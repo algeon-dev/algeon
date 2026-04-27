@@ -19,7 +19,12 @@ pass_through = [
   "PKG_CONFIG_LIBDIR",
   "PKG_CONFIG_SYSROOT_DIR",
 ]
-explicit_inputs = ["CUDF_INSTALL_DIR", "CUGRAPH_BUILD_DIR"]
+explicit_inputs = [
+  "CUDF_INSTALL_DIR",
+  "CUVS_INSTALL_DIR",
+  "CUVS_ROOT",
+  "CUGRAPH_CMAKE_BUILD_DIR",
+]
 
 # Presence is rejected regardless of spelling inside the value. This is an
 # allowlisted clean-build contract, not a denylist of known-unsafe CPU names.

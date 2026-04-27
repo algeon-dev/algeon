@@ -58,6 +58,7 @@ pub(super) fn node_operator(kind: &PlanNode) -> NodeOperator {
             weight_combiner: node.spec.weight_combiner,
         },
         PlanNode::GraphAlgorithm(graph) => NodeOperator::GraphAlgorithm { algorithm: graph.spec.algorithm },
+        PlanNode::VectorAlgorithm(vector) => NodeOperator::VectorAlgorithm { algorithm: vector.spec.algorithm },
     }
 }
 
@@ -125,6 +126,26 @@ fn node_executable_decision(plan: &QueryPlan, node: &QueryNode) -> CapabilityDec
             edge_normalize_node_executable_decision(plan, node.id, edge_normalize)
         },
         PlanNode::GraphAlgorithm(graph) => graph_algorithm_node_executable_decision(plan, node.id, graph),
+        PlanNode::VectorAlgorithm(vector) => vector_algorithm_node_executable_decision(plan, node.id, vector),
+    }
+}
+
+fn vector_algorithm_node_executable_decision(
+    plan: &QueryPlan,
+    node_id: NodeId,
+    vector: &crate::plan::VectorAlgorithmNode,
+) -> CapabilityDecision {
+    match crate::vector_validation::validate_vector_algorithm_node_contract(vector, plan, node_id) {
+        Ok(()) => CapabilityDecision::Satisfied,
+        Err(error) => {
+            let mut facts =
+                error.facts().iter().map(|(key, value)| (key, value.to_string())).collect::<BTreeMap<_, _>>();
+            facts.entry("node_id").or_insert_with(|| node_id.to_string());
+            facts.entry("algorithm").or_insert_with(|| vector.spec.algorithm.as_str().to_string());
+            facts.insert("validation_code", error.code().to_string());
+            facts.insert("validation_operation", error.operation().to_string());
+            CapabilityDecision::Rejected { reason: "unsupported_vector_algorithm_node_capability", facts }
+        },
     }
 }
 
@@ -1153,6 +1174,12 @@ fn node_local_requirements(plan: &QueryPlan, node: &QueryNode) -> Vec<Reservatio
             crate::plan::GRAPH_ALGORITHM_STRICT_BOUNDED_REQUIRED_CONTRACT,
             ContractQuality::ExactPreflight,
         )],
+        PlanNode::VectorAlgorithm(_) => vec![ReservationRequirement::blocked_by_lower_level(
+            ReservationKind::OperatorOutput,
+            crate::plan::VECTOR_ALGORITHM_BOUNDED_MEMORY_BOUNDARY,
+            crate::plan::VECTOR_ALGORITHM_BOUNDED_REQUIRED_CONTRACT,
+            ContractQuality::ExactPreflight,
+        )],
         _ => Vec::new(),
     }
 }
@@ -1179,7 +1206,8 @@ fn final_topk_sort_before_limit(plan: &QueryPlan, limit_input: NodeId) -> Option
             | PlanNode::Limit(_)
             | PlanNode::Union(_)
             | PlanNode::EdgeNormalize(_)
-            | PlanNode::GraphAlgorithm(_) => return None,
+            | PlanNode::GraphAlgorithm(_)
+            | PlanNode::VectorAlgorithm(_) => return None,
         }
     }
 }

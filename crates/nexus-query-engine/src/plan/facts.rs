@@ -85,6 +85,8 @@ pub enum SchemaBehavior {
     EdgeNormalize,
     /// Schema is produced by a graph algorithm result contract.
     GraphAlgorithm,
+    /// Schema is produced by a vector algorithm result contract.
+    VectorAlgorithm,
 }
 
 impl fmt::Display for SchemaBehavior {
@@ -98,6 +100,7 @@ impl fmt::Display for SchemaBehavior {
             Self::Union => "union",
             Self::EdgeNormalize => "edge_normalize",
             Self::GraphAlgorithm => "graph_algorithm",
+            Self::VectorAlgorithm => "vector_algorithm",
         })
     }
 }

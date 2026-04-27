@@ -57,3 +57,4 @@ pub mod runtime;
 pub mod source;
 pub mod triage;
 pub(crate) mod util;
+pub(crate) mod vector_validation;

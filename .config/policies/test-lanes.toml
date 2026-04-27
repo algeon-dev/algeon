@@ -66,6 +66,12 @@ resource_class = "shared"
 reason = "cuGraph SQL parity and algorithm tests construct and execute GPU graphs on small fixtures."
 
 [[binary]]
+id = "datafusion-nexus::cuvs_sql_gpu_tests"
+lane = "gpu"
+resource_class = "shared"
+reason = "cuVS SQL ingress, Parquet, multi-partition relational-output, and combined cuGraph pipelines execute small GPU fixtures."
+
+[[binary]]
 id = "datafusion-nexus::cpu_contract_tests"
 lane = "cpu"
 reason = "Merged CPU contract harness covering structured errors, policy reports, public facade reachability, and table-format scan planning without creating a native runtime."
@@ -110,6 +116,12 @@ id = "datafusion-nexus::server_cugraph_tests"
 lane = "gpu"
 resource_class = "shared"
 reason = "Server cuGraph integration tests execute graph functions through the GPU backend on small fixtures."
+
+[[binary]]
+id = "datafusion-nexus::server_cuvs_tests"
+lane = "gpu"
+resource_class = "shared"
+reason = "Flight SQL cuVS integration tests execute exact kNN, KMeans, and PCA through an explicitly unbounded GPU server."
 
 [[binary]]
 id = "datafusion-nexus::server_config_tests"

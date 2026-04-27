@@ -7,7 +7,7 @@
 #
 # The release binary must already be built. Either artifact flavor works:
 #   cargo build --release --features server,iceberg,nvml --bin datafusion_nexus_server
-#   cargo build --release --features server,iceberg,cugraph,nvml --bin datafusion_nexus_server
+#   cargo build --release --features server,iceberg,cugraph,cuvs,nvml --bin datafusion_nexus_server
 # The cuGraph SQL UDTFs stay disabled unless NEXUS_SERVER_CUGRAPH_ENABLED=true
 # is exported before calling this script (requires the cugraph build).
 #
@@ -69,8 +69,9 @@ export NEXUS_SERVER_MAX_CONCURRENT_QUERIES="${NEXUS_SERVER_MAX_CONCURRENT_QUERIE
 #
 # NEXUS_SERVER_NATIVE_MEMORY_POLICY
 #   bounded | unbounded (default: bounded). Use unbounded only for explicitly
-#   labelled graph-result smoke tests while the cuGraph bounded memory contract
-#   is still missing.
+#   labelled graph-result or cuVS smoke tests while their lower-level bounded
+#   memory contracts are still missing. cuVS calls reject under bounded
+#   admission; this is never a CPU fallback.
 #
 # NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES
 #   Hard cap on live GPU memory reservations. Leave unset with the two chunk

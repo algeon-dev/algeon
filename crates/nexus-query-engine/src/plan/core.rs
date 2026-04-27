@@ -279,6 +279,11 @@ impl QueryPlan {
         self.nodes.iter().any(|node| matches!(node.kind, PlanNode::EdgeNormalize(_)))
     }
 
+    /// Whether this plan contains a vector algorithm node.
+    pub fn contains_vector_algorithm(&self) -> bool {
+        self.nodes.iter().any(|node| matches!(node.kind, PlanNode::VectorAlgorithm(_)))
+    }
+
     /// Returns nodes that are not reachable from the explicit sink input.
     ///
     /// Builders normally produce sink-reachable plans, but this is useful for
@@ -353,6 +358,7 @@ impl QueryNode {
         match &self.kind {
             PlanNode::Projection(projection) => projection.output_schema(),
             PlanNode::GraphAlgorithm(graph) => graph.output_schema(),
+            PlanNode::VectorAlgorithm(vector) => vector.output_schema(),
             _ => &self.facts.output_schema,
         }
     }
@@ -394,6 +400,8 @@ pub enum PlanNode {
     EdgeNormalize(EdgeNormalizeNode),
     /// Runs a graph algorithm over an edge-list input.
     GraphAlgorithm(GraphAlgorithmNode),
+    /// Runs a vector search or vector-ML algorithm over relation inputs.
+    VectorAlgorithm(VectorAlgorithmNode),
 }
 
 impl PlanNode {
@@ -415,6 +423,7 @@ impl PlanNode {
             Self::Union(node) => &node.inputs,
             Self::EdgeNormalize(node) => std::slice::from_ref(&node.input),
             Self::GraphAlgorithm(node) => &node.inputs,
+            Self::VectorAlgorithm(node) => &node.inputs,
         }
     }
 }

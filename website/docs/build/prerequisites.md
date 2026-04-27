@@ -8,24 +8,26 @@ description: System packages, CUDA toolkit, host compiler, mold linker, and Rust
 Everything below installs system-wide, once. Commands are written for Ubuntu
 24.04 (the RAPIDS-supported LTS); adapt package names for other distributions.
 
-The two native libraries in the stack — **libcudf** and **libcugraph** — are
+The three native libraries in the stack — **libcudf**, **libcuvs**, and
+**libcugraph** — are
 built from the RAPIDS 26.06 sources, so their toolchain requirements are the
 upstream RAPIDS ones. Where a version matters, this page cites the upstream
 requirement rather than pinning the exact build this guide happened to run on;
 follow the [RAPIDS install guide](https://docs.rapids.ai/install/) and the
 `dependencies.yaml` in [rapidsai/cudf](https://github.com/rapidsai/cudf) /
+[rapidsai/cuvs](https://github.com/rapidsai/cuvs) /
 [rapidsai/cugraph](https://github.com/rapidsai/cugraph) as the source of truth.
 
 ## What each tool is for
 
 | Tool | Required by | Notes |
 | --- | --- | --- |
-| NVIDIA driver + CUDA toolkit | libcudf build, libcugraph build (nvcc); every layer at runtime (GPU) | CUDA 12.2 through 13.2 |
-| gcc/g++ **14** | libcudf build, libcugraph build (host compiler) | RAPIDS 26.06 pins gcc 14 |
-| CMake ≥ 3.30.4 | libcudf build, libcugraph build, the `cudf-nexus-sys` C++ shim | hard floor in the C++ projects |
-| Ninja | libcudf build, libcugraph build | RAPIDS build scripts default to it |
-| mold + clang | `cudf-nexus`, `cugraph-nexus`, `datafusion-nexus` Cargo builds | `datafusion-nexus` pins mold in `.cargo/config.toml`; install both on the host |
-| Rust (stable + nightly) | `cudf-nexus`, `cugraph-nexus`, `datafusion-nexus` | nightly only for `rustfmt` |
+| NVIDIA driver + CUDA toolkit | libcudf, libcuvs, libcugraph builds (nvcc); every layer at runtime (GPU) | CUDA 12.2 through 13.2 |
+| gcc/g++ **14** | libcudf, libcuvs, libcugraph builds (host compiler) | RAPIDS 26.06 pins gcc 14 |
+| CMake ≥ 3.30.4 | libcudf, libcuvs, libcugraph builds; the cuDF Rust shim | hard floor in the C++ projects |
+| Ninja | libcudf, libcuvs, libcugraph builds | RAPIDS build scripts default to it |
+| mold + clang | `cudf-nexus`, `cuvs-nexus`, `cugraph-nexus`, `datafusion-nexus` Cargo builds | `datafusion-nexus` pins mold in `.cargo/config.toml`; install both on the host |
+| Rust (stable + nightly) | `cudf-nexus`, `cuvs-nexus`, `cugraph-nexus`, `datafusion-nexus` | nightly only for `rustfmt` |
 | Python + pyarrow | a few `cudf-nexus` Parquet **fixture tests** | **not** a build dependency |
 
 ## NVIDIA driver and CUDA toolkit
@@ -78,8 +80,8 @@ uses; RAPIDS build scripts default to it), **git**, **clang**, and **mold**.
 `datafusion-nexus` selects clang + mold from its `.cargo/config.toml`, so install
 both before any `cargo build` / `cargo test` step on the Rust workspaces.
 
-RAPIDS 26.06 **pins gcc 14** as the host compiler for both native builds
-(`gcc_linux-64=14.*` in the cudf and cugraph `dependencies.yaml`). Ubuntu
+RAPIDS 26.06 **pins gcc 14** as the host compiler for all three native builds
+(`gcc_linux-64=14.*` in the cudf, cuvs, and cugraph `dependencies.yaml`). Ubuntu
 24.04's default is gcc 13, so install `gcc-14`/`g++-14` explicitly; the
 [environment file](./environment.md) points `CC`/`CXX`/`CUDAHOSTCXX` at it.
 There is no need to change the system default compiler.
@@ -98,7 +100,7 @@ toolkit is a classic source of inscrutable `nvcc` errors.
 
 ### CMake ≥ 3.30.4
 
-Both native builds (`libcudf`, `libcugraph`) and the `cudf-nexus-sys` shim declare
+All three native builds (`libcudf`, `libcuvs`, `libcugraph`) and the `cudf-nexus-sys` shim declare
 `cmake_minimum_required(VERSION 3.30.4)`. Ubuntu 24.04 ships 3.28, which fails
 immediately — install a newer CMake from the
 [Kitware apt repository](https://apt.kitware.com/):
@@ -133,7 +135,8 @@ mold --version
 clang --version
 ```
 
-For sibling crates built outside `datafusion-nexus` (`cudf-nexus`, `cugraph-nexus`),
+For sibling crates built outside `datafusion-nexus`
+(`cudf-nexus`, `cuvs-nexus`, `cugraph-nexus`),
 install the same packages and keep an equivalent linker setting in
 `~/.cargo/config.toml` so plain `cargo build` still uses mold:
 
@@ -163,7 +166,7 @@ it. The nightly toolchain is only used for `cargo +nightly fmt`.
 ## Python (test fixtures only)
 
 A few `cudf-nexus` Parquet fixture tests shell out to Python with pyarrow. This is
-**not** a build dependency — libcudf, libcugraph, and every Rust crate compile
+**not** a build dependency — libcudf, libcuvs, libcugraph, and every Rust crate compile
 and link without it — so install it only if you intend to run the full
 `cudf-nexus` test suite:
 

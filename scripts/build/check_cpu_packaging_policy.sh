@@ -57,6 +57,12 @@ import tomllib
 
 with open(sys.argv[1], "rb") as policy_file:
     policy = tomllib.load(policy_file)
+assert policy["clean_environment"]["explicit_inputs"] == [
+    "CUDF_INSTALL_DIR",
+    "CUVS_INSTALL_DIR",
+    "CUVS_ROOT",
+    "CUGRAPH_CMAKE_BUILD_DIR",
+]
 portable = policy["profiles"]["portable"]
 tuned = policy["profiles"]["tuned-local-v3"]
 assert portable["declared_baseline"] == "x86-64-v2"
@@ -137,7 +143,9 @@ env -i PATH="${tmp_dir}/bin:${PATH}" HOME="${tmp_dir}/home" \
     --target-root "${target_root}" \
     --manifest "${ROOT}/Cargo.toml" \
     --explicit-env "CUDF_INSTALL_DIR=${tmp_dir}/cudf" \
-    --explicit-env "CUGRAPH_BUILD_DIR=${tmp_dir}/cugraph" \
+    --explicit-env "CUVS_INSTALL_DIR=${tmp_dir}/cuvs" \
+    --explicit-env "CUVS_ROOT=${tmp_dir}/cuvs" \
+    --explicit-env "CUGRAPH_CMAKE_BUILD_DIR=${tmp_dir}/cugraph" \
     >"${tmp_dir}/build.output"
 
 binary="${target_root}/portable-x86-64-v2/x86_64-unknown-linux-gnu/release/datafusion_nexus_server"
@@ -304,7 +312,41 @@ case "${1:-}" in
   *) exit 2 ;;
 esac
 SH
-chmod +x "${tmp_dir}/bin/patchelf"
+cat >"${tmp_dir}/bin/readelf" <<'SH'
+#!/usr/bin/bash
+set -euo pipefail
+case "${1:-}" in
+  -h) echo 'ELF Header:' ;;
+  -d)
+    echo ' 0x0000000000000001 (NEEDED) Shared library: [librmm.so]'
+    [[ "${FAKE_LOGGER_NEEDED:-0}" != 1 ]] \
+      || echo ' 0x0000000000000001 (NEEDED) Shared library: [librapids_logger.so]'
+    [[ -z "${FAKE_READELF_NEEDED:-}" ]] \
+      || echo " 0x0000000000000001 (NEEDED) Shared library: [${FAKE_READELF_NEEDED}]"
+    ;;
+  *) exit 2 ;;
+esac
+SH
+cat >"${tmp_dir}/bin/ldd" <<'SH'
+#!/usr/bin/bash
+set -euo pipefail
+echo "librmm.so => ${CPU_PACKAGE_DIST_DIR}/lib/librmm.so (0x0001)"
+if [[ "$1" == */cugraph/libcugraph.so && -n "${FAKE_GRAPH_CUVS_REALPATH:-}" ]]; then
+  echo "libcuvs.so => ${FAKE_GRAPH_CUVS_REALPATH} (0x0002)"
+elif [[ "${FAKE_CLOSURE_HAS_CUVS:-0}" == 1 ]]; then
+  echo "libcuvs.so => ${CPU_PACKAGE_DIST_DIR}/lib/libcuvs.so (0x0002)"
+fi
+if [[ "${FAKE_CLOSURE_HAS_LOGGER:-0}" == 1 ]]; then
+  logger_realpath="${FAKE_LOGGER_REALPATH:-${CPU_PACKAGE_DIST_DIR}/lib/librapids_logger.so}"
+  if [[ "$1" == */lib/libcuvs.so && -n "${FAKE_SECOND_LOGGER_REALPATH:-}" ]]; then
+    logger_realpath="${FAKE_SECOND_LOGGER_REALPATH}"
+  fi
+  echo "librapids_logger.so => ${logger_realpath} (0x0003)"
+fi
+[[ "${FAKE_LDD_AUXILIARY_NOT_FOUND:-0}" != 1 ]] || echo 'visibility=hidden => not found'
+[[ "${FAKE_LDD_NOT_FOUND:-0}" != 1 ]] || echo 'libmissing.so => not found'
+SH
+chmod +x "${tmp_dir}/bin/patchelf" "${tmp_dir}/bin/readelf" "${tmp_dir}/bin/ldd"
 
 CPU_PACKAGE_TARGET_ROOT="${target_root}" \
 CPU_PACKAGE_DIST_DIR="${tmp_dir}/docker-dist" \
@@ -312,11 +354,14 @@ FEATURES=server,iceberg,nvml \
 SKIP_CARGO_BUILD=1 \
 NO_STRIP=1 \
 CUDF_INSTALL_DIR="${tmp_dir}/cudf" \
-CUGRAPH_BUILD_DIR="${tmp_dir}/cugraph" \
+CUGRAPH_CMAKE_BUILD_DIR="${tmp_dir}/cugraph" \
+FAKE_LDD_AUXILIARY_NOT_FOUND=1 \
 PATH="${tmp_dir}/bin:${PATH}" \
   bash docker/build.sh >"${tmp_dir}/full-skip-stage.output"
 [[ -f "${tmp_dir}/docker-dist/cpu-provenance.json" ]] \
   || fail "full fake staging path omitted provenance"
+[[ ! -e "${tmp_dir}/docker-dist/lib/librapids_logger.so" ]] \
+  || fail "static/absorbed logger package staged an unneeded shared logger"
 for needle in \
   '--build-arg CPU_BASELINE=x86-64-v2' \
   '--build-arg CPU_ARCH=amd64' \
@@ -328,6 +373,147 @@ for needle in \
     || fail "printed Docker command missing: ${needle}"
 done
 echo "PASS: fake canonical staging prints policy/provenance-bound Docker command"
+
+CPU_PACKAGE_TARGET_ROOT="${target_root}" \
+CPU_PACKAGE_DIST_DIR="${tmp_dir}/docker-dist-shared-logger" \
+FEATURES=server,iceberg,nvml \
+SKIP_CARGO_BUILD=1 \
+NO_STRIP=1 \
+CUDF_INSTALL_DIR="${tmp_dir}/cudf" \
+CUGRAPH_CMAKE_BUILD_DIR="${tmp_dir}/cugraph" \
+FAKE_LOGGER_NEEDED=1 \
+FAKE_CLOSURE_HAS_LOGGER=1 \
+PATH="${tmp_dir}/bin:${PATH}" \
+  bash docker/build.sh >"${tmp_dir}/shared-logger-stage.output"
+[[ -f "${tmp_dir}/docker-dist-shared-logger/lib/librapids_logger.so" ]] \
+  || fail "shared logger DT_NEEDED edge did not stage the canonical logger"
+
+status=0
+CPU_PACKAGE_TARGET_ROOT="${target_root}" \
+CPU_PACKAGE_DIST_DIR="${tmp_dir}/docker-dist-static-external-logger" \
+FEATURES=server,iceberg,nvml \
+SKIP_CARGO_BUILD=1 \
+NO_STRIP=1 \
+CUDF_INSTALL_DIR="${tmp_dir}/cudf" \
+CUGRAPH_CMAKE_BUILD_DIR="${tmp_dir}/cugraph" \
+FAKE_CLOSURE_HAS_LOGGER=1 \
+FAKE_LOGGER_REALPATH="${tmp_dir}/cudf/lib/librapids_logger.so" \
+PATH="${tmp_dir}/bin:${PATH}" \
+  bash docker/build.sh >"${tmp_dir}/static-external-logger.output" 2>&1 || status=$?
+[[ "${status}" -eq 1 ]] || fail "static/absorbed logger package accepted an external shared logger"
+grep -Fq 'without one canonical staged identity' "${tmp_dir}/static-external-logger.output" \
+  || fail "external shared logger diagnostic missing"
+echo "PASS: static and shared rapids_logger packaging contracts stay distinct"
+
+mkdir -p "${tmp_dir}/cuvs/lib" "${tmp_dir}/cugraph"
+printf 'fake canonical cuvs\n' >"${tmp_dir}/cuvs/lib/libcuvs.so"
+printf 'fake canonical cuvs C API\n' >"${tmp_dir}/cuvs/lib/libcuvs_c.so"
+for library in libcugraph.so libcugraph_c.so libcugraph_common.so libcugraph_mg.so; do
+  printf 'fake %s\n' "${library}" >"${tmp_dir}/cugraph/${library}"
+done
+
+build_fake_variant() {
+  local features=$1
+  env -i PATH="${tmp_dir}/bin:${PATH}" HOME="${tmp_dir}/home" \
+    python3 "${HELPER}" --policy "${POLICY}" build \
+      --profile portable \
+      --features "${features}" \
+      --target-root "${target_root}" \
+      --manifest "${ROOT}/Cargo.toml" \
+      --explicit-env "CUDF_INSTALL_DIR=${tmp_dir}/cudf" \
+      --explicit-env "CUVS_INSTALL_DIR=${tmp_dir}/cuvs" \
+      --explicit-env "CUVS_ROOT=${tmp_dir}/cuvs" \
+      --explicit-env "CUGRAPH_CMAKE_BUILD_DIR=${tmp_dir}/cugraph" \
+      >"${tmp_dir}/variant-build.output"
+}
+
+build_fake_variant server,cuvs
+CPU_PACKAGE_TARGET_ROOT="${target_root}" \
+CPU_PACKAGE_DIST_DIR="${tmp_dir}/docker-dist-cuvs" \
+FEATURES=server,cuvs SKIP_CARGO_BUILD=1 NO_STRIP=1 \
+CUDF_INSTALL_DIR="${tmp_dir}/cudf" CUVS_INSTALL_DIR="${tmp_dir}/cuvs" \
+FAKE_CLOSURE_HAS_CUVS=1 PATH="${tmp_dir}/bin:${PATH}" \
+  bash docker/build.sh >"${tmp_dir}/cuvs-stage.output"
+[[ -f "${tmp_dir}/docker-dist-cuvs/lib/libcuvs.so" ]] || fail "cuVS-only package omitted canonical libcuvs.so"
+[[ -f "${tmp_dir}/docker-dist-cuvs/lib/libcuvs_c.so" ]] || fail "cuVS-only package omitted libcuvs_c.so"
+
+build_fake_variant server,cugraph
+CPU_PACKAGE_TARGET_ROOT="${target_root}" \
+CPU_PACKAGE_DIST_DIR="${tmp_dir}/docker-dist-cugraph" \
+FEATURES=server,cugraph SKIP_CARGO_BUILD=1 NO_STRIP=1 \
+CUDF_INSTALL_DIR="${tmp_dir}/cudf" CUVS_INSTALL_DIR="${tmp_dir}/cuvs" \
+CUGRAPH_CMAKE_BUILD_DIR="${tmp_dir}/cugraph" \
+FAKE_GRAPH_CUVS_REALPATH="${tmp_dir}/cuvs/lib/libcuvs.so" FAKE_CLOSURE_HAS_CUVS=1 \
+PATH="${tmp_dir}/bin:${PATH}" \
+  bash docker/build.sh >"${tmp_dir}/cugraph-stage.output"
+[[ -f "${tmp_dir}/docker-dist-cugraph/lib/libcuvs.so" ]] || fail "cuGraph-only package omitted canonical libcuvs.so"
+[[ ! -e "${tmp_dir}/docker-dist-cugraph/lib/libcuvs_c.so" ]] || fail "cuGraph-only package unexpectedly staged libcuvs_c.so"
+
+build_fake_variant server,cugraph,cuvs
+CPU_PACKAGE_TARGET_ROOT="${target_root}" \
+CPU_PACKAGE_DIST_DIR="${tmp_dir}/docker-dist-combined" \
+FEATURES=server,cugraph,cuvs SKIP_CARGO_BUILD=1 NO_STRIP=1 \
+CUDF_INSTALL_DIR="${tmp_dir}/cudf" CUVS_INSTALL_DIR="${tmp_dir}/cuvs" \
+CUGRAPH_CMAKE_BUILD_DIR="${tmp_dir}/cugraph" \
+FAKE_GRAPH_CUVS_REALPATH="${tmp_dir}/cuvs/lib/libcuvs.so" FAKE_CLOSURE_HAS_CUVS=1 \
+PATH="${tmp_dir}/bin:${PATH}" \
+  bash docker/build.sh >"${tmp_dir}/combined-stage.output"
+[[ -f "${tmp_dir}/docker-dist-combined/lib/libcuvs.so" ]] || fail "combined package omitted canonical libcuvs.so"
+[[ -f "${tmp_dir}/docker-dist-combined/lib/libcuvs_c.so" ]] || fail "combined package omitted libcuvs_c.so"
+echo "PASS: cuVS-only, cuGraph-only, and combined packages stage the declared canonical cuVS libraries"
+
+printf 'fake divergent logger\n' >"${tmp_dir}/divergent-librapids_logger.so"
+status=0
+CPU_PACKAGE_TARGET_ROOT="${target_root}" CPU_PACKAGE_DIST_DIR="${tmp_dir}/docker-dist-divergent-logger" \
+FEATURES=server,cugraph,cuvs SKIP_CARGO_BUILD=1 NO_STRIP=1 \
+CUDF_INSTALL_DIR="${tmp_dir}/cudf" CUVS_INSTALL_DIR="${tmp_dir}/cuvs" \
+CUGRAPH_CMAKE_BUILD_DIR="${tmp_dir}/cugraph" \
+FAKE_GRAPH_CUVS_REALPATH="${tmp_dir}/cuvs/lib/libcuvs.so" FAKE_CLOSURE_HAS_CUVS=1 \
+FAKE_LOGGER_NEEDED=1 FAKE_CLOSURE_HAS_LOGGER=1 \
+FAKE_SECOND_LOGGER_REALPATH="${tmp_dir}/divergent-librapids_logger.so" \
+PATH="${tmp_dir}/bin:${PATH}" \
+  bash docker/build.sh >"${tmp_dir}/divergent-logger.output" 2>&1 || status=$?
+[[ "${status}" -eq 1 ]] || fail "combined package accepted divergent librapids_logger.so identities"
+grep -Fq 'multiple librapids_logger.so identities' "${tmp_dir}/divergent-logger.output" \
+  || fail "divergent librapids_logger.so diagnostic missing"
+
+printf 'fake divergent cuvs\n' >"${tmp_dir}/divergent-libcuvs.so"
+status=0
+CPU_PACKAGE_TARGET_ROOT="${target_root}" CPU_PACKAGE_DIST_DIR="${tmp_dir}/docker-dist-divergent" \
+FEATURES=server,cugraph,cuvs SKIP_CARGO_BUILD=1 NO_STRIP=1 \
+CUDF_INSTALL_DIR="${tmp_dir}/cudf" CUVS_INSTALL_DIR="${tmp_dir}/cuvs" \
+CUGRAPH_CMAKE_BUILD_DIR="${tmp_dir}/cugraph" \
+FAKE_GRAPH_CUVS_REALPATH="${tmp_dir}/divergent-libcuvs.so" FAKE_CLOSURE_HAS_CUVS=1 \
+PATH="${tmp_dir}/bin:${PATH}" \
+  bash docker/build.sh >"${tmp_dir}/divergent-cuvs.output" 2>&1 || status=$?
+[[ "${status}" -eq 1 ]] || fail "combined package accepted divergent libcuvs.so identity"
+grep -Fq 'different libcuvs.so identities' "${tmp_dir}/divergent-cuvs.output" \
+  || fail "divergent libcuvs.so diagnostic missing"
+
+status=0
+CPU_PACKAGE_TARGET_ROOT="${target_root}" CPU_PACKAGE_DIST_DIR="${tmp_dir}/docker-dist-not-found" \
+FEATURES=server,cugraph,cuvs SKIP_CARGO_BUILD=1 NO_STRIP=1 \
+CUDF_INSTALL_DIR="${tmp_dir}/cudf" CUVS_INSTALL_DIR="${tmp_dir}/cuvs" \
+CUGRAPH_CMAKE_BUILD_DIR="${tmp_dir}/cugraph" \
+FAKE_GRAPH_CUVS_REALPATH="${tmp_dir}/cuvs/lib/libcuvs.so" FAKE_CLOSURE_HAS_CUVS=1 FAKE_LDD_NOT_FOUND=1 \
+PATH="${tmp_dir}/bin:${PATH}" \
+  bash docker/build.sh >"${tmp_dir}/loader-not-found.output" 2>&1 || status=$?
+[[ "${status}" -eq 1 ]] || fail "loader closure accepted a not-found dependency"
+grep -Fq 'unresolved loader dependency' "${tmp_dir}/loader-not-found.output" \
+  || fail "loader not-found diagnostic missing"
+
+status=0
+CPU_PACKAGE_TARGET_ROOT="${target_root}" CPU_PACKAGE_DIST_DIR="${tmp_dir}/docker-dist-raft" \
+FEATURES=server,cugraph,cuvs SKIP_CARGO_BUILD=1 NO_STRIP=1 \
+CUDF_INSTALL_DIR="${tmp_dir}/cudf" CUVS_INSTALL_DIR="${tmp_dir}/cuvs" \
+CUGRAPH_CMAKE_BUILD_DIR="${tmp_dir}/cugraph" \
+FAKE_GRAPH_CUVS_REALPATH="${tmp_dir}/cuvs/lib/libcuvs.so" FAKE_CLOSURE_HAS_CUVS=1 \
+FAKE_READELF_NEEDED=libraft.so PATH="${tmp_dir}/bin:${PATH}" \
+  bash docker/build.sh >"${tmp_dir}/loader-raft.output" 2>&1 || status=$?
+[[ "${status}" -eq 1 ]] || fail "loader closure accepted a shared libraft.so"
+grep -Fq 'unexpected shared RAFT dependency' "${tmp_dir}/loader-raft.output" \
+  || fail "shared RAFT diagnostic missing"
+echo "PASS: packaging rejects divergent cuVS/logger identities and incomplete/unexpected loader closure entries"
 
 status=0
 bash docker/build.sh --config 'target.x86_64-unknown-linux-gnu.rustflags=[]' \

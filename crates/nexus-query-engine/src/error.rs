@@ -418,6 +418,50 @@ impl QueryError {
         .with_source(source)
     }
 
+    /// Wraps a `cuvs::Error` at the native vector-execution boundary.
+    ///
+    /// Classification is derived only from the typed cuVS kind and status;
+    /// foreign message text remains diagnostic and never drives retry policy.
+    #[cfg(feature = "cuvs")]
+    pub fn from_cuvs(operation: &'static str, message: impl Into<String>, source: cuvs::Error) -> Self {
+        let code = code_for_cuvs_error(&source);
+        let error = Self::new(code, operation, message)
+            .with_fact("cuvs_kind", source.kind())
+            .with_fact("cuvs_status", source.status())
+            .with_fact("cuvs_operation", source.operation());
+        let cuvs_message = source.message().trim();
+        let mut error = if cuvs_message.is_empty() {
+            error
+        } else {
+            error.with_fact("cuvs_message", redact_uri_tokens(cuvs_message))
+        };
+        for (key, value) in source.context().filter(|(key, _)| is_safe_cuvs_context_fact(key)) {
+            error = error.with_fact(key, value);
+        }
+        error.with_source(source)
+    }
+
+    /// Wraps a prepared cuDF interop failure at a native vector boundary.
+    #[cfg(feature = "cuvs")]
+    pub(crate) fn from_cudf_interop<E>(
+        operation: &'static str,
+        message: impl Into<String>,
+        source_kind: impl Into<String>,
+        source: E,
+    ) -> Self
+    where
+        E: StdError + Send + Sync + 'static,
+    {
+        // The engine validates vector schemas and selects every requested
+        // column before preparing this producer-rooted export. A preparation
+        // failure at this point is therefore an execution-binding invariant,
+        // not a second user-input validation surface.
+        let source_kind: String = source_kind.into();
+        Self::new(QueryErrorCode::CudfInvariantViolation, operation, message)
+            .with_fact("cudf_interop_kind", source_kind)
+            .with_source(source)
+    }
+
     /// Wraps a `cudf::Error` without attaching its display text as a source.
     ///
     /// Use this when source text may contain sensitive reader locations. It
@@ -691,6 +735,39 @@ fn code_for_cudf_error(error: &cudf::Error) -> QueryErrorCode {
     }
 }
 
+#[cfg(feature = "cuvs")]
+fn code_for_cuvs_error(error: &cuvs::Error) -> QueryErrorCode {
+    match error.kind() {
+        cuvs::ErrorKind::InvalidInput => QueryErrorCode::CudfInvalidInput,
+        cuvs::ErrorKind::Unsupported => QueryErrorCode::CudfUnsupported,
+        cuvs::ErrorKind::OutOfMemory => QueryErrorCode::CudfResourceExhausted,
+        cuvs::ErrorKind::InvalidState => QueryErrorCode::CudfInvariantViolation,
+        cuvs::ErrorKind::Unexpected => match error.status() {
+            cuvs::ErrorStatus::Temporary => QueryErrorCode::CudfTemporaryFailure,
+            cuvs::ErrorStatus::Persistent => QueryErrorCode::CudfPersistentFailure,
+            cuvs::ErrorStatus::Permanent => QueryErrorCode::CudfDependencyFailure,
+        },
+        _ => QueryErrorCode::CudfDependencyFailure,
+    }
+}
+
+#[cfg(feature = "cuvs")]
+fn is_safe_cuvs_context_fact(key: &str) -> bool {
+    matches!(
+        key,
+        "cudf_code"
+            | "cudf_kind"
+            | "cudf_status"
+            | "cudf_operation"
+            | "interop_kind"
+            | "native_status"
+            | "buffer_binding"
+            | "resource_binding"
+            | "expected_device"
+            | "actual_device"
+    )
+}
+
 fn quote(value: &str) -> String {
     if value.chars().all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.' | ':' | '/' | '(' | ')')) {
         value.to_string()
@@ -745,5 +822,36 @@ mod tests {
             "failed to open <redacted-uri> for read"
         );
         assert_eq!(redact_uri_tokens("  spaced   message  "), "spaced message");
+    }
+
+    #[cfg(feature = "cuvs")]
+    #[test]
+    fn from_cuvs_maps_only_typed_kind_and_status() {
+        let cases = [
+            (cuvs::Error::new(cuvs::ErrorKind::InvalidInput, "cuvs.invalid"), QueryErrorCode::CudfInvalidInput),
+            (cuvs::Error::new(cuvs::ErrorKind::Unsupported, "cuvs.unsupported"), QueryErrorCode::CudfUnsupported),
+            (cuvs::Error::new(cuvs::ErrorKind::OutOfMemory, "cuvs.oom"), QueryErrorCode::CudfResourceExhausted),
+            (cuvs::Error::new(cuvs::ErrorKind::InvalidState, "cuvs.state"), QueryErrorCode::CudfInvariantViolation),
+            (
+                cuvs::Error::new(cuvs::ErrorKind::Unexpected, "cuvs.temporary")
+                    .with_context("native_status", "CUVS_ERROR")
+                    .set_temporary(),
+                QueryErrorCode::CudfTemporaryFailure,
+            ),
+            (
+                cuvs::Error::new(cuvs::ErrorKind::Unexpected, "cuvs.persistent").set_persistent(),
+                QueryErrorCode::CudfPersistentFailure,
+            ),
+        ];
+        for (source, expected) in cases {
+            let error = QueryError::from_cuvs("nexus_query_engine.test.from_cuvs", "wrapped cuVS failure", source);
+            assert_eq!(error.code(), expected);
+            assert!(error.fact_value("cuvs_kind").is_some());
+            assert!(error.fact_value("cuvs_status").is_some());
+            assert!(error.fact_value("cuvs_operation").is_some());
+            if error.fact_value("cuvs_operation") == Some("cuvs.temporary") {
+                assert_eq!(error.fact_value("native_status"), Some("CUVS_ERROR"));
+            }
+        }
     }
 }

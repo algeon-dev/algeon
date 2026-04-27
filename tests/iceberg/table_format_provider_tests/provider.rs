@@ -85,6 +85,200 @@ async fn real_iceberg_provider_exposes_one_canonical_schema_to_cpu_and_native_op
     assert!(native_plan.schema().field(0).metadata().is_empty());
 }
 
+#[cfg(feature = "cuvs")]
+#[tokio::test]
+async fn cuvs_sql_executes_over_a_real_iceberg_relation() {
+    let fixture = RealIcebergProviderFixture::new();
+    fixture.write_one_row_and_current_manifest_list().await;
+    let provider = Arc::new(NexusIcebergTableProvider::try_new(fixture.table.clone()).unwrap());
+    let execution_config = NexusNativeExecutionConfig::unbounded();
+    let state = SessionStateBuilder::new()
+        .with_config(direct_friendly_session_config())
+        .with_default_features()
+        .with_nexus_native(NexusNativeOptimizerConfig::default().with_native_execution_config(execution_config))
+        .try_with_cuvs_sql()
+        .expect("install cuVS SQL")
+        .build();
+    let ctx = SessionContext::new_with_state(state);
+    ctx.register_table("vector_iceberg", provider).unwrap();
+
+    let query_schema = Arc::new(Schema::new(vec![
+        Field::new("query_id", DataType::Int64, false),
+        Field::new("d0", DataType::Float32, false),
+        Field::new("d1", DataType::Float32, false),
+    ]));
+    let queries = RecordBatch::try_new(
+        Arc::clone(&query_schema),
+        vec![
+            Arc::new(Int64Array::from(vec![7_i64])) as ArrayRef,
+            Arc::new(arrow::array::Float32Array::from(vec![200.0_f32])) as ArrayRef,
+            Arc::new(arrow::array::Float32Array::from(vec![300.0_f32])) as ArrayRef,
+        ],
+    )
+    .unwrap();
+    ctx.register_table("vector_queries", Arc::new(MemTable::try_new(query_schema, vec![vec![queries]]).unwrap()))
+        .unwrap();
+
+    let options = r#"{
+      "dataset":{"id":"item_id","vector":{"columns":["d0","d1"]}},
+      "queries":{"id":"query_id","vector":{"columns":["d0","d1"]}},
+      "k":1,
+      "metric":"l2_expanded"
+    }"#;
+    let batches = ctx
+        .sql(&format!(
+            "SELECT query_id, neighbor_id \
+             FROM cuvs_brute_force_knn(\
+                 (SELECT x AS item_id, CAST(y AS REAL) AS d0, CAST(z AS REAL) AS d1 FROM vector_iceberg), \
+                 (SELECT * FROM vector_queries), \
+                 '{}')",
+            options.replace('\'', "''")
+        ))
+        .await
+        .expect("plan cuVS Iceberg query")
+        .collect()
+        .await
+        .expect("execute cuVS Iceberg query");
+    assert_eq!(batches.len(), 1);
+    let batch = &batches[0];
+    let query_ids = batch.column(0).as_any().downcast_ref::<Int64Array>().unwrap();
+    let neighbor_ids = batch.column(1).as_any().downcast_ref::<Int64Array>().unwrap();
+    assert_eq!(query_ids.values(), &[7]);
+    assert_eq!(neighbor_ids.values(), &[100]);
+}
+
+#[cfg(feature = "cuvs")]
+#[tokio::test]
+async fn cuvs_sql_executes_uniform_float32_list_vectors_over_real_iceberg_relations() {
+    let fixture = RealIcebergProviderFixture::new_float32_vector_list();
+    fixture.write_float32_vector_list_rows_and_current_manifest_list(&[(100, &[0.0, 0.0]), (100, &[3.0, 3.0])]).await;
+    let provider = Arc::new(NexusIcebergTableProvider::try_new(fixture.table.clone()).unwrap());
+    let execution_config = NexusNativeExecutionConfig::unbounded();
+    let state = SessionStateBuilder::new()
+        .with_config(direct_friendly_session_config())
+        .with_default_features()
+        .with_nexus_native(NexusNativeOptimizerConfig::default().with_native_execution_config(execution_config))
+        .try_with_cuvs_sql()
+        .expect("install cuVS SQL")
+        .build();
+    let ctx = SessionContext::new_with_state(state);
+    ctx.register_table("vector_iceberg", provider).unwrap();
+
+    let item = Arc::new(Field::new("item", DataType::Float32, false));
+    let query_schema = Arc::new(Schema::new(vec![
+        Field::new("query_id", DataType::Int64, false),
+        Field::new("embedding", DataType::List(Arc::clone(&item)), false),
+    ]));
+    let queries = RecordBatch::try_new(
+        Arc::clone(&query_schema),
+        vec![
+            Arc::new(Int64Array::from(vec![99_i64])) as ArrayRef,
+            Arc::new(ListArray::new(
+                item,
+                OffsetBuffer::new(vec![0_i32, 2].into()),
+                Arc::new(Float32Array::from(vec![0.0_f32, 0.0])),
+                None,
+            )) as ArrayRef,
+        ],
+    )
+    .unwrap();
+    ctx.register_table("vector_queries", Arc::new(MemTable::try_new(query_schema, vec![vec![queries]]).unwrap()))
+        .unwrap();
+
+    let options = r#"{
+      "dataset":{"id":"item_id","vector":{"column":"embedding"}},
+      "queries":{"id":"query_id","vector":{"column":"embedding"}},
+      "k":1,
+      "metric":"l2_expanded"
+    }"#;
+    let batches = ctx
+        .sql(&format!(
+            "SELECT query_id, neighbor_id, rank \
+             FROM cuvs_brute_force_knn(\
+                 (SELECT x AS item_id, embedding FROM vector_iceberg), \
+                 (SELECT * FROM vector_queries), \
+                 '{}')",
+            options.replace('\'', "''")
+        ))
+        .await
+        .expect("plan cuVS Iceberg List<Float32> query")
+        .collect()
+        .await
+        .expect("execute cuVS Iceberg List<Float32> query");
+    assert_eq!(batches.len(), 1);
+    let batch = &batches[0];
+    let query_ids = batch.column(0).as_any().downcast_ref::<Int64Array>().unwrap();
+    let neighbor_ids = batch.column(1).as_any().downcast_ref::<Int64Array>().unwrap();
+    let ranks = batch.column(2).as_any().downcast_ref::<arrow::array::UInt32Array>().unwrap();
+    assert_eq!(query_ids.values(), &[99]);
+    assert_eq!(neighbor_ids.values(), &[100]);
+    assert_eq!(ranks.values(), &[0]);
+}
+
+#[cfg(feature = "cuvs")]
+#[tokio::test]
+async fn cuvs_kmeans_and_pca_execute_over_real_iceberg_relations() {
+    let fixture = RealIcebergProviderFixture::new();
+    fixture.write_clusterable_vector_rows_and_current_manifest_list().await;
+    let provider = Arc::new(NexusIcebergTableProvider::try_new(fixture.table.clone()).unwrap());
+    let execution_config = NexusNativeExecutionConfig::unbounded();
+    let state = SessionStateBuilder::new()
+        .with_config(direct_friendly_session_config())
+        .with_default_features()
+        .with_nexus_native(NexusNativeOptimizerConfig::default().with_native_execution_config(execution_config))
+        .try_with_cuvs_sql()
+        .expect("install cuVS SQL")
+        .build();
+    let ctx = SessionContext::new_with_state(state);
+    ctx.register_table("vector_iceberg", provider).unwrap();
+
+    let relation = "SELECT x AS item_id, CAST(y AS REAL) AS d0, CAST(z AS REAL) AS d1 FROM vector_iceberg";
+    let kmeans_options = r#"{
+      "input":{"id":"item_id","vector":{"columns":["d0","d1"]}},
+      "n_clusters":2,
+      "init":"kmeans++"
+    }"#;
+    let kmeans = ctx
+        .sql(&format!(
+            "SELECT id, cluster_id FROM cuvs_kmeans(({relation}), '{}') ORDER BY row_ordinal",
+            kmeans_options.replace('\'', "''")
+        ))
+        .await
+        .expect("plan cuVS K-means over Iceberg")
+        .collect()
+        .await
+        .expect("execute cuVS K-means over Iceberg");
+    assert_eq!(kmeans.len(), 1);
+    let kmeans = &kmeans[0];
+    let ids = kmeans.column(0).as_any().downcast_ref::<Int64Array>().unwrap();
+    assert_eq!(ids.values(), &[100, 100, 100, 100]);
+    let clusters = kmeans.column(1).as_any().downcast_ref::<Int32Array>().unwrap();
+    assert_eq!(clusters.value(0), clusters.value(1), "nearby low-valued rows must share a cluster");
+    assert_eq!(clusters.value(2), clusters.value(3), "nearby high-valued rows must share a cluster");
+    assert_ne!(clusters.value(0), clusters.value(2), "the separated groups must have distinct clusters");
+
+    let pca_options = r#"{
+      "input":{"id":"item_id","vector":{"columns":["d0","d1"]}},
+      "n_components":1
+    }"#;
+    let pca = ctx
+        .sql(&format!(
+            "SELECT id, pc_0 FROM cuvs_pca(({relation}), '{}') ORDER BY row_ordinal",
+            pca_options.replace('\'', "''")
+        ))
+        .await
+        .expect("plan cuVS PCA over Iceberg")
+        .collect()
+        .await
+        .expect("execute cuVS PCA over Iceberg");
+    assert_eq!(pca.len(), 1);
+    let pca = &pca[0];
+    let ids = pca.column(0).as_any().downcast_ref::<Int64Array>().unwrap();
+    assert_eq!(ids.values(), &[100, 100, 100, 100]);
+    let components = pca.column(1).as_any().downcast_ref::<Float32Array>().unwrap();
+    assert!((0..components.len()).all(|row| components.value(row).is_finite()));
+}
+
 #[tokio::test]
 async fn real_nested_iceberg_provider_canonicalizes_cpu_batches_and_native_list_planning() {
     let fixture = RealIcebergProviderFixture::new_nested();

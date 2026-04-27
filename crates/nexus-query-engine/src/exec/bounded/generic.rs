@@ -203,6 +203,14 @@ fn execute_bounded_generic_node(
         PlanNode::GraphAlgorithm(graph) => {
             execute_bounded_generic_graph_algorithm(context, plan, id, graph, gpu_inputs, reservations, metrics)
         },
+        PlanNode::VectorAlgorithm(vector) => Err(QueryError::new(
+            QueryErrorCode::UnsupportedPlanShape,
+            "nexus_query_engine.bounded.generic_vector_algorithm",
+            "bounded vector algorithms must be rejected by strict or adaptive admission before generic execution",
+        )
+        .with_fact("node_id", id)
+        .with_fact("algorithm", vector.spec.algorithm.as_str())
+        .with_fact("reason", "bounded_vector_admission_bypassed")),
         PlanNode::Aggregate(aggregate) => {
             let input = match plan.node(aggregate.input).map(|node| &node.kind) {
                 Some(PlanNode::Aggregate(_)) => match BoundedPlan::analyze_aggregate_subplan(plan, aggregate.input) {
@@ -1668,5 +1676,6 @@ fn bounded_generic_node_kind(node: &PlanNode) -> &'static str {
         PlanNode::Union(_) => "union",
         PlanNode::EdgeNormalize(_) => "edge_normalize",
         PlanNode::GraphAlgorithm(_) => "graph_algorithm",
+        PlanNode::VectorAlgorithm(_) => "vector_algorithm",
     }
 }

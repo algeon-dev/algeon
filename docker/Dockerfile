@@ -77,11 +77,45 @@ RUN printf '%s  %s\n' "${CPU_BINARY_SHA256}" /app/datafusion_nexus_server | sha2
     grep -Fx "cpu_target=${CPU_TARGET}" /app/cpu-provenance.labels && \
     grep -Fx "binary_sha256=${CPU_BINARY_SHA256}" /app/cpu-provenance.labels
 
-# Resolve the binary's full dependency closure and copy only the libraries
+# Resolve every staged ELF's dependency closure and copy only the libraries
 # that live under the CUDA toolkit prefix. The forked libs are already present
 # in /app/lib, so they resolve locally and are (correctly) NOT harvested here.
+# glibc ldd renders libnvtx3interop's DT_AUXILIARY [visibility=hidden] marker
+# as `visibility=hidden => not found`; it is not a DT_NEEDED dependency.
 RUN set -eu; mkdir -p /cuda-collect; \
-    LD_LIBRARY_PATH=/app/lib ldd /app/datafusion_nexus_server \
+    closure="$(for elf in /app/datafusion_nexus_server /app/lib/*.so*; do \
+        test -f "$elf" || continue; \
+        LD_LIBRARY_PATH=/app/lib ldd "$elf"; \
+    done)"; \
+    echo "$closure"; \
+    test -z "$(echo "$closure" \
+        | awk '$1 != "visibility=hidden" && $2 == "=>" && $3 == "not" && $4 == "found")"; \
+    test "$(echo "$closure" | awk '$1 ~ /^librmm\.so/ && $3 ~ /^\// { print $3 }' \
+        | xargs -r -n1 readlink -f | sort -u | wc -l)" -eq 1; \
+    logger_count="$(echo "$closure" | awk '$1 ~ /^librapids_logger\.so/ && $3 ~ /^\// { print $3 }' \
+        | xargs -r -n1 readlink -f | sort -u | wc -l)"; \
+    staged_logger_count="$(find /app/lib -maxdepth 1 -name 'librapids_logger.so*' -exec readlink -f {} \; \
+        | sort -u | wc -l)"; \
+    test "$staged_logger_count" -le 1; \
+    if test "$staged_logger_count" -eq 1; then \
+        test "$logger_count" -eq 1; \
+        resolved_logger="$(echo "$closure" | awk '$1 ~ /^librapids_logger\.so/ && $3 ~ /^\// { print $3; exit }')"; \
+        staged_logger="$(find /app/lib -maxdepth 1 -name 'librapids_logger.so*' -print -quit)"; \
+        test "$(readlink -f "$resolved_logger")" = "$(readlink -f "$staged_logger")"; \
+    else \
+        test "$logger_count" -eq 0; \
+    fi; \
+    if test -e /app/lib/libcuvs.so; then \
+        test "$(echo "$closure" | awk '$1 ~ /^libcuvs\.so/ && $3 ~ /^\// { print $3 }' \
+            | xargs -r -n1 readlink -f | sort -u | wc -l)" -eq 1; \
+        resolved_cuvs="$(echo "$closure" | awk '$1 ~ /^libcuvs\.so/ && $3 ~ /^\// { print $3; exit }')"; \
+        test "$(readlink -f "$resolved_cuvs")" = "$(readlink -f /app/lib/libcuvs.so)"; \
+    fi; \
+    ! readelf -d /app/datafusion_nexus_server /app/lib/*.so* 2>/dev/null \
+        | grep -E 'Shared library: \[libraft\.so'; \
+    test -z "$(readelf -d /app/datafusion_nexus_server /app/lib/*.so* 2>/dev/null \
+        | awk -F'[][]' '/\(NEEDED\)/ && $2 ~ /^libcudart\.so/ && $2 != "libcudart.so.13" { print $2 }')"; \
+    echo "$closure" \
         | awk '$3 ~ /^\/usr\/local\/cuda/ { print $3 }' \
         | sort -u \
         | xargs -r -I{} cp -Lv {} /cuda-collect/; \
@@ -137,6 +171,38 @@ COPY --from=cuda-harvest --chown=${USERNAME}:${USERNAME} /app/lib/      /app/lib
 COPY --from=cuda-harvest --chown=${USERNAME}:${USERNAME} /cuda-collect/ /app/lib/
 COPY --from=cuda-harvest --chown=${USERNAME}:${USERNAME} /app/datafusion_nexus_server /app/datafusion_nexus_server
 COPY --from=cuda-harvest --chown=${USERNAME}:${USERNAME} /app/cpu-provenance.json /app/cpu-provenance.json
+
+# Re-check after assembling the final image: the base-stage loader closure must
+# still resolve the staged canonical RMM/cuVS identities with no missing edge.
+RUN set -eu; \
+    closure="$(for elf in /app/datafusion_nexus_server /app/lib/*.so*; do \
+        test -f "$elf" || continue; \
+        LD_LIBRARY_PATH=/app/lib ldd "$elf"; \
+    done)"; \
+    echo "$closure"; \
+    test -z "$(echo "$closure" \
+        | awk '$1 != "visibility=hidden" && $2 == "=>" && $3 == "not" && $4 == "found")"; \
+    test "$(echo "$closure" | awk '$1 ~ /^librmm\.so/ && $3 ~ /^\// { print $3 }' \
+        | xargs -r -n1 readlink -f | sort -u | wc -l)" -eq 1; \
+    logger_count="$(echo "$closure" | awk '$1 ~ /^librapids_logger\.so/ && $3 ~ /^\// { print $3 }' \
+        | xargs -r -n1 readlink -f | sort -u | wc -l)"; \
+    staged_logger_count="$(find /app/lib -maxdepth 1 -name 'librapids_logger.so*' -exec readlink -f {} \; \
+        | sort -u | wc -l)"; \
+    test "$staged_logger_count" -le 1; \
+    if test "$staged_logger_count" -eq 1; then \
+        test "$logger_count" -eq 1; \
+        resolved_logger="$(echo "$closure" | awk '$1 ~ /^librapids_logger\.so/ && $3 ~ /^\// { print $3; exit }')"; \
+        staged_logger="$(find /app/lib -maxdepth 1 -name 'librapids_logger.so*' -print -quit)"; \
+        test "$(readlink -f "$resolved_logger")" = "$(readlink -f "$staged_logger")"; \
+    else \
+        test "$logger_count" -eq 0; \
+    fi; \
+    if test -e /app/lib/libcuvs.so; then \
+        test "$(echo "$closure" | awk '$1 ~ /^libcuvs\.so/ && $3 ~ /^\// { print $3 }' \
+            | xargs -r -n1 readlink -f | sort -u | wc -l)" -eq 1; \
+        resolved_cuvs="$(echo "$closure" | awk '$1 ~ /^libcuvs\.so/ && $3 ~ /^\// { print $3; exit }')"; \
+        test "$(readlink -f "$resolved_cuvs")" = "$(readlink -f /app/lib/libcuvs.so)"; \
+    fi
 
 # RUNPATH already points at /app/lib (binary) and $ORIGIN (libs); keep
 # LD_LIBRARY_PATH as a belt-and-suspenders fallback for hosts without patchelf.

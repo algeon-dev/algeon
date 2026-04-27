@@ -533,7 +533,7 @@ fn canonicalize_aggregate_input_column(plan: &QueryPlan, input: NodeId, column: 
         | PlanNode::Window(_)
         | PlanNode::Union(_)
         | PlanNode::EdgeNormalize(_)
-        | PlanNode::GraphAlgorithm(_) => None,
+        | PlanNode::GraphAlgorithm(_) | PlanNode::VectorAlgorithm(_) => None,
     }
 }
 
@@ -554,7 +554,7 @@ fn aggregate_alias_canonicalization_input_is_rowset_preserving(plan: &QueryPlan,
         | PlanNode::Window(_)
         | PlanNode::Union(_)
         | PlanNode::EdgeNormalize(_)
-        | PlanNode::GraphAlgorithm(_) => false,
+        | PlanNode::GraphAlgorithm(_) | PlanNode::VectorAlgorithm(_) => false,
     }
 }
 

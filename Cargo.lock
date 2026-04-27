@@ -1365,6 +1365,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "cmake-package"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "13cd24990b85e3c97060e03e0034a4c03266247769e573e129425404a5601639"
+dependencies = [
+ "itertools 0.14.0",
+ "once_cell",
+ "regex",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "which",
+]
+
+[[package]]
 name = "cmov"
 version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1649,6 +1664,24 @@ name = "cugraph-nexus-sys"
 version = "0.1.0"
 dependencies = [
  "bindgen",
+]
+
+[[package]]
+name = "cuvs-nexus"
+version = "0.1.0"
+dependencies = [
+ "cudf-nexus",
+ "cuvs-nexus-sys",
+ "rapids-interop",
+]
+
+[[package]]
+name = "cuvs-nexus-sys"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "cc",
+ "cmake-package",
 ]
 
 [[package]]
@@ -2230,6 +2263,8 @@ dependencies = [
  "cudf-nexus-sys",
  "cugraph-nexus",
  "cugraph-nexus-sys",
+ "cuvs-nexus",
+ "cuvs-nexus-sys",
  "dashmap",
  "datafusion",
  "futures",
@@ -3863,6 +3898,7 @@ dependencies = [
  "cudf-nexus-sys",
  "cugraph-nexus",
  "cugraph-nexus-sys",
+ "cuvs-nexus-sys",
  "datafusion",
  "datafusion-nexus",
  "futures",
@@ -3887,6 +3923,7 @@ dependencies = [
  "axum",
  "cudf-nexus-sys",
  "cugraph-nexus-sys",
+ "cuvs-nexus-sys",
  "datafusion",
  "datafusion-nexus",
  "nexus-query-engine",
@@ -3928,6 +3965,8 @@ dependencies = [
  "cudf-nexus-sys",
  "cugraph-nexus",
  "cugraph-nexus-sys",
+ "cuvs-nexus",
+ "cuvs-nexus-sys",
  "futures",
  "getrandom 0.4.2",
  "nvml-wrapper",
@@ -6566,6 +6605,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bf85cb06032201fa7c6f829d7db5a7e5aa45bcc0655327713065f6f0576731bf"
 dependencies = [
  "rustls-pki-types",
+]
+
+[[package]]
+name = "which"
+version = "8.0.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8f3ef584124b911bcc3875c2f1472e80f24361ceb789bd1c62b3e9a3df9ff43c"
+dependencies = [
+ "libc",
 ]
 
 [[package]]

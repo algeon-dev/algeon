@@ -3,6 +3,7 @@ use std::error::Error as StdError;
 use std::sync::Arc;
 
 use arrow::{
+    array::{Array, ArrayRef, make_array},
     datatypes::{DataType, Field, Schema, SchemaRef},
     record_batch::{RecordBatch, RecordBatchOptions},
 };
@@ -316,6 +317,24 @@ fn canonicalize_cpu_batch(
             snapshot_id,
         )
     })?;
+    let columns = columns
+        .into_iter()
+        .zip(schema.fields())
+        .map(|(column, field)| canonicalize_cpu_array(column, field.data_type()))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| {
+            let mut adapter = Error::new(
+                ErrorCode::InvalidExecutionPlan,
+                CANONICAL_SCHEMA_OPERATION,
+                "Iceberg CPU delegate returned a batch incompatible with the canonical scan schema",
+            )
+            .with_fact("cpu_delegate_field_count", delegate_schema.fields().len())
+            .with_fact("canonical_field_count", schema.fields().len());
+            if let Some(snapshot_id) = snapshot_id {
+                adapter = adapter.with_fact("snapshot_id", snapshot_id);
+            }
+            DataFusionError::from(adapter.with_source(error))
+        })?;
     RecordBatch::try_new_with_options(
         Arc::clone(&schema),
         columns,
@@ -334,6 +353,55 @@ fn canonicalize_cpu_batch(
         }
         DataFusionError::from(adapter.with_source(error))
     })
+}
+
+/// Rebuilds Arrow array data with the canonical field-bearing type while
+/// retaining the delegate's validated buffers and values. Arrow places nested
+/// field metadata in container data types, so assigning only a canonical
+/// `RecordBatch` schema is insufficient for list, struct, map, union, and
+/// other nested columns.
+fn canonicalize_cpu_array(
+    array: ArrayRef,
+    canonical_data_type: &DataType,
+) -> Result<ArrayRef, arrow::error::ArrowError> {
+    if array.data_type() == canonical_data_type {
+        return Ok(array);
+    }
+
+    let data = array.to_data();
+    let child_types = canonical_array_child_data_types(canonical_data_type);
+    if data.child_data().len() != child_types.len() {
+        return Err(arrow::error::ArrowError::InvalidArgumentError(format!(
+            "canonical Arrow data type has {} child arrays but delegate array has {}",
+            child_types.len(),
+            data.child_data().len()
+        )));
+    }
+    let child_data = data
+        .child_data()
+        .iter()
+        .zip(child_types)
+        .map(|(child, child_type)| {
+            canonicalize_cpu_array(make_array(child.clone()), child_type).map(|child| child.to_data())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(make_array(data.into_builder().data_type(canonical_data_type.clone()).child_data(child_data).build()?))
+}
+
+fn canonical_array_child_data_types(data_type: &DataType) -> Vec<&DataType> {
+    match data_type {
+        DataType::List(field)
+        | DataType::ListView(field)
+        | DataType::LargeList(field)
+        | DataType::LargeListView(field)
+        | DataType::FixedSizeList(field, _)
+        | DataType::Map(field, _) => vec![field.data_type()],
+        DataType::Struct(fields) => fields.iter().map(|field| field.data_type()).collect(),
+        DataType::Union(fields, _) => fields.iter().map(|(_, field)| field.data_type()).collect(),
+        DataType::Dictionary(_, value) => vec![value.as_ref()],
+        DataType::RunEndEncoded(run_ends, values) => vec![run_ends.data_type(), values.data_type()],
+        _ => Vec::new(),
+    }
 }
 
 fn canonical_schema_error(
@@ -639,6 +707,8 @@ mod tests {
     use std::collections::HashMap;
 
     use arrow::{
+        array::{Float32Array, ListArray},
+        buffer::OffsetBuffer,
         compute::SortOptions,
         datatypes::{DataType, Field, Schema},
     };
@@ -983,6 +1053,36 @@ mod tests {
         assert_eq!(batch.num_rows(), 7);
         assert_eq!(batch.num_columns(), 0);
         assert_eq!(batch.schema().as_ref(), canonical_schema.as_ref());
+    }
+
+    #[test]
+    fn canonical_batch_adapter_retypes_nested_field_metadata() {
+        let delegate_element = Arc::new(
+            Field::new("element", DataType::Float32, false)
+                .with_metadata(HashMap::from([("PARQUET:field_id".to_string(), "2".to_string())])),
+        );
+        let delegate_schema = Arc::new(Schema::new(vec![
+            Field::new("embedding", DataType::List(Arc::clone(&delegate_element)), false)
+                .with_metadata(HashMap::from([("PARQUET:field_id".to_string(), "1".to_string())])),
+        ]));
+        let canonical_element = Arc::new(Field::new("element", DataType::Float32, false));
+        let canonical_schema =
+            Arc::new(Schema::new(vec![Field::new("embedding", DataType::List(Arc::clone(&canonical_element)), false)]));
+        let batch = RecordBatch::try_new(
+            delegate_schema,
+            vec![Arc::new(ListArray::new(
+                delegate_element,
+                OffsetBuffer::new(vec![0_i32, 2].into()),
+                Arc::new(Float32Array::from(vec![1.0_f32, 2.0])),
+                None,
+            ))],
+        )
+        .unwrap();
+
+        let batch = canonicalize_cpu_batch(batch, Arc::clone(&canonical_schema), Some("snapshot-42")).unwrap();
+
+        assert_eq!(batch.schema().as_ref(), canonical_schema.as_ref());
+        assert_eq!(batch.column(0).data_type(), canonical_schema.field(0).data_type());
     }
 
     #[test]

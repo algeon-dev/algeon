@@ -159,10 +159,12 @@ mod tests {
     fn selected_candidate_human_line_marks_optional_reason_fields_absent() {
         let outcome = QueryGpuCandidateOutcome {
             selection: QueryGpuCandidateSelectionOutcome::Selected,
+            candidate_family: "projection".to_string(),
             reason_code: None,
             reason_kind: None,
             detail: "ProjectionExec".to_string(),
             category: None,
+            remedy: None,
             cost_evidence: None,
         };
 
@@ -173,10 +175,12 @@ mod tests {
 
         let unsupported = QueryGpuCandidateOutcome {
             selection: QueryGpuCandidateSelectionOutcome::NotSupported,
+            candidate_family: "projection".to_string(),
             reason_code: Some("unsupported_expression".to_string()),
             reason_kind: Some(QueryGpuCandidateReasonKind::Expression),
             detail: "ProjectionExec".to_string(),
             category: Some("expression".to_string()),
+            remedy: None,
             cost_evidence: None,
         };
         assert_eq!(

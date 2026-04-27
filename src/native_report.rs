@@ -50,7 +50,10 @@ use crate::graph_sql::CugraphAlgoExec;
 use crate::{
     capability::CapabilityReason,
     native::lower_physical_plan_to_native,
-    native_exec::{NexusNativeComposedExec, NexusNativeExec, NexusNativeExecutionConfig, NexusNativeGpuProducerExec},
+    native_exec::{
+        NexusNativeComposedExec, NexusNativeComposedGpuProducerExec, NexusNativeExec, NexusNativeExecutionConfig,
+        NexusNativeGpuProducerExec,
+    },
     planner::NexusNativePhysicalOptimizerRule,
     report::{CandidateOutcome, GpuCandidate},
 };
@@ -311,6 +314,11 @@ fn post_native_plan_edge_normalize_inserted(plan: &dyn ExecutionPlan) -> bool {
         return true;
     }
     if let Some(exec) = plan.downcast_ref::<NexusNativeComposedExec>()
+        && exec.native_plan().contains_edge_normalize()
+    {
+        return true;
+    }
+    if let Some(exec) = plan.downcast_ref::<NexusNativeComposedGpuProducerExec>()
         && exec.native_plan().contains_edge_normalize()
     {
         return true;

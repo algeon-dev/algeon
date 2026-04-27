@@ -1,6 +1,7 @@
 //! Shared helpers for the native execution wrappers.
 //!
 //! Each wrapper (`NexusNativeExec`, `NexusNativeComposedExec`,
+//! `NexusNativeComposedGpuProducerExec`,
 //! `NexusNativeGpuProducerExec`) advertises the same conservative
 //! `PlanProperties` and uses the same error tagging at the DataFusion runtime
 //! boundary, so those concerns live here rather than being duplicated.

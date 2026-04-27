@@ -1,6 +1,6 @@
 ---
 sidebar_position: 4
-description: Clone the repositories and build the stack bottom-up — libcudf, cudf-nexus, libcugraph, cugraph-nexus, then datafusion-nexus.
+description: Clone the repositories and build the stack bottom-up — libcudf/RMM, cuVS, cuGraph, then datafusion-nexus.
 ---
 
 # Building from Source
@@ -11,7 +11,7 @@ this order — each layer consumes the previous one's artifacts.
 
 ## 1. Clone the repositories
 
-Three repositories are cloned; everything else (Apache DataFusion and the rest
+Four repositories are cloned; everything else (Apache DataFusion and the rest
 of the Rust dependency graph) is fetched by Cargo, not cloned.
 
 ```bash
@@ -21,20 +21,24 @@ mkdir -p "$NEXUS_ROOT" && cd "$NEXUS_ROOT"
 git clone https://github.com/DataFusion-Nexus/cudf-nexus.git
 git -C cudf-nexus submodule update --init cudf          # libcudf fork sources
 
+git clone https://github.com/DataFusion-Nexus/cuvs-nexus.git
+git -C cuvs-nexus submodule update --init cuvs           # libcuvs sources
+
 git clone https://github.com/DataFusion-Nexus/cugraph-nexus.git
 git -C cugraph-nexus submodule update --init cugraph    # libcugraph fork sources
 
 git clone https://github.com/DataFusion-Nexus/datafusion-nexus.git
 ```
 
-The `cudf` and `cugraph` submodules are RAPIDS forks; `submodule update` fetches
-the fork and checks out the pinned commit. A shallow `--depth 1` submodule
+The `cudf`, `cuvs`, and `cugraph` submodules are RAPIDS sources; `submodule update`
+checks out their pinned commits. A shallow `--depth 1` submodule
 fetch does **not** work here — GitHub refuses to serve the pinned commit as a
 bare object, so use the default (full) fetch shown above.
 
-`datafusion-nexus/Cargo.toml` resolves the `cudf-nexus` and `cugraph-nexus`
-packages through the stable `cudf` and `cugraph` aliases at `../` sibling paths
-— keep the directory names exactly as cloned. Apache DataFusion
+`datafusion-nexus/Cargo.toml` resolves the `cudf-nexus`, `cuvs-nexus`, and
+`cugraph-nexus` packages through the stable `cudf`, `cuvs`, and `cugraph`
+aliases at `../` sibling paths — keep the directory names exactly as cloned.
+Apache DataFusion
 is an ordinary published crate (`datafusion = "54"`), so there is nothing to
 clone for it — Cargo fetches it and the rest of the dependency graph
 automatically.
@@ -65,8 +69,8 @@ architecture explicitly, e.g.
 Verify the install tree. `./build.sh libcudf` installs **cudf and rmm only** —
 `libcudf.so`, the shared `librmm.so`, and their CMake packages. The
 `rapids_logger`/`nvtx3` packages that cuGraph's `find_package(rmm)` needs are
-**not** installed here; the cuGraph build adds them in
-[step 4](#4-build-libcugraph). `cudf-nexus-sys` links the `.so` files directly
+**not** installed here; the shared-prefix preparation in
+[step 4](#4-prepare-the-shared-cudf-prefix) adds them. `cudf-nexus-sys` links the `.so` files directly
 without a CMake configure, so cudf + rmm is all it needs:
 
 ```bash
@@ -96,7 +100,35 @@ flock /tmp/cudf-gpu.lock cargo test --all-features
 Tests execute on the GPU, so they take the global GPU lock (see
 [Tests](./tests.md#gpu-serialization)).
 
-## 4. Build libcugraph
+## 4. Prepare the shared cuDF prefix
+
+```bash
+cd "$NEXUS_ROOT/cugraph-nexus"
+bash scripts/bootstrap_cudf_install.sh
+```
+
+This prepares the cuDF install so cuVS and cuGraph can use its one shared
+`librmm.so`; it does not build another RMM.
+
+## 5. Build libcuvs
+
+```bash
+cd "$NEXUS_ROOT/cuvs-nexus"
+bash scripts/build_libcuvs.sh
+```
+
+cuVS uses the shared `librmm.so` produced by libcudf and installs its native
+library into `cuvs-nexus/cuvs-install/`. It must be built before libcugraph.
+
+## 6. Build and test cuvs-nexus
+
+```bash
+cd "$NEXUS_ROOT/cuvs-nexus"
+cargo build
+flock /tmp/cudf-gpu.lock cargo test --all-features
+```
+
+## 7. Build libcugraph
 
 ```bash
 cd "$NEXUS_ROOT/cugraph-nexus"
@@ -133,7 +165,7 @@ After this step the cudf prefix is self-contained — the bootstrap has added th
 ls -d "$CUDF_INSTALL_DIR"/lib/cmake/{cudf,rmm,rapids_logger,nvtx3,fmt,spdlog}
 ```
 
-## 5. Build and test cugraph-nexus
+## 8. Build and test cugraph-nexus
 
 ```bash
 cd "$NEXUS_ROOT/cugraph-nexus"
@@ -152,7 +184,7 @@ pinned fork routes SCC through a host-side fallback on single-GPU `sm_120`, so
 the test suite passes on Blackwell — this is why the submodule pin matters and
 the fork, not upstream cuGraph, must be built.
 
-## 6. Build and test datafusion-nexus
+## 9. Build and test datafusion-nexus
 
 `datafusion-nexus` selects mold via its `.cargo/config.toml`; mold and clang
 must already be installed (see
@@ -160,11 +192,11 @@ must already be installed (see
 
 ```bash
 cd "$NEXUS_ROOT/datafusion-nexus"
-cargo build --features cugraph,server
-bash scripts/check_all.sh --features cugraph,server
+cargo build --features cugraph,cuvs,server
+bash scripts/check_all.sh --features cugraph,cuvs,server
 ```
 
-`--features cugraph,server` builds the full GPU stack plus the Flight SQL
+`--features cugraph,cuvs,server` builds the full GPU stack plus the Flight SQL
 server. `check_all.sh` is the canonical local check; it assigns CPU and GPU
 lanes and acquires the cross-consumer GPU lock. See [Tests](./tests.md) for the
 lane model and feature matrix.

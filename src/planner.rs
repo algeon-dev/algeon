@@ -21,6 +21,7 @@ use crate::{
 
 mod native;
 
+pub(crate) use native::optimize_native_relational_child_to_gpu_producer;
 pub use native::{
     NEXUS_FINAL_PLAN_REQUIREMENT_RULE_NAME, NEXUS_HOST_EXECUTION_QOS_RULE_NAME,
     NativeAdaptivePipelineCandidateDiagnostics, NativeAdaptivePipelineDiagnostics, NativePlanningDiagnostics,

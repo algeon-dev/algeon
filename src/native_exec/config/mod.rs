@@ -421,7 +421,6 @@ impl NexusNativeExecutionConfig {
         self.plan_task_mapping_datafusion_shape.as_deref()
     }
 
-    #[cfg(test)]
     pub(crate) fn metrics_capture_factory(&self) -> Option<NativeMetricsCapture> {
         self.metrics_capture.clone()
     }

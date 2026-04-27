@@ -159,6 +159,8 @@ mod runtime_observability;
 mod source_contracts;
 #[path = "native_contract_tests/type_support.rs"]
 mod type_support;
+#[path = "native_contract_tests/vector_algorithm.rs"]
+mod vector_algorithm;
 #[path = "native_contract_tests/yielded_frame.rs"]
 mod yielded_frame;
 

@@ -1,0 +1,782 @@
+use std::{
+    collections::BTreeSet,
+    fs,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+};
+
+use datafusion::{
+    common::{DFSchema, config::Dialect},
+    execution::{SessionStateBuilder, context::TaskContext},
+    logical_expr::{LogicalPlan, UserDefinedLogicalNodeCore},
+    physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties, SendableRecordBatchStream},
+    prelude::SessionContext,
+    sql::{
+        parser::Statement as DataFusionStatement,
+        sqlparser::ast::{
+            Expr as SqlExpr, FunctionArg, FunctionArgExpr, SetExpr, Statement as SqlStatement, TableFactor,
+        },
+    },
+};
+use datafusion_nexus::{
+    cuvs_sql::{
+        CUVS_BRUTE_FORCE_KNN_FUNCTION, CUVS_KMEANS_FUNCTION, CUVS_OPERATION_REGISTRY, CUVS_PCA_FUNCTION,
+        CUVS_VALIDATE_CALL_FUNCTION, CuvsAlgoExec, CuvsLogicalNode, CuvsOperation, CuvsOutputContract,
+        CuvsRelationArgumentSyntax, CuvsRelationRole, cuvs_options_json_schema,
+    },
+    error::{DataFusionErrorExt, ErrorCode},
+    native_exec::NexusNativeExecutionConfig,
+    session::NexusSessionStateBuilderExt,
+};
+use nexus_query_engine::plan::{
+    CUVS_ID_TYPES, CuvsOperation as NativeCuvsOperation, PlanNode, VectorAlgorithmParams, VectorRowIdBinding,
+    canonicalize_cuvs_options, vector_brute_force_knn_output_schema, vector_kmeans_output_schema,
+    vector_pca_output_schema,
+};
+
+#[path = "cuvs_sql_fixtures.rs"]
+mod fixtures;
+
+use fixtures::{KMEANS_OPTIONS, KNN_OPTIONS, PCA_OPTIONS, cuvs_context};
+
+#[test]
+fn canonical_registry_drives_names_relations_and_json_schemas() {
+    let names = CUVS_OPERATION_REGISTRY.iter().map(|descriptor| descriptor.sql_function_name).collect::<Vec<_>>();
+    assert_eq!(names, [CUVS_BRUTE_FORCE_KNN_FUNCTION, CUVS_KMEANS_FUNCTION, CUVS_PCA_FUNCTION]);
+    assert_eq!(
+        CuvsOperation::BruteForceKnn.descriptor().relation_roles,
+        [CuvsRelationRole::Dataset, CuvsRelationRole::Queries]
+    );
+    assert_eq!(CuvsOperation::KMeans.descriptor().relation_roles, [CuvsRelationRole::Input]);
+    assert!(CUVS_OPERATION_REGISTRY.iter().all(|descriptor| {
+        descriptor.relation_argument_syntax == CuvsRelationArgumentSyntax::ParenthesizedSubquery
+    }));
+
+    let knn = cuvs_options_json_schema(CuvsOperation::BruteForceKnn);
+    assert_eq!(knn["additionalProperties"], false);
+    assert_eq!(knn["required"], serde_json::json!(["dataset", "queries", "k", "metric"]));
+    assert_eq!(knn["properties"]["k"]["minimum"], 1);
+    assert_eq!(
+        knn["properties"]["metric"]["enum"],
+        serde_json::json!(["l2_expanded", "l2_sqrt_expanded", "cosine", "inner_product"])
+    );
+    assert_eq!(
+        CUVS_ID_TYPES,
+        &[
+            nexus_query_engine::plan::CuvsIdType::Int32,
+            nexus_query_engine::plan::CuvsIdType::Int64,
+            nexus_query_engine::plan::CuvsIdType::Utf8,
+            nexus_query_engine::plan::CuvsIdType::LargeUtf8,
+            nexus_query_engine::plan::CuvsIdType::Utf8View,
+        ]
+    );
+
+    let pca = cuvs_options_json_schema(CuvsOperation::Pca);
+    assert_eq!(pca["properties"]["solver"]["default"], "cov_eig_dq");
+    assert_eq!(pca["properties"]["n_iterations"]["default"], 15);
+    assert_eq!(pca["properties"]["flip_signs_based_on_u"]["default"], false);
+    for operation in CuvsOperation::all() {
+        assert_eq!(
+            cuvs_options_json_schema(operation),
+            operation.descriptor().options_json_schema(),
+            "root SQL metadata must be the canonical engine metadata"
+        );
+    }
+}
+
+#[test]
+fn captured_specs_and_generated_reference_pages_match_the_canonical_registry() {
+    let repository = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let spec_directory = repository.join("website/cuvs-specs");
+    let page_directory = repository.join("website/docs/cuvs/operations");
+    let expected_names =
+        CUVS_OPERATION_REGISTRY.iter().map(|descriptor| descriptor.sql_function_name).collect::<BTreeSet<_>>();
+    let captured_names = fs::read_dir(&spec_directory)
+        .unwrap_or_else(|error| panic!("read captured cuVS specs at {}: {error}", spec_directory.display()))
+        .map(|entry| entry.expect("read captured cuVS spec entry"))
+        .filter_map(|entry| {
+            let path = entry.path();
+            (path.extension().and_then(|extension| extension.to_str()) == Some("json"))
+                .then(|| path.file_stem().and_then(|stem| stem.to_str()).expect("UTF-8 spec file name").to_string())
+        })
+        .collect::<BTreeSet<_>>();
+    assert_eq!(captured_names.iter().map(String::as_str).collect::<BTreeSet<_>>(), expected_names);
+
+    for descriptor in CUVS_OPERATION_REGISTRY {
+        let operation = metadata_operation_name(descriptor.operation);
+        let output_contract = metadata_output_contract_name(descriptor.output_contract);
+        let spec_path = spec_directory.join(format!("{}.json", descriptor.sql_function_name));
+        let captured: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(&spec_path)
+                .unwrap_or_else(|error| panic!("read captured cuVS spec at {}: {error}", spec_path.display())),
+        )
+        .unwrap_or_else(|error| panic!("parse captured cuVS spec at {}: {error}", spec_path.display()));
+        assert_eq!(
+            captured,
+            serde_json::json!({
+                "function_name": descriptor.sql_function_name,
+                "operation": operation,
+                "relation_roles_json": serde_json::Value::Array(
+                    descriptor
+                        .relation_roles
+                        .iter()
+                        .map(|role| serde_json::Value::String(role.as_str().to_string()))
+                        .collect(),
+                )
+                .to_string(),
+                "relation_argument_syntax": "parenthesized_subquery",
+                "output_contract": output_contract,
+                "options_schema_json": descriptor.options_json_schema().to_string(),
+            }),
+            "captured metadata must be an exact projection of the canonical registry"
+        );
+
+        let page_path = page_directory.join(format!("{}.mdx", descriptor.sql_function_name));
+        let page = fs::read_to_string(&page_path)
+            .unwrap_or_else(|error| panic!("read generated cuVS page at {}: {error}", page_path.display()));
+        assert!(
+            page.contains("GENERATED FROM cuVS SQL metadata by website/scripts/gen-cuvs-docs.mjs"),
+            "{} must retain its generated-source marker",
+            page_path.display()
+        );
+        assert!(page.contains(&format!("# {}", descriptor.sql_function_name)), "{}", page_path.display());
+        assert!(
+            page.contains(&format!("Native operation: `{operation}`. Output contract: `{output_contract}`.")),
+            "{} must agree with the captured operation and output contract",
+            page_path.display()
+        );
+        for relation_role in descriptor.relation_roles {
+            assert!(page.contains(&format!("`{}`", relation_role.as_str())), "{}", page_path.display());
+        }
+        for option in descriptor.options {
+            assert!(page.contains(&format!("`{}`", option.name)), "{}", page_path.display());
+        }
+    }
+}
+
+#[tokio::test]
+async fn sql_output_schemas_equal_canonical_native_output_schemas() {
+    let ctx = cuvs_context();
+    let knn = logical_plan(
+        &ctx,
+        &format!(
+            "SELECT * FROM {CUVS_BRUTE_FORCE_KNN_FUNCTION}((SELECT * FROM dataset_vectors), (SELECT * FROM query_vectors), '{}')",
+            sql_literal(KNN_OPTIONS)
+        ),
+    )
+    .await;
+    let knn = find_cuvs_node(&knn).unwrap();
+    let expected_knn =
+        vector_brute_force_knn_output_schema(arrow::datatypes::DataType::Utf8, arrow::datatypes::DataType::Int64);
+    let expected_knn = DFSchema::try_from(expected_knn.as_ref().clone()).unwrap();
+    assert_eq!(knn.schema().as_ref(), &expected_knn);
+
+    let kmeans = logical_plan(
+        &ctx,
+        &format!(
+            "SELECT * FROM {CUVS_KMEANS_FUNCTION}((SELECT * FROM dataset_vectors), '{}')",
+            sql_literal(KMEANS_OPTIONS)
+        ),
+    )
+    .await;
+    let kmeans = find_cuvs_node(&kmeans).unwrap();
+    let expected_kmeans = vector_kmeans_output_schema(arrow::datatypes::DataType::Int64);
+    let expected_kmeans = DFSchema::try_from(expected_kmeans.as_ref().clone()).unwrap();
+    assert_eq!(kmeans.schema().as_ref(), &expected_kmeans);
+
+    let pca = logical_plan(
+        &ctx,
+        &format!("SELECT * FROM {CUVS_PCA_FUNCTION}((SELECT * FROM dataset_vectors), '{}')", sql_literal(PCA_OPTIONS)),
+    )
+    .await;
+    let pca = find_cuvs_node(&pca).unwrap();
+    let expected_pca = vector_pca_output_schema(arrow::datatypes::DataType::Int64, 2);
+    let expected_pca = DFSchema::try_from(expected_pca.as_ref().clone()).unwrap();
+    assert_eq!(pca.schema().as_ref(), &expected_pca);
+}
+
+#[test]
+fn installing_over_an_existing_query_planner_is_rejected_structurally() {
+    let builder = SessionStateBuilder::new_with_default_features().try_with_cuvs_sql().expect("first cuVS SQL install");
+    let error = builder.try_with_cuvs_sql().expect_err("second install must be rejected");
+    let typed = error.find_nexus_error().expect("structured query-planner conflict");
+    assert_eq!(typed.code(), ErrorCode::InvalidRequest);
+    assert_eq!(typed.facts().get("reason"), Some("query_planner_conflict"));
+}
+
+#[tokio::test]
+async fn root_relation_binding_validation_delegates_to_canonical_registry() {
+    let raw = r#"{"input":{"id":"item_id","vector":{}},"n_clusters":1}"#;
+    let canonical_error = canonicalize_cuvs_options(NativeCuvsOperation::KMeans, raw)
+        .expect_err("canonical registry should reject malformed vector binding");
+    let ctx = cuvs_context();
+    let sql = format!("SELECT * FROM {CUVS_KMEANS_FUNCTION}((SELECT * FROM dataset_vectors), '{}')", sql_literal(raw));
+    let error =
+        ctx.state().create_logical_plan(&sql).await.expect_err("root should delegate malformed binding validation");
+    let typed = error.find_nexus_error().expect("structured root validation error");
+    assert_eq!(typed.facts().get("reason"), Some(canonical_error.code()));
+    assert_eq!(typed.message(), canonical_error.message());
+}
+
+#[tokio::test]
+async fn catalog_relations_become_two_real_children_and_alias_resolves() {
+    let ctx = cuvs_context();
+    let sql = format!(
+        "SELECT knn.query_id, knn.neighbor_id, knn.distance \
+         FROM {CUVS_BRUTE_FORCE_KNN_FUNCTION}(\
+             (SELECT * FROM datafusion.public.dataset_vectors), \
+             (SELECT * FROM query_vectors), \
+             '{}') AS knn",
+        sql_literal(KNN_OPTIONS)
+    );
+    let statement = ctx.state().sql_to_statement(&sql, &Dialect::Generic).unwrap();
+    let DataFusionStatement::Statement(statement_ast) = &statement else { panic!("expected a standard SQL statement") };
+    let SqlStatement::Query(query) = statement_ast.as_ref() else { panic!("expected a query") };
+    let SetExpr::Select(select) = query.body.as_ref() else { panic!("expected a select") };
+    let TableFactor::Table { args: Some(args), .. } = &select.from[0].relation else {
+        panic!("expected cuVS table-function syntax")
+    };
+    assert!(
+        args.args[..2]
+            .iter()
+            .all(|argument| matches!(argument, FunctionArg::Unnamed(FunctionArgExpr::Expr(SqlExpr::Subquery(_)))))
+    );
+    let preload_relations = ctx
+        .state()
+        .resolve_table_references(&statement)
+        .unwrap()
+        .into_iter()
+        .map(|relation| relation.to_string())
+        .collect::<Vec<_>>();
+    assert!(preload_relations.iter().any(|relation| relation == "datafusion.public.dataset_vectors"));
+    assert!(preload_relations.iter().any(|relation| relation == "query_vectors"));
+
+    let plan = logical_plan(&ctx, &sql).await;
+    let node = find_cuvs_node(&plan).expect("cuVS logical extension");
+    assert_eq!(node.operation(), CuvsOperation::BruteForceKnn);
+    assert_eq!(node.inputs().len(), 2);
+    let dataset = node.inputs()[0].display_indent().to_string();
+    let queries = node.inputs()[1].display_indent().to_string();
+    assert!(dataset.contains("TableScan: datafusion.public.dataset_vectors"), "{dataset}");
+    assert!(queries.contains("TableScan: query_vectors"), "{queries}");
+    assert!(!dataset.contains("EmptyRelation"), "{dataset}");
+    assert!(!queries.contains("EmptyRelation"), "{queries}");
+    assert!(plan.display_indent().to_string().contains("SubqueryAlias: knn"));
+    assert_schema(node.schema(), &["query_ordinal", "query_id", "neighbor_ordinal", "neighbor_id", "rank", "distance"]);
+    assert_eq!(
+        node.schema().field_with_unqualified_name("query_id").unwrap().data_type(),
+        &arrow::datatypes::DataType::Utf8
+    );
+    assert_eq!(
+        node.schema().field_with_unqualified_name("neighbor_id").unwrap().data_type(),
+        &arrow::datatypes::DataType::Int64
+    );
+}
+
+#[tokio::test]
+async fn cte_relations_are_preserved_as_two_logical_children() {
+    let ctx = cuvs_context();
+    let sql = format!(
+        "WITH candidates AS (\
+             SELECT item_id, d0, d1 FROM datafusion.public.dataset_vectors WHERE d0 >= 0.0\
+         ), queries AS (\
+             SELECT query_id, d0, d1 FROM query_vectors\
+         ) \
+         SELECT * FROM {CUVS_BRUTE_FORCE_KNN_FUNCTION}(\
+             (SELECT * FROM candidates), \
+             (SELECT * FROM queries), \
+             '{}')",
+        sql_literal(KNN_OPTIONS)
+    );
+    let statement = ctx.state().sql_to_statement(&sql, &Dialect::Generic).unwrap();
+    let preload_relations = ctx
+        .state()
+        .resolve_table_references(&statement)
+        .unwrap()
+        .into_iter()
+        .map(|relation| relation.to_string())
+        .collect::<Vec<_>>();
+    assert!(preload_relations.iter().any(|relation| relation == "datafusion.public.dataset_vectors"));
+    assert!(preload_relations.iter().any(|relation| relation == "query_vectors"));
+
+    let plan = logical_plan(&ctx, &sql).await;
+    let node = find_cuvs_node(&plan).expect("cuVS logical extension");
+    assert_eq!(node.inputs().len(), 2);
+    let candidates = node.inputs()[0].display_indent().to_string();
+    let queries = node.inputs()[1].display_indent().to_string();
+    assert!(candidates.contains("TableScan: datafusion.public.dataset_vectors"), "{candidates}");
+    assert!(candidates.contains("Filter:"), "{candidates}");
+    assert!(queries.contains("TableScan: query_vectors"), "{queries}");
+    assert!(!candidates.contains("EmptyRelation"), "{candidates}");
+    assert!(!queries.contains("EmptyRelation"), "{queries}");
+}
+
+#[tokio::test]
+async fn direct_join_filter_projection_subqueries_remain_real_children() {
+    let ctx = cuvs_context();
+    let sql = format!(
+        "SELECT * FROM {CUVS_BRUTE_FORCE_KNN_FUNCTION}(\
+             (SELECT e.item_id, e.d0, e.d1 FROM dataset_vectors AS e JOIN query_vectors AS q ON e.d0 = q.d0 WHERE e.d1 >= 0.0),\
+             (SELECT query_id, d0, d1 FROM query_vectors WHERE d0 >= 0.0),\
+             '{}')",
+        sql_literal(KNN_OPTIONS)
+    );
+    let statement = ctx.state().sql_to_statement(&sql, &Dialect::Generic).unwrap();
+    let preload_relations = ctx
+        .state()
+        .resolve_table_references(&statement)
+        .unwrap()
+        .into_iter()
+        .map(|relation| relation.to_string())
+        .collect::<Vec<_>>();
+    assert!(preload_relations.iter().any(|relation| relation == "dataset_vectors"));
+    assert!(preload_relations.iter().any(|relation| relation == "query_vectors"));
+
+    let plan = logical_plan(&ctx, &sql).await;
+    let node = find_cuvs_node(&plan).expect("cuVS logical extension");
+    let dataset = node.inputs()[0].display_indent().to_string();
+    let queries = node.inputs()[1].display_indent().to_string();
+    assert!(dataset.contains("Projection:"), "{dataset}");
+    assert!(dataset.contains("Join:"), "{dataset}");
+    assert!(dataset.contains("Filter:"), "{dataset}");
+    assert!(queries.contains("Projection:"), "{queries}");
+    assert!(queries.contains("Filter:"), "{queries}");
+    assert!(!dataset.contains("EmptyRelation"), "{dataset}");
+    assert!(!queries.contains("EmptyRelation"), "{queries}");
+}
+
+#[tokio::test]
+async fn bare_identifier_is_omitted_from_async_table_reference_preload() {
+    let ctx = cuvs_context();
+    let sql = format!("SELECT * FROM {CUVS_KMEANS_FUNCTION}(dataset_vectors, '{}')", sql_literal(KMEANS_OPTIONS));
+    let statement = ctx.state().sql_to_statement(&sql, &Dialect::Generic).unwrap();
+    let preloaded = ctx
+        .state()
+        .resolve_table_references(&statement)
+        .unwrap()
+        .into_iter()
+        .map(|relation| relation.to_string())
+        .collect::<Vec<_>>();
+    assert!(!preloaded.iter().any(|relation| relation == "dataset_vectors"), "{preloaded:?}");
+    let error = ctx.state().create_logical_plan(&sql).await.expect_err("bare relation rejected");
+    let typed = error.find_nexus_error().expect("structured bare relation error");
+    assert_eq!(typed.facts().get("reason"), Some("relation_argument_not_subquery"));
+}
+
+#[tokio::test]
+async fn operation_output_schemas_and_defaulted_options_are_stable() {
+    let ctx = cuvs_context();
+    let kmeans = logical_plan(
+        &ctx,
+        &format!(
+            "SELECT * FROM {CUVS_KMEANS_FUNCTION}((SELECT * FROM dataset_vectors), '{}')",
+            sql_literal(KMEANS_OPTIONS)
+        ),
+    )
+    .await;
+    let kmeans = find_cuvs_node(&kmeans).unwrap();
+    assert_schema(kmeans.schema(), &["row_ordinal", "id", "cluster_id"]);
+    let normalized: serde_json::Value = serde_json::from_str(kmeans.validated_options().canonical_json()).unwrap();
+    assert_eq!(normalized["metric"], "l2_expanded");
+    assert_eq!(normalized["max_iter"], 100);
+    assert_eq!(normalized["tol"], 0.0001);
+    assert_eq!(normalized["n_init"], 1);
+    assert_eq!(normalized["init"], "kmeans++");
+
+    let pca = logical_plan(
+        &ctx,
+        &format!("SELECT * FROM {CUVS_PCA_FUNCTION}((SELECT * FROM dataset_vectors), '{}')", sql_literal(PCA_OPTIONS)),
+    )
+    .await;
+    let pca = find_cuvs_node(&pca).unwrap();
+    assert_schema(pca.schema(), &["row_ordinal", "id", "pc_0", "pc_1"]);
+    let normalized: serde_json::Value = serde_json::from_str(pca.validated_options().canonical_json()).unwrap();
+    assert_eq!(normalized["whiten"], false);
+    assert_eq!(normalized["solver"], "cov_eig_dq");
+    assert_eq!(normalized["n_iterations"], 15);
+}
+
+#[tokio::test]
+async fn metadata_list_describe_and_validate_are_registry_projections() {
+    let ctx = cuvs_context();
+    let listed = ctx
+        .sql("SELECT function_name, options_schema_json FROM cuvs_list_operations()")
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    assert_eq!(listed.iter().map(|batch| batch.num_rows()).sum::<usize>(), CUVS_OPERATION_REGISTRY.len());
+
+    let described =
+        ctx.sql("SELECT * FROM cuvs_describe_operation('cuvs_pca')").await.unwrap().collect().await.unwrap();
+    assert_eq!(described.iter().map(|batch| batch.num_rows()).sum::<usize>(), 1);
+
+    let valid = ctx
+        .sql(&format!(
+            "SELECT valid, normalized_options_json FROM {CUVS_VALIDATE_CALL_FUNCTION}('cuvs_kmeans', '{}')",
+            sql_literal(KMEANS_OPTIONS)
+        ))
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    let valid_column = valid[0].column(0).as_any().downcast_ref::<arrow::array::BooleanArray>().unwrap();
+    assert!(valid_column.value(0));
+}
+
+#[tokio::test]
+async fn relation_arguments_require_parenthesized_subqueries() {
+    let ctx = cuvs_context();
+    for relation_argument in ["dataset_vectors", "'dataset_vectors'"] {
+        let sql =
+            format!("SELECT * FROM {CUVS_KMEANS_FUNCTION}({relation_argument}, '{}')", sql_literal(KMEANS_OPTIONS));
+        let error = ctx.state().create_logical_plan(&sql).await.expect_err(&sql);
+        let typed = error.find_nexus_error().unwrap_or_else(|| panic!("missing typed error for {sql}: {error:?}"));
+        assert_eq!(typed.code(), ErrorCode::InvalidRequest, "{sql}");
+        assert_eq!(typed.facts().get("reason"), Some("relation_argument_not_subquery"), "{sql}");
+    }
+}
+
+#[tokio::test]
+async fn local_validation_rejects_schema_dimension_option_and_empty_input_contracts() {
+    let ctx = cuvs_context();
+    let cases = [
+        (
+            format!(
+                "SELECT * FROM {CUVS_KMEANS_FUNCTION}((SELECT * FROM dataset_vectors), '{{\"input\":{{\"id\":\"missing\",\"vector\":{{\"columns\":[\"d0\",\"d1\"]}}}},\"n_clusters\":1}}')"
+            ),
+            ErrorCode::FieldNotFound,
+            None,
+        ),
+        (
+            format!(
+                "SELECT * FROM {CUVS_KMEANS_FUNCTION}((SELECT * FROM bad_id_vectors), '{{\"input\":{{\"id\":\"item_id\",\"vector\":{{\"columns\":[\"d0\",\"d1\"]}}}},\"n_clusters\":1}}')"
+            ),
+            ErrorCode::UnsupportedType,
+            None,
+        ),
+        (
+            format!(
+                "SELECT * FROM {CUVS_KMEANS_FUNCTION}((SELECT * FROM nullable_vectors), '{}')",
+                sql_literal(KMEANS_OPTIONS)
+            ),
+            ErrorCode::InvalidRequest,
+            Some("nullable_feature_field"),
+        ),
+        (
+            format!(
+                "SELECT * FROM {CUVS_BRUTE_FORCE_KNN_FUNCTION}(\
+                    (SELECT * FROM dataset_vectors), \
+                    (SELECT * FROM one_dim_queries), \
+                    '{{\"dataset\":{{\"id\":\"item_id\",\"vector\":{{\"columns\":[\"d0\",\"d1\"]}}}},\
+                       \"queries\":{{\"id\":\"query_id\",\"vector\":{{\"columns\":[\"d0\"]}}}},\
+                       \"k\":1,\"metric\":\"cosine\"}}')"
+            ),
+            ErrorCode::InvalidRequest,
+            Some("vector_dimension_mismatch"),
+        ),
+        (
+            format!(
+                "SELECT * FROM {CUVS_KMEANS_FUNCTION}((SELECT * FROM dataset_vectors), '{{\"input\":{{\"id\":\"item_id\",\"vector\":{{\"columns\":[\"d0\",\"d1\"]}}}},\"n_clusters\":1,\"unknown\":true}}')"
+            ),
+            ErrorCode::InvalidRequest,
+            Some("unknown_option"),
+        ),
+        (
+            format!(
+                "WITH empty_input AS (SELECT CAST(1 AS BIGINT) AS item_id, CAST(1 AS FLOAT) AS d0, CAST(2 AS FLOAT) AS d1 LIMIT 0) \
+                 SELECT * FROM {CUVS_KMEANS_FUNCTION}((SELECT * FROM empty_input), '{}')",
+                sql_literal(KMEANS_OPTIONS)
+            ),
+            ErrorCode::InvalidRequest,
+            Some("empty_input"),
+        ),
+        (
+            format!(
+                "SELECT * FROM {CUVS_PCA_FUNCTION}((SELECT * FROM dataset_vectors), '{{\"input\":{{\"id\":\"item_id\",\"vector\":{{\"columns\":[\"d0\",\"d1\"]}}}},\"n_components\":3}}')"
+            ),
+            ErrorCode::InvalidRequest,
+            Some("component_count_exceeds_dimension"),
+        ),
+        (
+            format!(
+                "SELECT * FROM {CUVS_PCA_FUNCTION}((SELECT * FROM one_dim_queries), '{{\"input\":{{\"id\":\"query_id\",\"vector\":{{\"columns\":[\"d0\"]}}}},\"n_components\":1}}')"
+            ),
+            ErrorCode::InvalidRequest,
+            Some("insufficient_feature_dimension"),
+        ),
+    ];
+    for (sql, expected_code, expected_reason) in cases {
+        let error = ctx.state().create_logical_plan(&sql).await.expect_err(&sql);
+        let typed = error.find_nexus_error().unwrap_or_else(|| panic!("missing typed error for {sql}: {error:?}"));
+        assert_eq!(typed.code(), expected_code, "{sql}");
+        if let Some(reason) = expected_reason {
+            assert_eq!(typed.facts().get("reason"), Some(reason), "{sql}");
+        }
+    }
+}
+
+#[tokio::test]
+async fn physical_planning_lowers_typed_vector_ir_and_clone_retains_planner() {
+    let ctx = cuvs_context();
+    let sql = format!(
+        "SELECT * FROM {CUVS_BRUTE_FORCE_KNN_FUNCTION}(\
+             (SELECT * FROM dataset_vectors), \
+             (SELECT * FROM query_vectors), \
+             '{}')",
+        sql_literal(KNN_OPTIONS)
+    );
+    let logical = logical_plan(&ctx, &sql).await;
+    let physical = ctx.state().create_physical_plan(&logical).await.expect("cuVS physical planning");
+    let exec = find_cuvs_exec(physical.as_ref()).expect("CuvsAlgoExec");
+    assert_eq!(exec.operation(), CuvsOperation::BruteForceKnn);
+    assert_eq!(exec.children().len(), 2);
+    assert_eq!(exec.schema().as_ref(), logical.schema().as_arrow());
+    let native = exec.native_plan().expect("typed native vector plan");
+    let vector = native
+        .nodes()
+        .iter()
+        .find_map(|node| match &node.kind {
+            PlanNode::VectorAlgorithm(vector) => Some(vector),
+            _ => None,
+        })
+        .expect("VectorAlgorithmNode");
+    assert_eq!(vector.inputs.len(), 2);
+    assert_eq!(vector.spec.params.relation_bindings().count(), 2);
+    let VectorAlgorithmParams::BruteForceKnn(params) = &vector.spec.params else {
+        panic!("brute-force kNN must lower to its typed parameter payload")
+    };
+    assert_eq!(params.dataset.row_id, VectorRowIdBinding::Column("item_id".to_string()));
+    assert_eq!(params.queries.row_id, VectorRowIdBinding::Column("query_id".to_string()));
+    assert_eq!(
+        vector.spec.output_schema.fields().iter().map(|field| field.name().as_str()).collect::<Vec<_>>(),
+        ["query_ordinal", "query_id", "neighbor_ordinal", "neighbor_id", "rank", "distance"],
+        "ordinal outputs supplement the caller's row IDs instead of replacing them"
+    );
+
+    let cloned = datafusion::execution::SessionStateBuilder::new_from_existing(ctx.state()).build();
+    let cloned_physical = cloned.create_physical_plan(&logical).await.expect("cloned planner retained");
+    assert!(find_cuvs_exec(cloned_physical.as_ref()).is_some());
+
+    #[cfg(not(feature = "cuvs"))]
+    {
+        let error = ctx.sql(&sql).await.unwrap().collect().await.expect_err("feature-disabled execution");
+        assert_feature_disabled(error);
+    }
+}
+
+#[derive(Debug)]
+struct ExecuteCountingExec {
+    input: Arc<dyn ExecutionPlan>,
+    execute_count: Arc<AtomicUsize>,
+}
+
+impl DisplayAs for ExecuteCountingExec {
+    fn fmt_as(&self, t: DisplayFormatType, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.input.fmt_as(t, f)
+    }
+}
+
+impl ExecutionPlan for ExecuteCountingExec {
+    fn name(&self) -> &str {
+        "ExecuteCountingExec"
+    }
+
+    fn properties(&self) -> &Arc<PlanProperties> {
+        self.input.properties()
+    }
+
+    fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
+        vec![&self.input]
+    }
+
+    fn with_new_children(
+        self: Arc<Self>,
+        mut children: Vec<Arc<dyn ExecutionPlan>>,
+    ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
+        if children.len() != 1 {
+            return Err(datafusion::common::DataFusionError::Execution(
+                "ExecuteCountingExec expects one child".to_string(),
+            ));
+        }
+        Ok(Arc::new(Self { input: children.remove(0), execute_count: Arc::clone(&self.execute_count) }))
+    }
+
+    fn execute(
+        &self,
+        partition: usize,
+        context: Arc<TaskContext>,
+    ) -> datafusion::common::Result<SendableRecordBatchStream> {
+        self.execute_count.fetch_add(1, Ordering::SeqCst);
+        self.input.execute(partition, context)
+    }
+}
+
+#[tokio::test]
+async fn bounded_execution_rejects_before_any_child_execute() {
+    let ctx =
+        fixtures::cuvs_context_with_native_execution_config(NexusNativeExecutionConfig::bounded(1024, 512, 1, 3, 1));
+    let sql = format!(
+        "SELECT * FROM {CUVS_BRUTE_FORCE_KNN_FUNCTION}(\
+             (SELECT * FROM dataset_vectors), \
+             (SELECT * FROM query_vectors), \
+             '{}')",
+        sql_literal(KNN_OPTIONS)
+    );
+    let logical = logical_plan(&ctx, &sql).await;
+    let physical = ctx.state().create_physical_plan(&logical).await.expect("bounded cuVS physical planning");
+    let exec = find_cuvs_exec(physical.as_ref()).expect("CuvsAlgoExec");
+    let execute_count = Arc::new(AtomicUsize::new(0));
+    let children = exec
+        .children()
+        .into_iter()
+        .map(|child| {
+            Arc::new(ExecuteCountingExec { input: Arc::clone(child), execute_count: Arc::clone(&execute_count) })
+                as Arc<dyn ExecutionPlan>
+        })
+        .collect();
+    let rebound = Arc::new(exec.clone()).with_new_children(children).expect("rebind counting children");
+    let error = match rebound.execute(0, Arc::new(TaskContext::default())) {
+        Ok(_) => panic!("bounded cuVS execution must reject before creating a result stream"),
+        Err(error) => error,
+    };
+    let typed = error.find_nexus_error().expect("structured bounded cuVS rejection");
+    assert_eq!(typed.code(), ErrorCode::UnsupportedOperator);
+    assert_eq!(typed.facts().get("reason"), Some("blocked_lower_level_contract"));
+    assert_eq!(typed.facts().get("host_fallback"), Some("disabled"));
+    assert_eq!(typed.facts().get("required_contract"), Some("cuvs_vector_algorithm_peak_memory_preflight"));
+    assert_eq!(execute_count.load(Ordering::SeqCst), 0, "bounded rejection must precede child execution");
+}
+
+#[cfg(feature = "cugraph")]
+#[tokio::test]
+async fn cugraph_reaches_cuvs_as_a_direct_gpu_resident_producer() {
+    let ctx = fixtures::cuvs_cugraph_context();
+    let graph_knn_options = r#"{
+      "dataset":{"id":"vertex","vector":{"columns":["x","y"]}},
+      "queries":{"id":"query_id","vector":{"columns":["d0","d1"]}},
+      "k":1,
+      "metric":"cosine"
+    }"#;
+    let sql = format!(
+        "SELECT * FROM {CUVS_BRUTE_FORCE_KNN_FUNCTION}(\
+             (SELECT * FROM cugraph_force_atlas2('edges')), \
+             (SELECT * FROM query_vectors), \
+             '{}')",
+        sql_literal(graph_knn_options)
+    );
+    let plan = logical_plan(&ctx, &sql).await;
+    let node = find_cuvs_node(&plan).expect("cuVS logical extension");
+    let dataset = node.inputs()[0].display_indent().to_string();
+    assert!(dataset.contains("TableScan: cugraph_force_atlas2()"), "{dataset}");
+
+    let physical = ctx.state().create_physical_plan(&plan).await.expect("combined cuGraph/cuVS physical plan");
+    let cuvs = find_cuvs_exec(physical.as_ref()).expect("CuvsAlgoExec");
+    let dataset = cuvs.children()[0];
+    assert_eq!(dataset.name(), "CugraphAlgoExec", "cuGraph must be the direct cuVS child with no host wrapper");
+    assert!(
+        dataset.downcast_ref::<datafusion_nexus::graph_sql::CugraphAlgoExec>().is_some(),
+        "direct child must retain the typed GPU-resident producer"
+    );
+}
+
+#[cfg(feature = "cugraph")]
+#[tokio::test]
+async fn cugraph_join_filter_projection_reaches_cuvs_as_composed_gpu_producer() {
+    let ctx = fixtures::cuvs_cugraph_native_context();
+    let sql = format!(
+        "WITH candidates AS (\
+             SELECT e.item_id, e.d0, e.d1 \
+             FROM cugraph_louvain('edges') AS g \
+             JOIN dataset_vectors AS e ON e.item_id = g.vertex \
+             WHERE e.d0 >= CAST(0 AS REAL)\
+         ) \
+         SELECT * FROM {CUVS_BRUTE_FORCE_KNN_FUNCTION}(\
+             (SELECT item_id, d0, d1 FROM candidates), \
+             (SELECT * FROM query_vectors), \
+             '{}')",
+        sql_literal(KNN_OPTIONS)
+    );
+    let logical = logical_plan(&ctx, &sql).await;
+    let physical =
+        ctx.state().create_physical_plan(&logical).await.expect("combined relational cuGraph/cuVS physical plan");
+    let cuvs = find_cuvs_exec(physical.as_ref()).expect("CuvsAlgoExec");
+    let dataset = cuvs.children()[0];
+    let composed = dataset
+        .downcast_ref::<datafusion_nexus::native_exec::NexusNativeComposedGpuProducerExec>()
+        .unwrap_or_else(|| panic!("relational cuGraph child must remain a composed GPU producer: {dataset:?}"));
+    assert!(
+        !composed.native_plan().sink().materializes_host_boundary(),
+        "relational producer must not carry a host sink"
+    );
+    assert!(
+        composed
+            .children()
+            .into_iter()
+            .any(|child| child.downcast_ref::<datafusion_nexus::graph_sql::CugraphAlgoExec>().is_some()),
+        "composed relational producer must retain cuGraph as a direct GPU input"
+    );
+    let display = datafusion::physical_plan::displayable(physical.as_ref()).indent(false).to_string();
+    assert!(display.contains("NexusNativeComposedGpuProducerExec"), "{display}");
+    assert!(display.contains("output_boundary=device_resident"), "{display}");
+}
+
+async fn logical_plan(ctx: &SessionContext, sql: &str) -> LogicalPlan {
+    ctx.state()
+        .create_logical_plan(sql)
+        .await
+        .unwrap_or_else(|error| panic!("logical plan failed for {sql}: {error:?}"))
+}
+
+fn find_cuvs_node(plan: &LogicalPlan) -> Option<&CuvsLogicalNode> {
+    if let LogicalPlan::Extension(extension) = plan
+        && let Some(node) = extension.node.as_any().downcast_ref::<CuvsLogicalNode>()
+    {
+        return Some(node);
+    }
+    plan.inputs().into_iter().find_map(find_cuvs_node)
+}
+
+fn find_cuvs_exec(plan: &dyn ExecutionPlan) -> Option<&CuvsAlgoExec> {
+    if let Some(exec) = plan.downcast_ref::<CuvsAlgoExec>() {
+        return Some(exec);
+    }
+    plan.children().into_iter().find_map(|child| find_cuvs_exec(child.as_ref()))
+}
+
+fn metadata_operation_name(operation: CuvsOperation) -> &'static str {
+    match operation {
+        CuvsOperation::BruteForceKnn => "brute_force_knn",
+        CuvsOperation::KMeans => "kmeans",
+        CuvsOperation::Pca => "pca",
+    }
+}
+
+fn metadata_output_contract_name(output_contract: CuvsOutputContract) -> &'static str {
+    match output_contract {
+        CuvsOutputContract::BruteForceKnn => "brute_force_knn",
+        CuvsOutputContract::KMeansAssignments => "kmeans_assignments",
+        CuvsOutputContract::PcaComponents => "pca_components",
+    }
+}
+
+fn assert_schema(schema: &DFSchema, names: &[&str]) {
+    assert_eq!(schema.fields().iter().map(|field| field.name().as_str()).collect::<Vec<_>>(), names);
+    assert!(schema.fields().iter().all(|field| !field.is_nullable()));
+}
+
+#[cfg(not(feature = "cuvs"))]
+fn assert_feature_disabled(error: datafusion::common::DataFusionError) {
+    let typed = error.find_nexus_error().expect("structured cuVS feature-disabled error");
+    assert_eq!(typed.code(), ErrorCode::UnsupportedOperator);
+    assert_eq!(typed.facts().get("reason"), Some("cuvs_feature_disabled"));
+    assert_eq!(typed.facts().get("host_fallback"), Some("disabled"));
+}
+
+fn sql_literal(json: &str) -> String {
+    json.replace('\'', "''")
+}

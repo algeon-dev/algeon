@@ -56,20 +56,24 @@ pub fn adaptive_bounded_pipeline_admission(plan: &QueryPlan) -> Result<Option<Ad
 
 /// Run adaptive bounded admission with optional memory-history evidence.
 ///
-/// Non-join plans return `Ok(None)`. Join plans return a report whether they
-/// are admitted or rejected so callers can keep adaptive evidence separate
-/// from strict bounded contract rows.
+/// Plans without joins or vector algorithms return `Ok(None)`. Join/vector
+/// candidates return a report whether they are admitted or rejected so callers
+/// can keep adaptive evidence separate from strict bounded contract rows.
 pub fn adaptive_bounded_pipeline_admission_with_memory_history(
     plan: &QueryPlan,
     memory_history: Option<&AdaptiveMemoryHistory>,
 ) -> Result<Option<AdaptivePipelineAdmission>> {
-    if !plan.contains_join() {
+    if !plan.contains_join() && !plan.contains_vector_algorithm() {
         return Ok(None);
     }
 
-    let admission =
-        capability_first_bounded_pipeline_admission(plan)?.expect("join plan should produce admission evidence");
-    let runtime_evidence = runtime_evidence_for_plan(plan, memory_history, admission.envelope());
+    let admission = capability_first_bounded_pipeline_admission(plan)?
+        .expect("bounded candidate should produce admission evidence");
+    let runtime_evidence = if plan.contains_vector_algorithm() {
+        AdaptiveAdmissionRuntimeEvidence::default()
+    } else {
+        runtime_evidence_for_plan(plan, memory_history, admission.envelope())
+    };
     let (candidate_status, adaptive_strategy, rejection_reason, pipeline) = match admission.candidate_status() {
         CapabilityFirstCandidateStatus::Admitted => (
             AdaptiveCandidateStatus::Admitted,

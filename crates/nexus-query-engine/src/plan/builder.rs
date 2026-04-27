@@ -166,6 +166,40 @@ impl QueryPlanBuilder {
         ))
     }
 
+    /// Adds a typed vector algorithm node over its relation bindings.
+    pub fn add_vector_algorithm(&mut self, spec: VectorAlgorithmSpec) -> NodeId {
+        self.try_add_vector_algorithm(spec).expect("vector algorithm relation inputs must exist")
+    }
+
+    /// Adds a typed vector algorithm node and validates all relation references.
+    pub fn try_add_vector_algorithm(&mut self, spec: VectorAlgorithmSpec) -> Result<NodeId> {
+        let inputs = spec.params.relation_bindings().map(|binding| binding.input).collect::<Vec<_>>();
+        if inputs.is_empty() {
+            return Err(QueryError::new(
+                QueryErrorCode::InvalidPlan,
+                "nexus_query_engine.plan.builder.vector_algorithm",
+                "vector algorithm must reference at least one relation input",
+            )
+            .with_fact("algorithm", spec.algorithm.as_str()));
+        }
+        for input in &inputs {
+            if self.nodes.get(input.index()).is_none() {
+                return Err(QueryError::new(
+                    QueryErrorCode::InvalidPlan,
+                    "nexus_query_engine.plan.builder.vector_algorithm",
+                    "vector algorithm references a missing or forward relation input",
+                )
+                .with_fact("algorithm", spec.algorithm.as_str())
+                .with_fact("input", input));
+            }
+        }
+        let output_schema = Arc::clone(&spec.output_schema);
+        Ok(self.push(
+            PlanNode::VectorAlgorithm(VectorAlgorithmNode { inputs, spec }),
+            PlanFacts::device(output_schema, SchemaBehavior::VectorAlgorithm),
+        ))
+    }
+
     /// Finishes the plan with a host Arrow materialization sink.
     pub fn finish_with_host_sink(self, root: NodeId) -> QueryPlan {
         let schema = self.node(root).output_schema().clone();

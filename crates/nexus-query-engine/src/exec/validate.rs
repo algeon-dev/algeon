@@ -20,6 +20,7 @@ use types::{require_boolean, require_scalar_operator_value, require_timezone_fre
 pub(super) fn validate_query_plan(plan: &QueryPlan) -> Result<()> {
     validate_reachability(plan)?;
     let mut available_columns_by_node = Vec::with_capacity(plan.node_count());
+    let vector_ingress_columns = crate::vector_validation::vector_ingress_columns_by_input(plan);
 
     for (index, node) in plan.nodes().iter().enumerate() {
         if node.id.index() != index {
@@ -32,7 +33,11 @@ pub(super) fn validate_query_plan(plan: &QueryPlan) -> Result<()> {
             .with_fact("position", index));
         }
 
-        validate_schema_supported(node.output_schema(), "nexus_query_engine.plan.validate_schema")?;
+        crate::vector_validation::validate_schema_supported_with_vector_ingress(
+            node.output_schema(),
+            "nexus_query_engine.plan.validate_schema",
+            vector_ingress_columns.get(&node.id),
+        )?;
         validate_output_names_unique(node)?;
         let available_columns = match &node.kind {
             PlanNode::Source(source) => validate_source_node(source)?,
@@ -48,7 +53,17 @@ pub(super) fn validate_query_plan(plan: &QueryPlan) -> Result<()> {
                 let input = input_node(plan, projection.input, node.id)?;
                 let input_available = available_columns(&available_columns_by_node, projection.input)?;
                 for output in &projection.outputs {
-                    validate_projection_output_expr(output, input.output_schema(), input_available)?;
+                    if vector_ingress_columns.get(&node.id).is_some_and(|columns| columns.contains(output.field.name()))
+                    {
+                        crate::vector_validation::validate_vector_ingress_projection_output(
+                            output,
+                            input.output_schema(),
+                            input_available,
+                            vector_ingress_columns.get(&projection.input),
+                        )?;
+                    } else {
+                        validate_projection_output_expr(output, input.output_schema(), input_available)?;
+                    }
                 }
                 validate_projection_capability(projection, &node.facts.output_schema)?;
                 schema_column_names(node.output_schema())
@@ -152,6 +167,15 @@ pub(super) fn validate_query_plan(plan: &QueryPlan) -> Result<()> {
                 let input_available = available_columns(&available_columns_by_node, graph.input)?;
                 validate_graph_algorithm_node(graph, input.output_schema(), input_available, node.output_schema())?;
                 validate_graph_algorithm_side_inputs(graph, plan, &available_columns_by_node, node.id)?;
+                schema_column_names(node.output_schema())
+            },
+            PlanNode::VectorAlgorithm(vector) => {
+                crate::vector_validation::validate_vector_algorithm_node(
+                    vector,
+                    plan,
+                    &available_columns_by_node,
+                    node.id,
+                )?;
                 schema_column_names(node.output_schema())
             },
         };
@@ -339,6 +363,7 @@ fn plan_node_kind(node: &PlanNode) -> &'static str {
         PlanNode::Union(_) => "union",
         PlanNode::EdgeNormalize(_) => "edge_normalize",
         PlanNode::GraphAlgorithm(_) => "graph_algorithm",
+        PlanNode::VectorAlgorithm(_) => "vector_algorithm",
     }
 }
 

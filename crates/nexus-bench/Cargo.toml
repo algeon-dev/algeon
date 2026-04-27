@@ -27,6 +27,11 @@ cugraph = [
   "dep:cugraph",
   "dep:cugraph-sys",
 ]
+cuvs = [
+  "datafusion-nexus/cuvs",
+  "nexus-query-engine/cuvs",
+  "dep:cuvs-sys",
+]
 
 [dependencies]
 datafusion-nexus = { workspace = true }
@@ -43,6 +48,7 @@ cudf = { workspace = true }
 cudf-sys = { workspace = true }
 cugraph = { workspace = true, optional = true }
 cugraph-sys = { workspace = true, optional = true }
+cuvs-sys = { workspace = true, optional = true }
 futures = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "process", "signal", "sync", "time"] }

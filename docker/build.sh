@@ -14,8 +14,8 @@
 #   bin/datafusion_nexus_server        the compiled server
 #   lib/libcudf_rust.so                cudf-nexus-sys CMake FFI bridge (OUT_DIR)
 #   lib/libcudf.so librmm.so ...       forked RAPIDS C++ libs from cudf-nexus
-#   lib/libcugraph*.so libcuvs.so      forked RAPIDS C++ libs from cugraph-nexus
-#                                      (only when FEATURES contains `cugraph`)
+#   lib/libcugraph*.so                 forked RAPIDS C++ libs from cugraph-nexus
+#   lib/libcuvs.so* libcuvs_c.so*      canonical cuVS install (C API only for `cuvs`)
 #
 # The CUDA *toolkit* libraries (libcudart, libcublas, libnvrtc, ...) are NOT
 # staged here — they are harvested from an official nvidia/cuda `-runtime`
@@ -25,12 +25,13 @@
 # Prerequisites:
 #   - Sibling path deps resolved and BUILT:
 #       ../cudf-nexus/cudf-install/lib   (forked libcudf + friends)
-#       ../cugraph-nexus/cugraph/cpp/build (forked libcugraph + cuvs, if cugraph)
+#       ../cuvs-nexus/cuvs-install/lib (canonical libcuvs + libcuvs_c)
+#       ../cugraph-nexus/cugraph/cpp/build (forked libcugraph, if cugraph)
 #   - `cargo build --release` succeeds for the chosen FEATURES
 #   - patchelf (recommended; rewrites RUNPATHs so the container is hermetic)
 #
 # Usage:
-#   bash docker/build.sh                       # server,iceberg,cugraph,nvml (full)
+#   bash docker/build.sh                  # server,iceberg,cugraph,cuvs,nvml (full)
 #   FEATURES=server,iceberg,nvml bash docker/build.sh # lean cudf-only (~1/3 size)
 #   NO_STRIP=1 bash docker/build.sh            # keep debug symbols
 #   SKIP_CARGO_BUILD=1 bash docker/build.sh    # reuse only verified canonical artifact
@@ -59,7 +60,7 @@ POLICY_HELPER="$REPO_ROOT/scripts/build/cpu_packaging_policy.py"
 CPU_PACKAGE_PROFILE="${CPU_PACKAGE_PROFILE:-portable}"
 CPU_PACKAGE_TARGET_ROOT="${CPU_PACKAGE_TARGET_ROOT:-$REPO_ROOT/target/cpu-packaging}"
 FEATURES="$(python3 "$POLICY_HELPER" --policy "$POLICY_FILE" normalize-features \
-    --features "${FEATURES:-server,iceberg,cugraph,nvml}")"
+    --features "${FEATURES:-server,iceberg,cugraph,cuvs,nvml}")"
 
 eval "$(python3 "$POLICY_HELPER" --policy "$POLICY_FILE" describe --profile "$CPU_PACKAGE_PROFILE")"
 
@@ -72,22 +73,28 @@ python3 "$POLICY_HELPER" --policy "$POLICY_FILE" check-env --profile "$CPU_PACKA
 
 # Sibling forked-lib locations (override via env if your layout differs).
 CUDF_INSTALL_DIR="${CUDF_INSTALL_DIR:-$REPO_ROOT/../cudf-nexus/cudf-install}"
-CUGRAPH_BUILD_DIR="${CUGRAPH_BUILD_DIR:-$REPO_ROOT/../cugraph-nexus/cugraph/cpp/build}"
+CUVS_INSTALL_DIR="${CUVS_INSTALL_DIR:-$REPO_ROOT/../cuvs-nexus/cuvs-install}"
+CUGRAPH_CMAKE_BUILD_DIR="${CUGRAPH_CMAKE_BUILD_DIR:-$REPO_ROOT/../cugraph-nexus/cugraph/cpp/build}"
 
 # /app/lib is where the Dockerfile places the runtime libraries.
 RUNTIME_LIB_DIR="/app/lib"
 
 want_cugraph=0
+want_cuvs=0
 [[ ",$FEATURES," == *",cugraph,"* ]] && want_cugraph=1
+[[ ",$FEATURES," == *",cuvs,"* ]] && want_cuvs=1
+want_cuvs_runtime=0
+[[ $want_cugraph -eq 1 || $want_cuvs -eq 1 ]] && want_cuvs_runtime=1
 
-echo "==> FEATURES            : $FEATURES   (cugraph=$want_cugraph)"
+echo "==> FEATURES            : $FEATURES   (cugraph=$want_cugraph cuvs=$want_cuvs)"
 echo "==> CPU package profile : $CPU_POLICY_PROFILE ($CPU_PROFILE_KIND)"
 echo "==> CPU baseline        : $CPU_BASELINE"
 echo "==> CPU target          : $CPU_TARGET_TRIPLE"
 echo "==> CPU rustflags       : $CPU_RUSTFLAGS_JSON"
 echo "==> Deployment requires : $CPU_DEPLOYMENT_REQUIREMENT"
 echo "==> CUDF_INSTALL_DIR    : $CUDF_INSTALL_DIR"
-[[ $want_cugraph -eq 1 ]] && echo "==> CUGRAPH_BUILD_DIR   : $CUGRAPH_BUILD_DIR"
+[[ $want_cuvs_runtime -eq 1 ]] && echo "==> CUVS_INSTALL_DIR    : $CUVS_INSTALL_DIR"
+[[ $want_cugraph -eq 1 ]] && echo "==> CUGRAPH_CMAKE_BUILD_DIR: $CUGRAPH_CMAKE_BUILD_DIR"
 
 cd "$REPO_ROOT"
 
@@ -102,13 +109,22 @@ BUILD_PROVENANCE="$BINARY.cpu-provenance.json"
 
 if [[ "$SKIP_CARGO_BUILD" == "0" ]]; then
     echo "==> Building canonical datafusion_nexus_server artifact ..."
+    explicit_native_env=(--explicit-env "CUDF_INSTALL_DIR=$CUDF_INSTALL_DIR")
+    if [[ $want_cuvs_runtime -eq 1 ]]; then
+        explicit_native_env+=(
+            --explicit-env "CUVS_INSTALL_DIR=$CUVS_INSTALL_DIR"
+            --explicit-env "CUVS_ROOT=$CUVS_INSTALL_DIR"
+        )
+    fi
+    if [[ $want_cugraph -eq 1 ]]; then
+        explicit_native_env+=(--explicit-env "CUGRAPH_CMAKE_BUILD_DIR=$CUGRAPH_CMAKE_BUILD_DIR")
+    fi
     python3 "$POLICY_HELPER" --policy "$POLICY_FILE" build \
         --profile "$CPU_PACKAGE_PROFILE" \
         --features "$FEATURES" \
         --target-root "$CPU_PACKAGE_TARGET_ROOT" \
         --manifest "$REPO_ROOT/Cargo.toml" \
-        --explicit-env "CUDF_INSTALL_DIR=$CUDF_INSTALL_DIR" \
-        --explicit-env "CUGRAPH_BUILD_DIR=$CUGRAPH_BUILD_DIR"
+        "${explicit_native_env[@]}"
 else
     echo "==> SKIP_CARGO_BUILD=1 — verifying canonical artifact before reuse"
     python3 "$POLICY_HELPER" --policy "$POLICY_FILE" verify-build \
@@ -169,24 +185,93 @@ CUDF_LIB="$CUDF_INSTALL_DIR/lib"
 echo "==> Staging forked cuDF libs from $CUDF_LIB"
 copy_lib "$CUDF_LIB/libcudf.so"          || { echo "ERROR: libcudf.so missing" >&2; exit 1; }
 copy_lib "$CUDF_LIB/librmm.so"           || { echo "ERROR: librmm.so missing" >&2; exit 1; }
-copy_lib "$CUDF_LIB/librapids_logger.so" || { echo "ERROR: librapids_logger.so missing" >&2; exit 1; }
 # Optional-but-bundled: kvikio (remote/GDS reads) + nvcomp (parquet codecs).
 # These are dlopen'd by libcudf, so they never show up in ldd — bundle eagerly.
 copy_lib "$CUDF_LIB/libkvikio.so"        || echo "    note: libkvikio.so absent (remote-direct reads unavailable)"
 copy_lib "$CUDF_LIB/libnvcomp.so"*       || echo "    note: libnvcomp.so absent (GPU parquet codecs may be unavailable)"
 copy_lib "$CUDF_LIB/libnvcomp_cpu.so"*   || true
 
-# ── 6. Stage forked cuGraph / cuVS libs (only with cugraph feature) ─────────
+# ── 6. Stage canonical cuVS and optional forked cuGraph libraries ────────────
+CUVS_LIB=""
+if [[ $want_cuvs_runtime -eq 1 ]]; then
+    for candidate in "$CUVS_INSTALL_DIR/lib" "$CUVS_INSTALL_DIR/lib64"; do
+        if [[ -f "$candidate/libcuvs.so" ]]; then
+            CUVS_LIB="$candidate"
+            break
+        fi
+    done
+    [[ -n "$CUVS_LIB" ]] || {
+        echo "ERROR: canonical libcuvs.so not found under $CUVS_INSTALL_DIR/lib or lib64." >&2
+        exit 1
+    }
+    echo "==> Staging canonical cuVS libs from $CUVS_LIB"
+    copy_lib "$CUVS_LIB/libcuvs.so"* || { echo "ERROR: canonical libcuvs.so missing" >&2; exit 1; }
+    if [[ $want_cuvs -eq 1 ]]; then
+        copy_lib "$CUVS_LIB/libcuvs_c.so"* || { echo "ERROR: canonical libcuvs_c.so missing" >&2; exit 1; }
+    fi
+fi
+
+resolve_needed_realpath() {
+    local elf="$1" soname_prefix="$2" resolved
+    resolved=$(ldd "$elf" 2>/dev/null | awk -v prefix="$soname_prefix" \
+        '$1 ~ ("^" prefix "(\\.|$)") && $2 == "=>" && $3 ~ "^/" { print $3; exit }')
+    [[ -n "$resolved" ]] || return 1
+    readlink -f "$resolved"
+}
+
 if [[ $want_cugraph -eq 1 ]]; then
-    [[ -d "$CUGRAPH_BUILD_DIR" ]] || { echo "ERROR: $CUGRAPH_BUILD_DIR not found — build cugraph-nexus first." >&2; exit 1; }
-    echo "==> Staging forked cuGraph libs from $CUGRAPH_BUILD_DIR"
-    copy_lib "$CUGRAPH_BUILD_DIR/libcugraph.so"        || { echo "ERROR: libcugraph.so missing" >&2; exit 1; }
-    copy_lib "$CUGRAPH_BUILD_DIR/libcugraph_c.so"      || { echo "ERROR: libcugraph_c.so missing" >&2; exit 1; }
-    copy_lib "$CUGRAPH_BUILD_DIR/libcugraph_common.so" || { echo "ERROR: libcugraph_common.so missing" >&2; exit 1; }
-    copy_lib "$CUGRAPH_BUILD_DIR/libcugraph_mg.so"     || { echo "ERROR: libcugraph_mg.so missing" >&2; exit 1; }
-    copy_lib "$CUGRAPH_BUILD_DIR/_deps/cuvs-build/libcuvs.so" \
-        || copy_lib "$CUGRAPH_BUILD_DIR/libcuvs.so" \
-        || { echo "ERROR: libcuvs.so missing" >&2; exit 1; }
+    [[ -d "$CUGRAPH_CMAKE_BUILD_DIR" ]] || {
+        echo "ERROR: $CUGRAPH_CMAKE_BUILD_DIR not found — build cugraph-nexus first." >&2
+        exit 1
+    }
+    GRAPH_CUVS_REALPATH=$(resolve_needed_realpath "$CUGRAPH_CMAKE_BUILD_DIR/libcugraph.so" libcuvs) || {
+        echo "ERROR: ldd could not resolve libcugraph.so to a canonical libcuvs.so." >&2
+        exit 1
+    }
+    CANONICAL_CUVS_REALPATH=$(readlink -f "$CUVS_LIB/libcuvs.so")
+    [[ "$GRAPH_CUVS_REALPATH" != */_deps/* ]] || {
+        echo "ERROR: libcugraph selected private cuVS artifact $GRAPH_CUVS_REALPATH." >&2
+        exit 1
+    }
+    [[ "$GRAPH_CUVS_REALPATH" == "$CANONICAL_CUVS_REALPATH" ]] || {
+        echo "ERROR: libcugraph and packaging selected different libcuvs.so identities:" >&2
+        echo "  cuGraph:   $GRAPH_CUVS_REALPATH" >&2
+        echo "  canonical: $CANONICAL_CUVS_REALPATH" >&2
+        exit 1
+    }
+    echo "==> Staging forked cuGraph libs from $CUGRAPH_CMAKE_BUILD_DIR"
+    copy_lib "$CUGRAPH_CMAKE_BUILD_DIR/libcugraph.so"        || { echo "ERROR: libcugraph.so missing" >&2; exit 1; }
+    copy_lib "$CUGRAPH_CMAKE_BUILD_DIR/libcugraph_c.so"      || { echo "ERROR: libcugraph_c.so missing" >&2; exit 1; }
+    copy_lib "$CUGRAPH_CMAKE_BUILD_DIR/libcugraph_common.so" || { echo "ERROR: libcugraph_common.so missing" >&2; exit 1; }
+    copy_lib "$CUGRAPH_CMAKE_BUILD_DIR/libcugraph_mg.so"     || { echo "ERROR: libcugraph_mg.so missing" >&2; exit 1; }
+fi
+
+# rapids_logger may be linked as a shared library, or absorbed into the
+# canonical cuDF/RMM build. Stage it only when an artifact in this package has
+# a real DT_NEEDED edge; an absorbed build must not acquire a stale second
+# logger merely because one happens to exist in the install prefix.
+first_elf_needing() {
+    local soname_prefix="$1" elf
+    while IFS= read -r elf; do
+        if readelf -d "$elf" 2>/dev/null \
+            | awk -F'[][]' -v prefix="$soname_prefix" \
+                '/\(NEEDED\)/ && index($2, prefix) == 1 { found=1 } END { exit !found }'; then
+            printf '%s\n' "$elf"
+            return 0
+        fi
+    done < <(find "$DIST_DIR/bin" "$DIST_DIR/lib" -type f -print)
+    return 1
+}
+
+RAPIDS_LOGGER_NEEDED_BY=$(first_elf_needing librapids_logger.so || true)
+if [[ -n "$RAPIDS_LOGGER_NEEDED_BY" ]]; then
+    echo "==> Staging shared rapids_logger required by $RAPIDS_LOGGER_NEEDED_BY"
+    copy_lib "$CUDF_LIB/librapids_logger.so"* || {
+        echo "ERROR: $RAPIDS_LOGGER_NEEDED_BY needs a shared librapids_logger.so, but the canonical cuDF install $CUDF_LIB does not ship it." >&2
+        exit 1
+    }
+else
+    echo "    note: rapids_logger has no shared DT_NEEDED edge (static/absorbed); not staging librapids_logger.so"
 fi
 
 # ── 7. Strip + rehome RUNPATHs ──────────────────────────────────────────────
@@ -214,7 +299,148 @@ else
     echo "warning: patchelf absent — relying on ENV LD_LIBRARY_PATH=$RUNTIME_LIB_DIR set by the image"
 fi
 
-# ── 8. Provenance + manifest ────────────────────────────────────────────────
+# ── 8. Fail-closed native loader closure validation ─────────────────────────
+validate_loader_closure() {
+    command -v readelf >/dev/null 2>&1 || { echo "ERROR: readelf is required for loader validation." >&2; return 1; }
+    command -v ldd >/dev/null 2>&1 || { echo "ERROR: ldd is required for loader validation." >&2; return 1; }
+
+    local elf dynamic needed ldd_output unresolved dependency resolved realpath
+    local -A cuvs_realpaths=() rmm_realpaths=() logger_realpaths=() cudart_realpaths=()
+    while IFS= read -r elf; do
+        readelf -h "$elf" >/dev/null 2>&1 || {
+            echo "ERROR: staged runtime artifact is not a readable ELF file: $elf" >&2
+            return 1
+        }
+        dynamic=$(readelf -d "$elf" 2>&1) || {
+            echo "ERROR: cannot inspect ELF dynamic section: $elf" >&2
+            echo "$dynamic" >&2
+            return 1
+        }
+        while IFS= read -r needed; do
+            case "$needed" in
+                libraft.so*)
+                    echo "ERROR: unexpected shared RAFT dependency $needed in $elf; RAFT must remain header-only." >&2
+                    return 1
+                    ;;
+                libcudart.so*)
+                    [[ "$needed" == "libcudart.so.13" ]] || {
+                        echo "ERROR: unexpected CUDA runtime dependency $needed in $elf; this package targets CUDA 13." >&2
+                        return 1
+                    }
+                    ;;
+            esac
+        done < <(awk -F'[][]' '/\(NEEDED\)/ { print $2 }' <<< "$dynamic")
+
+        ldd_output=$(LD_LIBRARY_PATH="$DIST_DIR/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" ldd "$elf" 2>&1) || {
+            echo "ERROR: ldd failed for staged ELF $elf" >&2
+            echo "$ldd_output" >&2
+            return 1
+        }
+        # NVIDIA's libnvtx3interop uses DT_AUXILIARY [visibility=hidden].
+        # glibc ldd renders that marker as a fake `=> not found` row even
+        # though it is not a DT_NEEDED soname. Keep every real missing edge.
+        unresolved=$(awk \
+            '$1 != "visibility=hidden" && $2 == "=>" && $3 == "not" && $4 == "found"' \
+            <<< "$ldd_output")
+        if [[ -n "$unresolved" ]]; then
+            echo "ERROR: unresolved loader dependency for staged ELF $elf" >&2
+            echo "$unresolved" >&2
+            return 1
+        fi
+        while read -r dependency _ resolved _; do
+            [[ "$resolved" == /* ]] || continue
+            realpath=$(readlink -f "$resolved") || {
+                echo "ERROR: cannot canonicalize resolved dependency $resolved from $elf" >&2
+                return 1
+            }
+            case "$dependency" in
+                libcuvs.so*) cuvs_realpaths["$realpath"]=1 ;;
+                librmm.so*) rmm_realpaths["$realpath"]=1 ;;
+                librapids_logger.so*) logger_realpaths["$realpath"]=1 ;;
+                libcudart.so*) cudart_realpaths["$realpath"]=1 ;;
+                libraft.so*)
+                    echo "ERROR: unexpected shared RAFT dependency resolved for $elf: $realpath" >&2
+                    return 1
+                    ;;
+            esac
+        done <<< "$ldd_output"
+    done < <(find "$DIST_DIR/bin" "$DIST_DIR/lib" -type f -print)
+
+    if (( ${#rmm_realpaths[@]} != 1 )); then
+        echo "ERROR: loader closure must resolve exactly one librmm.so identity; found ${#rmm_realpaths[@]}." >&2
+        printf '  %s\n' "${!rmm_realpaths[@]}" >&2
+        return 1
+    fi
+    local staged_rmm
+    staged_rmm=$(readlink -f "$DIST_DIR/lib/librmm.so")
+    [[ -n "${rmm_realpaths[$staged_rmm]+present}" ]] || {
+        echo "ERROR: loader closure selected librmm.so outside the staged canonical identity $staged_rmm." >&2
+        return 1
+    }
+
+    if (( ${#logger_realpaths[@]} > 1 )); then
+        echo "ERROR: loader closure resolves multiple librapids_logger.so identities." >&2
+        printf '  %s\n' "${!logger_realpaths[@]}" >&2
+        return 1
+    fi
+    local -A staged_logger_realpaths=()
+    while IFS= read -r dependency; do
+        realpath=$(readlink -f "$dependency") || {
+            echo "ERROR: cannot canonicalize staged rapids_logger $dependency" >&2
+            return 1
+        }
+        staged_logger_realpaths["$realpath"]=1
+    done < <(find "$DIST_DIR/lib" -maxdepth 1 -name 'librapids_logger.so*' -print)
+    if (( ${#logger_realpaths[@]} == 1 )); then
+        (( ${#staged_logger_realpaths[@]} == 1 )) || {
+            echo "ERROR: loader closure resolved a shared librapids_logger.so without one canonical staged identity." >&2
+            return 1
+        }
+        for realpath in "${!logger_realpaths[@]}"; do
+            [[ -n "${staged_logger_realpaths[$realpath]+present}" ]] || {
+                echo "ERROR: loader closure selected librapids_logger.so outside the staged canonical identity." >&2
+                echo "  resolved: $realpath" >&2
+                printf '  staged:   %s\n' "${!staged_logger_realpaths[@]}" >&2
+                return 1
+            }
+        done
+    elif (( ${#staged_logger_realpaths[@]} != 0 )); then
+        echo "ERROR: staged librapids_logger.so is absent from the loader closure; refusing an unneeded or stale shared logger." >&2
+        return 1
+    fi
+
+    if [[ $want_cuvs_runtime -eq 1 ]]; then
+        if (( ${#cuvs_realpaths[@]} != 1 )); then
+            echo "ERROR: loader closure must resolve exactly one libcuvs.so identity; found ${#cuvs_realpaths[@]}." >&2
+            printf '  %s\n' "${!cuvs_realpaths[@]}" >&2
+            return 1
+        fi
+        local staged_cuvs
+        staged_cuvs=$(readlink -f "$DIST_DIR/lib/libcuvs.so")
+        [[ -n "${cuvs_realpaths[$staged_cuvs]+present}" ]] || {
+            echo "ERROR: loader closure selected libcuvs.so outside the staged canonical identity $staged_cuvs." >&2
+            return 1
+        }
+    elif (( ${#cuvs_realpaths[@]} != 0 )); then
+        echo "ERROR: libcuvs.so entered a package with neither cugraph nor cuvs enabled." >&2
+        return 1
+    fi
+
+    if [[ $want_cuvs -eq 1 && ! -e "$DIST_DIR/lib/libcuvs_c.so" ]]; then
+        echo "ERROR: cuvs feature package is missing staged libcuvs_c.so." >&2
+        return 1
+    fi
+    if (( ${#cudart_realpaths[@]} > 1 )); then
+        echo "ERROR: loader closure resolves multiple CUDA runtime identities." >&2
+        printf '  %s\n' "${!cudart_realpaths[@]}" >&2
+        return 1
+    fi
+}
+
+echo "==> Validating staged loader closure with readelf + ldd"
+validate_loader_closure
+
+# ── 9. Provenance + manifest ────────────────────────────────────────────────
 python3 "$POLICY_HELPER" --policy "$POLICY_FILE" stage \
     --profile "$CPU_PACKAGE_PROFILE" \
     --features "$FEATURES" \

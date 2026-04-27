@@ -9,6 +9,7 @@ build = "build.rs"
 [features]
 default = []
 cugraph = ["dep:cugraph", "dep:cugraph-sys"]
+cuvs = ["dep:cuvs", "dep:cuvs-sys"]
 # Optional live NVML diagnostics; admission capacity and SM count remain on cudf CUDA/RMM inventory.
 nvml = ["dep:nvml-wrapper"]
 
@@ -25,6 +26,8 @@ cudf = { workspace = true }
 cudf-sys = { workspace = true }
 cugraph = { workspace = true, optional = true }
 cugraph-sys = { workspace = true, optional = true }
+cuvs = { workspace = true, optional = true }
+cuvs-sys = { workspace = true, optional = true }
 futures = { workspace = true }
 getrandom = { workspace = true }
 nvml-wrapper = { version = "0.12.1", optional = true }

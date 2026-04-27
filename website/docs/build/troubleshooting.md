@@ -82,7 +82,7 @@ an architecture means stubs only.
 `scripts/build_libcugraph.sh` refuses to finish when the configure resolved an
 RMM or rapids_logger other than the one exported by `CUDF_INSTALL_DIR`, or when
 CPM-built copies linger under `cugraph/cpp/build/_deps`. This protects the
-one-RMM-per-process invariant ([Environment](./environment.md#why-one-shared-install-prefix)).
+one-RMM-per-process invariant ([Environment](./environment.md#dependency-relationship)).
 
 Usual cause: the build dir predates the external-RMM configure. Remove
 `cugraph/cpp/build` and re-run the script. Do not delete the check or point

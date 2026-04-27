@@ -1,5 +1,7 @@
 //! CPU contract coverage: errors, policy reports, public facade, table-format scan.
 
+#[path = "cpu_contract/cuvs_sql_tests.rs"]
+mod cuvs_sql_tests;
 #[path = "cpu_contract/error_tests.rs"]
 mod error_tests;
 #[path = "cpu_contract/policy_report_tests.rs"]

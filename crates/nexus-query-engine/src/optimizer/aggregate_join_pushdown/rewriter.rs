@@ -581,7 +581,8 @@ impl<'a> AggregateJoinPushdownRewriter<'a> {
             | PlanNode::Join(_)
             | PlanNode::Window(_)
             | PlanNode::EdgeNormalize(_)
-            | PlanNode::GraphAlgorithm(_) => None,
+            | PlanNode::GraphAlgorithm(_)
+            | PlanNode::VectorAlgorithm(_) => None,
         }
     }
 
@@ -620,9 +621,11 @@ impl<'a> AggregateJoinPushdownRewriter<'a> {
                 .iter()
                 .try_fold(0_u64, |total, input| total.checked_add(self.estimated_rewritten_output_rows(*input)?)),
             PlanNode::Aggregate(aggregate) if aggregate.spec.group_exprs.is_empty() => Some(1),
-            PlanNode::Aggregate(_) | PlanNode::Join(_) | PlanNode::EdgeNormalize(_) | PlanNode::GraphAlgorithm(_) => {
-                None
-            },
+            PlanNode::Aggregate(_)
+            | PlanNode::Join(_)
+            | PlanNode::EdgeNormalize(_)
+            | PlanNode::GraphAlgorithm(_)
+            | PlanNode::VectorAlgorithm(_) => None,
         }
     }
 

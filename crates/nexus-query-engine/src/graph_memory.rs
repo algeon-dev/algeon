@@ -1651,7 +1651,11 @@ fn hard_row_upper_bound_for_plan_node(plan: &QueryPlan, node_id: NodeId) -> Opti
         PlanNode::Aggregate(aggregate) if aggregate.spec.group_exprs.is_empty() => {
             Some((1, GraphPairCardinalitySource::PlanExact))
         },
-        PlanNode::Aggregate(_) | PlanNode::Join(_) | PlanNode::EdgeNormalize(_) | PlanNode::GraphAlgorithm(_) => None,
+        PlanNode::Aggregate(_)
+        | PlanNode::Join(_)
+        | PlanNode::EdgeNormalize(_)
+        | PlanNode::GraphAlgorithm(_)
+        | PlanNode::VectorAlgorithm(_) => None,
     }
 }
 

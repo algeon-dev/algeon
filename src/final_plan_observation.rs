@@ -10,7 +10,10 @@ use datafusion::physical_plan::ExecutionPlan;
 #[cfg(feature = "cugraph")]
 use crate::graph_sql::CugraphAlgoExec;
 use crate::{
-    native_exec::{NexusNativeComposedExec, NexusNativeExec, NexusNativeGpuProducerExec},
+    cuvs_sql::CuvsAlgoExec,
+    native_exec::{
+        NexusNativeComposedExec, NexusNativeComposedGpuProducerExec, NexusNativeExec, NexusNativeGpuProducerExec,
+    },
     planner::FinalPlanDisposition,
 };
 
@@ -32,12 +35,36 @@ impl FinalPlanObservation {
 
 /// Observe the exact executable physical plan once.
 pub(crate) fn observe_final_plan(plan: &dyn ExecutionPlan) -> FinalPlanObservation {
-    observe(plan)
+    observe_with_output_boundary(plan, true)
 }
 
-fn observe(plan: &dyn ExecutionPlan) -> FinalPlanObservation {
+/// Observe a node in the context in which its output is consumed.
+///
+/// Accelerator operators can execute through their ordinary DataFusion
+/// `ExecutionPlan` method or through the internal GPU-producer contract. The
+/// former owns a final device-to-host materialization; the latter must not be
+/// counted as one merely because the same concrete type also supports a host
+/// result. Keeping that context in this walk avoids reporting a false host
+/// boundary for composed graph/vector plans.
+fn observe_with_output_boundary(plan: &dyn ExecutionPlan, materializes_host: bool) -> FinalPlanObservation {
     if let Some(input) = crate::native_exec::transparent_root_wrapper_input(plan) {
-        return observe(input.as_ref());
+        return observe_with_output_boundary(input.as_ref(), materializes_host);
+    }
+    if plan.name() == "CooperativeExec" {
+        let children = plan.children();
+        if let [child] = children.as_slice() {
+            let wraps_gpu_producer = crate::native_exec::producer::gpu_resident_producer(plan).is_some();
+            let wraps_graph_native_input = !materializes_host
+                && (child.downcast_ref::<NexusNativeExec>().is_some()
+                    || child.downcast_ref::<NexusNativeComposedExec>().is_some());
+            if wraps_gpu_producer || wraps_graph_native_input {
+                // DataFusion's one-level cooperative wrapper is
+                // scheduling-only around an internal GPU producer or a
+                // native cuGraph input. It does not change device ownership
+                // or introduce an Arrow boundary.
+                return observe_with_output_boundary(child.as_ref(), false);
+            }
+        }
     }
     if plan.downcast_ref::<NexusNativeExec>().is_some() {
         return FinalPlanObservation {
@@ -45,7 +72,7 @@ fn observe(plan: &dyn ExecutionPlan) -> FinalPlanObservation {
             native_fragment_count: 1,
             explicit_gpu_island_count: 0,
             datafusion_boundary_count: 0,
-            host_materialization_count: 1,
+            host_materialization_count: usize::from(materializes_host),
         };
     }
     if plan.downcast_ref::<NexusNativeGpuProducerExec>().is_some() {
@@ -63,12 +90,58 @@ fn observe(plan: &dyn ExecutionPlan) -> FinalPlanObservation {
             native_fragment_count: 1,
             explicit_gpu_island_count: 0,
             datafusion_boundary_count: 0,
-            host_materialization_count: 1,
+            host_materialization_count: usize::from(materializes_host),
         };
         for child in plan.children() {
-            let child = observe(child.as_ref());
+            let child = observe_as_gpu_producer(child.as_ref());
             if child.disposition != FinalPlanDisposition::Native {
                 observation.disposition = FinalPlanDisposition::Mixed;
+            }
+            merge(&mut observation, child);
+        }
+        return observation;
+    }
+    if plan.downcast_ref::<NexusNativeComposedGpuProducerExec>().is_some() {
+        let mut observation = FinalPlanObservation {
+            disposition: FinalPlanDisposition::Native,
+            native_fragment_count: 1,
+            explicit_gpu_island_count: 0,
+            datafusion_boundary_count: 0,
+            host_materialization_count: 0,
+        };
+        for child in plan.children() {
+            let child = observe_as_gpu_producer(child.as_ref());
+            if child.disposition != FinalPlanDisposition::Native {
+                observation.disposition = FinalPlanDisposition::Mixed;
+            }
+            merge(&mut observation, child);
+        }
+        return observation;
+    }
+    if plan.downcast_ref::<CuvsAlgoExec>().is_some() {
+        // cuVS owns the native vector execution and its normal `ExecutionPlan`
+        // path materializes only its final relational result.  Its children
+        // remain on the device only when they satisfy the shared producer
+        // contract; otherwise `CuvsAlgoExec` explicitly stages the Arrow
+        // child before entering its native context.
+        let mut observation = FinalPlanObservation {
+            disposition: FinalPlanDisposition::Native,
+            native_fragment_count: 1,
+            explicit_gpu_island_count: 0,
+            datafusion_boundary_count: 0,
+            host_materialization_count: usize::from(materializes_host),
+        };
+        for child_plan in plan.children() {
+            let child_is_gpu_producer =
+                crate::native_exec::producer::gpu_resident_producer(child_plan.as_ref()).is_some();
+            let child = if child_is_gpu_producer {
+                observe_as_gpu_producer(child_plan.as_ref())
+            } else {
+                observe_with_output_boundary(child_plan.as_ref(), true)
+            };
+            if !child_is_gpu_producer || child.disposition != FinalPlanDisposition::Native {
+                observation.disposition = FinalPlanDisposition::Mixed;
+                observation.datafusion_boundary_count += 1;
             }
             merge(&mut observation, child);
         }
@@ -81,11 +154,16 @@ fn observe(plan: &dyn ExecutionPlan) -> FinalPlanObservation {
             native_fragment_count: 0,
             explicit_gpu_island_count: 1,
             datafusion_boundary_count: 0,
-            host_materialization_count: 1,
+            host_materialization_count: usize::from(materializes_host),
         };
         for child_plan in plan.children() {
-            let child = observe(child_plan.as_ref());
-            if !graph_child_stays_gpu_resident(child_plan.as_ref(), child) {
+            let child_uses_native_gpu_input = graph_child_uses_native_gpu_input(child_plan.as_ref());
+            let child = if child_uses_native_gpu_input {
+                observe_with_output_boundary(child_plan.as_ref(), false)
+            } else {
+                observe_with_output_boundary(child_plan.as_ref(), true)
+            };
+            if !child_uses_native_gpu_input || child.disposition != FinalPlanDisposition::Native {
                 observation.disposition = FinalPlanDisposition::Mixed;
                 observation.datafusion_boundary_count += 1;
             }
@@ -103,7 +181,7 @@ fn observe(plan: &dyn ExecutionPlan) -> FinalPlanObservation {
     };
     let mut directly_contains_gpu_runtime = false;
     for child in plan.children() {
-        let child = observe(child.as_ref());
+        let child = observe_with_output_boundary(child.as_ref(), true);
         directly_contains_gpu_runtime |= child.has_gpu_runtime();
         if child.disposition != FinalPlanDisposition::DataFusion {
             observation.disposition = FinalPlanDisposition::Mixed;
@@ -117,12 +195,13 @@ fn observe(plan: &dyn ExecutionPlan) -> FinalPlanObservation {
     observation
 }
 
+fn observe_as_gpu_producer(plan: &dyn ExecutionPlan) -> FinalPlanObservation {
+    observe_with_output_boundary(plan, false)
+}
+
 #[cfg(feature = "cugraph")]
-fn graph_child_stays_gpu_resident(plan: &dyn ExecutionPlan, observation: FinalPlanObservation) -> bool {
-    if observation.disposition == FinalPlanDisposition::Native
-        && (plan.downcast_ref::<NexusNativeExec>().is_some()
-            || plan.downcast_ref::<NexusNativeComposedExec>().is_some())
-    {
+fn graph_child_uses_native_gpu_input(plan: &dyn ExecutionPlan) -> bool {
+    if plan.downcast_ref::<NexusNativeExec>().is_some() || plan.downcast_ref::<NexusNativeComposedExec>().is_some() {
         return true;
     }
     if plan.name() != "CooperativeExec" {
@@ -132,9 +211,7 @@ fn graph_child_stays_gpu_resident(plan: &dyn ExecutionPlan, observation: FinalPl
     let [child] = children.as_slice() else {
         return false;
     };
-    let child = observe(child.as_ref());
-    child.disposition == FinalPlanDisposition::Native
-        && (child.native_fragment_count > 0 && child.explicit_gpu_island_count == 0)
+    child.downcast_ref::<NexusNativeExec>().is_some() || child.downcast_ref::<NexusNativeComposedExec>().is_some()
 }
 
 fn merge(target: &mut FinalPlanObservation, child: FinalPlanObservation) {

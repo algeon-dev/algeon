@@ -7,7 +7,7 @@
 
 use std::{fmt, sync::Arc};
 
-use arrow::datatypes::{Field, Schema, SchemaRef};
+use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 
 use crate::{
     expr::{AggregateFunction, AggregateSpec, ColumnRef, Expr, LimitSpec, LiteralValue, SortExpr, SortSpec},
@@ -24,6 +24,7 @@ mod join;
 mod nodes;
 mod preference;
 mod sink;
+mod vector_algorithm;
 
 pub use core::{NodeId, PlanNode, QueryNode, QueryPlan};
 
@@ -61,3 +62,13 @@ pub use preference::{
     NativePlanCostDecision, NativePlanCostFacts, NativePlanCostOptions, NativePlanCostReason, native_plan_cost_decision,
 };
 pub use sink::ResultSink;
+pub use vector_algorithm::{
+    CUVS_BRUTE_FORCE_KNN_FUNCTION, CUVS_ID_TYPES, CUVS_KMEANS_FUNCTION, CUVS_OPERATION_REGISTRY, CUVS_PCA_FUNCTION,
+    CuvsDenseVectorBinding, CuvsIdType, CuvsOperation, CuvsOperationDescriptor, CuvsOptionDefinition, CuvsOptionKind,
+    CuvsOptionValidationError, CuvsOutputContract, CuvsRelationArgumentSyntax, CuvsRelationRole,
+    VECTOR_ALGORITHM_BOUNDED_MEMORY_BOUNDARY, VECTOR_ALGORITHM_BOUNDED_REQUIRED_CONTRACT, VectorAlgorithm,
+    VectorAlgorithmNode, VectorAlgorithmParams, VectorAlgorithmSpec, VectorBruteForceKnnParams, VectorDistanceMetric,
+    VectorKMeansInit, VectorKMeansMetric, VectorKMeansParams, VectorPcaParams, VectorPcaSolver, VectorRelationBinding,
+    VectorRowIdBinding, canonicalize_cuvs_options, vector_brute_force_knn_output_schema, vector_kmeans_output_schema,
+    vector_pca_output_schema,
+};

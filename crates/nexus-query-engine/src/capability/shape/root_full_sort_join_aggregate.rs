@@ -199,7 +199,8 @@ fn root_full_sort_collect_downstream_consumer_joins(
             | PlanNode::Limit(_)
             | PlanNode::Union(_)
             | PlanNode::EdgeNormalize(_)
-            | PlanNode::GraphAlgorithm(_),
+            | PlanNode::GraphAlgorithm(_)
+            | PlanNode::VectorAlgorithm(_),
         )
         | None => {},
     }

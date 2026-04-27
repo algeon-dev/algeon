@@ -488,7 +488,8 @@ impl<'a> SemijoinLineageAnalyzer<'a> {
             | PlanNode::Limit(_)
             | PlanNode::Union(_)
             | PlanNode::EdgeNormalize(_)
-            | PlanNode::GraphAlgorithm(_) => Err(SemijoinReductionRejectedReason::UnsupportedLeftShape),
+            | PlanNode::GraphAlgorithm(_)
+            | PlanNode::VectorAlgorithm(_) => Err(SemijoinReductionRejectedReason::UnsupportedLeftShape),
         }
     }
 
@@ -979,7 +980,8 @@ fn filtered_source_keyset_evidence(plan: &QueryPlan, node_id: NodeId) -> Option<
         | PlanNode::Union(_)
         | PlanNode::Join(_)
         | PlanNode::EdgeNormalize(_)
-        | PlanNode::GraphAlgorithm(_) => None,
+        | PlanNode::GraphAlgorithm(_)
+        | PlanNode::VectorAlgorithm(_) => None,
     }
 }
 
@@ -1007,7 +1009,8 @@ fn is_aggregate_keyset_shape(plan: &QueryPlan, node_id: NodeId) -> bool {
         | PlanNode::Limit(_)
         | PlanNode::Union(_)
         | PlanNode::EdgeNormalize(_)
-        | PlanNode::GraphAlgorithm(_) => false,
+        | PlanNode::GraphAlgorithm(_)
+        | PlanNode::VectorAlgorithm(_) => false,
     }
 }
 
@@ -1026,7 +1029,8 @@ fn is_source_derived_keyset_input(plan: &QueryPlan, node_id: NodeId) -> bool {
         | PlanNode::Limit(_)
         | PlanNode::Union(_)
         | PlanNode::EdgeNormalize(_)
-        | PlanNode::GraphAlgorithm(_) => false,
+        | PlanNode::GraphAlgorithm(_)
+        | PlanNode::VectorAlgorithm(_) => false,
     }
 }
 

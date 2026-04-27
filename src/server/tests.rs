@@ -550,6 +550,17 @@ async fn build_session_context_with_backend_installs_backend_admission_source() 
 }
 
 #[tokio::test]
+async fn server_base_and_flight_style_clone_retain_cuvs_query_planner() {
+    let config = bounded_config(1);
+    let backend = admission_only_backend(1);
+    let ctx = build_session_context_with_backend(&config, Some(&backend)).await.unwrap();
+
+    assert!(format!("{:?}", ctx.state().query_planner()).contains("CuvsQueryPlanner"));
+    let cloned = SessionStateBuilder::new_from_existing(ctx.state()).build();
+    assert!(format!("{:?}", cloned.query_planner()).contains("CuvsQueryPlanner"));
+}
+
+#[tokio::test]
 async fn builder_installs_unbounded_native_execution_limit() {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let mut config = unbounded_config();

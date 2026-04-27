@@ -76,7 +76,8 @@ pub(super) fn execute_bounded_query_plan(
     observation_scope: Option<&crate::observability::RuntimeExecutionObservationScope>,
 ) -> Result<QueryOutput> {
     context.check_cancellation("nexus_query_engine.exec.bounded.execute_query_plan")?;
-    match bounded_pipeline_execution_mode(context) {
+    let execution_mode = bounded_pipeline_execution_mode(context);
+    match execution_mode {
         NativePipelineExecutionMode::StrictBounded => {
             if let Some(output) =
                 try_execute_strict_bounded_pipeline(context, plan, gpu_inputs, metrics, observation_scope)?
@@ -91,6 +92,13 @@ pub(super) fn execute_bounded_query_plan(
                 return Ok(output);
             }
         },
+    }
+
+    if plan.contains_vector_algorithm() {
+        return Err(match execution_mode {
+            NativePipelineExecutionMode::StrictBounded => strict_bounded_vector_algorithm_error(plan),
+            NativePipelineExecutionMode::Adaptive => adaptive_bounded_vector_algorithm_fallback_error(plan),
+        });
     }
 
     if plan.contains_join() {
@@ -152,6 +160,52 @@ pub(super) fn execute_bounded_query_plan(
             Ok(QueryOutput::HostArrow(output))
         },
     }
+}
+
+fn strict_bounded_vector_algorithm_error(plan: &QueryPlan) -> QueryError {
+    let (node_id, algorithm) = first_vector_algorithm(plan);
+    QueryError::new(
+        QueryErrorCode::UnsupportedPlanShape,
+        "nexus_query_engine.bounded.strict_vector_algorithm",
+        "strict bounded vector execution requires a lower-level cuVS peak-memory preflight contract",
+    )
+    .with_fact("execution_mode", "strict_bounded")
+    .with_fact("node_id", node_id)
+    .with_fact("operator", "vector_algorithm")
+    .with_fact("algorithm", algorithm)
+    .with_fact("rejection_reason", "blocked_lower_level_contract")
+    .with_fact("contract_status", "blocked_by_lower_level")
+    .with_fact("memory_boundary", crate::plan::VECTOR_ALGORITHM_BOUNDED_MEMORY_BOUNDARY)
+    .with_fact("required_contract", crate::plan::VECTOR_ALGORITHM_BOUNDED_REQUIRED_CONTRACT)
+}
+
+fn adaptive_bounded_vector_algorithm_fallback_error(plan: &QueryPlan) -> QueryError {
+    let (node_id, algorithm) = first_vector_algorithm(plan);
+    QueryError::new(
+        QueryErrorCode::UnsupportedPlanShape,
+        "nexus_query_engine.bounded.adaptive_vector_algorithm",
+        "adaptive bounded vector execution is unsupported without adaptive vector memory evidence",
+    )
+    .with_fact("execution_mode", "unsupported_adaptive")
+    .with_fact("candidate_status", "rejected")
+    .with_fact("adaptive_strategy", "unsupported")
+    .with_fact("runtime_actions_allowed", "none")
+    .with_fact("memory_history_evidence", "not_used")
+    .with_fact("node_id", node_id)
+    .with_fact("operator", "vector_algorithm")
+    .with_fact("algorithm", algorithm)
+    .with_fact("rejection_reason", "blocked_lower_level_contract")
+    .with_fact("required_contract", crate::plan::VECTOR_ALGORITHM_BOUNDED_REQUIRED_CONTRACT)
+}
+
+fn first_vector_algorithm(plan: &QueryPlan) -> (NodeId, &'static str) {
+    plan.nodes()
+        .iter()
+        .find_map(|node| match &node.kind {
+            PlanNode::VectorAlgorithm(vector) => Some((node.id, vector.spec.algorithm.as_str())),
+            _ => None,
+        })
+        .expect("contains_vector_algorithm guarantees a vector node")
 }
 
 fn bounded_pipeline_execution_mode(context: &ExecutionContext) -> NativePipelineExecutionMode {

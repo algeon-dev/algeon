@@ -48,7 +48,7 @@ fn subtree_can_propagate_column(plan: &QueryPlan, node_id: NodeId, column: &str)
         | PlanNode::Window(_)
         | PlanNode::Union(_)
         | PlanNode::EdgeNormalize(_)
-        | PlanNode::GraphAlgorithm(_) => false,
+        | PlanNode::GraphAlgorithm(_) | PlanNode::VectorAlgorithm(_) => false,
     }
 }
 
@@ -100,7 +100,7 @@ fn subtree_can_propagate_materialized_column(
         | PlanNode::Window(_)
         | PlanNode::Union(_)
         | PlanNode::EdgeNormalize(_)
-        | PlanNode::GraphAlgorithm(_) => false,
+        | PlanNode::GraphAlgorithm(_) | PlanNode::VectorAlgorithm(_) => false,
     }
 }
 
@@ -145,7 +145,7 @@ fn materialized_column_lineage(plan: &QueryPlan, node_id: NodeId, column: &str) 
         | PlanNode::Window(_)
         | PlanNode::Union(_)
         | PlanNode::EdgeNormalize(_)
-        | PlanNode::GraphAlgorithm(_) => None,
+        | PlanNode::GraphAlgorithm(_) | PlanNode::VectorAlgorithm(_) => None,
     }
 }
 
@@ -201,7 +201,7 @@ fn scalar_input_column_lineage_signature(plan: &QueryPlan, node_id: NodeId, colu
         | PlanNode::Window(_)
         | PlanNode::Union(_)
         | PlanNode::EdgeNormalize(_)
-        | PlanNode::GraphAlgorithm(_) => None,
+        | PlanNode::GraphAlgorithm(_) | PlanNode::VectorAlgorithm(_) => None,
     }
 }
 
@@ -259,7 +259,7 @@ fn propagatable_materialized_field(
         | PlanNode::Window(_)
         | PlanNode::Union(_)
         | PlanNode::EdgeNormalize(_)
-        | PlanNode::GraphAlgorithm(_) => None,
+        | PlanNode::GraphAlgorithm(_) | PlanNode::VectorAlgorithm(_) => None,
     }
 }
 

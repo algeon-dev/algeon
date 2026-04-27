@@ -180,7 +180,8 @@ pub(in crate::capability::admission) fn projection_scalar_setop_node_output_at_m
         | PlanNode::Window(_)
         | PlanNode::Union(_)
         | PlanNode::EdgeNormalize(_)
-        | PlanNode::GraphAlgorithm(_) => false,
+        | PlanNode::GraphAlgorithm(_)
+        | PlanNode::VectorAlgorithm(_) => false,
     };
     visiting.remove(&node_id);
     proven
@@ -400,7 +401,8 @@ pub(in crate::capability::admission) fn projection_scalar_setop_consumer_chain_r
             | PlanNode::Limit(_)
             | PlanNode::Union(_)
             | PlanNode::EdgeNormalize(_)
-            | PlanNode::GraphAlgorithm(_),
+            | PlanNode::GraphAlgorithm(_)
+            | PlanNode::VectorAlgorithm(_),
         )
         | None => false,
     }
@@ -432,7 +434,8 @@ pub(in crate::capability::admission) fn projection_scalar_setop_final_projection
             | PlanNode::Join(_)
             | PlanNode::Union(_)
             | PlanNode::EdgeNormalize(_)
-            | PlanNode::GraphAlgorithm(_) => return None,
+            | PlanNode::GraphAlgorithm(_)
+            | PlanNode::VectorAlgorithm(_) => return None,
         }
     }
 }

@@ -58,6 +58,8 @@ pub async fn build_session_context_with_backend(
                 None => builder,
             };
             builder
+                .try_with_cuvs_sql()
+                .map_err(|error| ServerError::session("failed to install the cuVS SQL planner", error))?
         },
     };
     let builder = match &config.host_execution_qos {

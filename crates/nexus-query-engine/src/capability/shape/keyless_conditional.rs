@@ -162,7 +162,8 @@ pub(in crate::capability) fn validate_keyless_conditional_input_subplan_for_capa
         | PlanNode::Limit(_)
         | PlanNode::Union(_)
         | PlanNode::EdgeNormalize(_)
-        | PlanNode::GraphAlgorithm(_) => Err(CapabilityDecision::rejected(
+        | PlanNode::GraphAlgorithm(_)
+        | PlanNode::VectorAlgorithm(_) => Err(CapabilityDecision::rejected(
             "keyless_conditional_input_subplan_unsupported_input_stage",
             [("node_id", node_id.to_string()), ("operator", node_operator_fact(&node.kind).to_string())],
         )),
@@ -329,7 +330,8 @@ pub(in crate::capability) fn validate_source_filter_projection_leaf_pipeline_for
         | PlanNode::Limit(_)
         | PlanNode::Union(_)
         | PlanNode::EdgeNormalize(_)
-        | PlanNode::GraphAlgorithm(_) => Err(CapabilityDecision::rejected(
+        | PlanNode::GraphAlgorithm(_)
+        | PlanNode::VectorAlgorithm(_) => Err(CapabilityDecision::rejected(
             "source_leaf_pipeline_requires_source_filter_projection",
             [("node_id", node_id.to_string()), ("operator", node_operator_fact(&node.kind).to_string())],
         )),

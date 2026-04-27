@@ -156,7 +156,10 @@ pub(super) fn lineages_for_column(
             })
             .map(mark_shared)
             .collect(),
-        PlanNode::Window(_) | PlanNode::EdgeNormalize(_) | PlanNode::GraphAlgorithm(_) => Vec::new(),
+        PlanNode::Window(_)
+        | PlanNode::EdgeNormalize(_)
+        | PlanNode::GraphAlgorithm(_)
+        | PlanNode::VectorAlgorithm(_) => Vec::new(),
     }
 }
 
@@ -237,7 +240,8 @@ pub(super) fn producer_input_is_direct_aggregate_keyset_alias(
         | PlanNode::Join(_)
         | PlanNode::Union(_)
         | PlanNode::EdgeNormalize(_)
-        | PlanNode::GraphAlgorithm(_) => false,
+        | PlanNode::GraphAlgorithm(_)
+        | PlanNode::VectorAlgorithm(_) => false,
     }
 }
 
@@ -355,7 +359,8 @@ fn consumer_pre_aggregate_lineages_for_column(
         | PlanNode::Limit(_)
         | PlanNode::Window(_)
         | PlanNode::EdgeNormalize(_)
-        | PlanNode::GraphAlgorithm(_) => Vec::new(),
+        | PlanNode::GraphAlgorithm(_)
+        | PlanNode::VectorAlgorithm(_) => Vec::new(),
     }
 }
 
@@ -431,9 +436,11 @@ pub(super) fn simple_lineages_for_column(
             .flat_map(|input| simple_lineages_for_column(plan, parent_counts, *input, column_name))
             .map(mark_shared)
             .collect(),
-        PlanNode::Aggregate(_) | PlanNode::Window(_) | PlanNode::EdgeNormalize(_) | PlanNode::GraphAlgorithm(_) => {
-            Vec::new()
-        },
+        PlanNode::Aggregate(_)
+        | PlanNode::Window(_)
+        | PlanNode::EdgeNormalize(_)
+        | PlanNode::GraphAlgorithm(_)
+        | PlanNode::VectorAlgorithm(_) => Vec::new(),
     }
 }
 
@@ -447,5 +454,49 @@ fn simple_projection_expr_lineages(
         Expr::Column(column) => simple_lineages_for_column(plan, parent_counts, input, column.name()),
         Expr::Alias { expr, .. } => simple_projection_expr_lineages(plan, parent_counts, input, expr),
         _ => Vec::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use arrow::datatypes::{DataType, Field, Schema};
+
+    use super::*;
+    use crate::{
+        optimizer::rewrite::parent_counts,
+        plan::{
+            QueryPlanBuilder, VectorAlgorithm, VectorAlgorithmParams, VectorAlgorithmSpec, VectorPcaParams,
+            VectorRelationBinding, VectorRowIdBinding, vector_pca_output_schema,
+        },
+        source::{LocalParquetSource, SourceNode},
+    };
+
+    #[test]
+    fn vector_algorithm_is_a_source_column_lineage_barrier() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("x", DataType::Float32, false),
+        ]));
+        let mut builder = QueryPlanBuilder::new();
+        let source = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+            "/tmp/vector-lineage.parquet",
+            schema,
+            vec!["id".to_string(), "x".to_string()],
+        )));
+        let params =
+            VectorPcaParams::new(VectorRelationBinding::new(source, VectorRowIdBinding::column("id"), ["x"]), 1);
+        let vector = builder.add_vector_algorithm(VectorAlgorithmSpec::new(
+            VectorAlgorithm::Pca,
+            VectorAlgorithmParams::Pca(params),
+            vector_pca_output_schema(DataType::Int64, 1),
+        ));
+        let plan = builder.finish_gpu_resident(vector);
+        let parents = parent_counts(&plan);
+
+        assert_eq!(simple_lineages_for_column(&plan, &parents, source, "x").len(), 1);
+        assert!(simple_lineages_for_column(&plan, &parents, vector, "component_0").is_empty());
+        assert!(simple_lineages_for_column(&plan, &parents, vector, "row_id").is_empty());
     }
 }

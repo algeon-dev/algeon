@@ -32,11 +32,11 @@ runs.
   return ordinary rows, so a graph traversal, a join, and an aggregation can
   live in one query over the same data — no separate graph database and no copy
   to keep in sync.
-- **Vector search and vector ML _(in progress)_.** The next accelerator on the
-  same pattern is [cuVS](https://github.com/NVIDIA/cuvs): `cuvs_*` table
-  functions for GPU nearest-neighbor search and vector workloads such as
-  clustering and dimensionality reduction, callable from SQL over your existing
-  tables.
+- **Vector search and vector ML.** [cuVS](https://github.com/NVIDIA/cuvs)
+  provides `cuvs_brute_force_knn`, `cuvs_kmeans`, and `cuvs_pca` table
+  functions over parenthesized SQL subqueries. They accept Float32 columns or
+  vector-list columns and return ordinary relational rows for joins, filters,
+  and projections. See the generated [cuVS SQL API](website/docs/cuvs/overview.mdx).
 - **Lakehouse data access.** Query Iceberg tables from REST catalogs, AWS Glue,
   or S3-compatible object stores, with KvikIO streaming Parquet from object
   storage directly into GPU memory. The unified Iceberg scan shares resolved

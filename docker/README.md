@@ -1,7 +1,7 @@
 # GPU query engine container
 
 A drop-and-run Arrow Flight SQL service that executes DataFusion physical plans
-on the GPU via cuDF (and optionally cuGraph). This directory builds a
+on the GPU via cuDF (and optionally cuGraph and cuVS). This directory builds a
 self-contained image: you give it a GPU and (optionally) a catalog, it serves
 SQL on `:50051`.
 
@@ -17,7 +17,8 @@ The split:
 
 | Layer | Source | How it gets in |
 |---|---|---|
-| Forked cuDF/cuGraph/RMM/cuVS `.so` | local `../cudf-nexus`, `../cugraph-nexus` builds | **bundled** by `build.sh` → `dist/lib/` |
+| Forked cuDF/cuGraph/RMM `.so` | local `../cudf-nexus`, `../cugraph-nexus` builds | **bundled** by `build.sh` → `dist/lib/` |
+| Canonical cuVS `.so` | local `../cuvs-nexus/cuvs-install` | **bundled** by `build.sh`; `libcuvs.so` for either accelerator and `libcuvs_c.so` for the `cuvs` feature |
 | `libcudf_rust.so` FFI bridge | cudf-nexus-sys CMake `OUT_DIR` | **bundled** by `build.sh` |
 | CUDA toolkit (`libcudart`, `libcublas`, `libnvrtc`, …) | official `nvidia/cuda:*-runtime` | **harvested** in-Dockerfile via `ldd` |
 | `libgomp1`, `libbrotli1`, `ca-certificates`, `tini` | Ubuntu apt | installed in final stage |
@@ -27,8 +28,9 @@ The split:
 ```bash
 # 1. Stage the binary + forked libs (compiles; strips/re-homes RUNPATHs when
 #    host tools are available).
-bash docker/build.sh                               # full: server,iceberg,cugraph,nvml
+bash docker/build.sh                               # full: server,iceberg,cugraph,cuvs,nvml
 FEATURES=server,iceberg,nvml bash docker/build.sh  # lean: cuDF only, ~3x smaller image
+FEATURES=server,cuvs bash docker/build.sh           # cuVS without cuGraph
 SKIP_CARGO_BUILD=1 bash docker/build.sh            # reuse only hash-verified canonical artifact
 
 # 2. Copy and run the exact docker build command printed by build.sh. It
@@ -47,10 +49,37 @@ profile, policy hash, and binary hash. `SKIP_CARGO_BUILD=1` succeeds only when
 that provenance still matches the selected policy and artifact bytes.
 
 Prerequisites: the forked libs must already be built —
-`../cudf-nexus/cudf-install/lib/libcudf.so` and (for cugraph)
+`../cudf-nexus/cudf-install/lib/libcudf.so`,
+`../cuvs-nexus/cuvs-install/lib/libcuvs.so`, and (for cugraph)
 `../cugraph-nexus/cugraph/cpp/build/libcugraph.so`. Override their locations with
-`CUDF_INSTALL_DIR` / `CUGRAPH_BUILD_DIR`. `patchelf` and `binutils` (strip) on
+`CUDF_INSTALL_DIR`, `CUVS_INSTALL_DIR`, and `CUGRAPH_CMAKE_BUILD_DIR`.
+The Cargo build receives `CUVS_ROOT=$CUVS_INSTALL_DIR`, and cuGraph must have
+been configured against that same prefix. `readelf` and `ldd` are mandatory
+closure checks; `patchelf` and `binutils` (strip) on
 the host are recommended; without them the image falls back to `LD_LIBRARY_PATH`.
+
+Packaging fails if cuGraph resolves a different or private `_deps` cuVS,
+`libcuvs_c.so` is missing for the `cuvs` feature, any dependency is unresolved,
+or the final realpath closure contains more than one cuVS/RMM/shared-logger
+identity. `librapids_logger.so` is bundled only when a staged ELF has a
+`DT_NEEDED` edge; static/absorbed logger builds deliberately omit it.
+
+## Serving cuVS SQL
+
+Use a `server,cuvs` image for `cuvs_brute_force_knn`, `cuvs_kmeans`, and
+`cuvs_pca`. Their relation arguments are parenthesized SQL subqueries, so the
+same call shape works over normal tables, Parquet, Iceberg, or cuGraph-derived
+relations. Until the lower-level vector peak-memory preflight contract exists,
+the default bounded server rejects those operations with a structured
+`unsupported_operator` response. Run an explicitly unbounded vector-serving
+container instead; this admits GPU execution and does not select a CPU
+fallback.
+
+```bash
+docker run --gpus all --rm -p 50051:50051 \
+  -e NEXUS_SERVER_NATIVE_MEMORY_POLICY=unbounded \
+  datafusion-nexus-server:x86-64-v2
+```
 
 ## Image size
 
@@ -60,7 +89,7 @@ mostly via the CUDA math libraries it pulls (`libcublasLt` alone is ~517 MB):
 | Build | Forked libs | Harvested CUDA | ≈ Final image |
 |---|---|---|---|
 | **lean** (`server,iceberg,nvml`) | ~180 MB | ~110 MB (cudart + nvrtc) | **~0.6 GB** |
-| **full** (`+cugraph`) | ~480 MB | ~1.2 GB (+ cublasLt/cusparse/cusolver/curand/nvJitLink) | **~2 GB** |
+| **full** (`+cugraph,+cuvs`) | ~480 MB | ~1.2 GB (+ cublasLt/cusparse/cusolver/curand/nvJitLink) | **~2 GB** |
 
 When `strip` is available, staged artifacts are stripped
 (`strip --strip-unneeded`, ~35–40% off). Set `NO_STRIP=1` to keep symbols for

@@ -1013,7 +1013,8 @@ fn sink_path_post_limit_unary_nodes_are_projection(plan: &QueryPlan) -> bool {
             | PlanNode::Sort(_)
             | PlanNode::Union(_)
             | PlanNode::EdgeNormalize(_)
-            | PlanNode::GraphAlgorithm(_) => return true,
+            | PlanNode::GraphAlgorithm(_)
+            | PlanNode::VectorAlgorithm(_) => return true,
         }
     }
 }

@@ -1,23 +1,97 @@
 ---
 sidebar_position: 1
 slug: /cuvs
-description: SQL-visible cuVS vector search and vector ML over DataFusion Nexus SQL sessions (in progress).
+description: SQL-visible cuVS vector search and vector ML over DataFusion Nexus SQL sessions.
 ---
 
 # cuVS SQL API
 
-:::note[In progress]
-
-The cuVS SQL surface is under active development. This page is a placeholder
-that describes the intended shape; the `cuvs_*` table functions are not yet
-available, and the details below may change before release.
-
-:::
-
-DataFusion Nexus will expose NVIDIA RAPIDS
+DataFusion Nexus exposes NVIDIA RAPIDS
 [**cuVS**](https://github.com/NVIDIA/cuvs) as SQL table functions over
 DataFusion SQL sessions — the same pattern already used by the
-[cuGraph SQL API](../cugraph/overview.mdx). Each `cuvs_*` function will read a
-relation of vectors, run a GPU vector operation, and return rows you can join
+[cuGraph SQL API](../cugraph/overview.mdx). Each `cuvs_*` function reads a
+relation of vectors, runs a GPU vector operation, and returns rows you can join
 and filter alongside the rest of your query, over the data already in your
 session — no separate vector store and no copy to keep in sync.
+
+The operation registry, JSON schemas, and generated pages below come from the
+same live metadata API exposed to embedded and Flight SQL clients.
+
+## Discovery and validation
+
+```sql
+SELECT function_name, relation_roles_json, output_contract
+FROM cuvs_list_operations()
+ORDER BY function_name;
+
+SELECT *
+FROM cuvs_describe_operation('cuvs_brute_force_knn');
+
+SELECT *
+FROM cuvs_validate_call(
+  'cuvs_kmeans',
+  '{"input":{"id":"item_id","vector":{"columns":["d0","d1"]}},"n_clusters":2}'
+);
+```
+
+The relation arguments of every `cuvs_*` function must be parenthesized
+subqueries. This makes regular tables, views, CTEs, Parquet scans, Iceberg
+tables, and cuGraph-derived relations explicit planner children. Bare table
+identifiers and quoted table-name strings are rejected; there is no CTAS or
+adapter-owned name-lookup bridge.
+
+## Parquet and Iceberg relation examples
+
+The vector operation owns only the relation inside its parenthesized argument;
+the relation can be an ordinary external Parquet table or an Iceberg table
+resolved through the session catalog. For example, an embedded or Flight SQL
+session can fit KMeans directly from Parquet:
+
+```sql
+CREATE EXTERNAL TABLE embedding_parquet STORED AS PARQUET
+LOCATION '/data/embeddings.parquet';
+
+SELECT id, cluster_id
+FROM cuvs_kmeans(
+  (SELECT item_id, d0, d1 FROM embedding_parquet),
+  '{"input":{"id":"item_id","vector":{"columns":["d0","d1"]}},"n_clusters":8}'
+)
+ORDER BY row_ordinal;
+```
+
+The same relation contract applies to a catalog-qualified Iceberg table; no
+export or temporary-table bridge is involved:
+
+```sql
+SELECT id, pc_0, pc_1
+FROM cuvs_pca(
+  (SELECT item_id, d0, d1 FROM catalog.analytics.embedding_iceberg),
+  '{"input":{"id":"item_id","vector":{"columns":["d0","d1"]}},"n_components":2}'
+)
+ORDER BY row_ordinal;
+```
+
+## Operations
+
+import Cheatsheet from './_cheatsheet.mdx';
+
+<Cheatsheet />
+
+## Running through Flight SQL
+
+Build the server with `server,cuvs`. While vector operations deliberately lack
+a lower-level bounded-memory preflight contract, start a vector-serving
+instance with `NEXUS_SERVER_NATIVE_MEMORY_POLICY=unbounded`; the default
+bounded server rejects the call with structured `unsupported_operator` status
+metadata. This is an explicit admission boundary, never a CPU fallback.
+
+```bash
+cargo build --features server,cuvs --bin datafusion_nexus_server
+NEXUS_SERVER_NATIVE_MEMORY_POLICY=unbounded bash scripts/dev/run_server.sh
+```
+
+The generated operation pages for
+[brute-force kNN](./operations/cuvs_brute_force_knn.mdx),
+[KMeans](./operations/cuvs_kmeans.mdx), and
+[PCA](./operations/cuvs_pca.mdx) include parenthesized-subquery examples and
+the stable output contract for every operation.
