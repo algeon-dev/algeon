@@ -13,7 +13,10 @@ use crate::{
         factorization::{Codebook, DictionaryEncodingOptions, Factorized},
     },
     ops::{binary::BinaryOperator, concatenate, replace::FillPolicy, sorting::SortOptions, unary::UnaryOperator},
-    runtime::{Runtime, execution_domain::ExecutionDomain},
+    runtime::{
+        BoundaryKind, BoundaryObservation, ExecutionPlacement, Runtime, execution_domain::ExecutionDomain,
+        record_boundary_observation_in_domain,
+    },
 };
 
 pub(super) const SERIES_VALUE_COUNTS_FALLBACK_NAME: &str = "value";
@@ -108,6 +111,11 @@ impl Series {
     /// Returns the number of null (invalid) elements.
     pub fn null_count(&self) -> usize {
         self.cached_null_count
+    }
+
+    /// Return a diagnostic summary of this series' retained execution placement.
+    pub fn placement(&self) -> ExecutionPlacement {
+        self.column.execution_domain().placement()
     }
 
     // -- Access --------------------------------------------------------------
@@ -607,9 +615,23 @@ impl Series {
     /// provenance, this reuses the existing GPU allocation. Otherwise the
     /// column is fenced and deep-copied into the target runtime.
     pub fn copy_into_runtime(&self, runtime: &Runtime) -> Result<Series> {
+        let should_copy = !ExecutionDomain::same_provenance(self.column.execution_domain(), runtime.execution_domain());
         let column =
             Self::clone_or_copy_into_domain(&self.column, runtime.execution_domain(), "series::copy_into_runtime")?;
-        Self::from_column_arc(column).map_err(|e| e.reanchor("series::copy_into_runtime"))
+        let series = Self::from_column_arc(column).map_err(|e| e.reanchor("series::copy_into_runtime"))?;
+        if should_copy {
+            record_boundary_observation_in_domain(
+                runtime.execution_domain(),
+                BoundaryObservation {
+                    kind: BoundaryKind::DeviceToDeviceCopy,
+                    placement: runtime.placement(),
+                    rows: self.len(),
+                    columns: 1,
+                    synchronized_for_host: false,
+                },
+            );
+        }
+        Ok(series)
     }
 
     /// Clone or deep-copy an `Arc<Column>` into the target domain.

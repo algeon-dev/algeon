@@ -42,7 +42,9 @@ use crate::{
         error::{self, Result},
         table::{Table, TableView},
     },
-    runtime::execution_domain::ExecutionDomain,
+    runtime::{
+        execution_context::ExecutionOverrides, execution_domain::ExecutionDomain, execution_resolver::ResolvedExecution,
+    },
 };
 
 /// Split output of a low-level join operation.
@@ -160,21 +162,14 @@ fn compatible_join_domain(
     left_payload: &TableView<'_>,
     right_payload: &TableView<'_>,
     operation: &'static str,
-) -> Result<Arc<ExecutionDomain>> {
-    let output_domain = Arc::clone(left_keys.execution_domain());
-
-    for input in [right_keys, left_payload, right_payload] {
-        ExecutionDomain::require_same_device_for_mixed_inputs(
-            left_keys.execution_domain(),
-            input.execution_domain(),
-            operation,
-        )?;
-        if !ExecutionDomain::same_provenance(input.execution_domain(), &output_domain) {
-            ExecutionDomain::insert_stream_dependency(input.execution_domain(), &output_domain, operation)?;
-        }
-    }
-
-    Ok(output_domain)
+) -> Result<ResolvedExecution> {
+    let ctx = ExecutionOverrides::new();
+    ResolvedExecution::many(
+        left_keys.execution_domain(),
+        [right_keys.execution_domain(), left_payload.execution_domain(), right_payload.execution_domain()],
+        &ctx,
+        operation,
+    )
 }
 
 /// Inner join: returns only rows with matching keys in both tables.
@@ -189,8 +184,7 @@ pub fn inner_join(
     right_payload: &TableView<'_>,
     null_equality: NullEquality,
 ) -> Result<JoinSides> {
-    let output_domain = compatible_join_domain(left_keys, right_keys, left_payload, right_payload, "join::inner_join")?;
-    let exec_options = output_domain.explicit_exec_options_raw();
+    let execution = compatible_join_domain(left_keys, right_keys, left_payload, right_payload, "join::inner_join")?;
     join_impl(
         left_keys,
         right_keys,
@@ -198,8 +192,8 @@ pub fn inner_join(
         right_payload,
         null_equality,
         JoinType::Inner,
-        &output_domain,
-        exec_options.as_ref(),
+        execution.output_domain(),
+        Some(execution.exec_options()),
         "join::inner_join",
     )
 }
@@ -213,8 +207,7 @@ pub fn left_join(
     right_payload: &TableView<'_>,
     null_equality: NullEquality,
 ) -> Result<JoinSides> {
-    let output_domain = compatible_join_domain(left_keys, right_keys, left_payload, right_payload, "join::left_join")?;
-    let exec_options = output_domain.explicit_exec_options_raw();
+    let execution = compatible_join_domain(left_keys, right_keys, left_payload, right_payload, "join::left_join")?;
     join_impl(
         left_keys,
         right_keys,
@@ -222,8 +215,8 @@ pub fn left_join(
         right_payload,
         null_equality,
         JoinType::Left,
-        &output_domain,
-        exec_options.as_ref(),
+        execution.output_domain(),
+        Some(execution.exec_options()),
         "join::left_join",
     )
 }
@@ -241,8 +234,7 @@ pub fn full_join(
     right_payload: &TableView<'_>,
     null_equality: NullEquality,
 ) -> Result<JoinSides> {
-    let output_domain = compatible_join_domain(left_keys, right_keys, left_payload, right_payload, "join::full_join")?;
-    let exec_options = output_domain.explicit_exec_options_raw();
+    let execution = compatible_join_domain(left_keys, right_keys, left_payload, right_payload, "join::full_join")?;
     join_impl(
         left_keys,
         right_keys,
@@ -250,8 +242,8 @@ pub fn full_join(
         right_payload,
         null_equality,
         JoinType::Full,
-        &output_domain,
-        exec_options.as_ref(),
+        execution.output_domain(),
+        Some(execution.exec_options()),
         "join::full_join",
     )
 }

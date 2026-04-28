@@ -10,7 +10,10 @@ use crate::{
     frame::series::Series,
     internal::{hash::fast_index_map_with_capacity, resolve::missing_column_error},
     ops::{self, copying, filter},
-    runtime::{Runtime, execution_context::ExecutionOverrides, execution_domain::ExecutionDomain},
+    runtime::{
+        Runtime, execution_context::ExecutionOverrides, execution_domain::ExecutionDomain,
+        execution_resolver::ResolvedExecution,
+    },
 };
 
 fn range_testing_dataframe() -> Result<DataFrame> {
@@ -136,12 +139,18 @@ impl DataFrame {
         let col = self.columns.get(column).ok_or_else(|| missing_column_error(operation, column))?;
         let col_view = col.view()?;
         let output_domain = Arc::clone(&self.domain);
-        ExecutionDomain::require_same_device_for_mixed_inputs(&self.domain, cv.execution_domain(), operation)?;
-        if !ExecutionDomain::same_provenance(cv.execution_domain(), &output_domain) {
-            ExecutionDomain::insert_stream_dependency(cv.execution_domain(), &output_domain, operation)?;
-        }
-        let exec_options = output_domain.explicit_exec_options_raw();
-        let mask = ops::search::contains_impl(&cv, &col_view, &output_domain, exec_options.as_ref(), operation)?;
+        let execution = ResolvedExecution::with_output_domain(
+            Arc::clone(&output_domain),
+            [cv.execution_domain(), col_view.execution_domain()],
+            operation,
+        )?;
+        let mask = ops::search::contains_impl(
+            &cv,
+            &col_view,
+            execution.output_domain(),
+            Some(execution.exec_options()),
+            operation,
+        )?;
         let mask_view = mask.view()?;
         self.filter_by_mask_impl(&mask_view, output_domain.explicit_exec_options_raw(), output_domain, operation)
     }
@@ -165,13 +174,13 @@ impl DataFrame {
         output_domain: Arc<ExecutionDomain>,
         operation: &'static str,
     ) -> Result<Self> {
-        ExecutionDomain::require_same_device_for_mixed_inputs(&self.domain, indices.execution_domain(), operation)?;
-        if !ExecutionDomain::same_provenance(&self.domain, &output_domain) {
-            ExecutionDomain::insert_stream_dependency(&self.domain, &output_domain, operation)?;
-        }
-        if !ExecutionDomain::same_provenance(indices.execution_domain(), &output_domain) {
-            ExecutionDomain::insert_stream_dependency(indices.execution_domain(), &output_domain, operation)?;
-        }
+        let execution = ResolvedExecution::with_output_domain(
+            Arc::clone(&output_domain),
+            [&self.domain, indices.execution_domain()],
+            operation,
+        )?;
+        let output_domain = Arc::clone(execution.output_domain());
+        let resolved_exec_options = exec_options.as_ref().unwrap_or(execution.exec_options());
 
         if indices.is_empty()? {
             return self.empty_with_same_schema_in_domain(output_domain);
@@ -183,7 +192,7 @@ impl DataFrame {
             cudf_sys::cudf_out_of_bounds_policy_t::CUDF_OUT_OF_BOUNDS_POLICY_NULLIFY,
             "nullify",
             &output_domain,
-            exec_options.as_ref(),
+            Some(resolved_exec_options),
             operation,
         )?;
         Self::from_table_with_names(result_table, self.column_names_owned())
@@ -196,18 +205,18 @@ impl DataFrame {
         output_domain: Arc<ExecutionDomain>,
         operation: &'static str,
     ) -> Result<Self> {
-        ExecutionDomain::require_same_device_for_mixed_inputs(&self.domain, mask.execution_domain(), operation)?;
-        if !ExecutionDomain::same_provenance(&self.domain, &output_domain) {
-            ExecutionDomain::insert_stream_dependency(&self.domain, &output_domain, operation)?;
-        }
-        if !ExecutionDomain::same_provenance(mask.execution_domain(), &output_domain) {
-            ExecutionDomain::insert_stream_dependency(mask.execution_domain(), &output_domain, operation)?;
-        }
+        let execution = ResolvedExecution::with_output_domain(
+            Arc::clone(&output_domain),
+            [&self.domain, mask.execution_domain()],
+            operation,
+        )?;
+        let output_domain = Arc::clone(execution.output_domain());
+        let resolved_exec_options = exec_options.as_ref().unwrap_or(execution.exec_options());
 
         self.validate_mask_view(mask, operation)?;
         let tv = self.build_table_view()?;
         let result_table =
-            filter::apply_boolean_mask_impl(&tv, mask, &output_domain, exec_options.as_ref(), operation)?;
+            filter::apply_boolean_mask_impl(&tv, mask, &output_domain, Some(resolved_exec_options), operation)?;
         Self::from_table_with_names(result_table, self.column_names_owned())
     }
 
@@ -261,10 +270,13 @@ impl DataFrame {
 
         let map = row_range::gather_map_in_domain(start, len, &output_domain, operation)?;
         let map_view = map.view()?;
-        ExecutionDomain::require_same_device_for_mixed_inputs(&self.domain, map_view.execution_domain(), operation)?;
-        if !ExecutionDomain::same_provenance(&self.domain, &output_domain) {
-            ExecutionDomain::insert_stream_dependency(&self.domain, &output_domain, operation)?;
-        }
+        let execution = ResolvedExecution::with_output_domain(
+            Arc::clone(&output_domain),
+            [&self.domain, map_view.execution_domain()],
+            operation,
+        )?;
+        let output_domain = Arc::clone(execution.output_domain());
+        let resolved_exec_options = exec_options.as_ref().unwrap_or(execution.exec_options());
 
         let tv = self.build_table_view()?;
         let result_table = copying::gather_impl(
@@ -273,7 +285,7 @@ impl DataFrame {
             cudf_sys::cudf_out_of_bounds_policy_t::CUDF_OUT_OF_BOUNDS_POLICY_DONT_CHECK,
             "dont_check",
             &output_domain,
-            exec_options.as_ref(),
+            Some(resolved_exec_options),
             operation,
         )?;
 

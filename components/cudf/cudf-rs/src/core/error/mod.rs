@@ -212,6 +212,63 @@ impl Error {
         self.inner.source.as_deref().map(|source| source as &(dyn StdError + 'static))
     }
 
+    /// Stable diagnostic string for logs and query-engine adapters.
+    ///
+    /// This formats the existing error contract without introducing parallel
+    /// stored kind/status fields or string-only categories. Callers that need
+    /// policy decisions should keep using [`code`](Self::code),
+    /// [`kind`](Self::kind), [`status`](Self::status), and
+    /// [`facts`](Self::facts) directly.
+    pub fn diagnostic_string(&self) -> String {
+        let mut out = format!(
+            "code={} kind={} status={} operation={} message={}",
+            self.code(),
+            self.kind(),
+            self.status(),
+            self.operation(),
+            diagnostic_quote(self.message()),
+        );
+
+        out.push_str(" facts={");
+        for (index, (key, value)) in self.facts().iter().enumerate() {
+            if index > 0 {
+                out.push_str(", ");
+            }
+            out.push_str(key.as_snake_case());
+            out.push('=');
+            out.push_str(&value.to_string());
+        }
+        out.push('}');
+
+        out.push_str(" details=[");
+        for (index, (key, value)) in self.details().iter().enumerate() {
+            if index > 0 {
+                out.push_str(", ");
+            }
+            out.push_str(key);
+            out.push('=');
+            out.push_str(&diagnostic_quote(value));
+        }
+        out.push(']');
+
+        out.push_str(" call_chain=[");
+        for (index, operation) in self.call_chain().iter().enumerate() {
+            if index > 0 {
+                out.push_str(" -> ");
+            }
+            out.push_str(operation);
+        }
+        out.push(']');
+
+        out.push_str(" source=");
+        match self.source_error() {
+            Some(source) => out.push_str(&diagnostic_quote(&source.to_string())),
+            None => out.push_str("none"),
+        }
+
+        out
+    }
+
     // -- Status/identity helpers (exact aliases only) -----------------------
 
     /// Exact alias: `status() == Temporary`.
@@ -300,6 +357,16 @@ fn assert_canonical_key_not_used_as_detail(key: &'static str) {
              use `with_fact` instead",
         );
     }
+}
+
+fn diagnostic_quote(input: &str) -> String {
+    let mut out = String::with_capacity(input.len() + 2);
+    out.push('"');
+    for ch in input.chars() {
+        out.extend(ch.escape_default());
+    }
+    out.push('"');
+    out
 }
 
 /// Build an `InvariantViolation` error.

@@ -13,7 +13,10 @@ use crate::{
         },
     },
     ops::{join, replace},
-    runtime::{Runtime, execution_context::ExecutionOverrides, execution_domain::ExecutionDomain},
+    runtime::{
+        Runtime, execution_context::ExecutionOverrides, execution_domain::ExecutionDomain,
+        execution_resolver::ResolvedExecution,
+    },
 };
 
 impl DataFrame {
@@ -198,18 +201,13 @@ impl DataFrame {
         operation: &'static str,
     ) -> Result<DataFrameJoinSides> {
         let output_domain = forced_output_domain.unwrap_or_else(|| Arc::clone(self.execution_domain()));
-
-        ExecutionDomain::require_same_device_for_mixed_inputs(
-            self.execution_domain(),
-            right.execution_domain(),
+        let execution = ResolvedExecution::with_output_domain(
+            Arc::clone(&output_domain),
+            [self.execution_domain(), right.execution_domain()],
             operation,
         )?;
-        if !ExecutionDomain::same_provenance(self.execution_domain(), &output_domain) {
-            ExecutionDomain::insert_stream_dependency(self.execution_domain(), &output_domain, operation)?;
-        }
-        if !ExecutionDomain::same_provenance(right.execution_domain(), &output_domain) {
-            ExecutionDomain::insert_stream_dependency(right.execution_domain(), &output_domain, operation)?;
-        }
+        let output_domain = Arc::clone(execution.output_domain());
+        let resolved_exec_options = exec_options.unwrap_or(execution.exec_options());
 
         if left_on.len() != right_on.len() {
             return Err(merge_key_count_mismatch_error(operation, left_on.len(), right_on.len()));
@@ -229,43 +227,17 @@ impl DataFrame {
         let lp_table = build_borrowed_table_view_from_columns(self.columns_map(), &left_payload_indices)?;
         let rp_table = build_borrowed_table_view_from_columns(right.columns_map(), &right_payload_indices)?;
 
-        let result = if let Some(exec_options) = exec_options {
-            join::join_impl(
-                lk_table.table(),
-                rk_table.table(),
-                lp_table.table(),
-                rp_table.table(),
-                null_equality,
-                join_type,
-                &output_domain,
-                Some(exec_options),
-                operation,
-            )?
-        } else {
-            match join_type {
-                join::JoinType::Inner => join::inner_join(
-                    lk_table.table(),
-                    rk_table.table(),
-                    lp_table.table(),
-                    rp_table.table(),
-                    null_equality,
-                )?,
-                join::JoinType::Left => join::left_join(
-                    lk_table.table(),
-                    rk_table.table(),
-                    lp_table.table(),
-                    rp_table.table(),
-                    null_equality,
-                )?,
-                join::JoinType::Full => join::full_join(
-                    lk_table.table(),
-                    rk_table.table(),
-                    lp_table.table(),
-                    rp_table.table(),
-                    null_equality,
-                )?,
-            }
-        };
+        let result = join::join_impl(
+            lk_table.table(),
+            rk_table.table(),
+            lp_table.table(),
+            rp_table.table(),
+            null_equality,
+            join_type,
+            &output_domain,
+            Some(resolved_exec_options),
+            operation,
+        )?;
 
         // Build schemas: left side uses left key names, right side uses right key names.
         let left_schema_names = build_join_schema_names(self.columns_map(), &left_key_indices, &left_payload_indices);
@@ -317,8 +289,18 @@ fn coalesce_columns(left: &Column, right: &Column, operation: &'static str) -> R
         .with_fact(FACT_RIGHT_TYPE_ID, rdt.id()));
     }
 
-    let exec_options = output_domain.explicit_exec_options_raw();
-    replace::replace_nulls_column_with_exec_options(&lcv, &rcv, &output_domain, exec_options.as_ref(), operation)
+    let execution = ResolvedExecution::with_output_domain(
+        Arc::clone(&output_domain),
+        [lcv.execution_domain(), rcv.execution_domain()],
+        operation,
+    )?;
+    replace::replace_nulls_column_with_exec_options(
+        &lcv,
+        &rcv,
+        execution.output_domain(),
+        Some(execution.exec_options()),
+        operation,
+    )
 }
 
 // ---------------------------------------------------------------------------

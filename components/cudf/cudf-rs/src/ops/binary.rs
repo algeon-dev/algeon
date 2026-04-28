@@ -20,7 +20,9 @@ use crate::{
         scalar::Scalar,
         types::{DataType, TypeId},
     },
-    runtime::execution_domain::ExecutionDomain,
+    runtime::{
+        execution_context::ExecutionOverrides, execution_domain::ExecutionDomain, execution_resolver::ResolvedExecution,
+    },
 };
 
 /// Binary operators matching `cudf::binary_operator` (same integer values).
@@ -259,27 +261,16 @@ pub fn binary_operation_vv(
     op: BinaryOperator,
     output_type: &DataType,
 ) -> Result<Column> {
-    let output_domain = Arc::clone(lhs.execution_domain());
-    ExecutionDomain::require_same_device_for_mixed_inputs(
-        lhs.execution_domain(),
-        rhs.execution_domain(),
-        "binary::binary_operation_vv",
-    )?;
-    if !ExecutionDomain::same_provenance(rhs.execution_domain(), &output_domain) {
-        ExecutionDomain::insert_stream_dependency(
-            rhs.execution_domain(),
-            &output_domain,
-            "binary::binary_operation_vv",
-        )?;
-    }
-    let exec_options = output_domain.explicit_exec_options_raw();
+    let ctx = ExecutionOverrides::new();
+    let execution =
+        ResolvedExecution::binary(lhs.execution_domain(), rhs.execution_domain(), &ctx, "binary::binary_operation_vv")?;
     binary_operation_vv_impl(
         lhs,
         rhs,
         op,
         output_type,
-        &output_domain,
-        exec_options.as_ref(),
+        execution.output_domain(),
+        Some(execution.exec_options()),
         "binary::binary_operation_vv",
     )
 }
@@ -337,16 +328,16 @@ pub fn binary_operation_vs(
     op: BinaryOperator,
     output_type: &DataType,
 ) -> Result<Column> {
-    let output_domain = Arc::clone(lhs.execution_domain());
-    ExecutionDomain::insert_stream_dependency(rhs.execution_domain(), &output_domain, "binary::binary_operation_vs")?;
-    let exec_options = output_domain.explicit_exec_options_raw();
+    let ctx = ExecutionOverrides::new();
+    let execution =
+        ResolvedExecution::binary(lhs.execution_domain(), rhs.execution_domain(), &ctx, "binary::binary_operation_vs")?;
     binary_operation_vs_impl(
         lhs,
         rhs,
         op,
         output_type,
-        &output_domain,
-        exec_options.as_ref(),
+        execution.output_domain(),
+        Some(execution.exec_options()),
         "binary::binary_operation_vs",
     )
 }
@@ -406,16 +397,16 @@ pub fn binary_operation_sv(
 ) -> Result<Column> {
     // Use the column's domain as primary (consistent with binary_operation_vs
     // which also uses the column's domain).
-    let output_domain = Arc::clone(rhs.execution_domain());
-    ExecutionDomain::insert_stream_dependency(lhs.execution_domain(), &output_domain, "binary::binary_operation_sv")?;
-    let exec_options = output_domain.explicit_exec_options_raw();
+    let ctx = ExecutionOverrides::new();
+    let execution =
+        ResolvedExecution::binary(rhs.execution_domain(), lhs.execution_domain(), &ctx, "binary::binary_operation_sv")?;
     binary_operation_sv_impl(
         lhs,
         rhs,
         op,
         output_type,
-        &output_domain,
-        exec_options.as_ref(),
+        execution.output_domain(),
+        Some(execution.exec_options()),
         "binary::binary_operation_sv",
     )
 }

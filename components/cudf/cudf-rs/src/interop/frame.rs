@@ -535,6 +535,8 @@ impl DataFrame {
             self.columns_map().values().map(AsRef::as_ref),
             self.num_rows(),
             Some(self.column_names_owned()),
+            self.placement(),
+            self.execution_domain().boundary_observer(),
             operation,
             default_device,
             readiness,

@@ -18,7 +18,9 @@ use crate::{
         },
         reduction::{checked_ddof_to_i32, ddof_range_error},
     },
-    runtime::execution_domain::ExecutionDomain,
+    runtime::{
+        execution_context::ExecutionOverrides, execution_domain::ExecutionDomain, execution_resolver::ResolvedExecution,
+    },
 };
 
 // GroupBy callers usually touch a handful of value columns and aggregations per
@@ -204,19 +206,14 @@ pub(crate) fn groupby_aggregate_impl(
     Ok(GroupByAggregationOutput { keys: keys_table, results })
 }
 
-fn compatible_groupby_domain(
-    keys: &TableView<'_>,
-    requests: &[AggregationRequest<'_>],
-) -> Result<Arc<ExecutionDomain>> {
-    let output_domain = Arc::clone(keys.execution_domain());
-    for request in requests {
-        ExecutionDomain::insert_stream_dependency(
-            request.values.execution_domain(),
-            &output_domain,
-            "groupby::groupby_aggregate",
-        )?;
-    }
-    Ok(output_domain)
+fn compatible_groupby_domain(keys: &TableView<'_>, requests: &[AggregationRequest<'_>]) -> Result<ResolvedExecution> {
+    let ctx = ExecutionOverrides::new();
+    ResolvedExecution::many(
+        keys.execution_domain(),
+        requests.iter().map(|request| request.values.execution_domain()),
+        &ctx,
+        "groupby::groupby_aggregate",
+    )
 }
 /// Create a C-side aggregation handle from an [`GroupByAgg`] enum.
 ///
@@ -305,14 +302,13 @@ pub fn groupby_aggregate(
     requests: &[AggregationRequest<'_>],
     null_policy: NullPolicy,
 ) -> Result<GroupByAggregationOutput> {
-    let output_domain = compatible_groupby_domain(keys, requests)?;
-    let exec_options = output_domain.exec_options_raw();
+    let execution = compatible_groupby_domain(keys, requests)?;
     groupby_aggregate_impl(
         keys,
         requests,
         null_policy,
-        &output_domain,
-        Some(&exec_options),
+        execution.output_domain(),
+        Some(execution.exec_options()),
         "groupby::groupby_aggregate",
     )
 }

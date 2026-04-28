@@ -31,7 +31,9 @@ use crate::{
         table::{Table, TableView},
         types::TypeId,
     },
-    runtime::execution_domain::ExecutionDomain,
+    runtime::{
+        execution_context::ExecutionOverrides, execution_domain::ExecutionDomain, execution_resolver::ResolvedExecution,
+    },
 };
 
 pub(crate) fn validate_boolean_mask(
@@ -96,21 +98,20 @@ pub fn apply_boolean_mask(input: &TableView<'_>, mask: &ColumnView<'_>) -> Resul
     let input_rows = input.num_rows()?;
     validate_boolean_mask(mask, input_rows, "table row count", "filter::apply_boolean_mask")?;
 
-    let output_domain = Arc::clone(input.execution_domain());
-    ExecutionDomain::require_same_device_for_mixed_inputs(
+    let ctx = ExecutionOverrides::new();
+    let execution = ResolvedExecution::binary(
         input.execution_domain(),
         mask.execution_domain(),
+        &ctx,
         "filter::apply_boolean_mask",
     )?;
-    if !ExecutionDomain::same_provenance(mask.execution_domain(), &output_domain) {
-        ExecutionDomain::insert_stream_dependency(
-            mask.execution_domain(),
-            &output_domain,
-            "filter::apply_boolean_mask",
-        )?;
-    }
-    let exec_options = output_domain.explicit_exec_options_raw();
-    apply_boolean_mask_impl(input, mask, &output_domain, exec_options.as_ref(), "filter::apply_boolean_mask")
+    apply_boolean_mask_impl(
+        input,
+        mask,
+        execution.output_domain(),
+        Some(execution.exec_options()),
+        "filter::apply_boolean_mask",
+    )
 }
 
 pub(crate) fn apply_row_predicate_impl(

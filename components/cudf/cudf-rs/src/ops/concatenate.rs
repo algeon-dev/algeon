@@ -21,7 +21,9 @@ use crate::{
         error::{self, Error, ErrorCode, FACT_COLUMN_INDEX, FACT_LEFT_TYPE_ID, FACT_RIGHT_TYPE_ID, Result},
         table::{Table, TableView},
     },
-    runtime::execution_domain::ExecutionDomain,
+    runtime::{
+        execution_context::ExecutionOverrides, execution_domain::ExecutionDomain, execution_resolver::ResolvedExecution,
+    },
 };
 
 fn checked_len_to_i32(
@@ -127,61 +129,38 @@ fn validate_table_column_types(tables: &[&TableView<'_>], operation: &'static st
     Ok(())
 }
 
-fn compatible_column_domain(columns: &[&ColumnView<'_>]) -> Result<Arc<ExecutionDomain>> {
+fn compatible_column_execution(columns: &[&ColumnView<'_>]) -> Result<ResolvedExecution> {
     let Some(first) = columns.first() else {
         return Err(concatenate_requires_input_error("concatenate::concatenate_columns", "column"));
     };
-    let output_domain = Arc::clone(first.execution_domain());
-    // Order any secondary input stream before the authoritative output stream
-    // so the concatenation kernel only reads completed device data.
-    for col in &columns[1..] {
-        ExecutionDomain::require_same_device_for_mixed_inputs(
-            first.execution_domain(),
-            col.execution_domain(),
-            "concatenate::concatenate_columns",
-        )?;
-        if !ExecutionDomain::same_provenance(col.execution_domain(), &output_domain) {
-            ExecutionDomain::insert_stream_dependency(
-                col.execution_domain(),
-                &output_domain,
-                "concatenate::concatenate_columns",
-            )?;
-        }
-    }
-    Ok(output_domain)
+    let ctx = ExecutionOverrides::new();
+    ResolvedExecution::many(
+        first.execution_domain(),
+        columns[1..].iter().map(|column| column.execution_domain()),
+        &ctx,
+        "concatenate::concatenate_columns",
+    )
 }
 
-fn compatible_table_domain(tables: &[&TableView<'_>]) -> Result<Arc<ExecutionDomain>> {
+fn compatible_table_execution(tables: &[&TableView<'_>]) -> Result<ResolvedExecution> {
     let Some(first) = tables.first() else {
         return Err(concatenate_requires_input_error("concatenate::concatenate_tables", "table"));
     };
-    let output_domain = Arc::clone(first.execution_domain());
-    // Order any secondary input stream before the authoritative output stream
-    // so the concatenation kernel only reads completed device data.
-    for tbl in &tables[1..] {
-        ExecutionDomain::require_same_device_for_mixed_inputs(
-            first.execution_domain(),
-            tbl.execution_domain(),
-            "concatenate::concatenate_tables",
-        )?;
-        if !ExecutionDomain::same_provenance(tbl.execution_domain(), &output_domain) {
-            ExecutionDomain::insert_stream_dependency(
-                tbl.execution_domain(),
-                &output_domain,
-                "concatenate::concatenate_tables",
-            )?;
-        }
-    }
-    Ok(output_domain)
+    let ctx = ExecutionOverrides::new();
+    ResolvedExecution::many(
+        first.execution_domain(),
+        tables[1..].iter().map(|table| table.execution_domain()),
+        &ctx,
+        "concatenate::concatenate_tables",
+    )
 }
 
 /// Concatenate multiple columns into a single column.
 ///
 /// All columns must have the same data type.
 pub fn concatenate_columns(columns: &[&ColumnView<'_>]) -> Result<Column> {
-    let output_domain = compatible_column_domain(columns)?;
-    let exec_options = output_domain.explicit_exec_options_raw();
-    concatenate_columns_with_exec(columns, &output_domain, exec_options.as_ref())
+    let execution = compatible_column_execution(columns)?;
+    concatenate_columns_with_exec(columns, execution.output_domain(), Some(execution.exec_options()))
 }
 
 pub(crate) fn concatenate_columns_with_exec(
@@ -220,9 +199,8 @@ pub(crate) fn concatenate_columns_with_exec(
 ///
 /// All tables must have the same number of columns with matching types.
 pub fn concatenate_tables(tables: &[&TableView<'_>]) -> Result<Table> {
-    let output_domain = compatible_table_domain(tables)?;
-    let exec_options = output_domain.explicit_exec_options_raw();
-    concatenate_tables_with_exec(tables, &output_domain, exec_options.as_ref())
+    let execution = compatible_table_execution(tables)?;
+    concatenate_tables_with_exec(tables, execution.output_domain(), Some(execution.exec_options()))
 }
 
 pub(crate) fn concatenate_tables_with_exec(

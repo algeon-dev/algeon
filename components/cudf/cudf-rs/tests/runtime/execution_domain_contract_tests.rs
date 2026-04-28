@@ -4,7 +4,7 @@
 //! family. The goal is to protect provenance, execution, and synchronization
 //! contracts without locking the library into an API-by-API matrix.
 use cudf::{
-    DataFrame, DataType, ErrorCode, ErrorKind, GroupByAgg, Series, SortOptions, TypeId,
+    DataFrame, DataType, ErrorCode, ErrorKind, ExecutionOverrides, GroupByAgg, Series, SortOptions, TypeId,
     core::{
         Column, Table,
         error::{FactKeyName, FactValue},
@@ -15,7 +15,7 @@ use cudf::{
         groupby::{self, AggregationRequest},
         join,
         reduction::{self, ReduceAgg},
-        search, sorting,
+        replace, search, sorting,
         unary::{self, UnaryOperator},
     },
     testing::prelude::*,
@@ -68,6 +68,37 @@ fn helper_constructors_seed_explicit_runtime_domain() {
     assert_eq!(df.testing_execution_domain_kind(), "explicit");
     assert_eq!(df.testing_execution_domain_id(), expected_id);
     assert_eq!(df.series("id").unwrap().as_column().testing_execution_domain_id(), expected_id);
+}
+
+#[test]
+fn borrowed_override_preserves_workflow_and_allocates_distinct_bundle_identity() {
+    let data_rt = sample_runtime();
+    let ctx_rt = sample_runtime();
+    let input = data_rt.series(&[3i32, 1, 2]).unwrap();
+    let input_placement = input.placement();
+    let ctx = ExecutionOverrides::new().with_stream(ctx_rt.stream()).with_memory_resource(ctx_rt.memory_resource());
+
+    let sorted = input.sort_values_in(SortOptions::default(), &ctx).unwrap();
+    let sorted_placement = sorted.placement();
+
+    assert_eq!(sorted.to_vec_strict::<i32>().unwrap(), vec![1, 2, 3]);
+    assert_eq!(sorted_placement.device, input_placement.device);
+    assert_eq!(sorted_placement.workflow_id, input_placement.workflow_id);
+    assert_ne!(sorted_placement.bundle_id, input_placement.bundle_id);
+    assert_eq!(sorted_placement.stream_debug, ctx_rt.stream().testing_raw_handle_value());
+    assert_eq!(sorted_placement.memory_resource_debug, ctx_rt.memory_resource().testing_raw_handle_value());
+    assert!(!input.same_provenance(&sorted), "same workflow must not hide different concrete handles");
+
+    let err = DataFrame::from_columns([("input", input), ("sorted", sorted)]).unwrap_err();
+    assert_eq!(err.code(), ErrorCode::CrossProvenanceInputs);
+    let left_domain = err.detail_value("left_domain").unwrap();
+    let right_domain = err.detail_value("right_domain").unwrap();
+    assert!(left_domain.contains(&format!("workflow={}", input_placement.workflow_id)));
+    assert!(right_domain.contains(&format!("workflow={}", sorted_placement.workflow_id)));
+    assert!(left_domain.contains(&format!("bundle={}", input_placement.bundle_id)));
+    assert!(right_domain.contains(&format!("bundle={}", sorted_placement.bundle_id)));
+    assert!(right_domain.contains(&format!("stream={}", sorted_placement.stream_debug)));
+    assert!(right_domain.contains(&format!("memory_resource={}", sorted_placement.memory_resource_debug)));
 }
 
 #[test]
@@ -402,4 +433,28 @@ fn dictionary_and_search_families_keep_primary_domain_contract() {
     keys.sort_unstable();
     assert_eq!(keys, vec![111, 213, 429]);
     assert_eq!(last_sync_stream_value(), dict_stream);
+}
+
+#[test]
+fn replace_family_uses_input_domain_and_orders_replacement_domain() {
+    let _event_observation = lock_event_observation();
+    let input = explicit_nullable_i32_series("input", &[1, 0, 3], &[true, false, true], 220);
+    let replacement = explicit_i32_column(&[10, 20, 30], 221);
+    let input_stream = input.as_column().testing_execution_domain_stream_value();
+    let input_mr = input.as_column().testing_execution_domain_mr_value();
+
+    reset_dependency_observation();
+    reset_sync_observation();
+    reset_exec_observation();
+    let filled =
+        replace::replace_nulls_column(&input.as_column().testing_view().unwrap(), &replacement.testing_view().unwrap())
+            .unwrap();
+
+    assert_eq!(last_exec_stream_value(), input_stream);
+    assert_eq!(last_exec_mr_value(), input_mr);
+    assert_column_exec_contract(&filled, 220, input_stream, input_mr);
+    assert_eq!(dependency_wait_call_count_for_stream(input_stream), 1);
+    reset_sync_observation();
+    assert_eq!(filled.testing_view().unwrap().to_vec::<i32>().unwrap(), vec![1, 20, 3]);
+    assert_eq!(last_sync_stream_value(), input_stream);
 }

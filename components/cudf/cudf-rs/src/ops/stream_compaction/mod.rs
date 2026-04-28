@@ -11,7 +11,9 @@ use crate::{
         error::{self, FACT_KEYS_COUNT, Result},
         table::{Table, TableView},
     },
-    runtime::execution_domain::ExecutionDomain,
+    runtime::{
+        execution_context::ExecutionOverrides, execution_domain::ExecutionDomain, execution_resolver::ResolvedExecution,
+    },
 };
 
 /// Policy for which duplicate rows to keep.
@@ -207,9 +209,16 @@ pub(crate) fn distinct_impl(
 /// assert_eq!(result.series("value").unwrap().to_vec_strict::<i32>().unwrap(), vec![1, 3]);
 /// ```
 pub fn drop_nulls(input: &TableView<'_>, keys: &[usize], keep_threshold: i32) -> Result<Table> {
-    let output_domain = Arc::clone(input.execution_domain());
-    let exec_options = output_domain.explicit_exec_options_raw();
-    drop_nulls_impl(input, keys, keep_threshold, &output_domain, exec_options.as_ref(), "stream_compaction::drop_nulls")
+    let ctx = ExecutionOverrides::new();
+    let execution = ResolvedExecution::unary(input.execution_domain(), &ctx, "stream_compaction::drop_nulls")?;
+    drop_nulls_impl(
+        input,
+        keys,
+        keep_threshold,
+        execution.output_domain(),
+        Some(execution.exec_options()),
+        "stream_compaction::drop_nulls",
+    )
 }
 
 /// Create a new table with distinct rows based on key columns.
@@ -236,16 +245,16 @@ pub fn distinct(
     null_equality: NullEquality,
     nan_equality: NanEquality,
 ) -> Result<Table> {
-    let output_domain = Arc::clone(input.execution_domain());
-    let exec_options = output_domain.explicit_exec_options_raw();
+    let ctx = ExecutionOverrides::new();
+    let execution = ResolvedExecution::unary(input.execution_domain(), &ctx, "stream_compaction::distinct")?;
     distinct_impl(
         input,
         keys,
         keep,
         null_equality,
         nan_equality,
-        &output_domain,
-        exec_options.as_ref(),
+        execution.output_domain(),
+        Some(execution.exec_options()),
         "stream_compaction::distinct",
     )
 }

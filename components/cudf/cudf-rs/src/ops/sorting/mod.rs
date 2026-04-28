@@ -33,7 +33,9 @@ use crate::{
         error::{self, FACT_KEYS_COUNT, Result},
         table::{Table, TableView},
     },
-    runtime::execution_domain::ExecutionDomain,
+    runtime::{
+        execution_context::ExecutionOverrides, execution_domain::ExecutionDomain, execution_resolver::ResolvedExecution,
+    },
 };
 
 /// Column sort order.
@@ -219,9 +221,17 @@ pub fn sort(
     column_order: Option<&[Order]>,
     null_precedence: Option<&[NullOrder]>,
 ) -> Result<Table> {
-    let output_domain = Arc::clone(input.execution_domain());
-    let exec_options = output_domain.exec_options_raw();
-    sort_table_impl(input, column_order, null_precedence, false, &output_domain, Some(&exec_options), "sorting::sort")
+    let ctx = ExecutionOverrides::new();
+    let execution = ResolvedExecution::unary(input.execution_domain(), &ctx, "sorting::sort")?;
+    sort_table_impl(
+        input,
+        column_order,
+        null_precedence,
+        false,
+        execution.output_domain(),
+        Some(execution.exec_options()),
+        "sorting::sort",
+    )
 }
 
 /// Stable sort (preserves relative order of equal elements).
@@ -230,15 +240,15 @@ pub fn stable_sort(
     column_order: Option<&[Order]>,
     null_precedence: Option<&[NullOrder]>,
 ) -> Result<Table> {
-    let output_domain = Arc::clone(input.execution_domain());
-    let exec_options = output_domain.exec_options_raw();
+    let ctx = ExecutionOverrides::new();
+    let execution = ResolvedExecution::unary(input.execution_domain(), &ctx, "sorting::stable_sort")?;
     sort_table_impl(
         input,
         column_order,
         null_precedence,
         true,
-        &output_domain,
-        Some(&exec_options),
+        execution.output_domain(),
+        Some(execution.exec_options()),
         "sorting::stable_sort",
     )
 }
@@ -250,24 +260,17 @@ pub fn sort_by_key(
     column_order: Option<&[Order]>,
     null_precedence: Option<&[NullOrder]>,
 ) -> Result<Table> {
-    let output_domain = Arc::clone(values.execution_domain());
-    ExecutionDomain::require_same_device_for_mixed_inputs(
-        values.execution_domain(),
-        keys.execution_domain(),
-        "sorting::sort_by_key",
-    )?;
-    if !ExecutionDomain::same_provenance(keys.execution_domain(), &output_domain) {
-        ExecutionDomain::insert_stream_dependency(keys.execution_domain(), &output_domain, "sorting::sort_by_key")?;
-    }
-    let exec_options = output_domain.exec_options_raw();
+    let ctx = ExecutionOverrides::new();
+    let execution =
+        ResolvedExecution::binary(values.execution_domain(), keys.execution_domain(), &ctx, "sorting::sort_by_key")?;
     sort_by_key_impl(
         values,
         keys,
         column_order,
         null_precedence,
         false,
-        &output_domain,
-        Some(&exec_options),
+        execution.output_domain(),
+        Some(execution.exec_options()),
         "sorting::sort_by_key",
     )
 }
@@ -281,28 +284,21 @@ pub fn stable_sort_by_key(
     column_order: Option<&[Order]>,
     null_precedence: Option<&[NullOrder]>,
 ) -> Result<Table> {
-    let output_domain = Arc::clone(values.execution_domain());
-    ExecutionDomain::require_same_device_for_mixed_inputs(
+    let ctx = ExecutionOverrides::new();
+    let execution = ResolvedExecution::binary(
         values.execution_domain(),
         keys.execution_domain(),
+        &ctx,
         "sorting::stable_sort_by_key",
     )?;
-    if !ExecutionDomain::same_provenance(keys.execution_domain(), &output_domain) {
-        ExecutionDomain::insert_stream_dependency(
-            keys.execution_domain(),
-            &output_domain,
-            "sorting::stable_sort_by_key",
-        )?;
-    }
-    let exec_options = output_domain.exec_options_raw();
     sort_by_key_impl(
         values,
         keys,
         column_order,
         null_precedence,
         true,
-        &output_domain,
-        Some(&exec_options),
+        execution.output_domain(),
+        Some(execution.exec_options()),
         "sorting::stable_sort_by_key",
     )
 }
@@ -315,8 +311,8 @@ pub fn sorted_order(
     column_order: Option<&[Order]>,
     null_precedence: Option<&[NullOrder]>,
 ) -> Result<Column> {
-    let output_domain = Arc::clone(input.execution_domain());
-    let exec_options = output_domain.exec_options_raw();
+    let ctx = ExecutionOverrides::new();
+    let execution = ResolvedExecution::unary(input.execution_domain(), &ctx, "sorting::sorted_order")?;
     let num_keys = input.num_columns()?;
     validate_sort_params("sorting::sorted_order", num_keys, column_order, null_precedence)?;
     let num_keys_i32 = checked_num_keys("sorting::sorted_order", num_keys)?;
@@ -324,7 +320,9 @@ pub fn sorted_order(
     let mut out = ptr::null_mut();
     error::check_status_in(
         // SAFETY: input handle is valid. co/np are either null or valid slices of num_keys elements.
-        unsafe { cudf_sys::cudf_sorted_order_ex(input.raw_handle(), co, np, num_keys_i32, &mut out, &exec_options) },
+        unsafe {
+            cudf_sys::cudf_sorted_order_ex(input.raw_handle(), co, np, num_keys_i32, &mut out, execution.exec_options())
+        },
         "sorting::sorted_order",
     )
     .map_err(|err| {
@@ -335,7 +333,7 @@ pub fn sorted_order(
         ])
     })?;
     // SAFETY: out was returned by a successful FFI call.
-    unsafe { Column::from_raw_with_domain(out, output_domain) }
+    unsafe { Column::from_raw_with_domain(out, Arc::clone(execution.output_domain())) }
 }
 
 /// Check whether the table is already sorted according to the given order.

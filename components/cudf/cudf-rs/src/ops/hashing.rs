@@ -15,7 +15,9 @@ use crate::{
         error::{self, Result},
         table::TableView,
     },
-    runtime::execution_domain::ExecutionDomain,
+    runtime::{
+        execution_context::ExecutionOverrides, execution_domain::ExecutionDomain, execution_resolver::ResolvedExecution,
+    },
 };
 
 /// Default hash seed (kept aligned with the legacy root hashing constant).
@@ -68,16 +70,22 @@ fn xxhash_64_impl(
 /// Returns a `UINT32` column with one hash value per row. The seed is used
 /// for the first column; subsequent columns chain the previous hash as seed.
 pub fn murmurhash3_x86_32(input: &TableView<'_>, seed: u32) -> Result<Column> {
-    let output_domain = Arc::clone(input.execution_domain());
-    let exec_options = output_domain.explicit_exec_options_raw();
-    murmurhash3_x86_32_impl(input, seed, &output_domain, exec_options.as_ref(), "hashing::murmurhash3_x86_32")
+    let ctx = ExecutionOverrides::new();
+    let execution = ResolvedExecution::unary(input.execution_domain(), &ctx, "hashing::murmurhash3_x86_32")?;
+    murmurhash3_x86_32_impl(
+        input,
+        seed,
+        execution.output_domain(),
+        Some(execution.exec_options()),
+        "hashing::murmurhash3_x86_32",
+    )
 }
 
 /// Compute XXHash 64-bit hash of each row in a table.
 ///
 /// Returns a `UINT64` column with one hash value per row.
 pub fn xxhash_64(input: &TableView<'_>, seed: u64) -> Result<Column> {
-    let output_domain = Arc::clone(input.execution_domain());
-    let exec_options = output_domain.explicit_exec_options_raw();
-    xxhash_64_impl(input, seed, &output_domain, exec_options.as_ref(), "hashing::xxhash_64")
+    let ctx = ExecutionOverrides::new();
+    let execution = ResolvedExecution::unary(input.execution_domain(), &ctx, "hashing::xxhash_64")?;
+    xxhash_64_impl(input, seed, execution.output_domain(), Some(execution.exec_options()), "hashing::xxhash_64")
 }

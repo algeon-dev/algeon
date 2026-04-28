@@ -44,7 +44,7 @@
 //!     .unwrap();
 //! ```
 
-use std::sync::Arc;
+use std::{cell::RefCell, sync::Arc};
 
 use super::{
     binary::{self, BinaryOperator},
@@ -62,8 +62,82 @@ use crate::{
         types::{CudfType, DataType, NullPolicy},
     },
     frame::{dataframe::DataFrame, series::Series},
-    runtime::execution_domain::ExecutionDomain,
+    internal::hash::{FastHashMap, fast_hash_map_with_capacity},
+    runtime::{ExecutionOverrides, execution_domain::ExecutionDomain},
 };
+
+struct ExprEvalContext<'df> {
+    df: &'df DataFrame,
+    output_domain: Arc<ExecutionDomain>,
+    exec_options: Option<cudf_sys::cudf_exec_options_t>,
+    operation: &'static str,
+    normalized_columns: RefCell<FastHashMap<String, Series>>,
+}
+
+impl<'df> ExprEvalContext<'df> {
+    fn new(df: &'df DataFrame, overrides: &ExecutionOverrides<'_>, operation: &'static str) -> Result<Self> {
+        let output_domain = overrides.resolve_output_domain(df.execution_domain())?;
+        let exec_options = output_domain.explicit_exec_options_raw();
+        Ok(Self {
+            df,
+            output_domain,
+            exec_options,
+            operation,
+            normalized_columns: RefCell::new(fast_hash_map_with_capacity(df.num_columns())),
+        })
+    }
+
+    fn exec_options(&self) -> Option<&cudf_sys::cudf_exec_options_t> {
+        self.exec_options.as_ref()
+    }
+
+    fn output_domain(&self) -> Arc<ExecutionDomain> {
+        Arc::clone(&self.output_domain)
+    }
+
+    fn column(&self, name: &str) -> Result<Series> {
+        if let Some(series) = self.normalized_columns.borrow().get(name) {
+            return Ok(series.clone());
+        }
+
+        let series = self.df.series(name)?;
+        let column = series.arc();
+        let normalized = if ExecutionDomain::same_provenance(column.execution_domain(), &self.output_domain) {
+            column
+        } else {
+            ExecutionDomain::insert_stream_dependency(column.execution_domain(), &self.output_domain, self.operation)?;
+            Arc::new(column.copy_into_domain(Arc::clone(&self.output_domain), self.operation)?)
+        };
+        let normalized = Series::from_column_arc(normalized)?;
+        self.normalized_columns.borrow_mut().insert(name.to_string(), normalized.clone());
+        Ok(normalized)
+    }
+
+    fn literal(&self, lit_val: &LitValue) -> Result<Series> {
+        let scalar = lit_val.to_scalar_in_domain(&self.output_domain)?;
+        let col = Column::from_scalar(&scalar, self.df.num_rows())?;
+        Series::from_column(col)
+    }
+
+    fn wrap_column(&self, column: Column) -> Result<Series> {
+        Series::from_column(column)
+    }
+}
+
+pub(crate) fn eval_many_in_context<'a, I>(
+    df: &DataFrame,
+    overrides: &ExecutionOverrides<'_>,
+    operation: &'static str,
+    exprs: I,
+) -> Result<(Arc<ExecutionDomain>, Vec<Series>)>
+where
+    I: IntoIterator<Item = &'a Expr>,
+{
+    let ctx = ExprEvalContext::new(df, overrides, operation)?;
+    let output_domain = ctx.output_domain();
+    let results = exprs.into_iter().map(|expr| expr.eval_with_context(&ctx)).collect::<Result<_>>()?;
+    Ok((output_domain, results))
+}
 // ===========================================================================
 // LitValue — type-erased scalar factory (crate-private)
 // ===========================================================================
@@ -363,139 +437,238 @@ impl Expr {
     /// Expression naming is schema metadata handled by DataFrame-level APIs.
     /// The returned [`Series`] itself is unnamed.
     pub fn eval(&self, df: &DataFrame) -> Result<Series> {
-        match self {
-            Expr::Column(name) => df.series(name),
+        let ctx = ExecutionOverrides::new();
+        self.eval_in(df, &ctx)
+    }
 
-            Expr::Literal(lit_val) => {
-                let scalar = lit_val.to_scalar_in_domain(df.execution_domain())?;
-                let size = df.num_rows();
-                let col = Column::from_scalar(&scalar, size)?;
-                Series::from_column(col)
-            },
+    /// Evaluate this expression against a DataFrame using borrowed execution overrides.
+    ///
+    /// Every expression node resolves into the same output execution domain.
+    /// Column references are shared when that domain matches the source frame
+    /// and device-copied when the borrowed override changes retained
+    /// provenance. Literal, reduction-broadcast, string, null-fill, and
+    /// conditional intermediates are all allocated through the resolved stream
+    /// and memory resource.
+    pub fn eval_in(&self, df: &DataFrame, overrides: &ExecutionOverrides<'_>) -> Result<Series> {
+        self.eval_in_with_operation(df, overrides, "expr::eval_in")
+    }
+
+    pub(crate) fn eval_in_with_operation(
+        &self,
+        df: &DataFrame,
+        overrides: &ExecutionOverrides<'_>,
+        operation: &'static str,
+    ) -> Result<Series> {
+        let ctx = ExprEvalContext::new(df, overrides, operation)?;
+        self.eval_with_context(&ctx)
+    }
+
+    fn eval_with_context(&self, ctx: &ExprEvalContext<'_>) -> Result<Series> {
+        match self {
+            Expr::Column(name) => ctx.column(name),
+
+            Expr::Literal(lit_val) => ctx.literal(lit_val),
 
             Expr::BinaryOp { lhs, op, rhs } => {
-                let left = lhs.eval(df)?;
-                let right = rhs.eval(df)?;
+                let left = lhs.eval_with_context(ctx)?;
+                let right = rhs.eval_with_context(ctx)?;
                 let lv = left.view()?;
                 let rv = right.view()?;
                 let out_type = binary::infer_binary_output_type(lv.data_type()?.id(), rv.data_type()?.id(), *op)?;
-                let col = binary::binary_operation_vv(&lv, &rv, *op, &out_type)?;
-                Series::from_column(col)
+                let col = binary::binary_operation_vv_impl(
+                    &lv,
+                    &rv,
+                    *op,
+                    &out_type,
+                    &ctx.output_domain,
+                    ctx.exec_options(),
+                    ctx.operation,
+                )?;
+                ctx.wrap_column(col)
             },
 
             Expr::UnaryOp { op, input } => {
-                let series = input.eval(df)?;
+                let series = input.eval_with_context(ctx)?;
                 let cv = series.view()?;
-                let col = unary::unary_operation(&cv, *op)?;
-                Series::from_column(col)
+                let col = unary::unary_operation_impl(&cv, *op, &ctx.output_domain, ctx.exec_options(), ctx.operation)?;
+                ctx.wrap_column(col)
             },
 
             Expr::Cast { input, target } => {
-                let series = input.eval(df)?;
-                series.astype(*target)
+                let series = input.eval_with_context(ctx)?;
+                let cv = series.view()?;
+                let col = unary::cast_impl(&cv, target, &ctx.output_domain, ctx.exec_options(), ctx.operation)?;
+                ctx.wrap_column(col)
             },
 
             Expr::IsNull(input) => {
-                let series = input.eval(df)?;
-                series.is_null()
+                let series = input.eval_with_context(ctx)?;
+                let cv = series.view()?;
+                let col = unary::is_null_impl(&cv, &ctx.output_domain, ctx.exec_options(), ctx.operation)?;
+                ctx.wrap_column(col)
             },
 
             Expr::IsNotNull(input) => {
-                let series = input.eval(df)?;
-                series.is_not_null()
+                let series = input.eval_with_context(ctx)?;
+                let cv = series.view()?;
+                let col = unary::is_valid_impl(&cv, &ctx.output_domain, ctx.exec_options(), ctx.operation)?;
+                ctx.wrap_column(col)
             },
 
             Expr::Alias { inner, name } => {
                 let _ = name;
-                inner.eval(df)
+                inner.eval_with_context(ctx)
             },
 
             Expr::FillNaScalar { input, value } => {
-                let series = input.eval(df)?;
-                let scalar = value.to_scalar_in_domain(df.execution_domain())?;
+                let series = input.eval_with_context(ctx)?;
+                let scalar = value.to_scalar_in_domain(&ctx.output_domain)?;
                 let cv = series.view()?;
-                let col = replace::replace_nulls(&cv, &scalar)?;
-                Series::from_column(col)
+                let col = replace::replace_nulls_with_exec_options(
+                    &cv,
+                    &scalar,
+                    &ctx.output_domain,
+                    ctx.exec_options(),
+                    ctx.operation,
+                )?;
+                ctx.wrap_column(col)
             },
 
             Expr::FillNaExpr { input, fill } => {
-                let series = input.eval(df)?;
-                let fill_series = fill.eval(df)?;
+                let series = input.eval_with_context(ctx)?;
+                let fill_series = fill.eval_with_context(ctx)?;
                 let cv = series.view()?;
                 let fill_cv = fill_series.view()?;
-                let col = replace::replace_nulls_column(&cv, &fill_cv)?;
-                Series::from_column(col)
+                let col = replace::replace_nulls_column_with_exec_options(
+                    &cv,
+                    &fill_cv,
+                    &ctx.output_domain,
+                    ctx.exec_options(),
+                    ctx.operation,
+                )?;
+                ctx.wrap_column(col)
             },
 
             Expr::FillNullPolicy { input, policy } => {
-                let series = input.eval(df)?;
+                let series = input.eval_with_context(ctx)?;
                 let cv = series.view()?;
-                let col = replace::replace_nulls_policy(&cv, *policy)?;
-                Series::from_column(col)
+                let col = replace::replace_nulls_policy_with_exec_options(
+                    &cv,
+                    *policy,
+                    &ctx.output_domain,
+                    ctx.exec_options(),
+                    ctx.operation,
+                )?;
+                ctx.wrap_column(col)
             },
 
             Expr::Scan { input, agg } => {
-                let series = input.eval(df)?;
+                let series = input.eval_with_context(ctx)?;
                 let cv = series.view()?;
-                let col = reduction::scan(&cv, *agg, ScanType::Inclusive, NullPolicy::Exclude)?;
-                Series::from_column(col)
+                let col = reduction::scan_impl(
+                    &cv,
+                    *agg,
+                    ScanType::Inclusive,
+                    NullPolicy::Exclude,
+                    &ctx.output_domain,
+                    ctx.exec_options(),
+                    ctx.operation,
+                )?;
+                ctx.wrap_column(col)
             },
 
             Expr::Reduce { input, agg } => {
-                let series = input.eval(df)?;
+                let series = input.eval_with_context(ctx)?;
                 let dt = series.dtype()?;
                 let cv = series.view()?;
                 let out_type = crate::frame::series::reduction::infer_reduce_output_type(&dt, agg, "expr::reduce")?;
-                let scalar = reduction::reduce(&cv, agg, &out_type)?;
-                let col = Column::from_scalar(&scalar, df.num_rows())?;
-                Series::from_column(col)
+                let scalar =
+                    reduction::reduce_impl(&cv, agg, &out_type, &ctx.output_domain, ctx.exec_options(), ctx.operation)?;
+                let col = Column::from_scalar(&scalar, ctx.df.num_rows())?;
+                ctx.wrap_column(col)
             },
 
             Expr::StringOp { input, op } => {
-                let series = input.eval(df)?;
+                let series = input.eval_with_context(ctx)?;
                 let cv = series.view()?;
                 let col = match op {
-                    StringOperator::Lower => strings::to_lower(&cv)?,
-                    StringOperator::Upper => strings::to_upper(&cv)?,
+                    StringOperator::Lower => {
+                        strings::to_lower_impl(&cv, &ctx.output_domain, ctx.exec_options(), ctx.operation)?
+                    },
+                    StringOperator::Upper => {
+                        strings::to_upper_impl(&cv, &ctx.output_domain, ctx.exec_options(), ctx.operation)?
+                    },
                     StringOperator::Strip => {
-                        let empty = Scalar::from_str_in_domain("", df.execution_domain())?;
-                        strings::strip(&cv, StripSide::Both, &empty)?
+                        let empty = Scalar::from_str_in_domain("", &ctx.output_domain)?;
+                        strings::strip_impl(
+                            &cv,
+                            StripSide::Both,
+                            &empty,
+                            &ctx.output_domain,
+                            ctx.exec_options(),
+                            ctx.operation,
+                        )?
                     },
                     StringOperator::LStrip => {
-                        let empty = Scalar::from_str_in_domain("", df.execution_domain())?;
-                        strings::strip(&cv, StripSide::Left, &empty)?
+                        let empty = Scalar::from_str_in_domain("", &ctx.output_domain)?;
+                        strings::strip_impl(
+                            &cv,
+                            StripSide::Left,
+                            &empty,
+                            &ctx.output_domain,
+                            ctx.exec_options(),
+                            ctx.operation,
+                        )?
                     },
                     StringOperator::RStrip => {
-                        let empty = Scalar::from_str_in_domain("", df.execution_domain())?;
-                        strings::strip(&cv, StripSide::Right, &empty)?
+                        let empty = Scalar::from_str_in_domain("", &ctx.output_domain)?;
+                        strings::strip_impl(
+                            &cv,
+                            StripSide::Right,
+                            &empty,
+                            &ctx.output_domain,
+                            ctx.exec_options(),
+                            ctx.operation,
+                        )?
                     },
-                    StringOperator::Len => strings::count_characters(&cv)?,
-                    StringOperator::ByteCount => strings::count_bytes(&cv)?,
+                    StringOperator::Len => {
+                        strings::count_characters_impl(&cv, &ctx.output_domain, ctx.exec_options(), ctx.operation)?
+                    },
+                    StringOperator::ByteCount => {
+                        strings::count_bytes_impl(&cv, &ctx.output_domain, ctx.exec_options(), ctx.operation)?
+                    },
                     StringOperator::Contains(pat) => {
-                        let scalar = Scalar::from_str_in_domain(pat, df.execution_domain())?;
-                        strings::str_contains(&cv, &scalar)?
+                        let scalar = Scalar::from_str_in_domain(pat, &ctx.output_domain)?;
+                        strings::str_contains_impl(&cv, &scalar, &ctx.output_domain, ctx.exec_options(), ctx.operation)?
                     },
                     StringOperator::StartsWith(pat) => {
-                        let scalar = Scalar::from_str_in_domain(pat, df.execution_domain())?;
-                        strings::starts_with(&cv, &scalar)?
+                        let scalar = Scalar::from_str_in_domain(pat, &ctx.output_domain)?;
+                        strings::starts_with_impl(&cv, &scalar, &ctx.output_domain, ctx.exec_options(), ctx.operation)?
                     },
                     StringOperator::EndsWith(pat) => {
-                        let scalar = Scalar::from_str_in_domain(pat, df.execution_domain())?;
-                        strings::ends_with(&cv, &scalar)?
+                        let scalar = Scalar::from_str_in_domain(pat, &ctx.output_domain)?;
+                        strings::ends_with_impl(&cv, &scalar, &ctx.output_domain, ctx.exec_options(), ctx.operation)?
                     },
                 };
-                Series::from_column(col)
+                ctx.wrap_column(col)
             },
 
             Expr::IfElse { condition, true_val, false_val } => {
-                let cond_series = condition.eval(df)?;
-                let true_series = true_val.eval(df)?;
-                let false_series = false_val.eval(df)?;
+                let cond_series = condition.eval_with_context(ctx)?;
+                let true_series = true_val.eval_with_context(ctx)?;
+                let false_series = false_val.eval_with_context(ctx)?;
                 let cond_cv = cond_series.view()?;
                 let true_cv = true_series.view()?;
                 let false_cv = false_series.view()?;
-                let col = copying::copy_if_else(&true_cv, &false_cv, &cond_cv)?;
-                Series::from_column(col)
+                let col = copying::copy_if_else_impl(
+                    &true_cv,
+                    &false_cv,
+                    &cond_cv,
+                    &ctx.output_domain,
+                    ctx.exec_options(),
+                    ctx.operation,
+                )?;
+                ctx.wrap_column(col)
             },
         }
     }

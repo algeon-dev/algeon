@@ -8,6 +8,7 @@
 //! user-facing API contract. They may change or disappear at any time.
 
 pub mod arrow;
+pub mod boundary;
 pub mod column;
 pub mod concatenate;
 pub mod core;

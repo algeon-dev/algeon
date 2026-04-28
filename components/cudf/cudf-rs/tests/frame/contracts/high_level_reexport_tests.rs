@@ -55,6 +55,57 @@ fn runtime_first_factories_smoke() {
 }
 
 #[test]
+fn execution_placement_summary_is_publicly_reexported() {
+    use cudf::{DataFrame, ExecutionPlacement, Runtime};
+
+    fn assert_summary(_: ExecutionPlacement) {}
+
+    let rt = Runtime::builder().build().unwrap();
+    let series = rt.series(&[1i32, 2, 3]).unwrap();
+    let df = DataFrame::from_columns([("id", series.clone())]).unwrap();
+
+    let runtime_placement = rt.placement();
+    let series_placement = series.placement();
+    let frame_placement = df.placement();
+
+    assert_summary(runtime_placement);
+    assert_eq!(series_placement, runtime_placement);
+    assert_eq!(frame_placement, runtime_placement);
+    assert_eq!(frame_placement.device, rt.device());
+    assert_ne!(frame_placement.workflow_id, 0);
+    assert_ne!(frame_placement.bundle_id, 0);
+    assert_ne!(frame_placement.stream_debug, 0);
+    assert_ne!(frame_placement.memory_resource_debug, 0);
+}
+
+#[test]
+fn boundary_observation_shape_is_publicly_reexported() {
+    use cudf::{BoundaryKind, BoundaryObservation, BoundaryObserver, DataFrame, Runtime};
+
+    fn assert_observation(_: BoundaryObservation) {}
+    fn assert_observer(_: &dyn BoundaryObserver) {}
+
+    let rt = Runtime::builder().build().unwrap();
+    let observer = |_observation: BoundaryObservation| {};
+    assert_observer(&observer);
+    let df = DataFrame::from_columns([("id", rt.series(&[1i32, 2, 3]).unwrap())]).unwrap();
+    let observation = BoundaryObservation {
+        kind: BoundaryKind::DeviceToHost,
+        placement: df.placement(),
+        rows: df.num_rows(),
+        columns: df.num_columns(),
+        synchronized_for_host: true,
+    };
+
+    assert_observation(observation);
+    assert_eq!(observation.kind, BoundaryKind::DeviceToHost);
+    assert_eq!(observation.placement, df.placement());
+    assert_eq!(observation.rows, 3);
+    assert_eq!(observation.columns, 1);
+    assert!(observation.synchronized_for_host);
+}
+
+#[test]
 fn factorization_surface_smoke() {
     use cudf::frame::factorization::{
         Codebook, DictionaryEncodingOptions, DictionaryKeyOrder, EncodedSeries, Factorized,
@@ -76,14 +127,20 @@ fn factorization_surface_smoke() {
 
 #[test]
 fn lookup_table_is_publicly_reexported() {
-    use cudf::LookupTable;
+    use cudf::{ExecutionOverrides, LookupTable, Runtime};
 
+    let runtime = Runtime::builder().build().unwrap();
     let keys = crate::common::series("id", &["u1", "u2"]).unwrap();
     let values = crate::common::series("label", &["alice", "bob"]).unwrap();
-    let table = LookupTable::new(keys, values).unwrap();
-    let input = crate::common::series("vertex", &["u2", "u9"]).unwrap();
+    let table = LookupTable::new_in_runtime(&runtime, keys, values).unwrap();
+    let copied = table.copy_into_runtime(&runtime).unwrap();
+    let input = runtime.series(&["u2", "u9"]).unwrap();
+    let ctx = ExecutionOverrides::new().with_stream(runtime.stream()).with_memory_resource(runtime.memory_resource());
 
-    let probed = table.probe(&input).unwrap();
+    assert_eq!(table.placement(), runtime.placement());
+    assert_eq!(copied.placement(), runtime.placement());
+
+    let probed = copied.probe_in(&input, &ctx).unwrap();
     assert_eq!(probed.to_optional_strings().unwrap(), vec![Some("bob".to_string()), None]);
 }
 

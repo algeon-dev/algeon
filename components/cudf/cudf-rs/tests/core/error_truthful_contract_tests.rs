@@ -59,6 +59,27 @@ fn truthful_error_hook_exposes_typed_facts_without_string_parsing() {
 }
 
 #[test]
+fn diagnostic_string_preserves_machine_fields_and_human_context() {
+    let err = cudf::testing::core::trigger_truthful_error_contract_for_test().unwrap_err();
+    let diagnostic = err.diagnostic_string();
+
+    assert!(diagnostic.contains("code=ColumnLengthMismatch"), "{diagnostic}");
+    assert!(diagnostic.contains("kind=InvalidInput"), "{diagnostic}");
+    assert!(diagnostic.contains("status=permanent"), "{diagnostic}");
+    assert!(diagnostic.contains("operation=testing::truthful_error_contract::outer"), "{diagnostic}");
+    assert!(diagnostic.contains("message=\"column length mismatch\""), "{diagnostic}");
+    assert!(diagnostic.contains("facts={expected_rows=3, actual_rows=2}"), "{diagnostic}");
+    assert!(diagnostic.contains("details=[detail=\"alpha\", detail=\"beta\"]"), "{diagnostic}");
+    assert!(
+        diagnostic.contains(
+            "call_chain=[testing::truthful_error_contract::inner -> testing::truthful_error_contract::middle]"
+        ),
+        "{diagnostic}",
+    );
+    assert!(diagnostic.contains("source=\"root cause\""), "{diagnostic}");
+}
+
+#[test]
 fn reanchor_preserves_payload_and_records_call_chain_in_order() {
     let err = cudf::testing::core::trigger_truthful_error_contract_for_test().unwrap_err();
 

@@ -1,4 +1,4 @@
-use super::{DataFrame, DataFrameJoinSides, DropDuplicatesOptions, DropNaOptions};
+use super::{DataFrame, DataFrameJoinSides, DropDuplicatesOptions, DropNaOptions, WithColumnExpr};
 use crate::{
     Expr, Result,
     frame::series::Series,
@@ -41,6 +41,20 @@ impl DataFrame {
 }
 
 impl<'df, 'ctx, 'handles> DataFrameExecutionScope<'df, 'ctx, 'handles> {
+    /// Evaluate expressions and add or replace columns using the borrowed execution override.
+    ///
+    /// Expression intermediates and outputs use the resolved stream and memory
+    /// resource. Unchanged columns are shared when the resolved domain matches
+    /// the source frame, and device-copied when the override changes retained
+    /// provenance so the resulting frame still has one provenance bundle.
+    pub fn with_columns<I, T>(&self, exprs: I) -> Result<DataFrame>
+    where
+        I: IntoIterator<Item = T>,
+        T: Into<WithColumnExpr>,
+    {
+        self.df.with_columns_in_context(exprs, self.ctx, "dataframe::with_execution::with_columns")
+    }
+
     /// Sort using the borrowed execution override.
     pub fn sort_values<I, S>(&self, by: I, options: SortOptions) -> Result<DataFrame>
     where

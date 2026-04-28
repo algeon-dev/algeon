@@ -1,6 +1,6 @@
 //! Tests for lookup semantics through the dedicated lookup operator.
 use cudf::{
-    ErrorCode, ErrorKind, TypeId,
+    ErrorCode, ErrorKind, ExecutionOverrides, TypeId,
     core::error::{FactKeyName, FactValue},
     ops::lookup::{self, LookupTable},
     testing::prelude::*,
@@ -205,6 +205,93 @@ fn test_lookup_table_rejects_mapping_length_mismatch_at_build_time() {
     assert_eq!(err.detail_value("keys_count"), None);
     assert_eq!(error_context_value(&err, "keys_type_id").as_deref(), None);
     assert_eq!(error_context_value(&err, "output_type_id").as_deref(), None);
+}
+
+#[test]
+fn test_lookup_table_new_rejects_mixed_same_device_mapping_provenance() {
+    let keys = explicit_i32_series("id", &[1, 2], 930);
+    let values = explicit_i32_series("label", &[10, 20], 931);
+
+    let err = LookupTable::new(keys, values).unwrap_err();
+
+    assert_eq!(err.kind(), ErrorKind::ExecutionContext);
+    assert_eq!(err.code(), ErrorCode::CrossProvenanceInputs);
+    assert_eq!(err.operation(), "lookup_table::new");
+    assert_eq!(err.fact_value(FactKeyName::KeysCount), Some(&FactValue::Usize(2)));
+    assert_eq!(err.detail_value("values_count"), Some("2"));
+}
+
+#[test]
+fn test_lookup_table_new_in_runtime_normalizes_mapping_and_reports_placement() {
+    let target = crate::common::sample_runtime();
+    let keys = explicit_i32_series("id", &[1, 2], 932);
+    let values = explicit_i32_series("label", &[10, 20], 933);
+
+    let table = LookupTable::new_in_runtime(&target, keys, values).unwrap();
+    let expected = target.placement();
+
+    assert_eq!(table.placement(), expected);
+    assert_eq!(table.keys().placement(), expected);
+    assert_eq!(table.values().placement(), expected);
+
+    let input = target.series(&[2, 9, 1]).unwrap();
+    let result = table.probe(&input).unwrap();
+    assert_eq!(result.placement(), expected);
+    assert_eq!(result.to_optional_vec::<i32>().unwrap(), vec![Some(20), None, Some(10)]);
+}
+
+#[test]
+fn test_lookup_table_copy_into_runtime_relocates_reusable_state_consistently() {
+    let build_runtime = crate::common::sample_runtime();
+    let target = crate::common::sample_runtime();
+    let keys = build_runtime.series(&[1, 2]).unwrap();
+    let values = build_runtime.series(&[10, 20]).unwrap();
+    let table = LookupTable::new(keys, values).unwrap();
+
+    let relocated = table.copy_into_runtime(&target).unwrap();
+    let expected = target.placement();
+
+    assert_eq!(relocated.placement(), expected);
+    assert_eq!(relocated.keys().placement(), expected);
+    assert_eq!(relocated.values().placement(), expected);
+    assert_ne!(table.placement().bundle_id, relocated.placement().bundle_id);
+
+    let input = target.series(&[2, 1]).unwrap();
+    let result = relocated.probe(&input).unwrap();
+    assert_eq!(result.placement(), expected);
+    assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![20, 10]);
+}
+
+#[test]
+fn test_lookup_table_probe_in_uses_borrowed_context_domain() {
+    let _event_observation = crate::common::lock_event_observation();
+    let table_runtime = crate::common::sample_runtime();
+    let input_runtime = crate::common::sample_runtime();
+    let ctx_runtime = crate::common::sample_runtime();
+    let keys = table_runtime.series(&[1, 2]).unwrap();
+    let values = table_runtime.series(&[10, 20]).unwrap();
+    let table = LookupTable::new(keys, values).unwrap();
+    let input = input_runtime.series(&[2, 9, 1]).unwrap();
+    let input_placement = input.placement();
+    let ctx =
+        ExecutionOverrides::new().with_stream(ctx_runtime.stream()).with_memory_resource(ctx_runtime.memory_resource());
+    let expected_stream = ctx_runtime.stream().testing_raw_handle_value();
+    let expected_mr = ctx_runtime.memory_resource().testing_raw_handle_value();
+
+    crate::common::reset_dependency_observation();
+    reset_exec_observation();
+    let result = table.probe_in(&input, &ctx).unwrap();
+    let result_placement = result.placement();
+
+    assert_eq!(result.to_optional_vec::<i32>().unwrap(), vec![Some(20), None, Some(10)]);
+    assert_eq!(result_placement.device, input_placement.device);
+    assert_eq!(result_placement.workflow_id, input_placement.workflow_id);
+    assert_ne!(result_placement.bundle_id, input_placement.bundle_id);
+    assert_eq!(result_placement.stream_debug, expected_stream);
+    assert_eq!(result_placement.memory_resource_debug, expected_mr);
+    assert_eq!(last_exec_stream_value(), expected_stream);
+    assert_eq!(last_exec_mr_value(), expected_mr);
+    assert_eq!(crate::common::dependency_wait_call_count_for_stream(expected_stream), 3);
 }
 
 #[test]

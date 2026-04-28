@@ -7,7 +7,9 @@ use crate::{
         column::{Column, ColumnView},
         error::{self, Result},
     },
-    runtime::execution_domain::ExecutionDomain,
+    runtime::{
+        execution_context::ExecutionOverrides, execution_domain::ExecutionDomain, execution_resolver::ResolvedExecution,
+    },
 };
 
 pub(crate) fn contains_impl(
@@ -55,15 +57,8 @@ pub(crate) fn contains_impl(
 /// assert_eq!(result.to_vec_strict::<bool>().unwrap(), vec![true, false]);
 /// ```
 pub fn contains(haystack: &ColumnView<'_>, needles: &ColumnView<'_>) -> Result<Column> {
-    let output_domain = Arc::clone(haystack.execution_domain());
-    ExecutionDomain::require_same_device_for_mixed_inputs(
-        haystack.execution_domain(),
-        needles.execution_domain(),
-        "search::contains",
-    )?;
-    if !ExecutionDomain::same_provenance(needles.execution_domain(), &output_domain) {
-        ExecutionDomain::insert_stream_dependency(needles.execution_domain(), &output_domain, "search::contains")?;
-    }
-    let exec_options = output_domain.explicit_exec_options_raw();
-    contains_impl(haystack, needles, &output_domain, exec_options.as_ref(), "search::contains")
+    let ctx = ExecutionOverrides::new();
+    let execution =
+        ResolvedExecution::binary(haystack.execution_domain(), needles.execution_domain(), &ctx, "search::contains")?;
+    contains_impl(haystack, needles, execution.output_domain(), Some(execution.exec_options()), "search::contains")
 }
