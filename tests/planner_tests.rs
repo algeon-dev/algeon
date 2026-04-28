@@ -259,6 +259,8 @@ fn gpu_island_explain_names_fused_operators_and_boundaries() {
 
     let one_line = displayable(result.plan.as_ref()).one_line().to_string();
     assert!(one_line.contains("operators=[filter,projection,sort,local_limit]"));
+    assert!(one_line.contains("internal_batch=CudfBatch"));
+    assert!(one_line.contains("internal_execution=operator_chain"));
     assert!(one_line.contains("projection_exprs=2"));
     assert!(one_line.contains("sort_exprs=1"));
     assert!(one_line.contains("local_limit=2"));
@@ -271,6 +273,10 @@ fn gpu_island_explain_names_fused_operators_and_boundaries() {
     assert!(tree.contains("projection"));
     assert!(tree.contains("sort"));
     assert!(tree.contains("local_limit"));
+    assert!(tree.contains("internal_batch"));
+    assert!(tree.contains("CudfBatch"));
+    assert!(tree.contains("internal_execution"));
+    assert!(tree.contains("operator_chain"));
     assert!(tree.contains("input_boundary"));
     assert!(tree.contains("host_to_device"));
     assert!(tree.contains("output_boundary"));

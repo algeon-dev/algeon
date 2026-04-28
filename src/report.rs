@@ -33,6 +33,10 @@ impl PlanningReport {
         Self::default()
     }
 
+    pub fn from_outcomes(outcomes: impl IntoIterator<Item = CandidateOutcome>) -> Self {
+        Self { outcomes: outcomes.into_iter().collect() }
+    }
+
     pub fn push_rewritten(&mut self, candidate: GpuCandidate) {
         self.outcomes.push(CandidateOutcome::Rewritten { candidate });
     }

@@ -1,5 +1,6 @@
 //! DataFusion adapter for cudf-rs GPU islands.
 
+pub mod benchmark;
 pub mod error;
 pub mod exec;
 pub mod planner;
@@ -7,6 +8,11 @@ pub mod policy;
 pub mod report;
 pub mod session;
 
+pub use benchmark::{
+    LargerIslandBenchmarkConfig, LargerIslandBenchmarkMetrics, LargerIslandBenchmarkPlanning,
+    LargerIslandBenchmarkReport, TimedBenchmarkRun, build_larger_island_benchmark_plan, run_larger_island_benchmark,
+    run_larger_island_benchmark_with_optimizer,
+};
 pub use error::{Error, ErrorCode, ErrorKind, ErrorStatus, Facts, Result};
 pub use exec::{CudfExecutionConfig, CudfGpuIslandExec};
 pub use planner::{CudfOptimizerConfig, CudfPhysicalOptimizerRule, OptimizationResult, optimize_plan};
