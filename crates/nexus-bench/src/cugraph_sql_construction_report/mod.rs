@@ -19,7 +19,7 @@ use datafusion::{
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
 use datafusion_nexus::{
-    graph_sql::CugraphSqlConfig,
+    cugraph_sql::CugraphSqlConfig,
     native_exec::NexusNativeExecutionConfig,
     native_report::NativeDataFusionExecutionMetrics,
     planner::{NexusNativeOptimizerConfig, NexusNativePhysicalOptimizerRule},

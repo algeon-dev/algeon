@@ -19,14 +19,14 @@
 
 pub mod backend;
 pub mod capability;
+#[cfg(feature = "cugraph")]
+pub mod cugraph_sql;
 pub mod cuvs_sql;
 pub mod error;
 mod final_plan_observation;
 pub mod gpu_coverage;
 pub mod gpu_coverage_sql;
 pub mod gpu_functions;
-#[cfg(feature = "cugraph")]
-pub mod graph_sql;
 pub mod native;
 pub mod native_exec;
 pub mod native_report;

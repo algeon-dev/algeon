@@ -14,15 +14,15 @@ use datafusion::{
     physical_plan::{ExecutionPlan, collect},
     prelude::{ParquetReadOptions, SessionContext},
 };
+#[cfg(feature = "cugraph")]
+use datafusion_nexus::{
+    cugraph_sql::CugraphSqlConfig,
+    native_exec::NexusNativeComposedGpuProducerExec,
+    planner::{FinalPlanDisposition, classify_final_plan},
+};
 use datafusion_nexus::{
     cuvs_sql::CuvsAlgoExec, native_exec::NexusNativeExecutionConfig, native_report::NativeDataFusionExecutionMetrics,
     planner::NexusNativeOptimizerConfig, session::NexusSessionStateBuilderExt,
-};
-#[cfg(feature = "cugraph")]
-use datafusion_nexus::{
-    graph_sql::CugraphSqlConfig,
-    native_exec::NexusNativeComposedGpuProducerExec,
-    planner::{FinalPlanDisposition, classify_final_plan},
 };
 use parquet::arrow::ArrowWriter;
 

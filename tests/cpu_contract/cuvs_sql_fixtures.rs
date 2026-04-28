@@ -49,7 +49,7 @@ fn context_with_state(state: datafusion::execution::SessionState) -> SessionCont
 
 #[cfg(feature = "cugraph")]
 pub fn cuvs_cugraph_context() -> SessionContext {
-    use datafusion_nexus::graph_sql::CugraphSqlConfig;
+    use datafusion_nexus::cugraph_sql::CugraphSqlConfig;
 
     let state = SessionStateBuilder::new_with_default_features()
         .with_cugraph_sql(CugraphSqlConfig::default())
@@ -72,7 +72,7 @@ pub fn cuvs_cugraph_context() -> SessionContext {
 
 #[cfg(feature = "cugraph")]
 pub fn cuvs_cugraph_native_context() -> SessionContext {
-    use datafusion_nexus::graph_sql::CugraphSqlConfig;
+    use datafusion_nexus::cugraph_sql::CugraphSqlConfig;
 
     let native_execution_config = NexusNativeExecutionConfig::unbounded();
     let state = SessionStateBuilder::new_with_default_features()

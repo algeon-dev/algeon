@@ -9,7 +9,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use datafusion_nexus::graph_sql::parity::{
+use datafusion_nexus::cugraph_sql::parity::{
     ParityDataset, ParityManifest, ParityManifestError, data_root, load_manifest,
 };
 use sha2::{Digest, Sha256};

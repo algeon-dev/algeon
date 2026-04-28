@@ -939,7 +939,7 @@ fn warn_if_cugraph_built_but_disabled(_config: &ServerConfig) {}
 
 #[cfg(feature = "cugraph")]
 fn cugraph_registry_algorithm_count() -> usize {
-    crate::graph_sql::CUGRAPH_OPERATION_REGISTRY.len()
+    crate::cugraph_sql::CUGRAPH_OPERATION_REGISTRY.len()
 }
 
 #[cfg(not(feature = "cugraph"))]

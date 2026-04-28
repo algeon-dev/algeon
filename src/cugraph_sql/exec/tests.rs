@@ -38,12 +38,12 @@ use crate::native_exec::admission::QueryAdmissionFacts;
 #[cfg(feature = "server")]
 use crate::native_exec::{NativeMetricsCapture, NativeMetricsCaptureSink};
 use crate::{
-    error::{DataFusionErrorExt, ErrorCode},
-    graph_sql::{
+    cugraph_sql::{
         CugraphBfsOutputOptions, CugraphBfsParams, CugraphGraphOptions, CugraphGraphPredicateTable,
         CugraphPageRankParams, CugraphSqlConfig, CugraphTableReference, CugraphTriangleCountAllParams,
         result_schema_for_params,
     },
+    error::{DataFusionErrorExt, ErrorCode},
     native_exec::{
         QueryAdmissionSource, task_context_with_query_admission_ticket, wrap_plan_with_query_admission_ticket,
     },

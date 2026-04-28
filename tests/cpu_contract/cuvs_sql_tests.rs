@@ -812,7 +812,7 @@ async fn cugraph_reaches_cuvs_as_a_direct_gpu_resident_producer() {
     let dataset = cuvs.children()[0];
     assert_eq!(dataset.name(), "CugraphAlgoExec", "cuGraph must be the direct cuVS child with no host wrapper");
     assert!(
-        dataset.downcast_ref::<datafusion_nexus::graph_sql::CugraphAlgoExec>().is_some(),
+        dataset.downcast_ref::<datafusion_nexus::cugraph_sql::CugraphAlgoExec>().is_some(),
         "direct child must retain the typed GPU-resident producer"
     );
 }
@@ -850,7 +850,7 @@ async fn cugraph_join_filter_projection_reaches_cuvs_as_composed_gpu_producer() 
         composed
             .children()
             .into_iter()
-            .any(|child| child.downcast_ref::<datafusion_nexus::graph_sql::CugraphAlgoExec>().is_some()),
+            .any(|child| child.downcast_ref::<datafusion_nexus::cugraph_sql::CugraphAlgoExec>().is_some()),
         "composed relational producer must retain cuGraph as a direct GPU input"
     );
     let display = datafusion::physical_plan::displayable(physical.as_ref()).indent(false).to_string();

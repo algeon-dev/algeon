@@ -66,7 +66,7 @@ use super::{
     observability::CapturedError,
 };
 #[cfg(feature = "cugraph")]
-use crate::graph_sql::CugraphSqlConfig;
+use crate::cugraph_sql::CugraphSqlConfig;
 #[cfg(feature = "cugraph")]
 use crate::session::NexusSessionStateBuilderExt;
 use crate::{

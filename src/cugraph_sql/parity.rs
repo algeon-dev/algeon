@@ -145,7 +145,7 @@ pub struct ParitySpec {
 ///
 /// Every SQL-visible algorithm has one GPU parity acceptance row. New
 /// algorithms must add a registry row here alongside their
-/// [`crate::graph_sql::CUGRAPH_OPERATION_REGISTRY`] entry.
+/// [`crate::cugraph_sql::CUGRAPH_OPERATION_REGISTRY`] entry.
 #[doc(hidden)]
 pub const CUGRAPH_PARITY_SPECS: &[ParitySpec] = &[
     ParitySpec {
@@ -879,7 +879,7 @@ mod tests {
 
     #[test]
     fn parity_specs_cover_every_registry_algorithm_once() {
-        use crate::graph_sql::CUGRAPH_OPERATION_REGISTRY;
+        use crate::cugraph_sql::CUGRAPH_OPERATION_REGISTRY;
         for entry in CUGRAPH_OPERATION_REGISTRY {
             let count = CUGRAPH_PARITY_SPECS.iter().filter(|spec| spec.algorithm == entry.algorithm).count();
             assert!(

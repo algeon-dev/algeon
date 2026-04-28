@@ -130,11 +130,11 @@ fn runtime_does_not_own_executor_cache_concrete_types_beyond_phase1_baseline() {
 }
 
 #[test]
-fn adapter_core_does_not_depend_on_graph_sql() {
+fn adapter_core_does_not_depend_on_cugraph_sql() {
     assert_no_edges(
-        "adapter core native_exec/planner must depend on a frontend-neutral graph SPI rather than graph_sql",
+        "adapter core native_exec/planner must depend on a frontend-neutral graph SPI rather than cugraph_sql",
         &["src/native_exec.rs", "src/native_exec", "src/planner.rs", "src/planner"],
-        &["identifier:graph_sql"],
+        &["identifier:cugraph_sql"],
     );
 }
 

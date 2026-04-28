@@ -10,7 +10,7 @@ use super::{
     remedy::{capability_remedy, cost_remedy},
 };
 #[cfg(feature = "cugraph")]
-use crate::graph_sql::CugraphAlgoExec;
+use crate::cugraph_sql::CugraphAlgoExec;
 use crate::{
     capability::CapabilityReason,
     final_plan_observation::FinalPlanObservation,

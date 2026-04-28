@@ -46,7 +46,7 @@ use nexus_query_engine::{
 };
 
 #[cfg(feature = "cugraph")]
-use crate::graph_sql::CugraphAlgoExec;
+use crate::cugraph_sql::CugraphAlgoExec;
 use crate::{
     capability::CapabilityReason,
     native::lower_physical_plan_to_native,

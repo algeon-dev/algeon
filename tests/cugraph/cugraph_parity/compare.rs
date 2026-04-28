@@ -7,7 +7,7 @@ use arrow::{
     datatypes::DataType,
     record_batch::RecordBatch,
 };
-use datafusion_nexus::graph_sql::{
+use datafusion_nexus::cugraph_sql::{
     CugraphAlgorithm,
     parity::{ParityComparator, ParitySpec, ParityTruthSource},
 };
@@ -770,7 +770,7 @@ mod tests {
         array::{ArrayRef, Int64Array},
         datatypes::{Field, Schema},
     };
-    use datafusion_nexus::graph_sql::parity::ParityTolerance;
+    use datafusion_nexus::cugraph_sql::parity::ParityTolerance;
 
     use super::*;
 

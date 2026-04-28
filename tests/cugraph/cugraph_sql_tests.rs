@@ -22,12 +22,12 @@ use datafusion::{
 };
 use datafusion_nexus::{
     backend::{NexusAdmissionPolicy, NexusGpuBackend},
-    error::{DataFusionErrorExt, Error, ErrorCode},
-    graph_sql::{
+    cugraph_sql::{
         CUGRAPH_OPERATION_REGISTRY, CugraphAlgorithm, CugraphAlgorithmParams, CugraphBfsOutputMode, CugraphBfsSource,
         CugraphBfsSourceVertex, CugraphGraphConstructionPolicy, CugraphSqlConfig, parse_cugraph_algorithm_spec,
         stable_result_schema,
     },
+    error::{DataFusionErrorExt, Error, ErrorCode},
     native_exec::{NexusNativeComposedExec, NexusNativeExec},
     native_report::NativeDataFusionExecutionMetrics,
     planner::NexusNativeOptimizerConfig,

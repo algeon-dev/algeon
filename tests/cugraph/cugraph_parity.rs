@@ -29,7 +29,7 @@ use datafusion::{
 };
 use datafusion_nexus::{
     backend::{NexusAdmissionPolicy, NexusGpuBackend},
-    graph_sql::{
+    cugraph_sql::{
         CUGRAPH_OPERATION_REGISTRY, CugraphAlgorithm, CugraphSqlConfig,
         parity::{CUGRAPH_PARITY_SPECS, OracleLookup, ParityTruthSource, data_root, load_ref_csv_vertex_list},
     },
@@ -350,7 +350,7 @@ fn register_similarity_pairs(ctx: &SessionContext) {
     ctx.register_table("similarity_pairs", Arc::new(table)).expect("similarity pair table must register");
 }
 
-fn parity_sql(spec: &datafusion_nexus::graph_sql::parity::ParitySpec) -> String {
+fn parity_sql(spec: &datafusion_nexus::cugraph_sql::parity::ParitySpec) -> String {
     let mut options = serde_json::from_str::<Map<String, Value>>(spec.params_json)
         .unwrap_or_else(|error| panic!("{} has invalid params JSON: {error}", spec.label));
     let source = options.remove("source_vertex").and_then(|value| value.as_i64());

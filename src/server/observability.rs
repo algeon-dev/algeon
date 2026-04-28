@@ -1055,7 +1055,7 @@ fn is_native_execution_wrapper(plan: &dyn ExecutionPlan) -> bool {
         return true;
     }
     #[cfg(feature = "cugraph")]
-    if plan.downcast_ref::<crate::graph_sql::CugraphAlgoExec>().is_some() {
+    if plan.downcast_ref::<crate::cugraph_sql::CugraphAlgoExec>().is_some() {
         return true;
     }
     false

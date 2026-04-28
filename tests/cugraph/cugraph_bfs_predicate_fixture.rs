@@ -26,7 +26,7 @@ use datafusion::{
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
 use datafusion_nexus::{
-    graph_sql::CugraphSqlConfig, planner::NexusNativeOptimizerConfig, session::NexusSessionStateBuilderExt,
+    cugraph_sql::CugraphSqlConfig, planner::NexusNativeOptimizerConfig, session::NexusSessionStateBuilderExt,
 };
 
 const DEFAULT_VERTEX_COUNT: i64 = 12_000;

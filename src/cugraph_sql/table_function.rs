@@ -22,7 +22,7 @@ use super::{
     validate_vertex_id_domain_support_for_call, vertex_id_domain_for_call,
 };
 use crate::{
-    graph_sql::CugraphAlgoExec, native_exec::NexusNativeExecutionConfig,
+    cugraph_sql::CugraphAlgoExec, native_exec::NexusNativeExecutionConfig,
     session::session_state_with_native_execution_config, session_config::DataFusionNexusSessionConfig,
 };
 
