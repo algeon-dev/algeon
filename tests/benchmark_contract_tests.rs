@@ -2,9 +2,10 @@ use std::{sync::Arc, time::Duration};
 
 use datafusion::physical_plan::{ExecutionPlan, metrics::MetricsSet};
 use datafusion_cudf::{
-    CandidateOutcome, CudfOptimizerConfig, FallbackReason, GpuCandidate, GpuFallbackPolicy,
-    LargerIslandBenchmarkConfig, LargerIslandBenchmarkMetrics, LargerIslandBenchmarkPlanning, TimedBenchmarkRun,
-    build_larger_island_benchmark_plan, optimize_plan,
+    BenchmarkGateReason, BenchmarkGateStatus, CandidateOutcome, CudfOptimizerConfig, FallbackReason, GpuCandidate,
+    GpuFallbackPolicy, LargerIslandBenchmarkConfig, LargerIslandBenchmarkDecisionCriteria,
+    LargerIslandBenchmarkMetrics, LargerIslandBenchmarkPlanning, TimedBenchmarkRun, build_larger_island_benchmark_plan,
+    optimize_plan,
 };
 
 #[test]
@@ -85,6 +86,7 @@ fn larger_island_benchmark_report_keeps_required_measurements() {
     assert_eq!(report.peak_device_memory_bytes, None);
 
     let text = report.to_text();
+    assert!(text.contains("input_batches"));
     assert!(text.contains("cpu_baseline_wall_ms"));
     assert!(text.contains("gpu_island_wall_ms"));
     assert!(text.contains("cudf_operator_ms"));
@@ -92,4 +94,115 @@ fn larger_island_benchmark_report_keeps_required_measurements() {
     assert!(text.contains("device_to_host_materializations"));
     assert!(text.contains("fallback_rejected_count"));
     assert!(text.contains("fallback_rejected_reasons=insufficient_island_size"));
+    assert!(text.contains("benchmark_gate_status="));
+    assert!(text.contains("benchmark_gate_reasons="));
+}
+
+#[test]
+fn benchmark_gate_allows_phase_4_only_when_gpu_beats_cpu_without_boundary_or_fallback_pressure() {
+    let report = benchmark_report(Duration::from_millis(100), Duration::from_millis(80), 1, 1, 0, None);
+
+    let assessment = report.assess_phase4_readiness(&LargerIslandBenchmarkDecisionCriteria::default());
+
+    assert_eq!(assessment.status, BenchmarkGateStatus::ProceedToPhase4);
+    assert_eq!(assessment.reasons, Vec::<BenchmarkGateReason>::new());
+    assert_eq!(assessment.host_device_boundary_count, 2);
+    assert!(assessment.gpu_speedup > 1.0);
+}
+
+#[test]
+fn benchmark_gate_stops_native_engine_expansion_when_gpu_is_not_faster_than_cpu() {
+    let report = benchmark_report(Duration::from_millis(100), Duration::from_millis(125), 1, 1, 0, None);
+
+    let assessment = report.assess_phase4_readiness(&LargerIslandBenchmarkDecisionCriteria::default());
+
+    assert_eq!(assessment.status, BenchmarkGateStatus::DoNotExpandNativeEngine);
+    assert_eq!(assessment.reasons, vec![BenchmarkGateReason::GpuNotFasterThanCpu]);
+}
+
+#[test]
+fn benchmark_gate_routes_fallback_pressure_to_coverage_work_before_phase_4() {
+    let report = benchmark_report(Duration::from_millis(100), Duration::from_millis(70), 1, 1, 2, None);
+
+    let assessment = report.assess_phase4_readiness(&LargerIslandBenchmarkDecisionCriteria::default());
+
+    assert_eq!(assessment.status, BenchmarkGateStatus::ImproveCoverageBeforeNativeEngine);
+    assert_eq!(assessment.reasons, vec![BenchmarkGateReason::RejectedFallbackCandidates]);
+}
+
+#[test]
+fn benchmark_gate_reports_extra_materialization_boundaries_as_datafusion_boundary_pressure() {
+    let report = benchmark_report(Duration::from_millis(100), Duration::from_millis(70), 1, 3, 0, None);
+
+    let assessment = report.assess_phase4_readiness(&LargerIslandBenchmarkDecisionCriteria::default());
+
+    assert_eq!(assessment.status, BenchmarkGateStatus::KeepExtensionAdapter);
+    assert_eq!(assessment.reasons, vec![BenchmarkGateReason::TooManyMaterializationBoundaries]);
+}
+
+#[test]
+fn benchmark_gate_can_require_peak_device_memory_before_phase_4() {
+    let report = benchmark_report(Duration::from_millis(100), Duration::from_millis(70), 1, 1, 0, None);
+    let criteria = LargerIslandBenchmarkDecisionCriteria::default().with_peak_device_memory_required(true);
+
+    let assessment = report.assess_phase4_readiness(&criteria);
+
+    assert_eq!(assessment.status, BenchmarkGateStatus::NeedMoreMeasurements);
+    assert_eq!(assessment.reasons, vec![BenchmarkGateReason::PeakDeviceMemoryUnavailable]);
+}
+
+fn benchmark_report(
+    cpu_wall_time: Duration,
+    gpu_wall_time: Duration,
+    rewritten_count: usize,
+    materializations: usize,
+    rejected_count: usize,
+    peak_device_memory_bytes: Option<usize>,
+) -> datafusion_cudf::LargerIslandBenchmarkReport {
+    let mut outcomes = Vec::new();
+    for _ in 0..rewritten_count {
+        outcomes.push(CandidateOutcome::Rewritten {
+            candidate: GpuCandidate::with_operator_count(
+                "LocalLimitExec(SortExec(AggregateExec(ProjectionExec(FilterExec(child)))))",
+                2,
+                5,
+            ),
+        });
+    }
+    for _ in 0..rejected_count {
+        outcomes.push(CandidateOutcome::Rejected {
+            candidate: GpuCandidate::with_operator_count("FilterExec(child)", 3, 1),
+            reason: FallbackReason::UnsupportedExpression,
+        });
+    }
+
+    datafusion_cudf::LargerIslandBenchmarkReport {
+        config: LargerIslandBenchmarkConfig::default().with_input_rows(10).with_batch_size(5),
+        cpu_baseline: TimedBenchmarkRun::from_samples([cpu_wall_time]),
+        gpu_island: TimedBenchmarkRun::from_samples([gpu_wall_time]),
+        gpu_metrics: LargerIslandBenchmarkMetrics {
+            input_batches: 1,
+            input_rows: 10,
+            host_to_device_uploads: 1,
+            host_to_device_uploaded_rows: 10,
+            host_to_device_uploaded_bytes: 120,
+            device_to_host_materializations: materializations,
+            device_to_host_materialized_rows: 2,
+            device_to_host_materialized_bytes: 24,
+            parquet_files: 0,
+            parquet_bytes_known: 0,
+            row_groups_selected: 0,
+            read_columns: 0,
+            parquet_read_time: Duration::ZERO,
+            record_batch_upload_time: Duration::from_millis(10),
+            cudf_operator_time: Duration::from_millis(30),
+            record_batch_materialization_time: Duration::from_millis(5),
+            elapsed_compute: Some(gpu_wall_time),
+            output_rows: Some(2),
+        },
+        planning: LargerIslandBenchmarkPlanning::from_report(&datafusion_cudf::PlanningReport::from_outcomes(outcomes)),
+        output_batches: 1,
+        output_rows: 2,
+        peak_device_memory_bytes,
+    }
 }

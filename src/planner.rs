@@ -5,6 +5,7 @@ use std::{
 
 use datafusion::{
     common::{Result as DataFusionResult, ScalarValue, config::ConfigOptions},
+    datasource::{physical_plan::ParquetSource, source::DataSourceExec},
     logical_expr::Operator,
     physical_expr::{
         PhysicalExpr,
@@ -336,6 +337,15 @@ fn inspect_composite_candidate(plan: &dyn ExecutionPlan) -> Option<InspectedCand
 }
 
 fn inspect_candidate(plan: &dyn ExecutionPlan) -> Option<InspectedCandidate> {
+    if let Some(data_source) = plan.as_any().downcast_ref::<DataSourceExec>()
+        && data_source.downcast_to_file_source::<ParquetSource>().is_some()
+    {
+        return Some(InspectedCandidate {
+            public: GpuCandidate::with_operator_count("LocalParquetScan", data_source.schema().fields().len(), 1),
+            rejection: None,
+        });
+    }
+
     if let Some(projection) = plan.as_any().downcast_ref::<ProjectionExec>() {
         return Some(InspectedCandidate {
             public: GpuCandidate::with_operator_count("ProjectionExec(child)", projection.schema().fields().len(), 1),

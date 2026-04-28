@@ -1,12 +1,18 @@
-use std::{any::Any, sync::Arc};
+use std::{any::Any, collections::BTreeSet, path::PathBuf, sync::Arc};
 
-use arrow::record_batch::RecordBatch;
+use arrow::{datatypes::SchemaRef, record_batch::RecordBatch};
 use cudf::{
-    AggSpec, ExecutionPlacement, Expr, GroupByAgg, Runtime, SortOptions as CudfSortOptions,
+    AggSpec, DataFrame, ExecutionOverrides, ExecutionPlacement, Expr, GroupByAgg, Runtime,
+    SortOptions as CudfSortOptions,
+    frame::dataframe::ParquetReadOptions,
     ops::{col, lit},
 };
 use datafusion::{
     common::{Result as DataFusionResult, ScalarValue, utils::memory::get_record_batch_memory_size},
+    datasource::{
+        physical_plan::{FileScanConfig, FileSource, ParquetSource},
+        source::DataSourceExec,
+    },
     execution::context::TaskContext,
     logical_expr::Operator,
     physical_expr::{
@@ -72,7 +78,7 @@ impl CudfExecutionConfig {
 
 #[derive(Debug, Clone)]
 pub struct CudfGpuIslandExec {
-    input: Arc<dyn ExecutionPlan>,
+    input: GpuIslandInput,
     filter: Option<Arc<dyn PhysicalExpr>>,
     projection: Vec<ProjectionExpr>,
     aggregate: Option<GpuAggregate>,
@@ -81,6 +87,71 @@ pub struct CudfGpuIslandExec {
     execution_config: CudfExecutionConfig,
     metrics: ExecutionPlanMetricsSet,
     cache: Arc<PlanProperties>,
+}
+
+#[derive(Debug, Clone)]
+enum GpuIslandInput {
+    ChildRecordBatches(Arc<dyn ExecutionPlan>),
+    LocalParquetScan(CudfParquetScan),
+}
+
+impl GpuIslandInput {
+    fn child(&self) -> Option<&Arc<dyn ExecutionPlan>> {
+        match self {
+            Self::ChildRecordBatches(input) => Some(input),
+            Self::LocalParquetScan(_) => None,
+        }
+    }
+
+    fn output_partition_count(&self) -> usize {
+        match self {
+            Self::ChildRecordBatches(input) => input.output_partitioning().partition_count(),
+            Self::LocalParquetScan(scan) => scan.partitions.len(),
+        }
+    }
+
+    fn display_name(&self) -> &'static str {
+        match self {
+            Self::ChildRecordBatches(_) => "child_record_batches",
+            Self::LocalParquetScan(_) => "local_parquet_scan",
+        }
+    }
+
+    fn input_boundary(&self) -> &'static str {
+        match self {
+            Self::ChildRecordBatches(_) => "host_to_device",
+            Self::LocalParquetScan(_) => "cudf_parquet_reader",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct CudfParquetScan {
+    partitions: Vec<CudfParquetPartition>,
+    read_columns: Vec<String>,
+    file_schema: SchemaRef,
+}
+
+#[derive(Debug, Clone)]
+struct CudfParquetPartition {
+    files: Vec<CudfParquetFile>,
+}
+
+#[derive(Debug, Clone)]
+struct CudfParquetFile {
+    path: PathBuf,
+    size: u64,
+    row_groups: Option<Vec<i32>>,
+}
+
+#[derive(Debug, Clone)]
+struct NormalizedGpuIslandPlan {
+    input: Arc<dyn ExecutionPlan>,
+    filter: Option<Arc<dyn PhysicalExpr>>,
+    projection: Vec<ProjectionExpr>,
+    aggregate: Option<GpuAggregate>,
+    sort: Vec<PhysicalSortExpr>,
+    local_limit: Option<usize>,
 }
 
 impl CudfGpuIslandExec {
@@ -92,159 +163,26 @@ impl CudfGpuIslandExec {
         plan: Arc<dyn ExecutionPlan>,
         execution_config: CudfExecutionConfig,
     ) -> AdapterResult<Self> {
-        if let Some(limit) = plan.as_any().downcast_ref::<LocalLimitExec>()
-            && let Some(sort) = limit.input().as_any().downcast_ref::<SortExec>()
-            && let Some(aggregate) = sort.input().as_any().downcast_ref::<AggregateExec>()
-            && let Some(projection) = aggregate.input().as_any().downcast_ref::<ProjectionExec>()
-            && let Some(filter) = projection.input().as_any().downcast_ref::<FilterExec>()
-        {
-            return Ok(Self {
-                input: Arc::clone(filter.input()),
-                filter: Some(Arc::clone(filter.predicate())),
-                projection: projection.expr().to_vec(),
-                aggregate: Some(lower_aggregate_exec(aggregate)?),
-                sort: sort.expr().to_vec(),
-                local_limit: Some(limit.fetch()),
-                execution_config,
-                metrics: ExecutionPlanMetricsSet::new(),
-                cache: Arc::clone(plan.properties()),
-            });
-        }
-
-        if let Some(limit) = plan.as_any().downcast_ref::<LocalLimitExec>()
-            && let Some(sort) = limit.input().as_any().downcast_ref::<SortExec>()
-            && let Some(projection) = sort.input().as_any().downcast_ref::<ProjectionExec>()
-            && let Some(filter) = projection.input().as_any().downcast_ref::<FilterExec>()
-        {
-            return Ok(Self {
-                input: Arc::clone(filter.input()),
-                filter: Some(Arc::clone(filter.predicate())),
-                projection: projection.expr().to_vec(),
-                aggregate: None,
-                sort: sort.expr().to_vec(),
-                local_limit: Some(limit.fetch()),
-                execution_config,
-                metrics: ExecutionPlanMetricsSet::new(),
-                cache: Arc::clone(plan.properties()),
-            });
-        }
-
-        if let Some(limit) = plan.as_any().downcast_ref::<LocalLimitExec>()
-            && let Some(projection) = limit.input().as_any().downcast_ref::<ProjectionExec>()
-            && let Some(filter) = projection.input().as_any().downcast_ref::<FilterExec>()
-        {
-            return Ok(Self {
-                input: Arc::clone(filter.input()),
-                filter: Some(Arc::clone(filter.predicate())),
-                projection: projection.expr().to_vec(),
-                aggregate: None,
-                sort: Vec::new(),
-                local_limit: Some(limit.fetch()),
-                execution_config,
-                metrics: ExecutionPlanMetricsSet::new(),
-                cache: Arc::clone(plan.properties()),
-            });
-        }
-
-        if let Some(sort) = plan.as_any().downcast_ref::<SortExec>()
-            && let Some(aggregate) = sort.input().as_any().downcast_ref::<AggregateExec>()
-            && let Some(projection) = aggregate.input().as_any().downcast_ref::<ProjectionExec>()
-            && let Some(filter) = projection.input().as_any().downcast_ref::<FilterExec>()
-        {
-            return Ok(Self {
-                input: Arc::clone(filter.input()),
-                filter: Some(Arc::clone(filter.predicate())),
-                projection: projection.expr().to_vec(),
-                aggregate: Some(lower_aggregate_exec(aggregate)?),
-                sort: sort.expr().to_vec(),
-                local_limit: sort.fetch(),
-                execution_config,
-                metrics: ExecutionPlanMetricsSet::new(),
-                cache: Arc::clone(plan.properties()),
-            });
-        }
-
-        if let Some(sort) = plan.as_any().downcast_ref::<SortExec>()
-            && let Some(projection) = sort.input().as_any().downcast_ref::<ProjectionExec>()
-            && let Some(filter) = projection.input().as_any().downcast_ref::<FilterExec>()
-        {
-            return Ok(Self {
-                input: Arc::clone(filter.input()),
-                filter: Some(Arc::clone(filter.predicate())),
-                projection: projection.expr().to_vec(),
-                aggregate: None,
-                sort: sort.expr().to_vec(),
-                local_limit: sort.fetch(),
-                execution_config,
-                metrics: ExecutionPlanMetricsSet::new(),
-                cache: Arc::clone(plan.properties()),
-            });
-        }
-
-        if let Some(aggregate) = plan.as_any().downcast_ref::<AggregateExec>()
-            && let Some(projection) = aggregate.input().as_any().downcast_ref::<ProjectionExec>()
-            && let Some(filter) = projection.input().as_any().downcast_ref::<FilterExec>()
-        {
-            return Ok(Self {
-                input: Arc::clone(filter.input()),
-                filter: Some(Arc::clone(filter.predicate())),
-                projection: projection.expr().to_vec(),
-                aggregate: Some(lower_aggregate_exec(aggregate)?),
-                sort: Vec::new(),
-                local_limit: None,
-                execution_config,
-                metrics: ExecutionPlanMetricsSet::new(),
-                cache: Arc::clone(plan.properties()),
-            });
-        }
-
-        if let Some(projection) = plan.as_any().downcast_ref::<ProjectionExec>() {
-            if let Some(filter) = projection.input().as_any().downcast_ref::<FilterExec>() {
-                return Ok(Self {
-                    input: Arc::clone(filter.input()),
-                    filter: Some(Arc::clone(filter.predicate())),
-                    projection: projection.expr().to_vec(),
-                    aggregate: None,
-                    sort: Vec::new(),
-                    local_limit: None,
-                    execution_config,
-                    metrics: ExecutionPlanMetricsSet::new(),
-                    cache: Arc::clone(plan.properties()),
-                });
-            }
-            return Ok(Self {
-                input: Arc::clone(projection.input()),
-                filter: None,
-                projection: projection.expr().to_vec(),
-                aggregate: None,
-                sort: Vec::new(),
-                local_limit: None,
-                execution_config,
-                metrics: ExecutionPlanMetricsSet::new(),
-                cache: Arc::clone(plan.properties()),
-            });
-        }
-
-        if let Some(filter) = plan.as_any().downcast_ref::<FilterExec>() {
-            return Ok(Self {
-                input: Arc::clone(filter.input()),
-                filter: Some(Arc::clone(filter.predicate())),
-                projection: Vec::new(),
-                aggregate: None,
-                sort: Vec::new(),
-                local_limit: None,
-                execution_config,
-                metrics: ExecutionPlanMetricsSet::new(),
-                cache: Arc::clone(plan.properties()),
-            });
-        }
-
-        Err(Error::new(
-            ErrorCode::InvalidExecutionPlan,
-            "datafusion_cudf.gpu_island.try_new",
-            "cannot build GPU island from physical plan",
-        )
-        .with_fact("plan_node", plan.name()))
+        let normalized = normalize_gpu_island_plan(Arc::clone(&plan))?.ok_or_else(|| {
+            Error::new(
+                ErrorCode::InvalidExecutionPlan,
+                "datafusion_cudf.gpu_island.try_new",
+                "cannot build GPU island from physical plan",
+            )
+            .with_fact("plan_node", plan.name())
+        })?;
+        let input = GpuIslandInput::try_from_normalized(&normalized)?;
+        Ok(Self {
+            input,
+            filter: normalized.filter,
+            projection: normalized.projection,
+            aggregate: normalized.aggregate,
+            sort: normalized.sort,
+            local_limit: normalized.local_limit,
+            execution_config,
+            metrics: ExecutionPlanMetricsSet::new(),
+            cache: Arc::clone(plan.properties()),
+        })
     }
 
     fn operator_list(&self) -> String {
@@ -268,6 +206,209 @@ impl CudfGpuIslandExec {
     }
 }
 
+impl GpuIslandInput {
+    fn try_from_normalized(plan: &NormalizedGpuIslandPlan) -> AdapterResult<Self> {
+        if let Ok(Some(scan)) = try_local_parquet_scan(plan) {
+            return Ok(Self::LocalParquetScan(scan));
+        }
+        Ok(Self::ChildRecordBatches(Arc::clone(&plan.input)))
+    }
+}
+
+fn normalize_gpu_island_plan(plan: Arc<dyn ExecutionPlan>) -> AdapterResult<Option<NormalizedGpuIslandPlan>> {
+    let mut input = Arc::clone(&plan);
+    let mut filter = None;
+    let mut projection = Vec::new();
+    let mut aggregate = None;
+    let mut sort = Vec::new();
+    let mut local_limit = None;
+    let mut operator_count = 0usize;
+
+    if let Some(limit) = input.as_any().downcast_ref::<LocalLimitExec>() {
+        local_limit = Some(limit.fetch());
+        input = Arc::clone(limit.input());
+        operator_count += 1;
+    }
+
+    if let Some(sort_exec) = input.as_any().downcast_ref::<SortExec>() {
+        sort = sort_exec.expr().to_vec();
+        if local_limit.is_none() {
+            local_limit = sort_exec.fetch();
+        }
+        input = Arc::clone(sort_exec.input());
+        operator_count += 1;
+    }
+
+    if let Some(aggregate_exec) = input.as_any().downcast_ref::<AggregateExec>() {
+        aggregate = Some(lower_aggregate_exec(aggregate_exec)?);
+        input = Arc::clone(aggregate_exec.input());
+        operator_count += 1;
+    }
+
+    if let Some(projection_exec) = input.as_any().downcast_ref::<ProjectionExec>() {
+        projection = projection_exec.expr().to_vec();
+        input = Arc::clone(projection_exec.input());
+        operator_count += 1;
+    }
+
+    if let Some(filter_exec) = input.as_any().downcast_ref::<FilterExec>() {
+        filter = Some(Arc::clone(filter_exec.predicate()));
+        input = Arc::clone(filter_exec.input());
+        operator_count += 1;
+    }
+
+    if operator_count == 0 && input.as_any().downcast_ref::<DataSourceExec>().is_none() {
+        return Ok(None);
+    }
+
+    Ok(Some(NormalizedGpuIslandPlan { input, filter, projection, aggregate, sort, local_limit }))
+}
+
+fn try_local_parquet_scan(plan: &NormalizedGpuIslandPlan) -> AdapterResult<Option<CudfParquetScan>> {
+    let Some(source_exec) = plan.input.as_any().downcast_ref::<DataSourceExec>() else {
+        return Ok(None);
+    };
+    let Some((file_scan, parquet_source)) = source_exec.downcast_to_file_source::<ParquetSource>() else {
+        return Ok(None);
+    };
+
+    validate_local_parquet_scan(file_scan, parquet_source)?;
+    let read_columns = required_parquet_read_columns(file_scan, plan)?;
+    let partitions = file_scan
+        .file_groups
+        .iter()
+        .map(|group| {
+            let files = group
+                .files()
+                .iter()
+                .map(|file| {
+                    if !file.partition_values.is_empty() {
+                        return Err(local_parquet_rejection("partition columns are not supported in GPU parquet scan"));
+                    }
+                    if file.range.is_some() {
+                        return Err(local_parquet_rejection(
+                            "byte-range parquet files are not supported in GPU parquet scan",
+                        ));
+                    }
+                    Ok(CudfParquetFile {
+                        path: local_object_path_to_filesystem(file.object_meta.location.as_ref()),
+                        size: file.object_meta.size,
+                        row_groups: None,
+                    })
+                })
+                .collect::<AdapterResult<Vec<_>>>()?;
+            Ok(CudfParquetPartition { files })
+        })
+        .collect::<AdapterResult<Vec<_>>>()?;
+
+    Ok(Some(CudfParquetScan { partitions, read_columns, file_schema: Arc::clone(file_scan.file_schema()) }))
+}
+
+fn validate_local_parquet_scan(file_scan: &FileScanConfig, parquet_source: &ParquetSource) -> AdapterResult<()> {
+    if !file_scan.object_store_url.as_str().starts_with("file://") {
+        return Err(local_parquet_rejection("non-local parquet object stores are not supported in GPU parquet scan"));
+    }
+    if !file_scan.table_partition_cols().is_empty() {
+        return Err(local_parquet_rejection("table partition columns are not supported in GPU parquet scan"));
+    }
+    if file_scan.expr_adapter_factory.is_some() {
+        return Err(local_parquet_rejection("schema expression adapters are not supported in GPU parquet scan"));
+    }
+    if file_scan.limit.is_some() {
+        return Err(local_parquet_rejection("pushed-down scan limits are not supported in GPU parquet scan"));
+    }
+    if file_scan.preserve_order {
+        return Err(local_parquet_rejection(
+            "order-sensitive file scan semantics are not supported in GPU parquet scan",
+        ));
+    }
+    if parquet_source.filter().is_some() {
+        return Err(local_parquet_rejection("pushed-down parquet predicates are not supported in GPU parquet scan"));
+    }
+    Ok(())
+}
+
+fn required_parquet_read_columns(
+    file_scan: &FileScanConfig,
+    plan: &NormalizedGpuIslandPlan,
+) -> AdapterResult<Vec<String>> {
+    let file_schema = file_scan.file_schema();
+    let mut required = BTreeSet::new();
+
+    if let Some(projection) = file_scan.file_source().projection() {
+        for index in projection.column_indices() {
+            if index >= file_schema.fields().len() {
+                return Err(local_parquet_rejection(
+                    "partition-column projections are not supported in GPU parquet scan",
+                ));
+            }
+            required.insert(file_schema.field(index).name().clone());
+        }
+    } else if plan.projection.is_empty() {
+        required.extend(file_schema.fields().iter().map(|field| field.name().clone()));
+    }
+
+    if let Some(filter) = &plan.filter {
+        collect_required_columns(filter, &mut required)?;
+    }
+    for projection in &plan.projection {
+        collect_required_columns(&projection.expr, &mut required)?;
+    }
+    if let Some(aggregate) = &plan.aggregate {
+        required.extend(aggregate.keys.iter().map(|key| key.input_column.clone()));
+        required.extend(aggregate.aggs.iter().map(|agg| agg.input_column.clone()));
+    }
+    for sort_expr in &plan.sort {
+        collect_required_columns(&sort_expr.expr, &mut required)?;
+    }
+
+    if required.is_empty() {
+        required.extend(file_schema.fields().iter().map(|field| field.name().clone()));
+    }
+
+    for column in &required {
+        if file_schema.index_of(column).is_err() {
+            return Err(local_parquet_rejection("GPU parquet scan requires a column outside the file schema")
+                .with_fact("column", column));
+        }
+    }
+
+    Ok(required.into_iter().collect())
+}
+
+fn collect_required_columns(expr: &Arc<dyn PhysicalExpr>, required: &mut BTreeSet<String>) -> AdapterResult<()> {
+    if let Some(column) = expr.as_any().downcast_ref::<Column>() {
+        required.insert(column.name().to_string());
+        return Ok(());
+    }
+    if expr.as_any().downcast_ref::<Literal>().is_some() {
+        return Ok(());
+    }
+    if let Some(binary) = expr.as_any().downcast_ref::<BinaryExpr>() {
+        collect_required_columns(binary.left(), required)?;
+        collect_required_columns(binary.right(), required)?;
+        return Ok(());
+    }
+    if let Some(not) = expr.as_any().downcast_ref::<NotExpr>() {
+        collect_required_columns(not.arg(), required)?;
+        return Ok(());
+    }
+    Err(Error::new(
+        ErrorCode::UnsupportedExpression,
+        "datafusion_cudf.parquet_scan.required_columns",
+        "cannot collect required columns from unsupported physical expression",
+    )
+    .with_fact("expression", expr))
+}
+
+fn local_object_path_to_filesystem(location: &str) -> PathBuf {
+    PathBuf::from("/").join(location)
+}
+
+fn local_parquet_rejection(message: impl Into<String>) -> Error {
+    Error::new(ErrorCode::UnsupportedOperator, "datafusion_cudf.parquet_scan.recognize", message)
+}
+
 impl DisplayAs for CudfGpuIslandExec {
     fn fmt_as(&self, t: DisplayFormatType, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let operators = self.operator_list();
@@ -275,8 +416,9 @@ impl DisplayAs for CudfGpuIslandExec {
             DisplayFormatType::Default | DisplayFormatType::Verbose => {
                 write!(
                     f,
-                    "CudfGpuIslandExec: operators=[{}], internal_batch=CudfBatch, internal_execution=operator_chain, projection_exprs={}",
+                    "CudfGpuIslandExec: operators=[{}], internal_batch=CudfBatch, internal_execution=operator_chain, input={}, projection_exprs={}",
                     operators,
+                    self.input.display_name(),
                     self.projection.len(),
                 )?;
                 if let Some(aggregate) = &self.aggregate {
@@ -288,12 +430,13 @@ impl DisplayAs for CudfGpuIslandExec {
                 if let Some(fetch) = self.local_limit {
                     write!(f, ", local_limit={fetch}")?;
                 }
-                write!(f, ", input_boundary=host_to_device, output_boundary=device_to_host")
+                write!(f, ", input_boundary={}, output_boundary=device_to_host", self.input.input_boundary())
             },
             DisplayFormatType::TreeRender => {
                 writeln!(f, "operators={operators}")?;
                 writeln!(f, "internal_batch=CudfBatch")?;
                 writeln!(f, "internal_execution=operator_chain")?;
+                writeln!(f, "input={}", self.input.display_name())?;
                 writeln!(f, "projection_exprs={}", self.projection.len())?;
                 if let Some(aggregate) = &self.aggregate {
                     writeln!(f, "group_keys={}", aggregate.keys.len())?;
@@ -305,7 +448,7 @@ impl DisplayAs for CudfGpuIslandExec {
                 if let Some(fetch) = self.local_limit {
                     writeln!(f, "local_limit={fetch}")?;
                 }
-                writeln!(f, "input_boundary=host_to_device")?;
+                writeln!(f, "input_boundary={}", self.input.input_boundary())?;
                 writeln!(f, "output_boundary=device_to_host")
             },
         }
@@ -326,28 +469,45 @@ impl ExecutionPlan for CudfGpuIslandExec {
     }
 
     fn maintains_input_order(&self) -> Vec<bool> {
-        vec![self.sort.is_empty()]
+        self.input.child().map(|_| self.sort.is_empty()).into_iter().collect()
     }
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
-        vec![&self.input]
+        self.input.child().into_iter().collect()
     }
 
     fn with_new_children(
         self: Arc<Self>,
         mut children: Vec<Arc<dyn ExecutionPlan>>,
     ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
-        if children.len() != 1 {
-            return Err(Error::new(
-                ErrorCode::InvalidChildCount,
-                "datafusion_cudf.gpu_island.with_new_children",
-                "GPU island expected exactly one child",
-            )
-            .with_fact("actual_child_count", children.len())
-            .into());
-        }
+        let input = match &self.input {
+            GpuIslandInput::ChildRecordBatches(_) => {
+                if children.len() != 1 {
+                    return Err(Error::new(
+                        ErrorCode::InvalidChildCount,
+                        "datafusion_cudf.gpu_island.with_new_children",
+                        "GPU island expected exactly one child",
+                    )
+                    .with_fact("actual_child_count", children.len())
+                    .into());
+                }
+                GpuIslandInput::ChildRecordBatches(children.swap_remove(0))
+            },
+            GpuIslandInput::LocalParquetScan(scan) => {
+                if !children.is_empty() {
+                    return Err(Error::new(
+                        ErrorCode::InvalidChildCount,
+                        "datafusion_cudf.gpu_island.with_new_children",
+                        "local parquet GPU island expected no children",
+                    )
+                    .with_fact("actual_child_count", children.len())
+                    .into());
+                }
+                GpuIslandInput::LocalParquetScan(scan.clone())
+            },
+        };
         Ok(Arc::new(Self {
-            input: children.swap_remove(0),
+            input,
             filter: self.filter.clone(),
             projection: self.projection.clone(),
             aggregate: self.aggregate.clone(),
@@ -371,15 +531,15 @@ impl ExecutionPlan for CudfGpuIslandExec {
         let chain = CudfOperatorChain::new(filter, projection, aggregate, sort, local_limit);
 
         if chain.requires_single_output_batch() {
-            let input = Arc::clone(&self.input);
-            let child_partitions = if self.cache.output_partitioning().partition_count() == 1 {
-                (0..self.input.output_partitioning().partition_count()).collect::<Vec<_>>()
+            let input = self.input.clone();
+            let input_partitions = if self.cache.output_partitioning().partition_count() == 1 {
+                (0..self.input.output_partition_count()).collect::<Vec<_>>()
             } else {
                 vec![partition]
             };
             let output = futures::stream::once(async move {
                 let output =
-                    execute_blocking_island(input, child_partitions, context, runtime.as_ref(), &chain, &metrics)
+                    execute_blocking_island(input, input_partitions, context, runtime.as_ref(), &chain, &metrics)
                         .await?;
                 match output {
                     Some(batch) => Ok(Some(batch.record_output(&metrics.baseline))),
@@ -393,7 +553,23 @@ impl ExecutionPlan for CudfGpuIslandExec {
             return Ok(Box::pin(RecordBatchStreamAdapter::new(schema, output)));
         }
 
-        let input = self.input.execute(partition, context)?;
+        let GpuIslandInput::ChildRecordBatches(input_plan) = &self.input else {
+            let input = self.input.clone();
+            let output = futures::stream::once(async move {
+                let output = execute_local_parquet_partition(input, partition, runtime.as_ref(), &chain, &metrics)?;
+                match output {
+                    Some(batch) => Ok(Some(batch.record_output(&metrics.baseline))),
+                    None => {
+                        metrics.baseline.done();
+                        Ok(None)
+                    },
+                }
+            })
+            .try_filter_map(|batch| async move { Ok(batch) });
+            return Ok(Box::pin(RecordBatchStreamAdapter::new(schema, output)));
+        };
+
+        let input = input_plan.execute(partition, context)?;
         let output = futures::stream::try_unfold(
             (input, local_limit, metrics, chain),
             move |(mut input, mut remaining_rows, metrics, chain)| {
@@ -428,24 +604,24 @@ impl ExecutionPlan for CudfGpuIslandExec {
 
 #[derive(Debug)]
 struct CudfBatch {
-    frame: cudf::DataFrame,
+    frame: DataFrame,
     placement: ExecutionPlacement,
 }
 
 impl CudfBatch {
-    fn new(frame: cudf::DataFrame) -> Self {
+    fn new(frame: DataFrame) -> Self {
         let placement = frame.placement();
         Self { frame, placement }
     }
 
-    fn into_frame(self) -> cudf::DataFrame {
+    fn into_frame(self) -> DataFrame {
         debug_assert_eq!(self.placement, self.frame.placement());
         self.frame
     }
 
     fn concat_many(
         self,
-        ctx: &cudf::ExecutionOverrides<'_>,
+        ctx: &ExecutionOverrides<'_>,
         other_batches: &[Self],
         metrics: &CudfGpuIslandMetrics,
     ) -> DataFusionResult<Self> {
@@ -510,7 +686,7 @@ impl CudfOperatorChain {
 
     fn execute(
         &self,
-        ctx: &cudf::ExecutionOverrides<'_>,
+        ctx: &ExecutionOverrides<'_>,
         remaining_rows: Option<&mut usize>,
         batch: CudfBatch,
         metrics: &CudfGpuIslandMetrics,
@@ -620,23 +796,33 @@ impl CudfOperatorChain {
 }
 
 async fn execute_blocking_island(
-    input: Arc<dyn ExecutionPlan>,
-    child_partitions: Vec<usize>,
+    input: GpuIslandInput,
+    input_partitions: Vec<usize>,
     context: Arc<TaskContext>,
     runtime: &Runtime,
     chain: &CudfOperatorChain,
     metrics: &CudfGpuIslandMetrics,
 ) -> DataFusionResult<Option<RecordBatch>> {
-    let ctx =
-        cudf::ExecutionOverrides::new().with_stream(runtime.stream()).with_memory_resource(runtime.memory_resource());
+    let ctx = ExecutionOverrides::new().with_stream(runtime.stream()).with_memory_resource(runtime.memory_resource());
     let mut frames = Vec::new();
 
-    for child_partition in child_partitions {
-        let mut stream = input.execute(child_partition, Arc::clone(&context))?;
-        while let Some(batch) = stream.next().await {
-            let batch = batch?;
-            frames.push(upload_batch(runtime, batch, metrics)?);
-        }
+    match input {
+        GpuIslandInput::ChildRecordBatches(input) => {
+            for child_partition in input_partitions {
+                let mut stream = input.execute(child_partition, Arc::clone(&context))?;
+                while let Some(batch) = stream.next().await {
+                    let batch = batch?;
+                    frames.push(upload_batch(runtime, batch, metrics)?);
+                }
+            }
+        },
+        GpuIslandInput::LocalParquetScan(scan) => {
+            for partition in input_partitions {
+                if let Some(batch) = read_local_parquet_partition(runtime, &ctx, &scan, partition, metrics)? {
+                    frames.push(batch);
+                }
+            }
+        },
     }
 
     let mut frames = frames.into_iter();
@@ -651,6 +837,93 @@ async fn execute_blocking_island(
     batch.materialize(metrics).map(Some)
 }
 
+fn execute_local_parquet_partition(
+    input: GpuIslandInput,
+    partition: usize,
+    runtime: &Runtime,
+    chain: &CudfOperatorChain,
+    metrics: &CudfGpuIslandMetrics,
+) -> DataFusionResult<Option<RecordBatch>> {
+    let GpuIslandInput::LocalParquetScan(scan) = input else {
+        return Err(Error::new(
+            ErrorCode::Internal,
+            "datafusion_cudf.parquet_scan.execute_partition",
+            "expected local parquet scan input",
+        )
+        .into());
+    };
+    let ctx = ExecutionOverrides::new().with_stream(runtime.stream()).with_memory_resource(runtime.memory_resource());
+    let Some(batch) = read_local_parquet_partition(runtime, &ctx, &scan, partition, metrics)? else {
+        return Ok(None);
+    };
+    let mut remaining_rows = chain.local_limit;
+    let batch = chain.execute(&ctx, remaining_rows.as_mut(), batch, metrics)?;
+    batch.materialize(metrics).map(Some)
+}
+
+fn read_local_parquet_partition(
+    runtime: &Runtime,
+    ctx: &ExecutionOverrides<'_>,
+    scan: &CudfParquetScan,
+    partition: usize,
+    metrics: &CudfGpuIslandMetrics,
+) -> DataFusionResult<Option<CudfBatch>> {
+    let Some(partition) = scan.partitions.get(partition) else {
+        return Err(Error::new(
+            ErrorCode::InvalidExecutionPlan,
+            "datafusion_cudf.parquet_scan.execute",
+            "local parquet partition does not exist",
+        )
+        .with_fact("partition", partition)
+        .with_fact("partition_count", scan.partitions.len())
+        .into());
+    };
+    let mut batches = Vec::with_capacity(partition.files.len());
+    for file in &partition.files {
+        batches.push(read_local_parquet_file(runtime, scan, file, metrics)?);
+    }
+
+    let mut batches = batches.into_iter();
+    let Some(batch) = batches.next() else {
+        return Ok(None);
+    };
+    let other_batches = batches.collect::<Vec<_>>();
+    batch.concat_many(ctx, &other_batches, metrics).map(Some)
+}
+
+fn read_local_parquet_file(
+    runtime: &Runtime,
+    scan: &CudfParquetScan,
+    file: &CudfParquetFile,
+    metrics: &CudfGpuIslandMetrics,
+) -> DataFusionResult<CudfBatch> {
+    debug_assert!(scan.read_columns.iter().all(|column| scan.file_schema.index_of(column).is_ok()));
+    let columns = scan.read_columns.iter().map(String::as_str).collect::<Vec<_>>();
+    let options = if let Some(row_groups) = &file.row_groups {
+        metrics.row_groups_selected.add(row_groups.len());
+        ParquetReadOptions::builder()
+            .filepath(&file.path)
+            .columns(&columns)
+            .row_groups(row_groups)
+            .with_runtime(runtime)
+            .build()
+    } else {
+        ParquetReadOptions::builder().filepath(&file.path).columns(&columns).with_runtime(runtime).build()
+    };
+    let read_timer = metrics.parquet_read_time.timer();
+    let frame = DataFrame::read_parquet_with_options(options).map_err(|error| {
+        Error::from_cudf("datafusion_cudf.parquet_scan.read", "failed to read local Parquet file with cudf", error)
+            .with_fact("path", file.path.display())
+    })?;
+    read_timer.done();
+    metrics.input_batches.add(1);
+    metrics.input_rows.add(frame.num_rows());
+    metrics.parquet_files.add(1);
+    metrics.parquet_bytes_known.add(file.size as usize);
+    metrics.read_columns.add(scan.read_columns.len());
+    Ok(CudfBatch::new(frame))
+}
+
 fn execute_record_batch(
     runtime: &Runtime,
     chain: &CudfOperatorChain,
@@ -663,8 +936,7 @@ fn execute_record_batch(
     metrics.input_batches.add(1);
     metrics.input_rows.add(input_rows);
 
-    let ctx =
-        cudf::ExecutionOverrides::new().with_stream(runtime.stream()).with_memory_resource(runtime.memory_resource());
+    let ctx = ExecutionOverrides::new().with_stream(runtime.stream()).with_memory_resource(runtime.memory_resource());
     let frame = upload_batch_with_size(runtime, batch, input_rows, input_bytes, metrics)?;
     let batch = chain.execute(&ctx, remaining_rows, frame, metrics)?;
     batch.materialize(metrics)
@@ -686,7 +958,7 @@ fn upload_batch_with_size(
     metrics: &CudfGpuIslandMetrics,
 ) -> DataFusionResult<CudfBatch> {
     let upload_timer = metrics.record_batch_upload_time.timer();
-    let frame = cudf::DataFrame::from_record_batch(runtime, &batch).map_err(|error| {
+    let frame = DataFrame::from_record_batch(runtime, &batch).map_err(|error| {
         Error::from_cudf("datafusion_cudf.record_batch.upload", "failed to upload RecordBatch to cudf", error)
     })?;
     upload_timer.done();
@@ -868,6 +1140,11 @@ struct CudfGpuIslandMetrics {
     device_to_host_materializations: Count,
     device_to_host_materialized_rows: Count,
     device_to_host_materialized_bytes: Count,
+    parquet_files: Count,
+    parquet_bytes_known: Count,
+    row_groups_selected: Count,
+    read_columns: Count,
+    parquet_read_time: Time,
     record_batch_upload_time: Time,
     cudf_operator_time: Time,
     record_batch_materialization_time: Time,
@@ -885,6 +1162,11 @@ impl CudfGpuIslandMetrics {
             device_to_host_materializations: summary_counter(metrics, "device_to_host_materializations", partition),
             device_to_host_materialized_rows: summary_counter(metrics, "device_to_host_materialized_rows", partition),
             device_to_host_materialized_bytes: summary_counter(metrics, "device_to_host_materialized_bytes", partition),
+            parquet_files: summary_counter(metrics, "parquet_files", partition),
+            parquet_bytes_known: summary_counter(metrics, "parquet_bytes_known", partition),
+            row_groups_selected: summary_counter(metrics, "row_groups_selected", partition),
+            read_columns: summary_counter(metrics, "read_columns", partition),
+            parquet_read_time: summary_timer(metrics, "parquet_read_time", partition),
             record_batch_upload_time: summary_timer(metrics, "record_batch_upload_time", partition),
             cudf_operator_time: summary_timer(metrics, "cudf_operator_time", partition),
             record_batch_materialization_time: summary_timer(metrics, "record_batch_materialization_time", partition),
