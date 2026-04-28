@@ -786,7 +786,6 @@ fn backend_install_rejects_conflicting_preexisting_session_extension() {
     assert_eq!(error.fact_value("reason"), Some("session_config_conflicts_with_backend_admission"));
 }
 
-#[cfg(feature = "cugraph")]
 #[test]
 fn backend_install_rejects_preexisting_cugraph_sql_registration() {
     use crate::{cugraph_sql::CugraphSqlConfig, session::NexusSessionStateBuilderExt};
@@ -809,6 +808,29 @@ fn backend_install_rejects_preexisting_cugraph_sql_registration() {
     assert_eq!(error.code(), ErrorCode::InvalidRequest);
     assert_eq!(error.fact_value("reason"), Some("preexisting_cugraph_sql_without_backend_admission"));
     assert!(error.fact_value("table_function").is_some_and(|name| name.starts_with("cugraph_")));
+}
+
+#[test]
+fn backend_install_with_cugraph_sql_registers_the_public_family() {
+    use crate::cugraph_sql::CugraphSqlConfig;
+
+    let backend = NexusGpuBackend::builder()
+        .memory_policy(NexusMemoryPolicy::Bounded {
+            device_ordinals: vec![0],
+            device_budget_bytes: 4096,
+            max_source_chunk_bytes: 1024,
+            max_row_groups_per_chunk: 1,
+            max_retry_attempts: 3,
+            min_retry_chunk_row_groups: 1,
+        })
+        .build_admission_only()
+        .unwrap();
+
+    let state = backend
+        .install_on_with_cugraph_sql(SessionStateBuilder::new(), CugraphSqlConfig::default())
+        .expect("backend installer must own cuGraph SQL registration")
+        .build();
+    assert!(state.table_functions().contains_key("cugraph_pagerank"));
 }
 
 #[test]

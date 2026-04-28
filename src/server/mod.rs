@@ -31,28 +31,23 @@ pub use auth::{
     AuthConfig, AuthInterceptor, AuthMode, PasswordHashError, Principal, StaticUserConfig, TokenStore,
     handle_handshake, hash_password, verify_password,
 };
-#[cfg(feature = "cugraph")]
-pub use config::CugraphServerConfig;
-#[cfg(feature = "iceberg")]
 pub use config::{
-    GlueServerBackendConfig, IcebergCatalogBackendConfig, IcebergServerConfig, IcebergTableRegistrationConfig,
-};
-pub use config::{
-    NEXUS_ICEBERG_CATALOG_KIND_ENV, NEXUS_ICEBERG_CATALOG_NAME_ENV, NEXUS_ICEBERG_GLUE_CATALOG_ID_ENV,
-    NEXUS_ICEBERG_GLUE_CATALOG_NAME_ENV, NEXUS_ICEBERG_GLUE_DATABASE_ENV, NEXUS_ICEBERG_GLUE_TABLES_ENV,
-    NEXUS_ICEBERG_GLUE_URI_ENV, NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, NEXUS_ICEBERG_NAMESPACE_ENV,
-    NEXUS_ICEBERG_REST_CATALOG_HANDLE_ENV, NEXUS_ICEBERG_REST_PREFIX_ENV, NEXUS_ICEBERG_REST_TOKEN_ENV,
-    NEXUS_ICEBERG_REST_URI_ENV, NEXUS_ICEBERG_S3_CREDENTIAL_SOURCE_ENV, NEXUS_ICEBERG_S3_ENDPOINT_ENV,
-    NEXUS_ICEBERG_S3_PATH_STYLE_ENV, NEXUS_ICEBERG_S3_REGION_ENV, NEXUS_ICEBERG_SCAN_PLANNING_TIMEOUT_SECS_ENV,
-    NEXUS_ICEBERG_TABLES_ENV, NEXUS_SERVER_ADMISSION_GRANT_MIN_ENV, NEXUS_SERVER_ADMISSION_GRANT_WANT_ENV,
-    NEXUS_SERVER_ADMISSION_MAX_QUERIES_PER_DEVICE_ENV, NEXUS_SERVER_ADMISSION_PINNED_DEVICE_ENV,
-    NEXUS_SERVER_ADMISSION_PLACEMENT_POLICY_ENV, NEXUS_SERVER_ADMISSION_SLOT_GUARANTEE_ENV,
-    NEXUS_SERVER_ADMISSION_WAIT_TIMEOUT_MS_ENV, NEXUS_SERVER_ADMISSION_WORKLOAD_PROFILE_ENV, NEXUS_SERVER_BIND_ENV,
-    NEXUS_SERVER_CONFIG_FILE_ENV, NEXUS_SERVER_CUGRAPH_CONSTRUCTION_POLICY_ENV, NEXUS_SERVER_CUGRAPH_DIRECTED_ENV,
-    NEXUS_SERVER_CUGRAPH_ENABLED_ENV, NEXUS_SERVER_CUGRAPH_RENUMBER_ENV, NEXUS_SERVER_DEVICE_BUDGET_FRACTION_ENV,
-    NEXUS_SERVER_GPU_DEVICES_ENV, NEXUS_SERVER_HOST_EXECUTION_QOS_MAX_CONCURRENT_STATEMENTS_ENV,
-    NEXUS_SERVER_HOST_EXECUTION_QOS_WAIT_TIMEOUT_MS_ENV, NEXUS_SERVER_LOG_ENV, NEXUS_SERVER_MAX_CONCURRENT_QUERIES_ENV,
-    NEXUS_SERVER_MAX_IN_FLIGHT_ENV, NEXUS_SERVER_NATIVE_CONFIG_OPTIONS, NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES_ENV,
+    CugraphServerConfig, NEXUS_ICEBERG_CATALOG_KIND_ENV, NEXUS_ICEBERG_CATALOG_NAME_ENV,
+    NEXUS_ICEBERG_GLUE_CATALOG_ID_ENV, NEXUS_ICEBERG_GLUE_CATALOG_NAME_ENV, NEXUS_ICEBERG_GLUE_DATABASE_ENV,
+    NEXUS_ICEBERG_GLUE_TABLES_ENV, NEXUS_ICEBERG_GLUE_URI_ENV, NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV,
+    NEXUS_ICEBERG_NAMESPACE_ENV, NEXUS_ICEBERG_REST_CATALOG_HANDLE_ENV, NEXUS_ICEBERG_REST_PREFIX_ENV,
+    NEXUS_ICEBERG_REST_TOKEN_ENV, NEXUS_ICEBERG_REST_URI_ENV, NEXUS_ICEBERG_S3_CREDENTIAL_SOURCE_ENV,
+    NEXUS_ICEBERG_S3_ENDPOINT_ENV, NEXUS_ICEBERG_S3_PATH_STYLE_ENV, NEXUS_ICEBERG_S3_REGION_ENV,
+    NEXUS_ICEBERG_SCAN_PLANNING_TIMEOUT_SECS_ENV, NEXUS_ICEBERG_TABLES_ENV, NEXUS_SERVER_ADMISSION_GRANT_MIN_ENV,
+    NEXUS_SERVER_ADMISSION_GRANT_WANT_ENV, NEXUS_SERVER_ADMISSION_MAX_QUERIES_PER_DEVICE_ENV,
+    NEXUS_SERVER_ADMISSION_PINNED_DEVICE_ENV, NEXUS_SERVER_ADMISSION_PLACEMENT_POLICY_ENV,
+    NEXUS_SERVER_ADMISSION_SLOT_GUARANTEE_ENV, NEXUS_SERVER_ADMISSION_WAIT_TIMEOUT_MS_ENV,
+    NEXUS_SERVER_ADMISSION_WORKLOAD_PROFILE_ENV, NEXUS_SERVER_BIND_ENV, NEXUS_SERVER_CONFIG_FILE_ENV,
+    NEXUS_SERVER_CUGRAPH_CONSTRUCTION_POLICY_ENV, NEXUS_SERVER_CUGRAPH_DIRECTED_ENV, NEXUS_SERVER_CUGRAPH_ENABLED_ENV,
+    NEXUS_SERVER_CUGRAPH_RENUMBER_ENV, NEXUS_SERVER_DEVICE_BUDGET_FRACTION_ENV, NEXUS_SERVER_GPU_DEVICES_ENV,
+    NEXUS_SERVER_HOST_EXECUTION_QOS_MAX_CONCURRENT_STATEMENTS_ENV, NEXUS_SERVER_HOST_EXECUTION_QOS_WAIT_TIMEOUT_MS_ENV,
+    NEXUS_SERVER_LOG_ENV, NEXUS_SERVER_MAX_CONCURRENT_QUERIES_ENV, NEXUS_SERVER_MAX_IN_FLIGHT_ENV,
+    NEXUS_SERVER_NATIVE_CONFIG_OPTIONS, NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES_ENV,
     NEXUS_SERVER_NATIVE_GRAPH_CACHE_MAX_RETAINED_BYTES_ENV, NEXUS_SERVER_NATIVE_MAX_RETRY_ATTEMPTS_ENV,
     NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV,
     NEXUS_SERVER_NATIVE_MAX_SOURCE_READS_IN_FLIGHT_ENV, NEXUS_SERVER_NATIVE_MEMORY_POLICY_ENV,
@@ -68,6 +63,10 @@ pub use config::{
     NEXUS_SERVER_WORKSPACE_BACKING_CATALOG_ENV, NEXUS_SERVER_WORKSPACE_BACKING_SCHEMA_ENV,
     NEXUS_SERVER_WORKSPACE_CATALOG_ENV, NEXUS_SERVER_WORKSPACE_SCHEMA_ENV, NexusServerNativeConfigOption, ServerConfig,
     ServerNativeConfigScope, ServerObservabilityConfig, WorkspaceOverlayConfig,
+};
+#[cfg(feature = "iceberg")]
+pub use config::{
+    GlueServerBackendConfig, IcebergCatalogBackendConfig, IcebergServerConfig, IcebergTableRegistrationConfig,
 };
 pub use diagnostics::{
     FlightSqlNativeNotSupportedClass, log_native_planning_report, log_native_planning_report_for_tables,
@@ -235,7 +234,6 @@ impl FlightSqlServerBuilder {
             config.statement_ticket_ttl,
             auth_interceptor,
             io_lifecycle,
-            #[cfg(feature = "cugraph")]
             config.cugraph.as_ref().map(|cugraph| {
                 session::cugraph_sql_config(cugraph, native_optimizer_config.native_execution_config().clone())
             }),
@@ -815,7 +813,7 @@ fn log_server_config_snapshot(config: &ServerConfig) {
                 native_source_chunk_planning_mode = %native_execution.source_chunk_planning_mode(),
                 native_statistical_aggregate_execution_mode = %native_execution.statistical_aggregate_execution_mode(),
                 cugraph_enabled = cugraph_enabled(config),
-                cugraph_registry_algorithm_count = cugraph_registry_algorithm_count(),
+                cugraph_registry_algorithm_count = cugraph_registry_algorithm_count(config),
                 iceberg_enabled = true,
                 iceberg_catalog_name = %iceberg.catalog_name,
                 iceberg_catalog_type = %snapshot.catalog_type,
@@ -858,7 +856,7 @@ fn log_server_config_snapshot(config: &ServerConfig) {
             native_source_chunk_planning_mode = %native_execution.source_chunk_planning_mode(),
             native_statistical_aggregate_execution_mode = %native_execution.statistical_aggregate_execution_mode(),
             cugraph_enabled = cugraph_enabled(config),
-            cugraph_registry_algorithm_count = cugraph_registry_algorithm_count(),
+            cugraph_registry_algorithm_count = cugraph_registry_algorithm_count(config),
             iceberg_enabled = false,
             "server config snapshot"
         ),
@@ -898,19 +896,13 @@ fn log_server_config_snapshot(config: &ServerConfig) {
         native_source_chunk_planning_mode = %native_execution.source_chunk_planning_mode(),
         native_statistical_aggregate_execution_mode = %native_execution.statistical_aggregate_execution_mode(),
         cugraph_enabled = cugraph_enabled(config),
-        cugraph_registry_algorithm_count = cugraph_registry_algorithm_count(),
+        cugraph_registry_algorithm_count = cugraph_registry_algorithm_count(config),
         "server config snapshot"
     );
 }
 
-#[cfg(feature = "cugraph")]
 fn cugraph_enabled(config: &ServerConfig) -> bool {
     config.cugraph.is_some()
-}
-
-#[cfg(not(feature = "cugraph"))]
-fn cugraph_enabled(_config: &ServerConfig) -> bool {
-    false
 }
 
 /// Emit a one-shot startup WARN when this binary was built with the `cugraph`
@@ -919,7 +911,8 @@ fn cugraph_enabled(_config: &ServerConfig) -> bool {
 /// `cugraph_*` table functions are never registered and queries fail with a
 /// not-found error, which is easy to misread as a build problem when the
 /// feature is actually compiled in. The cfg-gated definitions keep this a
-/// no-op on builds without the feature (where the rebuild hint applies instead).
+/// no-op on feature-off builds, where enabling the runtime setting instead
+/// registers the public frontend and returns its capability error at execution.
 #[cfg(feature = "cugraph")]
 fn warn_if_cugraph_built_but_disabled(config: &ServerConfig) {
     if config.cugraph.is_some() {
@@ -937,14 +930,8 @@ fn warn_if_cugraph_built_but_disabled(config: &ServerConfig) {
 #[cfg(not(feature = "cugraph"))]
 fn warn_if_cugraph_built_but_disabled(_config: &ServerConfig) {}
 
-#[cfg(feature = "cugraph")]
-fn cugraph_registry_algorithm_count() -> usize {
-    crate::cugraph_sql::CUGRAPH_OPERATION_REGISTRY.len()
-}
-
-#[cfg(not(feature = "cugraph"))]
-fn cugraph_registry_algorithm_count() -> usize {
-    0
+fn cugraph_registry_algorithm_count(config: &ServerConfig) -> usize {
+    config.cugraph.as_ref().map_or(0, |_| crate::cugraph_sql::CUGRAPH_OPERATION_REGISTRY.len())
 }
 
 struct NativeMemorySnapshot {

@@ -1,5 +1,6 @@
 //! SQL-facing cuGraph table-function contracts.
 
+#[cfg(feature = "cugraph")]
 mod exec;
 mod gpu_family;
 #[doc(hidden)]
@@ -12,10 +13,13 @@ use datafusion::{
     common::{DataFusionError, Result, ScalarValue, TableReference},
     logical_expr::Expr,
 };
+#[cfg(feature = "cugraph")]
 pub use exec::CugraphAlgoExec;
 pub(crate) use gpu_family::CugraphGpuFunctionFamily;
 pub use parser::parse_cugraph_algorithm_spec;
-pub use table_function::{CugraphAlgoTableProvider, cugraph_table_functions, register_cugraph_udtfs};
+#[cfg(feature = "cugraph")]
+pub use table_function::CugraphAlgoTableProvider;
+pub use table_function::{cugraph_table_functions, register_cugraph_udtfs};
 pub use types::{
     CUGRAPH_BETWEENNESS_CENTRALITY_FUNCTION, CUGRAPH_BFS_FUNCTION, CUGRAPH_CORE_NUMBER_FUNCTION,
     CUGRAPH_COSINE_FUNCTION, CUGRAPH_DEGREES_ALL_FUNCTION, CUGRAPH_ECG_FUNCTION,
@@ -45,6 +49,25 @@ pub(crate) use types::{
 };
 
 use crate::error::{Error, ErrorCode};
+
+/// Stable feature-off execution rejection for a cuGraph SQL operation.
+///
+/// The frontend deliberately remains available without native cuGraph support,
+/// so this boundary must be reached before a graph source is scanned, staged,
+/// or handed to a native executor.
+#[cfg(not(feature = "cugraph"))]
+pub(crate) fn cugraph_feature_disabled(algorithm: CugraphAlgorithm) -> DataFusionError {
+    Error::new(
+        ErrorCode::UnsupportedOperator,
+        "datafusion_nexus.cugraph_sql.execute",
+        "cuGraph SQL execution requires the cugraph Cargo feature",
+    )
+    .with_log_safe_fact("cugraph_operation", algorithm.function_name())
+    .with_log_safe_fact("reason", "required_feature_disabled")
+    .with_log_safe_fact("required_feature", "cugraph")
+    .with_log_safe_fact("host_fallback", "disabled")
+    .into()
+}
 
 fn plan_error(message: impl Into<String>) -> DataFusionError {
     DataFusionError::Plan(message.into())

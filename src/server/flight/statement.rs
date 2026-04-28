@@ -52,7 +52,6 @@ impl DatafusionNexusFlightSqlService {
             session_extension,
         )
         .expect("server query planning should install a session config derived from the same optimizer config");
-        #[cfg(feature = "cugraph")]
         let builder = if let Some(cugraph_sql_config) = &self.cugraph_sql_config {
             builder.with_cugraph_sql(cugraph_sql_config.clone().with_native_execution_config(execution_config))
         } else {

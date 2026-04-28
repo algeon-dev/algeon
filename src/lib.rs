@@ -19,7 +19,6 @@
 
 pub mod backend;
 pub mod capability;
-#[cfg(feature = "cugraph")]
 pub mod cugraph_sql;
 pub mod cuvs_sql;
 pub mod error;

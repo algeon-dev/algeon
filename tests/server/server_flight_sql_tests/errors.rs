@@ -134,6 +134,52 @@ async fn unknown_table_errors_are_not_found_with_structured_code() {
     assert_no_diagnostic_fields(status.message());
 }
 
+#[cfg(not(feature = "cugraph"))]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn feature_off_cugraph_ticket_returns_structured_capability_error() {
+    let (listener, addr) = free_local_addr();
+    let mut config = ServerConfig::from_env_get(|name| {
+        (name == datafusion_nexus::server::NEXUS_SERVER_CUGRAPH_ENABLED_ENV).then(|| "true".to_string())
+    })
+    .unwrap();
+    config.bind_addr = addr;
+
+    let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
+    let mut client = connect_with_retry(addr).await;
+    execute_batches(
+        &mut client,
+        "CREATE VIEW feature_off_cugraph_edges AS \
+         SELECT * FROM (VALUES (0::BIGINT, 1::BIGINT), (1::BIGINT, 2::BIGINT)) AS t(src, dst)",
+    )
+    .await;
+
+    let flight_info = client
+        .execute("SELECT * FROM cugraph_pagerank('feature_off_cugraph_edges')".to_string(), None)
+        .await
+        .expect("the enabled feature-off frontend must issue a statement ticket");
+    let ticket = flight_info.endpoint.first().and_then(|endpoint| endpoint.ticket.clone()).unwrap();
+    let error = client
+        .do_get(ticket)
+        .await
+        .expect("ticket execution must begin before the disabled executor rejects it")
+        .try_collect::<Vec<_>>()
+        .await
+        .expect_err("feature-off cuGraph execution must reject through the Flight result stream");
+
+    server.abort();
+
+    let status = unwrap_flight_status(error);
+    assert_eq!(status.code(), Code::Unimplemented);
+    assert_query_id_metadata(&status);
+    assert_error_metadata(&status, "unsupported_operator", "unsupported", "permanent");
+    assert_eq!(
+        status.metadata().get(ERROR_OPERATION_METADATA_KEY).and_then(|value| value.to_str().ok()),
+        Some("datafusion_nexus.cugraph_sql.execute")
+    );
+    assert!(status.message().contains("cuGraph SQL execution requires the cugraph Cargo feature"));
+    assert_no_diagnostic_fields(status.message());
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn missing_column_errors_are_invalid_input_with_structured_code() {
     let (listener, addr) = free_local_addr();

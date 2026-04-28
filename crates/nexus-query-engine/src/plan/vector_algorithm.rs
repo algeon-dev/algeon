@@ -71,6 +71,15 @@ impl CuvsRelationRole {
             Self::Input => "input",
         }
     }
+
+    /// Canonical documentation description for this logical relation role.
+    pub const fn description(self) -> &'static str {
+        match self {
+            Self::Dataset => "Dense-vector rows searched by the exact kNN operation.",
+            Self::Queries => "Dense-vector query rows matched against the evaluated dataset.",
+            Self::Input => "Dense-vector rows consumed by the fit-and-transform operation.",
+        }
+    }
 }
 
 /// Only relation-valued subqueries are admitted by the SQL surface.
@@ -133,6 +142,19 @@ pub struct CuvsOptionDefinition {
     pub name: &'static str,
     pub required: bool,
     pub kind: CuvsOptionKind,
+    /// User-facing semantics projected through the unified GPU descriptor.
+    pub description: &'static str,
+}
+
+/// One documented output field in a cuVS relational result.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CuvsOutputFieldDefinition {
+    pub name: &'static str,
+    pub data_type: &'static str,
+    pub nullable: bool,
+    /// Literal option that determines how many physical output fields exist.
+    pub repeats: Option<&'static str>,
+    pub description: &'static str,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -157,10 +179,23 @@ impl CuvsOptionValidationError {
 pub struct CuvsOperationDescriptor {
     pub operation: CuvsOperation,
     pub sql_function_name: &'static str,
+    /// Human-readable function title; SQL names remain canonical identifiers.
+    pub display_name: &'static str,
+    /// Short catalog summary.
+    pub summary: &'static str,
+    /// Concrete selection guidance for the generated reference page.
+    pub use_this_when: &'static str,
     pub relation_roles: &'static [CuvsRelationRole],
     pub relation_argument_syntax: CuvsRelationArgumentSyntax,
     pub output_contract: CuvsOutputContract,
     pub options: &'static [CuvsOptionDefinition],
+    pub output_fields: &'static [CuvsOutputFieldDefinition],
+    /// Generic SQL that demonstrates the real execution syntax, not only the
+    /// metadata-validation envelope.
+    pub quickstart_sql: &'static str,
+    /// Static and data-dependent lifecycle constraints that apply to this
+    /// operation in addition to the common relation/validation contract.
+    pub limitations: &'static [&'static str],
 }
 
 fn cuvs_vector_relation_binding_schema() -> Value {
@@ -169,18 +204,34 @@ fn cuvs_vector_relation_binding_schema() -> Value {
         "additionalProperties": false,
         "required": ["id", "vector"],
         "properties": {
-            "id": {"type": "string", "minLength": 1},
+            "id": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Non-null logical row ID column. IDs may repeat; result ordinals disambiguate physical rows."
+            },
             "vector": {
+                "description": "Choose exactly one dense-vector binding shape.",
                 "oneOf": [
                     {
                         "type": "object", "additionalProperties": false,
                         "required": ["columns"],
-                        "properties": {"columns": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}}}
+                        "properties": {
+                            "columns": {
+                                "type": "array", "minItems": 1, "uniqueItems": true,
+                                "description": "Ordered, unique non-null Float32 feature columns; order defines vector dimensions.",
+                                "items": {"type": "string", "minLength": 1}
+                            }
+                        }
                     },
                     {
                         "type": "object", "additionalProperties": false,
                         "required": ["column"],
-                        "properties": {"column": {"type": "string", "minLength": 1}}
+                        "properties": {
+                            "column": {
+                                "type": "string", "minLength": 1,
+                                "description": "One non-null FixedSizeList<Float32, D>, List<Float32>, or LargeList<Float32> column."
+                            }
+                        }
                     }
                 ]
             }
@@ -196,71 +247,210 @@ const KMEANS_INIT: &[&str] = &["kmeans++", "random"];
 const PCA_SOLVERS: &[&str] = &["cov_eig_dq", "cov_eig_jacobi"];
 
 const KNN_OPTIONS: &[CuvsOptionDefinition] = &[
-    CuvsOptionDefinition { name: "dataset", required: true, kind: CuvsOptionKind::RelationBinding },
-    CuvsOptionDefinition { name: "queries", required: true, kind: CuvsOptionKind::RelationBinding },
+    CuvsOptionDefinition {
+        name: "dataset",
+        required: true,
+        kind: CuvsOptionKind::RelationBinding,
+        description: "Names the dataset ID column and one dense-vector binding shape.",
+    },
+    CuvsOptionDefinition {
+        name: "queries",
+        required: true,
+        kind: CuvsOptionKind::RelationBinding,
+        description: "Names the query ID column and one dense-vector binding shape.",
+    },
     CuvsOptionDefinition {
         name: "k",
         required: true,
         kind: CuvsOptionKind::PositiveInteger { maximum: u32::MAX as u64, default: None },
+        description: "Number of neighbors returned for each evaluated query row.",
     },
     CuvsOptionDefinition {
         name: "metric",
         required: true,
         kind: CuvsOptionKind::Enum { values: KNN_METRICS, default: None },
+        description: "Distance or score metric. Distance metrics rank lower values first; inner product ranks higher values first.",
     },
 ];
 const KMEANS_OPTIONS: &[CuvsOptionDefinition] = &[
-    CuvsOptionDefinition { name: "input", required: true, kind: CuvsOptionKind::RelationBinding },
+    CuvsOptionDefinition {
+        name: "input",
+        required: true,
+        kind: CuvsOptionKind::RelationBinding,
+        description: "Names the input ID column and one dense-vector binding shape.",
+    },
     CuvsOptionDefinition {
         name: "n_clusters",
         required: true,
         kind: CuvsOptionKind::PositiveInteger { maximum: i32::MAX as u64, default: None },
+        description: "Number of clusters fitted for this one statement.",
     },
     CuvsOptionDefinition {
         name: "metric",
         required: false,
         kind: CuvsOptionKind::Enum { values: KMEANS_METRICS, default: Some("l2_expanded") },
+        description: "L2 distance form used while fitting and assigning the current input relation.",
     },
     CuvsOptionDefinition {
         name: "max_iter",
         required: false,
         kind: CuvsOptionKind::PositiveInteger { maximum: i32::MAX as u64, default: Some(100) },
+        description: "Maximum fitting iterations for this invocation.",
     },
-    CuvsOptionDefinition { name: "tol", required: false, kind: CuvsOptionKind::NonnegativeNumber { default: 0.0001 } },
+    CuvsOptionDefinition {
+        name: "tol",
+        required: false,
+        kind: CuvsOptionKind::NonnegativeNumber { default: 0.0001 },
+        description: "Non-negative convergence tolerance used by the fitted model.",
+    },
     CuvsOptionDefinition {
         name: "n_init",
         required: false,
         kind: CuvsOptionKind::PositiveInteger { maximum: i32::MAX as u64, default: Some(1) },
+        description: "Number of initialization attempts performed within this call.",
     },
     CuvsOptionDefinition {
         name: "init",
         required: false,
         kind: CuvsOptionKind::Enum { values: KMEANS_INIT, default: Some("kmeans++") },
+        description: "Centroid initialization strategy for this fitted model.",
     },
 ];
 const PCA_OPTIONS: &[CuvsOptionDefinition] = &[
-    CuvsOptionDefinition { name: "input", required: true, kind: CuvsOptionKind::RelationBinding },
+    CuvsOptionDefinition {
+        name: "input",
+        required: true,
+        kind: CuvsOptionKind::RelationBinding,
+        description: "Names the input ID column and one dense-vector binding shape.",
+    },
     CuvsOptionDefinition {
         name: "n_components",
         required: true,
         kind: CuvsOptionKind::PositiveInteger { maximum: i32::MAX as u64, default: None },
+        description: "Number of principal-component columns emitted as pc_0 through pc_<n_components - 1>.",
     },
-    CuvsOptionDefinition { name: "whiten", required: false, kind: CuvsOptionKind::Boolean { default: Some(false) } },
+    CuvsOptionDefinition {
+        name: "whiten",
+        required: false,
+        kind: CuvsOptionKind::Boolean { default: Some(false) },
+        description: "Whether the query-local transformed components are whitened.",
+    },
     CuvsOptionDefinition {
         name: "solver",
         required: false,
         kind: CuvsOptionKind::Enum { values: PCA_SOLVERS, default: Some("cov_eig_dq") },
+        description: "Covariance eigensolver used for this fit-transform call.",
     },
-    CuvsOptionDefinition { name: "tol", required: false, kind: CuvsOptionKind::NonnegativeNumber { default: 0.0 } },
+    CuvsOptionDefinition {
+        name: "tol",
+        required: false,
+        kind: CuvsOptionKind::NonnegativeNumber { default: 0.0 },
+        description: "Non-negative eigensolver tolerance.",
+    },
     CuvsOptionDefinition {
         name: "n_iterations",
         required: false,
         kind: CuvsOptionKind::PositiveInteger { maximum: i32::MAX as u64, default: Some(15) },
+        description: "Maximum eigensolver iterations for this invocation.",
     },
     CuvsOptionDefinition {
         name: "flip_signs_based_on_u",
         required: false,
         kind: CuvsOptionKind::Boolean { default: Some(false) },
+        description: "Whether cuVS applies its U-based component-sign convention.",
+    },
+];
+
+const KNN_OUTPUT_FIELDS: &[CuvsOutputFieldDefinition] = &[
+    CuvsOutputFieldDefinition {
+        name: "query_ordinal",
+        data_type: "UInt64",
+        nullable: false,
+        repeats: None,
+        description: "Zero-based ordinal of the evaluated query row; it disambiguates duplicate query IDs.",
+    },
+    CuvsOutputFieldDefinition {
+        name: "query_id",
+        data_type: "same_as_queries.id",
+        nullable: false,
+        repeats: None,
+        description: "Logical ID copied from the queries relation.",
+    },
+    CuvsOutputFieldDefinition {
+        name: "neighbor_ordinal",
+        data_type: "UInt64",
+        nullable: false,
+        repeats: None,
+        description: "Zero-based ordinal of the matched dataset row; it disambiguates duplicate dataset IDs.",
+    },
+    CuvsOutputFieldDefinition {
+        name: "neighbor_id",
+        data_type: "same_as_dataset.id",
+        nullable: false,
+        repeats: None,
+        description: "Logical ID copied from the matched dataset row.",
+    },
+    CuvsOutputFieldDefinition {
+        name: "rank",
+        data_type: "UInt32",
+        nullable: false,
+        repeats: None,
+        description: "One-based neighbor rank within a query. Order consumers explicitly by query_ordinal, rank.",
+    },
+    CuvsOutputFieldDefinition {
+        name: "distance",
+        data_type: "Float32",
+        nullable: false,
+        repeats: None,
+        description: "Metric value; smaller is better for distance metrics, while inner_product prefers larger values.",
+    },
+];
+
+const KMEANS_OUTPUT_FIELDS: &[CuvsOutputFieldDefinition] = &[
+    CuvsOutputFieldDefinition {
+        name: "row_ordinal",
+        data_type: "UInt64",
+        nullable: false,
+        repeats: None,
+        description: "Zero-based ordinal of the evaluated input row; it disambiguates duplicate IDs.",
+    },
+    CuvsOutputFieldDefinition {
+        name: "id",
+        data_type: "same_as_input.id",
+        nullable: false,
+        repeats: None,
+        description: "Logical ID copied from the input relation.",
+    },
+    CuvsOutputFieldDefinition {
+        name: "cluster_id",
+        data_type: "Int32",
+        nullable: false,
+        repeats: None,
+        description: "Query-local numeric assignment label, not a stable business or topic identifier.",
+    },
+];
+
+const PCA_OUTPUT_FIELDS: &[CuvsOutputFieldDefinition] = &[
+    CuvsOutputFieldDefinition {
+        name: "row_ordinal",
+        data_type: "UInt64",
+        nullable: false,
+        repeats: None,
+        description: "Zero-based ordinal of the evaluated input row; it disambiguates duplicate IDs.",
+    },
+    CuvsOutputFieldDefinition {
+        name: "id",
+        data_type: "same_as_input.id",
+        nullable: false,
+        repeats: None,
+        description: "Logical ID copied from the input relation.",
+    },
+    CuvsOutputFieldDefinition {
+        name: "pc_<index>",
+        data_type: "Float32",
+        nullable: false,
+        repeats: Some("n_components"),
+        description: "One transformed principal-component value; the field count is set by the literal n_components option.",
     },
 ];
 
@@ -293,26 +483,71 @@ pub const CUVS_OPERATION_REGISTRY: &[CuvsOperationDescriptor] = &[
     CuvsOperationDescriptor {
         operation: CuvsOperation::BruteForceKnn,
         sql_function_name: CUVS_BRUTE_FORCE_KNN_FUNCTION,
+        display_name: "Brute-force kNN",
+        summary: "Exact brute-force nearest-neighbor search over dense vectors.",
+        use_this_when: "Use this when SQL can first filter a candidate relation and you need exact batch reranking, not a persistent ANN index.",
         relation_roles: KNN_RELATIONS,
         relation_argument_syntax: CuvsRelationArgumentSyntax::ParenthesizedSubquery,
         output_contract: CuvsOutputContract::BruteForceKnn,
         options: KNN_OPTIONS,
+        output_fields: KNN_OUTPUT_FIELDS,
+        quickstart_sql: r#"SELECT *
+FROM cuvs_brute_force_knn(
+  (SELECT item_id, d0, d1 FROM dataset_vectors),
+  (SELECT query_id, d0, d1 FROM query_vectors),
+  '{"dataset":{"id":"item_id","vector":{"columns":["d0","d1"]}},"queries":{"id":"query_id","vector":{"columns":["d0","d1"]}},"k":8,"metric":"l2_expanded"}'
+);"#,
+        limitations: &[
+            "Builds an exact query-local index over the evaluated dataset relation; it does not persist an ANN index or replace a vector database.",
+            "The evaluated dataset must be non-empty and k must not exceed its row count. An empty query relation may return an empty result with the stable schema.",
+            "Dataset and query vector dimensions must match after both relation children are evaluated.",
+        ],
     },
     CuvsOperationDescriptor {
         operation: CuvsOperation::KMeans,
         sql_function_name: CUVS_KMEANS_FUNCTION,
+        display_name: "KMeans",
+        summary: "K-means clustering assignments for dense vector rows.",
+        use_this_when: "Use this when one statement should fit clusters over its evaluated relation and immediately join or aggregate the assignments.",
         relation_roles: INPUT_RELATION,
         relation_argument_syntax: CuvsRelationArgumentSyntax::ParenthesizedSubquery,
         output_contract: CuvsOutputContract::KMeansAssignments,
         options: KMEANS_OPTIONS,
+        output_fields: KMEANS_OUTPUT_FIELDS,
+        quickstart_sql: r#"SELECT id, cluster_id
+FROM cuvs_kmeans(
+  (SELECT item_id, d0, d1 FROM input_vectors),
+  '{"input":{"id":"item_id","vector":{"columns":["d0","d1"]}},"n_clusters":8}'
+)
+ORDER BY row_ordinal;"#,
+        limitations: &[
+            "Fits a model and returns assignments within one statement; it does not return a reusable model, centroids, or inertia.",
+            "The evaluated input must be non-empty and n_clusters must not exceed its row count.",
+            "cluster_id values are query-local labels. Do not attach permanent business meaning to their numeric values.",
+        ],
     },
     CuvsOperationDescriptor {
         operation: CuvsOperation::Pca,
         sql_function_name: CUVS_PCA_FUNCTION,
+        display_name: "PCA",
+        summary: "Principal-component analysis transform for dense vector rows.",
+        use_this_when: "Use this when one statement should fit and transform its evaluated input relation for relational export or downstream visualization.",
         relation_roles: INPUT_RELATION,
         relation_argument_syntax: CuvsRelationArgumentSyntax::ParenthesizedSubquery,
         output_contract: CuvsOutputContract::PcaComponents,
         options: PCA_OPTIONS,
+        output_fields: PCA_OUTPUT_FIELDS,
+        quickstart_sql: r#"SELECT id, pc_0, pc_1
+FROM cuvs_pca(
+  (SELECT item_id, d0, d1 FROM input_vectors),
+  '{"input":{"id":"item_id","vector":{"columns":["d0","d1"]}},"n_components":2}'
+)
+ORDER BY row_ordinal;"#,
+        limitations: &[
+            "Fits and transforms the evaluated input in one statement; it does not return a reusable transform, components, or explained-variance metadata.",
+            "The evaluated input needs at least two rows and two dimensions, and n_components must not exceed the evaluated dimension.",
+            "Component sign orientation is not a semantic label. The output schema changes with the literal n_components option.",
+        ],
     },
 ];
 
@@ -325,7 +560,9 @@ impl CuvsOperationDescriptor {
         let mut properties = serde_json::Map::new();
         let mut required = Vec::new();
         for option in self.options {
-            properties.insert(option.name.to_string(), option_schema(option.kind));
+            let mut schema = option_schema(option.kind);
+            schema["description"] = Value::String(option.description.to_string());
+            properties.insert(option.name.to_string(), schema);
             if option.required {
                 required.push(Value::String(option.name.to_string()));
             }

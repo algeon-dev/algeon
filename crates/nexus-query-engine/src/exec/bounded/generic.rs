@@ -394,31 +394,15 @@ pub(in crate::exec::bounded) fn execute_bounded_generic_union(
 
 #[cfg(not(feature = "cugraph"))]
 fn execute_bounded_generic_graph_algorithm(
-    context: &ExecutionContext,
-    plan: &QueryPlan,
+    _context: &ExecutionContext,
+    _plan: &QueryPlan,
     node_id: NodeId,
     graph: &crate::plan::GraphAlgorithmNode,
-    gpu_inputs: &GpuResidentInputMap,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
+    _gpu_inputs: &GpuResidentInputMap,
+    _reservations: &mut ReservationTracker,
+    _metrics: &mut QueryMetrics,
 ) -> Result<ResidentGpuFrame> {
-    let input = execute_bounded_generic_node(context, plan, graph.input, gpu_inputs, reservations, metrics)?;
-    let ResidentGpuFrame { frame, reservation } = input;
-    let error =
-        match execute_graph_algorithm(context, node_id, graph, frame, std::collections::BTreeMap::new(), metrics) {
-            Ok(output) => {
-                drop(output);
-                QueryError::new(
-                    QueryErrorCode::UnsupportedOperator,
-                    "nexus_query_engine.bounded.graph_algorithm",
-                    "graph execution without cugraph feature unexpectedly succeeded",
-                )
-                .with_fact("node_id", node_id)
-            },
-            Err(error) => error,
-        };
-    reservations.release(reservation, metrics);
-    Err(error)
+    Err(graph_algorithm_feature_disabled(node_id, graph))
 }
 
 #[cfg(feature = "cugraph")]

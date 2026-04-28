@@ -179,7 +179,7 @@ fn descriptor_for_operation(operation: CuvsOperation, availability: GpuFunctionA
                 "name": role.as_str(),
                 "required": true,
                 "reference": {"type": "table"},
-                "description": relation_role_description(*role),
+                "description": role.description(),
             })
         })
         .collect::<Vec<_>>();
@@ -189,13 +189,14 @@ fn descriptor_for_operation(operation: CuvsOperation, availability: GpuFunctionA
         provider: CUVS_PROVIDER.to_string(),
         domain: CUVS_DOMAIN.to_string(),
         signature: signature(operation),
-        summary: summary(operation).to_string(),
+        summary: descriptor.summary.to_string(),
         relation_roles: Value::Array(relation_roles),
         argument_descriptions: json!([
             {
                 "name": "options_json",
                 "position": descriptor.relation_roles.len() + 1,
                 "type": "JSON string literal",
+                "required": true,
                 "description": "cuVS operation options and relation-column bindings"
             }
         ]),
@@ -203,7 +204,7 @@ fn descriptor_for_operation(operation: CuvsOperation, availability: GpuFunctionA
         result_schemas: result_schemas(operation),
         validation_request_schema: validation_request_schema(descriptor.relation_roles, options_schema),
         examples: examples(operation),
-        limitations: limitations(),
+        limitations: limitations(operation),
         availability,
     }
 }
@@ -220,45 +221,26 @@ fn signature(operation: CuvsOperation) -> String {
     format!("{}({roles})", operation.descriptor().sql_function_name)
 }
 
-fn summary(operation: CuvsOperation) -> &'static str {
-    match operation {
-        CuvsOperation::BruteForceKnn => "Exact brute-force nearest-neighbor search over dense vectors.",
-        CuvsOperation::KMeans => "K-means clustering assignments for dense vector rows.",
-        CuvsOperation::Pca => "Principal-component analysis transform for dense vector rows.",
-    }
-}
-
-fn relation_role_description(role: CuvsRelationRole) -> &'static str {
-    match role {
-        CuvsRelationRole::Dataset => "Indexed dense-vector dataset.",
-        CuvsRelationRole::Queries => "Dense-vector query relation.",
-        CuvsRelationRole::Input => "Dense-vector input relation.",
-    }
-}
-
 fn result_schemas(operation: CuvsOperation) -> Value {
-    let fields = match operation.descriptor().output_contract {
-        CuvsOutputContract::BruteForceKnn => json!([
-            {"name":"query_ordinal","data_type":"UInt64","nullable":false},
-            {"name":"query_id","data_type":"same_as_queries.id","nullable":false},
-            {"name":"neighbor_ordinal","data_type":"UInt64","nullable":false},
-            {"name":"neighbor_id","data_type":"same_as_dataset.id","nullable":false},
-            {"name":"rank","data_type":"UInt32","nullable":false},
-            {"name":"distance","data_type":"Float32","nullable":false}
-        ]),
-        CuvsOutputContract::KMeansAssignments => json!([
-            {"name":"row_ordinal","data_type":"UInt64","nullable":false},
-            {"name":"id","data_type":"same_as_input.id","nullable":false},
-            {"name":"cluster_id","data_type":"Int32","nullable":false}
-        ]),
-        CuvsOutputContract::PcaComponents => json!([
-            {"name":"row_ordinal","data_type":"UInt64","nullable":false},
-            {"name":"id","data_type":"same_as_input.id","nullable":false},
-            {"name":"pc_<index>","data_type":"Float32","nullable":false,"repeats":"n_components"}
-        ]),
-    };
+    let descriptor = operation.descriptor();
+    let fields = descriptor
+        .output_fields
+        .iter()
+        .map(|field| {
+            let mut field_json = json!({
+                "name": field.name,
+                "data_type": field.data_type,
+                "nullable": field.nullable,
+                "description": field.description,
+            });
+            if let Some(repeats) = field.repeats {
+                field_json["repeats"] = Value::String(repeats.to_string());
+            }
+            field_json
+        })
+        .collect::<Vec<_>>();
     json!({
-        "output_contract": output_contract_name(operation.descriptor().output_contract),
+        "output_contract": output_contract_name(descriptor.output_contract),
         "fields": fields,
     })
 }
@@ -297,6 +279,7 @@ fn validation_request_schema(roles: &[CuvsRelationRole], options_schema: Value) 
 }
 
 fn examples(operation: CuvsOperation) -> Value {
+    let descriptor = operation.descriptor();
     let options = match operation {
         CuvsOperation::BruteForceKnn => json!({
             "dataset":{"id":"item_id","vector":{"columns":["d0","d1"]}},
@@ -320,19 +303,31 @@ fn examples(operation: CuvsOperation) -> Value {
         .map(|role| (role.as_str().to_string(), json!({"table": format!("{}_vectors", role.as_str())})))
         .collect::<Map<_, _>>();
     json!([{
+        "quickstart": {
+            "display_name": descriptor.display_name,
+            "use_this_when": descriptor.use_this_when,
+            "sql": descriptor.quickstart_sql,
+        },
         "validation": {
-            "function_name": operation.descriptor().sql_function_name,
+            "function_name": descriptor.sql_function_name,
             "call": {"schema_version": 1, "relations": relations, "options": options}
         }
     }])
 }
 
-fn limitations() -> Value {
-    json!([
+fn limitations(operation: CuvsOperation) -> Value {
+    let common = [
         "Validation resolves named tables or views and reads schemas only; it does not execute relation scans or GPU work.",
         "Bounded cuVS execution is unavailable until the lower-level peak-memory preflight contract exists.",
-        "Execution relation arguments support parenthesized subqueries; dry-run validation accepts registered named relations only."
-    ])
+        "Execution relation arguments require parenthesized subqueries; dry-run validation accepts registered named relations only.",
+    ];
+    Value::Array(
+        common
+            .into_iter()
+            .chain(operation.descriptor().limitations.iter().copied())
+            .map(|limitation| Value::String(limitation.to_string()))
+            .collect(),
+    )
 }
 
 struct ResolvedSchemaOnlyInput {

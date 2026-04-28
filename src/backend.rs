@@ -231,7 +231,6 @@ impl NexusGpuBackend {
             )
             .with_source(error)
         })?;
-        #[cfg(feature = "cugraph")]
         let builder = {
             let mut builder = builder;
             reject_preexisting_cugraph_sql(&mut builder)?;
@@ -251,7 +250,6 @@ impl NexusGpuBackend {
         })
     }
 
-    #[cfg(feature = "cugraph")]
     pub fn install_on_with_cugraph_sql(
         &self,
         builder: SessionStateBuilder,
@@ -881,7 +879,6 @@ fn invalid_backend_config(field: &'static str, message: impl Into<String>) -> Er
     Error::new(ErrorCode::InvalidRequest, "datafusion_nexus.backend.config", message).with_fact("field", field)
 }
 
-#[cfg(feature = "cugraph")]
 fn reject_preexisting_cugraph_sql(builder: &mut SessionStateBuilder) -> Result<()> {
     let Some(functions) = builder.table_functions().as_ref() else {
         return Ok(());
@@ -901,7 +898,6 @@ fn reject_preexisting_cugraph_sql(builder: &mut SessionStateBuilder) -> Result<(
     .with_fact("remediation", "use install_on_with_cugraph_sql or call with_cugraph_sql after install_on"))
 }
 
-#[cfg(feature = "cugraph")]
 fn is_cugraph_sql_table_function_name(name: &str) -> bool {
     use crate::cugraph_sql::CugraphAlgorithm;
 

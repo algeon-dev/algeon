@@ -852,50 +852,52 @@ fn execute_node(
             execute_edge_normalize(context, node.id, edge_normalize, input, metrics)
         },
         PlanNode::GraphAlgorithm(graph) => {
+            #[cfg(not(feature = "cugraph"))]
+            return Err(graph_algorithm_feature_disabled(node.id, graph));
             #[cfg(feature = "cugraph")]
-            let (input, mut preparation_pin) = if let Some(raw_input_id) = graph_preparation_bypass_input(plan, graph) {
-                let raw_input = execute_node(context, plan, raw_input_id, gpu_inputs, scratch, metrics)?;
-                if let Some(pin) = resident_graph_cache_preparation_pin(context, &raw_input, &graph.spec)? {
-                    (raw_input, Some(pin))
-                } else {
-                    (execute_node(context, plan, graph.input, gpu_inputs, scratch, metrics)?, None)
+            {
+                let (input, mut preparation_pin) =
+                    if let Some(raw_input_id) = graph_preparation_bypass_input(plan, graph) {
+                        let raw_input = execute_node(context, plan, raw_input_id, gpu_inputs, scratch, metrics)?;
+                        if let Some(pin) = resident_graph_cache_preparation_pin(context, &raw_input, &graph.spec)? {
+                            (raw_input, Some(pin))
+                        } else {
+                            (execute_node(context, plan, graph.input, gpu_inputs, scratch, metrics)?, None)
+                        }
+                    } else {
+                        (execute_node(context, plan, graph.input, gpu_inputs, scratch, metrics)?, None)
+                    };
+                #[cfg(feature = "cugraph")]
+                if preparation_pin.is_none() {
+                    preparation_pin = resident_graph_cache_preparation_pin(context, &input, &graph.spec)?;
                 }
-            } else {
-                (execute_node(context, plan, graph.input, gpu_inputs, scratch, metrics)?, None)
-            };
-            #[cfg(feature = "cugraph")]
-            if preparation_pin.is_none() {
-                preparation_pin = resident_graph_cache_preparation_pin(context, &input, &graph.spec)?;
+                let side_inputs = graph
+                    .inputs
+                    .iter()
+                    .skip(1)
+                    .map(|input_id| {
+                        execute_node(context, plan, *input_id, gpu_inputs, scratch, metrics)
+                            .map(|frame| (*input_id, frame))
+                    })
+                    .collect::<Result<std::collections::BTreeMap<_, _>>>()?;
+                #[cfg(feature = "cugraph")]
+                let result = if let Some(preparation_pin) = preparation_pin.as_ref() {
+                    execute_graph_algorithm_cache_hit(
+                        context,
+                        node.id,
+                        graph,
+                        input,
+                        side_inputs,
+                        preparation_pin.pin_id(),
+                        metrics,
+                    )
+                } else {
+                    execute_graph_algorithm(context, node.id, graph, input, side_inputs, metrics)
+                };
+                #[cfg(feature = "cugraph")]
+                drop(preparation_pin);
+                Ok(result.map_err(|error| error.with_fact("node_id", node.id))?)
             }
-            #[cfg(not(feature = "cugraph"))]
-            let input = execute_node(context, plan, graph.input, gpu_inputs, scratch, metrics)?;
-            let side_inputs = graph
-                .inputs
-                .iter()
-                .skip(1)
-                .map(|input_id| {
-                    execute_node(context, plan, *input_id, gpu_inputs, scratch, metrics).map(|frame| (*input_id, frame))
-                })
-                .collect::<Result<std::collections::BTreeMap<_, _>>>()?;
-            #[cfg(feature = "cugraph")]
-            let result = if let Some(preparation_pin) = preparation_pin.as_ref() {
-                execute_graph_algorithm_cache_hit(
-                    context,
-                    node.id,
-                    graph,
-                    input,
-                    side_inputs,
-                    preparation_pin.pin_id(),
-                    metrics,
-                )
-            } else {
-                execute_graph_algorithm(context, node.id, graph, input, side_inputs, metrics)
-            };
-            #[cfg(feature = "cugraph")]
-            drop(preparation_pin);
-            #[cfg(not(feature = "cugraph"))]
-            let result = execute_graph_algorithm(context, node.id, graph, input, side_inputs, metrics);
-            Ok(result.map_err(|error| error.with_fact("node_id", node.id))?)
         },
         PlanNode::VectorAlgorithm(vector) => {
             #[cfg(feature = "cuvs")]

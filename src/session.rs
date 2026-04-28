@@ -14,10 +14,9 @@ use datafusion::{
 };
 
 #[cfg(feature = "cugraph")]
-use crate::cugraph_sql::{CugraphGpuFunctionFamily, CugraphSqlConfig, cugraph_table_functions};
-#[cfg(feature = "cugraph")]
 use crate::native_exec::NexusNativeExecutionConfig;
 use crate::{
+    cugraph_sql::{CugraphGpuFunctionFamily, CugraphSqlConfig, cugraph_table_functions},
     cuvs_sql::{CuvsGpuFunctionFamily, CuvsQueryPlanner, cuvs_gpu_function_availability, cuvs_relation_planner},
     gpu_coverage_sql::gpu_coverage_table_function,
     gpu_functions::{GpuFunctionCatalog, gpu_metadata_table_functions, install_gpu_function_family},
@@ -83,7 +82,6 @@ pub trait NexusSessionStateBuilderExt {
     fn try_with_cuvs_sql(self) -> DataFusionResult<Self>
     where Self: Sized;
 
-    #[cfg(feature = "cugraph")]
     fn with_cugraph_sql(self, config: CugraphSqlConfig) -> Self;
 
     /// Register a caller-retained nexus native rule before DataFusion's final
@@ -132,8 +130,8 @@ impl NexusSessionStateBuilderExt for SessionStateBuilder {
         Ok(self.with_query_planner(Arc::new(CuvsQueryPlanner::default())))
     }
 
-    #[cfg(feature = "cugraph")]
     fn with_cugraph_sql(mut self, config: CugraphSqlConfig) -> Self {
+        #[cfg(feature = "cugraph")]
         let config = cugraph_config_with_builder_native_admission(&mut self, config);
         let functions = self.table_functions().get_or_insert_with(Default::default);
         for function in cugraph_table_functions(config.clone()) {

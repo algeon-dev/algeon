@@ -1,4 +1,3 @@
-#[cfg(feature = "cugraph")]
 #[test]
 fn server_cugraph_config_accepts_enabled_env() {
     use datafusion_nexus::cugraph_sql::CugraphGraphConstructionPolicy;
@@ -15,6 +14,42 @@ fn server_cugraph_config_accepts_enabled_env() {
     assert!(!cugraph.default_graph_options.directed);
     assert!(!cugraph.default_graph_options.renumber);
     assert_eq!(cugraph.default_graph_options.construction_policy, CugraphGraphConstructionPolicy::RawLibcugraph);
+}
+
+#[cfg(not(feature = "cugraph"))]
+#[tokio::test]
+async fn server_feature_off_cugraph_session_registers_unavailable_udtfs() {
+    let env = BTreeMap::from([(NEXUS_SERVER_CUGRAPH_ENABLED_ENV, "true".to_string())]);
+    let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
+    let ctx = datafusion_nexus::server::build_session_context(&config).await.unwrap();
+
+    assert!(ctx.state().table_functions().contains_key("cugraph_pagerank"));
+    let batches = ctx
+        .sql("SELECT available, unavailable_reason FROM gpu_list_functions() WHERE function_name = 'cugraph_pagerank'")
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    let available = batches[0].column(0).as_any().downcast_ref::<arrow::array::BooleanArray>().unwrap();
+    let reason = batches[0].column(1).as_any().downcast_ref::<arrow::array::StringArray>().unwrap();
+    assert!(!available.value(0));
+    assert_eq!(reason.value(0), "required_feature_disabled");
+
+    ctx.sql("CREATE VIEW feature_off_edges AS SELECT 0::BIGINT AS src, 1::BIGINT AS dst")
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    let dataframe = ctx.sql("SELECT * FROM cugraph_pagerank('feature_off_edges')").await.unwrap();
+    let error = dataframe.collect().await.expect_err("feature-off cuGraph SQL must reject execution");
+    let typed = error.find_nexus_error().unwrap_or_else(|| panic!("missing typed feature error: {error:?}"));
+    assert_eq!(typed.code(), ErrorCode::UnsupportedOperator);
+    assert_eq!(typed.operation(), "datafusion_nexus.cugraph_sql.execute");
+    assert_eq!(typed.fact_value("reason"), Some("required_feature_disabled"));
+    assert_eq!(typed.fact_value("required_feature"), Some("cugraph"));
+    assert_eq!(typed.fact_value("host_fallback"), Some("disabled"));
 }
 
 #[tokio::test]
