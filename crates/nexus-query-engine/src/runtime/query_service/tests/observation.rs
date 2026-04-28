@@ -1,6 +1,6 @@
 #[test]
 fn unhealthy_device_rejects_query_admission_before_grant_or_queue() {
-    let service = test_service(1, 8);
+    let service = runtime_test_service(1, 8);
     let scope = cudf::testing::device_safety::DeviceSafetyTestScope::install([]);
     let device = cudf::testing::device_safety::injected_device_id(service.config().device_ordinal as i32)
         .expect("isolated device health owner");

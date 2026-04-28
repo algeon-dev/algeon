@@ -716,6 +716,234 @@ async fn query_handle_gpu_pool_is_counted_and_rejects_work_after_finish() {
     let replacement = service.admit_query("tenant").expect("the final query-handle GPU pool drop releases admission");
     drop(replacement);
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn admission_without_runtime_context_releases_without_waiting_for_gpu_worker() {
+    let service = try_guaranteed_runtime_test_service().expect("single-worker guaranteed service");
+    let pool = service
+        .inner
+        .resources
+        .as_ref()
+        .unwrap()
+        .gpu_execution_pool_for_device(0)
+        .expect("service owns the device GPU execution pool");
+    assert_eq!(pool.snapshot().worker_count, 1);
+
+    let release_blocker = Arc::new(tokio::sync::Semaphore::new(0));
+    let blocker_release = Arc::clone(&release_blocker);
+    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+    let (finished_tx, finished_rx) = tokio::sync::oneshot::channel();
+    pool.spawn(GpuExecutionJobKind::Cleanup, async move {
+        let _ = started_tx.send(());
+        let _permit = blocker_release.acquire_owned().await.expect("cleanup blocker remains open");
+        let _ = finished_tx.send(());
+    })
+    .expect("cleanup blocker queues on the service pool");
+    started_rx.await.expect("cleanup blocker starts");
+
+    let direct = service.admit_query("tenant").expect("direct admission occupies the only slot");
+    let queued_service = service.clone();
+    let queued = tokio::spawn(async move { queued_service.admit_async("tenant").await });
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while service.admission_snapshot().unwrap().queued_queries != 1 {
+        assert!(Instant::now() < deadline, "second admission must queue behind the direct handle");
+        tokio::task::yield_now().await;
+    }
+
+    direct.finish();
+    drop(direct);
+    let admitted = tokio::time::timeout(Duration::from_millis(250), queued)
+        .await
+        .expect("direct admission release must not wait for a busy GPU worker")
+        .expect("queued admission task must not panic")
+        .expect("queued admission succeeds after the direct release");
+    drop(admitted);
+
+    release_blocker.add_permits(1);
+    finished_rx.await.expect("cleanup blocker finishes after release");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn root_context_release_waits_for_busy_gpu_worker() {
+    let service = try_guaranteed_runtime_test_service().expect("single-worker guaranteed service");
+    let handle = service.admit_query("tenant").expect("context-backed admission");
+    let context = handle.acquire_context().expect("root context acquisition");
+    drop(context);
+
+    let pool = service
+        .inner
+        .resources
+        .as_ref()
+        .unwrap()
+        .gpu_execution_pool_for_device(0)
+        .expect("service owns the device GPU execution pool");
+    assert_eq!(pool.snapshot().worker_count, 1);
+    let release_blocker = Arc::new(tokio::sync::Semaphore::new(0));
+    let blocker_release = Arc::clone(&release_blocker);
+    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+    pool.spawn(GpuExecutionJobKind::Cleanup, async move {
+        let _ = started_tx.send(());
+        let _permit = blocker_release.acquire_owned().await.expect("cleanup blocker remains open");
+    })
+    .expect("cleanup blocker queues on the service pool");
+    started_rx.await.expect("cleanup blocker starts");
+
+    let queued_service = service.clone();
+    let mut queued = tokio::spawn(async move { queued_service.admit_async("tenant").await });
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while service.admission_snapshot().unwrap().queued_queries != 1 {
+        assert!(Instant::now() < deadline, "second admission must queue behind the context-backed handle");
+        tokio::task::yield_now().await;
+    }
+
+    handle.finish();
+    drop(handle);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(250), &mut queued).await.is_err(),
+        "root-context cleanup must wait for the busy GPU worker"
+    );
+
+    release_blocker.add_permits(1);
+    let admitted = tokio::time::timeout(Duration::from_secs(1), queued)
+        .await
+        .expect("GPU cleanup releases the queued admission")
+        .expect("queued admission task must not panic")
+        .expect("queued admission succeeds after root-context cleanup");
+    drop(admitted);
+}
+
+#[cfg(feature = "cugraph")]
+fn warm_graph_reservation_test_key() -> crate::plan::ResidentGraphKey {
+    use arrow::datatypes::DataType;
+    use crate::plan::{
+        GraphAlgorithm, GraphAlgorithmParams, GraphAlgorithmSpec, GraphBfsParams, GraphConstructionOptions,
+        GraphConstructionPolicy, GraphEdgeColumnBindings, GraphResidencyDescriptor, GraphResidencyOrientation,
+    };
+
+    let spec = GraphAlgorithmSpec::with_stable_schema(
+        GraphAlgorithm::Bfs,
+        GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
+        GraphConstructionOptions { directed: true, renumber: true, policy: GraphConstructionPolicy::RawLibcugraph },
+        GraphAlgorithmParams::Bfs(Box::new(GraphBfsParams::new(0, None))),
+    );
+    let descriptor = GraphResidencyDescriptor::for_content_identity(
+        "query-service-warm-reservation-test-edges",
+        DataType::Int32,
+        None,
+        None,
+    )
+    .unwrap();
+    descriptor.resident_key(&spec, GraphResidencyOrientation::Forward)
+}
+
+#[cfg(feature = "cugraph")]
+fn cache_warm_graph_reservation_test_entry(
+    cache: &crate::runtime::cache::resident_graph::GpuResidentGraphCache,
+    context: &ExecutionContext,
+    resident_key: crate::plan::ResidentGraphKey,
+) {
+    use cugraph::cudf_interop::{SeriesGraphOptions, graph_from_series};
+
+    let runtime =
+        cache.companion_runtime_for_context(context, "nexus_query_engine.query_service.warm_reservation_test").unwrap();
+    let handle = cugraph::ResourceHandle::for_runtime(Arc::clone(&runtime)).unwrap();
+    let entered = handle.enter("nexus_query_engine.query_service.warm_reservation_test").unwrap();
+    let src = runtime.series(&[0_i32, 1, 2]).unwrap();
+    let dst = runtime.series(&[1_i32, 2, 0]).unwrap();
+    let graph =
+        graph_from_series::<cugraph::Forward>(&entered, &src, &dst, None, &SeriesGraphOptions::default().renumber())
+            .unwrap();
+    let parked = graph.park(&entered).unwrap();
+    drop(entered);
+    drop(handle);
+    drop(runtime);
+
+    assert_eq!(
+        cache.insert_if_absent(resident_key, context, parked, 1024).unwrap(),
+        crate::runtime::cache::resident_graph::GpuResidentGraphCacheInsert::Inserted
+    );
+}
+
+#[cfg(feature = "cugraph")]
+#[tokio::test(flavor = "current_thread")]
+async fn warm_graph_reservation_release_waits_for_gpu_cleanup() {
+    let service = QueryService::new_with_deployment(
+        QueryServiceConfig {
+            max_concurrent_queries: 1,
+            max_admission_queue_len: 8,
+            admission_wait_timeout: Duration::from_millis(500),
+            slot_guarantee: SlotGuarantee::GuaranteedMinimum,
+            resident_graph_cache_max_retained_bytes: Some(64 * 1024 * 1024),
+            ..QueryServiceConfig::default()
+        },
+        vec![QueryServiceTenantConfig::new("tenant", 8 * 1024 * 1024)],
+        non_gds_deployment(),
+    )
+    .expect("single-worker graph-cache service");
+    let resident_key = warm_graph_reservation_test_key();
+
+    let seed = service.admit_query("tenant").expect("seed admission");
+    let seed_context = seed.acquire_context().expect("seed context");
+    let context = seed_context.context().clone();
+    let cache = context.resident_graph_cache().expect("service graph cache");
+    cache_warm_graph_reservation_test_entry(&cache, &context, resident_key.clone());
+    drop(context);
+    drop(seed_context);
+    seed.finish();
+    drop(seed);
+    service.wait_for_stream_pools_idle(Duration::from_secs(5)).expect("seed cleanup returns its stream");
+
+    let warm = service
+        .admit_query_with_request(
+            "tenant",
+            QueryAdmissionRequest::new()
+                .with_placement_hint(QueryPlacementHint::for_resident_graph_key(resident_key))
+                .with_warm_graph_grant_request(QueryGrantRequest::new()),
+        )
+        .expect("warm graph cache hit reserves its stream and pin");
+    let pool = service
+        .inner
+        .resources
+        .as_ref()
+        .unwrap()
+        .gpu_execution_pool_for_device(0)
+        .expect("service owns the device GPU execution pool");
+    assert_eq!(pool.snapshot().worker_count, 1);
+    let release_blocker = Arc::new(tokio::sync::Semaphore::new(0));
+    let blocker_release = Arc::clone(&release_blocker);
+    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+    pool.spawn(GpuExecutionJobKind::Cleanup, async move {
+        let _ = started_tx.send(());
+        let _permit = blocker_release.acquire_owned().await.expect("cleanup blocker remains open");
+    })
+    .expect("cleanup blocker queues on the service pool");
+    started_rx.await.expect("cleanup blocker starts");
+
+    let queued_service = service.clone();
+    let mut queued = tokio::spawn(async move { queued_service.admit_async("tenant").await });
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while service.admission_snapshot().unwrap().queued_queries != 1 {
+        assert!(Instant::now() < deadline, "second admission must queue behind the warm handle");
+        tokio::task::yield_now().await;
+    }
+
+    warm.finish();
+    drop(warm);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(250), &mut queued).await.is_err(),
+        "warm reservation release must wait for the busy GPU worker"
+    );
+
+    release_blocker.add_permits(1);
+    let admitted = tokio::time::timeout(Duration::from_secs(1), queued)
+        .await
+        .expect("GPU cleanup releases the queued admission")
+        .expect("queued admission task must not panic")
+        .expect("queued admission succeeds after warm cleanup");
+    drop(admitted);
+    service.close_and_wait_for_quiescence(Duration::from_secs(5)).expect("graph-cache service shuts down");
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn query_handle_gpu_job_retains_query_epoch_until_joined() {
     let service = try_guaranteed_runtime_test_service_with_concurrency(2).expect("two-worker guaranteed service");

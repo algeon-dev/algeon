@@ -138,6 +138,16 @@ impl QueryHandleLifetime {
         if let Some(owner) = &release.observation_owner {
             owner.begin_query_cleanup();
         }
+        // An admitted query that never acquired a runtime context owns no
+        // CUDA-bound state. Its grant and device slot are ledger resources,
+        // so returning them must not wait behind unrelated GPU execution.
+        // This is important for callers that reserve admission before
+        // execution: releasing such a reservation is itself the event that
+        // unblocks the next query.
+        if !release.requires_gpu_cleanup() {
+            release.finish();
+            return;
+        }
         let pool = self
             .service
             .resources
@@ -206,6 +216,23 @@ struct QueryHandleRelease {
 }
 
 impl QueryHandleRelease {
+    fn requires_gpu_cleanup(&self) -> bool {
+        if self.root_context.is_some() {
+            return true;
+        }
+        // A warm graph reservation owns a leased stream and must retain the
+        // existing device-executor cleanup path even when execution did not
+        // reach context acquisition.
+        #[cfg(feature = "cugraph")]
+        {
+            self.warm_graph_reservation.is_some()
+        }
+        #[cfg(not(feature = "cugraph"))]
+        {
+            false
+        }
+    }
+
     fn finish(mut self) {
         // Remove the adaptive-growth clone before dropping our grant, while
         // retaining the active slot until every GPU-owned resource is gone.

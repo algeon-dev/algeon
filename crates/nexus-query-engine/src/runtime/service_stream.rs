@@ -1127,7 +1127,7 @@ mod tests {
             cudf::DeviceId::DEFAULT,
             cudf::runtime::DeviceFaultKind::FatalDeviceOperation,
             "injected_stream_reuse_fault",
-            Some(cudf_sys::CUDF_ERROR_FATAL_CUDA),
+            Some(cudf::runtime::DeviceFaultNativeStatus::Cudf(cudf_sys::CUDF_ERROR_FATAL_CUDA)),
         );
 
         let error = pool.acquire().expect_err("unhealthy device must reject idle runtime reuse");
@@ -1147,7 +1147,7 @@ mod tests {
             cudf::DeviceId::DEFAULT,
             cudf::runtime::DeviceFaultKind::FatalDeviceOperation,
             "injected_pre_reservation_fault",
-            Some(cudf_sys::CUDF_ERROR_FATAL_CUDA),
+            Some(cudf::runtime::DeviceFaultNativeStatus::Cudf(cudf_sys::CUDF_ERROR_FATAL_CUDA)),
         );
         let mut reserve_calls = 0;
 
@@ -1182,7 +1182,7 @@ mod tests {
                     cudf::DeviceId::DEFAULT,
                     cudf::runtime::DeviceFaultKind::FatalDeviceOperation,
                     "injected_warm_resident_graph_reservation_fault",
-                    Some(cudf_sys::CUDF_ERROR_FATAL_CUDA),
+                    Some(cudf::runtime::DeviceFaultNativeStatus::Cudf(cudf_sys::CUDF_ERROR_FATAL_CUDA)),
                 );
                 Ok(Some(()))
             })
