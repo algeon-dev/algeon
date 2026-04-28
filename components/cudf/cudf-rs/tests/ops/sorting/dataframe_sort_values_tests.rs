@@ -245,6 +245,33 @@ fn test_sort_values_nulls_first() {
 }
 
 #[test]
+fn test_sort_values_descending_null_placement() {
+    let ids = column_from_slice_nullable(&[0i32, 2, 3, 0, 1], &[false, true, true, false, true]);
+    let vals = column_from_slice(&[10i32, 20, 30, 40, 50]);
+    let df = crate::common::dataframe_from_columns(
+        vec!["id".to_string(), "val".to_string()],
+        vec![ids.unwrap(), vals.unwrap()],
+    )
+    .unwrap();
+
+    let nulls_first =
+        df.sort_values(["id"], SortOptions::new().with_descending(vec![true]).with_nulls_first(vec![true])).unwrap();
+    assert_eq!(
+        nulls_first.series("id").unwrap().to_optional_vec::<i32>().unwrap(),
+        vec![None, None, Some(3), Some(2), Some(1)]
+    );
+    assert_eq!(nulls_first.series("val").unwrap().to_vec_strict::<i32>().unwrap()[2..], [30, 20, 50]);
+
+    let nulls_last =
+        df.sort_values(["id"], SortOptions::new().with_descending(vec![true]).with_nulls_first(vec![false])).unwrap();
+    assert_eq!(
+        nulls_last.series("id").unwrap().to_optional_vec::<i32>().unwrap(),
+        vec![Some(3), Some(2), Some(1), None, None]
+    );
+    assert_eq!(nulls_last.series("val").unwrap().to_vec_strict::<i32>().unwrap()[..3], [30, 20, 50]);
+}
+
+#[test]
 fn test_sort_values_default_places_nulls_last() {
     let ids = column_from_slice_nullable(&[0i32, 2, 0, 1], &[false, true, false, true]);
     let vals = column_from_slice(&[10.0f64, 20.0, 30.0, 40.0]);

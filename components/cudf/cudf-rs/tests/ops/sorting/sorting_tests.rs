@@ -86,6 +86,34 @@ fn test_sort_by_key() {
 }
 
 #[test]
+fn test_sort_by_key_descending_null_placement() {
+    let keys = column_from_slice_nullable(&[0i32, 2, 3, 0, 1], &[false, true, true, false, true]).unwrap();
+    let value_keys = column_from_slice_nullable(&[0i32, 2, 3, 0, 1], &[false, true, true, false, true]).unwrap();
+    let vals = column_from_slice(&[10i32, 20, 30, 40, 50]).unwrap();
+
+    let keys_table = Table::from_columns(vec![keys]).unwrap();
+    let vals_table = Table::from_columns(vec![value_keys, vals]).unwrap();
+    let kv = keys_table.testing_view().unwrap();
+    let vv = vals_table.testing_view().unwrap();
+
+    let nulls_first = sorting::sort_by_key(&vv, &kv, Some(&[Order::Descending]), Some(&[NullOrder::Before])).unwrap();
+    let nulls_first_view = nulls_first.testing_view().unwrap();
+    assert_eq!(
+        nulls_first_view.column(0).unwrap().to_optional_vec::<i32>().unwrap(),
+        vec![None, None, Some(3), Some(2), Some(1)]
+    );
+    assert_eq!(nulls_first_view.column(1).unwrap().to_vec::<i32>().unwrap()[2..], [30, 20, 50]);
+
+    let nulls_last = sorting::sort_by_key(&vv, &kv, Some(&[Order::Descending]), Some(&[NullOrder::After])).unwrap();
+    let nulls_last_view = nulls_last.testing_view().unwrap();
+    assert_eq!(
+        nulls_last_view.column(0).unwrap().to_optional_vec::<i32>().unwrap(),
+        vec![Some(3), Some(2), Some(1), None, None]
+    );
+    assert_eq!(nulls_last_view.column(1).unwrap().to_vec::<i32>().unwrap()[..3], [30, 20, 50]);
+}
+
+#[test]
 fn test_sorted_order() {
     let col = column_from_slice(&[30i32, 10, 20]).unwrap();
     let table = Table::from_columns(vec![col]).unwrap();
