@@ -11,3 +11,6 @@ arrow = { version = "58", default-features = false, features = ["ipc"] }
 cudf = { path = "../dtggraph/submodules/cudf-rs/cudf-rs" }
 datafusion = { path = "../datafusion/datafusion/core" }
 futures = "0.3"
+
+[dev-dependencies]
+tokio = { version = "1.52", features = ["macros", "rt-multi-thread"] }

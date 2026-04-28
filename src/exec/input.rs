@@ -46,4 +46,11 @@ impl GpuIslandInput {
             Self::LocalParquetScan(_) => "cudf_parquet_reader",
         }
     }
+
+    pub(super) fn local_parquet_read_columns(&self) -> Option<&[String]> {
+        match self {
+            Self::ChildRecordBatches(_) => None,
+            Self::LocalParquetScan(scan) => Some(scan.read_columns()),
+        }
+    }
 }
