@@ -11,24 +11,38 @@ use datafusion::{
         expressions::{BinaryExpr, Column, Literal, NotExpr},
     },
     physical_optimizer::PhysicalOptimizerRule,
-    physical_plan::{ExecutionPlan, filter::FilterExec, projection::ProjectionExec},
+    physical_plan::{
+        ExecutionPlan,
+        aggregates::{AggregateExec, AggregateMode},
+        filter::FilterExec,
+        limit::LocalLimitExec,
+        projection::ProjectionExec,
+        sorts::sort::SortExec,
+    },
 };
 
 use crate::{
     error::{Error, ErrorCode},
+    exec::CudfExecutionConfig,
     policy::{FallbackReason, GpuFallbackPolicy},
     report::{GpuCandidate, PlanningReport},
+    session::CUDF_PHYSICAL_OPTIMIZER_RULE_NAME,
 };
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct CudfOptimizerConfig {
     fallback_policy: GpuFallbackPolicy,
     min_operators_per_island: usize,
+    execution_config: CudfExecutionConfig,
 }
 
 impl Default for CudfOptimizerConfig {
     fn default() -> Self {
-        Self { fallback_policy: GpuFallbackPolicy::default(), min_operators_per_island: 2 }
+        Self {
+            fallback_policy: GpuFallbackPolicy::default(),
+            min_operators_per_island: 2,
+            execution_config: CudfExecutionConfig::default(),
+        }
     }
 }
 
@@ -45,8 +59,23 @@ impl CudfOptimizerConfig {
         self.min_operators_per_island
     }
 
+    pub fn execution_config(&self) -> &CudfExecutionConfig {
+        &self.execution_config
+    }
+
     pub fn with_min_operators_per_island(mut self, min_operators_per_island: usize) -> Self {
         self.min_operators_per_island = min_operators_per_island.max(1);
+        self
+    }
+
+    pub fn with_execution_config(mut self, execution_config: CudfExecutionConfig) -> Self {
+        self.execution_config = execution_config;
+        self
+    }
+
+    /// Use one caller-provided cudf runtime for GPU islands produced by this optimizer.
+    pub fn with_runtime(mut self, runtime: cudf::Runtime) -> Self {
+        self.execution_config = self.execution_config.clone().with_runtime(runtime);
         self
     }
 }
@@ -89,7 +118,7 @@ impl PhysicalOptimizerRule for CudfPhysicalOptimizerRule {
     }
 
     fn name(&self) -> &str {
-        "datafusion_cudf_gpu_island"
+        CUDF_PHYSICAL_OPTIMIZER_RULE_NAME
     }
 
     fn schema_check(&self) -> bool {
@@ -149,7 +178,7 @@ fn handle_candidate(
     }
 
     report.push_rewritten(candidate.public);
-    crate::exec::CudfGpuIslandExec::try_new_from_plan(plan)
+    crate::exec::CudfGpuIslandExec::try_new_from_plan_with_execution_config(plan, config.execution_config().clone())
         .map(|plan| Arc::new(plan) as Arc<dyn ExecutionPlan>)
         .map_err(Into::into)
 }
@@ -158,8 +187,8 @@ fn rejection_reason(candidate: &InspectedCandidate, config: &CudfOptimizerConfig
     if config.fallback_policy == GpuFallbackPolicy::CpuOnly {
         return Some(FallbackReason::ExplicitCpuPolicy);
     }
-    if !candidate.supported_expressions {
-        return Some(FallbackReason::UnsupportedExpression);
+    if let Some(reason) = candidate.rejection {
+        return Some(reason);
     }
     if candidate.public.operator_count < config.min_operators_per_island {
         return Some(FallbackReason::InsufficientIslandSize);
@@ -183,20 +212,126 @@ fn candidate_rejected_error(candidate: &GpuCandidate, reason: FallbackReason, co
 #[derive(Debug, Clone)]
 struct InspectedCandidate {
     public: GpuCandidate,
-    supported_expressions: bool,
+    rejection: Option<FallbackReason>,
 }
 
 fn inspect_composite_candidate(plan: &dyn ExecutionPlan) -> Option<InspectedCandidate> {
+    if let Some(limit) = plan.as_any().downcast_ref::<LocalLimitExec>() {
+        if let Some(sort) = limit.input().as_any().downcast_ref::<SortExec>() {
+            if let Some(aggregate) = sort.input().as_any().downcast_ref::<AggregateExec>() {
+                let projection = aggregate.input().as_any().downcast_ref::<ProjectionExec>()?;
+                let filter = projection.input().as_any().downcast_ref::<FilterExec>()?;
+                let rejection = first_rejection([
+                    aggregate_rejection(aggregate),
+                    sort_rejection(sort),
+                    projection_rejection(projection),
+                    expr_rejection(filter.predicate()),
+                ]);
+                return Some(InspectedCandidate {
+                    public: GpuCandidate::with_operator_count(
+                        "LocalLimitExec(SortExec(AggregateExec(ProjectionExec(FilterExec(child)))))",
+                        sort.schema().fields().len(),
+                        5,
+                    ),
+                    rejection,
+                });
+            }
+
+            let projection = sort.input().as_any().downcast_ref::<ProjectionExec>()?;
+            let filter = projection.input().as_any().downcast_ref::<FilterExec>()?;
+            let rejection = first_rejection([
+                projection_rejection(projection),
+                sort_rejection(sort),
+                expr_rejection(filter.predicate()),
+            ]);
+            return Some(InspectedCandidate {
+                public: GpuCandidate::with_operator_count(
+                    "LocalLimitExec(SortExec(ProjectionExec(FilterExec(child))))",
+                    sort.schema().fields().len(),
+                    4,
+                ),
+                rejection,
+            });
+        }
+
+        let projection = limit.input().as_any().downcast_ref::<ProjectionExec>()?;
+        let filter = projection.input().as_any().downcast_ref::<FilterExec>()?;
+        let rejection = first_rejection([projection_rejection(projection), expr_rejection(filter.predicate())]);
+        return Some(InspectedCandidate {
+            public: GpuCandidate::with_operator_count(
+                "LocalLimitExec(ProjectionExec(FilterExec(child)))",
+                projection.schema().fields().len(),
+                3,
+            ),
+            rejection,
+        });
+    }
+
+    if let Some(sort) = plan.as_any().downcast_ref::<SortExec>() {
+        if let Some(aggregate) = sort.input().as_any().downcast_ref::<AggregateExec>() {
+            let projection = aggregate.input().as_any().downcast_ref::<ProjectionExec>()?;
+            let filter = projection.input().as_any().downcast_ref::<FilterExec>()?;
+            let rejection = first_rejection([
+                aggregate_rejection(aggregate),
+                sort_rejection(sort),
+                projection_rejection(projection),
+                expr_rejection(filter.predicate()),
+            ]);
+            return Some(InspectedCandidate {
+                public: GpuCandidate::with_operator_count(
+                    "SortExec(AggregateExec(ProjectionExec(FilterExec(child))))",
+                    sort.schema().fields().len(),
+                    4,
+                ),
+                rejection,
+            });
+        }
+
+        let projection = sort.input().as_any().downcast_ref::<ProjectionExec>()?;
+        let filter = projection.input().as_any().downcast_ref::<FilterExec>()?;
+        let rejection = first_rejection([
+            projection_rejection(projection),
+            sort_rejection(sort),
+            expr_rejection(filter.predicate()),
+        ]);
+        return Some(InspectedCandidate {
+            public: GpuCandidate::with_operator_count(
+                "SortExec(ProjectionExec(FilterExec(child)))",
+                sort.schema().fields().len(),
+                3,
+            ),
+            rejection,
+        });
+    }
+
+    if let Some(aggregate) = plan.as_any().downcast_ref::<AggregateExec>() {
+        let projection = aggregate.input().as_any().downcast_ref::<ProjectionExec>()?;
+        let filter = projection.input().as_any().downcast_ref::<FilterExec>()?;
+        let rejection = first_rejection([
+            aggregate_rejection(aggregate),
+            projection_rejection(projection),
+            expr_rejection(filter.predicate()),
+        ]);
+        return Some(InspectedCandidate {
+            public: GpuCandidate::with_operator_count(
+                "AggregateExec(ProjectionExec(FilterExec(child)))",
+                aggregate.schema().fields().len(),
+                3,
+            ),
+            rejection,
+        });
+    }
+
     let projection = plan.as_any().downcast_ref::<ProjectionExec>()?;
     let filter = projection.input().as_any().downcast_ref::<FilterExec>()?;
-    let supported_expressions = projection_exprs_supported(projection) && expr_supported(filter.predicate());
+    let rejection = first_rejection([projection_rejection(projection), expr_rejection(filter.predicate())]);
     Some(InspectedCandidate {
         public: GpuCandidate::with_operator_count(
             "ProjectionExec(FilterExec(child))",
             projection.schema().fields().len(),
             2,
         ),
-        supported_expressions,
+        rejection,
     })
 }
 
@@ -204,40 +339,90 @@ fn inspect_candidate(plan: &dyn ExecutionPlan) -> Option<InspectedCandidate> {
     if let Some(projection) = plan.as_any().downcast_ref::<ProjectionExec>() {
         return Some(InspectedCandidate {
             public: GpuCandidate::with_operator_count("ProjectionExec(child)", projection.schema().fields().len(), 1),
-            supported_expressions: projection_exprs_supported(projection),
+            rejection: projection_rejection(projection),
         });
     }
 
     if let Some(filter) = plan.as_any().downcast_ref::<FilterExec>() {
         return Some(InspectedCandidate {
             public: GpuCandidate::with_operator_count("FilterExec(child)", filter.schema().fields().len(), 1),
-            supported_expressions: expr_supported(filter.predicate()),
+            rejection: expr_rejection(filter.predicate()),
         });
     }
 
     None
 }
 
-fn projection_exprs_supported(projection: &ProjectionExec) -> bool {
-    projection.expr().iter().all(|expr| expr_supported(&expr.expr))
+fn first_rejection(rejections: impl IntoIterator<Item = Option<FallbackReason>>) -> Option<FallbackReason> {
+    rejections.into_iter().flatten().next()
 }
 
-fn expr_supported(expr: &Arc<dyn PhysicalExpr>) -> bool {
+fn projection_rejection(projection: &ProjectionExec) -> Option<FallbackReason> {
+    projection.expr().iter().find_map(|expr| expr_rejection(&expr.expr))
+}
+
+fn sort_rejection(sort: &SortExec) -> Option<FallbackReason> {
+    sort.expr()
+        .iter()
+        .any(|sort_expr| sort_expr.expr.as_any().downcast_ref::<Column>().is_none())
+        .then_some(FallbackReason::UnsupportedExpression)
+}
+
+fn aggregate_rejection(aggregate: &AggregateExec) -> Option<FallbackReason> {
+    if !matches!(aggregate.mode(), AggregateMode::Single | AggregateMode::SinglePartitioned) {
+        return Some(FallbackReason::UnsupportedOperator);
+    }
+
+    let group_by = aggregate.group_expr();
+    if !group_by.is_single() || group_by.expr().is_empty() {
+        return Some(FallbackReason::UnsupportedOperator);
+    }
+    if group_by.groups().len() != 1 || group_by.groups()[0].iter().any(|is_null| *is_null) {
+        return Some(FallbackReason::UnsupportedOperator);
+    }
+    if group_by.expr().iter().any(|(expr, _alias)| expr.as_any().downcast_ref::<Column>().is_none()) {
+        return Some(FallbackReason::UnsupportedExpression);
+    }
+    if aggregate.filter_expr().iter().any(Option::is_some) {
+        return Some(FallbackReason::UnsupportedExpression);
+    }
+
+    aggregate.aggr_expr().iter().find_map(|expr| aggregate_expr_rejection(expr))
+}
+
+fn aggregate_expr_rejection(
+    expr: &datafusion::physical_expr::aggregate::AggregateFunctionExpr,
+) -> Option<FallbackReason> {
+    if expr.is_distinct() || !expr.order_bys().is_empty() {
+        return Some(FallbackReason::UnsupportedExpression);
+    }
+    if !matches!(expr.fun().name().to_ascii_lowercase().as_str(), "sum" | "min" | "max" | "count" | "avg") {
+        return Some(FallbackReason::UnsupportedOperator);
+    }
+    let expressions = expr.expressions();
+    if expressions.len() != 1 || expressions[0].as_any().downcast_ref::<Column>().is_none() {
+        return Some(FallbackReason::UnsupportedExpression);
+    }
+    None
+}
+
+fn expr_rejection(expr: &Arc<dyn PhysicalExpr>) -> Option<FallbackReason> {
     if expr.as_any().downcast_ref::<Column>().is_some() {
-        return true;
+        return None;
     }
     if let Some(literal) = expr.as_any().downcast_ref::<Literal>() {
-        return literal_supported(literal.value());
+        return (!literal_supported(literal.value())).then_some(FallbackReason::UnsupportedExpression);
     }
     if let Some(binary) = expr.as_any().downcast_ref::<BinaryExpr>() {
-        return binary_operator_supported(binary.op())
-            && expr_supported(binary.left())
-            && expr_supported(binary.right());
+        if !binary_operator_supported(binary.op()) {
+            return Some(FallbackReason::UnsupportedExpression);
+        }
+        return first_rejection([expr_rejection(binary.left()), expr_rejection(binary.right())]);
     }
     if let Some(not) = expr.as_any().downcast_ref::<NotExpr>() {
-        return expr_supported(not.arg());
+        return expr_rejection(not.arg());
     }
-    false
+    Some(FallbackReason::UnsupportedExpression)
 }
 
 fn literal_supported(value: &ScalarValue) -> bool {
