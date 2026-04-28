@@ -652,6 +652,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "cudf-query-engine"
+version = "0.1.0"
+dependencies = [
+ "arrow",
+ "cudf",
+]
+
+[[package]]
 name = "cudf-sys"
 version = "0.2.0"
 dependencies = [
@@ -807,6 +815,7 @@ version = "0.1.0"
 dependencies = [
  "arrow",
  "cudf",
+ "cudf-query-engine",
  "datafusion",
  "futures",
  "tokio",
