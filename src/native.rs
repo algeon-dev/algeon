@@ -4,7 +4,8 @@ use arrow::datatypes::{DataType, SchemaRef};
 use cudf_query_engine::{
     AggregateExpr as NativeAggregateExpr, AggregateFunction as NativeAggregateFunction,
     AggregateSpec as NativeAggregateSpec, BinaryOp as NativeBinaryOp, Expr as NativeExpr, LimitSpec as NativeLimitSpec,
-    LiteralValue as NativeLiteralValue, LocalParquetSource as NativeLocalParquetSource, QueryPlan as NativeQueryPlan,
+    LiteralValue as NativeLiteralValue, LocalParquetFile as NativeLocalParquetFile,
+    LocalParquetSource as NativeLocalParquetSource, QueryPlan as NativeQueryPlan,
     QueryPlanBuilder as NativeQueryPlanBuilder, SortExpr as NativeSortExpr, SortSpec as NativeSortSpec,
     SourceNode as NativeSourceNode,
 };
@@ -97,14 +98,15 @@ fn lower_slice1_plan(plan: &dyn ExecutionPlan) -> Result<NativeQueryPlan, Fallba
     validate_sort(sort)?;
 
     let read_columns = required_parquet_read_columns(file_scan, filter, projection, aggregate)?;
-    let file = single_full_local_file(file_scan)?;
-
-    let source = NativeLocalParquetSource::new(
-        local_object_path_to_filesystem(file.object_meta.location.as_ref()),
-        source_exec.schema(),
-        read_columns,
-    )
-    .with_file_size_bytes(file.object_meta.size);
+    let files = full_local_files(file_scan)?;
+    let native_files = files
+        .into_iter()
+        .map(|file| {
+            NativeLocalParquetFile::new(local_object_path_to_filesystem(file.object_meta.location.as_ref()))
+                .with_file_size_bytes(file.object_meta.size)
+        })
+        .collect();
+    let source = NativeLocalParquetSource::from_files(native_files, source_exec.schema(), read_columns);
 
     let mut builder = NativeQueryPlanBuilder::new();
     let source_node = builder.add_source(NativeSourceNode::LocalParquet(source));
@@ -150,27 +152,27 @@ fn validate_slice1_parquet_scan(
     if parquet_source.filter().is_some() {
         return Err(FallbackReason::PlanPropertyMismatch);
     }
-    single_full_local_file(file_scan)?;
+    full_local_files(file_scan)?;
     Ok(())
 }
 
-fn single_full_local_file(file_scan: &FileScanConfig) -> Result<&PartitionedFile, FallbackReason> {
-    let [group] = file_scan.file_groups.as_slice() else {
-        return Err(FallbackReason::PlanPropertyMismatch);
-    };
-    let [file] = group.files() else {
-        return Err(FallbackReason::PlanPropertyMismatch);
-    };
-    if !file.partition_values.is_empty() {
+fn full_local_files(file_scan: &FileScanConfig) -> Result<Vec<&PartitionedFile>, FallbackReason> {
+    let files = file_scan.file_groups.iter().flat_map(|group| group.files()).collect::<Vec<_>>();
+    if files.is_empty() {
         return Err(FallbackReason::PlanPropertyMismatch);
     }
-    if file.range.is_some() {
-        return Err(FallbackReason::PlanPropertyMismatch);
+    for file in &files {
+        if !file.partition_values.is_empty() {
+            return Err(FallbackReason::PlanPropertyMismatch);
+        }
+        if file.range.is_some() {
+            return Err(FallbackReason::PlanPropertyMismatch);
+        }
+        if file.ordering.is_some() {
+            return Err(FallbackReason::PlanPropertyMismatch);
+        }
     }
-    if file.ordering.is_some() {
-        return Err(FallbackReason::PlanPropertyMismatch);
-    }
-    Ok(file)
+    Ok(files)
 }
 
 fn validate_schema(schema: SchemaRef) -> Result<(), FallbackReason> {
@@ -339,15 +341,15 @@ fn validate_column_type(column: &Column, input_schema: &SchemaRef) -> Result<(),
 fn lower_literal(value: &ScalarValue) -> Result<NativeExpr, FallbackReason> {
     let literal = match value {
         ScalarValue::Boolean(Some(value)) => NativeLiteralValue::Boolean(*value),
-        ScalarValue::Int8(Some(value)) => NativeLiteralValue::Int64(i64::from(*value)),
-        ScalarValue::Int16(Some(value)) => NativeLiteralValue::Int64(i64::from(*value)),
-        ScalarValue::Int32(Some(value)) => NativeLiteralValue::Int64(i64::from(*value)),
+        ScalarValue::Int8(Some(value)) => NativeLiteralValue::Int8(*value),
+        ScalarValue::Int16(Some(value)) => NativeLiteralValue::Int16(*value),
+        ScalarValue::Int32(Some(value)) => NativeLiteralValue::Int32(*value),
         ScalarValue::Int64(Some(value)) => NativeLiteralValue::Int64(*value),
-        ScalarValue::UInt8(Some(value)) => NativeLiteralValue::UInt64(u64::from(*value)),
-        ScalarValue::UInt16(Some(value)) => NativeLiteralValue::UInt64(u64::from(*value)),
-        ScalarValue::UInt32(Some(value)) => NativeLiteralValue::UInt64(u64::from(*value)),
+        ScalarValue::UInt8(Some(value)) => NativeLiteralValue::UInt8(*value),
+        ScalarValue::UInt16(Some(value)) => NativeLiteralValue::UInt16(*value),
+        ScalarValue::UInt32(Some(value)) => NativeLiteralValue::UInt32(*value),
         ScalarValue::UInt64(Some(value)) => NativeLiteralValue::UInt64(*value),
-        ScalarValue::Float32(Some(value)) => NativeLiteralValue::Float64(f64::from(*value)),
+        ScalarValue::Float32(Some(value)) => NativeLiteralValue::Float32(*value),
         ScalarValue::Float64(Some(value)) => NativeLiteralValue::Float64(*value),
         _ => return Err(FallbackReason::UnsupportedExpression),
     };

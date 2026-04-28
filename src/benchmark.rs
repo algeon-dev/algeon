@@ -163,6 +163,7 @@ impl TimedBenchmarkRun {
 pub struct LargerIslandBenchmarkMetrics {
     pub input_batches: usize,
     pub input_rows: usize,
+    pub peak_device_memory_bytes: Option<usize>,
     pub host_to_device_uploads: usize,
     pub host_to_device_uploaded_rows: usize,
     pub host_to_device_uploaded_bytes: usize,
@@ -186,6 +187,7 @@ impl LargerIslandBenchmarkMetrics {
         Self {
             input_batches: metric_count(metrics, "input_batches"),
             input_rows: metric_count(metrics, "input_rows"),
+            peak_device_memory_bytes: None,
             host_to_device_uploads: metric_count(metrics, "host_to_device_uploads"),
             host_to_device_uploaded_rows: metric_count(metrics, "host_to_device_uploaded_rows"),
             host_to_device_uploaded_bytes: metric_count(metrics, "host_to_device_uploaded_bytes"),
@@ -563,6 +565,7 @@ pub fn run_larger_island_benchmark_with_optimizer(
         )));
     }
 
+    let peak_device_memory_bytes = final_gpu.metrics.peak_device_memory_bytes;
     Ok(LargerIslandBenchmarkReport {
         config,
         cpu_baseline: TimedBenchmarkRun::from_samples(cpu_samples),
@@ -571,7 +574,7 @@ pub fn run_larger_island_benchmark_with_optimizer(
         planning: final_gpu.planning,
         output_batches: final_gpu.output_batches,
         output_rows: final_gpu.output_rows,
-        peak_device_memory_bytes: None,
+        peak_device_memory_bytes,
     })
 }
 

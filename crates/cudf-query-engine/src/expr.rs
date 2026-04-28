@@ -40,8 +40,15 @@ impl fmt::Display for Expr {
 #[derive(Debug, Clone, PartialEq)]
 pub enum LiteralValue {
     Boolean(bool),
+    Int8(i8),
+    Int16(i16),
+    Int32(i32),
     Int64(i64),
+    UInt8(u8),
+    UInt16(u16),
+    UInt32(u32),
     UInt64(u64),
+    Float32(f32),
     Float64(f64),
     String(String),
     Null,
@@ -51,8 +58,15 @@ impl fmt::Display for LiteralValue {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Boolean(value) => write!(f, "{value}"),
+            Self::Int8(value) => write!(f, "{value}"),
+            Self::Int16(value) => write!(f, "{value}"),
+            Self::Int32(value) => write!(f, "{value}"),
             Self::Int64(value) => write!(f, "{value}"),
+            Self::UInt8(value) => write!(f, "{value}"),
+            Self::UInt16(value) => write!(f, "{value}"),
+            Self::UInt32(value) => write!(f, "{value}"),
             Self::UInt64(value) => write!(f, "{value}"),
+            Self::Float32(value) => write!(f, "{value}"),
             Self::Float64(value) => write!(f, "{value}"),
             Self::String(value) => write!(f, "{value:?}"),
             Self::Null => f.write_str("NULL"),
