@@ -1,0 +1,28 @@
+unstable_features = true
+style_edition = "2024"
+max_width = 120
+remove_nested_parens = true
+
+# Keep simple logic compact
+use_small_heuristics = "Max"
+
+# Use shorthand to save tokens in struct initialization
+use_field_init_shorthand = true
+
+# Merge all imports from the same crate.
+imports_granularity = "Crate"
+group_imports = "StdExternalCrate"
+
+# Shrink the vertical footprint of the code
+blank_lines_upper_bound = 1
+
+# IMPORTANT: Formats code inside your doc comments.
+format_code_in_doc_comments = true
+doc_comment_code_block_width = 80
+
+# Keep "where" clauses and simple blocks on one line
+where_single_line = true
+combine_control_expr = true
+
+# Trailing commas help the AI avoid "missing comma" syntax errors during generation
+match_block_trailing_comma = true
