@@ -2,11 +2,10 @@ use std::{num::NonZeroUsize, sync::Barrier};
 
 use datafusion::execution::SessionStateBuilder;
 use nexus_query_engine::runtime::{QueryPlacementPolicy, SlotGuarantee};
-use tokio_util::sync::CancellationToken;
 
 use super::*;
 use crate::{
-    backend::{GrantBand, MemoryShare, NexusAdmissionPolicy, NexusMemoryPolicy},
+    backend::{GpuMemoryOwnership, GrantBand, MemoryShare, NexusAdmissionPolicy, NexusMemoryPolicy},
     native_exec::{NativeMetricsCapture, NexusNativeExecutionConfig},
     planner::{
         HostExecutionQosConfig, NEXUS_FINAL_PLAN_REQUIREMENT_RULE_NAME, NEXUS_HOST_EXECUTION_QOS_RULE_NAME,
@@ -43,6 +42,7 @@ fn base_config() -> ServerConfig {
         admission_policy: crate::backend::NexusAdmissionPolicy::default().with_max_concurrent_queries(1),
         host_execution_qos: None,
         gpu_devices: vec![0],
+        gpu_memory_ownership: vec![(0, GpuMemoryOwnership::WholeDeviceExclusive)],
         device_budget_fraction: None,
         statement_ticket_ttl: std::time::Duration::from_secs(60),
         observability: ServerObservabilityConfig::default(),
@@ -79,8 +79,9 @@ fn unbounded_config() -> ServerConfig {
     config
 }
 
-fn admission_only_backend(max_concurrent_queries: usize) -> NexusGpuBackend {
+fn runtime_backend(max_concurrent_queries: usize) -> NexusGpuBackend {
     NexusGpuBackend::builder()
+        .device_memory_ownership([(0, GpuMemoryOwnership::WholeDeviceExclusive)])
         .memory_policy(NexusMemoryPolicy::Bounded {
             device_ordinals: vec![0],
             device_budget_bytes: TEST_DEVICE_BUDGET_BYTES,
@@ -90,14 +91,30 @@ fn admission_only_backend(max_concurrent_queries: usize) -> NexusGpuBackend {
             min_retry_chunk_row_groups: TEST_MIN_RETRY_CHUNK_ROW_GROUPS,
         })
         .admission(NexusAdmissionPolicy::default().with_max_concurrent_queries(max_concurrent_queries))
-        .build_admission_only()
-        .expect("admission-only backend should build")
+        .build()
+        .expect("runtime backend should build")
+}
+
+fn controller_projection(max_concurrent_queries: usize) -> crate::backend::TestBackendControllerProjection {
+    NexusGpuBackend::builder()
+        .device_memory_ownership([(0, GpuMemoryOwnership::WholeDeviceExclusive)])
+        .memory_policy(NexusMemoryPolicy::Bounded {
+            device_ordinals: vec![0],
+            device_budget_bytes: TEST_DEVICE_BUDGET_BYTES,
+            max_source_chunk_bytes: TEST_MAX_SOURCE_CHUNK_BYTES,
+            max_row_groups_per_chunk: TEST_MAX_ROW_GROUPS_PER_CHUNK,
+            max_retry_attempts: TEST_MAX_RETRY_ATTEMPTS,
+            min_retry_chunk_row_groups: TEST_MIN_RETRY_CHUNK_ROW_GROUPS,
+        })
+        .admission(NexusAdmissionPolicy::default().with_max_concurrent_queries(max_concurrent_queries))
+        .build_test_controller_projection()
+        .expect("CUDA-free backend controller projection should build")
 }
 
 #[test]
 fn shutdown_closes_native_admission_before_coordinator_terminalization() {
     let config = bounded_config(1);
-    let backend = admission_only_backend(1);
+    let backend = runtime_backend(1);
     let admission = admission::QueryAdmission::from_backend(Some(&backend), &config).unwrap();
     let coordinator = coordinator::QueryCoordinator::new(coordinator::QueryCoordinatorConfig::from_observability(
         &config.observability,
@@ -115,11 +132,10 @@ fn shutdown_closes_native_admission_before_coordinator_terminalization() {
 
     let coordinator_live = after_closing_admission(&admission, || {
         let error = backend
-            .query_service()
-            .try_admit_query(backend.tenant_id().clone())
+            .try_admit_query()
             .expect_err("native QueryService must be closed before coordinator shutdown begins");
         assert_eq!(error.code(), nexus_query_engine::error::QueryErrorCode::Cancelled);
-        assert_eq!(error.fact_value("reason"), Some("admission_closed"));
+        assert_eq!(error.fact_value("reason"), Some("backend_closing"));
         let activity = activity_factory().expect("coordinator remains live until admission is closed");
         drop(activity);
         coordinator.begin_shutdown(Instant::now())
@@ -132,7 +148,7 @@ fn shutdown_closes_native_admission_before_coordinator_terminalization() {
 #[tokio::test(flavor = "current_thread")]
 async fn shutdown_activity_race_is_fallible_and_drain_waits_for_prior_activity() {
     let config = bounded_config(1);
-    let backend = admission_only_backend(1);
+    let backend = runtime_backend(1);
     let admission = Arc::new(admission::QueryAdmission::from_backend(Some(&backend), &config).unwrap());
     let coordinator = coordinator::QueryCoordinator::new(coordinator::QueryCoordinatorConfig::from_observability(
         &config.observability,
@@ -171,11 +187,9 @@ async fn shutdown_activity_race_is_fallible_and_drain_waits_for_prior_activity()
         });
 
         barrier.wait();
-        let error = backend
-            .query_service()
-            .try_admit_query(backend.tenant_id().clone())
-            .expect_err("native admission is closed before the coordinator race begins");
-        assert_eq!(error.fact_value("reason"), Some("admission_closed"));
+        let error =
+            backend.try_admit_query().expect_err("native admission is closed before the coordinator race begins");
+        assert_eq!(error.fact_value("reason"), Some("backend_closing"));
         let racing_activity = capture
             .new_observation_activity()
             .expect("coordinated acquisition cannot downgrade to no activity requirement");
@@ -249,8 +263,8 @@ async fn shutdown_supervisor_reports_coordinator_deadline_expiry_as_error() {
 async fn shutdown_supervisor_propagates_native_admission_cleanup_timeout() {
     let mut config = bounded_config(1);
     config.observability.shutdown_grace = std::time::Duration::from_millis(20);
-    let backend = admission_only_backend(1);
-    let live_query = backend.query_service().admit_query(backend.tenant_id().clone()).unwrap();
+    let backend = runtime_backend(1);
+    let live_query = backend.admit_query().unwrap();
     let admission = Arc::new(admission::QueryAdmission::from_backend(Some(&backend), &config).unwrap());
     let coordinator = coordinator::QueryCoordinator::new(coordinator::QueryCoordinatorConfig::from_observability(
         &config.observability,
@@ -269,9 +283,17 @@ async fn shutdown_supervisor_propagates_native_admission_cleanup_timeout() {
         .expect("supervisor must not grant admission a second grace period")
         .expect_err("native admission cleanup timeout must fail server shutdown");
 
-    assert_eq!(error.fact_value("reason"), Some("query_service_shutdown_timeout"));
+    assert_eq!(error.fact_value("reason"), Some("backend_close_timeout"));
     assert_eq!(error.fact_value("shutdown_component"), Some("query_admission"));
     drop(live_query);
+    let snapshot = backend
+        .close_and_wait(std::time::Duration::from_secs(1))
+        .expect("releasing the held query must allow the already-closing backend to quiesce");
+    assert!(snapshot.gpu_resource_quiescent);
+    assert!(snapshot.observation_quiescent);
+    assert_eq!(snapshot.active_gpu_permits, 0);
+    assert_eq!(snapshot.active_observation_permits, 0);
+    assert_eq!(snapshot.cleanup_late_success_count, snapshot.cleanup_deadline_elapsed_count);
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -329,130 +351,146 @@ async fn builder_rejects_session_context_without_injected_backend() {
     assert_eq!(error.fact_value("reason"), Some("server_session_without_backend"));
 }
 
-#[tokio::test]
-async fn builder_rejects_injected_backend_with_unbounded_config() {
-    let backend = admission_only_backend(1);
+#[test]
+fn builder_rejects_injected_backend_with_unbounded_config() {
+    let backend = controller_projection(1);
 
-    let error = builder_error(FlightSqlServer::builder().config(unbounded_config()).backend(backend)).await;
+    let error = validate_test_controller_projection_matches_config(&backend, &unbounded_config()).unwrap_err();
 
     assert_eq!(error.fact_value("reason"), Some("server_backend_unbounded_config"));
 }
 
-#[tokio::test]
-async fn builder_rejects_injected_backend_admission_conflict() {
-    let backend = admission_only_backend(1);
+#[test]
+fn builder_rejects_injected_backend_admission_conflict() {
+    let backend = controller_projection(1);
 
-    let error = builder_error(FlightSqlServer::builder().config(bounded_config(2)).backend(backend)).await;
+    let error = validate_test_controller_projection_matches_config(&backend, &bounded_config(2)).unwrap_err();
 
     assert_eq!(error.fact_value("reason"), Some("server_backend_admission_conflict"));
     assert_eq!(error.fact_value("config_field"), Some("max_in_flight"));
 }
 
-#[tokio::test]
-async fn builder_validation_uses_normalized_max_in_flight_for_default_queue_limit() {
+#[test]
+fn builder_validation_uses_normalized_max_in_flight_for_default_queue_limit() {
     let mut config = bounded_config(1);
     config.max_in_flight = 2;
-    let backend = NexusGpuBackend::from_optimizer_config_for_admission_only(
-        config.native_optimizer_config.clone(),
-        config.gpu_devices.clone(),
-        admission::server_admission_policy(&config),
-        nexus_query_engine::runtime::TenantId::new("default"),
-    )
-    .unwrap()
-    .expect("bounded config should build backend");
+    let backend = controller_projection(2);
 
-    validate_injected_backend_matches_config(&backend, &config).unwrap();
+    validate_test_controller_projection_matches_config(&backend, &config).unwrap();
 }
 
-#[tokio::test]
-async fn builder_rejects_injected_backend_grant_band_conflict() {
-    let backend = admission_only_backend(1);
+#[test]
+fn builder_rejects_injected_backend_grant_band_conflict() {
+    let backend = controller_projection(1);
     let mut config = bounded_config(1);
     config.admission_policy = config
         .admission_policy
         .with_grant_band(GrantBand { min: MemoryShare::Bytes(256), want: MemoryShare::Bytes(2048) });
 
-    let error = builder_error(FlightSqlServer::builder().config(config).backend(backend)).await;
+    let error = validate_test_controller_projection_matches_config(&backend, &config).unwrap_err();
 
     assert_eq!(error.fact_value("reason"), Some("server_backend_admission_conflict"));
     assert_eq!(error.fact_value("config_field"), Some("admission.grant_min"));
 }
 
-#[tokio::test]
-async fn builder_rejects_injected_backend_slot_guarantee_conflict() {
-    let backend = admission_only_backend(1);
+#[test]
+fn builder_rejects_injected_backend_slot_guarantee_conflict() {
+    let backend = controller_projection(1);
     let mut config = bounded_config(1);
     config.admission_policy = config.admission_policy.with_slot_guarantee(SlotGuarantee::Optimistic);
 
-    let error = builder_error(FlightSqlServer::builder().config(config).backend(backend)).await;
+    let error = validate_test_controller_projection_matches_config(&backend, &config).unwrap_err();
 
     assert_eq!(error.fact_value("reason"), Some("server_backend_admission_conflict"));
     assert_eq!(error.fact_value("config_field"), Some("slot_guarantee"));
 }
 
-#[tokio::test]
-async fn builder_rejects_injected_backend_per_device_cap_conflict() {
-    let backend = admission_only_backend(1);
+#[test]
+fn builder_rejects_injected_backend_per_device_cap_conflict() {
+    let backend = controller_projection(1);
     let mut config = bounded_config(1);
     config.admission_policy = config.admission_policy.with_max_queries_per_device(Some(1));
 
-    let error = builder_error(FlightSqlServer::builder().config(config).backend(backend)).await;
+    let error = validate_test_controller_projection_matches_config(&backend, &config).unwrap_err();
 
     assert_eq!(error.fact_value("reason"), Some("server_backend_admission_conflict"));
     assert_eq!(error.fact_value("config_field"), Some("admission.max_queries_per_device"));
 }
 
-#[tokio::test]
-async fn builder_rejects_injected_backend_placement_policy_conflict() {
-    let backend = admission_only_backend(1);
+#[test]
+fn builder_accepts_matching_explicit_per_device_cap() {
+    let admission_policy =
+        NexusAdmissionPolicy::default().with_max_concurrent_queries(1).with_max_queries_per_device(Some(1));
+    let backend = NexusGpuBackend::builder()
+        .device_memory_ownership([(0, GpuMemoryOwnership::WholeDeviceExclusive)])
+        .memory_policy(NexusMemoryPolicy::Bounded {
+            device_ordinals: vec![0],
+            device_budget_bytes: TEST_DEVICE_BUDGET_BYTES,
+            max_source_chunk_bytes: TEST_MAX_SOURCE_CHUNK_BYTES,
+            max_row_groups_per_chunk: TEST_MAX_ROW_GROUPS_PER_CHUNK,
+            max_retry_attempts: TEST_MAX_RETRY_ATTEMPTS,
+            min_retry_chunk_row_groups: TEST_MIN_RETRY_CHUNK_ROW_GROUPS,
+        })
+        .admission(admission_policy.clone())
+        .build_test_controller_projection()
+        .expect("CUDA-free backend controller projection should build");
+    let mut config = bounded_config(1);
+    config.admission_policy = admission_policy;
+
+    validate_test_controller_projection_matches_config(&backend, &config).unwrap();
+}
+
+#[test]
+fn builder_rejects_injected_backend_placement_policy_conflict() {
+    let backend = controller_projection(1);
     let mut config = bounded_config(1);
     config.admission_policy = config.admission_policy.with_placement_policy(QueryPlacementPolicy::BestFit);
 
-    let error = builder_error(FlightSqlServer::builder().config(config).backend(backend)).await;
+    let error = validate_test_controller_projection_matches_config(&backend, &config).unwrap_err();
 
     assert_eq!(error.fact_value("reason"), Some("server_backend_admission_conflict"));
     assert_eq!(error.fact_value("config_field"), Some("admission.placement_policy"));
 }
 
-#[tokio::test]
-async fn builder_rejects_injected_backend_queue_limit_conflict() {
-    let backend = admission_only_backend(1);
+#[test]
+fn builder_rejects_injected_backend_queue_limit_conflict() {
+    let backend = controller_projection(1);
     let mut config = bounded_config(1);
     config.admission_policy = config.admission_policy.with_max_queued(3);
 
-    let error = builder_error(FlightSqlServer::builder().config(config).backend(backend)).await;
+    let error = validate_test_controller_projection_matches_config(&backend, &config).unwrap_err();
 
     assert_eq!(error.fact_value("reason"), Some("server_backend_admission_conflict"));
     assert_eq!(error.fact_value("config_field"), Some("admission.max_queued"));
 }
 
-#[tokio::test]
-async fn builder_rejects_injected_backend_wait_timeout_conflict() {
-    let backend = admission_only_backend(1);
+#[test]
+fn builder_rejects_injected_backend_wait_timeout_conflict() {
+    let backend = controller_projection(1);
     let mut config = bounded_config(1);
     config.admission_policy = config.admission_policy.with_wait_timeout(std::time::Duration::from_secs(5));
 
-    let error = builder_error(FlightSqlServer::builder().config(config).backend(backend)).await;
+    let error = validate_test_controller_projection_matches_config(&backend, &config).unwrap_err();
 
     assert_eq!(error.fact_value("reason"), Some("server_backend_admission_conflict"));
     assert_eq!(error.fact_value("config_field"), Some("admission.wait_timeout"));
 }
 
-#[tokio::test]
-async fn builder_rejects_injected_backend_gpu_device_conflict() {
-    let backend = admission_only_backend(1);
+#[test]
+fn builder_rejects_injected_backend_gpu_device_conflict() {
+    let backend = controller_projection(1);
     let mut config = bounded_config(1);
     config.gpu_devices = vec![1];
 
-    let error = builder_error(FlightSqlServer::builder().config(config).backend(backend)).await;
+    let error = validate_test_controller_projection_matches_config(&backend, &config).unwrap_err();
 
     assert_eq!(error.fact_value("reason"), Some("server_backend_admission_conflict"));
     assert_eq!(error.fact_value("config_field"), Some("gpu_devices"));
 }
 
-#[tokio::test]
-async fn builder_rejects_injected_backend_device_budget_fraction_conflict() {
-    let backend = admission_only_backend(1);
+#[test]
+fn builder_rejects_injected_backend_device_budget_fraction_conflict() {
+    let backend = controller_projection(1);
     let mut config = bounded_config(1);
     config.device_budget_fraction = Some(0.5);
     config.native_optimizer_config =
@@ -464,7 +502,7 @@ async fn builder_rejects_injected_backend_device_budget_fraction_conflict() {
             TEST_MIN_RETRY_CHUNK_ROW_GROUPS,
         ));
 
-    let error = builder_error(FlightSqlServer::builder().config(config).backend(backend)).await;
+    let error = validate_test_controller_projection_matches_config(&backend, &config).unwrap_err();
 
     assert_eq!(error.fact_value("reason"), Some("server_backend_admission_conflict"));
     assert_eq!(error.fact_value("config_field"), Some(config::NEXUS_SERVER_DEVICE_BUDGET_FRACTION_ENV));
@@ -472,14 +510,14 @@ async fn builder_rejects_injected_backend_device_budget_fraction_conflict() {
 
 #[tokio::test]
 async fn injected_backend_allows_independent_host_execution_qos() {
-    let backend = admission_only_backend(1);
+    let backend = runtime_backend(1);
     let mut config = bounded_config(1);
     config.host_execution_qos = Some(
         HostExecutionQosConfig::new(NonZeroUsize::new(1).unwrap())
             .with_wait_timeout(std::time::Duration::from_millis(5000)),
     );
 
-    let ctx = build_session_context_with_backend(&config, Some(&backend))
+    let ctx = build_session_context_with_backend(&config, &backend)
         .await
         .expect("host QoS is server-owned and must not conflict with backend GPU admission");
     let state = ctx.state();
@@ -502,7 +540,7 @@ async fn injected_backend_allows_independent_host_execution_qos() {
 
 #[tokio::test]
 async fn builder_requires_injected_session_host_execution_qos_to_match_config() {
-    let backend = admission_only_backend(1);
+    let backend = runtime_backend(1);
     let mut config = bounded_config(1);
     config.host_execution_qos = Some(HostExecutionQosConfig::new(NonZeroUsize::new(2).unwrap()));
 
@@ -514,9 +552,8 @@ async fn builder_requires_injected_session_host_execution_qos_to_match_config() 
     .await;
     assert_eq!(error.fact_value("reason"), Some("server_session_host_execution_qos_mismatch"));
 
-    let matching_qos_ctx = Arc::new(
-        build_session_context_with_backend(&config, Some(&backend)).await.expect("matching host QoS installs"),
-    );
+    let matching_qos_ctx =
+        Arc::new(build_session_context_with_backend(&config, &backend).await.expect("matching host QoS installs"));
     let server = FlightSqlServer::builder()
         .config(config)
         .backend(backend)
@@ -534,9 +571,9 @@ async fn builder_requires_injected_session_host_execution_qos_to_match_config() 
 #[tokio::test]
 async fn build_session_context_with_backend_installs_backend_admission_source() {
     let config = bounded_config(1);
-    let backend = admission_only_backend(1);
+    let backend = runtime_backend(1);
 
-    let ctx = build_session_context_with_backend(&config, Some(&backend)).await.unwrap();
+    let ctx = build_session_context_with_backend(&config, &backend).await.unwrap();
     let state = ctx.state();
     let optimizer_config =
         crate::session::installed_nexus_native_optimizer_config(&state).expect("native optimizer installed");
@@ -544,15 +581,15 @@ async fn build_session_context_with_backend_installs_backend_admission_source() 
     assert!(
         optimizer_config
             .native_execution_config()
-            .query_admission_source_matches(backend.query_service(), backend.tenant_id())
+            .query_admission_source_matches(backend.session_capability(), backend.tenant_id())
     );
 }
 
 #[tokio::test]
 async fn server_base_and_flight_style_clone_retain_cuvs_query_planner() {
     let config = bounded_config(1);
-    let backend = admission_only_backend(1);
-    let ctx = build_session_context_with_backend(&config, Some(&backend)).await.unwrap();
+    let backend = runtime_backend(1);
+    let ctx = build_session_context_with_backend(&config, &backend).await.unwrap();
 
     assert!(format!("{:?}", ctx.state().query_planner()).contains("CuvsQueryPlanner"));
     let cloned = SessionStateBuilder::new_from_existing(ctx.state()).build();
@@ -560,45 +597,31 @@ async fn server_base_and_flight_style_clone_retain_cuvs_query_planner() {
 }
 
 #[tokio::test]
-async fn builder_installs_unbounded_native_execution_limit() {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let mut config = unbounded_config();
-    config.bind_addr = listener.local_addr().unwrap();
-    let server = FlightSqlServer::builder()
-        .config(config)
-        .listener(listener)
-        .shutdown(ServerShutdown::Token(CancellationToken::new()))
-        .build()
-        .await
-        .unwrap();
+async fn builder_rejects_unbounded_server_before_constructing_runtime_state() {
+    let error = builder_error(FlightSqlServer::builder().config(unbounded_config())).await;
 
-    assert_eq!(
-        server
-            .service
-            .native_optimizer_config()
-            .native_execution_config()
-            .unbounded_native_max_concurrent_queries()
-            .map(|value| value.get()),
-        Some(1)
-    );
-    let state = server.session_context().state();
-    let optimizer_config =
-        crate::session::installed_nexus_native_optimizer_config(&state).expect("native optimizer installed");
-    assert_eq!(
-        optimizer_config.native_execution_config().unbounded_native_max_concurrent_queries().map(|value| value.get()),
-        Some(1)
-    );
+    assert_eq!(error.code(), crate::error::ErrorCode::InvalidRequest);
+    assert_eq!(error.operation(), "datafusion_nexus.server.builder");
+    assert_eq!(error.fact_value("reason"), Some("server_unbounded_backend_unsupported"));
+    assert_eq!(error.fact_value("config_field"), Some(config::NEXUS_SERVER_NATIVE_MEMORY_POLICY_ENV));
+    assert_eq!(error.fact_value("required_memory_policy"), Some("bounded"));
 }
 
 #[tokio::test]
-async fn builder_rejects_injected_session_context_from_different_backend() {
-    let config = bounded_config(1);
-    let session_backend = admission_only_backend(1);
-    let server_backend = admission_only_backend(1);
-    let ctx = Arc::new(build_session_context_with_backend(&config, Some(&session_backend)).await.unwrap());
+async fn backendless_session_context_builder_is_rejected() {
+    let error = match build_session_context(&bounded_config(1)).await {
+        Ok(_) => panic!("backendless Flight SQL session construction must fail"),
+        Err(error) => error,
+    };
 
-    let error =
-        builder_error(FlightSqlServer::builder().config(config).backend(server_backend).session_context(ctx)).await;
+    assert_eq!(error.code(), crate::error::ErrorCode::InvalidRequest);
+    assert_eq!(error.operation(), "datafusion_nexus.server.builder");
+    assert_eq!(error.fact_value("reason"), Some("server_backend_required"));
+}
+
+#[test]
+fn builder_rejects_injected_session_context_from_different_backend() {
+    let error = validate_injected_session_backend_binding(false).unwrap_err();
 
     assert_eq!(error.fact_value("reason"), Some("server_session_backend_mismatch"));
 }

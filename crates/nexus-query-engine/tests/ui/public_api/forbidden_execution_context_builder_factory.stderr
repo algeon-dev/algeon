@@ -1,0 +1,10 @@
+error[E0624]: associated function `builder` is private
+ --> tests/ui/public_api/forbidden_execution_context_builder_factory.rs:4:31
+  |
+4 |     let _ = ExecutionContext::builder();
+  |                               ^^^^^^^ private associated function
+  |
+ ::: src/runtime/context/mod.rs
+  |
+  |     pub(crate) fn builder() -> ExecutionContextBuilder {
+  |     -------------------------------------------------- private associated function defined here

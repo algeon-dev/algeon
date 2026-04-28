@@ -59,7 +59,7 @@ pub(crate) async fn run_report_with_optional_stream(
     ));
 
     let provider = Arc::new(provider_with_native_planner(&resolved, planner, &catalog_type).await?);
-    let (ctx, native_rule) =
+    let (ctx, native_rule, _backend) =
         native_session_context(config.fixture.source_storage_profile(), NativeExecutionProfile::Smoke).await?;
     ctx.register_table(config.table_alias.as_str(), provider)?;
     let mut row = run_query_with_registered_native_tables(
@@ -116,7 +116,7 @@ pub(crate) async fn run_tpch_subset_report_with_execution_mode(
     let catalog_type = config.fixture.catalog_type().to_string();
     let staging_records = Arc::new(Mutex::new(Vec::new()));
     let staging_tempdir = Arc::new(tempfile::Builder::new().prefix("nexus-iceberg-tpch-stage-").tempdir()?);
-    let (ctx, native_rule) =
+    let (ctx, native_rule, _backend) =
         native_session_context(config.fixture.source_storage_profile(), NativeExecutionProfile::TpchBenchmark).await?;
     // Footer-pruning object-store registration is best-effort: a failure must
     // leave queries running unpruned, never abort the run.
@@ -225,7 +225,7 @@ pub(crate) async fn run_tpcds_subset_report(
     let catalog_type = config.fixture.catalog_type().to_string();
     let staging_records = Arc::new(Mutex::new(Vec::new()));
     let staging_tempdir = Arc::new(tempfile::Builder::new().prefix("nexus-iceberg-tpcds-stage-").tempdir()?);
-    let (ctx, native_rule) =
+    let (ctx, native_rule, _backend) =
         native_session_context(config.fixture.source_storage_profile(), NativeExecutionProfile::TpcdsBenchmark).await?;
     // Footer-pruning object-store registration is best-effort: a failure must
     // leave queries running unpruned, never abort the run.
@@ -344,7 +344,7 @@ pub(crate) async fn run_custom_subset_report(
         CustomWorkload::Tpch => NativeExecutionProfile::TpchBenchmark,
         CustomWorkload::Tpcds => NativeExecutionProfile::TpcdsBenchmark,
     };
-    let (ctx, native_rule) =
+    let (ctx, native_rule, _backend) =
         native_session_context(config.fixture.source_storage_profile(), native_execution_profile).await?;
 
     match workload {

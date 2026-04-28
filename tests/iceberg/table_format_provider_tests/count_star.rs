@@ -152,13 +152,36 @@ async fn iceberg_provider_count_star_fallback_executes_with_mixed_row_count_meta
     assert_eq!(fallback_source.projected_output_columns, Vec::<String>::new());
     assert_eq!(fallback_source.pure_filter_columns, vec!["id".to_string()]);
 
-    let execution_context = ExecutionContext::from_runtime(cudf::Runtime::new().unwrap()).unwrap();
-    let result = execute_query_plan(&execution_context, &result.plans[0]).unwrap();
+    let backend = datafusion_nexus::backend::NexusGpuBackend::builder()
+        .memory_policy(datafusion_nexus::backend::NexusMemoryPolicy::Bounded {
+            device_ordinals: vec![0],
+            device_budget_bytes: 512 * 1024 * 1024,
+            max_source_chunk_bytes: 256 * 1024 * 1024,
+            max_row_groups_per_chunk: 1,
+            max_retry_attempts: 3,
+            min_retry_chunk_row_groups: 1,
+        })
+        .device_memory_ownership([(
+            0,
+            datafusion_nexus::backend::GpuMemoryOwnership::WholeDeviceExclusive,
+        )])
+        .build()
+        .unwrap();
+    let handle = backend.admit_query().unwrap();
+    let tenant_context = handle.acquire_context().unwrap();
+    let execution_context: &ExecutionContext = tenant_context.context();
+    let result = execute_query_plan(execution_context, &result.plans[0]).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("COUNT(*) plan should materialize a host Arrow batch");
     };
     let values = batch.column(0).as_any().downcast_ref::<Int64Array>().unwrap();
     assert_eq!(values.value(0), 5);
+
+    drop(result);
+    drop(tenant_context);
+    handle.finish();
+    drop(handle);
+    backend.close_and_wait(Duration::from_secs(5)).unwrap();
 
     fs::remove_dir_all(dir).unwrap();
 }

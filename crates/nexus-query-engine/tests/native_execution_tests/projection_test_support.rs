@@ -1,13 +1,10 @@
 use super::*;
 
-pub(super) fn assert_duplicate_host_sink_schema_restoration(bounded: bool) {
-    let dir = unique_temp_dir(if bounded {
-        "nexus-query-engine-bounded-duplicate-host-sink-schema"
-    } else {
-        "nexus-query-engine-duplicate-host-sink-schema"
-    });
+pub(super) fn assert_bounded_duplicate_host_sink_schema_restoration() {
+    let dir = unique_temp_dir("nexus-query-engine-bounded-duplicate-host-sink-schema");
     let path = dir.join("input.parquet");
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = backend_context_with_grant(8 * 1024 * 1024 * 1024);
+    let runtime = Arc::new(context.runtime().unwrap());
     let input_schema = write_input_parquet(&runtime, &path);
     let executable_schema = Arc::new(Schema::new(vec![
         Field::new("exec_left_value", DataType::Int64, false),
@@ -33,18 +30,6 @@ pub(super) fn assert_duplicate_host_sink_schema_restoration(bounded: bool) {
         ),
     );
     let plan = builder.finish_with_host_sink_schema(projection, Arc::clone(&frontend_sink_schema));
-    let mut context_builder = ExecutionContext::builder().with_shared_runtime(Arc::clone(&runtime));
-    if bounded {
-        context_builder = context_builder.with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: 8 * 1024 * 1024 * 1024,
-            max_source_chunk_bytes: 1024 * 1024,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 1,
-            min_retry_chunk_row_groups: 1,
-        });
-    }
-    let context = context_builder.build().unwrap();
-
     let result = execute_query_plan(&context, &plan).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");
@@ -62,12 +47,11 @@ pub(super) fn host_sink_schema_validation_error(
     root_schema: Arc<Schema>,
     sink_schema: Arc<Schema>,
 ) -> nexus_query_engine::error::QueryError {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
     let mut builder = QueryPlanBuilder::new();
     let source =
         builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("missing_input", Arc::clone(&root_schema))));
     let plan = builder.finish_with_host_sink_schema(source, sink_schema);
-    let context = ExecutionContext::from_shared_runtime(runtime).unwrap();
+    let context = backend_context();
 
     match execute_query_plan(&context, &plan) {
         Ok(_) => panic!("native validation should reject host sink schema drift before source read"),

@@ -2,6 +2,7 @@
 async fn prepared_statement_round_trip_executes_select() {
     let (listener, addr) = free_local_addr();
     let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
 
     let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
@@ -27,6 +28,7 @@ async fn prepared_statement_round_trip_executes_select() {
 async fn prepared_statement_update_rejects_select_and_preserves_handle() {
     let (listener, addr) = free_local_addr();
     let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
 
     let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
@@ -55,6 +57,7 @@ async fn prepared_statement_update_rejects_select_and_preserves_handle() {
 async fn statement_update_rejects_sql_prepare_namespace() {
     let (listener, addr) = free_local_addr();
     let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
 
     let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
@@ -76,6 +79,7 @@ async fn statement_update_rejects_sql_prepare_namespace() {
 async fn prepared_statement_rejects_transaction_id() {
     let (listener, addr) = free_local_addr();
     let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
 
     let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
@@ -95,6 +99,7 @@ async fn prepared_statement_rejects_transaction_id() {
 async fn prepared_statement_close_is_idempotent_via_raw_action() {
     let (listener, addr) = free_local_addr();
     let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
 
     let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
@@ -120,6 +125,7 @@ async fn prepared_statement_close_is_idempotent_via_raw_action() {
 async fn prepared_statement_invalid_sql_fails_at_create() {
     let (listener, addr) = free_local_addr();
     let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
 
     let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
@@ -146,6 +152,7 @@ async fn prepared_statement_invalid_sql_fails_at_create() {
 async fn unknown_prepared_statement_query_stats_remains_resolvable() {
     let (listener, addr) = free_local_addr();
     let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
 
     let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
@@ -175,6 +182,7 @@ async fn unknown_prepared_statement_query_stats_remains_resolvable() {
 async fn prepared_statement_missing_column_uses_server_error_presentation() {
     let (listener, addr) = free_local_addr();
     let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
 
     let server = tokio::spawn(async move { serve_with_listener(config, listener).await });

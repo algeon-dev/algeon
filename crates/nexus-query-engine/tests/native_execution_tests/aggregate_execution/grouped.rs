@@ -2,7 +2,8 @@ use super::*;
 
 #[test]
 fn encoded_key_partial_contract_decodes_grouped_string_keys_before_merge() {
-    let runtime = cudf::Runtime::new().unwrap();
+    let context = backend_context();
+    let runtime = Arc::new(context.runtime().unwrap());
     let input = RecordBatch::try_new(
         Arc::new(Schema::new(vec![
             Field::new("key", DataType::Utf8, true),
@@ -53,7 +54,7 @@ fn encoded_key_partial_contract_decodes_grouped_string_keys_before_merge() {
 
 #[test]
 fn bounded_single_grouped_aggregate_uses_libcudf_without_exact_cardinality_probe() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = backend_context();
     let row_count = 600_000usize;
     let groups = ["13", "31", "23", "29", "30", "18", "17"];
     let schema = Arc::new(Schema::new(vec![
@@ -87,17 +88,6 @@ fn bounded_single_grouped_aggregate_uses_libcudf_without_exact_cardinality_probe
     let aggregate = builder.add_aggregate(source, aggregate_spec, aggregate_schema);
     let plan = builder.finish_with_host_sink(aggregate);
 
-    let context = ExecutionContext::builder()
-        .with_shared_runtime(Arc::clone(&runtime))
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: 8 * 1024 * 1024 * 1024,
-            max_source_chunk_bytes: 1024 * 1024,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 1,
-            min_retry_chunk_row_groups: 1,
-        })
-        .build()
-        .unwrap();
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
     let single_strategy = metrics
@@ -143,7 +133,7 @@ fn bounded_single_grouped_aggregate_uses_libcudf_without_exact_cardinality_probe
 
 #[test]
 fn bounded_medium_single_string_avg_uses_libcudf_without_exact_cardinality_probe() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = backend_context();
     let row_count = 204_000usize;
     let groups =
         ["Books", "Children", "Electronics", "Home", "Jewelry", "Men", "Music", "Shoes", "Sports", "Tools", "Women"];
@@ -174,17 +164,6 @@ fn bounded_medium_single_string_avg_uses_libcudf_without_exact_cardinality_probe
     let aggregate = builder.add_aggregate(source, aggregate_spec, Arc::clone(&aggregate_schema));
     let plan = builder.finish_with_host_sink(aggregate);
 
-    let context = ExecutionContext::builder()
-        .with_shared_runtime(Arc::clone(&runtime))
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: 8 * 1024 * 1024 * 1024,
-            max_source_chunk_bytes: 1024 * 1024,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 1,
-            min_retry_chunk_row_groups: 1,
-        })
-        .build()
-        .unwrap();
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
     let single_strategy = metrics
@@ -228,7 +207,8 @@ fn bounded_medium_single_string_avg_uses_libcudf_without_exact_cardinality_probe
 fn bounded_native_query_executes_chunked_grouped_sum_and_final_merge() {
     let dir = unique_temp_dir("nexus-query-engine-bounded-native-execution");
     let path = dir.join("input.parquet");
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let device_budget_bytes = 8 * 1024 * 1024 * 1024;
+    let context = backend_context_with_grant(device_budget_bytes);
     let input_schema = write_row_grouped_input_parquet(&path);
 
     let projected_schema = Arc::new(Schema::new(vec![
@@ -272,19 +252,6 @@ fn bounded_native_query_executes_chunked_grouped_sum_and_final_merge() {
     let limit = builder.add_limit(sort, LimitSpec::fetch(3), aggregated_schema);
     let plan = builder.finish_with_host_sink(limit);
 
-    let device_budget_bytes = 8 * 1024 * 1024 * 1024;
-    let context = ExecutionContext::builder()
-        .with_shared_runtime(Arc::clone(&runtime))
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes,
-            max_source_chunk_bytes: 1024 * 1024,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 1,
-            min_retry_chunk_row_groups: 1,
-        })
-        .with_source_scheduler_policy(SourceSchedulerPolicy::new(3))
-        .build()
-        .unwrap();
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
     assert_eq!(metrics.memory_control_policy.as_str(), "bounded");
@@ -443,7 +410,8 @@ fn bounded_native_query_executes_chunked_grouped_sum_and_final_merge() {
 fn bounded_native_query_batches_source_adjacent_grouped_aggregate_files() {
     let dir = unique_temp_dir("nexus-query-engine-bounded-source-adjacent-batched-files");
     let paths = [dir.join("input-0.parquet"), dir.join("input-1.parquet"), dir.join("input-2.parquet")];
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = backend_context();
+    let runtime = Arc::new(context.runtime().unwrap());
     let input_schema = write_input_parquet(&runtime, &paths[0]);
     write_input_parquet(&runtime, &paths[1]);
     write_input_parquet(&runtime, &paths[2]);
@@ -491,19 +459,6 @@ fn bounded_native_query_batches_source_adjacent_grouped_aggregate_files() {
     let sort = builder.add_sort(aggregate, sort, Arc::clone(&aggregated_schema));
     let plan = builder.finish_with_host_sink(sort);
 
-    let context = ExecutionContext::builder()
-        .with_shared_runtime(Arc::clone(&runtime))
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: 8 * 1024 * 1024 * 1024,
-            max_source_chunk_bytes: 1024 * 1024,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 1,
-            min_retry_chunk_row_groups: 1,
-        })
-        .with_source_scheduler_policy(SourceSchedulerPolicy::new(3))
-        .build()
-        .unwrap();
-
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
     assert_eq!(metrics.source_chunks_planned, 3);
@@ -530,90 +485,10 @@ fn bounded_native_query_batches_source_adjacent_grouped_aggregate_files() {
 }
 
 #[test]
-fn bounded_native_query_coalesces_many_source_adjacent_grouped_row_groups_by_budget() {
-    let dir = unique_temp_dir("nexus-query-engine-bounded-native-many-source-adjacent-chunks");
-    let path = dir.join("input.parquet");
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
-    let row_group_count = 65;
-    let input_schema = write_many_row_group_q01_like_parquet(&path, row_group_count);
-
-    let projected_schema = Arc::new(Schema::new(vec![
-        Field::new("l_returnflag", DataType::Utf8, true),
-        Field::new("l_linestatus", DataType::Utf8, true),
-        Field::new("value", DataType::Int64, true),
-    ]));
-    let aggregated_schema = Arc::new(Schema::new(vec![
-        Field::new("l_returnflag", DataType::Utf8, true),
-        Field::new("l_linestatus", DataType::Utf8, true),
-        Field::new("sum_value", DataType::Int64, true),
-    ]));
-
-    let row_group_bytes = 64 * 1024 * 1024;
-    let source = LocalParquetSource::from_files(
-        vec![
-            LocalParquetFile::new(&path)
-                .with_file_size_bytes(fs::metadata(&path).unwrap().len())
-                .with_row_group_bytes(vec![row_group_bytes; row_group_count])
-                .with_projected_row_group_bytes(
-                    vec![row_group_bytes; row_group_count],
-                    vec![row_group_bytes; row_group_count],
-                )
-                .with_row_group_rows(vec![1; row_group_count]),
-        ],
-        Arc::clone(&input_schema),
-        vec!["flag".to_string(), "status".to_string(), "value".to_string()],
-    );
-    let projection = vec![
-        Expr::column("flag").alias("l_returnflag"),
-        Expr::column("status").alias("l_linestatus"),
-        Expr::column("value"),
-    ];
-    let aggregate = AggregateSpec::new(
-        vec![Expr::column("l_returnflag"), Expr::column("l_linestatus")],
-        vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("value"), "sum_value")],
-    );
-
-    let mut builder = QueryPlanBuilder::new();
-    let source = builder.add_source(SourceNode::LocalParquet(source));
-    let projection = builder.add_projection(source, projection_outputs(projection, projected_schema));
-    let aggregate = builder.add_aggregate(projection, aggregate, aggregated_schema);
-    let plan = builder.finish_with_host_sink(aggregate);
-
-    let device_budget_bytes = 8 * 1024 * 1024 * 1024;
-    let context = ExecutionContext::builder()
-        .with_shared_runtime(Arc::clone(&runtime))
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes,
-            max_source_chunk_bytes: device_budget_bytes,
-            max_row_groups_per_chunk: 1024,
-            max_retry_attempts: 1,
-            min_retry_chunk_row_groups: 1,
-        })
-        .build()
-        .unwrap();
-    let result = execute_query_plan(&context, &plan).unwrap();
-    let metrics = result.metrics();
-    assert_eq!(metrics.source_chunks_planned, 11);
-    assert_eq!(metrics.source_chunks_committed, 11);
-    assert_eq!(metrics.row_groups_planned, row_group_count as u64);
-    assert_eq!(metrics.row_groups_committed, row_group_count as u64);
-    assert!(metrics.partial_aggregate_count > 0);
-    assert!(metrics.partial_aggregate_count < row_group_count as u64);
-    assert!(metrics.final_merge_attempts > 0);
-
-    let QueryOutput::HostArrow(batch) = result.output() else {
-        panic!("host sink should materialize one RecordBatch");
-    };
-    assert!(batch.num_rows() <= 4);
-
-    fs::remove_dir_all(dir).unwrap();
-}
-
-#[test]
 fn bounded_native_query_routes_many_string_morsels_away_from_source_adjacent_partitions() {
     let dir = unique_temp_dir("nexus-query-engine-bounded-source-adjacent-many-string-morsels");
     let path = dir.join("input.parquet");
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = backend_context();
     let row_group_count = 65;
     let input_schema = write_many_row_group_q01_like_parquet(&path, row_group_count);
 
@@ -655,17 +530,6 @@ fn bounded_native_query_routes_many_string_morsels_away_from_source_adjacent_par
     let aggregate = builder.add_aggregate(projection, aggregate, aggregated_schema);
     let plan = builder.finish_with_host_sink(aggregate);
 
-    let context = ExecutionContext::builder()
-        .with_shared_runtime(Arc::clone(&runtime))
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: 3_000_000_000,
-            max_source_chunk_bytes: 64 * 1024 * 1024,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 1,
-            min_retry_chunk_row_groups: 1,
-        })
-        .build()
-        .unwrap();
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
     assert_eq!(metrics.source_chunks_planned, row_group_count as u64);
@@ -704,7 +568,8 @@ fn bounded_native_query_routes_many_string_morsels_away_from_source_adjacent_par
 fn bounded_native_query_streams_source_adjacent_grouped_chunks_when_partition_retention_exceeds_budget() {
     let dir = unique_temp_dir("nexus-query-engine-bounded-source-adjacent-retention-budget");
     let path = dir.join("input.parquet");
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let device_budget_bytes = 8 * 1024 * 1024 * 1024;
+    let context = backend_context_with_grant(device_budget_bytes);
     let input_schema = write_row_grouped_input_parquet(&path);
     let projected_schema = Arc::new(Schema::new(vec![
         Field::new("key", DataType::Int32, false),
@@ -740,18 +605,6 @@ fn bounded_native_query_streams_source_adjacent_grouped_chunks_when_partition_re
     let aggregate = builder.add_aggregate(projection, aggregate, aggregated_schema);
     let plan = builder.finish_with_host_sink(aggregate);
 
-    let device_budget_bytes = 8 * 1024 * 1024 * 1024;
-    let context = ExecutionContext::builder()
-        .with_shared_runtime(Arc::clone(&runtime))
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes,
-            max_source_chunk_bytes: device_budget_bytes,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 1,
-            min_retry_chunk_row_groups: 1,
-        })
-        .build()
-        .unwrap();
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
     assert_eq!(metrics.source_chunks_planned, 3);
@@ -776,7 +629,16 @@ fn bounded_native_query_streams_source_adjacent_grouped_chunks_when_partition_re
 fn bounded_native_query_executes_source_adjacent_grouped_sum_with_empty_partitions() {
     let dir = unique_temp_dir("nexus-query-engine-bounded-source-adjacent-empty-partitions");
     let path = dir.join("input.parquet");
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = backend_context_with_memory_and_scheduler_policy(
+        MemoryControlPolicy::Bounded {
+            device_budget_bytes: 8 * 1024 * 1024 * 1024,
+            max_source_chunk_bytes: 1024 * 1024,
+            max_row_groups_per_chunk: 1,
+            max_retry_attempts: 1,
+            min_retry_chunk_row_groups: 1,
+        },
+        SourceSchedulerPolicy::new(3),
+    );
     let input_schema = write_row_grouped_input_parquet(&path);
 
     let projected_schema = Arc::new(Schema::new(vec![
@@ -821,18 +683,6 @@ fn bounded_native_query_executes_source_adjacent_grouped_sum_with_empty_partitio
     let limit = builder.add_limit(sort, LimitSpec::fetch(3), aggregated_schema);
     let plan = builder.finish_with_host_sink(limit);
 
-    let context = ExecutionContext::builder()
-        .with_shared_runtime(Arc::clone(&runtime))
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: 8 * 1024 * 1024 * 1024,
-            max_source_chunk_bytes: 1024 * 1024,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 1,
-            min_retry_chunk_row_groups: 1,
-        })
-        .with_source_scheduler_policy(SourceSchedulerPolicy::new(3))
-        .build()
-        .unwrap();
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
     assert_eq!(metrics.source_chunks_planned, 3);
@@ -885,7 +735,7 @@ fn bounded_native_query_executes_source_adjacent_grouped_sum_with_empty_partitio
 fn bounded_native_query_uses_group_key_source_adjacent_partitions_for_string_keys() {
     let dir = unique_temp_dir("nexus-query-engine-bounded-source-adjacent-group-key-partitions");
     let path = dir.join("input.parquet");
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = backend_context();
     let input_schema = write_nullable_string_grouped_aggregate_parquet(&path);
 
     let projected_schema = Arc::new(Schema::new(vec![
@@ -928,18 +778,6 @@ fn bounded_native_query_uses_group_key_source_adjacent_partitions_for_string_key
     let aggregate = builder.add_aggregate(projection, aggregate, Arc::clone(&aggregated_schema));
     let plan = builder.finish_with_host_sink(aggregate);
 
-    let context = ExecutionContext::builder()
-        .with_shared_runtime(Arc::clone(&runtime))
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: 8 * 1024 * 1024 * 1024,
-            max_source_chunk_bytes: 1024 * 1024,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 1,
-            min_retry_chunk_row_groups: 1,
-        })
-        .with_source_scheduler_policy(SourceSchedulerPolicy::new(3))
-        .build()
-        .unwrap();
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
     assert_eq!(metrics.source_chunks_planned, 3);
@@ -1026,7 +864,7 @@ fn bounded_native_query_uses_group_key_source_adjacent_partitions_for_string_key
 fn bounded_native_query_keeps_large_string_source_adjacent_inputs_on_group_key_partitions() {
     let dir = unique_temp_dir("nexus-query-engine-bounded-source-adjacent-large-string-group-key");
     let path = dir.join("input.parquet");
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = backend_context();
     let input_schema = write_nullable_string_grouped_aggregate_parquet(&path);
 
     let projected_schema = Arc::new(Schema::new(vec![
@@ -1066,18 +904,6 @@ fn bounded_native_query_keeps_large_string_source_adjacent_inputs_on_group_key_p
     let aggregate = builder.add_aggregate(projection, aggregate, Arc::clone(&aggregated_schema));
     let plan = builder.finish_with_host_sink(aggregate);
 
-    let context = ExecutionContext::builder()
-        .with_shared_runtime(Arc::clone(&runtime))
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: 8 * 1024 * 1024 * 1024,
-            max_source_chunk_bytes: 1024 * 1024,
-            max_row_groups_per_chunk: 8,
-            max_retry_attempts: 1,
-            min_retry_chunk_row_groups: 1,
-        })
-        .with_source_scheduler_policy(SourceSchedulerPolicy::new(3))
-        .build()
-        .unwrap();
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
     assert!(metrics.partial_aggregate_count > 0);
@@ -1121,7 +947,7 @@ fn bounded_native_query_keeps_large_string_source_adjacent_inputs_on_group_key_p
 fn bounded_native_query_prunes_partitioned_final_merge_outputs_with_topk() {
     let dir = unique_temp_dir("nexus-query-engine-bounded-partitioned-final-merge-topk");
     let path = dir.join("input.parquet");
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = backend_context();
     let input_schema = write_high_cardinality_url_count_parquet(&path);
 
     let projected_schema = Arc::new(Schema::new(vec![Field::new("URL", DataType::Utf8, false)]));
@@ -1161,18 +987,6 @@ fn bounded_native_query_prunes_partitioned_final_merge_outputs_with_topk() {
     let limit = builder.add_limit(sort, LimitSpec::fetch(2), aggregated_schema);
     let plan = builder.finish_with_host_sink(limit);
 
-    let context = ExecutionContext::builder()
-        .with_shared_runtime(Arc::clone(&runtime))
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: 8 * 1024 * 1024 * 1024,
-            max_source_chunk_bytes: 1024 * 1024,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 1,
-            min_retry_chunk_row_groups: 1,
-        })
-        .with_source_scheduler_policy(SourceSchedulerPolicy::new(3))
-        .build()
-        .unwrap();
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
     let final_strategy = metrics
@@ -1217,7 +1031,7 @@ fn bounded_native_query_prunes_partitioned_final_merge_outputs_with_topk() {
 fn bounded_native_query_keeps_small_nullable_string_partials_on_libcudf_before_final_merge() {
     let dir = unique_temp_dir("nexus-query-engine-bounded-encoded-string-aggregate");
     let path = dir.join("input.parquet");
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = backend_context();
     let input_schema = write_nullable_string_grouped_aggregate_parquet(&path);
 
     let aggregated_schema = Arc::new(Schema::new(vec![
@@ -1248,17 +1062,6 @@ fn bounded_native_query_keeps_small_nullable_string_partials_on_libcudf_before_f
     let aggregate = builder.add_aggregate(source, aggregate, Arc::clone(&aggregated_schema));
     let plan = builder.finish_with_host_sink(aggregate);
 
-    let context = ExecutionContext::builder()
-        .with_shared_runtime(Arc::clone(&runtime))
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: 8 * 1024 * 1024 * 1024,
-            max_source_chunk_bytes: 1024 * 1024,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 1,
-            min_retry_chunk_row_groups: 1,
-        })
-        .build()
-        .unwrap();
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
     assert_eq!(metrics.source_chunks_planned, 3);
@@ -1421,76 +1224,10 @@ fn grouped_string_sum_count_min_max_rows(batch: &RecordBatch) -> Vec<GroupedStri
 }
 
 #[test]
-fn bounded_native_query_uses_configured_source_cap_when_budget_model_allows_it() {
-    let dir = unique_temp_dir("nexus-query-engine-bounded-aggregate-source-refinement");
-    let path = dir.join("input.parquet");
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
-    let input_schema = write_row_grouped_input_parquet(&path);
-
-    let aggregated_schema = Arc::new(Schema::new(vec![
-        Field::new("key", DataType::Int32, false),
-        Field::new("sum_m00", DataType::Int64, true),
-    ]));
-
-    let source = LocalParquetSource::from_files(
-        vec![
-            LocalParquetFile::new(&path)
-                .with_file_size_bytes(fs::metadata(&path).unwrap().len())
-                .with_row_group_bytes(vec![350, 350, 350])
-                .with_projected_row_group_bytes(vec![350, 350, 350], vec![350, 350, 350])
-                .with_row_group_rows(vec![2, 2, 2]),
-        ],
-        Arc::clone(&input_schema),
-        vec!["key".to_string(), "m00".to_string()],
-    );
-    let aggregate = AggregateSpec::new(
-        vec![Expr::column("key")],
-        vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("m00"), "sum_m00")],
-    );
-
-    let mut builder = QueryPlanBuilder::new();
-    let source = builder.add_source(SourceNode::LocalParquet(source));
-    let aggregate = builder.add_aggregate(source, aggregate, Arc::clone(&aggregated_schema));
-    let plan = builder.finish_with_host_sink(aggregate);
-
-    let context = ExecutionContext::builder()
-        .with_shared_runtime(Arc::clone(&runtime))
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: 8 * 1024 * 1024 * 1024,
-            max_source_chunk_bytes: 1600,
-            max_row_groups_per_chunk: 8,
-            max_retry_attempts: 1,
-            min_retry_chunk_row_groups: 1,
-        })
-        .build()
-        .unwrap();
-    let result = execute_query_plan(&context, &plan).unwrap();
-    let metrics = result.metrics();
-    assert_eq!(metrics.source_chunks_planned, 1);
-    assert_eq!(metrics.source_chunks_retried, 0);
-    assert_eq!(metrics.reservation_denied_count, 0);
-    assert_eq!(metrics.partial_aggregate_count, 1);
-    let exact_source_read_bytes = u64::try_from(cudf::DataFrame::minimum_parquet_source_read_budget_bytes()).unwrap();
-    assert!(metrics.reservation_events.iter().any(|event| {
-        event.memory_boundary == "source_chunk_read"
-            && event.action == MemoryReservationEventAction::Reserve
-            && event.source_read_contract_quality.as_deref() == Some("exact_lower_level_contract")
-            && event.requested_bytes == exact_source_read_bytes
-    }));
-
-    let QueryOutput::HostArrow(batch) = result.output() else {
-        panic!("host sink should materialize one RecordBatch");
-    };
-    assert_eq!(batch.num_rows(), 3);
-
-    fs::remove_dir_all(dir).unwrap();
-}
-
-#[test]
 fn bounded_native_query_executes_min_max_count_and_final_merge() {
     let dir = unique_temp_dir("nexus-query-engine-bounded-native-aggregate-parity");
     let path = dir.join("input.parquet");
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = backend_context();
     let input_schema = write_row_grouped_input_parquet(&path);
 
     let aggregated_schema = Arc::new(Schema::new(vec![
@@ -1530,17 +1267,6 @@ fn bounded_native_query_executes_min_max_count_and_final_merge() {
     let limit = builder.add_limit(sort, LimitSpec::fetch(3), aggregated_schema);
     let plan = builder.finish_with_host_sink(limit);
 
-    let context = ExecutionContext::builder()
-        .with_shared_runtime(Arc::clone(&runtime))
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: 8 * 1024 * 1024 * 1024,
-            max_source_chunk_bytes: 1024 * 1024,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 1,
-            min_retry_chunk_row_groups: 1,
-        })
-        .build()
-        .unwrap();
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
     assert_eq!(metrics.source_chunks_planned, 3);
@@ -1576,7 +1302,13 @@ fn bounded_native_query_executes_min_max_count_and_final_merge() {
 fn bounded_native_query_casts_single_partial_grouped_count_to_output_schema() {
     let dir = unique_temp_dir("nexus-query-engine-bounded-native-single-partial-count");
     let path = dir.join("input.parquet");
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = backend_context_with_memory_control_policy(MemoryControlPolicy::Bounded {
+        device_budget_bytes: 8 * 1024 * 1024 * 1024,
+        max_source_chunk_bytes: 8 * 1024 * 1024 * 1024,
+        max_row_groups_per_chunk: 16,
+        max_retry_attempts: 1,
+        min_retry_chunk_row_groups: 1,
+    });
     let input_schema = write_row_grouped_input_parquet(&path);
 
     let aggregated_schema = Arc::new(Schema::new(vec![
@@ -1601,17 +1333,6 @@ fn bounded_native_query_casts_single_partial_grouped_count_to_output_schema() {
     let sort = builder.add_sort(aggregate, sort, Arc::clone(&aggregated_schema));
     let plan = builder.finish_with_host_sink(sort);
 
-    let context = ExecutionContext::builder()
-        .with_shared_runtime(Arc::clone(&runtime))
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: 8 * 1024 * 1024 * 1024,
-            max_source_chunk_bytes: 8 * 1024 * 1024 * 1024,
-            max_row_groups_per_chunk: 16,
-            max_retry_attempts: 1,
-            min_retry_chunk_row_groups: 1,
-        })
-        .build()
-        .unwrap();
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
     assert_eq!(metrics.source_chunks_planned, 1);

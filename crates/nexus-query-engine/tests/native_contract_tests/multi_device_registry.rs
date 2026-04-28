@@ -3,7 +3,7 @@ use std::{
     time::Duration,
 };
 
-use nexus_query_engine::runtime::{
+use crate::runtime::{
     DeploymentIoCapability, GdsDriverProbeStatus, KvikioCompatModeStatus, NvidiaFsProbeStatus, QueryGrantRequest,
     QueryPlacementPolicy, QueryService, QueryServiceConfig, QueryServiceTenantConfig, SlotGuarantee, TenantId,
 };
@@ -333,7 +333,7 @@ fn query_service_memory_failure_callback_ignores_budget_failures() {
 }
 
 #[test]
-fn query_services_on_same_device_share_memory_governor_ledger() {
+fn second_query_service_on_same_device_is_rejected_while_backend_is_live() {
     if cudf::DeviceId::count().unwrap_or(0) < 1 {
         return;
     }
@@ -354,25 +354,21 @@ fn query_services_on_same_device_share_memory_governor_ledger() {
         non_gds_deployment(),
     )
     .unwrap();
-    let second_service = QueryService::new_with_device_ordinals_and_deployment(
+    let error = QueryService::new_with_device_ordinals_and_deployment(
         config,
         vec![0],
         vec![QueryServiceTenantConfig::new("tenant", TEST_DEVICE_CAPACITY_BYTES)],
         non_gds_deployment(),
     )
-    .unwrap();
+    .expect_err("one process-owned backend must reject a second live service");
 
-    let first = first_service.try_admit_query("tenant").unwrap().expect("first service should admit");
-
-    assert!(second_service.try_admit_query("tenant").unwrap().is_none());
-    assert_eq!(second_service.memory_governor_reports().unwrap()[0].outstanding_bytes, first.device_budget_bytes());
-
-    drop(first);
-    let _second = second_service.admit_query("tenant").expect("ordered cleanup should wake memory admission");
+    assert_eq!(error.fact_value("reason"), Some("backend_already_live"));
+    assert_eq!(error.fact_value("existing_device_ordinals"), Some("0"));
+    drop(first_service);
 }
 
 #[test]
-fn max_queries_per_device_cap_is_shared_across_services_on_same_device() {
+fn max_queries_per_device_cap_is_enforced_within_one_backend() {
     if cudf::DeviceId::count().unwrap_or(0) < 1 {
         return;
     }
@@ -388,14 +384,7 @@ fn max_queries_per_device_cap_is_shared_across_services_on_same_device() {
         slot_guarantee: SlotGuarantee::Optimistic,
         ..QueryServiceConfig::default()
     };
-    let first_service = QueryService::new_with_device_ordinals_and_deployment(
-        config.clone(),
-        vec![0],
-        vec![QueryServiceTenantConfig::new("tenant", query_budget)],
-        non_gds_deployment(),
-    )
-    .unwrap();
-    let second_service = QueryService::new_with_device_ordinals_and_deployment(
+    let service = QueryService::new_with_device_ordinals_and_deployment(
         config,
         vec![0],
         vec![QueryServiceTenantConfig::new("tenant", query_budget)],
@@ -403,16 +392,16 @@ fn max_queries_per_device_cap_is_shared_across_services_on_same_device() {
     )
     .unwrap();
 
-    let first = first_service.try_admit_query("tenant").unwrap().expect("first service should admit");
+    let first = service.try_admit_query("tenant").unwrap().expect("first query should admit");
 
-    assert!(second_service.try_admit_query("tenant").unwrap().is_none());
+    assert!(service.try_admit_query("tenant").unwrap().is_none());
 
     drop(first);
-    let _second = second_service.admit_query("tenant").expect("ordered cleanup should wake per-device admission");
+    let _second = service.admit_query("tenant").expect("ordered cleanup should wake per-device admission");
 }
 
 #[test]
-fn max_queries_per_device_release_wakes_waiter_in_other_service() {
+fn max_queries_per_device_release_wakes_waiter_in_same_backend() {
     if cudf::DeviceId::count().unwrap_or(0) < 1 {
         return;
     }
@@ -428,14 +417,7 @@ fn max_queries_per_device_release_wakes_waiter_in_other_service() {
         slot_guarantee: SlotGuarantee::Optimistic,
         ..QueryServiceConfig::default()
     };
-    let first_service = QueryService::new_with_device_ordinals_and_deployment(
-        config.clone(),
-        vec![0],
-        vec![QueryServiceTenantConfig::new("tenant", query_budget)],
-        non_gds_deployment(),
-    )
-    .unwrap();
-    let second_service = QueryService::new_with_device_ordinals_and_deployment(
+    let service = QueryService::new_with_device_ordinals_and_deployment(
         config,
         vec![0],
         vec![QueryServiceTenantConfig::new("tenant", query_budget)],
@@ -443,8 +425,8 @@ fn max_queries_per_device_release_wakes_waiter_in_other_service() {
     )
     .unwrap();
 
-    let first = first_service.try_admit_query("tenant").unwrap().expect("first service should admit");
-    let waiting_service = second_service.clone();
+    let first = service.try_admit_query("tenant").unwrap().expect("first query should admit");
+    let waiting_service = service.clone();
     let (sender, receiver) = mpsc::channel();
     let waiter = std::thread::spawn(move || {
         let result = waiting_service
@@ -455,8 +437,8 @@ fn max_queries_per_device_release_wakes_waiter_in_other_service() {
     });
 
     let deadline = std::time::Instant::now() + Duration::from_secs(1);
-    while second_service.admission_snapshot().unwrap().queued_queries == 0 {
-        assert!(std::time::Instant::now() < deadline, "second service did not queue before release");
+    while service.admission_snapshot().unwrap().queued_queries == 0 {
+        assert!(std::time::Instant::now() < deadline, "second query did not queue before release");
         std::thread::sleep(Duration::from_millis(5));
     }
     drop(first);
@@ -718,6 +700,6 @@ fn queued_query_service_admission_times_out_while_device_capacity_is_busy() {
     std::thread::sleep(Duration::from_millis(5));
     let error = waiter.try_admit().unwrap_err();
 
-    assert_eq!(error.code(), nexus_query_engine::error::QueryErrorCode::ServiceOverloaded);
+    assert_eq!(error.code(), crate::error::QueryErrorCode::ServiceOverloaded);
     assert_eq!(error.fact_value("reason"), Some("admission_wait_timeout"));
 }

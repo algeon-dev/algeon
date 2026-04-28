@@ -1,6 +1,6 @@
 #[test]
 fn bounded_native_query_executes_root_hash_join_with_ordered_reservations() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let runtime = backend_runtime();
     let dir = unique_temp_dir("nexus-query-engine-bounded-root-hash-join");
     let left_path = dir.join("lineitem.parquet");
     let right_path = dir.join("orders.parquet");
@@ -39,17 +39,7 @@ fn bounded_native_query_executes_root_hash_join_with_ordered_reservations() {
         Arc::clone(&output_schema),
     );
     let plan = builder.finish_with_host_sink(join);
-    let context = ExecutionContext::builder()
-        .with_shared_runtime(Arc::clone(&runtime))
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: 1024 * 1024,
-            max_source_chunk_bytes: 1024,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 1,
-            min_retry_chunk_row_groups: 1,
-        })
-        .build()
-        .unwrap();
+    let context = backend_context_with_grant(1024 * 1024);
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
@@ -113,7 +103,7 @@ fn assert_temporary_hash_preflight_reserved(metrics: &QueryMetrics) {
 
 #[test]
 fn bounded_native_query_uses_single_pass_reusable_probe_for_unique_inner_build() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let runtime = backend_runtime();
     let dir = unique_temp_dir("nexus-query-engine-bounded-root-hash-join-single-pass-unique-build");
     let left_path = dir.join("lineitem.parquet");
     let right_path = dir.join("orders.parquet");
@@ -153,17 +143,7 @@ fn bounded_native_query_uses_single_pass_reusable_probe_for_unique_inner_build()
         Arc::clone(&output_schema),
     );
     let plan = builder.finish_with_host_sink(join);
-    let context = ExecutionContext::builder()
-        .with_shared_runtime(Arc::clone(&runtime))
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: 1024 * 1024,
-            max_source_chunk_bytes: 1024,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 1,
-            min_retry_chunk_row_groups: 1,
-        })
-        .build()
-        .unwrap();
+    let context = backend_context_with_grant(1024 * 1024);
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {

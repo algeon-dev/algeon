@@ -33,7 +33,7 @@ use datafusion::{
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
 use datafusion_nexus::{
-    backend::{MemoryShare, NexusAdmissionPolicy, NexusGpuBackend, NexusMemoryPolicy},
+    backend::{GpuMemoryOwnership, MemoryShare, NexusAdmissionPolicy, NexusGpuBackend, NexusMemoryPolicy},
     cugraph_sql::CugraphSqlConfig,
     native_report::NativeDataFusionExecutionMetrics,
     planner::NexusNativePhysicalOptimizerRule,
@@ -225,7 +225,7 @@ pub async fn run() -> Result<(), Box<dyn Error>> {
     let _ = sampler_handle.join();
     backend.set_cugraph_bfs_singleflight_enabled(true);
 
-    let effective_active_max = backend.query_service().gpu_execution_query_report().peak_active_query_jobs;
+    let effective_active_max = backend.gpu_execution_query_report().unwrap().peak_active_query_jobs;
     let bfs_singleflight = backend.cugraph_bfs_singleflight_snapshot();
     let samples = samples.lock().unwrap();
     write_outputs(
@@ -275,7 +275,12 @@ fn build_backend(config: &HarnessConfig) -> Result<NexusGpuBackend, Box<dyn Erro
     if let Some(want) = config.grant_want {
         admission = admission.with_grant_want(want);
     }
-    let mut builder = NexusGpuBackend::builder().memory_policy(memory_policy).admission(admission);
+    let mut builder = NexusGpuBackend::builder()
+        .device_memory_ownership(
+            config.device_ordinals.iter().copied().map(|ordinal| (ordinal, GpuMemoryOwnership::WholeDeviceExclusive)),
+        )
+        .memory_policy(memory_policy)
+        .admission(admission);
     if let Some(max_retained_bytes) = config.source_cache_max_retained_bytes {
         builder = builder.query_service_local_parquet_source_cache_max_retained_bytes(Some(max_retained_bytes));
     }

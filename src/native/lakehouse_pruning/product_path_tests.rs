@@ -35,17 +35,14 @@ use nexus_query_engine::{
     expr::{BinaryOp, Expr, LiteralValue},
     optimizer::local_parquet_source,
     plan::{NodeId, QueryPlan, QueryPlanBuilder},
-    runtime::{
-        DeploymentIoCapability, GdsDriverProbeStatus, KvikioCompatModeStatus, NvidiaFsProbeStatus, QueryService,
-        QueryServiceConfig, QueryServiceTenantConfig, S3SourceStorageProfile, SourceStorageProfile, TenantId,
-    },
+    runtime::{QueryServiceConfig, QueryServiceTenantConfig, S3SourceStorageProfile, SourceStorageProfile, TenantId},
     source::{GpuResidentSource, LocalParquetFile, LocalParquetSource, SourceNode},
 };
 
 use super::prune_native_query_plan;
 use crate::native_exec::{
     NexusNativeComposedExec, NexusNativeExec, NexusNativeExecutionConfig, NexusNativeGpuProducerExec,
-    QueryAdmissionSource,
+    admission::TestAdmissionController,
 };
 
 #[derive(Debug)]
@@ -238,23 +235,17 @@ fn prunable_query_plan(uri: &str, file_size_bytes: usize, gpu_resident_sink: boo
 
 fn admission_only_execution_config() -> NexusNativeExecutionConfig {
     let tenant_id = TenantId::new("lakehouse-order-test");
-    let deployment = DeploymentIoCapability::from_probe_inputs(
-        NvidiaFsProbeStatus::DriverMissing,
-        KvikioCompatModeStatus::Unset,
-        GdsDriverProbeStatus::ProbeUnimplemented,
-    );
-    let service = QueryService::new_admission_only(
+    let controller = TestAdmissionController::new(
         QueryServiceConfig {
             device_capacity_bytes: Some(1024 * 1024),
             max_concurrent_queries: 1,
             ..QueryServiceConfig::default()
         },
         vec![QueryServiceTenantConfig::new(tenant_id.clone(), 1024 * 1024)],
-        deployment,
     )
-    .expect("admission-only query service should build");
+    .expect("CUDA-free test admission controller should build");
     NexusNativeExecutionConfig::bounded(1024 * 1024, 512, 1, 3, 1)
-        .with_query_admission_source(QueryAdmissionSource::new(service, tenant_id))
+        .with_query_admission_source(controller.source(tenant_id))
         .with_plan_query_admission_ticket()
         .with_lakehouse_footer_pruning(true)
 }

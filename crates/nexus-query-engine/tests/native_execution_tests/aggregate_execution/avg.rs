@@ -4,7 +4,13 @@ use super::*;
 fn bounded_native_query_executes_avg_from_sum_count_state() {
     let dir = unique_temp_dir("nexus-query-engine-bounded-native-avg");
     let path = dir.join("input.parquet");
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = backend_context_with_memory_control_policy(MemoryControlPolicy::Bounded {
+        device_budget_bytes: 8 * 1024 * 1024 * 1024,
+        max_source_chunk_bytes: 1024 * 1024,
+        max_row_groups_per_chunk: 1,
+        max_retry_attempts: 1,
+        min_retry_chunk_row_groups: 1,
+    });
     let input_schema = write_uneven_avg_input_parquet(&path);
 
     let aggregated_schema = Arc::new(Schema::new(vec![
@@ -45,17 +51,6 @@ fn bounded_native_query_executes_avg_from_sum_count_state() {
     let limit = builder.add_limit(sort, LimitSpec::fetch(3), Arc::clone(&aggregated_schema));
     let plan = builder.finish_with_host_sink(limit);
 
-    let context = ExecutionContext::builder()
-        .with_shared_runtime(Arc::clone(&runtime))
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: 8 * 1024 * 1024 * 1024,
-            max_source_chunk_bytes: 1024 * 1024,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 1,
-            min_retry_chunk_row_groups: 1,
-        })
-        .build()
-        .unwrap();
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
     assert_eq!(metrics.source_chunks_planned, 2);
@@ -101,7 +96,13 @@ fn bounded_native_query_executes_avg_from_sum_count_state() {
 fn bounded_native_query_executes_single_chunk_avg_finalization() {
     let dir = unique_temp_dir("nexus-query-engine-bounded-native-single-chunk-avg");
     let path = dir.join("input.parquet");
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = backend_context_with_memory_control_policy(MemoryControlPolicy::Bounded {
+        device_budget_bytes: 8 * 1024 * 1024 * 1024,
+        max_source_chunk_bytes: 1024 * 1024,
+        max_row_groups_per_chunk: 8,
+        max_retry_attempts: 1,
+        min_retry_chunk_row_groups: 1,
+    });
     let input_schema = write_uneven_avg_input_parquet(&path);
 
     let aggregated_schema = Arc::new(Schema::new(vec![
@@ -127,17 +128,6 @@ fn bounded_native_query_executes_single_chunk_avg_finalization() {
     let limit = builder.add_limit(sort, LimitSpec::fetch(3), aggregated_schema);
     let plan = builder.finish_with_host_sink(limit);
 
-    let context = ExecutionContext::builder()
-        .with_shared_runtime(Arc::clone(&runtime))
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: 8 * 1024 * 1024 * 1024,
-            max_source_chunk_bytes: 1024 * 1024,
-            max_row_groups_per_chunk: 8,
-            max_retry_attempts: 1,
-            min_retry_chunk_row_groups: 1,
-        })
-        .build()
-        .unwrap();
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
     assert_eq!(metrics.source_chunks_planned, 1);
@@ -157,7 +147,7 @@ fn bounded_native_query_executes_single_chunk_avg_finalization() {
 fn native_query_executes_grouped_avg_with_float32_output_schema() {
     let dir = unique_temp_dir("nexus-query-engine-native-grouped-avg-float32");
     let path = dir.join("input.parquet");
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = backend_context();
     let input_schema = write_uneven_avg_input_parquet(&path);
 
     let aggregated_schema = Arc::new(Schema::new(vec![
@@ -182,7 +172,6 @@ fn native_query_executes_grouped_avg_with_float32_output_schema() {
     let sort = builder.add_sort(aggregate, sort, Arc::clone(&aggregated_schema));
     let plan = builder.finish_with_host_sink(sort);
 
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
     let result = execute_query_plan(&context, &plan).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");
@@ -198,7 +187,7 @@ fn native_query_executes_grouped_avg_with_float32_output_schema() {
 fn bounded_native_query_executes_nullable_avg_with_null_all_group() {
     let dir = unique_temp_dir("nexus-query-engine-bounded-native-nullable-avg");
     let path = dir.join("input.parquet");
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = backend_context();
     let input_schema = write_nullable_avg_input_parquet(&path);
 
     let aggregated_schema = Arc::new(Schema::new(vec![
@@ -224,17 +213,6 @@ fn bounded_native_query_executes_nullable_avg_with_null_all_group() {
     let limit = builder.add_limit(sort, LimitSpec::fetch(3), aggregated_schema);
     let plan = builder.finish_with_host_sink(limit);
 
-    let context = ExecutionContext::builder()
-        .with_shared_runtime(Arc::clone(&runtime))
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: 8 * 1024 * 1024 * 1024,
-            max_source_chunk_bytes: 1024 * 1024,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 1,
-            min_retry_chunk_row_groups: 1,
-        })
-        .build()
-        .unwrap();
     let result = execute_query_plan(&context, &plan).unwrap();
 
     let QueryOutput::HostArrow(batch) = result.output() else {
@@ -253,7 +231,7 @@ fn bounded_native_query_executes_nullable_avg_with_null_all_group() {
 fn bounded_native_query_rejects_avg_with_unsupported_output_schema() {
     let dir = unique_temp_dir("nexus-query-engine-bounded-native-avg-output-type");
     let path = dir.join("input.parquet");
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = backend_context();
     let input_schema = write_uneven_avg_input_parquet(&path);
 
     let aggregated_schema = Arc::new(Schema::new(vec![
@@ -279,18 +257,6 @@ fn bounded_native_query_rejects_avg_with_unsupported_output_schema() {
     let limit = builder.add_limit(sort, LimitSpec::fetch(3), aggregated_schema);
     let plan = builder.finish_with_host_sink(limit);
 
-    let context = ExecutionContext::builder()
-        .with_shared_runtime(Arc::clone(&runtime))
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: 8 * 1024 * 1024 * 1024,
-            max_source_chunk_bytes: 1024 * 1024,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 1,
-            min_retry_chunk_row_groups: 1,
-        })
-        .build()
-        .unwrap();
-
     match execute_query_plan(&context, &plan) {
         Ok(_) => panic!("avg with unsupported output schema should be rejected"),
         Err(error) => {
@@ -305,7 +271,7 @@ fn bounded_native_query_rejects_avg_with_unsupported_output_schema() {
 
 #[test]
 fn native_query_rejects_grouped_avg_with_unsupported_output_schema_before_source_read() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = backend_context();
     let input_schema = Arc::new(Schema::new(vec![
         Field::new("key", DataType::Int32, false),
         Field::new("m00", DataType::Int64, false),
@@ -329,7 +295,6 @@ fn native_query_rejects_grouped_avg_with_unsupported_output_schema_before_source
     let source = builder.add_source(SourceNode::LocalParquet(source));
     let aggregate = builder.add_aggregate(source, aggregate, aggregated_schema);
     let plan = builder.finish_with_host_sink(aggregate);
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
 
     match execute_query_plan(&context, &plan) {
         Ok(_) => panic!("grouped avg with unsupported output schema should be rejected before source read"),
@@ -344,7 +309,7 @@ fn native_query_rejects_grouped_avg_with_unsupported_output_schema_before_source
 
 #[test]
 fn native_query_rejects_global_avg_reserved_state_alias_collision_before_source_read() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = backend_context();
     let input_schema = Arc::new(Schema::new(vec![Field::new("m00", DataType::Int64, false)]));
     let aggregated_schema =
         Arc::new(Schema::new(vec![Field::new("__nexus_native_avg_0_sum", DataType::Float64, true)]));
@@ -358,7 +323,6 @@ fn native_query_rejects_global_avg_reserved_state_alias_collision_before_source_
         builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("missing_input", Arc::clone(&input_schema))));
     let aggregate = builder.add_aggregate(source, aggregate, aggregated_schema);
     let plan = builder.finish_with_host_sink(aggregate);
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
 
     match execute_query_plan(&context, &plan) {
         Ok(_) => panic!("global avg reserved state alias collision should be rejected before source read"),
@@ -432,26 +396,8 @@ fn assert_grouped_decimal_avg_keeps_output_scale(context: &ExecutionContext) {
 }
 
 #[test]
-fn unbounded_native_query_executes_grouped_decimal_avg_at_output_scale() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
-    assert_grouped_decimal_avg_keeps_output_scale(&context);
-}
-
-#[test]
 fn bounded_native_query_executes_grouped_decimal_avg_at_output_scale() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
-    let context = ExecutionContext::builder()
-        .with_shared_runtime(Arc::clone(&runtime))
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: 8 * 1024 * 1024 * 1024,
-            max_source_chunk_bytes: 1024 * 1024,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 1,
-            min_retry_chunk_row_groups: 1,
-        })
-        .build()
-        .unwrap();
+    let context = backend_context();
     assert_grouped_decimal_avg_keeps_output_scale(&context);
 }
 
@@ -524,13 +470,6 @@ fn assert_grouped_mixed_integer_and_decimal_avg(context: &ExecutionContext) {
     assert_eq!(price_c.value(2), 1_000_000, "G2 price_c = 1.000000");
 
     fs::remove_dir_all(dir).unwrap();
-}
-
-#[test]
-fn unbounded_native_query_executes_grouped_mixed_integer_and_decimal_avg() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
-    assert_grouped_mixed_integer_and_decimal_avg(&context);
 }
 
 /// Many-group regression for the partial-state grouped AVG path. Each of
@@ -697,66 +636,19 @@ fn assert_grouped_high_cardinality_mixed_avg(context: &ExecutionContext, groups:
 }
 
 #[test]
-fn unbounded_native_query_executes_grouped_high_cardinality_mixed_avg() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
-    assert_grouped_high_cardinality_mixed_avg(&context, 1500);
-}
-
-#[test]
 fn bounded_native_query_executes_grouped_high_cardinality_mixed_avg() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
-    let context = ExecutionContext::builder()
-        .with_shared_runtime(Arc::clone(&runtime))
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: 8 * 1024 * 1024 * 1024,
-            max_source_chunk_bytes: 1024 * 1024,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 1,
-            min_retry_chunk_row_groups: 1,
-        })
-        .build()
-        .unwrap();
+    let context = backend_context();
     assert_grouped_high_cardinality_mixed_avg(&context, 1500);
-}
-
-#[test]
-fn unbounded_native_query_executes_grouped_many_group_decimal_avg() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
-    assert_grouped_many_group_decimal_avg(&context);
 }
 
 #[test]
 fn bounded_native_query_executes_grouped_many_group_decimal_avg() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
-    let context = ExecutionContext::builder()
-        .with_shared_runtime(Arc::clone(&runtime))
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: 8 * 1024 * 1024 * 1024,
-            max_source_chunk_bytes: 1024 * 1024,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 1,
-            min_retry_chunk_row_groups: 1,
-        })
-        .build()
-        .unwrap();
+    let context = backend_context();
     assert_grouped_many_group_decimal_avg(&context);
 }
 
 #[test]
 fn bounded_native_query_executes_grouped_mixed_integer_and_decimal_avg() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
-    let context = ExecutionContext::builder()
-        .with_shared_runtime(Arc::clone(&runtime))
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: 8 * 1024 * 1024 * 1024,
-            max_source_chunk_bytes: 1024 * 1024,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 1,
-            min_retry_chunk_row_groups: 1,
-        })
-        .build()
-        .unwrap();
+    let context = backend_context();
     assert_grouped_mixed_integer_and_decimal_avg(&context);
 }

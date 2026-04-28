@@ -261,9 +261,8 @@ impl QueryService {
         &self,
         context: &DeviceContext,
     ) -> bool {
-        self.inner
-            .config
-            .max_queries_per_device
+        context
+            .active_query_limit(self.inner.config.max_queries_per_device)
             .is_none_or(|max_queries_per_device| context.active_queries() < max_queries_per_device)
     }
 

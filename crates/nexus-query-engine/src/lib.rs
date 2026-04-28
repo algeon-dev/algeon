@@ -19,6 +19,22 @@
 //! local identities for one plan or runtime; callers should not treat them as
 //! stable global handles.
 
+#[cfg(test)]
+extern crate self as nexus_query_engine;
+
+#[cfg(test)]
+fn projection_outputs(
+    expressions: Vec<expr::Expr>,
+    schema: std::sync::Arc<arrow::datatypes::Schema>,
+) -> Vec<plan::ProjectionOutput> {
+    assert_eq!(expressions.len(), schema.fields().len(), "projection outputs must match schema");
+    expressions
+        .into_iter()
+        .zip(schema.fields().iter())
+        .map(|(expression, field)| plan::ProjectionOutput::new(expression, field.as_ref().clone()))
+        .collect()
+}
+
 pub mod adaptive_report;
 pub mod adaptive_runtime;
 /// Strict and adaptive bounded-pipeline admission and diagnostics.

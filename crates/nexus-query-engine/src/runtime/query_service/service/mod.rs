@@ -20,7 +20,7 @@ pub(in crate::runtime::query_service::service) use queue::query_service_shutdown
 
 /// Service-level entry point for tenant-aware native query admission.
 #[derive(Clone, Debug)]
-pub struct QueryService {
+pub(crate) struct QueryService {
     pub(in crate::runtime::query_service) inner: Arc<QueryServiceInner>,
 }
 

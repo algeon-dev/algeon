@@ -4,7 +4,6 @@ use super::*;
 fn bounded_native_query_reports_reservation_failure_before_chunk_read() {
     let dir = unique_temp_dir("nexus-query-engine-bounded-reservation-failure");
     let path = dir.join("input.parquet");
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
     let input_schema = write_row_grouped_input_parquet(&path);
     let aggregated_schema = Arc::new(Schema::new(vec![
         Field::new("key", DataType::Int32, false),
@@ -24,17 +23,13 @@ fn bounded_native_query_reports_reservation_failure_before_chunk_read() {
     let source = builder.add_source(SourceNode::LocalParquet(source));
     let aggregate = builder.add_aggregate(source, aggregate, aggregated_schema);
     let plan = builder.finish_with_host_sink(aggregate);
-    let context = ExecutionContext::builder()
-        .with_shared_runtime(Arc::clone(&runtime))
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: 1,
-            max_source_chunk_bytes: 1024 * 1024,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 1,
-            min_retry_chunk_row_groups: 1,
-        })
-        .build()
-        .unwrap();
+    let context = backend_context_with_memory_control_policy(MemoryControlPolicy::Bounded {
+        device_budget_bytes: 1,
+        max_source_chunk_bytes: 1024 * 1024,
+        max_row_groups_per_chunk: 1,
+        max_retry_attempts: 1,
+        min_retry_chunk_row_groups: 1,
+    });
 
     let error = match execute_query_plan(&context, &plan) {
         Ok(_) => panic!("bounded execution should fail the source reservation"),
@@ -59,7 +54,6 @@ fn bounded_native_query_reports_reservation_failure_before_chunk_read() {
 fn bounded_native_query_uses_exact_source_read_admission_and_shrinks_to_observed() {
     let dir = unique_temp_dir("nexus-query-engine-bounded-source-read-sizing-contract");
     let path = dir.join("input.parquet");
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
     let input_schema = write_row_grouped_input_parquet(&path);
     let aggregated_schema = Arc::new(Schema::new(vec![
         Field::new("key", DataType::Int32, false),
@@ -90,17 +84,13 @@ fn bounded_native_query_uses_exact_source_read_admission_and_shrinks_to_observed
     let aggregate = builder.add_aggregate(filter, aggregate, aggregated_schema);
     let plan = builder.finish_with_host_sink(aggregate);
     let max_source_chunk_bytes = 1024 * 1024;
-    let context = ExecutionContext::builder()
-        .with_shared_runtime(Arc::clone(&runtime))
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: max_source_chunk_bytes * 4,
-            max_source_chunk_bytes,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 1,
-            min_retry_chunk_row_groups: 1,
-        })
-        .build()
-        .unwrap();
+    let context = backend_context_with_memory_control_policy(MemoryControlPolicy::Bounded {
+        device_budget_bytes: max_source_chunk_bytes * 4,
+        max_source_chunk_bytes,
+        max_row_groups_per_chunk: 1,
+        max_retry_attempts: 1,
+        min_retry_chunk_row_groups: 1,
+    });
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
@@ -130,7 +120,6 @@ fn bounded_native_query_uses_exact_source_read_admission_and_shrinks_to_observed
 fn bounded_native_query_reports_retry_facts_when_chunk_retry_exhausts() {
     let dir = unique_temp_dir("nexus-query-engine-bounded-chunk-retry-exhausted");
     let path = dir.join("input.parquet");
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
     let input_schema = write_row_grouped_input_parquet(&path);
     let aggregated_schema = Arc::new(Schema::new(vec![
         Field::new("key", DataType::Int32, false),
@@ -150,17 +139,13 @@ fn bounded_native_query_reports_retry_facts_when_chunk_retry_exhausts() {
     let source_id = builder.add_source(SourceNode::LocalParquet(source));
     let aggregate = builder.add_aggregate(source_id, aggregate, aggregated_schema);
     let plan = builder.finish_with_host_sink(aggregate);
-    let context = ExecutionContext::builder()
-        .with_shared_runtime(Arc::clone(&runtime))
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: 1,
-            max_source_chunk_bytes: 1024 * 1024,
-            max_row_groups_per_chunk: 3,
-            max_retry_attempts: 2,
-            min_retry_chunk_row_groups: 1,
-        })
-        .build()
-        .unwrap();
+    let context = backend_context_with_memory_control_policy(MemoryControlPolicy::Bounded {
+        device_budget_bytes: 1,
+        max_source_chunk_bytes: 1024 * 1024,
+        max_row_groups_per_chunk: 3,
+        max_retry_attempts: 2,
+        min_retry_chunk_row_groups: 1,
+    });
 
     let error = match execute_query_plan(&context, &plan) {
         Ok(_) => panic!("bounded execution should fail after exhausting source chunk retries"),
@@ -214,17 +199,13 @@ fn bounded_native_query_reports_exact_source_preflight_reservation_failure_befor
         .known_row_group_bytes
         .expect("test parquet metadata should expose row-group bytes")
         .saturating_add(1);
-    let context = ExecutionContext::builder()
-        .with_shared_runtime(Arc::new(cudf::Runtime::new().unwrap()))
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: admitted_budget,
-            max_source_chunk_bytes: 1024 * 1024,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 1,
-            min_retry_chunk_row_groups: 1,
-        })
-        .build()
-        .unwrap();
+    let context = backend_context_with_memory_control_policy(MemoryControlPolicy::Bounded {
+        device_budget_bytes: admitted_budget,
+        max_source_chunk_bytes: 1024 * 1024,
+        max_row_groups_per_chunk: 1,
+        max_retry_attempts: 1,
+        min_retry_chunk_row_groups: 1,
+    });
 
     let error = match execute_query_plan(&context, &plan) {
         Ok(_) => panic!("exact source-read preflight reservation should fail"),
@@ -252,7 +233,6 @@ fn bounded_native_query_reports_exact_source_preflight_reservation_failure_befor
 fn bounded_native_query_reports_chunk_operator_hard_budget_failure_after_reservation_admission() {
     let dir = unique_temp_dir("nexus-query-engine-bounded-chunk-operator-hard-budget-failure");
     let path = dir.join("input.parquet");
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
     let input_schema = write_final_merge_retry_input_parquet(&path, 512);
     let repeated_sums = 256;
     let mut fields = vec![Field::new("key", DataType::Int32, false)];
@@ -276,17 +256,13 @@ fn bounded_native_query_reports_chunk_operator_hard_budget_failure_after_reserva
     let aggregate = builder.add_aggregate(source_id, aggregate, aggregated_schema);
     let plan = builder.finish_with_host_sink(aggregate);
 
-    let baseline_context = ExecutionContext::builder()
-        .with_shared_runtime(Arc::clone(&runtime))
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: 8 * 1024 * 1024 * 1024,
-            max_source_chunk_bytes: 1024 * 1024,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 1,
-            min_retry_chunk_row_groups: 1,
-        })
-        .build()
-        .unwrap();
+    let baseline_context = backend_context_with_memory_control_policy(MemoryControlPolicy::Bounded {
+        device_budget_bytes: 8 * 1024 * 1024 * 1024,
+        max_source_chunk_bytes: 1024 * 1024,
+        max_row_groups_per_chunk: 1,
+        max_retry_attempts: 1,
+        min_retry_chunk_row_groups: 1,
+    });
     let baseline = execute_query_plan(&baseline_context, &plan).unwrap();
     let mut source_budget = 0_u64;
     let mut source_observed_bytes = None;
@@ -319,17 +295,15 @@ fn bounded_native_query_reports_chunk_operator_hard_budget_failure_after_reserva
     assert!(operator_budget > 0);
 
     let operator_token_budget = operator_budget.saturating_mul(4);
-    let constrained_context = ExecutionContext::builder()
-        .with_shared_runtime(Arc::clone(&runtime))
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: source_budget.saturating_add(operator_token_budget),
-            max_source_chunk_bytes: 1024 * 1024,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 1,
-            min_retry_chunk_row_groups: 1,
-        })
-        .build()
-        .unwrap();
+    drop(baseline_context);
+
+    let constrained_context = backend_context_with_memory_control_policy(MemoryControlPolicy::Bounded {
+        device_budget_bytes: source_budget.saturating_add(operator_token_budget),
+        max_source_chunk_bytes: 1024 * 1024,
+        max_row_groups_per_chunk: 1,
+        max_retry_attempts: 1,
+        min_retry_chunk_row_groups: 1,
+    });
 
     let error = match execute_query_plan(&constrained_context, &plan) {
         Ok(_) => panic!("hard cudf chunk operator budget should fail"),
@@ -340,7 +314,7 @@ fn bounded_native_query_reports_chunk_operator_hard_budget_failure_after_reserva
     assert_eq!(error.code(), QueryErrorCode::CudfResourceExhausted);
     assert_eq!(error.fact_value("budget_boundary"), Some("chunk_operator"));
     assert_eq!(error.fact_value("budget_bytes"), Some(operator_budget.as_str()));
-    assert_eq!(error.fact_value("budget_enforcement"), Some("stream_bound_reservation"));
+    assert_eq!(error.fact_value("budget_enforcement"), Some("reservation_arena_member"));
     assert_eq!(error.fact_value("memory_boundary"), Some("chunk_operator"));
     assert_eq!(error.fact_value("stage"), Some("chunk_operator"));
     assert_eq!(error.fact_value("chunk_index"), Some("0"));
@@ -357,7 +331,6 @@ fn bounded_native_query_reports_chunk_operator_hard_budget_failure_after_reserva
 fn bounded_native_query_prefetches_projected_metadata_only_after_first_required_source_read_is_observed() {
     let dir = unique_temp_dir("nexus-query-engine-bounded-initial-prefetch-calibration");
     let path = dir.join("input.parquet");
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
     let input_schema = write_row_grouped_input_parquet(&path);
     let aggregated_schema = Arc::new(Schema::new(vec![
         Field::new("key", DataType::Int32, false),
@@ -384,18 +357,16 @@ fn bounded_native_query_prefetches_projected_metadata_only_after_first_required_
     let aggregate = builder.add_aggregate(source, aggregate, Arc::clone(&aggregated_schema));
     let plan = builder.finish_with_host_sink(aggregate);
     let max_source_chunk_bytes = 1024 * 1024;
-    let context = ExecutionContext::builder()
-        .with_shared_runtime(Arc::clone(&runtime))
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
+    let context = backend_context_with_memory_and_scheduler_policy(
+        MemoryControlPolicy::Bounded {
             device_budget_bytes: max_source_chunk_bytes + 1,
             max_source_chunk_bytes,
             max_row_groups_per_chunk: 1,
             max_retry_attempts: 1,
             min_retry_chunk_row_groups: 1,
-        })
-        .with_source_scheduler_policy(SourceSchedulerPolicy::new(2))
-        .build()
-        .unwrap();
+        },
+        SourceSchedulerPolicy::new(2),
+    );
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
@@ -441,7 +412,6 @@ fn bounded_native_query_prefetches_projected_metadata_only_after_first_required_
 
 #[test]
 fn bounded_native_query_reports_global_count_exact_source_preflight_reservation_failure() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
     let output_schema = Arc::new(Schema::new(vec![
         Field::new("count_rows_0", DataType::Int64, false),
         Field::new("count_rows_1", DataType::Int64, false),
@@ -473,17 +443,13 @@ fn bounded_native_query_reports_global_count_exact_source_preflight_reservation_
     let source = builder.add_source(SourceNode::LocalParquet(source));
     let aggregate = builder.add_aggregate(source, aggregate, output_schema);
     let plan = builder.finish_with_host_sink(aggregate);
-    let context = ExecutionContext::builder()
-        .with_shared_runtime(Arc::clone(&runtime))
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: 1024,
-            max_source_chunk_bytes: 1,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 1,
-            min_retry_chunk_row_groups: 1,
-        })
-        .build()
-        .unwrap();
+    let context = backend_context_with_memory_control_policy(MemoryControlPolicy::Bounded {
+        device_budget_bytes: 1024,
+        max_source_chunk_bytes: 1,
+        max_row_groups_per_chunk: 1,
+        max_retry_attempts: 1,
+        min_retry_chunk_row_groups: 1,
+    });
 
     let error = match execute_query_plan(&context, &plan) {
         Ok(_) => panic!("exact count-source preflight reservation should fail before operator execution"),
@@ -500,7 +466,6 @@ fn bounded_native_query_reports_global_count_exact_source_preflight_reservation_
 fn bounded_native_query_retries_chunk_after_source_reservation_failure() {
     let dir = unique_temp_dir("nexus-query-engine-bounded-chunk-retry");
     let path = dir.join("input.parquet");
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
     let input_schema = write_row_grouped_input_parquet(&path);
 
     let projected_schema = Arc::new(Schema::new(vec![
@@ -549,17 +514,13 @@ fn bounded_native_query_retries_chunk_after_source_reservation_failure() {
     let limit = builder.add_limit(sort, LimitSpec::fetch(3), aggregated_schema);
     let plan = builder.finish_with_host_sink(limit);
 
-    let context = ExecutionContext::builder()
-        .with_shared_runtime(Arc::clone(&runtime))
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: initial_source_read_bytes.saturating_sub(1),
-            max_source_chunk_bytes: initial_chunk_bytes,
-            max_row_groups_per_chunk: 3,
-            max_retry_attempts: 3,
-            min_retry_chunk_row_groups: 1,
-        })
-        .build()
-        .unwrap();
+    let context = backend_context_with_memory_control_policy(MemoryControlPolicy::Bounded {
+        device_budget_bytes: initial_source_read_bytes.saturating_sub(1),
+        max_source_chunk_bytes: initial_chunk_bytes,
+        max_row_groups_per_chunk: 3,
+        max_retry_attempts: 3,
+        min_retry_chunk_row_groups: 1,
+    });
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
@@ -590,7 +551,6 @@ fn bounded_native_query_retries_chunk_after_source_reservation_failure() {
 fn bounded_native_source_only_retry_preserves_row_group_order() {
     let dir = unique_temp_dir("nexus-query-engine-bounded-source-only-retry-order");
     let path = dir.join("input.parquet");
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
     let input_schema = write_row_grouped_input_parquet(&path);
     let source = LocalParquetSource::from_files(
         vec![
@@ -613,17 +573,13 @@ fn bounded_native_source_only_retry_preserves_row_group_order() {
     let initial_source_read_bytes = one_chunk_plan.chunks[0].estimated_source_read_bytes.unwrap_or(initial_chunk_bytes);
     let plan = builder.finish_with_host_sink(source_id);
 
-    let context = ExecutionContext::builder()
-        .with_shared_runtime(Arc::clone(&runtime))
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: initial_source_read_bytes.saturating_sub(1),
-            max_source_chunk_bytes: initial_chunk_bytes,
-            max_row_groups_per_chunk: 3,
-            max_retry_attempts: 3,
-            min_retry_chunk_row_groups: 1,
-        })
-        .build()
-        .unwrap();
+    let context = backend_context_with_memory_control_policy(MemoryControlPolicy::Bounded {
+        device_budget_bytes: initial_source_read_bytes.saturating_sub(1),
+        max_source_chunk_bytes: initial_chunk_bytes,
+        max_row_groups_per_chunk: 3,
+        max_retry_attempts: 3,
+        min_retry_chunk_row_groups: 1,
+    });
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();

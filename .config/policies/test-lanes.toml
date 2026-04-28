@@ -121,7 +121,7 @@ reason = "Server cuGraph integration tests execute graph functions through the G
 id = "datafusion-nexus::server_cuvs_tests"
 lane = "gpu"
 resource_class = "shared"
-reason = "Flight SQL cuVS integration tests execute exact kNN, KMeans, and PCA through an explicitly unbounded GPU server."
+reason = "Flight SQL cuVS integration tests execute exact kNN, KMeans, and PCA through the injected bounded GPU backend."
 
 [[binary]]
 id = "datafusion-nexus::server_config_tests"
@@ -152,9 +152,25 @@ resource_class = "shared"
 reason = "Native engine library tests include cuDF runtime and kernel execution on small fixtures."
 
 [[binary]]
+id = "datafusion-nexus::datafusion_public_api_boundary"
+lane = "cpu"
+reason = "Trybuild coverage verifies the adapter runtime-injection boundary without constructing a CUDA runtime."
+
+[[binary]]
 id = "nexus-query-engine::native_contract_tests"
 lane = "cpu"
 reason = "Native contract coverage is pure capability, report, schema, and admission validation; compiled CUDA execution lives in native_pipeline_execution_tests."
+
+[[binary]]
+id = "nexus-query-engine::public_api_boundary"
+lane = "cpu"
+reason = "Trybuild coverage verifies the public engine API boundary without constructing a CUDA runtime."
+
+[[binary]]
+id = "nexus-query-engine::gpu_backend_heterogeneous_active_limits"
+lane = "gpu"
+resource_class = "shared"
+reason = "Heterogeneous active-limit coverage constructs a real two-device backend and validates per-device GPU ownership."
 
 [[binary]]
 id = "nexus-query-engine::native_pipeline_execution_tests"

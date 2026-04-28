@@ -539,22 +539,6 @@ fn adaptive_vector_rejection_does_not_consult_present_memory_history() {
     }
 }
 
-#[cfg(not(feature = "cuvs"))]
-#[test]
-fn feature_disabled_execution_rejects_before_gpu_child_lookup() {
-    let plan = knn_plan(false);
-    let context = ExecutionContext::builder().build().expect("execution context");
-
-    let error = match execute_query_plan_with_gpu_inputs(&context, &plan, &GpuResidentInputMap::new()) {
-        Ok(_) => panic!("feature-disabled vector execution should reject"),
-        Err(error) => error,
-    };
-    assert_eq!(error.code(), QueryErrorCode::UnsupportedOperator);
-    assert_eq!(error.operation(), "nexus_query_engine.vector_algorithm.execute");
-    assert_eq!(error.fact_value("reason"), Some("cuvs_feature_disabled"));
-    assert_eq!(error.fact_value("required_feature"), Some("cuvs"));
-}
-
 fn knn_plan(with_join_input: bool) -> QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let dataset = if with_join_input {

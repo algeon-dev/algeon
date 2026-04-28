@@ -39,3 +39,4 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "ti
 
 [dev-dependencies]
 async-trait = "0.1"
+trybuild = "1"

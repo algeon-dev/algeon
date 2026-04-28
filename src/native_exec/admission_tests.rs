@@ -7,22 +7,13 @@ use datafusion::{
 };
 use futures::StreamExt;
 use nexus_query_engine::runtime::{
-    DeploymentIoCapability, ExecutionCancellation, GdsDriverProbeStatus, KvikioCompatModeStatus, NvidiaFsProbeStatus,
-    QueryServiceConfig, QueryServiceTenantConfig,
+    ExecutionCancellation, QueryGrantRequest, QueryServiceConfig, QueryServiceTenantConfig,
 };
 
 use super::*;
 
-fn nongds_deployment() -> DeploymentIoCapability {
-    DeploymentIoCapability::from_probe_inputs(
-        NvidiaFsProbeStatus::DriverMissing,
-        KvikioCompatModeStatus::Unset,
-        GdsDriverProbeStatus::ProbeUnimplemented,
-    )
-}
-
-fn admission_only_service(tenant_id: &TenantId) -> QueryService {
-    QueryService::new_admission_only(
+fn admission_only_controller(tenant_id: &TenantId) -> TestAdmissionController {
+    TestAdmissionController::new(
         QueryServiceConfig {
             max_concurrent_queries: 1,
             device_capacity_bytes: Some(1024),
@@ -30,16 +21,15 @@ fn admission_only_service(tenant_id: &TenantId) -> QueryService {
             ..QueryServiceConfig::default()
         },
         vec![QueryServiceTenantConfig::new(tenant_id.clone(), 1024)],
-        nongds_deployment(),
     )
     .unwrap()
 }
 
-fn admission_only_ticket() -> (Arc<QueryAdmissionTicket>, QueryService, TenantId) {
+fn admission_only_ticket() -> (Arc<QueryAdmissionTicket>, TestAdmissionController, TenantId) {
     let tenant_id = TenantId::new("tenant");
-    let service = admission_only_service(&tenant_id);
-    let ticket = QueryAdmissionTicket::new(QueryAdmissionSource::new(service.clone(), tenant_id.clone()), None, None);
-    (ticket, service, tenant_id)
+    let controller = admission_only_controller(&tenant_id);
+    let ticket = QueryAdmissionTicket::new(controller.source(tenant_id.clone()), None, None);
+    (ticket, controller, tenant_id)
 }
 
 fn insert_test_round(
@@ -58,6 +48,7 @@ fn insert_test_round(
             active_streams: 0,
             epoch,
             admission_facts_recorded: false,
+            terminal_outcome: None,
             observation: ticket.new_observation(),
         },
     );
@@ -66,7 +57,7 @@ fn insert_test_round(
 #[test]
 fn admission_ticket_carries_requested_grant_bytes_for_admission() {
     let tenant_id = TenantId::new("tenant");
-    let service = QueryService::new_admission_only(
+    let controller = TestAdmissionController::new(
         QueryServiceConfig {
             max_concurrent_queries: 1,
             device_capacity_bytes: Some(1024),
@@ -74,23 +65,23 @@ fn admission_ticket_carries_requested_grant_bytes_for_admission() {
             ..QueryServiceConfig::default()
         },
         vec![QueryServiceTenantConfig::with_grant_range(tenant_id.clone(), 256, 1024)],
-        nongds_deployment(),
     )
     .unwrap();
-    let ticket = QueryAdmissionTicket::new(QueryAdmissionSource::new(service.clone(), tenant_id), Some(384), Some(512));
+    let ticket = QueryAdmissionTicket::new(controller.source(tenant_id.clone()), Some(384), Some(512));
 
     assert_eq!(ticket.requested_grant_min_bytes(), Some(384));
     assert_eq!(ticket.requested_grant_bytes(), Some(512));
     assert_eq!(
-        service
-            .tenant_requested_budget_with_grant_request(
-                &ticket.source.tenant_id,
+        controller
+            .requested_grant_band(
+                &tenant_id,
                 QueryGrantRequest {
                     requested_grant_min_bytes: ticket.requested_grant_min_bytes(),
                     requested_grant_bytes: ticket.requested_grant_bytes(),
                 },
             )
-            .unwrap(),
+            .unwrap()
+            .want_bytes,
         512
     );
 }
@@ -98,11 +89,11 @@ fn admission_ticket_carries_requested_grant_bytes_for_admission() {
 #[tokio::test(flavor = "current_thread")]
 async fn admission_ticket_owner_precedes_enqueue_and_seals_rejection() {
     let configured_tenant = TenantId::new("configured");
-    let service = admission_only_service(&configured_tenant);
+    let controller = admission_only_controller(&configured_tenant);
     let owner =
         RuntimeObservationOwner::new("ticket-rejected-query", None, RuntimeObservationConfig::bounded(32, 32 * 1024));
     let ticket = QueryAdmissionTicket::new_with_observation(
-        QueryAdmissionSource::new(service, TenantId::new("unknown")),
+        controller.source(TenantId::new("unknown")),
         None,
         None,
         owner.clone(),
@@ -135,7 +126,7 @@ async fn admission_ticket_owner_precedes_enqueue_and_seals_rejection() {
 #[tokio::test(flavor = "current_thread")]
 async fn coordinated_ticket_reuses_one_observation_session_across_three_legal_epochs() {
     let tenant_id = TenantId::new("tenant");
-    let service = admission_only_service(&tenant_id);
+    let controller = admission_only_controller(&tenant_id);
     let root =
         RuntimeObservationOwner::new("coordinated-ticket", None, RuntimeObservationConfig::bounded(64, 64 * 1024));
     let capture = NativeMetricsCapture::coordinated("coordinated-ticket", root.handle())
@@ -143,7 +134,7 @@ async fn coordinated_ticket_reuses_one_observation_session_across_three_legal_ep
         .new_execution();
     assert_eq!(capture.retention_stats().capacity, 0);
     let ticket = QueryAdmissionTicket::new_with_observation_and_capture(
-        QueryAdmissionSource::new(service, tenant_id),
+        controller.source(tenant_id),
         None,
         None,
         NativeRuntimeObservation::Coordinated(root.handle()),
@@ -184,7 +175,7 @@ async fn coordinated_ticket_reuses_one_observation_session_across_three_legal_ep
 #[tokio::test(flavor = "current_thread")]
 async fn coordinated_activity_rejection_is_a_structured_admission_failure() {
     let tenant_id = TenantId::new("tenant");
-    let service = admission_only_service(&tenant_id);
+    let controller = admission_only_controller(&tenant_id);
     let root = RuntimeObservationOwner::new(
         "coordinated-activity-rejected",
         None,
@@ -194,7 +185,7 @@ async fn coordinated_activity_rejection_is_a_structured_admission_failure() {
         .with_observation_activity_factory(Arc::new(|| None))
         .new_execution();
     let ticket = QueryAdmissionTicket::new_with_observation_and_capture(
-        QueryAdmissionSource::new(service.clone(), tenant_id),
+        controller.source(tenant_id),
         None,
         None,
         NativeRuntimeObservation::Coordinated(root.handle()),
@@ -210,7 +201,7 @@ async fn coordinated_activity_rejection_is_a_structured_admission_failure() {
     assert_eq!(error.operation(), "datafusion_nexus.native_exec.admission.observation_activity");
     assert_eq!(error.fact_value("reason"), Some("query_coordinator_activity_rejected"));
     assert_eq!(error.fact_value("admission_stage"), Some("observation_activity"));
-    let snapshot = service.admission_snapshot().unwrap();
+    let snapshot = controller.admission_snapshot();
     assert_eq!(snapshot.active_queries, 0);
     assert_eq!(snapshot.queued_queries, 0);
     assert!(root.sealed_snapshot().is_none(), "coordinated rejection cannot seal the coordinator root");
@@ -228,11 +219,11 @@ async fn coordinated_activity_rejection_is_a_structured_admission_failure() {
 #[test]
 fn standalone_ticket_drop_transfers_one_sealed_snapshot_to_its_local_collector() {
     let tenant_id = TenantId::new("tenant");
-    let service = admission_only_service(&tenant_id);
+    let controller = admission_only_controller(&tenant_id);
     let capture = NativeMetricsCapture::without_sink("standalone-ticket").new_execution();
     let observation = capture.new_runtime_observation("standalone-ticket", None);
     let ticket = QueryAdmissionTicket::new_with_observation_and_capture(
-        QueryAdmissionSource::new(service, tenant_id),
+        controller.source(tenant_id),
         None,
         None,
         observation,
@@ -251,7 +242,7 @@ fn standalone_ticket_drop_transfers_one_sealed_snapshot_to_its_local_collector()
 #[test]
 fn dropping_ticket_before_first_round_seals_initial_owner_once_and_isolates_observer_panics() {
     let tenant_id = TenantId::new("tenant");
-    let service = admission_only_service(&tenant_id);
+    let controller = admission_only_controller(&tenant_id);
     let owner =
         RuntimeObservationOwner::new("ticket-dropped-before-round", None, RuntimeObservationConfig::bounded(16, 4096));
     let delivered = Arc::new(AtomicU64::new(0));
@@ -260,12 +251,7 @@ fn dropping_ticket_before_first_round_seals_initial_owner_once_and_isolates_obse
         delivered_for_observer.fetch_add(1, Ordering::Relaxed);
     });
     owner.register_seal_observer(|_| panic!("ticket drop must isolate observer failure"));
-    let ticket = QueryAdmissionTicket::new_with_observation(
-        QueryAdmissionSource::new(service, tenant_id),
-        None,
-        None,
-        owner.clone(),
-    );
+    let ticket = QueryAdmissionTicket::new_with_observation(controller.source(tenant_id), None, None, owner.clone());
 
     let dropped = catch_unwind(AssertUnwindSafe(|| drop(ticket)));
 
@@ -279,7 +265,7 @@ fn dropping_ticket_before_first_round_seals_initial_owner_once_and_isolates_obse
 #[test]
 fn unwinding_unadmitted_round_guard_seals_panicked_exactly_once() {
     let tenant_id = TenantId::new("tenant");
-    let service = admission_only_service(&tenant_id);
+    let controller = admission_only_controller(&tenant_id);
     let owner =
         RuntimeObservationOwner::new("unadmitted-round-panic", None, RuntimeObservationConfig::bounded(16, 4096));
     let delivered = Arc::new(AtomicU64::new(0));
@@ -287,12 +273,7 @@ fn unwinding_unadmitted_round_guard_seals_panicked_exactly_once() {
     owner.register_seal_observer(move |_| {
         delivered_for_observer.fetch_add(1, Ordering::Relaxed);
     });
-    let ticket = QueryAdmissionTicket::new_with_observation(
-        QueryAdmissionSource::new(service, tenant_id),
-        None,
-        None,
-        owner.clone(),
-    );
+    let ticket = QueryAdmissionTicket::new_with_observation(controller.source(tenant_id), None, None, owner.clone());
     let guard = ticket.begin_execution_round(Arc::new(TaskContext::default())).unwrap();
 
     let unwind = catch_unwind(AssertUnwindSafe(move || {
@@ -311,19 +292,14 @@ fn unwinding_unadmitted_round_guard_seals_panicked_exactly_once() {
 #[test]
 fn unwinding_admit_reset_guard_seals_panicked_and_resets_without_poisoning() {
     let tenant_id = TenantId::new("tenant");
-    let service = admission_only_service(&tenant_id);
+    let controller = admission_only_controller(&tenant_id);
     let owner = RuntimeObservationOwner::new("admit-reset-panic", None, RuntimeObservationConfig::bounded(16, 4096));
     let delivered = Arc::new(AtomicU64::new(0));
     let delivered_for_observer = Arc::clone(&delivered);
     owner.register_seal_observer(move |_| {
         delivered_for_observer.fetch_add(1, Ordering::Relaxed);
     });
-    let ticket = QueryAdmissionTicket::new_with_observation(
-        QueryAdmissionSource::new(service, tenant_id),
-        None,
-        None,
-        owner.clone(),
-    );
+    let ticket = QueryAdmissionTicket::new_with_observation(controller.source(tenant_id), None, None, owner.clone());
     let task_key = 41;
     ticket.state.lock().unwrap().admitting.insert(task_key);
     let guard = TicketAdmitResetGuard {
@@ -349,18 +325,13 @@ fn unwinding_admit_reset_guard_seals_panicked_and_resets_without_poisoning() {
 #[test]
 fn cancellation_before_first_context_acquire_seals_initial_owner() {
     let tenant_id = TenantId::new("tenant");
-    let service = admission_only_service(&tenant_id);
+    let controller = admission_only_controller(&tenant_id);
     let owner = RuntimeObservationOwner::new(
         "ticket-cancelled-before-context",
         None,
         RuntimeObservationConfig::bounded(16, 4096),
     );
-    let ticket = QueryAdmissionTicket::new_with_observation(
-        QueryAdmissionSource::new(service, tenant_id),
-        None,
-        None,
-        owner.clone(),
-    );
+    let ticket = QueryAdmissionTicket::new_with_observation(controller.source(tenant_id), None, None, owner.clone());
     let task_context = Arc::new(TaskContext::default());
     let task_key = QueryAdmissionTicket::task_key(&task_context);
     let round = ticket.begin_execution_round(task_context).unwrap();
@@ -412,10 +383,10 @@ fn overlapping_context_releases_keep_round_until_last_context_finishes() {
 
 #[test]
 fn cancelled_pending_context_acquire_releases_ticket_epoch_and_admission() {
-    let (ticket, service, tenant_id) = admission_only_ticket();
+    let (ticket, controller, tenant_id) = admission_only_ticket();
     let task_context = Arc::new(TaskContext::default());
     let task_key = QueryAdmissionTicket::task_key(&task_context);
-    let handle = service.admit_query(tenant_id).unwrap();
+    let handle = controller.admit_for_test(&tenant_id).unwrap();
     ticket.state.lock().unwrap().rounds.insert(
         task_key,
         TicketRound {
@@ -425,6 +396,7 @@ fn cancelled_pending_context_acquire_releases_ticket_epoch_and_admission() {
             active_streams: 0,
             epoch: 13,
             admission_facts_recorded: false,
+            terminal_outcome: None,
             observation: ticket.new_observation(),
         },
     );
@@ -439,7 +411,7 @@ fn cancelled_pending_context_acquire_releases_ticket_epoch_and_admission() {
     drop(pending);
 
     assert!(!ticket.state.lock().unwrap().rounds.contains_key(&task_key));
-    assert_eq!(service.admission_snapshot().unwrap().active_queries, 0);
+    assert_eq!(controller.admission_snapshot().active_queries, 0);
 }
 
 #[test]
@@ -538,15 +510,11 @@ fn execution_round_reexecution_with_same_task_context_uses_fresh_epoch() {
 #[test]
 fn sequential_execution_epochs_use_distinct_owners_and_plan_invocations() {
     let tenant_id = TenantId::new("tenant");
-    let service = admission_only_service(&tenant_id);
+    let controller = admission_only_controller(&tenant_id);
     let initial_owner =
         RuntimeObservationOwner::new("stable-external-query", None, RuntimeObservationConfig::bounded(64, 64 * 1024));
-    let ticket = QueryAdmissionTicket::new_with_observation(
-        QueryAdmissionSource::new(service, tenant_id),
-        None,
-        None,
-        initial_owner.clone(),
-    );
+    let ticket =
+        QueryAdmissionTicket::new_with_observation(controller.source(tenant_id), None, None, initial_owner.clone());
     let task_context = Arc::new(TaskContext::default());
 
     let first_round = ticket.begin_execution_round(Arc::clone(&task_context)).unwrap();
@@ -594,9 +562,9 @@ fn sequential_execution_epochs_use_distinct_owners_and_plan_invocations() {
 #[test]
 fn concurrent_execution_epochs_have_distinct_live_owners_with_shared_external_identity() {
     let tenant_id = TenantId::new("tenant");
-    let service = admission_only_service(&tenant_id);
+    let controller = admission_only_controller(&tenant_id);
     let ticket = QueryAdmissionTicket::new_with_observation(
-        QueryAdmissionSource::new(service, tenant_id),
+        controller.source(tenant_id),
         None,
         None,
         RuntimeObservationOwner::new(
@@ -670,8 +638,37 @@ fn admission_wrapper_repeated_execute_with_same_context_shares_one_round() {
 }
 
 #[tokio::test]
+async fn admission_wrapper_dropped_sibling_overrides_shared_round_success() {
+    let tenant_id = TenantId::new("tenant");
+    let controller = admission_only_controller(&tenant_id);
+    let owner =
+        RuntimeObservationOwner::new("wrapper-dropped-sibling", None, RuntimeObservationConfig::bounded(32, 32 * 1024));
+    let ticket = QueryAdmissionTicket::new_with_observation(controller.source(tenant_id), None, None, owner.clone());
+    let input = Arc::new(EmptyExec::new(Arc::new(Schema::empty()))) as Arc<dyn ExecutionPlan>;
+    let wrapped = NativeAdmissionExec::new(input, Arc::clone(&ticket));
+    let task_context = Arc::new(TaskContext::default());
+    let task_key = QueryAdmissionTicket::task_key(&task_context);
+
+    let mut completed = wrapped.execute(0, Arc::clone(&task_context)).unwrap();
+    let dropped = wrapped.execute(0, Arc::clone(&task_context)).unwrap();
+    assert!(completed.next().await.is_none());
+    assert_eq!(ticket.state.lock().unwrap().rounds.get(&task_key).map(|round| round.active_streams), Some(1));
+
+    drop(dropped);
+
+    assert!(!ticket.state.lock().unwrap().rounds.contains_key(&task_key));
+    assert_eq!(
+        owner.sealed_snapshot().expect("the last sibling seals the shared round").footer().terminal,
+        Some(RuntimeTerminalOutcome::Dropped),
+    );
+}
+
+#[tokio::test]
 async fn admission_wrapper_releases_round_when_stream_finishes() {
-    let (ticket, _service, _tenant_id) = admission_only_ticket();
+    let tenant_id = TenantId::new("tenant");
+    let controller = admission_only_controller(&tenant_id);
+    let owner = RuntimeObservationOwner::new("wrapper-success", None, RuntimeObservationConfig::bounded(32, 32 * 1024));
+    let ticket = QueryAdmissionTicket::new_with_observation(controller.source(tenant_id), None, None, owner.clone());
     let input = Arc::new(EmptyExec::new(Arc::new(Schema::empty()))) as Arc<dyn ExecutionPlan>;
     let wrapped = Arc::new(NativeAdmissionExec::new(input, Arc::clone(&ticket))) as Arc<dyn ExecutionPlan>;
     assert!(plan_is_query_admission_wrapped(wrapped.as_ref()));
@@ -690,6 +687,10 @@ async fn admission_wrapper_releases_round_when_stream_finishes() {
         !ticket.state.lock().unwrap().rounds.contains_key(&task_key),
         "terminal stream poll should release the root execution-round guard"
     );
+    assert_eq!(
+        owner.sealed_snapshot().expect("wrapper terminal poll seals the invocation").footer().terminal,
+        Some(RuntimeTerminalOutcome::Succeeded),
+    );
 }
 
 #[test]
@@ -706,10 +707,10 @@ fn stale_epoch_release_does_not_remove_newer_round() {
 
 #[tokio::test]
 async fn active_same_task_round_reuses_existing_handle_instead_of_re_admitting() {
-    let (ticket, service, tenant_id) = admission_only_ticket();
+    let (ticket, controller, tenant_id) = admission_only_ticket();
     let task_context = Arc::new(TaskContext::default());
     let task_key = QueryAdmissionTicket::task_key(&task_context);
-    let handle = service.admit_async(tenant_id.clone()).await.unwrap();
+    let handle = controller.admit_for_test(&tenant_id).unwrap();
     ticket.state.lock().unwrap().rounds.insert(
         task_key,
         TicketRound {
@@ -719,10 +720,11 @@ async fn active_same_task_round_reuses_existing_handle_instead_of_re_admitting()
             active_streams: 0,
             epoch: 1,
             admission_facts_recorded: false,
+            terminal_outcome: None,
             observation: ticket.new_observation(),
         },
     );
-    assert_eq!(service.admission_snapshot().unwrap().active_queries, 1);
+    assert_eq!(controller.admission_snapshot().active_queries, 1);
 
     let acquire = tokio::time::timeout(
         Duration::from_millis(100),
@@ -732,23 +734,23 @@ async fn active_same_task_round_reuses_existing_handle_instead_of_re_admitting()
     .expect("overlapping acquisition should reuse the active round instead of waiting for another admission");
     assert!(acquire.is_err(), "admission-only services cannot acquire runtime contexts");
     assert_eq!(
-        service.admission_snapshot().unwrap().active_queries,
+        controller.admission_snapshot().active_queries,
         1,
         "failed overlapping context acquisition must not drop the original active round"
     );
 
     ticket.release_epoch_context(task_key, 1, false);
-    assert_eq!(service.admission_snapshot().unwrap().active_queries, 0);
+    assert_eq!(controller.admission_snapshot().active_queries, 0);
 }
 
 #[tokio::test]
 async fn failed_context_acquire_releases_ticket_epoch_for_reexecution() {
-    let (ticket, service, _tenant_id) = admission_only_ticket();
+    let (ticket, controller, _tenant_id) = admission_only_ticket();
     let task_context = Arc::new(TaskContext::default());
 
     let first = ticket.acquire_context(Arc::clone(&task_context), ExecutionCancellation::new()).await;
     assert!(first.is_err(), "admission-only services cannot acquire runtime contexts");
-    assert_eq!(service.admission_snapshot().unwrap().active_queries, 0);
+    assert_eq!(controller.admission_snapshot().active_queries, 0);
 
     let second = tokio::time::timeout(
         Duration::from_millis(100),
@@ -757,5 +759,5 @@ async fn failed_context_acquire_releases_ticket_epoch_for_reexecution() {
     .await
     .expect("second execution round should not wait on the failed first round");
     assert!(second.is_err(), "admission-only services cannot acquire runtime contexts");
-    assert_eq!(service.admission_snapshot().unwrap().active_queries, 0);
+    assert_eq!(controller.admission_snapshot().active_queries, 0);
 }

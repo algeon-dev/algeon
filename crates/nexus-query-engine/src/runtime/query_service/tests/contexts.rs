@@ -118,7 +118,21 @@ fn expired_shutdown_deadline_runs_local_cache_phase_and_returns_component_timeou
     .unwrap();
     let cache = service.inner.resources.as_ref().unwrap().local_parquet_source_cache_for_device(0).unwrap();
 
-    let error = service.close_and_wait_for_quiescence_until(Instant::now()).unwrap_err();
+    let outcome = service.close_drain_step_until(Instant::now());
+    let final_completion = outcome
+        .phases()
+        .iter()
+        .find(|phase| phase.phase() == QueryServiceDrainPhase::FinalCompletion)
+        .expect("every drain pass reports final completion");
+
+    assert!(matches!(final_completion, QueryServiceDrainPhaseOutcome::DeadlineElapsed { .. }));
+    let QueryServiceDrainPhaseOutcome::DeadlineElapsed { error: final_error, .. } = final_completion else {
+        unreachable!("the final phase is dependency-pending")
+    };
+    assert_eq!(final_error.fact_value("reason"), Some("query_service_cleanup_dependency_pending"));
+    assert_eq!(final_error.fact_value("blocked_by_phase"), Some("local_source_cache"));
+
+    let error = outcome.into_result().unwrap_err();
 
     assert_eq!(error.code(), QueryErrorCode::ServiceOverloaded);
     assert_eq!(error.fact_value("reason"), Some("local_source_cache_drain_timeout"));
@@ -262,7 +276,7 @@ fn query_service_context_carries_graph_calibration_override() {
 }
 #[test]
 fn query_service_released_handle_rejects_context_acquisition() {
-    let service = test_service(1, 8);
+    let service = runtime_test_service(1, 8);
     let handle = service.admit_query("small").unwrap();
     handle.finish();
 
@@ -356,7 +370,7 @@ fn finish_vs_runtime_derivation_is_linearizable_and_releases_once() {
 #[test]
 fn absolute_shutdown_deadline_includes_admission_close_lock_contention() {
     let service = test_service(1, 8);
-    let admission = service.lock_admission().unwrap();
+    let admission = service.hold_admission_lock().unwrap();
     let deadline = Instant::now() + Duration::from_millis(20);
     let waiting_service = service.clone();
     let (result_tx, result_rx) = std::sync::mpsc::channel();
@@ -385,7 +399,7 @@ fn absolute_shutdown_deadline_includes_admission_close_lock_contention() {
 #[test]
 fn close_signal_is_nonblocking_and_fail_closed_during_admission_lock_contention() {
     let service = test_service(1, 8);
-    let admission = service.lock_admission().unwrap();
+    let admission = service.hold_admission_lock().unwrap();
     let closing_service = service.clone();
     let (closed_tx, closed_rx) = std::sync::mpsc::channel();
     let close = std::thread::spawn(move || closed_tx.send(closing_service.close()).unwrap());
@@ -410,19 +424,19 @@ fn resource_free_expired_shutdown_completes_epoch_cleanup_but_cannot_succeed() {
 #[test]
 fn quiescence_reached_after_absolute_deadline_is_not_accepted() {
     let service = test_service(1, 8);
-    service.lock_admission().unwrap().active_queries = 1;
+    service.hold_admission_lock().unwrap().set_active_queries(1);
     let deadline = Instant::now() + Duration::from_millis(100);
     let waiting_service = service.clone();
     let wait = std::thread::spawn(move || waiting_service.close_and_wait_for_quiescence_until(deadline));
-    while service.inner.shutdown_waiters.load(Ordering::Acquire) == 0 {
+    while service.shutdown_waiter_count() == 0 {
         std::thread::yield_now();
     }
 
-    let mut state = service.lock_admission().unwrap();
+    let mut state = service.hold_admission_lock().unwrap();
     let release_at = deadline + Duration::from_millis(20);
     std::thread::sleep(release_at.saturating_duration_since(Instant::now()));
-    state.active_queries = 0;
-    service.inner.notify_admission_available();
+    state.set_active_queries(0);
+    service.notify_admission_available();
     drop(state);
 
     let error = wait.join().unwrap().expect_err("late quiescence must preserve the component timeout");
@@ -483,12 +497,13 @@ fn escaped_context_causes_bounded_shutdown_timeout_until_final_anchor_drops() {
 
     drop(retained_context);
     service.close_and_wait_for_quiescence(Duration::from_secs(5)).unwrap();
-    let replacement =
-        try_guaranteed_runtime_test_service().expect("the final query anchor releases the guaranteed governor claim");
+    drop(service);
+    let replacement = try_guaranteed_runtime_test_service()
+        .expect("the drained service resource aggregate releases the live backend owner when destroyed");
     drop(replacement);
 }
 #[test]
-fn held_runtime_and_produced_object_delay_claim_release_until_last_provenance_drop() {
+fn held_runtime_and_produced_object_delay_service_drain_until_last_provenance_drop() {
     let service = try_guaranteed_runtime_test_service().expect("first guaranteed service");
     let handle = service.admit_query("tenant").unwrap();
     let tenant_context = handle.acquire_context().unwrap();
@@ -503,14 +518,14 @@ fn held_runtime_and_produced_object_delay_claim_release_until_last_provenance_dr
     let timeout = service.close_and_wait_for_quiescence(Duration::from_millis(10)).unwrap_err();
     assert_eq!(timeout.fact_value("reason"), Some("query_service_shutdown_timeout"));
     assert_eq!(timeout.fact_value("deadline_stage"), Some("admission_quiescence"));
-    let error = try_guaranteed_runtime_test_service()
-        .expect_err("retained produced object keeps the prior governor claim live");
-    assert_eq!(error.fact_value("reason"), Some("shared_governor_guaranteed_minimum_conflict"));
+    let error = try_guaranteed_runtime_test_service().expect_err("the live service retains its backend owner");
+    assert_eq!(error.fact_value("reason"), Some("backend_already_live"));
 
     drop(series);
     service.close_and_wait_for_quiescence(Duration::from_secs(5)).unwrap();
-    let replacement =
-        try_guaranteed_runtime_test_service().expect("last retained provenance drop releases the prior governor claim");
+    drop(service);
+    let replacement = try_guaranteed_runtime_test_service()
+        .expect("the drained service resource aggregate releases the live backend owner when destroyed");
     drop(replacement);
 }
 #[test]
@@ -974,21 +989,23 @@ async fn query_handle_gpu_job_retains_query_epoch_until_joined() {
     drop(replacement);
 }
 #[test]
-fn active_query_owner_prevents_claim_release_until_cleanup_finishes() {
+fn active_query_owner_prevents_service_destruction_until_cleanup_finishes() {
     let service = try_guaranteed_runtime_test_service().expect("first guaranteed service");
     let handle = service.admit_query("tenant").unwrap();
 
     service.close().unwrap();
     let error = try_guaranteed_runtime_test_service().expect_err("active grant keeps prior claim live");
-    assert_eq!(error.fact_value("reason"), Some("shared_governor_guaranteed_minimum_conflict"));
+    assert_eq!(error.fact_value("reason"), Some("backend_already_live"));
 
     drop(handle);
     service.close_and_wait_for_quiescence(Duration::from_secs(5)).unwrap();
-    let replacement = try_guaranteed_runtime_test_service().expect("cleanup releases the prior claim");
+    drop(service);
+    let replacement = try_guaranteed_runtime_test_service()
+        .expect("the drained service resource aggregate releases the live backend owner when destroyed");
     drop(replacement);
 }
 #[test]
-fn close_and_wait_fences_delayed_gpu_cleanup_before_claim_release() {
+fn close_and_wait_fences_delayed_gpu_cleanup_before_service_resource_destruction() {
     struct CleanupBlockerGate {
         semaphore: Arc<tokio::sync::Semaphore>,
     }
@@ -1029,7 +1046,7 @@ fn close_and_wait_fences_delayed_gpu_cleanup_before_claim_release() {
     assert_eq!(service.admission_snapshot().unwrap().active_queries, 1);
     let error =
         try_guaranteed_runtime_test_service().expect_err("queued GPU cleanup must retain the prior governor claim");
-    assert_eq!(error.fact_value("reason"), Some("shared_governor_guaranteed_minimum_conflict"));
+    assert_eq!(error.fact_value("reason"), Some("backend_already_live"));
 
     let wait_entry = Arc::new(Barrier::new(2));
     let waiter_entry = Arc::clone(&wait_entry);
@@ -1059,8 +1076,9 @@ fn close_and_wait_fences_delayed_gpu_cleanup_before_claim_release() {
     done_rx.recv().expect("close waiter completes after the counted pool drops").unwrap();
     waiter.join().expect("close waiter must not panic");
 
-    let replacement =
-        try_guaranteed_runtime_test_service().expect("close-and-wait releases the claim before publishing quiescence");
+    drop(service);
+    let replacement = try_guaranteed_runtime_test_service()
+        .expect("the drained service resource aggregate releases the live backend owner when destroyed");
     drop(replacement);
 }
 #[test]

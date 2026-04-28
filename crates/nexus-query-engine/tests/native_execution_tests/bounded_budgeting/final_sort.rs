@@ -4,7 +4,6 @@ use super::*;
 fn bounded_native_query_uses_hierarchical_topk_without_full_sort_first() {
     let dir = unique_temp_dir("nexus-query-engine-bounded-final-sort-proactive-topk");
     let path = dir.join("input.parquet");
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
     let input_schema = write_single_row_group_final_sort_input_parquet(&path, 4096);
     let aggregated_schema = Arc::new(Schema::new(vec![
         Field::new("key", DataType::Int32, false),
@@ -36,17 +35,13 @@ fn bounded_native_query_uses_hierarchical_topk_without_full_sort_first() {
     let limit = builder.add_limit(sort, limit, Arc::clone(&final_sort_schema));
     let plan = builder.finish_with_host_sink(limit);
 
-    let context = ExecutionContext::builder()
-        .with_shared_runtime(Arc::clone(&runtime))
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: 1_200_000,
-            max_source_chunk_bytes: 1024 * 1024,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 1,
-            min_retry_chunk_row_groups: 1,
-        })
-        .build()
-        .unwrap();
+    let context = backend_context_with_memory_control_policy(MemoryControlPolicy::Bounded {
+        device_budget_bytes: 1_200_000,
+        max_source_chunk_bytes: 1024 * 1024,
+        max_row_groups_per_chunk: 1,
+        max_retry_attempts: 1,
+        min_retry_chunk_row_groups: 1,
+    });
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
     assert_eq!(metrics.source_chunks_planned, 1);
@@ -105,7 +100,6 @@ fn bounded_native_query_uses_hierarchical_topk_without_full_sort_first() {
 fn bounded_native_query_accounts_full_final_sort_reservation_during_limited_output() {
     let dir = unique_temp_dir("nexus-query-engine-bounded-final-sort-limit-reservation");
     let path = dir.join("input.parquet");
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
     let input_schema = write_single_row_group_final_sort_input_parquet(&path, 4096);
     let aggregated_schema = Arc::new(Schema::new(vec![
         Field::new("key", DataType::Int32, false),
@@ -133,17 +127,13 @@ fn bounded_native_query_accounts_full_final_sort_reservation_during_limited_outp
     let limit = builder.add_limit(sort, LimitSpec::fetch(4095), Arc::clone(&final_sort_schema));
     let plan = builder.finish_with_host_sink(limit);
 
-    let baseline_context = ExecutionContext::builder()
-        .with_shared_runtime(Arc::clone(&runtime))
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: 8 * 1024 * 1024 * 1024,
-            max_source_chunk_bytes: 1024 * 1024,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 1,
-            min_retry_chunk_row_groups: 1,
-        })
-        .build()
-        .unwrap();
+    let baseline_context = backend_context_with_memory_control_policy(MemoryControlPolicy::Bounded {
+        device_budget_bytes: 8 * 1024 * 1024 * 1024,
+        max_source_chunk_bytes: 1024 * 1024,
+        max_row_groups_per_chunk: 1,
+        max_retry_attempts: 1,
+        min_retry_chunk_row_groups: 1,
+    });
     let baseline = execute_query_plan(&baseline_context, &plan).unwrap();
     let baseline_metrics = baseline.metrics();
     let first_final_sort_event = baseline_metrics
@@ -186,17 +176,15 @@ fn bounded_native_query_accounts_full_final_sort_reservation_during_limited_outp
     assert!(constrained_budget > sequential_peak);
     assert!(constrained_budget < overlapping_peak);
 
-    let constrained_context = ExecutionContext::builder()
-        .with_shared_runtime(Arc::clone(&runtime))
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: constrained_budget,
-            max_source_chunk_bytes: 1024 * 1024,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 1,
-            min_retry_chunk_row_groups: 1,
-        })
-        .build()
-        .unwrap();
+    drop(baseline_context);
+
+    let constrained_context = backend_context_with_memory_control_policy(MemoryControlPolicy::Bounded {
+        device_budget_bytes: constrained_budget,
+        max_source_chunk_bytes: 1024 * 1024,
+        max_row_groups_per_chunk: 1,
+        max_retry_attempts: 1,
+        min_retry_chunk_row_groups: 1,
+    });
 
     let error = match execute_query_plan(&constrained_context, &plan) {
         Ok(_) => panic!("bounded execution should account full final-sort output while producing limited output"),
@@ -222,7 +210,6 @@ fn bounded_native_query_accounts_full_final_sort_reservation_during_limited_outp
 fn bounded_native_query_reports_retry_facts_when_final_sort_without_limit_fails() {
     let dir = unique_temp_dir("nexus-query-engine-bounded-final-sort-retry-exhausted");
     let path = dir.join("input.parquet");
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
     let input_schema = write_single_row_group_final_sort_input_parquet(&path, 4096);
     let aggregated_schema = Arc::new(Schema::new(vec![
         Field::new("key", DataType::Int32, false),
@@ -249,17 +236,13 @@ fn bounded_native_query_reports_retry_facts_when_final_sort_without_limit_fails(
     let sort = builder.add_sort(projection, sort, final_sort_schema);
     let plan = builder.finish_with_host_sink(sort);
 
-    let baseline_context = ExecutionContext::builder()
-        .with_shared_runtime(Arc::clone(&runtime))
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: 8 * 1024 * 1024 * 1024,
-            max_source_chunk_bytes: 1024 * 1024,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 1,
-            min_retry_chunk_row_groups: 1,
-        })
-        .build()
-        .unwrap();
+    let baseline_context = backend_context_with_memory_control_policy(MemoryControlPolicy::Bounded {
+        device_budget_bytes: 8 * 1024 * 1024 * 1024,
+        max_source_chunk_bytes: 1024 * 1024,
+        max_row_groups_per_chunk: 1,
+        max_retry_attempts: 3,
+        min_retry_chunk_row_groups: 1,
+    });
     let baseline = execute_query_plan(&baseline_context, &plan).unwrap();
     let baseline_metrics = baseline.metrics();
     let first_final_sort_event = baseline_metrics
@@ -290,17 +273,15 @@ fn bounded_native_query_reports_retry_facts_when_final_sort_without_limit_fails(
     let sequential_peak = input_bytes.saturating_add(final_sort_bytes[0]).saturating_add(final_sort_bytes[1]);
     let constrained_budget = sequential_peak - 1;
 
-    let constrained_context = ExecutionContext::builder()
-        .with_shared_runtime(Arc::clone(&runtime))
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: constrained_budget,
-            max_source_chunk_bytes: 1024 * 1024,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 3,
-            min_retry_chunk_row_groups: 1,
-        })
-        .build()
-        .unwrap();
+    drop(baseline_context);
+
+    let constrained_context = backend_context_with_memory_control_policy(MemoryControlPolicy::Bounded {
+        device_budget_bytes: constrained_budget,
+        max_source_chunk_bytes: 1024 * 1024,
+        max_row_groups_per_chunk: 1,
+        max_retry_attempts: 3,
+        min_retry_chunk_row_groups: 1,
+    });
 
     let error = match execute_query_plan(&constrained_context, &plan) {
         Ok(_) => panic!("bounded execution should fail final sort when no top-k retry boundary exists"),
@@ -320,7 +301,7 @@ fn bounded_native_query_reports_retry_facts_when_final_sort_without_limit_fails(
         assert_eq!(error.fact_value("reservation_kind"), Some("final_sort"));
     } else {
         assert_eq!(error.fact_value("budget_boundary"), Some("final_sort"));
-        assert_eq!(error.fact_value("budget_enforcement"), Some("stream_bound_reservation"));
+        assert_eq!(error.fact_value("budget_enforcement"), Some("reservation_arena_member"));
     }
 
     fs::remove_dir_all(dir).unwrap();

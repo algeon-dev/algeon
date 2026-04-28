@@ -2,7 +2,8 @@ use super::*;
 
 #[test]
 fn native_boolean_and_or_use_sql_three_valued_logic() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = backend_context();
+    let runtime = Arc::new(context.runtime().unwrap());
     let input_schema =
         Arc::new(Schema::new(vec![Field::new("a", DataType::Boolean, true), Field::new("b", DataType::Boolean, true)]));
     let output_schema = Arc::new(Schema::new(vec![
@@ -41,7 +42,7 @@ fn native_boolean_and_or_use_sql_three_valued_logic() {
         ),
     );
     let plan = builder.finish_with_host_sink(projection);
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
+
     let mut gpu_inputs = GpuResidentInputMap::new();
     gpu_inputs.insert(
         "bool_input".to_string(),
@@ -80,7 +81,8 @@ fn assert_boolean_values(array: &BooleanArray, expected: &[Option<bool>]) {
 fn native_query_executes_filter_projection_over_tpch_like_types() {
     let dir = unique_temp_dir("nexus-query-engine-native-execution-tpch-like-types");
     let path = dir.join("tpch-like.parquet");
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = backend_context();
+    let runtime = Arc::new(context.runtime().unwrap());
     let input_schema = write_tpch_like_types_parquet(&runtime, &path);
     let projected_schema = Arc::new(Schema::new(vec![
         Field::new("orderkey", DataType::Int64, false),
@@ -166,7 +168,6 @@ fn native_query_executes_filter_projection_over_tpch_like_types() {
     let projection = builder.add_projection(filter, projection_outputs(projection, projected_schema));
     let plan = builder.finish_with_host_sink(projection);
 
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
     assert_eq!(metrics.parquet_files, 1);
@@ -198,7 +199,8 @@ fn native_query_executes_filter_projection_over_tpch_like_types() {
 
 #[test]
 fn native_projection_coerces_decimal_output_to_declared_scale() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = backend_context();
+    let runtime = Arc::new(context.runtime().unwrap());
     let input_schema = Arc::new(Schema::new(vec![Field::new("amount", DataType::Decimal128(20, 0), false)]));
     let output_schema = Arc::new(Schema::new(vec![Field::new("mkt_share", DataType::Decimal128(20, -1), false)]));
     let batch = RecordBatch::try_new(
@@ -216,7 +218,7 @@ fn native_projection_coerces_decimal_output_to_declared_scale() {
         projection_outputs(vec![Expr::column("amount").alias("mkt_share")], Arc::clone(&output_schema)),
     );
     let plan = builder.finish_gpu_resident(projection);
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
+
     let mut gpu_inputs = GpuResidentInputMap::new();
     gpu_inputs.insert(
         "decimal_input".to_string(),
@@ -241,7 +243,7 @@ fn native_projection_coerces_decimal_output_to_declared_scale() {
 fn bounded_native_projection_coerces_decimal_output_to_declared_scale() {
     let dir = unique_temp_dir("nexus-query-engine-bounded-projection-decimal-schema-coerce");
     let path = dir.join("input.parquet");
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = backend_context();
     let input_schema = write_decimal_scale0_grouped_parquet(&path);
     let aggregate_schema = Arc::new(Schema::new(vec![
         Field::new("key", DataType::Int32, false),
@@ -272,17 +274,6 @@ fn bounded_native_projection_coerces_decimal_output_to_declared_scale() {
         ),
     );
     let plan = builder.finish_gpu_resident(projection);
-    let context = ExecutionContext::builder()
-        .with_shared_runtime(Arc::clone(&runtime))
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: 8 * 1024 * 1024 * 1024,
-            max_source_chunk_bytes: 1024 * 1024,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 1,
-            min_retry_chunk_row_groups: 1,
-        })
-        .build()
-        .unwrap();
 
     let result = execute_query_plan(&context, &plan).unwrap();
     assert!(result.metrics().budgeted_execution_events.iter().any(|event| {
@@ -308,7 +299,8 @@ fn bounded_native_projection_coerces_decimal_output_to_declared_scale() {
 
 #[test]
 fn native_projection_decimal_division_uses_declared_binary_output_type() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = backend_context();
+    let runtime = Arc::new(context.runtime().unwrap());
     let input_schema = Arc::new(Schema::new(vec![
         Field::new("numerator", DataType::Decimal128(38, 8), false),
         Field::new("denominator", DataType::Decimal128(38, 8), false),
@@ -341,7 +333,7 @@ fn native_projection_decimal_division_uses_declared_binary_output_type() {
     let projection =
         builder.add_projection(source, projection_outputs(vec![projection_expr], Arc::clone(&output_schema)));
     let plan = builder.finish_with_host_sink(projection);
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
+
     let mut gpu_inputs = GpuResidentInputMap::new();
     gpu_inputs.insert(
         "decimal_input".to_string(),
@@ -362,7 +354,7 @@ fn native_projection_decimal_division_uses_declared_binary_output_type() {
 fn bounded_native_projection_decimal_division_uses_declared_binary_output_type() {
     let dir = unique_temp_dir("nexus-query-engine-bounded-projection-decimal-division");
     let path = dir.join("input.parquet");
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = backend_context();
     let input_schema = write_decimal_ratio_parquet(&path);
     let output_schema = Arc::new(Schema::new(vec![Field::new("ratio", DataType::Decimal128(38, 8), false)]));
     let source = LocalParquetSource::from_files(
@@ -383,17 +375,6 @@ fn bounded_native_projection_decimal_division_uses_declared_binary_output_type()
     let projection =
         builder.add_projection(source, projection_outputs(vec![projection_expr], Arc::clone(&output_schema)));
     let plan = builder.finish_with_host_sink(projection);
-    let context = ExecutionContext::builder()
-        .with_shared_runtime(Arc::clone(&runtime))
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: 8 * 1024 * 1024 * 1024,
-            max_source_chunk_bytes: 1024 * 1024,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 1,
-            min_retry_chunk_row_groups: 1,
-        })
-        .build()
-        .unwrap();
 
     let result = execute_query_plan(&context, &plan).unwrap();
     assert!(
@@ -425,7 +406,7 @@ fn bounded_native_projection_decimal_division_uses_declared_binary_output_type()
 fn bounded_native_query_executes_decimal_sum_ratio_at_output_scale() {
     let dir = unique_temp_dir("nexus-query-engine-bounded-market-share-decimal-ratio");
     let path = dir.join("input.parquet");
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = backend_context();
     let input_schema = write_market_share_decimal_ratio_parquet(&path);
     let projected_schema = Arc::new(Schema::new(vec![
         Field::new("o_year", DataType::Int32, false),
@@ -471,17 +452,6 @@ fn bounded_native_query_executes_decimal_sum_ratio_at_output_scale() {
     let projection =
         builder.add_projection(aggregate, projection_outputs(vec![Expr::column("o_year"), mkt_share], output_schema));
     let plan = builder.finish_with_host_sink(projection);
-    let context = ExecutionContext::builder()
-        .with_shared_runtime(Arc::clone(&runtime))
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: 8 * 1024 * 1024 * 1024,
-            max_source_chunk_bytes: 1024 * 1024,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 1,
-            min_retry_chunk_row_groups: 1,
-        })
-        .build()
-        .unwrap();
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {

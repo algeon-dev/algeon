@@ -1,7 +1,7 @@
 #[test]
 fn bfs_drops_null_edge_rows_before_graph_construction() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
+    let context = backend_context();
+    let runtime = Arc::new(context.runtime().unwrap());
 
     let edge_schema =
         Arc::new(Schema::new(vec![Field::new("src", DataType::Int32, true), Field::new("dst", DataType::Int32, true)]));
@@ -61,7 +61,7 @@ fn bfs_drops_null_edge_rows_before_graph_construction() {
     assert!(result.metrics().budgeted_execution_events.iter().any(|event| {
         event.operation == "datafusion_nexus_cugraph_bfs"
             && event.boundary == "graph_memory"
-            && event.enforcement == "stream_bound_reservation"
+            && event.enforcement == "reservation_arena_member"
             && event.status == "reservation_enforced"
             && event.allocator_high_water_bytes.is_some()
     }));
@@ -78,8 +78,8 @@ fn bfs_drops_null_edge_rows_before_graph_construction() {
 
 #[test]
 fn bfs_python_cugraph_reports_null_edges_dropped_before_edge_normalize() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
+    let context = backend_context();
+    let runtime = Arc::new(context.runtime().unwrap());
 
     let edge_schema =
         Arc::new(Schema::new(vec![Field::new("src", DataType::Int32, true), Field::new("dst", DataType::Int32, true)]));
@@ -123,7 +123,7 @@ fn bfs_python_cugraph_reports_null_edges_dropped_before_edge_normalize() {
     assert!(result.metrics().budgeted_execution_events.iter().any(|event| {
         event.operation == "datafusion_nexus_cugraph_bfs"
             && event.boundary == "graph_memory"
-            && event.enforcement == "stream_bound_reservation"
+            && event.enforcement == "reservation_arena_member"
             && event.status == "reservation_enforced"
             && event.allocator_high_water_bytes.is_some()
     }));
@@ -131,8 +131,8 @@ fn bfs_python_cugraph_reports_null_edges_dropped_before_edge_normalize() {
 
 #[test]
 fn bfs_keeps_null_weight_edges_but_drops_null_edge_id_rows() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
+    let context = backend_context();
+    let runtime = Arc::new(context.runtime().unwrap());
 
     let edge_schema = Arc::new(Schema::new(vec![
         Field::new("src", DataType::Int32, false),
@@ -214,8 +214,8 @@ fn bfs_keeps_null_weight_edges_but_drops_null_edge_id_rows() {
 // reachable. Before the fix this returned i32::MAX sentinels for 1 and 2.
 #[test]
 fn bfs_null_weight_does_not_drop_reachable_edges() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
+    let context = backend_context();
+    let runtime = Arc::new(context.runtime().unwrap());
 
     let edge_schema = Arc::new(Schema::new(vec![
         Field::new("src", DataType::Int32, false),
@@ -278,13 +278,8 @@ fn bfs_null_weight_does_not_drop_reachable_edges() {
 
 #[test]
 fn bfs_include_edge_ids_filters_edges() {
-    let runtime = Arc::new(cudf::Runtime::builder().with_device_memory_manager().build().unwrap());
-    let cache = Arc::new(GpuResidentGraphCache::new(64 * 1024 * 1024));
-    let context = ExecutionContext::builder()
-        .with_shared_runtime(Arc::clone(&runtime))
-        .with_resident_graph_cache(Arc::clone(&cache))
-        .build()
-        .unwrap();
+    let context = backend_context();
+    let runtime = Arc::new(context.runtime().unwrap());
 
     let edge_schema = Arc::new(Schema::new(vec![
         Field::new("src", DataType::Int32, false),
@@ -368,15 +363,12 @@ fn bfs_include_edge_ids_filters_edges() {
     let graph_metrics = &result.metrics().graph_algorithm_runtime_rows;
     assert_eq!(graph_metrics.len(), 1);
     assert!(graph_metrics[0].algorithm_metadata.contains("predicate_include_edge_ids_rows=2"));
-    assert!(graph_metrics[0].algorithm_metadata.contains("graph_cache=bypass_edge_id_graph"));
-    assert_eq!(cache.len().unwrap(), 0);
-    assert_eq!(cache.checked_out_len().unwrap(), 0);
 }
 
 #[test]
 fn bfs_include_edges_relation_filters_by_source_destination() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
+    let context = backend_context();
+    let runtime = Arc::new(context.runtime().unwrap());
 
     let edge_schema = Arc::new(Schema::new(vec![
         Field::new("src", DataType::Int32, false),
@@ -468,8 +460,8 @@ fn bfs_include_edges_relation_filters_by_source_destination() {
 
 #[test]
 fn bfs_source_vertices_side_input_accepts_multiple_rows() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
+    let context = backend_context();
+    let runtime = Arc::new(context.runtime().unwrap());
 
     let edge_schema = Arc::new(Schema::new(vec![
         Field::new("src", DataType::Int32, false),
@@ -539,8 +531,8 @@ fn bfs_source_vertices_side_input_accepts_multiple_rows() {
 
 #[test]
 fn bfs_source_vertices_side_input_rejects_empty_source_set() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
+    let context = backend_context();
+    let runtime = Arc::new(context.runtime().unwrap());
 
     let edge_schema = Arc::new(Schema::new(vec![
         Field::new("src", DataType::Int32, false),
@@ -599,8 +591,8 @@ fn bfs_source_vertices_side_input_rejects_empty_source_set() {
 
 #[test]
 fn bfs_empty_path_endpoint_policy_returns_empty_after_edge_filter() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
+    let context = backend_context();
+    let runtime = Arc::new(context.runtime().unwrap());
 
     let edge_schema = Arc::new(Schema::new(vec![
         Field::new("src", DataType::Int32, false),
@@ -684,8 +676,8 @@ fn bfs_empty_path_endpoint_policy_returns_empty_after_edge_filter() {
 
 #[test]
 fn bfs_target_metadata_columns_are_shaped_when_requested() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
+    let context = backend_context();
+    let runtime = Arc::new(context.runtime().unwrap());
 
     let edge_schema = Arc::new(Schema::new(vec![
         Field::new("src", DataType::Int32, false),

@@ -88,7 +88,7 @@ impl PlacementRequest {
 }
 
 /// Policy that returns ordered candidate devices, most preferred first.
-pub trait PlacementPolicy: Send + Sync {
+pub(crate) trait PlacementPolicy: Send + Sync {
     /// Ordered placement candidates for `request`.
     fn candidates(&self, registry: &DeviceRegistry, request: &PlacementRequest) -> Result<Vec<cudf::DeviceId>>;
 }
@@ -139,7 +139,7 @@ impl PlacementPolicy for QueryPlacementPolicy {
 
 /// Places queries on the device with most ungranted capacity, then fewer actives.
 #[derive(Debug, Default, Clone, Copy)]
-pub struct LeastLoadedPlacement;
+pub(crate) struct LeastLoadedPlacement;
 
 impl PlacementPolicy for LeastLoadedPlacement {
     fn candidates(&self, registry: &DeviceRegistry, _request: &PlacementRequest) -> Result<Vec<cudf::DeviceId>> {
@@ -160,7 +160,7 @@ impl PlacementPolicy for LeastLoadedPlacement {
 
 /// Places queries on the fullest device that can satisfy the minimum grant.
 #[derive(Debug, Default, Clone, Copy)]
-pub struct BestFitPlacement;
+pub(crate) struct BestFitPlacement;
 
 impl PlacementPolicy for BestFitPlacement {
     fn candidates(&self, registry: &DeviceRegistry, request: &PlacementRequest) -> Result<Vec<cudf::DeviceId>> {
@@ -181,8 +181,8 @@ impl PlacementPolicy for BestFitPlacement {
 
 /// Pins all queries to one device when that device is part of the registry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PinnedDevicePlacement {
-    pub device: cudf::DeviceId,
+pub(crate) struct PinnedDevicePlacement {
+    pub(crate) device: cudf::DeviceId,
 }
 
 impl PlacementPolicy for PinnedDevicePlacement {

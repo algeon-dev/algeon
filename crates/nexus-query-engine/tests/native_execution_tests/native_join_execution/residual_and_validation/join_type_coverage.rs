@@ -5,7 +5,7 @@ fn native_query_executes_conditional_non_equi_inner_join() {
     let dir = unique_temp_dir("nexus-query-engine-native-conditional-inner-join");
     let left_path = dir.join("lineitem.parquet");
     let right_path = dir.join("orders.parquet");
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let runtime = backend_runtime();
     let left_schema = write_join_left_parquet(&runtime, &left_path);
     let right_schema = write_join_right_parquet(&runtime, &right_path);
     let output_schema = Arc::new(Schema::new(vec![
@@ -53,7 +53,7 @@ fn native_query_executes_conditional_non_equi_inner_join() {
     );
     let plan = builder.finish_with_host_sink(sort);
 
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
+    let context = backend_context();
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
     assert_eq!(metrics.hash_join_build_count, 0);
@@ -91,7 +91,7 @@ fn native_query_executes_left_join_with_equi_key_and_residual_predicate() {
     let dir = unique_temp_dir("nexus-query-engine-native-mixed-left-join");
     let left_path = dir.join("lineitem.parquet");
     let right_path = dir.join("orders.parquet");
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let runtime = backend_runtime();
     let left_schema = write_join_left_parquet(&runtime, &left_path);
     let right_schema = write_join_right_parquet(&runtime, &right_path);
     let output_schema = Arc::new(Schema::new(vec![
@@ -129,7 +129,7 @@ fn native_query_executes_left_join_with_equi_key_and_residual_predicate() {
     );
     let plan = builder.finish_with_host_sink(sort);
 
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
+    let context = backend_context();
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
     assert!(metrics.mixed_join_size_data_bytes > 0);
@@ -159,7 +159,7 @@ fn native_query_executes_full_join_with_equi_key_and_residual_predicate() {
     let dir = unique_temp_dir("nexus-query-engine-native-mixed-full-join");
     let left_path = dir.join("lineitem.parquet");
     let right_path = dir.join("orders.parquet");
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let runtime = backend_runtime();
     let left_schema = write_join_left_parquet(&runtime, &left_path);
     let right_schema = write_join_right_parquet(&runtime, &right_path);
     let output_schema = Arc::new(Schema::new(vec![
@@ -211,7 +211,7 @@ fn native_query_executes_full_join_with_equi_key_and_residual_predicate() {
     );
     let plan = builder.finish_with_host_sink(sort);
 
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
+    let context = backend_context();
     let result = execute_query_plan(&context, &plan).unwrap();
     let join_metrics = result
         .metrics()
@@ -267,7 +267,7 @@ fn native_query_executes_left_semi_and_anti_joins_with_equi_key_and_residual_pre
     let dir = unique_temp_dir("nexus-query-engine-native-mixed-semi-anti-join");
     let left_path = dir.join("lineitem.parquet");
     let right_path = dir.join("orders.parquet");
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let runtime = backend_runtime();
     let left_schema = write_join_left_parquet(&runtime, &left_path);
     let right_schema = write_join_right_parquet(&runtime, &right_path);
 

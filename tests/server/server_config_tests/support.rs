@@ -88,10 +88,6 @@ fn batch_i64_value(batch: &arrow::record_batch::RecordBatch, column: usize) -> i
     batch.column(column).as_any().downcast_ref::<arrow::array::Int64Array>().unwrap().value(0)
 }
 
-fn batch_string_value(batch: &arrow::record_batch::RecordBatch, column: usize) -> &str {
-    batch.column(column).as_any().downcast_ref::<arrow::array::StringArray>().unwrap().value(0)
-}
-
 #[cfg(feature = "iceberg")]
 fn expect_glue_backend(
     iceberg: &datafusion_nexus::server::IcebergServerConfig,

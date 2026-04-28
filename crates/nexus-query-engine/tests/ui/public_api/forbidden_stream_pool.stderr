@@ -1,0 +1,11 @@
+error[E0603]: struct `ServiceStreamPool` is private
+ --> tests/ui/public_api/forbidden_stream_pool.rs:1:34
+  |
+1 | use nexus_query_engine::runtime::ServiceStreamPool;
+  |                                  ^^^^^^^^^^^^^^^^^ private struct
+  |
+note: the struct `ServiceStreamPool` is defined here
+ --> src/runtime.rs
+  |
+  | pub(crate) use service_stream::{ServiceStreamPool, SourceReadStreamLease};
+  |                                 ^^^^^^^^^^^^^^^^^

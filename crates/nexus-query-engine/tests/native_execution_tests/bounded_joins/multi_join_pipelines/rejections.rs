@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn bounded_native_multi_join_rejects_unsupported_mixed_residual_before_source_read() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let runtime = backend_runtime();
     let left_schema = Arc::new(Schema::new(vec![
         Field::new("order_id", DataType::Int32, false),
         Field::new("qty", DataType::Int32, false),

@@ -8,16 +8,10 @@ use std::{
     time::Duration,
 };
 
-use datafusion::common::config::ConfigOptions;
-#[cfg(not(feature = "cugraph"))]
-use datafusion_nexus::error::{DataFusionErrorExt, ErrorCode};
 #[cfg(feature = "iceberg")]
 use datafusion_nexus::table_format::{self, TableFormatLakehouseCachePolicy};
 use datafusion_nexus::{
     backend::MemoryShare,
-    gpu_coverage::NEXUS_EXPLAIN_COVERAGE_FUNCTION,
-    native_exec::NexusNativeExecutionConfig,
-    planner::NexusNativeOptimizerConfig,
     server::{
         NEXUS_ICEBERG_GLUE_DATABASE_ENV, NEXUS_SERVER_ADMISSION_GRANT_MIN_ENV, NEXUS_SERVER_ADMISSION_GRANT_WANT_ENV,
         NEXUS_SERVER_ADMISSION_MAX_QUERIES_PER_DEVICE_ENV, NEXUS_SERVER_ADMISSION_PINNED_DEVICE_ENV,
@@ -44,16 +38,13 @@ use datafusion_nexus::{
         NEXUS_SERVER_WORKSPACE_BACKING_CATALOG_ENV, NEXUS_SERVER_WORKSPACE_BACKING_SCHEMA_ENV,
         NEXUS_SERVER_WORKSPACE_CATALOG_ENV, NEXUS_SERVER_WORKSPACE_SCHEMA_ENV, ServerConfig, ServerNativeConfigScope,
     },
-    session_config::{DATAFUSION_NEXUS_SESSION_CONFIG_OPTIONS, DataFusionNexusSessionConfig},
+    session_config::DATAFUSION_NEXUS_SESSION_CONFIG_OPTIONS,
 };
 #[cfg(feature = "iceberg")]
 use nexus_query_engine::runtime::S3SourceStorageCredential;
 use nexus_query_engine::{
     mode::{NativePipelineExecutionMode, StatisticalAggregateExecutionMode},
-    runtime::{
-        MemoryControlPolicy, QueryPlacementPolicy, QueryService, QueryServiceConfig, QueryServiceTenantConfig,
-        SlotGuarantee, SourceChunkPlanningMode,
-    },
+    runtime::{MemoryControlPolicy, QueryPlacementPolicy, SlotGuarantee, SourceChunkPlanningMode},
 };
 
 // Server config contract tests are split by concern while staying in this

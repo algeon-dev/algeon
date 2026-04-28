@@ -5,7 +5,8 @@ fn optimized_aggregate_join_pushdown_matches_plain_sum_inner_join_with_duplicate
     let dir = unique_temp_dir("nexus-query-engine-aggregate-join-pushdown-parity");
     let left_path = dir.join("left.parquet");
     let right_path = dir.join("right.parquet");
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = backend_context();
+    let runtime = Arc::new(context.runtime().unwrap());
 
     let left_schema = write_aggregate_join_pushdown_left_parquet(&runtime, &left_path);
     let right_schema = write_aggregate_join_pushdown_right_parquet(&runtime, &right_path);
@@ -14,7 +15,6 @@ fn optimized_aggregate_join_pushdown_matches_plain_sum_inner_join_with_duplicate
     assert_eq!(optimizer_result.change, nexus_query_engine::optimizer::NativeOptimizerChange::Changed);
     assert_eq!(optimizer_result.diagnostics.aggregate_join_pushdown.applied_count, 1);
 
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
     let original = execute_query_plan(&context, &plan).unwrap();
     let optimized = execute_query_plan(&context, &optimizer_result.plan).unwrap();
 
@@ -44,7 +44,8 @@ fn optimized_aggregate_join_pushdown_matches_left_join_count_with_unmatched_rows
     let dir = unique_temp_dir("nexus-query-engine-aggregate-join-pushdown-left-count-parity");
     let left_path = dir.join("customer.parquet");
     let right_path = dir.join("orders.parquet");
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = backend_context();
+    let runtime = Arc::new(context.runtime().unwrap());
 
     let left_schema = write_left_count_customer_parquet(&runtime, &left_path);
     let right_schema = write_left_count_orders_parquet(&runtime, &right_path);
@@ -53,7 +54,6 @@ fn optimized_aggregate_join_pushdown_matches_left_join_count_with_unmatched_rows
     assert_eq!(optimizer_result.change, nexus_query_engine::optimizer::NativeOptimizerChange::Changed);
     assert_eq!(optimizer_result.diagnostics.aggregate_join_pushdown.applied_count, 1);
 
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
     let original = execute_query_plan(&context, &plan).unwrap();
     let optimized = execute_query_plan(&context, &optimizer_result.plan).unwrap();
 

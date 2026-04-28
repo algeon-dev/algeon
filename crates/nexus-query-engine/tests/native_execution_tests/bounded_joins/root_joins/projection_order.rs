@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn bounded_native_query_preserves_right_then_left_projected_cross_output_order() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let runtime = backend_runtime();
     let dir = unique_temp_dir("nexus-query-engine-bounded-root-projected-cross-join");
     let left_path = dir.join("lineitem.parquet");
     let right_path = dir.join("orders.parquet");
@@ -95,7 +95,7 @@ fn bounded_native_query_preserves_right_then_left_projected_cross_output_order()
 
 #[test]
 fn bounded_native_query_preserves_mixed_projected_cross_output_order() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let runtime = backend_runtime();
     let dir = unique_temp_dir("nexus-query-engine-bounded-root-projected-cross-join-mixed-order");
     let left_path = dir.join("lineitem.parquet");
     let right_path = dir.join("orders.parquet");

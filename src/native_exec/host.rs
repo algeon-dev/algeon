@@ -239,7 +239,7 @@ impl ExecutionPlan for NexusNativeExec {
                 if let Some(admission_facts) = context_lease.admission_facts() {
                     metrics.record_admission_facts(admission_facts);
                 }
-                let gpu_execution_pool = context_lease.context().gpu_execution_pool().map_err(|error| {
+                let gpu_executor = context_lease.context().gpu_executor().map_err(|error| {
                     DataFusionError::from(mark_native_runtime_error(
                         Error::from_native(
                             "datafusion_nexus.native_exec.gpu_execution_pool",
@@ -250,11 +250,11 @@ impl ExecutionPlan for NexusNativeExec {
                     ))
                 })?;
                 let observation = context_lease.context().runtime_observation().clone();
-                let cursor_pool = gpu_execution_pool.clone();
+                let cursor_executor = gpu_executor.clone();
                 let cursor_observation = observation.clone();
                 let cursor_metrics = metrics.clone();
                 run_gpu_execution_task(
-                    gpu_execution_pool,
+                    gpu_executor,
                     observation,
                     "datafusion_nexus.native_exec.gpu_execution_pool",
                     move |gpu_stream_scope| async move {
@@ -303,7 +303,7 @@ impl ExecutionPlan for NexusNativeExec {
                             })?;
                         Ok::<NativeHostOutputCursor, DataFusionError>(NativeHostOutputCursor::new(
                             cursor,
-                            cursor_pool,
+                            cursor_executor,
                             cursor_observation,
                             cursor_metrics,
                         ))

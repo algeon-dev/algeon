@@ -1,9 +1,9 @@
 #![cfg(feature = "cuvs")]
 
-use std::{fs::File, sync::Arc};
+use std::{fs::File, sync::Arc, time::Duration};
 
 use arrow::{
-    array::{Array, ArrayRef, FixedSizeListArray, Float32Array, Int64Array, ListArray, StringArray},
+    array::{ArrayRef, FixedSizeListArray, Float32Array, Int64Array, ListArray, StringArray},
     buffer::OffsetBuffer,
     datatypes::{DataType, Field, Schema},
     record_batch::RecordBatch,
@@ -15,14 +15,12 @@ use datafusion::{
     prelude::{ParquetReadOptions, SessionContext},
 };
 #[cfg(feature = "cugraph")]
+use datafusion_nexus::cugraph_sql::CugraphSqlConfig;
 use datafusion_nexus::{
-    cugraph_sql::CugraphSqlConfig,
-    native_exec::NexusNativeComposedGpuProducerExec,
-    planner::{FinalPlanDisposition, classify_final_plan},
-};
-use datafusion_nexus::{
-    cuvs_sql::CuvsAlgoExec, native_exec::NexusNativeExecutionConfig, native_report::NativeDataFusionExecutionMetrics,
-    planner::NexusNativeOptimizerConfig, session::NexusSessionStateBuilderExt,
+    backend::{GpuMemoryOwnership, NexusGpuBackend, NexusMemoryPolicy},
+    cuvs_sql::CuvsAlgoExec,
+    error::{DataFusionErrorExt, ErrorCode},
+    session::NexusSessionStateBuilderExt,
 };
 use parquet::arrow::ArrowWriter;
 
@@ -46,13 +44,11 @@ const PCA_OPTIONS: &str = r#"{
 
 #[cfg(feature = "cugraph")]
 #[tokio::test]
-async fn cuvs_sql_gpu_composes_cugraph_relational_input_without_an_intermediate_host_boundary() {
-    let native_execution_config = NexusNativeExecutionConfig::unbounded();
-    let state = SessionStateBuilder::new_with_default_features()
-        .with_nexus_native(
-            NexusNativeOptimizerConfig::default().with_native_execution_config(native_execution_config.clone()),
-        )
-        .with_cugraph_sql(CugraphSqlConfig::default().with_native_execution_config(native_execution_config))
+async fn cuvs_sql_plans_cugraph_relational_input_then_rejects_bounded_execution() {
+    let backend = cuvs_test_backend();
+    let state = backend
+        .install_on_with_cugraph_sql(SessionStateBuilder::new_with_default_features(), CugraphSqlConfig::default())
+        .expect("install backend-owned cuGraph SQL")
         .try_with_cuvs_sql()
         .expect("install cuGraph and cuVS SQL")
         .build();
@@ -82,50 +78,24 @@ async fn cuvs_sql_gpu_composes_cugraph_relational_input_without_an_intermediate_
         .create_physical_plan()
         .await
         .expect("physical plan");
-    let cuvs = find_cuvs_exec(plan.as_ref()).expect("CuvsAlgoExec");
-    assert!(
-        cuvs.children()[0].downcast_ref::<NexusNativeComposedGpuProducerExec>().is_some(),
-        "the cuGraph join/filter/projection child must stay GPU resident"
-    );
+    find_cuvs_exec(plan.as_ref()).expect("CuvsAlgoExec");
     let rendered_plan = datafusion::physical_plan::displayable(plan.as_ref()).indent(false).to_string();
-    assert_eq!(
-        classify_final_plan(plan.as_ref()),
-        FinalPlanDisposition::Native,
-        "the composed graph-to-vector path must not introduce a DataFusion execution boundary:\n{rendered_plan}"
+    assert!(
+        rendered_plan.contains("CugraphAlgoExec: algorithm=ForceAtlas2"),
+        "the cuVS relation must retain its planned cuGraph producer:\n{rendered_plan}"
+    );
+    assert!(
+        rendered_plan.starts_with("NexusNativeComposedExec:"),
+        "relational operators above cuVS must still form the native outer consumer:\n{rendered_plan}"
     );
 
-    let batches = collect(Arc::clone(&plan), ctx.task_ctx()).await.expect("combined cuGraph/cuVS GPU execution");
-    assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 1);
-    let batch = batches.first().expect("one kNN output batch");
-    assert_eq!(batch.schema().field(0).name(), "query_ordinal");
-    assert_eq!(batch.schema().field(1).name(), "query_id");
-    assert_eq!(batch.schema().field(3).name(), "neighbor_id");
-    assert_eq!(batch.column(1).as_any().downcast_ref::<Int64Array>().expect("Int64 query IDs").value(0), 99);
-    assert_eq!(batch.column(3).as_any().downcast_ref::<Int64Array>().expect("Int64 neighbor IDs").value(0), 0);
-
-    let metrics = NativeDataFusionExecutionMetrics::from_metrics(&cuvs.metrics().expect("cuVS DataFusion metrics"));
-    assert_eq!(metrics.gpu_resident_input_handoffs, 2, "both cuVS inputs must become GPU handoffs");
-    assert_eq!(
-        metrics.host_to_device_uploads, 0,
-        "the cuVS boundary must not stage either relation through host memory"
-    );
-    assert_eq!(metrics.host_to_device_uploaded_rows, 0);
-    assert_eq!(metrics.host_to_device_uploaded_bytes, 0);
-    assert_eq!(
-        metrics.device_to_host_materializations, 0,
-        "the cuVS result must remain device resident for the outer native consumer"
-    );
-    let final_metrics =
-        NativeDataFusionExecutionMetrics::from_metrics(&plan.metrics().expect("final DataFusion metrics"));
-    assert_eq!(
-        final_metrics.device_to_host_materializations, 1,
-        "only the final DataFusion result may materialize on the host"
-    );
+    assert_cuvs_bounded_rejection(plan, &ctx, "cuvs_brute_force_knn").await;
+    close_cuvs_test_backend(backend, ctx);
 }
 
 #[tokio::test]
-async fn cuvs_sql_accepts_uniform_list_float32_vectors_through_its_dedicated_ingress() {
-    let ctx = cuvs_unbounded_context();
+async fn cuvs_sql_plans_uniform_list_float32_vectors_then_rejects_bounded_execution() {
+    let (backend, ctx) = cuvs_bounded_context();
     let item = Arc::new(Field::new("item", DataType::Float32, false));
     let dataset_schema = Arc::new(Schema::new(vec![
         Field::new("item_id", DataType::Int64, false),
@@ -182,19 +152,17 @@ async fn cuvs_sql_accepts_uniform_list_float32_vectors_through_its_dedicated_ing
         .create_physical_plan()
         .await
         .expect("physical List plan");
-    let cuvs = find_cuvs_exec(plan.as_ref()).expect("CuvsAlgoExec");
-    let batches = collect(Arc::clone(&plan), ctx.task_ctx()).await.expect("execute List<Float32> cuVS SQL");
-    let batch = single_batch(&batches);
-    assert_eq!(int64_values(batch, 0), vec![99]);
-    assert_eq!(int64_values(batch, 1), vec![10]);
-    assert_eq!(u32_values(batch, 2), vec![0]);
-    let metrics = NativeDataFusionExecutionMetrics::from_metrics(&cuvs.metrics().expect("cuVS metrics"));
-    assert_eq!(metrics.host_to_device_uploads, 2, "both List inputs must enter through cuVS-owned ingress");
+    find_cuvs_exec(plan.as_ref()).expect("List<Float32> inputs must plan a CuvsAlgoExec");
+    assert_eq!(plan.schema().field(0).name(), "query_id");
+    assert_eq!(plan.schema().field(1).name(), "neighbor_id");
+    assert_eq!(plan.schema().field(2).name(), "rank");
+    assert_cuvs_bounded_rejection(plan, &ctx, "cuvs_brute_force_knn").await;
+    close_cuvs_test_backend(backend, ctx);
 }
 
 #[tokio::test]
-async fn cuvs_sql_coalesces_multi_partition_input_and_supports_relational_operators_above_its_output() {
-    let ctx = cuvs_unbounded_context();
+async fn cuvs_sql_plans_multi_partition_input_and_relational_operators_then_rejects_bounded_execution() {
+    let (backend, ctx) = cuvs_bounded_context();
     let dataset_schema = wide_vector_schema("item_id");
     let first_partition = wide_vector_batch(Arc::clone(&dataset_schema), "item_id", &[1], &[0.0], &[0.0]);
     let second_partition = wide_vector_batch(Arc::clone(&dataset_schema), "item_id", &[2], &[5.0], &[5.0]);
@@ -230,7 +198,7 @@ async fn cuvs_sql_coalesces_multi_partition_input_and_supports_relational_operat
     ctx.register_table("labels", Arc::new(MemTable::try_new(labels_schema, vec![vec![labels]]).expect("labels table")))
         .expect("register labels");
 
-    let batches = execute_sql(
+    let plan = plan_sql(
         &ctx,
         &format!(
             "SELECT knn.query_id, labels.label \
@@ -249,15 +217,16 @@ async fn cuvs_sql_coalesces_multi_partition_input_and_supports_relational_operat
         ),
     )
     .await;
-    let batch = single_batch(&batches);
-    assert_eq!(int64_values(batch, 0), vec![11]);
-    let labels = batch.column(1).as_any().downcast_ref::<StringArray>().expect("Utf8 label output");
-    assert_eq!(labels.value(0), "nearest-one");
+    find_cuvs_exec(plan.as_ref()).expect("relational composition must retain CuvsAlgoExec");
+    assert_eq!(plan.schema().field(0).name(), "query_id");
+    assert_eq!(plan.schema().field(1).name(), "label");
+    assert_cuvs_bounded_rejection(plan, &ctx, "cuvs_brute_force_knn").await;
+    close_cuvs_test_backend(backend, ctx);
 }
 
 #[tokio::test]
-async fn cuvs_sql_executes_over_a_parquet_backed_relation() {
-    let ctx = cuvs_unbounded_context();
+async fn cuvs_sql_plans_parquet_relations_then_rejects_bounded_execution() {
+    let (backend, ctx) = cuvs_bounded_context();
     let temp_dir = tempfile::tempdir().expect("temporary Parquet directory");
     let dataset_path = temp_dir.path().join("dataset.parquet");
     let dataset_schema = wide_vector_schema("item_id");
@@ -282,7 +251,7 @@ async fn cuvs_sql_executes_over_a_parquet_backed_relation() {
     )
     .expect("register queries");
 
-    let batches = execute_sql(
+    let plan = plan_sql(
         &ctx,
         &format!(
             "SELECT query_id, neighbor_id \
@@ -294,14 +263,16 @@ async fn cuvs_sql_executes_over_a_parquet_backed_relation() {
         ),
     )
     .await;
-    let batch = single_batch(&batches);
-    assert_eq!(int64_values(batch, 0), vec![77]);
-    assert_eq!(int64_values(batch, 1), vec![7]);
+    find_cuvs_exec(plan.as_ref()).expect("Parquet relation must plan a CuvsAlgoExec");
+    assert_eq!(plan.schema().field(0).name(), "query_id");
+    assert_eq!(plan.schema().field(1).name(), "neighbor_id");
+    assert_cuvs_bounded_rejection(plan, &ctx, "cuvs_brute_force_knn").await;
+    close_cuvs_test_backend(backend, ctx);
 }
 
 #[tokio::test]
-async fn cuvs_sql_executes_fixed_size_list_float32_vectors_over_parquet_relations() {
-    let ctx = cuvs_unbounded_context();
+async fn cuvs_sql_plans_fixed_size_list_float32_parquet_relations_then_rejects_bounded_execution() {
+    let (backend, ctx) = cuvs_bounded_context();
     let temp_dir = tempfile::tempdir().expect("temporary Parquet directory");
     let item = Arc::new(Field::new("item", DataType::Float32, false));
     let dataset_schema = Arc::new(Schema::new(vec![
@@ -363,7 +334,7 @@ async fn cuvs_sql_executes_fixed_size_list_float32_vectors_over_parquet_relation
       "k":1,
       "metric":"l2_expanded"
     }"#;
-    let batches = execute_sql(
+    let plan = plan_sql(
         &ctx,
         &format!(
             "SELECT query_id, neighbor_id, rank \
@@ -375,15 +346,17 @@ async fn cuvs_sql_executes_fixed_size_list_float32_vectors_over_parquet_relation
         ),
     )
     .await;
-    let batch = single_batch(&batches);
-    assert_eq!(int64_values(batch, 0), vec![99]);
-    assert_eq!(int64_values(batch, 1), vec![10]);
-    assert_eq!(u32_values(batch, 2), vec![0]);
+    find_cuvs_exec(plan.as_ref()).expect("FixedSizeList<Float32> Parquet inputs must plan a CuvsAlgoExec");
+    assert_eq!(plan.schema().field(0).name(), "query_id");
+    assert_eq!(plan.schema().field(1).name(), "neighbor_id");
+    assert_eq!(plan.schema().field(2).name(), "rank");
+    assert_cuvs_bounded_rejection(plan, &ctx, "cuvs_brute_force_knn").await;
+    close_cuvs_test_backend(backend, ctx);
 }
 
 #[tokio::test]
-async fn cuvs_kmeans_and_pca_execute_over_a_parquet_backed_relation() {
-    let ctx = cuvs_unbounded_context();
+async fn cuvs_kmeans_and_pca_plan_over_parquet_then_reject_bounded_execution() {
+    let (backend, ctx) = cuvs_bounded_context();
     let temp_dir = tempfile::tempdir().expect("temporary Parquet directory");
     let input_path = temp_dir.path().join("vector_input.parquet");
     let input_schema = wide_vector_schema("item_id");
@@ -406,7 +379,7 @@ async fn cuvs_kmeans_and_pca_execute_over_a_parquet_backed_relation() {
     .await
     .expect("register Parquet vector input");
 
-    let kmeans = execute_sql(
+    let kmeans = plan_sql(
         &ctx,
         &format!(
             "SELECT id, cluster_id \
@@ -416,14 +389,12 @@ async fn cuvs_kmeans_and_pca_execute_over_a_parquet_backed_relation() {
         ),
     )
     .await;
-    let kmeans = single_batch(&kmeans);
-    assert_eq!(int64_values(kmeans, 0), vec![1, 2, 3, 4]);
-    let clusters = kmeans.column(1).as_any().downcast_ref::<arrow::array::Int32Array>().expect("Int32 cluster IDs");
-    assert_eq!(clusters.value(0), clusters.value(1), "nearby low-valued rows must share a cluster");
-    assert_eq!(clusters.value(2), clusters.value(3), "nearby high-valued rows must share a cluster");
-    assert_ne!(clusters.value(0), clusters.value(2), "the separated groups must have distinct clusters");
+    find_cuvs_exec(kmeans.as_ref()).expect("K-means Parquet input must plan a CuvsAlgoExec");
+    assert_eq!(kmeans.schema().field(0).name(), "id");
+    assert_eq!(kmeans.schema().field(1).name(), "cluster_id");
+    assert_cuvs_bounded_rejection(kmeans, &ctx, "cuvs_kmeans").await;
 
-    let pca = execute_sql(
+    let pca = plan_sql(
         &ctx,
         &format!(
             "SELECT id, pc_0 \
@@ -433,20 +404,44 @@ async fn cuvs_kmeans_and_pca_execute_over_a_parquet_backed_relation() {
         ),
     )
     .await;
-    let pca = single_batch(&pca);
-    assert_eq!(int64_values(pca, 0), vec![1, 2, 3, 4]);
-    let components = pca.column(1).as_any().downcast_ref::<Float32Array>().expect("Float32 PCA component");
-    assert!((0..components.len()).all(|row| components.value(row).is_finite()));
+    find_cuvs_exec(pca.as_ref()).expect("PCA Parquet input must plan a CuvsAlgoExec");
+    assert_eq!(pca.schema().field(0).name(), "id");
+    assert_eq!(pca.schema().field(1).name(), "pc_0");
+    assert_cuvs_bounded_rejection(pca, &ctx, "cuvs_pca").await;
+    close_cuvs_test_backend(backend, ctx);
 }
 
-fn cuvs_unbounded_context() -> SessionContext {
-    let execution_config = NexusNativeExecutionConfig::unbounded();
-    let state = SessionStateBuilder::new_with_default_features()
-        .with_nexus_native(NexusNativeOptimizerConfig::default().with_native_execution_config(execution_config))
+fn cuvs_test_backend() -> NexusGpuBackend {
+    NexusGpuBackend::builder()
+        .memory_policy(NexusMemoryPolicy::Bounded {
+            device_ordinals: vec![0],
+            device_budget_bytes: 512 * 1024 * 1024,
+            max_source_chunk_bytes: 256 * 1024 * 1024,
+            max_row_groups_per_chunk: 1,
+            max_retry_attempts: 3,
+            min_retry_chunk_row_groups: 1,
+        })
+        .device_memory_ownership([(0, GpuMemoryOwnership::WholeDeviceExclusive)])
+        .build()
+        .expect("cuVS SQL tests require a backend-owned GPU")
+}
+
+fn cuvs_bounded_context() -> (NexusGpuBackend, SessionContext) {
+    let backend = cuvs_test_backend();
+    let state = backend
+        .install_on(SessionStateBuilder::new_with_default_features())
+        .expect("install backend admission on the cuVS SQL session")
         .try_with_cuvs_sql()
         .expect("install cuVS SQL")
         .build();
-    SessionContext::new_with_state(state)
+    (backend, SessionContext::new_with_state(state))
+}
+
+fn close_cuvs_test_backend(backend: NexusGpuBackend, ctx: SessionContext) {
+    drop(ctx);
+    let close = backend.close_and_wait(Duration::from_secs(10)).expect("drain cuVS SQL test backend");
+    assert!(close.gpu_resource_quiescent);
+    assert!(close.observation_quiescent);
 }
 
 fn wide_vector_schema(id: &str) -> Arc<Schema> {
@@ -485,25 +480,24 @@ fn fixed_size_list_f32_array(item: Arc<Field>, values: &[f32], dimension: i32) -
     FixedSizeListArray::new(item, dimension, Arc::new(Float32Array::from(values.to_vec())), None)
 }
 
-async fn execute_sql(ctx: &SessionContext, sql: &str) -> Vec<RecordBatch> {
-    let plan = ctx.sql(sql).await.expect("plan cuVS SQL").create_physical_plan().await.expect("physical cuVS plan");
-    collect(plan, ctx.task_ctx()).await.expect("execute cuVS SQL")
+async fn plan_sql(ctx: &SessionContext, sql: &str) -> Arc<dyn ExecutionPlan> {
+    ctx.sql(sql).await.expect("plan cuVS SQL").create_physical_plan().await.expect("physical cuVS plan")
 }
 
-fn single_batch(batches: &[RecordBatch]) -> &RecordBatch {
-    assert_eq!(batches.len(), 1, "expected one output batch");
-    &batches[0]
-}
-
-fn int64_values(batch: &RecordBatch, column: usize) -> Vec<i64> {
-    let values = batch.column(column).as_any().downcast_ref::<Int64Array>().expect("Int64 output column");
-    (0..values.len()).map(|row| values.value(row)).collect()
-}
-
-fn u32_values(batch: &RecordBatch, column: usize) -> Vec<u32> {
-    let values =
-        batch.column(column).as_any().downcast_ref::<arrow::array::UInt32Array>().expect("UInt32 output column");
-    (0..values.len()).map(|row| values.value(row)).collect()
+async fn assert_cuvs_bounded_rejection(
+    plan: Arc<dyn ExecutionPlan>,
+    ctx: &SessionContext,
+    expected_operation: &'static str,
+) {
+    let error = collect(plan, ctx.task_ctx()).await.expect_err("bounded cuVS execution must fail closed");
+    let typed = error.find_nexus_error().expect("bounded cuVS rejection must preserve the structured Nexus error");
+    assert_eq!(typed.code(), ErrorCode::UnsupportedOperator);
+    assert_eq!(typed.operation(), "datafusion_nexus.cuvs_sql.bounded_admission");
+    assert_eq!(typed.facts().get("reason"), Some("blocked_lower_level_contract"));
+    assert_eq!(typed.facts().get("execution_mode"), Some("strict_bounded"));
+    assert_eq!(typed.facts().get("required_contract"), Some("cuvs_vector_algorithm_peak_memory_preflight"));
+    assert_eq!(typed.facts().get("host_fallback"), Some("disabled"));
+    assert_eq!(typed.facts().get("cuvs_operation"), Some(expected_operation));
 }
 
 #[cfg(feature = "cugraph")]

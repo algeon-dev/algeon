@@ -2,6 +2,7 @@
 async fn unconsumed_statement_ticket_does_not_block_get_flight_info() {
     let (listener, addr) = free_local_addr();
     let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
     config.max_in_flight = 1;
     config.statement_ticket_ttl = Duration::from_secs(30);
@@ -35,6 +36,7 @@ async fn unconsumed_statement_ticket_does_not_block_get_flight_info() {
 async fn abandoned_statement_ticket_expires_and_invalidates_do_get() {
     let (listener, addr) = free_local_addr();
     let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
     config.max_in_flight = 1;
     config.statement_ticket_ttl = Duration::from_millis(50);

@@ -7,6 +7,7 @@ use std::sync::{
 
 use super::{
     DeviceFacts, DeviceMemoryFailureReport, DeviceMemoryFailureTracker, GrantRequest, MemoryGovernor, MemoryGrant,
+    registry::EngineDeviceHealthIdentity,
 };
 use crate::{
     error::{QueryError, QueryErrorCode, Result},
@@ -15,7 +16,7 @@ use crate::{
 
 /// Service runtime state for one CUDA device ordinal.
 #[derive(Debug, Clone)]
-pub struct DeviceContext {
+pub(crate) struct DeviceContext {
     inner: Arc<DeviceContextInner>,
 }
 
@@ -48,22 +49,28 @@ struct DeviceContextInner {
     device: cudf::DeviceId,
     stream_pool: ServiceStreamPool,
     mr_manager: cudf::DeviceMemoryManager,
+    memory_manager_installation: cudf::DeviceMemoryManagerInstallationState,
+    engine_health_identity: EngineDeviceHealthIdentity,
     memory_failure_tracker: DeviceMemoryFailureTracker,
     governor: MemoryGovernor,
     facts: DeviceFacts,
     active_queries: Arc<AtomicUsize>,
+    max_active_queries: Option<usize>,
 }
 
 impl DeviceContext {
     /// Creates a per-device service context.
-    pub fn new(
+    pub(crate) fn new(
         device: cudf::DeviceId,
         stream_pool: ServiceStreamPool,
         mr_manager: cudf::DeviceMemoryManager,
+        memory_manager_installation: cudf::DeviceMemoryManagerInstallationState,
+        engine_health_identity: EngineDeviceHealthIdentity,
         memory_failure_tracker: DeviceMemoryFailureTracker,
         governor: MemoryGovernor,
         facts: DeviceFacts,
         active_queries: Arc<AtomicUsize>,
+        max_active_queries: Option<usize>,
     ) -> Result<Self> {
         if device.ordinal() != facts.device {
             return Err(QueryError::new(
@@ -92,6 +99,34 @@ impl DeviceContext {
             .with_fact("device_ordinal", device.ordinal())
             .with_fact("memory_manager_device_ordinal", mr_manager.device().ordinal()));
         }
+        if memory_manager_installation.device_ordinal != device.ordinal() {
+            return Err(QueryError::new(
+                QueryErrorCode::InvalidPlan,
+                "nexus_query_engine.gpu.device_context",
+                "device memory manager installation record must match the context device",
+            )
+            .with_fact("device_ordinal", device.ordinal())
+            .with_fact("installation_device_ordinal", memory_manager_installation.device_ordinal));
+        }
+        if memory_manager_installation.installation_generation
+            != Some(engine_health_identity.memory_manager_installation_generation)
+        {
+            return Err(QueryError::new(
+                QueryErrorCode::InvalidPlan,
+                "nexus_query_engine.gpu.device_context",
+                "engine health identity must bind the installed memory-manager generation",
+            )
+            .with_fact("device_ordinal", device.ordinal())
+            .with_fact("reason", "engine_health_installation_generation_mismatch")
+            .with_fact(
+                "engine_memory_manager_installation_generation",
+                engine_health_identity.memory_manager_installation_generation,
+            )
+            .with_fact(
+                "memory_manager_installation_generation",
+                format!("{:?}", memory_manager_installation.installation_generation),
+            ));
+        }
         if memory_failure_tracker.device_ordinal() != device.ordinal() {
             return Err(QueryError::new(
                 QueryErrorCode::InvalidPlan,
@@ -110,15 +145,28 @@ impl DeviceContext {
             .with_fact("device_ordinal", device.ordinal())
             .with_fact("memory_governor_device_ordinal", governor.device_ordinal()));
         }
+        if max_active_queries == Some(0) {
+            return Err(QueryError::new(
+                QueryErrorCode::InvalidPlan,
+                "nexus_query_engine.gpu.device_context",
+                "device active-query limit must be greater than zero",
+            )
+            .with_fact("device_ordinal", device.ordinal())
+            .with_fact("field", "max_active_queries")
+            .with_fact("reason", "zero"));
+        }
         Ok(Self {
             inner: Arc::new(DeviceContextInner {
                 device,
                 stream_pool,
                 mr_manager,
+                memory_manager_installation,
+                engine_health_identity,
                 memory_failure_tracker,
                 governor,
                 facts,
                 active_queries,
+                max_active_queries,
             }),
         })
     }
@@ -136,6 +184,16 @@ impl DeviceContext {
     /// Handle to cudf's process-global per-device memory manager.
     pub fn memory_manager(&self) -> &cudf::DeviceMemoryManager {
         &self.inner.mr_manager
+    }
+
+    /// Immutable process-installation record captured before this device was
+    /// published in the backend core.
+    pub fn memory_manager_installation(&self) -> cudf::DeviceMemoryManagerInstallationState {
+        self.inner.memory_manager_installation
+    }
+
+    pub(crate) fn engine_health_identity(&self) -> EngineDeviceHealthIdentity {
+        self.inner.engine_health_identity
     }
 
     /// Signal-only allocation-failure counters from the device memory manager callback.
@@ -164,6 +222,12 @@ impl DeviceContext {
         self.inner.active_queries.load(Ordering::Acquire)
     }
 
+    /// Immutable backend-owned active-query limit for this device, falling
+    /// back to the legacy uniform controller projection when absent.
+    pub(crate) fn active_query_limit(&self, legacy_limit: Option<usize>) -> Option<usize> {
+        self.inner.max_active_queries.or(legacy_limit)
+    }
+
     /// Attempts to acquire one per-device active-query slot.
     pub(crate) fn try_acquire_query_slot(
         &self,
@@ -171,7 +235,7 @@ impl DeviceContext {
     ) -> Option<DeviceActiveQuerySlot> {
         let mut current = self.inner.active_queries.load(Ordering::Acquire);
         loop {
-            if max_queries_per_device.is_some_and(|cap| current >= cap) {
+            if self.active_query_limit(max_queries_per_device).is_some_and(|cap| current >= cap) {
                 return None;
             }
             match self.inner.active_queries.compare_exchange_weak(

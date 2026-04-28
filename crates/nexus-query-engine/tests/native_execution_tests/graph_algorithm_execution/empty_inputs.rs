@@ -21,8 +21,8 @@ fn graph_input_handle(
 
 #[test]
 fn pagerank_empty_edges_returns_a_schema_correct_empty_result_after_null_sanitization() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
+    let context = backend_context();
+    let runtime = Arc::new(context.runtime().unwrap());
     let edge_schema =
         Arc::new(Schema::new(vec![Field::new("src", DataType::Int32, true), Field::new("dst", DataType::Int32, true)]));
     let edge_batch = RecordBatch::try_new(
@@ -59,8 +59,8 @@ fn pagerank_empty_edges_returns_a_schema_correct_empty_result_after_null_sanitiz
 
 #[test]
 fn bfs_strict_rejects_empty_edges_as_a_permanent_graph_input_error() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
+    let context = backend_context();
+    let runtime = Arc::new(context.runtime().unwrap());
     let edge_schema = Arc::new(Schema::new(vec![
         Field::new("src", DataType::Int32, false),
         Field::new("dst", DataType::Int32, false),
@@ -152,34 +152,24 @@ fn assert_personalized_pagerank_rejects_empty_required_side_input(
 
 #[test]
 fn personalized_pagerank_rejects_an_empty_required_side_input_before_graph_execution() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
+    let context = backend_context();
+    let runtime = Arc::new(context.runtime().unwrap());
 
     assert_personalized_pagerank_rejects_empty_required_side_input(&context, &runtime);
 }
 
 #[test]
 fn bounded_personalized_pagerank_rejects_empty_personalization_with_nonempty_edges() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
-    let context = ExecutionContext::builder()
-        .with_shared_runtime(Arc::clone(&runtime))
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: 16 * 1024 * 1024,
-            max_source_chunk_bytes: 1024 * 1024,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 1,
-            min_retry_chunk_row_groups: 1,
-        })
-        .build()
-        .unwrap();
+    let context = backend_context_with_grant(16 * 1024 * 1024);
+    let runtime = Arc::new(context.runtime().unwrap());
 
     assert_personalized_pagerank_rejects_empty_required_side_input(&context, &runtime);
 }
 
 #[test]
 fn bfs_empty_edges_with_nonempty_vertex_predicate_is_a_graph_input_error() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
+    let context = backend_context();
+    let runtime = Arc::new(context.runtime().unwrap());
     let edge_schema = Arc::new(Schema::new(vec![
         Field::new("src", DataType::Int32, false),
         Field::new("dst", DataType::Int32, false),

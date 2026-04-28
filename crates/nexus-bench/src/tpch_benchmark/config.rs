@@ -41,10 +41,24 @@ pub(super) struct NativeTpchBenchmarkConfig {
     pub(super) native_source_cache_policy: NativeTpchSourceCachePolicy,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub(super) struct NativeTpchRuntimeResources {
-    pub(super) runtime: Option<Arc<cudf::Runtime>>,
-    pub(super) source_cache: Option<Arc<nexus_query_engine::runtime::cache::local_parquet::GpuLocalParquetSourceCache>>,
+    owner: Option<GpuBackendOwner>,
+    pub(super) query_handle: Option<Arc<nexus_query_engine::runtime::QueryHandle>>,
+}
+
+impl NativeTpchRuntimeResources {
+    pub(super) fn unavailable() -> Self {
+        Self { owner: None, query_handle: None }
+    }
+
+    pub(super) fn shutdown(mut self) -> DataFusionResult<()> {
+        self.query_handle.take();
+        if let Some(owner) = self.owner.take() {
+            owner.close_and_wait(Duration::from_secs(30)).map_err(native_error)?;
+        }
+        Ok(())
+    }
 }
 
 impl NativeTpchBenchmarkConfig {
@@ -122,24 +136,54 @@ impl NativeTpchBenchmarkConfig {
             ))
             .with_source_chunk_planning_mode(source_chunk_planning_mode),
         };
-        config
-            .with_optional_shared_runtime(resources.runtime.clone())
-            .with_optional_local_parquet_source_cache(resources.source_cache.clone())
-            .with_native_pipeline_execution_mode(self.native_pipeline_execution_mode)
+        let config = config.with_native_pipeline_execution_mode(self.native_pipeline_execution_mode);
+        match resources.query_handle.as_ref() {
+            Some(handle) => config.with_query_service_handle(Arc::clone(handle)),
+            None => config,
+        }
     }
 
     pub(super) fn new_runtime_resources(&self) -> DataFusionResult<NativeTpchRuntimeResources> {
-        let runtime = Arc::new(
-            cudf::Runtime::new()
-                .map_err(|error| plan_error(format!("failed to initialize native benchmark runtime: {error}")))?,
-        );
-        let source_cache = match self.native_source_cache_policy {
-            NativeTpchSourceCachePolicy::Disabled => None,
-            NativeTpchSourceCachePolicy::GpuResident { max_retained_bytes } => Some(Arc::new(
-                nexus_query_engine::runtime::cache::local_parquet::GpuLocalParquetSourceCache::new(max_retained_bytes),
-            )),
+        let NativeTpchMemoryPolicy::Bounded {
+            device_budget_bytes,
+            max_source_chunk_bytes,
+            max_row_groups_per_chunk,
+            max_retry_attempts,
+            min_retry_chunk_row_groups,
+            source_chunk_planning_mode,
+            ..
+        } = self.native_memory_policy
+        else {
+            // Unbounded execution has no ownership-safe public backend contract.
+            // Execution will return the adapter's structured
+            // `reason=gpu_backend_required` error rather than constructing a
+            // raw runtime outside the backend owner.
+            return Ok(NativeTpchRuntimeResources::unavailable());
         };
-        Ok(NativeTpchRuntimeResources { runtime: Some(runtime), source_cache })
+        let service_config = QueryServiceConfig {
+            source_scheduler_policy: nexus_query_engine::runtime::SourceSchedulerPolicy::new(
+                self.max_source_reads_in_flight,
+            ),
+            source_chunk_planning_mode,
+            native_pipeline_execution_mode: self.native_pipeline_execution_mode,
+            local_parquet_source_cache_max_retained_bytes: self.native_source_cache_policy.max_retained_bytes(),
+            device_capacity_bytes: Some(device_budget_bytes),
+            max_concurrent_queries: 1,
+            max_source_chunk_bytes,
+            max_row_groups_per_chunk,
+            max_retry_attempts,
+            min_retry_chunk_row_groups,
+            ..QueryServiceConfig::default()
+        };
+        let owner = GpuBackendOwner::build(
+            service_config,
+            vec![0],
+            vec![QueryServiceTenantConfig::new("tpch_benchmark", device_budget_bytes)],
+        )
+        .map_err(native_error)?;
+        let query_handle =
+            Arc::new(owner.session().admit_query(TenantId::new("tpch_benchmark")).map_err(native_error)?);
+        Ok(NativeTpchRuntimeResources { owner: Some(owner), query_handle: Some(query_handle) })
     }
 }
 
@@ -156,34 +200,6 @@ impl Default for NativeTpchBenchmarkConfig {
             native_pipeline_execution_mode: NativePipelineExecutionMode::default(),
             max_source_reads_in_flight: DEFAULT_NATIVE_MAX_SOURCE_READS_IN_FLIGHT,
             native_source_cache_policy: NativeTpchSourceCachePolicy::Disabled,
-        }
-    }
-}
-
-trait NativeExecutionConfigSourceCacheExt {
-    fn with_optional_shared_runtime(self, runtime: Option<Arc<cudf::Runtime>>) -> Self;
-
-    fn with_optional_local_parquet_source_cache(
-        self,
-        cache: Option<Arc<nexus_query_engine::runtime::cache::local_parquet::GpuLocalParquetSourceCache>>,
-    ) -> Self;
-}
-
-impl NativeExecutionConfigSourceCacheExt for NexusNativeExecutionConfig {
-    fn with_optional_shared_runtime(self, runtime: Option<Arc<cudf::Runtime>>) -> Self {
-        match runtime {
-            Some(runtime) => self.with_shared_runtime(runtime),
-            None => self,
-        }
-    }
-
-    fn with_optional_local_parquet_source_cache(
-        self,
-        cache: Option<Arc<nexus_query_engine::runtime::cache::local_parquet::GpuLocalParquetSourceCache>>,
-    ) -> Self {
-        match cache {
-            Some(cache) => self.with_local_parquet_source_cache(cache),
-            None => self,
         }
     }
 }

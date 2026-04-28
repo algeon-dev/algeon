@@ -1,6 +1,6 @@
 #[test]
 fn bounded_native_query_routes_large_keyed_inner_build_to_partitioned_hash_join() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let runtime = backend_runtime();
     let dir = unique_temp_dir("nexus-query-engine-bounded-large-keyed-inner-partitioned-hash");
     let left_path = dir.join("lineitem.parquet");
     let right_path = dir.join("orders.parquet");
@@ -38,17 +38,7 @@ fn bounded_native_query_routes_large_keyed_inner_build_to_partitioned_hash_join(
         Arc::clone(&output_schema),
     );
     let plan = builder.finish_with_host_sink(join);
-    let context = ExecutionContext::builder()
-        .with_shared_runtime(Arc::clone(&runtime))
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: 1024 * 1024,
-            max_source_chunk_bytes: 1024,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 1,
-            min_retry_chunk_row_groups: 1,
-        })
-        .build()
-        .unwrap();
+    let context = backend_context_with_grant(1024 * 1024);
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
@@ -81,7 +71,7 @@ fn bounded_native_query_routes_large_keyed_inner_build_to_partitioned_hash_join(
 
 #[test]
 fn bounded_native_query_feeds_partitioned_root_join_stream_to_topk_without_concat() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let runtime = backend_runtime();
     let dir = unique_temp_dir("nexus-query-engine-bounded-root-hash-join-stream-topk");
     let left_path = dir.join("lineitem.parquet");
     let right_path = dir.join("orders.parquet");
@@ -153,7 +143,7 @@ fn bounded_native_query_feeds_partitioned_root_join_stream_to_topk_without_conca
 
 #[test]
 fn bounded_native_query_aliases_shared_partitioned_join_stream_for_probe_fanout() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let runtime = backend_runtime();
     let dir = unique_temp_dir("nexus-query-engine-bounded-shared-hash-join-stream");
     let fact_path = dir.join("fact.parquet");
     let prefix_dim_path = dir.join("prefix_dim.parquet");
@@ -278,7 +268,7 @@ fn bounded_native_query_aliases_shared_partitioned_join_stream_for_probe_fanout(
 
 #[test]
 fn bounded_native_query_streams_shared_reusable_join_output_for_probe_fanout() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let runtime = backend_runtime();
     let dir = unique_temp_dir("nexus-query-engine-bounded-shared-reusable-hash-join-stream");
     let fact_path = dir.join("fact.parquet");
     let prefix_dim_path = dir.join("prefix_dim.parquet");
@@ -415,7 +405,7 @@ fn bounded_native_query_streams_shared_reusable_join_output_for_probe_fanout() {
 
 #[test]
 fn bounded_native_query_routes_large_keyed_inner_residual_build_to_partitioned_mixed_join() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let runtime = backend_runtime();
     let dir = unique_temp_dir("nexus-query-engine-bounded-large-keyed-inner-residual-one-shot");
     let left_path = dir.join("lineitem.parquet");
     let right_path = dir.join("orders.parquet");
@@ -496,7 +486,7 @@ fn bounded_native_query_routes_large_keyed_inner_residual_build_to_partitioned_m
 
 #[test]
 fn bounded_native_query_executes_or_residual_with_mixed_join() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let runtime = backend_runtime();
     let dir = unique_temp_dir("nexus-query-engine-bounded-or-residual-mixed-join");
     let left_path = dir.join("lineitem.parquet");
     let right_path = dir.join("orders.parquet");
@@ -571,7 +561,7 @@ fn bounded_native_query_executes_or_residual_with_mixed_join() {
 
 #[test]
 fn bounded_native_query_streams_partitioned_mixed_join_into_grouped_aggregate() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let runtime = backend_runtime();
     let dir = unique_temp_dir("nexus-query-engine-bounded-partitioned-mixed-stream-aggregate");
     let left_path = dir.join("lineitem.parquet");
     let right_path = dir.join("orders.parquet");
@@ -625,17 +615,7 @@ fn bounded_native_query_streams_partitioned_mixed_join_into_grouped_aggregate() 
         Arc::clone(&aggregate_schema),
     );
     let plan = builder.finish_with_host_sink(aggregate);
-    let context = ExecutionContext::builder()
-        .with_shared_runtime(Arc::clone(&runtime))
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: 512 * 1024 * 1024,
-            max_source_chunk_bytes: 1024,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 1,
-            min_retry_chunk_row_groups: 1,
-        })
-        .build()
-        .unwrap();
+    let context = backend_context_with_grant(512 * 1024 * 1024);
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
@@ -703,7 +683,7 @@ fn bounded_native_query_streams_partitioned_mixed_join_into_grouped_aggregate() 
 
 #[test]
 fn bounded_native_query_executes_q72_shaped_flat_string_hash_prebuild() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let runtime = backend_runtime();
     let dir = unique_temp_dir("nexus-query-engine-bounded-q72-left-stream-aggregate");
     let left_path = dir.join("catalog_sales.parquet");
     let right_path = dir.join("catalog_returns.parquet");
@@ -798,7 +778,7 @@ fn bounded_native_query_executes_q72_shaped_flat_string_hash_prebuild() {
 
 #[test]
 fn bounded_native_query_executes_keyed_inner_case_residual_as_one_shot_post_filter() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let runtime = backend_runtime();
     let dir = unique_temp_dir("nexus-query-engine-bounded-keyed-inner-case-residual-one-shot");
     let left_path = dir.join("lineitem.parquet");
     let right_path = dir.join("orders.parquet");
@@ -876,7 +856,7 @@ fn bounded_native_query_executes_keyed_inner_case_residual_as_one_shot_post_filt
 
 #[test]
 fn bounded_native_query_routes_large_keyed_left_build_to_partitioned_hash_with_null_padding() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let runtime = backend_runtime();
     let dir = unique_temp_dir("nexus-query-engine-bounded-large-keyed-left-partitioned-hash");
     let left_path = dir.join("lineitem.parquet");
     let right_path = dir.join("orders.parquet");
@@ -955,7 +935,7 @@ fn bounded_native_query_routes_large_keyed_left_build_to_partitioned_hash_with_n
 
 #[test]
 fn bounded_native_query_routes_large_keyed_full_build_to_partitioned_hash_with_null_padding() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let runtime = backend_runtime();
     let dir = unique_temp_dir("nexus-query-engine-bounded-large-keyed-full-partitioned-hash");
     let left_path = dir.join("lineitem.parquet");
     let right_path = dir.join("orders.parquet");
@@ -1066,7 +1046,17 @@ fn bounded_native_query_routes_large_keyed_full_build_to_partitioned_hash_with_n
 
 #[test]
 fn bounded_native_query_consumes_partitioned_join_stream_directly_in_grouped_aggregate() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = backend_context_with_memory_and_scheduler_policy(
+        MemoryControlPolicy::Bounded {
+            device_budget_bytes: 8 * 1024 * 1024 * 1024,
+            max_source_chunk_bytes: 1,
+            max_row_groups_per_chunk: 1,
+            max_retry_attempts: 1,
+            min_retry_chunk_row_groups: 1,
+        },
+        SourceSchedulerPolicy::new(3),
+    );
+    let runtime = Arc::new(context.runtime().unwrap());
     let dir = unique_temp_dir("nexus-query-engine-bounded-direct-aggregate-stream");
     let left_path = dir.join("lineitem.parquet");
     let right_path = dir.join("orders.parquet");
@@ -1125,19 +1115,6 @@ fn bounded_native_query_consumes_partitioned_join_stream_directly_in_grouped_agg
         Arc::clone(&aggregate_schema),
     );
     let plan = builder.finish_with_host_sink(aggregate);
-    let context = ExecutionContext::builder()
-        .with_shared_runtime(Arc::clone(&runtime))
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: 8 * 1024 * 1024 * 1024,
-            max_source_chunk_bytes: 1,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 1,
-            min_retry_chunk_row_groups: 1,
-        })
-        .with_source_scheduler_policy(SourceSchedulerPolicy::new(3))
-        .build()
-        .unwrap();
-
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
     assert!(
@@ -1198,7 +1175,7 @@ fn bounded_native_query_consumes_partitioned_join_stream_directly_in_grouped_agg
 
 #[test]
 fn bounded_native_query_preserves_partitioned_join_stream_through_filtered_join_into_aggregate() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let runtime = backend_runtime();
     let dir = unique_temp_dir("nexus-query-engine-bounded-one-shot-filtered-aggregate-stream");
     let left_path = dir.join("lineitem.parquet");
     let right_path = dir.join("orders.parquet");
@@ -1278,18 +1255,7 @@ fn bounded_native_query_preserves_partitioned_join_stream_through_filtered_join_
         Arc::clone(&aggregate_schema),
     );
     let plan = builder.finish_with_host_sink(aggregate);
-    let context = ExecutionContext::builder()
-        .with_shared_runtime(Arc::clone(&runtime))
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: 8 * 1024 * 1024 * 1024,
-            max_source_chunk_bytes: 1,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 1,
-            min_retry_chunk_row_groups: 1,
-        })
-        .with_source_scheduler_policy(SourceSchedulerPolicy::new(3))
-        .build()
-        .unwrap();
+    let context = backend_context_with_grant(8 * 1024 * 1024 * 1024);
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();

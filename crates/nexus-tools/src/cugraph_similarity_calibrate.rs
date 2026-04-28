@@ -10,6 +10,7 @@ use std::{
     fs::{self, File},
     path::{Path, PathBuf},
     sync::Arc,
+    time::Duration,
 };
 
 use arrow::{
@@ -28,8 +29,7 @@ use nexus_query_engine::{
         QueryPlanBuilder,
     },
     runtime::{
-        ExecutionContext,
-        cache::resident_graph::GpuResidentGraphCache,
+        ExecutionContext, GpuBackendMemoryShare, GpuDeviceMemoryLimit, QueryServiceConfig, TenantId,
         resident::{GpuDataFrame, GpuResidentInputMap, GpuResultHandle},
     },
     source::GpuResidentSource,
@@ -37,7 +37,7 @@ use nexus_query_engine::{
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use serde_json::{Value, json};
 
-use crate::ToolResult;
+use crate::{ToolResult, gpu_backend::ToolGpuBackend};
 
 const EDGE_INPUT: &str = "calibration_edges";
 const PAIR_INPUT: &str = "calibration_pairs";
@@ -132,61 +132,90 @@ struct CalibrationInput {
 
 pub fn run(args: Vec<String>) -> ToolResult<()> {
     let args = parse_args(args)?;
-    let calibration_input = calibration_input(&args)?;
-    let runtime = Arc::new(cudf::Runtime::new()?);
-    let graph_cache = (args.graph_cache_state == GraphCacheState::Warm)
-        .then(|| GpuResidentGraphCache::new(64 * 1024 * 1024))
-        .map(Arc::new);
-    let context = match &graph_cache {
-        Some(cache) => ExecutionContext::builder()
-            .with_shared_runtime(Arc::clone(&runtime))
-            .with_resident_graph_cache(Arc::clone(cache))
-            .build()?,
-        None => ExecutionContext::from_shared_runtime(Arc::clone(&runtime))?,
-    };
-    let mut builder = QueryPlanBuilder::new();
-    let edges = builder.add_source(nexus_query_engine::source::SourceNode::GpuResident(GpuResidentSource::new(
-        EDGE_INPUT,
-        Arc::clone(&calibration_input.edge_schema),
-    )));
-    let pairs = builder.add_source(nexus_query_engine::source::SourceNode::GpuResident(GpuResidentSource::new(
-        PAIR_INPUT,
-        Arc::clone(&calibration_input.pair_schema),
-    )));
-    let spec = GraphAlgorithmSpec::with_stable_schema(
-        args.algorithm,
-        GraphEdgeColumnBindings::new("src", "dst", args.weighted.then_some("weight")),
-        // Every calibration input includes both directions, so raw libcugraph
-        // receives the required symmetric relation without an adapter-only
-        // similarity repair path.
-        GraphConstructionOptions { directed: false, renumber: true, policy: GraphConstructionPolicy::RawLibcugraph },
-        GraphAlgorithmParams::Similarity(GraphSimilarityParams::new(GraphVertexPairInput::new(
-            pairs, "first", "second",
-        ))),
-    );
-    let model = calibration_model_breakdown(&spec, &calibration_input, args.weighted)?;
-    let graph = builder.try_add_graph_algorithm(edges, spec)?;
-    let plan = builder.finish_with_host_sink(graph);
-
-    let graph_residency = (args.graph_cache_state == GraphCacheState::Warm)
-        .then(|| {
-            GraphResidencyDescriptor::for_content_identity(
-                format!(
-                    "nexus-tools:cugraph-similarity-calibrate:v1;input={};weighted={};vertex-dtype={}",
-                    calibration_input.graph_identity,
-                    args.weighted,
-                    calibration_input.vertex_dtype.as_str(),
-                ),
-                calibration_input.vertex_dtype.data_type(),
-                args.weighted.then_some(DataType::Float64),
-                None,
-            )
-        })
-        .transpose()?;
-
+    // Phase 0 intentionally fixes backend cache domains off. Keep the flag in
+    // the calibration schema, but fail before GPU construction until the
+    // owning backend cache contract is public.
     if args.graph_cache_state == GraphCacheState::Warm {
-        let warmup_inputs = calibration_inputs(
-            &context,
+        return Err(
+            "warm graph-cache calibration is unavailable while the Phase 0 backend contract keeps cache domains disabled"
+                .into(),
+        );
+    }
+    let calibration_input = calibration_input(&args)?;
+    let service_config = QueryServiceConfig { max_concurrent_queries: 1, ..QueryServiceConfig::default() };
+    let backend = ToolGpuBackend::build(
+        service_config,
+        GpuDeviceMemoryLimit::default(),
+        GpuBackendMemoryShare::Bytes(64 * 1024 * 1024),
+        GpuBackendMemoryShare::PolicyDefault,
+        TenantId::new("cugraph_similarity_calibrate"),
+    )?;
+    let result = (|| -> ToolResult<()> {
+        let query_handle = backend.session().admit_query(backend.tenant_id())?;
+        let tenant_context = query_handle.acquire_context()?;
+        let context = tenant_context.context();
+        let runtime = context.runtime()?;
+        let mut builder = QueryPlanBuilder::new();
+        let edges = builder.add_source(nexus_query_engine::source::SourceNode::GpuResident(GpuResidentSource::new(
+            EDGE_INPUT,
+            Arc::clone(&calibration_input.edge_schema),
+        )));
+        let pairs = builder.add_source(nexus_query_engine::source::SourceNode::GpuResident(GpuResidentSource::new(
+            PAIR_INPUT,
+            Arc::clone(&calibration_input.pair_schema),
+        )));
+        let spec = GraphAlgorithmSpec::with_stable_schema(
+            args.algorithm,
+            GraphEdgeColumnBindings::new("src", "dst", args.weighted.then_some("weight")),
+            // Every calibration input includes both directions, so raw libcugraph
+            // receives the required symmetric relation without an adapter-only
+            // similarity repair path.
+            GraphConstructionOptions {
+                directed: false,
+                renumber: true,
+                policy: GraphConstructionPolicy::RawLibcugraph,
+            },
+            GraphAlgorithmParams::Similarity(GraphSimilarityParams::new(GraphVertexPairInput::new(
+                pairs, "first", "second",
+            ))),
+        );
+        let model = calibration_model_breakdown(&spec, &calibration_input, args.weighted)?;
+        let graph = builder.try_add_graph_algorithm(edges, spec)?;
+        let plan = builder.finish_with_host_sink(graph);
+
+        let graph_residency = (args.graph_cache_state == GraphCacheState::Warm)
+            .then(|| {
+                GraphResidencyDescriptor::for_content_identity(
+                    format!(
+                        "nexus-tools:cugraph-similarity-calibrate:v1;input={};weighted={};vertex-dtype={}",
+                        calibration_input.graph_identity,
+                        args.weighted,
+                        calibration_input.vertex_dtype.as_str(),
+                    ),
+                    calibration_input.vertex_dtype.data_type(),
+                    args.weighted.then_some(DataType::Float64),
+                    None,
+                )
+            })
+            .transpose()?;
+
+        if args.graph_cache_state == GraphCacheState::Warm {
+            let warmup_inputs = calibration_inputs(
+                context,
+                &runtime,
+                &calibration_input.edge_schema,
+                &calibration_input.edge_batch,
+                &calibration_input.pair_schema,
+                &calibration_input.pair_batch,
+                graph_residency.as_ref(),
+            )?;
+            // The warmup establishes exactly the same content-addressed graph
+            // cache entry. Only the second execution is emitted as the selected
+            // warm-cache calibration observation.
+            let _ = nexus_query_engine::exec::execute_query_plan_with_gpu_inputs(context, &plan, &warmup_inputs)?;
+        }
+        let inputs = calibration_inputs(
+            context,
             &runtime,
             &calibration_input.edge_schema,
             &calibration_input.edge_batch,
@@ -194,71 +223,71 @@ pub fn run(args: Vec<String>) -> ToolResult<()> {
             &calibration_input.pair_batch,
             graph_residency.as_ref(),
         )?;
-        // The warmup establishes exactly the same content-addressed graph
-        // cache entry. Only the second execution is emitted as the selected
-        // warm-cache calibration observation.
-        let _ = nexus_query_engine::exec::execute_query_plan_with_gpu_inputs(&context, &plan, &warmup_inputs)?;
-    }
-    let inputs = calibration_inputs(
-        &context,
-        &runtime,
-        &calibration_input.edge_schema,
-        &calibration_input.edge_batch,
-        &calibration_input.pair_schema,
-        &calibration_input.pair_batch,
-        graph_residency.as_ref(),
-    )?;
 
-    let outcome = execute_query_plan_with_gpu_inputs_and_runtime_observation(
-        &context,
-        &plan,
-        &inputs,
-        RuntimeObservationSession::new(
-            "cugraph-similarity-calibrate",
-            None,
-            RuntimeObservationConfig::native_execution(),
-        ),
-    );
-    let (result, metrics, observation) = outcome.into_parts();
-    let output_rows = result?.as_host_arrow().map_or(0, |batch| batch.num_rows());
-    if args.graph_cache_state == GraphCacheState::Warm {
-        let cache_hit = metrics
-            .graph_algorithm_runtime_rows
-            .last()
-            .is_some_and(|row| row.algorithm_metadata.contains("graph_cache=hit;"));
-        if !cache_hit {
-            return Err("warm similarity calibration did not execute through the resident graph cache".into());
+        let outcome = execute_query_plan_with_gpu_inputs_and_runtime_observation(
+            context,
+            &plan,
+            &inputs,
+            RuntimeObservationSession::new(
+                "cugraph-similarity-calibrate",
+                None,
+                RuntimeObservationConfig::native_execution(),
+            ),
+        );
+        let (result, metrics, observation) = outcome.into_parts();
+        let output_rows = result?.as_host_arrow().map_or(0, |batch| batch.num_rows());
+        if args.graph_cache_state == GraphCacheState::Warm {
+            let cache_hit = metrics
+                .graph_algorithm_runtime_rows
+                .last()
+                .is_some_and(|row| row.algorithm_metadata.contains("graph_cache=hit;"));
+            if !cache_hit {
+                return Err("warm similarity calibration did not execute through the resident graph cache".into());
+            }
         }
+        let observation = observation.ok_or("calibration execution did not produce a runtime observation snapshot")?;
+        let mut runtime_observation_jsonl = Vec::new();
+        write_runtime_observation_jsonl(&observation, &mut runtime_observation_jsonl)?;
+        let report = json!({
+            "schema": "datafusion_nexus.cugraph_similarity_calibration.v1",
+            "algorithm": args.algorithm.as_str(),
+            "pair_rows": args.pair_rows,
+            "weighted": args.weighted,
+            "vertex_dtype": calibration_input.vertex_dtype.as_str(),
+            "graph_cache_state": args.graph_cache_state.as_str(),
+            "topology": calibration_input.topology_label,
+            "input": calibration_input.description,
+            "model": model,
+            "output_rows": output_rows,
+            "metrics": metrics.to_json(),
+            "runtime_observation_jsonl": String::from_utf8(runtime_observation_jsonl)?,
+        });
+        let rendered = serde_json::to_string_pretty(&report)?;
+        if let Some(path) = args.observation_out {
+            fs::write(path, &rendered)?;
+        } else {
+            println!("{rendered}");
+        }
+        Ok(())
+    })();
+    let cleanup = backend.close_and_wait(Duration::from_secs(30)).map_err(|error| error.into());
+    combine_work_and_cleanup(result, cleanup)
+}
+
+fn combine_work_and_cleanup<T>(work: ToolResult<T>, cleanup: ToolResult<()>) -> ToolResult<T> {
+    match (work, cleanup) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Err(error), Ok(())) => Err(error),
+        (Ok(_), Err(error)) => Err(error),
+        (Err(work_error), Err(cleanup_error)) => {
+            Err(format!("calibration failed: {work_error:#}; backend cleanup also failed: {cleanup_error:#}").into())
+        },
     }
-    let observation = observation.ok_or("calibration execution did not produce a runtime observation snapshot")?;
-    let mut runtime_observation_jsonl = Vec::new();
-    write_runtime_observation_jsonl(&observation, &mut runtime_observation_jsonl)?;
-    let report = json!({
-        "schema": "datafusion_nexus.cugraph_similarity_calibration.v1",
-        "algorithm": args.algorithm.as_str(),
-        "pair_rows": args.pair_rows,
-        "weighted": args.weighted,
-        "vertex_dtype": calibration_input.vertex_dtype.as_str(),
-        "graph_cache_state": args.graph_cache_state.as_str(),
-        "topology": calibration_input.topology_label,
-        "input": calibration_input.description,
-        "model": model,
-        "output_rows": output_rows,
-        "metrics": metrics.to_json(),
-        "runtime_observation_jsonl": String::from_utf8(runtime_observation_jsonl)?,
-    });
-    let rendered = serde_json::to_string_pretty(&report)?;
-    if let Some(path) = args.observation_out {
-        fs::write(path, &rendered)?;
-    } else {
-        println!("{rendered}");
-    }
-    Ok(())
 }
 
 fn calibration_inputs(
     context: &ExecutionContext,
-    runtime: &Arc<cudf::Runtime>,
+    runtime: &cudf::Runtime,
     edge_schema: &Arc<Schema>,
     edge_batch: &RecordBatch,
     pair_schema: &Arc<Schema>,

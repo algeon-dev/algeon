@@ -32,7 +32,7 @@ use futures::Stream;
 use nexus_query_engine::{
     observability::RuntimeObservationHandle,
     plan::{PlanNode, QueryPlan},
-    runtime::{GpuExecutionJobKind, GpuExecutionPool, resident::GpuHostBatchCursor},
+    runtime::{GpuExecutionJobKind, GpuExecutorLease, resident::GpuHostBatchCursor},
     source::SourceNode,
 };
 
@@ -126,7 +126,7 @@ pub(super) fn properties_with_equivalence(
 
 pub(super) struct NativeHostOutputCursor {
     cursor: GpuHostBatchCursor,
-    pool: GpuExecutionPool,
+    executor: GpuExecutorLease,
     observation: RuntimeObservationHandle,
     metrics: NexusNativeMetrics,
 }
@@ -134,11 +134,11 @@ pub(super) struct NativeHostOutputCursor {
 impl NativeHostOutputCursor {
     pub(super) fn new(
         cursor: GpuHostBatchCursor,
-        pool: GpuExecutionPool,
+        executor: GpuExecutorLease,
         observation: RuntimeObservationHandle,
         metrics: NexusNativeMetrics,
     ) -> Self {
-        Self { cursor, pool, observation, metrics }
+        Self { cursor, executor, observation, metrics }
     }
 
     fn next(
@@ -148,11 +148,11 @@ impl NativeHostOutputCursor {
         consumer_name: &'static str,
     ) -> BoxedNativeHostOutputStepFuture {
         Box::pin(async move {
-            let Self { cursor, pool, observation, metrics } = self;
-            let task_pool = pool.clone();
+            let Self { cursor, executor, observation, metrics } = self;
+            let task_executor = executor.clone();
             let task_observation = observation.clone();
             let (cursor, batch, reservation) = run_gpu_execution_task(
-                task_pool,
+                task_executor,
                 task_observation,
                 "datafusion_nexus.native_exec.host_batch_cursor",
                 move |_gpu_stream_scope| async move {
@@ -197,7 +197,7 @@ impl NativeHostOutputCursor {
             metrics.record_deferred_host_materialization(batch.num_rows(), get_record_batch_memory_size(&batch));
             let batch = batch.record_output(&metrics.baseline);
             Ok(NativeHostOutputStep {
-                cursor: Some(Self { cursor, pool, observation, metrics }),
+                cursor: Some(Self { cursor, executor, observation, metrics }),
                 batch: Some(batch),
                 reservation,
             })
@@ -330,7 +330,7 @@ where
 
 /// Runs a host-facing native query future on its device's dedicated GPU executor.
 pub(crate) async fn run_gpu_execution_task<B, F, T>(
-    pool: GpuExecutionPool,
+    executor: GpuExecutorLease,
     observation: RuntimeObservationHandle,
     operation: &'static str,
     build_future: B,
@@ -340,9 +340,11 @@ where
     F: Future<Output = DataFusionResult<T>> + Send + 'static,
     T: Send + 'static,
 {
-    pool.run_observed_scoped(GpuExecutionJobKind::QueryExecution, observation, build_future).await.map_err(|error| {
-        DataFusionError::from(native_query_runtime_error(operation, "dedicated GPU execution task failed", error))
-    })?
+    executor.run_observed_scoped(GpuExecutionJobKind::QueryExecution, observation, build_future).await.map_err(
+        |error| {
+            DataFusionError::from(native_query_runtime_error(operation, "dedicated GPU execution task failed", error))
+        },
+    )?
 }
 
 /// Collects `input_name`s of every GPU-resident source node in the plan.

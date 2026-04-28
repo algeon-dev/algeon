@@ -152,10 +152,8 @@ pub fn classify_final_plan(plan: &dyn ExecutionPlan) -> FinalPlanDisposition {
 /// accepted. Native execution uses an auto-sized bounded profile, query-engine
 /// optimizer options use their own defaults, and plan-cost selection is
 /// disabled unless a workload opts in. The native
-/// [`ExecutionContext`](nexus_query_engine::runtime::ExecutionContext) is still built
-/// lazily at execution time through [`NexusNativeExecutionConfig`], so allocator
-/// and memory-control validation fail at the DataFusion/native boundary rather
-/// than during rule construction.
+/// [`ExecutionContext`](nexus_query_engine::runtime::ExecutionContext) is
+/// acquired lazily from backend admission through [`NexusNativeExecutionConfig`].
 #[derive(Debug, Clone)]
 pub struct NexusNativeOptimizerConfig {
     native_execution_config: NexusNativeExecutionConfig,
@@ -278,12 +276,6 @@ impl NexusNativeOptimizerConfig {
     ) -> Self {
         self.native_execution_config =
             self.native_execution_config.clone().with_statistical_aggregate_execution_mode(mode);
-        self
-    }
-
-    /// Use one caller-provided cudf runtime for native execution produced by this optimizer.
-    pub fn with_runtime(mut self, runtime: cudf::Runtime) -> Self {
-        self.native_execution_config = self.native_execution_config.clone().with_runtime(runtime);
         self
     }
 

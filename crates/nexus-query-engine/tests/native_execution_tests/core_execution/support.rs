@@ -1,10 +1,3 @@
-fn expect_device_buffer_error(result: cudf::Result<cudf::core::DeviceBuffer>) -> cudf::Error {
-    match result {
-        Ok(_) => panic!("expected device buffer allocation to fail"),
-        Err(error) => error,
-    }
-}
-
 fn write_nullable_key_payload_parquet(runtime: &cudf::Runtime, path: &Path) -> Arc<Schema> {
     let schema = Arc::new(Schema::new(vec![
         Field::new("key", DataType::Int32, true),
@@ -105,28 +98,28 @@ fn assert_large_string_list_value(array: &LargeListArray, index: usize, expected
 }
 
 fn execute_gpu_resident_filter_ids(
-    runtime: &Arc<cudf::Runtime>,
+    context: &ExecutionContext,
     schema: Arc<Schema>,
     batch: &RecordBatch,
     predicate: Expr,
 ) -> Vec<i32> {
+    let runtime = Arc::new(context.runtime().unwrap());
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", Arc::clone(&schema))));
     let filter = builder.add_filter(source, predicate, Arc::clone(&schema));
     let plan = builder.finish_with_host_sink(filter);
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(runtime)).unwrap();
     let mut gpu_inputs = GpuResidentInputMap::new();
     gpu_inputs.insert(
         "input".to_string(),
         GpuResultHandle::new(
-            &context,
-            GpuDataFrame::new(DataFrame::from_record_batch(runtime, batch).unwrap()),
+            context,
+            GpuDataFrame::new(DataFrame::from_record_batch(&runtime, batch).unwrap()),
             Arc::clone(&schema),
         )
         .unwrap(),
     );
 
-    let result = execute_query_plan_with_gpu_inputs(&context, &plan, &gpu_inputs).unwrap();
+    let result = execute_query_plan_with_gpu_inputs(context, &plan, &gpu_inputs).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");
     };

@@ -116,18 +116,8 @@ pub(super) fn partition_passthrough_query_plan(
     builder.finish_with_host_sink(sort)
 }
 
-pub(super) fn bounded_source_chunk_context(runtime: Arc<cudf::Runtime>) -> ExecutionContext {
-    ExecutionContext::builder()
-        .with_shared_runtime(runtime)
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: 8 * 1024 * 1024 * 1024,
-            max_source_chunk_bytes: 1024 * 1024,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 1,
-            min_retry_chunk_row_groups: 1,
-        })
-        .build()
-        .unwrap()
+pub(super) fn bounded_source_chunk_context(_runtime: Arc<cudf::Runtime>) -> BackendQueryContext {
+    backend_context()
 }
 
 pub(super) fn int32_array(batch: &RecordBatch, index: usize) -> &Int32Array {

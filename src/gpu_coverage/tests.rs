@@ -30,6 +30,7 @@ use crate::{
     planner::NexusNativeOptimizerConfig,
     report::{CandidateOutcome, GpuCandidate, NativeCandidateCostEvidence, PlanningReport},
     session::NexusSessionStateBuilderExt,
+    session_config::DataFusionNexusSessionConfig,
 };
 
 fn test_execution_config() -> NexusNativeExecutionConfig {
@@ -329,12 +330,20 @@ async fn validate_query_without_a_native_rule_keeps_the_default_session_cpu_base
 
 #[tokio::test]
 async fn validate_query_metadata_uses_effective_session_optimizer_options() {
-    let ctx = validation_context(
-        NexusNativeOptimizerConfig::default()
-            .with_native_execution_config(test_execution_config())
-            .with_no_datafusion_cpu_requirement(),
-    );
-    ctx.sql("SET datafusion_nexus.native.pipeline_execution_mode = 'adaptive'").await.unwrap().collect().await.unwrap();
+    let optimizer_config = NexusNativeOptimizerConfig::default()
+        .with_native_execution_config(test_execution_config())
+        .with_no_datafusion_cpu_requirement();
+    let mut session_config = SessionConfig::new();
+    session_config
+        .options_mut()
+        .extensions
+        .insert(DataFusionNexusSessionConfig::from_optimizer_config(&optimizer_config));
+    session_config.options_mut().set("datafusion_nexus.native.pipeline_execution_mode", "adaptive").unwrap();
+    let state = SessionStateBuilder::new_with_default_features()
+        .with_config(session_config)
+        .with_nexus_native(optimizer_config)
+        .build();
+    let ctx = SessionContext::new_with_state(state);
 
     let coverage = validate_query(&ctx, "SELECT 1 AS value").await.unwrap();
 

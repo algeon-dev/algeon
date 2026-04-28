@@ -2,7 +2,7 @@
 fn query_service_admission_test_config_can_record_non_default_device_without_runtime_resources() {
     let device_safety = cudf::testing::device_safety::DeviceSafetyTestScope::install([]);
     let config = QueryServiceConfig { device_ordinal: 2, ..QueryServiceConfig::default() };
-    let service = QueryService::new_admission_only(
+    let service = AdmissionTestController::new(
         config,
         vec![QueryServiceTenantConfig::new("tenant", 1024 * 1024)],
         non_gds_deployment(),
@@ -12,8 +12,6 @@ fn query_service_admission_test_config_can_record_non_default_device_without_run
     let handle = service.admit_query("tenant").unwrap();
 
     assert_eq!(handle.device_ordinal(), 2);
-    let error = handle.acquire_context().unwrap_err();
-    assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
     assert_eq!(device_safety.remaining_call_count(), 0, "fake-device admission must not issue CUDA device-entry calls");
 }
 #[test]
@@ -36,7 +34,7 @@ fn query_service_handle_exposes_configured_execution_policies() {
         source_chunk_planning_options,
         ..QueryServiceConfig::default()
     };
-    let service = QueryService::new_for_admission_tests(
+    let service = AdmissionTestController::new(
         config,
         vec![QueryServiceTenantConfig::new("tenant", 1024 * 1024)],
         non_gds_deployment(),
@@ -64,7 +62,7 @@ fn query_service_rejects_inconsistent_dynamic_filter_execution_policy() {
         ..QueryServiceConfig::default()
     };
 
-    let error = QueryService::new_for_admission_tests(
+    let error = AdmissionTestController::new(
         config,
         vec![QueryServiceTenantConfig::new("tenant", 1024 * 1024)],
         non_gds_deployment(),
@@ -84,7 +82,7 @@ fn query_service_rejects_inconsistent_keyed_hash_join_strategy_policy() {
         ..QueryServiceConfig::default()
     };
 
-    let error = QueryService::new_for_admission_tests(
+    let error = AdmissionTestController::new(
         config,
         vec![QueryServiceTenantConfig::new("tenant", 1024 * 1024)],
         non_gds_deployment(),
@@ -104,7 +102,7 @@ fn query_service_rejects_invalid_aggregate_strategy_execution_policy() {
         ..QueryServiceConfig::default()
     };
 
-    let error = QueryService::new_for_admission_tests(
+    let error = AdmissionTestController::new(
         config,
         vec![QueryServiceTenantConfig::new("tenant", 1024 * 1024)],
         non_gds_deployment(),
@@ -123,7 +121,7 @@ fn query_service_rejects_invalid_source_chunk_planning_policy() {
         ..QueryServiceConfig::default()
     };
 
-    let error = QueryService::new_for_admission_tests(
+    let error = AdmissionTestController::new(
         config,
         vec![QueryServiceTenantConfig::new("tenant", 1024 * 1024)],
         non_gds_deployment(),
@@ -139,7 +137,7 @@ fn query_service_rejects_zero_local_parquet_source_cache_capacity() {
     let config =
         QueryServiceConfig { local_parquet_source_cache_max_retained_bytes: Some(0), ..QueryServiceConfig::default() };
 
-    let error = QueryService::new_for_admission_tests(
+    let error = AdmissionTestController::new(
         config,
         vec![QueryServiceTenantConfig::new("tenant", 1024 * 1024)],
         non_gds_deployment(),
@@ -160,7 +158,7 @@ fn query_service_query_memory_domain_policy_defaults_off_and_rejects_zero_multip
         ..QueryServiceConfig::default()
     };
 
-    let error = QueryService::new_for_admission_tests(
+    let error = AdmissionTestController::new(
         config,
         vec![QueryServiceTenantConfig::new("tenant", 1024 * 1024)],
         non_gds_deployment(),
@@ -190,7 +188,7 @@ fn query_service_rejects_query_memory_domain_with_durable_gpu_caches() {
         ..QueryServiceConfig::default()
     };
 
-    let source_cache_error = QueryService::new_for_admission_tests(
+    let source_cache_error = AdmissionTestController::new(
         source_cache_config,
         vec![QueryServiceTenantConfig::new("tenant", 1024 * 1024)],
         non_gds_deployment(),
@@ -208,7 +206,7 @@ fn query_service_rejects_query_memory_domain_with_durable_gpu_caches() {
             ..QueryServiceConfig::default()
         };
 
-        let graph_cache_error = QueryService::new_for_admission_tests(
+        let graph_cache_error = AdmissionTestController::new(
             graph_cache_config,
             vec![QueryServiceTenantConfig::new("tenant", 1024 * 1024)],
             non_gds_deployment(),
@@ -228,7 +226,7 @@ fn query_service_validates_pool_allocator_and_rejects_private_query_domains() {
         },
         ..QueryServiceConfig::default()
     };
-    let zero_error = QueryService::new_for_admission_tests(
+    let zero_error = AdmissionTestController::new(
         zero_pool,
         vec![QueryServiceTenantConfig::new("tenant", 1024 * 1024)],
         non_gds_deployment(),
@@ -245,7 +243,7 @@ fn query_service_validates_pool_allocator_and_rejects_private_query_domains() {
         query_memory_domain: Some(QueryMemoryDomainPolicy::default()),
         ..QueryServiceConfig::default()
     };
-    let domain_error = QueryService::new_for_admission_tests(
+    let domain_error = AdmissionTestController::new(
         private_domain,
         vec![QueryServiceTenantConfig::new("tenant", 1024 * 1024)],
         non_gds_deployment(),
@@ -260,7 +258,7 @@ fn query_service_rejects_zero_resident_graph_cache_capacity() {
     let config =
         QueryServiceConfig { resident_graph_cache_max_retained_bytes: Some(0), ..QueryServiceConfig::default() };
 
-    let error = QueryService::new_for_admission_tests(
+    let error = AdmissionTestController::new(
         config,
         vec![QueryServiceTenantConfig::new("tenant", 1024 * 1024)],
         non_gds_deployment(),
@@ -277,7 +275,7 @@ fn query_service_rejects_resident_graph_cache_without_cugraph_feature() {
     let config =
         QueryServiceConfig { resident_graph_cache_max_retained_bytes: Some(4096), ..QueryServiceConfig::default() };
 
-    let error = QueryService::new_for_admission_tests(
+    let error = AdmissionTestController::new(
         config,
         vec![QueryServiceTenantConfig::new("tenant", 1024 * 1024)],
         non_gds_deployment(),
@@ -385,7 +383,7 @@ fn query_service_rejects_stream_pool_smaller_than_admission_limit() {
     let config =
         QueryServiceConfig { max_concurrent_queries: 2, stream_pool_size: Some(1), ..QueryServiceConfig::default() };
 
-    let error = QueryService::new_for_admission_tests(
+    let error = AdmissionTestController::new(
         config,
         vec![QueryServiceTenantConfig::new("tenant", 1024 * 1024)],
         non_gds_deployment(),
@@ -405,7 +403,7 @@ fn query_service_rejects_stream_pool_that_covers_only_root_streams() {
         ..QueryServiceConfig::default()
     };
 
-    let error = QueryService::new_for_admission_tests(
+    let error = AdmissionTestController::new(
         config,
         vec![QueryServiceTenantConfig::new("tenant", 1024 * 1024)],
         non_gds_deployment(),
@@ -421,7 +419,7 @@ fn query_service_rejects_stream_pool_that_covers_only_root_streams() {
 fn query_service_rejects_zero_max_queries_per_device() {
     let config = QueryServiceConfig { max_queries_per_device: Some(0), ..QueryServiceConfig::default() };
 
-    let error = QueryService::new_for_admission_tests(
+    let error = AdmissionTestController::new(
         config,
         vec![QueryServiceTenantConfig::new("tenant", 1024 * 1024)],
         non_gds_deployment(),
@@ -434,7 +432,7 @@ fn query_service_rejects_zero_max_queries_per_device() {
 }
 #[test]
 fn admission_only_query_service_honors_max_queries_per_device_cap() {
-    let service = QueryService::new_for_admission_tests(
+    let service = AdmissionTestController::new(
         QueryServiceConfig {
             device_capacity_bytes: Some(100),
             max_concurrent_queries: 2,

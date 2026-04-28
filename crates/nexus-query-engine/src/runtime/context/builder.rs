@@ -44,7 +44,7 @@ use crate::{
 /// the builder creates a cudf runtime from the requested device ordinal and
 /// memory-resource policy.
 #[derive(Debug, Default)]
-pub struct ExecutionContextBuilder {
+pub(crate) struct ExecutionContextBuilder {
     /// Optional caller-provided diagnostic query id.
     query_id: Option<QueryId>,
     /// Optional caller-provided parent trace id.
@@ -211,7 +211,7 @@ impl ExecutionContextBuilder {
     }
 
     /// Uses a caller-owned dedicated executor for synchronous GPU work.
-    pub fn with_gpu_execution_pool(mut self, pool: GpuExecutionPool) -> Self {
+    pub(crate) fn with_gpu_execution_pool(mut self, pool: GpuExecutionPool) -> Self {
         self.gpu_execution_pool = Some(pool);
         self
     }
@@ -304,7 +304,7 @@ impl ExecutionContextBuilder {
     }
 
     /// Uses a caller-owned service stream pool for bounded source-read workers.
-    pub fn with_service_stream_pool(mut self, service_stream_pool: ServiceStreamPool) -> Self {
+    pub(crate) fn with_service_stream_pool(mut self, service_stream_pool: ServiceStreamPool) -> Self {
         self.service_stream_pool = Some(service_stream_pool);
         self
     }

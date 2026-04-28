@@ -1,8 +1,8 @@
 //! Native execution settings copied into rewritten DataFusion plan nodes.
 //!
-//! The config is cloneable and cheap to pass through planning. cuDF runtime
-//! construction, allocator setup, memory-control validation, and cache wiring
-//! happen later when execution builds the native query context.
+//! The config is cloneable and cheap to pass through planning. Backend
+//! admission supplies the installed runtime, allocator, streams, and worker
+//! executor when execution acquires the native query context.
 
 use std::sync::{
     Arc, OnceLock,
@@ -20,12 +20,10 @@ use nexus_query_engine::{
     mode::{NativePipelineExecutionMode, StddevSampExecutionMode},
     observability::{RuntimeObservationConfig, RuntimeObservationOwner, RuntimeTraceId},
     runtime::{
-        ExecutionBoundaryPolicy, ExecutionCancellation, ExecutionContext, GpuExecutionJobKind, GpuExecutionPool,
-        GpuInventory, IoLifecycle, LakehouseCacheFillConfig, MemoryControlPolicy, MemoryResourcePolicy,
-        NexusGpuInventory, QueryGrantRequest, QueryHandle, QueryMemoryDomainPolicy, QueryPlacementHint,
-        ServiceStreamPool, SourceChunkPlanningMode, SourceSchedulerPolicy, SourceStorageProfile, TenantQueryContext,
-        cache::{hash_join::GpuHashJoinBuildCache, local_parquet::GpuLocalParquetSourceCache},
-        default_service_stream_pool_size_for_device, device_budget_bytes_from_facts,
+        ExecutionBoundaryPolicy, ExecutionCancellation, ExecutionContext, GpuInventory, IoLifecycle,
+        LakehouseCacheFillConfig, MemoryControlPolicy, NexusGpuInventory, QueryGrantRequest, QueryHandle,
+        QueryMemoryDomainPolicy, QueryPlacementHint, SourceChunkPlanningMode, SourceSchedulerPolicy,
+        SourceStorageProfile, TenantQueryContext, device_budget_bytes_from_facts,
     },
 };
 
@@ -45,22 +43,17 @@ use crate::{
 /// Adapter-side native execution configuration.
 ///
 /// This type holds the DataFusion-facing knobs for native cuDF execution. It does not eagerly create
-/// cuDF runtime state; `execution_context` builds the native `ExecutionContext` at execution time so
-/// runtime injection, allocator setup, memory-control validation, boundary policy, and durable build
-/// cache wiring happen at the DataFusion/native boundary.
+/// cuDF runtime state. Production `ExecutionContext` values are acquired only
+/// through backend admission when an accepted native plan begins execution.
 #[derive(Debug, Clone)]
 pub struct NexusNativeExecutionConfig {
-    pub(super) runtime: Option<Arc<cudf::Runtime>>,
     pub(super) device_ordinal: Option<usize>,
-    pub(super) memory_resource_policy: MemoryResourcePolicy,
     pub(super) memory_control_policy: MemoryControlPolicy,
     pub(super) boundary_policy: ExecutionBoundaryPolicy,
     pub(super) source_scheduler_policy: SourceSchedulerPolicy,
     pub(super) source_chunk_planning_mode: SourceChunkPlanningMode,
     pub(super) lakehouse_cache_fill_config: LakehouseCacheFillConfig,
     pub(super) host_output_memory_pool_accounting: bool,
-    pub(super) service_stream_pool: Option<ServiceStreamPool>,
-    pub(super) service_stream_pool_size: Option<usize>,
     pub(super) cancellation: ExecutionCancellation,
     pub(super) io_lifecycle: Option<IoLifecycle>,
     pub(super) native_pipeline_execution_mode: NativePipelineExecutionMode,
@@ -72,8 +65,6 @@ pub struct NexusNativeExecutionConfig {
     pub(super) graph_memory_calibration_override: GraphMemoryCalibrationOverride,
     pub(super) graph_raw_input_edges_override_configured: bool,
     pub(super) adaptive_memory_history: Option<Arc<AdaptiveMemoryHistory>>,
-    pub(super) hash_join_build_cache: Option<Arc<GpuHashJoinBuildCache>>,
-    pub(super) local_parquet_source_cache: Option<Arc<GpuLocalParquetSourceCache>>,
     pub(super) query_service_local_parquet_source_cache_max_retained_bytes: Option<u64>,
     pub(super) query_service_resident_graph_cache_max_retained_bytes: Option<u64>,
     pub(super) query_service_query_memory_domain: Option<QueryMemoryDomainPolicy>,
@@ -101,8 +92,6 @@ pub(crate) struct NexusNativeExecutionContext {
     pub(super) record_admission_facts: bool,
     pub(super) _tenant_context: Option<TenantQueryContext>,
     pub(super) ticket_context: Option<TicketTenantQueryContext>,
-    #[cfg(debug_assertions)]
-    pub(super) _standalone_bounded_context_guard: Option<StandaloneBoundedContextDebugGuard>,
 }
 
 mod admission;
@@ -110,10 +99,6 @@ mod context;
 mod device_budget;
 #[cfg(test)]
 mod tests;
-
-// Field type for NexusNativeExecutionContext (debug builds).
-#[cfg(debug_assertions)]
-use context::StandaloneBoundedContextDebugGuard;
 
 impl NexusNativeExecutionConfig {
     /// Fallback bounded device budget, in bytes, used when auto-sizing cannot
@@ -137,17 +122,13 @@ impl NexusNativeExecutionConfig {
     /// Use the default allocator policy with no native bounded-memory execution controls.
     pub fn unbounded() -> Self {
         Self {
-            runtime: None,
             device_ordinal: None,
-            memory_resource_policy: MemoryResourcePolicy::DefaultCuda,
             memory_control_policy: MemoryControlPolicy::Unbounded,
             boundary_policy: ExecutionBoundaryPolicy::default(),
             source_scheduler_policy: SourceSchedulerPolicy::default(),
             source_chunk_planning_mode: SourceChunkPlanningMode::default(),
             lakehouse_cache_fill_config: LakehouseCacheFillConfig::default(),
             host_output_memory_pool_accounting: false,
-            service_stream_pool: None,
-            service_stream_pool_size: None,
             cancellation: ExecutionCancellation::new(),
             io_lifecycle: None,
             native_pipeline_execution_mode: NativePipelineExecutionMode::default(),
@@ -159,8 +140,6 @@ impl NexusNativeExecutionConfig {
             graph_memory_calibration_override: GraphMemoryCalibrationOverride::default(),
             graph_raw_input_edges_override_configured: false,
             adaptive_memory_history: None,
-            hash_join_build_cache: None,
-            local_parquet_source_cache: None,
             query_service_local_parquet_source_cache_max_retained_bytes: None,
             query_service_resident_graph_cache_max_retained_bytes: None,
             query_service_query_memory_domain: None,
@@ -216,9 +195,7 @@ impl NexusNativeExecutionConfig {
         min_retry_chunk_row_groups: usize,
     ) -> Self {
         Self {
-            runtime: None,
             device_ordinal: None,
-            memory_resource_policy: MemoryResourcePolicy::DefaultCuda,
             memory_control_policy: MemoryControlPolicy::Bounded {
                 device_budget_bytes,
                 max_source_chunk_bytes,
@@ -231,8 +208,6 @@ impl NexusNativeExecutionConfig {
             source_chunk_planning_mode: SourceChunkPlanningMode::default(),
             lakehouse_cache_fill_config: LakehouseCacheFillConfig::default(),
             host_output_memory_pool_accounting: false,
-            service_stream_pool: None,
-            service_stream_pool_size: None,
             cancellation: ExecutionCancellation::new(),
             io_lifecycle: None,
             native_pipeline_execution_mode: NativePipelineExecutionMode::default(),
@@ -244,8 +219,6 @@ impl NexusNativeExecutionConfig {
             graph_memory_calibration_override: GraphMemoryCalibrationOverride::default(),
             graph_raw_input_edges_override_configured: false,
             adaptive_memory_history: None,
-            hash_join_build_cache: None,
-            local_parquet_source_cache: None,
             query_service_local_parquet_source_cache_max_retained_bytes: None,
             query_service_resident_graph_cache_max_retained_bytes: None,
             query_service_query_memory_domain: None,
@@ -266,30 +239,9 @@ impl NexusNativeExecutionConfig {
         }
     }
 
-    /// Own `runtime` and share it with native execution through an `Arc`.
-    pub fn with_runtime(mut self, runtime: cudf::Runtime) -> Self {
-        self.runtime = Some(Arc::new(runtime));
-        self
-    }
-
-    /// Use a caller-shared runtime, preserving its device, stream, allocator, and observer state.
-    pub fn with_shared_runtime(mut self, runtime: Arc<cudf::Runtime>) -> Self {
-        self.runtime = Some(runtime);
-        self
-    }
-
-    /// Select the device for lazily created runtimes.
-    ///
-    /// This setting only matters when no runtime is supplied with `with_runtime` or
-    /// `with_shared_runtime`; injected runtimes keep their own device selection.
+    /// Select the device used when projecting this config into a backend draft.
     pub fn with_device_ordinal(mut self, device_ordinal: usize) -> Self {
         self.device_ordinal = Some(device_ordinal);
-        self
-    }
-
-    /// Set the allocator construction policy used when native execution builds a runtime.
-    pub fn with_memory_resource_policy(mut self, memory_resource_policy: MemoryResourcePolicy) -> Self {
-        self.memory_resource_policy = memory_resource_policy;
         self
     }
 
@@ -300,10 +252,6 @@ impl NexusNativeExecutionConfig {
     }
 
     /// Set source, build, probe, and result boundary choices for native execution.
-    ///
-    /// `ExecutionBoundaryPolicy` controls where data may remain device-resident across source reads,
-    /// hash-join build/probe work, and result materialization. Durable hash-join build boundaries
-    /// require `with_hash_join_build_cache` so the native context has a cache to write to and probe.
     pub fn with_boundary_policy(mut self, boundary_policy: ExecutionBoundaryPolicy) -> Self {
         self.boundary_policy = boundary_policy;
         self
@@ -321,10 +269,7 @@ impl NexusNativeExecutionConfig {
         self
     }
 
-    /// Set the lakehouse cache-fill resource policy for standalone native execution.
-    ///
-    /// Query-service execution gets this policy from the admitted service handle
-    /// instead; this setter covers direct `NexusNativeExec`/optimizer usage.
+    /// Set the lakehouse cache-fill resource policy projected into backend execution.
     pub fn with_lakehouse_cache_fill_config(mut self, config: LakehouseCacheFillConfig) -> Self {
         self.lakehouse_cache_fill_config = config;
         self
@@ -337,20 +282,6 @@ impl NexusNativeExecutionConfig {
     /// in the native query service/governor ledger.
     pub fn with_host_output_memory_pool_accounting(mut self, enabled: bool) -> Self {
         self.host_output_memory_pool_accounting = enabled;
-        self
-    }
-
-    /// Use a caller-owned service stream pool for bounded source-read workers.
-    pub fn with_service_stream_pool(mut self, service_stream_pool: ServiceStreamPool) -> Self {
-        self.service_stream_pool = Some(service_stream_pool);
-        self
-    }
-
-    /// Set the size of the default process-global service stream pool.
-    ///
-    /// Ignored when a pool is supplied with [`Self::with_service_stream_pool`].
-    pub fn with_service_stream_pool_size(mut self, pool_size: usize) -> Self {
-        self.service_stream_pool_size = Some(pool_size);
         self
     }
 
@@ -533,27 +464,11 @@ impl NexusNativeExecutionConfig {
         self
     }
 
-    /// Attach the durable GPU hash-join build cache required by durable build-boundary policy.
-    pub fn with_hash_join_build_cache(mut self, cache: Arc<GpuHashJoinBuildCache>) -> Self {
-        self.hash_join_build_cache = Some(cache);
-        self
-    }
-
-    /// Attach a durable GPU local-Parquet source cache for repeated source scans.
-    ///
-    /// Bounded native execution charges cache-resident source bytes through the
-    /// query-engine reservation ledger before source/operator admission.
-    pub fn with_local_parquet_source_cache(mut self, cache: Arc<GpuLocalParquetSourceCache>) -> Self {
-        self.local_parquet_source_cache = Some(cache);
-        self
-    }
-
     /// Configure the service-owned decoded local-Parquet source cache for
     /// backend/query-service execution.
     ///
-    /// Standalone execution continues to use [`Self::with_local_parquet_source_cache`].
-    /// `None` disables the service cache. `Some(0)` is rejected when a
-    /// `QueryService` is built from this config.
+    /// `None` disables the service cache. `Some(0)` is rejected when a backend
+    /// is built from this config.
     pub fn with_query_service_local_parquet_source_cache_max_retained_bytes(
         mut self,
         max_retained_bytes: Option<u64>,
@@ -654,7 +569,7 @@ impl NexusNativeExecutionConfig {
         self.source_chunk_planning_mode
     }
 
-    /// Lakehouse cache-fill resource policy used by standalone native execution.
+    /// Lakehouse cache-fill resource policy projected into backend execution.
     pub fn lakehouse_cache_fill_config(&self) -> &LakehouseCacheFillConfig {
         &self.lakehouse_cache_fill_config
     }

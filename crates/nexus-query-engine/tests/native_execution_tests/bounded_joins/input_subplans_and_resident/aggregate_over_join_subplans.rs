@@ -2,7 +2,14 @@ use super::*;
 
 #[test]
 fn bounded_native_query_executes_keyless_conditional_join_with_aggregate_over_join_subplan_inputs() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = backend_context_with_memory_control_policy(MemoryControlPolicy::Bounded {
+        device_budget_bytes: 1024 * 1024,
+        max_source_chunk_bytes: 1024,
+        max_row_groups_per_chunk: 1,
+        max_retry_attempts: 1,
+        min_retry_chunk_row_groups: 1,
+    });
+    let runtime = Arc::new(context.runtime().unwrap());
     let dir = unique_temp_dir("nexus-query-engine-bounded-aggregate-over-join-subplan-inputs");
     let grouped_fact_path = dir.join("grouped_partsupp.parquet");
     let scalar_fact_path = dir.join("scalar_partsupp.parquet");
@@ -35,7 +42,6 @@ fn bounded_native_query_executes_keyless_conditional_join_with_aggregate_over_jo
             .is_none()
     );
 
-    let context = bounded_join_execution_context(&runtime);
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
     assert_eq!(metrics.memory_control_policy.as_str(), "bounded");
@@ -106,18 +112,17 @@ fn bounded_native_query_executes_keyless_conditional_join_with_aggregate_over_jo
     assert_eq!(batch.num_columns(), 2);
     assert_eq!(int32_array(batch, 0).values().as_ref(), &[2, 1]);
     assert_eq!(int64_array(batch, 1).values().as_ref(), &[25, 15]);
+    drop(result);
+    drop(runtime);
+    drop(context);
 
-    let constrained_context = ExecutionContext::builder()
-        .with_shared_runtime(Arc::clone(&runtime))
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: 1,
-            max_source_chunk_bytes: 1024,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 1,
-            min_retry_chunk_row_groups: 1,
-        })
-        .build()
-        .unwrap();
+    let constrained_context = backend_context_with_memory_control_policy(MemoryControlPolicy::Bounded {
+        device_budget_bytes: 1,
+        max_source_chunk_bytes: 1024,
+        max_row_groups_per_chunk: 1,
+        max_retry_attempts: 1,
+        min_retry_chunk_row_groups: 1,
+    });
     let error = match execute_query_plan(&constrained_context, &plan) {
         Ok(_) => panic!("constrained aggregate-over-join subplan inputs pipeline should fail reservation"),
         Err(error) => error,

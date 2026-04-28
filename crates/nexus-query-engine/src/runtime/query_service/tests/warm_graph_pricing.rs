@@ -1,7 +1,23 @@
-static GRAPH_ADAPTIVE_RETRY_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+use arrow::{
+    array::Int32Array,
+    datatypes::{DataType, Field, Schema},
+    record_batch::RecordBatch,
+};
+use cudf::DataFrame;
+
+use crate::{
+    exec::{execute_query_plan_with_gpu_inputs, output::QueryOutput},
+    plan::{
+        GraphAlgorithm, GraphAlgorithmParams, GraphAlgorithmSpec, GraphBfsParams, GraphConstructionOptions,
+        GraphConstructionPolicy, GraphEdgeColumnBindings, GraphPageRankParams, GraphResidencyPlanAnalysis,
+        QueryPlanBuilder, graph_residency_descriptor_for_edge_plan, planned_resident_graph_key,
+        stable_graph_result_schema,
+    },
+    runtime::resident::{GpuDataFrame, GpuResidentInputMap, GpuResultHandle},
+    source::{GpuResidentSource, LocalParquetFile, LocalParquetSource, SourceNode},
+};
 
 fn assert_query_service_exact_runtime_warm_pricing(mode: NativePipelineExecutionMode) {
-    let _serial = GRAPH_ADAPTIVE_RETRY_TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
     let tenant_id = TenantId::new("graph-warm-pricing");
     let cold_grant = 32 * 1024 * 1024;
     let warm_grant = 16 * 1024 * 1024;
@@ -10,7 +26,7 @@ fn assert_query_service_exact_runtime_warm_pricing(mode: NativePipelineExecution
             device_capacity_bytes: Some(256 * 1024 * 1024),
             max_concurrent_queries: 2,
             max_queries_per_device: Some(2),
-            slot_guarantee: nexus_query_engine::runtime::SlotGuarantee::Optimistic,
+            slot_guarantee: SlotGuarantee::Optimistic,
             max_source_chunk_bytes: cold_grant,
             resident_graph_cache_max_retained_bytes: Some(64 * 1024 * 1024),
             native_pipeline_execution_mode: mode,
@@ -91,11 +107,8 @@ fn assert_query_service_exact_runtime_warm_pricing(mode: NativePipelineExecution
         drop(cold_context);
         cold_handle.finish();
         drop(cold_handle);
-        service.wait_for_stream_pools_idle(std::time::Duration::from_secs(5)).unwrap();
+        service.wait_for_stream_pools_idle(Duration::from_secs(5)).unwrap();
 
-        // The cache now has a device-level hit, but its exact owning runtime
-        // is deliberately leased by unrelated work. Warm pricing must remain
-        // unavailable even though placement affinity sees the resident key.
         let blocker_handle = service
             .admit_query_with_request(
                 tenant_id.clone(),
@@ -115,7 +128,7 @@ fn assert_query_service_exact_runtime_warm_pricing(mode: NativePipelineExecution
         drop(blocker_context);
         blocker_handle.finish();
         drop(blocker_handle);
-        service.wait_for_stream_pools_idle(std::time::Duration::from_secs(5)).unwrap();
+        service.wait_for_stream_pools_idle(Duration::from_secs(5)).unwrap();
 
         let warm_handle = service.admit_query_with_request(tenant_id.clone(), admission_request()).unwrap();
         assert_eq!(warm_handle.device_budget_bytes(), warm_grant);
@@ -167,41 +180,12 @@ fn assert_query_service_exact_runtime_warm_pricing(mode: NativePipelineExecution
     assert_eq!(governor[0].evictable_bytes, cache_rows[0].resident_bytes);
 }
 
-fn assert_vertex_betweenness_batches_close(expected: &RecordBatch, actual: &RecordBatch) {
-    let expected = vertex_betweenness_scores(expected);
-    let actual = vertex_betweenness_scores(actual);
-    assert_eq!(actual.len(), expected.len());
-    for (vertex, expected_value) in expected {
-        let actual_value = actual.get(&vertex).unwrap_or_else(|| panic!("missing vertex {vertex}"));
-        assert!(
-            (actual_value - expected_value).abs() <= 1.0e-6,
-            "vertex {vertex}: expected {expected_value}, got {actual_value}"
-        );
-    }
+#[test]
+fn strict_query_service_exact_runtime_warm_pricing_executes_bfs_and_pagerank_below_cold_grant() {
+    assert_query_service_exact_runtime_warm_pricing(NativePipelineExecutionMode::StrictBounded);
 }
 
-fn vertex_betweenness_scores(batch: &RecordBatch) -> std::collections::BTreeMap<i64, f64> {
-    let vertices = int64_array(batch, 0);
-    let values = float64_array(batch, 1);
-    (0..batch.num_rows()).map(|row| (vertices.value(row), values.value(row))).collect()
-}
-
-fn assert_edge_betweenness_batches_close(expected: &RecordBatch, actual: &RecordBatch) {
-    let expected = edge_betweenness_scores(expected);
-    let actual = edge_betweenness_scores(actual);
-    assert_eq!(actual.len(), expected.len());
-    for (edge, expected_value) in expected {
-        let actual_value = actual.get(&edge).unwrap_or_else(|| panic!("missing edge {edge:?}"));
-        assert!(
-            (actual_value - expected_value).abs() <= 1.0e-6,
-            "edge {edge:?}: expected {expected_value}, got {actual_value}"
-        );
-    }
-}
-
-fn edge_betweenness_scores(batch: &RecordBatch) -> std::collections::BTreeMap<(i64, i64), f64> {
-    let sources = int64_array(batch, 0);
-    let destinations = int64_array(batch, 1);
-    let scores = float64_array(batch, 2);
-    (0..batch.num_rows()).map(|row| ((sources.value(row), destinations.value(row)), scores.value(row))).collect()
+#[test]
+fn adaptive_query_service_exact_runtime_warm_pricing_executes_bfs_and_pagerank_below_cold_grant() {
+    assert_query_service_exact_runtime_warm_pricing(NativePipelineExecutionMode::Adaptive);
 }

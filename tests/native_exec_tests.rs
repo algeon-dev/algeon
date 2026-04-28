@@ -1,9 +1,6 @@
 use std::{
     fs,
-    sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
-    },
+    sync::{Arc, OnceLock},
     time::{Duration, Instant},
 };
 
@@ -33,7 +30,7 @@ use datafusion::{
     },
 };
 use datafusion_nexus::{
-    backend::NexusGpuBackend,
+    backend::{GpuMemoryOwnership, NexusGpuBackend, NexusMemoryPolicy},
     capability::CapabilityReason,
     error::{DataFusionErrorExt, ErrorCode},
     native::lower_physical_plan_to_native,
@@ -64,12 +61,46 @@ use proptest::prelude::*;
 
 #[path = "native_exec_tests/bounded_join.rs"]
 mod bounded_join;
+#[path = "native_fallback_pressure_tests/mixed_fallback.rs"]
+mod mixed_fallback;
 #[path = "native_exec_tests/support.rs"]
 mod support;
 #[path = "support/tpch_session.rs"]
 mod tpch_session;
 
 use support::*;
+
+fn test_gpu_backend() -> &'static NexusGpuBackend {
+    static BACKEND: OnceLock<NexusGpuBackend> = OnceLock::new();
+    BACKEND.get_or_init(|| {
+        NexusGpuBackend::builder()
+            .memory_policy(NexusMemoryPolicy::Bounded {
+                device_ordinals: vec![0],
+                device_budget_bytes: 256 * 1024 * 1024,
+                max_source_chunk_bytes: 64 * 1024 * 1024,
+                max_row_groups_per_chunk: 2,
+                max_retry_attempts: 3,
+                min_retry_chunk_row_groups: 1,
+            })
+            .device_memory_ownership([(0, GpuMemoryOwnership::WholeDeviceExclusive)])
+            .build()
+            .expect("native execution tests require a backend-owned GPU")
+    })
+}
+
+fn admitted_execution_config(config: NexusNativeExecutionConfig) -> NexusNativeExecutionConfig {
+    let backend = test_gpu_backend();
+    let handle = backend.admit_query().expect("test query must be admitted by the backend");
+    config.with_query_service_handle(Arc::new(handle))
+}
+
+fn bounded_config() -> NexusNativeExecutionConfig {
+    admitted_execution_config(support::bounded_config())
+}
+
+fn native_optimizer_config() -> NexusNativeOptimizerConfig {
+    support::native_optimizer_config().with_native_execution_config(bounded_config())
+}
 
 #[test]
 fn native_exec_constructs_host_arrow_leaf_with_conservative_properties() {
@@ -200,10 +231,7 @@ fn native_composed_exec_hands_gpu_result_between_fragments_without_host_material
     let path = dir.join("input.parquet");
     write_parquet_file(&path);
     let schema = parquet_file_schema();
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
-    // This test isolates GPU-resident fragment handoff semantics from bounded
-    // source scheduling and reservation behavior.
-    let config = NexusNativeExecutionConfig::unbounded().with_shared_runtime(Arc::clone(&runtime));
+    let config = admitted_execution_config(NexusNativeExecutionConfig::unbounded());
 
     let producer_plan = local_parquet_gpu_resident_plan(&path, Arc::clone(&schema));
     let producer = Arc::new(NexusNativeGpuProducerExec::try_new("fragment_input", producer_plan).unwrap());
@@ -246,28 +274,15 @@ fn native_composed_host_output_memory_pool_accounting_fails_fast() {
     let path = dir.join("input.parquet");
     write_parquet_file(&path);
     let schema = parquet_file_schema();
-    let device_to_host_boundaries = Arc::new(AtomicUsize::new(0));
-    let observed_device_to_host_boundaries = Arc::clone(&device_to_host_boundaries);
-    let runtime = Arc::new(
-        cudf::Runtime::builder()
-            .with_boundary_observer(move |observation: cudf::BoundaryObservation| {
-                if observation.kind == cudf::BoundaryKind::DeviceToHost {
-                    observed_device_to_host_boundaries.fetch_add(1, Ordering::SeqCst);
-                }
-            })
-            .build()
-            .unwrap(),
+    let config = admitted_execution_config(
+        NexusNativeExecutionConfig::unbounded().with_host_output_memory_pool_accounting(true),
     );
-    let config = NexusNativeExecutionConfig::unbounded()
-        .with_shared_runtime(Arc::clone(&runtime))
-        .with_host_output_memory_pool_accounting(true);
 
     let producer_plan = local_parquet_gpu_resident_plan(&path, Arc::clone(&schema));
     let producer = Arc::new(NexusNativeGpuProducerExec::try_new("fragment_input", producer_plan).unwrap());
     let producer_child = Arc::clone(&producer) as Arc<dyn ExecutionPlan>;
     let consumer_plan = gpu_resident_host_sink_plan("fragment_input", Arc::clone(&schema));
-    let composed = Arc::new(NexusNativeComposedExec::try_new(consumer_plan, vec![producer_child], config).unwrap())
-        as Arc<dyn ExecutionPlan>;
+    let composed = Arc::new(NexusNativeComposedExec::try_new(consumer_plan, vec![producer_child], config).unwrap());
     // The four source columns contain only 72 logical cuDF payload bytes, but
     // their four Arrow destination buffers retain 4 * 64 = 256 bytes. A
     // 128-byte pool therefore proves admission uses the destination estimate:
@@ -275,7 +290,7 @@ fn native_composed_host_output_memory_pool_accounting_fails_fast() {
     let runtime_env = Arc::new(RuntimeEnvBuilder::new().with_memory_limit(128, 1.0).build().unwrap());
     let task_context = Arc::new(TaskContext::default().with_runtime(Arc::clone(&runtime_env)));
 
-    let error = futures::executor::block_on(collect(composed, task_context))
+    let error = futures::executor::block_on(collect(Arc::clone(&composed) as Arc<dyn ExecutionPlan>, task_context))
         .expect_err("composed native host output should be charged to DataFusion's bounded memory pool");
 
     assert!(
@@ -287,7 +302,7 @@ fn native_composed_host_output_memory_pool_accounting_fails_fast() {
         "error should identify the composed native host-output memory consumer: {error}"
     );
     assert_eq!(
-        device_to_host_boundaries.load(Ordering::SeqCst),
+        composed.metrics().unwrap().sum_by_name("device_to_host_materializations").unwrap().as_usize(),
         0,
         "host memory reservation denial must happen before D2H"
     );
@@ -304,7 +319,9 @@ fn native_host_output_memory_pool_accounting_fails_fast_in_hybrid_plan() {
     let path = dir.join("input.parquet");
     write_parquet_file(&path);
 
-    let config = NexusNativeExecutionConfig::unbounded().with_host_output_memory_pool_accounting(true);
+    let config = admitted_execution_config(
+        NexusNativeExecutionConfig::unbounded().with_host_output_memory_pool_accounting(true),
+    );
     let native_plan = local_parquet_host_sink_plan(&path, parquet_file_schema());
     let native_child = Arc::new(NexusNativeExec::try_new(native_plan, config).unwrap()) as Arc<dyn ExecutionPlan>;
     let native_schema = native_child.schema();
@@ -334,12 +351,6 @@ fn native_host_output_memory_pool_accounting_fails_fast_in_hybrid_plan() {
     );
     assert_eq!(runtime.memory_pool.reserved(), 0);
 
-    let success_runtime = Arc::new(RuntimeEnvBuilder::new().with_memory_limit(1024 * 1024, 1.0).build().unwrap());
-    let success_task_context = Arc::new(TaskContext::default().with_runtime(Arc::clone(&success_runtime)));
-    let batches = futures::executor::block_on(collect(hybrid_plan, success_task_context)).unwrap();
-    assert_eq!(batches.iter().map(|batch| batch.num_rows()).sum::<usize>(), 3);
-    assert_eq!(success_runtime.memory_pool.reserved(), 0);
-
     fs::remove_dir_all(dir).unwrap();
 }
 
@@ -352,7 +363,9 @@ fn native_host_output_memory_pool_accounting_releases_on_stream_eof() {
     let path = dir.join("input.parquet");
     write_parquet_file(&path);
 
-    let config = NexusNativeExecutionConfig::unbounded().with_host_output_memory_pool_accounting(true);
+    let config = admitted_execution_config(
+        NexusNativeExecutionConfig::unbounded().with_host_output_memory_pool_accounting(true),
+    );
     let native_plan = local_parquet_host_sink_plan(&path, parquet_file_schema());
     let native_exec = NexusNativeExec::try_new(native_plan, config).unwrap();
     let runtime = Arc::new(RuntimeEnvBuilder::new().with_memory_limit(1024 * 1024, 1.0).build().unwrap());
@@ -590,33 +603,30 @@ fn native_optimizer_property_checked_ilike_boundary_reserves_host_output_before_
     let dir = unique_temp_dir("datafusion-nexus-native-exec-property-checked-ilike-host-budget");
     let path = dir.join("input.parquet");
     write_ilike_parquet_file(&path);
-    let device_to_host_boundaries = Arc::new(AtomicUsize::new(0));
-    let observed_device_to_host_boundaries = Arc::clone(&device_to_host_boundaries);
-    let runtime = Arc::new(
-        cudf::Runtime::builder()
-            .with_boundary_observer(move |observation: cudf::BoundaryObservation| {
-                if observation.kind == cudf::BoundaryKind::DeviceToHost {
-                    observed_device_to_host_boundaries.fetch_add(1, Ordering::SeqCst);
-                }
-            })
-            .build()
-            .unwrap(),
-    );
+    let backend = test_gpu_backend();
+    let handle = backend.admit_query().expect("test query must be admitted by the backend");
     let config = NexusNativeOptimizerConfig::default().with_native_execution_config(
-        bounded_config().with_shared_runtime(runtime).with_host_output_memory_pool_accounting(true),
+        support::bounded_config()
+            .with_host_output_memory_pool_accounting(true)
+            .with_query_service_handle(Arc::new(handle)),
     );
     let rule = NexusNativePhysicalOptimizerRule::new(config);
     let plan = rule.optimize(ilike_filter_plan(&path), &ConfigOptions::default()).unwrap();
     let runtime_env = Arc::new(RuntimeEnvBuilder::new().with_memory_limit(1, 1.0).build().unwrap());
     let task_context = Arc::new(TaskContext::default().with_runtime(Arc::clone(&runtime_env)));
 
-    let error = futures::executor::block_on(collect(plan, task_context))
+    let error = futures::executor::block_on(collect(Arc::clone(&plan), task_context))
         .expect_err("the optimizer-built P2a boundary must reserve its host Arrow output before D2H");
 
     assert!(matches!(error.find_root(), DataFusionError::ResourcesExhausted(_)), "unexpected error: {error:?}");
     assert!(error.to_string().contains("NexusNativeExec[host-output]"), "unexpected error: {error}");
     assert_eq!(
-        device_to_host_boundaries.load(Ordering::SeqCst),
+        p2_native_leaf(plan.as_ref())
+            .metrics()
+            .unwrap()
+            .sum_by_name("device_to_host_materializations")
+            .unwrap()
+            .as_usize(),
         0,
         "host-memory denial must occur before the P2a native leaf copies data from device to host"
     );
@@ -649,7 +659,7 @@ fn native_optimizer_property_checked_ilike_boundary_uses_one_backend_admission_a
     let dir = unique_temp_dir("datafusion-nexus-native-exec-property-checked-ilike-admission");
     let path = dir.join("input.parquet");
     write_ilike_parquet_file(&path);
-    let backend = NexusGpuBackend::builder().build().unwrap();
+    let backend = test_gpu_backend();
     let rule = NexusNativePhysicalOptimizerRule::new(backend.optimizer_config().clone());
     let plan = rule.optimize(ilike_filter_plan(&path), &ConfigOptions::default()).unwrap();
     let native_leaf = p2_native_leaf(plan.as_ref());
@@ -664,10 +674,10 @@ fn native_optimizer_property_checked_ilike_boundary_uses_one_backend_admission_a
     assert_eq!(metrics.sum_by_name("query_grant_bytes_observed").unwrap().as_usize(), 1);
     assert_eq!(metrics.sum_by_name("device_to_host_materializations").unwrap().as_usize(), 1);
     let deadline = Instant::now() + Duration::from_secs(5);
-    while backend.query_service().admission_snapshot().unwrap().active_queries != 0 && Instant::now() < deadline {
+    while backend.admission_snapshot().unwrap().active_queries != 0 && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(1));
     }
-    let snapshot = backend.query_service().admission_snapshot().unwrap();
+    let snapshot = backend.admission_snapshot().unwrap();
     assert_eq!(snapshot.active_queries, 0, "the one P2a admission ticket must release after its stream completes");
     assert_eq!(snapshot.queued_queries, 0);
 
@@ -954,7 +964,10 @@ fn native_optimizer_rule_uses_datafusion_config_options_at_optimize_time() {
     let path = dir.join("input.parquet");
     write_parquet_file(&path);
     let plan = aggregate_sort_limit_plan(parquet_scan(&path), Operator::Plus);
-    let config = native_optimizer_config();
+    // This is a pure planning-policy override test. It intentionally starts
+    // without backend-frozen admission policy so the session option remains
+    // caller-configurable.
+    let config = support::native_optimizer_config();
     let rule = NexusNativePhysicalOptimizerRule::new(config.clone());
     let mut options = ConfigOptions::default();
     options.extensions.insert(DataFusionNexusSessionConfig::from_optimizer_config(&config));

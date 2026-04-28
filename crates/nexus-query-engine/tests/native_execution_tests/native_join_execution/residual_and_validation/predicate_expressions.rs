@@ -5,7 +5,7 @@ fn native_query_executes_inner_join_with_equi_key_and_residual_predicate() {
     let dir = unique_temp_dir("nexus-query-engine-native-mixed-join");
     let left_path = dir.join("lineitem.parquet");
     let right_path = dir.join("orders.parquet");
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let runtime = backend_runtime();
     let left_schema = write_join_left_parquet(&runtime, &left_path);
     let right_schema = write_join_right_parquet(&runtime, &right_path);
     let output_schema = Arc::new(Schema::new(vec![
@@ -57,7 +57,7 @@ fn native_query_executes_inner_join_with_equi_key_and_residual_predicate() {
     );
     let plan = builder.finish_with_host_sink(join);
 
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
+    let context = backend_context();
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
     assert_eq!(metrics.hash_join_build_count, 0);
@@ -85,7 +85,7 @@ fn native_query_executes_join_residual_cast_predicate() {
     let dir = unique_temp_dir("nexus-query-engine-native-mixed-join-cast");
     let left_path = dir.join("lineitem.parquet");
     let right_path = dir.join("orders.parquet");
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let runtime = backend_runtime();
     let left_schema = write_join_left_parquet(&runtime, &left_path);
     let right_schema = write_join_right_parquet(&runtime, &right_path);
     let output_schema = Arc::new(Schema::new(vec![
@@ -127,7 +127,7 @@ fn native_query_executes_join_residual_cast_predicate() {
     );
     let plan = builder.finish_with_host_sink(join);
 
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
+    let context = backend_context();
     let result = execute_query_plan(&context, &plan).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");
@@ -144,7 +144,7 @@ fn native_query_executes_join_residual_decimal_to_float_cast_predicate() {
     let dir = unique_temp_dir("nexus-query-engine-native-mixed-join-decimal-cast");
     let left_path = dir.join("lineitem.parquet");
     let right_path = dir.join("orders.parquet");
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let runtime = backend_runtime();
     let left_schema = write_join_left_decimal_parquet(&runtime, &left_path);
     let right_schema = write_join_right_parquet(&runtime, &right_path);
     let output_schema = Arc::new(Schema::new(vec![
@@ -189,7 +189,7 @@ fn native_query_executes_join_residual_decimal_to_float_cast_predicate() {
     );
     let plan = builder.finish_with_host_sink(join);
 
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
+    let context = backend_context();
     let result = execute_query_plan(&context, &plan).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");
@@ -206,7 +206,7 @@ fn native_query_executes_join_residual_literal_in_list_predicate() {
     let dir = unique_temp_dir("nexus-query-engine-native-join-residual-in-list");
     let left_path = dir.join("lineitem.parquet");
     let right_path = dir.join("orders.parquet");
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let runtime = backend_runtime();
     let left_schema = write_join_left_parquet(&runtime, &left_path);
     let right_schema = write_join_right_parquet(&runtime, &right_path);
     let output_schema = Arc::new(Schema::new(vec![
@@ -260,7 +260,7 @@ fn native_query_executes_join_residual_literal_in_list_predicate() {
     );
     let plan = builder.finish_with_host_sink(sort);
 
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
+    let context = backend_context();
     let result = execute_query_plan(&context, &plan).unwrap();
     let join_metrics = result
         .metrics()

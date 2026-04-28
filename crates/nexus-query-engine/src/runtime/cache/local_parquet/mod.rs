@@ -809,6 +809,7 @@ fn local_source_cache_drain_timeout(operation: &'static str) -> QueryError {
         "timed out draining the GPU local Parquet source cache",
     )
     .with_fact("reason", "local_source_cache_drain_timeout")
+    .with_cleanup_deadline_elapsed()
 }
 
 impl GpuLocalParquetSourceCacheState {

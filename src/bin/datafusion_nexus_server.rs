@@ -1,6 +1,9 @@
 use std::{env, error::Error as StdError, io::IsTerminal, process::ExitCode};
 
-use datafusion_nexus::server::{NEXUS_SERVER_LOG_ENV, ServerConfig, ServerError, serve};
+use datafusion_nexus::{
+    backend::GpuMemoryOwnership,
+    server::{NEXUS_SERVER_LOG_ENV, ServerConfig, ServerError, serve},
+};
 
 fn main() -> ExitCode {
     serve_main()
@@ -121,6 +124,13 @@ fn init_tracing() -> Result<(), Box<dyn StdError + Send + Sync>> {
 
 async fn run() -> Result<(), ServerError> {
     let config = ServerConfig::from_env()?;
+    let ownership = config
+        .gpu_devices
+        .iter()
+        .copied()
+        .map(|ordinal| (ordinal, GpuMemoryOwnership::WholeDeviceExclusive))
+        .collect::<Vec<_>>();
+    let config = config.with_gpu_memory_ownership(ownership);
     serve(config).await?;
     Ok(())
 }

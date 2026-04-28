@@ -1,0 +1,5 @@
+error[E0599]: no method named `with_runtime` found for struct `NexusNativeExecutionConfig` in the current scope
+ --> tests/ui/public_api/forbidden_native_execution_config_with_runtime.rs:5:68
+  |
+5 |     let _config = NexusNativeExecutionConfig::bounded_auto_sized().with_runtime(runtime);
+  |                                                                    ^^^^^^^^^^^^ method not found in `NexusNativeExecutionConfig`

@@ -2,6 +2,7 @@
 async fn create_view_statement_executes_once_and_persists_across_statements() {
     let (listener, addr) = free_local_addr();
     let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
 
     let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
@@ -34,6 +35,7 @@ async fn create_view_statement_executes_once_and_persists_across_statements() {
 async fn prepared_create_view_query_advertises_empty_schema_and_persists() {
     let (listener, addr) = free_local_addr();
     let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
 
     let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
@@ -73,6 +75,7 @@ async fn prepared_create_view_query_advertises_empty_schema_and_persists() {
 async fn drop_table_on_view_reports_object_type_mismatch() {
     let (listener, addr) = free_local_addr();
     let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
 
     let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
@@ -124,6 +127,7 @@ async fn drop_table_on_view_reports_object_type_mismatch() {
 async fn drop_view_on_table_reports_object_type_mismatch() {
     let (listener, addr) = free_local_addr();
     let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
 
     let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
@@ -162,6 +166,7 @@ async fn drop_view_on_table_reports_object_type_mismatch() {
 async fn statement_update_create_external_table_executes_and_persists() {
     let (listener, addr) = free_local_addr();
     let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
 
     let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
@@ -193,6 +198,7 @@ async fn statement_update_create_external_table_executes_and_persists() {
 async fn prepared_statement_update_create_external_table_executes_and_persists() {
     let (listener, addr) = free_local_addr();
     let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
 
     let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
@@ -228,6 +234,7 @@ async fn prepared_statement_update_create_external_table_executes_and_persists()
 async fn prepared_ddl_create_action_omits_dataset_schema_bytes() {
     let (listener, addr) = free_local_addr();
     let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
 
     let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
@@ -258,6 +265,7 @@ async fn prepared_ddl_create_action_omits_dataset_schema_bytes() {
 async fn prepared_create_action_handle_resolves_query_stats() {
     let (listener, addr) = free_local_addr();
     let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
 
     let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
@@ -284,6 +292,7 @@ async fn prepared_statement_query_create_external_table_executes_and_persists() 
     // query path the same way a non-prepared statement does.
     let (listener, addr) = free_local_addr();
     let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
 
     let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
@@ -330,6 +339,7 @@ async fn prepared_statement_query_create_external_table_executes_and_persists() 
 async fn prepared_ddl_update_then_query_double_send_is_deduplicated() {
     let (listener, addr) = free_local_addr();
     let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
 
     let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
@@ -373,6 +383,7 @@ async fn prepared_ddl_update_then_query_double_send_is_deduplicated() {
 async fn prepared_ddl_double_execute_is_deduplicated_on_update_channel() {
     let (listener, addr) = free_local_addr();
     let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
 
     let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
@@ -414,6 +425,7 @@ async fn prepared_ddl_double_execute_is_deduplicated_on_update_channel() {
 async fn prepared_ddl_double_execute_is_deduplicated_on_query_channel() {
     let (listener, addr) = free_local_addr();
     let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
 
     let server = tokio::spawn(async move { serve_with_listener(config, listener).await });

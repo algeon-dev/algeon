@@ -16,6 +16,7 @@ fn server_config_defaults_to_two_native_query_admissions() {
     assert_eq!(config.admission_policy.wait_timeout(), Duration::from_secs(60));
     assert_eq!(host_execution_qos.wait_timeout(), Some(Duration::from_secs(30)));
     assert_eq!(config.gpu_devices, vec![0]);
+    assert!(config.gpu_memory_ownership.is_empty(), "server config loading must not invent deployment ownership");
     assert_eq!(config.device_budget_fraction, None);
     assert_eq!(config.statement_ticket_ttl.as_secs(), 300);
     assert_eq!(config.observability.per_query_max_records, 65_536);
@@ -149,10 +150,7 @@ fn server_config_accepts_host_execution_qos_statement_limit_env() {
 
     let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
 
-    assert_eq!(
-        config.host_execution_qos.as_ref().map(|qos| qos.max_concurrent_statements().get()),
-        Some(4)
-    );
+    assert_eq!(config.host_execution_qos.as_ref().map(|qos| qos.max_concurrent_statements().get()), Some(4));
 }
 
 #[test]
@@ -161,10 +159,7 @@ fn server_config_accepts_host_execution_qos_wait_timeout_env() {
 
     let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
 
-    assert_eq!(
-        config.host_execution_qos.as_ref().and_then(|qos| qos.wait_timeout()),
-        Some(Duration::from_millis(250))
-    );
+    assert_eq!(config.host_execution_qos.as_ref().and_then(|qos| qos.wait_timeout()), Some(Duration::from_millis(250)));
 }
 
 #[test]
@@ -196,10 +191,7 @@ max_concurrent_statements = 3
 
     let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
 
-    assert_eq!(
-        config.host_execution_qos.as_ref().map(|qos| qos.max_concurrent_statements().get()),
-        Some(3)
-    );
+    assert_eq!(config.host_execution_qos.as_ref().map(|qos| qos.max_concurrent_statements().get()), Some(3));
 }
 
 #[test]
@@ -213,10 +205,7 @@ wait_timeout_ms = 125
 
     let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
 
-    assert_eq!(
-        config.host_execution_qos.as_ref().and_then(|qos| qos.wait_timeout()),
-        Some(Duration::from_millis(125))
-    );
+    assert_eq!(config.host_execution_qos.as_ref().and_then(|qos| qos.wait_timeout()), Some(Duration::from_millis(125)));
 }
 
 #[test]
@@ -531,30 +520,6 @@ fn server_config_rejects_device_budget_fraction_with_explicit_device_budget() {
     let error = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap_err();
 
     assert!(error.to_string().contains(NEXUS_SERVER_DEVICE_BUDGET_FRACTION_ENV));
-}
-
-#[test]
-fn query_service_handle_rejects_stale_session_budget_extension() {
-    let service = QueryService::new(
-        QueryServiceConfig { max_concurrent_queries: 1, stream_pool_size: Some(3), ..QueryServiceConfig::default() },
-        vec![QueryServiceTenantConfig::new("tenant", 3 * 1024 * 1024)],
-    )
-    .unwrap();
-    let handle = Arc::new(service.try_admit_query("tenant").unwrap().expect("query should admit"));
-    let admitted_policy = handle.memory_control_policy();
-    let query_config = NexusNativeOptimizerConfig::default().with_native_execution_config(
-        NexusNativeExecutionConfig::bounded_auto_sized().with_query_service_handle(handle),
-    );
-    let stale_server_config = NexusNativeOptimizerConfig::default()
-        .with_native_execution_config(NexusNativeExecutionConfig::bounded(12 * 1024 * 1024, 64 * 1024 * 1024, 1, 3, 1));
-    let mut options = ConfigOptions::default();
-    options.extensions.insert(DataFusionNexusSessionConfig::from_optimizer_config(&stale_server_config));
-
-    let error = query_config.with_datafusion_config_options(&options).unwrap_err();
-
-    assert!(error.to_string().contains("native.device_budget_bytes"));
-    assert!(error.to_string().contains("query-service admission"));
-    assert_eq!(query_config.native_execution_config().memory_control_policy(), admitted_policy);
 }
 
 #[test]

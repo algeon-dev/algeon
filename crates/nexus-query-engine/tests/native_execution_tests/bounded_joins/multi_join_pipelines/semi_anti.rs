@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn bounded_native_query_executes_mixed_left_semi_left_anti_multi_join_pipeline_with_ordered_reservations() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let runtime = backend_runtime();
     let dir = unique_temp_dir("nexus-query-engine-bounded-mixed-semi-anti-multi-join");
     let left_path = dir.join("lineitem.parquet");
     let semi_path = dir.join("semi_orders.parquet");

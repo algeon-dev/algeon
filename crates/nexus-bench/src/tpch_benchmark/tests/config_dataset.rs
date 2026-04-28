@@ -26,7 +26,7 @@ fn default_config_selects_all_tpch_queries() {
 #[test]
 fn native_planning_uses_the_strict_final_plan_requirement_frozen_in_benchmark_config() {
     let config = NativeTpchBenchmarkConfig::default();
-    let resources = NativeTpchRuntimeResources { runtime: None, source_cache: None };
+    let resources = NativeTpchRuntimeResources::unavailable();
 
     let optimizer = execution::native_optimizer_config(&config, &resources);
 
@@ -76,7 +76,7 @@ fn native_profile_source_chunk_planning_reaches_execution_config() {
         native_memory_policy: NativeTpchMemoryPolicy::bounded_from_profile_settings(profile),
         ..NativeTpchBenchmarkConfig::default()
     };
-    let resources = NativeTpchRuntimeResources { runtime: None, source_cache: None };
+    let resources = NativeTpchRuntimeResources::unavailable();
 
     let execution = config.native_execution_config_with_resources(&resources);
 

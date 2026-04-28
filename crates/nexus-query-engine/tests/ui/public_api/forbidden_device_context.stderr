@@ -1,0 +1,11 @@
+error[E0603]: struct `DeviceContext` is private
+ --> tests/ui/public_api/forbidden_device_context.rs:1:34
+  |
+1 | use nexus_query_engine::runtime::DeviceContext;
+  |                                  ^^^^^^^^^^^^^ private struct
+  |
+note: the struct `DeviceContext` is defined here
+ --> src/runtime.rs
+  |
+  | pub(crate) use gpu::{DeviceContext, DeviceRegistry, DeviceRegistryConfig, PlacementPolicy};
+  |                      ^^^^^^^^^^^^^

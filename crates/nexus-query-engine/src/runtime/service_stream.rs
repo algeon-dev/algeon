@@ -1,9 +1,9 @@
 //! Service-level CUDA stream pooling for native worker tasks.
 
-#[cfg(test)]
-use std::sync::Barrier;
 use std::{
+    any::Any,
     collections::HashMap,
+    panic::{AssertUnwindSafe, catch_unwind},
     sync::{
         Arc, Condvar, Mutex, OnceLock,
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -12,6 +12,8 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
+#[cfg(test)]
+use std::{cell::Cell, sync::Barrier};
 
 #[cfg(test)]
 use super::DeviceFacts;
@@ -33,7 +35,14 @@ use crate::{
 /// unavailable and as the upper bound when detection succeeds.
 pub const DEFAULT_SERVICE_STREAM_POOL_SIZE: usize = 64;
 const STREAM_ACQUIRE_CANCELLATION_POLL_INTERVAL: Duration = Duration::from_millis(10);
+const STREAM_CLEANUP_SUPERVISOR_POLL_INTERVAL: Duration = Duration::from_millis(10);
+const STREAM_CLEANUP_SUPERVISOR_BUILD_OPERATION: &str = "nexus_query_engine.service_stream_pool.build";
 static NEXT_STREAM_POOL_ID: AtomicU64 = AtomicU64::new(1);
+
+#[cfg(test)]
+thread_local! {
+    static FAIL_NEXT_CLEANUP_SUPERVISOR_SPAWN: Cell<bool> = const { Cell::new(false) };
+}
 
 /// Returns the default service stream pool size for a CUDA device.
 ///
@@ -85,7 +94,7 @@ struct ServiceStreamPoolInner {
     available: Condvar,
     state_changed: Condvar,
     next_lease_id: AtomicU64,
-    cleanup_sender: mpsc::Sender<StreamCleanupJob>,
+    cleanup_supervisor: StreamCleanupSupervisor,
     closed: AtomicBool,
 }
 
@@ -99,6 +108,501 @@ struct ServiceStreamPoolState {
     synchronization_failures: u64,
     #[cfg(test)]
     fail_next_synchronization: bool,
+    #[cfg(test)]
+    force_next_cleanup_enqueue_fallback: bool,
+}
+
+type StreamCleanupCallback = Box<dyn FnOnce() + Send>;
+
+#[derive(Default)]
+struct StreamCleanupCompletion {
+    before_quiescence: Option<StreamCleanupCallback>,
+    after_quiescence: Option<StreamCleanupCallback>,
+}
+
+impl StreamCleanupCompletion {
+    fn new(
+        before_quiescence: impl FnOnce() + Send + 'static,
+        after_quiescence: impl FnOnce() + Send + 'static,
+    ) -> Self {
+        Self {
+            before_quiescence: Some(Box::new(before_quiescence)),
+            after_quiescence: Some(Box::new(after_quiescence)),
+        }
+    }
+
+    fn run_before_quiescence(&mut self) {
+        if let Some(completion) = self.before_quiescence.take() {
+            completion();
+        }
+    }
+
+    fn run_after_quiescence(&mut self) {
+        if let Some(completion) = self.after_quiescence.take() {
+            completion();
+        }
+    }
+
+    /// The receiver can discard queued cleanup jobs when a prior job panics.
+    /// Complete every remaining handoff while unwinding so that the typed
+    /// resource and observation permits cannot be stranded. Callback panics
+    /// are intentionally suppressed here: the originating supervisor failure
+    /// remains the fail-closed result and a second unwind from `Drop` would
+    /// abort the process.
+    fn run_remaining_after_abandonment(&mut self) {
+        if let Some(completion) = self.before_quiescence.take() {
+            let _ = catch_unwind(AssertUnwindSafe(completion));
+        }
+        if let Some(completion) = self.after_quiescence.take() {
+            let _ = catch_unwind(AssertUnwindSafe(completion));
+        }
+    }
+}
+
+impl Drop for StreamCleanupCompletion {
+    fn drop(&mut self) {
+        self.run_remaining_after_abandonment();
+    }
+}
+
+/// The pool-owned receiver thread which serializes CUDA stream cleanup.
+///
+/// This is deliberately separate from external completion delivery. Its only
+/// responsibilities are synchronization, CUDA runtime destruction, and pool
+/// accounting. A clean shutdown is not inferred from stream counters: the
+/// owner must first request shutdown, observe this thread's terminal state,
+/// and reclaim its join handle.
+struct StreamCleanupSupervisor {
+    device: cudf::DeviceId,
+    pool_id: u64,
+    sender: mpsc::Sender<StreamCleanupJob>,
+    submission_gate: Mutex<()>,
+    control: Arc<StreamCleanupSupervisorControl>,
+    join: Mutex<Option<thread::JoinHandle<StreamCleanupWorkerOutcome>>>,
+    join_disposition: AtomicU64,
+}
+
+const STREAM_CLEANUP_SUPERVISOR_NOT_JOINED: u64 = 0;
+const STREAM_CLEANUP_SUPERVISOR_JOINED: u64 = 1;
+const STREAM_CLEANUP_SUPERVISOR_JOIN_FAILED: u64 = 2;
+
+#[derive(Debug, Default)]
+struct StreamCleanupSupervisorControl {
+    state: Mutex<StreamCleanupSupervisorState>,
+    changed: Condvar,
+    #[cfg(test)]
+    panic_after_outcome: AtomicBool,
+    #[cfg(test)]
+    worker_outcome_pause: Mutex<Option<StreamCleanupWorkerOutcomePause>>,
+    #[cfg(test)]
+    shutdown_send_failed: Mutex<Option<mpsc::Sender<()>>>,
+    #[cfg(test)]
+    join_waiter: Mutex<Option<mpsc::Sender<()>>>,
+}
+
+#[derive(Debug, Default)]
+struct StreamCleanupSupervisorState {
+    shutdown_requested: bool,
+    joiner_active: bool,
+    terminal: Option<StreamCleanupSupervisorTerminal>,
+}
+
+#[derive(Debug, Clone)]
+enum StreamCleanupWorkerOutcome {
+    Clean,
+    Panicked { panic_message: String },
+    Unexpected { detail: &'static str },
+}
+
+#[derive(Debug, Clone)]
+enum StreamCleanupSupervisorTerminal {
+    Clean,
+    Panicked { stage: &'static str, panic_message: String },
+    Unexpected { detail: &'static str },
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone)]
+struct StreamCleanupWorkerOutcomePause {
+    arrived: Arc<Barrier>,
+    release: Arc<Barrier>,
+}
+
+enum StreamCleanupExecutorExit {
+    Shutdown,
+    ReceiverDisconnected,
+    #[cfg(test)]
+    Unexpected(&'static str),
+}
+
+impl std::fmt::Debug for StreamCleanupSupervisor {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("StreamCleanupSupervisor")
+            .field("device_ordinal", &self.device.ordinal())
+            .field("pool_id", &self.pool_id)
+            .field("join_disposition", &self.join_disposition.load(Ordering::Acquire))
+            .finish_non_exhaustive()
+    }
+}
+
+impl StreamCleanupSupervisor {
+    fn start(device: cudf::DeviceId, pool_id: u64) -> Result<Self> {
+        let (sender, receiver) = mpsc::channel();
+        let control = Arc::new(StreamCleanupSupervisorControl::default());
+        let thread_control = Arc::clone(&control);
+        #[cfg(test)]
+        let inject_spawn_failure = FAIL_NEXT_CLEANUP_SUPERVISOR_SPAWN.with(|failure| failure.replace(false));
+        #[cfg(not(test))]
+        let inject_spawn_failure = false;
+        let join = if inject_spawn_failure {
+            Err(std::io::Error::other("injected service stream cleanup supervisor spawn failure"))
+        } else {
+            thread::Builder::new()
+                .name(format!("nexus-stream-cleanup-d{}-p{pool_id}", device.ordinal()))
+                .spawn(move || run_stream_cleanup_worker(receiver, &thread_control))
+        }
+        .map_err(|error| {
+            QueryError::new(
+                QueryErrorCode::Internal,
+                STREAM_CLEANUP_SUPERVISOR_BUILD_OPERATION,
+                "failed to start the service stream cleanup supervisor",
+            )
+            .with_fact("device_ordinal", device.ordinal())
+            .with_fact("stream_pool_id", pool_id)
+            .with_fact("reason", "stream_cleanup_supervisor_spawn_failed")
+            .with_source(error)
+        })?;
+
+        Ok(Self {
+            device,
+            pool_id,
+            sender,
+            submission_gate: Mutex::new(()),
+            control,
+            join: Mutex::new(Some(join)),
+            join_disposition: AtomicU64::new(STREAM_CLEANUP_SUPERVISOR_NOT_JOINED),
+        })
+    }
+
+    fn enqueue(&self, job: StreamCleanupJob) -> std::result::Result<(), mpsc::SendError<StreamCleanupJob>> {
+        let _submission = self.submission_gate.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let state = self.control.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state.shutdown_requested || state.terminal.is_some() {
+            return Err(mpsc::SendError(job));
+        }
+        // A sender failure only says that the receiver has gone away. The
+        // worker's joined outcome remains the sole source of terminal state.
+        self.sender.send(job)
+    }
+
+    fn request_shutdown(&self, deadline: Instant, operation: &'static str) -> Result<()> {
+        let _submission = self.lock_submission_until(deadline, operation)?;
+        let mut state = self.lock_control_until(deadline, operation)?;
+        if state.shutdown_requested || state.terminal.is_some() {
+            return Ok(());
+        }
+        state.shutdown_requested = true;
+        let send_failed = self.sender.send(StreamCleanupJob::Shutdown).is_err();
+        drop(state);
+        if send_failed {
+            #[cfg(test)]
+            self.control.notify_shutdown_send_failed_for_test();
+        }
+        Ok(())
+    }
+
+    fn request_shutdown_from_drop(&self) {
+        let _submission = self.submission_gate.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut state = self.control.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state.shutdown_requested || state.terminal.is_some() {
+            return;
+        }
+        state.shutdown_requested = true;
+        let _ = self.sender.send(StreamCleanupJob::Shutdown);
+    }
+
+    fn ensure_not_failed(&self, operation: &'static str) -> Result<()> {
+        let state = self
+            .control
+            .state
+            .lock()
+            .map_err(|_| stream_cleanup_supervisor_state_poisoned(operation, self.device, self.pool_id))?;
+        match state.terminal.as_ref() {
+            None => Ok(()),
+            Some(terminal) => self.terminal_result(operation, terminal),
+        }
+    }
+
+    /// Commit an already-finished worker before an idle/quiescence caller
+    /// reports success. A healthy worker remains untouched: only a finished
+    /// handle or a join already in progress can enter the terminal path.
+    fn finalize_if_finished_until(&self, deadline: Instant, operation: &'static str) -> Result<()> {
+        let mut state = self.lock_control_until(deadline, operation)?;
+        loop {
+            if let Some(terminal) = state.terminal.as_ref() {
+                return self.terminal_result(operation, terminal);
+            }
+            if state.joiner_active {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    return Err(stream_cleanup_supervisor_join_timeout(operation, self.device, self.pool_id));
+                }
+                let (next, timeout) = self
+                    .control
+                    .changed
+                    .wait_timeout(state, remaining)
+                    .map_err(|_| stream_cleanup_supervisor_state_poisoned(operation, self.device, self.pool_id))?;
+                state = next;
+                if timeout.timed_out() && state.terminal.is_none() {
+                    return Err(stream_cleanup_supervisor_join_timeout(operation, self.device, self.pool_id));
+                }
+                continue;
+            }
+
+            // Holding control state while we inspect the handle prevents a
+            // competing caller from electing itself between the finished
+            // observation and this caller's election. The joiner never holds
+            // the join mutex while acquiring control state.
+            let finished = {
+                let join = self.lock_join_until(deadline, operation)?;
+                join.as_ref().map(thread::JoinHandle::is_finished).ok_or_else(|| {
+                    QueryError::new(
+                        QueryErrorCode::Internal,
+                        operation,
+                        "service stream cleanup supervisor join handle was unavailable before terminal commitment",
+                    )
+                    .with_fact("device_ordinal", self.device.ordinal())
+                    .with_fact("stream_pool_id", self.pool_id)
+                    .with_fact("reason", "stream_cleanup_supervisor_join_unavailable")
+                })?
+            };
+            if !finished {
+                return Ok(());
+            }
+
+            state.joiner_active = true;
+            drop(state);
+            return self.join_and_commit_terminal_until(deadline, operation);
+        }
+    }
+
+    /// Elect one caller to join the worker and commit its terminal state. A
+    /// worker outcome is not observable until the receiver and every queued
+    /// cleanup job have been dropped and the elected caller has joined it.
+    fn wait_for_exit_until(&self, deadline: Instant, operation: &'static str) -> Result<()> {
+        let mut state = self.lock_control_until(deadline, operation)?;
+        loop {
+            if let Some(terminal) = state.terminal.as_ref() {
+                return self.terminal_result(operation, terminal);
+            }
+            if !state.joiner_active {
+                state.joiner_active = true;
+                drop(state);
+                return self.join_and_commit_terminal_until(deadline, operation);
+            }
+
+            #[cfg(test)]
+            self.control.notify_join_waiter_for_test();
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(stream_cleanup_supervisor_join_timeout(operation, self.device, self.pool_id));
+            }
+            let (next, timeout) = self
+                .control
+                .changed
+                .wait_timeout(state, remaining)
+                .map_err(|_| stream_cleanup_supervisor_state_poisoned(operation, self.device, self.pool_id))?;
+            state = next;
+            if timeout.timed_out() && state.terminal.is_none() {
+                return Err(stream_cleanup_supervisor_join_timeout(operation, self.device, self.pool_id));
+            }
+        }
+    }
+
+    fn join_and_commit_terminal_until(&self, deadline: Instant, operation: &'static str) -> Result<()> {
+        let joined = self.join_worker_until(deadline, operation);
+        let joined = match joined {
+            Ok(joined) => joined,
+            Err(error) => {
+                self.relinquish_joiner();
+                return Err(error);
+            },
+        };
+
+        // Joining establishes the happens-before edge from receiver teardown,
+        // in-flight recovery, and queued-job recovery to terminal commitment.
+        let mut state = self.control.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        debug_assert!(state.terminal.is_none(), "only the elected joiner may commit a cleanup terminal state");
+        let terminal = match joined {
+            Ok(outcome) => Self::terminal_from_worker_outcome(outcome, state.shutdown_requested),
+            Err(panic) => StreamCleanupSupervisorTerminal::Panicked {
+                stage: "thread_join",
+                panic_message: stream_cleanup_supervisor_panic_message(panic.as_ref()),
+            },
+        };
+        state.terminal = Some(terminal.clone());
+        state.joiner_active = false;
+        self.control.changed.notify_all();
+        drop(state);
+        self.terminal_result(operation, &terminal)
+    }
+
+    fn join_worker_until(
+        &self,
+        deadline: Instant,
+        operation: &'static str,
+    ) -> Result<std::thread::Result<StreamCleanupWorkerOutcome>> {
+        let mut join = self.lock_join_until(deadline, operation)?;
+        if let Some(handle) = join.as_ref() {
+            while !handle.is_finished() {
+                if Instant::now() >= deadline {
+                    return Err(stream_cleanup_supervisor_join_timeout(operation, self.device, self.pool_id));
+                }
+                thread::yield_now();
+            }
+        }
+        let handle = join.take().ok_or_else(|| {
+            QueryError::new(
+                QueryErrorCode::Internal,
+                operation,
+                "service stream cleanup supervisor join handle was unavailable before terminal commitment",
+            )
+            .with_fact("device_ordinal", self.device.ordinal())
+            .with_fact("stream_pool_id", self.pool_id)
+            .with_fact("reason", "stream_cleanup_supervisor_join_unavailable")
+        })?;
+        let joined = handle.join();
+        self.join_disposition.store(
+            if joined.is_ok() { STREAM_CLEANUP_SUPERVISOR_JOINED } else { STREAM_CLEANUP_SUPERVISOR_JOIN_FAILED },
+            Ordering::Release,
+        );
+        Ok(joined)
+    }
+
+    fn relinquish_joiner(&self) {
+        let mut state = self.control.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state.terminal.is_none() {
+            state.joiner_active = false;
+            self.control.changed.notify_all();
+        }
+    }
+
+    fn terminal_from_worker_outcome(
+        outcome: StreamCleanupWorkerOutcome,
+        shutdown_requested: bool,
+    ) -> StreamCleanupSupervisorTerminal {
+        match outcome {
+            StreamCleanupWorkerOutcome::Clean if shutdown_requested => StreamCleanupSupervisorTerminal::Clean,
+            StreamCleanupWorkerOutcome::Clean => StreamCleanupSupervisorTerminal::Unexpected {
+                detail: "cleanup supervisor exited before explicit shutdown",
+            },
+            StreamCleanupWorkerOutcome::Panicked { panic_message } => {
+                StreamCleanupSupervisorTerminal::Panicked { stage: "cleanup_executor", panic_message }
+            },
+            StreamCleanupWorkerOutcome::Unexpected { detail } => StreamCleanupSupervisorTerminal::Unexpected { detail },
+        }
+    }
+
+    fn terminal_result(&self, operation: &'static str, terminal: &StreamCleanupSupervisorTerminal) -> Result<()> {
+        match terminal {
+            StreamCleanupSupervisorTerminal::Clean => Ok(()),
+            StreamCleanupSupervisorTerminal::Panicked { stage, panic_message } => {
+                Err(stream_cleanup_supervisor_panic_error(operation, self.device, self.pool_id, stage, panic_message))
+            },
+            StreamCleanupSupervisorTerminal::Unexpected { detail } => {
+                Err(stream_cleanup_supervisor_unexpected_exit_error(operation, self.device, self.pool_id, detail))
+            },
+        }
+    }
+
+    fn lock_submission_until(
+        &self,
+        deadline: Instant,
+        operation: &'static str,
+    ) -> Result<std::sync::MutexGuard<'_, ()>> {
+        loop {
+            match self.submission_gate.try_lock() {
+                Ok(gate) => return Ok(gate),
+                Err(std::sync::TryLockError::Poisoned(_)) => {
+                    return Err(stream_cleanup_supervisor_state_poisoned(operation, self.device, self.pool_id));
+                },
+                Err(std::sync::TryLockError::WouldBlock) if Instant::now() >= deadline => {
+                    return Err(stream_cleanup_supervisor_exit_timeout(operation, self.device, self.pool_id));
+                },
+                Err(std::sync::TryLockError::WouldBlock) => thread::yield_now(),
+            }
+        }
+    }
+
+    fn lock_control_until(
+        &self,
+        deadline: Instant,
+        operation: &'static str,
+    ) -> Result<std::sync::MutexGuard<'_, StreamCleanupSupervisorState>> {
+        loop {
+            match self.control.state.try_lock() {
+                Ok(state) => return Ok(state),
+                Err(std::sync::TryLockError::Poisoned(_)) => {
+                    return Err(stream_cleanup_supervisor_state_poisoned(operation, self.device, self.pool_id));
+                },
+                Err(std::sync::TryLockError::WouldBlock) if Instant::now() >= deadline => {
+                    return Err(stream_cleanup_supervisor_exit_timeout(operation, self.device, self.pool_id));
+                },
+                Err(std::sync::TryLockError::WouldBlock) => thread::yield_now(),
+            }
+        }
+    }
+
+    fn lock_join_until(
+        &self,
+        deadline: Instant,
+        operation: &'static str,
+    ) -> Result<std::sync::MutexGuard<'_, Option<thread::JoinHandle<StreamCleanupWorkerOutcome>>>> {
+        loop {
+            match self.join.try_lock() {
+                Ok(join) => return Ok(join),
+                Err(std::sync::TryLockError::Poisoned(_)) => {
+                    return Err(stream_cleanup_supervisor_state_poisoned(operation, self.device, self.pool_id));
+                },
+                Err(std::sync::TryLockError::WouldBlock) if Instant::now() >= deadline => {
+                    return Err(stream_cleanup_supervisor_join_timeout(operation, self.device, self.pool_id));
+                },
+                Err(std::sync::TryLockError::WouldBlock) => thread::yield_now(),
+            }
+        }
+    }
+}
+
+impl Drop for ServiceStreamPoolInner {
+    fn drop(&mut self) {
+        self.cleanup_supervisor.request_shutdown_from_drop();
+    }
+}
+
+impl StreamCleanupSupervisorControl {
+    #[cfg(test)]
+    fn pause_before_worker_return_for_test(&self) {
+        let pause = self.worker_outcome_pause.lock().unwrap().clone();
+        if let Some(pause) = pause {
+            pause.arrived.wait();
+            pause.release.wait();
+        }
+    }
+
+    #[cfg(test)]
+    fn notify_shutdown_send_failed_for_test(&self) {
+        if let Some(sender) = self.shutdown_send_failed.lock().unwrap().take() {
+            let _ = sender.send(());
+        }
+    }
+
+    #[cfg(test)]
+    fn notify_join_waiter_for_test(&self) {
+        if let Some(sender) = self.join_waiter.lock().unwrap().take() {
+            let _ = sender.send(());
+        }
+    }
 }
 
 /// Service-level CUDA stream pool for short-lived native worker tasks.
@@ -110,7 +614,7 @@ struct ServiceStreamPoolState {
 /// bounded source-read worker while preserving the existing reservation-aware
 /// allocator contract.
 #[derive(Debug, Clone)]
-pub struct ServiceStreamPool {
+pub(crate) struct ServiceStreamPool {
     inner: Arc<ServiceStreamPoolInner>,
 }
 
@@ -123,7 +627,9 @@ impl ServiceStreamPool {
     pub fn new(device: cudf::DeviceId, pool_size: usize) -> Result<Self> {
         validate_service_stream_pool_size(pool_size)?;
         let id = NEXT_STREAM_POOL_ID.fetch_add(1, Ordering::Relaxed);
-        let (cleanup_sender, cleanup_receiver) = mpsc::channel();
+        // The cleanup receiver is a construction resource. Do not publish a
+        // usable pool unless its owner thread was created successfully.
+        let cleanup_supervisor = StreamCleanupSupervisor::start(device, id)?;
         let inner = Arc::new(ServiceStreamPoolInner {
             id,
             device,
@@ -132,18 +638,9 @@ impl ServiceStreamPool {
             available: Condvar::new(),
             state_changed: Condvar::new(),
             next_lease_id: AtomicU64::new(1),
-            cleanup_sender,
+            cleanup_supervisor,
             closed: AtomicBool::new(false),
         });
-        if let Err(error) = thread::Builder::new()
-            .name(format!("nexus-stream-cleanup-d{}-p{id}", device.ordinal()))
-            .spawn(move || run_stream_cleanup_executor(cleanup_receiver))
-        {
-            eprintln!(
-                "[nexus-query-engine] warning: failed to spawn device {} service stream cleanup thread: {error}",
-                device.ordinal()
-            );
-        }
         Ok(Self { inner })
     }
 
@@ -223,7 +720,8 @@ impl ServiceStreamPool {
     }
 
     /// Close this pool and wait until every lease and deferred cleanup has
-    /// completed under the caller's absolute shutdown deadline.
+    /// completed, then explicitly stop and join the cleanup supervisor, under
+    /// the caller's absolute shutdown deadline.
     pub(crate) fn close_and_wait_until(&self, deadline: Instant, operation: &'static str) -> Result<()> {
         self.inner.closed.store(true, Ordering::Release);
         self.inner.available.notify_all();
@@ -235,6 +733,9 @@ impl ServiceStreamPool {
         self.inner.state_changed.notify_all();
         let mut state = self.lock_state_until(deadline, operation)?;
         loop {
+            if let Err(error) = self.inner.cleanup_supervisor.ensure_not_failed(operation) {
+                return Err(error);
+            }
             if state.created == 0
                 && state.idle.is_empty()
                 && state.pending_cleanups == 0
@@ -244,13 +745,14 @@ impl ServiceStreamPool {
                 if Instant::now() >= deadline {
                     return Err(stream_pool_cleanup_timeout(operation, self, &state, 0));
                 }
-                return Ok(());
+                break;
             }
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
                 return Err(stream_pool_cleanup_timeout(operation, self, &state, 0));
             }
-            let (next, timeout) = self.inner.state_changed.wait_timeout(state, remaining).map_err(|_error| {
+            let wait = remaining.min(STREAM_CLEANUP_SUPERVISOR_POLL_INTERVAL);
+            let (next, timeout) = self.inner.state_changed.wait_timeout(state, wait).map_err(|_error| {
                 QueryError::new(
                     QueryErrorCode::Internal,
                     operation,
@@ -259,6 +761,7 @@ impl ServiceStreamPool {
             })?;
             state = next;
             if timeout.timed_out()
+                && Instant::now() >= deadline
                 && (state.created != 0
                     || !state.idle.is_empty()
                     || state.pending_cleanups != 0
@@ -268,6 +771,13 @@ impl ServiceStreamPool {
                 return Err(stream_pool_cleanup_timeout(operation, self, &state, 0));
             }
         }
+        drop(state);
+
+        // A zero counter snapshot only proves that no work is currently
+        // accounted. The supervisor is an owned resource in its own right, so
+        // close must signal it and elect a joiner to commit its outcome.
+        self.inner.cleanup_supervisor.request_shutdown(deadline, operation)?;
+        self.inner.cleanup_supervisor.wait_for_exit_until(deadline, operation)
     }
 
     /// Wait until exactly `expected_leased_runtimes` created runtimes remain
@@ -292,6 +802,7 @@ impl ServiceStreamPool {
 
         let mut state = self.lock_state(operation)?;
         loop {
+            self.inner.cleanup_supervisor.ensure_not_failed(operation)?;
             let active_leased_runtimes = state
                 .created
                 .saturating_sub(state.idle.len())
@@ -301,13 +812,16 @@ impl ServiceStreamPool {
                 && state.pending_cleanups == 0
                 && state.active_cleanups == 0
             {
+                drop(state);
+                self.inner.cleanup_supervisor.finalize_if_finished_until(deadline, operation)?;
                 return Ok(());
             }
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
                 return Err(stream_pool_cleanup_timeout(operation, self, &state, expected_leased_runtimes));
             }
-            let (next, _timeout) = self.inner.state_changed.wait_timeout(state, remaining).map_err(|_error| {
+            let wait = remaining.min(STREAM_CLEANUP_SUPERVISOR_POLL_INTERVAL);
+            let (next, _timeout) = self.inner.state_changed.wait_timeout(state, wait).map_err(|_error| {
                 QueryError::new(
                     QueryErrorCode::Internal,
                     operation,
@@ -336,6 +850,11 @@ impl ServiceStreamPool {
     #[cfg(test)]
     fn fail_next_synchronization_for_test(&self) {
         self.inner.state.lock().unwrap().fail_next_synchronization = true;
+    }
+
+    #[cfg(test)]
+    fn force_next_cleanup_enqueue_fallback_for_test(&self) {
+        self.inner.state.lock().unwrap().force_next_cleanup_enqueue_fallback = true;
     }
 
     /// Acquire a CUDA stream/runtime lease, blocking when all pool slots are busy.
@@ -630,7 +1149,7 @@ impl ServiceStreamPool {
         &self,
         runtime: Arc<cudf::Runtime>,
         resource_epoch: Option<Arc<QueryServiceResourceEpoch>>,
-        completion: Option<Box<dyn FnOnce() + Send>>,
+        mut completion: Option<StreamCleanupCompletion>,
     ) {
         let registered = match self.inner.state.lock() {
             Ok(mut state) => {
@@ -647,59 +1166,131 @@ impl ServiceStreamPool {
             let _ = runtime.synchronize();
             drop(runtime);
             drop(resource_epoch);
-            if let Some(completion) = completion {
-                completion();
+            if let Some(completion) = completion.as_mut() {
+                completion.run_before_quiescence();
+                completion.run_after_quiescence();
             }
             return;
         }
-        let job = StreamCleanupJob::Runtime { pool: self.clone(), runtime, resource_epoch, completion };
-        if let Err(error) = self.inner.cleanup_sender.send(job) {
-            match error.0 {
-                StreamCleanupJob::Runtime { pool, runtime, resource_epoch, completion } => {
-                    pool.synchronize_deferred_runtime(runtime, resource_epoch, completion)
+        let job =
+            StreamCleanupJob::Runtime(DeferredStreamCleanup::new(self.clone(), runtime, resource_epoch, completion));
+        #[cfg(test)]
+        let force_enqueue_fallback = match self.inner.state.lock() {
+            Ok(mut state) => std::mem::take(&mut state.force_next_cleanup_enqueue_fallback),
+            Err(_) => false,
+        };
+        #[cfg(test)]
+        if force_enqueue_fallback {
+            match job {
+                StreamCleanupJob::Runtime(mut cleanup) => cleanup.run(),
+                StreamCleanupJob::Shutdown => unreachable!("runtime cleanup cannot enqueue supervisor shutdown"),
+                StreamCleanupJob::Probe { .. }
+                | StreamCleanupJob::Block { .. }
+                | StreamCleanupJob::ExitUnexpectedly => {
+                    unreachable!("new cleanup job is always a runtime cleanup")
                 },
+            }
+            return;
+        }
+        if let Err(error) = self.inner.cleanup_supervisor.enqueue(job) {
+            // The only production send failure is a terminal cleanup
+            // supervisor. The synchronous fallback still releases the job's
+            // permits, but the runtime cannot be returned to a pool whose
+            // owner has disappeared.
+            self.inner.closed.store(true, Ordering::Release);
+            match error.0 {
+                StreamCleanupJob::Runtime(mut cleanup) => cleanup.run(),
+                StreamCleanupJob::Shutdown => unreachable!("runtime cleanup cannot enqueue supervisor shutdown"),
                 #[cfg(test)]
-                StreamCleanupJob::Probe { .. } | StreamCleanupJob::Block { .. } => {},
+                StreamCleanupJob::Probe { .. }
+                | StreamCleanupJob::Block { .. }
+                | StreamCleanupJob::ExitUnexpectedly => {},
             }
         }
     }
+}
 
-    fn synchronize_deferred_runtime(
-        &self,
+/// Owns one queued stream cleanup until both resource accounting and the
+/// external completion handoff have finished. If a prior cleanup panics, the
+/// receiver drops queued jobs; this guard turns that drop into fail-closed
+/// resource cleanup rather than silently losing permits or completion work.
+struct DeferredStreamCleanup {
+    pool: ServiceStreamPool,
+    runtime: Option<Arc<cudf::Runtime>>,
+    resource_epoch: Option<Arc<QueryServiceResourceEpoch>>,
+    completion: Option<StreamCleanupCompletion>,
+    phase: DeferredStreamCleanupPhase,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DeferredStreamCleanupPhase {
+    Pending,
+    Active,
+    AfterAccounting,
+    Complete,
+}
+
+impl DeferredStreamCleanup {
+    fn new(
+        pool: ServiceStreamPool,
         runtime: Arc<cudf::Runtime>,
         resource_epoch: Option<Arc<QueryServiceResourceEpoch>>,
-        completion: Option<Box<dyn FnOnce() + Send>>,
-    ) {
-        {
-            let mut state = match self.inner.state.lock() {
-                Ok(state) => state,
-                Err(_error) => {
-                    eprintln!("[nexus-query-engine] warning: failed to start accounted stream cleanup");
-                    let _ = runtime.synchronize();
-                    drop(runtime);
-                    drop(resource_epoch);
-                    if let Some(completion) = completion {
-                        completion();
-                    }
-                    return;
-                },
-            };
-            state.pending_cleanups = state.pending_cleanups.saturating_sub(1);
-            state.active_cleanups = state.active_cleanups.saturating_add(1);
-            self.inner.state_changed.notify_all();
+        completion: Option<StreamCleanupCompletion>,
+    ) -> Self {
+        Self { pool, runtime: Some(runtime), resource_epoch, completion, phase: DeferredStreamCleanupPhase::Pending }
+    }
+
+    fn run(&mut self) {
+        if !self.begin_accounting() {
+            self.discard_after_accounting_failure();
+            return;
         }
 
+        let synchronized = self.synchronize_runtime();
+        self.finish_runtime_accounting(synchronized);
+        if let Some(completion) = self.completion.as_mut() {
+            // This callback releases GPU-side/query admission ownership while
+            // cleanup remains active. A panic is caught by the supervisor and
+            // this guard's Drop path completes the remaining handoff.
+            completion.run_before_quiescence();
+        }
+        self.finish_active_accounting();
+        if let Some(completion) = self.completion.as_mut() {
+            // The typed callback only enqueues to ObservationCompletionExecutor
+            // and therefore cannot reenter backend close from this supervisor.
+            completion.run_after_quiescence();
+        }
+        self.phase = DeferredStreamCleanupPhase::Complete;
+    }
+
+    fn begin_accounting(&mut self) -> bool {
+        match self.pool.inner.state.lock() {
+            Ok(mut state) => {
+                state.pending_cleanups = state.pending_cleanups.saturating_sub(1);
+                state.active_cleanups = state.active_cleanups.saturating_add(1);
+                self.phase = DeferredStreamCleanupPhase::Active;
+                self.pool.inner.state_changed.notify_all();
+                true
+            },
+            Err(_error) => {
+                eprintln!("[nexus-query-engine] warning: failed to start accounted stream cleanup");
+                false
+            },
+        }
+    }
+
+    fn synchronize_runtime(&self) -> bool {
         #[cfg(test)]
-        let force_failure = {
-            let mut state = self.inner.state.lock().unwrap();
-            std::mem::take(&mut state.fail_next_synchronization)
+        let force_failure = match self.pool.inner.state.lock() {
+            Ok(mut state) => std::mem::take(&mut state.fail_next_synchronization),
+            Err(_) => false,
         };
-        let synchronized = match runtime.synchronize() {
+        match self.runtime.as_ref().expect("deferred cleanup runtime is present").synchronize() {
             #[cfg(test)]
             Ok(()) if force_failure => {
                 eprintln!(
                     "[nexus-query-engine] warning: injecting device {} stream synchronization failure for test",
-                    self.device().ordinal()
+                    self.pool.device().ordinal()
                 );
                 false
             },
@@ -707,22 +1298,23 @@ impl ServiceStreamPool {
             Err(error) => {
                 eprintln!(
                     "[nexus-query-engine] warning: failed to synchronize device {} service stream; discarding runtime: {error}",
-                    self.device().ordinal()
+                    self.pool.device().ordinal()
                 );
                 false
             },
-        };
+        }
+    }
 
-        let mut runtime = Some(runtime);
+    fn finish_runtime_accounting(&mut self, synchronized: bool) {
         let mut idle_to_drop = Vec::new();
-        match self.inner.state.lock() {
+        match self.pool.inner.state.lock() {
             Ok(mut state) => {
-                if synchronized && !self.inner.closed.load(Ordering::Acquire) {
-                    state.idle.push(runtime.take().expect("deferred cleanup runtime is present"));
+                if synchronized && !self.pool.inner.closed.load(Ordering::Acquire) {
+                    state.idle.push(self.runtime.take().expect("deferred cleanup runtime is present"));
                 } else {
                     state.created = state.created.saturating_sub(1);
                     if !synchronized {
-                        self.inner.closed.store(true, Ordering::Release);
+                        self.pool.inner.closed.store(true, Ordering::Release);
                         state.synchronization_failures = state.synchronization_failures.saturating_add(1);
                         idle_to_drop = std::mem::take(&mut state.idle);
                         state.created = state.created.saturating_sub(idle_to_drop.len());
@@ -733,13 +1325,13 @@ impl ServiceStreamPool {
                 eprintln!("[nexus-query-engine] warning: failed to finish accounted stream cleanup");
             },
         }
-        drop(runtime);
+        drop(self.runtime.take());
         drop(idle_to_drop);
-        drop(resource_epoch);
-        if let Some(completion) = completion {
-            completion();
-        }
-        match self.inner.state.lock() {
+        drop(self.resource_epoch.take());
+    }
+
+    fn finish_active_accounting(&mut self) {
+        match self.pool.inner.state.lock() {
             Ok(mut state) => {
                 state.active_cleanups = state.active_cleanups.saturating_sub(1);
             },
@@ -747,8 +1339,76 @@ impl ServiceStreamPool {
                 eprintln!("[nexus-query-engine] warning: failed to complete stream cleanup accounting");
             },
         }
-        self.inner.available.notify_all();
-        self.inner.state_changed.notify_all();
+        self.pool.inner.available.notify_all();
+        self.pool.inner.state_changed.notify_all();
+        self.phase = DeferredStreamCleanupPhase::AfterAccounting;
+    }
+
+    fn discard_after_accounting_failure(&mut self) {
+        if let Some(runtime) = self.runtime.take() {
+            let _ = catch_unwind(AssertUnwindSafe(|| runtime.synchronize()));
+            drop(runtime);
+        }
+        drop(self.resource_epoch.take());
+        if let Some(completion) = self.completion.as_mut() {
+            completion.run_before_quiescence();
+            completion.run_after_quiescence();
+        }
+        self.phase = DeferredStreamCleanupPhase::Complete;
+    }
+
+    fn recover_after_abandonment(&mut self) {
+        let had_runtime = self.runtime.is_some();
+        if let Some(runtime) = self.runtime.take() {
+            let _ = catch_unwind(AssertUnwindSafe(|| runtime.synchronize()));
+            drop(runtime);
+        }
+        drop(self.resource_epoch.take());
+
+        let mut idle_to_drop = Vec::new();
+        match self.pool.inner.state.lock() {
+            Ok(mut state) => {
+                match self.phase {
+                    DeferredStreamCleanupPhase::Pending => {
+                        state.pending_cleanups = state.pending_cleanups.saturating_sub(1);
+                        if had_runtime {
+                            state.created = state.created.saturating_sub(1);
+                        }
+                    },
+                    DeferredStreamCleanupPhase::Active => {
+                        state.active_cleanups = state.active_cleanups.saturating_sub(1);
+                        if had_runtime {
+                            state.created = state.created.saturating_sub(1);
+                        }
+                    },
+                    DeferredStreamCleanupPhase::AfterAccounting | DeferredStreamCleanupPhase::Complete => {},
+                }
+                // An abandoned job means the owning supervisor is terminally
+                // unhealthy. Never reuse a runtime while its cleanup protocol
+                // has been interrupted.
+                self.pool.inner.closed.store(true, Ordering::Release);
+                idle_to_drop = std::mem::take(&mut state.idle);
+                state.created = state.created.saturating_sub(idle_to_drop.len());
+            },
+            Err(_error) => {
+                eprintln!("[nexus-query-engine] warning: failed to recover abandoned stream cleanup accounting");
+            },
+        }
+        drop(idle_to_drop);
+        self.pool.inner.available.notify_all();
+        self.pool.inner.state_changed.notify_all();
+        if let Some(mut completion) = self.completion.take() {
+            completion.run_remaining_after_abandonment();
+        }
+        self.phase = DeferredStreamCleanupPhase::Complete;
+    }
+}
+
+impl Drop for DeferredStreamCleanup {
+    fn drop(&mut self) {
+        if self.phase != DeferredStreamCleanupPhase::Complete {
+            self.recover_after_abandonment();
+        }
     }
 }
 
@@ -758,6 +1418,77 @@ fn stream_acquire_wait_interval(deadline: Option<Instant>) -> Duration {
         return cancellation_poll;
     };
     deadline.saturating_duration_since(Instant::now()).min(cancellation_poll)
+}
+
+fn stream_cleanup_supervisor_exit_timeout(operation: &'static str, device: cudf::DeviceId, pool_id: u64) -> QueryError {
+    QueryError::new(
+        QueryErrorCode::ServiceOverloaded,
+        operation,
+        "timed out waiting for the service stream cleanup supervisor to exit",
+    )
+    .with_fact("device_ordinal", device.ordinal())
+    .with_fact("stream_pool_id", pool_id)
+    .with_fact("reason", "stream_cleanup_supervisor_exit_timeout")
+    .with_cleanup_deadline_elapsed()
+}
+
+fn stream_cleanup_supervisor_join_timeout(operation: &'static str, device: cudf::DeviceId, pool_id: u64) -> QueryError {
+    QueryError::new(
+        QueryErrorCode::ServiceOverloaded,
+        operation,
+        "timed out waiting to join the service stream cleanup supervisor",
+    )
+    .with_fact("device_ordinal", device.ordinal())
+    .with_fact("stream_pool_id", pool_id)
+    .with_fact("reason", "stream_cleanup_supervisor_join_timeout")
+    .with_cleanup_deadline_elapsed()
+}
+
+fn stream_cleanup_supervisor_state_poisoned(
+    operation: &'static str,
+    device: cudf::DeviceId,
+    pool_id: u64,
+) -> QueryError {
+    QueryError::new(QueryErrorCode::Internal, operation, "service stream cleanup supervisor state was poisoned")
+        .with_fact("device_ordinal", device.ordinal())
+        .with_fact("stream_pool_id", pool_id)
+        .with_fact("reason", "stream_cleanup_supervisor_state_poisoned")
+}
+
+fn stream_cleanup_supervisor_unexpected_exit_error(
+    operation: &'static str,
+    device: cudf::DeviceId,
+    pool_id: u64,
+    detail: &str,
+) -> QueryError {
+    QueryError::new(QueryErrorCode::Internal, operation, "service stream cleanup supervisor exited unexpectedly")
+        .with_fact("device_ordinal", device.ordinal())
+        .with_fact("stream_pool_id", pool_id)
+        .with_fact("supervisor_detail", detail)
+        .with_fact("reason", "stream_cleanup_supervisor_unexpected_exit")
+}
+
+fn stream_cleanup_supervisor_panic_error(
+    operation: &'static str,
+    device: cudf::DeviceId,
+    pool_id: u64,
+    stage: &'static str,
+    panic_message: &str,
+) -> QueryError {
+    QueryError::new(QueryErrorCode::Internal, operation, "service stream cleanup supervisor panicked")
+        .with_fact("device_ordinal", device.ordinal())
+        .with_fact("stream_pool_id", pool_id)
+        .with_fact("supervisor_stage", stage)
+        .with_fact("panic_message", panic_message)
+        .with_fact("reason", "stream_cleanup_supervisor_panicked")
+}
+
+fn stream_cleanup_supervisor_panic_message(panic: &(dyn Any + Send)) -> String {
+    panic
+        .downcast_ref::<&'static str>()
+        .map(|message| (*message).to_string())
+        .or_else(|| panic.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "non-string panic payload".to_string())
 }
 
 fn stream_acquire_timeout_error(operation: &'static str, device: cudf::DeviceId, pool_size: usize) -> QueryError {
@@ -825,6 +1556,7 @@ fn stream_pool_cleanup_timeout(
         .with_fact("synchronization_failures", state.synchronization_failures)
         .with_fact("expected_leased_runtimes", expected_leased_runtimes)
         .with_fact("reason", reason)
+        .with_cleanup_deadline_elapsed()
 }
 
 #[derive(Debug)]
@@ -885,7 +1617,7 @@ impl StreamLeaseObservation {
     }
 }
 
-/// RAII handle for a runtime borrowed from a [`ServiceStreamPool`].
+/// RAII handle for a runtime borrowed from the backend-owned stream pool.
 ///
 /// Dropping the lease synchronously records that query ownership was released,
 /// then schedules runtime stream synchronization on the service cleanup thread.
@@ -898,7 +1630,7 @@ pub struct StreamLease {
     runtime: Option<Arc<cudf::Runtime>>,
     observation: Option<Arc<StreamLeaseObservation>>,
     resource_epoch: Option<Arc<QueryServiceResourceEpoch>>,
-    cleanup_completion: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+    cleanup_completion: Mutex<Option<StreamCleanupCompletion>>,
 }
 
 impl std::fmt::Debug for StreamLease {
@@ -925,7 +1657,11 @@ impl StreamLease {
         self
     }
 
-    pub(crate) fn install_cleanup_completion(&self, completion: impl FnOnce() + Send + 'static) -> bool {
+    pub(crate) fn install_cleanup_completion(
+        &self,
+        before_quiescence: impl FnOnce() + Send + 'static,
+        after_quiescence: impl FnOnce() + Send + 'static,
+    ) -> bool {
         let mut slot = match self.cleanup_completion.lock() {
             Ok(slot) => slot,
             Err(error) => error.into_inner(),
@@ -933,7 +1669,7 @@ impl StreamLease {
         if slot.is_some() {
             return false;
         }
-        *slot = Some(Box::new(completion));
+        *slot = Some(StreamCleanupCompletion::new(before_quiescence, after_quiescence));
         true
     }
 
@@ -981,24 +1717,62 @@ impl Drop for StreamLease {
 }
 
 enum StreamCleanupJob {
-    Runtime {
-        pool: ServiceStreamPool,
-        runtime: Arc<cudf::Runtime>,
-        resource_epoch: Option<Arc<QueryServiceResourceEpoch>>,
-        completion: Option<Box<dyn FnOnce() + Send>>,
+    Runtime(DeferredStreamCleanup),
+    Shutdown,
+    #[cfg(test)]
+    Probe {
+        done: mpsc::Sender<thread::ThreadId>,
     },
     #[cfg(test)]
-    Probe { done: mpsc::Sender<thread::ThreadId> },
+    Block {
+        entered: Arc<Barrier>,
+        release: Arc<Barrier>,
+    },
     #[cfg(test)]
-    Block { entered: Arc<Barrier>, release: Arc<Barrier> },
+    ExitUnexpectedly,
 }
 
-fn run_stream_cleanup_executor(receiver: mpsc::Receiver<StreamCleanupJob>) {
-    for job in receiver {
+fn run_stream_cleanup_worker(
+    receiver: mpsc::Receiver<StreamCleanupJob>,
+    _control: &StreamCleanupSupervisorControl,
+) -> StreamCleanupWorkerOutcome {
+    let executor = catch_unwind(AssertUnwindSafe(|| run_stream_cleanup_executor(&receiver)));
+
+    // The receiver owns all queued cleanup jobs. Drop it before constructing
+    // the provisional outcome so queued recovery completes before any joiner
+    // can observe and commit that outcome.
+    drop(receiver);
+
+    let outcome = match executor {
+        Ok(StreamCleanupExecutorExit::Shutdown) => StreamCleanupWorkerOutcome::Clean,
+        Ok(StreamCleanupExecutorExit::ReceiverDisconnected) => {
+            StreamCleanupWorkerOutcome::Unexpected { detail: "cleanup receiver disconnected before explicit shutdown" }
+        },
+        #[cfg(test)]
+        Ok(StreamCleanupExecutorExit::Unexpected(detail)) => StreamCleanupWorkerOutcome::Unexpected { detail },
+        Err(panic) => StreamCleanupWorkerOutcome::Panicked {
+            panic_message: stream_cleanup_supervisor_panic_message(panic.as_ref()),
+        },
+    };
+
+    #[cfg(test)]
+    _control.pause_before_worker_return_for_test();
+    #[cfg(test)]
+    if _control.panic_after_outcome.load(Ordering::Acquire) {
+        panic!("injected service stream cleanup supervisor join panic");
+    }
+    outcome
+}
+
+fn run_stream_cleanup_executor(receiver: &mpsc::Receiver<StreamCleanupJob>) -> StreamCleanupExecutorExit {
+    loop {
+        let job = match receiver.recv() {
+            Ok(job) => job,
+            Err(_) => return StreamCleanupExecutorExit::ReceiverDisconnected,
+        };
         match job {
-            StreamCleanupJob::Runtime { pool, runtime, resource_epoch, completion } => {
-                pool.synchronize_deferred_runtime(runtime, resource_epoch, completion);
-            },
+            StreamCleanupJob::Runtime(mut cleanup) => cleanup.run(),
+            StreamCleanupJob::Shutdown => return StreamCleanupExecutorExit::Shutdown,
             #[cfg(test)]
             StreamCleanupJob::Probe { done } => {
                 let _ = done.send(thread::current().id());
@@ -1007,6 +1781,10 @@ fn run_stream_cleanup_executor(receiver: mpsc::Receiver<StreamCleanupJob>) {
             StreamCleanupJob::Block { entered, release } => {
                 entered.wait();
                 release.wait();
+            },
+            #[cfg(test)]
+            StreamCleanupJob::ExitUnexpectedly => {
+                return StreamCleanupExecutorExit::Unexpected("test requested unexpected cleanup supervisor exit");
             },
         }
     }
@@ -1031,8 +1809,8 @@ pub(crate) fn block_stream_cleanup_thread_for_test(pool: &ServiceStreamPool) -> 
     let entered = Arc::new(Barrier::new(2));
     let release = Arc::new(Barrier::new(2));
     pool.inner
-        .cleanup_sender
-        .send(StreamCleanupJob::Block { entered: Arc::clone(&entered), release: Arc::clone(&release) })
+        .cleanup_supervisor
+        .enqueue(StreamCleanupJob::Block { entered: Arc::clone(&entered), release: Arc::clone(&release) })
         .expect("cleanup thread accepts blocker");
     entered.wait();
     StreamCleanupBlocker { release: Some(release) }
@@ -1041,8 +1819,64 @@ pub(crate) fn block_stream_cleanup_thread_for_test(pool: &ServiceStreamPool) -> 
 #[cfg(test)]
 fn stream_cleanup_thread_id_for_test(pool: &ServiceStreamPool) -> thread::ThreadId {
     let (sender, receiver) = mpsc::channel();
-    pool.inner.cleanup_sender.send(StreamCleanupJob::Probe { done: sender }).expect("cleanup thread accepts probe");
+    pool.inner
+        .cleanup_supervisor
+        .enqueue(StreamCleanupJob::Probe { done: sender })
+        .expect("cleanup thread accepts probe");
     receiver.recv().expect("cleanup thread returns probe")
+}
+
+#[cfg(test)]
+fn fail_next_cleanup_supervisor_spawn_for_test() {
+    FAIL_NEXT_CLEANUP_SUPERVISOR_SPAWN.with(|failure| failure.set(true));
+}
+
+#[cfg(test)]
+fn panic_cleanup_supervisor_after_outcome_for_test(pool: &ServiceStreamPool) {
+    pool.inner.cleanup_supervisor.control.panic_after_outcome.store(true, Ordering::Release);
+}
+
+#[cfg(test)]
+fn pause_cleanup_supervisor_before_worker_return_for_test(pool: &ServiceStreamPool) -> StreamCleanupWorkerOutcomePause {
+    let pause =
+        StreamCleanupWorkerOutcomePause { arrived: Arc::new(Barrier::new(2)), release: Arc::new(Barrier::new(2)) };
+    *pool.inner.cleanup_supervisor.control.worker_outcome_pause.lock().unwrap() = Some(pause.clone());
+    pause
+}
+
+#[cfg(test)]
+fn wait_for_cleanup_supervisor_worker_finished_for_test(pool: &ServiceStreamPool, deadline: Instant) {
+    loop {
+        let finished =
+            pool.inner.cleanup_supervisor.join.lock().unwrap().as_ref().is_some_and(thread::JoinHandle::is_finished);
+        if finished {
+            return;
+        }
+        assert!(Instant::now() < deadline, "cleanup supervisor did not finish its provisional outcome");
+        thread::yield_now();
+    }
+}
+
+#[cfg(test)]
+fn observe_cleanup_supervisor_shutdown_send_failure_for_test(pool: &ServiceStreamPool) -> mpsc::Receiver<()> {
+    let (sender, receiver) = mpsc::channel();
+    *pool.inner.cleanup_supervisor.control.shutdown_send_failed.lock().unwrap() = Some(sender);
+    receiver
+}
+
+#[cfg(test)]
+fn observe_cleanup_supervisor_join_waiter_for_test(pool: &ServiceStreamPool) -> mpsc::Receiver<()> {
+    let (sender, receiver) = mpsc::channel();
+    *pool.inner.cleanup_supervisor.control.join_waiter.lock().unwrap() = Some(sender);
+    receiver
+}
+
+#[cfg(test)]
+fn force_cleanup_supervisor_unexpected_exit_for_test(pool: &ServiceStreamPool) {
+    pool.inner
+        .cleanup_supervisor
+        .enqueue(StreamCleanupJob::ExitUnexpectedly)
+        .expect("cleanup supervisor accepts unexpected-exit test job");
 }
 
 pub(crate) struct SourceReadStreamLease {
@@ -1077,6 +1911,15 @@ pub(super) fn validate_service_stream_pool_size(pool_size: usize) -> Result<()> 
 mod tests {
     use super::*;
 
+    #[test]
+    fn zero_capacity_rejects_before_runtime_initialization() {
+        let error = validate_service_stream_pool_size(0).unwrap_err();
+        assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
+        assert_eq!(error.operation(), "nexus_query_engine.service_stream_pool.validate");
+        assert_eq!(error.fact_value("field"), Some("service_stream_pool_size"));
+        assert_eq!(error.fact_value("reason"), Some("zero"));
+    }
+
     fn observed_stream_states(owner: &crate::observability::RuntimeObservationOwner) -> Vec<StreamLeaseLifecycleState> {
         owner
             .live_snapshot()
@@ -1094,6 +1937,455 @@ mod tests {
     fn stream_cleanup_jobs_run_on_background_thread() {
         let pool = ServiceStreamPool::new(cudf::DeviceId::DEFAULT, 1).unwrap();
         assert_ne!(stream_cleanup_thread_id_for_test(&pool), thread::current().id());
+    }
+
+    #[test]
+    fn cleanup_supervisor_spawn_failure_rejects_pool_construction() {
+        fail_next_cleanup_supervisor_spawn_for_test();
+
+        let error = ServiceStreamPool::new(cudf::DeviceId::DEFAULT, 1).unwrap_err();
+
+        assert_eq!(error.code(), QueryErrorCode::Internal);
+        assert_eq!(error.status(), crate::error::QueryErrorStatus::Permanent);
+        assert_eq!(error.operation(), STREAM_CLEANUP_SUPERVISOR_BUILD_OPERATION);
+        assert_eq!(error.fact_value("reason"), Some("stream_cleanup_supervisor_spawn_failed"));
+        assert_eq!(error.fact_value("device_ordinal"), Some("0"));
+    }
+
+    #[test]
+    fn close_and_wait_explicitly_joins_cleanup_supervisor_for_all_clones() {
+        let pool = ServiceStreamPool::new(cudf::DeviceId::DEFAULT, 1).unwrap();
+        let clone = pool.clone();
+        let deadline = Instant::now() + Duration::from_secs(5);
+
+        pool.close_and_wait_until(deadline, "nexus_query_engine.service_stream_pool.test_join").unwrap();
+        assert_eq!(
+            pool.inner.cleanup_supervisor.join_disposition.load(Ordering::Acquire),
+            STREAM_CLEANUP_SUPERVISOR_JOINED,
+        );
+
+        clone.close_and_wait_until(deadline, "nexus_query_engine.service_stream_pool.test_join").unwrap();
+        let error = clone.acquire().unwrap_err();
+        assert_eq!(error.fact_value("reason"), Some("stream_pool_closed"));
+    }
+
+    #[test]
+    fn busy_cleanup_supervisor_times_out_then_joins_after_late_cleanup() {
+        let pool = ServiceStreamPool::new(cudf::DeviceId::DEFAULT, 1).unwrap();
+        let blocker = block_stream_cleanup_thread_for_test(&pool);
+        let lease = pool.acquire().unwrap();
+        drop(lease);
+
+        let timeout = pool
+            .close_and_wait_until(
+                Instant::now() + Duration::from_millis(10),
+                "nexus_query_engine.service_stream_pool.test_busy_cleanup",
+            )
+            .unwrap_err();
+        assert!(timeout.is_cleanup_deadline_elapsed());
+        assert_eq!(timeout.fact_value("reason"), Some("stream_pool_idle_timeout"));
+        assert_eq!(
+            pool.inner.cleanup_supervisor.join_disposition.load(Ordering::Acquire),
+            STREAM_CLEANUP_SUPERVISOR_NOT_JOINED,
+        );
+
+        drop(blocker);
+        pool.close_and_wait_until(
+            Instant::now() + Duration::from_secs(5),
+            "nexus_query_engine.service_stream_pool.test_busy_cleanup",
+        )
+        .unwrap();
+        assert_eq!(
+            pool.inner.cleanup_supervisor.join_disposition.load(Ordering::Acquire),
+            STREAM_CLEANUP_SUPERVISOR_JOINED,
+        );
+    }
+
+    #[test]
+    fn unexpected_cleanup_supervisor_exit_is_permanent_and_joined() {
+        let pool = ServiceStreamPool::new(cudf::DeviceId::DEFAULT, 1).unwrap();
+        force_cleanup_supervisor_unexpected_exit_for_test(&pool);
+        let publication = pool
+            .inner
+            .cleanup_supervisor
+            .wait_for_exit_until(
+                Instant::now() + Duration::from_secs(5),
+                "nexus_query_engine.service_stream_pool.test_unexpected_exit_publication",
+            )
+            .unwrap_err();
+        assert_eq!(publication.fact_value("reason"), Some("stream_cleanup_supervisor_unexpected_exit"));
+
+        let error = pool
+            .close_and_wait_until(
+                Instant::now() + Duration::from_secs(5),
+                "nexus_query_engine.service_stream_pool.test_unexpected_exit",
+            )
+            .unwrap_err();
+
+        assert_eq!(error.code(), QueryErrorCode::Internal);
+        assert_eq!(error.status(), crate::error::QueryErrorStatus::Permanent);
+        assert_eq!(error.fact_value("reason"), Some("stream_cleanup_supervisor_unexpected_exit"));
+        assert_eq!(
+            pool.inner.cleanup_supervisor.join_disposition.load(Ordering::Acquire),
+            STREAM_CLEANUP_SUPERVISOR_JOINED,
+        );
+    }
+
+    #[test]
+    fn unexpected_cleanup_supervisor_exit_recovers_queued_completion_payloads() {
+        let pool = ServiceStreamPool::new(cudf::DeviceId::DEFAULT, 2).unwrap();
+        let cleanup_thread = stream_cleanup_thread_id_for_test(&pool);
+        let blocker = block_stream_cleanup_thread_for_test(&pool);
+        // Queue the forced exit before the leases so the receiver's teardown
+        // drops both queued jobs and exercises their Drop recovery protocol.
+        force_cleanup_supervisor_unexpected_exit_for_test(&pool);
+        let first = pool.acquire().unwrap();
+        let second = pool.acquire().unwrap();
+        let (before_sender, before_receiver) = mpsc::channel();
+        let (after_sender, after_receiver) = mpsc::channel();
+
+        assert!(first.install_cleanup_completion(
+            {
+                let before_sender = before_sender.clone();
+                move || before_sender.send(("first", thread::current().id())).unwrap()
+            },
+            {
+                let after_sender = after_sender.clone();
+                move || after_sender.send(("first", thread::current().id())).unwrap()
+            },
+        ));
+        assert!(second.install_cleanup_completion(
+            move || before_sender.send(("second", thread::current().id())).unwrap(),
+            move || after_sender.send(("second", thread::current().id())).unwrap(),
+        ));
+        drop(first);
+        drop(second);
+        drop(blocker);
+
+        let error = pool
+            .close_and_wait_until(
+                Instant::now() + Duration::from_secs(5),
+                "nexus_query_engine.service_stream_pool.test_exit_with_payload",
+            )
+            .unwrap_err();
+        assert_eq!(error.fact_value("reason"), Some("stream_cleanup_supervisor_unexpected_exit"));
+        let mut before = vec![
+            before_receiver.recv_timeout(Duration::from_secs(5)).expect("first recovery before callback"),
+            before_receiver.recv_timeout(Duration::from_secs(5)).expect("second recovery before callback"),
+        ];
+        before.sort_by_key(|(label, _)| *label);
+        let mut after = vec![
+            after_receiver.recv_timeout(Duration::from_secs(5)).expect("first recovery after callback"),
+            after_receiver.recv_timeout(Duration::from_secs(5)).expect("second recovery after callback"),
+        ];
+        after.sort_by_key(|(label, _)| *label);
+        assert_eq!(before.iter().map(|(label, _)| *label).collect::<Vec<_>>(), vec!["first", "second"]);
+        assert_eq!(after.iter().map(|(label, _)| *label).collect::<Vec<_>>(), vec!["first", "second"]);
+        assert!(before.iter().all(|(_, thread_id)| *thread_id == cleanup_thread));
+        assert!(after.iter().all(|(_, thread_id)| *thread_id == cleanup_thread));
+        assert_eq!(
+            pool.inner.cleanup_supervisor.join_disposition.load(Ordering::Acquire),
+            STREAM_CLEANUP_SUPERVISOR_JOINED,
+        );
+    }
+
+    #[test]
+    fn cleanup_supervisor_panic_recovers_inflight_completion_payload() {
+        let pool = ServiceStreamPool::new(cudf::DeviceId::DEFAULT, 1).unwrap();
+        let cleanup_thread = stream_cleanup_thread_id_for_test(&pool);
+        let lease = pool.acquire().unwrap();
+        let (before_sender, before_receiver) = mpsc::channel();
+        let (after_sender, after_receiver) = mpsc::channel();
+        assert!(lease.install_cleanup_completion(
+            move || {
+                before_sender.send(thread::current().id()).unwrap();
+                panic!("injected in-flight cleanup completion panic");
+            },
+            move || after_sender.send(thread::current().id()).unwrap(),
+        ));
+        drop(lease);
+
+        let error = pool
+            .close_and_wait_until(
+                Instant::now() + Duration::from_secs(5),
+                "nexus_query_engine.service_stream_pool.test_inflight_payload",
+            )
+            .unwrap_err();
+        assert_eq!(error.code(), QueryErrorCode::Internal);
+        assert_eq!(error.fact_value("reason"), Some("stream_cleanup_supervisor_panicked"));
+        assert_eq!(error.fact_value("supervisor_stage"), Some("cleanup_executor"));
+        assert_eq!(
+            before_receiver.recv_timeout(Duration::from_secs(5)).expect("in-flight before callback"),
+            cleanup_thread
+        );
+        assert_eq!(
+            after_receiver.recv_timeout(Duration::from_secs(5)).expect("in-flight after callback"),
+            cleanup_thread
+        );
+        let state = pool.inner.state.lock().unwrap();
+        assert_eq!(state.pending_cleanups, 0);
+        assert_eq!(state.active_cleanups, 0);
+        assert_eq!(state.created, 0);
+    }
+
+    #[test]
+    fn wait_until_idle_commits_an_already_finished_cleanup_panic() {
+        let pool = ServiceStreamPool::new(cudf::DeviceId::DEFAULT, 1).unwrap();
+        let pause = pause_cleanup_supervisor_before_worker_return_for_test(&pool);
+        let lease = pool.acquire().unwrap();
+        assert!(lease.install_cleanup_completion(|| panic!("injected cleanup panic before idle boundary"), || {},));
+        drop(lease);
+
+        pause.arrived.wait();
+        pause.release.wait();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        wait_for_cleanup_supervisor_worker_finished_for_test(&pool, deadline);
+
+        let error = pool
+            .wait_until_idle(deadline, "nexus_query_engine.service_stream_pool.test_idle_finished_panic")
+            .unwrap_err();
+        assert_eq!(error.fact_value("reason"), Some("stream_cleanup_supervisor_panicked"));
+        assert_eq!(error.fact_value("supervisor_stage"), Some("cleanup_executor"));
+        assert_eq!(
+            pool.inner.cleanup_supervisor.join_disposition.load(Ordering::Acquire),
+            STREAM_CLEANUP_SUPERVISOR_JOINED,
+        );
+    }
+
+    #[test]
+    fn wait_until_quiescent_commits_an_already_finished_cleanup_panic() {
+        let pool = ServiceStreamPool::new(cudf::DeviceId::DEFAULT, 1).unwrap();
+        let pause = pause_cleanup_supervisor_before_worker_return_for_test(&pool);
+        let lease = pool.acquire().unwrap();
+        assert!(
+            lease.install_cleanup_completion(|| panic!("injected cleanup panic before quiescence boundary"), || {},)
+        );
+        drop(lease);
+
+        pause.arrived.wait();
+        pause.release.wait();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        wait_for_cleanup_supervisor_worker_finished_for_test(&pool, deadline);
+
+        let error = pool
+            .wait_until_quiescent(0, deadline, "nexus_query_engine.service_stream_pool.test_quiescent_finished_panic")
+            .unwrap_err();
+        assert_eq!(error.fact_value("reason"), Some("stream_cleanup_supervisor_panicked"));
+        assert_eq!(error.fact_value("supervisor_stage"), Some("cleanup_executor"));
+        assert_eq!(
+            pool.inner.cleanup_supervisor.join_disposition.load(Ordering::Acquire),
+            STREAM_CLEANUP_SUPERVISOR_JOINED,
+        );
+    }
+
+    #[test]
+    fn cleanup_supervisor_send_failure_does_not_mask_panicked_worker_outcome() {
+        let pool = ServiceStreamPool::new(cudf::DeviceId::DEFAULT, 1).unwrap();
+        let cleanup_thread = stream_cleanup_thread_id_for_test(&pool);
+        let pause = pause_cleanup_supervisor_before_worker_return_for_test(&pool);
+        let shutdown_send_failed = observe_cleanup_supervisor_shutdown_send_failure_for_test(&pool);
+        let lease = pool.acquire().unwrap();
+        let (before_sender, before_receiver) = mpsc::channel();
+        let (after_sender, after_receiver) = mpsc::channel();
+        assert!(lease.install_cleanup_completion(
+            move || {
+                before_sender.send(thread::current().id()).unwrap();
+                panic!("injected cleanup panic before shutdown send failure");
+            },
+            move || after_sender.send(thread::current().id()).unwrap(),
+        ));
+        drop(lease);
+
+        // The worker has caught the callback panic and dropped its receiver,
+        // including all queued-job recovery, but has not returned the outcome
+        // to the join handle yet.
+        pause.arrived.wait();
+        let closer_pool = pool.clone();
+        let closer = thread::spawn(move || {
+            closer_pool.close_and_wait_until(
+                Instant::now() + Duration::from_secs(5),
+                "nexus_query_engine.service_stream_pool.test_send_failure_panic",
+            )
+        });
+        shutdown_send_failed
+            .recv_timeout(Duration::from_secs(5))
+            .expect("close observes the disconnected cleanup receiver");
+        {
+            let state = pool.inner.cleanup_supervisor.control.state.lock().unwrap();
+            assert!(state.shutdown_requested);
+            assert!(state.terminal.is_none(), "send failure cannot commit a terminal outcome");
+        }
+
+        pause.release.wait();
+        let error = closer.join().expect("close thread joins").unwrap_err();
+        assert_eq!(error.fact_value("reason"), Some("stream_cleanup_supervisor_panicked"));
+        assert_eq!(error.fact_value("supervisor_stage"), Some("cleanup_executor"));
+        assert_eq!(
+            before_receiver.recv_timeout(Duration::from_secs(5)).expect("in-flight before callback"),
+            cleanup_thread
+        );
+        assert_eq!(
+            after_receiver.recv_timeout(Duration::from_secs(5)).expect("in-flight after callback"),
+            cleanup_thread
+        );
+        let state = pool.inner.state.lock().unwrap();
+        assert_eq!(state.pending_cleanups, 0);
+        assert_eq!(state.active_cleanups, 0);
+        assert_eq!(state.created, 0);
+        assert_eq!(
+            pool.inner.cleanup_supervisor.join_disposition.load(Ordering::Acquire),
+            STREAM_CLEANUP_SUPERVISOR_JOINED,
+        );
+    }
+
+    #[test]
+    fn cleanup_supervisor_elects_one_joiner_for_concurrent_close_callers() {
+        let pool = ServiceStreamPool::new(cudf::DeviceId::DEFAULT, 1).unwrap();
+        let blocker = block_stream_cleanup_thread_for_test(&pool);
+        let join_waiter = observe_cleanup_supervisor_join_waiter_for_test(&pool);
+        let first_pool = pool.clone();
+        let first = thread::spawn(move || {
+            first_pool.close_and_wait_until(
+                Instant::now() + Duration::from_secs(5),
+                "nexus_query_engine.service_stream_pool.test_concurrent_joiner_first",
+            )
+        });
+        let second_pool = pool.clone();
+        let second = thread::spawn(move || {
+            second_pool.close_and_wait_until(
+                Instant::now() + Duration::from_secs(5),
+                "nexus_query_engine.service_stream_pool.test_concurrent_joiner_second",
+            )
+        });
+
+        join_waiter.recv_timeout(Duration::from_secs(5)).expect("second close caller waits for the elected joiner");
+        drop(blocker);
+        first.join().expect("first close thread joins").expect("first close succeeds");
+        second.join().expect("second close thread joins").expect("second close succeeds");
+        let state = pool.inner.cleanup_supervisor.control.state.lock().unwrap();
+        assert!(matches!(state.terminal, Some(StreamCleanupSupervisorTerminal::Clean)));
+        assert!(!state.joiner_active);
+        assert_eq!(
+            pool.inner.cleanup_supervisor.join_disposition.load(Ordering::Acquire),
+            STREAM_CLEANUP_SUPERVISOR_JOINED,
+        );
+    }
+
+    #[test]
+    fn cleanup_supervisor_precommit_join_timeout_is_retryable() {
+        let pool = ServiceStreamPool::new(cudf::DeviceId::DEFAULT, 1).unwrap();
+        let blocker = block_stream_cleanup_thread_for_test(&pool);
+
+        let timeout = pool
+            .close_and_wait_until(
+                Instant::now() + Duration::from_millis(10),
+                "nexus_query_engine.service_stream_pool.test_precommit_join_timeout",
+            )
+            .unwrap_err();
+        assert!(timeout.is_cleanup_deadline_elapsed());
+        assert_eq!(timeout.fact_value("reason"), Some("stream_cleanup_supervisor_join_timeout"));
+        {
+            let state = pool.inner.cleanup_supervisor.control.state.lock().unwrap();
+            assert!(state.terminal.is_none(), "a deadline before join cannot commit a terminal outcome");
+            assert!(!state.joiner_active, "a later close caller must be able to retry the join");
+        }
+        assert_eq!(
+            pool.inner.cleanup_supervisor.join_disposition.load(Ordering::Acquire),
+            STREAM_CLEANUP_SUPERVISOR_NOT_JOINED,
+        );
+
+        drop(blocker);
+        pool.close_and_wait_until(
+            Instant::now() + Duration::from_secs(5),
+            "nexus_query_engine.service_stream_pool.test_precommit_join_timeout",
+        )
+        .unwrap();
+        assert_eq!(
+            pool.inner.cleanup_supervisor.join_disposition.load(Ordering::Acquire),
+            STREAM_CLEANUP_SUPERVISOR_JOINED,
+        );
+    }
+
+    #[test]
+    fn cleanup_supervisor_join_panic_supersedes_provisional_clean_outcome() {
+        let pool = ServiceStreamPool::new(cudf::DeviceId::DEFAULT, 1).unwrap();
+        panic_cleanup_supervisor_after_outcome_for_test(&pool);
+        let deadline = Instant::now() + Duration::from_secs(5);
+
+        let error =
+            pool.close_and_wait_until(deadline, "nexus_query_engine.service_stream_pool.test_join_panic").unwrap_err();
+        assert_eq!(error.code(), QueryErrorCode::Internal);
+        assert_eq!(error.status(), crate::error::QueryErrorStatus::Permanent);
+        assert_eq!(error.fact_value("reason"), Some("stream_cleanup_supervisor_panicked"));
+        assert_eq!(error.fact_value("supervisor_stage"), Some("thread_join"));
+
+        let repeated =
+            pool.close_and_wait_until(deadline, "nexus_query_engine.service_stream_pool.test_join_panic").unwrap_err();
+        assert_eq!(repeated.fact_value("reason"), Some("stream_cleanup_supervisor_panicked"));
+        assert_eq!(repeated.fact_value("supervisor_stage"), Some("thread_join"));
+    }
+
+    #[test]
+    fn cleanup_phase_callbacks_straddle_quiescence_accounting() {
+        let pool = ServiceStreamPool::new(cudf::DeviceId::DEFAULT, 1).unwrap();
+        let lease = pool.acquire().unwrap();
+        let before_pool = pool.clone();
+        let after_pool = pool.clone();
+        let (before_sender, before_receiver) = mpsc::channel();
+        let (after_sender, after_receiver) = mpsc::channel();
+
+        assert!(lease.install_cleanup_completion(
+            move || {
+                let active_cleanups = before_pool.inner.state.lock().unwrap().active_cleanups;
+                before_sender.send((active_cleanups, thread::current().id())).unwrap();
+            },
+            move || {
+                let active_cleanups = after_pool.inner.state.lock().unwrap().active_cleanups;
+                after_sender.send((active_cleanups, thread::current().id())).unwrap();
+            },
+        ));
+        drop(lease);
+
+        let (before_active, before_thread) =
+            before_receiver.recv_timeout(Duration::from_secs(5)).expect("internal cleanup callback runs");
+        let (after_active, after_thread) =
+            after_receiver.recv_timeout(Duration::from_secs(5)).expect("external completion callback runs");
+        assert_eq!(before_active, 1, "resource teardown remains inside cleanup accounting");
+        assert_eq!(after_active, 0, "external completion runs after cleanup quiescence is published");
+        assert_eq!(before_thread, after_thread, "both phases run on the pre-created cleanup supervisor");
+    }
+
+    #[test]
+    fn synchronous_cleanup_enqueue_fallback_dispatches_external_completion() {
+        let pool = ServiceStreamPool::new(cudf::DeviceId::DEFAULT, 1).unwrap();
+        let lease = pool.acquire().unwrap();
+        let dropping_thread = thread::current().id();
+        let before_pool = pool.clone();
+        let after_pool = pool.clone();
+        let (before_sender, before_receiver) = mpsc::channel();
+        let (after_sender, after_receiver) = mpsc::channel();
+
+        assert!(lease.install_cleanup_completion(
+            move || {
+                let active_cleanups = before_pool.inner.state.lock().unwrap().active_cleanups;
+                before_sender.send((active_cleanups, thread::current().id())).unwrap();
+            },
+            move || {
+                let active_cleanups = after_pool.inner.state.lock().unwrap().active_cleanups;
+                after_sender.send((active_cleanups, thread::current().id())).unwrap();
+            },
+        ));
+        pool.force_next_cleanup_enqueue_fallback_for_test();
+        drop(lease);
+
+        let (before_active, before_thread) =
+            before_receiver.recv_timeout(Duration::from_secs(5)).expect("fallback internal cleanup callback runs");
+        let (after_active, after_thread) =
+            after_receiver.recv_timeout(Duration::from_secs(5)).expect("fallback external completion callback runs");
+        assert_eq!(before_active, 1, "fallback resource teardown remains inside cleanup accounting");
+        assert_eq!(before_thread, dropping_thread, "fallback synchronizes resources on the dropping thread");
+        assert_eq!(after_active, 0, "fallback external completion runs after cleanup quiescence is published");
+        assert_eq!(after_thread, dropping_thread, "fallback transfers completion on its synchronous cleanup path");
     }
 
     #[test]

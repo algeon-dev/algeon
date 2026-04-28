@@ -4,7 +4,13 @@ use super::*;
 fn bounded_native_query_executes_filtered_decimal_global_sum() {
     let dir = unique_temp_dir("nexus-query-engine-bounded-filtered-decimal-sum");
     let path = dir.join("lineitem.parquet");
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = backend_context_with_memory_control_policy(MemoryControlPolicy::Bounded {
+        device_budget_bytes: 8 * 1024 * 1024 * 1024,
+        max_source_chunk_bytes: 1024 * 1024,
+        max_row_groups_per_chunk: 1,
+        max_retry_attempts: 1,
+        min_retry_chunk_row_groups: 1,
+    });
     let input_schema = write_discounted_lineitem_parquet(&path);
     let projected_schema =
         Arc::new(Schema::new(vec![Field::new("__nexus_native_aggregate_arg_0", DataType::Decimal128(38, 4), true)]));
@@ -73,17 +79,6 @@ fn bounded_native_query_executes_filtered_decimal_global_sum() {
     let aggregate = builder.add_aggregate(projection, aggregate, aggregated_schema);
     let plan = builder.finish_with_host_sink(aggregate);
 
-    let context = ExecutionContext::builder()
-        .with_shared_runtime(Arc::clone(&runtime))
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: 8 * 1024 * 1024 * 1024,
-            max_source_chunk_bytes: 1024 * 1024,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 1,
-            min_retry_chunk_row_groups: 1,
-        })
-        .build()
-        .unwrap();
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
     assert_eq!(metrics.source_chunks_planned, 4);
@@ -110,7 +105,13 @@ fn bounded_native_query_executes_filtered_decimal_global_sum() {
 
 #[test]
 fn bounded_native_zero_column_count_uses_row_group_metadata_without_read_columns() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = backend_context_with_memory_control_policy(MemoryControlPolicy::Bounded {
+        device_budget_bytes: 8 * 1024 * 1024 * 1024,
+        max_source_chunk_bytes: 250,
+        max_row_groups_per_chunk: 8,
+        max_retry_attempts: 1,
+        min_retry_chunk_row_groups: 1,
+    });
     let aggregated_schema = Arc::new(Schema::new(vec![Field::new("count_rows", DataType::Int64, false)]));
     let source = LocalParquetSource::zero_column_count(vec![
         LocalParquetFile::new("/tmp/count-only.parquet")
@@ -133,17 +134,6 @@ fn bounded_native_zero_column_count_uses_row_group_metadata_without_read_columns
     let limit = builder.add_limit(sort, LimitSpec::fetch(1), aggregated_schema);
     let plan = builder.finish_with_host_sink(limit);
 
-    let context = ExecutionContext::builder()
-        .with_shared_runtime(Arc::clone(&runtime))
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: 8 * 1024 * 1024 * 1024,
-            max_source_chunk_bytes: 250,
-            max_row_groups_per_chunk: 8,
-            max_retry_attempts: 1,
-            min_retry_chunk_row_groups: 1,
-        })
-        .build()
-        .unwrap();
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
     assert_eq!(metrics.source_chunks_planned, 2);

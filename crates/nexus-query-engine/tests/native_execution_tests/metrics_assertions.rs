@@ -17,7 +17,7 @@ pub(super) fn assert_budgeted_success_event(metrics: &QueryMetrics, operation: &
     for event in events {
         assert!(!event.boundary.is_empty(), "budgeted event should record boundary: {event:?}");
         assert!(event.budget_bytes > 0, "budgeted event should record budget bytes: {event:?}");
-        assert_eq!(event.enforcement, "stream_bound_reservation");
+        assert_eq!(event.enforcement, "reservation_arena_member");
         assert_eq!(event.status, "reservation_enforced");
         assert!(event.retained_bytes.is_some(), "budgeted event should record retained bytes: {event:?}");
         assert!(event.output_bytes.is_some(), "budgeted event should record output bytes: {event:?}");
@@ -148,7 +148,7 @@ pub(super) fn assert_final_sort_materialize_budget_event(
 fn final_sort_budget_event_has_common_contract(event: &BudgetedExecutionEvent, boundary: &str) -> bool {
     event.boundary == boundary
         && event.budget_bytes > 0
-        && event.enforcement == "stream_bound_reservation"
+        && event.enforcement == "reservation_arena_member"
         && event.status == "reservation_enforced"
         && event.unresolved_contract.as_deref() == Some("libcudf_sort_temporary_workspace_preflight_unavailable")
 }

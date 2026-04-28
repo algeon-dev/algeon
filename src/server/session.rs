@@ -9,41 +9,29 @@ use datafusion::{
 use super::{config::ServerConfig, error::ServerError};
 use crate::{backend::NexusGpuBackend, cugraph_sql::CugraphSqlConfig, session::NexusSessionStateBuilderExt};
 
-pub async fn build_session_context(config: &ServerConfig) -> super::error::Result<SessionContext> {
-    build_session_context_with_backend(config, None).await
+pub async fn build_session_context(_config: &ServerConfig) -> super::error::Result<SessionContext> {
+    Err(ServerError::builder_validation(
+        "server_backend_required",
+        "building a Flight SQL session requires an owned NexusGpuBackend",
+    ))
 }
 
 pub async fn build_session_context_with_backend(
     config: &ServerConfig,
-    backend: Option<&NexusGpuBackend>,
+    backend: &NexusGpuBackend,
 ) -> super::error::Result<SessionContext> {
     let session_config = build_session_config(config)?;
     let builder = SessionStateBuilder::new_with_default_features().with_config(session_config);
-    let builder = match backend {
-        Some(backend) => match &config.cugraph {
-            Some(cugraph) => backend
-                .install_on_with_cugraph_sql(
-                    builder,
-                    cugraph_sql_config(cugraph, config.native_optimizer_config.native_execution_config().clone()),
-                )
-                .map_err(|error| ServerError::session("failed to install backend native session", error))?,
-            None => backend
-                .install_on(builder)
-                .map_err(|error| ServerError::session("failed to install backend native session", error))?,
-        },
-        None => {
-            let builder = builder.with_nexus_native(config.native_optimizer_config.clone());
-            let builder = match &config.cugraph {
-                Some(cugraph) => builder.with_cugraph_sql(cugraph_sql_config(
-                    cugraph,
-                    config.native_optimizer_config.native_execution_config().clone(),
-                )),
-                None => builder,
-            };
-            builder
-                .try_with_cuvs_sql()
-                .map_err(|error| ServerError::session("failed to install the cuVS SQL planner", error))?
-        },
+    let builder = match &config.cugraph {
+        Some(cugraph) => backend
+            .install_on_with_cugraph_sql(
+                builder,
+                cugraph_sql_config(cugraph, config.native_optimizer_config.native_execution_config().clone()),
+            )
+            .map_err(|error| ServerError::session("failed to install backend native session", error))?,
+        None => backend
+            .install_on(builder)
+            .map_err(|error| ServerError::session("failed to install backend native session", error))?,
     };
     let builder = match &config.host_execution_qos {
         Some(host_execution_qos) => builder.with_host_execution_qos(host_execution_qos.clone()),
@@ -249,4 +237,27 @@ fn build_alias_provider(
         .with_catalog_type(catalog_type)
         .with_scan_planning_timeout(Some(scan_planning_timeout));
     Ok(Arc::new(provider))
+}
+
+#[cfg(all(test, feature = "cugraph"))]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use nexus_query_engine::runtime::MemoryControlPolicy;
+
+    use super::*;
+    use crate::server::{NEXUS_SERVER_CUGRAPH_ENABLED_ENV, NEXUS_SERVER_NATIVE_MEMORY_POLICY_ENV};
+
+    #[test]
+    fn cugraph_sql_config_inherits_server_native_memory_policy() {
+        let env = BTreeMap::from([
+            (NEXUS_SERVER_CUGRAPH_ENABLED_ENV, "true".to_string()),
+            (NEXUS_SERVER_NATIVE_MEMORY_POLICY_ENV, "unbounded".to_string()),
+        ]);
+        let server = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
+        let cugraph = server.cugraph.as_ref().expect("cuGraph must be enabled");
+        let sql = cugraph_sql_config(cugraph, server.native_optimizer_config.native_execution_config().clone());
+
+        assert_eq!(sql.native_execution_config.memory_control_policy(), MemoryControlPolicy::Unbounded);
+    }
 }

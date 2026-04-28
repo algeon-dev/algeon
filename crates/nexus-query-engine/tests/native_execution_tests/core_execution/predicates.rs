@@ -1,6 +1,6 @@
 #[test]
 fn native_query_executes_literal_batch_source_with_offset_only_limit() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = backend_context();
     let schema = Arc::new(Schema::new(vec![
         Field::new("key", DataType::Int32, false),
         Field::new("label", DataType::Utf8, true),
@@ -20,7 +20,6 @@ fn native_query_executes_literal_batch_source_with_offset_only_limit() {
     let limit = builder.add_limit(source, LimitSpec::offset(1), Arc::clone(&schema));
     let plan = builder.finish_with_host_sink(limit);
 
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
     assert_eq!(metrics.input_batches, 1);
@@ -41,7 +40,7 @@ fn native_query_executes_literal_batch_source_with_offset_only_limit() {
 
 #[test]
 fn native_literal_batch_source_preserves_batch_order() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = backend_context();
     let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
     let first_batch =
         RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int32Array::from(vec![10, 11]))]).unwrap();
@@ -55,7 +54,6 @@ fn native_literal_batch_source_preserves_batch_order() {
     )));
     let plan = builder.finish_with_host_sink(source);
 
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
     assert_eq!(metrics.input_batches, 2);
@@ -72,7 +70,8 @@ fn native_literal_batch_source_preserves_batch_order() {
 fn native_local_parquet_reader_predicate_coerces_integer_literal_to_float_column_type() {
     let dir = unique_temp_dir("nexus-query-engine-native-reader-float-integer-predicate");
     let path = dir.join("input.parquet");
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = backend_context();
+    let runtime = Arc::new(context.runtime().unwrap());
     let input_schema = Arc::new(Schema::new(vec![
         Field::new("order_id", DataType::Int32, false),
         Field::new("amount", DataType::Float64, false),
@@ -97,7 +96,6 @@ fn native_local_parquet_reader_predicate_coerces_integer_literal_to_float_column
     let source = builder.add_source(SourceNode::LocalParquet(source));
     let plan = builder.finish_with_host_sink(source);
 
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
     let result = execute_query_plan(&context, &plan).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");
@@ -113,7 +111,8 @@ fn native_local_parquet_reader_predicate_coerces_integer_literal_to_float_column
 fn native_local_parquet_reader_predicate_uses_sql_null_logical_or() {
     let dir = unique_temp_dir("nexus-query-engine-native-reader-null-logical-or");
     let path = dir.join("input.parquet");
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = backend_context();
+    let runtime = Arc::new(context.runtime().unwrap());
     let schema = Arc::new(Schema::new(vec![
         Field::new("key", DataType::Int32, false),
         Field::new("dmail", DataType::Utf8, true),
@@ -149,7 +148,6 @@ fn native_local_parquet_reader_predicate_uses_sql_null_logical_or() {
     let source = builder.add_source(SourceNode::LocalParquet(source));
     let plan = builder.finish_with_host_sink(source);
 
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
     let result = execute_query_plan(&context, &plan).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");
@@ -162,7 +160,7 @@ fn native_local_parquet_reader_predicate_uses_sql_null_logical_or() {
 
 #[test]
 fn native_filter_predicate_uses_where_semantics_for_nullable_and_or_in_lists() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = backend_context();
     let schema = Arc::new(Schema::new(vec![
         Field::new("id", DataType::Int32, false),
         Field::new("a", DataType::Boolean, true),
@@ -182,7 +180,7 @@ fn native_filter_predicate_uses_where_semantics_for_nullable_and_or_in_lists() {
 
     assert_eq!(
         execute_gpu_resident_filter_ids(
-            &runtime,
+            &context,
             Arc::clone(&schema),
             &batch,
             Expr::binary(Expr::column("a"), BinaryOp::And, Expr::column("b"))
@@ -191,7 +189,7 @@ fn native_filter_predicate_uses_where_semantics_for_nullable_and_or_in_lists() {
     );
     assert_eq!(
         execute_gpu_resident_filter_ids(
-            &runtime,
+            &context,
             Arc::clone(&schema),
             &batch,
             Expr::binary(Expr::column("a"), BinaryOp::Or, Expr::column("b"))
@@ -200,7 +198,7 @@ fn native_filter_predicate_uses_where_semantics_for_nullable_and_or_in_lists() {
     );
     assert_eq!(
         execute_gpu_resident_filter_ids(
-            &runtime,
+            &context,
             Arc::clone(&schema),
             &batch,
             Expr::in_list(
@@ -215,7 +213,7 @@ fn native_filter_predicate_uses_where_semantics_for_nullable_and_or_in_lists() {
     );
     assert_eq!(
         execute_gpu_resident_filter_ids(
-            &runtime,
+            &context,
             Arc::clone(&schema),
             &batch,
             Expr::not_in_list(
@@ -232,7 +230,7 @@ fn native_filter_predicate_uses_where_semantics_for_nullable_and_or_in_lists() {
 
 #[test]
 fn native_filter_predicate_executes_large_numeric_literal_in_list() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = backend_context();
     let schema =
         Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false), Field::new("key", DataType::Int64, true)]));
     let batch = RecordBatch::try_new(
@@ -247,7 +245,7 @@ fn native_filter_predicate_executes_large_numeric_literal_in_list() {
 
     assert_eq!(
         execute_gpu_resident_filter_ids(
-            &runtime,
+            &context,
             Arc::clone(&schema),
             &batch,
             Expr::in_list(Expr::column("key"), list)

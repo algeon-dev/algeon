@@ -748,17 +748,14 @@ mod tests {
             GraphAlgorithm, GraphAlgorithmParams, GraphAlgorithmSpec, GraphBfsParams, GraphConstructionOptions,
             GraphConstructionPolicy, GraphEdgeColumnBindings, GraphTriangleCountAllParams, QueryPlan, QueryPlanBuilder,
         },
-        runtime::{
-            DeploymentIoCapability, GdsDriverProbeStatus, KvikioCompatModeStatus, NvidiaFsProbeStatus, QueryService,
-            QueryServiceConfig, QueryServiceTenantConfig, TenantId,
-        },
+        runtime::{QueryServiceConfig, QueryServiceTenantConfig, TenantId},
         source::{LocalParquetFile, LocalParquetSource, SourceNode},
     };
 
     use super::*;
     use crate::{
         error::{DataFusionErrorExt, ErrorCode, ErrorStatus},
-        native_exec::QueryAdmissionSource,
+        native_exec::admission::TestAdmissionController,
     };
 
     fn native_exec_leaf() -> Arc<dyn ExecutionPlan> {
@@ -813,24 +810,15 @@ mod tests {
         assert!(Arc::ptr_eq(&plan, &returned));
     }
 
-    fn nongds_deployment() -> DeploymentIoCapability {
-        DeploymentIoCapability::from_probe_inputs(
-            NvidiaFsProbeStatus::DriverMissing,
-            KvikioCompatModeStatus::Unset,
-            GdsDriverProbeStatus::ProbeUnimplemented,
-        )
-    }
-
     fn backend_admission_config(min_bytes: u64, want_bytes: u64, capacity_bytes: u64) -> NexusNativeExecutionConfig {
         let tenant_id = TenantId::new("tenant");
-        let service = QueryService::new_admission_only(
+        let controller = TestAdmissionController::new(
             QueryServiceConfig { device_capacity_bytes: Some(capacity_bytes), ..QueryServiceConfig::default() },
             vec![QueryServiceTenantConfig::with_grant_range(tenant_id.clone(), min_bytes, want_bytes)],
-            nongds_deployment(),
         )
         .unwrap();
         NexusNativeExecutionConfig::bounded(min_bytes, 512, 1, 3, 1)
-            .with_query_admission_source(QueryAdmissionSource::new(service, tenant_id))
+            .with_query_admission_source(controller.source(tenant_id))
     }
 
     fn edge_schema() -> Arc<Schema> {

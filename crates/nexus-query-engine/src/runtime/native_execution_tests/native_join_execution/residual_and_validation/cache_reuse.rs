@@ -1,8 +1,8 @@
 use super::*;
 
 #[test]
-fn native_query_reuses_build_side_hash_join_for_repeated_broadcast_probe() {
-    let dir = unique_temp_dir("nexus-query-engine-native-hash-join-cache");
+fn unbounded_context_reuses_build_side_hash_join_for_repeated_broadcast_probe() {
+    let dir = unique_temp_dir("nexus-query-engine-unbounded-native-hash-join-cache");
     let left_path = dir.join("lineitem.parquet");
     let right_path = dir.join("orders.parquet");
     let runtime = Arc::new(cudf::Runtime::new().unwrap());
@@ -78,6 +78,7 @@ fn native_query_reuses_build_side_hash_join_for_repeated_broadcast_probe() {
         .with_boundary_policy(policy)
         .build()
         .unwrap();
+    assert_eq!(context.memory_control_policy(), MemoryControlPolicy::Unbounded);
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
     assert_eq!(metrics.execution_boundary_policy, policy);
@@ -87,8 +88,7 @@ fn native_query_reuses_build_side_hash_join_for_repeated_broadcast_probe() {
     assert_eq!(metrics.hash_join_cache_hits, 1);
     assert!(metrics.hash_join_hash_table_bytes > 0);
     let join_metrics = metrics.operators.iter().filter_map(|operator| operator.join.as_ref()).collect::<Vec<_>>();
-    let join_count = join_metrics.len();
-    assert_eq!(join_count, 2);
+    assert_eq!(join_metrics.len(), 2);
     assert!(join_metrics.iter().all(|join| join.hash_table_bytes == metrics.hash_join_hash_table_bytes));
     assert!(join_metrics.iter().all(|join| join.gather_map_bytes > 0));
 

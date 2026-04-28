@@ -270,7 +270,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        native_exec::NexusNativeExecutionConfig, planner::NexusNativeOptimizerConfig,
+        backend::InstalledTestGpuBackend, native_exec::NexusNativeExecutionConfig, planner::NexusNativeOptimizerConfig,
         session::NexusSessionStateBuilderExt,
     };
 
@@ -290,7 +290,8 @@ mod tests {
 
     #[tokio::test]
     async fn coverage_table_function_returns_summary_candidate_rows_and_json() {
-        let state = SessionStateBuilder::new_with_default_features().with_nexus_native(test_optimizer_config()).build();
+        let backend = InstalledTestGpuBackend::new();
+        let state = backend.install_on(SessionStateBuilder::new_with_default_features()).unwrap().build();
         let ctx = SessionContext::new_with_state(state);
 
         let batches = ctx
@@ -324,7 +325,8 @@ mod tests {
 
     #[tokio::test]
     async fn coverage_table_function_promotes_candidate_remedies_to_columns() {
-        let state = SessionStateBuilder::new_with_default_features().with_nexus_native(test_optimizer_config()).build();
+        let backend = InstalledTestGpuBackend::new();
+        let state = backend.install_on(SessionStateBuilder::new_with_default_features()).unwrap().build();
         let ctx = SessionContext::new_with_state(state);
 
         let batches = ctx
@@ -349,7 +351,8 @@ mod tests {
 
     #[tokio::test]
     async fn coverage_table_function_rejects_recursive_validation() {
-        let state = SessionStateBuilder::new_with_default_features().with_nexus_native(test_optimizer_config()).build();
+        let backend = InstalledTestGpuBackend::new();
+        let state = backend.install_on(SessionStateBuilder::new_with_default_features()).unwrap().build();
         let ctx = SessionContext::new_with_state(state);
 
         let batches = ctx
@@ -372,7 +375,8 @@ mod tests {
 
     #[tokio::test]
     async fn coverage_table_function_rejects_view_indirect_recursive_validation() {
-        let state = SessionStateBuilder::new_with_default_features().with_nexus_native(test_optimizer_config()).build();
+        let backend = InstalledTestGpuBackend::new();
+        let state = backend.install_on(SessionStateBuilder::new_with_default_features()).unwrap().build();
         let ctx = SessionContext::new_with_state(state);
 
         ctx.sql(

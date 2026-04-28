@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn bounded_native_query_executes_serial_aggregate_multi_join_distinct_count_spine() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let runtime = backend_runtime();
     let dir = unique_temp_dir("nexus-query-engine-bounded-serial-aggregate-multi-join-spine");
     let part_path = dir.join("part.parquet");
     let partsupp_path = dir.join("partsupp.parquet");

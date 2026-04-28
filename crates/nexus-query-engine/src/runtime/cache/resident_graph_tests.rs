@@ -386,13 +386,15 @@ fn escaped_checked_out_graph_retains_service_epoch_and_claim_until_drop() {
     cache.close_and_drain().unwrap();
     let error = guaranteed_graph_cache_service()
         .expect_err("escaped parked graph companion must retain the prior guaranteed claim");
-    assert_eq!(error.fact_value("reason"), Some("shared_governor_guaranteed_minimum_conflict"));
+    assert_eq!(error.fact_value("reason"), Some("backend_already_live"));
     assert!(companion.upgrade().is_some());
 
     drop(parked);
     drop(checkout);
     service.close_and_wait_for_quiescence(Duration::from_secs(5)).unwrap();
     assert!(companion.upgrade().is_none());
-    let replacement = guaranteed_graph_cache_service().expect("last escaped graph owner releases the claim");
+    drop(service);
+    let replacement = guaranteed_graph_cache_service()
+        .expect("the drained service aggregate releases its live backend owner after graph destruction");
     drop(replacement);
 }

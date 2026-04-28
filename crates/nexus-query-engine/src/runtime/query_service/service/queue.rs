@@ -33,13 +33,35 @@ impl QueryService {
     pub(in crate::runtime::query_service) fn lock_admission(
         &self,
     ) -> Result<std::sync::MutexGuard<'_, AdmissionState>> {
-        self.inner.admission.lock().map_err(|_error| {
-            QueryError::new(
-                QueryErrorCode::Internal,
-                "nexus_query_engine.query_service.admission",
-                "query service admission mutex was poisoned",
-            )
-        })
+        self.inner.admission.lock().map_err(|_error| admission_mutex_poisoned_error())
+    }
+
+    /// Removes and terminalizes one queued request after recovering a poisoned
+    /// admission guard. The terminal callback runs only after the guard is
+    /// released, because it may synchronously reenter backend shutdown.
+    pub(in crate::runtime::query_service) fn recover_queued_request_after_admission_poison(
+        &self,
+        mut state: std::sync::MutexGuard<'_, AdmissionState>,
+        admission_request_id: AdmissionRequestId,
+    ) -> QueryError {
+        let removed = self.abandon_queued_request_locked(&mut state, admission_request_id);
+        let queue_depth = state.queued.len();
+        drop(state);
+
+        let error = admission_mutex_poisoned_error();
+        if let Some(request) = removed {
+            record_admission_lifecycle(
+                &request.observation,
+                request.admission_request_id,
+                &request.tenant_id,
+                admission_rejection(&error),
+                queue_depth,
+                None,
+                None,
+            );
+            finish_removed_request_error(Some(request), &error);
+        }
+        error
     }
 
     pub(in crate::runtime::query_service) fn admission_is_closed(&self, state: &AdmissionState) -> bool {
@@ -65,7 +87,6 @@ impl QueryService {
         state: &mut AdmissionState,
         admission_request_id: AdmissionRequestId,
     ) -> Result<bool> {
-        self.sweep_expired_queued_requests_locked(state);
         if state.active_queries >= self.inner.config.max_concurrent_queries {
             return Ok(false);
         }
@@ -75,10 +96,10 @@ impl QueryService {
         Ok(state.queued[position].admission_request_id == admission_request_id)
     }
 
-    pub(in crate::runtime::query_service::service) fn sweep_expired_queued_requests_locked(
+    pub(in crate::runtime::query_service) fn sweep_expired_queued_requests_locked(
         &self,
         state: &mut AdmissionState,
-    ) {
+    ) -> Vec<AdmissionRequest> {
         let now = Instant::now();
         let mut expired = Vec::new();
         let mut retained = VecDeque::with_capacity(state.queued.len());
@@ -96,7 +117,7 @@ impl QueryService {
                 self.grow_active_adaptive_grants_locked(state);
             }
             self.inner.notify_admission_available();
-            for request in expired {
+            for request in &expired {
                 record_admission_lifecycle(
                     &request.observation,
                     request.admission_request_id,
@@ -108,6 +129,7 @@ impl QueryService {
                 );
             }
         }
+        expired
     }
 
     pub(in crate::runtime::query_service::service) fn select_next_request_position(
@@ -212,6 +234,15 @@ impl QueryService {
     }
 }
 
+pub(super) fn admission_mutex_poisoned_error() -> QueryError {
+    QueryError::new(
+        QueryErrorCode::Internal,
+        "nexus_query_engine.query_service.admission",
+        "query service admission mutex was poisoned",
+    )
+    .with_fact("reason", "admission_mutex_poisoned")
+}
+
 pub(in crate::runtime::query_service::service) fn query_service_shutdown_timeout(
     operation: &'static str,
     state: Option<&AdmissionState>,
@@ -223,7 +254,8 @@ pub(in crate::runtime::query_service::service) fn query_service_shutdown_timeout
         "timed out waiting for query service shutdown cleanup",
     )
     .with_fact("reason", "query_service_shutdown_timeout")
-    .with_fact("deadline_stage", deadline_stage);
+    .with_fact("deadline_stage", deadline_stage)
+    .with_cleanup_deadline_elapsed();
     match state {
         Some(state) => error
             .with_fact("active_queries", state.active_queries)

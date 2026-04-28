@@ -10,6 +10,23 @@ use std::{
 
 use cudf::{DeviceMemoryFailureAction, DeviceMemoryFailureSource, DeviceMemoryPoolUsage};
 
+use crate::error::{QueryError, QueryErrorCode, Result};
+
+const TRACKER_LOOKUP_OPERATION: &str = "nexus_query_engine.gpu.memory_failure_tracker.lookup";
+
+#[derive(Debug, Default)]
+struct DeviceMemoryFailureTrackerRegistryState {
+    pending: HashMap<usize, DeviceMemoryFailureTracker>,
+    installed: HashMap<(usize, u64), DeviceMemoryFailureTracker>,
+}
+
+type DeviceMemoryFailureTrackerRegistry = Mutex<DeviceMemoryFailureTrackerRegistryState>;
+
+fn device_memory_failure_trackers() -> &'static DeviceMemoryFailureTrackerRegistry {
+    static TRACKERS: OnceLock<DeviceMemoryFailureTrackerRegistry> = OnceLock::new();
+    TRACKERS.get_or_init(|| Mutex::new(DeviceMemoryFailureTrackerRegistryState::default()))
+}
+
 /// Per-device allocation-failure counters observed by the device memory
 /// manager failure callback.
 #[derive(Debug, Clone)]
@@ -20,6 +37,7 @@ pub struct DeviceMemoryFailureTracker {
 #[derive(Debug)]
 struct DeviceMemoryFailureTrackerInner {
     device_ordinal: usize,
+    installation_generation: AtomicU64,
     callback_installed: AtomicBool,
     callback_install_unavailable: AtomicBool,
     allocation_failure_count: AtomicU64,
@@ -50,10 +68,11 @@ pub struct DeviceMemoryFailureReport {
 
 impl DeviceMemoryFailureTracker {
     /// Creates a zeroed tracker for one CUDA device ordinal.
-    pub fn new(device_ordinal: usize) -> Self {
+    pub(crate) fn new(device_ordinal: usize) -> Self {
         Self {
             inner: Arc::new(DeviceMemoryFailureTrackerInner {
                 device_ordinal,
+                installation_generation: AtomicU64::new(0),
                 callback_installed: AtomicBool::new(false),
                 callback_install_unavailable: AtomicBool::new(false),
                 allocation_failure_count: AtomicU64::new(0),
@@ -74,12 +93,222 @@ impl DeviceMemoryFailureTracker {
     /// process/device, so the Nexus counters must have the same lifetime and
     /// sharing semantics. Multiple QueryServices for one device therefore
     /// report the same callback counters.
-    pub fn for_device(device_ordinal: usize) -> Self {
-        static TRACKERS: OnceLock<Mutex<HashMap<usize, DeviceMemoryFailureTracker>>> = OnceLock::new();
-        let trackers = TRACKERS.get_or_init(|| Mutex::new(HashMap::new()));
-        match trackers.lock() {
-            Ok(mut trackers) => trackers.entry(device_ordinal).or_insert_with(|| Self::new(device_ordinal)).clone(),
-            Err(_error) => Self::new(device_ordinal),
+    pub(crate) fn for_device(device_ordinal: usize) -> Result<Self> {
+        Self::for_device_in_registry(device_ordinal, device_memory_failure_trackers())
+    }
+
+    /// Recovers the tracker referenced by an already-installed callback, or
+    /// creates an unbound candidate only while the process manager is still
+    /// uninstalled. This prevents a fresh counter from being substituted for
+    /// the callback's original `(device, installation_generation)` owner.
+    pub(crate) fn for_installation_state(
+        device_ordinal: usize,
+        state: cudf::DeviceMemoryManagerInstallationState,
+    ) -> Result<Self> {
+        Self::for_installation_state_in_registry(device_ordinal, state, device_memory_failure_trackers())
+    }
+
+    fn for_installation_state_in_registry(
+        device_ordinal: usize,
+        state: cudf::DeviceMemoryManagerInstallationState,
+        trackers: &DeviceMemoryFailureTrackerRegistry,
+    ) -> Result<Self> {
+        let mut trackers = trackers.lock().map_err(|_error| tracker_registry_poisoned(device_ordinal))?;
+        match state.status {
+            cudf::DeviceMemoryManagerInstallationStatus::Uninstalled => {
+                if trackers.installed.keys().any(|(installed_device, _)| *installed_device == device_ordinal) {
+                    return Err(QueryError::new(
+                        QueryErrorCode::Internal,
+                        TRACKER_LOOKUP_OPERATION,
+                        "tracker remains bound while the device manager reports uninstalled",
+                    )
+                    .with_fact("device_ordinal", device_ordinal)
+                    .with_fact("reason", "tracker_generation_without_installation"));
+                }
+                let tracker = trackers.pending.entry(device_ordinal).or_insert_with(|| Self::new(device_ordinal));
+                if tracker.installation_generation().is_some() {
+                    return Err(QueryError::new(
+                        QueryErrorCode::Internal,
+                        TRACKER_LOOKUP_OPERATION,
+                        "pending tracker is bound while the device manager reports uninstalled",
+                    )
+                    .with_fact("device_ordinal", device_ordinal)
+                    .with_fact("reason", "pending_tracker_generation_without_installation"));
+                }
+                Ok(tracker.clone())
+            },
+            cudf::DeviceMemoryManagerInstallationStatus::Owned
+            | cudf::DeviceMemoryManagerInstallationStatus::Incomplete => {
+                let generation = state.installation_generation.ok_or_else(|| {
+                    QueryError::new(
+                        QueryErrorCode::Internal,
+                        TRACKER_LOOKUP_OPERATION,
+                        "owned device-manager callback has no installation generation",
+                    )
+                    .with_fact("device_ordinal", device_ordinal)
+                    .with_fact("reason", "installed_callback_generation_missing")
+                })?;
+                if let Some(tracker) = trackers.installed.get(&(device_ordinal, generation)).cloned() {
+                    tracker.require_installation_generation(generation)?;
+                    return Ok(tracker);
+                }
+                if let Some((_, existing_generation)) =
+                    trackers.installed.keys().find(|(installed_device, _)| *installed_device == device_ordinal).copied()
+                {
+                    return Err(QueryError::new(
+                        QueryErrorCode::CudfPersistentFailure,
+                        TRACKER_LOOKUP_OPERATION,
+                        "installed device-manager callback generation does not match the recoverable tracker",
+                    )
+                    .with_fact("device_ordinal", device_ordinal)
+                    .with_fact("expected_installation_generation", existing_generation)
+                    .with_fact("observed_installation_generation", generation)
+                    .with_fact("reason", "callback_tracker_generation_mismatch"));
+                }
+                let tracker = trackers.pending.remove(&device_ordinal).ok_or_else(|| {
+                    QueryError::new(
+                        QueryErrorCode::Internal,
+                        TRACKER_LOOKUP_OPERATION,
+                        "installed device-manager callback has no recoverable original tracker",
+                    )
+                    .with_fact("device_ordinal", device_ordinal)
+                    .with_fact("installation_generation", generation)
+                    .with_fact("reason", "installed_callback_tracker_missing")
+                })?;
+                if state.status == cudf::DeviceMemoryManagerInstallationStatus::Incomplete
+                    && tracker.installation_generation().is_none()
+                {
+                    // The native/Rust cuDF installation record commits callback
+                    // identity before attempting the current-resource switch.
+                    // A retryable switch failure therefore binds the original
+                    // pre-install candidate here before a later owner retries.
+                    tracker.bind_installation_generation(generation)?;
+                } else {
+                    tracker.require_installation_generation(generation)?;
+                }
+                trackers.installed.insert((device_ordinal, generation), tracker.clone());
+                Ok(tracker)
+            },
+            _ => Err(QueryError::new(
+                QueryErrorCode::CudfPersistentFailure,
+                TRACKER_LOOKUP_OPERATION,
+                "device-manager callback installation is permanently unusable",
+            )
+            .with_fact("device_ordinal", device_ordinal)
+            .with_fact("installation_status", format!("{:?}", state.status))
+            .with_fact("installation_retry", format!("{:?}", state.retry))
+            .with_fact("installation_cause", format!("{:?}", state.cause))
+            .with_fact("reason", "installed_callback_unrecoverable")),
+        }
+    }
+
+    fn for_device_in_registry(device_ordinal: usize, trackers: &DeviceMemoryFailureTrackerRegistry) -> Result<Self> {
+        let mut trackers = trackers.lock().map_err(|_error| tracker_registry_poisoned(device_ordinal))?;
+        if let Some(tracker) = trackers
+            .installed
+            .iter()
+            .find_map(|((installed_device, _), tracker)| (*installed_device == device_ordinal).then(|| tracker.clone()))
+        {
+            return Ok(tracker);
+        }
+        Ok(trackers.pending.entry(device_ordinal).or_insert_with(|| Self::new(device_ordinal)).clone())
+    }
+
+    pub(crate) fn commit_installation_generation(&self, generation: u64) -> Result<()> {
+        self.bind_installation_generation(generation)?;
+        let device_ordinal = self.device_ordinal();
+        let mut trackers =
+            device_memory_failure_trackers().lock().map_err(|_error| tracker_registry_poisoned(device_ordinal))?;
+        if let Some(existing) = trackers.installed.get(&(device_ordinal, generation)) {
+            if Arc::ptr_eq(&existing.inner, &self.inner) {
+                return Ok(());
+            }
+            return Err(QueryError::new(
+                QueryErrorCode::CudfPersistentFailure,
+                TRACKER_LOOKUP_OPERATION,
+                "installation generation is already bound to a different callback tracker",
+            )
+            .with_fact("device_ordinal", device_ordinal)
+            .with_fact("installation_generation", generation)
+            .with_fact("reason", "callback_tracker_identity_mismatch"));
+        }
+        let pending = trackers.pending.remove(&device_ordinal).ok_or_else(|| {
+            QueryError::new(
+                QueryErrorCode::CudfPersistentFailure,
+                TRACKER_LOOKUP_OPERATION,
+                "installed callback tracker was not the registered pre-install candidate",
+            )
+            .with_fact("device_ordinal", device_ordinal)
+            .with_fact("installation_generation", generation)
+            .with_fact("reason", "pending_callback_tracker_missing")
+        })?;
+        if !Arc::ptr_eq(&pending.inner, &self.inner) {
+            trackers.pending.insert(device_ordinal, pending);
+            return Err(QueryError::new(
+                QueryErrorCode::CudfPersistentFailure,
+                TRACKER_LOOKUP_OPERATION,
+                "pending callback tracker does not match the installed callback tracker",
+            )
+            .with_fact("device_ordinal", device_ordinal)
+            .with_fact("installation_generation", generation)
+            .with_fact("reason", "callback_tracker_identity_mismatch"));
+        }
+        trackers.installed.insert((device_ordinal, generation), self.clone());
+        Ok(())
+    }
+
+    pub(crate) fn bind_installation_generation(&self, generation: u64) -> Result<()> {
+        if generation == 0 {
+            return Err(QueryError::new(
+                QueryErrorCode::Internal,
+                TRACKER_LOOKUP_OPERATION,
+                "callback installation generation must be nonzero",
+            )
+            .with_fact("device_ordinal", self.device_ordinal())
+            .with_fact("reason", "zero_installation_generation"));
+        }
+        match self.inner.installation_generation.compare_exchange(0, generation, Ordering::AcqRel, Ordering::Acquire) {
+            Ok(_) => Ok(()),
+            Err(existing) if existing == generation => Ok(()),
+            Err(existing) => Err(QueryError::new(
+                QueryErrorCode::CudfPersistentFailure,
+                TRACKER_LOOKUP_OPERATION,
+                "callback tracker is bound to a different installation generation",
+            )
+            .with_fact("device_ordinal", self.device_ordinal())
+            .with_fact("expected_installation_generation", existing)
+            .with_fact("observed_installation_generation", generation)
+            .with_fact("reason", "callback_tracker_generation_mismatch")),
+        }
+    }
+
+    fn require_installation_generation(&self, generation: u64) -> Result<()> {
+        match self.installation_generation() {
+            Some(existing) if existing == generation => Ok(()),
+            Some(existing) => Err(QueryError::new(
+                QueryErrorCode::CudfPersistentFailure,
+                TRACKER_LOOKUP_OPERATION,
+                "installed callback generation does not match its original tracker",
+            )
+            .with_fact("device_ordinal", self.device_ordinal())
+            .with_fact("expected_installation_generation", existing)
+            .with_fact("observed_installation_generation", generation)
+            .with_fact("reason", "callback_tracker_generation_mismatch")),
+            None => Err(QueryError::new(
+                QueryErrorCode::CudfPersistentFailure,
+                TRACKER_LOOKUP_OPERATION,
+                "installed callback's tracker is not bound to an installation generation",
+            )
+            .with_fact("device_ordinal", self.device_ordinal())
+            .with_fact("observed_installation_generation", generation)
+            .with_fact("reason", "callback_tracker_generation_unbound")),
+        }
+    }
+
+    fn installation_generation(&self) -> Option<u64> {
+        match self.inner.installation_generation.load(Ordering::Acquire) {
+            0 => None,
+            generation => Some(generation),
         }
     }
 
@@ -151,6 +380,16 @@ impl DeviceMemoryFailureTracker {
     }
 }
 
+fn tracker_registry_poisoned(device_ordinal: usize) -> QueryError {
+    QueryError::new(
+        QueryErrorCode::Internal,
+        TRACKER_LOOKUP_OPERATION,
+        "device memory failure-tracker registry mutex was poisoned",
+    )
+    .with_fact("device_ordinal", device_ordinal)
+    .with_fact("reason", "tracker_registry_poisoned")
+}
+
 fn update_max(target: &AtomicU64, candidate: u64) {
     let mut current = target.load(Ordering::Relaxed);
     while candidate > current {
@@ -163,6 +402,8 @@ fn update_max(target: &AtomicU64, candidate: u64) {
 
 #[cfg(test)]
 mod tests {
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+
     use super::*;
 
     #[test]
@@ -248,5 +489,78 @@ mod tests {
         assert_eq!(report.trim_retry_count, 1);
         assert_eq!(report.pool_usage_observation_count, 1);
         assert_eq!(report.last_failed_allocation_bytes, 10);
+    }
+
+    #[test]
+    fn compatible_generation_lookup_recovers_original_callback_tracker() {
+        let trackers = Mutex::new(DeviceMemoryFailureTrackerRegistryState::default());
+        let first_generation = DeviceMemoryFailureTracker::for_device_in_registry(3, &trackers).unwrap();
+        let original_identity = Arc::downgrade(&first_generation.inner);
+        let original_callback = first_generation.failure_callback();
+        drop(first_generation);
+
+        let second_generation = DeviceMemoryFailureTracker::for_device_in_registry(3, &trackers).unwrap();
+        let original_inner = original_identity.upgrade().expect("registry must retain the original tracker");
+        assert!(Arc::ptr_eq(&original_inner, &second_generation.inner));
+
+        let action = original_callback(cudf::DeviceMemoryFailureInfo {
+            device: cudf::DeviceId::DEFAULT,
+            source: DeviceMemoryFailureSource::Physical,
+            allocation_domain: None,
+            requested_bytes: 64,
+            callback_attempt: 0,
+            trim_retry_count: 0,
+            pool_usage: None,
+        });
+
+        assert_eq!(action, DeviceMemoryFailureAction::Decline);
+        let report = second_generation.report();
+        assert_eq!(report.allocation_failure_count, 1);
+        assert_eq!(report.total_failed_allocation_bytes, 64);
+        assert_eq!(report.last_failed_allocation_bytes, 64);
+    }
+
+    #[test]
+    fn retryable_incomplete_install_binds_the_original_preinstall_tracker() {
+        let trackers = Mutex::new(DeviceMemoryFailureTrackerRegistryState::default());
+        let original = DeviceMemoryFailureTracker::for_device_in_registry(3, &trackers).unwrap();
+        assert_eq!(original.installation_generation(), None);
+        let state = cudf::DeviceMemoryManagerInstallationState {
+            device_ordinal: 3,
+            status: cudf::DeviceMemoryManagerInstallationStatus::Incomplete,
+            retry: cudf::DeviceMemoryManagerInstallationRetry::Retryable,
+            cause: cudf::DeviceMemoryManagerInstallationCause::CurrentResourceInstallFailed,
+            effective_options: Some(cudf::DeviceMemoryManagerOptions::default()),
+            identity: Some(cudf::DeviceMemoryManagerInstallationIdentity::new([1; 16], 1, [2; 16])),
+            installation_generation: Some(41),
+            failure_callback_installed: true,
+            current_resource_installed: false,
+            failure_callback_panicked: false,
+        };
+
+        let recovered = DeviceMemoryFailureTracker::for_installation_state_in_registry(3, state, &trackers).unwrap();
+
+        assert!(Arc::ptr_eq(&original.inner, &recovered.inner));
+        assert_eq!(recovered.installation_generation(), Some(41));
+        let registry = trackers.lock().unwrap();
+        assert!(!registry.pending.contains_key(&3));
+        assert!(registry.installed.get(&(3, 41)).is_some_and(|tracker| Arc::ptr_eq(&tracker.inner, &original.inner)));
+    }
+
+    #[test]
+    fn tracker_registry_poison_fails_closed() {
+        let trackers = Mutex::new(DeviceMemoryFailureTrackerRegistryState::default());
+        let poison = catch_unwind(AssertUnwindSafe(|| {
+            let _guard = trackers.lock().unwrap();
+            panic!("poison test tracker registry");
+        }));
+        assert!(poison.is_err());
+
+        let error = DeviceMemoryFailureTracker::for_device_in_registry(7, &trackers).unwrap_err();
+
+        assert_eq!(error.code(), QueryErrorCode::Internal);
+        assert_eq!(error.operation(), TRACKER_LOOKUP_OPERATION);
+        assert_eq!(error.fact_value("device_ordinal"), Some("7"));
+        assert_eq!(error.fact_value("reason"), Some("tracker_registry_poisoned"));
     }
 }

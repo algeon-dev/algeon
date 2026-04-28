@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn bounded_native_query_executes_keyed_hash_join_resident_subplan_pipeline() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let runtime = backend_runtime();
     let dir = unique_temp_dir("nexus-query-engine-bounded-resident-revenue-subplan");
     let supplier_path = dir.join("supplier.parquet");
     let lineitem_path = dir.join("lineitem.parquet");

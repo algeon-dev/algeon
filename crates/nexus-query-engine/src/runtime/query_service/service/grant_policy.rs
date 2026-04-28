@@ -306,25 +306,29 @@ impl QueryService {
             return Ok(usize::MAX);
         }
         let memory_slots = usize::try_from(context.available_bytes()? / min_bytes).unwrap_or(usize::MAX);
-        let capped_slots = self.inner.config.max_queries_per_device.map_or(memory_slots, |max_queries_per_device| {
-            memory_slots.min(max_queries_per_device.saturating_sub(active_after_selected))
-        });
+        let capped_slots = context
+            .active_query_limit(self.inner.config.max_queries_per_device)
+            .map_or(memory_slots, |max_queries_per_device| {
+                memory_slots.min(max_queries_per_device.saturating_sub(active_after_selected))
+            });
         Ok(capped_slots)
     }
 
     pub(in crate::runtime::query_service::service) fn idle_future_min_slots_on_device(
         &self,
-        capacity_bytes: u64,
+        context: &DeviceContext,
         min_bytes: u64,
         active_after_selected: usize,
     ) -> usize {
         if min_bytes == 0 {
             return usize::MAX;
         }
-        let memory_slots = usize::try_from(capacity_bytes / min_bytes).unwrap_or(usize::MAX);
-        self.inner.config.max_queries_per_device.map_or(memory_slots, |max_queries_per_device| {
-            memory_slots.min(max_queries_per_device.saturating_sub(active_after_selected))
-        })
+        let memory_slots = usize::try_from(context.capacity_bytes() / min_bytes).unwrap_or(usize::MAX);
+        context
+            .active_query_limit(self.inner.config.max_queries_per_device)
+            .map_or(memory_slots, |max_queries_per_device| {
+                memory_slots.min(max_queries_per_device.saturating_sub(active_after_selected))
+            })
     }
 
     pub(in crate::runtime::query_service::service) fn reserved_min_bytes_for_selected_device_at_idle(
@@ -348,8 +352,7 @@ impl QueryService {
             if !self.placement_policy_admits_ordinal(context.device().ordinal()) {
                 continue;
             }
-            let slots =
-                self.idle_future_min_slots_on_device(context.capacity_bytes(), self.inner.max_tenant_min_bytes, 0);
+            let slots = self.idle_future_min_slots_on_device(context, self.inner.max_tenant_min_bytes, 0);
             other_device_min_slots = other_device_min_slots.saturating_add(slots);
             if other_device_min_slots >= remaining_slots {
                 return Ok(0);
@@ -357,7 +360,7 @@ impl QueryService {
         }
         let slots_to_reserve_on_selected = remaining_slots.saturating_sub(other_device_min_slots);
         let selected_future_slots =
-            self.idle_future_min_slots_on_device(selected_context.capacity_bytes(), self.inner.max_tenant_min_bytes, 1);
+            self.idle_future_min_slots_on_device(selected_context, self.inner.max_tenant_min_bytes, 1);
         if slots_to_reserve_on_selected > selected_future_slots {
             return Ok(u64::MAX);
         }

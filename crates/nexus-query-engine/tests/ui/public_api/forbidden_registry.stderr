@@ -1,0 +1,23 @@
+error[E0603]: struct `DeviceRegistry` is private
+ --> tests/ui/public_api/forbidden_registry.rs:1:35
+  |
+1 | use nexus_query_engine::runtime::{DeviceRegistry, DeviceRegistryConfig, NexusGpuInventory};
+  |                                   ^^^^^^^^^^^^^^ private struct
+  |
+note: the struct `DeviceRegistry` is defined here
+ --> src/runtime.rs
+  |
+  | pub(crate) use gpu::{DeviceContext, DeviceRegistry, DeviceRegistryConfig, PlacementPolicy};
+  |                                     ^^^^^^^^^^^^^^
+
+error[E0603]: struct `DeviceRegistryConfig` is private
+ --> tests/ui/public_api/forbidden_registry.rs:1:51
+  |
+1 | use nexus_query_engine::runtime::{DeviceRegistry, DeviceRegistryConfig, NexusGpuInventory};
+  |                                                   ^^^^^^^^^^^^^^^^^^^^ private struct
+  |
+note: the struct `DeviceRegistryConfig` is defined here
+ --> src/runtime.rs
+  |
+  | pub(crate) use gpu::{DeviceContext, DeviceRegistry, DeviceRegistryConfig, PlacementPolicy};
+  |                                                     ^^^^^^^^^^^^^^^^^^^^

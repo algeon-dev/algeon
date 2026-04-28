@@ -4,7 +4,6 @@ use super::*;
 fn bounded_native_query_executes_post_aggregate_projection_before_final_sort() {
     let dir = unique_temp_dir("nexus-query-engine-bounded-post-aggregate-projection");
     let path = dir.join("input.parquet");
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
     let input_schema = write_row_grouped_input_parquet(&path);
     let aggregated_schema = Arc::new(Schema::new(vec![
         Field::new("key", DataType::Int32, false),
@@ -41,17 +40,7 @@ fn bounded_native_query_executes_post_aggregate_projection_before_final_sort() {
     let limit = builder.add_limit(sort, LimitSpec::fetch(3), post_projection_schema);
     let plan = builder.finish_with_host_sink(limit);
 
-    let context = ExecutionContext::builder()
-        .with_shared_runtime(Arc::clone(&runtime))
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: 8 * 1024 * 1024 * 1024,
-            max_source_chunk_bytes: 1024 * 1024,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 1,
-            min_retry_chunk_row_groups: 1,
-        })
-        .build()
-        .unwrap();
+    let context = backend_context_with_grant(8 * 1024 * 1024 * 1024);
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
     assert!(metrics.reservation_events.iter().any(|event| {
@@ -92,7 +81,7 @@ fn bounded_native_query_executes_post_aggregate_projection_before_final_sort() {
 fn bounded_native_query_executes_filter_between_aggregate_and_sort() {
     let dir = unique_temp_dir("nexus-query-engine-bounded-post-aggregate-filter");
     let path = dir.join("input.parquet");
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let runtime = backend_runtime();
     let input_schema = write_row_grouped_input_parquet(&path);
     let aggregated_schema = Arc::new(Schema::new(vec![
         Field::new("key", DataType::Int32, false),
@@ -141,7 +130,7 @@ fn bounded_native_query_executes_filter_between_aggregate_and_sort() {
 fn bounded_native_query_executes_projection_between_sort_and_limit() {
     let dir = unique_temp_dir("nexus-query-engine-bounded-post-sort-projection");
     let path = dir.join("input.parquet");
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let runtime = backend_runtime();
     let input_schema = write_row_grouped_input_parquet(&path);
     let aggregated_schema = Arc::new(Schema::new(vec![
         Field::new("key", DataType::Int32, false),
@@ -196,16 +185,6 @@ fn bounded_native_query_executes_projection_between_sort_and_limit() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-fn bounded_test_context(runtime: Arc<cudf::Runtime>) -> ExecutionContext {
-    ExecutionContext::builder()
-        .with_shared_runtime(runtime)
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: 8 * 1024 * 1024 * 1024,
-            max_source_chunk_bytes: 1024 * 1024,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 1,
-            min_retry_chunk_row_groups: 1,
-        })
-        .build()
-        .unwrap()
+fn bounded_test_context(_runtime: Arc<cudf::Runtime>) -> BackendQueryContext {
+    backend_context_with_grant(8 * 1024 * 1024 * 1024_u64)
 }

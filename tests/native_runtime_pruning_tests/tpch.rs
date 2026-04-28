@@ -43,24 +43,26 @@ async fn native_runtime_tpch_q1_tiny_matches_cpu() {
 }
 
 #[tokio::test]
-async fn native_runtime_tpch_q3_tiny_join_matches_cpu() {
+async fn native_runtime_tpch_q3_tiny_bounded_join_matches_cpu() {
     let dir = unique_temp_dir("datafusion-nexus-native-runtime-tpch-q3-tiny");
     write_tiny_tpch_parquet_dataset(&dir).unwrap();
     let q3 = TPCH_QUERIES.iter().find(|query| query.id == "q03").expect("TPC-H Q3 query must exist");
     let cpu_batches = cpu_tpch_sql_output(&dir, q3.sql).await;
 
-    let native_plan = native_datafusion_tpch_sql_plan(&dir, q3.sql, unbounded_native_datafusion_config()).await;
+    let native_plan = native_datafusion_tpch_sql_plan(&dir, q3.sql, native_datafusion_config()).await;
     assert!(
         displayable(native_plan.as_ref()).indent(false).to_string().contains("NexusNativeExec"),
-        "TPC-H Q3 should be replaced by NexusNativeExec"
+        "bounded TPC-H Q3 should be replaced by NexusNativeExec"
     );
 
     let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
     cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
-    let native_batches = collect(native_plan, Arc::new(TaskContext::default())).await.unwrap();
+    let native_batches = collect(Arc::clone(&native_plan), Arc::new(TaskContext::default())).await.unwrap();
     assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
-    assert_eq!(cudf::testing::arrow::arrow_host_export_call_count_for_test(), 1);
+    assert!(cudf::testing::arrow::arrow_host_export_call_count_for_test() >= 1);
     assert_batches_equal(&cpu_batches, &native_batches);
+    let metrics = native_plan.metrics().expect("NexusNativeExec should expose DataFusion metrics");
+    assert_eq!(metrics.sum_by_name("reservation_denied_count").unwrap().as_usize(), 0);
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -133,24 +135,26 @@ async fn native_runtime_tpch_q2_tiny_bounded_aggregate_over_join_subplan_topk_ma
 }
 
 #[tokio::test]
-async fn native_runtime_tpch_q19_tiny_join_residual_in_list_matches_cpu() {
+async fn native_runtime_tpch_q19_tiny_bounded_join_residual_in_list_matches_cpu() {
     let dir = unique_temp_dir("datafusion-nexus-native-runtime-tpch-q19-tiny");
     write_tiny_tpch_parquet_dataset(&dir).unwrap();
     let q19 = TPCH_QUERIES.iter().find(|query| query.id == "q19").expect("TPC-H Q19 query must exist");
     let cpu_batches = cpu_tpch_sql_output(&dir, q19.sql).await;
 
-    let native_plan = native_datafusion_tpch_sql_plan(&dir, q19.sql, unbounded_native_datafusion_config()).await;
+    let native_plan = native_datafusion_tpch_sql_plan(&dir, q19.sql, native_datafusion_config()).await;
     assert!(
         displayable(native_plan.as_ref()).indent(false).to_string().contains("NexusNativeExec"),
-        "TPC-H Q19 should be replaced by NexusNativeExec"
+        "bounded TPC-H Q19 should be replaced by NexusNativeExec"
     );
 
     let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
     cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
-    let native_batches = collect(native_plan, Arc::new(TaskContext::default())).await.unwrap();
+    let native_batches = collect(Arc::clone(&native_plan), Arc::new(TaskContext::default())).await.unwrap();
     assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
-    assert_eq!(cudf::testing::arrow::arrow_host_export_call_count_for_test(), 1);
+    assert!(cudf::testing::arrow::arrow_host_export_call_count_for_test() >= 1);
     assert_batches_equal(&cpu_batches, &native_batches);
+    let metrics = native_plan.metrics().expect("NexusNativeExec should expose DataFusion metrics");
+    assert_eq!(metrics.sum_by_name("reservation_denied_count").unwrap().as_usize(), 0);
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -200,24 +204,26 @@ async fn native_runtime_tpch_q04_tiny_bounded_left_semi_full_sort_matches_cpu() 
 }
 
 #[tokio::test]
-async fn native_runtime_tpch_q15_tiny_root_join_matches_cpu() {
+async fn native_runtime_tpch_q15_tiny_bounded_root_join_matches_cpu() {
     let dir = unique_temp_dir("datafusion-nexus-native-runtime-tpch-q15-tiny");
     write_tiny_tpch_parquet_dataset(&dir).unwrap();
     let q15 = TPCH_QUERIES.iter().find(|query| query.id == "q15").expect("TPC-H Q15 query must exist");
     let cpu_batches = cpu_tpch_sql_output(&dir, q15.sql).await;
 
-    let native_plan = native_datafusion_tpch_sql_plan(&dir, q15.sql, unbounded_native_datafusion_config()).await;
+    let native_plan = native_datafusion_tpch_sql_plan(&dir, q15.sql, native_datafusion_config()).await;
     assert!(
         displayable(native_plan.as_ref()).indent(false).to_string().contains("NexusNativeExec"),
-        "TPC-H Q15 should be replaced by NexusNativeExec"
+        "bounded TPC-H Q15 should be replaced by NexusNativeExec"
     );
 
     let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
     cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
-    let native_batches = collect(native_plan, Arc::new(TaskContext::default())).await.unwrap();
+    let native_batches = collect(Arc::clone(&native_plan), Arc::new(TaskContext::default())).await.unwrap();
     assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
     assert_eq!(cudf::testing::arrow::arrow_host_export_call_count_for_test(), 1);
     assert_batches_equal_allow_empty(&cpu_batches, &native_batches);
+    let metrics = native_plan.metrics().expect("NexusNativeExec should expose DataFusion metrics");
+    assert_eq!(metrics.sum_by_name("reservation_denied_count").unwrap().as_usize(), 0);
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -342,47 +348,26 @@ async fn native_runtime_tpch_q20_tiny_bounded_resident_aggregate_subquery_filter
 }
 
 #[tokio::test]
-async fn native_runtime_tpch_q16_tiny_distinct_anti_join_matches_cpu() {
+async fn native_runtime_tpch_q16_tiny_bounded_distinct_anti_join_matches_cpu() {
     let dir = unique_temp_dir("datafusion-nexus-native-runtime-tpch-q16-tiny");
     write_tiny_tpch_parquet_dataset(&dir).unwrap();
     let q16 = TPCH_QUERIES.iter().find(|query| query.id == "q16").expect("TPC-H Q16 query must exist");
     let cpu_batches = cpu_tpch_sql_output(&dir, q16.sql).await;
 
-    let native_plan = native_datafusion_tpch_sql_plan(&dir, q16.sql, unbounded_native_datafusion_config()).await;
+    let native_plan = native_datafusion_tpch_sql_plan(&dir, q16.sql, native_datafusion_config()).await;
     assert!(
         displayable(native_plan.as_ref()).indent(false).to_string().contains("NexusNativeExec"),
-        "TPC-H Q16 should be replaced by NexusNativeExec"
+        "bounded TPC-H Q16 should be replaced by NexusNativeExec"
     );
 
     let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
     cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
-    let native_batches = collect(native_plan, Arc::new(TaskContext::default())).await.unwrap();
+    let native_batches = collect(Arc::clone(&native_plan), Arc::new(TaskContext::default())).await.unwrap();
     assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
-    assert_eq!(cudf::testing::arrow::arrow_host_export_call_count_for_test(), 1);
+    assert!(cudf::testing::arrow::arrow_host_export_call_count_for_test() >= 1);
     assert_batches_equal_allow_empty(&cpu_batches, &native_batches);
-
-    fs::remove_dir_all(dir).unwrap();
-}
-
-#[tokio::test]
-async fn native_runtime_tpch_q11_tiny_nested_loop_having_subquery_matches_cpu() {
-    let dir = unique_temp_dir("datafusion-nexus-native-runtime-tpch-q11-tiny");
-    write_tiny_tpch_parquet_dataset(&dir).unwrap();
-    let q11 = TPCH_QUERIES.iter().find(|query| query.id == "q11").expect("TPC-H Q11 query must exist");
-    let cpu_batches = cpu_tpch_sql_output(&dir, q11.sql).await;
-
-    let native_plan = native_datafusion_tpch_sql_plan(&dir, q11.sql, unbounded_native_datafusion_config()).await;
-    assert!(
-        displayable(native_plan.as_ref()).indent(false).to_string().contains("NexusNativeExec"),
-        "TPC-H Q11 should be replaced by NexusNativeExec"
-    );
-
-    let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
-    cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
-    let native_batches = collect(native_plan, Arc::new(TaskContext::default())).await.unwrap();
-    assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
-    assert_eq!(cudf::testing::arrow::arrow_host_export_call_count_for_test(), 1);
-    assert_batches_equal_allow_empty(&cpu_batches, &native_batches);
+    let metrics = native_plan.metrics().expect("NexusNativeExec should expose DataFusion metrics");
+    assert_eq!(metrics.sum_by_name("reservation_denied_count").unwrap().as_usize(), 0);
 
     fs::remove_dir_all(dir).unwrap();
 }

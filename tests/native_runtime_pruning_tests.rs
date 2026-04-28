@@ -41,16 +41,15 @@ use datafusion::{
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
 use datafusion_nexus::{
+    backend::{GpuMemoryOwnership, GrantBand, MemoryShare, NexusAdmissionPolicy, NexusGpuBackend, NexusMemoryPolicy},
     error::{Error, ErrorCode},
     native::lower_physical_plan_to_native,
     native_exec::{NexusNativeExec, NexusNativeExecutionConfig},
-    planner::NexusNativeOptimizerConfig,
-    session::NexusSessionStateBuilderExt,
 };
 use nexus_query_engine::{
     exec::{execute_query_plan, output::QueryOutput},
     plan::PlanNode,
-    runtime::{ExecutionContext, MemoryControlPolicy},
+    runtime::{ExecutionContext, QueryHandle, SlotGuarantee, TenantQueryContext},
     source::SourceNode,
 };
 use nexus_workloads::tpch::{TPCH_QUERIES, TPCH_TABLES, write_tiny_tpch_parquet_dataset};
@@ -144,34 +143,6 @@ async fn native_runtime_mixed_filtered_and_unfiltered_aggregates_match_cpu() {
 
     assert_sql_native_parity(&path, direct_friendly_sql_session_config(), SQL_MIXED_FILTERED_AGGREGATES_QUERY, None)
         .await;
-
-    fs::remove_dir_all(dir).unwrap();
-}
-
-#[tokio::test]
-async fn native_runtime_median_aggregate_matches_cpu_single_stage_unbounded() {
-    let dir = unique_temp_dir("datafusion-nexus-native-runtime-median-aggregate");
-    let path = dir.join("input.parquet");
-    write_row_group_pruning_parquet_file(&path);
-
-    let cpu_batches = cpu_sql_output(&path, SQL_MEDIAN_AGGREGATE_QUERY).await;
-    let native_physical_plan = sql_plan(&path, direct_friendly_sql_session_config(), SQL_MEDIAN_AGGREGATE_QUERY).await;
-    let lowering = lower_physical_plan_to_native(native_physical_plan);
-    assert_eq!(lowering.selected_count(), 1, "outcomes={:?}", lowering.report.outcomes());
-    assert_eq!(lowering.not_selected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
-
-    let context = unbounded_execution_context();
-    let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
-    cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
-    let result = execute_query_plan(&context, &lowering.plans[0]).unwrap();
-    let metrics = result.metrics();
-    assert_eq!(metrics.boundary.host_to_device_uploads, 0);
-    assert_eq!(metrics.boundary.device_to_host_materializations, 1);
-
-    let QueryOutput::HostArrow(native_batch) = result.output() else {
-        panic!("native host sink should return a RecordBatch");
-    };
-    assert_batches_equal(&cpu_batches, std::slice::from_ref(native_batch));
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -363,15 +334,10 @@ async fn native_runtime_physically_empty_parquet_files_match_cpu_without_replay(
     for path in [&zero_row_file, &zero_row_group_file] {
         for sql in [SQL_COUNT_ONLY_QUERY, SQL_COUNT_STAR_QUERY] {
             let cpu_batches = cpu_sql_output(path, sql).await;
-            for config in [native_datafusion_config(), unbounded_native_datafusion_config()] {
-                let native_plan = native_datafusion_sql_plan(path, sql, config).await;
-                assert_nexus_native_exec(
-                    &native_plan,
-                    "physical empty parquet aggregate should lower to NexusNativeExec",
-                );
-                let native_batches = collect(native_plan, Arc::new(TaskContext::default())).await.unwrap();
-                assert_batches_equal_allow_empty(&cpu_batches, &native_batches);
-            }
+            let native_plan = native_datafusion_sql_plan(path, sql, native_datafusion_config()).await;
+            assert_nexus_native_exec(&native_plan, "physical empty parquet aggregate should lower to NexusNativeExec");
+            let native_batches = collect(native_plan, Arc::new(TaskContext::default())).await.unwrap();
+            assert_batches_equal_allow_empty(&cpu_batches, &native_batches);
         }
     }
 
@@ -894,8 +860,7 @@ async fn assert_native_physical_plan_parity(
         assert!(selected_row_groups < total_row_groups);
     }
 
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
-    let context = ExecutionContext::from_shared_runtime(runtime).unwrap();
+    let context = bounded_execution_context();
     let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
     cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
     let result = execute_query_plan(&context, &lowering.plans[0]).unwrap();

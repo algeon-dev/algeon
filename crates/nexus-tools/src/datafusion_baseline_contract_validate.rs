@@ -18,7 +18,7 @@ use std::{
     fs,
     path::{Path, PathBuf},
     sync::Arc,
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use arrow::{
@@ -36,7 +36,7 @@ use datafusion::{
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
 use datafusion_nexus::{
-    backend::{GrantBand, MemoryShare, NexusAdmissionPolicy, NexusGpuBackend, NexusMemoryPolicy},
+    backend::{GpuMemoryOwnership, GrantBand, MemoryShare, NexusAdmissionPolicy, NexusGpuBackend, NexusMemoryPolicy},
     error::{DataFusionErrorExt, ErrorCode},
     native_exec::NexusNativeExecutionConfig,
     native_report::{FinalPlanDisposition, NativeDataFusionPlanningReport},
@@ -138,6 +138,16 @@ pub async fn run(args: Vec<String>) -> ToolResult<()> {
     // Optional real TPC-H SF1 path for larger-data corner case.
     let tpch = PathBuf::from("/opt/dlami/nvme/fixture/data/tpch/sf1/parquet");
 
+    let empty = fixture.join("empty.parquet");
+    write_empty_parquet(&empty)?;
+    let nullable = fixture.join("nullable.parquet");
+    write_nullable_parquet(&nullable, 128)?;
+
+    let backend = build_backend(GrantBand {
+        min: MemoryShare::Bytes(64 * 1024 * 1024),
+        want: MemoryShare::Bytes(128 * 1024 * 1024),
+    })?;
+
     let mut cases: Vec<CaseResult> = Vec::new();
 
     // ---- Parquet relational-execution matrix ----
@@ -152,6 +162,7 @@ pub async fn run(args: Vec<String>) -> ToolResult<()> {
             Some(1),
             true,
             false,
+            &backend,
         )
         .await,
     );
@@ -169,6 +180,7 @@ pub async fn run(args: Vec<String>) -> ToolResult<()> {
             Some(0),
             true,
             false,
+            &backend,
         )
         .await,
     );
@@ -191,6 +203,7 @@ pub async fn run(args: Vec<String>) -> ToolResult<()> {
             Some(0),
             true,
             false,
+            &backend,
         )
         .await,
     );
@@ -208,6 +221,7 @@ pub async fn run(args: Vec<String>) -> ToolResult<()> {
             Some(0),
             true,
             false,
+            &backend,
         )
         .await,
     );
@@ -225,6 +239,7 @@ pub async fn run(args: Vec<String>) -> ToolResult<()> {
             None,
             true,
             false,
+            &backend,
         )
         .await,
     );
@@ -242,6 +257,7 @@ pub async fn run(args: Vec<String>) -> ToolResult<()> {
             None,
             false,
             false,
+            &backend,
         )
         .await,
     );
@@ -257,13 +273,14 @@ pub async fn run(args: Vec<String>) -> ToolResult<()> {
             None,
             true,
             false,
+            &backend,
         )
         .await,
     );
 
     // Real TPC-H SF1 unsupported-expression case.
     if tpch.join("lineitem.parquet").is_file() {
-        cases.push(run_tpch_case(&tpch).await);
+        cases.push(run_tpch_case(&tpch, &backend).await);
     } else {
         cases.push(CaseResult {
             id: "tpch_sf1_unavailable".into(),
@@ -284,22 +301,19 @@ pub async fn run(args: Vec<String>) -> ToolResult<()> {
         });
     }
 
-    // ---- Runtime failure: no DataFusion replay ----
-    cases.push(run_runtime_no_rescue(&bench).await);
+    // Preserve the report ordering while deferring the distinct 1-byte backend
+    // until the ordinary process backend has closed completely.
+    let runtime_failure_case_index = cases.len();
 
     // ---- Iceberg dual-mode provider ----
-    cases.push(run_iceberg_datafusion_baseline_executes().await);
-    cases.push(run_iceberg_native_group_by_rewrites().await);
-    cases.push(run_iceberg_unsupported_expression_retains_executable_datafusion_plan().await);
+    cases.push(run_iceberg_datafusion_baseline_executes(&backend).await);
+    cases.push(run_iceberg_native_group_by_rewrites(&backend).await);
+    cases.push(run_iceberg_unsupported_expression_retains_executable_datafusion_plan(&backend).await);
 
     // Corner: empty parquet file
-    let empty = fixture.join("empty.parquet");
-    write_empty_parquet(&empty)?;
-    cases.push(run_empty_parquet_corner(&empty).await);
+    cases.push(run_empty_parquet_corner(&empty, &backend).await);
 
     // Corner: null-heavy + stringy keys
-    let nullable = fixture.join("nullable.parquet");
-    write_nullable_parquet(&nullable, 128)?;
     cases.push(
         run_single_table_case(
             "parquet_native_default_nullable_approx_distinct",
@@ -308,9 +322,14 @@ pub async fn run(args: Vec<String>) -> ToolResult<()> {
             &nullable,
             "SELECT k, APPROX_DISTINCT(s) AS d FROM n GROUP BY k ORDER BY k",
             true,
+            &backend,
         )
         .await,
     );
+
+    cases = finish_backend_scope(backend, Ok(cases)).await?;
+    let runtime_failure_case = run_runtime_no_rescue(&bench).await;
+    cases.insert(runtime_failure_case_index, runtime_failure_case);
 
     let pass_count = cases.iter().filter(|c| c.ok).count();
     let fail_count = cases.len() - pass_count;
@@ -428,6 +447,7 @@ async fn run_parquet_case(
     expected_min_fragments: Option<usize>,
     expect_execute_ok: bool,
     require_host_boundary_if_partial: bool,
+    backend: &NexusGpuBackend,
 ) -> CaseResult {
     match run_parquet_case_inner(
         id,
@@ -439,6 +459,7 @@ async fn run_parquet_case(
         expected_min_fragments,
         expect_execute_ok,
         require_host_boundary_if_partial,
+        backend,
     )
     .await
     {
@@ -476,8 +497,9 @@ async fn run_parquet_case_inner(
     expected_min_fragments: Option<usize>,
     expect_execute_ok: bool,
     require_host_boundary_if_partial: bool,
+    backend: &NexusGpuBackend,
 ) -> ToolResult<CaseResult> {
-    let gpu_ctx = relational_ctx(selection)?;
+    let gpu_ctx = relational_ctx(selection, backend)?;
     register_pair(&gpu_ctx, bench, bench2).await?;
 
     let plan_result = gpu_ctx.sql(sql).await?.create_physical_plan().await;
@@ -634,9 +656,10 @@ async fn run_single_table_case(
     path: &Path,
     sql: &str,
     expect_execute_ok: bool,
+    backend: &NexusGpuBackend,
 ) -> CaseResult {
     let result = async {
-        let gpu_ctx = relational_ctx(selection)?;
+        let gpu_ctx = relational_ctx(selection, backend)?;
         gpu_ctx.register_parquet(table, path.to_str().unwrap(), ParquetReadOptions::default()).await?;
         let plan = gpu_ctx.sql(sql).await?.create_physical_plan().await?;
         let session_state = gpu_ctx.state();
@@ -710,13 +733,13 @@ async fn run_single_table_case(
     }
 }
 
-async fn run_tpch_case(tpch: &Path) -> CaseResult {
+async fn run_tpch_case(tpch: &Path, backend: &NexusGpuBackend) -> CaseResult {
     let id = "tpch_sf1_native_default_approx_distinct_join";
     // Highly selective filter keeps SF1 manageable while exercising default
     // native planning's executable-plan retention.
     let sql = "SELECT l.l_returnflag, APPROX_DISTINCT(o.o_orderkey) AS d                FROM lineitem l JOIN orders o ON l.l_orderkey = o.o_orderkey                WHERE l.l_shipdate = DATE '1998-01-01'                GROUP BY l.l_returnflag ORDER BY l.l_returnflag";
     let result = async {
-        let gpu_ctx = relational_ctx(RelationalExecution::NativeDefault)?;
+        let gpu_ctx = relational_ctx(RelationalExecution::NativeDefault, backend)?;
         for t in ["lineitem", "orders"] {
             let p = tpch.join(format!("{t}.parquet"));
             gpu_ctx.register_parquet(t, p.to_str().unwrap(), ParquetReadOptions::default()).await?;
@@ -827,8 +850,10 @@ async fn run_runtime_no_rescue_constrained(bench: &Path) -> ToolResult<CaseResul
     let id = "runtime_failure_no_datafusion_replay";
     // Mirror tests/native_runtime_pruning_tests::constrained_native_datafusion_config:
     // device_budget_bytes=1 forces a memory reservation failure after native start.
-    let runtime = Arc::new(cudf::Runtime::new()?);
-    let exec_config = NexusNativeExecutionConfig::bounded(1, 1024 * 1024, 1, 1, 1).with_shared_runtime(runtime);
+    let backend = build_backend(GrantBand { min: MemoryShare::Bytes(1), want: MemoryShare::Bytes(1) })?;
+    let work = async {
+    let handle = Arc::new(backend.admit_query()?);
+    let exec_config = NexusNativeExecutionConfig::bounded(1, 1024 * 1024, 1, 1, 1).with_query_service_handle(handle);
     let config = NexusNativeOptimizerConfig::default().with_native_execution_config(exec_config);
     let rule = Arc::new(NexusNativePhysicalOptimizerRule::new(config));
     let state = SessionStateBuilder::new_with_default_features()
@@ -890,7 +915,7 @@ async fn run_runtime_no_rescue_constrained(bench: &Path) -> ToolResult<CaseResul
     let no_rescue = facts.get("cpu_fallback_after_native_start").map(String::as_str) == Some("false");
     let stage = facts.get("native_datafusion_stage").map(String::as_str).unwrap_or("");
     let ok = no_rescue && (stage.contains("runtime") || facts.get("error_code").is_some());
-    Ok(CaseResult {
+    ToolResult::Ok(CaseResult {
         id: id.into(),
         category: "runtime_failure".into(),
         ok,
@@ -909,14 +934,17 @@ async fn run_runtime_no_rescue_constrained(bench: &Path) -> ToolResult<CaseResul
         parity_ok: None,
         error_facts: facts,
     })
+    }
+    .await;
+    finish_backend_scope(backend, work).await
 }
 
-async fn run_iceberg_datafusion_baseline_executes() -> CaseResult {
+async fn run_iceberg_datafusion_baseline_executes(backend: &NexusGpuBackend) -> CaseResult {
     let id = "iceberg_datafusion_baseline_executes_datafusion_delegate";
     let result = async {
         let schema = iceberg_schema();
         let provider = iceberg_provider(Arc::clone(&schema), 32)?;
-        let ctx = relational_ctx(RelationalExecution::DataFusionBaseline)?;
+        let ctx = relational_ctx(RelationalExecution::DataFusionBaseline, backend)?;
         ctx.register_table("iceberg_t", provider)?;
         let sql = "SELECT value, COUNT(*) AS c FROM iceberg_t GROUP BY value ORDER BY value";
         let plan = ctx.sql(sql).await?.create_physical_plan().await?;
@@ -951,12 +979,12 @@ async fn run_iceberg_datafusion_baseline_executes() -> CaseResult {
     case_result_or_error(id, RelationalExecution::DataFusionBaseline.as_str(), result)
 }
 
-async fn run_iceberg_native_group_by_rewrites() -> CaseResult {
+async fn run_iceberg_native_group_by_rewrites(backend: &NexusGpuBackend) -> CaseResult {
     let id = "iceberg_native_default_group_by_rewrites";
     let result = async {
         let schema = iceberg_schema();
         let provider = iceberg_provider(Arc::clone(&schema), 64)?;
-        let config = NexusNativeOptimizerConfig::default();
+        let config = backend.optimizer_config().clone();
         let rule = Arc::new(NexusNativePhysicalOptimizerRule::new(config));
         let state = SessionStateBuilder::new_with_default_features()
             .with_config(direct_cfg())
@@ -995,12 +1023,14 @@ async fn run_iceberg_native_group_by_rewrites() -> CaseResult {
     case_result_or_error(id, RelationalExecution::NativeDefault.as_str(), result)
 }
 
-async fn run_iceberg_unsupported_expression_retains_executable_datafusion_plan() -> CaseResult {
+async fn run_iceberg_unsupported_expression_retains_executable_datafusion_plan(
+    backend: &NexusGpuBackend,
+) -> CaseResult {
     let id = "iceberg_native_default_unsupported_expression_retains_datafusion_delegate";
     let result = async {
         let schema = iceberg_schema();
         let provider = iceberg_provider(Arc::clone(&schema), 48)?;
-        let config = NexusNativeOptimizerConfig::default();
+        let config = backend.optimizer_config().clone();
         let rule = Arc::new(NexusNativePhysicalOptimizerRule::new(config));
         let state = SessionStateBuilder::new_with_default_features()
             .with_config(direct_cfg())
@@ -1046,11 +1076,11 @@ async fn run_iceberg_unsupported_expression_retains_executable_datafusion_plan()
     case_result_or_error(id, RelationalExecution::NativeDefault.as_str(), result)
 }
 
-async fn run_empty_parquet_corner(path: &Path) -> CaseResult {
+async fn run_empty_parquet_corner(path: &Path, backend: &NexusGpuBackend) -> CaseResult {
     let id = "parquet_empty_file_count_star";
     let sql = "SELECT COUNT(*) AS c FROM empty";
     let result = async {
-        let gpu_ctx = relational_ctx(RelationalExecution::NativeDefault)?;
+        let gpu_ctx = relational_ctx(RelationalExecution::NativeDefault, backend)?;
         gpu_ctx.register_parquet("empty", path.to_str().unwrap(), ParquetReadOptions::default()).await?;
         let plan = gpu_ctx.sql(sql).await?.create_physical_plan().await?;
         let session_state = gpu_ctx.state();
@@ -1157,8 +1187,9 @@ impl TableFormatPlanner for FixedPlanner {
     }
 }
 
-fn build_backend() -> ToolResult<NexusGpuBackend> {
+fn build_backend(grant_band: GrantBand) -> ToolResult<NexusGpuBackend> {
     Ok(NexusGpuBackend::builder()
+        .device_memory_ownership([(0, GpuMemoryOwnership::WholeDeviceExclusive)])
         .memory_policy(NexusMemoryPolicy::Bounded {
             device_ordinals: vec![0],
             device_budget_bytes: 256 * 1024 * 1024,
@@ -1167,22 +1198,43 @@ fn build_backend() -> ToolResult<NexusGpuBackend> {
             max_retry_attempts: 3,
             min_retry_chunk_row_groups: 1,
         })
-        .admission(NexusAdmissionPolicy::default().with_slot_guarantee(SlotGuarantee::Optimistic).with_grant_band(
-            GrantBand { min: MemoryShare::Bytes(64 * 1024 * 1024), want: MemoryShare::Bytes(128 * 1024 * 1024) },
-        ))
+        .admission(
+            NexusAdmissionPolicy::default()
+                .with_max_concurrent_queries(1)
+                .with_slot_guarantee(SlotGuarantee::Optimistic)
+                .with_grant_band(grant_band),
+        )
         .build()?)
 }
 
-fn relational_ctx(selection: RelationalExecution) -> ToolResult<SessionContext> {
+fn relational_ctx(selection: RelationalExecution, backend: &NexusGpuBackend) -> ToolResult<SessionContext> {
     let builder = SessionStateBuilder::new_with_default_features().with_config(direct_cfg());
     let state = match selection {
         RelationalExecution::DataFusionBaseline => builder.build(),
-        RelationalExecution::NativeDefault => build_backend()?.install_on(builder)?.build(),
-        RelationalExecution::RequireNoDataFusionCpu => builder
-            .with_nexus_native(NexusNativeOptimizerConfig::default().with_no_datafusion_cpu_requirement())
-            .build(),
+        RelationalExecution::NativeDefault => backend.install_on(builder)?.build(),
+        RelationalExecution::RequireNoDataFusionCpu => {
+            builder.with_nexus_native(backend.optimizer_config().clone().with_no_datafusion_cpu_requirement()).build()
+        },
     };
     Ok(SessionContext::new_with_state(state))
+}
+
+async fn finish_backend_scope<T>(backend: NexusGpuBackend, work: ToolResult<T>) -> ToolResult<T> {
+    let cleanup = tokio::task::spawn_blocking(move || backend.close_and_wait(Duration::from_secs(30))).await;
+    let cleanup: ToolResult<()> = match cleanup {
+        Ok(Ok(_)) => Ok(()),
+        Ok(Err(error)) => Err(Box::new(error)),
+        Err(error) => Err(format!("backend cleanup task failed to join: {error}").into()),
+    };
+    match (work, cleanup) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Err(error), Ok(())) => Err(error),
+        (Ok(_), Err(error)) => Err(error),
+        (Err(work_error), Err(cleanup_error)) => {
+            Err(format!("validation work failed: {work_error:#}; backend cleanup also failed: {cleanup_error:#}")
+                .into())
+        },
+    }
 }
 
 fn case_result_or_error(id: &str, category: &str, result: ToolResult<CaseResult>) -> CaseResult {

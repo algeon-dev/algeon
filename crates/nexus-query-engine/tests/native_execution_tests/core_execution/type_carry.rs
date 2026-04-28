@@ -2,7 +2,7 @@
 fn native_local_parquet_source_carries_timestamp_timezone_to_host_output() {
     let dir = unique_temp_dir("nexus-query-engine-native-timestamp-tz");
     let path = dir.join("input.parquet");
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = backend_context();
     let schema = Arc::new(Schema::new(vec![
         Field::new("id", DataType::Int32, false),
         Field::new("event_ts", DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())), true),
@@ -32,7 +32,6 @@ fn native_local_parquet_source_carries_timestamp_timezone_to_host_output() {
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
     let plan = builder.finish_with_host_sink(source);
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {
@@ -53,7 +52,7 @@ fn native_local_parquet_source_carries_timestamp_timezone_to_host_output() {
 fn native_local_parquet_source_carries_list_utf8_through_scalar_filter_to_host_output() {
     let dir = unique_temp_dir("nexus-query-engine-native-list-utf8");
     let path = dir.join("input.parquet");
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = backend_context();
     let source_schema = Arc::new(Schema::new(vec![
         Field::new("id", DataType::Int32, false),
         Field::new("tags", DataType::List(Arc::new(Field::new("element", DataType::Utf8, true))), true),
@@ -97,7 +96,6 @@ fn native_local_parquet_source_carries_list_utf8_through_scalar_filter_to_host_o
     let filter = builder.add_filter(source, filter, Arc::clone(&source_schema));
     let projection = builder.add_projection(filter, projection);
     let plan = builder.finish_with_host_sink_schema(projection, Arc::clone(&output_schema));
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {
@@ -116,7 +114,7 @@ fn native_local_parquet_source_carries_list_utf8_through_scalar_filter_to_host_o
 fn native_local_parquet_source_carries_large_list_large_utf8_to_host_output() {
     let dir = unique_temp_dir("nexus-query-engine-native-large-list-utf8");
     let path = dir.join("input.parquet");
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = backend_context();
     let source_schema = Arc::new(Schema::new(vec![
         Field::new("id", DataType::Int32, false),
         Field::new("tags", DataType::LargeList(Arc::new(Field::new("element", DataType::LargeUtf8, true))), true),
@@ -144,7 +142,6 @@ fn native_local_parquet_source_carries_large_list_large_utf8_to_host_output() {
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
     let plan = builder.finish_with_host_sink(source);
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {

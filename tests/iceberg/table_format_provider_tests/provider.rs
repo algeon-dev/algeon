@@ -86,20 +86,43 @@ async fn real_iceberg_provider_exposes_one_canonical_schema_to_cpu_and_native_op
 }
 
 #[cfg(feature = "cuvs")]
-#[tokio::test]
-async fn cuvs_sql_executes_over_a_real_iceberg_relation() {
-    let fixture = RealIcebergProviderFixture::new();
-    fixture.write_one_row_and_current_manifest_list().await;
-    let provider = Arc::new(NexusIcebergTableProvider::try_new(fixture.table.clone()).unwrap());
-    let execution_config = NexusNativeExecutionConfig::unbounded();
-    let state = SessionStateBuilder::new()
-        .with_config(direct_friendly_session_config())
-        .with_default_features()
-        .with_nexus_native(NexusNativeOptimizerConfig::default().with_native_execution_config(execution_config))
+fn cuvs_iceberg_session() -> (NexusGpuBackend, SessionContext) {
+    let backend = NexusGpuBackend::builder()
+        .memory_policy(NexusMemoryPolicy::Bounded {
+            device_ordinals: vec![0],
+            device_budget_bytes: 512 * 1024 * 1024,
+            max_source_chunk_bytes: 256 * 1024 * 1024,
+            max_row_groups_per_chunk: 1,
+            max_retry_attempts: 3,
+            min_retry_chunk_row_groups: 1,
+        })
+        .device_memory_ownership([(0, GpuMemoryOwnership::WholeDeviceExclusive)])
+        .build()
+        .expect("cuVS Iceberg tests require a backend-owned GPU");
+    let state = backend
+        .install_on(SessionStateBuilder::new().with_config(direct_friendly_session_config()).with_default_features())
+        .expect("install backend admission on the cuVS Iceberg session")
         .try_with_cuvs_sql()
         .expect("install cuVS SQL")
         .build();
-    let ctx = SessionContext::new_with_state(state);
+    (backend, SessionContext::new_with_state(state))
+}
+
+#[cfg(feature = "cuvs")]
+fn close_cuvs_iceberg_session(backend: NexusGpuBackend, ctx: SessionContext) {
+    drop(ctx);
+    let close = backend.close_and_wait(Duration::from_secs(10)).expect("drain cuVS Iceberg backend");
+    assert!(close.gpu_resource_quiescent);
+    assert!(close.observation_quiescent);
+}
+
+#[cfg(feature = "cuvs")]
+#[tokio::test]
+async fn cuvs_sql_plans_a_real_iceberg_relation_then_rejects_bounded_execution() {
+    let fixture = RealIcebergProviderFixture::new();
+    fixture.write_one_row_and_current_manifest_list().await;
+    let provider = Arc::new(NexusIcebergTableProvider::try_new(fixture.table.clone()).unwrap());
+    let (backend, ctx) = cuvs_iceberg_session();
     ctx.register_table("vector_iceberg", provider).unwrap();
 
     let query_schema = Arc::new(Schema::new(vec![
@@ -125,7 +148,7 @@ async fn cuvs_sql_executes_over_a_real_iceberg_relation() {
       "k":1,
       "metric":"l2_expanded"
     }"#;
-    let batches = ctx
+    let plan = ctx
         .sql(&format!(
             "SELECT query_id, neighbor_id \
              FROM cuvs_brute_force_knn(\
@@ -136,32 +159,23 @@ async fn cuvs_sql_executes_over_a_real_iceberg_relation() {
         ))
         .await
         .expect("plan cuVS Iceberg query")
-        .collect()
+        .create_physical_plan()
         .await
-        .expect("execute cuVS Iceberg query");
-    assert_eq!(batches.len(), 1);
-    let batch = &batches[0];
-    let query_ids = batch.column(0).as_any().downcast_ref::<Int64Array>().unwrap();
-    let neighbor_ids = batch.column(1).as_any().downcast_ref::<Int64Array>().unwrap();
-    assert_eq!(query_ids.values(), &[7]);
-    assert_eq!(neighbor_ids.values(), &[100]);
+        .expect("create cuVS Iceberg physical plan");
+    assert!(plan_contains_name(plan.as_ref(), "CuvsAlgoExec"));
+    assert_eq!(plan.schema().field(0).name(), "query_id");
+    assert_eq!(plan.schema().field(1).name(), "neighbor_id");
+    assert_cuvs_iceberg_bounded_rejection(plan, &ctx, "cuvs_brute_force_knn").await;
+    close_cuvs_iceberg_session(backend, ctx);
 }
 
 #[cfg(feature = "cuvs")]
 #[tokio::test]
-async fn cuvs_sql_executes_uniform_float32_list_vectors_over_real_iceberg_relations() {
+async fn cuvs_sql_plans_uniform_float32_list_iceberg_vectors_then_rejects_bounded_execution() {
     let fixture = RealIcebergProviderFixture::new_float32_vector_list();
     fixture.write_float32_vector_list_rows_and_current_manifest_list(&[(100, &[0.0, 0.0]), (100, &[3.0, 3.0])]).await;
     let provider = Arc::new(NexusIcebergTableProvider::try_new(fixture.table.clone()).unwrap());
-    let execution_config = NexusNativeExecutionConfig::unbounded();
-    let state = SessionStateBuilder::new()
-        .with_config(direct_friendly_session_config())
-        .with_default_features()
-        .with_nexus_native(NexusNativeOptimizerConfig::default().with_native_execution_config(execution_config))
-        .try_with_cuvs_sql()
-        .expect("install cuVS SQL")
-        .build();
-    let ctx = SessionContext::new_with_state(state);
+    let (backend, ctx) = cuvs_iceberg_session();
     ctx.register_table("vector_iceberg", provider).unwrap();
 
     let item = Arc::new(Field::new("item", DataType::Float32, false));
@@ -191,7 +205,7 @@ async fn cuvs_sql_executes_uniform_float32_list_vectors_over_real_iceberg_relati
       "k":1,
       "metric":"l2_expanded"
     }"#;
-    let batches = ctx
+    let plan = ctx
         .sql(&format!(
             "SELECT query_id, neighbor_id, rank \
              FROM cuvs_brute_force_knn(\
@@ -202,34 +216,24 @@ async fn cuvs_sql_executes_uniform_float32_list_vectors_over_real_iceberg_relati
         ))
         .await
         .expect("plan cuVS Iceberg List<Float32> query")
-        .collect()
+        .create_physical_plan()
         .await
-        .expect("execute cuVS Iceberg List<Float32> query");
-    assert_eq!(batches.len(), 1);
-    let batch = &batches[0];
-    let query_ids = batch.column(0).as_any().downcast_ref::<Int64Array>().unwrap();
-    let neighbor_ids = batch.column(1).as_any().downcast_ref::<Int64Array>().unwrap();
-    let ranks = batch.column(2).as_any().downcast_ref::<arrow::array::UInt32Array>().unwrap();
-    assert_eq!(query_ids.values(), &[99]);
-    assert_eq!(neighbor_ids.values(), &[100]);
-    assert_eq!(ranks.values(), &[0]);
+        .expect("create cuVS Iceberg List<Float32> physical plan");
+    assert!(plan_contains_name(plan.as_ref(), "CuvsAlgoExec"));
+    assert_eq!(plan.schema().field(0).name(), "query_id");
+    assert_eq!(plan.schema().field(1).name(), "neighbor_id");
+    assert_eq!(plan.schema().field(2).name(), "rank");
+    assert_cuvs_iceberg_bounded_rejection(plan, &ctx, "cuvs_brute_force_knn").await;
+    close_cuvs_iceberg_session(backend, ctx);
 }
 
 #[cfg(feature = "cuvs")]
 #[tokio::test]
-async fn cuvs_kmeans_and_pca_execute_over_real_iceberg_relations() {
+async fn cuvs_kmeans_and_pca_plan_over_real_iceberg_then_reject_bounded_execution() {
     let fixture = RealIcebergProviderFixture::new();
     fixture.write_clusterable_vector_rows_and_current_manifest_list().await;
     let provider = Arc::new(NexusIcebergTableProvider::try_new(fixture.table.clone()).unwrap());
-    let execution_config = NexusNativeExecutionConfig::unbounded();
-    let state = SessionStateBuilder::new()
-        .with_config(direct_friendly_session_config())
-        .with_default_features()
-        .with_nexus_native(NexusNativeOptimizerConfig::default().with_native_execution_config(execution_config))
-        .try_with_cuvs_sql()
-        .expect("install cuVS SQL")
-        .build();
-    let ctx = SessionContext::new_with_state(state);
+    let (backend, ctx) = cuvs_iceberg_session();
     ctx.register_table("vector_iceberg", provider).unwrap();
 
     let relation = "SELECT x AS item_id, CAST(y AS REAL) AS d0, CAST(z AS REAL) AS d1 FROM vector_iceberg";
@@ -245,17 +249,13 @@ async fn cuvs_kmeans_and_pca_execute_over_real_iceberg_relations() {
         ))
         .await
         .expect("plan cuVS K-means over Iceberg")
-        .collect()
+        .create_physical_plan()
         .await
-        .expect("execute cuVS K-means over Iceberg");
-    assert_eq!(kmeans.len(), 1);
-    let kmeans = &kmeans[0];
-    let ids = kmeans.column(0).as_any().downcast_ref::<Int64Array>().unwrap();
-    assert_eq!(ids.values(), &[100, 100, 100, 100]);
-    let clusters = kmeans.column(1).as_any().downcast_ref::<Int32Array>().unwrap();
-    assert_eq!(clusters.value(0), clusters.value(1), "nearby low-valued rows must share a cluster");
-    assert_eq!(clusters.value(2), clusters.value(3), "nearby high-valued rows must share a cluster");
-    assert_ne!(clusters.value(0), clusters.value(2), "the separated groups must have distinct clusters");
+        .expect("create cuVS K-means Iceberg physical plan");
+    assert!(plan_contains_name(kmeans.as_ref(), "CuvsAlgoExec"));
+    assert_eq!(kmeans.schema().field(0).name(), "id");
+    assert_eq!(kmeans.schema().field(1).name(), "cluster_id");
+    assert_cuvs_iceberg_bounded_rejection(kmeans, &ctx, "cuvs_kmeans").await;
 
     let pca_options = r#"{
       "input":{"id":"item_id","vector":{"columns":["d0","d1"]}},
@@ -268,15 +268,33 @@ async fn cuvs_kmeans_and_pca_execute_over_real_iceberg_relations() {
         ))
         .await
         .expect("plan cuVS PCA over Iceberg")
-        .collect()
+        .create_physical_plan()
         .await
-        .expect("execute cuVS PCA over Iceberg");
-    assert_eq!(pca.len(), 1);
-    let pca = &pca[0];
-    let ids = pca.column(0).as_any().downcast_ref::<Int64Array>().unwrap();
-    assert_eq!(ids.values(), &[100, 100, 100, 100]);
-    let components = pca.column(1).as_any().downcast_ref::<Float32Array>().unwrap();
-    assert!((0..components.len()).all(|row| components.value(row).is_finite()));
+        .expect("create cuVS PCA Iceberg physical plan");
+    assert!(plan_contains_name(pca.as_ref(), "CuvsAlgoExec"));
+    assert_eq!(pca.schema().field(0).name(), "id");
+    assert_eq!(pca.schema().field(1).name(), "pc_0");
+    assert_cuvs_iceberg_bounded_rejection(pca, &ctx, "cuvs_pca").await;
+    close_cuvs_iceberg_session(backend, ctx);
+}
+
+#[cfg(feature = "cuvs")]
+async fn assert_cuvs_iceberg_bounded_rejection(
+    plan: Arc<dyn ExecutionPlan>,
+    ctx: &SessionContext,
+    expected_operation: &'static str,
+) {
+    let error = collect(plan, ctx.task_ctx()).await.expect_err("bounded cuVS Iceberg execution must fail closed");
+    let typed = error
+        .find_nexus_error()
+        .expect("bounded cuVS Iceberg rejection must preserve the structured Nexus error");
+    assert_eq!(typed.code(), ErrorCode::UnsupportedOperator);
+    assert_eq!(typed.operation(), "datafusion_nexus.cuvs_sql.bounded_admission");
+    assert_eq!(typed.facts().get("reason"), Some("blocked_lower_level_contract"));
+    assert_eq!(typed.facts().get("execution_mode"), Some("strict_bounded"));
+    assert_eq!(typed.facts().get("required_contract"), Some("cuvs_vector_algorithm_peak_memory_preflight"));
+    assert_eq!(typed.facts().get("host_fallback"), Some("disabled"));
+    assert_eq!(typed.facts().get("cuvs_operation"), Some(expected_operation));
 }
 
 #[tokio::test]

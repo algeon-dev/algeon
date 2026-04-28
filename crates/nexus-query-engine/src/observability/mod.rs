@@ -38,6 +38,7 @@ pub use model::{
 pub use operator_stage::{
     RuntimeOperatorStageGuard, RuntimeOperatorStageIdentity, observe_operator_stage, stage_context_from_execution,
 };
+pub(crate) use recorder::in_runtime_observation_delivery;
 pub use recorder::{
     LiveRuntimeObservationSnapshot, RuntimeEventContext, RuntimeObservationConfig, RuntimeObservationHandle,
     RuntimeObservationOwner, RuntimeObservationRecordDisposition, RuntimeObservationSession,

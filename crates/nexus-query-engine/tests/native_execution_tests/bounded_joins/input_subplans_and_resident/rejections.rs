@@ -2,7 +2,6 @@ use super::*;
 
 #[test]
 fn bounded_native_query_rejects_unsupported_join_under_aggregate_before_source_read() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
     let left_schema = Arc::new(Schema::new(vec![
         Field::new("id", DataType::Int32, false),
         Field::new("amount", DataType::Int64, false),
@@ -57,17 +56,7 @@ fn bounded_native_query_rejects_unsupported_join_under_aggregate_before_source_r
     assert!(!plan.capability_analysis().admits_root_join());
     assert!(!plan.capability_analysis().admits_single_join_post_root_pipeline());
 
-    let context = ExecutionContext::builder()
-        .with_shared_runtime(runtime)
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: 1024 * 1024,
-            max_source_chunk_bytes: 1024,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 1,
-            min_retry_chunk_row_groups: 1,
-        })
-        .build()
-        .unwrap();
+    let context = backend_context_with_grant(1024 * 1024);
 
     let error = match execute_query_plan(&context, &plan) {
         Ok(_) => panic!("bounded aggregate join should reject before source reads"),
@@ -79,7 +68,7 @@ fn bounded_native_query_rejects_unsupported_join_under_aggregate_before_source_r
 
 #[test]
 fn bounded_native_query_rejects_grouped_aggregate_join_build_input_without_strict_envelope() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let runtime = backend_runtime();
     let dir = unique_temp_dir("nexus-query-engine-bounded-aggregate-join-input");
     let left_path = dir.join("left.parquet");
     let right_path = dir.join("right.parquet");

@@ -1,6 +1,6 @@
 #[test]
 fn bounded_native_query_applies_hash_join_build_dynamic_filter_to_probe_source() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let runtime = backend_runtime();
     let dir = unique_temp_dir("nexus-query-engine-bounded-root-hash-join-dynamic-filter");
     let left_path = dir.join("lineitem.parquet");
     let right_path = dir.join("orders.parquet");
@@ -47,17 +47,7 @@ fn bounded_native_query_applies_hash_join_build_dynamic_filter_to_probe_source()
         &nexus_query_engine::optimizer::NativeOptimizerOptions::default(),
     );
     assert_eq!(optimized.diagnostics.dynamic_filter_route_discovery.route_count, 1);
-    let context = ExecutionContext::builder()
-        .with_shared_runtime(Arc::clone(&runtime))
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: 1024 * 1024,
-            max_source_chunk_bytes: 1024,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 1,
-            min_retry_chunk_row_groups: 1,
-        })
-        .build()
-        .unwrap();
+    let context = backend_context_with_grant(1024 * 1024);
 
     let result = execute_query_plan(&context, &optimized.plan).unwrap();
     let output = result.output().as_host_arrow().unwrap();
@@ -69,7 +59,6 @@ fn bounded_native_query_applies_hash_join_build_dynamic_filter_to_probe_source()
 
 #[test]
 fn bounded_native_query_applies_post_decode_filter_to_shared_local_source_frame() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
     let dir = unique_temp_dir("nexus-query-engine-bounded-shared-source-post-decode-dynamic-filter");
     let part_path = dir.join("part.parquet");
     let partsupp_path = dir.join("partsupp.parquet");
@@ -217,17 +206,7 @@ fn bounded_native_query_applies_post_decode_filter_to_shared_local_source_frame(
                     if source_node_id == partsupp
             )
     }));
-    let context = ExecutionContext::builder()
-        .with_shared_runtime(Arc::clone(&runtime))
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: 1024 * 1024,
-            max_source_chunk_bytes: 1024 * 1024,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 1,
-            min_retry_chunk_row_groups: 1,
-        })
-        .build()
-        .unwrap();
+    let context = backend_context_with_grant(1024 * 1024);
 
     let analysis = optimized.plan.capability_analysis();
     let pipeline = nexus_query_engine::pipeline::compile_pipeline(&optimized.plan, &analysis).unwrap();
@@ -286,7 +265,6 @@ fn bounded_native_query_applies_post_decode_filter_to_shared_local_source_frame(
 
 #[test]
 fn bounded_native_query_batches_dynamic_reader_predicate_probe_source_chunks() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
     let dir = unique_temp_dir("nexus-query-engine-bounded-root-hash-join-batched-dynamic-reader-filter");
     let left_paths = [dir.join("lineitem-0.parquet"), dir.join("lineitem-1.parquet"), dir.join("lineitem-2.parquet")];
     let left_schema = write_dynamic_filter_probe_rows_parquet(&left_paths[0], &[1, 2], &[10, 20]);
@@ -336,17 +314,7 @@ fn bounded_native_query_batches_dynamic_reader_predicate_probe_source_chunks() {
     };
     let optimized = nexus_query_engine::optimizer::optimize_query_plan(plan, &optimizer_options);
     assert_eq!(optimized.diagnostics.dynamic_filter_route_discovery.route_count, 1);
-    let context = ExecutionContext::builder()
-        .with_shared_runtime(Arc::clone(&runtime))
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: 8 * 1024 * 1024,
-            max_source_chunk_bytes: 1024 * 1024,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 1,
-            min_retry_chunk_row_groups: 1,
-        })
-        .build()
-        .unwrap();
+    let context = backend_context_with_grant(8 * 1024 * 1024);
 
     let result = execute_query_plan(&context, &optimized.plan).unwrap();
     let output = result.output().as_host_arrow().unwrap();
@@ -387,7 +355,6 @@ fn bounded_native_query_batches_dynamic_reader_predicate_probe_source_chunks() {
 
 #[test]
 fn bounded_native_query_applies_residual_equality_dynamic_filter_before_downstream_dimension_build() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
     let dir = unique_temp_dir("nexus-query-engine-bounded-residual-equality-dynamic-filter");
     let sales_path = dir.join("catalog_sales.parquet");
     let d1_path = dir.join("date_dim_d1.parquet");
@@ -547,17 +514,7 @@ fn bounded_native_query_applies_residual_equality_dynamic_filter_before_downstre
         })
         .cloned()
         .expect("residual equality should route filtered d1 week evidence into d2");
-    let context = ExecutionContext::builder()
-        .with_shared_runtime(Arc::clone(&runtime))
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: 8 * 1024 * 1024,
-            max_source_chunk_bytes: 1024 * 1024,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 1,
-            min_retry_chunk_row_groups: 1,
-        })
-        .build()
-        .unwrap();
+    let context = backend_context_with_grant(8 * 1024 * 1024);
 
     let result = execute_query_plan(&context, &optimized.plan).unwrap();
     let output = result.output().as_host_arrow().unwrap();
@@ -589,7 +546,6 @@ fn bounded_native_query_applies_residual_equality_dynamic_filter_before_downstre
 
 #[test]
 fn bounded_native_query_prunes_hash_set_dynamic_filter_gap_row_group_off_probe_source() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
     let dir = unique_temp_dir("nexus-query-engine-bounded-root-hash-join-source-hash-set-dynamic-filter");
     let left_path = dir.join("lineitem.parquet");
     let left_schema = write_dynamic_filter_probe_parquet(&left_path);
@@ -636,17 +592,7 @@ fn bounded_native_query_prunes_hash_set_dynamic_filter_gap_row_group_off_probe_s
     };
     let optimized = nexus_query_engine::optimizer::optimize_query_plan(plan, &optimizer_options);
     assert_eq!(optimized.diagnostics.dynamic_filter_route_discovery.route_count, 1);
-    let context = ExecutionContext::builder()
-        .with_shared_runtime(Arc::clone(&runtime))
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: 1024 * 1024,
-            max_source_chunk_bytes: 1024,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 1,
-            min_retry_chunk_row_groups: 1,
-        })
-        .build()
-        .unwrap();
+    let context = backend_context_with_grant(1024 * 1024);
 
     let result = execute_query_plan(&context, &optimized.plan).unwrap();
     let output = result.output().as_host_arrow().unwrap();
@@ -688,7 +634,6 @@ fn bounded_native_query_prunes_hash_set_dynamic_filter_gap_row_group_off_probe_s
 
 #[test]
 fn bounded_native_query_defers_large_small_in_list_reader_filter_when_sibling_reader_filter_remains() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
     let dir = unique_temp_dir("nexus-query-engine-bounded-root-hash-join-deferred-small-in-list-reader-filter");
     let fact_path = dir.join("lineitem.parquet");
     let fact_schema = write_dynamic_filter_probe_parquet(&fact_path);
@@ -757,17 +702,7 @@ fn bounded_native_query_defers_large_small_in_list_reader_filter_when_sibling_re
     };
     let optimized = nexus_query_engine::optimizer::optimize_query_plan(plan, &optimizer_options);
     assert_eq!(optimized.diagnostics.dynamic_filter_route_discovery.route_count, 2);
-    let context = ExecutionContext::builder()
-        .with_shared_runtime(Arc::clone(&runtime))
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: 1024 * 1024,
-            max_source_chunk_bytes: 1024,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 1,
-            min_retry_chunk_row_groups: 1,
-        })
-        .build()
-        .unwrap();
+    let context = backend_context_with_grant(1024 * 1024);
 
     let result = execute_query_plan(&context, &optimized.plan).unwrap();
     let output = result.output().as_host_arrow().unwrap();
@@ -807,7 +742,6 @@ fn bounded_native_query_defers_large_small_in_list_reader_filter_when_sibling_re
 
 #[test]
 fn bounded_native_query_produces_range_only_dynamic_filter_for_large_local_parquet_keyset() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
     let dir = unique_temp_dir("nexus-query-engine-bounded-root-hash-join-large-source-range-filter");
     let left_path = dir.join("lineitem.parquet");
     let left_schema = write_dynamic_filter_probe_parquet(&left_path);
@@ -857,17 +791,7 @@ fn bounded_native_query_produces_range_only_dynamic_filter_for_large_local_parqu
     };
     let optimized = nexus_query_engine::optimizer::optimize_query_plan(plan, &optimizer_options);
     assert_eq!(optimized.diagnostics.dynamic_filter_route_discovery.route_count, 1);
-    let context = ExecutionContext::builder()
-        .with_shared_runtime(Arc::clone(&runtime))
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: 8 * 1024 * 1024,
-            max_source_chunk_bytes: 1024,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 1,
-            min_retry_chunk_row_groups: 1,
-        })
-        .build()
-        .unwrap();
+    let context = backend_context_with_grant(8 * 1024 * 1024);
 
     let result = execute_query_plan(&context, &optimized.plan).unwrap();
     let output = result.output().as_host_arrow().unwrap();
@@ -904,7 +828,6 @@ fn bounded_native_query_produces_range_only_dynamic_filter_for_large_local_parqu
 
 #[test]
 fn bounded_native_query_skips_large_dynamic_filter_for_dimension_sized_probe_source() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
     let dir = unique_temp_dir("nexus-query-engine-bounded-root-hash-join-large-dimension-filter-skip");
     let left_path = dir.join("lineitem.parquet");
     let left_schema = write_dynamic_filter_probe_parquet(&left_path);
@@ -950,17 +873,7 @@ fn bounded_native_query_skips_large_dynamic_filter_for_dimension_sized_probe_sou
     };
     let optimized = nexus_query_engine::optimizer::optimize_query_plan(plan, &optimizer_options);
     assert_eq!(optimized.diagnostics.dynamic_filter_route_discovery.route_count, 1);
-    let context = ExecutionContext::builder()
-        .with_shared_runtime(Arc::clone(&runtime))
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: 8 * 1024 * 1024,
-            max_source_chunk_bytes: 1024,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 1,
-            min_retry_chunk_row_groups: 1,
-        })
-        .build()
-        .unwrap();
+    let context = backend_context_with_grant(8 * 1024 * 1024);
 
     let result = execute_query_plan(&context, &optimized.plan).unwrap();
     let output = result.output().as_host_arrow().unwrap();
@@ -979,7 +892,6 @@ fn bounded_native_query_skips_large_dynamic_filter_for_dimension_sized_probe_sou
 
 #[test]
 fn bounded_native_query_splits_large_dynamic_filter_between_dimension_and_fact_sources() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
     let dir = unique_temp_dir("nexus-query-engine-bounded-root-hash-join-large-filter-mixed-source-policy");
     let small_path = dir.join("small_probe.parquet");
     let large_path = dir.join("large_probe.parquet");
@@ -1041,17 +953,7 @@ fn bounded_native_query_splits_large_dynamic_filter_between_dimension_and_fact_s
     };
     let optimized = nexus_query_engine::optimizer::optimize_query_plan(plan, &optimizer_options);
     assert_eq!(optimized.diagnostics.dynamic_filter_route_discovery.route_count, 2);
-    let context = ExecutionContext::builder()
-        .with_shared_runtime(Arc::clone(&runtime))
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: 8 * 1024 * 1024,
-            max_source_chunk_bytes: 1024,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 1,
-            min_retry_chunk_row_groups: 1,
-        })
-        .build()
-        .unwrap();
+    let context = backend_context_with_grant(8 * 1024 * 1024);
 
     let result = execute_query_plan(&context, &optimized.plan).unwrap();
     let output = result.output().as_host_arrow().unwrap();
@@ -1079,7 +981,6 @@ fn bounded_native_query_splits_large_dynamic_filter_between_dimension_and_fact_s
 
 #[test]
 fn bounded_native_query_does_not_duplicate_small_in_list_reader_predicate_after_probe_source_decode() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
     let dir = unique_temp_dir("nexus-query-engine-bounded-root-hash-join-source-small-in-list-reader-predicate");
     let left_path = dir.join("lineitem.parquet");
     let left_schema = write_dynamic_filter_probe_parquet(&left_path);
@@ -1124,17 +1025,7 @@ fn bounded_native_query_does_not_duplicate_small_in_list_reader_predicate_after_
     };
     let optimized = nexus_query_engine::optimizer::optimize_query_plan(plan, &optimizer_options);
     assert_eq!(optimized.diagnostics.dynamic_filter_route_discovery.route_count, 1);
-    let context = ExecutionContext::builder()
-        .with_shared_runtime(Arc::clone(&runtime))
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: 1024 * 1024,
-            max_source_chunk_bytes: 1024,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 1,
-            min_retry_chunk_row_groups: 1,
-        })
-        .build()
-        .unwrap();
+    let context = backend_context_with_grant(1024 * 1024);
 
     let result = execute_query_plan(&context, &optimized.plan).unwrap();
     let output = result.output().as_host_arrow().unwrap();
@@ -1188,7 +1079,6 @@ fn bounded_native_query_does_not_duplicate_small_in_list_reader_predicate_after_
 
 #[test]
 fn bounded_native_query_does_not_duplicate_tpcds_sized_small_in_list_reader_predicate_after_probe_source_decode() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
     let dir = unique_temp_dir("nexus-query-engine-bounded-root-hash-join-tpcds-small-in-list-reader-predicate");
     let left_path = dir.join("lineitem.parquet");
     let left_schema = write_dynamic_filter_probe_parquet(&left_path);
@@ -1236,17 +1126,7 @@ fn bounded_native_query_does_not_duplicate_tpcds_sized_small_in_list_reader_pred
     };
     let optimized = nexus_query_engine::optimizer::optimize_query_plan(plan, &optimizer_options);
     assert_eq!(optimized.diagnostics.dynamic_filter_route_discovery.route_count, 1);
-    let context = ExecutionContext::builder()
-        .with_shared_runtime(Arc::clone(&runtime))
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: 1024 * 1024,
-            max_source_chunk_bytes: 1024,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 1,
-            min_retry_chunk_row_groups: 1,
-        })
-        .build()
-        .unwrap();
+    let context = backend_context_with_grant(1024 * 1024);
 
     let result = execute_query_plan(&context, &optimized.plan).unwrap();
     let output = result.output().as_host_arrow().unwrap();
@@ -1304,7 +1184,6 @@ fn bounded_native_query_does_not_duplicate_tpcds_sized_small_in_list_reader_pred
 
 #[test]
 fn bounded_native_query_handles_dynamic_filter_pruned_empty_probe_source() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
     let dir = unique_temp_dir("nexus-query-engine-bounded-root-hash-join-empty-dynamic-filter");
     let left_path = dir.join("lineitem.parquet");
     let left_schema = write_dynamic_filter_probe_parquet(&left_path);
@@ -1345,17 +1224,7 @@ fn bounded_native_query_handles_dynamic_filter_pruned_empty_probe_source() {
         &nexus_query_engine::optimizer::NativeOptimizerOptions::default(),
     );
     assert_eq!(optimized.diagnostics.dynamic_filter_route_discovery.route_count, 1);
-    let context = ExecutionContext::builder()
-        .with_shared_runtime(Arc::clone(&runtime))
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: 1024 * 1024,
-            max_source_chunk_bytes: 1024,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 1,
-            min_retry_chunk_row_groups: 1,
-        })
-        .build()
-        .unwrap();
+    let context = backend_context_with_grant(1024 * 1024);
 
     let result = execute_query_plan(&context, &optimized.plan).unwrap();
     let output = result.output().as_host_arrow().unwrap();
@@ -1378,14 +1247,14 @@ fn bounded_native_query_handles_dynamic_filter_pruned_empty_probe_source() {
 
 #[test]
 fn bounded_native_query_applies_hash_join_build_dynamic_filter_to_resident_probe() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let fixture_runtime = backend_runtime();
     let dir = unique_temp_dir("nexus-query-engine-bounded-root-hash-join-resident-probe-dynamic-filter");
     let right_path = dir.join("orders.parquet");
     let left_schema = Arc::new(Schema::new(vec![
         Field::new("order_id", DataType::Int32, false),
         Field::new("qty", DataType::Int32, false),
     ]));
-    let right_schema = write_join_right_keys_parquet(&runtime, &right_path, &[2]);
+    let right_schema = write_join_right_keys_parquet(&fixture_runtime, &right_path, &[2]);
     let left_batch = RecordBatch::try_new(
         Arc::clone(&left_schema),
         vec![Arc::new(Int32Array::from(vec![1, 2, 3, 4])), Arc::new(Int32Array::from(vec![10, 20, 30, 40]))],
@@ -1429,17 +1298,9 @@ fn bounded_native_query_applies_hash_join_build_dynamic_filter_to_resident_probe
         nexus_query_engine::dynamic_filter::DynamicFilterConsumer::HashJoinProbe { .. }
     ));
 
-    let context = ExecutionContext::builder()
-        .with_shared_runtime(Arc::clone(&runtime))
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: 1024 * 1024,
-            max_source_chunk_bytes: 1024,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 1,
-            min_retry_chunk_row_groups: 1,
-        })
-        .build()
-        .unwrap();
+    drop(fixture_runtime);
+    let context = backend_context_with_grant(1024 * 1024);
+    let runtime = Arc::new(context.runtime().unwrap());
     let mut gpu_inputs = GpuResidentInputMap::new();
     gpu_inputs.insert(
         "left".to_string(),
@@ -1471,14 +1332,14 @@ fn bounded_native_query_applies_hash_join_build_dynamic_filter_to_resident_probe
 
 #[test]
 fn bounded_native_query_applies_hash_join_build_dynamic_filter_at_resident_probe_filter() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let fixture_runtime = backend_runtime();
     let dir = unique_temp_dir("nexus-query-engine-bounded-root-hash-join-resident-probe-filter-dynamic-filter");
     let right_path = dir.join("orders.parquet");
     let left_schema = Arc::new(Schema::new(vec![
         Field::new("order_id", DataType::Int32, false),
         Field::new("qty", DataType::Int32, false),
     ]));
-    let right_schema = write_join_right_keys_parquet(&runtime, &right_path, &[2]);
+    let right_schema = write_join_right_keys_parquet(&fixture_runtime, &right_path, &[2]);
     let left_batch = RecordBatch::try_new(
         Arc::clone(&left_schema),
         vec![Arc::new(Int32Array::from(vec![1, 2, 3, 4])), Arc::new(Int32Array::from(vec![10, 20, 30, 40]))],
@@ -1527,17 +1388,9 @@ fn bounded_native_query_applies_hash_join_build_dynamic_filter_at_resident_probe
         nexus_query_engine::dynamic_filter::DynamicFilterConsumer::Filter { .. }
     ));
 
-    let context = ExecutionContext::builder()
-        .with_shared_runtime(Arc::clone(&runtime))
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: 1024 * 1024,
-            max_source_chunk_bytes: 1024,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 1,
-            min_retry_chunk_row_groups: 1,
-        })
-        .build()
-        .unwrap();
+    drop(fixture_runtime);
+    let context = backend_context_with_grant(1024 * 1024);
+    let runtime = Arc::new(context.runtime().unwrap());
     let mut gpu_inputs = GpuResidentInputMap::new();
     gpu_inputs.insert(
         "left".to_string(),
@@ -1571,7 +1424,7 @@ fn bounded_native_query_applies_hash_join_build_dynamic_filter_at_resident_probe
 
 #[test]
 fn bounded_native_query_applies_filter_dynamic_filter_through_projection_alias() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let fixture_runtime = backend_runtime();
     let dir = unique_temp_dir("nexus-query-engine-bounded-root-hash-join-projected-filter-dynamic-filter");
     let right_path = dir.join("orders.parquet");
     let left_schema = Arc::new(Schema::new(vec![
@@ -1582,7 +1435,7 @@ fn bounded_native_query_applies_filter_dynamic_filter_through_projection_alias()
         Field::new("order_id", DataType::Int32, false),
         Field::new("qty", DataType::Int32, false),
     ]));
-    let right_schema = write_join_right_keys_parquet(&runtime, &right_path, &[2]);
+    let right_schema = write_join_right_keys_parquet(&fixture_runtime, &right_path, &[2]);
     let left_batch = RecordBatch::try_new(
         Arc::clone(&left_schema),
         vec![Arc::new(Int32Array::from(vec![1, 2, 3, 4])), Arc::new(Int32Array::from(vec![10, 20, 30, 40]))],
@@ -1636,17 +1489,9 @@ fn bounded_native_query_applies_filter_dynamic_filter_through_projection_alias()
         nexus_query_engine::dynamic_filter::DynamicFilterConsumer::Filter { .. }
     ));
 
-    let context = ExecutionContext::builder()
-        .with_shared_runtime(Arc::clone(&runtime))
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: 1024 * 1024,
-            max_source_chunk_bytes: 1024,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 1,
-            min_retry_chunk_row_groups: 1,
-        })
-        .build()
-        .unwrap();
+    drop(fixture_runtime);
+    let context = backend_context_with_grant(1024 * 1024);
+    let runtime = Arc::new(context.runtime().unwrap());
     let mut gpu_inputs = GpuResidentInputMap::new();
     gpu_inputs.insert(
         "left".to_string(),
@@ -1680,7 +1525,7 @@ fn bounded_native_query_applies_filter_dynamic_filter_through_projection_alias()
 
 #[test]
 fn bounded_native_query_rejects_aggregate_keyset_dynamic_filter_without_strict_envelope() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let runtime = backend_runtime();
     let dir = unique_temp_dir("nexus-query-engine-bounded-root-hash-join-aggregate-dynamic-filter");
     let left_path = dir.join("lineitem.parquet");
     let right_path = dir.join("orders.parquet");
@@ -1727,17 +1572,7 @@ fn bounded_native_query_rejects_aggregate_keyset_dynamic_filter_without_strict_e
     };
     let optimized = nexus_query_engine::optimizer::optimize_query_plan(plan, &optimizer_options);
     assert_eq!(optimized.diagnostics.dynamic_filter_route_discovery.route_count, 1);
-    let context = ExecutionContext::builder()
-        .with_shared_runtime(Arc::clone(&runtime))
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: 1024 * 1024,
-            max_source_chunk_bytes: 1024,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 1,
-            min_retry_chunk_row_groups: 1,
-        })
-        .build()
-        .unwrap();
+    let context = backend_context_with_grant(1024 * 1024);
 
     let error = match execute_query_plan(&context, &optimized.plan) {
         Ok(_) => panic!("aggregate keyset join input needs explicit strict envelope admission"),
@@ -1755,7 +1590,7 @@ fn bounded_native_query_rejects_aggregate_keyset_dynamic_filter_without_strict_e
 
 #[test]
 fn bounded_native_query_rejects_build_dynamic_filter_below_aggregate_probe_without_strict_envelope() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let runtime = backend_runtime();
     let dir = unique_temp_dir("nexus-query-engine-bounded-root-hash-join-aggregate-probe-dynamic-filter");
     let fact_path = dir.join("store_returns.parquet");
     let dim_path = dir.join("store.parquet");
@@ -1806,17 +1641,7 @@ fn bounded_native_query_rejects_build_dynamic_filter_below_aggregate_probe_witho
         optimized.plan.dynamic_filter_routes()[0].consumer,
         nexus_query_engine::dynamic_filter::DynamicFilterConsumer::LocalParquetSource { .. }
     ));
-    let context = ExecutionContext::builder()
-        .with_shared_runtime(Arc::clone(&runtime))
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: 1024 * 1024,
-            max_source_chunk_bytes: 1024,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 1,
-            min_retry_chunk_row_groups: 1,
-        })
-        .build()
-        .unwrap();
+    let context = backend_context_with_grant(1024 * 1024);
 
     let error = match execute_query_plan(&context, &optimized.plan) {
         Ok(_) => panic!("aggregate probe input needs explicit strict envelope admission"),

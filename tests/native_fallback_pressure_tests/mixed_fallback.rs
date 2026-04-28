@@ -8,13 +8,20 @@
 //! - candidate rewritten/rejected outcomes
 //! - session results vs plain DataFusion parity
 
-use arrow::{array::StringArray, util::pretty::pretty_format_batches};
-use datafusion_nexus::{
-    backend::{GrantBand, MemoryShare, NexusAdmissionPolicy, NexusGpuBackend, NexusMemoryPolicy},
-    report::CandidateOutcome,
-    session::NEXUS_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME,
+use std::fs::File;
+
+use arrow::{
+    array::{Float64Array, Int64Array, StringArray},
+    datatypes::{DataType, Field, Schema},
+    record_batch::RecordBatch,
+    util::pretty::pretty_format_batches,
 };
-use nexus_query_engine::runtime::SlotGuarantee;
+use datafusion::{
+    execution::SessionStateBuilder,
+    parquet::{arrow::ArrowWriter, file::properties::WriterProperties},
+    prelude::{ParquetReadOptions, SessionConfig, SessionContext},
+};
+use datafusion_nexus::{report::CandidateOutcome, session::NEXUS_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME};
 
 use super::*;
 
@@ -89,22 +96,9 @@ async fn run_datafusion_baseline_case(
     bench: &std::path::Path,
     bench2: &std::path::Path,
 ) {
-    // Keep the normal bounded QueryService configuration so the fully supported
-    // control retains its native performance coverage alongside DataFusion baselines.
-    let backend = NexusGpuBackend::builder()
-        .memory_policy(NexusMemoryPolicy::Bounded {
-            device_ordinals: vec![0],
-            device_budget_bytes: 256 * 1024 * 1024,
-            max_source_chunk_bytes: 64 * 1024 * 1024,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 3,
-            min_retry_chunk_row_groups: 1,
-        })
-        .admission(NexusAdmissionPolicy::default().with_slot_guarantee(SlotGuarantee::Optimistic).with_grant_band(
-            GrantBand { min: MemoryShare::Bytes(64 * 1024 * 1024), want: MemoryShare::Bytes(128 * 1024 * 1024) },
-        ))
-        .build()
-        .unwrap_or_else(|error| panic!("{}: backend build failed: {error}", case.id));
+    // Share the execution suite's process-owned backend across cases. A second
+    // whole-device backend must not be installed after the first case runs.
+    let backend = test_gpu_backend();
     // install_on freezes session config for QueryService admission authority.
     let state = backend
         .install_on(SessionStateBuilder::new_with_default_features().with_config(direct_friendly_sql_session_config()))
@@ -216,6 +210,18 @@ fn installed_final_native_rule(
 async fn register_datafusion_baseline_tables(ctx: &SessionContext, bench: &std::path::Path, bench2: &std::path::Path) {
     ctx.register_parquet("bench", bench.to_str().unwrap(), ParquetReadOptions::default()).await.unwrap();
     ctx.register_parquet("bench2", bench2.to_str().unwrap(), ParquetReadOptions::default()).await.unwrap();
+}
+
+fn direct_friendly_sql_session_config() -> SessionConfig {
+    let mut config = SessionConfig::new()
+        .with_repartition_file_scans(false)
+        .with_repartition_aggregations(false)
+        .with_repartition_sorts(false)
+        .with_target_partitions(1);
+    config.options_mut().optimizer.enable_topk_dynamic_filter_pushdown = false;
+    config.options_mut().optimizer.enable_aggregate_dynamic_filter_pushdown = false;
+    config.options_mut().optimizer.enable_dynamic_filter_pushdown = false;
+    config
 }
 
 fn write_datafusion_baseline_input_parquet(path: &std::path::Path, salt: i64) {

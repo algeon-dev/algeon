@@ -2,7 +2,7 @@ use std::{
     collections::HashSet,
     panic::AssertUnwindSafe,
     sync::{
-        Arc, Barrier, Mutex,
+        Arc, Barrier, Condvar, Mutex,
         atomic::{AtomicUsize, Ordering},
         mpsc,
     },
@@ -96,6 +96,130 @@ fn concurrent_owner_finishers_wait_for_and_share_one_result_cell() {
 }
 
 #[test]
+fn non_reentrant_finisher_waits_for_observer_delivery() {
+    let owner =
+        RuntimeObservationOwner::new("blocking-observer-query", None, RuntimeObservationConfig::bounded(64, 16 * 1024));
+    let gate = Arc::new((Mutex::new(false), Condvar::new()));
+    let observer_gate = Arc::clone(&gate);
+    let (entered_tx, entered_rx) = mpsc::sync_channel(1);
+    owner.register_seal_observer(move |_| {
+        entered_tx.send(()).expect("test receives observer entry");
+        let (lock, changed) = &*observer_gate;
+        let mut released = lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        while !*released {
+            released = changed.wait(released).unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+    });
+
+    let primary_owner = owner.clone();
+    let primary = std::thread::spawn(move || primary_owner.finish_query(RuntimeTerminalOutcome::Succeeded).unwrap());
+    entered_rx.recv().expect("blocking observer entered delivery");
+    assert!(matches!(
+        &*owner.lock_lifecycle(),
+        RuntimeObservationOwnerLifecycleState::Delivering { snapshot: Some(_), .. }
+    ));
+
+    let (started_tx, started_rx) = mpsc::sync_channel(0);
+    let (completed_tx, completed_rx) = mpsc::sync_channel(1);
+    let secondary_owner = owner.clone();
+    let secondary_thread = std::thread::spawn(move || {
+        started_tx.send(()).expect("test observes second finisher start");
+        let snapshot = secondary_owner.finish_query(RuntimeTerminalOutcome::Succeeded).unwrap();
+        completed_tx.send(snapshot).expect("test receives second finisher result");
+    });
+    started_rx.recv().expect("second finisher started");
+    assert!(matches!(completed_rx.try_recv(), Err(mpsc::TryRecvError::Empty)));
+
+    let (lock, changed) = &*gate;
+    *lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = true;
+    changed.notify_all();
+    let primary = primary.join().expect("primary finisher completed");
+    let secondary = completed_rx.recv().expect("second finisher resumes after delivery");
+    secondary_thread.join().expect("second finisher thread completed");
+    assert!(primary.is_same_snapshot(&secondary));
+}
+
+#[test]
+fn late_observer_registration_joins_the_delivery_fence() {
+    enum LateDeliveryEvent {
+        RegistrationReturned,
+        ObserverEntered,
+    }
+
+    let owner = RuntimeObservationOwner::new(
+        "late-observer-delivery-query",
+        None,
+        RuntimeObservationConfig::bounded(64, 16 * 1024),
+    );
+    let primary_gate = Arc::new((Mutex::new(false), Condvar::new()));
+    let primary_observer_gate = Arc::clone(&primary_gate);
+    let (primary_entered_tx, primary_entered_rx) = mpsc::sync_channel(1);
+    owner.register_seal_observer(move |_| {
+        primary_entered_tx.send(()).expect("test receives primary observer entry");
+        let (lock, changed) = &*primary_observer_gate;
+        let mut released = lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        while !*released {
+            released = changed.wait(released).unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+    });
+
+    let primary_owner = owner.clone();
+    let primary = std::thread::spawn(move || primary_owner.finish_query(RuntimeTerminalOutcome::Succeeded).unwrap());
+    primary_entered_rx.recv().expect("primary observer entered delivery");
+
+    let late_gate = Arc::new((Mutex::new(false), Condvar::new()));
+    let late_observer_gate = Arc::clone(&late_gate);
+    let (event_tx, event_rx) = mpsc::channel();
+    let late_owner = owner.clone();
+    let late_registration = std::thread::spawn(move || {
+        let observer_events = event_tx.clone();
+        late_owner.register_seal_observer(move |_| {
+            observer_events.send(LateDeliveryEvent::ObserverEntered).expect("test receives late observer entry");
+            let (lock, changed) = &*late_observer_gate;
+            let mut released = lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            while !*released {
+                released = changed.wait(released).unwrap_or_else(std::sync::PoisonError::into_inner);
+            }
+        });
+        event_tx.send(LateDeliveryEvent::RegistrationReturned).expect("test observes late registration return");
+    });
+    assert!(matches!(event_rx.recv().expect("late registration event"), LateDeliveryEvent::RegistrationReturned));
+
+    let (started_tx, started_rx) = mpsc::sync_channel(0);
+    let (completed_tx, completed_rx) = mpsc::sync_channel(1);
+    let secondary_owner = owner.clone();
+    let secondary = std::thread::spawn(move || {
+        started_tx.send(()).expect("test observes second finisher start");
+        completed_tx
+            .send(secondary_owner.finish_query(RuntimeTerminalOutcome::Succeeded).unwrap())
+            .expect("test receives second finisher result");
+    });
+    started_rx.recv().expect("second finisher started");
+
+    let (lock, changed) = &*primary_gate;
+    *lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = true;
+    changed.notify_all();
+    assert!(matches!(
+        event_rx.recv().expect("late observer entered after primary release"),
+        LateDeliveryEvent::ObserverEntered
+    ));
+    assert!(matches!(
+        &*owner.lock_lifecycle(),
+        RuntimeObservationOwnerLifecycleState::Delivering { snapshot: Some(_), .. }
+    ));
+    assert!(matches!(completed_rx.try_recv(), Err(mpsc::TryRecvError::Empty)));
+
+    let (lock, changed) = &*late_gate;
+    *lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = true;
+    changed.notify_all();
+    let primary = primary.join().expect("primary finisher completed");
+    let secondary_snapshot = completed_rx.recv().expect("second finisher resumes after late observer delivery");
+    secondary.join().expect("second finisher thread completed");
+    late_registration.join().expect("late registration thread completed");
+    assert!(primary.is_same_snapshot(&secondary_snapshot));
+}
+
+#[test]
 fn seal_observer_can_reenter_owner_finish_after_result_publication() {
     let owner = RuntimeObservationOwner::new(
         "reentrant-observer-query",
@@ -105,16 +229,56 @@ fn seal_observer_can_reenter_owner_finish_after_result_publication() {
     let callback_owner = owner.clone();
     let (callback_tx, callback_rx) = mpsc::channel();
     owner.register_seal_observer(move |observed| {
+        let in_delivery = in_runtime_observation_delivery();
         let reentered = callback_owner
             .finish_query(RuntimeTerminalOutcome::Succeeded)
             .expect("reentrant finisher receives the published result");
-        callback_tx.send(reentered.is_same_snapshot(&observed)).unwrap();
+        callback_tx.send((in_delivery, reentered.is_same_snapshot(&observed))).unwrap();
     });
 
     let finisher = std::thread::spawn(move || owner.finish_query(RuntimeTerminalOutcome::Succeeded).unwrap());
-    assert!(callback_rx.recv_timeout(Duration::from_secs(2)).expect("observer must not deadlock"));
+    assert_eq!(callback_rx.recv_timeout(Duration::from_secs(2)).expect("observer must not deadlock"), (true, true));
     let snapshot = finisher.join().unwrap();
     assert_eq!(snapshot.footer().terminal, Some(RuntimeTerminalOutcome::Succeeded));
+}
+
+#[test]
+fn seal_observer_delivery_context_is_scoped_to_the_callback() {
+    let owner = RuntimeObservationOwner::new(
+        "observer-delivery-context-query",
+        None,
+        RuntimeObservationConfig::bounded(64, 16 * 1024),
+    );
+    assert!(!in_runtime_observation_delivery());
+    let (context_tx, context_rx) = mpsc::sync_channel(1);
+    owner.register_seal_observer(move |_| {
+        context_tx.send(in_runtime_observation_delivery()).expect("test receives delivery context");
+    });
+
+    owner.finish_query(RuntimeTerminalOutcome::Succeeded).expect("owner seals");
+    assert!(context_rx.recv().expect("observer ran"));
+    assert!(!in_runtime_observation_delivery());
+}
+
+#[test]
+fn late_delivery_observer_panic_is_isolated_before_completion() {
+    let owner = RuntimeObservationOwner::new(
+        "late-observer-panic-query",
+        None,
+        RuntimeObservationConfig::bounded(64, 16 * 1024),
+    );
+    let callback_owner = owner.clone();
+    let (registered_tx, registered_rx) = mpsc::sync_channel(1);
+    owner.register_seal_observer(move |_| {
+        callback_owner.register_seal_observer(|_| panic!("late observer panic must be isolated"));
+        registered_tx.send(()).expect("test observes late observer registration");
+    });
+
+    let snapshot =
+        owner.finish_query(RuntimeTerminalOutcome::Succeeded).expect("owner completes after late observer panic");
+    registered_rx.recv().expect("initial observer registered a late observer");
+    assert_eq!(snapshot.footer().terminal, Some(RuntimeTerminalOutcome::Succeeded));
+    assert!(matches!(&*owner.lock_lifecycle(), RuntimeObservationOwnerLifecycleState::Sealed(Some(_))));
 }
 
 struct BlockingPanickingClock {

@@ -1,0 +1,28 @@
+error[E0603]: enum `GpuBackendConstructionCheckpoint` is private
+ --> tests/ui/public_api/forbidden_construction_probe.rs:1:35
+  |
+1 | use nexus_query_engine::runtime::{GpuBackendConstructionCheckpoint, GpuBackendConstructionProbe};
+  |                                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ private enum
+  |
+note: the enum `GpuBackendConstructionCheckpoint` is defined here
+ --> src/runtime.rs
+  |
+  | pub(crate) use backend_core::{GpuBackendConstructionCheckpoint, GpuBackendConstructionProbe};
+  |                               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+ ::: src/runtime/backend_core.rs
+  |
+  | #[non_exhaustive]
+  | ----------------- cannot be constructed because it is `#[non_exhaustive]`
+
+error[E0603]: trait `GpuBackendConstructionProbe` is private
+ --> tests/ui/public_api/forbidden_construction_probe.rs:1:69
+  |
+1 | use nexus_query_engine::runtime::{GpuBackendConstructionCheckpoint, GpuBackendConstructionProbe};
+  |                                                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^ private trait
+  |
+note: the trait `GpuBackendConstructionProbe` is defined here
+ --> src/runtime.rs
+  |
+  | pub(crate) use backend_core::{GpuBackendConstructionCheckpoint, GpuBackendConstructionProbe};
+  |                                                                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^

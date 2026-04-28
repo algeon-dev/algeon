@@ -14,7 +14,9 @@ use nexus_query_engine::{
     pipeline::PipelineTaskKind,
     plan::QueryPlan,
     runtime::{
-        ExecutionContext,
+        DeploymentIoCapability, ExecutionContext, GdsDriverProbeStatus, GpuBackendControllerDraft, GpuBackendCore,
+        GpuBackendCoreDraft, GpuBackendDeviceConfig, GpuBackendMemoryShare, GpuBackendTenantDraft, GpuMemoryOwnership,
+        KvikioCompatModeStatus, NvidiaFsProbeStatus, QueryServiceConfig,
         cache::{
             hash_join::GpuHashJoinBuildCache,
             local_parquet::{GpuLocalParquetSourceCache, GpuLocalParquetSourceCacheKey},
@@ -32,7 +34,21 @@ fn canonical_engine_paths_expose_intentional_contract_groups() {
     let _mode = NativePipelineExecutionMode::StrictBounded;
     let _expr = Expr::column("c0");
     let _metrics = QueryMetrics::default();
-    let _runtime = ExecutionContext::builder();
+    let deployment = DeploymentIoCapability::from_probe_inputs(
+        NvidiaFsProbeStatus::DriverMissing,
+        KvikioCompatModeStatus::Unset,
+        GdsDriverProbeStatus::ProbeUnimplemented,
+    );
+    let controller = GpuBackendControllerDraft::from_legacy_policy(
+        QueryServiceConfig::default(),
+        vec![GpuBackendTenantDraft::new("tenant", GpuBackendMemoryShare::Bytes(1), GpuBackendMemoryShare::Bytes(1))],
+    );
+    let draft = GpuBackendCoreDraft::new(
+        vec![GpuBackendDeviceConfig::new(0, GpuMemoryOwnership::WholeDeviceExclusive)],
+        controller,
+        deployment,
+    );
+    let _supported_backend_builder = GpuBackendCore::builder(draft);
     let _hash_join_cache = GpuHashJoinBuildCache::new();
     let _local_parquet_cache = GpuLocalParquetSourceCache::new(0);
     let _local_parquet_key: fn(&LocalParquetSource) -> GpuLocalParquetSourceCacheKey =

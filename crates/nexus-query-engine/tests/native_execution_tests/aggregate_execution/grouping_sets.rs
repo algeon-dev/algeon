@@ -4,7 +4,7 @@ type RollupAvgRow = (Option<String>, Option<String>, Option<String>, Option<Stri
 
 #[test]
 fn bounded_native_query_emits_rollup_grand_total_row_for_empty_literal_input() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = backend_context();
     let input_schema = Arc::new(Schema::new(vec![
         Field::new("key", DataType::Int32, false),
         Field::new("payload", DataType::Int64, false),
@@ -35,17 +35,6 @@ fn bounded_native_query_emits_rollup_grand_total_row_for_empty_literal_input() {
     );
     let plan = builder.finish_with_host_sink(aggregate);
 
-    let context = ExecutionContext::builder()
-        .with_shared_runtime(Arc::clone(&runtime))
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: 8 * 1024 * 1024 * 1024,
-            max_source_chunk_bytes: 1024 * 1024,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 1,
-            min_retry_chunk_row_groups: 1,
-        })
-        .build()
-        .unwrap();
     let result = execute_query_plan(&context, &plan).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");
@@ -59,7 +48,7 @@ fn bounded_native_query_emits_rollup_grand_total_row_for_empty_literal_input() {
 fn bounded_native_query_emits_rollup_grand_total_row_for_runtime_filtered_empty_input() {
     let dir = unique_temp_dir("nexus-query-engine-bounded-native-filtered-empty-rollup");
     let path = dir.join("bench.parquet");
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = backend_context();
     let input_schema = write_filtered_empty_rollup_input_parquet(&path);
 
     let output_schema = Arc::new(Schema::new(vec![
@@ -88,17 +77,6 @@ fn bounded_native_query_emits_rollup_grand_total_row_for_runtime_filtered_empty_
     );
     let plan = builder.finish_with_host_sink(aggregate);
 
-    let context = ExecutionContext::builder()
-        .with_shared_runtime(Arc::clone(&runtime))
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: 8 * 1024 * 1024 * 1024,
-            max_source_chunk_bytes: 1024 * 1024,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 1,
-            min_retry_chunk_row_groups: 1,
-        })
-        .build()
-        .unwrap();
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics().clone();
     let QueryOutput::HostArrow(batch) = result.output() else {
@@ -130,7 +108,7 @@ fn bounded_compiled_join_rollup_avg_final_merge_concatenates_typed_null_partials
     let dir = unique_temp_dir("nexus-query-engine-bounded-compiled-rollup-avg-typed-null-partials");
     let inventory_path = dir.join("inventory.parquet");
     let item_path = dir.join("item.parquet");
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = backend_context();
     let inventory_schema = write_inventory_rollup_parquet(&inventory_path);
     let item_schema = write_item_rollup_parquet(&item_path);
     let join_schema = Arc::new(Schema::new(vec![
@@ -228,18 +206,6 @@ fn bounded_compiled_join_rollup_avg_final_merge_concatenates_typed_null_partials
     );
     let plan = builder.finish_with_host_sink(sort);
 
-    let context = ExecutionContext::builder()
-        .with_shared_runtime(Arc::clone(&runtime))
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: 8 * 1024 * 1024 * 1024,
-            max_source_chunk_bytes: 1,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 1,
-            min_retry_chunk_row_groups: 1,
-        })
-        .with_source_scheduler_policy(SourceSchedulerPolicy::new(3))
-        .build()
-        .unwrap();
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
     assert_eq!(metrics.compiled_pipeline_attempts, 1);
