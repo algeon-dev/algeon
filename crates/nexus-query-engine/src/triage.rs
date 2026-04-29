@@ -82,6 +82,7 @@ impl From<QueryErrorCode> for TriageCode {
             QueryErrorCode::UnsupportedType => Self::UnsupportedType,
             QueryErrorCode::CudfUnsupported => Self::UnsupportedPlanShape,
             QueryErrorCode::InvalidPlan => Self::InvalidPlan,
+            QueryErrorCode::InvalidAttemptCorrelation => Self::InvalidInput,
             QueryErrorCode::GraphInputInvalid => Self::InvalidInput,
             QueryErrorCode::CudfInvalidInput => Self::InvalidInput,
             QueryErrorCode::MemoryReservationFailed => Self::MemoryReservationDenied,

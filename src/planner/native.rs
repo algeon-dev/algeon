@@ -14,12 +14,13 @@ use super::{
     FinalPlanDisposition, FinalPlanRequirement, HostExecutionQosConfig, NexusNativeOptimizerConfig, classify_final_plan,
 };
 use crate::{
+    attempt::NexusAttemptExtension,
     error::{Error, ErrorCode},
     native::lakehouse_pruning,
     native_exec::{
         NexusNativeComposedExec, NexusNativeComposedGpuProducerExec, NexusNativeExec, NexusNativeExecutionConfig,
         NexusNativeGpuProducerExec,
-        admission::QueryAdmissionTicket,
+        admission::{AttemptTicketBinding, QueryAdmissionTicket},
         graph::{GraphAdmissionModelAsk, graph_execution_plan},
         plan_is_host_execution_qos_limited, plan_is_query_admission_wrapped,
         plan_is_unbounded_native_execution_limited, wrap_plan_with_host_execution_qos,
@@ -434,8 +435,14 @@ impl PhysicalOptimizerRule for NexusNativePhysicalOptimizerRule {
         *self.state.last_input_join_diagnostics.lock().expect("native input join diagnostics mutex poisoned") =
             physical_join_diagnostics(plan.as_ref());
 
-        let effective_config =
-            self.config.with_datafusion_config_options(config)?.with_query_id_if_absent(QueryId::mint());
+        let attempt_extension = config.extensions.get::<NexusAttemptExtension>().cloned();
+        let effective_config = self.config.with_datafusion_config_options(config)?.with_query_id_if_absent(
+            attempt_extension
+                .as_ref()
+                .and_then(|extension| extension.state.query_id.as_ref())
+                .map(|query_id| QueryId::new(query_id.as_str()))
+                .unwrap_or_else(QueryId::mint),
+        );
         let native_execution_config = effective_config
             .native_execution_config()
             .clone()
@@ -461,10 +468,18 @@ impl PhysicalOptimizerRule for NexusNativePhysicalOptimizerRule {
         };
         let mut optimized = optimized;
         let query_admission_ticket = if optimized.rewritten {
-            plan_query_admission_ticket_for_optimized_plan(optimized.plan.as_ref(), native_execution_config)?
+            plan_query_admission_ticket_for_optimized_plan(
+                optimized.plan.as_ref(),
+                native_execution_config,
+                attempt_extension.as_ref(),
+            )?
         } else {
             None
         };
+        if let (Some(extension), Some(ticket)) = (&attempt_extension, &query_admission_ticket) {
+            *extension.state.ticket.lock().unwrap_or_else(std::sync::PoisonError::into_inner) =
+                Some(Arc::clone(ticket));
+        }
         apply_execution_admission_wrappers(&mut optimized, native_execution_config, query_admission_ticket);
         self.store_optimization_attempt(&optimized)?;
         Ok(optimized.plan)
@@ -530,18 +545,36 @@ fn apply_execution_admission_wrappers(
 fn plan_query_admission_ticket_for_optimized_plan(
     plan: &dyn ExecutionPlan,
     native_execution_config: &NexusNativeExecutionConfig,
+    attempt: Option<&NexusAttemptExtension>,
 ) -> DataFusionResult<Option<Arc<QueryAdmissionTicket>>> {
     let graph_model_ask = graph_aware_requested_grant_bytes_for_plan(plan, native_execution_config)?;
     let placement_hint = graph_placement_hint_for_plan(plan);
-    native_execution_config
-        .new_plan_query_admission_ticket_with_graph_model_ask(graph_model_ask, placement_hint)
+    let ticket = native_execution_config
+        .new_plan_query_admission_ticket_with_graph_model_ask(graph_model_ask, placement_hint.clone())
         .map_err(|error| {
             datafusion::common::DataFusionError::from(Error::from_native(
                 "datafusion_nexus.native_optimizer.graph_ticket_ask",
                 "failed to compute graph-aware query admission ticket ask",
                 error,
             ))
-        })
+        })?;
+    Ok(ticket.map(|ticket| match attempt {
+        Some(extension) => QueryAdmissionTicket::new_attempt_bound(
+            ticket.source(),
+            ticket.requested_grant_min_bytes_for_rebind(),
+            ticket.requested_grant_bytes_for_rebind(),
+            ticket.placement_hint_for_rebind(),
+            #[cfg(feature = "cugraph")]
+            ticket.warm_graph_requested_grant_bytes_for_rebind(),
+            AttemptTicketBinding {
+                handle: extension.state.handle.clone(),
+                cancellation: extension.state.cancellation.clone(),
+                observation_owner: extension.state.observation_owner.clone(),
+            },
+            ticket.metrics_capture(),
+        ),
+        None => ticket,
+    }))
 }
 
 fn graph_placement_hint_for_plan(plan: &dyn ExecutionPlan) -> QueryPlacementHint {
@@ -954,7 +987,7 @@ mod tests {
             config.graph_aware_requested_grant_bytes_for_model_ask(model_ask.map(|ask| ask.cold_bytes())).unwrap();
 
         let requested = graph_aware_requested_grant_bytes_for_plan(&exec, &config).unwrap();
-        let ticket = plan_query_admission_ticket_for_optimized_plan(&exec, &config).unwrap().unwrap();
+        let ticket = plan_query_admission_ticket_for_optimized_plan(&exec, &config, None).unwrap().unwrap();
 
         assert_eq!(requested, model_ask);
         assert_eq!(ticket.requested_grant_bytes(), expected);
@@ -968,7 +1001,7 @@ mod tests {
         let exec = graph_exec(Some(vec![100, 200]), &config);
 
         assert_eq!(graph_aware_requested_grant_bytes_for_plan(&exec, &config).unwrap(), None);
-        let ticket = plan_query_admission_ticket_for_optimized_plan(&exec, &config).unwrap().unwrap();
+        let ticket = plan_query_admission_ticket_for_optimized_plan(&exec, &config, None).unwrap().unwrap();
         assert_eq!(ticket.requested_grant_bytes(), Some(768 * 1024 * 1024));
     }
 
@@ -978,7 +1011,7 @@ mod tests {
         let exec = graph_exec(None, &config);
 
         assert_eq!(graph_aware_requested_grant_bytes_for_plan(&exec, &config).unwrap(), None);
-        let ticket = plan_query_admission_ticket_for_optimized_plan(&exec, &config).unwrap().unwrap();
+        let ticket = plan_query_admission_ticket_for_optimized_plan(&exec, &config, None).unwrap().unwrap();
         assert_eq!(ticket.requested_grant_bytes(), None);
     }
 
@@ -989,7 +1022,7 @@ mod tests {
 
         let ask = graph_aware_requested_grant_bytes_for_plan(&exec, &config).unwrap().unwrap();
         assert!(ask.cold_bytes() > ask.warm_bytes());
-        let ticket = plan_query_admission_ticket_for_optimized_plan(&exec, &config).unwrap().unwrap();
+        let ticket = plan_query_admission_ticket_for_optimized_plan(&exec, &config, None).unwrap().unwrap();
         assert!(ticket.requested_grant_bytes().is_some());
     }
 
@@ -1001,7 +1034,7 @@ mod tests {
         let plan = UnionExec::try_new(vec![known, unknown]).unwrap();
 
         assert_eq!(graph_aware_requested_grant_bytes_for_plan(plan.as_ref(), &config).unwrap(), None);
-        let ticket = plan_query_admission_ticket_for_optimized_plan(plan.as_ref(), &config).unwrap().unwrap();
+        let ticket = plan_query_admission_ticket_for_optimized_plan(plan.as_ref(), &config, None).unwrap().unwrap();
         assert_eq!(ticket.requested_grant_bytes(), None);
     }
 
@@ -1011,7 +1044,7 @@ mod tests {
         let exec = NexusNativeExec::try_new(graph_union_native_plan(Some(vec![100, 200])), config.clone()).unwrap();
 
         assert_eq!(graph_aware_requested_grant_bytes_for_plan(&exec, &config).unwrap(), None);
-        let ticket = plan_query_admission_ticket_for_optimized_plan(&exec, &config).unwrap().unwrap();
+        let ticket = plan_query_admission_ticket_for_optimized_plan(&exec, &config, None).unwrap().unwrap();
         assert_eq!(ticket.requested_grant_bytes(), None);
     }
 }

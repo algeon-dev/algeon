@@ -351,6 +351,10 @@ impl ExecutionPlan for NexusNativeComposedExec {
                     ))
                 })?;
                 let observation = context_lease.context().runtime_observation().clone();
+                if let Some(ticket) = super::admission::query_admission_ticket_from_task_context(task_context.as_ref())
+                {
+                    ticket.record_attempt_gpu_execution_started();
+                }
                 let cursor_executor = gpu_executor.clone();
                 let cursor_observation = observation.clone();
                 let cursor_metrics = metrics.clone();

@@ -233,7 +233,7 @@ impl ExecutionPlan for NexusNativeExec {
                 // Context construction is the configuration/validation stage. Failures here happen
                 // before the native query starts.
                 let context_lease = execution_config
-                    .execution_context_async(task_context)
+                    .execution_context_async(Arc::clone(&task_context))
                     .await
                     .map_err(|error| DataFusionError::from(mark_native_runtime_error(error, "runtime_context")))?;
                 if let Some(admission_facts) = context_lease.admission_facts() {
@@ -250,6 +250,10 @@ impl ExecutionPlan for NexusNativeExec {
                     ))
                 })?;
                 let observation = context_lease.context().runtime_observation().clone();
+                if let Some(ticket) = super::admission::query_admission_ticket_from_task_context(task_context.as_ref())
+                {
+                    ticket.record_attempt_gpu_execution_started();
+                }
                 let cursor_executor = gpu_executor.clone();
                 let cursor_observation = observation.clone();
                 let cursor_metrics = metrics.clone();

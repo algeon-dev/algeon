@@ -17,6 +17,7 @@
 //! runtime policy, capability admission, and cudf execution live in
 //! [`nexus_query_engine`].
 
+pub mod attempt;
 pub mod backend;
 pub mod capability;
 pub mod cugraph_sql;

@@ -42,6 +42,8 @@ pub enum QueryErrorCode {
     /// Use this when the plan is malformed for the native engine, not when the
     /// plan is well-formed but outside the supported catalogue.
     InvalidPlan,
+    /// Caller-supplied execution-attempt correlation is invalid or oversized.
+    InvalidAttemptCorrelation,
     /// Runtime graph inputs violate an engine-owned graph-operation contract.
     ///
     /// Unlike [`Self::InvalidPlan`], this describes materialized edge or
@@ -103,6 +105,7 @@ impl QueryErrorCode {
             Self::UnsupportedExpression => "unsupported_expression",
             Self::UnsupportedType => "unsupported_type",
             Self::InvalidPlan => "invalid_plan",
+            Self::InvalidAttemptCorrelation => "invalid_attempt_correlation",
             Self::GraphInputInvalid => "graph_input_invalid",
             Self::CudfInvalidInput => "cudf_invalid_input",
             Self::CudfUnsupported => "cudf_unsupported",
@@ -234,6 +237,7 @@ pub const fn kind_for_code(code: QueryErrorCode) -> QueryErrorKind {
         | QueryErrorCode::UnsupportedExpression
         | QueryErrorCode::UnsupportedType => QueryErrorKind::Unsupported,
         QueryErrorCode::InvalidPlan => QueryErrorKind::Planning,
+        QueryErrorCode::InvalidAttemptCorrelation => QueryErrorKind::InvalidInput,
         QueryErrorCode::GraphInputInvalid => QueryErrorKind::InvalidInput,
         QueryErrorCode::CudfInvalidInput => QueryErrorKind::InvalidInput,
         QueryErrorCode::CudfUnsupported => QueryErrorKind::Unsupported,
@@ -275,6 +279,7 @@ pub const fn status_for_code(code: QueryErrorCode) -> QueryErrorStatus {
         | QueryErrorCode::UnsupportedExpression
         | QueryErrorCode::UnsupportedType
         | QueryErrorCode::InvalidPlan
+        | QueryErrorCode::InvalidAttemptCorrelation
         | QueryErrorCode::GraphInputInvalid
         | QueryErrorCode::CudfInvalidInput
         | QueryErrorCode::CudfUnsupported

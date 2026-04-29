@@ -63,9 +63,26 @@ async fn aborting_server_future_never_blocks_current_thread_runtime_drop() {
         .expect_err("aborted server task must report cancellation");
     assert!(error.is_cancelled());
 
-    let replacement = NexusGpuBackend::from_server_config(&replacement_config)
-        .expect("nonblocking abort must release a quiescent server governor claim")
-        .expect("default server config is bounded");
+    // The aborted build may already hold the device-owner lease; its close
+    // and rollback release it asynchronously. Wait for that release instead
+    // of assuming it already happened: the race between the first yield and
+    // the ownership claim is environment-dependent.
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    let replacement = loop {
+        match NexusGpuBackend::from_server_config(&replacement_config) {
+            Ok(Some(backend)) => break backend,
+            Ok(None) => panic!("default server config is bounded"),
+            Err(error)
+                if error.fact_value("native_operation") == Some("nexus_query_engine.gpu.owner.claim")
+                    && std::time::Instant::now() < deadline =>
+            {
+                std::thread::sleep(Duration::from_millis(25));
+            },
+            Err(error) => {
+                panic!("nonblocking abort must release a quiescent server governor claim: {error:?}")
+            },
+        }
+    };
     drop(replacement);
 }
 

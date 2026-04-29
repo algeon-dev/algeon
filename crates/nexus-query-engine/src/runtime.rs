@@ -41,6 +41,9 @@ pub use backend_core::{
     GpuBackendSession, GpuBackendTenantDraft, GpuDeviceMemoryLimit, GpuMemoryFraction, GpuMemoryOwnership,
 };
 pub(crate) use backend_core::{GpuBackendConstructionCheckpoint, GpuBackendConstructionProbe};
+#[cfg(test)]
+pub(crate) use backend_lifecycle::BackendLifecycle;
+pub(crate) use backend_lifecycle::ObservationPermit;
 pub use boundary::{
     BuildMaterializationBoundary, ExecutionBoundaryPolicy, ProbeExecutionBoundary, ResultMaterializationBoundary,
     SourceReadBoundary,
