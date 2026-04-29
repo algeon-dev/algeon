@@ -19,6 +19,7 @@ pub enum QueryErrorCode {
     CudfPersistentFailure,
     CudfDependencyFailure,
     CudfInvariantViolation,
+    MemoryReservationFailed,
     Internal,
 }
 
@@ -37,6 +38,7 @@ impl QueryErrorCode {
             Self::CudfPersistentFailure => "cudf_persistent_failure",
             Self::CudfDependencyFailure => "cudf_dependency_failure",
             Self::CudfInvariantViolation => "cudf_invariant_violation",
+            Self::MemoryReservationFailed => "memory_reservation_failed",
             Self::Internal => "internal",
         }
     }
@@ -120,7 +122,9 @@ pub const fn kind_for_code(code: QueryErrorCode) -> QueryErrorKind {
         QueryErrorCode::InvalidPlan => QueryErrorKind::Planning,
         QueryErrorCode::CudfInvalidInput => QueryErrorKind::InvalidInput,
         QueryErrorCode::CudfUnsupported => QueryErrorKind::Unsupported,
-        QueryErrorCode::CudfResourceExhausted => QueryErrorKind::ResourceExhausted,
+        QueryErrorCode::CudfResourceExhausted | QueryErrorCode::MemoryReservationFailed => {
+            QueryErrorKind::ResourceExhausted
+        },
         QueryErrorCode::CudfTemporaryFailure
         | QueryErrorCode::CudfPersistentFailure
         | QueryErrorCode::CudfDependencyFailure => QueryErrorKind::DependencyFailure,
@@ -131,7 +135,9 @@ pub const fn kind_for_code(code: QueryErrorCode) -> QueryErrorKind {
 
 pub const fn status_for_code(code: QueryErrorCode) -> QueryErrorStatus {
     match code {
-        QueryErrorCode::CudfResourceExhausted | QueryErrorCode::CudfTemporaryFailure => QueryErrorStatus::Temporary,
+        QueryErrorCode::CudfResourceExhausted
+        | QueryErrorCode::CudfTemporaryFailure
+        | QueryErrorCode::MemoryReservationFailed => QueryErrorStatus::Temporary,
         QueryErrorCode::CudfPersistentFailure => QueryErrorStatus::Persistent,
         QueryErrorCode::UnsupportedPlanShape
         | QueryErrorCode::UnsupportedOperator
@@ -195,9 +201,7 @@ impl QueryError {
 
     #[must_use]
     pub fn with_source<E>(mut self, source: E) -> Self
-    where
-        E: StdError + Send + Sync + 'static,
-    {
+    where E: StdError + Send + Sync + 'static {
         self.source = Some(Box::new(source));
         self
     }

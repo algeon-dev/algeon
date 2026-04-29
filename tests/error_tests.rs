@@ -14,6 +14,10 @@ fn error_code_projections_are_stable_policy_contracts() {
     assert_eq!(ErrorCode::CudfPersistentFailure.as_str(), "cudf_persistent_failure");
     assert_eq!(ErrorCode::CudfPersistentFailure.kind(), ErrorKind::DependencyFailure);
     assert_eq!(ErrorCode::CudfPersistentFailure.status(), ErrorStatus::Persistent);
+
+    assert_eq!(ErrorCode::MemoryReservationFailed.as_str(), "memory_reservation_failed");
+    assert_eq!(ErrorCode::MemoryReservationFailed.kind(), ErrorKind::ResourceExhausted);
+    assert_eq!(ErrorCode::MemoryReservationFailed.status(), ErrorStatus::Temporary);
 }
 
 #[test]
@@ -57,4 +61,26 @@ fn datafusion_conversion_preserves_typed_adapter_error() {
     assert_eq!(adapter_error.code(), ErrorCode::InvalidExecutionPlan);
     assert_eq!(adapter_error.kind(), ErrorKind::Planning);
     assert_eq!(adapter_error.fact_value("plan_node"), Some("EmptyExec"));
+}
+
+#[test]
+fn native_memory_reservation_error_preserves_adapter_classification_and_facts() {
+    let native_error =
+        cudf_query_engine::MemoryReservationRequest::new(cudf_query_engine::ReservationKind::FinalSort, 4096, 2048)
+            .with_node_id("n5")
+            .with_stage("final_sort")
+            .with_attempt(1, 3)
+            .denied_error(1024);
+
+    let adapter_error =
+        Error::from_native("datafusion_cudf.native.execute", "native cudf query execution failed", native_error);
+
+    assert_eq!(adapter_error.code(), ErrorCode::MemoryReservationFailed);
+    assert_eq!(adapter_error.kind(), ErrorKind::ResourceExhausted);
+    assert_eq!(adapter_error.status(), ErrorStatus::Temporary);
+    assert_eq!(adapter_error.fact_value("native_code"), Some("memory_reservation_failed"));
+    assert_eq!(adapter_error.fact_value("reservation_kind"), Some("final_sort"));
+    assert_eq!(adapter_error.fact_value("node_id"), Some("n5"));
+    assert_eq!(adapter_error.fact_value("attempt"), Some("1"));
+    assert_eq!(adapter_error.fact_value("max_attempts"), Some("3"));
 }

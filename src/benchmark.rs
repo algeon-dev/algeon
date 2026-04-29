@@ -35,6 +35,10 @@ use datafusion::{
 
 use crate::{CandidateOutcome, CudfOptimizerConfig, FallbackReason, GpuFallbackPolicy, PlanningReport, optimize_plan};
 
+const PHASE_C_MEMORY_CONTROL_UNBOUNDED: &str = "unbounded";
+const PHASE_C_RUNTIME_GATE_NOT_EVALUATED: &str = "not_evaluated";
+const PHASE_C_MEMORY_CONTROL_BOUNDED: &str = "bounded";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LargerIslandBenchmarkConfig {
     input_rows: usize,
@@ -161,8 +165,28 @@ impl TimedBenchmarkRun {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LargerIslandBenchmarkMetrics {
+    pub phase_c_memory_control_policy: &'static str,
+    pub phase_c_runtime_gate: &'static str,
     pub input_batches: usize,
     pub input_rows: usize,
+    pub resident_dataframe_peak_bytes: Option<usize>,
+    pub allocator_high_water_bytes: Option<usize>,
+    pub reservation_requested_bytes: usize,
+    pub reservation_granted_bytes: usize,
+    pub reservation_denied_count: usize,
+    pub source_chunks_planned: usize,
+    pub source_chunks_attempted: usize,
+    pub source_chunks_committed: usize,
+    pub source_chunks_retried: usize,
+    pub row_groups_planned: usize,
+    pub row_groups_committed: usize,
+    pub partial_aggregate_count: usize,
+    pub partial_aggregate_rows: usize,
+    pub final_merge_attempts: usize,
+    pub final_merge_levels: usize,
+    pub retry_count: usize,
+    pub retry_resource_exhausted_count: usize,
+    pub retry_reservation_failure_count: usize,
     pub peak_device_memory_bytes: Option<usize>,
     pub host_to_device_uploads: usize,
     pub host_to_device_uploaded_rows: usize,
@@ -185,8 +209,28 @@ pub struct LargerIslandBenchmarkMetrics {
 impl LargerIslandBenchmarkMetrics {
     pub fn from_metrics(metrics: &MetricsSet) -> Self {
         Self {
+            phase_c_memory_control_policy: PHASE_C_MEMORY_CONTROL_UNBOUNDED,
+            phase_c_runtime_gate: PHASE_C_RUNTIME_GATE_NOT_EVALUATED,
             input_batches: metric_count(metrics, "input_batches"),
             input_rows: metric_count(metrics, "input_rows"),
+            resident_dataframe_peak_bytes: None,
+            allocator_high_water_bytes: None,
+            reservation_requested_bytes: 0,
+            reservation_granted_bytes: 0,
+            reservation_denied_count: 0,
+            source_chunks_planned: 0,
+            source_chunks_attempted: 0,
+            source_chunks_committed: 0,
+            source_chunks_retried: 0,
+            row_groups_planned: 0,
+            row_groups_committed: 0,
+            partial_aggregate_count: 0,
+            partial_aggregate_rows: 0,
+            final_merge_attempts: 0,
+            final_merge_levels: 0,
+            retry_count: 0,
+            retry_resource_exhausted_count: 0,
+            retry_reservation_failure_count: 0,
             peak_device_memory_bytes: None,
             host_to_device_uploads: metric_count(metrics, "host_to_device_uploads"),
             host_to_device_uploaded_rows: metric_count(metrics, "host_to_device_uploaded_rows"),
@@ -204,6 +248,56 @@ impl LargerIslandBenchmarkMetrics {
             record_batch_materialization_time: metric_duration(metrics, "record_batch_materialization_time"),
             elapsed_compute: metrics.elapsed_compute().map(duration_from_nanos),
             output_rows: metrics.output_rows(),
+        }
+    }
+
+    pub fn assess_phase_c_runtime_gate(&self, output_equality_verified: bool) -> PhaseCRuntimeGateStatus {
+        if self.phase_c_memory_control_policy == PHASE_C_MEMORY_CONTROL_UNBOUNDED {
+            return PhaseCRuntimeGateStatus::NotEvaluated;
+        }
+        if self.phase_c_memory_control_policy != PHASE_C_MEMORY_CONTROL_BOUNDED {
+            return PhaseCRuntimeGateStatus::Fail;
+        }
+        if !output_equality_verified {
+            return PhaseCRuntimeGateStatus::Fail;
+        }
+        if self.host_to_device_uploads != 0
+            || self.host_to_device_uploaded_rows != 0
+            || self.host_to_device_uploaded_bytes != 0
+        {
+            return PhaseCRuntimeGateStatus::Fail;
+        }
+        if self.device_to_host_materializations != 1 {
+            return PhaseCRuntimeGateStatus::Fail;
+        }
+        if self.source_chunks_planned == 0
+            || self.source_chunks_committed == 0
+            || self.row_groups_planned == 0
+            || self.row_groups_committed != self.row_groups_planned
+        {
+            return PhaseCRuntimeGateStatus::Fail;
+        }
+        if self.resident_dataframe_peak_bytes.is_none() {
+            return PhaseCRuntimeGateStatus::Fail;
+        }
+
+        PhaseCRuntimeGateStatus::Pass
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PhaseCRuntimeGateStatus {
+    Pass,
+    Fail,
+    NotEvaluated,
+}
+
+impl PhaseCRuntimeGateStatus {
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::Pass => "pass",
+            Self::Fail => "fail",
+            Self::NotEvaluated => PHASE_C_RUNTIME_GATE_NOT_EVALUATED,
         }
     }
 }
@@ -416,6 +510,8 @@ impl LargerIslandBenchmarkReport {
         let _ = writeln!(output, "group_count={}", self.config.group_count);
         let _ = writeln!(output, "limit={}", self.config.limit);
         let _ = writeln!(output, "iterations={}", self.config.iterations);
+        let _ = writeln!(output, "phase_c_memory_control_policy={}", self.gpu_metrics.phase_c_memory_control_policy);
+        let _ = writeln!(output, "phase_c_runtime_gate={}", self.gpu_metrics.phase_c_runtime_gate);
         let _ = writeln!(output, "input_batches={}", self.gpu_metrics.input_batches);
         let _ = writeln!(output, "cpu_baseline_wall_ms={:.3}", duration_ms(self.cpu_baseline.mean));
         let _ = writeln!(output, "gpu_island_wall_ms={:.3}", duration_ms(self.gpu_island.mean));
@@ -435,6 +531,23 @@ impl LargerIslandBenchmarkReport {
         let _ = writeln!(output, "parquet_bytes_known={}", self.gpu_metrics.parquet_bytes_known);
         let _ = writeln!(output, "row_groups_selected={}", self.gpu_metrics.row_groups_selected);
         let _ = writeln!(output, "read_columns={}", self.gpu_metrics.read_columns);
+        let _ = writeln!(output, "source_chunks_planned={}", self.gpu_metrics.source_chunks_planned);
+        let _ = writeln!(output, "source_chunks_committed={}", self.gpu_metrics.source_chunks_committed);
+        let _ = writeln!(output, "source_chunks_retried={}", self.gpu_metrics.source_chunks_retried);
+        let _ = writeln!(output, "retry_count={}", self.gpu_metrics.retry_count);
+        let _ = writeln!(output, "reservation_denied_count={}", self.gpu_metrics.reservation_denied_count);
+        let _ = writeln!(
+            output,
+            "resident_dataframe_peak_bytes={}",
+            optional_usize_text(self.gpu_metrics.resident_dataframe_peak_bytes)
+        );
+        let _ = writeln!(
+            output,
+            "allocator_high_water_bytes={}",
+            optional_usize_text(self.gpu_metrics.allocator_high_water_bytes)
+        );
+        let _ = writeln!(output, "final_merge_attempts={}", self.gpu_metrics.final_merge_attempts);
+        let _ = writeln!(output, "final_merge_levels={}", self.gpu_metrics.final_merge_levels);
         let _ =
             writeln!(output, "device_to_host_materializations={}", self.gpu_metrics.device_to_host_materializations);
         let _ =
@@ -705,6 +818,10 @@ fn duration_div(duration: Duration, divisor: usize) -> Duration {
 
 fn duration_ms(duration: Duration) -> f64 {
     duration.as_secs_f64() * 1_000.0
+}
+
+fn optional_usize_text(value: Option<usize>) -> String {
+    value.map_or_else(|| "unavailable".to_string(), |value| value.to_string())
 }
 
 fn benchmark_gate_status(reasons: &[BenchmarkGateReason]) -> BenchmarkGateStatus {

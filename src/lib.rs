@@ -13,8 +13,8 @@ pub mod session;
 pub use benchmark::{
     BenchmarkGateReason, BenchmarkGateStatus, LargerIslandBenchmarkAssessment, LargerIslandBenchmarkConfig,
     LargerIslandBenchmarkDecisionCriteria, LargerIslandBenchmarkMetrics, LargerIslandBenchmarkPlanning,
-    LargerIslandBenchmarkReport, TimedBenchmarkRun, build_larger_island_benchmark_plan, run_larger_island_benchmark,
-    run_larger_island_benchmark_with_optimizer,
+    LargerIslandBenchmarkReport, PhaseCRuntimeGateStatus, TimedBenchmarkRun, build_larger_island_benchmark_plan,
+    run_larger_island_benchmark, run_larger_island_benchmark_with_optimizer,
 };
 pub use error::{Error, ErrorCode, ErrorKind, ErrorStatus, Facts, Result};
 pub use exec::{CudfExecutionConfig, CudfGpuIslandExec};

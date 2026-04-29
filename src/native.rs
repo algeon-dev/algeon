@@ -5,15 +5,19 @@ use cudf_query_engine::{
     AggregateExpr as NativeAggregateExpr, AggregateFunction as NativeAggregateFunction,
     AggregateSpec as NativeAggregateSpec, BinaryOp as NativeBinaryOp, Expr as NativeExpr, LimitSpec as NativeLimitSpec,
     LiteralValue as NativeLiteralValue, LocalParquetFile as NativeLocalParquetFile,
-    LocalParquetSource as NativeLocalParquetSource, QueryPlan as NativeQueryPlan,
-    QueryPlanBuilder as NativeQueryPlanBuilder, SortExpr as NativeSortExpr, SortSpec as NativeSortSpec,
-    SourceNode as NativeSourceNode,
+    LocalParquetSource as NativeLocalParquetSource, PredicateDisposition as NativePredicateDisposition,
+    QueryPlan as NativeQueryPlan, QueryPlanBuilder as NativeQueryPlanBuilder,
+    RejectedSourceFeature as NativeRejectedSourceFeature, SortExpr as NativeSortExpr, SortSpec as NativeSortSpec,
+    SourceDiagnostics as NativeSourceDiagnostics, SourceNode as NativeSourceNode,
 };
 use datafusion::{
     common::ScalarValue,
     datasource::{
         listing::PartitionedFile,
-        physical_plan::{FileScanConfig, FileSource, ParquetSource},
+        physical_plan::{
+            FileScanConfig, FileSource, ParquetSource,
+            parquet::{ParquetAccessPlan, RowGroupAccess},
+        },
         source::DataSourceExec,
     },
     logical_expr::Operator,
@@ -27,7 +31,7 @@ use datafusion::{
         filter::FilterExec,
         limit::LocalLimitExec,
         projection::{ProjectionExec, ProjectionExpr},
-        sorts::sort::SortExec,
+        sorts::{sort::SortExec, sort_preserving_merge::SortPreservingMergeExec},
     },
 };
 
@@ -36,12 +40,16 @@ use crate::{
     report::{GpuCandidate, PlanningReport},
 };
 
-const SLICE1_SHAPE: &str = "LocalLimitExec(SortExec(AggregateExec(ProjectionExec(FilterExec(LocalParquetScan)))))";
+const LOCAL_LIMIT_SHAPE: &str = "LocalLimitExec(SortExec(AggregateExec(ProjectionExec(FilterExec(LocalParquetScan)))))";
+const SORT_FETCH_SHAPE: &str = "SortExec(fetch)(AggregateExec(ProjectionExec(FilterExec(LocalParquetScan))))";
+const SORT_PRESERVING_MERGE_SHAPE: &str = "SortPreservingMergeExec";
+const UNSUPPORTED_NATIVE_PLAN_SHAPE: &str = "UnsupportedNativePhysicalPlan";
 
 #[derive(Debug, Clone)]
 pub struct NativeLoweringResult {
     pub plans: Vec<NativeQueryPlan>,
     pub report: PlanningReport,
+    pub source_diagnostics: Vec<NativeSourceDiagnostics>,
 }
 
 impl NativeLoweringResult {
@@ -59,30 +67,126 @@ impl NativeLoweringResult {
 }
 
 pub fn lower_physical_plan_to_native(plan: Arc<dyn ExecutionPlan>) -> NativeLoweringResult {
-    let candidate = GpuCandidate::with_operator_count(SLICE1_SHAPE, plan.schema().fields().len(), 5);
-    match lower_slice1_plan(plan.as_ref()) {
-        Ok(native_plan) => {
+    match normalize_native_plan(plan.as_ref()) {
+        Ok(normalized) => lower_normalized_plan(&normalized).map_or_else(
+            |reason| {
+                let mut report = PlanningReport::new();
+                report.push_rejected(normalized.candidate, reason);
+                NativeLoweringResult {
+                    plans: Vec::new(),
+                    report,
+                    source_diagnostics: source_diagnostics_for_normalized_plan(&normalized),
+                }
+            },
+            |native_plan| {
+                let mut report = PlanningReport::new();
+                report.push_rewritten(normalized.candidate);
+                NativeLoweringResult {
+                    plans: vec![native_plan],
+                    report,
+                    source_diagnostics: source_diagnostics_for_normalized_plan(&normalized),
+                }
+            },
+        ),
+        Err(rejection) => {
             let mut report = PlanningReport::new();
-            report.push_rewritten(candidate);
-            NativeLoweringResult { plans: vec![native_plan], report }
-        },
-        Err(reason) => {
-            let mut report = PlanningReport::new();
-            report.push_rejected(candidate, reason);
-            NativeLoweringResult { plans: Vec::new(), report }
+            report.push_rejected(rejection.candidate, rejection.reason);
+            NativeLoweringResult { plans: Vec::new(), report, source_diagnostics: Vec::new() }
         },
     }
 }
 
-fn lower_slice1_plan(plan: &dyn ExecutionPlan) -> Result<NativeQueryPlan, FallbackReason> {
-    let limit = plan.as_any().downcast_ref::<LocalLimitExec>().ok_or(FallbackReason::UnsupportedOperator)?;
-    let sort = limit.input().as_any().downcast_ref::<SortExec>().ok_or(FallbackReason::UnsupportedOperator)?;
-    let aggregate = sort.input().as_any().downcast_ref::<AggregateExec>().ok_or(FallbackReason::UnsupportedOperator)?;
-    let projection =
-        aggregate.input().as_any().downcast_ref::<ProjectionExec>().ok_or(FallbackReason::UnsupportedOperator)?;
-    let filter = projection.input().as_any().downcast_ref::<FilterExec>().ok_or(FallbackReason::UnsupportedOperator)?;
-    let source_exec =
-        filter.input().as_any().downcast_ref::<DataSourceExec>().ok_or(FallbackReason::UnsupportedOperator)?;
+#[derive(Debug, Clone, Copy)]
+struct NormalizedNativePlan<'a> {
+    candidate: GpuCandidate,
+    source_exec: &'a DataSourceExec,
+    filter: &'a FilterExec,
+    projection: &'a ProjectionExec,
+    aggregate: &'a AggregateExec,
+    sort: &'a SortExec,
+    limit_fetch: usize,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct NativePlanRejection {
+    candidate: GpuCandidate,
+    reason: FallbackReason,
+}
+
+fn normalize_native_plan(plan: &dyn ExecutionPlan) -> Result<NormalizedNativePlan<'_>, NativePlanRejection> {
+    if plan.as_any().downcast_ref::<SortPreservingMergeExec>().is_some() {
+        return Err(NativePlanRejection {
+            candidate: GpuCandidate::with_operator_count(SORT_PRESERVING_MERGE_SHAPE, plan.schema().fields().len(), 1),
+            reason: FallbackReason::NativeSortPreservingMergeUnsupported,
+        });
+    }
+
+    if let Some(limit) = plan.as_any().downcast_ref::<LocalLimitExec>() {
+        let candidate = GpuCandidate::with_operator_count(LOCAL_LIMIT_SHAPE, plan.schema().fields().len(), 5);
+        let sort = required_child::<SortExec>(limit.input().as_ref(), candidate)?;
+        let fetch = sort.fetch().map_or(limit.fetch(), |sort_fetch| sort_fetch.min(limit.fetch()));
+        return normalize_sort_stack(candidate, sort, Some(fetch));
+    }
+
+    if let Some(sort) = plan.as_any().downcast_ref::<SortExec>() {
+        let candidate = GpuCandidate::with_operator_count(SORT_FETCH_SHAPE, plan.schema().fields().len(), 5);
+        let Some(fetch) = sort.fetch() else {
+            return Err(NativePlanRejection { candidate, reason: FallbackReason::UnsupportedOperator });
+        };
+        return normalize_sort_stack(candidate, sort, Some(fetch));
+    }
+
+    Err(NativePlanRejection {
+        candidate: GpuCandidate::with_operator_count(UNSUPPORTED_NATIVE_PLAN_SHAPE, plan.schema().fields().len(), 1),
+        reason: FallbackReason::UnsupportedOperator,
+    })
+}
+
+fn normalize_sort_stack<'a>(
+    candidate: GpuCandidate,
+    sort: &'a SortExec,
+    limit_fetch: Option<usize>,
+) -> Result<NormalizedNativePlan<'a>, NativePlanRejection> {
+    if sort.preserve_partitioning() {
+        return Err(NativePlanRejection {
+            candidate,
+            reason: FallbackReason::NativePartitionPreservingSortUnsupported,
+        });
+    }
+    let Some(limit_fetch) = limit_fetch else {
+        return Err(NativePlanRejection { candidate, reason: FallbackReason::UnsupportedOperator });
+    };
+    let aggregate = required_child::<AggregateExec>(sort.input().as_ref(), candidate)?;
+    let projection = required_child::<ProjectionExec>(aggregate.input().as_ref(), candidate)?;
+    let filter = required_child::<FilterExec>(projection.input().as_ref(), candidate)?;
+    let source_exec = required_child::<DataSourceExec>(filter.input().as_ref(), candidate)?;
+
+    Ok(NormalizedNativePlan { candidate, source_exec, filter, projection, aggregate, sort, limit_fetch })
+}
+
+fn required_child<T: 'static>(plan: &dyn ExecutionPlan, candidate: GpuCandidate) -> Result<&T, NativePlanRejection> {
+    plan.as_any()
+        .downcast_ref::<T>()
+        .ok_or(NativePlanRejection { candidate, reason: FallbackReason::UnsupportedOperator })
+}
+
+fn lower_normalized_plan(normalized: &NormalizedNativePlan<'_>) -> Result<NativeQueryPlan, FallbackReason> {
+    lower_slice1_plan(normalized)
+}
+
+fn source_diagnostics_for_normalized_plan(normalized: &NormalizedNativePlan<'_>) -> Vec<NativeSourceDiagnostics> {
+    let Some((file_scan, parquet_source)) = normalized.source_exec.downcast_to_file_source::<ParquetSource>() else {
+        return Vec::new();
+    };
+    vec![local_parquet_source_diagnostics(file_scan, parquet_source)]
+}
+
+fn lower_slice1_plan(normalized: &NormalizedNativePlan<'_>) -> Result<NativeQueryPlan, FallbackReason> {
+    let source_exec = normalized.source_exec;
+    let filter = normalized.filter;
+    let projection = normalized.projection;
+    let aggregate = normalized.aggregate;
+    let sort = normalized.sort;
     let (file_scan, parquet_source) =
         source_exec.downcast_to_file_source::<ParquetSource>().ok_or(FallbackReason::UnsupportedOperator)?;
 
@@ -91,22 +195,19 @@ fn lower_slice1_plan(plan: &dyn ExecutionPlan) -> Result<NativeQueryPlan, Fallba
     validate_schema(projection.schema())?;
     validate_schema(aggregate.schema())?;
     validate_schema(sort.schema())?;
-    validate_schema(limit.schema())?;
 
     validate_slice1_parquet_scan(file_scan, parquet_source)?;
     validate_aggregate(aggregate)?;
     validate_sort(sort)?;
 
     let read_columns = required_parquet_read_columns(file_scan, filter, projection, aggregate)?;
-    let files = full_local_files(file_scan)?;
-    let native_files = files
-        .into_iter()
-        .map(|file| {
-            NativeLocalParquetFile::new(local_object_path_to_filesystem(file.object_meta.location.as_ref()))
-                .with_file_size_bytes(file.object_meta.size)
-        })
-        .collect();
-    let source = NativeLocalParquetSource::from_files(native_files, source_exec.schema(), read_columns);
+    let native_files = local_parquet_files(file_scan)?;
+    let mut source = NativeLocalParquetSource::from_files(native_files, source_exec.schema(), read_columns);
+    source.diagnostics.predicate_disposition = if parquet_source.filter().is_some() {
+        NativePredicateDisposition::Rejected
+    } else {
+        NativePredicateDisposition::Absent
+    };
 
     let mut builder = NativeQueryPlanBuilder::new();
     let source_node = builder.add_source(NativeSourceNode::LocalParquet(source));
@@ -122,7 +223,7 @@ fn lower_slice1_plan(plan: &dyn ExecutionPlan) -> Result<NativeQueryPlan, Fallba
         aggregate.schema(),
     );
     let sort_node = builder.add_sort(aggregate_node, lower_sort_spec(sort)?, sort.schema());
-    let limit_node = builder.add_limit(sort_node, NativeLimitSpec::fetch(limit.fetch()), limit.schema());
+    let limit_node = builder.add_limit(sort_node, NativeLimitSpec::fetch(normalized.limit_fetch), sort.schema());
 
     Ok(builder.finish_with_host_sink(limit_node))
 }
@@ -132,47 +233,167 @@ fn validate_slice1_parquet_scan(
     parquet_source: &ParquetSource,
 ) -> Result<(), FallbackReason> {
     if !file_scan.object_store_url.as_str().starts_with("file://") {
-        return Err(FallbackReason::PlanPropertyMismatch);
+        return Err(FallbackReason::NativeSourceNonLocalObjectStore);
     }
     if !file_scan.table_partition_cols().is_empty() {
-        return Err(FallbackReason::PlanPropertyMismatch);
+        return Err(FallbackReason::NativeSourcePartitionColumns);
     }
     if file_scan.expr_adapter_factory.is_some() {
-        return Err(FallbackReason::PlanPropertyMismatch);
+        return Err(FallbackReason::NativeSourceExprAdapter);
     }
     if file_scan.limit.is_some() {
-        return Err(FallbackReason::PlanPropertyMismatch);
+        return Err(FallbackReason::NativeSourceScanLimit);
     }
     if file_scan.preserve_order {
-        return Err(FallbackReason::PlanPropertyMismatch);
+        return Err(FallbackReason::NativeSourcePreserveOrder);
     }
     if !file_scan.output_ordering.is_empty() {
-        return Err(FallbackReason::PlanPropertyMismatch);
+        return Err(FallbackReason::NativeSourceOutputOrdering);
     }
     if parquet_source.filter().is_some() {
-        return Err(FallbackReason::PlanPropertyMismatch);
+        return Err(FallbackReason::NativeSourcePushedDownParquetPredicate);
     }
-    full_local_files(file_scan)?;
+    local_parquet_files(file_scan)?;
     Ok(())
 }
 
-fn full_local_files(file_scan: &FileScanConfig) -> Result<Vec<&PartitionedFile>, FallbackReason> {
+fn local_parquet_source_diagnostics(
+    file_scan: &FileScanConfig,
+    parquet_source: &ParquetSource,
+) -> NativeSourceDiagnostics {
     let files = file_scan.file_groups.iter().flat_map(|group| group.files()).collect::<Vec<_>>();
+    let known_bytes =
+        files.iter().map(|file| file.object_meta.size).try_fold(0u64, |total, bytes| Some(total.saturating_add(bytes)));
+    let ranged_file_count = files.iter().filter(|file| file.range.is_some()).count();
+    let selected_row_groups = selected_row_groups_from_access_plans(&files);
+
+    let mut rejected_features = Vec::new();
+    if !file_scan.object_store_url.as_str().starts_with("file://") {
+        rejected_features.push(NativeRejectedSourceFeature::NonLocalObjectStore);
+    }
+    if !file_scan.table_partition_cols().is_empty() {
+        rejected_features.push(NativeRejectedSourceFeature::PartitionColumns);
+    }
+    if file_scan.expr_adapter_factory.is_some() {
+        rejected_features.push(NativeRejectedSourceFeature::ExprAdapter);
+    }
+    if file_scan.limit.is_some() {
+        rejected_features.push(NativeRejectedSourceFeature::ScanLimit);
+    }
+    if file_scan.preserve_order {
+        rejected_features.push(NativeRejectedSourceFeature::PreserveOrder);
+    }
+    if !file_scan.output_ordering.is_empty() {
+        rejected_features.push(NativeRejectedSourceFeature::OutputOrdering);
+    }
+    if parquet_source.filter().is_some() {
+        rejected_features.push(NativeRejectedSourceFeature::PushedDownParquetPredicate);
+    }
     if files.is_empty() {
-        return Err(FallbackReason::PlanPropertyMismatch);
+        rejected_features.push(NativeRejectedSourceFeature::EmptySource);
     }
     for file in &files {
         if !file.partition_values.is_empty() {
-            return Err(FallbackReason::PlanPropertyMismatch);
+            rejected_features.push(NativeRejectedSourceFeature::PartitionValues);
         }
         if file.range.is_some() {
-            return Err(FallbackReason::PlanPropertyMismatch);
+            rejected_features.push(NativeRejectedSourceFeature::ByteRange);
         }
         if file.ordering.is_some() {
-            return Err(FallbackReason::PlanPropertyMismatch);
+            rejected_features.push(NativeRejectedSourceFeature::FileOrdering);
+        }
+        if has_row_level_selection(file) {
+            rejected_features.push(NativeRejectedSourceFeature::RowSelection);
         }
     }
-    Ok(files)
+    rejected_features.sort_by_key(|feature| feature.as_str());
+    rejected_features.dedup();
+
+    NativeSourceDiagnostics {
+        format: cudf_query_engine::SourceFormat::Parquet,
+        direct_device_read: rejected_features.is_empty(),
+        file_count: files.len(),
+        ranged_file_count,
+        known_bytes,
+        selected_row_groups,
+        predicate_disposition: if parquet_source.filter().is_some() {
+            NativePredicateDisposition::Rejected
+        } else {
+            NativePredicateDisposition::Absent
+        },
+        rejected_features,
+    }
+}
+
+fn local_parquet_files(file_scan: &FileScanConfig) -> Result<Vec<NativeLocalParquetFile>, FallbackReason> {
+    let files = file_scan.file_groups.iter().flat_map(|group| group.files()).collect::<Vec<_>>();
+    if files.is_empty() {
+        return Err(FallbackReason::NativeSourceEmpty);
+    }
+    let mut native_files = Vec::with_capacity(files.len());
+    for file in files {
+        if !file.partition_values.is_empty() {
+            return Err(FallbackReason::NativeSourcePartitionValues);
+        }
+        if file.range.is_some() {
+            return Err(FallbackReason::NativeSourceByteRange);
+        }
+        if file.ordering.is_some() {
+            return Err(FallbackReason::NativeSourceFileOrdering);
+        }
+        let mut native_file =
+            NativeLocalParquetFile::new(local_object_path_to_filesystem(file.object_meta.location.as_ref()))
+                .with_file_size_bytes(file.object_meta.size);
+        if let Some(row_groups) = explicit_row_group_selection(file)? {
+            native_file = native_file.with_row_groups(row_groups);
+        }
+        native_files.push(native_file);
+    }
+    Ok(native_files)
+}
+
+fn explicit_row_group_selection(file: &PartitionedFile) -> Result<Option<Vec<usize>>, FallbackReason> {
+    let Some(extension) = &file.extensions else {
+        return Ok(None);
+    };
+    let Some(access_plan) = extension.downcast_ref::<ParquetAccessPlan>() else {
+        return Ok(None);
+    };
+
+    let mut row_groups = Vec::new();
+    for (index, access) in access_plan.inner().iter().enumerate() {
+        match access {
+            RowGroupAccess::Skip => {},
+            RowGroupAccess::Scan => row_groups.push(index),
+            RowGroupAccess::Selection(_) => return Err(FallbackReason::NativeSourceRowSelection),
+        }
+    }
+    Ok(Some(row_groups))
+}
+
+fn selected_row_groups_from_access_plans(files: &[&PartitionedFile]) -> Option<usize> {
+    if files.is_empty() {
+        return None;
+    }
+    files.iter().try_fold(0usize, |total, file| {
+        explicit_row_group_selection_count(file).map(|count| total.saturating_add(count))
+    })
+}
+
+fn explicit_row_group_selection_count(file: &PartitionedFile) -> Option<usize> {
+    let extension = file.extensions.as_ref()?;
+    let access_plan = extension.downcast_ref::<ParquetAccessPlan>()?;
+    Some(access_plan.inner().iter().filter(|access| !matches!(access, RowGroupAccess::Skip)).count())
+}
+
+fn has_row_level_selection(file: &PartitionedFile) -> bool {
+    let Some(extension) = &file.extensions else {
+        return false;
+    };
+    let Some(access_plan) = extension.downcast_ref::<ParquetAccessPlan>() else {
+        return false;
+    };
+    access_plan.inner().iter().any(|access| matches!(access, RowGroupAccess::Selection(_)))
 }
 
 fn validate_schema(schema: SchemaRef) -> Result<(), FallbackReason> {
@@ -239,9 +460,6 @@ fn validate_aggregate(aggregate: &AggregateExec) -> Result<(), FallbackReason> {
 }
 
 fn validate_sort(sort: &SortExec) -> Result<(), FallbackReason> {
-    if sort.fetch().is_some() {
-        return Err(FallbackReason::PlanPropertyMismatch);
-    }
     if sort.expr().is_empty() {
         return Err(FallbackReason::UnsupportedExpression);
     }
@@ -393,7 +611,7 @@ fn required_parquet_read_columns(
     if let Some(projection) = file_scan.file_source().projection() {
         for index in projection.column_indices() {
             if index >= file_schema.fields().len() {
-                return Err(FallbackReason::PlanPropertyMismatch);
+                return Err(FallbackReason::NativeSourcePartitionColumns);
             }
             required.insert(file_schema.field(index).name().clone());
         }
@@ -409,7 +627,7 @@ fn required_parquet_read_columns(
 
     for column in &required {
         if file_schema.index_of(column).is_err() {
-            return Err(FallbackReason::PlanPropertyMismatch);
+            return Err(FallbackReason::UnsupportedExpression);
         }
     }
 

@@ -22,6 +22,7 @@ pub enum ErrorCode {
     CudfPersistentFailure,
     CudfDependencyFailure,
     CudfInvariantViolation,
+    MemoryReservationFailed,
     Internal,
 }
 
@@ -41,6 +42,7 @@ impl ErrorCode {
             Self::CudfPersistentFailure => "cudf_persistent_failure",
             Self::CudfDependencyFailure => "cudf_dependency_failure",
             Self::CudfInvariantViolation => "cudf_invariant_violation",
+            Self::MemoryReservationFailed => "memory_reservation_failed",
             Self::Internal => "internal",
         }
     }
@@ -126,7 +128,7 @@ pub const fn kind_for_code(code: ErrorCode) -> ErrorKind {
         ErrorCode::InvalidChildCount => ErrorKind::Internal,
         ErrorCode::CudfInvalidInput => ErrorKind::InvalidInput,
         ErrorCode::CudfUnsupported => ErrorKind::Unsupported,
-        ErrorCode::CudfResourceExhausted => ErrorKind::ResourceExhausted,
+        ErrorCode::CudfResourceExhausted | ErrorCode::MemoryReservationFailed => ErrorKind::ResourceExhausted,
         ErrorCode::CudfTemporaryFailure | ErrorCode::CudfPersistentFailure | ErrorCode::CudfDependencyFailure => {
             ErrorKind::DependencyFailure
         },
@@ -137,7 +139,9 @@ pub const fn kind_for_code(code: ErrorCode) -> ErrorKind {
 
 pub const fn status_for_code(code: ErrorCode) -> ErrorStatus {
     match code {
-        ErrorCode::CudfResourceExhausted | ErrorCode::CudfTemporaryFailure => ErrorStatus::Temporary,
+        ErrorCode::CudfResourceExhausted | ErrorCode::CudfTemporaryFailure | ErrorCode::MemoryReservationFailed => {
+            ErrorStatus::Temporary
+        },
         ErrorCode::CudfPersistentFailure => ErrorStatus::Persistent,
         ErrorCode::GpuCandidateRejected
         | ErrorCode::UnsupportedOperator
@@ -215,6 +219,23 @@ impl Error {
             .with_fact("cudf_status", source.status())
             .with_fact("cudf_operation", source.operation())
             .with_source(source)
+    }
+
+    pub fn from_native(
+        operation: &'static str,
+        message: impl Into<String>,
+        source: cudf_query_engine::QueryError,
+    ) -> Self {
+        let code = code_for_native_error(&source);
+        let mut error = Self::new(code, operation, message)
+            .with_fact("native_code", source.code())
+            .with_fact("native_kind", source.kind())
+            .with_fact("native_status", source.status())
+            .with_fact("native_operation", source.operation());
+        for (key, value) in source.facts().iter() {
+            error.facts.insert(key, value.to_string());
+        }
+        error.with_source(source)
     }
 
     pub fn code(&self) -> ErrorCode {
@@ -326,6 +347,26 @@ fn code_for_cudf_error(error: &cudf::Error) -> ErrorCode {
         cudf::ErrorKind::DependencyFailure => ErrorCode::CudfDependencyFailure,
         cudf::ErrorKind::InvariantViolation | cudf::ErrorKind::ExecutionContext => ErrorCode::CudfInvariantViolation,
         _ => ErrorCode::CudfDependencyFailure,
+    }
+}
+
+fn code_for_native_error(error: &cudf_query_engine::QueryError) -> ErrorCode {
+    match error.code() {
+        cudf_query_engine::QueryErrorCode::UnsupportedPlanShape => ErrorCode::UnsupportedOperator,
+        cudf_query_engine::QueryErrorCode::UnsupportedOperator => ErrorCode::UnsupportedOperator,
+        cudf_query_engine::QueryErrorCode::UnsupportedExpression => ErrorCode::UnsupportedExpression,
+        cudf_query_engine::QueryErrorCode::UnsupportedType => ErrorCode::UnsupportedType,
+        cudf_query_engine::QueryErrorCode::InvalidPlan => ErrorCode::InvalidExecutionPlan,
+        cudf_query_engine::QueryErrorCode::CudfInvalidInput => ErrorCode::CudfInvalidInput,
+        cudf_query_engine::QueryErrorCode::CudfUnsupported => ErrorCode::CudfUnsupported,
+        cudf_query_engine::QueryErrorCode::CudfResourceExhausted => ErrorCode::CudfResourceExhausted,
+        cudf_query_engine::QueryErrorCode::CudfTemporaryFailure => ErrorCode::CudfTemporaryFailure,
+        cudf_query_engine::QueryErrorCode::CudfPersistentFailure => ErrorCode::CudfPersistentFailure,
+        cudf_query_engine::QueryErrorCode::CudfDependencyFailure => ErrorCode::CudfDependencyFailure,
+        cudf_query_engine::QueryErrorCode::CudfInvariantViolation => ErrorCode::CudfInvariantViolation,
+        cudf_query_engine::QueryErrorCode::MemoryReservationFailed => ErrorCode::MemoryReservationFailed,
+        cudf_query_engine::QueryErrorCode::Internal => ErrorCode::Internal,
+        _ => ErrorCode::Internal,
     }
 }
 

@@ -163,7 +163,7 @@ fn handle_candidate(
 ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
     let rejection = rejection_reason(&candidate, config);
     if let Some(reason) = rejection {
-        report.push_rejected(candidate.public.clone(), reason);
+        report.push_rejected(candidate.public, reason);
         if config.fallback_policy == GpuFallbackPolicy::GpuOnly {
             return Err(candidate_rejected_error(&candidate.public, reason, config).into());
         }
