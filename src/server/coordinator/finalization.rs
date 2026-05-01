@@ -9,7 +9,10 @@ use std::{
 };
 
 use nexus_query_engine::{
-    observability::{RuntimeObservationOwner, RuntimeTerminalOutcome, write_runtime_observation_jsonl},
+    observability::{
+        QueryAttemptReport, RuntimeObservationOwner, RuntimeTerminalOutcome, SealedRuntimeObservationSnapshot,
+        write_runtime_observation_jsonl,
+    },
     runtime::ExecutionCancellation,
 };
 
@@ -36,6 +39,8 @@ pub(in crate::server) struct FinalizationInputs {
     pub(in crate::server) runtime_outcome: RuntimeTerminalOutcome,
     pub(in crate::server) captured: CapturedQuery,
     pub(in crate::server) observation_owner: Option<RuntimeObservationOwner>,
+    pub(in crate::server) attempt_report: Option<Arc<QueryAttemptReport>>,
+    pub(in crate::server) attempt_snapshot: Option<SealedRuntimeObservationSnapshot>,
     pub(in crate::server) live_stats_cache: Arc<LiveStatsCache>,
     pub(in crate::server) hot: QueryHotCounterSnapshot,
     pub(in crate::server) artifact_max_bytes: u64,
@@ -150,6 +155,7 @@ impl QueryCoordinator {
             (record.terminal_outcome.is_some()
                 && record.active_leases == 0
                 && record.active_activities == 0
+                && (!record.requires_attempt_report || record.attempt_report.is_some())
                 && record.finalization_claim.is_none()
                 && matches!(record.phase, QueryPhase::Planning | QueryPhase::Executing | QueryPhase::Finalizing))
             .then(|| key.clone())
@@ -172,6 +178,8 @@ impl QueryCoordinator {
             runtime_outcome,
             captured: record.captured.take().expect("finalizing live query retains captured stats inputs"),
             observation_owner: record.observation_owner.take(),
+            attempt_report: record.attempt_report.take(),
+            attempt_snapshot: record.attempt_snapshot.take(),
             live_stats_cache: Arc::clone(&live_stats_cache),
             hot: record.hot.snapshot(),
             artifact_max_bytes: record.artifact_max_bytes,
@@ -199,17 +207,15 @@ impl QueryCoordinator {
         );
         inputs.captured.seal(Instant::now());
         let stats_outcome = inputs.terminal_outcome.stats_outcome();
-        let Some(owner) = inputs.observation_owner else {
-            return FinalizationOutput::unavailable(
-                inputs.key,
-                inputs.claim,
-                inputs.live_stats_cache,
-                stats_outcome,
-                RetainedUnavailableReason::CaptureDisabled,
-                inputs.artifact_max_bytes,
-            );
+        let snapshot = match inputs.observation_owner.take() {
+            Some(owner) => owner.finish_query(inputs.runtime_outcome),
+            // Flight receives this snapshot only after the attempt has sealed
+            // it. The coordinator projects that immutable result and never
+            // creates another owner for the same invocation.
+            None if inputs.attempt_report.is_some() => inputs.attempt_snapshot.take(),
+            None => None,
         };
-        let Some(snapshot) = owner.finish_query(inputs.runtime_outcome) else {
+        let Some(snapshot) = snapshot else {
             return FinalizationOutput::unavailable(
                 inputs.key,
                 inputs.claim,

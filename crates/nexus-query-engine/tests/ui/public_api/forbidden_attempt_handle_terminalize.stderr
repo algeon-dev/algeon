@@ -1,0 +1,5 @@
+error[E0599]: no method named `terminalize` found for struct `AttemptHandle` in the current scope
+ --> tests/ui/public_api/forbidden_attempt_handle_terminalize.rs:4:20
+  |
+4 |     let _ = handle.terminalize(RuntimeTerminalOutcome::Cancelled);
+  |                    ^^^^^^^^^^^ method not found in `AttemptHandle`

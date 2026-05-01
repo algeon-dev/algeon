@@ -5,35 +5,32 @@
 //! executor when execution acquires the native query context.
 
 use std::sync::{
-    Arc, OnceLock,
+    Arc,
     atomic::{AtomicBool, Ordering},
 };
 
 use datafusion::execution::context::TaskContext;
 use nexus_query_engine::{
-    adaptive_runtime::AdaptiveMemoryHistory,
     capability::{AggregateStrategyExecutionOptions, KeyedHashJoinStrategyOptions},
     chunk::SourceChunkPlanningOptions,
     dynamic_filter::DynamicFilterExecutionOptions,
     graph_memory::GraphMemoryCalibrationOverride,
     metrics::{QueryId, TraceId},
-    mode::{NativePipelineExecutionMode, StddevSampExecutionMode},
+    mode::StddevSampExecutionMode,
     observability::{RuntimeObservationConfig, RuntimeObservationOwner, RuntimeTraceId},
     runtime::{
-        ExecutionBoundaryPolicy, ExecutionCancellation, ExecutionContext, GpuInventory, IoLifecycle,
-        LakehouseCacheFillConfig, MemoryControlPolicy, NexusGpuInventory, QueryGrantRequest, QueryHandle,
-        QueryMemoryDomainPolicy, QueryPlacementHint, SourceChunkPlanningMode, SourceSchedulerPolicy,
-        SourceStorageProfile, TenantQueryContext, device_budget_bytes_from_facts,
+        AdmittedQueryContext, ExecutionBoundaryPolicy, ExecutionCancellation, ExecutionContext, IoLifecycle,
+        LakehouseCacheFillConfig, MemoryControlPolicy, QueryHandle, SourceChunkPlanningMode, SourceSchedulerPolicy,
+        SourceStorageProfile,
     },
 };
 
 use super::{
     admission::{
-        QueryAdmissionFacts, QueryAdmissionSource, QueryAdmissionTicket, TicketTenantQueryContext,
+        QueryAdmissionFacts, QueryAdmissionSource, QueryAdmissionTicket, TicketAdmissionContext,
         query_admission_ticket_from_task_context,
     },
     metrics::{NativeExecutionMetricsCapture, NativeMetricsCapture},
-    unbounded_native::UnboundedNativeExecutionLimiter,
 };
 use crate::{
     error::Error,
@@ -47,7 +44,6 @@ use crate::{
 /// through backend admission when an accepted native plan begins execution.
 #[derive(Debug, Clone)]
 pub struct NexusNativeExecutionConfig {
-    pub(super) device_ordinal: Option<usize>,
     pub(super) memory_control_policy: MemoryControlPolicy,
     pub(super) boundary_policy: ExecutionBoundaryPolicy,
     pub(super) source_scheduler_policy: SourceSchedulerPolicy,
@@ -56,7 +52,6 @@ pub struct NexusNativeExecutionConfig {
     pub(super) host_output_memory_pool_accounting: bool,
     pub(super) cancellation: ExecutionCancellation,
     pub(super) io_lifecycle: Option<IoLifecycle>,
-    pub(super) native_pipeline_execution_mode: NativePipelineExecutionMode,
     pub(super) stddev_samp_execution_mode: StddevSampExecutionMode,
     pub(super) dynamic_filter_execution_options: DynamicFilterExecutionOptions,
     pub(super) keyed_hash_join_strategy_options: KeyedHashJoinStrategyOptions,
@@ -64,18 +59,11 @@ pub struct NexusNativeExecutionConfig {
     pub(super) source_chunk_planning_options: SourceChunkPlanningOptions,
     pub(super) graph_memory_calibration_override: GraphMemoryCalibrationOverride,
     pub(super) graph_raw_input_edges_override_configured: bool,
-    pub(super) adaptive_memory_history: Option<Arc<AdaptiveMemoryHistory>>,
-    pub(super) query_service_local_parquet_source_cache_max_retained_bytes: Option<u64>,
-    pub(super) query_service_resident_graph_cache_max_retained_bytes: Option<u64>,
-    pub(super) query_service_query_memory_domain: Option<QueryMemoryDomainPolicy>,
     pub(super) source_storage_profiles: Vec<SourceStorageProfile>,
     pub(super) query_service_handle: Option<Arc<QueryHandle>>,
     pub(super) query_admission_facts_recorded: Option<Arc<AtomicBool>>,
     pub(super) query_admission_source: Option<QueryAdmissionSource>,
     pub(super) query_admission_ticket: Option<Arc<QueryAdmissionTicket>>,
-    pub(super) requested_grant_min_bytes: Option<u64>,
-    pub(super) requested_grant_bytes: Option<u64>,
-    pub(super) unbounded_native_execution_limiter: Option<UnboundedNativeExecutionLimiter>,
     pub(super) query_id: Option<QueryId>,
     pub(super) trace_id: Option<TraceId>,
     pub(super) plan_task_mapping_datafusion_shape: Option<String>,
@@ -90,88 +78,38 @@ pub(crate) struct NexusNativeExecutionContext {
     pub(super) context: ExecutionContext,
     pub(super) admission_facts: Option<QueryAdmissionFacts>,
     pub(super) record_admission_facts: bool,
-    pub(super) _tenant_context: Option<TenantQueryContext>,
-    pub(super) ticket_context: Option<TicketTenantQueryContext>,
+    pub(super) _admission_context: Option<AdmittedQueryContext>,
+    pub(super) ticket_context: Option<TicketAdmissionContext>,
 }
 
 mod admission;
 mod context;
-mod device_budget;
 #[cfg(test)]
 mod tests;
 
 impl NexusNativeExecutionConfig {
-    /// Fallback bounded device budget, in bytes, used when auto-sizing cannot
-    /// read the primary GPU's total memory.
+    /// Fallback bounded device budget, in bytes, used only as an unadmitted
+    /// planning template. A real execution context always replaces this with
+    /// the immutable grant selected by the per-device ledger.
     pub const AUTO_SIZED_DEVICE_BUDGET_FALLBACK_BYTES: u64 = 256 * 1024 * 1024;
-    /// Device-memory headroom, in bytes, reserved for libcudf and driver
-    /// overhead when deriving a bounded budget from CUDA device inventory.
+    /// Device-memory headroom, in bytes, reserved by automatic per-device
+    /// backend profiles for libcudf and driver overhead.
     pub const AUTO_SIZED_DEVICE_BUDGET_HEADROOM_BYTES: u64 = 500 * 1024 * 1024;
-    /// Default bounded source chunk byte target used by
-    /// [`Self::bounded_auto_sized`].
+    /// Default bounded source chunk byte target used by [`Self::bounded_default`].
     pub const DEFAULT_BOUNDED_MAX_SOURCE_CHUNK_BYTES: u64 = 64 * 1024 * 1024;
-    /// Default bounded source row-group target used by
-    /// [`Self::bounded_auto_sized`].
+    /// Default bounded source row-group target used by [`Self::bounded_default`].
     pub const DEFAULT_BOUNDED_MAX_ROW_GROUPS_PER_CHUNK: usize = 1;
-    /// Default bounded retry-attempt cap used by [`Self::bounded_auto_sized`].
+    /// Default bounded retry-attempt cap used by [`Self::bounded_default`].
     pub const DEFAULT_BOUNDED_MAX_RETRY_ATTEMPTS: usize = 3;
-    /// Default bounded retry floor, in row groups, used by
-    /// [`Self::bounded_auto_sized`].
+    /// Default bounded retry floor, in row groups, used by [`Self::bounded_default`].
     pub const DEFAULT_BOUNDED_MIN_RETRY_CHUNK_ROW_GROUPS: usize = 1;
 
-    /// Use the default allocator policy with no native bounded-memory execution controls.
-    pub fn unbounded() -> Self {
-        Self {
-            device_ordinal: None,
-            memory_control_policy: MemoryControlPolicy::Unbounded,
-            boundary_policy: ExecutionBoundaryPolicy::default(),
-            source_scheduler_policy: SourceSchedulerPolicy::default(),
-            source_chunk_planning_mode: SourceChunkPlanningMode::default(),
-            lakehouse_cache_fill_config: LakehouseCacheFillConfig::default(),
-            host_output_memory_pool_accounting: false,
-            cancellation: ExecutionCancellation::new(),
-            io_lifecycle: None,
-            native_pipeline_execution_mode: NativePipelineExecutionMode::default(),
-            stddev_samp_execution_mode: StddevSampExecutionMode::default(),
-            dynamic_filter_execution_options: DynamicFilterExecutionOptions::default(),
-            keyed_hash_join_strategy_options: KeyedHashJoinStrategyOptions::default(),
-            aggregate_strategy_execution_options: AggregateStrategyExecutionOptions::default(),
-            source_chunk_planning_options: SourceChunkPlanningOptions::default(),
-            graph_memory_calibration_override: GraphMemoryCalibrationOverride::default(),
-            graph_raw_input_edges_override_configured: false,
-            adaptive_memory_history: None,
-            query_service_local_parquet_source_cache_max_retained_bytes: None,
-            query_service_resident_graph_cache_max_retained_bytes: None,
-            query_service_query_memory_domain: None,
-            source_storage_profiles: Vec::new(),
-            query_service_handle: None,
-            query_admission_facts_recorded: None,
-            query_admission_source: None,
-            query_admission_ticket: None,
-            requested_grant_min_bytes: None,
-            requested_grant_bytes: None,
-            unbounded_native_execution_limiter: None,
-            query_id: None,
-            trace_id: None,
-            plan_task_mapping_datafusion_shape: None,
-            metrics_capture: Some(NativeMetricsCapture::without_sink("unassigned")),
-            lakehouse_footer_pruning: false,
-            graph_execution_services: GraphExecutionServices::default(),
-        }
-    }
-
-    /// Use default runtime allocator construction with an auto-sized bounded
-    /// memory-control profile.
-    ///
-    /// The device budget is CUDA device 0's total memory minus
-    /// [`Self::AUTO_SIZED_DEVICE_BUDGET_HEADROOM_BYTES`]. If CUDA inventory is
-    /// unavailable or fails, the budget
-    /// falls back to [`Self::AUTO_SIZED_DEVICE_BUDGET_FALLBACK_BYTES`]. Source
-    /// chunking uses a 64 MiB byte target, one row group per chunk, three retry
-    /// attempts, and one row group as the retry floor.
-    pub fn bounded_auto_sized() -> Self {
+    /// Use the bounded planning defaults before a backend has admitted an
+    /// attempt. This carries no selected device or capacity decision: admitted
+    /// execution always receives the selected device's immutable grant.
+    pub fn bounded_default() -> Self {
         Self::bounded(
-            Self::auto_sized_device_budget_bytes(),
+            Self::AUTO_SIZED_DEVICE_BUDGET_FALLBACK_BYTES,
             Self::DEFAULT_BOUNDED_MAX_SOURCE_CHUNK_BYTES,
             Self::DEFAULT_BOUNDED_MAX_ROW_GROUPS_PER_CHUNK,
             Self::DEFAULT_BOUNDED_MAX_RETRY_ATTEMPTS,
@@ -195,7 +133,6 @@ impl NexusNativeExecutionConfig {
         min_retry_chunk_row_groups: usize,
     ) -> Self {
         Self {
-            device_ordinal: None,
             memory_control_policy: MemoryControlPolicy::Bounded {
                 device_budget_bytes,
                 max_source_chunk_bytes,
@@ -210,7 +147,6 @@ impl NexusNativeExecutionConfig {
             host_output_memory_pool_accounting: false,
             cancellation: ExecutionCancellation::new(),
             io_lifecycle: None,
-            native_pipeline_execution_mode: NativePipelineExecutionMode::default(),
             stddev_samp_execution_mode: StddevSampExecutionMode::default(),
             dynamic_filter_execution_options: DynamicFilterExecutionOptions::default(),
             keyed_hash_join_strategy_options: KeyedHashJoinStrategyOptions::default(),
@@ -218,18 +154,11 @@ impl NexusNativeExecutionConfig {
             source_chunk_planning_options: SourceChunkPlanningOptions::default(),
             graph_memory_calibration_override: GraphMemoryCalibrationOverride::default(),
             graph_raw_input_edges_override_configured: false,
-            adaptive_memory_history: None,
-            query_service_local_parquet_source_cache_max_retained_bytes: None,
-            query_service_resident_graph_cache_max_retained_bytes: None,
-            query_service_query_memory_domain: None,
             source_storage_profiles: Vec::new(),
             query_service_handle: None,
             query_admission_facts_recorded: None,
             query_admission_source: None,
             query_admission_ticket: None,
-            requested_grant_min_bytes: None,
-            requested_grant_bytes: None,
-            unbounded_native_execution_limiter: None,
             query_id: None,
             trace_id: None,
             plan_task_mapping_datafusion_shape: None,
@@ -239,14 +168,12 @@ impl NexusNativeExecutionConfig {
         }
     }
 
-    /// Select the device used when projecting this config into a backend draft.
-    pub fn with_device_ordinal(mut self, device_ordinal: usize) -> Self {
-        self.device_ordinal = Some(device_ordinal);
-        self
-    }
-
     /// Set bounded execution controls such as chunk sizing, reservations, and retry limits.
-    pub fn with_memory_control_policy(mut self, memory_control_policy: MemoryControlPolicy) -> Self {
+    ///
+    /// This is crate-private because deployment resource profiles own capacity;
+    /// public callers construct a bounded template and backend admission
+    /// replaces its budget with the selected immutable grant.
+    pub(crate) fn with_memory_control_policy(mut self, memory_control_policy: MemoryControlPolicy) -> Self {
         self.memory_control_policy = memory_control_policy;
         self
     }
@@ -378,12 +305,6 @@ impl NexusNativeExecutionConfig {
         self.lakehouse_footer_pruning
     }
 
-    /// Select strict bounded or adaptive native bounded-pipeline execution.
-    pub fn with_native_pipeline_execution_mode(mut self, mode: NativePipelineExecutionMode) -> Self {
-        self.native_pipeline_execution_mode = mode;
-        self
-    }
-
     /// Select the execution contract for floating statistical aggregates.
     pub fn with_statistical_aggregate_execution_mode(mut self, mode: StddevSampExecutionMode) -> Self {
         self.stddev_samp_execution_mode = mode;
@@ -454,69 +375,10 @@ impl NexusNativeExecutionConfig {
         self.graph_memory_calibration_override
     }
 
-    /// Attach an adaptive-only memory-history store for adaptive admission/execution.
-    ///
-    /// Strict bounded admission does not read this store. Supplying it while strict mode is selected
-    /// leaves strict reports deterministic and only makes the store available if the mode is later
-    /// changed to adaptive.
-    pub fn with_adaptive_memory_history(mut self, memory_history: Arc<AdaptiveMemoryHistory>) -> Self {
-        self.adaptive_memory_history = Some(memory_history);
-        self
-    }
-
-    /// Configure the service-owned decoded local-Parquet source cache for
-    /// backend/query-service execution.
-    ///
-    /// `None` disables the service cache. `Some(0)` is rejected when a backend
-    /// is built from this config.
-    pub fn with_query_service_local_parquet_source_cache_max_retained_bytes(
-        mut self,
-        max_retained_bytes: Option<u64>,
-    ) -> Self {
-        self.query_service_local_parquet_source_cache_max_retained_bytes = max_retained_bytes;
-        self
-    }
-
-    /// Configure the service-owned parked cuGraph cache for backend/query-service
-    /// execution.
-    ///
-    /// `None` disables the service cache. `Some(0)` is rejected when a
-    /// `QueryService` is built from this config. Server parsing rejects this
-    /// option on builds without the `cugraph` feature because no resident graph
-    /// resources are installed there.
-    pub fn with_query_service_resident_graph_cache_max_retained_bytes(
-        mut self,
-        max_retained_bytes: Option<u64>,
-    ) -> Self {
-        self.query_service_resident_graph_cache_max_retained_bytes = max_retained_bytes;
-        self
-    }
-
-    /// Configure per-query allocator domains for backend/query-service execution.
-    ///
-    /// `None` preserves reservation arenas. The service validates incompatible
-    /// durable-cache combinations until cache-owned allocator routing lands.
-    pub fn with_query_service_query_memory_domain(mut self, policy: Option<QueryMemoryDomainPolicy>) -> Self {
-        self.query_service_query_memory_domain = policy;
-        self
-    }
-
     /// Source object-store profiles registered for native remote source
     /// fetches and local-cache miss fills.
     pub fn source_storage_profiles(&self) -> &[SourceStorageProfile] {
         &self.source_storage_profiles
-    }
-
-    /// Per-device retained-byte cap for service-owned decoded local-Parquet
-    /// source caches. Runtime-affine entries may duplicate per warmed service
-    /// runtime until cross-runtime source-frame reuse is modeled.
-    pub fn query_service_local_parquet_source_cache_max_retained_bytes(&self) -> Option<u64> {
-        self.query_service_local_parquet_source_cache_max_retained_bytes
-    }
-
-    /// Per-device retained-byte cap for service-owned parked cuGraph caches.
-    pub fn query_service_resident_graph_cache_max_retained_bytes(&self) -> Option<u64> {
-        self.query_service_resident_graph_cache_max_retained_bytes
     }
 
     pub(crate) fn graph_execution_services(&self) -> &GraphExecutionServices {
@@ -529,11 +391,6 @@ impl NexusNativeExecutionConfig {
 
     pub(crate) fn set_graph_bfs_singleflight_enabled(&self, enabled: bool) {
         self.graph_execution_services.set_bfs_singleflight_enabled(enabled);
-    }
-
-    /// Per-query allocator-domain policy for backend/query-service execution.
-    pub fn query_service_query_memory_domain(&self) -> Option<QueryMemoryDomainPolicy> {
-        self.query_service_query_memory_domain
     }
 
     /// Register source object-store profiles used by native remote source
@@ -550,7 +407,7 @@ impl NexusNativeExecutionConfig {
     }
 
     /// Memory-control policy copied into the lazily built native context.
-    pub fn memory_control_policy(&self) -> MemoryControlPolicy {
+    pub(crate) fn memory_control_policy(&self) -> MemoryControlPolicy {
         self.memory_control_policy
     }
 
@@ -578,11 +435,6 @@ impl NexusNativeExecutionConfig {
     /// DataFusion's host-side memory pool.
     pub fn host_output_memory_pool_accounting(&self) -> bool {
         self.host_output_memory_pool_accounting
-    }
-
-    /// Strict bounded or adaptive pipeline execution mode.
-    pub fn native_pipeline_execution_mode(&self) -> NativePipelineExecutionMode {
-        self.native_pipeline_execution_mode
     }
 
     /// Execution contract for floating statistical aggregates.
@@ -647,10 +499,5 @@ impl NexusNativeExecutionConfig {
             )
         })?;
         Ok(())
-    }
-
-    /// Adaptive-only memory history store, if configured.
-    pub fn adaptive_memory_history(&self) -> Option<Arc<AdaptiveMemoryHistory>> {
-        self.adaptive_memory_history.as_ref().map(Arc::clone)
     }
 }

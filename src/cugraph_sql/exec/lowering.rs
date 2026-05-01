@@ -322,7 +322,7 @@ pub(super) fn native_algorithm_params_for_memory_estimate(
 ) -> Option<GraphAlgorithmParams> {
     match params {
         // These variants require side-input node ids in the native IR. Fall back
-        // to tenant-default admission instead of minting placeholder ids.
+        // to default admission instead of minting placeholder ids.
         CugraphAlgorithmParams::PersonalizedPageRank(_) => None,
         CugraphAlgorithmParams::Bfs(_) => None,
         CugraphAlgorithmParams::Similarity(_) => None,

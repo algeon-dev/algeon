@@ -1,18 +1,13 @@
-use std::sync::{
-    Arc, Mutex,
-    atomic::{AtomicU64, Ordering},
-};
+use std::sync::{Arc, Mutex};
 
 use datafusion::{
-    common::{DataFusionError, Result as DataFusionResult, config::ConfigOptions},
+    common::{Result as DataFusionResult, config::ConfigOptions},
     physical_optimizer::PhysicalOptimizerRule,
     physical_plan::ExecutionPlan,
 };
-use nexus_query_engine::{metrics::QueryId, plan::PlanNode, runtime::QueryPlacementHint};
+use nexus_query_engine::{admission::QueryPlanCapabilityProof, metrics::QueryId, plan::PlanNode};
 
-use super::{
-    FinalPlanDisposition, FinalPlanRequirement, HostExecutionQosConfig, NexusNativeOptimizerConfig, classify_final_plan,
-};
+use super::{FinalPlanDisposition, FinalPlanRequirement, NexusNativeOptimizerConfig, classify_final_plan};
 use crate::{
     attempt::NexusAttemptExtension,
     error::{Error, ErrorCode},
@@ -22,9 +17,7 @@ use crate::{
         NexusNativeGpuProducerExec,
         admission::{AttemptTicketBinding, QueryAdmissionTicket},
         graph::{GraphAdmissionModelAsk, graph_execution_plan},
-        plan_is_host_execution_qos_limited, plan_is_query_admission_wrapped,
-        plan_is_unbounded_native_execution_limited, wrap_plan_with_host_execution_qos,
-        wrap_plan_with_query_admission_ticket, wrap_plan_with_unbounded_native_execution_limit,
+        plan_is_query_admission_wrapped, wrap_plan_with_query_admission_ticket,
     },
     native_report::{NativeJoinDiagnosticSummary, physical_join_diagnostics},
     physical_plan::physical_plan_shape,
@@ -32,122 +25,23 @@ use crate::{
     session::{NEXUS_NATIVE_COUNT_ONLY_PHYSICAL_OPTIMIZER_RULE_NAME, NEXUS_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME},
 };
 
-mod adaptive;
 mod attempt;
+mod capability_envelope;
 mod mixed;
-mod strict_bounded;
 
-pub use adaptive::{NativeAdaptivePipelineCandidateDiagnostics, NativeAdaptivePipelineDiagnostics};
 use attempt::{
     NativeOptimizationAttempt, optimize_count_only_native_plan, optimize_final_native_plan,
     peel_cooperative_native_exec,
 };
-use mixed::is_certified_mixed_execution_plan;
-pub use strict_bounded::{
-    NativeStrictBoundedAcceptedCandidateDiagnostics, NativeStrictBoundedCompiledGraphDiagnostics,
-    NativeStrictBoundedContractDiagnostics, NativeStrictBoundedRejectedCandidateDiagnostics,
-    STRICT_BOUNDED_NON_JOIN_OUTSIDE_REPORT_SCOPE_REASON,
+pub use capability_envelope::{
+    CAPABILITY_NON_JOIN_OUTSIDE_REPORT_SCOPE_REASON, NativeCapabilityAcceptedCandidateDiagnostics,
+    NativeCapabilityCompiledGraphDiagnostics, NativeCapabilityContractDiagnostics,
+    NativeCapabilityRejectedCandidateDiagnostics,
 };
-
-static NEXT_NATIVE_RELATIONAL_PRODUCER_ID: AtomicU64 = AtomicU64::new(0);
-
-/// Attempt native lowering for one relational child that will feed an outer
-/// accelerator operator. Successful host-native wrappers are converted to
-/// their GPU-resident producer form so the outer operator owns the only native
-/// context and final host boundary. Unsupported children remain ordinary
-/// DataFusion plans and are staged by the accelerator frontend.
-pub(crate) fn optimize_native_relational_child_to_gpu_producer(
-    plan: Arc<dyn ExecutionPlan>,
-    config: &NexusNativeOptimizerConfig,
-) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
-    if crate::native_exec::producer::gpu_resident_producer_input_name(plan.as_ref()).is_some() {
-        return Ok(plan);
-    }
-    if config.native_execution_config().memory_control_policy().is_bounded() {
-        return Ok(plan);
-    }
-
-    let optimized = optimize_final_native_plan(
-        Arc::clone(&plan),
-        config.native_execution_config(),
-        config.native_optimizer_options(),
-        config.native_plan_cost_options(),
-    )?;
-    if !optimized.rewritten {
-        return Ok(plan);
-    }
-
-    // The normal root rewrite may retain DataFusion's cooperative wrapper
-    // around a native host plan. It is an ordinary row-stream wrapper, so it
-    // must be removed before this child becomes a device-handle producer.
-    let optimized_plan = peel_cooperative_native_exec(&optimized.plan).unwrap_or_else(|| Arc::clone(&optimized.plan));
-    let producer_id = NEXT_NATIVE_RELATIONAL_PRODUCER_ID.fetch_add(1, Ordering::Relaxed);
-    let input_name = format!("__datafusion_nexus_relational_gpu_input_{producer_id}");
-    if let Some(native) = optimized_plan.downcast_ref::<NexusNativeExec>() {
-        return native
-            .to_gpu_resident_producer(input_name)
-            .map(|producer| Arc::new(producer) as Arc<dyn ExecutionPlan>)
-            .map_err(DataFusionError::from);
-    }
-    if let Some(composed) = optimized_plan.downcast_ref::<NexusNativeComposedExec>() {
-        return composed
-            .to_gpu_resident_producer(input_name)
-            .map(|producer| Arc::new(producer) as Arc<dyn ExecutionPlan>)
-            .map_err(DataFusionError::from);
-    }
-
-    Ok(plan)
-}
+use mixed::is_certified_mixed_execution_plan;
 
 /// Internal optimizer-rule identity for completed-plan requirements.
 pub const NEXUS_FINAL_PLAN_REQUIREMENT_RULE_NAME: &str = "datafusion_nexus_final_plan_requirement";
-/// Internal optimizer-rule identity for host-side statement execution QoS.
-pub const NEXUS_HOST_EXECUTION_QOS_RULE_NAME: &str = "datafusion_nexus_host_execution_qos";
-
-/// Applies host-side statement QoS to exact completed DataFusion and mixed
-/// physical plans. Native-only plans continue directly to GPU admission.
-#[derive(Debug, Clone)]
-pub struct NexusHostExecutionQosRule {
-    config: HostExecutionQosConfig,
-}
-
-impl NexusHostExecutionQosRule {
-    /// Create an outer statement-final host QoS rule.
-    pub fn new(config: HostExecutionQosConfig) -> Self {
-        Self { config }
-    }
-
-    #[cfg(feature = "server")]
-    pub(crate) fn config(&self) -> &HostExecutionQosConfig {
-        &self.config
-    }
-}
-
-impl PhysicalOptimizerRule for NexusHostExecutionQosRule {
-    fn optimize(
-        &self,
-        plan: Arc<dyn ExecutionPlan>,
-        _config: &ConfigOptions,
-    ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
-        if plan_is_host_execution_qos_limited(plan.as_ref()) {
-            return Ok(plan);
-        }
-        match classify_final_plan(plan.as_ref()) {
-            FinalPlanDisposition::DataFusion | FinalPlanDisposition::Mixed => {
-                Ok(wrap_plan_with_host_execution_qos(plan, self.config.limiter()))
-            },
-            FinalPlanDisposition::Native | FinalPlanDisposition::Rejected => Ok(plan),
-        }
-    }
-
-    fn name(&self) -> &str {
-        NEXUS_HOST_EXECUTION_QOS_RULE_NAME
-    }
-
-    fn schema_check(&self) -> bool {
-        true
-    }
-}
 
 /// Enforces configured requirements against the exact physical plan produced by
 /// the preceding native rewrite and leaf-guard rules.
@@ -243,9 +137,8 @@ fn first_native_not_supported(
 
 /// Last-observed native planning diagnostics from a retained optimizer rule.
 ///
-/// The strict bounded and adaptive fields are intentionally separate. Report
-/// code should not project adaptive evidence into strict contract rows, or
-/// strict preflight failures into adaptive runtime history.
+/// Capability-contract evidence is retained from the planner. The optimizer
+/// retains no alternate planning-history projection.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativePlanningDiagnostics {
     /// Root DataFusion execution node name seen before native optimization.
@@ -261,10 +154,8 @@ pub struct NativePlanningDiagnostics {
     pub native_optimizer: nexus_query_engine::optimizer::NativeOptimizerDiagnostics,
     /// Source-read diagnostics captured while lowering/planning native sources.
     pub source_diagnostics: Vec<nexus_query_engine::source::SourceDiagnostics>,
-    /// Strict bounded contract evidence; never populated from adaptive rows.
-    pub strict_bounded_contract: NativeStrictBoundedContractDiagnostics,
-    /// Adaptive admission evidence; never projected into strict contract rows.
-    pub adaptive_pipeline: NativeAdaptivePipelineDiagnostics,
+    /// Canonical capability-contract evidence.
+    pub capability_contract: NativeCapabilityContractDiagnostics,
 }
 
 /// DataFusion physical optimizer rule that rewrites supported plans to native cuDF execution.
@@ -290,8 +181,7 @@ struct NexusNativePhysicalOptimizerRuleState {
     last_report: Mutex<Option<PlanningReport>>,
     last_native_optimizer: Mutex<nexus_query_engine::optimizer::NativeOptimizerDiagnostics>,
     last_source_diagnostics: Mutex<Vec<nexus_query_engine::source::SourceDiagnostics>>,
-    last_strict_bounded_contract: Mutex<NativeStrictBoundedContractDiagnostics>,
-    last_adaptive_pipeline: Mutex<NativeAdaptivePipelineDiagnostics>,
+    last_capability_contract: Mutex<NativeCapabilityContractDiagnostics>,
 }
 
 // Distinct rule identities let the count-only probe run before the final rewrite pass.
@@ -316,8 +206,7 @@ impl NexusNativePhysicalOptimizerRule {
                 last_report: Mutex::new(None),
                 last_native_optimizer: Mutex::new(nexus_query_engine::optimizer::NativeOptimizerDiagnostics::default()),
                 last_source_diagnostics: Mutex::new(Vec::new()),
-                last_strict_bounded_contract: Mutex::new(NativeStrictBoundedContractDiagnostics::default()),
-                last_adaptive_pipeline: Mutex::new(NativeAdaptivePipelineDiagnostics::default()),
+                last_capability_contract: Mutex::new(NativeCapabilityContractDiagnostics::default()),
             }),
         }
     }
@@ -386,17 +275,11 @@ impl NexusNativePhysicalOptimizerRule {
                 .expect("native optimizer diagnostics mutex poisoned")
                 .clone(),
             source_diagnostics: self.last_source_diagnostics(),
-            strict_bounded_contract: self
+            capability_contract: self
                 .state
-                .last_strict_bounded_contract
+                .last_capability_contract
                 .lock()
-                .expect("native strict bounded contract diagnostics mutex poisoned")
-                .clone(),
-            adaptive_pipeline: self
-                .state
-                .last_adaptive_pipeline
-                .lock()
-                .expect("native adaptive pipeline diagnostics mutex poisoned")
+                .expect("native capability contract diagnostics mutex poisoned")
                 .clone(),
         })
     }
@@ -409,12 +292,6 @@ impl PhysicalOptimizerRule for NexusNativePhysicalOptimizerRule {
         config: &ConfigOptions,
     ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
         if plan_is_query_admission_wrapped(plan.as_ref()) {
-            return Ok(plan);
-        }
-        if plan_is_unbounded_native_execution_limited(plan.as_ref()) {
-            return Ok(plan);
-        }
-        if plan_is_host_execution_qos_limited(plan.as_ref()) {
             return Ok(plan);
         }
         if plan.downcast_ref::<NexusNativeExec>().is_some() || plan.downcast_ref::<NexusNativeComposedExec>().is_some()
@@ -439,7 +316,7 @@ impl PhysicalOptimizerRule for NexusNativePhysicalOptimizerRule {
         let effective_config = self.config.with_datafusion_config_options(config)?.with_query_id_if_absent(
             attempt_extension
                 .as_ref()
-                .and_then(|extension| extension.state.query_id.as_ref())
+                .and_then(NexusAttemptExtension::query_id)
                 .map(|query_id| QueryId::new(query_id.as_str()))
                 .unwrap_or_else(QueryId::mint),
         );
@@ -477,10 +354,9 @@ impl PhysicalOptimizerRule for NexusNativePhysicalOptimizerRule {
             None
         };
         if let (Some(extension), Some(ticket)) = (&attempt_extension, &query_admission_ticket) {
-            *extension.state.ticket.lock().unwrap_or_else(std::sync::PoisonError::into_inner) =
-                Some(Arc::clone(ticket));
+            extension.bind_ticket(Arc::clone(ticket));
         }
-        apply_execution_admission_wrappers(&mut optimized, native_execution_config, query_admission_ticket);
+        apply_execution_admission_wrappers(&mut optimized, query_admission_ticket);
         self.store_optimization_attempt(&optimized)?;
         Ok(optimized.plan)
     }
@@ -510,35 +386,20 @@ impl NexusNativePhysicalOptimizerRule {
             optimized.native_optimizer.clone();
         *self.state.last_source_diagnostics.lock().expect("native source diagnostics mutex poisoned") =
             optimized.source_diagnostics.clone();
-        *self
-            .state
-            .last_strict_bounded_contract
-            .lock()
-            .expect("native strict bounded contract diagnostics mutex poisoned") =
-            optimized.strict_bounded_contract.clone();
-        *self.state.last_adaptive_pipeline.lock().expect("native adaptive pipeline diagnostics mutex poisoned") =
-            optimized.adaptive_pipeline.clone();
+        *self.state.last_capability_contract.lock().expect("native capability contract diagnostics mutex poisoned") =
+            optimized.capability_contract.clone();
         Ok(())
     }
 }
 
 fn apply_execution_admission_wrappers(
     optimized: &mut NativeOptimizationAttempt,
-    native_execution_config: &NexusNativeExecutionConfig,
     query_admission_ticket: Option<Arc<QueryAdmissionTicket>>,
 ) {
     if optimized.rewritten
         && let Some(ticket) = query_admission_ticket
     {
         optimized.plan = wrap_plan_with_query_admission_ticket(Arc::clone(&optimized.plan), ticket);
-    } else if optimized.rewritten
-        && matches!(
-            native_execution_config.memory_control_policy(),
-            nexus_query_engine::runtime::MemoryControlPolicy::Unbounded
-        )
-        && let Some(limiter) = native_execution_config.unbounded_native_execution_limiter()
-    {
-        optimized.plan = wrap_plan_with_unbounded_native_execution_limit(Arc::clone(&optimized.plan), limiter);
     }
 }
 
@@ -547,68 +408,77 @@ fn plan_query_admission_ticket_for_optimized_plan(
     native_execution_config: &NexusNativeExecutionConfig,
     attempt: Option<&NexusAttemptExtension>,
 ) -> DataFusionResult<Option<Arc<QueryAdmissionTicket>>> {
-    let graph_model_ask = graph_aware_requested_grant_bytes_for_plan(plan, native_execution_config)?;
-    let placement_hint = graph_placement_hint_for_plan(plan);
+    let graph_model_ask = graph_aware_model_ask_for_plan(plan, native_execution_config)?;
+    let fragment_proofs = native_fragment_capability_proofs(plan);
     let ticket = native_execution_config
-        .new_plan_query_admission_ticket_with_graph_model_ask(graph_model_ask, placement_hint.clone())
+        .new_plan_query_admission_ticket_with_graph_model_ask_and_fragment_requirements(
+            graph_model_ask,
+            fragment_proofs,
+        )
         .map_err(|error| {
             datafusion::common::DataFusionError::from(Error::from_native(
                 "datafusion_nexus.native_optimizer.graph_ticket_ask",
-                "failed to compute graph-aware query admission ticket ask",
+                "failed to compute query admission ticket requirements",
                 error,
             ))
         })?;
-    Ok(ticket.map(|ticket| match attempt {
+    let Some(ticket) = ticket else {
+        return Ok(None);
+    };
+    let ticket = match attempt {
         Some(extension) => QueryAdmissionTicket::new_attempt_bound(
             ticket.source(),
-            ticket.requested_grant_min_bytes_for_rebind(),
-            ticket.requested_grant_bytes_for_rebind(),
-            ticket.placement_hint_for_rebind(),
-            #[cfg(feature = "cugraph")]
-            ticket.warm_graph_requested_grant_bytes_for_rebind(),
-            AttemptTicketBinding {
-                handle: extension.state.handle.clone(),
-                cancellation: extension.state.cancellation.clone(),
-                observation_owner: extension.state.observation_owner.clone(),
-            },
+            ticket.attempt_capability_proof_for_rebind(),
+            extension.ticket_binding(),
             ticket.metrics_capture(),
         ),
         None => ticket,
-    }))
+    };
+    Ok(Some(ticket))
 }
 
-fn graph_placement_hint_for_plan(plan: &dyn ExecutionPlan) -> QueryPlacementHint {
-    fn collect(plan: &dyn ExecutionPlan, selected: &mut Option<QueryPlacementHint>, ambiguous: &mut bool) {
-        if let Some(graph) = graph_execution_plan(plan) {
-            let hint = graph.graph_placement_hint_for_admission();
-            if hint.is_empty() {
-                return;
-            }
-            match selected {
-                Some(current) if current != &hint => *ambiguous = true,
-                Some(_) => {},
-                None => *selected = Some(hint),
-            }
-            return;
-        }
-        for child in plan.children() {
-            collect(child.as_ref(), selected, ambiguous);
+fn native_fragment_capability_proofs(plan: &dyn ExecutionPlan) -> Vec<QueryPlanCapabilityProof> {
+    let mut proofs = Vec::new();
+    collect_native_fragment_capability_proofs(plan, &mut proofs);
+    proofs
+}
+
+fn collect_native_fragment_capability_proofs(plan: &dyn ExecutionPlan, proofs: &mut Vec<QueryPlanCapabilityProof>) {
+    for child in plan.children() {
+        collect_native_fragment_capability_proofs(child.as_ref(), proofs);
+    }
+    if graph_execution_plan(plan).is_some() {
+        proofs.push(QueryPlanCapabilityProof::for_cugraph_graph_execution());
+        return;
+    }
+    if let Some(native_plan) = lowered_native_plan(plan) {
+        if let Some(proof) = native_plan_capability_proof(native_plan) {
+            proofs.push(proof);
         }
     }
-
-    let mut selected = None;
-    let mut ambiguous = false;
-    collect(plan, &mut selected, &mut ambiguous);
-    if ambiguous { QueryPlacementHint::default() } else { selected.unwrap_or_default() }
 }
 
-fn graph_aware_requested_grant_bytes_for_plan(
+fn native_plan_capability_proof(native_plan: &nexus_query_engine::plan::QueryPlan) -> Option<QueryPlanCapabilityProof> {
+    QueryPlanCapabilityProof::for_query_plan(native_plan)
+}
+
+fn lowered_native_plan(plan: &dyn ExecutionPlan) -> Option<&nexus_query_engine::plan::QueryPlan> {
+    if let Some(native) = plan.downcast_ref::<NexusNativeExec>() {
+        return Some(native.native_plan());
+    }
+    if let Some(native) = plan.downcast_ref::<NexusNativeComposedExec>() {
+        return Some(native.native_plan());
+    }
+    if let Some(native) = plan.downcast_ref::<NexusNativeGpuProducerExec>() {
+        return Some(native.native_plan());
+    }
+    plan.downcast_ref::<NexusNativeComposedGpuProducerExec>().map(NexusNativeComposedGpuProducerExec::native_plan)
+}
+
+fn graph_aware_model_ask_for_plan(
     plan: &dyn ExecutionPlan,
     native_execution_config: &NexusNativeExecutionConfig,
 ) -> DataFusionResult<Option<GraphAdmissionModelAsk>> {
-    if native_execution_config.requested_grant_bytes().is_some() {
-        return Ok(None);
-    }
     let Some(source) = native_execution_config.query_admission_source() else {
         return Ok(None);
     };
@@ -702,7 +572,7 @@ fn update_graph_model_ask_scan(
         scan.disqualified = true;
         return Ok(true);
     }
-    for estimate in nexus_query_engine::graph_memory::graph_memory_estimates_for_plan(
+    for evidence in nexus_query_engine::graph_memory::graph_memory_admission_evidence_for_plan(
         native_plan,
         calibration_override,
         device_total_memory_bytes,
@@ -710,13 +580,16 @@ fn update_graph_model_ask_scan(
     .map_err(|error| {
         datafusion::common::DataFusionError::from(Error::from_native(
             "datafusion_nexus.native_optimizer.graph_ticket_ask",
-            "failed to estimate graph memory from native plan metadata",
+            "failed to derive graph admission evidence from native plan metadata",
             error,
         ))
     })? {
         scan.estimated_graph_node_count += 1;
-        let ask = GraphAdmissionModelAsk::new(estimate.estimate.requested_bytes, estimate.estimate.execution_bytes);
-        scan.max_graph_model_ask = Some(scan.max_graph_model_ask.map_or(ask, |current| current.max(ask)));
+        let ask = GraphAdmissionModelAsk::from_graph_memory_admission_evidence(evidence);
+        scan.max_graph_model_ask = Some(match scan.max_graph_model_ask.take() {
+            Some(current) => current.max(ask),
+            None => ask,
+        });
     }
     Ok(true)
 }
@@ -728,7 +601,10 @@ fn update_registered_graph_model_ask_scan(
     scan.graph_node_count += 1;
     if let Some(model_ask) = graph.graph_model_ask_for_admission()? {
         scan.estimated_graph_node_count += 1;
-        scan.max_graph_model_ask = Some(scan.max_graph_model_ask.map_or(model_ask, |current| current.max(model_ask)));
+        scan.max_graph_model_ask = Some(match scan.max_graph_model_ask.take() {
+            Some(current) => current.max(model_ask),
+            None => model_ask,
+        });
     }
     Ok(())
 }
@@ -768,30 +644,23 @@ fn native_plan_is_graph_ticket_light_fragment(native_plan: &nexus_query_engine::
 
 #[cfg(test)]
 mod tests {
-    use std::num::NonZeroUsize;
-
     use arrow::datatypes::{DataType, Field, Schema};
-    use datafusion::{
-        common::ScalarValue,
-        physical_expr::expressions::lit,
-        physical_plan::{empty::EmptyExec, filter::FilterExec, union::UnionExec},
-    };
+    use datafusion::physical_plan::{empty::EmptyExec, union::UnionExec};
     use nexus_query_engine::{
         plan::{
             GraphAlgorithm, GraphAlgorithmParams, GraphAlgorithmSpec, GraphBfsParams, GraphConstructionOptions,
             GraphConstructionPolicy, GraphEdgeColumnBindings, GraphTriangleCountAllParams, QueryPlan, QueryPlanBuilder,
         },
-        runtime::{QueryServiceConfig, QueryServiceTenantConfig, TenantId},
-        source::{LocalParquetFile, LocalParquetSource, SourceNode},
+        source::{GpuResidentSource, LocalParquetFile, LocalParquetSource, SourceNode},
     };
 
     use super::*;
     use crate::{
         error::{DataFusionErrorExt, ErrorCode, ErrorStatus},
-        native_exec::admission::TestAdmissionController,
+        native_exec::admission::{TestAdmissionController, TestAdmissionDeviceProfile},
     };
 
-    fn native_exec_leaf() -> Arc<dyn ExecutionPlan> {
+    fn local_parquet_native_plan() -> QueryPlan {
         let schema = Arc::new(Schema::empty());
         let mut builder = QueryPlanBuilder::new();
         let source = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
@@ -799,8 +668,12 @@ mod tests {
             schema,
             Vec::new(),
         )));
+        builder.finish_with_host_sink(source)
+    }
+
+    fn native_exec_leaf() -> Arc<dyn ExecutionPlan> {
         Arc::new(
-            NexusNativeExec::try_new(builder.finish_with_host_sink(source), NexusNativeExecutionConfig::unbounded())
+            NexusNativeExec::try_new(local_parquet_native_plan(), NexusNativeExecutionConfig::bounded_default())
                 .expect("native runtime leaf should build without opening its source"),
         )
     }
@@ -844,14 +717,12 @@ mod tests {
     }
 
     fn backend_admission_config(min_bytes: u64, want_bytes: u64, capacity_bytes: u64) -> NexusNativeExecutionConfig {
-        let tenant_id = TenantId::new("tenant");
         let controller = TestAdmissionController::new(
-            QueryServiceConfig { device_capacity_bytes: Some(capacity_bytes), ..QueryServiceConfig::default() },
-            vec![QueryServiceTenantConfig::with_grant_range(tenant_id.clone(), min_bytes, want_bytes)],
+            TestAdmissionDeviceProfile::new(0, capacity_bytes, 1, min_bytes),
+            Some(want_bytes),
         )
         .unwrap();
-        NexusNativeExecutionConfig::bounded(min_bytes, 512, 1, 3, 1)
-            .with_query_admission_source(controller.source(tenant_id))
+        NexusNativeExecutionConfig::bounded(min_bytes, 512, 1, 3, 1).with_query_admission_source(controller.source())
     }
 
     fn edge_schema() -> Arc<Schema> {
@@ -923,58 +794,7 @@ mod tests {
     }
 
     #[test]
-    fn host_execution_qos_wraps_datafusion_and_mixed_final_plans_once() {
-        let rule = NexusHostExecutionQosRule::new(HostExecutionQosConfig::new(NonZeroUsize::new(1).unwrap()));
-        let datafusion: Arc<dyn ExecutionPlan> = Arc::new(EmptyExec::new(Arc::new(Schema::empty())));
-        let native = native_exec_leaf();
-        let mixed: Arc<dyn ExecutionPlan> =
-            Arc::new(FilterExec::try_new(lit(ScalarValue::Boolean(Some(true))), native).unwrap());
-
-        for plan in [datafusion, mixed] {
-            let disposition = classify_final_plan(plan.as_ref());
-            let optimized = rule.optimize(Arc::clone(&plan), &ConfigOptions::default()).unwrap();
-
-            assert!(plan_is_host_execution_qos_limited(optimized.as_ref()));
-            assert_eq!(classify_final_plan(optimized.as_ref()), disposition);
-            let optimized_again = rule.optimize(Arc::clone(&optimized), &ConfigOptions::default()).unwrap();
-            assert!(Arc::ptr_eq(&optimized, &optimized_again), "host QoS must wrap once per final statement");
-        }
-    }
-
-    #[test]
-    fn final_plan_requirement_observes_unary_mixed_plan_under_host_execution_qos() {
-        let native = native_exec_leaf();
-        let mixed: Arc<dyn ExecutionPlan> =
-            Arc::new(FilterExec::try_new(lit(ScalarValue::Boolean(Some(true))), native).unwrap());
-        let host_qos = NexusHostExecutionQosRule::new(HostExecutionQosConfig::new(NonZeroUsize::new(1).unwrap()));
-        let mixed = host_qos.optimize(mixed, &ConfigOptions::default()).unwrap();
-        let requirement = NexusFinalPlanRequirementRule::new(
-            NexusNativeOptimizerConfig::default().with_no_datafusion_cpu_requirement(),
-        );
-
-        let error = requirement
-            .optimize(mixed, &ConfigOptions::default())
-            .expect_err("NoDataFusionCpu must reject the unary mixed plan under host QoS");
-        let error = error.find_nexus_error().expect("typed adapter error");
-
-        assert_eq!(error.code(), ErrorCode::FinalPlanRequirementUnsatisfied);
-        assert_eq!(error.fact_value("observed_final_plan_disposition"), Some("mixed"));
-    }
-
-    #[test]
-    fn host_execution_qos_leaves_native_final_plans_unwrapped() {
-        let rule = NexusHostExecutionQosRule::new(HostExecutionQosConfig::new(NonZeroUsize::new(1).unwrap()));
-        let native = native_exec_leaf();
-
-        let optimized = rule.optimize(Arc::clone(&native), &ConfigOptions::default()).unwrap();
-
-        assert!(Arc::ptr_eq(&native, &optimized));
-        assert!(!plan_is_host_execution_qos_limited(optimized.as_ref()));
-        assert_eq!(classify_final_plan(optimized.as_ref()), FinalPlanDisposition::Native);
-    }
-
-    #[test]
-    fn graph_aware_ticket_ask_uses_lowered_graph_model_and_clamps_to_tenant_band() {
+    fn graph_aware_ticket_keeps_lowered_graph_model_bytes_out_of_admission_grant() {
         let min = 64 * 1024 * 1024;
         let want = 2 * 1024 * 1024 * 1024;
         let capacity = 4 * 1024 * 1024 * 1024;
@@ -983,26 +803,69 @@ mod tests {
         let model_ask =
             complete_graph_dominated_model_ask_bytes(&exec, config.graph_memory_calibration_override(), Some(capacity))
                 .unwrap();
-        let expected =
-            config.graph_aware_requested_grant_bytes_for_model_ask(model_ask.map(|ask| ask.cold_bytes())).unwrap();
+        let expected = model_ask.as_ref().map(GraphAdmissionModelAsk::cold_model_requested_bytes);
 
-        let requested = graph_aware_requested_grant_bytes_for_plan(&exec, &config).unwrap();
+        let requested = graph_aware_model_ask_for_plan(&exec, &config).unwrap();
         let ticket = plan_query_admission_ticket_for_optimized_plan(&exec, &config, None).unwrap().unwrap();
+        let expected_proof = native_plan_capability_proof(exec.native_plan());
 
         assert_eq!(requested, model_ask);
-        assert_eq!(ticket.requested_grant_bytes(), expected);
-        assert!(ticket.requested_grant_bytes().unwrap() < want, "small graph ask should not default to tenant want");
+        assert_eq!(ticket.attempt_capability_proof(), expected_proof.as_ref());
+        assert!(
+            expected.expect("known graph rows produce model bytes") < want,
+            "small graph estimate should not default to the controller hint"
+        );
+        assert!(
+            ticket
+                .attempt_capability_proof()
+                .expect("native graph ticket retains its engine-issued proof")
+                .required_capabilities()
+                .iter()
+                .any(|requirement| {
+                    requirement.required_contract
+                        == nexus_query_engine::plan::GRAPH_ALGORITHM_CAPABILITY_REQUIRED_CONTRACT
+                })
+        );
     }
 
     #[test]
-    fn graph_aware_ticket_ask_does_not_override_explicit_requested_grant_bytes() {
-        let config = backend_admission_config(64 * 1024 * 1024, 2 * 1024 * 1024 * 1024, 4 * 1024 * 1024 * 1024)
-            .with_requested_grant_bytes(Some(768 * 1024 * 1024));
-        let exec = graph_exec(Some(vec![100, 200]), &config);
+    fn planner_ticket_unions_capabilities_from_composed_native_fragments() {
+        let config = backend_admission_config(64 * 1024 * 1024, 2 * 1024 * 1024 * 1024, 4 * 1024 * 1024 * 1024);
+        let left =
+            NexusNativeGpuProducerExec::try_new("left", local_parquet_native_plan().clone_with_gpu_resident_sink())
+                .unwrap();
+        let right =
+            NexusNativeGpuProducerExec::try_new("right", local_parquet_native_plan().clone_with_gpu_resident_sink())
+                .unwrap();
+        let schema = left.schema();
+        let mut builder = QueryPlanBuilder::new();
+        let left_source =
+            builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("left", Arc::clone(&schema))));
+        let right_source =
+            builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("right", Arc::clone(&schema))));
+        let union = builder.add_union(vec![left_source, right_source], Arc::clone(&schema));
+        let consumer_plan = builder.finish_with_host_sink_schema(union, schema);
 
-        assert_eq!(graph_aware_requested_grant_bytes_for_plan(&exec, &config).unwrap(), None);
-        let ticket = plan_query_admission_ticket_for_optimized_plan(&exec, &config, None).unwrap().unwrap();
-        assert_eq!(ticket.requested_grant_bytes(), Some(768 * 1024 * 1024));
+        let left_proof = native_plan_capability_proof(left.native_plan()).expect("producer has capability proof");
+        let right_proof = native_plan_capability_proof(right.native_plan()).expect("producer has capability proof");
+        let consumer_proof = native_plan_capability_proof(&consumer_plan).expect("consumer has capability proof");
+        let unaggregated_capability_count = left_proof.required_capabilities().len()
+            + right_proof.required_capabilities().len()
+            + consumer_proof.required_capabilities().len();
+        assert!(!left_proof.required_capabilities().is_empty(), "producer must expose a capability requirement");
+        let expected = QueryPlanCapabilityProof::combine(left_proof, [right_proof, consumer_proof]).unwrap();
+        let composed =
+            NexusNativeComposedExec::try_new(consumer_plan, vec![Arc::new(left), Arc::new(right)], config.clone())
+                .unwrap();
+
+        let ticket = plan_query_admission_ticket_for_optimized_plan(&composed, &config, None).unwrap().unwrap();
+
+        assert_eq!(ticket.attempt_capability_proof(), Some(&expected));
+        assert!(
+            ticket.attempt_capability_proof().expect("planner ticket retains its proof").required_capabilities().len()
+                < unaggregated_capability_count,
+            "the repeated producer capability must be deduplicated"
+        );
     }
 
     #[test]
@@ -1010,20 +873,20 @@ mod tests {
         let config = backend_admission_config(64 * 1024 * 1024, 2 * 1024 * 1024 * 1024, 4 * 1024 * 1024 * 1024);
         let exec = graph_exec(None, &config);
 
-        assert_eq!(graph_aware_requested_grant_bytes_for_plan(&exec, &config).unwrap(), None);
+        assert_eq!(graph_aware_model_ask_for_plan(&exec, &config).unwrap(), None);
         let ticket = plan_query_admission_ticket_for_optimized_plan(&exec, &config, None).unwrap().unwrap();
-        assert_eq!(ticket.requested_grant_bytes(), None);
+        assert_eq!(ticket.attempt_capability_proof(), native_plan_capability_proof(exec.native_plan()).as_ref());
     }
 
     #[test]
-    fn graph_aware_ticket_ask_prices_cacheable_bfs_construction() {
+    fn graph_aware_ticket_keeps_cacheable_bfs_model_bytes_out_of_admission_grant() {
         let config = backend_admission_config(64 * 1024 * 1024, 2 * 1024 * 1024 * 1024, 4 * 1024 * 1024 * 1024);
         let exec = NexusNativeExec::try_new(bfs_native_plan(Some(vec![100, 200])), config.clone()).unwrap();
 
-        let ask = graph_aware_requested_grant_bytes_for_plan(&exec, &config).unwrap().unwrap();
-        assert!(ask.cold_bytes() > ask.warm_bytes());
+        let ask = graph_aware_model_ask_for_plan(&exec, &config).unwrap().unwrap();
+        assert!(ask.cold_model_requested_bytes() > ask.warm_model_requested_bytes());
         let ticket = plan_query_admission_ticket_for_optimized_plan(&exec, &config, None).unwrap().unwrap();
-        assert!(ticket.requested_grant_bytes().is_some());
+        assert_eq!(ticket.attempt_capability_proof(), native_plan_capability_proof(exec.native_plan()).as_ref());
     }
 
     #[test]
@@ -1033,9 +896,9 @@ mod tests {
         let unknown = Arc::new(graph_exec(None, &config)) as Arc<dyn ExecutionPlan>;
         let plan = UnionExec::try_new(vec![known, unknown]).unwrap();
 
-        assert_eq!(graph_aware_requested_grant_bytes_for_plan(plan.as_ref(), &config).unwrap(), None);
+        assert_eq!(graph_aware_model_ask_for_plan(plan.as_ref(), &config).unwrap(), None);
         let ticket = plan_query_admission_ticket_for_optimized_plan(plan.as_ref(), &config, None).unwrap().unwrap();
-        assert_eq!(ticket.requested_grant_bytes(), None);
+        assert!(ticket.attempt_capability_proof().is_some());
     }
 
     #[test]
@@ -1043,8 +906,8 @@ mod tests {
         let config = backend_admission_config(64 * 1024 * 1024, 2 * 1024 * 1024 * 1024, 4 * 1024 * 1024 * 1024);
         let exec = NexusNativeExec::try_new(graph_union_native_plan(Some(vec![100, 200])), config.clone()).unwrap();
 
-        assert_eq!(graph_aware_requested_grant_bytes_for_plan(&exec, &config).unwrap(), None);
+        assert_eq!(graph_aware_model_ask_for_plan(&exec, &config).unwrap(), None);
         let ticket = plan_query_admission_ticket_for_optimized_plan(&exec, &config, None).unwrap().unwrap();
-        assert_eq!(ticket.requested_grant_bytes(), None);
+        assert_eq!(ticket.attempt_capability_proof(), native_plan_capability_proof(exec.native_plan()).as_ref());
     }
 }

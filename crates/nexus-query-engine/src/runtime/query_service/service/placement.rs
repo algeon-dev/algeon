@@ -1,282 +1,358 @@
-//! Device placement, governor grants, and query slot acquisition.
+//! Device placement and immutable-grant admission against per-device ledgers.
 
 use super::*;
 
-pub(in crate::runtime::query_service::service) fn unhealthy_placement_device_error(
-    device: cudf::DeviceId,
-    health: cudf::runtime::DeviceHealthSnapshot,
-) -> QueryError {
-    let mut error = QueryError::new(
-        QueryErrorCode::CudfPersistentFailure,
-        "nexus_query_engine.query_service.placement",
-        "CUDA device is unhealthy and cannot admit new queries",
-    )
-    .with_fact("device_ordinal", device.ordinal())
-    .with_fact("device_health", "unhealthy")
-    .with_fact("device_fault_count", health.fault_count())
-    .with_fact("reason", "device_health_rejected_admission");
-    if let Some(first_fault) = health.first_fault() {
-        error = error
-            .with_fact("first_device_fault_kind", format!("{:?}", first_fault.kind()))
-            .with_fact("first_device_fault_operation", first_fault.operation());
-    }
-    error
+/// Returns the immutable capabilities required before placement.
+pub(in crate::runtime::query_service) fn required_capabilities_for_placement(
+    requirement: &AttemptRequirement,
+) -> Vec<crate::capability::ReservationRequirement> {
+    requirement.required_capabilities.clone()
 }
 
 impl QueryService {
-    pub(in crate::runtime::query_service::service) fn try_grant_from_governor(
-        &self,
-        governor: &MemoryGovernor,
-        admission_request_id: AdmissionRequestId,
-        grant_policy: TenantGrantPolicy,
-        qos: QueryQos,
-        deadline: Option<Instant>,
-        active_queries: usize,
-    ) -> Result<Option<MemoryGrant>> {
-        let available_bytes = governor.available_bytes()?;
-        if available_bytes < grant_policy.min_bytes {
-            return Ok(None);
-        }
-        let reserved_for_remaining_slots = self.reserved_min_bytes_for_remaining_slots(active_queries);
-        let Some(want_bytes) = self.grant_budget_bytes(available_bytes, grant_policy, reserved_for_remaining_slots)
-        else {
-            return Ok(None);
+    /// Folds persistent native CUDA faults into their owning scheduler ledgers.
+    ///
+    /// Callers own deferred shared-waiter notification: queue maintenance may
+    /// hold the admission mutex, while direct placement already owns a pending
+    /// notification set. Returning only ordinals whose ledgers transitioned
+    /// keeps notification outside those critical sections.
+    pub(in crate::runtime::query_service::service) fn reconcile_native_admission_health(&self) -> Result<Vec<usize>> {
+        let Some(resources) = &self.inner.resources else {
+            return Ok(Vec::new());
         };
-        let mut request = GrantRequest::new(admission_request_id, grant_policy.min_bytes, want_bytes);
-        request = request.with_qos(qos);
-        if let Some(deadline) = deadline {
-            request = request.with_deadline(deadline);
+        let mut transitioned_ordinals = Vec::new();
+        for context in resources.devices.contexts() {
+            if context.synchronize_native_admission_health()? {
+                transitioned_ordinals.push(context.device().ordinal());
+            }
         }
-        governor.try_request(request)
+        Ok(transitioned_ordinals)
     }
 
-    pub(in crate::runtime::query_service) fn try_place_query(
+    /// Admits the selected waiter on the queue-selected device.
+    ///
+    /// The queue's oldest-runnable decision already ranked eligible devices;
+    /// this performs the health check and the ledger transaction on exactly
+    /// that device so overtake accounting
+    /// and protection consumption observe the same ordinal.
+    pub(in crate::runtime::query_service) fn try_place_on_device(
         &self,
-        tenant_id: &TenantId,
+        device_ordinal: usize,
         admission_request_id: AdmissionRequestId,
-        grant_policy: TenantGrantPolicy,
-        #[cfg(feature = "cugraph")] warm_graph_grant_policy: Option<TenantGrantPolicy>,
-        qos: QueryQos,
-        placement_hint: &QueryPlacementHint,
-        deadline: Option<Instant>,
-        active_queries: usize,
+        requirement: &AttemptRequirement,
         slot_notifications: &mut PendingDeviceSlotNotifications,
     ) -> Result<Option<PlacedQuery>> {
-        let Some(resources) = &self.inner.resources else {
-            // Admission-only services deliberately have no CUDA resources. The
-            // configured ordinal labels their ledger and must not be resolved
-            // through CUDA merely to admit a handle.
-            if !self.fallback_active_query_cap_allows(active_queries) {
-                return Ok(None);
-            }
-            let Some(memory_grant) = self.try_grant_from_governor(
-                &self.inner.fallback_memory_governor,
-                admission_request_id,
-                grant_policy,
-                qos,
-                deadline,
-                active_queries,
-            )?
-            else {
-                return Ok(None);
-            };
-            return Ok(Some(PlacedQuery {
-                device_ordinal: self.inner.config.device_ordinal,
-                memory_grant,
-                device_slot: None,
-                grant_policy,
-                #[cfg(feature = "cugraph")]
-                warm_graph_reservation: None,
-            }));
-        };
-
-        let placement_request = PlacementRequest::with_grant_range(grant_policy.min_bytes, grant_policy.want_bytes)
-            .with_tenant_id(tenant_id.as_str())
-            .with_placement_hint(placement_hint.clone());
-        let mut any_device_can_fit_minimum = false;
-        let mut healthy_candidates = 0usize;
-        let mut first_unhealthy = None;
-        for device in self.placement_candidates(resources, &placement_request)? {
-            let health = cudf::runtime::device_health_snapshot(device);
-            if health.status() == cudf::runtime::DeviceHealthStatus::Unhealthy {
-                first_unhealthy.get_or_insert((device, health));
-                continue;
-            }
-            healthy_candidates = healthy_candidates.saturating_add(1);
-            let context = resources.devices.context(device)?;
-            if context.capacity_bytes() >= grant_policy.min_bytes {
-                any_device_can_fit_minimum = true;
-            }
-            let available_bytes = context.available_bytes()?;
-            if available_bytes < grant_policy.min_bytes {
-                continue;
-            }
-            // This helper accounts for the query being selected; compute it
-            // before the device slot increments the active-query counter.
-            let reserved_for_remaining_slots =
-                self.reserved_min_bytes_for_selected_device(resources, device, active_queries)?;
-            let Some(device_slot) = context.try_acquire_query_slot(self.inner.config.max_queries_per_device) else {
-                continue;
-            };
-            #[cfg(feature = "cugraph")]
-            let warm_graph_reservation = match (warm_graph_grant_policy, placement_hint.resident_graph_key()) {
-                (Some(_warm_policy), Some(resident_graph_key)) => {
-                    resources.try_reserve_warm_graph(context, resident_graph_key)?
-                },
-                _ => None,
-            };
-            #[cfg(feature = "cugraph")]
-            let selected_grant_policy = if warm_graph_reservation.is_some() {
-                warm_graph_grant_policy.expect("warm reservation requires warm graph grant policy")
-            } else {
-                grant_policy
-            };
-            #[cfg(not(feature = "cugraph"))]
-            let selected_grant_policy = grant_policy;
-            let Some(want_bytes) =
-                self.grant_budget_bytes(available_bytes, selected_grant_policy, reserved_for_remaining_slots)
-            else {
-                slot_notifications.release_slot(device_slot);
-                continue;
-            };
-            let mut request = GrantRequest::new(admission_request_id, selected_grant_policy.min_bytes, want_bytes);
-            request = request.with_qos(qos);
-            if let Some(deadline) = deadline {
-                request = request.with_deadline(deadline);
-            }
-            match context.try_grant_query(request) {
-                Ok(Some(memory_grant)) => {
-                    return Ok(Some(PlacedQuery {
-                        device_ordinal: device.ordinal(),
-                        memory_grant,
-                        device_slot: Some(device_slot),
-                        grant_policy: selected_grant_policy,
-                        #[cfg(feature = "cugraph")]
-                        warm_graph_reservation,
-                    }));
-                },
-                Ok(None) => slot_notifications.release_slot(device_slot),
-                Err(error) => {
-                    slot_notifications.release_slot(device_slot);
-                    return Err(error);
-                },
-            }
+        let _fleet_admission = self.inner.fleet_admission.lock().map_err(|_error| {
+            QueryError::new(
+                QueryErrorCode::Internal,
+                "nexus_query_engine.query_service.placement",
+                "fleet admission gate was poisoned",
+            )
+            .with_fact("reason", "fleet_admission_gate_poisoned")
+        })?;
+        let required_capabilities = required_capabilities_for_placement(requirement);
+        if !self.device_supports_capabilities(device_ordinal, &required_capabilities) {
+            return Err(self.no_capable_device_error(&required_capabilities));
         }
-        if any_device_can_fit_minimum {
+        let Some(resources) = &self.inner.resources else {
+            let Some(ledger) = &self.inner.fallback_device_ledger else {
+                return Err(QueryError::new(
+                    QueryErrorCode::Internal,
+                    "nexus_query_engine.query_service.placement",
+                    "admission-only service is missing its synthetic device ledger",
+                )
+                .with_fact("reason", "synthetic_ledger_missing"));
+            };
+            return ledger.try_admit(admission_request_id, requirement).map(|grant| {
+                grant.map(|memory_grant| PlacedQuery { device_ordinal: ledger.device_ordinal(), memory_grant })
+            });
+        };
+        let context = resources.devices.context_by_ordinal(device_ordinal)?;
+        if context.synchronize_native_admission_health()? {
+            slot_notifications.record_device_health_transition(device_ordinal);
             return Ok(None);
         }
-        if healthy_candidates == 0
-            && let Some((device, health)) = first_unhealthy
-        {
-            return Err(unhealthy_placement_device_error(device, health));
+        match context.try_admit_attempt(admission_request_id, requirement) {
+            Ok(Some(memory_grant)) => Ok(Some(PlacedQuery { device_ordinal, memory_grant })),
+            Ok(None) => {
+                if !matches!(context.ledger().health()?, crate::runtime::gpu::DeviceAdmissionHealth::Open) {
+                    slot_notifications.record_device_health_transition(device_ordinal);
+                }
+                Ok(None)
+            },
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Attempts one immutable-grant admission for the queued request.
+    ///
+    /// Candidates are filtered by capability/health and the normative ledger
+    /// equation, then ranked by the documented stable placement order. The
+    /// winning device's ledger transaction reserves the attempt slot and the
+    /// immutable grant atomically; there is no separate slot to acquire.
+    pub(in crate::runtime::query_service) fn try_place_query(
+        &self,
+        admission_request_id: AdmissionRequestId,
+        requirement: &AttemptRequirement,
+        slot_notifications: &mut PendingDeviceSlotNotifications,
+    ) -> Result<Option<PlacedQuery>> {
+        let _fleet_admission = self.inner.fleet_admission.lock().map_err(|_error| {
+            QueryError::new(
+                QueryErrorCode::Internal,
+                "nexus_query_engine.query_service.placement",
+                "fleet admission gate was poisoned",
+            )
+            .with_fact("reason", "fleet_admission_gate_poisoned")
+        })?;
+        let required_capabilities = required_capabilities_for_placement(requirement);
+        for device_ordinal in self.reconcile_native_admission_health()? {
+            slot_notifications.record_device_health_transition(device_ordinal);
+        }
+        let Some(resources) = &self.inner.resources else {
+            // Admission-only services deliberately have no CUDA resources. The
+            // configured ordinal labels their synthetic ledger and must not be
+            // resolved through CUDA merely to admit a handle.
+            let fallback_device_ordinal = self.default_device_ordinal().ok_or_else(|| {
+                QueryError::new(
+                    QueryErrorCode::Internal,
+                    "nexus_query_engine.query_service.placement",
+                    "admission-only service has no configured device ordinal",
+                )
+            })?;
+            if !self.device_supports_capabilities(fallback_device_ordinal, &required_capabilities) {
+                return Err(self.no_capable_device_error(&required_capabilities));
+            }
+            if let Some(error) = self.all_compatible_devices_closed_error(&[fallback_device_ordinal])? {
+                return Err(error);
+            }
+            let Some(ledger) = &self.inner.fallback_device_ledger else {
+                return Err(QueryError::new(
+                    QueryErrorCode::Internal,
+                    "nexus_query_engine.query_service.placement",
+                    "admission-only service is missing its synthetic device ledger",
+                )
+                .with_fact("reason", "synthetic_ledger_missing"));
+            };
+            return ledger.try_admit(admission_request_id, requirement).map(|grant| {
+                grant.map(|memory_grant| PlacedQuery { device_ordinal: ledger.device_ordinal(), memory_grant })
+            });
+        };
+
+        let compatible_devices = resources
+            .devices
+            .device_ordinals()
+            .iter()
+            .copied()
+            .filter(|device_ordinal| resources.devices.supports_capabilities(*device_ordinal, &required_capabilities))
+            .collect::<Vec<_>>();
+        if compatible_devices.is_empty() {
+            return Err(self.no_capable_device_error(&required_capabilities));
+        }
+        // An unknown-isolation cleanup fault is represented by closed device
+        // ledgers, not a service-side latch.  Check that canonical controller
+        // state before treating a closed fleet as a capacity-floor error.
+        if let Some(error) = self.all_compatible_devices_closed_error(&compatible_devices)? {
+            return Err(error);
+        }
+
+        let placement_request = PlacementRequest::new(0)
+            .with_attempt_requirement(requirement.clone())
+            .with_required_capabilities(required_capabilities);
+        let mut any_device_can_fit_floor = false;
+        let mut max_candidate_required_floor_bytes = 0u64;
+        let placements = self.placement_candidates(resources, &placement_request)?;
+        #[cfg(test)]
+        if let Some(pause) = take_direct_placement_snapshot_pause(self) {
+            pause.wait();
+        }
+        for placement in placements {
+            let candidate = placement.candidate;
+            let context = resources.devices.context_by_ordinal(candidate.ordinal)?;
+            if context.synchronize_native_admission_health()? {
+                slot_notifications.record_device_health_transition(candidate.ordinal);
+                continue;
+            }
+            max_candidate_required_floor_bytes = max_candidate_required_floor_bytes.max(candidate.required_floor_bytes);
+            if placement.can_ever_fit_required_floor {
+                any_device_can_fit_floor = true;
+            }
+            // Ranking and permanent-capacity classification come from the
+            // same ledger snapshot as queue selection. The later ledger
+            // transaction is still authoritative; a stale affirmative
+            // snapshot may simply fail to reserve and leave the request
+            // queued for the next canonical scan.
+            if !placement.can_admit_now {
+                continue;
+            }
+            match context.try_admit_attempt(admission_request_id, requirement) {
+                Ok(Some(memory_grant)) => {
+                    return Ok(Some(PlacedQuery { device_ordinal: candidate.ordinal, memory_grant }));
+                },
+                Ok(None) => {
+                    if !matches!(context.ledger().health()?, crate::runtime::gpu::DeviceAdmissionHealth::Open) {
+                        slot_notifications.record_device_health_transition(candidate.ordinal);
+                    }
+                },
+                Err(error) => return Err(error),
+            }
+        }
+        // A native fault can close the final ledger after the initial fleet
+        // check or after its ranking snapshot. Health is ledger-owned, so
+        // re-read the canonical state before calling a remaining open fleet a
+        // capacity failure.
+        if let Some(error) = self.all_compatible_devices_closed_error(&compatible_devices)? {
+            return Err(error);
+        }
+        if any_device_can_fit_floor {
+            return Ok(None);
         }
         Err(QueryError::new(
             QueryErrorCode::ServiceOverloaded,
             "nexus_query_engine.query_service.placement",
-            "no configured CUDA device has enough capacity for the query minimum budget",
+            "no configured CUDA device has enough capacity for the attempt required floor",
         )
-        .with_fact("tenant_id", tenant_id.as_str())
-        .with_fact("min_device_budget_bytes", grant_policy.min_bytes)
-        .with_fact("reason", "query_min_budget_exceeds_device_capacity"))
-    }
-
-    pub(in crate::runtime::query_service) fn attach_admission_release_wakeup(&self, grant: &MemoryGrant) -> Result<()> {
-        let service = self.clone();
-        grant.notify_on_release(Arc::new(move || {
-            let mut guard = match service.inner.admission.lock() {
-                Ok(guard) => guard,
-                Err(_error) => {
-                    eprintln!(
-                        "[nexus-query-engine] warning: failed to lock query service admission for grant release wakeup"
-                    );
-                    return;
-                },
-            };
-            if guard.cleanup_in_progress != 0 {
-                return;
-            }
-            if guard.queued.is_empty() {
-                service.grow_active_adaptive_grants_locked(&mut guard);
-            }
-            service.inner.notify_admission_available();
-        }))
-    }
-
-    pub(in crate::runtime::query_service) fn attach_admission_budget_decrease_wakeup(
-        &self,
-        grant: &MemoryGrant,
-    ) -> Result<()> {
-        let service = self.clone();
-        grant.notify_on_budget_decrease(Arc::new(move || {
-            let mut guard = match service.inner.admission.lock() {
-                Ok(guard) => guard,
-                Err(_error) => {
-                    eprintln!(
-                        "[nexus-query-engine] warning: failed to lock query service admission for grant budget-decrease wakeup"
-                    );
-                    return;
-                },
-            };
-            if guard.cleanup_in_progress != 0 {
-                return;
-            }
-            if guard.queued.is_empty() {
-                service.grow_active_adaptive_grants_locked(&mut guard);
-            }
-            service.inner.notify_admission_available();
-        }))
+        .with_fact("max_candidate_required_floor_bytes", max_candidate_required_floor_bytes)
+        .with_fact("reason", "required_floor_exceeds_device_capacity"))
     }
 
     pub(in crate::runtime::query_service::service) fn placement_candidates(
         &self,
         resources: &QueryServiceResources,
         request: &PlacementRequest,
-    ) -> Result<Vec<cudf::DeviceId>> {
-        let candidates = self.inner.config.placement_policy.candidates(&resources.devices, request)?;
-        #[cfg(feature = "cugraph")]
-        if let Some(resident_graph_key) = request.placement_hint.resident_graph_key() {
-            let mut hit_ordinals = BTreeSet::new();
-            for device in &candidates {
-                if let Some(cache) = resources.resident_graph_cache_for_device(device.ordinal()) {
-                    match cache.contains_resident_key(resident_graph_key) {
-                        Ok(true) => {
-                            hit_ordinals.insert(device.ordinal());
-                        },
-                        Ok(false) => {},
-                        Err(error) => {
-                            eprintln!(
-                                "[nexus-query-engine] warning: failed to inspect resident graph cache for placement affinity on device {}: {error}",
-                                device.ordinal()
-                            );
-                        },
-                    }
-                }
-            }
-            return Ok(rank_cache_affine_candidates(candidates, &hit_ordinals));
+    ) -> Result<Vec<crate::runtime::gpu::placement::PlacementCandidateSnapshot>> {
+        crate::runtime::gpu::placement::ordered_placement_candidate_snapshots(
+            &resources.devices,
+            request,
+            resources.devices.contexts().map(|context| context.device().ordinal()),
+            None,
+        )
+    }
+}
+
+/// Test-only rendezvous between direct candidate capture and its authoritative
+/// ledger transaction. It proves that a fleet health transition in this gap is
+/// reported from the ledger, not classified as a static capacity failure.
+#[cfg(test)]
+#[derive(Debug)]
+struct DirectPlacementSnapshotPause {
+    entered: std::sync::mpsc::SyncSender<()>,
+    release: Mutex<std::sync::mpsc::Receiver<()>>,
+}
+
+#[cfg(test)]
+impl DirectPlacementSnapshotPause {
+    fn wait(&self) {
+        self.entered.send(()).expect("direct placement snapshot pause receiver remains live");
+        self.release
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .recv()
+            .expect("direct placement snapshot pause is released");
+    }
+}
+
+#[cfg(test)]
+#[derive(Debug)]
+struct DirectPlacementSnapshotPauseRegistration {
+    service: std::sync::Weak<QueryServiceInner>,
+    pause: Arc<DirectPlacementSnapshotPause>,
+}
+
+#[cfg(test)]
+static DIRECT_PLACEMENT_SNAPSHOT_PAUSE: std::sync::OnceLock<Mutex<Vec<DirectPlacementSnapshotPauseRegistration>>> =
+    std::sync::OnceLock::new();
+
+#[cfg(test)]
+fn direct_placement_snapshot_pause_registry() -> &'static Mutex<Vec<DirectPlacementSnapshotPauseRegistration>> {
+    DIRECT_PLACEMENT_SNAPSHOT_PAUSE.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+#[cfg(test)]
+pub(in crate::runtime::query_service) struct DirectPlacementSnapshotPauseHandle {
+    entered: Mutex<std::sync::mpsc::Receiver<()>>,
+    release: Mutex<Option<std::sync::mpsc::SyncSender<()>>>,
+    service: std::sync::Weak<QueryServiceInner>,
+    pause: Arc<DirectPlacementSnapshotPause>,
+}
+
+#[cfg(test)]
+impl DirectPlacementSnapshotPauseHandle {
+    pub(in crate::runtime::query_service) fn wait_until_entered(&self, timeout: std::time::Duration) {
+        self.entered
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .recv_timeout(timeout)
+            .expect("direct placement did not capture candidate snapshots before the deadline");
+    }
+
+    pub(in crate::runtime::query_service) fn entered_within(&self, timeout: std::time::Duration) -> bool {
+        match self.entered.lock().unwrap_or_else(std::sync::PoisonError::into_inner).recv_timeout(timeout) {
+            Ok(()) => true,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => false,
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                panic!("direct placement snapshot pause sender disconnected")
+            },
         }
-        Ok(candidates)
     }
 
-    pub(in crate::runtime::query_service::service) fn device_active_query_cap_allows(
+    pub(in crate::runtime::query_service) fn release(&self) {
+        if let Some(release) = self.release.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take() {
+            release.send(()).expect("paused direct placement remains live until release");
+        }
+    }
+}
+
+#[cfg(test)]
+impl Drop for DirectPlacementSnapshotPauseHandle {
+    fn drop(&mut self) {
+        if let Some(release) = self.release.get_mut().unwrap_or_else(std::sync::PoisonError::into_inner).take() {
+            let _ = release.send(());
+        }
+        let mut registrations =
+            direct_placement_snapshot_pause_registry().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(position) = registrations.iter().position(|registered| {
+            registered.service.ptr_eq(&self.service) && Arc::ptr_eq(&registered.pause, &self.pause)
+        }) {
+            registrations.remove(position);
+        }
+    }
+}
+
+#[cfg(test)]
+fn take_direct_placement_snapshot_pause(service: &QueryService) -> Option<Arc<DirectPlacementSnapshotPause>> {
+    let mut registrations =
+        direct_placement_snapshot_pause_registry().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    registrations.retain(|registered| registered.service.upgrade().is_some());
+    registrations
+        .iter()
+        .position(|registered| registered.service.upgrade().is_some_and(|target| Arc::ptr_eq(&target, &service.inner)))
+        .map(|position| registrations.remove(position).pause)
+}
+
+#[cfg(test)]
+impl QueryService {
+    pub(in crate::runtime::query_service) fn pause_next_direct_placement_after_snapshot_for_test(
         &self,
-        context: &DeviceContext,
-    ) -> bool {
-        context
-            .active_query_limit(self.inner.config.max_queries_per_device)
-            .is_none_or(|max_queries_per_device| context.active_queries() < max_queries_per_device)
-    }
-
-    pub(in crate::runtime::query_service::service) fn placement_policy_admits_ordinal(&self, ordinal: usize) -> bool {
-        placement_policy_admits_ordinal(self.inner.config.placement_policy, ordinal)
-    }
-
-    pub(in crate::runtime::query_service::service) fn fallback_active_query_cap_allows(
-        &self,
-        active_queries: usize,
-    ) -> bool {
-        self.inner
-            .config
-            .max_queries_per_device
-            .is_none_or(|max_queries_per_device| active_queries < max_queries_per_device)
+    ) -> DirectPlacementSnapshotPauseHandle {
+        let (entered_sender, entered_receiver) = std::sync::mpsc::sync_channel(1);
+        let (release_sender, release_receiver) = std::sync::mpsc::sync_channel(1);
+        let pause =
+            Arc::new(DirectPlacementSnapshotPause { entered: entered_sender, release: Mutex::new(release_receiver) });
+        let service = Arc::downgrade(&self.inner);
+        let mut registrations =
+            direct_placement_snapshot_pause_registry().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        registrations.retain(|registered| registered.service.upgrade().is_some());
+        assert!(
+            !registrations.iter().any(|registered| registered.service.ptr_eq(&service)),
+            "only one direct placement snapshot pause may be armed for a service at a time"
+        );
+        registrations
+            .push(DirectPlacementSnapshotPauseRegistration { service: service.clone(), pause: Arc::clone(&pause) });
+        DirectPlacementSnapshotPauseHandle {
+            entered: Mutex::new(entered_receiver),
+            release: Mutex::new(Some(release_sender)),
+            service,
+            pause,
+        }
     }
 }

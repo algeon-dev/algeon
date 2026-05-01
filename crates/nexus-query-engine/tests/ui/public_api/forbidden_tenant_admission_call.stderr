@@ -1,0 +1,39 @@
+error[E0432]: unresolved imports `nexus_query_engine::runtime::TenantId`, `nexus_query_engine::runtime::TenantQueueDepth`
+ --> tests/ui/public_api/forbidden_tenant_admission_call.rs:1:66
+  |
+1 | use nexus_query_engine::runtime::{QueryServiceAdmissionSnapshot, TenantId, TenantQueueDepth};
+  |                                                                  ^^^^^^^^  ^^^^^^^^^^^^^^^^ no `TenantQueueDepth` in `runtime`
+  |                                                                  |
+  |                                                                  no `TenantId` in `runtime`
+
+error[E0560]: struct `QueryServiceAdmissionSnapshot` has no field named `queued_by_tenant`
+ --> tests/ui/public_api/forbidden_tenant_admission_call.rs:7:9
+  |
+7 |         queued_by_tenant: Vec::new(),
+  |         ^^^^^^^^^^^^^^^^ `QueryServiceAdmissionSnapshot` does not have this field
+  |
+  = note: all struct fields are already assigned
+
+error[E0560]: struct `QueryServiceAdmissionSnapshot` has no field named `next_tenant_id`
+ --> tests/ui/public_api/forbidden_tenant_admission_call.rs:8:9
+  |
+8 |         next_tenant_id: None,
+  |         ^^^^^^^^^^^^^^ `QueryServiceAdmissionSnapshot` does not have this field
+  |
+  = note: all struct fields are already assigned
+
+error[E0609]: no field `queued_by_tenant` on type `QueryServiceAdmissionSnapshot`
+  --> tests/ui/public_api/forbidden_tenant_admission_call.rs:12:22
+   |
+12 |     let _ = snapshot.queued_by_tenant;
+   |                      ^^^^^^^^^^^^^^^^ unknown field
+   |
+   = note: available fields are: `active_queries`, `queued_queries`, `protected_devices`
+
+error[E0609]: no field `next_tenant_id` on type `QueryServiceAdmissionSnapshot`
+  --> tests/ui/public_api/forbidden_tenant_admission_call.rs:13:22
+   |
+13 |     let _ = snapshot.next_tenant_id;
+   |                      ^^^^^^^^^^^^^^ unknown field
+   |
+   = note: available fields are: `active_queries`, `queued_queries`, `protected_devices`

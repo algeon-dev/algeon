@@ -1,0 +1,11 @@
+error[E0432]: unresolved import `nexus_query_engine::runtime::QueryServiceConfig`
+ --> tests/ui/public_api/forbidden_p2_cache_query_service_config_fields.rs:1:5
+  |
+1 | use nexus_query_engine::runtime::QueryServiceConfig;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ no `QueryServiceConfig` in `runtime`
+  |
+help: a similar name exists in the module
+  |
+1 - use nexus_query_engine::runtime::QueryServiceConfig;
+1 + use nexus_query_engine::runtime::QueryService;
+  |

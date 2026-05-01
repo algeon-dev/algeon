@@ -88,14 +88,15 @@ async fn real_iceberg_provider_exposes_one_canonical_schema_to_cpu_and_native_op
 #[cfg(feature = "cuvs")]
 fn cuvs_iceberg_session() -> (NexusGpuBackend, SessionContext) {
     let backend = NexusGpuBackend::builder()
-        .memory_policy(NexusMemoryPolicy::Bounded {
-            device_ordinals: vec![0],
-            device_budget_bytes: 512 * 1024 * 1024,
-            max_source_chunk_bytes: 256 * 1024 * 1024,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 3,
-            min_retry_chunk_row_groups: 1,
-        })
+        .with_native_execution_config(NexusNativeExecutionConfig::bounded(
+            512 * 1024 * 1024,
+            256 * 1024 * 1024,
+            1,
+            3,
+            1,
+        ))
+        .device_profiles([NexusGpuDeviceProfile::new(0)
+            .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: 512 * 1024 * 1024 })])
         .device_memory_ownership([(0, GpuMemoryOwnership::WholeDeviceExclusive)])
         .build()
         .expect("cuVS Iceberg tests require a backend-owned GPU");
@@ -285,13 +286,12 @@ async fn assert_cuvs_iceberg_bounded_rejection(
     expected_operation: &'static str,
 ) {
     let error = collect(plan, ctx.task_ctx()).await.expect_err("bounded cuVS Iceberg execution must fail closed");
-    let typed = error
-        .find_nexus_error()
-        .expect("bounded cuVS Iceberg rejection must preserve the structured Nexus error");
+    let typed =
+        error.find_nexus_error().expect("bounded cuVS Iceberg rejection must preserve the structured Nexus error");
     assert_eq!(typed.code(), ErrorCode::UnsupportedOperator);
     assert_eq!(typed.operation(), "datafusion_nexus.cuvs_sql.bounded_admission");
     assert_eq!(typed.facts().get("reason"), Some("blocked_lower_level_contract"));
-    assert_eq!(typed.facts().get("execution_mode"), Some("strict_bounded"));
+    assert_eq!(typed.facts().get("execution_mode"), Some("bounded"));
     assert_eq!(typed.facts().get("required_contract"), Some("cuvs_vector_algorithm_peak_memory_preflight"));
     assert_eq!(typed.facts().get("host_fallback"), Some("disabled"));
     assert_eq!(typed.facts().get("cuvs_operation"), Some(expected_operation));

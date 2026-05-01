@@ -97,21 +97,21 @@ fn assert_projection_scalar_setop_scalar_fanout_admission(
     assert!(
         analysis.admits_projection_scalar_setop_pipeline(),
         "{label}: scalar fanout should admit through projection-scalar/setop, got {:?}",
-        analysis.strict_bounded_envelope_admission()
+        analysis.capability_envelope_admission()
     );
-    let CapabilityEnvelopeAdmission::Admitted { envelope } = analysis.strict_bounded_envelope_admission() else {
+    let CapabilityEnvelopeAdmission::Admitted { envelope } = analysis.capability_envelope_admission() else {
         panic!(
             "{label}: expected projection-scalar/setop selected envelope, got {:?}",
-            analysis.strict_bounded_envelope_admission()
+            analysis.capability_envelope_admission()
         );
     };
-    assert_eq!(envelope, StrictBoundedEnvelope::ProjectionScalarSetop);
+    assert_eq!(envelope, CapabilityEnvelope::ProjectionScalarSetop);
     assert_eq!(envelope.as_str(), "projection_scalar_setop");
 
-    let admission = strict_bounded_pipeline_admission(&plan)
+    let admission = bounded_pipeline_admission(&plan)
         .expect("strict admission should not fail")
         .unwrap_or_else(|| panic!("{label}: scalar fanout should be admitted"));
-    assert_eq!(admission.envelope(), StrictBoundedEnvelope::ProjectionScalarSetop);
+    assert_eq!(admission.envelope(), CapabilityEnvelope::ProjectionScalarSetop);
 
     let pipeline = admission.pipeline();
     assert_task_kind_count(pipeline, PipelineTaskKind::LiteralBatchSource, expected_literal_sources);
@@ -128,9 +128,9 @@ fn assert_projection_scalar_setop_scalar_fanout_admission(
         CompiledBoundedPipelineSupport::Supported
     );
 
-    let report = StrictBoundedContractReport::from_compiled_pipeline(admission.analysis(), pipeline)
+    let report = CapabilityContractReport::from_compiled_pipeline(admission.analysis(), pipeline)
         .unwrap_or_else(|error| panic!("{label}: compiled projection-scalar/setop report should be valid: {error}"));
-    assert_eq!(report.execution_mode(), StrictBoundedExecutionMode::StrictBounded);
+    assert_eq!(report.execution_mode(), CapabilityEnvelopeStatus::Admitted);
     assert_modeled_gate_row(label, &report, ReservationKind::SourceRead, "source_contract");
     assert_modeled_gate_row(label, &report, ReservationKind::OperatorOutput, "aggregate_contract");
     assert_modeled_gate_row(
@@ -161,12 +161,12 @@ fn strict_admission_accepts_projection_scalar_setop_dedup_scalar_with_modeled_ga
     assert!(
         analysis.admits_projection_scalar_setop_pipeline(),
         "setop/dedup scalar should admit through projection-scalar/setop, got {:?}",
-        analysis.strict_bounded_envelope_admission()
+        analysis.capability_envelope_admission()
     );
-    let admission = strict_bounded_pipeline_admission(&plan)
+    let admission = bounded_pipeline_admission(&plan)
         .expect("strict admission should not fail")
         .expect("setop/dedup scalar should be admitted");
-    assert_eq!(admission.envelope(), StrictBoundedEnvelope::ProjectionScalarSetop);
+    assert_eq!(admission.envelope(), CapabilityEnvelope::ProjectionScalarSetop);
 
     let pipeline = admission.pipeline();
     assert_task_kind_count(pipeline, PipelineTaskKind::SourceRead, 2);
@@ -177,7 +177,7 @@ fn strict_admission_accepts_projection_scalar_setop_dedup_scalar_with_modeled_ga
         CompiledBoundedPipelineSupport::Supported
     );
 
-    let report = StrictBoundedContractReport::from_compiled_pipeline(admission.analysis(), pipeline)
+    let report = CapabilityContractReport::from_compiled_pipeline(admission.analysis(), pipeline)
         .expect("compiled setop/dedup scalar report should be valid");
     assert_modeled_gate_row(
         "setop/dedup scalar",
@@ -273,7 +273,7 @@ fn strict_admission_accepts_raw_left_anti_scalar_count_as_single_join_post_root(
     assert!(
         analysis.admits_single_join_post_root_pipeline(),
         "left-anti scalar count should fall through to the generic single-join post-root envelope, got {:?}",
-        analysis.strict_bounded_envelope_admission()
+        analysis.capability_envelope_admission()
     );
     assert!(
         !analysis.admits_projection_scalar_setop_pipeline(),
@@ -284,10 +284,10 @@ fn strict_admission_accepts_raw_left_anti_scalar_count_as_single_join_post_root(
         "admitted left-anti scalar count should not carry a strict rejection"
     );
 
-    let admission = strict_bounded_pipeline_admission(&plan)
+    let admission = bounded_pipeline_admission(&plan)
         .expect("strict admission should not fail")
         .expect("left-anti scalar count should be admitted");
-    assert_eq!(admission.envelope(), StrictBoundedEnvelope::SingleJoinPostRootPipeline);
+    assert_eq!(admission.envelope(), CapabilityEnvelope::SingleJoinPostRootPipeline);
 
     let pipeline = admission.pipeline();
     assert_task_kind_count(pipeline, PipelineTaskKind::SourceRead, 2);
@@ -298,7 +298,7 @@ fn strict_admission_accepts_raw_left_anti_scalar_count_as_single_join_post_root(
         CompiledBoundedPipelineSupport::Supported
     );
 
-    let report = StrictBoundedContractReport::from_compiled_pipeline(admission.analysis(), pipeline)
+    let report = CapabilityContractReport::from_compiled_pipeline(admission.analysis(), pipeline)
         .expect("compiled left-anti scalar count report should be valid");
     assert_modeled_gate_row("left-anti scalar count", &report, ReservationKind::SourceRead, "source_contract");
     assert_modeled_gate_row("left-anti scalar count", &report, ReservationKind::OperatorOutput, "aggregate_contract");
@@ -343,12 +343,12 @@ fn strict_admission_accepts_projection_scalar_setop_scalar_join_aggregate_input_
     assert!(
         analysis.admits_projection_scalar_setop_pipeline(),
         "scalar join aggregate should admit through projection-scalar/setop, got {:?}",
-        analysis.strict_bounded_envelope_admission()
+        analysis.capability_envelope_admission()
     );
-    let admission = strict_bounded_pipeline_admission(&plan)
+    let admission = bounded_pipeline_admission(&plan)
         .expect("strict admission should not fail")
         .expect("scalar join aggregate should be admitted");
-    assert_eq!(admission.envelope(), StrictBoundedEnvelope::ProjectionScalarSetop);
+    assert_eq!(admission.envelope(), CapabilityEnvelope::ProjectionScalarSetop);
 
     let pipeline = admission.pipeline();
     assert_task_kind_count(pipeline, PipelineTaskKind::SourceRead, 3);
@@ -359,7 +359,7 @@ fn strict_admission_accepts_projection_scalar_setop_scalar_join_aggregate_input_
         CompiledBoundedPipelineSupport::Supported
     );
 
-    let report = StrictBoundedContractReport::from_compiled_pipeline(admission.analysis(), pipeline)
+    let report = CapabilityContractReport::from_compiled_pipeline(admission.analysis(), pipeline)
         .expect("compiled scalar join aggregate report should be valid");
     assert_modeled_gate_row("scalar join aggregate", &report, ReservationKind::SourceRead, "source_contract");
     assert_modeled_gate_row("scalar join aggregate", &report, ReservationKind::OperatorOutput, "aggregate_contract");
@@ -385,17 +385,17 @@ fn strict_admission_accepts_projection_scalar_setop_scalar_join_grouped_aggregat
     assert!(
         analysis.admits_projection_scalar_setop_pipeline(),
         "scalar join with grouped aggregate input should admit through projection-scalar/setop, got {:?}",
-        analysis.strict_bounded_envelope_admission()
+        analysis.capability_envelope_admission()
     );
     assert_eq!(
         analysis.projection_scalar_setop_admission.rejection_reason(),
         None,
         "grouped aggregate input contract should be modeled locally"
     );
-    let admission = strict_bounded_pipeline_admission(&plan)
+    let admission = bounded_pipeline_admission(&plan)
         .expect("strict admission should not fail")
         .expect("scalar join grouped aggregate input should be admitted");
-    assert_eq!(admission.envelope(), StrictBoundedEnvelope::ProjectionScalarSetop);
+    assert_eq!(admission.envelope(), CapabilityEnvelope::ProjectionScalarSetop);
 
     let pipeline = admission.pipeline();
     assert_task_kind_count(pipeline, PipelineTaskKind::SourceRead, 2);
@@ -407,7 +407,7 @@ fn strict_admission_accepts_projection_scalar_setop_scalar_join_grouped_aggregat
         CompiledBoundedPipelineSupport::Supported
     );
 
-    let report = StrictBoundedContractReport::from_compiled_pipeline(admission.analysis(), pipeline)
+    let report = CapabilityContractReport::from_compiled_pipeline(admission.analysis(), pipeline)
         .expect("compiled scalar join grouped aggregate report should be valid");
     assert_modeled_gate_row("scalar join grouped aggregate", &report, ReservationKind::SourceRead, "source_contract");
     assert_modeled_gate_row(
@@ -466,7 +466,7 @@ fn assert_projection_scalar_setop_contract_not_implemented_projection(
     let projection = analysis.first_rejection_projection().unwrap_or_else(|| {
         panic!(
             "{label}: scalar/setop parked contract should project locally; admission={:?}",
-            analysis.strict_bounded_envelope_admission()
+            analysis.capability_envelope_admission()
         )
     });
     assert!(
@@ -491,7 +491,7 @@ fn assert_projection_scalar_setop_contract_not_implemented_projection(
     );
     assert!(
         matches!(
-            analysis.strict_bounded_envelope_admission(),
+            analysis.capability_envelope_admission(),
             CapabilityEnvelopeAdmission::Rejected {
                 projection: nexus_query_engine::capability::CapabilityRejectionProjection {
                     owner: nexus_query_engine::capability::CapabilityRejectionOwner::Admission(
@@ -504,7 +504,7 @@ fn assert_projection_scalar_setop_contract_not_implemented_projection(
         "{label}: scalar/setop parked contract must be selected as a strict rejection"
     );
     assert!(
-        strict_bounded_pipeline_admission(plan).expect("strict admission should not fail").is_none(),
+        bounded_pipeline_admission(plan).expect("strict admission should not fail").is_none(),
         "scalar/setop placeholder must not compile through generic strict admission"
     );
     assert_ne!(

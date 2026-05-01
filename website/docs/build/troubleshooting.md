@@ -155,15 +155,18 @@ by the exact toolkit and that `/usr/local/cuda` resolves to that toolkit
 ## Datafusion Nexus tests fail under bare parallel Cargo
 
 `datafusion-nexus` GPU tests use process-global CUDA and query-service state.
-Do not diagnose failures with bare parallel `cargo test`; use the repository's
-serialized diagnostic surface instead:
+Do not diagnose failures with broad `cargo test`, even with
+`--test-threads=1`: serial threads cannot restore the engine's process-global
+allocator or policy fixtures. The former `cargo-diagnostic` runner now fails
+closed for this reason. Use the canonical runner instead:
 
 ```bash
-bash scripts/check_all.sh --runner cargo-diagnostic
+bash scripts/check_all.sh
 ```
 
-For canonical validation, run `bash scripts/check_all.sh`. A bare
-`cargo nextest run` also does not take the repository-wide GPU lock.
+A bare `cargo nextest run` also does not take the repository-wide GPU lock; use
+`check_all.sh --lane gpu-shared` or `check_all.sh --lane gpu-exclusive` for a
+locked targeted GPU lane.
 
 ## A build works in your shell but fails in CI (or vice versa)
 

@@ -137,12 +137,9 @@ pub(super) fn validated_under(state: &SessionState, config: &ValidationOptimizer
     QueryGpuValidatedUnder {
         optimizer_config_source: config.optimizer_config_source.to_string(),
         native_optimizer_rule_installed: config.optimizer_config.is_some(),
-        execution_mode: config
-            .effective_optimizer_config
-            .as_ref()
-            .map(|config| config.native_pipeline_execution_mode().to_string()),
+        execution_mode: config.effective_optimizer_config.as_ref().map(|_| "bounded".to_string()),
         final_plan_requirements,
-        session_config_fingerprint: fingerprint_debug(state.config_options()),
+        session_config_fingerprint: fingerprint_session_config(state.config_options()),
         optimizer_fingerprint: fingerprint_debug(&optimizer_fingerprint_input),
         catalog_snapshot: "session_state_cloned_at_validation_call".to_string(),
     }
@@ -260,4 +257,14 @@ fn fingerprint_debug(value: &impl std::fmt::Debug) -> String {
     let mut hasher = DefaultHasher::new();
     format!("{value:?}").hash(&mut hasher);
     format!("{:016x}", hasher.finish())
+}
+
+/// Fingerprint only declarative session settings, never opaque invocation
+/// extensions. Attempt-local bindings carry admission handles and cancellation
+/// state but cannot change coverage planning; including their debug output
+/// would make otherwise identical SQL surfaces report different evidence.
+fn fingerprint_session_config(config: &datafusion::common::config::ConfigOptions) -> String {
+    let mut entries = config.entries().into_iter().map(|entry| (entry.key, entry.value)).collect::<Vec<_>>();
+    entries.sort_unstable();
+    fingerprint_debug(&entries)
 }

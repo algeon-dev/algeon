@@ -26,7 +26,7 @@ async fn native_runtime_tpch_q1_tiny_matches_cpu() {
         "tiny TPC-H Q1 should exercise non-empty output parity"
     );
 
-    let native_plan = native_datafusion_tpch_sql_plan(&dir, q1.sql, native_datafusion_config()).await;
+    let native_plan = native_datafusion_tpch_sql_plan(&dir, q1.sql).await;
     assert!(
         displayable(native_plan.as_ref()).indent(false).to_string().contains("NexusNativeExec"),
         "TPC-H Q1 should be replaced by NexusNativeExec"
@@ -49,7 +49,7 @@ async fn native_runtime_tpch_q3_tiny_bounded_join_matches_cpu() {
     let q3 = TPCH_QUERIES.iter().find(|query| query.id == "q03").expect("TPC-H Q3 query must exist");
     let cpu_batches = cpu_tpch_sql_output(&dir, q3.sql).await;
 
-    let native_plan = native_datafusion_tpch_sql_plan(&dir, q3.sql, native_datafusion_config()).await;
+    let native_plan = native_datafusion_tpch_sql_plan(&dir, q3.sql).await;
     assert!(
         displayable(native_plan.as_ref()).indent(false).to_string().contains("NexusNativeExec"),
         "bounded TPC-H Q3 should be replaced by NexusNativeExec"
@@ -85,7 +85,7 @@ async fn native_runtime_tpch_q7_tiny_bounded_duplicate_nation_identity_matches_c
         lowering.plans[0]
     );
 
-    let native_plan = native_datafusion_tpch_sql_plan(&dir, q7.sql, native_datafusion_config()).await;
+    let native_plan = native_datafusion_tpch_sql_plan(&dir, q7.sql).await;
     assert_nexus_native_exec(&native_plan, "bounded TPC-H Q7 should be replaced by NexusNativeExec");
 
     let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
@@ -121,7 +121,7 @@ async fn native_runtime_tpch_q2_tiny_bounded_aggregate_over_join_subplan_topk_ma
         lowering.plans[0]
     );
 
-    let native_plan = native_datafusion_tpch_sql_plan(&dir, q2.sql, native_datafusion_config()).await;
+    let native_plan = native_datafusion_tpch_sql_plan(&dir, q2.sql).await;
     assert_nexus_native_exec(&native_plan, "bounded TPC-H Q2 should be replaced by NexusNativeExec");
 
     let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
@@ -141,7 +141,7 @@ async fn native_runtime_tpch_q19_tiny_bounded_join_residual_in_list_matches_cpu(
     let q19 = TPCH_QUERIES.iter().find(|query| query.id == "q19").expect("TPC-H Q19 query must exist");
     let cpu_batches = cpu_tpch_sql_output(&dir, q19.sql).await;
 
-    let native_plan = native_datafusion_tpch_sql_plan(&dir, q19.sql, native_datafusion_config()).await;
+    let native_plan = native_datafusion_tpch_sql_plan(&dir, q19.sql).await;
     assert!(
         displayable(native_plan.as_ref()).indent(false).to_string().contains("NexusNativeExec"),
         "bounded TPC-H Q19 should be replaced by NexusNativeExec"
@@ -185,7 +185,7 @@ async fn native_runtime_tpch_q04_tiny_bounded_left_semi_full_sort_matches_cpu() 
     };
     assert_batches_equal(&cpu_batches, std::slice::from_ref(direct_batches));
 
-    let native_plan = native_datafusion_tpch_sql_plan(&dir, q4.sql, native_datafusion_config()).await;
+    let native_plan = native_datafusion_tpch_sql_plan(&dir, q4.sql).await;
     assert_nexus_native_exec(&native_plan, "bounded TPC-H Q4 should be replaced by NexusNativeExec");
 
     let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
@@ -210,7 +210,7 @@ async fn native_runtime_tpch_q15_tiny_bounded_root_join_matches_cpu() {
     let q15 = TPCH_QUERIES.iter().find(|query| query.id == "q15").expect("TPC-H Q15 query must exist");
     let cpu_batches = cpu_tpch_sql_output(&dir, q15.sql).await;
 
-    let native_plan = native_datafusion_tpch_sql_plan(&dir, q15.sql, native_datafusion_config()).await;
+    let native_plan = native_datafusion_tpch_sql_plan(&dir, q15.sql).await;
     assert!(
         displayable(native_plan.as_ref()).indent(false).to_string().contains("NexusNativeExec"),
         "bounded TPC-H Q15 should be replaced by NexusNativeExec"
@@ -271,7 +271,7 @@ async fn native_runtime_tpch_q18_tiny_bounded_resident_aggregate_topk_matches_cp
     };
     assert_batches_equal_allow_empty(&cpu_batches, std::slice::from_ref(direct_batches));
 
-    let native_plan = native_datafusion_tpch_sql_plan(&dir, q18.sql, native_datafusion_config()).await;
+    let native_plan = native_datafusion_tpch_sql_plan(&dir, q18.sql).await;
     assert_nexus_native_exec(&native_plan, "bounded TPC-H Q18 should be replaced by NexusNativeExec");
 
     let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
@@ -329,7 +329,7 @@ async fn native_runtime_tpch_q20_tiny_bounded_resident_aggregate_subquery_filter
     };
     assert_batches_equal_allow_empty(&cpu_batches, std::slice::from_ref(direct_batches));
 
-    let native_plan = native_datafusion_tpch_sql_plan(&dir, q20.sql, native_datafusion_config()).await;
+    let native_plan = native_datafusion_tpch_sql_plan(&dir, q20.sql).await;
     assert_nexus_native_exec(&native_plan, "bounded TPC-H Q20 should be replaced by NexusNativeExec");
 
     let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
@@ -354,7 +354,7 @@ async fn native_runtime_tpch_q16_tiny_bounded_distinct_anti_join_matches_cpu() {
     let q16 = TPCH_QUERIES.iter().find(|query| query.id == "q16").expect("TPC-H Q16 query must exist");
     let cpu_batches = cpu_tpch_sql_output(&dir, q16.sql).await;
 
-    let native_plan = native_datafusion_tpch_sql_plan(&dir, q16.sql, native_datafusion_config()).await;
+    let native_plan = native_datafusion_tpch_sql_plan(&dir, q16.sql).await;
     assert!(
         displayable(native_plan.as_ref()).indent(false).to_string().contains("NexusNativeExec"),
         "bounded TPC-H Q16 should be replaced by NexusNativeExec"
@@ -380,7 +380,7 @@ async fn native_runtime_tpch_q11_tiny_bounded_aggregate_over_join_subplan_inputs
     let cpu_batches = cpu_tpch_sql_output(&dir, q11.sql).await;
     assert_eq!(record_batch_row_count(&cpu_batches), 1, "tiny TPC-H Q11 CPU output should be non-empty");
 
-    let native_plan = native_datafusion_tpch_sql_plan(&dir, q11.sql, native_datafusion_config()).await;
+    let native_plan = native_datafusion_tpch_sql_plan(&dir, q11.sql).await;
     assert_nexus_native_exec(&native_plan, "bounded TPC-H Q11 should be replaced by NexusNativeExec");
 
     let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
@@ -399,49 +399,13 @@ async fn native_runtime_tpch_q11_tiny_bounded_aggregate_over_join_subplan_inputs
 }
 
 #[tokio::test]
-async fn native_runtime_tpch_q11_tiny_bounded_budget_failure_preserves_reservation_facts() {
-    let dir = unique_temp_dir("datafusion-nexus-native-runtime-tpch-q11-tiny-budget-failure");
-    write_tiny_tpch_parquet_dataset(&dir).unwrap();
-    let q11 = TPCH_QUERIES.iter().find(|query| query.id == "q11").expect("TPC-H Q11 query must exist");
-
-    let native_plan = native_datafusion_tpch_sql_plan(&dir, q11.sql, constrained_native_datafusion_config()).await;
-    assert_nexus_native_exec(
-        &native_plan,
-        "bounded TPC-H Q11 should be admitted before the constrained runtime budget fails",
-    );
-
-    let error = collect(Arc::clone(&native_plan), Arc::new(TaskContext::default())).await.unwrap_err();
-    let adapter_error = adapter_error(&error);
-
-    assert_eq!(adapter_error.code(), ErrorCode::MemoryReservationFailed);
-    assert_eq!(adapter_error.fact_value("native_code"), Some("memory_reservation_failed"));
-    assert_eq!(adapter_error.fact_value("native_datafusion_stage"), Some("runtime_execution"));
-    assert_eq!(adapter_error.fact_value("bounded_join_execution_family"), None);
-    assert!(adapter_error.fact_value("compiled_task_id").is_some());
-    for fact in [
-        "memory_boundary",
-        "reservation_kind",
-        "requested_bytes",
-        "granted_bytes",
-        "budget_bytes",
-        "node_id",
-        "stage",
-        "attempt",
-        "max_attempts",
-    ] {
-        assert!(adapter_error.fact_value(fact).is_some(), "missing Q11 reservation failure fact {fact}");
-    }
-    fs::remove_dir_all(dir).unwrap();
-}
-
-#[tokio::test]
 async fn native_runtime_tpch_q17_tiny_bounded_decimal_residual_matches_cpu() {
     let dir = unique_temp_dir("datafusion-nexus-native-runtime-tpch-q17-tiny");
     write_tiny_tpch_parquet_dataset(&dir).unwrap();
     let q17 = TPCH_QUERIES.iter().find(|query| query.id == "q17").expect("TPC-H Q17 query must exist");
     let cpu_batches = cpu_tpch_sql_output(&dir, q17.sql).await;
 
-    let native_plan = native_datafusion_tpch_sql_plan(&dir, q17.sql, native_datafusion_config()).await;
+    let native_plan = native_datafusion_tpch_sql_plan(&dir, q17.sql).await;
     assert!(
         displayable(native_plan.as_ref()).indent(false).to_string().contains("NexusNativeExec"),
         "TPC-H Q17 should be replaced by NexusNativeExec"
@@ -464,7 +428,7 @@ async fn native_runtime_tpch_q22_tiny_bounded_scalar_subquery_matches_cpu() {
     let q22 = TPCH_QUERIES.iter().find(|query| query.id == "q22").expect("TPC-H Q22 query must exist");
     let cpu_batches = cpu_tpch_sql_output(&dir, q22.sql).await;
 
-    let native_plan = native_datafusion_tpch_sql_plan(&dir, q22.sql, native_datafusion_config()).await;
+    let native_plan = native_datafusion_tpch_sql_plan(&dir, q22.sql).await;
     assert!(
         displayable(native_plan.as_ref()).indent(false).to_string().contains("NexusNativeExec"),
         "TPC-H Q22 should be replaced by NexusNativeExec"
@@ -493,7 +457,7 @@ async fn assert_tpch_q6_native_parity(lineitem_path: &std::path::Path) {
         "tiny TPC-H Q6 should exercise non-empty output parity"
     );
 
-    let native_plan = native_datafusion_lineitem_sql_plan(lineitem_path, q6.sql, native_datafusion_config()).await;
+    let native_plan = native_datafusion_lineitem_sql_plan(lineitem_path, q6.sql).await;
     assert!(
         displayable(native_plan.as_ref()).indent(false).to_string().contains("NexusNativeExec"),
         "TPC-H Q6 should be replaced by NexusNativeExec"

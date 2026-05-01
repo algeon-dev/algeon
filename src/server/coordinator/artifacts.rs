@@ -679,11 +679,13 @@ impl QueryCoordinator {
                     let bundle = record.retained.as_ref()?;
                     if record.unavailable.is_some() {
                         ArtifactFrameSnapshot::Control { control: Arc::clone(&bundle.runtime_control) }
-                    } else {
+                    } else if let Some(jsonl) = bundle.runtime_jsonl.as_ref() {
                         ArtifactFrameSnapshot::Sealed {
                             control: Arc::clone(&bundle.runtime_control),
-                            jsonl: bundle.runtime_jsonl.as_ref().map(Arc::clone)?,
+                            jsonl: Arc::clone(jsonl),
                         }
+                    } else {
+                        ArtifactFrameSnapshot::Control { control: Arc::clone(&bundle.runtime_control) }
                     }
                 },
                 QueryPhase::Tombstone => ArtifactFrameSnapshot::Incomplete {

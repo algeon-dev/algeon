@@ -16,7 +16,7 @@ pub(super) fn assert_highlighted_planning_rows_and_tsv(
         }
         assert!(!row.rejected_before_execution, "{query_id} should be replaced by native execution");
         assert!(
-            row.strict_bounded_contract_rows.iter().map(|gate| gate.to_stable_kv_row()).all(|rendered| {
+            row.capability_contract_rows.iter().map(|gate| gate.to_stable_kv_row()).all(|rendered| {
                 strict_contract_row_is_family_path_free(&rendered)
                     && strict_contract_row_excludes_adaptive_terms(&rendered)
             }),
@@ -27,7 +27,7 @@ pub(super) fn assert_highlighted_planning_rows_and_tsv(
     let q21 = planning_replacement_row(report, "q21");
     assert_eq!(q21.physical_root, "SortExec(TopK)");
     assert!(
-        q21.strict_bounded_contract_rows.iter().any(|gate| gate.reservation_kind == ReservationKind::FinalSort
+        q21.capability_contract_rows.iter().any(|gate| gate.reservation_kind == ReservationKind::FinalSort
             && gate.contract_quality == ContractQuality::HardBudgetedReportWithUnresolvedPreflight
             && gate.unresolved_preflight_gap == Some("libcudf_final_sort_order_preflight_unavailable")),
         "q21 should report its TopK final-sort gate as hard-budgeted unresolved preflight"
@@ -36,35 +36,34 @@ pub(super) fn assert_highlighted_planning_rows_and_tsv(
     let q15 = planning_replacement_row(report, "q15");
     if q15.final_disposition == FinalPlanDisposition::Native {
         assert!(
-            q15.strict_bounded_contract_rows.iter().any(|gate| gate.reservation_kind == ReservationKind::FinalSort
+            q15.capability_contract_rows.iter().any(|gate| gate.reservation_kind == ReservationKind::FinalSort
                 && gate.contract_quality == ContractQuality::HardBudgetedReportWithUnresolvedPreflight
                 && gate.unresolved_preflight_gap == Some("libcudf_final_sort_order_preflight_unavailable")),
             "q15 should report final-sort as hard-budgeted with an unresolved lower-level preflight gap"
         );
         assert!(
-            q15.strict_bounded_contract_rows.iter().any(|gate| gate.reservation_kind
-                == ReservationKind::OperatorOutput
+            q15.capability_contract_rows.iter().any(|gate| gate.reservation_kind == ReservationKind::OperatorOutput
                 && gate.contract_quality == ContractQuality::HardBudgetedReportWithUnresolvedPreflight
                 && gate.unresolved_preflight_gap
                     == Some("libcudf_groupby_aggregate_temporary_workspace_preflight_unavailable")),
             "q15 resident/shared-subplan row should keep aggregate preflight gaps explicit"
         );
         assert!(
-            q15.strict_bounded_compiled_graphs.iter().any(|graph| graph.resource_count > 0 && graph.gate_count > 0),
+            q15.capability_compiled_graphs.iter().any(|graph| graph.resource_count > 0 && graph.gate_count > 0),
             "q15 resident/shared-subplan row should expose compiled graph resource and gate accounting"
         );
     }
 
     let q17 = planning_replacement_row(report, "q17");
     assert!(
-        q17.strict_bounded_contract_rows.iter().any(|gate| gate.reservation_kind == ReservationKind::OperatorOutput
+        q17.capability_contract_rows.iter().any(|gate| gate.reservation_kind == ReservationKind::OperatorOutput
             && gate.contract_quality == ContractQuality::HardBudgetedReportWithUnresolvedPreflight
             && gate.unresolved_preflight_gap
                 == Some("libcudf_groupby_aggregate_temporary_workspace_preflight_unavailable")),
         "q17 should keep aggregate preflight gaps as strict contract quality evidence"
     );
     assert!(
-        !q17.strict_bounded_contract_rows.iter().any(|gate| gate.reservation_kind == ReservationKind::FinalSort),
+        !q17.capability_contract_rows.iter().any(|gate| gate.reservation_kind == ReservationKind::FinalSort),
         "q17 should not claim a final-sort gate"
     );
 
@@ -82,9 +81,11 @@ pub(super) fn assert_highlighted_planning_rows_and_tsv(
     assert!(text.contains(&format!("# dataset_metadata_fingerprint={metadata_fingerprint}\n")));
     assert!(text.contains("# dataset_content_fingerprint=not_computed\n"));
     assert!(text.contains(&format!("{NATIVE_DATAFUSION_PLANNING_TSV_HEADER}\n")));
-    assert!(text.contains(
-        "strict_bounded_contract_rows\tstrict_bounded_compiled_graphs\tadaptive_pipeline_rows\tnative_optimizer\tedge_normalize_inserted"
-    ));
+    assert!(
+        text.contains(
+            "capability_contract_rows\tcapability_compiled_graphs\tnative_optimizer\tedge_normalize_inserted"
+        )
+    );
     assert!(text.contains("execution_mode=strict_bounded"));
     assert!(text.contains("contract_status=modeled"));
     assert!(text.contains("contract_quality="));

@@ -489,7 +489,7 @@ async fn tpch_q11_lowers_joined_grouped_and_scalar_aggregate_inputs_for_bounded_
     assert_q11_keyless_proof_selected_as(
         plan,
         "lowered q11",
-        nexus_query_engine::capability::StrictBoundedEnvelope::RootFullSortJoinAggregate,
+        nexus_query_engine::capability::CapabilityEnvelope::RootFullSortJoinAggregate,
     );
     assert!(
         nexus_query_engine::admission::bounded_join_unsupported_shape_facts(
@@ -570,7 +570,7 @@ async fn tpch_q11_lowers_joined_grouped_and_scalar_aggregate_inputs_for_bounded_
     assert_q11_keyless_proof_selected_as(
         &optimized.plan,
         "optimized q11",
-        nexus_query_engine::capability::StrictBoundedEnvelope::KeylessConditionalJoinAggregateOverJoinSubplanInputs,
+        nexus_query_engine::capability::CapabilityEnvelope::KeylessConditionalJoinAggregateOverJoinSubplanInputs,
     );
     let aggregate_join_pushdown = &optimized.diagnostics.aggregate_join_pushdown;
     assert_eq!(aggregate_join_pushdown.applied_count, 1, "optimizer diagnostics={aggregate_join_pushdown:?}");
@@ -640,7 +640,7 @@ async fn tpch_q11_lowers_joined_grouped_and_scalar_aggregate_inputs_for_bounded_
 fn assert_q11_keyless_proof_selected_as(
     plan: &QueryPlan,
     context: &str,
-    expected: nexus_query_engine::capability::StrictBoundedEnvelope,
+    expected: nexus_query_engine::capability::CapabilityEnvelope,
 ) {
     let analysis = plan.capability_analysis();
     assert_eq!(
@@ -649,12 +649,9 @@ fn assert_q11_keyless_proof_selected_as(
         "{context} should retain the keyless aggregate-over-join proof:\n{plan}"
     );
     let nexus_query_engine::capability::CapabilityEnvelopeAdmission::Admitted { envelope } =
-        analysis.strict_bounded_envelope_admission()
+        analysis.capability_envelope_admission()
     else {
-        panic!(
-            "{context} should be strict-bounded executable: {:?}\n{plan}",
-            analysis.strict_bounded_envelope_admission()
-        );
+        panic!("{context} should be strict-bounded executable: {:?}\n{plan}", analysis.capability_envelope_admission());
     };
     assert_eq!(envelope, expected, "{context} should select the expected strict bounded envelope");
 }

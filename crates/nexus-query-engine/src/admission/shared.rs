@@ -1,12 +1,12 @@
-//! Capability-first bounded-pipeline admission shared by strict and adaptive facades.
+//! Capability-first bounded-pipeline admission with one decision path.
 
 use std::collections::BTreeMap;
 
 use super::{CompiledBoundedPipelineSupport, compiled_bounded_query_plan_support};
 use crate::{
     capability::{
-        CapabilityAnalysis, CapabilityEnvelopeAdmission, CapabilityRejectionCategory, CapabilityRejectionOwner,
-        CapabilityRejectionProjection, ReservationRequirementScope, StrictBoundedEnvelope,
+        CapabilityAnalysis, CapabilityEnvelope, CapabilityEnvelopeAdmission, CapabilityRejectionCategory,
+        CapabilityRejectionOwner, CapabilityRejectionProjection, ReservationRequirementScope,
     },
     error::{QueryError, QueryErrorCode, Result},
     pipeline::{CompiledPipeline, compile_pipeline},
@@ -23,21 +23,17 @@ pub(super) enum CapabilityFirstCandidateStatus {
 pub(super) struct CapabilityFirstPipelineAdmission {
     analysis: CapabilityAnalysis,
     pipeline: Option<CompiledPipeline>,
-    envelope: Option<StrictBoundedEnvelope>,
+    envelope: Option<CapabilityEnvelope>,
     rejection_projection: Option<CapabilityRejectionProjection>,
     candidate_status: CapabilityFirstCandidateStatus,
 }
 
 impl CapabilityFirstPipelineAdmission {
-    pub(super) fn analysis(&self) -> &CapabilityAnalysis {
-        &self.analysis
-    }
-
     pub(super) fn pipeline(&self) -> Option<&CompiledPipeline> {
         self.pipeline.as_ref()
     }
 
-    pub(super) fn envelope(&self) -> Option<StrictBoundedEnvelope> {
+    pub(super) fn envelope(&self) -> Option<CapabilityEnvelope> {
         self.envelope
     }
 
@@ -57,7 +53,7 @@ impl CapabilityFirstPipelineAdmission {
         (self.analysis, self.pipeline)
     }
 
-    fn admitted(analysis: CapabilityAnalysis, envelope: StrictBoundedEnvelope, pipeline: CompiledPipeline) -> Self {
+    fn admitted(analysis: CapabilityAnalysis, envelope: CapabilityEnvelope, pipeline: CompiledPipeline) -> Self {
         Self {
             analysis,
             pipeline: Some(pipeline),
@@ -90,7 +86,7 @@ pub(super) fn capability_first_bounded_pipeline_admission(
     }
 
     let analysis = plan.capability_analysis();
-    let envelope = match analysis.strict_bounded_envelope_admission() {
+    let envelope = match analysis.capability_envelope_admission() {
         CapabilityEnvelopeAdmission::Admitted { envelope } => envelope,
         CapabilityEnvelopeAdmission::Rejected { projection } => {
             return Ok(Some(CapabilityFirstPipelineAdmission::rejected(analysis, None, projection)));
@@ -170,29 +166,29 @@ mod tests {
     };
 
     #[test]
-    fn strict_admission_accepts_root_full_sort_left_semi_grouped_aggregate() {
+    fn capability_admission_accepts_root_full_sort_left_semi_grouped_aggregate() {
         let plan = root_full_sort_left_semi_grouped_aggregate_plan();
 
         let admission = capability_first_bounded_pipeline_admission(&plan)
             .expect("left-semi full-sort aggregate admission should not error")
-            .expect("join plan should produce strict admission evidence");
+            .expect("join plan should produce capability admission evidence");
 
         assert!(
             matches!(admission.candidate_status(), CapabilityFirstCandidateStatus::Admitted),
             "rejection={:?}",
             admission.rejection_projection()
         );
-        assert_eq!(admission.envelope(), Some(StrictBoundedEnvelope::RootFullSortJoinAggregate));
+        assert_eq!(admission.envelope(), Some(CapabilityEnvelope::RootFullSortJoinAggregate));
         assert!(admission.pipeline().is_some());
     }
 
     #[test]
-    fn strict_admission_accepts_gpu_resident_sink_for_join_pipeline() {
+    fn capability_admission_accepts_gpu_resident_sink_for_join_pipeline() {
         let plan = root_full_sort_left_semi_grouped_aggregate_plan().clone_with_gpu_resident_sink();
 
         let admission = capability_first_bounded_pipeline_admission(&plan)
             .expect("gpu-resident sink admission should not error")
-            .expect("join plan should produce strict admission evidence");
+            .expect("join plan should produce capability admission evidence");
 
         assert!(
             matches!(admission.candidate_status(), CapabilityFirstCandidateStatus::Admitted),
@@ -208,7 +204,7 @@ mod tests {
     }
 
     #[test]
-    fn strict_admission_demotes_dynamic_filter_control_cycle_to_unsupported_envelope() {
+    fn capability_admission_demotes_dynamic_filter_control_cycle_to_unsupported_envelope() {
         let plan = dynamic_filter_control_cycle_plan();
         let analysis = plan.capability_analysis();
         let compile_error = compile_pipeline(&plan, &analysis).expect_err("raw compiler should reject the cycle");

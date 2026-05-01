@@ -1,0 +1,5 @@
+error[E0599]: no associated function or constant named `memory_governor_reports` found for struct `NexusGpuBackend` in the current scope
+ --> tests/ui/public_api/forbidden_legacy_memory_governor_reports.rs:4:30
+  |
+4 |     let _ = NexusGpuBackend::memory_governor_reports;
+  |                              ^^^^^^^^^^^^^^^^^^^^^^^ associated function or constant not found in `NexusGpuBackend`

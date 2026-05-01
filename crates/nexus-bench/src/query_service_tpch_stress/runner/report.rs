@@ -1,14 +1,11 @@
 use std::fs;
 
-use super::{
-    config::{native_pipeline_execution_mode_name, slot_guarantee_name},
-    *,
-};
+use super::*;
 
 const TSV_COLUMNS: &[&str] = &[
     "row_type",
     "request_index",
-    "tenant_id",
+    "client_id",
     "workload_class",
     "query_id",
     "iteration",
@@ -74,32 +71,14 @@ impl StressReport {
         output.push_str(&format!("# dataset_root={}\n", self.config.dataset_root.display()));
         output.push_str(&format!("# dataset_metadata_fingerprint={}\n", self.dataset.metadata_fingerprint));
         output.push_str(&format!("# device_capacity_bytes={}\n", self.config.device_capacity_bytes));
-        output.push_str(&format!("# tenant_min_grant_bytes={}\n", self.config.tenant_min_grant_bytes));
-        output.push_str(&format!("# tenant_want_grant_bytes={}\n", self.config.tenant_want_grant_bytes));
-        output.push_str(&format!("# slot_guarantee={}\n", slot_guarantee_name(self.config.slot_guarantee)));
-        output.push_str(&format!("# max_concurrent_queries={}\n", self.config.max_concurrent_queries));
+        output.push_str(&format!("# attempt_floor_bytes={}\n", self.config.attempt_floor_bytes));
+        output.push_str(&format!("# soft_working_set_hint_bytes={}\n", self.config.soft_working_set_hint_bytes));
+        output.push_str(&format!("# max_active_attempts_per_device={}\n", self.config.max_active_attempts_per_device));
         output.push_str(&format!("# effective_active_max={}\n", self.effective_active_max));
-        output.push_str(&format!("# max_admission_queue_len={}\n", self.config.max_admission_queue_len));
+        output.push_str(&format!("# max_queued_attempts={}\n", self.config.max_queued_attempts));
+        output.push_str(&format!("# max_queue_wait_ms={}\n", self.config.max_queue_wait.as_millis()));
         output.push_str(&format!("# max_source_chunk_bytes={}\n", self.config.max_source_chunk_bytes));
         output.push_str(&format!("# max_row_groups_per_chunk={}\n", self.config.max_row_groups_per_chunk));
-        output.push_str(&format!(
-            "# source_cache_max_retained_bytes={}\n",
-            self.config.source_cache_max_retained_bytes.map_or_else(|| "none".to_string(), |value| value.to_string())
-        ));
-        output.push_str(&format!(
-            "# memory_manager_pool_initial_bytes={}\n",
-            self.config.memory_manager_pool_initial_bytes.map_or_else(|| "none".to_string(), |value| value.to_string())
-        ));
-        output.push_str(&format!(
-            "# native_pipeline_execution_mode={}\n",
-            native_pipeline_execution_mode_name(self.config.native_pipeline_execution_mode)
-        ));
-        output.push_str(&format!(
-            "# query_memory_domain_ceiling_multiplier={}\n",
-            self.config
-                .query_memory_domain_ceiling_multiplier
-                .map_or_else(|| "none".to_string(), |value| value.to_string())
-        ));
         output.push_str(&format!("# warmup_rounds={}\n", self.config.warmup_rounds));
         output.push_str(&format!("# stream_idle_timeout_ms={}\n", self.config.stream_idle_timeout.as_millis()));
         output.push_str(&format!("# cuda_profiler_capture={}\n", self.config.cuda_profiler_capture));
@@ -114,10 +93,10 @@ impl StressReport {
                 self.profile_measured_execution_ms.map_or_else(|| "none".to_string(), format_ms)
             ));
         }
-        for summary in tenant_summaries(&self.rows) {
+        for summary in client_summaries(&self.rows) {
             output.push_str(&format!(
-                "# tenant_summary tenant_id={} succeeded={} overloaded={} failed={} max_total_wall_ms={} p95_total_wall_ms={}\n",
-                summary.tenant_id,
+                "# client_summary client_id={} succeeded={} overloaded={} failed={} max_total_wall_ms={} p95_total_wall_ms={}\n",
+                summary.client_id,
                 summary.succeeded,
                 summary.overloaded,
                 summary.failed,
@@ -136,7 +115,7 @@ impl StressReport {
 }
 
 impl ProfileEvidenceReport {
-    const COLUMNS: [&'static str; 15] = [
+    const COLUMNS: [&'static str; 10] = [
         "phase",
         "lane",
         "iteration",
@@ -146,11 +125,6 @@ impl ProfileEvidenceReport {
         "query_id",
         "native_runtime_outcome",
         "parity_status",
-        "source_cache_hits",
-        "source_cache_misses",
-        "source_cache_inserts",
-        "source_cache_insert_skipped",
-        "source_cache_retained_bytes",
         "native_wall_ms",
     ];
 
@@ -183,11 +157,6 @@ impl ProfileEvidenceRow {
             self.query_id.clone(),
             self.native_runtime_outcome.to_string(),
             self.parity_status.to_string(),
-            self.source_cache_hits.to_string(),
-            self.source_cache_misses.to_string(),
-            self.source_cache_inserts.to_string(),
-            self.source_cache_insert_skipped.to_string(),
-            self.source_cache_retained_bytes.to_string(),
             self.native_wall_ms.map(format_ms).unwrap_or_else(|| "none".to_string()),
         ];
         debug_assert_eq!(fields.len(), ProfileEvidenceReport::COLUMNS.len());
@@ -200,7 +169,7 @@ impl StressRow {
         let fields = [
             self.row_type.to_string(),
             self.request_index.to_string(),
-            self.tenant_id.clone(),
+            self.client_id.clone(),
             self.workload_class.to_string(),
             self.query_id.clone(),
             self.iteration.to_string(),
@@ -243,8 +212,8 @@ impl StressRow {
 }
 
 #[derive(Debug, Clone)]
-struct TenantSummary {
-    tenant_id: String,
+struct ClientSummary {
+    client_id: String,
     succeeded: usize,
     overloaded: usize,
     failed: usize,
@@ -252,21 +221,21 @@ struct TenantSummary {
     p95_total_wall_ms: f64,
 }
 
-fn tenant_summaries(rows: &[StressRow]) -> Vec<TenantSummary> {
-    let mut by_tenant: BTreeMap<String, Vec<&StressRow>> = BTreeMap::new();
+fn client_summaries(rows: &[StressRow]) -> Vec<ClientSummary> {
+    let mut by_client: BTreeMap<String, Vec<&StressRow>> = BTreeMap::new();
     for row in rows.iter().filter(|row| row.row_type == "query") {
-        by_tenant.entry(row.tenant_id.clone()).or_default().push(row);
+        by_client.entry(row.client_id.clone()).or_default().push(row);
     }
-    by_tenant
+    by_client
         .into_iter()
-        .map(|(tenant_id, rows)| {
+        .map(|(client_id, rows)| {
             let mut latencies = rows.iter().map(|row| row.total_wall_ms).collect::<Vec<_>>();
             latencies.sort_by(f64::total_cmp);
             let succeeded = rows.iter().filter(|row| row.native_runtime_outcome == "succeeded").count();
             let overloaded = rows.iter().filter(|row| row.error.code.as_deref() == Some("service_overloaded")).count();
             let failed = rows.len().saturating_sub(succeeded + overloaded);
-            TenantSummary {
-                tenant_id,
+            ClientSummary {
+                client_id,
                 succeeded,
                 overloaded,
                 failed,
@@ -287,10 +256,7 @@ fn percentile(sorted_values: &[f64], quantile: f64) -> f64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        super::config::{MAX_ADMISSION_QUEUE_LEN_ENV, SLOT_GUARANTEE_ENV},
-        *,
-    };
+    use super::{super::config::MAX_QUEUED_ATTEMPTS_ENV, *};
 
     fn queue_test_config() -> StressConfig {
         StressConfig {
@@ -300,18 +266,13 @@ mod tests {
             bulk_iterations: 1,
             interactive_iterations: 1,
             device_capacity_bytes: 100,
-            tenant_min_grant_bytes: 25,
-            tenant_want_grant_bytes: 50,
-            slot_guarantee: SlotGuarantee::GuaranteedMinimum,
-            max_concurrent_queries: 2,
-            max_admission_queue_len: 2,
-            admission_wait_timeout: Duration::from_secs(1),
+            attempt_floor_bytes: 25,
+            soft_working_set_hint_bytes: 50,
+            max_active_attempts_per_device: 2,
+            max_queued_attempts: 2,
+            max_queue_wait: Duration::from_secs(1),
             max_source_chunk_bytes: 1,
             max_row_groups_per_chunk: 1,
-            source_cache_max_retained_bytes: None,
-            memory_manager_pool_initial_bytes: None,
-            native_pipeline_execution_mode: NativePipelineExecutionMode::StrictBounded,
-            query_memory_domain_ceiling_multiplier: None,
             warmup_rounds: 0,
             stream_idle_timeout: Duration::from_secs(1),
             cuda_profiler_capture: false,
@@ -340,7 +301,7 @@ mod tests {
         let row = StressRow {
             row_type: "query",
             request_index: 1,
-            tenant_id: "interactive".to_string(),
+            client_id: "interactive".to_string(),
             workload_class: "interactive",
             query_id: "q06".to_string(),
             iteration: 1,
@@ -368,14 +329,14 @@ mod tests {
 
         let error = config.validate().unwrap_err();
 
-        assert!(error.to_string().contains(MAX_ADMISSION_QUEUE_LEN_ENV));
+        assert!(error.to_string().contains(MAX_QUEUED_ATTEMPTS_ENV));
         assert!(error.to_string().contains("synchronized request count (3)"));
     }
 
     #[test]
     fn profile_mode_does_not_apply_barrier_queue_preflight() {
         let mut config = queue_test_config();
-        config.max_admission_queue_len = 1;
+        config.max_queued_attempts = 1;
         config.profile = Some(StressProfileConfig {
             query_id: "q06".to_string(),
             lanes: 1,
@@ -388,7 +349,7 @@ mod tests {
     }
 
     #[test]
-    fn stress_config_rejects_overcommitted_guaranteed_minimum_band() {
+    fn stress_config_rejects_attempt_floor_larger_than_capacity() {
         let config = StressConfig {
             dataset_root: PathBuf::new(),
             bulk_queries: vec!["q01".to_string()],
@@ -396,18 +357,13 @@ mod tests {
             bulk_iterations: 1,
             interactive_iterations: 1,
             device_capacity_bytes: 100,
-            tenant_min_grant_bytes: 60,
-            tenant_want_grant_bytes: 60,
-            slot_guarantee: SlotGuarantee::GuaranteedMinimum,
-            max_concurrent_queries: 2,
-            max_admission_queue_len: 1,
-            admission_wait_timeout: Duration::from_secs(1),
+            attempt_floor_bytes: 60,
+            soft_working_set_hint_bytes: 60,
+            max_active_attempts_per_device: 2,
+            max_queued_attempts: 1,
+            max_queue_wait: Duration::from_secs(1),
             max_source_chunk_bytes: 1,
             max_row_groups_per_chunk: 1,
-            source_cache_max_retained_bytes: None,
-            memory_manager_pool_initial_bytes: None,
-            native_pipeline_execution_mode: NativePipelineExecutionMode::StrictBounded,
-            query_memory_domain_ceiling_multiplier: None,
             warmup_rounds: 0,
             stream_idle_timeout: Duration::from_secs(1),
             cuda_profiler_capture: false,
@@ -418,16 +374,16 @@ mod tests {
 
         let error = config.validate().unwrap_err();
 
-        assert!(error.to_string().contains(SLOT_GUARANTEE_ENV));
+        assert!(error.to_string().contains(super::config::ATTEMPT_FLOOR_BYTES_ENV));
     }
 
     #[test]
-    fn tenant_summary_counts_success_overload_and_failures() {
+    fn client_summary_counts_success_overload_and_failures() {
         let rows = vec![
             StressRow {
                 row_type: "query",
                 request_index: 1,
-                tenant_id: "interactive".to_string(),
+                client_id: "interactive".to_string(),
                 workload_class: "interactive",
                 query_id: "q06".to_string(),
                 iteration: 1,
@@ -449,7 +405,7 @@ mod tests {
             StressRow {
                 row_type: "query",
                 request_index: 2,
-                tenant_id: "interactive".to_string(),
+                client_id: "interactive".to_string(),
                 workload_class: "interactive",
                 query_id: "q06".to_string(),
                 iteration: 2,
@@ -470,7 +426,7 @@ mod tests {
             },
         ];
 
-        let summaries = tenant_summaries(&rows);
+        let summaries = client_summaries(&rows);
 
         assert_eq!(summaries.len(), 1);
         assert_eq!(summaries[0].succeeded, 1);

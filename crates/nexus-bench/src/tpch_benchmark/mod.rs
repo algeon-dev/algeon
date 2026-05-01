@@ -26,10 +26,7 @@ use datafusion_nexus::{
     planner::{NexusNativeOptimizerConfig, NexusNativePhysicalOptimizerRule},
     session::NexusSessionStateBuilderExt,
 };
-use nexus_query_engine::{
-    mode::NativePipelineExecutionMode,
-    runtime::{QueryServiceConfig, QueryServiceTenantConfig, TenantId},
-};
+use nexus_query_engine::runtime::QueryExecutionConfig;
 use nexus_workloads::tpch::{
     NEXUS_PARQUET_DIR_ENV, NEXUS_TPCH_GENERATION_COMMAND_ENV, NEXUS_TPCH_SCALE_FACTOR_ENV, TPCH_QUERIES, TPCH_TABLES,
     TpchDatasetMetadata, TpchQuery, TpchTableLayout, TpchWorkloadError, default_tpch_dataset_with_fingerprint,

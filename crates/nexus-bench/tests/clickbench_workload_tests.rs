@@ -1,6 +1,6 @@
 use std::panic;
 
-use datafusion_nexus::native_exec::NexusNativeExecutionConfig;
+use datafusion_nexus::{native_exec::NexusNativeExecutionConfig, session_config::DataFusionNexusSessionConfig};
 use nexus_bench::report_workload::clickbench::{
     CLICKBENCH_GPU_THROUGHPUT_DEVICE_BUDGET_BYTES, CLICKBENCH_GPU_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK,
     CLICKBENCH_GPU_THROUGHPUT_MAX_SOURCE_CHUNK_BYTES, CLICKBENCH_NATIVE_PROFILE_CONSERVATIVE,
@@ -121,17 +121,8 @@ fn clickbench_native_optimizer_config_uses_resolved_profile_knobs() {
         execution.source_chunk_planning_mode(),
         nexus_query_engine::runtime::SourceChunkPlanningMode::LocalParquetThroughput
     );
-    match execution.memory_control_policy() {
-        nexus_query_engine::runtime::MemoryControlPolicy::Bounded {
-            device_budget_bytes,
-            max_source_chunk_bytes,
-            max_row_groups_per_chunk,
-            ..
-        } => {
-            assert_eq!(device_budget_bytes, CLICKBENCH_GPU_THROUGHPUT_DEVICE_BUDGET_BYTES);
-            assert_eq!(max_source_chunk_bytes, CLICKBENCH_GPU_THROUGHPUT_MAX_SOURCE_CHUNK_BYTES);
-            assert_eq!(max_row_groups_per_chunk, CLICKBENCH_GPU_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK);
-        },
-        other => panic!("expected bounded memory control policy, got {other:?}"),
-    }
+    let projection = DataFusionNexusSessionConfig::from_optimizer_config(&config);
+    assert_eq!(projection.native_device_budget_bytes, CLICKBENCH_GPU_THROUGHPUT_DEVICE_BUDGET_BYTES);
+    assert_eq!(projection.native_max_source_chunk_bytes, CLICKBENCH_GPU_THROUGHPUT_MAX_SOURCE_CHUNK_BYTES);
+    assert_eq!(projection.native_max_row_groups_per_chunk, CLICKBENCH_GPU_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK);
 }

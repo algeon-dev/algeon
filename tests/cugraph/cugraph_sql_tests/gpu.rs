@@ -1,7 +1,6 @@
 use datafusion::{common::config::ConfigOptions, physical_optimizer::PhysicalOptimizerRule};
 use datafusion_nexus::planner::{
-    FinalPlanDisposition, HostExecutionQosConfig, NexusFinalPlanRequirementRule, NexusNativeOptimizerConfig,
-    classify_final_plan,
+    FinalPlanDisposition, NexusFinalPlanRequirementRule, NexusNativeOptimizerConfig, classify_final_plan,
 };
 
 use super::{support::*, *};
@@ -124,44 +123,6 @@ async fn cugraph_sql_cpu_to_gpu_to_cpu_projects_away_unsupported_upstream_type()
 }
 
 #[tokio::test]
-async fn cugraph_nested_planning_uses_the_outer_host_execution_qos_permit_once() {
-    let (_backend, ctx) = backend_cugraph_sql_context(
-        SessionStateBuilder::new_with_default_features()
-            .with_host_execution_qos(HostExecutionQosConfig::new(std::num::NonZeroUsize::new(1).unwrap())),
-    );
-    register_edges_with_upstream_only_list(&ctx, "raw_edges");
-    ctx.sql(
-        "CREATE VIEW filtered_edges AS \
-         SELECT src, dst FROM raw_edges WHERE array_length(tags) > 0",
-    )
-    .await
-    .unwrap()
-    .collect()
-    .await
-    .unwrap();
-
-    let plan = ctx
-        .sql(
-            "SELECT vertex, out_degree \
-             FROM cugraph_degrees_all('filtered_edges', 'src', 'dst') \
-             WHERE out_degree > 0 ORDER BY vertex",
-        )
-        .await
-        .unwrap()
-        .create_physical_plan()
-        .await
-        .unwrap();
-    assert_eq!(classify_final_plan(plan.as_ref()), FinalPlanDisposition::Mixed);
-
-    let batches =
-        tokio::time::timeout(Duration::from_secs(5), datafusion::physical_plan::collect(plan, ctx.task_ctx()))
-            .await
-            .expect("nested cuGraph planning must not reacquire the outer host QoS permit")
-            .expect("mixed CPU -> cuGraph -> CPU statement should execute");
-    assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 3);
-}
-
-#[tokio::test]
 async fn cugraph_sql_keeps_native_inputs_device_resident_for_native_downstream() {
     let (_backend, ctx) = default_backend_cugraph_sql_context();
     register_directed_bfs_edges(&ctx, "raw_edges");
@@ -214,7 +175,7 @@ async fn cugraph_sql_backend_session_records_query_service_admission_metrics() {
 
     let backend = NexusGpuBackend::builder()
         .device_memory_ownership([(0, GpuMemoryOwnership::WholeDeviceExclusive)])
-        .admission(NexusAdmissionPolicy::default().with_slot_guarantee(SlotGuarantee::Optimistic))
+        .device_profiles([datafusion_nexus::backend::NexusGpuDeviceProfile::new(0)])
         .build()
         .unwrap();
     let cugraph = CugraphSqlConfig::default()

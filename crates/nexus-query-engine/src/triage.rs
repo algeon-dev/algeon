@@ -3,9 +3,8 @@
 use serde_json::{Value, json};
 
 use crate::{
-    adaptive_report::{AdaptiveCandidateStatus, AdaptivePipelineReport},
     capability::EdgeConsumer,
-    contract_report::{StrictBoundedContractOwner, StrictBoundedContractReport},
+    contract_report::{CapabilityContractOwner, CapabilityContractReport},
     error::{QueryError, QueryErrorCode},
     metrics::{CompiledTaskId, PlanNodeId, QueryId, QueryMetrics},
 };
@@ -23,17 +22,13 @@ pub enum TriageCode {
     UnsupportedSource,
     InvalidInput,
     InvalidPlan,
-    StrictBoundedRejected,
-    AdaptivePipelineRejected,
+    CapabilityEnvelopeRejected,
     MemoryReservationDenied,
     ResourceExhausted,
     ServiceOverloaded,
     SourceFailure,
     DependencyFailure,
     InvariantViolation,
-    AdaptiveRetry,
-    AdaptiveSpill,
-    AdaptiveDowngrade,
     Internal,
 }
 
@@ -50,17 +45,14 @@ impl TriageCode {
             Self::UnsupportedSource => "unsupported_source",
             Self::InvalidInput => "invalid_input",
             Self::InvalidPlan => "invalid_plan",
-            Self::StrictBoundedRejected => "strict_bounded_rejected",
-            Self::AdaptivePipelineRejected => "adaptive_pipeline_rejected",
+            // Compatibility wire label retained for existing report consumers.
+            Self::CapabilityEnvelopeRejected => "strict_bounded_rejected",
             Self::MemoryReservationDenied => "memory_reservation_denied",
             Self::ResourceExhausted => "resource_exhausted",
             Self::ServiceOverloaded => "service_overloaded",
             Self::SourceFailure => "source_failure",
             Self::DependencyFailure => "dependency_failure",
             Self::InvariantViolation => "invariant_violation",
-            Self::AdaptiveRetry => "adaptive_retry",
-            Self::AdaptiveSpill => "adaptive_spill",
-            Self::AdaptiveDowngrade => "adaptive_downgrade",
             Self::Internal => "internal",
         }
     }
@@ -315,27 +307,6 @@ impl QueryMetrics {
                 format!("{} retry attempt(s) were caused by reservation failure", self.retry_reservation_failure_count),
             ));
         }
-        if self.adaptive_retry_count > 0 {
-            signals.push(TriageSignal::new(
-                TriageSeverity::Warning,
-                TriageCode::AdaptiveRetry,
-                format!("{} adaptive retry action(s) were recorded", self.adaptive_retry_count),
-            ));
-        }
-        if self.adaptive_spill_count > 0 {
-            signals.push(TriageSignal::new(
-                TriageSeverity::Warning,
-                TriageCode::AdaptiveSpill,
-                format!("{} adaptive spill action(s) were recorded", self.adaptive_spill_count),
-            ));
-        }
-        if self.adaptive_downgrade_count > 0 {
-            signals.push(TriageSignal::new(
-                TriageSeverity::Warning,
-                TriageCode::AdaptiveDowngrade,
-                format!("{} adaptive downgrade action(s) were recorded", self.adaptive_downgrade_count),
-            ));
-        }
 
         let verdict = if signals.is_empty() { TriageVerdict::Healthy } else { TriageVerdict::Degraded };
         TriageSummary::new(verdict, signals)
@@ -361,10 +332,10 @@ impl QueryError {
     }
 }
 
-impl StrictBoundedContractReport {
-    /// Builds a compact triage summary for strict bounded readiness.
+impl CapabilityContractReport {
+    /// Builds a compact triage summary for capability-envelope readiness.
     pub fn triage_summary(&self) -> TriageSummary {
-        if self.is_strict_bounded_ready() {
+        if self.is_ready() {
             return TriageSummary::healthy();
         }
         let query_id = self.query_id().cloned();
@@ -379,52 +350,18 @@ impl StrictBoundedContractReport {
                 if let Some(query_id) = query_id.clone() {
                     evidence = evidence.with_query_id(query_id);
                 }
-                if let Some(plan_node_id) = strict_owner_plan_node_id(&row.owner) {
+                if let Some(plan_node_id) = capability_owner_plan_node_id(&row.owner) {
                     evidence = evidence.with_plan_node_id(plan_node_id);
                 }
                 TriageSignal::new(
                     TriageSeverity::Warning,
-                    TriageCode::StrictBoundedRejected,
-                    format!("strict bounded gate {} is {}", row.gate_id, row.contract_status.as_str()),
+                    TriageCode::CapabilityEnvelopeRejected,
+                    format!("capability gate {} is {}", row.gate_id, row.contract_status.as_str()),
                 )
                 .with_evidence(evidence)
             })
             .collect::<Vec<_>>();
         TriageSummary::new(TriageVerdict::NotSelected, signals)
-    }
-}
-
-impl AdaptivePipelineReport {
-    /// Builds a compact triage summary for adaptive pipeline admission.
-    pub fn triage_summary(&self) -> TriageSummary {
-        let mut signals = Vec::new();
-        let row = self.row();
-        let query_id = self.query_id().cloned();
-        if row.candidate_status == AdaptiveCandidateStatus::Rejected {
-            let mut evidence = TriageEvidenceRef::new("adaptive_pipeline_report.row");
-            if let Some(query_id) = query_id.clone() {
-                evidence = evidence.with_query_id(query_id);
-            }
-            if let Some(plan_node_id) =
-                row.missing_strict_contracts.iter().find_map(|missing| adaptive_owner_plan_node_id(&missing.owner))
-            {
-                evidence = evidence.with_plan_node_id(plan_node_id);
-            }
-            signals.push(
-                TriageSignal::new(
-                    TriageSeverity::Warning,
-                    TriageCode::AdaptivePipelineRejected,
-                    row.rejection_reason.unwrap_or("adaptive pipeline candidate was rejected"),
-                )
-                .with_evidence(evidence),
-            );
-        }
-        let verdict = if row.candidate_status == AdaptiveCandidateStatus::Rejected {
-            TriageVerdict::NotSelected
-        } else {
-            TriageVerdict::Healthy
-        };
-        TriageSummary::new(verdict, signals)
     }
 }
 
@@ -435,24 +372,15 @@ fn maybe_with_evidence(signal: TriageSignal, evidence: Option<TriageEvidenceRef>
     }
 }
 
-fn strict_owner_plan_node_id(owner: &StrictBoundedContractOwner) -> Option<PlanNodeId> {
+fn capability_owner_plan_node_id(owner: &CapabilityContractOwner) -> Option<PlanNodeId> {
     match owner {
-        StrictBoundedContractOwner::CapabilityNode(node) => Some((*node).into()),
-        StrictBoundedContractOwner::CapabilityEdge { producer, consumer } => match consumer {
+        CapabilityContractOwner::CapabilityNode(node) => Some((*node).into()),
+        CapabilityContractOwner::CapabilityEdge { producer, consumer } => match consumer {
             EdgeConsumer::Node(node) => Some((*node).into()),
             EdgeConsumer::Sink(_) => Some((*producer).into()),
         },
-        StrictBoundedContractOwner::Compiled(_)
-        | StrictBoundedContractOwner::CapabilitySubgraph(_)
-        | StrictBoundedContractOwner::CapabilityAdmission(_) => None,
+        CapabilityContractOwner::Compiled(_)
+        | CapabilityContractOwner::CapabilitySubgraph(_)
+        | CapabilityContractOwner::CapabilityAdmission(_) => None,
     }
-}
-
-fn adaptive_owner_plan_node_id(owner: &str) -> Option<PlanNodeId> {
-    if owner.starts_with('n') {
-        return Some(PlanNodeId::new(owner));
-    }
-    let edge = owner.strip_prefix("edge:")?;
-    let producer = edge.split("->").next()?;
-    producer.starts_with('n').then(|| PlanNodeId::new(producer))
 }

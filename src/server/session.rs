@@ -7,7 +7,7 @@ use datafusion::{
 };
 
 use super::{config::ServerConfig, error::ServerError};
-use crate::{backend::NexusGpuBackend, cugraph_sql::CugraphSqlConfig, session::NexusSessionStateBuilderExt};
+use crate::{backend::NexusGpuBackend, cugraph_sql::CugraphSqlConfig};
 
 pub async fn build_session_context(_config: &ServerConfig) -> super::error::Result<SessionContext> {
     Err(ServerError::builder_validation(
@@ -32,10 +32,6 @@ pub async fn build_session_context_with_backend(
         None => backend
             .install_on(builder)
             .map_err(|error| ServerError::session("failed to install backend native session", error))?,
-    };
-    let builder = match &config.host_execution_qos {
-        Some(host_execution_qos) => builder.with_host_execution_qos(host_execution_qos.clone()),
-        None => builder,
     };
     let state = builder.build();
     let ctx = SessionContext::new_with_state(state);
@@ -246,18 +242,23 @@ mod tests {
     use nexus_query_engine::runtime::MemoryControlPolicy;
 
     use super::*;
-    use crate::server::{NEXUS_SERVER_CUGRAPH_ENABLED_ENV, NEXUS_SERVER_NATIVE_MEMORY_POLICY_ENV};
+    use crate::server::NEXUS_SERVER_CUGRAPH_ENABLED_ENV;
+
+    fn server_config_with_test_device_profile(mut env: BTreeMap<&'static str, String>) -> ServerConfig {
+        let config_file = tempfile::NamedTempFile::new().expect("create server config fixture");
+        std::fs::write(config_file.path(), "[[admission.device_profiles]]\ndevice_ordinal = 0\n")
+            .expect("write server config fixture");
+        env.insert(crate::server::NEXUS_SERVER_CONFIG_FILE_ENV, config_file.path().to_string_lossy().into_owned());
+        ServerConfig::from_env_get(|name| env.get(name).cloned()).expect("load server config fixture")
+    }
 
     #[test]
-    fn cugraph_sql_config_inherits_server_native_memory_policy() {
-        let env = BTreeMap::from([
-            (NEXUS_SERVER_CUGRAPH_ENABLED_ENV, "true".to_string()),
-            (NEXUS_SERVER_NATIVE_MEMORY_POLICY_ENV, "unbounded".to_string()),
-        ]);
-        let server = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
+    fn cugraph_sql_config_inherits_server_bounded_native_config() {
+        let env = BTreeMap::from([(NEXUS_SERVER_CUGRAPH_ENABLED_ENV, "true".to_string())]);
+        let server = server_config_with_test_device_profile(env);
         let cugraph = server.cugraph.as_ref().expect("cuGraph must be enabled");
         let sql = cugraph_sql_config(cugraph, server.native_optimizer_config.native_execution_config().clone());
 
-        assert_eq!(sql.native_execution_config.memory_control_policy(), MemoryControlPolicy::Unbounded);
+        assert!(matches!(sql.native_execution_config.memory_control_policy(), MemoryControlPolicy::Bounded { .. }));
     }
 }

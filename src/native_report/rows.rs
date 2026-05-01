@@ -6,7 +6,7 @@
 //! accounting over the query lifetime; live peak and retained-byte fields
 //! describe instantaneous resident device memory.
 
-use nexus_query_engine::{adaptive_report::AdaptivePipelineReportRow, contract_report::StrictBoundedContractGateRow};
+use nexus_query_engine::contract_report::CapabilityContractGateRow;
 
 use super::{
     metrics::NativeDataFusionExecutionMetrics,
@@ -15,14 +15,13 @@ use super::{
         NATIVE_FALLBACK_PRESSURE_TSV_COLUMNS,
     },
     tsv::{
-        TsvRow, format_adaptive_pipeline_rows, format_aggregate_strategy_rows, format_dynamic_filter_runtime_rows,
-        format_graph_reservation_rows, format_graph_runtime_rows, format_join_diagnostics, format_join_strategy_rows,
-        format_lakehouse_cache_fill_event_snapshot_rows, format_plan_task_mapping_rows, format_source_diagnostics,
-        format_strict_bounded_compiled_graphs, format_strict_bounded_contract_rows, format_task_operator_rows,
-        format_task_runtime_rows,
+        TsvRow, format_aggregate_strategy_rows, format_capability_compiled_graphs, format_capability_contract_rows,
+        format_dynamic_filter_runtime_rows, format_graph_reservation_rows, format_graph_runtime_rows,
+        format_join_diagnostics, format_join_strategy_rows, format_lakehouse_cache_fill_event_snapshot_rows,
+        format_plan_task_mapping_rows, format_source_diagnostics, format_task_operator_rows, format_task_runtime_rows,
     },
 };
-use crate::planner::{FinalPlanDisposition, NativeStrictBoundedCompiledGraphDiagnostics};
+use crate::planner::{FinalPlanDisposition, NativeCapabilityCompiledGraphDiagnostics};
 
 /// One row in the native planning TSV.
 ///
@@ -47,12 +46,10 @@ pub struct NativeDataFusionPlanningRow {
     pub reason_code: Option<String>,
     /// Stable unsupported-category label, or `none` when not rejected as unsupported.
     pub unsupported_category: Option<String>,
-    /// Strict-only gate rows; adaptive evidence must use a separate surface.
-    pub strict_bounded_contract_rows: Vec<StrictBoundedContractGateRow>,
-    /// Compiled graph summaries for strict bounded candidates.
-    pub strict_bounded_compiled_graphs: Vec<NativeStrictBoundedCompiledGraphDiagnostics>,
-    /// Adaptive-only rows; strict evidence must not be projected here.
-    pub adaptive_pipeline_rows: Vec<AdaptivePipelineReportRow>,
+    /// Capability gate rows emitted by the selected candidate.
+    pub capability_contract_rows: Vec<CapabilityContractGateRow>,
+    /// Compiled graph summaries for capability-supported candidates.
+    pub capability_compiled_graphs: Vec<NativeCapabilityCompiledGraphDiagnostics>,
     /// Native optimizer diagnostics emitted while preparing the candidate.
     pub native_optimizer: nexus_query_engine::optimizer::NativeOptimizerDiagnostics,
     /// Whether the optimized DataFusion plan contains an explicit native edge-list normalization step.
@@ -97,12 +94,10 @@ pub struct NativeDataFusionExecutionRow {
     pub reason_code: Option<String>,
     /// Stable unsupported-category label, or `none` when not rejected as unsupported.
     pub unsupported_category: Option<String>,
-    /// Strict-only gate rows; adaptive evidence must use a separate surface.
-    pub strict_bounded_contract_rows: Vec<StrictBoundedContractGateRow>,
-    /// Compiled graph summaries for strict bounded candidates.
-    pub strict_bounded_compiled_graphs: Vec<NativeStrictBoundedCompiledGraphDiagnostics>,
-    /// Adaptive-only rows; strict evidence must not be projected here.
-    pub adaptive_pipeline_rows: Vec<AdaptivePipelineReportRow>,
+    /// Capability gate rows emitted by the selected candidate.
+    pub capability_contract_rows: Vec<CapabilityContractGateRow>,
+    /// Compiled graph summaries for capability-supported candidates.
+    pub capability_compiled_graphs: Vec<NativeCapabilityCompiledGraphDiagnostics>,
     /// Nested source-scan diagnostics serialized as stable key/value rows.
     pub source_diagnostics: Vec<NativeSourceDiagnosticSummary>,
     /// Display name of the post-native-optimizer physical root.
@@ -205,8 +200,6 @@ pub struct NativeFallbackPressureRow {
     pub reason_code: Option<String>,
     /// Stable unsupported-category label, or `none` when not rejected as unsupported.
     pub unsupported_category: Option<String>,
-    /// Adaptive-only rows; strict fallback-pressure reports leave this empty.
-    pub adaptive_pipeline_rows: Vec<AdaptivePipelineReportRow>,
     /// Nested join-shape diagnostics serialized as stable key/value rows.
     pub join_diagnostics: Vec<NativeJoinDiagnosticSummary>,
     /// Nested source-scan diagnostics serialized as stable key/value rows.
@@ -329,7 +322,6 @@ impl TsvRow for NativeFallbackPressureRow {
             self.outcome.map_or_else(|| "none".to_string(), |outcome| outcome.as_str().to_string()),
             self.reason_code.clone().unwrap_or_else(|| "none".to_string()),
             self.unsupported_category.clone().unwrap_or_else(|| "none".to_string()),
-            format_adaptive_pipeline_rows(&self.adaptive_pipeline_rows),
             format_join_diagnostics(&self.join_diagnostics),
             format_source_diagnostics(&self.source_diagnostics),
             self.rejected_before_execution.to_string(),
@@ -350,9 +342,8 @@ impl TsvRow for NativeDataFusionPlanningRow {
             self.outcome.map_or_else(|| "none".to_string(), |outcome| outcome.as_str().to_string()),
             self.reason_code.clone().unwrap_or_else(|| "none".to_string()),
             self.unsupported_category.clone().unwrap_or_else(|| "none".to_string()),
-            format_strict_bounded_contract_rows(&self.strict_bounded_contract_rows),
-            format_strict_bounded_compiled_graphs(&self.strict_bounded_compiled_graphs),
-            format_adaptive_pipeline_rows(&self.adaptive_pipeline_rows),
+            format_capability_contract_rows(&self.capability_contract_rows),
+            format_capability_compiled_graphs(&self.capability_compiled_graphs),
             super::tsv::format_native_optimizer_diagnostics(&self.native_optimizer),
             self.edge_normalize_inserted.to_string(),
             format_join_diagnostics(&self.join_diagnostics),
@@ -383,9 +374,8 @@ impl TsvRow for NativeDataFusionExecutionRow {
             self.planning_outcome.map_or_else(|| "none".to_string(), |outcome| outcome.as_str().to_string()),
             self.reason_code.clone().unwrap_or_else(|| "none".to_string()),
             self.unsupported_category.clone().unwrap_or_else(|| "none".to_string()),
-            format_strict_bounded_contract_rows(&self.strict_bounded_contract_rows),
-            format_strict_bounded_compiled_graphs(&self.strict_bounded_compiled_graphs),
-            format_adaptive_pipeline_rows(&self.adaptive_pipeline_rows),
+            format_capability_contract_rows(&self.capability_contract_rows),
+            format_capability_compiled_graphs(&self.capability_compiled_graphs),
             self.post_native_plan_root.clone(),
             self.final_disposition.as_str().to_string(),
             self.native_plan_fragment_count.to_string(),
@@ -453,11 +443,6 @@ impl TsvRow for NativeDataFusionExecutionRow {
             self.metrics.source_read_prefetches_completed.to_string(),
             self.metrics.source_read_prefetches_skipped.to_string(),
             self.metrics.source_read_prefetches_abandoned.to_string(),
-            self.metrics.source_cache_hits.to_string(),
-            self.metrics.source_cache_misses.to_string(),
-            self.metrics.source_cache_inserts.to_string(),
-            self.metrics.source_cache_insert_skipped.to_string(),
-            self.metrics.source_cache_retained_bytes.to_string(),
             self.metrics.row_groups_planned.to_string(),
             self.metrics.row_groups_committed.to_string(),
             self.metrics.partial_aggregate_count.to_string(),
@@ -478,20 +463,11 @@ impl TsvRow for NativeDataFusionExecutionRow {
             self.metrics.retry_count.to_string(),
             self.metrics.retry_resource_exhausted_count.to_string(),
             self.metrics.retry_reservation_failure_count.to_string(),
-            self.metrics.adaptive_retry_count.to_string(),
-            self.metrics.adaptive_spill_count.to_string(),
-            self.metrics.adaptive_downgrade_count.to_string(),
-            self.metrics.adaptive_memory_history_lookup_count.to_string(),
-            self.metrics.adaptive_memory_history_hit_count.to_string(),
-            self.metrics.adaptive_memory_history_miss_count.to_string(),
             self.metrics.hash_join_build_count.to_string(),
             self.metrics.filtered_join_build_count.to_string(),
             self.metrics.one_shot_join_count.to_string(),
             self.metrics.hash_join_cache_hits.to_string(),
             self.metrics.hash_join_cache_misses.to_string(),
-            self.metrics.hash_join_durable_cache_hits.to_string(),
-            self.metrics.hash_join_durable_cache_misses.to_string(),
-            self.metrics.hash_join_durable_cache_inserts.to_string(),
             self.metrics.hash_join_hash_table_bytes.to_string(),
             self.metrics.filtered_join_hash_table_bytes.to_string(),
             self.metrics.filtered_join_probe_state_bytes.to_string(),
@@ -541,7 +517,6 @@ mod tests {
             outcome: Some(NativeFallbackPressureOutcome::NotSupported),
             reason_code: Some("unsupported_operator".to_string()),
             unsupported_category: Some("operator_sort".to_string()),
-            adaptive_pipeline_rows: Vec::new(),
             join_diagnostics: Vec::new(),
             source_diagnostics: Vec::new(),
             rejected_before_execution: false,
@@ -549,7 +524,7 @@ mod tests {
         assert_eq!(fallback.fields().len(), NativeFallbackPressureRow::COLUMNS.len());
         assert_eq!(
             fallback.to_tsv_line(),
-            "q\tRoot\tRoot(Source)\tnone\tnone\tnot_supported\tunsupported_operator\toperator_sort\tnone\tnone\tnone\tfalse"
+            "q\tRoot\tRoot(Source)\tnone\tnone\tnot_supported\tunsupported_operator\toperator_sort\tnone\tnone\tfalse"
         );
 
         let planning = NativeDataFusionPlanningRow {
@@ -561,9 +536,8 @@ mod tests {
             outcome: Some(NativeDataFusionPlanningOutcome::NotSupported),
             reason_code: Some("unsupported_operator".to_string()),
             unsupported_category: Some("operator_sort".to_string()),
-            strict_bounded_contract_rows: Vec::new(),
-            strict_bounded_compiled_graphs: Vec::new(),
-            adaptive_pipeline_rows: Vec::new(),
+            capability_contract_rows: Vec::new(),
+            capability_compiled_graphs: Vec::new(),
             native_optimizer: nexus_query_engine::optimizer::NativeOptimizerDiagnostics::default(),
             edge_normalize_inserted: false,
             join_diagnostics: Vec::new(),
@@ -577,7 +551,7 @@ mod tests {
         assert_eq!(planning.fields().len(), NativeDataFusionPlanningRow::COLUMNS.len());
         assert_eq!(
             planning.to_tsv_line(),
-            "q\tRoot\tRoot(Source)\tnone\tnone\tnot_supported\tunsupported_operator\toperator_sort\tnone\tnone\tnone\tnone\tfalse\tnone\tnone\tRoot\tdatafusion\t0\t0\tfalse"
+            "q\tRoot\tRoot(Source)\tnone\tnone\tnot_supported\tunsupported_operator\toperator_sort\tnone\tnone\tnone\tfalse\tnone\tnone\tRoot\tdatafusion\t0\t0\tfalse"
         );
 
         let execution = NativeDataFusionExecutionRow {
@@ -589,9 +563,8 @@ mod tests {
             planning_outcome: Some(NativeDataFusionPlanningOutcome::NotSupported),
             reason_code: Some("unsupported_operator".to_string()),
             unsupported_category: Some("operator_sort".to_string()),
-            strict_bounded_contract_rows: Vec::new(),
-            strict_bounded_compiled_graphs: Vec::new(),
-            adaptive_pipeline_rows: Vec::new(),
+            capability_contract_rows: Vec::new(),
+            capability_compiled_graphs: Vec::new(),
             source_diagnostics: Vec::new(),
             post_native_plan_root: "Root".to_string(),
             final_disposition: FinalPlanDisposition::DataFusion,
@@ -624,9 +597,8 @@ mod tests {
                 "dynamic_filter_measured_reduction_status" | "dynamic_filter_work_avoidance_status" => "unknown",
                 "native_candidate_shape"
                 | "native_candidate_shape_family"
-                | "strict_bounded_contract_rows"
-                | "strict_bounded_compiled_graphs"
-                | "adaptive_pipeline_rows"
+                | "capability_contract_rows"
+                | "capability_compiled_graphs"
                 | "admission_sequence"
                 | "admission_wait_ms"
                 | "device_ordinal"
@@ -664,9 +636,8 @@ mod tests {
             planning_outcome: Some(NativeDataFusionPlanningOutcome::Selected),
             reason_code: None,
             unsupported_category: None,
-            strict_bounded_contract_rows: Vec::new(),
-            strict_bounded_compiled_graphs: Vec::new(),
-            adaptive_pipeline_rows: Vec::new(),
+            capability_contract_rows: Vec::new(),
+            capability_compiled_graphs: Vec::new(),
             source_diagnostics: Vec::new(),
             post_native_plan_root: "NexusNativeExec".to_string(),
             final_disposition: FinalPlanDisposition::Native,
@@ -728,11 +699,6 @@ mod tests {
                 source_read_prefetches_completed: 51,
                 source_read_prefetches_skipped: 52,
                 source_read_prefetches_abandoned: 53,
-                source_cache_hits: 54,
-                source_cache_misses: 55,
-                source_cache_inserts: 56,
-                source_cache_insert_skipped: 57,
-                source_cache_retained_bytes: 58,
                 row_groups_planned: 59,
                 row_groups_committed: 60,
                 partial_aggregate_count: 61,
@@ -745,20 +711,11 @@ mod tests {
                 retry_count: 68,
                 retry_resource_exhausted_count: 69,
                 retry_reservation_failure_count: 70,
-                adaptive_retry_count: 71,
-                adaptive_spill_count: 72,
-                adaptive_downgrade_count: 73,
-                adaptive_memory_history_lookup_count: 74,
-                adaptive_memory_history_hit_count: 75,
-                adaptive_memory_history_miss_count: 76,
                 hash_join_build_count: 77,
                 filtered_join_build_count: 78,
                 one_shot_join_count: 79,
                 hash_join_cache_hits: 80,
                 hash_join_cache_misses: 81,
-                hash_join_durable_cache_hits: 82,
-                hash_join_durable_cache_misses: 83,
-                hash_join_durable_cache_inserts: 84,
                 hash_join_hash_table_bytes: 85,
                 filtered_join_hash_table_bytes: 86,
                 filtered_join_probe_state_bytes: 87,
@@ -791,13 +748,13 @@ mod tests {
             execution.to_tsv_line(),
             concat!(
                 "q_exec\tRootExec\tRootExec(Source)\tcandidate_shape\tcandidate_family\tselected\tnone\tnone\t",
-                "none\tnone\tnone\tNexusNativeExec\tnative\t7\t2\tfalse\t100\t1.500\t2\t4096\t",
+                "none\tnone\tNexusNativeExec\tnative\t7\t2\tfalse\t100\t1.500\t2\t4096\t",
                 "true\tsucceeded\tnone\t3\t111\t2222\t",
                 "10\t11\t12\t13\t14\t15\t16\t17\t18\t19\t20\t21\t22\t23\t24\t25\t26\t27\t28\t29\t30\t31\t",
                 "none\tnone\tnone\tnone\t32\t33\t34\t35\t36\t37\t38\t39\t40\t41\t42\t43\t44\t45\t",
                 "mixed_post_decode\tmeasured_source_pruned\tsource_read_pruned\tnone\t",
                 "46\t47\t48\t49\t50\t51\t52\t53\t54\t55\t56\t57\t58\t59\t60\t61\t62\t63\t64\t65\t66\t67\t",
-                "0\t0\t0\t0\t0\t0\t0\t0\t68\t69\t70\t71\t72\t73\t74\t75\t76\t77\t78\t79\t80\t81\t82\t83\t",
+                "0\t0\t0\t0\t0\t0\t0\t0\t68\t69\t70\t77\t78\t79\t80\t81\t82\t83\t",
                 "84\t85\t86\t87\t88\t89\t90\t91\t92\tnone\tnone\tnone\t",
                 "outcome=completed,bytes=4096,elapsed_ns=9000000,cache_path_hash=cache123,stable_id_hash=stable456,",
                 "file_index=0,chunk_index=2,error_code=none,error_kind=none,error_status=none,error_operation=none",

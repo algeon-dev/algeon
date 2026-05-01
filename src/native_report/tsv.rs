@@ -8,10 +8,10 @@
 use std::fmt::Write;
 
 use datafusion::physical_plan::metrics::MetricsSet;
-use nexus_query_engine::{adaptive_report::AdaptivePipelineReportRow, contract_report::StrictBoundedContractGateRow};
+use nexus_query_engine::contract_report::CapabilityContractGateRow;
 
 use super::{metrics::NativePlanTaskMappingMetricRow, *};
-use crate::planner::NativeStrictBoundedCompiledGraphDiagnostics;
+use crate::planner::NativeCapabilityCompiledGraphDiagnostics;
 
 pub(crate) trait TsvRow {
     const COLUMNS: &'static [&'static str];
@@ -109,7 +109,7 @@ pub(super) fn format_source_diagnostics(diagnostics: &[NativeSourceDiagnosticSum
     output
 }
 
-pub(super) fn format_strict_bounded_contract_rows(rows: &[StrictBoundedContractGateRow]) -> String {
+pub(super) fn format_capability_contract_rows(rows: &[CapabilityContractGateRow]) -> String {
     if rows.is_empty() {
         return "none".to_string();
     }
@@ -132,7 +132,7 @@ pub(super) fn format_strict_bounded_contract_rows(rows: &[StrictBoundedContractG
     output
 }
 
-pub(super) fn format_strict_bounded_compiled_graphs(graphs: &[NativeStrictBoundedCompiledGraphDiagnostics]) -> String {
+pub(super) fn format_capability_compiled_graphs(graphs: &[NativeCapabilityCompiledGraphDiagnostics]) -> String {
     if graphs.is_empty() {
         return "none".to_string();
     }
@@ -167,16 +167,6 @@ pub(super) fn format_strict_bounded_compiled_graphs(graphs: &[NativeStrictBounde
         );
     }
     output
-}
-
-pub(super) fn format_adaptive_pipeline_rows(rows: &[AdaptivePipelineReportRow]) -> String {
-    if rows.is_empty() {
-        return "none".to_string();
-    }
-
-    let mut rows = rows.iter().collect::<Vec<_>>();
-    rows.sort_by_key(|row| row.to_stable_kv_row());
-    rows.iter().map(|row| stable_nested_tsv_field(&row.to_stable_kv_row())).collect::<Vec<_>>().join("|")
 }
 
 pub(super) fn format_dynamic_filter_runtime_rows(rows: &[NativeDynamicFilterRuntimeMetricRow]) -> String {

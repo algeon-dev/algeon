@@ -2,7 +2,7 @@
 #[test]
 fn server_iceberg_config_ignores_aws_env_without_catalog_request() {
     let env = BTreeMap::from([(datafusion_nexus::table_format::iceberg::AWS_REGION_ENV, "us-east-1".to_string())]);
-    let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
+    let config = server_config_with_default_device_profile(env).unwrap();
 
     assert!(config.iceberg.is_none());
 }
@@ -15,7 +15,7 @@ fn server_iceberg_config_accepts_dynamic_catalog_without_explicit_tables() {
         (datafusion_nexus::server::NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, "s3://bucket/warehouse/".to_string()),
         (datafusion_nexus::table_format::iceberg::AWS_REGION_ENV, "us-east-1".to_string()),
     ]);
-    let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
+    let config = server_config_with_default_device_profile(env).unwrap();
     let iceberg = config.iceberg.expect("iceberg config must be present");
 
     assert!(iceberg.tables.is_empty(), "dynamic catalog mode: tables must be empty when no tables env var is set");
@@ -31,7 +31,7 @@ fn server_iceberg_config_accepts_scan_planning_timeout() {
         (datafusion_nexus::server::NEXUS_ICEBERG_SCAN_PLANNING_TIMEOUT_SECS_ENV, "7".to_string()),
         (datafusion_nexus::table_format::iceberg::AWS_REGION_ENV, "us-east-1".to_string()),
     ]);
-    let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
+    let config = server_config_with_default_device_profile(env).unwrap();
     let iceberg = config.iceberg.expect("iceberg config must be present");
 
     assert_eq!(iceberg.scan_planning_timeout.as_secs(), 7);
@@ -46,7 +46,7 @@ fn server_iceberg_config_rejects_zero_scan_planning_timeout() {
         (datafusion_nexus::server::NEXUS_ICEBERG_SCAN_PLANNING_TIMEOUT_SECS_ENV, "0".to_string()),
         (datafusion_nexus::table_format::iceberg::AWS_REGION_ENV, "us-east-1".to_string()),
     ]);
-    let error = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap_err();
+    let error = server_config_with_default_device_profile(env).unwrap_err();
 
     assert!(error.to_string().contains(datafusion_nexus::server::NEXUS_ICEBERG_SCAN_PLANNING_TIMEOUT_SECS_ENV));
 }
@@ -65,7 +65,7 @@ fn server_iceberg_config_accepts_backend_neutral_namespace_env() {
         (NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, "s3://bucket/warehouse/".to_string()),
         (datafusion_nexus::table_format::iceberg::AWS_REGION_ENV, "us-east-1".to_string()),
     ]);
-    let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
+    let config = server_config_with_default_device_profile(env).unwrap();
     let iceberg = config.iceberg.expect("iceberg config must be present");
 
     assert_eq!(iceberg.catalog_name, "iceberg");
@@ -95,7 +95,7 @@ fn server_iceberg_config_catalog_name_does_not_affect_glue_catalog_handle() {
         (NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, "s3://bucket/warehouse/".to_string()),
         (datafusion_nexus::table_format::iceberg::AWS_REGION_ENV, "us-east-1".to_string()),
     ]);
-    let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
+    let config = server_config_with_default_device_profile(env).unwrap();
     let iceberg = config.iceberg.expect("iceberg config must be present");
 
     assert_eq!(iceberg.catalog_name, "iceberg", "DataFusion connector name");
@@ -111,7 +111,7 @@ fn server_iceberg_config_backward_compat_glue_database_maps_to_namespace() {
         (datafusion_nexus::server::NEXUS_ICEBERG_GLUE_TABLES_ENV, "nation".to_string()),
         (datafusion_nexus::table_format::iceberg::AWS_REGION_ENV, "us-east-1".to_string()),
     ]);
-    let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
+    let config = server_config_with_default_device_profile(env).unwrap();
     let iceberg = config.iceberg.expect("iceberg config must be present");
 
     assert_eq!(iceberg.namespace, "tpch_sf1", "GLUE_DATABASE must map to namespace field");
@@ -141,7 +141,7 @@ fn server_iceberg_config_kind_glue_explicit_selects_glue_backend() {
         (datafusion_nexus::table_format::iceberg::NEXUS_ICEBERG_S3_ACCESS_KEY_ID_ENV, "AKIA_LOCAL".to_string()),
         (datafusion_nexus::table_format::iceberg::NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY_ENV, "local-secret".to_string()),
     ]);
-    let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
+    let config = server_config_with_default_device_profile(env).unwrap();
     let profiles = config.native_optimizer_config.native_execution_config().source_storage_profiles();
     assert_eq!(profiles.len(), 1);
     assert_eq!(profiles[0].id(), "table_format_s3");
@@ -196,7 +196,7 @@ fn server_iceberg_s3_credential_source_default_chain_keeps_default_chain_with_en
         (datafusion_nexus::table_format::iceberg::AWS_ACCESS_KEY_ID_ENV, "AKIA_AMBIENT".to_string()),
         (datafusion_nexus::table_format::iceberg::AWS_SECRET_ACCESS_KEY_ENV, "ambient-secret".to_string()),
     ]);
-    let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
+    let config = server_config_with_default_device_profile(env).unwrap();
     let profiles = config.native_optimizer_config.native_execution_config().source_storage_profiles();
     assert_eq!(profiles.len(), 1);
     let s3_profile = profiles[0].s3_profile();
@@ -236,7 +236,7 @@ fn server_iceberg_custom_endpoint_freezes_unsigned_source_policy_and_native_prof
         (datafusion_nexus::table_format::iceberg::AWS_SECRET_ACCESS_KEY_ENV, "ambient-secret".to_string()),
     ]);
 
-    let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
+    let config = server_config_with_default_device_profile(env).unwrap();
     let iceberg = config.iceberg.as_ref().expect("iceberg config must be present");
     let source_access = iceberg.source_access_policy().s3_access();
     assert_eq!(source_access.endpoint, Some("http://localhost:9000"));
@@ -270,7 +270,7 @@ fn server_iceberg_s3_credential_source_default_chain_applies_to_rest_backend() {
         (NEXUS_ICEBERG_S3_PATH_STYLE_ENV, "true".to_string()),
         (NEXUS_ICEBERG_S3_CREDENTIAL_SOURCE_ENV, "default_chain".to_string()),
     ]);
-    let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
+    let config = server_config_with_default_device_profile(env).unwrap();
     let profiles = config.native_optimizer_config.native_execution_config().source_storage_profiles();
     assert_eq!(profiles.len(), 1);
     let s3_profile = profiles[0].s3_profile();
@@ -297,7 +297,7 @@ fn server_iceberg_s3_credential_source_rejects_unknown_value() {
         (NEXUS_ICEBERG_S3_CREDENTIAL_SOURCE_ENV, "imds".to_string()),
         (datafusion_nexus::table_format::iceberg::AWS_REGION_ENV, "us-east-1".to_string()),
     ]);
-    let error = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap_err();
+    let error = server_config_with_default_device_profile(env).unwrap_err();
     assert!(error.to_string().contains(NEXUS_ICEBERG_S3_CREDENTIAL_SOURCE_ENV), "{error}");
     assert!(error.to_string().contains("default_chain"), "error should name the accepted value: {error}");
 }
@@ -319,7 +319,7 @@ fn server_iceberg_s3_credential_source_rejects_static_credential_combination() {
         (datafusion_nexus::table_format::iceberg::NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY_ENV, "local-secret".to_string()),
         (datafusion_nexus::table_format::iceberg::AWS_REGION_ENV, "us-east-1".to_string()),
     ]);
-    let error = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap_err();
+    let error = server_config_with_default_device_profile(env).unwrap_err();
     assert!(error.to_string().contains(NEXUS_ICEBERG_S3_CREDENTIAL_SOURCE_ENV), "{error}");
     assert!(
         error.to_string().contains("NEXUS_ICEBERG_S3_ACCESS_KEY_ID"),
@@ -342,7 +342,7 @@ fn server_iceberg_glue_config_debug_redacts_local_endpoint_urls() {
         (NEXUS_ICEBERG_S3_ENDPOINT_ENV, "https://user:s3-secret@s3.local".to_string()),
         (datafusion_nexus::table_format::iceberg::AWS_REGION_ENV, "us-east-1".to_string()),
     ]);
-    let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
+    let config = server_config_with_default_device_profile(env).unwrap();
 
     let rendered = format!("{config:?}");
 
@@ -361,7 +361,7 @@ fn server_iceberg_config_invalid_kind_is_rejected() {
         (NEXUS_ICEBERG_CATALOG_KIND_ENV, "delta".to_string()),
         (NEXUS_ICEBERG_NAMESPACE_ENV, "tpch_sf1".to_string()),
     ]);
-    let error = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap_err();
+    let error = server_config_with_default_device_profile(env).unwrap_err();
     assert!(error.to_string().contains("glue"), "error should name the accepted kinds: {error}");
     assert!(error.to_string().contains("rest"), "error should name the accepted kinds: {error}");
 }
@@ -385,7 +385,7 @@ fn server_iceberg_config_kind_rest_happy_path() {
         (datafusion_nexus::table_format::iceberg::NEXUS_ICEBERG_S3_ACCESS_KEY_ID_ENV, "AKIA_REST".to_string()),
         (datafusion_nexus::table_format::iceberg::NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY_ENV, "rest-secret".to_string()),
     ]);
-    let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
+    let config = server_config_with_default_device_profile(env).unwrap();
     let profiles = config.native_optimizer_config.native_execution_config().source_storage_profiles();
     assert_eq!(profiles.len(), 1);
     assert_eq!(profiles[0].id(), "table_format_s3");
@@ -435,7 +435,7 @@ fn server_iceberg_config_owns_table_format_parquet_strategy() {
         (table_format::NEXUS_LAKEHOUSE_CACHE_MAX_BYTES_ENV, "4096".to_string()),
     ]);
 
-    let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
+    let config = server_config_with_default_device_profile(env).unwrap();
     let iceberg = config.iceberg.expect("iceberg config must be present");
     let strategy = iceberg.parquet_read_strategy_config;
 
@@ -462,7 +462,7 @@ fn server_iceberg_config_rejects_unknown_lakehouse_cache_policy() {
         (table_format::NEXUS_LAKEHOUSE_CACHE_POLICY_ENV, "eventual".to_string()),
     ]);
 
-    let error = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap_err();
+    let error = server_config_with_default_device_profile(env).unwrap_err();
 
     assert!(error.to_string().contains(table_format::NEXUS_LAKEHOUSE_CACHE_POLICY_ENV));
     assert!(error.to_string().contains("fill_before_read"));
@@ -486,7 +486,7 @@ fn server_iceberg_config_rejects_invalid_table_format_strategy_size() {
         .cloned()
         .chain([(table_format::NEXUS_LAKEHOUSE_CACHE_MAX_BYTES_ENV, "0".to_string())])
         .collect::<BTreeMap<_, _>>();
-    let zero_size_error = ServerConfig::from_env_get(|name| zero_size.get(name).cloned()).unwrap_err();
+    let zero_size_error = server_config_with_default_device_profile(zero_size).unwrap_err();
     assert!(zero_size_error.to_string().contains(table_format::NEXUS_LAKEHOUSE_CACHE_MAX_BYTES_ENV));
 }
 
@@ -504,7 +504,7 @@ fn server_iceberg_config_kind_rest_does_not_require_region() {
         (NEXUS_ICEBERG_REST_URI_ENV, "http://localhost:8181".to_string()),
         (NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, "s3://lakehouse/warehouse".to_string()),
     ]);
-    let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
+    let config = server_config_with_default_device_profile(env).unwrap();
     let iceberg = config.iceberg.expect("iceberg config must be present");
     assert_eq!(expect_rest_backend(&iceberg).uri(), "http://localhost:8181");
 }
@@ -520,7 +520,7 @@ fn server_iceberg_config_kind_rest_requires_uri() {
         (NEXUS_ICEBERG_NAMESPACE_ENV, "tpch_sf1".to_string()),
         (NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, "s3://lakehouse/warehouse".to_string()),
     ]);
-    let error = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap_err();
+    let error = server_config_with_default_device_profile(env).unwrap_err();
     assert!(
         error.to_string().contains(datafusion_nexus::server::NEXUS_ICEBERG_REST_URI_ENV),
         "error should name the missing REST URI env var: {error}"
@@ -538,7 +538,7 @@ fn server_iceberg_config_kind_rest_requires_warehouse() {
         (NEXUS_ICEBERG_NAMESPACE_ENV, "tpch_sf1".to_string()),
         (NEXUS_ICEBERG_REST_URI_ENV, "http://localhost:8181".to_string()),
     ]);
-    let error = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap_err();
+    let error = server_config_with_default_device_profile(env).unwrap_err();
     assert!(
         error.to_string().contains(datafusion_nexus::server::NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV),
         "error should name the missing warehouse env var: {error}"

@@ -20,7 +20,7 @@ use nexus_query_engine::{
     exec::execute_query_plan_observed,
     observability::SealedRuntimeObservationSnapshot,
     plan::QueryPlanBuilder,
-    runtime::{ExecutionCancellation, ExecutionContext, QueryHandle, TenantQueryContext},
+    runtime::{AdmittedQueryContext, ExecutionCancellation, ExecutionContext, QueryHandle},
     source::{GpuResidentSource, LiteralBatchSource, SourceNode},
 };
 use nexus_query_engine::{
@@ -39,7 +39,7 @@ use super::{
     record::{NATIVE_NEXUS_RECORDING_DESCRIPTORS, NativeMetricRecordingKind},
 };
 #[cfg(feature = "server")]
-use crate::backend::{GpuMemoryOwnership, NexusGpuBackend};
+use crate::backend::{GpuMemoryOwnership, NexusGpuBackend, NexusGpuDeviceProfile};
 #[cfg(feature = "server")]
 use crate::native_exec::{
     NexusNativeComposedExec, NexusNativeExec, NexusNativeExecutionConfig, NexusNativeGpuProducerExec,
@@ -50,7 +50,7 @@ use crate::{native_exec::admission::QueryAdmissionFacts, native_report::NativeDa
 struct AdmittedTestContext {
     context: ExecutionContext,
     cancellation: ExecutionCancellation,
-    _tenant_context: TenantQueryContext,
+    _admission_context: AdmittedQueryContext,
     _handle: QueryHandle,
     _backend: NexusGpuBackend,
 }
@@ -58,15 +58,22 @@ struct AdmittedTestContext {
 #[cfg(feature = "server")]
 fn admitted_test_context(query_id: &'static str) -> AdmittedTestContext {
     let backend = NexusGpuBackend::builder()
+        .device_profiles([NexusGpuDeviceProfile::new(0)])
         .device_memory_ownership([(0, GpuMemoryOwnership::WholeDeviceExclusive)])
         .build()
         .expect("test GPU backend builds");
     let handle = backend.admit_query().expect("test query admits");
     let cancellation = ExecutionCancellation::new();
-    let tenant_context =
+    let admission_context =
         handle.acquire_context_with_cancellation(cancellation.clone()).expect("admitted test context acquires");
-    let context = tenant_context.context().with_query_id(query_id).expect("test query id is valid");
-    AdmittedTestContext { context, cancellation, _tenant_context: tenant_context, _handle: handle, _backend: backend }
+    let context = admission_context.context().with_query_id(query_id).expect("test query id is valid");
+    AdmittedTestContext {
+        context,
+        cancellation,
+        _admission_context: admission_context,
+        _handle: handle,
+        _backend: backend,
+    }
 }
 
 #[test]
@@ -96,7 +103,6 @@ fn ordered_descriptors_drive_names_registration_and_legacy_categories() {
         "admission_wait_time",
         "source_metadata_load_time",
         "source_read_queue_wait_time",
-        "source_cache_lookup_time",
         "parquet_read_time",
         "source_read_time",
         "operator_time",
@@ -140,7 +146,7 @@ fn ordered_descriptors_drive_names_registration_and_legacy_categories() {
 fn every_ordered_descriptor_has_a_compile_time_recording_mapping() {
     let recording_names = NATIVE_NEXUS_RECORDING_DESCRIPTORS.iter().map(|(name, _kind)| *name).collect::<Vec<_>>();
     assert_eq!(recording_names, NATIVE_NEXUS_DATAFUSION_METRIC_NAMES);
-    assert_eq!(recording_names.len(), 126, "the stable public metric count must not change");
+    assert_eq!(recording_names.len(), 110, "the stable public metric count must not change");
 
     for expected_kind in
         [NativeMetricRecordingKind::Query, NativeMetricRecordingKind::Admission, NativeMetricRecordingKind::CacheEvents]
@@ -353,7 +359,7 @@ fn standalone_execution_has_no_coordinated_activity_requirement() {
 fn cloned_config_allocates_isolated_drainable_local_collectors_and_drop_releases_evidence() {
     let wiring = NativeMetricsCapture::without_sink("reused-config")
         .with_runtime_observation_config(RuntimeObservationConfig::bounded(7, 777));
-    let config = NexusNativeExecutionConfig::unbounded().with_metrics_capture(wiring);
+    let config = NexusNativeExecutionConfig::bounded_default().with_metrics_capture(wiring);
     assert_eq!(config.runtime_observation_config().limits().max_retained_records, 7);
     assert_eq!(config.runtime_observation_config().limits().max_retained_bytes, 777);
     let schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Int32, false)]));
@@ -440,7 +446,7 @@ fn local_collector_overflow_and_zero_capacity_have_explicit_accounting() {
 fn composed_native_fragments_share_only_the_parent_local_collector_and_capacity() {
     let wiring = NativeMetricsCapture::without_sink("composed-owner")
         .with_runtime_observation_config(RuntimeObservationConfig::bounded(9, 999));
-    let config = NexusNativeExecutionConfig::unbounded().with_metrics_capture(wiring);
+    let config = NexusNativeExecutionConfig::bounded_default().with_metrics_capture(wiring);
     let schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Int32, false)]));
     let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int32Array::from(vec![1]))]).unwrap();
     let mut producer_builder = QueryPlanBuilder::new();

@@ -8,10 +8,7 @@ use super::{
     },
     *,
 };
-use crate::{
-    runtime::cache::local_parquet::{GpuLocalParquetSourceCacheInsert, GpuLocalParquetSourceCacheKey},
-    source::{LocalParquetFile, ParquetReadStrategy},
-};
+use crate::source::{LocalParquetFile, ParquetReadStrategy};
 
 mod execution;
 mod reservation_contract;
@@ -65,7 +62,4 @@ pub(super) use source_read::{
     concatenate_source_read_outputs, read_local_parquet_chunk_batch_required_only_no_commit,
     read_local_parquet_chunks_required_only, read_local_parquet_chunks_required_only_with_observation,
     release_source_read_outputs_reverse,
-};
-pub(in crate::exec::bounded) use source_read::{
-    insert_bounded_local_parquet_source_cache, try_read_cached_local_parquet_chunk,
 };

@@ -1,7 +1,7 @@
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn statement_update_invalid_sql_uses_server_error_presentation() {
     let (listener, addr) = free_local_addr();
-    let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    let mut config = test_server_config();
     declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
 
@@ -22,7 +22,7 @@ async fn statement_update_invalid_sql_uses_server_error_presentation() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn statement_update_rejects_transaction_id_with_structured_error() {
     let (listener, addr) = free_local_addr();
-    let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    let mut config = test_server_config();
     declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
 
@@ -34,21 +34,29 @@ async fn statement_update_rejects_transaction_id_with_structured_error() {
         .execute_update("CREATE VIEW tx_update_probe AS SELECT 1 AS x".to_string(), Some(txn_id))
         .await
         .unwrap_err();
-
-    server.abort();
-
     let status = unwrap_flight_status(error);
     assert_eq!(status.code(), Code::Unimplemented);
     assert_query_id_metadata(&status);
     assert_error_metadata(&status, "unsupported_operator", "unsupported", "permanent");
     assert!(status.message().contains("transactions are not supported"));
     assert_no_diagnostic_fields(status.message());
+
+    let query_id = query_id_from_status(&status);
+    let payload = get_query_stats_raw(&mut client, &query_id).await;
+    assert!(payload.contains("# outcome=failed"), "{payload}");
+    assert!(payload.contains("# sealed=true"), "{payload}");
+    assert!(
+        !payload.contains("# attempt_id="),
+        "a DoPut preflight rejection has no attempt owner and must not retain an attempt-owned coordinator record: {payload}"
+    );
+
+    server.abort();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn statement_update_rejects_select_without_side_effect_path() {
     let (listener, addr) = free_local_addr();
-    let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    let mut config = test_server_config();
     declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
 
@@ -70,7 +78,7 @@ async fn statement_update_rejects_select_without_side_effect_path() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn statement_query_rejects_sql_prepare_namespace() {
     let (listener, addr) = free_local_addr();
-    let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    let mut config = test_server_config();
     declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
 
@@ -92,7 +100,7 @@ async fn statement_query_rejects_sql_prepare_namespace() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn statement_planning_errors_include_query_id_metadata() {
     let (listener, addr) = free_local_addr();
-    let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    let mut config = test_server_config();
     declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
 
@@ -117,7 +125,7 @@ async fn statement_planning_errors_include_query_id_metadata() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn unknown_table_errors_are_not_found_with_structured_code() {
     let (listener, addr) = free_local_addr();
-    let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    let mut config = test_server_config();
     declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
 
@@ -144,10 +152,10 @@ async fn unknown_table_errors_are_not_found_with_structured_code() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn feature_off_cugraph_ticket_returns_structured_capability_error() {
     let (listener, addr) = free_local_addr();
-    let mut config = ServerConfig::from_env_get(|name| {
-        (name == datafusion_nexus::server::NEXUS_SERVER_CUGRAPH_ENABLED_ENV).then(|| "true".to_string())
-    })
-    .unwrap();
+    let mut config = test_server_config_with_env(std::collections::BTreeMap::from([(
+        datafusion_nexus::server::NEXUS_SERVER_CUGRAPH_ENABLED_ENV,
+        "true".to_string(),
+    )]));
     declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
 
@@ -190,7 +198,7 @@ async fn feature_off_cugraph_ticket_returns_structured_capability_error() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn missing_column_errors_are_invalid_input_with_structured_code() {
     let (listener, addr) = free_local_addr();
-    let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    let mut config = test_server_config();
     declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
 

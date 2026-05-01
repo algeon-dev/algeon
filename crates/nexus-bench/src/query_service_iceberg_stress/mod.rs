@@ -30,7 +30,7 @@ use datafusion_nexus::{
 };
 use nexus_query_engine::{
     error::QueryError,
-    runtime::{GpuBackendSession, QueryServiceConfig, QueryServiceTenantConfig, TenantId},
+    runtime::{GpuBackendSession, QueryExecutionConfig, QueueBounds},
 };
 use tokio::sync::Barrier;
 
@@ -41,7 +41,7 @@ use crate::{
 const TSV_COLUMNS: &[&str] = &[
     "row_type",
     "request_index",
-    "tenant_id",
+    "client_id",
     "iteration",
     "admission_sequence",
     "admission_wait_ms",
@@ -75,12 +75,12 @@ const DEFAULT_WAREHOUSE: &str = "s3://lakehouse/warehouse";
 const DEFAULT_CATALOG_ID: &str = "";
 const DEFAULT_REGION: &str = "us-east-1";
 const QUERY_ENV: &str = "NEXUS_QUERY_SERVICE_ICEBERG_SQL";
-const TENANTS_ENV: &str = "NEXUS_QUERY_SERVICE_ICEBERG_TENANTS";
+const CLIENT_IDS_ENV: &str = "NEXUS_QUERY_SERVICE_ICEBERG_CLIENT_IDS";
 const ITERATIONS_ENV: &str = "NEXUS_QUERY_SERVICE_ICEBERG_ITERATIONS";
-const TENANT_BUDGET_BYTES_ENV: &str = "NEXUS_QUERY_SERVICE_ICEBERG_TENANT_BUDGET_BYTES";
-const MAX_CONCURRENT_QUERIES_ENV: &str = "NEXUS_QUERY_SERVICE_ICEBERG_MAX_CONCURRENT_QUERIES";
-const MAX_ADMISSION_QUEUE_LEN_ENV: &str = "NEXUS_QUERY_SERVICE_ICEBERG_MAX_ADMISSION_QUEUE_LEN";
-const ADMISSION_WAIT_TIMEOUT_MS_ENV: &str = "NEXUS_QUERY_SERVICE_ICEBERG_ADMISSION_WAIT_TIMEOUT_MS";
+const ATTEMPT_FLOOR_BYTES_ENV: &str = "NEXUS_QUERY_SERVICE_ICEBERG_ATTEMPT_FLOOR_BYTES";
+const MAX_ACTIVE_ATTEMPTS_PER_DEVICE_ENV: &str = "NEXUS_QUERY_SERVICE_ICEBERG_MAX_ACTIVE_ATTEMPTS_PER_DEVICE";
+const MAX_QUEUED_ATTEMPTS_ENV: &str = "NEXUS_QUERY_SERVICE_ICEBERG_MAX_QUEUED_ATTEMPTS";
+const MAX_QUEUE_WAIT_MS_ENV: &str = "NEXUS_QUERY_SERVICE_ICEBERG_MAX_QUEUE_WAIT_MS";
 const MAX_SOURCE_CHUNK_BYTES_ENV: &str = "NEXUS_QUERY_SERVICE_ICEBERG_MAX_SOURCE_CHUNK_BYTES";
 const MAX_ROW_GROUPS_PER_CHUNK_ENV: &str = "NEXUS_QUERY_SERVICE_ICEBERG_MAX_ROW_GROUPS_PER_CHUNK";
 const OVERLOAD_PROBE_ENV: &str = "NEXUS_QUERY_SERVICE_ICEBERG_OVERLOAD_PROBE";
@@ -104,12 +104,12 @@ struct StressConfig {
     glue: GlueIcebergTableConfig,
     table_alias: String,
     sql: String,
-    tenants: Vec<TenantId>,
+    client_ids: Vec<String>,
     iterations: usize,
-    tenant_budget_bytes: u64,
-    max_concurrent_queries: usize,
-    max_admission_queue_len: usize,
-    admission_wait_timeout: Duration,
+    attempt_floor_bytes: u64,
+    max_active_attempts_per_device: usize,
+    max_queued_attempts: usize,
+    max_queue_wait: Duration,
     max_source_chunk_bytes: u64,
     max_row_groups_per_chunk: usize,
     run_overload_probe: bool,
@@ -138,12 +138,12 @@ impl StressConfig {
             glue,
             table_alias,
             sql,
-            tenants: tenant_ids_from_env(TENANTS_ENV, &["bulk", "interactive_a", "interactive_b"])?,
+            client_ids: client_ids_from_env(CLIENT_IDS_ENV, &["bulk", "interactive_a", "interactive_b"])?,
             iterations: env_usize(ITERATIONS_ENV, 2)?,
-            tenant_budget_bytes: env_u64(TENANT_BUDGET_BYTES_ENV, default_tenant_budget_bytes())?,
-            max_concurrent_queries: env_usize(MAX_CONCURRENT_QUERIES_ENV, 1)?,
-            max_admission_queue_len: env_usize(MAX_ADMISSION_QUEUE_LEN_ENV, 64)?,
-            admission_wait_timeout: Duration::from_millis(env_u64(ADMISSION_WAIT_TIMEOUT_MS_ENV, 30_000)?),
+            attempt_floor_bytes: env_u64(ATTEMPT_FLOOR_BYTES_ENV, default_attempt_floor_bytes())?,
+            max_active_attempts_per_device: env_usize(MAX_ACTIVE_ATTEMPTS_PER_DEVICE_ENV, 1)?,
+            max_queued_attempts: env_usize(MAX_QUEUED_ATTEMPTS_ENV, 64)?,
+            max_queue_wait: Duration::from_millis(env_u64(MAX_QUEUE_WAIT_MS_ENV, 30_000)?),
             max_source_chunk_bytes: env_u64(MAX_SOURCE_CHUNK_BYTES_ENV, 64 * 1024 * 1024)?,
             max_row_groups_per_chunk: env_usize(MAX_ROW_GROUPS_PER_CHUNK_ENV, 1)?,
             run_overload_probe: env_bool(OVERLOAD_PROBE_ENV, true)?,
@@ -153,42 +153,47 @@ impl StressConfig {
     }
 
     fn validate(&self) -> DataFusionResult<()> {
-        if self.tenants.len() < 2 {
-            return Err(plan_error(format!("{TENANTS_ENV} must include at least two tenants")));
+        if self.client_ids.len() < 2 {
+            return Err(plan_error(format!("{CLIENT_IDS_ENV} must include at least two client IDs")));
         }
         validate_nonzero(ITERATIONS_ENV, self.iterations)?;
-        validate_nonzero(TENANT_BUDGET_BYTES_ENV, self.tenant_budget_bytes)?;
-        validate_nonzero(MAX_CONCURRENT_QUERIES_ENV, self.max_concurrent_queries)?;
-        validate_nonzero(MAX_ADMISSION_QUEUE_LEN_ENV, self.max_admission_queue_len)?;
+        validate_nonzero(ATTEMPT_FLOOR_BYTES_ENV, self.attempt_floor_bytes)?;
+        validate_nonzero(MAX_ACTIVE_ATTEMPTS_PER_DEVICE_ENV, self.max_active_attempts_per_device)?;
+        validate_nonzero(MAX_QUEUED_ATTEMPTS_ENV, self.max_queued_attempts)?;
         validate_synchronized_admission_queue(
-            MAX_ADMISSION_QUEUE_LEN_ENV,
-            self.max_admission_queue_len,
+            MAX_QUEUED_ATTEMPTS_ENV,
+            self.max_queued_attempts,
             self.synchronized_request_count(),
         )
         .map_err(plan_error)?;
         validate_nonzero(MAX_SOURCE_CHUNK_BYTES_ENV, self.max_source_chunk_bytes)?;
         validate_nonzero(MAX_ROW_GROUPS_PER_CHUNK_ENV, self.max_row_groups_per_chunk)?;
-        if self.admission_wait_timeout.is_zero() {
-            return Err(plan_error(format!("{ADMISSION_WAIT_TIMEOUT_MS_ENV} must be greater than zero")));
+        if self.max_queue_wait.is_zero() {
+            return Err(plan_error(format!("{MAX_QUEUE_WAIT_MS_ENV} must be greater than zero")));
         }
         Ok(())
     }
 
     fn synchronized_request_count(&self) -> usize {
-        self.tenants.len().saturating_mul(self.iterations)
+        self.client_ids.len().saturating_mul(self.iterations)
     }
 
-    fn service_config(&self) -> QueryServiceConfig {
-        QueryServiceConfig {
+    fn service_config(&self) -> QueryExecutionConfig {
+        QueryExecutionConfig {
             source_storage_profiles: vec![source_access_policy_to_native_source_storage_profile(
                 &self.glue.source_access_policy_from_env(),
             )],
-            max_concurrent_queries: self.max_concurrent_queries,
-            max_admission_queue_len: self.max_admission_queue_len,
-            admission_wait_timeout: self.admission_wait_timeout,
             max_source_chunk_bytes: self.max_source_chunk_bytes,
             max_row_groups_per_chunk: self.max_row_groups_per_chunk,
-            ..QueryServiceConfig::default()
+            ..QueryExecutionConfig::default()
+        }
+    }
+
+    fn queue_bounds(&self) -> QueueBounds {
+        QueueBounds {
+            max_waiters: self.max_queued_attempts,
+            max_wait: self.max_queue_wait,
+            max_overtakes_per_waiter: 4,
         }
     }
 }
@@ -196,7 +201,7 @@ impl StressConfig {
 #[derive(Debug, Clone)]
 struct StressRequest {
     request_index: usize,
-    tenant_id: TenantId,
+    client_id: String,
     iteration: usize,
 }
 
@@ -204,7 +209,7 @@ struct StressRequest {
 struct StressRow {
     row_type: &'static str,
     request_index: usize,
-    tenant_id: String,
+    client_id: String,
     iteration: usize,
     admission_sequence: Option<u64>,
     admission_wait_ms: Option<f64>,
@@ -266,12 +271,15 @@ impl StressReport {
             "# expected_count={}\n",
             self.expected_count.map(|count| count.to_string()).unwrap_or_else(|| "unknown".to_string())
         ));
-        output.push_str(&format!("# tenant_budget_bytes={}\n", self.config.tenant_budget_bytes));
+        output.push_str(&format!("# attempt_floor_bytes={}\n", self.config.attempt_floor_bytes));
+        output.push_str(&format!("# max_active_attempts_per_device={}\n", self.config.max_active_attempts_per_device));
+        output.push_str(&format!("# max_queued_attempts={}\n", self.config.max_queued_attempts));
+        output.push_str(&format!("# max_queue_wait_ms={}\n", self.config.max_queue_wait.as_millis()));
         output.push_str(&format!("# effective_active_max={}\n", self.effective_active_max));
-        for summary in tenant_summaries(&self.rows) {
+        for summary in client_summaries(&self.rows) {
             output.push_str(&format!(
-                "# tenant_summary tenant_id={} succeeded={} overloaded={} failed={} max_total_wall_ms={} p95_total_wall_ms={}\n",
-                summary.tenant_id,
+                "# client_summary client_id={} succeeded={} overloaded={} failed={} max_total_wall_ms={} p95_total_wall_ms={}\n",
+                summary.client_id,
                 summary.succeeded,
                 summary.overloaded,
                 summary.failed,
@@ -294,7 +302,7 @@ impl StressRow {
         let fields = [
             self.row_type.to_string(),
             self.request_index.to_string(),
-            self.tenant_id.clone(),
+            self.client_id.clone(),
             self.iteration.to_string(),
             self.admission_sequence.map(|value| value.to_string()).unwrap_or_else(|| "none".to_string()),
             self.admission_wait_ms.map(format_ms).unwrap_or_else(|| "none".to_string()),
@@ -367,12 +375,13 @@ async fn planned_table_row_count(config: &GlueIcebergTableConfig) -> DataFusionR
 async fn run_stress(config: &StressConfig, expected_count: Option<u64>) -> DataFusionResult<StressRun> {
     let backend = GpuBackendOwner::build(
         config.service_config(),
-        vec![0],
-        config
-            .tenants
-            .iter()
-            .map(|tenant| QueryServiceTenantConfig::new(tenant.clone(), config.tenant_budget_bytes))
-            .collect(),
+        config.queue_bounds(),
+        vec![GpuBackendOwner::device_config(
+            0,
+            config.attempt_floor_bytes.max(1),
+            config.max_active_attempts_per_device,
+            1,
+        )],
     )
     .map_err(native_error)?;
     let service = backend.session();
@@ -405,9 +414,8 @@ async fn run_native_request(
     expected_count: Option<u64>,
 ) -> DataFusionResult<StressRow> {
     let total_started = Instant::now();
-    let tenant_for_admission = request.tenant_id.clone();
     let service_for_admission = service.clone();
-    let handle = match tokio::task::spawn_blocking(move || service_for_admission.admit_query(tenant_for_admission))
+    let handle = match tokio::task::spawn_blocking(move || service_for_admission.admit_query())
         .await
         .map_err(|error| plan_error(format!("query service admission task join failed: {error}")))?
     {
@@ -442,7 +450,7 @@ async fn run_native_request(
             Ok(StressRow {
                 row_type: "query",
                 request_index: request.request_index,
-                tenant_id: request.tenant_id.to_string(),
+                client_id: request.client_id.to_string(),
                 iteration: request.iteration,
                 admission_sequence,
                 admission_wait_ms,
@@ -494,9 +502,8 @@ async fn collect_native_with_handle(
     config: &StressConfig,
     handle: Arc<nexus_query_engine::runtime::QueryHandle>,
 ) -> DataFusionResult<NativeCollectOutcome> {
-    let optimizer_config = NexusNativeOptimizerConfig::default().with_native_execution_config(
-        NexusNativeExecutionConfig::bounded_auto_sized().with_query_service_handle(handle),
-    );
+    let optimizer_config = NexusNativeOptimizerConfig::default()
+        .with_native_execution_config(NexusNativeExecutionConfig::bounded_default().with_query_service_handle(handle));
     let native_rule = Arc::new(NexusNativePhysicalOptimizerRule::new(optimizer_config));
     let state = SessionStateBuilder::new_with_default_features()
         .with_config(tpch_report_session_config())
@@ -535,40 +542,33 @@ async fn collect_native_with_handle(
 }
 
 fn run_overload_probe(config: &StressConfig) -> DataFusionResult<StressRow> {
-    let probe_config = QueryServiceConfig {
-        max_concurrent_queries: 1,
-        max_admission_queue_len: 1,
-        admission_wait_timeout: Duration::from_millis(50),
-        ..config.service_config()
-    };
+    let probe_config = config.service_config();
+    let probe_queue_bounds =
+        QueueBounds { max_waiters: 1, max_wait: Duration::from_millis(50), max_overtakes_per_waiter: 4 };
     let backend = GpuBackendOwner::build(
         probe_config,
-        vec![0],
-        vec![
-            QueryServiceTenantConfig::new("bulk", config.tenant_budget_bytes),
-            QueryServiceTenantConfig::new("interactive", config.tenant_budget_bytes),
-        ],
+        probe_queue_bounds,
+        vec![GpuBackendOwner::device_config(0, config.attempt_floor_bytes.max(1), 1, 1)],
     )
     .map_err(native_error)?;
     let service = backend.session();
-    let active = service.admit_query(TenantId::new("bulk")).map_err(native_error)?;
+    let active = service.admit_query().map_err(native_error)?;
     let queued_service = service.clone();
     let (ready_sender, ready_receiver) = std::sync::mpsc::channel();
     let waiter = std::thread::spawn(move || {
         ready_sender.send(()).expect("overload probe ready signal should send");
-        let _queued = queued_service.admit_query(TenantId::new("bulk"));
+        let _queued = queued_service.admit_query();
     });
     ready_receiver.recv().map_err(|error| plan_error(format!("overload probe setup failed: {error}")))?;
     wait_for_queued_len(&service, 1)?;
     let started = Instant::now();
-    let error =
-        service.admit_query(TenantId::new("interactive")).expect_err("filled admission queue must reject next query");
+    let error = service.admit_query().expect_err("filled admission queue must reject next query");
     drop(active);
     waiter.join().map_err(|_| plan_error("overload probe waiter thread panicked"))?;
     let row = StressRow {
         row_type: "overload_probe",
         request_index: 0,
-        tenant_id: "interactive".to_string(),
+        client_id: "interactive".to_string(),
         iteration: 0,
         admission_sequence: None,
         admission_wait_ms: None,
@@ -603,8 +603,8 @@ fn build_requests(config: &StressConfig) -> Vec<StressRequest> {
     let mut requests = Vec::new();
     let mut request_index = 1;
     for iteration in 1..=config.iterations {
-        for tenant_id in &config.tenants {
-            requests.push(StressRequest { request_index, tenant_id: tenant_id.clone(), iteration });
+        for client_id in &config.client_ids {
+            requests.push(StressRequest { request_index, client_id: client_id.clone(), iteration });
             request_index += 1;
         }
     }
@@ -627,7 +627,7 @@ fn failure_row(
     StressRow {
         row_type: "query",
         request_index: request.request_index,
-        tenant_id: request.tenant_id.to_string(),
+        client_id: request.client_id.to_string(),
         iteration: request.iteration,
         admission_sequence,
         admission_wait_ms,
@@ -681,8 +681,8 @@ fn select_planning_row(rows: Vec<NativeDataFusionPlanningRow>) -> DataFusionResu
 }
 
 #[derive(Debug, Clone)]
-struct TenantSummary {
-    tenant_id: String,
+struct ClientSummary {
+    client_id: String,
     succeeded: usize,
     overloaded: usize,
     failed: usize,
@@ -690,21 +690,21 @@ struct TenantSummary {
     p95_total_wall_ms: f64,
 }
 
-fn tenant_summaries(rows: &[StressRow]) -> Vec<TenantSummary> {
-    let mut by_tenant: BTreeMap<String, Vec<&StressRow>> = BTreeMap::new();
+fn client_summaries(rows: &[StressRow]) -> Vec<ClientSummary> {
+    let mut by_client: BTreeMap<String, Vec<&StressRow>> = BTreeMap::new();
     for row in rows.iter().filter(|row| row.row_type == "query") {
-        by_tenant.entry(row.tenant_id.clone()).or_default().push(row);
+        by_client.entry(row.client_id.clone()).or_default().push(row);
     }
-    by_tenant
+    by_client
         .into_iter()
-        .map(|(tenant_id, rows)| {
+        .map(|(client_id, rows)| {
             let mut latencies = rows.iter().map(|row| row.total_wall_ms).collect::<Vec<_>>();
             latencies.sort_by(f64::total_cmp);
             let succeeded = rows.iter().filter(|row| row.native_runtime_outcome == "succeeded").count();
             let overloaded = rows.iter().filter(|row| row.error.code.as_deref() == Some("service_overloaded")).count();
             let failed = rows.len().saturating_sub(succeeded + overloaded);
-            TenantSummary {
-                tenant_id,
+            ClientSummary {
+                client_id,
                 succeeded,
                 overloaded,
                 failed,
@@ -723,7 +723,7 @@ fn percentile(sorted_values: &[f64], quantile: f64) -> f64 {
     sorted_values[index.min(sorted_values.len() - 1)]
 }
 
-fn tenant_ids_from_env(name: &'static str, default: &[&'static str]) -> DataFusionResult<Vec<TenantId>> {
+fn client_ids_from_env(name: &'static str, default: &[&'static str]) -> DataFusionResult<Vec<String>> {
     let values = match std::env::var_os(name) {
         Some(value) => value
             .to_string_lossy()
@@ -735,15 +735,15 @@ fn tenant_ids_from_env(name: &'static str, default: &[&'static str]) -> DataFusi
         None => default.iter().map(|value| (*value).to_string()).collect(),
     };
     if values.is_empty() {
-        return Err(plan_error(format!("{name} must contain at least one tenant id")));
+        return Err(plan_error(format!("{name} must contain at least one client id")));
     }
     let mut seen = BTreeSet::new();
     for value in &values {
         if !seen.insert(value.clone()) {
-            return Err(plan_error(format!("{name} contains duplicate tenant id {value}")));
+            return Err(plan_error(format!("{name} contains duplicate client id {value}")));
         }
     }
-    Ok(values.into_iter().map(TenantId::new).collect())
+    Ok(values)
 }
 
 fn env_string(name: &'static str, default: &'static str) -> String {
@@ -789,9 +789,10 @@ where T: PartialEq + From<u8> {
     Ok(())
 }
 
-fn default_tenant_budget_bytes() -> u64 {
-    let total = NexusNativeExecutionConfig::auto_sized_device_budget_bytes();
-    (total / 3).max(NexusNativeExecutionConfig::AUTO_SIZED_DEVICE_BUDGET_FALLBACK_BYTES)
+fn default_attempt_floor_bytes() -> u64 {
+    // Keep the standalone profile bounded without deriving a shared floor
+    // from GPU 0. Server backends resolve their defaults per device.
+    NexusNativeExecutionConfig::AUTO_SIZED_DEVICE_BUDGET_FALLBACK_BYTES
 }
 
 fn format_facts(facts: &BTreeMap<String, String>) -> String {
@@ -830,12 +831,12 @@ mod tests {
             glue: GlueIcebergTableConfig::new("glue", "db", "table", "s3://warehouse", "us-east-1"),
             table_alias: "iceberg_t".to_string(),
             sql: "select count(*) from iceberg_t".to_string(),
-            tenants: vec![TenantId::new("a"), TenantId::new("b")],
+            client_ids: vec!["a".to_string(), "b".to_string()],
             iterations: 2,
-            tenant_budget_bytes: 1,
-            max_concurrent_queries: 1,
-            max_admission_queue_len: 3,
-            admission_wait_timeout: Duration::from_secs(1),
+            attempt_floor_bytes: 1,
+            max_active_attempts_per_device: 1,
+            max_queued_attempts: 3,
+            max_queue_wait: Duration::from_secs(1),
             max_source_chunk_bytes: 1,
             max_row_groups_per_chunk: 1,
             run_overload_probe: false,
@@ -849,15 +850,15 @@ mod tests {
     }
 
     #[test]
-    fn tenant_ids_reject_duplicates() {
+    fn client_ids_reject_duplicates() {
         unsafe {
-            std::env::set_var(TENANTS_ENV, "a,a");
+            std::env::set_var(CLIENT_IDS_ENV, "a,a");
         }
-        let error = tenant_ids_from_env(TENANTS_ENV, &["x"]).unwrap_err();
+        let error = client_ids_from_env(CLIENT_IDS_ENV, &["x"]).unwrap_err();
         unsafe {
-            std::env::remove_var(TENANTS_ENV);
+            std::env::remove_var(CLIENT_IDS_ENV);
         }
-        assert!(error.to_string().contains("duplicate tenant id"));
+        assert!(error.to_string().contains("duplicate client id"));
     }
 
     #[test]
@@ -867,7 +868,7 @@ mod tests {
         let row = StressRow {
             row_type: "query",
             request_index: 1,
-            tenant_id: "interactive".to_string(),
+            client_id: "interactive".to_string(),
             iteration: 1,
             admission_sequence: Some(1),
             admission_wait_ms: Some(0.0),
@@ -891,7 +892,7 @@ mod tests {
 
         let error = config.validate().unwrap_err();
 
-        assert!(error.to_string().contains(MAX_ADMISSION_QUEUE_LEN_ENV));
+        assert!(error.to_string().contains(MAX_QUEUED_ATTEMPTS_ENV));
         assert!(error.to_string().contains("synchronized request count (4)"));
     }
 }

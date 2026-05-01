@@ -61,7 +61,7 @@ fn bfs_drops_null_edge_rows_before_graph_construction() {
     assert!(result.metrics().budgeted_execution_events.iter().any(|event| {
         event.operation == "datafusion_nexus_cugraph_bfs"
             && event.boundary == "graph_memory"
-            && event.enforcement == "reservation_arena_member"
+            && event.enforcement == "query_domain_member"
             && event.status == "reservation_enforced"
             && event.allocator_high_water_bytes.is_some()
     }));
@@ -123,7 +123,7 @@ fn bfs_python_cugraph_reports_null_edges_dropped_before_edge_normalize() {
     assert!(result.metrics().budgeted_execution_events.iter().any(|event| {
         event.operation == "datafusion_nexus_cugraph_bfs"
             && event.boundary == "graph_memory"
-            && event.enforcement == "reservation_arena_member"
+            && event.enforcement == "query_domain_member"
             && event.status == "reservation_enforced"
             && event.allocator_high_water_bytes.is_some()
     }));

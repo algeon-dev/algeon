@@ -1,4 +1,4 @@
-static GRAPH_ADAPTIVE_RETRY_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+static GRAPH_SEED_CHUNK_RETRY_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 fn graph_input_handle(
     context: &ExecutionContext,

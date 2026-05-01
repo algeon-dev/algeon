@@ -367,7 +367,7 @@ pub(in crate::exec::bounded::chunks) fn legacy_bounded_chunk_operator_kind(
     memory_boundary: &str,
 ) -> Option<&'static str> {
     match kind {
-        ReservationKind::SourceRead | ReservationKind::SourceCacheRetained => Some("source_read"),
+        ReservationKind::SourceRead => Some("source_read"),
         ReservationKind::ChunkOperator | ReservationKind::PartialState
             if memory_boundary.contains("filter") || memory_boundary.contains("projection") =>
         {

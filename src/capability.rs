@@ -32,10 +32,8 @@ pub enum CapabilityReason {
     /// DataFusion produced a partition-preserving sort shape that the native
     /// planner does not currently lower.
     NativePartitionPreservingSortUnsupported,
-    /// Strict bounded native join admission rejected the shape.
+    /// Bounded native join capability admission rejected the shape.
     NativeBoundedJoinUnsupported,
-    /// Adaptive native pipeline admission rejected the shape.
-    NativeAdaptivePipelineUnsupported,
     /// The replaced subtree declares an output ordering the lowered native plan
     /// cannot reproduce.
     NativeOrderedOutputUnsupported,
@@ -126,7 +124,7 @@ impl CapabilityReason {
     /// Internal diagnostics projections use this list to assert that a new
     /// reason cannot accidentally ship without actionable guidance.
     #[cfg(test)]
-    pub(crate) const ALL: [Self; 38] = [
+    pub(crate) const ALL: [Self; 37] = [
         Self::UnsupportedOperator,
         Self::UnsupportedExpression,
         Self::UnsupportedType,
@@ -134,7 +132,6 @@ impl CapabilityReason {
         Self::NativeDistributedAggregateUnsupported,
         Self::NativePartitionPreservingSortUnsupported,
         Self::NativeBoundedJoinUnsupported,
-        Self::NativeAdaptivePipelineUnsupported,
         Self::NativeOrderedOutputUnsupported,
         Self::NativeSourceNonLocalObjectStore,
         Self::NativeSourcePartitionColumns,
@@ -177,7 +174,6 @@ impl CapabilityReason {
             Self::NativeDistributedAggregateUnsupported => "native_distributed_aggregate_unsupported",
             Self::NativePartitionPreservingSortUnsupported => "native_partition_preserving_sort_unsupported",
             Self::NativeBoundedJoinUnsupported => "native_bounded_join_unsupported",
-            Self::NativeAdaptivePipelineUnsupported => "native_adaptive_pipeline_unsupported",
             Self::NativeOrderedOutputUnsupported => "native_ordered_output_unsupported",
             Self::NativeSourceNonLocalObjectStore => "native_source_non_local_object_store",
             Self::NativeSourcePartitionColumns => "native_source_partition_columns",
@@ -217,8 +213,7 @@ impl CapabilityReason {
             Self::UnsupportedOperator => TriageCode::UnsupportedOperator,
             Self::UnsupportedExpression => TriageCode::UnsupportedExpression,
             Self::UnsupportedType => TriageCode::UnsupportedType,
-            Self::NativeBoundedJoinUnsupported => TriageCode::StrictBoundedRejected,
-            Self::NativeAdaptivePipelineUnsupported => TriageCode::AdaptivePipelineRejected,
+            Self::NativeBoundedJoinUnsupported => TriageCode::CapabilityEnvelopeRejected,
             Self::NativeSourceNonLocalObjectStore
             | Self::NativeSourcePartitionColumns
             | Self::NativeSourceExprAdapter

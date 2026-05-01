@@ -7,7 +7,7 @@ use crate::{
         RuntimeObservationPayload, RuntimeObservationSession, RuntimeQueryLifecycle, RuntimeReservationAction,
         RuntimeReservationDisposition, RuntimeTerminalOutcome, write_runtime_observation_jsonl,
     },
-    runtime::{GrantRequest, MemoryGovernor},
+    runtime::DeviceLedger,
     source::LocalParquetSource,
 };
 
@@ -176,208 +176,57 @@ fn cloning_query_metrics_detaches_the_reservation_projection_ledger() -> Result<
 }
 
 #[test]
-fn adaptive_reservation_tracker_observes_live_grant_growth() -> Result<()> {
-    let governor = MemoryGovernor::new(0, 100)?;
-    let grant =
-        governor.try_request(GrantRequest::new(AdmissionRequestId::new(7), 40, 40))?.expect("initial grant should fit");
+fn grant_backed_static_tracker_transfers_live_output_at_grant_cap_without_double_charge() -> Result<()> {
+    let governor = DeviceLedger::for_test(0, 100, 2);
+    let grant = governor.admit_for_test(AdmissionRequestId::new(7), 10, 30)?.expect("initial grant should fit");
     let mut metrics = QueryMetrics::default();
     let mut reservations = ReservationTracker::new_with_budget(
         MemorySpaceId::Device { device_ordinal: 0 },
-        ReservationBudget::AdaptiveGrant(grant.clone()),
+        ReservationBudget::GrantBackedStatic { budget_bytes: 30, grant: grant.clone() },
     );
 
-    let first = reservations.try_reserve_owned_resident(
-        test_request(ReservationKind::OperatorOutput, "first", 30, reservations.budget()),
-        &mut metrics,
-    )?;
-    let denied = match reservations.try_reserve_owned_resident(
-        test_request(ReservationKind::OperatorOutput, "before_growth", 20, reservations.budget()),
-        &mut metrics,
-    ) {
-        Ok(_) => panic!("only 10 bytes should remain before grant growth"),
-        Err(error) => error,
-    };
-    assert_eq!(denied.fact_value("granted_bytes"), Some("10"));
-
-    assert!(grant.try_grow_to(70)?);
-    assert_eq!(reservations.budget(), 70);
-    assert_eq!(reservations.remaining_bytes(), 40);
-
-    let second = reservations.try_reserve_owned_resident(
-        test_request(ReservationKind::OperatorOutput, "after_growth", 20, reservations.budget()),
-        &mut metrics,
-    )?;
-
-    let granted = metrics
-        .reservation_events
-        .iter()
-        .rev()
-        .find(|event| {
-            event.outcome == MemoryReservationEventOutcome::Granted
-                && event.action == MemoryReservationEventAction::Reserve
-                && event.memory_boundary == "after_growth"
-        })
-        .expect("post-growth reservation should be recorded");
-    assert_eq!(granted.budget_bytes, 70);
-
-    reservations.release(second, &mut metrics);
-    reservations.release(first, &mut metrics);
-    Ok(())
-}
-
-#[test]
-fn static_reservation_tracker_ignores_later_grant_growth() -> Result<()> {
-    let governor = MemoryGovernor::new(0, 100)?;
-    let grant =
-        governor.try_request(GrantRequest::new(AdmissionRequestId::new(8), 40, 40))?.expect("initial grant should fit");
-    let mut metrics = QueryMetrics::default();
-    let mut reservations = ReservationTracker::new(MemorySpaceId::Device { device_ordinal: 0 }, grant.budget_bytes());
-
-    let first = reservations.try_reserve_owned_resident(
-        test_request(ReservationKind::OperatorOutput, "first", 30, reservations.budget()),
-        &mut metrics,
-    )?;
-    assert!(grant.try_grow_to(70)?);
-    assert_eq!(grant.budget_bytes(), 70);
-    assert_eq!(reservations.budget(), 40);
-    assert_eq!(reservations.remaining_bytes(), 10);
-
-    let denied = match reservations.try_reserve_owned_resident(
-        test_request(ReservationKind::OperatorOutput, "after_external_growth", 20, reservations.budget()),
-        &mut metrics,
-    ) {
-        Ok(_) => panic!("static reservation tracker must keep the original budget"),
-        Err(error) => error,
-    };
-    assert_eq!(denied.fact_value("granted_bytes"), Some("10"));
-
-    reservations.release(first, &mut metrics);
-    Ok(())
-}
-
-#[test]
-fn static_reservation_tracker_acknowledges_grant_shrink_as_noop() -> Result<()> {
-    let reservations = ReservationTracker::new(MemorySpaceId::Device { device_ordinal: 0 }, 100);
-
-    assert!(reservations.acknowledge_requested_grant_shrink()?);
-    assert_eq!(reservations.budget(), 100);
-    Ok(())
-}
-
-#[test]
-fn grant_backed_static_tracker_retains_live_output_bytes() -> Result<()> {
-    let governor = MemoryGovernor::new(0, 100)?;
-    let grant =
-        governor.try_request(GrantRequest::new(AdmissionRequestId::new(7), 10, 40))?.expect("initial grant should fit");
-    let mut metrics = QueryMetrics::default();
-    let mut reservations = ReservationTracker::new_with_budget(
-        MemorySpaceId::Device { device_ordinal: 0 },
-        ReservationBudget::GrantBackedStatic { budget_bytes: 40, grant: grant.clone() },
-    );
-
-    let active = reservations.try_reserve_owned_resident(
+    let mut active = reservations.try_reserve_owned_resident(
         test_request(ReservationKind::OperatorOutput, "strict_output", 30, reservations.budget()),
         &mut metrics,
     )?;
     assert_eq!(grant.live_reserved_bytes(), 30);
 
-    let retained = active.retain_grant_live_reservation().expect("strict grant should retain live output bytes");
-    drop(active);
+    let retained = active.transfer_grant_live_reservation().expect("strict grant should retain live output bytes");
+    assert_eq!(grant.live_reserved_bytes(), 30, "transfer cannot transiently double-charge the immutable grant");
+    let sequence_after_transfer = governor.snapshot()?.sequence;
+    reservations.release(active, &mut metrics);
 
     assert_eq!(grant.live_reserved_bytes(), 30);
-    assert!(grant.try_shrink_to(0)?);
+    assert_eq!(
+        governor.snapshot()?.sequence,
+        sequence_after_transfer,
+        "tracker release must not mutate the ledger after the charge moved to the result lifetime"
+    );
     assert_eq!(grant.budget_bytes(), 30);
+    assert_eq!(
+        metrics.reservation_events.iter().map(|event| event.charged_delta_bytes).sum::<i128>(),
+        0,
+        "tracker retains its historical release event after ownership transfer"
+    );
 
     drop(retained);
     assert_eq!(grant.live_reserved_bytes(), 0);
-    assert!(grant.try_shrink_to(0)?);
-    assert_eq!(grant.budget_bytes(), 10);
+    assert_eq!(grant.budget_bytes(), 30);
     Ok(())
 }
 
 #[test]
-fn adaptive_reservation_tracker_acknowledges_shrink_without_underflowing_live_reservations() -> Result<()> {
-    let governor = MemoryGovernor::new(0, 100)?;
-    let grant =
-        governor.try_request(GrantRequest::new(AdmissionRequestId::new(7), 30, 80))?.expect("initial grant should fit");
-    let mut metrics = QueryMetrics::default();
-    let mut reservations = ReservationTracker::new_with_budget(
-        MemorySpaceId::Device { device_ordinal: 0 },
-        ReservationBudget::AdaptiveGrant(grant.clone()),
-    );
-    let live = reservations.try_reserve_owned_resident(
-        test_request(ReservationKind::OperatorOutput, "live", 55, reservations.budget()),
-        &mut metrics,
-    )?;
-
-    assert_eq!(grant.request_shrink_to(40)?, Some(40));
-    assert!(!reservations.acknowledge_requested_grant_shrink()?);
-
-    assert_eq!(reservations.reserved_bytes(), 55);
-    assert_eq!(grant.budget_bytes(), 55);
-    assert_eq!(grant.requested_shrink_target_bytes()?, Some(40));
-    assert_eq!(governor.available_bytes()?, 45);
-
-    reservations.release(live, &mut metrics);
-    Ok(())
-}
-
-#[test]
-fn adaptive_shrink_ack_uses_grant_scoped_live_bytes_across_trackers() -> Result<()> {
-    let governor = MemoryGovernor::new(0, 100)?;
-    let grant =
-        governor.try_request(GrantRequest::new(AdmissionRequestId::new(7), 30, 90))?.expect("initial grant should fit");
+fn grant_backed_reservation_tracker_denies_when_shared_grant_live_budget_is_exhausted() -> Result<()> {
+    let governor = DeviceLedger::for_test(0, 100, 2);
+    let grant = governor.admit_for_test(AdmissionRequestId::new(7), 30, 70)?.expect("initial grant should fit");
     let mut metrics = QueryMetrics::default();
     let mut first_tracker = ReservationTracker::new_with_budget(
         MemorySpaceId::Device { device_ordinal: 0 },
-        ReservationBudget::AdaptiveGrant(grant.clone()),
+        ReservationBudget::GrantBackedStatic { budget_bytes: grant.budget_bytes(), grant: grant.clone() },
     );
     let mut second_tracker = ReservationTracker::new_with_budget(
         MemorySpaceId::Device { device_ordinal: 0 },
-        ReservationBudget::AdaptiveGrant(grant.clone()),
-    );
-    let first_live = first_tracker.try_reserve_owned_resident(
-        test_request(ReservationKind::OperatorOutput, "first_live", 60, first_tracker.budget()),
-        &mut metrics,
-    )?;
-    let second_live = second_tracker.try_reserve_owned_resident(
-        test_request(ReservationKind::OperatorOutput, "second_live", 20, second_tracker.budget()),
-        &mut metrics,
-    )?;
-
-    assert_eq!(grant.live_reserved_bytes(), 80);
-    assert_eq!(grant.request_shrink_to(40)?, Some(40));
-    assert!(!second_tracker.acknowledge_requested_grant_shrink()?);
-
-    assert_eq!(second_tracker.raw_reserved_bytes(), 20);
-    assert_eq!(grant.budget_bytes(), 80);
-    assert_eq!(grant.requested_shrink_target_bytes()?, Some(40));
-    assert_eq!(governor.available_bytes()?, 20);
-
-    first_tracker.release(first_live, &mut metrics);
-    assert!(second_tracker.acknowledge_requested_grant_shrink()?);
-    assert_eq!(grant.budget_bytes(), 40);
-    assert_eq!(grant.requested_shrink_target_bytes()?, None);
-    assert_eq!(governor.available_bytes()?, 60);
-
-    second_tracker.release(second_live, &mut metrics);
-    assert_eq!(grant.live_reserved_bytes(), 0);
-    Ok(())
-}
-
-#[test]
-fn adaptive_reservation_tracker_denies_when_shared_grant_live_budget_is_exhausted() -> Result<()> {
-    let governor = MemoryGovernor::new(0, 100)?;
-    let grant =
-        governor.try_request(GrantRequest::new(AdmissionRequestId::new(7), 30, 70))?.expect("initial grant should fit");
-    let mut metrics = QueryMetrics::default();
-    let mut first_tracker = ReservationTracker::new_with_budget(
-        MemorySpaceId::Device { device_ordinal: 0 },
-        ReservationBudget::AdaptiveGrant(grant.clone()),
-    );
-    let mut second_tracker = ReservationTracker::new_with_budget(
-        MemorySpaceId::Device { device_ordinal: 0 },
-        ReservationBudget::AdaptiveGrant(grant.clone()),
+        ReservationBudget::GrantBackedStatic { budget_bytes: grant.budget_bytes(), grant: grant.clone() },
     );
     let first_live = first_tracker.try_reserve_owned_resident(
         test_request(ReservationKind::OperatorOutput, "first_live", 50, first_tracker.budget()),
@@ -401,15 +250,17 @@ fn adaptive_reservation_tracker_denies_when_shared_grant_live_budget_is_exhauste
 }
 
 #[test]
-fn adaptive_reservation_tracker_borrowed_resident_does_not_double_charge_grant_live_bytes() -> Result<()> {
-    let governor = MemoryGovernor::new(0, 100)?;
-    let grant =
-        governor.try_request(GrantRequest::new(AdmissionRequestId::new(7), 30, 70))?.expect("initial grant should fit");
-    let retained_input = grant.retain_live_reservation(50).expect("input handle should retain live bytes");
+fn grant_backed_reservation_tracker_borrowed_resident_does_not_double_charge_grant_live_bytes() -> Result<()> {
+    let governor = DeviceLedger::for_test(0, 100, 2);
+    let grant = governor.admit_for_test(AdmissionRequestId::new(7), 30, 70)?.expect("initial grant should fit");
+    let retained_input = grant
+        .retain_live_reservation(50)
+        .expect("input retention fits the immutable grant")
+        .expect("input handle should retain live bytes");
     let mut metrics = QueryMetrics::default();
     let mut reservations = ReservationTracker::new_with_budget(
         MemorySpaceId::Device { device_ordinal: 0 },
-        ReservationBudget::AdaptiveGrant(grant.clone()),
+        ReservationBudget::GrantBackedStatic { budget_bytes: grant.budget_bytes(), grant: grant.clone() },
     );
 
     let borrowed = reservations.borrow_resident(
@@ -468,57 +319,6 @@ fn alias_reservation_over_borrowed_resident_releases_without_charging() {
     assert_eq!(lineage.deferred_charged_release_bytes.get(), 0);
     assert_eq!(reservations.reserved_bytes(), 0);
     assert_eq!(reservations.raw_reserved_bytes(), 0);
-}
-
-#[test]
-fn adaptive_reservation_tracker_completes_shrink_after_live_bytes_drop() -> Result<()> {
-    let governor = MemoryGovernor::new(0, 100)?;
-    let grant =
-        governor.try_request(GrantRequest::new(AdmissionRequestId::new(7), 30, 80))?.expect("initial grant should fit");
-    let mut metrics = QueryMetrics::default();
-    let mut reservations = ReservationTracker::new_with_budget(
-        MemorySpaceId::Device { device_ordinal: 0 },
-        ReservationBudget::AdaptiveGrant(grant.clone()),
-    );
-    let live = reservations.try_reserve_owned_resident(
-        test_request(ReservationKind::OperatorOutput, "live", 55, reservations.budget()),
-        &mut metrics,
-    )?;
-
-    assert_eq!(grant.request_shrink_to(40)?, Some(40));
-    assert!(!reservations.acknowledge_requested_grant_shrink()?);
-    reservations.release(live, &mut metrics);
-    assert!(reservations.acknowledge_requested_grant_shrink()?);
-
-    assert_eq!(reservations.reserved_bytes(), 0);
-    assert_eq!(grant.budget_bytes(), 40);
-    assert_eq!(grant.requested_shrink_target_bytes()?, None);
-    assert_eq!(governor.available_bytes()?, 60);
-    Ok(())
-}
-
-#[test]
-fn adaptive_reservation_tracker_shrink_ack_counts_source_cache_baseline() -> Result<()> {
-    let governor = MemoryGovernor::new(0, 100)?;
-    let grant =
-        governor.try_request(GrantRequest::new(AdmissionRequestId::new(7), 30, 80))?.expect("initial grant should fit");
-    let mut metrics = QueryMetrics::default();
-    let mut reservations = ReservationTracker::new_with_budget(
-        MemorySpaceId::Device { device_ordinal: 0 },
-        ReservationBudget::AdaptiveGrant(grant.clone()),
-    );
-
-    reservations.try_reserve_source_cache_baseline(55, &mut metrics)?;
-    assert_eq!(reservations.reserved_bytes(), 0);
-    assert_eq!(reservations.raw_reserved_bytes(), 55);
-    assert_eq!(grant.request_shrink_to(40)?, Some(40));
-
-    assert!(!reservations.acknowledge_requested_grant_shrink()?);
-
-    assert_eq!(grant.budget_bytes(), 55);
-    assert_eq!(grant.requested_shrink_target_bytes()?, Some(40));
-    assert_eq!(governor.available_bytes()?, 45);
-    Ok(())
 }
 
 #[test]
@@ -696,89 +496,6 @@ fn typed_reservation_lineage_balances_transfer_alias_and_deferred_release() -> R
 }
 
 #[test]
-fn source_cache_promotion_and_eviction_keep_typed_meaning_and_legacy_public_totals() -> Result<()> {
-    let lifecycle = RuntimeQueryLifecycle::new(
-        RuntimeObservationSession::new(
-            "source-cache-promotion",
-            None,
-            RuntimeObservationConfig::bounded(32, 64 * 1024),
-        ),
-        PlanExecutionId::new("plan-source-cache-promotion"),
-    );
-    let scope = lifecycle.execution_scope();
-    let mut metrics = QueryMetrics::default();
-    let mut reservations = ReservationTracker::new_with_budget_and_observation(
-        MemorySpaceId::Device { device_ordinal: 0 },
-        ReservationBudget::Static(100),
-        Some(&scope),
-    );
-    let schema = Arc::new(Schema::new(vec![Field::new("c0", DataType::Int64, true)]));
-    let source = LocalParquetSource::new("/tmp/source-cache-promotion.parquet", schema, vec!["c0".to_string()]);
-    let key = GpuLocalParquetSourceCacheKey::from_source(&source);
-    let request = |kind, boundary, bytes| {
-        test_request(kind, boundary, bytes, 100).with_node_id("source-cache-node").with_task_registration(
-            "source-cache-task",
-            1,
-            "source_read",
-        )
-    };
-    let mut source_reservation = reservations
-        .try_reserve_owned_resident(request(ReservationKind::SourceRead, "source_read", 40), &mut metrics)?;
-    reservations.promote_source_cache_insert(
-        &mut source_reservation,
-        60,
-        request(ReservationKind::SourceCacheRetained, "source_cache_retained", 60),
-        &mut metrics,
-        &key,
-    )?;
-    reservations.release(source_reservation, &mut metrics);
-    reservations.release_source_cache_baseline_bytes(60, &mut metrics);
-    assert_eq!(reservations.raw_reserved_bytes(), 0);
-    drop(reservations);
-
-    let snapshot = lifecycle.finish(RuntimeTerminalOutcome::Succeeded).expect("observation seals");
-    let typed = snapshot
-        .events()
-        .iter()
-        .filter_map(|event| match &event.payload {
-            RuntimeObservationPayload::Reservation(observation) => {
-                Some((observation.action, observation.charged_delta_bytes))
-            },
-            _ => None,
-        })
-        .collect::<Vec<_>>();
-    assert!(typed.iter().any(|event| event.0 == RuntimeReservationAction::SourceCachePromote && event.1 == 20));
-    assert!(typed.iter().any(|event| event.0 == RuntimeReservationAction::SourceCacheEvict && event.1 == -60));
-    assert!(!typed.iter().any(|event| event.0 == RuntimeReservationAction::Transfer));
-    assert_eq!(typed.iter().map(|event| event.1).sum::<i128>(), 0);
-
-    let promotion = metrics
-        .reservation_events
-        .iter()
-        .find(|event| event.memory_boundary == "source_cache_retained" && event.charged_delta_bytes > 0)
-        .expect("legacy promotion row is retained");
-    assert_eq!(promotion.action, MemoryReservationEventAction::Reserve);
-    assert_eq!(promotion.requested_bytes, 60);
-    assert_eq!(promotion.granted_bytes, 60);
-    let eviction = metrics
-        .reservation_events
-        .iter()
-        .find(|event| event.stage.as_deref() == Some("source_cache_eviction"))
-        .expect("legacy eviction row is retained");
-    assert_eq!(eviction.action, MemoryReservationEventAction::Release);
-    assert_eq!(eviction.charged_delta_bytes, -60);
-    assert_eq!(eviction.current_reserved_bytes, 0);
-    assert_eq!(metrics.reservation_requested_bytes, 100);
-    assert_eq!(metrics.reservation_granted_bytes, 100);
-    let task = &metrics.task_runtime_metrics["source-cache-task"];
-    assert_eq!(task.reservation_requested_bytes, 100);
-    assert_eq!(task.reservation_granted_bytes, 60);
-    assert_eq!(task.reservation_released_bytes, 60);
-    assert_eq!(task.live_reserved_bytes, 0);
-    Ok(())
-}
-
-#[test]
 fn typed_reservations_replace_source_paths_with_stable_opaque_ids() -> Result<()> {
     let sensitive_locations = [
         "/srv/private/customer-42/orders.parquet",
@@ -951,8 +668,6 @@ fn typed_reservation_rollback_and_cleanup_releases_are_balanced() -> Result<()> 
             reservations.enter_release_observation_scope(RuntimeReservationDisposition::CleanupRelease);
         reservations.release(cleanup, &mut metrics);
     }
-    reservations.try_reserve_source_cache_baseline(20, &mut metrics)?;
-    reservations.release_source_cache_baseline_bytes(20, &mut metrics);
     drop(reservations);
 
     let snapshot = lifecycle.finish(RuntimeTerminalOutcome::Succeeded).expect("observation seals");

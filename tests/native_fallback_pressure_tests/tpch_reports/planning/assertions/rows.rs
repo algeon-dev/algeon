@@ -12,32 +12,32 @@ pub(super) fn assert_planning_rows(report: &NativeDataFusionPlanningReport) {
                 && row.final_disposition == FinalPlanDisposition::Native
             {
                 assert!(
-                    !row.strict_bounded_contract_rows.is_empty(),
+                    !row.capability_contract_rows.is_empty(),
                     "{} accepted bounded join row should expose strict contract gates",
                     row.query_id
                 );
                 assert!(
-                    !row.strict_bounded_compiled_graphs.is_empty(),
+                    !row.capability_compiled_graphs.is_empty(),
                     "{} accepted bounded join row should expose compiled graph diagnostics",
                     row.query_id
                 );
                 assert!(
-                    row.strict_bounded_contract_rows.iter().all(|gate| {
-                        gate.execution_mode == StrictBoundedExecutionMode::StrictBounded
+                    row.capability_contract_rows.iter().all(|gate| {
+                        gate.execution_mode == CapabilityEnvelopeStatus::Admitted
                             && gate.contract_status == ContractStatus::Modeled
                     }),
                     "{} accepted strict bounded gates should be modeled strict-bounded rows",
                     row.query_id
                 );
                 assert!(
-                    row.strict_bounded_contract_rows
+                    row.capability_contract_rows
                         .iter()
                         .any(|gate| gate.reservation_kind == ReservationKind::Materialization),
                     "{} accepted strict bounded gates should include host materialization",
                     row.query_id
                 );
                 assert!(
-                    row.strict_bounded_contract_rows
+                    row.capability_contract_rows
                         .iter()
                         .map(|gate| gate.to_stable_kv_row())
                         .all(|rendered| strict_contract_row_is_family_path_free(&rendered)),
@@ -47,11 +47,11 @@ pub(super) fn assert_planning_rows(report: &NativeDataFusionPlanningReport) {
             } else {
                 if row.final_disposition == FinalPlanDisposition::Native {
                     assert!(
-                        row.strict_bounded_contract_rows.is_empty(),
+                        row.capability_contract_rows.is_empty(),
                         "{} non-join accepted row is outside the current strict join gate report surface",
                         row.query_id
                     );
-                    assert!(row.strict_bounded_compiled_graphs.is_empty());
+                    assert!(row.capability_compiled_graphs.is_empty());
                 }
             }
             if row.final_disposition == FinalPlanDisposition::Native {
@@ -72,7 +72,7 @@ pub(super) fn assert_planning_rows(report: &NativeDataFusionPlanningReport) {
                 row.query_id
             );
             assert!(
-                row.strict_bounded_contract_rows
+                row.capability_contract_rows
                     .iter()
                     .map(|gate| gate.to_stable_kv_row())
                     .all(|rendered| strict_contract_row_is_family_path_free(&rendered)),
@@ -129,14 +129,11 @@ pub(super) fn assert_planning_rows(report: &NativeDataFusionPlanningReport) {
 fn assert_row_rejection_diagnostics_are_family_free(
     row: &datafusion_nexus::native_report::NativeDataFusionPlanningRow,
 ) {
-    for gate in &row.strict_bounded_contract_rows {
+    for gate in &row.capability_contract_rows {
         assert_no_legacy_rejection_terms(row.query_id.as_str(), &gate.to_stable_kv_row());
     }
-    for graph in &row.strict_bounded_compiled_graphs {
+    for graph in &row.capability_compiled_graphs {
         assert_no_legacy_rejection_terms(row.query_id.as_str(), &format!("{graph:?}"));
-    }
-    for adaptive in &row.adaptive_pipeline_rows {
-        assert_no_legacy_rejection_terms(row.query_id.as_str(), &adaptive.to_stable_kv_row());
     }
     assert_no_legacy_rejection_terms(row.query_id.as_str(), &format!("{:?}", row.join_diagnostics));
     assert_no_legacy_rejection_terms(row.query_id.as_str(), &format!("{:?}", row.source_diagnostics));

@@ -33,13 +33,6 @@ fn graph_memory_classes_pin_phase_f3_algorithm_tiers() {
 
 #[test]
 fn similarity_memory_model_requires_pair_evidence_and_prices_each_pair_relation_row() {
-    assert!(GraphPairCardinalitySource::PlanExact.is_strict_bounded_evidence());
-    assert!(GraphPairCardinalitySource::PlanHardUpperBound.is_strict_bounded_evidence());
-    assert!(
-        !GraphPairCardinalitySource::RuntimeMaterialized.is_strict_bounded_evidence(),
-        "runtime materialization is adaptive/unbounded evidence, not a strict pre-admission bound"
-    );
-
     let spec = GraphAlgorithmSpec::with_stable_schema(
         GraphAlgorithm::Jaccard,
         GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
@@ -77,52 +70,21 @@ fn similarity_memory_model_requires_pair_evidence_and_prices_each_pair_relation_
     // `Int64, Int64, Float64` output) plus the calibrated fixed workspace.
     assert_eq!(estimate.execution_bytes, 120 * 1024 + 9_200);
     assert_eq!(estimate.requested_bytes, estimate.construction_bytes + estimate.execution_bytes);
-
-    let adaptive = GraphMemoryModel
-        .estimate_for_adaptive_bounded(
-            &spec,
-            input.with_similarity_pair_input(100, 8, GraphPairCardinalitySource::RuntimeMaterialized),
-        )
-        .unwrap();
-    assert_eq!(
-        adaptive.pair_cardinality_admission_mode,
-        Some(GraphPairCardinalityAdmissionMode::AdaptiveBounded),
-        "materialized pair evidence is valid only for adaptive bounded admission"
-    );
-
-    let runtime_only_strict = GraphMemoryModel
-        .estimate_for_strict_bounded(
-            &spec,
-            input.with_similarity_pair_input(100, 8, GraphPairCardinalitySource::RuntimeMaterialized),
-        )
-        .unwrap_err();
-    assert_eq!(runtime_only_strict.code(), QueryErrorCode::InvalidPlan);
-    assert_eq!(runtime_only_strict.fact_value("reason"), Some("strict_pair_cardinality_evidence_not_plan_bound"));
-    assert_eq!(runtime_only_strict.fact_value("admission_mode"), Some("strict_bounded"));
-
-    for source in [GraphPairCardinalitySource::PlanExact, GraphPairCardinalitySource::PlanHardUpperBound] {
-        let strict = GraphMemoryModel
-            .estimate_for_strict_bounded(&spec, input.with_similarity_pair_input(100, 8, source))
-            .unwrap();
-        assert_eq!(strict.pair_cardinality_source, Some(source));
-        assert_eq!(strict.pair_cardinality_admission_mode, Some(GraphPairCardinalityAdmissionMode::StrictBounded));
-    }
-
-    let strict_missing = GraphMemoryModel.estimate_for_strict_bounded(&spec, input).unwrap_err();
-    assert_eq!(strict_missing.code(), QueryErrorCode::InvalidPlan);
-    assert_eq!(strict_missing.fact_value("reason"), Some("strict_missing_pair_cardinality_evidence"));
 }
 
 #[test]
-fn strict_similarity_admission_accepts_a_frontend_proved_gpu_pair_upper_bound() {
+fn bounded_similarity_admission_accepts_a_frontend_proved_gpu_pair_upper_bound() {
     let mut builder = QueryPlanBuilder::new();
-    let edges = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new(
-        "edges",
-        Arc::new(Schema::new(vec![
-            Field::new("src", DataType::Int64, false),
-            Field::new("dst", DataType::Int64, false),
-        ])),
-    )));
+    let edges = builder.add_source(SourceNode::GpuResident(
+        GpuResidentSource::new(
+            "edges",
+            Arc::new(Schema::new(vec![
+                Field::new("src", DataType::Int64, false),
+                Field::new("dst", DataType::Int64, false),
+            ])),
+        )
+        .with_row_count_upper_bound(20),
+    ));
     let pairs = builder.add_source(SourceNode::GpuResident(
         GpuResidentSource::new(
             "pairs",
@@ -143,13 +105,16 @@ fn strict_similarity_admission_accepts_a_frontend_proved_gpu_pair_upper_bound() 
     );
     let graph = builder.add_graph_algorithm(edges, spec);
     let plan = builder.finish_with_host_sink(graph);
-    let PlanNode::GraphAlgorithm(graph) = &plan.root_node().kind else {
-        panic!("expected graph algorithm root");
-    };
-
+    let estimates = graph_memory_estimates_for_plan(&plan, GraphMemoryCalibrationOverride::none(), None).unwrap();
+    assert_eq!(estimates.len(), 1);
+    assert_eq!(estimates[0].estimate.pair_rows, Some(13));
     assert_eq!(
-        strict_similarity_pair_cardinality_for_plan(&plan, graph).unwrap(),
-        Some((13, GraphPairCardinalitySource::PlanHardUpperBound))
+        estimates[0].estimate.pair_cardinality_source,
+        Some(GraphPairCardinalitySource::PlanHardUpperBound)
+    );
+    assert_eq!(
+        estimates[0].estimate.pair_cardinality_admission_mode,
+        Some(GraphPairCardinalityAdmissionMode::Bounded)
     );
 }
 
@@ -291,9 +256,9 @@ fn similarity_memory_model_pins_all_unweighted_metric_captures() {
     // Each case was captured through the shared native executor with
     // `nexus-tools cugraph-similarity-calibrate --pair-rows 100000` on
     // 2026-07-25. They deliberately span both supported vertex widths,
-    // sparse/hub topology, and cold/warm graph-cache state. The cache capture
-    // uses the normal cold-size report because no exact-resident admission
-    // price was reserved for this standalone calibration invocation.
+    // sparse/hub topology, and graph construction versus execution-only
+    // estimates. The capture uses the construction-inclusive report because
+    // this standalone calibration has no retained-graph admission path.
     for (algorithm, vertex_width_bytes, observed_peak_bytes) in [
         (GraphAlgorithm::Jaccard, 4, 5_201_975),
         (GraphAlgorithm::Sorensen, 8, 7_201_623),
@@ -467,7 +432,7 @@ fn graph_memory_report_admits_and_denies_without_strict_contract_projection() {
     assert_eq!(denied.outcome, GraphReservationOutcome::Denied);
     assert_eq!(denied.reason, Some("graph_memory_estimate_exceeds_budget"));
 
-    let strict = StrictBoundedContractReport::from_capability_analysis(
+    let strict = CapabilityContractReport::from_capability_analysis(
         &graph_plan(
             GraphAlgorithm::PageRank,
             GraphAlgorithmParams::PageRank(GraphPageRankParams::default()),
@@ -710,7 +675,7 @@ fn graph_memory_model_keeps_triangle_plan_time_fallback_below_whole_device_ticke
     assert_eq!(estimate.requested_bytes, 33_535_213_664);
     assert!(
         estimate.requested_bytes < 101_449_662_464 / 2,
-        "plan-time triangle fallback should remain a packing hint, not collapse to tenant want"
+        "plan-time triangle fallback should remain a packing hint, not become a caller-selected grant target"
     );
 }
 

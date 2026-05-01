@@ -10,13 +10,12 @@ pub(crate) const NATIVE_FALLBACK_PRESSURE_TSV_COLUMNS: &[&str] = &[
     "outcome",
     "reason_code",
     "unsupported_category",
-    "adaptive_pipeline_rows",
     "join_diagnostics",
     "source_diagnostics",
     "rejected_before_execution",
 ];
 /// Fallback-pressure TSV header.
-pub const NATIVE_FALLBACK_PRESSURE_TSV_HEADER: &str = "query_id\tphysical_root\tphysical_shape\tnative_candidate_shape\tnative_candidate_shape_family\toutcome\treason_code\tunsupported_category\tadaptive_pipeline_rows\tjoin_diagnostics\tsource_diagnostics\trejected_before_execution";
+pub const NATIVE_FALLBACK_PRESSURE_TSV_HEADER: &str = "query_id\tphysical_root\tphysical_shape\tnative_candidate_shape\tnative_candidate_shape_family\toutcome\treason_code\tunsupported_category\tjoin_diagnostics\tsource_diagnostics\trejected_before_execution";
 
 /// Planning-report TSV column names in wire/report order.
 pub(crate) const NATIVE_DATAFUSION_PLANNING_TSV_COLUMNS: &[&str] = &[
@@ -28,9 +27,8 @@ pub(crate) const NATIVE_DATAFUSION_PLANNING_TSV_COLUMNS: &[&str] = &[
     "outcome",
     "reason_code",
     "unsupported_category",
-    "strict_bounded_contract_rows",
-    "strict_bounded_compiled_graphs",
-    "adaptive_pipeline_rows",
+    "capability_contract_rows",
+    "capability_compiled_graphs",
     "native_optimizer",
     "edge_normalize_inserted",
     "join_diagnostics",
@@ -42,7 +40,7 @@ pub(crate) const NATIVE_DATAFUSION_PLANNING_TSV_COLUMNS: &[&str] = &[
     "rejected_before_execution",
 ];
 /// Planning-report TSV header. Nested row columns use stable key/value escaping.
-pub const NATIVE_DATAFUSION_PLANNING_TSV_HEADER: &str = "query_id\tphysical_root\tphysical_shape\tnative_candidate_shape\tnative_candidate_shape_family\toutcome\treason_code\tunsupported_category\tstrict_bounded_contract_rows\tstrict_bounded_compiled_graphs\tadaptive_pipeline_rows\tnative_optimizer\tedge_normalize_inserted\tjoin_diagnostics\tsource_diagnostics\tpost_native_plan_root\tpost_native_execution_path\tnative_plan_fragment_count\thost_datafusion_boundary_count\trejected_before_execution";
+pub const NATIVE_DATAFUSION_PLANNING_TSV_HEADER: &str = "query_id\tphysical_root\tphysical_shape\tnative_candidate_shape\tnative_candidate_shape_family\toutcome\treason_code\tunsupported_category\tcapability_contract_rows\tcapability_compiled_graphs\tnative_optimizer\tedge_normalize_inserted\tjoin_diagnostics\tsource_diagnostics\tpost_native_plan_root\tpost_native_execution_path\tnative_plan_fragment_count\thost_datafusion_boundary_count\trejected_before_execution";
 
 /// Execution-report TSV column names in wire/report order.
 pub(crate) const NATIVE_DATAFUSION_EXECUTION_TSV_COLUMNS: &[&str] = &[
@@ -54,9 +52,8 @@ pub(crate) const NATIVE_DATAFUSION_EXECUTION_TSV_COLUMNS: &[&str] = &[
     "planning_outcome",
     "reason_code",
     "unsupported_category",
-    "strict_bounded_contract_rows",
-    "strict_bounded_compiled_graphs",
-    "adaptive_pipeline_rows",
+    "capability_contract_rows",
+    "capability_compiled_graphs",
     "post_native_plan_root",
     "post_native_execution_path",
     "native_plan_fragment_count",
@@ -124,11 +121,6 @@ pub(crate) const NATIVE_DATAFUSION_EXECUTION_TSV_COLUMNS: &[&str] = &[
     "source_read_prefetches_completed",
     "source_read_prefetches_skipped",
     "source_read_prefetches_abandoned",
-    "source_cache_hits",
-    "source_cache_misses",
-    "source_cache_inserts",
-    "source_cache_insert_skipped",
-    "source_cache_retained_bytes",
     "row_groups_planned",
     "row_groups_committed",
     "partial_aggregate_count",
@@ -149,20 +141,11 @@ pub(crate) const NATIVE_DATAFUSION_EXECUTION_TSV_COLUMNS: &[&str] = &[
     "retry_count",
     "retry_resource_exhausted_count",
     "retry_reservation_failure_count",
-    "adaptive_retry_count",
-    "adaptive_spill_count",
-    "adaptive_downgrade_count",
-    "adaptive_memory_history_lookup_count",
-    "adaptive_memory_history_hit_count",
-    "adaptive_memory_history_miss_count",
     "hash_join_build_count",
     "filtered_join_build_count",
     "one_shot_join_count",
     "hash_join_cache_hits",
     "hash_join_cache_misses",
-    "hash_join_durable_cache_hits",
-    "hash_join_durable_cache_misses",
-    "hash_join_durable_cache_inserts",
     "hash_join_hash_table_bytes",
     "filtered_join_hash_table_bytes",
     "filtered_join_probe_state_bytes",
@@ -180,8 +163,8 @@ pub(crate) const NATIVE_DATAFUSION_EXECUTION_TSV_COLUMNS: &[&str] = &[
 /// Execution-report TSV header. Byte columns are bytes unless a name says otherwise.
 pub const NATIVE_DATAFUSION_EXECUTION_TSV_HEADER: &str = concat!(
     "query_id\tphysical_root\tphysical_shape\tnative_candidate_shape\tnative_candidate_shape_family\t",
-    "planning_outcome\treason_code\tunsupported_category\tstrict_bounded_contract_rows\t",
-    "strict_bounded_compiled_graphs\tadaptive_pipeline_rows\tpost_native_plan_root\tpost_native_execution_path\t",
+    "planning_outcome\treason_code\tunsupported_category\tcapability_contract_rows\t",
+    "capability_compiled_graphs\tpost_native_plan_root\tpost_native_execution_path\t",
     "native_plan_fragment_count\thost_datafusion_boundary_count\trejected_before_execution\t",
     "admission_sequence\tadmission_wait_ms\tdevice_ordinal\tquery_grant_bytes\t",
     "native_runtime_started\truntime_outcome\truntime_failure\toutput_batches\toutput_rows\toutput_bytes\t",
@@ -202,19 +185,15 @@ pub const NATIVE_DATAFUSION_EXECUTION_TSV_HEADER: &str = concat!(
     "dynamic_filter_measured_reduction_status\tdynamic_filter_work_avoidance_status\tdynamic_filter_runtime_rows\t",
     "source_chunks_planned\tsource_chunks_attempted\tsource_chunks_committed\tsource_chunks_retried\t",
     "source_read_prefetches_started\tsource_read_prefetches_completed\tsource_read_prefetches_skipped\t",
-    "source_read_prefetches_abandoned\tsource_cache_hits\tsource_cache_misses\tsource_cache_inserts\t",
-    "source_cache_insert_skipped\tsource_cache_retained_bytes\trow_groups_planned\trow_groups_committed\t",
+    "source_read_prefetches_abandoned\trow_groups_planned\trow_groups_committed\t",
     "partial_aggregate_count\tpartial_aggregate_input_rows\tpartial_aggregate_rows\t",
     "partial_aggregate_retained_bytes\tfinal_merge_attempts\tfinal_merge_levels\tfinal_merge_max_fan_in\t",
     "aggregate_libcudf_runtime_probe_count\taggregate_libcudf_runtime_probe_elapsed_ns\t",
     "aggregate_libcudf_runtime_probe_input_rows\taggregate_exact_cardinality_probe_count\t",
     "aggregate_exact_cardinality_probe_elapsed_ns\taggregate_exact_cardinality_probe_input_rows\t",
     "aggregate_prepared_sort_groupby_elapsed_ns\taggregate_encoded_key_partial_elapsed_ns\t",
-    "retry_count\tretry_resource_exhausted_count\tretry_reservation_failure_count\tadaptive_retry_count\t",
-    "adaptive_spill_count\tadaptive_downgrade_count\tadaptive_memory_history_lookup_count\t",
-    "adaptive_memory_history_hit_count\tadaptive_memory_history_miss_count\thash_join_build_count\t",
+    "retry_count\tretry_resource_exhausted_count\tretry_reservation_failure_count\thash_join_build_count\t",
     "filtered_join_build_count\tone_shot_join_count\thash_join_cache_hits\thash_join_cache_misses\t",
-    "hash_join_durable_cache_hits\thash_join_durable_cache_misses\thash_join_durable_cache_inserts\t",
     "hash_join_hash_table_bytes\tfiltered_join_hash_table_bytes\tfiltered_join_probe_state_bytes\t",
     "mixed_join_size_data_bytes\tone_shot_join_index_bytes\tone_shot_join_materialization_bytes\t",
     "one_shot_join_output_bytes\tjoin_gather_map_bytes\taggregate_strategy_rows\tjoin_strategy_rows\t",

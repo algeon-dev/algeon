@@ -38,11 +38,22 @@ const PCA_OPTIONS: &str = r#"{
   "n_components":1
 }"#;
 
+fn test_server_config() -> ServerConfig {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("server.toml");
+    std::fs::write(&path, "[[admission.device_profiles]]\ndevice_ordinal = 0\n").expect("write server config");
+    let path = path.to_string_lossy().into_owned();
+    ServerConfig::from_env_get(|name| {
+        (name == datafusion_nexus::server::NEXUS_SERVER_CONFIG_FILE_ENV).then(|| path.clone())
+    })
+    .expect("explicit test device profile")
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn bounded_flight_sql_lists_all_cuvs_operations_and_rejects_relation_subqueries() {
     let _guard = server_test_lock().lock().await;
     let (listener, addr) = free_local_addr();
-    let mut config = ServerConfig::from_env_get(|_| None).expect("default bounded server config");
+    let mut config = test_server_config();
     config.gpu_memory_ownership = vec![(0, GpuMemoryOwnership::WholeDeviceExclusive)];
     config.bind_addr = addr;
 
@@ -113,7 +124,7 @@ async fn bounded_flight_sql_plans_parquet_cuvs_relations_then_rejects_execution(
     write_vector_parquet(&parquet_path);
 
     let (listener, addr) = free_local_addr();
-    let mut config = ServerConfig::from_env_get(|_| None).expect("default bounded server config");
+    let mut config = test_server_config();
     config.gpu_memory_ownership = vec![(0, GpuMemoryOwnership::WholeDeviceExclusive)];
     config.bind_addr = addr;
 
@@ -157,7 +168,7 @@ async fn bounded_flight_sql_plans_parquet_cuvs_relations_then_rejects_execution(
 async fn default_bounded_flight_sql_rejects_cuvs_before_child_execution_with_structured_status() {
     let _guard = server_test_lock().lock().await;
     let (listener, addr) = free_local_addr();
-    let mut config = ServerConfig::from_env_get(|_| None).expect("default bounded server config");
+    let mut config = test_server_config();
     config.gpu_memory_ownership = vec![(0, GpuMemoryOwnership::WholeDeviceExclusive)];
     config.bind_addr = addr;
 

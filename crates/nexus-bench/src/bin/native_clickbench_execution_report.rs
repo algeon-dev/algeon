@@ -15,12 +15,10 @@ use nexus_bench::{
         },
     },
 };
-use nexus_query_engine::mode::NativePipelineExecutionMode;
 use nexus_workloads::clickbench::{
     ClickbenchDatasetMetadata, ClickbenchWorkloadError, ClickbenchWorkloadResult, prepare_clickbench_report_dataset,
 };
 
-const NEXUS_NATIVE_PIPELINE_EXECUTION_MODE_ENV: &str = "NEXUS_NATIVE_PIPELINE_EXECUTION_MODE";
 const NEXUS_CLICKBENCH_EXECUTION_QUERY_IDS_ENV: &str = "NEXUS_CLICKBENCH_EXECUTION_QUERY_IDS";
 const NEXUS_CLICKBENCH_EXECUTION_PROGRESS_ENV: &str = "NEXUS_CLICKBENCH_EXECUTION_PROGRESS";
 
@@ -41,13 +39,11 @@ async fn main() -> ExitCode {
 
 async fn clickbench_report() -> ClickbenchWorkloadResult<ClickbenchExecutionReport> {
     let relational_execution = RelationalExecutionSelection::native();
-    let native_pipeline_execution_mode = native_pipeline_execution_mode_from_env();
     let native_profile = clickbench_native_profile_settings_from_env();
     eprintln!(
-        "[native_clickbench_execution_report] stage=run_config relational_execution={} native_profile={} native_pipeline_execution_mode={} device_budget_bytes={} max_source_chunk_bytes={} max_row_groups_per_chunk={} source_chunk_planning_mode={}",
+        "[native_clickbench_execution_report] stage=run_config relational_execution={} native_profile={} device_budget_bytes={} max_source_chunk_bytes={} max_row_groups_per_chunk={} source_chunk_planning_mode={}",
         relational_execution.as_str(),
         native_profile.profile_name,
-        native_pipeline_execution_mode.as_str(),
         native_profile.device_budget_bytes,
         native_profile.max_source_chunk_bytes,
         native_profile.max_row_groups_per_chunk,
@@ -61,9 +57,7 @@ async fn clickbench_report() -> ClickbenchWorkloadResult<ClickbenchExecutionRepo
         )
     })?;
     let optimizer_config = relational_execution
-        .configure_native_optimizer(
-            clickbench_native_optimizer_config().with_native_pipeline_execution_mode(native_pipeline_execution_mode),
-        )
+        .configure_native_optimizer(clickbench_native_optimizer_config())
         .expect("native execution report installs the native rule");
     let query_filter = query_filter_from_env();
     let progress_enabled = progress_enabled_from_env();
@@ -108,17 +102,6 @@ async fn clickbench_report() -> ClickbenchWorkloadResult<ClickbenchExecutionRepo
 struct ClickbenchExecutionReport {
     report: NativeDataFusionExecutionReport,
     metadata: ClickbenchDatasetMetadata,
-}
-
-fn native_pipeline_execution_mode_from_env() -> NativePipelineExecutionMode {
-    let mode = std::env::var(NEXUS_NATIVE_PIPELINE_EXECUTION_MODE_ENV)
-        .unwrap_or_else(|_| NativePipelineExecutionMode::StrictBounded.as_str().to_string());
-    mode.parse::<NativePipelineExecutionMode>().unwrap_or_else(|error| {
-        panic!(
-            "unsupported {NEXUS_NATIVE_PIPELINE_EXECUTION_MODE_ENV}={}; expected strict_bounded or adaptive",
-            error.value()
-        )
-    })
 }
 
 fn query_filter_from_env() -> Option<Vec<String>> {

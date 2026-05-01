@@ -489,28 +489,18 @@ async fn unified_gpu_metadata_is_relation_aware_and_projects_the_canonical_regis
         .await
         .unwrap();
     let valid_column = valid[0].column(0).as_any().downcast_ref::<arrow::array::BooleanArray>().unwrap();
+    let error_code = valid[0].column(1).as_any().downcast_ref::<arrow::array::StringArray>().unwrap();
     let resolved_column = valid[0].column(2).as_any().downcast_ref::<arrow::array::BooleanArray>().unwrap();
     let would_execute = valid[0].column(5).as_any().downcast_ref::<arrow::array::BooleanArray>().unwrap();
     #[cfg(feature = "cuvs")]
     {
-        let output_schema = valid[0].column(4).as_any().downcast_ref::<arrow::array::StringArray>().unwrap();
-        assert!(valid_column.value(0));
-        assert!(resolved_column.value(0));
-        assert!(would_execute.value(0));
-        let output_schema = serde_json::from_str::<serde_json::Value>(output_schema.value(0)).unwrap();
-        assert_eq!(
-            output_schema["fields"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(|field| field["name"].as_str().unwrap())
-                .collect::<Vec<_>>(),
-            ["row_ordinal", "id", "cluster_id"]
-        );
+        assert!(!valid_column.value(0));
+        assert_eq!(error_code.value(0), "bounded_execution_unavailable");
+        assert!(!resolved_column.value(0));
+        assert!(!would_execute.value(0));
     }
     #[cfg(not(feature = "cuvs"))]
     {
-        let error_code = valid[0].column(1).as_any().downcast_ref::<arrow::array::StringArray>().unwrap();
         assert!(!valid_column.value(0));
         assert_eq!(error_code.value(0), "required_feature_disabled");
         assert!(!resolved_column.value(0));
@@ -566,7 +556,7 @@ async fn unified_gpu_metadata_reports_bounded_cuvs_as_unavailable() {
 }
 
 #[tokio::test]
-async fn unified_gpu_metadata_rejects_missing_relations_and_invalid_bindings_without_execution() {
+async fn unified_gpu_metadata_reports_cuvs_unavailability_before_relation_validation() {
     let ctx = cuvs_context();
     let missing = serde_json::json!({
         "schema_version": 1,
@@ -589,28 +579,8 @@ async fn unified_gpu_metadata_rejects_missing_relations_and_invalid_bindings_wit
     #[cfg(feature = "cuvs")]
     {
         assert!(!missing_valid.value(0));
-        assert_eq!(missing_code.value(0), "table_not_found");
+        assert_eq!(missing_code.value(0), "bounded_execution_unavailable");
         assert!(!missing_resolved.value(0));
-
-        let invalid_binding = serde_json::json!({
-            "schema_version": 1,
-            "relations": {"input": {"table": "dataset_vectors"}},
-            "options": {"input":{"id":"missing","vector":{"columns":["d0","d1"]}},"n_clusters":1},
-        });
-        let invalid = ctx
-            .sql(&format!(
-                "SELECT valid, error_code FROM {GPU_VALIDATE_CALL_FUNCTION}('cuvs_kmeans', '{}')",
-                sql_literal(&invalid_binding.to_string())
-            ))
-            .await
-            .unwrap()
-            .collect()
-            .await
-            .unwrap();
-        let invalid_valid = invalid[0].column(0).as_any().downcast_ref::<arrow::array::BooleanArray>().unwrap();
-        let invalid_code = invalid[0].column(1).as_any().downcast_ref::<arrow::array::StringArray>().unwrap();
-        assert!(!invalid_valid.value(0));
-        assert_eq!(invalid_code.value(0), "column_not_found");
     }
     #[cfg(not(feature = "cuvs"))]
     {
@@ -878,7 +848,7 @@ async fn cugraph_reaches_cuvs_as_a_direct_gpu_resident_producer() {
 
 #[cfg(feature = "cugraph")]
 #[tokio::test]
-async fn cugraph_join_filter_projection_reaches_cuvs_as_composed_gpu_producer() {
+async fn cugraph_join_filter_projection_reaches_bounded_cuvs_rejection_before_child_execution() {
     let ctx = fixtures::cuvs_cugraph_native_context();
     let sql = format!(
         "WITH candidates AS (\
@@ -897,24 +867,26 @@ async fn cugraph_join_filter_projection_reaches_cuvs_as_composed_gpu_producer() 
     let physical =
         ctx.state().create_physical_plan(&logical).await.expect("combined relational cuGraph/cuVS physical plan");
     let cuvs = find_cuvs_exec(physical.as_ref()).expect("CuvsAlgoExec");
-    let dataset = cuvs.children()[0];
-    let composed = dataset
-        .downcast_ref::<datafusion_nexus::native_exec::NexusNativeComposedGpuProducerExec>()
-        .unwrap_or_else(|| panic!("relational cuGraph child must remain a composed GPU producer: {dataset:?}"));
-    assert!(
-        !composed.native_plan().sink().materializes_host_boundary(),
-        "relational producer must not carry a host sink"
-    );
-    assert!(
-        composed
-            .children()
-            .into_iter()
-            .any(|child| child.downcast_ref::<datafusion_nexus::cugraph_sql::CugraphAlgoExec>().is_some()),
-        "composed relational producer must retain cuGraph as a direct GPU input"
-    );
-    let display = datafusion::physical_plan::displayable(physical.as_ref()).indent(false).to_string();
-    assert!(display.contains("NexusNativeComposedGpuProducerExec"), "{display}");
-    assert!(display.contains("output_boundary=device_resident"), "{display}");
+    let execute_count = Arc::new(AtomicUsize::new(0));
+    let children = cuvs
+        .children()
+        .into_iter()
+        .map(|child| {
+            Arc::new(ExecuteCountingExec { input: Arc::clone(child), execute_count: Arc::clone(&execute_count) })
+                as Arc<dyn ExecutionPlan>
+        })
+        .collect();
+    let rebound = Arc::new(cuvs.clone()).with_new_children(children).expect("rebind counting children");
+    let error = match rebound.execute(0, Arc::new(TaskContext::default())) {
+        Ok(_) => panic!("bounded cuVS execution must reject before touching relational cuGraph inputs"),
+        Err(error) => error,
+    };
+    let typed = error.find_nexus_error().expect("structured bounded cuVS rejection");
+    assert_eq!(typed.code(), ErrorCode::UnsupportedOperator);
+    assert_eq!(typed.facts().get("reason"), Some("blocked_lower_level_contract"));
+    assert_eq!(typed.facts().get("host_fallback"), Some("disabled"));
+    assert_eq!(typed.facts().get("required_contract"), Some("cuvs_vector_algorithm_peak_memory_preflight"));
+    assert_eq!(execute_count.load(Ordering::SeqCst), 0, "bounded rejection must precede child execution");
 }
 
 async fn logical_plan(ctx: &SessionContext, sql: &str) -> LogicalPlan {

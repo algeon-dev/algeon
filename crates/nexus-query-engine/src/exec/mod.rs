@@ -1,8 +1,8 @@
 //! Native query execution.
 //!
 //! Entrypoints validate local source contracts, derive output mode from the
-//! plan sink, and dispatch to unbounded, strict bounded, or adaptive bounded
-//! execution according to the [`ExecutionContext`].
+//! plan sink, and dispatch according to the bounded execution contract in the
+//! [`ExecutionContext`].
 //! GPU-resident input lookup is by plan-local names supplied in
 //! [`GpuResidentInputMap`]. Metrics are owned by the returned
 //! [`output::QueryExecutionResult`] so callers can record them after choosing host or
@@ -53,7 +53,7 @@ mod validate;
 mod vector_algorithm;
 
 #[doc(hidden)]
-pub use bounded::strict::{
+pub use bounded::pipeline::{
     CompiledGpuResource, CompiledGpuTaskExecutor, CompiledPipelineScheduler, CompiledPipelineState,
     CompiledSchedulingCycle, CompiledTaskAdmission, CompiledTaskExecutor, CompiledTaskOutput, ReleasedCompiledResource,
     ResidentFrameStreamProducerTestHarness, YieldedFrameCounterTestHarness,
@@ -63,12 +63,13 @@ pub use bounded::{
     STRING_OFFSET_BYTES_CONSERVATIVE, join_output_upper_bound_bytes, partial_aggregate_upper_bound_bytes,
 };
 use edge_normalize::execute_edge_normalize;
-#[cfg(feature = "cugraph")]
+#[cfg(all(test, feature = "cugraph"))]
+pub(crate) use graph_algorithm::force_next_graph_statistics_optional_resource_exhausted_for_test;
+#[cfg(all(test, feature = "cugraph"))]
 #[doc(hidden)]
-pub use graph_algorithm::{
-    force_next_graph_adaptive_chunk_attempt_resource_exhausted_for_test,
-    force_next_graph_adaptive_full_attempt_resource_exhausted_for_test,
-    force_next_graph_statistics_optional_resource_exhausted_for_test,
+pub(crate) use graph_algorithm::{
+    force_next_graph_seed_chunk_retry_chunk_attempt_resource_exhausted_for_test,
+    force_next_graph_seed_chunk_retry_full_attempt_resource_exhausted_for_test,
 };
 use output::QueryOutput;
 pub use source::{
@@ -79,20 +80,12 @@ pub use source::{
 pub mod reservation_contract_testing {
     #![allow(missing_docs)]
 
-    use std::sync::Arc;
-
-    use arrow::datatypes::{DataType as ArrowDataType, Field, Schema};
-
     use super::bounded::{JoinMaterializationTxn, ReservationTracker};
     use crate::{
         error::{QueryError, Result},
         metrics::QueryMetrics,
         pipeline::PipelineTaskKind,
-        runtime::{
-            MemoryReservationRequest, MemorySpaceId, ReservationKind,
-            cache::local_parquet::GpuLocalParquetSourceCacheKey,
-        },
-        source::LocalParquetSource,
+        runtime::{MemoryReservationRequest, MemorySpaceId, ReservationKind},
     };
 
     #[derive(Debug)]
@@ -115,19 +108,6 @@ pub mod reservation_contract_testing {
     pub struct JoinMaterializationTxnRollbackProbe {
         pub metrics: QueryMetrics,
         pub reserved_after_rollback: u64,
-    }
-
-    #[derive(Debug)]
-    pub struct SourceCacheAliasRelabelProbe {
-        pub metrics: QueryMetrics,
-        pub reserved_after_cache_insert: u64,
-        pub reserved_after_borrow: u64,
-        pub reserved_after_relabel: u64,
-        pub reserved_after_alias_release: u64,
-        pub reserved_after_cache_release: u64,
-        pub protected_after_borrow: usize,
-        pub protected_after_relabel: usize,
-        pub protected_after_alias_release: usize,
     }
 
     pub fn probe_alias_contract() -> Result<ReservationTrackerContractProbe> {
@@ -268,60 +248,6 @@ pub mod reservation_contract_testing {
         Ok(JoinMaterializationTxnRollbackProbe { metrics, reserved_after_rollback })
     }
 
-    pub fn probe_source_cache_alias_relabel_contract() -> Result<SourceCacheAliasRelabelProbe> {
-        let mut metrics = QueryMetrics::default();
-        let mut tracker = ReservationTracker::new(MemorySpaceId::Device { device_ordinal: 0 }, 100);
-        let key = source_cache_key();
-        let mut source = tracker.try_reserve_owned_resident(
-            request(ReservationKind::SourceRead, "join_source_read", 60, tracker.budget()),
-            &mut metrics,
-        )?;
-        tracker.promote_source_cache_insert(
-            &mut source,
-            60,
-            request(ReservationKind::SourceCacheRetained, "source_cache_retained", 60, tracker.budget()),
-            &mut metrics,
-            &key,
-        )?;
-        let reserved_after_cache_insert = tracker.reserved_bytes();
-        tracker.release(source, &mut metrics);
-
-        let borrowed = tracker.borrow_accounted_source_cache(key.clone(), 60, None, &mut metrics);
-        let reserved_after_borrow = tracker.reserved_bytes();
-        let protected_after_borrow = tracker.source_cache_protected_key_count(&key);
-        let relabeled = tracker.relabel_alias_reservation(
-            borrowed,
-            request(ReservationKind::ProbeSide, "join_probe_side", 60, tracker.budget()),
-            &mut metrics,
-        );
-        let reserved_after_relabel = tracker.reserved_bytes();
-        let protected_after_relabel = tracker.source_cache_protected_key_count(&key);
-        tracker.release(relabeled, &mut metrics);
-        let reserved_after_alias_release = tracker.reserved_bytes();
-        let protected_after_alias_release = tracker.source_cache_protected_key_count(&key);
-        tracker.release_source_cache_baseline_bytes(60, &mut metrics);
-        let reserved_after_cache_release = tracker.reserved_bytes();
-
-        Ok(SourceCacheAliasRelabelProbe {
-            metrics,
-            reserved_after_cache_insert,
-            reserved_after_borrow,
-            reserved_after_relabel,
-            reserved_after_alias_release,
-            reserved_after_cache_release,
-            protected_after_borrow,
-            protected_after_relabel,
-            protected_after_alias_release,
-        })
-    }
-
-    fn source_cache_key() -> GpuLocalParquetSourceCacheKey {
-        let schema = Arc::new(Schema::new(vec![Field::new("c0", ArrowDataType::Int64, true)]));
-        let source =
-            LocalParquetSource::new("/tmp/source-cache-alias-contract.parquet", schema, vec!["c0".to_string()]);
-        GpuLocalParquetSourceCacheKey::from_source(&source)
-    }
-
     fn request(
         kind: ReservationKind,
         memory_boundary: &'static str,
@@ -334,8 +260,6 @@ pub mod reservation_contract_testing {
     }
 }
 
-#[cfg(feature = "cugraph")]
-use self::graph_algorithm::resident_cache::resident_graph_cache_preparation_pin;
 use self::{
     bounded::*,
     graph_algorithm::*,
@@ -373,7 +297,6 @@ use crate::{
     runtime::{
         BoundedJoinReservationContract, ExecutionContext, MemoryControlPolicy, MemoryReservationRequest,
         ReservationKind, RetryFacts,
-        cache::hash_join::GpuHashJoinBuildCache,
         resident::{
             GpuDataFrame, GpuFilteredJoinBuildHandle, GpuHashJoinBuildHandle, GpuResidentInputMap, GpuResultHandle,
         },
@@ -413,7 +336,6 @@ static NEXT_PLAN_EXECUTION_ID: AtomicU64 = AtomicU64::new(1);
 pub(super) struct ExecutionScratch {
     node_results: HashMap<NodeId, GpuDataFrame>,
     hash_join_builds: HashJoinBuildRepository,
-    durable_hash_join_builds: Option<Arc<GpuHashJoinBuildCache>>,
 }
 
 impl ExecutionScratch {
@@ -421,7 +343,6 @@ impl ExecutionScratch {
         Ok(Self {
             node_results: HashMap::new(),
             hash_join_builds: HashJoinBuildRepository::new(context.shared_runtime()?, context.device_placement()),
-            durable_hash_join_builds: context.hash_join_build_cache(),
         })
     }
 }
@@ -481,8 +402,8 @@ pub fn execute_query_plan(context: &ExecutionContext, plan: &QueryPlan) -> Resul
 /// Execute a native plan with caller-supplied GPU-resident inputs.
 ///
 /// `gpu_inputs` is keyed by the names referenced by GPU-resident source nodes
-/// in `plan`. Bounded plans dispatch through the context's strict/adaptive
-/// pipeline mode; unbounded plans execute the operator tree directly.
+/// in `plan`. Bounded plans dispatch through the context's bounded pipeline
+/// contract.
 pub fn execute_query_plan_with_gpu_inputs(
     context: &ExecutionContext,
     plan: &QueryPlan,
@@ -736,6 +657,7 @@ fn execute_query_plan_output(
 ) -> Result<Output> {
     context.check_cancellation("nexus_query_engine.exec.execute_query_plan")?;
     validate_query_plan(plan)?;
+    context.validate_admitted_plan_capabilities(plan)?;
     let _order_tracking = DataFusionOrderTrackingGuard::new(
         context.stddev_samp_execution_mode().is_datafusion_exact()
             && plan_requires_datafusion_exact_statistical_order(plan),
@@ -856,21 +778,7 @@ fn execute_node(
             return Err(graph_algorithm_feature_disabled(node.id, graph));
             #[cfg(feature = "cugraph")]
             {
-                let (input, mut preparation_pin) =
-                    if let Some(raw_input_id) = graph_preparation_bypass_input(plan, graph) {
-                        let raw_input = execute_node(context, plan, raw_input_id, gpu_inputs, scratch, metrics)?;
-                        if let Some(pin) = resident_graph_cache_preparation_pin(context, &raw_input, &graph.spec)? {
-                            (raw_input, Some(pin))
-                        } else {
-                            (execute_node(context, plan, graph.input, gpu_inputs, scratch, metrics)?, None)
-                        }
-                    } else {
-                        (execute_node(context, plan, graph.input, gpu_inputs, scratch, metrics)?, None)
-                    };
-                #[cfg(feature = "cugraph")]
-                if preparation_pin.is_none() {
-                    preparation_pin = resident_graph_cache_preparation_pin(context, &input, &graph.spec)?;
-                }
+                let input = execute_node(context, plan, graph.input, gpu_inputs, scratch, metrics)?;
                 let side_inputs = graph
                     .inputs
                     .iter()
@@ -880,22 +788,7 @@ fn execute_node(
                             .map(|frame| (*input_id, frame))
                     })
                     .collect::<Result<std::collections::BTreeMap<_, _>>>()?;
-                #[cfg(feature = "cugraph")]
-                let result = if let Some(preparation_pin) = preparation_pin.as_ref() {
-                    execute_graph_algorithm_cache_hit(
-                        context,
-                        node.id,
-                        graph,
-                        input,
-                        side_inputs,
-                        preparation_pin.pin_id(),
-                        metrics,
-                    )
-                } else {
-                    execute_graph_algorithm(context, node.id, graph, input, side_inputs, metrics)
-                };
-                #[cfg(feature = "cugraph")]
-                drop(preparation_pin);
+                let result = execute_graph_algorithm(context, node.id, graph, input, side_inputs, metrics);
                 Ok(result.map_err(|error| error.with_fact("node_id", node.id))?)
             }
         },

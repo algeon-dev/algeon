@@ -25,14 +25,15 @@ use arrow::{
 };
 use cudf::DataFrame;
 use nexus_query_engine::{
+    admission::bounded_pipeline_attempt_requirement,
     chunk::{SourceChunkPlanningPolicy, plan_local_parquet_source_chunks},
     error::QueryErrorCode,
     exec::{
         execute_query_plan, execute_query_plan_with_gpu_inputs, materialize_gpu_result_to_host, output::QueryOutput,
     },
     expr::{
-        AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, Expr, GroupingSetsSpec, LimitSpec, LiteralValue,
-        SortExpr, SortSpec,
+        AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, ColumnRef, Expr, GroupingSetsSpec, LimitSpec,
+        LiteralValue, SortExpr, SortSpec,
     },
     metrics::{MemoryReservationEventAction, QueryMetrics},
     plan::{
@@ -40,11 +41,11 @@ use nexus_query_engine::{
         WindowFunction, WindowSpec,
     },
     runtime::{
-        BoundedJoinReservationContract, DeploymentIoCapability, ExecutionBoundaryPolicy, ExecutionContext,
-        GdsDriverProbeStatus, GpuBackendControllerDraft, GpuBackendCore, GpuBackendCoreDraft, GpuBackendDeviceConfig,
-        GpuBackendMemoryShare, GpuBackendTenantDraft, GpuMemoryOwnership, KvikioCompatModeStatus, MemoryControlPolicy,
-        MemorySpaceId, NvidiaFsProbeStatus, QueryAdmissionRequest, QueryGrantRequest, QueryHandle, QueryServiceConfig,
-        ReservationKind, SourceSchedulerPolicy, TenantId, TenantQueryContext,
+        AdmittedQueryContext, BoundedJoinReservationContract, DeploymentIoCapability, ExecutionBoundaryPolicy,
+        ExecutionContext, GdsDriverProbeStatus, GpuBackendControllerDraft, GpuBackendCore, GpuBackendCoreDraft,
+        GpuBackendDeviceConfig, GpuDeviceMemoryLimit, GpuMemoryOwnership, KvikioCompatModeStatus, MemoryControlPolicy,
+        MemorySpaceId, NvidiaFsProbeStatus, QueryAdmissionRequest, QueryExecutionConfig, QueryHandle, QueueBounds,
+        ReservationKind, SourceSchedulerPolicy,
         resident::{GpuDataFrame, GpuResidentInputMap, GpuResultHandle},
     },
     source::{
@@ -71,8 +72,12 @@ use nexus_query_engine::{
 };
 use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
 
-const TEST_TENANT: &str = "native-execution-suite";
-const TEST_MINIMUM_GRANT_BYTES: u64 = 1;
+// Keep this integration fixture independent of the host inventory.  The
+// native-execution cases derive both success and failure envelopes from their
+// requested grants (up to 8 GiB), so a host-sized automatic profile would
+// silently raise small grants through its derived attempt floor.
+const NATIVE_EXECUTION_TEST_DEVICE_LIMIT_BYTES: u64 = 8 * 1024 * 1024 * 1024;
+const NATIVE_EXECUTION_TEST_ATTEMPT_FLOOR_BYTES: u64 = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct BackendTestPolicy {
@@ -140,23 +145,20 @@ fn suite_backend() -> &'static GpuBackendCore {
 fn suite_backend_with_policy(policy: BackendTestPolicy) -> &'static GpuBackendCore {
     static BACKEND: OnceLock<(BackendTestPolicy, GpuBackendCore)> = OnceLock::new();
     let (installed_policy, backend) = BACKEND.get_or_init(|| {
-        let controller = GpuBackendControllerDraft::from_legacy_policy(
-            QueryServiceConfig {
-                max_concurrent_queries: 1,
+        let controller = GpuBackendControllerDraft::new(
+            QueryExecutionConfig {
                 max_source_chunk_bytes: policy.max_source_chunk_bytes,
                 max_row_groups_per_chunk: policy.max_row_groups_per_chunk,
                 max_retry_attempts: policy.max_retry_attempts,
                 min_retry_chunk_row_groups: policy.min_retry_chunk_row_groups,
                 source_scheduler_policy: policy.source_scheduler_policy,
-                ..QueryServiceConfig::default()
+                ..QueryExecutionConfig::default()
             },
-            vec![GpuBackendTenantDraft::new(
-                TEST_TENANT,
-                GpuBackendMemoryShare::Bytes(TEST_MINIMUM_GRANT_BYTES),
-                GpuBackendMemoryShare::PolicyDefault,
-            )],
+            QueueBounds::default(),
         );
         let device = GpuBackendDeviceConfig::new(0, GpuMemoryOwnership::WholeDeviceExclusive)
+            .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: NATIVE_EXECUTION_TEST_DEVICE_LIMIT_BYTES })
+            .with_attempt_floor_bytes(NATIVE_EXECUTION_TEST_ATTEMPT_FLOOR_BYTES)
             .with_max_active_queries(1)
             .with_installation_bounds(4, 1, 1);
         let backend = GpuBackendCore::builder(GpuBackendCoreDraft::new(vec![device], controller, non_gds_deployment()))
@@ -172,7 +174,7 @@ fn suite_backend_with_policy(policy: BackendTestPolicy) -> &'static GpuBackendCo
 }
 
 struct BackendQueryContext {
-    context: TenantQueryContext,
+    context: AdmittedQueryContext,
     _handle: QueryHandle,
 }
 
@@ -213,14 +215,57 @@ fn backend_context_with_policy_and_grant(
     requested_bytes: Option<u64>,
 ) -> BackendQueryContext {
     let request = requested_bytes.map_or_else(QueryAdmissionRequest::new, |bytes| {
-        QueryAdmissionRequest::new().with_grant_request(QueryGrantRequest::with_requested_grant_bytes(bytes))
+        QueryAdmissionRequest::new().with_test_planned_capability_evidence(fixture_planned_capability_evidence(bytes))
     });
-    let handle = suite_backend_with_policy(policy)
-        .session_capability()
-        .admit_query_with_request(TenantId::new(TEST_TENANT), request)
-        .unwrap();
+    let handle = suite_backend_with_policy(policy).session_capability().admit_query_with_request(request).unwrap();
     let context = handle.acquire_context().unwrap();
     BackendQueryContext { context, _handle: handle }
+}
+
+/// Derives a budget hint through the same bounded-plan analysis used by a
+/// frontend. The fixture must not manufacture opaque admission evidence or
+/// reopen a public raw-byte test hook.
+fn fixture_planned_capability_evidence(bytes: u64) -> nexus_query_engine::admission::AttemptCapabilityEvidence {
+    let schema = Arc::new(Schema::new(vec![Field::new("fixture_key", DataType::Int64, false)]));
+    let fixture_source = LocalParquetSource::from_files(
+        vec![
+            LocalParquetFile::new("/tmp/nexus-native-execution-budget-fixture.parquet")
+                .with_row_groups(vec![0])
+                .with_row_group_bytes(vec![bytes])
+                .with_projected_row_group_bytes(vec![bytes], vec![bytes])
+                .with_row_group_rows(vec![1]),
+        ],
+        Arc::clone(&schema),
+        vec!["fixture_key".to_owned()],
+    );
+    let mut builder = QueryPlanBuilder::new();
+    let left = builder.add_source(SourceNode::LocalParquet(fixture_source));
+    let right = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+        "/tmp/nexus-native-execution-budget-build-fixture.parquet",
+        Arc::clone(&schema),
+        vec!["fixture_key".to_owned()],
+    )));
+    let join = builder.add_join(
+        left,
+        right,
+        JoinSpec::new(
+            JoinType::LeftSemi,
+            vec![JoinKey::new(
+                ColumnRef::input(0, "fixture_key", "fixture_key"),
+                ColumnRef::input(1, "fixture_key", "fixture_key"),
+            )],
+        )
+        .with_output_projection(vec![JoinOutputColumn::left(
+            ColumnRef::input(0, "fixture_key", "fixture_key"),
+            "fixture_key",
+        )])
+        .with_build_side(JoinSide::Right),
+        schema,
+    );
+    let plan = builder.finish_with_host_sink(join);
+    bounded_pipeline_attempt_requirement(&plan)
+        .expect("fixture plan capability analysis")
+        .expect("fixture plan remains in bounded-pipeline support")
 }
 
 fn backend_runtime() -> Arc<cudf::Runtime> {

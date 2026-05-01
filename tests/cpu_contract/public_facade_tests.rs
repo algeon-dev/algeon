@@ -3,7 +3,9 @@ use std::mem::size_of;
 #[path = "../support/public_surface.rs"]
 mod public_surface;
 
-use public_surface::{assert_modules_are_private, assert_no_crate_root_reexports, assert_no_removed_public_surface};
+use public_surface::{
+    assert_modules_are_private, assert_no_crate_root_reexports, assert_no_removed_public_surface, rust_identifier_count,
+};
 
 #[test]
 fn canonical_adapter_paths_expose_stable_contract_symbols() {
@@ -100,9 +102,48 @@ fn canonical_server_path_exposes_cugraph_config_contract() {
 fn removed_adapter_facades_and_glob_reexports_do_not_reappear() {
     let root = workspace_root();
     assert!(!root.join("src/iceberg.rs").exists(), "the compatibility iceberg facade must stay deleted");
+    assert!(root.join("src/server/auth").is_dir(), "Flight SQL authentication belongs to the application layer");
+    assert_application_auth_stays_outside_gpu_controller(&root);
     assert_no_crate_root_reexports(&root.join("src/lib.rs"));
     assert_no_removed_public_surface(&root.join("src"));
     assert_modules_are_private(&root.join("src/server/mod.rs"), &["auth", "config", "diagnostics", "error"]);
+}
+
+fn assert_application_auth_stays_outside_gpu_controller(root: &std::path::Path) {
+    const APPLICATION_AUTH_TYPES: &[&str] =
+        &["AuthConfig", "AuthInterceptor", "AuthMode", "PasswordHashError", "Principal", "TokenStore"];
+    let controller_sources = [
+        root.join("src/backend.rs"),
+        root.join("src/server/admission.rs"),
+        root.join("crates/nexus-query-engine/src/runtime/query_service"),
+    ];
+    for source in controller_sources {
+        assert_controller_scope_omits_auth_types(&source, APPLICATION_AUTH_TYPES);
+    }
+}
+
+fn assert_controller_scope_omits_auth_types(path: &std::path::Path, auth_types: &[&str]) {
+    if path.is_dir() {
+        for entry in
+            std::fs::read_dir(path).unwrap_or_else(|error| panic!("failed to read {}: {error}", path.display()))
+        {
+            assert_controller_scope_omits_auth_types(&entry.expect("directory entry").path(), auth_types);
+        }
+        return;
+    }
+    if path.extension().is_none_or(|extension| extension != "rs") {
+        return;
+    }
+    let source =
+        std::fs::read_to_string(path).unwrap_or_else(|error| panic!("failed to read {}: {error}", path.display()));
+    for auth_type in auth_types {
+        assert_eq!(
+            rust_identifier_count(&source, auth_type),
+            0,
+            "{} must not depend on Flight/application auth type `{auth_type}`",
+            path.display()
+        );
+    }
 }
 
 /// The nexus-owned Cudf -> Nexus API rename is a deliberate pre-alpha break.

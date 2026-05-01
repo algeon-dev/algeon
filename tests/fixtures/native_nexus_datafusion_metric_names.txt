@@ -11,7 +11,6 @@ device_to_device_copies
 device_to_device_copied_bytes
 source_read_boundary_direct_device
 build_materialization_boundary_query_scoped
-build_materialization_boundary_durable
 probe_execution_boundary_reusable
 result_materialization_boundary_explicit
 admission_sequence
@@ -51,11 +50,6 @@ source_read_prefetches_started
 source_read_prefetches_completed
 source_read_prefetches_skipped
 source_read_prefetches_abandoned
-source_cache_hits
-source_cache_misses
-source_cache_inserts
-source_cache_insert_skipped
-source_cache_retained_bytes
 row_groups_planned
 row_groups_committed
 partial_aggregate_count
@@ -75,12 +69,6 @@ read_columns
 retry_count
 retry_resource_exhausted_count
 retry_reservation_failure_count
-adaptive_retry_count
-adaptive_spill_count
-adaptive_downgrade_count
-adaptive_memory_history_lookup_count
-adaptive_memory_history_hit_count
-adaptive_memory_history_miss_count
 dynamic_filter_produced_count
 dynamic_filter_skipped_count
 dynamic_filter_applied_count
@@ -100,9 +88,6 @@ filtered_join_build_count
 one_shot_join_count
 hash_join_cache_hits
 hash_join_cache_misses
-hash_join_durable_cache_hits
-hash_join_durable_cache_misses
-hash_join_durable_cache_inserts
 hash_join_hash_table_bytes
 filtered_join_hash_table_bytes
 filtered_join_probe_state_bytes
@@ -115,7 +100,6 @@ native_aggregate_strategy_rows
 native_join_strategy_rows
 source_metadata_load_time
 source_read_queue_wait_time
-source_cache_lookup_time
 parquet_read_time
 source_read_time
 operator_time

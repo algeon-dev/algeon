@@ -7,7 +7,10 @@ use std::{
 };
 
 use nexus_query_engine::{
-    observability::{RuntimeObservationConfig, RuntimeObservationOwner, RuntimeQueryId, RuntimeTraceId},
+    observability::{
+        QueryAttemptReport, RuntimeObservationConfig, RuntimeObservationOwner, RuntimeQueryId, RuntimeTraceId,
+        SealedRuntimeObservationSnapshot,
+    },
     runtime::ExecutionCancellation,
 };
 use uuid::Uuid;
@@ -36,6 +39,15 @@ pub(in crate::server) struct QueryRecord {
     pub(in crate::server) active_leases: usize,
     pub(in crate::server) active_activities: usize,
     pub(in crate::server) observation_owner: Option<RuntimeObservationOwner>,
+    /// Flight attempt reports are immutable handoffs from the actual attempt
+    /// owner. `None` remains valid for legacy coordinator-owned observation
+    /// paths, but attempt-owned records cannot finalize until this arrives.
+    pub(in crate::server) attempt_report: Option<Arc<QueryAttemptReport>>,
+    /// The immutable snapshot sealed by the same attempt as
+    /// `attempt_report`. This is retained only for artifact projection; the
+    /// coordinator never receives observation-sealing authority.
+    pub(in crate::server) attempt_snapshot: Option<SealedRuntimeObservationSnapshot>,
+    pub(in crate::server) requires_attempt_report: bool,
     pub(in crate::server) hot: Arc<QueryHotCounters>,
     pub(in crate::server) logical_capture_bytes: u64,
     pub(in crate::server) artifact_max_bytes: u64,
@@ -80,7 +92,42 @@ impl QueryCoordinator {
         let mut state = self.lock_state();
         let query_id = Uuid::new_v4().hyphenated().to_string();
         let lease = self
-            .register_locked(&mut state, query_id.clone(), sql.into(), correlation_id, trace_id, observation_config)
+            .register_locked(
+                &mut state,
+                query_id.clone(),
+                sql.into(),
+                correlation_id,
+                trace_id,
+                observation_config,
+                true,
+            )
+            .map_err(|error| error.with_query_id(query_id.clone()))?;
+        Ok((query_id, lease))
+    }
+
+    /// Registers a Flight query whose runtime observation is owned by the
+    /// invocation's `NexusAttempt`. The coordinator still retains planning,
+    /// cancellation, and artifact state, but never receives a second sealing
+    /// authority for the same execution.
+    pub(in crate::server) fn register_new_with_attempt_observation(
+        self: &Arc<Self>,
+        sql: impl Into<String>,
+        correlation_id: Option<String>,
+        trace_id: Option<String>,
+        observation_config: RuntimeObservationConfig,
+    ) -> Result<(String, QueryPlanningLease), QueryCoordinatorError> {
+        let mut state = self.lock_state();
+        let query_id = Uuid::new_v4().hyphenated().to_string();
+        let lease = self
+            .register_locked(
+                &mut state,
+                query_id.clone(),
+                sql.into(),
+                correlation_id,
+                trace_id,
+                observation_config,
+                false,
+            )
             .map_err(|error| error.with_query_id(query_id.clone()))?;
         Ok((query_id, lease))
     }
@@ -96,8 +143,39 @@ impl QueryCoordinator {
     ) -> Result<QueryPlanningLease, QueryCoordinatorError> {
         let query_id = query_id.into();
         let mut state = self.lock_state();
-        self.register_locked(&mut state, query_id.clone(), sql.into(), correlation_id, trace_id, observation_config)
-            .map_err(|error| error.with_query_id(query_id))
+        self.register_locked(
+            &mut state,
+            query_id.clone(),
+            sql.into(),
+            correlation_id,
+            trace_id,
+            observation_config,
+            true,
+        )
+        .map_err(|error| error.with_query_id(query_id))
+    }
+
+    #[cfg(test)]
+    pub(in crate::server) fn register_with_id_with_attempt_observation(
+        self: &Arc<Self>,
+        query_id: impl Into<String>,
+        sql: impl Into<String>,
+        correlation_id: Option<String>,
+        trace_id: Option<String>,
+        observation_config: RuntimeObservationConfig,
+    ) -> Result<QueryPlanningLease, QueryCoordinatorError> {
+        let query_id = query_id.into();
+        let mut state = self.lock_state();
+        self.register_locked(
+            &mut state,
+            query_id.clone(),
+            sql.into(),
+            correlation_id,
+            trace_id,
+            observation_config,
+            false,
+        )
+        .map_err(|error| error.with_query_id(query_id))
     }
 
     pub(in crate::server) fn register_locked(
@@ -108,6 +186,7 @@ impl QueryCoordinator {
         correlation_id: Option<String>,
         trace_id: Option<String>,
         observation_config: RuntimeObservationConfig,
+        create_runtime_observation_owner: bool,
     ) -> Result<QueryPlanningLease, QueryCoordinatorError> {
         let runtime_capture_bytes = observation_config.limits().max_retained_bytes;
         let logical_capture_bytes = runtime_capture_bytes
@@ -175,11 +254,13 @@ impl QueryCoordinator {
         state.next_generation = generation;
         let key = QueryKey { query_id: Arc::from(query_id.as_str()), generation };
         let observation_id = ObservationId(Arc::from(format!("{query_id}:{generation}")));
-        let owner = RuntimeObservationOwner::new(
-            RuntimeQueryId::new(query_id.clone()),
-            trace_id.map(RuntimeTraceId::new),
-            observation_config,
-        );
+        let owner = create_runtime_observation_owner.then(|| {
+            RuntimeObservationOwner::new(
+                RuntimeQueryId::new(query_id.clone()),
+                trace_id.map(RuntimeTraceId::new),
+                observation_config,
+            )
+        });
         let captured = CapturedQuery::new(
             query_id.clone(),
             sql,
@@ -202,7 +283,10 @@ impl QueryCoordinator {
                 terminal_outcome: None,
                 active_leases: 1,
                 active_activities: 0,
-                observation_owner: Some(owner),
+                observation_owner: owner,
+                attempt_report: None,
+                attempt_snapshot: None,
+                requires_attempt_report: !create_runtime_observation_owner,
                 hot: Arc::clone(&hot),
                 logical_capture_bytes,
                 artifact_max_bytes: self.config.per_query_artifact_max_bytes,
@@ -235,6 +319,73 @@ impl QueryCoordinator {
             .count()
     }
 
+    /// Attach the report published by the single execution-attempt owner.
+    /// This is a retained read-only projection: the coordinator has no
+    /// terminalization or observation-sealing authority over the report.
+    pub(in crate::server) fn attach_attempt_report(
+        &self,
+        query_id: &str,
+        report: Arc<QueryAttemptReport>,
+        snapshot: Option<SealedRuntimeObservationSnapshot>,
+    ) -> Result<(), QueryCoordinatorError> {
+        let mut state = self.lock_state();
+        let key = state.current.get(query_id).cloned().ok_or_else(|| {
+            QueryCoordinatorError::new(QueryCoordinatorErrorKind::UnknownQuery, "unknown query attempt report")
+        })?;
+        let record = state.records.get_mut(&key).ok_or_else(|| {
+            QueryCoordinatorError::new(QueryCoordinatorErrorKind::UnknownQuery, "unknown query attempt report")
+        })?;
+        if !record.requires_attempt_report {
+            return Err(QueryCoordinatorError::new(
+                QueryCoordinatorErrorKind::InvalidTransition,
+                "query does not accept an attempt-owned report",
+            ));
+        }
+        if let Some(existing) = &record.attempt_report {
+            if existing.attempt_id != report.attempt_id {
+                return Err(QueryCoordinatorError::new(
+                    QueryCoordinatorErrorKind::InvalidTransition,
+                    "query already has a different attempt report",
+                ));
+            }
+            return Ok(());
+        }
+        if let Some(snapshot) = snapshot.as_ref() {
+            let Some(snapshot_report) = snapshot.attempt_report() else {
+                return Err(QueryCoordinatorError::new(
+                    QueryCoordinatorErrorKind::InvalidTransition,
+                    "attempt observation snapshot omitted its immutable attempt report",
+                ));
+            };
+            if snapshot_report != report.as_ref() || snapshot.footer().terminal.as_ref() != Some(&report.outcome) {
+                return Err(QueryCoordinatorError::new(
+                    QueryCoordinatorErrorKind::InvalidTransition,
+                    "attempt observation snapshot report is not identical to its completed attempt",
+                ));
+            }
+        }
+        if let Some(captured) = &mut record.captured {
+            captured.set_attempt_report(Arc::clone(&report));
+        }
+        record.attempt_report = Some(report);
+        record.attempt_snapshot = snapshot;
+        Self::bump_capture_version(record);
+        drop(state);
+        self.finalize_ready();
+        Ok(())
+    }
+
+    /// Allows a begin-attempt rejection to finalize its coordinator record.
+    /// No attempt exists in that one backend-closing/error window, so there is
+    /// no immutable completion to await; the retained artifact is explicitly
+    /// marked unavailable instead of waiting forever.
+    pub(in crate::server) fn allow_missing_attempt_report(&self, query_id: &str) {
+        let mut state = self.lock_state();
+        let Some(key) = state.current.get(query_id).cloned() else { return };
+        let Some(record) = state.records.get_mut(&key) else { return };
+        record.requires_attempt_report = false;
+    }
+
     pub(in crate::server) fn record_mut<'a>(
         state: &'a mut QueryRegistryState,
         key: &QueryKey,
@@ -254,16 +405,17 @@ impl QueryCoordinator {
     }
 
     pub(in crate::server) fn cancel_ticket(&self, query_id: &str, error: CapturedError) -> bool {
-        let cancelled = {
+        // An attempt can synchronously publish its sealed report when it is
+        // cancelled. Its observer re-enters this coordinator, so finish the
+        // ticket state transition before invoking either cancellation handle.
+        let ticket = {
             let mut state = self.lock_state();
             let Some(key) = state.current.get(query_id).cloned() else { return false };
             let Some(record) = state.records.get_mut(&key) else { return false };
             if record.phase != QueryPhase::Ticketed {
                 return false;
             }
-            if let Some(ticket) = record.ticket.take() {
-                ticket.native_cancellation.cancel();
-            }
+            let ticket = record.ticket.take();
             if record.terminal_outcome.is_none() {
                 let mut terminal = QueryTerminal::Cancelled { stage: "cancel_query", error: Arc::new(error) };
                 Self::apply_terminal_to_capture(record, &mut terminal, Instant::now());
@@ -272,13 +424,17 @@ impl QueryCoordinator {
             }
             record.phase = QueryPhase::Finalizing;
             state.ticketed_count = state.ticketed_count.checked_sub(1).expect("cancelled ticket count underflow");
-            true
+            ticket
         };
-        if cancelled {
-            self.notify.notify_waiters();
-            self.finalize_ready();
+        if let Some(ticket) = ticket {
+            ticket.native_cancellation.cancel();
+            if let Some(attempt) = ticket.attempt.as_ref() {
+                attempt.cancel_before_stream();
+            }
         }
-        cancelled
+        self.notify.notify_waiters();
+        self.finalize_ready();
+        true
     }
 
     #[cfg(all(test, feature = "iceberg"))]

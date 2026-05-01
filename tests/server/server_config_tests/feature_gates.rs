@@ -2,7 +2,7 @@
 #[test]
 fn server_config_rejects_iceberg_env_without_iceberg_feature() {
     let env = BTreeMap::from([(NEXUS_ICEBERG_GLUE_DATABASE_ENV, "tpch_sf1".to_string())]);
-    let error = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap_err();
+    let error = server_config_with_default_device_profile(env).unwrap_err();
 
     assert!(error.to_string().contains("--features server,iceberg"));
 }
@@ -11,7 +11,7 @@ fn server_config_rejects_iceberg_env_without_iceberg_feature() {
 #[test]
 fn server_config_accepts_cugraph_env_without_cugraph_feature() {
     let env = BTreeMap::from([(NEXUS_SERVER_CUGRAPH_ENABLED_ENV, "true".to_string())]);
-    let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
+    let config = server_config_with_default_device_profile(env).unwrap();
 
     assert!(config.cugraph.is_some(), "an explicit enabled setting must install the unavailable SQL frontend");
 }
@@ -22,7 +22,7 @@ fn server_config_accepts_explicit_cugraph_disabled_without_cugraph_feature() {
     // One env file must be able to serve both artifact flavors: an explicit
     // `false` requests no capability, so a no-cugraph build accepts it.
     let env = BTreeMap::from([(NEXUS_SERVER_CUGRAPH_ENABLED_ENV, "false".to_string())]);
-    let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
+    let config = server_config_with_default_device_profile(env).unwrap();
 
     assert_eq!(config.bind_addr.to_string(), "0.0.0.0:50051");
 }
@@ -34,7 +34,7 @@ fn server_config_rejects_cugraph_settings_alongside_disabled_env_without_cugraph
         (NEXUS_SERVER_CUGRAPH_ENABLED_ENV, "false".to_string()),
         (datafusion_nexus::server::NEXUS_SERVER_CUGRAPH_DIRECTED_ENV, "false".to_string()),
     ]);
-    let error = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap_err();
+    let error = server_config_with_default_device_profile(env).unwrap_err();
 
     assert!(error.to_string().contains(NEXUS_SERVER_CUGRAPH_ENABLED_ENV));
     assert!(error.to_string().contains("must be true"));
@@ -44,7 +44,7 @@ fn server_config_rejects_cugraph_settings_alongside_disabled_env_without_cugraph
 #[test]
 fn server_config_rejects_malformed_cugraph_enabled_without_cugraph_feature() {
     let env = BTreeMap::from([(NEXUS_SERVER_CUGRAPH_ENABLED_ENV, "maybe".to_string())]);
-    let error = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap_err();
+    let error = server_config_with_default_device_profile(env).unwrap_err();
 
     assert!(error.to_string().contains("must be a boolean"));
 }

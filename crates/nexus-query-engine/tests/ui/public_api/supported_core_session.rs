@@ -3,9 +3,8 @@ use nexus_query_engine::{
     observability::RuntimeObservationHandle,
     runtime::{
         DeploymentIoCapability, ExecutionContext, GdsDriverProbeStatus, GpuBackendControllerDraft, GpuBackendCore,
-        GpuBackendCoreDraft, GpuBackendDeviceConfig, GpuBackendMemoryShare, GpuBackendSession, GpuBackendTenantDraft,
-        GpuExecutionJobKind, GpuExecutorLease, GpuMemoryOwnership, KvikioCompatModeStatus, NvidiaFsProbeStatus,
-        QueryHandle, QueryServiceConfig,
+        GpuBackendCoreDraft, GpuBackendDeviceConfig, GpuBackendSession, GpuExecutionJobKind, GpuExecutorLease,
+        GpuMemoryOwnership, KvikioCompatModeStatus, NvidiaFsProbeStatus, QueryExecutionConfig, QueryHandle, QueueBounds,
     },
 };
 
@@ -40,10 +39,7 @@ fn main() {
         KvikioCompatModeStatus::Unset,
         GdsDriverProbeStatus::ProbeUnimplemented,
     );
-    let controller = GpuBackendControllerDraft::from_legacy_policy(
-        QueryServiceConfig::default(),
-        vec![GpuBackendTenantDraft::new("tenant", GpuBackendMemoryShare::Bytes(1), GpuBackendMemoryShare::Bytes(1))],
-    );
+    let controller = GpuBackendControllerDraft::new(QueryExecutionConfig::default(), QueueBounds::default());
     let draft = GpuBackendCoreDraft::new(
         vec![GpuBackendDeviceConfig::new(0, GpuMemoryOwnership::WholeDeviceExclusive)],
         controller,

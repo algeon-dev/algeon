@@ -185,12 +185,6 @@ resource_class = "shared"
 reason = "Compiled pipeline execution creates CUDA runtimes and validates native GPU task scheduling on bounded fixtures."
 
 [[binary]]
-id = "nexus-query-engine::native_execution_tests"
-lane = "gpu"
-resource_class = "shared"
-reason = "Native engine execution tests submit cuDF kernels with explicit bounded budgets on small fixtures."
-
-[[binary]]
 id = "nexus-query-engine::query_service_allocator_lifecycle"
 lane = "gpu"
 resource_class = "exclusive"

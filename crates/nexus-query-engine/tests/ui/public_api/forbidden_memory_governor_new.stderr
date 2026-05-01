@@ -1,10 +1,10 @@
 error[E0624]: associated function `new` is private
- --> tests/ui/public_api/forbidden_memory_governor_new.rs:4:29
+ --> tests/ui/public_api/forbidden_memory_governor_new.rs:5:27
   |
-4 |     let _ = MemoryGovernor::new(0, 1);
-  |                             ^^^ private associated function
+5 |     let _ = DeviceLedger::new(profile);
+  |                           ^^^ private associated function
   |
- ::: src/runtime/gpu/governor.rs
+ ::: src/runtime/gpu/ledger.rs
   |
-  |     pub(crate) fn new(device_ordinal: usize, capacity_bytes: u64) -> Result<Self> {
-  |     ----------------------------------------------------------------------------- private associated function defined here
+  |     pub(crate) fn new(profile: DeviceResourceProfile) -> Self {
+  |     --------------------------------------------------------- private associated function defined here

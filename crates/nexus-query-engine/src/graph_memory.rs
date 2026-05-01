@@ -159,8 +159,8 @@ impl GraphPairCardinalitySource {
         }
     }
 
-    /// Returns whether the evidence is admissible for strict bounded pricing.
-    pub const fn is_strict_bounded_evidence(self) -> bool {
+    /// Returns whether the evidence is available before bounded admission.
+    pub(crate) const fn is_pre_admission_bound(self) -> bool {
         matches!(self, Self::PlanExact | Self::PlanHardUpperBound)
     }
 }
@@ -171,21 +171,17 @@ impl std::fmt::Display for GraphPairCardinalitySource {
     }
 }
 
-/// Admission contract that consumed explicit-pair cardinality evidence.
+/// Capability admission status projected into graph report rows.
 ///
-/// A runtime-materialized count is valid for adaptive bounded execution, but
-/// never proves a strict pre-admission bound.  Preserve that distinction on
-/// the estimate and its report projection rather than inferring it from a
-/// later execution mode label.
+/// The bounded controller emits [`Self::Bounded`]. Compatibility string
+/// labels are emitted only from the bounded capability contract.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum GraphPairCardinalityAdmissionMode {
     /// No bounded admission was active; the row records observed execution
     /// evidence only.
     Unbounded,
-    /// Strict bounded admission used a plan-exact count or hard upper bound.
-    StrictBounded,
-    /// Adaptive bounded admission used materialized/preflight evidence.
-    AdaptiveBounded,
+    /// Bounded admission used a plan-exact count or hard upper bound.
+    Bounded,
 }
 
 impl GraphPairCardinalityAdmissionMode {
@@ -193,8 +189,7 @@ impl GraphPairCardinalityAdmissionMode {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Unbounded => "unbounded",
-            Self::StrictBounded => "strict_bounded",
-            Self::AdaptiveBounded => "adaptive_bounded",
+            Self::Bounded => "strict_bounded",
         }
     }
 }
@@ -564,16 +559,54 @@ pub struct GraphMemoryEstimate {
     pub seed_count: Option<u64>,
     pub seed_mode: Option<GraphSeedMode>,
     pub data_dependent: bool,
-    /// Bytes needed to construct and retain the native graph representation.
+    /// Bytes needed to construct the native graph representation.
     ///
-    /// Warm cache admission may omit this term only when query-service
-    /// admission has reserved an exact-runtime resident graph entry.
+    /// The execution-only estimate may omit this diagnostic term, but P2
+    /// admission never uses that estimate to select a grant. A future P5
+    /// cache would need its own accounted reservation before retaining a
+    /// graph across attempts.
     pub construction_bytes: u64,
-    /// Algorithm output and workspace bytes that remain necessary on both
-    /// cold and warm executions.
+    /// Algorithm output and workspace bytes needed after graph construction.
     pub execution_bytes: u64,
-    /// Cold execution price: construction plus output and workspace.
+    /// Construction-inclusive estimate: construction plus output and workspace.
     pub requested_bytes: u64,
+}
+
+/// Opaque graph-memory model output.
+///
+/// The model is the only constructor for this token. It contains descriptive
+/// bytes only: public callers may inspect those diagnostics, but cannot
+/// convert the token into a generic admission requirement or use it to select
+/// an immutable grant.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GraphMemoryAdmissionEvidence {
+    cold_model_requested_bytes: u64,
+    warm_model_requested_bytes: u64,
+}
+
+impl GraphMemoryAdmissionEvidence {
+    fn from_modeled_estimate(estimate: &GraphMemoryEstimate) -> Self {
+        Self {
+            cold_model_requested_bytes: estimate.requested_bytes,
+            warm_model_requested_bytes: estimate.execution_bytes,
+        }
+    }
+
+    /// Returns the construction-inclusive model's descriptive byte estimate.
+    ///
+    /// This is diagnostic/model output only. It is not accepted by public
+    /// admission request construction.
+    pub fn cold_model_requested_bytes(&self) -> u64 {
+        self.cold_model_requested_bytes
+    }
+
+    /// Returns the execution-only model's descriptive byte estimate.
+    ///
+    /// This is a hypothetical cache-price diagnostic only. It is not accepted
+    /// by public admission request construction or P2 placement.
+    pub fn warm_model_requested_bytes(&self) -> u64 {
+        self.warm_model_requested_bytes
+    }
 }
 
 /// Planning-time graph memory estimate for a node in a native query plan.
@@ -798,36 +831,15 @@ impl GraphMemoryModel {
     ///
     /// Similarity requires plan-exact or hard-upper-bound pair cardinality
     /// evidence here.  A count obtained by executing the pair relation is
-    /// deliberately rejected, because it is adaptive evidence and cannot be
-    /// retroactively promoted to a strict admission proof.
-    pub fn estimate_for_strict_bounded(
+    /// deliberately rejected, because it is post-admission runtime evidence
+    /// and cannot be retroactively promoted to an admission proof.
+    pub(crate) fn estimate_for_bounded(
         &self,
         spec: &GraphAlgorithmSpec,
         input: GraphMemoryModelInput,
     ) -> Result<GraphMemoryEstimate> {
         require_strict_similarity_pair_cardinality_evidence(spec, input)?;
-        self.estimate_with_pair_cardinality_admission_mode(
-            spec,
-            input,
-            GraphPairCardinalityAdmissionMode::StrictBounded,
-        )
-    }
-
-    /// Estimate a graph fragment for adaptive bounded admission.
-    ///
-    /// The adaptive path may consume a pair relation after its own
-    /// materialization boundary.  Its report is labelled separately so that
-    /// runtime evidence is never presented as a strict bound.
-    pub fn estimate_for_adaptive_bounded(
-        &self,
-        spec: &GraphAlgorithmSpec,
-        input: GraphMemoryModelInput,
-    ) -> Result<GraphMemoryEstimate> {
-        self.estimate_with_pair_cardinality_admission_mode(
-            spec,
-            input,
-            GraphPairCardinalityAdmissionMode::AdaptiveBounded,
-        )
+        self.estimate_with_pair_cardinality_admission_mode(spec, input, GraphPairCardinalityAdmissionMode::Bounded)
     }
 
     fn estimate_with_pair_cardinality_admission_mode(
@@ -1236,7 +1248,7 @@ fn require_strict_similarity_pair_cardinality_evidence(
         .with_fact("pair_vertex_width_bytes", input.pair_vertex_width_bytes.unwrap_or(0))
         .with_fact("pair_cardinality_source", "none"));
     };
-    if !source.is_strict_bounded_evidence() {
+    if !source.is_pre_admission_bound() {
         return Err(strict_similarity_pair_cardinality_error(
             spec.algorithm,
             "strict_pair_cardinality_evidence_not_plan_bound",
@@ -1255,7 +1267,7 @@ fn strict_similarity_pair_cardinality_error(algorithm: GraphAlgorithm, reason: &
         "strict bounded similarity admission requires plan-exact pair cardinality or a hard pair-row upper bound",
     )
     .with_fact("algorithm", algorithm.as_str())
-    .with_fact("admission_mode", GraphPairCardinalityAdmissionMode::StrictBounded.as_str())
+    .with_fact("admission_mode", GraphPairCardinalityAdmissionMode::Bounded.as_str())
     .with_fact("reason", reason)
 }
 
@@ -1463,8 +1475,8 @@ pub fn graph_memory_model_input(
 ///
 /// Missing ordinary edge-row evidence leaves a graph node unpriced. In
 /// contrast, a similarity node with known edge rows but no plan-exact or hard
-/// pair-row bound is a strict admission failure: materializing the pair source
-/// first would create adaptive evidence, not a strict pre-admission proof.
+/// pair-row bound is an admission failure: materializing the pair source first
+/// would create post-admission evidence, not a pre-admission proof.
 pub fn graph_memory_estimates_for_plan(
     plan: &QueryPlan,
     calibration_override: GraphMemoryCalibrationOverride,
@@ -1482,10 +1494,27 @@ pub fn graph_memory_estimates_for_plan(
         if let Some(device_total_memory_bytes) = device_total_memory_bytes {
             input = input.with_device_total_memory_bytes(device_total_memory_bytes);
         }
-        let estimate = GraphMemoryModel.estimate_for_strict_bounded(&graph.spec, input)?;
+        let estimate = GraphMemoryModel.estimate_for_bounded(&graph.spec, input)?;
         estimates.push(GraphPlanMemoryEstimate { node_id: node.id, estimate });
     }
     Ok(estimates)
+}
+
+/// Derive opaque cold and warm admission evidence for every modeled graph node
+/// in a native plan.
+///
+/// This is the admission handoff for engine-owned graph planning. It does not
+/// accept a report estimate, so an embedding caller cannot mint a
+/// caller-selected grant hint from public report data.
+pub fn graph_memory_admission_evidence_for_plan(
+    plan: &QueryPlan,
+    calibration_override: GraphMemoryCalibrationOverride,
+    device_total_memory_bytes: Option<u64>,
+) -> Result<Vec<GraphMemoryAdmissionEvidence>> {
+    Ok(graph_memory_estimates_for_plan(plan, calibration_override, device_total_memory_bytes)?
+        .into_iter()
+        .map(|estimate| GraphMemoryAdmissionEvidence::from_modeled_estimate(&estimate.estimate))
+        .collect())
 }
 
 /// Estimate graph memory for a graph edge list when planning has direct edge-count evidence.
@@ -1502,6 +1531,30 @@ pub fn graph_memory_estimate_for_edge_list(
         input = input.with_device_total_memory_bytes(device_total_memory_bytes);
     }
     GraphMemoryModel.estimate(spec, calibration_override.apply_to_input(input))
+}
+
+/// Derive opaque graph admission evidence from direct edge-list planning
+/// inputs.
+///
+/// As with [`graph_memory_admission_evidence_for_plan`], the byte values stay
+/// inside the engine-issued token and cannot be supplied from a report value.
+pub fn graph_memory_admission_evidence_for_edge_list(
+    spec: &GraphAlgorithmSpec,
+    input_schema: &SchemaRef,
+    input_edges: u64,
+    raw_input_edges: Option<u64>,
+    calibration_override: GraphMemoryCalibrationOverride,
+    device_total_memory_bytes: Option<u64>,
+) -> Result<GraphMemoryAdmissionEvidence> {
+    let estimate = graph_memory_estimate_for_edge_list(
+        spec,
+        input_schema,
+        input_edges,
+        raw_input_edges,
+        calibration_override,
+        device_total_memory_bytes,
+    )?;
+    Ok(GraphMemoryAdmissionEvidence::from_modeled_estimate(&estimate))
 }
 
 /// Estimate the row count produced by a native edge-list plan, when the plan
@@ -1584,7 +1637,7 @@ fn graph_memory_model_input_for_plan_node(
 /// strict bounded graph node must invoke it before evaluating graph side
 /// inputs, then price the graph reservation with the returned exact count or
 /// upper bound.
-pub fn strict_similarity_pair_cardinality_for_plan(
+pub(crate) fn strict_similarity_pair_cardinality_for_plan(
     plan: &QueryPlan,
     graph: &crate::plan::GraphAlgorithmNode,
 ) -> Result<Option<(u64, GraphPairCardinalitySource)>> {
@@ -1900,7 +1953,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        plan::{GraphConstructionOptions, GraphTriangleCountAllParams, QueryPlanBuilder},
+        plan::{GraphConstructionOptions, GraphSimilarityParams, GraphTriangleCountAllParams, QueryPlanBuilder},
         source::{LocalParquetFile, LocalParquetSource, SourceNode},
     };
 
@@ -1989,5 +2042,53 @@ mod tests {
         let estimates = graph_memory_estimates_for_plan(&plan, GraphMemoryCalibrationOverride::none(), None).unwrap();
 
         assert!(estimates.is_empty());
+    }
+
+    #[test]
+    fn bounded_similarity_model_accepts_only_pre_admission_pair_evidence() {
+        assert!(GraphPairCardinalitySource::PlanExact.is_pre_admission_bound());
+        assert!(GraphPairCardinalitySource::PlanHardUpperBound.is_pre_admission_bound());
+        assert!(!GraphPairCardinalitySource::RuntimeMaterialized.is_pre_admission_bound());
+
+        let spec = GraphAlgorithmSpec::with_stable_schema(
+            GraphAlgorithm::Jaccard,
+            GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
+            GraphConstructionOptions {
+                directed: false,
+                renumber: true,
+                policy: GraphConstructionPolicy::RawLibcugraph,
+            },
+            GraphAlgorithmParams::Similarity(GraphSimilarityParams::default()),
+        );
+        let input = GraphMemoryModelInput {
+            raw_input_edges: None,
+            input_edges: 20,
+            vertex_width_bytes: 8,
+            weight_width_bytes: None,
+            has_edge_id: false,
+            device_total_memory_bytes: None,
+            vertex_estimate: None,
+            statistics: None,
+            edge_normalize_inserted: false,
+            pair_rows: None,
+            pair_vertex_width_bytes: None,
+            pair_cardinality_source: None,
+        };
+
+        let runtime_only = GraphMemoryModel
+            .estimate_for_bounded(
+                &spec,
+                input.with_similarity_pair_input(100, 8, GraphPairCardinalitySource::RuntimeMaterialized),
+            )
+            .unwrap_err();
+        assert_eq!(runtime_only.code(), QueryErrorCode::InvalidPlan);
+        assert_eq!(runtime_only.fact_value("reason"), Some("strict_pair_cardinality_evidence_not_plan_bound"));
+
+        for source in [GraphPairCardinalitySource::PlanExact, GraphPairCardinalitySource::PlanHardUpperBound] {
+            let estimate =
+                GraphMemoryModel.estimate_for_bounded(&spec, input.with_similarity_pair_input(100, 8, source)).unwrap();
+            assert_eq!(estimate.pair_cardinality_source, Some(source));
+            assert_eq!(estimate.pair_cardinality_admission_mode, Some(GraphPairCardinalityAdmissionMode::Bounded));
+        }
     }
 }

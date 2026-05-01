@@ -7,28 +7,20 @@
 //! Final-plan requirements, when configured, inspect that exact resulting plan
 //! after native rewrite; they never trigger a second plan.
 
-use std::{num::NonZeroUsize, time::Duration};
-
 use datafusion::{
     common::{Result as DataFusionResult, config::ConfigOptions},
     physical_plan::ExecutionPlan,
 };
 
-use crate::{
-    native_exec::{HostExecutionQosLimiter, NexusNativeExecutionConfig},
-    session_config::optimizer_config_with_datafusion_options,
-};
+use crate::{native_exec::NexusNativeExecutionConfig, session_config::optimizer_config_with_datafusion_options};
 
 mod native;
 
-pub(crate) use native::optimize_native_relational_child_to_gpu_producer;
 pub use native::{
-    NEXUS_FINAL_PLAN_REQUIREMENT_RULE_NAME, NEXUS_HOST_EXECUTION_QOS_RULE_NAME,
-    NativeAdaptivePipelineCandidateDiagnostics, NativeAdaptivePipelineDiagnostics, NativePlanningDiagnostics,
-    NativeStrictBoundedAcceptedCandidateDiagnostics, NativeStrictBoundedCompiledGraphDiagnostics,
-    NativeStrictBoundedContractDiagnostics, NativeStrictBoundedRejectedCandidateDiagnostics,
-    NexusFinalPlanRequirementRule, NexusHostExecutionQosRule, NexusNativePhysicalOptimizerRule,
-    STRICT_BOUNDED_NON_JOIN_OUTSIDE_REPORT_SCOPE_REASON,
+    CAPABILITY_NON_JOIN_OUTSIDE_REPORT_SCOPE_REASON, NEXUS_FINAL_PLAN_REQUIREMENT_RULE_NAME,
+    NativeCapabilityAcceptedCandidateDiagnostics, NativeCapabilityCompiledGraphDiagnostics,
+    NativeCapabilityContractDiagnostics, NativeCapabilityRejectedCandidateDiagnostics, NativePlanningDiagnostics,
+    NexusFinalPlanRequirementRule, NexusNativePhysicalOptimizerRule,
 };
 
 /// The execution ownership observed in a completed physical plan.
@@ -90,52 +82,6 @@ impl std::fmt::Display for FinalPlanRequirement {
     }
 }
 
-/// Host-side execution QoS applied once to a completed DataFusion or mixed
-/// physical plan.
-///
-/// This configuration is intentionally independent of
-/// [`NexusNativeOptimizerConfig`]. CPU-baseline and cuGraph-only sessions use
-/// the same outer statement bound without installing relational native
-/// selection. Clones share the limiter instance and therefore one bound.
-#[derive(Debug, Clone)]
-pub struct HostExecutionQosConfig {
-    limiter: HostExecutionQosLimiter,
-}
-
-impl HostExecutionQosConfig {
-    /// Create a host statement bound with indefinite wait time.
-    pub fn new(max_concurrent_statements: NonZeroUsize) -> Self {
-        Self { limiter: HostExecutionQosLimiter::new_with_wait_timeout(max_concurrent_statements, None) }
-    }
-
-    /// Set the maximum time a statement waits for a host execution permit.
-    ///
-    /// A zero duration restores indefinite waiting. This is independent of
-    /// GPU query-service admission timeouts.
-    pub fn with_wait_timeout(self, wait_timeout: Duration) -> Self {
-        Self {
-            limiter: HostExecutionQosLimiter::new_with_wait_timeout(
-                self.max_concurrent_statements(),
-                (!wait_timeout.is_zero()).then_some(wait_timeout),
-            ),
-        }
-    }
-
-    /// Maximum number of host-executing statements allowed concurrently.
-    pub fn max_concurrent_statements(&self) -> NonZeroUsize {
-        self.limiter.max_concurrent_statements()
-    }
-
-    /// Maximum host-permit wait time, or `None` for an indefinite wait.
-    pub fn wait_timeout(&self) -> Option<Duration> {
-        self.limiter.wait_timeout()
-    }
-
-    pub(crate) fn limiter(&self) -> HostExecutionQosLimiter {
-        self.limiter.clone()
-    }
-}
-
 /// Classify the exact completed physical plan without invoking planning.
 ///
 /// The classifier intentionally recognizes only runtime nodes whose execution
@@ -149,7 +95,7 @@ pub fn classify_final_plan(plan: &dyn ExecutionPlan) -> FinalPlanDisposition {
 /// DataFusion-facing native optimizer configuration.
 ///
 /// Defaults preserve the DataFusion baseline when native candidates are not
-/// accepted. Native execution uses an auto-sized bounded profile, query-engine
+/// accepted. Native execution uses a bounded planning template, query-engine
 /// optimizer options use their own defaults, and plan-cost selection is
 /// disabled unless a workload opts in. The native
 /// [`ExecutionContext`](nexus_query_engine::runtime::ExecutionContext) is
@@ -165,7 +111,7 @@ pub struct NexusNativeOptimizerConfig {
 impl Default for NexusNativeOptimizerConfig {
     fn default() -> Self {
         Self {
-            native_execution_config: NexusNativeExecutionConfig::bounded_auto_sized(),
+            native_execution_config: NexusNativeExecutionConfig::bounded_default(),
             native_optimizer_options: nexus_query_engine::optimizer::NativeOptimizerOptions::default(),
             native_plan_cost_options: nexus_query_engine::plan::NativePlanCostOptions::disabled(),
             final_plan_requirements: Vec::new(),
@@ -212,11 +158,6 @@ impl NexusNativeOptimizerConfig {
         self.with_final_plan_requirement(FinalPlanRequirement::NoDataFusionCpu)
     }
 
-    /// Strict bounded or adaptive pipeline mode used by native execution.
-    pub fn native_pipeline_execution_mode(&self) -> nexus_query_engine::mode::NativePipelineExecutionMode {
-        self.native_execution_config.native_pipeline_execution_mode()
-    }
-
     /// Floating statistical aggregate execution contract used by native execution.
     pub fn statistical_aggregate_execution_mode(&self) -> nexus_query_engine::mode::StatisticalAggregateExecutionMode {
         self.native_execution_config.statistical_aggregate_execution_mode()
@@ -246,25 +187,6 @@ impl NexusNativeOptimizerConfig {
     /// Replace native plan cost-selection options.
     pub fn with_native_plan_cost_options(mut self, options: nexus_query_engine::plan::NativePlanCostOptions) -> Self {
         self.native_plan_cost_options = options;
-        self
-    }
-
-    #[cfg(feature = "server")]
-    pub(crate) fn with_unbounded_native_execution_limiter(
-        mut self,
-        limiter: crate::native_exec::UnboundedNativeExecutionLimiter,
-    ) -> Self {
-        self.native_execution_config =
-            self.native_execution_config.clone().with_unbounded_native_execution_limiter(limiter);
-        self
-    }
-
-    /// Set strict bounded or adaptive execution without rebuilding the rest of the config.
-    pub fn with_native_pipeline_execution_mode(
-        mut self,
-        mode: nexus_query_engine::mode::NativePipelineExecutionMode,
-    ) -> Self {
-        self.native_execution_config = self.native_execution_config.clone().with_native_pipeline_execution_mode(mode);
         self
     }
 

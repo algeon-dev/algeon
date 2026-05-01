@@ -4,13 +4,13 @@ use std::{
     collections::HashMap,
     sync::{
         Arc, Mutex, OnceLock,
-        atomic::{AtomicU64, AtomicUsize, Ordering},
+        atomic::{AtomicU64, Ordering},
     },
 };
 
 use super::{
-    DeviceContext, DeviceMemoryFailureReport, DeviceMemoryFailureTracker, DeviceOwnerToken, GpuInventory,
-    MemoryGovernor, PlacementPolicy, PlacementRequest,
+    DeviceCapabilities, DeviceContext, DeviceLedger, DeviceMemoryFailureReport, DeviceMemoryFailureTracker,
+    DeviceOwnerToken, DeviceResourceProfile, GpuInventory, PlacementPolicy, PlacementRequest,
 };
 use crate::{
     error::{QueryError, QueryErrorCode, Result},
@@ -53,13 +53,18 @@ impl DeviceRegistryMemoryPartition {
 }
 
 /// Fully resolved, independent installation profile for one device.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DeviceRegistryInstallProfile {
     pub(crate) stream_pool_size: usize,
+    /// Immutable native capabilities consumed before placement and queueing.
+    pub(crate) device_capabilities: DeviceCapabilities,
     pub(crate) max_active_queries: Option<usize>,
     pub(crate) capacity_policy: DeviceRegistryCapacityPolicy,
     pub(crate) backend_reserve_bytes: u64,
-    pub(crate) device_memory_manager_base: cudf::DeviceMemoryManagerBase,
+    pub(crate) attempt_floor_bytes: Option<u64>,
+    pub(crate) source_work_per_attempt: usize,
+    pub(crate) worker_job_capacity: usize,
+    pub(crate) lane_count: usize,
     pub(crate) memory_partition: DeviceRegistryMemoryPartition,
 }
 
@@ -79,8 +84,6 @@ pub(crate) struct DeviceRegistryConfig {
     /// The effective capacity is `min(inventory_capacity, device_capacity_bytes)`
     /// so a single config value cannot over-grant smaller GPUs.
     pub device_capacity_bytes: Option<u64>,
-    /// Physical allocator installed for each device before any runtime is built.
-    pub device_memory_manager_base: cudf::DeviceMemoryManagerBase,
     device_profiles: HashMap<usize, DeviceRegistryInstallProfile>,
 }
 
@@ -93,7 +96,6 @@ impl DeviceRegistryConfig {
             capacity_headroom_bytes: 500 * 1024 * 1024,
             fallback_capacity_bytes: 256 * 1024 * 1024,
             device_capacity_bytes: None,
-            device_memory_manager_base: cudf::DeviceMemoryManagerBase::default(),
             device_profiles: HashMap::new(),
         }
     }
@@ -111,20 +113,15 @@ impl DeviceRegistryConfig {
         self
     }
 
-    /// Selects the process-lifetime physical allocator installed per device.
-    pub fn with_device_memory_manager_base(mut self, base: cudf::DeviceMemoryManagerBase) -> Self {
-        self.device_memory_manager_base = base;
-        self
-    }
-
     pub(crate) fn with_device_profile(mut self, device_ordinal: usize, profile: DeviceRegistryInstallProfile) -> Self {
         self.device_profiles.insert(device_ordinal, profile);
         self
     }
 
-    fn profile(&self, device_ordinal: usize) -> DeviceRegistryInstallProfile {
-        self.device_profiles.get(&device_ordinal).copied().unwrap_or(DeviceRegistryInstallProfile {
+    pub(crate) fn profile(&self, device_ordinal: usize) -> DeviceRegistryInstallProfile {
+        self.device_profiles.get(&device_ordinal).cloned().unwrap_or(DeviceRegistryInstallProfile {
             stream_pool_size: self.stream_pool_size,
+            device_capabilities: DeviceCapabilities::default(),
             max_active_queries: None,
             capacity_policy: DeviceRegistryCapacityPolicy::Automatic {
                 headroom_bytes: self.capacity_headroom_bytes,
@@ -133,7 +130,10 @@ impl DeviceRegistryConfig {
                 maximum_bytes: self.device_capacity_bytes,
             },
             backend_reserve_bytes: 0,
-            device_memory_manager_base: self.device_memory_manager_base,
+            attempt_floor_bytes: None,
+            source_work_per_attempt: 1,
+            worker_job_capacity: self.stream_pool_size,
+            lane_count: self.stream_pool_size,
             memory_partition: DeviceRegistryMemoryPartition::WholeDevice,
         })
     }
@@ -144,6 +144,7 @@ impl DeviceRegistryConfig {
 pub(crate) struct DeviceRegistry {
     contexts: Arc<[Option<DeviceContext>]>,
     device_ordinals: Arc<[usize]>,
+    resource_profiles: Arc<[DeviceResourceProfile]>,
 }
 
 #[derive(Debug)]
@@ -152,6 +153,7 @@ pub(crate) struct ResolvedDeviceInstallPlan {
     pub(crate) facts: super::DeviceFacts,
     pub(crate) profile: DeviceRegistryInstallProfile,
     pub(crate) capacity_bytes: u64,
+    pub(crate) resource_profile: DeviceResourceProfile,
 }
 
 /// Complete immutable device plan set frozen before the first process-memory
@@ -228,8 +230,69 @@ impl DeviceRegistry {
                 .with_fact("reason", "inventory_device_mismatch"));
             }
             let profile = config.profile(*ordinal);
-            let capacity_bytes = managed_capacity_bytes(*ordinal, &facts, profile)?;
-            discovered.push(ResolvedDeviceInstallPlan { device, facts, profile, capacity_bytes });
+            let capacity_bytes = managed_capacity_bytes(*ordinal, &facts, &profile)?;
+            let configured_limit_bytes =
+                capacity_bytes.checked_add(profile.backend_reserve_bytes).ok_or_else(|| {
+                    QueryError::new(
+                        QueryErrorCode::InvalidPlan,
+                        "nexus_query_engine.gpu.device_registry.capacity",
+                        "configured capacity overflowed",
+                    )
+                    .with_fact("device_ordinal", *ordinal)
+                    .with_fact("field", "backend_reserve_bytes")
+                    .with_fact("reason", "configured_capacity_overflow")
+                })?;
+            // The default floor divides the managed capacity into eight
+            // baseline shares, or into one share per active-attempt slot when
+            // more than eight slots are configured, so the frozen
+            // `floor * A_d <= managed_capacity` invariant always holds.
+            // Explicit floors are validated against the same equation.
+            let max_active = profile.max_active_queries.unwrap_or(1);
+            let default_floor_divisor = u64::try_from(max_active).unwrap_or(u64::MAX).max(8);
+            let attempt_floor_bytes = match profile.attempt_floor_bytes {
+                Some(floor) => floor,
+                None => {
+                    let floor = capacity_bytes / default_floor_divisor;
+                    if floor == 0 {
+                        return Err(QueryError::new(
+                            QueryErrorCode::InvalidPlan,
+                            "nexus_query_engine.gpu.device_registry.capacity",
+                            "managed capacity is too small for the default attempt floor",
+                        )
+                        .with_fact("device_ordinal", *ordinal)
+                        .with_fact("field", "attempt_floor_bytes")
+                        .with_fact("reason", "managed_capacity_too_small_for_default_floor")
+                        .with_fact("managed_capacity_bytes", capacity_bytes)
+                        .with_fact("max_active_attempts", max_active));
+                    }
+                    floor
+                },
+            };
+            let resource_profile = DeviceResourceProfile::resolve_with_capabilities(
+                *ordinal,
+                configured_limit_bytes,
+                0,
+                profile.backend_reserve_bytes,
+                attempt_floor_bytes,
+                profile.max_active_queries.unwrap_or(1),
+                profile.source_work_per_attempt,
+                profile.stream_pool_size,
+                profile.worker_job_capacity,
+                profile.device_capabilities.clone(),
+            )?;
+            if profile.lane_count < resource_profile.max_active_attempts {
+                return Err(QueryError::new(
+                    QueryErrorCode::InvalidPlan,
+                    "nexus_query_engine.gpu.device_registry.capacity",
+                    "lane count must cover every active attempt",
+                )
+                .with_fact("device_ordinal", *ordinal)
+                .with_fact("field", "lane_count")
+                .with_fact("reason", "lane_count_below_active_limit")
+                .with_fact("lane_count", profile.lane_count)
+                .with_fact("max_active_attempts", resource_profile.max_active_attempts));
+            }
+            discovered.push(ResolvedDeviceInstallPlan { device, facts, profile, capacity_bytes, resource_profile });
             checkpoint(probe, GpuBackendConstructionCheckpoint::AfterDeviceDiscovery { device_ordinal: *ordinal })?;
         }
 
@@ -267,14 +330,8 @@ impl DeviceRegistry {
             let memory_failure_tracker =
                 DeviceMemoryFailureTracker::for_installation_state(ordinal, installation_before)?;
             let allocation_limit_bytes = discovered.profile.memory_partition.allocation_limit_bytes();
-            let (mr_manager, memory_manager_installation) = install_device_memory_manager(
-                discovered.device,
-                &memory_failure_tracker,
-                cudf::DeviceMemoryManagerOptions {
-                    base: discovered.profile.device_memory_manager_base,
-                    allocation_limit_bytes,
-                },
-            )?;
+            let (mr_manager, memory_manager_installation) =
+                install_device_memory_manager(discovered.device, &memory_failure_tracker, allocation_limit_bytes)?;
             if let Some(journal) = construction_journal {
                 journal.record_memory_manager(mr_manager.clone())?;
             }
@@ -300,19 +357,25 @@ impl DeviceRegistry {
             checkpoint(probe, GpuBackendConstructionCheckpoint::AfterMemoryManager { device_ordinal: ordinal })?;
         }
 
+        let resource_profiles =
+            managed.iter().map(|managed| managed.discovered.resource_profile.clone()).collect::<Vec<_>>();
         let mut contexts = vec![None; max_ordinal.saturating_add(1)];
         for managed in managed {
             let ordinal = managed.discovered.device.ordinal();
             checkpoint(probe, GpuBackendConstructionCheckpoint::BeforeStreamPool { device_ordinal: ordinal })?;
-            let stream_pool =
-                ServiceStreamPool::new(managed.discovered.device, managed.discovered.profile.stream_pool_size)?;
+            let resource_profile = &managed.discovered.resource_profile;
+            let stream_pool = ServiceStreamPool::new_with_classes(
+                managed.discovered.device,
+                managed.discovered.profile.stream_pool_size,
+                resource_profile.max_active_attempts,
+                resource_profile.aux_source_work_capacity,
+            )?;
             if let Some(journal) = construction_journal {
                 journal.record_stream_pool(stream_pool.clone())?;
             }
             checkpoint(probe, GpuBackendConstructionCheckpoint::AfterStreamPool { device_ordinal: ordinal })?;
             checkpoint(probe, GpuBackendConstructionCheckpoint::BeforeDeviceContext { device_ordinal: ordinal })?;
-            let governor = MemoryGovernor::new(ordinal, managed.discovered.capacity_bytes)?;
-            let active_queries = Arc::new(AtomicUsize::new(0));
+            let ledger = Arc::new(DeviceLedger::new(managed.discovered.resource_profile.clone()));
             let context = DeviceContext::new(
                 managed.discovered.device,
                 stream_pool,
@@ -320,9 +383,8 @@ impl DeviceRegistry {
                 managed.memory_manager_installation,
                 managed.engine_health_identity,
                 managed.memory_failure_tracker,
-                governor,
+                ledger,
                 managed.discovered.facts,
-                active_queries,
                 managed.discovered.profile.max_active_queries,
             )?;
             if let Some(journal) = construction_journal {
@@ -331,7 +393,11 @@ impl DeviceRegistry {
             contexts[ordinal] = Some(context);
             checkpoint(probe, GpuBackendConstructionCheckpoint::AfterDeviceContext { device_ordinal: ordinal })?;
         }
-        Ok(Self { contexts: contexts.into(), device_ordinals: ordinals.into() })
+        Ok(Self {
+            contexts: contexts.into(),
+            device_ordinals: ordinals.into(),
+            resource_profiles: resource_profiles.into(),
+        })
     }
 
     /// Legacy internal construction wrapper. The ownership-enforcing backend
@@ -381,6 +447,22 @@ impl DeviceRegistry {
     }
 
     /// Number of installed device contexts.
+    pub(crate) fn resource_profile(&self, device_ordinal: usize) -> Option<&DeviceResourceProfile> {
+        self.resource_profiles.iter().find(|profile| profile.device_ordinal == device_ordinal)
+    }
+
+    /// Whether one installed device can execute every immutable capability
+    /// requirement of an attempt. This reads only the profile frozen during
+    /// installation; it never consults live CUDA state.
+    pub(crate) fn supports_capabilities(
+        &self,
+        device_ordinal: usize,
+        requirements: &[crate::capability::ReservationRequirement],
+    ) -> bool {
+        self.resource_profile(device_ordinal)
+            .is_some_and(|profile| profile.device_capabilities.supports_all(requirements))
+    }
+
     pub fn len(&self) -> usize {
         self.device_ordinals.len()
     }
@@ -392,9 +474,15 @@ impl DeviceRegistry {
 
     /// Returns whether any candidate device has enough configured capacity for
     /// this query budget, ignoring current active grants.
-    pub fn can_fit_query_budget(&self, policy: &dyn PlacementPolicy, request: &PlacementRequest) -> Result<bool> {
+    pub(crate) fn can_fit_query_budget(
+        &self,
+        policy: &dyn PlacementPolicy,
+        request: &PlacementRequest,
+    ) -> Result<bool> {
         for device in policy.candidates(self, request)? {
-            if self.context(device)?.capacity_bytes() >= request.min_device_budget_bytes {
+            let context = self.context(device)?;
+            let required_floor_bytes = request.required_floor_bytes_for(context.ledger())?;
+            if context.ledger().can_ever_fit_required_floor_bytes(required_floor_bytes)? {
                 return Ok(true);
             }
         }
@@ -476,7 +564,7 @@ fn bind_engine_device_health(
 fn managed_capacity_bytes(
     device_ordinal: usize,
     facts: &super::DeviceFacts,
-    profile: DeviceRegistryInstallProfile,
+    profile: &DeviceRegistryInstallProfile,
 ) -> Result<u64> {
     let allocation_limit =
         profile.memory_partition.allocation_limit_bytes().and_then(|limit| u64::try_from(limit).ok());
@@ -540,8 +628,9 @@ fn managed_capacity_bytes(
 fn install_device_memory_manager(
     device: cudf::DeviceId,
     memory_failure_tracker: &DeviceMemoryFailureTracker,
-    options: cudf::DeviceMemoryManagerOptions,
+    allocation_limit_bytes: Option<usize>,
 ) -> Result<(cudf::DeviceMemoryManager, cudf::DeviceMemoryManagerInstallationState)> {
+    let options = canonical_device_memory_manager_options(allocation_limit_bytes);
     let callback_was_installed = memory_failure_tracker.report().callback_installed;
     let identity = cudf::DeviceMemoryManagerInstallationIdentity::new(
         *b"nexus-query-eng\0",
@@ -629,6 +718,13 @@ fn install_device_memory_manager(
     Ok((manager, outcome.state))
 }
 
+/// P2 hard query domains require cuDF's canonical stream-ordered async base.
+/// This stays in the registry because allocation-manager installation is a
+/// process-owned backend concern, not a caller-selectable execution policy.
+fn canonical_device_memory_manager_options(allocation_limit_bytes: Option<usize>) -> cudf::DeviceMemoryManagerOptions {
+    cudf::DeviceMemoryManagerOptions { allocation_limit_bytes, ..Default::default() }
+}
+
 fn partition_fingerprint(device_ordinal: usize, allocation_limit_bytes: Option<usize>) -> [u8; 16] {
     // Installation identity includes the exact immutable partition, rather
     // than relying only on the separately compared manager options. Use two
@@ -693,30 +789,6 @@ fn validate_registry_config(config: &DeviceRegistryConfig) -> Result<()> {
         .with_fact("field", "device_capacity_bytes")
         .with_fact("reason", "zero"));
     }
-    if let cudf::DeviceMemoryManagerBase::Pool { initial_pool_size, maximum_pool_size } =
-        config.device_memory_manager_base
-    {
-        if initial_pool_size == 0 {
-            return Err(QueryError::new(
-                QueryErrorCode::InvalidPlan,
-                "nexus_query_engine.gpu.device_registry.config",
-                "device memory manager pool initial size must be greater than zero",
-            )
-            .with_fact("field", "device_memory_manager_base.initial_pool_size")
-            .with_fact("reason", "zero"));
-        }
-        if maximum_pool_size.is_some_and(|maximum| maximum < initial_pool_size) {
-            return Err(QueryError::new(
-                QueryErrorCode::InvalidPlan,
-                "nexus_query_engine.gpu.device_registry.config",
-                "device memory manager pool maximum must be at least its initial size",
-            )
-            .with_fact("field", "device_memory_manager_base.maximum_pool_size")
-            .with_fact("initial_pool_size", initial_pool_size)
-            .with_fact("maximum_pool_size", maximum_pool_size.unwrap_or_default())
-            .with_fact("reason", "pool_maximum_below_initial"));
-        }
-    }
     for (ordinal, profile) in &config.device_profiles {
         if profile.stream_pool_size == 0 {
             return Err(QueryError::new(
@@ -762,10 +834,7 @@ fn validate_registry_config(config: &DeviceRegistryConfig) -> Result<()> {
             },
             _ => {},
         }
-        cudf::DeviceMemoryManagerOptions {
-            base: profile.device_memory_manager_base,
-            allocation_limit_bytes: profile.memory_partition.allocation_limit_bytes(),
-        }
+        canonical_device_memory_manager_options(profile.memory_partition.allocation_limit_bytes())
         .validate()
         .map_err(|error| {
             QueryError::from_cudf(
@@ -898,19 +967,6 @@ mod tests {
     }
 
     #[test]
-    fn registry_config_rejects_pool_maximum_below_initial_size() {
-        let config = DeviceRegistryConfig::new(vec![0], 1).with_device_memory_manager_base(
-            cudf::DeviceMemoryManagerBase::Pool { initial_pool_size: 4096, maximum_pool_size: Some(2048) },
-        );
-
-        let error = validate_registry_config(&config).unwrap_err();
-
-        assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
-        assert_eq!(error.fact_value("field"), Some("device_memory_manager_base.maximum_pool_size"));
-        assert_eq!(error.fact_value("reason"), Some("pool_maximum_below_initial"));
-    }
-
-    #[test]
     fn resolving_complete_plan_set_has_no_installation_checkpoint() {
         let inventory = FakeInventory {
             facts: vec![
@@ -930,13 +986,17 @@ mod tests {
                 },
             ],
         };
-        let config = DeviceRegistryConfig::new(vec![0, 1], 1).with_capacity_policy(100, 200);
+        let config = DeviceRegistryConfig::new(vec![0, 1], 2).with_capacity_policy(100, 200);
         let probe = RecordingProbe::default();
 
         let resolved = DeviceRegistry::resolve_install_plans(&inventory, &config, Some(&probe)).unwrap();
 
         assert_eq!(resolved.device_ordinals(), &[0, 1]);
         assert_eq!(resolved.plans().iter().map(|plan| plan.capacity_bytes).collect::<Vec<_>>(), vec![900, 1_900]);
+        assert_eq!(
+            resolved.plans().iter().map(|plan| plan.resource_profile.managed_capacity_bytes).collect::<Vec<_>>(),
+            vec![900, 1_900]
+        );
         assert_eq!(
             *probe.0.lock().unwrap(),
             vec![
@@ -949,11 +1009,74 @@ mod tests {
     }
 
     #[test]
+    fn resolves_ordinal_local_resource_profiles_and_rejects_incompatible_device() {
+        let inventory = FakeInventory {
+            facts: vec![
+                DeviceFacts {
+                    device: 0,
+                    total_bytes: 1_000,
+                    free_bytes: 1_000,
+                    sm_count: Some(1),
+                    utilization_pct: None,
+                },
+                DeviceFacts {
+                    device: 1,
+                    total_bytes: 2_000,
+                    free_bytes: 2_000,
+                    sm_count: Some(1),
+                    utilization_pct: None,
+                },
+            ],
+        };
+        let profile = |floor| DeviceRegistryInstallProfile {
+            stream_pool_size: 4,
+            device_capabilities: DeviceCapabilities::default(),
+            max_active_queries: Some(2),
+            capacity_policy: DeviceRegistryCapacityPolicy::Automatic {
+                headroom_bytes: 100,
+                fallback_bytes: 100,
+                fraction: None,
+                maximum_bytes: None,
+            },
+            backend_reserve_bytes: 100,
+            attempt_floor_bytes: floor,
+            source_work_per_attempt: 1,
+            worker_job_capacity: 4,
+            lane_count: 2,
+            memory_partition: DeviceRegistryMemoryPartition::WholeDevice,
+        };
+        let plans = DeviceRegistry::resolve_install_plans(
+            &inventory,
+            &DeviceRegistryConfig::new(vec![0, 1], 4)
+                .with_device_profile(0, profile(None))
+                .with_device_profile(1, profile(None)),
+            None,
+        )
+        .unwrap();
+        assert_eq!(plans.plans()[0].resource_profile.managed_capacity_bytes, 800);
+        assert_eq!(plans.plans()[1].resource_profile.managed_capacity_bytes, 1_800);
+        assert_eq!(plans.plans()[0].resource_profile.attempt_floor_bytes, 100);
+        assert_eq!(plans.plans()[1].resource_profile.attempt_floor_bytes, 225);
+
+        let error = DeviceRegistry::resolve_install_plans(
+            &inventory,
+            &DeviceRegistryConfig::new(vec![0, 1], 4)
+                .with_device_profile(0, profile(None))
+                .with_device_profile(1, profile(Some(1_000))),
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(error.fact_value("device_ordinal"), Some("1"));
+        assert_eq!(error.fact_value("reason"), Some("attempt_floor_exceeds_managed_capacity"));
+    }
+
+    #[test]
     fn managed_capacities_are_derived_independently_per_device() {
         let whole_facts =
             DeviceFacts { device: 0, total_bytes: 1_000, free_bytes: 100, sm_count: Some(1), utilization_pct: None };
         let whole = DeviceRegistryInstallProfile {
             stream_pool_size: 2,
+            device_capabilities: DeviceCapabilities::default(),
             max_active_queries: None,
             capacity_policy: DeviceRegistryCapacityPolicy::Automatic {
                 headroom_bytes: 100,
@@ -962,12 +1085,16 @@ mod tests {
                 maximum_bytes: None,
             },
             backend_reserve_bytes: 50,
-            device_memory_manager_base: cudf::DeviceMemoryManagerBase::default(),
+            attempt_floor_bytes: None,
+            source_work_per_attempt: 1,
+            worker_job_capacity: 2,
+            lane_count: 2,
             memory_partition: DeviceRegistryMemoryPartition::WholeDevice,
         };
         let partition_facts = DeviceFacts { device: 1, total_bytes: 4_000, ..whole_facts.clone() };
         let partition = DeviceRegistryInstallProfile {
             stream_pool_size: 7,
+            device_capabilities: DeviceCapabilities::default(),
             max_active_queries: None,
             capacity_policy: DeviceRegistryCapacityPolicy::Automatic {
                 headroom_bytes: 100,
@@ -976,22 +1103,29 @@ mod tests {
                 maximum_bytes: None,
             },
             backend_reserve_bytes: 25,
-            device_memory_manager_base: cudf::DeviceMemoryManagerBase::default(),
+            attempt_floor_bytes: None,
+            source_work_per_attempt: 1,
+            worker_job_capacity: 7,
+            lane_count: 7,
             memory_partition: DeviceRegistryMemoryPartition::StaticPartition { allocation_limit_bytes: 600 },
         };
         let explicit_facts = DeviceFacts { device: 2, total_bytes: 10_000, ..whole_facts.clone() };
         let explicit = DeviceRegistryInstallProfile {
             stream_pool_size: 3,
+            device_capabilities: DeviceCapabilities::default(),
             max_active_queries: None,
             capacity_policy: DeviceRegistryCapacityPolicy::Explicit { limit_bytes: 700 },
             backend_reserve_bytes: 10,
-            device_memory_manager_base: cudf::DeviceMemoryManagerBase::default(),
+            attempt_floor_bytes: None,
+            source_work_per_attempt: 1,
+            worker_job_capacity: 3,
+            lane_count: 3,
             memory_partition: DeviceRegistryMemoryPartition::WholeDevice,
         };
 
-        assert_eq!(managed_capacity_bytes(0, &whole_facts, whole).unwrap(), 850);
-        assert_eq!(managed_capacity_bytes(1, &partition_facts, partition).unwrap(), 475);
-        assert_eq!(managed_capacity_bytes(2, &explicit_facts, explicit).unwrap(), 690);
+        assert_eq!(managed_capacity_bytes(0, &whole_facts, &whole).unwrap(), 850);
+        assert_eq!(managed_capacity_bytes(1, &partition_facts, &partition).unwrap(), 475);
+        assert_eq!(managed_capacity_bytes(2, &explicit_facts, &explicit).unwrap(), 690);
     }
 
     #[test]
@@ -1010,6 +1144,7 @@ mod tests {
             DeviceFacts { device: 0, total_bytes: 100, free_bytes: 50, sm_count: Some(1), utilization_pct: None };
         let automatic = DeviceRegistryInstallProfile {
             stream_pool_size: 1,
+            device_capabilities: DeviceCapabilities::default(),
             max_active_queries: None,
             capacity_policy: DeviceRegistryCapacityPolicy::Automatic {
                 headroom_bytes: 500,
@@ -1018,16 +1153,19 @@ mod tests {
                 maximum_bytes: None,
             },
             backend_reserve_bytes: 0,
-            device_memory_manager_base: cudf::DeviceMemoryManagerBase::default(),
+            attempt_floor_bytes: None,
+            source_work_per_attempt: 1,
+            worker_job_capacity: 1,
+            lane_count: 1,
             memory_partition: DeviceRegistryMemoryPartition::WholeDevice,
         };
-        assert_eq!(managed_capacity_bytes(0, &facts, automatic).unwrap(), 100);
+        assert_eq!(managed_capacity_bytes(0, &facts, &automatic).unwrap(), 100);
 
         let explicit = DeviceRegistryInstallProfile {
             capacity_policy: DeviceRegistryCapacityPolicy::Explicit { limit_bytes: 101 },
-            ..automatic
+            ..automatic.clone()
         };
-        let error = managed_capacity_bytes(0, &facts, explicit).unwrap_err();
+        let error = managed_capacity_bytes(0, &facts, &explicit).unwrap_err();
         assert_eq!(error.fact_value("reason"), Some("explicit_capacity_exceeds_owned_capacity"));
 
         let partition = DeviceRegistryInstallProfile {
@@ -1035,7 +1173,7 @@ mod tests {
             memory_partition: DeviceRegistryMemoryPartition::StaticPartition { allocation_limit_bytes: 101 },
             ..automatic
         };
-        let error = managed_capacity_bytes(0, &facts, partition).unwrap_err();
+        let error = managed_capacity_bytes(0, &facts, &partition).unwrap_err();
         assert_eq!(error.fact_value("reason"), Some("static_partition_exceeds_physical_capacity"));
     }
 }

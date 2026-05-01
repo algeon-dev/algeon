@@ -49,17 +49,11 @@ pub(super) const QUERY_COLUMNS: &[&str] = &[
     "graph_statistics_sum_out_degree",
     "graph_peak_bytes",
     "graph_reason",
-    "graph_cache",
     "graph_elapsed_ms",
     "graph_output_device_bytes",
     "output_rows",
     "native_lowered",
     "error",
-    "source_cache_hits",
-    "source_cache_misses",
-    "source_cache_inserts",
-    "source_cache_insert_skipped",
-    "source_cache_retained_bytes",
 ];
 
 pub(super) const SAMPLE_COLUMNS: &[&str] = &[
@@ -121,11 +115,6 @@ impl QueryRow {
             allocator_high_water_bytes: None,
             max_task_observed_peak_bytes: None,
             max_task_reservation_bytes: 0,
-            source_cache_hits: 0,
-            source_cache_misses: 0,
-            source_cache_inserts: 0,
-            source_cache_insert_skipped: 0,
-            source_cache_retained_bytes: 0,
             graph_algorithm: None,
             graph_class: None,
             graph_outcome: None,
@@ -155,7 +144,6 @@ impl QueryRow {
             graph_statistics_sum_out_degree: None,
             graph_peak_bytes: None,
             graph_reason: None,
-            graph_cache: None,
             graph_elapsed_ms: None,
             graph_output_device_bytes: None,
             output_rows: None,
@@ -177,11 +165,6 @@ impl QueryRow {
         self.allocator_high_water_bytes = metrics.allocator_high_water_bytes;
         self.max_task_observed_peak_bytes = metrics.max_task_observed_peak_bytes;
         self.max_task_reservation_bytes = metrics.max_task_reservation_bytes;
-        self.source_cache_hits = metrics.source_cache_hits;
-        self.source_cache_misses = metrics.source_cache_misses;
-        self.source_cache_inserts = metrics.source_cache_inserts;
-        self.source_cache_insert_skipped = metrics.source_cache_insert_skipped;
-        self.source_cache_retained_bytes = metrics.source_cache_retained_bytes;
         if let Some(reservation) = metrics.graph_reservation_rows.first() {
             self.graph_algorithm = Some(reservation.algorithm.clone());
             self.graph_class = Some(reservation.class.clone());
@@ -216,7 +199,6 @@ impl QueryRow {
             self.graph_elapsed_ms = Some(runtime.elapsed_ns as f64 / 1_000_000.0);
             self.graph_output_device_bytes = runtime.output_device_bytes;
             self.graph_peak_bytes = runtime.graph_peak_bytes;
-            self.graph_cache = graph_cache_metadata_value(&runtime.algorithm_metadata);
             if self.graph_algorithm.is_none() {
                 self.graph_algorithm = Some(runtime.algorithm.clone());
             }
@@ -288,17 +270,11 @@ impl QueryRow {
             fmt_opt(self.graph_statistics_sum_out_degree),
             fmt_opt(self.graph_peak_bytes),
             fmt_opt_str(&self.graph_reason),
-            fmt_opt_str(&self.graph_cache),
             self.graph_elapsed_ms.map_or_else(|| "none".to_string(), |value| format!("{value:.3}")),
             fmt_opt(self.graph_output_device_bytes),
             fmt_opt(self.output_rows),
             self.native_lowered.to_string(),
             self.error.as_deref().map(tsv_field).unwrap_or_else(|| "none".to_string()),
-            self.source_cache_hits.to_string(),
-            self.source_cache_misses.to_string(),
-            self.source_cache_inserts.to_string(),
-            self.source_cache_insert_skipped.to_string(),
-            self.source_cache_retained_bytes.to_string(),
         ];
         debug_assert_eq!(fields.len(), QUERY_COLUMNS.len());
         fields.join("\t")
@@ -344,7 +320,7 @@ pub(super) fn write_outputs(
     device_samples: &[DeviceSampleRow],
     makespan_ms: f64,
     effective_active_max: usize,
-    bfs_singleflight: datafusion_nexus::native_exec::graph::GraphBfsSingleflightSnapshot,
+    bfs_singleflight: datafusion_nexus::native_exec::GraphBfsSingleflightSnapshot,
 ) -> Result<(), Box<dyn Error>> {
     let queries_path = config.out_dir.join("queries.tsv");
     write_query_rows(&queries_path, query_rows)?;
@@ -400,20 +376,14 @@ pub(super) fn write_outputs(
             "iterations": config.iterations,
             "cuda_profiler_capture": config.cuda_profiler_capture,
             "stagger_ms": config.stagger_ms,
-            "max_concurrent_queries": config.max_concurrent_queries,
+            "max_active_attempts_per_device": config.max_active_attempts_per_device,
             "device_ordinals": config.device_ordinals,
-            "slot_guarantee": format!("{:?}", config.slot_guarantee),
-            "grant_min": config.grant_min.map(|share| format!("{share:?}")),
-            "grant_want": config.grant_want.map(|share| format!("{share:?}")),
-            "wait_timeout_ms": config.wait_timeout_ms,
+            "attempt_floor_bytes": config.attempt_floor_bytes,
+            "max_queue_wait_ms": config.max_queue_wait_ms,
             "budget_fraction": config.budget_fraction,
             "device_budget_bytes": config.device_budget_bytes,
-            "requested_grant_min_bytes": config.requested_grant_min_bytes,
-            "requested_grant_bytes": config.requested_grant_bytes,
             "raw_input_edges": config.raw_input_edges,
             "query_timeout_ms": config.query_timeout_ms,
-            "source_cache_max_retained_bytes": config.source_cache_max_retained_bytes,
-            "graph_cache_max_retained_bytes": config.graph_cache_max_retained_bytes,
             "edges_parquet": config.edges_parquet,
         },
         "labels": label_stats.iter().map(|(label, (ok, failed, walls, waits, fingerprints))| {

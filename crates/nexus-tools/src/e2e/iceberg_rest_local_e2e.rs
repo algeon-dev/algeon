@@ -354,7 +354,7 @@ async fn rest_native_planning_and_parity_local() {
     // Single partition keeps the plan free of RepartitionExec so the aggregate
     // shape lowers cleanly into one NexusNativeExec pipeline.
     let native_execution_config =
-        NexusNativeExecutionConfig::bounded_auto_sized().with_source_storage_profile(storage_profile);
+        NexusNativeExecutionConfig::bounded_default().with_source_storage_profile(storage_profile);
     let optimizer_config = NexusNativeOptimizerConfig::default().with_native_execution_config(native_execution_config);
     let state = SessionStateBuilder::new_with_default_features()
         .with_config(SessionConfig::new().with_target_partitions(1))

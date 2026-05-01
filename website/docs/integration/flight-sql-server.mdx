@@ -31,7 +31,6 @@ fixture/fixture.sh iceberg rest load \
   --load-mode add-files
 
 NEXUS_SERVER_CUGRAPH_ENABLED=true \
-NEXUS_SERVER_NATIVE_MEMORY_POLICY=unbounded \
 NEXUS_SERVER_BIND=127.0.0.1:50051 \
 DATAFUSION_CATALOG_DEFAULT_CATALOG=datafusion \
 DATAFUSION_CATALOG_DEFAULT_SCHEMA=public \
@@ -63,8 +62,8 @@ For the meaning of each server variable, see
 graph examples, see the [demo dataset](../cugraph/demo-dataset.mdx).
 
 Flight SQL accepts ordinary DataFusion `SET` statements through the update
-endpoint, but it rejects `SET datafusion_nexus.*`. DataFusion Nexus request
-policy for Flight workloads comes from server or tenant defaults rather than
+endpoint, but it rejects `SET datafusion_nexus.*`. DataFusion Nexus resource
+policy for Flight workloads comes from server configuration rather than
 session-scoped SQL keys.
 
 ## Connect from application code with ADBC
@@ -168,6 +167,6 @@ Output formats: `--output table` (default, shows column headers), `json`, `csv`,
 Whether standalone or embedded, native execution runs on the GPU. The process
 must run on a machine with a CUDA-capable device and matching cuDF plus the
 cuGraph and/or cuVS runtime libraries selected by its Cargo features. `cuvs_*`
-calls require `NEXUS_SERVER_NATIVE_MEMORY_POLICY=unbounded`; a bounded Flight
-SQL server returns structured `unsupported_operator` instead of falling back to
+calls remain fail-closed with structured `unsupported_operator` until their
+bounded peak-memory preflight is available; the server does not fall back to
 the host.

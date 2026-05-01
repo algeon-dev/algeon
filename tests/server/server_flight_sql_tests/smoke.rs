@@ -1,11 +1,11 @@
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn flight_sql_client_can_run_select_one() {
     let (listener, addr) = free_local_addr();
-    let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    let mut config = test_server_config();
     declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
+    let backend = build_injected_test_backend(&mut config);
     let replacement_config = config.clone();
-    let backend = NexusGpuBackend::from_server_config(&config).unwrap().expect("default server config is bounded");
     let cleanup_backend = backend.clone();
 
     let server = FlightSqlServer::builder().config(config).backend(backend).listener(listener).build().await.unwrap();
@@ -49,7 +49,7 @@ async fn flight_sql_client_can_run_select_one() {
 #[tokio::test(flavor = "current_thread")]
 async fn aborting_server_future_never_blocks_current_thread_runtime_drop() {
     let (listener, addr) = free_local_addr();
-    let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    let mut config = test_server_config();
     declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
     let replacement_config = config.clone();
@@ -89,10 +89,9 @@ async fn aborting_server_future_never_blocks_current_thread_runtime_drop() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn flight_sql_builder_can_run_select_one_and_shutdown_by_token() {
     let (listener, addr) = free_local_addr();
-    let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    let mut config = test_server_config();
     declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
-    config.admission_policy = config.admission_policy.with_slot_guarantee(SlotGuarantee::Optimistic);
     let shutdown = CancellationToken::new();
     let server = FlightSqlServer::builder()
         .config(config)
@@ -122,31 +121,23 @@ async fn flight_sql_builder_can_run_select_one_and_shutdown_by_token() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn unbounded_flight_sql_server_is_rejected_before_runtime_construction() {
-    let config = ServerConfig::from_env_get(|name| {
+async fn removed_unbounded_server_setting_is_rejected_during_config_load() {
+    let error = ServerConfig::from_env_get(|name| {
         (name == "NEXUS_SERVER_NATIVE_MEMORY_POLICY").then(|| "unbounded".to_string())
     })
-    .unwrap();
-
-    let error = match FlightSqlServer::builder().config(config).build().await {
-        Ok(_) => panic!("Phase 0 Flight SQL must reject unbounded native execution"),
-        Err(error) => error,
-    };
-
+    .unwrap_err();
     assert_eq!(error.code(), datafusion_nexus::error::ErrorCode::InvalidRequest);
-    assert_eq!(error.operation(), "datafusion_nexus.server.builder");
-    assert_eq!(error.fact_value("reason"), Some("server_unbounded_backend_unsupported"));
+    assert_eq!(error.operation(), "datafusion_nexus.server.config");
     assert_eq!(error.fact_value("config_field"), Some("NEXUS_SERVER_NATIVE_MEMORY_POLICY"));
-    assert_eq!(error.fact_value("required_memory_policy"), Some("bounded"));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn flight_sql_datafusion_baseline_statement_never_enters_gpu_ledger() {
     let (listener, addr) = free_local_addr();
-    let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    let mut config = test_server_config();
     declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
-    let backend = NexusGpuBackend::from_server_config(&config).unwrap().expect("default server config is bounded");
+    let backend = build_injected_test_backend(&mut config);
     let shutdown = CancellationToken::new();
     let server = FlightSqlServer::builder()
         .config(config)
@@ -163,7 +154,13 @@ async fn flight_sql_datafusion_baseline_statement_never_enters_gpu_ledger() {
     // Case-insensitive LIKE remains a structured native expression rejection.
     // Keep this independent of regexp_replace lowering coverage so the test
     // continues to exercise DataFusion-baseline execution, not the GPU ledger.
+    let attempts_before = backend.attempt_counters_snapshot().attempts_begun;
     let flight_info = client.execute("select 'ABC' ilike 'a%' as label_match".to_string(), None).await.unwrap();
+    assert_eq!(
+        backend.attempt_counters_snapshot().attempts_begun,
+        attempts_before + 1,
+        "GetFlightInfo begins the sole invocation attempt before any GPU admission"
+    );
     wait_for_empty_gpu_ledger(&backend).await;
     let snapshot = backend.admission_snapshot().unwrap();
     assert_eq!(snapshot.active_queries, 0, "GetFlightInfo must not occupy GPU admission: {snapshot:?}");
@@ -194,13 +191,11 @@ async fn flight_sql_datafusion_baseline_statement_never_enters_gpu_ledger() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn flight_sql_builder_shares_injected_backend_with_session_context() {
     let (listener, addr) = free_local_addr();
-    let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    let mut config = test_server_config();
     declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
-    config.max_in_flight = 1;
-    config.admission_policy =
-        config.admission_policy.with_max_concurrent_queries(1).with_slot_guarantee(SlotGuarantee::Optimistic);
-    let backend = NexusGpuBackend::from_server_config(&config).unwrap().expect("default server config is bounded");
+    config.gpu_device_profiles[0] = config.gpu_device_profiles[0].clone().with_max_active_attempts(1);
+    let backend = build_injected_test_backend(&mut config);
     let dir = tempfile::Builder::new().prefix("datafusion-nexus-flight-sql-shared-backend-").tempdir().unwrap();
     let parquet_path = dir.path().join("edges.parquet");
     write_update_edges_parquet(&parquet_path);
@@ -271,14 +266,10 @@ async fn flight_sql_builder_shares_injected_backend_with_session_context() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn backend_clone_installed_sessions_share_identity_queue_and_worker_pool_records() {
-    let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    let mut config = test_server_config();
     declare_test_gpu_ownership(&mut config);
-    config.max_in_flight = 1;
-    config.admission_policy = config
-        .admission_policy
-        .with_max_concurrent_queries(1)
-        .with_max_queued(2)
-        .with_slot_guarantee(SlotGuarantee::Optimistic);
+    config.gpu_device_profiles[0] = config.gpu_device_profiles[0].clone().with_max_active_attempts(1);
+    config.queue_policy = config.queue_policy.clone().with_max_queued_attempts(2);
     let backend = NexusGpuBackend::from_server_config(&config).unwrap().expect("default server config is bounded");
     let first_backend = backend.clone();
     let second_backend = backend.clone();
@@ -321,7 +312,7 @@ async fn backend_clone_installed_sessions_share_identity_queue_and_worker_pool_r
         first_backend.device_admission_snapshots().unwrap(),
         second_backend.device_admission_snapshots().unwrap()
     );
-    assert_eq!(first_backend.memory_governor_reports().unwrap(), second_backend.memory_governor_reports().unwrap());
+    assert_eq!(first_backend.device_ledger_reports().unwrap(), second_backend.device_ledger_reports().unwrap());
     assert_eq!(
         first_backend.device_memory_failure_reports().unwrap(),
         second_backend.device_memory_failure_reports().unwrap()

@@ -1,0 +1,5 @@
+error[E0432]: unresolved import `nexus_query_engine::adaptive_runtime`
+ --> tests/ui/public_api/forbidden_adaptive_runtime.rs:1:25
+  |
+1 | use nexus_query_engine::adaptive_runtime::AdaptiveMemoryHistory;
+  |                         ^^^^^^^^^^^^^^^^ could not find `adaptive_runtime` in `nexus_query_engine`

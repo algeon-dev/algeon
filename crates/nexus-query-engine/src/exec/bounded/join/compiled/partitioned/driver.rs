@@ -307,7 +307,6 @@ where
             plan.context,
             "nexus_query_engine.exec.bounded.partitioned_join_probe_split_retry",
         )?;
-        record_partitioned_join_adaptive_retry_action(plan.context, metrics);
         return materialize_partitioned_join_retry_children(
             plan,
             left_partitioned,
@@ -326,7 +325,6 @@ where
             plan.context,
             "nexus_query_engine.exec.bounded.partitioned_join_repartition_retry",
         )?;
-        record_partitioned_join_adaptive_retry_action(plan.context, metrics);
         return materialize_repartitioned_join_work_with_retry(
             plan,
             left_partitioned,
@@ -364,12 +362,6 @@ where
 
 fn record_partitioned_join_retry_error(error: &QueryError, metrics: &mut QueryMetrics) {
     crate::exec::retry::record_retryable_resource_error(error, metrics);
-}
-
-fn record_partitioned_join_adaptive_retry_action(context: &ExecutionContext, metrics: &mut QueryMetrics) {
-    if context.native_pipeline_execution_mode() == crate::mode::NativePipelineExecutionMode::Adaptive {
-        metrics.record_adaptive_retry();
-    }
 }
 
 fn materialize_partitioned_join_retry_children<F>(
@@ -1019,26 +1011,11 @@ mod tests {
     }
 
     #[test]
-    fn retry_error_evidence_does_not_claim_an_adaptive_action_before_backoff_succeeds() {
+    fn retry_error_evidence_records_bounded_retry_fact() {
         let error = retryable_error_with_fact("memory_boundary", "join_partition_right_side");
         let mut metrics = QueryMetrics::default();
 
         record_partitioned_join_retry_error(&error, &mut metrics);
         assert_eq!(metrics.retry_reservation_failure_count, 1);
-        assert_eq!(metrics.adaptive_retry_count, 0, "an exhausted retry has error evidence but no adaptive action");
-
-        let adaptive_context = ExecutionContext::builder()
-            .with_native_pipeline_execution_mode(crate::mode::NativePipelineExecutionMode::Adaptive)
-            .build()
-            .expect("adaptive context builds");
-        record_partitioned_join_adaptive_retry_action(&adaptive_context, &mut metrics);
-        assert_eq!(
-            metrics.adaptive_retry_count, 1,
-            "only a retry that begins after backoff records an adaptive action"
-        );
-
-        let strict_context = ExecutionContext::builder().build().expect("strict context builds");
-        record_partitioned_join_adaptive_retry_action(&strict_context, &mut metrics);
-        assert_eq!(metrics.adaptive_retry_count, 1, "strict retries are not adaptive actions");
     }
 }

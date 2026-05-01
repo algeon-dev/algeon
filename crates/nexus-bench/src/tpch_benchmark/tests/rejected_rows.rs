@@ -6,13 +6,13 @@ fn benchmark_report_header_and_not_selected_rows_are_stable() {
         NativeTpchBenchmarkConfig { query_ids: vec!["q02".to_string()], ..NativeTpchBenchmarkConfig::default() };
     let metadata = benchmark_metadata();
     let mut planning = not_supported_planning_row("q02");
-    planning.strict_bounded_contract_rows = vec![nexus_query_engine::contract_report::StrictBoundedContractGateRow {
-        execution_mode: nexus_query_engine::mode::StrictBoundedExecutionMode::UnsupportedStrictBounded,
+    planning.capability_contract_rows = vec![nexus_query_engine::contract_report::CapabilityContractGateRow {
+        execution_mode: nexus_query_engine::mode::CapabilityEnvelopeStatus::Rejected,
         contract_scope: nexus_query_engine::capability::ReservationRequirementScope::Node,
-        gate_id: nexus_query_engine::contract_report::StrictBoundedContractGateId::Compiled(
+        gate_id: nexus_query_engine::contract_report::CapabilityContractGateId::Compiled(
             nexus_query_engine::pipeline::ReservationGateId::new(0),
         ),
-        owner: nexus_query_engine::contract_report::StrictBoundedContractOwner::Compiled(
+        owner: nexus_query_engine::contract_report::CapabilityContractOwner::Compiled(
             nexus_query_engine::pipeline::ReservationGateOwner::Task(
                 nexus_query_engine::pipeline::PipelineTaskId::new(0),
             ),
@@ -46,8 +46,7 @@ fn benchmark_report_header_and_not_selected_rows_are_stable() {
     assert!(text.contains("# tpch_benchmark_native_max_source_chunk_bytes=536870912\n"));
     assert!(text.contains("# tpch_benchmark_native_source_chunk_planning_mode=conservative\n"));
     assert!(text.contains("# tpch_benchmark_native_max_source_reads_in_flight=2\n"));
-    assert!(text.contains("# tpch_benchmark_native_source_cache_policy=disabled\n"));
-    assert!(text.contains("# tpch_benchmark_native_source_cache_max_retained_bytes=none\n"));
+    assert!(!text.contains("tpch_benchmark_native_source_cache_"));
     assert!(text.contains("q02\tnot_supported\tbounded_rejected\tnative_bounded_join_unsupported\toperator_hashjoin"));
     assert!(text.contains("execution_mode=unsupported_strict_bounded"));
     assert!(text.contains("contract_status=blocked_by_lower_level"));

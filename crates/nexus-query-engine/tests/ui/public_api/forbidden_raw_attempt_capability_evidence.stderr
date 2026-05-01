@@ -1,0 +1,23 @@
+error[E0603]: struct `AttemptCapabilityEvidence` is private
+ --> tests/ui/public_api/forbidden_raw_attempt_capability_evidence.rs:1:37
+  |
+1 | use nexus_query_engine::admission::{AttemptCapabilityEvidence, EstimateQuality};
+  |                                     ^^^^^^^^^^^^^^^^^^^^^^^^^ private struct
+  |
+note: the struct `AttemptCapabilityEvidence` is defined here
+ --> src/admission.rs
+  |
+  |     AttemptCapabilityEvidence as AttemptRequirement, AttemptCapabilityEvidence, EstimateQuality,
+  |                                                      ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0603]: enum `EstimateQuality` is private
+ --> tests/ui/public_api/forbidden_raw_attempt_capability_evidence.rs:1:64
+  |
+1 | use nexus_query_engine::admission::{AttemptCapabilityEvidence, EstimateQuality};
+  |                                                                ^^^^^^^^^^^^^^^ private enum
+  |
+note: the enum `EstimateQuality` is defined here
+ --> src/admission.rs
+  |
+  |     AttemptCapabilityEvidence as AttemptRequirement, AttemptCapabilityEvidence, EstimateQuality,
+  |                                                                                 ^^^^^^^^^^^^^^^

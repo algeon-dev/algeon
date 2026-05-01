@@ -17,7 +17,7 @@ fn strict_admission_rejects_root_full_sort_join_aggregate_with_local_envelope_re
     let projection = analysis.first_rejection_projection().unwrap_or_else(|| {
         panic!(
             "{label}: full-sort envelope should project locally; admission={:?}",
-            analysis.strict_bounded_envelope_admission()
+            analysis.capability_envelope_admission()
         )
     });
     assert!(
@@ -39,11 +39,11 @@ fn strict_admission_rejects_root_full_sort_join_aggregate_with_local_envelope_re
     );
 
     assert!(
-        strict_bounded_pipeline_admission(&plan).expect("strict admission should not fail").is_none(),
+        bounded_pipeline_admission(&plan).expect("strict admission should not fail").is_none(),
         "{label}: Phase 1 owns and rejects the full-sort shape before whole-native execution"
     );
 
-    let report = StrictBoundedContractReport::from_capability_analysis(&analysis)
+    let report = CapabilityContractReport::from_capability_analysis(&analysis)
         .expect("rejected full-sort envelope should still produce a contract report");
     let blocking_row = report
         .gate_rows()
@@ -87,11 +87,11 @@ fn strict_admission_rejects_statistical_root_full_sort_when_subcontract_is_unpro
     );
     assert_eq!(projection.reason, "root_full_sort_join_aggregate_rejects_unsupported_subcontract");
     assert_ne!(
-        analysis.strict_bounded_envelope_admission(),
-        CapabilityEnvelopeAdmission::Admitted { envelope: StrictBoundedEnvelope::ExactStatisticalJoinFinalFullSort }
+        analysis.capability_envelope_admission(),
+        CapabilityEnvelopeAdmission::Admitted { envelope: CapabilityEnvelope::ExactStatisticalJoinFinalFullSort }
     );
     assert!(
-        strict_bounded_pipeline_admission(&plan).expect("strict admission should not fail").is_none(),
+        bounded_pipeline_admission(&plan).expect("strict admission should not fail").is_none(),
         "unproven root full-sort subcontract must not be admitted through the exact statistical envelope"
     );
 }
@@ -107,15 +107,15 @@ fn strict_admission_accepts_root_full_sort_shared_aggregate_fanout_with_modeled_
             && invariant.nodes.first().is_some_and(|producer| producer.to_string() == "n3")
             && invariant.decision == CapabilityDecision::Satisfied
     }));
-    let CapabilityEnvelopeAdmission::Admitted { envelope } = analysis.strict_bounded_envelope_admission() else {
-        panic!("expected root full-sort selected envelope, got {:?}", analysis.strict_bounded_envelope_admission());
+    let CapabilityEnvelopeAdmission::Admitted { envelope } = analysis.capability_envelope_admission() else {
+        panic!("expected root full-sort selected envelope, got {:?}", analysis.capability_envelope_admission());
     };
-    assert_eq!(envelope, StrictBoundedEnvelope::RootFullSortJoinAggregate);
+    assert_eq!(envelope, CapabilityEnvelope::RootFullSortJoinAggregate);
 
-    let admission = strict_bounded_pipeline_admission(&plan)
+    let admission = bounded_pipeline_admission(&plan)
         .expect("strict admission should not fail")
         .expect("shared aggregate fanout root full-sort join/aggregate should be admitted");
-    assert_eq!(admission.envelope(), StrictBoundedEnvelope::RootFullSortJoinAggregate);
+    assert_eq!(admission.envelope(), CapabilityEnvelope::RootFullSortJoinAggregate);
 
     let pipeline = admission.pipeline();
     assert_task_kind_count(pipeline, PipelineTaskKind::SourceRead, 2);
@@ -128,9 +128,9 @@ fn strict_admission_accepts_root_full_sort_shared_aggregate_fanout_with_modeled_
         CompiledBoundedPipelineSupport::Supported
     );
 
-    let report = StrictBoundedContractReport::from_compiled_pipeline(admission.analysis(), pipeline)
+    let report = CapabilityContractReport::from_compiled_pipeline(admission.analysis(), pipeline)
         .expect("compiled root full-sort report should be valid");
-    assert_eq!(report.execution_mode(), StrictBoundedExecutionMode::StrictBounded);
+    assert_eq!(report.execution_mode(), CapabilityEnvelopeStatus::Admitted);
     assert_modeled_gate_row(
         "root full-sort shared aggregate fanout",
         &report,
@@ -180,16 +180,16 @@ fn strict_admission_accepts_root_full_sort_keyed_join_aggregate_with_modeled_gat
         "fixture must pin the overlap with generic single-join post-root admission"
     );
     assert!(analysis.admits_root_full_sort_join_aggregate_pipeline());
-    let CapabilityEnvelopeAdmission::Admitted { envelope } = analysis.strict_bounded_envelope_admission() else {
-        panic!("expected root full-sort selected envelope, got {:?}", analysis.strict_bounded_envelope_admission());
+    let CapabilityEnvelopeAdmission::Admitted { envelope } = analysis.capability_envelope_admission() else {
+        panic!("expected root full-sort selected envelope, got {:?}", analysis.capability_envelope_admission());
     };
-    assert_eq!(envelope, StrictBoundedEnvelope::RootFullSortJoinAggregate);
+    assert_eq!(envelope, CapabilityEnvelope::RootFullSortJoinAggregate);
     assert_eq!(envelope.as_str(), "root_full_sort_join_aggregate");
 
-    let admission = strict_bounded_pipeline_admission(&plan)
+    let admission = bounded_pipeline_admission(&plan)
         .expect("strict admission should not fail")
         .expect("keyed root full-sort join/aggregate should be admitted");
-    assert_eq!(admission.envelope(), StrictBoundedEnvelope::RootFullSortJoinAggregate);
+    assert_eq!(admission.envelope(), CapabilityEnvelope::RootFullSortJoinAggregate);
 
     let pipeline = admission.pipeline();
     assert_task_kind_count(pipeline, PipelineTaskKind::JoinMaterialize, 1);
@@ -201,9 +201,9 @@ fn strict_admission_accepts_root_full_sort_keyed_join_aggregate_with_modeled_gat
         CompiledBoundedPipelineSupport::Supported
     );
 
-    let report = StrictBoundedContractReport::from_compiled_pipeline(admission.analysis(), pipeline)
+    let report = CapabilityContractReport::from_compiled_pipeline(admission.analysis(), pipeline)
         .expect("compiled root full-sort report should be valid");
-    assert_eq!(report.execution_mode(), StrictBoundedExecutionMode::StrictBounded);
+    assert_eq!(report.execution_mode(), CapabilityEnvelopeStatus::Admitted);
     assert_modeled_gate_row(
         "root full-sort keyed join",
         &report,
@@ -236,11 +236,11 @@ fn strict_admission_accepts_root_full_sort_keyed_grouped_aggregate_below_orderle
         analysis.root_full_sort_join_aggregate_admission
     );
     assert_eq!(
-        analysis.strict_bounded_envelope_admission(),
-        CapabilityEnvelopeAdmission::Admitted { envelope: StrictBoundedEnvelope::RootFullSortJoinAggregate }
+        analysis.capability_envelope_admission(),
+        CapabilityEnvelopeAdmission::Admitted { envelope: CapabilityEnvelope::RootFullSortJoinAggregate }
     );
 
-    let admission = strict_bounded_pipeline_admission(&plan)
+    let admission = bounded_pipeline_admission(&plan)
         .expect("strict admission should not fail")
         .expect("q98-shaped root full-sort join/aggregate should be admitted");
     let pipeline = admission.pipeline();
@@ -254,7 +254,7 @@ fn strict_admission_accepts_root_full_sort_keyed_grouped_aggregate_below_orderle
         CompiledBoundedPipelineSupport::Supported
     );
 
-    let report = StrictBoundedContractReport::from_compiled_pipeline(admission.analysis(), pipeline)
+    let report = CapabilityContractReport::from_compiled_pipeline(admission.analysis(), pipeline)
         .expect("compiled q98-shaped root full-sort report should be valid");
     assert_modeled_gate_row(
         "root full-sort keyed grouped aggregate below window",
@@ -282,24 +282,24 @@ fn strict_admission_accepts_root_full_sort_keyless_scalar_projection_fanout_with
     let analysis = plan.capability_analysis();
 
     assert!(analysis.admits_root_full_sort_join_aggregate_pipeline());
-    let CapabilityEnvelopeAdmission::Admitted { envelope } = analysis.strict_bounded_envelope_admission() else {
-        panic!("expected root full-sort selected envelope, got {:?}", analysis.strict_bounded_envelope_admission());
+    let CapabilityEnvelopeAdmission::Admitted { envelope } = analysis.capability_envelope_admission() else {
+        panic!("expected root full-sort selected envelope, got {:?}", analysis.capability_envelope_admission());
     };
-    assert_eq!(envelope, StrictBoundedEnvelope::RootFullSortJoinAggregate);
+    assert_eq!(envelope, CapabilityEnvelope::RootFullSortJoinAggregate);
 
-    let admission = strict_bounded_pipeline_admission(&plan)
+    let admission = bounded_pipeline_admission(&plan)
         .expect("strict admission should not fail")
         .expect("keyless scalar root full-sort join/aggregate should be admitted");
-    assert_eq!(admission.envelope(), StrictBoundedEnvelope::RootFullSortJoinAggregate);
+    assert_eq!(admission.envelope(), CapabilityEnvelope::RootFullSortJoinAggregate);
     assert_eq!(
         compiled_bounded_query_plan_support(&plan, admission.pipeline())
             .expect("plan-aware support check should not fail"),
         CompiledBoundedPipelineSupport::Supported
     );
 
-    let report = StrictBoundedContractReport::from_compiled_pipeline(admission.analysis(), admission.pipeline())
+    let report = CapabilityContractReport::from_compiled_pipeline(admission.analysis(), admission.pipeline())
         .expect("compiled root full-sort report should be valid");
-    assert_eq!(report.execution_mode(), StrictBoundedExecutionMode::StrictBounded);
+    assert_eq!(report.execution_mode(), CapabilityEnvelopeStatus::Admitted);
     assert_modeled_gate_row(
         "root full-sort keyless scalar",
         &report,
@@ -338,24 +338,24 @@ fn strict_admission_accepts_root_full_sort_repeated_projection_fanout_with_model
     let analysis = plan.capability_analysis();
 
     assert!(analysis.admits_root_full_sort_join_aggregate_pipeline());
-    let CapabilityEnvelopeAdmission::Admitted { envelope } = analysis.strict_bounded_envelope_admission() else {
-        panic!("expected root full-sort selected envelope, got {:?}", analysis.strict_bounded_envelope_admission());
+    let CapabilityEnvelopeAdmission::Admitted { envelope } = analysis.capability_envelope_admission() else {
+        panic!("expected root full-sort selected envelope, got {:?}", analysis.capability_envelope_admission());
     };
-    assert_eq!(envelope, StrictBoundedEnvelope::RootFullSortJoinAggregate);
+    assert_eq!(envelope, CapabilityEnvelope::RootFullSortJoinAggregate);
 
-    let admission = strict_bounded_pipeline_admission(&plan)
+    let admission = bounded_pipeline_admission(&plan)
         .expect("strict admission should not fail")
         .expect("repeated projection fanout root full-sort join/aggregate should be admitted");
-    assert_eq!(admission.envelope(), StrictBoundedEnvelope::RootFullSortJoinAggregate);
+    assert_eq!(admission.envelope(), CapabilityEnvelope::RootFullSortJoinAggregate);
     assert_eq!(
         compiled_bounded_query_plan_support(&plan, admission.pipeline())
             .expect("plan-aware support check should not fail"),
         CompiledBoundedPipelineSupport::Supported
     );
 
-    let report = StrictBoundedContractReport::from_compiled_pipeline(admission.analysis(), admission.pipeline())
+    let report = CapabilityContractReport::from_compiled_pipeline(admission.analysis(), admission.pipeline())
         .expect("compiled root full-sort report should be valid");
-    assert_eq!(report.execution_mode(), StrictBoundedExecutionMode::StrictBounded);
+    assert_eq!(report.execution_mode(), CapabilityEnvelopeStatus::Admitted);
     assert_modeled_gate_row(
         "root full-sort repeated projection fanout",
         &report,

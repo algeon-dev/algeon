@@ -1,7 +1,7 @@
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn prepared_statement_round_trip_executes_select() {
     let (listener, addr) = free_local_addr();
-    let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    let mut config = test_server_config();
     declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
 
@@ -27,7 +27,7 @@ async fn prepared_statement_round_trip_executes_select() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn prepared_statement_update_rejects_select_and_preserves_handle() {
     let (listener, addr) = free_local_addr();
-    let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    let mut config = test_server_config();
     declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
 
@@ -56,7 +56,7 @@ async fn prepared_statement_update_rejects_select_and_preserves_handle() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn statement_update_rejects_sql_prepare_namespace() {
     let (listener, addr) = free_local_addr();
-    let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    let mut config = test_server_config();
     declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
 
@@ -78,7 +78,7 @@ async fn statement_update_rejects_sql_prepare_namespace() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn prepared_statement_rejects_transaction_id() {
     let (listener, addr) = free_local_addr();
-    let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    let mut config = test_server_config();
     declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
 
@@ -98,7 +98,7 @@ async fn prepared_statement_rejects_transaction_id() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn prepared_statement_close_is_idempotent_via_raw_action() {
     let (listener, addr) = free_local_addr();
-    let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    let mut config = test_server_config();
     declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
 
@@ -124,7 +124,7 @@ async fn prepared_statement_close_is_idempotent_via_raw_action() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn prepared_statement_invalid_sql_fails_at_create() {
     let (listener, addr) = free_local_addr();
-    let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    let mut config = test_server_config();
     declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
 
@@ -151,7 +151,7 @@ async fn prepared_statement_invalid_sql_fails_at_create() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn unknown_prepared_statement_query_stats_remains_resolvable() {
     let (listener, addr) = free_local_addr();
-    let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    let mut config = test_server_config();
     declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
 
@@ -181,7 +181,7 @@ async fn unknown_prepared_statement_query_stats_remains_resolvable() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn prepared_statement_missing_column_uses_server_error_presentation() {
     let (listener, addr) = free_local_addr();
-    let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    let mut config = test_server_config();
     declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
 

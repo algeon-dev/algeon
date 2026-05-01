@@ -223,7 +223,7 @@ fn bounded_native_query_enforces_mixed_keyed_residual_grouped_aggregate_hard_bud
                 .and_then(|value| value.parse::<u64>().ok())
                 .expect("aggregate hard-budget failure should report budget bytes");
             assert!(budget_bytes >= operator_token_budget);
-            assert_eq!(error.fact_value("budget_enforcement"), Some("reservation_arena_member"));
+            assert_eq!(error.fact_value("budget_enforcement"), Some("query_domain_member"));
             assert_eq!(error.fact_value("memory_boundary"), None);
             assert_eq!(error.fact_value("stage"), None);
             assert_eq!(error.fact_value("attempt"), None);

@@ -9,14 +9,6 @@ pub(super) struct ReservationObservation {
     pub(super) span_id: Option<RuntimeSpanId>,
 }
 
-#[derive(Debug, Clone)]
-pub(super) struct SourceCacheBaselineObservation {
-    pub(super) observation: Option<ReservationObservation>,
-    pub(super) event_context: ActiveReservationEventContext,
-    pub(super) reservation_projection_ledger: ReservationProjectionLedgerHandle,
-    pub(super) remaining_bytes: u64,
-}
-
 impl ReservationObservation {
     pub(super) fn retarget(&mut self, task_attempt_id: Option<TaskAttemptId>, span_id: Option<RuntimeSpanId>) {
         self.task_attempt_id = task_attempt_id;

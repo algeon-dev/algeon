@@ -1,52 +1,87 @@
-#[cfg(feature = "cugraph")]
-use super::super::context::{ReservedResidentGraphHit, warm_graph_reservation_error};
 use super::{
     super::{
-        context::{QueryResourceAnchor, QueryResourceEpoch, QueryServiceResourceEpoch},
-        memory_domain::{create_grant_memory_domain, create_grant_reservation_arena},
+        attempt_domain::AttemptAllocationDomain,
+        context::{
+            AttemptAuxiliaryPermit, AttemptAuxiliarySlots, QueryResourceAnchor, QueryResourceEpoch,
+            QueryServiceResourceEpoch,
+        },
     },
     *,
 };
 use crate::runtime::GpuExecutorLease;
 
+const CONTEXT_SETUP_WAIT_POLL_INTERVAL: Duration = Duration::from_millis(10);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ContextSetupClaim {
+    Root,
+    Auxiliary,
+    WaitForRoot,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RootContextSetupState {
+    Unclaimed,
+    InFlight,
+    Ready,
+}
+
+#[derive(Debug)]
+struct RootContextSetupCoordinator {
+    state: Mutex<RootContextSetupState>,
+    changed: Condvar,
+    async_changed: tokio::sync::Notify,
+}
+
+impl RootContextSetupCoordinator {
+    fn new() -> Self {
+        Self {
+            state: Mutex::new(RootContextSetupState::Unclaimed),
+            changed: Condvar::new(),
+            async_changed: tokio::sync::Notify::new(),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub(super) struct QueryHandleLifetime {
     service: Mutex<Option<Arc<QueryServiceInner>>>,
-    pub(super) tenant_id: TenantId,
     pub(super) admission_request_id: AdmissionRequestId,
     observation: RuntimeObservationHandle,
     completion: Mutex<Option<QueryCompletion>>,
     service_epoch_user: Mutex<Option<QueryServiceEpochUser>>,
-    gpu_resource_permit: Mutex<Option<GpuResourcePermit>>,
     device_ordinal: usize,
     release_requested: AtomicBool,
     released: AtomicBool,
     query_epoch: QueryResourceEpoch,
     root_context: Mutex<Option<ExecutionContext>>,
-    memory_grant: Mutex<Option<MemoryGrant>>,
-    device_slot: Mutex<Option<DeviceActiveQuerySlot>>,
-    #[cfg(feature = "cugraph")]
-    warm_graph_reservation: Mutex<Option<WarmGraphReservation>>,
-    #[cfg(feature = "cugraph")]
-    warm_graph_priced: bool,
+    root_context_setup: RootContextSetupCoordinator,
+    attempt_auxiliary_slots: Arc<AttemptAuxiliarySlots>,
+    envelope: Mutex<Option<super::service::transaction::AdmissionEnvelope>>,
+    #[cfg(test)]
+    release_commit_gate: Mutex<Option<Arc<ReleaseCommitGate>>>,
+    #[cfg(test)]
+    terminal_domain_usage: Mutex<Option<cudf::QueryMemoryDomainUsage>>,
 }
 
 impl QueryHandleLifetime {
     pub(super) fn new(
         service: Arc<QueryServiceInner>,
-        tenant_id: TenantId,
         admission_request_id: AdmissionRequestId,
         observation: RuntimeObservationHandle,
         completion: QueryCompletion,
-        gpu_resource_permit: Option<GpuResourcePermit>,
-        memory_grant: MemoryGrant,
-        device_slot: Option<DeviceActiveQuerySlot>,
-        #[cfg(feature = "cugraph")] warm_graph_reservation: Option<WarmGraphReservation>,
+        envelope: super::service::transaction::AdmissionEnvelope,
     ) -> Arc<Self> {
-        let device_ordinal =
-            device_slot.as_ref().map(DeviceActiveQuerySlot::device_ordinal).unwrap_or(service.config.device_ordinal);
-        #[cfg(feature = "cugraph")]
-        let warm_graph_priced = warm_graph_reservation.is_some();
+        let device_ordinal = envelope.device_ordinal();
+        let attempt_auxiliary_capacity = service
+            .resources
+            .as_ref()
+            .and_then(|resources| resources.devices.resource_profile(device_ordinal))
+            .map_or_else(
+                || service.config.source_scheduler_policy.max_source_reads_in_flight().max(1),
+                |profile| profile.source_work_per_attempt,
+            );
+        let attempt_auxiliary_slots = AttemptAuxiliarySlots::new(device_ordinal, attempt_auxiliary_capacity);
         let service_epoch_user = service.service_epoch.retain_existing_user();
         Arc::new_cyclic(|weak: &Weak<QueryHandleLifetime>| {
             let weak_lifetime = weak.clone();
@@ -57,39 +92,96 @@ impl QueryHandleLifetime {
             });
             Self {
                 service: Mutex::new(Some(service)),
-                tenant_id,
                 admission_request_id,
                 observation,
                 completion: Mutex::new(Some(completion)),
                 service_epoch_user: Mutex::new(Some(service_epoch_user)),
-                gpu_resource_permit: Mutex::new(gpu_resource_permit),
                 device_ordinal,
                 release_requested: AtomicBool::new(false),
                 released: AtomicBool::new(false),
                 query_epoch: QueryResourceEpoch::new(Some(on_query_idle)),
                 root_context: Mutex::new(None),
-                memory_grant: Mutex::new(Some(memory_grant)),
-                device_slot: Mutex::new(device_slot),
-                #[cfg(feature = "cugraph")]
-                warm_graph_reservation: Mutex::new(warm_graph_reservation),
-                #[cfg(feature = "cugraph")]
-                warm_graph_priced,
+                root_context_setup: RootContextSetupCoordinator::new(),
+                attempt_auxiliary_slots,
+                envelope: Mutex::new(Some(envelope)),
+                #[cfg(test)]
+                release_commit_gate: Mutex::new(None),
+                #[cfg(test)]
+                terminal_domain_usage: Mutex::new(None),
             }
         })
     }
 
+    fn lock_envelope(
+        &self,
+    ) -> Result<std::sync::MutexGuard<'_, Option<super::service::transaction::AdmissionEnvelope>>> {
+        self.envelope.lock().map_err(|_error| {
+            QueryError::new(
+                QueryErrorCode::Internal,
+                "nexus_query_engine.query_service.context",
+                "query service admission envelope mutex was poisoned",
+            )
+        })
+    }
+
+    /// Attempt allocation domain clone for disposition tests.
+    #[cfg(test)]
+    pub(super) fn envelope_domain_for_test(&self) -> Option<AttemptAllocationDomain> {
+        self.lock_envelope().ok()?.as_ref().and_then(|envelope| envelope.domain().cloned())
+    }
+
+    /// Admission-envelope identity evidence for transaction tests:
+    /// (domain id, grant id, worker scope).
+    #[cfg(test)]
+    pub(super) fn envelope_evidence(
+        &self,
+    ) -> Option<(Option<u64>, u64, Option<crate::runtime::gpu::DeviceWorkerScope>)> {
+        self.lock_envelope().ok()?.as_ref().map(|envelope| {
+            (
+                envelope.domain().map(|domain| domain.domain_id()),
+                envelope.memory_grant().grant_id(),
+                envelope.worker_scope(),
+            )
+        })
+    }
+
+    /// Arms a barrier inside this handle's release commit, after the health
+    /// commit and before the observation seal. The barrier fires exactly once.
+    #[cfg(test)]
+    pub(super) fn arm_release_commit_gate(&self) -> Arc<ReleaseCommitGate> {
+        let gate = Arc::new(ReleaseCommitGate {
+            entered: std::sync::atomic::AtomicUsize::new(0),
+            gate: std::sync::Barrier::new(2),
+        });
+        *self.release_commit_gate.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::clone(&gate));
+        gate
+    }
+
+    /// Overrides this handle's terminal attempt-domain sample exactly once.
+    #[cfg(test)]
+    pub(super) fn inject_terminal_domain_usage_for_test(&self, usage: cudf::QueryMemoryDomainUsage) {
+        *self.terminal_domain_usage.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(usage);
+    }
+
+    /// Installs an unrelated root-stream completion to exercise the
+    /// fail-closed duplicate-handoff path. Normal query-service ownership
+    /// never permits this; a later release must commit `CallbackAbandoned`
+    /// before it returns admission capacity.
+    #[cfg(test)]
+    pub(super) fn install_foreign_root_stream_cleanup_completion_for_test(&self) {
+        let root_context = self.root_context.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let root_context = root_context.as_ref().expect("root context is acquired before injecting cleanup collision");
+        assert!(root_context.install_root_stream_cleanup_completion(|_| {}, || {}));
+    }
+
+    fn attempt_allocation_domain(&self) -> Result<Option<AttemptAllocationDomain>> {
+        Ok(self.lock_envelope()?.as_ref().and_then(|envelope| envelope.domain().cloned()))
+    }
+
     pub(super) fn memory_grant(&self) -> Result<MemoryGrant> {
-        self.memory_grant
-            .lock()
-            .map_err(|_error| {
-                QueryError::new(
-                    QueryErrorCode::Internal,
-                    "nexus_query_engine.query_service.context",
-                    "query service memory grant mutex was poisoned",
-                )
-            })?
+        self.lock_envelope()?
             .as_ref()
-            .cloned()
+            .map(|envelope| envelope.memory_grant().clone())
             .ok_or_else(|| self.released_error())
     }
 
@@ -101,9 +193,135 @@ impl QueryHandleLifetime {
         self.query_epoch.acquire(owner, operation).map_err(|_error| self.released_error())
     }
 
+    fn lock_root_context_setup(
+        &self,
+        operation: &'static str,
+    ) -> Result<std::sync::MutexGuard<'_, RootContextSetupState>> {
+        self.root_context_setup.state.lock().map_err(|_error| {
+            QueryError::new(QueryErrorCode::Internal, operation, "query service root-context setup mutex was poisoned")
+                .with_fact("reason", "root_context_setup_poisoned")
+        })
+    }
+
+    fn reserve_context_setup(&self, operation: &'static str) -> Result<ContextSetupClaim> {
+        if self.release_requested.load(Ordering::Acquire) || self.released.load(Ordering::Acquire) {
+            return Err(self.released_error());
+        }
+        let mut state = self.lock_root_context_setup(operation)?;
+        Ok(match *state {
+            RootContextSetupState::Unclaimed => {
+                *state = RootContextSetupState::InFlight;
+                ContextSetupClaim::Root
+            },
+            RootContextSetupState::InFlight => ContextSetupClaim::WaitForRoot,
+            RootContextSetupState::Ready => ContextSetupClaim::Auxiliary,
+        })
+    }
+
+    fn wait_for_root_context_setup(&self, cancellation: &ExecutionCancellation, operation: &'static str) -> Result<()> {
+        loop {
+            cancellation.check(operation)?;
+            if self.release_requested.load(Ordering::Acquire) || self.released.load(Ordering::Acquire) {
+                return Err(self.released_error());
+            }
+            let state = self.lock_root_context_setup(operation)?;
+            if *state != RootContextSetupState::InFlight {
+                return Ok(());
+            }
+            let (_state, _timeout) =
+                self.root_context_setup.changed.wait_timeout(state, CONTEXT_SETUP_WAIT_POLL_INTERVAL).map_err(
+                    |_error| {
+                        QueryError::new(
+                            QueryErrorCode::Internal,
+                            operation,
+                            "query service root-context setup mutex was poisoned while waiting",
+                        )
+                        .with_fact("reason", "root_context_setup_poisoned")
+                    },
+                )?;
+        }
+    }
+
+    async fn wait_for_root_context_setup_async(
+        &self,
+        cancellation: &ExecutionCancellation,
+        operation: &'static str,
+    ) -> Result<()> {
+        loop {
+            cancellation.check(operation)?;
+            if self.release_requested.load(Ordering::Acquire) || self.released.load(Ordering::Acquire) {
+                return Err(self.released_error());
+            }
+            // Register before looking at the state so a transition cannot be
+            // lost between the observation and the await.
+            let changed = self.root_context_setup.async_changed.notified();
+            let root_setup_in_flight = {
+                let state = self.lock_root_context_setup(operation)?;
+                *state == RootContextSetupState::InFlight
+            };
+            if !root_setup_in_flight {
+                return Ok(());
+            }
+            let _ = tokio::time::timeout(CONTEXT_SETUP_WAIT_POLL_INTERVAL, changed).await;
+        }
+    }
+
+    fn reserve_context_setup_sync(
+        &self,
+        cancellation: &ExecutionCancellation,
+        operation: &'static str,
+    ) -> Result<ContextSetupClaim> {
+        loop {
+            match self.reserve_context_setup(operation)? {
+                ContextSetupClaim::WaitForRoot => self.wait_for_root_context_setup(cancellation, operation)?,
+                claim => return Ok(claim),
+            }
+        }
+    }
+
+    async fn reserve_context_setup_async(
+        &self,
+        cancellation: &ExecutionCancellation,
+        operation: &'static str,
+    ) -> Result<ContextSetupClaim> {
+        loop {
+            match self.reserve_context_setup(operation)? {
+                ContextSetupClaim::WaitForRoot => {
+                    self.wait_for_root_context_setup_async(cancellation, operation).await?
+                },
+                claim => return Ok(claim),
+            }
+        }
+    }
+
+    fn complete_root_context_setup(&self) {
+        let mut state = self.root_context_setup.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        debug_assert_eq!(*state, RootContextSetupState::InFlight);
+        *state = RootContextSetupState::Ready;
+        drop(state);
+        self.root_context_setup.changed.notify_all();
+        self.root_context_setup.async_changed.notify_waiters();
+    }
+
+    fn rollback_root_context_setup(&self) {
+        let mut state = self.root_context_setup.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if *state == RootContextSetupState::InFlight {
+            *state = RootContextSetupState::Unclaimed;
+        }
+        drop(state);
+        self.root_context_setup.changed.notify_all();
+        self.root_context_setup.async_changed.notify_waiters();
+    }
+
+    fn wake_root_context_setup_waiters(&self) {
+        self.root_context_setup.changed.notify_all();
+        self.root_context_setup.async_changed.notify_waiters();
+    }
+
     fn request_release(&self) {
         self.release_requested.store(true, Ordering::Release);
         self.query_epoch.invalidate();
+        self.wake_root_context_setup_waiters();
         self.release_if_ready();
     }
 
@@ -115,34 +333,34 @@ impl QueryHandleLifetime {
             return;
         }
         let root_context = take_owned_for_cleanup(&self.root_context, "root context");
-        let memory_grant = take_owned_for_cleanup(&self.memory_grant, "memory grant");
-        let device_slot = take_owned_for_cleanup(&self.device_slot, "device slot");
+        let envelope = take_owned_for_cleanup(&self.envelope, "admission envelope");
         let completion = take_owned_for_cleanup(&self.completion, "query completion");
         let service_epoch_user = take_owned_for_cleanup(&self.service_epoch_user, "service epoch user");
-        let gpu_resource_permit = take_owned_for_cleanup(&self.gpu_resource_permit, "GPU resource permit");
+        #[cfg(test)]
+        let release_commit_gate = take_owned_for_cleanup(&self.release_commit_gate, "release commit gate");
+        #[cfg(test)]
+        let terminal_domain_usage = take_owned_for_cleanup(&self.terminal_domain_usage, "terminal domain usage");
         let service = take_owned_for_cleanup(&self.service, "query service")
             .expect("query handle lifetime retains its service until the one release path");
-        #[cfg(feature = "cugraph")]
-        let warm_graph_reservation = take_owned_for_cleanup(&self.warm_graph_reservation, "warm graph reservation");
-        let release = QueryHandleRelease {
+        let mut release = QueryHandleRelease {
             service: Some(service),
-            tenant_id: self.tenant_id.clone(),
             admission_request_id: self.admission_request_id,
             observation: self.observation.clone(),
             completion,
             service_epoch_user,
-            gpu_resource_permit,
             device_ordinal: self.device_ordinal,
             root_context,
-            memory_grant,
-            device_slot,
-            #[cfg(feature = "cugraph")]
-            warm_graph_reservation,
+            envelope,
+            #[cfg(test)]
+            release_commit_gate,
+            #[cfg(test)]
+            terminal_domain_usage,
+            terminal_outcome: RuntimeTerminalOutcome::Dropped,
             release_started: false,
-            cleanup_accounting_started: false,
             internal_cleanup_finished: false,
         };
         release.begin_query_cleanup();
+        release.resolve_terminal_outcome_before_gpu_cleanup();
         let requires_gpu_cleanup = release.requires_gpu_cleanup();
         let pool = if requires_gpu_cleanup {
             release
@@ -169,12 +387,19 @@ impl QueryHandleLifetime {
         match pool {
             Some(pool) => {
                 let observation = self.observation.clone();
-                pool.spawn_observed_with_completion(
-                    GpuExecutionJobKind::Cleanup,
+                if let Err(error) = pool.spawn_release_cleanup_observed_with_completion(
                     observation,
                     async move { release.finish() },
                     || {},
-                );
+                ) {
+                    // The rejected task drops its release guard, which drives
+                    // the same consuming cleanup path synchronously. Do not
+                    // create an unbounded cleanup queue merely to hide a
+                    // saturated or closing bounded executor.
+                    eprintln!(
+                        "[nexus-query-engine] warning: GPU cleanup submission was rejected; releasing inline: {error}"
+                    );
+                }
             },
             None => {
                 release.finish();
@@ -188,7 +413,6 @@ impl QueryHandleLifetime {
             "nexus_query_engine.query_service.context",
             "query service handle was released before context acquisition",
         )
-        .with_fact("tenant_id", self.tenant_id.as_str())
         .with_fact("admission_request_id", self.admission_request_id)
         .with_fact("reason", "query_handle_released")
     }
@@ -217,6 +441,26 @@ impl QueryHandleLifetime {
     }
 }
 
+#[cfg(test)]
+#[derive(Debug)]
+pub(crate) struct ReleaseCommitGate {
+    entered: std::sync::atomic::AtomicUsize,
+    gate: std::sync::Barrier,
+}
+
+#[cfg(test)]
+impl ReleaseCommitGate {
+    /// Whether the release commit has reached the pre-seal barrier.
+    pub(crate) fn entered(&self) -> bool {
+        self.entered.load(Ordering::Acquire) > 0
+    }
+
+    /// Releases the commit to run the seal and the capacity release.
+    pub(crate) fn open(&self) {
+        self.gate.wait();
+    }
+}
+
 fn take_owned_for_cleanup<T>(owned: &Mutex<Option<T>>, resource: &'static str) -> Option<T> {
     match owned.lock() {
         Ok(mut owned) => owned.take(),
@@ -227,31 +471,169 @@ fn take_owned_for_cleanup<T>(owned: &Mutex<Option<T>>, resource: &'static str) -
     }
 }
 
-#[cfg(feature = "cugraph")]
-fn require_warm_graph_reservation<T>(reservation: Option<T>, warm_graph_priced: bool) -> Result<Option<T>> {
-    if reservation.is_none() && warm_graph_priced {
-        return Err(warm_graph_reservation_error("stream_and_pin_reservation_already_consumed"));
-    }
-    Ok(reservation)
-}
-
 struct QueryHandleRelease {
     service: Option<Arc<QueryServiceInner>>,
-    tenant_id: TenantId,
     admission_request_id: AdmissionRequestId,
     observation: RuntimeObservationHandle,
     completion: Option<QueryCompletion>,
     service_epoch_user: Option<QueryServiceEpochUser>,
-    gpu_resource_permit: Option<GpuResourcePermit>,
     device_ordinal: usize,
     root_context: Option<ExecutionContext>,
-    memory_grant: Option<MemoryGrant>,
-    device_slot: Option<DeviceActiveQuerySlot>,
-    #[cfg(feature = "cugraph")]
-    warm_graph_reservation: Option<WarmGraphReservation>,
+    envelope: Option<super::service::transaction::AdmissionEnvelope>,
+    #[cfg(test)]
+    release_commit_gate: Option<Arc<ReleaseCommitGate>>,
+    #[cfg(test)]
+    terminal_domain_usage: Option<cudf::QueryMemoryDomainUsage>,
+    terminal_outcome: RuntimeTerminalOutcome,
     release_started: bool,
-    cleanup_accounting_started: bool,
     internal_cleanup_finished: bool,
+}
+
+/// The P2.7 report commit: disposition decision, health commit, and
+/// observation seal, always before capacity release.
+struct QueryHandleReportCommit {
+    service: Option<Arc<QueryServiceInner>>,
+    admission_request_id: AdmissionRequestId,
+    observation: RuntimeObservationHandle,
+    device_ordinal: usize,
+    domain: Option<super::super::attempt_domain::AttemptAllocationDomain>,
+    #[cfg(test)]
+    release_commit_gate: Option<Arc<ReleaseCommitGate>>,
+    #[cfg(test)]
+    terminal_domain_usage: Option<cudf::QueryMemoryDomainUsage>,
+}
+
+impl QueryHandleReportCommit {
+    fn run(
+        self,
+        external_completion: Option<QueryCompletion>,
+        terminal_outcome: RuntimeTerminalOutcome,
+        evidence: super::service::disposition::CleanupEvidence,
+    ) -> Option<super::admission::QueryCompletionActivityTail> {
+        #[cfg(test)]
+        use super::service::disposition::decide_capacity_disposition_with_terminal_usage_for_test;
+        use super::service::disposition::{CapacityCommitDisposition, CleanupEvidence, decide_capacity_disposition};
+        #[cfg(test)]
+        let (disposition, usage) = match self.terminal_domain_usage {
+            Some(terminal_usage) => decide_capacity_disposition_with_terminal_usage_for_test(
+                self.device_ordinal,
+                self.domain.as_ref(),
+                evidence,
+                terminal_usage,
+            ),
+            None => decide_capacity_disposition(self.device_ordinal, self.domain.as_ref(), evidence),
+        };
+        #[cfg(not(test))]
+        let (disposition, usage) = decide_capacity_disposition(self.device_ordinal, self.domain.as_ref(), evidence);
+        if let Some(usage) = usage.as_ref() {
+            debug_assert_eq!(
+                usage.domain_id,
+                self.domain.as_ref().map(|domain| domain.domain_id()).unwrap_or_default()
+            );
+            let _ = usage.peak_bytes;
+        }
+        let final_domain_usage = usage.map(crate::observability::AttemptFinalDomainUsage::from);
+        // This is the sole P2 projection of the exact final usage sample and
+        // health transition above. P3 extends this commit with bounded typed
+        // fault/retry evidence; it must not resample these terminal facts.
+        let terminal_commit = match (&disposition, evidence) {
+            (CapacityCommitDisposition::HealthyReuse, CleanupEvidence::Completed) => {
+                crate::observability::AttemptTerminalCommit::completed(
+                    crate::observability::AttemptCapacityDisposition::Released,
+                    final_domain_usage,
+                    crate::observability::AttemptHealthTransition::HealthyReuse,
+                )
+            },
+            (CapacityCommitDisposition::HealthyReuse, _) => {
+                crate::observability::AttemptTerminalCommit::failed_cleanup(
+                    crate::observability::AttemptCapacityDisposition::Released,
+                    final_domain_usage,
+                    crate::observability::AttemptHealthTransition::HealthyReuse,
+                )
+            },
+            (
+                CapacityCommitDisposition::DeviceQuarantine { .. } | CapacityCommitDisposition::BackendUnhealthy { .. },
+                CleanupEvidence::Completed,
+            ) => crate::observability::AttemptTerminalCommit::completed(
+                crate::observability::AttemptCapacityDisposition::RetainedQuarantine,
+                final_domain_usage,
+                match disposition {
+                    CapacityCommitDisposition::DeviceQuarantine { .. } => {
+                        crate::observability::AttemptHealthTransition::DeviceQuarantined
+                    },
+                    CapacityCommitDisposition::BackendUnhealthy { .. } => {
+                        crate::observability::AttemptHealthTransition::BackendUnhealthy
+                    },
+                    CapacityCommitDisposition::HealthyReuse => unreachable!(),
+                },
+            ),
+            (
+                CapacityCommitDisposition::DeviceQuarantine { .. } | CapacityCommitDisposition::BackendUnhealthy { .. },
+                _,
+            ) => crate::observability::AttemptTerminalCommit::failed_cleanup(
+                crate::observability::AttemptCapacityDisposition::RetainedQuarantine,
+                final_domain_usage,
+                match disposition {
+                    CapacityCommitDisposition::DeviceQuarantine { .. } => {
+                        crate::observability::AttemptHealthTransition::DeviceQuarantined
+                    },
+                    CapacityCommitDisposition::BackendUnhealthy { .. } => {
+                        crate::observability::AttemptHealthTransition::BackendUnhealthy
+                    },
+                    CapacityCommitDisposition::HealthyReuse => unreachable!(),
+                },
+            ),
+        };
+        match disposition {
+            CapacityCommitDisposition::HealthyReuse => {},
+            CapacityCommitDisposition::DeviceQuarantine { reason } => {
+                // The device closes BEFORE the report is published; the
+                // attempt's bytes still return, but the closed ledger admits
+                // nothing new and queued waiters retarget.
+                if let Some(service) = self.service.as_ref()
+                    && let Some(resources) = service.resources.as_ref()
+                    && let Ok(device) = resources.devices.context_by_ordinal(self.device_ordinal)
+                {
+                    if let Err(error) = device.ledger().close_admission(reason) {
+                        eprintln!(
+                            "[nexus-query-engine] warning: failed to close device admission during release commit: {error}"
+                        );
+                    }
+                    service.notify_admission_available();
+                }
+            },
+            CapacityCommitDisposition::BackendUnhealthy { reason } => {
+                if let Some(service) = self.service.as_ref() {
+                    service.close_unknown_isolation_admission(reason);
+                }
+            },
+        }
+        // The release is committed: record the terminal admission lifecycle
+        // event before the seal so the sealed report retains it. The
+        // mechanical capacity release still happens only after the seal.
+        if let Some(service) = self.service.as_ref() {
+            let queue_depth = service.admission.lock().map(|state| state.queued.len()).unwrap_or_else(|error| {
+                eprintln!("[nexus-query-engine] warning: failed to read poisoned admission queue depth");
+                error.into_inner().queued.len()
+            });
+            record_admission_lifecycle(
+                &self.observation,
+                self.admission_request_id,
+                AdmissionLifecycleState::Released,
+                queue_depth,
+                Some(self.device_ordinal),
+                None,
+            );
+        }
+        // Deterministic-barrier hook: tests prove cleanup-complete without
+        // report-ready cannot admit a replacement.
+        #[cfg(test)]
+        if let Some(gate) = self.release_commit_gate {
+            gate.entered.fetch_add(1, Ordering::AcqRel);
+            gate.gate.wait();
+        }
+        external_completion.map(|completion| completion.seal_after_gpu_cleanup(terminal_outcome, terminal_commit))
+    }
 }
 
 /// Owns a release until either CUDA cleanup starts or a submission/cancellation
@@ -286,23 +668,26 @@ impl QueryHandleRelease {
         if self.root_context.is_some() {
             return true;
         }
-        // A warm graph reservation owns a leased stream and must retain the
-        // existing device-executor cleanup path even when execution did not
-        // reach context acquisition.
-        #[cfg(feature = "cugraph")]
-        {
-            self.warm_graph_reservation.is_some()
-        }
-        #[cfg(not(feature = "cugraph"))]
-        {
-            false
-        }
+        // A device-backed admission envelope owns the root stream and
+        // allocation domain from admission time (P2.6). Their destruction
+        // must run on the device executor even when execution never reached
+        // context acquisition. Ledger-only envelopes own no CUDA state.
+        self.envelope.as_ref().is_some_and(super::service::transaction::AdmissionEnvelope::holds_gpu_resources)
     }
 
     fn begin_query_cleanup(&self) {
         if let Some(completion) = &self.completion {
             completion.begin_query_cleanup();
         }
+    }
+
+    /// Establish an unterminalized attempt's fallback before any GPU cleanup
+    /// task is submitted. The stored value is the exact terminal outcome used
+    /// after cleanup for report publication and capacity accounting.
+    fn resolve_terminal_outcome_before_gpu_cleanup(&mut self) {
+        self.terminal_outcome = self.completion.as_ref().map_or(RuntimeTerminalOutcome::Dropped, |completion| {
+            completion.resolve_terminal_outcome_for_cleanup(RuntimeTerminalOutcome::Dropped)
+        });
     }
 
     fn finish(mut self) {
@@ -315,45 +700,35 @@ impl QueryHandleRelease {
             return;
         }
         self.release_started = true;
-        // Remove the adaptive-growth clone before dropping our grant, while
-        // retaining the active slot until every GPU-owned resource is gone.
-        // The final MemoryGrant drop invokes observers that reacquire this
-        // mutex, so it must never happen while the mutex is held.
-        if !self.cleanup_accounting_started {
-            self.cleanup_accounting_started = true;
-            if let Some(service) = self.service.as_ref() {
-                match service.admission.lock() {
-                    Ok(mut state) => {
-                        state.active_adaptive_grants.remove(&self.admission_request_id);
-                        state.cleanup_in_progress = state.cleanup_in_progress.saturating_add(1);
-                    },
-                    Err(_error) => {
-                        eprintln!(
-                            "[nexus-query-engine] warning: failed to remove poisoned query service adaptive grant state"
-                        );
-                    },
-                }
-            }
-        }
-        if let Some(grant) = self.memory_grant.as_ref() {
-            let live_reserved_bytes = grant.live_reserved_bytes();
-            if live_reserved_bytes != 0
-                && let Err(error) = grant.try_shrink_to(live_reserved_bytes)
-            {
-                eprintln!(
-                    "[nexus-query-engine] warning: failed to shrink query service memory grant on release: {error}"
-                );
-            }
+        if let Some(envelope) = self.envelope.as_mut() {
+            envelope.begin_terminal_cleanup();
         }
         let root_context = self.root_context.take();
         if root_context.as_ref().is_some_and(ExecutionContext::has_root_stream_lease) {
             let root_context = root_context.expect("root context with a stream lease is present");
             let external_completion = self.take_external_completion();
+            let commit = self.prepare_report_commit();
+            let terminal_outcome = self.terminal_outcome.clone();
             let internal_cleanup =
                 QueryHandleReleaseGuard::new(std::mem::replace(self, Self::empty_recovered_release()));
+            // P2.7 report-before-reuse: the health commit, usage sample, and
+            // observation seal run BEFORE the capacity release callback.
+            let activity_tail = Arc::new(Mutex::new(None));
+            let activity_tail_slot = Arc::clone(&activity_tail);
             let installed = root_context.install_root_stream_cleanup_completion(
-                move || internal_cleanup.finish(),
-                move || Self::finish_external_completion(external_completion),
+                move |outcome| {
+                    *activity_tail_slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = commit.run(
+                        external_completion,
+                        terminal_outcome,
+                        super::service::disposition::CleanupEvidence::from(outcome),
+                    )
+                },
+                move || {
+                    internal_cleanup.finish();
+                    if let Some(tail) = activity_tail.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take() {
+                        tail.finish();
+                    }
+                },
             );
             if !installed {
                 eprintln!("[nexus-query-engine] warning: root stream cleanup completion was already installed");
@@ -362,50 +737,72 @@ impl QueryHandleRelease {
             return;
         }
         drop(root_context);
-        // A warm-priced admission can own a stream without ever producing a
-        // root execution context. Destroy its graph pin on the GPU cleanup
-        // worker, then use the stream cleanup completion as the same
-        // post-accounting fence used by the root-context path. Publishing
-        // external activity from the GPU job itself would let a reentrant
-        // backend close wait on that still-active job.
-        #[cfg(feature = "cugraph")]
-        if let Some(WarmGraphReservation { stream_lease, preparation_pin }) = self.warm_graph_reservation.take() {
-            drop(preparation_pin);
+        // An admitted attempt whose context was never acquired still owns the
+        // envelope's root stream. Destroy the member and domain, then use the
+        // root stream cleanup
+        // completion as the same post-accounting fence used by the
+        // root-context path. Publishing external activity from the GPU job
+        // itself would let a reentrant backend close wait on that
+        // still-active job.
+        let commit = self.prepare_report_commit();
+        if let Some(stream_lease) = self.envelope.as_mut().and_then(|envelope| envelope.release_unconsumed_physical()) {
             let external_completion = self.take_external_completion();
+            let terminal_outcome = self.terminal_outcome.clone();
             let internal_cleanup =
                 QueryHandleReleaseGuard::new(std::mem::replace(self, Self::empty_recovered_release()));
+            let activity_tail = Arc::new(Mutex::new(None));
+            let activity_tail_slot = Arc::clone(&activity_tail);
             let installed = stream_lease.install_cleanup_completion(
-                move || internal_cleanup.finish(),
-                move || Self::finish_external_completion(external_completion),
+                move |outcome| {
+                    *activity_tail_slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = commit.run(
+                        external_completion,
+                        terminal_outcome,
+                        super::service::disposition::CleanupEvidence::from(outcome),
+                    )
+                },
+                move || {
+                    internal_cleanup.finish();
+                    if let Some(tail) = activity_tail.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take() {
+                        tail.finish();
+                    }
+                },
             );
             if !installed {
-                eprintln!("[nexus-query-engine] warning: warm graph stream cleanup completion was already installed");
+                eprintln!("[nexus-query-engine] warning: root stream cleanup completion was already installed");
             }
-            drop_recovering(Some(stream_lease), "warm graph stream lease");
+            drop_recovering(Some(stream_lease), "admission envelope root stream lease");
             return;
         }
+        // Ledger-only or context-consumed release: no stream fence remains.
+        // The report commit still precedes the capacity release.
         let external_completion = self.take_external_completion();
+        let activity_tail = commit.run(
+            external_completion,
+            self.terminal_outcome.clone(),
+            super::service::disposition::CleanupEvidence::Completed,
+        );
         self.complete_without_stream_cleanup();
-        Self::finish_external_completion(external_completion);
+        if let Some(tail) = activity_tail {
+            tail.finish();
+        }
     }
 
     fn empty_recovered_release() -> Self {
         Self {
             service: None,
-            tenant_id: TenantId::from("released"),
             admission_request_id: AdmissionRequestId::new(0),
             observation: RuntimeObservationHandle::disabled(),
             completion: None,
             service_epoch_user: None,
-            gpu_resource_permit: None,
             device_ordinal: 0,
             root_context: None,
-            memory_grant: None,
-            device_slot: None,
-            #[cfg(feature = "cugraph")]
-            warm_graph_reservation: None,
+            envelope: None,
+            #[cfg(test)]
+            release_commit_gate: None,
+            #[cfg(test)]
+            terminal_domain_usage: None,
+            terminal_outcome: RuntimeTerminalOutcome::Dropped,
             release_started: true,
-            cleanup_accounting_started: true,
             internal_cleanup_finished: true,
         }
     }
@@ -414,9 +811,21 @@ impl QueryHandleRelease {
         self.completion.take()
     }
 
-    fn finish_external_completion(completion: Option<QueryCompletion>) {
-        if let Some(completion) = completion {
-            completion.finish_after_gpu_cleanup(RuntimeTerminalOutcome::Dropped);
+    /// Captures everything the report commit needs after GPU cleanup
+    /// completes: the service for health plumbing, the device, and the
+    /// attempt domain clone for the final usage sample.
+    fn prepare_report_commit(&mut self) -> QueryHandleReportCommit {
+        let domain = self.envelope.as_ref().and_then(|envelope| envelope.domain().cloned());
+        QueryHandleReportCommit {
+            service: self.service.clone(),
+            admission_request_id: self.admission_request_id,
+            observation: self.observation.clone(),
+            device_ordinal: self.device_ordinal,
+            domain,
+            #[cfg(test)]
+            release_commit_gate: self.release_commit_gate.take(),
+            #[cfg(test)]
+            terminal_domain_usage: self.terminal_domain_usage.take(),
         }
     }
 
@@ -428,52 +837,29 @@ impl QueryHandleRelease {
         if self.internal_cleanup_finished {
             return;
         }
-        #[cfg(feature = "cugraph")]
-        drop_recovering(self.warm_graph_reservation.take(), "warm graph reservation");
-        drop_recovering(self.memory_grant.take(), "memory grant");
-        drop_recovering(self.device_slot.take(), "device active-query slot");
+        // The envelope drops physical remnants, the attempt lane, immutable
+        // grant, backend-generation permit, and lifecycle ticket in that
+        // order. The final MemoryGrant drop invokes the ledger release hook
+        // that reacquires the admission mutex, so it must never happen while
+        // that mutex is held.
+        drop_recovering(self.envelope.take(), "admission envelope");
         // Publish query quiescence only after this handle no longer retains
         // the service epoch. `close_and_wait_for_quiescence` uses the active
         // query count as its completion fence, so waking it earlier could let
         // a replacement race the final governor-claim release.
         drop_recovering(self.service_epoch_user.take(), "query service epoch user");
-
         let Some(service) = self.service.take() else {
-            drop_recovering(self.gpu_resource_permit.take(), "GPU resource permit");
             self.internal_cleanup_finished = true;
             return;
         };
-        let queue_depth = match service.admission.lock() {
-            Ok(mut state) => {
-                state.active_queries = state.active_queries.saturating_sub(1);
-                state.cleanup_in_progress = state.cleanup_in_progress.saturating_sub(1);
-                if state.queued.is_empty() {
-                    QueryService { inner: Arc::clone(&service) }.grow_active_adaptive_grants_locked(&mut state);
-                }
-                state.queued.len()
-            },
-            Err(_error) => {
-                eprintln!("[nexus-query-engine] warning: failed to release poisoned query service admission state");
-                0
-            },
-        };
+        // The Released lifecycle event was recorded by the report commit
+        // before the seal; only mechanical capacity accounting remains here.
+        // Finished handles retain only projections and the service reference.
+        // The envelope already released the admission resources and its final
+        // lifecycle fence before this notification can publish quiescence.
         notify_shared_device_admission_available(self.device_ordinal);
         service.notify_admission_available();
-        record_admission_lifecycle(
-            &self.observation,
-            self.admission_request_id,
-            &self.tenant_id,
-            AdmissionLifecycleState::Released,
-            queue_depth,
-            Some(self.device_ordinal),
-            None,
-        );
-        // Finished handles retain only their immutable policy snapshot. Drop
-        // the last query-owned service/resource reference before the backend
-        // generation permit. Stream cleanup cannot publish quiescence until
-        // both are gone.
         drop_recovering(Some(service), "query service");
-        drop_recovering(self.gpu_resource_permit.take(), "GPU resource permit");
         self.internal_cleanup_finished = true;
     }
 }
@@ -484,11 +870,27 @@ impl Drop for QueryHandleRelease {
             return;
         }
 
+        // A panic may reach the recovery destructor before `start_release`.
+        // Preserve the envelope-owned cleanup fence instead of leaking an
+        // Active ticket in the tracker.
+        if let Some(envelope) = self.envelope.as_mut() {
+            envelope.begin_terminal_cleanup();
+        }
+
         // A cancellation or panic can drop a queued GPU/stream callback before
-        // it invokes its body. Recover the ledger and GPU-generation release
-        // here, then terminalize the external completion only after that work.
+        // it invokes its body: cleanup completion is unproven and fault
+        // isolation is unknown, so the commit marks the backend unhealthy
+        // before the seal and only then releases capacity.
+        let commit = self.prepare_report_commit();
+        let activity_tail = commit.run(
+            self.take_external_completion(),
+            self.terminal_outcome.clone(),
+            super::service::disposition::CleanupEvidence::CallbackAbandoned,
+        );
         self.complete_internal_cleanup();
-        Self::finish_external_completion(self.take_external_completion());
+        if let Some(tail) = activity_tail {
+            tail.finish();
+        }
     }
 }
 
@@ -498,11 +900,15 @@ fn drop_recovering<T>(value: Option<T>, resource: &'static str) {
     }
 }
 
-/// RAII admission handle for one tenant query.
+/// RAII admission handle for one native query.
 #[derive(Debug)]
 pub struct QueryHandle {
-    pub(super) config: QueryServiceConfig,
-    pub(super) tenant_id: TenantId,
+    pub(super) config: QueryExecutionConfig,
+    pub(super) queue_bounds: QueueBounds,
+    /// Immutable capability requirement resolved before this handle entered the
+    /// service. It is copied into every admitted execution context so plan
+    /// dispatch can verify the proof still covers the actual plan.
+    pub(super) admitted_capability_evidence: crate::admission::AttemptRequirement,
     pub(super) admission_request_id: AdmissionRequestId,
     pub(super) admission_sequence: u64,
     pub(super) admission_wait: Duration,
@@ -527,11 +933,6 @@ impl QueryHandle {
         self.admission_wait
     }
 
-    /// Tenant that owns this admitted query.
-    pub fn tenant_id(&self) -> &TenantId {
-        &self.tenant_id
-    }
-
     /// Device-memory budget slice assigned to this query.
     pub fn device_budget_bytes(&self) -> u64 {
         self.device_budget_bytes
@@ -544,20 +945,20 @@ impl QueryHandle {
 
     /// Bounded memory policy this handle will use for native execution.
     pub fn memory_control_policy(&self) -> MemoryControlPolicy {
-        self.config.memory_policy_for_tenant(self.device_budget_bytes)
+        self.config.memory_policy_for_admitted_query(self.device_budget_bytes)
     }
 
-    /// Boundary policy copied into the tenant execution context.
+    /// Boundary policy copied into the admitted execution context.
     pub fn boundary_policy(&self) -> ExecutionBoundaryPolicy {
         self.config.boundary_policy
     }
 
-    /// Source scheduler policy copied into the tenant execution context.
+    /// Source scheduler policy copied into the admitted execution context.
     pub fn source_scheduler_policy(&self) -> SourceSchedulerPolicy {
         self.config.source_scheduler_policy
     }
 
-    /// Source chunk planning mode copied into the tenant execution context.
+    /// Source chunk planning mode copied into the admitted execution context.
     pub fn source_chunk_planning_mode(&self) -> SourceChunkPlanningMode {
         self.config.source_chunk_planning_mode
     }
@@ -565,11 +966,6 @@ impl QueryHandle {
     /// Lakehouse cache-fill resource policy assigned to this admitted query.
     pub fn lakehouse_cache_fill_config(&self) -> LakehouseCacheFillConfig {
         self.config.lakehouse_cache_fill.clone()
-    }
-
-    /// Native bounded-pipeline mode copied into the tenant execution context.
-    pub fn native_pipeline_execution_mode(&self) -> NativePipelineExecutionMode {
-        self.config.native_pipeline_execution_mode
     }
 
     /// Floating statistical aggregate execution contract assigned to this admitted query.
@@ -603,28 +999,86 @@ impl QueryHandle {
         self.config.source_chunk_planning_options
     }
 
-    /// Acquires a tenant-bound execution context from the service stream pool.
-    pub fn acquire_context(&self) -> Result<TenantQueryContext> {
+    fn context_stream_acquire_deadline(&self) -> Instant {
+        Instant::now().checked_add(self.queue_bounds.max_wait).unwrap_or_else(Instant::now)
+    }
+
+    /// Acquires an admitted execution context from the service stream pool.
+    pub fn acquire_context(&self) -> Result<AdmittedQueryContext> {
         self.acquire_context_with_cancellation(ExecutionCancellation::new())
     }
 
-    /// Acquires a tenant-bound execution context without blocking the caller's async runtime.
-    pub async fn acquire_context_async(self: &Arc<Self>) -> Result<TenantQueryContext> {
+    /// Acquires an admitted execution context without blocking the caller's async runtime.
+    pub async fn acquire_context_async(self: &Arc<Self>) -> Result<AdmittedQueryContext> {
         self.acquire_context_with_cancellation_async(ExecutionCancellation::new()).await
     }
 
-    /// Acquires a tenant-bound execution context on this query's device executor.
+    /// Acquires an admitted execution context on this query's device executor.
     pub async fn acquire_context_with_cancellation_async(
         self: &Arc<Self>,
         cancellation: ExecutionCancellation,
-    ) -> Result<TenantQueryContext> {
-        let pool = self.gpu_execution_pool()?;
+    ) -> Result<AdmittedQueryContext> {
+        let operation = "nexus_query_engine.query_service.context";
+        let setup_claim = self.lifetime.reserve_context_setup_async(&cancellation, operation).await?;
+        let stream_acquire_deadline = self.context_stream_acquire_deadline();
+        // Claim the attempt-owned share before submitting an auxiliary job.
+        // Otherwise excess work from one attempt can fill every global
+        // auxiliary executor permit while it waits for its own local limit.
+        let attempt_auxiliary_permit = match setup_claim {
+            ContextSetupClaim::Auxiliary => Some(
+                self.lifetime
+                    .attempt_auxiliary_slots
+                    .acquire_with_cancellation_deadline_async(
+                        &cancellation,
+                        stream_acquire_deadline,
+                        "nexus_query_engine.query_service.context.attempt_auxiliary_acquire",
+                    )
+                    .await?,
+            ),
+            ContextSetupClaim::Root => None,
+            ContextSetupClaim::WaitForRoot => {
+                unreachable!("context setup reservation resolves waits before scheduling")
+            },
+        };
+        let pool = match self.gpu_execution_pool() {
+            Ok(pool) => pool,
+            Err(error) => {
+                if setup_claim == ContextSetupClaim::Root {
+                    self.lifetime.rollback_root_context_setup();
+                }
+                return Err(error);
+            },
+        };
+        let job_class = match setup_claim {
+            ContextSetupClaim::Root => super::super::gpu_execution_pool::GpuExecutionJobClass::Root,
+            ContextSetupClaim::Auxiliary => super::super::gpu_execution_pool::GpuExecutionJobClass::Auxiliary,
+            ContextSetupClaim::WaitForRoot => {
+                unreachable!("context setup reservation resolves waits before scheduling")
+            },
+        };
         let observation = self.lifetime.observation.clone();
         let handle = Arc::clone(self);
-        pool.run_observed_scoped(GpuExecutionJobKind::ContextSetup, observation, move |stream_scope| async move {
-            handle.acquire_context_with_cancellation_and_stream_scope(cancellation, stream_scope)
-        })
-        .await?
+        let result = pool
+            .run_observed_scoped_in_class(
+                GpuExecutionJobKind::ContextSetup,
+                job_class,
+                observation,
+                move |stream_scope| async move {
+                    handle.acquire_context_with_cancellation_and_stream_scope(
+                        cancellation,
+                        stream_scope,
+                        setup_claim,
+                        stream_acquire_deadline,
+                        attempt_auxiliary_permit,
+                    )
+                },
+            )
+            .await
+            .and_then(|result| result);
+        if setup_claim == ContextSetupClaim::Root && result.is_err() {
+            self.lifetime.rollback_root_context_setup();
+        }
+        result
     }
 
     /// Opaque lifecycle-bound executor for synchronous GPU work on this
@@ -650,20 +1104,36 @@ impl QueryHandle {
         Ok(pool.with_resource_epoch(resource_epoch))
     }
 
-    /// Acquires a tenant-bound execution context that observes caller-supplied
+    /// Acquires an admitted execution context that observes caller-supplied
     /// cooperative cancellation.
-    pub fn acquire_context_with_cancellation(&self, cancellation: ExecutionCancellation) -> Result<TenantQueryContext> {
-        self.acquire_context_with_cancellation_and_stream_scope(
+    pub fn acquire_context_with_cancellation(
+        &self,
+        cancellation: ExecutionCancellation,
+    ) -> Result<AdmittedQueryContext> {
+        let operation = "nexus_query_engine.query_service.context";
+        let setup_claim = self.lifetime.reserve_context_setup_sync(&cancellation, operation)?;
+        let stream_acquire_deadline = self.context_stream_acquire_deadline();
+        let result = self.acquire_context_with_cancellation_and_stream_scope(
             cancellation,
             crate::observability::RuntimeStreamLeaseScope::default(),
-        )
+            setup_claim,
+            stream_acquire_deadline,
+            None,
+        );
+        if setup_claim == ContextSetupClaim::Root && result.is_err() {
+            self.lifetime.rollback_root_context_setup();
+        }
+        result
     }
 
     fn acquire_context_with_cancellation_and_stream_scope(
         &self,
         cancellation: ExecutionCancellation,
         stream_scope: crate::observability::RuntimeStreamLeaseScope,
-    ) -> Result<TenantQueryContext> {
+        setup_claim: ContextSetupClaim,
+        stream_acquire_deadline: Instant,
+        attempt_auxiliary_permit: Option<AttemptAuxiliaryPermit>,
+    ) -> Result<AdmittedQueryContext> {
         let operation = "nexus_query_engine.query_service.context";
         let query_anchor = self.lifetime.acquire_resource_anchor(operation)?;
         let service = self.lifetime.service()?;
@@ -683,76 +1153,88 @@ impl QueryHandle {
             )
         })?;
         if let Some(template) = root_context.as_ref().cloned() {
+            if setup_claim != ContextSetupClaim::Auxiliary {
+                return Err(QueryError::new(
+                    QueryErrorCode::Internal,
+                    operation,
+                    "root context was ready without an auxiliary context-setup reservation",
+                )
+                .with_fact("reason", "context_setup_claim_mismatch")
+                .with_fact("context_setup_claim", "root"));
+            }
             // Concurrent fragments under one admitted query must not share the
             // root stream: cuDF rejects a second live query-domain budget token
             // on the same stream. Bind each secondary acquire to a dedicated
             // service stream while preserving the shared grant/domain.
             drop(root_context);
-            let stream_acquire_deadline =
-                Instant::now().checked_add(service.config.admission_wait_timeout).unwrap_or_else(Instant::now);
-            let stream_lease = device.stream_pool().acquire_observed_with_cancellation_deadline(
+            let attempt_auxiliary_permit = match attempt_auxiliary_permit {
+                Some(permit) => permit,
+                None => self.lifetime.attempt_auxiliary_slots.acquire_with_cancellation_deadline(
+                    &cancellation,
+                    stream_acquire_deadline,
+                    "nexus_query_engine.query_service.context.attempt_auxiliary_acquire",
+                )?,
+            };
+            let stream_lease = device.stream_pool().acquire_observed_with_cancellation_deadline_and_class(
                 &cancellation,
                 stream_acquire_deadline,
                 "nexus_query_engine.query_service.context.stream_acquire",
                 self.lifetime.observation.clone(),
                 stream_scope,
+                crate::runtime::StreamPermitClass::Auxiliary,
             )?;
             validate_service_stream_pool_device(device.stream_pool(), stream_lease.device())?;
-            let context =
-                template.with_owned_stream_lease(stream_lease)?.into_context().with_query_resource_anchor(query_anchor);
+            let context = template
+                .with_owned_stream_lease(stream_lease)?
+                .into_context()
+                .with_auxiliary_stream_permit_guard(attempt_auxiliary_permit)
+                .with_query_resource_anchor(query_anchor);
             self.lifetime.query_epoch.check_open(operation).map_err(|_error| self.lifetime.released_error())?;
-            return Ok(TenantQueryContext { context });
+            return Ok(AdmittedQueryContext { context });
         }
-        let stream_acquire_deadline =
-            Instant::now().checked_add(service.config.admission_wait_timeout).unwrap_or_else(Instant::now);
-        #[cfg(feature = "cugraph")]
-        let warm_graph_reservation = require_warm_graph_reservation(
-            take_owned_for_cleanup(
-                &self.lifetime.warm_graph_reservation,
-                "warm graph reservation for context acquisition",
-            ),
-            self.lifetime.warm_graph_priced,
-        )?;
-        #[cfg(feature = "cugraph")]
-        let (stream_lease, reserved_resident_graph_hit) = match warm_graph_reservation {
-            Some(reservation) => {
-                (reservation.stream_lease, Some(Arc::new(ReservedResidentGraphHit::new(reservation.preparation_pin))))
-            },
-            None => {
-                let stream_lease = device.stream_pool().acquire_observed_with_cancellation_deadline(
-                    &cancellation,
-                    stream_acquire_deadline,
-                    "nexus_query_engine.query_service.context.stream_acquire",
-                    self.lifetime.observation.clone(),
-                    stream_scope.clone(),
-                )?;
-                (stream_lease, None)
-            },
+        if setup_claim != ContextSetupClaim::Root {
+            return Err(QueryError::new(
+                QueryErrorCode::Internal,
+                operation,
+                "auxiliary context setup ran before the admitted root context was ready",
+            )
+            .with_fact("reason", "context_setup_claim_mismatch")
+            .with_fact("context_setup_claim", "auxiliary"));
+        }
+        debug_assert!(attempt_auxiliary_permit.is_none(), "root context setup cannot carry an auxiliary permit");
+        // The admission transaction already owns the root stream, allocation
+        // domain, and root stream member (P2.6). Consume that binding; no
+        // stream or domain is created after admission.
+        let binding = {
+            let envelope = self.lifetime.lock_envelope()?;
+            let envelope = envelope.as_ref().ok_or_else(|| self.lifetime.released_error())?;
+            // The envelope's worker scope is the admission-time identity
+            // evidence: same device, same worker pool, and the lane the
+            // attempt has held since the ledger transaction committed.
+            if let Some(scope) = envelope.worker_scope() {
+                debug_assert_eq!(scope.device_ordinal(), self.device_ordinal);
+                debug_assert_eq!(scope.lane_index(), envelope.lane_index().expect("lane matches its scope"));
+            }
+            envelope.take_root_binding()?
         };
-        #[cfg(not(feature = "cugraph"))]
-        let stream_lease = device.stream_pool().acquire_observed_with_cancellation_deadline(
-            &cancellation,
-            stream_acquire_deadline,
-            "nexus_query_engine.query_service.context.stream_acquire",
-            self.lifetime.observation.clone(),
-            stream_scope.clone(),
-        )?;
-        validate_service_stream_pool_device(device.stream_pool(), stream_lease.device())?;
-        let stream_lease_guard = Arc::new(stream_lease);
+        validate_service_stream_pool_device(device.stream_pool(), binding.stream_lease.device())?;
+        let stream_lease_guard = Arc::new(binding.stream_lease);
         let memory_grant = self.lifetime.memory_grant()?;
         let runtime = stream_lease_guard.shared_runtime()?;
         let gpu_execution_pool = resources.gpu_execution_pool_for_device(self.device_ordinal)?;
-        let grant_memory_domain = create_grant_memory_domain(
-            runtime.as_ref(),
-            Some(&memory_grant),
-            service.config.query_memory_domain,
-            device.capacity_bytes(),
-        )?;
-        let grant_reservation_arena = if grant_memory_domain.is_some() {
-            None
-        } else {
-            create_grant_reservation_arena(runtime.as_ref(), Some(&memory_grant))?
-        };
+        {
+            let envelope = self.lifetime.lock_envelope()?;
+            if let Some(scope) = envelope.as_ref().and_then(|envelope| envelope.worker_scope()) {
+                debug_assert_eq!(scope.pool_id(), gpu_execution_pool.snapshot().pool_id);
+            }
+        }
+        let attempt_allocation_domain = self
+            .lifetime
+            .attempt_allocation_domain()?
+            .expect("device-backed admission envelope always carries the attempt allocation domain");
+        // The root execution stream binds the attempt's root domain member
+        // once for the whole attempt lifetime.
+        let attempt_member_lease = binding.member_lease;
         let observation_owner = self.lifetime.observation_owner();
         let query_id = self.lifetime.observation.query_id().map(|query_id| QueryId::new(query_id.as_str()));
         let trace_id =
@@ -774,8 +1256,12 @@ impl QueryHandle {
             memory_policy: MemoryResourcePolicy::ExternalRuntime,
             memory_control_policy: self.memory_control_policy(),
             memory_grant: Some(memory_grant),
-            grant_reservation_arena,
-            grant_memory_domain,
+            grant_reservation_arena: None,
+            grant_memory_domain: Some(Arc::clone(attempt_allocation_domain.as_cudf())),
+            attempt_allocation_domain: Some(attempt_allocation_domain),
+            attempt_auxiliary_slots: Some(Arc::clone(&self.lifetime.attempt_auxiliary_slots)),
+            admitted_capability_evidence: Some(self.admitted_capability_evidence.clone()),
+            attempt_member_lease: Some(attempt_member_lease),
             boundary_policy: service.config.boundary_policy,
             source_scheduler_policy: service.config.source_scheduler_policy,
             source_chunk_planning_mode: service.config.source_chunk_planning_mode,
@@ -788,26 +1274,20 @@ impl QueryHandle {
             source_object_stores: Arc::clone(&resources.source_object_stores),
             deployment_io_capability: resources.deployment_io_capability.clone(),
             cancellation,
-            native_pipeline_execution_mode: service.config.native_pipeline_execution_mode,
             stddev_samp_execution_mode: service.config.stddev_samp_execution_mode,
             aggregate_strategy_execution_options: service.config.aggregate_strategy_execution_options,
             source_chunk_planning_options: service.config.source_chunk_planning_options,
             graph_memory_calibration_override: service.config.graph_memory_calibration_override,
-            adaptive_memory_history: Some(Arc::new(AdaptiveMemoryHistory::default())),
-            hash_join_build_cache: None,
-            local_parquet_source_cache: resources.local_parquet_source_cache_for_device(self.device_ordinal),
-            #[cfg(feature = "cugraph")]
-            resident_graph_cache: resources.resident_graph_cache_for_device(self.device_ordinal),
-            #[cfg(feature = "cugraph")]
-            reserved_resident_graph_hit,
             stream_lease_guard: Some(stream_lease_guard),
+            auxiliary_stream_permit_guard: None,
             query_service_admitted: true,
         });
         *root_context = Some(context.clone());
         drop(root_context);
+        self.lifetime.complete_root_context_setup();
         let context = context.with_query_resource_anchor(query_anchor);
         self.lifetime.query_epoch.check_open(operation).map_err(|_error| self.lifetime.released_error())?;
-        Ok(TenantQueryContext { context })
+        Ok(AdmittedQueryContext { context })
     }
 
     /// Requests admission release before dropping the handle.
@@ -831,12 +1311,12 @@ impl Drop for QueryHandle {
 
 /// Execution context borrowed from a [`QueryHandle`].
 #[derive(Debug)]
-pub struct TenantQueryContext {
+pub struct AdmittedQueryContext {
     context: ExecutionContext,
 }
 
-impl TenantQueryContext {
-    /// Native execution context for this tenant query.
+impl AdmittedQueryContext {
+    /// Native execution context for this admitted query.
     pub fn context(&self) -> &ExecutionContext {
         &self.context
     }
@@ -849,11 +1329,7 @@ mod tests {
         sync::{Arc, Mutex},
     };
 
-    #[cfg(feature = "cugraph")]
-    use super::require_warm_graph_reservation;
     use super::take_owned_for_cleanup;
-    #[cfg(feature = "cugraph")]
-    use crate::error::{QueryErrorCode, QueryErrorStatus};
 
     #[test]
     fn poisoned_owned_resource_is_recovered_for_ordered_cleanup() {
@@ -866,16 +1342,5 @@ mod tests {
 
         assert_eq!(take_owned_for_cleanup(owned.as_ref(), "test resource"), Some(7));
         assert_eq!(take_owned_for_cleanup(owned.as_ref(), "test resource"), None);
-    }
-
-    #[cfg(feature = "cugraph")]
-    #[test]
-    fn consumed_warm_graph_reservation_requires_query_readmission() {
-        let error = require_warm_graph_reservation(Option::<()>::None, true).unwrap_err();
-
-        assert_eq!(error.code(), QueryErrorCode::ServiceOverloaded);
-        assert_eq!(error.status(), QueryErrorStatus::Temporary);
-        assert_eq!(error.fact_value("reason"), Some("stream_and_pin_reservation_already_consumed"));
-        assert_eq!(error.fact_value("retry_action"), Some("readmit_query"));
     }
 }

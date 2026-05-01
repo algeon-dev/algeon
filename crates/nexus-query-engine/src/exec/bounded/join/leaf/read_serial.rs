@@ -14,8 +14,7 @@ pub(super) fn read_join_leaf_source_chunks_serial(
     min_retry_chunk_row_groups: usize,
     grow_source_to_observed: bool,
 ) -> Result<Vec<(GpuDataFrame, ActiveReservation)>> {
-    let batches = cache_preserving_join_leaf_source_chunk_batches(
-        context,
+    let batches = join_leaf_source_chunk_batches_for_execution(
         source,
         source_chunks,
         reader_dynamic_filters,
@@ -67,10 +66,6 @@ pub(super) fn read_join_leaf_source_batches_serial(
             ) {
                 Ok(mut outputs) => {
                     chunks.append(&mut outputs);
-                    if let Err(error) = reservations.acknowledge_requested_grant_shrink() {
-                        release_join_source_chunks_reverse(reservations, chunks, metrics);
-                        return Err(error);
-                    }
                 },
                 Err(error) => {
                     release_join_source_chunks_reverse(reservations, chunks, metrics);
@@ -93,10 +88,6 @@ pub(super) fn read_join_leaf_source_batches_serial(
         ) {
             Ok(mut outputs) => {
                 chunks.append(&mut outputs);
-                if let Err(error) = reservations.acknowledge_requested_grant_shrink() {
-                    release_join_source_chunks_reverse(reservations, chunks, metrics);
-                    return Err(error);
-                }
             },
             Err(error) => {
                 release_join_source_chunks_reverse(reservations, chunks, metrics);
@@ -372,15 +363,6 @@ pub(super) fn read_join_leaf_source_chunk_attempt(
 ) -> Result<(GpuDataFrame, ActiveReservation)> {
     context.check_cancellation("nexus_query_engine.exec.bounded.join_leaf_source_chunk")?;
     metrics.record_source_chunk_attempt();
-    if let Some(output) = try_read_cached_local_parquet_chunk(context, source, chunk, reservations, metrics)? {
-        record_dynamic_filter_reader_predicate_rows(reader_dynamic_filters, chunk, &output.frame, metrics);
-        metrics.record_source_chunk_commit(committed_join_source_chunk_row_groups(
-            chunk,
-            metrics.row_groups_selected,
-            metrics,
-        ));
-        return Ok((output.frame, output.reservation));
-    }
     let selected_row_groups_before_read = metrics.row_groups_selected;
     let requested_bytes = chunk_requested_bytes(context.memory_control_policy(), chunk);
     let mut reservation = reservations.try_reserve(
@@ -448,24 +430,6 @@ pub(super) fn read_join_leaf_source_chunk_attempt(
             metrics,
             attempt,
             max_attempts,
-        ) {
-            drop(frame);
-            reservations.release(reservation, metrics);
-            return Err(error);
-        }
-        let retained_device_bytes = reservation.bytes();
-        if let Err(error) = insert_bounded_local_parquet_source_cache(
-            context,
-            source,
-            chunk,
-            &frame,
-            &mut reservation,
-            reservations,
-            metrics,
-            "join_source_read",
-            attempt,
-            max_attempts,
-            retained_device_bytes,
         ) {
             drop(frame);
             reservations.release(reservation, metrics);

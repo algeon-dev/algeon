@@ -32,15 +32,17 @@ Feature selection (CLI selectors replace FEATURES; core default-member surface o
   (reported as all(fixed)) and are not controlled by the core selectors above.
 
 Execution:
-  --runner RUNNER               nextest (canonical) or cargo-diagnostic
+  --runner RUNNER               nextest only; same-process Cargo runners fail closed
   --strict                      Compatibility spelling; rustdoc is always strict
   -h, --help                    Show this help and exit
 
 Environment compatibility:
-  FEATURES, TEST_RUNNER, GPU_LOCK, and STRICT remain accepted. Every present
-  value is validated. Valid CLI values override their environment counterpart;
-  TEST_RUNNER=cargo maps to cargo-diagnostic. Shared-GPU concurrency is always
-  the number of CPU cores available to this environment, as reported by nproc.
+  FEATURES, TEST_RUNNER, GPU_LOCK, and STRICT remain recognized. Every present
+  value is validated. Valid CLI values override their environment counterpart.
+  TEST_RUNNER=nextest is the only supported runner value; the retired
+  cargo/cargo-diagnostic values fail closed because they share process-global
+  test state. Shared-GPU concurrency is always the number of CPU cores
+  available to this environment, as reported by nproc.
   Any CLI feature selector replaces FEATURES rather than merging with it.
   CHECK_ALL_PHASE_LOG_DIR optionally selects the persistent phase-log directory;
   otherwise a unique directory is created below target/check-all/.
@@ -49,7 +51,6 @@ Examples:
   bash scripts/check_all.sh
   bash scripts/check_all.sh --fast --features server
   bash scripts/check_all.sh --lane gpu-shared
-  bash scripts/check_all.sh --runner cargo-diagnostic
 USAGE
 }
 
@@ -196,20 +197,25 @@ fi
 
 runner=nextest
 runner_source=default
+unsupported_runner=""
 if [[ -v TEST_RUNNER ]]; then
   case "${TEST_RUNNER}" in
-    nextest) runner=nextest ;;
-    cargo | cargo-diagnostic) runner=cargo-diagnostic ;;
-    *) usage_error "TEST_RUNNER must be nextest, cargo, or cargo-diagnostic, got '${TEST_RUNNER}'." ;;
+    nextest) ;;
+    cargo | cargo-diagnostic) unsupported_runner=${TEST_RUNNER} ;;
+    *) usage_error "TEST_RUNNER must be nextest; cargo and cargo-diagnostic are retired, got '${TEST_RUNNER}'." ;;
   esac
   runner_source=env
 fi
 if [[ "${seen_runner}" -eq 1 ]]; then
   case "${cli_runner}" in
-    nextest | cargo-diagnostic) runner=${cli_runner} ;;
-    *) usage_error "--runner must be nextest or cargo-diagnostic, got '${cli_runner}'." ;;
+    nextest) unsupported_runner="" ;;
+    cargo | cargo-diagnostic) unsupported_runner=${cli_runner} ;;
+    *) usage_error "--runner must be nextest; cargo and cargo-diagnostic are retired, got '${cli_runner}'." ;;
   esac
   runner_source=cli
+fi
+if [[ -n "${unsupported_runner}" ]]; then
+  usage_error "same-process Cargo runner '${unsupported_runner}' is unsupported: allocator lifecycle and policy-specific native tests require cargo-nextest per-test-process isolation. Use '--runner nextest' or omit --runner."
 fi
 
 if [[ -v GPU_LOCK ]]; then
@@ -251,12 +257,6 @@ case "${lane}" in
   *) usage_error "--lane must be all, cpu, gpu, gpu-shared, gpu-exclusive, or policy, got '${lane}'." ;;
 esac
 
-if [[ "${mode}" == fast && "${runner}" != nextest ]]; then
-  usage_error "--fast requires --runner nextest."
-fi
-if [[ "${mode}" == lane && "${runner}" == cargo-diagnostic && "${lane}" != all && "${lane}" != policy ]]; then
-  usage_error "cargo-diagnostic cannot select individual test lanes; use --lane all."
-fi
 gpu_threads=$(nproc 2>/dev/null)
 nproc_status=$?
 [[ "${nproc_status}" -eq 0 ]] \
@@ -301,7 +301,7 @@ DOC_RUSTDOCFLAGS="${RUSTDOCFLAGS:-}"
 DOC_RUSTDOCFLAGS="${DOC_RUSTDOCFLAGS:+${DOC_RUSTDOCFLAGS} }-D warnings"
 
 needs_nextest=0
-if [[ "${runner}" == nextest && "${lane}" != policy ]]; then
+if [[ "${lane}" != policy ]]; then
   needs_nextest=1
 fi
 if [[ "${needs_nextest}" -eq 1 ]]; then
@@ -333,8 +333,6 @@ echo "CHECK CONFIG: mode=${mode} lane=${lane} runner=${runner}(${runner_source})
 echo "PHASE LOG DIRECTORY: ${PHASE_LOG_DIR}"
 if [[ "${mode}" != full ]]; then
   echo "PARTIAL SURFACE: mode=${mode} lane=${lane}; this does not satisfy full pre-merge validation."
-elif [[ "${runner}" == cargo-diagnostic ]]; then
-  echo "NONCANONICAL RUNNER: cargo-diagnostic serializes the test suite under the GPU lock; it does not satisfy canonical nextest validation."
 fi
 
 status=0
@@ -362,7 +360,6 @@ PHASE_ORDER=(
   iceberg-tests
   gpu-shared-tests
   gpu-exclusive-tests
-  cargo-diagnostic
   doctests
   rustdoc
   bench-rustdoc
@@ -403,7 +400,6 @@ define_phase bench-tests "cargo nextest run -p nexus-bench --all-features -E 'no
 define_phase iceberg-tests "cargo nextest run -p nexus-iceberg --all-features --no-fail-fast"
 define_phase gpu-shared-tests "flock ${GPU_LOCK} cargo nextest run -P ${GPU_NEXTEST_PROFILE} ${FEATURE_ARGS[*]} -E group(${GPU_NEXTEST_GROUP}) --no-fail-fast --test-threads ${gpu_threads}"
 define_phase gpu-exclusive-tests "flock ${GPU_LOCK} cargo nextest run -P ${GPU_NEXTEST_PROFILE} ${FEATURE_ARGS[*]} -E group(gpu-exclusive) --no-fail-fast --test-threads ${GPU_EXCLUSIVE_CAP}"
-define_phase cargo-diagnostic "RUST_TEST_THREADS=1 flock ${GPU_LOCK} cargo test ${FEATURE_ARGS[*]} --no-fail-fast --lib --bins --tests --examples -- --test-threads=1"
 define_phase doctests "flock ${GPU_LOCK} cargo test ${FEATURE_ARGS[*]} --doc --no-fail-fast"
 define_phase rustdoc "RUSTDOCFLAGS='${DOC_RUSTDOCFLAGS}' cargo doc ${FEATURE_ARGS[*]} --no-deps --keep-going"
 define_phase bench-rustdoc "RUSTDOCFLAGS='${DOC_RUSTDOCFLAGS}' cargo doc -p nexus-bench --all-features --no-deps --keep-going"
@@ -658,19 +654,6 @@ gpu_exclusive_test_command() {
     "${FEATURE_ARGS[@]}" -E 'group(gpu-exclusive)' --no-fail-fast --test-threads "${GPU_EXCLUSIVE_CAP}"
 }
 
-cargo_diagnostic_command() {
-  RUST_TEST_THREADS=1 flock "${GPU_LOCK}" cargo test \
-    "${FEATURE_ARGS[@]}" --no-fail-fast --lib --bins --tests --examples -- --test-threads=1
-}
-
-# Bench tested surface still uses pure Cargo on the cargo-diagnostic runner so
-# diagnostics remain available without nextest profile mechanics. All admitted
-# bench tests are CPU, so this does not take the GPU lock.
-bench_cargo_diagnostic_command() {
-  cargo test -p nexus-bench --all-features \
-    --no-fail-fast --lib --tests -- --test-threads=1
-}
-
 doctest_command() {
   flock "${GPU_LOCK}" cargo test \
     "${FEATURE_ARGS[@]}" --doc --no-fail-fast
@@ -702,7 +685,7 @@ if [[ "${mode}" == full ]]; then
   run_phase iceberg-fmt none - - cargo "+${RUSTFMT_TOOLCHAIN}" fmt -p nexus-iceberg -- --check || true
 fi
 
-if [[ "${runner}" == nextest && "${lane}" != policy ]]; then
+if [[ "${lane}" != policy ]]; then
   if [[ "${mode}" != fast ]]; then
     if ! run_phase live-inventory none - - bash scripts/ci/check_gpu_test_lane.sh "${FEATURE_ARGS[@]}"; then
       lane_safe=0
@@ -755,16 +738,6 @@ if [[ "${runner}" == nextest && "${lane}" != policy ]]; then
       || PHASE_STATUS[gpu-shared-tests]='SKIPPED(blocked)'
     [[ "${needs_exclusive_gpu}" -eq 0 || "${PHASE_STATUS[gpu-exclusive-tests]}" != SKIPPED ]] \
       || PHASE_STATUS[gpu-exclusive-tests]='SKIPPED(blocked)'
-  fi
-elif [[ "${runner}" == cargo-diagnostic && "${lane}" == all ]]; then
-  if [[ "${lane_safe}" -eq 1 ]]; then
-    run_phase cargo-diagnostic cargo "${GPU_EXCLUSIVE_CAP}" "${GPU_LOCK}" cargo_diagnostic_command || true
-    # Replace the nextest bench-tests phase when the diagnostic runner is selected.
-    PHASE_COMMAND[bench-tests]="cargo test -p nexus-bench --all-features --no-fail-fast --lib --tests -- --test-threads=1"
-    run_phase bench-tests cargo - - bench_cargo_diagnostic_command || true
-  else
-    PHASE_STATUS[cargo-diagnostic]='SKIPPED(blocked)'
-    PHASE_STATUS[bench-tests]='SKIPPED(blocked)'
   fi
 fi
 
@@ -821,15 +794,13 @@ if [[ "${fatal_status}" -ne 0 ]]; then
   final_status=${fatal_status}
 fi
 if [[ "${final_status}" -ne 0 ]]; then
-  if [[ "${mode}" == full && "${runner}" == nextest ]]; then
+  if [[ "${mode}" == full ]]; then
     echo "FAIL: canonical full pre-merge surface reported problems."
   else
-    echo "FAIL: selected partial/noncanonical surface reported problems."
+    echo "FAIL: selected partial validation surface reported problems."
   fi
-elif [[ "${mode}" == full && "${runner}" == nextest ]]; then
-  echo "OK: canonical full pre-merge surface passed."
 elif [[ "${mode}" == full ]]; then
-  echo "OK: NONCANONICAL cargo-diagnostic surface passed; run with nextest for full pre-merge validation."
+  echo "OK: canonical full pre-merge surface passed."
 elif [[ "${mode}" == fast ]]; then
   echo "OK: fast edit-loop surface passed. PARTIAL: full pre-merge validation was not run."
 else

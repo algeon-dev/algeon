@@ -5,7 +5,7 @@ use std::{
     collections::HashMap,
     panic::{AssertUnwindSafe, catch_unwind},
     sync::{
-        Arc, Condvar, Mutex, OnceLock,
+        Arc, Condvar, Mutex, OnceLock, Weak,
         atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc,
     },
@@ -17,7 +17,13 @@ use std::{cell::Cell, sync::Barrier};
 
 #[cfg(test)]
 use super::DeviceFacts;
-use super::{ExecutionCancellation, ExecutionContext, context::QueryServiceResourceEpoch};
+use super::{
+    ExecutionCancellation, ExecutionContext,
+    context::{AttemptAuxiliaryPermit, QueryServiceResourceEpoch},
+    process_exit::{
+        ProcessExitPhase, ProcessExitRegistration, ProcessExitShutdown, register_cuda_process_exit_shutdown,
+    },
+};
 use crate::{
     error::{QueryError, QueryErrorCode, Result},
     observability::{
@@ -90,18 +96,48 @@ struct ServiceStreamPoolInner {
     id: u64,
     device: cudf::DeviceId,
     pool_size: usize,
+    root_capacity: usize,
+    aux_capacity: usize,
     state: Mutex<ServiceStreamPoolState>,
     available: Condvar,
     state_changed: Condvar,
     next_lease_id: AtomicU64,
-    cleanup_supervisor: StreamCleanupSupervisor,
+    cleanup_supervisor: Arc<StreamCleanupSupervisor>,
     closed: AtomicBool,
+    process_exit_started: AtomicBool,
+}
+
+/// Resource class for bounded stream-pool admission.
+///
+/// For active-attempt limit `A_d` and per-attempt source-work bound `S_d`,
+/// each device reserves `A_d` root stream slots and `A_d * S_d` auxiliary
+/// stream slots. Auxiliary (child/source-read) acquisition can never consume
+/// a future root slot.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum StreamPermitClass {
+    /// Per-attempt root execution stream.
+    Root,
+    /// Fragment and source-read streams.
+    #[default]
+    Auxiliary,
+}
+
+impl StreamPermitClass {
+    /// Stable diagnostic label for this permit class.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Root => "root",
+            Self::Auxiliary => "auxiliary",
+        }
+    }
 }
 
 #[derive(Debug, Default)]
 struct ServiceStreamPoolState {
     idle: Vec<Arc<cudf::Runtime>>,
     created: usize,
+    root_outstanding: usize,
+    aux_outstanding: usize,
     waiting_acquires: usize,
     pending_cleanups: usize,
     active_cleanups: usize,
@@ -112,17 +148,32 @@ struct ServiceStreamPoolState {
     force_next_cleanup_enqueue_fallback: bool,
 }
 
-type StreamCleanupCallback = Box<dyn FnOnce() + Send>;
+type StreamCleanupCallback = Box<dyn FnOnce(StreamCleanupOutcome) + Send>;
+type StreamCleanupTailCallback = Box<dyn FnOnce() + Send>;
+
+/// Typed evidence handed to the pre-quiescence cleanup callback (P2.7).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StreamCleanupOutcome {
+    Completed,
+    StreamSynchronizationFailed,
+    CallbackAbandoned,
+}
+
+impl StreamCleanupOutcome {
+    fn from_synchronized(synchronized: bool) -> Self {
+        if synchronized { Self::Completed } else { Self::StreamSynchronizationFailed }
+    }
+}
 
 #[derive(Default)]
 struct StreamCleanupCompletion {
     before_quiescence: Option<StreamCleanupCallback>,
-    after_quiescence: Option<StreamCleanupCallback>,
+    after_quiescence: Option<StreamCleanupTailCallback>,
 }
 
 impl StreamCleanupCompletion {
     fn new(
-        before_quiescence: impl FnOnce() + Send + 'static,
+        before_quiescence: impl FnOnce(StreamCleanupOutcome) + Send + 'static,
         after_quiescence: impl FnOnce() + Send + 'static,
     ) -> Self {
         Self {
@@ -131,9 +182,9 @@ impl StreamCleanupCompletion {
         }
     }
 
-    fn run_before_quiescence(&mut self) {
+    fn run_before_quiescence(&mut self, outcome: StreamCleanupOutcome) {
         if let Some(completion) = self.before_quiescence.take() {
-            completion();
+            completion(outcome);
         }
     }
 
@@ -151,7 +202,7 @@ impl StreamCleanupCompletion {
     /// abort the process.
     fn run_remaining_after_abandonment(&mut self) {
         if let Some(completion) = self.before_quiescence.take() {
-            let _ = catch_unwind(AssertUnwindSafe(completion));
+            let _ = catch_unwind(AssertUnwindSafe(|| completion(StreamCleanupOutcome::CallbackAbandoned)));
         }
         if let Some(completion) = self.after_quiescence.take() {
             let _ = catch_unwind(AssertUnwindSafe(completion));
@@ -180,6 +231,22 @@ struct StreamCleanupSupervisor {
     control: Arc<StreamCleanupSupervisorControl>,
     join: Mutex<Option<thread::JoinHandle<StreamCleanupWorkerOutcome>>>,
     join_disposition: AtomicU64,
+    process_exit_registration: Mutex<Option<ProcessExitRegistration>>,
+}
+
+enum StreamCleanupEnqueueError {
+    ProcessExit(StreamCleanupJob),
+    SupervisorStopped(StreamCleanupJob),
+}
+
+/// A process-exit owner deliberately retains only the cleanup-thread control
+/// plane. It keeps no CUDA runtime or pool state alive, but it can upgrade a
+/// still-live pool to close it before joining the worker. If the final pool
+/// reference is released by the worker itself, the supervisor remains
+/// registered long enough for the process hook to join that last thread.
+struct ProcessExitStreamPool {
+    inner: Weak<ServiceStreamPoolInner>,
+    supervisor: Arc<StreamCleanupSupervisor>,
 }
 
 const STREAM_CLEANUP_SUPERVISOR_NOT_JOINED: u64 = 0;
@@ -247,10 +314,21 @@ impl std::fmt::Debug for StreamCleanupSupervisor {
 }
 
 impl StreamCleanupSupervisor {
-    fn start(device: cudf::DeviceId, pool_id: u64) -> Result<Self> {
+    fn start(device: cudf::DeviceId, pool_id: u64) -> Result<Arc<Self>> {
         let (sender, receiver) = mpsc::channel();
         let control = Arc::new(StreamCleanupSupervisorControl::default());
-        let thread_control = Arc::clone(&control);
+        let supervisor = Arc::new(Self {
+            device,
+            pool_id,
+            sender,
+            submission_gate: Mutex::new(()),
+            control,
+            join: Mutex::new(None),
+            join_disposition: AtomicU64::new(STREAM_CLEANUP_SUPERVISOR_NOT_JOINED),
+            process_exit_registration: Mutex::new(None),
+        });
+        let thread_control = Arc::clone(&supervisor.control);
+        let worker_supervisor = Arc::clone(&supervisor);
         #[cfg(test)]
         let inject_spawn_failure = FAIL_NEXT_CLEANUP_SUPERVISOR_SPAWN.with(|failure| failure.replace(false));
         #[cfg(not(test))]
@@ -258,9 +336,13 @@ impl StreamCleanupSupervisor {
         let join = if inject_spawn_failure {
             Err(std::io::Error::other("injected service stream cleanup supervisor spawn failure"))
         } else {
-            thread::Builder::new()
-                .name(format!("nexus-stream-cleanup-d{}-p{pool_id}", device.ordinal()))
-                .spawn(move || run_stream_cleanup_worker(receiver, &thread_control))
+            thread::Builder::new().name(format!("nexus-stream-cleanup-d{}-p{pool_id}", device.ordinal())).spawn(
+                move || {
+                    let outcome = run_stream_cleanup_worker(receiver, &thread_control);
+                    worker_supervisor.unregister_process_exit();
+                    outcome
+                },
+            )
         }
         .map_err(|error| {
             QueryError::new(
@@ -274,17 +356,27 @@ impl StreamCleanupSupervisor {
             .with_source(error)
         })?;
 
-        Ok(Self {
-            device,
-            pool_id,
-            sender,
-            submission_gate: Mutex::new(()),
-            control,
-            join: Mutex::new(Some(join)),
-            join_disposition: AtomicU64::new(STREAM_CLEANUP_SUPERVISOR_NOT_JOINED),
-        })
+        *supervisor.join.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(join);
+        Ok(supervisor)
     }
 
+    fn register_process_exit(self: &Arc<Self>, inner: Weak<ServiceStreamPoolInner>) {
+        let shutdown: Arc<dyn ProcessExitShutdown> =
+            Arc::new(ProcessExitStreamPool { inner, supervisor: Arc::clone(self) });
+        let registration = register_cuda_process_exit_shutdown(shutdown);
+        let mut slot = self.process_exit_registration.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        *slot = registration;
+    }
+
+    fn unregister_process_exit(&self) {
+        let registration =
+            self.process_exit_registration.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
+        if let Some(registration) = registration {
+            registration.unregister();
+        }
+    }
+
+    #[cfg(test)]
     fn enqueue(&self, job: StreamCleanupJob) -> std::result::Result<(), mpsc::SendError<StreamCleanupJob>> {
         let _submission = self.submission_gate.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let state = self.control.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -294,6 +386,22 @@ impl StreamCleanupSupervisor {
         // A sender failure only says that the receiver has gone away. The
         // worker's joined outcome remains the sole source of terminal state.
         self.sender.send(job)
+    }
+
+    fn enqueue_before_process_exit(
+        &self,
+        job: StreamCleanupJob,
+        process_exit_started: &AtomicBool,
+    ) -> std::result::Result<(), StreamCleanupEnqueueError> {
+        let _submission = self.submission_gate.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if process_exit_started.load(Ordering::Acquire) {
+            return Err(StreamCleanupEnqueueError::ProcessExit(job));
+        }
+        let state = self.control.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state.shutdown_requested || state.terminal.is_some() {
+            return Err(StreamCleanupEnqueueError::SupervisorStopped(job));
+        }
+        self.sender.send(job).map_err(|error| StreamCleanupEnqueueError::SupervisorStopped(error.0))
     }
 
     fn request_shutdown(&self, deadline: Instant, operation: &'static str) -> Result<()> {
@@ -477,7 +585,30 @@ impl StreamCleanupSupervisor {
             if joined.is_ok() { STREAM_CLEANUP_SUPERVISOR_JOINED } else { STREAM_CLEANUP_SUPERVISOR_JOIN_FAILED },
             Ordering::Release,
         );
+        self.unregister_process_exit();
         Ok(joined)
+    }
+
+    fn join_for_process_exit(&self) {
+        self.request_shutdown_from_drop();
+        let mut join = self.join.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(handle) = join.take() else {
+            return;
+        };
+        if handle.thread().id() == thread::current().id() {
+            // The worker will finish its own current cleanup and then drop
+            // this handle while unwinding out of its entry point. Joining
+            // oneself would deadlock and cannot add a happens-before edge.
+            *join = Some(handle);
+            return;
+        }
+        let joined = handle.join();
+        self.join_disposition.store(
+            if joined.is_ok() { STREAM_CLEANUP_SUPERVISOR_JOINED } else { STREAM_CLEANUP_SUPERVISOR_JOIN_FAILED },
+            Ordering::Release,
+        );
+        drop(join);
+        self.unregister_process_exit();
     }
 
     fn relinquish_joiner(&self) {
@@ -580,6 +711,20 @@ impl Drop for ServiceStreamPoolInner {
     }
 }
 
+impl ProcessExitShutdown for ProcessExitStreamPool {
+    fn phase(&self) -> ProcessExitPhase {
+        ProcessExitPhase::StreamPool
+    }
+
+    fn shutdown_for_process_exit(&self) {
+        if let Some(inner) = self.inner.upgrade() {
+            ServiceStreamPool { inner }.close_and_join_for_process_exit();
+        } else {
+            self.supervisor.join_for_process_exit();
+        }
+    }
+}
+
 impl StreamCleanupSupervisorControl {
     #[cfg(test)]
     fn pause_before_worker_return_for_test(&self) {
@@ -625,7 +770,34 @@ impl ServiceStreamPool {
     /// Runtime/stream creation is lazy: construction records the limit but does
     /// not allocate CUDA streams immediately.
     pub fn new(device: cudf::DeviceId, pool_size: usize) -> Result<Self> {
+        // Direct constructors keep pre-partition semantics: one root slot for
+        // lifecycle work and an auxiliary class bounded only by the physical
+        // pool size. Backend-owned pools pass explicit `A_d`/`A_d * S_d`
+        // capacities from the device resource profile via
+        // [`Self::new_with_classes`].
+        Self::new_with_classes(device, pool_size, 1, pool_size)
+    }
+
+    /// Creates a pool with explicit root/auxiliary stream-slot capacities.
+    pub fn new_with_classes(
+        device: cudf::DeviceId,
+        pool_size: usize,
+        root_capacity: usize,
+        aux_capacity: usize,
+    ) -> Result<Self> {
         validate_service_stream_pool_size(pool_size)?;
+        for (field, capacity) in [("root_capacity", root_capacity), ("aux_capacity", aux_capacity)] {
+            if capacity == 0 {
+                return Err(QueryError::new(
+                    QueryErrorCode::InvalidPlan,
+                    "nexus_query_engine.service_stream_pool",
+                    "service stream pool permit-class capacity must be greater than zero",
+                )
+                .with_fact("device_ordinal", device.ordinal())
+                .with_fact("field", field)
+                .with_fact("reason", "zero"));
+            }
+        }
         let id = NEXT_STREAM_POOL_ID.fetch_add(1, Ordering::Relaxed);
         // The cleanup receiver is a construction resource. Do not publish a
         // usable pool unless its owner thread was created successfully.
@@ -634,13 +806,17 @@ impl ServiceStreamPool {
             id,
             device,
             pool_size,
+            root_capacity,
+            aux_capacity,
             state: Mutex::new(ServiceStreamPoolState::default()),
             available: Condvar::new(),
             state_changed: Condvar::new(),
             next_lease_id: AtomicU64::new(1),
-            cleanup_supervisor,
+            cleanup_supervisor: Arc::clone(&cleanup_supervisor),
             closed: AtomicBool::new(false),
+            process_exit_started: AtomicBool::new(false),
         });
+        cleanup_supervisor.register_process_exit(Arc::downgrade(&inner));
         Ok(Self { inner })
     }
 
@@ -652,7 +828,7 @@ impl ServiceStreamPool {
     /// capacity contract.
     pub fn for_device(device: cudf::DeviceId, pool_size: usize) -> Result<Self> {
         validate_service_stream_pool_size(pool_size)?;
-        static POOLS: OnceLock<Mutex<HashMap<(usize, usize), ServiceStreamPool>>> = OnceLock::new();
+        static POOLS: OnceLock<Mutex<HashMap<(usize, usize), Weak<ServiceStreamPoolInner>>>> = OnceLock::new();
         let pools = POOLS.get_or_init(|| Mutex::new(HashMap::new()));
         let mut pools = pools.lock().map_err(|_error| {
             QueryError::new(
@@ -662,11 +838,11 @@ impl ServiceStreamPool {
             )
         })?;
         let key = (device.ordinal(), pool_size);
-        if let Some(pool) = pools.get(&key) {
-            return Ok(pool.clone());
+        if let Some(inner) = pools.get(&key).and_then(Weak::upgrade) {
+            return Ok(Self { inner });
         }
         let pool = Self::new(device, pool_size)?;
-        pools.insert(key, pool.clone());
+        pools.insert(key, Arc::downgrade(&pool.inner));
         Ok(pool)
     }
 
@@ -683,6 +859,13 @@ impl ServiceStreamPool {
     /// Maximum number of simultaneously leased streams.
     pub fn pool_size(&self) -> usize {
         self.inner.pool_size
+    }
+
+    /// Permit-class counters for partition assertions.
+    #[cfg(test)]
+    pub(crate) fn class_counters(&self) -> (usize, usize, usize, usize) {
+        let state = self.inner.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        (state.root_outstanding, self.inner.root_capacity, state.aux_outstanding, self.inner.aux_capacity)
     }
 
     /// Wait until every runtime created by this pool has completed cleanup and
@@ -780,6 +963,30 @@ impl ServiceStreamPool {
         self.inner.cleanup_supervisor.wait_for_exit_until(deadline, operation)
     }
 
+    /// Terminal process-exit path. Unlike normal API shutdown it has no
+    /// caller-selected timeout: returning while this worker can still destroy
+    /// CUDA state would race libcudart finalization.
+    fn close_and_join_for_process_exit(&self) {
+        // Ordinary shutdown waits for every lease because its destructor is
+        // part of the reusable-capacity contract. `std::process::exit` skips
+        // those destructors, so waiting for externally held leases here would
+        // deadlock the atexit hook. Mark the terminal boundary first: a lease
+        // racing this hook is leaked instead of running CUDA destruction after
+        // the cleanup supervisor has been joined.
+        self.inner.process_exit_started.store(true, Ordering::Release);
+        self.inner.closed.store(true, Ordering::Release);
+        self.inner.available.notify_all();
+        let idle = {
+            let mut state = self.inner.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let idle = std::mem::take(&mut state.idle);
+            state.created = state.created.saturating_sub(idle.len());
+            self.inner.state_changed.notify_all();
+            idle
+        };
+        drop(idle);
+        self.inner.cleanup_supervisor.join_for_process_exit();
+    }
+
     /// Wait until exactly `expected_leased_runtimes` created runtimes remain
     /// checked out and every other runtime has completed cleanup.
     pub(crate) fn wait_until_quiescent(
@@ -848,7 +1055,7 @@ impl ServiceStreamPool {
     }
 
     #[cfg(test)]
-    fn fail_next_synchronization_for_test(&self) {
+    pub(crate) fn fail_next_synchronization_for_test(&self) {
         self.inner.state.lock().unwrap().fail_next_synchronization = true;
     }
 
@@ -859,12 +1066,18 @@ impl ServiceStreamPool {
 
     /// Acquire a CUDA stream/runtime lease, blocking when all pool slots are busy.
     pub fn acquire(&self) -> Result<StreamLease> {
+        self.acquire_with_class(StreamPermitClass::Auxiliary)
+    }
+
+    /// Acquire a lease of the given permit class, blocking when the class is full.
+    pub fn acquire_with_class(&self, permit_class: StreamPermitClass) -> Result<StreamLease> {
         self.acquire_inner(
             None,
             None,
             "nexus_query_engine.service_stream_pool.acquire",
             RuntimeObservationHandle::disabled(),
             RuntimeStreamLeaseScope::default(),
+            permit_class,
         )
     }
 
@@ -880,6 +1093,7 @@ impl ServiceStreamPool {
             operation,
             RuntimeObservationHandle::disabled(),
             RuntimeStreamLeaseScope::default(),
+            StreamPermitClass::Auxiliary,
         )
     }
 
@@ -897,6 +1111,7 @@ impl ServiceStreamPool {
             operation,
             RuntimeObservationHandle::disabled(),
             RuntimeStreamLeaseScope::default(),
+            StreamPermitClass::Auxiliary,
         )
     }
 
@@ -909,7 +1124,26 @@ impl ServiceStreamPool {
         observation: RuntimeObservationHandle,
         scope: RuntimeStreamLeaseScope,
     ) -> Result<StreamLease> {
-        self.acquire_inner(Some(cancellation), Some(deadline), operation, observation, scope)
+        self.acquire_observed_with_cancellation_deadline_and_class(
+            cancellation,
+            deadline,
+            operation,
+            observation,
+            scope,
+            StreamPermitClass::Auxiliary,
+        )
+    }
+
+    pub(crate) fn acquire_observed_with_cancellation_deadline_and_class(
+        &self,
+        cancellation: &ExecutionCancellation,
+        deadline: Instant,
+        operation: &'static str,
+        observation: RuntimeObservationHandle,
+        scope: RuntimeStreamLeaseScope,
+        permit_class: StreamPermitClass,
+    ) -> Result<StreamLease> {
+        self.acquire_inner(Some(cancellation), Some(deadline), operation, observation, scope, permit_class)
     }
 
     pub(crate) fn acquire_observed_with_cancellation(
@@ -919,57 +1153,24 @@ impl ServiceStreamPool {
         observation: RuntimeObservationHandle,
         scope: RuntimeStreamLeaseScope,
     ) -> Result<StreamLease> {
-        self.acquire_inner(Some(cancellation), None, operation, observation, scope)
+        self.acquire_observed_with_cancellation_and_class(
+            cancellation,
+            operation,
+            observation,
+            scope,
+            StreamPermitClass::Auxiliary,
+        )
     }
 
-    /// Attempts to reserve an idle runtime for which `reserve` can also
-    /// acquire a caller-owned companion reservation.
-    ///
-    /// The callback runs while the stream-pool mutex is held. It must remain
-    /// host-only and must not call back into this stream pool. This is used by
-    /// query admission to reserve an exact-runtime resident graph cache entry
-    /// and its stream as one lifecycle; runtimes created after this call
-    /// cannot own an existing cache entry and are intentionally not created.
-    #[cfg(feature = "cugraph")]
-    pub(crate) fn try_acquire_matching<T>(
+    pub(crate) fn acquire_observed_with_cancellation_and_class(
         &self,
+        cancellation: &ExecutionCancellation,
         operation: &'static str,
-        mut reserve: impl FnMut(&Arc<cudf::Runtime>) -> Result<Option<T>>,
-    ) -> Result<Option<(StreamLease, T)>> {
-        if self.inner.closed.load(Ordering::Acquire) {
-            return Err(stream_pool_closed(operation, self));
-        }
-        let mut state = self.lock_state(operation)?;
-        if self.inner.closed.load(Ordering::Acquire) {
-            return Err(stream_pool_closed(operation, self));
-        }
-        let health = cudf::runtime::device_health_snapshot(self.device());
-        if health.status() == cudf::runtime::DeviceHealthStatus::Unhealthy {
-            return Err(unhealthy_stream_device_error(operation, self.device(), health));
-        }
-        for index in (0..state.idle.len()).rev() {
-            let runtime = &state.idle[index];
-            let Some(reservation) = reserve(runtime)? else {
-                continue;
-            };
-            let health = cudf::runtime::device_health_snapshot(self.device());
-            if health.status() == cudf::runtime::DeviceHealthStatus::Unhealthy {
-                return Err(unhealthy_stream_device_error(operation, self.device(), health));
-            }
-            let runtime = state.idle.swap_remove(index);
-            self.inner.state_changed.notify_all();
-            return Ok(Some((
-                StreamLease {
-                    pool: self.clone(),
-                    runtime: Some(runtime),
-                    observation: None,
-                    resource_epoch: None,
-                    cleanup_completion: Mutex::new(None),
-                },
-                reservation,
-            )));
-        }
-        Ok(None)
+        observation: RuntimeObservationHandle,
+        scope: RuntimeStreamLeaseScope,
+        permit_class: StreamPermitClass,
+    ) -> Result<StreamLease> {
+        self.acquire_inner(Some(cancellation), None, operation, observation, scope, permit_class)
     }
 
     fn acquire_inner(
@@ -979,6 +1180,7 @@ impl ServiceStreamPool {
         operation: &'static str,
         observation: RuntimeObservationHandle,
         scope: RuntimeStreamLeaseScope,
+        permit_class: StreamPermitClass,
     ) -> Result<StreamLease> {
         enum AcquireAction {
             Reuse(Arc<cudf::Runtime>),
@@ -1021,14 +1223,28 @@ impl ServiceStreamPool {
                 lease_observation.terminal(StreamLeaseLifecycleState::Failed { error_code: error.code().to_string() });
                 return Err(error);
             }
-            if let Some(runtime) = state.idle.pop() {
-                self.inner.state_changed.notify_all();
-                break AcquireAction::Reuse(runtime);
-            }
-            if state.created < self.pool_size() {
-                state.created += 1;
-                self.inner.state_changed.notify_all();
-                break AcquireAction::Create;
+            let class_open = match permit_class {
+                StreamPermitClass::Root => state.root_outstanding < self.inner.root_capacity,
+                StreamPermitClass::Auxiliary => state.aux_outstanding < self.inner.aux_capacity,
+            };
+            if class_open {
+                if let Some(runtime) = state.idle.pop() {
+                    match permit_class {
+                        StreamPermitClass::Root => state.root_outstanding += 1,
+                        StreamPermitClass::Auxiliary => state.aux_outstanding += 1,
+                    }
+                    self.inner.state_changed.notify_all();
+                    break AcquireAction::Reuse(runtime);
+                }
+                if state.created < self.pool_size() {
+                    state.created += 1;
+                    match permit_class {
+                        StreamPermitClass::Root => state.root_outstanding += 1,
+                        StreamPermitClass::Auxiliary => state.aux_outstanding += 1,
+                    }
+                    self.inner.state_changed.notify_all();
+                    break AcquireAction::Create;
+                }
             }
             if cancellation.is_some() || deadline.is_some() {
                 let wait = stream_acquire_wait_interval(deadline);
@@ -1065,7 +1281,7 @@ impl ServiceStreamPool {
                     (Arc::new(runtime), StreamLeaseAcquisition::Created)
                 },
                 Ok(runtime) => {
-                    self.discard_created_slot();
+                    self.discard_created_slot(permit_class);
                     drop(runtime);
                     let error = stream_pool_closed(operation, self);
                     lease_observation
@@ -1073,7 +1289,7 @@ impl ServiceStreamPool {
                     return Err(error);
                 },
                 Err(error) => {
-                    self.discard_created_slot();
+                    self.discard_created_slot(permit_class);
                     lease_observation
                         .terminal(StreamLeaseLifecycleState::Failed { error_code: error.code().to_string() });
                     return Err(error);
@@ -1090,6 +1306,7 @@ impl ServiceStreamPool {
             observation: Some(lease_observation),
             resource_epoch: None,
             cleanup_completion: Mutex::new(None),
+            permit_class,
         })
     }
 
@@ -1132,10 +1349,14 @@ impl ServiceStreamPool {
         }
     }
 
-    fn discard_created_slot(&self) {
+    fn discard_created_slot(&self, permit_class: StreamPermitClass) {
         match self.inner.state.lock() {
             Ok(mut state) => {
                 state.created = state.created.saturating_sub(1);
+                match permit_class {
+                    StreamPermitClass::Root => state.root_outstanding = state.root_outstanding.saturating_sub(1),
+                    StreamPermitClass::Auxiliary => state.aux_outstanding = state.aux_outstanding.saturating_sub(1),
+                }
                 self.inner.available.notify_one();
                 self.inner.state_changed.notify_all();
             },
@@ -1150,7 +1371,19 @@ impl ServiceStreamPool {
         runtime: Arc<cudf::Runtime>,
         resource_epoch: Option<Arc<QueryServiceResourceEpoch>>,
         mut completion: Option<StreamCleanupCompletion>,
+        permit_class: StreamPermitClass,
     ) {
+        if self.inner.process_exit_started.load(Ordering::Acquire) {
+            // The process-exit owner has already joined (or is joining) the
+            // only thread allowed to destroy service runtimes. Leaking this
+            // terminal payload is intentional: process exit will reclaim the
+            // address space, whereas dropping it could race libcudart's later
+            // atexit handler.
+            std::mem::forget(runtime);
+            std::mem::forget(resource_epoch);
+            std::mem::forget(completion);
+            return;
+        }
         let registered = match self.inner.state.lock() {
             Ok(mut state) => {
                 state.pending_cleanups = state.pending_cleanups.saturating_add(1);
@@ -1163,17 +1396,22 @@ impl ServiceStreamPool {
             },
         };
         if !registered {
-            let _ = runtime.synchronize();
+            let synchronized = runtime.synchronize().is_ok();
             drop(runtime);
             drop(resource_epoch);
             if let Some(completion) = completion.as_mut() {
-                completion.run_before_quiescence();
+                completion.run_before_quiescence(StreamCleanupOutcome::from_synchronized(synchronized));
                 completion.run_after_quiescence();
             }
             return;
         }
-        let job =
-            StreamCleanupJob::Runtime(DeferredStreamCleanup::new(self.clone(), runtime, resource_epoch, completion));
+        let job = StreamCleanupJob::Runtime(DeferredStreamCleanup::new(
+            self.clone(),
+            runtime,
+            resource_epoch,
+            completion,
+            permit_class,
+        ));
         #[cfg(test)]
         let force_enqueue_fallback = match self.inner.state.lock() {
             Ok(mut state) => std::mem::take(&mut state.force_next_cleanup_enqueue_fallback),
@@ -1192,20 +1430,30 @@ impl ServiceStreamPool {
             }
             return;
         }
-        if let Err(error) = self.inner.cleanup_supervisor.enqueue(job) {
-            // The only production send failure is a terminal cleanup
-            // supervisor. The synchronous fallback still releases the job's
-            // permits, but the runtime cannot be returned to a pool whose
-            // owner has disappeared.
-            self.inner.closed.store(true, Ordering::Release);
-            match error.0 {
-                StreamCleanupJob::Runtime(mut cleanup) => cleanup.run(),
-                StreamCleanupJob::Shutdown => unreachable!("runtime cleanup cannot enqueue supervisor shutdown"),
-                #[cfg(test)]
-                StreamCleanupJob::Probe { .. }
-                | StreamCleanupJob::Block { .. }
-                | StreamCleanupJob::ExitUnexpectedly => {},
-            }
+        match self.inner.cleanup_supervisor.enqueue_before_process_exit(job, &self.inner.process_exit_started) {
+            Ok(()) => {},
+            Err(StreamCleanupEnqueueError::ProcessExit(job)) => {
+                // The exit flag is checked while holding the same submission
+                // gate used to queue supervisor shutdown. A cleanup therefore
+                // either precedes shutdown or is retained across the terminal
+                // boundary; it can never fall back to CUDA work after join.
+                std::mem::forget(job);
+            },
+            Err(StreamCleanupEnqueueError::SupervisorStopped(job)) => {
+                // The only production send failure outside process exit is a
+                // terminal cleanup supervisor. The synchronous fallback still
+                // releases the job's permits, but the runtime cannot be
+                // returned to a pool whose owner has disappeared.
+                self.inner.closed.store(true, Ordering::Release);
+                match job {
+                    StreamCleanupJob::Runtime(mut cleanup) => cleanup.run(),
+                    StreamCleanupJob::Shutdown => unreachable!("runtime cleanup cannot enqueue supervisor shutdown"),
+                    #[cfg(test)]
+                    StreamCleanupJob::Probe { .. }
+                    | StreamCleanupJob::Block { .. }
+                    | StreamCleanupJob::ExitUnexpectedly => {},
+                }
+            },
         }
     }
 }
@@ -1220,6 +1468,7 @@ struct DeferredStreamCleanup {
     resource_epoch: Option<Arc<QueryServiceResourceEpoch>>,
     completion: Option<StreamCleanupCompletion>,
     phase: DeferredStreamCleanupPhase,
+    permit_class: StreamPermitClass,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1236,8 +1485,16 @@ impl DeferredStreamCleanup {
         runtime: Arc<cudf::Runtime>,
         resource_epoch: Option<Arc<QueryServiceResourceEpoch>>,
         completion: Option<StreamCleanupCompletion>,
+        permit_class: StreamPermitClass,
     ) -> Self {
-        Self { pool, runtime: Some(runtime), resource_epoch, completion, phase: DeferredStreamCleanupPhase::Pending }
+        Self {
+            pool,
+            runtime: Some(runtime),
+            resource_epoch,
+            completion,
+            phase: DeferredStreamCleanupPhase::Pending,
+            permit_class,
+        }
     }
 
     fn run(&mut self) {
@@ -1252,7 +1509,7 @@ impl DeferredStreamCleanup {
             // This callback releases GPU-side/query admission ownership while
             // cleanup remains active. A panic is caught by the supervisor and
             // this guard's Drop path completes the remaining handoff.
-            completion.run_before_quiescence();
+            completion.run_before_quiescence(StreamCleanupOutcome::from_synchronized(synchronized));
         }
         self.finish_active_accounting();
         if let Some(completion) = self.completion.as_mut() {
@@ -1309,6 +1566,10 @@ impl DeferredStreamCleanup {
         let mut idle_to_drop = Vec::new();
         match self.pool.inner.state.lock() {
             Ok(mut state) => {
+                match self.permit_class {
+                    StreamPermitClass::Root => state.root_outstanding = state.root_outstanding.saturating_sub(1),
+                    StreamPermitClass::Auxiliary => state.aux_outstanding = state.aux_outstanding.saturating_sub(1),
+                }
                 if synchronized && !self.pool.inner.closed.load(Ordering::Acquire) {
                     state.idle.push(self.runtime.take().expect("deferred cleanup runtime is present"));
                 } else {
@@ -1351,7 +1612,7 @@ impl DeferredStreamCleanup {
         }
         drop(self.resource_epoch.take());
         if let Some(completion) = self.completion.as_mut() {
-            completion.run_before_quiescence();
+            completion.run_before_quiescence(StreamCleanupOutcome::StreamSynchronizationFailed);
             completion.run_after_quiescence();
         }
         self.phase = DeferredStreamCleanupPhase::Complete;
@@ -1631,6 +1892,7 @@ pub struct StreamLease {
     observation: Option<Arc<StreamLeaseObservation>>,
     resource_epoch: Option<Arc<QueryServiceResourceEpoch>>,
     cleanup_completion: Mutex<Option<StreamCleanupCompletion>>,
+    permit_class: StreamPermitClass,
 }
 
 impl std::fmt::Debug for StreamLease {
@@ -1659,9 +1921,15 @@ impl StreamLease {
 
     pub(crate) fn install_cleanup_completion(
         &self,
-        before_quiescence: impl FnOnce() + Send + 'static,
+        before_quiescence: impl FnOnce(StreamCleanupOutcome) + Send + 'static,
         after_quiescence: impl FnOnce() + Send + 'static,
     ) -> bool {
+        // Materialize the handoff before inspecting the slot.  A duplicate
+        // installation is an ownership invariant violation: dropping this
+        // completion deliberately reports `CallbackAbandoned` and runs its
+        // tail rather than silently losing report/health work and releasing
+        // the query's capacity without a terminal commit.
+        let completion = StreamCleanupCompletion::new(before_quiescence, after_quiescence);
         let mut slot = match self.cleanup_completion.lock() {
             Ok(slot) => slot,
             Err(error) => error.into_inner(),
@@ -1669,7 +1937,7 @@ impl StreamLease {
         if slot.is_some() {
             return false;
         }
-        *slot = Some(StreamCleanupCompletion::new(before_quiescence, after_quiescence));
+        *slot = Some(completion);
         true
     }
 
@@ -1712,7 +1980,7 @@ impl Drop for StreamLease {
             Ok(completion) => completion.take(),
             Err(error) => error.into_inner().take(),
         };
-        self.pool.enqueue_cleanup(runtime, self.resource_epoch.take(), cleanup_completion);
+        self.pool.enqueue_cleanup(runtime, self.resource_epoch.take(), cleanup_completion, self.permit_class);
     }
 }
 
@@ -1882,11 +2150,19 @@ fn force_cleanup_supervisor_unexpected_exit_for_test(pool: &ServiceStreamPool) {
 pub(crate) struct SourceReadStreamLease {
     context: ExecutionContext,
     _stream_lease: StreamLease,
+    // Drop after the derived context and global stream lease so the
+    // attempt-local envelope remains charged for every actual auxiliary
+    // stream lifetime.
+    _attempt_auxiliary_permit: Option<AttemptAuxiliaryPermit>,
 }
 
 impl SourceReadStreamLease {
-    pub(super) fn new(context: ExecutionContext, stream_lease: StreamLease) -> Self {
-        Self { context, _stream_lease: stream_lease }
+    pub(super) fn new(
+        context: ExecutionContext,
+        stream_lease: StreamLease,
+        attempt_auxiliary_permit: Option<AttemptAuxiliaryPermit>,
+    ) -> Self {
+        Self { context, _stream_lease: stream_lease, _attempt_auxiliary_permit: attempt_auxiliary_permit }
     }
 
     pub(crate) fn context(&self) -> &ExecutionContext {
@@ -1937,6 +2213,51 @@ mod tests {
     fn stream_cleanup_jobs_run_on_background_thread() {
         let pool = ServiceStreamPool::new(cudf::DeviceId::DEFAULT, 1).unwrap();
         assert_ne!(stream_cleanup_thread_id_for_test(&pool), thread::current().id());
+    }
+
+    #[test]
+    fn process_exit_joins_an_orphaned_cleanup_supervisor() {
+        let pool = ServiceStreamPool::new(cudf::DeviceId::DEFAULT, 1).unwrap();
+        let supervisor = Arc::clone(&pool.inner.cleanup_supervisor);
+
+        drop(pool);
+        supervisor.join_for_process_exit();
+
+        assert_eq!(supervisor.join_disposition.load(Ordering::Acquire), STREAM_CLEANUP_SUPERVISOR_JOINED,);
+    }
+
+    #[test]
+    fn cleanup_submission_racing_process_exit_is_retained_after_terminal_boundary() {
+        let pool = ServiceStreamPool::new(cudf::DeviceId::DEFAULT, 1).unwrap();
+        let supervisor = Arc::clone(&pool.inner.cleanup_supervisor);
+        let submission_gate = supervisor.submission_gate.lock().unwrap();
+        let submitter_supervisor = Arc::clone(&supervisor);
+        let submitter_pool = pool.clone();
+        let rendezvous = Arc::new(Barrier::new(2));
+        let submitter_rendezvous = Arc::clone(&rendezvous);
+        let (done, receiver) = mpsc::channel();
+        let submitter = thread::spawn(move || {
+            submitter_rendezvous.wait();
+            submitter_supervisor.enqueue_before_process_exit(
+                StreamCleanupJob::Probe { done },
+                &submitter_pool.inner.process_exit_started,
+            )
+        });
+
+        rendezvous.wait();
+        pool.inner.process_exit_started.store(true, Ordering::Release);
+        drop(submission_gate);
+        let retained_job = match submitter.join().expect("cleanup submitter must not panic") {
+            Err(StreamCleanupEnqueueError::ProcessExit(job)) => job,
+            Ok(()) | Err(StreamCleanupEnqueueError::SupervisorStopped(_)) => {
+                panic!("cleanup crossing the process-exit boundary must be retained")
+            },
+        };
+        assert!(matches!(receiver.try_recv(), Err(mpsc::TryRecvError::Empty)));
+
+        pool.close_and_join_for_process_exit();
+        drop(retained_job);
+        assert!(matches!(receiver.try_recv(), Err(mpsc::TryRecvError::Disconnected)));
     }
 
     #[test]
@@ -2047,7 +2368,7 @@ mod tests {
         assert!(first.install_cleanup_completion(
             {
                 let before_sender = before_sender.clone();
-                move || before_sender.send(("first", thread::current().id())).unwrap()
+                move |outcome| before_sender.send(("first", outcome, thread::current().id())).unwrap()
             },
             {
                 let after_sender = after_sender.clone();
@@ -2055,7 +2376,7 @@ mod tests {
             },
         ));
         assert!(second.install_cleanup_completion(
-            move || before_sender.send(("second", thread::current().id())).unwrap(),
+            move |outcome| before_sender.send(("second", outcome, thread::current().id())).unwrap(),
             move || after_sender.send(("second", thread::current().id())).unwrap(),
         ));
         drop(first);
@@ -2073,15 +2394,19 @@ mod tests {
             before_receiver.recv_timeout(Duration::from_secs(5)).expect("first recovery before callback"),
             before_receiver.recv_timeout(Duration::from_secs(5)).expect("second recovery before callback"),
         ];
-        before.sort_by_key(|(label, _)| *label);
+        before.sort_by_key(|(label, _, _)| *label);
         let mut after = vec![
             after_receiver.recv_timeout(Duration::from_secs(5)).expect("first recovery after callback"),
             after_receiver.recv_timeout(Duration::from_secs(5)).expect("second recovery after callback"),
         ];
         after.sort_by_key(|(label, _)| *label);
-        assert_eq!(before.iter().map(|(label, _)| *label).collect::<Vec<_>>(), vec!["first", "second"]);
+        assert_eq!(before.iter().map(|(label, _, _)| *label).collect::<Vec<_>>(), vec!["first", "second"]);
+        assert!(
+            before.iter().all(|(_, outcome, _)| *outcome == StreamCleanupOutcome::CallbackAbandoned),
+            "queued cleanup recovery must preserve abandonment rather than misclassifying it as a sync failure"
+        );
         assert_eq!(after.iter().map(|(label, _)| *label).collect::<Vec<_>>(), vec!["first", "second"]);
-        assert!(before.iter().all(|(_, thread_id)| *thread_id == cleanup_thread));
+        assert!(before.iter().all(|(_, _, thread_id)| *thread_id == cleanup_thread));
         assert!(after.iter().all(|(_, thread_id)| *thread_id == cleanup_thread));
         assert_eq!(
             pool.inner.cleanup_supervisor.join_disposition.load(Ordering::Acquire),
@@ -2097,7 +2422,7 @@ mod tests {
         let (before_sender, before_receiver) = mpsc::channel();
         let (after_sender, after_receiver) = mpsc::channel();
         assert!(lease.install_cleanup_completion(
-            move || {
+            move |_| {
                 before_sender.send(thread::current().id()).unwrap();
                 panic!("injected in-flight cleanup completion panic");
             },
@@ -2133,7 +2458,7 @@ mod tests {
         let pool = ServiceStreamPool::new(cudf::DeviceId::DEFAULT, 1).unwrap();
         let pause = pause_cleanup_supervisor_before_worker_return_for_test(&pool);
         let lease = pool.acquire().unwrap();
-        assert!(lease.install_cleanup_completion(|| panic!("injected cleanup panic before idle boundary"), || {},));
+        assert!(lease.install_cleanup_completion(|_| panic!("injected cleanup panic before idle boundary"), || {},));
         drop(lease);
 
         pause.arrived.wait();
@@ -2158,7 +2483,7 @@ mod tests {
         let pause = pause_cleanup_supervisor_before_worker_return_for_test(&pool);
         let lease = pool.acquire().unwrap();
         assert!(
-            lease.install_cleanup_completion(|| panic!("injected cleanup panic before quiescence boundary"), || {},)
+            lease.install_cleanup_completion(|_| panic!("injected cleanup panic before quiescence boundary"), || {},)
         );
         drop(lease);
 
@@ -2188,7 +2513,7 @@ mod tests {
         let (before_sender, before_receiver) = mpsc::channel();
         let (after_sender, after_receiver) = mpsc::channel();
         assert!(lease.install_cleanup_completion(
-            move || {
+            move |_| {
                 before_sender.send(thread::current().id()).unwrap();
                 panic!("injected cleanup panic before shutdown send failure");
             },
@@ -2335,7 +2660,7 @@ mod tests {
         let (after_sender, after_receiver) = mpsc::channel();
 
         assert!(lease.install_cleanup_completion(
-            move || {
+            move |_| {
                 let active_cleanups = before_pool.inner.state.lock().unwrap().active_cleanups;
                 before_sender.send((active_cleanups, thread::current().id())).unwrap();
             },
@@ -2366,7 +2691,7 @@ mod tests {
         let (after_sender, after_receiver) = mpsc::channel();
 
         assert!(lease.install_cleanup_completion(
-            move || {
+            move |_| {
                 let active_cleanups = before_pool.inner.state.lock().unwrap().active_cleanups;
                 before_sender.send((active_cleanups, thread::current().id())).unwrap();
             },
@@ -2425,69 +2750,6 @@ mod tests {
         let error = pool.acquire().expect_err("unhealthy device must reject idle runtime reuse");
         assert_eq!(error.code(), QueryErrorCode::CudfPersistentFailure);
         assert_eq!(error.fact_value("reason"), Some("device_health_rejected_stream_acquire"));
-    }
-
-    #[cfg(feature = "cugraph")]
-    #[test]
-    fn unhealthy_device_rejects_matching_before_warm_reservation_callback() {
-        let pool = ServiceStreamPool::new(cudf::DeviceId::DEFAULT, 1).unwrap();
-        let lease = pool.acquire().unwrap();
-        drop(lease);
-        let _ = stream_cleanup_thread_id_for_test(&pool);
-        let _scope = cudf::testing::device_safety::DeviceSafetyTestScope::install([]);
-        cudf::runtime::report_device_fault(
-            cudf::DeviceId::DEFAULT,
-            cudf::runtime::DeviceFaultKind::FatalDeviceOperation,
-            "injected_pre_reservation_fault",
-            Some(cudf::runtime::DeviceFaultNativeStatus::Cudf(cudf_sys::CUDF_ERROR_FATAL_CUDA)),
-        );
-        let mut reserve_calls = 0;
-
-        let error = pool
-            .try_acquire_matching("nexus_query_engine.service_stream_pool.test_pre_reservation_fault", |_runtime| {
-                reserve_calls += 1;
-                Ok(Some(()))
-            })
-            .expect_err("unhealthy device must reject before invoking warm reservation");
-
-        assert_eq!(reserve_calls, 0);
-        assert_eq!(error.fact_value("reason"), Some("device_health_rejected_stream_acquire"));
-        let state = pool.inner.state.lock().unwrap();
-        assert_eq!(state.created, 1);
-        assert_eq!(state.idle.len(), 1);
-    }
-
-    #[cfg(feature = "cugraph")]
-    #[test]
-    fn warm_resident_graph_reservation_fault_race_keeps_idle_runtime_in_pool() {
-        let pool = ServiceStreamPool::new(cudf::DeviceId::DEFAULT, 1).unwrap();
-        let lease = pool.acquire().unwrap();
-        drop(lease);
-        let _ = stream_cleanup_thread_id_for_test(&pool);
-        let scope = cudf::testing::device_safety::DeviceSafetyTestScope::install([]);
-        let mut reserve_calls = 0;
-
-        let error = pool
-            .try_acquire_matching("nexus_query_engine.service_stream_pool.test_warm_fault_race", |_runtime| {
-                reserve_calls += 1;
-                cudf::runtime::report_device_fault(
-                    cudf::DeviceId::DEFAULT,
-                    cudf::runtime::DeviceFaultKind::FatalDeviceOperation,
-                    "injected_warm_resident_graph_reservation_fault",
-                    Some(cudf::runtime::DeviceFaultNativeStatus::Cudf(cudf_sys::CUDF_ERROR_FATAL_CUDA)),
-                );
-                Ok(Some(()))
-            })
-            .expect_err("fault racing a warm reservation must reject idle runtime reuse");
-
-        assert_eq!(reserve_calls, 1);
-        assert_eq!(error.code(), QueryErrorCode::CudfPersistentFailure);
-        assert_eq!(error.fact_value("reason"), Some("device_health_rejected_stream_acquire"));
-        let state = pool.inner.state.lock().unwrap();
-        assert_eq!(state.created, 1);
-        assert_eq!(state.idle.len(), 1);
-        drop(state);
-        assert_eq!(scope.health_snapshot(cudf::DeviceId::DEFAULT).fault_count(), 1);
     }
 
     #[test]
@@ -2651,5 +2913,89 @@ mod tests {
         assert_eq!(error.operation(), "nexus_query_engine.service_stream_pool.test_timed_acquire");
         assert_eq!(error.fact_value("reason"), Some("stream_pool_wait_timeout"));
         assert_eq!(error.fact_value("stream_pool_size"), Some("1"));
+    }
+}
+
+#[cfg(test)]
+mod permit_class_tests {
+    use super::*;
+
+    #[test]
+    fn root_class_waits_while_auxiliary_slots_are_free() {
+        if cudf::DeviceId::count().unwrap_or(0) == 0 {
+            return;
+        }
+        let pool = ServiceStreamPool::new_with_classes(cudf::DeviceId::DEFAULT, 3, 1, 2).unwrap();
+        let root = pool.acquire_with_class(StreamPermitClass::Root).unwrap();
+        let aux_one = pool.acquire_with_class(StreamPermitClass::Auxiliary).unwrap();
+        let aux_two = pool.acquire_with_class(StreamPermitClass::Auxiliary).unwrap();
+        let (root_out, root_cap, aux_out, aux_cap) = pool.class_counters();
+        assert_eq!((root_out, root_cap, aux_out, aux_cap), (1, 1, 2, 2));
+
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let second_pool = pool.clone();
+        let waiter = std::thread::spawn(move || {
+            sender.send(()).unwrap();
+            second_pool.acquire_observed_with_cancellation_deadline_and_class(
+                &ExecutionCancellation::new(),
+                Instant::now() + std::time::Duration::from_millis(200),
+                "nexus_query_engine.service_stream_pool.test_root_wait",
+                RuntimeObservationHandle::disabled(),
+                RuntimeStreamLeaseScope::default(),
+                StreamPermitClass::Root,
+            )
+        });
+        receiver.recv_timeout(std::time::Duration::from_secs(1)).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert!(!waiter.is_finished(), "root class is full even though every physical slot is busy anyway");
+
+        drop(aux_two);
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert!(
+            !waiter.is_finished(),
+            "freeing an auxiliary slot must not release a root waiter: classes are partitioned"
+        );
+        drop(root);
+        let acquired = waiter.join().unwrap().expect("root waiter acquires after the root lease returns");
+        drop(acquired);
+        drop(aux_one);
+    }
+
+    #[test]
+    fn auxiliary_class_waits_while_root_slots_are_free() {
+        if cudf::DeviceId::count().unwrap_or(0) == 0 {
+            return;
+        }
+        let pool = ServiceStreamPool::new_with_classes(cudf::DeviceId::DEFAULT, 3, 1, 1).unwrap();
+        let _root = pool.acquire_with_class(StreamPermitClass::Root).unwrap();
+        let aux = pool.acquire_with_class(StreamPermitClass::Auxiliary).unwrap();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let second_pool = pool.clone();
+        let waiter = std::thread::spawn(move || {
+            sender.send(()).unwrap();
+            second_pool.acquire_observed_with_cancellation_deadline_and_class(
+                &ExecutionCancellation::new(),
+                Instant::now() + std::time::Duration::from_millis(200),
+                "nexus_query_engine.service_stream_pool.test_aux_wait",
+                RuntimeObservationHandle::disabled(),
+                RuntimeStreamLeaseScope::default(),
+                StreamPermitClass::Auxiliary,
+            )
+        });
+        receiver.recv_timeout(std::time::Duration::from_secs(1)).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert!(!waiter.is_finished(), "auxiliary class is full while the root slot stays free");
+        drop(aux);
+        let acquired = waiter.join().unwrap().expect("auxiliary waiter acquires after an auxiliary return");
+        drop(acquired);
+    }
+
+    #[test]
+    fn zero_class_capacity_is_rejected() {
+        let error = ServiceStreamPool::new_with_classes(cudf::DeviceId::DEFAULT, 2, 0, 1).unwrap_err();
+        assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
+        assert_eq!(error.fact_value("field"), Some("root_capacity"));
+        let error = ServiceStreamPool::new_with_classes(cudf::DeviceId::DEFAULT, 2, 1, 0).unwrap_err();
+        assert_eq!(error.fact_value("field"), Some("aux_capacity"));
     }
 }

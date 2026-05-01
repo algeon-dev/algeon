@@ -10,9 +10,8 @@ fn benchmark_report_accepted_rows_include_bounded_status_contract_rows_and_resou
     let row = NativeTpchBenchmarkRow {
         query_id: "q01".to_string(),
         planning_outcome: Some(NativeDataFusionPlanningOutcome::Selected),
-        strict_bounded_contract_rows: Vec::new(),
-        strict_bounded_compiled_graphs: Vec::new(),
-        adaptive_pipeline_rows: Vec::new(),
+        capability_contract_rows: Vec::new(),
+        capability_compiled_graphs: Vec::new(),
         reason_code: None,
         unsupported_category: None,
         native_candidate_shape_family: Some("sort_local_parquet_aggregate".to_string()),
@@ -117,11 +116,6 @@ fn benchmark_report_accepted_rows_include_bounded_status_contract_rows_and_resou
             source_read_prefetches_completed: 25,
             source_read_prefetches_skipped: 26,
             source_read_prefetches_abandoned: 27,
-            source_cache_hits: 28,
-            source_cache_misses: 29,
-            source_cache_inserts: 30,
-            source_cache_insert_skipped: 31,
-            source_cache_retained_bytes: 32,
             row_groups_planned: 35,
             row_groups_committed: 36,
             partial_aggregate_count: 37,
@@ -134,20 +128,11 @@ fn benchmark_report_accepted_rows_include_bounded_status_contract_rows_and_resou
             retry_count: 44,
             retry_resource_exhausted_count: 43,
             retry_reservation_failure_count: 44,
-            adaptive_retry_count: 45,
-            adaptive_spill_count: 46,
-            adaptive_downgrade_count: 47,
-            adaptive_memory_history_lookup_count: 48,
-            adaptive_memory_history_hit_count: 49,
-            adaptive_memory_history_miss_count: 50,
             hash_join_build_count: 51,
             filtered_join_build_count: 52,
             one_shot_join_count: 53,
             hash_join_cache_hits: 54,
             hash_join_cache_misses: 55,
-            hash_join_durable_cache_hits: 56,
-            hash_join_durable_cache_misses: 57,
-            hash_join_durable_cache_inserts: 58,
             hash_join_hash_table_bytes: 59,
             filtered_join_hash_table_bytes: 60,
             filtered_join_probe_state_bytes: 61,
@@ -301,7 +286,6 @@ fn benchmark_report_accepted_rows_include_bounded_status_contract_rows_and_resou
             parquet_read_time_ms: Some(1.0),
             source_read_time_ms: Some(2.0),
             source_read_queue_wait_time_ms: Some(3.0),
-            source_cache_lookup_time_ms: Some(4.0),
             operator_time_ms: Some(9.0),
             chunk_operator_time_ms: Some(10.0),
             final_merge_time_ms: Some(11.0),
@@ -314,7 +298,7 @@ fn benchmark_report_accepted_rows_include_bounded_status_contract_rows_and_resou
     let text = report.to_tsv();
     assert!(text.contains("# tpch_benchmark_relational_execution=native_no_datafusion_cpu\n"));
     assert!(text.contains(
-        "q01\tselected\tbounded_accepted_parity_matched\tnone\tnone\tnone\tnone\tnone\tsort_local_parquet_aggregate\tnative\tfalse\ttrue\ttrue\tsucceeded"
+        "q01\tselected\tbounded_accepted_parity_matched\tnone\tnone\tnone\tnone\tsort_local_parquet_aggregate\tnative\tfalse\ttrue\ttrue\tsucceeded"
     ));
     assert!(text.contains(
         "\t20.000\t5.000\t4.000\t1\t1\t4\t4\t128\t128\toutput-fnv1a64:1111111111111111\toutput-fnv1a64:1111111111111111\toutput-fnv1a64:1111111111111111\t"
@@ -383,7 +367,7 @@ fn benchmark_report_accepted_rows_include_bounded_status_contract_rows_and_resou
             .contains("prepared_sort_groupby_num_groups=unknown")
     );
     assert!(text.contains("\tnode_id=n7,join_strategy=one_shot_equi,execution_strategy=bounded_one_shot_equi_join"));
-    assert!(text.contains("\t1.000\t2.000\t3.000\t4.000\t9.000\t10.000\t11.000\t12.000\t13.000\n"));
+    assert!(text.contains("\t1.000\t2.000\t3.000\t9.000\t10.000\t11.000\t12.000\t13.000\n"));
 }
 
 #[test]
@@ -431,8 +415,8 @@ fn benchmark_report_accepted_join_rows_emit_strict_contract_rows() {
         NativeTpchBenchmarkConfig { query_ids: vec!["q15".to_string()], ..NativeTpchBenchmarkConfig::default() };
     let mut planning = accepted_planning_row("q15");
     planning.native_candidate_shape_family = Some("sort_hash_join_input".to_string());
-    planning.strict_bounded_contract_rows = accepted_strict_bounded_contract_rows();
-    planning.strict_bounded_compiled_graphs = accepted_strict_bounded_compiled_graphs();
+    planning.capability_contract_rows = accepted_capability_contract_rows();
+    planning.capability_compiled_graphs = accepted_capability_compiled_graphs();
     let report = NativeTpchBenchmarkReport {
         metadata: benchmark_metadata(),
         config,
@@ -452,8 +436,8 @@ fn benchmark_report_accepted_join_rows_emit_strict_contract_rows() {
     let fields = row.split('\t').collect::<Vec<_>>();
     assert_eq!(fields.len(), header_fields.len(), "row has wrong schema width: {row}");
 
-    let contract_rows_index = header_index(&header_fields, "strict_bounded_contract_rows");
-    let graph_index = header_index(&header_fields, "strict_bounded_compiled_graphs");
+    let contract_rows_index = header_index(&header_fields, "capability_contract_rows");
+    let graph_index = header_index(&header_fields, "capability_compiled_graphs");
     assert_eq!(fields[0], "q15");
     assert!(fields[contract_rows_index].contains("execution_mode=strict_bounded"));
     assert!(fields[contract_rows_index].contains("contract_status=modeled"));

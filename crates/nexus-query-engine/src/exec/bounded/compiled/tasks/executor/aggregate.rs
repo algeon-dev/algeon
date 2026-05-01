@@ -116,15 +116,7 @@ impl CompiledGpuTaskExecutor<'_> {
             );
             self.reservations.release(input_reservation, self.metrics);
             match result {
-                Ok(output) => {
-                    if let Err(error) = self.acknowledge_requested_grant_shrink() {
-                        let ResidentGpuFrame { frame, reservation } = output;
-                        drop(frame);
-                        self.reservations.release(reservation, self.metrics);
-                        return Err(error);
-                    }
-                    Ok(output)
-                },
+                Ok(output) => Ok(output),
                 Err(error) => Err(error),
             }
         } else {

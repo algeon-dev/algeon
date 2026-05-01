@@ -4,7 +4,11 @@
 //! discovery SPI. Graph frontends register implementations without creating a
 //! core-to-frontend dependency.
 //!
-//! Exact-request singleflight for expensive, cache-resident BFS calls.
+//! Exact-request singleflight for expensive BFS calls.
+//!
+//! In P2, this holds only a transient host result until its followers consume
+//! it. The graph identity is a coalescing key, not a device-resident cache
+//! claim; a future P5 cache may reuse the identity under its own owner.
 //!
 //! libcugraph multi-source BFS produces one nearest-source forest, not one
 //! independent result per source. Serving coalescing therefore groups only
@@ -25,8 +29,7 @@ use datafusion::{
     common::Result as DataFusionResult, execution::memory_pool::MemoryReservation, physical_plan::ExecutionPlan,
 };
 use nexus_query_engine::{
-    plan::ResidentGraphKey,
-    runtime::{ExecutionCancellation, QueryPlacementHint},
+    graph_memory::GraphMemoryAdmissionEvidence, plan::ResidentGraphKey, runtime::ExecutionCancellation,
 };
 use tokio::sync::watch;
 
@@ -35,41 +38,57 @@ use crate::error::{Error, ErrorCode, Result};
 const OPERATION: &str = "datafusion_nexus.graph_execution.bfs_singleflight";
 const DEFAULT_MAX_BATCH_WIDTH: usize = 32;
 
-/// Cold and exact-runtime-warm graph prices before ticket safety margin and
-/// tenant-band clamping.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct GraphAdmissionModelAsk {
-    cold_bytes: u64,
-    warm_bytes: u64,
+/// Opaque construction-inclusive and execution-only graph-model output.
+///
+/// The model remains a planning/reporting input, but its byte values do not
+/// cross the adapter-to-engine admission boundary. The installed device
+/// profile selects the immutable grant; the adapter forwards only the fixed
+/// graph-execution capability.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct GraphAdmissionModelAsk {
+    cold_model_requested_bytes: u64,
+    warm_model_requested_bytes: u64,
 }
 
 impl GraphAdmissionModelAsk {
-    pub fn new(cold_bytes: u64, warm_bytes: u64) -> Self {
-        Self { cold_bytes, warm_bytes }
+    /// Forwards engine-issued graph-model evidence into the adapter-private
+    /// planning/diagnostic path.
+    pub(crate) fn from_graph_memory_admission_evidence(evidence: GraphMemoryAdmissionEvidence) -> Self {
+        Self {
+            cold_model_requested_bytes: evidence.cold_model_requested_bytes(),
+            warm_model_requested_bytes: evidence.warm_model_requested_bytes(),
+        }
     }
 
-    pub fn cold_bytes(self) -> u64 {
-        self.cold_bytes
+    /// Construction-inclusive graph-model estimate retained for planner diagnostics only.
+    pub(crate) fn cold_model_requested_bytes(&self) -> u64 {
+        self.cold_model_requested_bytes
     }
 
-    pub fn warm_bytes(self) -> u64 {
-        self.warm_bytes
+    /// Execution-only graph-model estimate retained for planner diagnostics only.
+    pub(crate) fn warm_model_requested_bytes(&self) -> u64 {
+        self.warm_model_requested_bytes
     }
 
     pub(crate) fn max(self, other: Self) -> Self {
-        Self { cold_bytes: self.cold_bytes.max(other.cold_bytes), warm_bytes: self.warm_bytes.max(other.warm_bytes) }
+        Self {
+            cold_model_requested_bytes: self.cold_model_requested_bytes.max(other.cold_model_requested_bytes),
+            warm_model_requested_bytes: self.warm_model_requested_bytes.max(other.warm_model_requested_bytes),
+        }
     }
 }
 
-/// Frontend-neutral admission evidence exposed by a graph execution node.
-pub trait GraphExecutionPlan: Send + Sync {
+/// Frontend-neutral graph-model diagnostics exposed by a graph execution node.
+///
+/// Capability proof issuance remains in the adapter planner after it has
+/// recognized this crate-private execution type; graph frontends do not get a
+/// caller-controlled proof SPI.
+pub(crate) trait GraphExecutionPlan: Send + Sync {
     fn graph_model_ask_for_admission(&self) -> DataFusionResult<Option<GraphAdmissionModelAsk>>;
-
-    fn graph_placement_hint_for_admission(&self) -> QueryPlacementHint;
 }
 
 /// A graph frontend hook that recognizes one of its DataFusion execution nodes.
-pub type GraphExecutionPlanDiscovery = for<'a> fn(&'a dyn ExecutionPlan) -> Option<&'a dyn GraphExecutionPlan>;
+pub(crate) type GraphExecutionPlanDiscovery = for<'a> fn(&'a dyn ExecutionPlan) -> Option<&'a dyn GraphExecutionPlan>;
 
 static GRAPH_EXECUTION_PLAN_DISCOVERIES: OnceLock<Mutex<Vec<GraphExecutionPlanDiscovery>>> = OnceLock::new();
 
@@ -77,7 +96,7 @@ static GRAPH_EXECUTION_PLAN_DISCOVERIES: OnceLock<Mutex<Vec<GraphExecutionPlanDi
 ///
 /// Registration is idempotent for the same function and does not retain a
 /// frontend value. The core planner only sees the frontend-neutral trait.
-pub fn register_graph_execution_plan_discovery(discovery: GraphExecutionPlanDiscovery) {
+pub(crate) fn register_graph_execution_plan_discovery(discovery: GraphExecutionPlanDiscovery) {
     let mut discoveries = GRAPH_EXECUTION_PLAN_DISCOVERIES
         .get_or_init(|| Mutex::new(Vec::new()))
         .lock()

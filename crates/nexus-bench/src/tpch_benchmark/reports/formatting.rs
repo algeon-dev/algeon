@@ -2,13 +2,8 @@ use super::*;
 
 pub(super) fn write_native_execution_policy_metadata(
     output: &mut String,
-    pipeline_execution_mode: NativePipelineExecutionMode,
     relational_execution: crate::report_workload::RelationalExecutionSelection,
 ) {
-    push_line(
-        output,
-        format_args!("# tpch_benchmark_native_pipeline_execution_mode={}", pipeline_execution_mode.as_str()),
-    );
     push_line(output, format_args!("# tpch_benchmark_relational_execution={}", relational_execution.as_str()));
 }
 
@@ -16,61 +11,30 @@ pub(super) fn write_native_memory_policy_metadata(
     output: &mut String,
     memory_policy: NativeTpchMemoryPolicy,
     max_source_reads_in_flight: usize,
-    source_cache_policy: NativeTpchSourceCachePolicy,
 ) {
-    match memory_policy {
-        NativeTpchMemoryPolicy::Unbounded => {
-            push_line(output, format_args!("# tpch_benchmark_native_profile_name=none"));
-            push_line(output, format_args!("# tpch_benchmark_native_profile_source=none"));
-            push_line(output, format_args!("# tpch_benchmark_native_device_budget_bytes=none"));
-            push_line(output, format_args!("# tpch_benchmark_native_max_source_chunk_bytes=none"));
-            push_line(output, format_args!("# tpch_benchmark_native_max_row_groups_per_chunk=none"));
-            push_line(output, format_args!("# tpch_benchmark_native_max_retry_attempts=none"));
-            push_line(output, format_args!("# tpch_benchmark_native_min_retry_chunk_row_groups=none"));
-            push_line(output, format_args!("# tpch_benchmark_native_source_chunk_planning_mode=none"));
-        },
-        NativeTpchMemoryPolicy::Bounded {
-            profile_name,
-            profile_source,
-            device_budget_bytes,
-            max_source_chunk_bytes,
-            max_row_groups_per_chunk,
-            max_retry_attempts,
-            min_retry_chunk_row_groups,
-            source_chunk_planning_mode,
-        } => {
-            push_line(output, format_args!("# tpch_benchmark_native_profile_name={profile_name}"));
-            push_line(output, format_args!("# tpch_benchmark_native_profile_source={profile_source}"));
-            push_line(output, format_args!("# tpch_benchmark_native_device_budget_bytes={device_budget_bytes}"));
-            push_line(output, format_args!("# tpch_benchmark_native_max_source_chunk_bytes={max_source_chunk_bytes}"));
-            push_line(
-                output,
-                format_args!("# tpch_benchmark_native_max_row_groups_per_chunk={max_row_groups_per_chunk}"),
-            );
-            push_line(output, format_args!("# tpch_benchmark_native_max_retry_attempts={max_retry_attempts}"));
-            push_line(
-                output,
-                format_args!("# tpch_benchmark_native_min_retry_chunk_row_groups={min_retry_chunk_row_groups}"),
-            );
-            push_line(
-                output,
-                format_args!(
-                    "# tpch_benchmark_native_source_chunk_planning_mode={}",
-                    source_chunk_planning_mode.as_str()
-                ),
-            );
-        },
-    }
-    push_line(output, format_args!("# tpch_benchmark_native_max_source_reads_in_flight={max_source_reads_in_flight}"));
-    push_line(output, format_args!("# tpch_benchmark_native_runtime_policy=shared_per_benchmark_run"));
-    push_line(output, format_args!("# tpch_benchmark_native_source_cache_policy={}", source_cache_policy.as_str()));
+    let NativeTpchMemoryPolicy {
+        profile_name,
+        profile_source,
+        device_budget_bytes,
+        max_source_chunk_bytes,
+        max_row_groups_per_chunk,
+        max_retry_attempts,
+        min_retry_chunk_row_groups,
+        source_chunk_planning_mode,
+    } = memory_policy;
+    push_line(output, format_args!("# tpch_benchmark_native_profile_name={profile_name}"));
+    push_line(output, format_args!("# tpch_benchmark_native_profile_source={profile_source}"));
+    push_line(output, format_args!("# tpch_benchmark_native_device_budget_bytes={device_budget_bytes}"));
+    push_line(output, format_args!("# tpch_benchmark_native_max_source_chunk_bytes={max_source_chunk_bytes}"));
+    push_line(output, format_args!("# tpch_benchmark_native_max_row_groups_per_chunk={max_row_groups_per_chunk}"));
+    push_line(output, format_args!("# tpch_benchmark_native_max_retry_attempts={max_retry_attempts}"));
+    push_line(output, format_args!("# tpch_benchmark_native_min_retry_chunk_row_groups={min_retry_chunk_row_groups}"));
     push_line(
         output,
-        format_args!(
-            "# tpch_benchmark_native_source_cache_max_retained_bytes={}",
-            source_cache_policy.max_retained_bytes().map_or_else(|| "none".to_string(), |bytes| bytes.to_string())
-        ),
+        format_args!("# tpch_benchmark_native_source_chunk_planning_mode={}", source_chunk_planning_mode.as_str()),
     );
+    push_line(output, format_args!("# tpch_benchmark_native_max_source_reads_in_flight={max_source_reads_in_flight}"));
+    push_line(output, format_args!("# tpch_benchmark_native_runtime_policy=shared_per_benchmark_run"));
 }
 
 pub(super) fn write_tpch_dataset_metadata(output: &mut String, metadata: &TpchDatasetMetadata) {
@@ -99,7 +63,7 @@ pub(super) fn write_tpch_dataset_metadata(output: &mut String, metadata: &TpchDa
     push_line(output, format_args!("# tpch_dataset_table_row_group_counts={}", metadata.table_row_group_counts()));
 }
 
-pub(super) fn format_strict_bounded_contract_rows(rows: &[StrictBoundedContractGateRow]) -> String {
+pub(super) fn format_capability_contract_rows(rows: &[CapabilityContractGateRow]) -> String {
     if rows.is_empty() {
         return "none".to_string();
     }
@@ -115,7 +79,7 @@ pub(super) fn format_strict_bounded_contract_rows(rows: &[StrictBoundedContractG
     rows.iter().map(|row| stable_tsv_field(&row.to_stable_kv_row())).collect::<Vec<_>>().join("|")
 }
 
-pub(super) fn format_strict_bounded_compiled_graphs(graphs: &[NativeStrictBoundedCompiledGraphDiagnostics]) -> String {
+pub(super) fn format_capability_compiled_graphs(graphs: &[NativeCapabilityCompiledGraphDiagnostics]) -> String {
     if graphs.is_empty() {
         return "none".to_string();
     }
@@ -148,16 +112,6 @@ pub(super) fn format_strict_bounded_compiled_graphs(graphs: &[NativeStrictBounde
         })
         .collect::<Vec<_>>()
         .join("|")
-}
-
-pub(super) fn format_adaptive_pipeline_rows(rows: &[AdaptivePipelineReportRow]) -> String {
-    if rows.is_empty() {
-        return "none".to_string();
-    }
-
-    let mut rows = rows.iter().collect::<Vec<_>>();
-    rows.sort_by_key(|row| row.to_stable_kv_row());
-    rows.iter().map(|row| stable_tsv_field(&row.to_stable_kv_row())).collect::<Vec<_>>().join("|")
 }
 
 pub(super) fn format_join_strategy_rows(rows: &[NativeJoinStrategyMetricRow]) -> String {

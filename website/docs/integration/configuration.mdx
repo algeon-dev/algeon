@@ -18,68 +18,70 @@ SQL server and for production-style Iceberg deployments.
 | `NEXUS_SERVER_BIND` | `0.0.0.0:50051` | Flight SQL listen address. Bind `127.0.0.1` to restrict to localhost. |
 | `NEXUS_SERVER_LOG` | `info` | Log level (`error`/`warn`/`info`/`debug`/`trace`). |
 | `NEXUS_SERVER_CUGRAPH_ENABLED` | `false` | Register the `cugraph_*` SQL functions. Requires the `cugraph` build feature. |
+| `NEXUS_SERVER_CONFIG_FILE` | unset | Path to the TOML overlay. It is required in a GPU server deployment because it supplies the ordinal-keyed device profiles. |
 
 ## cuVS availability
 
 cuVS has no `NEXUS_SERVER_CUVS_ENABLED` toggle. Build the server with the
 `cuvs` Cargo feature to register `cuvs_*` functions, then use
 `gpu_list_functions()` or `gpu_describe_function(...)` to inspect availability.
-Current cuVS execution requires the unbounded native memory policy because it
-has no lower-level peak-memory preflight. A bounded server exposes the
-functions as unavailable and rejects execution with structured
-`unsupported_operator`; it never selects a CPU fallback.
+Until cuVS supplies a bounded peak-memory preflight, the server rejects
+execution with structured `unsupported_operator`; it never selects a CPU
+fallback or an unadmitted GPU path.
 
-### cuVS cache interaction
+### cuVS retention
 
-The server's decoded local-Parquet source cache and parked cuGraph graph cache
-do not cache cuVS indexes, models, transforms, or result relations. Both cache
-knobs are bounded-only settings, while current cuVS execution requires
-`unbounded`; a Flight SQL server rejects that combination. cuVS therefore has
-no server-configurable cross-statement artifact cache today.
+P2 has no server-configurable cross-statement GPU artifact retention. cuVS
+indexes, models, transforms, and result relations stay within the admitted
+query and are released with it. The persistent lakehouse byte cache described
+below is filesystem storage, not a cuVS or GPU-memory cache.
 
 ## Admission
 
-Server admission is byte-denominated and slot-bounded. The default admits two
-queries, guarantees each admitted query at least `1/8` of the resolved device
-budget, and derives the preferred grant from the slot guarantee and native
-pipeline mode. With the default `guaranteed_minimum` policy, a lone query can
-use the full device budget minus the floor reserved for remaining slots.
+Server admission has one bounded-resource contract. Each admitted attempt gets
+an immutable device-local grant; placement is capability-first and the usable
+global attempt capacity is the checked sum of the configured per-device active
+limits.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `NEXUS_SERVER_ADMISSION_WORKLOAD_PROFILE` | `balanced` | `balanced` keeps conservative defaults; `small_query` sets the global maximum to eight times the eligible-GPU count, uses optimistic grants, and sets a 1 GiB minimum grant. |
-| `NEXUS_SERVER_MAX_CONCURRENT_QUERIES` | profile-derived | Preferred max GPU-native/query-service admissions. |
-| `NEXUS_SERVER_MAX_IN_FLIGHT` | profile-derived | Compatibility alias for `NEXUS_SERVER_MAX_CONCURRENT_QUERIES`. Set only one, or set both to the same value. |
-| `NEXUS_SERVER_ADMISSION_GRANT_MIN` | profile-derived | Minimum per-query grant. Accepts a fraction of device capacity or an explicit byte count. |
-| `NEXUS_SERVER_ADMISSION_GRANT_WANT` | policy-derived | Preferred per-query grant when memory is available. Accepts a fraction or bytes. |
-| `NEXUS_SERVER_ADMISSION_SLOT_GUARANTEE` | profile-derived | `guaranteed_minimum` reserves enough memory for empty slots; `optimistic` grants work-conservingly and lets large arrivals wait for memory. |
-| `NEXUS_SERVER_ADMISSION_WAIT_TIMEOUT_MS` | `60000` | Maximum query-service admission wait before a structured overload error. |
-| `NEXUS_SERVER_ADMISSION_PLACEMENT_POLICY` | `least_loaded` | `least_loaded`, `best_fit`, or `pinned` placement across configured devices. |
-| `NEXUS_SERVER_ADMISSION_PINNED_DEVICE` | unset | CUDA ordinal required when placement is `pinned`. |
-| `NEXUS_SERVER_ADMISSION_MAX_QUERIES_PER_DEVICE` | unset | Optional active-query cap on each eligible device. |
+| `NEXUS_SERVER_ADMISSION_MAX_QUEUED_ATTEMPTS` | `64` | Bounded admission queue length. |
+| `NEXUS_SERVER_ADMISSION_MAX_QUEUE_WAIT_MS` | `30000` | Maximum queue wait before a structured overload error. |
+| `NEXUS_SERVER_ADMISSION_MAX_OVERTAKES_PER_WAITER` | `4` | Finite compatible-device bypass budget for a queued waiter. |
 | `NEXUS_SERVER_GPU_DEVICES` | `0` | Comma-separated CUDA device ordinals used for independent query placement. |
 
-## Host execution QoS
-
-Host execution QoS is independent of relational native selection and GPU
-query-service admission. It wraps each completed DataFusion or mixed plan once;
-fully native plans do not acquire a host-execution permit. This gives a server
-one statement-level bound for its DataFusion baseline and CPU/GPU boundary work,
-without treating a capability miss as a second policy mode.
-
-| Variable | Default | Purpose |
-| --- | --- | --- |
-| `NEXUS_SERVER_HOST_EXECUTION_QOS_MAX_CONCURRENT_STATEMENTS` | `2` | Maximum concurrent host-executing statements. Set `0` to disable the QoS rule. |
-| `NEXUS_SERVER_HOST_EXECUTION_QOS_WAIT_TIMEOUT_MS` | `30000` | Maximum wait for a host-execution permit before `service_overloaded`; set `0` to wait indefinitely. |
-
-The same values can come from the TOML overlay named by
-`NEXUS_SERVER_CONFIG_FILE`; environment variables take precedence:
+Device-local capacity belongs only to the ordinal-keyed TOML
+`admission.device_profiles` array. Each selected ordinal needs one profile;
+the server rejects startup with `missing_device_profiles` when the overlay is
+absent or incomplete. For one GPU, a minimal explicit deployment is:
 
 ```toml
-[host_execution_qos]
-max_concurrent_statements = 2
-wait_timeout_ms = 30000
+# /etc/datafusion-nexus/server.toml
+[[admission.device_profiles]]
+device_ordinal = 0
+memory_limit_bytes = 24_000_000_000
+attempt_floor_bytes = 536_870_912
+max_active_attempts = 1
+source_work_per_attempt = 1
 ```
+
+```bash
+NEXUS_SERVER_GPU_DEVICES=0 \
+NEXUS_SERVER_CONFIG_FILE=/etc/datafusion-nexus/server.toml \
+flock /tmp/cudf-gpu.lock bash scripts/dev/run_server.sh
+```
+
+`memory_limit_bytes`, `backend_reserve_bytes`, `attempt_floor_bytes`,
+`source_work_per_attempt`, `max_active_attempts`, `stream_pool_size`,
+`worker_count`, `lane_count`, `install_telemetry`, and
+`install_diagnostics` are the only accepted profile keys after
+`device_ordinal`. The installation bounds `stream_pool_size`, `worker_count`,
+and `lane_count` must be supplied together. Capabilities and GPU-memory
+ownership are not TOML profile fields:
+the embedding process resolves them when it creates the backend. The removed
+scalar active-attempt, floor, and source-work environment variables, as well
+as global device-capacity overrides, are rejected rather than broadcast across
+heterogeneous devices.
 
 ## cuGraph defaults
 
@@ -100,37 +102,23 @@ The native engine runs on the GPU, so the device budget must fit your card.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `NEXUS_SERVER_NATIVE_MEMORY_POLICY` | `bounded` | `bounded` enforces a device budget; `unbounded` lets native execution use the whole card. |
-| `NEXUS_SERVER_DEVICE_BUDGET_FRACTION` | unset | Fraction of total device memory eligible for native query budgets. `1.0` preserves the historical auto-sized `total - headroom` behavior. |
 | `NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES` | unset | Explicit bounded planning budget in bytes. When set, the source chunk byte and row-group limits must also be set. |
 | `NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES` | unset | Max bytes per source scan chunk. |
 | `NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK` | unset | Max Parquet row groups per chunk. |
-| `NEXUS_SERVER_NATIVE_SOURCE_CACHE_MAX_RETAINED_BYTES` | unset (disabled) | Per-device cap for decoded Parquet frames. Requires bounded native memory policy. |
-| `NEXUS_SERVER_NATIVE_GRAPH_CACHE_MAX_RETAINED_BYTES` | unset (disabled) | Per-device cap for parked cuGraph graphs. Requires bounded policy, a cuGraph build, and cuGraph enabled. |
-| `NEXUS_SERVER_NATIVE_QUERY_MEMORY_DOMAIN_CEILING_MULTIPLIER` | unset (disabled) | Enables a private per-query CUDA pool whose immutable ceiling is this positive multiple of the initial grant. Incompatible with the two cross-query VRAM caches. |
-| `NEXUS_SERVER_NATIVE_PIPELINE_EXECUTION_MODE` | `strict_bounded` | `strict_bounded` or `adaptive`; the modes keep separate admission and report contracts. |
 | `NEXUS_SERVER_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE` | `datafusion_exact_host_welford` | Exact host Welford parity or `gpu_native_tolerant` statistical execution. |
 
 :::warning[Leave deployment headroom]
-The server derives one shared planning cap from the first configured device's
-CUDA total memory, applying the requested fraction while retaining at least
-500 MiB of headroom. Each device governor then clamps that cap to at most its
-own `total - 500 MiB`, so a smaller first device can also cap larger devices.
-The 256 MiB configuration fallback applies only when the first-device inventory
-probe is unavailable; a later runtime inventory failure can still prevent
-startup. These calculations use total rather than live free memory and do not
-account for other processes. Set a smaller fraction or explicit budget when
-the deployment needs more headroom, for example
-`NEXUS_SERVER_DEVICE_BUDGET_FRACTION=0.5`. Use
-`NEXUS_SERVER_NATIVE_MEMORY_POLICY=unbounded` only for local single-query work
-when the GPU is otherwise idle. This policy is currently required for `cuvs_*`
-execution. In unbounded mode the server limits native work to one concurrent
-query and rejects bounded-only memory, cache, and admission settings.
+For automatic capacity, the server resolves every claimed GPU independently
+from that device's own profile; it never inherits GPU 0's budget. The 256 MiB
+native value is only an unadmitted planning placeholder. These calculations
+use total rather than live free memory and do not account for other processes.
+Set `memory_limit_bytes` or `backend_reserve_bytes` on each device profile when
+the deployment needs more headroom.
 :::
 
-The cache caps are part of the governor's evictable ledger, not extra memory
-outside the device budget. See [Cache Design and Use](../design/cache.mdx) for
-sizing, keys, eviction, and diagnostics.
+The P2 controller has no cross-query GPU cache capacity setting or runtime
+diagnostic. The persistent lakehouse byte cache described below is separate
+from GPU device memory.
 
 ## DataFusion session
 
@@ -148,16 +136,14 @@ Nexus also registers `datafusion_nexus.native.*` session keys for direct
 optimizer installs. Backend-managed sessions freeze those native policy keys so
 they cannot diverge from the shared admission ledger. The
 `datafusion_nexus.request.*` namespace is intentionally request-scoped and stays
-mutable on those embedded DataFusion sessions. Set
-`datafusion_nexus.request.requested_grant_bytes` (preferred grant),
-`datafusion_nexus.request.requested_grant_min_bytes` (request-scoped grant
-floor: admit with at least this much or keep queueing), or
+mutable on those embedded DataFusion sessions only for planner evidence. Set
 `datafusion_nexus.request.graph_raw_input_edges` (edge-count evidence for graph
-memory pricing when source statistics are unavailable) through SQL or DataFusion's
-session-option API after Nexus registers the extension. Flight SQL does not
-support session-scoped `datafusion_nexus.*` keys through SQL `SET`; configure
-server or tenant defaults instead. The server does not load request keys from a
-`DATAFUSION_NEXUS_*` environment variable during startup.
+memory pricing when source statistics are unavailable) through SQL or
+DataFusion's session-option API after Nexus registers the extension.
+Caller-selected grant bytes and request-scoped grant floors are not supported.
+Flight SQL does not support session-scoped `datafusion_nexus.*` keys through SQL
+`SET`; configure the server ordinal profiles and queue policy instead. The server does not load
+request keys from a `DATAFUSION_NEXUS_*` environment variable during startup.
 
 ## Iceberg sources and workspace overlay
 
@@ -176,8 +162,8 @@ NEXUS_LAKEHOUSE_CACHE_MAX_BYTES=536870912000
 ```
 
 `read_through` fills misses in the background; `fill_before_read` blocks until
-the complete object is published locally; `disabled` never fills. The cache is
-independent of the decoded VRAM source cache.
+the complete object is published locally; `disabled` never fills. This
+persistent byte cache is separate from GPU device memory.
 
 Set `NEXUS_ICEBERG_FOOTER_PRUNING=true` to enable native object-store footer
 pruning. It applies safe static and dimension-derived filters to Parquet row

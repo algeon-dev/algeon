@@ -25,11 +25,10 @@ use nexus_query_engine::{
     observability::{RuntimeObservationConfig, RuntimeObservationSession, write_runtime_observation_jsonl},
     plan::{
         GraphAlgorithm, GraphAlgorithmParams, GraphAlgorithmSpec, GraphConstructionOptions, GraphConstructionPolicy,
-        GraphEdgeColumnBindings, GraphResidencyDescriptor, GraphSimilarityParams, GraphVertexPairInput,
-        QueryPlanBuilder,
+        GraphEdgeColumnBindings, GraphSimilarityParams, GraphVertexPairInput, QueryPlanBuilder,
     },
     runtime::{
-        ExecutionContext, GpuBackendMemoryShare, GpuDeviceMemoryLimit, QueryServiceConfig, TenantId,
+        ExecutionContext, GpuBackendDeviceConfig, GpuDeviceMemoryLimit, GpuMemoryOwnership, QueryExecutionConfig,
         resident::{GpuDataFrame, GpuResidentInputMap, GpuResultHandle},
     },
     source::GpuResidentSource,
@@ -60,21 +59,6 @@ impl VertexDtype {
         match self {
             Self::Int32 => "int32",
             Self::Int64 => "int64",
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum GraphCacheState {
-    Cold,
-    Warm,
-}
-
-impl GraphCacheState {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Cold => "cold",
-            Self::Warm => "warm",
         }
     }
 }
@@ -112,7 +96,6 @@ struct CalibrationArgs {
     pair_rows: usize,
     weighted: bool,
     vertex_dtype: VertexDtype,
-    graph_cache_state: GraphCacheState,
     topology: CalibrationTopology,
     edge_parquet: Option<PathBuf>,
     edge_row_groups: usize,
@@ -125,35 +108,23 @@ struct CalibrationInput {
     pair_schema: Arc<Schema>,
     pair_batch: RecordBatch,
     vertex_dtype: VertexDtype,
-    graph_identity: String,
     topology_label: &'static str,
     description: Value,
 }
 
 pub fn run(args: Vec<String>) -> ToolResult<()> {
     let args = parse_args(args)?;
-    // Phase 0 intentionally fixes backend cache domains off. Keep the flag in
-    // the calibration schema, but fail before GPU construction until the
-    // owning backend cache contract is public.
-    if args.graph_cache_state == GraphCacheState::Warm {
-        return Err(
-            "warm graph-cache calibration is unavailable while the Phase 0 backend contract keeps cache domains disabled"
-                .into(),
-        );
-    }
     let calibration_input = calibration_input(&args)?;
-    let service_config = QueryServiceConfig { max_concurrent_queries: 1, ..QueryServiceConfig::default() };
-    let backend = ToolGpuBackend::build(
-        service_config,
-        GpuDeviceMemoryLimit::default(),
-        GpuBackendMemoryShare::Bytes(64 * 1024 * 1024),
-        GpuBackendMemoryShare::PolicyDefault,
-        TenantId::new("cugraph_similarity_calibrate"),
-    )?;
+    let service_config = QueryExecutionConfig::default();
+    let device = GpuBackendDeviceConfig::new(0, GpuMemoryOwnership::WholeDeviceExclusive)
+        .with_memory_limit(GpuDeviceMemoryLimit::default())
+        .with_max_active_queries(1)
+        .with_installation_bounds(2, 1, 1);
+    let backend = ToolGpuBackend::build(service_config, device)?;
     let result = (|| -> ToolResult<()> {
-        let query_handle = backend.session().admit_query(backend.tenant_id())?;
-        let tenant_context = query_handle.acquire_context()?;
-        let context = tenant_context.context();
+        let query_handle = backend.session().admit_query()?;
+        let admitted_context = query_handle.acquire_context()?;
+        let context = admitted_context.context();
         let runtime = context.runtime()?;
         let mut builder = QueryPlanBuilder::new();
         let edges = builder.add_source(nexus_query_engine::source::SourceNode::GpuResident(GpuResidentSource::new(
@@ -183,37 +154,6 @@ pub fn run(args: Vec<String>) -> ToolResult<()> {
         let graph = builder.try_add_graph_algorithm(edges, spec)?;
         let plan = builder.finish_with_host_sink(graph);
 
-        let graph_residency = (args.graph_cache_state == GraphCacheState::Warm)
-            .then(|| {
-                GraphResidencyDescriptor::for_content_identity(
-                    format!(
-                        "nexus-tools:cugraph-similarity-calibrate:v1;input={};weighted={};vertex-dtype={}",
-                        calibration_input.graph_identity,
-                        args.weighted,
-                        calibration_input.vertex_dtype.as_str(),
-                    ),
-                    calibration_input.vertex_dtype.data_type(),
-                    args.weighted.then_some(DataType::Float64),
-                    None,
-                )
-            })
-            .transpose()?;
-
-        if args.graph_cache_state == GraphCacheState::Warm {
-            let warmup_inputs = calibration_inputs(
-                context,
-                &runtime,
-                &calibration_input.edge_schema,
-                &calibration_input.edge_batch,
-                &calibration_input.pair_schema,
-                &calibration_input.pair_batch,
-                graph_residency.as_ref(),
-            )?;
-            // The warmup establishes exactly the same content-addressed graph
-            // cache entry. Only the second execution is emitted as the selected
-            // warm-cache calibration observation.
-            let _ = nexus_query_engine::exec::execute_query_plan_with_gpu_inputs(context, &plan, &warmup_inputs)?;
-        }
         let inputs = calibration_inputs(
             context,
             &runtime,
@@ -221,7 +161,6 @@ pub fn run(args: Vec<String>) -> ToolResult<()> {
             &calibration_input.edge_batch,
             &calibration_input.pair_schema,
             &calibration_input.pair_batch,
-            graph_residency.as_ref(),
         )?;
 
         let outcome = execute_query_plan_with_gpu_inputs_and_runtime_observation(
@@ -236,15 +175,6 @@ pub fn run(args: Vec<String>) -> ToolResult<()> {
         );
         let (result, metrics, observation) = outcome.into_parts();
         let output_rows = result?.as_host_arrow().map_or(0, |batch| batch.num_rows());
-        if args.graph_cache_state == GraphCacheState::Warm {
-            let cache_hit = metrics
-                .graph_algorithm_runtime_rows
-                .last()
-                .is_some_and(|row| row.algorithm_metadata.contains("graph_cache=hit;"));
-            if !cache_hit {
-                return Err("warm similarity calibration did not execute through the resident graph cache".into());
-            }
-        }
         let observation = observation.ok_or("calibration execution did not produce a runtime observation snapshot")?;
         let mut runtime_observation_jsonl = Vec::new();
         write_runtime_observation_jsonl(&observation, &mut runtime_observation_jsonl)?;
@@ -254,7 +184,6 @@ pub fn run(args: Vec<String>) -> ToolResult<()> {
             "pair_rows": args.pair_rows,
             "weighted": args.weighted,
             "vertex_dtype": calibration_input.vertex_dtype.as_str(),
-            "graph_cache_state": args.graph_cache_state.as_str(),
             "topology": calibration_input.topology_label,
             "input": calibration_input.description,
             "model": model,
@@ -292,13 +221,8 @@ fn calibration_inputs(
     edge_batch: &RecordBatch,
     pair_schema: &Arc<Schema>,
     pair_batch: &RecordBatch,
-    graph_residency: Option<&GraphResidencyDescriptor>,
 ) -> ToolResult<GpuResidentInputMap> {
     let edge_frame = GpuDataFrame::new(DataFrame::from_record_batch(runtime, edge_batch)?);
-    let edge_frame = match graph_residency {
-        Some(graph_residency) => edge_frame.with_graph_residency(graph_residency.clone()),
-        None => edge_frame,
-    };
     let mut inputs = GpuResidentInputMap::new();
     inputs.insert(EDGE_INPUT.to_string(), GpuResultHandle::new(context, edge_frame, Arc::clone(edge_schema))?);
     inputs.insert(
@@ -317,7 +241,6 @@ fn parse_args(args: Vec<String>) -> ToolResult<CalibrationArgs> {
     let mut pair_rows = None;
     let mut weighted = false;
     let mut vertex_dtype = VertexDtype::Int32;
-    let mut graph_cache_state = GraphCacheState::Cold;
     let mut topology = CalibrationTopology::SparseUniform;
     let mut edge_parquet = None;
     let mut edge_row_groups = 1;
@@ -337,15 +260,6 @@ fn parse_args(args: Vec<String>) -> ToolResult<CalibrationArgs> {
                     },
                 };
             },
-            "--graph-cache-state" => {
-                graph_cache_state = match next_value(&mut args, "--graph-cache-state")?.as_str() {
-                    "cold" => GraphCacheState::Cold,
-                    "warm" => GraphCacheState::Warm,
-                    other => {
-                        return Err(format!("unsupported --graph-cache-state {other:?}; expected cold or warm").into());
-                    },
-                };
-            },
             "--topology" => {
                 topology = match next_value(&mut args, "--topology")?.as_str() {
                     "sparse-uniform" => CalibrationTopology::SparseUniform,
@@ -362,7 +276,7 @@ fn parse_args(args: Vec<String>) -> ToolResult<CalibrationArgs> {
             "--observation-out" => observation_out = Some(PathBuf::from(next_value(&mut args, "--observation-out")?)),
             "-h" | "--help" => {
                 return Err(
-                    "usage: cugraph-similarity-calibrate --algorithm <jaccard|sorensen|overlap|cosine> --pair-rows <N> [--weighted] [--vertex-dtype int32|int64] [--graph-cache-state cold|warm] [--topology sparse-uniform|hub-skewed] [--edge-parquet PATH --edge-row-groups N] [--observation-out PATH]"
+                    "usage: cugraph-similarity-calibrate --algorithm <jaccard|sorensen|overlap|cosine> --pair-rows <N> [--weighted] [--vertex-dtype int32|int64] [--topology sparse-uniform|hub-skewed] [--edge-parquet PATH --edge-row-groups N] [--observation-out PATH]"
                         .into(),
                 );
             },
@@ -377,7 +291,6 @@ fn parse_args(args: Vec<String>) -> ToolResult<CalibrationArgs> {
         pair_rows: pair_rows.ok_or("missing --pair-rows")?,
         weighted,
         vertex_dtype,
-        graph_cache_state,
         topology,
         edge_parquet,
         edge_row_groups,
@@ -419,7 +332,6 @@ fn calibration_input(args: &CalibrationArgs) -> ToolResult<CalibrationInput> {
         pair_schema,
         pair_batch,
         vertex_dtype: args.vertex_dtype,
-        graph_identity: format!("synthetic:{}", args.topology.as_str()),
         topology_label: args.topology.as_str(),
         description: json!({
             "kind": "synthetic_topology",
@@ -513,7 +425,6 @@ fn parquet_calibration_input(
         pair_schema,
         pair_batch,
         vertex_dtype: VertexDtype::Int64,
-        graph_identity: format!("parquet:{}:row-groups={selected_row_groups}", path.display()),
         topology_label: "parquet-fixture",
         description: json!({
             "kind": "parquet_edge_fixture",

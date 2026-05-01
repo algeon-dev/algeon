@@ -22,10 +22,8 @@ pub struct DatafusionNexusFlightSqlService {
     /// registered for execution and tickets still waiting for `DoGet` see
     /// cancellation at the first await.
     pub(super) shutdown_token: CancellationToken,
-    /// Bearer-token validator + handshake credential store. Cloned into
-    /// the service from [`crate::server::serve`] so the same
-    /// [`TokenStore`] is shared between the handshake mint path and the
-    /// per-RPC validate path.
+    /// Flight/application-layer bearer-token validator. The underlying token
+    /// store is shared with the handshake path and never reaches GPU control.
     pub(super) auth: AuthInterceptor,
     pub(super) catalog_diagnostics: ServerCatalogDiagnostics,
     pub(super) cugraph_sql_config: Option<CugraphSqlConfig>,
@@ -81,6 +79,39 @@ impl DatafusionNexusFlightSqlService {
             })
     }
 
+    /// Register a Flight result-stream invocation whose execution attempt
+    /// owns runtime observation. The coordinator remains responsible for
+    /// tickets, cancellation, and retained projections, but it must not mint
+    /// an independent observation owner for the same invocation.
+    pub(super) fn register_new_attempt_query(
+        &self,
+        sql: String,
+        correlation_id: Option<String>,
+    ) -> Result<(String, QueryPlanningLease), (String, Status)> {
+        let registration = if self.admission.has_attempt_backend() {
+            self.coordinator.register_new_with_attempt_observation(
+                sql,
+                correlation_id.clone(),
+                correlation_id,
+                self.runtime_observation_config,
+            )
+        } else {
+            // CPU-only unit fixtures intentionally have no runtime backend to
+            // begin an attempt against. Production server construction always
+            // takes the attempt-owned branch above.
+            self.coordinator.register_new(sql, correlation_id.clone(), correlation_id, self.runtime_observation_config)
+        };
+        registration.map_err(|error| {
+            let query_id = error
+                .query_id()
+                .expect("coordinator-owned registration failures retain their allocated query id")
+                .to_string();
+            let status =
+                adapter_error_status(error.adapter_error("datafusion_nexus.server.flight.query_coordinator.register"));
+            (query_id, status)
+        })
+    }
+
     #[cfg(test)]
     pub(super) fn register_query(
         &self,
@@ -88,11 +119,26 @@ impl DatafusionNexusFlightSqlService {
         sql: String,
         correlation_id: Option<String>,
     ) -> Result<QueryPlanningLease, Status> {
-        self.coordinator
-            .register_with_id(query_id, sql, correlation_id.clone(), correlation_id, self.runtime_observation_config)
-            .map_err(|error| {
-                adapter_error_status(error.adapter_error("datafusion_nexus.server.flight.query_coordinator.register"))
-            })
+        let registration = if self.admission.has_attempt_backend() {
+            self.coordinator.register_with_id_with_attempt_observation(
+                query_id,
+                sql,
+                correlation_id.clone(),
+                correlation_id,
+                self.runtime_observation_config,
+            )
+        } else {
+            self.coordinator.register_with_id(
+                query_id,
+                sql,
+                correlation_id.clone(),
+                correlation_id,
+                self.runtime_observation_config,
+            )
+        };
+        registration.map_err(|error| {
+            adapter_error_status(error.adapter_error("datafusion_nexus.server.flight.query_coordinator.register"))
+        })
     }
 
     #[cfg(test)]
@@ -101,7 +147,6 @@ impl DatafusionNexusFlightSqlService {
         native_optimizer_config: NexusNativeOptimizerConfig,
         admission: Arc<QueryAdmission>,
         statement_ticket_ttl: Duration,
-        auth: AuthInterceptor,
         #[cfg(feature = "cugraph")] cugraph_sql_config: Option<CugraphSqlConfig>,
     ) -> Self {
         let io_lifecycle = Arc::new(crate::server::io_lifecycle::ServerIoLifecycle::new());
@@ -114,7 +159,7 @@ impl DatafusionNexusFlightSqlService {
             native_optimizer_config,
             admission,
             statement_ticket_ttl,
-            auth,
+            AuthInterceptor::new(AuthMode::Disabled, TokenStore::new()),
             io_lifecycle,
             cugraph_sql_config,
         )
@@ -166,18 +211,16 @@ impl DatafusionNexusFlightSqlService {
         self
     }
 
+    /// Validate the bearer token on a Flight request. Disabled auth keeps the
+    /// existing trusted-network behavior and returns no principal.
+    pub(super) fn check_auth<T>(&self, request: &Request<T>) -> Result<Option<crate::server::Principal>, Status> {
+        self.auth.check(request.metadata())
+    }
+
     #[cfg(all(test, feature = "iceberg"))]
     pub(super) fn with_catalog_diagnostics(mut self, diagnostics: ServerCatalogDiagnostics) -> Self {
         self.catalog_diagnostics = diagnostics;
         self
-    }
-
-    /// Validate the bearer token on a tonic request. Returns the
-    /// authenticated [`crate::server::Principal`] when auth is enabled,
-    /// or `None` when the server is running in
-    /// [`AuthMode::Disabled`]. Errors as `Status::unauthenticated`.
-    pub(super) fn check_auth<T>(&self, request: &Request<T>) -> Result<Option<crate::server::auth::Principal>, Status> {
-        self.auth.check(request.metadata())
     }
 
     pub(super) async fn build_get_tables_response(
@@ -386,7 +429,6 @@ pub(super) fn bounded_test_service(statement_ticket_ttl: Duration) -> BoundedTes
         native_optimizer_config,
         admission,
         statement_ticket_ttl,
-        AuthInterceptor::new(crate::server::auth::AuthMode::Disabled, crate::server::auth::TokenStore::new()),
         #[cfg(feature = "cugraph")]
         None,
     );

@@ -7,5 +7,5 @@ error[E0603]: struct `DeviceContext` is private
 note: the struct `DeviceContext` is defined here
  --> src/runtime.rs
   |
-  | pub(crate) use gpu::{DeviceContext, DeviceRegistry, DeviceRegistryConfig, PlacementPolicy};
+  | pub(crate) use gpu::{DeviceContext, DeviceRegistry, DeviceRegistryConfig, PlacementPolicy, PlacementRequest};
   |                      ^^^^^^^^^^^^^

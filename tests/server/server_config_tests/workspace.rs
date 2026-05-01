@@ -5,7 +5,7 @@ fn server_config_accepts_workspace_overlay_defaults_and_aliases() {
         (NEXUS_SERVER_WORKSPACE_BACKING_SCHEMA_ENV, "nexus_graph".to_string()),
         (NEXUS_SERVER_WORKSPACE_BACKING_ALIASES_ENV, "edges_by_src,edges_by_dst,profiles_by_user_id".to_string()),
     ]);
-    let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
+    let config = server_config_with_default_device_profile(env).unwrap();
     let workspace = config.workspace.expect("workspace overlay config");
 
     assert_eq!(workspace.catalog, "datafusion");
@@ -26,7 +26,7 @@ fn server_config_accepts_explicit_workspace_identity() {
         (NEXUS_SERVER_WORKSPACE_BACKING_CATALOG_ENV, "glue".to_string()),
         (NEXUS_SERVER_WORKSPACE_BACKING_SCHEMA_ENV, "nexus_graph".to_string()),
     ]);
-    let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
+    let config = server_config_with_default_device_profile(env).unwrap();
     let workspace = config.workspace.expect("workspace overlay config");
 
     assert_eq!(workspace.catalog, "workspace");
@@ -37,7 +37,7 @@ fn server_config_accepts_explicit_workspace_identity() {
 #[test]
 fn server_config_rejects_incomplete_workspace_backing() {
     let env = BTreeMap::from([(NEXUS_SERVER_WORKSPACE_BACKING_CATALOG_ENV, "glue".to_string())]);
-    let error = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap_err();
+    let error = server_config_with_default_device_profile(env).unwrap_err();
 
     assert!(error.to_string().contains(NEXUS_SERVER_WORKSPACE_BACKING_SCHEMA_ENV), "{error}");
 }
@@ -50,7 +50,7 @@ fn server_config_rejects_workspace_equal_to_backing() {
         (NEXUS_SERVER_WORKSPACE_BACKING_CATALOG_ENV, "glue".to_string()),
         (NEXUS_SERVER_WORKSPACE_BACKING_SCHEMA_ENV, "nexus_graph".to_string()),
     ]);
-    let error = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap_err();
+    let error = server_config_with_default_device_profile(env).unwrap_err();
 
     assert!(error.to_string().contains("must differ from backing"), "{error}");
 }

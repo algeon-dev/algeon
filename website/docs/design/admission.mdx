@@ -1,466 +1,131 @@
 ---
 sidebar_position: 2
 slug: /design/admission
-description: "How DataFusion Nexus admits concurrent GPU queries: one device ledger, plan-scoped admission tickets, grant bands, and the layered memory-control stack."
+description: "How DataFusion Nexus admits concurrent GPU queries through one bounded per-device resource controller."
 ---
 
-import {FlowDiagram, StackDiagram} from '@site/src/components/design/Diagram';
+# Bounded GPU Admission
 
-# Admission & Memory Governance
+Nexus has one runtime admission contract for native GPU work. It is shared by
+embedded SessionContext users and the Flight SQL server; server environment
+variables lower onto the same engine policy and do not create another
+controller.
 
-GPU device memory is the one resource a DataFusion session cannot pretend is
-elastic. Nexus therefore treats **admission** — deciding when a query may start
-native execution and how much device memory it is granted — as an engine
-concept shared by both consumption modes:
+Plan support is decided separately by native lowering. Runtime admission begins
+only when a supported plan first executes.
 
-- **Library mode:** you own the `SessionContext` and install Nexus through a
-  process-scoped `NexusGpuBackend`.
-- **Server mode:** the Flight SQL server lowers its env/TOML configuration onto
-  the *same* backend policy. Env vars are a presentation layer, not a second
-  admission implementation.
+## Contract
 
-This page governs *runtime* resources. Whether a candidate lowers natively at
-all — plan-shape admission — is a separate plan-time contract described in
-[Native Lowering & Fallback](./native-lowering.mdx). The rest of this page is
-the runtime contract: who owns the ledger, when admission happens, how grants
-are sized, and which layer enforces what.
+- Each configured CUDA device has one process-owned DeviceLedger.
+- An accepted attempt receives an immutable MemoryGrant. The grant is both its
+  hard memory cap and its allocation-domain ceiling for the lifetime of that
+  attempt.
+- A device profile fixes the root worker, auxiliary lane, stream, and active
+  attempt bounds before work starts. It is not resized by load.
+- The usable global active-attempt capacity is the checked sum of the
+  per-device active limits. There is no fixed global GPU-concurrency product
+  knob.
+- Capability-first checks reject unsupported or impossible work locally with a
+  structured reason. Queueing cannot make an impossible request admissible.
+- There is no tenant identity, priority tier, QoS weighting, grant band,
+  placement-policy selector, slot-guarantee mode, or strict/adaptive product
+  mode in the admission path.
 
-## Design rules
+The controller may rank compatible devices, but the resulting placement is an
+engine decision from fixed device facts and live ledger state. It is not a
+caller-selected policy.
 
-1. **One ledger per device, one owner per process.** The per-device
-   `MemoryGovernor` is the sole authority on device-memory grants. Two
-   accounting authorities on one device can jointly over-commit it, so the
-   backend must be shared, never duplicated, across the sessions of one
-   process.
-2. **Admission is per query, not per plan fragment.** A physical plan may
-   contain several native fragments; they share one admission slot and one
-   grant, so a plan can never deadlock against itself.
-3. **Byte-denominated grants plus a slot cap.** The grant band governs memory;
-   `max_concurrent_queries` bounds stream and host-side fan-out. Throughput on
-   TPC-H-class work saturates around three concurrent queries; beyond that only
-   tail latency grows.
-4. **No disk spill.** Work conservation comes from grant banding, admission
-   backfill, and chunk-boundary re-planning in the adaptive lane — never from
-   spilling operators.
-5. **Capability is configuration, not load.** Whether a query *can* run
-   natively depends only on the band's `min`. It must not depend on who else is
-   running.
+## Attempt lifecycle
 
-## The admission path
+1. Native lowering attaches one lazy attempt admission to the execution round.
+   Planning and EXPLAIN do not consume a device slot.
+2. At execution, the service evaluates capability requirements and ranks
+   compatible devices.
+3. The admission transaction reserves an immutable grant, device lane, stream,
+   allocation domain, and worker resources. A failed step rolls the preceding
+   reservations back in reverse order.
+4. Execution uses that one grant for its complete attempt domain. A grant never
+   grows, shrinks, borrows, or is revoked while live.
+5. Cleanup seals runtime observation and commits terminal disposition and
+   health before the ledger releases the attempt's capacity. A replacement
+   cannot observe reusable capacity before report completion.
+6. A cleanup failure or unknown CUDA-fault isolation latches the backend
+   unhealthy and prevents reuse rather than returning capacity.
 
-<FlowDiagram
-  ariaLabel="Plan-scoped admission path"
-  nodes={[
-    {
-      id: 'plan',
-      kind: 'planning time', name: 'native rewrite',
-      note: 'one admission ticket per optimized plan', tone: 'plan',
-      sub: 'src/planner/native.rs',
-      detail: <>During one <code>optimize()</code> pass the rule creates one
-        plan-scoped admission ticket and injects it into every native node it
-        emits. Planning admits nothing: the ticket is lazy, so an
-        <code>EXPLAIN</code> or a never-executed plan costs no slot.</>,
-    },
-    {
-      id: 'ticket',
-      kind: 'execution start', name: 'admission ticket',
-      note: ['lazy — nothing admitted until the first poll', 'fresh epoch for every execution round'],
-      tone: 'engine',
-      sub: 'src/native_exec/admission.rs',
-      edgeLabel: 'injected into every native node of the plan',
-      detail: <>On the first native stream poll the ticket admits
-        asynchronously through the backend's <code>QueryService</code>.
-        Sibling fragments of the same plan await the same ticket and reuse the
-        admitted handle — one slot and one grant per query, however many
-        native fragments the plan contains. Each fresh execution round
-        re-admits under a new epoch; the handle releases when the round's
-        native contexts drain.</>,
-    },
-    {
-      id: 'service',
-      kind: 'admission queue', name: 'QueryService',
-      note: ['slot cap · priority tiers · tenant round-robin', 'small queries backfill past a blocked head'],
-      tone: 'engine',
-      sub: 'nexus-query-engine · runtime/query_service/',
-      edgeLabel: 'async admit at the first native stream poll',
-      detail: <>The admission queue is priority-tiered
-        (<code>Critical → Low</code>) with tenant round-robin inside a tier.
-        A queued request that cannot receive its minimum grant does not block
-        the queue: smaller queries backfill past it. Waits are bounded by the
-        policy's <code>wait_timeout</code>; overflow and timeout surface as
-        structured <code>service_overloaded</code> errors.</>,
-    },
-    {
-      id: 'governor',
-      kind: 'per device', name: 'MemoryGovernor',
-      note: ['the grant ledger — Σ grants ≤ capacity', 'least-loaded placement across devices'],
-      tone: 'gpu',
-      sub: 'runtime/gpu/governor.rs',
-      edgeLabel: 'grant band [min, want] for the tenant',
-      detail: <>The per-device grant ledger. A grant receives
-        <code>want.min(available_after_slot_reservations)</code>, never below
-        the band's <code>min</code>. Multi-device backends place independent
-        queries on the least-loaded ordinal. Releases wake blocked admissions
-        and can re-grow running adaptive grants.</>,
-    },
-    {
-      id: 'exec',
-      kind: 'admitted query', name: 'bounded execution',
-      note: ['reservation tracker · cuDF budget tokens', 'strict: gate-first · adaptive: re-read per chunk'],
-      tone: 'gpu',
-      sub: 'exec/bounded/',
-      edgeLabel: 'granted budget sizes every reservation',
-      detail: <>The admitted grant sizes the query's reservation tracker and
-        the per-operator cuDF budget tokens. Strict execution snapshots the
-        budget gate-first; adaptive execution re-reads it at chunk boundaries,
-        which is what makes growth and cooperative shrink possible.</>,
-    },
-  ]}
-  groups={[
-    {label: 'PLAN SCOPED · PER OPTIMIZE PASS', nodes: ['plan', 'ticket']},
-    {label: 'NexusGpuBackend · ONE PER PROCESS', nodes: ['service', 'governor']},
-  ]}
-  returns={[
-    {
-      from: 'exec', to: 'governor',
-      label: ['RAII release when the', 'round drains: freed bytes', 'wake the queue and grow', 'running adaptive grants'],
-    },
-  ]}
-caption={<>Admission is execute-time and plan-scoped: one ticket per
-  optimized plan, one slot and one grant per query per execution round,
-  RAII release when the round drains. Click a box for its contract.</>}
-/>
+This ordering gives reports, DataFusion metrics, and TSV output one source of
+truth: the runtime observation snapshot.
 
-Flight SQL uses the same unit as embedded DataFusion sessions. `GetFlightInfo`
-and prepared-statement creation may plan and issue a Flight ticket, but they do
-not acquire a GPU slot. If the client never calls `DoGet`, no native admission
-is consumed. The first native execution poll behind `DoGet` admits through the
-plan ticket above; a completed DataFusion-baseline plan never enters the GPU
-ledger.
+## Queue and fairness
 
-:::warning[Admission failures are structured, not silent]
-Queue overflow and admission timeouts surface as the same structured
-`resource_exhausted`/`service_overloaded` taxonomy the server has always
-emitted, converted to `DataFusionError` at the boundary. Nothing silently
-downgrades an admitted query.
-:::
+The queue is bounded by maximum waiters, maximum wait time, and a finite
+compatible-device overtake budget. It is a liveness mechanism, not a tenant
+scheduler:
 
-## One owner: `NexusGpuBackend`
+- impossible requirements reject immediately;
+- the oldest runnable compatible request wins once its overtake budget is
+  exhausted;
+- a request can be bypassed only while a compatible device can make progress;
+- service close, cancellation, deadline expiry, or backend-unhealthy state
+  completes every affected waiter with a structured outcome.
 
-The backend wraps exactly one `QueryService` and is the object sessions share.
-Multiple `SessionContext`s installed from one backend share the governor,
-stream pools, and admission queue.
+## Device profiles and capacity
 
-```rust
-use datafusion::execution::SessionStateBuilder;
-use datafusion::prelude::SessionContext;
-use datafusion_nexus::backend::{NexusAdmissionPolicy, NexusGpuBackend, NexusMemoryPolicy};
-use nexus_query_engine::runtime::SlotGuarantee;
+A backend resolves a DeviceResourceProfile for each selected device. The
+profile declares active-attempt, root-worker, auxiliary-lane, and stream
+bounds. Its attempt floor is configured explicitly or derived per device as
+managed_bytes / max(8, active_attempts).
 
-let backend = NexusGpuBackend::builder()
-    .memory_policy(NexusMemoryPolicy::BoundedAuto {
-        device_ordinals: vec![0],
-        budget_fraction: None,          // default: capacity − headroom
-    })
-    .admission(
-        NexusAdmissionPolicy::default()
-            .with_max_concurrent_queries(2)
-            .with_slot_guarantee(SlotGuarantee::GuaranteedMinimum),
-    )
-    .build()?;                          // rejects contradictions loudly
+For an empty device with managed capacity M, live granted bytes L, floor F, and
+E empty active-attempt slots, a candidate grant is bounded by:
 
-let state = backend.install_on(SessionStateBuilder::new())?.build();
-let ctx = SessionContext::new_with_state(state);
-```
+~~~text
+max_new = M - L - F * E
+~~~
 
-`build()` validates the policy against the resolved devices: empty or
-duplicated ordinals, fractions outside `(0, 1]`, `want < min`, zero queue or
-timeout values, and `Unbounded` memory combined with admission are all
-structured build errors, not runtime surprises.
-
-Backend-managed sessions **freeze** the backend-owned native keys:
-`SET datafusion_nexus.native.*` fails loudly instead of silently diverging from
-the shared ledger. Configure those knobs on the builder. The request-scoped
-`datafusion_nexus.request.*` namespace is exempt from that freeze because it
-does not change backend policy; it can only request a per-statement grant inside
-the already configured tenant band. Flight SQL does not expose those keys as
-mutable session state; set server or tenant defaults for Flight workloads.
-
-:::warning[Build one backend per process per device set]
-The per-ordinal governor is claimed process-globally, and `GuaranteedMinimum`
-claims are exclusive: with the default slot guarantee a second backend on the
-same ordinal is rejected loudly at build time
-(`shared_governor_guaranteed_minimum_conflict`; a mismatched budget fails as
-`device_governor_capacity_conflict`). The claim frees only after the first
-backend's last query handle drains, so a rebuild must drop the old backend
-first. Two `Optimistic` backends may coexist on one ordinal — they then share
-the byte ledger (each sees the other's grants) but not admission queues or
-slot guarantees. In every case, share the one backend object instead of
-building a second. The plain `with_nexus_native` path (no backend) keeps the
-historical per-query-full-budget behavior and is only safe for one query at a
-time.
-:::
-
-## Grant bands and slot guarantees
-
-Each admitted query receives a grant inside the tenant band
-`[min, want]`, resolved against device capacity:
-
-| Setting | Default | Meaning |
-| --- | --- | --- |
-| `max_concurrent_queries` | 2 (library and server) | Admission slot cap; bounds streams, host decode fan-out, tail latency. |
-| `grant.min` | 1/8 of capacity | Capability floor: the largest query guaranteed admissible regardless of load. |
-| `grant.want` | Derived from slot guarantee and execution mode | Target grant when memory is available; explicit config always wins. |
-| `slot_guarantee` | `GuaranteedMinimum` | See below. |
-| `max_queued` | 64 × slots | Queue depth before `admission_queue_full`. |
-| `wait_timeout` | 60 s | Bound on queued admission wait. |
-
-Default `want` is derived after the backend resolves device count, capacity,
-slot guarantee, and native pipeline mode:
-
-| Slot guarantee × lane | Default `want` |
-| --- | --- |
-| `GuaranteedMinimum` × strict or adaptive | Full capacity. The runtime grant still reserves `min` for remaining slots, so a lone query receives `capacity − (remaining_slots · min)`. |
-| `Optimistic` × adaptive | Full capacity; blocked waiters can trigger cooperative shrink at chunk boundaries. |
-| `Optimistic` × strict | `capacity − ((ceil(max_concurrent_queries / device_count) − 1) · min)`, so a strict query does not hold the entire per-device budget while later arrivals wait. |
-
-**`GuaranteedMinimum`** reserves `min` for every empty admission slot, so any
-arriving query can always receive its floor immediately. This is deadlock-free
-and latency-predictable, while the default full-capacity `want` lets a lone
-query use the memory that is not reserved for future floors.
-
-**`Optimistic`** deletes the empty-slot reservation: a lone query receives
-`want.min(available)`, and a later arrival that cannot get `min` waits (bounded
-by `wait_timeout`) while smaller queries backfill past it. Highest utilization;
-admission latency for large queries becomes load-dependent.
-
-On the 96 GB reference card with the defaults, `grant.min` is 12 GB. With two
-GuaranteedMinimum slots, a lone query can receive roughly 84 GB because the
-ledger reserves only the other slot's 12 GB floor. The slot default of 2 is the
-measured sweet spot: it captured most of the saturation-throughput win on
-TPC-H bursts with no capability cliff.
-
-`NexusGpuBackend` and the server always pass an explicit resolved device
-capacity into the `QueryService`. Direct `QueryService` callers that use
-`QueryServiceTenantConfig::with_grant_range` must do the same by setting
-`QueryServiceConfig::device_capacity_bytes`; the unset compatibility path is
-only for fixed-slice tenants where `min == want`.
-
-### Per-Statement Grant Requests
-
-`datafusion_nexus.request.requested_grant_bytes` is a request-scoped preferred
-grant override. The optimizer reads it when it mints the plan admission ticket;
-all native fragments in that optimized plan share the same ask. Unset or
-`none` uses the backend's tenant `want` — with one exception: for
-graph-dominated plans the ticket ask is derived from the graph memory model
-(edge-count and dtype evidence in the lowered plan), so a `cugraph_*` query no
-longer asks for the whole card by default. An explicit
-`requested_grant_bytes` always wins over the derived ask.
-
-The key overrides only `want`, never `min`. The request must be greater than or
-equal to the tenant `min`, less than or equal to the tenant `want`, and no larger
-than device capacity. Values outside that range fail loudly during
-query-service admission. They are not silently clamped, because a mistyped ask
-would otherwise change concurrency behavior without evidence.
-
-`datafusion_nexus.request.requested_grant_min_bytes` is the floor-side
-companion: a request-scoped minimum grant inside the tenant band. Admission
-either returns a grant at least that large or keeps the query queued (up to
-`wait_timeout`) — it never admits a query into a grant the plan already knows
-is fatal, which turns "wait, get a leftover grant, then die on the memory
-gate" into "wait until enough memory is actually free". It is validated with
-the same loud out-of-range rejection as the want-side key and does not change
-the tenant band itself.
-
-Small asks leave more grant room for backfill. Large asks reserve more up front
-when the query is known to need it. Tune from evidence: per-query reports expose
-`query_grant_bytes`, `reservation_live_peak_bytes`, reservation denials,
-allocator high-water bytes, and retry counters.
-
-## The layered memory stack
-
-<StackDiagram
-  ariaLabel="Admission and memory enforcement layers"
-  nodes={[
-    {
-      kind: 'bindings', name: 'CUDA async pool', note: 'physical pool · explicit trim', tone: 'gpu',
-      boundary: 'cudf-nexus / RMM',
-      sub: 'cudf-nexus · DeviceMemoryManager',
-      detail: <>Layer 0. cudf-nexus backs each device memory manager with CUDA's
-        stream-ordered async pool. The pool stays warm by default
-        (<code>release_threshold = UINT64_MAX</code>) so steady-state query
-        loops do not repay physical mapping cost, but the backend can
-        explicitly trim idle pages. cudf-nexus also exposes pool reserved/used
-        counters so the physical allocator state is observable instead of only
-        inferred from grant ledgers.</>,
-    },
-    {
-      kind: 'engine', name: 'MemoryGovernor grants', note: 'authoritative ledger · admission-time', tone: 'engine',
-      sub: 'nexus-query-engine · runtime/gpu/governor.rs',
-      detail: <>Layer 1. Byte-denominated grants against per-device capacity.
-        Grants are <code>want.min(available)</code> after any
-        <code>GuaranteedMinimum</code> empty-slot reservation. On release,
-        freed bytes wake blocked admissions and can grow running adaptive
-        grants; a blocked admission can ask running adaptive queries to shrink
-        cooperatively at their next chunk boundary.</>,
-    },
-    {
-      kind: 'engine', name: 'reservation trackers + grant arena', note: 'per-query cap · per-boundary members', tone: 'bridge',
-      sub: 'exec/bounded/reservation.rs · cudf ReservationArena',
-      detail: <>Layer 2. Bounded execution reserves against the granted budget
-        before each chunk, batching target, and operator boundary. Strict mode
-        snapshots the budget once (gate-first); adaptive mode re-reads the live
-        grant at boundaries, so growth and shrink apply to <em>future</em>
-        chunks. The grant is mirrored into one query-scoped native reservation
-        arena; grow and cooperative shrink flow from the governor to that arena,
-        never the other way around.</>,
-    },
-    {
-      kind: 'bindings', name: 'RMM arena members + failure callback', note: 'hard backstop · trim retry', tone: 'gpu',
-      boundary: 'FFI / C ABI boundary',
-      sub: 'cudf-nexus · reservation_aware_resource_adaptor',
-      detail: <>Layer 3. cudf-nexus installs a reservation-aware RMM resource per
-        device: each <code>ExecutionBudgetToken</code> is a per-stream member
-        lease under the query arena. Native allocation accounting charges the
-        arena parent first, then the member, so concurrent streams cannot exceed
-        the query grant. The cuGraph graph stage runs on such a member lease
-        too, so libcugraph workspace allocations are charged to the query
-        rather than landing on the bare device pool. Over-limit allocations
-        fail as structured <code>ResourceExhausted</code> (retryable upstream).
-        The reclaim-capable failure callback receives device, request, and
-        async-pool reserved/used counters; the backend can ask cudf-nexus to trim
-        idle async-pool pages once, then retry the failed allocation.</>,
-    },
-  ]}
-  caption={<>The async pool is the physical allocator, the governor is
-  authoritative for grants, the query arena mirrors the current grant as a
-  hard cap, and member reservations are the per-stream failure boundary — a
-  pre-flight gate is never silently converted into a mid-execution OOM.</>}
-/>
-
-### Strict and adaptive stay separate
-
-The elastic behaviors — grow-on-release and cooperative chunk-boundary shrink —
-exist **only in the adaptive lane**:
-
-- **Strict** execution is gate-first: it snapshots its budget at admission and
-  never grows or shrinks mid-query. Its evidence surface is the strict bounded
-  contract report.
-- **Adaptive** execution re-reads its grant at chunk boundaries. When another
-  query's release frees memory, running adaptive grants may grow toward `want`
-  (weighted by QoS). When a blocked admission cannot fit, running adaptive
-  grants are asked to shrink toward `min`; the shrink is acknowledged
-  cooperatively at the next chunk boundary and the query re-plans its remaining
-  chunks under the smaller budget — reclamation without spill.
-
-## What DataFusion's `MemoryPool` governs
-
-Device admission is deliberately **not** expressed through DataFusion's
-`MemoryPool`: `try_grow` is synchronous and non-blocking on tokio workers,
-while admission must be able to queue and wait. The pool also has no query
-identity, so grants and placement are inexpressible there.
-
-The host side *is* bridged: `NexusNativeExec` registers a
-`MemoryConsumer("NexusNativeExec[host-output]")` against the task's memory pool
-and accounts the host Arrow batches it materializes for downstream CPU
-operators. Hybrid plans therefore stay honest under
-`RuntimeEnvBuilder::with_memory_limit`, and the accounting is free when the
-default unbounded pool is installed. If you install a bounded DataFusion pool
-alongside a backend, the pool governs host operators; device memory belongs to
-the governor.
-
-Host execution QoS is bounded separately from GPU admission. The rule wraps a
-completed DataFusion or mixed plan once; a fully native final plan does not
-acquire a host permit. It governs the DataFusion baseline and host boundaries,
-does not reserve GPU memory, does not appear in `QueryService` admission
-snapshots, and is deliberately not coupled to `max_concurrent_queries`.
-
-Library users install it independently of relational native selection with
-`HostExecutionQosConfig` and `SessionStateBuilder::with_host_execution_qos`.
-The configuration uses a non-zero limit; omit the rule to leave library host
-execution unbounded. A zero `Duration` restores indefinite waiting.
+The transaction rejects any non-positive or capability-insufficient candidate.
+Heterogeneous devices keep their own profiles; no average or global split is
+substituted for their individual limits.
 
 ## Server configuration lowering
 
-The server applies the same host-execution QoS contract from its configuration:
+The Flight SQL server accepts resource-only inputs:
 
-| Env | TOML | Backend field |
+| Env | TOML | Meaning |
 | --- | --- | --- |
-| `NEXUS_SERVER_MAX_CONCURRENT_QUERIES` (alias: `NEXUS_SERVER_MAX_IN_FLIGHT`) | `admission.max_concurrent_queries` | `max_concurrent_queries` (default 2) |
-| `NEXUS_SERVER_ADMISSION_WORKLOAD_PROFILE` | `admission.workload_profile` | `balanced` (default) or `small_query` |
-| `NEXUS_SERVER_ADMISSION_GRANT_MIN` | `admission.grant_min` | `grant.min` — fraction (`0.125`) or bytes |
-| `NEXUS_SERVER_ADMISSION_GRANT_WANT` | `admission.grant_want` | `grant.want`; unset means policy-derived |
-| `NEXUS_SERVER_ADMISSION_SLOT_GUARANTEE` | `admission.slot_guarantee` | `guaranteed_minimum` \| `optimistic` |
-| `NEXUS_SERVER_ADMISSION_PLACEMENT_POLICY` | `admission.placement_policy` | `least_loaded` \| `best_fit` \| `pinned` |
-| `NEXUS_SERVER_ADMISSION_PINNED_DEVICE` | `admission.pinned_device_ordinal` | Required companion ordinal for `pinned` placement |
-| `NEXUS_SERVER_ADMISSION_MAX_QUERIES_PER_DEVICE` | `admission.max_queries_per_device` | Optional per-device slot cap |
-| `NEXUS_SERVER_ADMISSION_WAIT_TIMEOUT_MS` | `admission.wait_timeout_ms` | Query-service admission wait timeout; default 60 s |
-| `NEXUS_SERVER_HOST_EXECUTION_QOS_MAX_CONCURRENT_STATEMENTS` | `host_execution_qos.max_concurrent_statements` | Host-executing statement limit; default 2, `0` disables the QoS rule |
-| `NEXUS_SERVER_HOST_EXECUTION_QOS_WAIT_TIMEOUT_MS` | `host_execution_qos.wait_timeout_ms` | Host-execution permit wait timeout; default 30 s, `0` waits indefinitely |
+| — | admission.device_profiles | One explicit ordinal device profile per selected GPU. It owns only resource inputs: memory limit/reserve, attempt floor, active-attempt cap, source-work bound, and installation bounds. |
+| NEXUS_SERVER_ADMISSION_MAX_QUEUED_ATTEMPTS | admission.max_queued_attempts | Queue capacity; default 64. |
+| NEXUS_SERVER_ADMISSION_MAX_QUEUE_WAIT_MS | admission.max_queue_wait_ms | Queue deadline; default 30000. |
+| NEXUS_SERVER_ADMISSION_MAX_OVERTAKES_PER_WAITER | admission.max_overtakes_per_waiter | Finite compatible-device bypass budget; default 4. |
+| NEXUS_SERVER_GPU_DEVICES | — | Comma-separated CUDA device ordinals; default 0. |
 
-Setting the alias and the primary key to different values is a startup error.
-Explicit shares are spelled as decimals: `GRANT_WANT=1.0`, and
-`GRANT_MIN=1.0` for one full-card floor (`0.5` for two, `0.25` for four).
-Always include the decimal point: the share parser reads a bare integer such as
-`1` as **bytes**, and rejects `1/2`-style strings. To preserve the earlier
-half-cap default, set `NEXUS_SERVER_ADMISSION_GRANT_WANT=0.5` explicitly.
+GPU-memory ownership and exact capability restrictions are supplied by the
+embedding process when it builds the backend; TOML does not invent either.
+The scalar admission inputs, placement selector, slot guarantee, tenant policy,
+strict/adaptive controller modes, and global device-budget fraction are removed.
+They are not compatibility projections and cannot be reconstructed from
+diagnostics.
 
-## Observability
+## Observability and shutdown
 
-Admission is a first-class report surface, consistent with the repo's
-reports-not-printed-plans convention:
+Each native execution round records an admission sequence, wait time, device
+ordinal, grant bytes, reservations, and terminal disposition in the runtime
+observation snapshot. The same snapshot projects to native TSV reports,
+DataFusion metrics, JSONL artifacts, and QueryMetrics.
 
-- **Per-query DataFusion metrics** on the native exec nodes:
-  `admission_sequence`, `admission_wait_time`, `device_ordinal`,
-  `query_grant_bytes`, `reservation_live_peak_bytes`,
-  `reservation_denied_count`, `allocator_high_water_bytes`, `retry_count`,
-  `retry_resource_exhausted_count`, and `retry_reservation_failure_count`, with
-  `_observed` companions where absence is meaningful. The execution TSV report
-  carries the same facts.
-- **Library diagnostics** through the backend:
-  `backend.query_service().admission_snapshot()` (queue depths, active
-  queries, next tenant), `memory_governor_reports()` (per-grant rows,
-  capacity, available bytes — a pool-shaped read surface), and
-  `device_admission_snapshots()` (process-wide active slots by ordinal),
-  `device_telemetry_snapshots()` (best-effort live CUDA/NVML memory and
-  utilization), and `device_memory_failure_reports()` (failure-callback counters, trim retries,
-  last failed allocation bytes, and the latest observed async-pool
-  reserved/used counters). The underlying cudf-nexus manager also exposes
-  async-pool reserved/used counters and an explicit trim hook for operator
-  diagnostics and administrative controls.
-- **Server surface:** the same snapshots in server logs and the
-  `GetAdmissionStats` Flight action, behind the standard server auth.
+Close is coordinated in dependency order. Backend cleanup drains admitted
+attempts before execution pools; execution pools finish before stream cleanup;
+observation completion consumes the final tail. CUDA-capable workers register
+for process exit and are synchronously joined before CUDA runtime teardown, so
+a detached worker cannot race libcudart finalization.
 
-"Why was I queued and how big was my grant" is answerable from evidence, not
-from log archaeology.
+## Boundaries
 
-## Where the boundaries are
-
-- **cuGraph:** graph SQL executes eagerly through table functions. The
-  admission ticket is ambient per query: a `cugraph_*` call executing inside a
-  natively rewritten plan joins that plan's ticket, and a standalone
-  `cugraph_*` query — including DataFusion-baseline edge and predicate inputs —
-  admits exactly once through its own. Standalone *bounded* sessions (no
-  backend) refuse to execute native relational work inside a
-  `cugraph_*` call — a loud structured error instead of a second full-budget
-  ledger. Graph workspace memory follows the same governance contract as
-  relational work: a runtime statistics probe on the resident edge frame
-  (exact distinct vertices, plus degree evidence for the workspace-heavy
-  algorithms) prices the graph stage, that ask is gated against the query's
-  actual grant, and the stage then executes under a per-stream budget token
-  charged to the query's grant arena — libcugraph workspace allocations
-  included. A stage priced too low fails as a contained, retryable structured
-  error on that one query instead of pressuring the shared pool, and graph
-  reservation rows carry the measured statistics, `graph_peak_bytes`, and the
-  model error ratio so pricing drift is visible in every report.
-- **Capability-first admission is unchanged.** Admission grants memory
-  *capacity*; it never re-introduces estimate-driven plan admission. Rejections
-  stay local and structured (operator, expression, type, source, reservation
-  contract).
-- **The governor is the admission ledger.** It is the only authority that grants
-  or refunds bytes. The native reservation arena mirrors the current grant and
-  physically rejects over-limit allocations; keeping those two aligned is the
-  invariant every elastic feature is measured against.
-- **Caches are evictable, not hidden grants.** Decoded-source and resident-graph
-  bytes are charged to the same per-device governor and can be reclaimed under
-  pressure. See [Cache Design and Use](./cache.mdx).
+- DataFusion MemoryPool governs host allocations. GPU grants and allocation
+  domains stay in the device ledger.
+- The controller does not provide authentication, authorization, application
+  rate limiting, idempotency, result retention, or tenant policy.
+- Native caches remain disabled in the Phase 2 baseline. Future cache work
+  needs allocator-backed ownership rather than a hidden cross-query grant.
+- cuGraph and cuVS stages use the same per-attempt capability and reservation
+  contract. A missing preflight remains a local structured rejection, never a
+  fallback admission mode.

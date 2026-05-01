@@ -1,13 +1,12 @@
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use cudf::{DeviceId, DeviceMemoryManager, DeviceMemoryManagerBase, DeviceMemoryManagerOptions};
 use nexus_query_engine::{
     error::QueryErrorCode,
     runtime::{
         DeploymentIoCapability, GdsDriverProbeStatus, GpuBackendControllerDraft, GpuBackendCore, GpuBackendCoreDraft,
-        GpuBackendDeviceConfig, GpuBackendMemoryShare, GpuBackendTenantDraft, GpuMemoryOwnership,
-        KvikioCompatModeStatus, NvidiaFsProbeStatus, QueryMemoryDomainPolicy, QueryServiceConfig,
-        QueryServiceTenantConfig, S3SourceStorageProfile, SourceStorageProfile, TenantId,
+        GpuBackendDeviceConfig, GpuExecutionJobKind, GpuMemoryOwnership, KvikioCompatModeStatus, NvidiaFsProbeStatus,
+        QueryAdmissionRequest, QueryExecutionConfig, QueueBounds, S3SourceStorageProfile, SourceStorageProfile,
     },
 };
 
@@ -19,33 +18,25 @@ fn non_gds_deployment() -> DeploymentIoCapability {
     )
 }
 
-fn pool_config(device: DeviceId) -> QueryServiceConfig {
-    QueryServiceConfig {
-        device_ordinal: device.ordinal(),
-        device_memory_manager_base: DeviceMemoryManagerBase::Pool {
-            initial_pool_size: 64 * 1024 * 1024,
-            maximum_pool_size: Some(64 * 1024 * 1024),
-        },
-        ..QueryServiceConfig::default()
-    }
+fn canonical_options() -> DeviceMemoryManagerOptions {
+    DeviceMemoryManagerOptions::default()
 }
 
-fn backend_draft(config: QueryServiceConfig, tenants: Vec<QueryServiceTenantConfig>) -> GpuBackendCoreDraft {
-    let device_ordinal = config.device_ordinal;
-    let max_active_queries = config.max_concurrent_queries.max(1);
-    let stream_pool_size = config.stream_pool_size.unwrap_or(max_active_queries).max(1);
-    let tenants = tenants
-        .into_iter()
-        .map(|tenant| {
-            GpuBackendTenantDraft::new(
-                tenant.tenant_id,
-                GpuBackendMemoryShare::Bytes(tenant.min_device_budget_bytes),
-                GpuBackendMemoryShare::Bytes(tenant.device_budget_bytes),
-            )
-        })
-        .collect();
-    let controller = GpuBackendControllerDraft::from_legacy_policy(config, tenants);
+fn backend_draft(config: QueryExecutionConfig) -> GpuBackendCoreDraft {
+    backend_draft_with_limits_and_queue_bounds(config, QueueBounds::default(), 1)
+}
+
+fn backend_draft_with_limits_and_queue_bounds(
+    config: QueryExecutionConfig,
+    queue_bounds: QueueBounds,
+    max_active_queries: usize,
+) -> GpuBackendCoreDraft {
+    let device_ordinal = DeviceId::current().expect("current CUDA device").ordinal();
+    let source_work_per_attempt = 1;
+    let stream_pool_size = max_active_queries.saturating_mul(1 + source_work_per_attempt).max(1);
+    let controller = GpuBackendControllerDraft::new(config, queue_bounds);
     let device = GpuBackendDeviceConfig::new(device_ordinal, GpuMemoryOwnership::WholeDeviceExclusive)
+        .with_source_work_per_attempt(source_work_per_attempt)
         .with_max_active_queries(max_active_queries)
         .with_installation_bounds(stream_pool_size, max_active_queries, max_active_queries);
     GpuBackendCoreDraft::new(vec![device], controller, non_gds_deployment())
@@ -56,73 +47,28 @@ fn rejected_configs_and_unidentified_allocator_do_not_mutate_the_allocator() {
     let device = DeviceId::current().unwrap();
     assert_eq!(DeviceMemoryManager::options_for_device(device).unwrap(), None);
 
-    let config =
-        QueryServiceConfig { query_memory_domain: Some(QueryMemoryDomainPolicy::default()), ..pool_config(device) };
-    let error =
-        backend_draft(config, vec![QueryServiceTenantConfig::new("tenant", 8 * 1024 * 1024)]).validate().unwrap_err();
-
-    assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
-    assert_eq!(error.fact_value("reason"), Some("query_memory_domain_requires_cuda_async_manager"));
-    assert_eq!(
-        DeviceMemoryManager::options_for_device(device).unwrap(),
-        None,
-        "validation must reject before the process-global allocator is installed",
-    );
-
-    let empty_tenants = backend_draft(pool_config(device), vec![]).validate().unwrap_err();
-    assert_eq!(empty_tenants.code(), QueryErrorCode::InvalidPlan);
-    assert_eq!(empty_tenants.fact_value("reason"), Some("empty"));
-
-    let invalid_tenant =
-        backend_draft(pool_config(device), vec![QueryServiceTenantConfig::new("invalid", 0)]).validate().unwrap_err();
-    assert_eq!(invalid_tenant.code(), QueryErrorCode::InvalidPlan);
-    assert_eq!(invalid_tenant.fact_value("reason"), Some("zero"));
-
-    let duplicate_tenant = backend_draft(
-        pool_config(device),
-        vec![
-            QueryServiceTenantConfig::new("duplicate", 8 * 1024 * 1024),
-            QueryServiceTenantConfig::new("duplicate", 8 * 1024 * 1024),
-        ],
-    )
-    .validate()
-    .unwrap_err();
-    assert_eq!(duplicate_tenant.code(), QueryErrorCode::InvalidPlan);
-    assert_eq!(duplicate_tenant.fact_value("reason"), Some("duplicate"));
-
-    let empty_profile_config = QueryServiceConfig {
+    let empty_profile_config = QueryExecutionConfig {
         source_storage_profiles: vec![SourceStorageProfile::s3("  ", S3SourceStorageProfile::default_chain())],
-        ..pool_config(device)
+        ..QueryExecutionConfig::default()
     };
-    let empty_profile =
-        backend_draft(empty_profile_config, vec![QueryServiceTenantConfig::new("tenant", 8 * 1024 * 1024)])
-            .validate()
-            .unwrap_err();
+    let empty_profile = backend_draft(empty_profile_config).validate().unwrap_err();
     assert_eq!(empty_profile.code(), QueryErrorCode::InvalidPlan);
     assert_eq!(empty_profile.fact_value("reason"), Some("empty_profile_id"));
 
     let profile = SourceStorageProfile::s3("duplicate", S3SourceStorageProfile::default_chain());
     let duplicate_profile_config =
-        QueryServiceConfig { source_storage_profiles: vec![profile.clone(), profile], ..pool_config(device) };
-    let duplicate_profile =
-        backend_draft(duplicate_profile_config, vec![QueryServiceTenantConfig::new("tenant", 8 * 1024 * 1024)])
-            .validate()
-            .unwrap_err();
+        QueryExecutionConfig { source_storage_profiles: vec![profile.clone(), profile], ..QueryExecutionConfig::default() };
+    let duplicate_profile = backend_draft(duplicate_profile_config).validate().unwrap_err();
     assert_eq!(duplicate_profile.code(), QueryErrorCode::InvalidPlan);
     assert_eq!(duplicate_profile.fact_value("reason"), Some("duplicate_profile_id"));
     assert_eq!(
         DeviceMemoryManager::options_for_device(device).unwrap(),
         None,
-        "resource-independent tenant and storage-profile validation must precede allocator installation",
+        "resource-independent storage-profile validation must precede allocator installation",
     );
 
     DeviceMemoryManager::install_for_device(device).unwrap();
-    let incompatible = GpuBackendCore::builder(backend_draft(
-        pool_config(device),
-        vec![QueryServiceTenantConfig::new("tenant", 8 * 1024 * 1024)],
-    ))
-    .build()
-    .unwrap_err();
+    let incompatible = GpuBackendCore::builder(backend_draft(QueryExecutionConfig::default())).build().unwrap_err();
 
     assert_eq!(incompatible.code(), QueryErrorCode::CudfPersistentFailure);
     assert_eq!(incompatible.fact_value("reason"), Some("installed_callback_unrecoverable"));
@@ -138,71 +84,40 @@ fn rejected_configs_and_unidentified_allocator_do_not_mutate_the_allocator() {
 }
 
 #[test]
-fn owned_allocator_options_conflict_is_typed_and_does_not_mutate_the_allocator() {
+fn noncanonical_pool_allocator_is_rejected_during_backend_preflight() {
     let device = DeviceId::current().unwrap();
     assert_eq!(DeviceMemoryManager::options_for_device(device).unwrap(), None);
 
-    let installed_config = pool_config(device);
-    let installed_options =
-        DeviceMemoryManagerOptions { base: installed_config.device_memory_manager_base, allocation_limit_bytes: None };
-    let backend = GpuBackendCore::builder(backend_draft(
-        installed_config,
-        vec![QueryServiceTenantConfig::new("tenant", 8 * 1024 * 1024)],
-    ))
-    .build()
-    .unwrap();
-    assert_eq!(DeviceMemoryManager::options_for_device(device).unwrap(), Some(installed_options));
-
-    let close = backend.close_and_wait(Duration::from_secs(10)).unwrap();
-    assert!(close.gpu_resource_quiescent);
-    assert!(close.observation_quiescent);
-    drop(backend);
-
-    let requested_options = DeviceMemoryManagerOptions {
+    let installed_options = DeviceMemoryManagerOptions {
         base: DeviceMemoryManagerBase::Pool {
-            initial_pool_size: 128 * 1024 * 1024,
-            maximum_pool_size: Some(128 * 1024 * 1024),
+            initial_pool_size: 64 * 1024 * 1024,
+            maximum_pool_size: Some(64 * 1024 * 1024),
         },
         allocation_limit_bytes: None,
     };
-    let conflicting_config = QueryServiceConfig {
-        device_ordinal: device.ordinal(),
-        device_memory_manager_base: requested_options.base,
-        ..QueryServiceConfig::default()
-    };
-    let conflict = GpuBackendCore::builder(backend_draft(
-        conflicting_config,
-        vec![QueryServiceTenantConfig::new("tenant", 8 * 1024 * 1024)],
-    ))
-    .build()
-    .unwrap_err();
+    DeviceMemoryManager::install_for_device_with_options(device, installed_options).unwrap();
+
+    let conflict = GpuBackendCore::builder(backend_draft(QueryExecutionConfig::default())).build().unwrap_err();
 
     assert_eq!(conflict.code(), QueryErrorCode::InvalidPlan);
     assert_eq!(conflict.fact_value("reason"), Some("device_memory_manager_options_conflict"));
-    assert_eq!(conflict.fact_value("installation_status"), Some("Owned"));
-    assert_eq!(conflict.fact_value("installation_retry"), Some("Reusable"));
     assert_eq!(conflict.fact_value("installation_cause"), Some("OptionsMismatch"));
     assert_eq!(conflict.fact_value("existing_options"), Some(format!("{installed_options:?}").as_str()));
-    assert_eq!(conflict.fact_value("requested_options"), Some(format!("{requested_options:?}").as_str()));
+    assert_eq!(conflict.fact_value("requested_options"), Some(format!("{:?}", canonical_options()).as_str()));
     assert_eq!(conflict.fact_value("device_ordinal"), Some(device.ordinal().to_string().as_str()));
     assert_eq!(
         DeviceMemoryManager::options_for_device(device).unwrap(),
         Some(installed_options),
-        "a conflicting backend must not replace the identified allocator",
+        "the failed preflight must not replace a process-global allocator before any query can admit",
     );
 }
 
 #[test]
-fn compatible_allocator_reuse_preserves_authoritative_installation_identity_across_backend_generations() {
+fn canonical_allocator_reuse_preserves_authoritative_installation_identity_across_backend_generations() {
     let device = DeviceId::current().unwrap();
     assert_eq!(DeviceMemoryManager::options_for_device(device).unwrap(), None);
 
-    let first = GpuBackendCore::builder(backend_draft(
-        pool_config(device),
-        vec![QueryServiceTenantConfig::new("tenant", 8 * 1024 * 1024)],
-    ))
-    .build()
-    .unwrap();
+    let first = GpuBackendCore::builder(backend_draft(QueryExecutionConfig::default())).build().unwrap();
     let first_identity = first.identity();
     let first_pools = first.session_capability().gpu_execution_pool_reports().unwrap();
     let [first_pool] = first_pools.as_slice() else {
@@ -233,12 +148,7 @@ fn compatible_allocator_reuse_preserves_authoritative_installation_identity_acro
     assert!(close.observation_quiescent);
     drop(first);
 
-    let second = GpuBackendCore::builder(backend_draft(
-        pool_config(device),
-        vec![QueryServiceTenantConfig::new("tenant", 8 * 1024 * 1024)],
-    ))
-    .build()
-    .unwrap();
+    let second = GpuBackendCore::builder(backend_draft(QueryExecutionConfig::default())).build().unwrap();
     let second_identity = second.identity();
     let second_pools = second.session_capability().gpu_execution_pool_reports().unwrap();
     let [second_pool] = second_pools.as_slice() else {
@@ -284,18 +194,166 @@ fn compatible_allocator_reuse_preserves_authoritative_installation_identity_acro
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn canonical_default_allocator_admits_a_hard_query_domain() {
+    let core = GpuBackendCore::builder(backend_draft_with_limits_and_queue_bounds(
+        QueryExecutionConfig::default(),
+        QueueBounds { max_waiters: 2, max_wait: Duration::from_secs(10), max_overtakes_per_waiter: 4 },
+        1,
+    ))
+    .build()
+    .unwrap();
+    let session = core.session_capability();
+    let handle = session.admit_query().unwrap();
+    let context = handle.acquire_context().unwrap();
+    assert!(context.context().attempt_allocation_domain_id().is_some());
+    drop(context);
+    handle.finish();
+    drop(handle);
+    drop(session);
+    let close = core.close_and_wait(Duration::from_secs(10)).unwrap();
+    assert!(close.gpu_resource_quiescent);
+    assert!(close.observation_quiescent);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn same_device_attempts_have_distinct_grant_domain_stream_lane_and_job_identities() {
+    let device = DeviceId::current().unwrap();
+    let core = GpuBackendCore::builder(backend_draft_with_limits_and_queue_bounds(
+        QueryExecutionConfig::default(),
+        QueueBounds { max_waiters: 2, max_wait: Duration::from_secs(10), max_overtakes_per_waiter: 4 },
+        2,
+    ))
+    .build()
+    .unwrap();
+    let session = core.session_capability();
+
+    let [startup] = core.device_startup_records() else {
+        panic!("expected one startup record for the single configured device");
+    };
+    assert_eq!(startup.device_ordinal, device.ordinal());
+    assert_eq!(startup.max_active_queries, 2);
+    assert_eq!(startup.lane_count, 2);
+    assert_eq!(startup.resource_profile.root_lane_count, 2);
+    assert_eq!(startup.resource_profile.root_stream_count, 2);
+    assert_eq!(startup.worker_count, 2);
+
+    let first = Arc::new(session.admit_query().unwrap());
+    let second = Arc::new(session.admit_query().unwrap());
+    assert_eq!(first.device_ordinal(), device.ordinal());
+    assert_eq!(second.device_ordinal(), device.ordinal());
+    assert_ne!(first.admission_request_id(), second.admission_request_id());
+
+    let ledger_reports = session.device_ledger_reports().unwrap();
+    let [ledger] = ledger_reports.as_slice() else {
+        panic!("expected one device ledger for the single configured device");
+    };
+    assert_eq!(ledger.device_ordinal, device.ordinal());
+    assert_eq!(ledger.max_active_attempts, 2);
+    assert_eq!(ledger.active_attempts, 2);
+    assert_eq!(ledger.grants.len(), 2);
+    let grant_id = |request_id| {
+        ledger
+            .grants
+            .iter()
+            .find(|grant| grant.admission_request_id == request_id)
+            .unwrap_or_else(|| panic!("missing grant for admission request {request_id:?}"))
+            .grant_id
+    };
+    let first_grant_id = grant_id(first.admission_request_id());
+    let second_grant_id = grant_id(second.admission_request_id());
+    assert_ne!(first_grant_id, second_grant_id, "simultaneous attempts must own distinct immutable grants");
+
+    let first_context = first.acquire_context().unwrap();
+    let second_context = second.acquire_context().unwrap();
+    let first_domain_id = first_context.context().attempt_allocation_domain_id().expect("first attempt domain");
+    let second_domain_id = second_context.context().attempt_allocation_domain_id().expect("second attempt domain");
+    assert_eq!(first_domain_id, first_grant_id);
+    assert_eq!(second_domain_id, second_grant_id);
+    assert_ne!(first_domain_id, second_domain_id, "simultaneous attempts must own distinct allocation domains");
+
+    let first_runtime = first_context.context().runtime().unwrap();
+    let second_runtime = second_context.context().runtime().unwrap();
+    let first_stream_id = first_runtime.stream().identity();
+    let second_stream_id = second_runtime.stream().identity();
+    assert_ne!(first_stream_id, second_stream_id, "simultaneous attempts must own distinct root streams");
+    drop(first_runtime);
+    drop(second_runtime);
+
+    // Publishing both handles proves that both entries in the two-lane array
+    // are held simultaneously: admission acquires one exclusive lane before it
+    // can create the root stream/domain envelope, and no lane has been released.
+    assert!(
+        session.try_admit_query_with_request(QueryAdmissionRequest::new()).unwrap().is_none(),
+        "two live attempts must exhaust exactly the two configured attempt lanes",
+    );
+
+    let entered = Arc::new(tokio::sync::Barrier::new(3));
+    let release = Arc::new(tokio::sync::Barrier::new(3));
+    let spawn_job = |handle: Arc<nexus_query_engine::runtime::QueryHandle>,
+                     observation: nexus_query_engine::observability::RuntimeObservationHandle| {
+        let entered = Arc::clone(&entered);
+        let release = Arc::clone(&release);
+        tokio::spawn(async move {
+            handle
+                .gpu_executor()
+                .unwrap()
+                .run_observed_scoped(GpuExecutionJobKind::QueryExecution, observation, move |scope| async move {
+                    entered.wait().await;
+                    release.wait().await;
+                    scope
+                })
+                .await
+                .unwrap()
+        })
+    };
+    let first_job = spawn_job(Arc::clone(&first), first_context.context().runtime_observation().clone());
+    let second_job = spawn_job(Arc::clone(&second), second_context.context().runtime_observation().clone());
+    tokio::time::timeout(Duration::from_secs(10), entered.wait())
+        .await
+        .expect("both same-device GPU jobs must start concurrently");
+
+    let pool_reports = session.gpu_execution_pool_reports().unwrap();
+    let [pool] = pool_reports.as_slice() else {
+        panic!("expected one worker pool for the single configured device");
+    };
+    assert_eq!(pool.device_ordinal, device.ordinal());
+    assert_eq!(pool.active_query_jobs, 2);
+    assert_eq!(pool.active_jobs, 2);
+
+    tokio::time::timeout(Duration::from_secs(10), release.wait())
+        .await
+        .expect("both same-device GPU jobs must reach the release barrier");
+    let first_scope = first_job.await.unwrap();
+    let second_scope = second_job.await.unwrap();
+    let first_job_id = first_scope.gpu_job_id.expect("first GPU job id");
+    let second_job_id = second_scope.gpu_job_id.expect("second GPU job id");
+    assert_ne!(first_job_id, second_job_id, "simultaneous attempts must run distinct GPU jobs");
+    let first_worker_id = first_scope.gpu_worker_id.expect("first GPU worker id");
+    let second_worker_id = second_scope.gpu_worker_id.expect("second GPU worker id");
+    assert_ne!(first_worker_id, second_worker_id, "simultaneous GPU jobs must occupy distinct worker lanes");
+
+    drop(first_context);
+    drop(second_context);
+    first.finish();
+    second.finish();
+    drop(first);
+    drop(second);
+    drop(session);
+    let close = core.close_and_wait(Duration::from_secs(10)).unwrap();
+    assert!(close.gpu_resource_quiescent);
+    assert!(close.observation_quiescent);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn backend_clone_sessions_share_identity_ledger_worker_pools_and_startup_records() {
     let device = DeviceId::current().unwrap();
-    let config = QueryServiceConfig {
-        max_concurrent_queries: 1,
-        max_admission_queue_len: 2,
-        admission_wait_timeout: Duration::from_secs(10),
-        ..pool_config(device)
-    };
-    let core =
-        GpuBackendCore::builder(backend_draft(config, vec![QueryServiceTenantConfig::new("tenant", 8 * 1024 * 1024)]))
-            .build()
-            .unwrap();
+    let core = GpuBackendCore::builder(backend_draft_with_limits_and_queue_bounds(
+        QueryExecutionConfig::default(),
+        QueueBounds { max_waiters: 2, max_wait: Duration::from_secs(10), max_overtakes_per_waiter: 4 },
+        1,
+    ))
+    .build()
+    .unwrap();
     let cloned_core = core.clone();
     let first_session = core.session_capability();
     let second_session = cloned_core.session_capability();
@@ -326,11 +384,10 @@ async fn backend_clone_sessions_share_identity_ledger_worker_pools_and_startup_r
     assert_eq!(first_worker_pools[0].device_ordinal, device.ordinal());
     assert_eq!(first_worker_pools[0].worker_count, 1);
 
-    let tenant = TenantId::new("tenant");
-    let first = first_session.admit_query(tenant.clone()).unwrap();
+    let first = first_session.admit_query().unwrap();
     let first_sequence = first.admission_sequence();
     let queued_session = second_session.clone();
-    let queued = tokio::spawn(async move { queued_session.admit_async_with_request(tenant, Default::default()).await });
+    let queued = tokio::spawn(async move { queued_session.admit_async_with_request(Default::default()).await });
 
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     loop {

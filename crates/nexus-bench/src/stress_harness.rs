@@ -8,12 +8,12 @@
 /// make the immediately active subset smaller than that limit.
 pub fn validate_synchronized_admission_queue(
     queue_env: &str,
-    max_admission_queue_len: usize,
+    max_queued_attempts: usize,
     synchronized_request_count: usize,
 ) -> Result<(), String> {
-    if max_admission_queue_len < synchronized_request_count {
+    if max_queued_attempts < synchronized_request_count {
         return Err(format!(
-            "{queue_env} must be at least the synchronized request count ({synchronized_request_count}), got {max_admission_queue_len}"
+            "{queue_env} must be at least the synchronized request count ({synchronized_request_count}), got {max_queued_attempts}"
         ));
     }
     Ok(())

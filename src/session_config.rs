@@ -7,7 +7,7 @@
 //! `datafusion_nexus.request.*` namespace read by the optimizer when it mints a
 //! plan ticket.
 
-use std::{any::Any, fmt};
+use std::any::Any;
 
 use datafusion::common::{
     DataFusionError, Result as DataFusionResult,
@@ -15,19 +15,14 @@ use datafusion::common::{
 };
 use nexus_query_engine::{
     graph_memory::GraphMemoryCalibrationOverride,
-    mode::{NativePipelineExecutionMode, StatisticalAggregateExecutionMode},
+    mode::StatisticalAggregateExecutionMode,
     runtime::{MemoryControlPolicy, SourceChunkPlanningMode, SourceSchedulerPolicy},
 };
 
-use crate::{
-    error::{Error, ErrorCode},
-    native_exec::NexusNativeExecutionConfig,
-    planner::NexusNativeOptimizerConfig,
-};
+use crate::{native_exec::NexusNativeExecutionConfig, planner::NexusNativeOptimizerConfig};
 
 /// DataFusion config-extension namespace prefix for datafusion-nexus options.
 pub const DATAFUSION_NEXUS_CONFIG_PREFIX: &str = "datafusion_nexus";
-const NATIVE_MEMORY_POLICY_KEY: &str = "native.memory_policy";
 const NATIVE_DEVICE_BUDGET_BYTES_KEY: &str = "native.device_budget_bytes";
 const NATIVE_MAX_SOURCE_CHUNK_BYTES_KEY: &str = "native.max_source_chunk_bytes";
 const NATIVE_MAX_ROW_GROUPS_PER_CHUNK_KEY: &str = "native.max_row_groups_per_chunk";
@@ -35,10 +30,7 @@ const NATIVE_MAX_RETRY_ATTEMPTS_KEY: &str = "native.max_retry_attempts";
 const NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_KEY: &str = "native.min_retry_chunk_row_groups";
 const NATIVE_MAX_SOURCE_READS_IN_FLIGHT_KEY: &str = "native.max_source_reads_in_flight";
 const NATIVE_SOURCE_CHUNK_PLANNING_MODE_KEY: &str = "native.source_chunk_planning_mode";
-const NATIVE_PIPELINE_EXECUTION_MODE_KEY: &str = "native.pipeline_execution_mode";
 const NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_KEY: &str = "native.statistical_aggregate_execution_mode";
-const REQUEST_REQUESTED_GRANT_MIN_BYTES_KEY: &str = "request.requested_grant_min_bytes";
-const REQUEST_REQUESTED_GRANT_BYTES_KEY: &str = "request.requested_grant_bytes";
 const REQUEST_GRAPH_RAW_INPUT_EDGES_KEY: &str = "request.graph_raw_input_edges";
 
 /// Discoverable metadata for one `datafusion_nexus.native.*` session option.
@@ -46,11 +38,11 @@ const REQUEST_GRAPH_RAW_INPUT_EDGES_KEY: &str = "request.graph_raw_input_edges";
 #[non_exhaustive]
 pub struct DataFusionNexusSessionConfigOption {
     /// Key below [`DATAFUSION_NEXUS_CONFIG_PREFIX`], for example
-    /// `native.memory_policy`.
+    /// `native.device_budget_bytes`.
     pub key: &'static str,
     /// Human-readable value type used by docs and operator surfaces.
     pub value_type: &'static str,
-    /// Whether this option is active only when native memory policy is bounded.
+    /// Whether this option controls bounded native execution.
     pub bounded_only: bool,
     /// Description shown through DataFusion config entries.
     pub description: &'static str,
@@ -69,12 +61,6 @@ impl DataFusionNexusSessionConfigOption {
 /// users and documentation generators. `ConfigOptions::entries` reports the
 /// same keys and descriptions with current values.
 pub const DATAFUSION_NEXUS_SESSION_CONFIG_OPTIONS: &[DataFusionNexusSessionConfigOption] = &[
-    DataFusionNexusSessionConfigOption {
-        key: NATIVE_MEMORY_POLICY_KEY,
-        value_type: "enum: bounded|unbounded",
-        bounded_only: false,
-        description: "Native memory-control mode: bounded or unbounded.",
-    },
     DataFusionNexusSessionConfigOption {
         key: NATIVE_DEVICE_BUDGET_BYTES_KEY,
         value_type: "positive integer bytes",
@@ -118,28 +104,10 @@ pub const DATAFUSION_NEXUS_SESSION_CONFIG_OPTIONS: &[DataFusionNexusSessionConfi
         description: "Bounded source chunk planning mode.",
     },
     DataFusionNexusSessionConfigOption {
-        key: NATIVE_PIPELINE_EXECUTION_MODE_KEY,
-        value_type: "enum: strict_bounded|adaptive",
-        bounded_only: true,
-        description: "Native bounded-pipeline execution mode.",
-    },
-    DataFusionNexusSessionConfigOption {
         key: NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_KEY,
         value_type: "enum: datafusion_exact_host_welford|gpu_native_tolerant",
         bounded_only: false,
         description: "Floating statistical aggregate execution contract.",
-    },
-    DataFusionNexusSessionConfigOption {
-        key: REQUEST_REQUESTED_GRANT_MIN_BYTES_KEY,
-        value_type: "positive integer bytes or none",
-        bounded_only: false,
-        description: "Request-scoped minimum query-service grant floor for subsequently optimized native plans.",
-    },
-    DataFusionNexusSessionConfigOption {
-        key: REQUEST_REQUESTED_GRANT_BYTES_KEY,
-        value_type: "positive integer bytes or none",
-        bounded_only: false,
-        description: "Request-scoped preferred query-service grant override for subsequently optimized native plans.",
     },
     DataFusionNexusSessionConfigOption {
         key: REQUEST_GRAPH_RAW_INPUT_EDGES_KEY,
@@ -149,32 +117,6 @@ pub const DATAFUSION_NEXUS_SESSION_CONFIG_OPTIONS: &[DataFusionNexusSessionConfi
     },
 ];
 
-/// Native memory-control policy label used by the DataFusion config extension.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub enum NativeMemoryPolicyConfig {
-    /// Memory-controlled native execution.
-    #[default]
-    Bounded,
-    /// Disable native bounded-memory controls for the session.
-    Unbounded,
-}
-
-impl NativeMemoryPolicyConfig {
-    /// Stable snake-case label used in DataFusion config values.
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Bounded => "bounded",
-            Self::Unbounded => "unbounded",
-        }
-    }
-}
-
-impl fmt::Display for NativeMemoryPolicyConfig {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
-
 /// DataFusion session options under the `datafusion_nexus.native.*` namespace.
 ///
 /// `with_nexus_native` registers this extension automatically, initialized from
@@ -183,8 +125,6 @@ impl fmt::Display for NativeMemoryPolicyConfig {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct DataFusionNexusSessionConfig {
-    /// Native memory-control mode.
-    pub native_memory_policy: NativeMemoryPolicyConfig,
     /// Bounded native device-memory budget in bytes.
     pub native_device_budget_bytes: u64,
     /// Maximum source bytes planned into one native bounded source chunk.
@@ -200,13 +140,8 @@ pub struct DataFusionNexusSessionConfig {
     /// Bounded source chunk planning mode.
     pub native_source_chunk_planning_mode: SourceChunkPlanningMode,
     /// Native bounded-pipeline execution mode.
-    pub native_pipeline_execution_mode: NativePipelineExecutionMode,
     /// Floating statistical aggregate execution contract.
     pub native_statistical_aggregate_execution_mode: StatisticalAggregateExecutionMode,
-    /// Request-scoped minimum query-service grant floor in bytes.
-    pub request_requested_grant_min_bytes: Option<u64>,
-    /// Request-scoped preferred query-service grant override in bytes.
-    pub request_requested_grant_bytes: Option<u64>,
     /// Request-scoped raw edge rows before graph normalization.
     request_graph_raw_input_edges: Option<u64>,
     request_graph_raw_input_edges_configured: bool,
@@ -230,41 +165,19 @@ impl DataFusionNexusSessionConfig {
     /// Build config-extension values from an optimizer config.
     pub fn from_optimizer_config(config: &NexusNativeOptimizerConfig) -> Self {
         let execution = config.native_execution_config();
-        let (
-            native_memory_policy,
-            native_device_budget_bytes,
-            native_max_source_chunk_bytes,
-            native_max_row_groups_per_chunk,
-            native_max_retry_attempts,
-            native_min_retry_chunk_row_groups,
-        ) = match execution.memory_control_policy() {
-            MemoryControlPolicy::Bounded {
-                device_budget_bytes,
-                max_source_chunk_bytes,
-                max_row_groups_per_chunk,
-                max_retry_attempts,
-                min_retry_chunk_row_groups,
-            } => (
-                NativeMemoryPolicyConfig::Bounded,
-                device_budget_bytes,
-                max_source_chunk_bytes,
-                max_row_groups_per_chunk,
-                max_retry_attempts,
-                min_retry_chunk_row_groups,
-            ),
-            MemoryControlPolicy::Unbounded => (
-                NativeMemoryPolicyConfig::Unbounded,
-                NexusNativeExecutionConfig::auto_sized_device_budget_bytes(),
-                NexusNativeExecutionConfig::DEFAULT_BOUNDED_MAX_SOURCE_CHUNK_BYTES,
-                NexusNativeExecutionConfig::DEFAULT_BOUNDED_MAX_ROW_GROUPS_PER_CHUNK,
-                NexusNativeExecutionConfig::DEFAULT_BOUNDED_MAX_RETRY_ATTEMPTS,
-                NexusNativeExecutionConfig::DEFAULT_BOUNDED_MIN_RETRY_CHUNK_ROW_GROUPS,
-            ),
+        let MemoryControlPolicy::Bounded {
+            device_budget_bytes: native_device_budget_bytes,
+            max_source_chunk_bytes: native_max_source_chunk_bytes,
+            max_row_groups_per_chunk: native_max_row_groups_per_chunk,
+            max_retry_attempts: native_max_retry_attempts,
+            min_retry_chunk_row_groups: native_min_retry_chunk_row_groups,
+        } = execution.memory_control_policy()
+        else {
+            unreachable!("datafusion-nexus exposes only bounded native execution")
         };
 
         let graph_memory_calibration = execution.graph_memory_calibration_override();
         Self {
-            native_memory_policy,
             native_device_budget_bytes,
             native_max_source_chunk_bytes,
             native_max_row_groups_per_chunk,
@@ -272,10 +185,7 @@ impl DataFusionNexusSessionConfig {
             native_min_retry_chunk_row_groups,
             native_max_source_reads_in_flight: execution.source_scheduler_policy().max_source_reads_in_flight(),
             native_source_chunk_planning_mode: execution.source_chunk_planning_mode(),
-            native_pipeline_execution_mode: execution.native_pipeline_execution_mode(),
             native_statistical_aggregate_execution_mode: execution.statistical_aggregate_execution_mode(),
-            request_requested_grant_min_bytes: execution.requested_grant_min_bytes(),
-            request_requested_grant_bytes: execution.requested_grant_bytes(),
             request_graph_raw_input_edges: graph_memory_calibration.raw_input_edges,
             request_graph_raw_input_edges_configured: false,
             authority: DataFusionNexusSessionConfigAuthority::SessionMutable,
@@ -321,9 +231,6 @@ impl DataFusionNexusSessionConfig {
         device_budget_validation: NativeDeviceBudgetValidation,
     ) -> DataFusionResult<()> {
         let expected = Self::from_optimizer_config(config);
-        if self.native_memory_policy != expected.native_memory_policy {
-            return Err(frozen_backend_config_error(NATIVE_MEMORY_POLICY_KEY));
-        }
         if device_budget_validation == NativeDeviceBudgetValidation::Exact
             && self.native_device_budget_bytes != expected.native_device_budget_bytes
         {
@@ -347,9 +254,6 @@ impl DataFusionNexusSessionConfig {
         if self.native_source_chunk_planning_mode != expected.native_source_chunk_planning_mode {
             return Err(frozen_backend_config_error(NATIVE_SOURCE_CHUNK_PLANNING_MODE_KEY));
         }
-        if self.native_pipeline_execution_mode != expected.native_pipeline_execution_mode {
-            return Err(frozen_backend_config_error(NATIVE_PIPELINE_EXECUTION_MODE_KEY));
-        }
         if self.native_statistical_aggregate_execution_mode != expected.native_statistical_aggregate_execution_mode {
             return Err(frozen_backend_config_error(NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_KEY));
         }
@@ -364,28 +268,18 @@ impl DataFusionNexusSessionConfig {
     ) -> DataFusionResult<NexusNativeOptimizerConfig> {
         self.validate()?;
         let mut execution = base.native_execution_config().clone();
-        execution = match self.native_memory_policy {
-            NativeMemoryPolicyConfig::Bounded => execution
-                .with_memory_control_policy(MemoryControlPolicy::Bounded {
-                    device_budget_bytes: self.native_device_budget_bytes,
-                    max_source_chunk_bytes: self.native_max_source_chunk_bytes,
-                    max_row_groups_per_chunk: self.native_max_row_groups_per_chunk,
-                    max_retry_attempts: self.native_max_retry_attempts,
-                    min_retry_chunk_row_groups: self.native_min_retry_chunk_row_groups,
-                })
-                .with_source_scheduler_policy(SourceSchedulerPolicy::new(self.native_max_source_reads_in_flight))
-                .with_source_chunk_planning_mode(self.native_source_chunk_planning_mode)
-                .with_native_pipeline_execution_mode(self.native_pipeline_execution_mode),
-            NativeMemoryPolicyConfig::Unbounded => execution
-                .with_memory_control_policy(MemoryControlPolicy::Unbounded)
-                .with_source_scheduler_policy(SourceSchedulerPolicy::default())
-                .with_source_chunk_planning_mode(SourceChunkPlanningMode::default())
-                .with_native_pipeline_execution_mode(NativePipelineExecutionMode::default()),
-        };
+        execution = execution
+            .with_memory_control_policy(MemoryControlPolicy::Bounded {
+                device_budget_bytes: self.native_device_budget_bytes,
+                max_source_chunk_bytes: self.native_max_source_chunk_bytes,
+                max_row_groups_per_chunk: self.native_max_row_groups_per_chunk,
+                max_retry_attempts: self.native_max_retry_attempts,
+                min_retry_chunk_row_groups: self.native_min_retry_chunk_row_groups,
+            })
+            .with_source_scheduler_policy(SourceSchedulerPolicy::new(self.native_max_source_reads_in_flight))
+            .with_source_chunk_planning_mode(self.native_source_chunk_planning_mode);
         execution =
             execution.with_statistical_aggregate_execution_mode(self.native_statistical_aggregate_execution_mode);
-        execution = execution.with_requested_grant_min_bytes(self.request_requested_grant_min_bytes);
-        execution = execution.with_requested_grant_bytes(self.request_requested_grant_bytes);
         execution = self.apply_graph_memory_calibration_request_options(execution);
         Ok(base.with_native_execution_config(execution))
     }
@@ -427,21 +321,12 @@ impl DataFusionNexusSessionConfig {
     }
 
     fn validate(&self) -> DataFusionResult<()> {
-        if self.native_memory_policy == NativeMemoryPolicyConfig::Bounded {
-            require_positive_u64(NATIVE_DEVICE_BUDGET_BYTES_KEY, self.native_device_budget_bytes)?;
-            require_positive_u64(NATIVE_MAX_SOURCE_CHUNK_BYTES_KEY, self.native_max_source_chunk_bytes)?;
-            require_positive_usize(NATIVE_MAX_ROW_GROUPS_PER_CHUNK_KEY, self.native_max_row_groups_per_chunk)?;
-            require_positive_usize(NATIVE_MAX_RETRY_ATTEMPTS_KEY, self.native_max_retry_attempts)?;
-            require_positive_usize(NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_KEY, self.native_min_retry_chunk_row_groups)?;
-            require_positive_usize(NATIVE_MAX_SOURCE_READS_IN_FLIGHT_KEY, self.native_max_source_reads_in_flight)?;
-        }
-        Ok(())
-    }
-
-    fn reject_bounded_key_when_unbounded(&self, key: &str) -> DataFusionResult<()> {
-        if self.native_memory_policy == NativeMemoryPolicyConfig::Unbounded {
-            return Err(config_error(format!("{key} cannot be set while {NATIVE_MEMORY_POLICY_KEY} is `unbounded`")));
-        }
+        require_positive_u64(NATIVE_DEVICE_BUDGET_BYTES_KEY, self.native_device_budget_bytes)?;
+        require_positive_u64(NATIVE_MAX_SOURCE_CHUNK_BYTES_KEY, self.native_max_source_chunk_bytes)?;
+        require_positive_usize(NATIVE_MAX_ROW_GROUPS_PER_CHUNK_KEY, self.native_max_row_groups_per_chunk)?;
+        require_positive_usize(NATIVE_MAX_RETRY_ATTEMPTS_KEY, self.native_max_retry_attempts)?;
+        require_positive_usize(NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_KEY, self.native_min_retry_chunk_row_groups)?;
+        require_positive_usize(NATIVE_MAX_SOURCE_READS_IN_FLIGHT_KEY, self.native_max_source_reads_in_flight)?;
         Ok(())
     }
 
@@ -454,7 +339,6 @@ impl DataFusionNexusSessionConfig {
 
     fn value_for_key(&self, key: &str) -> String {
         match key {
-            NATIVE_MEMORY_POLICY_KEY => self.native_memory_policy.to_string(),
             NATIVE_DEVICE_BUDGET_BYTES_KEY => self.native_device_budget_bytes.to_string(),
             NATIVE_MAX_SOURCE_CHUNK_BYTES_KEY => self.native_max_source_chunk_bytes.to_string(),
             NATIVE_MAX_ROW_GROUPS_PER_CHUNK_KEY => self.native_max_row_groups_per_chunk.to_string(),
@@ -462,15 +346,8 @@ impl DataFusionNexusSessionConfig {
             NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_KEY => self.native_min_retry_chunk_row_groups.to_string(),
             NATIVE_MAX_SOURCE_READS_IN_FLIGHT_KEY => self.native_max_source_reads_in_flight.to_string(),
             NATIVE_SOURCE_CHUNK_PLANNING_MODE_KEY => self.native_source_chunk_planning_mode.to_string(),
-            NATIVE_PIPELINE_EXECUTION_MODE_KEY => self.native_pipeline_execution_mode.to_string(),
             NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_KEY => {
                 self.native_statistical_aggregate_execution_mode.to_string()
-            },
-            REQUEST_REQUESTED_GRANT_MIN_BYTES_KEY => {
-                self.request_requested_grant_min_bytes.map_or_else(|| "none".to_string(), |value| value.to_string())
-            },
-            REQUEST_REQUESTED_GRANT_BYTES_KEY => {
-                self.request_requested_grant_bytes.map_or_else(|| "none".to_string(), |value| value.to_string())
             },
             REQUEST_GRAPH_RAW_INPUT_EDGES_KEY => {
                 self.request_graph_raw_input_edges.map_or_else(|| "none".to_string(), |value| value.to_string())
@@ -505,59 +382,37 @@ impl ExtensionOptions for DataFusionNexusSessionConfig {
 
     fn set(&mut self, key: &str, value: &str) -> DataFusionResult<()> {
         match key {
-            NATIVE_MEMORY_POLICY_KEY => {
-                self.reject_backend_admission_key(key)?;
-                self.native_memory_policy = parse_native_memory_policy(value)?;
-            },
             NATIVE_DEVICE_BUDGET_BYTES_KEY => {
                 self.reject_backend_admission_key(key)?;
-                self.reject_bounded_key_when_unbounded(key)?;
                 self.native_device_budget_bytes = parse_positive_u64(key, value)?;
             },
             NATIVE_MAX_SOURCE_CHUNK_BYTES_KEY => {
                 self.reject_backend_admission_key(key)?;
-                self.reject_bounded_key_when_unbounded(key)?;
                 self.native_max_source_chunk_bytes = parse_positive_u64(key, value)?;
             },
             NATIVE_MAX_ROW_GROUPS_PER_CHUNK_KEY => {
                 self.reject_backend_admission_key(key)?;
-                self.reject_bounded_key_when_unbounded(key)?;
                 self.native_max_row_groups_per_chunk = parse_positive_usize(key, value)?;
             },
             NATIVE_MAX_RETRY_ATTEMPTS_KEY => {
                 self.reject_backend_admission_key(key)?;
-                self.reject_bounded_key_when_unbounded(key)?;
                 self.native_max_retry_attempts = parse_positive_usize(key, value)?;
             },
             NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_KEY => {
                 self.reject_backend_admission_key(key)?;
-                self.reject_bounded_key_when_unbounded(key)?;
                 self.native_min_retry_chunk_row_groups = parse_positive_usize(key, value)?;
             },
             NATIVE_MAX_SOURCE_READS_IN_FLIGHT_KEY => {
                 self.reject_backend_admission_key(key)?;
-                self.reject_bounded_key_when_unbounded(key)?;
                 self.native_max_source_reads_in_flight = parse_positive_usize(key, value)?;
             },
             NATIVE_SOURCE_CHUNK_PLANNING_MODE_KEY => {
                 self.reject_backend_admission_key(key)?;
-                self.reject_bounded_key_when_unbounded(key)?;
                 self.native_source_chunk_planning_mode = parse_source_chunk_planning_mode(value)?;
-            },
-            NATIVE_PIPELINE_EXECUTION_MODE_KEY => {
-                self.reject_backend_admission_key(key)?;
-                self.reject_bounded_key_when_unbounded(key)?;
-                self.native_pipeline_execution_mode = parse_native_pipeline_execution_mode(value)?;
             },
             NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_KEY => {
                 self.reject_backend_admission_key(key)?;
                 self.native_statistical_aggregate_execution_mode = parse_statistical_aggregate_execution_mode(value)?
-            },
-            REQUEST_REQUESTED_GRANT_MIN_BYTES_KEY => {
-                self.request_requested_grant_min_bytes = parse_optional_positive_u64(key, value)?;
-            },
-            REQUEST_REQUESTED_GRANT_BYTES_KEY => {
-                self.request_requested_grant_bytes = parse_optional_positive_u64(key, value)?;
             },
             REQUEST_GRAPH_RAW_INPUT_EDGES_KEY => {
                 self.set_request_graph_raw_input_edges(parse_optional_positive_u64(key, value)?);
@@ -589,7 +444,6 @@ pub fn optimizer_config_with_datafusion_options(
         // QueryService admission is the authority for bounded server/query execution.
         if let Some(session_config) = options.extensions.get::<DataFusionNexusSessionConfig>() {
             session_config.validate_matches_optimizer_config(config)?;
-            reject_request_grant_for_pre_admitted_query_handle(session_config)?;
             return Ok(apply_request_options(config.clone(), session_config));
         }
         return Ok(config.clone());
@@ -618,21 +472,9 @@ fn apply_request_options(
     config: NexusNativeOptimizerConfig,
     session_config: &DataFusionNexusSessionConfig,
 ) -> NexusNativeOptimizerConfig {
-    let execution_config = config
-        .native_execution_config()
-        .clone()
-        .with_requested_grant_min_bytes(session_config.request_requested_grant_min_bytes)
-        .with_requested_grant_bytes(session_config.request_requested_grant_bytes);
-    let execution_config = session_config.apply_graph_memory_calibration_request_options(execution_config);
+    let execution_config =
+        session_config.apply_graph_memory_calibration_request_options(config.native_execution_config().clone());
     config.with_native_execution_config(execution_config)
-}
-
-fn parse_native_memory_policy(value: &str) -> DataFusionResult<NativeMemoryPolicyConfig> {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "bounded" => Ok(NativeMemoryPolicyConfig::Bounded),
-        "unbounded" => Ok(NativeMemoryPolicyConfig::Unbounded),
-        other => Err(config_error(format!("must be `bounded` or `unbounded`, got `{other}`"))),
-    }
 }
 
 fn parse_source_chunk_planning_mode(value: &str) -> DataFusionResult<SourceChunkPlanningMode> {
@@ -640,14 +482,6 @@ fn parse_source_chunk_planning_mode(value: &str) -> DataFusionResult<SourceChunk
         "conservative" => Ok(SourceChunkPlanningMode::Conservative),
         "local_parquet_throughput" => Ok(SourceChunkPlanningMode::LocalParquetThroughput),
         other => Err(config_error(format!("must be `conservative` or `local_parquet_throughput`, got `{other}`"))),
-    }
-}
-
-fn parse_native_pipeline_execution_mode(value: &str) -> DataFusionResult<NativePipelineExecutionMode> {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "strict_bounded" => Ok(NativePipelineExecutionMode::StrictBounded),
-        "adaptive" => Ok(NativePipelineExecutionMode::Adaptive),
-        other => Err(config_error(format!("must be `strict_bounded` or `adaptive`, got `{other}`"))),
     }
 }
 
@@ -710,88 +544,13 @@ fn backend_admission_session_config_not_frozen_error() -> DataFusionError {
     config_error("datafusion_nexus native session config must be frozen when query-service admission is authoritative")
 }
 
-fn reject_request_grant_for_pre_admitted_query_handle(
-    session_config: &DataFusionNexusSessionConfig,
-) -> DataFusionResult<()> {
-    if let Some(requested_grant_min_bytes) = session_config.request_requested_grant_min_bytes {
-        return Err(Error::new(
-            ErrorCode::InvalidRequest,
-            "datafusion_nexus.session_config.request_grant",
-            "datafusion_nexus.request.requested_grant_min_bytes cannot apply to a pre-admitted query-service handle whose grant was fixed at admission",
-        )
-        .with_fact("reason", "request_grant_pre_admitted_query_handle")
-        .with_fact(
-            "config_key",
-            format!("{DATAFUSION_NEXUS_CONFIG_PREFIX}.{REQUEST_REQUESTED_GRANT_MIN_BYTES_KEY}"),
-        )
-        .with_fact("requested_grant_min_bytes", requested_grant_min_bytes)
-        .into());
-    }
-    let Some(requested_grant_bytes) = session_config.request_requested_grant_bytes else {
-        return Ok(());
-    };
-    Err(Error::new(
-        ErrorCode::InvalidRequest,
-        "datafusion_nexus.session_config.request_grant",
-        "datafusion_nexus.request.requested_grant_bytes cannot apply to a pre-admitted query-service handle whose grant was fixed at admission",
-    )
-    .with_fact("reason", "request_grant_pre_admitted_query_handle")
-    .with_fact("config_key", format!("{DATAFUSION_NEXUS_CONFIG_PREFIX}.{REQUEST_REQUESTED_GRANT_BYTES_KEY}"))
-    .with_fact("requested_grant_bytes", requested_grant_bytes)
-    .into())
-}
-
 #[cfg(test)]
 mod tests {
-    use nexus_query_engine::runtime::{QueryServiceConfig, QueryServiceTenantConfig, TenantId};
-
     use super::*;
-    use crate::native_exec::admission::TestAdmissionController;
-
-    fn pre_admitted_request_error(session_config: &DataFusionNexusSessionConfig) -> Box<Error> {
-        let error = reject_request_grant_for_pre_admitted_query_handle(session_config).unwrap_err();
-        match error {
-            DataFusionError::External(source) => source.downcast::<Error>().expect("expected adapter error"),
-            other => panic!("expected adapter error, got {other:?}"),
-        }
-    }
+    use crate::native_exec::admission::{TestAdmissionController, TestAdmissionDeviceProfile};
 
     #[test]
-    fn pre_admitted_query_rejects_requested_grant_bytes() {
-        let base = NexusNativeOptimizerConfig::default();
-        let mut session_config = DataFusionNexusSessionConfig::from_optimizer_config(&base);
-        session_config.request_requested_grant_bytes = Some(1_048_576);
-
-        let error = pre_admitted_request_error(&session_config);
-
-        assert_eq!(error.code(), ErrorCode::InvalidRequest);
-        assert_eq!(error.fact_value("reason"), Some("request_grant_pre_admitted_query_handle"));
-        assert_eq!(error.fact_value("requested_grant_bytes"), Some("1048576"));
-    }
-
-    #[test]
-    fn pre_admitted_query_rejects_requested_grant_min_bytes() {
-        let base = NexusNativeOptimizerConfig::default();
-        let mut session_config = DataFusionNexusSessionConfig::from_optimizer_config(&base);
-        session_config.request_requested_grant_min_bytes = Some(1_048_576);
-
-        let error = pre_admitted_request_error(&session_config);
-
-        assert_eq!(error.code(), ErrorCode::InvalidRequest);
-        assert_eq!(error.fact_value("reason"), Some("request_grant_pre_admitted_query_handle"));
-        assert_eq!(error.fact_value("requested_grant_min_bytes"), Some("1048576"));
-    }
-
-    #[test]
-    fn pre_admitted_query_accepts_default_request_grant() {
-        let base = NexusNativeOptimizerConfig::default();
-        let session_config = DataFusionNexusSessionConfig::from_optimizer_config(&base);
-
-        reject_request_grant_for_pre_admitted_query_handle(&session_config).unwrap();
-    }
-
-    #[test]
-    fn request_key_is_mutable_when_backend_admission_config_is_frozen() {
+    fn graph_request_key_is_mutable_when_backend_admission_config_is_frozen() {
         let base = NexusNativeOptimizerConfig::default();
         let mut session_config =
             DataFusionNexusSessionConfig::from_optimizer_config(&base).frozen_for_backend_admission();
@@ -799,49 +558,28 @@ mod tests {
         let native_error = session_config.set(NATIVE_DEVICE_BUDGET_BYTES_KEY, "2048").unwrap_err();
         assert!(native_error.to_string().contains("native.device_budget_bytes"));
 
-        session_config.set(REQUEST_REQUESTED_GRANT_MIN_BYTES_KEY, "1024").unwrap();
-        assert_eq!(session_config.request_requested_grant_min_bytes, Some(1024));
-        session_config.set(REQUEST_REQUESTED_GRANT_BYTES_KEY, "1536").unwrap();
-        assert_eq!(session_config.request_requested_grant_bytes, Some(1536));
         session_config.set(REQUEST_GRAPH_RAW_INPUT_EDGES_KEY, "45564149").unwrap();
         assert_eq!(session_config.request_graph_raw_input_edges, Some(45_564_149));
 
-        session_config.set(REQUEST_REQUESTED_GRANT_MIN_BYTES_KEY, "default").unwrap();
-        assert_eq!(session_config.request_requested_grant_min_bytes, None);
-        session_config.set(REQUEST_REQUESTED_GRANT_BYTES_KEY, "default").unwrap();
-        assert_eq!(session_config.request_requested_grant_bytes, None);
         session_config.set(REQUEST_GRAPH_RAW_INPUT_EDGES_KEY, "default").unwrap();
         assert_eq!(session_config.request_graph_raw_input_edges, None);
     }
 
     #[test]
-    fn request_key_applies_to_backend_frozen_optimizer_config() {
-        let tenant_id = TenantId::new("tenant");
-        let controller = TestAdmissionController::new(
-            QueryServiceConfig {
-                device_capacity_bytes: Some(2048),
-                max_concurrent_queries: 1,
-                max_admission_queue_len: 1,
-                ..QueryServiceConfig::default()
-            },
-            vec![QueryServiceTenantConfig::with_grant_range(tenant_id.clone(), 512, 2048)],
-        )
-        .unwrap();
-        let execution_config = NexusNativeExecutionConfig::bounded(512, 512, 1, 3, 1)
-            .with_query_admission_source(controller.source(tenant_id));
+    fn graph_request_key_applies_to_backend_frozen_optimizer_config() {
+        let controller =
+            TestAdmissionController::new(TestAdmissionDeviceProfile::new(0, 2048, 1, 512), Some(2048)).unwrap();
+        let execution_config =
+            NexusNativeExecutionConfig::bounded(512, 512, 1, 3, 1).with_query_admission_source(controller.source());
         let base = NexusNativeOptimizerConfig::default().with_native_execution_config(execution_config);
         let mut session_config =
             DataFusionNexusSessionConfig::from_optimizer_config(&base).frozen_for_backend_admission();
-        session_config.set(REQUEST_REQUESTED_GRANT_MIN_BYTES_KEY, "768").unwrap();
-        session_config.set(REQUEST_REQUESTED_GRANT_BYTES_KEY, "1024").unwrap();
         session_config.set(REQUEST_GRAPH_RAW_INPUT_EDGES_KEY, "45564149").unwrap();
         let mut options = ConfigOptions::default();
         options.extensions.insert(session_config);
 
         let effective = optimizer_config_with_datafusion_options(&base, &options).unwrap();
 
-        assert_eq!(effective.native_execution_config().requested_grant_min_bytes(), Some(768));
-        assert_eq!(effective.native_execution_config().requested_grant_bytes(), Some(1024));
         let graph_calibration = effective.native_execution_config().graph_memory_calibration_override();
         assert_eq!(graph_calibration.raw_input_edges, Some(45_564_149));
         assert_eq!(
@@ -860,7 +598,7 @@ mod tests {
     fn default_request_graph_options_do_not_override_service_acquired_calibration() {
         let service_override = GraphMemoryCalibrationOverride::default().with_raw_input_edges(45_564_149);
         let base = NexusNativeOptimizerConfig::default()
-            .with_native_execution_config(NexusNativeExecutionConfig::bounded_auto_sized());
+            .with_native_execution_config(NexusNativeExecutionConfig::bounded_default());
         let mut options = ConfigOptions::default();
         options
             .extensions
@@ -880,7 +618,7 @@ mod tests {
     fn explicit_request_graph_reset_overrides_service_acquired_calibration() {
         let service_override = GraphMemoryCalibrationOverride::default().with_raw_input_edges(45_564_149);
         let base = NexusNativeOptimizerConfig::default()
-            .with_native_execution_config(NexusNativeExecutionConfig::bounded_auto_sized());
+            .with_native_execution_config(NexusNativeExecutionConfig::bounded_default());
         let mut session_config =
             DataFusionNexusSessionConfig::from_optimizer_config(&base).frozen_for_backend_admission();
         session_config.set(REQUEST_GRAPH_RAW_INPUT_EDGES_KEY, "none").unwrap();
@@ -901,7 +639,7 @@ mod tests {
     fn public_request_graph_reset_setters_mark_request_options_configured() {
         let service_override = GraphMemoryCalibrationOverride::default().with_raw_input_edges(45_564_149);
         let base = NexusNativeOptimizerConfig::default()
-            .with_native_execution_config(NexusNativeExecutionConfig::bounded_auto_sized());
+            .with_native_execution_config(NexusNativeExecutionConfig::bounded_default());
         let mut session_config =
             DataFusionNexusSessionConfig::from_optimizer_config(&base).frozen_for_backend_admission();
         session_config.set_request_graph_raw_input_edges(None);

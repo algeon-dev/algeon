@@ -173,7 +173,7 @@ pub(super) fn unsupported_category(
         CapabilityReason::NativeSortPreservingMergeUnsupported
         | CapabilityReason::NativePartitionPreservingSortUnsupported => Some("operator_sort".to_string()),
         CapabilityReason::NativeOrderedOutputUnsupported => Some("operator_ordering".to_string()),
-        CapabilityReason::NativeBoundedJoinUnsupported | CapabilityReason::NativeAdaptivePipelineUnsupported => {
+        CapabilityReason::NativeBoundedJoinUnsupported => {
             first_join_operator_category(plan).or_else(|| Some("operator_join".to_string()))
         },
     }

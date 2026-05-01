@@ -1,0 +1,5 @@
+error[E0432]: unresolved import `nexus_query_engine::mode::NativePipelineExecutionMode`
+ --> tests/ui/public_api/forbidden_native_pipeline_execution_mode.rs:1:5
+  |
+1 | use nexus_query_engine::mode::NativePipelineExecutionMode;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ no `NativePipelineExecutionMode` in `mode`

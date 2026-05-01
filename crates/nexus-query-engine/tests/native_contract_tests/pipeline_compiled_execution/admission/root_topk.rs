@@ -80,7 +80,7 @@ fn compiled_bounded_support_accepts_root_topk_distinct_and_keyless_subcontract_g
             "{variant:?}"
         );
 
-        let report = StrictBoundedContractReport::from_compiled_pipeline(&analysis, &pipeline)
+        let report = CapabilityContractReport::from_compiled_pipeline(&analysis, &pipeline)
             .unwrap_or_else(|error| panic!("{variant:?} compiled report should be valid: {error}"));
         assert_modeled_gate_row(
             &format!("{variant:?}"),
@@ -133,7 +133,7 @@ fn compiled_bounded_support_accepts_root_topk_sort_fetch_hash_join_input_subcont
         CompiledBoundedPipelineSupport::Supported,
     );
 
-    let report = StrictBoundedContractReport::from_compiled_pipeline(&analysis, &pipeline)
+    let report = CapabilityContractReport::from_compiled_pipeline(&analysis, &pipeline)
         .expect("sort-fetch hash-join-input compiled report should be valid");
     assert_modeled_gate_row(
         "sort-fetch hash-join-input",
@@ -196,7 +196,7 @@ fn compiled_bounded_support_accepts_root_topk_sort_fetch_join_aggregate_subcontr
             "{variant:?}",
         );
 
-        let report = StrictBoundedContractReport::from_compiled_pipeline(&analysis, &pipeline)
+        let report = CapabilityContractReport::from_compiled_pipeline(&analysis, &pipeline)
             .unwrap_or_else(|error| panic!("{variant:?} compiled report should be valid: {error}"));
         assert_modeled_gate_row(
             &format!("{variant:?}"),
@@ -296,7 +296,7 @@ fn compiled_bounded_support_accepts_rollup_topk_without_rank_after_aggregate_joi
         CompiledBoundedPipelineSupport::Supported,
     );
 
-    let report = StrictBoundedContractReport::from_compiled_pipeline(&analysis, &pipeline)
+    let report = CapabilityContractReport::from_compiled_pipeline(&analysis, &pipeline)
         .expect("q22-class rollup TopK compiled report should be valid");
     assert_modeled_gate_row("q22-class rollup TopK", &report, ReservationKind::OperatorOutput, "aggregate_contract");
     assert_modeled_gate_row("q22-class rollup TopK", &report, ReservationKind::FinalSort, "final_sort_contract");
@@ -341,7 +341,7 @@ fn compiled_bounded_support_accepts_root_topk_null_filtered_aggregate_fan_in_gra
         CompiledBoundedPipelineSupport::Supported,
     );
 
-    let report = StrictBoundedContractReport::from_compiled_pipeline(&analysis, &pipeline)
+    let report = CapabilityContractReport::from_compiled_pipeline(&analysis, &pipeline)
         .expect("null-filtered aggregate fan-in compiled report should be valid");
     assert_modeled_gate_row(
         "null-filtered aggregate fan-in",
@@ -414,7 +414,7 @@ fn compiled_bounded_support_accepts_root_topk_window_subcontract_graphs() {
             "{variant:?}"
         );
 
-        let report = StrictBoundedContractReport::from_compiled_pipeline(&analysis, &pipeline)
+        let report = CapabilityContractReport::from_compiled_pipeline(&analysis, &pipeline)
             .unwrap_or_else(|error| panic!("{variant:?} compiled report should be valid: {error}"));
         assert_modeled_gate_row(
             &format!("{variant:?}"),

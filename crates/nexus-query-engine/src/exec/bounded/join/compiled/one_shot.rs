@@ -452,7 +452,6 @@ pub(super) fn materialize_compiled_one_shot_equi_join_probe_chunk(
             return Err(error);
         },
     };
-    reservations.reclaim_source_cache_for_external_working_set(reservations.budget(), metrics)?;
     let output = match indices.materialize_output(
         &left.frame,
         &right.frame,

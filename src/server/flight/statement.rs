@@ -61,6 +61,32 @@ impl DatafusionNexusFlightSqlService {
         QueryPlanning { ctx: SessionContext::new_with_state(state), native_rule }
     }
 
+    /// Retain the immutable report at the attempt-owned seal point.
+    ///
+    /// This is intentionally a synchronous seal observer rather than a
+    /// detached receiver task: a Flight terminal lease must never become
+    /// releasable before the coordinator has the identical sealed report.
+    pub(super) fn register_attempt_report_handoff(
+        &self,
+        query_id: String,
+        attempt: &crate::attempt::NexusAttempt,
+        terminal: Option<Arc<CoordinatorExecutionTerminal>>,
+    ) {
+        let coordinator = Arc::clone(&self.coordinator);
+        attempt.register_sealed_report_observer(move |report, snapshot| {
+            if let Err(error) = coordinator.attach_attempt_report(&query_id, report, Some(snapshot)) {
+                tracing::warn!(query_id, %error, "failed to retain sealed Flight attempt report");
+                return;
+            }
+            // Retain the terminal through asynchronous GPU cleanup. A weak
+            // observer would let the final stream wrapper drop its pending
+            // lease before this immutable handoff can release it.
+            if let Some(terminal) = terminal.as_ref() {
+                terminal.mark_attempt_report_attached();
+            }
+        });
+    }
+
     pub(super) async fn statement_flight_info(
         &self,
         mut planning_lease: QueryPlanningLease,
@@ -78,14 +104,35 @@ impl DatafusionNexusFlightSqlService {
         // shared with the optimizer rule, but `do_action_cancel_query` cannot
         // reach it until the ticket is registered.
         let native_cancellation = ExecutionCancellation::new();
-        let observation = match planning_lease.observation_handle() {
-            Ok(observation) => observation,
+        let mut attempt = match self.admission.begin_attempt(crate::attempt::AttemptOptions {
+            query_id: Some(query_id.clone()),
+            trace_context: correlation_id.clone(),
+            deadline: None,
+            observation: self.runtime_observation_config,
+        }) {
+            Ok(attempt) => attempt,
             Err(error) => {
-                let (status, captured) = adapter_error_to_status_and_capture(
-                    error.adapter_error("datafusion_nexus.server.flight.statement.observation_handle"),
-                );
+                self.coordinator.allow_missing_attempt_report(&query_id);
+                let (status, captured) = adapter_error_to_status_and_capture(error);
+                let status = status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
                 planning_lease.finish_captured("planning", &status, captured);
                 return Err(status);
+            },
+        };
+        if let Some(attempt) = attempt.as_ref() {
+            self.register_attempt_report_handoff(query_id.clone(), attempt, None);
+        }
+        let observation = match attempt.as_ref() {
+            Some(attempt) => attempt.observation_handle(),
+            None => match planning_lease.observation_handle() {
+                Ok(observation) => observation,
+                Err(error) => {
+                    let (status, captured) = adapter_error_to_status_and_capture(
+                        error.adapter_error("datafusion_nexus.server.flight.statement.observation_handle"),
+                    );
+                    planning_lease.finish_captured("planning", &status, captured);
+                    return Err(status);
+                },
             },
         };
         let activity_factory = planning_lease.activity_factory();
@@ -96,7 +143,19 @@ impl DatafusionNexusFlightSqlService {
             observation,
             activity_factory,
         );
-        let query_ctx = &planning.ctx;
+        let query_ctx = match attempt.as_ref() {
+            Some(attempt) => match attempt.planning_context(&planning.ctx) {
+                Ok(context) => context,
+                Err(error) => {
+                    let (status, captured) =
+                        datafusion_error_to_status_and_capture(error, ticket_kind.create_logical_plan_operation());
+                    let status = status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
+                    planning_lease.finish_captured("planning", &status, captured);
+                    return Err(status);
+                },
+            },
+            None => planning.ctx.clone(),
+        };
         let query_state = query_ctx.state();
         let logical_plan = tokio::select! {
             result = query_state.create_logical_plan(&sql)
@@ -104,6 +163,9 @@ impl DatafusionNexusFlightSqlService {
                 match result {
                     Ok(plan) => plan,
                     Err(error) => {
+                        if let Some(attempt) = attempt.as_ref() {
+                            attempt.planning_failed(&error);
+                        }
                         let (status, captured) = datafusion_error_to_status_and_capture(
                             error,
                             ticket_kind.create_logical_plan_operation(),
@@ -115,6 +177,9 @@ impl DatafusionNexusFlightSqlService {
             },
             _ = self.shutdown_token.cancelled() => {
                 native_cancellation.cancel();
+                if let Some(attempt) = attempt.as_ref() {
+                    attempt.cancel_before_stream();
+                }
                 let (status, captured) = adapter_error_to_status_and_capture(server_shutdown_error());
                 let status = status_with_query_id_and_correlation_id(
                     status,
@@ -126,15 +191,21 @@ impl DatafusionNexusFlightSqlService {
             }
         };
         if let Err(error) = verify_flight_info_plan(&logical_plan, ticket_kind) {
+            if let Some(attempt) = attempt.as_ref() {
+                attempt.planning_failed_adapter(&error);
+            }
             let (status, captured) = adapter_error_to_status_and_capture(error);
             let status = status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
             planning_lease.finish_captured("planning", &status, captured);
             return Err(status);
         }
         if let Err(error) =
-            reject_drop_object_type_mismatch(query_ctx, &logical_plan, ticket_kind.create_logical_plan_operation())
+            reject_drop_object_type_mismatch(&query_ctx, &logical_plan, ticket_kind.create_logical_plan_operation())
                 .await
         {
+            if let Some(attempt) = attempt.as_ref() {
+                attempt.planning_failed_adapter(&error);
+            }
             let (status, captured) = adapter_error_to_status_and_capture(error);
             let status = status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
             planning_lease.finish_captured("planning", &status, captured);
@@ -162,6 +233,13 @@ impl DatafusionNexusFlightSqlService {
         let info = match FlightInfo::new().try_with_schema(&schema) {
             Ok(info) => info,
             Err(error) => {
+                if let Some(attempt) = attempt.as_ref() {
+                    attempt.planning_failed_adapter(&Error::new(
+                        ErrorCode::Internal,
+                        "datafusion_nexus.server.flight.get_flight_info_query.schema",
+                        "failed to build Flight SQL query FlightInfo schema",
+                    ));
+                }
                 let (status, captured) = arrow_error_to_status_and_capture(
                     error,
                     "datafusion_nexus.server.flight.get_flight_info_query.schema",
@@ -183,6 +261,7 @@ impl DatafusionNexusFlightSqlService {
                 prepared_handle,
                 kind: ticket_kind.code(),
                 native_cancellation,
+                attempt: attempt.take(),
                 started_at,
                 deadline,
             })
@@ -210,26 +289,52 @@ impl DatafusionNexusFlightSqlService {
         started_at: Instant,
     ) -> Result<FlightInfo, Status> {
         self.expire_stale_tickets(Instant::now());
+        let mut attempt = match self.admission.begin_attempt(crate::attempt::AttemptOptions {
+            query_id: Some(query_id.clone()),
+            trace_context: correlation_id.clone(),
+            deadline: None,
+            observation: self.runtime_observation_config,
+        }) {
+            Ok(attempt) => attempt,
+            Err(error) => {
+                self.coordinator.allow_missing_attempt_report(&query_id);
+                let (status, captured) = adapter_error_to_status_and_capture(error);
+                let status = status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
+                planning_lease.finish_captured("planning", &status, captured);
+                return Err(status);
+            },
+        };
+        if let Some(attempt) = attempt.as_ref() {
+            self.register_attempt_report_handoff(query_id.clone(), attempt, None);
+        }
         let ticket_kind = match output_mode {
             ExplainGpuOutputMode::Rows => StatementTicketKind::ExplainGpuRows,
             ExplainGpuOutputMode::Json => StatementTicketKind::ExplainGpuJson,
         };
         let ticket = TicketStatementQuery { statement_handle: query_id.as_bytes().to_vec().into() };
         let endpoint = FlightEndpoint::new().with_ticket(Ticket { ticket: ticket.as_any().encode_to_vec().into() });
-        let info = FlightInfo::new()
-            .try_with_schema(coverage_schema().as_ref())
-            .map_err(|error| {
+        let info = match FlightInfo::new().try_with_schema(coverage_schema().as_ref()) {
+            Ok(info) => info,
+            Err(error) => {
+                if let Some(attempt) = attempt.as_ref() {
+                    attempt.planning_failed_adapter(&Error::new(
+                        ErrorCode::Internal,
+                        "datafusion_nexus.server.flight.get_flight_info_statement.explain_gpu.schema",
+                        "failed to build EXPLAIN GPU FlightInfo schema",
+                    ));
+                }
                 let (status, captured) = arrow_error_to_status_and_capture(
                     error,
                     "datafusion_nexus.server.flight.get_flight_info_statement.explain_gpu.schema",
                     "failed to build EXPLAIN GPU FlightInfo schema",
                 );
                 planning_lease.finish_captured("planning", &status, captured);
-                status
-            })?
-            .with_descriptor(descriptor)
-            .with_endpoint(endpoint)
-            .with_ordered(false);
+                return Err(status);
+            },
+        }
+        .with_descriptor(descriptor)
+        .with_endpoint(endpoint)
+        .with_ordered(false);
         let issued_at = Instant::now();
         let deadline = issued_at.checked_add(self.statement_ticket_ttl).unwrap_or(issued_at);
         planning_lease
@@ -239,6 +344,7 @@ impl DatafusionNexusFlightSqlService {
                 prepared_handle: None,
                 kind: ticket_kind.code(),
                 native_cancellation: ExecutionCancellation::new(),
+                attempt: attempt.take(),
                 started_at,
                 deadline,
             })

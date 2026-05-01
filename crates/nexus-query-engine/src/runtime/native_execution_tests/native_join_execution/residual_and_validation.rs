@@ -1,4 +1,4 @@
 use super::*;
 
-#[path = "residual_and_validation/cache_reuse.rs"]
-mod cache_reuse;
+// Durable hash-join cache reuse belongs to the private P5 substrate.  P2
+// native execution tests intentionally run without cache construction.

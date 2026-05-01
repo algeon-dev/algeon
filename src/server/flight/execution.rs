@@ -1,5 +1,199 @@
 use super::*;
 
+/// Resolves only after all execution layers have observed Flight cancellation.
+///
+/// This future is passed directly to `take_until`: it establishes the
+/// cancellation ordering before that combinator can drop an attempt stream.
+/// A detached bridge would race stream drop and could misclassify shutdown as
+/// an ordinary client drop in the immutable attempt report.
+async fn cancel_execution_on_token(
+    token: CancellationToken,
+    native_cancellation: ExecutionCancellation,
+    attempt_cancellation: Option<nexus_query_engine::attempt::AttemptCancellation>,
+) {
+    token.cancelled().await;
+    native_cancellation.cancel();
+    if let Some(attempt_cancellation) = attempt_cancellation {
+        attempt_cancellation.cancel();
+    }
+}
+
+/// Keeps a Flight-owned cancellation path ahead of the attempt stream's drop
+/// implementation. `take_until` and client disconnects may discard this
+/// wrapper at any poll boundary; its `Drop` cancels the attempt before Rust
+/// drops the inner [`AttemptStream`], so terminalization observes
+/// `Cancelled` rather than an unrelated client-drop outcome.
+struct FlightExecutionBody {
+    inner: Option<SendableRecordBatchStream>,
+    cancellation: std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>,
+    native_cancellation: ExecutionCancellation,
+    attempt_cancellation: Option<nexus_query_engine::attempt::AttemptCancellation>,
+    terminal: Arc<CoordinatorExecutionTerminal>,
+    native_execution_span: tracing::Span,
+}
+
+impl FlightExecutionBody {
+    fn new(
+        inner: SendableRecordBatchStream,
+        flight_token: CancellationToken,
+        native_cancellation: ExecutionCancellation,
+        attempt_cancellation: Option<nexus_query_engine::attempt::AttemptCancellation>,
+        terminal: Arc<CoordinatorExecutionTerminal>,
+        native_execution_span: tracing::Span,
+    ) -> Self {
+        Self {
+            inner: Some(inner),
+            cancellation: Box::pin(flight_token.cancelled_owned()),
+            native_cancellation,
+            attempt_cancellation,
+            terminal,
+            native_execution_span,
+        }
+    }
+}
+
+impl Stream for FlightExecutionBody {
+    type Item = datafusion::common::Result<arrow::record_batch::RecordBatch>;
+
+    fn poll_next(
+        self: std::pin::Pin<&mut Self>,
+        context: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        let this = self.get_mut();
+        let _native_enter = this.native_execution_span.enter();
+        if this.cancellation.as_mut().poll(context).is_ready() {
+            this.native_cancellation.cancel();
+            if let Some(attempt_cancellation) = &this.attempt_cancellation {
+                attempt_cancellation.cancel();
+            }
+            // `take_until` retains its inner stream after its stop future
+            // resolves. Release ours now so AttemptStream terminalizes and
+            // the report handoff completes before the cancellation tail can
+            // release the coordinator execution lease.
+            this.inner = None;
+            return std::task::Poll::Ready(None);
+        }
+        let poll =
+            this.inner.as_mut().map_or(std::task::Poll::Ready(None), |stream| stream.as_mut().poll_next(context));
+        if matches!(&poll, std::task::Poll::Ready(None)) {
+            // Reaching EOF is the execution-resource boundary. Do not retain
+            // the exhausted DataFusion stream (and its admission ticket)
+            // until tonic later drops the response wrapper. This is also the
+            // only reliable Flight success boundary: an empty synthetic tail
+            // may not be polled after stream encoding finishes, which would
+            // otherwise drop the coordinator lease as `Dropped`.
+            this.inner = None;
+            this.terminal.finish_success("stream");
+        }
+        poll
+    }
+}
+
+impl Drop for FlightExecutionBody {
+    fn drop(&mut self) {
+        if self.inner.is_some() {
+            self.native_cancellation.cancel();
+            if let Some(attempt_cancellation) = &self.attempt_cancellation {
+                attempt_cancellation.cancel();
+            }
+        }
+    }
+}
+
+/// Owns the diagnostic-only half of an `EXPLAIN GPU` Flight response.
+///
+/// Unlike an ordinary statement, coverage validation produces a synthetic
+/// batch and never transfers the attempt owner into a physical result stream.
+/// Keeping that owner beside the Flight body preserves the same terminal
+/// contract: EOF succeeds, cancellation cancels, and a client drop commits
+/// before its coordinator lease can be released.
+struct ExplainGpuExecutionBody {
+    batch: Option<arrow::record_batch::RecordBatch>,
+    attempt: Option<crate::attempt::NexusAttempt>,
+    guard: QueryExecutionGuard,
+    finished: bool,
+}
+
+impl ExplainGpuExecutionBody {
+    fn new(
+        batch: arrow::record_batch::RecordBatch,
+        attempt: Option<crate::attempt::NexusAttempt>,
+        guard: QueryExecutionGuard,
+    ) -> Self {
+        Self { batch: Some(batch), attempt, guard, finished: false }
+    }
+
+    fn cancel_attempt(&mut self) {
+        self.guard.native_cancellation.cancel();
+        if let Some(attempt) = self.attempt.take() {
+            attempt.cancel_before_stream();
+        }
+    }
+
+    fn cancelled_status(&self) -> (Status, CapturedError) {
+        let (status, captured) = adapter_error_to_status_and_capture(cancellation_error(&self.guard.shutdown_token));
+        (
+            status_with_query_id_and_correlation_id(status, &self.guard.query_id, self.guard.correlation_id.as_deref()),
+            captured,
+        )
+    }
+}
+
+impl Stream for ExplainGpuExecutionBody {
+    type Item = Result<arrow::record_batch::RecordBatch, FlightError>;
+
+    fn poll_next(
+        self: std::pin::Pin<&mut Self>,
+        _context: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        let this = self.get_mut();
+        if this.finished {
+            return std::task::Poll::Ready(None);
+        }
+        if this.guard.flight_token.is_cancelled() {
+            this.cancel_attempt();
+            this.batch = None;
+            this.finished = true;
+            let (status, captured) = this.cancelled_status();
+            this.guard.terminal.finish_captured("stream", &status, captured);
+            return std::task::Poll::Ready(Some(Err(FlightError::from(status))));
+        }
+        if let Some(batch) = this.batch.take() {
+            return std::task::Poll::Ready(Some(Ok(batch)));
+        }
+        if let Some(attempt) = this.attempt.take() {
+            attempt.complete_without_result_stream();
+        }
+        this.finished = true;
+        this.guard.terminal.finish_success("stream");
+        std::task::Poll::Ready(None)
+    }
+}
+
+impl Drop for ExplainGpuExecutionBody {
+    fn drop(&mut self) {
+        if self.finished {
+            return;
+        }
+        self.finished = true;
+        if std::thread::panicking() {
+            // The attempt owner observes the active panic while it is dropped
+            // and records the matching panicked terminal report.
+            drop(self.attempt.take());
+            self.guard.terminal.finish_panicked("stream");
+            return;
+        }
+        // Match the ordinary Flight stream: a client drop is cooperative
+        // cancellation, so terminalize this owner before the guard can release
+        // the coordinator execution lease.
+        self.cancel_attempt();
+        if !self.guard.terminal.is_finished() {
+            let (status, captured) = self.cancelled_status();
+            self.guard.terminal.finish_captured("stream", &status, captured);
+        }
+    }
+}
+
 impl DatafusionNexusFlightSqlService {
     pub(super) fn expire_stale_tickets(&self, now: Instant) {
         self.coordinator.maintenance_at(now);
@@ -38,6 +232,7 @@ impl DatafusionNexusFlightSqlService {
             prepared_handle,
             kind,
             native_cancellation,
+            mut attempt,
             started_at,
             ..
         } = ticket;
@@ -60,31 +255,39 @@ impl DatafusionNexusFlightSqlService {
                 "executing Flight SQL statement ticket"
             );
         }
-        let observation = match execution_lease.observation_handle() {
-            Ok(observation) => observation,
-            Err(error) => {
-                let (status, captured) = adapter_error_to_status_and_capture(
-                    error.adapter_error("datafusion_nexus.server.flight.execute_ticket.observation_handle"),
-                );
-                let status = status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
-                execution_lease.finish_captured("planning", &status, captured);
-                return Err(status);
+        let observation = match attempt.as_ref() {
+            Some(attempt) => attempt.observation_handle(),
+            None => match execution_lease.observation_handle() {
+                Ok(observation) => observation,
+                Err(error) => {
+                    let (status, captured) = adapter_error_to_status_and_capture(
+                        error.adapter_error("datafusion_nexus.server.flight.execute_ticket.observation_handle"),
+                    );
+                    let status = status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
+                    execution_lease.finish_captured("planning", &status, captured);
+                    return Err(status);
+                },
             },
         };
         let output_counters = execution_lease.hot_counters();
         let activity_factory = execution_lease.activity_factory();
-        self.cancellations.insert(query_id.clone(), token.clone(), native_cancellation.clone());
-        let native_cancellation_for_bridge = native_cancellation.clone();
-        let token_for_bridge = token.clone();
-        // Native cancellation is cooperative. A cancelled query keeps its
-        // worker and native execution admission until the current libcudf/CUDA call
-        // reaches the next cancellation boundary; this does not promise kernel
-        // preemption.
-        let native_cancel_bridge = tokio::spawn(async move {
-            token_for_bridge.cancelled().await;
-            native_cancellation_for_bridge.cancel();
-        });
-        let coordinator_terminal = CoordinatorExecutionTerminal::new(execution_lease, query_id.clone(), started_at);
+        let attempt_cancellation = attempt.as_ref().map(crate::attempt::NexusAttempt::cancellation);
+        self.cancellations.insert(
+            query_id.clone(),
+            token.clone(),
+            native_cancellation.clone(),
+            attempt_cancellation.clone(),
+        );
+        let attempt_cancellation_for_stream = attempt_cancellation.clone();
+        let coordinator_terminal = CoordinatorExecutionTerminal::new_with_attempt_report(
+            execution_lease,
+            query_id.clone(),
+            started_at,
+            attempt.is_some(),
+        );
+        if let Some(attempt) = attempt.as_ref() {
+            self.register_attempt_report_handoff(query_id.clone(), attempt, Some(Arc::clone(&coordinator_terminal)));
+        }
         // Construct the guard before any post-ticket branch so cancellation
         // registration and observability cleanup stay tied together after the
         // ticket leaves the coordinator's ticketed state.
@@ -94,12 +297,15 @@ impl DatafusionNexusFlightSqlService {
             cancellations: Arc::clone(&self.cancellations),
             flight_token: token.clone(),
             native_cancellation: native_cancellation.clone(),
-            native_cancel_bridge,
+            attempt_cancellation,
             shutdown_token: self.shutdown_token.clone(),
             terminal: Arc::clone(&coordinator_terminal),
         };
         if token.is_cancelled() {
             native_cancellation.cancel();
+            if let Some(attempt) = attempt.as_ref() {
+                attempt.cancel_before_stream();
+            }
             let (status, captured) = adapter_error_to_status_and_capture(cancellation_error(&self.shutdown_token));
             let status = status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
             coordinator_terminal.finish_captured("planning", &status, captured);
@@ -109,8 +315,8 @@ impl DatafusionNexusFlightSqlService {
         if let Some(output_mode) = ticket_kind.explain_gpu_output_mode() {
             // `EXPLAIN GPU` is a plan-time diagnostic. It uses the same
             // per-query context, coordinator lease, and cancellation wiring as
-            // ordinary statements, but deliberately never creates an
-            // executable physical stream or acquires GPU admission.
+            // ordinary statements, but deliberately never executes a physical
+            // plan or acquires GPU admission.
             let planning = self.coordinated_query_planning(
                 &query_id,
                 correlation_id.as_deref(),
@@ -118,8 +324,22 @@ impl DatafusionNexusFlightSqlService {
                 observation,
                 activity_factory,
             );
+            let query_ctx = match attempt.as_ref() {
+                Some(attempt) => match attempt.planning_context(&planning.ctx) {
+                    Ok(context) => context,
+                    Err(error) => {
+                        let (status, captured) =
+                            datafusion_error_to_status_and_capture(error, ticket_kind.sql_operation());
+                        let status =
+                            status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
+                        coordinator_terminal.finish_captured("planning", &status, captured);
+                        return Err(status);
+                    },
+                },
+                None => planning.ctx.clone(),
+            };
             let coverage = tokio::select! {
-                result = validate_query(&planning.ctx, &sql)
+                result = validate_query(&query_ctx, &sql)
                     .instrument(Self::query_stage_span(
                         Some(&query_span),
                         &query_id,
@@ -128,6 +348,9 @@ impl DatafusionNexusFlightSqlService {
                     )) => match result {
                     Ok(coverage) => coverage,
                     Err(error) => {
+                        if let Some(attempt) = attempt.as_ref() {
+                            attempt.planning_failed_adapter(&error);
+                        }
                         let (status, captured) = adapter_error_to_status_and_capture(error);
                         let status = status_with_query_id_and_correlation_id(
                             status,
@@ -140,6 +363,9 @@ impl DatafusionNexusFlightSqlService {
                 },
                 _ = token.cancelled() => {
                     native_cancellation.cancel();
+                    if let Some(attempt) = attempt.as_ref() {
+                        attempt.cancel_before_stream();
+                    }
                     let (status, captured) = adapter_error_to_status_and_capture(cancellation_error(&self.shutdown_token));
                     let status = status_with_query_id_and_correlation_id(
                         status,
@@ -153,6 +379,9 @@ impl DatafusionNexusFlightSqlService {
             let batch = match coverage_batch(&coverage, output_mode, Some(&query_id)) {
                 Ok(batch) => batch,
                 Err(error) => {
+                    if let Some(attempt) = attempt.as_ref() {
+                        attempt.planning_failed(&error);
+                    }
                     let (status, captured) = datafusion_error_to_status_and_capture(
                         error,
                         "datafusion_nexus.server.flight.do_get_statement.explain_gpu.project",
@@ -162,66 +391,11 @@ impl DatafusionNexusFlightSqlService {
                     return Err(status);
                 },
             };
-            let token_for_body = token.clone();
-            let native_cancellation_for_body = native_cancellation.clone();
-            let shutdown_token_for_body = self.shutdown_token.clone();
-            let query_id_for_body = query_id.clone();
-            let correlation_id_for_body = correlation_id.clone();
-            let terminal_for_body = Arc::clone(&coordinator_terminal);
             let output_counters_for_body = Arc::clone(&output_counters);
-            let body = futures::stream::once(async move { Ok::<_, FlightError>(batch) })
-                .map(move |result| {
-                    if token_for_body.is_cancelled() {
-                        native_cancellation_for_body.cancel();
-                        let (status, captured) =
-                            adapter_error_to_status_and_capture(cancellation_error(&shutdown_token_for_body));
-                        let status = status_with_query_id_and_correlation_id(
-                            status,
-                            &query_id_for_body,
-                            correlation_id_for_body.as_deref(),
-                        );
-                        terminal_for_body.finish_captured("stream", &status, captured);
-                        return Err(FlightError::from(status));
-                    }
-                    result.inspect(|batch| {
-                        output_counters_for_body.record_output(batch.num_rows(), batch.get_array_memory_size());
-                    })
+            let stream = ExplainGpuExecutionBody::new(batch, attempt.take(), guard).map(move |result| {
+                result.inspect(|batch| {
+                    output_counters_for_body.record_output(batch.num_rows(), batch.get_array_memory_size());
                 })
-                .take_until(token.clone().cancelled_owned());
-            // Match ordinary query streams: a cancellation tail owns the
-            // terminal cancellation status, and a distinct end stream marks
-            // success only after the source has been fully consumed.
-            let cancel_token_for_tail = token.clone();
-            let shutdown_token_for_tail = self.shutdown_token.clone();
-            let query_id_for_tail = query_id.clone();
-            let correlation_id_for_tail = correlation_id.clone();
-            let terminal_for_tail = Arc::clone(&coordinator_terminal);
-            let tail = futures::stream::once(async move {
-                cancel_token_for_tail.is_cancelled().then(|| {
-                    native_cancellation.cancel();
-                    let (status, captured) =
-                        adapter_error_to_status_and_capture(cancellation_error(&shutdown_token_for_tail));
-                    let status = status_with_query_id_and_correlation_id(
-                        status,
-                        &query_id_for_tail,
-                        correlation_id_for_tail.as_deref(),
-                    );
-                    terminal_for_tail.finish_captured("stream", &status, captured);
-                    Err(FlightError::from(status))
-                })
-            })
-            .filter_map(|result| async move { result });
-            let terminal_for_end = Arc::clone(&coordinator_terminal);
-            let end = futures::stream::once(async move {
-                terminal_for_end.finish_success("stream");
-                None::<Result<arrow::record_batch::RecordBatch, FlightError>>
-            })
-            .filter_map(|result| async move { result });
-            let stream = body.chain(tail).chain(end).map(move |result| {
-                // Hold cancellation and coordinator cleanup state until Flight
-                // has consumed the diagnostic stream's terminal event.
-                let _guard = &guard;
-                result
             });
             let terminal_for_encode = Arc::clone(&coordinator_terminal);
             let query_id_for_encode = query_id.clone();
@@ -258,6 +432,9 @@ impl DatafusionNexusFlightSqlService {
                 prepared_statement_handle = handle.as_str(),
                 "deduplicated repeated prepared DDL execution on the query channel; returning an empty result"
             );
+            if let Some(attempt) = attempt.as_ref() {
+                attempt.complete_without_result_stream();
+            }
             coordinator_terminal.finish_success("stream");
             drop(guard);
             let query_id_for_encode = query_id.clone();
@@ -289,7 +466,18 @@ impl DatafusionNexusFlightSqlService {
             observation,
             activity_factory,
         );
-        let query_ctx = &planning.ctx;
+        let query_ctx = match attempt.as_ref() {
+            Some(attempt) => match attempt.planning_context(&planning.ctx) {
+                Ok(context) => context,
+                Err(error) => {
+                    let (status, captured) = datafusion_error_to_status_and_capture(error, ticket_kind.sql_operation());
+                    let status = status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
+                    coordinator_terminal.finish_captured("planning", &status, captured);
+                    return Err(status);
+                },
+            },
+            None => planning.ctx.clone(),
+        };
         let query_state = query_ctx.state();
         let logical_plan = tokio::select! {
             result = query_state.create_logical_plan(&sql)
@@ -301,6 +489,9 @@ impl DatafusionNexusFlightSqlService {
                 )) => match result {
                 Ok(plan) => plan,
                 Err(error) => {
+                    if let Some(attempt) = attempt.as_ref() {
+                        attempt.planning_failed(&error);
+                    }
                     let (status, captured) =
                         datafusion_error_to_status_and_capture(error, ticket_kind.sql_operation());
                     let status = status_with_query_id(status, &query_id);
@@ -312,6 +503,9 @@ impl DatafusionNexusFlightSqlService {
             },
             _ = token.cancelled() => {
                 native_cancellation.cancel();
+                if let Some(attempt) = attempt.as_ref() {
+                    attempt.cancel_before_stream();
+                }
                 let (status, captured) = adapter_error_to_status_and_capture(cancellation_error(&self.shutdown_token));
                 let status = status_with_query_id_and_correlation_id(
                     status,
@@ -323,8 +517,11 @@ impl DatafusionNexusFlightSqlService {
             },
         };
         if let Err(error) =
-            reject_drop_object_type_mismatch(query_ctx, &logical_plan, ticket_kind.sql_operation()).await
+            reject_drop_object_type_mismatch(&query_ctx, &logical_plan, ticket_kind.sql_operation()).await
         {
+            if let Some(attempt) = attempt.as_ref() {
+                attempt.planning_failed_adapter(&error);
+            }
             let (status, captured) = adapter_error_to_status_and_capture(error);
             let status = status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
             coordinator_terminal.finish_captured("planning", &status, captured);
@@ -340,6 +537,9 @@ impl DatafusionNexusFlightSqlService {
                 )) => match result {
                 Ok(df) => df,
                 Err(error) => {
+                    if let Some(attempt) = attempt.as_ref() {
+                        attempt.planning_failed(&error);
+                    }
                     // DDL execution and logical-plan wrapping happen before
                     // the physical optimizer runs, so `last_report` is empty
                     // here. The leaf-guard helper no-ops on non-leaf-guard
@@ -354,6 +554,9 @@ impl DatafusionNexusFlightSqlService {
             },
             _ = token.cancelled() => {
                 native_cancellation.cancel();
+                if let Some(attempt) = attempt.as_ref() {
+                    attempt.cancel_before_stream();
+                }
                 let (status, captured) = adapter_error_to_status_and_capture(cancellation_error(&self.shutdown_token));
                 let status = status_with_query_id_and_correlation_id(
                     status,
@@ -374,7 +577,6 @@ impl DatafusionNexusFlightSqlService {
             entry.mark_executed();
         }
         let schema = df.schema().as_arrow().clone();
-        let task_ctx = Arc::new(df.task_ctx());
         let logical_plan_tables = referenced_table_names(df.logical_plan());
         // Physical planning runs the retained native optimizer rule. Capture
         // the post-optimizer plan and retained diagnostics before execution so
@@ -389,6 +591,9 @@ impl DatafusionNexusFlightSqlService {
                 )) => match result {
                 Ok(plan) => plan,
                 Err(error) => {
+                    if let Some(attempt) = attempt.as_ref() {
+                        attempt.planning_failed(&error);
+                    }
                     let diagnostics = planning.native_rule.last_planning_diagnostics();
                     log_native_planning_report_for_tables(
                         &query_id,
@@ -412,6 +617,9 @@ impl DatafusionNexusFlightSqlService {
             },
             _ = token.cancelled() => {
                 native_cancellation.cancel();
+                if let Some(attempt) = attempt.as_ref() {
+                    attempt.cancel_before_stream();
+                }
                 let (status, captured) = adapter_error_to_status_and_capture(cancellation_error(&self.shutdown_token));
                 let status = status_with_query_id_and_correlation_id(
                     status,
@@ -423,6 +631,9 @@ impl DatafusionNexusFlightSqlService {
             },
         };
         let diagnostics = planning.native_rule.last_planning_diagnostics();
+        if let Some(attempt) = attempt.as_ref() {
+            attempt.physical_planning_finished(plan.as_ref());
+        }
         log_native_planning_report_for_tables(
             &query_id,
             diagnostics.as_ref().map(|diagnostics| &diagnostics.report),
@@ -431,7 +642,13 @@ impl DatafusionNexusFlightSqlService {
         self.coordinator.capture_planning(&query_id, diagnostics, Arc::clone(&plan));
         let native_execution_span =
             Self::query_stage_span(Some(&query_span), &query_id, correlation_id.as_deref(), "native_execution");
-        let stream = match execute_physical_stream(Arc::clone(&plan), task_ctx) {
+        let stream_result: datafusion::common::Result<SendableRecordBatchStream> = match attempt.as_ref() {
+            Some(attempt) => attempt
+                .execute_physical_plan(Arc::clone(&plan), &query_ctx)
+                .map(|stream| Box::pin(stream) as SendableRecordBatchStream),
+            None => execute_physical_stream(Arc::clone(&plan), Arc::new(df.task_ctx())),
+        };
+        let stream = match stream_result {
             Ok(stream) => stream,
             Err(error) => {
                 let (status, captured) =
@@ -442,21 +659,14 @@ impl DatafusionNexusFlightSqlService {
                 return Err(status);
             },
         };
-        let mut native_stream = Some(stream);
-        let native_execution_span_for_poll = native_execution_span.clone();
-        let stream = futures::stream::poll_fn(move |context| {
-            let _native_enter = native_execution_span_for_poll.enter();
-            let poll = native_stream
-                .as_mut()
-                .map_or(std::task::Poll::Ready(None), |stream| stream.as_mut().poll_next(context));
-            if matches!(&poll, std::task::Poll::Ready(None)) {
-                // Reaching EOF is the execution-resource boundary. Do not
-                // retain the exhausted DataFusion stream (and its admission
-                // ticket) until tonic later drops the response wrapper.
-                native_stream = None;
-            }
-            poll
-        });
+        let stream = FlightExecutionBody::new(
+            stream,
+            token.clone(),
+            native_cancellation.clone(),
+            attempt_cancellation_for_stream.clone(),
+            Arc::clone(&coordinator_terminal),
+            native_execution_span,
+        );
         let cancel_token_for_tail = token.clone();
         let shutdown_token_for_tail = self.shutdown_token.clone();
         let query_id_for_tail = query_id.clone();
@@ -486,8 +696,7 @@ impl DatafusionNexusFlightSqlService {
                 )
                 .entered();
                 datafusion_error_to_flight_error(error, &query_id_for_body, &terminal_for_body, stream_operation)
-            })
-            .take_until(token.cancelled_owned());
+            });
         let terminal_for_tail = Arc::clone(&coordinator_terminal);
         let tail = futures::stream::once(async move {
             cancel_token_for_tail.is_cancelled().then(|| {
@@ -505,7 +714,7 @@ impl DatafusionNexusFlightSqlService {
         .filter_map(|opt| async move { opt });
         let terminal_for_end = Arc::clone(&coordinator_terminal);
         let end = futures::stream::once(async move {
-            terminal_for_end.finish_success("stream");
+            terminal_for_end.wait_finished().await;
             None::<Result<arrow::record_batch::RecordBatch, FlightError>>
         })
         .filter_map(|opt| async move { opt });

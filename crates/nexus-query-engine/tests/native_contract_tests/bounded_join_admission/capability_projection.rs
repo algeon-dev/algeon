@@ -100,7 +100,7 @@ fn bounded_root_and_single_join_admission_uses_capability_proofs_without_path_pr
     let root_analysis = root.capability_analysis();
     assert!(root.capability_analysis().admits_root_join());
     assert!(root_analysis.admits_root_join());
-    assert!(root_analysis.admits_strict_bounded_join());
+    assert!(root_analysis.admits_bounded_join());
     assert!(!root_analysis.admits_closed_multi_join_subgraph());
     assert!(!root_analysis.admits_keyless_conditional_join_input_subplan_pipeline());
 
@@ -108,7 +108,7 @@ fn bounded_root_and_single_join_admission_uses_capability_proofs_without_path_pr
     let single_analysis = single.capability_analysis();
     assert!(single.capability_analysis().admits_single_join_post_root_pipeline());
     assert!(single_analysis.admits_single_join_post_root_pipeline());
-    assert!(single_analysis.admits_strict_bounded_join());
+    assert!(single_analysis.admits_bounded_join());
     assert!(!single_analysis.admits_closed_multi_join_subgraph());
     assert!(!single_analysis.admits_multi_join_resident_grouped_aggregate_subquery_filter_pipeline());
 }
@@ -287,21 +287,10 @@ fn bounded_capability_analysis_rejects_multi_join_admission_without_family_recog
     assert!(matches!(projection.owner, nexus_query_engine::capability::CapabilityRejectionOwner::Admission(_)));
 
     assert!(
-        nexus_query_engine::admission::strict_bounded_pipeline_admission(&plan)
+        nexus_query_engine::admission::bounded_pipeline_admission(&plan)
             .expect("strict admission should not fail")
             .is_none(),
         "strict admission must reject through the same envelope projection"
-    );
-
-    let adaptive_admission = nexus_query_engine::admission::adaptive_bounded_pipeline_admission(&plan)
-        .expect("adaptive admission should not fail")
-        .expect("join plan should produce adaptive admission evidence");
-    let adaptive_row = adaptive_admission.report().row();
-    assert_eq!(adaptive_row.candidate_status, nexus_query_engine::adaptive_report::AdaptiveCandidateStatus::Rejected);
-    assert_eq!(adaptive_row.rejection_reason, Some(projection.reason));
-    assert!(
-        adaptive_row.missing_strict_contracts.iter().any(|contract| contract.required_contract == projection.reason),
-        "adaptive rejection should expose the same projected strict gap"
     );
 
     let unsupported_facts = unsupported_facts(&plan, ExecutionBoundaryPolicy::default())
@@ -315,9 +304,9 @@ fn bounded_capability_analysis_rejects_multi_join_admission_without_family_recog
         );
     }
 
-    let report = StrictBoundedContractReport::from_capability_analysis(&analysis)
+    let report = CapabilityContractReport::from_capability_analysis(&analysis)
         .expect("unsupported envelope should still produce a strict contract report");
-    assert_eq!(report.execution_mode(), StrictBoundedExecutionMode::UnsupportedStrictBounded);
+    assert_eq!(report.execution_mode(), CapabilityEnvelopeStatus::Rejected);
     let blocking_row = report
         .gate_rows()
         .iter()
@@ -342,32 +331,6 @@ fn bounded_capability_analysis_projects_reservation_facts_without_family_path_vo
             && !value.contains("bounded_join_execution_path")
     }));
     assert!(facts.get("modeled_reservations").is_some_and(|value| value.contains("source_read")));
-}
-
-#[test]
-fn adaptive_admission_report_is_schema_v2_and_excludes_runtime_action_counts() {
-    let plan = simple_root_join_plan();
-    let admission = nexus_query_engine::admission::adaptive_bounded_pipeline_admission(&plan)
-        .expect("adaptive admission should not fail")
-        .expect("root join should produce adaptive admission evidence");
-    let report = admission.report();
-
-    assert_eq!(
-        report.row().candidate_status,
-        nexus_query_engine::adaptive_report::AdaptiveCandidateStatus::Admitted
-    );
-    let stable_row = report.stable_kv_row();
-    assert!(!stable_row.contains("retry_count="));
-    assert!(!stable_row.contains("spill_count="));
-    assert!(!stable_row.contains("downgrade_count="));
-
-    let json = report.to_json();
-    assert_eq!(json["schema"], "nexus_query_engine.adaptive_pipeline_report.v2");
-    assert!(json["row"].get("runtime_action_counts").is_none());
-
-    let triage = report.triage_summary();
-    assert_eq!(triage.verdict, nexus_query_engine::triage::TriageVerdict::Healthy);
-    assert!(triage.signals.is_empty(), "admission-only triage must not project runtime actions");
 }
 
 #[test]
@@ -452,7 +415,7 @@ fn strict_contract_report_projects_rejected_node_capability_when_reservations_ar
     assert!(analysis.has_rejections());
     assert!(analysis.requirements.iter().all(|requirement| requirement.status == ContractStatus::Modeled));
 
-    let report = StrictBoundedContractReport::from_capability_analysis(&analysis)
+    let report = CapabilityContractReport::from_capability_analysis(&analysis)
         .expect("unsupported capability analysis should produce a strict contract report");
     let row = report
         .gate_rows()
@@ -460,9 +423,9 @@ fn strict_contract_report_projects_rejected_node_capability_when_reservations_ar
         .find(|row| row.contract_status == ContractStatus::RejectedByCapability)
         .expect("unsupported report should expose a local capability rejection row");
 
-    assert_eq!(report.execution_mode(), StrictBoundedExecutionMode::UnsupportedStrictBounded);
+    assert_eq!(report.execution_mode(), CapabilityEnvelopeStatus::Rejected);
     assert_eq!(row.contract_scope, ReservationRequirementScope::Node);
-    assert!(matches!(row.owner, StrictBoundedContractOwner::CapabilityNode(_)));
+    assert!(matches!(row.owner, CapabilityContractOwner::CapabilityNode(_)));
     assert_eq!(row.reservation_kind, ReservationKind::CapabilityContract);
     assert_eq!(row.memory_boundary, "node_capability");
     assert_eq!(row.required_contract, "unsupported_join_node_capability");
@@ -474,7 +437,7 @@ fn bounded_capability_analysis_rejects_unsupported_filter_expression_as_node_cap
     let plan = single_join_pipeline_with_empty_in_list_filter_plan();
     let analysis = plan.capability_analysis();
 
-    assert!(!analysis.admits_strict_bounded_join());
+    assert!(!analysis.admits_bounded_join());
     let rejected_filter = analysis
         .nodes
         .iter()
@@ -493,7 +456,7 @@ fn bounded_capability_analysis_rejects_unsupported_join_residual_expression_as_n
     let plan = root_join_with_like_residual_plan();
     let analysis = plan.capability_analysis();
 
-    assert!(!analysis.admits_strict_bounded_join());
+    assert!(!analysis.admits_bounded_join());
     let rejected_join = analysis
         .nodes
         .iter()

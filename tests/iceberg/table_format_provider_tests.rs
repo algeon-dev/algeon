@@ -38,11 +38,13 @@ use datafusion::{
     prelude::{SessionConfig, SessionContext},
 };
 #[cfg(feature = "cuvs")]
-use datafusion_nexus::backend::{GpuMemoryOwnership, NexusGpuBackend, NexusMemoryPolicy};
+use datafusion_nexus::backend::{GpuMemoryOwnership, NexusGpuBackend};
 use datafusion_nexus::{
+    backend::{GpuDeviceMemoryLimit, NexusGpuDeviceProfile},
     capability::CapabilityReason,
     error::{DataFusionErrorExt, Error, ErrorCode, ErrorStatus},
     native::lower_physical_plan_to_native,
+    native_exec::NexusNativeExecutionConfig,
     planner::NexusNativeOptimizerConfig,
     report::CandidateOutcome,
     session::NexusSessionStateBuilderExt,

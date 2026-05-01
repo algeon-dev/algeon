@@ -22,8 +22,6 @@ pub(super) fn execute_degrees_all(
     run_with_cugraph_graph::<cugraph::Transposed, _>(
         context,
         inputs.graph_memory_limit_bytes,
-        spec,
-        None,
         edges,
         options,
         "datafusion_nexus_cugraph_degrees_all",
@@ -67,8 +65,6 @@ pub(super) fn execute_in_degrees_all(
     run_with_cugraph_graph::<cugraph::Transposed, _>(
         context,
         inputs.graph_memory_limit_bytes,
-        spec,
-        None,
         edges,
         options,
         "datafusion_nexus_cugraph_in_degrees_all",
@@ -114,8 +110,6 @@ pub(super) fn execute_out_degrees_all(
     run_with_cugraph_graph::<cugraph::Forward, _>(
         context,
         inputs.graph_memory_limit_bytes,
-        spec,
-        None,
         edges,
         options,
         "datafusion_nexus_cugraph_out_degrees_all",
@@ -159,8 +153,6 @@ pub(super) fn execute_weakly_connected_components(
     run_with_cugraph_graph::<cugraph::Forward, _>(
         context,
         inputs.graph_memory_limit_bytes,
-        spec,
-        None,
         edges,
         options,
         "datafusion_nexus_cugraph_weakly_connected_components",
@@ -205,8 +197,6 @@ pub(super) fn execute_strongly_connected_components(
     run_with_cugraph_graph::<cugraph::Forward, _>(
         context,
         inputs.graph_memory_limit_bytes,
-        spec,
-        None,
         edges,
         options,
         "datafusion_nexus_cugraph_strongly_connected_components",
@@ -251,8 +241,6 @@ pub(super) fn execute_triangle_count_all(
     run_with_cugraph_graph::<cugraph::Forward, _>(
         context,
         inputs.graph_memory_limit_bytes,
-        spec,
-        None,
         edges,
         options,
         "datafusion_nexus_cugraph_triangle_count_all",
@@ -301,8 +289,6 @@ pub(super) fn execute_core_number(
     run_with_cugraph_graph::<cugraph::Forward, _>(
         context,
         inputs.graph_memory_limit_bytes,
-        spec,
-        None,
         edges,
         options,
         "datafusion_nexus_cugraph_core_number",
@@ -347,8 +333,6 @@ pub(super) fn execute_k_core(
     run_with_cugraph_graph::<cugraph::Forward, _>(
         context,
         inputs.graph_memory_limit_bytes,
-        spec,
-        None,
         edges,
         options,
         "datafusion_nexus_cugraph_k_core",
@@ -399,8 +383,6 @@ pub(super) fn execute_minimum_spanning_tree(
     run_with_cugraph_graph::<cugraph::Forward, _>(
         context,
         inputs.graph_memory_limit_bytes,
-        spec,
-        None,
         edges,
         options,
         "datafusion_nexus_cugraph_minimum_spanning_tree",

@@ -1,29 +1,29 @@
 use super::*;
 
 impl NexusNativeExecutionContext {
-    pub(super) fn tenant_bound(
-        tenant_context: TenantQueryContext,
+    pub(super) fn admitted(
+        admission_context: AdmittedQueryContext,
         admission_facts: QueryAdmissionFacts,
         record_admission_facts: bool,
     ) -> Self {
-        let context = tenant_context.context().clone();
+        let context = admission_context.context().clone();
         Self {
             context,
             admission_facts: Some(admission_facts),
             record_admission_facts,
-            _tenant_context: Some(tenant_context),
+            _admission_context: Some(admission_context),
             ticket_context: None,
         }
     }
 
-    pub(super) fn ticket_bound(ticket_context: TicketTenantQueryContext) -> Self {
+    pub(super) fn ticket_bound(ticket_context: TicketAdmissionContext) -> Self {
         let context = ticket_context.context().context().clone();
         let admission_facts = ticket_context.admission_facts();
         Self {
             context,
             admission_facts: Some(admission_facts),
             record_admission_facts: ticket_context.should_record_admission_facts(),
-            _tenant_context: None,
+            _admission_context: None,
             ticket_context: Some(ticket_context),
         }
     }
@@ -71,11 +71,11 @@ impl NexusNativeExecutionConfig {
             let admission_facts_recorded = self.query_admission_facts_recorded.clone();
             return handle
                 .acquire_context_with_cancellation(self.cancellation.clone())
-                .map(|tenant_context| {
+                .map(|admission_context| {
                     let record_admission_facts = admission_facts_recorded
                         .as_ref()
                         .is_some_and(|recorded| !recorded.swap(true, Ordering::AcqRel));
-                    NexusNativeExecutionContext::tenant_bound(tenant_context, admission_facts, record_admission_facts)
+                    NexusNativeExecutionContext::admitted(admission_context, admission_facts, record_admission_facts)
                 })
                 .and_then(|context| self.stamp_acquired_service_context(context))
                 .map_err(|error| {
@@ -114,11 +114,11 @@ impl NexusNativeExecutionConfig {
             return Arc::clone(handle)
                 .acquire_context_with_cancellation_async(self.cancellation.clone())
                 .await
-                .map(|tenant_context| {
+                .map(|admission_context| {
                     let record_admission_facts = admission_facts_recorded
                         .as_ref()
                         .is_some_and(|recorded| !recorded.swap(true, Ordering::AcqRel));
-                    NexusNativeExecutionContext::tenant_bound(tenant_context, admission_facts, record_admission_facts)
+                    NexusNativeExecutionContext::admitted(admission_context, admission_facts, record_admission_facts)
                 })
                 .and_then(|context| self.stamp_acquired_service_context(context))
                 .map_err(|error| {

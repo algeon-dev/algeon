@@ -1,4 +1,4 @@
-//! Strict bounded contract accounting rows.
+//! Capability-contract accounting rows.
 //!
 //! The report model is DataFusion-free and gate-first: it projects capability
 //! requirements and compiled reservation gates without routing through bounded
@@ -8,13 +8,12 @@ use std::fmt;
 
 use serde_json::{Value, json};
 
-pub use crate::mode::StrictBoundedExecutionMode;
+pub use crate::mode::CapabilityEnvelopeStatus;
 use crate::{
     capability::{
         CapabilityAnalysis, CapabilityEnvelopeAdmission, CapabilityRejectionOwner, CapabilityRejectionProjection,
         ContractQuality, ContractStatus, EdgeConsumer, InvariantId, NodeOperator, ReservationRequirement,
-        ReservationRequirementScope, ResultSinkKind, lower_level_unresolved_preflight_gap,
-        strict_unresolved_preflight_gap,
+        ReservationRequirementScope, ResultSinkKind, lower_level_unresolved_preflight_gap, unresolved_preflight_gap,
     },
     error::{QueryError, QueryErrorCode, Result},
     metrics::{QueryId, TraceId},
@@ -23,36 +22,36 @@ use crate::{
     runtime::ReservationKind,
 };
 
-/// Gate-first report for strict bounded contract readiness.
+/// Gate-first report for capability-envelope readiness.
 ///
-/// A report is strict-only: non-strict runtime evidence must use a different
-/// report surface and execution mode.
+/// Its JSON and TSV projections use stable wire labels, but this report is the
+/// canonical single-controller evidence store.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StrictBoundedContractReport {
+pub struct CapabilityContractReport {
     query_id: Option<QueryId>,
     trace_id: Option<TraceId>,
-    execution_mode: StrictBoundedExecutionMode,
-    gate_rows: Vec<StrictBoundedContractGateRow>,
+    execution_mode: CapabilityEnvelopeStatus,
+    gate_rows: Vec<CapabilityContractGateRow>,
 }
 
-impl StrictBoundedContractReport {
-    /// Builds a strict contract report from already-materialized gate rows.
+impl CapabilityContractReport {
+    /// Builds a capability-contract report from already-materialized gate rows.
     pub fn from_gate_rows(
-        execution_mode: StrictBoundedExecutionMode,
-        gate_rows: Vec<StrictBoundedContractGateRow>,
+        execution_mode: CapabilityEnvelopeStatus,
+        gate_rows: Vec<CapabilityContractGateRow>,
     ) -> Result<Self> {
         Self::new(execution_mode, gate_rows)
     }
 
     /// Builds a report from compiled reservation gates and validates capability backing.
     pub fn from_compiled_pipeline(analysis: &CapabilityAnalysis, pipeline: &CompiledPipeline) -> Result<Self> {
-        let execution_mode = strict_execution_mode_for_analysis(analysis, || {
+        let execution_mode = capability_envelope_status_for_analysis(analysis, || {
             pipeline.gates().iter().any(|gate| gate.status() != ContractStatus::Modeled)
         });
 
         let mut gate_rows = Vec::with_capacity(pipeline.gates().len());
         for gate in pipeline.gates() {
-            let row = StrictBoundedContractGateRow::from_compiled_gate(execution_mode, gate)?;
+            let row = CapabilityContractGateRow::from_compiled_gate(execution_mode, gate)?;
             validate_requirement_is_backed_by_capability_analysis(analysis, gate.requirement())?;
             gate_rows.push(row);
         }
@@ -65,19 +64,19 @@ impl StrictBoundedContractReport {
     /// This is used before pipeline compilation or when admission failed before
     /// concrete reservation gates could be emitted.
     pub fn from_capability_analysis(analysis: &CapabilityAnalysis) -> Result<Self> {
-        let execution_mode = strict_execution_mode_for_analysis(analysis, || {
+        let execution_mode = capability_envelope_status_for_analysis(analysis, || {
             analysis.requirements.iter().any(|requirement| requirement.status != ContractStatus::Modeled)
         });
         let mut gate_rows = Vec::new();
 
         for node in &analysis.nodes {
             for requirement in &node.local_requirements {
-                let gate_id = StrictBoundedContractGateId::CapabilityRequirement {
+                let gate_id = CapabilityContractGateId::CapabilityRequirement {
                     scope: ReservationRequirementScope::Node,
                     index: gate_rows.len(),
                 };
-                let owner = StrictBoundedContractOwner::CapabilityNode(node.node_id);
-                gate_rows.push(StrictBoundedContractGateRow::from_requirement(
+                let owner = CapabilityContractOwner::CapabilityNode(node.node_id);
+                gate_rows.push(CapabilityContractGateRow::from_requirement(
                     execution_mode,
                     gate_id,
                     owner,
@@ -88,13 +87,13 @@ impl StrictBoundedContractReport {
 
         for edge in &analysis.edges {
             for requirement in &edge.reservation_requirements {
-                let gate_id = StrictBoundedContractGateId::CapabilityRequirement {
+                let gate_id = CapabilityContractGateId::CapabilityRequirement {
                     scope: ReservationRequirementScope::Edge,
                     index: gate_rows.len(),
                 };
                 let owner =
-                    StrictBoundedContractOwner::CapabilityEdge { producer: edge.producer, consumer: edge.consumer };
-                gate_rows.push(StrictBoundedContractGateRow::from_requirement(
+                    CapabilityContractOwner::CapabilityEdge { producer: edge.producer, consumer: edge.consumer };
+                gate_rows.push(CapabilityContractGateRow::from_requirement(
                     execution_mode,
                     gate_id,
                     owner,
@@ -105,12 +104,12 @@ impl StrictBoundedContractReport {
 
         for invariant in &analysis.invariants {
             for requirement in &invariant.reservation_requirements {
-                let gate_id = StrictBoundedContractGateId::CapabilityRequirement {
+                let gate_id = CapabilityContractGateId::CapabilityRequirement {
                     scope: ReservationRequirementScope::Subgraph,
                     index: gate_rows.len(),
                 };
-                let owner = StrictBoundedContractOwner::CapabilitySubgraph(invariant.invariant_id);
-                gate_rows.push(StrictBoundedContractGateRow::from_requirement(
+                let owner = CapabilityContractOwner::CapabilitySubgraph(invariant.invariant_id);
+                gate_rows.push(CapabilityContractGateRow::from_requirement(
                     execution_mode,
                     gate_id,
                     owner,
@@ -124,19 +123,19 @@ impl StrictBoundedContractReport {
         Self::new(execution_mode, gate_rows)
     }
 
-    /// Returns the strict bounded readiness mode represented by every row.
-    pub fn execution_mode(&self) -> StrictBoundedExecutionMode {
+    /// Returns the capability-envelope status represented by every row.
+    pub fn execution_mode(&self) -> CapabilityEnvelopeStatus {
         self.execution_mode
     }
 
     /// Returns gate rows in stable report order.
-    pub fn gate_rows(&self) -> &[StrictBoundedContractGateRow] {
+    pub fn gate_rows(&self) -> &[CapabilityContractGateRow] {
         &self.gate_rows
     }
 
-    /// Returns true when every gate is modeled for strict bounded execution.
-    pub fn is_strict_bounded_ready(&self) -> bool {
-        self.execution_mode == StrictBoundedExecutionMode::StrictBounded
+    /// Returns true when every gate is modeled for the capability envelope.
+    pub fn is_ready(&self) -> bool {
+        self.execution_mode == CapabilityEnvelopeStatus::Admitted
             && self.gate_rows.iter().all(|row| row.contract_status == ContractStatus::Modeled)
     }
 
@@ -150,14 +149,14 @@ impl StrictBoundedContractReport {
         self.trace_id.as_ref()
     }
 
-    /// Returns this strict report with a query id assigned.
+    /// Returns this report with a query id assigned.
     #[must_use]
     pub fn with_query_id(mut self, query_id: impl Into<QueryId>) -> Self {
         self.query_id = Some(query_id.into());
         self
     }
 
-    /// Returns this strict report with a parent trace id assigned.
+    /// Returns this report with a parent trace id assigned.
     #[must_use]
     pub fn with_trace_id(mut self, trace_id: impl Into<TraceId>) -> Self {
         self.trace_id = Some(trace_id.into());
@@ -166,10 +165,10 @@ impl StrictBoundedContractReport {
 
     /// Serializes each row as a stable comma-separated key/value string.
     pub fn stable_kv_rows(&self) -> Vec<String> {
-        self.gate_rows.iter().map(StrictBoundedContractGateRow::to_stable_kv_row).collect()
+        self.gate_rows.iter().map(CapabilityContractGateRow::to_stable_kv_row).collect()
     }
 
-    /// Serializes this strict bounded contract report as named JSON.
+    /// Serializes this report with its established compatibility schema.
     pub fn to_json(&self) -> Value {
         json!({
             "schema": "nexus_query_engine.strict_bounded_contract_report.v1",
@@ -177,24 +176,22 @@ impl StrictBoundedContractReport {
             "trace_id": self.trace_id.as_ref().map(TraceId::as_str),
             "triage": self.triage_summary().to_json(),
             "execution_mode": self.execution_mode.as_str(),
-            "strict_bounded_ready": self.is_strict_bounded_ready(),
-            "gate_rows": self.gate_rows.iter().map(StrictBoundedContractGateRow::to_json).collect::<Vec<_>>(),
+            "strict_bounded_ready": self.is_ready(),
+            "gate_rows": self.gate_rows.iter().map(CapabilityContractGateRow::to_json).collect::<Vec<_>>(),
         })
     }
 
-    fn new(execution_mode: StrictBoundedExecutionMode, gate_rows: Vec<StrictBoundedContractGateRow>) -> Result<Self> {
+    fn new(execution_mode: CapabilityEnvelopeStatus, gate_rows: Vec<CapabilityContractGateRow>) -> Result<Self> {
         if gate_rows.is_empty() {
-            return Err(contract_report_error("strict bounded contract report has no gate rows"));
+            return Err(contract_report_error("capability contract report has no gate rows"));
         }
         for row in &gate_rows {
             validate_report_row(row)?;
             if row.execution_mode != execution_mode {
-                return Err(contract_report_error(
-                    "strict bounded contract report row has inconsistent execution mode",
-                )
-                .with_fact("row_execution_mode", row.execution_mode.as_str())
-                .with_fact("report_execution_mode", execution_mode.as_str())
-                .with_fact("gate_id", row.gate_id.to_string()));
+                return Err(contract_report_error("capability contract report row has inconsistent envelope status")
+                    .with_fact("row_execution_mode", row.execution_mode.as_str())
+                    .with_fact("report_execution_mode", execution_mode.as_str())
+                    .with_fact("gate_id", row.gate_id.to_string()));
             }
         }
         validate_report_execution_mode(execution_mode, &gate_rows)?;
@@ -203,16 +200,16 @@ impl StrictBoundedContractReport {
 }
 
 fn append_rejection_projection_if_needed(
-    execution_mode: StrictBoundedExecutionMode,
+    execution_mode: CapabilityEnvelopeStatus,
     analysis: &CapabilityAnalysis,
-    gate_rows: &mut Vec<StrictBoundedContractGateRow>,
+    gate_rows: &mut Vec<CapabilityContractGateRow>,
 ) -> Result<()> {
-    if execution_mode == StrictBoundedExecutionMode::UnsupportedStrictBounded
+    if execution_mode == CapabilityEnvelopeStatus::Rejected
         && gate_rows.iter().all(|row| row.contract_status == ContractStatus::Modeled)
         && analysis_has_join_operator(analysis)
         && let Some(projection) = analysis.first_rejection_projection()
     {
-        gate_rows.push(StrictBoundedContractGateRow::from_capability_rejection_projection(
+        gate_rows.push(CapabilityContractGateRow::from_capability_rejection_projection(
             execution_mode,
             gate_rows.len(),
             &projection,
@@ -225,37 +222,35 @@ fn analysis_has_join_operator(analysis: &CapabilityAnalysis) -> bool {
     analysis.nodes.iter().any(|node| matches!(node.operator, NodeOperator::Join { .. }))
 }
 
-fn strict_execution_mode_for_analysis(
+fn capability_envelope_status_for_analysis(
     analysis: &CapabilityAnalysis,
     has_non_modeled_gates: impl FnOnce() -> bool,
-) -> StrictBoundedExecutionMode {
+) -> CapabilityEnvelopeStatus {
     let has_non_modeled_gates = has_non_modeled_gates();
-    match analysis.strict_bounded_envelope_admission() {
-        CapabilityEnvelopeAdmission::Admitted { .. } if !has_non_modeled_gates => {
-            StrictBoundedExecutionMode::StrictBounded
-        },
+    match analysis.capability_envelope_admission() {
+        CapabilityEnvelopeAdmission::Admitted { .. } if !has_non_modeled_gates => CapabilityEnvelopeStatus::Admitted,
         CapabilityEnvelopeAdmission::Rejected { .. }
             if !analysis_has_join_operator(analysis) && !has_non_modeled_gates =>
         {
-            StrictBoundedExecutionMode::StrictBounded
+            CapabilityEnvelopeStatus::Admitted
         },
         CapabilityEnvelopeAdmission::Admitted { .. } | CapabilityEnvelopeAdmission::Rejected { .. } => {
-            StrictBoundedExecutionMode::UnsupportedStrictBounded
+            CapabilityEnvelopeStatus::Rejected
         },
     }
 }
 
-/// One stable row describing a strict bounded reservation or capability gate.
+/// One stable row describing a capability-envelope reservation or gate.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StrictBoundedContractGateRow {
-    /// Strict bounded readiness label for this row.
-    pub execution_mode: StrictBoundedExecutionMode,
+pub struct CapabilityContractGateRow {
+    /// Capability-envelope status for this row.
+    pub execution_mode: CapabilityEnvelopeStatus,
     /// Most local graph scope that owns the gate.
     pub contract_scope: ReservationRequirementScope,
     /// Stable row id from either a compiled gate or capability requirement.
-    pub gate_id: StrictBoundedContractGateId,
+    pub gate_id: CapabilityContractGateId,
     /// Graph object that owns the gate.
-    pub owner: StrictBoundedContractOwner,
+    pub owner: CapabilityContractOwner,
     /// Runtime reservation class.
     pub reservation_kind: ReservationKind,
     /// Stable report label for the resource or execution boundary.
@@ -270,20 +265,20 @@ pub struct StrictBoundedContractGateRow {
     pub unresolved_preflight_gap: Option<&'static str>,
 }
 
-impl StrictBoundedContractGateRow {
-    fn from_compiled_gate(execution_mode: StrictBoundedExecutionMode, gate: &ReservationGate) -> Result<Self> {
+impl CapabilityContractGateRow {
+    fn from_compiled_gate(execution_mode: CapabilityEnvelopeStatus, gate: &ReservationGate) -> Result<Self> {
         Self::from_requirement(
             execution_mode,
-            StrictBoundedContractGateId::Compiled(gate.id()),
-            StrictBoundedContractOwner::Compiled(gate.owner()),
+            CapabilityContractGateId::Compiled(gate.id()),
+            CapabilityContractOwner::Compiled(gate.owner()),
             gate.requirement(),
         )
     }
 
     fn from_requirement(
-        execution_mode: StrictBoundedExecutionMode,
-        gate_id: StrictBoundedContractGateId,
-        owner: StrictBoundedContractOwner,
+        execution_mode: CapabilityEnvelopeStatus,
+        gate_id: CapabilityContractGateId,
+        owner: CapabilityContractOwner,
         requirement: &ReservationRequirement,
     ) -> Result<Self> {
         validate_report_requirement(&gate_id, requirement)?;
@@ -307,15 +302,15 @@ impl StrictBoundedContractGateRow {
 
     /// Builds a synthetic report row for the first capability rejection.
     pub fn from_capability_rejection_projection(
-        execution_mode: StrictBoundedExecutionMode,
+        execution_mode: CapabilityEnvelopeStatus,
         index: usize,
         projection: &CapabilityRejectionProjection,
     ) -> Result<Self> {
         let row = Self {
             execution_mode,
             contract_scope: projection.contract_scope,
-            gate_id: StrictBoundedContractGateId::CapabilityRequirement { scope: projection.contract_scope, index },
-            owner: StrictBoundedContractOwner::from_capability_rejection_owner(&projection.owner),
+            gate_id: CapabilityContractGateId::CapabilityRequirement { scope: projection.contract_scope, index },
+            owner: CapabilityContractOwner::from_capability_rejection_owner(&projection.owner),
             reservation_kind: ReservationKind::CapabilityContract,
             memory_boundary: projection.memory_boundary,
             required_contract: projection.reason,
@@ -344,7 +339,7 @@ impl StrictBoundedContractGateRow {
         )
     }
 
-    /// Serializes this strict bounded contract row as named JSON.
+    /// Serializes this row with the report's compatibility schema.
     pub fn to_json(&self) -> Value {
         json!({
             "execution_mode": self.execution_mode.as_str(),
@@ -361,15 +356,15 @@ impl StrictBoundedContractGateRow {
     }
 }
 
-impl fmt::Display for StrictBoundedContractGateRow {
+impl fmt::Display for CapabilityContractGateRow {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.to_stable_kv_row())
     }
 }
 
-/// Stable identifier for a strict bounded contract report row.
+/// Stable identifier for a capability-contract report row.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum StrictBoundedContractGateId {
+pub enum CapabilityContractGateId {
     /// Row comes from a reservation gate in a compiled pipeline graph.
     Compiled(ReservationGateId),
     /// Row comes from a capability requirement before graph compilation.
@@ -381,7 +376,7 @@ pub enum StrictBoundedContractGateId {
     },
 }
 
-impl fmt::Display for StrictBoundedContractGateId {
+impl fmt::Display for CapabilityContractGateId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Compiled(gate_id) => write!(f, "{gate_id}"),
@@ -392,9 +387,9 @@ impl fmt::Display for StrictBoundedContractGateId {
     }
 }
 
-/// Report-facing owner for a strict bounded contract gate.
+/// Report-facing owner for a capability-contract gate.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum StrictBoundedContractOwner {
+pub enum CapabilityContractOwner {
     /// Gate owner from a compiled pipeline graph.
     Compiled(ReservationGateOwner),
     /// Node-local capability owner.
@@ -412,7 +407,7 @@ pub enum StrictBoundedContractOwner {
     CapabilityAdmission(&'static str),
 }
 
-impl StrictBoundedContractOwner {
+impl CapabilityContractOwner {
     fn from_capability_rejection_owner(owner: &CapabilityRejectionOwner) -> Self {
         match owner {
             CapabilityRejectionOwner::Node(node) => Self::CapabilityNode(*node),
@@ -425,7 +420,7 @@ impl StrictBoundedContractOwner {
     }
 }
 
-impl fmt::Display for StrictBoundedContractOwner {
+impl fmt::Display for CapabilityContractOwner {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Compiled(owner) => write!(f, "{owner}"),
@@ -458,7 +453,7 @@ fn validate_requirement_is_backed_by_capability_analysis(
     if analysis.requirements.iter().any(|candidate| candidate == requirement) {
         return Ok(());
     }
-    Err(contract_report_error("compiled strict bounded gate is not backed by capability analysis")
+    Err(contract_report_error("compiled capability gate is not backed by capability analysis")
         .with_fact("reservation_kind", requirement.kind.as_str())
         .with_fact("memory_boundary", requirement.memory_boundary)
         .with_fact("required_contract", requirement.required_contract)
@@ -466,32 +461,29 @@ fn validate_requirement_is_backed_by_capability_analysis(
         .with_fact("contract_quality", requirement.quality.as_str()))
 }
 
-fn validate_report_requirement(
-    gate_id: &StrictBoundedContractGateId,
-    requirement: &ReservationRequirement,
-) -> Result<()> {
+fn validate_report_requirement(gate_id: &CapabilityContractGateId, requirement: &ReservationRequirement) -> Result<()> {
     if requirement.memory_boundary.is_empty() {
-        return Err(contract_report_error("strict bounded contract gate has empty memory boundary")
+        return Err(contract_report_error("capability contract gate has empty memory boundary")
             .with_fact("gate_id", gate_id)
             .with_fact("reservation_kind", requirement.kind.as_str()));
     }
     if requirement.required_contract.is_empty() {
-        return Err(contract_report_error("strict bounded contract gate has empty required contract")
+        return Err(contract_report_error("capability contract gate has empty required contract")
             .with_fact("gate_id", gate_id)
             .with_fact("reservation_kind", requirement.kind.as_str()));
     }
     if requirement.status.as_str().is_empty() {
-        return Err(contract_report_error("strict bounded contract gate lacks status")
+        return Err(contract_report_error("capability contract gate lacks status")
             .with_fact("gate_id", gate_id)
             .with_fact("reservation_kind", requirement.kind.as_str()));
     }
     if requirement.quality.as_str().is_empty() {
-        return Err(contract_report_error("strict bounded contract gate lacks quality")
+        return Err(contract_report_error("capability contract gate lacks quality")
             .with_fact("gate_id", gate_id)
             .with_fact("reservation_kind", requirement.kind.as_str()));
     }
 
-    let unresolved_gap = strict_unresolved_preflight_gap(requirement.kind, requirement.required_contract);
+    let unresolved_gap = unresolved_preflight_gap(requirement.kind, requirement.required_contract);
     if requirement.quality == ContractQuality::HardBudgetedReportWithUnresolvedPreflight {
         if requirement.status != ContractStatus::Modeled {
             return Err(contract_report_error("hard-budgeted unresolved-preflight gate must remain modeled")
@@ -518,14 +510,14 @@ fn validate_report_requirement(
     Ok(())
 }
 
-fn validate_report_row(row: &StrictBoundedContractGateRow) -> Result<()> {
+fn validate_report_row(row: &CapabilityContractGateRow) -> Result<()> {
     if row.memory_boundary.is_empty() {
-        return Err(contract_report_error("strict bounded contract gate has empty memory boundary")
+        return Err(contract_report_error("capability contract gate has empty memory boundary")
             .with_fact("gate_id", row.gate_id.to_string())
             .with_fact("reservation_kind", row.reservation_kind.as_str()));
     }
     if row.required_contract.is_empty() {
-        return Err(contract_report_error("strict bounded contract gate has empty required contract")
+        return Err(contract_report_error("capability contract gate has empty required contract")
             .with_fact("gate_id", row.gate_id.to_string())
             .with_fact("reservation_kind", row.reservation_kind.as_str()));
     }
@@ -548,49 +540,44 @@ fn validate_report_row(row: &StrictBoundedContractGateRow) -> Result<()> {
 }
 
 fn validate_report_execution_mode(
-    execution_mode: StrictBoundedExecutionMode,
-    gate_rows: &[StrictBoundedContractGateRow],
+    execution_mode: CapabilityEnvelopeStatus,
+    gate_rows: &[CapabilityContractGateRow],
 ) -> Result<()> {
     let has_non_modeled_row = gate_rows.iter().any(|row| row.contract_status != ContractStatus::Modeled);
     match execution_mode {
-        StrictBoundedExecutionMode::StrictBounded if has_non_modeled_row => {
-            Err(contract_report_error("strict bounded report cannot contain non-modeled contract rows")
+        CapabilityEnvelopeStatus::Admitted if has_non_modeled_row => {
+            Err(contract_report_error("admitted capability report cannot contain non-modeled contract rows")
                 .with_fact("report_execution_mode", execution_mode.as_str()))
         },
-        StrictBoundedExecutionMode::UnsupportedStrictBounded if !has_non_modeled_row => {
-            Err(contract_report_error("unsupported strict bounded report must contain a non-modeled contract row")
+        CapabilityEnvelopeStatus::Rejected if !has_non_modeled_row => {
+            Err(contract_report_error("rejected capability report must contain a non-modeled contract row")
                 .with_fact("report_execution_mode", execution_mode.as_str()))
         },
-        StrictBoundedExecutionMode::StrictBounded | StrictBoundedExecutionMode::UnsupportedStrictBounded => Ok(()),
+        CapabilityEnvelopeStatus::Admitted | CapabilityEnvelopeStatus::Rejected => Ok(()),
     }
 }
 
-fn validate_report_row_owner_scope(row: &StrictBoundedContractGateRow) -> Result<()> {
+fn validate_report_row_owner_scope(row: &CapabilityContractGateRow) -> Result<()> {
     let valid = match (&row.owner, row.contract_scope) {
-        (StrictBoundedContractOwner::Compiled(ReservationGateOwner::Task(_)), ReservationRequirementScope::Node) => {
-            true
-        },
-        (StrictBoundedContractOwner::Compiled(ReservationGateOwner::Edge(_)), ReservationRequirementScope::Edge) => {
-            true
+        (CapabilityContractOwner::Compiled(ReservationGateOwner::Task(_)), ReservationRequirementScope::Node) => true,
+        (CapabilityContractOwner::Compiled(ReservationGateOwner::Edge(_)), ReservationRequirementScope::Edge) => true,
+        (CapabilityContractOwner::Compiled(ReservationGateOwner::SinkBoundary), ReservationRequirementScope::Edge) => {
+            sink_boundary_edge_gate_kind_is_allowed(row.reservation_kind)
         },
         (
-            StrictBoundedContractOwner::Compiled(ReservationGateOwner::SinkBoundary),
-            ReservationRequirementScope::Edge,
-        ) => sink_boundary_edge_gate_kind_is_allowed(row.reservation_kind),
-        (
-            StrictBoundedContractOwner::Compiled(ReservationGateOwner::Barrier(_)),
+            CapabilityContractOwner::Compiled(ReservationGateOwner::Barrier(_)),
             ReservationRequirementScope::Subgraph,
         ) => true,
-        (StrictBoundedContractOwner::CapabilityNode(_), ReservationRequirementScope::Node) => true,
-        (StrictBoundedContractOwner::CapabilityEdge { .. }, ReservationRequirementScope::Edge) => true,
-        (StrictBoundedContractOwner::CapabilitySubgraph(_), ReservationRequirementScope::Subgraph) => true,
-        (StrictBoundedContractOwner::CapabilityAdmission(_), ReservationRequirementScope::Subgraph) => true,
+        (CapabilityContractOwner::CapabilityNode(_), ReservationRequirementScope::Node) => true,
+        (CapabilityContractOwner::CapabilityEdge { .. }, ReservationRequirementScope::Edge) => true,
+        (CapabilityContractOwner::CapabilitySubgraph(_), ReservationRequirementScope::Subgraph) => true,
+        (CapabilityContractOwner::CapabilityAdmission(_), ReservationRequirementScope::Subgraph) => true,
         _ => false,
     };
     if valid {
         return Ok(());
     }
-    Err(contract_report_error("strict bounded contract owner does not match contract scope")
+    Err(contract_report_error("capability contract owner does not match contract scope")
         .with_fact("gate_id", row.gate_id.to_string())
         .with_fact("owner", row.owner.to_string())
         .with_fact("contract_scope", row.contract_scope.as_str())
@@ -608,14 +595,14 @@ fn sink_boundary_edge_gate_kind_is_allowed(kind: ReservationKind) -> bool {
 }
 
 fn validate_quality_gap_consistency(
-    gate_id: &StrictBoundedContractGateId,
+    gate_id: &CapabilityContractGateId,
     kind: ReservationKind,
     required_contract: &str,
     status: ContractStatus,
     quality: ContractQuality,
-    unresolved_preflight_gap: Option<&'static str>,
+    reported_unresolved_preflight_gap: Option<&'static str>,
 ) -> Result<()> {
-    let expected_gap = strict_unresolved_preflight_gap(kind, required_contract).map(|gap| gap.unresolved_gap);
+    let expected_gap = unresolved_preflight_gap(kind, required_contract).map(|gap| gap.unresolved_gap);
     if quality == ContractQuality::HardBudgetedReportWithUnresolvedPreflight {
         if status != ContractStatus::Modeled {
             return Err(contract_report_error("hard-budgeted unresolved-preflight gate must remain modeled")
@@ -630,7 +617,7 @@ fn validate_quality_gap_consistency(
                 .with_fact("reservation_kind", kind.as_str())
                 .with_fact("required_contract", required_contract));
         };
-        if unresolved_preflight_gap != Some(expected_gap) {
+        if reported_unresolved_preflight_gap != Some(expected_gap) {
             return Err(contract_report_error(
                 "hard-budgeted gate has mismatched lower-level unresolved preflight gap",
             )
@@ -638,15 +625,15 @@ fn validate_quality_gap_consistency(
             .with_fact("reservation_kind", kind.as_str())
             .with_fact("required_contract", required_contract)
             .with_fact("expected_unresolved_preflight_gap", expected_gap)
-            .with_fact("unresolved_preflight_gap", unresolved_preflight_gap.unwrap_or("none")));
+            .with_fact("unresolved_preflight_gap", reported_unresolved_preflight_gap.unwrap_or("none")));
         }
-    } else if unresolved_preflight_gap.is_some() {
+    } else if reported_unresolved_preflight_gap.is_some() {
         return Err(contract_report_error("non-hard-budgeted gate must not carry unresolved preflight gap")
             .with_fact("gate_id", gate_id.to_string())
             .with_fact("reservation_kind", kind.as_str())
             .with_fact("required_contract", required_contract)
             .with_fact("contract_quality", quality.as_str())
-            .with_fact("unresolved_preflight_gap", unresolved_preflight_gap.unwrap_or("none")));
+            .with_fact("unresolved_preflight_gap", reported_unresolved_preflight_gap.unwrap_or("none")));
     }
     if expected_gap.is_some() && quality != ContractQuality::HardBudgetedReportWithUnresolvedPreflight {
         return Err(contract_report_error("unresolved-preflight gate must use unresolved-preflight quality")
@@ -660,7 +647,7 @@ fn validate_quality_gap_consistency(
 }
 
 fn validate_quality_ownership(
-    gate_id: &StrictBoundedContractGateId,
+    gate_id: &CapabilityContractGateId,
     kind: ReservationKind,
     required_contract: &str,
     status: ContractStatus,
@@ -708,5 +695,5 @@ fn exact_preflight_contract_is_owned_by_lower_layer(kind: ReservationKind, requi
 }
 
 fn contract_report_error(message: &'static str) -> QueryError {
-    QueryError::new(QueryErrorCode::InvalidPlan, "nexus_query_engine.strict_bounded_contract_report", message)
+    QueryError::new(QueryErrorCode::InvalidPlan, "nexus_query_engine.capability_contract_report", message)
 }

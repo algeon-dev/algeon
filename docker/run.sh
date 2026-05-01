@@ -26,25 +26,19 @@ IMAGE="${NEXUS_SERVER_IMAGE:-datafusion-nexus-server:x86-64-v2}"
 # Server core
 # NEXUS_SERVER_BIND          host:port to listen on (default: 0.0.0.0:50051)
 # NEXUS_SERVER_LOG           tracing filter — "info", "debug", "warn,datafusion=info"
-# NEXUS_SERVER_MAX_IN_FLIGHT max concurrent in-flight Flight SQL requests (default: 1)
 # ---------------------------------------------------------------------------
 BIND="0.0.0.0:50051"
 LOG="info"
-MAX_IN_FLIGHT=1
 
 # ---------------------------------------------------------------------------
 # Native GPU execution controls
-# Server default without explicit budget env vars is bounded auto-sized. This
-# helper sets an explicit bounded profile for repeatable local/decision-grade
-# runs. Set NEXUS_SERVER_NATIVE_MEMORY_POLICY=unbounded to omit bounded controls.
-#
-# NEXUS_SERVER_NATIVE_MEMORY_POLICY
-#   bounded | unbounded
+# The default is automatic bounded capacity resolved independently for each
+# selected GPU after it is claimed. Set all three explicit profile values only
+# when a deliberately shared cap is required for a reproducible experiment.
 #
 # NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES
-#   Hard cap on live GPU memory reservations.
-#   = nvidia-smi memory.total - 500 MiB overhead
-#   RTX PRO 6000 Blackwell (97887 MiB): 97387 MiB = 102117670912 bytes
+#   Explicit hard cap on live GPU memory reservations. Must be set together
+#   with the source chunk byte and row-group limits below.
 #
 # NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES
 #   Max bytes read per Parquet source chunk.
@@ -63,22 +57,16 @@ MAX_IN_FLIGHT=1
 # NEXUS_SERVER_NATIVE_SOURCE_CHUNK_PLANNING_MODE
 #   conservative | local_parquet_throughput
 #
-# NEXUS_SERVER_NATIVE_PIPELINE_EXECUTION_MODE
-#   strict_bounded | adaptive
-#
 # NEXUS_SERVER_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE
 #   datafusion_exact_host_welford | gpu_native_tolerant
 # ---------------------------------------------------------------------------
-NATIVE_MEMORY_POLICY="${NEXUS_SERVER_NATIVE_MEMORY_POLICY:-bounded}"
-NATIVE_MEMORY_POLICY_NORMALIZED="${NATIVE_MEMORY_POLICY,,}"
-NATIVE_DEVICE_BUDGET_BYTES="${NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES:-102117670912}"   # 97387 MiB
-NATIVE_MAX_SOURCE_CHUNK_BYTES="${NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES:-4294967296}" # 4 GiB
-NATIVE_MAX_ROW_GROUPS_PER_CHUNK="${NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK:-1024}"
+NATIVE_DEVICE_BUDGET_BYTES="${NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES:-}"
+NATIVE_MAX_SOURCE_CHUNK_BYTES="${NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES:-}"
+NATIVE_MAX_ROW_GROUPS_PER_CHUNK="${NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK:-}"
 NATIVE_MAX_RETRY_ATTEMPTS="${NEXUS_SERVER_NATIVE_MAX_RETRY_ATTEMPTS:-3}"
 NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS="${NEXUS_SERVER_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS:-1}"
 NATIVE_MAX_SOURCE_READS_IN_FLIGHT="${NEXUS_SERVER_NATIVE_MAX_SOURCE_READS_IN_FLIGHT:-2}"
 NATIVE_SOURCE_CHUNK_PLANNING_MODE="${NEXUS_SERVER_NATIVE_SOURCE_CHUNK_PLANNING_MODE:-conservative}"
-NATIVE_PIPELINE_EXECUTION_MODE="${NEXUS_SERVER_NATIVE_PIPELINE_EXECUTION_MODE:-strict_bounded}"
 NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE="${NEXUS_SERVER_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE:-datafusion_exact_host_welford}"
 
 # ---------------------------------------------------------------------------
@@ -166,11 +154,13 @@ ARGS=(
     # Server core
     -e "NEXUS_SERVER_BIND=${BIND}"
     -e "NEXUS_SERVER_LOG=${LOG}"
-    -e "NEXUS_SERVER_MAX_IN_FLIGHT=${MAX_IN_FLIGHT}"
 
     # Native GPU execution controls
-    -e "NEXUS_SERVER_NATIVE_MEMORY_POLICY=${NATIVE_MEMORY_POLICY}"
     -e "NEXUS_SERVER_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE=${NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE}"
+    -e "NEXUS_SERVER_NATIVE_MAX_RETRY_ATTEMPTS=${NATIVE_MAX_RETRY_ATTEMPTS}"
+    -e "NEXUS_SERVER_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS=${NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS}"
+    -e "NEXUS_SERVER_NATIVE_MAX_SOURCE_READS_IN_FLIGHT=${NATIVE_MAX_SOURCE_READS_IN_FLIGHT}"
+    -e "NEXUS_SERVER_NATIVE_SOURCE_CHUNK_PLANNING_MODE=${NATIVE_SOURCE_CHUNK_PLANNING_MODE}"
 
     # DataFusion session
     -e "DATAFUSION_EXECUTION_TARGET_PARTITIONS=${DATAFUSION_EXECUTION_TARGET_PARTITIONS}"
@@ -193,16 +183,15 @@ ARGS=(
     -e "NEXUS_SERVER_CUGRAPH_ENABLED=${CUGRAPH_ENABLED}"
 )
 
-if [[ "${NATIVE_MEMORY_POLICY_NORMALIZED}" != "unbounded" ]]; then
+if [[ -n "${NATIVE_DEVICE_BUDGET_BYTES}${NATIVE_MAX_SOURCE_CHUNK_BYTES}${NATIVE_MAX_ROW_GROUPS_PER_CHUNK}" ]]; then
+    if [[ -z "${NATIVE_DEVICE_BUDGET_BYTES}" || -z "${NATIVE_MAX_SOURCE_CHUNK_BYTES}" || -z "${NATIVE_MAX_ROW_GROUPS_PER_CHUNK}" ]]; then
+        echo "ERROR: set NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES, NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES, and NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK together" >&2
+        exit 2
+    fi
     ARGS+=(
         -e "NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES=${NATIVE_DEVICE_BUDGET_BYTES}"
         -e "NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES=${NATIVE_MAX_SOURCE_CHUNK_BYTES}"
         -e "NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK=${NATIVE_MAX_ROW_GROUPS_PER_CHUNK}"
-        -e "NEXUS_SERVER_NATIVE_MAX_RETRY_ATTEMPTS=${NATIVE_MAX_RETRY_ATTEMPTS}"
-        -e "NEXUS_SERVER_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS=${NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS}"
-        -e "NEXUS_SERVER_NATIVE_MAX_SOURCE_READS_IN_FLIGHT=${NATIVE_MAX_SOURCE_READS_IN_FLIGHT}"
-        -e "NEXUS_SERVER_NATIVE_SOURCE_CHUNK_PLANNING_MODE=${NATIVE_SOURCE_CHUNK_PLANNING_MODE}"
-        -e "NEXUS_SERVER_NATIVE_PIPELINE_EXECUTION_MODE=${NATIVE_PIPELINE_EXECUTION_MODE}"
     )
 fi
 

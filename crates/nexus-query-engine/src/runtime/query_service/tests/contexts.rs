@@ -1,122 +1,64 @@
 #[test]
 fn strict_query_service_context_uses_hard_limited_query_domain_members() {
-    let config = QueryServiceConfig {
-        native_pipeline_execution_mode: NativePipelineExecutionMode::StrictBounded,
-        query_memory_domain: Some(QueryMemoryDomainPolicy::default()),
-        slot_guarantee: SlotGuarantee::Optimistic,
-        ..QueryServiceConfig::default()
-    };
-    let service = QueryService::new_with_deployment(
+    let config = QueryExecutionConfig { ..QueryExecutionConfig::default() };
+    let service = runtime_test_service_with_profiles(
         config,
-        vec![QueryServiceTenantConfig::new("tenant", 8 * 1024 * 1024)],
-        non_gds_deployment(),
+        QueueBounds::default(),
+        vec![runtime_test_device_profile_with_limits(0, 64 * 1024 * 1024, 8 * 1024 * 1024, 1, 3, 1, 1)],
     )
     .unwrap();
 
-    let handle = service.admit_query("tenant").unwrap();
+    // An explicit working set pins the immutable grant for the domain-member
+    // assertions below.
+    let handle = service
+        .admit_query_with_request(
+            QueryAdmissionRequest::new().with_attempt_requirement(requirement(8 * 1024 * 1024, Some(8 * 1024 * 1024))),
+        )
+        .unwrap();
     let grant = handle.lifetime.memory_grant().unwrap();
-    let tenant_context = handle.acquire_context().unwrap();
-    let token = tenant_context
+    let admitted_context = handle.acquire_context().unwrap();
+    let token = admitted_context
         .context()
         .execution_budget_token(cudf::ExecutionBudgetRequest::new(1024 * 1024).with_boundary("test_strict_policy"))
         .unwrap();
 
     assert_eq!(token.enforcement(), cudf::ExecutionBudgetEnforcement::QueryDomainMember);
-    assert_eq!(grant.hard_cap_bytes(), Some(16 * 1024 * 1024));
-}
-#[test]
-fn concurrent_runtimes_single_flight_query_memory_domain_creation() {
-    const CONTEXTS: usize = 8;
-    let config = QueryServiceConfig {
-        max_concurrent_queries: CONTEXTS,
-        native_pipeline_execution_mode: NativePipelineExecutionMode::StrictBounded,
-        query_memory_domain: Some(QueryMemoryDomainPolicy::default()),
-        slot_guarantee: SlotGuarantee::Optimistic,
-        stream_pool_size: Some(CONTEXTS * 3),
-        ..QueryServiceConfig::default()
-    };
-    let service = QueryService::new_with_deployment(
-        config,
-        vec![QueryServiceTenantConfig::new("tenant", 8 * 1024 * 1024)],
-        non_gds_deployment(),
-    )
-    .unwrap();
-    let handle = service.admit_query("tenant").unwrap();
-    let grant = handle.lifetime.memory_grant().unwrap();
-    let grant_key = grant.identity_key();
-    let device = service.inner.resources.as_ref().unwrap().devices.context_by_ordinal(handle.device_ordinal).unwrap();
-    let capacity_bytes = device.capacity_bytes();
-    let runtimes = (0..CONTEXTS)
-        .map(|_| device.stream_pool().acquire().unwrap())
-        .map(|lease| (lease.shared_runtime().unwrap(), lease))
-        .collect::<Vec<_>>();
-    let barrier = Arc::new(Barrier::new(CONTEXTS));
-    let threads = runtimes
-        .into_iter()
-        .map(|(runtime, lease)| {
-            let grant = grant.clone();
-            let barrier = Arc::clone(&barrier);
-            std::thread::spawn(move || {
-                barrier.wait();
-                let domain = super::super::memory_domain::create_grant_memory_domain(
-                    runtime.as_ref(),
-                    Some(&grant),
-                    Some(QueryMemoryDomainPolicy::default()),
-                    capacity_bytes,
-                )
-                .unwrap()
-                .unwrap();
-                drop(lease);
-                domain
-            })
-        })
-        .collect::<Vec<_>>();
-    let domains = threads.into_iter().map(|thread| thread.join().unwrap()).collect::<Vec<_>>();
+    assert_eq!(grant.budget_bytes(), 8 * 1024 * 1024);
+    assert_eq!(admitted_context.context().attempt_allocation_domain_id(), Some(grant.grant_id()));
+    let usage = admitted_context.context().attempt_allocation_domain_usage().unwrap().unwrap();
+    assert_eq!(usage.domain_id, grant.grant_id());
 
-    assert!(domains.iter().all(|domain| Arc::ptr_eq(&domains[0], domain)));
-    assert!(!grant_memory_domain_creation_locks().lock().unwrap().contains_key(&grant_key));
-}
-#[test]
-fn query_service_context_carries_local_parquet_source_cache() {
-    let config = QueryServiceConfig {
-        local_parquet_source_cache_max_retained_bytes: Some(4096),
-        slot_guarantee: SlotGuarantee::Optimistic,
-        ..QueryServiceConfig::default()
-    };
-    let service = QueryService::new_with_deployment(
-        config,
-        vec![QueryServiceTenantConfig::new("tenant", 1024 * 1024)],
-        non_gds_deployment(),
-    )
-    .unwrap();
-
-    let handle = service.admit_query("tenant").unwrap();
-    let tenant_context = handle.acquire_context().unwrap();
-    let resources = service.inner.resources.as_ref().unwrap();
-    let service_cache = resources.local_parquet_source_cache_for_device(0).expect("device cache should be installed");
-    let context_cache = tenant_context
+    // One member per stream for the attempt: sequential stage tokens share
+    // it instead of attaching a second member, and their outputs stay valid
+    // after the producing token drops.
+    let outcome =
+        admitted_context.context().runtime().unwrap().series_from_value_with_budget(7i32, 1024, &token).unwrap();
+    assert_eq!(outcome.report().status(), cudf::ExecutionBudgetStatus::ReservationEnforced);
+    let usage_after_alloc = admitted_context.context().attempt_allocation_domain_usage().unwrap().unwrap();
+    assert!(usage_after_alloc.peak_bytes > 0);
+    assert!(usage_after_alloc.active_members >= 1);
+    drop(token);
+    let shared_member_token = admitted_context
         .context()
-        .local_parquet_source_cache()
-        .expect("service context should carry the per-device source cache");
-
-    assert_eq!(context_cache.max_retained_device_bytes(), 4096);
-    assert!(context_cache.is_governor_backed());
-    assert!(Arc::ptr_eq(&service_cache, &context_cache));
+        .execution_budget_token(
+            cudf::ExecutionBudgetRequest::new(1024 * 1024).with_boundary("test_strict_policy_second_stage"),
+        )
+        .expect("the shared member accepts the next stage token on the same stream");
+    let second = admitted_context
+        .context()
+        .runtime()
+        .unwrap()
+        .series_from_value_with_budget(9i32, 1024, &shared_member_token)
+        .unwrap();
+    assert_eq!(second.report().status(), cudf::ExecutionBudgetStatus::ReservationEnforced);
+    drop(second);
+    drop(outcome);
+    drop(shared_member_token);
 }
 #[test]
-fn expired_shutdown_deadline_runs_local_cache_phase_and_returns_component_timeout() {
-    let config = QueryServiceConfig {
-        local_parquet_source_cache_max_retained_bytes: Some(4096),
-        slot_guarantee: SlotGuarantee::Optimistic,
-        ..QueryServiceConfig::default()
-    };
-    let service = QueryService::new_with_deployment(
-        config,
-        vec![QueryServiceTenantConfig::new("tenant", 1024 * 1024)],
-        non_gds_deployment(),
-    )
-    .unwrap();
-    let cache = service.inner.resources.as_ref().unwrap().local_parquet_source_cache_for_device(0).unwrap();
+fn expired_shutdown_deadline_reports_final_timeout() {
+    let config = QueryExecutionConfig { ..QueryExecutionConfig::default() };
+    let service = QueryService::new_with_deployment(config, QueueBounds::default(), non_gds_deployment()).unwrap();
 
     let outcome = service.close_drain_step_until(Instant::now());
     let final_completion = outcome
@@ -126,36 +68,15 @@ fn expired_shutdown_deadline_runs_local_cache_phase_and_returns_component_timeou
         .expect("every drain pass reports final completion");
 
     assert!(matches!(final_completion, QueryServiceDrainPhaseOutcome::DeadlineElapsed { .. }));
-    let QueryServiceDrainPhaseOutcome::DeadlineElapsed { error: final_error, .. } = final_completion else {
-        unreachable!("the final phase is dependency-pending")
-    };
-    assert_eq!(final_error.fact_value("reason"), Some("query_service_cleanup_dependency_pending"));
-    assert_eq!(final_error.fact_value("blocked_by_phase"), Some("local_source_cache"));
-
-    let error = outcome.into_result().unwrap_err();
-
-    assert_eq!(error.code(), QueryErrorCode::ServiceOverloaded);
-    assert_eq!(error.fact_value("reason"), Some("local_source_cache_drain_timeout"));
-    assert!(cache.is_empty().unwrap());
+    assert!(outcome.into_result().is_err());
 }
 #[test]
-fn query_service_source_cache_is_shared_across_stream_runtimes() {
-    let config = QueryServiceConfig {
-        local_parquet_source_cache_max_retained_bytes: Some(4096),
-        max_concurrent_queries: 2,
-        stream_pool_size: Some(6),
-        slot_guarantee: SlotGuarantee::Optimistic,
-        ..QueryServiceConfig::default()
-    };
-    let service = QueryService::new_with_deployment(
-        config,
-        vec![QueryServiceTenantConfig::new("tenant", 1024 * 1024)],
-        non_gds_deployment(),
-    )
-    .unwrap();
+fn query_service_stream_runtimes_are_distinct_while_both_contexts_are_held() {
+    let config = QueryExecutionConfig { ..QueryExecutionConfig::default() };
+    let service = QueryService::new_with_deployment(config, QueueBounds::default(), non_gds_deployment()).unwrap();
 
-    let first_handle = service.admit_query("tenant").unwrap();
-    let second_handle = service.admit_query("tenant").unwrap();
+    let first_handle = service.admit_query().unwrap();
+    let second_handle = service.admit_query().unwrap();
     let first_context = first_handle.acquire_context().unwrap();
     let second_context = second_handle.acquire_context().unwrap();
 
@@ -165,145 +86,52 @@ fn query_service_source_cache_is_shared_across_stream_runtimes() {
         !Arc::ptr_eq(&first_runtime, &second_runtime),
         "holding the first context should force the second stream-pool runtime"
     );
-
-    let first_cache = first_context.context().local_parquet_source_cache().expect("first runtime should have a cache");
-    let second_cache =
-        second_context.context().local_parquet_source_cache().expect("second runtime should have a cache");
-
-    assert_eq!(first_cache.max_retained_device_bytes(), 4096);
-    assert_eq!(second_cache.max_retained_device_bytes(), 4096);
-    assert!(
-        Arc::ptr_eq(&first_cache, &second_cache),
-        "same-device service contexts share one runtime-aware cache with one retained-byte cap"
-    );
-}
-#[test]
-fn local_parquet_cache_is_query_neutral_and_checkout_retains_current_query() {
-    use arrow::{
-        array::Int32Array,
-        datatypes::{DataType, Field, Schema},
-        record_batch::RecordBatch,
-    };
-    use cudf::DataFrame;
-
-    use crate::{
-        runtime::{
-            cache::local_parquet::GpuLocalParquetSourceCacheKey,
-            resident::{GpuDataFrame, GpuResultHandle},
-        },
-        source::LocalParquetSource,
-    };
-
-    let service = QueryService::new_with_deployment(
-        QueryServiceConfig {
-            max_concurrent_queries: 1,
-            max_admission_queue_len: 8,
-            admission_wait_timeout: Duration::from_millis(500),
-            local_parquet_source_cache_max_retained_bytes: Some(1024 * 1024),
-            slot_guarantee: SlotGuarantee::Optimistic,
-            ..QueryServiceConfig::default()
-        },
-        vec![QueryServiceTenantConfig::new("tenant", 8 * 1024 * 1024)],
-        non_gds_deployment(),
-    )
-    .unwrap();
-    let schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Int32, false)]));
-    let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int32Array::from(vec![1, 2, 3]))]).unwrap();
-    let source = LocalParquetSource::new(
-        "/tmp/datafusion-nexus-query-neutral-cache.parquet",
-        Arc::clone(&schema),
-        vec!["value".to_string()],
-    );
-    let key = GpuLocalParquetSourceCacheKey::from_source(&source);
-
-    let q1 = service.admit_query("tenant").unwrap();
-    let q1_context = q1.acquire_context().unwrap();
-    let runtime = q1_context.context().shared_runtime().unwrap();
-    let frame = GpuDataFrame::new(DataFrame::from_record_batch(runtime.as_ref(), &batch).unwrap());
-    let retained_device_bytes = frame.device_allocated_size_bytes().unwrap();
-    let q1_result = GpuResultHandle::new(q1_context.context(), frame, Arc::clone(&schema)).unwrap();
-    let cache = q1_context.context().local_parquet_source_cache().unwrap();
-    let inserted =
-        cache.insert_if_absent_pinned(q1_context.context(), key.clone(), q1_result, retained_device_bytes).unwrap();
-    assert!(inserted.handle.is_some());
-    drop(inserted.handle);
-    drop(runtime);
-    drop(q1_context);
-    q1.finish();
-    drop(q1);
-
-    let q2 = service.admit_query("tenant").expect("cache entry must not retain q1 admission");
-    let q2_context = q2.acquire_context().unwrap();
-    let (q2_output, cached_bytes) = cache.get(&key, q2_context.context(), &schema).unwrap().expect("q2 cache hit");
-    assert_eq!(cached_bytes, retained_device_bytes);
-    assert_eq!(q2_output.to_host_record_batch().unwrap(), batch);
-
-    q2.finish();
-    let expired = match cache.get(&key, q2_context.context(), &schema) {
-        Ok(_) => panic!("finished query must reject cache lookup"),
-        Err(error) => error,
-    };
-    assert_eq!(expired.fact_value("reason"), Some("query_handle_released"));
-    drop(q2_context);
-    drop(q2);
-    assert!(service.try_admit_query("tenant").unwrap().is_none(), "escaped q2 output retains q2 admission");
-
-    drop(q2_output);
-    let replacement = service.admit_query("tenant").expect("final q2 output drop releases admission");
-    drop(replacement);
 }
 #[test]
 fn query_service_context_carries_graph_calibration_override() {
     let graph_memory_calibration_override = GraphMemoryCalibrationOverride::default().with_raw_input_edges(45_564_149);
-    let config = QueryServiceConfig {
+    let config = QueryExecutionConfig {
         graph_memory_calibration_override,
         // Runtime-backed services contend for process-global governor claims in
         // unit tests; optimistic claims can coexist across test cases.
-        slot_guarantee: SlotGuarantee::Optimistic,
-        ..QueryServiceConfig::default()
+        ..QueryExecutionConfig::default()
     };
-    let service = QueryService::new_with_deployment(
-        config,
-        vec![QueryServiceTenantConfig::new("tenant", 1024 * 1024)],
-        non_gds_deployment(),
-    )
-    .unwrap();
+    let service = QueryService::new_with_deployment(config, QueueBounds::default(), non_gds_deployment()).unwrap();
 
-    let handle = service.admit_query("tenant").unwrap();
-    let tenant_context = handle.acquire_context().unwrap();
+    let handle = service.admit_query().unwrap();
+    let admitted_context = handle.acquire_context().unwrap();
 
-    assert_eq!(tenant_context.context().graph_memory_calibration_override(), graph_memory_calibration_override);
+    assert_eq!(admitted_context.context().graph_memory_calibration_override(), graph_memory_calibration_override);
 }
 #[test]
 fn query_service_released_handle_rejects_context_acquisition() {
     let service = runtime_test_service(1, 8);
-    let handle = service.admit_query("small").unwrap();
+    let handle = service.admit_query().unwrap();
     handle.finish();
 
     let error = handle.acquire_context().unwrap_err();
 
     assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
-    assert_eq!(error.fact_value("tenant_id"), Some("small"));
     assert_eq!(error.fact_value("reason"), Some("query_handle_released"));
 }
 #[test]
 fn query_service_context_keeps_admission_until_context_drop() {
     let service = runtime_test_service(1, 8);
-    let handle = service.admit_query("large").unwrap();
-    let tenant_context = handle.acquire_context().unwrap();
+    let handle = service.admit_query().unwrap();
+    let admitted_context = handle.acquire_context().unwrap();
     drop(handle);
 
-    assert!(service.try_admit_query("small").unwrap().is_none());
-    drop(tenant_context);
-    service.admit_query("small").expect("cleanup should wake the blocked admission");
+    assert!(service.try_admit_query().unwrap().is_none());
+    drop(admitted_context);
+    service.admit_query().expect("cleanup should wake the blocked admission");
 }
 #[test]
 fn finished_query_rejects_context_derivations_until_escaped_context_drops() {
     let service = runtime_test_service(1, 8);
-    let handle = service.admit_query("large").unwrap();
-    let tenant_context = handle.acquire_context().unwrap();
-    let escaped_context = tenant_context.context().clone();
-    drop(tenant_context);
+    let handle = service.admit_query().unwrap();
+    let admitted_context = handle.acquire_context().unwrap();
+    let escaped_context = admitted_context.context().clone();
+    drop(admitted_context);
 
     handle.finish();
 
@@ -316,20 +144,20 @@ fn finished_query_rejects_context_derivations_until_escaped_context_drops() {
         assert_eq!(error.code(), QueryErrorCode::Cancelled);
         assert_eq!(error.fact_value("reason"), Some("query_handle_released"));
     }
-    assert!(service.try_admit_query("small").unwrap().is_none());
+    assert!(service.try_admit_query().unwrap().is_none());
 
     drop(escaped_context);
-    let next = service.admit_query("small").expect("the final context anchor releases admission");
+    let next = service.admit_query().expect("the final context anchor releases admission");
     drop(next);
 }
 #[test]
 fn finish_vs_runtime_derivation_is_linearizable_and_releases_once() {
     let service = runtime_test_service(1, 8);
     for _ in 0..16 {
-        let handle = Arc::new(service.admit_query("small").unwrap());
-        let tenant_context = handle.acquire_context().unwrap();
-        let escaped_context = tenant_context.context().clone();
-        drop(tenant_context);
+        let handle = Arc::new(service.admit_query().unwrap());
+        let admitted_context = handle.acquire_context().unwrap();
+        let escaped_context = admitted_context.context().clone();
+        drop(admitted_context);
         let barrier = Arc::new(Barrier::new(3));
         let finish_handle = Arc::clone(&handle);
         let finish_barrier = Arc::clone(&barrier);
@@ -356,12 +184,12 @@ fn finish_vs_runtime_derivation_is_linearizable_and_releases_once() {
         drop(handle);
         if runtime.is_some() {
             assert!(
-                service.try_admit_query("small").unwrap().is_none(),
+                service.try_admit_query().unwrap().is_none(),
                 "a runtime linearized before finish must retain admission"
             );
         }
         drop(runtime);
-        let next = service.admit_query("small").expect("each raced query releases admission exactly once");
+        let next = service.admit_query().expect("each raced query releases admission exactly once");
         drop(next);
     }
     service.close_and_wait_for_quiescence(Duration::from_secs(5)).unwrap();
@@ -389,7 +217,7 @@ fn absolute_shutdown_deadline_includes_admission_close_lock_contention() {
     assert_eq!(error.fact_value("reason"), Some("query_service_shutdown_timeout"));
     assert_eq!(error.fact_value("deadline_stage"), Some("admission_mutex"));
     assert_eq!(
-        service.try_admit_query("small").unwrap_err().fact_value("reason"),
+        service.try_admit_query().unwrap_err().fact_value("reason"),
         Some("admission_closed"),
         "admission-lock timeout must leave the service fail-closed"
     );
@@ -409,7 +237,7 @@ fn close_signal_is_nonblocking_and_fail_closed_during_admission_lock_contention(
     let close_result = close_result.expect("close signal must not wait for the admission-state mutex");
     close.join().unwrap();
     close_result.unwrap();
-    assert_eq!(service.try_admit_query("small").unwrap_err().fact_value("reason"), Some("admission_closed"));
+    assert_eq!(service.try_admit_query().unwrap_err().fact_value("reason"), Some("admission_closed"));
 }
 #[test]
 fn resource_free_expired_shutdown_completes_epoch_cleanup_but_cannot_succeed() {
@@ -419,7 +247,7 @@ fn resource_free_expired_shutdown_completes_epoch_cleanup_but_cannot_succeed() {
         .expect_err("the complete shutdown cannot succeed after its absolute deadline");
 
     assert_eq!(error.fact_value("reason"), Some("query_service_resource_epoch_timeout"));
-    assert_eq!(service.try_admit_query("small").unwrap_err().fact_value("reason"), Some("admission_closed"));
+    assert_eq!(service.try_admit_query().unwrap_err().fact_value("reason"), Some("admission_closed"));
 }
 #[test]
 fn quiescence_reached_after_absolute_deadline_is_not_accepted() {
@@ -446,7 +274,7 @@ fn quiescence_reached_after_absolute_deadline_is_not_accepted() {
 #[test]
 fn query_service_handle_binds_secondary_context_to_dedicated_stream() {
     let service = runtime_test_service(1, 8);
-    let handle = service.admit_query("large").unwrap();
+    let handle = service.admit_query().unwrap();
     let first = handle.acquire_context().unwrap();
     let second = handle.acquire_context().unwrap();
     let first_runtime = first.context().shared_runtime().unwrap();
@@ -476,10 +304,10 @@ fn query_service_handle_binds_secondary_context_to_dedicated_stream() {
 #[test]
 fn escaped_context_causes_bounded_shutdown_timeout_until_final_anchor_drops() {
     let service = try_guaranteed_runtime_test_service().expect("first guaranteed service");
-    let handle = service.admit_query("tenant").unwrap();
-    let tenant_context = handle.acquire_context().unwrap();
-    let retained_context = tenant_context.context().clone();
-    drop(tenant_context);
+    let handle = service.admit_query().unwrap();
+    let admitted_context = handle.acquire_context().unwrap();
+    let retained_context = admitted_context.context().clone();
+    drop(admitted_context);
     drop(handle);
 
     let timeout = service.close_and_wait_for_quiescence(Duration::from_millis(10)).unwrap_err();
@@ -505,13 +333,13 @@ fn escaped_context_causes_bounded_shutdown_timeout_until_final_anchor_drops() {
 #[test]
 fn held_runtime_and_produced_object_delay_service_drain_until_last_provenance_drop() {
     let service = try_guaranteed_runtime_test_service().expect("first guaranteed service");
-    let handle = service.admit_query("tenant").unwrap();
-    let tenant_context = handle.acquire_context().unwrap();
-    let retained_context = tenant_context.context().clone();
+    let handle = service.admit_query().unwrap();
+    let admitted_context = handle.acquire_context().unwrap();
+    let retained_context = admitted_context.context().clone();
     let runtime = retained_context.runtime().unwrap();
     let series = runtime.series(&[1_i32, 2, 3]).expect("produce a retained GPU series");
     drop(runtime);
-    drop(tenant_context);
+    drop(admitted_context);
     drop(retained_context);
     drop(handle);
 
@@ -531,30 +359,30 @@ fn held_runtime_and_produced_object_delay_service_drain_until_last_provenance_dr
 #[test]
 fn execution_budget_token_retains_query_domain_until_drop() {
     let service = try_guaranteed_runtime_test_service().expect("guaranteed service");
-    let handle = service.admit_query("tenant").unwrap();
-    let tenant_context = handle.acquire_context().unwrap();
-    let token = tenant_context
+    let handle = service.admit_query().unwrap();
+    let admitted_context = handle.acquire_context().unwrap();
+    let token = admitted_context
         .context()
         .execution_budget_token(cudf::ExecutionBudgetRequest::new(1).with_boundary("query_epoch_retention"))
         .expect("query-domain execution budget token");
-    drop(tenant_context);
+    drop(admitted_context);
     handle.finish();
 
     assert!(
-        service.try_admit_query("tenant").unwrap().is_none(),
+        service.try_admit_query().unwrap().is_none(),
         "the budget token's retained runtime must keep query admission"
     );
     drop(token);
-    let next = service.admit_query("tenant").expect("dropping the budget token releases query admission");
+    let next = service.admit_query().expect("dropping the budget token releases query admission");
     drop(next);
 }
 #[test]
 fn retained_service_stream_pool_keeps_query_admitted_and_rejects_post_finish_acquire() {
     let service = try_guaranteed_runtime_test_service().expect("first guaranteed service");
-    let handle = service.admit_query("tenant").unwrap();
-    let tenant_context = handle.acquire_context().unwrap();
-    let retained_pool = tenant_context.context().service_stream_pool();
-    drop(tenant_context);
+    let handle = service.admit_query().unwrap();
+    let admitted_context = handle.acquire_context().unwrap();
+    let retained_pool = admitted_context.context().service_stream_pool();
+    drop(admitted_context);
     handle.finish();
 
     assert_eq!(service.admission_snapshot().unwrap().active_queries, 1);
@@ -563,7 +391,7 @@ fn retained_service_stream_pool_keeps_query_admitted_and_rejects_post_finish_acq
     assert_eq!(error.code(), QueryErrorCode::Cancelled);
     assert_eq!(error.fact_value("reason"), Some("query_handle_released"));
     drop(retained_pool);
-    let replacement = service.admit_query("tenant").expect("final stream-pool anchor releases query admission");
+    let replacement = service.admit_query().expect("final stream-pool anchor releases query admission");
     drop(replacement);
 }
 #[test]
@@ -571,9 +399,9 @@ fn acquired_service_stream_and_derived_runtime_hold_query_until_last_counted_dro
     use cudf::testing::prelude::RuntimeTestingExt;
 
     let service = try_guaranteed_runtime_test_service().expect("first guaranteed service");
-    let handle = service.admit_query("tenant").unwrap();
-    let tenant_context = handle.acquire_context().unwrap();
-    let retained_pool = tenant_context.context().service_stream_pool();
+    let handle = service.admit_query().unwrap();
+    let admitted_context = handle.acquire_context().unwrap();
+    let retained_pool = admitted_context.context().service_stream_pool();
     let stream_lease = retained_pool.acquire().expect("service stream acquisition");
     let runtime = stream_lease.runtime().expect("counted derived runtime");
     let shared_runtime = stream_lease.shared_runtime().expect("counted shared derived runtime");
@@ -582,56 +410,63 @@ fn acquired_service_stream_and_derived_runtime_hold_query_until_last_counted_dro
     assert_eq!(shared_runtime.testing_retained_lifetime_count(), 1);
     drop(shared_runtime);
     drop(retained_pool);
-    drop(tenant_context);
+    drop(admitted_context);
     handle.finish();
 
     let error = stream_lease.runtime().expect_err("query finish must reject new runtime derivation from the lease");
     assert_eq!(error.fact_value("reason"), Some("query_handle_released"));
-    assert!(service.try_admit_query("tenant").unwrap().is_none());
+    assert!(service.try_admit_query().unwrap().is_none());
 
     drop(stream_lease);
     assert!(
-        service.try_admit_query("tenant").unwrap().is_none(),
+        service.try_admit_query().unwrap().is_none(),
         "the runtime derived before finish retains the query after its stream is released"
     );
 
     drop(runtime);
-    let replacement = service.admit_query("tenant").expect("the final stream runtime releases query admission");
+    let replacement = service.admit_query().expect("the final stream runtime releases query admission");
     drop(replacement);
 }
 #[test]
 fn cloned_memory_grant_and_live_reservation_hold_query_and_reject_post_finish_work() {
     let service = try_guaranteed_runtime_test_service().expect("first guaranteed service");
-    let handle = service.admit_query("tenant").unwrap();
-    let tenant_context = handle.acquire_context().unwrap();
-    let grant = tenant_context.context().memory_grant().unwrap().expect("service context carries a memory grant");
+    // The grant clamps to the request's soft working-set hint, exercising the
+    // immutable budget independent of the full candidate maximum.
+    let handle = service
+        .admit_query_with_request(
+            QueryAdmissionRequest::new().with_attempt_requirement(requirement(8 * 1024 * 1024, Some(8 * 1024 * 1024))),
+        )
+        .unwrap();
+    let admitted_context = handle.acquire_context().unwrap();
+    let grant = admitted_context.context().memory_grant().unwrap().expect("service context carries a memory grant");
     let retained_grant = grant.clone();
-    let retained_reservation = retained_grant.retain_live_reservation(1).expect("positive reservation is retained");
+    let retained_reservation = retained_grant
+        .retain_live_reservation(1)
+        .expect("retention fits the immutable grant")
+        .expect("positive reservation is retained");
     drop(grant);
-    drop(tenant_context);
+    drop(admitted_context);
     handle.finish();
 
-    let error = retained_grant.try_grow(1).expect_err("closed query epoch must reject grant mutation");
-    assert_eq!(error.code(), QueryErrorCode::Cancelled);
-    assert_eq!(error.fact_value("reason"), Some("query_handle_released"));
-    assert!(service.try_admit_query("tenant").unwrap().is_none());
+    assert_eq!(retained_grant.budget_bytes(), 8 * 1024 * 1024, "immutable grant budget survives epoch closure");
+    assert!(service.try_admit_query().unwrap().is_none());
 
     drop(retained_grant);
     assert!(
-        service.try_admit_query("tenant").unwrap().is_none(),
+        service.try_admit_query().unwrap().is_none(),
         "the live reservation's cloned grant retains query admission"
     );
 
     drop(retained_reservation);
-    let replacement = service.admit_query("tenant").expect("the final memory-grant anchor releases admission");
+    let replacement = service.admit_query().expect("the final memory-grant anchor releases admission");
     drop(replacement);
 }
 #[tokio::test(flavor = "current_thread")]
 async fn cloned_gpu_pool_job_holds_query_and_rejects_post_finish_submission() {
     let service = try_guaranteed_runtime_test_service().expect("first guaranteed service");
-    let handle = service.admit_query("tenant").unwrap();
-    let tenant_context = handle.acquire_context().unwrap();
-    let pool = tenant_context.context().gpu_execution_pool().expect("counted GPU execution pool");
+    let handle = service.admit_query().unwrap();
+    let admitted_context = handle.acquire_context().unwrap();
+    let pool = admitted_context.context().gpu_execution_pool().expect("counted GPU execution pool");
     let retained_pool = pool.clone();
     let release = Arc::new(tokio::sync::Semaphore::new(0));
     let job_release = Arc::clone(&release);
@@ -645,7 +480,7 @@ async fn cloned_gpu_pool_job_holds_query_and_rejects_post_finish_submission() {
     .unwrap();
     started_rx.await.expect("GPU job starts");
     drop(pool);
-    drop(tenant_context);
+    drop(admitted_context);
     handle.finish();
 
     let spawn_error = retained_pool
@@ -661,19 +496,19 @@ async fn cloned_gpu_pool_job_holds_query_and_rejects_post_finish_submission() {
     assert_eq!(run_error.fact_value("reason"), Some("query_handle_released"));
     drop(retained_pool);
 
-    assert!(service.try_admit_query("tenant").unwrap().is_none(), "the in-flight GPU job must retain query admission");
+    assert!(service.try_admit_query().unwrap().is_none(), "the in-flight GPU job must retain query admission");
 
     release.add_permits(1);
     finished_rx.await.expect("GPU job finishes after release");
-    let replacement = service.admit_query("tenant").expect("the completed GPU job releases query admission");
+    let replacement = service.admit_query().expect("the completed GPU job releases query admission");
     drop(replacement);
 }
 #[tokio::test(flavor = "current_thread")]
 async fn queued_gpu_pool_job_retains_query_without_parking_cleanup_on_worker_permit() {
     let service = try_guaranteed_runtime_test_service().expect("single-worker guaranteed service");
-    let handle = service.admit_query("tenant").unwrap();
-    let tenant_context = handle.acquire_context().unwrap();
-    let pool = tenant_context.context().gpu_execution_pool().expect("counted GPU execution pool");
+    let handle = service.admit_query().unwrap();
+    let admitted_context = handle.acquire_context().unwrap();
+    let pool = admitted_context.context().gpu_execution_pool().expect("counted GPU execution pool");
     assert_eq!(pool.snapshot().worker_count, 1);
     let release = Arc::new(tokio::sync::Semaphore::new(0));
     let blocker_release = Arc::clone(&release);
@@ -696,20 +531,20 @@ async fn queued_gpu_pool_job_retains_query_without_parking_cleanup_on_worker_per
         std::thread::yield_now();
     }
 
-    drop(tenant_context);
+    drop(admitted_context);
     handle.finish();
     drop(pool);
     assert_eq!(service.admission_snapshot().unwrap().active_queries, 1);
 
     release.add_permits(1);
     queued_finished_rx.await.expect("queued job runs after the worker permit is released");
-    let next = service.admit_query("tenant").expect("queued and running anchors drain before cleanup");
+    let next = service.admit_query().expect("queued and running anchors drain before cleanup");
     drop(next);
 }
 #[tokio::test(flavor = "current_thread")]
 async fn query_handle_gpu_pool_is_counted_and_rejects_work_after_finish() {
     let service = try_guaranteed_runtime_test_service().expect("first guaranteed service");
-    let handle = service.admit_query("tenant").unwrap();
+    let handle = service.admit_query().unwrap();
     let retained_pool = handle.gpu_execution_pool().expect("counted query-handle GPU execution pool");
 
     handle.finish();
@@ -728,12 +563,15 @@ async fn query_handle_gpu_pool_is_counted_and_rejects_work_after_finish() {
     assert_eq!(run_error.fact_value("reason"), Some("query_handle_released"));
 
     drop(retained_pool);
-    let replacement = service.admit_query("tenant").expect("the final query-handle GPU pool drop releases admission");
+    let replacement = service.admit_query().expect("the final query-handle GPU pool drop releases admission");
     drop(replacement);
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn admission_without_runtime_context_releases_without_waiting_for_gpu_worker() {
+async fn admission_without_runtime_context_releases_through_the_device_executor() {
+    // P2.6: every device-backed admission owns its root stream and domain
+    // from admission time, so a handle that never acquired a context still
+    // releases through the device executor.
     let service = try_guaranteed_runtime_test_service().expect("single-worker guaranteed service");
     let pool = service
         .inner
@@ -756,9 +594,9 @@ async fn admission_without_runtime_context_releases_without_waiting_for_gpu_work
     .expect("cleanup blocker queues on the service pool");
     started_rx.await.expect("cleanup blocker starts");
 
-    let direct = service.admit_query("tenant").expect("direct admission occupies the only slot");
+    let direct = service.admit_query().expect("direct admission occupies the only slot");
     let queued_service = service.clone();
-    let queued = tokio::spawn(async move { queued_service.admit_async("tenant").await });
+    let queued = tokio::spawn(async move { queued_service.admit_async().await });
     let deadline = Instant::now() + Duration::from_secs(1);
     while service.admission_snapshot().unwrap().queued_queries != 1 {
         assert!(Instant::now() < deadline, "second admission must queue behind the direct handle");
@@ -767,21 +605,29 @@ async fn admission_without_runtime_context_releases_without_waiting_for_gpu_work
 
     direct.finish();
     drop(direct);
-    let admitted = tokio::time::timeout(Duration::from_millis(250), queued)
-        .await
-        .expect("direct admission release must not wait for a busy GPU worker")
-        .expect("queued admission task must not panic")
-        .expect("queued admission succeeds after the direct release");
-    drop(admitted);
+    // The release owns the envelope's root stream and domain, so it queues
+    // behind the blocked device executor and must not unblock the queued
+    // admission yet.
+    let mut queued = queued;
+    assert!(
+        tokio::time::timeout(Duration::from_millis(200), &mut queued).await.is_err(),
+        "envelope-owning release must wait for the busy GPU worker"
+    );
 
     release_blocker.add_permits(1);
     finished_rx.await.expect("cleanup blocker finishes after release");
+    let admitted = tokio::time::timeout(Duration::from_secs(10), queued)
+        .await
+        .expect("queued admission completes once the device executor runs the release")
+        .expect("queued admission task must not panic")
+        .expect("queued admission succeeds after the direct release");
+    drop(admitted);
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn root_context_release_waits_for_busy_gpu_worker() {
     let service = try_guaranteed_runtime_test_service().expect("single-worker guaranteed service");
-    let handle = service.admit_query("tenant").expect("context-backed admission");
+    let handle = service.admit_query().expect("context-backed admission");
     let context = handle.acquire_context().expect("root context acquisition");
     drop(context);
 
@@ -804,7 +650,7 @@ async fn root_context_release_waits_for_busy_gpu_worker() {
     started_rx.await.expect("cleanup blocker starts");
 
     let queued_service = service.clone();
-    let mut queued = tokio::spawn(async move { queued_service.admit_async("tenant").await });
+    let mut queued = tokio::spawn(async move { queued_service.admit_async().await });
     let deadline = Instant::now() + Duration::from_secs(1);
     while service.admission_snapshot().unwrap().queued_queries != 1 {
         assert!(Instant::now() < deadline, "second admission must queue behind the context-backed handle");
@@ -827,142 +673,10 @@ async fn root_context_release_waits_for_busy_gpu_worker() {
     drop(admitted);
 }
 
-#[cfg(feature = "cugraph")]
-fn warm_graph_reservation_test_key() -> crate::plan::ResidentGraphKey {
-    use arrow::datatypes::DataType;
-    use crate::plan::{
-        GraphAlgorithm, GraphAlgorithmParams, GraphAlgorithmSpec, GraphBfsParams, GraphConstructionOptions,
-        GraphConstructionPolicy, GraphEdgeColumnBindings, GraphResidencyDescriptor, GraphResidencyOrientation,
-    };
-
-    let spec = GraphAlgorithmSpec::with_stable_schema(
-        GraphAlgorithm::Bfs,
-        GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
-        GraphConstructionOptions { directed: true, renumber: true, policy: GraphConstructionPolicy::RawLibcugraph },
-        GraphAlgorithmParams::Bfs(Box::new(GraphBfsParams::new(0, None))),
-    );
-    let descriptor = GraphResidencyDescriptor::for_content_identity(
-        "query-service-warm-reservation-test-edges",
-        DataType::Int32,
-        None,
-        None,
-    )
-    .unwrap();
-    descriptor.resident_key(&spec, GraphResidencyOrientation::Forward)
-}
-
-#[cfg(feature = "cugraph")]
-fn cache_warm_graph_reservation_test_entry(
-    cache: &crate::runtime::cache::resident_graph::GpuResidentGraphCache,
-    context: &ExecutionContext,
-    resident_key: crate::plan::ResidentGraphKey,
-) {
-    use cugraph::cudf_interop::{SeriesGraphOptions, graph_from_series};
-
-    let runtime =
-        cache.companion_runtime_for_context(context, "nexus_query_engine.query_service.warm_reservation_test").unwrap();
-    let handle = cugraph::ResourceHandle::for_runtime(Arc::clone(&runtime)).unwrap();
-    let entered = handle.enter("nexus_query_engine.query_service.warm_reservation_test").unwrap();
-    let src = runtime.series(&[0_i32, 1, 2]).unwrap();
-    let dst = runtime.series(&[1_i32, 2, 0]).unwrap();
-    let graph =
-        graph_from_series::<cugraph::Forward>(&entered, &src, &dst, None, &SeriesGraphOptions::default().renumber())
-            .unwrap();
-    let parked = graph.park(&entered).unwrap();
-    drop(entered);
-    drop(handle);
-    drop(runtime);
-
-    assert_eq!(
-        cache.insert_if_absent(resident_key, context, parked, 1024).unwrap(),
-        crate::runtime::cache::resident_graph::GpuResidentGraphCacheInsert::Inserted
-    );
-}
-
-#[cfg(feature = "cugraph")]
-#[tokio::test(flavor = "current_thread")]
-async fn warm_graph_reservation_release_waits_for_gpu_cleanup() {
-    let service = QueryService::new_with_deployment(
-        QueryServiceConfig {
-            max_concurrent_queries: 1,
-            max_admission_queue_len: 8,
-            admission_wait_timeout: Duration::from_millis(500),
-            slot_guarantee: SlotGuarantee::GuaranteedMinimum,
-            resident_graph_cache_max_retained_bytes: Some(64 * 1024 * 1024),
-            ..QueryServiceConfig::default()
-        },
-        vec![QueryServiceTenantConfig::new("tenant", 8 * 1024 * 1024)],
-        non_gds_deployment(),
-    )
-    .expect("single-worker graph-cache service");
-    let resident_key = warm_graph_reservation_test_key();
-
-    let seed = service.admit_query("tenant").expect("seed admission");
-    let seed_context = seed.acquire_context().expect("seed context");
-    let context = seed_context.context().clone();
-    let cache = context.resident_graph_cache().expect("service graph cache");
-    cache_warm_graph_reservation_test_entry(&cache, &context, resident_key.clone());
-    drop(context);
-    drop(seed_context);
-    seed.finish();
-    drop(seed);
-    service.wait_for_stream_pools_idle(Duration::from_secs(5)).expect("seed cleanup returns its stream");
-
-    let warm = service
-        .admit_query_with_request(
-            "tenant",
-            QueryAdmissionRequest::new()
-                .with_placement_hint(QueryPlacementHint::for_resident_graph_key(resident_key))
-                .with_warm_graph_grant_request(QueryGrantRequest::new()),
-        )
-        .expect("warm graph cache hit reserves its stream and pin");
-    let pool = service
-        .inner
-        .resources
-        .as_ref()
-        .unwrap()
-        .gpu_execution_pool_for_device(0)
-        .expect("service owns the device GPU execution pool");
-    assert_eq!(pool.snapshot().worker_count, 1);
-    let release_blocker = Arc::new(tokio::sync::Semaphore::new(0));
-    let blocker_release = Arc::clone(&release_blocker);
-    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
-    pool.spawn(GpuExecutionJobKind::Cleanup, async move {
-        let _ = started_tx.send(());
-        let _permit = blocker_release.acquire_owned().await.expect("cleanup blocker remains open");
-    })
-    .expect("cleanup blocker queues on the service pool");
-    started_rx.await.expect("cleanup blocker starts");
-
-    let queued_service = service.clone();
-    let mut queued = tokio::spawn(async move { queued_service.admit_async("tenant").await });
-    let deadline = Instant::now() + Duration::from_secs(1);
-    while service.admission_snapshot().unwrap().queued_queries != 1 {
-        assert!(Instant::now() < deadline, "second admission must queue behind the warm handle");
-        tokio::task::yield_now().await;
-    }
-
-    warm.finish();
-    drop(warm);
-    assert!(
-        tokio::time::timeout(Duration::from_millis(250), &mut queued).await.is_err(),
-        "warm reservation release must wait for the busy GPU worker"
-    );
-
-    release_blocker.add_permits(1);
-    let admitted = tokio::time::timeout(Duration::from_secs(1), queued)
-        .await
-        .expect("GPU cleanup releases the queued admission")
-        .expect("queued admission task must not panic")
-        .expect("queued admission succeeds after warm cleanup");
-    drop(admitted);
-    service.close_and_wait_for_quiescence(Duration::from_secs(5)).expect("graph-cache service shuts down");
-}
-
 #[tokio::test(flavor = "current_thread")]
 async fn query_handle_gpu_job_retains_query_epoch_until_joined() {
     let service = try_guaranteed_runtime_test_service_with_concurrency(2).expect("two-worker guaranteed service");
-    let handle = service.admit_query("tenant").unwrap();
+    let handle = service.admit_query().unwrap();
     let retained_pool = handle.gpu_execution_pool().expect("counted query-handle GPU execution pool");
     assert_eq!(retained_pool.snapshot().worker_count, 2);
     let job_pool = retained_pool.clone();
@@ -985,13 +699,13 @@ async fn query_handle_gpu_job_retains_query_epoch_until_joined() {
 
     release.add_permits(1);
     job.await.expect("GPU job task joins").expect("GPU job succeeds after release");
-    let replacement = service.admit_query("tenant").expect("joining the final GPU job releases query admission");
+    let replacement = service.admit_query().expect("joining the final GPU job releases query admission");
     drop(replacement);
 }
 #[test]
 fn active_query_owner_prevents_service_destruction_until_cleanup_finishes() {
     let service = try_guaranteed_runtime_test_service().expect("first guaranteed service");
-    let handle = service.admit_query("tenant").unwrap();
+    let handle = service.admit_query().unwrap();
 
     service.close().unwrap();
     let error = try_guaranteed_runtime_test_service().expect_err("active grant keeps prior claim live");
@@ -1017,7 +731,7 @@ fn close_and_wait_fences_delayed_gpu_cleanup_before_service_resource_destruction
     }
 
     let service = try_guaranteed_runtime_test_service().expect("first guaranteed service");
-    let handle = service.admit_query("tenant").unwrap();
+    let handle = service.admit_query().unwrap();
     let pool = handle.gpu_execution_pool().unwrap();
     let worker_count = pool.snapshot().worker_count;
     let release = CleanupBlockerGate { semaphore: Arc::new(tokio::sync::Semaphore::new(0)) };
@@ -1084,7 +798,7 @@ fn close_and_wait_fences_delayed_gpu_cleanup_before_service_resource_destruction
 #[test]
 fn query_service_waits_for_background_stream_cleanup_quiescence() {
     let service = runtime_test_service(1, 8);
-    let handle = service.admit_query("large").unwrap();
+    let handle = service.admit_query().unwrap();
     let context = handle.acquire_context().unwrap();
 
     let error = service.wait_for_stream_pools_idle(Duration::ZERO).unwrap_err();
@@ -1100,7 +814,7 @@ fn query_service_waits_for_background_stream_cleanup_quiescence() {
 #[test]
 fn query_service_quiescence_allows_declared_long_lived_root_contexts() {
     let service = runtime_test_service(1, 8);
-    let handle = service.admit_query("large").unwrap();
+    let handle = service.admit_query().unwrap();
     let context = handle.acquire_context().unwrap();
 
     service.wait_for_stream_pools_quiescent(&[(0, 1)], Duration::ZERO).unwrap();

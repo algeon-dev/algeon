@@ -7,7 +7,8 @@ use arrow::{array::Int32Array, record_batch::RecordBatch};
 use datafusion::prelude::SessionContext;
 use datafusion_nexus::{
     attempt::AttemptOptions,
-    backend::{GpuMemoryOwnership, NexusGpuBackend, NexusMemoryPolicy},
+    backend::{GpuDeviceMemoryLimit, GpuMemoryOwnership, NexusGpuBackend, NexusGpuDeviceProfile},
+    native_exec::NexusNativeExecutionConfig,
 };
 use futures::StreamExt;
 use parquet::arrow::ArrowWriter;
@@ -25,14 +26,9 @@ async fn main() -> ExitCode {
 
 async fn run() -> anyhow::Result<()> {
     let backend = NexusGpuBackend::builder()
-        .memory_policy(NexusMemoryPolicy::Bounded {
-            device_ordinals: vec![0],
-            device_budget_bytes: 256 * 1024 * 1024,
-            max_source_chunk_bytes: 64 * 1024 * 1024,
-            max_row_groups_per_chunk: 2,
-            max_retry_attempts: 3,
-            min_retry_chunk_row_groups: 1,
-        })
+        .with_native_execution_config(NexusNativeExecutionConfig::bounded(256 * 1024 * 1024, 64 * 1024 * 1024, 2, 3, 1))
+        .device_profiles([NexusGpuDeviceProfile::new(0)
+            .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: 256 * 1024 * 1024 })])
         .device_memory_ownership([(0, GpuMemoryOwnership::WholeDeviceExclusive)])
         .build()
         .map_err(|error| anyhow!("no usable CUDA device 0 for this example: {error}"))?;

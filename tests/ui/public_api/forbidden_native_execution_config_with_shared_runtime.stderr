@@ -1,5 +1,5 @@
 error[E0599]: no method named `with_shared_runtime` found for struct `NexusNativeExecutionConfig` in the current scope
- --> tests/ui/public_api/forbidden_native_execution_config_with_shared_runtime.rs:7:68
+ --> tests/ui/public_api/forbidden_native_execution_config_with_shared_runtime.rs:7:65
   |
-7 |     let _config = NexusNativeExecutionConfig::bounded_auto_sized().with_shared_runtime(runtime);
-  |                                                                    ^^^^^^^^^^^^^^^^^^^ method not found in `NexusNativeExecutionConfig`
+7 |     let _config = NexusNativeExecutionConfig::bounded_default().with_shared_runtime(runtime);
+  |                                                                 ^^^^^^^^^^^^^^^^^^^ method not found in `NexusNativeExecutionConfig`

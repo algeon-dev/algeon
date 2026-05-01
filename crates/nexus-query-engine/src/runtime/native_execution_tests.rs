@@ -23,12 +23,38 @@ use nexus_query_engine::exec::execute_query_plan_with_gpu_inputs_observed;
 use nexus_query_engine::observability::{
     PlanExecutionBoundaryKind, RuntimeObservationConfig, RuntimeObservationPayload, RuntimeTerminalOutcome,
 };
-#[cfg(feature = "cugraph")]
-use nexus_query_engine::runtime::cache::resident_graph::GpuResidentGraphCache;
+use nexus_query_engine::{
+    chunk::{SourceChunkPlanningPolicy, plan_local_parquet_source_chunks},
+    error::QueryErrorCode,
+    exec::{
+        execute_query_plan, execute_query_plan_with_gpu_inputs, materialize_gpu_result_to_host, output::QueryOutput,
+    },
+    expr::{
+        AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, Expr, GroupingSetsSpec, LimitSpec, LiteralValue,
+        SortExpr, SortSpec,
+    },
+    metrics::{MemoryReservationEventAction, QueryMetrics},
+    mode::StddevSampExecutionMode,
+    observability::AdmissionRequestId,
+    plan::{
+        JoinKey, JoinNullEquality, JoinOutputColumn, JoinSide, JoinSpec, JoinType, ProjectionOutput, QueryPlanBuilder,
+        WindowFunction, WindowSpec,
+    },
+    runtime::{
+        BoundedJoinReservationContract, BuildMaterializationBoundary, DeviceLedger, ExecutionBoundaryPolicy,
+        ExecutionContext, MemoryControlPolicy, MemorySpaceId, ReservationKind, SourceSchedulerPolicy,
+        resident::{GpuDataFrame, GpuResidentInputMap, GpuResultHandle},
+    },
+    source::{
+        GpuResidentSource, LiteralBatchSource, LocalParquetFile, LocalParquetSource, MissingColumn,
+        ParquetEqualityDeleteFile, ParquetPositionDeleteFile, PartitionColumn, ResolvedParquetSource, SourceNode,
+        ZERO_COLUMN_COUNT_COLUMN,
+    },
+};
 #[cfg(feature = "cugraph")]
 use nexus_query_engine::{
-    adaptive_runtime::AdaptiveMemoryHistory, exec::force_next_graph_adaptive_chunk_attempt_resource_exhausted_for_test,
-    exec::force_next_graph_adaptive_full_attempt_resource_exhausted_for_test,
+    exec::force_next_graph_seed_chunk_retry_chunk_attempt_resource_exhausted_for_test,
+    exec::force_next_graph_seed_chunk_retry_full_attempt_resource_exhausted_for_test,
     exec::force_next_graph_statistics_optional_resource_exhausted_for_test,
     graph_memory::GRAPH_MEMORY_BUDGET_TRACKING_MIN_LIMIT_BYTES, graph_memory::GRAPH_VERTEX_ESTIMATE_BOUNDARY,
     graph_memory::GRAPH_VERTEX_ESTIMATE_PROBE_MIN_BYTES, graph_memory::GraphMemoryCalibrationOverride,
@@ -42,35 +68,6 @@ use nexus_query_engine::{
     plan::GraphPersonalizedPageRankParams, plan::GraphPredicateInput, plan::GraphResidencyPlanAnalysis,
     plan::GraphSimilarityParams, plan::GraphTriangleCountAllParams, plan::GraphVertexPairInput,
     plan::graph_residency_descriptor_for_edge_plan, plan::planned_resident_graph_key, plan::stable_graph_result_schema,
-};
-use nexus_query_engine::{
-    chunk::{SourceChunkPlanningPolicy, plan_local_parquet_source_chunks},
-    error::QueryErrorCode,
-    exec::{
-        execute_query_plan, execute_query_plan_with_gpu_inputs, materialize_gpu_result_to_host, output::QueryOutput,
-    },
-    expr::{
-        AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, Expr, GroupingSetsSpec, LimitSpec, LiteralValue,
-        SortExpr, SortSpec,
-    },
-    metrics::{MemoryReservationEventAction, QueryMetrics},
-    mode::{NativePipelineExecutionMode, StddevSampExecutionMode},
-    observability::AdmissionRequestId,
-    plan::{
-        JoinKey, JoinNullEquality, JoinOutputColumn, JoinSide, JoinSpec, JoinType, ProjectionOutput, QueryPlanBuilder,
-        WindowFunction, WindowSpec,
-    },
-    runtime::{
-        BoundedJoinReservationContract, BuildMaterializationBoundary, ExecutionBoundaryPolicy, ExecutionContext,
-        GrantRequest, MemoryControlPolicy, MemoryGovernor, MemorySpaceId, ReservationKind, SourceSchedulerPolicy,
-        cache::{hash_join::GpuHashJoinBuildCache, local_parquet::GpuLocalParquetSourceCache},
-        resident::{GpuDataFrame, GpuResidentInputMap, GpuResultHandle},
-    },
-    source::{
-        GpuResidentSource, LiteralBatchSource, LocalParquetFile, LocalParquetSource, MissingColumn,
-        ParquetEqualityDeleteFile, ParquetPositionDeleteFile, PartitionColumn, ResolvedParquetSource, SourceNode,
-        ZERO_COLUMN_COUNT_COLUMN,
-    },
 };
 use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
 
@@ -139,8 +136,8 @@ mod unbounded_pruning_regressions;
 #[cfg(feature = "cuvs")]
 #[path = "native_execution_tests/vector_algorithm_execution.rs"]
 mod vector_algorithm_execution;
-#[path = "native_execution_tests/window_execution.rs"]
-mod window_execution;
+// Window cache-retention scenarios are P5 substrate; P2 execution tests run
+// with durable source caching disabled.
 
 use aggregate_test_support::*;
 use join_test_support::*;

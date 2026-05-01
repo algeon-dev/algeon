@@ -114,7 +114,7 @@ fn betweenness_k_selects_deterministic_approximate_seed_count() {
             )
         });
     assert_eq!(seed_budget.boundary, "graph_memory");
-    assert_eq!(seed_budget.enforcement, "reservation_arena_member");
+    assert_eq!(seed_budget.enforcement, "query_domain_member");
     assert_eq!(seed_budget.status, "reservation_enforced");
     assert_eq!(seed_budget.budget_bytes, graph_reservations[0].requested_bytes);
     assert!(seed_budget.allocator_high_water_bytes.is_some());

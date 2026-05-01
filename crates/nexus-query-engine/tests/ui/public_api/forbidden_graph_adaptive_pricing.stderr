@@ -1,0 +1,41 @@
+error[E0603]: function `strict_similarity_pair_cardinality_for_plan` is private
+ --> tests/ui/public_api/forbidden_graph_adaptive_pricing.rs:2:51
+  |
+2 |     GraphMemoryModel, GraphPairCardinalitySource, strict_similarity_pair_cardinality_for_plan,
+  |                                                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ private function
+  |
+note: the function `strict_similarity_pair_cardinality_for_plan` is defined here
+ --> src/graph_memory.rs
+  |
+  | / pub(crate) fn strict_similarity_pair_cardinality_for_plan(
+  | |     plan: &QueryPlan,
+  | |     graph: &crate::plan::GraphAlgorithmNode,
+  | | ) -> Result<Option<(u64, GraphPairCardinalitySource)>> {
+  | |______________________________________________________^
+
+error[E0599]: no associated function or constant named `estimate_for_adaptive_bounded` found for struct `GraphMemoryModel` in the current scope
+ --> tests/ui/public_api/forbidden_graph_adaptive_pricing.rs:6:31
+  |
+6 |     let _ = GraphMemoryModel::estimate_for_adaptive_bounded;
+  |                               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ associated function or constant not found in `GraphMemoryModel`
+
+error[E0624]: method `estimate_for_bounded` is private
+ --> tests/ui/public_api/forbidden_graph_adaptive_pricing.rs:7:31
+  |
+7 |       let _ = GraphMemoryModel::estimate_for_bounded;
+  |                                 ^^^^^^^^^^^^^^^^^^^^ private method
+  |
+ ::: src/graph_memory.rs
+  |
+  | /     pub(crate) fn estimate_for_bounded(
+  | |         &self,
+  | |         spec: &GraphAlgorithmSpec,
+  | |         input: GraphMemoryModelInput,
+  | |     ) -> Result<GraphMemoryEstimate> {
+  | |____________________________________- private method defined here
+
+error[E0599]: no variant, associated function, or constant named `is_strict_bounded_evidence` found for enum `GraphPairCardinalitySource` in the current scope
+ --> tests/ui/public_api/forbidden_graph_adaptive_pricing.rs:8:41
+  |
+8 |     let _ = GraphPairCardinalitySource::is_strict_bounded_evidence;
+  |                                         ^^^^^^^^^^^^^^^^^^^^^^^^^^ variant, associated function, or constant not found in `GraphPairCardinalitySource`

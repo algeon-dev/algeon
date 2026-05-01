@@ -7,7 +7,7 @@ fn strict_admission_accepts_rank_window_branches_feeding_native_union() {
         "union pipeline admission should accept branch-local windows; first_rejection={:?}",
         analysis.first_rejection_projection()
     );
-    assert!(analysis.admits_strict_bounded_join());
+    assert!(analysis.admits_bounded_join());
 
     let pipeline = compile_pipeline(&plan, &analysis).expect("rank-window union plan should compile");
     assert_task_kind_count(&pipeline, PipelineTaskKind::Window, 2);
@@ -18,7 +18,7 @@ fn strict_admission_accepts_rank_window_branches_feeding_native_union() {
         CompiledBoundedPipelineSupport::Supported
     );
 
-    let admission = strict_bounded_pipeline_admission(&plan)
+    let admission = bounded_pipeline_admission(&plan)
         .expect("strict admission should not fail")
         .expect("rank-window union plan should be strictly admitted");
     let rendered = admission.pipeline().debug_render();
@@ -61,18 +61,18 @@ fn strict_admission_rejects_large_full_scan_rollup_rank_topk_before_execution() 
     );
 
     assert!(
-        strict_bounded_pipeline_admission(&plan).expect("strict admission should not fail").is_none(),
+        bounded_pipeline_admission(&plan).expect("strict admission should not fail").is_none(),
         "rejected shape must not produce a strict pipeline for execution"
     );
 
-    let report = StrictBoundedContractReport::from_capability_analysis(&analysis)
+    let report = CapabilityContractReport::from_capability_analysis(&analysis)
         .expect("rejected capability analysis should still produce a contract report");
     let blocking_row = report
         .gate_rows()
         .iter()
         .find(|row| row.required_contract == "blocking_rollup_rank_full_scan_requires_exact_contracts")
         .expect("contract report should preserve the structured rejection code");
-    assert_eq!(blocking_row.execution_mode, StrictBoundedExecutionMode::UnsupportedStrictBounded);
+    assert_eq!(blocking_row.execution_mode, CapabilityEnvelopeStatus::Rejected);
     assert_eq!(blocking_row.contract_status, ContractStatus::RejectedByCapability);
     assert_eq!(blocking_row.contract_quality, ContractQuality::CapabilityProof);
 }
@@ -92,7 +92,7 @@ fn strict_admission_rejects_large_rollup_rank_native_fragment_without_outer_topk
     assert_ne!(rejection.facts.get("rank_sort_id").map(String::as_str), Some("absent"));
     assert_ne!(rejection.facts.get("rank_filter_id").map(String::as_str), Some("absent"));
     assert!(
-        strict_bounded_pipeline_admission(&plan).expect("strict admission should not fail").is_none(),
+        bounded_pipeline_admission(&plan).expect("strict admission should not fail").is_none(),
         "native fragment rejected by the guard must not produce a strict pipeline"
     );
 }
@@ -441,18 +441,18 @@ fn strict_admission_accepts_exact_statistical_join_final_full_sort_envelope() {
     );
     assert!(analysis.first_rejection_projection().is_none(), "{:?}", analysis.first_rejection_projection());
 
-    let admission = strict_bounded_pipeline_admission(&plan)
+    let admission = bounded_pipeline_admission(&plan)
         .expect("strict admission should not fail")
         .expect("q39-class exact statistical final-sort shape should be admitted");
-    assert_eq!(admission.envelope(), StrictBoundedEnvelope::ExactStatisticalJoinFinalFullSort);
+    assert_eq!(admission.envelope(), CapabilityEnvelope::ExactStatisticalJoinFinalFullSort);
     assert_eq!(
         compiled_bounded_pipeline_support(admission.pipeline()).expect("support check should not fail"),
         CompiledBoundedPipelineSupport::Supported
     );
 
-    let report = StrictBoundedContractReport::from_compiled_pipeline(admission.analysis(), admission.pipeline())
+    let report = CapabilityContractReport::from_compiled_pipeline(admission.analysis(), admission.pipeline())
         .expect("accepted statistical final-sort capability analysis should produce a strict contract report");
-    assert_eq!(report.execution_mode(), StrictBoundedExecutionMode::StrictBounded);
+    assert_eq!(report.execution_mode(), CapabilityEnvelopeStatus::Admitted);
     for required_contract in [
         "host_welford_input_materialization_preflight",
         "host_welford_output_upload_reservation",
@@ -473,32 +473,32 @@ fn strict_admission_accepts_exact_statistical_join_final_full_sort_envelope() {
 #[test]
 fn strict_admission_mode_boundary_accepts_tolerant_statistical_envelope_without_exact_host_gates() {
     let plan = statistical_join_final_full_sort_plan();
-    let shape_admission = strict_bounded_pipeline_admission(&plan)
+    let shape_admission = bounded_pipeline_admission(&plan)
         .expect("shape-only strict admission should not fail")
         .expect("shape-only exact statistical envelope should be admitted");
-    assert_eq!(shape_admission.envelope(), StrictBoundedEnvelope::ExactStatisticalJoinFinalFullSort);
+    assert_eq!(shape_admission.envelope(), CapabilityEnvelope::ExactStatisticalJoinFinalFullSort);
 
-    let tolerant_admission = strict_bounded_pipeline_admission_with_statistical_aggregate_mode(
+    let tolerant_admission = bounded_pipeline_admission_with_statistical_aggregate_mode(
         &plan,
         StatisticalAggregateExecutionMode::GpuNativeTolerant,
     )
     .expect("mode-aware strict admission should not fail")
     .expect("tolerant statistical envelope should be admitted");
-    assert_eq!(tolerant_admission.envelope(), StrictBoundedEnvelope::TolerantStatisticalJoinFinalFullSort);
+    assert_eq!(tolerant_admission.envelope(), CapabilityEnvelope::TolerantStatisticalJoinFinalFullSort);
 
-    let projection = strict_bounded_pipeline_rejection_projection_with_statistical_aggregate_mode(
+    let projection = bounded_pipeline_rejection_projection_with_statistical_aggregate_mode(
         &plan,
         StatisticalAggregateExecutionMode::GpuNativeTolerant,
     )
     .expect("mode-aware rejection projection should not fail");
     assert_eq!(projection, None);
 
-    let report = StrictBoundedContractReport::from_compiled_pipeline(
+    let report = CapabilityContractReport::from_compiled_pipeline(
         tolerant_admission.analysis(),
         tolerant_admission.pipeline(),
     )
     .expect("accepted tolerant statistical final-sort admission should produce a strict contract report");
-    assert_eq!(report.execution_mode(), StrictBoundedExecutionMode::StrictBounded);
+    assert_eq!(report.execution_mode(), CapabilityEnvelopeStatus::Admitted);
     assert!(report.gate_rows().iter().any(|row| {
         row.required_contract == "gpu_native_tolerant_statistical_aggregate_contract"
             && row.memory_boundary == "tolerant_statistical_join_final_full_sort"
@@ -550,16 +550,16 @@ fn assert_rollup_rank_topk_after_pushdown_envelope(
         analysis.rollup_rank_topk_after_aggregate_join_pushdown_admission,
         analysis.first_rejection_projection()
     );
-    let CapabilityEnvelopeAdmission::Admitted { envelope } = analysis.strict_bounded_envelope_admission() else {
-        panic!("{label}: expected selected strict envelope, got {:?}", analysis.strict_bounded_envelope_admission());
+    let CapabilityEnvelopeAdmission::Admitted { envelope } = analysis.capability_envelope_admission() else {
+        panic!("{label}: expected selected strict envelope, got {:?}", analysis.capability_envelope_admission());
     };
-    assert_eq!(envelope, StrictBoundedEnvelope::RollupRankTopKAfterAggregateJoinPushdown);
+    assert_eq!(envelope, CapabilityEnvelope::RollupRankTopKAfterAggregateJoinPushdown);
     assert_eq!(envelope.as_str(), "rollup_rank_topk_after_aggregate_join_pushdown");
 
-    let report = StrictBoundedContractReport::from_capability_analysis(analysis)
+    let report = CapabilityContractReport::from_capability_analysis(analysis)
         .unwrap_or_else(|error| panic!("{label}: capability contract report failed: {error}"));
-    assert_eq!(report.execution_mode(), StrictBoundedExecutionMode::StrictBounded);
-    assert!(report.is_strict_bounded_ready(), "{label}: capability gate rows should be strict-ready");
+    assert_eq!(report.execution_mode(), CapabilityEnvelopeStatus::Admitted);
+    assert!(report.is_ready(), "{label}: capability gate rows should be strict-ready");
 
     let aggregate_rows = report
         .gate_rows()
@@ -610,10 +610,10 @@ fn assert_rollup_rank_topk_after_pushdown_envelope(
         CompiledBoundedPipelineSupport::Supported,
         "{label}: compiled plan should be inside the strict runtime envelope"
     );
-    let runtime_admission = strict_bounded_pipeline_admission(plan)
+    let runtime_admission = bounded_pipeline_admission(plan)
         .unwrap_or_else(|error| panic!("{label}: strict bounded runtime admission failed: {error}"))
         .unwrap_or_else(|| panic!("{label}: strict bounded runtime admission should be selected"));
-    assert_eq!(runtime_admission.envelope(), StrictBoundedEnvelope::RollupRankTopKAfterAggregateJoinPushdown);
+    assert_eq!(runtime_admission.envelope(), CapabilityEnvelope::RollupRankTopKAfterAggregateJoinPushdown);
     assert_compiled_graph_counts(label, runtime_admission.pipeline(), expected_graph);
 }
 
@@ -628,7 +628,7 @@ fn assert_compiled_graph_counts(label: &str, pipeline: &CompiledPipeline, expect
 
 fn assert_modeled_gate_row(
     label: &str,
-    report: &StrictBoundedContractReport,
+    report: &CapabilityContractReport,
     kind: ReservationKind,
     required_contract: &str,
 ) {

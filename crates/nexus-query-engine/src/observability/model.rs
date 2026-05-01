@@ -154,6 +154,155 @@ pub enum AttemptCapacityDisposition {
     Released,
     RetainedQuarantine,
 }
+
+/// The device-health result decided by an admitted attempt's terminal release
+/// commit.
+///
+/// This is deliberately distinct from [`AttemptCapacityDisposition`]: both a
+/// device-local fault and an unknown-isolation backend fault retain capacity,
+/// but they have materially different health consequences.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AttemptHealthTransition {
+    HealthyReuse,
+    DeviceQuarantined,
+    BackendUnhealthy,
+}
+
+/// Exact final counters observed for one attempt allocation domain.
+///
+/// A report carries this only when its final sample completed successfully.
+/// `None` in [`QueryAttemptReport::final_domain_usage`] means that no
+/// trustworthy final sample is available; it never represents a synthetic
+/// all-zero domain. This includes ledger-only attempts, failed final samples,
+/// and unknown-isolation cleanup paths.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AttemptFinalDomainUsage {
+    pub domain_id: u64,
+    pub active: bool,
+    pub active_members: u64,
+    pub ceiling_bytes: u64,
+    pub effective_driver_ceiling_bytes: u64,
+    pub driver_ceiling_verified: bool,
+    pub allocation_limit_bytes: u64,
+    pub current_bytes: u64,
+    pub peak_bytes: u64,
+    pub total_bytes: u64,
+    pub current_aligned_bytes: u64,
+    pub peak_aligned_bytes: u64,
+    pub total_allocations: u64,
+    pub current_allocations: u64,
+    pub peak_allocations: u64,
+    pub failed_allocation_count: u64,
+    pub largest_failed_allocation_bytes: u64,
+}
+
+impl From<cudf::QueryMemoryDomainUsage> for AttemptFinalDomainUsage {
+    fn from(usage: cudf::QueryMemoryDomainUsage) -> Self {
+        Self {
+            domain_id: usage.domain_id,
+            active: usage.active,
+            active_members: usage.active_members,
+            ceiling_bytes: usage.ceiling_bytes,
+            effective_driver_ceiling_bytes: usage.effective_driver_ceiling_bytes,
+            driver_ceiling_verified: usage.driver_ceiling_verified,
+            allocation_limit_bytes: usage.allocation_limit_bytes,
+            current_bytes: usage.current_bytes,
+            peak_bytes: usage.peak_bytes,
+            total_bytes: usage.total_bytes,
+            current_aligned_bytes: usage.current_aligned_bytes,
+            peak_aligned_bytes: usage.peak_aligned_bytes,
+            total_allocations: usage.total_allocations,
+            current_allocations: usage.current_allocations,
+            peak_allocations: usage.peak_allocations,
+            failed_allocation_count: usage.failed_allocation_count,
+            largest_failed_allocation_bytes: usage.largest_failed_allocation_bytes,
+        }
+    }
+}
+
+/// The immutable cleanup and capacity facts committed after an admitted
+/// attempt's device cleanup and before its observation report is sealed.
+///
+/// This stays crate-internal because the query service is the sole authority
+/// that observes the cleanup result and returns (or retains) capacity. The
+/// attempt owner projects this value into [`QueryAttemptReport`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct AttemptTerminalCommit {
+    cleanup_disposition: AttemptCleanupDisposition,
+    capacity_disposition: AttemptCapacityDisposition,
+    cleanup_failure_count: u64,
+    final_domain_usage: Option<AttemptFinalDomainUsage>,
+    health_transition: AttemptHealthTransition,
+}
+
+impl AttemptTerminalCommit {
+    pub(crate) const fn completed(
+        capacity_disposition: AttemptCapacityDisposition,
+        final_domain_usage: Option<AttemptFinalDomainUsage>,
+        health_transition: AttemptHealthTransition,
+    ) -> Self {
+        Self {
+            cleanup_disposition: AttemptCleanupDisposition::Completed,
+            capacity_disposition,
+            cleanup_failure_count: 0,
+            final_domain_usage,
+            health_transition,
+        }
+    }
+
+    pub(crate) const fn failed_cleanup(
+        capacity_disposition: AttemptCapacityDisposition,
+        final_domain_usage: Option<AttemptFinalDomainUsage>,
+        health_transition: AttemptHealthTransition,
+    ) -> Self {
+        Self {
+            cleanup_disposition: AttemptCleanupDisposition::CompletedWithFailures,
+            capacity_disposition,
+            cleanup_failure_count: 1,
+            final_domain_usage,
+            health_transition,
+        }
+    }
+
+    pub(crate) const fn cleanup_disposition(self) -> AttemptCleanupDisposition {
+        self.cleanup_disposition
+    }
+
+    pub(crate) const fn capacity_disposition(self) -> AttemptCapacityDisposition {
+        self.capacity_disposition
+    }
+
+    pub(crate) const fn cleanup_failure_count(self) -> u64 {
+        self.cleanup_failure_count
+    }
+
+    pub(crate) const fn final_domain_usage(self) -> Option<AttemptFinalDomainUsage> {
+        self.final_domain_usage
+    }
+
+    pub(crate) const fn health_transition(self) -> AttemptHealthTransition {
+        self.health_transition
+    }
+
+    pub(crate) const fn has_consistent_capacity_health_transition(self) -> bool {
+        matches!(
+            (self.capacity_disposition, self.health_transition),
+            (AttemptCapacityDisposition::Released, AttemptHealthTransition::HealthyReuse)
+                | (AttemptCapacityDisposition::RetainedQuarantine, AttemptHealthTransition::DeviceQuarantined)
+                | (AttemptCapacityDisposition::RetainedQuarantine, AttemptHealthTransition::BackendUnhealthy)
+        )
+    }
+
+    pub(crate) const fn is_admitted_cleanup_commit(self) -> bool {
+        !matches!(self.cleanup_disposition, AttemptCleanupDisposition::NotRequired)
+            && !matches!(
+                self.capacity_disposition,
+                AttemptCapacityDisposition::NotAdmitted | AttemptCapacityDisposition::PendingRelease
+            )
+            && self.has_consistent_capacity_health_transition()
+    }
+}
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AttemptAdmissionFact {
     pub admission_sequence: u64,
@@ -188,6 +337,15 @@ pub struct QueryAttemptReport {
     pub cleanup_disposition: AttemptCleanupDisposition,
     pub cleanup_failure_count: u64,
     pub capacity_disposition: AttemptCapacityDisposition,
+    /// Exact final domain usage after admitted cleanup, when sampling
+    /// succeeded. `None` is an unavailable sample, never a zero sample.
+    #[serde(default)]
+    pub final_domain_usage: Option<AttemptFinalDomainUsage>,
+    /// Health result of the admitted release commit. `None` means no
+    /// trustworthy admitted terminal release-commit fact was recorded (for
+    /// example, an unadmitted or legacy attempt).
+    #[serde(default)]
+    pub health_transition: Option<AttemptHealthTransition>,
     pub observation_lost_records: u64,
     pub observation_retained_records: u64,
     pub observation_retained_bytes: u64,
@@ -835,7 +993,6 @@ runtime_observation_body!(
     /// Admission-lifecycle payload body retained out of line.
     RuntimeAdmissionObservation {
         admission_request_id: AdmissionRequestId,
-        tenant_id: String,
         lifecycle: AdmissionLifecycleState,
         queue_depth: usize,
         device_ordinal: Option<u32>,
@@ -1444,12 +1601,10 @@ impl LogicalRetainedBytes for RuntimeTimelineEvent {
                     }
             },
             RuntimeObservationPayload::Admission(observation) => {
-                string_bytes(&observation.tenant_id)
-                    + match &observation.lifecycle {
-                        AdmissionLifecycleState::Rejected { reason } => string_bytes(reason),
-                        _ => 1,
-                    }
-                    + 29
+                (match &observation.lifecycle {
+                    AdmissionLifecycleState::Rejected { reason } => string_bytes(reason),
+                    _ => 1,
+                }) + 29
             },
             RuntimeObservationPayload::GpuJob(observation) => {
                 string_bytes(observation.job_id.as_str())

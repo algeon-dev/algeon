@@ -1,0 +1,17 @@
+error[E0432]: unresolved import `datafusion_nexus::backend::NexusGpuResourcePolicy`
+ --> tests/ui/public_api/forbidden_legacy_admission_builder.rs:1:50
+  |
+1 | use datafusion_nexus::backend::{NexusGpuBackend, NexusGpuResourcePolicy};
+  |                                                  ^^^^^^^^^^^^^^^^^^^^^^ no `NexusGpuResourcePolicy` in `backend`
+  |
+help: a similar name exists in the module
+  |
+1 - use datafusion_nexus::backend::{NexusGpuBackend, NexusGpuResourcePolicy};
+1 + use datafusion_nexus::backend::{NexusGpuBackend, NexusGpuQueuePolicy};
+  |
+
+error[E0599]: no method named `admission` found for struct `NexusGpuBackendBuilder` in the current scope
+ --> tests/ui/public_api/forbidden_legacy_admission_builder.rs:4:40
+  |
+4 |     let _ = NexusGpuBackend::builder().admission(NexusGpuResourcePolicy::default());
+  |                                        ^^^^^^^^^ method not found in `NexusGpuBackendBuilder`

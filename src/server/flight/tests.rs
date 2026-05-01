@@ -17,7 +17,6 @@ use futures::{TryStreamExt as _, future::BoxFuture};
 use super::*;
 use crate::{
     server::{
-        auth::{AuthMode, TokenStore},
         coordinator::QueryTerminalOutcome,
         error::{
             ERROR_CODE_METADATA_KEY, ERROR_KIND_METADATA_KEY, ERROR_OPERATION_METADATA_KEY, ERROR_STATUS_METADATA_KEY,
@@ -72,6 +71,120 @@ fn cancel_invalid_argument_status_carries_adapter_metadata() {
     assert_eq!(status.metadata().get(ERROR_KIND_METADATA_KEY).unwrap().to_str().unwrap(), "invalid_input");
     assert_eq!(status.metadata().get(ERROR_STATUS_METADATA_KEY).unwrap().to_str().unwrap(), "permanent");
     assert_eq!(status.message(), "Flight SQL cancel action contained a non-UTF-8 query id");
+}
+
+fn query_stats_payload(service: &DatafusionNexusFlightSqlService, query_id: &str) -> String {
+    String::from_utf8(
+        service.coordinator.query_stats(query_id).expect("completed Flight query should retain stats").to_vec(),
+    )
+    .expect("query stats are UTF-8")
+}
+
+fn query_id_from_flight_info(response: &Response<FlightInfo>) -> String {
+    response
+        .metadata()
+        .get(QUERY_ID_METADATA_KEY)
+        .and_then(|value| value.to_str().ok())
+        .expect("FlightInfo response metadata carries a query id")
+        .to_string()
+}
+
+fn assert_single_sealed_attempt_report(payload: &str, expected_outcome: &str) {
+    assert_eq!(payload.matches("# attempt_id=attempt-").count(), 1, "{payload}");
+    assert_eq!(payload.matches("# attempt_outcome=").count(), 1, "{payload}");
+    assert!(payload.contains(&format!("# attempt_outcome={expected_outcome}")), "{payload}");
+    assert!(payload.contains("# sealed=true"), "{payload}");
+}
+
+#[tokio::test]
+async fn explain_gpu_success_retains_one_sealed_attempt_report() {
+    let service = super::service::bounded_test_service(Duration::from_secs(30));
+    let response = service
+        .get_flight_info_statement(
+            CommandStatementQuery { query: "EXPLAIN GPU SELECT 1 AS one".to_string(), transaction_id: None },
+            Request::new(FlightDescriptor::new_cmd(Vec::<u8>::new())),
+        )
+        .await
+        .expect("EXPLAIN GPU FlightInfo should issue a ticket");
+    let query_id = query_id_from_flight_info(&response);
+
+    let batches = execute_ticket_batches(&service, query_id.clone()).await;
+
+    assert_eq!(batches.len(), 1);
+    let payload = query_stats_payload(&service, &query_id);
+    assert!(payload.contains("# outcome=succeeded"), "{payload}");
+    assert_single_sealed_attempt_report(&payload, "succeeded");
+}
+
+#[tokio::test]
+async fn explain_gpu_planning_failure_retains_one_sealed_attempt_report() {
+    let service = super::service::bounded_test_service(Duration::from_secs(30));
+    let status = service
+        .get_flight_info_statement(
+            CommandStatementQuery { query: "EXPLAIN GPU FORMAT TEXT SELECT 1".to_string(), transaction_id: None },
+            Request::new(FlightDescriptor::new_cmd(Vec::<u8>::new())),
+        )
+        .await
+        .expect_err("unsupported EXPLAIN GPU format should fail planning");
+    let query_id = status
+        .metadata()
+        .get(QUERY_ID_METADATA_KEY)
+        .and_then(|value| value.to_str().ok())
+        .expect("planning failure carries a query id")
+        .to_string();
+
+    assert_eq!(status.code(), Code::InvalidArgument);
+    let payload = query_stats_payload(&service, &query_id);
+    assert!(payload.contains("# outcome=failed"), "{payload}");
+    assert_single_sealed_attempt_report(&payload, "failed");
+}
+
+#[tokio::test]
+async fn explain_gpu_cancel_before_do_get_retains_one_sealed_attempt_report() {
+    use prost::Message as _;
+
+    let service = super::service::bounded_test_service(Duration::from_secs(30));
+    let response = service
+        .get_flight_info_statement(
+            CommandStatementQuery { query: "EXPLAIN GPU SELECT 1 AS one".to_string(), transaction_id: None },
+            Request::new(FlightDescriptor::new_cmd(Vec::<u8>::new())),
+        )
+        .await
+        .expect("EXPLAIN GPU FlightInfo should issue a ticket");
+    let query_id = query_id_from_flight_info(&response);
+    let info = response.into_inner();
+
+    assert!(service.cancel_from_flight_info(&info.encode_to_vec()).expect("cancel request should decode"));
+
+    let payload = query_stats_payload(&service, &query_id);
+    assert!(payload.contains("# outcome=failed"), "{payload}");
+    assert_single_sealed_attempt_report(&payload, "cancelled");
+}
+
+#[tokio::test]
+async fn explain_gpu_stream_drop_retains_one_sealed_attempt_report() {
+    let service = super::service::bounded_test_service(Duration::from_secs(30));
+    let response = service
+        .get_flight_info_statement(
+            CommandStatementQuery { query: "EXPLAIN GPU SELECT 1 AS one".to_string(), transaction_id: None },
+            Request::new(FlightDescriptor::new_cmd(Vec::<u8>::new())),
+        )
+        .await
+        .expect("EXPLAIN GPU FlightInfo should issue a ticket");
+    let query_id = query_id_from_flight_info(&response);
+    let native_cancellation =
+        service.coordinator.ticket_cancellation(&query_id).expect("EXPLAIN GPU ticket retains native cancellation");
+    let response =
+        service.execute_ticket(query_id.clone(), None).await.expect("EXPLAIN GPU DoGet should return a lazy stream");
+
+    drop(response);
+
+    assert!(native_cancellation.is_cancelled(), "dropping EXPLAIN GPU must cancel its Flight lifecycle");
+    assert_eq!(service.cancellations.len(), 0, "dropped EXPLAIN GPU stream must unregister cancellation");
+    let payload = query_stats_payload(&service, &query_id);
+    assert!(payload.contains("# outcome=failed"), "{payload}");
+    assert!(payload.contains("code=cancelled"), "{payload}");
+    assert_single_sealed_attempt_report(&payload, "cancelled");
 }
 
 #[derive(Debug)]
@@ -133,9 +246,8 @@ async fn table_format_distinct_list_issues_ticket_and_executes_datafusion_delega
     let service = DatafusionNexusFlightSqlService::new(
         ctx,
         NexusNativeOptimizerConfig::default(),
-        Arc::new(QueryAdmission::new(1).expect("test admission limit")),
+        Arc::new(QueryAdmission::new_for_tests()),
         Duration::from_secs(30),
-        AuthInterceptor::new(AuthMode::Disabled, TokenStore::new()),
         #[cfg(feature = "cugraph")]
         None,
     );
@@ -180,9 +292,8 @@ async fn table_format_map_preserves_datafusion_baseline() {
     let service = DatafusionNexusFlightSqlService::new(
         ctx,
         NexusNativeOptimizerConfig::default(),
-        Arc::new(QueryAdmission::new(1).expect("test admission limit")),
+        Arc::new(QueryAdmission::new_for_tests()),
         Duration::from_secs(30),
-        AuthInterceptor::new(AuthMode::Disabled, TokenStore::new()),
         #[cfg(feature = "cugraph")]
         None,
     );
@@ -274,9 +385,8 @@ async fn planning_timeout_consumes_statement_ticket_without_holding_admission() 
     let service = DatafusionNexusFlightSqlService::new(
         ctx,
         NexusNativeOptimizerConfig::default(),
-        Arc::new(QueryAdmission::new(1).expect("test admission limit")),
+        Arc::new(QueryAdmission::new_for_tests()),
         Duration::from_secs(30),
-        AuthInterceptor::new(AuthMode::Disabled, TokenStore::new()),
         #[cfg(feature = "cugraph")]
         None,
     );
@@ -311,9 +421,8 @@ async fn update_ddl_read_only_schema_failure_captures_catalog_target_facts() {
     let service = DatafusionNexusFlightSqlService::new(
         ctx,
         NexusNativeOptimizerConfig::default(),
-        Arc::new(QueryAdmission::new(1).expect("test admission limit")),
+        Arc::new(QueryAdmission::new_for_tests()),
         Duration::from_secs(30),
-        AuthInterceptor::new(AuthMode::Disabled, TokenStore::new()),
         #[cfg(feature = "cugraph")]
         None,
     )
@@ -358,9 +467,8 @@ async fn update_set_datafusion_nexus_key_is_rejected_loudly() {
     let service = DatafusionNexusFlightSqlService::new(
         ctx,
         NexusNativeOptimizerConfig::default(),
-        Arc::new(QueryAdmission::new(1).expect("test admission limit")),
+        Arc::new(QueryAdmission::new_for_tests()),
         Duration::from_secs(30),
-        AuthInterceptor::new(AuthMode::Disabled, TokenStore::new()),
         #[cfg(feature = "cugraph")]
         None,
     );
@@ -375,13 +483,13 @@ async fn update_set_datafusion_nexus_key_is_rejected_loudly() {
 
     assert_eq!(status.code(), Code::InvalidArgument);
     assert_status_metadata(&status, "invalid_request", "invalid_input", "permanent");
-    assert!(status.message().contains("server or tenant defaults"), "status={status:?}");
+    assert!(status.message().contains("server configuration or admission defaults"), "status={status:?}");
     let payload = String::from_utf8(
         service.coordinator.query_stats(&query_id).expect("failed SET update should retain query stats").to_vec(),
     )
     .unwrap();
     assert!(payload.contains("fact.reason=flight_session_scoped_datafusion_nexus_keys_unsupported"), "{payload}");
-    assert!(payload.contains("fact.configuration_scope=server_or_tenant_defaults"), "{payload}");
+    assert!(payload.contains("fact.configuration_scope=server_or_admission_defaults"), "{payload}");
     assert!(!payload.contains("fact.config_key="), "raw config key must not be retained: {payload}");
 }
 
@@ -398,6 +506,44 @@ async fn update_set_plain_datafusion_key_still_succeeds() {
         .expect("plain DataFusion SET should keep existing update-lane behavior");
 
     assert_eq!(count, NO_UPDATED_RECORDS_COUNT);
+    let payload = String::from_utf8(
+        service
+            .coordinator
+            .query_stats(&query_id)
+            .expect("bounded DoPut update should retain the attempt-owned query report")
+            .to_vec(),
+    )
+    .unwrap();
+    assert!(payload.contains("# attempt_id=attempt-"), "{payload}");
+    assert_eq!(payload.matches("# attempt_outcome=").count(), 1, "{payload}");
+    assert!(payload.contains("# sealed=true"), "{payload}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn deduplicated_prepared_update_retains_sealed_attempt_report() {
+    let service = super::service::bounded_test_service(Duration::from_secs(30));
+    let query_id = "deduplicated-prepared-update".to_string();
+    let planning_lease = service
+        .register_query(query_id.clone(), "CREATE VIEW deduplicated_update_view AS SELECT 1".to_string(), None)
+        .unwrap();
+
+    let count = service
+        .complete_deduplicated_update(planning_lease, None)
+        .await
+        .expect("deduplicated prepared update should complete through its attempt owner");
+
+    assert_eq!(count, NO_UPDATED_RECORDS_COUNT);
+    let payload = String::from_utf8(
+        service
+            .coordinator
+            .query_stats(&query_id)
+            .expect("deduplicated update should retain the attempt-owned query report")
+            .to_vec(),
+    )
+    .unwrap();
+    assert!(payload.contains("# attempt_id=attempt-"), "{payload}");
+    assert_eq!(payload.matches("# attempt_outcome=").count(), 1, "{payload}");
+    assert!(payload.contains("# sealed=true"), "{payload}");
 }
 
 #[tokio::test]
@@ -405,9 +551,8 @@ async fn prepared_update_shutdown_promotion_preserves_operation_and_request_meta
     let service = DatafusionNexusFlightSqlService::new(
         Arc::new(SessionContext::new()),
         NexusNativeOptimizerConfig::default(),
-        Arc::new(QueryAdmission::new(1).expect("test admission limit")),
+        Arc::new(QueryAdmission::new_for_tests()),
         Duration::from_secs(30),
-        AuthInterceptor::new(AuthMode::Disabled, TokenStore::new()),
         #[cfg(feature = "cugraph")]
         None,
     );
@@ -458,9 +603,8 @@ async fn issuing_a_new_ticket_sweeps_abandoned_tickets_without_do_get() {
     let service = DatafusionNexusFlightSqlService::new(
         Arc::new(SessionContext::new()),
         NexusNativeOptimizerConfig::default(),
-        Arc::new(QueryAdmission::new(1).expect("test admission limit")),
+        Arc::new(QueryAdmission::new_for_tests()),
         Duration::ZERO,
-        AuthInterceptor::new(AuthMode::Disabled, TokenStore::new()),
         #[cfg(feature = "cugraph")]
         None,
     );

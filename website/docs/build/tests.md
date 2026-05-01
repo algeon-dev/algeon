@@ -128,23 +128,19 @@ and passes it explicitly to nextest; exclusive tests always use one.
 `bash scripts/ci/test_all.sh` is a pure alias that preserves every argument
 passed to `check_all.sh`.
 
-Cargo is never a silent fallback. It is available only as an explicit,
-noncanonical diagnostic surface:
-
-```bash
-bash scripts/check_all.sh --runner cargo-diagnostic
-```
-
-This runs the whole non-doctest Cargo suite serially under the GPU lock and
-prints `NONCANONICAL`. It cannot select an individual test lane and does not
-satisfy full pre-merge validation. `TEST_RUNNER=cargo` remains a compatibility
-mapping to this explicit mode.
+Cargo is never a test-runner fallback. The admitted test surface requires
+`cargo-nextest` per-test-process isolation: allocator lifecycle cases mutate a
+process-global `DeviceMemoryManager`, and native execution cases intentionally
+retain one backend policy per process. Serial libtest threads cannot reset that
+state. `--runner cargo-diagnostic`, `TEST_RUNNER=cargo`, and
+`TEST_RUNNER=cargo-diagnostic` therefore fail closed before any test work.
 
 The compatibility variables `FEATURES`, `TEST_RUNNER`, `GPU_LOCK`, and `STRICT`
-remain supported. Every present value is validated before CLI precedence is
-applied; a CLI value cannot hide an invalid environment value. Valid CLI values
-win. Unknown options, duplicates, conflicts, invalid values, missing option
-arguments, and an invalid `nproc` result exit 2 before expensive work.
+remain recognized. `TEST_RUNNER=nextest` is its only accepted runner value;
+`--runner nextest` can explicitly replace a retired runner environment value.
+Every present value is validated before expensive work. Unknown options,
+duplicates, conflicts, invalid values, missing option arguments, and an invalid
+`nproc` result exit 2 before expensive work.
 `--strict` and `STRICT=1` are compatibility spellings because rustdoc is always
 strict when that phase runs.
 
@@ -238,7 +234,6 @@ loads nor modifies the real RAPIDS libraries.
 ```bash
 bash scripts/check_all.sh --fast
 bash scripts/check_all.sh --lane gpu-shared
-bash scripts/check_all.sh --runner cargo-diagnostic
 ```
 
 ### One package, one harness
@@ -314,10 +309,10 @@ the active all-feature surface, not from a multi-day dirty `target/` tree.
 `sccache` (or equivalent) can help clean CI and branch switches; it does not
 remove the cost of linking many large test binaries.
 
-Do not use bare parallel `cargo test` for `datafusion-nexus`: libtest runs
-cases in a binary as threads and does not provide the native standalone-context
-admission model. The explicit Cargo diagnostic serializes that noncanonical
-surface under the GPU lock. `cargo nextest run` is the deterministic
+Do not use broad `cargo test` for `datafusion-nexus`: libtest runs cases in a
+binary as threads, and serial threads still cannot restore the engine's
+process-global allocator or policy fixtures. The retired Cargo diagnostic
+runner fails closed for that reason. `cargo nextest run` is the deterministic
 unit/integration surface, but a bare invocation does **not** acquire the
 cross-consumer GPU lock; use `check_all.sh` for repository validation. It
 intentionally contains **no external-service E2E** — nothing in the Cargo test

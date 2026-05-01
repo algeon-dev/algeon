@@ -24,8 +24,7 @@ pub(super) fn stream_join_leaf_source_chunks_serial_from<F>(
 where
     F: FnMut(ResidentGpuFrame, &mut ReservationTracker, &mut QueryMetrics) -> Result<()>,
 {
-    let batches = cache_preserving_join_leaf_source_chunk_batches(
-        context,
+    let batches = join_leaf_source_chunk_batches_for_execution(
         &stream.source,
         chunks,
         &stream.reader_dynamic_filters,
@@ -43,7 +42,6 @@ where
                 metrics,
                 consume,
             )?;
-            reservations.acknowledge_requested_grant_shrink()?;
             continue;
         }
         match stream_join_leaf_source_batch_or_split_with_consumer(
@@ -54,9 +52,7 @@ where
             metrics,
             consume,
         ) {
-            Ok(()) => {
-                reservations.acknowledge_requested_grant_shrink()?;
-            },
+            Ok(()) => {},
             Err(error) => return Err(error),
         }
     }
@@ -123,7 +119,7 @@ pub(super) fn stream_join_leaf_source_batch_with_consumer<F>(
 where
     F: FnMut(ResidentGpuFrame, &mut ReservationTracker, &mut QueryMetrics) -> Result<()>,
 {
-    let grow_source_to_observed = retain_decoded_source_for_cache(context, stream);
+    let grow_source_to_observed = retain_decoded_source(stream);
     let (frame, reservation) = read_join_leaf_source_batch_attempt(
         context,
         &stream.source,
@@ -152,7 +148,7 @@ where
     F: FnMut(ResidentGpuFrame, &mut ReservationTracker, &mut QueryMetrics) -> Result<()>,
 {
     context.check_cancellation("nexus_query_engine.exec.bounded.join_leaf_source_stream")?;
-    let grow_source_to_observed = retain_decoded_source_for_cache(context, stream);
+    let grow_source_to_observed = retain_decoded_source(stream);
     let (frame, reservation) = match read_join_leaf_source_chunk_attempt(
         context,
         &stream.source,
@@ -244,7 +240,6 @@ where
             metrics,
             consume,
         )?;
-        reservations.acknowledge_requested_grant_shrink()?;
         stream_join_leaf_source_chunk_with_consumer_retry(
             context,
             stream,
@@ -254,7 +249,6 @@ where
             metrics,
             consume,
         )?;
-        reservations.acknowledge_requested_grant_shrink()?;
         return Ok(());
     }
 
@@ -271,7 +265,7 @@ pub(super) fn stream_join_leaf_source_chunks_with_scheduler<F>(
 where
     F: FnMut(ResidentGpuFrame, &mut ReservationTracker, &mut QueryMetrics) -> Result<()>,
 {
-    let grow_source_to_observed = retain_decoded_source_for_cache(context, stream);
+    let grow_source_to_observed = retain_decoded_source(stream);
     let mut pending = VecDeque::new();
     let mut next_chunk_index = 0usize;
     context.check_cancellation("nexus_query_engine.exec.bounded.join_leaf_source_stream_scheduler")?;
@@ -343,25 +337,6 @@ where
                 abandon_join_leaf_reads(pending, reservations, metrics);
                 return Err(error);
             }
-            let retained_device_bytes = output.reservation.bytes();
-            if let Err(error) = insert_bounded_local_parquet_source_cache(
-                context,
-                &stream.source,
-                chunk,
-                &output.frame,
-                &mut output.reservation,
-                reservations,
-                metrics,
-                "join_source_read",
-                1,
-                stream.max_attempts,
-                retained_device_bytes,
-            ) {
-                drop(output.frame);
-                reservations.release(output.reservation, metrics);
-                abandon_join_leaf_reads(pending, reservations, metrics);
-                return Err(error);
-            }
         } else if let Err(error) = observe_device_memory_bytes(&output.frame, metrics) {
             drop(output.frame);
             reservations.release(output.reservation, metrics);
@@ -413,11 +388,6 @@ where
             }
             return Err(error);
         }
-        if let Err(error) = reservations.acknowledge_requested_grant_shrink() {
-            abandon_join_leaf_reads(pending, reservations, metrics);
-            return Err(error);
-        }
-
         if let Err(error) = fill_optional_join_leaf_reads(
             context,
             &stream.source,

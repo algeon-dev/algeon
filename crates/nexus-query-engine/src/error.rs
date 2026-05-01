@@ -88,8 +88,8 @@ pub enum QueryErrorCode {
     /// This is a temporary resource condition, separate from a cuDF allocator
     /// failure, and is intended to drive retry/backoff decisions.
     MemoryReservationFailed,
-    /// The service admission layer rejected the query because shared
-    /// multi-tenant capacity is saturated.
+    /// The service admission layer rejected the query because shared bounded
+    /// capacity is saturated.
     ServiceOverloaded,
     /// An internal native-engine bug or unreachable condition.
     Internal,

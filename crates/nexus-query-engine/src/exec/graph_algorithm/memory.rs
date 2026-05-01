@@ -113,18 +113,10 @@ pub(in crate::exec) fn graph_memory_reservation_report(
         model_input = model_input.with_statistics(statistics);
     }
     let model = crate::graph_memory::GraphMemoryModel;
-    let mut estimate = match (budget_bytes.is_some(), context.native_pipeline_execution_mode()) {
-        (true, crate::mode::NativePipelineExecutionMode::StrictBounded) => {
-            model.estimate_for_strict_bounded(spec, model_input)?
-        },
-        (true, crate::mode::NativePipelineExecutionMode::Adaptive) => {
-            model.estimate_for_adaptive_bounded(spec, model_input)?
-        },
-        (false, _) => model.estimate(spec, model_input)?,
+    let mut estimate = match budget_bytes.is_some() {
+        true => model.estimate_for_bounded(spec, model_input)?,
+        false => model.estimate(spec, model_input)?,
     };
-    if context.has_reserved_resident_graph_price() {
-        estimate.requested_bytes = estimate.execution_bytes;
-    }
     let report = crate::graph_memory::GraphReservationReport::from_estimate(node_id, estimate, budget_bytes)
         .credit_live_similarity_pair_input(already_accounted_similarity_pair_input_bytes);
     Ok(match statistics {
@@ -273,18 +265,6 @@ pub(super) fn graph_execution_budget(
 }
 
 #[cfg(feature = "cugraph")]
-pub(super) fn graph_execution_budget_with_runtime(
-    context: &ExecutionContext,
-    graph_memory_limit_bytes: Option<u64>,
-    budget_boundary: &'static str,
-    operation: &'static str,
-    runtime: std::sync::Arc<cudf::Runtime>,
-) -> Result<GraphExecutionBudget> {
-    let token = graph_execution_budget_token(context, graph_memory_limit_bytes, budget_boundary, operation)?;
-    Ok(GraphExecutionBudget { runtime, token: Some(token) })
-}
-
-#[cfg(feature = "cugraph")]
 fn graph_execution_budget_token(
     context: &ExecutionContext,
     graph_memory_limit_bytes: Option<u64>,
@@ -340,24 +320,6 @@ pub(super) fn graph_budget_observation(
     let usage = token.reservation_usage().ok()?;
     let arena_usage = token.reservation_arena_usage().ok().flatten();
     Some(GraphBudgetObservation::from_reservation_usage(operation, token, usage, arena_usage, status))
-}
-
-#[cfg(feature = "cugraph")]
-pub(super) fn graph_budget_current_bytes(token: Option<&cudf::ExecutionBudgetToken>) -> Option<u64> {
-    token?.reservation_usage().ok().map(|usage| usage.current_bytes)
-}
-
-#[cfg(feature = "cugraph")]
-pub(super) fn graph_retained_device_bytes_upper_bound(
-    token: Option<&cudf::ExecutionBudgetToken>,
-    before_current_bytes: Option<u64>,
-    output: &DataFrame,
-) -> u64 {
-    let Some(after_current_bytes) = graph_budget_current_bytes(token) else {
-        return 0;
-    };
-    let output_device_bytes = GpuDataFrame::new(output.clone()).device_allocated_size_bytes().unwrap_or(0);
-    after_current_bytes.saturating_sub(before_current_bytes.unwrap_or(0)).saturating_sub(output_device_bytes)
 }
 
 #[cfg(feature = "cugraph")]

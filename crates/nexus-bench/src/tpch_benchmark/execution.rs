@@ -403,13 +403,6 @@ fn aggregate_native_execution_metrics(metrics: &[MetricsSet]) -> NativeDataFusio
             aggregate.source_read_prefetches_skipped.saturating_add(current.source_read_prefetches_skipped);
         aggregate.source_read_prefetches_abandoned =
             aggregate.source_read_prefetches_abandoned.saturating_add(current.source_read_prefetches_abandoned);
-        aggregate.source_cache_hits = aggregate.source_cache_hits.saturating_add(current.source_cache_hits);
-        aggregate.source_cache_misses = aggregate.source_cache_misses.saturating_add(current.source_cache_misses);
-        aggregate.source_cache_inserts = aggregate.source_cache_inserts.saturating_add(current.source_cache_inserts);
-        aggregate.source_cache_insert_skipped =
-            aggregate.source_cache_insert_skipped.saturating_add(current.source_cache_insert_skipped);
-        aggregate.source_cache_retained_bytes =
-            aggregate.source_cache_retained_bytes.max(current.source_cache_retained_bytes);
         aggregate.row_groups_planned = aggregate.row_groups_planned.saturating_add(current.row_groups_planned);
         aggregate.row_groups_committed = aggregate.row_groups_committed.saturating_add(current.row_groups_committed);
         aggregate.partial_aggregate_count =
@@ -428,16 +421,6 @@ fn aggregate_native_execution_metrics(metrics: &[MetricsSet]) -> NativeDataFusio
             aggregate.retry_resource_exhausted_count.saturating_add(current.retry_resource_exhausted_count);
         aggregate.retry_reservation_failure_count =
             aggregate.retry_reservation_failure_count.saturating_add(current.retry_reservation_failure_count);
-        aggregate.adaptive_retry_count = aggregate.adaptive_retry_count.saturating_add(current.adaptive_retry_count);
-        aggregate.adaptive_spill_count = aggregate.adaptive_spill_count.saturating_add(current.adaptive_spill_count);
-        aggregate.adaptive_downgrade_count =
-            aggregate.adaptive_downgrade_count.saturating_add(current.adaptive_downgrade_count);
-        aggregate.adaptive_memory_history_lookup_count =
-            aggregate.adaptive_memory_history_lookup_count.saturating_add(current.adaptive_memory_history_lookup_count);
-        aggregate.adaptive_memory_history_hit_count =
-            aggregate.adaptive_memory_history_hit_count.saturating_add(current.adaptive_memory_history_hit_count);
-        aggregate.adaptive_memory_history_miss_count =
-            aggregate.adaptive_memory_history_miss_count.saturating_add(current.adaptive_memory_history_miss_count);
         aggregate.dynamic_filter_produced_count =
             aggregate.dynamic_filter_produced_count.saturating_add(current.dynamic_filter_produced_count);
         aggregate.dynamic_filter_skipped_count =
@@ -483,12 +466,6 @@ fn aggregate_native_execution_metrics(metrics: &[MetricsSet]) -> NativeDataFusio
         aggregate.hash_join_cache_hits = aggregate.hash_join_cache_hits.saturating_add(current.hash_join_cache_hits);
         aggregate.hash_join_cache_misses =
             aggregate.hash_join_cache_misses.saturating_add(current.hash_join_cache_misses);
-        aggregate.hash_join_durable_cache_hits =
-            aggregate.hash_join_durable_cache_hits.saturating_add(current.hash_join_durable_cache_hits);
-        aggregate.hash_join_durable_cache_misses =
-            aggregate.hash_join_durable_cache_misses.saturating_add(current.hash_join_durable_cache_misses);
-        aggregate.hash_join_durable_cache_inserts =
-            aggregate.hash_join_durable_cache_inserts.saturating_add(current.hash_join_durable_cache_inserts);
         aggregate.hash_join_hash_table_bytes =
             aggregate.hash_join_hash_table_bytes.saturating_add(current.hash_join_hash_table_bytes);
         aggregate.filtered_join_hash_table_bytes =

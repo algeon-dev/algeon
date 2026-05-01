@@ -1,6 +1,7 @@
 use std::{
     error::Error,
     fs::{self, File},
+    io,
     path::Path,
     sync::Arc,
     time::{Instant, SystemTime, UNIX_EPOCH},
@@ -25,10 +26,9 @@ use datafusion_nexus::{
     planner::{NexusNativeOptimizerConfig, NexusNativePhysicalOptimizerRule},
     session::NexusSessionStateBuilderExt,
 };
-use nexus_query_engine::mode::NativePipelineExecutionMode;
 
 const ROWS_ENV: &str = "NEXUS_CUGRAPH_CONSTRUCTION_ROWS";
-const MEMORY_POLICY_ENV: &str = "NEXUS_CUGRAPH_CONSTRUCTION_MEMORY_POLICY";
+const REMOVED_MEMORY_POLICY_ENV: &str = "NEXUS_CUGRAPH_CONSTRUCTION_MEMORY_POLICY";
 const DEVICE_BUDGET_BYTES_ENV: &str = "NEXUS_CUGRAPH_CONSTRUCTION_DEVICE_BUDGET_BYTES";
 const MAX_SOURCE_CHUNK_BYTES_ENV: &str = "NEXUS_CUGRAPH_CONSTRUCTION_MAX_SOURCE_CHUNK_BYTES";
 
@@ -55,6 +55,7 @@ const COLUMNS: &[&str] = &[
 ];
 
 pub async fn run() -> Result<(), Box<dyn Error>> {
+    reject_removed_memory_policy_env()?;
     let rows = env_usize(ROWS_ENV, 4096);
     let dir = unique_temp_dir("datafusion-nexus-cugraph-construction-report");
     let result = run_report(&dir, rows).await;
@@ -81,9 +82,8 @@ async fn run_report(dir: &Path, rows: usize) -> Result<(), Box<dyn Error>> {
     register_views(&ctx).await?;
 
     println!(
-        "# rows={rows}\tmemory_policy={}\tdevice_budget_bytes={}\tmax_source_chunk_bytes={}",
-        std::env::var(MEMORY_POLICY_ENV).unwrap_or_else(|_| "bounded".to_string()),
-        env_u64(DEVICE_BUDGET_BYTES_ENV, NexusNativeExecutionConfig::auto_sized_device_budget_bytes(),),
+        "# rows={rows}\tmemory_policy=bounded\tdevice_budget_bytes={}\tmax_source_chunk_bytes={}",
+        env_u64(DEVICE_BUDGET_BYTES_ENV, NexusNativeExecutionConfig::AUTO_SIZED_DEVICE_BUDGET_FALLBACK_BYTES,),
         env_u64(MAX_SOURCE_CHUNK_BYTES_ENV, NexusNativeExecutionConfig::DEFAULT_BOUNDED_MAX_SOURCE_CHUNK_BYTES,),
     );
     println!("{}", COLUMNS.join("\t"));
@@ -327,22 +327,24 @@ fn direct_friendly_session_config() -> SessionConfig {
 }
 
 fn native_execution_config() -> NexusNativeExecutionConfig {
-    match std::env::var(MEMORY_POLICY_ENV).as_deref() {
-        Ok("bounded") | Err(_) => NexusNativeExecutionConfig::bounded(
-            env_u64(DEVICE_BUDGET_BYTES_ENV, NexusNativeExecutionConfig::auto_sized_device_budget_bytes()),
-            env_u64(MAX_SOURCE_CHUNK_BYTES_ENV, NexusNativeExecutionConfig::DEFAULT_BOUNDED_MAX_SOURCE_CHUNK_BYTES),
-            1024,
-            3,
-            1,
+    NexusNativeExecutionConfig::bounded(
+        env_u64(DEVICE_BUDGET_BYTES_ENV, NexusNativeExecutionConfig::AUTO_SIZED_DEVICE_BUDGET_FALLBACK_BYTES),
+        env_u64(MAX_SOURCE_CHUNK_BYTES_ENV, NexusNativeExecutionConfig::DEFAULT_BOUNDED_MAX_SOURCE_CHUNK_BYTES),
+        1024,
+        3,
+        1,
+    )
+}
+
+fn reject_removed_memory_policy_env() -> Result<(), Box<dyn Error>> {
+    if std::env::var_os(REMOVED_MEMORY_POLICY_ENV).is_some() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{REMOVED_MEMORY_POLICY_ENV} is unavailable; benchmark execution is always bounded"),
         )
-        .with_native_pipeline_execution_mode(NativePipelineExecutionMode::StrictBounded),
-        // Explicit diagnostic opt-in for comparing legacy whole-source graph
-        // construction against the bounded production default.
-        Ok("unbounded") => NexusNativeExecutionConfig::unbounded(),
-        Ok(value) => {
-            panic!("unsupported {MEMORY_POLICY_ENV}={value}; expected unbounded or bounded");
-        },
+        .into());
     }
+    Ok(())
 }
 
 fn write_synthetic_edges(path: &Path, rows: usize) -> Result<(), Box<dyn Error>> {

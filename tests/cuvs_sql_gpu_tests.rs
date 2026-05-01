@@ -17,9 +17,10 @@ use datafusion::{
 #[cfg(feature = "cugraph")]
 use datafusion_nexus::cugraph_sql::CugraphSqlConfig;
 use datafusion_nexus::{
-    backend::{GpuMemoryOwnership, NexusGpuBackend, NexusMemoryPolicy},
+    backend::{GpuDeviceMemoryLimit, GpuMemoryOwnership, NexusGpuBackend, NexusGpuDeviceProfile},
     cuvs_sql::CuvsAlgoExec,
     error::{DataFusionErrorExt, ErrorCode},
+    native_exec::NexusNativeExecutionConfig,
     session::NexusSessionStateBuilderExt,
 };
 use parquet::arrow::ArrowWriter;
@@ -413,14 +414,15 @@ async fn cuvs_kmeans_and_pca_plan_over_parquet_then_reject_bounded_execution() {
 
 fn cuvs_test_backend() -> NexusGpuBackend {
     NexusGpuBackend::builder()
-        .memory_policy(NexusMemoryPolicy::Bounded {
-            device_ordinals: vec![0],
-            device_budget_bytes: 512 * 1024 * 1024,
-            max_source_chunk_bytes: 256 * 1024 * 1024,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 3,
-            min_retry_chunk_row_groups: 1,
-        })
+        .with_native_execution_config(NexusNativeExecutionConfig::bounded(
+            512 * 1024 * 1024,
+            256 * 1024 * 1024,
+            1,
+            3,
+            1,
+        ))
+        .device_profiles([NexusGpuDeviceProfile::new(0)
+            .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: 512 * 1024 * 1024 })])
         .device_memory_ownership([(0, GpuMemoryOwnership::WholeDeviceExclusive)])
         .build()
         .expect("cuVS SQL tests require a backend-owned GPU")
@@ -494,7 +496,7 @@ async fn assert_cuvs_bounded_rejection(
     assert_eq!(typed.code(), ErrorCode::UnsupportedOperator);
     assert_eq!(typed.operation(), "datafusion_nexus.cuvs_sql.bounded_admission");
     assert_eq!(typed.facts().get("reason"), Some("blocked_lower_level_contract"));
-    assert_eq!(typed.facts().get("execution_mode"), Some("strict_bounded"));
+    assert_eq!(typed.facts().get("execution_mode"), Some("bounded"));
     assert_eq!(typed.facts().get("required_contract"), Some("cuvs_vector_algorithm_peak_memory_preflight"));
     assert_eq!(typed.facts().get("host_fallback"), Some("disabled"));
     assert_eq!(typed.facts().get("cuvs_operation"), Some(expected_operation));

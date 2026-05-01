@@ -16,15 +16,15 @@ pub use lifecycle::{
     RuntimeExecutionObservationScope, RuntimePlanExecutionLifecycle, RuntimeQueryLifecycle, RuntimeTaskLifecycle,
     task_attempt_id,
 };
-pub(crate) use model::LogicalRetainedBytes;
 pub use model::{
     AdmissionLifecycleState, AdmissionRequestId, AttemptAdmissionFact, AttemptCapacityDisposition,
-    AttemptCleanupDisposition, AttemptDisposition, AttemptId, AttemptQueryId, AttemptTimestamps, AttemptTraceContext,
-    BarrierDefinitionRow, CompiledEdgeRow, GpuJobLifecycleState, JobDefinitionRow, MAX_ATTEMPT_QUERY_ID_BYTES,
-    MAX_ATTEMPT_TRACE_CONTEXT_BYTES, ObservationSequence, PlanEdgeRow, PlanExecutionBoundaryKind, PlanExecutionId,
-    PlanNodeRow, QUERY_ATTEMPT_REPORT_SCHEMA_V1, QueryAttemptReport, QueryBoundaryKind,
-    RUNTIME_OBSERVATION_JSONL_SCHEMA, ReservationGateRow, RuntimeAdmissionObservation, RuntimeAttemptId,
-    RuntimeBarrierId, RuntimeCleanupFailureObservation, RuntimeClockDomain, RuntimeGpuJobObservation, RuntimeJobId,
+    AttemptCleanupDisposition, AttemptDisposition, AttemptFinalDomainUsage, AttemptHealthTransition, AttemptId,
+    AttemptQueryId, AttemptTimestamps, AttemptTraceContext, BarrierDefinitionRow, CompiledEdgeRow,
+    GpuJobLifecycleState, JobDefinitionRow, MAX_ATTEMPT_QUERY_ID_BYTES, MAX_ATTEMPT_TRACE_CONTEXT_BYTES,
+    ObservationSequence, PlanEdgeRow, PlanExecutionBoundaryKind, PlanExecutionId, PlanNodeRow,
+    QUERY_ATTEMPT_REPORT_SCHEMA_V1, QueryAttemptReport, QueryBoundaryKind, RUNTIME_OBSERVATION_JSONL_SCHEMA,
+    ReservationGateRow, RuntimeAdmissionObservation, RuntimeAttemptId, RuntimeBarrierId,
+    RuntimeCleanupFailureObservation, RuntimeClockDomain, RuntimeGpuJobObservation, RuntimeJobId,
     RuntimeMeasurementQuality, RuntimeMeasurementScope, RuntimeMeasurementSource, RuntimeObservationClassLoss,
     RuntimeObservationFooter, RuntimeObservationLimits, RuntimeObservationLossReason, RuntimeObservationManifest,
     RuntimeObservationPayload, RuntimeObservationReasonLoss, RuntimeObservationRecord, RuntimeObservationRecordClass,
@@ -38,15 +38,16 @@ pub use model::{
     SourceReadLifecycleState, StreamLeaseAcquisition, StreamLeaseLifecycleState, TaskAttemptId, TaskDefinitionRow,
     TaskLifecycleState, WorkerDefinitionRow,
 };
+pub(crate) use model::{AttemptTerminalCommit, LogicalRetainedBytes};
 pub use operator_stage::{
     RuntimeOperatorStageGuard, RuntimeOperatorStageIdentity, observe_operator_stage, stage_context_from_execution,
 };
-pub(crate) use recorder::in_runtime_observation_delivery;
 pub use recorder::{
     LiveRuntimeObservationSnapshot, RuntimeEventContext, RuntimeObservationConfig, RuntimeObservationHandle,
     RuntimeObservationOwner, RuntimeObservationRecordDisposition, RuntimeObservationSession,
     SealedRuntimeObservationSnapshot,
 };
+pub(crate) use recorder::{QueryCleanupSealDelivery, in_runtime_observation_delivery};
 
 #[cfg(test)]
 pub(crate) fn assert_live_topology_references_resolve(snapshot: &LiveRuntimeObservationSnapshot) {

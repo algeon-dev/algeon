@@ -159,11 +159,6 @@ pub(super) fn hash_partition_join_side(
             return Err(error);
         },
     };
-    if let Err(error) = reservations.reclaim_source_cache_for_external_working_set(reservations.budget(), metrics) {
-        reservations.release(reservation, metrics);
-        release_partition_input(frame, input_reservation, reservations, metrics);
-        return Err(error);
-    }
     let partitioned = match frame
         .with_execution(overrides)
         .hash_partition_by(keys.iter().map(String::as_str), partition_count)

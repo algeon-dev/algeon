@@ -30,16 +30,16 @@ use datafusion::{
     },
 };
 use datafusion_nexus::{
-    backend::{GpuMemoryOwnership, NexusGpuBackend, NexusMemoryPolicy},
+    backend::{GpuDeviceMemoryLimit, GpuMemoryOwnership, NexusGpuBackend, NexusGpuDeviceProfile},
     capability::CapabilityReason,
     error::{DataFusionErrorExt, ErrorCode},
     native::lower_physical_plan_to_native,
     native_exec::{NexusNativeComposedExec, NexusNativeExec, NexusNativeExecutionConfig, NexusNativeGpuProducerExec},
     native_report::{NativeDataFusionPlanningOutcome, NativeDataFusionPlanningReport},
     planner::{
-        FinalPlanDisposition, NEXUS_FINAL_PLAN_REQUIREMENT_RULE_NAME, NexusFinalPlanRequirementRule,
-        NexusNativeOptimizerConfig, NexusNativePhysicalOptimizerRule,
-        STRICT_BOUNDED_NON_JOIN_OUTSIDE_REPORT_SCOPE_REASON, classify_final_plan,
+        CAPABILITY_NON_JOIN_OUTSIDE_REPORT_SCOPE_REASON, FinalPlanDisposition, NEXUS_FINAL_PLAN_REQUIREMENT_RULE_NAME,
+        NexusFinalPlanRequirementRule, NexusNativeOptimizerConfig, NexusNativePhysicalOptimizerRule,
+        classify_final_plan,
     },
     report::CandidateOutcome,
     session::nexus_native_physical_optimizer_rules,
@@ -48,12 +48,12 @@ use datafusion_nexus::{
 use nexus_query_engine::{
     capability::ContractQuality,
     chunk::SourceChunkPlanningOptions,
-    mode::{NativePipelineExecutionMode, StrictBoundedExecutionMode},
+    mode::CapabilityEnvelopeStatus,
     pipeline::{PipelineTaskKind, compile_pipeline},
     plan::{NativePlanCostOptions, NativePlanCostReason},
     runtime::{
-        BoundedJoinReservationContract, ExecutionCancellation, LakehouseCacheFillConfig, MemoryControlPolicy,
-        ReservationKind, SourceChunkPlanningMode,
+        BoundedJoinReservationContract, ExecutionCancellation, LakehouseCacheFillConfig, ReservationKind,
+        SourceChunkPlanningMode,
     },
 };
 use nexus_workloads::tpch::{TPCH_QUERIES, write_tiny_tpch_parquet_dataset};
@@ -74,14 +74,15 @@ fn test_gpu_backend() -> &'static NexusGpuBackend {
     static BACKEND: OnceLock<NexusGpuBackend> = OnceLock::new();
     BACKEND.get_or_init(|| {
         NexusGpuBackend::builder()
-            .memory_policy(NexusMemoryPolicy::Bounded {
-                device_ordinals: vec![0],
-                device_budget_bytes: 256 * 1024 * 1024,
-                max_source_chunk_bytes: 64 * 1024 * 1024,
-                max_row_groups_per_chunk: 2,
-                max_retry_attempts: 3,
-                min_retry_chunk_row_groups: 1,
-            })
+            .with_native_execution_config(NexusNativeExecutionConfig::bounded(
+                256 * 1024 * 1024,
+                64 * 1024 * 1024,
+                2,
+                3,
+                1,
+            ))
+            .device_profiles([NexusGpuDeviceProfile::new(0)
+                .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: 256 * 1024 * 1024 })])
             .device_memory_ownership([(0, GpuMemoryOwnership::WholeDeviceExclusive)])
             .build()
             .expect("native execution tests require a backend-owned GPU")
@@ -134,16 +135,6 @@ fn native_exec_constructs_host_arrow_leaf_with_conservative_properties() {
 }
 
 #[test]
-fn native_exec_display_records_selected_adaptive_pipeline_mode() {
-    let native_plan = host_sink_plan();
-    let config = bounded_config().with_native_pipeline_execution_mode(NativePipelineExecutionMode::Adaptive);
-    let exec = NexusNativeExec::try_new(native_plan, config).unwrap();
-
-    let display = displayable(&exec).one_line().to_string();
-    assert!(display.contains("native_pipeline_execution_mode=adaptive"));
-}
-
-#[test]
 fn native_exec_rejects_gpu_resident_sink_for_datafusion_output() {
     let error = NexusNativeExec::try_new(gpu_resident_plan(), bounded_config()).unwrap_err();
 
@@ -152,35 +143,35 @@ fn native_exec_rejects_gpu_resident_sink_for_datafusion_output() {
 }
 
 #[test]
-fn native_exec_accepts_unbounded_memory_control_policy() {
-    // Unbounded mode remains part of the public API for explicit diagnostic and
-    // regression coverage even though production defaults are bounded.
-    let exec = NexusNativeExec::try_new(host_sink_plan(), NexusNativeExecutionConfig::unbounded()).unwrap();
+fn native_exec_uses_bounded_memory_control_policy() {
+    let exec = NexusNativeExec::try_new(host_sink_plan(), NexusNativeExecutionConfig::bounded_default()).unwrap();
 
     let display = displayable(&exec).one_line().to_string();
     assert!(display.contains("NexusNativeExec"));
-    assert!(display.contains("memory_control_policy=unbounded"));
+    assert!(display.contains("memory_control_policy=bounded"));
 }
 
 #[test]
 fn bounded_auto_sized_uses_bounded_defaults_and_prefetch_scheduler() {
-    let config = NexusNativeExecutionConfig::bounded_auto_sized();
+    let config = NexusNativeExecutionConfig::bounded_default();
+    let projection = DataFusionNexusSessionConfig::from_optimizer_config(
+        &NexusNativeOptimizerConfig::default().with_native_execution_config(config.clone()),
+    );
 
-    let MemoryControlPolicy::Bounded {
-        device_budget_bytes,
-        max_source_chunk_bytes,
-        max_row_groups_per_chunk,
-        max_retry_attempts,
-        min_retry_chunk_row_groups,
-    } = config.memory_control_policy()
-    else {
-        panic!("bounded_auto_sized must create a bounded memory-control policy");
-    };
-    assert!(device_budget_bytes > 0);
-    assert_eq!(max_source_chunk_bytes, NexusNativeExecutionConfig::DEFAULT_BOUNDED_MAX_SOURCE_CHUNK_BYTES);
-    assert_eq!(max_row_groups_per_chunk, NexusNativeExecutionConfig::DEFAULT_BOUNDED_MAX_ROW_GROUPS_PER_CHUNK);
-    assert_eq!(max_retry_attempts, NexusNativeExecutionConfig::DEFAULT_BOUNDED_MAX_RETRY_ATTEMPTS);
-    assert_eq!(min_retry_chunk_row_groups, NexusNativeExecutionConfig::DEFAULT_BOUNDED_MIN_RETRY_CHUNK_ROW_GROUPS);
+    assert!(projection.native_device_budget_bytes > 0);
+    assert_eq!(
+        projection.native_max_source_chunk_bytes,
+        NexusNativeExecutionConfig::DEFAULT_BOUNDED_MAX_SOURCE_CHUNK_BYTES
+    );
+    assert_eq!(
+        projection.native_max_row_groups_per_chunk,
+        NexusNativeExecutionConfig::DEFAULT_BOUNDED_MAX_ROW_GROUPS_PER_CHUNK
+    );
+    assert_eq!(projection.native_max_retry_attempts, NexusNativeExecutionConfig::DEFAULT_BOUNDED_MAX_RETRY_ATTEMPTS);
+    assert_eq!(
+        projection.native_min_retry_chunk_row_groups,
+        NexusNativeExecutionConfig::DEFAULT_BOUNDED_MIN_RETRY_CHUNK_ROW_GROUPS
+    );
     assert_eq!(config.source_scheduler_policy().max_source_reads_in_flight(), 2);
     assert_eq!(config.source_chunk_planning_mode(), SourceChunkPlanningMode::Conservative);
     assert_eq!(config.lakehouse_cache_fill_config().acquire_timeout, LakehouseCacheFillConfig::DEFAULT_ACQUIRE_TIMEOUT);
@@ -204,14 +195,14 @@ fn bounded_auto_sized_uses_bounded_defaults_and_prefetch_scheduler() {
     let source_chunk_planning_options =
         SourceChunkPlanningOptions::default().with_local_parquet_throughput_max_row_groups_per_chunk(2048);
     assert_eq!(
-        NexusNativeExecutionConfig::bounded_auto_sized()
+        NexusNativeExecutionConfig::bounded_default()
             .with_source_chunk_planning_options(source_chunk_planning_options)
             .source_chunk_planning_options(),
         source_chunk_planning_options
     );
-    assert!(!NexusNativeExecutionConfig::bounded_auto_sized().host_output_memory_pool_accounting());
+    assert!(!NexusNativeExecutionConfig::bounded_default().host_output_memory_pool_accounting());
     assert!(
-        NexusNativeExecutionConfig::bounded_auto_sized()
+        NexusNativeExecutionConfig::bounded_default()
             .with_host_output_memory_pool_accounting(true)
             .host_output_memory_pool_accounting()
     );
@@ -221,7 +212,7 @@ fn bounded_auto_sized_uses_bounded_defaults_and_prefetch_scheduler() {
 fn optimizer_config_default_uses_bounded_native_execution() {
     let config = NexusNativeOptimizerConfig::default();
 
-    assert!(config.native_execution_config().memory_control_policy().is_bounded());
+    assert!(DataFusionNexusSessionConfig::from_optimizer_config(&config).native_device_budget_bytes > 0);
     assert_eq!(config.native_execution_config().source_scheduler_policy().max_source_reads_in_flight(), 2);
 }
 
@@ -231,7 +222,7 @@ fn native_composed_exec_hands_gpu_result_between_fragments_without_host_material
     let path = dir.join("input.parquet");
     write_parquet_file(&path);
     let schema = parquet_file_schema();
-    let config = admitted_execution_config(NexusNativeExecutionConfig::unbounded());
+    let config = admitted_execution_config(NexusNativeExecutionConfig::bounded_default());
 
     let producer_plan = local_parquet_gpu_resident_plan(&path, Arc::clone(&schema));
     let producer = Arc::new(NexusNativeGpuProducerExec::try_new("fragment_input", producer_plan).unwrap());
@@ -275,7 +266,7 @@ fn native_composed_host_output_memory_pool_accounting_fails_fast() {
     write_parquet_file(&path);
     let schema = parquet_file_schema();
     let config = admitted_execution_config(
-        NexusNativeExecutionConfig::unbounded().with_host_output_memory_pool_accounting(true),
+        NexusNativeExecutionConfig::bounded_default().with_host_output_memory_pool_accounting(true),
     );
 
     let producer_plan = local_parquet_gpu_resident_plan(&path, Arc::clone(&schema));
@@ -320,7 +311,7 @@ fn native_host_output_memory_pool_accounting_fails_fast_in_hybrid_plan() {
     write_parquet_file(&path);
 
     let config = admitted_execution_config(
-        NexusNativeExecutionConfig::unbounded().with_host_output_memory_pool_accounting(true),
+        NexusNativeExecutionConfig::bounded_default().with_host_output_memory_pool_accounting(true),
     );
     let native_plan = local_parquet_host_sink_plan(&path, parquet_file_schema());
     let native_child = Arc::new(NexusNativeExec::try_new(native_plan, config).unwrap()) as Arc<dyn ExecutionPlan>;
@@ -364,7 +355,7 @@ fn native_host_output_memory_pool_accounting_releases_on_stream_eof() {
     write_parquet_file(&path);
 
     let config = admitted_execution_config(
-        NexusNativeExecutionConfig::unbounded().with_host_output_memory_pool_accounting(true),
+        NexusNativeExecutionConfig::bounded_default().with_host_output_memory_pool_accounting(true),
     );
     let native_plan = local_parquet_host_sink_plan(&path, parquet_file_schema());
     let native_exec = NexusNativeExec::try_new(native_plan, config).unwrap();
@@ -454,12 +445,12 @@ fn native_optimizer_rule_rewrites_supported_physical_plan() {
     }
     assert_eq!(rule.last_source_diagnostics().len(), 1);
     let diagnostics = rule.last_planning_diagnostics().expect("native optimizer should retain diagnostics");
-    assert!(diagnostics.strict_bounded_contract.accepted_candidates.is_empty());
-    assert!(diagnostics.strict_bounded_contract.rejected_candidates.is_empty());
-    assert_eq!(diagnostics.strict_bounded_contract.non_join_bounded_plan_count, 1);
+    assert!(diagnostics.capability_contract.accepted_candidates.is_empty());
+    assert!(diagnostics.capability_contract.rejected_candidates.is_empty());
+    assert_eq!(diagnostics.capability_contract.non_join_bounded_plan_count, 1);
     assert_eq!(
-        diagnostics.strict_bounded_contract.non_join_bounded_plan_reason.as_deref(),
-        Some(STRICT_BOUNDED_NON_JOIN_OUTSIDE_REPORT_SCOPE_REASON)
+        diagnostics.capability_contract.non_join_bounded_plan_reason.as_deref(),
+        Some(CAPABILITY_NON_JOIN_OUTSIDE_REPORT_SCOPE_REASON)
     );
 
     fs::remove_dir_all(dir).unwrap();
@@ -971,14 +962,14 @@ fn native_optimizer_rule_uses_datafusion_config_options_at_optimize_time() {
     let rule = NexusNativePhysicalOptimizerRule::new(config.clone());
     let mut options = ConfigOptions::default();
     options.extensions.insert(DataFusionNexusSessionConfig::from_optimizer_config(&config));
-    options.set("datafusion_nexus.native.memory_policy", "unbounded").unwrap();
+    options.set("datafusion_nexus.native.max_source_chunk_bytes", "1048576").unwrap();
 
     let optimized = rule.optimize(plan, &options).unwrap();
 
     let native =
         optimized.downcast_ref::<NexusNativeExec>().expect("supported plan should optimize to NexusNativeExec");
     let display = displayable(native).one_line().to_string();
-    assert!(display.contains("memory_control_policy=unbounded"), "{display}");
+    assert!(display.contains("memory_control_policy=bounded"), "{display}");
     let report = rule.last_report().expect("native optimizer should record a planning report");
     assert_eq!(report.selected_count(), 1);
 

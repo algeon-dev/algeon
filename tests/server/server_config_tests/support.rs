@@ -1,9 +1,26 @@
 fn env_with_server_toml(toml_body: &str) -> (tempfile::TempDir, BTreeMap<&'static str, String>) {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("server.toml");
-    std::fs::write(&path, toml_body).expect("write config file");
+    let toml = if toml_body.contains("[[admission.device_profiles]]") {
+        toml_body.to_owned()
+    } else {
+        format!("{toml_body}\n\n[[admission.device_profiles]]\ndevice_ordinal = 0\n")
+    };
+    std::fs::write(&path, toml).expect("write config file");
     let path_str = path.to_string_lossy().into_owned();
     (dir, BTreeMap::from([(NEXUS_SERVER_CONFIG_FILE_ENV, path_str)]))
+}
+
+fn env_with_default_device_profile() -> (tempfile::TempDir, BTreeMap<&'static str, String>) {
+    env_with_server_toml("")
+}
+
+fn server_config_with_default_device_profile(
+    mut env: BTreeMap<&'static str, String>,
+) -> datafusion_nexus::server::Result<ServerConfig> {
+    let (_dir, profile_env) = env_with_default_device_profile();
+    env.extend(profile_env);
+    ServerConfig::from_env_get(|name| env.get(name).cloned())
 }
 
 #[derive(Debug)]

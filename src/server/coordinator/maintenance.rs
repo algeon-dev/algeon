@@ -158,7 +158,12 @@ pub(in crate::server) async fn run_coordinator_maintenance(
 
 impl QueryCoordinator {
     pub(in crate::server) fn maintenance_at(&self, now: Instant) {
-        let shutdown_due = {
+        // Releasing an unconsumed ticket can terminalize its attempt. That
+        // synchronously seals the observation, whose report observer reenters
+        // the coordinator. Keep the payload alive until after the state mutex
+        // is released, just as cancellation and shutdown do for their
+        // callback-capable handles.
+        let (shutdown_due, expired_ticket_payloads) = {
             let mut state = self.lock_state();
             let expired_tickets = state
                 .records
@@ -169,9 +174,12 @@ impl QueryCoordinator {
                 })
                 .map(|(key, _)| key.clone())
                 .collect::<Vec<_>>();
+            let mut expired_ticket_payloads = Vec::with_capacity(expired_tickets.len());
             for key in expired_tickets {
                 if let Some(record) = state.records.get_mut(&key) {
-                    record.ticket = None;
+                    if let Some(ticket) = record.ticket.take() {
+                        expired_ticket_payloads.push(ticket);
+                    }
                     if record.terminal_outcome.is_none() {
                         let mut terminal = QueryTerminal::Dropped;
                         Self::apply_terminal_to_capture(record, &mut terminal, now);
@@ -208,8 +216,12 @@ impl QueryCoordinator {
                 Self::remove_tombstone_locked(&mut state, &key);
             }
             Self::enforce_retention_locked(&self.config, &mut state, now);
-            state.shutdown_deadline.is_some_and(|deadline| now >= deadline) && Self::live_count_locked(&state) > 0
+            (
+                state.shutdown_deadline.is_some_and(|deadline| now >= deadline) && Self::live_count_locked(&state) > 0,
+                expired_ticket_payloads,
+            )
         };
+        drop(expired_ticket_payloads);
         self.finalize_ready();
         if shutdown_due {
             self.force_shutdown_timeout(now);
@@ -222,11 +234,17 @@ impl QueryCoordinator {
             "datafusion_nexus.server.flight.shutdown",
             "server shutting down; statement aborted",
         )));
-        let (live_count, deadline) = {
+        // Attempt cancellation synchronously seals its observation and calls
+        // back into the coordinator to attach the immutable report. Take all
+        // callback-capable handles while locked, but invoke them only after
+        // the state transition is visible and the mutex has been released.
+        let (live_count, deadline, tickets_to_cancel, executions_to_cancel) = {
             let mut state = self.lock_state();
             state.accepting = false;
             let deadline = *state.shutdown_deadline.get_or_insert(checked_deadline(now, self.config.shutdown_grace));
             let mut removed_tickets = 0usize;
+            let mut tickets_to_cancel = Vec::new();
+            let mut executions_to_cancel = Vec::new();
             for record in state.records.values_mut() {
                 if !matches!(
                     record.phase,
@@ -235,11 +253,11 @@ impl QueryCoordinator {
                     continue;
                 }
                 if let Some(ticket) = record.ticket.take() {
-                    ticket.native_cancellation.cancel();
+                    tickets_to_cancel.push(ticket);
                     removed_tickets = removed_tickets.checked_add(1).expect("removed ticket count overflow");
                 }
                 if let Some(cancellation) = &record.execution_cancellation {
-                    cancellation.cancel();
+                    executions_to_cancel.push(cancellation.clone());
                 }
                 if record.terminal_outcome.is_none() {
                     let mut terminal =
@@ -254,8 +272,17 @@ impl QueryCoordinator {
             }
             state.ticketed_count =
                 state.ticketed_count.checked_sub(removed_tickets).expect("shutdown ticket count underflow");
-            (Self::live_count_locked(&state), deadline)
+            (Self::live_count_locked(&state), deadline, tickets_to_cancel, executions_to_cancel)
         };
+        for ticket in tickets_to_cancel {
+            ticket.native_cancellation.cancel();
+            if let Some(attempt) = ticket.attempt.as_ref() {
+                attempt.cancel_before_stream();
+            }
+        }
+        for cancellation in executions_to_cancel {
+            cancellation.cancel();
+        }
         self.notify.notify_waiters();
         QueryCoordinatorShutdownPlan { deadline, live_count }
     }

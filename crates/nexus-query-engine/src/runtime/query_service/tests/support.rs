@@ -1,137 +1,92 @@
 #[derive(Clone, Debug)]
 struct AdmissionTestController {
     service: QueryService,
+    synthetic_ticket: Arc<std::sync::Mutex<Option<AdmissionTicket>>>,
 }
 
 impl AdmissionTestController {
     fn new(
-        config: QueryServiceConfig,
-        tenants: Vec<QueryServiceTenantConfig>,
+        config: QueryExecutionConfig,
+        queue_bounds: QueueBounds,
         deployment_io_capability: DeploymentIoCapability,
     ) -> Result<Self> {
-        QueryService::new_for_admission_tests(config, tenants, deployment_io_capability).map(|service| Self { service })
+        Self::new_with_ledger(
+            config,
+            queue_bounds,
+            deployment_io_capability,
+            test_ledger(64 * 1024 * 1024, 1, Default::default()),
+        )
     }
 
-    fn admit_query(&self, tenant_id: impl Into<TenantId>) -> Result<AdmissionTestHandle> {
-        self.service.admit_query(tenant_id).map(AdmissionTestHandle::new)
+    fn new_with_ledger(
+        config: QueryExecutionConfig,
+        queue_bounds: QueueBounds,
+        deployment_io_capability: DeploymentIoCapability,
+        ledger: DeviceLedger,
+    ) -> Result<Self> {
+        QueryService::new_for_admission_tests(config, queue_bounds, deployment_io_capability, ledger).map(|service| Self {
+            service,
+            synthetic_ticket: Arc::new(std::sync::Mutex::new(None)),
+        })
     }
 
-    async fn admit_async(&self, tenant_id: impl Into<TenantId>) -> Result<AdmissionTestHandle> {
-        self.service.admit_async(tenant_id).await.map(AdmissionTestHandle::new)
+    fn new_with_device_capabilities(
+        config: QueryExecutionConfig,
+        queue_bounds: QueueBounds,
+        deployment_io_capability: DeploymentIoCapability,
+        device_capabilities: crate::runtime::DeviceCapabilities,
+    ) -> Result<Self> {
+        QueryService::new_for_admission_tests_with_device_capabilities(
+            config,
+            queue_bounds,
+            deployment_io_capability,
+            device_capabilities.clone(),
+            test_ledger(64 * 1024 * 1024, 1, device_capabilities.clone()),
+        )
+        .map(|service| Self {
+            service,
+            synthetic_ticket: Arc::new(std::sync::Mutex::new(None)),
+        })
     }
 
-    fn admit_query_with_request(
-        &self,
-        tenant_id: impl Into<TenantId>,
-        request: QueryAdmissionRequest,
-    ) -> Result<AdmissionTestHandle> {
-        self.service.admit_query_with_request(tenant_id, request).map(AdmissionTestHandle::new)
+    fn admit_query(&self) -> Result<AdmissionTestHandle> {
+        self.service.admit_query().map(AdmissionTestHandle::new)
     }
 
-    async fn admit_async_with_request(
-        &self,
-        tenant_id: impl Into<TenantId>,
-        request: QueryAdmissionRequest,
-    ) -> Result<AdmissionTestHandle> {
-        self.service.admit_async_with_request(tenant_id, request).await.map(AdmissionTestHandle::new)
+    async fn admit_async(&self) -> Result<AdmissionTestHandle> {
+        self.service.admit_async().await.map(AdmissionTestHandle::new)
     }
 
-    fn try_admit_query(&self, tenant_id: impl Into<TenantId>) -> Result<Option<AdmissionTestHandle>> {
-        self.service.try_admit_query(tenant_id).map(|handle| handle.map(AdmissionTestHandle::new))
+    fn admit_query_with_request(&self, request: QueryAdmissionRequest) -> Result<AdmissionTestHandle> {
+        self.service.admit_query_with_request(request).map(AdmissionTestHandle::new)
     }
 
-    fn try_admit_query_with_request(
-        &self,
-        tenant_id: impl Into<TenantId>,
-        request: QueryAdmissionRequest,
-    ) -> Result<Option<AdmissionTestHandle>> {
-        self.service.try_admit_query_with_request(tenant_id, request).map(|handle| handle.map(AdmissionTestHandle::new))
+    async fn admit_async_with_request(&self, request: QueryAdmissionRequest) -> Result<AdmissionTestHandle> {
+        self.service.admit_async_with_request(request).await.map(AdmissionTestHandle::new)
     }
 
-    fn try_admit_query_with_qos(
-        &self,
-        tenant_id: impl Into<TenantId>,
-        qos: QueryQos,
-    ) -> Result<Option<AdmissionTestHandle>> {
-        self.service.try_admit_query_with_qos(tenant_id, qos).map(|handle| handle.map(AdmissionTestHandle::new))
+    fn try_admit_query(&self) -> Result<Option<AdmissionTestHandle>> {
+        self.service.try_admit_query().map(|handle| handle.map(AdmissionTestHandle::new))
     }
 
-    fn try_admit_query_with_qos_and_requested_grant_bytes(
-        &self,
-        tenant_id: impl Into<TenantId>,
-        qos: QueryQos,
-        requested_grant_bytes: Option<u64>,
-    ) -> Result<Option<AdmissionTestHandle>> {
-        self.service
-            .try_admit_query_with_qos_and_requested_grant_bytes(tenant_id, qos, requested_grant_bytes)
-            .map(|handle| handle.map(AdmissionTestHandle::new))
+    fn try_admit_query_with_request(&self, request: QueryAdmissionRequest) -> Result<Option<AdmissionTestHandle>> {
+        self.service.try_admit_query_with_request(request).map(|handle| handle.map(AdmissionTestHandle::new))
     }
 
-    fn try_admit_query_with_qos_and_grant_request(
-        &self,
-        tenant_id: impl Into<TenantId>,
-        qos: QueryQos,
-        grant_request: QueryGrantRequest,
-    ) -> Result<Option<AdmissionTestHandle>> {
-        self.service
-            .try_admit_query_with_qos_and_grant_request(tenant_id, qos, grant_request)
-            .map(|handle| handle.map(AdmissionTestHandle::new))
+    fn enqueue_admission(&self) -> Result<AdmissionTestWaiter> {
+        self.service.enqueue_admission().map(AdmissionTestWaiter::new)
     }
 
-    fn admit_query_with_qos_and_grant_request(
-        &self,
-        tenant_id: impl Into<TenantId>,
-        qos: QueryQos,
-        grant_request: QueryGrantRequest,
-    ) -> Result<AdmissionTestHandle> {
-        self.service.admit_query_with_qos_and_grant_request(tenant_id, qos, grant_request).map(AdmissionTestHandle::new)
-    }
-
-    fn enqueue_admission(&self, tenant_id: impl Into<TenantId>) -> Result<AdmissionTestWaiter> {
-        self.service.enqueue_admission(tenant_id).map(AdmissionTestWaiter::new)
-    }
-
-    fn enqueue_admission_with_request(
-        &self,
-        tenant_id: impl Into<TenantId>,
-        request: QueryAdmissionRequest,
-    ) -> Result<AdmissionTestWaiter> {
-        self.service.enqueue_admission_with_request(tenant_id, request).map(AdmissionTestWaiter::new)
-    }
-
-    fn enqueue_admission_with_qos(&self, tenant_id: impl Into<TenantId>, qos: QueryQos) -> Result<AdmissionTestWaiter> {
-        self.service.enqueue_admission_with_qos(tenant_id, qos).map(AdmissionTestWaiter::new)
-    }
-
-    fn enqueue_admission_with_qos_and_grant_request(
-        &self,
-        tenant_id: impl Into<TenantId>,
-        qos: QueryQos,
-        grant_request: QueryGrantRequest,
-    ) -> Result<AdmissionTestWaiter> {
-        self.service
-            .enqueue_admission_with_qos_and_grant_request(tenant_id, qos, grant_request)
-            .map(AdmissionTestWaiter::new)
+    fn enqueue_admission_with_request(&self, request: QueryAdmissionRequest) -> Result<AdmissionTestWaiter> {
+        self.service.enqueue_admission_with_request(request).map(AdmissionTestWaiter::new)
     }
 
     fn admission_snapshot(&self) -> Result<QueryServiceAdmissionSnapshot> {
         self.service.admission_snapshot()
     }
 
-    fn memory_governor_reports(&self) -> Result<Vec<MemoryGovernorReport>> {
-        self.service.memory_governor_reports()
-    }
-
-    fn tenant_requested_budget(&self, tenant_id: &TenantId, requested_grant_bytes: Option<u64>) -> Result<u64> {
-        self.service.tenant_requested_budget(tenant_id, requested_grant_bytes)
-    }
-
-    fn tenant_requested_budget_with_grant_request(
-        &self,
-        tenant_id: &TenantId,
-        grant_request: QueryGrantRequest,
-    ) -> Result<u64> {
-        self.service.tenant_requested_budget_with_grant_request(tenant_id, grant_request)
+    fn device_ledger_reports(&self) -> Result<Vec<DeviceLedgerReport>> {
+        self.service.device_ledger_reports()
     }
 
     fn queued_len(&self) -> usize {
@@ -154,6 +109,10 @@ impl AdmissionTestController {
         self.service.close()
     }
 
+    fn close_device_admission_for_test(&self, device_ordinal: usize, reason: &str) -> Result<()> {
+        self.service.close_device_admission_for_test(device_ordinal, reason)
+    }
+
     fn close_and_wait_for_quiescence(&self, timeout: Duration) -> Result<()> {
         self.service.close_and_wait_for_quiescence(timeout)
     }
@@ -163,7 +122,10 @@ impl AdmissionTestController {
     }
 
     fn hold_admission_lock(&self) -> Result<AdmissionTestLockGuard<'_>> {
-        self.service.lock_admission().map(|state| AdmissionTestLockGuard { state })
+        self.service.lock_admission().map(|state| AdmissionTestLockGuard {
+            state,
+            synthetic_ticket: Arc::clone(&self.synthetic_ticket),
+        })
     }
 
     fn shutdown_waiter_count(&self) -> usize {
@@ -231,10 +193,6 @@ impl AdmissionTestHandle {
         self.handle.admission_wait()
     }
 
-    fn tenant_id(&self) -> &TenantId {
-        self.handle.tenant_id()
-    }
-
     fn device_budget_bytes(&self) -> u64 {
         self.handle.device_budget_bytes()
     }
@@ -257,10 +215,6 @@ impl AdmissionTestHandle {
 
     fn source_chunk_planning_mode(&self) -> SourceChunkPlanningMode {
         self.handle.source_chunk_planning_mode()
-    }
-
-    fn native_pipeline_execution_mode(&self) -> NativePipelineExecutionMode {
-        self.handle.native_pipeline_execution_mode()
     }
 
     fn stddev_samp_execution_mode(&self) -> StddevSampExecutionMode {
@@ -295,11 +249,24 @@ impl AdmissionTestHandle {
 #[derive(Debug)]
 struct AdmissionTestLockGuard<'a> {
     state: std::sync::MutexGuard<'a, AdmissionState>,
+    synthetic_ticket: Arc<std::sync::Mutex<Option<AdmissionTicket>>>,
 }
 
 impl AdmissionTestLockGuard<'_> {
     fn set_active_queries(&mut self, active_queries: usize) {
-        self.state.active_queries = active_queries;
+        let mut synthetic_ticket = self.synthetic_ticket.lock().expect("synthetic lifecycle ticket state");
+        if active_queries == 0 {
+            if let Some(mut ticket) = synthetic_ticket.take() {
+                ticket.transition_to_cleanup().expect("synthetic lifecycle ticket enters cleanup exactly once");
+                drop(ticket);
+            }
+            return;
+        }
+        if synthetic_ticket.is_none() {
+            let mut ticket = self.state.lifecycle.begin_provisional();
+            ticket.transition_to_active().expect("synthetic lifecycle ticket activates exactly once");
+            *synthetic_ticket = Some(ticket);
+        }
     }
 }
 
@@ -319,6 +286,17 @@ impl AdmissionTestWaiter {
 
     fn admission_request_id(&self) -> AdmissionRequestId {
         self.waiter.admission_request_id
+    }
+}
+
+fn requirement(floor: u64, hint: Option<u64>) -> AttemptRequirement {
+    use crate::admission::EstimateQuality;
+    AttemptRequirement {
+        configured_floor_bytes: floor,
+        capability_floor_raise_bytes: 0,
+        soft_working_set_hint_bytes: hint,
+        estimate_quality: EstimateQuality::Modeled,
+        required_capabilities: Vec::new(),
     }
 }
 
@@ -359,56 +337,172 @@ fn non_gds_deployment() -> DeploymentIoCapability {
         GdsDriverProbeStatus::ProbeUnimplemented,
     )
 }
-fn test_service(max_concurrent_queries: usize, max_admission_queue_len: usize) -> AdmissionTestController {
-    let config = QueryServiceConfig {
-        max_concurrent_queries,
-        max_admission_queue_len,
-        admission_wait_timeout: Duration::from_millis(500),
-        ..QueryServiceConfig::default()
-    };
-    AdmissionTestController::new(
-        config,
-        vec![
-            QueryServiceTenantConfig::new("large", 8 * 1024 * 1024),
-            QueryServiceTenantConfig::new("small", 1024 * 1024),
-        ],
-        non_gds_deployment(),
-    )
-    .unwrap()
+fn test_ledger(
+    managed_capacity_bytes: u64,
+    max_active_attempts: usize,
+    device_capabilities: crate::runtime::DeviceCapabilities,
+) -> DeviceLedger {
+    test_ledger_for_ordinal(0, managed_capacity_bytes, max_active_attempts, device_capabilities)
 }
-fn runtime_test_service(max_concurrent_queries: usize, max_admission_queue_len: usize) -> QueryService {
-    let config = QueryServiceConfig {
-        max_concurrent_queries,
-        max_admission_queue_len,
-        admission_wait_timeout: Duration::from_millis(500),
-        slot_guarantee: SlotGuarantee::Optimistic,
-        ..QueryServiceConfig::default()
-    };
-    QueryService::new_with_deployment(
+fn test_ledger_for_ordinal(
+    device_ordinal: usize,
+    managed_capacity_bytes: u64,
+    max_active_attempts: usize,
+    device_capabilities: crate::runtime::DeviceCapabilities,
+) -> DeviceLedger {
+    let max_active_attempts = max_active_attempts.max(1);
+    let floor =
+        (managed_capacity_bytes / u64::try_from(max_active_attempts.saturating_mul(8)).unwrap_or(u64::MAX)).max(1);
+    test_ledger_with_explicit_profile(
+        device_ordinal,
+        managed_capacity_bytes,
+        floor,
+        max_active_attempts,
+        device_capabilities,
+    )
+}
+fn test_ledger_with_explicit_profile(
+    device_ordinal: usize,
+    managed_capacity_bytes: u64,
+    attempt_floor_bytes: u64,
+    max_active_attempts: usize,
+    device_capabilities: crate::runtime::DeviceCapabilities,
+) -> DeviceLedger {
+    let max_active_attempts = max_active_attempts.max(1);
+    let source_work = 1usize;
+    let slots = max_active_attempts.saturating_mul(source_work.saturating_add(1)).max(max_active_attempts);
+    let profile = DeviceResourceProfile::resolve_with_capabilities(
+        device_ordinal,
+        managed_capacity_bytes,
+        0,
+        0,
+        attempt_floor_bytes,
+        max_active_attempts,
+        source_work,
+        slots,
+        slots,
+        device_capabilities,
+    )
+    .expect("test ledger profile must resolve");
+    DeviceLedger::new(profile)
+}
+
+/// Build the CUDA-free admission fixture with the exact per-device ledger
+/// contract asserted by a test. `QueryExecutionConfig` deliberately carries
+/// no device limits, so test-local capacity and floor values belong here.
+fn admission_test_service_with_profile(
+    config: QueryExecutionConfig,
+    queue_bounds: QueueBounds,
+    managed_capacity_bytes: u64,
+    attempt_floor_bytes: u64,
+    max_active_attempts: usize,
+) -> AdmissionTestController {
+    AdmissionTestController::new_with_ledger(
         config,
-        vec![
-            QueryServiceTenantConfig::new("large", 8 * 1024 * 1024),
-            QueryServiceTenantConfig::new("small", 1024 * 1024),
-        ],
+        queue_bounds,
         non_gds_deployment(),
+        test_ledger_with_explicit_profile(0, managed_capacity_bytes, attempt_floor_bytes, max_active_attempts, Default::default()),
+    )
+    .expect("explicit admission test profile must resolve")
+}
+
+fn test_service(max_active_attempts_per_device: usize, max_waiters: usize) -> AdmissionTestController {
+    let queue_bounds = QueueBounds {
+        max_waiters,
+        max_wait: Duration::from_millis(500),
+        max_overtakes_per_waiter: 4,
+    };
+    admission_test_service_with_profile(
+        QueryExecutionConfig::default(),
+        queue_bounds,
+        64 * 1024 * 1024,
+        (64 * 1024 * 1024 / u64::try_from(max_active_attempts_per_device.saturating_mul(8)).unwrap_or(u64::MAX)).max(1),
+        max_active_attempts_per_device,
+    )
+}
+fn runtime_test_service(max_active_attempts_per_device: usize, max_waiters: usize) -> QueryService {
+    let queue_bounds = QueueBounds {
+        max_waiters,
+        max_wait: Duration::from_millis(500),
+        max_overtakes_per_waiter: 4,
+    };
+    runtime_test_service_with_profiles(
+        QueryExecutionConfig::default(),
+        queue_bounds,
+        vec![runtime_test_device_profile(max_active_attempts_per_device)],
     )
     .unwrap()
 }
 fn try_guaranteed_runtime_test_service() -> Result<QueryService> {
     try_guaranteed_runtime_test_service_with_concurrency(1)
 }
-fn try_guaranteed_runtime_test_service_with_concurrency(max_concurrent_queries: usize) -> Result<QueryService> {
-    QueryService::new_with_deployment(
-        QueryServiceConfig {
-            max_concurrent_queries,
-            max_admission_queue_len: 8,
-            admission_wait_timeout: Duration::from_millis(500),
-            slot_guarantee: SlotGuarantee::GuaranteedMinimum,
-            ..QueryServiceConfig::default()
+fn try_guaranteed_runtime_test_service_with_concurrency(max_active_attempts_per_device: usize) -> Result<QueryService> {
+    runtime_test_service_with_profiles(
+        QueryExecutionConfig::default(),
+        QueueBounds {
+            // Keep the guaranteed-runtime fixture independent of the host
+            // inventory. Its regressions request small, deterministic grants.
+            max_waiters: 8,
+            max_wait: Duration::from_millis(500),
+            max_overtakes_per_waiter: 4,
         },
-        vec![QueryServiceTenantConfig::new("tenant", 8 * 1024 * 1024)],
+        vec![runtime_test_device_profile(max_active_attempts_per_device)],
+    )
+}
+
+fn runtime_test_service_with_profiles(
+    config: QueryExecutionConfig,
+    queue_bounds: QueueBounds,
+    device_profiles: Vec<GpuBackendDeviceConfig>,
+) -> Result<QueryService> {
+    QueryService::new_with_device_profiles_and_deployment_for_test(
+        config,
+        queue_bounds,
+        device_profiles,
         non_gds_deployment(),
     )
+}
+
+/// Runtime-backed service tests must install the same explicit per-device
+/// contract their assertions exercise.  Host-derived construction silently
+/// forces one active attempt and makes capacity assertions depend on the
+/// machine running the test.
+fn runtime_test_device_profile(max_active_attempts_per_device: usize) -> GpuBackendDeviceConfig {
+    const CAPACITY_BYTES: u64 = 64 * 1024 * 1024;
+
+    let max_active_attempts = max_active_attempts_per_device.max(1);
+    let attempt_floor_bytes =
+        (CAPACITY_BYTES / u64::try_from(max_active_attempts.saturating_mul(8)).unwrap_or(u64::MAX)).max(1);
+    // Match `SourceSchedulerPolicy::default()`: every active attempt reserves
+    // one root stream plus two bounded auxiliary source-work slots.
+    let stream_pool_size = max_active_attempts.saturating_mul(3);
+
+    runtime_test_device_profile_with_limits(
+        0,
+        CAPACITY_BYTES,
+        attempt_floor_bytes,
+        max_active_attempts,
+        stream_pool_size,
+        max_active_attempts,
+        max_active_attempts,
+    )
+}
+
+fn runtime_test_device_profile_with_limits(
+    device_ordinal: usize,
+    capacity_bytes: u64,
+    attempt_floor_bytes: u64,
+    max_active_attempts: usize,
+    stream_pool_size: usize,
+    worker_count: usize,
+    worker_lane_count: usize,
+) -> GpuBackendDeviceConfig {
+    GpuBackendDeviceConfig::new(device_ordinal, GpuMemoryOwnership::WholeDeviceExclusive)
+        .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: capacity_bytes })
+        .with_attempt_floor_bytes(attempt_floor_bytes)
+        .with_source_work_per_attempt(2)
+        .with_max_active_queries(max_active_attempts)
+        .with_installation_bounds(stream_pool_size, worker_count, worker_lane_count)
 }
 fn wait_for_queued_len(service: &AdmissionTestController, expected: usize) {
     let deadline = Instant::now() + Duration::from_secs(1);
@@ -431,37 +525,17 @@ fn wait_for_exact_queued_len(service: &AdmissionTestController, expected: usize)
         std::thread::sleep(Duration::from_millis(5));
     }
 }
-fn optimistic_shrink_test_service(
-    native_pipeline_execution_mode: NativePipelineExecutionMode,
-) -> AdmissionTestController {
-    AdmissionTestController::new(
-        QueryServiceConfig {
-            device_capacity_bytes: Some(100),
-            max_concurrent_queries: 2,
-            slot_guarantee: SlotGuarantee::Optimistic,
-            max_admission_queue_len: 8,
-            admission_wait_timeout: Duration::from_secs(2),
-            native_pipeline_execution_mode,
-            ..QueryServiceConfig::default()
-        },
-        vec![QueryServiceTenantConfig::with_grant_range("tenant", 40, 100)],
-        non_gds_deployment(),
+fn optimistic_shrink_test_service() -> AdmissionTestController {
+    admission_test_service_with_profile(
+        QueryExecutionConfig::default(),
+        QueueBounds { max_waiters: 8, max_wait: Duration::from_secs(2), max_overtakes_per_waiter: 4 },
+        100,
+        1,
+        2,
     )
-    .unwrap()
 }
-fn wait_for_requested_shrink(grant: &MemoryGrant, expected: Option<u64>) {
-    let deadline = Instant::now() + Duration::from_secs(1);
-    loop {
-        let actual = grant.requested_shrink_target_bytes().unwrap();
-        if actual == expected {
-            return;
-        }
-        assert!(Instant::now() < deadline, "timed out waiting for shrink target {expected:?}; last target={actual:?}");
-        std::thread::sleep(Duration::from_millis(5));
-    }
-}
-fn first_memory_governor_report(service: &AdmissionTestController) -> MemoryGovernorReport {
-    let reports = service.memory_governor_reports().unwrap();
+fn first_memory_governor_report(service: &AdmissionTestController) -> DeviceLedgerReport {
+    let reports = service.device_ledger_reports().unwrap();
     assert_eq!(reports.len(), 1);
     reports.into_iter().next().unwrap()
 }

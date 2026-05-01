@@ -2,20 +2,15 @@ use std::sync::Arc;
 
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use nexus_query_engine::{
-    adaptive_report::{AdaptiveCandidateStatus, AdaptiveStrategy},
-    adaptive_runtime::{AdaptiveMemoryHistory, AdaptiveMemoryHistoryKey, AdaptiveMemoryObservation},
-    admission::{
-        adaptive_bounded_pipeline_admission, adaptive_bounded_pipeline_admission_with_memory_history,
-        strict_bounded_pipeline_admission, strict_bounded_pipeline_rejection_projection,
-    },
+    admission::{bounded_pipeline_admission, bounded_pipeline_rejection_projection},
     capability::{
         CapabilityDecision, ContractQuality, ContractStatus, EdgeConsumer, EdgeContractKind, InputRole, NodeOperator,
         VectorInputRole,
     },
-    contract_report::StrictBoundedContractReport,
+    contract_report::CapabilityContractReport,
     exec::preflight_query_plan,
     expr::{ColumnRef, Expr},
-    mode::{AdaptiveExecutionMode, StrictBoundedExecutionMode},
+    mode::CapabilityEnvelopeStatus,
     optimizer::{NativeOptimizerOptions, optimize_query_plan},
     plan::{
         CUVS_OPERATION_REGISTRY, CuvsOperation, CuvsOutputContract, JoinKey, JoinOutputColumn, JoinSide, JoinSpec,
@@ -440,8 +435,8 @@ fn vector_capability_has_typed_edges_and_lower_level_bounded_block() {
         assert!(edge.contract_kinds.contains(&EdgeContractKind::VectorAlgorithmInput { role }));
     }
 
-    let report = StrictBoundedContractReport::from_capability_analysis(&analysis).unwrap();
-    assert_eq!(report.execution_mode(), StrictBoundedExecutionMode::UnsupportedStrictBounded);
+    let report = CapabilityContractReport::from_capability_analysis(&analysis).unwrap();
+    assert_eq!(report.execution_mode(), CapabilityEnvelopeStatus::Rejected);
     assert!(report.gate_rows().iter().any(|row| {
         row.memory_boundary == VECTOR_ALGORITHM_BOUNDED_MEMORY_BOUNDARY
             && row.required_contract == VECTOR_ALGORITHM_BOUNDED_REQUIRED_CONTRACT
@@ -469,73 +464,18 @@ fn invalid_vector_contract_is_rejected_by_capability_before_execution() {
 }
 
 #[test]
-fn strict_and_adaptive_vector_rejections_keep_independent_evidence() {
+fn bounded_vector_rejections_have_capability_projection() {
     for plan in [knn_plan(false), knn_plan(true)] {
         assert!(plan.contains_vector_algorithm());
-        assert!(
-            strict_bounded_pipeline_admission(&plan).expect("strict admission should classify vector plan").is_none()
-        );
-        let strict = strict_bounded_pipeline_rejection_projection(&plan)
-            .expect("strict rejection projection should be constructible")
-            .expect("vector plan should have a strict rejection");
-        assert_eq!(strict.reason, "blocked_lower_level_contract");
+        assert!(bounded_pipeline_admission(&plan).expect("bounded admission should classify vector plan").is_none());
+        let projection = bounded_pipeline_rejection_projection(&plan)
+            .expect("bounded rejection projection should be constructible")
+            .expect("vector plan should have a bounded rejection");
+        assert_eq!(projection.reason, "blocked_lower_level_contract");
         assert_eq!(
-            strict.facts.get("required_contract").map(String::as_str),
+            projection.facts.get("required_contract").map(String::as_str),
             Some(VECTOR_ALGORITHM_BOUNDED_REQUIRED_CONTRACT)
         );
-
-        let adaptive = adaptive_bounded_pipeline_admission(&plan)
-            .expect("adaptive admission should classify vector plan")
-            .expect("vector plan should emit adaptive evidence");
-        assert!(adaptive.pipeline().is_none());
-        let row = adaptive.report().row();
-        assert_eq!(row.execution_mode, AdaptiveExecutionMode::UnsupportedAdaptive);
-        assert_eq!(row.candidate_status, AdaptiveCandidateStatus::Rejected);
-        assert_eq!(row.adaptive_strategy, AdaptiveStrategy::Unsupported);
-        assert_eq!(row.runtime_actions_allowed.to_stable_value(), "none");
-        assert_eq!(row.memory_history_evidence.to_stable_value(), "not_used");
-        assert!(row.missing_strict_contracts.iter().any(|missing| {
-            missing.required_contract == VECTOR_ALGORITHM_BOUNDED_REQUIRED_CONTRACT
-                && missing.contract_status == ContractStatus::BlockedByLowerLevel
-        }));
-        let rendered = adaptive.report().stable_kv_row();
-        assert!(rendered.contains("execution_mode=unsupported_adaptive"));
-        assert!(!rendered.contains("execution_mode=strict_bounded"));
-        assert!(!rendered.contains("unsupported_strict_bounded"));
-    }
-}
-
-#[test]
-fn adaptive_vector_rejection_does_not_consult_present_memory_history() {
-    for plan in [knn_plan(false), knn_plan(true)] {
-        let memory_history = AdaptiveMemoryHistory::new();
-        memory_history.record_observation(
-            AdaptiveMemoryHistoryKey::for_query_plan(&plan),
-            AdaptiveMemoryObservation {
-                resident_dataframe_peak_bytes: Some(4096),
-                reservation_granted_bytes: 8192,
-                source_chunks_committed: 3,
-            },
-        );
-        assert!(memory_history.lookup_query_plan(&plan).is_some());
-        let adaptive = adaptive_bounded_pipeline_admission_with_memory_history(&plan, Some(&memory_history))
-            .expect("adaptive admission should classify vector plan")
-            .expect("vector plan should emit adaptive evidence");
-
-        assert!(adaptive.pipeline().is_none());
-        let row = adaptive.report().row();
-        assert_eq!(row.execution_mode, AdaptiveExecutionMode::UnsupportedAdaptive);
-        assert_eq!(row.candidate_status, AdaptiveCandidateStatus::Rejected);
-        assert_eq!(row.adaptive_strategy, AdaptiveStrategy::Unsupported);
-        assert_eq!(row.runtime_actions_allowed.to_stable_value(), "none");
-        assert!(!row.runtime_actions_allowed.memory_history_lookup);
-        assert_eq!(row.memory_history_evidence.to_stable_value(), "not_used");
-
-        let rendered = adaptive.report().stable_kv_row();
-        assert!(rendered.contains("memory_history_evidence=not_used"));
-        assert!(!rendered.contains("memory_history_evidence=lookup_miss"));
-        assert!(!rendered.contains("memory_history_evidence=observed"));
-        assert!(!rendered.contains("execution_mode=strict_bounded"));
     }
 }
 

@@ -1,4 +1,7 @@
+use nexus_query_engine::admission::QueryPlanCapabilityProof;
+
 use super::*;
+
 pub(super) fn edge_execution_config(
     plan: &dyn ExecutionPlan,
     default_execution_config: &NexusNativeExecutionConfig,
@@ -44,37 +47,21 @@ pub(super) fn cugraph_execution_config_with_graph_aware_ticket(
     spec: &CugraphAlgorithmSpec,
     edge_source: &dyn ExecutionPlan,
     edge_normalize_inserted: bool,
-    placement_hint: QueryPlacementHint,
     execution_config: NexusNativeExecutionConfig,
 ) -> Result<NexusNativeExecutionConfig> {
-    let graph_model_ask =
-        if execution_config.requested_grant_bytes().is_some() || execution_config.query_admission_source().is_none() {
-            None
-        } else {
-            cugraph_graph_model_ask_bytes(spec, edge_source, edge_normalize_inserted, &execution_config)?
-        };
-    execution_config.with_graph_aware_plan_query_admission_ticket(graph_model_ask, placement_hint).map_err(|error| {
+    let graph_model_ask = if execution_config.query_admission_source().is_none() {
+        None
+    } else {
+        cugraph_graph_model_ask_bytes(spec, edge_source, edge_normalize_inserted, &execution_config)?
+    };
+    let fragment_proofs = vec![QueryPlanCapabilityProof::for_cugraph_graph_execution()];
+    execution_config.with_graph_aware_plan_query_admission_ticket(graph_model_ask, fragment_proofs).map_err(|error| {
         DataFusionError::from(Error::from_native(
             "datafusion_nexus.cugraph_sql.graph_ticket_ask",
             "failed to compute cuGraph SQL graph-aware query admission ticket ask",
             error,
         ))
     })
-}
-
-pub(super) fn cugraph_graph_placement_hint(
-    spec: &CugraphAlgorithmSpec,
-    graph_residency: Option<&GraphResidencyDescriptor>,
-    edge_normalize_inserted: bool,
-    predicate_sources: &[Arc<dyn ExecutionPlan>],
-) -> QueryPlacementHint {
-    let Some(graph_residency) = graph_residency else {
-        return QueryPlacementHint::default();
-    };
-    let native_spec = native_graph_spec_for_placement_hint(spec, edge_normalize_inserted, predicate_sources);
-    planned_resident_graph_key(graph_residency, &native_spec)
-        .map(QueryPlacementHint::for_resident_graph_key)
-        .unwrap_or_default()
 }
 
 pub(super) fn cugraph_graph_model_ask_bytes(
@@ -97,7 +84,7 @@ pub(super) fn cugraph_graph_model_ask_bytes(
     let input_edges = cugraph_effective_input_edges(raw_input_edges, spec, edge_normalize_inserted);
     let device_total_memory_bytes =
         execution_config.query_admission_source().map(|source| source.max_device_total_memory_bytes());
-    let estimate = graph_memory_estimate_for_edge_list(
+    let evidence = graph_memory_admission_evidence_for_edge_list(
         &native_spec,
         &edge_source.schema(),
         input_edges,
@@ -108,11 +95,11 @@ pub(super) fn cugraph_graph_model_ask_bytes(
     .map_err(|error| {
         DataFusionError::from(Error::from_native(
             "datafusion_nexus.cugraph_sql.graph_ticket_ask",
-            "failed to estimate cuGraph SQL graph memory from planning metadata",
+            "failed to derive cuGraph SQL graph admission evidence from planning metadata",
             error,
         ))
     })?;
-    Ok(Some(GraphAdmissionModelAsk::new(estimate.requested_bytes, estimate.execution_bytes)))
+    Ok(Some(GraphAdmissionModelAsk::from_graph_memory_admission_evidence(evidence)))
 }
 
 pub(super) fn edge_source_output_rows(edge_source: &dyn ExecutionPlan) -> Result<Option<u64>> {
@@ -223,7 +210,7 @@ pub(super) fn validate_standalone_bounded_cugraph_sources(
     edge_source: &dyn ExecutionPlan,
     predicate_sources: &[Arc<dyn ExecutionPlan>],
 ) -> Result<()> {
-    if !config.is_bounded_without_admission() {
+    if config.has_query_admission_authority() {
         return Ok(());
     }
     validate_standalone_bounded_source_contains_no_native_child("edge", edge_source)?;

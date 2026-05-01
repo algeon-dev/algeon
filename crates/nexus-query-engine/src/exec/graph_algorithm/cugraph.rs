@@ -1,9 +1,10 @@
-use std::{collections::BTreeMap, sync::atomic::Ordering};
+use std::collections::BTreeMap;
+#[cfg(test)]
+use std::sync::atomic::Ordering;
 
 use super::super::*;
 
-#[path = "adaptive_betweenness.rs"]
-pub(in crate::exec) mod adaptive_betweenness;
+pub(in crate::exec) mod bounded_betweenness;
 #[path = "build.rs"]
 pub(in crate::exec) mod build;
 #[path = "centrality.rs"]
@@ -14,6 +15,8 @@ mod community;
 pub(in crate::exec) mod diagnostics;
 #[path = "empty_input.rs"]
 mod empty_input;
+#[path = "graph_builder.rs"]
+pub(in crate::exec) mod graph_builder;
 #[path = "layout.rs"]
 mod layout;
 #[path = "memory.rs"]
@@ -22,8 +25,6 @@ pub(in crate::exec) mod memory;
 mod nvtx;
 #[path = "params.rs"]
 mod params;
-#[path = "resident_cache.rs"]
-pub(in crate::exec) mod resident_cache;
 #[path = "similarity.rs"]
 mod similarity;
 #[path = "statistics.rs"]
@@ -33,28 +34,30 @@ mod structure;
 #[path = "traversal.rs"]
 mod traversal;
 
-use adaptive_betweenness::{
-    FORCE_NEXT_GRAPH_ADAPTIVE_FULL_ATTEMPT_RESOURCE_EXHAUSTED, RuntimeGraphSpecResolution,
-    execute_chunked_betweenness_retry, graph_adaptive_memory_observation_from_error, graph_adaptive_retry_seed_batches,
-    record_graph_adaptive_memory_history_from_error, resolve_runtime_graph_spec_for_execution,
-    runtime_graph_spec_resolution_after_bounded_seed_validation, validate_betweenness_static_seed_policy,
+use bounded_betweenness::{
+    RuntimeGraphSpecResolution, execute_bounded_betweenness_seed_chunk_retry,
+    graph_retry_memory_observation_from_error, graph_seed_chunk_retry_batches,
+    resolve_runtime_graph_spec_for_execution, runtime_graph_spec_resolution_after_bounded_seed_validation,
+    validate_betweenness_static_seed_policy,
 };
-pub use adaptive_betweenness::{
-    force_next_graph_adaptive_chunk_attempt_resource_exhausted_for_test,
-    force_next_graph_adaptive_full_attempt_resource_exhausted_for_test,
+#[cfg(test)]
+pub(crate) use bounded_betweenness::{
+    force_next_graph_seed_chunk_retry_chunk_attempt_resource_exhausted_for_test,
+    force_next_graph_seed_chunk_retry_full_attempt_resource_exhausted_for_test,
 };
 use build::*;
 use centrality::*;
 use community::*;
 use diagnostics::*;
 use empty_input::*;
+use graph_builder::*;
 use layout::*;
 use memory::*;
 use nvtx::*;
 use params::*;
-use resident_cache::*;
 use similarity::*;
-pub use statistics::force_next_graph_statistics_optional_resource_exhausted_for_test;
+#[cfg(test)]
+pub(crate) use statistics::force_next_graph_statistics_optional_resource_exhausted_for_test;
 use structure::*;
 use traversal::{execute_bfs, execute_sssp};
 
@@ -66,27 +69,7 @@ pub(in crate::exec) fn execute_graph_algorithm(
     side_inputs: BTreeMap<NodeId, GpuDataFrame>,
     metrics: &mut QueryMetrics,
 ) -> Result<GpuDataFrame> {
-    execute_graph_algorithm_with_cache_requirement(context, node_id, node, input, side_inputs, None, metrics)
-}
-
-pub(in crate::exec) fn execute_graph_algorithm_cache_hit(
-    context: &ExecutionContext,
-    node_id: NodeId,
-    node: &crate::plan::GraphAlgorithmNode,
-    input: GpuDataFrame,
-    side_inputs: BTreeMap<NodeId, GpuDataFrame>,
-    preparation_pin_id: u64,
-    metrics: &mut QueryMetrics,
-) -> Result<GpuDataFrame> {
-    execute_graph_algorithm_with_cache_requirement(
-        context,
-        node_id,
-        node,
-        input,
-        side_inputs,
-        Some(preparation_pin_id),
-        metrics,
-    )
+    execute_prepared_graph_algorithm(context, node_id, node, input, side_inputs, metrics)
 }
 
 pub(in crate::exec) fn graph_empty_input_prevalidated(
@@ -101,13 +84,12 @@ pub(in crate::exec) fn graph_empty_input_prevalidated(
         .map(|result| result.is_some())
 }
 
-fn execute_graph_algorithm_with_cache_requirement(
+fn execute_prepared_graph_algorithm(
     context: &ExecutionContext,
     node_id: NodeId,
     node: &crate::plan::GraphAlgorithmNode,
     input: GpuDataFrame,
     side_inputs: BTreeMap<NodeId, GpuDataFrame>,
-    preparation_pin_id: Option<u64>,
     metrics: &mut QueryMetrics,
 ) -> Result<GpuDataFrame> {
     let input_rows = input.num_rows() as u64;
@@ -156,7 +138,6 @@ fn execute_graph_algorithm_with_cache_requirement(
         input_rows,
         input_columns,
         null_edge_rows_dropped,
-        preparation_pin_id,
         empty_input_prevalidated,
         metrics,
     )
@@ -173,7 +154,6 @@ pub(in crate::exec) fn execute_graph_algorithm_sanitized(
     input_rows: u64,
     input_columns: u64,
     null_edge_rows_dropped: u64,
-    preparation_pin_id: Option<u64>,
     empty_input_prevalidated: bool,
     metrics: &mut QueryMetrics,
 ) -> Result<GpuDataFrame> {
@@ -197,36 +177,27 @@ pub(in crate::exec) fn execute_graph_algorithm_sanitized(
         };
         let spec = runtime_spec.spec_or(&node.spec);
         let executor = graph_algorithm_executor(spec.algorithm)?;
-        let adaptive_retry_inputs = graph_adaptive_retry_seed_batches(spec).map(|batches| {
+        let seed_chunk_retry_inputs = graph_seed_chunk_retry_batches(spec).map(|batches| {
             (
                 GraphAlgorithmExecutionInputs {
                     edge_list: input.clone(),
                     side_inputs: side_inputs.clone(),
                     graph_memory_limit_bytes,
-                    preparation_pin_id,
                 },
                 batches,
             )
         });
-        let inputs = GraphAlgorithmExecutionInputs {
-            edge_list: input,
-            side_inputs,
-            graph_memory_limit_bytes,
-            preparation_pin_id,
-        };
+        let inputs = GraphAlgorithmExecutionInputs { edge_list: input, side_inputs, graph_memory_limit_bytes };
         match execute_graph_algorithm_attempt(context, spec, inputs, executor) {
             Ok(result) => result,
-            Err(error) if should_retry_graph_resource_exhausted(context, &error, adaptive_retry_inputs.as_ref()) => {
-                let Some((retry_inputs, seed_batches)) = adaptive_retry_inputs else {
+            Err(error) if should_run_bounded_seed_chunk_retry(context, &error, seed_chunk_retry_inputs.as_ref()) => {
+                let Some((retry_inputs, seed_batches)) = seed_chunk_retry_inputs else {
                     return Err(error);
                 };
-                record_graph_adaptive_memory_history_from_error(context, &node.spec, &error);
                 record_graph_budget_observation_from_error(metrics, &error);
-                metrics.record_adaptive_retry();
                 let retry_result =
-                    execute_chunked_betweenness_retry(context, spec, retry_inputs, seed_batches, executor);
+                    execute_bounded_betweenness_seed_chunk_retry(context, spec, retry_inputs, seed_batches, executor);
                 if let Err(retry_error) = &retry_result {
-                    record_graph_adaptive_memory_history_from_error(context, &node.spec, retry_error);
                     record_graph_budget_observation_from_error(metrics, retry_error);
                 }
                 retry_result?
@@ -294,16 +265,17 @@ fn execute_graph_algorithm_attempt(
     inputs: GraphAlgorithmExecutionInputs,
     executor: GraphAlgorithmExecutor,
 ) -> Result<GraphAlgorithmExecutionResult> {
-    if context.native_pipeline_execution_mode() == crate::mode::NativePipelineExecutionMode::Adaptive
-        && graph_adaptive_retry_seed_batches(spec).is_some()
-        && FORCE_NEXT_GRAPH_ADAPTIVE_FULL_ATTEMPT_RESOURCE_EXHAUSTED.swap(false, Ordering::SeqCst)
+    #[cfg(test)]
+    if graph_seed_chunk_retry_batches(spec).is_some()
+        && bounded_betweenness::FORCE_NEXT_GRAPH_SEED_CHUNK_RETRY_FULL_ATTEMPT_RESOURCE_EXHAUSTED
+            .swap(false, Ordering::SeqCst)
     {
         let mut error = QueryError::new(
             QueryErrorCode::CudfResourceExhausted,
-            "nexus_query_engine.graph_algorithm.adaptive_retry_test",
-            "forced graph adaptive retry resource exhaustion",
+            "nexus_query_engine.graph_algorithm.bounded_seed_chunk_retry_test",
+            "forced graph bounded seed-chunk retry resource exhaustion",
         )
-        .with_fact("reason", "forced_graph_adaptive_oom_retry_test")
+        .with_fact("reason", "forced_graph_bounded_seed_chunk_retry_resource_exhausted_test")
         .with_fact("algorithm", spec.algorithm.as_str());
         if let Some(limit) = inputs.graph_memory_limit_bytes {
             error = error
@@ -316,18 +288,17 @@ fn execute_graph_algorithm_attempt(
     executor(context, spec, inputs)
 }
 
-fn should_retry_graph_resource_exhausted(
-    context: &ExecutionContext,
+fn should_run_bounded_seed_chunk_retry(
+    _context: &ExecutionContext,
     error: &QueryError,
     retry_inputs: Option<&(GraphAlgorithmExecutionInputs, Vec<crate::plan::GraphBetweennessSeeds>)>,
 ) -> bool {
     let Some((inputs, _)) = retry_inputs else {
         return false;
     };
-    context.native_pipeline_execution_mode() == crate::mode::NativePipelineExecutionMode::Adaptive
-        && error.code() == QueryErrorCode::CudfResourceExhausted
+    error.code() == QueryErrorCode::CudfResourceExhausted
         && inputs.graph_memory_limit_bytes.is_some()
-        && graph_adaptive_memory_observation_from_error(error).is_some()
+        && graph_retry_memory_observation_from_error(error).is_some()
 }
 
 // Common return envelope for algorithm-specific cuGraph executors.
@@ -343,7 +314,6 @@ pub(super) struct GraphAlgorithmExecutionInputs {
     pub(super) edge_list: GpuDataFrame,
     pub(super) side_inputs: BTreeMap<NodeId, GpuDataFrame>,
     pub(super) graph_memory_limit_bytes: Option<u64>,
-    pub(super) preparation_pin_id: Option<u64>,
 }
 
 type GraphAlgorithmExecutor = fn(

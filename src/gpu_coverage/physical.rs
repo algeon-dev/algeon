@@ -120,7 +120,6 @@ fn capability_reason_kind(reason: CapabilityReason) -> QueryGpuCandidateReasonKi
         | CapabilityReason::NativeDistributedAggregateUnsupported
         | CapabilityReason::NativePartitionPreservingSortUnsupported
         | CapabilityReason::NativeBoundedJoinUnsupported
-        | CapabilityReason::NativeAdaptivePipelineUnsupported
         | CapabilityReason::NativeOrderedOutputUnsupported => QueryGpuCandidateReasonKind::PlanShape,
         CapabilityReason::UnsupportedOperator => QueryGpuCandidateReasonKind::Operator,
     }
@@ -137,7 +136,7 @@ pub(super) fn runtime_caveats(
     let mut caveats = vec![
         QueryGpuRuntimeCaveat::new(
             "runtime_gpu_admission_unknown",
-            "query-service grants are acquired at execution time and can wait, shrink, or fail under concurrency",
+            "query-service grants are acquired at execution time and can wait or fail under concurrency; admitted grants are immutable",
         ),
         QueryGpuRuntimeCaveat::new(
             "device_memory_runtime_unknown",
@@ -164,7 +163,7 @@ pub(super) fn runtime_caveats(
         caveats.push(QueryGpuRuntimeCaveat::new(
             "execution_mode_plan_time_only",
             format!(
-                "validated under native pipeline execution mode {execution_mode}; strict/adaptive runtime gates still execute later"
+                "validated under native pipeline execution mode {execution_mode}; bounded runtime validation still executes later"
             ),
         ));
     }

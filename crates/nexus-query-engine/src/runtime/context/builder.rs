@@ -12,7 +12,7 @@ use super::{
     super::{
         CacheFillByteBudget, DeploymentIoCapability, ExecutionBoundaryPolicy, GpuExecutionPool,
         LakehouseCacheFillConfig, MemoryControlPolicy, MemoryGrant, MemoryResourcePolicy, ServiceStreamPool,
-        SourceChunkPlanningMode, SourceStorageProfile, cache,
+        SourceChunkPlanningMode, SourceStorageProfile,
         cache_events::LakehouseCacheFillEventSink,
         cache_fill::{CacheFillConcurrencyGate, default_lakehouse_cache_fill_budget_bytes},
         memory_domain::create_grant_reservation_arena,
@@ -23,13 +23,12 @@ use super::{
     SourceSchedulerPolicy,
 };
 use crate::{
-    adaptive_runtime::AdaptiveMemoryHistory,
     capability::AggregateStrategyExecutionOptions,
     chunk::SourceChunkPlanningOptions,
     error::{QueryError, QueryErrorCode, Result},
     graph_memory::GraphMemoryCalibrationOverride,
     metrics::{QueryId, TraceId},
-    mode::{NativePipelineExecutionMode, StddevSampExecutionMode},
+    mode::StddevSampExecutionMode,
     observability::{
         RuntimeObservationConfig, RuntimeObservationHandle, RuntimeObservationSession, RuntimeQueryId,
         RuntimeTerminalOutcome, RuntimeTraceId,
@@ -88,8 +87,6 @@ pub(crate) struct ExecutionContextBuilder {
     deployment_io_capability: Option<DeploymentIoCapability>,
     /// Cooperative cancellation flag observed by native execution.
     cancellation: ExecutionCancellation,
-    /// Native bounded-pipeline execution mode.
-    native_pipeline_execution_mode: NativePipelineExecutionMode,
     /// Execution contract for floating statistical aggregates.
     stddev_samp_execution_mode: StddevSampExecutionMode,
     /// Runtime threshold policy for grouped aggregate strategy selection.
@@ -98,15 +95,6 @@ pub(crate) struct ExecutionContextBuilder {
     source_chunk_planning_options: SourceChunkPlanningOptions,
     /// Optional graph calibration metadata supplied by fixture/config.
     graph_memory_calibration_override: GraphMemoryCalibrationOverride,
-    /// Optional adaptive-only memory history store.
-    adaptive_memory_history: Option<Arc<AdaptiveMemoryHistory>>,
-    /// Optional durable hash-join build cache.
-    hash_join_build_cache: Option<Arc<cache::hash_join::GpuHashJoinBuildCache>>,
-    /// Optional durable local-Parquet source cache.
-    local_parquet_source_cache: Option<Arc<cache::local_parquet::GpuLocalParquetSourceCache>>,
-    /// Optional durable resident graph cache.
-    #[cfg(feature = "cugraph")]
-    resident_graph_cache: Option<Arc<cache::resident_graph::GpuResidentGraphCache>>,
 }
 
 /// Builder that owns a caller-supplied runtime observation session.
@@ -353,12 +341,6 @@ impl ExecutionContextBuilder {
         self
     }
 
-    /// Selects the native bounded-pipeline execution mode.
-    pub fn with_native_pipeline_execution_mode(mut self, mode: NativePipelineExecutionMode) -> Self {
-        self.native_pipeline_execution_mode = mode;
-        self
-    }
-
     /// Selects the execution contract for floating statistical aggregates.
     pub fn with_statistical_aggregate_execution_mode(mut self, mode: StddevSampExecutionMode) -> Self {
         self.stddev_samp_execution_mode = mode;
@@ -388,41 +370,7 @@ impl ExecutionContextBuilder {
         self
     }
 
-    /// Provides the adaptive-only memory history store.
-    pub fn with_adaptive_memory_history(mut self, memory_history: Arc<AdaptiveMemoryHistory>) -> Self {
-        self.adaptive_memory_history = Some(memory_history);
-        self
-    }
-
-    /// Provides the cache required by durable GPU hash-join materialization.
-    pub fn with_hash_join_build_cache(mut self, cache: Arc<cache::hash_join::GpuHashJoinBuildCache>) -> Self {
-        self.hash_join_build_cache = Some(cache);
-        self
-    }
-
-    /// Provides the durable GPU local-Parquet source cache.
-    ///
-    /// Bounded execution charges retained source frames through the reservation
-    /// ledger before using cached frames or retaining newly read frames.
-    pub fn with_local_parquet_source_cache(
-        mut self,
-        cache: Arc<cache::local_parquet::GpuLocalParquetSourceCache>,
-    ) -> Self {
-        self.local_parquet_source_cache = Some(cache);
-        self
-    }
-
-    /// Provides the durable GPU resident graph cache.
-    #[cfg(feature = "cugraph")]
-    pub fn with_resident_graph_cache(mut self, cache: Arc<cache::resident_graph::GpuResidentGraphCache>) -> Self {
-        self.resident_graph_cache = Some(cache);
-        self
-    }
-
     /// Validates policies, constructs or records the runtime, and returns a context.
-    ///
-    /// Validation failures carry report-facing facts such as
-    /// `missing_hash_join_build_cache`; do not churn those fact keys casually.
     pub fn build(self) -> Result<ExecutionContext> {
         if self.runtime_observation_config.is_enabled() {
             return Err(runtime_observation_owner_required_error());
@@ -498,7 +446,6 @@ impl ExecutionContextBuilder {
 
     fn build_context(self, runtime_observation: RuntimeObservationHandle) -> Result<ExecutionContext> {
         self.memory_control_policy.validate()?;
-        self.boundary_policy.validate(self.hash_join_build_cache.is_some())?;
         self.source_scheduler_policy.validate()?;
         self.aggregate_strategy_execution_options.validate()?;
         self.source_chunk_planning_options.validate()?;
@@ -560,6 +507,10 @@ impl ExecutionContextBuilder {
                 memory_grant: self.memory_grant.clone(),
                 grant_reservation_arena,
                 grant_memory_domain: None,
+                attempt_allocation_domain: None,
+                attempt_auxiliary_slots: None,
+                admitted_capability_evidence: None,
+                attempt_member_lease: None,
                 boundary_policy: self.boundary_policy,
                 source_scheduler_policy: self.source_scheduler_policy,
                 source_chunk_planning_mode: self.source_chunk_planning_mode,
@@ -572,19 +523,12 @@ impl ExecutionContextBuilder {
                 source_object_stores,
                 deployment_io_capability,
                 cancellation: self.cancellation,
-                native_pipeline_execution_mode: self.native_pipeline_execution_mode,
                 stddev_samp_execution_mode: self.stddev_samp_execution_mode,
                 aggregate_strategy_execution_options: self.aggregate_strategy_execution_options,
                 source_chunk_planning_options: self.source_chunk_planning_options,
                 graph_memory_calibration_override: self.graph_memory_calibration_override,
-                adaptive_memory_history: self.adaptive_memory_history,
-                hash_join_build_cache: self.hash_join_build_cache,
-                local_parquet_source_cache: self.local_parquet_source_cache,
-                #[cfg(feature = "cugraph")]
-                resident_graph_cache: self.resident_graph_cache,
-                #[cfg(feature = "cugraph")]
-                reserved_resident_graph_hit: None,
                 stream_lease_guard: None,
+                auxiliary_stream_permit_guard: None,
                 query_service_admitted: false,
             }));
         }
@@ -644,6 +588,10 @@ impl ExecutionContextBuilder {
             memory_grant: self.memory_grant,
             grant_reservation_arena,
             grant_memory_domain: None,
+            attempt_allocation_domain: None,
+            attempt_auxiliary_slots: None,
+            admitted_capability_evidence: None,
+            attempt_member_lease: None,
             boundary_policy: self.boundary_policy,
             source_scheduler_policy: self.source_scheduler_policy,
             source_chunk_planning_mode: self.source_chunk_planning_mode,
@@ -656,19 +604,12 @@ impl ExecutionContextBuilder {
             source_object_stores,
             deployment_io_capability,
             cancellation: self.cancellation,
-            native_pipeline_execution_mode: self.native_pipeline_execution_mode,
             stddev_samp_execution_mode: self.stddev_samp_execution_mode,
             aggregate_strategy_execution_options: self.aggregate_strategy_execution_options,
             source_chunk_planning_options: self.source_chunk_planning_options,
             graph_memory_calibration_override: self.graph_memory_calibration_override,
-            adaptive_memory_history: self.adaptive_memory_history,
-            hash_join_build_cache: self.hash_join_build_cache,
-            local_parquet_source_cache: self.local_parquet_source_cache,
-            #[cfg(feature = "cugraph")]
-            resident_graph_cache: self.resident_graph_cache,
-            #[cfg(feature = "cugraph")]
-            reserved_resident_graph_hit: None,
             stream_lease_guard: None,
+            auxiliary_stream_permit_guard: None,
             query_service_admitted: false,
         }))
     }

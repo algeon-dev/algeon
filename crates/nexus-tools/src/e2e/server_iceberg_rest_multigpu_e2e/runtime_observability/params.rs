@@ -4,8 +4,8 @@ pub(super) const DEFAULT_FIXTURE_ROOT: &str = "/opt/dlami/nvme/fixture/data";
 pub(super) const DEFAULT_SERVER_BINARY: &str = "target/release/datafusion_nexus_server";
 pub(super) const DEFAULT_EVIDENCE_PATH: &str = "target/runtime_observability_e2e/evidence.json";
 pub(super) const DEFAULT_SERVER_LOG_PATH: &str = "target/runtime_observability_e2e/server";
-pub(super) const EVIDENCE_SCHEMA: &str = "datafusion_nexus.server_runtime_observability_e2e.v4";
-pub(super) const EVIDENCE_VERSION: u32 = 4;
+pub(super) const EVIDENCE_SCHEMA: &str = "datafusion_nexus.server_runtime_observability_e2e.v5";
+pub(super) const EVIDENCE_VERSION: u32 = 5;
 pub(super) const TABLE_NAME: &str = "runtime_observability_lineitem";
 pub(super) const ORDERS_TABLE_NAME: &str = "runtime_observability_orders";
 pub(super) const OBS_RECORDS_ENV: &str = "NEXUS_SERVER_OBSERVABILITY_PER_QUERY_MAX_RECORDS";
@@ -24,11 +24,10 @@ pub(super) fn print_usage() {
            --catalog-path PATH          Directory containing lineitem.parquet and orders.parquet\n\
            --server-binary PATH         Built server executable\n\
            --device ORDINAL             CUDA device ordinal (default: 0)\n\
-           --concurrency N              Overlapping queries and per-device limit (default: 4)\n\
+           --concurrency N              Overlapping queries, host gate, and per-device limit (default: 4)\n\
            --waves N                    Native success waves (default: 2)\n\
            --restart-iterations N       Hard termination/restart iterations (default: 1)\n\
            --scenarios matrix|native|datafusion_baseline\n\
-           --bounded-mode strict_bounded|adaptive\n\
            --evidence-json PATH         Machine-readable evidence output\n\
            --server-log PATH            Prefix for per-process stdout/stderr logs\n\
            --connect-timeout-secs N\n\
@@ -99,7 +98,6 @@ pub(super) struct RuntimeParams {
     pub(super) waves: usize,
     pub(super) restart_iterations: usize,
     pub(super) scenario_selection: ScenarioSelection,
-    pub(super) bounded_mode: String,
     pub(super) evidence_path: PathBuf,
     pub(super) server_log_path: PathBuf,
     pub(super) connect_timeout: Duration,
@@ -120,7 +118,6 @@ impl RuntimeParams {
         let mut waves = 2usize;
         let mut restart_iterations = 1usize;
         let mut scenario_selection = ScenarioSelection::Matrix;
-        let mut bounded_mode = "strict_bounded".to_string();
         let mut evidence_path = PathBuf::from(DEFAULT_EVIDENCE_PATH);
         let mut server_log_path = PathBuf::from(DEFAULT_SERVER_LOG_PATH);
         let mut connect_timeout = Duration::from_secs(60);
@@ -156,12 +153,6 @@ impl RuntimeParams {
                 "--waves" => waves = parse_usize(flag, value)?,
                 "--restart-iterations" => restart_iterations = parse_usize(flag, value)?,
                 "--scenarios" => scenario_selection = ScenarioSelection::parse(value)?,
-                "--bounded-mode" if matches!(value.as_str(), "strict_bounded" | "adaptive") => {
-                    bounded_mode.clone_from(value)
-                },
-                "--bounded-mode" => {
-                    return Err(format!("--bounded-mode must be strict_bounded or adaptive; got {value:?}").into());
-                },
                 "--evidence-json" => evidence_path = PathBuf::from(value),
                 "--server-log" => server_log_path = PathBuf::from(value),
                 "--connect-timeout-secs" => connect_timeout = positive_duration(flag, value)?,
@@ -226,7 +217,6 @@ impl RuntimeParams {
             waves,
             restart_iterations,
             scenario_selection,
-            bounded_mode,
             evidence_path,
             server_log_path,
             connect_timeout,

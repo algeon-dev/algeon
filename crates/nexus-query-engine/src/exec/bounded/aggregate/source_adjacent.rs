@@ -248,8 +248,7 @@ fn source_adjacent_raw_source_batches(
     bounded: &BoundedPlan<'_>,
     chunks: &[SourceChunk],
 ) -> Vec<SourceChunkBatch> {
-    if context.local_parquet_source_cache().is_some()
-        || !bounded.source.partition_columns.is_empty()
+    if !bounded.source.partition_columns.is_empty()
         || bounded.source.files.iter().any(LocalParquetFile::has_row_delete_files)
         || bounded.source.scan_limit.is_some()
         || bounded

@@ -5,7 +5,7 @@ use super::*;
 pub(super) const TSV_HEADER: &str = concat!(
     "engine\tquery_id\titeration\twarmup\twall_ms\toutcome\tplanning_outcome\toutput_batches\toutput_rows\toutput_bytes",
     "\treservation_live_peak_bytes\treservation_denied_count\tretry_count\tnative_runtime_started\tfailure",
-    "\tparquet_read_time_ms\tsource_read_time_ms\tsource_read_queue_wait_time_ms\tsource_cache_lookup_time_ms",
+    "\tparquet_read_time_ms\tsource_read_time_ms\tsource_read_queue_wait_time_ms",
     "\toperator_time_ms\tchunk_operator_time_ms\tfinal_merge_time_ms\tfinal_sort_time_ms\tmaterialization_time_ms",
     "\taggregate_libcudf_runtime_probe_count\taggregate_libcudf_runtime_probe_elapsed_ns",
     "\taggregate_libcudf_runtime_probe_input_rows\taggregate_exact_cardinality_probe_count",
@@ -16,8 +16,7 @@ pub(super) const TSV_HEADER: &str = concat!(
     "\ttask_reservation_operator_class\ttask_reservation_operator_class_bytes",
     "\tsource_chunks_planned\tsource_chunks_attempted\tsource_chunks_committed\tsource_chunks_retried",
     "\tsource_read_prefetches_started\tsource_read_prefetches_completed\tsource_read_prefetches_skipped",
-    "\tsource_read_prefetches_abandoned\tsource_cache_hits\tsource_cache_misses\tsource_cache_inserts",
-    "\tsource_cache_insert_skipped\tsource_cache_retained_bytes",
+    "\tsource_read_prefetches_abandoned",
     "\trow_groups_planned\trow_groups_committed",
     "\thash_join_build_count\tfiltered_join_build_count\tone_shot_join_count\tpartitioned_join_count",
     "\tjoin_partitioning_status\tdynamic_filter_produced_count\tdynamic_filter_skipped_count",
@@ -51,7 +50,6 @@ const TSV_COLUMNS: &[&str] = &[
     "parquet_read_time_ms",
     "source_read_time_ms",
     "source_read_queue_wait_time_ms",
-    "source_cache_lookup_time_ms",
     "operator_time_ms",
     "chunk_operator_time_ms",
     "final_merge_time_ms",
@@ -79,11 +77,6 @@ const TSV_COLUMNS: &[&str] = &[
     "source_read_prefetches_completed",
     "source_read_prefetches_skipped",
     "source_read_prefetches_abandoned",
-    "source_cache_hits",
-    "source_cache_misses",
-    "source_cache_inserts",
-    "source_cache_insert_skipped",
-    "source_cache_retained_bytes",
     "row_groups_planned",
     "row_groups_committed",
     "hash_join_build_count",
@@ -127,7 +120,6 @@ pub(super) fn print_metadata(cfg: &BenchConfig) {
     println!("# tpcds_benchmark_native_profile_name={}", cfg.native_profile.profile_name);
     println!("# tpcds_benchmark_native_profile_source={}", cfg.native_profile.profile_source);
     println!("# tpcds_benchmark_relational_execution={}", cfg.relational_execution.as_str());
-    println!("# tpcds_benchmark_native_pipeline_execution_mode={}", cfg.native_pipeline_execution_mode.as_str());
     println!("# tpcds_benchmark_native_device_budget_bytes={}", cfg.native_profile.device_budget_bytes);
     println!("# tpcds_benchmark_native_max_source_chunk_bytes={}", cfg.native_profile.max_source_chunk_bytes);
     println!("# tpcds_benchmark_native_max_row_groups_per_chunk={}", cfg.native_profile.max_row_groups_per_chunk);
@@ -192,7 +184,6 @@ fn row_fields(
         optional_f64_text(outcome.timing_metrics.parquet_read_time_ms),
         optional_f64_text(outcome.timing_metrics.source_read_time_ms),
         optional_f64_text(outcome.timing_metrics.source_read_queue_wait_time_ms),
-        optional_f64_text(outcome.timing_metrics.source_cache_lookup_time_ms),
         optional_f64_text(outcome.timing_metrics.operator_time_ms),
         optional_f64_text(outcome.timing_metrics.chunk_operator_time_ms),
         optional_f64_text(outcome.timing_metrics.final_merge_time_ms),
@@ -220,11 +211,6 @@ fn row_fields(
         metric_field(metrics, |metrics| metrics.source_read_prefetches_completed),
         metric_field(metrics, |metrics| metrics.source_read_prefetches_skipped),
         metric_field(metrics, |metrics| metrics.source_read_prefetches_abandoned),
-        metric_field(metrics, |metrics| metrics.source_cache_hits),
-        metric_field(metrics, |metrics| metrics.source_cache_misses),
-        metric_field(metrics, |metrics| metrics.source_cache_inserts),
-        metric_field(metrics, |metrics| metrics.source_cache_insert_skipped),
-        metric_field(metrics, |metrics| metrics.source_cache_retained_bytes),
         metric_field(metrics, |metrics| metrics.row_groups_planned),
         metric_field(metrics, |metrics| metrics.row_groups_committed),
         metric_field(metrics, |metrics| metrics.hash_join_build_count),
@@ -322,7 +308,6 @@ pub(super) struct NativeTimingMetrics {
     parquet_read_time_ms: Option<f64>,
     source_read_time_ms: Option<f64>,
     source_read_queue_wait_time_ms: Option<f64>,
-    source_cache_lookup_time_ms: Option<f64>,
     operator_time_ms: Option<f64>,
     chunk_operator_time_ms: Option<f64>,
     final_merge_time_ms: Option<f64>,
@@ -336,7 +321,6 @@ impl NativeTimingMetrics {
             parquet_read_time_ms: metric_duration_ms(metrics, "parquet_read_time"),
             source_read_time_ms: metric_duration_ms(metrics, "source_read_time"),
             source_read_queue_wait_time_ms: metric_duration_ms(metrics, "source_read_queue_wait_time"),
-            source_cache_lookup_time_ms: metric_duration_ms(metrics, "source_cache_lookup_time"),
             operator_time_ms: metric_duration_ms(metrics, "operator_time"),
             chunk_operator_time_ms: metric_duration_ms(metrics, "chunk_operator_time"),
             final_merge_time_ms: metric_duration_ms(metrics, "final_merge_time"),
@@ -640,6 +624,16 @@ mod tests {
         assert_eq!(p1.runtime_operator_class, "not_run");
         assert_eq!(TSV_COLUMNS.join("\t"), TSV_HEADER);
         assert_eq!(TSV_HEADER.split('\t').count(), row_fields(query, 0, false, &outcome, Engine::CpuDataFusion).len());
+        for removed in [
+            "source_cache_hits",
+            "source_cache_misses",
+            "source_cache_inserts",
+            "source_cache_insert_skipped",
+            "source_cache_retained_bytes",
+            "source_cache_lookup_time_ms",
+        ] {
+            assert!(!TSV_COLUMNS.contains(&removed), "P2 report must not project {removed}");
+        }
     }
 
     #[test]

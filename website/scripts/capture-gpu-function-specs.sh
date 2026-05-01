@@ -7,7 +7,6 @@
 # families installed. For example:
 #   cargo build --release --features server,cugraph,cuvs --bin datafusion_nexus_server
 #   NEXUS_SERVER_CUGRAPH_ENABLED=true \
-#   NEXUS_SERVER_NATIVE_MEMORY_POLICY=unbounded \
 #   bash scripts/dev/run_server.sh
 set -euo pipefail
 

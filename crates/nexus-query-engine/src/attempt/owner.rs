@@ -3,10 +3,7 @@ use std::{
     fmt,
     future::Future,
     pin::Pin,
-    sync::{
-        Arc, Condvar, Mutex,
-        atomic::{AtomicU64, Ordering},
-    },
+    sync::{Arc, Condvar, Mutex, atomic::Ordering},
     task::{Context, Poll, Waker},
     time::{Duration, Instant},
 };
@@ -14,14 +11,16 @@ use std::{
 use super::{
     AttemptBackendCounters, AttemptCancellation, AttemptCompletionQueue, AttemptLifecycle, AttemptLifecycleError,
 };
+#[cfg(test)]
+use crate::observability::{AttemptFinalDomainUsage, AttemptHealthTransition};
 use crate::{
     error::QueryError,
     observability::{
         AttemptAdmissionFact, AttemptCapacityDisposition, AttemptCleanupDisposition, AttemptDisposition, AttemptId,
-        AttemptQueryId, AttemptTraceContext, QUERY_ATTEMPT_REPORT_SCHEMA_V1, QueryAttemptReport,
+        AttemptQueryId, AttemptTerminalCommit, AttemptTraceContext, QUERY_ATTEMPT_REPORT_SCHEMA_V1, QueryAttemptReport,
         RuntimeCleanupFailureObservation, RuntimeObservationClock, RuntimeObservationConfig, RuntimeObservationFooter,
         RuntimeObservationHandle, RuntimeObservationOwner, RuntimeObservationPayload, RuntimeQueryId,
-        RuntimeTerminalOutcome, RuntimeTraceId, SystemRuntimeObservationClock,
+        RuntimeTerminalOutcome, RuntimeTraceId, SealedRuntimeObservationSnapshot, SystemRuntimeObservationClock,
     },
     runtime::ObservationPermit,
 };
@@ -81,7 +80,47 @@ pub struct AttemptOwner(Arc<AttemptInner>);
 /// invocation. It cannot terminalize the attempt.
 pub struct AttemptHandle(Arc<AttemptCore>);
 
+/// Opaque authority for rejecting an admission request before it receives a
+/// grant.
+///
+/// This is intentionally narrower than [`AttemptOwner`]: it can only commit
+/// a structured pre-admission rejection or cancellation, and it cannot seal
+/// an observation, terminalize an admitted attempt, or record arbitrary
+/// lifecycle boundaries.
+pub struct AttemptAdmissionRejection(Arc<AttemptCore>);
+
+/// Opaque, identity-bound admission attachment for one execution attempt.
+///
+/// [`AttemptOwner`] mints this as one unit so an admission request can never
+/// combine one attempt's observation owner with another attempt's cleanup
+/// capability. It exposes neither terminalization nor observation-seal
+/// authority to the request caller.
+#[derive(Clone)]
+pub struct AttemptAdmissionBinding {
+    observation_owner: RuntimeObservationOwner,
+    release_commit: AttemptReleaseCommit,
+}
+
+/// Crate-private cleanup authority carried by [`AttemptAdmissionBinding`].
+///
+/// Only query-service cleanup may apply its terminal facts. Keeping it behind
+/// the binding prevents external request construction from pairing it with a
+/// different attempt's observation owner.
+pub(crate) struct AttemptReleaseCommit(Arc<AttemptCore>);
+
 impl Clone for AttemptHandle {
+    fn clone(&self) -> Self {
+        Self(Arc::clone(&self.0))
+    }
+}
+
+impl Clone for AttemptAdmissionRejection {
+    fn clone(&self) -> Self {
+        Self(Arc::clone(&self.0))
+    }
+}
+
+impl Clone for AttemptReleaseCommit {
     fn clone(&self) -> Self {
         Self(Arc::clone(&self.0))
     }
@@ -136,7 +175,6 @@ struct AttemptCore {
     // `RuntimeObservationHandle` is cloneable record-only state, so holding it
     // here cannot cycle back into the attempt core.
     observation: std::sync::OnceLock<RuntimeObservationHandle>,
-    cleanup_failure_count: AtomicU64,
     cell: Arc<AttemptCompletionCell>,
     counters: Arc<AttemptBackendCounters>,
     completion_queue: Option<Arc<AttemptCompletionQueue>>,
@@ -166,12 +204,13 @@ impl AttemptCore {
         self.clock.monotonic_ns()
     }
 
-    /// Builds the fixed report from lifecycle state. Observation completeness
-    /// facts start zeroed; the recorder seal path patches the embedded copy
-    /// from the computed footer and [`Self::finish_with_footer`] patches the
-    /// delivered copy from the sealed snapshot footer.
+    /// Builds the fixed report from lifecycle state. The sole seal commit
+    /// applies observation completeness before this value is made visible to
+    /// either the sealed snapshot or completion receivers.
     fn report(&self) -> QueryAttemptReport {
         let lifecycle = self.lock_lifecycle();
+        let terminal_commit = lifecycle.terminal_commit;
+        let cleanup_failure_count = lifecycle.cleanup_failures;
         QueryAttemptReport {
             schema: QUERY_ATTEMPT_REPORT_SCHEMA_V1.to_string(),
             attempt_id: self.attempt_id,
@@ -186,21 +225,39 @@ impl AttemptCore {
             device_ordinal: lifecycle.admitted.as_ref().map(|(_, fact)| fact.device_ordinal),
             admission: lifecycle.admitted.as_ref().map(|(_, fact)| fact.clone()),
             timestamps: lifecycle.timestamps(),
-            cleanup_disposition: if lifecycle.admitted.is_some() {
-                if self.cleanup_failure_count.load(Ordering::Acquire) == 0 {
-                    AttemptCleanupDisposition::Completed
-                } else {
-                    AttemptCleanupDisposition::CompletedWithFailures
-                }
-            } else {
-                AttemptCleanupDisposition::NotRequired
-            },
-            cleanup_failure_count: self.cleanup_failure_count.load(Ordering::Acquire),
-            capacity_disposition: if lifecycle.admitted.is_some() {
-                AttemptCapacityDisposition::PendingRelease
-            } else {
-                AttemptCapacityDisposition::NotAdmitted
-            },
+            cleanup_disposition: terminal_commit.map_or_else(
+                || {
+                    if lifecycle.admitted.is_some() {
+                        if cleanup_failure_count == 0 {
+                            AttemptCleanupDisposition::Completed
+                        } else {
+                            AttemptCleanupDisposition::CompletedWithFailures
+                        }
+                    } else {
+                        AttemptCleanupDisposition::NotRequired
+                    }
+                },
+                |commit| {
+                    if cleanup_failure_count == 0 {
+                        commit.cleanup_disposition()
+                    } else {
+                        AttemptCleanupDisposition::CompletedWithFailures
+                    }
+                },
+            ),
+            cleanup_failure_count,
+            capacity_disposition: terminal_commit.map_or_else(
+                || {
+                    if lifecycle.admitted.is_some() {
+                        AttemptCapacityDisposition::PendingRelease
+                    } else {
+                        AttemptCapacityDisposition::NotAdmitted
+                    }
+                },
+                AttemptTerminalCommit::capacity_disposition,
+            ),
+            final_domain_usage: terminal_commit.and_then(AttemptTerminalCommit::final_domain_usage),
+            health_transition: terminal_commit.map(AttemptTerminalCommit::health_transition),
             observation_lost_records: 0,
             observation_retained_records: 0,
             observation_retained_bytes: 0,
@@ -210,30 +267,53 @@ impl AttemptCore {
         }
     }
 
-    /// The single commit completion path: cleanup commit (admitted only),
-    /// exact aggregates, report-ready, then publish. Idempotent; the first
-    /// call wins so the seal observer and the owner backstop cannot race a
-    /// second publication.
-    fn finish_with_footer(&self, footer: &RuntimeObservationFooter) -> Result<(), AttemptLifecycleError> {
-        let report = {
+    /// Establishes the lifecycle's sole terminal outcome. A terminal already
+    /// committed by the attempt owner always wins over a release fallback.
+    fn terminalize_for_release(
+        &self,
+        fallback: RuntimeTerminalOutcome,
+    ) -> Result<RuntimeTerminalOutcome, AttemptLifecycleError> {
+        let mut lifecycle = self.lock_lifecycle();
+        if let Some((_, outcome)) = &lifecycle.terminal {
+            return Ok(outcome.clone());
+        }
+        lifecycle.terminalize(fallback, self.monotonic_ns())?;
+        Ok(lifecycle.terminal.as_ref().expect("terminal outcome was recorded").1.clone())
+    }
+
+    /// Resolves the sole terminal outcome at seal. Recorder-local pending
+    /// outcomes are only an early observation; the attempt lifecycle remains
+    /// canonical once it has a terminal state.
+    fn canonical_terminal_outcome(&self, fallback: RuntimeTerminalOutcome) -> RuntimeTerminalOutcome {
+        self.terminalize_for_release(fallback.clone()).unwrap_or(fallback)
+    }
+
+    /// The single seal-and-completion commit: cleanup commit (admitted only),
+    /// exact aggregates, report-ready, and publication of one immutable
+    /// report. The returned `Arc` is embedded directly in the sealed snapshot.
+    fn finish_with_footer(
+        &self,
+        footer: &RuntimeObservationFooter,
+    ) -> Result<Arc<QueryAttemptReport>, AttemptLifecycleError> {
+        {
             let mut lifecycle = self.lock_lifecycle();
-            if lifecycle.ready.is_some() {
-                return Ok(());
+            if lifecycle.ready.is_none() {
+                if lifecycle.admitted.is_some() {
+                    lifecycle.cleanup(self.monotonic_ns())?;
+                }
+                lifecycle.ready(self.monotonic_ns())?;
             }
-            if lifecycle.admitted.is_some() {
-                lifecycle.cleanup(self.monotonic_ns())?;
-            }
-            lifecycle.ready(self.monotonic_ns())?;
-            drop(lifecycle);
+        }
+        let report = {
             let mut report = self.report();
             report.set_observation_completeness(footer);
             Arc::new(report)
         };
-        self.counters.reports_ready.fetch_add(1, Ordering::AcqRel);
         let mut state = self.cell.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        if state.report.is_some() {
-            return Ok(());
+        if let Some(existing) = &state.report {
+            return Ok(Arc::clone(existing));
         }
+        self.counters.reports_ready.fetch_add(1, Ordering::AcqRel);
         state.report = Some(Arc::clone(&report));
         let wakers = std::mem::take(&mut state.wakers);
         let abandoned = state.receivers == 0;
@@ -245,7 +325,7 @@ impl AttemptCore {
         // Abandoned-report delivery is best-effort: overflow is counted and
         // never blocks planning, GPU workers, or cleanup.
         if abandoned && let Some(queue) = &self.completion_queue {
-            if queue.try_push(report) {
+            if queue.try_push(Arc::clone(&report)) {
                 self.counters.completion_queue_pushed.fetch_add(1, Ordering::AcqRel);
             } else {
                 self.counters.completion_queue_overflowed.fetch_add(1, Ordering::AcqRel);
@@ -255,10 +335,10 @@ impl AttemptCore {
         // left to fence and is released before any waiter observes close
         // quiescence. Report and completion state carry no lease.
         self.observation_permit.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
-        Ok(())
+        Ok(report)
     }
 
-    fn finish_without_observation(&self) -> Result<(), AttemptLifecycleError> {
+    fn finish_without_observation(&self) -> Result<Arc<QueryAttemptReport>, AttemptLifecycleError> {
         self.finish_with_footer(&RuntimeObservationFooter {
             complete: true,
             terminal: None,
@@ -313,7 +393,6 @@ impl AttemptOwner {
             clock: Arc::clone(&clock),
             cancellation: AttemptCancellation::new(request.deadline),
             observation: std::sync::OnceLock::new(),
-            cleanup_failure_count: AtomicU64::new(0),
             cell: Arc::clone(&cell),
             counters,
             completion_queue: queue,
@@ -327,24 +406,15 @@ impl AttemptOwner {
             .map(|query_id| RuntimeQueryId::new(query_id.as_str()))
             .unwrap_or_else(|| RuntimeQueryId::new(""));
         let trace_id = core.trace_context.as_ref().map(|trace| RuntimeTraceId::new(trace.as_str()));
-        let provider_core = Arc::clone(&core);
+        let terminal_outcome_core = Arc::clone(&core);
+        let report_core = Arc::clone(&core);
         let owner = RuntimeObservationOwner::with_clock(query_id, trace_id, observation, clock)
-            .with_attempt_report_provider(Arc::new(move || provider_core.report()));
-        // The seal observer completes the deferred commit for admitted
-        // attempts: the engine seals this owner only after GPU cleanup, so
-        // cleanup-complete and report-ready are recorded at delivery. A seal
-        // that arrives without a wrapper commit is terminalized as dropped so
-        // completion delivery cannot be lost.
-        let observer_core = Arc::clone(&core);
-        owner.register_seal_observer(move |snapshot| {
-            {
-                let mut lifecycle = observer_core.lock_lifecycle();
-                if lifecycle.terminal.is_none() {
-                    let _ = lifecycle.terminalize(RuntimeTerminalOutcome::Dropped, observer_core.monotonic_ns());
-                }
-            }
-            let _ = observer_core.finish_with_footer(snapshot.footer());
-        });
+            .with_terminal_outcome_resolver(move |fallback| terminal_outcome_core.canonical_terminal_outcome(fallback))
+            .with_attempt_report_seal_provider(move |footer| {
+                report_core
+                    .finish_with_footer(footer)
+                    .expect("attempt lifecycle must complete while sealing its sole immutable report")
+            });
         core.observation.set(owner.handle()).expect("attempt observation handle is set exactly once");
         core.observation_permit.lock().unwrap_or_else(std::sync::PoisonError::into_inner).replace(permit);
         AttemptBegin {
@@ -363,6 +433,24 @@ impl AttemptOwner {
         AttemptHandle(Arc::clone(&self.0.core))
     }
 
+    /// Opaque capability that can terminalize only an admission request that
+    /// was rejected before an admission grant was published.
+    pub fn admission_rejection(&self) -> AttemptAdmissionRejection {
+        AttemptAdmissionRejection(Arc::clone(&self.0.core))
+    }
+
+    /// Opaque, atomic attachment for the query-service admission request.
+    ///
+    /// Its observation owner and release capability originate from this same
+    /// attempt and are consumed together by admission. Standalone observation
+    /// users continue to attach only a [`RuntimeObservationOwner`].
+    pub fn admission_binding(&self) -> AttemptAdmissionBinding {
+        AttemptAdmissionBinding {
+            observation_owner: self.0.observation_owner.clone(),
+            release_commit: AttemptReleaseCommit(Arc::clone(&self.0.core)),
+        }
+    }
+
     /// An independent receiver for the terminal report.
     pub fn completion(&self) -> AttemptCompletion {
         self.0.core.cell.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).receivers += 1;
@@ -374,9 +462,13 @@ impl AttemptOwner {
         self.0.core.cancellation.clone()
     }
 
-    /// The observation owner handed to the admission ticket so the engine
-    /// seals this attempt's observation after GPU cleanup.
-    pub fn observation_owner(&self) -> RuntimeObservationOwner {
+    /// Test-only access to the owner behind an attempt binding.
+    ///
+    /// Production callers receive only the read-only APIs on
+    /// [`AttemptAdmissionBinding`], so they cannot detach observation sealing
+    /// from the corresponding release commitment.
+    #[cfg(test)]
+    pub(crate) fn observation_owner_for_test(&self) -> RuntimeObservationOwner {
         self.0.observation_owner.clone()
     }
 
@@ -397,8 +489,12 @@ impl AttemptOwner {
             let report_ready = self.0.core.lock_lifecycle().ready.is_some();
             if !report_ready {
                 match self.0.observation_owner.sealed_snapshot() {
-                    Some(snapshot) => self.0.core.finish_with_footer(snapshot.footer())?,
-                    None => self.0.core.finish_without_observation()?,
+                    Some(snapshot) => {
+                        let _ = self.0.core.finish_with_footer(snapshot.footer())?;
+                    },
+                    None => {
+                        let _ = self.0.core.finish_without_observation()?;
+                    },
                 }
             }
         }
@@ -431,6 +527,99 @@ impl fmt::Debug for AttemptHandle {
     }
 }
 
+impl fmt::Debug for AttemptAdmissionRejection {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("AttemptAdmissionRejection")
+            .field("attempt_id", &self.0.attempt_id)
+            .finish_non_exhaustive()
+    }
+}
+
+impl fmt::Debug for AttemptReleaseCommit {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.debug_struct("AttemptReleaseCommit").field("attempt_id", &self.0.attempt_id).finish_non_exhaustive()
+    }
+}
+
+impl fmt::Debug for AttemptAdmissionBinding {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("AttemptAdmissionBinding")
+            .field("attempt_id", &self.release_commit.0.attempt_id)
+            .finish_non_exhaustive()
+    }
+}
+
+impl AttemptAdmissionBinding {
+    /// Returns recording-only access to the attempt observation.
+    ///
+    /// The returned handle cannot seal the observation.  Admission must take
+    /// this binding as a whole to receive the paired cleanup commitment.
+    pub fn observation_handle(&self) -> RuntimeObservationHandle {
+        self.observation_owner.handle()
+    }
+
+    /// Registers a read-only notification for the immutable attempt seal.
+    ///
+    /// This preserves the owner's delivery ordering without exposing any
+    /// terminal-seal authority to callers.
+    pub fn register_seal_observer<F>(&self, observer: F)
+    where F: Fn(SealedRuntimeObservationSnapshot) + Send + Sync + 'static {
+        self.observation_owner.register_seal_observer(observer);
+    }
+
+    pub(crate) fn into_parts(self) -> (RuntimeObservationOwner, AttemptReleaseCommit) {
+        (self.observation_owner, self.release_commit)
+    }
+}
+
+impl AttemptAdmissionRejection {
+    /// Records the structured outcome of a rejected or cancelled admission
+    /// request. The lifecycle accepts it only after admission was requested
+    /// and before a grant or physical execution boundary exists.
+    pub fn reject(&self, error: &QueryError) -> Result<(), AttemptLifecycleError> {
+        let outcome = if error.fact_value("reason") == Some("backend_closing") {
+            RuntimeTerminalOutcome::Failed {
+                error_code: "backend_closing".to_string(),
+                error_status: "permanent".to_string(),
+            }
+        } else if self.0.cancellation.is_cancelled() || error.code() == crate::error::QueryErrorCode::Cancelled {
+            RuntimeTerminalOutcome::Cancelled
+        } else {
+            RuntimeTerminalOutcome::Failed {
+                error_code: error.code().as_str().to_string(),
+                error_status: error.status().as_str().to_string(),
+            }
+        };
+        self.0.lock_lifecycle().terminalize_admission_rejection(outcome, self.0.monotonic_ns())
+    }
+}
+
+impl AttemptReleaseCommit {
+    /// Establishes the lifecycle terminal outcome before committing admitted
+    /// cleanup and capacity facts. The resolved outcome must then be passed
+    /// to the observation seal so footer, report, and terminal boundary agree.
+    pub(crate) fn terminalize_for_release(
+        &self,
+        fallback: RuntimeTerminalOutcome,
+    ) -> Result<RuntimeTerminalOutcome, AttemptLifecycleError> {
+        self.0.terminalize_for_release(fallback)
+    }
+
+    /// Applies the sole release result before report seal. This remains
+    /// crate-private so a request caller cannot manufacture cleanup or
+    /// capacity facts for an unrelated attempt.
+    pub(crate) fn commit(&self, commit: AttemptTerminalCommit) -> Result<(), AttemptLifecycleError> {
+        let mut lifecycle = self.0.lock_lifecycle();
+        if lifecycle.terminal_commit == Some(commit) {
+            return Ok(());
+        }
+        lifecycle.terminal_commit(commit, self.0.monotonic_ns())?;
+        Ok(())
+    }
+}
+
 impl AttemptHandle {
     /// The engine-minted identity of this invocation.
     pub fn attempt_id(&self) -> AttemptId {
@@ -450,20 +639,6 @@ impl AttemptHandle {
     /// The current disposition, when planning or execution has classified it.
     pub fn disposition(&self) -> Option<AttemptDisposition> {
         self.0.lock_lifecycle().disposition
-    }
-
-    /// First-wins terminalization for the admission binding.
-    ///
-    /// The [`AttemptOwner`] remains the primary terminalization authority.
-    /// This handle-level path exists for exactly one window: when GPU
-    /// admission itself is rejected, cancelled, or closed before physical
-    /// execution starts, the engine seals the attempt observation immediately
-    /// and the terminal fact must already be recorded or the report would
-    /// degrade to a synthetic `Dropped`. Exactly-once is enforced by the
-    /// state machine; a racing owner commit observes
-    /// [`AttemptLifecycleError::DoubleTerminalization`].
-    pub fn terminalize(&self, outcome: RuntimeTerminalOutcome) -> Result<(), AttemptLifecycleError> {
-        self.0.lock_lifecycle().terminalize(outcome, self.0.monotonic_ns())
     }
 
     pub fn record_planning_started(&self) -> Result<(), AttemptLifecycleError> {
@@ -497,7 +672,6 @@ impl AttemptHandle {
     /// Counts one secondary cleanup failure exactly and records a bounded
     /// timeline fact. The count never replaces the primary outcome.
     pub fn record_cleanup_failure(&self, cleanup_error: &QueryError) {
-        self.0.cleanup_failure_count.fetch_add(1, Ordering::AcqRel);
         let primary_error_code = {
             let mut lifecycle = self.0.lock_lifecycle();
             lifecycle.cleanup_failure();
@@ -627,15 +801,48 @@ mod tests {
         assert_eq!(report.disposition, AttemptDisposition::Native);
         assert_eq!(report.cleanup_disposition, AttemptCleanupDisposition::NotRequired);
         assert_eq!(report.capacity_disposition, AttemptCapacityDisposition::NotAdmitted);
+        assert_eq!(report.final_domain_usage, None, "unadmitted attempts have no final domain sample");
+        assert_eq!(report.health_transition, None, "unadmitted attempts have no release health transition");
         assert_eq!(report.timestamps.cleanup_complete_ns, None);
         assert_eq!(report.timestamps.report_ready_ns, Some(10));
         assert_eq!(report.timestamps.outcome_terminal_ns, 10);
         assert_eq!(counters.snapshot().reports_ready, 1);
-        // The sealed observation snapshot embeds the same fixed summary.
-        let snapshot = begin.owner.observation_owner().sealed_snapshot().expect("sealed");
+        // The sealed observation and completion share one immutable report.
+        let snapshot = begin.owner.observation_owner_for_test().sealed_snapshot().expect("sealed");
         let embedded = snapshot.attempt_report().expect("attempt report embedded");
-        assert_eq!(embedded.attempt_id, report.attempt_id);
-        assert_eq!(embedded.disposition, report.disposition);
+        assert_eq!(embedded, report.as_ref());
+        assert!(Arc::ptr_eq(
+            snapshot.data().attempt_report.as_ref().expect("attempt report allocation embedded"),
+            &report
+        ));
+    }
+
+    #[test]
+    fn seal_uses_the_attempt_terminal_outcome_for_footer_report_and_boundary() {
+        let (begin, _clock, _counters) = test_begin(RuntimeObservationConfig::native_execution(), None);
+        let completion = begin.completion.clone();
+        native_disposition(&begin);
+        let observation_owner = begin.owner.observation_owner_for_test();
+        observation_owner.record_terminal_outcome(RuntimeTerminalOutcome::Failed {
+            error_code: "inner_failure".to_string(),
+            error_status: "permanent".to_string(),
+        });
+
+        begin.owner.commit_terminal(RuntimeTerminalOutcome::Cancelled).unwrap();
+        let report = completion.wait_timeout(Duration::from_secs(1)).expect("report published");
+        let snapshot = observation_owner.sealed_snapshot().expect("sealed");
+
+        assert_eq!(report.outcome, RuntimeTerminalOutcome::Cancelled);
+        assert_eq!(snapshot.footer().terminal, Some(RuntimeTerminalOutcome::Cancelled));
+        assert_eq!(snapshot.attempt_report().expect("attempt report embedded"), report.as_ref());
+        assert!(snapshot.events().iter().any(|event| {
+            matches!(
+                event.payload,
+                RuntimeObservationPayload::QueryBoundary {
+                    boundary: crate::observability::QueryBoundaryKind::Cancelled
+                }
+            )
+        }));
     }
 
     #[test]
@@ -644,6 +851,7 @@ mod tests {
         let completion = begin.completion.clone();
         native_disposition(&begin);
         let handle = begin.owner.handle();
+        let (_, release_commit) = begin.owner.admission_binding().into_parts();
         handle.record_admission_requested().unwrap();
         handle
             .record_admitted(AttemptAdmissionFact {
@@ -660,15 +868,92 @@ mod tests {
         assert!(!completion.is_ready(), "admitted attempt must wait for the post-cleanup seal");
         // The engine seals the observation owner after GPU cleanup.
         clock.set_monotonic_ns(30);
-        begin.owner.observation_owner().finish_query(RuntimeTerminalOutcome::Succeeded);
+        let final_domain_usage = AttemptFinalDomainUsage::from(cudf::QueryMemoryDomainUsage {
+            domain_id: 101,
+            active: false,
+            active_members: 0,
+            ceiling_bytes: 1024,
+            effective_driver_ceiling_bytes: 2048,
+            driver_ceiling_verified: true,
+            allocation_limit_bytes: 768,
+            current_bytes: 0,
+            peak_bytes: 512,
+            total_bytes: 1024,
+            current_aligned_bytes: 0,
+            peak_aligned_bytes: 640,
+            total_allocations: 9,
+            current_allocations: 0,
+            peak_allocations: 4,
+            failed_allocation_count: 2,
+            largest_failed_allocation_bytes: 64,
+        });
+        release_commit
+            .commit(AttemptTerminalCommit::completed(
+                AttemptCapacityDisposition::Released,
+                Some(final_domain_usage),
+                AttemptHealthTransition::HealthyReuse,
+            ))
+            .unwrap();
+        begin.owner.observation_owner_for_test().finish_query(RuntimeTerminalOutcome::Succeeded);
         let report = completion.wait_timeout(Duration::from_secs(1)).expect("report published after seal");
         assert_eq!(report.timestamps.outcome_terminal_ns, 20);
         assert_eq!(report.timestamps.cleanup_complete_ns, Some(30));
         assert_eq!(report.timestamps.report_ready_ns, Some(30));
         assert_eq!(report.device_ordinal, Some(1));
         assert_eq!(report.cleanup_disposition, AttemptCleanupDisposition::Completed);
-        assert_eq!(report.capacity_disposition, AttemptCapacityDisposition::PendingRelease);
+        assert_eq!(report.capacity_disposition, AttemptCapacityDisposition::Released);
+        assert_eq!(report.final_domain_usage, Some(final_domain_usage), "report preserves every final sample scalar");
+        assert_eq!(report.health_transition, Some(AttemptHealthTransition::HealthyReuse));
         assert_eq!(report.admission.as_ref().map(|fact| fact.grant_bytes), Some(1024));
+        let snapshot = begin.owner.observation_owner_for_test().sealed_snapshot().expect("sealed");
+        assert_eq!(snapshot.attempt_report().expect("attempt report embedded"), report.as_ref());
+    }
+
+    #[test]
+    fn terminal_commit_projects_actual_cleanup_and_capacity_before_seal() {
+        let (begin, clock, _counters) = test_begin(RuntimeObservationConfig::native_execution(), None);
+        let completion = begin.completion.clone();
+        native_disposition(&begin);
+        let handle = begin.owner.handle();
+        let (_, release_commit) = begin.owner.admission_binding().into_parts();
+        handle.record_admission_requested().unwrap();
+        handle
+            .record_admitted(AttemptAdmissionFact {
+                admission_sequence: 3,
+                admission_wait_ns: 1,
+                device_ordinal: 1,
+                grant_bytes: 1024,
+            })
+            .unwrap();
+        clock.set_monotonic_ns(20);
+        begin.owner.commit_terminal(RuntimeTerminalOutcome::Succeeded).unwrap();
+        clock.set_monotonic_ns(30);
+        release_commit
+            .commit(AttemptTerminalCommit::failed_cleanup(
+                AttemptCapacityDisposition::RetainedQuarantine,
+                None,
+                AttemptHealthTransition::BackendUnhealthy,
+            ))
+            .unwrap();
+        release_commit
+            .commit(AttemptTerminalCommit::failed_cleanup(
+                AttemptCapacityDisposition::RetainedQuarantine,
+                None,
+                AttemptHealthTransition::BackendUnhealthy,
+            ))
+            .unwrap();
+        begin.owner.observation_owner_for_test().finish_query(RuntimeTerminalOutcome::Succeeded);
+        let report = completion.wait_timeout(Duration::from_secs(1)).expect("report");
+        assert!(matches!(report.outcome, RuntimeTerminalOutcome::Succeeded));
+        assert_eq!(report.cleanup_disposition, AttemptCleanupDisposition::CompletedWithFailures);
+        assert_eq!(report.cleanup_failure_count, 1);
+        assert_eq!(report.capacity_disposition, AttemptCapacityDisposition::RetainedQuarantine);
+        assert_eq!(report.final_domain_usage, None, "unavailable sample is never replaced with all-zero usage");
+        assert_eq!(report.health_transition, Some(AttemptHealthTransition::BackendUnhealthy));
+        assert_eq!(report.timestamps.cleanup_complete_ns, Some(30));
+        assert_eq!(report.timestamps.report_ready_ns, Some(30));
+        let snapshot = begin.owner.observation_owner_for_test().sealed_snapshot().expect("sealed");
+        assert_eq!(snapshot.attempt_report().expect("attempt report embedded"), report.as_ref());
     }
 
     #[test]
@@ -780,7 +1065,7 @@ mod tests {
         let cleanup_error = QueryError::new(QueryErrorCode::Internal, "test.cleanup", "injected cleanup failure");
         handle.record_cleanup_failure(&cleanup_error);
         handle.record_cleanup_failure(&cleanup_error);
-        begin.owner.observation_owner().finish_query(RuntimeTerminalOutcome::Failed {
+        begin.owner.observation_owner_for_test().finish_query(RuntimeTerminalOutcome::Failed {
             error_code: "cudf_temporary_failure".to_string(),
             error_status: "temporary".to_string(),
         });
@@ -792,7 +1077,7 @@ mod tests {
             RuntimeTerminalOutcome::Failed { ref error_code, .. } if error_code == "cudf_temporary_failure"
         ));
         // The bounded timeline carries the same facts when capture allows.
-        let snapshot = begin.owner.observation_owner().sealed_snapshot().expect("sealed");
+        let snapshot = begin.owner.observation_owner_for_test().sealed_snapshot().expect("sealed");
         let cleanup_events = snapshot
             .events()
             .iter()
@@ -816,10 +1101,7 @@ mod tests {
 #[cfg(test)]
 mod terminalize_race_tests {
     use super::*;
-    use crate::{
-        observability::{DeterministicRuntimeObservationClock, RuntimeObservationConfig},
-        runtime::BackendLifecycle,
-    };
+    use crate::{observability::DeterministicRuntimeObservationClock, runtime::BackendLifecycle};
 
     #[test]
     fn admission_rejection_terminalized_at_the_binding_wins_over_the_wrapper_commit() {
@@ -829,16 +1111,18 @@ mod terminalize_race_tests {
         let clock = Arc::new(DeterministicRuntimeObservationClock::new(Some(1)));
         let begin = AttemptOwner::begin_with_clock(BeginAttemptRequest::default(), permit, counters, None, clock);
         let handle = begin.owner.handle();
+        let admission_rejection = begin.owner.admission_rejection();
         handle.record_planning_started().unwrap();
         handle.record_planning_finished().unwrap();
         handle.set_disposition(AttemptDisposition::Native).unwrap();
         handle.record_admission_requested().unwrap();
         // The admission binding terminalizes the rejection at its source.
-        handle
-            .terminalize(RuntimeTerminalOutcome::Failed {
-                error_code: "service_overloaded".to_string(),
-                error_status: "temporary".to_string(),
-            })
+        admission_rejection
+            .reject(&QueryError::new(
+                crate::error::QueryErrorCode::ServiceOverloaded,
+                "test.admission_rejection",
+                "injected admission rejection",
+            ))
             .unwrap();
         // The wrapper's later commit loses and observes the structured error.
         assert_eq!(
@@ -849,7 +1133,7 @@ mod terminalize_race_tests {
             Err(AttemptLifecycleError::DoubleTerminalization)
         );
         // The engine post-rejection seal publishes the truthful outcome.
-        begin.owner.observation_owner().finish_query(RuntimeTerminalOutcome::Failed {
+        begin.owner.observation_owner_for_test().finish_query(RuntimeTerminalOutcome::Failed {
             error_code: "service_overloaded".to_string(),
             error_status: "temporary".to_string(),
         });

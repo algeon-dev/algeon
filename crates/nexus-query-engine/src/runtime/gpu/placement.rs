@@ -1,90 +1,144 @@
 //! Placement policies for independent query scheduling across devices.
+//!
+//! Placement consumes one atomic ledger snapshot per device. It never reads
+//! NVML or live CUDA memory samples: configured capacity, immutable grants,
+//! reservations, cache residency (zero in P2), and ledger health drive
+//! admission. Native-health reconciliation belongs to the query-service
+//! boundary before queue maintenance or direct placement begins; this module
+//! only reads the resulting ledger state.
 
-#[cfg(feature = "cugraph")]
-use std::collections::BTreeSet;
+use super::{DeviceLedger, DeviceRegistry, DeviceResourceProfile};
+use crate::{admission::AttemptRequirement, capability::ReservationRequirement, error::Result};
 
-use super::DeviceRegistry;
-use crate::{
-    error::{QueryError, Result},
-    plan::ResidentGraphKey,
-};
-
-/// Optional placement metadata for one query-service admission request.
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[non_exhaustive]
-pub struct QueryPlacementHint {
-    /// Prefer devices that already retain this graph key in their local graph cache.
-    pub resident_graph_key: Option<ResidentGraphKey>,
-}
-
-impl QueryPlacementHint {
-    /// Creates an empty placement hint.
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Creates a graph-cache affinity hint for a resident graph key.
-    pub fn for_resident_graph_key(resident_graph_key: ResidentGraphKey) -> Self {
-        Self { resident_graph_key: Some(resident_graph_key) }
-    }
-
-    /// Borrow the resident graph key requested by this hint, when any.
-    pub fn resident_graph_key(&self) -> Option<&ResidentGraphKey> {
-        self.resident_graph_key.as_ref()
-    }
-
-    /// Whether this hint carries no placement metadata.
-    pub fn is_empty(&self) -> bool {
-        self.resident_graph_key.is_none()
-    }
-}
-
-/// Placement input for one admitted query.
+/// Internal placement input derived from planner-owned capability evidence.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
-pub struct PlacementRequest {
-    /// Minimum device-memory bytes required to place the query.
-    pub min_device_budget_bytes: u64,
-    /// Preferred device-memory bytes for placement.
-    pub want_device_budget_bytes: u64,
-    /// Optional tenant identifier for affinity policies.
-    pub tenant_id: Option<String>,
-    /// Optional query-local placement hints.
-    pub placement_hint: QueryPlacementHint,
+pub(crate) struct PlacementRequest {
+    /// Explicit required attempt floor proven before admission.
+    ///
+    /// This is retained for callers that already resolved a floor. New
+    /// query-service placement supplies [`Self::attempt_requirement`] so a
+    /// zero request floor resolves against each candidate profile.
+    pub(crate) required_floor_bytes: u64,
+    /// Device-independent requirement resolved once per candidate ledger.
+    pub(crate) attempt_requirement: Option<AttemptRequirement>,
+    /// Device capabilities that must be present before this request can enter
+    /// capacity ranking. These are a safety predicate, not a placement hint.
+    pub(crate) required_capabilities: Vec<ReservationRequirement>,
 }
 
 impl PlacementRequest {
-    /// Creates a placement request for a fixed query budget.
-    pub fn new(device_budget_bytes: u64) -> Self {
-        Self {
-            min_device_budget_bytes: device_budget_bytes,
-            want_device_budget_bytes: device_budget_bytes,
-            tenant_id: None,
-            placement_hint: QueryPlacementHint::default(),
-        }
+    /// Creates a placement request for a required attempt floor.
+    pub(crate) fn new(required_floor_bytes: u64) -> Self {
+        Self { required_floor_bytes, attempt_requirement: None, required_capabilities: Vec::new() }
     }
 
-    /// Creates a placement request with separate minimum and preferred budgets.
-    pub fn with_grant_range(min_device_budget_bytes: u64, want_device_budget_bytes: u64) -> Self {
-        Self {
-            min_device_budget_bytes,
-            want_device_budget_bytes,
-            tenant_id: None,
-            placement_hint: QueryPlacementHint::default(),
-        }
-    }
-
-    /// Adds tenant identity for policies that need tenant affinity.
-    pub fn with_tenant_id(mut self, tenant_id: impl Into<String>) -> Self {
-        self.tenant_id = Some(tenant_id.into());
+    /// Resolves a zero configured floor using the candidate device profile.
+    pub(crate) fn with_attempt_requirement(mut self, attempt_requirement: AttemptRequirement) -> Self {
+        self.attempt_requirement = Some(attempt_requirement);
         self
     }
 
-    /// Adds optional placement metadata for policy composition.
-    pub fn with_placement_hint(mut self, placement_hint: QueryPlacementHint) -> Self {
-        self.placement_hint = placement_hint;
+    /// Adds immutable device capabilities required by the attempt.
+    pub(crate) fn with_required_capabilities(
+        mut self,
+        required_capabilities: impl IntoIterator<Item = ReservationRequirement>,
+    ) -> Self {
+        self.required_capabilities = required_capabilities.into_iter().collect();
         self
     }
+
+    pub(crate) fn required_floor_bytes_for(&self, ledger: &DeviceLedger) -> Result<u64> {
+        self.attempt_requirement
+            .as_ref()
+            .map_or(Ok(self.required_floor_bytes), |requirement| ledger.required_floor_bytes_for(requirement))
+    }
+}
+
+/// One candidate device's placement view at one ledger observation sequence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PlacementCandidate {
+    pub(crate) ordinal: usize,
+    /// Floor resolved against this candidate's immutable profile.
+    pub(crate) required_floor_bytes: u64,
+    /// Headroom the normative equation offers a new grant on this device.
+    pub(crate) max_new_grant_bytes: u64,
+    pub(crate) active_attempts: usize,
+    pub(crate) live_grants_bytes: u64,
+    /// Logical worker slots committed by active attempts in the atomic ledger
+    /// snapshot.
+    pub(crate) worker_depth: usize,
+    /// Logical stream slots still available in that same snapshot.
+    pub(crate) stream_slots_available: usize,
+}
+
+/// One atomic ledger observation used for both queue and direct placement.
+///
+/// `candidate` contains every ranking input from the same snapshot;
+/// `can_admit_now` states whether that snapshot has enough capacity for the
+/// request.  A later `try_admit` remains the authoritative reservation
+/// transaction, so this helper never turns a ranking observation into a
+/// second admission authority.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PlacementCandidateSnapshot {
+    pub(crate) candidate: PlacementCandidate,
+    pub(crate) can_admit_now: bool,
+    /// Whether the immutable device profile can ever satisfy this candidate's
+    /// resolved floor, independent of concurrent grants. This belongs beside
+    /// the snapshot so callers do not reconstruct a different permanent-
+    /// capacity classification after ranking.
+    pub(crate) can_ever_fit_required_floor: bool,
+}
+
+impl PlacementCandidate {
+    /// Spare bytes beyond this candidate's required floor after admission.
+    fn spare_after(&self) -> u64 {
+        self.max_new_grant_bytes.saturating_sub(self.required_floor_bytes)
+    }
+}
+
+/// Documented stable placement ranking:
+///
+/// 1. spare capacity after admission, descending (least-loaded);
+/// 2. active attempts, ascending;
+/// 3. live grants, ascending;
+/// 4. worker depth, ascending;
+/// 5. stream availability, descending;
+/// 6. device ordinal, ascending (deterministic tie-break).
+pub(crate) fn compare_placement_candidates(
+    left: &PlacementCandidate,
+    right: &PlacementCandidate,
+) -> std::cmp::Ordering {
+    right
+        .spare_after()
+        .cmp(&left.spare_after())
+        .then_with(|| left.active_attempts.cmp(&right.active_attempts))
+        .then_with(|| left.live_grants_bytes.cmp(&right.live_grants_bytes))
+        .then_with(|| left.worker_depth.cmp(&right.worker_depth))
+        .then_with(|| right.stream_slots_available.cmp(&left.stream_slots_available))
+        .then_with(|| left.ordinal.cmp(&right.ordinal))
+}
+
+/// Selects the single best candidate with the documented placement order.
+///
+/// Both direct placement and queue admission call this helper so that a
+/// queue waiter cannot silently diverge from normal device ranking.
+pub(crate) fn preferred_placement_candidate(
+    candidates: impl IntoIterator<Item = PlacementCandidate>,
+) -> Option<PlacementCandidate> {
+    candidates.into_iter().min_by(compare_placement_candidates)
+}
+
+#[cfg(test)]
+pub(crate) fn rank_placement_candidates(
+    mut candidates: Vec<PlacementCandidate>,
+    required_floor_bytes: u64,
+) -> Vec<usize> {
+    for candidate in &mut candidates {
+        candidate.required_floor_bytes = required_floor_bytes;
+    }
+    candidates.sort_by(compare_placement_candidates);
+    candidates.into_iter().map(|candidate| candidate.ordinal).collect()
 }
 
 /// Policy that returns ordered candidate devices, most preferred first.
@@ -93,248 +147,203 @@ pub(crate) trait PlacementPolicy: Send + Sync {
     fn candidates(&self, registry: &DeviceRegistry, request: &PlacementRequest) -> Result<Vec<cudf::DeviceId>>;
 }
 
-/// Configured placement policy for query-service admission.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum QueryPlacementPolicy {
-    /// Prefer the device with the most ungranted memory, then fewer active queries.
-    #[default]
-    LeastLoaded,
-    /// Prefer the fullest device that can satisfy the query minimum.
-    BestFit,
-    /// Place every query on one configured CUDA ordinal.
-    Pinned { device_ordinal: usize },
-}
-
-impl QueryPlacementPolicy {
-    /// Stable snake-case label for diagnostics and config surfaces.
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::LeastLoaded => "least_loaded",
-            Self::BestFit => "best_fit",
-            Self::Pinned { .. } => "pinned",
+/// Captures candidate ranking evidence from one ledger snapshot per ordinal.
+///
+/// Queue selection passes a protected ordinal when its finite-overtake
+/// reservation is eligible for replacement; direct placement passes `None`.
+/// The reservation is still consumed only by the ledger's admission
+/// transaction, preserving protection's ledger-local atomicity.
+pub(crate) fn snapshot_placement_candidates(
+    registry: &DeviceRegistry,
+    request: &PlacementRequest,
+    ordinals: impl IntoIterator<Item = usize>,
+    protected_ordinal: Option<usize>,
+) -> Result<Vec<PlacementCandidateSnapshot>> {
+    // Every healthy device participates so the placement loop can distinguish
+    // transiently busy devices (capacity fits, equation not yet satisfied)
+    // from devices that can never fit the required floor.
+    let mut candidates = Vec::with_capacity(registry.len());
+    for ordinal in ordinals {
+        let context = registry.context_by_ordinal(ordinal)?;
+        if !profile_supports_placement_request(
+            registry.resource_profile(context.device().ordinal()),
+            &request.required_capabilities,
+        ) {
+            continue;
         }
-    }
-}
-
-impl PlacementPolicy for QueryPlacementPolicy {
-    fn candidates(&self, registry: &DeviceRegistry, request: &PlacementRequest) -> Result<Vec<cudf::DeviceId>> {
-        match *self {
-            Self::LeastLoaded => LeastLoadedPlacement.candidates(registry, request),
-            Self::BestFit => BestFitPlacement.candidates(registry, request),
-            Self::Pinned { device_ordinal } => {
-                let device = cudf::DeviceId::new(device_ordinal).map_err(|error| {
-                    QueryError::from_cudf(
-                        "nexus_query_engine.query_service.placement",
-                        "failed to resolve pinned query-service CUDA device",
-                        error,
-                    )
-                    .with_fact("device_ordinal", device_ordinal)
-                })?;
-                PinnedDevicePlacement { device }.candidates(registry, request)
+        let snapshot = context.ledger().snapshot()?;
+        if !matches!(snapshot.health, super::DeviceAdmissionHealth::Open) {
+            continue;
+        }
+        let required_floor_bytes = request.required_floor_bytes_for(context.ledger())?;
+        let can_ever_fit_required_floor = context.ledger().can_ever_fit_required_floor_bytes(required_floor_bytes)?;
+        let max_new_grant_bytes =
+            snapshot.max_new_grant_bytes(required_floor_bytes, protected_ordinal == Some(ordinal));
+        candidates.push(PlacementCandidateSnapshot {
+            candidate: PlacementCandidate {
+                ordinal: context.device().ordinal(),
+                required_floor_bytes,
+                max_new_grant_bytes: max_new_grant_bytes.unwrap_or(0),
+                active_attempts: snapshot.active_attempts,
+                live_grants_bytes: snapshot.live_grants_bytes,
+                worker_depth: snapshot.worker_depth,
+                stream_slots_available: snapshot.stream_slots_available(),
             },
-        }
+            can_admit_now: max_new_grant_bytes.is_some(),
+            can_ever_fit_required_floor,
+        });
     }
+    Ok(candidates)
 }
 
-/// Places queries on the device with most ungranted capacity, then fewer actives.
+/// Produces the stable direct-placement order from the same snapshots that
+/// queue selection uses.  Runnable candidates are tried first; saturated but
+/// otherwise valid candidates remain ordered for permanent-capacity analysis.
+pub(crate) fn ordered_placement_candidate_snapshots(
+    registry: &DeviceRegistry,
+    request: &PlacementRequest,
+    ordinals: impl IntoIterator<Item = usize>,
+    protected_ordinal: Option<usize>,
+) -> Result<Vec<PlacementCandidateSnapshot>> {
+    let mut candidates = snapshot_placement_candidates(registry, request, ordinals, protected_ordinal)?;
+    candidates.sort_by(|left, right| {
+        right
+            .can_admit_now
+            .cmp(&left.can_admit_now)
+            .then_with(|| compare_placement_candidates(&left.candidate, &right.candidate))
+    });
+    Ok(candidates)
+}
+
+/// Applies the immutable capability gate before a candidate can be observed
+/// by the ledger ranking. Keeping this predicate separate makes it explicit
+/// that no capacity or load signal may resurrect an incapable device.
+fn profile_supports_placement_request(
+    profile: Option<&DeviceResourceProfile>,
+    required_capabilities: &[ReservationRequirement],
+) -> bool {
+    profile.is_some_and(|profile| profile.device_capabilities.supports_all(required_capabilities))
+}
+
+/// Places queries on the device with the most spare capacity after admission.
 #[derive(Debug, Default, Clone, Copy)]
 pub(crate) struct LeastLoadedPlacement;
 
 impl PlacementPolicy for LeastLoadedPlacement {
-    fn candidates(&self, registry: &DeviceRegistry, _request: &PlacementRequest) -> Result<Vec<cudf::DeviceId>> {
-        let mut loads = Vec::with_capacity(registry.len());
-        for context in registry.contexts() {
-            loads.push(DeviceLoad {
-                ordinal: context.device().ordinal(),
-                available_bytes: context.available_bytes()?,
-                active_queries: context.active_queries(),
-            });
-        }
-        Ok(rank_device_loads(loads)
-            .into_iter()
-            .filter_map(|ordinal| registry.context_by_ordinal(ordinal).ok().map(|context| context.device()))
-            .collect())
-    }
-}
-
-/// Places queries on the fullest device that can satisfy the minimum grant.
-#[derive(Debug, Default, Clone, Copy)]
-pub(crate) struct BestFitPlacement;
-
-impl PlacementPolicy for BestFitPlacement {
     fn candidates(&self, registry: &DeviceRegistry, request: &PlacementRequest) -> Result<Vec<cudf::DeviceId>> {
-        let mut loads = Vec::with_capacity(registry.len());
-        for context in registry.contexts() {
-            loads.push(DeviceLoad {
-                ordinal: context.device().ordinal(),
-                available_bytes: context.available_bytes()?,
-                active_queries: context.active_queries(),
-            });
-        }
-        Ok(rank_best_fit_device_loads(loads, request.min_device_budget_bytes)
+        let candidates = ordered_placement_candidate_snapshots(
+            registry,
+            request,
+            registry.contexts().map(|context| context.device().ordinal()),
+            None,
+        )?;
+        Ok(candidates
             .into_iter()
-            .filter_map(|ordinal| registry.context_by_ordinal(ordinal).ok().map(|context| context.device()))
+            .filter_map(|candidate| {
+                registry.context_by_ordinal(candidate.candidate.ordinal).ok().map(|context| context.device())
+            })
             .collect())
     }
-}
-
-/// Pins all queries to one device when that device is part of the registry.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct PinnedDevicePlacement {
-    pub(crate) device: cudf::DeviceId,
-}
-
-impl PlacementPolicy for PinnedDevicePlacement {
-    fn candidates(&self, registry: &DeviceRegistry, _request: &PlacementRequest) -> Result<Vec<cudf::DeviceId>> {
-        Ok(registry.context(self.device).map(|_| vec![self.device]).unwrap_or_default())
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct DeviceLoad {
-    ordinal: usize,
-    available_bytes: u64,
-    active_queries: usize,
-}
-
-fn rank_device_loads(mut loads: Vec<DeviceLoad>) -> Vec<usize> {
-    loads.sort_by(|left, right| {
-        right
-            .available_bytes
-            .cmp(&left.available_bytes)
-            .then_with(|| left.active_queries.cmp(&right.active_queries))
-            .then_with(|| left.ordinal.cmp(&right.ordinal))
-    });
-    loads.into_iter().map(|load| load.ordinal).collect()
-}
-
-fn rank_best_fit_device_loads(mut loads: Vec<DeviceLoad>, min_device_budget_bytes: u64) -> Vec<usize> {
-    loads.sort_by(|left, right| {
-        let left_fits = left.available_bytes >= min_device_budget_bytes;
-        let right_fits = right.available_bytes >= min_device_budget_bytes;
-        right_fits
-            .cmp(&left_fits)
-            .then_with(|| match (left_fits, right_fits) {
-                (true, true) => left.available_bytes.cmp(&right.available_bytes),
-                _ => right.available_bytes.cmp(&left.available_bytes),
-            })
-            .then_with(|| left.active_queries.cmp(&right.active_queries))
-            .then_with(|| left.ordinal.cmp(&right.ordinal))
-    });
-    loads.into_iter().map(|load| load.ordinal).collect()
-}
-
-#[cfg(feature = "cugraph")]
-pub(crate) fn rank_cache_affine_candidates(
-    candidates: Vec<cudf::DeviceId>,
-    cache_hit_ordinals: &BTreeSet<usize>,
-) -> Vec<cudf::DeviceId> {
-    rank_cache_affine_by(candidates, cache_hit_ordinals, |device| device.ordinal())
-}
-
-#[cfg(feature = "cugraph")]
-fn rank_cache_affine_by<T>(
-    candidates: Vec<T>,
-    cache_hit_ordinals: &BTreeSet<usize>,
-    ordinal: impl Fn(&T) -> usize,
-) -> Vec<T> {
-    if cache_hit_ordinals.is_empty() || candidates.len() <= 1 {
-        return candidates;
-    }
-    let mut hits = Vec::new();
-    let mut misses = Vec::new();
-    for candidate in candidates {
-        if cache_hit_ordinals.contains(&ordinal(&candidate)) {
-            hits.push(candidate);
-        } else {
-            misses.push(candidate);
-        }
-    }
-    hits.extend(misses);
-    hits
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{
+        capability::{ContractQuality, ReservationRequirement},
+        runtime::{DeviceCapabilities, DeviceCapability, ReservationKind},
+    };
 
-    #[test]
-    fn least_loaded_ranking_prefers_available_bytes_then_active_count_then_ordinal() {
-        let ranked = rank_device_loads(vec![
-            DeviceLoad { ordinal: 2, available_bytes: 10, active_queries: 0 },
-            DeviceLoad { ordinal: 1, available_bytes: 20, active_queries: 2 },
-            DeviceLoad { ordinal: 0, available_bytes: 20, active_queries: 1 },
-            DeviceLoad { ordinal: 3, available_bytes: 20, active_queries: 1 },
-        ]);
-
-        assert_eq!(ranked, vec![0, 3, 1, 2]);
+    fn candidate(
+        ordinal: usize,
+        max_new_grant: u64,
+        active: usize,
+        live: u64,
+        depth: usize,
+        streams: usize,
+    ) -> PlacementCandidate {
+        PlacementCandidate {
+            ordinal,
+            required_floor_bytes: 0,
+            max_new_grant_bytes: max_new_grant,
+            active_attempts: active,
+            live_grants_bytes: live,
+            worker_depth: depth,
+            stream_slots_available: streams,
+        }
     }
 
     #[test]
-    fn best_fit_ranking_prefers_fullest_device_that_can_fit_minimum() {
-        let ranked = rank_best_fit_device_loads(
+    fn placement_ranking_prefers_spare_then_active_then_grants_then_depth_then_streams_then_ordinal() {
+        let ranked = rank_placement_candidates(
             vec![
-                DeviceLoad { ordinal: 0, available_bytes: 80, active_queries: 3 },
-                DeviceLoad { ordinal: 1, available_bytes: 30, active_queries: 0 },
-                DeviceLoad { ordinal: 2, available_bytes: 60, active_queries: 1 },
-                DeviceLoad { ordinal: 3, available_bytes: 60, active_queries: 0 },
+                candidate(2, 100, 0, 0, 0, 10),
+                candidate(1, 200, 2, 10, 0, 10),
+                candidate(0, 200, 1, 50, 0, 10),
+                candidate(3, 200, 1, 50, 0, 20),
+                candidate(4, 200, 1, 40, 1, 30),
             ],
             50,
         );
 
-        assert_eq!(ranked, vec![3, 2, 0, 1]);
+        assert_eq!(ranked, vec![4, 3, 0, 1, 2]);
     }
 
     #[test]
-    fn best_fit_ranking_keeps_non_fitting_devices_last_by_available_bytes() {
-        let ranked = rank_best_fit_device_loads(
-            vec![
-                DeviceLoad { ordinal: 0, available_bytes: 30, active_queries: 0 },
-                DeviceLoad { ordinal: 1, available_bytes: 20, active_queries: 0 },
-                DeviceLoad { ordinal: 2, available_bytes: 40, active_queries: 0 },
-            ],
-            50,
+    fn placement_ranking_is_stable_for_heterogeneous_envelopes() {
+        let ranked =
+            rank_placement_candidates(vec![candidate(0, 1_000, 0, 0, 0, 10), candidate(1, 500, 0, 0, 0, 10)], 400);
+
+        assert_eq!(ranked, vec![0, 1], "the larger envelope offers more spare capacity");
+    }
+
+    #[test]
+    fn shared_candidate_selection_uses_the_same_stream_tie_break_for_queue_admission() {
+        let selected = preferred_placement_candidate([candidate(7, 100, 1, 50, 2, 3), candidate(4, 100, 1, 50, 2, 4)])
+            .expect("candidates are present");
+
+        assert_eq!(selected.ordinal, 4);
+    }
+
+    #[test]
+    fn capability_gate_excludes_incapable_profiles_before_placement_ranking() {
+        let requirement = ReservationRequirement::modeled(
+            ReservationKind::OperatorOutput,
+            "test_operator",
+            "test_operator_contract",
+            ContractQuality::CapabilityProof,
         );
+        let incapable = DeviceResourceProfile::resolve_with_capabilities(
+            0,
+            1_000,
+            0,
+            0,
+            100,
+            1,
+            1,
+            2,
+            2,
+            DeviceCapabilities::only(std::iter::empty::<DeviceCapability>()),
+        )
+        .unwrap();
+        let capable = DeviceResourceProfile::resolve_with_capabilities(
+            1,
+            1_000,
+            0,
+            0,
+            100,
+            1,
+            1,
+            2,
+            2,
+            DeviceCapabilities::only([DeviceCapability::new(
+                ReservationKind::OperatorOutput,
+                "test_operator_contract",
+            )]),
+        )
+        .unwrap();
 
-        assert_eq!(ranked, vec![2, 0, 1]);
-    }
-
-    #[cfg(feature = "cugraph")]
-    #[test]
-    fn cache_affine_ranking_stably_partitions_hit_devices() {
-        let candidates = vec![0, 1, 2, 3];
-        let hit_ordinals = BTreeSet::from([2, 0]);
-
-        let ranked = rank_cache_affine_by(candidates, &hit_ordinals, |ordinal| *ordinal);
-
-        assert_eq!(ranked, vec![0, 2, 1, 3]);
-    }
-
-    #[cfg(feature = "cugraph")]
-    #[test]
-    fn cache_affine_ranking_preserves_identity_without_hits() {
-        let candidates = vec![1, 0];
-
-        let ranked = rank_cache_affine_by(candidates, &BTreeSet::new(), |ordinal| *ordinal);
-
-        assert_eq!(ranked, vec![1, 0]);
-    }
-
-    #[cfg(feature = "cugraph")]
-    #[test]
-    fn cache_affine_ranking_leaves_single_candidate_unchanged() {
-        let candidates = vec![1];
-
-        let ranked = rank_cache_affine_by(candidates, &BTreeSet::from([1]), |ordinal| *ordinal);
-
-        assert_eq!(ranked, vec![1]);
-    }
-
-    #[test]
-    fn query_placement_policy_names_are_stable_snake_case() {
-        assert_eq!(QueryPlacementPolicy::LeastLoaded.as_str(), "least_loaded");
-        assert_eq!(QueryPlacementPolicy::BestFit.as_str(), "best_fit");
-        assert_eq!(QueryPlacementPolicy::Pinned { device_ordinal: 2 }.as_str(), "pinned");
+        assert!(!profile_supports_placement_request(Some(&incapable), &[requirement.clone()]));
+        assert!(profile_supports_placement_request(Some(&capable), &[requirement]));
     }
 }

@@ -8,19 +8,15 @@ use std::{
 
 use arrow::datatypes::SchemaRef;
 
+pub(crate) use crate::runtime::source_identity::GpuLocalParquetSourceCacheKey;
 use crate::{
     error::{QueryError, Result},
     runtime::{
         ExecutionContext,
-        gpu::governor::{EvictableMemoryPressure, MemoryGovernor},
+        gpu::ledger::{DeviceLedger, EvictableMemoryPressure},
         resident::{GpuLocalParquetCachedResult, GpuResultHandle},
     },
 };
-
-mod fingerprint;
-mod key;
-
-pub use key::GpuLocalParquetSourceCacheKey;
 
 /// Result of attempting to retain a GPU source chunk in the cache.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -69,9 +65,13 @@ impl GpuLocalParquetSourceCacheEntryKey {
         Self { source_key, runtime_key: runtime.affinity_id().get() }
     }
 
-    fn for_context(source_key: &GpuLocalParquetSourceCacheKey, context: &ExecutionContext) -> Result<Self> {
-        let runtime =
-            context.local_parquet_cache_owner_runtime("nexus_query_engine.gpu_local_parquet_source_cache.entry_key")?;
+    fn for_context(
+        source_key: &GpuLocalParquetSourceCacheKey,
+        context: &ExecutionContext,
+        operation: &'static str,
+    ) -> Result<Self> {
+        ensure_local_parquet_source_cache_attempt_domain_coverage(context, operation)?;
+        let runtime = context.local_parquet_cache_owner_runtime(operation)?;
         Ok(Self::new(source_key.clone(), &runtime))
     }
 }
@@ -99,7 +99,7 @@ struct GpuLocalParquetSourceCacheState {
 
 struct GpuLocalParquetSourceCacheInner {
     max_retained_device_bytes: u64,
-    governor: Option<MemoryGovernor>,
+    governor: Option<DeviceLedger>,
     state: Mutex<GpuLocalParquetSourceCacheState>,
     #[cfg(test)]
     close_and_drain_delay: Mutex<Option<std::time::Duration>>,
@@ -179,11 +179,11 @@ impl GpuLocalParquetSourceCache {
 
     /// Create an empty source cache whose retained bytes are charged to a
     /// device memory governor as evictable cache residency.
-    pub fn new_governor_backed(max_retained_device_bytes: u64, governor: MemoryGovernor) -> Self {
+    pub fn new_governor_backed(max_retained_device_bytes: u64, governor: DeviceLedger) -> Self {
         Self::new_with_governor(max_retained_device_bytes, Some(governor))
     }
 
-    fn new_with_governor(max_retained_device_bytes: u64, governor: Option<MemoryGovernor>) -> Self {
+    fn new_with_governor(max_retained_device_bytes: u64, governor: Option<DeviceLedger>) -> Self {
         Self {
             inner: Arc::new(GpuLocalParquetSourceCacheInner {
                 max_retained_device_bytes,
@@ -298,7 +298,11 @@ impl GpuLocalParquetSourceCache {
         context: &ExecutionContext,
         schema: &SchemaRef,
     ) -> Result<Option<(GpuResultHandle, u64)>> {
-        let entry_key = GpuLocalParquetSourceCacheEntryKey::for_context(key, context)?;
+        let entry_key = GpuLocalParquetSourceCacheEntryKey::for_context(
+            key,
+            context,
+            "nexus_query_engine.gpu_local_parquet_source_cache.get",
+        )?;
         let mut state = self.lock()?;
         if state.closed {
             return Err(local_parquet_source_cache_closed("nexus_query_engine.gpu_local_parquet_source_cache.get"));
@@ -369,7 +373,11 @@ impl GpuLocalParquetSourceCache {
         protected_keys: &HashSet<GpuLocalParquetSourceCacheKey>,
         pin_returned_handle: bool,
     ) -> Result<(GpuLocalParquetSourceCacheInsertResult, Option<GpuResultHandle>)> {
-        let entry_key = GpuLocalParquetSourceCacheEntryKey::for_context(&key, context)?;
+        let entry_key = GpuLocalParquetSourceCacheEntryKey::for_context(
+            &key,
+            context,
+            "nexus_query_engine.gpu_local_parquet_source_cache.insert",
+        )?;
         let mut state = self.lock()?;
         if state.closed {
             return Err(local_parquet_source_cache_closed("nexus_query_engine.gpu_local_parquet_source_cache.insert"));
@@ -609,6 +617,7 @@ impl GpuLocalParquetSourceCache {
         context: &ExecutionContext,
         operation: &'static str,
     ) -> Result<Arc<cudf::Runtime>> {
+        ensure_local_parquet_source_cache_attempt_domain_coverage(context, operation)?;
         let pooled_runtime = context.local_parquet_cache_owner_runtime(operation)?;
         let runtime_key = pooled_runtime.affinity_id().get();
         let device_ordinal = pooled_runtime.device().ordinal();
@@ -797,6 +806,34 @@ impl GpuLocalParquetSourceCache {
     }
 }
 
+fn ensure_local_parquet_source_cache_attempt_domain_coverage(
+    context: &ExecutionContext,
+    operation: &'static str,
+) -> Result<()> {
+    // P2 attempts own one immutable allocation domain. Cached source results
+    // live on a query-neutral companion runtime, whose allocations are not
+    // members of that domain. Durable-cache accounting belongs to P5, so the
+    // migration substrate must remain unavailable for admitted attempts.
+    if local_parquet_source_cache_attempt_domain_is_uncovered(context.attempt_allocation_domain_id()) {
+        return Err(local_parquet_source_cache_attempt_domain_error(operation));
+    }
+    Ok(())
+}
+
+fn local_parquet_source_cache_attempt_domain_is_uncovered(attempt_allocation_domain_id: Option<u64>) -> bool {
+    attempt_allocation_domain_id.is_some()
+}
+
+fn local_parquet_source_cache_attempt_domain_error(operation: &'static str) -> QueryError {
+    QueryError::new(
+        crate::error::QueryErrorCode::InvalidPlan,
+        "nexus_query_engine.gpu_local_parquet_source_cache",
+        "GPU local Parquet source cache is unavailable while an attempt allocation domain is active",
+    )
+    .with_fact("operation", operation)
+    .with_fact("reason", "allocation_domain_uncovered")
+}
+
 fn local_parquet_source_cache_closed(operation: &'static str) -> QueryError {
     QueryError::new(crate::error::QueryErrorCode::Cancelled, operation, "GPU local Parquet source cache is closed")
         .with_fact("reason", "local_parquet_source_cache_closed")
@@ -969,16 +1006,22 @@ mod tests {
     use super::*;
     use crate::{
         runtime::{
-            gpu::governor::MemoryGovernor,
+            gpu::ledger::DeviceLedger,
             resident::{GpuDataFrame, GpuResultHandle},
         },
         source::LocalParquetSource,
     };
 
+    #[test]
+    fn local_parquet_source_cache_attempt_domain_helper_is_fail_closed() {
+        assert!(!local_parquet_source_cache_attempt_domain_is_uncovered(None));
+        assert!(local_parquet_source_cache_attempt_domain_is_uncovered(Some(42)));
+    }
+
     struct CacheFixture {
         cache: Arc<GpuLocalParquetSourceCache>,
         context: ExecutionContext,
-        governor: MemoryGovernor,
+        governor: DeviceLedger,
         key: GpuLocalParquetSourceCacheKey,
         handle: GpuResultHandle,
         batch: RecordBatch,
@@ -988,7 +1031,7 @@ mod tests {
     fn cache_fixture() -> CacheFixture {
         let runtime = Arc::new(cudf::Runtime::new().unwrap());
         let context = ExecutionContext::builder().with_shared_runtime(Arc::clone(&runtime)).build().unwrap();
-        let governor = MemoryGovernor::new(runtime.device().ordinal(), 64 * 1024 * 1024).unwrap();
+        let governor = DeviceLedger::for_test(runtime.device().ordinal(), 64 * 1024 * 1024, 1);
         let cache = Arc::new(GpuLocalParquetSourceCache::new_governor_backed(32 * 1024 * 1024, governor.clone()));
         GpuLocalParquetSourceCache::register_governor_pressure_observer(&cache).unwrap();
         let schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Int32, false)]));

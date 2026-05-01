@@ -38,22 +38,15 @@ pub use config::{
     NEXUS_ICEBERG_NAMESPACE_ENV, NEXUS_ICEBERG_REST_CATALOG_HANDLE_ENV, NEXUS_ICEBERG_REST_PREFIX_ENV,
     NEXUS_ICEBERG_REST_TOKEN_ENV, NEXUS_ICEBERG_REST_URI_ENV, NEXUS_ICEBERG_S3_CREDENTIAL_SOURCE_ENV,
     NEXUS_ICEBERG_S3_ENDPOINT_ENV, NEXUS_ICEBERG_S3_PATH_STYLE_ENV, NEXUS_ICEBERG_S3_REGION_ENV,
-    NEXUS_ICEBERG_SCAN_PLANNING_TIMEOUT_SECS_ENV, NEXUS_ICEBERG_TABLES_ENV, NEXUS_SERVER_ADMISSION_GRANT_MIN_ENV,
-    NEXUS_SERVER_ADMISSION_GRANT_WANT_ENV, NEXUS_SERVER_ADMISSION_MAX_QUERIES_PER_DEVICE_ENV,
-    NEXUS_SERVER_ADMISSION_PINNED_DEVICE_ENV, NEXUS_SERVER_ADMISSION_PLACEMENT_POLICY_ENV,
-    NEXUS_SERVER_ADMISSION_SLOT_GUARANTEE_ENV, NEXUS_SERVER_ADMISSION_WAIT_TIMEOUT_MS_ENV,
-    NEXUS_SERVER_ADMISSION_WORKLOAD_PROFILE_ENV, NEXUS_SERVER_BIND_ENV, NEXUS_SERVER_CONFIG_FILE_ENV,
+    NEXUS_ICEBERG_SCAN_PLANNING_TIMEOUT_SECS_ENV, NEXUS_ICEBERG_TABLES_ENV,
+    NEXUS_SERVER_ADMISSION_MAX_OVERTAKES_PER_WAITER_ENV, NEXUS_SERVER_ADMISSION_MAX_QUEUE_WAIT_MS_ENV,
+    NEXUS_SERVER_ADMISSION_MAX_QUEUED_ATTEMPTS_ENV, NEXUS_SERVER_BIND_ENV, NEXUS_SERVER_CONFIG_FILE_ENV,
     NEXUS_SERVER_CUGRAPH_CONSTRUCTION_POLICY_ENV, NEXUS_SERVER_CUGRAPH_DIRECTED_ENV, NEXUS_SERVER_CUGRAPH_ENABLED_ENV,
-    NEXUS_SERVER_CUGRAPH_RENUMBER_ENV, NEXUS_SERVER_DEVICE_BUDGET_FRACTION_ENV, NEXUS_SERVER_GPU_DEVICES_ENV,
-    NEXUS_SERVER_HOST_EXECUTION_QOS_MAX_CONCURRENT_STATEMENTS_ENV, NEXUS_SERVER_HOST_EXECUTION_QOS_WAIT_TIMEOUT_MS_ENV,
-    NEXUS_SERVER_LOG_ENV, NEXUS_SERVER_MAX_CONCURRENT_QUERIES_ENV, NEXUS_SERVER_MAX_IN_FLIGHT_ENV,
+    NEXUS_SERVER_CUGRAPH_RENUMBER_ENV, NEXUS_SERVER_GPU_DEVICES_ENV, NEXUS_SERVER_LOG_ENV,
     NEXUS_SERVER_NATIVE_CONFIG_OPTIONS, NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES_ENV,
-    NEXUS_SERVER_NATIVE_GRAPH_CACHE_MAX_RETAINED_BYTES_ENV, NEXUS_SERVER_NATIVE_MAX_RETRY_ATTEMPTS_ENV,
-    NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV,
-    NEXUS_SERVER_NATIVE_MAX_SOURCE_READS_IN_FLIGHT_ENV, NEXUS_SERVER_NATIVE_MEMORY_POLICY_ENV,
-    NEXUS_SERVER_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV, NEXUS_SERVER_NATIVE_PIPELINE_EXECUTION_MODE_ENV,
-    NEXUS_SERVER_NATIVE_QUERY_MEMORY_DOMAIN_CEILING_MULTIPLIER_ENV,
-    NEXUS_SERVER_NATIVE_SOURCE_CACHE_MAX_RETAINED_BYTES_ENV, NEXUS_SERVER_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV,
+    NEXUS_SERVER_NATIVE_MAX_RETRY_ATTEMPTS_ENV, NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV,
+    NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, NEXUS_SERVER_NATIVE_MAX_SOURCE_READS_IN_FLIGHT_ENV,
+    NEXUS_SERVER_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV, NEXUS_SERVER_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV,
     NEXUS_SERVER_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV,
     NEXUS_SERVER_OBSERVABILITY_ACTIVE_LOGICAL_CAPTURE_MAX_BYTES_ENV,
     NEXUS_SERVER_OBSERVABILITY_GLOBAL_SEALED_MAX_BYTES_ENV, NEXUS_SERVER_OBSERVABILITY_GLOBAL_SEALED_MAX_COUNT_ENV,
@@ -166,17 +159,9 @@ impl FlightSqlServerBuilder {
                 "server config is required to build Flight SQL server",
             )
         })?;
-        if !matches!(
-            config.native_optimizer_config.native_execution_config().memory_control_policy(),
-            MemoryControlPolicy::Bounded { .. }
-        ) {
-            return Err(ServerError::builder_validation(
-                "server_unbounded_backend_unsupported",
-                "Flight SQL server construction requires a bounded NexusGpuBackend",
-            )
-            .with_fact("config_field", config::NEXUS_SERVER_NATIVE_MEMORY_POLICY_ENV)
-            .with_fact("required_memory_policy", "bounded"));
-        }
+        // `ServerConfig::from_env*` validates this during TOML loading, but
+        // callers can also construct the public config struct directly.
+        config.auth.mode.validate()?;
         ensure_single_librmm_runtime_mapping()?;
         let listen = match self.listener {
             Some(listener) => Listen::Prebound(listener),
@@ -207,7 +192,7 @@ impl FlightSqlServerBuilder {
         };
 
         let admission_init_start = Instant::now();
-        let admission = Arc::new(admission::QueryAdmission::from_backend(Some(&backend), &config)?);
+        let admission = Arc::new(admission::QueryAdmission::from_backend(&backend));
         tracing::info!(
             elapsed_ms = u64::try_from(admission_init_start.elapsed().as_millis()).unwrap_or(u64::MAX),
             "query admission controller initialized"
@@ -330,11 +315,7 @@ async fn serve_built_server(server: FlightSqlServer) -> Result<()> {
         Arc::clone(&coordinator),
         maintenance,
     );
-    tracing::info!(
-        bind_addr = %addr,
-        max_in_flight = admission.max_in_flight(),
-        "starting datafusion-nexus Flight SQL server"
-    );
+    tracing::info!(bind_addr = %addr, "starting datafusion-nexus Flight SQL server");
 
     let (shutdown, watchdog_rx) =
         shutdown_future(shutdown, shutdown_supervisor.trigger(), cancellations, shutdown_token);
@@ -583,23 +564,11 @@ fn after_closing_admission<T>(admission: &admission::QueryAdmission, action: imp
 }
 
 fn validate_injected_backend_matches_config(backend: &NexusGpuBackend, config: &ServerConfig) -> Result<()> {
-    let service_config = backend
-        .controller_config()
-        .map_err(|error| ServerError::session("failed to inspect injected backend controller config", error))?;
-    let backend_want = backend
-        .session_capability()
-        .requested_grant_band(backend.tenant_id(), nexus_query_engine::runtime::QueryGrantRequest::new())
-        .map(|grant| grant.want_bytes)
-        .map_err(|error| ServerError::session("failed to inspect injected backend tenant budget", error))?;
-    validate_backend_config_projection_matches(
-        &service_config,
-        backend.admission_policy(),
-        backend.device_ordinals(),
-        backend.device_memory_ownership(),
-        backend.optimizer_config(),
-        backend_want,
-        config,
-    )
+    let queue_bounds = backend
+        .controller_queue_bounds()
+        .map_err(|error| ServerError::session("failed to inspect injected backend queue policy", error))?;
+    validate_injected_queue_policy(&queue_bounds, config)?;
+    validate_injected_startup_profiles(backend.device_startup_records(), config)
 }
 
 #[cfg(test)]
@@ -607,164 +576,352 @@ fn validate_test_controller_projection_matches_config(
     backend: &crate::backend::TestBackendControllerProjection,
     config: &ServerConfig,
 ) -> Result<()> {
-    let service_config = backend
-        .controller_config()
-        .map_err(|error| ServerError::session("failed to inspect test backend controller projection", error))?;
-    let backend_want = backend
-        .tenant_budget()
-        .map_err(|error| ServerError::session("failed to inspect test backend tenant budget", error))?;
-    validate_backend_config_projection_matches(
-        &service_config,
-        backend.admission_policy(),
-        backend.device_ordinals(),
-        backend.device_memory_ownership(),
-        backend.optimizer_config(),
-        backend_want,
-        config,
-    )
+    let queue_bounds = backend
+        .controller_queue_bounds()
+        .map_err(|error| ServerError::session("failed to inspect test backend queue policy", error))?;
+    validate_injected_queue_policy(&queue_bounds, config)?;
+    validate_test_profile_projection(backend.device_profiles(), backend.device_memory_ownership(), config)
 }
 
-fn validate_backend_config_projection_matches(
-    service_config: &nexus_query_engine::runtime::QueryServiceConfig,
-    backend_admission_policy: &crate::backend::NexusAdmissionPolicy,
-    backend_device_ordinals: &[usize],
-    backend_device_memory_ownership: &[(usize, crate::backend::GpuMemoryOwnership)],
-    backend_optimizer_config: &NexusNativeOptimizerConfig,
-    backend_want: u64,
+fn validate_injected_queue_policy(
+    queue_bounds: &nexus_query_engine::runtime::QueueBounds,
     config: &ServerConfig,
 ) -> Result<()> {
-    let MemoryControlPolicy::Bounded { device_budget_bytes: config_device_budget_bytes, .. } =
-        config.native_optimizer_config.native_execution_config().memory_control_policy()
-    else {
-        return Err(ServerError::builder_validation(
-            "server_backend_unbounded_config",
-            "an injected backend requires bounded native memory policy in the server config",
-        ));
-    };
-
-    let normalized_admission_policy = admission::server_admission_policy(config);
-    if config.max_in_flight != backend_admission_policy.max_concurrent_queries() {
+    let queue_policy = admission::server_queue_policy(config);
+    if queue_policy.max_queued_attempts != queue_bounds.max_waiters {
         return Err(ServerError::builder_conflict(
             "server_backend_admission_conflict",
-            "max_in_flight",
-            config.max_in_flight,
-            backend_admission_policy.max_concurrent_queries(),
+            "admission.max_queued_attempts",
+            queue_policy.max_queued_attempts,
+            queue_bounds.max_waiters,
         ));
     }
-    if config.gpu_devices != backend_device_ordinals {
+    if queue_policy.max_queue_wait != queue_bounds.max_wait {
         return Err(ServerError::builder_conflict(
             "server_backend_admission_conflict",
-            "gpu_devices",
-            format_usize_list(&config.gpu_devices),
-            format_usize_list(backend_device_ordinals),
+            "admission.max_queue_wait_ms",
+            queue_policy.max_queue_wait.as_millis(),
+            queue_bounds.max_wait.as_millis(),
         ));
     }
-    let configured_ownership =
-        config.gpu_memory_ownership.iter().copied().collect::<std::collections::BTreeMap<_, _>>();
-    let backend_ownership =
-        backend_device_memory_ownership.iter().copied().collect::<std::collections::BTreeMap<_, _>>();
-    if config.gpu_memory_ownership.len() != backend_device_memory_ownership.len()
-        || configured_ownership != backend_ownership
-    {
+    if queue_policy.max_overtakes_per_waiter != queue_bounds.max_overtakes_per_waiter {
         return Err(ServerError::builder_conflict(
             "server_backend_admission_conflict",
-            "gpu_memory_ownership",
-            format!("{configured_ownership:?}"),
-            format!("{backend_ownership:?}"),
-        ));
-    }
-    if normalized_admission_policy.slot_guarantee() != backend_admission_policy.slot_guarantee() {
-        return Err(ServerError::builder_conflict(
-            "server_backend_admission_conflict",
-            "slot_guarantee",
-            slot_guarantee_value(normalized_admission_policy.slot_guarantee()),
-            slot_guarantee_value(backend_admission_policy.slot_guarantee()),
-        ));
-    }
-    if normalized_admission_policy.max_queries_per_device() != backend_admission_policy.max_queries_per_device() {
-        return Err(ServerError::builder_conflict(
-            "server_backend_admission_conflict",
-            "admission.max_queries_per_device",
-            format_optional_usize(normalized_admission_policy.max_queries_per_device()),
-            format_optional_usize(backend_admission_policy.max_queries_per_device()),
-        ));
-    }
-    if normalized_admission_policy.placement_policy() != backend_admission_policy.placement_policy() {
-        return Err(ServerError::builder_conflict(
-            "server_backend_admission_conflict",
-            "admission.placement_policy",
-            placement_policy_value(normalized_admission_policy.placement_policy()),
-            placement_policy_value(backend_admission_policy.placement_policy()),
-        ));
-    }
-    if normalized_admission_policy.max_queued() != backend_admission_policy.max_queued() {
-        return Err(ServerError::builder_conflict(
-            "server_backend_admission_conflict",
-            "admission.max_queued",
-            normalized_admission_policy.max_queued(),
-            backend_admission_policy.max_queued(),
-        ));
-    }
-    if normalized_admission_policy.wait_timeout() != backend_admission_policy.wait_timeout() {
-        return Err(ServerError::builder_conflict(
-            "server_backend_admission_conflict",
-            "admission.wait_timeout",
-            normalized_admission_policy.wait_timeout().as_millis(),
-            backend_admission_policy.wait_timeout().as_millis(),
-        ));
-    }
-    let backend_capacity = service_config.device_capacity_bytes.ok_or_else(|| {
-        ServerError::builder_validation(
-            "server_backend_admission_conflict",
-            "injected backend does not expose a bounded device capacity",
-        )
-    })?;
-    if config_device_budget_bytes != backend_capacity {
-        let field = if config.device_budget_fraction.is_some() {
-            config::NEXUS_SERVER_DEVICE_BUDGET_FRACTION_ENV
-        } else {
-            config::NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES_ENV
-        };
-        return Err(ServerError::builder_conflict(
-            "server_backend_admission_conflict",
-            field,
-            config_device_budget_bytes,
-            backend_capacity,
-        ));
-    }
-
-    let config_grant = normalized_admission_policy
-        .resolve_grant_band_bytes(
-            backend_capacity,
-            config.gpu_devices.len(),
-            config.native_optimizer_config.native_execution_config().native_pipeline_execution_mode(),
-        )
-        .map_err(|error| ServerError::session("failed to resolve server admission grant band", error))?;
-    let MemoryControlPolicy::Bounded { device_budget_bytes: backend_min, .. } =
-        backend_optimizer_config.native_execution_config().memory_control_policy()
-    else {
-        return Err(ServerError::builder_validation(
-            "server_backend_admission_conflict",
-            "injected backend native optimizer config is not bounded",
-        ));
-    };
-    if config_grant.min_bytes != backend_min {
-        return Err(ServerError::builder_conflict(
-            "server_backend_admission_conflict",
-            "admission.grant_min",
-            config_grant.min_bytes,
-            backend_min,
-        ));
-    }
-    if config_grant.want_bytes != backend_want {
-        return Err(ServerError::builder_conflict(
-            "server_backend_admission_conflict",
-            "admission.grant_want",
-            config_grant.want_bytes,
-            backend_want,
+            "admission.max_overtakes_per_waiter",
+            queue_policy.max_overtakes_per_waiter,
+            queue_bounds.max_overtakes_per_waiter,
         ));
     }
     Ok(())
+}
+
+/// Validate injected backends against the records frozen by the engine after
+/// discovery and allocator installation.  A planner budget is intentionally
+/// absent from this comparison: it is an unadmitted planning template, while
+/// capacity and floors are ordinal-local controller facts.
+fn validate_injected_startup_profiles(
+    records: &[nexus_query_engine::runtime::GpuBackendDeviceStartupRecord],
+    config: &ServerConfig,
+) -> Result<()> {
+    let configured_profiles = configured_profile_map(config)?;
+    let configured_ownership = configured_ownership_map(config)?;
+    if records.len() != configured_profiles.len() {
+        return Err(ServerError::builder_conflict(
+            "server_backend_admission_conflict",
+            "admission.device_profiles",
+            configured_profiles.len(),
+            records.len(),
+        ));
+    }
+    for record in records {
+        let ordinal = record.device_ordinal;
+        let Some(profile) = configured_profiles.get(&ordinal) else {
+            return Err(ServerError::builder_conflict(
+                "server_backend_admission_conflict",
+                "admission.device_profiles",
+                format_usize_list(&config.gpu_devices),
+                ordinal,
+            ));
+        };
+        let expected_ownership = configured_ownership.get(&ordinal).ok_or_else(|| {
+            ServerError::builder_validation(
+                "server_backend_admission_conflict",
+                "server config has no deployment ownership declaration for an injected device profile",
+            )
+            .with_fact("device_ordinal", ordinal)
+        })?;
+        compare_profile_field(
+            ordinal,
+            "gpu_memory_ownership",
+            format!("{expected_ownership:?}"),
+            format!("{:?}", record.memory_ownership),
+        )?;
+        compare_profile_field(
+            ordinal,
+            "admission.device_profiles.memory_limit",
+            format!("{:?}", profile.memory_limit()),
+            format!("{:?}", record.memory_limit),
+        )?;
+        compare_profile_field(
+            ordinal,
+            "admission.device_profiles.backend_reserve_bytes",
+            profile.backend_reserve_bytes(),
+            record.backend_reserve_bytes,
+        )?;
+        compare_profile_field(
+            ordinal,
+            "admission.device_profiles.max_active_attempts",
+            profile.max_active_attempts(),
+            record.resource_profile.max_active_attempts,
+        )?;
+        if let Some(floor) = profile.attempt_floor_bytes() {
+            compare_profile_field(
+                ordinal,
+                "admission.device_profiles.attempt_floor_bytes",
+                floor,
+                record.resource_profile.attempt_floor_bytes,
+            )?;
+        }
+        let source_work = profile.source_work_per_attempt();
+        compare_profile_field(
+            ordinal,
+            "admission.device_profiles.source_work_per_attempt",
+            source_work,
+            record.resource_profile.source_work_per_attempt,
+        )?;
+        let bounds = expected_profile_bounds(profile)?;
+        compare_profile_field(
+            ordinal,
+            "admission.device_profiles.stream_pool_size",
+            bounds.stream_pool_size,
+            record.stream_pool_size,
+        )?;
+        compare_profile_field(
+            ordinal,
+            "admission.device_profiles.worker_count",
+            bounds.worker_count,
+            record.worker_count,
+        )?;
+        compare_profile_field(ordinal, "admission.device_profiles.lane_count", bounds.lane_count, record.lane_count)?;
+        compare_profile_field(
+            ordinal,
+            "admission.device_profiles.capabilities",
+            format!("{:?}", profile.device_capabilities()),
+            format!("{:?}", record.resource_profile.device_capabilities),
+        )?;
+        compare_profile_field(
+            ordinal,
+            "admission.device_profiles.install_telemetry",
+            profile.install_telemetry(),
+            record.install_telemetry,
+        )?;
+        compare_profile_field(
+            ordinal,
+            "admission.device_profiles.install_diagnostics",
+            profile.install_diagnostics(),
+            record.install_diagnostics,
+        )?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+fn validate_test_profile_projection(
+    backend_profiles: &[crate::backend::NexusGpuDeviceProfile],
+    backend_ownership: &[(usize, crate::backend::GpuMemoryOwnership)],
+    config: &ServerConfig,
+) -> Result<()> {
+    let configured_profiles = configured_profile_map(config)?;
+    let configured_ownership = configured_ownership_map(config)?;
+    if backend_profiles.len() != configured_profiles.len() {
+        return Err(ServerError::builder_conflict(
+            "server_backend_admission_conflict",
+            "admission.device_profiles",
+            configured_profiles.len(),
+            backend_profiles.len(),
+        ));
+    }
+    let backend_ownership = backend_ownership.iter().copied().collect::<std::collections::BTreeMap<_, _>>();
+    for profile in backend_profiles {
+        let ordinal = profile.device_ordinal();
+        let expected = configured_profiles.get(&ordinal).ok_or_else(|| {
+            ServerError::builder_validation(
+                "server_backend_admission_conflict",
+                "test backend has a device profile absent from the server configuration",
+            )
+            .with_fact("device_ordinal", ordinal)
+        })?;
+        compare_profile_field(
+            ordinal,
+            "admission.device_profiles.memory_limit",
+            format!("{:?}", expected.memory_limit()),
+            format!("{:?}", profile.memory_limit()),
+        )?;
+        compare_profile_field(
+            ordinal,
+            "admission.device_profiles.backend_reserve_bytes",
+            expected.backend_reserve_bytes(),
+            profile.backend_reserve_bytes(),
+        )?;
+        compare_profile_field(
+            ordinal,
+            "admission.device_profiles.attempt_floor_bytes",
+            format!("{:?}", expected.attempt_floor_bytes()),
+            format!("{:?}", profile.attempt_floor_bytes()),
+        )?;
+        compare_profile_field(
+            ordinal,
+            "admission.device_profiles.source_work_per_attempt",
+            expected.source_work_per_attempt(),
+            profile.source_work_per_attempt(),
+        )?;
+        compare_profile_field(
+            ordinal,
+            "admission.device_profiles.max_active_attempts",
+            expected.max_active_attempts(),
+            profile.max_active_attempts(),
+        )?;
+        compare_profile_field(
+            ordinal,
+            "admission.device_profiles.installation_bounds",
+            format!("{:?}", expected.installation_bounds()),
+            format!("{:?}", profile.installation_bounds()),
+        )?;
+        compare_profile_field(
+            ordinal,
+            "admission.device_profiles.capabilities",
+            format!("{:?}", expected.device_capabilities()),
+            format!("{:?}", profile.device_capabilities()),
+        )?;
+        compare_profile_field(
+            ordinal,
+            "admission.device_profiles.install_telemetry",
+            expected.install_telemetry(),
+            profile.install_telemetry(),
+        )?;
+        compare_profile_field(
+            ordinal,
+            "admission.device_profiles.install_diagnostics",
+            expected.install_diagnostics(),
+            profile.install_diagnostics(),
+        )?;
+        let expected_ownership = configured_ownership.get(&ordinal).ok_or_else(|| {
+            ServerError::builder_validation(
+                "server_backend_admission_conflict",
+                "server config has no deployment ownership declaration for a test device profile",
+            )
+            .with_fact("device_ordinal", ordinal)
+        })?;
+        let actual_ownership = backend_ownership.get(&ordinal).ok_or_else(|| {
+            ServerError::builder_validation(
+                "server_backend_admission_conflict",
+                "test backend has no deployment ownership declaration for a device profile",
+            )
+            .with_fact("device_ordinal", ordinal)
+        })?;
+        compare_profile_field(
+            ordinal,
+            "gpu_memory_ownership",
+            format!("{expected_ownership:?}"),
+            format!("{actual_ownership:?}"),
+        )?;
+    }
+    Ok(())
+}
+
+fn configured_profile_map(
+    config: &ServerConfig,
+) -> Result<std::collections::BTreeMap<usize, &crate::backend::NexusGpuDeviceProfile>> {
+    let selected = config.gpu_devices.iter().copied().collect::<std::collections::BTreeSet<_>>();
+    let mut profiles = std::collections::BTreeMap::new();
+    for profile in &config.gpu_device_profiles {
+        let ordinal = profile.device_ordinal();
+        if profiles.insert(ordinal, profile).is_some() {
+            return Err(ServerError::builder_validation(
+                "server_backend_admission_conflict",
+                "server config contains duplicate device profiles",
+            )
+            .with_fact("device_ordinal", ordinal));
+        }
+    }
+    let configured = profiles.keys().copied().collect::<std::collections::BTreeSet<_>>();
+    if configured != selected {
+        return Err(ServerError::builder_conflict(
+            "server_backend_admission_conflict",
+            "admission.device_profiles",
+            format_usize_list(&config.gpu_devices),
+            format_usize_list(&profiles.keys().copied().collect::<Vec<_>>()),
+        ));
+    }
+    Ok(profiles)
+}
+
+fn configured_ownership_map(
+    config: &ServerConfig,
+) -> Result<std::collections::BTreeMap<usize, crate::backend::GpuMemoryOwnership>> {
+    let mut ownership = std::collections::BTreeMap::new();
+    for (ordinal, value) in config.gpu_memory_ownership.iter().copied() {
+        if ownership.insert(ordinal, value).is_some() {
+            return Err(ServerError::builder_validation(
+                "server_backend_admission_conflict",
+                "server config contains duplicate GPU memory ownership declarations",
+            )
+            .with_fact("device_ordinal", ordinal));
+        }
+    }
+    let selected = config.gpu_devices.iter().copied().collect::<std::collections::BTreeSet<_>>();
+    let declared = ownership.keys().copied().collect::<std::collections::BTreeSet<_>>();
+    if declared != selected {
+        return Err(ServerError::builder_conflict(
+            "server_backend_admission_conflict",
+            "gpu_memory_ownership",
+            format_usize_list(&config.gpu_devices),
+            format_usize_list(&ownership.keys().copied().collect::<Vec<_>>()),
+        ));
+    }
+    Ok(ownership)
+}
+
+fn expected_profile_bounds(
+    profile: &crate::backend::NexusGpuDeviceProfile,
+) -> Result<crate::backend::NexusGpuDeviceInstallationBounds> {
+    if let Some(bounds) = profile.installation_bounds() {
+        return Ok(bounds);
+    }
+    let auxiliary = profile.max_active_attempts().checked_mul(profile.source_work_per_attempt()).ok_or_else(|| {
+        ServerError::builder_validation(
+            "server_backend_admission_conflict",
+            "configured source-work capacity overflowed while validating an injected backend",
+        )
+        .with_fact("device_ordinal", profile.device_ordinal())
+    })?;
+    let stream_pool_size = profile.max_active_attempts().checked_add(auxiliary).ok_or_else(|| {
+        ServerError::builder_validation(
+            "server_backend_admission_conflict",
+            "configured stream capacity overflowed while validating an injected backend",
+        )
+        .with_fact("device_ordinal", profile.device_ordinal())
+    })?;
+    Ok(crate::backend::NexusGpuDeviceInstallationBounds {
+        stream_pool_size,
+        worker_count: profile.max_active_attempts(),
+        lane_count: profile.max_active_attempts(),
+    })
+}
+
+fn compare_profile_field(
+    device_ordinal: usize,
+    field: &'static str,
+    configured: impl ToString,
+    actual: impl ToString,
+) -> Result<()> {
+    let configured = configured.to_string();
+    let actual = actual.to_string();
+    if configured == actual {
+        return Ok(());
+    }
+    Err(ServerError::builder_conflict("server_backend_admission_conflict", field, configured, actual)
+        .with_fact("device_ordinal", device_ordinal))
 }
 
 fn validate_injected_session_matches_server_config(
@@ -779,26 +936,9 @@ fn validate_injected_session_matches_server_config(
             "injected session_context does not have the datafusion-nexus native optimizer installed",
         ));
     };
-    let source_matches = optimizer_config
-        .native_execution_config()
-        .query_admission_source_matches(backend.session_capability(), backend.tenant_id());
+    let source_matches =
+        optimizer_config.native_execution_config().query_admission_source_matches(backend.session_capability());
     validate_injected_session_backend_binding(source_matches)?;
-    let installed_host_execution_qos = crate::session::installed_host_execution_qos_config(&state);
-    let configured_host_execution_qos = config.host_execution_qos.as_ref();
-    let host_execution_qos_matches = match (installed_host_execution_qos.as_ref(), configured_host_execution_qos) {
-        (None, None) => true,
-        (Some(installed), Some(configured)) => {
-            installed.max_concurrent_statements() == configured.max_concurrent_statements()
-                && installed.wait_timeout() == configured.wait_timeout()
-        },
-        _ => false,
-    };
-    if !host_execution_qos_matches {
-        return Err(ServerError::builder_validation(
-            "server_session_host_execution_qos_mismatch",
-            "injected session_context host execution QoS does not match server configuration",
-        ));
-    }
     Ok(())
 }
 
@@ -816,56 +956,16 @@ fn format_usize_list(values: &[usize]) -> String {
     values.iter().map(usize::to_string).collect::<Vec<_>>().join(",")
 }
 
-fn slot_guarantee_value(slot_guarantee: nexus_query_engine::runtime::SlotGuarantee) -> &'static str {
-    match slot_guarantee {
-        nexus_query_engine::runtime::SlotGuarantee::GuaranteedMinimum => "guaranteed_minimum",
-        nexus_query_engine::runtime::SlotGuarantee::Optimistic => "optimistic",
-    }
-}
-
-fn format_optional_usize(value: Option<usize>) -> String {
-    value.map_or_else(|| "none".to_string(), |value| value.to_string())
-}
-
-fn placement_policy_value(policy: nexus_query_engine::runtime::QueryPlacementPolicy) -> String {
-    match policy {
-        nexus_query_engine::runtime::QueryPlacementPolicy::LeastLoaded => "least_loaded".to_string(),
-        nexus_query_engine::runtime::QueryPlacementPolicy::BestFit => "best_fit".to_string(),
-        nexus_query_engine::runtime::QueryPlacementPolicy::Pinned { device_ordinal } => {
-            format!("pinned:{device_ordinal}")
-        },
-        _ => "unknown".to_string(),
-    }
-}
-
-fn host_execution_qos_max_concurrent_statements(config: &ServerConfig) -> usize {
-    config.host_execution_qos.as_ref().map(|qos| qos.max_concurrent_statements().get()).unwrap_or(0)
-}
-
-fn host_execution_qos_wait_timeout_ms(config: &ServerConfig) -> u128 {
-    config
-        .host_execution_qos
-        .as_ref()
-        .and_then(|qos| qos.wait_timeout())
-        .map(|timeout| timeout.as_millis())
-        .unwrap_or(0)
-}
-
 #[cfg(feature = "iceberg")]
 fn log_server_config_snapshot(config: &ServerConfig) {
     let native_execution = config.native_optimizer_config.native_execution_config();
     let native_memory = NativeMemorySnapshot::from(native_execution.memory_control_policy());
     let source_scheduler = native_execution.source_scheduler_policy();
-    let host_execution_qos_max_concurrent_statements = host_execution_qos_max_concurrent_statements(config);
-    let host_execution_qos_wait_timeout_ms = host_execution_qos_wait_timeout_ms(config);
     match &config.iceberg {
         Some(iceberg) => {
             let snapshot = iceberg_backend_snapshot(&iceberg.backend, iceberg.source_access_policy());
             tracing::info!(
                 bind_addr = %config.bind_addr,
-                max_in_flight = config.max_in_flight,
-                host_execution_qos_max_concurrent_statements,
-                host_execution_qos_wait_timeout_ms,
                 statement_ticket_ttl_secs = config.statement_ticket_ttl.as_secs(),
                 observability_per_query_max_records = config.observability.per_query_max_records,
                 observability_per_query_max_bytes = config.observability.per_query_max_bytes,
@@ -875,7 +975,6 @@ fn log_server_config_snapshot(config: &ServerConfig) {
                 observability_sealed_ttl_secs = config.observability.sealed_ttl.as_secs(),
                 observability_shutdown_grace_secs = config.observability.shutdown_grace.as_secs(),
                 log_filter = %config.log_filter,
-                native_pipeline_execution_mode = %native_execution.native_pipeline_execution_mode(),
                 native_memory_control_policy = %native_execution.memory_control_policy(),
                 native_device_budget_bytes = %native_memory.device_budget_bytes,
                 native_max_source_chunk_bytes = %native_memory.max_source_chunk_bytes,
@@ -906,9 +1005,6 @@ fn log_server_config_snapshot(config: &ServerConfig) {
         },
         None => tracing::info!(
             bind_addr = %config.bind_addr,
-            max_in_flight = config.max_in_flight,
-            host_execution_qos_max_concurrent_statements,
-            host_execution_qos_wait_timeout_ms,
             statement_ticket_ttl_secs = config.statement_ticket_ttl.as_secs(),
             observability_per_query_max_records = config.observability.per_query_max_records,
             observability_per_query_max_bytes = config.observability.per_query_max_bytes,
@@ -918,7 +1014,6 @@ fn log_server_config_snapshot(config: &ServerConfig) {
             observability_sealed_ttl_secs = config.observability.sealed_ttl.as_secs(),
             observability_shutdown_grace_secs = config.observability.shutdown_grace.as_secs(),
             log_filter = %config.log_filter,
-            native_pipeline_execution_mode = %native_execution.native_pipeline_execution_mode(),
             native_memory_control_policy = %native_execution.memory_control_policy(),
             native_device_budget_bytes = %native_memory.device_budget_bytes,
             native_max_source_chunk_bytes = %native_memory.max_source_chunk_bytes,
@@ -942,13 +1037,8 @@ fn log_server_config_snapshot(config: &ServerConfig) {
     let native_execution = config.native_optimizer_config.native_execution_config();
     let native_memory = NativeMemorySnapshot::from(native_execution.memory_control_policy());
     let source_scheduler = native_execution.source_scheduler_policy();
-    let host_execution_qos_max_concurrent_statements = host_execution_qos_max_concurrent_statements(config);
-    let host_execution_qos_wait_timeout_ms = host_execution_qos_wait_timeout_ms(config);
     tracing::info!(
         bind_addr = %config.bind_addr,
-        max_in_flight = config.max_in_flight,
-        host_execution_qos_max_concurrent_statements,
-        host_execution_qos_wait_timeout_ms,
         statement_ticket_ttl_secs = config.statement_ticket_ttl.as_secs(),
         observability_per_query_max_records = config.observability.per_query_max_records,
         observability_per_query_max_bytes = config.observability.per_query_max_bytes,
@@ -958,7 +1048,6 @@ fn log_server_config_snapshot(config: &ServerConfig) {
         observability_sealed_ttl_secs = config.observability.sealed_ttl.as_secs(),
         observability_shutdown_grace_secs = config.observability.shutdown_grace.as_secs(),
         log_filter = %config.log_filter,
-        native_pipeline_execution_mode = %native_execution.native_pipeline_execution_mode(),
         native_memory_control_policy = %native_execution.memory_control_policy(),
         native_device_budget_bytes = %native_memory.device_budget_bytes,
         native_max_source_chunk_bytes = %native_memory.max_source_chunk_bytes,
@@ -1006,6 +1095,24 @@ fn warn_if_cugraph_built_but_disabled(_config: &ServerConfig) {}
 
 fn cugraph_registry_algorithm_count(config: &ServerConfig) -> usize {
     config.cugraph.as_ref().map_or(0, |_| crate::cugraph_sql::CUGRAPH_OPERATION_REGISTRY.len())
+}
+
+/// Emit a one-shot startup line summarizing the configured application-layer
+/// authentication mode. Authentication is intentionally owned by Flight RPCs,
+/// never by GPU admission or controller code.
+fn log_auth_mode_snapshot(mode: &auth::AuthMode) {
+    match mode {
+        auth::AuthMode::Disabled => tracing::warn!(
+            auth_mode = "disabled",
+            "datafusion-nexus Flight SQL server starting with auth DISABLED; every RPC will be accepted"
+        ),
+        auth::AuthMode::BasicBearer { users, token_ttl_secs } => tracing::info!(
+            auth_mode = "basic_bearer",
+            user_count = users.len(),
+            token_ttl_secs = *token_ttl_secs,
+            "datafusion-nexus Flight SQL server starting with Basic+Bearer auth"
+        ),
+    }
 }
 
 struct NativeMemorySnapshot {
@@ -1093,31 +1200,6 @@ fn iceberg_backend_snapshot<'a>(
                 .map(credential_free_endpoint_identity)
                 .map(Cow::Owned)
                 .unwrap_or(Cow::Borrowed("none")),
-        },
-    }
-}
-
-/// Emit a one-shot startup line summarizing the configured auth mode,
-/// and a WARN when [`AuthMode::Disabled`] is selected so operators
-/// see in the log that the server is wide open.
-fn log_auth_mode_snapshot(mode: &auth::AuthMode) {
-    match mode {
-        auth::AuthMode::Disabled => {
-            tracing::warn!(
-                auth_mode = "disabled",
-                "datafusion-nexus Flight SQL server starting with auth DISABLED. \
-                 Every RPC will be accepted. This is unsafe to expose outside \
-                 a trusted network. Configure [auth] in the server TOML config \
-                 to enable Basic+Bearer authentication."
-            );
-        },
-        auth::AuthMode::BasicBearer { users, token_ttl_secs } => {
-            tracing::info!(
-                auth_mode = "basic_bearer",
-                user_count = users.len(),
-                token_ttl_secs = *token_ttl_secs,
-                "datafusion-nexus Flight SQL server starting with Basic+Bearer auth"
-            );
         },
     }
 }

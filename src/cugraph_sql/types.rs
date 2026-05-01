@@ -104,7 +104,7 @@ impl Default for CugraphSqlConfig {
     fn default() -> Self {
         Self {
             default_graph_options: CugraphGraphOptions::default(),
-            native_execution_config: NexusNativeExecutionConfig::bounded_auto_sized(),
+            native_execution_config: NexusNativeExecutionConfig::bounded_default(),
             host_boundary_config: GpuIslandHostBoundaryConfig::default(),
         }
     }

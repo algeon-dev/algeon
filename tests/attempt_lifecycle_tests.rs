@@ -1,35 +1,80 @@
 //! GPU-lane integration contracts for the explicit attempt adapter.
 
-use std::sync::OnceLock;
+use std::{
+    ops::Deref,
+    sync::{Mutex, MutexGuard},
+};
 
-use datafusion::{physical_plan::RecordBatchStream, prelude::SessionContext};
+use datafusion::prelude::SessionContext;
 use datafusion_nexus::{
     attempt::{AttemptOptions, RuntimeObservationConfig},
-    backend::{GpuMemoryOwnership, NexusGpuBackend, NexusMemoryPolicy},
+    backend::{GpuDeviceMemoryLimit, GpuMemoryOwnership, NexusGpuBackend, NexusGpuDeviceProfile},
+    native_exec::NexusNativeExecutionConfig,
 };
 use futures::StreamExt;
 use nexus_query_engine::observability::{AttemptDisposition, RuntimeTerminalOutcome};
 
-fn backend() -> &'static NexusGpuBackend {
-    static BACKEND: OnceLock<NexusGpuBackend> = OnceLock::new();
-    BACKEND.get_or_init(|| {
-        NexusGpuBackend::builder()
-            .memory_policy(NexusMemoryPolicy::Bounded {
-                device_ordinals: vec![0],
-                device_budget_bytes: 256 * 1024 * 1024,
-                max_source_chunk_bytes: 64 * 1024 * 1024,
-                max_row_groups_per_chunk: 2,
-                max_retry_attempts: 3,
-                min_retry_chunk_row_groups: 1,
-            })
-            .device_memory_ownership([(0, GpuMemoryOwnership::WholeDeviceExclusive)])
-            .build()
-            .expect("attempt lifecycle tests require CUDA device 0")
-    })
+static BACKEND_SERIAL: Mutex<()> = Mutex::new(());
+
+/// Keeps process-wide backend ownership serialized until the backend has
+/// closed and released every resource that can retain its owner lease.
+struct BackendFixture {
+    backend: Option<NexusGpuBackend>,
+    _guard: MutexGuard<'static, ()>,
 }
 
-fn context() -> SessionContext {
-    let state = backend()
+impl BackendFixture {
+    fn new(queue_capacity: Option<usize>, resource_policy: datafusion_nexus::backend::NexusGpuQueuePolicy) -> Self {
+        let guard = BACKEND_SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut builder = NexusGpuBackend::builder()
+            .with_native_execution_config(NexusNativeExecutionConfig::bounded(
+                256 * 1024 * 1024,
+                64 * 1024 * 1024,
+                2,
+                3,
+                1,
+            ))
+            .device_profiles([NexusGpuDeviceProfile::new(0)
+                .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: 256 * 1024 * 1024 })])
+            .device_memory_ownership([(0, GpuMemoryOwnership::WholeDeviceExclusive)])
+            .queue_policy(resource_policy);
+        if let Some(capacity) = queue_capacity {
+            builder = builder.with_attempt_completion_queue_capacity(capacity);
+        }
+        let backend = builder.build().expect("attempt lifecycle tests require CUDA device 0");
+        Self { backend: Some(backend), _guard: guard }
+    }
+}
+
+impl Deref for BackendFixture {
+    type Target = NexusGpuBackend;
+
+    fn deref(&self) -> &Self::Target {
+        self.backend.as_ref().expect("backend fixture remains live")
+    }
+}
+
+impl Drop for BackendFixture {
+    fn drop(&mut self) {
+        let Some(backend) = self.backend.take() else {
+            return;
+        };
+        let close = backend.close_and_wait(std::time::Duration::from_secs(10));
+        drop(backend);
+        if let Err(error) = close {
+            if !std::thread::panicking() {
+                panic!("attempt lifecycle backend closes before releasing ownership: {error}");
+            }
+        }
+    }
+}
+
+fn backend() -> BackendFixture {
+    BackendFixture::new(None, datafusion_nexus::backend::NexusGpuQueuePolicy::default())
+}
+
+fn context(backend: &NexusGpuBackend) -> SessionContext {
+    let state = backend
         .install_on(datafusion::execution::SessionStateBuilder::new_with_default_features())
         .expect("install backend")
         .build();
@@ -38,11 +83,7 @@ fn context() -> SessionContext {
 
 /// A memory-source table never lowers to native execution, so a scan of it is
 /// a deterministic CPU-only (`cpu_fallback`) invocation.
-fn cpu_only_context() -> SessionContext {
-    cpu_only_context_for(backend())
-}
-
-fn cpu_only_context_for(backend: &NexusGpuBackend) -> SessionContext {
+fn cpu_only_context(backend: &NexusGpuBackend) -> SessionContext {
     use arrow::{
         array::Int64Array,
         datatypes::{DataType, Field, Schema},
@@ -67,14 +108,16 @@ fn cpu_only_context_for(backend: &NexusGpuBackend) -> SessionContext {
 
 #[tokio::test]
 async fn correlation_is_bounded_and_cpu_attempt_waits_for_eof() {
+    let backend = backend();
+    let cpu_ctx = cpu_only_context(&backend);
     let oversized_query = AttemptOptions { query_id: Some("q".repeat(257)), ..Default::default() };
-    assert!(backend().begin_attempt(oversized_query).is_err());
+    assert!(backend.begin_attempt(oversized_query).is_err());
     let oversized_trace = AttemptOptions { trace_context: Some("t".repeat(1025)), ..Default::default() };
-    assert!(backend().begin_attempt(oversized_trace).is_err());
+    assert!(backend.begin_attempt(oversized_trace).is_err());
 
-    let attempt = backend().begin_attempt(AttemptOptions::default()).unwrap();
+    let attempt = backend.begin_attempt(AttemptOptions::default()).unwrap();
     let first_id = attempt.attempt_id();
-    let mut stream = attempt.sql(&cpu_only_context(), "SELECT approx_distinct(v) FROM cpu_rows").await.unwrap();
+    let mut stream = attempt.sql(&cpu_ctx, "SELECT approx_distinct(v) FROM cpu_rows").await.unwrap();
     assert!(!attempt.completion().is_ready(), "success is terminal only at EOF");
     while let Some(batch) = stream.next().await {
         batch.unwrap();
@@ -86,62 +129,35 @@ async fn correlation_is_bounded_and_cpu_attempt_waits_for_eof() {
     assert!(report.timestamps.physical_execution_started_ns.is_some());
     assert!(report.admission.is_none());
 
-    let second = backend().begin_attempt(AttemptOptions::default()).unwrap();
+    let second = backend.begin_attempt(AttemptOptions::default()).unwrap();
     assert_ne!(first_id, second.attempt_id());
 }
 
 #[tokio::test]
 async fn planning_failure_cancellation_drop_and_disabled_observation_publish_reports() {
-    let planning = backend().begin_attempt(AttemptOptions::default()).unwrap();
-    assert!(planning.sql(&context(), "SELECT FROM").await.is_err());
+    let backend = backend();
+    let ctx = context(&backend);
+    let cpu_ctx = cpu_only_context(&backend);
+    let planning = backend.begin_attempt(AttemptOptions::default()).unwrap();
+    assert!(planning.sql(&ctx, "SELECT FROM").await.is_err());
     let planning_report = planning.completion().await;
     assert_eq!(planning_report.disposition, AttemptDisposition::Unplanned);
     assert!(matches!(planning_report.outcome, RuntimeTerminalOutcome::Failed { .. }));
     assert!(planning_report.timestamps.physical_execution_started_ns.is_none());
 
-    let cancelled = backend().begin_attempt(AttemptOptions::default()).unwrap();
+    let cancelled = backend.begin_attempt(AttemptOptions::default()).unwrap();
     cancelled.cancellation().cancel();
-    assert!(cancelled.sql(&context(), "SELECT 1").await.is_err());
+    assert!(cancelled.sql(&ctx, "SELECT 1").await.is_err());
     assert!(matches!(cancelled.completion().await.outcome, RuntimeTerminalOutcome::Cancelled));
 
-    let dropped = backend()
+    let dropped = backend
         .begin_attempt(AttemptOptions { observation: RuntimeObservationConfig::disabled(), ..Default::default() })
         .unwrap();
-    let stream = dropped.sql(&cpu_only_context(), "SELECT approx_distinct(v) FROM cpu_rows").await.unwrap();
+    let stream = dropped.sql(&cpu_ctx, "SELECT approx_distinct(v) FROM cpu_rows").await.unwrap();
     drop(stream);
     let report = dropped.completion().await;
     assert!(matches!(report.outcome, RuntimeTerminalOutcome::Dropped));
     assert_eq!(report.disposition, AttemptDisposition::CpuFallback);
-}
-
-/// Shared serialized construction for tests that need their own backend
-/// instance (close/queue-config cases must not share the static backend).
-fn own_backend(queue_capacity: Option<usize>) -> NexusGpuBackend {
-    own_backend_with_policy(queue_capacity, datafusion_nexus::backend::NexusAdmissionPolicy::default())
-}
-
-fn own_backend_with_policy(
-    queue_capacity: Option<usize>,
-    admission: datafusion_nexus::backend::NexusAdmissionPolicy,
-) -> NexusGpuBackend {
-    use std::sync::{Mutex, MutexGuard};
-    static SERIAL: Mutex<()> = Mutex::new(());
-    let _guard: MutexGuard<'_, ()> = SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    let mut builder = NexusGpuBackend::builder()
-        .memory_policy(NexusMemoryPolicy::Bounded {
-            device_ordinals: vec![0],
-            device_budget_bytes: 256 * 1024 * 1024,
-            max_source_chunk_bytes: 64 * 1024 * 1024,
-            max_row_groups_per_chunk: 2,
-            max_retry_attempts: 3,
-            min_retry_chunk_row_groups: 1,
-        })
-        .device_memory_ownership([(0, GpuMemoryOwnership::WholeDeviceExclusive)])
-        .admission(admission);
-    if let Some(capacity) = queue_capacity {
-        builder = builder.with_attempt_completion_queue_capacity(capacity);
-    }
-    builder.build().expect("own attempt backend")
 }
 
 async fn native_context(backend: &NexusGpuBackend) -> SessionContext {
@@ -192,8 +208,9 @@ async fn native_context(backend: &NexusGpuBackend) -> SessionContext {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn native_invocation_shares_one_admission_and_distinct_boundaries() {
-    let ctx = native_context(backend()).await;
-    let attempt = backend().begin_attempt(AttemptOptions::default()).unwrap();
+    let backend = backend();
+    let ctx = native_context(&backend).await;
+    let attempt = backend.begin_attempt(AttemptOptions::default()).unwrap();
     let mut stream = attempt.sql(&ctx, "SELECT k, SUM(v) FROM native_rows GROUP BY k ORDER BY k").await.unwrap();
     while let Some(batch) = stream.next().await {
         batch.unwrap();
@@ -218,12 +235,22 @@ async fn native_invocation_shares_one_admission_and_distinct_boundaries() {
     assert!(timestamps.report_ready_ns.is_some());
     assert!(report.cleanup_ns().is_some());
     assert_eq!(report.cleanup_disposition, nexus_query_engine::observability::AttemptCleanupDisposition::Completed);
+    assert_eq!(
+        report.capacity_disposition,
+        nexus_query_engine::observability::AttemptCapacityDisposition::Released,
+        "outer EOF terminalization precedes the native round cleanup commit"
+    );
+    assert_eq!(
+        report.health_transition,
+        Some(nexus_query_engine::observability::AttemptHealthTransition::HealthyReuse)
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn reused_plans_mint_fresh_attempts_and_never_observe_plan_lifetime_attempts() {
-    let ctx = native_context(backend()).await;
-    let planner = backend().begin_attempt(AttemptOptions::default()).unwrap();
+    let backend = backend();
+    let ctx = native_context(&backend).await;
+    let planner = backend.begin_attempt(AttemptOptions::default()).unwrap();
     let plan = planner.plan_sql(&ctx, "SELECT k, SUM(v) FROM native_rows GROUP BY k ORDER BY k").await.unwrap();
     let planner_id = planner.attempt_id();
 
@@ -237,7 +264,7 @@ async fn reused_plans_mint_fresh_attempts_and_never_observe_plan_lifetime_attemp
 
     // A second attempt reuses the same plan and receives a fresh identity and
     // its own admission facts; nothing records into the first attempt.
-    let second = backend().begin_attempt(AttemptOptions::default()).unwrap();
+    let second = backend.begin_attempt(AttemptOptions::default()).unwrap();
     let second_id = second.attempt_id();
     assert_ne!(planner_id, second_id);
     let mut stream = second.execute_physical_plan(std::sync::Arc::clone(&plan), &ctx).unwrap();
@@ -254,14 +281,14 @@ async fn reused_plans_mint_fresh_attempts_and_never_observe_plan_lifetime_attemp
     );
 
     // A third invocation reuses the SQL text and still mints a fresh id.
-    let third = backend().begin_attempt(AttemptOptions::default()).unwrap();
+    let third = backend.begin_attempt(AttemptOptions::default()).unwrap();
     assert_ne!(third.attempt_id(), planner_id);
     assert_ne!(third.attempt_id(), second_id);
 
     // The same attempt-bound plan executed through a raw session without the
     // invocation extension is rejected: fragments cannot observe a
     // plan-lifetime attempt.
-    let raw_state = backend()
+    let raw_state = backend
         .install_on(datafusion::execution::SessionStateBuilder::new_with_default_features())
         .expect("install backend")
         .build();
@@ -328,6 +355,7 @@ async fn panic_in_result_stream_is_terminal_exactly_once_and_unwinds() {
         }
     }
 
+    let backend = backend();
     let schema = std::sync::Arc::new(Schema::new(vec![Field::new("v", DataType::Int64, false)]));
     let plan: std::sync::Arc<dyn ExecutionPlan> = std::sync::Arc::new(PanicExec {
         properties: std::sync::Arc::new(PlanProperties::new(
@@ -339,9 +367,9 @@ async fn panic_in_result_stream_is_terminal_exactly_once_and_unwinds() {
         schema,
     });
 
-    let attempt = backend().begin_attempt(AttemptOptions::default()).unwrap();
+    let attempt = backend.begin_attempt(AttemptOptions::default()).unwrap();
     let completion = attempt.completion();
-    let mut stream = attempt.execute_physical_plan(plan, &context()).unwrap();
+    let mut stream = attempt.execute_physical_plan(plan, &context(&backend)).unwrap();
     let caught = futures::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(stream.next())).await;
     assert!(caught.is_err(), "the panic unwinds through the nexus boundary");
     drop(stream);
@@ -352,10 +380,10 @@ async fn panic_in_result_stream_is_terminal_exactly_once_and_unwinds() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn abandoned_reports_are_best_effort_delivery_loss_only() {
-    let own = own_backend(Some(1));
+    let backend = BackendFixture::new(Some(1), datafusion_nexus::backend::NexusGpuQueuePolicy::default());
 
-    let cpu_ctx = cpu_only_context_for(&own);
-    let first = own.begin_attempt(AttemptOptions::default()).unwrap();
+    let cpu_ctx = cpu_only_context(&backend);
+    let first = backend.begin_attempt(AttemptOptions::default()).unwrap();
     let first_id = first.attempt_id();
     drop(first.completion());
     let mut stream = first.sql(&cpu_ctx, "SELECT approx_distinct(v) FROM cpu_rows").await.unwrap();
@@ -365,16 +393,16 @@ async fn abandoned_reports_are_best_effort_delivery_loss_only() {
     let report = first.completion().await;
     assert!(matches!(report.outcome, RuntimeTerminalOutcome::Succeeded));
 
-    let drained = own.take_abandoned_attempt_reports(8);
+    let drained = backend.take_abandoned_attempt_reports(8);
     assert_eq!(drained.len(), 1);
     assert_eq!(drained[0].attempt_id, first_id);
-    let counters = own.attempt_counters_snapshot();
+    let counters = backend.attempt_counters_snapshot();
     assert_eq!(counters.completion_queue_pushed, 1);
     assert_eq!(counters.completion_queue_overflowed, 0);
 
     // Two further abandoned reports overflow the capacity-one queue.
     for _ in 0..2 {
-        let attempt = own.begin_attempt(AttemptOptions::default()).unwrap();
+        let attempt = backend.begin_attempt(AttemptOptions::default()).unwrap();
         drop(attempt.completion());
         let mut stream = attempt.sql(&cpu_ctx, "SELECT approx_distinct(v) FROM cpu_rows").await.unwrap();
         while let Some(batch) = stream.next().await {
@@ -382,19 +410,18 @@ async fn abandoned_reports_are_best_effort_delivery_loss_only() {
         }
         let _ = attempt.completion().await;
     }
-    let counters = own.attempt_counters_snapshot();
+    let counters = backend.attempt_counters_snapshot();
     assert_eq!(counters.completion_queue_pushed, 2);
     assert_eq!(counters.completion_queue_overflowed, 1);
-    assert_eq!(own.take_abandoned_attempt_reports(8).len(), 1);
-    own.close_and_wait(std::time::Duration::from_secs(10)).expect("own backend closes");
+    assert_eq!(backend.take_abandoned_attempt_reports(8).len(), 1);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn begin_after_close_is_backend_closing_and_reports_outlive_quiescence() {
-    let own = own_backend(None);
-    let ctx = native_context(&own).await;
+    let backend = backend();
+    let ctx = native_context(&backend).await;
 
-    let attempt = own.begin_attempt(AttemptOptions::default()).unwrap();
+    let attempt = backend.begin_attempt(AttemptOptions::default()).unwrap();
     let completion = attempt.completion();
     let mut stream = attempt.sql(&ctx, "SELECT k, SUM(v) FROM native_rows GROUP BY k ORDER BY k").await.unwrap();
     while let Some(batch) = stream.next().await {
@@ -403,26 +430,28 @@ async fn begin_after_close_is_backend_closing_and_reports_outlive_quiescence() {
     let report = completion.await;
     assert!(matches!(report.outcome, RuntimeTerminalOutcome::Succeeded));
 
-    let close = own.close_and_wait(std::time::Duration::from_secs(10)).expect("close completes");
+    let close = backend.close_and_wait(std::time::Duration::from_secs(10)).expect("close completes");
     assert!(close.gpu_resource_quiescent);
     // The published report remains readable after GPU-resource quiescence:
     // observation state never retains the device lease.
     assert!(matches!(report.outcome, RuntimeTerminalOutcome::Succeeded));
     assert!(report.timestamps.cleanup_complete_ns.is_some());
 
-    let error = own.begin_attempt(AttemptOptions::default()).unwrap_err();
+    let error = backend.begin_attempt(AttemptOptions::default()).unwrap_err();
     assert_eq!(error.fact_value("reason"), Some("backend_closing"), "begin after close is backend_closing: {error:?}");
-    let counters = own.attempt_counters_snapshot();
+    let counters = backend.attempt_counters_snapshot();
     assert_eq!(counters.attempts_begun, 1, "a losing begin creates no counted attempt");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cancellation_before_execute_and_mid_drain_are_cooperative() {
+    let backend = backend();
+    let cpu_ctx = cpu_only_context(&backend);
     // Cancellation before execution starts: no physical start boundary.
-    let planned = backend().begin_attempt(AttemptOptions::default()).unwrap();
-    let plan = planned.plan_sql(&cpu_only_context(), "SELECT approx_distinct(v) FROM cpu_rows").await.unwrap();
+    let planned = backend.begin_attempt(AttemptOptions::default()).unwrap();
+    let plan = planned.plan_sql(&cpu_ctx, "SELECT approx_distinct(v) FROM cpu_rows").await.unwrap();
     planned.cancellation().cancel();
-    let _error = match planned.execute_physical_plan(plan, &cpu_only_context()) {
+    let _error = match planned.execute_physical_plan(plan, &cpu_ctx) {
         Ok(_) => panic!("a cancelled attempt must not execute"),
         Err(error) => error,
     };
@@ -432,23 +461,34 @@ async fn cancellation_before_execute_and_mid_drain_are_cooperative() {
     assert!(report.timestamps.physical_execution_started_ns.is_none());
 
     // Cancellation during CPU result drain terminalizes the attempt.
-    let draining = backend().begin_attempt(AttemptOptions::default()).unwrap();
-    let mut stream = draining.sql(&cpu_only_context(), "SELECT approx_distinct(v) FROM cpu_rows").await.unwrap();
+    let draining = backend.begin_attempt(AttemptOptions::default()).unwrap();
+    let mut stream = draining.sql(&cpu_ctx, "SELECT approx_distinct(v) FROM cpu_rows").await.unwrap();
     draining.cancellation().cancel();
-    let mut saw_error = false;
-    while let Some(batch) = stream.next().await {
-        saw_error = saw_error || batch.is_err();
-    }
+    let cancellation = stream.next().await.expect("cancellation produces one terminal stream item");
+    assert!(cancellation.is_err(), "the drain surfaces the cancellation");
+    assert!(stream.next().await.is_none(), "the cancellation error exhausts the wrapper stream");
+    assert!(stream.next().await.is_none(), "later polls must not re-enter the inner stream");
     let report = draining.completion().await;
-    assert!(saw_error, "the drain surfaces the cancellation");
+    assert!(matches!(report.outcome, RuntimeTerminalOutcome::Cancelled));
+
+    // Flight cancellation may discard the response stream before its next
+    // poll. Once cancellation has propagated, `AttemptStream::drop` must
+    // retain the cancelled terminal outcome instead of rewriting it as a
+    // client-drop outcome.
+    let cancelled_then_dropped = backend.begin_attempt(AttemptOptions::default()).unwrap();
+    let stream = cancelled_then_dropped.sql(&cpu_ctx, "SELECT approx_distinct(v) FROM cpu_rows").await.unwrap();
+    cancelled_then_dropped.cancellation().cancel();
+    drop(stream);
+    let report = cancelled_then_dropped.completion().await;
     assert!(matches!(report.outcome, RuntimeTerminalOutcome::Cancelled));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn dataframe_invocation_and_partial_drain_drop_terminalize() {
+    let backend = backend();
     // DataFrame path: same lifecycle coverage through the explicit adapter.
-    let ctx = cpu_only_context();
-    let attempt = backend().begin_attempt(AttemptOptions::default()).unwrap();
+    let ctx = cpu_only_context(&backend);
+    let attempt = backend.begin_attempt(AttemptOptions::default()).unwrap();
     let df = ctx.sql("SELECT approx_distinct(v) FROM cpu_rows").await.expect("aggregate dataframe");
     let mut stream = attempt.execute_dataframe(df).await.unwrap();
     while let Some(batch) = stream.next().await {
@@ -460,8 +500,8 @@ async fn dataframe_invocation_and_partial_drain_drop_terminalize() {
     assert!(report.admission.is_none());
 
     // Dropping after a partial drain terminalizes as dropped exactly once.
-    let partial = backend().begin_attempt(AttemptOptions::default()).unwrap();
-    let mut stream = partial.sql(&cpu_only_context(), "SELECT approx_distinct(v) FROM cpu_rows").await.unwrap();
+    let partial = backend.begin_attempt(AttemptOptions::default()).unwrap();
+    let mut stream = partial.sql(&ctx, "SELECT approx_distinct(v) FROM cpu_rows").await.unwrap();
     let first = stream.next().await;
     assert!(matches!(first, Some(Ok(_)) | None));
     drop(stream);
@@ -471,14 +511,16 @@ async fn dataframe_invocation_and_partial_drain_drop_terminalize() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn deadline_expiry_cancels_planning_and_drain_with_typed_reason() {
+    let backend = backend();
+    let cpu_ctx = cpu_only_context(&backend);
     // Expired before planning: the attempt terminalizes cancelled, unplanned.
-    let expired = backend()
+    let expired = backend
         .begin_attempt(AttemptOptions {
             deadline: Some(std::time::Instant::now() - std::time::Duration::from_millis(1)),
             ..Default::default()
         })
         .unwrap();
-    let error = expired.sql(&cpu_only_context(), "SELECT approx_distinct(v) FROM cpu_rows").await.unwrap_err();
+    let error = expired.sql(&cpu_ctx, "SELECT approx_distinct(v) FROM cpu_rows").await.unwrap_err();
     let nexus_error = datafusion_nexus::error::DataFusionErrorExt::find_nexus_error(&error).expect("typed error");
     assert_eq!(nexus_error.fact_value("reason"), Some("deadline_expired"));
     let report = expired.completion().await;
@@ -487,13 +529,13 @@ async fn deadline_expiry_cancels_planning_and_drain_with_typed_reason() {
     assert!(report.timestamps.physical_execution_started_ns.is_none());
 
     // Expiring during result drain terminalizes the attempt as cancelled.
-    let draining = backend()
+    let draining = backend
         .begin_attempt(AttemptOptions {
             deadline: Some(std::time::Instant::now() + std::time::Duration::from_millis(500)),
             ..Default::default()
         })
         .unwrap();
-    let mut stream = draining.sql(&cpu_only_context(), "SELECT approx_distinct(v) FROM cpu_rows").await.unwrap();
+    let mut stream = draining.sql(&cpu_ctx, "SELECT approx_distinct(v) FROM cpu_rows").await.unwrap();
     tokio::time::sleep(std::time::Duration::from_millis(700)).await;
     let mut saw_error = false;
     while let Some(batch) = stream.next().await {
@@ -506,19 +548,17 @@ async fn deadline_expiry_cancels_planning_and_drain_with_typed_reason() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn admission_rejection_reports_the_typed_rejection_not_a_synthetic_drop() {
-    use datafusion_nexus::backend::NexusAdmissionPolicy;
-    let own = own_backend_with_policy(
+    use datafusion_nexus::backend::NexusGpuQueuePolicy;
+    let backend = BackendFixture::new(
         None,
-        NexusAdmissionPolicy::default()
-            .with_max_concurrent_queries(1)
-            .with_wait_timeout(std::time::Duration::from_millis(50)),
+        NexusGpuQueuePolicy::default().with_max_queue_wait(std::time::Duration::from_millis(50)),
     );
-    let ctx = native_context(&own).await;
+    let ctx = native_context(&backend).await;
 
     // Hold the single admission slot so the attempt's admission must queue
     // and time out instead of being placed.
-    let held = own.admit_query().expect("slot holder admits");
-    let attempt = own.begin_attempt(AttemptOptions::default()).unwrap();
+    let held = backend.admit_query().expect("slot holder admits");
+    let attempt = backend.begin_attempt(AttemptOptions::default()).unwrap();
     let completion = attempt.completion();
     let mut stream = attempt.sql(&ctx, "SELECT k, SUM(v) FROM native_rows GROUP BY k ORDER BY k").await.unwrap();
     let mut saw_error = false;
@@ -544,5 +584,4 @@ async fn admission_rejection_reports_the_typed_rejection_not_a_synthetic_drop() 
     assert!(report.timestamps.physical_execution_started_ns.is_none());
     assert!(report.timestamps.cleanup_complete_ns.is_none());
     drop(held);
-    own.close_and_wait(std::time::Duration::from_secs(10)).expect("own backend closes");
 }

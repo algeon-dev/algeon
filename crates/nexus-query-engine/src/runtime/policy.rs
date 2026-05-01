@@ -198,8 +198,6 @@ impl std::fmt::Display for MemoryControlPolicy {
 pub enum ReservationKind {
     /// Device memory needed while reading a source chunk.
     SourceRead,
-    /// Durable GPU source-cache bytes retained across source reads or queries.
-    SourceCacheRetained,
     /// Temporary memory for a chunk-local operator.
     ChunkOperator,
     /// Resident output frame produced by an operator.
@@ -238,7 +236,6 @@ impl ReservationKind {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::SourceRead => "source_read",
-            Self::SourceCacheRetained => "source_cache_retained",
             Self::ChunkOperator => "chunk_operator",
             Self::OperatorOutput => "operator_output",
             Self::BuildSide => "build_side",

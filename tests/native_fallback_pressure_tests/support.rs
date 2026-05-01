@@ -51,8 +51,7 @@ pub(super) fn accepted_native_diagnostics() -> NativePlanningDiagnostics {
         report,
         native_optimizer: Default::default(),
         source_diagnostics: Vec::new(),
-        strict_bounded_contract: Default::default(),
-        adaptive_pipeline: Default::default(),
+        capability_contract: Default::default(),
     }
 }
 
@@ -69,18 +68,17 @@ pub(super) fn accepted_bounded_join_native_diagnostics() -> NativePlanningDiagno
         report,
         native_optimizer: Default::default(),
         source_diagnostics: Vec::new(),
-        strict_bounded_contract: accepted_strict_bounded_contract_diagnostics(),
-        adaptive_pipeline: Default::default(),
+        capability_contract: accepted_capability_contract_diagnostics(),
     }
 }
 
-pub(super) fn accepted_strict_bounded_contract_diagnostics() -> NativeStrictBoundedContractDiagnostics {
+pub(super) fn accepted_capability_contract_diagnostics() -> NativeCapabilityContractDiagnostics {
     let candidate =
         GpuCandidate::new("SortExec(fetch)(AggregateExec(HashJoinExec(LocalParquetScan,LocalParquetScan)))", 1);
     let rows = vec![
         strict_bounded_gate_row(
-            StrictBoundedContractGateId::Compiled(ReservationGateId::new(0)),
-            StrictBoundedContractOwner::Compiled(ReservationGateOwner::Edge(
+            CapabilityContractGateId::Compiled(ReservationGateId::new(0)),
+            CapabilityContractOwner::Compiled(ReservationGateOwner::Edge(
                 nexus_query_engine::pipeline::PipelineEdgeId::new(0),
             )),
             ReservationRequirementScope::Edge,
@@ -91,8 +89,8 @@ pub(super) fn accepted_strict_bounded_contract_diagnostics() -> NativeStrictBoun
             None,
         ),
         strict_bounded_gate_row(
-            StrictBoundedContractGateId::Compiled(ReservationGateId::new(1)),
-            StrictBoundedContractOwner::Compiled(ReservationGateOwner::SinkBoundary),
+            CapabilityContractGateId::Compiled(ReservationGateId::new(1)),
+            CapabilityContractOwner::Compiled(ReservationGateOwner::SinkBoundary),
             ReservationRequirementScope::Edge,
             ReservationKind::Materialization,
             "host_arrow_materialization",
@@ -101,12 +99,11 @@ pub(super) fn accepted_strict_bounded_contract_diagnostics() -> NativeStrictBoun
             None,
         ),
     ];
-    NativeStrictBoundedContractDiagnostics {
-        accepted_candidates: vec![NativeStrictBoundedAcceptedCandidateDiagnostics {
+    NativeCapabilityContractDiagnostics {
+        accepted_candidates: vec![NativeCapabilityAcceptedCandidateDiagnostics {
             candidate,
-            report: StrictBoundedContractReport::from_gate_rows(StrictBoundedExecutionMode::StrictBounded, rows)
-                .unwrap(),
-            compiled_graph: NativeStrictBoundedCompiledGraphDiagnostics {
+            report: CapabilityContractReport::from_gate_rows(CapabilityEnvelopeStatus::Admitted, rows).unwrap(),
+            compiled_graph: NativeCapabilityCompiledGraphDiagnostics {
                 task_count: 2,
                 edge_count: 1,
                 barrier_count: 0,
@@ -123,17 +120,17 @@ pub(super) fn accepted_strict_bounded_contract_diagnostics() -> NativeStrictBoun
 }
 
 fn strict_bounded_gate_row(
-    gate_id: StrictBoundedContractGateId,
-    owner: StrictBoundedContractOwner,
+    gate_id: CapabilityContractGateId,
+    owner: CapabilityContractOwner,
     contract_scope: ReservationRequirementScope,
     reservation_kind: ReservationKind,
     memory_boundary: &'static str,
     required_contract: &'static str,
     contract_quality: ContractQuality,
     unresolved_preflight_gap: Option<&'static str>,
-) -> StrictBoundedContractGateRow {
-    StrictBoundedContractGateRow {
-        execution_mode: StrictBoundedExecutionMode::StrictBounded,
+) -> CapabilityContractGateRow {
+    CapabilityContractGateRow {
+        execution_mode: CapabilityEnvelopeStatus::Admitted,
         contract_scope,
         gate_id,
         owner,
@@ -183,11 +180,6 @@ pub(super) fn native_execution_metrics_set() -> datafusion::physical_plan::metri
         ("source_read_prefetches_completed", 2),
         ("source_read_prefetches_skipped", 1),
         ("source_read_prefetches_abandoned", 1),
-        ("source_cache_hits", 4),
-        ("source_cache_misses", 5),
-        ("source_cache_inserts", 3),
-        ("source_cache_insert_skipped", 2),
-        ("source_cache_retained_bytes", 65536),
         ("row_groups_planned", 8),
         ("row_groups_committed", 4),
         ("partial_aggregate_count", 5),
@@ -200,12 +192,6 @@ pub(super) fn native_execution_metrics_set() -> datafusion::physical_plan::metri
         ("retry_count", 3),
         ("retry_resource_exhausted_count", 1),
         ("retry_reservation_failure_count", 2),
-        ("adaptive_retry_count", 10),
-        ("adaptive_spill_count", 11),
-        ("adaptive_downgrade_count", 12),
-        ("adaptive_memory_history_lookup_count", 13),
-        ("adaptive_memory_history_hit_count", 8),
-        ("adaptive_memory_history_miss_count", 5),
         ("dynamic_filter_produced_count", 1),
         ("dynamic_filter_skipped_count", 1),
         ("dynamic_filter_applied_count", 1),
@@ -225,9 +211,6 @@ pub(super) fn native_execution_metrics_set() -> datafusion::physical_plan::metri
         ("one_shot_join_count", 7),
         ("hash_join_cache_hits", 2),
         ("hash_join_cache_misses", 1),
-        ("hash_join_durable_cache_hits", 3),
-        ("hash_join_durable_cache_misses", 4),
-        ("hash_join_durable_cache_inserts", 5),
         ("hash_join_hash_table_bytes", 16384),
         ("filtered_join_hash_table_bytes", 8192),
         ("filtered_join_probe_state_bytes", 1024),
@@ -525,36 +508,6 @@ pub(super) async fn sql_plan(path: &std::path::Path, config: SessionConfig, sql:
 pub(super) async fn parquet_scan(path: &std::path::Path) -> Arc<dyn ExecutionPlan> {
     let ctx = SessionContext::new_with_config(direct_friendly_sql_session_config());
     let df = ctx.read_parquet(path.to_str().unwrap(), ParquetReadOptions::default()).await.unwrap();
-    df.create_physical_plan().await.unwrap()
-}
-
-pub(super) async fn join_aggregate_sort_limit_sql_plan(
-    left: &std::path::Path,
-    right: &std::path::Path,
-) -> Arc<dyn ExecutionPlan> {
-    let ctx = SessionContext::new_with_config(
-        SessionConfig::new()
-            .with_repartition_file_scans(false)
-            .with_repartition_joins(false)
-            .with_repartition_sorts(false)
-            .with_target_partitions(1),
-    );
-    ctx.register_parquet("left_input", left.to_str().unwrap(), ParquetReadOptions::default()).await.unwrap();
-    ctx.register_parquet("right_input", right.to_str().unwrap(), ParquetReadOptions::default()).await.unwrap();
-    let df = ctx
-        .sql(
-            "
-SELECT l.key, SUM(l.m00 + r.m01) AS sum_x00
-FROM left_input l
-JOIN right_input r ON l.key = r.key
-WHERE l.payload >= 10 AND r.payload >= 10
-GROUP BY l.key
-ORDER BY sum_x00 DESC, l.key ASC
-LIMIT 2
-",
-        )
-        .await
-        .unwrap();
     df.create_physical_plan().await.unwrap()
 }
 

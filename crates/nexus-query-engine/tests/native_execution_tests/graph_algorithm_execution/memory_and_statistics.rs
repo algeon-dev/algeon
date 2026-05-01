@@ -47,7 +47,7 @@ fn bounded_bfs_counts_gpu_tables_without_graph_memory_reservation() {
         .find(|event| event.operation == "datafusion_nexus_cugraph_bfs")
         .expect("bounded BFS should record a graph reservation observation");
     assert_eq!(graph_budget.boundary, "graph_memory");
-    assert_eq!(graph_budget.enforcement, "reservation_arena_member");
+    assert_eq!(graph_budget.enforcement, "query_domain_member");
     assert_eq!(graph_budget.status, "reservation_enforced");
     assert_eq!(
         graph_budget.budget_bytes,
@@ -161,7 +161,7 @@ fn bounded_bfs_counts_side_input_tables_without_graph_memory_reservation() {
         .find(|event| event.operation == "datafusion_nexus_cugraph_bfs")
         .expect("bounded BFS with side inputs should record a graph reservation observation");
     assert_eq!(graph_budget.boundary, "graph_memory");
-    assert_eq!(graph_budget.enforcement, "reservation_arena_member");
+    assert_eq!(graph_budget.enforcement, "query_domain_member");
     assert_eq!(graph_budget.status, "reservation_enforced");
     assert_eq!(result.metrics().graph_algorithm_runtime_rows.len(), 1);
     assert!(result.metrics().graph_algorithm_runtime_rows[0].graph_peak_bytes.is_some());
@@ -287,7 +287,7 @@ fn bounded_betweenness_success_keeps_graph_memory_reservation() {
         .find(|event| event.operation == "datafusion_nexus_cugraph_betweenness_centrality")
         .expect("bounded betweenness should enforce a graph memory budget");
     assert_eq!(graph_budget.boundary, "graph_memory");
-    assert_eq!(graph_budget.enforcement, "reservation_arena_member");
+    assert_eq!(graph_budget.enforcement, "query_domain_member");
     assert_eq!(graph_budget.status, "reservation_enforced");
     assert_eq!(graph_budget.budget_bytes, graph_reserve.requested_bytes);
     assert!(result.metrics().reservation_events.iter().any(|event| {
@@ -418,7 +418,7 @@ fn bounded_sparse_pagerank_uses_runtime_vertex_estimate_to_admit_graph_memory() 
     assert!(result.metrics().budgeted_execution_events.iter().any(|event| {
         event.operation == "nexus_query_engine.graph_algorithm.graph_memory_vertex_estimate"
             && event.boundary == GRAPH_VERTEX_ESTIMATE_BOUNDARY
-            && event.enforcement == "reservation_arena_member"
+            && event.enforcement == "query_domain_member"
             && event.status == "reservation_enforced"
             && event.unresolved_contract.as_deref() == Some("graph_vertex_estimate_probe")
     }));

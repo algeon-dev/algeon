@@ -1246,14 +1246,14 @@ mod tests {
             "nexus_query_engine.query_service.admit",
             "native query service queue is full",
         )
-        .with_fact("tenant_id", "default");
+        .with_fact("reason", "queue_full");
 
         let error = ServerError::session("query service admission failed", native);
 
         assert_eq!(error.code(), ErrorCode::ServiceOverloaded);
         assert_eq!(error.fact_value("native_code"), Some("service_overloaded"));
         assert_eq!(error.fact_value("native_operation"), Some("nexus_query_engine.query_service.admit"));
-        assert_eq!(error.fact_value("tenant_id"), Some("default"));
+        assert_eq!(error.fact_value("reason"), Some("queue_full"));
 
         let status = adapter_error_to_status(error.as_adapter_error());
         assert_eq!(status.code(), Code::ResourceExhausted);

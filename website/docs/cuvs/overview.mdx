@@ -47,9 +47,9 @@ column and request schemas are in the
 ## Execution availability
 
 `gpu_validate_call` validates schemas and options; it is not a GPU-memory
-preflight. All current `cuvs_*` calls require explicitly unbounded native
-execution. A bounded server rejects them before relation children run with the
-structured `unsupported_operator` error; there is no CPU fallback.
+preflight. Until cuVS provides a bounded peak-memory preflight, the server
+rejects `cuvs_*` calls before relation children run with structured
+`unsupported_operator`; there is no CPU fallback or unadmitted GPU mode.
 
 cuVS SQL also has no persistent cross-statement cache for brute-force indexes,
 KMeans models, PCA transforms, or result relations. Each call creates the
@@ -63,7 +63,7 @@ server requirements.
 
 ## Next steps
 
-- **[Integrate cuVS](../integration/overview.mdx)** — configure an embedded
-  session or Flight SQL server for the required unbounded execution mode.
-- **[Configure the server](../integration/configuration.mdx)** — review memory
-  policy and cache admission settings.
+- **[Integrate cuVS](../integration/overview.mdx)** — use the bounded server
+  contract and inspect availability through the GPU function catalog.
+- **[Configure the server](../integration/configuration.mdx)** — review
+  per-device capacity and cache admission settings.

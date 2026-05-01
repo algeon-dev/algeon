@@ -18,8 +18,8 @@ surface that matches the service boundary you own:
 All three surfaces execute supported relational plans on cuDF. The `cugraph`
 and `cuvs` features add SQL-visible `cugraph_*` and `cuvs_*` table functions;
 the `iceberg` feature adds Iceberg/Glue/REST/S3 source integration. cuVS has
-no lower-level bounded peak-memory preflight yet, so its execution requires an
-explicitly unbounded native session or server.
+no lower-level bounded peak-memory preflight yet, so its execution currently
+fails closed with structured `unsupported_operator`.
 
 ## Common flow
 

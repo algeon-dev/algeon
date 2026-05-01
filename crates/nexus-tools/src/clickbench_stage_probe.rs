@@ -8,7 +8,7 @@
 
 use std::{
     collections::BTreeSet,
-    env, fs,
+    fs,
     io::{self, Write},
     path::{Path, PathBuf},
     sync::{
@@ -33,14 +33,14 @@ use nexus_bench::report_workload::clickbench::{
 };
 use nexus_query_engine::{
     exec::{execute_query_plan_with_runtime_observation, output::QueryOutput},
-    mode::NativePipelineExecutionMode,
     observability::{
         RuntimeObservationConfig, RuntimeObservationPayload, RuntimeObservationSession, RuntimeOperatorStageState,
         RuntimeQueryId, write_runtime_observation_jsonl,
     },
     plan::QueryPlan,
     runtime::{
-        ExecutionCancellation, GpuBackendMemoryShare, GpuDeviceMemoryLimit, QueryHandle, QueryServiceConfig, TenantId,
+        ExecutionCancellation, GpuBackendDeviceConfig, GpuDeviceMemoryLimit, GpuMemoryOwnership, QueryExecutionConfig,
+        QueryHandle,
     },
 };
 use nexus_workloads::clickbench::{
@@ -65,7 +65,6 @@ struct ProbeConfig {
     artifact_dir: PathBuf,
     deadline: Duration,
     snapshot_interval: Duration,
-    native_pipeline_execution_mode: NativePipelineExecutionMode,
     mode: ProbeMode,
 }
 
@@ -110,7 +109,7 @@ pub async fn run(args: Vec<String>) -> ToolResult<()> {
     let config = parse_args(args)?;
     fs::create_dir_all(&config.artifact_dir)?;
     let profile = clickbench_native_profile_settings_from_env();
-    let backend = build_probe_backend(&profile, &config)?;
+    let backend = build_probe_backend(&profile)?;
     let (root, _metadata) = prepare_clickbench_report_dataset()?.ok_or_else(|| {
         ClickbenchWorkloadError::InvalidDataset(
             "no ClickBench fixture found; set NEXUS_PARQUET_DIR or stage fixture/clickbench/data".to_string(),
@@ -119,7 +118,7 @@ pub async fn run(args: Vec<String>) -> ToolResult<()> {
 
     let mut verdicts = Vec::new();
     for query_id in &config.query_ids {
-        let query_handle = Arc::new(backend.session().admit_query(backend.tenant_id())?);
+        let query_handle = Arc::new(backend.session().admit_query()?);
         let verdict = match config.mode {
             ProbeMode::NativeObserved => {
                 probe_native_observed(query_id, &root, &profile, &config, Arc::clone(&query_handle)).await?
@@ -155,7 +154,7 @@ async fn probe_native_observed(
     query_handle: Arc<QueryHandle>,
 ) -> ToolResult<ProbeVerdict> {
     let sql = clickbench_sql(query_id)?;
-    let physical = plan_native_physical(query_id, root, sql, profile, config, Arc::clone(&query_handle)).await?;
+    let physical = plan_native_physical(query_id, root, sql, profile, Arc::clone(&query_handle)).await?;
     let native_plan = peel_native_query_plan(physical.as_ref())
         .ok_or_else(|| format!("query {query_id} did not lower to NexusNativeExec/NexusNativeComposedExec"))?;
 
@@ -183,9 +182,9 @@ async fn probe_native_observed(
     );
 
     let started = Instant::now();
-    let tenant_context = query_handle.acquire_context_with_cancellation(cancellation.clone())?;
+    let admitted_context = query_handle.acquire_context_with_cancellation(cancellation.clone())?;
 
-    let outcome = execute_query_plan_with_runtime_observation(tenant_context.context(), &native_plan, session);
+    let outcome = execute_query_plan_with_runtime_observation(admitted_context.context(), &native_plan, session);
     stop.store(true, Ordering::Release);
     let _ = watchdog.join();
     let elapsed_ms = started.elapsed().as_millis() as u64;
@@ -259,7 +258,7 @@ async fn probe_datafusion_collect(
     query_handle: Arc<QueryHandle>,
 ) -> ToolResult<ProbeVerdict> {
     let sql = clickbench_sql(query_id)?;
-    let physical = plan_native_physical(query_id, root, sql, profile, config, query_handle).await?;
+    let physical = plan_native_physical(query_id, root, sql, profile, query_handle).await?;
     let query_dir = config.artifact_dir.join(query_id);
     let live_dir = query_dir.join("live");
     fs::create_dir_all(&live_dir)?;
@@ -340,25 +339,21 @@ async fn plan_native_physical(
     root: &Path,
     sql: &str,
     profile: &nexus_bench::report_workload::clickbench::ClickbenchNativeProfileSettings,
-    config: &ProbeConfig,
     query_handle: Arc<QueryHandle>,
 ) -> ToolResult<Arc<dyn ExecutionPlan>> {
     let layout = discover_clickbench_layout(root)?;
-    let optimizer_config = NexusNativeOptimizerConfig::default()
-        .with_native_pipeline_execution_mode(config.native_pipeline_execution_mode)
-        .with_native_execution_config(
-            NexusNativeExecutionConfig::bounded(
-                profile.device_budget_bytes,
-                profile.max_source_chunk_bytes,
-                profile.max_row_groups_per_chunk,
-                profile.max_retry_attempts,
-                profile.min_retry_chunk_row_groups,
-            )
-            .with_source_chunk_planning_mode(profile.source_chunk_planning_mode)
-            .with_query_id(query_id)
-            .with_native_pipeline_execution_mode(config.native_pipeline_execution_mode)
-            .with_query_service_handle(query_handle),
-        );
+    let optimizer_config = NexusNativeOptimizerConfig::default().with_native_execution_config(
+        NexusNativeExecutionConfig::bounded(
+            profile.device_budget_bytes,
+            profile.max_source_chunk_bytes,
+            profile.max_row_groups_per_chunk,
+            profile.max_retry_attempts,
+            profile.min_retry_chunk_row_groups,
+        )
+        .with_source_chunk_planning_mode(profile.source_chunk_planning_mode)
+        .with_query_id(query_id)
+        .with_query_service_handle(query_handle),
+    );
 
     let state = datafusion::execution::SessionStateBuilder::new()
         .with_config(clickbench_report_session_config())
@@ -374,26 +369,20 @@ async fn plan_native_physical(
 
 fn build_probe_backend(
     profile: &nexus_bench::report_workload::clickbench::ClickbenchNativeProfileSettings,
-    config: &ProbeConfig,
 ) -> ToolResult<ToolGpuBackend> {
-    let service_config = QueryServiceConfig {
+    let service_config = QueryExecutionConfig {
         source_chunk_planning_mode: profile.source_chunk_planning_mode,
-        native_pipeline_execution_mode: config.native_pipeline_execution_mode,
-        device_capacity_bytes: Some(profile.device_budget_bytes),
-        max_concurrent_queries: 1,
         max_source_chunk_bytes: profile.max_source_chunk_bytes,
         max_row_groups_per_chunk: profile.max_row_groups_per_chunk,
         max_retry_attempts: profile.max_retry_attempts,
         min_retry_chunk_row_groups: profile.min_retry_chunk_row_groups,
-        ..QueryServiceConfig::default()
+        ..QueryExecutionConfig::default()
     };
-    Ok(ToolGpuBackend::build(
-        service_config,
-        GpuDeviceMemoryLimit::Explicit { limit_bytes: profile.device_budget_bytes },
-        GpuBackendMemoryShare::Bytes(profile.device_budget_bytes),
-        GpuBackendMemoryShare::Bytes(profile.device_budget_bytes),
-        TenantId::new("clickbench_stage_probe"),
-    )?)
+    let device = GpuBackendDeviceConfig::new(0, GpuMemoryOwnership::WholeDeviceExclusive)
+        .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: profile.device_budget_bytes })
+        .with_max_active_queries(1)
+        .with_installation_bounds(2, 1, 1);
+    Ok(ToolGpuBackend::build(service_config, device)?)
 }
 
 fn peel_native_query_plan(plan: &dyn ExecutionPlan) -> Option<QueryPlan> {
@@ -614,7 +603,6 @@ fn parse_args(args: Vec<String>) -> ToolResult<ProbeConfig> {
     let mut deadline_secs = DEFAULT_DEADLINE_SECS;
     let mut snapshot_interval_ms = DEFAULT_SNAPSHOT_INTERVAL_MS;
     let mut mode = ProbeMode::NativeObserved;
-    let mut pipeline_mode = native_pipeline_execution_mode_from_env();
 
     let mut iter = args.into_iter();
     while let Some(arg) = iter.next() {
@@ -653,10 +641,6 @@ fn parse_args(args: Vec<String>) -> ToolResult<ProbeConfig> {
                     other => return Err(format!("unsupported --mode {other}").into()),
                 };
             },
-            "--pipeline-mode" => {
-                let value = iter.next().ok_or("--pipeline-mode requires a value")?;
-                pipeline_mode = parse_pipeline_mode(&value)?;
-            },
             other => return Err(format!("unknown clickbench-stage-probe argument: {other}").into()),
         }
     }
@@ -670,7 +654,6 @@ fn parse_args(args: Vec<String>) -> ToolResult<ProbeConfig> {
         artifact_dir,
         deadline: Duration::from_secs(deadline_secs),
         snapshot_interval: Duration::from_millis(snapshot_interval_ms),
-        native_pipeline_execution_mode: pipeline_mode,
         mode,
     })
 }
@@ -678,21 +661,6 @@ fn parse_args(args: Vec<String>) -> ToolResult<ProbeConfig> {
 fn default_artifact_dir() -> PathBuf {
     let stamp = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
     PathBuf::from(format!("target/clickbench_hang_remediation/phase2/probe_{stamp}"))
-}
-
-fn native_pipeline_execution_mode_from_env() -> NativePipelineExecutionMode {
-    env::var("NEXUS_NATIVE_PIPELINE_EXECUTION_MODE")
-        .ok()
-        .and_then(|value| parse_pipeline_mode(value.trim()).ok())
-        .unwrap_or(NativePipelineExecutionMode::StrictBounded)
-}
-
-fn parse_pipeline_mode(value: &str) -> ToolResult<NativePipelineExecutionMode> {
-    match value {
-        "strict_bounded" | "strict" => Ok(NativePipelineExecutionMode::StrictBounded),
-        "adaptive_bounded" | "adaptive" => Ok(NativePipelineExecutionMode::Adaptive),
-        other => Err(format!("unsupported pipeline mode {other}").into()),
-    }
 }
 
 fn print_usage() {
@@ -705,7 +673,7 @@ fn print_usage() {
              [--deadline-secs 120] [--snapshot-interval-ms 500] [--mode native_observed|datafusion_collect]\n\
          \n\
          Environment:\n\
-           NEXUS_PARQUET_DIR, NEXUS_CLICKBENCH_NATIVE_PROFILE, NEXUS_NATIVE_PIPELINE_EXECUTION_MODE\n\
+           NEXUS_PARQUET_DIR, NEXUS_CLICKBENCH_NATIVE_PROFILE\n\
            and other NEXUS_CLICKBENCH_NATIVE_* knobs are honored via the shared ClickBench profile."
     );
 }

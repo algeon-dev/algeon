@@ -21,13 +21,13 @@ use datafusion::{
     prelude::{DataFrame, SessionContext},
 };
 use futures::{FutureExt, Stream};
+use nexus_query_engine::{
+    attempt::{AttemptAdmissionBinding, AttemptAdmissionRejection, AttemptHandle, AttemptOwner, BeginAttemptRequest},
+    observability::{AttemptDisposition, RuntimeObservationHandle, RuntimeTerminalOutcome},
+};
 pub use nexus_query_engine::{
     attempt::{AttemptBackendCountersSnapshot, AttemptCancellation, AttemptCompletion},
     observability::{AttemptId, AttemptQueryId, AttemptTraceContext, QueryAttemptReport, RuntimeObservationConfig},
-};
-use nexus_query_engine::{
-    attempt::{AttemptHandle, AttemptOwner, BeginAttemptRequest},
-    observability::{AttemptDisposition, RuntimeObservationOwner, RuntimeTerminalOutcome},
 };
 
 use crate::{
@@ -63,20 +63,69 @@ impl Default for AttemptOptions {
 }
 
 /// Per-invocation state propagated through DataFusion configuration.
+///
+/// This is deliberately private: the extension carries an invocation binding
+/// through DataFusion planning, but it must not hand terminalization or
+/// observation-sealing authority to custom optimizer rules.
 #[derive(Debug)]
-pub struct AttemptExecutionState {
-    pub handle: AttemptHandle,
-    pub query_id: Option<AttemptQueryId>,
-    pub observation_owner: RuntimeObservationOwner,
-    pub cancellation: AttemptCancellation,
-    pub(crate) ticket: Mutex<Option<Arc<crate::native_exec::admission::QueryAdmissionTicket>>>,
+struct AttemptExecutionState {
+    handle: AttemptHandle,
+    admission_rejection: AttemptAdmissionRejection,
+    admission_binding: AttemptAdmissionBinding,
+    query_id: Option<AttemptQueryId>,
+    observation_handle: RuntimeObservationHandle,
+    cancellation: AttemptCancellation,
+    ticket: Mutex<Option<Arc<crate::native_exec::admission::QueryAdmissionTicket>>>,
 }
 
 /// Config extension carrying attempt-local state.  It intentionally has no SQL
 /// settings: attempts are installed only into invocation-local session states.
 #[derive(Debug, Clone)]
-pub struct NexusAttemptExtension {
-    pub state: Arc<AttemptExecutionState>,
+pub(crate) struct NexusAttemptExtension {
+    state: Arc<AttemptExecutionState>,
+}
+
+impl NexusAttemptExtension {
+    fn new(state: Arc<AttemptExecutionState>) -> Self {
+        Self { state }
+    }
+
+    /// The correlation id selected by the attempt owner, if the caller
+    /// supplied one. This is planning metadata only.
+    pub(crate) fn query_id(&self) -> Option<&AttemptQueryId> {
+        self.state.query_id.as_ref()
+    }
+
+    /// Create the opaque native-admission binding for this invocation.
+    ///
+    /// Only adapter-owned planner code can construct this binding. In
+    /// particular, the extension never exposes the raw `AttemptHandle` or
+    /// observation-seal authority to DataFusion extensions.
+    pub(crate) fn ticket_binding(&self) -> AttemptTicketBinding {
+        AttemptTicketBinding {
+            handle: self.state.handle.clone(),
+            admission_rejection: self.state.admission_rejection.clone(),
+            admission_binding: self.state.admission_binding.clone(),
+            cancellation: self.state.cancellation.clone(),
+        }
+    }
+
+    /// Retain the planner-created ticket so every execution path in this
+    /// invocation can bind it to its task context.
+    pub(crate) fn bind_ticket(&self, ticket: Arc<QueryAdmissionTicket>) {
+        *self.state.ticket.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(ticket);
+    }
+
+    /// Recover the opaque ticket from an invocation-local session config.
+    ///
+    /// DataFusion executes CTAS inside `execute_logical_plan`, before the
+    /// adapter receives a physical plan to decorate. The inner DataFrame
+    /// inherits this extension but not an `ActiveQueryAdmissionTicket`, so
+    /// native admission must be able to promote this exact planner-created
+    /// ticket into that task context.
+    pub(crate) fn bound_ticket(&self) -> Option<Arc<QueryAdmissionTicket>> {
+        self.state.ticket.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
+    }
 }
 
 impl ConfigExtension for NexusAttemptExtension {
@@ -141,8 +190,10 @@ impl NexusGpuBackend {
             })?;
         let state = Arc::new(AttemptExecutionState {
             handle: begin.owner.handle(),
+            admission_rejection: begin.owner.admission_rejection(),
+            admission_binding: begin.owner.admission_binding(),
             query_id: state_query_id,
-            observation_owner: begin.owner.observation_owner(),
+            observation_handle: begin.owner.admission_binding().observation_handle(),
             cancellation: begin.owner.cancellation(),
             ticket: Mutex::new(None),
         });
@@ -178,6 +229,45 @@ impl NexusAttempt {
         self.state.cancellation.clone()
     }
 
+    /// Stable recording handle for this attempt's runtime observation.
+    ///
+    /// Flight's coordinator uses this only to route native metrics while it
+    /// retains ticket and activity accounting. The attempt owner remains the
+    /// only capability that can seal the corresponding observation.
+    pub(crate) fn observation_handle(&self) -> nexus_query_engine::observability::RuntimeObservationHandle {
+        self.state.observation_handle.clone()
+    }
+
+    /// Registers a read-only handoff for the immutable report produced at the
+    /// attempt's sole observation seal point.
+    ///
+    /// The observer has no terminalization authority. The attempt owner
+    /// publishes the report before it delivers its sealed observation, so the
+    /// callback can retain the exact completed report together with the
+    /// snapshot that embeds it without a detached completion task.
+    pub(crate) fn register_sealed_report_observer<F>(&self, observer: F)
+    where F: Fn(Arc<QueryAttemptReport>, nexus_query_engine::observability::SealedRuntimeObservationSnapshot)
+            + Send
+            + Sync
+            + 'static {
+        let completion = self.completion.uncounted();
+        self.state.admission_binding.register_seal_observer(move |snapshot| {
+            if let Some(report) = completion.try_report() {
+                observer(report, snapshot);
+            } else {
+                // `AttemptOwner::finish_with_footer` publishes the report
+                // before the owner exposes this sealed snapshot. Keep the
+                // coordinator fail-closed if that engine invariant is ever
+                // violated rather than retaining a fabricated projection.
+                // Tracing is a server-only dependency. The invariant is
+                // preserved in every build; emit its operational diagnostic
+                // only in the Flight-enabled surface.
+                #[cfg(feature = "server")]
+                tracing::error!("attempt observation sealed before its immutable report was published");
+            }
+        });
+    }
+
     /// Commits through the still-owned terminalization authority. Once the
     /// authority moved into a result stream this is a no-op; the stream is the
     /// only remaining committer and the engine state machine enforces
@@ -204,7 +294,7 @@ impl NexusAttempt {
     fn invocation_state(&self, state: datafusion::execution::SessionState) -> datafusion::execution::SessionState {
         let mut builder = SessionStateBuilder::new_from_existing(state);
         let config = builder.config().get_or_insert_with(Default::default);
-        config.options_mut().extensions.insert(NexusAttemptExtension { state: Arc::clone(&self.state) });
+        config.options_mut().extensions.insert(NexusAttemptExtension::new(Arc::clone(&self.state)));
         builder.build()
     }
 
@@ -212,13 +302,59 @@ impl NexusAttempt {
         SessionContext::new_with_state(self.invocation_state(ctx.state()))
     }
 
+    /// Begin attempt-owned planning in an invocation-local DataFusion state.
+    /// Flight uses this before it issues a ticket so logical-planning failures
+    /// terminalize the same attempt that later owns physical execution.
+    pub(crate) fn planning_context(&self, ctx: &SessionContext) -> DataFusionResult<SessionContext> {
+        if self.cancellation().check("datafusion_nexus.attempt.flight_planning").is_err() {
+            self.commit(RuntimeTerminalOutcome::Cancelled);
+            return Err(self.cancelled_error("datafusion_nexus.attempt.flight_planning"));
+        }
+        self.fail_if_backend_closing("datafusion_nexus.attempt.flight_planning")?;
+        let _ = self.state.handle.record_planning_started();
+        Ok(self.invocation_context(ctx))
+    }
+
     fn cancelled_error(&self, operation: &'static str) -> DataFusionError {
         let error = self.cancellation().check(operation).expect_err("cancellation was checked after it was requested");
         DataFusionError::from(Error::from_native(operation, "execution attempt was cancelled", error))
     }
 
-    fn planning_failed(&self, error: &DataFusionError) {
+    pub(crate) fn planning_failed(&self, error: &DataFusionError) {
         self.commit(terminal_outcome_for_error(error, &self.state.cancellation));
+    }
+
+    /// Commits an adapter-side planning rejection through the same owner as
+    /// DataFusion failures, without exposing that owner to callers.
+    pub(crate) fn planning_failed_adapter(&self, error: &Error) {
+        self.commit(RuntimeTerminalOutcome::Failed {
+            error_code: error.code().as_str().to_string(),
+            error_status: error.status().as_str().to_string(),
+        });
+    }
+
+    /// Records the completed physical-planning boundary for Flight's split
+    /// GetFlightInfo/DoGet invocation. This remains separate from execution:
+    /// the owner does not move into an [`AttemptStream`] until DoGet starts
+    /// the finalized plan.
+    pub(crate) fn physical_planning_finished(&self, plan: &dyn ExecutionPlan) {
+        let _ = self.state.handle.set_disposition(disposition_for(classify_final_plan(plan)));
+        let _ = self.state.handle.record_planning_finished();
+    }
+
+    /// Propagate a Flight cancellation before a result stream exists.
+    pub(crate) fn cancel_before_stream(&self) {
+        self.state.cancellation.cancel();
+        self.commit(RuntimeTerminalOutcome::Cancelled);
+    }
+
+    /// Completes an invocation whose protocol result is deliberately empty.
+    ///
+    /// Flight uses this for a deduplicated prepared DDL execution: there is
+    /// no DataFusion result stream to transfer the owner into, but the same
+    /// pre-created attempt still needs one immutable terminal report.
+    pub(crate) fn complete_without_result_stream(&self) {
+        self.commit(RuntimeTerminalOutcome::Succeeded);
     }
 
     /// Rejects planning when the backend started closing after this attempt
@@ -357,22 +493,19 @@ impl NexusAttempt {
         plan: &dyn ExecutionPlan,
         task_context: Arc<datafusion::execution::context::TaskContext>,
     ) -> Arc<datafusion::execution::context::TaskContext> {
-        let Some(admission) = native_admission_root(plan) else { return task_context };
+        let Some(admission) = native_admission_plan(plan) else { return task_context };
         let ticket = {
             let mut state = self.state.ticket.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             Arc::clone(state.get_or_insert_with(|| {
                 let donor = admission.ticket();
                 QueryAdmissionTicket::new_attempt_bound(
                     donor.source(),
-                    donor.requested_grant_min_bytes_for_rebind(),
-                    donor.requested_grant_bytes_for_rebind(),
-                    donor.placement_hint_for_rebind(),
-                    #[cfg(feature = "cugraph")]
-                    donor.warm_graph_requested_grant_bytes_for_rebind(),
+                    donor.attempt_capability_proof_for_rebind(),
                     AttemptTicketBinding {
                         handle: self.state.handle.clone(),
+                        admission_rejection: self.state.admission_rejection.clone(),
+                        admission_binding: self.state.admission_binding.clone(),
                         cancellation: self.state.cancellation.clone(),
-                        observation_owner: self.state.observation_owner.clone(),
                     },
                     donor.metrics_capture(),
                 )
@@ -382,17 +515,24 @@ impl NexusAttempt {
     }
 }
 
-fn native_admission_root(plan: &dyn ExecutionPlan) -> Option<&NativeAdmissionExec> {
+fn native_admission_plan(plan: &dyn ExecutionPlan) -> Option<&NativeAdmissionExec> {
     // `NativeAdmissionExec` is a transparent wrapper: `name`, `fmt`, and
     // `downcast_delegate` all forward to its input, so detection must cast
     // the trait object directly instead of `ExecutionPlan::downcast_ref`.
+    // It is usually the physical root, but DDL plans can execute it below a
+    // non-transparent DataFusion operator. The invocation task context must
+    // carry the same attempt ticket before either shape starts execution.
     let mut current = plan;
     loop {
         if let Some(admission) = (current as &dyn Any).downcast_ref::<NativeAdmissionExec>() {
             return Some(admission);
         }
-        current = transparent_root_wrapper_input(current)?.as_ref();
+        let Some(input) = transparent_root_wrapper_input(current) else {
+            break;
+        };
+        current = input.as_ref();
     }
+    current.children().into_iter().find_map(|child| native_admission_plan(child.as_ref()))
 }
 
 fn disposition_for(disposition: FinalPlanDisposition) -> AttemptDisposition {
@@ -429,11 +569,16 @@ fn terminal_outcome_for_error(error: &DataFusionError, cancellation: &AttemptCan
 /// stream initiates cooperative cancellation without blocking the runtime
 /// worker it is dropped on.
 pub struct AttemptStream {
-    inner: SendableRecordBatchStream,
+    /// Kept only until the wrapper commits its terminal outcome. Releasing it
+    /// afterwards drops a native admission round, so its cleanup commit sees
+    /// the attempt's canonical terminal state before it returns capacity.
+    inner: Option<SendableRecordBatchStream>,
+    schema: arrow::datatypes::SchemaRef,
     owner: AttemptOwner,
     state: Arc<AttemptExecutionState>,
     completion: AttemptCompletion,
     physical_start_recorded: bool,
+    terminal: bool,
 }
 
 impl AttemptStream {
@@ -443,7 +588,8 @@ impl AttemptStream {
         state: Arc<AttemptExecutionState>,
         completion: AttemptCompletion,
     ) -> Self {
-        Self { inner, owner, state, completion, physical_start_recorded: false }
+        let schema = inner.schema();
+        Self { inner: Some(inner), schema, owner, state, completion, physical_start_recorded: false, terminal: false }
     }
 
     /// An independent receiver for this attempt's terminal report.
@@ -453,6 +599,16 @@ impl AttemptStream {
 
     fn commit(&self, outcome: RuntimeTerminalOutcome) {
         let _ = self.owner.commit_terminal(outcome);
+    }
+
+    /// Commits the outer terminal result before destroying the physical
+    /// stream. Native admission rounds release their query handle from that
+    /// stream's drop path, and their `AttemptTerminalCommit` must therefore
+    /// observe this terminal state rather than racing it at EOF or error.
+    fn finish_terminal(&mut self, outcome: RuntimeTerminalOutcome) {
+        self.terminal = true;
+        self.commit(outcome);
+        drop(self.inner.take());
     }
 
     fn cancelled_error(&self) -> DataFusionError {
@@ -472,7 +628,7 @@ impl AttemptStream {
 
 impl RecordBatchStream for AttemptStream {
     fn schema(&self) -> arrow::datatypes::SchemaRef {
-        self.inner.schema()
+        Arc::clone(&self.schema)
     }
 }
 
@@ -481,10 +637,15 @@ impl Stream for AttemptStream {
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.get_mut();
+        if this.terminal {
+            return Poll::Ready(None);
+        }
         if !this.state.handle.is_terminal()
             && this.state.cancellation.check("datafusion_nexus.attempt.result_drain").is_err()
         {
-            this.commit(RuntimeTerminalOutcome::Cancelled);
+            // The cancellation error is the stream's final item. The handle
+            // is terminal after `commit`, so it cannot guard a later poll.
+            this.finish_terminal(RuntimeTerminalOutcome::Cancelled);
             return Poll::Ready(Some(Err(this.cancelled_error())));
         }
         if !this.physical_start_recorded {
@@ -496,19 +657,21 @@ impl Stream for AttemptStream {
                 let _ = this.state.handle.record_physical_execution_started();
             }
         }
-        let poll = catch_unwind(AssertUnwindSafe(|| Pin::new(&mut this.inner).poll_next(cx)));
+        let poll = catch_unwind(AssertUnwindSafe(|| {
+            Pin::new(this.inner.as_mut().expect("live attempt stream retains its inner stream")).poll_next(cx)
+        }));
         match poll {
             Err(panic) => {
-                this.commit(RuntimeTerminalOutcome::Panicked);
+                this.finish_terminal(RuntimeTerminalOutcome::Panicked);
                 resume_unwind(panic);
             },
             Ok(Poll::Ready(None)) => {
-                this.commit(RuntimeTerminalOutcome::Succeeded);
+                this.finish_terminal(RuntimeTerminalOutcome::Succeeded);
                 Poll::Ready(None)
             },
             Ok(Poll::Ready(Some(Err(error)))) => {
                 let outcome = terminal_outcome_for_error(&error, &this.state.cancellation);
-                this.commit(outcome);
+                this.finish_terminal(outcome);
                 Poll::Ready(Some(Err(error)))
             },
             Ok(other) => other,
@@ -519,9 +682,20 @@ impl Stream for AttemptStream {
 impl Drop for AttemptStream {
     fn drop(&mut self) {
         if !self.state.handle.is_terminal() {
-            self.state.cancellation.cancel();
-            self.commit(RuntimeTerminalOutcome::Dropped);
+            // Flight's unwind guard cancels the shared token while it records
+            // the coordinator-side panic.  Preserve the primary unwind
+            // outcome for the immutable attempt report instead of letting
+            // that cleanup cancellation downgrade it to `Cancelled`.
+            if std::thread::panicking() {
+                self.finish_terminal(RuntimeTerminalOutcome::Panicked);
+            } else if self.state.cancellation.is_cancelled() || self.state.cancellation.is_expired() {
+                self.finish_terminal(RuntimeTerminalOutcome::Cancelled);
+            } else {
+                self.state.cancellation.cancel();
+                self.finish_terminal(RuntimeTerminalOutcome::Dropped);
+            }
         }
+        drop(self.inner.take());
     }
 }
 

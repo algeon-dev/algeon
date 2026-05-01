@@ -10,10 +10,10 @@ use datafusion::{
 };
 
 use super::{
-    NativeAdaptivePipelineDiagnostics, NativeStrictBoundedContractDiagnostics,
-    adaptive::{adaptive_pipeline_was_rejected, plan_adaptive_pipeline_diagnostics},
-    strict_bounded::{
-        accepted_plan_contract_diagnostics, rejected_plan_contract_diagnostics, strict_bounded_admission_is_rejected,
+    NativeCapabilityContractDiagnostics,
+    capability_envelope::{
+        accepted_plan_contract_diagnostics, capability_envelope_admission_is_rejected,
+        rejected_plan_contract_diagnostics,
     },
 };
 use crate::{
@@ -33,8 +33,7 @@ pub(super) struct NativeOptimizationAttempt {
     pub(super) report: PlanningReport,
     pub(super) native_optimizer: nexus_query_engine::optimizer::NativeOptimizerDiagnostics,
     pub(super) source_diagnostics: Vec<nexus_query_engine::source::SourceDiagnostics>,
-    pub(super) strict_bounded_contract: NativeStrictBoundedContractDiagnostics,
-    pub(super) adaptive_pipeline: NativeAdaptivePipelineDiagnostics,
+    pub(super) capability_contract: NativeCapabilityContractDiagnostics,
     pub(super) rewritten: bool,
 }
 
@@ -118,8 +117,7 @@ fn replace_lowered_root_or_keep_plan(
             report: lowering.report,
             native_optimizer: nexus_query_engine::optimizer::NativeOptimizerDiagnostics::default(),
             source_diagnostics: lowering.source_diagnostics,
-            strict_bounded_contract: NativeStrictBoundedContractDiagnostics::default(),
-            adaptive_pipeline: NativeAdaptivePipelineDiagnostics::default(),
+            capability_contract: NativeCapabilityContractDiagnostics::default(),
             rewritten: false,
         });
     }
@@ -155,8 +153,7 @@ fn replace_lowered_root_or_keep_plan(
                     report: native_execution_rejection_report_for_candidate(candidate, reason, &lowering.report),
                     native_optimizer,
                     source_diagnostics: lowering.source_diagnostics,
-                    strict_bounded_contract: NativeStrictBoundedContractDiagnostics::default(),
-                    adaptive_pipeline: NativeAdaptivePipelineDiagnostics::default(),
+                    capability_contract: NativeCapabilityContractDiagnostics::default(),
                     rewritten: false,
                 });
             },
@@ -182,51 +179,8 @@ fn replace_lowered_root_or_keep_plan(
             ),
             native_optimizer,
             source_diagnostics: lowering.source_diagnostics,
-            strict_bounded_contract: NativeStrictBoundedContractDiagnostics::default(),
-            adaptive_pipeline: NativeAdaptivePipelineDiagnostics::default(),
+            capability_contract: NativeCapabilityContractDiagnostics::default(),
             rewritten: false,
-        });
-    }
-
-    if native_execution_config.native_pipeline_execution_mode()
-        == nexus_query_engine::mode::NativePipelineExecutionMode::Adaptive
-    {
-        let adaptive_pipeline =
-            plan_adaptive_pipeline_diagnostics(&native_plan, candidate.clone(), native_execution_config)?
-                .unwrap_or_default();
-        if adaptive_pipeline_was_rejected(&adaptive_pipeline) {
-            return Ok(NativeOptimizationAttempt {
-                plan,
-                report: native_execution_rejection_report_for_candidate(
-                    candidate.clone(),
-                    CapabilityReason::NativeAdaptivePipelineUnsupported,
-                    &lowering.report,
-                ),
-                native_optimizer,
-                source_diagnostics: lowering.source_diagnostics,
-                strict_bounded_contract: NativeStrictBoundedContractDiagnostics::default(),
-                adaptive_pipeline,
-                rewritten: false,
-            });
-        }
-
-        let plan = native_datafusion_exec_for_plan(
-            Arc::clone(&plan),
-            native_plan,
-            native_execution_config,
-            &candidate.shape,
-            output_equivalence_properties
-                .clone()
-                .unwrap_or_else(|| properties_plan.properties().equivalence_properties().clone()),
-        )?;
-        return Ok(NativeOptimizationAttempt {
-            plan,
-            report: lowering.report,
-            native_optimizer,
-            source_diagnostics: lowering.source_diagnostics,
-            strict_bounded_contract: NativeStrictBoundedContractDiagnostics::default(),
-            adaptive_pipeline,
-            rewritten: true,
         });
     }
 
@@ -241,18 +195,13 @@ fn replace_lowered_root_or_keep_plan(
             report,
             native_optimizer,
             source_diagnostics: lowering.source_diagnostics,
-            strict_bounded_contract: rejected_plan_contract_diagnostics(
-                &native_plan,
-                candidate,
-                native_execution_config,
-            )?,
-            adaptive_pipeline: NativeAdaptivePipelineDiagnostics::default(),
+            capability_contract: rejected_plan_contract_diagnostics(&native_plan, candidate, native_execution_config)?,
             rewritten: false,
         });
     }
 
     let datafusion_shape = candidate.shape.clone();
-    let strict_bounded_contract = accepted_plan_contract_diagnostics(&native_plan, candidate, native_execution_config)?;
+    let capability_contract = accepted_plan_contract_diagnostics(&native_plan, candidate, native_execution_config)?;
     let plan = native_datafusion_exec_for_plan(
         Arc::clone(&plan),
         native_plan,
@@ -265,8 +214,7 @@ fn replace_lowered_root_or_keep_plan(
         report: lowering.report,
         native_optimizer,
         source_diagnostics: lowering.source_diagnostics,
-        strict_bounded_contract,
-        adaptive_pipeline: NativeAdaptivePipelineDiagnostics::default(),
+        capability_contract,
         rewritten: true,
     })
 }
@@ -286,14 +234,7 @@ fn native_optimizer_options_for_execution(
 ) -> crate::error::Result<nexus_query_engine::optimizer::NativeOptimizerOptions> {
     native_execution_config.validate_query_policies()?;
     let mut options = options.clone();
-    options.semijoin_reduction.admission_mode = match native_execution_config.native_pipeline_execution_mode() {
-        nexus_query_engine::mode::NativePipelineExecutionMode::StrictBounded => {
-            nexus_query_engine::optimizer::SemijoinReductionAdmissionMode::StrictBounded
-        },
-        nexus_query_engine::mode::NativePipelineExecutionMode::Adaptive => {
-            nexus_query_engine::optimizer::SemijoinReductionAdmissionMode::Adaptive
-        },
-    };
+    options.semijoin_reduction.admission_mode = nexus_query_engine::optimizer::SemijoinReductionAdmissionMode::Bounded;
     options.dynamic_filter_route_discovery.execution = native_execution_config.dynamic_filter_execution_options();
     options.keyed_hash_join_strategy = native_execution_config.keyed_hash_join_strategy_options();
     options.validate().map_err(|error| {
@@ -395,7 +336,7 @@ fn native_execution_boundary_is_rejected(
     if !execution_config.memory_control_policy().is_bounded() || !plan.contains_join() {
         return Ok(false);
     }
-    strict_bounded_admission_is_rejected(plan, execution_config)
+    capability_envelope_admission_is_rejected(plan, execution_config)
 }
 
 fn native_execution_cost_selection_report(
@@ -542,8 +483,7 @@ mod tests {
             .with_small_reusable_hash_build_row_threshold(11);
         let execution_config = NexusNativeExecutionConfig::bounded(1024, 512, 1, 3, 1)
             .with_dynamic_filter_execution_options(dynamic_filter_options)
-            .with_keyed_hash_join_strategy_options(keyed_hash_join_strategy_options)
-            .with_native_pipeline_execution_mode(nexus_query_engine::mode::NativePipelineExecutionMode::Adaptive);
+            .with_keyed_hash_join_strategy_options(keyed_hash_join_strategy_options);
 
         let options = native_optimizer_options_for_execution(
             &nexus_query_engine::optimizer::NativeOptimizerOptions::disabled(),
@@ -555,7 +495,7 @@ mod tests {
         assert_eq!(options.keyed_hash_join_strategy, keyed_hash_join_strategy_options);
         assert_eq!(
             options.semijoin_reduction.admission_mode,
-            nexus_query_engine::optimizer::SemijoinReductionAdmissionMode::Adaptive
+            nexus_query_engine::optimizer::SemijoinReductionAdmissionMode::Bounded
         );
     }
 

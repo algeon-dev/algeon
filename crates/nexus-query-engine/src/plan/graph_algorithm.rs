@@ -27,11 +27,11 @@ pub use community::{
 };
 pub use definition::{
     EmptyGraphEdgeInputAction, EmptyGraphInputPolicy, EmptyGraphSideInputPolicy,
-    GRAPH_ALGORITHM_STRICT_BOUNDED_LOWER_LEVEL_CONTRACTS, GRAPH_ALGORITHM_STRICT_BOUNDED_MEMORY_BOUNDARY,
-    GRAPH_ALGORITHM_STRICT_BOUNDED_REQUIRED_CONTRACT, GRAPH_OPERATION_REGISTRY, GraphAlgorithm,
-    GraphAlgorithmStrictBoundedLowerLevelContract, GraphConstructionOptions, GraphConstructionPolicy,
-    GraphEdgeColumnBindings, GraphOperationDefinition, GraphOutputSchemaKind, GraphSourceVertexRequirement,
-    GraphVertexIdTypeSupport, GraphWeightPolicy,
+    GRAPH_ALGORITHM_CAPABILITY_LOWER_LEVEL_CONTRACTS, GRAPH_ALGORITHM_CAPABILITY_MEMORY_BOUNDARY,
+    GRAPH_ALGORITHM_CAPABILITY_REQUIRED_CONTRACT, GRAPH_OPERATION_REGISTRY, GraphAlgorithm,
+    GraphAlgorithmLowerLevelContract, GraphConstructionOptions, GraphConstructionPolicy, GraphEdgeColumnBindings,
+    GraphOperationDefinition, GraphOutputSchemaKind, GraphSourceVertexRequirement, GraphVertexIdTypeSupport,
+    GraphWeightPolicy,
 };
 pub use layout::{GraphForceAtlas2Params, GraphLayoutRequirement};
 pub use residency::{
@@ -176,11 +176,13 @@ impl GraphAlgorithmSpec {
     }
 }
 
-/// Resident graph key this spec will try to use during execution, when known at planning time.
+/// Stable graph identity available to P2 transient coalescing and future P5
+/// cache work, when known at planning time.
 ///
 /// Keep this function in sync with graph execution dispatch. It intentionally
-/// returns `None` for paths that currently bypass the resident graph cache, such
-/// as edge-id graph construction and BFS include-edges filtering.
+/// returns `None` for paths whose graph construction cannot form a stable
+/// identity, such as edge-id graph construction and BFS include-edges
+/// filtering.
 pub fn planned_resident_graph_key(
     descriptor: &GraphResidencyDescriptor,
     spec: &GraphAlgorithmSpec,

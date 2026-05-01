@@ -29,13 +29,10 @@ use nexus_bench::{
         },
     },
 };
-use nexus_query_engine::mode::NativePipelineExecutionMode;
 use nexus_workloads::{
     tpcds::{TpcdsDatasetMetadata, TpcdsWorkloadResult, prepare_tpcds_report_dataset},
     tpch::{TpchDatasetMetadata, TpchWorkloadResult, prepare_tpch_report_dataset},
 };
-
-const NEXUS_NATIVE_PIPELINE_EXECUTION_MODE_ENV: &str = "NEXUS_NATIVE_PIPELINE_EXECUTION_MODE";
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
@@ -64,8 +61,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         },
     };
 
-    let execution_config = NexusNativeExecutionConfig::bounded(256 * 1024 * 1024, 64 * 1024 * 1024, 1, 3, 1)
-        .with_native_pipeline_execution_mode(native_pipeline_execution_mode_from_env());
+    let execution_config = NexusNativeExecutionConfig::bounded(256 * 1024 * 1024, 64 * 1024 * 1024, 1, 3, 1);
     let mut report = NativeFallbackPressureReport::collect_with_native_execution_config(items, &execution_config);
     if let Some(metadata) = workload_dataset {
         report = report.with_workload_dataset_metadata(metadata);
@@ -74,17 +70,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     fs::remove_dir_all(dir)?;
     Ok(())
-}
-
-fn native_pipeline_execution_mode_from_env() -> NativePipelineExecutionMode {
-    let mode = std::env::var(NEXUS_NATIVE_PIPELINE_EXECUTION_MODE_ENV)
-        .unwrap_or_else(|_| NativePipelineExecutionMode::StrictBounded.as_str().to_string());
-    mode.parse::<NativePipelineExecutionMode>().unwrap_or_else(|error| {
-        panic!(
-            "unsupported {NEXUS_NATIVE_PIPELINE_EXECUTION_MODE_ENV}={}; expected strict_bounded or adaptive",
-            error.value()
-        )
-    })
 }
 
 async fn synthetic_workload_items(dir: &std::path::Path) -> Vec<NativeFallbackPressureWorkloadItem> {

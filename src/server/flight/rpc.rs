@@ -19,10 +19,18 @@ impl FlightSqlService for DatafusionNexusFlightSqlService {
         self.check_auth(&request)?;
         let correlation_id = request_correlation_id(&request)?;
         let sql = query.query;
-        let (query_id, planning_lease) =
-            self.register_new_query(sql.clone(), correlation_id.clone()).map_err(|(query_id, status)| {
-                status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref())
-            })?;
+        // Every statement-query invocation starts with the attempt-owned
+        // coordinator registration. `EXPLAIN GPU` never executes a physical
+        // plan or acquires GPU admission, but its diagnostic planning and
+        // Flight lifecycle still publish one immutable attempt report.
+        let registration = if query.transaction_id.is_none() {
+            self.register_new_attempt_query(sql.clone(), correlation_id.clone())
+        } else {
+            self.register_new_query(sql.clone(), correlation_id.clone())
+        };
+        let (query_id, mut planning_lease) = registration.map_err(|(query_id, status)| {
+            status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref())
+        })?;
         let query_span =
             DatafusionNexusFlightSqlService::query_span(&query_id, correlation_id.as_deref(), "get_flight_info");
         let _query_enter = query_span.enter();
@@ -43,6 +51,27 @@ impl FlightSqlService for DatafusionNexusFlightSqlService {
         let explain_gpu = match parse_explain_gpu(&sql) {
             Ok(statement) => statement,
             Err(error) => {
+                let attempt = match self.admission.begin_attempt(crate::attempt::AttemptOptions {
+                    query_id: Some(query_id.clone()),
+                    trace_context: correlation_id.clone(),
+                    deadline: None,
+                    observation: self.runtime_observation_config,
+                }) {
+                    Ok(attempt) => attempt,
+                    Err(begin_error) => {
+                        self.coordinator.allow_missing_attempt_report(&query_id);
+                        let (status, captured) = adapter_error_to_status_and_capture(begin_error);
+                        let status =
+                            status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
+                        log_statement_status(&query_id, "planning", planning_started_at, &status);
+                        planning_lease.finish_captured("planning", &status, captured);
+                        return Err(status);
+                    },
+                };
+                if let Some(attempt) = attempt.as_ref() {
+                    self.register_attempt_report_handoff(query_id.clone(), attempt, None);
+                    attempt.planning_failed_adapter(&error);
+                }
                 let (status, captured) = adapter_error_to_status_and_capture(error);
                 let status = status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
                 log_statement_status(&query_id, "planning", planning_started_at, &status);
@@ -96,16 +125,6 @@ impl FlightSqlService for DatafusionNexusFlightSqlService {
     ) -> Result<Response<FlightInfo>, Status> {
         self.check_auth(&request)?;
         let correlation_id = request_correlation_id(&request)?;
-        let (query_id, planning_lease) =
-            self.register_new_query(String::new(), correlation_id.clone()).map_err(|(query_id, status)| {
-                status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref())
-            })?;
-        let query_span = DatafusionNexusFlightSqlService::query_span(
-            &query_id,
-            correlation_id.as_deref(),
-            "get_flight_info_prepared_statement",
-        );
-        let _query_enter = query_span.enter();
         let handle = match std::str::from_utf8(&query.prepared_statement_handle) {
             Ok(handle) => handle.to_string(),
             Err(error) => {
@@ -114,10 +133,7 @@ impl FlightSqlService for DatafusionNexusFlightSqlService {
                     "datafusion_nexus.server.flight.get_flight_info_prepared_statement.handle",
                     format!("prepared statement handle is not valid UTF-8: {error}"),
                 );
-                let (status, captured) = adapter_error_to_status_and_capture(error);
-                let status = status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
-                planning_lease.fail("planning", captured);
-                return Err(status);
+                return Err(record_non_attempt_failure(self, &correlation_id, error)?);
             },
         };
         let sql = match self.prepared_statements.get(&handle).map(|entry| entry.sql.clone()) {
@@ -128,10 +144,7 @@ impl FlightSqlService for DatafusionNexusFlightSqlService {
                     "datafusion_nexus.server.flight.get_flight_info_prepared_statement.resolve",
                     format!("unknown prepared statement handle: {handle}"),
                 );
-                let (status, captured) = adapter_error_to_status_and_capture(error);
-                let status = status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
-                planning_lease.fail("planning", captured);
-                return Err(status);
+                return Err(record_non_attempt_failure(self, &correlation_id, error)?);
             },
         };
         if let Some(error) = explain_gpu_endpoint_error(
@@ -139,11 +152,18 @@ impl FlightSqlService for DatafusionNexusFlightSqlService {
             "datafusion_nexus.server.flight.get_flight_info_prepared_statement.explain_gpu",
             "EXPLAIN GPU cannot be executed through a prepared statement; use the statement query endpoint",
         ) {
-            let (status, captured) = adapter_error_to_status_and_capture(error);
-            let status = status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
-            planning_lease.fail("planning", captured);
-            return Err(status);
+            return Err(record_non_attempt_failure(self, &correlation_id, error)?);
         }
+        let (query_id, planning_lease) =
+            self.register_new_attempt_query(sql.clone(), correlation_id.clone()).map_err(|(query_id, status)| {
+                status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref())
+            })?;
+        let query_span = DatafusionNexusFlightSqlService::query_span(
+            &query_id,
+            correlation_id.as_deref(),
+            "get_flight_info_prepared_statement",
+        );
+        let _query_enter = query_span.enter();
         self.coordinator.set_sql(&query_id, sql.clone());
 
         let planning_started_at = Instant::now();
@@ -531,26 +551,20 @@ impl FlightSqlService for DatafusionNexusFlightSqlService {
         self.check_auth(&request)?;
         let correlation_id = request_correlation_id(&request)?;
         let sql = query.query;
-        let (query_id, planning_lease) =
-            self.register_new_query(sql.clone(), correlation_id.clone()).map_err(|(query_id, status)| {
-                status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref())
-            })?;
         if query.transaction_id.is_some() {
-            let (status, captured) = adapter_error_to_status_and_capture(flight_sql_transactions_unsupported_error());
-            let status = status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
-            planning_lease.fail("planning", captured);
-            return Err(status);
+            return Err(record_non_attempt_failure(self, &correlation_id, flight_sql_transactions_unsupported_error())?);
         }
         if let Some(error) = explain_gpu_endpoint_error(
             &sql,
             "datafusion_nexus.server.flight.do_put_statement_update.explain_gpu",
             "EXPLAIN GPU is a statement-query operation; use the Flight SQL statement query endpoint",
         ) {
-            let (status, captured) = adapter_error_to_status_and_capture(error);
-            let status = status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
-            planning_lease.fail("planning", captured);
-            return Err(status);
+            return Err(record_non_attempt_failure(self, &correlation_id, error)?);
         }
+        let (_query_id, planning_lease) =
+            self.register_new_attempt_query(sql.clone(), correlation_id.clone()).map_err(|(query_id, status)| {
+                status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref())
+            })?;
         self.execute_update_sql(planning_lease, sql, correlation_id, UpdateStatementKind::Statement).await
     }
 
@@ -561,10 +575,6 @@ impl FlightSqlService for DatafusionNexusFlightSqlService {
     ) -> Result<i64, Status> {
         self.check_auth(&request)?;
         let correlation_id = request_correlation_id(&request)?;
-        let (query_id, planning_lease) =
-            self.register_new_query(String::new(), correlation_id.clone()).map_err(|(query_id, status)| {
-                status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref())
-            })?;
         let handle = match std::str::from_utf8(&query.prepared_statement_handle) {
             Ok(handle) => handle.to_string(),
             Err(error) => {
@@ -573,10 +583,7 @@ impl FlightSqlService for DatafusionNexusFlightSqlService {
                     "datafusion_nexus.server.flight.do_put_prepared_statement_update.handle",
                     format!("prepared statement handle is not valid UTF-8: {error}"),
                 );
-                let (status, captured) = adapter_error_to_status_and_capture(error);
-                let status = status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
-                planning_lease.fail("planning", captured);
-                return Err(status);
+                return Err(record_non_attempt_failure(self, &correlation_id, error)?);
             },
         };
         let (sql, already_executed) = match self
@@ -591,10 +598,7 @@ impl FlightSqlService for DatafusionNexusFlightSqlService {
                     "datafusion_nexus.server.flight.do_put_prepared_statement_update.resolve",
                     format!("unknown prepared statement handle: {handle}"),
                 );
-                let (status, captured) = adapter_error_to_status_and_capture(error);
-                let status = status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
-                planning_lease.fail("planning", captured);
-                return Err(status);
+                return Err(record_non_attempt_failure(self, &correlation_id, error)?);
             },
         };
         if let Some(error) = explain_gpu_endpoint_error(
@@ -602,11 +606,12 @@ impl FlightSqlService for DatafusionNexusFlightSqlService {
             "datafusion_nexus.server.flight.do_put_prepared_statement_update.explain_gpu",
             "EXPLAIN GPU is a statement-query operation and cannot be executed through a prepared update",
         ) {
-            let (status, captured) = adapter_error_to_status_and_capture(error);
-            let status = status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
-            planning_lease.fail("planning", captured);
-            return Err(status);
+            return Err(record_non_attempt_failure(self, &correlation_id, error)?);
         }
+        let (query_id, planning_lease) =
+            self.register_new_attempt_query(sql.clone(), correlation_id.clone()).map_err(|(query_id, status)| {
+                status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref())
+            })?;
         self.coordinator.set_sql(&query_id, sql.clone());
 
         // DataGrip-class clients may re-run the held handle after executing a
@@ -619,16 +624,7 @@ impl FlightSqlService for DatafusionNexusFlightSqlService {
                 prepared_statement_handle = handle.as_str(),
                 "deduplicated repeated prepared DDL execution on the update channel; returning a no-op"
             );
-            match planning_lease.into_execution() {
-                Ok(execution) => execution.succeed(),
-                Err(error) => {
-                    let status = adapter_error_status(error.adapter_error(
-                        "datafusion_nexus.server.flight.do_put_prepared_statement_update.into_execution",
-                    ));
-                    return Err(status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref()));
-                },
-            }
-            return Ok(NO_UPDATED_RECORDS_COUNT);
+            return self.complete_deduplicated_update(planning_lease, correlation_id).await;
         }
 
         let record_count = self
@@ -906,6 +902,25 @@ impl FlightSqlService for DatafusionNexusFlightSqlService {
     }
 
     async fn register_sql_info(&self, _id: i32, _result: &SqlInfo) {}
+}
+
+/// Record a Flight request failure that occurs before an executable result
+/// stream can own a NexusAttempt. The coordinator report remains available to
+/// clients, while the legacy registration deliberately does not require an
+/// attempt terminal report.
+fn record_non_attempt_failure(
+    service: &DatafusionNexusFlightSqlService,
+    correlation_id: &Option<String>,
+    error: Error,
+) -> std::result::Result<Status, Status> {
+    let (query_id, planning_lease) =
+        service.register_new_query(String::new(), correlation_id.clone()).map_err(|(query_id, status)| {
+            status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref())
+        })?;
+    let (status, captured) = adapter_error_to_status_and_capture(error);
+    let status = status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
+    planning_lease.fail("planning", captured);
+    Ok(status)
 }
 
 fn explain_gpu_endpoint_error(sql: &str, operation: &'static str, message: &'static str) -> Option<Error> {

@@ -103,11 +103,7 @@ where
         budget.token.as_ref(),
         operation,
     );
-    if context.resident_graph_cache().is_some() {
-        result.map(|result| with_graph_cache_metadata(result, "bypass_edge_id_graph"))
-    } else {
-        result
-    }
+    result
 }
 
 #[cfg(feature = "cugraph")]

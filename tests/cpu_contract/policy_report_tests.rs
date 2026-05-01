@@ -17,7 +17,6 @@ fn capability_reason_codes_are_stable_manifest_values() {
         (CapabilityReason::NativeDistributedAggregateUnsupported, "native_distributed_aggregate_unsupported"),
         (CapabilityReason::NativePartitionPreservingSortUnsupported, "native_partition_preserving_sort_unsupported"),
         (CapabilityReason::NativeBoundedJoinUnsupported, "native_bounded_join_unsupported"),
-        (CapabilityReason::NativeAdaptivePipelineUnsupported, "native_adaptive_pipeline_unsupported"),
         (CapabilityReason::NativeOrderedOutputUnsupported, "native_ordered_output_unsupported"),
         (CapabilityReason::NativeSourceNonLocalObjectStore, "native_source_non_local_object_store"),
         (CapabilityReason::NativeSourcePartitionColumns, "native_source_partition_columns"),
@@ -74,8 +73,7 @@ fn cost_decision_has_a_shared_triage_code() {
 #[test]
 fn capability_reasons_map_to_shared_triage_codes() {
     assert_eq!(CapabilityReason::UnsupportedExpression.triage_code(), TriageCode::UnsupportedExpression);
-    assert_eq!(CapabilityReason::NativeBoundedJoinUnsupported.triage_code(), TriageCode::StrictBoundedRejected);
-    assert_eq!(CapabilityReason::NativeAdaptivePipelineUnsupported.triage_code(), TriageCode::AdaptivePipelineRejected);
+    assert_eq!(CapabilityReason::NativeBoundedJoinUnsupported.triage_code(), TriageCode::CapabilityEnvelopeRejected);
     assert_eq!(CapabilityReason::NativeSourceNonLocalObjectStore.triage_code(), TriageCode::UnsupportedSource);
     assert_eq!(CapabilityReason::IcebergObjectStoreReadUnsupported.triage_code(), TriageCode::UnsupportedSource);
     assert_eq!(CapabilityReason::IcebergFileIoSourceAccessUnverified.triage_code(), TriageCode::UnsupportedSource);

@@ -5,13 +5,6 @@ use std::collections::BTreeSet;
 use nexus_query_engine::metrics::{MetricAggregation, MetricDescriptor, MetricDirection, MetricUnit};
 
 const NATIVE_REPORT_DESCRIPTOR_NAMES: &[&str] = &[
-    "adaptive_downgrade_count",
-    "adaptive_memory_history_hit_count",
-    "adaptive_memory_history_lookup_count",
-    "adaptive_memory_history_miss_count",
-    "adaptive_pipeline_rows",
-    "adaptive_retry_count",
-    "adaptive_spill_count",
     "admission_sequence",
     "admission_sequence_observed",
     "admission_wait_ms",
@@ -28,7 +21,6 @@ const NATIVE_REPORT_DESCRIPTOR_NAMES: &[&str] = &[
     "aggregate_strategy_rows",
     "allocator_high_water_bytes",
     "allocator_high_water_bytes_observed",
-    "build_materialization_boundary_durable",
     "build_materialization_boundary_query_scoped",
     "chunk_operator_time",
     "comparison_mode",
@@ -86,9 +78,6 @@ const NATIVE_REPORT_DESCRIPTOR_NAMES: &[&str] = &[
     "hash_join_build_count",
     "hash_join_cache_hits",
     "hash_join_cache_misses",
-    "hash_join_durable_cache_hits",
-    "hash_join_durable_cache_inserts",
-    "hash_join_durable_cache_misses",
     "hash_join_hash_table_bytes",
     "host_datafusion_boundary_count",
     "host_to_device_uploaded_bytes",
@@ -181,12 +170,6 @@ const NATIVE_REPORT_DESCRIPTOR_NAMES: &[&str] = &[
     "row_groups_selected",
     "runtime_failure",
     "runtime_outcome",
-    "source_cache_hits",
-    "source_cache_insert_skipped",
-    "source_cache_inserts",
-    "source_cache_lookup_time",
-    "source_cache_misses",
-    "source_cache_retained_bytes",
     "source_chunks_attempted",
     "source_chunks_committed",
     "source_chunks_planned",
@@ -200,8 +183,8 @@ const NATIVE_REPORT_DESCRIPTOR_NAMES: &[&str] = &[
     "source_read_prefetches_started",
     "source_read_queue_wait_time",
     "source_read_time",
-    "strict_bounded_compiled_graphs",
-    "strict_bounded_contract_rows",
+    "capability_compiled_graphs",
+    "capability_contract_rows",
     "task_operator_rows",
     "task_runtime_rows",
     "unsupported_category",
@@ -364,9 +347,8 @@ fn semantics_for_name(name: &str) -> &'static str {
 fn is_nested_row_cell(name: &str) -> bool {
     matches!(
         name,
-        "strict_bounded_contract_rows"
-            | "strict_bounded_compiled_graphs"
-            | "adaptive_pipeline_rows"
+        "capability_contract_rows"
+            | "capability_compiled_graphs"
             | "join_diagnostics"
             | "source_diagnostics"
             | "graph_reservation_rows"

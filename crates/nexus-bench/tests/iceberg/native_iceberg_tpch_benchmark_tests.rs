@@ -10,6 +10,8 @@ use datafusion_nexus::{
         FinalPlanDisposition, NativeDataFusionPlanningOutcome, NativeDataFusionRuntimeOutcome, ParityComparisonMode,
         ParityStatus,
     },
+    planner::NexusNativeOptimizerConfig,
+    session_config::DataFusionNexusSessionConfig,
     table_format::{
         TableFormat, TableFormatDataFile, TableFormatDataFileFormat, TableFormatReadCapability, TableFormatScanPlan,
     },
@@ -28,7 +30,6 @@ use nexus_bench::{
 };
 use nexus_query_engine::{
     mode::StatisticalAggregateExecutionMode,
-    runtime::MemoryControlPolicy,
     source::{CredentialMode, LakehouseCacheStatus, ResolvedParquetSource},
 };
 use nexus_workloads::tpch::TPCH_QUERIES;
@@ -144,14 +145,12 @@ fn tpch_native_execution_profile_uses_decision_grade_source_chunk_defaults() {
     )
     .unwrap();
 
-    let MemoryControlPolicy::Bounded { max_source_chunk_bytes, max_row_groups_per_chunk, .. } =
-        config.memory_control_policy()
-    else {
-        panic!("TPC-H Iceberg native profile must be bounded");
-    };
+    let projection = DataFusionNexusSessionConfig::from_optimizer_config(
+        &NexusNativeOptimizerConfig::default().with_native_execution_config(config.clone()),
+    );
 
-    assert_eq!(max_source_chunk_bytes, 32 * 1024 * 1024 * 1024);
-    assert_eq!(max_row_groups_per_chunk, 1024);
+    assert_eq!(projection.native_max_source_chunk_bytes, 32 * 1024 * 1024 * 1024);
+    assert_eq!(projection.native_max_row_groups_per_chunk, 1024);
     assert_eq!(config.source_scheduler_policy().max_source_reads_in_flight(), 2);
 }
 
@@ -162,9 +161,9 @@ fn iceberg_benchmark_native_optimizer_allows_source_reuse_up_to_profile_source_c
         |_| None,
     )
     .unwrap();
-    let MemoryControlPolicy::Bounded { max_source_chunk_bytes, .. } = config.memory_control_policy() else {
-        panic!("TPC-H Iceberg native profile must be bounded");
-    };
+    let projection = DataFusionNexusSessionConfig::from_optimizer_config(
+        &NexusNativeOptimizerConfig::default().with_native_execution_config(config.clone()),
+    );
     let options = native_iceberg_smoke_report::native_optimizer_options_for_profile(
         NativeExecutionProfile::TpchBenchmark,
         &config,
@@ -173,7 +172,7 @@ fn iceberg_benchmark_native_optimizer_allows_source_reuse_up_to_profile_source_c
     let max_source_reads_in_flight = config.source_scheduler_policy().max_source_reads_in_flight() as u64;
     assert_eq!(
         options.local_parquet_source_reuse.max_variant_selected_bytes,
-        max_source_chunk_bytes * max_source_reads_in_flight
+        projection.native_max_source_chunk_bytes * max_source_reads_in_flight
     );
 
     let smoke_config = native_iceberg_smoke_report::native_execution_config_for_profile_with_env(

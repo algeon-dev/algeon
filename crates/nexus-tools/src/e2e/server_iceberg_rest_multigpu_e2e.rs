@@ -41,9 +41,9 @@ use self::{
     churn::{CHURN_TIMEOUT, run_churn},
     flight::{CpuReference, Q06_WAVE_SIZE, Workload, build_cpu_references, run_mixed_wave, run_wave, tpch_workloads},
     probe::{ProbeReport, REQUIRED_SATURATED_PROBES, SATURATION_FLOOR, run_probes},
-    server::{MAX_CONCURRENT_QUERIES, MAX_QUERIES_PER_DEVICE, Params, ServerChild, require_opt_in},
+    server::{CONCURRENT_CLIENTS, MAX_ACTIVE_ATTEMPTS_PER_DEVICE, Params, ServerChild, require_opt_in},
     validation::{
-        validate_cold_and_warm_cache, validate_final_diagnostics, validate_observed_devices, validate_static_topology,
+        validate_cold_and_warm_waves, validate_final_diagnostics, validate_observed_devices, validate_static_topology,
         wait_for_idle,
     },
 };
@@ -109,8 +109,8 @@ async fn run_acceptance(
         let warm = run_wave(&channel, "warm_q06", vec![q06; Q06_WAVE_SIZE], q06_cpu).await?;
 
         eprintln!("running mixed concurrent Q01/Q03/Q06/Q10 wave");
-        let mut mixed_workloads = Vec::with_capacity(MAX_CONCURRENT_QUERIES);
-        for _ in 0..MAX_QUERIES_PER_DEVICE {
+        let mut mixed_workloads = Vec::with_capacity(CONCURRENT_CLIENTS);
+        for _ in 0..MAX_ACTIVE_ATTEMPTS_PER_DEVICE {
             for query_id in ["q01", "q03", "q06", "q10"] {
                 mixed_workloads.push(workloads.get(query_id).expect("mixed workload").clone());
             }
@@ -146,7 +146,7 @@ async fn run_acceptance(
     fs::write(params.artifact_dir.join("admission.peak.txt"), &probes.peak_payload)?;
     write_probe_artifacts(params, &probes)?;
 
-    validate_cold_and_warm_cache(&cold, &warm, &params.devices)?;
+    validate_cold_and_warm_waves(&cold, &warm, &params.devices)?;
 
     eprintln!("running cancellation and dropped-stream churn");
     let churn = tokio::time::timeout(

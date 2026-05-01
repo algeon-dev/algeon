@@ -1,7 +1,5 @@
 use super::*;
 
-const SOURCE_CACHE_KEY_GRANULARITY_REASON: &str = "source_gate:source_cache_key_granularity";
-
 pub(super) fn stream_has_multi_source_batches(
     context: &ExecutionContext,
     stream: &BoundedJoinLeafLocalParquetSourceStream,
@@ -12,11 +10,10 @@ pub(super) fn stream_has_multi_source_batches(
 }
 
 pub(super) fn source_chunk_batches(
-    context: &ExecutionContext,
+    _context: &ExecutionContext,
     stream: &BoundedJoinLeafLocalParquetSourceStream,
 ) -> Vec<SourceChunkBatch> {
-    cache_preserving_join_leaf_source_chunk_batches(
-        context,
+    join_leaf_source_chunk_batches_for_execution(
         &stream.source,
         &stream.chunks,
         &stream.reader_dynamic_filters,
@@ -33,13 +30,9 @@ pub(super) fn materialized_source_chunk_batches(
     plan_source_chunk_batches(&stream.chunks, materialized_source_batch_target_bytes(stream))
 }
 
-pub(super) fn cache_preserving_materialized_source_chunk_batches(
-    context: &ExecutionContext,
+pub(super) fn materialized_source_chunk_batches_for_execution(
     stream: &BoundedJoinLeafLocalParquetSourceStream,
 ) -> Vec<SourceChunkBatch> {
-    if context.local_parquet_source_cache().is_some() {
-        return singleton_source_chunk_batches(&stream.chunks, SOURCE_CACHE_KEY_GRANULARITY_REASON);
-    }
     materialized_source_chunk_batches(stream)
 }
 
@@ -56,16 +49,12 @@ pub(super) fn join_leaf_source_chunk_batches(
     plan_source_chunk_batches(chunks, target_bytes)
 }
 
-pub(super) fn cache_preserving_join_leaf_source_chunk_batches(
-    context: &ExecutionContext,
+pub(super) fn join_leaf_source_chunk_batches_for_execution(
     source: &LocalParquetSource,
     chunks: &[SourceChunk],
     reader_dynamic_filters: &[BoundedJoinLeafSourceStreamDynamicFilterStage],
     max_batch_source_read_bytes: Option<u64>,
 ) -> Vec<SourceChunkBatch> {
-    if context.local_parquet_source_cache().is_some() {
-        return singleton_source_chunk_batches(chunks, SOURCE_CACHE_KEY_GRANULARITY_REASON);
-    }
     join_leaf_source_chunk_batches(source, chunks, reader_dynamic_filters, max_batch_source_read_bytes)
 }
 

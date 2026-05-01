@@ -43,7 +43,6 @@ pub(in crate::exec) use crate::source::{
 };
 use crate::{
     metrics::SourceReadParquetEvidenceMetrics,
-    runtime::cache::local_parquet::{GpuLocalParquetSourceCacheInsert, GpuLocalParquetSourceCacheKey},
     source::validate_local_parquet_source,
 };
 
@@ -120,9 +119,7 @@ pub(in crate::exec) fn source_read_batch_request(
 
 /// Read a local Parquet source into a GPU dataframe.
 ///
-/// The source is validated before reading. When a compatible source cache is
-/// configured on the context, lookup and retained-byte metrics are recorded;
-/// otherwise the files are read directly.
+/// The source is validated before reading and is then read directly.
 pub fn read_local_parquet_source(
     context: &ExecutionContext,
     source_node_id: NodeId,
@@ -130,10 +127,6 @@ pub fn read_local_parquet_source(
     metrics: &mut QueryMetrics,
 ) -> Result<GpuDataFrame> {
     validate_local_parquet_source(source)?;
-
-    if let Some(cache) = context.local_parquet_source_cache() {
-        return read_cacheable_local_parquet_source(context, source_node_id, source, &cache, metrics);
-    }
 
     read_local_parquet_source_uncached(context, source_node_id, source, metrics)
 }
@@ -185,48 +178,6 @@ pub fn read_literal_batch_source(
     })?;
     metrics.operator_time += timer.elapsed();
     Ok(GpuDataFrame::new(output))
-}
-
-fn read_cacheable_local_parquet_source(
-    context: &ExecutionContext,
-    source_node_id: NodeId,
-    source: &LocalParquetSource,
-    cache: &std::sync::Arc<crate::runtime::cache::local_parquet::GpuLocalParquetSourceCache>,
-    metrics: &mut QueryMetrics,
-) -> Result<GpuDataFrame> {
-    if datafusion_order_tracking_enabled() {
-        return read_local_parquet_source_uncached(context, source_node_id, source, metrics);
-    }
-
-    let key = GpuLocalParquetSourceCacheKey::from_source(source);
-    let lookup_timer = Instant::now();
-    let cached = cache.get(&key, context, source.output_schema())?;
-    metrics.record_source_cache_lookup_time(lookup_timer.elapsed());
-    if let Some((handle, _retained_device_bytes)) = cached {
-        metrics.record_source_cache_hit(cache.retained_device_bytes()?);
-        return Ok(handle.into_gpu_frame());
-    }
-
-    metrics.record_source_cache_miss(cache.retained_device_bytes()?);
-    let frame = read_local_parquet_source_uncached(context, source_node_id, source, metrics)?;
-    let retained_device_bytes = frame.device_allocated_size_bytes()?;
-    let handle = GpuResultHandle::new(context, frame.clone(), Arc::clone(source.output_schema()))?;
-    let insert = cache.insert_if_absent_pinned(context, key, handle, retained_device_bytes)?;
-    match insert.outcome {
-        GpuLocalParquetSourceCacheInsert::Inserted => {
-            metrics.record_source_cache_insert(cache.retained_device_bytes()?);
-            if let Some(handle) = insert.handle {
-                return Ok(handle.into_gpu_frame());
-            }
-        },
-        GpuLocalParquetSourceCacheInsert::AlreadyPresent | GpuLocalParquetSourceCacheInsert::CapacitySkipped => {
-            metrics.record_source_cache_insert_skipped(cache.retained_device_bytes()?);
-            if let Some(handle) = insert.handle {
-                return Ok(handle.into_gpu_frame());
-            }
-        },
-    }
-    Ok(frame)
 }
 
 fn read_local_parquet_source_uncached(
@@ -1026,7 +977,7 @@ mod tests {
     }
 
     #[test]
-    fn background_cache_fill_enqueue_runtime_does_not_use_source_cache_insert_metrics() {
+    fn background_cache_fill_enqueue_runtime_reports_saturated_fill_gate() {
         let root = std::env::temp_dir().join(format!(
             "nexus-query-engine-background-fill-{}",
             std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
@@ -1063,7 +1014,6 @@ mod tests {
             &mut metrics,
         );
 
-        assert_eq!(metrics.source_cache_insert_skipped, 0);
         assert_eq!(metrics.source_read_runtime_rows.len(), 1);
         assert_eq!(metrics.source_read_runtime_rows[0].read_kind, "background_cache_fill_file");
         assert_eq!(metrics.source_read_runtime_rows[0].source_batching_reason, "fill_concurrency_saturated");

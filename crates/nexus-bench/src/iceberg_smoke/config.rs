@@ -707,55 +707,33 @@ pub(crate) async fn native_session_context(
     if let Some(profile) = resolve_default_chain_source_storage_profile(source_storage_profile).await? {
         execution_config = execution_config.with_source_storage_profile(profile);
     }
-    let MemoryControlPolicy::Bounded {
-        device_budget_bytes,
-        max_source_chunk_bytes,
-        max_row_groups_per_chunk,
-        max_retry_attempts,
-        min_retry_chunk_row_groups,
-    } = execution_config.memory_control_policy()
-    else {
-        return Err(Box::new(
-            nexus_query_engine::error::QueryError::new(
-                nexus_query_engine::error::QueryErrorCode::InvalidPlan,
-                "nexus_bench.iceberg_smoke.gpu_backend",
-                "Iceberg native execution requires an ownership-enforcing GPU backend",
-            )
-            .with_fact("reason", "gpu_backend_required"),
-        ));
-    };
-    let service_config = QueryServiceConfig {
+    let execution_projection = datafusion_nexus::session_config::DataFusionNexusSessionConfig::from_optimizer_config(
+        &NexusNativeOptimizerConfig::default().with_native_execution_config(execution_config.clone()),
+    );
+    let service_config = QueryExecutionConfig {
         lakehouse_cache_fill: execution_config.lakehouse_cache_fill_config().clone(),
         source_storage_profiles: execution_config.source_storage_profiles().to_vec(),
         boundary_policy: execution_config.boundary_policy(),
         source_scheduler_policy: execution_config.source_scheduler_policy(),
         source_chunk_planning_mode: execution_config.source_chunk_planning_mode(),
-        native_pipeline_execution_mode: execution_config.native_pipeline_execution_mode(),
         stddev_samp_execution_mode: execution_config.stddev_samp_execution_mode(),
         dynamic_filter_execution_options: execution_config.dynamic_filter_execution_options(),
         keyed_hash_join_strategy_options: execution_config.keyed_hash_join_strategy_options(),
         aggregate_strategy_execution_options: execution_config.aggregate_strategy_execution_options(),
         source_chunk_planning_options: execution_config.source_chunk_planning_options(),
         graph_memory_calibration_override: execution_config.graph_memory_calibration_override(),
-        local_parquet_source_cache_max_retained_bytes: execution_config
-            .query_service_local_parquet_source_cache_max_retained_bytes(),
-        resident_graph_cache_max_retained_bytes: execution_config
-            .query_service_resident_graph_cache_max_retained_bytes(),
-        query_memory_domain: execution_config.query_service_query_memory_domain(),
-        device_capacity_bytes: Some(device_budget_bytes),
-        max_concurrent_queries: 1,
-        max_source_chunk_bytes,
-        max_row_groups_per_chunk,
-        max_retry_attempts,
-        min_retry_chunk_row_groups,
-        ..QueryServiceConfig::default()
+        max_source_chunk_bytes: execution_projection.native_max_source_chunk_bytes,
+        max_row_groups_per_chunk: execution_projection.native_max_row_groups_per_chunk,
+        max_retry_attempts: execution_projection.native_max_retry_attempts,
+        min_retry_chunk_row_groups: execution_projection.native_min_retry_chunk_row_groups,
+        ..QueryExecutionConfig::default()
     };
     let backend = GpuBackendOwner::build(
         service_config,
-        vec![0],
-        vec![QueryServiceTenantConfig::new("iceberg_benchmark", device_budget_bytes)],
+        nexus_query_engine::runtime::QueueBounds::default(),
+        vec![GpuBackendOwner::device_config(0, execution_projection.native_device_budget_bytes, 1, 1)],
     )?;
-    let query_handle = Arc::new(backend.session().admit_query(TenantId::new("iceberg_benchmark"))?);
+    let query_handle = Arc::new(backend.session().admit_query()?);
     execution_config = execution_config.with_query_service_handle(query_handle);
     let native_optimizer_options = native_optimizer_options_for_profile(native_execution_profile, &execution_config);
     let optimizer_config = crate::report_workload::RelationalExecutionSelection::strict_native()
@@ -786,14 +764,14 @@ pub fn native_optimizer_options_for_profile(
     execution_config: &NexusNativeExecutionConfig,
 ) -> nexus_query_engine::optimizer::NativeOptimizerOptions {
     let mut options = nexus_query_engine::optimizer::NativeOptimizerOptions::default();
-    if matches!(profile, NativeExecutionProfile::TpchBenchmark | NativeExecutionProfile::TpcdsBenchmark)
-        && let nexus_query_engine::runtime::MemoryControlPolicy::Bounded { max_source_chunk_bytes, .. } =
-            execution_config.memory_control_policy()
-    {
+    if matches!(profile, NativeExecutionProfile::TpchBenchmark | NativeExecutionProfile::TpcdsBenchmark) {
+        let projection = datafusion_nexus::session_config::DataFusionNexusSessionConfig::from_optimizer_config(
+            &NexusNativeOptimizerConfig::default().with_native_execution_config(execution_config.clone()),
+        );
         let max_source_reads_in_flight =
             u64::try_from(execution_config.source_scheduler_policy().max_source_reads_in_flight()).unwrap_or(u64::MAX);
         options.local_parquet_source_reuse.max_variant_selected_bytes =
-            max_source_chunk_bytes.saturating_mul(max_source_reads_in_flight);
+            projection.native_max_source_chunk_bytes.saturating_mul(max_source_reads_in_flight);
     }
     options
 }
@@ -852,11 +830,11 @@ pub fn native_execution_config_for_profile_with_env(
     profile: NativeExecutionProfile,
     mut get: impl FnMut(&str) -> Option<String>,
 ) -> SmokeResult<NexusNativeExecutionConfig> {
-    let mut config = match profile {
-        NativeExecutionProfile::Smoke => NexusNativeExecutionConfig::bounded_auto_sized(),
+    let config = match profile {
+        NativeExecutionProfile::Smoke => NexusNativeExecutionConfig::bounded_default(),
         NativeExecutionProfile::TpchBenchmark | NativeExecutionProfile::TpcdsBenchmark => {
             let device_budget_bytes = optional_env_u64_get(&mut get, NATIVE_DEVICE_BUDGET_BYTES_ENV)?
-                .unwrap_or_else(NexusNativeExecutionConfig::auto_sized_device_budget_bytes);
+                .unwrap_or(NexusNativeExecutionConfig::AUTO_SIZED_DEVICE_BUDGET_FALLBACK_BYTES);
             let max_source_chunk_bytes = optional_env_u64_get(&mut get, NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV)?
                 .unwrap_or(TPCH_NATIVE_MAX_SOURCE_CHUNK_BYTES_DEFAULT);
             let max_row_groups_per_chunk = optional_env_usize_get(&mut get, NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV)?
@@ -880,7 +858,6 @@ pub fn native_execution_config_for_profile_with_env(
             .with_source_scheduler_policy(SourceSchedulerPolicy::new(max_source_reads_in_flight))
         },
     };
-    config = config.with_native_pipeline_execution_mode(NativePipelineExecutionMode::StrictBounded);
     Ok(config)
 }
 

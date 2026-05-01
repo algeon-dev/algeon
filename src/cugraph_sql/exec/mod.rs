@@ -46,7 +46,7 @@ use nexus_query_engine::{
         output::{QueryExecutionOutcome, QueryOutput},
     },
     expr::{BinaryOp, CaseWhen, Expr as NativeExpr, LimitSpec, LiteralValue},
-    graph_memory::{graph_edge_list_output_rows_for_plan, graph_memory_estimate_for_edge_list},
+    graph_memory::{graph_edge_list_output_rows_for_plan, graph_memory_admission_evidence_for_edge_list},
     metrics::{GraphAlgorithmRuntimeMetrics, QueryMetrics},
     observability::RuntimeObservationConfig,
     plan::{
@@ -65,7 +65,7 @@ use nexus_query_engine::{
         graph_residency_descriptor_for_edge_plan, planned_resident_graph_key,
     },
     runtime::{
-        ExecutionContext, MemoryControlPolicy, QueryPlacementHint,
+        ExecutionContext,
         resident::{GpuDataFrame, GpuResidentInputMap, GpuResultHandle},
     },
     source::{GpuResidentSource, SourceNode},

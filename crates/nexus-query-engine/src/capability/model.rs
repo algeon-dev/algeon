@@ -10,7 +10,7 @@ use crate::plan::{EdgeDedupStrategy, EdgeWeightCombiner};
 /// Whether the engine currently proves a bounded contract.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ContractStatus {
-    /// The boundary has an admissible contract for strict bounded execution.
+    /// The boundary has an admissible contract for capability-envelope execution.
     Modeled,
     /// The boundary is understood, but a required cudf/libcudf contract is
     /// not available yet.
@@ -90,65 +90,65 @@ pub struct ReservationRequirement {
     pub memory_boundary: &'static str,
     /// Stable report label for the lower-level or query-engine contract.
     pub required_contract: &'static str,
-    /// Whether the contract is currently admitted for strict bounded mode.
+    /// Whether the contract is currently admitted for capability-envelope mode.
     pub status: ContractStatus,
     /// How strong the admitted contract evidence is.
     pub quality: ContractQuality,
 }
 
-/// A current strict preflight gap that can only be retired by replacing the
+/// A current capability preflight gap that can only be retired by replacing the
 /// placeholder contract with a stronger cudf/libcudf contract.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct StrictUnresolvedPreflightGap {
+pub struct UnresolvedPreflightGap {
     /// Reservation kind affected by the unresolved lower-level contract.
     pub kind: ReservationKind,
     /// Stable contract label that currently relies on a placeholder proof.
     pub required_contract: &'static str,
     /// Stable report code naming the missing cudf/libcudf preflight.
     pub unresolved_gap: &'static str,
-    /// Human-readable condition required to remove this gap from strict mode.
+    /// Human-readable condition required to remove this gap from capability-envelope mode.
     pub retirement_requirement: &'static str,
 }
 
-/// Known strict-mode preflight gaps that require lower-level cudf/libcudf work.
-pub const STRICT_UNRESOLVED_PREFLIGHT_GAPS: &[StrictUnresolvedPreflightGap] = &[
-    StrictUnresolvedPreflightGap {
+/// Known capability-mode preflight gaps that require lower-level cudf/libcudf work.
+pub const UNRESOLVED_PREFLIGHT_GAPS: &[UnresolvedPreflightGap] = &[
+    UnresolvedPreflightGap {
         kind: ReservationKind::SourceRead,
         required_contract: "row_delete_application_contract",
         unresolved_gap: "libcudf_row_delete_application_preflight_unavailable",
-        retirement_requirement: "cudf/libcudf row-delete file read, anti-join, and workspace preflight for strict source chunks",
+        retirement_requirement: "cudf/libcudf row-delete file read, anti-join, and workspace preflight for capability source chunks",
     },
-    StrictUnresolvedPreflightGap {
+    UnresolvedPreflightGap {
         kind: ReservationKind::SourceRead,
         required_contract: "source_contract",
         unresolved_gap: "libcudf_parquet_decoded_output_preflight_unavailable",
         retirement_requirement: "cudf/libcudf decoded-output preflight for planned row groups and projected columns",
     },
-    StrictUnresolvedPreflightGap {
+    UnresolvedPreflightGap {
         kind: ReservationKind::OperatorOutput,
         required_contract: "aggregate_contract",
         unresolved_gap: "libcudf_groupby_aggregate_temporary_workspace_preflight_unavailable",
         retirement_requirement: "cudf/libcudf groupby aggregate output and temporary-workspace preflight",
     },
-    StrictUnresolvedPreflightGap {
+    UnresolvedPreflightGap {
         kind: ReservationKind::OperatorOutput,
         required_contract: "window_contract",
         unresolved_gap: "libcudf_window_output_temporary_workspace_preflight_unavailable",
         retirement_requirement: "cudf/libcudf window output and temporary-workspace preflight",
     },
-    StrictUnresolvedPreflightGap {
+    UnresolvedPreflightGap {
         kind: ReservationKind::OperatorOutput,
         required_contract: "edge_normalize_output_size_preflight",
         unresolved_gap: "libcudf_edge_normalize_output_preflight_unavailable",
         retirement_requirement: "cudf/libcudf edge normalization output and temporary-workspace preflight",
     },
-    StrictUnresolvedPreflightGap {
+    UnresolvedPreflightGap {
         kind: ReservationKind::FinalSort,
         required_contract: "final_sort_contract",
         unresolved_gap: "libcudf_final_sort_order_preflight_unavailable",
         retirement_requirement: "cudf/libcudf final sort or top-k output and temporary-workspace preflight",
     },
-    StrictUnresolvedPreflightGap {
+    UnresolvedPreflightGap {
         kind: ReservationKind::OperatorOutput,
         required_contract: "join_filtered_build_key_deduplicate_output_contract",
         unresolved_gap: "libcudf_drop_duplicates_output_preflight_unavailable",
@@ -164,13 +164,13 @@ pub const BLOCKING_ROLLUP_RANK_FULL_SCAN_REQUIRES_EXACT_CONTRACTS: &str =
 
 /// Rejection code for precision-sensitive floating statistical aggregates over
 /// join pipelines whose final output is a full sort. The aggregate itself may
-/// have a DataFusion-exact host Welford implementation, but strict whole-plan
+/// have a DataFusion-exact host Welford implementation, but capability-envelope
 /// admission still needs a plan-level order/batch and full-sort bound proof.
 pub const STATISTICAL_JOIN_FINAL_SORT_REQUIRES_EXACT_CONTRACTS: &str =
     "statistical_join_final_sort_requires_exact_contracts";
 
 impl ReservationRequirement {
-    /// Creates an admitted strict-bounded reservation requirement.
+    /// Creates an admitted capability-envelope reservation requirement.
     pub fn modeled(
         kind: ReservationKind,
         memory_boundary: &'static str,
@@ -187,7 +187,7 @@ impl ReservationRequirement {
         }
     }
 
-    /// Creates a requirement whose strict proof waits on a lower-level contract.
+    /// Creates a requirement whose capability proof waits on a lower-level contract.
     pub fn blocked_by_lower_level(
         kind: ReservationKind,
         memory_boundary: &'static str,
@@ -207,23 +207,23 @@ impl ReservationRequirement {
 
 /// Returns the stable unresolved-gap code for a reservation contract, if known.
 pub fn lower_level_unresolved_preflight_gap(kind: ReservationKind, required_contract: &str) -> Option<&'static str> {
-    strict_unresolved_preflight_gap(kind, required_contract).map(|gap| gap.unresolved_gap)
+    unresolved_preflight_gap(kind, required_contract).map(|gap| gap.unresolved_gap)
 }
 
 /// Returns the stable unresolved-gap code for a contract label, if known.
 pub fn lower_level_unresolved_preflight_gap_for_contract(required_contract: &str) -> Option<&'static str> {
-    STRICT_UNRESOLVED_PREFLIGHT_GAPS
+    UNRESOLVED_PREFLIGHT_GAPS
         .iter()
         .find(|gap| gap.required_contract == required_contract)
         .map(|gap| gap.unresolved_gap)
 }
 
-/// Looks up the full strict-mode unresolved preflight descriptor.
-pub fn strict_unresolved_preflight_gap(
+/// Looks up the full capability-mode unresolved preflight descriptor.
+pub fn unresolved_preflight_gap(
     kind: ReservationKind,
     required_contract: &str,
-) -> Option<&'static StrictUnresolvedPreflightGap> {
-    STRICT_UNRESOLVED_PREFLIGHT_GAPS.iter().find(|gap| gap.kind == kind && gap.required_contract == required_contract)
+) -> Option<&'static UnresolvedPreflightGap> {
+    UNRESOLVED_PREFLIGHT_GAPS.iter().find(|gap| gap.kind == kind && gap.required_contract == required_contract)
 }
 
 /// Maps a reservation kind to the most local capability scope that owns it.
@@ -233,7 +233,6 @@ pub const fn reservation_requirement_scope(kind: ReservationKind) -> Reservation
         | ReservationKind::HashTable
         | ReservationKind::FilteredProbeState
         | ReservationKind::MixedSizeData
-        | ReservationKind::SourceCacheRetained
         | ReservationKind::ChunkOperator
         | ReservationKind::GraphAlgorithm
         | ReservationKind::PartialState
@@ -732,7 +731,7 @@ pub enum SubgraphInvariantKind {
     /// A downstream final top-k may exist but is not required for the guard.
     BlockingRollupRankTopKFullScan,
     /// A floating statistical aggregate participates in a join pipeline whose
-    /// final output is a full sort; strict bounded admission needs an explicit
+    /// final output is a full sort; capability-envelope admission needs an explicit
     /// exactness envelope before this can replace the DataFusion baseline.
     StatisticalJoinFinalSortExactness,
     /// Every reachable resident producer remains valid for all of its admitted
@@ -782,7 +781,7 @@ pub struct CapabilityRejectionProjection {
     pub owner: CapabilityRejectionOwner,
     /// Stable rejection category for report/fact projections.
     pub category: CapabilityRejectionCategory,
-    /// Contract scope used by strict bounded reports.
+    /// Contract scope used by capability-envelope reports.
     pub contract_scope: ReservationRequirementScope,
     /// Stable diagnostic boundary label.
     pub memory_boundary: &'static str,
@@ -809,7 +808,7 @@ pub enum CapabilityRejectionCategory {
     MissingSubgraphInvariant,
     /// The final sink boundary is outside the compiled bounded runtime envelope.
     UnsupportedSinkBoundary,
-    /// The compiled pipeline graph is outside the strict runtime envelope.
+    /// The compiled pipeline graph is outside the capability-envelope envelope.
     UnsupportedCompiledPipelineEnvelope,
 }
 
@@ -829,7 +828,7 @@ impl CapabilityRejectionCategory {
     }
 }
 
-/// Local capability owner projected into strict bounded contract diagnostics.
+/// Local capability owner projected into capability-envelope contract diagnostics.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CapabilityRejectionOwner {
     /// Rejection owned by a node-local capability.
@@ -847,9 +846,9 @@ pub enum CapabilityRejectionOwner {
     Admission(&'static str),
 }
 
-/// Strict bounded execution envelope selected by native capability admission.
+/// Capability-envelope execution envelope selected by native capability admission.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum StrictBoundedEnvelope {
+pub enum CapabilityEnvelope {
     /// A single join is the sink root.
     RootJoin,
     /// A single join feeds admitted post-root operators.
@@ -888,7 +887,7 @@ pub enum StrictBoundedEnvelope {
     UnionPipeline,
 }
 
-impl StrictBoundedEnvelope {
+impl CapabilityEnvelope {
     /// Stable snake-case label emitted in diagnostics.
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -922,15 +921,15 @@ impl StrictBoundedEnvelope {
     }
 }
 
-/// Capability authority result for strict bounded envelope selection.
+/// Capability authority result for capability-envelope envelope selection.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CapabilityEnvelopeAdmission {
-    /// The analysis selected a strict bounded envelope.
+    /// The analysis selected a capability-envelope envelope.
     Admitted {
         /// Selected envelope.
-        envelope: StrictBoundedEnvelope,
+        envelope: CapabilityEnvelope,
     },
-    /// The analysis rejected strict bounded admission with one projection.
+    /// The analysis rejected capability-envelope admission with one projection.
     Rejected {
         /// Structured report/fact projection for the rejection.
         projection: CapabilityRejectionProjection,
@@ -954,39 +953,39 @@ pub struct CapabilityAnalysis {
     pub requirements: Vec<ReservationRequirement>,
     /// Node-local aggregate strategy capability facts.
     pub aggregate_strategies: Vec<AggregateStrategyCapability>,
-    /// Strict root-join compiled-envelope admission.
+    /// Capability root-join compiled-envelope admission.
     pub root_join_admission: CapabilityDecision,
-    /// Strict single-join post-root compiled-envelope admission.
+    /// Capability single-join post-root compiled-envelope admission.
     pub single_join_post_root_pipeline_admission: CapabilityDecision,
-    /// Strict closed multi-join compiled-envelope admission.
+    /// Capability closed multi-join compiled-envelope admission.
     pub closed_multi_join_subgraph_admission: CapabilityDecision,
-    /// Strict multi-join aggregate/top-k compiled-envelope admission.
+    /// Capability multi-join aggregate/top-k compiled-envelope admission.
     pub multi_join_aggregate_over_join_subplan_topk_admission: CapabilityDecision,
-    /// Strict root top-k join/aggregate envelope admission.
+    /// Capability root top-k join/aggregate envelope admission.
     pub root_topk_join_aggregate_admission: CapabilityDecision,
-    /// Strict root full-sort join/aggregate envelope admission.
+    /// Capability root full-sort join/aggregate envelope admission.
     pub root_full_sort_join_aggregate_admission: CapabilityDecision,
-    /// Strict exact statistical join/final-full-sort envelope admission.
+    /// Capability exact statistical join/final-full-sort envelope admission.
     pub exact_statistical_join_final_full_sort_admission: CapabilityDecision,
-    /// Strict projection-root/global-limit envelope admission.
+    /// Capability projection-root/global-limit envelope admission.
     pub projection_global_limit_admission: CapabilityDecision,
-    /// Strict projection-root scalar/setop envelope admission.
+    /// Capability projection-root scalar/setop envelope admission.
     pub projection_scalar_setop_admission: CapabilityDecision,
-    /// Strict mixed keyed/residual resident-aggregate compiled-envelope admission.
+    /// Capability mixed keyed/residual resident-aggregate compiled-envelope admission.
     pub mixed_keyed_residual_join_resident_grouped_aggregate_input_admission: CapabilityDecision,
-    /// Strict hash-join resident-aggregate post-join/top-k envelope admission.
+    /// Capability hash-join resident-aggregate post-join/top-k envelope admission.
     pub hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_admission: CapabilityDecision,
-    /// Strict rollup/rank/top-k post aggregate-join-pushdown envelope admission.
+    /// Capability rollup/rank/top-k post aggregate-join-pushdown envelope admission.
     pub rollup_rank_topk_after_aggregate_join_pushdown_admission: CapabilityDecision,
-    /// Strict shared resident-subplan compiled-envelope admission.
+    /// Capability shared resident-subplan compiled-envelope admission.
     pub keyed_hash_join_resident_subplan_admission: CapabilityDecision,
-    /// Strict keyless conditional input-subplan envelope admission.
+    /// Capability keyless conditional input-subplan envelope admission.
     pub keyless_conditional_join_input_subplan_admission: CapabilityDecision,
-    /// Strict keyless aggregate-over-join-inputs envelope admission.
+    /// Capability keyless aggregate-over-join-inputs envelope admission.
     pub keyless_conditional_join_aggregate_over_join_subplan_inputs_admission: CapabilityDecision,
-    /// Strict multi-join resident aggregate subquery-filter envelope admission.
+    /// Capability multi-join resident aggregate subquery-filter envelope admission.
     pub multi_join_resident_grouped_aggregate_subquery_filter_admission: CapabilityDecision,
-    /// Strict union compiled-envelope admission.
+    /// Capability union compiled-envelope admission.
     pub union_pipeline_admission: CapabilityDecision,
 }
 
@@ -998,9 +997,9 @@ impl CapabilityAnalysis {
             || self.invariants.iter().any(|invariant| matches!(invariant.decision, CapabilityDecision::Rejected { .. }))
     }
 
-    /// Selects the one strict bounded envelope admitted by this analysis, or a
-    /// structured projection explaining why no strict envelope is admissible.
-    pub fn strict_bounded_envelope_admission(&self) -> CapabilityEnvelopeAdmission {
+    /// Selects the one capability-envelope envelope admitted by this analysis, or a
+    /// structured projection explaining why no capability envelope is admissible.
+    pub fn capability_envelope_admission(&self) -> CapabilityEnvelopeAdmission {
         if let Some(projection) = self.first_local_rejection_projection() {
             return CapabilityEnvelopeAdmission::Rejected { projection };
         }
@@ -1010,7 +1009,7 @@ impl CapabilityAnalysis {
         if let Some(projection) = self.projection_global_limit_rejection_projection() {
             return CapabilityEnvelopeAdmission::Rejected { projection };
         }
-        if let Some(envelope) = self.selected_specialized_strict_bounded_envelope() {
+        if let Some(envelope) = self.selected_specialized_capability_envelope() {
             return CapabilityEnvelopeAdmission::Admitted { envelope };
         }
         if let Some(projection) = self.projection_scalar_setop_rejection_projection() {
@@ -1019,7 +1018,7 @@ impl CapabilityAnalysis {
         if let Some(projection) = self.root_full_sort_join_aggregate_rejection_projection() {
             return CapabilityEnvelopeAdmission::Rejected { projection };
         }
-        if let Some(envelope) = self.selected_generic_strict_bounded_envelope() {
+        if let Some(envelope) = self.selected_generic_capability_envelope() {
             return CapabilityEnvelopeAdmission::Admitted { envelope };
         }
         if let Some(projection) = self.first_raw_admission_rejection_projection() {
@@ -1027,12 +1026,12 @@ impl CapabilityAnalysis {
         }
         CapabilityEnvelopeAdmission::Rejected {
             projection: CapabilityRejectionProjection {
-                owner: CapabilityRejectionOwner::Admission("strict_bounded_envelope_admission"),
+                owner: CapabilityRejectionOwner::Admission("capability_envelope_admission"),
                 category: CapabilityRejectionCategory::MissingSubgraphInvariant,
                 contract_scope: ReservationRequirementScope::Subgraph,
-                memory_boundary: "strict_bounded_envelope_admission",
-                reason: "strict_bounded_capability_admission_not_satisfied",
-                facts: BTreeMap::from([("strict_bounded_envelope_admission", "false".to_string())]),
+                memory_boundary: "capability_envelope_admission",
+                reason: "capability_envelope_not_satisfied",
+                facts: BTreeMap::from([("capability_envelope_admission", "false".to_string())]),
             },
         }
     }
@@ -1040,7 +1039,7 @@ impl CapabilityAnalysis {
     /// Returns whether the generic closed multi-join capability proof is satisfied.
     ///
     /// This is a raw side-channel helper for legacy/generic coverage. Executable
-    /// strict bounded admission still goes through `strict_bounded_envelope_admission()`.
+    /// capability-envelope admission still goes through `capability_envelope_admission()`.
     pub fn admits_closed_multi_join_subgraph(&self) -> bool {
         admission_is_satisfied(&self.closed_multi_join_subgraph_admission)
     }
@@ -1048,7 +1047,7 @@ impl CapabilityAnalysis {
     /// Returns whether the generic root-join capability proof is satisfied.
     ///
     /// This is a raw side-channel helper for legacy/generic coverage. Executable
-    /// strict bounded admission still goes through `strict_bounded_envelope_admission()`.
+    /// capability-envelope admission still goes through `capability_envelope_admission()`.
     pub fn admits_root_join(&self) -> bool {
         admission_is_satisfied(&self.root_join_admission)
     }
@@ -1056,153 +1055,151 @@ impl CapabilityAnalysis {
     /// Returns whether the generic single-join post-root capability proof is satisfied.
     ///
     /// This is a raw side-channel helper for legacy/generic coverage. Executable
-    /// strict bounded admission still goes through `strict_bounded_envelope_admission()`.
+    /// capability-envelope admission still goes through `capability_envelope_admission()`.
     pub fn admits_single_join_post_root_pipeline(&self) -> bool {
         admission_is_satisfied(&self.single_join_post_root_pipeline_admission)
     }
 
-    /// Returns whether the strict multi-join aggregate/top-k envelope is admitted.
+    /// Returns whether the capability multi-join aggregate/top-k envelope is admitted.
     pub fn admits_multi_join_aggregate_over_join_subplan_topk_pipeline(&self) -> bool {
-        self.admits_selected_strict_bounded_envelope(StrictBoundedEnvelope::MultiJoinAggregateOverJoinSubplanTopK)
+        self.admits_selected_capability_envelope(CapabilityEnvelope::MultiJoinAggregateOverJoinSubplanTopK)
     }
 
-    /// Returns whether the strict root top-k join/aggregate envelope is admitted.
+    /// Returns whether the capability root top-k join/aggregate envelope is admitted.
     pub fn admits_root_topk_join_aggregate_pipeline(&self) -> bool {
-        self.admits_selected_strict_bounded_envelope(StrictBoundedEnvelope::RootTopKJoinAggregate)
+        self.admits_selected_capability_envelope(CapabilityEnvelope::RootTopKJoinAggregate)
     }
 
-    /// Returns whether the strict root full-sort join/aggregate envelope is admitted.
+    /// Returns whether the capability root full-sort join/aggregate envelope is admitted.
     pub fn admits_root_full_sort_join_aggregate_pipeline(&self) -> bool {
-        self.admits_selected_strict_bounded_envelope(StrictBoundedEnvelope::RootFullSortJoinAggregate)
+        self.admits_selected_capability_envelope(CapabilityEnvelope::RootFullSortJoinAggregate)
     }
 
-    /// Returns whether the strict projection/global-limit envelope is admitted.
+    /// Returns whether the capability projection/global-limit envelope is admitted.
     pub fn admits_projection_global_limit_pipeline(&self) -> bool {
-        self.admits_selected_strict_bounded_envelope(StrictBoundedEnvelope::ProjectionGlobalLimit)
+        self.admits_selected_capability_envelope(CapabilityEnvelope::ProjectionGlobalLimit)
     }
 
-    /// Returns whether the strict projection scalar/setop envelope is admitted.
+    /// Returns whether the capability projection scalar/setop envelope is admitted.
     pub fn admits_projection_scalar_setop_pipeline(&self) -> bool {
-        self.admits_selected_strict_bounded_envelope(StrictBoundedEnvelope::ProjectionScalarSetop)
+        self.admits_selected_capability_envelope(CapabilityEnvelope::ProjectionScalarSetop)
     }
 
-    /// Returns whether the strict mixed keyed/residual aggregate-input envelope is admitted.
+    /// Returns whether the capability mixed keyed/residual aggregate-input envelope is admitted.
     pub fn admits_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline(&self) -> bool {
-        self.admits_selected_strict_bounded_envelope(
-            StrictBoundedEnvelope::MixedKeyedResidualJoinResidentGroupedAggregateInput,
+        self.admits_selected_capability_envelope(
+            CapabilityEnvelope::MixedKeyedResidualJoinResidentGroupedAggregateInput,
         )
     }
 
-    /// Returns whether the strict hash-join aggregate post-join/top-k envelope is admitted.
+    /// Returns whether the capability hash-join aggregate post-join/top-k envelope is admitted.
     pub fn admits_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_pipeline(&self) -> bool {
-        self.admits_selected_strict_bounded_envelope(
-            StrictBoundedEnvelope::HashJoinResidentGroupedAggregateInputPostJoinAggregateTopK,
+        self.admits_selected_capability_envelope(
+            CapabilityEnvelope::HashJoinResidentGroupedAggregateInputPostJoinAggregateTopK,
         )
     }
 
-    /// Returns whether the strict rollup/rank/top-k post-pushdown envelope is admitted.
+    /// Returns whether the capability rollup/rank/top-k post-pushdown envelope is admitted.
     pub fn admits_rollup_rank_topk_after_aggregate_join_pushdown_pipeline(&self) -> bool {
-        self.admits_selected_strict_bounded_envelope(StrictBoundedEnvelope::RollupRankTopKAfterAggregateJoinPushdown)
+        self.admits_selected_capability_envelope(CapabilityEnvelope::RollupRankTopKAfterAggregateJoinPushdown)
     }
 
-    /// Returns whether the strict shared resident-subplan recognizer is locally
+    /// Returns whether the capability shared resident-subplan recognizer is locally
     /// satisfied, independent of broader selected-envelope priority.
     pub fn admits_keyed_hash_join_resident_subplan_pipeline(&self) -> bool {
         admission_is_satisfied(&self.keyed_hash_join_resident_subplan_admission)
     }
 
-    /// Returns whether the strict keyless conditional input-subplan envelope is admitted.
+    /// Returns whether the capability keyless conditional input-subplan envelope is admitted.
     pub fn admits_keyless_conditional_join_input_subplan_pipeline(&self) -> bool {
-        self.admits_selected_strict_bounded_envelope(StrictBoundedEnvelope::KeylessConditionalJoinInputSubplan)
+        self.admits_selected_capability_envelope(CapabilityEnvelope::KeylessConditionalJoinInputSubplan)
     }
 
-    /// Returns whether the strict keyless aggregate-over-inputs envelope is admitted.
+    /// Returns whether the capability keyless aggregate-over-inputs envelope is admitted.
     pub fn admits_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline(&self) -> bool {
-        self.admits_selected_strict_bounded_envelope(
-            StrictBoundedEnvelope::KeylessConditionalJoinAggregateOverJoinSubplanInputs,
+        self.admits_selected_capability_envelope(
+            CapabilityEnvelope::KeylessConditionalJoinAggregateOverJoinSubplanInputs,
         )
     }
 
-    /// Returns whether the strict resident aggregate subquery-filter envelope is admitted.
+    /// Returns whether the capability resident aggregate subquery-filter envelope is admitted.
     pub fn admits_multi_join_resident_grouped_aggregate_subquery_filter_pipeline(&self) -> bool {
-        self.admits_selected_strict_bounded_envelope(
-            StrictBoundedEnvelope::MultiJoinResidentGroupedAggregateSubqueryFilter,
-        )
+        self.admits_selected_capability_envelope(CapabilityEnvelope::MultiJoinResidentGroupedAggregateSubqueryFilter)
     }
 
-    /// Returns true when any strict bounded join compiled envelope is admitted.
-    pub fn admits_strict_bounded_join(&self) -> bool {
-        matches!(self.strict_bounded_envelope_admission(), CapabilityEnvelopeAdmission::Admitted { .. })
+    /// Returns true when any capability-envelope join compiled envelope is admitted.
+    pub fn admits_bounded_join(&self) -> bool {
+        matches!(self.capability_envelope_admission(), CapabilityEnvelopeAdmission::Admitted { .. })
     }
 
     /// Projects the first local rejection or lower-level block into report diagnostics.
     pub fn first_rejection_projection(&self) -> Option<CapabilityRejectionProjection> {
-        match self.strict_bounded_envelope_admission() {
+        match self.capability_envelope_admission() {
             CapabilityEnvelopeAdmission::Admitted { .. } => None,
             CapabilityEnvelopeAdmission::Rejected { projection } => Some(projection),
         }
     }
 
-    fn admits_selected_strict_bounded_envelope(&self, expected: StrictBoundedEnvelope) -> bool {
+    fn admits_selected_capability_envelope(&self, expected: CapabilityEnvelope) -> bool {
         matches!(
-            self.strict_bounded_envelope_admission(),
+            self.capability_envelope_admission(),
             CapabilityEnvelopeAdmission::Admitted { envelope } if envelope == expected
         )
     }
 
-    fn selected_specialized_strict_bounded_envelope(&self) -> Option<StrictBoundedEnvelope> {
+    fn selected_specialized_capability_envelope(&self) -> Option<CapabilityEnvelope> {
         // This order is part of admission semantics. Prefer narrow, shape-specific
         // envelopes before broader projection/scalar-setop contracts, since those
         // contracts can also prove cardinality for several specialized join shapes.
         [
             (
-                StrictBoundedEnvelope::MultiJoinAggregateOverJoinSubplanTopK,
+                CapabilityEnvelope::MultiJoinAggregateOverJoinSubplanTopK,
                 &self.multi_join_aggregate_over_join_subplan_topk_admission,
             ),
             (
-                StrictBoundedEnvelope::HashJoinResidentGroupedAggregateInputPostJoinAggregateTopK,
+                CapabilityEnvelope::HashJoinResidentGroupedAggregateInputPostJoinAggregateTopK,
                 &self.hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_admission,
             ),
-            (StrictBoundedEnvelope::RootTopKJoinAggregate, &self.root_topk_join_aggregate_admission),
+            (CapabilityEnvelope::RootTopKJoinAggregate, &self.root_topk_join_aggregate_admission),
             (
-                StrictBoundedEnvelope::ExactStatisticalJoinFinalFullSort,
+                CapabilityEnvelope::ExactStatisticalJoinFinalFullSort,
                 &self.exact_statistical_join_final_full_sort_admission,
             ),
-            (StrictBoundedEnvelope::RootFullSortJoinAggregate, &self.root_full_sort_join_aggregate_admission),
-            (StrictBoundedEnvelope::ProjectionGlobalLimit, &self.projection_global_limit_admission),
+            (CapabilityEnvelope::RootFullSortJoinAggregate, &self.root_full_sort_join_aggregate_admission),
+            (CapabilityEnvelope::ProjectionGlobalLimit, &self.projection_global_limit_admission),
             (
-                StrictBoundedEnvelope::MixedKeyedResidualJoinResidentGroupedAggregateInput,
+                CapabilityEnvelope::MixedKeyedResidualJoinResidentGroupedAggregateInput,
                 &self.mixed_keyed_residual_join_resident_grouped_aggregate_input_admission,
             ),
             (
-                StrictBoundedEnvelope::RollupRankTopKAfterAggregateJoinPushdown,
+                CapabilityEnvelope::RollupRankTopKAfterAggregateJoinPushdown,
                 &self.rollup_rank_topk_after_aggregate_join_pushdown_admission,
             ),
-            (StrictBoundedEnvelope::KeyedHashJoinResidentSubplan, &self.keyed_hash_join_resident_subplan_admission),
+            (CapabilityEnvelope::KeyedHashJoinResidentSubplan, &self.keyed_hash_join_resident_subplan_admission),
             (
-                StrictBoundedEnvelope::KeylessConditionalJoinInputSubplan,
+                CapabilityEnvelope::KeylessConditionalJoinInputSubplan,
                 &self.keyless_conditional_join_input_subplan_admission,
             ),
             (
-                StrictBoundedEnvelope::KeylessConditionalJoinAggregateOverJoinSubplanInputs,
+                CapabilityEnvelope::KeylessConditionalJoinAggregateOverJoinSubplanInputs,
                 &self.keyless_conditional_join_aggregate_over_join_subplan_inputs_admission,
             ),
             (
-                StrictBoundedEnvelope::MultiJoinResidentGroupedAggregateSubqueryFilter,
+                CapabilityEnvelope::MultiJoinResidentGroupedAggregateSubqueryFilter,
                 &self.multi_join_resident_grouped_aggregate_subquery_filter_admission,
             ),
-            (StrictBoundedEnvelope::ProjectionScalarSetop, &self.projection_scalar_setop_admission),
-            (StrictBoundedEnvelope::UnionPipeline, &self.union_pipeline_admission),
+            (CapabilityEnvelope::ProjectionScalarSetop, &self.projection_scalar_setop_admission),
+            (CapabilityEnvelope::UnionPipeline, &self.union_pipeline_admission),
         ]
         .into_iter()
         .find_map(|(envelope, decision)| (*decision == CapabilityDecision::Satisfied).then_some(envelope))
     }
 
-    fn selected_generic_strict_bounded_envelope(&self) -> Option<StrictBoundedEnvelope> {
+    fn selected_generic_capability_envelope(&self) -> Option<CapabilityEnvelope> {
         [
-            (StrictBoundedEnvelope::RootJoin, &self.root_join_admission),
-            (StrictBoundedEnvelope::SingleJoinPostRootPipeline, &self.single_join_post_root_pipeline_admission),
-            (StrictBoundedEnvelope::ClosedMultiJoinSubgraph, &self.closed_multi_join_subgraph_admission),
+            (CapabilityEnvelope::RootJoin, &self.root_join_admission),
+            (CapabilityEnvelope::SingleJoinPostRootPipeline, &self.single_join_post_root_pipeline_admission),
+            (CapabilityEnvelope::ClosedMultiJoinSubgraph, &self.closed_multi_join_subgraph_admission),
         ]
         .into_iter()
         .find_map(|(envelope, decision)| (*decision == CapabilityDecision::Satisfied).then_some(envelope))
@@ -1351,10 +1348,10 @@ impl CapabilityAnalysis {
                     ("blocked_lower_level_contract", CapabilityRejectionCategory::MissingLowerLevelContract)
                 },
                 ContractStatus::DeferredUntilPrerequisite => {
-                    ("deferred_strict_bounded_contract", CapabilityRejectionCategory::MissingSubgraphInvariant)
+                    ("deferred_capability_contract", CapabilityRejectionCategory::MissingSubgraphInvariant)
                 },
                 ContractStatus::RejectedByCapability => {
-                    ("rejected_strict_bounded_contract", CapabilityRejectionCategory::MissingSubgraphInvariant)
+                    ("rejected_capability_contract", CapabilityRejectionCategory::MissingSubgraphInvariant)
                 },
                 ContractStatus::Modeled => unreachable!("modeled requirements are filtered above"),
             };

@@ -1,0 +1,39 @@
+error[E0603]: module `graph` is private
+ --> tests/ui/public_api/forbidden_graph_execution_spi.rs:1:36
+  |
+1 | use datafusion_nexus::native_exec::graph::{
+  |                                    ^^^^^ private module
+2 |     GraphExecutionPlan, GraphExecutionPlanDiscovery, register_graph_execution_plan_discovery,
+  |     ------------------ trait `GraphExecutionPlan` is not publicly re-exported
+  |
+note: the module `graph` is defined here
+ --> src/native_exec.rs
+  |
+  | pub(crate) mod graph;
+  | ^^^^^^^^^^^^^^^^^^^^
+
+error[E0603]: module `graph` is private
+ --> tests/ui/public_api/forbidden_graph_execution_spi.rs:1:36
+  |
+1 | use datafusion_nexus::native_exec::graph::{
+  |                                    ^^^^^ private module
+  |
+note: the module `graph` is defined here
+ --> src/native_exec.rs
+  |
+  | pub(crate) mod graph;
+  | ^^^^^^^^^^^^^^^^^^^^
+
+error[E0603]: module `graph` is private
+  --> tests/ui/public_api/forbidden_graph_execution_spi.rs:10:75
+   |
+10 |     ) -> datafusion::common::Result<Option<datafusion_nexus::native_exec::graph::GraphAdmissionModelAsk>> {
+   |                                                                           ^^^^^  ---------------------- struct `GraphAdmissionModelAsk` is not publicly re-exported
+   |                                                                           |
+   |                                                                           private module
+   |
+note: the module `graph` is defined here
+  --> src/native_exec.rs
+   |
+   | pub(crate) mod graph;
+   | ^^^^^^^^^^^^^^^^^^^^

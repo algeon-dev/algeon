@@ -14,6 +14,7 @@ mkdir -p \
   "${fixture}/tests" \
   "${fixture}/docs/plan" \
   "${fixture}/docs/report" \
+  "${fixture}/docs/guide" \
   "${fixture}/website/docs" \
   "${fixture}/bin"
 
@@ -36,6 +37,7 @@ printf '#[cfg(test)]\nmod tests {\n    const LEGACY: &str = "GpuFallbackPolicy";
   >>"${fixture}/crates/nexus-examples/src/main.rs"
 printf '{"name":"website"}\n' >"${fixture}/website/package.json"
 printf '# Current website source\n' >"${fixture}/website/docs/intro.md"
+printf '# Current contributor guide\n' >"${fixture}/docs/guide/current.md"
 
 # These are intentionally outside the public checker surface. They prove the
 # scope keeps ignored planning/report material and non-public Rust tests out.
@@ -95,6 +97,19 @@ reject_root_term gpu_only GpuOnly 'GpuOnly policy wording'
 reject_root_term partial_native PartialNative PartialNative
 reject_root_term iceberg_cpu iceberg-cpu iceberg-cpu
 reject_root_term iceberg_provider IcebergProviderKind IcebergProviderKind
+reject_root_term legacy_resource_policy NexusGpuResourcePolicy NexusGpuResourcePolicy
+reject_root_term removed_server_pipeline_env NEXUS_SERVER_NATIVE_PIPELINE_EXECUTION_MODE 'removed server bounded-controller environment variable'
+reject_root_term removed_bench_pipeline_env CUDF_NATIVE_PIPELINE_EXECUTION_MODE 'removed benchmark pipeline-mode environment variable'
+reject_root_term removed_tpch_pipeline_env NEXUS_TPCH_BENCH_NATIVE_PIPELINE_EXECUTION_MODE 'removed benchmark pipeline-mode environment variable'
+reject_root_term removed_query_service_pipeline_env CUDF_QUERY_SERVICE_TPCH_NATIVE_PIPELINE_EXECUTION_MODE 'removed benchmark pipeline-mode environment variable'
+reject_root_term removed_adaptive_module adaptive_report.rs 'removed adaptive report module'
+reject_root_term removed_adaptive_module_path adaptive_report::AdaptivePipelineReport 'removed adaptive report module'
+reject_root_term removed_adaptive_row adaptive_pipeline_rows 'removed adaptive report row'
+reject_root_term removed_adaptive_projection_prose 'adaptive-named rows and counters are canonical empty or zero values' 'removed adaptive compatibility projection prose'
+reject_root_term removed_adaptive_counter adaptive_retry_count 'removed adaptive report row or counter'
+reject_root_term removed_strict_projection strict_bounded_contract_rows 'removed strict report projection'
+reject_root_term removed_tenant_diagnostic next_tenant_id 'removed tenant queue diagnostic'
+reject_root_term removed_graph_cache_snapshot QueryServiceGraphCacheSnapshot 'removed resident graph cache snapshot'
 
 printf 'cpu-fallback-contract-validate = []\n' >>"${fixture}/crates/nexus-tools/Cargo.toml"
 run_check tool_selector "${check[@]}"
@@ -107,6 +122,12 @@ run_check website_source "${check[@]}"
 assert_status website_source 1
 assert_contains "${tmp_dir}/website_source.out" "website/docs/intro.md:6: NEXUS_SERVER_CPU_FALLBACK_* environment variables"
 sed -i '$d' "${fixture}/website/docs/intro.md"
+
+printf 'NEXUS_SERVER_ADMISSION_MAX_ACTIVE_ATTEMPTS_PER_DEVICE\n' >>"${fixture}/docs/guide/current.md"
+run_check contributor_guide "${check[@]}"
+assert_status contributor_guide 1
+assert_contains "${tmp_dir}/contributor_guide.out" "docs/guide/current.md:2: removed server bounded-controller environment variable"
+sed -i '$d' "${fixture}/docs/guide/current.md"
 
 printf 'fallback.max_concurrent_statements = 2\n' >>"${fixture}/website/docs/intro.md"
 run_check legacy_toml "${check[@]}"

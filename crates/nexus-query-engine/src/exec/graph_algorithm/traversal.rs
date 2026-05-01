@@ -5,8 +5,7 @@ pub(super) fn execute_bfs(
     spec: &crate::plan::GraphAlgorithmSpec,
     inputs: GraphAlgorithmExecutionInputs,
 ) -> Result<GraphAlgorithmExecutionResult> {
-    let GraphAlgorithmExecutionInputs { edge_list: input, side_inputs, graph_memory_limit_bytes, preparation_pin_id } =
-        inputs;
+    let GraphAlgorithmExecutionInputs { edge_list: input, side_inputs, graph_memory_limit_bytes } = inputs;
     let crate::plan::GraphAlgorithmParams::Bfs(params) = &spec.params else {
         return Err(QueryError::new(
             QueryErrorCode::InvalidPlan,
@@ -16,11 +15,6 @@ pub(super) fn execute_bfs(
         .with_fact("algorithm", spec.algorithm.as_str()));
     };
 
-    let resident_graph_key = if params.predicates.include_edges.is_none() {
-        resident_graph_key_for_input::<cugraph::Forward>(&input, spec)
-    } else {
-        None
-    };
     let input = input.into_frame();
     let (mut edges, vertex_type) = project_edge_list(&input, spec)?;
     let options = table_graph_options(spec);
@@ -262,24 +256,10 @@ pub(super) fn execute_bfs(
             "datafusion_nexus_cugraph_bfs",
             run_bfs,
         )
-    } else if let Some(preparation_pin_id) = preparation_pin_id {
-        run_with_cugraph_graph_cache_hit::<cugraph::Forward, _>(
-            context,
-            graph_memory_limit_bytes,
-            spec,
-            resident_graph_key,
-            edges,
-            options,
-            "datafusion_nexus_cugraph_bfs",
-            preparation_pin_id,
-            run_bfs,
-        )
     } else {
         run_with_cugraph_graph::<cugraph::Forward, _>(
             context,
             graph_memory_limit_bytes,
-            spec,
-            resident_graph_key,
             edges,
             options,
             "datafusion_nexus_cugraph_bfs",
@@ -1251,8 +1231,6 @@ pub(super) fn execute_sssp(
     run_with_cugraph_graph::<cugraph::Forward, _>(
         context,
         inputs.graph_memory_limit_bytes,
-        spec,
-        None,
         edges,
         options,
         "datafusion_nexus_cugraph_sssp",

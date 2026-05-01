@@ -1,15 +1,6 @@
 use super::*;
 
 impl CompiledGpuTaskExecutor<'_> {
-    pub(super) fn acknowledge_requested_grant_shrink(&mut self) -> Result<bool> {
-        let budget_before = self.reservations.budget();
-        let request_satisfied = self.reservations.acknowledge_requested_grant_shrink()?;
-        if self.reservations.budget() < budget_before {
-            self.cooperative_shrink_applied_since_last_cycle = true;
-        }
-        Ok(request_satisfied)
-    }
-
     pub(super) fn select_join_build_strategy(
         &mut self,
         task: &PipelineTask,

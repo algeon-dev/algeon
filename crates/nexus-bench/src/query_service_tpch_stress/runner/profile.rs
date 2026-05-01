@@ -14,8 +14,8 @@ pub(super) async fn run_profile_stress(
         let batches = batch.into_iter().map(|request| vec![request]).collect();
         let results = execute_profile_batches(service.clone(), Arc::clone(&cpu_baselines), batches).await?;
         wait_for_gpu_jobs_idle(service.clone(), config.stream_idle_timeout).await?;
-        log_profile_cache_evidence(&results);
-        validate_profile_results(&results, config.source_cache_max_retained_bytes.is_some() && iteration >= 2)?;
+        log_profile_evidence(&results);
+        validate_profile_results(&results)?;
         evidence.rows.extend(results.into_iter().map(|result| result.evidence));
         eprintln!(
             "[query_service_tpch_stress] profile warmup iteration {iteration}/{} complete",
@@ -36,8 +36,8 @@ pub(super) async fn run_profile_stress(
     quiescence_result?;
     profiler_result?;
 
-    log_profile_cache_evidence(&results);
-    validate_profile_results(&results, config.source_cache_max_retained_bytes.is_some())?;
+    log_profile_evidence(&results);
+    validate_profile_results(&results)?;
     let rows = results.iter().map(|result| result.row.clone()).collect::<Vec<_>>();
     evidence.rows.extend(results.into_iter().map(|result| result.evidence));
 
@@ -50,7 +50,7 @@ async fn admit_profile_lanes(service: GpuBackendSession, lanes: usize) -> DataFu
     let mut admitted = Vec::with_capacity(lanes);
     for lane in 1..=lanes {
         let service_for_admission = service.clone();
-        let handle = tokio::task::spawn_blocking(move || service_for_admission.admit_query(TenantId::new("bulk")))
+        let handle = tokio::task::spawn_blocking(move || service_for_admission.admit_query())
             .await
             .map_err(|error| plan_error(format!("profile lane admission task join failed: {error}")))?
             .map_err(native_error)?;
@@ -110,7 +110,7 @@ async fn prepare_profile_measurements(
 fn profile_request(profile: &StressProfileConfig, lane: usize, iteration: usize) -> StressRequest {
     StressRequest {
         request_index: (iteration - 1) * profile.lanes + lane,
-        tenant_id: TenantId::new("bulk"),
+        client_id: "bulk".to_string(),
         workload_class: "profile",
         query_id: profile.query_id.clone(),
         iteration,
@@ -160,8 +160,8 @@ async fn execute_prepared_profile_request(
     let admission_facts = admission_facts(service, &handle)?;
     let cpu = cpu_baselines.get(&request.query_id);
 
-    let (row, metrics) = match collect_prepared_native(prepared).await {
-        Ok(NativeCollectOutcome::Succeeded { planning_row, measurement: native, metrics }) => {
+    let row = match collect_prepared_native(prepared).await {
+        Ok(NativeCollectOutcome::Succeeded { planning_row, measurement: native }) => {
             let parity = match cpu {
                 Some(cpu) if cpu.output_fingerprint == native.output_fingerprint => "matched",
                 Some(_) => "mismatched",
@@ -170,7 +170,7 @@ async fn execute_prepared_profile_request(
             let row = StressRow {
                 row_type: "query",
                 request_index: request.request_index,
-                tenant_id: request.tenant_id.to_string(),
+                client_id: request.client_id.to_string(),
                 workload_class: request.workload_class,
                 query_id: request.query_id.clone(),
                 iteration: request.iteration,
@@ -192,9 +192,9 @@ async fn execute_prepared_profile_request(
                 native_output_fingerprint: Some(native.output_fingerprint),
                 error: StructuredFailure::default(),
             };
-            (row, metrics)
+            row
         },
-        Ok(NativeCollectOutcome::RuntimeFailed { planning_row, error, metrics }) => {
+        Ok(NativeCollectOutcome::RuntimeFailed { planning_row, error }) => {
             let row = failure_row(
                 &request,
                 total_started.elapsed(),
@@ -209,7 +209,7 @@ async fn execute_prepared_profile_request(
                 cpu,
                 None,
             );
-            (row, metrics)
+            row
         },
         Err(error) => {
             let row = failure_row(
@@ -226,7 +226,7 @@ async fn execute_prepared_profile_request(
                 cpu,
                 None,
             );
-            (row, NativeDataFusionExecutionMetrics::default())
+            row
         },
     };
 
@@ -240,17 +240,12 @@ async fn execute_prepared_profile_request(
         query_id: row.query_id.clone(),
         native_runtime_outcome: row.native_runtime_outcome,
         parity_status: row.parity_status,
-        source_cache_hits: metrics.source_cache_hits,
-        source_cache_misses: metrics.source_cache_misses,
-        source_cache_inserts: metrics.source_cache_inserts,
-        source_cache_insert_skipped: metrics.source_cache_insert_skipped,
-        source_cache_retained_bytes: metrics.source_cache_retained_bytes,
         native_wall_ms: row.native_wall_ms,
     };
     Ok(ProfileRequestResult { row, evidence })
 }
 
-fn validate_profile_results(results: &[ProfileRequestResult], require_cache_only: bool) -> DataFusionResult<()> {
+fn validate_profile_results(results: &[ProfileRequestResult]) -> DataFusionResult<()> {
     for result in results {
         let row = &result.row;
         let evidence = &result.evidence;
@@ -265,40 +260,19 @@ fn validate_profile_results(results: &[ProfileRequestResult], require_cache_only
                 row.error.message.as_deref().unwrap_or("none"),
             )));
         }
-        if require_cache_only
-            && (evidence.source_cache_hits == 0
-                || evidence.source_cache_misses != 0
-                || evidence.source_cache_inserts != 0)
-        {
-            return Err(plan_error(format!(
-                "profile {} lane {} iteration {} was not cache-only: hits={} misses={} inserts={} skipped={}",
-                evidence.phase,
-                evidence.lane,
-                evidence.iteration,
-                evidence.source_cache_hits,
-                evidence.source_cache_misses,
-                evidence.source_cache_inserts,
-                evidence.source_cache_insert_skipped,
-            )));
-        }
     }
     Ok(())
 }
 
-fn log_profile_cache_evidence(results: &[ProfileRequestResult]) {
+fn log_profile_evidence(results: &[ProfileRequestResult]) {
     for result in results {
         let evidence = &result.evidence;
         eprintln!(
-            "[query_service_tpch_stress] profile phase={} lane={} iteration={} device={} hits={} misses={} inserts={} skipped={} retained_bytes={} native_wall_ms={}",
+            "[query_service_tpch_stress] profile phase={} lane={} iteration={} device={} native_wall_ms={}",
             evidence.phase,
             evidence.lane,
             evidence.iteration,
             evidence.device_ordinal,
-            evidence.source_cache_hits,
-            evidence.source_cache_misses,
-            evidence.source_cache_inserts,
-            evidence.source_cache_insert_skipped,
-            evidence.source_cache_retained_bytes,
             evidence.native_wall_ms.map(format_ms).unwrap_or_else(|| "none".to_string()),
         );
     }

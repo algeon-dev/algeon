@@ -27,6 +27,25 @@ impl fmt::Display for PasswordHashError {
 
 impl std::error::Error for PasswordHashError {}
 
+/// Parse and validate an Argon2 PHC string without performing a password
+/// verification. Configuration loading uses this to reject malformed hashes
+/// before the server accepts handshakes.
+pub(crate) fn validate_password_hash(phc_string: &str) -> Result<(), PasswordHashError> {
+    let parsed = PasswordHash::new(phc_string).map_err(|error| PasswordHashError::InvalidHash(error.to_string()))?;
+    if !matches!(parsed.algorithm.as_str(), "argon2d" | "argon2i" | "argon2id") {
+        Err(PasswordHashError::InvalidHash(format!(
+            "password hash algorithm `{}` is not an Argon2 variant",
+            parsed.algorithm
+        )))
+    } else if parsed.salt.is_none() {
+        Err(PasswordHashError::InvalidHash("password hash is missing its salt".to_string()))
+    } else if parsed.hash.is_none() {
+        Err(PasswordHashError::InvalidHash("password hash is missing its encoded output".to_string()))
+    } else {
+        Ok(())
+    }
+}
+
 /// Verify a plaintext password against an Argon2 PHC string. Returns
 /// `Ok(true)` on match, `Ok(false)` on mismatch (the only two outcomes
 /// callers should branch on). A malformed `phc_string` returns
@@ -75,6 +94,15 @@ mod tests {
     fn malformed_hash_reports_invalid() {
         let err = verify_password("anything", "not a phc string").unwrap_err();
         assert!(matches!(err, PasswordHashError::InvalidHash(_)), "got: {err:?}");
+    }
+
+    #[test]
+    fn config_validation_requires_a_complete_argon2_phc() {
+        let valid = hash_password("correct horse battery staple").expect("hash");
+        validate_password_hash(&valid).expect("generated hash is a complete Argon2 PHC");
+        let error = validate_password_hash("$argon2id$v=19$m=19456,t=2,p=1$only-a-salt")
+            .expect_err("PHC without encoded output must reject");
+        assert!(matches!(error, PasswordHashError::InvalidHash(_)), "got: {error:?}");
     }
 
     #[test]

@@ -1,17 +1,12 @@
-use std::{num::NonZeroUsize, sync::Barrier};
+use std::sync::Barrier;
 
 use datafusion::execution::SessionStateBuilder;
-use nexus_query_engine::runtime::{QueryPlacementPolicy, SlotGuarantee};
 
 use super::*;
 use crate::{
-    backend::{GpuMemoryOwnership, GrantBand, MemoryShare, NexusAdmissionPolicy, NexusMemoryPolicy},
+    backend::{GpuDeviceMemoryLimit, GpuMemoryOwnership, NexusGpuDeviceProfile, NexusGpuQueuePolicy},
     native_exec::{NativeMetricsCapture, NexusNativeExecutionConfig},
-    planner::{
-        HostExecutionQosConfig, NEXUS_FINAL_PLAN_REQUIREMENT_RULE_NAME, NEXUS_HOST_EXECUTION_QOS_RULE_NAME,
-        NexusNativeOptimizerConfig,
-    },
-    session::NEXUS_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME,
+    planner::NexusNativeOptimizerConfig,
 };
 
 const TEST_DEVICE_BUDGET_BYTES: u64 = 4096;
@@ -38,16 +33,14 @@ fn base_config() -> ServerConfig {
     ServerConfig {
         bind_addr: "127.0.0.1:0".parse().expect("test bind address"),
         log_filter: "info".to_string(),
-        max_in_flight: 1,
-        admission_policy: crate::backend::NexusAdmissionPolicy::default().with_max_concurrent_queries(1),
-        host_execution_qos: None,
+        queue_policy: NexusGpuQueuePolicy::default(),
+        gpu_device_profiles: vec![NexusGpuDeviceProfile::new(0)],
         gpu_devices: vec![0],
         gpu_memory_ownership: vec![(0, GpuMemoryOwnership::WholeDeviceExclusive)],
-        device_budget_fraction: None,
         statement_ticket_ttl: std::time::Duration::from_secs(60),
         observability: ServerObservabilityConfig::default(),
         native_optimizer_config: NexusNativeOptimizerConfig::default(),
-        auth: auth::AuthConfig::default(),
+        auth: AuthConfig::default(),
         workspace: None,
         #[cfg(feature = "iceberg")]
         iceberg: None,
@@ -55,10 +48,8 @@ fn base_config() -> ServerConfig {
     }
 }
 
-fn bounded_config(max_concurrent_queries: usize) -> ServerConfig {
+fn bounded_config(max_active_attempts_per_device: usize) -> ServerConfig {
     let mut config = base_config();
-    config.max_in_flight = max_concurrent_queries;
-    config.admission_policy = NexusAdmissionPolicy::default().with_max_concurrent_queries(max_concurrent_queries);
     config.native_optimizer_config =
         NexusNativeOptimizerConfig::default().with_native_execution_config(NexusNativeExecutionConfig::bounded(
             TEST_DEVICE_BUDGET_BYTES,
@@ -67,46 +58,44 @@ fn bounded_config(max_concurrent_queries: usize) -> ServerConfig {
             TEST_MAX_RETRY_ATTEMPTS,
             TEST_MIN_RETRY_CHUNK_ROW_GROUPS,
         ));
+    config.gpu_device_profiles = vec![
+        NexusGpuDeviceProfile::new(0)
+            .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: TEST_DEVICE_BUDGET_BYTES })
+            .with_max_active_attempts(max_active_attempts_per_device),
+    ];
     config
 }
 
-fn unbounded_config() -> ServerConfig {
-    let mut config = base_config();
-    config.max_in_flight = 1;
-    config.admission_policy = NexusAdmissionPolicy::default().with_max_concurrent_queries(1);
-    config.native_optimizer_config =
-        NexusNativeOptimizerConfig::default().with_native_execution_config(NexusNativeExecutionConfig::unbounded());
-    config
-}
-
-fn runtime_backend(max_concurrent_queries: usize) -> NexusGpuBackend {
+fn runtime_backend(max_active_attempts_per_device: usize) -> NexusGpuBackend {
     NexusGpuBackend::builder()
         .device_memory_ownership([(0, GpuMemoryOwnership::WholeDeviceExclusive)])
-        .memory_policy(NexusMemoryPolicy::Bounded {
-            device_ordinals: vec![0],
-            device_budget_bytes: TEST_DEVICE_BUDGET_BYTES,
-            max_source_chunk_bytes: TEST_MAX_SOURCE_CHUNK_BYTES,
-            max_row_groups_per_chunk: TEST_MAX_ROW_GROUPS_PER_CHUNK,
-            max_retry_attempts: TEST_MAX_RETRY_ATTEMPTS,
-            min_retry_chunk_row_groups: TEST_MIN_RETRY_CHUNK_ROW_GROUPS,
-        })
-        .admission(NexusAdmissionPolicy::default().with_max_concurrent_queries(max_concurrent_queries))
+        .with_native_execution_config(NexusNativeExecutionConfig::bounded(
+            TEST_DEVICE_BUDGET_BYTES,
+            TEST_MAX_SOURCE_CHUNK_BYTES,
+            TEST_MAX_ROW_GROUPS_PER_CHUNK,
+            TEST_MAX_RETRY_ATTEMPTS,
+            TEST_MIN_RETRY_CHUNK_ROW_GROUPS,
+        ))
+        .device_profiles([NexusGpuDeviceProfile::new(0)
+            .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: TEST_DEVICE_BUDGET_BYTES })
+            .with_max_active_attempts(max_active_attempts_per_device)])
         .build()
         .expect("runtime backend should build")
 }
 
-fn controller_projection(max_concurrent_queries: usize) -> crate::backend::TestBackendControllerProjection {
+fn controller_projection(max_active_attempts_per_device: usize) -> crate::backend::TestBackendControllerProjection {
     NexusGpuBackend::builder()
         .device_memory_ownership([(0, GpuMemoryOwnership::WholeDeviceExclusive)])
-        .memory_policy(NexusMemoryPolicy::Bounded {
-            device_ordinals: vec![0],
-            device_budget_bytes: TEST_DEVICE_BUDGET_BYTES,
-            max_source_chunk_bytes: TEST_MAX_SOURCE_CHUNK_BYTES,
-            max_row_groups_per_chunk: TEST_MAX_ROW_GROUPS_PER_CHUNK,
-            max_retry_attempts: TEST_MAX_RETRY_ATTEMPTS,
-            min_retry_chunk_row_groups: TEST_MIN_RETRY_CHUNK_ROW_GROUPS,
-        })
-        .admission(NexusAdmissionPolicy::default().with_max_concurrent_queries(max_concurrent_queries))
+        .with_native_execution_config(NexusNativeExecutionConfig::bounded(
+            TEST_DEVICE_BUDGET_BYTES,
+            TEST_MAX_SOURCE_CHUNK_BYTES,
+            TEST_MAX_ROW_GROUPS_PER_CHUNK,
+            TEST_MAX_RETRY_ATTEMPTS,
+            TEST_MIN_RETRY_CHUNK_ROW_GROUPS,
+        ))
+        .device_profiles([NexusGpuDeviceProfile::new(0)
+            .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: TEST_DEVICE_BUDGET_BYTES })
+            .with_max_active_attempts(max_active_attempts_per_device)])
         .build_test_controller_projection()
         .expect("CUDA-free backend controller projection should build")
 }
@@ -115,7 +104,7 @@ fn controller_projection(max_concurrent_queries: usize) -> crate::backend::TestB
 fn shutdown_closes_native_admission_before_coordinator_terminalization() {
     let config = bounded_config(1);
     let backend = runtime_backend(1);
-    let admission = admission::QueryAdmission::from_backend(Some(&backend), &config).unwrap();
+    let admission = admission::QueryAdmission::from_backend(&backend);
     let coordinator = coordinator::QueryCoordinator::new(coordinator::QueryCoordinatorConfig::from_observability(
         &config.observability,
     ));
@@ -149,7 +138,7 @@ fn shutdown_closes_native_admission_before_coordinator_terminalization() {
 async fn shutdown_activity_race_is_fallible_and_drain_waits_for_prior_activity() {
     let config = bounded_config(1);
     let backend = runtime_backend(1);
-    let admission = Arc::new(admission::QueryAdmission::from_backend(Some(&backend), &config).unwrap());
+    let admission = Arc::new(admission::QueryAdmission::from_backend(&backend));
     let coordinator = coordinator::QueryCoordinator::new(coordinator::QueryCoordinatorConfig::from_observability(
         &config.observability,
     ));
@@ -220,7 +209,7 @@ async fn shutdown_activity_race_is_fallible_and_drain_waits_for_prior_activity()
 
 #[tokio::test(flavor = "current_thread")]
 async fn shutdown_supervisor_reports_coordinator_deadline_expiry_as_error() {
-    let admission = Arc::new(admission::QueryAdmission::new(1).unwrap());
+    let admission = Arc::new(admission::QueryAdmission::new_for_tests());
     let observability = ServerObservabilityConfig {
         shutdown_grace: std::time::Duration::from_millis(20),
         ..ServerObservabilityConfig::default()
@@ -265,7 +254,7 @@ async fn shutdown_supervisor_propagates_native_admission_cleanup_timeout() {
     config.observability.shutdown_grace = std::time::Duration::from_millis(20);
     let backend = runtime_backend(1);
     let live_query = backend.admit_query().unwrap();
-    let admission = Arc::new(admission::QueryAdmission::from_backend(Some(&backend), &config).unwrap());
+    let admission = Arc::new(admission::QueryAdmission::from_backend(&backend));
     let coordinator = coordinator::QueryCoordinator::new(coordinator::QueryCoordinatorConfig::from_observability(
         &config.observability,
     ));
@@ -298,7 +287,7 @@ async fn shutdown_supervisor_propagates_native_admission_cleanup_timeout() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn supervisor_uses_captured_expired_plan_after_coordinator_finalization_clears_deadline() {
-    let admission = Arc::new(admission::QueryAdmission::new(1).unwrap());
+    let admission = Arc::new(admission::QueryAdmission::new_for_tests());
     let observability =
         ServerObservabilityConfig { shutdown_grace: std::time::Duration::ZERO, ..ServerObservabilityConfig::default() };
     let coordinator =
@@ -352,128 +341,94 @@ async fn builder_rejects_session_context_without_injected_backend() {
 }
 
 #[test]
-fn builder_rejects_injected_backend_with_unbounded_config() {
-    let backend = controller_projection(1);
-
-    let error = validate_test_controller_projection_matches_config(&backend, &unbounded_config()).unwrap_err();
-
-    assert_eq!(error.fact_value("reason"), Some("server_backend_unbounded_config"));
-}
-
-#[test]
 fn builder_rejects_injected_backend_admission_conflict() {
     let backend = controller_projection(1);
 
     let error = validate_test_controller_projection_matches_config(&backend, &bounded_config(2)).unwrap_err();
 
     assert_eq!(error.fact_value("reason"), Some("server_backend_admission_conflict"));
-    assert_eq!(error.fact_value("config_field"), Some("max_in_flight"));
+    assert_eq!(error.fact_value("config_field"), Some("admission.device_profiles.max_active_attempts"));
 }
 
 #[test]
-fn builder_validation_uses_normalized_max_in_flight_for_default_queue_limit() {
-    let mut config = bounded_config(1);
-    config.max_in_flight = 2;
-    let backend = controller_projection(2);
-
-    validate_test_controller_projection_matches_config(&backend, &config).unwrap();
-}
-
-#[test]
-fn builder_rejects_injected_backend_grant_band_conflict() {
+fn builder_rejects_injected_backend_attempt_floor_conflict() {
     let backend = controller_projection(1);
     let mut config = bounded_config(1);
-    config.admission_policy = config
-        .admission_policy
-        .with_grant_band(GrantBand { min: MemoryShare::Bytes(256), want: MemoryShare::Bytes(2048) });
+    config.gpu_device_profiles[0] = config.gpu_device_profiles[0].clone().with_attempt_floor_bytes(Some(256));
 
     let error = validate_test_controller_projection_matches_config(&backend, &config).unwrap_err();
 
     assert_eq!(error.fact_value("reason"), Some("server_backend_admission_conflict"));
-    assert_eq!(error.fact_value("config_field"), Some("admission.grant_min"));
+    assert_eq!(error.fact_value("config_field"), Some("admission.device_profiles.attempt_floor_bytes"));
 }
 
 #[test]
-fn builder_rejects_injected_backend_slot_guarantee_conflict() {
+fn builder_rejects_injected_backend_overtake_budget_conflict() {
     let backend = controller_projection(1);
     let mut config = bounded_config(1);
-    config.admission_policy = config.admission_policy.with_slot_guarantee(SlotGuarantee::Optimistic);
+    config.queue_policy = config.queue_policy.with_max_overtakes_per_waiter(7);
 
     let error = validate_test_controller_projection_matches_config(&backend, &config).unwrap_err();
 
     assert_eq!(error.fact_value("reason"), Some("server_backend_admission_conflict"));
-    assert_eq!(error.fact_value("config_field"), Some("slot_guarantee"));
+    assert_eq!(error.fact_value("config_field"), Some("admission.max_overtakes_per_waiter"));
 }
 
 #[test]
-fn builder_rejects_injected_backend_per_device_cap_conflict() {
+fn builder_rejects_injected_backend_per_device_limit_conflict() {
     let backend = controller_projection(1);
     let mut config = bounded_config(1);
-    config.admission_policy = config.admission_policy.with_max_queries_per_device(Some(1));
+    config.gpu_device_profiles[0] = config.gpu_device_profiles[0].clone().with_max_active_attempts(2);
 
     let error = validate_test_controller_projection_matches_config(&backend, &config).unwrap_err();
 
     assert_eq!(error.fact_value("reason"), Some("server_backend_admission_conflict"));
-    assert_eq!(error.fact_value("config_field"), Some("admission.max_queries_per_device"));
+    assert_eq!(error.fact_value("config_field"), Some("admission.device_profiles.max_active_attempts"));
 }
 
 #[test]
 fn builder_accepts_matching_explicit_per_device_cap() {
-    let admission_policy =
-        NexusAdmissionPolicy::default().with_max_concurrent_queries(1).with_max_queries_per_device(Some(1));
     let backend = NexusGpuBackend::builder()
         .device_memory_ownership([(0, GpuMemoryOwnership::WholeDeviceExclusive)])
-        .memory_policy(NexusMemoryPolicy::Bounded {
-            device_ordinals: vec![0],
-            device_budget_bytes: TEST_DEVICE_BUDGET_BYTES,
-            max_source_chunk_bytes: TEST_MAX_SOURCE_CHUNK_BYTES,
-            max_row_groups_per_chunk: TEST_MAX_ROW_GROUPS_PER_CHUNK,
-            max_retry_attempts: TEST_MAX_RETRY_ATTEMPTS,
-            min_retry_chunk_row_groups: TEST_MIN_RETRY_CHUNK_ROW_GROUPS,
-        })
-        .admission(admission_policy.clone())
+        .with_native_execution_config(NexusNativeExecutionConfig::bounded(
+            TEST_DEVICE_BUDGET_BYTES,
+            TEST_MAX_SOURCE_CHUNK_BYTES,
+            TEST_MAX_ROW_GROUPS_PER_CHUNK,
+            TEST_MAX_RETRY_ATTEMPTS,
+            TEST_MIN_RETRY_CHUNK_ROW_GROUPS,
+        ))
+        .device_profiles([NexusGpuDeviceProfile::new(0)
+            .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: TEST_DEVICE_BUDGET_BYTES })
+            .with_max_active_attempts(1)])
         .build_test_controller_projection()
         .expect("CUDA-free backend controller projection should build");
-    let mut config = bounded_config(1);
-    config.admission_policy = admission_policy;
+    let config = bounded_config(1);
 
     validate_test_controller_projection_matches_config(&backend, &config).unwrap();
-}
-
-#[test]
-fn builder_rejects_injected_backend_placement_policy_conflict() {
-    let backend = controller_projection(1);
-    let mut config = bounded_config(1);
-    config.admission_policy = config.admission_policy.with_placement_policy(QueryPlacementPolicy::BestFit);
-
-    let error = validate_test_controller_projection_matches_config(&backend, &config).unwrap_err();
-
-    assert_eq!(error.fact_value("reason"), Some("server_backend_admission_conflict"));
-    assert_eq!(error.fact_value("config_field"), Some("admission.placement_policy"));
 }
 
 #[test]
 fn builder_rejects_injected_backend_queue_limit_conflict() {
     let backend = controller_projection(1);
     let mut config = bounded_config(1);
-    config.admission_policy = config.admission_policy.with_max_queued(3);
+    config.queue_policy = config.queue_policy.with_max_queued_attempts(3);
 
     let error = validate_test_controller_projection_matches_config(&backend, &config).unwrap_err();
 
     assert_eq!(error.fact_value("reason"), Some("server_backend_admission_conflict"));
-    assert_eq!(error.fact_value("config_field"), Some("admission.max_queued"));
+    assert_eq!(error.fact_value("config_field"), Some("admission.max_queued_attempts"));
 }
 
 #[test]
 fn builder_rejects_injected_backend_wait_timeout_conflict() {
     let backend = controller_projection(1);
     let mut config = bounded_config(1);
-    config.admission_policy = config.admission_policy.with_wait_timeout(std::time::Duration::from_secs(5));
+    config.queue_policy = config.queue_policy.with_max_queue_wait(std::time::Duration::from_secs(5));
 
     let error = validate_test_controller_projection_matches_config(&backend, &config).unwrap_err();
 
     assert_eq!(error.fact_value("reason"), Some("server_backend_admission_conflict"));
-    assert_eq!(error.fact_value("config_field"), Some("admission.wait_timeout"));
+    assert_eq!(error.fact_value("config_field"), Some("admission.max_queue_wait_ms"));
 }
 
 #[test]
@@ -481,18 +436,22 @@ fn builder_rejects_injected_backend_gpu_device_conflict() {
     let backend = controller_projection(1);
     let mut config = bounded_config(1);
     config.gpu_devices = vec![1];
+    config.gpu_device_profiles = vec![
+        NexusGpuDeviceProfile::new(1)
+            .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: TEST_DEVICE_BUDGET_BYTES }),
+    ];
+    config.gpu_memory_ownership = vec![(1, GpuMemoryOwnership::WholeDeviceExclusive)];
 
     let error = validate_test_controller_projection_matches_config(&backend, &config).unwrap_err();
 
     assert_eq!(error.fact_value("reason"), Some("server_backend_admission_conflict"));
-    assert_eq!(error.fact_value("config_field"), Some("gpu_devices"));
+    assert_eq!(error.fact_value("config_field"), Some("admission.device_profiles"));
 }
 
 #[test]
-fn builder_rejects_injected_backend_device_budget_fraction_conflict() {
+fn injected_backend_validation_does_not_conflate_planner_template_with_profile_capacity() {
     let backend = controller_projection(1);
     let mut config = bounded_config(1);
-    config.device_budget_fraction = Some(0.5);
     config.native_optimizer_config =
         NexusNativeOptimizerConfig::default().with_native_execution_config(NexusNativeExecutionConfig::bounded(
             TEST_DEVICE_BUDGET_BYTES / 2,
@@ -502,70 +461,8 @@ fn builder_rejects_injected_backend_device_budget_fraction_conflict() {
             TEST_MIN_RETRY_CHUNK_ROW_GROUPS,
         ));
 
-    let error = validate_test_controller_projection_matches_config(&backend, &config).unwrap_err();
-
-    assert_eq!(error.fact_value("reason"), Some("server_backend_admission_conflict"));
-    assert_eq!(error.fact_value("config_field"), Some(config::NEXUS_SERVER_DEVICE_BUDGET_FRACTION_ENV));
-}
-
-#[tokio::test]
-async fn injected_backend_allows_independent_host_execution_qos() {
-    let backend = runtime_backend(1);
-    let mut config = bounded_config(1);
-    config.host_execution_qos = Some(
-        HostExecutionQosConfig::new(NonZeroUsize::new(1).unwrap())
-            .with_wait_timeout(std::time::Duration::from_millis(5000)),
-    );
-
-    let ctx = build_session_context_with_backend(&config, &backend)
-        .await
-        .expect("host QoS is server-owned and must not conflict with backend GPU admission");
-    let state = ctx.state();
-    let rules = state.physical_optimizers();
-    let native = rules
-        .iter()
-        .position(|rule| rule.name() == NEXUS_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME)
-        .expect("backend native selection rule installed");
-    let host_qos = rules
-        .iter()
-        .position(|rule| rule.name() == NEXUS_HOST_EXECUTION_QOS_RULE_NAME)
-        .expect("server host QoS rule installed");
-    let requirement = rules
-        .iter()
-        .position(|rule| rule.name() == NEXUS_FINAL_PLAN_REQUIREMENT_RULE_NAME)
-        .expect("final-plan requirement rule installed");
-
-    assert!(native < host_qos && host_qos < requirement);
-}
-
-#[tokio::test]
-async fn builder_requires_injected_session_host_execution_qos_to_match_config() {
-    let backend = runtime_backend(1);
-    let mut config = bounded_config(1);
-    config.host_execution_qos = Some(HostExecutionQosConfig::new(NonZeroUsize::new(2).unwrap()));
-
-    let missing_qos_state = backend.install_on(SessionStateBuilder::new()).unwrap().build();
-    let missing_qos_ctx = Arc::new(SessionContext::new_with_state(missing_qos_state));
-    let error = builder_error(
-        FlightSqlServer::builder().config(config.clone()).backend(backend.clone()).session_context(missing_qos_ctx),
-    )
-    .await;
-    assert_eq!(error.fact_value("reason"), Some("server_session_host_execution_qos_mismatch"));
-
-    let matching_qos_ctx =
-        Arc::new(build_session_context_with_backend(&config, &backend).await.expect("matching host QoS installs"));
-    let server = FlightSqlServer::builder()
-        .config(config)
-        .backend(backend)
-        .session_context(matching_qos_ctx)
-        .build()
-        .await
-        .expect("matching injected host QoS is accepted");
-    assert_eq!(
-        crate::session::installed_host_execution_qos_config(&server.session_context().state())
-            .map(|qos| qos.max_concurrent_statements().get()),
-        Some(2)
-    );
+    validate_test_controller_projection_matches_config(&backend, &config)
+        .expect("planner template bytes are not a backend capacity or floor assertion");
 }
 
 #[tokio::test]
@@ -578,11 +475,7 @@ async fn build_session_context_with_backend_installs_backend_admission_source() 
     let optimizer_config =
         crate::session::installed_nexus_native_optimizer_config(&state).expect("native optimizer installed");
 
-    assert!(
-        optimizer_config
-            .native_execution_config()
-            .query_admission_source_matches(backend.session_capability(), backend.tenant_id())
-    );
+    assert!(optimizer_config.native_execution_config().query_admission_source_matches(backend.session_capability()));
 }
 
 #[tokio::test]
@@ -594,17 +487,6 @@ async fn server_base_and_flight_style_clone_retain_cuvs_query_planner() {
     assert!(format!("{:?}", ctx.state().query_planner()).contains("CuvsQueryPlanner"));
     let cloned = SessionStateBuilder::new_from_existing(ctx.state()).build();
     assert!(format!("{:?}", cloned.query_planner()).contains("CuvsQueryPlanner"));
-}
-
-#[tokio::test]
-async fn builder_rejects_unbounded_server_before_constructing_runtime_state() {
-    let error = builder_error(FlightSqlServer::builder().config(unbounded_config())).await;
-
-    assert_eq!(error.code(), crate::error::ErrorCode::InvalidRequest);
-    assert_eq!(error.operation(), "datafusion_nexus.server.builder");
-    assert_eq!(error.fact_value("reason"), Some("server_unbounded_backend_unsupported"));
-    assert_eq!(error.fact_value("config_field"), Some(config::NEXUS_SERVER_NATIVE_MEMORY_POLICY_ENV));
-    assert_eq!(error.fact_value("required_memory_policy"), Some("bounded"));
 }
 
 #[tokio::test]

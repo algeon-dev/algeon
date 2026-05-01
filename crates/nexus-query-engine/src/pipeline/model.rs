@@ -13,10 +13,10 @@ use crate::{
 /// Mode-agnostic compiled graph for a native query DAG.
 ///
 /// This structure records task order, resource lifetimes, barriers, sink
-/// boundaries, and reservation gates. Strict and adaptive executors may consume
-/// it, but mode-specific admission and runtime-action policy live outside it.
-/// Task, edge, barrier, resource, and gate ids are local index spaces owned by
-/// one compiled graph and are validated for topological consistency before use.
+/// boundaries, and reservation gates. The capability-first bounded executor
+/// consumes it. Task, edge, barrier, resource, and gate ids are local index
+/// spaces owned by one compiled graph and are validated for topological
+/// consistency before use.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompiledPipeline {
     tasks: Vec<PipelineTask>,

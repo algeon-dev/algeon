@@ -33,7 +33,6 @@ pub struct CompiledGpuTaskExecutor<'a> {
     pub(super) join_builds: BTreeMap<NodeId, BoundedCompiledJoinBuildState>,
     pub(super) join_probes: BTreeMap<NodeId, BoundedCompiledJoinProbeState>,
     pub(super) host_output: Option<RecordBatch>,
-    pub(super) cooperative_shrink_applied_since_last_cycle: bool,
 }
 
 impl<'a> CompiledGpuTaskExecutor<'a> {
@@ -69,7 +68,6 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
             join_builds: BTreeMap::new(),
             join_probes: BTreeMap::new(),
             host_output: None,
-            cooperative_shrink_applied_since_last_cycle: false,
         })
     }
 
@@ -115,8 +113,8 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
                     .with_fact("sink_boundary_kind", self.pipeline.sink().kind().as_str()));
             },
         };
-        let ResidentGpuFrame { frame, reservation } = *frame;
-        let live_reservation = reservation.retain_grant_live_reservation();
+        let ResidentGpuFrame { frame, mut reservation } = *frame;
+        let live_reservation = reservation.transfer_grant_live_reservation();
         let handle = match GpuResultHandle::new_with_live_reservation(
             self.context,
             frame,
@@ -133,7 +131,6 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
             },
         };
         self.reservations.release(reservation, self.metrics);
-        self.acknowledge_requested_grant_shrink()?;
         Ok(handle)
     }
 }
@@ -215,7 +212,6 @@ impl CompiledTaskExecutor for CompiledGpuTaskExecutor<'_> {
                 prefetch.abandon(&mut self.reservations, self.metrics);
             },
         }
-        self.acknowledge_requested_grant_shrink()?;
         Ok(())
     }
 
@@ -236,18 +232,11 @@ impl CompiledTaskExecutor for CompiledGpuTaskExecutor<'_> {
         while let Some((_, build)) = self.join_builds.pop_first() {
             release_bounded_compiled_join_build_state(build, &mut self.reservations, self.metrics);
         }
-        self.acknowledge_requested_grant_shrink()?;
         Ok(())
     }
 
     fn before_scheduling_cycle(&mut self) -> Result<CompiledSchedulingCycle> {
-        self.acknowledge_requested_grant_shrink()?;
-        if self.cooperative_shrink_applied_since_last_cycle {
-            self.cooperative_shrink_applied_since_last_cycle = false;
-            Ok(CompiledSchedulingCycle::after_cooperative_shrink_applied())
-        } else {
-            Ok(CompiledSchedulingCycle::default())
-        }
+        Ok(CompiledSchedulingCycle::default())
     }
 
     fn live_reserved_bytes(&self) -> Option<u64> {

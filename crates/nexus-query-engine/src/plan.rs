@@ -34,9 +34,9 @@ pub use facts::{DataPlacement, PlanFacts, SchemaBehavior};
 pub use graph_algorithm::{
     DEFAULT_BETWEENNESS_EXACT_VERTEX_THRESHOLD, EdgeDedupStrategy, EdgeNormalizeSpec, EdgeWeightCombiner,
     EmptyGraphEdgeInputAction, EmptyGraphInputPolicy, EmptyGraphSideInputPolicy,
-    GRAPH_ALGORITHM_STRICT_BOUNDED_LOWER_LEVEL_CONTRACTS, GRAPH_ALGORITHM_STRICT_BOUNDED_MEMORY_BOUNDARY,
-    GRAPH_ALGORITHM_STRICT_BOUNDED_REQUIRED_CONTRACT, GRAPH_OPERATION_REGISTRY, GraphAlgorithm, GraphAlgorithmNode,
-    GraphAlgorithmParams, GraphAlgorithmSpec, GraphAlgorithmStrictBoundedLowerLevelContract,
+    GRAPH_ALGORITHM_CAPABILITY_LOWER_LEVEL_CONTRACTS, GRAPH_ALGORITHM_CAPABILITY_MEMORY_BOUNDARY,
+    GRAPH_ALGORITHM_CAPABILITY_REQUIRED_CONTRACT, GRAPH_OPERATION_REGISTRY, GraphAlgorithm,
+    GraphAlgorithmLowerLevelContract, GraphAlgorithmNode, GraphAlgorithmParams, GraphAlgorithmSpec,
     GraphBetweennessCentralityParams, GraphBetweennessSeeds, GraphBfsEndpointPolicy, GraphBfsParams,
     GraphBfsPredicateInputs, GraphConstructionOptions, GraphConstructionPolicy, GraphCoreNumberParams,
     GraphDegreesAllParams, GraphEcgParams, GraphEdgeBetweennessCentralityParams, GraphEdgeColumnBindings,

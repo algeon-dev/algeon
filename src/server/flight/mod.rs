@@ -37,7 +37,7 @@ use datafusion::{
     error::DataFusionError,
     execution::SessionStateBuilder,
     logical_expr::{DdlStatement, LogicalPlan, Statement},
-    physical_plan::execute_stream as execute_physical_stream,
+    physical_plan::{SendableRecordBatchStream, execute_stream as execute_physical_stream},
     prelude::SessionContext,
 };
 use futures::{Stream, StreamExt, TryStreamExt};
@@ -46,10 +46,13 @@ use nexus_query_engine::{
     runtime::ExecutionCancellation,
 };
 use prost::Message;
+use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 use tonic::{Code, Request, Response, Status, Streaming, metadata::MetadataValue};
 use tracing::Instrument;
 
+#[cfg(test)]
+use super::auth::{AuthMode, TokenStore};
 #[cfg(test)]
 use super::coordinator::CoordinatorArtifact;
 #[cfg(all(test, feature = "iceberg"))]

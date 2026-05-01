@@ -99,19 +99,6 @@ if [[ "${1:-}" == "test" && " $* " == *" --doc "* ]]; then
   echo "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s"
   exit 0
 fi
-if [[ "${1:-}" == "test" ]]; then
-  if [[ " $* " == *" -p nexus-bench "* ]]; then
-    echo "test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s"
-    exit 0
-  fi
-  if [[ "${FAKE_CARGO_TEST_STATUS:-0}" -ne 0 ]]; then
-    echo "RAW_CARGO_DIAGNOSTIC_FAILURE" >&2
-    echo "test result: FAILED. 3 passed; 1 failed; 1 ignored; 0 measured; 2 filtered out; finished in 0.01s"
-    exit "${FAKE_CARGO_TEST_STATUS}"
-  fi
-  echo "test result: ok. 4 passed; 0 failed; 1 ignored; 0 measured; 2 filtered out; finished in 0.01s"
-  exit 0
-fi
 exit 0
 SH
 
@@ -255,7 +242,7 @@ echo "PASS: CPU-derived shared cap and fixed exclusive cap"
 run_check help /usr/bin/bash scripts/check_all.sh --help
 assert_status help 0
 assert_contains "${tmp_dir}/help.output" "Usage: bash scripts/check_all.sh [OPTIONS]"
-assert_contains "${tmp_dir}/help.output" "cargo-diagnostic"
+assert_contains "${tmp_dir}/help.output" "same-process Cargo runners fail closed"
 assert_contains "${tmp_dir}/help.output" "CHECK_ALL_PHASE_LOG_DIR optionally selects the persistent phase-log directory"
 assert_empty "${tmp_dir}/help.log"
 echo "PASS: help is side-effect free"
@@ -277,7 +264,7 @@ assert_empty "${tmp_dir}/feature_conflict.log"
 
 run_check cargo_cli_spelling /usr/bin/bash scripts/check_all.sh --runner cargo
 assert_status cargo_cli_spelling 2
-assert_contains "${tmp_dir}/cargo_cli_spelling.output" "--runner must be nextest or cargo-diagnostic"
+assert_contains "${tmp_dir}/cargo_cli_spelling.output" "same-process Cargo runner 'cargo' is unsupported"
 assert_empty "${tmp_dir}/cargo_cli_spelling.log"
 echo "PASS: unknown, duplicate, and conflicting CLI options fail before work"
 
@@ -288,8 +275,13 @@ assert_empty "${tmp_dir}/invalid_features_env.log"
 
 run_check invalid_runner_env env TEST_RUNNER=surprise /usr/bin/bash scripts/check_all.sh
 assert_status invalid_runner_env 2
-assert_contains "${tmp_dir}/invalid_runner_env.output" "TEST_RUNNER must be nextest, cargo, or cargo-diagnostic"
+assert_contains "${tmp_dir}/invalid_runner_env.output" "TEST_RUNNER must be nextest; cargo and cargo-diagnostic are retired"
 assert_empty "${tmp_dir}/invalid_runner_env.log"
+
+run_check retired_runner_env env TEST_RUNNER=cargo /usr/bin/bash scripts/check_all.sh
+assert_status retired_runner_env 2
+assert_contains "${tmp_dir}/retired_runner_env.output" "same-process Cargo runner 'cargo' is unsupported"
+assert_empty "${tmp_dir}/retired_runner_env.log"
 
 run_check invalid_lock_env env GPU_LOCK= /usr/bin/bash scripts/check_all.sh
 assert_status invalid_lock_env 2
@@ -373,7 +365,6 @@ assert_phase_contains "${tmp_dir}/default.output" doctests "0.100s | PASS | harn
 assert_phase_contains "${tmp_dir}/default.output" bench-rustdoc "all(fixed) | ${tmp_dir}/phase-logs/bench-rustdoc.log"
 assert_phase_contains "${tmp_dir}/default.output" bench-clippy "all(fixed) | ${tmp_dir}/phase-logs/bench-clippy.log"
 assert_phase_contains "${tmp_dir}/default.output" bench-check "all(fixed) | ${tmp_dir}/phase-logs/bench-check.log"
-assert_phase_contains "${tmp_dir}/default.output" cargo-diagnostic "- | SKIPPED | - | - | - | all | -"
 for phase_log in policy-selftests cpu-tests bench-tests gpu-shared-tests gpu-exclusive-tests doctests rustdoc bench-rustdoc clippy bench-clippy tools-check examples-check bench-check; do
   [[ -f "${tmp_dir}/phase-logs/${phase_log}.log" ]] || {
     echo "FAIL: expected persistent phase log ${phase_log}.log" >&2
@@ -403,30 +394,11 @@ assert_status lock_env 0
 assert_contains "${tmp_dir}/lock_env.log" "flock </tmp/custom-cudf.lock> <cargo> <nextest>"
 echo "PASS: FEATURES and GPU_LOCK compatibility values remain effective"
 
-run_check cargo_fallback env TEST_RUNNER=cargo /usr/bin/bash scripts/check_all.sh
-assert_status cargo_fallback 0
-assert_contains "${tmp_dir}/cargo_fallback.log" "cargo <test> <--all-features> <--no-fail-fast> <--lib> <--bins> <--tests> <--examples> <--> <--test-threads=1>"
-echo "PASS: cargo fallback remains serialized under the GPU lock"
-
-run_check cargo_diagnostic_cli /usr/bin/bash scripts/check_all.sh --runner cargo-diagnostic
-assert_status cargo_diagnostic_cli 0
-assert_contains "${tmp_dir}/cargo_diagnostic_cli.output" "NONCANONICAL RUNNER"
-assert_contains "${tmp_dir}/cargo_diagnostic_cli.output" "NONCANONICAL cargo-diagnostic surface passed"
-assert_contains "${tmp_dir}/cargo_diagnostic_cli.log" "flock </tmp/cudf-gpu.lock> <cargo> <test> <--all-features> <--no-fail-fast> <--lib> <--bins> <--tests> <--examples> <--> <--test-threads=1>"
-assert_not_contains "${tmp_dir}/cargo_diagnostic_cli.log" "cargo <nextest>"
-assert_phase_contains "${tmp_dir}/cargo_diagnostic_cli.output" cargo-diagnostic "0.100s | PASS | run=4 passed=4 failed=0 ignored=1 measured=0 filtered=2 harnesses=1 | 1 | /tmp/cudf-gpu.lock | all | ${tmp_dir}/phase-logs/cargo-diagnostic.log"
-assert_phase_contains "${tmp_dir}/cargo_diagnostic_cli.output" cargo-diagnostic "cargo-diagnostic | RUST_TEST_THREADS=1 flock /tmp/cudf-gpu.lock cargo test --all-features --no-fail-fast --lib --bins --tests --examples -- --test-threads=1 | 0.100s"
-assert_phase_contains "${tmp_dir}/cargo_diagnostic_cli.output" cpu-tests "- | SKIPPED | - | - | - | all | -"
-assert_contains "${tmp_dir}/cargo_diagnostic_cli.log" "cargo <test> <-p> <nexus-bench> <--all-features> <--no-fail-fast> <--lib> <--tests> <--> <--test-threads=1>"
-assert_phase_contains "${tmp_dir}/cargo_diagnostic_cli.output" bench-tests "all(fixed) | ${tmp_dir}/phase-logs/bench-tests.log"
-echo "PASS: Cargo runner is explicit, serialized, and noncanonical"
-
-run_check cargo_diagnostic_failure env FAKE_CARGO_TEST_STATUS=33 /usr/bin/bash scripts/check_all.sh --runner cargo-diagnostic
-assert_status cargo_diagnostic_failure 1
-assert_contains "${tmp_dir}/cargo_diagnostic_failure.output" "RAW_CARGO_DIAGNOSTIC_FAILURE"
-assert_phase_contains "${tmp_dir}/cargo_diagnostic_failure.output" cargo-diagnostic "0.100s | FAIL(33) | run=4 passed=3 failed=1 ignored=1 measured=0 filtered=2 harnesses=1 | 1 | /tmp/cudf-gpu.lock | all | ${tmp_dir}/phase-logs/cargo-diagnostic.log"
-assert_contains "${tmp_dir}/phase-logs/cargo-diagnostic.log" "RAW_CARGO_DIAGNOSTIC_FAILURE"
-echo "PASS: Cargo diagnostic failure output and counts are preserved"
+run_check retired_runner_cli /usr/bin/bash scripts/check_all.sh --runner cargo-diagnostic
+assert_status retired_runner_cli 2
+assert_contains "${tmp_dir}/retired_runner_cli.output" "same-process Cargo runner 'cargo-diagnostic' is unsupported"
+assert_empty "${tmp_dir}/retired_runner_cli.log"
+echo "PASS: retired same-process Cargo runners fail closed before work"
 
 run_check twelve_cores env FAKE_NPROC_OUTPUT=12 /usr/bin/bash scripts/check_all.sh --lane gpu-shared
 assert_status twelve_cores 0
@@ -440,7 +412,7 @@ run_check cli_precedence env FEATURES=server TEST_RUNNER=cargo STRICT=1 \
 assert_status cli_precedence 0
 assert_contains "${tmp_dir}/cli_precedence.output" "runner=nextest(cli) features=all(cli) gpu_profile=default gpu_threads=16(nproc) strict=always(cli)"
 assert_contains "${tmp_dir}/cli_precedence.log" "cargo <nextest> <run> <-P> <default> <--all-features> <-E> <group(gpu)> <--no-fail-fast> <--test-threads> <16>"
-echo "PASS: validated CLI values take precedence over compatibility environment values"
+echo "PASS: explicit nextest CLI selection takes precedence over a retired runner environment value"
 
 run_check fast /usr/bin/bash scripts/check_all.sh --fast --features server
 assert_status fast 0
@@ -567,12 +539,6 @@ assert_phase_contains "${tmp_dir}/live_inventory_failure.output" bench-tests "- 
 assert_phase_contains "${tmp_dir}/live_inventory_failure.output" gpu-shared-tests "- | SKIPPED(blocked) | - | - | - | all | -"
 assert_contains "${tmp_dir}/phase-logs/live-inventory.log" "RAW_LIVE_INVENTORY_FAILURE"
 echo "PASS: failed live inventory is logged and blocks selected lanes"
-
-run_check cargo_lane_conflict /usr/bin/bash scripts/check_all.sh --runner cargo-diagnostic --lane cpu
-assert_status cargo_lane_conflict 2
-assert_contains "${tmp_dir}/cargo_lane_conflict.output" "cargo-diagnostic cannot select individual test lanes"
-assert_empty "${tmp_dir}/cargo_lane_conflict.log"
-echo "PASS: diagnostic Cargo runner rejects unsupported lane selection"
 
 run_check show_config_drift env FAKE_GPU_CAP=5 /usr/bin/bash scripts/check_all.sh
 assert_status show_config_drift 2

@@ -69,9 +69,10 @@ pub(super) struct PendingDeviceSlotNotifications {
 }
 
 impl PendingDeviceSlotNotifications {
-    pub(super) fn release_slot(&mut self, slot: DeviceActiveQuerySlot) {
-        let device_ordinal = slot.device_ordinal();
-        drop(slot);
+    /// Records a device-health transition while the caller still owns an
+    /// admission mutex. Notification is deferred until that mutex is dropped
+    /// because shared waiters also lock their service admission state.
+    pub(super) fn record_device_health_transition(&mut self, device_ordinal: usize) {
         self.device_ordinals.push(device_ordinal);
     }
 

@@ -11,41 +11,25 @@ use std::{
 #[cfg(feature = "iceberg")]
 use datafusion_nexus::table_format::{self, TableFormatLakehouseCachePolicy};
 use datafusion_nexus::{
-    backend::MemoryShare,
     server::{
-        NEXUS_ICEBERG_GLUE_DATABASE_ENV, NEXUS_SERVER_ADMISSION_GRANT_MIN_ENV, NEXUS_SERVER_ADMISSION_GRANT_WANT_ENV,
-        NEXUS_SERVER_ADMISSION_MAX_QUERIES_PER_DEVICE_ENV, NEXUS_SERVER_ADMISSION_PINNED_DEVICE_ENV,
-        NEXUS_SERVER_ADMISSION_PLACEMENT_POLICY_ENV, NEXUS_SERVER_ADMISSION_SLOT_GUARANTEE_ENV,
-        NEXUS_SERVER_ADMISSION_WAIT_TIMEOUT_MS_ENV, NEXUS_SERVER_ADMISSION_WORKLOAD_PROFILE_ENV, NEXUS_SERVER_BIND_ENV,
+        AuthMode, NEXUS_ICEBERG_GLUE_DATABASE_ENV, NEXUS_SERVER_ADMISSION_MAX_OVERTAKES_PER_WAITER_ENV,
+        NEXUS_SERVER_ADMISSION_MAX_QUEUE_WAIT_MS_ENV, NEXUS_SERVER_ADMISSION_MAX_QUEUED_ATTEMPTS_ENV,
         NEXUS_SERVER_CONFIG_FILE_ENV, NEXUS_SERVER_CUGRAPH_CONSTRUCTION_POLICY_ENV, NEXUS_SERVER_CUGRAPH_DIRECTED_ENV,
-        NEXUS_SERVER_CUGRAPH_ENABLED_ENV, NEXUS_SERVER_CUGRAPH_RENUMBER_ENV, NEXUS_SERVER_DEVICE_BUDGET_FRACTION_ENV,
-        NEXUS_SERVER_GPU_DEVICES_ENV, NEXUS_SERVER_HOST_EXECUTION_QOS_MAX_CONCURRENT_STATEMENTS_ENV,
-        NEXUS_SERVER_HOST_EXECUTION_QOS_WAIT_TIMEOUT_MS_ENV, NEXUS_SERVER_MAX_CONCURRENT_QUERIES_ENV,
-        NEXUS_SERVER_MAX_IN_FLIGHT_ENV, NEXUS_SERVER_NATIVE_CONFIG_OPTIONS,
-        NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES_ENV, NEXUS_SERVER_NATIVE_GRAPH_CACHE_MAX_RETAINED_BYTES_ENV,
+        NEXUS_SERVER_CUGRAPH_ENABLED_ENV, NEXUS_SERVER_CUGRAPH_RENUMBER_ENV, NEXUS_SERVER_GPU_DEVICES_ENV,
+        NEXUS_SERVER_NATIVE_CONFIG_OPTIONS, NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES_ENV,
         NEXUS_SERVER_NATIVE_MAX_RETRY_ATTEMPTS_ENV, NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV,
         NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, NEXUS_SERVER_NATIVE_MAX_SOURCE_READS_IN_FLIGHT_ENV,
-        NEXUS_SERVER_NATIVE_MEMORY_POLICY_ENV, NEXUS_SERVER_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV,
-        NEXUS_SERVER_NATIVE_PIPELINE_EXECUTION_MODE_ENV,
-        NEXUS_SERVER_NATIVE_QUERY_MEMORY_DOMAIN_CEILING_MULTIPLIER_ENV,
-        NEXUS_SERVER_NATIVE_SOURCE_CACHE_MAX_RETAINED_BYTES_ENV, NEXUS_SERVER_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV,
-        NEXUS_SERVER_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV,
-        NEXUS_SERVER_OBSERVABILITY_ACTIVE_LOGICAL_CAPTURE_MAX_BYTES_ENV,
-        NEXUS_SERVER_OBSERVABILITY_GLOBAL_SEALED_MAX_BYTES_ENV, NEXUS_SERVER_OBSERVABILITY_GLOBAL_SEALED_MAX_COUNT_ENV,
-        NEXUS_SERVER_OBSERVABILITY_PER_QUERY_MAX_BYTES_ENV, NEXUS_SERVER_OBSERVABILITY_PER_QUERY_MAX_RECORDS_ENV,
-        NEXUS_SERVER_OBSERVABILITY_SEALED_TTL_SECS_ENV, NEXUS_SERVER_OBSERVABILITY_SHUTDOWN_GRACE_SECS_ENV,
-        NEXUS_SERVER_STATEMENT_TICKET_TTL_SECS_ENV, NEXUS_SERVER_WORKSPACE_BACKING_ALIASES_ENV,
-        NEXUS_SERVER_WORKSPACE_BACKING_CATALOG_ENV, NEXUS_SERVER_WORKSPACE_BACKING_SCHEMA_ENV,
-        NEXUS_SERVER_WORKSPACE_CATALOG_ENV, NEXUS_SERVER_WORKSPACE_SCHEMA_ENV, ServerConfig, ServerNativeConfigScope,
+        NEXUS_SERVER_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV, NEXUS_SERVER_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV,
+        NEXUS_SERVER_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV, NEXUS_SERVER_STATEMENT_TICKET_TTL_SECS_ENV,
+        NEXUS_SERVER_WORKSPACE_BACKING_ALIASES_ENV, NEXUS_SERVER_WORKSPACE_BACKING_CATALOG_ENV,
+        NEXUS_SERVER_WORKSPACE_BACKING_SCHEMA_ENV, NEXUS_SERVER_WORKSPACE_CATALOG_ENV,
+        NEXUS_SERVER_WORKSPACE_SCHEMA_ENV, ServerConfig, hash_password,
     },
-    session_config::DATAFUSION_NEXUS_SESSION_CONFIG_OPTIONS,
+    session_config::{DATAFUSION_NEXUS_SESSION_CONFIG_OPTIONS, DataFusionNexusSessionConfig},
 };
 #[cfg(feature = "iceberg")]
 use nexus_query_engine::runtime::S3SourceStorageCredential;
-use nexus_query_engine::{
-    mode::{NativePipelineExecutionMode, StatisticalAggregateExecutionMode},
-    runtime::{MemoryControlPolicy, QueryPlacementPolicy, SlotGuarantee, SourceChunkPlanningMode},
-};
+use nexus_query_engine::{mode::StatisticalAggregateExecutionMode, runtime::SourceChunkPlanningMode};
 
 // Server config contract tests are split by concern while staying in this
 // integration-test module via include! so existing test names remain stable.
@@ -56,3 +40,61 @@ include!("server_config_tests/workspace.rs");
 include!("server_config_tests/feature_gates.rs");
 include!("server_config_tests/cugraph.rs");
 include!("server_config_tests/iceberg.rs");
+
+#[test]
+fn auth_toml_overlay_loads_static_basic_bearer_user() {
+    let alice_hash = hash_password("from-toml").expect("hash");
+    let toml_body = format!(
+        r#"
+[auth.mode]
+kind = "basic_bearer"
+token_ttl_secs = 600
+
+[[auth.mode.users]]
+username = "alice"
+password_hash = "{alice_hash}"
+roles = ["reader"]
+"#,
+    );
+    let (_dir, env) = env_with_server_toml(&toml_body);
+    let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).expect("load auth TOML overlay");
+
+    let AuthMode::BasicBearer { users, token_ttl_secs } = &config.auth.mode else {
+        panic!("expected basic bearer auth mode, got {:?}", config.auth.mode);
+    };
+    assert_eq!(*token_ttl_secs, 600);
+    assert_eq!(users.len(), 1);
+    assert_eq!(users[0].username, "alice");
+    assert_eq!(users[0].roles, ["reader"]);
+}
+
+#[test]
+fn auth_toml_overlay_rejects_plaintext_password() {
+    let toml_body = r#"
+[auth.mode]
+kind = "basic_bearer"
+
+[[auth.mode.users]]
+username = "alice"
+password_hash = "plaintext-not-allowed"
+"#;
+    let (_dir, env) = env_with_server_toml(toml_body);
+    let error = ServerConfig::from_env_get(|name| env.get(name).cloned()).expect_err("plaintext password must reject");
+    assert!(error.to_string().contains("Argon2"), "unexpected error: {error}");
+}
+
+#[test]
+fn auth_toml_overlay_rejects_malformed_argon2_phc() {
+    let toml_body = r#"
+[auth.mode]
+kind = "basic_bearer"
+
+[[auth.mode.users]]
+username = "alice"
+password_hash = "$argon2id$v=19$m=19456,t=2,p=1$not-a-complete-phc"
+"#;
+    let (_dir, env) = env_with_server_toml(toml_body);
+    let error =
+        ServerConfig::from_env_get(|name| env.get(name).cloned()).expect_err("malformed Argon2 PHC must reject");
+    assert!(error.to_string().contains("valid Argon2 PHC string"), "unexpected error: {error}");
+}

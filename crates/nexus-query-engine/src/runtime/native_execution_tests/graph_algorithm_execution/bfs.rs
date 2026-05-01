@@ -1,10 +1,8 @@
 #[test]
 fn bfs_include_edge_ids_filters_edges() {
     let runtime = Arc::new(cudf::Runtime::builder().with_device_memory_manager().build().unwrap());
-    let cache = Arc::new(GpuResidentGraphCache::new(64 * 1024 * 1024));
     let context = ExecutionContext::builder()
         .with_shared_runtime(Arc::clone(&runtime))
-        .with_resident_graph_cache(Arc::clone(&cache))
         .build()
         .unwrap();
 
@@ -90,7 +88,4 @@ fn bfs_include_edge_ids_filters_edges() {
     let graph_metrics = &result.metrics().graph_algorithm_runtime_rows;
     assert_eq!(graph_metrics.len(), 1);
     assert!(graph_metrics[0].algorithm_metadata.contains("predicate_include_edge_ids_rows=2"));
-    assert!(graph_metrics[0].algorithm_metadata.contains("graph_cache=bypass_edge_id_graph"));
-    assert_eq!(cache.len().unwrap(), 0);
-    assert_eq!(cache.checked_out_len().unwrap(), 0);
 }

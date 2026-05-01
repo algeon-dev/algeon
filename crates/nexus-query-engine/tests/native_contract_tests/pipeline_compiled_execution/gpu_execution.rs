@@ -392,131 +392,6 @@ fn observed_compiled_root_join_replays_typed_reservations_with_registered_tasks(
 }
 
 #[test]
-fn execute_query_plan_routes_selected_adaptive_root_hash_join_through_adaptive_shell() {
-    let runtime = cudf::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
-    let dir = unique_temp_dir("nexus-query-engine-adaptive-e5-root-join");
-    let left_path = dir.join("left.parquet");
-    let right_path = dir.join("right.parquet");
-    write_join_parquets(&left_path, &right_path);
-    let plan = root_join_data_plan(&left_path, &right_path);
-    let memory_history = Arc::new(AdaptiveMemoryHistory::new());
-    memory_history.record_observation(
-        AdaptiveMemoryHistoryKey::for_query_plan(&plan),
-        AdaptiveMemoryObservation {
-            resident_dataframe_peak_bytes: Some(2048),
-            reservation_granted_bytes: 4096,
-            source_chunks_committed: 2,
-        },
-    );
-    let context = bounded_context_with_mode_and_memory_history(
-        Arc::new(runtime),
-        NativePipelineExecutionMode::Adaptive,
-        Arc::clone(&memory_history),
-    );
-
-    assert_eq!(context.native_pipeline_execution_mode(), NativePipelineExecutionMode::Adaptive);
-    let result = execute_query_plan(&context, &plan).expect("adaptive selected root join should execute");
-    let batch = result.output().as_host_arrow().expect("adaptive output should be host Arrow");
-    let metrics = result.metrics();
-
-    assert_eq!(batch.num_rows(), 2);
-    assert_eq!(int32_values(batch, 0), vec![Some(2), Some(4)]);
-    assert_eq!(int32_values(batch, 1), vec![Some(200), Some(400)]);
-    assert_eq!(metrics.compiled_pipeline_attempts, 1);
-    assert!(metrics.compiled_pipeline_tasks_executed > 0);
-    assert_eq!(metrics.compiled_pipeline_host_arrow_sinks, 1);
-    assert_eq!(metrics.adaptive_retry_count, 0);
-    assert_eq!(metrics.adaptive_spill_count, 0);
-    assert_eq!(metrics.adaptive_downgrade_count, 0);
-    assert_eq!(metrics.adaptive_memory_history_lookup_count, 1);
-    assert_eq!(metrics.adaptive_memory_history_hit_count, 1);
-    assert_eq!(metrics.adaptive_memory_history_miss_count, 0);
-}
-
-#[test]
-fn execute_query_plan_uses_adaptive_task_history_to_lower_repeated_reservations() {
-    let runtime = cudf::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
-    let runtime = Arc::new(runtime);
-    let dir = unique_temp_dir("nexus-query-engine-adaptive-w5-task-history");
-    let left_path = dir.join("left.parquet");
-    let right_path = dir.join("right.parquet");
-    write_join_parquets(&left_path, &right_path);
-    let plan = root_join_data_plan(&left_path, &right_path);
-    let analysis = plan.capability_analysis();
-    let pipeline = compile_pipeline(&plan, &analysis).expect("root join should compile");
-
-    let baseline_context = bounded_context_with_mode(Arc::clone(&runtime), NativePipelineExecutionMode::Adaptive);
-    let baseline_result =
-        execute_query_plan(&baseline_context, &plan).expect("baseline adaptive run should collect task metrics");
-    let baseline_metrics = baseline_result.metrics();
-    let (refined_task_id, baseline_requested_bytes) = baseline_metrics
-        .task_runtime_metrics
-        .iter()
-        .find_map(|(task_id, row)| {
-            (row.operator_kind == PipelineTaskKind::JoinProbe.as_str() && row.reservation_requested_bytes > 8)
-                .then_some((task_id.clone(), row.reservation_requested_bytes))
-        })
-        .expect("baseline join probe task should request enough bytes to demonstrate downward refinement");
-    let history = Arc::new(AdaptiveMemoryHistory::new());
-    history.record_observation(
-        AdaptiveMemoryHistoryKey::for_query_plan(&plan),
-        AdaptiveMemoryObservation {
-            resident_dataframe_peak_bytes: baseline_metrics.resident_dataframe_peak_bytes,
-            reservation_granted_bytes: baseline_metrics.reservation_granted_bytes,
-            source_chunks_committed: baseline_metrics.source_chunks_committed,
-        },
-    );
-    history.record_task_observations_from_query_metrics(&plan, &pipeline, baseline_metrics);
-
-    let refined_context = bounded_context_with_mode_and_memory_history(
-        Arc::clone(&runtime),
-        NativePipelineExecutionMode::Adaptive,
-        Arc::clone(&history),
-    );
-    let refined_result =
-        execute_query_plan(&refined_context, &plan).expect("adaptive task-history run should still execute");
-    let refined_metrics = refined_result.metrics();
-    let refined_requested_bytes = refined_metrics
-        .task_runtime_metrics
-        .get(&refined_task_id)
-        .expect("refined run should report the same structural compiled task")
-        .reservation_requested_bytes;
-
-    assert!(
-        refined_requested_bytes < baseline_requested_bytes,
-        "adaptive task history should lower repeated task reservation requests: baseline={baseline_requested_bytes}, refined={refined_requested_bytes}"
-    );
-    assert_eq!(refined_metrics.adaptive_memory_history_lookup_count, 1);
-    assert_eq!(refined_metrics.adaptive_memory_history_hit_count, 1);
-    assert_eq!(refined_metrics.adaptive_memory_history_miss_count, 0);
-}
-
-#[test]
-fn execute_query_plan_routes_gpu_sink_join_through_adaptive_compiled_pipeline() {
-    let runtime = cudf::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
-    let dir = unique_temp_dir("nexus-query-engine-adaptive-e5-unsupported");
-    let left_path = dir.join("left.parquet");
-    let right_path = dir.join("right.parquet");
-    write_join_parquets(&left_path, &right_path);
-    let plan = root_join_gpu_sink_data_plan(&left_path, &right_path);
-    let context = bounded_context_with_mode(Arc::new(runtime), NativePipelineExecutionMode::Adaptive);
-
-    let result = execute_query_plan(&context, &plan).expect("adaptive compiled GPU sink join should execute");
-    let QueryOutput::GpuResident(handle) = result.output() else {
-        panic!("GPU sink should keep the compiled output resident");
-    };
-    let mut materialization_metrics = QueryMetrics::default();
-    let batch = materialize_gpu_result_to_host(handle.clone(), &mut materialization_metrics)
-        .expect("resident compiled output should materialize for assertions");
-
-    assert_eq!(batch.num_rows(), 2);
-    assert_eq!(int32_values(&batch, 0), vec![Some(2), Some(4)]);
-    assert_eq!(int32_values(&batch, 1), vec![Some(200), Some(400)]);
-    assert_eq!(result.metrics().compiled_pipeline_attempts, 1);
-    assert_eq!(result.metrics().compiled_pipeline_host_arrow_sinks, 0);
-}
-
-#[test]
 fn execute_query_plan_routes_keyless_root_join_strategy_through_compiled_pipeline() {
     let runtime = cudf::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
     let dir = unique_temp_dir("nexus-query-engine-compiled-d34-keyless-root");
@@ -610,9 +485,9 @@ fn execute_query_plan_routes_gpu_resident_sink_join_through_compiled_pipeline() 
     let plan = root_join_gpu_sink_data_plan(&left_path, &right_path);
     let analysis = plan.capability_analysis();
     assert!(analysis.admits_root_join());
-    let admission = strict_bounded_pipeline_admission(&plan)
-        .expect("strict admission should not fail")
-        .expect("GPU sink root join should be strict-admitted");
+    let admission = bounded_pipeline_admission(&plan)
+        .expect("bounded admission should not fail")
+        .expect("GPU sink root join should be admitted");
     assert_eq!(admission.pipeline().sink().kind(), SinkBoundaryKind::GpuResidentOutput);
     assert!(
         admission.pipeline().gates().iter().all(|gate| {
@@ -623,8 +498,8 @@ fn execute_query_plan_routes_gpu_resident_sink_join_through_compiled_pipeline() 
         "GPU sink compiled pipeline must not carry host materialization gates"
     );
     assert!(
-        nexus_query_engine::admission::strict_bounded_pipeline_rejection_projection(&plan)
-            .expect("strict rejection projection should not fail")
+        nexus_query_engine::admission::bounded_pipeline_rejection_projection(&plan)
+            .expect("bounded rejection projection should not fail")
             .is_none(),
         "GPU sink should stay inside the compiled bounded envelope"
     );
