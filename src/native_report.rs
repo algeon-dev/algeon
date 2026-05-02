@@ -17,10 +17,16 @@ use datafusion::{
     },
 };
 
-use crate::{CandidateOutcome, FallbackReason, lower_physical_plan_to_native, report::GpuCandidate};
+use crate::{
+    CandidateOutcome, CudfGpuIslandExec, FallbackReason, NativeCudfExec, lower_physical_plan_to_native,
+    planner::{CudfNativePhysicalOptimizerRule, NativePlanningDiagnostics},
+    report::GpuCandidate,
+};
 
 pub const NATIVE_FALLBACK_PRESSURE_TSV_SCHEMA_VERSION: u32 = 1;
 pub const NATIVE_FALLBACK_PRESSURE_TSV_HEADER: &str = "query_id\tphysical_root\tphysical_shape\tnative_candidate_shape\toutcome\treason_code\tunsupported_category\tsource_diagnostics\trejected_before_execution";
+pub const NATIVE_DATAFUSION_PLANNING_TSV_SCHEMA_VERSION: u32 = 1;
+pub const NATIVE_DATAFUSION_PLANNING_TSV_HEADER: &str = "query_id\tphysical_root\tphysical_shape\tnative_candidate_shape\toutcome\treason_code\tunsupported_category\tsource_diagnostics\tpost_native_plan_root\tpost_native_execution_path\trejected_before_execution";
 
 #[derive(Debug, Clone)]
 pub struct NativeFallbackPressureWorkloadItem {
@@ -77,6 +83,129 @@ impl NativeFallbackPressureReport {
             );
         }
         output
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeDataFusionPlanningReport {
+    pub rows: Vec<NativeDataFusionPlanningRow>,
+}
+
+impl NativeDataFusionPlanningReport {
+    pub fn collect(items: impl IntoIterator<Item = NativeDataFusionPlanningWorkloadItem>) -> Self {
+        let rows = items.into_iter().flat_map(datafusion_planning_rows_for_item).collect();
+        Self { rows }
+    }
+
+    pub fn from_retained_rule(
+        query_id: impl Into<String>,
+        planned_plan: Arc<dyn ExecutionPlan>,
+        native_rule: &CudfNativePhysicalOptimizerRule,
+    ) -> Self {
+        let Some(diagnostics) = native_rule.last_planning_diagnostics() else {
+            return Self { rows: Vec::new() };
+        };
+        Self::collect([NativeDataFusionPlanningWorkloadItem::new(query_id, planned_plan, diagnostics)])
+    }
+
+    pub fn accepted_count(&self) -> usize {
+        self.rows.iter().filter(|row| row.outcome == NativeDataFusionPlanningOutcome::AcceptedReplaced).count()
+    }
+
+    pub fn rejected_count(&self) -> usize {
+        self.rows.iter().filter(|row| row.outcome == NativeDataFusionPlanningOutcome::RejectedBeforeExecution).count()
+    }
+
+    pub fn to_tsv(&self) -> String {
+        let mut output = String::new();
+        let _ = writeln!(
+            output,
+            "# native_datafusion_planning_tsv_schema_version={NATIVE_DATAFUSION_PLANNING_TSV_SCHEMA_VERSION}"
+        );
+        output.push_str(NATIVE_DATAFUSION_PLANNING_TSV_HEADER);
+        output.push('\n');
+        for row in &self.rows {
+            let _ = writeln!(
+                output,
+                "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                row.query_id,
+                row.physical_root,
+                row.physical_shape,
+                row.native_candidate_shape.as_deref().unwrap_or("none"),
+                row.outcome.as_str(),
+                row.reason_code.as_deref().unwrap_or("none"),
+                row.unsupported_category.as_deref().unwrap_or("none"),
+                format_source_diagnostics(&row.source_diagnostics),
+                row.post_native_plan_root,
+                row.post_native_execution_path.as_str(),
+                row.rejected_before_execution,
+            );
+        }
+        output
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct NativeDataFusionPlanningWorkloadItem {
+    pub query_id: String,
+    pub planned_plan: Arc<dyn ExecutionPlan>,
+    pub native_diagnostics: NativePlanningDiagnostics,
+}
+
+impl NativeDataFusionPlanningWorkloadItem {
+    pub fn new(
+        query_id: impl Into<String>,
+        planned_plan: Arc<dyn ExecutionPlan>,
+        native_diagnostics: NativePlanningDiagnostics,
+    ) -> Self {
+        Self { query_id: query_id.into(), planned_plan, native_diagnostics }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeDataFusionPlanningRow {
+    pub query_id: String,
+    pub physical_root: String,
+    pub physical_shape: String,
+    pub native_candidate_shape: Option<String>,
+    pub outcome: NativeDataFusionPlanningOutcome,
+    pub reason_code: Option<String>,
+    pub unsupported_category: Option<String>,
+    pub source_diagnostics: Vec<NativeSourceDiagnosticSummary>,
+    pub post_native_plan_root: String,
+    pub post_native_execution_path: NativeDataFusionPostNativeExecutionPath,
+    pub rejected_before_execution: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NativeDataFusionPlanningOutcome {
+    AcceptedReplaced,
+    RejectedBeforeExecution,
+}
+
+impl NativeDataFusionPlanningOutcome {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::AcceptedReplaced => "accepted_replaced",
+            Self::RejectedBeforeExecution => "rejected_before_execution",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NativeDataFusionPostNativeExecutionPath {
+    Native,
+    GpuIsland,
+    Cpu,
+}
+
+impl NativeDataFusionPostNativeExecutionPath {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Native => "native",
+            Self::GpuIsland => "gpu_island",
+            Self::Cpu => "cpu",
+        }
     }
 }
 
@@ -156,6 +285,62 @@ fn report_rows_for_item(item: NativeFallbackPressureWorkloadItem) -> Vec<NativeF
             },
         })
         .collect()
+}
+
+fn datafusion_planning_rows_for_item(item: NativeDataFusionPlanningWorkloadItem) -> Vec<NativeDataFusionPlanningRow> {
+    let post_native_plan_root = item.planned_plan.name().to_string();
+    let post_native_execution_path = post_native_execution_path(item.planned_plan.as_ref());
+    let source_diagnostics =
+        item.native_diagnostics.source_diagnostics.iter().map(summarize_source_diagnostics).collect::<Vec<_>>();
+
+    item.native_diagnostics
+        .report
+        .outcomes()
+        .iter()
+        .map(|outcome| match outcome {
+            CandidateOutcome::Rewritten { candidate } => NativeDataFusionPlanningRow {
+                query_id: item.query_id.clone(),
+                physical_root: item.native_diagnostics.input_plan_root.clone(),
+                physical_shape: item.native_diagnostics.input_plan_shape.clone(),
+                native_candidate_shape: Some(candidate.shape.to_string()),
+                outcome: NativeDataFusionPlanningOutcome::AcceptedReplaced,
+                reason_code: None,
+                unsupported_category: None,
+                source_diagnostics: source_diagnostics.clone(),
+                post_native_plan_root: post_native_plan_root.clone(),
+                post_native_execution_path,
+                rejected_before_execution: false,
+            },
+            CandidateOutcome::Rejected { candidate, reason } => NativeDataFusionPlanningRow {
+                query_id: item.query_id.clone(),
+                physical_root: item.native_diagnostics.input_plan_root.clone(),
+                physical_shape: item.native_diagnostics.input_plan_shape.clone(),
+                native_candidate_shape: Some(candidate.shape.to_string()),
+                outcome: NativeDataFusionPlanningOutcome::RejectedBeforeExecution,
+                reason_code: Some(reason.code().to_string()),
+                unsupported_category: unsupported_category(item.planned_plan.as_ref(), *candidate, *reason),
+                source_diagnostics: source_diagnostics.clone(),
+                post_native_plan_root: post_native_plan_root.clone(),
+                post_native_execution_path,
+                rejected_before_execution: true,
+            },
+        })
+        .collect()
+}
+
+fn post_native_execution_path(plan: &dyn ExecutionPlan) -> NativeDataFusionPostNativeExecutionPath {
+    if plan.as_any().downcast_ref::<NativeCudfExec>().is_some() {
+        return NativeDataFusionPostNativeExecutionPath::Native;
+    }
+    if contains_gpu_island(plan) {
+        return NativeDataFusionPostNativeExecutionPath::GpuIsland;
+    }
+    NativeDataFusionPostNativeExecutionPath::Cpu
+}
+
+fn contains_gpu_island(plan: &dyn ExecutionPlan) -> bool {
+    plan.as_any().downcast_ref::<CudfGpuIslandExec>().is_some()
+        || plan.children().iter().any(|child| contains_gpu_island(child.as_ref()))
 }
 
 fn summarize_source_diagnostics(diagnostics: &NativeSourceDiagnostics) -> NativeSourceDiagnosticSummary {

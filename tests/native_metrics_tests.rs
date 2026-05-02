@@ -1,4 +1,5 @@
 use cudf_query_engine::QueryMetrics;
+use datafusion_cudf::NATIVE_CUDF_DATAFUSION_METRIC_NAMES;
 
 #[test]
 fn query_metrics_records_peak_device_memory_observation() {
@@ -51,4 +52,38 @@ fn query_metrics_count_retries_attempts_and_commits_separately() {
     assert_eq!(metrics.retry_count, 2);
     assert_eq!(metrics.retry_reservation_failure_count, 1);
     assert_eq!(metrics.retry_resource_exhausted_count, 1);
+}
+
+#[test]
+fn native_datafusion_metric_names_cover_bounded_runtime_contract() {
+    let names = NATIVE_CUDF_DATAFUSION_METRIC_NAMES;
+    let mut sorted = names.to_vec();
+    sorted.sort_unstable();
+    sorted.dedup();
+    assert_eq!(sorted.len(), names.len(), "native DataFusion metric names must be unique");
+
+    for expected in [
+        "host_to_device_uploads",
+        "host_to_device_uploaded_bytes",
+        "device_to_host_materializations",
+        "device_to_host_materialized_bytes",
+        "source_chunks_planned",
+        "source_chunks_attempted",
+        "source_chunks_committed",
+        "source_chunks_retried",
+        "row_groups_planned",
+        "row_groups_committed",
+        "reservation_requested_bytes",
+        "reservation_granted_bytes",
+        "reservation_denied_count",
+        "retry_resource_exhausted_count",
+        "retry_reservation_failure_count",
+        "parquet_read_time",
+        "operator_time",
+        "final_merge_time",
+        "final_sort_time",
+        "materialization_time",
+    ] {
+        assert!(names.contains(&expected), "missing native DataFusion metric: {expected}");
+    }
 }

@@ -17,9 +17,10 @@ use crate::{
     capability::{aggregate_rejection, expr_rejection, projection_rejection, sort_rejection},
     error::{Error, ErrorCode},
     exec::CudfExecutionConfig,
+    native_exec::{NativeCudfExec, NativeCudfExecutionConfig},
     policy::{FallbackReason, GpuFallbackPolicy},
     report::{GpuCandidate, PlanningReport},
-    session::CUDF_PHYSICAL_OPTIMIZER_RULE_NAME,
+    session::{CUDF_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME, CUDF_PHYSICAL_OPTIMIZER_RULE_NAME},
 };
 
 #[derive(Debug, Clone)]
@@ -27,6 +28,7 @@ pub struct CudfOptimizerConfig {
     fallback_policy: GpuFallbackPolicy,
     min_operators_per_island: usize,
     execution_config: CudfExecutionConfig,
+    native_execution_config: Option<NativeCudfExecutionConfig>,
 }
 
 impl Default for CudfOptimizerConfig {
@@ -35,6 +37,7 @@ impl Default for CudfOptimizerConfig {
             fallback_policy: GpuFallbackPolicy::default(),
             min_operators_per_island: 2,
             execution_config: CudfExecutionConfig::default(),
+            native_execution_config: None,
         }
     }
 }
@@ -56,6 +59,14 @@ impl CudfOptimizerConfig {
         &self.execution_config
     }
 
+    pub fn native_execution_config(&self) -> Option<&NativeCudfExecutionConfig> {
+        self.native_execution_config.as_ref()
+    }
+
+    pub fn native_execution_enabled(&self) -> bool {
+        self.native_execution_config.is_some()
+    }
+
     pub fn with_min_operators_per_island(mut self, min_operators_per_island: usize) -> Self {
         self.min_operators_per_island = min_operators_per_island.max(1);
         self
@@ -63,6 +74,11 @@ impl CudfOptimizerConfig {
 
     pub fn with_execution_config(mut self, execution_config: CudfExecutionConfig) -> Self {
         self.execution_config = execution_config;
+        self
+    }
+
+    pub fn with_native_execution_config(mut self, native_execution_config: NativeCudfExecutionConfig) -> Self {
+        self.native_execution_config = Some(native_execution_config);
         self
     }
 
@@ -77,6 +93,125 @@ impl CudfOptimizerConfig {
 pub struct OptimizationResult {
     pub plan: Arc<dyn ExecutionPlan>,
     pub report: PlanningReport,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativePlanningDiagnostics {
+    pub input_plan_root: String,
+    pub input_plan_shape: String,
+    pub report: PlanningReport,
+    pub source_diagnostics: Vec<cudf_query_engine::SourceDiagnostics>,
+}
+
+#[derive(Debug)]
+pub struct CudfNativePhysicalOptimizerRule {
+    config: CudfOptimizerConfig,
+    last_input_plan_root: Mutex<Option<String>>,
+    last_input_plan_shape: Mutex<Option<String>>,
+    last_report: Mutex<Option<PlanningReport>>,
+    last_source_diagnostics: Mutex<Vec<cudf_query_engine::SourceDiagnostics>>,
+}
+
+impl CudfNativePhysicalOptimizerRule {
+    pub fn new(config: CudfOptimizerConfig) -> Self {
+        Self {
+            config,
+            last_input_plan_root: Mutex::new(None),
+            last_input_plan_shape: Mutex::new(None),
+            last_report: Mutex::new(None),
+            last_source_diagnostics: Mutex::new(Vec::new()),
+        }
+    }
+
+    pub fn config(&self) -> &CudfOptimizerConfig {
+        &self.config
+    }
+
+    pub fn last_report(&self) -> Option<PlanningReport> {
+        self.last_report.lock().expect("native planning report mutex poisoned").clone()
+    }
+
+    pub fn last_source_diagnostics(&self) -> Vec<cudf_query_engine::SourceDiagnostics> {
+        self.last_source_diagnostics.lock().expect("native source diagnostics mutex poisoned").clone()
+    }
+
+    pub fn last_planning_diagnostics(&self) -> Option<NativePlanningDiagnostics> {
+        self.last_report().map(|report| NativePlanningDiagnostics {
+            input_plan_root: self
+                .last_input_plan_root
+                .lock()
+                .expect("native input plan root mutex poisoned")
+                .clone()
+                .unwrap_or_default(),
+            input_plan_shape: self
+                .last_input_plan_shape
+                .lock()
+                .expect("native input plan shape mutex poisoned")
+                .clone()
+                .unwrap_or_default(),
+            report,
+            source_diagnostics: self.last_source_diagnostics(),
+        })
+    }
+}
+
+impl PhysicalOptimizerRule for CudfNativePhysicalOptimizerRule {
+    fn optimize(
+        &self,
+        plan: Arc<dyn ExecutionPlan>,
+        _config: &ConfigOptions,
+    ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
+        *self.last_input_plan_root.lock().expect("native input plan root mutex poisoned") =
+            Some(plan.name().to_string());
+        *self.last_input_plan_shape.lock().expect("native input plan shape mutex poisoned") =
+            Some(physical_plan_shape(plan.as_ref()));
+
+        let Some(native_execution_config) = self.config.native_execution_config() else {
+            *self.last_report.lock().expect("native planning report mutex poisoned") = Some(PlanningReport::new());
+            *self.last_source_diagnostics.lock().expect("native source diagnostics mutex poisoned") = Vec::new();
+            return Ok(plan);
+        };
+
+        let lowering = crate::native::lower_physical_plan_to_native(Arc::clone(&plan));
+        *self.last_report.lock().expect("native planning report mutex poisoned") = Some(lowering.report.clone());
+        *self.last_source_diagnostics.lock().expect("native source diagnostics mutex poisoned") =
+            lowering.source_diagnostics.clone();
+
+        if lowering.plans.len() != 1 || lowering.rewritten_count() != 1 {
+            return Ok(plan);
+        }
+
+        NativeCudfExec::try_new(lowering.plans[0].clone(), native_execution_config.clone())
+            .map(|plan| Arc::new(plan) as Arc<dyn ExecutionPlan>)
+            .map_err(Into::into)
+    }
+
+    fn name(&self) -> &str {
+        CUDF_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME
+    }
+
+    fn schema_check(&self) -> bool {
+        true
+    }
+}
+
+fn physical_plan_shape(plan: &dyn ExecutionPlan) -> String {
+    let children = plan.children();
+    if children.is_empty() {
+        return plan.name().to_string();
+    }
+
+    let mut shape = String::new();
+    shape.push_str(plan.name());
+    shape.push('(');
+    for (index, child) in children.iter().enumerate() {
+        if index > 0 {
+            shape.push(',');
+        }
+        shape.push_str(&physical_plan_shape(child.as_ref()));
+    }
+    shape.push(')');
+    shape
 }
 
 #[derive(Debug)]

@@ -10,13 +10,17 @@ use arrow::{
     record_batch::RecordBatch,
 };
 use datafusion::{
+    execution::SessionStateBuilder,
     parquet::{arrow::ArrowWriter, file::properties::WriterProperties},
     physical_plan::ExecutionPlan,
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
 use datafusion_cudf::{
-    NATIVE_FALLBACK_PRESSURE_TSV_HEADER, NATIVE_FALLBACK_PRESSURE_TSV_SCHEMA_VERSION, NativeFallbackPressureOutcome,
-    NativeFallbackPressureReport, NativeFallbackPressureWorkloadItem,
+    CudfNativePhysicalOptimizerRule, CudfOptimizerConfig, CudfPhysicalOptimizerRule, CudfSessionStateBuilderExt,
+    GpuFallbackPolicy, NATIVE_DATAFUSION_PLANNING_TSV_HEADER, NATIVE_DATAFUSION_PLANNING_TSV_SCHEMA_VERSION,
+    NATIVE_FALLBACK_PRESSURE_TSV_HEADER, NATIVE_FALLBACK_PRESSURE_TSV_SCHEMA_VERSION, NativeCudfExecutionConfig,
+    NativeDataFusionPlanningOutcome, NativeDataFusionPlanningReport, NativeDataFusionPostNativeExecutionPath,
+    NativeFallbackPressureOutcome, NativeFallbackPressureReport, NativeFallbackPressureWorkloadItem,
 };
 
 #[tokio::test]
@@ -103,6 +107,53 @@ async fn native_fallback_pressure_report_summarizes_workload_outcomes() {
     fs::remove_dir_all(dir).unwrap();
 }
 
+#[tokio::test]
+async fn native_datafusion_planning_report_summarizes_session_optimizer_outcomes() {
+    let dir = unique_temp_dir("datafusion-cudf-native-datafusion-planning-report");
+    let path = dir.join("input.parquet");
+    write_numeric_parquet_file(&path);
+
+    let accepted = native_datafusion_planning_report("sum_session", &path, SQL_SUM_QUERY).await;
+    assert_eq!(accepted.rows.len(), 1);
+    assert_eq!(accepted.accepted_count(), 1);
+    assert_eq!(accepted.rejected_count(), 0);
+    let accepted_row = &accepted.rows[0];
+    assert_eq!(accepted_row.outcome, NativeDataFusionPlanningOutcome::AcceptedReplaced);
+    assert_eq!(accepted_row.reason_code, None);
+    assert_eq!(accepted_row.unsupported_category, None);
+    assert_eq!(accepted_row.post_native_plan_root, "NativeCudfExec");
+    assert_eq!(accepted_row.post_native_execution_path, NativeDataFusionPostNativeExecutionPath::Native);
+    assert!(!accepted_row.rejected_before_execution);
+    assert_eq!(accepted_row.source_diagnostics.len(), 1);
+    assert!(accepted_row.source_diagnostics[0].direct_device_read);
+
+    let rejected = native_datafusion_planning_report("filtered_session", &path, SQL_FILTERED_QUERY).await;
+    assert_eq!(rejected.rows.len(), 1);
+    assert_eq!(rejected.accepted_count(), 0);
+    assert_eq!(rejected.rejected_count(), 1);
+    let rejected_row = &rejected.rows[0];
+    assert_eq!(rejected_row.outcome, NativeDataFusionPlanningOutcome::RejectedBeforeExecution);
+    assert_eq!(rejected_row.reason_code.as_deref(), Some("unsupported_expression"));
+    assert_ne!(rejected_row.post_native_execution_path, NativeDataFusionPostNativeExecutionPath::Native);
+    assert!(rejected_row.rejected_before_execution);
+    assert_eq!(rejected_row.source_diagnostics.len(), 1);
+    assert!(rejected_row.source_diagnostics[0].direct_device_read);
+
+    let text = accepted.to_tsv();
+    assert_eq!(NATIVE_DATAFUSION_PLANNING_TSV_SCHEMA_VERSION, 1);
+    assert_eq!(
+        NATIVE_DATAFUSION_PLANNING_TSV_HEADER,
+        "query_id\tphysical_root\tphysical_shape\tnative_candidate_shape\toutcome\treason_code\tunsupported_category\tsource_diagnostics\tpost_native_plan_root\tpost_native_execution_path\trejected_before_execution"
+    );
+    assert!(text.starts_with("# native_datafusion_planning_tsv_schema_version=1\n"));
+    assert!(text.contains(&format!("{NATIVE_DATAFUSION_PLANNING_TSV_HEADER}\n")));
+    assert!(text.contains("sum_session\t"));
+    assert!(text.contains("\taccepted_replaced\tnone\tnone\t"));
+    assert!(text.contains("\tNativeCudfExec\tnative\tfalse"));
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
 fn report_row<'a>(
     report: &'a NativeFallbackPressureReport,
     query_id: &str,
@@ -115,6 +166,26 @@ async fn sql_plan(path: &std::path::Path, config: SessionConfig, sql: &str) -> A
     ctx.register_parquet("bench", path.to_str().unwrap(), ParquetReadOptions::default()).await.unwrap();
     let df = ctx.sql(sql).await.unwrap();
     df.create_physical_plan().await.unwrap()
+}
+
+async fn native_datafusion_planning_report(
+    query_id: &str,
+    path: &std::path::Path,
+    sql: &str,
+) -> NativeDataFusionPlanningReport {
+    let optimizer_config = CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred)
+        .with_native_execution_config(NativeCudfExecutionConfig::bounded(256 * 1024 * 1024, 64 * 1024 * 1024, 1, 3, 1));
+    let native_rule = Arc::new(CudfNativePhysicalOptimizerRule::new(optimizer_config.clone()));
+    let gpu_island_rule = Arc::new(CudfPhysicalOptimizerRule::new(optimizer_config));
+    let state = SessionStateBuilder::new_with_default_features()
+        .with_config(direct_friendly_sql_session_config())
+        .with_cudf_native_and_gpu_island_rules(Arc::clone(&native_rule), gpu_island_rule)
+        .build();
+    let ctx = SessionContext::new_with_state(state);
+    ctx.register_parquet("bench", path.to_str().unwrap(), ParquetReadOptions::default()).await.unwrap();
+    let df = ctx.sql(sql).await.unwrap();
+    let plan = df.create_physical_plan().await.unwrap();
+    NativeDataFusionPlanningReport::from_retained_rule(query_id, plan, native_rule.as_ref())
 }
 
 fn direct_friendly_sql_session_config() -> SessionConfig {

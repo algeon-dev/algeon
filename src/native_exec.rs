@@ -22,6 +22,49 @@ use futures::TryStreamExt;
 
 use crate::error::{Error, ErrorCode};
 
+pub const NATIVE_CUDF_DATAFUSION_METRIC_NAMES: &[&str] = &[
+    "input_batches",
+    "input_rows",
+    "host_to_device_uploads",
+    "host_to_device_uploaded_rows",
+    "host_to_device_uploaded_bytes",
+    "device_to_host_materializations",
+    "device_to_host_materialized_rows",
+    "device_to_host_materialized_bytes",
+    "device_to_device_copies",
+    "device_to_device_copied_bytes",
+    "reservation_requested_bytes",
+    "reservation_granted_bytes",
+    "reservation_denied_count",
+    "peak_device_memory_bytes",
+    "resident_dataframe_peak_bytes",
+    "allocator_high_water_bytes",
+    "source_chunks_planned",
+    "source_chunks_attempted",
+    "source_chunks_committed",
+    "source_chunks_retried",
+    "row_groups_planned",
+    "row_groups_committed",
+    "partial_aggregate_count",
+    "partial_aggregate_rows",
+    "final_merge_attempts",
+    "final_merge_levels",
+    "parquet_files",
+    "parquet_bytes_known",
+    "row_groups_selected",
+    "read_columns",
+    "retry_count",
+    "retry_resource_exhausted_count",
+    "retry_reservation_failure_count",
+    "parquet_read_time",
+    "source_read_time",
+    "operator_time",
+    "chunk_operator_time",
+    "final_merge_time",
+    "final_sort_time",
+    "materialization_time",
+];
+
 #[derive(Debug, Clone)]
 pub struct NativeCudfExecutionConfig {
     runtime: Option<Arc<cudf::Runtime>>,
@@ -218,9 +261,11 @@ impl ExecutionPlan for NativeCudfExec {
         let execution_config = self.execution_config.clone();
         let metrics = NativeCudfMetrics::new(&self.metrics, partition);
         let output = futures::stream::once(async move {
-            let context = execution_config.execution_context().map_err(DataFusionError::from)?;
+            let context = execution_config
+                .execution_context()
+                .map_err(|error| DataFusionError::from(mark_native_runtime_error(error, "runtime_context")))?;
             let result = execute_query_plan(&context, &plan).map_err(|error| {
-                DataFusionError::from(Error::from_native(
+                DataFusionError::from(native_query_runtime_error(
                     "datafusion_cudf.native_exec.execute",
                     "native cudf query execution failed",
                     error,
@@ -259,6 +304,18 @@ fn conservative_properties(schema: SchemaRef) -> Arc<PlanProperties> {
     ))
 }
 
+fn native_query_runtime_error(
+    operation: &'static str,
+    message: impl Into<String>,
+    source: cudf_query_engine::QueryError,
+) -> Error {
+    mark_native_runtime_error(Error::from_native(operation, message, source), "runtime_execution")
+}
+
+fn mark_native_runtime_error(error: Error, phase: &'static str) -> Error {
+    error.with_fact("native_datafusion_phase", phase).with_fact("cpu_fallback_after_native_start", false)
+}
+
 #[derive(Debug, Clone)]
 struct NativeCudfMetrics {
     baseline: BaselineMetrics,
@@ -275,12 +332,19 @@ struct NativeCudfMetrics {
     reservation_requested_bytes: Count,
     reservation_granted_bytes: Count,
     reservation_denied_count: Count,
+    peak_device_memory_bytes: Count,
+    resident_dataframe_peak_bytes: Count,
+    allocator_high_water_bytes: Count,
     source_chunks_planned: Count,
     source_chunks_attempted: Count,
     source_chunks_committed: Count,
     source_chunks_retried: Count,
     row_groups_planned: Count,
     row_groups_committed: Count,
+    partial_aggregate_count: Count,
+    partial_aggregate_rows: Count,
+    final_merge_attempts: Count,
+    final_merge_levels: Count,
     parquet_files: Count,
     parquet_bytes_known: Count,
     row_groups_selected: Count,
@@ -314,12 +378,19 @@ impl NativeCudfMetrics {
             reservation_requested_bytes: summary_counter(metrics, "reservation_requested_bytes", partition),
             reservation_granted_bytes: summary_counter(metrics, "reservation_granted_bytes", partition),
             reservation_denied_count: summary_counter(metrics, "reservation_denied_count", partition),
+            peak_device_memory_bytes: summary_counter(metrics, "peak_device_memory_bytes", partition),
+            resident_dataframe_peak_bytes: summary_counter(metrics, "resident_dataframe_peak_bytes", partition),
+            allocator_high_water_bytes: summary_counter(metrics, "allocator_high_water_bytes", partition),
             source_chunks_planned: summary_counter(metrics, "source_chunks_planned", partition),
             source_chunks_attempted: summary_counter(metrics, "source_chunks_attempted", partition),
             source_chunks_committed: summary_counter(metrics, "source_chunks_committed", partition),
             source_chunks_retried: summary_counter(metrics, "source_chunks_retried", partition),
             row_groups_planned: summary_counter(metrics, "row_groups_planned", partition),
             row_groups_committed: summary_counter(metrics, "row_groups_committed", partition),
+            partial_aggregate_count: summary_counter(metrics, "partial_aggregate_count", partition),
+            partial_aggregate_rows: summary_counter(metrics, "partial_aggregate_rows", partition),
+            final_merge_attempts: summary_counter(metrics, "final_merge_attempts", partition),
+            final_merge_levels: summary_counter(metrics, "final_merge_levels", partition),
             parquet_files: summary_counter(metrics, "parquet_files", partition),
             parquet_bytes_known: summary_counter(metrics, "parquet_bytes_known", partition),
             row_groups_selected: summary_counter(metrics, "row_groups_selected", partition),
@@ -351,12 +422,19 @@ impl NativeCudfMetrics {
         self.reservation_requested_bytes.add(count(metrics.reservation_requested_bytes));
         self.reservation_granted_bytes.add(count(metrics.reservation_granted_bytes));
         self.reservation_denied_count.add(count(metrics.reservation_denied_count));
+        add_optional_count(&self.peak_device_memory_bytes, metrics.peak_device_memory_bytes);
+        add_optional_count(&self.resident_dataframe_peak_bytes, metrics.resident_dataframe_peak_bytes);
+        add_optional_count(&self.allocator_high_water_bytes, metrics.allocator_high_water_bytes);
         self.source_chunks_planned.add(count(metrics.source_chunks_planned));
         self.source_chunks_attempted.add(count(metrics.source_chunks_attempted));
         self.source_chunks_committed.add(count(metrics.source_chunks_committed));
         self.source_chunks_retried.add(count(metrics.source_chunks_retried));
         self.row_groups_planned.add(count(metrics.row_groups_planned));
         self.row_groups_committed.add(count(metrics.row_groups_committed));
+        self.partial_aggregate_count.add(count(metrics.partial_aggregate_count));
+        self.partial_aggregate_rows.add(count(metrics.partial_aggregate_rows));
+        self.final_merge_attempts.add(count(metrics.final_merge_attempts));
+        self.final_merge_levels.add(count(metrics.final_merge_levels));
         self.parquet_files.add(count(metrics.parquet_files));
         self.parquet_bytes_known.add(count(metrics.parquet_bytes_known));
         self.row_groups_selected.add(count(metrics.row_groups_selected));
@@ -376,6 +454,12 @@ impl NativeCudfMetrics {
 
 fn count(value: u64) -> usize {
     usize::try_from(value).unwrap_or(usize::MAX)
+}
+
+fn add_optional_count(metric: &Count, value: Option<u64>) {
+    if let Some(value) = value {
+        metric.add(count(value));
+    }
 }
 
 fn summary_counter(metrics: &ExecutionPlanMetricsSet, name: &'static str, partition: usize) -> Count {

@@ -24,7 +24,7 @@ use datafusion::{
         physical_plan::{FileSource, ParquetSource},
         source::DataSourceExec,
     },
-    execution::context::TaskContext,
+    execution::{SessionStateBuilder, context::TaskContext},
     functions_aggregate::sum::sum_udaf,
     logical_expr::Operator,
     parquet::{
@@ -53,8 +53,10 @@ use datafusion::{
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
 use datafusion_cudf::{
-    CandidateOutcome, CudfGpuIslandExec, CudfOptimizerConfig, GpuFallbackPolicy, LargerIslandBenchmarkMetrics,
-    LargerIslandBenchmarkPlanning, TimedBenchmarkRun, lower_physical_plan_to_native, optimize_plan,
+    CandidateOutcome, CudfGpuIslandExec, CudfNativePhysicalOptimizerRule, CudfOptimizerConfig,
+    CudfPhysicalOptimizerRule, CudfSessionStateBuilderExt, GpuFallbackPolicy, LargerIslandBenchmarkMetrics,
+    LargerIslandBenchmarkPlanning, NativeCudfExec, NativeCudfExecutionConfig, NativeDataFusionPlanningReport,
+    TimedBenchmarkRun, lower_physical_plan_to_native, optimize_plan,
 };
 
 const THREE_GIB: u64 = 3_221_225_472;
@@ -490,17 +492,21 @@ struct DirectParquetBenchmarkReport {
     cpu_comparable: TimedBenchmarkRun,
     cpu_default: TimedBenchmarkRun,
     gpu: Option<TimedBenchmarkRun>,
-    native_gpu: TimedBenchmarkRun,
+    datafusion_native_exec: TimedBenchmarkRun,
+    manual_native_lowering: TimedBenchmarkRun,
     cpu_comparable_samples: Vec<Duration>,
     cpu_default_samples: Vec<Duration>,
     gpu_samples: Vec<Duration>,
-    native_gpu_samples: Vec<Duration>,
+    datafusion_native_exec_samples: Vec<Duration>,
+    manual_native_lowering_samples: Vec<Duration>,
     gpu_metric_samples: Vec<LargerIslandBenchmarkMetrics>,
-    native_gpu_metric_samples: Vec<LargerIslandBenchmarkMetrics>,
+    datafusion_native_exec_metric_samples: Vec<LargerIslandBenchmarkMetrics>,
+    manual_native_lowering_metric_samples: Vec<LargerIslandBenchmarkMetrics>,
     final_cpu_comparable: CollectMeasurement,
     final_cpu_default: CollectMeasurement,
     final_gpu: Option<GpuCollectMeasurement>,
-    final_native_gpu: GpuCollectMeasurement,
+    final_datafusion_native_exec: GpuCollectMeasurement,
+    final_manual_native_lowering: GpuCollectMeasurement,
     source_diagnostic: String,
 }
 
@@ -508,10 +514,11 @@ impl DirectParquetBenchmarkReport {
     fn to_text(&self) -> String {
         let comparable_speedup = self.gpu.as_ref().map(|gpu| speedup(self.cpu_comparable.mean, gpu.mean));
         let default_speedup = self.gpu.as_ref().map(|gpu| speedup(self.cpu_default.mean, gpu.mean));
-        let native_comparable_speedup = speedup(self.cpu_comparable.mean, self.native_gpu.mean);
-        let native_default_speedup = speedup(self.cpu_default.mean, self.native_gpu.mean);
-        let native_metrics = &self.final_native_gpu.metrics;
-        let native_planning = &self.final_native_gpu.planning;
+        let datafusion_native_comparable_speedup = speedup(self.cpu_comparable.mean, self.datafusion_native_exec.mean);
+        let datafusion_native_default_speedup = speedup(self.cpu_default.mean, self.datafusion_native_exec.mean);
+        let manual_native_comparable_speedup = speedup(self.cpu_comparable.mean, self.manual_native_lowering.mean);
+        let manual_native_default_speedup = speedup(self.cpu_default.mean, self.manual_native_lowering.mean);
+        let native_metrics = &self.final_datafusion_native_exec.metrics;
         let mut text = String::new();
 
         push_line(&mut text, format_args!("case=gpu_friendly_local_parquet"));
@@ -541,18 +548,41 @@ impl DirectParquetBenchmarkReport {
         push_line(&mut text, format_args!("cpu_comparable_wall_ms={:.3}", duration_ms(self.cpu_comparable.mean)));
         push_line(&mut text, format_args!("cpu_wall_ms={:.3}", duration_ms(self.cpu_comparable.mean)));
         push_line(&mut text, format_args!("cpu_default_wall_ms={:.3}", duration_ms(self.cpu_default.mean)));
+        push_line(&mut text, format_args!("cpu_datafusion_wall_ms={:.3}", duration_ms(self.cpu_default.mean)));
         if let Some(gpu) = &self.gpu {
             push_line(&mut text, format_args!("gpu_wall_ms={:.3}", duration_ms(gpu.mean)));
         } else {
             push_line(&mut text, format_args!("gpu_wall_ms=not_run"));
         }
-        push_line(&mut text, format_args!("native_gpu_wall_ms={:.3}", duration_ms(self.native_gpu.mean)));
+        push_line(
+            &mut text,
+            format_args!("datafusion_native_exec_wall_ms={:.3}", duration_ms(self.datafusion_native_exec.mean)),
+        );
+        push_line(
+            &mut text,
+            format_args!("manual_native_lowering_wall_ms={:.3}", duration_ms(self.manual_native_lowering.mean)),
+        );
         push_line(&mut text, format_args!("gpu_speedup_vs_cpu_comparable={}", optional_f64_text(comparable_speedup)));
         push_line(&mut text, format_args!("gpu_speedup={}", optional_f64_text(comparable_speedup)));
         push_line(&mut text, format_args!("gpu_speedup_vs_cpu_default={}", optional_f64_text(default_speedup)));
-        push_line(&mut text, format_args!("native_gpu_speedup_vs_cpu_comparable={native_comparable_speedup:.3}"));
-        push_line(&mut text, format_args!("native_gpu_speedup={native_comparable_speedup:.3}"));
-        push_line(&mut text, format_args!("native_gpu_speedup_vs_cpu_default={native_default_speedup:.3}"));
+        push_line(
+            &mut text,
+            format_args!("datafusion_native_exec_speedup_vs_cpu_comparable={datafusion_native_comparable_speedup:.3}"),
+        );
+        push_line(&mut text, format_args!("datafusion_native_exec_speedup={datafusion_native_comparable_speedup:.3}"));
+        push_line(
+            &mut text,
+            format_args!("datafusion_native_exec_speedup_vs_cpu_datafusion={datafusion_native_default_speedup:.3}"),
+        );
+        push_line(
+            &mut text,
+            format_args!("manual_native_lowering_speedup_vs_cpu_comparable={manual_native_comparable_speedup:.3}"),
+        );
+        push_line(&mut text, format_args!("manual_native_lowering_speedup={manual_native_comparable_speedup:.3}"));
+        push_line(
+            &mut text,
+            format_args!("manual_native_lowering_speedup_vs_cpu_datafusion={manual_native_default_speedup:.3}"),
+        );
         push_line(
             &mut text,
             format_args!("cpu_comparable_wall_ms_samples={}", duration_samples_csv(&self.cpu_comparable_samples)),
@@ -564,7 +594,17 @@ impl DirectParquetBenchmarkReport {
         push_line(&mut text, format_args!("gpu_wall_ms_samples={}", optional_duration_samples_csv(&self.gpu_samples)));
         push_line(
             &mut text,
-            format_args!("native_gpu_wall_ms_samples={}", duration_samples_csv(&self.native_gpu_samples)),
+            format_args!(
+                "datafusion_native_exec_wall_ms_samples={}",
+                duration_samples_csv(&self.datafusion_native_exec_samples)
+            ),
+        );
+        push_line(
+            &mut text,
+            format_args!(
+                "manual_native_lowering_wall_ms_samples={}",
+                duration_samples_csv(&self.manual_native_lowering_samples)
+            ),
         );
         if let Some(final_gpu) = &self.final_gpu {
             push_line(&mut text, format_args!("output_rows={}", final_gpu.output_rows));
@@ -575,9 +615,30 @@ impl DirectParquetBenchmarkReport {
             push_line(&mut text, format_args!("output_batches=not_run"));
             push_line(&mut text, format_args!("output_bytes=not_run"));
         }
-        push_line(&mut text, format_args!("native_output_rows={}", self.final_native_gpu.output_rows));
-        push_line(&mut text, format_args!("native_output_batches={}", self.final_native_gpu.output_batches));
-        push_line(&mut text, format_args!("native_output_bytes={}", self.final_native_gpu.output_bytes));
+        push_line(
+            &mut text,
+            format_args!("datafusion_native_exec_output_rows={}", self.final_datafusion_native_exec.output_rows),
+        );
+        push_line(
+            &mut text,
+            format_args!("datafusion_native_exec_output_batches={}", self.final_datafusion_native_exec.output_batches),
+        );
+        push_line(
+            &mut text,
+            format_args!("datafusion_native_exec_output_bytes={}", self.final_datafusion_native_exec.output_bytes),
+        );
+        push_line(
+            &mut text,
+            format_args!("manual_native_lowering_output_rows={}", self.final_manual_native_lowering.output_rows),
+        );
+        push_line(
+            &mut text,
+            format_args!("manual_native_lowering_output_batches={}", self.final_manual_native_lowering.output_batches),
+        );
+        push_line(
+            &mut text,
+            format_args!("manual_native_lowering_output_bytes={}", self.final_manual_native_lowering.output_bytes),
+        );
         push_line(&mut text, format_args!("cpu_comparable_output_rows={}", self.final_cpu_comparable.output_rows));
         push_line(
             &mut text,
@@ -672,164 +733,226 @@ impl DirectParquetBenchmarkReport {
         } else {
             push_line(&mut text, format_args!("gpu_direct_status=not_run"));
         }
-        push_line(
+        push_native_measurement_lines(
             &mut text,
-            format_args!("native_parquet_read_ms={:.3}", duration_ms(native_metrics.parquet_read_time)),
+            "datafusion_native_exec",
+            &self.final_datafusion_native_exec,
+            &self.datafusion_native_exec_metric_samples,
         );
-        push_line(
+        push_native_datafusion_planning_lines(
             &mut text,
-            format_args!(
-                "native_parquet_read_ms_mean={:.3}",
-                duration_ms(mean_metric_duration(&self.native_gpu_metric_samples, |metrics| metrics.parquet_read_time))
-            ),
+            "datafusion_native_exec",
+            self.final_datafusion_native_exec.native_datafusion_planning_report.as_ref(),
         );
-        push_line(
+        push_native_measurement_lines(
             &mut text,
-            format_args!(
-                "native_parquet_read_ms_samples={}",
-                metric_duration_samples_csv(&self.native_gpu_metric_samples, |metrics| metrics.parquet_read_time)
-            ),
+            "manual_native_lowering",
+            &self.final_manual_native_lowering,
+            &self.manual_native_lowering_metric_samples,
         );
-        push_line(
-            &mut text,
-            format_args!("native_cudf_operator_ms={:.3}", duration_ms(native_metrics.cudf_operator_time)),
-        );
-        push_line(
-            &mut text,
-            format_args!(
-                "native_cudf_operator_ms_mean={:.3}",
-                duration_ms(mean_metric_duration(&self.native_gpu_metric_samples, |metrics| metrics.cudf_operator_time))
-            ),
-        );
-        push_line(
-            &mut text,
-            format_args!(
-                "native_cudf_operator_ms_samples={}",
-                metric_duration_samples_csv(&self.native_gpu_metric_samples, |metrics| metrics.cudf_operator_time)
-            ),
-        );
-        push_line(
-            &mut text,
-            format_args!(
-                "native_record_batch_materialization_ms={:.3}",
-                duration_ms(native_metrics.record_batch_materialization_time)
-            ),
-        );
-        push_line(
-            &mut text,
-            format_args!(
-                "native_record_batch_materialization_ms_mean={:.3}",
-                duration_ms(mean_metric_duration(&self.native_gpu_metric_samples, |metrics| {
-                    metrics.record_batch_materialization_time
-                }))
-            ),
-        );
-        push_line(
-            &mut text,
-            format_args!(
-                "native_peak_device_memory_bytes={}",
-                optional_usize_text(native_metrics.peak_device_memory_bytes)
-            ),
-        );
-        push_line(
-            &mut text,
-            format_args!(
-                "native_resident_dataframe_peak_bytes={}",
-                optional_usize_text(native_metrics.resident_dataframe_peak_bytes)
-            ),
-        );
-        push_line(
-            &mut text,
-            format_args!(
-                "native_allocator_high_water_bytes={}",
-                optional_usize_text(native_metrics.allocator_high_water_bytes)
-            ),
-        );
-        push_line(
-            &mut text,
-            format_args!("native_reservation_requested_bytes={}", native_metrics.reservation_requested_bytes),
-        );
-        push_line(
-            &mut text,
-            format_args!("native_reservation_granted_bytes={}", native_metrics.reservation_granted_bytes),
-        );
-        push_line(
-            &mut text,
-            format_args!("native_reservation_denied_count={}", native_metrics.reservation_denied_count),
-        );
-        push_line(&mut text, format_args!("native_source_chunks_planned={}", native_metrics.source_chunks_planned));
-        push_line(&mut text, format_args!("native_source_chunks_attempted={}", native_metrics.source_chunks_attempted));
-        push_line(&mut text, format_args!("native_source_chunks_committed={}", native_metrics.source_chunks_committed));
-        push_line(&mut text, format_args!("native_source_chunks_retried={}", native_metrics.source_chunks_retried));
-        push_line(&mut text, format_args!("native_row_groups_planned={}", native_metrics.row_groups_planned));
-        push_line(&mut text, format_args!("native_row_groups_committed={}", native_metrics.row_groups_committed));
-        push_line(&mut text, format_args!("native_partial_aggregate_count={}", native_metrics.partial_aggregate_count));
-        push_line(&mut text, format_args!("native_partial_aggregate_rows={}", native_metrics.partial_aggregate_rows));
-        push_line(&mut text, format_args!("native_retry_count={}", native_metrics.retry_count));
-        push_line(
-            &mut text,
-            format_args!("native_retry_resource_exhausted_count={}", native_metrics.retry_resource_exhausted_count),
-        );
-        push_line(
-            &mut text,
-            format_args!("native_retry_reservation_failure_count={}", native_metrics.retry_reservation_failure_count),
-        );
-        push_line(&mut text, format_args!("native_final_merge_attempts={}", native_metrics.final_merge_attempts));
-        push_line(&mut text, format_args!("native_final_merge_levels={}", native_metrics.final_merge_levels));
-        push_line(
-            &mut text,
-            format_args!(
-                "native_peak_device_memory_bytes_mean={}",
-                optional_usize_text(mean_metric_optional_usize(&self.native_gpu_metric_samples, |metrics| {
-                    metrics.peak_device_memory_bytes
-                }))
-            ),
-        );
-        push_line(
-            &mut text,
-            format_args!(
-                "native_peak_device_memory_bytes_samples={}",
-                metric_optional_usize_samples_csv(&self.native_gpu_metric_samples, |metrics| {
-                    metrics.peak_device_memory_bytes
-                })
-            ),
-        );
-        push_line(&mut text, format_args!("native_host_to_device_uploads={}", native_metrics.host_to_device_uploads));
-        push_line(
-            &mut text,
-            format_args!("native_host_to_device_uploaded_rows={}", native_metrics.host_to_device_uploaded_rows),
-        );
-        push_line(
-            &mut text,
-            format_args!("native_device_to_host_materializations={}", native_metrics.device_to_host_materializations),
-        );
-        push_line(
-            &mut text,
-            format_args!("native_device_to_host_materialized_rows={}", native_metrics.device_to_host_materialized_rows),
-        );
-        push_line(&mut text, format_args!("native_parquet_files={}", native_metrics.parquet_files));
-        push_line(&mut text, format_args!("native_parquet_bytes_known={}", native_metrics.parquet_bytes_known));
-        push_line(&mut text, format_args!("native_row_groups_selected={}", native_metrics.row_groups_selected));
-        push_line(&mut text, format_args!("native_read_column_count={}", native_metrics.read_columns));
-        push_line(&mut text, format_args!("native_read_columns={}", self.final_native_gpu.read_columns.join(",")));
-        push_line(&mut text, format_args!("native_fallback_candidate_count={}", native_planning.candidate_count));
-        push_line(&mut text, format_args!("native_fallback_rewritten_count={}", native_planning.rewritten_count));
-        push_line(&mut text, format_args!("native_fallback_rejected_count={}", native_planning.rejected_count));
-        push_line(
-            &mut text,
-            format_args!(
-                "native_default_sql_physical_plan={}",
-                self.final_native_gpu.source_physical_plan_one_line.as_deref().unwrap_or("not_available")
-            ),
-        );
-        push_line(
-            &mut text,
-            format_args!("native_lowered_candidate_shapes={}", self.final_native_gpu.native_candidate_shapes.join(";")),
-        );
-        push_line(&mut text, format_args!("native_gpu_plan={}", self.final_native_gpu.plan_one_line));
         push_line(&mut text, format_args!("source_diagnostic={}", self.source_diagnostic));
         text
     }
+}
+
+fn push_native_measurement_lines(
+    text: &mut String,
+    prefix: &str,
+    measurement: &GpuCollectMeasurement,
+    metric_samples: &[LargerIslandBenchmarkMetrics],
+) {
+    let metrics = &measurement.metrics;
+    let planning = &measurement.planning;
+    push_line(text, format_args!("{prefix}_parquet_read_ms={:.3}", duration_ms(metrics.parquet_read_time)));
+    push_line(
+        text,
+        format_args!(
+            "{prefix}_parquet_read_ms_mean={:.3}",
+            duration_ms(mean_metric_duration(metric_samples, |metrics| metrics.parquet_read_time))
+        ),
+    );
+    push_line(
+        text,
+        format_args!(
+            "{prefix}_parquet_read_ms_samples={}",
+            metric_duration_samples_csv(metric_samples, |metrics| metrics.parquet_read_time)
+        ),
+    );
+    push_line(text, format_args!("{prefix}_cudf_operator_ms={:.3}", duration_ms(metrics.cudf_operator_time)));
+    push_line(
+        text,
+        format_args!(
+            "{prefix}_cudf_operator_ms_mean={:.3}",
+            duration_ms(mean_metric_duration(metric_samples, |metrics| metrics.cudf_operator_time))
+        ),
+    );
+    push_line(
+        text,
+        format_args!(
+            "{prefix}_cudf_operator_ms_samples={}",
+            metric_duration_samples_csv(metric_samples, |metrics| metrics.cudf_operator_time)
+        ),
+    );
+    push_line(
+        text,
+        format_args!(
+            "{prefix}_record_batch_materialization_ms={:.3}",
+            duration_ms(metrics.record_batch_materialization_time)
+        ),
+    );
+    push_line(
+        text,
+        format_args!(
+            "{prefix}_record_batch_materialization_ms_mean={:.3}",
+            duration_ms(mean_metric_duration(metric_samples, |metrics| metrics.record_batch_materialization_time))
+        ),
+    );
+    push_line(
+        text,
+        format_args!("{prefix}_peak_device_memory_bytes={}", optional_usize_text(metrics.peak_device_memory_bytes)),
+    );
+    push_line(
+        text,
+        format_args!(
+            "{prefix}_resident_dataframe_peak_bytes={}",
+            optional_usize_text(metrics.resident_dataframe_peak_bytes)
+        ),
+    );
+    push_line(
+        text,
+        format_args!("{prefix}_allocator_high_water_bytes={}", optional_usize_text(metrics.allocator_high_water_bytes)),
+    );
+    push_line(text, format_args!("{prefix}_reservation_requested_bytes={}", metrics.reservation_requested_bytes));
+    push_line(text, format_args!("{prefix}_reservation_granted_bytes={}", metrics.reservation_granted_bytes));
+    push_line(text, format_args!("{prefix}_reservation_denied_count={}", metrics.reservation_denied_count));
+    push_line(text, format_args!("{prefix}_source_chunks_planned={}", metrics.source_chunks_planned));
+    push_line(text, format_args!("{prefix}_source_chunks_attempted={}", metrics.source_chunks_attempted));
+    push_line(text, format_args!("{prefix}_source_chunks_committed={}", metrics.source_chunks_committed));
+    push_line(text, format_args!("{prefix}_source_chunks_retried={}", metrics.source_chunks_retried));
+    push_line(text, format_args!("{prefix}_row_groups_planned={}", metrics.row_groups_planned));
+    push_line(text, format_args!("{prefix}_row_groups_committed={}", metrics.row_groups_committed));
+    push_line(text, format_args!("{prefix}_partial_aggregate_count={}", metrics.partial_aggregate_count));
+    push_line(text, format_args!("{prefix}_partial_aggregate_rows={}", metrics.partial_aggregate_rows));
+    push_line(text, format_args!("{prefix}_retry_count={}", metrics.retry_count));
+    push_line(text, format_args!("{prefix}_retry_resource_exhausted_count={}", metrics.retry_resource_exhausted_count));
+    push_line(
+        text,
+        format_args!("{prefix}_retry_reservation_failure_count={}", metrics.retry_reservation_failure_count),
+    );
+    push_line(text, format_args!("{prefix}_final_merge_attempts={}", metrics.final_merge_attempts));
+    push_line(text, format_args!("{prefix}_final_merge_levels={}", metrics.final_merge_levels));
+    push_line(
+        text,
+        format_args!(
+            "{prefix}_peak_device_memory_bytes_mean={}",
+            optional_usize_text(mean_metric_optional_usize(metric_samples, |metrics| metrics.peak_device_memory_bytes))
+        ),
+    );
+    push_line(
+        text,
+        format_args!(
+            "{prefix}_peak_device_memory_bytes_samples={}",
+            metric_optional_usize_samples_csv(metric_samples, |metrics| metrics.peak_device_memory_bytes)
+        ),
+    );
+    push_line(text, format_args!("{prefix}_host_to_device_uploads={}", metrics.host_to_device_uploads));
+    push_line(text, format_args!("{prefix}_host_to_device_uploaded_rows={}", metrics.host_to_device_uploaded_rows));
+    push_line(
+        text,
+        format_args!("{prefix}_device_to_host_materializations={}", metrics.device_to_host_materializations),
+    );
+    push_line(
+        text,
+        format_args!("{prefix}_device_to_host_materialized_rows={}", metrics.device_to_host_materialized_rows),
+    );
+    push_line(text, format_args!("{prefix}_parquet_files={}", metrics.parquet_files));
+    push_line(text, format_args!("{prefix}_parquet_bytes_known={}", metrics.parquet_bytes_known));
+    push_line(text, format_args!("{prefix}_row_groups_selected={}", metrics.row_groups_selected));
+    push_line(text, format_args!("{prefix}_read_column_count={}", metrics.read_columns));
+    push_line(text, format_args!("{prefix}_read_columns={}", measurement.read_columns.join(",")));
+    push_line(text, format_args!("{prefix}_fallback_candidate_count={}", planning.candidate_count));
+    push_line(text, format_args!("{prefix}_fallback_rewritten_count={}", planning.rewritten_count));
+    push_line(text, format_args!("{prefix}_fallback_rejected_count={}", planning.rejected_count));
+    push_line(
+        text,
+        format_args!(
+            "{prefix}_source_physical_plan={}",
+            measurement.source_physical_plan_one_line.as_deref().unwrap_or("not_available")
+        ),
+    );
+    push_line(
+        text,
+        format_args!("{prefix}_lowered_candidate_shapes={}", measurement.native_candidate_shapes.join(";")),
+    );
+    push_line(text, format_args!("{prefix}_plan={}", measurement.plan_one_line));
+}
+
+fn push_native_datafusion_planning_lines(
+    text: &mut String,
+    prefix: &str,
+    report: Option<&NativeDataFusionPlanningReport>,
+) {
+    let Some(report) = report else {
+        push_line(text, format_args!("{prefix}_planning_report_status=not_available"));
+        return;
+    };
+    push_line(text, format_args!("{prefix}_planning_report_status=available"));
+    push_line(text, format_args!("{prefix}_planning_accepted_count={}", report.accepted_count()));
+    push_line(text, format_args!("{prefix}_planning_rejected_count={}", report.rejected_count()));
+    let Some(row) = report.rows.first() else {
+        push_line(text, format_args!("{prefix}_planning_outcome=none"));
+        return;
+    };
+    push_line(text, format_args!("{prefix}_planning_outcome={}", row.outcome.as_str()));
+    push_line(text, format_args!("{prefix}_planning_reason_code={}", row.reason_code.as_deref().unwrap_or("none")));
+    push_line(
+        text,
+        format_args!(
+            "{prefix}_planning_unsupported_category={}",
+            row.unsupported_category.as_deref().unwrap_or("none")
+        ),
+    );
+    push_line(text, format_args!("{prefix}_planning_post_native_plan_root={}", row.post_native_plan_root));
+    push_line(
+        text,
+        format_args!("{prefix}_planning_post_native_execution_path={}", row.post_native_execution_path.as_str()),
+    );
+    push_line(text, format_args!("{prefix}_planning_rejected_before_execution={}", row.rejected_before_execution));
+    push_line(
+        text,
+        format_args!(
+            "{prefix}_planning_source_diagnostics={}",
+            native_source_diagnostics_text(&row.source_diagnostics)
+        ),
+    );
+}
+
+fn native_source_diagnostics_text(diagnostics: &[datafusion_cudf::NativeSourceDiagnosticSummary]) -> String {
+    if diagnostics.is_empty() {
+        return "none".to_string();
+    }
+
+    diagnostics
+        .iter()
+        .map(|diagnostic| {
+            format!(
+                "format={},direct_device_read={},file_count={},ranged_file_count={},known_bytes={},selected_row_groups={},predicate={},rejected_features={}",
+                diagnostic.format,
+                diagnostic.direct_device_read,
+                diagnostic.file_count,
+                diagnostic.ranged_file_count,
+                diagnostic.known_bytes.map_or_else(|| "unknown".to_string(), |value| value.to_string()),
+                diagnostic.selected_row_groups.map_or_else(|| "all".to_string(), |value| value.to_string()),
+                diagnostic.predicate_disposition,
+                if diagnostic.rejected_features.is_empty() {
+                    "none".to_string()
+                } else {
+                    diagnostic.rejected_features.join(",")
+                },
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("|")
 }
 
 #[derive(Debug)]
@@ -957,11 +1080,20 @@ struct GpuCollectMeasurement {
     output_bytes: usize,
     metrics: LargerIslandBenchmarkMetrics,
     planning: LargerIslandBenchmarkPlanning,
+    native_datafusion_planning_report: Option<NativeDataFusionPlanningReport>,
     plan_one_line: String,
     source_physical_plan_one_line: Option<String>,
     native_candidate_shapes: Vec<String>,
     read_columns: Vec<String>,
     batches: Vec<RecordBatch>,
+}
+
+#[derive(Debug)]
+struct DataFusionNativePlannedExec {
+    plan: Arc<dyn ExecutionPlan>,
+    planning: LargerIslandBenchmarkPlanning,
+    planning_report: NativeDataFusionPlanningReport,
+    native_candidate_shapes: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -975,7 +1107,8 @@ enum BenchmarkPath {
     CpuComparable,
     CpuDefault,
     GpuDirect,
-    NativeGpuDirect,
+    DataFusionNativeExec,
+    ManualNativeLowering,
 }
 
 impl BenchmarkPath {
@@ -984,7 +1117,8 @@ impl BenchmarkPath {
             Self::CpuComparable => "cpu_comparable",
             Self::CpuDefault => "cpu_default",
             Self::GpuDirect => "gpu_direct",
-            Self::NativeGpuDirect => "native_gpu_direct",
+            Self::DataFusionNativeExec => "datafusion_native_exec",
+            Self::ManualNativeLowering => "manual_native_lowering",
         }
     }
 }
@@ -1002,19 +1136,23 @@ async fn run_direct_parquet_benchmark(
         if config.benchmark_paths.includes_gpu_direct() {
             let _ = collect_gpu_direct_once(path, config).await?;
         }
-        let _ = collect_native_gpu_direct_once(path, config).await?;
+        let _ = collect_datafusion_native_exec_once(path, config).await?;
+        let _ = collect_manual_native_lowering_once(path, config).await?;
     }
 
     let mut cpu_comparable_samples = Vec::with_capacity(config.iterations);
     let mut cpu_default_samples = Vec::with_capacity(config.iterations);
     let mut gpu_samples = Vec::with_capacity(config.iterations);
-    let mut native_gpu_samples = Vec::with_capacity(config.iterations);
+    let mut datafusion_native_exec_samples = Vec::with_capacity(config.iterations);
+    let mut manual_native_lowering_samples = Vec::with_capacity(config.iterations);
     let mut gpu_metric_samples = Vec::with_capacity(config.iterations);
-    let mut native_gpu_metric_samples = Vec::with_capacity(config.iterations);
+    let mut datafusion_native_exec_metric_samples = Vec::with_capacity(config.iterations);
+    let mut manual_native_lowering_metric_samples = Vec::with_capacity(config.iterations);
     let mut final_cpu_comparable = None;
     let mut final_cpu_default = None;
     let mut final_gpu = None;
-    let mut final_native_gpu = None;
+    let mut final_datafusion_native_exec = None;
+    let mut final_manual_native_lowering = None;
 
     for iteration in 0..config.iterations {
         for path_kind in measured_iteration_order(iteration, config.benchmark_paths) {
@@ -1035,11 +1173,17 @@ async fn run_direct_parquet_benchmark(
                     gpu_metric_samples.push(measurement.metrics.clone());
                     final_gpu = Some(measurement);
                 },
-                BenchmarkPath::NativeGpuDirect => {
-                    let measurement = collect_native_gpu_direct_once(path, config).await?;
-                    native_gpu_samples.push(measurement.wall_time);
-                    native_gpu_metric_samples.push(measurement.metrics.clone());
-                    final_native_gpu = Some(measurement);
+                BenchmarkPath::DataFusionNativeExec => {
+                    let measurement = collect_datafusion_native_exec_once(path, config).await?;
+                    datafusion_native_exec_samples.push(measurement.wall_time);
+                    datafusion_native_exec_metric_samples.push(measurement.metrics.clone());
+                    final_datafusion_native_exec = Some(measurement);
+                },
+                BenchmarkPath::ManualNativeLowering => {
+                    let measurement = collect_manual_native_lowering_once(path, config).await?;
+                    manual_native_lowering_samples.push(measurement.wall_time);
+                    manual_native_lowering_metric_samples.push(measurement.metrics.clone());
+                    final_manual_native_lowering = Some(measurement);
                 },
             }
         }
@@ -1049,34 +1193,41 @@ async fn run_direct_parquet_benchmark(
         final_cpu_comparable.expect("validated benchmark config requires measured comparable CPU iterations");
     let final_cpu_default =
         final_cpu_default.expect("validated benchmark config requires measured default CPU iterations");
-    let mut final_native_gpu =
-        final_native_gpu.expect("validated benchmark config requires measured native GPU iterations");
+    let mut final_datafusion_native_exec = final_datafusion_native_exec
+        .expect("validated benchmark config requires measured DataFusion native iterations");
+    let final_manual_native_lowering =
+        final_manual_native_lowering.expect("validated benchmark config requires measured manual native iterations");
     if let Some(final_gpu) = &final_gpu {
         compare_outputs(&final_cpu_comparable.batches, &final_gpu.batches)?;
         compare_outputs(&final_cpu_default.batches, &final_gpu.batches)?;
-        compare_outputs(&final_gpu.batches, &final_native_gpu.batches)?;
+        compare_outputs(&final_gpu.batches, &final_datafusion_native_exec.batches)?;
+        compare_outputs(&final_gpu.batches, &final_manual_native_lowering.batches)?;
         validate_gpu_direct_measurement(final_gpu, parquet_file_bytes, config)?;
     }
-    compare_outputs(&final_cpu_comparable.batches, &final_native_gpu.batches)?;
-    compare_outputs(&final_cpu_default.batches, &final_native_gpu.batches)?;
-    validate_native_gpu_direct_measurement(&final_native_gpu, parquet_file_bytes, config)?;
-    final_native_gpu.metrics.phase_c_runtime_gate = final_native_gpu.metrics.assess_phase_c_runtime_gate(true).code();
+    compare_outputs(&final_cpu_comparable.batches, &final_datafusion_native_exec.batches)?;
+    compare_outputs(&final_cpu_default.batches, &final_datafusion_native_exec.batches)?;
+    compare_outputs(&final_datafusion_native_exec.batches, &final_manual_native_lowering.batches)?;
+    validate_datafusion_native_exec_measurement(&final_datafusion_native_exec, parquet_file_bytes, config)?;
+    validate_manual_native_lowering_measurement(&final_manual_native_lowering, parquet_file_bytes, config)?;
+    final_datafusion_native_exec.metrics.phase_c_runtime_gate =
+        final_datafusion_native_exec.metrics.assess_phase_c_runtime_gate(true).code();
     let cpu_comparable = TimedBenchmarkRun::from_samples(cpu_comparable_samples.iter().copied());
     let cpu_default = TimedBenchmarkRun::from_samples(cpu_default_samples.iter().copied());
     let gpu = config
         .benchmark_paths
         .includes_gpu_direct()
         .then(|| TimedBenchmarkRun::from_samples(gpu_samples.iter().copied()));
-    let native_gpu = TimedBenchmarkRun::from_samples(native_gpu_samples.iter().copied());
+    let datafusion_native_exec = TimedBenchmarkRun::from_samples(datafusion_native_exec_samples.iter().copied());
+    let manual_native_lowering = TimedBenchmarkRun::from_samples(manual_native_lowering_samples.iter().copied());
     validate_phase_b_runtime_gate(
         &cpu_comparable,
-        &native_gpu,
-        &final_native_gpu,
+        &datafusion_native_exec,
+        &final_datafusion_native_exec,
         parquet_file_bytes,
         dataset_layout,
         config,
     )?;
-    validate_phase_c_runtime_gate(&final_native_gpu, config)?;
+    validate_phase_c_runtime_gate(&final_datafusion_native_exec, config)?;
 
     Ok(DirectParquetBenchmarkReport {
         parquet_file_bytes,
@@ -1099,17 +1250,21 @@ async fn run_direct_parquet_benchmark(
         cpu_comparable,
         cpu_default,
         gpu,
-        native_gpu,
+        datafusion_native_exec,
+        manual_native_lowering,
         cpu_comparable_samples,
         cpu_default_samples,
         gpu_samples,
-        native_gpu_samples,
+        datafusion_native_exec_samples,
+        manual_native_lowering_samples,
         gpu_metric_samples,
-        native_gpu_metric_samples,
+        datafusion_native_exec_metric_samples,
+        manual_native_lowering_metric_samples,
         final_cpu_comparable,
         final_cpu_default,
         final_gpu,
-        final_native_gpu,
+        final_datafusion_native_exec,
+        final_manual_native_lowering,
         source_diagnostic,
     })
 }
@@ -1184,6 +1339,7 @@ async fn collect_gpu_direct_once(
         output_bytes: output.output_bytes,
         metrics,
         planning,
+        native_datafusion_planning_report: None,
         plan_one_line,
         source_physical_plan_one_line: None,
         native_candidate_shapes: Vec::new(),
@@ -1192,7 +1348,85 @@ async fn collect_gpu_direct_once(
     })
 }
 
-async fn collect_native_gpu_direct_once(
+async fn collect_datafusion_native_exec_once(
+    path: &Path,
+    config: &LocalParquetBenchmarkConfig,
+) -> DataFusionResult<GpuCollectMeasurement> {
+    let planned = plan_datafusion_native_sql(path, &benchmark_sql(config), config).await?;
+    let DataFusionNativePlannedExec { plan, planning, planning_report, native_candidate_shapes } = planned;
+    let Some(native_exec) = plan.as_any().downcast_ref::<NativeCudfExec>() else {
+        return Err(plan_error(format!(
+            "datafusion_native_exec planning rejected NativeCudfExec path: root={}, accepted_count={}, rejected_count={}, candidates={}",
+            plan.name(),
+            planning_report.accepted_count(),
+            planning_report.rejected_count(),
+            native_candidate_shapes.join(";")
+        )));
+    };
+    let read_columns = native_local_parquet_read_columns(native_exec.native_plan())?;
+    let source_physical_plan_one_line = planning_report
+        .rows
+        .first()
+        .map(|row| row.physical_shape.clone())
+        .unwrap_or_else(|| "not_available".to_string());
+    let plan_one_line = displayable(plan.as_ref()).one_line().to_string();
+
+    let started = Instant::now();
+    let batches = collect(Arc::clone(&plan), Arc::new(TaskContext::default())).await?;
+    let wall_time = started.elapsed();
+    let metrics = plan.metrics().unwrap_or_else(MetricsSet::new);
+    let output = measure_output(&batches);
+
+    Ok(GpuCollectMeasurement {
+        wall_time,
+        output_batches: output.output_batches,
+        output_rows: output.output_rows,
+        output_bytes: output.output_bytes,
+        metrics: benchmark_metrics_from_datafusion_native(&metrics, config.native_memory_control_policy),
+        planning,
+        native_datafusion_planning_report: Some(planning_report),
+        plan_one_line,
+        source_physical_plan_one_line: Some(source_physical_plan_one_line),
+        native_candidate_shapes,
+        read_columns,
+        batches,
+    })
+}
+
+async fn plan_datafusion_native_sql(
+    path: &Path,
+    sql: &str,
+    config: &LocalParquetBenchmarkConfig,
+) -> DataFusionResult<DataFusionNativePlannedExec> {
+    let native_execution_config = native_datafusion_execution_config(config)?;
+    let optimizer_config =
+        CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred).with_native_execution_config(native_execution_config);
+    let native_rule = Arc::new(CudfNativePhysicalOptimizerRule::new(optimizer_config.clone()));
+    let gpu_island_rule = Arc::new(CudfPhysicalOptimizerRule::new(optimizer_config));
+    let state = SessionStateBuilder::new_with_default_features()
+        .with_config(native_datafusion_session_config())
+        .with_cudf_native_and_gpu_island_rules(Arc::clone(&native_rule), gpu_island_rule)
+        .build();
+    let ctx = SessionContext::new_with_state(state);
+    let path_text =
+        path.to_str().ok_or_else(|| plan_error(format!("benchmark path is not valid UTF-8: {}", path.display())))?;
+    ctx.register_parquet("bench", path_text, ParquetReadOptions::default()).await?;
+    let df = ctx.sql(sql).await?;
+    let plan = df.create_physical_plan().await?;
+    let planning_report = NativeDataFusionPlanningReport::from_retained_rule(
+        "local_parquet_benchmark",
+        Arc::clone(&plan),
+        native_rule.as_ref(),
+    );
+    let planning = native_rule
+        .last_report()
+        .map(|report| LargerIslandBenchmarkPlanning::from_report(&report))
+        .unwrap_or_else(|| LargerIslandBenchmarkPlanning::from_report(&datafusion_cudf::PlanningReport::new()));
+    let native_candidate_shapes = native_datafusion_candidate_shapes(&planning_report);
+    Ok(DataFusionNativePlannedExec { plan, planning, planning_report, native_candidate_shapes })
+}
+
+async fn collect_manual_native_lowering_once(
     path: &Path,
     config: &LocalParquetBenchmarkConfig,
 ) -> DataFusionResult<GpuCollectMeasurement> {
@@ -1236,6 +1470,7 @@ async fn collect_native_gpu_direct_once(
         output_bytes: output.output_bytes,
         metrics: benchmark_metrics_from_native(&native_metrics),
         planning,
+        native_datafusion_planning_report: None,
         plan_one_line,
         source_physical_plan_one_line: Some(source_physical_plan_one_line),
         native_candidate_shapes,
@@ -1252,6 +1487,44 @@ async fn build_native_physical_plan(
         BenchmarkPlanShape::DefaultSql => build_cpu_default_plan(path, config).await,
         BenchmarkPlanShape::DirectFriendly => build_cpu_comparable_plan(path, config).await,
     }
+}
+
+fn native_datafusion_execution_config(
+    config: &LocalParquetBenchmarkConfig,
+) -> DataFusionResult<NativeCudfExecutionConfig> {
+    match config.native_memory_control_policy {
+        NativeMemoryControlPolicy::Bounded {
+            device_budget_bytes,
+            max_source_chunk_bytes,
+            max_row_groups_per_chunk,
+            max_retry_attempts,
+            min_retry_chunk_row_groups,
+        } => Ok(NativeCudfExecutionConfig::bounded(
+            device_budget_bytes,
+            max_source_chunk_bytes,
+            max_row_groups_per_chunk,
+            max_retry_attempts,
+            min_retry_chunk_row_groups,
+        )),
+        NativeMemoryControlPolicy::Unbounded => {
+            Err(plan_error("datafusion_native_exec requires CUDF_PARQUET_BENCH_NATIVE_MEMORY_POLICY=bounded"))
+        },
+    }
+}
+
+fn native_datafusion_candidate_shapes(report: &NativeDataFusionPlanningReport) -> Vec<String> {
+    report
+        .rows
+        .iter()
+        .map(|row| {
+            format!(
+                "{}:{}:{}",
+                row.outcome.as_str(),
+                row.native_candidate_shape.as_deref().unwrap_or("none"),
+                row.reason_code.as_deref().unwrap_or("none")
+            )
+        })
+        .collect()
 }
 
 fn native_candidate_shapes(report: &datafusion_cudf::PlanningReport) -> Vec<String> {
@@ -1335,6 +1608,69 @@ fn benchmark_metrics_from_native(metrics: &NativeQueryMetrics) -> LargerIslandBe
         elapsed_compute: None,
         output_rows: Some(u64_to_usize(metrics.boundary.device_to_host_materialized_rows)),
     }
+}
+
+fn benchmark_metrics_from_datafusion_native(
+    metrics: &MetricsSet,
+    memory_control_policy: NativeMemoryControlPolicy,
+) -> LargerIslandBenchmarkMetrics {
+    LargerIslandBenchmarkMetrics {
+        phase_c_memory_control_policy: memory_control_policy.as_str(),
+        phase_c_runtime_gate: phase_c_runtime_gate(memory_control_policy),
+        input_batches: metric_count(metrics, "input_batches"),
+        input_rows: metric_count(metrics, "input_rows"),
+        peak_device_memory_bytes: metric_optional_count(metrics, "peak_device_memory_bytes"),
+        resident_dataframe_peak_bytes: metric_optional_count(metrics, "resident_dataframe_peak_bytes"),
+        allocator_high_water_bytes: metric_optional_count(metrics, "allocator_high_water_bytes"),
+        reservation_requested_bytes: metric_count(metrics, "reservation_requested_bytes"),
+        reservation_granted_bytes: metric_count(metrics, "reservation_granted_bytes"),
+        reservation_denied_count: metric_count(metrics, "reservation_denied_count"),
+        source_chunks_planned: metric_count(metrics, "source_chunks_planned"),
+        source_chunks_attempted: metric_count(metrics, "source_chunks_attempted"),
+        source_chunks_committed: metric_count(metrics, "source_chunks_committed"),
+        source_chunks_retried: metric_count(metrics, "source_chunks_retried"),
+        row_groups_planned: metric_count(metrics, "row_groups_planned"),
+        row_groups_committed: metric_count(metrics, "row_groups_committed"),
+        partial_aggregate_count: metric_count(metrics, "partial_aggregate_count"),
+        partial_aggregate_rows: metric_count(metrics, "partial_aggregate_rows"),
+        final_merge_attempts: metric_count(metrics, "final_merge_attempts"),
+        final_merge_levels: metric_count(metrics, "final_merge_levels"),
+        retry_count: metric_count(metrics, "retry_count"),
+        retry_resource_exhausted_count: metric_count(metrics, "retry_resource_exhausted_count"),
+        retry_reservation_failure_count: metric_count(metrics, "retry_reservation_failure_count"),
+        host_to_device_uploads: metric_count(metrics, "host_to_device_uploads"),
+        host_to_device_uploaded_rows: metric_count(metrics, "host_to_device_uploaded_rows"),
+        host_to_device_uploaded_bytes: metric_count(metrics, "host_to_device_uploaded_bytes"),
+        device_to_host_materializations: metric_count(metrics, "device_to_host_materializations"),
+        device_to_host_materialized_rows: metric_count(metrics, "device_to_host_materialized_rows"),
+        device_to_host_materialized_bytes: metric_count(metrics, "device_to_host_materialized_bytes"),
+        parquet_files: metric_count(metrics, "parquet_files"),
+        parquet_bytes_known: metric_count(metrics, "parquet_bytes_known"),
+        row_groups_selected: metric_count(metrics, "row_groups_selected"),
+        read_columns: metric_count(metrics, "read_columns"),
+        parquet_read_time: metric_duration(metrics, "parquet_read_time"),
+        record_batch_upload_time: Duration::ZERO,
+        cudf_operator_time: metric_duration(metrics, "operator_time"),
+        record_batch_materialization_time: metric_duration(metrics, "materialization_time"),
+        elapsed_compute: metrics.elapsed_compute().map(duration_from_nanos),
+        output_rows: metrics.output_rows(),
+    }
+}
+
+fn metric_count(metrics: &MetricsSet, name: &str) -> usize {
+    metrics.sum_by_name(name).map(|value| value.as_usize()).unwrap_or(0)
+}
+
+fn metric_optional_count(metrics: &MetricsSet, name: &str) -> Option<usize> {
+    metrics.sum_by_name(name).map(|value| value.as_usize())
+}
+
+fn metric_duration(metrics: &MetricsSet, name: &str) -> Duration {
+    metrics.sum_by_name(name).map(|value| duration_from_nanos(value.as_usize())).unwrap_or(Duration::ZERO)
+}
+
+fn duration_from_nanos(nanos: usize) -> Duration {
+    Duration::from_nanos(nanos.min(u64::MAX as usize) as u64)
 }
 
 fn native_local_parquet_read_columns(plan: &NativeQueryPlan) -> DataFusionResult<Vec<String>> {
@@ -1479,6 +1815,14 @@ async fn local_parquet_scan_diagnostic(path: &Path) -> DataFusionResult<String> 
 
 fn benchmark_session_config() -> SessionConfig {
     SessionConfig::new().with_repartition_file_scans(false).with_target_partitions(1)
+}
+
+fn native_datafusion_session_config() -> SessionConfig {
+    let mut config = benchmark_session_config().with_repartition_aggregations(false).with_repartition_sorts(false);
+    config.options_mut().optimizer.enable_topk_dynamic_filter_pushdown = false;
+    config.options_mut().optimizer.enable_aggregate_dynamic_filter_pushdown = false;
+    config.options_mut().optimizer.enable_dynamic_filter_pushdown = false;
+    config
 }
 
 fn write_benchmark_parquet_dataset(path: &Path, config: &LocalParquetBenchmarkConfig) -> DataFusionResult<()> {
@@ -1715,7 +2059,7 @@ fn validate_gpu_direct_measurement(
 
 fn validate_phase_b_runtime_gate(
     cpu_comparable: &TimedBenchmarkRun,
-    native_gpu: &TimedBenchmarkRun,
+    datafusion_native_exec: &TimedBenchmarkRun,
     native_measurement: &GpuCollectMeasurement,
     parquet_file_bytes: u64,
     dataset_layout: ParquetDatasetLayout,
@@ -1756,13 +2100,13 @@ fn validate_phase_b_runtime_gate(
         )));
     }
 
-    let native_speedup = speedup(cpu_comparable.mean, native_gpu.mean);
+    let native_speedup = speedup(cpu_comparable.mean, datafusion_native_exec.mean);
     if native_speedup <= config.minimum_native_gpu_speedup {
         return Err(plan_error(format!(
-            "Phase B runtime gate did not preserve the native GPU win: native_gpu_speedup={native_speedup:.3}, minimum_native_gpu_speedup={:.3}, cpu_comparable_wall_ms={:.3}, native_gpu_wall_ms={:.3}",
+            "Phase B runtime gate did not preserve the DataFusion native exec win: datafusion_native_exec_speedup={native_speedup:.3}, minimum_native_gpu_speedup={:.3}, cpu_comparable_wall_ms={:.3}, datafusion_native_exec_wall_ms={:.3}",
             config.minimum_native_gpu_speedup,
             duration_ms(cpu_comparable.mean),
-            duration_ms(native_gpu.mean)
+            duration_ms(datafusion_native_exec.mean)
         )));
     }
     Ok(())
@@ -1794,55 +2138,96 @@ fn validate_phase_c_runtime_gate(
     Ok(())
 }
 
-fn validate_native_gpu_direct_measurement(
+fn validate_datafusion_native_exec_measurement(
     measurement: &GpuCollectMeasurement,
     parquet_file_bytes: u64,
     config: &LocalParquetBenchmarkConfig,
 ) -> DataFusionResult<()> {
-    let metrics = &measurement.metrics;
+    if !measurement.plan_one_line.contains("NativeCudfExec") {
+        return Err(plan_error(format!(
+            "datafusion_native_exec benchmark did not execute through NativeCudfExec: {}",
+            measurement.plan_one_line
+        )));
+    }
+    let Some(report) = &measurement.native_datafusion_planning_report else {
+        return Err(plan_error("datafusion_native_exec benchmark did not retain a native planning report"));
+    };
+    if report.accepted_count() != 1 || report.rejected_count() != 0 {
+        return Err(plan_error(format!(
+            "datafusion_native_exec planning did not accept exactly one native plan: accepted_count={}, rejected_count={}",
+            report.accepted_count(),
+            report.rejected_count()
+        )));
+    }
+    let row = report.rows.first().ok_or_else(|| plan_error("datafusion_native_exec planning report was empty"))?;
+    if row.post_native_plan_root != "NativeCudfExec" || row.post_native_execution_path.as_str() != "native" {
+        return Err(plan_error(format!(
+            "datafusion_native_exec planning did not route to native execution: root={}, path={}",
+            row.post_native_plan_root,
+            row.post_native_execution_path.as_str()
+        )));
+    }
+    validate_native_direct_metrics("datafusion_native_exec", measurement, parquet_file_bytes, config)
+}
+
+fn validate_manual_native_lowering_measurement(
+    measurement: &GpuCollectMeasurement,
+    parquet_file_bytes: u64,
+    config: &LocalParquetBenchmarkConfig,
+) -> DataFusionResult<()> {
     if !measurement.plan_one_line.contains("LocalParquetSource")
         || !measurement.plan_one_line.contains("format=Parquet")
         || !measurement.plan_one_line.contains("direct_device_read=true")
         || !measurement.plan_one_line.contains("sink=host_arrow")
     {
         return Err(plan_error(format!(
-            "native default SQL plan did not lower to the direct local Parquet host-arrow path: {}",
+            "manual_native_lowering plan did not lower to the direct local Parquet host-arrow path: {}",
             measurement.plan_one_line
         )));
     }
+    validate_native_direct_metrics("manual_native_lowering", measurement, parquet_file_bytes, config)
+}
+
+fn validate_native_direct_metrics(
+    label: &str,
+    measurement: &GpuCollectMeasurement,
+    parquet_file_bytes: u64,
+    config: &LocalParquetBenchmarkConfig,
+) -> DataFusionResult<()> {
+    let metrics = &measurement.metrics;
     if metrics.host_to_device_uploads != 0 || metrics.host_to_device_uploaded_rows != 0 {
         return Err(plan_error(format!(
-            "native default SQL direct Parquet path crossed host-to-device upload boundary: uploads={}, uploaded_rows={}",
+            "{label} direct Parquet path crossed host-to-device upload boundary: uploads={}, uploaded_rows={}",
             metrics.host_to_device_uploads, metrics.host_to_device_uploaded_rows
         )));
     }
     if metrics.device_to_host_materializations != 1 {
         return Err(plan_error(format!(
-            "native default SQL direct Parquet path expected one final host materialization, got {}",
+            "{label} direct Parquet path expected one final host materialization, got {}",
             metrics.device_to_host_materializations
         )));
     }
     if metrics.device_to_host_materialized_rows != measurement.output_rows {
         return Err(plan_error(format!(
-            "native materialized row metrics did not match output rows: materialized_rows={}, output_rows={}",
+            "{label} materialized row metrics did not match output rows: materialized_rows={}, output_rows={}",
             metrics.device_to_host_materialized_rows, measurement.output_rows
         )));
     }
     let Some(peak_device_memory_bytes) = metrics.peak_device_memory_bytes else {
-        return Err(plan_error("native default SQL direct Parquet path did not record peak device memory"));
+        return Err(plan_error(format!("{label} direct Parquet path did not record peak device memory")));
     };
     if peak_device_memory_bytes == 0 {
-        return Err(plan_error("native default SQL direct Parquet path recorded zero peak device memory"));
+        return Err(plan_error(format!("{label} direct Parquet path recorded zero peak device memory")));
     }
     if measurement.output_rows > config.limit {
         return Err(plan_error(format!(
-            "native default SQL direct Parquet path returned too many rows: output_rows={}, limit={}",
+            "{label} direct Parquet path returned too many rows: output_rows={}, limit={}",
             measurement.output_rows, config.limit
         )));
     }
     if metrics.parquet_files != config.file_count {
         return Err(plan_error(format!(
-            "native default SQL direct Parquet path expected {} files, got {}",
+            "{label} direct Parquet path expected {} files, got {}",
             config.file_count, metrics.parquet_files
         )));
     }
@@ -1850,13 +2235,13 @@ fn validate_native_gpu_direct_measurement(
         || metrics.parquet_bytes_known < config.minimum_file_bytes as usize
     {
         return Err(plan_error(format!(
-            "native default SQL direct Parquet metrics did not account for the benchmark file size: parquet_bytes_known={}, parquet_file_bytes={}, minimum_file_bytes={}",
+            "{label} direct Parquet metrics did not account for the benchmark file size: parquet_bytes_known={}, parquet_file_bytes={}, minimum_file_bytes={}",
             metrics.parquet_bytes_known, parquet_file_bytes, config.minimum_file_bytes
         )));
     }
     if measurement.planning.rejected_count != 0 {
         return Err(plan_error(format!(
-            "native default SQL Parquet lowering rejected fallback candidates: rejected_count={}",
+            "{label} lowering rejected fallback candidates: rejected_count={}",
             measurement.planning.rejected_count
         )));
     }
@@ -1866,7 +2251,7 @@ fn validate_native_gpu_direct_measurement(
     let expected = config.expected_read_columns();
     if actual != expected {
         return Err(plan_error(format!(
-            "native default SQL direct Parquet read columns did not match workload requirements: actual={}, expected={}",
+            "{label} direct Parquet read columns did not match workload requirements: actual={}, expected={}",
             actual.join(","),
             expected.join(",")
         )));
@@ -2023,32 +2408,46 @@ fn u64_to_usize(value: u64) -> usize {
 fn measured_iteration_order(iteration: usize, path_set: BenchmarkPathSet) -> Vec<BenchmarkPath> {
     match path_set {
         BenchmarkPathSet::NativeOnly => match iteration % 2 {
-            0 => vec![BenchmarkPath::CpuComparable, BenchmarkPath::CpuDefault, BenchmarkPath::NativeGpuDirect],
-            _ => vec![BenchmarkPath::NativeGpuDirect, BenchmarkPath::CpuDefault, BenchmarkPath::CpuComparable],
+            0 => vec![
+                BenchmarkPath::CpuComparable,
+                BenchmarkPath::CpuDefault,
+                BenchmarkPath::DataFusionNativeExec,
+                BenchmarkPath::ManualNativeLowering,
+            ],
+            _ => vec![
+                BenchmarkPath::ManualNativeLowering,
+                BenchmarkPath::DataFusionNativeExec,
+                BenchmarkPath::CpuDefault,
+                BenchmarkPath::CpuComparable,
+            ],
         },
         BenchmarkPathSet::All => match iteration % 4 {
             0 => vec![
                 BenchmarkPath::CpuComparable,
                 BenchmarkPath::CpuDefault,
                 BenchmarkPath::GpuDirect,
-                BenchmarkPath::NativeGpuDirect,
+                BenchmarkPath::DataFusionNativeExec,
+                BenchmarkPath::ManualNativeLowering,
             ],
             1 => vec![
-                BenchmarkPath::NativeGpuDirect,
+                BenchmarkPath::ManualNativeLowering,
+                BenchmarkPath::DataFusionNativeExec,
                 BenchmarkPath::GpuDirect,
                 BenchmarkPath::CpuComparable,
                 BenchmarkPath::CpuDefault,
             ],
             2 => vec![
                 BenchmarkPath::GpuDirect,
-                BenchmarkPath::NativeGpuDirect,
+                BenchmarkPath::DataFusionNativeExec,
+                BenchmarkPath::ManualNativeLowering,
                 BenchmarkPath::CpuDefault,
                 BenchmarkPath::CpuComparable,
             ],
             _ => vec![
                 BenchmarkPath::CpuDefault,
                 BenchmarkPath::CpuComparable,
-                BenchmarkPath::NativeGpuDirect,
+                BenchmarkPath::ManualNativeLowering,
+                BenchmarkPath::DataFusionNativeExec,
                 BenchmarkPath::GpuDirect,
             ],
         },
@@ -2244,6 +2643,160 @@ mod tests {
         assert!(text.contains("committed_chunks:2"));
     }
 
+    #[tokio::test]
+    async fn supported_sql_benchmark_plan_reports_datafusion_native_accepted() {
+        let dir = unique_benchmark_dir(&std::env::temp_dir());
+        let config = test_config();
+        let path = benchmark_input_path(&dir, &config);
+        write_benchmark_parquet_dataset(&path, &config).unwrap();
+
+        let planned = plan_datafusion_native_sql(&path, &benchmark_sql(&config), &config).await.unwrap();
+
+        assert_eq!(planned.plan.name(), "NativeCudfExec");
+        assert!(planned.plan.as_any().downcast_ref::<NativeCudfExec>().is_some());
+        assert_eq!(planned.planning_report.accepted_count(), 1);
+        assert_eq!(planned.planning_report.rejected_count(), 0);
+        let row = &planned.planning_report.rows[0];
+        assert_eq!(row.outcome.as_str(), "accepted_replaced");
+        assert_eq!(row.post_native_plan_root, "NativeCudfExec");
+        assert_eq!(row.post_native_execution_path.as_str(), "native");
+        assert!(!row.rejected_before_execution);
+        assert!(row.source_diagnostics.iter().any(|diagnostic| diagnostic.direct_device_read));
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn rejected_sql_benchmark_plan_reports_reason_without_native_runtime() {
+        let dir = unique_benchmark_dir(&std::env::temp_dir());
+        let config = test_config();
+        let path = benchmark_input_path(&dir, &config);
+        write_benchmark_parquet_dataset(&path, &config).unwrap();
+
+        let planned =
+            plan_datafusion_native_sql(&path, "SELECT AVG(m00) AS avg_m00 FROM bench", &config).await.unwrap();
+
+        assert_ne!(planned.plan.name(), "NativeCudfExec");
+        assert!(planned.plan.as_any().downcast_ref::<NativeCudfExec>().is_none());
+        assert_eq!(planned.planning_report.accepted_count(), 0);
+        assert_eq!(planned.planning_report.rejected_count(), 1);
+        let row = &planned.planning_report.rows[0];
+        assert_eq!(row.outcome.as_str(), "rejected_before_execution");
+        assert!(row.reason_code.is_some());
+        assert!(row.rejected_before_execution);
+        assert_ne!(row.post_native_execution_path.as_str(), "native");
+        assert!(planned.plan.metrics().is_none_or(|metrics| metrics.sum_by_name("host_to_device_uploads").is_none()));
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn direct_parquet_benchmark_output_names_primary_datafusion_native_path() {
+        let config = test_config();
+        let metrics = test_native_metrics();
+        let planning = LargerIslandBenchmarkPlanning::from_report(&datafusion_cudf::PlanningReport::from_outcomes([
+            CandidateOutcome::Rewritten {
+                candidate: datafusion_cudf::GpuCandidate::with_operator_count(
+                    "SortExec(fetch)(ProjectionExec(AggregateExec(FilterExec(LocalParquetScan))))",
+                    2,
+                    4,
+                ),
+            },
+        ]));
+        let datafusion_planning_report = NativeDataFusionPlanningReport {
+            rows: vec![datafusion_cudf::NativeDataFusionPlanningRow {
+                query_id: "local_parquet_benchmark".to_string(),
+                physical_root: "SortExec".to_string(),
+                physical_shape: "SortExec(fetch)(ProjectionExec(AggregateExec(FilterExec(LocalParquetScan))))"
+                    .to_string(),
+                native_candidate_shape: Some(
+                    "SortExec(fetch)(ProjectionExec(AggregateExec(FilterExec(LocalParquetScan))))".to_string(),
+                ),
+                outcome: datafusion_cudf::NativeDataFusionPlanningOutcome::AcceptedReplaced,
+                reason_code: None,
+                unsupported_category: None,
+                source_diagnostics: vec![datafusion_cudf::NativeSourceDiagnosticSummary {
+                    format: "Parquet".to_string(),
+                    direct_device_read: true,
+                    file_count: config.file_count,
+                    ranged_file_count: 0,
+                    known_bytes: Some(4096),
+                    selected_row_groups: Some(2),
+                    predicate_disposition: "pruning_only".to_string(),
+                    rejected_features: Vec::new(),
+                }],
+                post_native_plan_root: "NativeCudfExec".to_string(),
+                post_native_execution_path: datafusion_cudf::NativeDataFusionPostNativeExecutionPath::Native,
+                rejected_before_execution: false,
+            }],
+        };
+        let report = DirectParquetBenchmarkReport {
+            parquet_file_bytes: 4096,
+            parquet_row_groups: 4,
+            input_rows: config.input_rows,
+            file_count: config.file_count,
+            measure_columns: config.measure_columns,
+            batch_size: config.batch_size,
+            row_group_size: config.row_group_size,
+            group_count: config.group_count,
+            warmup_iterations: 0,
+            iterations: 1,
+            limit: config.limit,
+            minimum_native_gpu_speedup: config.minimum_native_gpu_speedup,
+            benchmark_paths: config.benchmark_paths,
+            compression: config.compression,
+            native_plan_shape: config.native_plan_shape,
+            expected_outcome: config.expected_outcome,
+            measured_run_order: measured_run_order_summary(1, config.benchmark_paths),
+            cpu_comparable: TimedBenchmarkRun::from_samples([Duration::from_millis(100)]),
+            cpu_default: TimedBenchmarkRun::from_samples([Duration::from_millis(110)]),
+            gpu: None,
+            datafusion_native_exec: TimedBenchmarkRun::from_samples([Duration::from_millis(50)]),
+            manual_native_lowering: TimedBenchmarkRun::from_samples([Duration::from_millis(55)]),
+            cpu_comparable_samples: vec![Duration::from_millis(100)],
+            cpu_default_samples: vec![Duration::from_millis(110)],
+            gpu_samples: Vec::new(),
+            datafusion_native_exec_samples: vec![Duration::from_millis(50)],
+            manual_native_lowering_samples: vec![Duration::from_millis(55)],
+            gpu_metric_samples: Vec::new(),
+            datafusion_native_exec_metric_samples: vec![metrics.clone()],
+            manual_native_lowering_metric_samples: vec![metrics.clone()],
+            final_cpu_comparable: test_collect_measurement(Duration::from_millis(100)),
+            final_cpu_default: test_collect_measurement(Duration::from_millis(110)),
+            final_gpu: None,
+            final_datafusion_native_exec: test_gpu_measurement(
+                Duration::from_millis(50),
+                metrics.clone(),
+                planning.clone(),
+                Some(datafusion_planning_report),
+                "NativeCudfExec: native_nodes=5",
+                Some("SortExec(fetch)(ProjectionExec(AggregateExec(FilterExec(LocalParquetScan))))"),
+                config.expected_read_columns(),
+            ),
+            final_manual_native_lowering: test_gpu_measurement(
+                Duration::from_millis(55),
+                metrics,
+                planning,
+                None,
+                "LocalParquetSource: format=Parquet, direct_device_read=true, sink=host_arrow",
+                Some("SortExec(fetch)"),
+                config.expected_read_columns(),
+            ),
+            source_diagnostic: "files=4".to_string(),
+        };
+
+        let text = report.to_text();
+        assert!(text.contains("cpu_datafusion_wall_ms=110.000"));
+        assert!(text.contains("datafusion_native_exec_wall_ms=50.000"));
+        assert!(text.contains("manual_native_lowering_wall_ms=55.000"));
+        assert!(text.contains("datafusion_native_exec_planning_outcome=accepted_replaced"));
+        assert!(text.contains("datafusion_native_exec_planning_post_native_execution_path=native"));
+        assert!(text.contains("datafusion_native_exec_planning_source_diagnostics=format=Parquet"));
+        assert_key_order(&text, "cpu_datafusion_wall_ms", "datafusion_native_exec_wall_ms");
+        assert_key_order(&text, "datafusion_native_exec_wall_ms", "manual_native_lowering_wall_ms");
+        assert_key_order(&text, "datafusion_native_exec_planning_accepted_count", "manual_native_lowering_plan");
+    }
+
     #[test]
     fn benchmark_payload_pruning_pattern_is_file_local() {
         let config = test_config();
@@ -2283,5 +2836,87 @@ mod tests {
             expected_outcome: BenchmarkExpectedOutcome::Success,
             output_dir: None,
         }
+    }
+
+    fn test_collect_measurement(wall_time: Duration) -> CollectMeasurement {
+        CollectMeasurement { wall_time, output_batches: 1, output_rows: 2, output_bytes: 64, batches: Vec::new() }
+    }
+
+    fn test_gpu_measurement(
+        wall_time: Duration,
+        metrics: LargerIslandBenchmarkMetrics,
+        planning: LargerIslandBenchmarkPlanning,
+        native_datafusion_planning_report: Option<NativeDataFusionPlanningReport>,
+        plan_one_line: &str,
+        source_physical_plan_one_line: Option<&str>,
+        read_columns: Vec<String>,
+    ) -> GpuCollectMeasurement {
+        GpuCollectMeasurement {
+            wall_time,
+            output_batches: 1,
+            output_rows: 2,
+            output_bytes: 64,
+            metrics,
+            planning,
+            native_datafusion_planning_report,
+            plan_one_line: plan_one_line.to_string(),
+            source_physical_plan_one_line: source_physical_plan_one_line.map(str::to_string),
+            native_candidate_shapes: vec![
+                "accepted_replaced:SortExec(fetch)(ProjectionExec(AggregateExec(FilterExec(LocalParquetScan)))):none"
+                    .to_string(),
+            ],
+            read_columns,
+            batches: Vec::new(),
+        }
+    }
+
+    fn test_native_metrics() -> LargerIslandBenchmarkMetrics {
+        LargerIslandBenchmarkMetrics {
+            phase_c_memory_control_policy: "bounded",
+            phase_c_runtime_gate: "pass",
+            input_batches: 1,
+            input_rows: 16,
+            resident_dataframe_peak_bytes: Some(1024),
+            allocator_high_water_bytes: Some(2048),
+            reservation_requested_bytes: 1024,
+            reservation_granted_bytes: 1024,
+            reservation_denied_count: 0,
+            source_chunks_planned: 2,
+            source_chunks_attempted: 2,
+            source_chunks_committed: 2,
+            source_chunks_retried: 0,
+            row_groups_planned: 2,
+            row_groups_committed: 2,
+            partial_aggregate_count: 2,
+            partial_aggregate_rows: 4,
+            final_merge_attempts: 1,
+            final_merge_levels: 1,
+            retry_count: 0,
+            retry_resource_exhausted_count: 0,
+            retry_reservation_failure_count: 0,
+            peak_device_memory_bytes: Some(1024),
+            host_to_device_uploads: 0,
+            host_to_device_uploaded_rows: 0,
+            host_to_device_uploaded_bytes: 0,
+            device_to_host_materializations: 1,
+            device_to_host_materialized_rows: 2,
+            device_to_host_materialized_bytes: 64,
+            parquet_files: 4,
+            parquet_bytes_known: 4096,
+            row_groups_selected: 2,
+            read_columns: 4,
+            parquet_read_time: Duration::from_millis(3),
+            record_batch_upload_time: Duration::ZERO,
+            cudf_operator_time: Duration::from_millis(4),
+            record_batch_materialization_time: Duration::from_millis(1),
+            elapsed_compute: Some(Duration::from_millis(8)),
+            output_rows: Some(2),
+        }
+    }
+
+    fn assert_key_order(text: &str, before: &str, after: &str) {
+        let before_index = text.find(before).unwrap_or_else(|| panic!("missing key {before}"));
+        let after_index = text.find(after).unwrap_or_else(|| panic!("missing key {after}"));
+        assert!(before_index < after_index, "expected {before} to appear before {after}");
     }
 }

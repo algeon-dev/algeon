@@ -21,16 +21,22 @@ pub use benchmark::{
 pub use error::{Error, ErrorCode, ErrorKind, ErrorStatus, Facts, Result};
 pub use exec::{CudfExecutionConfig, CudfGpuIslandExec};
 pub use native::{NativeLoweringResult, lower_physical_plan_to_native};
-pub use native_exec::{NativeCudfExec, NativeCudfExecutionConfig};
+pub use native_exec::{NATIVE_CUDF_DATAFUSION_METRIC_NAMES, NativeCudfExec, NativeCudfExecutionConfig};
 pub use native_report::{
-    NATIVE_FALLBACK_PRESSURE_TSV_HEADER, NATIVE_FALLBACK_PRESSURE_TSV_SCHEMA_VERSION, NativeFallbackPressureOutcome,
-    NativeFallbackPressureReport, NativeFallbackPressureRow, NativeFallbackPressureWorkloadItem,
-    NativeSourceDiagnosticSummary,
+    NATIVE_DATAFUSION_PLANNING_TSV_HEADER, NATIVE_DATAFUSION_PLANNING_TSV_SCHEMA_VERSION,
+    NATIVE_FALLBACK_PRESSURE_TSV_HEADER, NATIVE_FALLBACK_PRESSURE_TSV_SCHEMA_VERSION, NativeDataFusionPlanningOutcome,
+    NativeDataFusionPlanningReport, NativeDataFusionPlanningRow, NativeDataFusionPlanningWorkloadItem,
+    NativeDataFusionPostNativeExecutionPath, NativeFallbackPressureOutcome, NativeFallbackPressureReport,
+    NativeFallbackPressureRow, NativeFallbackPressureWorkloadItem, NativeSourceDiagnosticSummary,
 };
-pub use planner::{CudfOptimizerConfig, CudfPhysicalOptimizerRule, OptimizationResult, optimize_plan};
+pub use planner::{
+    CudfNativePhysicalOptimizerRule, CudfOptimizerConfig, CudfPhysicalOptimizerRule, NativePlanningDiagnostics,
+    OptimizationResult, optimize_plan,
+};
 pub use policy::{FallbackReason, GpuFallbackPolicy};
 pub use report::{CandidateOutcome, GpuCandidate, PlanningReport};
 pub use session::{
-    CUDF_PHYSICAL_OPTIMIZER_RULE_NAME, CudfSessionStateBuilderExt, PhysicalOptimizerRules,
-    cudf_physical_optimizer_rules, cudf_physical_optimizer_rules_with_rule,
+    CUDF_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME, CUDF_PHYSICAL_OPTIMIZER_RULE_NAME, CudfSessionStateBuilderExt,
+    PhysicalOptimizerRules, cudf_physical_optimizer_rules, cudf_physical_optimizer_rules_with_retained_rules,
+    cudf_physical_optimizer_rules_with_rule,
 };
