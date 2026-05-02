@@ -133,16 +133,32 @@ fn profile_from_file(raw: &super::file::ServerAdmissionDeviceProfileFileConfig) 
             return Err(ServerError::invalid_config(field, "must be greater than zero"));
         }
     }
-    let memory_limit =
-        raw.memory_limit_bytes.map(|limit_bytes| GpuDeviceMemoryLimit::Explicit { limit_bytes }).unwrap_or_default();
-    let mut profile = NexusGpuDeviceProfile::new(raw.device_ordinal)
-        .with_memory_limit(memory_limit)
-        .with_backend_reserve_bytes(raw.backend_reserve_bytes.unwrap_or(0))
-        .with_attempt_floor_bytes(raw.attempt_floor_bytes)
-        .with_source_work_per_attempt(raw.source_work_per_attempt.unwrap_or(1))
-        .with_max_active_attempts(raw.max_active_attempts.unwrap_or(1))
-        .with_telemetry(raw.install_telemetry.unwrap_or(true))
-        .with_diagnostics(raw.install_diagnostics.unwrap_or(true));
+    // Start from the root projection of engine defaults and apply only values
+    // explicitly selected by the server file. This must not restate device
+    // controller defaults such as automatic floors, one active attempt, or
+    // one source-work slot.
+    let mut profile = NexusGpuDeviceProfile::new(raw.device_ordinal);
+    if let Some(limit_bytes) = raw.memory_limit_bytes {
+        profile = profile.with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes });
+    }
+    if let Some(backend_reserve_bytes) = raw.backend_reserve_bytes {
+        profile = profile.with_backend_reserve_bytes(backend_reserve_bytes);
+    }
+    if let Some(attempt_floor_bytes) = raw.attempt_floor_bytes {
+        profile = profile.with_attempt_floor_bytes(Some(attempt_floor_bytes));
+    }
+    if let Some(source_work_per_attempt) = raw.source_work_per_attempt {
+        profile = profile.with_source_work_per_attempt(source_work_per_attempt);
+    }
+    if let Some(max_active_attempts) = raw.max_active_attempts {
+        profile = profile.with_max_active_attempts(max_active_attempts);
+    }
+    if let Some(install_telemetry) = raw.install_telemetry {
+        profile = profile.with_telemetry(install_telemetry);
+    }
+    if let Some(install_diagnostics) = raw.install_diagnostics {
+        profile = profile.with_diagnostics(install_diagnostics);
+    }
     match (raw.stream_pool_size, raw.worker_count, raw.lane_count) {
         (None, None, None) => {},
         (Some(stream_pool_size), Some(worker_count), Some(lane_count)) => {

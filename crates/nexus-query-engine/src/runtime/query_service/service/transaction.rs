@@ -19,9 +19,9 @@
 //! physical envelope.
 
 #[cfg(test)]
-use std::{sync::mpsc, time::Duration};
+use std::time::Duration;
 use std::{
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, mpsc},
     time::Instant,
 };
 
@@ -93,22 +93,17 @@ impl AdmissionStep {
 /// Fault-injection probe for the admission transaction. The default is no-op.
 pub(crate) struct AdmissionTransactionProbe {
     fail_at: Mutex<Option<AdmissionStep>>,
-    #[cfg(test)]
     pause_at: Mutex<Option<(AdmissionStep, Arc<AdmissionTransactionPause>)>>,
-    #[cfg(test)]
     force_deadline_at: Mutex<Option<ForcedAdmissionDeadline>>,
-    #[cfg(test)]
     rollback_pause: Mutex<Option<Arc<AdmissionTransactionPause>>>,
 }
 
-#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ForcedAdmissionDeadline {
     Acquisition(AdmissionStep),
     BeforePublication,
 }
 
-#[cfg(test)]
 struct AdmissionTransactionPause {
     entered: mpsc::SyncSender<()>,
     release: Mutex<mpsc::Receiver<()>>,
@@ -241,7 +236,6 @@ impl AdmissionTransactionProbe {
         )
     }
 
-    #[cfg(test)]
     fn forces_deadline_at_acquisition_stage(&self, stage: &'static str) -> bool {
         matches!(
             *self.force_deadline_at.lock().unwrap_or_else(std::sync::PoisonError::into_inner),
@@ -249,7 +243,6 @@ impl AdmissionTransactionProbe {
         )
     }
 
-    #[cfg(test)]
     fn forces_deadline_before_publication(&self) -> bool {
         matches!(
             *self.force_deadline_at.lock().unwrap_or_else(std::sync::PoisonError::into_inner),
@@ -257,7 +250,6 @@ impl AdmissionTransactionProbe {
         )
     }
 
-    #[cfg(test)]
     fn pause_after_rollback_accounting(&self) -> Result<()> {
         let pause = self
             .rollback_pause
@@ -319,7 +311,6 @@ impl AdmissionTransactionProbe {
             .with_fact("admission_step", step.as_str()));
         }
         drop(fail_at);
-        #[cfg(test)]
         if let Some(pause) = self
             .pause_at
             .lock()
@@ -567,12 +558,8 @@ fn check_admission_boundary(
 ) -> Result<()> {
     const OPERATION: &str = "nexus_query_engine.query_service.admission_transaction";
     cancellation.check(OPERATION)?;
-    #[cfg(not(test))]
-    let _ = probe;
-    let deadline_elapsed = Instant::now() >= deadline;
-    #[cfg(test)]
-    let deadline_elapsed =
-        deadline_elapsed || probe.is_some_and(|probe| probe.forces_deadline_at_acquisition_stage(acquisition_stage));
+    let deadline_elapsed = Instant::now() >= deadline
+        || probe.is_some_and(|probe| probe.forces_deadline_at_acquisition_stage(acquisition_stage));
     if !deadline_elapsed {
         return Ok(());
     }
@@ -589,41 +576,27 @@ pub(super) fn publication_deadline_error(
     deadline: Instant,
     probe: Option<&AdmissionTransactionProbe>,
 ) -> Option<QueryError> {
-    #[cfg(not(test))]
-    let _ = probe;
-    (Instant::now() >= deadline || {
-        #[cfg(test)]
-        {
-            probe.is_some_and(AdmissionTransactionProbe::forces_deadline_before_publication)
-        }
-        #[cfg(not(test))]
-        {
-            false
-        }
-    })
-    .then(|| {
-        QueryError::new(
-            QueryErrorCode::ServiceOverloaded,
-            "nexus_query_engine.query_service.admission_transaction.publish",
-            "query service admission deadline elapsed before publication",
-        )
-        .with_fact("reason", "queue_wait_elapsed")
-        .with_fact("acquisition_stage", "before_publication")
-    })
+    (Instant::now() >= deadline || probe.is_some_and(AdmissionTransactionProbe::forces_deadline_before_publication))
+        .then(|| {
+            QueryError::new(
+                QueryErrorCode::ServiceOverloaded,
+                "nexus_query_engine.query_service.admission_transaction.publish",
+                "query service admission deadline elapsed before publication",
+            )
+            .with_fact("reason", "queue_wait_elapsed")
+            .with_fact("acquisition_stage", "before_publication")
+        })
 }
 
-/// Test-only rendezvous for the interval after rollback ownership is counted
+/// Optional rendezvous for the interval after rollback ownership is counted
 /// and the admission mutex is released, but before dropping the envelope can
-/// begin physical cleanup. Production builds keep this as a no-op.
+/// begin physical cleanup. Production's default probe makes this a no-op.
 pub(super) fn pause_after_rollback_accounting(probe: Option<&AdmissionTransactionProbe>) {
-    #[cfg(test)]
     if let Some(probe) = probe
         && let Err(error) = probe.pause_after_rollback_accounting()
     {
         eprintln!("[nexus-query-engine] warning: rollback accounting probe failed: {error}");
     }
-    #[cfg(not(test))]
-    let _ = probe;
 }
 
 impl AdmissionEnvelope {

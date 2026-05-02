@@ -10,9 +10,9 @@ use nexus_query_engine::runtime::MemoryControlPolicy;
 use tokio_util::sync::CancellationToken;
 use tonic::transport::{Server, server::TcpIncoming};
 
+use crate::backend::NexusGpuBackend;
 #[cfg(feature = "iceberg")]
 use crate::table_format::scan::credential_free_endpoint_identity;
-use crate::{backend::NexusGpuBackend, planner::NexusNativeOptimizerConfig};
 
 mod admission;
 mod auth;
@@ -572,12 +572,12 @@ fn validate_injected_backend_matches_config(backend: &NexusGpuBackend, config: &
 }
 
 #[cfg(test)]
-fn validate_test_controller_projection_matches_config(
-    backend: &crate::backend::TestBackendControllerProjection,
+fn validate_test_validation_projection_matches_config(
+    backend: &crate::backend::TestBackendValidationProjection,
     config: &ServerConfig,
 ) -> Result<()> {
     let queue_bounds = backend
-        .controller_queue_bounds()
+        .queue_bounds()
         .map_err(|error| ServerError::session("failed to inspect test backend queue policy", error))?;
     validate_injected_queue_policy(&queue_bounds, config)?;
     validate_test_profile_projection(backend.device_profiles(), backend.device_memory_ownership(), config)
@@ -745,11 +745,12 @@ fn validate_test_profile_projection(
     for profile in backend_profiles {
         let ordinal = profile.device_ordinal();
         let expected = configured_profiles.get(&ordinal).ok_or_else(|| {
-            ServerError::builder_validation(
+            ServerError::builder_conflict(
                 "server_backend_admission_conflict",
-                "test backend has a device profile absent from the server configuration",
+                "admission.device_profiles",
+                format_usize_list(&config.gpu_devices),
+                ordinal,
             )
-            .with_fact("device_ordinal", ordinal)
         })?;
         compare_profile_field(
             ordinal,
@@ -927,7 +928,7 @@ fn compare_profile_field(
 fn validate_injected_session_matches_server_config(
     ctx: &SessionContext,
     backend: &NexusGpuBackend,
-    config: &ServerConfig,
+    _config: &ServerConfig,
 ) -> Result<()> {
     let state = ctx.state();
     let Some(optimizer_config) = crate::session::installed_nexus_native_optimizer_config(&state) else {

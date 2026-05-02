@@ -12,9 +12,7 @@ use crate::{
     },
     pipeline::CompiledPipeline,
     plan::QueryPlan,
-    runtime::{
-        ExecutionContext, MemoryGrant, MemorySpaceId, gpu::ledger::MemoryGrantLiveReservation,
-    },
+    runtime::{ExecutionContext, MemoryGrant, MemorySpaceId, gpu::ledger::MemoryGrantLiveReservation},
 };
 
 mod active;
@@ -27,7 +25,6 @@ mod tests;
 
 pub(in crate::exec::bounded) use active::reconcile_work_reservation_to_output;
 // Sibling modules resolve shared private items via `use super::*;`.
-use active::*;
 pub(in crate::exec) use active::{ActiveReservation, ActiveReservationSemantics, CommittedPartial, ResidentGpuFrame};
 pub(in crate::exec) use diagnostics::ReservationDiagnosticScope;
 use diagnostics::*;

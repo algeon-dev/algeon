@@ -22,6 +22,7 @@ pub(crate) use diagnostics::{
 };
 pub(crate) use join_strategy::{CompiledJoinExecutionStrategy, CompiledJoinStrategySelection};
 pub use requirement::QueryPlanCapabilityProof;
+#[allow(unused_imports)]
 pub(crate) use requirement::{
     AttemptCapabilityEvidence as AttemptRequirement, AttemptCapabilityEvidence, EstimateQuality,
 };

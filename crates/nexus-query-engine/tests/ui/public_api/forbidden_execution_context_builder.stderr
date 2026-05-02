@@ -4,13 +4,6 @@ error[E0432]: unresolved import `nexus_query_engine::runtime::ExecutionContextBu
 1 | use nexus_query_engine::runtime::ExecutionContextBuilder;
   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ no `ExecutionContextBuilder` in `runtime`
   |
-note: found an item that was configured out
- --> src/runtime.rs
-  |
-  | #[cfg(test)]
-  |       ---- the item is gated here
-  | pub(crate) use context::ExecutionContextBuilder;
-  |                         ^^^^^^^^^^^^^^^^^^^^^^^
 help: a similar name exists in the module
   |
 1 - use nexus_query_engine::runtime::ExecutionContextBuilder;

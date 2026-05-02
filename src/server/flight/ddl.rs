@@ -98,6 +98,7 @@ impl DatafusionNexusFlightSqlService {
                         datafusion_error_to_status_and_capture(error, statement_kind.sql_operation());
                     let status = status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
                     coordinator_terminal.finish_captured("planning", &status, captured);
+                    coordinator_terminal.wait_finished().await;
                     return Err(status);
                 },
             },
@@ -120,6 +121,7 @@ impl DatafusionNexusFlightSqlService {
                     let status =
                         status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
                     coordinator_terminal.finish_captured("planning", &status, captured);
+                    coordinator_terminal.wait_finished().await;
                     return Err(status);
                 },
             },
@@ -135,6 +137,7 @@ impl DatafusionNexusFlightSqlService {
                     correlation_id.as_deref(),
                 );
                 coordinator_terminal.finish_captured("planning", &status, captured);
+                coordinator_terminal.wait_finished().await;
                 return Err(status);
             },
         };
@@ -149,6 +152,7 @@ impl DatafusionNexusFlightSqlService {
             );
             let status = status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
             coordinator_terminal.finish_captured("planning", &status, captured);
+            coordinator_terminal.wait_finished().await;
             return Err(status);
         }
         if let Err(error) = verify_update_plan(&plan) {
@@ -162,6 +166,7 @@ impl DatafusionNexusFlightSqlService {
                 correlation_id.as_deref(),
             );
             coordinator_terminal.finish_captured("planning", &status, captured);
+            coordinator_terminal.wait_finished().await;
             return Err(status);
         }
         if let Err(error) = reject_drop_object_type_mismatch(&query_ctx, &plan, statement_kind.sql_operation()).await {
@@ -175,9 +180,9 @@ impl DatafusionNexusFlightSqlService {
                 correlation_id.as_deref(),
             );
             coordinator_terminal.finish_captured("planning", &status, captured);
+            coordinator_terminal.wait_finished().await;
             return Err(status);
         }
-        let plan_for_error = plan.clone();
         let _result = tokio::select! {
             result = query_ctx.execute_logical_plan(plan)
                 .instrument(Self::query_stage_span(Some(&query_span), &query_id, correlation_id.as_deref(), "planning")) => match result {
@@ -186,40 +191,18 @@ impl DatafusionNexusFlightSqlService {
                     if let Some(attempt) = attempt.as_ref() {
                         attempt.planning_failed(&error);
                     }
-                    let (status, captured) = match self.ddl_read_only_registration_error(
-                        &query_ctx,
-                        &plan_for_error,
-                        error,
-                        statement_kind.sql_operation(),
-                    ) {
-                        Ok(error) => {
-                            let captured = CapturedError::from_adapter_error(&error);
-                            let status = finish_adapter_error_status_with_correlation_id(
-                                self.coordinator.as_ref(),
-                                &query_id,
-                                correlation_id.as_deref(),
-                                "planning",
-                                error,
-                            );
-                            (status, captured)
-                        },
-                        Err(error) => {
-                            let captured = datafusion_error_to_captured_error(&error, statement_kind.sql_operation());
-                            let status = status_with_query_id(
-                                datafusion_error_to_status_for_operation(error, statement_kind.sql_operation()),
-                                &query_id,
-                            );
-                            (
-                                status_with_query_id_and_correlation_id(
-                                    status,
-                                    &query_id,
-                                    correlation_id.as_deref(),
-                                ),
-                                captured,
-                            )
-                        },
-                    };
+                    let captured = datafusion_error_to_captured_error(&error, statement_kind.sql_operation());
+                    let status = status_with_query_id(
+                        datafusion_error_to_status_for_operation(error, statement_kind.sql_operation()),
+                        &query_id,
+                    );
+                    let status = status_with_query_id_and_correlation_id(
+                        status,
+                        &query_id,
+                        correlation_id.as_deref(),
+                    );
                     coordinator_terminal.finish_captured("planning", &status, captured);
+                    coordinator_terminal.wait_finished().await;
                     return Err(status);
                 },
             },
@@ -235,6 +218,7 @@ impl DatafusionNexusFlightSqlService {
                     correlation_id.as_deref(),
                 );
                 coordinator_terminal.finish_captured("planning", &status, captured);
+                coordinator_terminal.wait_finished().await;
                 return Err(status);
             },
         };
@@ -313,70 +297,6 @@ impl DatafusionNexusFlightSqlService {
         coordinator_terminal.wait_finished().await;
         Ok(NO_UPDATED_RECORDS_COUNT)
     }
-
-    pub(super) fn ddl_read_only_registration_error(
-        &self,
-        ctx: &SessionContext,
-        plan: &LogicalPlan,
-        source: DataFusionError,
-        operation: &'static str,
-    ) -> Result<Error, DataFusionError> {
-        if !datafusion_error_contains_message(&source, READ_ONLY_SCHEMA_PROVIDER_REGISTER_TABLE_MESSAGE) {
-            return Err(source);
-        }
-        let Some((target, statement_kind)) = ddl_register_table_target(plan) else {
-            return Err(source);
-        };
-
-        let options = ctx.state();
-        let catalog_options = &options.config().options().catalog;
-        let resolved = target.clone().resolve(&catalog_options.default_catalog, &catalog_options.default_schema);
-        let message = format!(
-            "schema provider does not support registering tables for DDL target {}.{}",
-            resolved.catalog, resolved.schema
-        );
-        let mut error = Error::new(ErrorCode::DataFusionPlanning, operation, message)
-            .with_fact("target_catalog", resolved.catalog.as_ref())
-            .with_fact("target_schema", resolved.schema.as_ref())
-            .with_fact("target_table", resolved.table.as_ref())
-            .with_log_safe_fact("statement_kind", statement_kind)
-            .with_log_safe_fact("iceberg_enabled", self.catalog_diagnostics.iceberg_enabled);
-        if let Some(workspace_catalog) = &self.catalog_diagnostics.workspace_catalog {
-            error = error.with_fact("workspace_catalog", workspace_catalog);
-        }
-        if let Some(workspace_schema) = &self.catalog_diagnostics.workspace_schema {
-            error = error.with_fact("workspace_schema", workspace_schema);
-        }
-        Ok(error.with_source(source))
-    }
-}
-
-pub(super) fn ddl_register_table_target(plan: &LogicalPlan) -> Option<(&TableReference, &'static str)> {
-    let LogicalPlan::Ddl(ddl) = plan else {
-        return None;
-    };
-    match ddl {
-        DdlStatement::CreateExternalTable(statement) => Some((&statement.name, "CreateExternalTable")),
-        DdlStatement::CreateMemoryTable(statement) => Some((&statement.name, "CreateMemoryTable")),
-        DdlStatement::CreateView(statement) => Some((&statement.name, "CreateView")),
-        _ => None,
-    }
-}
-
-pub(super) fn datafusion_error_contains_message(error: &DataFusionError, needle: &str) -> bool {
-    if error.to_string().contains(needle) {
-        return true;
-    }
-    match error {
-        DataFusionError::Context(_, source) | DataFusionError::Diagnostic(_, source) => {
-            datafusion_error_contains_message(source, needle)
-        },
-        DataFusionError::Shared(source) => datafusion_error_contains_message(source, needle),
-        DataFusionError::Collection(errors) => {
-            errors.iter().any(|error| datafusion_error_contains_message(error, needle))
-        },
-        _ => false,
-    }
 }
 
 pub(super) fn referenced_table_names(plan: &LogicalPlan) -> String {
@@ -404,6 +324,15 @@ pub(super) async fn reject_drop_object_type_mismatch(
         LogicalPlan::Ddl(DdlStatement::DropView(drop_view)) => (&drop_view.name, TableType::View),
         _ => return Ok(()),
     };
+    reject_drop_table_type_mismatch(ctx, object_name, expected_table_type, operation).await
+}
+
+async fn reject_drop_table_type_mismatch(
+    ctx: &SessionContext,
+    object_name: &TableReference,
+    expected_table_type: TableType,
+    operation: &'static str,
+) -> crate::error::Result<()> {
     let table_name = object_name.table().to_string();
     let Ok(schema) = ctx.state().schema_for_ref(object_name.clone()) else {
         return Ok(());

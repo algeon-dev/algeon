@@ -121,7 +121,12 @@ fn query_service_resources_use_shared_lakehouse_cache_fill_limits() {
         },
         ..QueryExecutionConfig::default()
     };
-    let service = QueryService::new_with_deployment(config, QueueBounds::default(), non_gds_deployment()).unwrap();
+    let service = runtime_test_service_with_profiles(
+        config,
+        QueueBounds::default(),
+        vec![runtime_test_device_profile(2)],
+    )
+    .unwrap();
     let resources = service.inner.resources.as_ref().unwrap();
 
     assert_eq!(resources.lakehouse_cache_fill_budget.budget_bytes(), 2048);

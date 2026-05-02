@@ -62,8 +62,8 @@ use super::{
     auth::{AuthInterceptor, handle_handshake},
     cancel::QueryCancellation,
     coordinator::{
-        CoordinatorTicketPayload, QueryCoordinator, QueryCoordinatorConfig, QueryCoordinatorError, QueryCoordinatorErrorKind,
-        QueryExecutionLease, QueryPlanningLease, QueryPlanningReportDeliveryTerminal,
+        CoordinatorTicketPayload, QueryCoordinator, QueryCoordinatorConfig, QueryCoordinatorError,
+        QueryCoordinatorErrorKind, QueryExecutionLease, QueryPlanningLease, QueryPlanningReportDeliveryTerminal,
     },
     diagnostics::log_native_planning_report_for_tables,
     error::{adapter_error_to_status, datafusion_error_to_captured_error, datafusion_error_to_status_for_operation},
@@ -94,8 +94,8 @@ mod status;
 mod tests;
 mod tickets;
 
+use correlation::tracing_correlation_id;
 pub(super) use correlation::{attach_query_response_metadata, request_correlation_id};
-use correlation::{finish_adapter_error_status_with_correlation_id, tracing_correlation_id};
 use ddl::{referenced_table_names, reject_drop_object_type_mismatch};
 #[cfg(all(test, feature = "iceberg"))]
 use execution::cancel_invalid_argument_status;
@@ -119,8 +119,6 @@ const QUERY_ID_METADATA_KEY: &str = "x-datafusion-nexus-query-id";
 const CORRELATION_ID_METADATA_KEY: &str = "x-datafusion-nexus-correlation-id";
 const CORRELATION_ID_METADATA_ALIASES: &[&str] = &[CORRELATION_ID_METADATA_KEY, "x-correlation-id"];
 const MAX_CORRELATION_ID_LEN: usize = 256;
-const READ_ONLY_SCHEMA_PROVIDER_REGISTER_TABLE_MESSAGE: &str = "schema provider does not support registering tables";
-
 /// Hard cap on live prepared-statement handles across all connections.
 /// Bounds the worst case for clients that leak handles by disconnecting
 /// without calling `ClosePreparedStatement`. Sized for DataGrip-class

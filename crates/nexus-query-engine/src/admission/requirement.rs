@@ -42,6 +42,36 @@ pub(crate) struct AttemptCapabilityEvidence {
     pub(crate) estimate_quality: EstimateQuality,
     /// Capability contracts required by the admitted fragments.
     pub(crate) required_capabilities: Vec<ReservationRequirement>,
+    /// Exact graph plans for which the engine may replace its generic
+    /// lower-level graph-workspace blocker with the cuGraph contract.
+    ///
+    /// This remains part of the engine-owned evidence bundle from admission
+    /// through execution. A capability label alone is deliberately not enough
+    /// to make that substitution: it would let a combined proof authorize an
+    /// unrelated graph plan.
+    pub(crate) attested_cugraph_graph_execution_scopes: Vec<AttestedCugraphGraphExecutionScope>,
+}
+
+/// Collision-free structural identity for one graph plan whose frontend owns
+/// construction and workspace lifetimes.
+///
+/// The identity retains the full derived structural form instead of a
+/// fixed-width hash. These scopes are short-lived admission evidence, not
+/// externally stored keys, so a hash collision cannot become an authorization
+/// path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AttestedCugraphGraphExecutionScope {
+    structural_fingerprint: String,
+}
+
+impl AttestedCugraphGraphExecutionScope {
+    fn for_plan(plan: &QueryPlan) -> Self {
+        Self { structural_fingerprint: format!("{plan:#?}") }
+    }
+
+    fn matches(&self, plan: &QueryPlan) -> bool {
+        self.structural_fingerprint == Self::for_plan(plan).structural_fingerprint
+    }
 }
 
 /// Opaque capability proof issued from a native plan or a canonical graph
@@ -66,13 +96,29 @@ impl QueryPlanCapabilityProof {
         (!requirement.required_capabilities.is_empty()).then_some(Self { requirement })
     }
 
-    /// Issues the fixed proof for the canonical cuGraph execution contract.
+    /// Derives a plan-scoped proof for the exact internal plan issued by the
+    /// cuGraph frontend.
     ///
-    /// This is intentionally narrower than accepting caller-selected graph
-    /// model data: model bytes are diagnostic only and never participate in a
-    /// capability proof or immutable-grant selection.
-    pub fn for_cugraph_graph_execution() -> Self {
-        Self { requirement: AttemptCapabilityEvidence::graph_execution() }
+    /// The generic graph node analysis deliberately keeps its lower-level
+    /// bounded-execution blocker: the engine alone cannot establish that an
+    /// embedding graph runtime owns all graph construction and workspace
+    /// lifetimes.  cuGraph establishes that contract at its own boundary, so
+    /// its engine-issued proof replaces only that blocker with the canonical
+    /// cuGraph execution capability. The replacement is bound to a private,
+    /// collision-free structural scope for this exact plan; combining proofs
+    /// preserves every scope, and execution rechecks it against the plan
+    /// about to run. All other plan requirements, including edge
+    /// normalization and result-sink materialization, remain exact.
+    pub fn for_cugraph_graph_execution_plan(plan: &QueryPlan) -> Option<Self> {
+        let mut requirement = AttemptCapabilityEvidence::for_query_plan(plan);
+        let graph_requirement = generic_graph_execution_blocker();
+        if !requirement.required_capabilities.contains(&graph_requirement) {
+            return (!requirement.required_capabilities.is_empty()).then_some(Self { requirement });
+        }
+        requirement.required_capabilities.retain(|candidate| candidate != &graph_requirement);
+        requirement.required_capabilities.push(cugraph_graph_execution_capability());
+        requirement.attested_cugraph_graph_execution_scopes.push(AttestedCugraphGraphExecutionScope::for_plan(plan));
+        Some(Self { requirement })
     }
 
     /// Combines proofs already issued for native fragments in one invocation.
@@ -113,25 +159,6 @@ impl AttemptCapabilityEvidence {
     /// determines the capability set.
     pub(crate) fn for_query_plan(plan: &QueryPlan) -> Self {
         Self::from_parts(0, 0, None, EstimateQuality::Unknown, plan.capability_analysis().requirements)
-    }
-
-    /// Returns the fixed capability evidence for a modeled cuGraph execution.
-    ///
-    /// The contract identity is engine-owned so a frontend cannot select an
-    /// arbitrary device capability while composing an admission request.
-    pub(crate) fn graph_execution() -> Self {
-        Self::from_parts(
-            0,
-            0,
-            None,
-            EstimateQuality::Unknown,
-            vec![ReservationRequirement::modeled(
-                ReservationKind::GraphAlgorithm,
-                "cugraph_graph_execution",
-                "cugraph_graph_execution_contract",
-                crate::capability::ContractQuality::CapabilityProof,
-            )],
-        )
     }
 
     /// Returns the descriptive working-set target, if a planner produced one.
@@ -189,6 +216,7 @@ impl AttemptCapabilityEvidence {
             soft_working_set_hint_bytes,
             estimate_quality,
             required_capabilities,
+            attested_cugraph_graph_execution_scopes: Vec::new(),
         }
     }
 
@@ -215,9 +243,15 @@ impl AttemptCapabilityEvidence {
     /// GPU work.
     pub(crate) fn validate_covers_plan(&self, plan: &QueryPlan) -> Result<()> {
         let required_capabilities = plan.capability_analysis().requirements;
+        let cugraph_graph_execution_is_proven =
+            self.required_capabilities.contains(&cugraph_graph_execution_capability())
+                && self.attested_cugraph_graph_execution_scopes.iter().any(|scope| scope.matches(plan));
         let missing_capabilities = required_capabilities
             .iter()
-            .filter(|required| !self.required_capabilities.contains(required))
+            .filter(|required| {
+                !self.required_capabilities.contains(required)
+                    && !(cugraph_graph_execution_is_proven && is_generic_graph_execution_blocker(required))
+            })
             .cloned()
             .collect::<Vec<_>>();
         if missing_capabilities.is_empty() {
@@ -247,6 +281,7 @@ impl AttemptCapabilityEvidence {
         let mut soft_working_set_hint_bytes: Option<u64> = None;
         let mut estimate_quality = EstimateQuality::Measured;
         let mut required_capabilities = Vec::new();
+        let mut attested_cugraph_graph_execution_scopes = Vec::new();
         for fragment in fragments {
             capability_floor_raise_bytes =
                 capability_floor_raise_bytes.checked_add(fragment.capability_floor_raise_bytes).ok_or_else(|| {
@@ -268,15 +303,44 @@ impl AttemptCapabilityEvidence {
                     required_capabilities.push(capability);
                 }
             }
+            for scope in fragment.attested_cugraph_graph_execution_scopes {
+                if !attested_cugraph_graph_execution_scopes.contains(&scope) {
+                    attested_cugraph_graph_execution_scopes.push(scope);
+                }
+            }
         }
-        Ok(Self::from_parts(
+        let mut aggregate = Self::from_parts(
             configured_floor_bytes,
             capability_floor_raise_bytes,
             soft_working_set_hint_bytes,
             estimate_quality,
             required_capabilities,
-        ))
+        );
+        aggregate.attested_cugraph_graph_execution_scopes = attested_cugraph_graph_execution_scopes;
+        Ok(aggregate)
     }
+}
+
+fn generic_graph_execution_blocker() -> ReservationRequirement {
+    ReservationRequirement::blocked_by_lower_level(
+        ReservationKind::OperatorOutput,
+        crate::plan::GRAPH_ALGORITHM_CAPABILITY_MEMORY_BOUNDARY,
+        crate::plan::GRAPH_ALGORITHM_CAPABILITY_REQUIRED_CONTRACT,
+        crate::capability::ContractQuality::ExactPreflight,
+    )
+}
+
+fn cugraph_graph_execution_capability() -> ReservationRequirement {
+    ReservationRequirement::modeled(
+        ReservationKind::GraphAlgorithm,
+        "cugraph_graph_execution",
+        "cugraph_graph_execution_contract",
+        crate::capability::ContractQuality::CapabilityProof,
+    )
+}
+
+fn is_generic_graph_execution_blocker(requirement: &ReservationRequirement) -> bool {
+    requirement == &generic_graph_execution_blocker()
 }
 
 #[cfg(test)]
@@ -306,6 +370,10 @@ mod tests {
     }
 
     fn graph_bfs_plan() -> QueryPlan {
+        graph_bfs_plan_with_source_vertex(0)
+    }
+
+    fn graph_bfs_plan_with_source_vertex(source_vertex: i64) -> QueryPlan {
         let schema = Arc::new(Schema::new(vec![
             Field::new("src", DataType::Int64, false),
             Field::new("dst", DataType::Int64, false),
@@ -319,10 +387,17 @@ mod tests {
                 GraphAlgorithm::Bfs,
                 GraphEdgeColumnBindings::new("src", "dst", Some("weight")),
                 GraphConstructionOptions::default(),
-                GraphAlgorithmParams::Bfs(Box::new(GraphBfsParams::new(0, None))),
+                GraphAlgorithmParams::Bfs(Box::new(GraphBfsParams::new(source_vertex, None))),
             ),
         );
         builder.finish_with_host_sink(graph)
+    }
+
+    fn ordinary_native_plan() -> QueryPlan {
+        let schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Int64, false)]));
+        let mut builder = QueryPlanBuilder::new();
+        let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", schema)));
+        builder.finish_with_host_sink(source)
     }
 
     #[test]
@@ -381,27 +456,71 @@ mod tests {
     }
 
     #[test]
-    fn graph_proof_rejects_an_uncovered_native_plan_with_stable_facts() {
-        let proof = QueryPlanCapabilityProof::for_cugraph_graph_execution();
+    fn cugraph_graph_scope_rejects_an_unattested_native_plan_with_stable_facts() {
+        let attested_plan = graph_bfs_plan_with_source_vertex(1);
+        let proof = QueryPlanCapabilityProof::for_cugraph_graph_execution_plan(&attested_plan)
+            .expect("attested graph execution has capability requirements");
         let error = proof
             .as_requirement()
             .validate_covers_plan(&graph_bfs_plan())
-            .expect_err("a canonical cuGraph proof must not authorize a different native graph plan");
+            .expect_err("a plan-scoped cuGraph proof must not authorize a different native graph plan");
 
         assert_eq!(error.code(), QueryErrorCode::UnsupportedPlanShape);
         assert_eq!(error.fact_value("reason"), Some("admitted_capability_evidence_mismatch"));
         assert_eq!(
-            error.fact_value("required_capabilities"),
-            Some(
-                "operator_output:edge_normalize_output_size_preflight,operator_output:unsupported_graph_algorithm_reservation_contract,materialization:query_engine_explicit_sink_materialization_reservation"
-            )
+            error.fact_value("missing_capabilities"),
+            Some("operator_output:unsupported_graph_algorithm_reservation_contract")
         );
-        assert_eq!(error.fact_value("admitted_capabilities"), Some("graph_algorithm:cugraph_graph_execution_contract"));
+    }
+
+    #[test]
+    fn exact_cugraph_plan_proof_replaces_only_the_engine_graph_blocker() {
+        let plan = graph_bfs_plan();
+        let proof = QueryPlanCapabilityProof::for_cugraph_graph_execution_plan(&plan)
+            .expect("graph execution has capability requirements");
+
+        assert!(proof.required_capabilities().iter().any(|requirement| {
+            requirement.kind == ReservationKind::GraphAlgorithm
+                && requirement.required_contract == "cugraph_graph_execution_contract"
+        }));
+        assert!(!proof.required_capabilities().iter().any(is_generic_graph_execution_blocker));
+        assert_eq!(proof.as_requirement().attested_cugraph_graph_execution_scopes.len(), 1);
+        proof
+            .as_requirement()
+            .validate_covers_plan(&plan)
+            .expect("the issued cuGraph proof must cover its exact internal plan");
+    }
+
+    #[test]
+    fn combining_cugraph_proofs_retains_each_attested_graph_scope() {
+        let native_plan = ordinary_native_plan();
+        let first_plan = graph_bfs_plan_with_source_vertex(0);
+        let second_plan = graph_bfs_plan_with_source_vertex(1);
+        let unscoped_plan = graph_bfs_plan_with_source_vertex(2);
+        let proof = QueryPlanCapabilityProof::combine(
+            QueryPlanCapabilityProof::for_query_plan(&native_plan)
+                .expect("native plan has an explicit sink capability requirement"),
+            [
+                QueryPlanCapabilityProof::for_cugraph_graph_execution_plan(&first_plan)
+                    .expect("first graph plan has capability requirements"),
+                QueryPlanCapabilityProof::for_cugraph_graph_execution_plan(&second_plan)
+                    .expect("second graph plan has capability requirements"),
+            ],
+        )
+        .expect("native and plan-scoped graph proofs must combine");
+
+        let requirement = proof.as_requirement();
+        assert_eq!(requirement.attested_cugraph_graph_execution_scopes.len(), 2);
+        requirement.validate_covers_plan(&native_plan).expect("combined proof must retain the native plan capability");
+        requirement.validate_covers_plan(&first_plan).expect("combined proof must retain the first graph scope");
+        requirement.validate_covers_plan(&second_plan).expect("combined proof must retain the second graph scope");
+        let error = requirement
+            .validate_covers_plan(&unscoped_plan)
+            .expect_err("combined proof must not widen its graph scope");
+        assert_eq!(error.fact_value("reason"), Some("admitted_capability_evidence_mismatch"));
         assert_eq!(
             error.fact_value("missing_capabilities"),
-            Some(
-                "operator_output:edge_normalize_output_size_preflight,operator_output:unsupported_graph_algorithm_reservation_contract,materialization:query_engine_explicit_sink_materialization_reservation"
-            )
+            Some("operator_output:unsupported_graph_algorithm_reservation_contract")
         );
     }
 }

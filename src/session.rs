@@ -324,21 +324,20 @@ fn insert_nexus_native_rules_for_cugraph_subplan(
 #[cfg(all(test, feature = "cugraph"))]
 mod tests {
     use super::*;
-    use crate::native_exec::{
-        QueryAdmissionSource,
-        admission::{TestAdmissionController, TestAdmissionDeviceProfile},
-    };
+    use crate::{backend::InstalledTestGpuBackend, native_exec::QueryAdmissionSource};
 
-    fn admission_only_source() -> QueryAdmissionSource {
-        let controller =
-            TestAdmissionController::new(TestAdmissionDeviceProfile::new(0, 1024 * 1024, 1, 1024 * 1024), None)
-                .expect("CUDA-free test admission controller should build");
-        controller.source()
+    fn admission_source(backend: &InstalledTestGpuBackend) -> QueryAdmissionSource {
+        backend
+            .optimizer_config()
+            .native_execution_config()
+            .query_admission_source()
+            .expect("installed backend must provide admission authority")
     }
 
     #[test]
     fn cugraph_sql_config_inherits_installed_backend_admission() {
-        let source = admission_only_source();
+        let backend = InstalledTestGpuBackend::new();
+        let source = admission_source(&backend);
         let native_execution_config =
             NexusNativeExecutionConfig::bounded(1024, 512, 1, 3, 1).with_query_admission_source(source);
         let optimizer_config =

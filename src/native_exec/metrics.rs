@@ -9,8 +9,6 @@ mod contract;
 mod record;
 mod registry;
 
-#[cfg(all(feature = "server", test))]
-pub(crate) use capture::NativeMetricsCaptureSink;
 #[cfg(feature = "server")]
 pub(crate) use capture::NativeObservationActivityFactory;
 pub(crate) use capture::{NativeExecutionMetricsCapture, NativeMetricsCapture, NativeRuntimeObservation};

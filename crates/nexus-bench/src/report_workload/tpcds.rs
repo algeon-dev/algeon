@@ -723,6 +723,7 @@ pub async fn tpcds_datafusion_execution_workload_items_filtered(
                     NativeDataFusionRuntime::NotStarted => "not_started",
                     NativeDataFusionRuntime::Succeeded { .. } => "succeeded",
                     NativeDataFusionRuntime::Failed { .. } => "failed",
+                    NativeDataFusionRuntime::Interrupted { outcome, .. } => outcome.as_str(),
                 },
             };
             cb(TpcdsExecutionProgressEvent::QueryFinished {

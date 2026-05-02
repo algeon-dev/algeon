@@ -43,6 +43,7 @@ impl QueryService {
         let queue_deadline = request.queue_deadline;
         let execution_cancellation = request.execution_cancellation.clone();
         let attempt_requirement = request.resolved_attempt_requirement();
+        let submitted_plan_capability_evidence = request.submitted_plan_capability_evidence();
         let mut observation_owner = request.into_runtime_observation();
         let attempt_id = observation_owner.attempt_id;
         let admission_request_id =
@@ -128,6 +129,7 @@ impl QueryService {
             observation: observation_owner.handle.clone(),
             attempt_id,
             completion,
+            submitted_plan_capability_evidence,
             requirement: requirement.clone(),
             submission_seq: self.inner.next_submission_seq.fetch_add(1, Ordering::Relaxed),
             compatible_devices,
@@ -362,6 +364,7 @@ impl QueryService {
                 return self.commit_placed_admission(
                     placed_query,
                     admitted.requirement.clone(),
+                    admitted.submitted_plan_capability_evidence.clone(),
                     admitted.compatible_devices.clone(),
                     admitted.observation,
                     admitted.attempt_id,
@@ -513,6 +516,7 @@ impl QueryService {
         let queue_deadline = request.queue_deadline;
         let execution_cancellation = request.execution_cancellation.clone();
         let attempt_requirement = request.resolved_attempt_requirement();
+        let submitted_plan_capability_evidence = request.submitted_plan_capability_evidence();
         let mut observation_owner = request.into_runtime_observation();
         let attempt_id = observation_owner.attempt_id;
         let admission_request_id =
@@ -649,6 +653,7 @@ impl QueryService {
             observation: observation_owner.handle.clone(),
             attempt_id,
             completion,
+            submitted_plan_capability_evidence,
             requirement: requirement.clone(),
             submission_seq: self.inner.next_submission_seq.fetch_add(1, Ordering::Relaxed),
             compatible_devices,
@@ -692,7 +697,8 @@ impl QueryService {
     pub(in crate::runtime::query_service) fn commit_placed_admission(
         &self,
         placed_query: PlacedQuery,
-        admitted_capability_evidence: AttemptRequirement,
+        admitted_requirement: AttemptRequirement,
+        submitted_plan_capability_evidence: Option<AttemptRequirement>,
         admitted_compatible_devices: Vec<usize>,
         observation: RuntimeObservationHandle,
         attempt_id: Option<crate::observability::AttemptId>,
@@ -923,12 +929,12 @@ impl QueryService {
                 observation,
                 completion,
                 envelope,
-                admitted_capability_evidence.clone(),
+                admitted_requirement,
                 admitted_compatible_devices,
             ),
             config: self.inner.config.clone(),
             queue_bounds: self.inner.queue_bounds.clone(),
-            admitted_capability_evidence,
+            submitted_plan_capability_evidence,
             admission_request_id,
             admission_sequence,
             admission_wait,
@@ -975,6 +981,7 @@ impl QueryService {
         let queue_deadline = request.queue_deadline;
         let execution_cancellation = request.execution_cancellation.clone();
         let attempt_requirement = request.resolved_attempt_requirement();
+        let submitted_plan_capability_evidence = request.submitted_plan_capability_evidence();
         let mut observation_owner = request.into_runtime_observation();
         let attempt_id = observation_owner.attempt_id;
         let admission_request_id =
@@ -1136,6 +1143,7 @@ impl QueryService {
         self.commit_placed_admission(
             placed_query,
             requirement,
+            submitted_plan_capability_evidence,
             compatible_devices,
             observation_owner.handle,
             attempt_id,

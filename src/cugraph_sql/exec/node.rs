@@ -1,3 +1,5 @@
+use nexus_query_engine::admission::QueryPlanCapabilityProof;
+
 use super::*;
 #[derive(Clone, Debug)]
 pub struct CugraphAlgoExec {
@@ -92,6 +94,10 @@ impl CugraphAlgoExec {
         let native_execution_config = cugraph_execution_config_with_graph_aware_ticket(
             &spec,
             edge_source.as_ref(),
+            &predicate_sources,
+            &predicate_row_upper_bounds,
+            projection.as_ref(),
+            limit,
             edge_normalize_inserted,
             native_execution_config,
         )?;
@@ -782,6 +788,18 @@ pub(super) fn register_cugraph_execution_spis() {
 impl GraphExecutionPlan for CugraphAlgoExec {
     fn graph_model_ask_for_admission(&self) -> Result<Option<GraphAdmissionModelAsk>> {
         self.graph_model_ask_bytes_for_admission_ticket()
+    }
+
+    fn graph_execution_capability_proof(&self) -> Result<QueryPlanCapabilityProof> {
+        cugraph_execution_capability_proof(
+            &self.spec,
+            self.edge_source.schema(),
+            self.predicate_sources.iter().map(|source| source.schema()).collect(),
+            &self.predicate_row_upper_bounds,
+            self.projection.as_ref(),
+            self.limit,
+            cugraph_edge_normalize_inserted(&self.spec, &self.edge_source_canonical_facts),
+        )
     }
 
     fn sealed_attempt_metrics_target(&self) -> crate::native_exec::SealedAttemptMetricsTarget {

@@ -1,8 +1,9 @@
 use nexus_query_engine::error::QueryError;
 
 use super::*;
-use crate::native_exec::admission::{
-    QueryAdmissionTicket, TestAdmissionController, TestAdmissionDeviceProfile, task_context_with_query_admission_ticket,
+use crate::{
+    backend::InstalledTestGpuBackend,
+    native_exec::admission::{QueryAdmissionTicket, task_context_with_query_admission_ticket},
 };
 
 #[test]
@@ -58,10 +59,12 @@ fn service_acquired_context_applies_only_configured_adapter_graph_calibration_fi
 
 #[test]
 fn plan_query_admission_ticket_is_shared_by_config_clones() {
-    let controller =
-        TestAdmissionController::new(TestAdmissionDeviceProfile::new(0, 1024 * 1024, 1, 256), Some(1024 * 1024))
-            .unwrap();
-    let source = controller.source();
+    let backend = InstalledTestGpuBackend::new();
+    let source = backend
+        .optimizer_config()
+        .native_execution_config()
+        .query_admission_source()
+        .expect("installed backend must provide admission authority");
     let base = NexusNativeExecutionConfig::bounded(1024, 512, 1, 3, 1)
         .with_query_id("ticket-query")
         .with_trace_id("ticket-trace")
@@ -82,11 +85,15 @@ fn plan_query_admission_ticket_is_shared_by_config_clones() {
 
 #[test]
 fn query_admission_ticket_selection_prefers_ambient_query_admission_ticket() {
-    let controller =
-        TestAdmissionController::new(TestAdmissionDeviceProfile::new(0, 2048, 1, 256), Some(2048)).unwrap();
-    let ambient_ticket = QueryAdmissionTicket::new(controller.source(), None);
+    let backend = InstalledTestGpuBackend::new();
+    let source = backend
+        .optimizer_config()
+        .native_execution_config()
+        .query_admission_source()
+        .expect("installed backend must provide admission authority");
+    let ambient_ticket = QueryAdmissionTicket::new(source.clone(), None);
     let child_config = NexusNativeExecutionConfig::bounded(256, 512, 1, 3, 1)
-        .with_query_admission_source(controller.source())
+        .with_query_admission_source(source)
         .with_plan_query_admission_ticket();
     let child_ticket_id = child_config.query_admission_ticket_id();
     let task_context =

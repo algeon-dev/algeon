@@ -28,6 +28,7 @@ struct FlightExecutionBody {
     cancellation: std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>,
     native_cancellation: ExecutionCancellation,
     attempt_cancellation: Option<nexus_query_engine::attempt::AttemptCancellation>,
+    delivery_started: Arc<std::sync::atomic::AtomicBool>,
     terminal: Arc<CoordinatorExecutionTerminal>,
     native_execution_span: tracing::Span,
 }
@@ -38,6 +39,7 @@ impl FlightExecutionBody {
         flight_token: CancellationToken,
         native_cancellation: ExecutionCancellation,
         attempt_cancellation: Option<nexus_query_engine::attempt::AttemptCancellation>,
+        delivery_started: Arc<std::sync::atomic::AtomicBool>,
         terminal: Arc<CoordinatorExecutionTerminal>,
         native_execution_span: tracing::Span,
     ) -> Self {
@@ -46,6 +48,7 @@ impl FlightExecutionBody {
             cancellation: Box::pin(flight_token.cancelled_owned()),
             native_cancellation,
             attempt_cancellation,
+            delivery_started,
             terminal,
             native_execution_span,
         }
@@ -73,8 +76,10 @@ impl Stream for FlightExecutionBody {
             this.inner = None;
             return std::task::Poll::Ready(None);
         }
-        let poll =
-            this.inner.as_mut().map_or(std::task::Poll::Ready(None), |stream| stream.as_mut().poll_next(context));
+        let poll = this.inner.as_mut().map_or(std::task::Poll::Ready(None), |stream| {
+            this.delivery_started.store(true, std::sync::atomic::Ordering::Release);
+            stream.as_mut().poll_next(context)
+        });
         if matches!(&poll, std::task::Poll::Ready(None)) {
             // Reaching EOF is the execution-resource boundary. Do not retain
             // the exhausted DataFusion stream (and its admission ticket)
@@ -159,6 +164,7 @@ impl Stream for ExplainGpuExecutionBody {
             return std::task::Poll::Ready(Some(Err(FlightError::from(status))));
         }
         if let Some(batch) = this.batch.take() {
+            this.guard.delivery_started.store(true, std::sync::atomic::Ordering::Release);
             return std::task::Poll::Ready(Some(Ok(batch)));
         }
         if let Some(attempt) = this.attempt.take() {
@@ -184,13 +190,11 @@ impl Drop for ExplainGpuExecutionBody {
             return;
         }
         // Match the ordinary Flight stream: a client drop is cooperative
-        // cancellation, so terminalize this owner before the guard can release
-        // the coordinator execution lease.
+        // cancellation. Dropping the attempt before the guard preserves the
+        // sealed-attempt handoff, while the guard owns the one delivery
+        // classification policy: before the first batch it is dropped; after
+        // delivery starts it is a captured cancellation failure.
         self.cancel_attempt();
-        if !self.guard.terminal.is_finished() {
-            let (status, captured) = self.cancelled_status();
-            self.guard.terminal.finish_captured("stream", &status, captured);
-        }
     }
 }
 
@@ -329,6 +333,7 @@ impl DatafusionNexusFlightSqlService {
             native_cancellation: native_cancellation.clone(),
             attempt_cancellation,
             shutdown_token: self.shutdown_token.clone(),
+            delivery_started: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             terminal: Arc::clone(&coordinator_terminal),
         };
         if token.is_cancelled() {
@@ -689,6 +694,7 @@ impl DatafusionNexusFlightSqlService {
             token.clone(),
             native_cancellation.clone(),
             attempt_cancellation_for_stream.clone(),
+            Arc::clone(&guard.delivery_started),
             Arc::clone(&coordinator_terminal),
             native_execution_span,
         );

@@ -265,6 +265,11 @@ pub(super) struct AdmissionRequest {
     /// correlation once this request owns a physical allocation domain.
     pub(super) attempt_id: Option<crate::observability::AttemptId>,
     pub(super) completion: QueryCompletion,
+    /// Optional plan proof submitted by planning.  This is distinct from the
+    /// always-resolved placement requirement below: no proof means execution
+    /// coverage validation remains unavailable, rather than asserting an
+    /// empty proof.
+    pub(super) submitted_plan_capability_evidence: Option<AttemptRequirement>,
     pub(super) requirement: AttemptRequirement,
     /// Monotonic FIFO identity retained independently from admission order.
     pub(super) submission_seq: u64,
@@ -875,6 +880,7 @@ impl QueryAdmissionWaiter {
                 .commit_placed_admission(
                     placed_query,
                     admitted.requirement.clone(),
+                    admitted.submitted_plan_capability_evidence.clone(),
                     admitted.compatible_devices.clone(),
                     admitted.observation,
                     admitted.attempt_id,

@@ -9,7 +9,7 @@ use arrow::{
 };
 use datafusion::{
     catalog::{Session, TableFunction, TableFunctionArgs, TableFunctionImpl, TableProvider},
-    common::Result,
+    common::{DataFusionError, Result},
     datasource::TableType,
     execution::{SessionState, context::SessionContext},
     logical_expr::Expr,
@@ -588,10 +588,13 @@ fn predicate_source_specs(spec: &CugraphAlgorithmSpec) -> Vec<PredicateSourceSpe
 
 fn validate_edge_source_schema(spec: &CugraphAlgorithmSpec, schema: &SchemaRef) -> Result<CugraphVertexIdDomain> {
     let src = schema.field_with_name(&spec.src_col).map_err(|_| {
-        plan_error(format!("cuGraph edge source '{}' is missing source column '{}'", spec.table_name, spec.src_col))
+        DataFusionError::Plan(format!(
+            "cuGraph edge source '{}' is missing source column '{}'",
+            spec.table_name, spec.src_col
+        ))
     })?;
     let dst = schema.field_with_name(&spec.dst_col).map_err(|_| {
-        plan_error(format!(
+        DataFusionError::Plan(format!(
             "cuGraph edge source '{}' is missing destination column '{}'",
             spec.table_name, spec.dst_col
         ))
@@ -600,7 +603,10 @@ fn validate_edge_source_schema(spec: &CugraphAlgorithmSpec, schema: &SchemaRef) 
     validate_vertex_id_domain_support_for_call(spec.algorithm, &domain)?;
     if let Some(edge_id_col) = &spec.edge_id_col {
         let edge_id = schema.field_with_name(edge_id_col).map_err(|_| {
-            plan_error(format!("cuGraph edge source '{}' is missing edge-id column '{edge_id_col}'", spec.table_name))
+            DataFusionError::Plan(format!(
+                "cuGraph edge source '{}' is missing edge-id column '{edge_id_col}'",
+                spec.table_name
+            ))
         })?;
         if !domain.accepts(edge_id.data_type()) {
             return Err(plan_error(format!(

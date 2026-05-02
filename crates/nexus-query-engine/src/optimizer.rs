@@ -15,6 +15,7 @@ mod dimension_pruning;
 mod dynamic_filter;
 mod join_build_side;
 mod join_filter_reassociation;
+mod lakehouse_footer_pruning;
 mod lineage;
 mod local_parquet_source_reuse;
 mod outer_join_null_rejection;
@@ -58,6 +59,10 @@ pub use join_build_side::{
 pub use join_filter_reassociation::{
     JOIN_FILTER_REASSOCIATION_RULE_NAME, JoinFilterReassociationCandidateDiagnostics,
     JoinFilterReassociationDiagnostics, JoinFilterReassociationOptions, JoinFilterReassociationRejectedReason,
+};
+pub use lakehouse_footer_pruning::{
+    LakehouseFooterPruningEvent, LakehouseFooterPruningOptions, LakehouseFooterPruningResolver,
+    LakehouseFooterPruningResult, optimize_lakehouse_footer_pruning,
 };
 pub use local_parquet_source_reuse::{
     LOCAL_PARQUET_SOURCE_REUSE_RULE_NAME, LocalParquetSourceReuseCandidateDiagnostics,

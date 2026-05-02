@@ -66,7 +66,7 @@ async fn query_service_admit_async_wakes_on_release() {
     wait_for_queued_len(&service, 1);
 
     drop(active);
-    let handle = time::timeout(Duration::from_millis(200), queued).await.unwrap().unwrap().unwrap();
+    let _handle = time::timeout(Duration::from_millis(200), queued).await.unwrap().unwrap().unwrap();
     assert_eq!(service.admission_snapshot().unwrap().active_queries, 1);
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -84,8 +84,8 @@ async fn query_service_admit_async_notifies_after_queue_head_admits() {
     drop(active_1);
     drop(active_2);
     drop(active_3);
-    let first = time::timeout(Duration::from_millis(200), first).await.unwrap().unwrap().unwrap();
-    let second = time::timeout(Duration::from_millis(200), second).await.unwrap().unwrap().unwrap();
+    let _first = time::timeout(Duration::from_millis(200), first).await.unwrap().unwrap().unwrap();
+    let _second = time::timeout(Duration::from_millis(200), second).await.unwrap().unwrap().unwrap();
     assert_eq!(service.admission_snapshot().unwrap().active_queries, 2);
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -179,7 +179,6 @@ fn blocking_admission_returns_its_cancelled_terminal_result_after_queue_sweep() 
 fn query_service_concurrent_budget_sum_never_exceeds_capacity() {
     let capacity_bytes = 12 * 1024 * 1024;
     let max_active_attempts_per_device = 4;
-    let per_query_budget = capacity_bytes / u64::try_from(max_active_attempts_per_device).unwrap();
     let service = AdmissionTestController::new_with_ledger(
         QueryExecutionConfig::default(),
         QueueBounds { max_waiters: 8, max_wait: Duration::from_secs(30), max_overtakes_per_waiter: 4 },

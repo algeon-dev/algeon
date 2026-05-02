@@ -573,51 +573,10 @@ fn adapter_error_from_datafusion_error(error: DataFusionError, operation: &'stat
 fn client_datafusion_error_message(error: &DataFusionError) -> String {
     let effective = effective_datafusion_error(error);
     let human_message = datafusion_error_human_message(effective);
-    let message = match effective {
+    match effective {
         DataFusionError::SQL(_, _) => format!("invalid SQL statement: {human_message}"),
         _ => human_message,
-    };
-    maybe_append_cugraph_feature_hint(message)
-}
-
-/// When a missing `cugraph_*` table function shows up in a DataFusion not-found
-/// message, the runtime registration toggle is the actionable problem. This
-/// applies to both build flavors: feature-off registration exposes the stable
-/// capability error instead of a missing function.
-fn maybe_append_cugraph_feature_hint(message: String) -> String {
-    if is_cugraph_table_function_not_found(&message) {
-        format!(
-            "{message}; cuGraph SQL functions are not registered - set \
-             NEXUS_SERVER_CUGRAPH_ENABLED=true to register them"
-        )
-    } else {
-        message
     }
-}
-
-/// True when `message` is a DataFusion "table function not found" error whose
-/// missing function name starts with `cugraph_`. Only the quoted/suffixed
-/// function name is inspected (not the whole message) so a future "did you
-/// mean" suggestion that merely mentions a `cugraph_*` name elsewhere does not
-/// trigger a false positive.
-fn is_cugraph_table_function_not_found(message: &str) -> bool {
-    missing_table_function_name(message).is_some_and(|name| name.to_ascii_lowercase().starts_with("cugraph_"))
-}
-
-/// Extracts the missing table-function name from a DataFusion not-found
-/// message, handling both the quoted form (`table function 'name' not found`)
-/// and the suffixed form (`table function not found: name`). Returns `None` for
-/// any other message shape.
-fn missing_table_function_name(message: &str) -> Option<&str> {
-    let message = message.trim();
-    if let Some(rest) = message.strip_prefix("table function '") {
-        return rest.split('\'').next().filter(|name| !name.is_empty());
-    }
-    if let Some(rest) = message.strip_prefix("table function not found:") {
-        let name = rest.trim();
-        return (!name.is_empty()).then_some(name);
-    }
-    None
 }
 
 fn effective_datafusion_error(error: &DataFusionError) -> &DataFusionError {
@@ -634,7 +593,6 @@ fn effective_datafusion_error(error: &DataFusionError) -> &DataFusionError {
 fn classify_datafusion_error(error: &DataFusionError) -> ErrorCode {
     match error {
         DataFusionError::SQL(_, _) => ErrorCode::SqlParse,
-        DataFusionError::Plan(message) if datafusion_not_found_message(message) => ErrorCode::ObjectNotFound,
         DataFusionError::Plan(_) => ErrorCode::DataFusionPlanning,
         DataFusionError::SchemaError(schema, _) => match schema.as_ref() {
             SchemaError::FieldNotFound { .. } => ErrorCode::FieldNotFound,
@@ -644,14 +602,17 @@ fn classify_datafusion_error(error: &DataFusionError) -> ErrorCode {
         },
         DataFusionError::NotImplemented(_) => ErrorCode::UnsupportedOperator,
         DataFusionError::Configuration(_) => ErrorCode::DataFusionPlanning,
-        DataFusionError::Execution(message) if datafusion_not_found_message(message) => ErrorCode::ObjectNotFound,
         // Non-not-found execution errors may include reader internals, so keep
         // them behind the generic `Internal` client surface.
         DataFusionError::Execution(_) => ErrorCode::Internal,
         DataFusionError::ResourcesExhausted(_) => ErrorCode::MemoryReservationFailed,
-        DataFusionError::Context(_, source) | DataFusionError::Diagnostic(_, source) => {
-            classify_datafusion_error(source)
-        },
+        DataFusionError::Context(_, source) => classify_datafusion_error(source),
+        // DataFusion diagnostics add spans, notes, and hints around several
+        // planning failures. Their wrapped `Plan` variant has no structured
+        // relation-miss discriminator, so it cannot truthfully be projected
+        // as `ObjectNotFound` without parsing display text. Preserve the
+        // generic planning classification instead.
+        DataFusionError::Diagnostic(_, source) => classify_datafusion_error(source),
         DataFusionError::Collection(errors) => {
             errors.first().map(classify_datafusion_error).unwrap_or(ErrorCode::Internal)
         },
@@ -664,18 +625,6 @@ fn classify_datafusion_error(error: &DataFusionError) -> ErrorCode {
         | DataFusionError::Ffi(_) => ErrorCode::Internal,
         _ => ErrorCode::Internal,
     }
-}
-
-fn datafusion_not_found_message(message: &str) -> bool {
-    let message = message.trim().to_ascii_lowercase();
-    (message.starts_with("table '") && message.contains("' not found"))
-        || (message.starts_with("table '")
-            && (message.contains("' doesn't exist") || message.contains("' does not exist")))
-        || (message.starts_with("view '")
-            && (message.contains("' doesn't exist") || message.contains("' does not exist")))
-        || message.starts_with("table not found:")
-        || (message.starts_with("table function '") && message.contains("' not found"))
-        || message.starts_with("table function not found:")
 }
 
 fn datafusion_error_variant(error: &DataFusionError) -> &'static str {
@@ -706,7 +655,7 @@ mod tests {
     use std::{error::Error as StdError, fmt};
 
     use datafusion::{
-        common::{Column, SchemaError, TableReference},
+        common::{Column, Diagnostic, SchemaError, TableReference},
         sql::sqlparser::parser::ParserError,
     };
     use tonic::Code;
@@ -1001,27 +950,70 @@ mod tests {
     }
 
     #[test]
-    fn known_missing_table_plan_message_is_object_not_found() {
-        let status = datafusion_error_to_status_for_operation(
-            DataFusionError::Plan("table 'does_not_exist' not found".to_string()),
-            TEST_OPERATION,
-        );
+    fn datafusion_plan_classification_is_variant_based_not_message_based() {
+        for message in [
+            "optimizer rule was not found in registry",
+            "table 'does_not_exist' not found",
+            "table function 'cugraph_bfs' not found",
+        ] {
+            let status =
+                datafusion_error_to_status_for_operation(DataFusionError::Plan(message.to_string()), TEST_OPERATION);
 
-        assert_eq!(status.code(), Code::NotFound);
-        assert_error_metadata(&status, "object_not_found", "not_found", "permanent");
-        assert_eq!(status.message(), "table 'does_not_exist' not found");
+            assert_eq!(status.code(), Code::InvalidArgument, "{message}");
+            assert_error_metadata(&status, "datafusion_planning", "planning", "permanent");
+            assert_eq!(status.message(), message);
+            assert!(!status.message().contains("NEXUS_SERVER_CUGRAPH_ENABLED"));
+        }
     }
 
     #[test]
-    fn missing_drop_target_execution_message_is_object_not_found() {
-        let status = datafusion_error_to_status_for_operation(
-            DataFusionError::Execution("Table 'does_not_exist' doesn't exist.".to_string()),
-            TEST_OPERATION,
-        );
+    fn diagnostic_wrapped_plan_errors_remain_generic_planning_without_message_parsing() {
+        for message in [
+            "table p39_missing_table was not found",
+            "function p39_missing_function does not exist",
+            "column p39_value must appear in GROUP BY",
+        ] {
+            let error = DataFusionError::Diagnostic(
+                Box::new(Diagnostic::new_error("synthetic planning diagnostic", None)),
+                Box::new(DataFusionError::Plan(message.to_string())),
+            );
+            let status = datafusion_error_to_status_for_operation(error, TEST_OPERATION);
 
-        assert_eq!(status.code(), Code::NotFound);
-        assert_error_metadata(&status, "object_not_found", "not_found", "permanent");
-        assert_eq!(status.message(), "Table 'does_not_exist' doesn't exist.");
+            assert_eq!(status.code(), Code::InvalidArgument, "{message}");
+            assert_error_metadata(&status, "datafusion_planning", "planning", "permanent");
+        }
+    }
+
+    #[tokio::test]
+    async fn session_context_missing_table_remains_generic_planning_without_a_typed_relation_error() {
+        let context = datafusion::prelude::SessionContext::new();
+        let error = context
+            .sql("SELECT * FROM p39_missing_table")
+            .await
+            .expect_err("an unregistered relation must fail planning");
+
+        let status = datafusion_error_to_status_for_operation(error, TEST_OPERATION);
+
+        assert_eq!(status.code(), Code::InvalidArgument);
+        assert_error_metadata(&status, "datafusion_planning", "planning", "permanent");
+    }
+
+    #[test]
+    fn datafusion_execution_classification_is_variant_based_not_message_based() {
+        for message in [
+            "Table 'does_not_exist' doesn't exist.",
+            "Parquet error reading /var/lib/nexus/secret/customers.parquet: invalid magic bytes",
+        ] {
+            let status = datafusion_error_to_status_for_operation(
+                DataFusionError::Execution(message.to_string()),
+                TEST_OPERATION,
+            );
+
+            assert_eq!(status.code(), Code::Internal, "{message}");
+            assert_error_metadata(&status, "internal", "internal", "permanent");
+            assert_eq!(status.message(), "internal server error while processing the request");
+            assert!(!status.message().contains("/var/lib/nexus"));
+        }
     }
 
     #[test]
@@ -1040,66 +1032,6 @@ mod tests {
         assert!(!status.message().contains("/var/lib/nexus"));
         assert!(!status.message().contains("customers.parquet"));
         assert_no_diagnostic_fields(status.message());
-    }
-
-    #[test]
-    fn generic_not_found_plan_message_is_not_object_not_found() {
-        let status = datafusion_error_to_status_for_operation(
-            DataFusionError::Plan("optimizer rule was not found in registry".to_string()),
-            TEST_OPERATION,
-        );
-
-        assert_eq!(status.code(), Code::InvalidArgument);
-        assert_error_metadata(&status, "datafusion_planning", "planning", "permanent");
-        assert_eq!(status.message(), "optimizer rule was not found in registry");
-    }
-
-    #[test]
-    fn table_function_not_found_plan_message_is_object_not_found() {
-        let status = datafusion_error_to_status_for_operation(
-            DataFusionError::Plan("table function 'read_json' not found".to_string()),
-            TEST_OPERATION,
-        );
-
-        assert_eq!(status.code(), Code::NotFound);
-        assert_error_metadata(&status, "object_not_found", "not_found", "permanent");
-    }
-
-    #[test]
-    fn cugraph_table_function_not_found_appends_registration_hint() {
-        let status = datafusion_error_to_status_for_operation(
-            DataFusionError::Plan("table function 'cugraph_bfs' not found".to_string()),
-            TEST_OPERATION,
-        );
-
-        assert_eq!(status.code(), Code::NotFound);
-        assert_error_metadata(&status, "object_not_found", "not_found", "permanent");
-        assert!(status.message().contains("cugraph_bfs"));
-        assert!(status.message().contains("NEXUS_SERVER_CUGRAPH_ENABLED=true"));
-        assert!(!status.message().contains("server-cugraph"));
-    }
-
-    #[test]
-    fn non_cugraph_table_function_not_found_has_no_hint() {
-        let status = datafusion_error_to_status_for_operation(
-            DataFusionError::Plan("table function 'read_json' not found".to_string()),
-            TEST_OPERATION,
-        );
-
-        assert_eq!(status.message(), "table function 'read_json' not found");
-    }
-
-    #[test]
-    fn cugraph_mention_outside_function_name_is_not_a_false_positive() {
-        // A non-cugraph function whose suggestion text merely mentions a
-        // cugraph_* name must not trigger the cuGraph hint on either build.
-        let status = datafusion_error_to_status_for_operation(
-            DataFusionError::Plan("table function 'read_json' not found. Did you mean 'cugraph_bfs'?".to_string()),
-            TEST_OPERATION,
-        );
-
-        assert!(!status.message().contains("CUGRAPH_ENABLED"));
-        assert!(!status.message().contains("server-cugraph"));
     }
 
     #[test]

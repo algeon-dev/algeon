@@ -113,7 +113,7 @@ pub(in crate::exec) fn graph_memory_reservation_report(
         model_input = model_input.with_statistics(statistics);
     }
     let model = crate::graph_memory::GraphMemoryModel;
-    let mut estimate = match budget_bytes.is_some() {
+    let estimate = match budget_bytes.is_some() {
         true => model.estimate_for_bounded(spec, model_input)?,
         false => model.estimate(spec, model_input)?,
     };

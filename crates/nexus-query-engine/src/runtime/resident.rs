@@ -23,7 +23,6 @@ use crate::{
     plan::{GraphResidencyDescriptor, JoinNullEquality},
     runtime::{
         DevicePlacement, ExecutionCancellation, ExecutionContext,
-        cache::local_parquet::GpuLocalParquetSourceCachePin,
         gpu::ledger::{MemoryGrant, MemoryGrantLiveReservation},
     },
 };
@@ -43,7 +42,6 @@ pub struct GpuDataFrame {
     frame: DataFrame,
     placement: ExecutionPlacement,
     live_reservation: Option<MemoryGrantLiveReservation>,
-    source_cache_pin: Option<GpuLocalParquetSourceCachePin>,
     graph_residency: Option<Arc<GraphResidencyDescriptor>>,
 }
 
@@ -53,10 +51,9 @@ impl GpuDataFrame {
         Self::new_with_live_reservation(frame, None)
     }
 
-    /// Wrap a derived cuDF frame with identity-aware live-byte accounting and
-    /// the source's transitive cache safety lifetime.
+    /// Wrap a derived cuDF frame with identity-aware live-byte accounting.
     pub fn try_new_with_source_residency(frame: DataFrame, source: &Self) -> Result<Self> {
-        if source.live_reservation.is_none() && source.source_cache_pin.is_none() {
+        if source.live_reservation.is_none() {
             return Ok(Self::new(frame));
         }
         let source_identities = source_column_memory_identities(&source.frame);
@@ -81,27 +78,12 @@ impl GpuDataFrame {
             },
             None => None,
         };
-        // A source-cache pin is a safety lifetime, not a byte-accounting
-        // projection. Keep it transitively across derived frames even when an
-        // operator relocates or wraps columns and their immediate owner
-        // identities change. Live reservations remain identity-aware above;
-        // the conservative pin only prevents the cache allocation from being
-        // evicted before the escaping derived result is dropped.
-        let source_cache_pin = source.source_cache_pin.clone();
-        Ok(Self::new_with_residency(frame, live_reservation, source_cache_pin))
+        Ok(Self::new_with_live_reservation(frame, live_reservation))
     }
 
     fn new_with_live_reservation(frame: DataFrame, live_reservation: Option<MemoryGrantLiveReservation>) -> Self {
-        Self::new_with_residency(frame, live_reservation, None)
-    }
-
-    fn new_with_residency(
-        frame: DataFrame,
-        live_reservation: Option<MemoryGrantLiveReservation>,
-        source_cache_pin: Option<GpuLocalParquetSourceCachePin>,
-    ) -> Self {
         let placement = frame.placement();
-        Self { frame, placement, live_reservation, source_cache_pin, graph_residency: None }
+        Self { frame, placement, live_reservation, graph_residency: None }
     }
 
     /// Borrow the underlying cuDF frame.
@@ -116,20 +98,15 @@ impl GpuDataFrame {
     }
 
     fn into_frame_and_live_reservation(self) -> (DataFrame, Option<MemoryGrantLiveReservation>) {
-        let (frame, live_reservation, _source_cache_pin, _graph_residency) = self.into_frame_and_residency();
+        let (frame, live_reservation, _graph_residency) = self.into_frame_and_residency();
         (frame, live_reservation)
     }
 
     fn into_frame_and_residency(
         self,
-    ) -> (
-        DataFrame,
-        Option<MemoryGrantLiveReservation>,
-        Option<GpuLocalParquetSourceCachePin>,
-        Option<Arc<GraphResidencyDescriptor>>,
-    ) {
+    ) -> (DataFrame, Option<MemoryGrantLiveReservation>, Option<Arc<GraphResidencyDescriptor>>) {
         debug_assert_eq!(self.placement, self.frame.placement());
-        (self.frame, self.live_reservation, self.source_cache_pin, self.graph_residency)
+        (self.frame, self.live_reservation, self.graph_residency)
     }
 
     /// Attach graph source provenance to this GPU frame.
@@ -190,10 +167,6 @@ impl GpuDataFrame {
             _ => 0,
         }
     }
-
-    pub(crate) fn source_cache_pin(&self) -> Option<GpuLocalParquetSourceCachePin> {
-        self.source_cache_pin.clone()
-    }
 }
 
 /// GPU-resident query result bound to an Arrow schema and runtime.
@@ -207,22 +180,7 @@ pub struct GpuResultHandle {
     runtime: Arc<cudf::Runtime>,
     device_placement: DevicePlacement,
     live_reservation: Option<MemoryGrantLiveReservation>,
-    source_cache_pin: Option<GpuLocalParquetSourceCachePin>,
     graph_residency: Option<Arc<GraphResidencyDescriptor>>,
-}
-
-/// Query-neutral GPU allocation retained by the service local-Parquet cache.
-///
-/// The cache runtime owns a distinct stream in the same stable affinity as the
-/// pooled query runtime. Insertion therefore performs a real device-to-device
-/// ownership copy instead of retaining column provenance from the inserting
-/// query. Checkout re-anchors the frame to a current-query runtime without
-/// exposing any API that can detach a query lifetime from arbitrary results.
-#[derive(Clone)]
-pub(crate) struct GpuLocalParquetCachedResult {
-    batch: GpuRecordBatch,
-    runtime: Arc<cudf::Runtime>,
-    device_placement: DevicePlacement,
 }
 
 /// Bounded native GPU-to-host cursor retaining every owner required by the
@@ -233,7 +191,6 @@ pub struct GpuHostBatchCursor {
     _runtime: Arc<cudf::Runtime>,
     _device_placement: DevicePlacement,
     _live_reservation: Option<MemoryGrantLiveReservation>,
-    _source_cache_pin: Option<GpuLocalParquetSourceCachePin>,
     _graph_residency: Option<Arc<GraphResidencyDescriptor>>,
 }
 
@@ -350,7 +307,7 @@ impl GpuResultHandle {
             .with_fact("runtime_device", context.runtime()?.device().ordinal()));
         }
         let frame = strip_hidden_datafusion_order_columns(frame, &schema)?;
-        let (frame, frame_live_reservation, source_cache_pin, graph_residency) = frame.into_frame_and_residency();
+        let (frame, frame_live_reservation, graph_residency) = frame.into_frame_and_residency();
         let live_reservation = live_reservation.or(frame_live_reservation);
         let batch = GpuRecordBatch::new(frame, schema).map_err(|error| {
             QueryError::from_cudf(
@@ -364,7 +321,6 @@ impl GpuResultHandle {
             runtime: context.shared_runtime()?,
             device_placement: context.device_placement(),
             live_reservation,
-            source_cache_pin,
             graph_residency,
         })
     }
@@ -376,8 +332,8 @@ impl GpuResultHandle {
 
     /// Consume the handle and return its GPU frame wrapper.
     pub fn into_gpu_frame(self) -> GpuDataFrame {
-        let Self { batch, runtime: _, device_placement: _, live_reservation, source_cache_pin, graph_residency } = self;
-        let mut frame = GpuDataFrame::new_with_residency(batch.into_frame(), live_reservation, source_cache_pin);
+        let Self { batch, runtime: _, device_placement: _, live_reservation, graph_residency } = self;
+        let mut frame = GpuDataFrame::new_with_live_reservation(batch.into_frame(), live_reservation);
         frame.graph_residency = graph_residency;
         frame
     }
@@ -401,55 +357,9 @@ impl GpuResultHandle {
         self.live_reservation.is_some()
     }
 
-    pub(crate) fn has_source_cache_pin(&self) -> bool {
-        self.source_cache_pin.is_some()
-    }
-
     /// Graph source provenance carried by this handle, when known.
     pub fn graph_residency(&self) -> Option<&GraphResidencyDescriptor> {
         self.graph_residency.as_deref()
-    }
-
-    pub(crate) fn copy_for_local_parquet_cache(
-        &self,
-        cache_runtime: Arc<cudf::Runtime>,
-    ) -> Result<GpuLocalParquetCachedResult> {
-        let operation = "nexus_query_engine.gpu_local_parquet_source_cache.copy_for_cache";
-        if self.live_reservation.is_some() || self.source_cache_pin.is_some() || self.graph_residency.is_some() {
-            return Err(QueryError::new(
-                crate::error::QueryErrorCode::InvalidPlan,
-                operation,
-                "local Parquet cache input carries query-owned residency",
-            )
-            .with_fact("reason", "query_owned_residency_in_cache_input"));
-        }
-        if !cudf::Runtime::shares_affinity(&self.runtime, &cache_runtime)
-            || self.runtime.device() != cache_runtime.device()
-        {
-            return Err(QueryError::new(
-                crate::error::QueryErrorCode::InvalidPlan,
-                operation,
-                "local Parquet cache runtime does not match the source runtime affinity",
-            )
-            .with_fact("reason", "local_parquet_cache_runtime_affinity_mismatch")
-            .with_fact("source_device", self.runtime.device().ordinal())
-            .with_fact("cache_device", cache_runtime.device().ordinal()));
-        }
-        if self.runtime.binding_id() == cache_runtime.binding_id() {
-            return Err(QueryError::new(
-                crate::error::QueryErrorCode::InvalidPlan,
-                operation,
-                "local Parquet cache runtime must use an independent execution binding",
-            )
-            .with_fact("reason", "local_parquet_cache_runtime_binding_not_independent"));
-        }
-        let frame = self.batch.frame().copy_into_runtime(&cache_runtime).map_err(|error| {
-            QueryError::from_cudf(operation, "failed to copy local Parquet source into service cache ownership", error)
-        })?;
-        let batch = GpuRecordBatch::new(frame, Arc::clone(self.schema())).map_err(|error| {
-            QueryError::from_cudf(operation, "failed to bind query-neutral local Parquet cache value", error)
-        })?;
-        Ok(GpuLocalParquetCachedResult { batch, runtime: cache_runtime, device_placement: self.device_placement })
     }
 
     /// Current cuDF execution placement for the underlying batch.
@@ -484,7 +394,7 @@ impl GpuResultHandle {
         cancellation: ExecutionCancellation,
         config: HostBatchCursorConfig,
     ) -> Result<GpuHostBatchCursor> {
-        let Self { batch, runtime, device_placement, live_reservation, source_cache_pin, graph_residency } = self;
+        let Self { batch, runtime, device_placement, live_reservation, graph_residency } = self;
         let cursor = batch.into_host_batch_cursor(config).map_err(|error| {
             QueryError::from_cudf(
                 "nexus_query_engine.host_batch_cursor.create",
@@ -498,68 +408,7 @@ impl GpuResultHandle {
             _runtime: runtime,
             _device_placement: device_placement,
             _live_reservation: live_reservation,
-            _source_cache_pin: source_cache_pin,
             _graph_residency: graph_residency,
-        })
-    }
-}
-
-impl GpuLocalParquetCachedResult {
-    pub(crate) fn schema(&self) -> &SchemaRef {
-        self.batch.schema()
-    }
-
-    pub(crate) fn runtime(&self) -> &Arc<cudf::Runtime> {
-        &self.runtime
-    }
-
-    pub(crate) fn device_placement(&self) -> DevicePlacement {
-        self.device_placement
-    }
-
-    pub(crate) fn placement(&self) -> ExecutionPlacement {
-        self.batch.placement()
-    }
-
-    pub(crate) fn device_allocated_size_bytes(&self) -> Result<u64> {
-        let info = self.batch.frame().info_with(InfoDetail::DEVICE_ALLOCATED).map_err(|error| {
-            QueryError::from_cudf(
-                "nexus_query_engine.gpu_local_parquet_source_cache.device_memory",
-                "failed to inspect cached local Parquet device memory",
-                error,
-            )
-        })?;
-        let bytes =
-            info.memory_accounting.and_then(|accounting| accounting.device_allocated_bytes).ok_or_else(|| {
-                QueryError::new(
-                    crate::error::QueryErrorCode::Internal,
-                    "nexus_query_engine.gpu_local_parquet_source_cache.device_memory",
-                    "cached local Parquet memory accounting did not include device-allocated bytes",
-                )
-            })?;
-        Ok(bytes as u64)
-    }
-
-    pub(crate) fn checkout(
-        &self,
-        context: &ExecutionContext,
-        pin: GpuLocalParquetSourceCachePin,
-    ) -> Result<GpuResultHandle> {
-        let operation = "nexus_query_engine.gpu_local_parquet_source_cache.checkout";
-        let query_runtime = context.local_parquet_cache_query_runtime(&self.runtime, operation)?;
-        let frame = self.batch.frame().copy_into_runtime(&query_runtime).map_err(|error| {
-            QueryError::from_cudf(operation, "failed to re-anchor cached local Parquet source to current query", error)
-        })?;
-        let batch = GpuRecordBatch::new(frame, Arc::clone(self.schema())).map_err(|error| {
-            QueryError::from_cudf(operation, "failed to bind current-query local Parquet cache checkout", error)
-        })?;
-        Ok(GpuResultHandle {
-            batch,
-            runtime: query_runtime,
-            device_placement: context.device_placement(),
-            live_reservation: None,
-            source_cache_pin: Some(pin),
-            graph_residency: None,
         })
     }
 }
@@ -569,7 +418,7 @@ fn strip_hidden_datafusion_order_columns(frame: GpuDataFrame, schema: &SchemaRef
         return Ok(frame);
     }
 
-    let (raw, live_reservation, source_cache_pin, graph_residency) = frame.into_frame_and_residency();
+    let (raw, live_reservation, graph_residency) = frame.into_frame_and_residency();
     let frame_names = raw.column_names();
     let expected_names = schema.fields().iter().map(|field| field.name().as_str()).collect::<Vec<_>>();
     let visible_prefix_matches =
@@ -584,12 +433,12 @@ fn strip_hidden_datafusion_order_columns(frame: GpuDataFrame, schema: &SchemaRef
                 error,
             )
         })?;
-        let mut frame = GpuDataFrame::new_with_residency(selected, live_reservation, source_cache_pin);
+        let mut frame = GpuDataFrame::new_with_live_reservation(selected, live_reservation);
         frame.graph_residency = graph_residency;
         return Ok(frame);
     }
 
-    let mut frame = GpuDataFrame::new_with_residency(raw, live_reservation, source_cache_pin);
+    let mut frame = GpuDataFrame::new_with_live_reservation(raw, live_reservation);
     frame.graph_residency = graph_residency;
     Ok(frame)
 }

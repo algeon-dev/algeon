@@ -231,6 +231,7 @@ fn query_service_memory_failure_callback_ignores_budget_failures() {
                 soft_working_set_hint_bytes: Some(GRANT_BYTES),
                 estimate_quality: EstimateQuality::Modeled,
                 required_capabilities: Vec::new(),
+                attested_cugraph_graph_execution_scopes: Vec::new(),
             },
         ))
         .unwrap()
@@ -554,6 +555,7 @@ fn protection_retargets_on_health_close_and_unrelated_devices_stay_work_conservi
                 soft_working_set_hint_bytes: Some(floor),
                 estimate_quality: EstimateQuality::Modeled,
                 required_capabilities: Vec::new(),
+                attested_cugraph_graph_execution_scopes: Vec::new(),
             },
         ))
         .unwrap();

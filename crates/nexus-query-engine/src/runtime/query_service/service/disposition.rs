@@ -72,45 +72,14 @@ pub(crate) fn decide_capacity_disposition(
     device_ordinal: usize,
     domain: Option<&AttemptAllocationDomain>,
     cleanup_evidence: CleanupEvidence,
+    terminal_usage: Option<cudf::QueryMemoryDomainUsage>,
 ) -> (CapacityCommitDisposition, Option<cudf::QueryMemoryDomainUsage>) {
-    let decision = decide_capacity_commit(device_ordinal, domain, cleanup_evidence);
-    (decision.disposition, decision.usage)
-}
-
-#[cfg(test)]
-pub(crate) fn decide_capacity_disposition_with_terminal_usage_for_test(
-    device_ordinal: usize,
-    domain: Option<&AttemptAllocationDomain>,
-    cleanup_evidence: CleanupEvidence,
-    terminal_usage: cudf::QueryMemoryDomainUsage,
-) -> (CapacityCommitDisposition, Option<cudf::QueryMemoryDomainUsage>) {
-    let decision =
-        decide_capacity_commit_with_terminal_usage(device_ordinal, domain, cleanup_evidence, Some(terminal_usage));
+    let decision = decide_capacity_commit(device_ordinal, domain, cleanup_evidence, terminal_usage);
     (decision.disposition, decision.usage)
 }
 
 /// Produces the actual release decision used by finalization.
 pub(crate) fn decide_capacity_commit(
-    device_ordinal: usize,
-    domain: Option<&AttemptAllocationDomain>,
-    cleanup_evidence: CleanupEvidence,
-) -> CapacityCommitDecision {
-    decide_capacity_commit_with_terminal_usage(device_ordinal, domain, cleanup_evidence, None)
-}
-
-/// Test-only equivalent of [`decide_capacity_commit`] with an injected final
-/// domain sample. Production always samples the owned domain exactly here.
-#[cfg(test)]
-pub(crate) fn decide_capacity_commit_with_terminal_usage_for_test(
-    device_ordinal: usize,
-    domain: Option<&AttemptAllocationDomain>,
-    cleanup_evidence: CleanupEvidence,
-    terminal_usage: cudf::QueryMemoryDomainUsage,
-) -> CapacityCommitDecision {
-    decide_capacity_commit_with_terminal_usage(device_ordinal, domain, cleanup_evidence, Some(terminal_usage))
-}
-
-fn decide_capacity_commit_with_terminal_usage(
     device_ordinal: usize,
     domain: Option<&AttemptAllocationDomain>,
     cleanup_evidence: CleanupEvidence,

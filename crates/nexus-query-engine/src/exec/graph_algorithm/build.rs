@@ -98,12 +98,8 @@ where
             error
         }
     })?;
-    let result = attach_graph_budget_observation(
-        f(budget.runtime.as_ref(), &entered, &mut graph),
-        budget.token.as_ref(),
-        operation,
-    );
-    result
+
+    attach_graph_budget_observation(f(budget.runtime.as_ref(), &entered, &mut graph), budget.token.as_ref(), operation)
 }
 
 #[cfg(feature = "cugraph")]

@@ -520,8 +520,8 @@ fn start_scheduled_source_read(
 
 fn finish_scheduled_source_read(
     scheduled: ScheduledLocalParquetRead,
-    context: &ExecutionContext,
-    source: &LocalParquetSource,
+    _context: &ExecutionContext,
+    _source: &LocalParquetSource,
     reservations: &mut ReservationTracker,
     metrics: &mut QueryMetrics,
     attempt: usize,

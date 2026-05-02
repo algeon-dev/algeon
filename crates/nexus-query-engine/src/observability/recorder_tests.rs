@@ -86,13 +86,35 @@ fn concurrent_owner_finishers_wait_for_and_share_one_result_cell() {
             let barrier = Arc::clone(&barrier);
             std::thread::spawn(move || {
                 barrier.wait();
-                owner.finish_query(RuntimeTerminalOutcome::Succeeded).expect("enabled owner seals")
+                owner.finish_query(Some(RuntimeTerminalOutcome::Succeeded)).expect("enabled owner seals")
             })
         })
         .collect::<Vec<_>>();
     let snapshots = threads.into_iter().map(|thread| thread.join().unwrap()).collect::<Vec<_>>();
     assert!(snapshots.iter().all(|snapshot| snapshot.is_same_snapshot(&snapshots[0])));
     assert_eq!(snapshots[0].footer().terminal, Some(RuntimeTerminalOutcome::Succeeded));
+}
+
+#[test]
+fn coordinator_owned_finish_seals_without_an_attempt_terminal() {
+    let owner =
+        RuntimeObservationOwner::new("coordinator-owned-query", None, RuntimeObservationConfig::bounded(64, 16 * 1024));
+
+    let sealed = owner.finish_query(None).expect("enabled coordinator owner seals");
+
+    assert_eq!(sealed.footer().terminal, None);
+    assert!(sealed.events().iter().all(|event| {
+        !matches!(
+            event.payload,
+            RuntimeObservationPayload::QueryBoundary {
+                boundary: QueryBoundaryKind::Succeeded
+                    | QueryBoundaryKind::Failed
+                    | QueryBoundaryKind::Cancelled
+                    | QueryBoundaryKind::Dropped
+                    | QueryBoundaryKind::Panicked,
+            }
+        )
+    }));
 }
 
 #[test]
@@ -112,7 +134,8 @@ fn non_reentrant_finisher_waits_for_observer_delivery() {
     });
 
     let primary_owner = owner.clone();
-    let primary = std::thread::spawn(move || primary_owner.finish_query(RuntimeTerminalOutcome::Succeeded).unwrap());
+    let primary =
+        std::thread::spawn(move || primary_owner.finish_query(Some(RuntimeTerminalOutcome::Succeeded)).unwrap());
     entered_rx.recv().expect("blocking observer entered delivery");
     assert!(matches!(
         &*owner.lock_lifecycle(),
@@ -124,7 +147,7 @@ fn non_reentrant_finisher_waits_for_observer_delivery() {
     let secondary_owner = owner.clone();
     let secondary_thread = std::thread::spawn(move || {
         started_tx.send(()).expect("test observes second finisher start");
-        let snapshot = secondary_owner.finish_query(RuntimeTerminalOutcome::Succeeded).unwrap();
+        let snapshot = secondary_owner.finish_query(Some(RuntimeTerminalOutcome::Succeeded)).unwrap();
         completed_tx.send(snapshot).expect("test receives second finisher result");
     });
     started_rx.recv().expect("second finisher started");
@@ -164,7 +187,8 @@ fn late_observer_registration_joins_the_delivery_fence() {
     });
 
     let primary_owner = owner.clone();
-    let primary = std::thread::spawn(move || primary_owner.finish_query(RuntimeTerminalOutcome::Succeeded).unwrap());
+    let primary =
+        std::thread::spawn(move || primary_owner.finish_query(Some(RuntimeTerminalOutcome::Succeeded)).unwrap());
     primary_entered_rx.recv().expect("primary observer entered delivery");
 
     let late_gate = Arc::new((Mutex::new(false), Condvar::new()));
@@ -191,7 +215,7 @@ fn late_observer_registration_joins_the_delivery_fence() {
     let secondary = std::thread::spawn(move || {
         started_tx.send(()).expect("test observes second finisher start");
         completed_tx
-            .send(secondary_owner.finish_query(RuntimeTerminalOutcome::Succeeded).unwrap())
+            .send(secondary_owner.finish_query(Some(RuntimeTerminalOutcome::Succeeded)).unwrap())
             .expect("test receives second finisher result");
     });
     started_rx.recv().expect("second finisher started");
@@ -231,12 +255,12 @@ fn seal_observer_can_reenter_owner_finish_after_result_publication() {
     owner.register_seal_observer(move |observed| {
         let in_delivery = in_runtime_observation_delivery();
         let reentered = callback_owner
-            .finish_query(RuntimeTerminalOutcome::Succeeded)
+            .finish_query(Some(RuntimeTerminalOutcome::Succeeded))
             .expect("reentrant finisher receives the published result");
         callback_tx.send((in_delivery, reentered.is_same_snapshot(&observed))).unwrap();
     });
 
-    let finisher = std::thread::spawn(move || owner.finish_query(RuntimeTerminalOutcome::Succeeded).unwrap());
+    let finisher = std::thread::spawn(move || owner.finish_query(Some(RuntimeTerminalOutcome::Succeeded)).unwrap());
     assert_eq!(callback_rx.recv_timeout(Duration::from_secs(2)).expect("observer must not deadlock"), (true, true));
     let snapshot = finisher.join().unwrap();
     assert_eq!(snapshot.footer().terminal, Some(RuntimeTerminalOutcome::Succeeded));
@@ -255,7 +279,7 @@ fn seal_observer_delivery_context_is_scoped_to_the_callback() {
         context_tx.send(in_runtime_observation_delivery()).expect("test receives delivery context");
     });
 
-    owner.finish_query(RuntimeTerminalOutcome::Succeeded).expect("owner seals");
+    owner.finish_query(Some(RuntimeTerminalOutcome::Succeeded)).expect("owner seals");
     assert!(context_rx.recv().expect("observer ran"));
     assert!(!in_runtime_observation_delivery());
 }
@@ -275,7 +299,7 @@ fn late_delivery_observer_panic_is_isolated_before_completion() {
     });
 
     let snapshot =
-        owner.finish_query(RuntimeTerminalOutcome::Succeeded).expect("owner completes after late observer panic");
+        owner.finish_query(Some(RuntimeTerminalOutcome::Succeeded)).expect("owner completes after late observer panic");
     registered_rx.recv().expect("initial observer registered a late observer");
     assert_eq!(snapshot.footer().terminal, Some(RuntimeTerminalOutcome::Succeeded));
     assert!(matches!(&*owner.lock_lifecycle(), RuntimeObservationOwnerLifecycleState::Sealed(Some(_))));
@@ -319,7 +343,9 @@ fn clock_panic_publishes_degraded_panicked_result_and_wakes_waiters() {
     let owner = RuntimeObservationOwner::from_session(session);
     let primary_owner = owner.clone();
     let primary = std::thread::spawn(move || {
-        std::panic::catch_unwind(AssertUnwindSafe(|| primary_owner.finish_query(RuntimeTerminalOutcome::Succeeded)))
+        std::panic::catch_unwind(AssertUnwindSafe(|| {
+            primary_owner.finish_query(Some(RuntimeTerminalOutcome::Succeeded))
+        }))
     });
     clock.entered.wait();
 
@@ -327,7 +353,7 @@ fn clock_panic_publishes_degraded_panicked_result_and_wakes_waiters() {
         .map(|_| {
             let owner = owner.clone();
             std::thread::spawn(move || {
-                owner.finish_query(RuntimeTerminalOutcome::Succeeded).expect("waiter receives recovered seal")
+                owner.finish_query(Some(RuntimeTerminalOutcome::Succeeded)).expect("waiter receives recovered seal")
             })
         })
         .collect::<Vec<_>>();
@@ -449,7 +475,7 @@ fn seal_observers_receive_snapshot_identity_and_isolate_panics() {
     owner.register_seal_observer(move |snapshot| delivered_for_observer.lock().unwrap().push(snapshot));
     owner.register_seal_observer(|_| panic!("observer failure must be isolated"));
 
-    let sealed = owner.finish_query(RuntimeTerminalOutcome::Succeeded).unwrap();
+    let sealed = owner.finish_query(Some(RuntimeTerminalOutcome::Succeeded)).unwrap();
     let delivered = delivered.lock().unwrap();
     assert_eq!(delivered.len(), 1);
     assert!(delivered[0].is_same_snapshot(&sealed));

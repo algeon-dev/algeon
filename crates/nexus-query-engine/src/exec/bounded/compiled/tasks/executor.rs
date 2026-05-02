@@ -236,7 +236,7 @@ impl CompiledTaskExecutor for CompiledGpuTaskExecutor<'_> {
     }
 
     fn before_scheduling_cycle(&mut self) -> Result<CompiledSchedulingCycle> {
-        Ok(CompiledSchedulingCycle::default())
+        Ok(CompiledSchedulingCycle)
     }
 
     fn live_reserved_bytes(&self) -> Option<u64> {

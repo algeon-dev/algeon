@@ -30,6 +30,16 @@ extern crate self as nexus_query_engine;
 #[path = "../tests/native_execution_tests.rs"]
 mod native_execution_integration_tests;
 
+// These focused contract sources exercise crate-private reservation and frame
+// ownership hooks.  They remain outside the production facade while compiling
+// with the engine's unit-test crate.
+#[cfg(test)]
+#[path = "../tests/native_contract_tests/reservation_tracker_contracts.rs"]
+mod reservation_tracker_contracts;
+#[cfg(test)]
+#[path = "../tests/native_contract_tests/yielded_frame.rs"]
+mod yielded_frame;
+
 #[cfg(test)]
 fn projection_outputs(
     expressions: Vec<expr::Expr>,
@@ -50,12 +60,14 @@ pub mod attempt;
 pub mod capability;
 pub mod chunk;
 pub mod contract_report;
+mod correlation;
 /// Arrow-to-cuDF datatype support and cast policy helpers.
 pub mod datatypes;
 /// DataFusion-free dynamic-filter producer/consumer route IR.
 pub mod dynamic_filter;
 pub mod error;
 pub mod exec;
+mod execution_contracts;
 /// DataFusion-free expression IR used by native query plans.
 pub mod expr;
 /// Approximate cuGraph memory pricing outside strict bounded admission.

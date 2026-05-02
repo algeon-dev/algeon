@@ -1,6 +1,7 @@
 use nexus_query_engine::admission::QueryPlanCapabilityProof;
 
 use super::*;
+use crate::native_exec::NexusNativeComposedGpuProducerExec;
 
 pub(super) fn edge_execution_config(
     plan: &dyn ExecutionPlan,
@@ -46,6 +47,10 @@ pub(super) fn cugraph_execution_config_for_task_context(
 pub(super) fn cugraph_execution_config_with_graph_aware_ticket(
     spec: &CugraphAlgorithmSpec,
     edge_source: &dyn ExecutionPlan,
+    predicate_sources: &[Arc<dyn ExecutionPlan>],
+    predicate_row_upper_bounds: &[Option<u64>],
+    projection: Option<&Vec<usize>>,
+    limit: Option<usize>,
     edge_normalize_inserted: bool,
     execution_config: NexusNativeExecutionConfig,
 ) -> Result<NexusNativeExecutionConfig> {
@@ -54,7 +59,25 @@ pub(super) fn cugraph_execution_config_with_graph_aware_ticket(
     } else {
         cugraph_graph_model_ask_bytes(spec, edge_source, edge_normalize_inserted, &execution_config)?
     };
-    let fragment_proofs = vec![QueryPlanCapabilityProof::for_cugraph_graph_execution()];
+    // A cuGraph attempt executes its graph operation and may also execute
+    // lowered native edge/predicate fragments under the same ticket. Keep one
+    // aggregate proof for that whole invocation so the engine can verify each
+    // fragment at execution time without treating the graph proof as blanket
+    // authorization for a different native plan.
+    let graph_execution_proof = cugraph_execution_capability_proof(
+        spec,
+        edge_source.schema(),
+        predicate_sources.iter().map(|source| source.schema()).collect(),
+        predicate_row_upper_bounds,
+        projection,
+        limit,
+        edge_normalize_inserted,
+    )?;
+    let mut fragment_proofs = vec![graph_execution_proof];
+    collect_native_fragment_capability_proofs(edge_source, &mut fragment_proofs);
+    for predicate_source in predicate_sources {
+        collect_native_fragment_capability_proofs(predicate_source.as_ref(), &mut fragment_proofs);
+    }
     execution_config.with_graph_aware_plan_query_admission_ticket(graph_model_ask, fragment_proofs).map_err(|error| {
         DataFusionError::from(Error::from_native(
             "datafusion_nexus.cugraph_sql.graph_ticket_ask",
@@ -62,6 +85,32 @@ pub(super) fn cugraph_execution_config_with_graph_aware_ticket(
             error,
         ))
     })
+}
+
+fn collect_native_fragment_capability_proofs(plan: &dyn ExecutionPlan, proofs: &mut Vec<QueryPlanCapabilityProof>) {
+    for child in plan.children() {
+        collect_native_fragment_capability_proofs(child.as_ref(), proofs);
+    }
+
+    let native_plan = if let Some(native) = as_nexus_native_exec(plan) {
+        Some(native.native_plan())
+    } else if let Some(native) = as_nexus_native_composed_exec(plan) {
+        Some(native.native_plan())
+    } else if let Some(native) = plan.downcast_ref::<NexusNativeGpuProducerExec>() {
+        Some(native.native_plan())
+    } else {
+        plan.downcast_ref::<NexusNativeComposedGpuProducerExec>().map(NexusNativeComposedGpuProducerExec::native_plan)
+    };
+
+    // `execute_edge_source_to_gpu` converts every native edge fragment to a
+    // GPU-resident sink before submitting it to the engine. Derive the proof
+    // from that exact execution shape: a host-sink proof is intentionally not
+    // broad enough to authorize the additional GPU-output contract.
+    if let Some(native_plan) = native_plan
+        && let Some(proof) = QueryPlanCapabilityProof::for_query_plan(&native_plan.clone_with_gpu_resident_sink())
+    {
+        proofs.push(proof);
+    }
 }
 
 pub(super) fn cugraph_graph_model_ask_bytes(

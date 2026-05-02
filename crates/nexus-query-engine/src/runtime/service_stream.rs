@@ -1,28 +1,35 @@
 //! Service-level CUDA stream pooling for native worker tasks.
 
+#[cfg(test)]
+use std::sync::{Barrier, mpsc};
 use std::{
-    any::Any,
     collections::HashMap,
-    panic::{AssertUnwindSafe, catch_unwind},
     sync::{
         Arc, Condvar, Mutex, OnceLock, Weak,
         atomic::{AtomicBool, AtomicU64, Ordering},
-        mpsc,
     },
     thread,
     time::{Duration, Instant},
 };
-#[cfg(test)]
-use std::{cell::Cell, sync::Barrier};
 
 #[cfg(test)]
 use super::DeviceFacts;
+pub(crate) use super::stream_cleanup::StreamCleanupOutcome;
+#[cfg(test)]
+pub(crate) use super::stream_cleanup::block_stream_cleanup_thread_for_test;
+#[cfg(test)]
+use super::stream_cleanup::{
+    STREAM_CLEANUP_SUPERVISOR_BUILD_OPERATION, STREAM_CLEANUP_SUPERVISOR_JOINED, STREAM_CLEANUP_SUPERVISOR_NOT_JOINED,
+    StreamCleanupEnqueueError, StreamCleanupSupervisorTerminal, fail_next_cleanup_supervisor_spawn_for_test,
+    force_cleanup_supervisor_unexpected_exit_for_test, observe_cleanup_supervisor_join_waiter_for_test,
+    observe_cleanup_supervisor_shutdown_send_failure_for_test, panic_cleanup_supervisor_after_outcome_for_test,
+    pause_cleanup_supervisor_before_worker_return_for_test, probe_cleanup_job_for_test,
+    stream_cleanup_thread_id_for_test, wait_for_cleanup_supervisor_worker_finished_for_test,
+};
 use super::{
     ExecutionCancellation, ExecutionContext,
     context::{AttemptAuxiliaryPermit, QueryServiceResourceEpoch},
-    process_exit::{
-        ProcessExitPhase, ProcessExitRegistration, ProcessExitShutdown, register_cuda_process_exit_shutdown,
-    },
+    stream_cleanup::{ServiceStreamTestProbeSlot, StreamCleanupCompletion, StreamCleanupSupervisor},
 };
 use crate::{
     error::{QueryError, QueryErrorCode, Result},
@@ -42,13 +49,7 @@ use crate::{
 pub const DEFAULT_SERVICE_STREAM_POOL_SIZE: usize = 64;
 const STREAM_ACQUIRE_CANCELLATION_POLL_INTERVAL: Duration = Duration::from_millis(10);
 const STREAM_CLEANUP_SUPERVISOR_POLL_INTERVAL: Duration = Duration::from_millis(10);
-const STREAM_CLEANUP_SUPERVISOR_BUILD_OPERATION: &str = "nexus_query_engine.service_stream_pool.build";
 static NEXT_STREAM_POOL_ID: AtomicU64 = AtomicU64::new(1);
-
-#[cfg(test)]
-thread_local! {
-    static FAIL_NEXT_CLEANUP_SUPERVISOR_SPAWN: Cell<bool> = const { Cell::new(false) };
-}
 
 /// Returns the default service stream pool size for a CUDA device.
 ///
@@ -92,20 +93,23 @@ pub(super) fn nonzero_sm_count(count: u32) -> Option<usize> {
 }
 
 #[derive(Debug)]
-struct ServiceStreamPoolInner {
-    id: u64,
-    device: cudf::DeviceId,
-    pool_size: usize,
-    root_capacity: usize,
-    aux_capacity: usize,
-    state: Mutex<ServiceStreamPoolState>,
-    available: Condvar,
-    state_changed: Condvar,
-    next_lease_id: AtomicU64,
-    cleanup_supervisor: Arc<StreamCleanupSupervisor>,
-    closed: AtomicBool,
-    process_exit_started: AtomicBool,
+pub(super) struct ServiceStreamPoolInner {
+    pub(super) id: u64,
+    pub(super) device: cudf::DeviceId,
+    pub(super) pool_size: usize,
+    pub(super) root_capacity: usize,
+    pub(super) aux_capacity: usize,
+    pub(super) state: Mutex<ServiceStreamPoolState>,
+    pub(super) available: Condvar,
+    pub(super) state_changed: Condvar,
+    pub(super) next_lease_id: AtomicU64,
+    pub(super) cleanup_probe: ServiceStreamTestProbeSlot,
+    pub(super) cleanup_supervisor: Arc<StreamCleanupSupervisor>,
+    pub(super) closed: AtomicBool,
+    pub(super) process_exit_started: AtomicBool,
 }
+
+type ServiceStreamPoolRegistry = HashMap<(usize, usize), Weak<ServiceStreamPoolInner>>;
 
 /// Resource class for bounded stream-pool admission.
 ///
@@ -133,621 +137,15 @@ impl StreamPermitClass {
 }
 
 #[derive(Debug, Default)]
-struct ServiceStreamPoolState {
-    idle: Vec<Arc<cudf::Runtime>>,
-    created: usize,
-    root_outstanding: usize,
-    aux_outstanding: usize,
-    waiting_acquires: usize,
-    pending_cleanups: usize,
-    active_cleanups: usize,
-    synchronization_failures: u64,
-    #[cfg(test)]
-    fail_next_synchronization: bool,
-    #[cfg(test)]
-    force_next_cleanup_enqueue_fallback: bool,
-}
-
-type StreamCleanupCallback = Box<dyn FnOnce(StreamCleanupOutcome) + Send>;
-type StreamCleanupTailCallback = Box<dyn FnOnce() + Send>;
-
-/// Typed evidence handed to the pre-quiescence cleanup callback (P2.7).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum StreamCleanupOutcome {
-    Completed,
-    StreamSynchronizationFailed,
-    CallbackAbandoned,
-}
-
-impl StreamCleanupOutcome {
-    fn from_synchronized(synchronized: bool) -> Self {
-        if synchronized { Self::Completed } else { Self::StreamSynchronizationFailed }
-    }
-}
-
-#[derive(Default)]
-struct StreamCleanupCompletion {
-    before_quiescence: Option<StreamCleanupCallback>,
-    after_quiescence: Option<StreamCleanupTailCallback>,
-}
-
-impl StreamCleanupCompletion {
-    fn new(
-        before_quiescence: impl FnOnce(StreamCleanupOutcome) + Send + 'static,
-        after_quiescence: impl FnOnce() + Send + 'static,
-    ) -> Self {
-        Self {
-            before_quiescence: Some(Box::new(before_quiescence)),
-            after_quiescence: Some(Box::new(after_quiescence)),
-        }
-    }
-
-    fn run_before_quiescence(&mut self, outcome: StreamCleanupOutcome) {
-        if let Some(completion) = self.before_quiescence.take() {
-            completion(outcome);
-        }
-    }
-
-    fn run_after_quiescence(&mut self) {
-        if let Some(completion) = self.after_quiescence.take() {
-            completion();
-        }
-    }
-
-    /// The receiver can discard queued cleanup jobs when a prior job panics.
-    /// Complete every remaining handoff while unwinding so that the typed
-    /// resource and observation permits cannot be stranded. Callback panics
-    /// are intentionally suppressed here: the originating supervisor failure
-    /// remains the fail-closed result and a second unwind from `Drop` would
-    /// abort the process.
-    fn run_remaining_after_abandonment(&mut self) {
-        if let Some(completion) = self.before_quiescence.take() {
-            let _ = catch_unwind(AssertUnwindSafe(|| completion(StreamCleanupOutcome::CallbackAbandoned)));
-        }
-        if let Some(completion) = self.after_quiescence.take() {
-            let _ = catch_unwind(AssertUnwindSafe(completion));
-        }
-    }
-}
-
-impl Drop for StreamCleanupCompletion {
-    fn drop(&mut self) {
-        self.run_remaining_after_abandonment();
-    }
-}
-
-/// The pool-owned receiver thread which serializes CUDA stream cleanup.
-///
-/// This is deliberately separate from external completion delivery. Its only
-/// responsibilities are synchronization, CUDA runtime destruction, and pool
-/// accounting. A clean shutdown is not inferred from stream counters: the
-/// owner must first request shutdown, observe this thread's terminal state,
-/// and reclaim its join handle.
-struct StreamCleanupSupervisor {
-    device: cudf::DeviceId,
-    pool_id: u64,
-    sender: mpsc::Sender<StreamCleanupJob>,
-    submission_gate: Mutex<()>,
-    control: Arc<StreamCleanupSupervisorControl>,
-    join: Mutex<Option<thread::JoinHandle<StreamCleanupWorkerOutcome>>>,
-    join_disposition: AtomicU64,
-    process_exit_registration: Mutex<Option<ProcessExitRegistration>>,
-}
-
-enum StreamCleanupEnqueueError {
-    ProcessExit(StreamCleanupJob),
-    SupervisorStopped(StreamCleanupJob),
-}
-
-/// A process-exit owner deliberately retains only the cleanup-thread control
-/// plane. It keeps no CUDA runtime or pool state alive, but it can upgrade a
-/// still-live pool to close it before joining the worker. If the final pool
-/// reference is released by the worker itself, the supervisor remains
-/// registered long enough for the process hook to join that last thread.
-struct ProcessExitStreamPool {
-    inner: Weak<ServiceStreamPoolInner>,
-    supervisor: Arc<StreamCleanupSupervisor>,
-}
-
-const STREAM_CLEANUP_SUPERVISOR_NOT_JOINED: u64 = 0;
-const STREAM_CLEANUP_SUPERVISOR_JOINED: u64 = 1;
-const STREAM_CLEANUP_SUPERVISOR_JOIN_FAILED: u64 = 2;
-
-#[derive(Debug, Default)]
-struct StreamCleanupSupervisorControl {
-    state: Mutex<StreamCleanupSupervisorState>,
-    changed: Condvar,
-    #[cfg(test)]
-    panic_after_outcome: AtomicBool,
-    #[cfg(test)]
-    worker_outcome_pause: Mutex<Option<StreamCleanupWorkerOutcomePause>>,
-    #[cfg(test)]
-    shutdown_send_failed: Mutex<Option<mpsc::Sender<()>>>,
-    #[cfg(test)]
-    join_waiter: Mutex<Option<mpsc::Sender<()>>>,
-}
-
-#[derive(Debug, Default)]
-struct StreamCleanupSupervisorState {
-    shutdown_requested: bool,
-    joiner_active: bool,
-    terminal: Option<StreamCleanupSupervisorTerminal>,
-}
-
-#[derive(Debug, Clone)]
-enum StreamCleanupWorkerOutcome {
-    Clean,
-    Panicked { panic_message: String },
-    Unexpected { detail: &'static str },
-}
-
-#[derive(Debug, Clone)]
-enum StreamCleanupSupervisorTerminal {
-    Clean,
-    Panicked { stage: &'static str, panic_message: String },
-    Unexpected { detail: &'static str },
-}
-
-#[cfg(test)]
-#[derive(Debug, Clone)]
-struct StreamCleanupWorkerOutcomePause {
-    arrived: Arc<Barrier>,
-    release: Arc<Barrier>,
-}
-
-enum StreamCleanupExecutorExit {
-    Shutdown,
-    ReceiverDisconnected,
-    #[cfg(test)]
-    Unexpected(&'static str),
-}
-
-impl std::fmt::Debug for StreamCleanupSupervisor {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("StreamCleanupSupervisor")
-            .field("device_ordinal", &self.device.ordinal())
-            .field("pool_id", &self.pool_id)
-            .field("join_disposition", &self.join_disposition.load(Ordering::Acquire))
-            .finish_non_exhaustive()
-    }
-}
-
-impl StreamCleanupSupervisor {
-    fn start(device: cudf::DeviceId, pool_id: u64) -> Result<Arc<Self>> {
-        let (sender, receiver) = mpsc::channel();
-        let control = Arc::new(StreamCleanupSupervisorControl::default());
-        let supervisor = Arc::new(Self {
-            device,
-            pool_id,
-            sender,
-            submission_gate: Mutex::new(()),
-            control,
-            join: Mutex::new(None),
-            join_disposition: AtomicU64::new(STREAM_CLEANUP_SUPERVISOR_NOT_JOINED),
-            process_exit_registration: Mutex::new(None),
-        });
-        let thread_control = Arc::clone(&supervisor.control);
-        let worker_supervisor = Arc::clone(&supervisor);
-        #[cfg(test)]
-        let inject_spawn_failure = FAIL_NEXT_CLEANUP_SUPERVISOR_SPAWN.with(|failure| failure.replace(false));
-        #[cfg(not(test))]
-        let inject_spawn_failure = false;
-        let join = if inject_spawn_failure {
-            Err(std::io::Error::other("injected service stream cleanup supervisor spawn failure"))
-        } else {
-            thread::Builder::new().name(format!("nexus-stream-cleanup-d{}-p{pool_id}", device.ordinal())).spawn(
-                move || {
-                    let outcome = run_stream_cleanup_worker(receiver, &thread_control);
-                    worker_supervisor.unregister_process_exit();
-                    outcome
-                },
-            )
-        }
-        .map_err(|error| {
-            QueryError::new(
-                QueryErrorCode::Internal,
-                STREAM_CLEANUP_SUPERVISOR_BUILD_OPERATION,
-                "failed to start the service stream cleanup supervisor",
-            )
-            .with_fact("device_ordinal", device.ordinal())
-            .with_fact("stream_pool_id", pool_id)
-            .with_fact("reason", "stream_cleanup_supervisor_spawn_failed")
-            .with_source(error)
-        })?;
-
-        *supervisor.join.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(join);
-        Ok(supervisor)
-    }
-
-    fn register_process_exit(self: &Arc<Self>, inner: Weak<ServiceStreamPoolInner>) {
-        let shutdown: Arc<dyn ProcessExitShutdown> =
-            Arc::new(ProcessExitStreamPool { inner, supervisor: Arc::clone(self) });
-        let registration = register_cuda_process_exit_shutdown(shutdown);
-        let mut slot = self.process_exit_registration.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        *slot = registration;
-    }
-
-    fn unregister_process_exit(&self) {
-        let registration =
-            self.process_exit_registration.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
-        if let Some(registration) = registration {
-            registration.unregister();
-        }
-    }
-
-    #[cfg(test)]
-    fn enqueue(&self, job: StreamCleanupJob) -> std::result::Result<(), mpsc::SendError<StreamCleanupJob>> {
-        let _submission = self.submission_gate.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        let state = self.control.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        if state.shutdown_requested || state.terminal.is_some() {
-            return Err(mpsc::SendError(job));
-        }
-        // A sender failure only says that the receiver has gone away. The
-        // worker's joined outcome remains the sole source of terminal state.
-        self.sender.send(job)
-    }
-
-    fn enqueue_before_process_exit(
-        &self,
-        job: StreamCleanupJob,
-        process_exit_started: &AtomicBool,
-    ) -> std::result::Result<(), StreamCleanupEnqueueError> {
-        let _submission = self.submission_gate.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        if process_exit_started.load(Ordering::Acquire) {
-            return Err(StreamCleanupEnqueueError::ProcessExit(job));
-        }
-        let state = self.control.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        if state.shutdown_requested || state.terminal.is_some() {
-            return Err(StreamCleanupEnqueueError::SupervisorStopped(job));
-        }
-        self.sender.send(job).map_err(|error| StreamCleanupEnqueueError::SupervisorStopped(error.0))
-    }
-
-    fn request_shutdown(&self, deadline: Instant, operation: &'static str) -> Result<()> {
-        let _submission = self.lock_submission_until(deadline, operation)?;
-        let mut state = self.lock_control_until(deadline, operation)?;
-        if state.shutdown_requested || state.terminal.is_some() {
-            return Ok(());
-        }
-        state.shutdown_requested = true;
-        let send_failed = self.sender.send(StreamCleanupJob::Shutdown).is_err();
-        drop(state);
-        if send_failed {
-            #[cfg(test)]
-            self.control.notify_shutdown_send_failed_for_test();
-        }
-        Ok(())
-    }
-
-    fn request_shutdown_from_drop(&self) {
-        let _submission = self.submission_gate.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        let mut state = self.control.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        if state.shutdown_requested || state.terminal.is_some() {
-            return;
-        }
-        state.shutdown_requested = true;
-        let _ = self.sender.send(StreamCleanupJob::Shutdown);
-    }
-
-    fn ensure_not_failed(&self, operation: &'static str) -> Result<()> {
-        let state = self
-            .control
-            .state
-            .lock()
-            .map_err(|_| stream_cleanup_supervisor_state_poisoned(operation, self.device, self.pool_id))?;
-        match state.terminal.as_ref() {
-            None => Ok(()),
-            Some(terminal) => self.terminal_result(operation, terminal),
-        }
-    }
-
-    /// Commit an already-finished worker before an idle/quiescence caller
-    /// reports success. A healthy worker remains untouched: only a finished
-    /// handle or a join already in progress can enter the terminal path.
-    fn finalize_if_finished_until(&self, deadline: Instant, operation: &'static str) -> Result<()> {
-        let mut state = self.lock_control_until(deadline, operation)?;
-        loop {
-            if let Some(terminal) = state.terminal.as_ref() {
-                return self.terminal_result(operation, terminal);
-            }
-            if state.joiner_active {
-                let remaining = deadline.saturating_duration_since(Instant::now());
-                if remaining.is_zero() {
-                    return Err(stream_cleanup_supervisor_join_timeout(operation, self.device, self.pool_id));
-                }
-                let (next, timeout) = self
-                    .control
-                    .changed
-                    .wait_timeout(state, remaining)
-                    .map_err(|_| stream_cleanup_supervisor_state_poisoned(operation, self.device, self.pool_id))?;
-                state = next;
-                if timeout.timed_out() && state.terminal.is_none() {
-                    return Err(stream_cleanup_supervisor_join_timeout(operation, self.device, self.pool_id));
-                }
-                continue;
-            }
-
-            // Holding control state while we inspect the handle prevents a
-            // competing caller from electing itself between the finished
-            // observation and this caller's election. The joiner never holds
-            // the join mutex while acquiring control state.
-            let finished = {
-                let join = self.lock_join_until(deadline, operation)?;
-                join.as_ref().map(thread::JoinHandle::is_finished).ok_or_else(|| {
-                    QueryError::new(
-                        QueryErrorCode::Internal,
-                        operation,
-                        "service stream cleanup supervisor join handle was unavailable before terminal commitment",
-                    )
-                    .with_fact("device_ordinal", self.device.ordinal())
-                    .with_fact("stream_pool_id", self.pool_id)
-                    .with_fact("reason", "stream_cleanup_supervisor_join_unavailable")
-                })?
-            };
-            if !finished {
-                return Ok(());
-            }
-
-            state.joiner_active = true;
-            drop(state);
-            return self.join_and_commit_terminal_until(deadline, operation);
-        }
-    }
-
-    /// Elect one caller to join the worker and commit its terminal state. A
-    /// worker outcome is not observable until the receiver and every queued
-    /// cleanup job have been dropped and the elected caller has joined it.
-    fn wait_for_exit_until(&self, deadline: Instant, operation: &'static str) -> Result<()> {
-        let mut state = self.lock_control_until(deadline, operation)?;
-        loop {
-            if let Some(terminal) = state.terminal.as_ref() {
-                return self.terminal_result(operation, terminal);
-            }
-            if !state.joiner_active {
-                state.joiner_active = true;
-                drop(state);
-                return self.join_and_commit_terminal_until(deadline, operation);
-            }
-
-            #[cfg(test)]
-            self.control.notify_join_waiter_for_test();
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
-                return Err(stream_cleanup_supervisor_join_timeout(operation, self.device, self.pool_id));
-            }
-            let (next, timeout) = self
-                .control
-                .changed
-                .wait_timeout(state, remaining)
-                .map_err(|_| stream_cleanup_supervisor_state_poisoned(operation, self.device, self.pool_id))?;
-            state = next;
-            if timeout.timed_out() && state.terminal.is_none() {
-                return Err(stream_cleanup_supervisor_join_timeout(operation, self.device, self.pool_id));
-            }
-        }
-    }
-
-    fn join_and_commit_terminal_until(&self, deadline: Instant, operation: &'static str) -> Result<()> {
-        let joined = self.join_worker_until(deadline, operation);
-        let joined = match joined {
-            Ok(joined) => joined,
-            Err(error) => {
-                self.relinquish_joiner();
-                return Err(error);
-            },
-        };
-
-        // Joining establishes the happens-before edge from receiver teardown,
-        // in-flight recovery, and queued-job recovery to terminal commitment.
-        let mut state = self.control.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        debug_assert!(state.terminal.is_none(), "only the elected joiner may commit a cleanup terminal state");
-        let terminal = match joined {
-            Ok(outcome) => Self::terminal_from_worker_outcome(outcome, state.shutdown_requested),
-            Err(panic) => StreamCleanupSupervisorTerminal::Panicked {
-                stage: "thread_join",
-                panic_message: stream_cleanup_supervisor_panic_message(panic.as_ref()),
-            },
-        };
-        state.terminal = Some(terminal.clone());
-        state.joiner_active = false;
-        self.control.changed.notify_all();
-        drop(state);
-        self.terminal_result(operation, &terminal)
-    }
-
-    fn join_worker_until(
-        &self,
-        deadline: Instant,
-        operation: &'static str,
-    ) -> Result<std::thread::Result<StreamCleanupWorkerOutcome>> {
-        let mut join = self.lock_join_until(deadline, operation)?;
-        if let Some(handle) = join.as_ref() {
-            while !handle.is_finished() {
-                if Instant::now() >= deadline {
-                    return Err(stream_cleanup_supervisor_join_timeout(operation, self.device, self.pool_id));
-                }
-                thread::yield_now();
-            }
-        }
-        let handle = join.take().ok_or_else(|| {
-            QueryError::new(
-                QueryErrorCode::Internal,
-                operation,
-                "service stream cleanup supervisor join handle was unavailable before terminal commitment",
-            )
-            .with_fact("device_ordinal", self.device.ordinal())
-            .with_fact("stream_pool_id", self.pool_id)
-            .with_fact("reason", "stream_cleanup_supervisor_join_unavailable")
-        })?;
-        let joined = handle.join();
-        self.join_disposition.store(
-            if joined.is_ok() { STREAM_CLEANUP_SUPERVISOR_JOINED } else { STREAM_CLEANUP_SUPERVISOR_JOIN_FAILED },
-            Ordering::Release,
-        );
-        self.unregister_process_exit();
-        Ok(joined)
-    }
-
-    fn join_for_process_exit(&self) {
-        self.request_shutdown_from_drop();
-        let mut join = self.join.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        let Some(handle) = join.take() else {
-            return;
-        };
-        if handle.thread().id() == thread::current().id() {
-            // The worker will finish its own current cleanup and then drop
-            // this handle while unwinding out of its entry point. Joining
-            // oneself would deadlock and cannot add a happens-before edge.
-            *join = Some(handle);
-            return;
-        }
-        let joined = handle.join();
-        self.join_disposition.store(
-            if joined.is_ok() { STREAM_CLEANUP_SUPERVISOR_JOINED } else { STREAM_CLEANUP_SUPERVISOR_JOIN_FAILED },
-            Ordering::Release,
-        );
-        drop(join);
-        self.unregister_process_exit();
-    }
-
-    fn relinquish_joiner(&self) {
-        let mut state = self.control.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        if state.terminal.is_none() {
-            state.joiner_active = false;
-            self.control.changed.notify_all();
-        }
-    }
-
-    fn terminal_from_worker_outcome(
-        outcome: StreamCleanupWorkerOutcome,
-        shutdown_requested: bool,
-    ) -> StreamCleanupSupervisorTerminal {
-        match outcome {
-            StreamCleanupWorkerOutcome::Clean if shutdown_requested => StreamCleanupSupervisorTerminal::Clean,
-            StreamCleanupWorkerOutcome::Clean => StreamCleanupSupervisorTerminal::Unexpected {
-                detail: "cleanup supervisor exited before explicit shutdown",
-            },
-            StreamCleanupWorkerOutcome::Panicked { panic_message } => {
-                StreamCleanupSupervisorTerminal::Panicked { stage: "cleanup_executor", panic_message }
-            },
-            StreamCleanupWorkerOutcome::Unexpected { detail } => StreamCleanupSupervisorTerminal::Unexpected { detail },
-        }
-    }
-
-    fn terminal_result(&self, operation: &'static str, terminal: &StreamCleanupSupervisorTerminal) -> Result<()> {
-        match terminal {
-            StreamCleanupSupervisorTerminal::Clean => Ok(()),
-            StreamCleanupSupervisorTerminal::Panicked { stage, panic_message } => {
-                Err(stream_cleanup_supervisor_panic_error(operation, self.device, self.pool_id, stage, panic_message))
-            },
-            StreamCleanupSupervisorTerminal::Unexpected { detail } => {
-                Err(stream_cleanup_supervisor_unexpected_exit_error(operation, self.device, self.pool_id, detail))
-            },
-        }
-    }
-
-    fn lock_submission_until(
-        &self,
-        deadline: Instant,
-        operation: &'static str,
-    ) -> Result<std::sync::MutexGuard<'_, ()>> {
-        loop {
-            match self.submission_gate.try_lock() {
-                Ok(gate) => return Ok(gate),
-                Err(std::sync::TryLockError::Poisoned(_)) => {
-                    return Err(stream_cleanup_supervisor_state_poisoned(operation, self.device, self.pool_id));
-                },
-                Err(std::sync::TryLockError::WouldBlock) if Instant::now() >= deadline => {
-                    return Err(stream_cleanup_supervisor_exit_timeout(operation, self.device, self.pool_id));
-                },
-                Err(std::sync::TryLockError::WouldBlock) => thread::yield_now(),
-            }
-        }
-    }
-
-    fn lock_control_until(
-        &self,
-        deadline: Instant,
-        operation: &'static str,
-    ) -> Result<std::sync::MutexGuard<'_, StreamCleanupSupervisorState>> {
-        loop {
-            match self.control.state.try_lock() {
-                Ok(state) => return Ok(state),
-                Err(std::sync::TryLockError::Poisoned(_)) => {
-                    return Err(stream_cleanup_supervisor_state_poisoned(operation, self.device, self.pool_id));
-                },
-                Err(std::sync::TryLockError::WouldBlock) if Instant::now() >= deadline => {
-                    return Err(stream_cleanup_supervisor_exit_timeout(operation, self.device, self.pool_id));
-                },
-                Err(std::sync::TryLockError::WouldBlock) => thread::yield_now(),
-            }
-        }
-    }
-
-    fn lock_join_until(
-        &self,
-        deadline: Instant,
-        operation: &'static str,
-    ) -> Result<std::sync::MutexGuard<'_, Option<thread::JoinHandle<StreamCleanupWorkerOutcome>>>> {
-        loop {
-            match self.join.try_lock() {
-                Ok(join) => return Ok(join),
-                Err(std::sync::TryLockError::Poisoned(_)) => {
-                    return Err(stream_cleanup_supervisor_state_poisoned(operation, self.device, self.pool_id));
-                },
-                Err(std::sync::TryLockError::WouldBlock) if Instant::now() >= deadline => {
-                    return Err(stream_cleanup_supervisor_join_timeout(operation, self.device, self.pool_id));
-                },
-                Err(std::sync::TryLockError::WouldBlock) => thread::yield_now(),
-            }
-        }
-    }
-}
-
-impl Drop for ServiceStreamPoolInner {
-    fn drop(&mut self) {
-        self.cleanup_supervisor.request_shutdown_from_drop();
-    }
-}
-
-impl ProcessExitShutdown for ProcessExitStreamPool {
-    fn phase(&self) -> ProcessExitPhase {
-        ProcessExitPhase::StreamPool
-    }
-
-    fn shutdown_for_process_exit(&self) {
-        if let Some(inner) = self.inner.upgrade() {
-            ServiceStreamPool { inner }.close_and_join_for_process_exit();
-        } else {
-            self.supervisor.join_for_process_exit();
-        }
-    }
-}
-
-impl StreamCleanupSupervisorControl {
-    #[cfg(test)]
-    fn pause_before_worker_return_for_test(&self) {
-        let pause = self.worker_outcome_pause.lock().unwrap().clone();
-        if let Some(pause) = pause {
-            pause.arrived.wait();
-            pause.release.wait();
-        }
-    }
-
-    #[cfg(test)]
-    fn notify_shutdown_send_failed_for_test(&self) {
-        if let Some(sender) = self.shutdown_send_failed.lock().unwrap().take() {
-            let _ = sender.send(());
-        }
-    }
-
-    #[cfg(test)]
-    fn notify_join_waiter_for_test(&self) {
-        if let Some(sender) = self.join_waiter.lock().unwrap().take() {
-            let _ = sender.send(());
-        }
-    }
+pub(super) struct ServiceStreamPoolState {
+    pub(super) idle: Vec<Arc<cudf::Runtime>>,
+    pub(super) created: usize,
+    pub(super) root_outstanding: usize,
+    pub(super) aux_outstanding: usize,
+    pub(super) waiting_acquires: usize,
+    pub(super) pending_cleanups: usize,
+    pub(super) active_cleanups: usize,
+    pub(super) synchronization_failures: u64,
 }
 
 /// Service-level CUDA stream pool for short-lived native worker tasks.
@@ -760,7 +158,7 @@ impl StreamCleanupSupervisorControl {
 /// allocator contract.
 #[derive(Debug, Clone)]
 pub(crate) struct ServiceStreamPool {
-    inner: Arc<ServiceStreamPoolInner>,
+    pub(super) inner: Arc<ServiceStreamPoolInner>,
 }
 
 impl ServiceStreamPool {
@@ -799,9 +197,12 @@ impl ServiceStreamPool {
             }
         }
         let id = NEXT_STREAM_POOL_ID.fetch_add(1, Ordering::Relaxed);
+        let cleanup_probe = ServiceStreamTestProbeSlot::default();
+        #[cfg(test)]
+        cleanup_probe.install_next_pool_probe();
         // The cleanup receiver is a construction resource. Do not publish a
         // usable pool unless its owner thread was created successfully.
-        let cleanup_supervisor = StreamCleanupSupervisor::start(device, id)?;
+        let cleanup_supervisor = StreamCleanupSupervisor::start(device, id, cleanup_probe.clone())?;
         let inner = Arc::new(ServiceStreamPoolInner {
             id,
             device,
@@ -812,6 +213,7 @@ impl ServiceStreamPool {
             available: Condvar::new(),
             state_changed: Condvar::new(),
             next_lease_id: AtomicU64::new(1),
+            cleanup_probe,
             cleanup_supervisor: Arc::clone(&cleanup_supervisor),
             closed: AtomicBool::new(false),
             process_exit_started: AtomicBool::new(false),
@@ -828,7 +230,7 @@ impl ServiceStreamPool {
     /// capacity contract.
     pub fn for_device(device: cudf::DeviceId, pool_size: usize) -> Result<Self> {
         validate_service_stream_pool_size(pool_size)?;
-        static POOLS: OnceLock<Mutex<HashMap<(usize, usize), Weak<ServiceStreamPoolInner>>>> = OnceLock::new();
+        static POOLS: OnceLock<Mutex<ServiceStreamPoolRegistry>> = OnceLock::new();
         let pools = POOLS.get_or_init(|| Mutex::new(HashMap::new()));
         let mut pools = pools.lock().map_err(|_error| {
             QueryError::new(
@@ -916,9 +318,7 @@ impl ServiceStreamPool {
         self.inner.state_changed.notify_all();
         let mut state = self.lock_state_until(deadline, operation)?;
         loop {
-            if let Err(error) = self.inner.cleanup_supervisor.ensure_not_failed(operation) {
-                return Err(error);
-            }
+            self.inner.cleanup_supervisor.ensure_not_failed(operation)?;
             if state.created == 0
                 && state.idle.is_empty()
                 && state.pending_cleanups == 0
@@ -966,7 +366,7 @@ impl ServiceStreamPool {
     /// Terminal process-exit path. Unlike normal API shutdown it has no
     /// caller-selected timeout: returning while this worker can still destroy
     /// CUDA state would race libcudart finalization.
-    fn close_and_join_for_process_exit(&self) {
+    pub(super) fn close_and_join_for_process_exit(&self) {
         // Ordinary shutdown waits for every lease because its destructor is
         // part of the reusable-capacity contract. `std::process::exit` skips
         // those destructors, so waiting for externally held leases here would
@@ -1056,12 +456,16 @@ impl ServiceStreamPool {
 
     #[cfg(test)]
     pub(crate) fn fail_next_synchronization_for_test(&self) {
-        self.inner.state.lock().unwrap().fail_next_synchronization = true;
+        self.inner.cleanup_probe.with_test_probe(|probe| {
+            probe.force_next_synchronization_failure.store(true, Ordering::Release);
+        });
     }
 
     #[cfg(test)]
     fn force_next_cleanup_enqueue_fallback_for_test(&self) {
-        self.inner.state.lock().unwrap().force_next_cleanup_enqueue_fallback = true;
+        self.inner.cleanup_probe.with_test_probe(|probe| {
+            probe.force_next_cleanup_enqueue_fallback.store(true, Ordering::Release);
+        });
     }
 
     /// Acquire a CUDA stream/runtime lease, blocking when all pool slots are busy.
@@ -1365,312 +769,6 @@ impl ServiceStreamPool {
             },
         }
     }
-
-    fn enqueue_cleanup(
-        &self,
-        runtime: Arc<cudf::Runtime>,
-        resource_epoch: Option<Arc<QueryServiceResourceEpoch>>,
-        mut completion: Option<StreamCleanupCompletion>,
-        permit_class: StreamPermitClass,
-    ) {
-        if self.inner.process_exit_started.load(Ordering::Acquire) {
-            // The process-exit owner has already joined (or is joining) the
-            // only thread allowed to destroy service runtimes. Leaking this
-            // terminal payload is intentional: process exit will reclaim the
-            // address space, whereas dropping it could race libcudart's later
-            // atexit handler.
-            std::mem::forget(runtime);
-            std::mem::forget(resource_epoch);
-            std::mem::forget(completion);
-            return;
-        }
-        let registered = match self.inner.state.lock() {
-            Ok(mut state) => {
-                state.pending_cleanups = state.pending_cleanups.saturating_add(1);
-                self.inner.state_changed.notify_all();
-                true
-            },
-            Err(_error) => {
-                eprintln!("[nexus-query-engine] warning: failed to account deferred stream cleanup");
-                false
-            },
-        };
-        if !registered {
-            let synchronized = runtime.synchronize().is_ok();
-            drop(runtime);
-            drop(resource_epoch);
-            if let Some(completion) = completion.as_mut() {
-                completion.run_before_quiescence(StreamCleanupOutcome::from_synchronized(synchronized));
-                completion.run_after_quiescence();
-            }
-            return;
-        }
-        let job = StreamCleanupJob::Runtime(DeferredStreamCleanup::new(
-            self.clone(),
-            runtime,
-            resource_epoch,
-            completion,
-            permit_class,
-        ));
-        #[cfg(test)]
-        let force_enqueue_fallback = match self.inner.state.lock() {
-            Ok(mut state) => std::mem::take(&mut state.force_next_cleanup_enqueue_fallback),
-            Err(_) => false,
-        };
-        #[cfg(test)]
-        if force_enqueue_fallback {
-            match job {
-                StreamCleanupJob::Runtime(mut cleanup) => cleanup.run(),
-                StreamCleanupJob::Shutdown => unreachable!("runtime cleanup cannot enqueue supervisor shutdown"),
-                StreamCleanupJob::Probe { .. }
-                | StreamCleanupJob::Block { .. }
-                | StreamCleanupJob::ExitUnexpectedly => {
-                    unreachable!("new cleanup job is always a runtime cleanup")
-                },
-            }
-            return;
-        }
-        match self.inner.cleanup_supervisor.enqueue_before_process_exit(job, &self.inner.process_exit_started) {
-            Ok(()) => {},
-            Err(StreamCleanupEnqueueError::ProcessExit(job)) => {
-                // The exit flag is checked while holding the same submission
-                // gate used to queue supervisor shutdown. A cleanup therefore
-                // either precedes shutdown or is retained across the terminal
-                // boundary; it can never fall back to CUDA work after join.
-                std::mem::forget(job);
-            },
-            Err(StreamCleanupEnqueueError::SupervisorStopped(job)) => {
-                // The only production send failure outside process exit is a
-                // terminal cleanup supervisor. The synchronous fallback still
-                // releases the job's permits, but the runtime cannot be
-                // returned to a pool whose owner has disappeared.
-                self.inner.closed.store(true, Ordering::Release);
-                match job {
-                    StreamCleanupJob::Runtime(mut cleanup) => cleanup.run(),
-                    StreamCleanupJob::Shutdown => unreachable!("runtime cleanup cannot enqueue supervisor shutdown"),
-                    #[cfg(test)]
-                    StreamCleanupJob::Probe { .. }
-                    | StreamCleanupJob::Block { .. }
-                    | StreamCleanupJob::ExitUnexpectedly => {},
-                }
-            },
-        }
-    }
-}
-
-/// Owns one queued stream cleanup until both resource accounting and the
-/// external completion handoff have finished. If a prior cleanup panics, the
-/// receiver drops queued jobs; this guard turns that drop into fail-closed
-/// resource cleanup rather than silently losing permits or completion work.
-struct DeferredStreamCleanup {
-    pool: ServiceStreamPool,
-    runtime: Option<Arc<cudf::Runtime>>,
-    resource_epoch: Option<Arc<QueryServiceResourceEpoch>>,
-    completion: Option<StreamCleanupCompletion>,
-    phase: DeferredStreamCleanupPhase,
-    permit_class: StreamPermitClass,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum DeferredStreamCleanupPhase {
-    Pending,
-    Active,
-    AfterAccounting,
-    Complete,
-}
-
-impl DeferredStreamCleanup {
-    fn new(
-        pool: ServiceStreamPool,
-        runtime: Arc<cudf::Runtime>,
-        resource_epoch: Option<Arc<QueryServiceResourceEpoch>>,
-        completion: Option<StreamCleanupCompletion>,
-        permit_class: StreamPermitClass,
-    ) -> Self {
-        Self {
-            pool,
-            runtime: Some(runtime),
-            resource_epoch,
-            completion,
-            phase: DeferredStreamCleanupPhase::Pending,
-            permit_class,
-        }
-    }
-
-    fn run(&mut self) {
-        if !self.begin_accounting() {
-            self.discard_after_accounting_failure();
-            return;
-        }
-
-        let synchronized = self.synchronize_runtime();
-        self.finish_runtime_accounting(synchronized);
-        if let Some(completion) = self.completion.as_mut() {
-            // This callback releases GPU-side/query admission ownership while
-            // cleanup remains active. A panic is caught by the supervisor and
-            // this guard's Drop path completes the remaining handoff.
-            completion.run_before_quiescence(StreamCleanupOutcome::from_synchronized(synchronized));
-        }
-        self.finish_active_accounting();
-        if let Some(completion) = self.completion.as_mut() {
-            // The typed callback only enqueues to ObservationCompletionExecutor
-            // and therefore cannot reenter backend close from this supervisor.
-            completion.run_after_quiescence();
-        }
-        self.phase = DeferredStreamCleanupPhase::Complete;
-    }
-
-    fn begin_accounting(&mut self) -> bool {
-        match self.pool.inner.state.lock() {
-            Ok(mut state) => {
-                state.pending_cleanups = state.pending_cleanups.saturating_sub(1);
-                state.active_cleanups = state.active_cleanups.saturating_add(1);
-                self.phase = DeferredStreamCleanupPhase::Active;
-                self.pool.inner.state_changed.notify_all();
-                true
-            },
-            Err(_error) => {
-                eprintln!("[nexus-query-engine] warning: failed to start accounted stream cleanup");
-                false
-            },
-        }
-    }
-
-    fn synchronize_runtime(&self) -> bool {
-        #[cfg(test)]
-        let force_failure = match self.pool.inner.state.lock() {
-            Ok(mut state) => std::mem::take(&mut state.fail_next_synchronization),
-            Err(_) => false,
-        };
-        match self.runtime.as_ref().expect("deferred cleanup runtime is present").synchronize() {
-            #[cfg(test)]
-            Ok(()) if force_failure => {
-                eprintln!(
-                    "[nexus-query-engine] warning: injecting device {} stream synchronization failure for test",
-                    self.pool.device().ordinal()
-                );
-                false
-            },
-            Ok(()) => true,
-            Err(error) => {
-                eprintln!(
-                    "[nexus-query-engine] warning: failed to synchronize device {} service stream; discarding runtime: {error}",
-                    self.pool.device().ordinal()
-                );
-                false
-            },
-        }
-    }
-
-    fn finish_runtime_accounting(&mut self, synchronized: bool) {
-        let mut idle_to_drop = Vec::new();
-        match self.pool.inner.state.lock() {
-            Ok(mut state) => {
-                match self.permit_class {
-                    StreamPermitClass::Root => state.root_outstanding = state.root_outstanding.saturating_sub(1),
-                    StreamPermitClass::Auxiliary => state.aux_outstanding = state.aux_outstanding.saturating_sub(1),
-                }
-                if synchronized && !self.pool.inner.closed.load(Ordering::Acquire) {
-                    state.idle.push(self.runtime.take().expect("deferred cleanup runtime is present"));
-                } else {
-                    state.created = state.created.saturating_sub(1);
-                    if !synchronized {
-                        self.pool.inner.closed.store(true, Ordering::Release);
-                        state.synchronization_failures = state.synchronization_failures.saturating_add(1);
-                        idle_to_drop = std::mem::take(&mut state.idle);
-                        state.created = state.created.saturating_sub(idle_to_drop.len());
-                    }
-                }
-            },
-            Err(_error) => {
-                eprintln!("[nexus-query-engine] warning: failed to finish accounted stream cleanup");
-            },
-        }
-        drop(self.runtime.take());
-        drop(idle_to_drop);
-        drop(self.resource_epoch.take());
-    }
-
-    fn finish_active_accounting(&mut self) {
-        match self.pool.inner.state.lock() {
-            Ok(mut state) => {
-                state.active_cleanups = state.active_cleanups.saturating_sub(1);
-            },
-            Err(_error) => {
-                eprintln!("[nexus-query-engine] warning: failed to complete stream cleanup accounting");
-            },
-        }
-        self.pool.inner.available.notify_all();
-        self.pool.inner.state_changed.notify_all();
-        self.phase = DeferredStreamCleanupPhase::AfterAccounting;
-    }
-
-    fn discard_after_accounting_failure(&mut self) {
-        if let Some(runtime) = self.runtime.take() {
-            let _ = catch_unwind(AssertUnwindSafe(|| runtime.synchronize()));
-            drop(runtime);
-        }
-        drop(self.resource_epoch.take());
-        if let Some(completion) = self.completion.as_mut() {
-            completion.run_before_quiescence(StreamCleanupOutcome::StreamSynchronizationFailed);
-            completion.run_after_quiescence();
-        }
-        self.phase = DeferredStreamCleanupPhase::Complete;
-    }
-
-    fn recover_after_abandonment(&mut self) {
-        let had_runtime = self.runtime.is_some();
-        if let Some(runtime) = self.runtime.take() {
-            let _ = catch_unwind(AssertUnwindSafe(|| runtime.synchronize()));
-            drop(runtime);
-        }
-        drop(self.resource_epoch.take());
-
-        let mut idle_to_drop = Vec::new();
-        match self.pool.inner.state.lock() {
-            Ok(mut state) => {
-                match self.phase {
-                    DeferredStreamCleanupPhase::Pending => {
-                        state.pending_cleanups = state.pending_cleanups.saturating_sub(1);
-                        if had_runtime {
-                            state.created = state.created.saturating_sub(1);
-                        }
-                    },
-                    DeferredStreamCleanupPhase::Active => {
-                        state.active_cleanups = state.active_cleanups.saturating_sub(1);
-                        if had_runtime {
-                            state.created = state.created.saturating_sub(1);
-                        }
-                    },
-                    DeferredStreamCleanupPhase::AfterAccounting | DeferredStreamCleanupPhase::Complete => {},
-                }
-                // An abandoned job means the owning supervisor is terminally
-                // unhealthy. Never reuse a runtime while its cleanup protocol
-                // has been interrupted.
-                self.pool.inner.closed.store(true, Ordering::Release);
-                idle_to_drop = std::mem::take(&mut state.idle);
-                state.created = state.created.saturating_sub(idle_to_drop.len());
-            },
-            Err(_error) => {
-                eprintln!("[nexus-query-engine] warning: failed to recover abandoned stream cleanup accounting");
-            },
-        }
-        drop(idle_to_drop);
-        self.pool.inner.available.notify_all();
-        self.pool.inner.state_changed.notify_all();
-        if let Some(mut completion) = self.completion.take() {
-            completion.run_remaining_after_abandonment();
-        }
-        self.phase = DeferredStreamCleanupPhase::Complete;
-    }
-}
-
-impl Drop for DeferredStreamCleanup {
-    fn drop(&mut self) {
-        if self.phase != DeferredStreamCleanupPhase::Complete {
-            self.recover_after_abandonment();
-        }
-    }
 }
 
 fn stream_acquire_wait_interval(deadline: Option<Instant>) -> Duration {
@@ -1679,77 +777,6 @@ fn stream_acquire_wait_interval(deadline: Option<Instant>) -> Duration {
         return cancellation_poll;
     };
     deadline.saturating_duration_since(Instant::now()).min(cancellation_poll)
-}
-
-fn stream_cleanup_supervisor_exit_timeout(operation: &'static str, device: cudf::DeviceId, pool_id: u64) -> QueryError {
-    QueryError::new(
-        QueryErrorCode::ServiceOverloaded,
-        operation,
-        "timed out waiting for the service stream cleanup supervisor to exit",
-    )
-    .with_fact("device_ordinal", device.ordinal())
-    .with_fact("stream_pool_id", pool_id)
-    .with_fact("reason", "stream_cleanup_supervisor_exit_timeout")
-    .with_cleanup_deadline_elapsed()
-}
-
-fn stream_cleanup_supervisor_join_timeout(operation: &'static str, device: cudf::DeviceId, pool_id: u64) -> QueryError {
-    QueryError::new(
-        QueryErrorCode::ServiceOverloaded,
-        operation,
-        "timed out waiting to join the service stream cleanup supervisor",
-    )
-    .with_fact("device_ordinal", device.ordinal())
-    .with_fact("stream_pool_id", pool_id)
-    .with_fact("reason", "stream_cleanup_supervisor_join_timeout")
-    .with_cleanup_deadline_elapsed()
-}
-
-fn stream_cleanup_supervisor_state_poisoned(
-    operation: &'static str,
-    device: cudf::DeviceId,
-    pool_id: u64,
-) -> QueryError {
-    QueryError::new(QueryErrorCode::Internal, operation, "service stream cleanup supervisor state was poisoned")
-        .with_fact("device_ordinal", device.ordinal())
-        .with_fact("stream_pool_id", pool_id)
-        .with_fact("reason", "stream_cleanup_supervisor_state_poisoned")
-}
-
-fn stream_cleanup_supervisor_unexpected_exit_error(
-    operation: &'static str,
-    device: cudf::DeviceId,
-    pool_id: u64,
-    detail: &str,
-) -> QueryError {
-    QueryError::new(QueryErrorCode::Internal, operation, "service stream cleanup supervisor exited unexpectedly")
-        .with_fact("device_ordinal", device.ordinal())
-        .with_fact("stream_pool_id", pool_id)
-        .with_fact("supervisor_detail", detail)
-        .with_fact("reason", "stream_cleanup_supervisor_unexpected_exit")
-}
-
-fn stream_cleanup_supervisor_panic_error(
-    operation: &'static str,
-    device: cudf::DeviceId,
-    pool_id: u64,
-    stage: &'static str,
-    panic_message: &str,
-) -> QueryError {
-    QueryError::new(QueryErrorCode::Internal, operation, "service stream cleanup supervisor panicked")
-        .with_fact("device_ordinal", device.ordinal())
-        .with_fact("stream_pool_id", pool_id)
-        .with_fact("supervisor_stage", stage)
-        .with_fact("panic_message", panic_message)
-        .with_fact("reason", "stream_cleanup_supervisor_panicked")
-}
-
-fn stream_cleanup_supervisor_panic_message(panic: &(dyn Any + Send)) -> String {
-    panic
-        .downcast_ref::<&'static str>()
-        .map(|message| (*message).to_string())
-        .or_else(|| panic.downcast_ref::<String>().cloned())
-        .unwrap_or_else(|| "non-string panic payload".to_string())
 }
 
 fn stream_acquire_timeout_error(operation: &'static str, device: cudf::DeviceId, pool_size: usize) -> QueryError {
@@ -1984,169 +1011,6 @@ impl Drop for StreamLease {
     }
 }
 
-enum StreamCleanupJob {
-    Runtime(DeferredStreamCleanup),
-    Shutdown,
-    #[cfg(test)]
-    Probe {
-        done: mpsc::Sender<thread::ThreadId>,
-    },
-    #[cfg(test)]
-    Block {
-        entered: Arc<Barrier>,
-        release: Arc<Barrier>,
-    },
-    #[cfg(test)]
-    ExitUnexpectedly,
-}
-
-fn run_stream_cleanup_worker(
-    receiver: mpsc::Receiver<StreamCleanupJob>,
-    _control: &StreamCleanupSupervisorControl,
-) -> StreamCleanupWorkerOutcome {
-    let executor = catch_unwind(AssertUnwindSafe(|| run_stream_cleanup_executor(&receiver)));
-
-    // The receiver owns all queued cleanup jobs. Drop it before constructing
-    // the provisional outcome so queued recovery completes before any joiner
-    // can observe and commit that outcome.
-    drop(receiver);
-
-    let outcome = match executor {
-        Ok(StreamCleanupExecutorExit::Shutdown) => StreamCleanupWorkerOutcome::Clean,
-        Ok(StreamCleanupExecutorExit::ReceiverDisconnected) => {
-            StreamCleanupWorkerOutcome::Unexpected { detail: "cleanup receiver disconnected before explicit shutdown" }
-        },
-        #[cfg(test)]
-        Ok(StreamCleanupExecutorExit::Unexpected(detail)) => StreamCleanupWorkerOutcome::Unexpected { detail },
-        Err(panic) => StreamCleanupWorkerOutcome::Panicked {
-            panic_message: stream_cleanup_supervisor_panic_message(panic.as_ref()),
-        },
-    };
-
-    #[cfg(test)]
-    _control.pause_before_worker_return_for_test();
-    #[cfg(test)]
-    if _control.panic_after_outcome.load(Ordering::Acquire) {
-        panic!("injected service stream cleanup supervisor join panic");
-    }
-    outcome
-}
-
-fn run_stream_cleanup_executor(receiver: &mpsc::Receiver<StreamCleanupJob>) -> StreamCleanupExecutorExit {
-    loop {
-        let job = match receiver.recv() {
-            Ok(job) => job,
-            Err(_) => return StreamCleanupExecutorExit::ReceiverDisconnected,
-        };
-        match job {
-            StreamCleanupJob::Runtime(mut cleanup) => cleanup.run(),
-            StreamCleanupJob::Shutdown => return StreamCleanupExecutorExit::Shutdown,
-            #[cfg(test)]
-            StreamCleanupJob::Probe { done } => {
-                let _ = done.send(thread::current().id());
-            },
-            #[cfg(test)]
-            StreamCleanupJob::Block { entered, release } => {
-                entered.wait();
-                release.wait();
-            },
-            #[cfg(test)]
-            StreamCleanupJob::ExitUnexpectedly => {
-                return StreamCleanupExecutorExit::Unexpected("test requested unexpected cleanup supervisor exit");
-            },
-        }
-    }
-}
-
-#[cfg(test)]
-pub(crate) struct StreamCleanupBlocker {
-    release: Option<Arc<Barrier>>,
-}
-
-#[cfg(test)]
-impl Drop for StreamCleanupBlocker {
-    fn drop(&mut self) {
-        if let Some(release) = self.release.take() {
-            release.wait();
-        }
-    }
-}
-
-#[cfg(test)]
-pub(crate) fn block_stream_cleanup_thread_for_test(pool: &ServiceStreamPool) -> StreamCleanupBlocker {
-    let entered = Arc::new(Barrier::new(2));
-    let release = Arc::new(Barrier::new(2));
-    pool.inner
-        .cleanup_supervisor
-        .enqueue(StreamCleanupJob::Block { entered: Arc::clone(&entered), release: Arc::clone(&release) })
-        .expect("cleanup thread accepts blocker");
-    entered.wait();
-    StreamCleanupBlocker { release: Some(release) }
-}
-
-#[cfg(test)]
-fn stream_cleanup_thread_id_for_test(pool: &ServiceStreamPool) -> thread::ThreadId {
-    let (sender, receiver) = mpsc::channel();
-    pool.inner
-        .cleanup_supervisor
-        .enqueue(StreamCleanupJob::Probe { done: sender })
-        .expect("cleanup thread accepts probe");
-    receiver.recv().expect("cleanup thread returns probe")
-}
-
-#[cfg(test)]
-fn fail_next_cleanup_supervisor_spawn_for_test() {
-    FAIL_NEXT_CLEANUP_SUPERVISOR_SPAWN.with(|failure| failure.set(true));
-}
-
-#[cfg(test)]
-fn panic_cleanup_supervisor_after_outcome_for_test(pool: &ServiceStreamPool) {
-    pool.inner.cleanup_supervisor.control.panic_after_outcome.store(true, Ordering::Release);
-}
-
-#[cfg(test)]
-fn pause_cleanup_supervisor_before_worker_return_for_test(pool: &ServiceStreamPool) -> StreamCleanupWorkerOutcomePause {
-    let pause =
-        StreamCleanupWorkerOutcomePause { arrived: Arc::new(Barrier::new(2)), release: Arc::new(Barrier::new(2)) };
-    *pool.inner.cleanup_supervisor.control.worker_outcome_pause.lock().unwrap() = Some(pause.clone());
-    pause
-}
-
-#[cfg(test)]
-fn wait_for_cleanup_supervisor_worker_finished_for_test(pool: &ServiceStreamPool, deadline: Instant) {
-    loop {
-        let finished =
-            pool.inner.cleanup_supervisor.join.lock().unwrap().as_ref().is_some_and(thread::JoinHandle::is_finished);
-        if finished {
-            return;
-        }
-        assert!(Instant::now() < deadline, "cleanup supervisor did not finish its provisional outcome");
-        thread::yield_now();
-    }
-}
-
-#[cfg(test)]
-fn observe_cleanup_supervisor_shutdown_send_failure_for_test(pool: &ServiceStreamPool) -> mpsc::Receiver<()> {
-    let (sender, receiver) = mpsc::channel();
-    *pool.inner.cleanup_supervisor.control.shutdown_send_failed.lock().unwrap() = Some(sender);
-    receiver
-}
-
-#[cfg(test)]
-fn observe_cleanup_supervisor_join_waiter_for_test(pool: &ServiceStreamPool) -> mpsc::Receiver<()> {
-    let (sender, receiver) = mpsc::channel();
-    *pool.inner.cleanup_supervisor.control.join_waiter.lock().unwrap() = Some(sender);
-    receiver
-}
-
-#[cfg(test)]
-fn force_cleanup_supervisor_unexpected_exit_for_test(pool: &ServiceStreamPool) {
-    pool.inner
-        .cleanup_supervisor
-        .enqueue(StreamCleanupJob::ExitUnexpectedly)
-        .expect("cleanup supervisor accepts unexpected-exit test job");
-}
-
 pub(crate) struct SourceReadStreamLease {
     context: ExecutionContext,
     _stream_lease: StreamLease,
@@ -2239,7 +1103,7 @@ mod tests {
         let submitter = thread::spawn(move || {
             submitter_rendezvous.wait();
             submitter_supervisor.enqueue_before_process_exit(
-                StreamCleanupJob::Probe { done },
+                probe_cleanup_job_for_test(done),
                 &submitter_pool.inner.process_exit_started,
             )
         });

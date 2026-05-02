@@ -141,11 +141,7 @@ impl NexusNativeGpuProducerExec {
             .with_fact("gpu_resident_sources", comma_separated(source_names.iter().map(String::as_str))));
         }
 
-        let metrics_capture = Some(
-            metrics_capture
-                .unwrap_or_else(|| NativeMetricsCapture::without_sink("unassigned-producer"))
-                .new_execution(),
-        );
+        let metrics_capture = Some(metrics_capture.unwrap_or_else(NativeMetricsCapture::standalone).new_execution());
         Ok(Self {
             input_name,
             cache: conservative_properties(Arc::clone(plan.output_schema())),
@@ -169,16 +165,6 @@ impl NexusNativeGpuProducerExec {
     pub(crate) fn with_metrics_capture(mut self, metrics_capture: Option<NativeExecutionMetricsCapture>) -> Self {
         self.metrics_capture = metrics_capture;
         self
-    }
-
-    #[cfg(test)]
-    pub(crate) fn metrics_capture(&self) -> Option<NativeExecutionMetricsCapture> {
-        self.metrics_capture.clone()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn record_test_query_metrics(&self, metrics: &nexus_query_engine::metrics::QueryMetrics) {
-        NexusNativeMetrics::new(&self.metrics, 0).record_query_metrics(metrics);
     }
 
     /// Execute this producer inside a composed exec's shared native context.

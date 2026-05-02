@@ -11,7 +11,7 @@ use std::{
     ops::Deref,
     path::{Path, PathBuf},
     sync::{Arc, Mutex, MutexGuard},
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use arrow::{

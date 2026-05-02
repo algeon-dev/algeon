@@ -1,6 +1,5 @@
 //! GPU runtime inventory, registry, and placement helpers.
 
-pub mod comms;
 pub(crate) mod device_context;
 pub mod inventory;
 pub(crate) mod lanes;
@@ -11,7 +10,6 @@ pub(crate) mod placement;
 pub mod profile;
 pub(crate) mod registry;
 
-pub use comms::{GpuComms, SingleDeviceComms};
 pub(crate) use device_context::DeviceContext;
 pub use inventory::{
     DeviceFacts, DeviceTelemetrySnapshot, DeviceTelemetryStatus, GpuInventory, GpuTelemetry, NexusGpuInventory,

@@ -147,7 +147,7 @@ impl QueryService {
             },
         };
         let gpu_execution_query_tracker = GpuExecutionQueryTracker::new();
-        let gpu_execution_worker_count = gpu_execution_worker_count_per_device(&config);
+        let gpu_execution_worker_count = gpu_execution_worker_count_per_device(config);
         let gpu_execution_pools = devices
             .contexts()
             .map(|device| {
@@ -347,9 +347,9 @@ impl QueryService {
         register_shared_device_admission_waiters(&inner)?;
         let service = Self { inner };
         // Grant releases wake this service's queue and any sibling services
-        // sharing the device. The hook fires only after the ledger state lock
-        // is released; the admission invariant forbids grant drops while the
-        // admission mutex is held.
+        // sharing the device. Release observers run only after the ledger
+        // state lock is released; the admission invariant forbids grant drops
+        // while the admission mutex is held.
         let ledgers = service
             .inner
             .resources
@@ -367,8 +367,8 @@ impl QueryService {
             });
         for ledger in ledgers {
             let weak = Arc::downgrade(&service.inner);
-            ledger.set_release_hook(Arc::new(move |device_ordinal| {
-                notify_shared_device_admission_available(device_ordinal);
+            ledger.register_release_observer(Arc::new(move |transition| {
+                notify_shared_device_admission_available(transition.snapshot.device_ordinal);
                 if let Some(inner) = weak.upgrade() {
                     inner.notify_admission_available();
                 }
@@ -405,18 +405,7 @@ fn device_registry_config(
         for ordinal in &device_ordinals {
             registry_config = registry_config.with_device_profile(
                 *ordinal,
-                DeviceRegistryInstallProfile {
-                    stream_pool_size,
-                    device_capabilities: crate::runtime::DeviceCapabilities::default(),
-                    max_active_queries: Some(1),
-                    capacity_policy: legacy_capacity_policy,
-                    backend_reserve_bytes: 0,
-                    attempt_floor_bytes: None,
-                    source_work_per_attempt: 1,
-                    worker_job_capacity: stream_pool_size,
-                    lane_count: stream_pool_size,
-                    memory_partition: DeviceRegistryMemoryPartition::WholeDevice,
-                },
+                DeviceRegistryInstallProfile::legacy_default(stream_pool_size, legacy_capacity_policy),
             );
         }
     }

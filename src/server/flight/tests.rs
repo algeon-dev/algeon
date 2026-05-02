@@ -12,7 +12,7 @@ use datafusion::{
     datasource::{MemTable, TableProvider},
     prelude::SessionConfig,
 };
-use futures::{TryStreamExt as _, future::BoxFuture};
+use futures::{StreamExt as _, TryStreamExt as _, future::BoxFuture};
 
 use super::*;
 use crate::{
@@ -185,8 +185,44 @@ async fn explain_gpu_stream_drop_retains_one_sealed_attempt_report() {
     assert_eq!(service.cancellations.len(), 0, "dropped EXPLAIN GPU stream must unregister cancellation");
     let payload = query_stats_payload(&service, &query_id);
     assert!(payload.contains("# outcome=cancelled"), "{payload}");
+    assert!(payload.contains("# delivery_outcome=dropped"), "{payload}");
+    assert!(payload.contains("# attempt_outcome=cancelled"), "{payload}");
+    assert_single_sealed_attempt_report(&payload, "cancelled");
+}
+
+#[tokio::test]
+async fn explain_gpu_post_batch_drop_records_failed_delivery_outcome() {
+    let service = super::service::bounded_test_service(Duration::from_secs(30));
+    let response = service
+        .get_flight_info_statement(
+            CommandStatementQuery { query: "EXPLAIN GPU SELECT 1 AS one".to_string(), transaction_id: None },
+            Request::new(FlightDescriptor::new_cmd(Vec::<u8>::new())),
+        )
+        .await
+        .expect("EXPLAIN GPU FlightInfo should issue a ticket");
+    let query_id = query_id_from_flight_info(&response);
+    let native_cancellation =
+        service.coordinator.ticket_cancellation(&query_id).expect("EXPLAIN GPU ticket retains native cancellation");
+    let mut stream = service
+        .execute_ticket(query_id.clone(), None)
+        .await
+        .expect("EXPLAIN GPU DoGet should return a lazy stream")
+        .into_inner();
+
+    stream.next().await.expect("schema frame").expect("schema frame is valid");
+    stream.next().await.expect("EXPLAIN GPU batch frame").expect("EXPLAIN GPU batch frame is valid");
+    assert!(!native_cancellation.is_cancelled(), "delivering the EXPLAIN GPU batch keeps the query live until EOF");
+
+    drop(stream);
+
+    assert!(
+        native_cancellation.is_cancelled(),
+        "dropping a partially delivered EXPLAIN GPU stream cancels native work"
+    );
+    assert_eq!(service.cancellations.len(), 0, "post-batch drop must unregister cancellation");
+    let payload = query_stats_payload(&service, &query_id);
+    assert!(payload.contains("# outcome=cancelled"), "{payload}");
     assert!(payload.contains("# delivery_outcome=failed"), "{payload}");
-    assert!(payload.contains("code=cancelled"), "{payload}");
     assert_single_sealed_attempt_report(&payload, "cancelled");
 }
 
@@ -413,7 +449,7 @@ async fn planning_timeout_consumes_statement_ticket_without_holding_admission() 
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn update_ddl_read_only_schema_failure_captures_catalog_target_facts() {
+async fn update_ddl_read_only_schema_failure_does_not_classify_upstream_error_prose() {
     let ctx = Arc::new(SessionContext::new_with_config(
         SessionConfig::new().with_default_catalog_and_schema("glue", "nexus_graph"),
     ));
@@ -428,12 +464,7 @@ async fn update_ddl_read_only_schema_failure_captures_catalog_target_facts() {
         Duration::from_secs(30),
         #[cfg(feature = "cugraph")]
         None,
-    )
-    .with_catalog_diagnostics(ServerCatalogDiagnostics {
-        iceberg_enabled: true,
-        workspace_catalog: Some("datafusion".to_string()),
-        workspace_schema: Some("public".to_string()),
-    });
+    );
     let query_id = "read-only-ddl-target".to_string();
     let sql = "CREATE VIEW target_edges AS SELECT src, dst FROM edges_by_src".to_string();
     let planning_lease = service.register_query(query_id.clone(), sql.clone(), None).unwrap();
@@ -443,22 +474,24 @@ async fn update_ddl_read_only_schema_failure_captures_catalog_target_facts() {
         .await
         .expect_err("read-only source schema should reject DDL registration");
 
-    assert_eq!(status.code(), Code::InvalidArgument);
-    assert_status_metadata(&status, "datafusion_planning", "planning", "permanent");
-    assert!(status.message().contains("glue.nexus_graph"), "status={status:?}");
+    assert_eq!(status.code(), Code::Internal);
+    assert_status_metadata(&status, "internal", "internal", "permanent");
+    assert_eq!(status.message(), "internal server error while processing the request");
+    assert!(!status.message().contains("glue.nexus_graph"), "status={status:?}");
     let payload = String::from_utf8(
         service.coordinator.query_stats(&query_id).expect("failed DDL update should retain query stats").to_vec(),
     )
     .unwrap();
     assert!(payload.contains("operation=datafusion_nexus.server.flight.do_put_statement_update.sql"), "{payload}");
-    assert!(payload.contains("fact.statement_kind=CreateView"), "{payload}");
-    assert!(payload.contains("fact.iceberg_enabled=true"), "{payload}");
+    assert!(payload.contains("fact.datafusion_error=execution"), "{payload}");
     for raw_fact in [
         "fact.target_catalog=",
         "fact.target_schema=",
         "fact.target_table=",
         "fact.workspace_catalog=",
         "fact.workspace_schema=",
+        "fact.statement_kind=",
+        "fact.iceberg_enabled=",
     ] {
         assert!(!payload.contains(raw_fact), "raw identifier fact must not be retained: {payload}");
     }

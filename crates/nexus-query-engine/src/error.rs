@@ -9,7 +9,7 @@ use std::{collections::BTreeMap, error::Error as StdError, fmt};
 
 use serde_json::{Value, json};
 
-use crate::metrics::{QueryId, TraceId};
+use crate::correlation::{QueryId, TraceId};
 
 type BoxedSourceError = Box<dyn StdError + Send + Sync + 'static>;
 
@@ -23,7 +23,6 @@ pub type Result<T> = std::result::Result<T, QueryError>;
 /// [`status_for_code`]; consumers should not infer those policies from variant
 /// names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[non_exhaustive]
 pub enum QueryErrorCode {
     /// Query execution was cancelled by the caller.
     Cancelled,
@@ -96,6 +95,37 @@ pub enum QueryErrorCode {
 }
 
 impl QueryErrorCode {
+    /// Every native error code supported by this engine release.
+    ///
+    /// This list keeps adapter projections and status policy mechanically
+    /// auditable when a new code is introduced.
+    pub const ALL: &'static [Self] = &[
+        Self::Cancelled,
+        Self::UnsupportedPlanShape,
+        Self::UnsupportedOperator,
+        Self::UnsupportedExpression,
+        Self::UnsupportedType,
+        Self::InvalidPlan,
+        Self::InvalidAttemptCorrelation,
+        Self::GraphInputInvalid,
+        Self::CudfInvalidInput,
+        Self::CudfUnsupported,
+        Self::CudfResourceExhausted,
+        Self::SizeOverflow,
+        Self::HostMaterializationLimitExceeded,
+        Self::CudfTemporaryFailure,
+        Self::CudfPersistentFailure,
+        Self::CudfDependencyFailure,
+        Self::SourceAccessDenied,
+        Self::SourceUnauthenticated,
+        Self::SourceObjectNotFound,
+        Self::SourceTemporaryFailure,
+        Self::CudfInvariantViolation,
+        Self::MemoryReservationFailed,
+        Self::ServiceOverloaded,
+        Self::Internal,
+    ];
+
     /// Stable snake-case code label used in reports and error text.
     pub const fn as_str(self) -> &'static str {
         match self {

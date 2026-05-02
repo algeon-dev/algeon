@@ -10,6 +10,7 @@ const NATIVE_REPORT_DESCRIPTOR_NAMES: &[&str] = &[
     "admission_wait_ms",
     "admission_wait_time",
     "admission_wait_time_observed",
+    "attempt_report_rows",
     "aggregate_encoded_key_partial_elapsed_ns",
     "aggregate_exact_cardinality_probe_count",
     "aggregate_exact_cardinality_probe_elapsed_ns",

@@ -26,8 +26,6 @@ pub(crate) use common::run_gpu_execution_task;
 pub(crate) use self::admission::query_admission_ticket_from_task_context;
 #[cfg(all(test, feature = "cugraph"))]
 pub(crate) use self::admission::task_context_with_query_admission_ticket;
-#[cfg(all(feature = "server", test))]
-pub(crate) use self::metrics::NativeMetricsCaptureSink;
 #[cfg(feature = "server")]
 pub(crate) use self::metrics::{
     NativeMetricsCapture, NativeObservationActivityFactory, SERVER_CAPTURE_LOSS_METRIC_NAME,

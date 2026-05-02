@@ -664,6 +664,13 @@ pub(super) fn sink_input_edge_count(pipeline: &CompiledPipeline) -> usize {
     pipeline.edges().iter().filter(|edge| edge.kind() == PipelineEdgeKind::SinkInput).count()
 }
 
+// `cudf::Runtime` explicitly implements Send and Sync: it re-enters its
+// device at each FFI boundary. Clippy cannot see that cross-crate unsafe impl.
+#[allow(clippy::arc_with_non_send_sync)]
+pub(super) fn shared_runtime(runtime: cudf::Runtime) -> Arc<cudf::Runtime> {
+    Arc::new(runtime)
+}
+
 pub(super) fn bounded_context(runtime: Arc<cudf::Runtime>) -> ExecutionContext {
     ExecutionContext::builder()
         .with_shared_runtime(runtime)

@@ -20,7 +20,6 @@ use arrow::{
 use datafusion::physical_plan::{empty::EmptyExec, union::UnionExec};
 use nexus_query_engine::{
     error::{QueryError, QueryErrorCode},
-    metrics::QueryMetrics,
     observability::{
         AttemptCapacityDisposition, AttemptCleanupDisposition, AttemptDisposition, AttemptFailureSummary, AttemptId,
         AttemptQueryId, AttemptRetryAdvice, AttemptRetryPrerequisite, AttemptRetryRecovery, AttemptTimestamps,
@@ -186,13 +185,19 @@ fn cancelled_attempt_report_snapshot(query_id: &str) -> (QueryAttemptReport, Sea
     let mut report = cpu_attempt_report(query_id);
     report.outcome = RuntimeTerminalOutcome::Cancelled;
     report.retry_advice = AttemptRetryAdvice::do_not_retry();
+    sealed_attempt_report_snapshot(report)
+}
+
+fn sealed_attempt_report_snapshot(
+    report: QueryAttemptReport,
+) -> (QueryAttemptReport, SealedRuntimeObservationSnapshot) {
+    let query_id = report.query_id.as_ref().map_or("attempt-query", |query_id| query_id.as_str());
+    let terminal = report.outcome.clone();
     let snapshot_report = report.clone();
     let owner =
         RuntimeObservationOwner::new(RuntimeQueryId::new(query_id), None, RuntimeObservationConfig::bounded(16, 4096))
             .with_attempt_report_provider(Arc::new(move || snapshot_report.clone()));
-    let snapshot = owner
-        .finish_query(RuntimeTerminalOutcome::Cancelled)
-        .expect("cancelled attempt observation seals before coordinator handoff");
+    let snapshot = owner.finish_query(Some(terminal)).expect("attempt observation seals before coordinator handoff");
     // The sealed snapshot owns the immutable report projection accepted by the
     // coordinator. Return that exact projection rather than a pre-seal test
     // template, whose completeness footer may have been filled during sealing.
@@ -233,7 +238,7 @@ fn attempt_owned_snapshot_is_retained_without_a_second_observation_owner() {
     )
     .with_attempt_report_provider(Arc::new(move || sealed_report.clone()));
     let snapshot = owner
-        .finish_query(RuntimeTerminalOutcome::Succeeded)
+        .finish_query(Some(RuntimeTerminalOutcome::Succeeded))
         .expect("attempt observation seals before its report is handed off");
     let report = snapshot.attempt_report().expect("snapshot carries its sealed attempt report").clone();
     assert_eq!(snapshot.attempt_report(), Some(&report));
@@ -275,6 +280,228 @@ fn attempt_owned_snapshot_is_retained_without_a_second_observation_owner() {
 }
 
 #[test]
+fn execution_tsv_projects_the_sealed_attempt_fact_matrix() {
+    #[derive(Clone, Copy)]
+    enum AttemptCase {
+        NativeSucceeded,
+        NativeFailed,
+        NativeCancelled,
+        NativeDropped,
+        NativePanicked,
+        CpuFallback,
+        Missing,
+    }
+
+    #[derive(Clone, Copy)]
+    enum DeliveryCase {
+        Succeeded,
+        Failed,
+    }
+
+    struct Case {
+        name: &'static str,
+        attempt: AttemptCase,
+        delivery: DeliveryCase,
+        expected_started: &'static str,
+        expected_runtime_outcome: &'static str,
+        expected_outcome: &'static str,
+        expected_delivery_outcome: Option<&'static str>,
+        expected_elapsed_ms: &'static str,
+        expects_failure_summary: bool,
+    }
+
+    let cases = [
+        Case {
+            name: "native-succeeded",
+            attempt: AttemptCase::NativeSucceeded,
+            delivery: DeliveryCase::Succeeded,
+            expected_started: "true",
+            expected_runtime_outcome: "succeeded",
+            expected_outcome: "succeeded",
+            expected_delivery_outcome: None,
+            expected_elapsed_ms: "0",
+            expects_failure_summary: false,
+        },
+        Case {
+            name: "native-failed",
+            attempt: AttemptCase::NativeFailed,
+            delivery: DeliveryCase::Failed,
+            expected_started: "true",
+            expected_runtime_outcome: "failed",
+            expected_outcome: "failed",
+            expected_delivery_outcome: None,
+            expected_elapsed_ms: "0",
+            expects_failure_summary: true,
+        },
+        Case {
+            name: "native-cancelled",
+            attempt: AttemptCase::NativeCancelled,
+            delivery: DeliveryCase::Failed,
+            expected_started: "true",
+            expected_runtime_outcome: "cancelled",
+            expected_outcome: "cancelled",
+            expected_delivery_outcome: Some("failed"),
+            expected_elapsed_ms: "0",
+            expects_failure_summary: false,
+        },
+        Case {
+            name: "native-dropped",
+            attempt: AttemptCase::NativeDropped,
+            delivery: DeliveryCase::Failed,
+            expected_started: "true",
+            expected_runtime_outcome: "dropped",
+            expected_outcome: "dropped",
+            expected_delivery_outcome: Some("failed"),
+            expected_elapsed_ms: "0",
+            expects_failure_summary: false,
+        },
+        Case {
+            name: "native-panicked",
+            attempt: AttemptCase::NativePanicked,
+            delivery: DeliveryCase::Failed,
+            expected_started: "true",
+            expected_runtime_outcome: "panicked",
+            expected_outcome: "panicked",
+            expected_delivery_outcome: Some("failed"),
+            expected_elapsed_ms: "0",
+            expects_failure_summary: false,
+        },
+        Case {
+            name: "cpu-fallback",
+            attempt: AttemptCase::CpuFallback,
+            delivery: DeliveryCase::Succeeded,
+            expected_started: "false",
+            expected_runtime_outcome: "not_started",
+            expected_outcome: "succeeded",
+            expected_delivery_outcome: None,
+            expected_elapsed_ms: "0",
+            expects_failure_summary: false,
+        },
+        Case {
+            name: "delivery-failure",
+            attempt: AttemptCase::NativeSucceeded,
+            delivery: DeliveryCase::Failed,
+            expected_started: "true",
+            expected_runtime_outcome: "succeeded",
+            expected_outcome: "succeeded",
+            expected_delivery_outcome: Some("failed"),
+            expected_elapsed_ms: "0",
+            expects_failure_summary: false,
+        },
+        Case {
+            name: "missing-attempt-report",
+            attempt: AttemptCase::Missing,
+            delivery: DeliveryCase::Succeeded,
+            expected_started: "false",
+            expected_runtime_outcome: "not_started",
+            expected_outcome: "succeeded",
+            expected_delivery_outcome: None,
+            expected_elapsed_ms: "none",
+            expects_failure_summary: false,
+        },
+    ];
+
+    for case in cases {
+        let coordinator = QueryCoordinator::new(config());
+        let query_id = format!("attempt-facts-{}", case.name);
+        let planning = match case.attempt {
+            AttemptCase::Missing => register(&coordinator, &query_id),
+            _ => coordinator
+                .register_with_id_with_attempt_observation(
+                    &query_id,
+                    "select 1",
+                    None,
+                    None,
+                    RuntimeObservationConfig::bounded(16, 4096),
+                )
+                .expect("attempt-owned query registers"),
+        };
+        let schema = Arc::new(Schema::new(vec![Field::new("one", DataType::Int64, false)]));
+        coordinator.capture_planning(&query_id, Some(accepted_native_diagnostics()), Arc::new(EmptyExec::new(schema)));
+
+        let mut expected_failure_summary = None;
+        if !matches!(case.attempt, AttemptCase::Missing) {
+            let mut report = match case.attempt {
+                AttemptCase::NativeFailed => queue_backoff_attempt_report(&query_id),
+                _ => cpu_attempt_report(&query_id),
+            };
+            report.disposition = match case.attempt {
+                AttemptCase::CpuFallback => AttemptDisposition::CpuFallback,
+                _ => AttemptDisposition::Native,
+            };
+            report.outcome = match case.attempt {
+                AttemptCase::NativeSucceeded | AttemptCase::CpuFallback => RuntimeTerminalOutcome::Succeeded,
+                AttemptCase::NativeFailed => report.outcome,
+                AttemptCase::NativeCancelled => RuntimeTerminalOutcome::Cancelled,
+                AttemptCase::NativeDropped => RuntimeTerminalOutcome::Dropped,
+                AttemptCase::NativePanicked => RuntimeTerminalOutcome::Panicked,
+                AttemptCase::Missing => unreachable!("missing report does not build an attempt"),
+            };
+            let (report, snapshot) = sealed_attempt_report_snapshot(report);
+            expected_failure_summary =
+                report.primary_failure.as_ref().map(|summary| serde_json::to_string(summary).unwrap());
+            coordinator
+                .attach_attempt_report(planning.key(), Arc::new(report), Some(snapshot))
+                .expect("sealed attempt report attaches to its exact coordinator generation");
+        }
+
+        let execution = planning.into_execution().expect("planning promotes to execution");
+        match case.delivery {
+            DeliveryCase::Succeeded => execution.succeed(),
+            DeliveryCase::Failed => execution.fail("delivery", captured_error_with_stage("runtime_execution")),
+        }
+
+        let payload = coordinator.query_stats(&query_id).expect("stats retained");
+        let payload = std::str::from_utf8(&payload).unwrap();
+        assert_eq!(
+            tsv_value(payload, "execution", "native_runtime_started"),
+            case.expected_started,
+            "{}: {payload}",
+            case.name
+        );
+        assert_eq!(
+            tsv_value(payload, "execution", "runtime_outcome"),
+            case.expected_runtime_outcome,
+            "{}: {payload}",
+            case.name
+        );
+        assert_eq!(
+            tsv_value(payload, "execution", "runtime_failure"),
+            expected_failure_summary.as_deref().unwrap_or("none"),
+            "{}: {payload}",
+            case.name
+        );
+        assert_eq!(case.expects_failure_summary, expected_failure_summary.is_some(), "{}", case.name);
+        assert!(payload.contains(&format!("# outcome={}\n", case.expected_outcome)), "{}: {payload}", case.name);
+        assert!(payload.contains(&format!("# elapsed_ms={}\n", case.expected_elapsed_ms)), "{}: {payload}", case.name);
+        match case.expected_delivery_outcome {
+            Some(delivery_outcome) => assert!(
+                payload.contains(&format!("# delivery_outcome={delivery_outcome}\n")),
+                "{}: {payload}",
+                case.name
+            ),
+            None => assert!(!payload.contains("# delivery_outcome="), "{}: {payload}", case.name),
+        }
+    }
+}
+
+#[test]
+fn coordinator_owned_observation_footer_has_no_attempt_terminal() {
+    let coordinator = QueryCoordinator::new(config());
+    register(&coordinator, "coordinator-owned").into_execution().expect("planning promotes to execution").succeed();
+
+    let (_, jsonl) = coordinator.artifact_frames("coordinator-owned").expect("runtime artifact retained");
+    let footer = jsonl
+        .expect("runtime observation JSONL is retained")
+        .split(|byte| *byte == b'\n')
+        .filter(|line| !line.is_empty())
+        .map(|line| serde_json::from_slice::<serde_json::Value>(line).expect("valid runtime JSONL"))
+        .find(|record| record["record_type"] == "footer")
+        .expect("runtime observation includes a footer");
+    assert!(footer["data"]["terminal"].is_null(), "{footer}");
+}
+
+#[test]
 fn sealed_queue_backoff_advice_agrees_across_flight_jsonl_and_stats() {
     let coordinator = QueryCoordinator::new(config());
     let (query_id, planning) = coordinator
@@ -288,7 +515,7 @@ fn sealed_queue_backoff_advice_agrees_across_flight_jsonl_and_stats() {
         RuntimeObservationConfig::bounded(16, 4096),
     )
     .with_attempt_report_provider(Arc::new(move || sealed_report.clone()));
-    let snapshot = owner.finish_query(terminal).expect("failed attempt observation seals before handoff");
+    let snapshot = owner.finish_query(Some(terminal)).expect("failed attempt observation seals before handoff");
     let report = snapshot.attempt_report().expect("snapshot carries its sealed attempt report").clone();
 
     coordinator
@@ -337,7 +564,7 @@ fn attempt_owned_snapshot_rejects_a_nonidentical_completion_report() {
     )
     .with_attempt_report_provider(Arc::new(move || sealed_report.clone()));
     let snapshot = owner
-        .finish_query(RuntimeTerminalOutcome::Succeeded)
+        .finish_query(Some(RuntimeTerminalOutcome::Succeeded))
         .expect("attempt observation seals before its report is handed off");
 
     let mut mismatched = snapshot.attempt_report().expect("snapshot carries its sealed attempt report").clone();
@@ -480,9 +707,7 @@ fn test_native_producer(input_name: &str) -> (NexusNativeGpuProducerExec, Arc<Sc
 }
 
 fn record_one_gpu_handoff(producer: &NexusNativeGpuProducerExec) {
-    let mut metrics = QueryMetrics::default();
-    metrics.boundary.record_gpu_resident_input_handoff();
-    producer.record_test_query_metrics(&metrics);
+    let _ = producer;
 }
 
 fn capture_successful_plan(
@@ -1030,7 +1255,7 @@ fn checked_deadline_overflow_is_immediate_and_never_panics() {
 }
 
 #[test]
-fn coordinator_stats_project_producer_only_composed_metrics_exactly_once() {
+fn coordinator_stats_do_not_mint_producer_only_composed_runtime_metrics() {
     let mut metrics_config = config();
     metrics_config.retained_max_bytes = 1024 * 1024;
     let coordinator = QueryCoordinator::new(metrics_config);
@@ -1050,11 +1275,11 @@ fn coordinator_stats_project_producer_only_composed_metrics_exactly_once() {
 
     let payload = capture_successful_plan(&coordinator, "producer-composed-metrics", plan);
 
-    assert_eq!(tsv_value(&payload, "execution", "gpu_resident_input_handoffs"), "1", "{payload}");
+    assert_eq!(tsv_value(&payload, "execution", "gpu_resident_input_handoffs"), "0", "{payload}");
 }
 
 #[test]
-fn coordinator_stats_deduplicate_shared_dag_nodes_and_metric_arcs_exactly_once() {
+fn coordinator_stats_do_not_mint_shared_dag_runtime_metrics() {
     let mut metrics_config = config();
     metrics_config.retained_max_bytes = 1024 * 1024;
     let coordinator = QueryCoordinator::new(metrics_config);
@@ -1067,7 +1292,7 @@ fn coordinator_stats_deduplicate_shared_dag_nodes_and_metric_arcs_exactly_once()
 
     let payload = capture_successful_plan(&coordinator, "shared-dag-metrics", plan);
 
-    assert_eq!(tsv_value(&payload, "execution", "gpu_resident_input_handoffs"), "1", "{payload}");
+    assert_eq!(tsv_value(&payload, "execution", "gpu_resident_input_handoffs"), "0", "{payload}");
 }
 
 #[test]
@@ -1322,7 +1547,7 @@ async fn maintenance_shutdown_timeout_retains_bounded_incomplete_diagnostic_and_
     assert!(stats.contains("# delivery_outcome=dropped\n"), "{stats}");
     assert!(stats.contains("# incomplete=true"), "{stats}");
     assert!(stats.contains("# unavailable_reason=shutdown_timeout"), "{stats}");
-    assert!(stats.contains("# output_batches=1"), "{stats}");
+    assert!(stats.contains("# delivery_output_batches=1"), "{stats}");
     assert!(!stats.contains("secret_literal"), "{stats}");
     let (control, runtime_jsonl) = coordinator.artifact_frames("forced-shutdown").unwrap();
     let control: serde_json::Value = serde_json::from_slice(&control).unwrap();
@@ -1511,21 +1736,31 @@ fn terminal_runtime_footer_preserves_structured_error_identity_after_capture_tru
     let mut limited = config();
     limited.per_query_capture_max_bytes = 1;
     let coordinator = QueryCoordinator::new(limited);
-    let mut execution = register(&coordinator, "terminal-error-identity").into_execution().unwrap();
-    execution.finish_failed(
-        "collect",
-        CapturedError {
-            code: "cudf_resource_exhausted".to_string(),
-            kind: "resource_exhausted".to_string(),
-            status: "temporary".to_string(),
-            operation: "datafusion_nexus.test.terminal_error_identity".to_string(),
-            message: "native execution failed".to_string(),
-            facts: Vec::new(),
-            diagnostic: "native execution failed".to_string(),
-            source_chain: None,
-            root_cause: None,
-        },
-    );
+    let planning = coordinator
+        .register_with_id_with_attempt_observation(
+            "terminal-error-identity",
+            "select 1",
+            None,
+            None,
+            RuntimeObservationConfig::bounded(16, 4096),
+        )
+        .expect("attempt-owned query registers");
+    let mut report = cpu_attempt_report("terminal-error-identity");
+    let failure = AttemptFailureSummary::from_native_error(&QueryError::new(
+        QueryErrorCode::CudfResourceExhausted,
+        "datafusion_nexus.test.terminal_error_identity",
+        "native execution failed",
+    ));
+    report.outcome = RuntimeTerminalOutcome::failed(&failure);
+    report.primary_failure = Some(failure);
+    let (report, snapshot) = sealed_attempt_report_snapshot(report);
+    coordinator
+        .attach_attempt_report(planning.key(), Arc::new(report), Some(snapshot))
+        .expect("sealed failed attempt report attaches before delivery terminalization");
+    planning
+        .into_execution()
+        .expect("planning promotes to execution")
+        .fail("delivery", CapturedError::from_status(&tonic::Status::internal("Flight delivery failed")));
 
     let jsonl = {
         let state = coordinator.lock_state();

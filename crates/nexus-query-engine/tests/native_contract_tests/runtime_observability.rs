@@ -15,15 +15,15 @@ use std::{
 use nexus_query_engine::{
     metrics::QueryId,
     observability::{
-        DeterministicRuntimeObservationClock, ObservationSequence, PlanEdgeRow, PlanExecutionBoundaryKind,
-        AttemptFailureCode, AttemptFailureStatus, PlanExecutionId, PlanNodeRow, QueryBoundaryKind,
-        RUNTIME_OBSERVATION_JSONL_SCHEMA, RuntimeEventContext,
-        RuntimeObservationConfig, RuntimeObservationExportErrorKind, RuntimeObservationExportErrorStatus,
-        RuntimeObservationLossReason, RuntimeObservationPayload, RuntimeObservationRecord,
-        RuntimeObservationRecordClass, RuntimeObservationRecordDisposition, RuntimeObservationSession,
-        RuntimePlanNodeId, RuntimeQueryId, RuntimeQueryLifecycle, RuntimeResourceDomain, RuntimeResourceId,
-        RuntimeResourceRow, RuntimeSpanId, RuntimeTaskId, RuntimeTerminalOutcome, RuntimeTopologyRecord,
-        RuntimeTraceId, TaskDefinitionRow, write_runtime_observation_jsonl,
+        AttemptFailureCode, AttemptFailureStatus, DeterministicRuntimeObservationClock, ObservationSequence,
+        PlanEdgeRow, PlanExecutionBoundaryKind, PlanExecutionId, PlanNodeRow, QueryBoundaryKind,
+        RUNTIME_OBSERVATION_JSONL_SCHEMA, RuntimeEventContext, RuntimeObservationConfig,
+        RuntimeObservationExportErrorKind, RuntimeObservationExportErrorStatus, RuntimeObservationLossReason,
+        RuntimeObservationPayload, RuntimeObservationRecord, RuntimeObservationRecordClass,
+        RuntimeObservationRecordDisposition, RuntimeObservationSession, RuntimePlanNodeId, RuntimeQueryId,
+        RuntimeQueryLifecycle, RuntimeResourceDomain, RuntimeResourceId, RuntimeResourceRow, RuntimeSpanId,
+        RuntimeTaskId, RuntimeTerminalOutcome, RuntimeTopologyRecord, RuntimeTraceId, TaskDefinitionRow,
+        write_runtime_observation_jsonl,
     },
 };
 

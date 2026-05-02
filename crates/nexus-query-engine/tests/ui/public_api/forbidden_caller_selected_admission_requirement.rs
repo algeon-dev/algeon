@@ -21,7 +21,7 @@ fn raw_evidence_fields_must_remain_private() {
 }
 
 fn raw_requirement_attachment_must_remain_private() {
-    let _ = QueryAdmissionRequest::new().with_attempt_requirement(AttemptCapabilityEvidence::graph_execution());
+    let _ = QueryAdmissionRequest::new().with_attempt_requirement(AttemptCapabilityEvidence::empty());
 }
 
 fn main() {

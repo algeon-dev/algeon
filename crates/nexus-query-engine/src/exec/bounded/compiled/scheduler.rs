@@ -57,7 +57,7 @@ pub trait CompiledTaskExecutor {
     }
 
     fn before_scheduling_cycle(&mut self) -> Result<CompiledSchedulingCycle> {
-        Ok(CompiledSchedulingCycle::default())
+        Ok(CompiledSchedulingCycle)
     }
 
     fn live_reserved_bytes(&self) -> Option<u64> {
@@ -874,7 +874,7 @@ mod tests {
                 AttemptHealthTransition::HealthyReuse,
             ))
             .expect("post-cleanup finalization succeeds");
-        observation_owner.finish_query(RuntimeTerminalOutcome::from_query_error(&error));
+        observation_owner.finish_query(Some(RuntimeTerminalOutcome::from_query_error(&error)));
 
         let report = completion.wait_timeout(std::time::Duration::from_secs(1)).expect("attempt report publishes");
         assert_eq!(report.cleanup_disposition, AttemptCleanupDisposition::CompletedWithFailures);

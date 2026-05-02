@@ -249,12 +249,9 @@ impl CuvsAlgoExec {
             &uploaded.inputs,
             self.native_execution_config.runtime_observation_config(),
         );
-        let (result, mut query_metrics, observation) = outcome.into_parts();
+        let (result, mut query_metrics, _observation) = outcome.into_parts();
         record_cuvs_staging_boundaries(&mut query_metrics, &host_to_device_uploads);
         metrics.record_query_metrics(&query_metrics);
-        if let Some(observation) = observation {
-            metrics.record_runtime_observation(Arc::new(observation));
-        }
         result.map_err(|error| {
             DataFusionError::from(Error::from_native(
                 "datafusion_nexus.cuvs_sql.execute",

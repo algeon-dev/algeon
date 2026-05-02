@@ -37,7 +37,6 @@ pub(in crate::server) struct FinalizationInputs {
     pub(in crate::server) claim: u64,
     pub(in crate::server) terminal_outcome: QueryTerminalOutcome,
     pub(in crate::server) attempt_outcome: Option<RuntimeTerminalOutcome>,
-    pub(in crate::server) runtime_outcome: RuntimeTerminalOutcome,
     pub(in crate::server) captured: CapturedQuery,
     pub(in crate::server) observation_owner: Option<RuntimeObservationOwner>,
     pub(in crate::server) attempt_report: Option<Arc<QueryAttemptReport>>,
@@ -174,7 +173,6 @@ impl QueryCoordinator {
         let terminal = record.terminal.take().expect("finalization requires a terminal payload");
         let terminal_outcome = terminal.compact_outcome();
         debug_assert_eq!(record.terminal_outcome, Some(terminal_outcome));
-        let runtime_outcome = terminal.runtime_outcome();
         drop(terminal);
         let live_stats_cache = Arc::clone(&record.live_stats_cache);
         live_stats_cache.close();
@@ -183,7 +181,6 @@ impl QueryCoordinator {
             claim,
             terminal_outcome,
             attempt_outcome: record.attempt_outcome.clone(),
-            runtime_outcome,
             captured: record.captured.take().expect("finalizing live query retains captured stats inputs"),
             observation_owner: record.observation_owner.take(),
             attempt_report: record.attempt_report.take(),
@@ -218,7 +215,7 @@ impl QueryCoordinator {
         let stats_outcome = inputs.attempt_outcome.as_ref().map(attempt_outcome_label).unwrap_or(delivery_outcome);
         let stats_delivery_outcome = (stats_outcome != delivery_outcome).then_some(delivery_outcome);
         let snapshot = match inputs.observation_owner.take() {
-            Some(owner) => owner.finish_query(inputs.runtime_outcome),
+            Some(owner) => owner.finish_query(None),
             // Flight receives this snapshot only after the attempt has sealed
             // it. The coordinator projects that immutable result and never
             // creates another owner for the same invocation.

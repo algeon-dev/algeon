@@ -73,7 +73,12 @@ fn expired_shutdown_deadline_reports_final_timeout() {
 #[test]
 fn query_service_stream_runtimes_are_distinct_while_both_contexts_are_held() {
     let config = QueryExecutionConfig { ..QueryExecutionConfig::default() };
-    let service = QueryService::new_with_deployment(config, QueueBounds::default(), non_gds_deployment()).unwrap();
+    let service = runtime_test_service_with_profiles(
+        config,
+        QueueBounds::default(),
+        vec![runtime_test_device_profile(2)],
+    )
+    .unwrap();
 
     let first_handle = service.admit_query().unwrap();
     let second_handle = service.admit_query().unwrap();
@@ -113,6 +118,73 @@ fn query_service_released_handle_rejects_context_acquisition() {
 
     assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
     assert_eq!(error.fact_value("reason"), Some("query_handle_released"));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn release_racing_root_context_binding_returns_a_structured_error_without_unwinding() {
+    let service = runtime_test_service(1, 8);
+    let handle = Arc::new(service.admit_query().expect("admission"));
+    let gate = handle.lifetime.arm_root_context_binding_gate();
+    let acquiring_handle = Arc::clone(&handle);
+    let acquire = tokio::spawn(async move { acquiring_handle.acquire_context_async().await });
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !gate.entered() {
+        assert!(Instant::now() < deadline, "root context setup consumes its binding");
+        tokio::task::yield_now().await;
+    }
+    handle.finish();
+    gate.open();
+
+    let error = acquire
+        .await
+        .expect("a release racing root-context setup must not unwind")
+        .expect_err("release invalidates the in-flight root-context setup");
+    assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
+    assert_eq!(error.fact_value("reason"), Some("query_handle_released"));
+    drop(handle);
+    service.close_and_wait_for_quiescence(Duration::from_secs(10)).expect("service drains");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn dropping_queued_root_context_setup_rolls_back_the_in_flight_claim() {
+    let service = try_guaranteed_runtime_test_service().expect("single-worker guaranteed service");
+    let handle = Arc::new(service.admit_query().expect("admission"));
+    let pool = handle.gpu_execution_pool().expect("counted GPU execution pool");
+    assert_eq!(pool.snapshot().worker_count, 1);
+
+    let release = Arc::new(tokio::sync::Semaphore::new(0));
+    let blocker_release = Arc::clone(&release);
+    let (blocker_started_tx, blocker_started_rx) = tokio::sync::oneshot::channel();
+    pool.spawn(GpuExecutionJobKind::QueryExecution, async move {
+        let _ = blocker_started_tx.send(());
+        let _permit = blocker_release.acquire_owned().await.expect("blocker release semaphore remains open");
+    })
+    .expect("auxiliary blocker submits");
+    blocker_started_rx.await.expect("auxiliary blocker starts");
+
+    let acquiring_handle = Arc::clone(&handle);
+    let acquisition = tokio::spawn(async move { acquiring_handle.acquire_context_async().await });
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while pool.snapshot().queued_jobs == 0 {
+        assert!(Instant::now() < deadline, "root context setup must queue behind the worker blocker");
+        tokio::task::yield_now().await;
+    }
+
+    acquisition.abort();
+    assert!(acquisition.await.expect_err("aborted root setup task must not complete").is_cancelled());
+
+    release.add_permits(1);
+    let admitted_context = tokio::time::timeout(Duration::from_secs(10), handle.acquire_context_async())
+        .await
+        .expect("a subsequent acquisition must not wait on an abandoned root claim")
+        .expect("a subsequent acquisition establishes the root context");
+
+    drop(admitted_context);
+    handle.finish();
+    drop(pool);
+    drop(handle);
+    service.close_and_wait_for_quiescence(Duration::from_secs(10)).expect("service drains");
 }
 #[test]
 fn query_service_context_keeps_admission_until_context_drop() {

@@ -81,43 +81,38 @@ impl Drop for YieldedFrameReleaseGuard {
     }
 }
 
-#[doc(hidden)]
-pub struct YieldedFrameCounterTestHarness {
+pub(crate) struct YieldedFrameCounterTestHarness {
     live_counter: Rc<Cell<u64>>,
 }
 
-#[doc(hidden)]
 impl Default for YieldedFrameCounterTestHarness {
     fn default() -> Self {
         Self::new()
     }
 }
 
-#[doc(hidden)]
 impl YieldedFrameCounterTestHarness {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self { live_counter: Rc::new(Cell::new(0)) }
     }
 
-    pub fn live_bytes(&self) -> u64 {
+    pub(crate) fn live_bytes(&self) -> u64 {
         self.live_counter.get()
     }
 
-    pub fn yield_bytes(&self, contributed_bytes: u64) -> YieldedFrameCounterTestGuard {
+    pub(crate) fn yield_bytes(&self, contributed_bytes: u64) -> YieldedFrameCounterTestGuard {
         YieldedFrameCounterTestGuard {
             release_guard: YieldedFrameReleaseGuard::new(Rc::clone(&self.live_counter), contributed_bytes, true),
         }
     }
 }
 
-#[doc(hidden)]
-pub struct YieldedFrameCounterTestGuard {
+pub(crate) struct YieldedFrameCounterTestGuard {
     release_guard: YieldedFrameReleaseGuard,
 }
 
-#[doc(hidden)]
 impl YieldedFrameCounterTestGuard {
-    pub fn take_for_release(&mut self) {
+    pub(crate) fn take_for_release(&mut self) {
         self.release_guard.take_for_release("YieldedFrameCounterTestGuard::take_for_release called twice");
     }
 }
@@ -603,20 +598,18 @@ pub(super) fn map_projection_resident_frame_stream(
     )
 }
 
-#[doc(hidden)]
-pub struct ResidentFrameStreamProducerTestHarness {
+pub(crate) struct ResidentFrameStreamProducerTestHarness {
     payload: Option<ResidentFrameStreamPayload>,
     reservations: ReservationTracker,
     metrics: QueryMetrics,
 }
 
-#[doc(hidden)]
 impl ResidentFrameStreamProducerTestHarness {
-    pub fn new(producer_reservation_bytes: &[u64]) -> Result<Self> {
+    pub(crate) fn new(producer_reservation_bytes: &[u64]) -> Result<Self> {
         Self::with_source(producer_reservation_bytes, Box::new(EmptyResidentFrameStreamSource))
     }
 
-    pub fn new_erroring(producer_reservation_bytes: &[u64]) -> Result<Self> {
+    pub(crate) fn new_erroring(producer_reservation_bytes: &[u64]) -> Result<Self> {
         Self::with_source(producer_reservation_bytes, Box::new(ErrorResidentFrameStreamSource { emitted: false }))
     }
 
@@ -646,17 +639,17 @@ impl ResidentFrameStreamProducerTestHarness {
         Ok(Self { payload: Some(payload), reservations, metrics })
     }
 
-    pub fn reserved_bytes(&self) -> u64 {
+    pub(crate) fn reserved_bytes(&self) -> u64 {
         self.reservations.reserved_bytes()
     }
 
-    pub fn release_producer_reservations(&mut self) {
+    pub(crate) fn release_producer_reservations(&mut self) {
         if let Some(payload) = self.payload.as_mut() {
             payload.release_producer_reservations(&mut self.reservations, &mut self.metrics);
         }
     }
 
-    pub fn collect_remaining_frames_owned_then_release(&mut self) -> Result<usize> {
+    pub(crate) fn collect_remaining_frames_owned_then_release(&mut self) -> Result<usize> {
         let result = self
             .payload
             .as_mut()
@@ -667,7 +660,7 @@ impl ResidentFrameStreamProducerTestHarness {
         result
     }
 
-    pub fn drop_payload_without_release(&mut self) {
+    pub(crate) fn drop_payload_without_release(&mut self) {
         drop(self.payload.take());
     }
 }

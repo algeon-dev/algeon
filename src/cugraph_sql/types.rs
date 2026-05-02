@@ -900,12 +900,12 @@ pub(crate) fn vertex_id_domain_for_call(
     let is_bfs_string_source = bfs_source.is_some_and(CugraphBfsSource::is_utf8);
     if is_bfs_string_source {
         if !is_string_vertex_dtype(src_type) {
-            return Err(plan_error(format!(
+            return Err(unsupported_vertex_dtype_error(format!(
                 "cuGraph BFS string source_vertex requires a string source column, found {src_type:?}"
             )));
         }
         if !is_string_vertex_dtype(dst_type) {
-            return Err(plan_error(format!(
+            return Err(unsupported_vertex_dtype_error(format!(
                 "cuGraph BFS string source_vertex requires a string destination column, found {dst_type:?}"
             )));
         }
@@ -916,7 +916,7 @@ pub(crate) fn vertex_id_domain_for_call(
         && bfs_source.is_some_and(CugraphBfsSource::is_literal_numeric_domain)
         && (is_string_vertex_dtype(src_type) || is_string_vertex_dtype(dst_type))
     {
-        return Err(plan_error(format!(
+        return Err(vertex_dtype_mismatch_error(format!(
             "cuGraph BFS numeric source_vertex requires Int32 or Int64 edge columns, found source={src_type:?}, destination={dst_type:?}"
         )));
     }
@@ -930,19 +930,21 @@ pub(crate) fn vertex_id_domain_for_call(
     }
 
     if !is_numeric_vertex_dtype(src_type) {
-        return Err(plan_error(format!(
+        return Err(unsupported_vertex_dtype_error(format!(
             "cuGraph {} source column has unsupported dtype {src_type:?}",
             algorithm.function_name()
         )));
     }
     if !is_numeric_vertex_dtype(dst_type) {
-        return Err(plan_error(format!(
+        return Err(unsupported_vertex_dtype_error(format!(
             "cuGraph {} destination column has unsupported dtype {dst_type:?}",
             algorithm.function_name()
         )));
     }
     if src_type != dst_type {
-        return Err(plan_error("cuGraph source and destination columns must have the same numeric vertex dtype"));
+        return Err(vertex_dtype_mismatch_error(
+            "cuGraph source and destination columns must have the same numeric vertex dtype",
+        ));
     }
     match src_type {
         DataType::Int32 => Ok(CugraphVertexIdDomain::Int32),
@@ -992,20 +994,20 @@ pub(crate) fn validate_similarity_pair_table_schema(
     vertex_domain: &CugraphVertexIdDomain,
 ) -> Result<()> {
     let first = schema.field_with_name(&table.first_vertex_col).map_err(|_| {
-        plan_error(format!(
+        missing_column_error(format!(
             "cuGraph vertex-pair source '{}' is missing first vertex column '{}'",
             table.table_name, table.first_vertex_col
         ))
     })?;
     let second = schema.field_with_name(&table.second_vertex_col).map_err(|_| {
-        plan_error(format!(
+        missing_column_error(format!(
             "cuGraph vertex-pair source '{}' is missing second vertex column '{}'",
             table.table_name, table.second_vertex_col
         ))
     })?;
 
     if first.data_type() != second.data_type() {
-        return Err(plan_error(format!(
+        return Err(vertex_dtype_mismatch_error(format!(
             "cuGraph vertex-pair columns '{}' and '{}' in '{}' must have the same dtype, found {:?} and {:?}",
             table.first_vertex_col,
             table.second_vertex_col,
@@ -1015,7 +1017,7 @@ pub(crate) fn validate_similarity_pair_table_schema(
         )));
     }
     if !vertex_domain.accepts(first.data_type()) {
-        return Err(plan_error(format!(
+        return Err(vertex_dtype_mismatch_error(format!(
             "cuGraph vertex-pair first vertex column '{}' in '{}' must have dtype {}",
             table.first_vertex_col,
             table.table_name,
@@ -1023,7 +1025,7 @@ pub(crate) fn validate_similarity_pair_table_schema(
         )));
     }
     if !vertex_domain.accepts(second.data_type()) {
-        return Err(plan_error(format!(
+        return Err(vertex_dtype_mismatch_error(format!(
             "cuGraph vertex-pair second vertex column '{}' in '{}' must have dtype {}",
             table.second_vertex_col,
             table.table_name,
@@ -1035,6 +1037,24 @@ pub(crate) fn validate_similarity_pair_table_schema(
 
 pub(crate) fn is_numeric_vertex_dtype(data_type: &DataType) -> bool {
     matches!(data_type, DataType::Int32 | DataType::Int64)
+}
+
+fn unsupported_vertex_dtype_error(message: impl Into<String>) -> DataFusionError {
+    Error::new(ErrorCode::UnsupportedType, "datafusion_nexus.cugraph_sql.vertex_id_type", message)
+        .with_fact("reason", "unsupported_vertex_dtype")
+        .into()
+}
+
+fn vertex_dtype_mismatch_error(message: impl Into<String>) -> DataFusionError {
+    Error::new(ErrorCode::InvalidExecutionPlan, "datafusion_nexus.cugraph_sql.vertex_id_type", message)
+        .with_fact("reason", "vertex_dtype_mismatch")
+        .into()
+}
+
+fn missing_column_error(message: impl Into<String>) -> DataFusionError {
+    Error::new(ErrorCode::FieldNotFound, "datafusion_nexus.cugraph_sql.vertex_pair_schema", message)
+        .with_fact("reason", "column_not_found")
+        .into()
 }
 
 pub(crate) fn is_string_vertex_dtype(data_type: &DataType) -> bool {

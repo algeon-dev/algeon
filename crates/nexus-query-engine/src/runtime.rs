@@ -8,19 +8,16 @@
 
 mod allocator_correlation;
 mod attempt_domain;
+mod backend_close;
 mod backend_core;
 mod backend_lifecycle;
 mod boundary;
 mod bounded_join;
-/// Runtime-owned GPU caches.
-// P5 cache implementations remain private substrate.  P2 construction and
-// execution cannot inject, retain, or observe cache instances.
-pub(crate) mod cache;
 mod cache_events;
 mod cache_fill;
 mod context;
 mod deadline;
-pub mod gpu;
+pub(crate) mod gpu;
 mod gpu_execution_pool;
 mod io_capability;
 mod io_lifecycle;
@@ -30,6 +27,7 @@ mod native_contract_runtime_observability_tests;
 #[cfg(test)]
 mod native_execution_tests;
 mod object_store;
+mod observation_completion;
 mod policy;
 mod process_exit;
 mod query_service;
@@ -37,8 +35,7 @@ mod reservation;
 /// Frontend-neutral GPU-resident data and reusable build handles.
 pub mod resident;
 mod service_stream;
-// P5-only source-cache identities remain implementation substrate.
-pub(crate) mod source_identity;
+mod stream_cleanup;
 #[cfg(test)]
 mod tests;
 
@@ -67,8 +64,6 @@ pub use cache_fill::{
     DEFAULT_LAKEHOUSE_CACHE_FILL_MAX_CONCURRENT_OPS, LakehouseCacheFillConfig,
     default_lakehouse_cache_fill_budget_bytes,
 };
-#[cfg(test)]
-pub(crate) use context::ExecutionContextBuilder;
 pub use context::{
     ExecutionCancellation, ExecutionContext, LeasedExecutionContext, QueryServiceStreamPool,
     RuntimeObservationBuildError, RuntimeObservedExecutionContext, RuntimeObservedExecutionContextBuilder,
@@ -77,9 +72,10 @@ pub use context::{
 pub use gpu::{
     DeviceCapabilities, DeviceCapability, DeviceFacts, DeviceLedger, DeviceLedgerGrantRow, DeviceLedgerReport,
     DeviceMemoryFailureReport, DeviceResourceProfile, DeviceTelemetrySnapshot, DeviceTelemetryStatus,
-    EvictableMemoryObserver, EvictableMemoryPressure, GpuComms, GpuInventory, GpuTelemetry, LedgerSnapshot,
-    MemoryGrant, NexusGpuInventory, NexusNvmlTelemetry, Placement, SingleDeviceComms, device_budget_bytes_from_facts,
+    EvictableMemoryObserver, EvictableMemoryPressure, GpuInventory, GpuTelemetry, LedgerSnapshot, MemoryGrant,
+    NexusGpuInventory, NexusNvmlTelemetry, Placement, device_budget_bytes_from_facts,
 };
+#[allow(unused_imports)]
 pub(crate) use gpu::{DeviceContext, DeviceRegistry, DeviceRegistryConfig, PlacementPolicy, PlacementRequest};
 pub use gpu_execution_pool::{
     GpuExecutionJobKind, GpuExecutionPoolSnapshot, GpuExecutionQuerySnapshot, GpuExecutorLease,
@@ -103,7 +99,8 @@ pub use query_service::{
     AdmittedQueryContext, QueryActivityLease, QueryAdmissionRequest, QueryExecutionConfig, QueryHandle,
     QueryServiceAdmissionSnapshot, QueryServiceDeviceAdmissionSnapshot, QueueBounds,
 };
-pub use reservation::{MemoryReservationRequest, RetryFacts};
+pub use reservation::MemoryReservationRequest;
+pub(crate) use reservation::RetryFacts;
 pub use service_stream::{
     DEFAULT_SERVICE_STREAM_POOL_SIZE, StreamLease, StreamPermitClass, default_service_stream_pool_size_for_device,
 };

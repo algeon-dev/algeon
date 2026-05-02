@@ -7,9 +7,9 @@
 use std::{collections::BTreeMap, time::Duration};
 
 use crate::{
+    execution_contracts::{ExecutionBoundaryPolicy, MemoryControlPolicy},
     graph_memory::GraphReservationReport,
     harness::max_option,
-    runtime::{ExecutionBoundaryPolicy, MemoryControlPolicy},
 };
 
 mod aggregate;
@@ -31,8 +31,11 @@ pub(crate) use memory::ReservationProjectionLedgerHandle;
 pub use self::{
     aggregate::AggregateStrategyDecisionMetrics,
     boundary::BoundaryMetrics,
-    correlation::{CompiledTaskId, PlanNodeId, PlanTaskMapping, QueryId, TraceId},
-    descriptor::{MetricAggregation, MetricDescriptor, MetricDirection, MetricUnit, QUERY_METRIC_DESCRIPTORS},
+    correlation::PlanTaskMapping,
+    descriptor::{
+        DATAFUSION_PROJECTION_METRIC_DESCRIPTORS, MetricAggregation, MetricDescriptor, MetricDirection, MetricUnit,
+        QUERY_METRIC_DESCRIPTORS, native_datafusion_metric_descriptors,
+    },
     dynamic_filter::{DynamicFilterRuntimeMetrics, DynamicFilterSourceSnapshot},
     graph::GraphAlgorithmRuntimeMetrics,
     join::{JoinOperatorMetrics, JoinStrategyDecisionMetrics},
@@ -40,6 +43,10 @@ pub use self::{
     operator::OperatorMetrics,
     source_read::{SourceReadParquetEvidenceMetrics, SourceReadRuntimeMetrics},
     task::{BudgetedExecutionEvent, TaskOperatorMetrics, TaskRuntimeMetrics},
+};
+pub use crate::{
+    correlation::{CompiledTaskId, PlanNodeId, QueryId, TraceId},
+    execution_contracts::{MemoryReservationRequest, MemorySpaceId, ReservationKind},
 };
 
 /// Query-scoped metrics accumulated during native execution.

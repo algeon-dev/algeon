@@ -6,6 +6,7 @@ mod hash;
 mod leaf;
 pub(in crate::exec::bounded) mod sizing;
 
+#[cfg(test)]
 pub(in crate::exec) use compiled::transaction::JoinMaterializationTxn;
 pub(in crate::exec::bounded) use compiled::{
     BoundedCompiledJoinBuildState, BoundedCompiledJoinMaterializeOutput, BoundedCompiledJoinProbeState,

@@ -1,5 +1,3 @@
-use arrow::datatypes::{DataType, Field, Schema};
-
 use super::{tracker::ReservationBudget, *};
 use crate::{
     observability::{
@@ -8,7 +6,6 @@ use crate::{
         RuntimeReservationDisposition, RuntimeTerminalOutcome, write_runtime_observation_jsonl,
     },
     runtime::DeviceLedger,
-    source::LocalParquetSource,
 };
 
 fn test_request(kind: ReservationKind, boundary: &'static str, bytes: u64, budget: u64) -> MemoryReservationRequest {

@@ -228,7 +228,7 @@ impl BoundedJoinLeafLocalParquetSourcePrefetch {
 
     pub(in crate::exec::bounded) fn finish(
         self,
-        context: &ExecutionContext,
+        _context: &ExecutionContext,
         reservations: &mut ReservationTracker,
         metrics: &mut QueryMetrics,
     ) -> Result<ResidentGpuFrame> {

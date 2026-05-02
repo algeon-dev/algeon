@@ -151,7 +151,7 @@ impl<'a> GraphExecutionMetrics<'a> {
     fn merge_stage_evidence(
         &mut self,
         metrics: QueryMetrics,
-        observation: Option<nexus_query_engine::observability::SealedRuntimeObservationSnapshot>,
+        _observation: Option<nexus_query_engine::observability::SealedRuntimeObservationSnapshot>,
     ) {
         if self.stage_count == 0 {
             self.accumulated = metrics;
@@ -159,9 +159,6 @@ impl<'a> GraphExecutionMetrics<'a> {
             self.accumulated.merge_from(metrics);
         }
         self.stage_count = self.stage_count.saturating_add(1);
-        if let Some(observation) = observation {
-            self.sink.record_runtime_observation(Arc::new(observation));
-        }
     }
 
     fn merge_outcome(

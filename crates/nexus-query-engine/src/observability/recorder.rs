@@ -748,12 +748,12 @@ impl RuntimeObservationHandle {
     }
 
     fn seal_owned(&self, outcome: RuntimeTerminalOutcome) -> Option<SealedRuntimeObservationSnapshot> {
-        self.seal_owned_deferred(outcome, None).invoke_observers()
+        self.seal_owned_deferred(Some(outcome), None).invoke_observers()
     }
 
     fn seal_owned_deferred(
         &self,
-        outcome: RuntimeTerminalOutcome,
+        outcome: Option<RuntimeTerminalOutcome>,
         attempt_report_provider: Option<&AttemptReportSealProvider>,
     ) -> DeferredRuntimeObservationSeal {
         let Some(inner) = self.inner.as_ref() else {
@@ -951,7 +951,7 @@ impl RuntimeObservationSession {
 
     fn seal_deferred(
         &self,
-        outcome: RuntimeTerminalOutcome,
+        outcome: Option<RuntimeTerminalOutcome>,
         attempt_report_provider: Option<&AttemptReportSealProvider>,
     ) -> DeferredRuntimeObservationSeal {
         self.handle.seal_owned_deferred(outcome, attempt_report_provider)
@@ -1106,7 +1106,7 @@ impl RuntimeObservationOwner {
                 RuntimeObservationOwnerLifecycleState::Sealed(snapshot) => return snapshot.clone(),
             }
         };
-        self.finish_owner_terminal(outcome, |_| {})
+        self.finish_owner_terminal(Some(outcome), |_| {})
     }
 
     /// Retains one plan or admission outcome until the query owner completes cleanup.
@@ -1186,12 +1186,16 @@ impl RuntimeObservationOwner {
     /// returns; [`QueryCleanupSealDelivery::deliver`] runs afterwards and
     /// never gates reuse.
     pub(crate) fn seal_query_cleanup(&self, fallback: RuntimeTerminalOutcome) -> QueryCleanupSealDelivery {
+        self.seal_query_cleanup_with_fallback(Some(fallback))
+    }
+
+    fn seal_query_cleanup_with_fallback(&self, fallback: Option<RuntimeTerminalOutcome>) -> QueryCleanupSealDelivery {
         self.begin_query_cleanup();
         let outcome = loop {
             let mut lifecycle = self.lock_lifecycle();
             match &mut *lifecycle {
                 RuntimeObservationOwnerLifecycleState::Open { pending_outcome, .. } => {
-                    let outcome = pending_outcome.take().unwrap_or_else(|| fallback.clone());
+                    let outcome = pending_outcome.take().or_else(|| fallback.clone());
                     *lifecycle = RuntimeObservationOwnerLifecycleState::Finishing { late_observers: Vec::new() };
                     break outcome;
                 },
@@ -1224,16 +1228,27 @@ impl RuntimeObservationOwner {
         let deferred = self.seal_owner_terminal(outcome, |outcome| {
             self.handle()
                 .record(|| RuntimeObservationPayload::QueryBoundary { boundary: QueryBoundaryKind::CleanupFinished });
-            let boundary = query_terminal_boundary(outcome);
-            self.handle().record(|| RuntimeObservationPayload::QueryBoundary { boundary });
+            if let Some(outcome) = outcome {
+                let boundary = query_terminal_boundary(outcome);
+                self.handle().record(|| RuntimeObservationPayload::QueryBoundary { boundary });
+            }
         });
         QueryCleanupSealDelivery { owner: Some(self.clone()), deferred: Some(deferred), already_sealed: None }
     }
 
     /// Completes a query that has no admitted handle responsible for cleanup.
-    pub fn finish_query(&self, outcome: RuntimeTerminalOutcome) -> Option<SealedRuntimeObservationSnapshot> {
-        self.record_terminal_outcome(outcome.clone());
-        self.finish_query_cleanup(outcome)
+    ///
+    /// `None` is reserved for coordinator-owned records that have no attempt
+    /// lifecycle. Their observation still seals, but its terminal field stays
+    /// absent rather than minting an engine attempt outcome from delivery data.
+    pub fn finish_query(&self, outcome: Option<RuntimeTerminalOutcome>) -> Option<SealedRuntimeObservationSnapshot> {
+        match outcome {
+            Some(outcome) => {
+                self.record_terminal_outcome(outcome.clone());
+                self.finish_query_cleanup(outcome)
+            },
+            None => self.seal_query_cleanup_with_fallback(None).deliver(),
+        }
     }
 
     /// Returns a live incomplete snapshot before terminal sealing.
@@ -1279,11 +1294,11 @@ impl RuntimeObservationOwner {
 
     fn finish_owner_terminal<F>(
         &self,
-        outcome: RuntimeTerminalOutcome,
+        outcome: Option<RuntimeTerminalOutcome>,
         before_seal: F,
     ) -> Option<SealedRuntimeObservationSnapshot>
     where
-        F: FnOnce(&RuntimeTerminalOutcome),
+        F: FnOnce(Option<&RuntimeTerminalOutcome>),
     {
         let deferred = self.seal_owner_terminal(outcome, before_seal);
         self.complete_observer_delivery(deferred)
@@ -1292,26 +1307,28 @@ impl RuntimeObservationOwner {
     /// Seals the recorder state and returns the deferred observer delivery.
     fn seal_owner_terminal<F>(
         &self,
-        outcome: RuntimeTerminalOutcome,
+        outcome: Option<RuntimeTerminalOutcome>,
         before_seal: F,
     ) -> DeferredRuntimeObservationSeal
     where
-        F: FnOnce(&RuntimeTerminalOutcome),
+        F: FnOnce(Option<&RuntimeTerminalOutcome>),
     {
         let finishing = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let outcome = match &self.terminal_outcome_resolver {
+            let outcome = outcome.map(|outcome| match &self.terminal_outcome_resolver {
                 Some(resolver) => resolver(outcome),
                 None => outcome,
-            };
-            before_seal(&outcome);
-            let attempt_report_provider = self.attempt_report_seal_provider.clone().or_else(|| {
-                self.attempt_report_provider.as_ref().map(|provider| {
-                    let provider = Arc::clone(provider);
-                    Arc::new(move |footer: &RuntimeObservationFooter| {
-                        let mut report = provider();
-                        report.set_observation_completeness(footer);
-                        Arc::new(report)
-                    }) as AttemptReportSealProvider
+            });
+            before_seal(outcome.as_ref());
+            let attempt_report_provider = outcome.as_ref().and_then(|_| {
+                self.attempt_report_seal_provider.clone().or_else(|| {
+                    self.attempt_report_provider.as_ref().map(|provider| {
+                        let provider = Arc::clone(provider);
+                        Arc::new(move |footer: &RuntimeObservationFooter| {
+                            let mut report = provider();
+                            report.set_observation_completeness(footer);
+                            Arc::new(report)
+                        }) as AttemptReportSealProvider
+                    })
                 })
             });
             self.session.seal_deferred(outcome, attempt_report_provider.as_ref())
@@ -1320,7 +1337,7 @@ impl RuntimeObservationOwner {
             Ok(deferred) => deferred,
             Err(panic) => {
                 self.handle().mark_degraded();
-                let deferred = self.session.seal_deferred(RuntimeTerminalOutcome::Panicked, None);
+                let deferred = self.session.seal_deferred(Some(RuntimeTerminalOutcome::Panicked), None);
                 let _ = self.complete_observer_delivery(deferred);
                 std::panic::resume_unwind(panic);
             },
@@ -1592,7 +1609,7 @@ impl RuntimeObservationSessionInner {
     fn take_sealed_snapshot_data(
         &self,
         state: &mut RuntimeObservationRecorderState,
-        outcome: RuntimeTerminalOutcome,
+        outcome: Option<RuntimeTerminalOutcome>,
         attempt_report_provider: Option<&AttemptReportSealProvider>,
     ) -> RuntimeObservationSnapshotData {
         let mut topology = std::mem::take(&mut state.topology);
@@ -1611,7 +1628,7 @@ impl RuntimeObservationSessionInner {
             .collect();
         let mut footer = RuntimeObservationFooter {
             complete: true,
-            terminal: Some(outcome),
+            terminal: outcome,
             retained_records: state.retained_records,
             retained_bytes: state.retained_bytes,
             first_dropped_sequence: state.first_dropped_sequence,

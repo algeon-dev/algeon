@@ -41,10 +41,7 @@ use zero_column_count::{read_zero_column_count_source, zero_column_count_chunk_f
 pub(in crate::exec) use crate::source::{
     local_parquet_file_row_group_metadata_count, parquet_file_path_fact, parquet_file_stable_id_fact,
 };
-use crate::{
-    metrics::SourceReadParquetEvidenceMetrics,
-    source::validate_local_parquet_source,
-};
+use crate::{metrics::SourceReadParquetEvidenceMetrics, source::validate_local_parquet_source};
 
 pub(in crate::exec) fn parquet_chunk_path_fact(chunk: &SourceChunk) -> String {
     crate::source::parquet_source_path_fact(&chunk.location, &chunk.path)

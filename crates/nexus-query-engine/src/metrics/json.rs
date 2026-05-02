@@ -9,11 +9,11 @@ use super::{
     SourceReadRuntimeMetrics, TaskOperatorMetrics, TaskRuntimeMetrics, TraceId,
 };
 use crate::{
-    graph_memory::GraphReservationReport,
-    runtime::{
+    execution_contracts::{
         BuildMaterializationBoundary, ExecutionBoundaryPolicy, ProbeExecutionBoundary, ResultMaterializationBoundary,
         SourceReadBoundary,
     },
+    graph_memory::GraphReservationReport,
 };
 
 impl QueryMetrics {

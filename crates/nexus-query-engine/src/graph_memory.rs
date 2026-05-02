@@ -8,12 +8,12 @@ use arrow::datatypes::{DataType, SchemaRef};
 
 use crate::{
     error::{QueryError, QueryErrorCode, Result},
+    execution_contracts::{MemoryReservationRequest, MemorySpaceId, ReservationKind},
     metrics::{PlanNodeId, QueryId},
     plan::{
         EdgeNormalizeSpec, GraphAlgorithm, GraphAlgorithmParams, GraphAlgorithmSpec, GraphConstructionPolicy,
         GraphEdgeColumnBindings, NodeId, PlanNode, QueryPlan, estimated_output_rows,
     },
-    runtime::{MemoryReservationRequest, MemorySpaceId, ReservationKind},
 };
 
 /// Stable graph memory-tier boundary used in reports and reservation facts.
