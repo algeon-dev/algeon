@@ -24,6 +24,8 @@ async fn main() {
 
     let workload = [
         ("sum_rewrite", SQL_SUM_QUERY),
+        ("not_rewrite", SQL_NOT_QUERY),
+        ("cast_rewrite", SQL_CAST_QUERY),
         ("avg_reject", SQL_AVG_QUERY),
         ("filtered_reject", SQL_FILTERED_QUERY),
         ("modulo_reject", SQL_MODULO_QUERY),
@@ -98,6 +100,24 @@ FROM bench
 WHERE payload >= 10
 GROUP BY key
 ORDER BY sum_x00 DESC, key ASC
+LIMIT 2
+";
+
+const SQL_NOT_QUERY: &str = "
+SELECT key, SUM(m00 + m01) AS sum_x00
+FROM bench
+WHERE NOT (payload < 10)
+GROUP BY key
+ORDER BY sum_x00 DESC, key ASC
+LIMIT 2
+";
+
+const SQL_CAST_QUERY: &str = "
+SELECT key, SUM(CAST(key AS BIGINT)) AS sum_cast
+FROM bench
+WHERE payload >= 10
+GROUP BY key
+ORDER BY sum_cast DESC, key ASC
 LIMIT 2
 ";
 

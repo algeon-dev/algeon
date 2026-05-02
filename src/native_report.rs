@@ -19,6 +19,9 @@ use datafusion::{
 
 use crate::{CandidateOutcome, FallbackReason, lower_physical_plan_to_native, report::GpuCandidate};
 
+pub const NATIVE_FALLBACK_PRESSURE_TSV_SCHEMA_VERSION: u32 = 1;
+pub const NATIVE_FALLBACK_PRESSURE_TSV_HEADER: &str = "query_id\tphysical_root\tphysical_shape\tnative_candidate_shape\toutcome\treason_code\tunsupported_category\tsource_diagnostics\trejected_before_execution";
+
 #[derive(Debug, Clone)]
 pub struct NativeFallbackPressureWorkloadItem {
     pub query_id: String,
@@ -52,9 +55,12 @@ impl NativeFallbackPressureReport {
 
     pub fn to_tsv(&self) -> String {
         let mut output = String::new();
-        output.push_str(
-            "query_id\tphysical_root\tphysical_shape\tnative_candidate_shape\toutcome\treason_code\tunsupported_category\tsource_diagnostics\trejected_before_execution\n",
+        let _ = writeln!(
+            output,
+            "# native_fallback_pressure_tsv_schema_version={NATIVE_FALLBACK_PRESSURE_TSV_SCHEMA_VERSION}"
         );
+        output.push_str(NATIVE_FALLBACK_PRESSURE_TSV_HEADER);
+        output.push('\n');
         for row in &self.rows {
             let _ = writeln!(
                 output,
@@ -184,6 +190,7 @@ fn physical_plan_shape(plan: &dyn ExecutionPlan) -> String {
     shape
 }
 
+// TODO: `_candidate` is currently unused; either drop it or use `candidate.shape` to disambiguate when a plan has multiple candidates.
 fn unsupported_category(plan: &dyn ExecutionPlan, _candidate: GpuCandidate, reason: FallbackReason) -> Option<String> {
     match reason {
         FallbackReason::UnsupportedExpression => first_unsupported_expression_category(plan)
@@ -221,6 +228,7 @@ fn unsupported_category(plan: &dyn ExecutionPlan, _candidate: GpuCandidate, reas
     }
 }
 
+// TODO: this returns the category of the first AggregateExec encountered top-down. For partial/final aggregate pairs the rejecting node may be the other one — prefer Final / FinalPartitioned modes when both exist.
 fn first_aggregate_category(plan: &dyn ExecutionPlan) -> Option<String> {
     if let Some(aggregate) = plan.as_any().downcast_ref::<AggregateExec>() {
         for filter in aggregate.filter_expr() {

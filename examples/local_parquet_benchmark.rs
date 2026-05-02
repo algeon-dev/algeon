@@ -14,8 +14,9 @@ use arrow::{
 };
 use cudf_query_engine::{
     ExecutionContext as NativeExecutionContext, MemoryControlPolicy as NativeMemoryControlPolicy,
-    PlanNode as NativePlanNode, QueryMetrics as NativeQueryMetrics, QueryOutput as NativeQueryOutput,
-    QueryPlan as NativeQueryPlan, SourceNode as NativeSourceNode, execute_query_plan as execute_native_query_plan,
+    PlanNode as NativePlanNode, QueryError as NativeQueryError, QueryErrorCode as NativeQueryErrorCode,
+    QueryMetrics as NativeQueryMetrics, QueryOutput as NativeQueryOutput, QueryPlan as NativeQueryPlan,
+    SourceNode as NativeSourceNode, execute_query_plan as execute_native_query_plan,
 };
 use datafusion::{
     common::{DataFusionError, Result as DataFusionResult, ScalarValue, utils::memory::get_record_batch_memory_size},
@@ -65,6 +66,8 @@ const DEFAULT_NATIVE_MAX_RETRY_ATTEMPTS: usize = 4;
 const DEFAULT_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS: usize = 1;
 const DEFAULT_MIN_NATIVE_GPU_SPEEDUP: f64 = 1.0;
 const DEFAULT_BENCHMARK_DATA_DIR: &str = "/opt/dlami/nvme/data";
+const SIX_GIB: u64 = 6 * 1024 * 1024 * 1024;
+const TEN_GIB: u64 = 10 * 1024 * 1024 * 1024;
 
 #[tokio::main]
 async fn main() -> DataFusionResult<()> {
@@ -96,13 +99,27 @@ async fn main() -> DataFusionResult<()> {
     println!("native_memory_control_policy={}", config.native_memory_control_policy.as_str());
     println!("benchmark_paths={}", config.benchmark_paths.name());
     println!("compression={}", config.compression.name());
+    println!("native_plan_shape={}", config.native_plan_shape.name());
+    println!("expected_outcome={}", config.expected_outcome.name());
+    println!("phase_c_decision_matrix_cases={}", phase_c_decision_matrix().len());
     println!("limit={}", config.limit);
     println!("warmups={}", config.warmup_iterations);
     println!("iterations={}", config.iterations);
 
-    let report = run_direct_parquet_benchmark(&path, file_bytes, dataset_layout, source_diagnostic, &config).await?;
     println!();
-    print!("{}", report.to_text());
+    match config.expected_outcome {
+        BenchmarkExpectedOutcome::Success => {
+            let report =
+                run_direct_parquet_benchmark(&path, file_bytes, dataset_layout, source_diagnostic, &config).await?;
+            print!("{}", report.to_text());
+        },
+        BenchmarkExpectedOutcome::ResourceFailure => {
+            let report =
+                run_expected_resource_failure_probe(&path, file_bytes, dataset_layout, source_diagnostic, &config)
+                    .await?;
+            print!("{}", report.to_text());
+        },
+    }
 
     Ok(())
 }
@@ -123,6 +140,8 @@ struct LocalParquetBenchmarkConfig {
     native_memory_control_policy: NativeMemoryControlPolicy,
     benchmark_paths: BenchmarkPathSet,
     compression: BenchmarkCompression,
+    native_plan_shape: BenchmarkPlanShape,
+    expected_outcome: BenchmarkExpectedOutcome,
     output_dir: Option<PathBuf>,
 }
 
@@ -146,6 +165,8 @@ impl LocalParquetBenchmarkConfig {
             native_memory_control_policy: native_memory_control_policy_from_env()?,
             benchmark_paths: BenchmarkPathSet::from_env("CUDF_PARQUET_BENCH_PATHS")?,
             compression: BenchmarkCompression::from_env("CUDF_PARQUET_BENCH_COMPRESSION")?,
+            native_plan_shape: BenchmarkPlanShape::from_env("CUDF_PARQUET_BENCH_NATIVE_PLAN_SHAPE")?,
+            expected_outcome: BenchmarkExpectedOutcome::from_env("CUDF_PARQUET_BENCH_EXPECTED_OUTCOME")?,
             output_dir: std::env::var_os("CUDF_PARQUET_BENCH_DIR").map(PathBuf::from),
         };
         config.validate()?;
@@ -199,6 +220,40 @@ impl LocalParquetBenchmarkConfig {
 enum BenchmarkCompression {
     Uncompressed,
     Snappy,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BenchmarkPlanShape {
+    DefaultSql,
+    DirectFriendly,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BenchmarkExpectedOutcome {
+    Success,
+    ResourceFailure,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BenchmarkSourceLayout {
+    SingleFileMultiRowGroup,
+    MultiFile,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BenchmarkScalePoint {
+    ThreeGiB,
+    SixGiB,
+    TenGiB,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PhaseCMatrixCase {
+    scale: BenchmarkScalePoint,
+    compression: BenchmarkCompression,
+    source_layout: BenchmarkSourceLayout,
+    native_plan_shape: BenchmarkPlanShape,
+    expected_outcome: BenchmarkExpectedOutcome,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -258,6 +313,143 @@ impl BenchmarkCompression {
     }
 }
 
+impl BenchmarkPlanShape {
+    fn from_env(name: &'static str) -> DataFusionResult<Self> {
+        let Some(value) = std::env::var_os(name) else {
+            return Ok(Self::DefaultSql);
+        };
+        match value.to_string_lossy().to_ascii_lowercase().as_str() {
+            "default_sql" | "default-sql" => Ok(Self::DefaultSql),
+            "direct_friendly" | "direct-friendly" => Ok(Self::DirectFriendly),
+            other => Err(plan_error(format!("invalid {name}: {other}; expected default_sql or direct_friendly"))),
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::DefaultSql => "default_sql",
+            Self::DirectFriendly => "direct_friendly",
+        }
+    }
+}
+
+impl BenchmarkExpectedOutcome {
+    fn from_env(name: &'static str) -> DataFusionResult<Self> {
+        let Some(value) = std::env::var_os(name) else {
+            return Ok(Self::Success);
+        };
+        match value.to_string_lossy().to_ascii_lowercase().as_str() {
+            "success" => Ok(Self::Success),
+            "resource_failure" | "resource-failure" => Ok(Self::ResourceFailure),
+            other => Err(plan_error(format!("invalid {name}: {other}; expected success or resource_failure"))),
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Success => "success",
+            Self::ResourceFailure => "resource_failure",
+        }
+    }
+}
+
+impl BenchmarkSourceLayout {
+    fn name(self) -> &'static str {
+        match self {
+            Self::SingleFileMultiRowGroup => "single_file_multi_row_group",
+            Self::MultiFile => "multi_file",
+        }
+    }
+
+    fn file_count(self) -> usize {
+        match self {
+            Self::SingleFileMultiRowGroup => 1,
+            Self::MultiFile => 4,
+        }
+    }
+}
+
+impl BenchmarkScalePoint {
+    fn name(self) -> &'static str {
+        match self {
+            Self::ThreeGiB => "3gib",
+            Self::SixGiB => "6gib",
+            Self::TenGiB => "10gib",
+        }
+    }
+
+    fn minimum_file_bytes(self) -> u64 {
+        match self {
+            Self::ThreeGiB => THREE_GIB,
+            Self::SixGiB => SIX_GIB,
+            Self::TenGiB => TEN_GIB,
+        }
+    }
+}
+
+impl PhaseCMatrixCase {
+    fn name(self) -> String {
+        format!(
+            "{}-{}-{}-{}-{}",
+            self.scale.name(),
+            self.compression.name(),
+            self.source_layout.name(),
+            self.native_plan_shape.name(),
+            self.expected_outcome.name()
+        )
+    }
+
+    fn env_overrides(self) -> Vec<(&'static str, String)> {
+        vec![
+            ("CUDF_PARQUET_BENCH_MIN_FILE_BYTES", self.scale.minimum_file_bytes().to_string()),
+            ("CUDF_PARQUET_BENCH_COMPRESSION", self.compression.name().to_string()),
+            ("CUDF_PARQUET_BENCH_FILES", self.source_layout.file_count().to_string()),
+            ("CUDF_PARQUET_BENCH_NATIVE_PLAN_SHAPE", self.native_plan_shape.name().to_string()),
+            ("CUDF_PARQUET_BENCH_EXPECTED_OUTCOME", self.expected_outcome.name().to_string()),
+            ("CUDF_PARQUET_BENCH_NATIVE_MEMORY_POLICY", "bounded".to_string()),
+        ]
+    }
+}
+
+fn phase_c_decision_matrix() -> Vec<PhaseCMatrixCase> {
+    let mut cases = Vec::new();
+    let compressions = [BenchmarkCompression::Uncompressed, BenchmarkCompression::Snappy];
+    let layouts = [BenchmarkSourceLayout::SingleFileMultiRowGroup, BenchmarkSourceLayout::MultiFile];
+    let plan_shapes = [BenchmarkPlanShape::DefaultSql, BenchmarkPlanShape::DirectFriendly];
+
+    for scale in [BenchmarkScalePoint::ThreeGiB, BenchmarkScalePoint::SixGiB] {
+        for compression in compressions {
+            for source_layout in layouts {
+                for native_plan_shape in plan_shapes {
+                    cases.push(PhaseCMatrixCase {
+                        scale,
+                        compression,
+                        source_layout,
+                        native_plan_shape,
+                        expected_outcome: BenchmarkExpectedOutcome::Success,
+                    });
+                }
+            }
+        }
+    }
+
+    for compression in compressions {
+        for source_layout in layouts {
+            for native_plan_shape in plan_shapes {
+                cases.push(PhaseCMatrixCase {
+                    scale: BenchmarkScalePoint::TenGiB,
+                    compression,
+                    source_layout,
+                    native_plan_shape,
+                    expected_outcome: BenchmarkExpectedOutcome::ResourceFailure,
+                });
+            }
+        }
+    }
+
+    cases
+}
+
 #[derive(Debug)]
 struct DirectParquetBenchmarkReport {
     parquet_file_bytes: u64,
@@ -274,6 +466,8 @@ struct DirectParquetBenchmarkReport {
     minimum_native_gpu_speedup: f64,
     benchmark_paths: BenchmarkPathSet,
     compression: BenchmarkCompression,
+    native_plan_shape: BenchmarkPlanShape,
+    expected_outcome: BenchmarkExpectedOutcome,
     measured_run_order: String,
     cpu_comparable: TimedBenchmarkRun,
     cpu_default: TimedBenchmarkRun,
@@ -316,6 +510,9 @@ impl DirectParquetBenchmarkReport {
         push_line(&mut text, format_args!("iterations={}", self.iterations));
         push_line(&mut text, format_args!("minimum_native_gpu_speedup={:.3}", self.minimum_native_gpu_speedup));
         push_line(&mut text, format_args!("benchmark_paths={}", self.benchmark_paths.name()));
+        push_line(&mut text, format_args!("native_plan_shape={}", self.native_plan_shape.name()));
+        push_line(&mut text, format_args!("expected_outcome={}", self.expected_outcome.name()));
+        push_line(&mut text, format_args!("phase_c_decision_matrix_cases={}", phase_c_decision_matrix().len()));
         push_line(&mut text, format_args!("phase_b_runtime_gate=pass"));
         push_line(
             &mut text,
@@ -596,6 +793,114 @@ impl DirectParquetBenchmarkReport {
     }
 }
 
+#[derive(Debug)]
+struct ExpectedResourceFailureReport {
+    parquet_file_bytes: u64,
+    parquet_row_groups: usize,
+    input_rows: usize,
+    file_count: usize,
+    compression: BenchmarkCompression,
+    native_plan_shape: BenchmarkPlanShape,
+    expected_outcome: BenchmarkExpectedOutcome,
+    native_candidate_shapes: Vec<String>,
+    source_physical_plan_one_line: String,
+    source_diagnostic: String,
+    error: NativeQueryError,
+}
+
+impl ExpectedResourceFailureReport {
+    fn to_text(&self) -> String {
+        let mut text = String::new();
+        push_line(&mut text, format_args!("case=phase_c_expected_resource_failure"));
+        push_line(&mut text, format_args!("parquet_file_bytes={}", self.parquet_file_bytes));
+        push_line(&mut text, format_args!("parquet_row_groups={}", self.parquet_row_groups));
+        push_line(&mut text, format_args!("input_rows={}", self.input_rows));
+        push_line(&mut text, format_args!("configured_parquet_files={}", self.file_count));
+        push_line(&mut text, format_args!("compression={}", self.compression.name()));
+        push_line(&mut text, format_args!("native_plan_shape={}", self.native_plan_shape.name()));
+        push_line(&mut text, format_args!("expected_outcome={}", self.expected_outcome.name()));
+        push_line(&mut text, format_args!("phase_c_runtime_gate=expected_resource_failure"));
+        push_line(&mut text, format_args!("no_silent_cpu_fallback=true"));
+        push_line(&mut text, format_args!("native_error_code={}", self.error.code()));
+        push_line(&mut text, format_args!("native_error_kind={}", self.error.kind()));
+        push_line(&mut text, format_args!("native_error_status={}", self.error.status()));
+        push_line(&mut text, format_args!("native_error_operation={}", self.error.operation()));
+        push_line(&mut text, format_args!("native_error_facts={}", native_error_facts_tsv(&self.error)));
+        push_line(
+            &mut text,
+            format_args!("native_lowered_candidate_shapes={}", self.native_candidate_shapes.join(";")),
+        );
+        push_line(&mut text, format_args!("native_default_sql_physical_plan={}", self.source_physical_plan_one_line));
+        push_line(&mut text, format_args!("source_diagnostic={}", self.source_diagnostic));
+        text
+    }
+}
+
+async fn run_expected_resource_failure_probe(
+    path: &Path,
+    parquet_file_bytes: u64,
+    dataset_layout: ParquetDatasetLayout,
+    source_diagnostic: String,
+    config: &LocalParquetBenchmarkConfig,
+) -> DataFusionResult<ExpectedResourceFailureReport> {
+    if !config.native_memory_control_policy.is_bounded() {
+        return Err(plan_error(
+            "expected resource-failure benchmark mode requires CUDF_PARQUET_BENCH_NATIVE_MEMORY_POLICY=bounded",
+        ));
+    }
+
+    let plan = build_native_physical_plan(path, config).await?;
+    let source_physical_plan_one_line = displayable(plan.as_ref()).one_line().to_string();
+    let lowering = lower_physical_plan_to_native(Arc::clone(&plan));
+    let native_candidate_shapes = native_candidate_shapes(&lowering.report);
+    if lowering.plans.len() != 1 {
+        return Err(plan_error(format!(
+            "expected resource-failure benchmark mode requires one lowered native plan, got native_plan_count={}, candidates={}",
+            lowering.plans.len(),
+            native_candidate_shapes.join(";")
+        )));
+    }
+
+    let native_plan = lowering.plans.into_iter().next().expect("validated native lowering contains one plan");
+    let context = NativeExecutionContext::builder()
+        .with_memory_control_policy(config.native_memory_control_policy)
+        .build()
+        .map_err(native_query_error)?;
+
+    match execute_native_query_plan(&context, &native_plan) {
+        Ok(_) => Err(plan_error(
+            "expected resource-failure benchmark mode completed successfully; tighten the bounded memory policy or run as expected_outcome=success",
+        )),
+        Err(error) if is_planned_resource_failure(&error) => Ok(ExpectedResourceFailureReport {
+            parquet_file_bytes,
+            parquet_row_groups: dataset_layout.row_group_count,
+            input_rows: config.input_rows,
+            file_count: config.file_count,
+            compression: config.compression,
+            native_plan_shape: config.native_plan_shape,
+            expected_outcome: config.expected_outcome,
+            native_candidate_shapes,
+            source_physical_plan_one_line,
+            source_diagnostic,
+            error,
+        }),
+        Err(error) => Err(native_query_error(error)),
+    }
+}
+
+fn is_planned_resource_failure(error: &NativeQueryError) -> bool {
+    matches!(error.code(), NativeQueryErrorCode::MemoryReservationFailed | NativeQueryErrorCode::CudfResourceExhausted)
+}
+
+fn native_error_facts_tsv(error: &NativeQueryError) -> String {
+    let facts = error
+        .facts()
+        .iter()
+        .map(|(key, value)| format!("{key}:{}", value.replace(['\t', '\n'], " ")))
+        .collect::<Vec<_>>();
+    if facts.is_empty() { "none".to_string() } else { facts.join(",") }
+}
+
 #[derive(Debug, Clone)]
 struct CollectMeasurement {
     wall_time: Duration,
@@ -749,6 +1054,8 @@ async fn run_direct_parquet_benchmark(
         minimum_native_gpu_speedup: config.minimum_native_gpu_speedup,
         benchmark_paths: config.benchmark_paths,
         compression: config.compression,
+        native_plan_shape: config.native_plan_shape,
+        expected_outcome: config.expected_outcome,
         measured_run_order: measured_run_order_summary(config.iterations, config.benchmark_paths),
         cpu_comparable,
         cpu_default,
@@ -850,7 +1157,7 @@ async fn collect_native_gpu_direct_once(
     path: &Path,
     config: &LocalParquetBenchmarkConfig,
 ) -> DataFusionResult<GpuCollectMeasurement> {
-    let plan = build_cpu_default_plan(path, config).await?;
+    let plan = build_native_physical_plan(path, config).await?;
     let source_physical_plan_one_line = displayable(plan.as_ref()).one_line().to_string();
     let lowering = lower_physical_plan_to_native(Arc::clone(&plan));
     let planning = LargerIslandBenchmarkPlanning::from_report(&lowering.report);
@@ -896,6 +1203,16 @@ async fn collect_native_gpu_direct_once(
         read_columns,
         batches,
     })
+}
+
+async fn build_native_physical_plan(
+    path: &Path,
+    config: &LocalParquetBenchmarkConfig,
+) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
+    match config.native_plan_shape {
+        BenchmarkPlanShape::DefaultSql => build_cpu_default_plan(path, config).await,
+        BenchmarkPlanShape::DirectFriendly => build_cpu_comparable_plan(path, config).await,
+    }
 }
 
 fn native_candidate_shapes(report: &datafusion_cudf::PlanningReport) -> Vec<String> {
@@ -1781,4 +2098,102 @@ fn plan_error(message: impl Into<String>) -> DataFusionError {
 
 fn native_query_error(error: cudf_query_engine::QueryError) -> DataFusionError {
     DataFusionError::External(Box::new(error))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn phase_c_decision_matrix_covers_required_dimensions() {
+        let cases = phase_c_decision_matrix();
+
+        assert!(cases.iter().any(|case| case.scale == BenchmarkScalePoint::ThreeGiB));
+        assert!(cases.iter().any(|case| case.scale == BenchmarkScalePoint::SixGiB));
+        assert!(cases.iter().any(|case| case.scale == BenchmarkScalePoint::TenGiB));
+        assert!(cases.iter().any(|case| case.compression == BenchmarkCompression::Uncompressed));
+        assert!(cases.iter().any(|case| case.compression == BenchmarkCompression::Snappy));
+        assert!(cases.iter().any(|case| case.source_layout == BenchmarkSourceLayout::SingleFileMultiRowGroup));
+        assert!(cases.iter().any(|case| case.source_layout == BenchmarkSourceLayout::MultiFile));
+        assert!(cases.iter().any(|case| case.native_plan_shape == BenchmarkPlanShape::DefaultSql));
+        assert!(cases.iter().any(|case| case.native_plan_shape == BenchmarkPlanShape::DirectFriendly));
+        assert!(cases.iter().any(|case| case.expected_outcome == BenchmarkExpectedOutcome::Success));
+        assert!(cases.iter().any(|case| case.expected_outcome == BenchmarkExpectedOutcome::ResourceFailure));
+
+        let success_cases =
+            cases.iter().filter(|case| case.expected_outcome == BenchmarkExpectedOutcome::Success).collect::<Vec<_>>();
+        assert_eq!(success_cases.len(), 16);
+        assert!(success_cases.iter().all(|case| case.scale != BenchmarkScalePoint::TenGiB));
+
+        let expected_failure_cases = cases
+            .iter()
+            .filter(|case| case.expected_outcome == BenchmarkExpectedOutcome::ResourceFailure)
+            .collect::<Vec<_>>();
+        assert_eq!(expected_failure_cases.len(), 8);
+        assert!(expected_failure_cases.iter().all(|case| case.scale == BenchmarkScalePoint::TenGiB));
+    }
+
+    #[test]
+    fn phase_c_matrix_case_names_and_env_overrides_are_stable() {
+        let case = PhaseCMatrixCase {
+            scale: BenchmarkScalePoint::TenGiB,
+            compression: BenchmarkCompression::Snappy,
+            source_layout: BenchmarkSourceLayout::MultiFile,
+            native_plan_shape: BenchmarkPlanShape::DirectFriendly,
+            expected_outcome: BenchmarkExpectedOutcome::ResourceFailure,
+        };
+
+        assert_eq!(case.name(), "10gib-snappy-multi_file-direct_friendly-resource_failure");
+        assert_eq!(
+            case.env_overrides(),
+            vec![
+                ("CUDF_PARQUET_BENCH_MIN_FILE_BYTES", TEN_GIB.to_string()),
+                ("CUDF_PARQUET_BENCH_COMPRESSION", "snappy".to_string()),
+                ("CUDF_PARQUET_BENCH_FILES", "4".to_string()),
+                ("CUDF_PARQUET_BENCH_NATIVE_PLAN_SHAPE", "direct_friendly".to_string()),
+                ("CUDF_PARQUET_BENCH_EXPECTED_OUTCOME", "resource_failure".to_string()),
+                ("CUDF_PARQUET_BENCH_NATIVE_MEMORY_POLICY", "bounded".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn expected_resource_failure_report_includes_resource_error_facts() {
+        let error = NativeQueryError::new(
+            NativeQueryErrorCode::MemoryReservationFailed,
+            "cudf_query_engine.memory.reserve",
+            "memory reservation failed before native cudf execution",
+        )
+        .with_fact("memory_boundary", "final_sort")
+        .with_fact("stage", "final_sort")
+        .with_fact("attempt", 1)
+        .with_fact("committed_chunks", 2);
+        let report = ExpectedResourceFailureReport {
+            parquet_file_bytes: TEN_GIB,
+            parquet_row_groups: 32,
+            input_rows: 1,
+            file_count: 1,
+            compression: BenchmarkCompression::Uncompressed,
+            native_plan_shape: BenchmarkPlanShape::DefaultSql,
+            expected_outcome: BenchmarkExpectedOutcome::ResourceFailure,
+            native_candidate_shapes: vec!["rewritten:LocalLimitExec(SortExec(...))".to_string()],
+            source_physical_plan_one_line: "SortExec(fetch=100)".to_string(),
+            source_diagnostic: "files=1".to_string(),
+            error,
+        };
+
+        let text = report.to_text();
+
+        assert!(text.contains("case=phase_c_expected_resource_failure"));
+        assert!(text.contains("phase_c_runtime_gate=expected_resource_failure"));
+        assert!(text.contains("no_silent_cpu_fallback=true"));
+        assert!(text.contains("native_error_code=memory_reservation_failed"));
+        assert!(text.contains("native_error_kind=resource_exhausted"));
+        assert!(text.contains("native_error_status=temporary"));
+        assert!(text.contains("native_error_facts="));
+        assert!(text.contains("memory_boundary:final_sort"));
+        assert!(text.contains("stage:final_sort"));
+        assert!(text.contains("attempt:1"));
+        assert!(text.contains("committed_chunks:2"));
+    }
 }

@@ -27,7 +27,7 @@ use datafusion::{
     },
     physical_expr::{
         LexOrdering, PhysicalExpr, PhysicalSortExpr,
-        expressions::{BinaryExpr, Column, DynamicFilterPhysicalExpr, Literal, NotExpr},
+        expressions::{BinaryExpr, CastExpr, Column, DynamicFilterPhysicalExpr, Literal, NotExpr, TryCastExpr},
     },
     physical_plan::{
         ExecutionPlan,
@@ -1096,6 +1096,20 @@ fn is_supported_native_type(data_type: &DataType) -> bool {
     )
 }
 
+fn is_supported_native_cast(source_type: &DataType, target_type: &DataType) -> bool {
+    source_type == target_type
+        || matches!(
+            (source_type, target_type),
+            (DataType::Int8, DataType::Int16 | DataType::Int32 | DataType::Int64)
+                | (DataType::Int16, DataType::Int32 | DataType::Int64)
+                | (DataType::Int32, DataType::Int64)
+                | (DataType::UInt8, DataType::UInt16 | DataType::UInt32 | DataType::UInt64)
+                | (DataType::UInt16, DataType::UInt32 | DataType::UInt64)
+                | (DataType::UInt32, DataType::UInt64)
+                | (DataType::Float32, DataType::Float64)
+        )
+}
+
 fn validate_aggregate(
     aggregate: &AggregateExec,
     aggregate_args_must_be_columns: bool,
@@ -1350,6 +1364,17 @@ fn lower_physical_expr(expr: &Arc<dyn PhysicalExpr>, input_schema: &SchemaRef) -
     if let Some(not) = expr.as_any().downcast_ref::<NotExpr>() {
         return Ok(NativeExpr::not(lower_physical_expr(not.arg(), input_schema)?));
     }
+    if let Some(cast) = expr.as_any().downcast_ref::<CastExpr>() {
+        let source_type =
+            cast.expr().data_type(input_schema.as_ref()).map_err(|_error| FallbackReason::UnsupportedExpression)?;
+        if !is_supported_native_cast(&source_type, cast.cast_type()) {
+            return Err(FallbackReason::UnsupportedType);
+        }
+        return Ok(NativeExpr::cast(lower_physical_expr(cast.expr(), input_schema)?, cast.cast_type().clone()));
+    }
+    if expr.as_any().downcast_ref::<TryCastExpr>().is_some() {
+        return Err(FallbackReason::UnsupportedExpression);
+    }
     Err(FallbackReason::UnsupportedExpression)
 }
 
@@ -1465,6 +1490,13 @@ fn collect_required_columns(
     if let Some(not) = expr.as_any().downcast_ref::<NotExpr>() {
         collect_required_columns(not.arg(), required)?;
         return Ok(());
+    }
+    if let Some(cast) = expr.as_any().downcast_ref::<CastExpr>() {
+        collect_required_columns(cast.expr(), required)?;
+        return Ok(());
+    }
+    if expr.as_any().downcast_ref::<TryCastExpr>().is_some() {
+        return Err(FallbackReason::UnsupportedExpression);
     }
     Err(FallbackReason::UnsupportedExpression)
 }
