@@ -1,9 +1,9 @@
 use std::time::Instant;
 
-use arrow::{array::Array, record_batch::RecordBatch};
+use arrow::{array::Array, datatypes::DataType as ArrowDataType, record_batch::RecordBatch};
 use cudf::{
     AggSpec as CudfAggSpec, DataFrame, ExecutionOverrides, ExecutionPlacement, GroupByAgg,
-    SortOptions as CudfSortOptions,
+    SortOptions as CudfSortOptions, TypeId,
     frame::dataframe::{InfoDetail, ParquetReadOptions},
     ops::{col, lit},
 };
@@ -1712,6 +1712,7 @@ fn execute_final_aggregate(
                 error,
             )
         })?;
+    output = cast_count_output_columns(output, &bounded.aggregate.0.spec, bounded.aggregate.1)?;
     output = output.select(expected_output_names.iter().map(String::as_str).collect::<Vec<_>>()).map_err(|error| {
         QueryError::from_cudf(
             "cudf_query_engine.final_merge.select",
@@ -1811,6 +1812,7 @@ fn execute_aggregate(
                 error,
             )
         })?;
+    output = cast_count_output_columns(output, &node.spec, output_schema)?;
     let key_renames = aggregate
         .key_columns
         .iter()
@@ -1836,6 +1838,59 @@ fn execute_aggregate(
     })?;
     metrics.operator_time += timer.elapsed();
     Ok(GpuDataFrame::new(output))
+}
+
+fn cast_count_output_columns(
+    mut frame: DataFrame,
+    spec: &AggregateSpec,
+    output_schema: &arrow::datatypes::SchemaRef,
+) -> Result<DataFrame> {
+    for expr in spec.aggr_exprs.iter().filter(|expr| expr.function == AggregateFunction::Count) {
+        let field = output_schema.field_with_name(expr.alias.as_str()).map_err(|_error| {
+            QueryError::new(
+                QueryErrorCode::InvalidPlan,
+                "cudf_query_engine.aggregate.cast_count",
+                "count aggregate output field is missing from output schema",
+            )
+            .with_fact("alias", expr.alias.as_str())
+        })?;
+        let target_type = arrow_type_to_cudf_type_id(field.data_type()).ok_or_else(|| {
+            QueryError::new(
+                QueryErrorCode::UnsupportedType,
+                "cudf_query_engine.aggregate.cast_count",
+                "count aggregate output schema type is not supported by native execution",
+            )
+            .with_fact("alias", expr.alias.as_str())
+            .with_fact("data_type", format!("{:?}", field.data_type()))
+        })?;
+        frame = frame.cast_column(expr.alias.as_str(), target_type).map_err(|error| {
+            QueryError::from_cudf(
+                "cudf_query_engine.aggregate.cast_count",
+                "failed to cast native count aggregate output column",
+                error,
+            )
+            .with_fact("alias", expr.alias.as_str())
+            .with_fact("data_type", format!("{:?}", field.data_type()))
+        })?;
+    }
+    Ok(frame)
+}
+
+fn arrow_type_to_cudf_type_id(data_type: &ArrowDataType) -> Option<TypeId> {
+    match data_type {
+        ArrowDataType::Boolean => Some(TypeId::Bool8),
+        ArrowDataType::Int8 => Some(TypeId::Int8),
+        ArrowDataType::Int16 => Some(TypeId::Int16),
+        ArrowDataType::Int32 => Some(TypeId::Int32),
+        ArrowDataType::Int64 => Some(TypeId::Int64),
+        ArrowDataType::UInt8 => Some(TypeId::UInt8),
+        ArrowDataType::UInt16 => Some(TypeId::UInt16),
+        ArrowDataType::UInt32 => Some(TypeId::UInt32),
+        ArrowDataType::UInt64 => Some(TypeId::UInt64),
+        ArrowDataType::Float32 => Some(TypeId::Float32),
+        ArrowDataType::Float64 => Some(TypeId::Float64),
+        _ => None,
+    }
 }
 
 fn execute_sort(
@@ -2102,9 +2157,7 @@ fn lower_aggregate_spec(spec: &AggregateSpec) -> Result<LoweredAggregate> {
         .iter()
         .map(|expr| {
             let input_column = lower_column_expr(&expr.expr, "cudf_query_engine.aggregate.lower_expr")?;
-            let function = match expr.function {
-                AggregateFunction::Sum => GroupByAgg::Sum,
-            };
+            let function = lower_aggregate_function(expr.function);
             Ok(CudfAggSpec::new(input_column, function).with_alias(expr.alias.as_str()))
         })
         .collect::<Result<Vec<_>>>()?;
@@ -2119,7 +2172,10 @@ fn lower_final_aggregate_spec(spec: &AggregateSpec) -> Result<LoweredAggregate> 
     let aggregations = spec
         .aggr_exprs
         .iter()
-        .map(|expr| CudfAggSpec::new(expr.alias.as_str(), GroupByAgg::Sum).with_alias(expr.alias.as_str()))
+        .map(|expr| {
+            CudfAggSpec::new(expr.alias.as_str(), lower_final_aggregate_function(expr.function))
+                .with_alias(expr.alias.as_str())
+        })
         .collect::<Vec<_>>();
 
     Ok(LoweredAggregate {
@@ -2128,6 +2184,24 @@ fn lower_final_aggregate_spec(spec: &AggregateSpec) -> Result<LoweredAggregate> 
         aggregations,
         output_names: partial.output_names,
     })
+}
+
+fn lower_aggregate_function(function: AggregateFunction) -> GroupByAgg {
+    match function {
+        AggregateFunction::Sum => GroupByAgg::Sum,
+        AggregateFunction::Min => GroupByAgg::Min,
+        AggregateFunction::Max => GroupByAgg::Max,
+        AggregateFunction::Count => GroupByAgg::Count { include_nulls: false },
+    }
+}
+
+fn lower_final_aggregate_function(function: AggregateFunction) -> GroupByAgg {
+    match function {
+        AggregateFunction::Sum => GroupByAgg::Sum,
+        AggregateFunction::Min => GroupByAgg::Min,
+        AggregateFunction::Max => GroupByAgg::Max,
+        AggregateFunction::Count => GroupByAgg::Sum,
+    }
 }
 
 struct LoweredSort {

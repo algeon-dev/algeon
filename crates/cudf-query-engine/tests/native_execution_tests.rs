@@ -232,6 +232,76 @@ fn bounded_native_query_executes_chunked_grouped_sum_and_final_merge() {
 }
 
 #[test]
+fn bounded_native_query_executes_min_max_count_and_final_merge() {
+    let dir = unique_temp_dir("cudf-query-engine-bounded-native-aggregate-parity");
+    let path = dir.join("input.parquet");
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let input_schema = write_row_grouped_input_parquet(&path);
+
+    let aggregated_schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int32, false),
+        Field::new("min_m00", DataType::Int64, true),
+        Field::new("max_m01", DataType::Int64, true),
+        Field::new("count_payload", DataType::Int64, false),
+    ]));
+
+    let source = LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(&path).with_file_size_bytes(fs::metadata(&path).unwrap().len())],
+        Arc::clone(&input_schema),
+        vec!["key".to_string(), "payload".to_string(), "m00".to_string(), "m01".to_string()],
+    );
+    let filter = Expr::binary(Expr::column("payload"), BinaryOp::GtEq, Expr::literal(LiteralValue::Int64(10)));
+    let aggregate = AggregateSpec::new(
+        vec![Expr::column("key")],
+        vec![
+            AggregateExpr::new(AggregateFunction::Min, Expr::column("m00"), "min_m00"),
+            AggregateExpr::new(AggregateFunction::Max, Expr::column("m01"), "max_m01"),
+            AggregateExpr::new(AggregateFunction::Count, Expr::column("payload"), "count_payload"),
+        ],
+    );
+    let sort = SortSpec::new(vec![SortExpr::new(Expr::column("key"), false, false)]);
+
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LocalParquet(source));
+    let filter = builder.add_filter(source, filter, Arc::clone(&input_schema));
+    let aggregate = builder.add_aggregate(filter, aggregate, Arc::clone(&aggregated_schema));
+    let sort = builder.add_sort(aggregate, sort, Arc::clone(&aggregated_schema));
+    let limit = builder.add_limit(sort, LimitSpec::fetch(3), aggregated_schema);
+    let plan = builder.finish_with_host_sink(limit);
+
+    let context = ExecutionContext::builder()
+        .with_shared_runtime(Arc::clone(&runtime))
+        .with_memory_control_policy(MemoryControlPolicy::Bounded {
+            device_budget_bytes: 8 * 1024 * 1024 * 1024,
+            max_source_chunk_bytes: 1024 * 1024,
+            max_row_groups_per_chunk: 1,
+            max_retry_attempts: 1,
+            min_retry_chunk_row_groups: 1,
+        })
+        .build()
+        .unwrap();
+    let result = execute_query_plan(&context, &plan).unwrap();
+    let metrics = result.metrics();
+    assert_eq!(metrics.source_chunks_planned, 3);
+    assert_eq!(metrics.source_chunks_committed, 3);
+    assert_eq!(metrics.partial_aggregate_count, 3);
+    assert_eq!(metrics.final_merge_attempts, 1);
+    assert_eq!(metrics.boundary.host_to_device_uploads, 0);
+    assert_eq!(metrics.boundary.device_to_host_materializations, 1);
+
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    assert_eq!(batch.num_rows(), 3);
+    assert_eq!(int32_array(batch, 0).values().as_ref(), &[1, 2, 3]);
+    assert_eq!(int64_array(batch, 1).values().as_ref(), &[100, 200, 400]);
+    assert_eq!(int64_array(batch, 2).values().as_ref(), &[3, 5, 4]);
+    assert_eq!(int64_array(batch, 3).values().as_ref(), &[2, 2, 1]);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn bounded_native_query_reports_reservation_failure_before_chunk_read() {
     let dir = unique_temp_dir("cudf-query-engine-bounded-reservation-failure");
     let path = dir.join("input.parquet");

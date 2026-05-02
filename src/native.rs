@@ -21,6 +21,10 @@ use datafusion::{
         source::DataSourceExec,
     },
     logical_expr::Operator,
+    parquet::file::{
+        reader::{FileReader, SerializedFileReader},
+        statistics::Statistics,
+    },
     physical_expr::{
         PhysicalExpr, PhysicalSortExpr,
         expressions::{BinaryExpr, Column, Literal},
@@ -318,7 +322,7 @@ fn lower_slice1_plan(normalized: &NormalizedNativePlan<'_>) -> Result<NativeQuer
     validate_sort(sort)?;
 
     let read_columns = required_parquet_read_columns(file_scan, filter, pre_aggregate_projection, aggregate)?;
-    let native_files = local_parquet_files(file_scan)?;
+    let native_files = local_parquet_files(file_scan, parquet_source, filter, source_exec.schema())?;
     let mut source = NativeLocalParquetSource::from_files(native_files, source_exec.schema(), read_columns);
     source.diagnostics.predicate_disposition =
         parquet_predicate_disposition(parquet_source, filter, &source_exec.schema());
@@ -337,20 +341,32 @@ fn lower_slice1_plan(normalized: &NormalizedNativePlan<'_>) -> Result<NativeQuer
     } else {
         (source_node, source_exec.schema())
     };
-    let (aggregate_input_node, aggregate_input_schema, synthetic_aggregate_args) =
-        if let Some(projection) = pre_aggregate_projection {
-            let projection_node =
-                builder.add_projection(filter_node, lower_projection_exprs(projection)?, projection.schema());
-            (projection_node, projection.schema(), None)
-        } else {
-            let synthetic_projection = synthetic_aggregate_input_projection(aggregate, &filter_output_schema)?;
-            let projection_node = builder.add_projection(
-                filter_node,
+    let (aggregate_input_node, aggregate_input_schema, synthetic_aggregate_args) = if let Some(projection) =
+        pre_aggregate_projection
+    {
+        let projection_node =
+            builder.add_projection(filter_node, lower_projection_exprs(projection)?, projection.schema());
+        if let Some(synthetic_projection) =
+            synthetic_aggregate_input_projection_if_needed(aggregate, &projection.schema())?
+        {
+            let synthetic_projection_node = builder.add_projection(
+                projection_node,
                 synthetic_projection.expressions,
                 Arc::clone(&synthetic_projection.schema),
             );
-            (projection_node, synthetic_projection.schema, Some(synthetic_projection.aggregate_arg_aliases))
-        };
+            (synthetic_projection_node, synthetic_projection.schema, Some(synthetic_projection.aggregate_arg_aliases))
+        } else {
+            (projection_node, projection.schema(), None)
+        }
+    } else {
+        let synthetic_projection = synthetic_aggregate_input_projection(aggregate, &filter_output_schema)?;
+        let projection_node = builder.add_projection(
+            filter_node,
+            synthetic_projection.expressions,
+            Arc::clone(&synthetic_projection.schema),
+        );
+        (projection_node, synthetic_projection.schema, Some(synthetic_projection.aggregate_arg_aliases))
+    };
     let aggregate_node = builder.add_aggregate(
         aggregate_input_node,
         lower_aggregate_spec(aggregate, &aggregate_input_schema, synthetic_aggregate_args.as_deref())?,
@@ -394,7 +410,7 @@ fn validate_slice1_parquet_scan(
     if parquet_source.filter().is_some() {
         validate_pruning_only_parquet_predicate(parquet_source, filter, &source_schema)?;
     }
-    local_parquet_files(file_scan)?;
+    local_parquet_files(file_scan, parquet_source, filter, source_schema)?;
     Ok(())
 }
 
@@ -408,7 +424,10 @@ fn local_parquet_source_diagnostics(
     let known_bytes =
         files.iter().map(|file| file.object_meta.size).try_fold(0u64, |total, bytes| Some(total.saturating_add(bytes)));
     let ranged_file_count = files.iter().filter(|file| file.range.is_some()).count();
-    let selected_row_groups = selected_row_groups_from_access_plans(&files);
+    let selected_row_groups = selected_row_groups_from_access_plans(&files).or_else(|| {
+        metadata_row_group_selections(&files, file_scan, parquet_source, filter, &source_schema)
+            .map(|selections| selections.iter().map(Vec::len).sum())
+    });
 
     let mut rejected_features = Vec::new();
     if !file_scan.object_store_url.as_str().starts_with("file://") {
@@ -519,13 +538,20 @@ fn physical_expr_eq(left: &dyn PhysicalExpr, right: &dyn PhysicalExpr) -> bool {
     false
 }
 
-fn local_parquet_files(file_scan: &FileScanConfig) -> Result<Vec<NativeLocalParquetFile>, FallbackReason> {
+fn local_parquet_files(
+    file_scan: &FileScanConfig,
+    parquet_source: &ParquetSource,
+    filter: Option<&FilterExec>,
+    source_schema: SchemaRef,
+) -> Result<Vec<NativeLocalParquetFile>, FallbackReason> {
     let files = file_scan.file_groups.iter().flat_map(|group| group.files()).collect::<Vec<_>>();
     if files.is_empty() {
         return Err(FallbackReason::NativeSourceEmpty);
     }
+    let metadata_row_group_selections =
+        metadata_row_group_selections(&files, file_scan, parquet_source, filter, &source_schema);
     let mut native_files = Vec::with_capacity(files.len());
-    for file in files {
+    for (file_index, file) in files.iter().enumerate() {
         if !file.partition_values.is_empty() {
             return Err(FallbackReason::NativeSourcePartitionValues);
         }
@@ -540,10 +566,218 @@ fn local_parquet_files(file_scan: &FileScanConfig) -> Result<Vec<NativeLocalParq
                 .with_file_size_bytes(file.object_meta.size);
         if let Some(row_groups) = explicit_row_group_selection(file)? {
             native_file = native_file.with_row_groups(row_groups);
+        } else if let Some(row_groups) =
+            metadata_row_group_selections.as_ref().and_then(|selections| selections.get(file_index))
+        {
+            native_file = native_file.with_row_groups(row_groups.clone());
         }
         native_files.push(native_file);
     }
     Ok(native_files)
+}
+
+fn metadata_row_group_selections(
+    files: &[&PartitionedFile],
+    file_scan: &FileScanConfig,
+    parquet_source: &ParquetSource,
+    filter: Option<&FilterExec>,
+    source_schema: &SchemaRef,
+) -> Option<Vec<Vec<usize>>> {
+    if files.is_empty()
+        || !file_scan.object_store_url.as_str().starts_with("file://")
+        || !file_scan.table_partition_cols().is_empty()
+        || file_scan.expr_adapter_factory.is_some()
+        || file_scan.limit.is_some()
+        || file_scan.preserve_order
+        || !file_scan.output_ordering.is_empty()
+        || files.iter().any(|file| {
+            file.extensions.is_some()
+                || !file.partition_values.is_empty()
+                || file.range.is_some()
+                || file.ordering.is_some()
+        })
+    {
+        return None;
+    }
+    if parquet_source.filter().is_some()
+        && validate_pruning_only_parquet_predicate(parquet_source, filter, source_schema).is_err()
+    {
+        return None;
+    }
+    let predicate = row_group_pruning_predicate(filter?.predicate(), file_scan.file_schema())?;
+    let selections =
+        files.iter().map(|file| metadata_row_group_selection(file, predicate)).collect::<Option<Vec<_>>>()?;
+    let selected_row_groups = selections.iter().map(|selection| selection.row_groups.len()).sum::<usize>();
+    let total_row_groups = selections.iter().map(|selection| selection.total_row_groups).sum::<usize>();
+    if selected_row_groups > 0 && selected_row_groups < total_row_groups {
+        Some(selections.into_iter().map(|selection| selection.row_groups).collect())
+    } else {
+        None
+    }
+}
+
+#[derive(Debug, Clone)]
+struct MetadataRowGroupSelection {
+    row_groups: Vec<usize>,
+    total_row_groups: usize,
+}
+
+fn metadata_row_group_selection(
+    file: &PartitionedFile,
+    predicate: RowGroupPruningPredicate,
+) -> Option<MetadataRowGroupSelection> {
+    let path = local_object_path_to_filesystem(file.object_meta.location.as_ref());
+    let reader = SerializedFileReader::try_from(path.as_path()).ok()?;
+    let metadata = reader.metadata();
+    let total_row_groups = metadata.num_row_groups();
+    if total_row_groups == 0 {
+        return None;
+    }
+    let row_groups = metadata
+        .row_groups()
+        .iter()
+        .enumerate()
+        .map(|(index, row_group)| {
+            let statistics = row_group.columns().get(predicate.column_index)?.statistics()?;
+            row_group_may_satisfy_predicate(statistics, predicate).map(|may_satisfy| may_satisfy.then_some(index))
+        })
+        .collect::<Option<Vec<_>>>()
+        .map(|row_groups| row_groups.into_iter().flatten().collect())?;
+    Some(MetadataRowGroupSelection { row_groups, total_row_groups })
+}
+
+#[derive(Debug, Clone, Copy)]
+struct RowGroupPruningPredicate {
+    column_index: usize,
+    op: Operator,
+    literal: NumericLiteral,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum NumericLiteral {
+    Int64(i64),
+    Float64(f64),
+}
+
+fn row_group_pruning_predicate(
+    expr: &Arc<dyn PhysicalExpr>,
+    file_schema: &SchemaRef,
+) -> Option<RowGroupPruningPredicate> {
+    let binary = expr.as_any().downcast_ref::<BinaryExpr>()?;
+    if let Some((column, literal, op)) = column_literal_predicate(binary.left(), binary.op(), binary.right()) {
+        return Some(RowGroupPruningPredicate {
+            column_index: file_schema.index_of(column.name()).ok()?,
+            op,
+            literal: numeric_literal(literal.value())?,
+        });
+    }
+    let inverted_op = invert_comparison_operator(binary.op())?;
+    let (column, literal, op) = column_literal_predicate(binary.right(), &inverted_op, binary.left())?;
+    Some(RowGroupPruningPredicate {
+        column_index: file_schema.index_of(column.name()).ok()?,
+        op,
+        literal: numeric_literal(literal.value())?,
+    })
+}
+
+fn column_literal_predicate<'a>(
+    left: &'a Arc<dyn PhysicalExpr>,
+    op: &Operator,
+    right: &'a Arc<dyn PhysicalExpr>,
+) -> Option<(&'a Column, &'a Literal, Operator)> {
+    let column = left.as_any().downcast_ref::<Column>()?;
+    let literal = right.as_any().downcast_ref::<Literal>()?;
+    if matches!(op, Operator::Eq | Operator::Lt | Operator::LtEq | Operator::Gt | Operator::GtEq) {
+        Some((column, literal, *op))
+    } else {
+        None
+    }
+}
+
+fn invert_comparison_operator(op: &Operator) -> Option<Operator> {
+    match op {
+        Operator::Eq => Some(Operator::Eq),
+        Operator::Lt => Some(Operator::Gt),
+        Operator::LtEq => Some(Operator::GtEq),
+        Operator::Gt => Some(Operator::Lt),
+        Operator::GtEq => Some(Operator::LtEq),
+        _ => None,
+    }
+}
+
+fn numeric_literal(value: &ScalarValue) -> Option<NumericLiteral> {
+    match value {
+        ScalarValue::Int8(Some(value)) => Some(NumericLiteral::Int64(i64::from(*value))),
+        ScalarValue::Int16(Some(value)) => Some(NumericLiteral::Int64(i64::from(*value))),
+        ScalarValue::Int32(Some(value)) => Some(NumericLiteral::Int64(i64::from(*value))),
+        ScalarValue::Int64(Some(value)) => Some(NumericLiteral::Int64(*value)),
+        ScalarValue::Float32(Some(value)) => Some(NumericLiteral::Float64(f64::from(*value))),
+        ScalarValue::Float64(Some(value)) => Some(NumericLiteral::Float64(*value)),
+        _ => None,
+    }
+}
+
+fn row_group_may_satisfy_predicate(statistics: &Statistics, predicate: RowGroupPruningPredicate) -> Option<bool> {
+    match statistics {
+        Statistics::Int32(stats) => {
+            let min = i64::from(*stats.min_opt()?);
+            let max = i64::from(*stats.max_opt()?);
+            let NumericLiteral::Int64(literal) = predicate.literal else {
+                return None;
+            };
+            Some(int_range_may_satisfy(min, max, predicate.op, literal))
+        },
+        Statistics::Int64(stats) => {
+            let min = *stats.min_opt()?;
+            let max = *stats.max_opt()?;
+            let NumericLiteral::Int64(literal) = predicate.literal else {
+                return None;
+            };
+            Some(int_range_may_satisfy(min, max, predicate.op, literal))
+        },
+        Statistics::Float(stats) => {
+            let min = f64::from(*stats.min_opt()?);
+            let max = f64::from(*stats.max_opt()?);
+            let NumericLiteral::Float64(literal) = predicate.literal else {
+                return None;
+            };
+            Some(float_range_may_satisfy(min, max, predicate.op, literal))
+        },
+        Statistics::Double(stats) => {
+            let min = *stats.min_opt()?;
+            let max = *stats.max_opt()?;
+            let NumericLiteral::Float64(literal) = predicate.literal else {
+                return None;
+            };
+            Some(float_range_may_satisfy(min, max, predicate.op, literal))
+        },
+        _ => None,
+    }
+}
+
+fn int_range_may_satisfy(min: i64, max: i64, op: Operator, literal: i64) -> bool {
+    match op {
+        Operator::Eq => min <= literal && literal <= max,
+        Operator::Lt => min < literal,
+        Operator::LtEq => min <= literal,
+        Operator::Gt => max > literal,
+        Operator::GtEq => max >= literal,
+        _ => true,
+    }
+}
+
+fn float_range_may_satisfy(min: f64, max: f64, op: Operator, literal: f64) -> bool {
+    if min.is_nan() || max.is_nan() || literal.is_nan() {
+        return true;
+    }
+    match op {
+        Operator::Eq => min <= literal && literal <= max,
+        Operator::Lt => min < literal,
+        Operator::LtEq => min <= literal,
+        Operator::Gt => max > literal,
+        Operator::GtEq => max >= literal,
+        _ => true,
+    }
 }
 
 fn explicit_row_group_selection(file: &PartitionedFile) -> Result<Option<Vec<usize>>, FallbackReason> {
@@ -634,14 +868,15 @@ fn validate_aggregate(aggregate: &AggregateExec, aggregate_args_must_be_columns:
         if aggregate_expr.is_distinct() || !aggregate_expr.order_bys().is_empty() {
             return Err(FallbackReason::UnsupportedExpression);
         }
-        if !aggregate_expr.fun().name().eq_ignore_ascii_case("sum") {
-            return Err(FallbackReason::UnsupportedOperator);
-        }
+        let function = lower_native_aggregate_function(aggregate_expr.fun().name())?;
         let expressions = aggregate_expr.expressions();
         let [arg] = expressions.as_slice() else {
             return Err(FallbackReason::UnsupportedExpression);
         };
-        if aggregate_args_must_be_columns && arg.as_any().downcast_ref::<Column>().is_none() {
+        if aggregate_args_must_be_columns
+            && function != NativeAggregateFunction::Count
+            && arg.as_any().downcast_ref::<Column>().is_none()
+        {
             return Err(FallbackReason::UnsupportedExpression);
         }
         lower_physical_expr(arg, &aggregate.input().schema())?;
@@ -697,6 +932,41 @@ fn synthetic_aggregate_input_projection(
     }
 
     Ok(SyntheticAggregateInputProjection { expressions, schema: Arc::new(Schema::new(fields)), aggregate_arg_aliases })
+}
+
+fn synthetic_aggregate_input_projection_if_needed(
+    aggregate: &AggregateExec,
+    input_schema: &SchemaRef,
+) -> Result<Option<SyntheticAggregateInputProjection>, FallbackReason> {
+    let needs_projection = aggregate.aggr_expr().iter().any(|aggregate_expr| {
+        let expressions = aggregate_expr.expressions();
+        !matches!(expressions.as_slice(), [arg] if arg.as_any().downcast_ref::<Column>().is_some())
+    });
+    if !needs_projection {
+        return Ok(None);
+    }
+
+    let mut expressions =
+        input_schema.fields().iter().map(|field| NativeExpr::column(field.name())).collect::<Vec<_>>();
+    let mut fields = input_schema.fields().iter().map(|field| field.as_ref().clone()).collect::<Vec<_>>();
+
+    let mut aggregate_arg_aliases = Vec::with_capacity(aggregate.aggr_expr().len());
+    for (index, aggregate_expr) in aggregate.aggr_expr().iter().enumerate() {
+        let expressions_for_aggregate = aggregate_expr.expressions();
+        let [arg] = expressions_for_aggregate.as_slice() else {
+            return Err(FallbackReason::UnsupportedExpression);
+        };
+        let alias = unique_synthetic_aggregate_arg_alias(index, input_schema, &fields);
+        expressions.push(alias_if_needed(lower_physical_expr(arg, input_schema)?, alias.as_str()));
+        fields.push(physical_expr_field(arg, input_schema, alias.as_str())?);
+        aggregate_arg_aliases.push(alias);
+    }
+
+    Ok(Some(SyntheticAggregateInputProjection {
+        expressions,
+        schema: Arc::new(Schema::new(fields)),
+        aggregate_arg_aliases,
+    }))
 }
 
 fn unique_synthetic_aggregate_arg_alias(index: usize, input_schema: &SchemaRef, fields: &[Field]) -> String {
@@ -774,11 +1044,25 @@ fn lower_aggregate_spec(
             let lowered_arg = synthetic_aggregate_args
                 .and_then(|aliases| aliases.get(index))
                 .map_or_else(|| lower_physical_expr(arg, input_schema), |alias| Ok(NativeExpr::column(alias)))?;
-            Ok(NativeAggregateExpr::new(NativeAggregateFunction::Sum, lowered_arg, expr.name()))
+            Ok(NativeAggregateExpr::new(lower_native_aggregate_function(expr.fun().name())?, lowered_arg, expr.name()))
         })
         .collect::<Result<Vec<_>, _>>()?;
 
     Ok(NativeAggregateSpec::new(group_exprs, aggr_exprs))
+}
+
+fn lower_native_aggregate_function(name: &str) -> Result<NativeAggregateFunction, FallbackReason> {
+    if name.eq_ignore_ascii_case("sum") {
+        Ok(NativeAggregateFunction::Sum)
+    } else if name.eq_ignore_ascii_case("min") {
+        Ok(NativeAggregateFunction::Min)
+    } else if name.eq_ignore_ascii_case("max") {
+        Ok(NativeAggregateFunction::Max)
+    } else if name.eq_ignore_ascii_case("count") {
+        Ok(NativeAggregateFunction::Count)
+    } else {
+        Err(FallbackReason::UnsupportedOperator)
+    }
 }
 
 fn lower_sort_spec(sort: &SortExec) -> Result<NativeSortSpec, FallbackReason> {

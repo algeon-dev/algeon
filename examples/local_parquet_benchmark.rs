@@ -1158,7 +1158,7 @@ fn benchmark_batch(
     for offset in 0..len {
         let row = start + offset;
         keys.push((row % config.group_count) as i32);
-        payload.push((splitmix64(row as u64 ^ 0x9e37_79b9_7f4a_7c15) % 100) as i32);
+        payload.push(benchmark_payload_value(row, config));
         for (column_index, values) in measures.iter_mut().enumerate() {
             values.push(measure_value(row, column_index));
         }
@@ -1169,6 +1169,17 @@ fn benchmark_batch(
     columns.push(Arc::new(Int32Array::from(payload)));
     columns.extend(measures.into_iter().map(|values| Arc::new(Int64Array::from(values)) as ArrayRef));
     Ok(RecordBatch::try_new(schema, columns)?)
+}
+
+fn benchmark_payload_value(row: usize, config: &LocalParquetBenchmarkConfig) -> i32 {
+    let total_row_groups = config.input_rows.div_ceil(config.row_group_size);
+    let pruned_row_groups = total_row_groups / 2;
+    let row_group = row / config.row_group_size;
+    if row_group < pruned_row_groups {
+        (row % 10) as i32
+    } else {
+        10 + (splitmix64(row as u64 ^ 0x9e37_79b9_7f4a_7c15) % 90) as i32
+    }
 }
 
 fn measure_value(row: usize, column_index: usize) -> i64 {
@@ -1343,6 +1354,14 @@ fn validate_phase_b_runtime_gate(
         return Err(plan_error(format!(
             "Phase B runtime gate requires one final native host materialization: materializations={}",
             native_measurement.metrics.device_to_host_materializations
+        )));
+    }
+    if native_measurement.metrics.row_groups_selected == 0
+        || native_measurement.metrics.row_groups_selected >= dataset_layout.row_group_count
+    {
+        return Err(plan_error(format!(
+            "Phase B runtime gate requires native row-group pruning: row_groups_selected={}, total_row_groups={}",
+            native_measurement.metrics.row_groups_selected, dataset_layout.row_group_count
         )));
     }
 

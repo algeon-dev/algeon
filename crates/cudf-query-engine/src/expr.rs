@@ -137,6 +137,9 @@ impl AggregateExpr {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AggregateFunction {
     Sum,
+    Min,
+    Max,
+    Count,
 }
 
 #[derive(Debug, Clone, PartialEq)]
