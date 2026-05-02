@@ -262,6 +262,19 @@ fn local_parquet_source_tracks_direct_source_diagnostics() {
 }
 
 #[test]
+fn predicate_disposition_names_are_stable_manifest_values() {
+    let dispositions = [
+        (PredicateDisposition::Absent, "absent"),
+        (PredicateDisposition::PruningOnly, "pruning_only"),
+        (PredicateDisposition::Rejected, "rejected"),
+    ];
+
+    for (disposition, expected) in dispositions {
+        assert_eq!(disposition.as_str(), expected);
+    }
+}
+
+#[test]
 fn local_parquet_source_validation_rejects_invalid_reader_contracts() {
     let schema = Arc::new(Schema::new(vec![Field::new("key", DataType::UInt32, false)]));
     let empty_columns = LocalParquetSource::new("/tmp/phase4.parquet", Arc::clone(&schema), Vec::new());

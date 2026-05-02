@@ -17,3 +17,6 @@ target
 rustc-ice-*.txt
 
 .idea/
+
+# CUDA/cuFile runtime logs
+cufile.log

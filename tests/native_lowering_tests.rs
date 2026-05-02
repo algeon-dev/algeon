@@ -15,7 +15,7 @@ use datafusion::{
     common::ScalarValue,
     datasource::{
         physical_plan::{
-            FileGroup, FileScanConfigBuilder, ParquetSource,
+            FileGroup, FileScanConfigBuilder, FileSource, ParquetSource,
             parquet::{ParquetAccessPlan, RowGroupAccess},
         },
         source::DataSourceExec,
@@ -310,11 +310,60 @@ fn sort_preserving_merge_is_rejected_with_stable_native_reason() {
 }
 
 #[test]
-fn pushed_down_parquet_predicate_is_rejected_with_source_reason() {
+fn pushed_down_parquet_predicate_with_filter_is_pruning_only_evidence() {
     let dir = unique_temp_dir("datafusion-cudf-native-lowering-pushed-predicate");
     let path = dir.join("input.parquet");
     write_numeric_parquet_file(&path);
     let scan = parquet_scan_with_pushed_down_predicate(&path);
+    let plan = aggregate_sort_limit_plan(scan, Operator::Plus);
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_eq!(result.rewritten_count(), 1);
+    assert_eq!(result.rejected_count(), 0);
+    assert!(matches!(result.report.outcomes()[0], CandidateOutcome::Rewritten { .. }));
+    assert_eq!(result.source_diagnostics.len(), 1);
+    assert!(result.source_diagnostics[0].direct_device_read);
+    assert_eq!(result.source_diagnostics[0].predicate_disposition.as_str(), "pruning_only");
+    assert!(result.source_diagnostics[0].rejected_features.is_empty());
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn pushed_down_parquet_predicate_without_filter_is_rejected_with_source_reason() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-pushed-predicate-without-filter");
+    let path = dir.join("input.parquet");
+    write_numeric_parquet_file(&path);
+    let scan = parquet_scan_with_pushed_down_predicate(&path);
+    let plan = aggregate_sort_limit_plan_without_filter(scan, Operator::Plus);
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert!(result.plans.is_empty());
+    assert_eq!(result.rejected_count(), 1);
+    assert!(matches!(
+        result.report.outcomes()[0],
+        CandidateOutcome::Rejected { reason: FallbackReason::NativeSourcePushedDownParquetPredicate, .. }
+    ));
+    assert_eq!(result.source_diagnostics.len(), 1);
+    assert_eq!(result.source_diagnostics[0].predicate_disposition.as_str(), "rejected");
+    assert!(
+        result.source_diagnostics[0]
+            .rejected_features
+            .iter()
+            .any(|feature| feature.as_str() == "pushed_down_parquet_predicate")
+    );
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn pushed_down_parquet_predicate_with_different_filter_is_rejected_with_source_reason() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-pushed-predicate-mismatch");
+    let path = dir.join("input.parquet");
+    write_numeric_parquet_file(&path);
+    let scan = parquet_scan_with_pushed_down_predicate_value(&path, 20);
     let plan = aggregate_sort_limit_plan(scan, Operator::Plus);
 
     let result = lower_physical_plan_to_native(plan);
@@ -326,6 +375,7 @@ fn pushed_down_parquet_predicate_is_rejected_with_source_reason() {
         CandidateOutcome::Rejected { reason: FallbackReason::NativeSourcePushedDownParquetPredicate, .. }
     ));
     assert_eq!(result.source_diagnostics.len(), 1);
+    assert!(!result.source_diagnostics[0].direct_device_read);
     assert_eq!(result.source_diagnostics[0].predicate_disposition.as_str(), "rejected");
     assert!(
         result.source_diagnostics[0]
@@ -412,6 +462,119 @@ fn parquet_partition_columns_are_rejected_with_source_reason() {
     fs::remove_dir_all(dir).unwrap();
 }
 
+#[tokio::test]
+async fn direct_friendly_sql_physical_plan_has_stable_native_lowering_outcome() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-sql-friendly");
+    let path = dir.join("input.parquet");
+    write_numeric_parquet_file(&path);
+    let plan = sql_benchmark_plan(&path, direct_friendly_sql_session_config()).await;
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_eq!(result.candidate_count(), 1);
+    assert_eq!(result.rewritten_count(), 1);
+    assert_eq!(result.rejected_count(), 0);
+    let CandidateOutcome::Rewritten { candidate } = result.report.outcomes()[0] else {
+        panic!("direct-friendly SQL plan should lower to native");
+    };
+    assert_eq!(candidate.shape, "SortExec(fetch)(ProjectionExec(AggregateExec(FilterExec(LocalParquetScan))))");
+    assert_eq!(candidate.operator_count, 5);
+    assert_eq!(result.plans.len(), 1);
+    assert_eq!(result.source_diagnostics.len(), 1);
+    assert_eq!(result.source_diagnostics[0].file_count, 1);
+    assert!(result.source_diagnostics[0].direct_device_read);
+    assert_eq!(result.source_diagnostics[0].predicate_disposition.as_str(), "pruning_only");
+    assert!(result.source_diagnostics[0].rejected_features.is_empty());
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn default_sql_physical_plan_rejects_before_native_execution_with_stable_reason() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-sql-default");
+    let path = dir.join("input.parquet");
+    write_numeric_parquet_file(&path);
+    let plan = sql_benchmark_plan(&path, SessionConfig::new()).await;
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_eq!(result.plans.len(), 0);
+    assert_eq!(result.rewritten_count(), 0);
+    assert_eq!(result.rejected_count(), 1);
+    assert!(matches!(
+        result.report.outcomes()[0],
+        CandidateOutcome::Rejected { reason: FallbackReason::NativeSortPreservingMergeUnsupported, .. }
+    ));
+    let CandidateOutcome::Rejected { reason, .. } = result.report.outcomes()[0] else {
+        panic!("default SQL plan should reject before native execution");
+    };
+    assert!(!reason.code().is_empty());
+    assert_ne!(reason.code(), "plan_property_mismatch");
+    assert!(result.source_diagnostics.is_empty());
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn direct_friendly_sql_filter_plan_lowers_when_scan_predicate_is_absent() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-sql-filter-rewrite");
+    let path = dir.join("input.parquet");
+    write_numeric_parquet_file(&path);
+    let plan = sql_benchmark_plan(&path, direct_friendly_sql_session_config()).await;
+    let plan = sql_plan_without_scan_predicate(plan);
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_eq!(result.candidate_count(), 1);
+    assert_eq!(result.rewritten_count(), 1);
+    assert_eq!(result.rejected_count(), 0);
+    let CandidateOutcome::Rewritten { candidate } = result.report.outcomes()[0] else {
+        panic!("direct-friendly SQL filter plan should lower to native");
+    };
+    assert_eq!(candidate.shape, "SortExec(fetch)(ProjectionExec(AggregateExec(FilterExec(LocalParquetScan))))");
+    assert_eq!(candidate.operator_count, 5);
+    assert_eq!(result.plans.len(), 1);
+    assert_eq!(result.plans[0].node_count(), 7);
+    assert_eq!(result.source_diagnostics.len(), 1);
+    assert!(result.source_diagnostics[0].direct_device_read);
+    assert_eq!(result.source_diagnostics[0].predicate_disposition.as_str(), "absent");
+    let source = native_local_parquet_source(&result.plans[0]);
+    assert_eq!(
+        source.read_columns,
+        vec!["key".to_string(), "m00".to_string(), "m01".to_string(), "payload".to_string()]
+    );
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn direct_friendly_sql_physical_plan_without_scan_predicate_lowers_to_native_plan() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-sql-rewrite");
+    let path = dir.join("input.parquet");
+    write_numeric_parquet_file(&path);
+    let plan = sql_plan(&path, direct_friendly_sql_session_config(), SQL_NO_FILTER_BENCHMARK_QUERY).await;
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_eq!(result.candidate_count(), 1);
+    assert_eq!(result.rewritten_count(), 1);
+    assert_eq!(result.rejected_count(), 0);
+    let CandidateOutcome::Rewritten { candidate } = result.report.outcomes()[0] else {
+        panic!("direct-friendly SQL no-filter plan should lower to native");
+    };
+    assert_eq!(candidate.shape, "SortExec(fetch)(ProjectionExec(AggregateExec(LocalParquetScan)))");
+    assert_eq!(candidate.operator_count, 4);
+    assert_eq!(result.plans.len(), 1);
+    assert_eq!(result.source_diagnostics.len(), 1);
+    assert!(result.source_diagnostics[0].direct_device_read);
+    assert_eq!(result.source_diagnostics[0].predicate_disposition.as_str(), "absent");
+    assert!(result.source_diagnostics[0].rejected_features.is_empty());
+    let source = native_local_parquet_source(&result.plans[0]);
+    assert_eq!(source.read_columns, vec!["key".to_string(), "m00".to_string(), "m01".to_string()]);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
 #[test]
 fn every_rejected_native_candidate_has_stable_rejection_code() {
     let dir = unique_temp_dir("datafusion-cudf-native-lowering-rejection-codes");
@@ -419,7 +582,7 @@ fn every_rejected_native_candidate_has_stable_rejection_code() {
     write_numeric_parquet_file(&path);
     let rejected_results = [
         lower_physical_plan_to_native(aggregate_sort_limit_plan(parquet_scan_with_byte_range(&path), Operator::Plus)),
-        lower_physical_plan_to_native(aggregate_sort_limit_plan(
+        lower_physical_plan_to_native(aggregate_sort_limit_plan_without_filter(
             parquet_scan_with_pushed_down_predicate(&path),
             Operator::Plus,
         )),
@@ -448,15 +611,106 @@ fn parquet_scan(path: &std::path::Path) -> Arc<dyn ExecutionPlan> {
     futures::executor::block_on(df.create_physical_plan()).unwrap()
 }
 
+async fn sql_benchmark_plan(path: &std::path::Path, config: SessionConfig) -> Arc<dyn ExecutionPlan> {
+    sql_plan(path, config, SQL_BENCHMARK_QUERY).await
+}
+
+async fn sql_plan(path: &std::path::Path, config: SessionConfig, sql: &str) -> Arc<dyn ExecutionPlan> {
+    let ctx = SessionContext::new_with_config(config);
+    ctx.register_parquet("bench", path.to_str().unwrap(), ParquetReadOptions::default()).await.unwrap();
+    let df = ctx.sql(sql).await.unwrap();
+    df.create_physical_plan().await.unwrap()
+}
+
+fn sql_plan_without_scan_predicate(plan: Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
+    let sort_plan = plan;
+    let sort = sort_plan.as_any().downcast_ref::<SortExec>().expect("SQL plan root should be SortExec");
+    let post_projection_plan = Arc::clone(sort.input());
+    let post_projection = post_projection_plan
+        .as_any()
+        .downcast_ref::<ProjectionExec>()
+        .expect("SQL plan should have a post-aggregate ProjectionExec");
+    let aggregate_plan = Arc::clone(post_projection.input());
+    let aggregate = aggregate_plan
+        .as_any()
+        .downcast_ref::<AggregateExec>()
+        .expect("SQL plan should have an AggregateExec below post projection");
+    let filter_plan = Arc::clone(aggregate.input());
+    let filter =
+        filter_plan.as_any().downcast_ref::<FilterExec>().expect("SQL plan should have a FilterExec below aggregate");
+    let source_plan = Arc::clone(filter.input());
+    let source = source_plan
+        .as_any()
+        .downcast_ref::<DataSourceExec>()
+        .expect("SQL plan filter input should be a DataSourceExec");
+
+    let source_without_predicate = parquet_source_exec_without_predicate(source);
+    let filter_without_predicate = filter_plan.with_new_children(vec![source_without_predicate]).unwrap();
+    let aggregate_without_predicate = aggregate_plan.with_new_children(vec![filter_without_predicate]).unwrap();
+    let projection_without_predicate =
+        post_projection_plan.with_new_children(vec![aggregate_without_predicate]).unwrap();
+    sort_plan.with_new_children(vec![projection_without_predicate]).unwrap()
+}
+
+fn parquet_source_exec_without_predicate(source: &DataSourceExec) -> Arc<dyn ExecutionPlan> {
+    let (file_scan, _parquet_source) =
+        source.downcast_to_file_source::<ParquetSource>().expect("SQL scan should use ParquetSource");
+    let projection_indices = file_scan.file_source().projection().map(|projection| projection.column_indices());
+    let parquet_source = ParquetSource::new(file_scan.file_source().table_schema().clone());
+    let mut builder =
+        FileScanConfigBuilder::from(file_scan.clone()).with_source(Arc::new(parquet_source) as Arc<dyn FileSource>);
+    if let Some(projection_indices) = projection_indices {
+        builder = builder.with_projection_indices(Some(projection_indices)).unwrap();
+    }
+    DataSourceExec::from_data_source(builder.build())
+}
+
+fn direct_friendly_sql_session_config() -> SessionConfig {
+    let mut config = SessionConfig::new()
+        .with_repartition_file_scans(false)
+        .with_repartition_aggregations(false)
+        .with_repartition_sorts(false)
+        .with_target_partitions(1);
+    config.options_mut().optimizer.enable_topk_dynamic_filter_pushdown = false;
+    config.options_mut().optimizer.enable_aggregate_dynamic_filter_pushdown = false;
+    config.options_mut().optimizer.enable_dynamic_filter_pushdown = false;
+    config
+}
+
+const SQL_BENCHMARK_QUERY: &str = "
+SELECT key, SUM(m00 + m01) AS sum_x00
+FROM bench
+WHERE payload >= 10
+GROUP BY key
+ORDER BY sum_x00 DESC, key ASC
+LIMIT 2
+";
+
+const SQL_NO_FILTER_BENCHMARK_QUERY: &str = "
+SELECT key, SUM(m00 + m01) AS sum_x00
+FROM bench
+GROUP BY key
+ORDER BY sum_x00 DESC, key ASC
+LIMIT 2
+";
+
 fn parquet_scan_with_pushed_down_predicate(path: &std::path::Path) -> Arc<dyn ExecutionPlan> {
+    parquet_scan_with_pushed_down_predicate_value(path, 10)
+}
+
+fn parquet_scan_with_pushed_down_predicate_value(path: &std::path::Path, value: i32) -> Arc<dyn ExecutionPlan> {
     let scan = parquet_scan(path);
     let data_source = scan.as_any().downcast_ref::<DataSourceExec>().expect("parquet scan should be DataSourceExec");
     let (file_scan, parquet_source) =
         data_source.downcast_to_file_source::<ParquetSource>().expect("parquet scan should use ParquetSource");
     let scan_schema = scan.schema();
-    let predicate =
-        binary(col("payload", &scan_schema).unwrap(), Operator::GtEq, lit(ScalarValue::Int32(Some(10))), &scan_schema)
-            .unwrap();
+    let predicate = binary(
+        col("payload", &scan_schema).unwrap(),
+        Operator::GtEq,
+        lit(ScalarValue::Int32(Some(value))),
+        &scan_schema,
+    )
+    .unwrap();
     let parquet_source = parquet_source.with_predicate(predicate);
     let file_scan = FileScanConfigBuilder::from(file_scan.clone()).with_source(Arc::new(parquet_source)).build();
     DataSourceExec::from_data_source(file_scan)
@@ -554,6 +808,14 @@ fn aggregate_sort_limit_plan(scan: Arc<dyn ExecutionPlan>, projection_operator: 
     Arc::new(LocalLimitExec::new(sort, 2))
 }
 
+fn aggregate_sort_limit_plan_without_filter(
+    scan: Arc<dyn ExecutionPlan>,
+    projection_operator: Operator,
+) -> Arc<dyn ExecutionPlan> {
+    let sort = aggregate_sort_plan_without_filter(scan, projection_operator);
+    Arc::new(LocalLimitExec::new(sort, 2))
+}
+
 fn aggregate_topk_plan(
     scan: Arc<dyn ExecutionPlan>,
     projection_operator: Operator,
@@ -586,6 +848,53 @@ fn aggregate_sort_plan(scan: Arc<dyn ExecutionPlan>, projection_operator: Operat
                 ProjectionExpr { expr: x00, alias: "x00".to_string() },
             ],
             filter,
+        )
+        .unwrap(),
+    );
+
+    let projection_schema = projection.schema();
+    let group_by = PhysicalGroupBy::new_single(vec![(col("key", &projection_schema).unwrap(), "key".to_string())]);
+    let sum = AggregateExprBuilder::new(sum_udaf(), vec![col("x00", &projection_schema).unwrap()])
+        .schema(Arc::clone(&projection_schema))
+        .alias("sum_x00")
+        .build()
+        .unwrap();
+    let aggregate: Arc<dyn ExecutionPlan> = Arc::new(
+        AggregateExec::try_new(
+            AggregateMode::Single,
+            group_by,
+            vec![Arc::new(sum)],
+            vec![None],
+            projection,
+            projection_schema,
+        )
+        .unwrap(),
+    );
+
+    let aggregate_schema = aggregate.schema();
+    let sort_exprs = LexOrdering::new([
+        PhysicalSortExpr::new(col("sum_x00", &aggregate_schema).unwrap(), ArrowSortOptions::new(true, false)),
+        PhysicalSortExpr::new(col("key", &aggregate_schema).unwrap(), ArrowSortOptions::new(false, false)),
+    ])
+    .unwrap();
+    Arc::new(SortExec::new(sort_exprs, aggregate))
+}
+
+fn aggregate_sort_plan_without_filter(
+    scan: Arc<dyn ExecutionPlan>,
+    projection_operator: Operator,
+) -> Arc<dyn ExecutionPlan> {
+    let scan_schema = scan.schema();
+    let x00 =
+        binary(col("m00", &scan_schema).unwrap(), projection_operator, col("m01", &scan_schema).unwrap(), &scan_schema)
+            .unwrap();
+    let projection: Arc<dyn ExecutionPlan> = Arc::new(
+        ProjectionExec::try_new(
+            [
+                ProjectionExpr { expr: col("key", &scan_schema).unwrap(), alias: "key".to_string() },
+                ProjectionExpr { expr: x00, alias: "x00".to_string() },
+            ],
+            scan,
         )
         .unwrap(),
     );

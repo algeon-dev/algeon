@@ -124,6 +124,7 @@ pub enum SourceFormat {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PredicateDisposition {
     Absent,
+    PruningOnly,
     Rejected,
 }
 
@@ -131,6 +132,7 @@ impl PredicateDisposition {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Absent => "absent",
+            Self::PruningOnly => "pruning_only",
             Self::Rejected => "rejected",
         }
     }
