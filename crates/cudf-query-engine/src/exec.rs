@@ -1,4 +1,4 @@
-use std::time::Instant;
+use std::{cell::Cell, rc::Rc, time::Instant};
 
 use arrow::{array::Array, datatypes::DataType as ArrowDataType, record_batch::RecordBatch};
 use cudf::{
@@ -366,9 +366,14 @@ fn execute_bounded_query_plan(
 
     record_device_memory_observation(&frame.frame, metrics)?;
     match plan.sink() {
-        ResultSink::GpuResident { .. } => Ok(QueryOutput::GpuResident(frame.frame)),
+        ResultSink::GpuResident { .. } => {
+            reservations.release(frame.reservation);
+            debug_assert_eq!(reservations.reserved_bytes(), 0);
+            Ok(QueryOutput::GpuResident(frame.frame))
+        },
         ResultSink::HostArrow { .. } => {
             let output = materialize_bounded_to_host(frame, plan.sink().input(), &mut reservations, metrics)?;
+            debug_assert_eq!(reservations.reserved_bytes(), 0);
             Ok(QueryOutput::HostArrow(output))
         },
     }
@@ -472,14 +477,14 @@ fn execute_bounded_chunk_attempt(
         Ok(frame) => frame,
         Err(error) => {
             reservations.release(source_reservation);
-            return Err(error);
+            return Err(attach_chunk_resource_facts(error, chunk, "source_chunk_read", attempt, max_attempts, metrics));
         },
     };
     let source_observed_bytes = match observe_device_memory_bytes(&frame, metrics) {
         Ok(bytes) => bytes,
         Err(error) => {
             reservations.release(source_reservation);
-            return Err(error);
+            return Err(attach_chunk_resource_facts(error, chunk, "source_chunk_read", attempt, max_attempts, metrics));
         },
     };
 
@@ -516,14 +521,15 @@ fn execute_bounded_chunk_attempt(
         Err(error) => {
             reservations.release(operator_reservation);
             reservations.release(source_reservation);
-            return Err(error);
+            return Err(attach_chunk_resource_facts(error, chunk, "chunk_operator", attempt, max_attempts, metrics));
         },
     };
 
     reservations.release(operator_reservation);
     reservations.release(source_reservation);
 
-    let partial_bytes = observe_device_memory_bytes(&frame, metrics)?;
+    let partial_bytes = observe_device_memory_bytes(&frame, metrics)
+        .map_err(|error| attach_chunk_resource_facts(error, chunk, "partial_state", attempt, max_attempts, metrics))?;
     let partial_request = chunk_reservation_request(
         ReservationKind::PartialState,
         "partial_state",
@@ -810,24 +816,54 @@ fn validate_aggregate_output_names(
     Ok(())
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug)]
 struct ActiveReservation {
+    reserved_bytes: Rc<Cell<u64>>,
     bytes: u64,
+    released: bool,
+}
+
+impl ActiveReservation {
+    fn new(reserved_bytes: Rc<Cell<u64>>, bytes: u64) -> Self {
+        Self { reserved_bytes, bytes, released: false }
+    }
+
+    fn bytes(&self) -> u64 {
+        self.bytes
+    }
+
+    fn release(&mut self) {
+        if self.released {
+            return;
+        }
+        self.reserved_bytes.set(self.reserved_bytes.get().saturating_sub(self.bytes));
+        self.released = true;
+    }
+}
+
+impl Drop for ActiveReservation {
+    fn drop(&mut self) {
+        self.release();
+    }
 }
 
 #[derive(Debug)]
 struct ReservationTracker {
     budget_bytes: u64,
-    reserved_bytes: u64,
+    reserved_bytes: Rc<Cell<u64>>,
 }
 
 impl ReservationTracker {
     fn new(budget_bytes: u64) -> Self {
-        Self { budget_bytes, reserved_bytes: 0 }
+        Self { budget_bytes, reserved_bytes: Rc::new(Cell::new(0)) }
     }
 
     fn budget(&self) -> u64 {
         self.budget_bytes
+    }
+
+    fn reserved_bytes(&self) -> u64 {
+        self.reserved_bytes.get()
     }
 
     fn try_reserve(
@@ -835,19 +871,19 @@ impl ReservationTracker {
         request: MemoryReservationRequest,
         metrics: &mut QueryMetrics,
     ) -> Result<ActiveReservation> {
-        let remaining = self.budget_bytes.saturating_sub(self.reserved_bytes);
+        let remaining = self.budget_bytes.saturating_sub(self.reserved_bytes());
         if request.requested_bytes > remaining {
             metrics.record_reservation_denied(request.requested_bytes);
             return Err(request.denied_error(remaining));
         }
 
-        self.reserved_bytes = self.reserved_bytes.saturating_add(request.requested_bytes);
+        self.reserved_bytes.set(self.reserved_bytes().saturating_add(request.requested_bytes));
         metrics.record_reservation_granted(request.requested_bytes, request.requested_bytes);
-        Ok(ActiveReservation { bytes: request.requested_bytes })
+        Ok(ActiveReservation::new(Rc::clone(&self.reserved_bytes), request.requested_bytes))
     }
 
-    fn release(&mut self, reservation: ActiveReservation) {
-        self.reserved_bytes = self.reserved_bytes.saturating_sub(reservation.bytes);
+    fn release(&mut self, mut reservation: ActiveReservation) {
+        reservation.release();
     }
 }
 
@@ -971,6 +1007,69 @@ fn chunk_retry_facts(chunk: &SourceChunk, metrics: &QueryMetrics) -> RetryFacts 
         .with_committed_partials(metrics.partial_aggregate_count as usize)
 }
 
+#[derive(Debug, Clone, Copy)]
+struct RuntimeResourceFacts<'a> {
+    memory_boundary: &'static str,
+    stage: &'static str,
+    node_id: NodeId,
+    attempt: usize,
+    max_attempts: usize,
+    resume_boundary: &'static str,
+    metrics: &'a QueryMetrics,
+}
+
+impl RuntimeResourceFacts<'_> {
+    fn attach_to(self, error: QueryError) -> QueryError {
+        if error.code() != QueryErrorCode::CudfResourceExhausted {
+            return error;
+        }
+
+        RetryFacts::new()
+            .with_resume_boundary(self.resume_boundary)
+            .with_committed_chunks(self.metrics.source_chunks_committed as usize)
+            .with_committed_partials(self.metrics.partial_aggregate_count as usize)
+            .attach_to_error(
+                error
+                    .with_fact("memory_boundary", self.memory_boundary)
+                    .with_fact("stage", self.stage)
+                    .with_fact("node_id", self.node_id)
+                    .with_fact("attempt", self.attempt)
+                    .with_fact("max_attempts", self.max_attempts),
+            )
+    }
+}
+
+fn attach_chunk_resource_facts(
+    error: QueryError,
+    chunk: &SourceChunk,
+    memory_boundary: &'static str,
+    attempt: usize,
+    max_attempts: usize,
+    metrics: &QueryMetrics,
+) -> QueryError {
+    if error.code() != QueryErrorCode::CudfResourceExhausted {
+        return error;
+    }
+
+    let mut error = RuntimeResourceFacts {
+        memory_boundary,
+        stage: memory_boundary,
+        node_id: chunk.source_node_id,
+        attempt,
+        max_attempts,
+        resume_boundary: "source_chunk",
+        metrics,
+    }
+    .attach_to(error)
+    .with_fact("chunk_index", chunk.chunk_index)
+    .with_fact("file_index", chunk.file_index)
+    .with_fact("path", chunk.path.display());
+    if !chunk.reads_all_row_groups {
+        error = error.with_fact("row_groups", comma_separated_usize(&chunk.row_group_indexes));
+    }
+    error
+}
+
 fn execute_final_aggregate_merge(
     context: &ExecutionContext,
     bounded: &BoundedPlan<'_>,
@@ -1038,7 +1137,7 @@ fn execute_post_aggregate_projection(
     };
 
     let request =
-        MemoryReservationRequest::new(ReservationKind::FinalMerge, input.reservation.bytes, reservations.budget())
+        MemoryReservationRequest::new(ReservationKind::FinalMerge, input.reservation.bytes(), reservations.budget())
             .with_memory_boundary("post_aggregate_projection")
             .with_node_id(bounded.aggregate_id)
             .with_stage("post_aggregate_projection");
@@ -1049,12 +1148,32 @@ fn execute_post_aggregate_projection(
         Ok(frame) => frame,
         Err(error) => {
             reservations.release(input.reservation);
-            return Err(error);
+            return Err(RuntimeResourceFacts {
+                memory_boundary: "post_aggregate_projection",
+                stage: "post_aggregate_projection",
+                node_id: bounded.aggregate_id,
+                attempt: 1,
+                max_attempts: 1,
+                resume_boundary: "post_aggregate_projection",
+                metrics,
+            }
+            .attach_to(error));
         },
     };
 
     reservations.release(input.reservation);
-    let output_bytes = observe_device_memory_bytes(&frame, metrics)?;
+    let output_bytes = observe_device_memory_bytes(&frame, metrics).map_err(|error| {
+        RuntimeResourceFacts {
+            memory_boundary: "post_aggregate_projection_output",
+            stage: "post_aggregate_projection",
+            node_id: bounded.aggregate_id,
+            attempt: 1,
+            max_attempts: 1,
+            resume_boundary: "post_aggregate_projection",
+            metrics,
+        }
+        .attach_to(error)
+    })?;
     let output_request =
         MemoryReservationRequest::new(ReservationKind::FinalMerge, output_bytes, reservations.budget())
             .with_memory_boundary("post_aggregate_projection_output")
@@ -1106,7 +1225,7 @@ fn execute_final_merge_group_attempt(
     metrics: &mut QueryMetrics,
 ) -> Result<CommittedPartial> {
     debug_assert!(partials.len() > 1);
-    let requested_bytes = partials.iter().map(|partial| partial.reservation.bytes).sum::<u64>();
+    let requested_bytes = partials.iter().map(|partial| partial.reservation.bytes()).sum::<u64>();
     let merge_request =
         MemoryReservationRequest::new(ReservationKind::FinalMerge, requested_bytes, reservations.budget())
             .with_memory_boundary("final_aggregate_merge")
@@ -1123,12 +1242,32 @@ fn execute_final_merge_group_attempt(
         Ok(frame) => frame,
         Err(error) => {
             metrics.final_merge_time += merge_elapsed;
-            return Err(error);
+            return Err(RuntimeResourceFacts {
+                memory_boundary: "final_aggregate_merge",
+                stage: "final_merge",
+                node_id: bounded.aggregate_id,
+                attempt,
+                max_attempts,
+                resume_boundary: "final_merge",
+                metrics,
+            }
+            .attach_to(error));
         },
     };
     metrics.final_merge_time += merge_elapsed;
 
-    let output_bytes = observe_device_memory_bytes(&frame, metrics)?;
+    let output_bytes = observe_device_memory_bytes(&frame, metrics).map_err(|error| {
+        RuntimeResourceFacts {
+            memory_boundary: "final_aggregate_merge_output",
+            stage: "final_merge",
+            node_id: bounded.aggregate_id,
+            attempt,
+            max_attempts,
+            resume_boundary: "final_merge",
+            metrics,
+        }
+        .attach_to(error)
+    })?;
     let output_request =
         MemoryReservationRequest::new(ReservationKind::FinalMerge, output_bytes, reservations.budget())
             .with_memory_boundary("final_aggregate_merge_output")
@@ -1315,7 +1454,7 @@ fn execute_full_final_sort_limit_attempt(
     metrics: &mut QueryMetrics,
 ) -> Result<CommittedPartial> {
     let sort_request =
-        MemoryReservationRequest::new(ReservationKind::FinalSort, input.reservation.bytes, reservations.budget())
+        MemoryReservationRequest::new(ReservationKind::FinalSort, input.reservation.bytes(), reservations.budget())
             .with_memory_boundary("final_sort")
             .with_node_id(bounded.aggregate_id)
             .with_stage("final_sort")
@@ -1325,7 +1464,18 @@ fn execute_full_final_sort_limit_attempt(
     let result = execute_sort_on_frame(context, sort, input.frame.frame().clone(), metrics)
         .and_then(|frame| execute_optional_limit(context, limit, frame, metrics));
     reservations.release(sort_reservation);
-    let frame = result?;
+    let frame = result.map_err(|error| {
+        RuntimeResourceFacts {
+            memory_boundary: "final_sort",
+            stage: "final_sort",
+            node_id: bounded.aggregate_id,
+            attempt,
+            max_attempts,
+            resume_boundary: "final_sort",
+            metrics,
+        }
+        .attach_to(error)
+    })?;
     reserve_final_sort_output(bounded, frame, attempt, max_attempts, reservations, metrics)
 }
 
@@ -1356,11 +1506,11 @@ fn execute_hierarchical_topk_final_sort(
     if input_rows == 0 {
         return Ok(input);
     }
-    let bytes_per_row = estimated_bytes_per_row(input.reservation.bytes, input_rows);
+    let bytes_per_row = estimated_bytes_per_row(input.reservation.bytes(), input_rows);
     let initial_rows_per_chunk = final_sort_rows_per_chunk(
         input_rows,
         bytes_per_row,
-        reservations.budget().saturating_sub(input.reservation.bytes),
+        reservations.budget().saturating_sub(input.reservation.bytes()),
     );
     let mut candidates = match execute_initial_topk_candidates(
         context,
@@ -1433,7 +1583,18 @@ fn execute_hierarchical_topk_final_sort(
         return Ok(candidate);
     }
 
-    let output = execute_limit(context, limit, candidate.frame, metrics)?;
+    let output = execute_limit(context, limit, candidate.frame, metrics).map_err(|error| {
+        RuntimeResourceFacts {
+            memory_boundary: "final_sort_limit",
+            stage: "final_sort",
+            node_id: bounded.aggregate_id,
+            attempt: max_attempts,
+            max_attempts,
+            resume_boundary: "final_sort",
+            metrics,
+        }
+        .attach_to(error)
+    })?;
     reservations.release(candidate.reservation);
     reserve_final_sort_output(bounded, output, max_attempts, max_attempts, reservations, metrics)
 }
@@ -1519,7 +1680,18 @@ fn execute_topk_slice_attempt(
         })
         .and_then(|frame| execute_topk_candidate(context, sort, frame, keep_rows, metrics));
     reservations.release(work_reservation);
-    let frame = result?;
+    let frame = result.map_err(|error| {
+        RuntimeResourceFacts {
+            memory_boundary: "final_sort_topk_chunk",
+            stage: "final_sort",
+            node_id: bounded.aggregate_id,
+            attempt,
+            max_attempts,
+            resume_boundary: "final_sort",
+            metrics,
+        }
+        .attach_to(error)
+    })?;
     reserve_final_sort_output(bounded, frame, attempt, max_attempts, reservations, metrics)
 }
 
@@ -1577,7 +1749,7 @@ fn execute_topk_merge_group_attempt(
     metrics: &mut QueryMetrics,
 ) -> Result<CommittedPartial> {
     debug_assert!(candidates.len() > 1);
-    let requested_bytes = candidates.iter().map(|candidate| candidate.reservation.bytes).sum::<u64>();
+    let requested_bytes = candidates.iter().map(|candidate| candidate.reservation.bytes()).sum::<u64>();
     let request = MemoryReservationRequest::new(ReservationKind::FinalSort, requested_bytes, reservations.budget())
         .with_memory_boundary("final_sort_topk_merge")
         .with_node_id(bounded.aggregate_id)
@@ -1588,7 +1760,18 @@ fn execute_topk_merge_group_attempt(
     let result = concat_committed_frames(context, candidates, "cudf_query_engine.final_sort.topk_concat")
         .and_then(|frame| execute_topk_candidate(context, sort, frame, keep_rows, metrics));
     reservations.release(merge_reservation);
-    let frame = result?;
+    let frame = result.map_err(|error| {
+        RuntimeResourceFacts {
+            memory_boundary: "final_sort_topk_merge",
+            stage: "final_sort",
+            node_id: bounded.aggregate_id,
+            attempt,
+            max_attempts,
+            resume_boundary: "final_sort",
+            metrics,
+        }
+        .attach_to(error)
+    })?;
     reserve_final_sort_output(bounded, frame, attempt, max_attempts, reservations, metrics)
 }
 
@@ -1627,7 +1810,18 @@ fn reserve_final_sort_output(
     reservations: &mut ReservationTracker,
     metrics: &mut QueryMetrics,
 ) -> Result<CommittedPartial> {
-    let output_bytes = observe_device_memory_bytes(&frame, metrics)?;
+    let output_bytes = observe_device_memory_bytes(&frame, metrics).map_err(|error| {
+        RuntimeResourceFacts {
+            memory_boundary: "final_sort_output",
+            stage: "final_sort",
+            node_id: bounded.aggregate_id,
+            attempt,
+            max_attempts,
+            resume_boundary: "final_sort",
+            metrics,
+        }
+        .attach_to(error)
+    })?;
     let output_request = MemoryReservationRequest::new(ReservationKind::FinalSort, output_bytes, reservations.budget())
         .with_memory_boundary("final_sort_output")
         .with_node_id(bounded.aggregate_id)
@@ -2091,12 +2285,15 @@ fn materialize_bounded_to_host(
     reservations: &mut ReservationTracker,
     metrics: &mut QueryMetrics,
 ) -> Result<RecordBatch> {
-    let request =
-        MemoryReservationRequest::new(ReservationKind::Materialization, input.reservation.bytes, reservations.budget())
-            .with_memory_boundary("host_materialization")
-            .with_node_id(final_node_id)
-            .with_stage("materialization")
-            .with_attempt(1, 1);
+    let request = MemoryReservationRequest::new(
+        ReservationKind::Materialization,
+        input.reservation.bytes(),
+        reservations.budget(),
+    )
+    .with_memory_boundary("host_materialization")
+    .with_node_id(final_node_id)
+    .with_stage("materialization")
+    .with_attempt(1, 1);
     let materialization_reservation = match reservations.try_reserve(request, metrics) {
         Ok(reservation) => reservation,
         Err(error) => {
@@ -2105,10 +2302,21 @@ fn materialize_bounded_to_host(
         },
     };
 
-    let result = materialize_to_host(input.frame, metrics);
+    let result = materialize_to_host(input.frame, metrics).map_err(|error| {
+        RuntimeResourceFacts {
+            memory_boundary: "host_materialization",
+            stage: "materialization",
+            node_id: final_node_id,
+            attempt: 1,
+            max_attempts: 1,
+            resume_boundary: "host_materialization",
+            metrics,
+        }
+        .attach_to(error)
+    });
     reservations.release(materialization_reservation);
     reservations.release(input.reservation);
-    result
+    result.map_err(|error| host_materialization_failure_facts(metrics).attach_to_error(error))
 }
 
 fn host_materialization_failure_facts(metrics: &QueryMetrics) -> RetryFacts {
