@@ -24,8 +24,8 @@ use nexus_query_engine::{
 #[cfg(feature = "server")]
 use nexus_query_engine::{
     observability::{
-        PlanExecutionBoundaryKind, RuntimeObservationConfig, RuntimeObservationPayload, RuntimeObservationSession,
-        RuntimeTerminalOutcome, SealedRuntimeObservationSnapshot,
+        AttemptFailureCode, AttemptFailureStatus, PlanExecutionBoundaryKind, RuntimeObservationConfig,
+        RuntimeObservationPayload, RuntimeObservationSession, RuntimeTerminalOutcome, SealedRuntimeObservationSnapshot,
     },
     runtime::LakehouseCacheFillEventSnapshot,
 };
@@ -960,8 +960,8 @@ async fn graph_native_failure_retains_failed_evidence_and_original_error() {
     assert_eq!(
         retained[0].footer().terminal,
         Some(RuntimeTerminalOutcome::Failed {
-            error_code: "cudf_invalid_input".to_string(),
-            error_status: ErrorCode::CudfInvalidInput.status().as_str().to_string(),
+            error_code: AttemptFailureCode::CudfInvalidInput,
+            error_status: AttemptFailureStatus::Permanent,
         })
     );
     assert!(retained[0].footer().complete);
@@ -1027,8 +1027,11 @@ async fn graph_failure_after_gpu_start_has_one_attempt_no_output_and_no_cpu_repl
     assert_eq!(
         retained[0].footer().terminal,
         Some(RuntimeTerminalOutcome::Failed {
-            error_code: "host_staging_limit_exceeded".to_string(),
-            error_status: ErrorCode::HostStagingLimitExceeded.status().as_str().to_string(),
+            // The host-staging error is returned through the root adapter's
+            // DataFusion boundary. The sealed engine report deliberately
+            // retains only the closed, text-free adapter fallback here.
+            error_code: AttemptFailureCode::DatafusionError,
+            error_status: AttemptFailureStatus::Permanent,
         })
     );
     assert_eq!(graph_plan_boundary_count(&retained[0], PlanExecutionBoundaryKind::Started), 1);

@@ -93,6 +93,7 @@ fn assert_single_sealed_attempt_report(payload: &str, expected_outcome: &str) {
     assert_eq!(payload.matches("# attempt_id=attempt-").count(), 1, "{payload}");
     assert_eq!(payload.matches("# attempt_outcome=").count(), 1, "{payload}");
     assert!(payload.contains(&format!("# attempt_outcome={expected_outcome}")), "{payload}");
+    assert!(payload.contains(&format!("# outcome={expected_outcome}")), "{payload}");
     assert!(payload.contains("# sealed=true"), "{payload}");
 }
 
@@ -157,7 +158,8 @@ async fn explain_gpu_cancel_before_do_get_retains_one_sealed_attempt_report() {
     assert!(service.cancel_from_flight_info(&info.encode_to_vec()).expect("cancel request should decode"));
 
     let payload = query_stats_payload(&service, &query_id);
-    assert!(payload.contains("# outcome=failed"), "{payload}");
+    assert!(payload.contains("# outcome=cancelled"), "{payload}");
+    assert!(payload.contains("# delivery_outcome=failed"), "{payload}");
     assert_single_sealed_attempt_report(&payload, "cancelled");
 }
 
@@ -182,7 +184,8 @@ async fn explain_gpu_stream_drop_retains_one_sealed_attempt_report() {
     assert!(native_cancellation.is_cancelled(), "dropping EXPLAIN GPU must cancel its Flight lifecycle");
     assert_eq!(service.cancellations.len(), 0, "dropped EXPLAIN GPU stream must unregister cancellation");
     let payload = query_stats_payload(&service, &query_id);
-    assert!(payload.contains("# outcome=failed"), "{payload}");
+    assert!(payload.contains("# outcome=cancelled"), "{payload}");
+    assert!(payload.contains("# delivery_outcome=failed"), "{payload}");
     assert!(payload.contains("code=cancelled"), "{payload}");
     assert_single_sealed_attempt_report(&payload, "cancelled");
 }

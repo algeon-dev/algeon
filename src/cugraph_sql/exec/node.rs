@@ -137,6 +137,12 @@ impl CugraphAlgoExec {
         self.spec.algorithm.function_name()
     }
 
+    /// Returns the one post-seal attempt projection target for this cuGraph
+    /// execution root. It is read only and has no graph/admission authority.
+    pub(crate) fn sealed_attempt_metrics_target(&self) -> crate::native_exec::SealedAttemptMetricsTarget {
+        crate::native_exec::SealedAttemptMetricsTarget::new(&self.metrics)
+    }
+
     #[cfg(test)]
     pub(crate) fn coverage_gpu_result_input_name(&self) -> &str {
         &self.gpu_result_input_name
@@ -776,6 +782,10 @@ pub(super) fn register_cugraph_execution_spis() {
 impl GraphExecutionPlan for CugraphAlgoExec {
     fn graph_model_ask_for_admission(&self) -> Result<Option<GraphAdmissionModelAsk>> {
         self.graph_model_ask_bytes_for_admission_ticket()
+    }
+
+    fn sealed_attempt_metrics_target(&self) -> crate::native_exec::SealedAttemptMetricsTarget {
+        self.sealed_attempt_metrics_target()
     }
 }
 

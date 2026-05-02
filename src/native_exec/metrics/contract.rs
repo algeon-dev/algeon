@@ -133,6 +133,7 @@ macro_rules! for_each_native_nexus_metric {
             final_sort_time => "final_sort_time": timer,
             materialization_time => "materialization_time": timer,
             native_plan_task_mapping_rows => "native_plan_task_mapping_rows": rows,
+            attempt_report_rows => "attempt_report_rows": rows,
         }
     };
 }

@@ -45,7 +45,9 @@ struct QueryGpuCoverageValidationInProgress;
 pub(super) struct QueryGpuRejection {
     pub(super) phase: QueryGpuRejectionPhase,
     pub(super) reason_code: String,
-    pub(super) retryable: bool,
+    /// Coarse source status is diagnostic context only. It is never sealed
+    /// attempt retry advice.
+    pub(super) source_error_status: Option<&'static str>,
     pub(super) detail: String,
 }
 
@@ -53,10 +55,9 @@ impl QueryGpuRejection {
     pub(super) fn new(
         phase: QueryGpuRejectionPhase,
         reason_code: impl Into<String>,
-        retryable: bool,
         detail: impl Into<String>,
     ) -> Self {
-        Self { phase, reason_code: reason_code.into(), retryable, detail: detail.into() }
+        Self { phase, reason_code: reason_code.into(), source_error_status: None, detail: detail.into() }
     }
 
     pub(super) fn from_datafusion_error(phase: QueryGpuRejectionPhase, error: &DataFusionError) -> Self {
@@ -66,18 +67,17 @@ impl QueryGpuRejection {
                 .unwrap_or_else(|| adapter_error.code().as_str())
                 .to_string();
             let diagnostics = ErrorSourceDiagnostics::from_error(error);
-            return Self::new(
+            return Self {
                 phase,
                 reason_code,
-                adapter_error.is_retryable(),
-                diagnostics.chain().unwrap_or_else(|| adapter_error.message()).to_string(),
-            );
+                source_error_status: Some(adapter_error.status().as_str()),
+                detail: diagnostics.chain().unwrap_or_else(|| adapter_error.message()).to_string(),
+            };
         }
         let diagnostics = ErrorSourceDiagnostics::from_error(error);
         Self::new(
             phase,
             ErrorCode::DataFusionPlanning.as_str(),
-            false,
             diagnostics.chain().map(ToString::to_string).unwrap_or_else(|| error.message().to_string()),
         )
     }
@@ -157,7 +157,6 @@ pub(super) fn coverage_validator_recursion_rejection() -> QueryGpuRejection {
     QueryGpuRejection::new(
         QueryGpuRejectionPhase::Parsing,
         COVERAGE_VALIDATOR_RECURSION_REASON_CODE,
-        false,
         format!("{NEXUS_EXPLAIN_COVERAGE_FUNCTION} cannot validate a query that calls itself"),
     )
 }
@@ -178,7 +177,6 @@ pub(super) fn preflight_single_query(state: &SessionState, sql: &str) -> Option<
         return Some(QueryGpuRejection::new(
             QueryGpuRejectionPhase::Parsing,
             ErrorCode::DataFusionPlanning.as_str(),
-            false,
             format!("unsupported SQL dialect configured for validation: {dialect_config}"),
         ));
     };
@@ -197,7 +195,6 @@ pub(super) fn preflight_single_query(state: &SessionState, sql: &str) -> Option<
         return Some(QueryGpuRejection::new(
             QueryGpuRejectionPhase::Parsing,
             "empty_sql",
-            false,
             "validate_query expects a SQL query statement",
         ));
     }
@@ -205,7 +202,6 @@ pub(super) fn preflight_single_query(state: &SessionState, sql: &str) -> Option<
         return Some(QueryGpuRejection::new(
             QueryGpuRejectionPhase::Parsing,
             "multi_statement_unsupported",
-            false,
             format!("validate_query expects exactly one query statement, got {}", statements.len()),
         ));
     }
@@ -218,14 +214,12 @@ pub(super) fn preflight_single_query(state: &SessionState, sql: &str) -> Option<
             _ => Some(QueryGpuRejection::new(
                 QueryGpuRejectionPhase::Parsing,
                 "non_query_statement_unsupported",
-                false,
                 "validate_query v1 supports SELECT/query statements only",
             )),
         },
         Some(_) => Some(QueryGpuRejection::new(
             QueryGpuRejectionPhase::Parsing,
             "non_query_statement_unsupported",
-            false,
             "validate_query v1 supports SELECT/query statements only",
         )),
         None => unreachable!("empty statements are handled before statement matching"),

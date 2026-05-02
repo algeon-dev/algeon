@@ -573,11 +573,7 @@ fn execute_query_plan_with_gpu_inputs_and_runtime_observation_authority(
         .map_err(|error| error.with_query_id(query_id).with_optional_trace_id(trace_id.as_ref()));
     let terminal = match &result {
         Ok(_) => RuntimeTerminalOutcome::Succeeded,
-        Err(error) if error.code() == QueryErrorCode::Cancelled => RuntimeTerminalOutcome::Cancelled,
-        Err(error) => RuntimeTerminalOutcome::Failed {
-            error_code: error.code().to_string(),
-            error_status: error.status().as_str().to_string(),
-        },
+        Err(error) => RuntimeTerminalOutcome::from_query_error(error),
     };
     let snapshot = lifecycle.finish(terminal);
     metrics.finalize_reservation_projection();
@@ -924,10 +920,7 @@ mod tests {
         assert_eq!(failure.fact_value("reason"), Some("runtime_observation_query_id_mismatch"));
         assert_key_unavailable_evidence(
             &failed,
-            RuntimeTerminalOutcome::Failed {
-                error_code: QueryErrorCode::InvalidPlan.to_string(),
-                error_status: QueryErrorCode::InvalidPlan.status().as_str().to_string(),
-            },
+            RuntimeTerminalOutcome::from_query_error(&failure),
         );
 
         let cancellation = ExecutionCancellation::new();

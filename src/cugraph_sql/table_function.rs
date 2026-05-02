@@ -27,6 +27,7 @@ use datafusion::{
     physical_plan::{
         DisplayAs, DisplayFormatType, PlanProperties, SendableRecordBatchStream,
         execution_plan::{Boundedness, EmissionType},
+        stream::RecordBatchStreamAdapter,
     },
 };
 
@@ -256,7 +257,14 @@ impl ExecutionPlan for CugraphFeatureDisabledExec {
     }
 
     fn execute(&self, _partition: usize, _task_context: Arc<TaskContext>) -> Result<SendableRecordBatchStream> {
-        Err(super::cugraph_feature_disabled(self.algorithm))
+        // Flight SQL has already issued a ticket when physical execution
+        // starts. Keep the feature-gate error on that ticket's result stream
+        // rather than rejecting stream construction, while still performing
+        // no source scan, staging, or GPU work.
+        let schema = self.schema();
+        let error = super::cugraph_feature_disabled(self.algorithm);
+        let stream = futures::stream::once(async move { Err(error) });
+        Ok(Box::pin(RecordBatchStreamAdapter::new(schema, stream)))
     }
 }
 

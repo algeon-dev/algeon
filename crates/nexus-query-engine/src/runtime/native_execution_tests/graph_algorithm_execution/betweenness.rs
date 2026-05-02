@@ -202,10 +202,7 @@ fn bounded_betweenness_failed_retry_still_records_graph_floor() {
     let snapshot = outcome.observation().expect("failed bounded retry retains its terminal observation");
     assert_eq!(
         snapshot.footer().terminal,
-        Some(RuntimeTerminalOutcome::Failed {
-            error_code: QueryErrorCode::CudfResourceExhausted.to_string(),
-            error_status: QueryErrorCode::CudfResourceExhausted.status().as_str().to_string(),
-        }),
+        Some(RuntimeTerminalOutcome::from_query_error(&error)),
         "terminal status must come from the terminal retry error, not the recorded retry action",
     );
 }

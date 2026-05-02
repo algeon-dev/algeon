@@ -8,8 +8,8 @@ use std::{
 
 use nexus_query_engine::{
     observability::{
-        QueryAttemptReport, RuntimeObservationConfig, RuntimeObservationOwner, RuntimeQueryId, RuntimeTraceId,
-        SealedRuntimeObservationSnapshot,
+        QueryAttemptReport, RuntimeObservationConfig, RuntimeObservationOwner, RuntimeQueryId, RuntimeTerminalOutcome,
+        RuntimeTraceId, SealedRuntimeObservationSnapshot,
     },
     runtime::ExecutionCancellation,
 };
@@ -43,6 +43,10 @@ pub(in crate::server) struct QueryRecord {
     /// owner. `None` remains valid for legacy coordinator-owned observation
     /// paths, but attempt-owned records cannot finalize until this arrives.
     pub(in crate::server) attempt_report: Option<Arc<QueryAttemptReport>>,
+    /// The canonical attempt outcome survives handoff of the full immutable
+    /// report so unavailable and tombstone projections never reconstruct it
+    /// from Flight delivery state.
+    pub(in crate::server) attempt_outcome: Option<RuntimeTerminalOutcome>,
     /// The immutable snapshot sealed by the same attempt as
     /// `attempt_report`. This is retained only for artifact projection; the
     /// coordinator never receives observation-sealing authority.
@@ -285,6 +289,7 @@ impl QueryCoordinator {
                 active_activities: 0,
                 observation_owner: owner,
                 attempt_report: None,
+                attempt_outcome: None,
                 attempt_snapshot: None,
                 requires_attempt_report: !create_runtime_observation_owner,
                 hot: Arc::clone(&hot),
@@ -303,7 +308,14 @@ impl QueryCoordinator {
                 finalization_claim: None,
             },
         );
-        Ok(QueryPlanningLease { coordinator: Arc::downgrade(self), key, observation_id, hot, released: false })
+        Ok(QueryPlanningLease {
+            coordinator: Arc::downgrade(self),
+            key,
+            observation_id,
+            hot,
+            attempt_report_handoff_registered: std::cell::Cell::new(false),
+            released: false,
+        })
     }
 
     pub(in crate::server) fn live_count_locked(state: &QueryRegistryState) -> usize {
@@ -324,17 +336,12 @@ impl QueryCoordinator {
     /// terminalization or observation-sealing authority over the report.
     pub(in crate::server) fn attach_attempt_report(
         &self,
-        query_id: &str,
+        key: &QueryKey,
         report: Arc<QueryAttemptReport>,
         snapshot: Option<SealedRuntimeObservationSnapshot>,
     ) -> Result<(), QueryCoordinatorError> {
         let mut state = self.lock_state();
-        let key = state.current.get(query_id).cloned().ok_or_else(|| {
-            QueryCoordinatorError::new(QueryCoordinatorErrorKind::UnknownQuery, "unknown query attempt report")
-        })?;
-        let record = state.records.get_mut(&key).ok_or_else(|| {
-            QueryCoordinatorError::new(QueryCoordinatorErrorKind::UnknownQuery, "unknown query attempt report")
-        })?;
+        let record = Self::record_mut(&mut state, key)?;
         if !record.requires_attempt_report {
             return Err(QueryCoordinatorError::new(
                 QueryCoordinatorErrorKind::InvalidTransition,
@@ -367,6 +374,7 @@ impl QueryCoordinator {
         if let Some(captured) = &mut record.captured {
             captured.set_attempt_report(Arc::clone(&report));
         }
+        record.attempt_outcome = Some(report.outcome.clone());
         record.attempt_report = Some(report);
         record.attempt_snapshot = snapshot;
         Self::bump_capture_version(record);
@@ -384,6 +392,37 @@ impl QueryCoordinator {
         let Some(key) = state.current.get(query_id).cloned() else { return };
         let Some(record) = state.records.get_mut(&key) else { return };
         record.requires_attempt_report = false;
+    }
+
+    /// Stops awaiting an attempt report that sealed successfully but could not
+    /// be retained by the coordinator. This records a delivery failure; it
+    /// does not invent a coordinator-owned attempt outcome.
+    pub(in crate::server) fn abandon_attempt_report_delivery(
+        &self,
+        key: &QueryKey,
+        attempt_outcome: Option<RuntimeTerminalOutcome>,
+    ) {
+        let should_finalize = {
+            let mut state = self.lock_state();
+            let Ok(record) = Self::record_mut(&mut state, key) else { return };
+            // A rejected full handoff must not retain the report or snapshot,
+            // but the already-sealed attempt outcome remains the canonical
+            // compact projection for unavailable/tombstone stats.
+            if record.attempt_outcome.is_none() {
+                record.attempt_outcome = attempt_outcome;
+            }
+            record.requires_attempt_report = false;
+            record.unavailable = Some(RetainedUnavailableReason::AttemptReportDeliveryFailed);
+            Self::bump_capture_version(record);
+            record.terminal_outcome.is_some()
+                && record.active_leases == 0
+                && record.active_activities == 0
+                && !matches!(record.phase, QueryPhase::Retained | QueryPhase::Tombstone)
+        };
+        self.notify.notify_waiters();
+        if should_finalize {
+            self.finalize_ready();
+        }
     }
 
     pub(in crate::server) fn record_mut<'a>(

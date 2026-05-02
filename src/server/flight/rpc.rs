@@ -69,7 +69,10 @@ impl FlightSqlService for DatafusionNexusFlightSqlService {
                     },
                 };
                 if let Some(attempt) = attempt.as_ref() {
-                    self.register_attempt_report_handoff(query_id.clone(), attempt, None);
+                    self.register_attempt_report_handoff(
+                        attempt,
+                        CoordinatorReportHandoffTerminal::planning(&planning_lease),
+                    );
                     attempt.planning_failed_adapter(&error);
                 }
                 let (status, captured) = adapter_error_to_status_and_capture(error);
@@ -552,7 +555,11 @@ impl FlightSqlService for DatafusionNexusFlightSqlService {
         let correlation_id = request_correlation_id(&request)?;
         let sql = query.query;
         if query.transaction_id.is_some() {
-            return Err(record_non_attempt_failure(self, &correlation_id, flight_sql_transactions_unsupported_error())?);
+            return Err(record_non_attempt_failure(
+                self,
+                &correlation_id,
+                flight_sql_transactions_unsupported_error(),
+            )?);
         }
         if let Some(error) = explain_gpu_endpoint_error(
             &sql,

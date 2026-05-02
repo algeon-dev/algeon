@@ -3,8 +3,8 @@ fn unhealthy_device_rejects_query_admission_before_grant_or_queue() {
     let service = runtime_test_service(1, 8);
     let scope = cudf::testing::device_safety::DeviceSafetyTestScope::install([]);
     let device_ordinal = service.device_ledger_reports().unwrap()[0].device_ordinal;
-    let device = cudf::testing::device_safety::injected_device_id(device_ordinal as i32)
-        .expect("isolated device health owner");
+    let device =
+        cudf::testing::device_safety::injected_device_id(device_ordinal as i32).expect("isolated device health owner");
     cudf::runtime::report_device_fault(
         device,
         cudf::runtime::DeviceFaultKind::FatalDeviceOperation,
@@ -336,7 +336,7 @@ fn queued_waiter_drop_recovers_a_poisoned_admission_guard_before_terminal_comple
     );
     assert!(matches!(
         &wait_for_sealed_observation(&owner).footer().terminal,
-        Some(RuntimeTerminalOutcome::Failed { error_code, .. }) if error_code == QueryErrorCode::Internal.as_str()
+        Some(RuntimeTerminalOutcome::Failed { error_code, .. }) if *error_code == AttemptFailureCode::Internal
     ));
 }
 
@@ -467,7 +467,7 @@ fn snapshot_sweep_finishes_timeout_after_waiter_consumes_terminal_error() {
     let sealed = owner.sealed_snapshot().expect("sweep finalizes the queued completion");
     assert!(matches!(
         &sealed.footer().terminal,
-        Some(RuntimeTerminalOutcome::Failed { error_code, .. }) if error_code == QueryErrorCode::ServiceOverloaded.as_str()
+        Some(RuntimeTerminalOutcome::Failed { error_code, .. }) if *error_code == AttemptFailureCode::ServiceOverloaded
     ));
     assert_eq!(
         observed_admission_events(&owner),
@@ -475,6 +475,65 @@ fn snapshot_sweep_finishes_timeout_after_waiter_consumes_terminal_error() {
             (admission_request_id, AdmissionLifecycleState::Enqueued),
             (admission_request_id, AdmissionLifecycleState::TimedOut),
         ]
+    );
+
+    drop(active);
+}
+
+/// The queue sweep must carry the borrowed native summary through the
+/// attempt-owned completion even after the waiter has taken its rich error.
+#[test]
+fn snapshot_sweep_preserves_attempt_binding_primary_failure_after_waiter_consumes_timeout() {
+    let service = test_service(1, 8);
+    let active = service.admit_query().expect("first query occupies the only slot");
+    let attempt_lifecycle = crate::runtime::BackendLifecycle::new();
+    let attempt = crate::attempt::AttemptOwner::begin(
+        crate::attempt::BeginAttemptRequest {
+            observation: RuntimeObservationConfig::bounded(32, 32 * 1024),
+            ..crate::attempt::BeginAttemptRequest::default()
+        },
+        attempt_lifecycle.try_begin_observation().expect("attempt observation permit"),
+        Arc::new(crate::attempt::AttemptBackendCounters::default()),
+        None,
+    );
+    let mut waiter = service
+        .enqueue_admission_with_request(
+            QueryAdmissionRequest::new().with_attempt_binding(attempt.owner.admission_binding()),
+        )
+        .expect("attempt-bound second query queues");
+    service.expire_waiter(&mut waiter);
+
+    let pause = service.service.pause_next_queue_sweep_finish_for_test();
+    let reporting_service = service.service.clone();
+    let snapshot = std::thread::spawn(move || reporting_service.admission_snapshot());
+    pause.wait_until_entered(Duration::from_secs(1));
+
+    let error = waiter.try_admit().expect_err("waiter consumes its terminal timeout before sweep completion");
+    assert_eq!(error.code(), QueryErrorCode::ServiceOverloaded);
+    assert_eq!(error.fact_value("reason"), Some("queue_wait_elapsed"));
+    assert!(attempt.completion.try_report().is_none(), "the paused sweep still owns attempt completion");
+
+    pause.release();
+    let admission = snapshot.join().expect("snapshot reporter does not panic").expect("snapshot succeeds");
+    assert_eq!(admission.queued_queries, 0);
+
+    let report = attempt.completion.wait_timeout(Duration::from_secs(1)).expect("queue sweep seals the attempt report");
+    assert!(matches!(
+        &report.outcome,
+        RuntimeTerminalOutcome::Failed { error_code, .. } if *error_code == AttemptFailureCode::ServiceOverloaded
+    ));
+    let primary = report.primary_failure.as_ref().expect("queue sweep retains the borrowed primary failure");
+    assert_eq!(primary.code(), AttemptFailureCode::ServiceOverloaded);
+    assert_eq!(primary.operation(), crate::observability::AttemptFailureOperation::Admission);
+    assert_eq!(primary.facts().len(), 1, "the stable report retains one closed admission reason");
+    assert_eq!(primary.facts()[0].key(), crate::observability::AttemptFailureFactKey::Reason);
+    assert_eq!(primary.facts()[0].value(), crate::observability::AttemptFailureFactValue::QueueWaitElapsed);
+    assert_eq!(
+        report.retry_advice,
+        crate::observability::AttemptRetryAdvice {
+            recovery: crate::observability::AttemptRetryRecovery::Backoff,
+            prerequisite: crate::observability::AttemptRetryPrerequisite::CapacityAvailable,
+        }
     );
 
     drop(active);
@@ -517,7 +576,7 @@ fn snapshot_sweep_finishes_health_rejection_after_waiter_consumes_terminal_error
     let sealed = owner.sealed_snapshot().expect("sweep finalizes the health-rejected completion");
     assert!(matches!(
         &sealed.footer().terminal,
-        Some(RuntimeTerminalOutcome::Failed { error_code, .. }) if error_code == QueryErrorCode::ServiceOverloaded.as_str()
+        Some(RuntimeTerminalOutcome::Failed { error_code, .. }) if *error_code == AttemptFailureCode::ServiceOverloaded
     ));
     assert_eq!(
         observed_admission_events(&owner),

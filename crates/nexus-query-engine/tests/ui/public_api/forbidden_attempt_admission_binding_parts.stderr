@@ -6,5 +6,5 @@ error[E0624]: method `into_parts` is private
   |
  ::: src/attempt/owner.rs
   |
-  |     pub(crate) fn into_parts(self) -> (RuntimeObservationOwner, AttemptReleaseCommit) {
+  |     pub(crate) fn into_parts(self) -> (RuntimeObservationOwner, AttemptFinalizerSlot) {
   |     --------------------------------------------------------------------------------- private method defined here

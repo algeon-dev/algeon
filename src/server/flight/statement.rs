@@ -68,23 +68,62 @@ impl DatafusionNexusFlightSqlService {
     /// releasable before the coordinator has the identical sealed report.
     pub(super) fn register_attempt_report_handoff(
         &self,
-        query_id: String,
         attempt: &crate::attempt::NexusAttempt,
-        terminal: Option<Arc<CoordinatorExecutionTerminal>>,
+        terminal: CoordinatorReportHandoffTerminal,
+    ) {
+        let key = terminal.key().clone();
+        self.register_attempt_report_handoff_for_key(key, attempt, terminal);
+    }
+
+    #[cfg(test)]
+    pub(super) fn register_attempt_report_handoff_for_test(
+        &self,
+        key: crate::server::coordinator::QueryKey,
+        attempt: &crate::attempt::NexusAttempt,
+        terminal: CoordinatorReportHandoffTerminal,
+    ) {
+        self.register_attempt_report_handoff_for_key(key, attempt, terminal);
+    }
+
+    fn register_attempt_report_handoff_for_key(
+        &self,
+        key: crate::server::coordinator::QueryKey,
+        attempt: &crate::attempt::NexusAttempt,
+        terminal: CoordinatorReportHandoffTerminal,
     ) {
         let coordinator = Arc::clone(&self.coordinator);
+        let query_id = key.query_id().to_string();
         attempt.register_sealed_report_observer(move |report, snapshot| {
-            if let Err(error) = coordinator.attach_attempt_report(&query_id, report, Some(snapshot)) {
+            let Some(report) = report else {
+                Self::finish_missing_attempt_report_handoff(&terminal, &query_id);
+                return;
+            };
+            let attempt_outcome = report.outcome.clone();
+            if let Err(error) = coordinator.attach_attempt_report(&key, report, Some(snapshot)) {
                 tracing::warn!(query_id, %error, "failed to retain sealed Flight attempt report");
+                terminal.finish_attempt_report_delivery_failed(error, Some(attempt_outcome));
                 return;
             }
             // Retain the terminal through asynchronous GPU cleanup. A weak
             // observer would let the final stream wrapper drop its pending
             // lease before this immutable handoff can release it.
-            if let Some(terminal) = terminal.as_ref() {
-                terminal.mark_attempt_report_attached();
-            }
+            terminal.mark_attempt_report_attached();
         });
+    }
+
+    /// Fails a Flight delivery whose sealed attempt violated the engine
+    /// invariant that a report is published before its snapshot observer.
+    ///
+    /// The coordinator must release its report gate even on this impossible
+    /// production path; retaining a pending terminal would otherwise turn an
+    /// observation invariant failure into an indefinitely live query.
+    pub(super) fn finish_missing_attempt_report_handoff(terminal: &CoordinatorReportHandoffTerminal, query_id: &str) {
+        let error = QueryCoordinatorError::new(
+            QueryCoordinatorErrorKind::InvalidTransition,
+            "attempt observation sealed before its immutable report was published",
+        );
+        tracing::warn!(query_id, %error, "sealed Flight attempt omitted its immutable report");
+        terminal.finish_attempt_report_delivery_failed(error, None);
     }
 
     pub(super) async fn statement_flight_info(
@@ -120,7 +159,7 @@ impl DatafusionNexusFlightSqlService {
             },
         };
         if let Some(attempt) = attempt.as_ref() {
-            self.register_attempt_report_handoff(query_id.clone(), attempt, None);
+            self.register_attempt_report_handoff(attempt, CoordinatorReportHandoffTerminal::planning(&planning_lease));
         }
         let observation = match attempt.as_ref() {
             Some(attempt) => attempt.observation_handle(),
@@ -305,7 +344,7 @@ impl DatafusionNexusFlightSqlService {
             },
         };
         if let Some(attempt) = attempt.as_ref() {
-            self.register_attempt_report_handoff(query_id.clone(), attempt, None);
+            self.register_attempt_report_handoff(attempt, CoordinatorReportHandoffTerminal::planning(&planning_lease));
         }
         let ticket_kind = match output_mode {
             ExplainGpuOutputMode::Rows => StatementTicketKind::ExplainGpuRows,

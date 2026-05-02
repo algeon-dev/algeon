@@ -104,10 +104,16 @@ fn path_str(path: &PathBuf) -> ValidateResult<&str> {
 
 fn print_human(coverage: &QueryGpuCoverage) {
     println!("overall: {}", coverage.overall.as_str());
-    if let QueryGpuCoverageOverall::Rejected { phase, reason_code, retryable, detail } = &coverage.overall {
+    if let QueryGpuCoverageOverall::Rejected { phase, reason_code, retry_advice, source_error_status, detail } =
+        &coverage.overall
+    {
         println!("rejection_phase: {}", phase.as_str());
         println!("reason_code: {reason_code}");
-        println!("retryable: {retryable}");
+        println!("retry_advice_availability: {}", retry_advice.availability());
+        println!("retry_advice_reason: {}", retry_advice.reason());
+        if let Some(status) = source_error_status {
+            println!("source_error_status: {status}");
+        }
         println!("detail: {detail}");
     }
     println!("final_disposition: {}", coverage.final_disposition.as_str());

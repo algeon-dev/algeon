@@ -62,7 +62,8 @@ use super::{
     auth::{AuthInterceptor, handle_handshake},
     cancel::QueryCancellation,
     coordinator::{
-        CoordinatorTicketPayload, QueryCoordinator, QueryCoordinatorConfig, QueryExecutionLease, QueryPlanningLease,
+        CoordinatorTicketPayload, QueryCoordinator, QueryCoordinatorConfig, QueryCoordinatorError, QueryCoordinatorErrorKind,
+        QueryExecutionLease, QueryPlanningLease, QueryPlanningReportDeliveryTerminal,
     },
     diagnostics::log_native_planning_report_for_tables,
     error::{adapter_error_to_status, datafusion_error_to_captured_error, datafusion_error_to_status_for_operation},

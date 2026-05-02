@@ -7,9 +7,9 @@ use super::{admission::AdmissionTicket, *};
 use crate::{
     graph_memory::GraphMemoryCalibrationOverride,
     observability::{
-        AdmissionLifecycleState, GpuJobLifecycleState, PlanExecutionId, QueryBoundaryKind, RuntimeObservationConfig,
-        RuntimeObservationOwner, RuntimeObservationPayload, RuntimePlanExecutionLifecycle, RuntimeTerminalOutcome,
-        RuntimeTraceId, StreamLeaseLifecycleState,
+        AdmissionLifecycleState, AttemptFailureCode, AttemptFailureStatus, GpuJobLifecycleState, PlanExecutionId,
+        QueryBoundaryKind, RuntimeObservationConfig, RuntimeObservationOwner, RuntimeObservationPayload,
+        RuntimePlanExecutionLifecycle, RuntimeTerminalOutcome, RuntimeTraceId, StreamLeaseLifecycleState,
     },
     runtime::{DeviceResourceProfile, GdsDriverProbeStatus, KvikioCompatModeStatus, NvidiaFsProbeStatus},
 };

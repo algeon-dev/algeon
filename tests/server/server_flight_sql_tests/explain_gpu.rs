@@ -264,7 +264,8 @@ async fn flight_sql_explain_gpu_cancel_before_do_get_records_cancelled_stats() {
     let payload = get_query_stats_raw(&mut client, &query_id).await;
     server.abort();
 
-    assert!(payload.contains("# outcome=failed"), "{payload}");
+    assert!(payload.contains("# outcome=cancelled"), "{payload}");
+    assert!(payload.contains("# delivery_outcome=failed"), "{payload}");
     assert!(payload.contains("# sealed=true"), "{payload}");
     assert!(payload.contains("# attempt_outcome=cancelled"), "{payload}");
     assert!(payload.contains("code=cancelled"), "{payload}");

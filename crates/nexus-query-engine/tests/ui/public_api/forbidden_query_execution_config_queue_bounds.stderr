@@ -4,4 +4,4 @@ error[E0560]: struct `QueryExecutionConfig` has no field named `queue_bounds`
 5 |         queue_bounds: QueueBounds::default(),
   |         ^^^^^^^^^^^^ `QueryExecutionConfig` does not have this field
   |
-  = note: available fields are: `lakehouse_cache_fill`, `source_storage_profiles`, `boundary_policy`, `source_scheduler_policy`, `source_chunk_planning_mode` ... and 11 others
+  = note: available fields are: `lakehouse_cache_fill`, `source_storage_profiles`, `boundary_policy`, `source_scheduler_policy`, `source_chunk_planning_mode` ... and 10 others

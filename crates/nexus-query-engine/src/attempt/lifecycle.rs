@@ -1,9 +1,13 @@
 //! Pure fixed execution-attempt lifecycle state.
 use crate::observability::{
-    AttemptAdmissionFact, AttemptDisposition, AttemptTerminalCommit, AttemptTimestamps, RuntimeTerminalOutcome,
+    AttemptAdmissionFact, AttemptDisposition, AttemptFailureSummary, AttemptTerminalCommit, AttemptTimestamps,
+    CleanupFailureSummary, RuntimeTerminalOutcome,
 };
 #[cfg(test)]
-use crate::observability::{AttemptCapacityDisposition, AttemptFinalDomainUsage, AttemptHealthTransition};
+use crate::observability::{
+    AttemptCapacityDisposition, AttemptFailureCode, AttemptFailureStatus, AttemptFinalDomainUsage,
+    AttemptHealthTransition,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AttemptLifecycleError {
@@ -13,6 +17,7 @@ pub enum AttemptLifecycleError {
     ReportBeforeTerminal,
     CleanupWithoutAdmission,
     TerminalCommitConflict,
+    FinalizationUnavailable,
 }
 
 impl std::fmt::Display for AttemptLifecycleError {
@@ -37,7 +42,14 @@ pub(crate) struct AttemptLifecycle {
     pub ready: Option<u64>,
     pub disposition: Option<AttemptDisposition>,
     pub cleanup_failures: u64,
+    pub cleanup_failures_complete: bool,
+    pub primary_failure: Option<AttemptFailureSummary>,
+    pub first_cleanup_failure: Option<CleanupFailureSummary>,
     pub terminal_commit: Option<AttemptTerminalCommit>,
+    /// A terminal report may be sealed only after its one finalizer has been
+    /// consumed. Admitted attempts consume it with their cleanup/capacity
+    /// commit; all other attempts consume it with `NotRequired` finalization.
+    pub finalized: bool,
 }
 
 fn first(slot: &mut Option<u64>, at: u64, previous: u64, boundary: &'static str) -> Result<(), AttemptLifecycleError> {
@@ -66,7 +78,11 @@ impl AttemptLifecycle {
             ready: None,
             disposition: None,
             cleanup_failures: 0,
+            cleanup_failures_complete: true,
+            primary_failure: None,
+            first_cleanup_failure: None,
             terminal_commit: None,
+            finalized: false,
         }
     }
 
@@ -211,6 +227,9 @@ impl AttemptLifecycle {
             });
         }
         self.disposition = Some(d);
+        if self.primary_failure.is_none() {
+            self.primary_failure = outcome.fallback_failure_summary();
+        }
         self.terminal = Some((at, outcome));
         Ok(())
     }
@@ -245,8 +264,31 @@ impl AttemptLifecycle {
         self.terminalize(outcome, at)
     }
 
-    pub(crate) fn cleanup_failure(&mut self) {
-        self.cleanup_failures = self.cleanup_failures.saturating_add(1)
+    /// Records a primary failure while it is still borrowed by the execution
+    /// path. First-wins preserves the terminal failure that was returned to
+    /// the caller; a later cleanup failure cannot replace it.
+    pub(crate) fn primary_failure(&mut self, summary: AttemptFailureSummary) {
+        if self.primary_failure.is_none() {
+            self.primary_failure = Some(summary);
+        }
+    }
+
+    /// Retains only the first cleanup failure while accounting every observed
+    /// cleanup failure. Overflow is marked incomplete rather than published as
+    /// a saturated exact value.
+    pub(crate) fn cleanup_failure(&mut self, summary: CleanupFailureSummary) {
+        if let Some(first) = &mut self.first_cleanup_failure {
+            // The report retains one representative summary. Once another
+            // cleanup failure is observed that representative is necessarily
+            // incomplete, even though the count remains exact below.
+            first.mark_incomplete();
+        } else {
+            self.first_cleanup_failure = Some(summary);
+        }
+        match self.cleanup_failures.checked_add(1) {
+            Some(next) => self.cleanup_failures = next,
+            None => self.cleanup_failures_complete = false,
+        }
     }
 
     /// Commits the cleanup and capacity outcome observed by the admitting
@@ -279,8 +321,37 @@ impl AttemptLifecycle {
             });
         }
         self.cleanup(at)?;
-        self.cleanup_failures = self.cleanup_failures.saturating_add(commit.cleanup_failure_count());
         self.terminal_commit = Some(commit);
+        self.finalized = true;
+        Ok(())
+    }
+
+    /// Consumes the owner-held finalizer for an attempt that never acquired an
+    /// admission grant. This is deliberately separate from an admitted
+    /// terminal commit: no cleanup, capacity, health, or domain facts exist.
+    pub(crate) fn finalize_not_admitted(&mut self, at: u64) -> Result<(), AttemptLifecycleError> {
+        if self.admitted.is_some() {
+            return Err(AttemptLifecycleError::InvalidOrder {
+                boundary: "attempt_finalization",
+                reason: "admission_already_granted",
+            });
+        }
+        if self.terminal.is_none() {
+            return Err(AttemptLifecycleError::ReportBeforeTerminal);
+        }
+        if self.finalized {
+            return Ok(());
+        }
+        // Keep the finalization point monotonic even though it has no public
+        // timestamp field of its own. `ready` remains the published boundary.
+        let terminal = self.terminal.as_ref().expect("terminal was checked").0;
+        if at < terminal {
+            return Err(AttemptLifecycleError::InvalidOrder {
+                boundary: "attempt_finalization",
+                reason: "timestamp_regressed",
+            });
+        }
+        self.finalized = true;
         Ok(())
     }
 
@@ -299,6 +370,12 @@ impl AttemptLifecycle {
 
     pub(crate) fn ready(&mut self, at: u64) -> Result<(), AttemptLifecycleError> {
         let Some((terminal, _)) = self.terminal else { return Err(AttemptLifecycleError::ReportBeforeTerminal) };
+        if !self.finalized {
+            return Err(AttemptLifecycleError::InvalidOrder {
+                boundary: "report_ready",
+                reason: "finalization_incomplete",
+            });
+        }
         if self.admitted.is_some() && self.cleanup.is_none() {
             return Err(AttemptLifecycleError::InvalidOrder { boundary: "report_ready", reason: "cleanup_incomplete" });
         }
@@ -324,13 +401,30 @@ impl AttemptLifecycle {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::{QueryError, QueryErrorCode};
 
     fn fact() -> AttemptAdmissionFact {
         AttemptAdmissionFact { admission_sequence: 7, admission_wait_ns: 3, device_ordinal: 2, grant_bytes: 4096 }
     }
 
     fn failed() -> RuntimeTerminalOutcome {
-        RuntimeTerminalOutcome::Failed { error_code: "internal".to_string(), error_status: "permanent".to_string() }
+        RuntimeTerminalOutcome::Failed {
+            error_code: AttemptFailureCode::Internal,
+            error_status: AttemptFailureStatus::Permanent,
+        }
+    }
+
+    #[test]
+    fn cleanup_failure_counter_never_publishes_a_saturated_exact_count() {
+        let mut lifecycle = AttemptLifecycle::new(0);
+        lifecycle.cleanup_failures = u64::MAX;
+        lifecycle.cleanup_failure(CleanupFailureSummary::from_native_error(
+            crate::observability::CleanupFailurePhase::QueryServiceCleanup,
+            &QueryError::new(QueryErrorCode::Internal, "test.cleanup", "overflow probe"),
+        ));
+
+        assert_eq!(lifecycle.cleanup_failures, u64::MAX);
+        assert!(!lifecycle.cleanup_failures_complete);
     }
 
     /// One row of the phase lifecycle table driven through the state machine.
@@ -352,10 +446,12 @@ mod tests {
             Row::UnplannedPlanningFailure => {
                 lifecycle.planning_started(1).unwrap();
                 lifecycle.terminalize(failed(), 2).unwrap();
+                lifecycle.finalize_not_admitted(3).unwrap();
                 lifecycle.ready(3).unwrap();
             },
             Row::UnplannedPrePlanningRejection => {
                 lifecycle.terminalize(failed(), 1).unwrap();
+                lifecycle.finalize_not_admitted(2).unwrap();
                 lifecycle.ready(2).unwrap();
             },
             Row::CpuFallback => {
@@ -364,6 +460,7 @@ mod tests {
                 lifecycle.disposition(AttemptDisposition::CpuFallback).unwrap();
                 lifecycle.physical(3).unwrap();
                 lifecycle.terminalize(RuntimeTerminalOutcome::Succeeded, 4).unwrap();
+                lifecycle.finalize_not_admitted(5).unwrap();
                 lifecycle.ready(5).unwrap();
             },
             Row::CpuFallbackDroppedBeforePoll => {
@@ -371,6 +468,7 @@ mod tests {
                 lifecycle.planning_finished(2).unwrap();
                 lifecycle.disposition(AttemptDisposition::CpuFallback).unwrap();
                 lifecycle.terminalize(RuntimeTerminalOutcome::Dropped, 3).unwrap();
+                lifecycle.finalize_not_admitted(4).unwrap();
                 lifecycle.ready(4).unwrap();
             },
             Row::PartialNative => {
@@ -382,7 +480,13 @@ mod tests {
                 lifecycle.physical(4).unwrap();
                 lifecycle.gpu(5).unwrap();
                 lifecycle.terminalize(RuntimeTerminalOutcome::Succeeded, 6).unwrap();
-                lifecycle.cleanup(7).unwrap();
+                lifecycle
+                    .terminal_commit(AttemptTerminalCommit::new(
+                        AttemptCapacityDisposition::Released,
+                        None,
+                        AttemptHealthTransition::HealthyReuse,
+                    ), 7)
+                    .unwrap();
                 lifecycle.ready(8).unwrap();
             },
             Row::Native => {
@@ -394,7 +498,13 @@ mod tests {
                 lifecycle.physical(4).unwrap();
                 lifecycle.gpu(5).unwrap();
                 lifecycle.terminalize(failed(), 6).unwrap();
-                lifecycle.cleanup(7).unwrap();
+                lifecycle
+                    .terminal_commit(AttemptTerminalCommit::new(
+                        AttemptCapacityDisposition::Released,
+                        None,
+                        AttemptHealthTransition::HealthyReuse,
+                    ), 7)
+                    .unwrap();
                 lifecycle.ready(8).unwrap();
             },
             Row::QueueRejection => {
@@ -403,6 +513,7 @@ mod tests {
                 lifecycle.disposition(AttemptDisposition::Native).unwrap();
                 lifecycle.admission_requested(3).unwrap();
                 lifecycle.terminalize(failed(), 4).unwrap();
+                lifecycle.finalize_not_admitted(5).unwrap();
                 lifecycle.ready(5).unwrap();
             },
             Row::QueueCancellation => {
@@ -411,6 +522,7 @@ mod tests {
                 lifecycle.disposition(AttemptDisposition::PartialNative).unwrap();
                 lifecycle.admission_requested(3).unwrap();
                 lifecycle.terminalize(RuntimeTerminalOutcome::Cancelled, 4).unwrap();
+                lifecycle.finalize_not_admitted(5).unwrap();
                 lifecycle.ready(5).unwrap();
             },
         }
@@ -524,7 +636,18 @@ mod tests {
         admitted.terminalize(RuntimeTerminalOutcome::Succeeded, 3).unwrap();
         assert!(matches!(admitted.ready(4), Err(AttemptLifecycleError::InvalidOrder { boundary: "report_ready", .. })));
         admitted.cleanup(4).unwrap();
-        admitted.ready(5).unwrap();
+        assert!(matches!(
+            admitted.ready(5),
+            Err(AttemptLifecycleError::InvalidOrder { boundary: "report_ready", reason: "finalization_incomplete" })
+        ));
+        admitted
+            .terminal_commit(AttemptTerminalCommit::new(
+                AttemptCapacityDisposition::Released,
+                None,
+                AttemptHealthTransition::HealthyReuse,
+            ), 5)
+            .unwrap();
+        admitted.ready(6).unwrap();
     }
 
     #[test]
@@ -548,7 +671,7 @@ mod tests {
         lifecycle.admitted(fact(), 2).unwrap();
         assert!(matches!(
             lifecycle.terminal_commit(
-                AttemptTerminalCommit::completed(
+                AttemptTerminalCommit::new(
                     AttemptCapacityDisposition::Released,
                     None,
                     AttemptHealthTransition::HealthyReuse,
@@ -558,7 +681,7 @@ mod tests {
             Err(AttemptLifecycleError::InvalidOrder { boundary: "cleanup_complete", reason: "not_terminal" })
         ));
         lifecycle.terminalize(RuntimeTerminalOutcome::Succeeded, 3).unwrap();
-        let released = AttemptTerminalCommit::completed(
+        let released = AttemptTerminalCommit::new(
             AttemptCapacityDisposition::Released,
             Some(AttemptFinalDomainUsage {
                 domain_id: 7,
@@ -587,7 +710,7 @@ mod tests {
         lifecycle.terminal_commit(released, 5).unwrap();
         assert_eq!(
             lifecycle.terminal_commit(
-                AttemptTerminalCommit::failed_cleanup(
+                AttemptTerminalCommit::new(
                     AttemptCapacityDisposition::RetainedQuarantine,
                     None,
                     AttemptHealthTransition::DeviceQuarantined,
@@ -605,7 +728,7 @@ mod tests {
         lifecycle.admission_requested(1).unwrap();
         lifecycle.admitted(fact(), 2).unwrap();
         lifecycle.terminalize(RuntimeTerminalOutcome::Succeeded, 3).unwrap();
-        let committed = AttemptTerminalCommit::completed(
+        let committed = AttemptTerminalCommit::new(
             AttemptCapacityDisposition::Released,
             Some(AttemptFinalDomainUsage {
                 domain_id: 1,
@@ -631,7 +754,7 @@ mod tests {
         lifecycle.terminal_commit(committed, 4).unwrap();
         assert_eq!(
             lifecycle.terminal_commit(
-                AttemptTerminalCommit::completed(
+                AttemptTerminalCommit::new(
                     AttemptCapacityDisposition::Released,
                     Some(AttemptFinalDomainUsage {
                         domain_id: 99,
@@ -648,17 +771,17 @@ mod tests {
     #[test]
     fn terminal_commit_rejects_inconsistent_capacity_and_health_transition() {
         let invalid = [
-            AttemptTerminalCommit::completed(
+            AttemptTerminalCommit::new(
                 AttemptCapacityDisposition::RetainedQuarantine,
                 None,
                 AttemptHealthTransition::HealthyReuse,
             ),
-            AttemptTerminalCommit::completed(
+            AttemptTerminalCommit::new(
                 AttemptCapacityDisposition::Released,
                 None,
                 AttemptHealthTransition::DeviceQuarantined,
             ),
-            AttemptTerminalCommit::failed_cleanup(
+            AttemptTerminalCommit::new(
                 AttemptCapacityDisposition::Released,
                 None,
                 AttemptHealthTransition::BackendUnhealthy,
@@ -695,8 +818,8 @@ mod tests {
         lifecycle
             .terminalize_admission_rejection(
                 RuntimeTerminalOutcome::Failed {
-                    error_code: "admission_rejected".to_string(),
-                    error_status: "permanent".to_string(),
+                    error_code: AttemptFailureCode::Internal,
+                    error_status: AttemptFailureStatus::Permanent,
                 },
                 2,
             )

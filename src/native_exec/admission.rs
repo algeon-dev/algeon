@@ -749,6 +749,30 @@ impl QueryAdmissionTicket {
         }
     }
 
+    /// Captures a native failure while it is still borrowed by this adapter
+    /// path.  This is deliberately record-only: the post-cleanup finalizer
+    /// remains the sole admitted terminal/seal authority.
+    fn record_attempt_native_failure(&self, error: &nexus_query_engine::error::QueryError) {
+        if let Some(binding) = &self.attempt {
+            binding.handle.record_native_failure(error);
+        }
+    }
+
+    /// Extracts an engine error from a returned DataFusion error before the
+    /// admission round releases an admitted handle.  The outer attempt owner
+    /// still receives the unchanged DataFusion error and remains responsible
+    /// for ordinary non-admitted terminalization.
+    fn record_attempt_datafusion_failure(&self, error: &DataFusionError) {
+        let Some(error) = error.find_nexus_error() else { return };
+        let Some(native) = error
+            .source_error()
+            .and_then(|source| source.downcast_ref::<nexus_query_engine::error::QueryError>())
+        else {
+            return;
+        };
+        self.record_attempt_native_failure(native);
+    }
+
     fn attempt_cancellation(&self, fallback: ExecutionCancellation) -> ExecutionCancellation {
         self.attempt.as_ref().map(|binding| binding.cancellation.execution_cancellation()).unwrap_or(fallback)
     }
@@ -1024,6 +1048,21 @@ impl QueryAdmissionTicket {
             },
         };
 
+        // Query-service admission has now published the immutable grant and
+        // moved the sole post-cleanup finalizer into the returned handle. The
+        // attempt lifecycle must record that fact before any later context
+        // acquisition can fail; otherwise the handle's necessary cleanup
+        // would have no truthful admitted lifecycle to finalize.
+        let admission_facts = QueryAdmissionFacts::from_handle(handle.as_ref());
+        if let Some(binding) = &self.attempt {
+            let _ = binding.handle.record_admitted(AttemptAdmissionFact {
+                admission_sequence: admission_facts.admission_sequence,
+                admission_wait_ns: admission_facts.admission_wait.as_nanos().min(u128::from(u64::MAX)) as u64,
+                device_ordinal: admission_facts.device_ordinal,
+                grant_bytes: admission_facts.query_grant_bytes,
+            });
+        }
+
         let epoch = {
             let mut state = match self.lock_state() {
                 Ok(state) => state,
@@ -1091,12 +1130,6 @@ impl QueryAdmissionTicket {
                 pending_guard.released = true;
                 let admission_facts = QueryAdmissionFacts::from_handle(handle.as_ref());
                 if let Some(binding) = &self.attempt {
-                    let _ = binding.handle.record_admitted(AttemptAdmissionFact {
-                        admission_sequence: admission_facts.admission_sequence,
-                        admission_wait_ns: admission_facts.admission_wait.as_nanos().min(u128::from(u64::MAX)) as u64,
-                        device_ordinal: admission_facts.device_ordinal,
-                        grant_bytes: admission_facts.query_grant_bytes,
-                    });
                     let _ = binding.handle.record_physical_execution_started();
                 }
                 Ok(TicketAdmissionContext {
@@ -1225,14 +1258,7 @@ impl QueryAdmissionTicket {
     }
 
     fn observation_outcome_for_error(error: &nexus_query_engine::error::QueryError) -> RuntimeTerminalOutcome {
-        if error.code() == nexus_query_engine::error::QueryErrorCode::Cancelled {
-            RuntimeTerminalOutcome::Cancelled
-        } else {
-            RuntimeTerminalOutcome::Failed {
-                error_code: error.code().to_string(),
-                error_status: error.status().as_str().to_string(),
-            }
-        }
+        RuntimeTerminalOutcome::from_query_error(error)
     }
 
     fn record_observation_outcome_for_error(
@@ -1240,6 +1266,10 @@ impl QueryAdmissionTicket {
         observation: &NativeRuntimeObservation,
         error: &nexus_query_engine::error::QueryError,
     ) {
+        // An attempt-bound ticket has only a coordinated observation handle
+        // here, so its release can otherwise finalise before the outer
+        // adapter gets a chance to inspect this borrowed error.
+        self.record_attempt_native_failure(error);
         if let NativeRuntimeObservation::Local(owner) = observation {
             owner.record_terminal_outcome(Self::observation_outcome_for_error(error));
         }
@@ -1351,16 +1381,12 @@ impl QueryAdmissionExecutionRoundGuard {
     }
 
     fn record_datafusion_error(&mut self, error: &DataFusionError) {
+        self.ticket.record_attempt_datafusion_failure(error);
         let outcome = match error.find_nexus_error() {
             Some(error) if error.code() == ErrorCode::Cancelled => RuntimeTerminalOutcome::Cancelled,
-            Some(error) => RuntimeTerminalOutcome::Failed {
-                error_code: error.code().as_str().to_string(),
-                error_status: error.status().as_str().to_string(),
-            },
-            None => RuntimeTerminalOutcome::Failed {
-                error_code: "datafusion_error".to_string(),
-                error_status: "permanent".to_string(),
-            },
+            Some(_) | None => RuntimeTerminalOutcome::failed(
+                &nexus_query_engine::observability::AttemptFailureSummary::datafusion_fallback(),
+            ),
         };
         self.record_terminal_outcome(outcome);
     }

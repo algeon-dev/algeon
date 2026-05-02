@@ -195,6 +195,33 @@ impl Drop for ExplainGpuExecutionBody {
 }
 
 impl DatafusionNexusFlightSqlService {
+    fn empty_ddl_response(
+        &self,
+        query_id: &str,
+        correlation_id: Option<&str>,
+    ) -> Response<<Self as FlightService>::DoGetStream> {
+        let query_id_for_encode = query_id.to_string();
+        let correlation_id_for_encode = correlation_id.map(str::to_string);
+        let stream = encode_flight_data_stream(
+            Arc::new(Schema::empty()),
+            futures::stream::empty::<Result<arrow::record_batch::RecordBatch, FlightError>>(),
+        )
+        .map_err(move |error| {
+            status_with_query_id_and_correlation_id(
+                arrow_flight_error_to_status_for_operation(
+                    error,
+                    "datafusion_nexus.server.flight.execute_ticket.empty_ddl_encode",
+                    "failed to encode empty Flight SQL DDL result stream",
+                ),
+                &query_id_for_encode,
+                correlation_id_for_encode.as_deref(),
+            )
+        });
+        let mut response = Response::new(Box::pin(stream) as <Self as FlightService>::DoGetStream);
+        attach_query_response_metadata(&mut response, query_id, correlation_id);
+        response
+    }
+
     pub(super) fn expire_stale_tickets(&self, now: Instant) {
         self.coordinator.maintenance_at(now);
     }
@@ -286,7 +313,10 @@ impl DatafusionNexusFlightSqlService {
             attempt.is_some(),
         );
         if let Some(attempt) = attempt.as_ref() {
-            self.register_attempt_report_handoff(query_id.clone(), attempt, Some(Arc::clone(&coordinator_terminal)));
+            self.register_attempt_report_handoff(
+                attempt,
+                CoordinatorReportHandoffTerminal::execution(Arc::clone(&coordinator_terminal)),
+            );
         }
         // Construct the guard before any post-ticket branch so cancellation
         // registration and observability cleanup stay tied together after the
@@ -437,26 +467,7 @@ impl DatafusionNexusFlightSqlService {
             }
             coordinator_terminal.finish_success("stream");
             drop(guard);
-            let query_id_for_encode = query_id.clone();
-            let correlation_id_for_encode = correlation_id.clone();
-            let stream = encode_flight_data_stream(
-                Arc::new(Schema::empty()),
-                futures::stream::empty::<Result<arrow::record_batch::RecordBatch, FlightError>>(),
-            )
-            .map_err(move |error| {
-                status_with_query_id_and_correlation_id(
-                    arrow_flight_error_to_status_for_operation(
-                        error,
-                        "datafusion_nexus.server.flight.execute_ticket.empty_ddl_encode",
-                        "failed to encode empty Flight SQL DDL result stream",
-                    ),
-                    &query_id_for_encode,
-                    correlation_id_for_encode.as_deref(),
-                )
-            });
-            let mut response = Response::new(Box::pin(stream) as <Self as FlightService>::DoGetStream);
-            attach_query_response_metadata(&mut response, &query_id, correlation_id.as_deref());
-            return Ok(response);
+            return Ok(self.empty_ddl_response(&query_id, correlation_id.as_deref()));
         }
 
         let planning = self.coordinated_query_planning(
@@ -527,6 +538,7 @@ impl DatafusionNexusFlightSqlService {
             coordinator_terminal.finish_captured("planning", &status, captured);
             return Err(status);
         }
+        let completes_eagerly_without_result_stream = matches!(&logical_plan, LogicalPlan::Ddl(_));
         let df = tokio::select! {
             result = query_ctx.execute_logical_plan(logical_plan)
                 .instrument(Self::query_stage_span(
@@ -575,6 +587,19 @@ impl DatafusionNexusFlightSqlService {
             && let Some(entry) = self.prepared_statements.get(handle)
         {
             entry.mark_executed();
+        }
+        if completes_eagerly_without_result_stream {
+            // DataFusion executes DDL from `execute_logical_plan`; CTAS in
+            // particular has already consumed its native result stream and
+            // its attempt's sole finalizer. Planning the returned empty
+            // DataFrame would manufacture a second native admission.
+            if let Some(attempt) = attempt.as_ref() {
+                attempt.complete_without_result_stream();
+            }
+            coordinator_terminal.finish_success("stream");
+            coordinator_terminal.wait_finished().await;
+            drop(guard);
+            return Ok(self.empty_ddl_response(&query_id, correlation_id.as_deref()));
         }
         let schema = df.schema().as_arrow().clone();
         let logical_plan_tables = referenced_table_names(df.logical_plan());

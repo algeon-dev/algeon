@@ -344,6 +344,11 @@ impl PhysicalOptimizerRule for NexusNativePhysicalOptimizerRule {
             )?,
         };
         let mut optimized = optimized;
+        if optimized.rewritten
+            && let Some(extension) = &attempt_extension
+        {
+            extension.native_admission_planned(optimized.plan.as_ref());
+        }
         let query_admission_ticket = if optimized.rewritten {
             plan_query_admission_ticket_for_optimized_plan(
                 optimized.plan.as_ref(),

@@ -1,12 +1,13 @@
 //! Ticket issue/consume and planning/execution lease transitions.
 
 use std::{
+    cell::Cell,
     sync::{Arc, Weak},
     time::Instant,
 };
 
 use nexus_query_engine::{
-    observability::{RuntimeObservationHandle, RuntimeObservationOwner},
+    observability::{RuntimeObservationHandle, RuntimeObservationOwner, RuntimeTerminalOutcome},
     runtime::QueryActivityLease,
 };
 
@@ -187,6 +188,47 @@ impl QueryCoordinator {
         }
     }
 
+    /// Finishes a planning-only lease for which no native attempt was ever
+    /// created. Attempt-owned registration starts with a report gate so a
+    /// real attempt cannot race terminal publication; this path is the one
+    /// explicit exception before an attempt handoff has been registered.
+    ///
+    /// This is deliberately distinct from `abandon_attempt_report_delivery`:
+    /// there is no sealed report and therefore no delivery failure or
+    /// canonical attempt outcome to preserve.
+    pub(in crate::server) fn finish_planning_without_attempt_report(
+        &self,
+        key: &QueryKey,
+        mut terminal: QueryTerminal,
+    ) {
+        let should_finalize = {
+            let mut state = self.lock_state();
+            let Ok(record) = Self::record_mut(&mut state, key) else { return };
+            // A `QueryPlanningLease` becomes released on a successful move
+            // into a ticket or execution lease. Its unreleased terminal path
+            // therefore still owns only the pre-execution planning slot.
+            if record.phase == QueryPhase::Planning {
+                record.requires_attempt_report = false;
+            }
+            if record.terminal_outcome.is_none() {
+                Self::apply_terminal_to_capture(record, &mut terminal, Instant::now());
+                record.terminal_outcome = Some(terminal.compact_outcome());
+                record.terminal = Some(terminal);
+                Self::bump_capture_version(record);
+            }
+            if record.active_leases > 0 {
+                record.active_leases -= 1;
+            }
+            record.active_leases == 0
+                && record.active_activities == 0
+                && !matches!(record.phase, QueryPhase::Retained | QueryPhase::Tombstone)
+        };
+        self.notify.notify_waiters();
+        if should_finalize {
+            self.finalize_ready();
+        }
+    }
+
     pub(in crate::server) fn release_activity(&self, key: &QueryKey) {
         let should_finalize = {
             let mut state = self.lock_state();
@@ -212,12 +254,52 @@ pub(in crate::server) struct QueryPlanningLease {
     pub(in crate::server) key: QueryKey,
     pub(in crate::server) observation_id: ObservationId,
     pub(in crate::server) hot: Arc<QueryHotCounters>,
+    /// Set exactly when a native attempt has registered its immutable report
+    /// handoff. Until then a planning failure is not allowed to leave the
+    /// coordinator waiting for an attempt that was never created.
+    pub(in crate::server) attempt_report_handoff_registered: Cell<bool>,
     pub(in crate::server) released: bool,
+}
+
+/// A generation-bound completion hook for an attempt report that was sealed
+/// while a query was still in Flight planning.
+///
+/// The planning lease itself may move into a ticket before the attempt seals,
+/// so an observer cannot borrow or own that lease. This hook preserves the
+/// exact coordinator generation instead. On delivery failure it removes the
+/// report gate for that generation; the planning or execution lease remains
+/// the sole owner of the query terminal outcome.
+#[derive(Clone, Debug)]
+pub(in crate::server) struct QueryPlanningReportDeliveryTerminal {
+    coordinator: Weak<QueryCoordinator>,
+    key: QueryKey,
+}
+
+impl QueryPlanningReportDeliveryTerminal {
+    pub(in crate::server) fn key(&self) -> &QueryKey {
+        &self.key
+    }
+
+    pub(in crate::server) fn finish_attempt_report_delivery_failed(
+        &self,
+        attempt_outcome: Option<RuntimeTerminalOutcome>,
+    ) {
+        if let Some(coordinator) = self.coordinator.upgrade() {
+            coordinator.abandon_attempt_report_delivery(&self.key, attempt_outcome);
+        }
+    }
 }
 
 impl QueryPlanningLease {
     pub(in crate::server) fn key(&self) -> &QueryKey {
         &self.key
+    }
+
+    /// Creates the generation-bound report-delivery hook that remains valid
+    /// across this lease's transition to a ticket or its terminal release.
+    pub(in crate::server) fn attempt_report_delivery_terminal(&self) -> QueryPlanningReportDeliveryTerminal {
+        self.attempt_report_handoff_registered.set(true);
+        QueryPlanningReportDeliveryTerminal { coordinator: self.coordinator.clone(), key: self.key.clone() }
     }
 
     #[cfg(test)]
@@ -308,7 +390,11 @@ impl QueryPlanningLease {
         }
         self.released = true;
         if let Some(coordinator) = self.coordinator.upgrade() {
-            coordinator.set_terminal(&self.key, terminal);
+            if self.attempt_report_handoff_registered.get() {
+                coordinator.set_terminal(&self.key, terminal);
+            } else {
+                coordinator.finish_planning_without_attempt_report(&self.key, terminal);
+            }
         }
     }
 }
@@ -392,6 +478,25 @@ impl QueryExecutionLease {
         } else {
             self.finish_failed(stage, error);
         }
+    }
+
+    /// Makes a report-handoff failure explicit before releasing this lease.
+    /// The native attempt remains the only possible author of its outcome;
+    /// the coordinator records only that it could not retain that projection.
+    pub(in crate::server) fn finish_attempt_report_delivery_failed(
+        &mut self,
+        stage: &'static str,
+        status: &tonic::Status,
+        error: CapturedError,
+        attempt_outcome: Option<RuntimeTerminalOutcome>,
+    ) {
+        if self.released {
+            return;
+        }
+        if let Some(coordinator) = self.coordinator.upgrade() {
+            coordinator.abandon_attempt_report_delivery(&self.key, attempt_outcome);
+        }
+        self.finish_captured(stage, status, error);
     }
 
     pub(in crate::server) fn finish(&mut self, terminal: QueryTerminal) {

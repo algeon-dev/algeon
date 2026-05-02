@@ -1096,7 +1096,8 @@ impl QueueSweep {
         }
         for (request, disposition, rejection) in self.terminated {
             record_admission_lifecycle(&request.observation, request.admission_request_id, rejection, 0, None, None);
-            request.completion.finish_terminal_disposition(disposition);
+            let primary_failure = request.terminal.take_primary_failure();
+            request.completion.finish_terminal_disposition(disposition, primary_failure);
         }
         self.transitioned_device_ordinals.sort_unstable();
         self.transitioned_device_ordinals.dedup();

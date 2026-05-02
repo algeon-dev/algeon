@@ -510,13 +510,6 @@ impl Error {
         self.code.status()
     }
 
-    /// Returns whether this error is eligible for automatic retry.
-    ///
-    /// This is an exact alias for `self.status() == ErrorStatus::Temporary`.
-    pub fn is_retryable(&self) -> bool {
-        self.status() == ErrorStatus::Temporary
-    }
-
     /// Returns the stable dotted operation id that produced the error.
     pub fn operation(&self) -> &'static str {
         self.operation
@@ -600,8 +593,9 @@ fn redact_uri_tokens(message: &str) -> String {
 // cuDF classification preserves permanent size/host-limit codes first, then
 // generic resource exhaustion, retry status (`Temporary`/`Persistent`), and
 // permanent failures by cuDF kind. This keeps
-// cuDF's action contract intact: only Temporary is automatically retryable;
-// Persistent requires escalation or intervention. Notable permanent mappings:
+// cuDF's coarse status contract intact. Attempt retry advice is derived only
+// from a sealed report; Persistent still records a condition needing
+// escalation or intervention. Notable permanent mappings:
 // `NotFound` is treated as invalid input, `ExecutionContext` is treated as an
 // invariant violation, and unknown kinds fall back to dependency failure.
 fn code_for_cudf_error(error: &cudf::Error) -> ErrorCode {

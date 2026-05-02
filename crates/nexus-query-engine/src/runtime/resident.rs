@@ -969,7 +969,6 @@ mod tests {
         assert_eq!(error.code(), QueryErrorCode::HostMaterializationLimitExceeded);
         assert_eq!(error.kind(), QueryErrorKind::ResourceExhausted);
         assert_eq!(error.status(), QueryErrorStatus::Permanent);
-        assert!(!error.is_retryable());
         assert_eq!(error.fact_value("reason"), Some("host_materialization_hard_limit_exceeded"));
         assert_eq!(error.fact_value("candidate_rows"), Some("1"));
         assert_eq!(

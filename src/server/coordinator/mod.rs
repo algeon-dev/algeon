@@ -33,7 +33,7 @@ use self::{artifacts::ArtifactEgressLimiter, registry::QueryRegistryState};
 pub(in crate::server) use self::{
     artifacts::LeasedArtifactResponse,
     maintenance::{QueryCoordinatorMaintenance, QueryCoordinatorShutdownPlan},
-    ticket::{ObservationActivityLease, QueryExecutionLease, QueryPlanningLease},
+    ticket::{ObservationActivityLease, QueryExecutionLease, QueryPlanningLease, QueryPlanningReportDeliveryTerminal},
     types::{
         CoordinatorTicketPayload, ObservationId, QueryCoordinatorConfig, QueryCoordinatorError,
         QueryCoordinatorErrorKind, QueryHotCounters, QueryKey, QueryTerminal, QueryTerminalOutcome,

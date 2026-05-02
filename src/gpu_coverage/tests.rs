@@ -142,6 +142,10 @@ async fn validate_query_rejects_multiple_statements_but_not_semicolon_literal() 
         QueryGpuCoverageOverall::Rejected { phase: QueryGpuRejectionPhase::Parsing, ref reason_code, .. }
             if reason_code == "empty_sql"
     ));
+    let empty_json = empty.to_json();
+    assert_eq!(empty_json["overall"]["retry_advice"]["availability"], "unavailable");
+    assert_eq!(empty_json["overall"]["retry_advice"]["reason"], "no_sealed_attempt_report");
+    assert!(empty_json["overall"].get("retryable").is_none());
 
     let rejected = validate_query(&ctx, "SELECT ';' AS marker; SELECT 1").await.unwrap();
     assert!(matches!(

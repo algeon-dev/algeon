@@ -321,7 +321,10 @@ fn evictable_cache_accounting_is_separate_from_the_admission_equation() {
     assert!(ledger.try_reserve_evictable_bytes(300).unwrap());
     assert_eq!(ledger.evictable_bytes().unwrap(), 300);
     let snapshot = ledger.snapshot().unwrap();
-    assert_eq!(snapshot.cache_evictable_resident_bytes, 0, "P2 admission snapshots expose zero cache residency");
+    assert_eq!(
+        snapshot.cache_evictable_resident_bytes, 300,
+        "resource evidence snapshots retain the same lock-held evictable charge as their sequence"
+    );
     assert_eq!(snapshot.cache_pinned_in_use_bytes, 0);
     assert_eq!(ledger.release_evictable_bytes(400).unwrap(), 300);
     assert_eq!(ledger.evictable_bytes().unwrap(), 0);

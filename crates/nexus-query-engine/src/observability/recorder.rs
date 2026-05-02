@@ -11,11 +11,12 @@ use std::{
 };
 
 use super::{
-    LogicalRetainedBytes, ObservationSequence, PlanExecutionId, QueryAttemptReport, QueryBoundaryKind,
-    RuntimeObservationClassLoss, RuntimeObservationClock, RuntimeObservationFooter, RuntimeObservationLimits,
-    RuntimeObservationLossReason, RuntimeObservationManifest, RuntimeObservationPayload, RuntimeObservationReasonLoss,
-    RuntimeObservationRecordClass, RuntimeQueryId, RuntimeSourceLocationId, RuntimeSpanId, RuntimeTerminalOutcome,
-    RuntimeTimelineEvent, RuntimeTopologyRecord, RuntimeTraceId, SystemRuntimeObservationClock,
+    CleanupFailureSummary, LogicalRetainedBytes, ObservationSequence, PlanExecutionId, QueryAttemptReport,
+    QueryBoundaryKind, RuntimeObservationClassLoss, RuntimeObservationClock, RuntimeObservationFooter,
+    RuntimeObservationLimits, RuntimeObservationLossReason, RuntimeObservationManifest, RuntimeObservationPayload,
+    RuntimeObservationReasonLoss, RuntimeObservationRecordClass, RuntimeQueryId, RuntimeSourceLocationId,
+    RuntimeSpanId, RuntimeTerminalOutcome, RuntimeTimelineEvent, RuntimeTopologyRecord, RuntimeTraceId,
+    SystemRuntimeObservationClock,
 };
 use crate::observability::{RUNTIME_OBSERVATION_JSONL_SCHEMA, RuntimeClockDomain};
 
@@ -114,9 +115,6 @@ pub(crate) struct RuntimeObservationSnapshotData {
     pub(crate) topology: Vec<RetainedTopologyRecord>,
     pub(crate) events: Vec<RuntimeTimelineEvent>,
     pub(crate) footer: RuntimeObservationFooter,
-    /// The one report sealed for an attempt. Completion receivers clone this
-    /// exact allocation instead of rebuilding a post-seal projection.
-    pub(crate) attempt_report: Option<Arc<QueryAttemptReport>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -152,9 +150,10 @@ macro_rules! snapshot_accessors {
             ///
             /// The embedded report is the same immutable value delivered by
             /// the attempt completion. In particular, `report_ready_ns` is
-            /// fixed before this snapshot is published.
+            /// fixed before this snapshot is published and the JSONL footer
+            /// serializes this exact allocation.
             pub fn attempt_report(&self) -> Option<&QueryAttemptReport> {
-                self.data.attempt_report.as_deref()
+                self.data.footer.attempt_report.as_deref()
             }
         }
     };
@@ -184,6 +183,7 @@ impl SealedRuntimeObservationSnapshot {
 pub struct RuntimeObservationHandle {
     config: RuntimeObservationConfig,
     inner: Option<Arc<RuntimeObservationSessionInner>>,
+    attempt_cleanup_failure_recorder: Option<AttemptCleanupFailureRecorder>,
 }
 
 impl fmt::Debug for RuntimeObservationHandle {
@@ -223,6 +223,11 @@ type AttemptReportSealProvider = Arc<dyn Fn(&RuntimeObservationFooter) -> Arc<Qu
 type RuntimeObservationTerminalOutcomeResolver =
     Arc<dyn Fn(RuntimeTerminalOutcome) -> RuntimeTerminalOutcome + Send + Sync>;
 
+/// Engine-owned lifecycle routing for a cleanup failure. The recorder invokes
+/// this before optional timeline retention, so bounded capture loss cannot
+/// change the immutable attempt report.
+type AttemptCleanupFailureRecorder = Arc<dyn Fn(CleanupFailureSummary) + Send + Sync>;
+
 /// Cloneable shared ownership of one query observation session.
 ///
 /// Clones carry the same terminal authority and the recorder's first-terminal
@@ -235,6 +240,7 @@ pub struct RuntimeObservationOwner {
     attempt_report_provider: Option<AttemptReportProvider>,
     attempt_report_seal_provider: Option<AttemptReportSealProvider>,
     terminal_outcome_resolver: Option<RuntimeObservationTerminalOutcomeResolver>,
+    attempt_cleanup_failure_recorder: Option<AttemptCleanupFailureRecorder>,
     #[cfg(test)]
     deferred_delivery_gate: Arc<Mutex<Option<Arc<RuntimeObservationDeliveryGate>>>>,
 }
@@ -514,7 +520,7 @@ impl RuntimeObservationHandle {
         config: RuntimeObservationConfig,
     ) -> Self {
         if !config.is_enabled() {
-            return Self { config, inner: None };
+            return Self { config, inner: None, attempt_cleanup_failure_recorder: None };
         }
         Self::with_clock(query_id, trace_id, config, Arc::new(SystemRuntimeObservationClock::new()))
     }
@@ -527,7 +533,7 @@ impl RuntimeObservationHandle {
         clock: Arc<dyn RuntimeObservationClock>,
     ) -> Self {
         if !config.is_enabled() {
-            return Self { config, inner: None };
+            return Self { config, inner: None, attempt_cleanup_failure_recorder: None };
         }
         Self::with_clock_and_source_location_digest_key(
             query_id,
@@ -546,7 +552,7 @@ impl RuntimeObservationHandle {
         source_location_digest_key_provider: &dyn SourceLocationDigestKeyProvider,
     ) -> Self {
         if !config.is_enabled() {
-            return Self { config, inner: None };
+            return Self { config, inner: None, attempt_cleanup_failure_recorder: None };
         }
         let manifest = RuntimeObservationManifest {
             schema: RUNTIME_OBSERVATION_JSONL_SCHEMA.to_string(),
@@ -585,12 +591,13 @@ impl RuntimeObservationHandle {
                 state: Mutex::new(state),
                 sealed: AtomicBool::new(false),
             })),
+            attempt_cleanup_failure_recorder: None,
         }
     }
 
     /// Returns a disabled session.
     pub const fn disabled() -> Self {
-        Self { config: RuntimeObservationConfig::disabled(), inner: None }
+        Self { config: RuntimeObservationConfig::disabled(), inner: None, attempt_cleanup_failure_recorder: None }
     }
 
     /// Returns whether this session constructs and records payloads.
@@ -601,6 +608,14 @@ impl RuntimeObservationHandle {
     /// Returns the immutable recorder configuration.
     pub const fn config(&self) -> RuntimeObservationConfig {
         self.config
+    }
+
+    /// Routes an attempt-owned cleanup failure into the lifecycle before the
+    /// caller attempts an optional timeline projection.
+    pub(crate) fn record_attempt_cleanup_failure(&self, summary: CleanupFailureSummary) {
+        if let Some(recorder) = &self.attempt_cleanup_failure_recorder {
+            recorder(summary);
+        }
     }
 
     /// Returns the immutable query identity when recording is enabled.
@@ -976,6 +991,7 @@ impl RuntimeObservationOwner {
             attempt_report_provider: None,
             attempt_report_seal_provider: None,
             terminal_outcome_resolver: None,
+            attempt_cleanup_failure_recorder: None,
             #[cfg(test)]
             deferred_delivery_gate: Arc::new(Mutex::new(None)),
         };
@@ -1007,6 +1023,15 @@ impl RuntimeObservationOwner {
         self
     }
 
+    /// Installs the engine-owned attempt cleanup recorder. This internal hook
+    /// is only routing: lifecycle state remains the sole owner of the count
+    /// and first-summary facts.
+    pub(crate) fn with_attempt_cleanup_failure_recorder<F>(mut self, recorder: F) -> Self
+    where F: Fn(CleanupFailureSummary) + Send + Sync + 'static {
+        self.attempt_cleanup_failure_recorder = Some(Arc::new(recorder));
+        self
+    }
+
     /// Blocks ordinary observer delivery after the terminal commit. This is
     /// test-only and scoped to this observation owner.
     #[cfg(test)]
@@ -1028,7 +1053,9 @@ impl RuntimeObservationOwner {
 
     /// Returns cloneable recording access without terminal authority.
     pub fn handle(&self) -> RuntimeObservationHandle {
-        self.session.handle()
+        let mut handle = self.session.handle();
+        handle.attempt_cleanup_failure_recorder = self.attempt_cleanup_failure_recorder.clone();
+        handle
     }
 
     /// Returns the immutable query identity.
@@ -1544,7 +1571,6 @@ impl RuntimeObservationSessionInner {
             manifest: self.manifest.clone(),
             topology,
             events,
-            attempt_report: None,
             footer: RuntimeObservationFooter {
                 complete,
                 terminal,
@@ -1557,6 +1583,7 @@ impl RuntimeObservationSessionInner {
                 truncated: state.first_dropped_sequence.is_some(),
                 degraded: state.degraded,
                 poison_recoveries: state.poison_recoveries,
+                attempt_report: None,
                 counter_overflow: state.counter_overflow,
             },
         }
@@ -1582,7 +1609,7 @@ impl RuntimeObservationSessionInner {
             .iter()
             .map(|(reason, count)| RuntimeObservationReasonLoss { reason: *reason, count: *count })
             .collect();
-        let footer = RuntimeObservationFooter {
+        let mut footer = RuntimeObservationFooter {
             complete: true,
             terminal: Some(outcome),
             retained_records: state.retained_records,
@@ -1594,16 +1621,17 @@ impl RuntimeObservationSessionInner {
             truncated: state.first_dropped_sequence.is_some(),
             degraded: state.degraded,
             poison_recoveries: state.poison_recoveries,
+            attempt_report: None,
             counter_overflow: state.counter_overflow,
         };
         // The provider runs only after the complete footer exists. It returns
         // the exact immutable report that completion receivers publish, rather
         // than a pre-seal report which would be missing report-ready facts.
-        let attempt_report = attempt_report_provider.map(|provider| provider(&footer));
+        footer.attempt_report = attempt_report_provider.map(|provider| provider(&footer));
         debug_assert!(
-            attempt_report.as_ref().is_none_or(|report| { footer.terminal.as_ref() == Some(&report.outcome) })
+            footer.attempt_report.as_ref().is_none_or(|report| { footer.terminal.as_ref() == Some(&report.outcome) })
         );
-        RuntimeObservationSnapshotData { manifest: self.manifest.clone(), topology, events, attempt_report, footer }
+        RuntimeObservationSnapshotData { manifest: self.manifest.clone(), topology, events, footer }
     }
 }
 

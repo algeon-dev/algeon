@@ -13,11 +13,11 @@ use std::{
 };
 
 use nexus_query_engine::{
-    error::QueryErrorCode,
     metrics::QueryId,
     observability::{
         DeterministicRuntimeObservationClock, ObservationSequence, PlanEdgeRow, PlanExecutionBoundaryKind,
-        PlanExecutionId, PlanNodeRow, QueryBoundaryKind, RUNTIME_OBSERVATION_JSONL_SCHEMA, RuntimeEventContext,
+        AttemptFailureCode, AttemptFailureStatus, PlanExecutionId, PlanNodeRow, QueryBoundaryKind,
+        RUNTIME_OBSERVATION_JSONL_SCHEMA, RuntimeEventContext,
         RuntimeObservationConfig, RuntimeObservationExportErrorKind, RuntimeObservationExportErrorStatus,
         RuntimeObservationLossReason, RuntimeObservationPayload, RuntimeObservationRecord,
         RuntimeObservationRecordClass, RuntimeObservationRecordDisposition, RuntimeObservationSession,
@@ -208,8 +208,8 @@ fn first_terminal_wins_and_live_snapshots_remain_explicitly_incomplete() {
     let first = session.seal(RuntimeTerminalOutcome::Succeeded).expect("first seal succeeds");
     let second = session
         .seal(RuntimeTerminalOutcome::Failed {
-            error_code: "internal".to_string(),
-            error_status: QueryErrorCode::Internal.status().as_str().to_string(),
+            error_code: AttemptFailureCode::Internal,
+            error_status: AttemptFailureStatus::Permanent,
         })
         .expect("subsequent seal returns winner");
     assert!(first.footer().complete);
@@ -380,8 +380,8 @@ fn jsonl_v2_matches_fixed_golden_bytes() {
     session.record(query_started);
     let snapshot = session
         .seal(RuntimeTerminalOutcome::Failed {
-            error_code: "golden_failure".to_string(),
-            error_status: "permanent".to_string(),
+            error_code: AttemptFailureCode::Internal,
+            error_status: AttemptFailureStatus::Permanent,
         })
         .expect("golden session seals");
     assert!(matches!(

@@ -100,7 +100,8 @@ impl QueryGpuCoverage {
         let overall = QueryGpuCoverageOverall::Rejected {
             phase: rejection.phase,
             reason_code: rejection.reason_code,
-            retryable: rejection.retryable,
+            retry_advice: QueryGpuRetryAdviceAvailability::NoSealedAttemptReport,
+            source_error_status: rejection.source_error_status.map(ToString::to_string),
             detail: rejection.detail,
         };
         Self {
@@ -149,9 +150,41 @@ impl QueryGpuCoverage {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum QueryGpuCoverageOverall {
     NoCpuInPlannedPath,
-    PartialGpuPlanned { gpu_fragments: usize, cpu_boundaries: usize },
+    PartialGpuPlanned {
+        gpu_fragments: usize,
+        cpu_boundaries: usize,
+    },
     CpuOnly,
-    Rejected { phase: QueryGpuRejectionPhase, reason_code: String, retryable: bool, detail: String },
+    Rejected {
+        phase: QueryGpuRejectionPhase,
+        reason_code: String,
+        /// A planning-only rejection has no execution attempt and therefore
+        /// cannot expose a sealed retry decision.
+        retry_advice: QueryGpuRetryAdviceAvailability,
+        /// Coarse source status remains diagnostic context only.
+        source_error_status: Option<String>,
+        detail: String,
+    },
+}
+
+/// Whether a public surface can truthfully expose sealed attempt retry advice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QueryGpuRetryAdviceAvailability {
+    NoSealedAttemptReport,
+}
+
+impl QueryGpuRetryAdviceAvailability {
+    pub const fn availability(self) -> &'static str {
+        match self {
+            Self::NoSealedAttemptReport => "unavailable",
+        }
+    }
+
+    pub const fn reason(self) -> &'static str {
+        match self {
+            Self::NoSealedAttemptReport => "no_sealed_attempt_report",
+        }
+    }
 }
 
 impl QueryGpuCoverageOverall {
@@ -188,11 +221,15 @@ impl QueryGpuCoverageOverall {
                 "cpu_boundaries": cpu_boundaries,
             }),
             Self::CpuOnly => json!({ "verdict": self.as_str() }),
-            Self::Rejected { phase, reason_code, retryable, detail } => json!({
+            Self::Rejected { phase, reason_code, retry_advice, source_error_status, detail } => json!({
                 "verdict": self.as_str(),
                 "phase": phase.as_str(),
                 "reason_code": reason_code,
-                "retryable": retryable,
+                "retry_advice": {
+                    "availability": retry_advice.availability(),
+                    "reason": retry_advice.reason(),
+                },
+                "source_error_status": source_error_status,
                 "detail": detail,
             }),
         }

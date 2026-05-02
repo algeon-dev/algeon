@@ -33,7 +33,7 @@ use super::{
         native_query_runtime_error, properties_with_equivalence, run_gpu_execution_task, write_native_plan_tree,
     },
     config::NexusNativeExecutionConfig,
-    metrics::{NativeExecutionMetricsCapture, NexusNativeMetrics},
+    metrics::{NativeExecutionMetricsCapture, NexusNativeMetrics, SealedAttemptMetricsTarget},
     producer::{
         GpuResidentProducer, execute_gpu_resident_producer_with_context, gpu_resident_producer_input_name,
         prepare_gpu_resident_producer_for_execution, register_gpu_resident_producer_discovery,
@@ -197,6 +197,12 @@ impl NexusNativeComposedExec {
     #[cfg(test)]
     pub(crate) fn metrics_capture(&self) -> Option<NativeExecutionMetricsCapture> {
         self.metrics_capture.clone()
+    }
+
+    /// Returns the one post-seal attempt projection target for this composed
+    /// root. Producer fragments are intentionally not separate owners.
+    pub(crate) fn sealed_attempt_metrics_target(&self) -> SealedAttemptMetricsTarget {
+        SealedAttemptMetricsTarget::new(&self.metrics)
     }
 
     pub(crate) async fn prepare_lakehouse_metadata(&self, task_context: Arc<TaskContext>) -> DataFusionResult<Self> {

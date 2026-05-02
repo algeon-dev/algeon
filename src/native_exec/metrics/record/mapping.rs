@@ -14,6 +14,7 @@ pub(in crate::native_exec::metrics) enum NativeMetricRecordingKind {
     Query,
     Admission,
     CacheEvents,
+    Attempt,
 }
 
 /// Compile-time recording contract for one ordered metric descriptor.
@@ -350,6 +351,15 @@ impl_noop_recording! {
     admission_wait_time_observed,
     device_ordinal_observed,
     query_grant_bytes_observed,
+}
+
+// The report becomes available only at the attempt owner's seal point, after
+// native wrappers have already recorded their `QueryMetrics`. Its row is
+// emitted directly by the elected root metric target rather than inferred
+// from a pre-seal execution result.
+impl_noop_recording! {
+    Attempt;
+    attempt_report_rows,
 }
 
 impl NativeMetricRecording<recording_marker::native_lakehouse_cache_fill_event_snapshot_rows> for NexusNativeMetrics {

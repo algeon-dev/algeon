@@ -80,8 +80,8 @@ fn correlation_limits_are_pinned_public_constants() {
 #[test]
 fn query_attempt_report_serde_round_trips_with_stable_field_names() {
     use nexus_query_engine::observability::{
-        AttemptAdmissionFact, AttemptCapacityDisposition, AttemptCleanupDisposition, AttemptTimestamps,
-        QueryAttemptReport, RuntimeTerminalOutcome,
+        AttemptAdmissionFact, AttemptCapacityDisposition, AttemptCleanupDisposition, AttemptRetryAdvice,
+        AttemptTimestamps, QueryAttemptReport, RuntimeTerminalOutcome,
     };
     let report = QueryAttemptReport {
         schema: QUERY_ATTEMPT_REPORT_SCHEMA_V1.to_string(),
@@ -90,6 +90,8 @@ fn query_attempt_report_serde_round_trips_with_stable_field_names() {
         trace_context: None,
         disposition: AttemptDisposition::Native,
         outcome: RuntimeTerminalOutcome::Succeeded,
+        primary_failure: None,
+        retry_advice: AttemptRetryAdvice::no_retry_needed(),
         device_ordinal: Some(1),
         admission: Some(AttemptAdmissionFact {
             admission_sequence: 9,
@@ -111,9 +113,13 @@ fn query_attempt_report_serde_round_trips_with_stable_field_names() {
         },
         cleanup_disposition: AttemptCleanupDisposition::Completed,
         cleanup_failure_count: 0,
-        capacity_disposition: AttemptCapacityDisposition::PendingRelease,
+        cleanup_failure_count_complete: true,
+        first_cleanup_failure: None,
+        capacity_disposition: AttemptCapacityDisposition::Released,
         final_domain_usage: None,
         health_transition: None,
+        native_fault_evidence: None,
+        resource_evidence: None,
         observation_lost_records: 0,
         observation_retained_records: 3,
         observation_retained_bytes: 128,
@@ -129,14 +135,20 @@ fn query_attempt_report_serde_round_trips_with_stable_field_names() {
         "trace_context",
         "disposition",
         "outcome",
+        "primary_failure",
+        "retry_advice",
         "device_ordinal",
         "admission",
         "timestamps",
         "cleanup_disposition",
         "cleanup_failure_count",
+        "cleanup_failure_count_complete",
+        "first_cleanup_failure",
         "capacity_disposition",
         "final_domain_usage",
         "health_transition",
+        "native_fault_evidence",
+        "resource_evidence",
         "observation_lost_records",
         "observation_retained_records",
         "observation_retained_bytes",
@@ -149,6 +161,20 @@ fn query_attempt_report_serde_round_trips_with_stable_field_names() {
     assert_eq!(json["schema"], QUERY_ATTEMPT_REPORT_SCHEMA_V1);
     assert_eq!(json["disposition"], "native");
     assert_eq!(json["outcome"]["kind"], "succeeded");
+    let mut legacy_json = json.clone();
+    let fields = legacy_json.as_object_mut().expect("report serializes as a JSON object");
+    fields.remove("primary_failure");
+    fields.remove("cleanup_failure_count_complete");
+    fields.remove("first_cleanup_failure");
+    fields.remove("resource_evidence");
+    fields.remove("retry_advice");
+    let legacy: QueryAttemptReport = serde_json::from_value(legacy_json).expect("old report remains readable");
+    assert_eq!(legacy.primary_failure, None);
+    assert!(legacy.cleanup_failure_count_complete);
+    assert_eq!(legacy.first_cleanup_failure, None);
+    assert_eq!(legacy.resource_evidence, None);
+    assert_eq!(legacy.retry_advice, AttemptRetryAdvice::indeterminate());
+
     let decoded: QueryAttemptReport = serde_json::from_value(json).expect("deserialize report");
     assert_eq!(decoded, report);
     assert_eq!(decoded.total_ns(), Some(8));

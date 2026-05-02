@@ -3,7 +3,7 @@
 use super::*;
 use crate::{
     admission::{AttemptRequirement, QueryPlanCapabilityProof},
-    attempt::{AttemptAdmissionBinding, AttemptReleaseCommit},
+    attempt::{AttemptAdmissionBinding, AttemptFinalizerSlot},
 };
 
 #[derive(Debug)]
@@ -73,7 +73,14 @@ pub(in crate::runtime::query_service::service) struct AdmissionObservation {
     pub(in crate::runtime::query_service::service) owner: Option<RuntimeObservationOwner>,
     pub(in crate::runtime::query_service::service) activity: Option<QueryActivityLease>,
     pub(in crate::runtime::query_service::service) activity_error: Option<QueryError>,
-    pub(in crate::runtime::query_service::service) attempt_release_commit: Option<AttemptReleaseCommit>,
+    /// The owner-held finalizer routing handle. It remains here while the
+    /// request is queued or rejected and moves its unique token into the
+    /// admitted envelope only after admission succeeds.
+    pub(in crate::runtime::query_service::service) attempt_finalizer_slot: Option<AttemptFinalizerSlot>,
+    /// Present only for an engine-minted attempt binding. This is the identity
+    /// that may receive a post-callback allocator correlation after a physical
+    /// domain has been admitted.
+    pub(in crate::runtime::query_service::service) attempt_id: Option<crate::observability::AttemptId>,
 }
 
 impl AdmissionObservation {
@@ -212,16 +219,17 @@ impl QueryAdmissionRequest {
             Some(Err(error)) => (None, Some(error)),
             None => (None, None),
         };
-        let (handle, owner, attempt_release_commit) = match self.runtime_observation {
-            RuntimeObservationAttachment::Disabled => (RuntimeObservationHandle::disabled(), None, None),
-            RuntimeObservationAttachment::StandaloneOwner(owner) => (owner.handle(), Some(owner), None),
-            RuntimeObservationAttachment::Handle(handle) => (handle, None, None),
+        let (handle, owner, attempt_finalizer_slot, attempt_id) = match self.runtime_observation {
+            RuntimeObservationAttachment::Disabled => (RuntimeObservationHandle::disabled(), None, None, None),
+            RuntimeObservationAttachment::StandaloneOwner(owner) => (owner.handle(), Some(owner), None, None),
+            RuntimeObservationAttachment::Handle(handle) => (handle, None, None, None),
             RuntimeObservationAttachment::Attempt(binding) => {
-                let (owner, release_commit) = binding.into_parts();
-                (owner.handle(), Some(owner), Some(release_commit))
+                let attempt_id = binding.attempt_id();
+                let (owner, finalizer_slot) = binding.into_parts();
+                (owner.handle(), Some(owner), Some(finalizer_slot), Some(attempt_id))
             },
         };
-        AdmissionObservation { handle, owner, activity, activity_error, attempt_release_commit }
+        AdmissionObservation { handle, owner, activity, activity_error, attempt_finalizer_slot, attempt_id }
     }
 }
 
@@ -261,7 +269,8 @@ mod tests {
         let observation = QueryAdmissionRequest::new().with_runtime_observation_owner(owner).into_runtime_observation();
 
         assert!(observation.owner.is_some());
-        assert!(observation.attempt_release_commit.is_none());
+        assert!(observation.attempt_finalizer_slot.is_none());
+        assert!(observation.attempt_id.is_none());
     }
 
     #[test]
@@ -276,11 +285,13 @@ mod tests {
             std::sync::Arc::new(crate::attempt::AttemptBackendCounters::default()),
             None,
         );
+        let attempt_id = attempt.owner.attempt_id();
         let observation = QueryAdmissionRequest::new()
             .with_attempt_binding(attempt.owner.admission_binding())
             .into_runtime_observation();
 
         assert!(observation.owner.is_some());
-        assert!(observation.attempt_release_commit.is_some());
+        assert!(observation.attempt_finalizer_slot.is_some());
+        assert_eq!(observation.attempt_id, Some(attempt_id));
     }
 }

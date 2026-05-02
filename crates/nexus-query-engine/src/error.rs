@@ -189,21 +189,21 @@ impl fmt::Display for QueryErrorKind {
 
 /// Retry and remediation status for native-engine errors.
 ///
-/// Only [`Self::Temporary`] is automatically retryable.
+/// This is a coarse source classification, not attempt retry advice.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum QueryErrorStatus {
     /// The same request will not succeed without changing its query, input,
     /// configuration, or code. Do not retry it automatically.
     Permanent,
-    /// The failure may clear without external repair. Automatic retry, backoff,
-    /// or smaller resource admission may succeed.
+    /// The failure may clear without external repair. A sealed attempt report
+    /// still needs terminal evidence before it can advise backoff or retry.
     Temporary,
     /// A dependency/runtime failure has been observed to recur or is known to
     /// continue. Stop automatic retries and escalate or wait for intervention.
     ///
     /// This remains distinct from [`Self::Permanent`] because it records a
     /// continuing dependency failure rather than a request that must change;
-    /// neither status is automatically retryable.
+    /// neither status alone is retry advice.
     Persistent,
 }
 
@@ -260,7 +260,7 @@ pub const fn kind_for_code(code: QueryErrorCode) -> QueryErrorKind {
 
 /// Maps each native error code to its stable retry/remediation status.
 ///
-/// Only [`QueryErrorStatus::Temporary`] is automatically retryable.
+/// Attempt retry advice is derived only after terminal evidence is sealed.
 /// [`QueryErrorStatus::Persistent`] means a repeated or known-continuing
 /// dependency failure that requires escalation or intervention, while
 /// [`QueryErrorStatus::Permanent`] means the request, input, configuration, or
@@ -562,14 +562,6 @@ impl QueryError {
         self.code.status()
     }
 
-    /// Returns whether this error is eligible for automatic retry.
-    ///
-    /// This is an exact alias for
-    /// `self.status() == QueryErrorStatus::Temporary`.
-    pub fn is_retryable(&self) -> bool {
-        self.status() == QueryErrorStatus::Temporary
-    }
-
     /// Returns the query-wide diagnostic correlation id, when assigned.
     pub fn query_id(&self) -> Option<&QueryId> {
         self.query_id.as_ref()
@@ -737,8 +729,9 @@ impl StdError for QueryError {
 // cuDF classification preserves permanent size/host-limit codes first, then
 // generic resource exhaustion, retry status (`Temporary`/`Persistent`), and
 // permanent failures by cuDF kind. This keeps
-// cuDF's action contract intact: only Temporary is automatically retryable;
-// Persistent requires escalation or intervention. Notable permanent mappings:
+// cuDF's coarse status contract intact. Sealed attempt advice, not this
+// status alone, governs retry; Persistent requires escalation or intervention.
+// Notable permanent mappings:
 // `NotFound` is treated as invalid input, `ExecutionContext` is treated as an
 // invariant violation, and unknown kinds fall back to dependency failure.
 fn code_for_cudf_error(error: &cudf::Error) -> QueryErrorCode {
