@@ -14,9 +14,8 @@ use arrow::{
 };
 use cudf_query_engine::{
     ExecutionContext as NativeExecutionContext, MemoryControlPolicy as NativeMemoryControlPolicy,
-    PlanNode as NativePlanNode, QueryError as NativeQueryError, QueryErrorCode as NativeQueryErrorCode,
-    QueryMetrics as NativeQueryMetrics, QueryOutput as NativeQueryOutput, QueryPlan as NativeQueryPlan,
-    SourceNode as NativeSourceNode, execute_query_plan as execute_native_query_plan,
+    PlanNode as NativePlanNode, QueryMetrics as NativeQueryMetrics, QueryOutput as NativeQueryOutput,
+    QueryPlan as NativeQueryPlan, SourceNode as NativeSourceNode, execute_query_plan as execute_native_query_plan,
 };
 use datafusion::{
     common::{DataFusionError, Result as DataFusionResult, ScalarValue, utils::memory::get_record_batch_memory_size},
@@ -54,9 +53,9 @@ use datafusion::{
 };
 use datafusion_cudf::{
     CandidateOutcome, CudfGpuIslandExec, CudfNativePhysicalOptimizerRule, CudfOptimizerConfig,
-    CudfPhysicalOptimizerRule, CudfSessionStateBuilderExt, GpuFallbackPolicy, LargerIslandBenchmarkMetrics,
-    LargerIslandBenchmarkPlanning, NativeCudfExec, NativeCudfExecutionConfig, NativeDataFusionPlanningReport,
-    TimedBenchmarkRun, lower_physical_plan_to_native, optimize_plan,
+    CudfPhysicalOptimizerRule, CudfSessionStateBuilderExt, Error as AdapterError, GpuFallbackPolicy,
+    LargerIslandBenchmarkMetrics, LargerIslandBenchmarkPlanning, NativeCudfExec, NativeCudfExecutionConfig,
+    NativeDataFusionPlanningReport, TimedBenchmarkRun, lower_physical_plan_to_native, optimize_plan,
 };
 
 const THREE_GIB: u64 = 3_221_225_472;
@@ -67,65 +66,133 @@ const DEFAULT_NATIVE_MAX_ROW_GROUPS_PER_CHUNK: usize = 1;
 const DEFAULT_NATIVE_MAX_RETRY_ATTEMPTS: usize = 4;
 const DEFAULT_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS: usize = 1;
 const DEFAULT_MIN_NATIVE_GPU_SPEEDUP: f64 = 1.0;
-const DEFAULT_BENCHMARK_DATA_DIR: &str = "/opt/dlami/nvme/data";
-#[cfg(test)]
+const DEFAULT_BENCHMARK_DATA_DIR: &str = "test/data/local-parquet-benchmark";
+const DEFAULT_PHASE_C_MATRIX_DATA_DIR: &str = "test/data/phase-c-matrix";
 const SIX_GIB: u64 = 6 * 1024 * 1024 * 1024;
-#[cfg(test)]
 const TEN_GIB: u64 = 10 * 1024 * 1024 * 1024;
 
 #[tokio::main]
 async fn main() -> DataFusionResult<()> {
+    let run_mode = BenchmarkRunMode::from_env("CUDF_PARQUET_BENCH_RUN")?;
     let config = LocalParquetBenchmarkConfig::from_env()?;
-    let dir = config.output_dir.clone().unwrap_or_else(default_benchmark_dir);
-    fs::create_dir_all(&dir)?;
-    let path = benchmark_input_path(&dir, &config);
 
-    write_benchmark_parquet_dataset(&path, &config)?;
-    let file_bytes = parquet_dataset_bytes(&path)?;
-    validate_file_size(file_bytes, &config)?;
-    let dataset_layout = parquet_dataset_layout(&path)?;
-    validate_dataset_layout(&dataset_layout, &config)?;
-
-    let source_diagnostic = local_parquet_scan_diagnostic(&path).await?;
-    println!("local_parquet_benchmark");
-    println!("parquet_path={}", path.display());
-    println!("source_diagnostic={source_diagnostic}");
-    println!("parquet_file_bytes={file_bytes}");
-    println!("input_rows={}", config.input_rows);
-    println!("parquet_files={}", config.file_count);
-    println!("measure_columns={}", config.measure_columns);
-    println!("projected_measure_pairs={}", config.projected_measure_pairs());
-    println!("group_count={}", config.group_count);
-    println!("batch_size={}", config.batch_size);
-    println!("row_group_size={}", config.row_group_size);
-    println!("parquet_row_groups={}", dataset_layout.row_group_count);
-    println!("minimum_native_gpu_speedup={:.3}", config.minimum_native_gpu_speedup);
-    println!("native_memory_control_policy={}", config.native_memory_control_policy.as_str());
-    println!("benchmark_paths={}", config.benchmark_paths.name());
-    println!("compression={}", config.compression.name());
-    println!("native_plan_shape={}", config.native_plan_shape.name());
-    println!("expected_outcome={}", config.expected_outcome.name());
-    println!("phase_c_decision_matrix_cases={}", phase_c_decision_matrix().len());
-    println!("limit={}", config.limit);
-    println!("warmups={}", config.warmup_iterations);
-    println!("iterations={}", config.iterations);
-
-    println!();
-    match config.expected_outcome {
-        BenchmarkExpectedOutcome::Success => {
-            let report =
-                run_direct_parquet_benchmark(&path, file_bytes, dataset_layout, source_diagnostic, &config).await?;
-            print!("{}", report.to_text());
+    match run_mode {
+        BenchmarkRunMode::SingleCase => {
+            let report = run_configured_benchmark_case(&config).await?;
+            print!("{}", benchmark_case_prologue(&report, &config));
+            println!();
+            print!("{}", report.report.to_text());
         },
-        BenchmarkExpectedOutcome::ResourceFailure => {
-            let report =
-                run_expected_resource_failure_probe(&path, file_bytes, dataset_layout, source_diagnostic, &config)
-                    .await?;
+        BenchmarkRunMode::PhaseCMatrix => {
+            let report = run_phase_c_matrix(&config).await?;
             print!("{}", report.to_text());
+            if !report.decision_gate_pass() {
+                return Err(plan_error(format!(
+                    "Phase C DataFusion native exec matrix decision gate failed: unexpected_outcomes={}",
+                    report.unexpected_outcome_count()
+                )));
+            }
         },
     }
 
     Ok(())
+}
+
+#[derive(Debug)]
+struct ConfiguredBenchmarkCaseReport {
+    path: PathBuf,
+    parquet_file_bytes: u64,
+    dataset_layout: ParquetDatasetLayout,
+    source_diagnostic: String,
+    report: BenchmarkCaseReport,
+}
+
+#[derive(Debug)]
+enum BenchmarkCaseReport {
+    Success(DirectParquetBenchmarkReport),
+    PlanningRejected(ExpectedPlanningRejectedReport),
+    ResourceFailure(ExpectedResourceFailureReport),
+}
+
+impl BenchmarkCaseReport {
+    fn to_text(&self) -> String {
+        match self {
+            Self::Success(report) => report.to_text(),
+            Self::PlanningRejected(report) => report.to_text(),
+            Self::ResourceFailure(report) => report.to_text(),
+        }
+    }
+}
+
+async fn run_configured_benchmark_case(
+    config: &LocalParquetBenchmarkConfig,
+) -> DataFusionResult<ConfiguredBenchmarkCaseReport> {
+    let dir = config.output_dir.clone().unwrap_or_else(default_benchmark_dir);
+    fs::create_dir_all(&dir)?;
+    let path = benchmark_input_path(&dir, config);
+
+    write_benchmark_parquet_dataset(&path, config)?;
+    let parquet_file_bytes = parquet_dataset_bytes(&path)?;
+    validate_file_size(parquet_file_bytes, config)?;
+    let dataset_layout = parquet_dataset_layout(&path)?;
+    validate_dataset_layout(&dataset_layout, config)?;
+
+    let source_diagnostic = local_parquet_scan_diagnostic(&path).await?;
+    let report = match config.expected_outcome {
+        BenchmarkExpectedOutcome::Success => BenchmarkCaseReport::Success(
+            run_direct_parquet_benchmark(&path, parquet_file_bytes, dataset_layout, source_diagnostic.clone(), config)
+                .await?,
+        ),
+        BenchmarkExpectedOutcome::PlanningRejected => BenchmarkCaseReport::PlanningRejected(
+            run_expected_planning_rejection_probe(
+                &path,
+                parquet_file_bytes,
+                dataset_layout,
+                source_diagnostic.clone(),
+                config,
+            )
+            .await?,
+        ),
+        BenchmarkExpectedOutcome::ResourceFailure => BenchmarkCaseReport::ResourceFailure(
+            run_expected_resource_failure_probe(
+                &path,
+                parquet_file_bytes,
+                dataset_layout,
+                source_diagnostic.clone(),
+                config,
+            )
+            .await?,
+        ),
+    };
+
+    Ok(ConfiguredBenchmarkCaseReport { path, parquet_file_bytes, dataset_layout, source_diagnostic, report })
+}
+
+fn benchmark_case_prologue(report: &ConfiguredBenchmarkCaseReport, config: &LocalParquetBenchmarkConfig) -> String {
+    let mut text = String::new();
+    push_line(&mut text, format_args!("local_parquet_benchmark"));
+    push_line(&mut text, format_args!("parquet_path={}", report.path.display()));
+    push_line(&mut text, format_args!("source_diagnostic={}", report.source_diagnostic));
+    push_line(&mut text, format_args!("parquet_file_bytes={}", report.parquet_file_bytes));
+    push_line(&mut text, format_args!("input_rows={}", config.input_rows));
+    push_line(&mut text, format_args!("parquet_files={}", config.file_count));
+    push_line(&mut text, format_args!("measure_columns={}", config.measure_columns));
+    push_line(&mut text, format_args!("projected_measure_pairs={}", config.projected_measure_pairs()));
+    push_line(&mut text, format_args!("group_count={}", config.group_count));
+    push_line(&mut text, format_args!("batch_size={}", config.batch_size));
+    push_line(&mut text, format_args!("row_group_size={}", config.row_group_size));
+    push_line(&mut text, format_args!("parquet_row_groups={}", report.dataset_layout.row_group_count));
+    push_line(&mut text, format_args!("minimum_native_gpu_speedup={:.3}", config.minimum_native_gpu_speedup));
+    push_line(&mut text, format_args!("native_memory_control_policy={}", config.native_memory_control_policy.as_str()));
+    push_line(&mut text, format_args!("benchmark_paths={}", config.benchmark_paths.name()));
+    push_line(&mut text, format_args!("compression={}", config.compression.name()));
+    push_line(&mut text, format_args!("native_plan_shape={}", config.native_plan_shape.name()));
+    push_line(&mut text, format_args!("expected_outcome={}", config.expected_outcome.name()));
+    push_line(&mut text, format_args!("phase_c_decision_matrix_cases={}", phase_c_decision_matrix().len()));
+    push_line(&mut text, format_args!("limit={}", config.limit));
+    push_line(&mut text, format_args!("warmups={}", config.warmup_iterations));
+    push_line(&mut text, format_args!("iterations={}", config.iterations));
+    text
 }
 
 #[derive(Debug, Clone)]
@@ -235,7 +302,14 @@ enum BenchmarkPlanShape {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BenchmarkExpectedOutcome {
     Success,
+    PlanningRejected,
     ResourceFailure,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BenchmarkRunMode {
+    SingleCase,
+    PhaseCMatrix,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -344,21 +418,37 @@ impl BenchmarkExpectedOutcome {
         };
         match value.to_string_lossy().to_ascii_lowercase().as_str() {
             "success" => Ok(Self::Success),
+            "planning_rejected" | "planning-rejected" => Ok(Self::PlanningRejected),
             "resource_failure" | "resource-failure" => Ok(Self::ResourceFailure),
-            other => Err(plan_error(format!("invalid {name}: {other}; expected success or resource_failure"))),
+            other => Err(plan_error(format!(
+                "invalid {name}: {other}; expected success, planning_rejected, or resource_failure"
+            ))),
         }
     }
 
     fn name(self) -> &'static str {
         match self {
             Self::Success => "success",
+            Self::PlanningRejected => "planning_rejected",
             Self::ResourceFailure => "resource_failure",
         }
     }
 }
 
+impl BenchmarkRunMode {
+    fn from_env(name: &'static str) -> DataFusionResult<Self> {
+        let Some(value) = std::env::var_os(name) else {
+            return Ok(Self::SingleCase);
+        };
+        match value.to_string_lossy().to_ascii_lowercase().as_str() {
+            "single" | "single_case" | "single-case" => Ok(Self::SingleCase),
+            "phase_c_matrix" | "phase-c-matrix" => Ok(Self::PhaseCMatrix),
+            other => Err(plan_error(format!("invalid {name}: {other}; expected single_case or phase_c_matrix"))),
+        }
+    }
+}
+
 impl BenchmarkSourceLayout {
-    #[cfg(test)]
     fn name(self) -> &'static str {
         match self {
             Self::SingleFileMultiRowGroup => "single_file_multi_row_group",
@@ -366,7 +456,6 @@ impl BenchmarkSourceLayout {
         }
     }
 
-    #[cfg(test)]
     fn file_count(self) -> usize {
         match self {
             Self::SingleFileMultiRowGroup => 1,
@@ -376,7 +465,6 @@ impl BenchmarkSourceLayout {
 }
 
 impl BenchmarkScalePoint {
-    #[cfg(test)]
     fn name(self) -> &'static str {
         match self {
             Self::ThreeGiB => "3gib",
@@ -385,16 +473,17 @@ impl BenchmarkScalePoint {
         }
     }
 
-    #[cfg(test)]
-    fn input_rows(self) -> usize {
-        match self {
-            Self::ThreeGiB => 12_250_000,
-            Self::SixGiB => 24_500_000,
-            Self::TenGiB => 40_900_000,
+    fn input_rows(self, compression: BenchmarkCompression) -> usize {
+        match (self, compression) {
+            (Self::ThreeGiB, BenchmarkCompression::Uncompressed) => 12_250_000,
+            (Self::ThreeGiB, BenchmarkCompression::Snappy) => 16_000_000,
+            (Self::SixGiB, BenchmarkCompression::Uncompressed) => 24_500_000,
+            (Self::SixGiB, BenchmarkCompression::Snappy) => 32_000_000,
+            (Self::TenGiB, BenchmarkCompression::Uncompressed) => 40_900_000,
+            (Self::TenGiB, BenchmarkCompression::Snappy) => 52_000_000,
         }
     }
 
-    #[cfg(test)]
     fn minimum_file_bytes(self) -> u64 {
         match self {
             Self::ThreeGiB => THREE_GIB,
@@ -405,7 +494,6 @@ impl BenchmarkScalePoint {
 }
 
 impl PhaseCMatrixCase {
-    #[cfg(test)]
     fn name(self) -> String {
         format!(
             "{}-{}-{}-{}-{}",
@@ -419,15 +507,41 @@ impl PhaseCMatrixCase {
 
     #[cfg(test)]
     fn env_overrides(self) -> Vec<(&'static str, String)> {
-        vec![
-            ("CUDF_PARQUET_BENCH_ROWS", self.scale.input_rows().to_string()),
+        let mut overrides = vec![
+            ("CUDF_PARQUET_BENCH_ROWS", self.scale.input_rows(self.compression).to_string()),
             ("CUDF_PARQUET_BENCH_MIN_FILE_BYTES", self.scale.minimum_file_bytes().to_string()),
             ("CUDF_PARQUET_BENCH_COMPRESSION", self.compression.name().to_string()),
             ("CUDF_PARQUET_BENCH_FILES", self.source_layout.file_count().to_string()),
             ("CUDF_PARQUET_BENCH_NATIVE_PLAN_SHAPE", self.native_plan_shape.name().to_string()),
             ("CUDF_PARQUET_BENCH_EXPECTED_OUTCOME", self.expected_outcome.name().to_string()),
             ("CUDF_PARQUET_BENCH_NATIVE_MEMORY_POLICY", "bounded".to_string()),
-        ]
+        ];
+        if self.expected_outcome == BenchmarkExpectedOutcome::ResourceFailure {
+            overrides.extend([
+                ("CUDF_PARQUET_BENCH_NATIVE_DEVICE_BUDGET_BYTES", "1".to_string()),
+                ("CUDF_PARQUET_BENCH_NATIVE_MAX_SOURCE_CHUNK_BYTES", "1".to_string()),
+                ("CUDF_PARQUET_BENCH_NATIVE_MAX_ROW_GROUPS_PER_CHUNK", "1".to_string()),
+                ("CUDF_PARQUET_BENCH_NATIVE_MAX_RETRY_ATTEMPTS", "1".to_string()),
+                ("CUDF_PARQUET_BENCH_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS", "1".to_string()),
+            ]);
+        }
+        overrides
+    }
+
+    fn configured_case(self, base: &LocalParquetBenchmarkConfig, output_dir: PathBuf) -> LocalParquetBenchmarkConfig {
+        let mut config = base.clone();
+        config.input_rows = self.scale.input_rows(self.compression);
+        config.file_count = self.source_layout.file_count();
+        config.minimum_file_bytes = self.scale.minimum_file_bytes();
+        config.compression = self.compression;
+        config.native_plan_shape = self.native_plan_shape;
+        config.expected_outcome = self.expected_outcome;
+        config.benchmark_paths = BenchmarkPathSet::NativeOnly;
+        config.output_dir = Some(output_dir);
+        if self.expected_outcome == BenchmarkExpectedOutcome::ResourceFailure {
+            config.native_memory_control_policy = forced_resource_failure_policy();
+        }
+        config
     }
 }
 
@@ -468,6 +582,561 @@ fn phase_c_decision_matrix() -> Vec<PhaseCMatrixCase> {
     }
 
     cases
+}
+
+const PHASE_C_DATAFUSION_NATIVE_EXEC_MATRIX_TSV_SCHEMA_VERSION: u32 = 1;
+const PHASE_C_DATAFUSION_NATIVE_EXEC_MATRIX_TSV_HEADER: &str = concat!(
+    "schema_version\tcase_id\tscale\tcompression\tsource_layout\tnative_plan_shape\texpected_outcome\toutcome\t",
+    "planning_outcome\tplanning_reason_code\tnative_cudf_exec_accepted_count\tnative_runtime_started\t",
+    "no_silent_cpu_fallback\tzero_host_to_device_uploads\tone_device_to_host_materialization\t",
+    "row_groups_selected\trow_groups_planned\trow_groups_committed\tsource_chunks_planned\t",
+    "source_chunks_committed\tsource_chunks_retried\treservation_denied_count\tretry_count\t",
+    "retry_resource_exhausted_count\tretry_reservation_failure_count\tcpu_datafusion_wall_ms\t",
+    "datafusion_native_exec_wall_ms\tdatafusion_native_exec_speedup_vs_cpu_datafusion\t",
+    "datafusion_native_exec_speedup_vs_cpu_comparable\tparquet_file_bytes\tparquet_row_groups\t",
+    "runtime_error_code\truntime_error_kind\truntime_error_status\truntime_error_operation\truntime_error_facts\tlog_path"
+);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BenchmarkMatrixOutcome {
+    Pass,
+    PlanningRejected,
+    ResourceFailure,
+    RuntimeFailure,
+}
+
+impl BenchmarkMatrixOutcome {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Pass => "pass",
+            Self::PlanningRejected => "planning_rejected",
+            Self::ResourceFailure => "resource_failure",
+            Self::RuntimeFailure => "runtime_failure",
+        }
+    }
+}
+
+#[derive(Debug)]
+struct PhaseCMatrixReport {
+    artifact_dir: PathBuf,
+    tsv_path: PathBuf,
+    json_path: PathBuf,
+    markdown_path: PathBuf,
+    rows: Vec<PhaseCMatrixReportRow>,
+}
+
+impl PhaseCMatrixReport {
+    fn decision_gate_pass(&self) -> bool {
+        self.rows.iter().all(PhaseCMatrixReportRow::matches_expected_outcome)
+    }
+
+    fn unexpected_outcome_count(&self) -> usize {
+        self.rows.iter().filter(|row| !row.matches_expected_outcome()).count()
+    }
+
+    fn to_text(&self) -> String {
+        let mut text = String::new();
+        push_line(&mut text, format_args!("phase_c_datafusion_native_exec_matrix"));
+        push_line(
+            &mut text,
+            format_args!("schema_version={}", PHASE_C_DATAFUSION_NATIVE_EXEC_MATRIX_TSV_SCHEMA_VERSION),
+        );
+        push_line(&mut text, format_args!("case_count={}", self.rows.len()));
+        push_line(&mut text, format_args!("decision_gate={}", if self.decision_gate_pass() { "pass" } else { "fail" }));
+        push_line(&mut text, format_args!("unexpected_outcomes={}", self.unexpected_outcome_count()));
+        push_line(&mut text, format_args!("artifact_dir={}", self.artifact_dir.display()));
+        push_line(&mut text, format_args!("tsv_report={}", self.tsv_path.display()));
+        push_line(&mut text, format_args!("json_report={}", self.json_path.display()));
+        push_line(&mut text, format_args!("markdown_report={}", self.markdown_path.display()));
+        text
+    }
+
+    fn to_tsv(&self) -> String {
+        let mut text = String::new();
+        push_line(&mut text, format_args!("{PHASE_C_DATAFUSION_NATIVE_EXEC_MATRIX_TSV_HEADER}"));
+        for row in &self.rows {
+            push_line(&mut text, format_args!("{}", row.to_tsv_row()));
+        }
+        text
+    }
+
+    fn to_json(&self) -> String {
+        let rows = self.rows.iter().map(PhaseCMatrixReportRow::to_json_value).collect::<Vec<_>>();
+        serde_json::to_string_pretty(&serde_json::json!({
+            "schema_version": PHASE_C_DATAFUSION_NATIVE_EXEC_MATRIX_TSV_SCHEMA_VERSION,
+            "decision_gate": if self.decision_gate_pass() { "pass" } else { "fail" },
+            "unexpected_outcomes": self.unexpected_outcome_count(),
+            "rows": rows,
+        }))
+        .expect("phase c matrix JSON report should serialize")
+    }
+
+    fn to_markdown(&self) -> String {
+        let mut text = String::new();
+        push_line(&mut text, format_args!("# DataFusion Native Exec Phase C Matrix Results"));
+        push_line(&mut text, format_args!(""));
+        push_line(
+            &mut text,
+            format_args!(
+                "Generated by `cargo run --example local_parquet_benchmark` with `CUDF_PARQUET_BENCH_RUN=phase_c_matrix`."
+            ),
+        );
+        push_line(&mut text, format_args!(""));
+        push_line(
+            &mut text,
+            format_args!(
+                "Decision gate: **{}**. Unexpected outcomes: {}.",
+                if self.decision_gate_pass() { "pass" } else { "fail" },
+                self.unexpected_outcome_count()
+            ),
+        );
+        push_line(&mut text, format_args!(""));
+        push_line(
+            &mut text,
+            format_args!(
+                "| case id | expected | outcome | planning | accepted | zero upload | one materialization | row groups | chunks | retries | native wall ms | speedup | error |"
+            ),
+        );
+        push_line(
+            &mut text,
+            format_args!("| --- | --- | --- | --- | ---: | --- | --- | ---: | ---: | ---: | ---: | ---: | --- |"),
+        );
+        for row in &self.rows {
+            push_line(
+                &mut text,
+                format_args!(
+                    "| {} | {} | {} | {} | {} | {} | {} | {}/{}/{} | {}/{}/{} | {}/{}/{} | {} | {} | {} |",
+                    row.case_id,
+                    row.expected_outcome,
+                    row.outcome.as_str(),
+                    row.planning_outcome,
+                    row.native_cudf_exec_accepted_count,
+                    row.zero_host_to_device_uploads,
+                    row.one_device_to_host_materialization,
+                    row.row_groups_selected,
+                    row.row_groups_planned,
+                    row.row_groups_committed,
+                    row.source_chunks_planned,
+                    row.source_chunks_committed,
+                    row.source_chunks_retried,
+                    row.retry_count,
+                    row.retry_resource_exhausted_count,
+                    row.retry_reservation_failure_count,
+                    row.datafusion_native_exec_wall_ms,
+                    row.datafusion_native_exec_speedup_vs_cpu_datafusion,
+                    row.runtime_error_code
+                ),
+            );
+        }
+        text
+    }
+}
+
+#[derive(Debug, Clone)]
+struct PhaseCMatrixReportRow {
+    case_id: String,
+    scale: &'static str,
+    compression: &'static str,
+    source_layout: &'static str,
+    native_plan_shape: &'static str,
+    expected_outcome: &'static str,
+    outcome: BenchmarkMatrixOutcome,
+    planning_outcome: String,
+    planning_reason_code: String,
+    native_cudf_exec_accepted_count: String,
+    native_runtime_started: &'static str,
+    no_silent_cpu_fallback: &'static str,
+    zero_host_to_device_uploads: String,
+    one_device_to_host_materialization: String,
+    row_groups_selected: String,
+    row_groups_planned: String,
+    row_groups_committed: String,
+    source_chunks_planned: String,
+    source_chunks_committed: String,
+    source_chunks_retried: String,
+    reservation_denied_count: String,
+    retry_count: String,
+    retry_resource_exhausted_count: String,
+    retry_reservation_failure_count: String,
+    cpu_datafusion_wall_ms: String,
+    datafusion_native_exec_wall_ms: String,
+    datafusion_native_exec_speedup_vs_cpu_datafusion: String,
+    datafusion_native_exec_speedup_vs_cpu_comparable: String,
+    parquet_file_bytes: String,
+    parquet_row_groups: String,
+    runtime_error_code: String,
+    runtime_error_kind: String,
+    runtime_error_status: String,
+    runtime_error_operation: String,
+    runtime_error_facts: String,
+    log_path: String,
+}
+
+impl PhaseCMatrixReportRow {
+    fn from_case_report(case: PhaseCMatrixCase, report: &ConfiguredBenchmarkCaseReport, log_path: &Path) -> Self {
+        match &report.report {
+            BenchmarkCaseReport::Success(success) => Self::from_success(case, success, log_path),
+            BenchmarkCaseReport::PlanningRejected(rejected) => Self::from_planning_rejected(case, rejected, log_path),
+            BenchmarkCaseReport::ResourceFailure(resource_failure) => {
+                Self::from_resource_failure(case, resource_failure, log_path)
+            },
+        }
+    }
+
+    fn runtime_failure(case: PhaseCMatrixCase, error: &DataFusionError, log_path: &Path) -> Self {
+        let adapter_error = adapter_error_from_datafusion(error).ok();
+        let (code, kind, status, operation, facts) = adapter_error.map_or_else(
+            || {
+                (
+                    "unavailable".to_string(),
+                    "unavailable".to_string(),
+                    "unavailable".to_string(),
+                    "unavailable".to_string(),
+                    sanitize_report_value(&error.to_string()),
+                )
+            },
+            |error| {
+                (
+                    error.code().as_str().to_string(),
+                    error.kind().as_str().to_string(),
+                    error.status().as_str().to_string(),
+                    error.operation().to_string(),
+                    adapter_error_facts_tsv(error),
+                )
+            },
+        );
+        Self {
+            case_id: case.name(),
+            scale: case.scale.name(),
+            compression: case.compression.name(),
+            source_layout: case.source_layout.name(),
+            native_plan_shape: case.native_plan_shape.name(),
+            expected_outcome: case.expected_outcome.name(),
+            outcome: BenchmarkMatrixOutcome::RuntimeFailure,
+            planning_outcome: "unavailable".to_string(),
+            planning_reason_code: "unavailable".to_string(),
+            native_cudf_exec_accepted_count: "unavailable".to_string(),
+            native_runtime_started: "unknown",
+            no_silent_cpu_fallback: "unknown",
+            zero_host_to_device_uploads: "unavailable".to_string(),
+            one_device_to_host_materialization: "unavailable".to_string(),
+            row_groups_selected: "unavailable".to_string(),
+            row_groups_planned: "unavailable".to_string(),
+            row_groups_committed: "unavailable".to_string(),
+            source_chunks_planned: "unavailable".to_string(),
+            source_chunks_committed: "unavailable".to_string(),
+            source_chunks_retried: "unavailable".to_string(),
+            reservation_denied_count: "unavailable".to_string(),
+            retry_count: "unavailable".to_string(),
+            retry_resource_exhausted_count: "unavailable".to_string(),
+            retry_reservation_failure_count: "unavailable".to_string(),
+            cpu_datafusion_wall_ms: "unavailable".to_string(),
+            datafusion_native_exec_wall_ms: "unavailable".to_string(),
+            datafusion_native_exec_speedup_vs_cpu_datafusion: "unavailable".to_string(),
+            datafusion_native_exec_speedup_vs_cpu_comparable: "unavailable".to_string(),
+            parquet_file_bytes: "unavailable".to_string(),
+            parquet_row_groups: "unavailable".to_string(),
+            runtime_error_code: code,
+            runtime_error_kind: kind,
+            runtime_error_status: status,
+            runtime_error_operation: operation,
+            runtime_error_facts: facts,
+            log_path: log_path.display().to_string(),
+        }
+    }
+
+    fn from_success(case: PhaseCMatrixCase, report: &DirectParquetBenchmarkReport, log_path: &Path) -> Self {
+        let metrics = &report.final_datafusion_native_exec.metrics;
+        let planning_row = report
+            .final_datafusion_native_exec
+            .native_datafusion_planning_report
+            .as_ref()
+            .and_then(|report| report.rows.first());
+        Self {
+            case_id: case.name(),
+            scale: case.scale.name(),
+            compression: case.compression.name(),
+            source_layout: case.source_layout.name(),
+            native_plan_shape: case.native_plan_shape.name(),
+            expected_outcome: case.expected_outcome.name(),
+            outcome: BenchmarkMatrixOutcome::Pass,
+            planning_outcome: planning_row.map_or("unavailable", |row| row.outcome.as_str()).to_string(),
+            planning_reason_code: planning_row.and_then(|row| row.reason_code.as_deref()).unwrap_or("none").to_string(),
+            native_cudf_exec_accepted_count: report
+                .final_datafusion_native_exec
+                .native_datafusion_planning_report
+                .as_ref()
+                .map_or_else(|| "unavailable".to_string(), |report| report.accepted_count().to_string()),
+            native_runtime_started: "true",
+            no_silent_cpu_fallback: "true",
+            zero_host_to_device_uploads: (metrics.host_to_device_uploads == 0).to_string(),
+            one_device_to_host_materialization: (metrics.device_to_host_materializations == 1).to_string(),
+            row_groups_selected: metrics.row_groups_selected.to_string(),
+            row_groups_planned: metrics.row_groups_planned.to_string(),
+            row_groups_committed: metrics.row_groups_committed.to_string(),
+            source_chunks_planned: metrics.source_chunks_planned.to_string(),
+            source_chunks_committed: metrics.source_chunks_committed.to_string(),
+            source_chunks_retried: metrics.source_chunks_retried.to_string(),
+            reservation_denied_count: metrics.reservation_denied_count.to_string(),
+            retry_count: metrics.retry_count.to_string(),
+            retry_resource_exhausted_count: metrics.retry_resource_exhausted_count.to_string(),
+            retry_reservation_failure_count: metrics.retry_reservation_failure_count.to_string(),
+            cpu_datafusion_wall_ms: format!("{:.3}", duration_ms(report.cpu_default.mean)),
+            datafusion_native_exec_wall_ms: format!("{:.3}", duration_ms(report.datafusion_native_exec.mean)),
+            datafusion_native_exec_speedup_vs_cpu_datafusion: format!(
+                "{:.3}",
+                speedup(report.cpu_default.mean, report.datafusion_native_exec.mean)
+            ),
+            datafusion_native_exec_speedup_vs_cpu_comparable: format!(
+                "{:.3}",
+                speedup(report.cpu_comparable.mean, report.datafusion_native_exec.mean)
+            ),
+            parquet_file_bytes: report.parquet_file_bytes.to_string(),
+            parquet_row_groups: report.parquet_row_groups.to_string(),
+            runtime_error_code: "none".to_string(),
+            runtime_error_kind: "none".to_string(),
+            runtime_error_status: "none".to_string(),
+            runtime_error_operation: "none".to_string(),
+            runtime_error_facts: "none".to_string(),
+            log_path: log_path.display().to_string(),
+        }
+    }
+
+    fn from_planning_rejected(
+        case: PhaseCMatrixCase,
+        report: &ExpectedPlanningRejectedReport,
+        log_path: &Path,
+    ) -> Self {
+        let row = report.planning_report.rows.first();
+        Self {
+            case_id: case.name(),
+            scale: case.scale.name(),
+            compression: case.compression.name(),
+            source_layout: case.source_layout.name(),
+            native_plan_shape: case.native_plan_shape.name(),
+            expected_outcome: case.expected_outcome.name(),
+            outcome: BenchmarkMatrixOutcome::PlanningRejected,
+            planning_outcome: row.map_or("unavailable", |row| row.outcome.as_str()).to_string(),
+            planning_reason_code: row.and_then(|row| row.reason_code.as_deref()).unwrap_or("none").to_string(),
+            native_cudf_exec_accepted_count: report.planning_report.accepted_count().to_string(),
+            native_runtime_started: "false",
+            no_silent_cpu_fallback: "true",
+            zero_host_to_device_uploads: "unavailable".to_string(),
+            one_device_to_host_materialization: "unavailable".to_string(),
+            row_groups_selected: "unavailable".to_string(),
+            row_groups_planned: "unavailable".to_string(),
+            row_groups_committed: "unavailable".to_string(),
+            source_chunks_planned: "unavailable".to_string(),
+            source_chunks_committed: "unavailable".to_string(),
+            source_chunks_retried: "unavailable".to_string(),
+            reservation_denied_count: "unavailable".to_string(),
+            retry_count: "unavailable".to_string(),
+            retry_resource_exhausted_count: "unavailable".to_string(),
+            retry_reservation_failure_count: "unavailable".to_string(),
+            cpu_datafusion_wall_ms: "unavailable".to_string(),
+            datafusion_native_exec_wall_ms: "unavailable".to_string(),
+            datafusion_native_exec_speedup_vs_cpu_datafusion: "unavailable".to_string(),
+            datafusion_native_exec_speedup_vs_cpu_comparable: "unavailable".to_string(),
+            parquet_file_bytes: report.parquet_file_bytes.to_string(),
+            parquet_row_groups: report.parquet_row_groups.to_string(),
+            runtime_error_code: "none".to_string(),
+            runtime_error_kind: "none".to_string(),
+            runtime_error_status: "none".to_string(),
+            runtime_error_operation: "none".to_string(),
+            runtime_error_facts: "none".to_string(),
+            log_path: log_path.display().to_string(),
+        }
+    }
+
+    fn from_resource_failure(case: PhaseCMatrixCase, report: &ExpectedResourceFailureReport, log_path: &Path) -> Self {
+        let row = report.planning_report.rows.first();
+        Self {
+            case_id: case.name(),
+            scale: case.scale.name(),
+            compression: case.compression.name(),
+            source_layout: case.source_layout.name(),
+            native_plan_shape: case.native_plan_shape.name(),
+            expected_outcome: case.expected_outcome.name(),
+            outcome: BenchmarkMatrixOutcome::ResourceFailure,
+            planning_outcome: row.map_or("unavailable", |row| row.outcome.as_str()).to_string(),
+            planning_reason_code: row.and_then(|row| row.reason_code.as_deref()).unwrap_or("none").to_string(),
+            native_cudf_exec_accepted_count: report.planning_report.accepted_count().to_string(),
+            native_runtime_started: "true",
+            no_silent_cpu_fallback: "true",
+            zero_host_to_device_uploads: "unavailable".to_string(),
+            one_device_to_host_materialization: "unavailable".to_string(),
+            row_groups_selected: "unavailable".to_string(),
+            row_groups_planned: "unavailable".to_string(),
+            row_groups_committed: "unavailable".to_string(),
+            source_chunks_planned: "unavailable".to_string(),
+            source_chunks_committed: "unavailable".to_string(),
+            source_chunks_retried: "unavailable".to_string(),
+            reservation_denied_count: "unavailable".to_string(),
+            retry_count: "unavailable".to_string(),
+            retry_resource_exhausted_count: "unavailable".to_string(),
+            retry_reservation_failure_count: "unavailable".to_string(),
+            cpu_datafusion_wall_ms: "unavailable".to_string(),
+            datafusion_native_exec_wall_ms: "unavailable".to_string(),
+            datafusion_native_exec_speedup_vs_cpu_datafusion: "unavailable".to_string(),
+            datafusion_native_exec_speedup_vs_cpu_comparable: "unavailable".to_string(),
+            parquet_file_bytes: report.parquet_file_bytes.to_string(),
+            parquet_row_groups: report.parquet_row_groups.to_string(),
+            runtime_error_code: report.error.code.clone(),
+            runtime_error_kind: report.error.kind.clone(),
+            runtime_error_status: report.error.status.clone(),
+            runtime_error_operation: report.error.operation.to_string(),
+            runtime_error_facts: report.error.facts.clone(),
+            log_path: log_path.display().to_string(),
+        }
+    }
+
+    fn matches_expected_outcome(&self) -> bool {
+        matches!(
+            (self.expected_outcome, self.outcome),
+            ("success", BenchmarkMatrixOutcome::Pass)
+                | ("planning_rejected", BenchmarkMatrixOutcome::PlanningRejected)
+                | ("resource_failure", BenchmarkMatrixOutcome::ResourceFailure)
+        )
+    }
+
+    fn to_tsv_row(&self) -> String {
+        [
+            PHASE_C_DATAFUSION_NATIVE_EXEC_MATRIX_TSV_SCHEMA_VERSION.to_string(),
+            self.case_id.clone(),
+            self.scale.to_string(),
+            self.compression.to_string(),
+            self.source_layout.to_string(),
+            self.native_plan_shape.to_string(),
+            self.expected_outcome.to_string(),
+            self.outcome.as_str().to_string(),
+            self.planning_outcome.clone(),
+            self.planning_reason_code.clone(),
+            self.native_cudf_exec_accepted_count.clone(),
+            self.native_runtime_started.to_string(),
+            self.no_silent_cpu_fallback.to_string(),
+            self.zero_host_to_device_uploads.clone(),
+            self.one_device_to_host_materialization.clone(),
+            self.row_groups_selected.clone(),
+            self.row_groups_planned.clone(),
+            self.row_groups_committed.clone(),
+            self.source_chunks_planned.clone(),
+            self.source_chunks_committed.clone(),
+            self.source_chunks_retried.clone(),
+            self.reservation_denied_count.clone(),
+            self.retry_count.clone(),
+            self.retry_resource_exhausted_count.clone(),
+            self.retry_reservation_failure_count.clone(),
+            self.cpu_datafusion_wall_ms.clone(),
+            self.datafusion_native_exec_wall_ms.clone(),
+            self.datafusion_native_exec_speedup_vs_cpu_datafusion.clone(),
+            self.datafusion_native_exec_speedup_vs_cpu_comparable.clone(),
+            self.parquet_file_bytes.clone(),
+            self.parquet_row_groups.clone(),
+            self.runtime_error_code.clone(),
+            self.runtime_error_kind.clone(),
+            self.runtime_error_status.clone(),
+            self.runtime_error_operation.clone(),
+            self.runtime_error_facts.clone(),
+            self.log_path.clone(),
+        ]
+        .into_iter()
+        .map(|value| tsv_escape(&value))
+        .collect::<Vec<_>>()
+        .join("\t")
+    }
+
+    fn to_json_value(&self) -> serde_json::Value {
+        serde_json::json!({
+            "case_id": self.case_id,
+            "scale": self.scale,
+            "compression": self.compression,
+            "source_layout": self.source_layout,
+            "native_plan_shape": self.native_plan_shape,
+            "expected_outcome": self.expected_outcome,
+            "outcome": self.outcome.as_str(),
+            "planning_outcome": self.planning_outcome,
+            "planning_reason_code": self.planning_reason_code,
+            "native_cudf_exec_accepted_count": self.native_cudf_exec_accepted_count,
+            "native_runtime_started": self.native_runtime_started,
+            "no_silent_cpu_fallback": self.no_silent_cpu_fallback,
+            "zero_host_to_device_uploads": self.zero_host_to_device_uploads,
+            "one_device_to_host_materialization": self.one_device_to_host_materialization,
+            "row_groups_selected": self.row_groups_selected,
+            "row_groups_planned": self.row_groups_planned,
+            "row_groups_committed": self.row_groups_committed,
+            "source_chunks_planned": self.source_chunks_planned,
+            "source_chunks_committed": self.source_chunks_committed,
+            "source_chunks_retried": self.source_chunks_retried,
+            "reservation_denied_count": self.reservation_denied_count,
+            "retry_count": self.retry_count,
+            "retry_resource_exhausted_count": self.retry_resource_exhausted_count,
+            "retry_reservation_failure_count": self.retry_reservation_failure_count,
+            "cpu_datafusion_wall_ms": self.cpu_datafusion_wall_ms,
+            "datafusion_native_exec_wall_ms": self.datafusion_native_exec_wall_ms,
+            "datafusion_native_exec_speedup_vs_cpu_datafusion": self.datafusion_native_exec_speedup_vs_cpu_datafusion,
+            "datafusion_native_exec_speedup_vs_cpu_comparable": self.datafusion_native_exec_speedup_vs_cpu_comparable,
+            "parquet_file_bytes": self.parquet_file_bytes,
+            "parquet_row_groups": self.parquet_row_groups,
+            "runtime_error_code": self.runtime_error_code,
+            "runtime_error_kind": self.runtime_error_kind,
+            "runtime_error_status": self.runtime_error_status,
+            "runtime_error_operation": self.runtime_error_operation,
+            "runtime_error_facts": self.runtime_error_facts,
+            "log_path": self.log_path,
+        })
+    }
+}
+
+async fn run_phase_c_matrix(base_config: &LocalParquetBenchmarkConfig) -> DataFusionResult<PhaseCMatrixReport> {
+    let artifact_dir = phase_c_matrix_artifact_dir();
+    let logs_dir = artifact_dir.join("logs");
+    let data_dir = phase_c_matrix_data_dir();
+    fs::create_dir_all(&logs_dir)?;
+    fs::create_dir_all(&data_dir)?;
+
+    let mut rows = Vec::new();
+    for case in phase_c_decision_matrix() {
+        let case_id = case.name();
+        let log_path = logs_dir.join(format!("{case_id}.log"));
+        let case_config = case.configured_case(base_config, data_dir.join(&case_id));
+        match run_configured_benchmark_case(&case_config).await {
+            Ok(case_report) => {
+                let mut log = benchmark_case_prologue(&case_report, &case_config);
+                log.push('\n');
+                log.push_str(&case_report.report.to_text());
+                fs::write(&log_path, log)?;
+                rows.push(PhaseCMatrixReportRow::from_case_report(case, &case_report, &log_path));
+            },
+            Err(error) => {
+                fs::write(&log_path, format!("case={case_id}\noutcome=runtime_failure\nerror={error}\n"))?;
+                rows.push(PhaseCMatrixReportRow::runtime_failure(case, &error, &log_path));
+            },
+        }
+    }
+
+    let report = PhaseCMatrixReport {
+        tsv_path: artifact_dir.join("datafusion-native-exec-phase-c-matrix.tsv"),
+        json_path: artifact_dir.join("datafusion-native-exec-phase-c-matrix.json"),
+        markdown_path: artifact_dir.join("datafusion-native-exec-phase-c-matrix.md"),
+        artifact_dir,
+        rows,
+    };
+    fs::write(&report.tsv_path, report.to_tsv())?;
+    fs::write(&report.json_path, report.to_json())?;
+    fs::write(&report.markdown_path, report.to_markdown())?;
+    Ok(report)
+}
+
+fn phase_c_matrix_artifact_dir() -> PathBuf {
+    std::env::var_os("CUDF_PARQUET_BENCH_MATRIX_ARTIFACT_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("target/phase-c-matrix"))
+}
+
+fn phase_c_matrix_data_dir() -> PathBuf {
+    std::env::var_os("CUDF_PARQUET_BENCH_MATRIX_DATA_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(DEFAULT_PHASE_C_MATRIX_DATA_DIR))
 }
 
 #[derive(Debug)]
@@ -956,6 +1625,83 @@ fn native_source_diagnostics_text(diagnostics: &[datafusion_cudf::NativeSourceDi
 }
 
 #[derive(Debug)]
+struct ExpectedPlanningRejectedReport {
+    parquet_file_bytes: u64,
+    parquet_row_groups: usize,
+    input_rows: usize,
+    file_count: usize,
+    compression: BenchmarkCompression,
+    native_plan_shape: BenchmarkPlanShape,
+    expected_outcome: BenchmarkExpectedOutcome,
+    final_plan_root: String,
+    source_diagnostic: String,
+    planning_report: NativeDataFusionPlanningReport,
+}
+
+impl ExpectedPlanningRejectedReport {
+    fn to_text(&self) -> String {
+        let mut text = String::new();
+        push_line(&mut text, format_args!("case=datafusion_native_exec_planning_rejected"));
+        push_line(&mut text, format_args!("parquet_file_bytes={}", self.parquet_file_bytes));
+        push_line(&mut text, format_args!("parquet_row_groups={}", self.parquet_row_groups));
+        push_line(&mut text, format_args!("input_rows={}", self.input_rows));
+        push_line(&mut text, format_args!("configured_parquet_files={}", self.file_count));
+        push_line(&mut text, format_args!("compression={}", self.compression.name()));
+        push_line(&mut text, format_args!("native_plan_shape={}", self.native_plan_shape.name()));
+        push_line(&mut text, format_args!("expected_outcome={}", self.expected_outcome.name()));
+        push_line(&mut text, format_args!("phase_c_runtime_gate=planning_rejected"));
+        push_line(&mut text, format_args!("native_runtime_executed=false"));
+        push_line(&mut text, format_args!("datafusion_native_exec_final_plan_root={}", self.final_plan_root));
+        push_native_datafusion_planning_lines(&mut text, "datafusion_native_exec", Some(&self.planning_report));
+        push_line(&mut text, format_args!("source_diagnostic={}", self.source_diagnostic));
+        text
+    }
+}
+
+async fn run_expected_planning_rejection_probe(
+    path: &Path,
+    parquet_file_bytes: u64,
+    dataset_layout: ParquetDatasetLayout,
+    source_diagnostic: String,
+    config: &LocalParquetBenchmarkConfig,
+) -> DataFusionResult<ExpectedPlanningRejectedReport> {
+    let planned = plan_datafusion_native_sql(path, rejected_benchmark_sql(), config).await?;
+    if planned.plan.as_any().downcast_ref::<NativeCudfExec>().is_some() || planned.planning_report.accepted_count() != 0
+    {
+        return Err(plan_error(format!(
+            "expected planning-rejected benchmark mode produced NativeCudfExec: root={}, accepted_count={}, rejected_count={}",
+            planned.plan.name(),
+            planned.planning_report.accepted_count(),
+            planned.planning_report.rejected_count()
+        )));
+    }
+    if planned.planning_report.rejected_count() == 0 {
+        return Err(plan_error(format!(
+            "expected planning-rejected benchmark mode did not retain a rejection row: root={}, candidates={}",
+            planned.plan.name(),
+            planned.native_candidate_shapes.join(";")
+        )));
+    }
+
+    Ok(ExpectedPlanningRejectedReport {
+        parquet_file_bytes,
+        parquet_row_groups: dataset_layout.row_group_count,
+        input_rows: config.input_rows,
+        file_count: config.file_count,
+        compression: config.compression,
+        native_plan_shape: config.native_plan_shape,
+        expected_outcome: config.expected_outcome,
+        final_plan_root: planned.plan.name().to_string(),
+        source_diagnostic,
+        planning_report: planned.planning_report,
+    })
+}
+
+fn rejected_benchmark_sql() -> &'static str {
+    "SELECT AVG(m00) AS avg_m00 FROM bench"
+}
+
+#[derive(Debug)]
 struct ExpectedResourceFailureReport {
     parquet_file_bytes: u64,
     parquet_row_groups: usize,
@@ -964,10 +1710,12 @@ struct ExpectedResourceFailureReport {
     compression: BenchmarkCompression,
     native_plan_shape: BenchmarkPlanShape,
     expected_outcome: BenchmarkExpectedOutcome,
+    final_plan_root: String,
+    planning_report: NativeDataFusionPlanningReport,
     native_candidate_shapes: Vec<String>,
     source_physical_plan_one_line: String,
     source_diagnostic: String,
-    error: NativeQueryError,
+    error: AdapterRuntimeErrorReport,
 }
 
 impl ExpectedResourceFailureReport {
@@ -983,11 +1731,14 @@ impl ExpectedResourceFailureReport {
         push_line(&mut text, format_args!("expected_outcome={}", self.expected_outcome.name()));
         push_line(&mut text, format_args!("phase_c_runtime_gate=expected_resource_failure"));
         push_line(&mut text, format_args!("no_silent_cpu_fallback=true"));
-        push_line(&mut text, format_args!("native_error_code={}", self.error.code()));
-        push_line(&mut text, format_args!("native_error_kind={}", self.error.kind()));
-        push_line(&mut text, format_args!("native_error_status={}", self.error.status()));
-        push_line(&mut text, format_args!("native_error_operation={}", self.error.operation()));
-        push_line(&mut text, format_args!("native_error_facts={}", native_error_facts_tsv(&self.error)));
+        push_line(&mut text, format_args!("native_runtime_executed=true"));
+        push_line(&mut text, format_args!("datafusion_native_exec_final_plan_root={}", self.final_plan_root));
+        push_native_datafusion_planning_lines(&mut text, "datafusion_native_exec", Some(&self.planning_report));
+        push_line(&mut text, format_args!("native_error_code={}", self.error.code));
+        push_line(&mut text, format_args!("native_error_kind={}", self.error.kind));
+        push_line(&mut text, format_args!("native_error_status={}", self.error.status));
+        push_line(&mut text, format_args!("native_error_operation={}", self.error.operation));
+        push_line(&mut text, format_args!("native_error_facts={}", self.error.facts));
         push_line(
             &mut text,
             format_args!("native_lowered_candidate_shapes={}", self.native_candidate_shapes.join(";")),
@@ -995,6 +1746,27 @@ impl ExpectedResourceFailureReport {
         push_line(&mut text, format_args!("native_default_sql_physical_plan={}", self.source_physical_plan_one_line));
         push_line(&mut text, format_args!("source_diagnostic={}", self.source_diagnostic));
         text
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AdapterRuntimeErrorReport {
+    code: String,
+    kind: String,
+    status: String,
+    operation: &'static str,
+    facts: String,
+}
+
+impl AdapterRuntimeErrorReport {
+    fn from_adapter_error(error: &AdapterError) -> Self {
+        Self {
+            code: error.code().as_str().to_string(),
+            kind: error.kind().as_str().to_string(),
+            status: error.status().as_str().to_string(),
+            operation: error.operation(),
+            facts: adapter_error_facts_tsv(error),
+        }
     }
 }
 
@@ -1011,50 +1783,84 @@ async fn run_expected_resource_failure_probe(
         ));
     }
 
-    let plan = build_native_physical_plan(path, config).await?;
-    let source_physical_plan_one_line = displayable(plan.as_ref()).one_line().to_string();
-    let lowering = lower_physical_plan_to_native(Arc::clone(&plan));
-    let native_candidate_shapes = native_candidate_shapes(&lowering.report);
-    if lowering.plans.len() != 1 {
+    let planned = plan_datafusion_native_sql(path, &benchmark_sql(config), config).await?;
+    let DataFusionNativePlannedExec { plan, planning: _, planning_report, native_candidate_shapes } = planned;
+    if plan.as_any().downcast_ref::<NativeCudfExec>().is_none() || planning_report.accepted_count() != 1 {
         return Err(plan_error(format!(
-            "expected resource-failure benchmark mode requires one lowered native plan, got native_plan_count={}, candidates={}",
-            lowering.plans.len(),
+            "expected resource-failure benchmark mode requires one accepted NativeCudfExec, got root={}, accepted_count={}, rejected_count={}, candidates={}",
+            plan.name(),
+            planning_report.accepted_count(),
+            planning_report.rejected_count(),
             native_candidate_shapes.join(";")
         )));
     }
 
-    let native_plan = lowering.plans.into_iter().next().expect("validated native lowering contains one plan");
-    let context = NativeExecutionContext::builder()
-        .with_memory_control_policy(config.native_memory_control_policy)
-        .build()
-        .map_err(native_query_error)?;
+    let final_plan_root = plan.name().to_string();
+    let source_physical_plan_one_line = planning_report
+        .rows
+        .first()
+        .map(|row| row.physical_shape.clone())
+        .unwrap_or_else(|| displayable(plan.as_ref()).one_line().to_string());
 
-    match execute_native_query_plan(&context, &native_plan) {
+    match collect(Arc::clone(&plan), Arc::new(TaskContext::default())).await {
         Ok(_) => Err(plan_error(
             "expected resource-failure benchmark mode completed successfully; tighten the bounded memory policy or run as expected_outcome=success",
         )),
-        Err(error) if is_planned_resource_failure(&error) => Ok(ExpectedResourceFailureReport {
-            parquet_file_bytes,
-            parquet_row_groups: dataset_layout.row_group_count,
-            input_rows: config.input_rows,
-            file_count: config.file_count,
-            compression: config.compression,
-            native_plan_shape: config.native_plan_shape,
-            expected_outcome: config.expected_outcome,
-            native_candidate_shapes,
-            source_physical_plan_one_line,
-            source_diagnostic,
-            error,
-        }),
-        Err(error) => Err(native_query_error(error)),
+        Err(error) => {
+            let adapter_error = adapter_error_from_datafusion(&error)?;
+            if !is_planned_adapter_resource_failure(adapter_error) {
+                return Err(error);
+            }
+            if adapter_error.fact_value("native_datafusion_phase") != Some("runtime_execution") {
+                return Err(plan_error(format!(
+                    "expected resource-failure benchmark mode to fail after native execution started, got native_datafusion_phase={:?}",
+                    adapter_error.fact_value("native_datafusion_phase")
+                )));
+            }
+            if adapter_error.fact_value("cpu_fallback_after_native_start") != Some("false") {
+                return Err(plan_error(format!(
+                    "expected resource-failure benchmark mode to preserve no-silent-fallback fact, got cpu_fallback_after_native_start={:?}",
+                    adapter_error.fact_value("cpu_fallback_after_native_start")
+                )));
+            }
+            Ok(ExpectedResourceFailureReport {
+                parquet_file_bytes,
+                parquet_row_groups: dataset_layout.row_group_count,
+                input_rows: config.input_rows,
+                file_count: config.file_count,
+                compression: config.compression,
+                native_plan_shape: config.native_plan_shape,
+                expected_outcome: config.expected_outcome,
+                final_plan_root,
+                planning_report,
+                native_candidate_shapes,
+                source_physical_plan_one_line,
+                source_diagnostic,
+                error: AdapterRuntimeErrorReport::from_adapter_error(adapter_error),
+            })
+        },
     }
 }
 
-fn is_planned_resource_failure(error: &NativeQueryError) -> bool {
-    matches!(error.code(), NativeQueryErrorCode::MemoryReservationFailed | NativeQueryErrorCode::CudfResourceExhausted)
+fn is_planned_adapter_resource_failure(error: &AdapterError) -> bool {
+    matches!(
+        error.code(),
+        datafusion_cudf::ErrorCode::MemoryReservationFailed | datafusion_cudf::ErrorCode::CudfResourceExhausted
+    )
 }
 
-fn native_error_facts_tsv(error: &NativeQueryError) -> String {
+fn adapter_error_from_datafusion(error: &DataFusionError) -> DataFusionResult<&AdapterError> {
+    let DataFusionError::External(source) = error else {
+        return Err(plan_error(format!(
+            "native execution errors should cross DataFusion as external adapter errors: {error}"
+        )));
+    };
+    source.downcast_ref::<AdapterError>().ok_or_else(|| {
+        plan_error(format!("DataFusion external error did not preserve datafusion_cudf::Error: {error}"))
+    })
+}
+
+fn adapter_error_facts_tsv(error: &AdapterError) -> String {
     let facts = error
         .facts()
         .iter()
@@ -2356,6 +3162,16 @@ fn native_memory_control_policy_from_env() -> DataFusionResult<NativeMemoryContr
     }
 }
 
+fn forced_resource_failure_policy() -> NativeMemoryControlPolicy {
+    NativeMemoryControlPolicy::Bounded {
+        device_budget_bytes: 1,
+        max_source_chunk_bytes: 1,
+        max_row_groups_per_chunk: 1,
+        max_retry_attempts: 1,
+        min_retry_chunk_row_groups: 1,
+    }
+}
+
 fn validate_nonzero(name: &'static str, value: usize) -> DataFusionResult<()> {
     if value == 0 {
         return Err(plan_error(format!("{name} must be greater than zero")));
@@ -2522,6 +3338,14 @@ fn optional_usize_text(value: Option<usize>) -> String {
     value.map_or_else(|| "unavailable".to_string(), |value| value.to_string())
 }
 
+fn sanitize_report_value(value: &str) -> String {
+    value.replace(['\t', '\n', '\r'], " ")
+}
+
+fn tsv_escape(value: &str) -> String {
+    sanitize_report_value(value)
+}
+
 fn phase_c_runtime_gate(_policy: NativeMemoryControlPolicy) -> &'static str {
     "not_evaluated"
 }
@@ -2588,24 +3412,44 @@ mod tests {
         assert_eq!(
             case.env_overrides(),
             vec![
-                ("CUDF_PARQUET_BENCH_ROWS", "40900000".to_string()),
+                ("CUDF_PARQUET_BENCH_ROWS", "52000000".to_string()),
                 ("CUDF_PARQUET_BENCH_MIN_FILE_BYTES", TEN_GIB.to_string()),
                 ("CUDF_PARQUET_BENCH_COMPRESSION", "snappy".to_string()),
                 ("CUDF_PARQUET_BENCH_FILES", "4".to_string()),
                 ("CUDF_PARQUET_BENCH_NATIVE_PLAN_SHAPE", "direct_friendly".to_string()),
                 ("CUDF_PARQUET_BENCH_EXPECTED_OUTCOME", "resource_failure".to_string()),
                 ("CUDF_PARQUET_BENCH_NATIVE_MEMORY_POLICY", "bounded".to_string()),
+                ("CUDF_PARQUET_BENCH_NATIVE_DEVICE_BUDGET_BYTES", "1".to_string()),
+                ("CUDF_PARQUET_BENCH_NATIVE_MAX_SOURCE_CHUNK_BYTES", "1".to_string()),
+                ("CUDF_PARQUET_BENCH_NATIVE_MAX_ROW_GROUPS_PER_CHUNK", "1".to_string()),
+                ("CUDF_PARQUET_BENCH_NATIVE_MAX_RETRY_ATTEMPTS", "1".to_string()),
+                ("CUDF_PARQUET_BENCH_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS", "1".to_string()),
             ]
         );
+
+        let mut base = test_config();
+        base.benchmark_paths = BenchmarkPathSet::All;
+        let configured = case.configured_case(&base, PathBuf::from("target/phase-c-matrix-data"));
+        assert_eq!(configured.input_rows, 52_000_000);
+        assert_eq!(configured.minimum_file_bytes, TEN_GIB);
+        assert_eq!(configured.file_count, 4);
+        assert_eq!(configured.benchmark_paths, BenchmarkPathSet::NativeOnly);
+        assert_eq!(configured.native_memory_control_policy, forced_resource_failure_policy());
     }
 
     #[test]
     fn expected_resource_failure_report_includes_resource_error_facts() {
-        let error = NativeQueryError::new(
-            NativeQueryErrorCode::MemoryReservationFailed,
-            "cudf_query_engine.memory.reserve",
-            "memory reservation failed before native cudf execution",
+        let error = AdapterError::new(
+            datafusion_cudf::ErrorCode::MemoryReservationFailed,
+            "datafusion_cudf.native_exec.execute",
+            "native cudf query execution failed",
         )
+        .with_fact("native_code", cudf_query_engine::QueryErrorCode::MemoryReservationFailed)
+        .with_fact("native_kind", "resource_exhausted")
+        .with_fact("native_status", "temporary")
+        .with_fact("native_operation", "cudf_query_engine.memory.reserve")
+        .with_fact("native_datafusion_phase", "runtime_execution")
+        .with_fact("cpu_fallback_after_native_start", false)
         .with_fact("memory_boundary", "final_sort")
         .with_fact("stage", "final_sort")
         .with_fact("attempt", 1)
@@ -2620,10 +3464,12 @@ mod tests {
             compression: BenchmarkCompression::Uncompressed,
             native_plan_shape: BenchmarkPlanShape::DefaultSql,
             expected_outcome: BenchmarkExpectedOutcome::ResourceFailure,
-            native_candidate_shapes: vec!["rewritten:LocalLimitExec(SortExec(...))".to_string()],
+            final_plan_root: "NativeCudfExec".to_string(),
+            planning_report: test_native_datafusion_planning_report(),
+            native_candidate_shapes: vec!["accepted_replaced:LocalLimitExec(SortExec(...)):none".to_string()],
             source_physical_plan_one_line: "SortExec(fetch=100)".to_string(),
             source_diagnostic: "files=1".to_string(),
-            error,
+            error: AdapterRuntimeErrorReport::from_adapter_error(&error),
         };
 
         let text = report.to_text();
@@ -2631,6 +3477,8 @@ mod tests {
         assert!(text.contains("case=phase_c_expected_resource_failure"));
         assert!(text.contains("phase_c_runtime_gate=expected_resource_failure"));
         assert!(text.contains("no_silent_cpu_fallback=true"));
+        assert!(text.contains("native_runtime_executed=true"));
+        assert!(text.contains("datafusion_native_exec_planning_outcome=accepted_replaced"));
         assert!(text.contains("native_error_code=memory_reservation_failed"));
         assert!(text.contains("native_error_kind=resource_exhausted"));
         assert!(text.contains("native_error_status=temporary"));
@@ -2673,8 +3521,7 @@ mod tests {
         let path = benchmark_input_path(&dir, &config);
         write_benchmark_parquet_dataset(&path, &config).unwrap();
 
-        let planned =
-            plan_datafusion_native_sql(&path, "SELECT AVG(m00) AS avg_m00 FROM bench", &config).await.unwrap();
+        let planned = plan_datafusion_native_sql(&path, rejected_benchmark_sql(), &config).await.unwrap();
 
         assert_ne!(planned.plan.name(), "NativeCudfExec");
         assert!(planned.plan.as_any().downcast_ref::<NativeCudfExec>().is_none());
@@ -2686,6 +3533,24 @@ mod tests {
         assert!(row.rejected_before_execution);
         assert_ne!(row.post_native_execution_path.as_str(), "native");
         assert!(planned.plan.metrics().is_none_or(|metrics| metrics.sum_by_name("host_to_device_uploads").is_none()));
+
+        let mut rejected_config = config.clone();
+        rejected_config.expected_outcome = BenchmarkExpectedOutcome::PlanningRejected;
+        let report = run_expected_planning_rejection_probe(
+            &path,
+            parquet_dataset_bytes(&path).unwrap(),
+            parquet_dataset_layout(&path).unwrap(),
+            "files=4".to_string(),
+            &rejected_config,
+        )
+        .await
+        .unwrap();
+        let text = report.to_text();
+        assert!(text.contains("case=datafusion_native_exec_planning_rejected"));
+        assert!(text.contains("native_runtime_executed=false"));
+        assert!(text.contains("datafusion_native_exec_planning_outcome=rejected_before_execution"));
+        assert!(text.contains("datafusion_native_exec_planning_reason_code="));
+        assert!(text.contains("datafusion_native_exec_planning_rejected_before_execution=true"));
 
         fs::remove_dir_all(dir).unwrap();
     }
@@ -2795,6 +3660,40 @@ mod tests {
         assert_key_order(&text, "cpu_datafusion_wall_ms", "datafusion_native_exec_wall_ms");
         assert_key_order(&text, "datafusion_native_exec_wall_ms", "manual_native_lowering_wall_ms");
         assert_key_order(&text, "datafusion_native_exec_planning_accepted_count", "manual_native_lowering_plan");
+
+        let matrix_case = PhaseCMatrixCase {
+            scale: BenchmarkScalePoint::ThreeGiB,
+            compression: BenchmarkCompression::Uncompressed,
+            source_layout: BenchmarkSourceLayout::MultiFile,
+            native_plan_shape: BenchmarkPlanShape::DefaultSql,
+            expected_outcome: BenchmarkExpectedOutcome::Success,
+        };
+        let matrix_row =
+            PhaseCMatrixReportRow::from_success(matrix_case, &report, Path::new("target/phase-c-matrix/logs/case.log"));
+        assert!(matrix_row.matches_expected_outcome());
+        assert_eq!(matrix_row.outcome.as_str(), "pass");
+        assert_eq!(matrix_row.planning_outcome, "accepted_replaced");
+        assert_eq!(matrix_row.native_cudf_exec_accepted_count, "1");
+        assert_eq!(matrix_row.zero_host_to_device_uploads, "true");
+        assert_eq!(matrix_row.one_device_to_host_materialization, "true");
+
+        let matrix_report = PhaseCMatrixReport {
+            artifact_dir: PathBuf::from("target/phase-c-matrix"),
+            tsv_path: PathBuf::from("target/phase-c-matrix/datafusion-native-exec-phase-c-matrix.tsv"),
+            json_path: PathBuf::from("target/phase-c-matrix/datafusion-native-exec-phase-c-matrix.json"),
+            markdown_path: PathBuf::from("target/phase-c-matrix/datafusion-native-exec-phase-c-matrix.md"),
+            rows: vec![matrix_row],
+        };
+        let tsv = matrix_report.to_tsv();
+        assert!(tsv.starts_with(PHASE_C_DATAFUSION_NATIVE_EXEC_MATRIX_TSV_HEADER));
+        assert!(tsv.contains("\tpass\taccepted_replaced\tnone\t1\ttrue\ttrue\ttrue\ttrue\t"));
+        let json = matrix_report.to_json();
+        assert!(json.contains("\"schema_version\": 1"));
+        assert!(json.contains("\"case_id\": \"3gib-uncompressed-multi_file-default_sql-success\""));
+        assert!(json.contains("\"zero_host_to_device_uploads\": \"true\""));
+        let markdown = matrix_report.to_markdown();
+        assert!(markdown.contains("Decision gate: **pass**"));
+        assert!(markdown.contains("3gib-uncompressed-multi_file-default_sql-success"));
     }
 
     #[test]
@@ -2867,6 +3766,36 @@ mod tests {
             ],
             read_columns,
             batches: Vec::new(),
+        }
+    }
+
+    fn test_native_datafusion_planning_report() -> NativeDataFusionPlanningReport {
+        NativeDataFusionPlanningReport {
+            rows: vec![datafusion_cudf::NativeDataFusionPlanningRow {
+                query_id: "local_parquet_benchmark".to_string(),
+                physical_root: "SortExec".to_string(),
+                physical_shape: "SortExec(fetch)(ProjectionExec(AggregateExec(FilterExec(LocalParquetScan))))"
+                    .to_string(),
+                native_candidate_shape: Some(
+                    "SortExec(fetch)(ProjectionExec(AggregateExec(FilterExec(LocalParquetScan))))".to_string(),
+                ),
+                outcome: datafusion_cudf::NativeDataFusionPlanningOutcome::AcceptedReplaced,
+                reason_code: None,
+                unsupported_category: None,
+                source_diagnostics: vec![datafusion_cudf::NativeSourceDiagnosticSummary {
+                    format: "Parquet".to_string(),
+                    direct_device_read: true,
+                    file_count: 1,
+                    ranged_file_count: 0,
+                    known_bytes: Some(4096),
+                    selected_row_groups: Some(2),
+                    predicate_disposition: "pruning_only".to_string(),
+                    rejected_features: Vec::new(),
+                }],
+                post_native_plan_root: "NativeCudfExec".to_string(),
+                post_native_execution_path: datafusion_cudf::NativeDataFusionPostNativeExecutionPath::Native,
+                rejected_before_execution: false,
+            }],
         }
     }
 
