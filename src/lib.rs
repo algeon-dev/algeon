@@ -5,6 +5,7 @@ mod capability;
 pub mod error;
 pub mod exec;
 pub mod native;
+pub mod native_exec;
 pub mod native_report;
 pub mod planner;
 pub mod policy;
@@ -20,6 +21,7 @@ pub use benchmark::{
 pub use error::{Error, ErrorCode, ErrorKind, ErrorStatus, Facts, Result};
 pub use exec::{CudfExecutionConfig, CudfGpuIslandExec};
 pub use native::{NativeLoweringResult, lower_physical_plan_to_native};
+pub use native_exec::{NativeCudfExec, NativeCudfExecutionConfig};
 pub use native_report::{
     NATIVE_FALLBACK_PRESSURE_TSV_HEADER, NATIVE_FALLBACK_PRESSURE_TSV_SCHEMA_VERSION, NativeFallbackPressureOutcome,
     NativeFallbackPressureReport, NativeFallbackPressureRow, NativeFallbackPressureWorkloadItem,

@@ -26,7 +26,7 @@ async fn main() {
         ("sum_rewrite", SQL_SUM_QUERY),
         ("not_rewrite", SQL_NOT_QUERY),
         ("cast_rewrite", SQL_CAST_QUERY),
-        ("avg_reject", SQL_AVG_QUERY),
+        ("avg_rewrite", SQL_AVG_QUERY),
         ("filtered_reject", SQL_FILTERED_QUERY),
         ("modulo_reject", SQL_MODULO_QUERY),
     ];

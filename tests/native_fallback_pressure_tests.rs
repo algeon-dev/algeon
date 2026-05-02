@@ -29,7 +29,7 @@ async fn native_fallback_pressure_report_summarizes_workload_outcomes() {
         ("sum_rewrite", SQL_SUM_QUERY),
         ("not_rewrite", SQL_NOT_QUERY),
         ("cast_rewrite", SQL_CAST_QUERY),
-        ("avg_reject", SQL_AVG_QUERY),
+        ("avg_rewrite", SQL_AVG_QUERY),
         ("filtered_reject", SQL_FILTERED_QUERY),
         ("modulo_reject", SQL_MODULO_QUERY),
     ];
@@ -44,8 +44,8 @@ async fn native_fallback_pressure_report_summarizes_workload_outcomes() {
     let report = NativeFallbackPressureReport::collect(items);
 
     assert_eq!(report.rows.len(), 6);
-    assert_eq!(report.rewritten_count(), 3);
-    assert_eq!(report.rejected_count(), 3);
+    assert_eq!(report.rewritten_count(), 4);
+    assert_eq!(report.rejected_count(), 2);
 
     let rewritten = report_row(&report, "sum_rewrite");
     assert_eq!(rewritten.outcome, NativeFallbackPressureOutcome::Rewritten);
@@ -68,11 +68,11 @@ async fn native_fallback_pressure_report_summarizes_workload_outcomes() {
     assert_eq!(cast.unsupported_category, None);
     assert!(!cast.rejected_before_execution);
 
-    let avg = report_row(&report, "avg_reject");
-    assert_eq!(avg.outcome, NativeFallbackPressureOutcome::Rejected);
-    assert_eq!(avg.reason_code.as_deref(), Some("unsupported_operator"));
-    assert_eq!(avg.unsupported_category.as_deref(), Some("aggregate_avg"));
-    assert!(avg.rejected_before_execution);
+    let avg = report_row(&report, "avg_rewrite");
+    assert_eq!(avg.outcome, NativeFallbackPressureOutcome::Rewritten);
+    assert_eq!(avg.reason_code, None);
+    assert_eq!(avg.unsupported_category, None);
+    assert!(!avg.rejected_before_execution);
 
     let filtered = report_row(&report, "filtered_reject");
     assert_eq!(filtered.reason_code.as_deref(), Some("unsupported_expression"));
@@ -95,9 +95,8 @@ async fn native_fallback_pressure_report_summarizes_workload_outcomes() {
     assert!(text.contains("sum_rewrite\tSortExec"));
     assert!(text.contains("not_rewrite\tSortExec"));
     assert!(text.contains("cast_rewrite\tSortExec"));
+    assert!(text.contains("avg_rewrite\tSortExec"));
     assert!(text.contains("\trewritten\tnone\tnone\t"));
-    assert!(text.contains("avg_reject\tSortExec"));
-    assert!(text.contains("\tunsupported_operator\taggregate_avg\t"));
     assert!(text.contains("\tunsupported_expression\taggregate_filter\t"));
     assert!(text.contains("\tunsupported_expression\texpression_binary_modulo\t"));
 
