@@ -132,95 +132,43 @@ impl QueryAdmission {
     }
 
     pub fn log_query_service_state(&self, query_id: Option<&str>, event: &'static str) {
-        let session = match &self.backend {
-            QueryAdmissionBackend::QueryService { backend } => backend.session_capability(),
+        let backend = match &self.backend {
+            QueryAdmissionBackend::QueryService { backend } => backend,
             #[cfg(test)]
             QueryAdmissionBackend::TestOnly { .. } => return,
         };
-        match session.admission_snapshot() {
-            Ok(snapshot) => {
-                tracing::info!(
-                    query_id = query_id.unwrap_or(""),
-                    event,
-                    active_queries = snapshot.active_queries,
-                    queued_queries = snapshot.queued_queries,
-                    "query service admission snapshot"
-                );
-            },
-            Err(error) => tracing::warn!(
-                query_id = query_id.unwrap_or(""),
-                event,
-                %error,
-                "failed to read query service admission snapshot"
-            ),
-        }
-        match session.device_ledger_reports() {
-            Ok(reports) => {
-                for report in reports {
-                    tracing::info!(
-                        query_id = query_id.unwrap_or(""),
-                        event,
-                        device_ordinal = report.device_ordinal,
-                        managed_capacity_bytes = report.managed_capacity_bytes,
-                        live_grants_bytes = report.live_grants_bytes,
-                        evictable_bytes = report.evictable_bytes,
-                        available_bytes = report.available_bytes,
-                        active_grants = report.grants.len(),
-                        "query service device ledger report"
-                    );
-                }
-            },
-            Err(error) => tracing::warn!(
-                query_id = query_id.unwrap_or(""),
-                event,
-                %error,
-                "failed to read query service device ledger report"
-            ),
-        }
-        for snapshot in session.device_admission_snapshots().unwrap_or_default() {
+        let snapshot = backend.backend_metrics_snapshot();
+        let configured_devices = snapshot.devices.iter().flatten().count();
+        let active_attempts =
+            snapshot.devices.iter().flatten().map(|device| device.admission.active_attempts).sum::<u64>();
+
+        tracing::info!(
+            query_id = query_id.unwrap_or(""),
+            event,
+            backend_generation = snapshot.backend_generation,
+            metrics_generation = snapshot.generation,
+            configured_devices,
+            active_attempts,
+            "query service backend metrics snapshot"
+        );
+        for device in snapshot.devices.into_iter().flatten() {
             tracing::info!(
                 query_id = query_id.unwrap_or(""),
                 event,
-                device_ordinal = snapshot.device_ordinal,
-                process_active_query_slots = snapshot.process_active_query_slots,
-                "query service device admission snapshot"
-            );
-        }
-        for snapshot in session.device_telemetry_snapshots().unwrap_or_default() {
-            tracing::info!(
-                query_id = query_id.unwrap_or(""),
-                event,
-                sampled_at_unix_ms = snapshot.sampled_at_unix_ms,
-                device_ordinal = snapshot.device_ordinal,
-                cuda_status = snapshot.cuda_status.as_str(),
-                cuda_total_bytes = ?snapshot.cuda_total_bytes,
-                cuda_free_bytes = ?snapshot.cuda_free_bytes,
-                nvml_status = snapshot.nvml_status.as_str(),
-                nvml_total_bytes = ?snapshot.nvml_total_bytes,
-                nvml_reserved_bytes = ?snapshot.nvml_reserved_bytes,
-                nvml_used_bytes = ?snapshot.nvml_used_bytes,
-                nvml_free_bytes = ?snapshot.nvml_free_bytes,
-                gpu_utilization_pct = ?snapshot.gpu_utilization_pct,
-                memory_utilization_pct = ?snapshot.memory_utilization_pct,
-                "query service device telemetry snapshot"
-            );
-        }
-        for report in session.device_memory_failure_reports().unwrap_or_default() {
-            tracing::info!(
-                query_id = query_id.unwrap_or(""),
-                event,
-                device_ordinal = report.device_ordinal,
-                callback_installed = report.callback_installed,
-                callback_install_unavailable = report.callback_install_unavailable,
-                allocation_failure_count = report.allocation_failure_count,
-                total_failed_allocation_bytes = report.total_failed_allocation_bytes,
-                largest_failed_allocation_bytes = report.largest_failed_allocation_bytes,
-                trim_retry_count = report.trim_retry_count,
-                pool_usage_observation_count = report.pool_usage_observation_count,
-                last_failed_allocation_bytes = report.last_failed_allocation_bytes,
-                last_pool_reserved_current_bytes = report.last_pool_reserved_current_bytes,
-                last_pool_used_current_bytes = report.last_pool_used_current_bytes,
-                "query service device memory failure report"
+                device_ordinal = device.device_ordinal,
+                ledger_sequence = device.ledger_sequence,
+                active_attempts = device.admission.active_attempts,
+                live_grant_bytes = device.admission.live_grant_bytes,
+                live_reserved_bytes = device.admission.live_reserved_bytes,
+                max_live_reserved_bytes = device.admission.max_live_reserved_bytes,
+                cache_evictable_resident_bytes = device.admission.cache_evictable_resident_bytes,
+                cache_pinned_in_use_bytes = device.admission.cache_pinned_in_use_bytes,
+                admission_health = ?device.admission.health,
+                telemetry_refresh = ?device.telemetry.last_refresh,
+                allocation_failure_count = device.telemetry.allocation_failure_count,
+                allocation_failure_bytes = device.telemetry.allocation_failure_bytes,
+                largest_allocation_failure_bytes = device.telemetry.largest_allocation_failure_bytes,
+                "query service device backend metrics snapshot"
             );
         }
     }
@@ -230,9 +178,8 @@ impl QueryAdmission {
         let _ = writeln!(output, "# datafusion_nexus_admission_stats=1");
         match &self.backend {
             QueryAdmissionBackend::QueryService { backend } => {
-                let session = backend.session_capability();
-                let queue_bounds = session
-                    .queue_bounds()
+                let queue_bounds = backend
+                    .controller_queue_bounds()
                     .map_err(|error| ServerError::session("failed to read backend queue policy", error))?;
                 let _ = writeln!(output, "# backend=query_service");
                 let _ = writeln!(output, "# device_ordinals={}", payload_value(&join_usize(backend.device_ordinals())));
@@ -249,141 +196,75 @@ impl QueryAdmission {
                 }
                 let _ = writeln!(output, "# max_queued_attempts={}", queue_bounds.max_waiters);
                 let _ = writeln!(output, "# max_queue_wait_ms={}", queue_bounds.max_wait.as_millis());
+                // This is the one dynamic observation for the whole payload.
+                // It cannot contain grant ids, query ids, CUDA/NVML payloads,
+                // or execution-pool state, because none of those are part of
+                // the bounded P4 backend metrics contract.
+                let snapshot = backend.backend_metrics_snapshot();
+                let _ = writeln!(output, "# backend_metrics_backend_generation={}", snapshot.backend_generation);
+                let _ = writeln!(output, "# backend_metrics_generation={}", snapshot.generation);
 
-                let snapshot = session
-                    .admission_snapshot()
-                    .map_err(|error| ServerError::session("failed to read query service admission snapshot", error))?;
-                output.push_str("\n[admission]\n");
-                output.push_str("active_queries\tqueued_queries\n");
-                let _ = writeln!(output, "{}\t{}", snapshot.active_queries, snapshot.queued_queries);
-
-                let reports = session.device_ledger_reports().map_err(|error| {
-                    ServerError::session("failed to read query service device ledger reports", error)
-                })?;
-                output.push_str("\n[device_ledger_reports]\n");
-                output.push_str(
-                    "device_ordinal\tmanaged_capacity_bytes\tlive_grants_bytes\tavailable_bytes\tactive_grants\tevictable_bytes\n",
-                );
-                for report in &reports {
-                    let _ = writeln!(
-                        output,
-                        "{}\t{}\t{}\t{}\t{}\t{}",
-                        report.device_ordinal,
-                        report.managed_capacity_bytes,
-                        report.live_grants_bytes,
-                        report.available_bytes,
-                        report.grants.len(),
-                        report.evictable_bytes
-                    );
-                }
-
-                output.push_str("\n[device_ledger_grants]\n");
-                output.push_str("device_ordinal\tgrant_id\tadmission_request_id\tgrant_bytes\tlive_reserved_bytes\n");
-                for report in &reports {
-                    for grant in &report.grants {
-                        let _ = writeln!(
-                            output,
-                            "{}\t{}\t{}\t{}\t{}",
-                            report.device_ordinal,
-                            grant.grant_id,
-                            grant.admission_request_id,
-                            grant.grant_bytes,
-                            grant.live_reserved_bytes
-                        );
-                    }
-                }
-
-                output.push_str("\n[device_memory_failure_reports]\n");
-                output.push_str(
-                    "device_ordinal\tcallback_installed\tcallback_install_unavailable\tallocation_failure_count\ttotal_failed_allocation_bytes\tlargest_failed_allocation_bytes\ttrim_retry_count\tpool_usage_observation_count\tlast_failed_allocation_bytes\tlast_pool_reserved_current_bytes\tlast_pool_used_current_bytes\n",
-                );
-                for report in session
-                    .device_memory_failure_reports()
-                    .map_err(|error| ServerError::session("failed to read device memory failure reports", error))?
-                {
-                    let _ = writeln!(
-                        output,
-                        "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
-                        report.device_ordinal,
-                        report.callback_installed,
-                        report.callback_install_unavailable,
-                        report.allocation_failure_count,
-                        report.total_failed_allocation_bytes,
-                        report.largest_failed_allocation_bytes,
-                        report.trim_retry_count,
-                        report.pool_usage_observation_count,
-                        report.last_failed_allocation_bytes,
-                        report.last_pool_reserved_current_bytes,
-                        report.last_pool_used_current_bytes
-                    );
-                }
-
-                let query_execution = session
-                    .gpu_execution_query_report()
-                    .map_err(|error| ServerError::session("failed to read GPU execution report", error))?;
-                output.push_str("\n[gpu_execution]\n");
-                output.push_str("active_query_jobs\tpeak_active_query_jobs\n");
+                output.push_str("\n[backend_metrics]\n");
+                output.push_str("backend_generation\tgeneration\tconfigured_devices\n");
                 let _ = writeln!(
                     output,
-                    "{}\t{}",
-                    query_execution.active_query_jobs, query_execution.peak_active_query_jobs
+                    "{}\t{}\t{}",
+                    snapshot.backend_generation,
+                    snapshot.generation,
+                    snapshot.devices.iter().flatten().count()
                 );
 
-                output.push_str("\n[gpu_execution_pools]\n");
+                output.push_str("\n[backend_device_admission]\n");
                 output.push_str(
-                    "device_ordinal\tworker_count\tactive_jobs\tpeak_active_jobs\tqueued_jobs\tpeak_queued_jobs\tactive_query_jobs\tpeak_active_query_jobs\n",
+                    "device_ordinal\tledger_sequence\tactive_attempts\tlive_grant_bytes\tlive_reserved_bytes\tmax_live_reserved_bytes\tcache_evictable_resident_bytes\tcache_pinned_in_use_bytes\thealth\n",
                 );
-                for report in session
-                    .gpu_execution_pool_reports()
-                    .map_err(|error| ServerError::session("failed to read GPU execution pool reports", error))?
-                {
+                for device in snapshot.devices.iter().flatten() {
                     let _ = writeln!(
                         output,
-                        "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
-                        report.device_ordinal,
-                        report.worker_count,
-                        report.active_jobs,
-                        report.peak_active_jobs,
-                        report.queued_jobs,
-                        report.peak_queued_jobs,
-                        report.active_query_jobs,
-                        report.peak_active_query_jobs,
+                        "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:?}",
+                        device.device_ordinal,
+                        device.ledger_sequence,
+                        device.admission.active_attempts,
+                        device.admission.live_grant_bytes,
+                        device.admission.live_reserved_bytes,
+                        device.admission.max_live_reserved_bytes,
+                        device.admission.cache_evictable_resident_bytes,
+                        device.admission.cache_pinned_in_use_bytes,
+                        device.admission.health,
                     );
                 }
 
-                output.push_str("\n[device_admission_slots]\n");
-                output.push_str("device_ordinal\tprocess_active_query_slots\n");
-                for snapshot in session
-                    .device_admission_snapshots()
-                    .map_err(|error| ServerError::session("failed to read device admission snapshots", error))?
-                {
-                    let _ = writeln!(output, "{}\t{}", snapshot.device_ordinal, snapshot.process_active_query_slots);
-                }
-
-                output.push_str("\n[device_telemetry]\n");
+                output.push_str("\n[backend_device_telemetry]\n");
                 output.push_str(
-                    "sampled_at_unix_ms\tdevice_ordinal\tcuda_status\tcuda_total_bytes\tcuda_free_bytes\tnvml_status\tnvml_total_bytes\tnvml_reserved_bytes\tnvml_used_bytes\tnvml_free_bytes\tgpu_utilization_pct\tmemory_utilization_pct\n",
+                    "device_ordinal\trefresh_source\tsampled_at_unix_ms\tage_ms\tavailability\tallocation_failure_count\tallocation_failure_bytes\tlargest_allocation_failure_bytes\n",
                 );
-                for snapshot in session
-                    .device_telemetry_snapshots()
-                    .map_err(|error| ServerError::session("failed to read device telemetry snapshots", error))?
-                {
-                    let _ = writeln!(
-                        output,
-                        "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
-                        snapshot.sampled_at_unix_ms,
-                        snapshot.device_ordinal,
-                        snapshot.cuda_status.as_str(),
-                        optional_payload_value(snapshot.cuda_total_bytes),
-                        optional_payload_value(snapshot.cuda_free_bytes),
-                        snapshot.nvml_status.as_str(),
-                        optional_payload_value(snapshot.nvml_total_bytes),
-                        optional_payload_value(snapshot.nvml_reserved_bytes),
-                        optional_payload_value(snapshot.nvml_used_bytes),
-                        optional_payload_value(snapshot.nvml_free_bytes),
-                        optional_payload_value(snapshot.gpu_utilization_pct),
-                        optional_payload_value(snapshot.memory_utilization_pct),
-                    );
+                for device in snapshot.devices.iter().flatten() {
+                    match device.telemetry.last_refresh {
+                        Some(refresh) => {
+                            let _ = writeln!(
+                                output,
+                                "{}\t{:?}\t{}\t{}\t{:?}\t{}\t{}\t{}",
+                                device.device_ordinal,
+                                refresh.source,
+                                refresh.sampled_at_unix_ms,
+                                refresh.age_ms,
+                                refresh.availability,
+                                device.telemetry.allocation_failure_count,
+                                device.telemetry.allocation_failure_bytes,
+                                device.telemetry.largest_allocation_failure_bytes,
+                            );
+                        },
+                        None => {
+                            let _ = writeln!(
+                                output,
+                                "{}\tnone\tnone\tnone\tnone\t{}\t{}\t{}",
+                                device.device_ordinal,
+                                device.telemetry.allocation_failure_count,
+                                device.telemetry.allocation_failure_bytes,
+                                device.telemetry.largest_allocation_failure_bytes,
+                            );
+                        },
+                    }
                 }
             },
             #[cfg(test)]
@@ -393,10 +274,6 @@ impl QueryAdmission {
         }
         Ok(output)
     }
-}
-
-fn optional_payload_value(value: Option<impl ToString>) -> String {
-    value.map_or_else(|| "none".to_string(), |value| value.to_string())
 }
 
 #[cfg(test)]
@@ -608,6 +485,16 @@ mod tests {
         let admission = QueryAdmission::from_backend(&backend);
         let permit = admission.try_acquire().unwrap().expect("first query should admit");
 
+        let snapshot = backend.backend_metrics_snapshot();
+        let device = snapshot.device(0).expect("configured device must have one bounded metrics slot");
+        assert_eq!(device.admission.active_attempts, 1);
+        assert_eq!(device.admission.live_grant_bytes, 1024);
+        assert_eq!(device.admission.live_reserved_bytes, 0);
+        // P4 descriptors are present, but cache accounting does not begin
+        // until P5 owns an accounted cache state.
+        assert_eq!(device.admission.cache_evictable_resident_bytes, 0);
+        assert_eq!(device.admission.cache_pinned_in_use_bytes, 0);
+
         let payload = admission.diagnostics_payload().unwrap();
 
         assert!(payload.contains("# datafusion_nexus_admission_stats=1\n"), "{payload}");
@@ -615,46 +502,26 @@ mod tests {
         assert!(payload.contains("# device_profile_count=1\n"), "{payload}");
         assert!(payload.contains("# device_0_max_active_attempts=1\n"), "{payload}");
         assert!(payload.contains("# device_0_attempt_floor_bytes=256\n"), "{payload}");
-        assert!(payload.contains("[admission]\nactive_queries\tqueued_queries\n1\t0\n"), "{payload}");
-        assert!(payload.contains("[gpu_execution]\nactive_query_jobs\tpeak_active_query_jobs\n0\t0\n"), "{payload}");
         assert!(
-            payload.contains(
-                "[gpu_execution_pools]\ndevice_ordinal\tworker_count\tactive_jobs\tpeak_active_jobs\tqueued_jobs\tpeak_queued_jobs\tactive_query_jobs\tpeak_active_query_jobs\n"
-            ),
+            payload.contains("[backend_metrics]\nbackend_generation\tgeneration\tconfigured_devices\n"),
             "{payload}"
         );
         assert!(
             payload.contains(
-                "[device_ledger_reports]\ndevice_ordinal\tmanaged_capacity_bytes\tlive_grants_bytes\tavailable_bytes\tactive_grants\tevictable_bytes\n0\t1024\t1024\t0\t1\t0\n"
+                "[backend_device_admission]\ndevice_ordinal\tledger_sequence\tactive_attempts\tlive_grant_bytes\tlive_reserved_bytes\tmax_live_reserved_bytes\tcache_evictable_resident_bytes\tcache_pinned_in_use_bytes\thealth\n0\t"
             ),
             "{payload}"
         );
-        assert!(payload.contains("[device_ledger_grants]\n"), "{payload}");
-        assert!(payload.contains("\t1\t1024\t"), "{payload}");
+        assert!(payload.contains("\t1\t1024\t0\t0\t0\t0\tOpen\n"), "{payload}");
         assert!(
             payload.contains(
-                "[device_memory_failure_reports]\ndevice_ordinal\tcallback_installed\tcallback_install_unavailable\tallocation_failure_count\ttotal_failed_allocation_bytes\tlargest_failed_allocation_bytes\ttrim_retry_count\tpool_usage_observation_count\tlast_failed_allocation_bytes\tlast_pool_reserved_current_bytes\tlast_pool_used_current_bytes\n"
+                "[backend_device_telemetry]\ndevice_ordinal\trefresh_source\tsampled_at_unix_ms\tage_ms\tavailability\tallocation_failure_count\tallocation_failure_bytes\tlargest_allocation_failure_bytes\n0\tnone\tnone\tnone\tnone\t0\t0\t0\n"
             ),
             "{payload}"
         );
         assert!(
-            payload.find("[device_memory_failure_reports]").unwrap() < payload.find("[gpu_execution]").unwrap(),
-            "new diagnostics sections must follow the pre-existing TSV section order: {payload}"
-        );
-        assert!(
-            payload.contains("[device_admission_slots]\ndevice_ordinal\tprocess_active_query_slots\n"),
-            "{payload}"
-        );
-        assert!(
-            payload.contains(
-                "[device_telemetry]\nsampled_at_unix_ms\tdevice_ordinal\tcuda_status\tcuda_total_bytes\tcuda_free_bytes\tnvml_status\tnvml_total_bytes\tnvml_reserved_bytes\tnvml_used_bytes\tnvml_free_bytes\tgpu_utilization_pct\tmemory_utilization_pct\n"
-            ),
-            "{payload}"
-        );
-        assert!(
-            payload.find("[gpu_execution_pools]").unwrap() < payload.find("[device_admission_slots]").unwrap()
-                && payload.find("[device_admission_slots]").unwrap() < payload.find("[device_telemetry]").unwrap(),
-            "appended diagnostics sections must follow every pre-existing section: {payload}"
+            !payload.contains("[device_ledger_grants]") && !payload.contains("[gpu_execution]"),
+            "diagnostics must not combine the P4 snapshot with legacy independent service reads: {payload}"
         );
 
         drop(permit);

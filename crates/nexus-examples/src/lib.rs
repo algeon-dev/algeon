@@ -9,6 +9,8 @@ use datafusion::prelude::SessionContext;
 use datafusion_nexus::backend::NexusGpuBackend;
 
 pub mod flight;
+#[cfg(feature = "otlp-metrics")]
+pub mod otlp_metrics;
 pub mod pipelines;
 pub mod rest;
 

@@ -11,6 +11,7 @@ mod attempt_domain;
 mod backend_close;
 mod backend_core;
 mod backend_lifecycle;
+mod backend_metrics;
 mod boundary;
 mod bounded_join;
 mod cache_events;
@@ -49,6 +50,15 @@ pub(crate) use backend_core::{GpuBackendConstructionCheckpoint, GpuBackendConstr
 #[cfg(test)]
 pub(crate) use backend_lifecycle::BackendLifecycle;
 pub(crate) use backend_lifecycle::ObservationPermit;
+pub use backend_metrics::{
+    BACKEND_ATTEMPT_DURATION_BUCKET_COUNT, BACKEND_ATTEMPT_DURATION_BUCKETS_NS, BACKEND_METRIC_DEVICE_CAPACITY,
+    BackendAdmissionHealth, BackendAdmissionMetricsSnapshot, BackendAttemptDisposition, BackendAttemptDuration,
+    BackendAttemptDurations, BackendAttemptMetricsSnapshot, BackendAttemptOutcome, BackendDeviceMetricsSnapshot,
+    BackendHistogramProjection, BackendHistogramSnapshot, BackendMemoryFailureTelemetry, BackendMetricAttribute,
+    BackendMetricAttributeValue, BackendMetricProjectionError, BackendMetricSample, BackendMetricSampleValue,
+    BackendMetricsSnapshot, BackendTelemetryAvailability, BackendTelemetryMetricsSnapshot, BackendTelemetryRefresh,
+    BackendTelemetryRefreshSnapshot, BackendTelemetrySource, project_backend_histogram,
+};
 pub use boundary::{
     BuildMaterializationBoundary, ExecutionBoundaryPolicy, ProbeExecutionBoundary, ResultMaterializationBoundary,
     SourceReadBoundary,

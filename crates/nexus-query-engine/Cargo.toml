@@ -61,5 +61,9 @@ name = "public_api_boundary"
 path = "tests/public_api_boundary.rs"
 
 [[test]]
+name = "backend_metric_descriptor_tests"
+path = "tests/backend_metric_descriptor_tests.rs"
+
+[[test]]
 name = "query_service_allocator_lifecycle"
 path = "tests/query_service_allocator_lifecycle.rs"

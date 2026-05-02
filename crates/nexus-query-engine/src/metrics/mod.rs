@@ -13,6 +13,7 @@ use crate::{
 };
 
 mod aggregate;
+mod backend_descriptor;
 mod boundary;
 mod correlation;
 mod descriptor;
@@ -30,6 +31,11 @@ pub(crate) use memory::ReservationProjectionLedgerHandle;
 
 pub use self::{
     aggregate::AggregateStrategyDecisionMetrics,
+    backend_descriptor::{
+        BACKEND_ATTEMPT_DURATION_BUCKETS_NS, BACKEND_METRIC_DESCRIPTORS, BackendDurationHistogramProjection,
+        BackendDurationProjectionError, BackendMetric, BackendMetricDescriptor, BackendMetricKind, BackendMetricLabel,
+        BackendMetricUnit, BackendMetricUpdatePoint, backend_metric_descriptors, project_backend_duration_histogram,
+    },
     boundary::BoundaryMetrics,
     correlation::PlanTaskMapping,
     descriptor::{
