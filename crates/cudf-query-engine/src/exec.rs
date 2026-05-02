@@ -2077,6 +2077,7 @@ fn lower_expr(expr: &Expr) -> Result<cudf::Expr> {
     match expr {
         Expr::Column(name) => Ok(col(name)),
         Expr::Literal(value) => lower_literal(value),
+        Expr::Not(expr) => Ok(lower_expr(expr)?.not()),
         Expr::Binary { left, op, right } => lower_binary(lower_expr(left)?, *op, lower_expr(right)?),
         Expr::Alias { expr, alias } => Ok(lower_expr(expr)?.alias(alias)),
     }

@@ -4,6 +4,7 @@ use std::fmt;
 pub enum Expr {
     Column(String),
     Literal(LiteralValue),
+    Not(Box<Expr>),
     Binary { left: Box<Expr>, op: BinaryOp, right: Box<Expr> },
     Alias { expr: Box<Expr>, alias: String },
 }
@@ -21,6 +22,10 @@ impl Expr {
         Self::Binary { left: Box::new(left), op, right: Box::new(right) }
     }
 
+    pub fn not(expr: Self) -> Self {
+        Self::Not(Box::new(expr))
+    }
+
     pub fn alias(self, alias: impl Into<String>) -> Self {
         Self::Alias { expr: Box::new(self), alias: alias.into() }
     }
@@ -31,6 +36,7 @@ impl fmt::Display for Expr {
         match self {
             Self::Column(name) => f.write_str(name),
             Self::Literal(value) => write!(f, "{value}"),
+            Self::Not(expr) => write!(f, "NOT {expr}"),
             Self::Binary { left, op, right } => write!(f, "({left} {op} {right})"),
             Self::Alias { expr, alias } => write!(f, "{expr} AS {alias}"),
         }

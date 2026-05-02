@@ -35,9 +35,9 @@ use datafusion::{
         },
     },
     physical_expr::{
-        LexOrdering, PhysicalSortExpr,
+        LexOrdering, PhysicalExpr, PhysicalSortExpr,
         aggregate::{AggregateExprBuilder, AggregateFunctionExpr},
-        expressions::{binary, col, lit},
+        expressions::{NotExpr, binary, col, lit},
     },
     physical_plan::{
         ExecutionPlan,
@@ -937,6 +937,35 @@ async fn direct_friendly_sql_filter_plan_lowers_when_scan_predicate_is_absent() 
 }
 
 #[tokio::test]
+async fn direct_friendly_sql_not_filter_lowers_to_native_expr() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-sql-not-filter");
+    let path = dir.join("input.parquet");
+    write_numeric_parquet_file(&path);
+    let scan = parquet_scan(&path);
+    let scan_schema = scan.schema();
+    let payload_lt_10 =
+        binary(col("payload", &scan_schema).unwrap(), Operator::Lt, lit(ScalarValue::Int32(Some(10))), &scan_schema)
+            .unwrap();
+    let predicate = Arc::new(NotExpr::new(payload_lt_10));
+    let plan = aggregate_sort_limit_plan_with_filter(scan, predicate, Operator::Plus);
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_eq!(result.candidate_count(), 1);
+    assert_eq!(result.rewritten_count(), 1);
+    assert_eq!(result.rejected_count(), 0);
+    let filter = native_filter_expr(&result.plans[0]);
+    assert_eq!(filter.to_string(), "NOT (payload < 10)");
+    let source = native_local_parquet_source(&result.plans[0]);
+    assert_eq!(
+        source.read_columns,
+        vec!["key".to_string(), "m00".to_string(), "m01".to_string(), "payload".to_string()]
+    );
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
 async fn direct_friendly_sql_physical_plan_without_scan_predicate_lowers_to_native_plan() {
     let dir = unique_temp_dir("datafusion-cudf-native-lowering-sql-rewrite");
     let path = dir.join("input.parquet");
@@ -1461,8 +1490,27 @@ fn native_aggregate_exprs(plan: &cudf_query_engine::QueryPlan) -> &[cudf_query_e
         .expect("native plan should contain an aggregate node")
 }
 
+fn native_filter_expr(plan: &cudf_query_engine::QueryPlan) -> &Expr {
+    plan.nodes()
+        .iter()
+        .find_map(|node| match &node.kind {
+            PlanNode::Filter(filter) => Some(&filter.predicate),
+            _ => None,
+        })
+        .expect("native plan should contain a filter node")
+}
+
 fn aggregate_sort_limit_plan(scan: Arc<dyn ExecutionPlan>, projection_operator: Operator) -> Arc<dyn ExecutionPlan> {
     let sort = aggregate_sort_plan(scan, projection_operator);
+    Arc::new(LocalLimitExec::new(sort, 2))
+}
+
+fn aggregate_sort_limit_plan_with_filter(
+    scan: Arc<dyn ExecutionPlan>,
+    predicate: Arc<dyn PhysicalExpr>,
+    projection_operator: Operator,
+) -> Arc<dyn ExecutionPlan> {
+    let sort = aggregate_sort_plan_with_filter(scan, predicate, projection_operator);
     Arc::new(LocalLimitExec::new(sort, 2))
 }
 
@@ -1489,6 +1537,14 @@ fn aggregate_sort_plan(scan: Arc<dyn ExecutionPlan>, projection_operator: Operat
     let predicate =
         binary(col("payload", &scan_schema).unwrap(), Operator::GtEq, lit(ScalarValue::Int32(Some(10))), &scan_schema)
             .unwrap();
+    aggregate_sort_plan_with_filter(scan, predicate, projection_operator)
+}
+
+fn aggregate_sort_plan_with_filter(
+    scan: Arc<dyn ExecutionPlan>,
+    predicate: Arc<dyn PhysicalExpr>,
+    projection_operator: Operator,
+) -> Arc<dyn ExecutionPlan> {
     let filter: Arc<dyn ExecutionPlan> = Arc::new(FilterExec::try_new(predicate, scan).unwrap());
 
     let filter_schema = filter.schema();
