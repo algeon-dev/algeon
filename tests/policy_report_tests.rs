@@ -15,6 +15,7 @@ fn fallback_reason_codes_are_stable_manifest_values() {
         (FallbackReason::PlanPropertyMismatch, "plan_property_mismatch"),
         (FallbackReason::ExplicitCpuPolicy, "explicit_cpu_policy"),
         (FallbackReason::NativeSortPreservingMergeUnsupported, "native_sort_preserving_merge_unsupported"),
+        (FallbackReason::NativeDistributedAggregateUnsupported, "native_distributed_aggregate_unsupported"),
         (FallbackReason::NativePartitionPreservingSortUnsupported, "native_partition_preserving_sort_unsupported"),
         (FallbackReason::NativeSourceNonLocalObjectStore, "native_source_non_local_object_store"),
         (FallbackReason::NativeSourcePartitionColumns, "native_source_partition_columns"),

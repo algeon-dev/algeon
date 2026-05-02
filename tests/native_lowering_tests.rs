@@ -22,7 +22,7 @@ use datafusion::{
         table_schema::TableSchema,
     },
     execution::object_store::ObjectStoreUrl,
-    functions_aggregate::sum::sum_udaf,
+    functions_aggregate::{first_last::first_value_udaf, min_max::max_udaf, sum::sum_udaf},
     logical_expr::Operator,
     parquet::{
         arrow::{
@@ -36,7 +36,7 @@ use datafusion::{
     },
     physical_expr::{
         LexOrdering, PhysicalSortExpr,
-        aggregate::AggregateExprBuilder,
+        aggregate::{AggregateExprBuilder, AggregateFunctionExpr},
         expressions::{binary, col, lit},
     },
     physical_plan::{
@@ -45,11 +45,12 @@ use datafusion::{
         filter::FilterExec,
         limit::LocalLimitExec,
         projection::{ProjectionExec, ProjectionExpr},
+        repartition::RepartitionExec,
         sorts::{sort::SortExec, sort_preserving_merge::SortPreservingMergeExec},
     },
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
-use datafusion_cudf::{CandidateOutcome, FallbackReason, lower_physical_plan_to_native};
+use datafusion_cudf::{CandidateOutcome, FallbackReason, NativeLoweringResult, lower_physical_plan_to_native};
 
 #[test]
 fn benchmark_shape_lowers_to_one_native_query_plan() {
@@ -316,6 +317,30 @@ fn sort_preserving_merge_is_rejected_with_stable_native_reason() {
 }
 
 #[test]
+fn sort_preserving_merge_with_child_fetch_smaller_than_root_fetch_is_rejected() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-sort-preserving-merge-fetch");
+    let path = dir.join("input.parquet");
+    write_numeric_parquet_file(&path);
+    let sort = aggregate_sort_plan(parquet_scan(&path), Operator::Plus);
+    let sort = sort.as_any().downcast_ref::<SortExec>().expect("helper returns SortExec");
+    let child_sort: Arc<dyn ExecutionPlan> =
+        Arc::new(SortExec::new(sort.expr().clone(), Arc::clone(sort.input())).with_fetch(Some(1)));
+    let merge: Arc<dyn ExecutionPlan> =
+        Arc::new(SortPreservingMergeExec::new(sort.expr().clone(), child_sort).with_fetch(Some(2)));
+
+    let result = lower_physical_plan_to_native(merge);
+
+    assert!(result.plans.is_empty());
+    assert_eq!(result.rejected_count(), 1);
+    assert!(matches!(
+        result.report.outcomes()[0],
+        CandidateOutcome::Rejected { reason: FallbackReason::NativeSortPreservingMergeUnsupported, .. }
+    ));
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn pushed_down_parquet_predicate_with_filter_is_pruning_only_evidence() {
     let dir = unique_temp_dir("datafusion-cudf-native-lowering-pushed-predicate");
     let path = dir.join("input.parquet");
@@ -394,11 +419,37 @@ fn pushed_down_parquet_predicate_with_different_filter_is_rejected_with_source_r
 }
 
 #[test]
-fn ranged_parquet_file_is_rejected_with_source_reason() {
+fn full_file_byte_range_coalesces_to_native_source() {
     let dir = unique_temp_dir("datafusion-cudf-native-lowering-ranged-file");
     let path = dir.join("input.parquet");
     write_numeric_parquet_file(&path);
     let scan = parquet_scan_with_byte_range(&path);
+    let plan = aggregate_sort_limit_plan(scan, Operator::Plus);
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_eq!(result.rewritten_count(), 1);
+    assert_eq!(result.rejected_count(), 0);
+    let source = native_local_parquet_source(&result.plans[0]);
+    assert_eq!(source.file_count(), 1);
+    assert_eq!(source.files[0].file_size_bytes, Some(fs::metadata(&path).unwrap().len()));
+    assert!(source.diagnostics.direct_device_read);
+    assert_eq!(source.diagnostics.ranged_file_count, 1);
+    assert!(source.diagnostics.rejected_features.is_empty());
+    assert_eq!(result.source_diagnostics.len(), 1);
+    assert_eq!(result.source_diagnostics[0].ranged_file_count, 1);
+    assert!(result.source_diagnostics[0].direct_device_read);
+    assert!(result.source_diagnostics[0].rejected_features.is_empty());
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn partial_byte_range_is_rejected_with_source_reason() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-partial-ranged-file");
+    let path = dir.join("input.parquet");
+    write_numeric_parquet_file(&path);
+    let scan = parquet_scan_with_partial_byte_range(&path);
     let plan = aggregate_sort_limit_plan(scan, Operator::Plus);
 
     let result = lower_physical_plan_to_native(plan);
@@ -411,6 +462,54 @@ fn ranged_parquet_file_is_rejected_with_source_reason() {
     ));
     assert_eq!(result.source_diagnostics.len(), 1);
     assert_eq!(result.source_diagnostics[0].ranged_file_count, 1);
+    assert!(result.source_diagnostics[0].rejected_features.iter().any(|feature| feature.as_str() == "byte_range"));
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn split_full_file_byte_ranges_coalesce_without_duplicate_native_files() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-split-ranged-file");
+    let path = dir.join("input.parquet");
+    write_numeric_parquet_file(&path);
+    let scan = parquet_scan_with_split_full_byte_ranges(&path);
+    let plan = aggregate_sort_limit_plan(scan, Operator::Plus);
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_eq!(result.rewritten_count(), 1);
+    assert_eq!(result.rejected_count(), 0);
+    let source = native_local_parquet_source(&result.plans[0]);
+    assert_eq!(source.file_count(), 1);
+    assert_eq!(source.files[0].file_size_bytes, Some(fs::metadata(&path).unwrap().len()));
+    assert_eq!(source.diagnostics.file_count, 1);
+    assert_eq!(source.diagnostics.ranged_file_count, 2);
+    assert!(source.diagnostics.direct_device_read);
+    assert!(source.diagnostics.rejected_features.is_empty());
+    assert_eq!(result.source_diagnostics[0].file_count, 1);
+    assert_eq!(result.source_diagnostics[0].ranged_file_count, 2);
+    assert!(result.source_diagnostics[0].rejected_features.is_empty());
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn overlapping_byte_ranges_are_rejected_with_source_reason() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-overlap-ranged-file");
+    let path = dir.join("input.parquet");
+    write_numeric_parquet_file(&path);
+    let scan = parquet_scan_with_overlapping_byte_ranges(&path);
+    let plan = aggregate_sort_limit_plan(scan, Operator::Plus);
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert!(result.plans.is_empty());
+    assert_eq!(result.rejected_count(), 1);
+    assert!(matches!(
+        result.report.outcomes()[0],
+        CandidateOutcome::Rejected { reason: FallbackReason::NativeSourceByteRange, .. }
+    ));
+    assert_eq!(result.source_diagnostics[0].ranged_file_count, 2);
     assert!(result.source_diagnostics[0].rejected_features.iter().any(|feature| feature.as_str() == "byte_range"));
 
     fs::remove_dir_all(dir).unwrap();
@@ -555,12 +654,12 @@ async fn direct_friendly_sql_count_star_lowers_with_synthetic_argument_column() 
 }
 
 #[tokio::test]
-async fn direct_friendly_sql_pushed_predicate_prunes_native_row_groups_from_metadata() {
+async fn default_sql_pushed_predicate_prunes_native_row_groups_from_metadata() {
     let dir = unique_temp_dir("datafusion-cudf-native-lowering-sql-row-group-pruning");
     let path = dir.join("input.parquet");
     write_row_group_pruning_parquet_file(&path);
     let total_row_groups = parquet_row_group_count(&path);
-    let plan = sql_benchmark_plan(&path, direct_friendly_sql_session_config()).await;
+    let plan = sql_benchmark_plan(&path, SessionConfig::new()).await;
 
     let result = lower_physical_plan_to_native(plan);
 
@@ -608,7 +707,7 @@ async fn direct_friendly_sql_filter_without_scan_predicate_prunes_native_row_gro
 }
 
 #[tokio::test]
-async fn default_sql_physical_plan_rejects_before_native_execution_with_stable_reason() {
+async fn default_sql_physical_plan_lowers_to_native_plan() {
     let dir = unique_temp_dir("datafusion-cudf-native-lowering-sql-default");
     let path = dir.join("input.parquet");
     write_numeric_parquet_file(&path);
@@ -616,19 +715,191 @@ async fn default_sql_physical_plan_rejects_before_native_execution_with_stable_r
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_eq!(result.plans.len(), 0);
-    assert_eq!(result.rewritten_count(), 0);
-    assert_eq!(result.rejected_count(), 1);
-    assert!(matches!(
-        result.report.outcomes()[0],
-        CandidateOutcome::Rejected { reason: FallbackReason::NativeSortPreservingMergeUnsupported, .. }
-    ));
-    let CandidateOutcome::Rejected { reason, .. } = result.report.outcomes()[0] else {
-        panic!("default SQL plan should reject before native execution");
+    assert_eq!(result.candidate_count(), 1);
+    assert_eq!(result.rewritten_count(), 1);
+    assert_eq!(result.rejected_count(), 0);
+    let CandidateOutcome::Rewritten { candidate } = result.report.outcomes()[0] else {
+        panic!("default SQL plan should lower to native");
     };
-    assert!(!reason.code().is_empty());
-    assert_ne!(reason.code(), "plan_property_mismatch");
-    assert!(result.source_diagnostics.is_empty());
+    assert_eq!(
+        candidate.shape,
+        "SortPreservingMergeExec(fetch)(SortExec(ProjectionExec(FinalAggregateExec(RepartitionExec(PartialAggregateExec(FilterExec(RepartitionExec(LocalParquetScan)))))))"
+    );
+    assert_eq!(candidate.operator_count, 9);
+    assert_eq!(result.plans.len(), 1);
+    assert_eq!(result.source_diagnostics.len(), 1);
+    assert_eq!(result.source_diagnostics[0].file_count, 1);
+    assert!(result.source_diagnostics[0].direct_device_read);
+    assert_eq!(result.source_diagnostics[0].predicate_disposition.as_str(), "pruning_only");
+    assert!(result.source_diagnostics[0].rejected_features.is_empty());
+    let source = native_local_parquet_source(&result.plans[0]);
+    assert_eq!(
+        source.read_columns,
+        vec!["key".to_string(), "m00".to_string(), "m01".to_string(), "payload".to_string()]
+    );
+    assert!(source.diagnostics.direct_device_read);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn default_sql_distributed_avg_aggregate_is_rejected() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-distributed-avg");
+    let path = dir.join("input.parquet");
+    write_numeric_parquet_file(&path);
+    let plan = sql_plan(&path, SessionConfig::new(), SQL_AVG_AGGREGATE_QUERY).await;
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_distributed_aggregate_rejection(&result, FallbackReason::UnsupportedOperator);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn default_sql_distributed_aggregate_filter_is_rejected() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-distributed-filtered-aggregate");
+    let path = dir.join("input.parquet");
+    write_numeric_parquet_file(&path);
+    let plan = sql_plan(&path, SessionConfig::new(), SQL_FILTERED_AGGREGATE_QUERY).await;
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_distributed_aggregate_rejection(&result, FallbackReason::NativeDistributedAggregateUnsupported);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn default_sql_distributed_distinct_aggregate_is_rejected() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-distributed-distinct-aggregate");
+    let path = dir.join("input.parquet");
+    write_numeric_parquet_file(&path);
+    let plan = sql_plan(&path, SessionConfig::new(), SQL_DISTINCT_AGGREGATE_QUERY).await;
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_distributed_aggregate_rejection(&result, FallbackReason::UnsupportedOperator);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn distributed_final_partial_aggregate_function_mismatch_is_rejected() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-distributed-function-mismatch");
+    let path = dir.join("input.parquet");
+    write_numeric_parquet_file(&path);
+    let plan = sql_benchmark_plan(&path, SessionConfig::new()).await;
+    let plan = with_rewritten_distributed_final_aggregate(plan, |final_aggregate| {
+        let original = &final_aggregate.aggr_expr()[0];
+        aggregate_expr_on_column_like(original, max_udaf(), final_aggregate.input().schema(), 1, false, vec![])
+    });
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_distributed_aggregate_rejection(&result, FallbackReason::NativeDistributedAggregateUnsupported);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn distributed_aggregate_filter_expr_is_rejected() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-distributed-filter-mutation");
+    let path = dir.join("input.parquet");
+    write_numeric_parquet_file(&path);
+    let plan = sql_benchmark_plan(&path, SessionConfig::new()).await;
+    let plan = with_rewritten_distributed_partial_aggregate(plan, |partial_aggregate| {
+        let input_schema = partial_aggregate.input().schema();
+        let predicate = binary(
+            col("key", &input_schema).unwrap(),
+            Operator::GtEq,
+            lit(ScalarValue::Int32(Some(10))),
+            &input_schema,
+        )
+        .unwrap();
+        Arc::new(
+            AggregateExec::try_new(
+                *partial_aggregate.mode(),
+                partial_aggregate.group_expr().clone(),
+                partial_aggregate.aggr_expr().to_vec(),
+                vec![Some(predicate)],
+                Arc::clone(partial_aggregate.input()),
+                partial_aggregate.input_schema(),
+            )
+            .unwrap(),
+        )
+    });
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_distributed_aggregate_rejection(&result, FallbackReason::NativeDistributedAggregateUnsupported);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn distributed_aggregate_distinct_expr_is_rejected() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-distributed-distinct-mutation");
+    let path = dir.join("input.parquet");
+    write_numeric_parquet_file(&path);
+    let plan = sql_benchmark_plan(&path, SessionConfig::new()).await;
+    let plan = with_rewritten_distributed_partial_aggregate(plan, |partial_aggregate| {
+        let original = &partial_aggregate.aggr_expr()[0];
+        let distinct = aggregate_expr_like(original, sum_udaf(), partial_aggregate.input().schema(), true, vec![]);
+        Arc::new(partial_aggregate.with_new_aggr_exprs(vec![distinct]))
+    });
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_distributed_aggregate_rejection(&result, FallbackReason::NativeDistributedAggregateUnsupported);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn distributed_aggregate_order_by_expr_is_rejected() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-distributed-order-by-mutation");
+    let path = dir.join("input.parquet");
+    write_numeric_parquet_file(&path);
+    let plan = sql_benchmark_plan(&path, SessionConfig::new()).await;
+    let plan = with_rewritten_distributed_partial_and_final_aggregate(
+        plan,
+        |partial_aggregate| {
+            let input_schema = partial_aggregate.input().schema();
+            let order_by =
+                vec![PhysicalSortExpr::new(col("key", &input_schema).unwrap(), ArrowSortOptions::new(false, false))];
+            let original = &partial_aggregate.aggr_expr()[0];
+            let ordered = aggregate_expr_like(original, first_value_udaf(), input_schema, false, order_by);
+            Arc::new(partial_aggregate.with_new_aggr_exprs(vec![ordered]))
+        },
+        |final_aggregate| {
+            let input_schema = final_aggregate.input().schema();
+            let order_by =
+                vec![PhysicalSortExpr::new(col("key", &input_schema).unwrap(), ArrowSortOptions::new(false, false))];
+            let original = &final_aggregate.aggr_expr()[0];
+            let ordered = aggregate_expr_on_column_like(original, first_value_udaf(), input_schema, 1, false, order_by);
+            ordered
+        },
+    );
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_distributed_aggregate_rejection(&result, FallbackReason::NativeDistributedAggregateUnsupported);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn distributed_aggregate_without_partial_source_shape_is_rejected() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-distributed-unexpected-source");
+    let path = dir.join("input.parquet");
+    write_numeric_parquet_file(&path);
+    let plan = sql_benchmark_plan(&path, SessionConfig::new()).await;
+    let plan = with_distributed_final_input_replaced_by_scan(plan);
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_distributed_aggregate_rejection(&result, FallbackReason::NativeDistributedAggregateUnsupported);
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -699,7 +970,10 @@ fn every_rejected_native_candidate_has_stable_rejection_code() {
     let path = dir.join("input.parquet");
     write_numeric_parquet_file(&path);
     let rejected_results = [
-        lower_physical_plan_to_native(aggregate_sort_limit_plan(parquet_scan_with_byte_range(&path), Operator::Plus)),
+        lower_physical_plan_to_native(aggregate_sort_limit_plan(
+            parquet_scan_with_partial_byte_range(&path),
+            Operator::Plus,
+        )),
         lower_physical_plan_to_native(aggregate_sort_limit_plan_without_filter(
             parquet_scan_with_pushed_down_predicate(&path),
             Operator::Plus,
@@ -783,6 +1057,186 @@ fn parquet_source_exec_without_predicate(source: &DataSourceExec) -> Arc<dyn Exe
     DataSourceExec::from_data_source(builder.build())
 }
 
+struct DefaultDistributedSqlPlanParts {
+    root: Arc<dyn ExecutionPlan>,
+    sort: Arc<dyn ExecutionPlan>,
+    projection: Arc<dyn ExecutionPlan>,
+    final_aggregate: Arc<dyn ExecutionPlan>,
+    between_aggregate_repartition: Arc<dyn ExecutionPlan>,
+    partial_aggregate: Arc<dyn ExecutionPlan>,
+    scan_input: Arc<dyn ExecutionPlan>,
+}
+
+fn default_distributed_sql_plan_parts(plan: Arc<dyn ExecutionPlan>) -> DefaultDistributedSqlPlanParts {
+    let root = plan;
+    let root_spm = root.as_any().downcast_ref::<SortPreservingMergeExec>().expect("default SQL root should be SPM");
+    let sort = Arc::clone(root_spm.input());
+    let sort_exec = sort.as_any().downcast_ref::<SortExec>().expect("default SQL SPM input should be SortExec");
+    let projection = Arc::clone(sort_exec.input());
+    let projection_exec =
+        projection.as_any().downcast_ref::<ProjectionExec>().expect("default SQL sort input should be ProjectionExec");
+    let final_aggregate = Arc::clone(projection_exec.input());
+    let final_aggregate_exec = final_aggregate
+        .as_any()
+        .downcast_ref::<AggregateExec>()
+        .expect("default SQL projection input should be final AggregateExec");
+    assert!(matches!(final_aggregate_exec.mode(), AggregateMode::FinalPartitioned));
+    let between_aggregate_repartition = Arc::clone(final_aggregate_exec.input());
+    let repartition = between_aggregate_repartition
+        .as_any()
+        .downcast_ref::<RepartitionExec>()
+        .expect("default SQL final aggregate input should be RepartitionExec");
+    let partial_aggregate = Arc::clone(repartition.input());
+    let partial_aggregate_exec = partial_aggregate
+        .as_any()
+        .downcast_ref::<AggregateExec>()
+        .expect("default SQL repartition input should be partial AggregateExec");
+    assert!(matches!(partial_aggregate_exec.mode(), AggregateMode::Partial));
+    let filter = partial_aggregate_exec
+        .input()
+        .as_any()
+        .downcast_ref::<FilterExec>()
+        .expect("default SQL partial aggregate input should be FilterExec");
+    let source_repartition = filter
+        .input()
+        .as_any()
+        .downcast_ref::<RepartitionExec>()
+        .expect("default SQL filter input should be RepartitionExec");
+    let scan_input = Arc::clone(source_repartition.input());
+
+    DefaultDistributedSqlPlanParts {
+        root,
+        sort,
+        projection,
+        final_aggregate,
+        between_aggregate_repartition,
+        partial_aggregate,
+        scan_input,
+    }
+}
+
+fn rebuild_default_distributed_sql_plan(
+    parts: &DefaultDistributedSqlPlanParts,
+    final_aggregate: Arc<dyn ExecutionPlan>,
+) -> Arc<dyn ExecutionPlan> {
+    let projection = Arc::clone(&parts.projection).with_new_children(vec![final_aggregate]).unwrap();
+    let sort = Arc::clone(&parts.sort).with_new_children(vec![projection]).unwrap();
+    Arc::clone(&parts.root).with_new_children(vec![sort]).unwrap()
+}
+
+fn with_rewritten_distributed_final_aggregate(
+    plan: Arc<dyn ExecutionPlan>,
+    rewrite: impl FnOnce(&AggregateExec) -> Arc<AggregateFunctionExpr>,
+) -> Arc<dyn ExecutionPlan> {
+    let parts = default_distributed_sql_plan_parts(plan);
+    let final_aggregate = parts
+        .final_aggregate
+        .as_any()
+        .downcast_ref::<AggregateExec>()
+        .expect("default SQL final aggregate should be AggregateExec");
+    let rewritten_final: Arc<dyn ExecutionPlan> =
+        Arc::new(final_aggregate.with_new_aggr_exprs(vec![rewrite(final_aggregate)]));
+    rebuild_default_distributed_sql_plan(&parts, rewritten_final)
+}
+
+fn with_rewritten_distributed_partial_aggregate(
+    plan: Arc<dyn ExecutionPlan>,
+    rewrite: impl FnOnce(&AggregateExec) -> Arc<dyn ExecutionPlan>,
+) -> Arc<dyn ExecutionPlan> {
+    let parts = default_distributed_sql_plan_parts(plan);
+    let partial_aggregate = parts
+        .partial_aggregate
+        .as_any()
+        .downcast_ref::<AggregateExec>()
+        .expect("default SQL partial aggregate should be AggregateExec");
+    let rewritten_partial = rewrite(partial_aggregate);
+    let repartition =
+        Arc::clone(&parts.between_aggregate_repartition).with_new_children(vec![rewritten_partial]).unwrap();
+    let final_aggregate = Arc::clone(&parts.final_aggregate).with_new_children(vec![repartition]).unwrap();
+    rebuild_default_distributed_sql_plan(&parts, final_aggregate)
+}
+
+fn with_rewritten_distributed_partial_and_final_aggregate(
+    plan: Arc<dyn ExecutionPlan>,
+    rewrite_partial: impl FnOnce(&AggregateExec) -> Arc<dyn ExecutionPlan>,
+    rewrite_final: impl FnOnce(&AggregateExec) -> Arc<AggregateFunctionExpr>,
+) -> Arc<dyn ExecutionPlan> {
+    let parts = default_distributed_sql_plan_parts(plan);
+    let partial_aggregate = parts
+        .partial_aggregate
+        .as_any()
+        .downcast_ref::<AggregateExec>()
+        .expect("default SQL partial aggregate should be AggregateExec");
+    let final_aggregate = parts
+        .final_aggregate
+        .as_any()
+        .downcast_ref::<AggregateExec>()
+        .expect("default SQL final aggregate should be AggregateExec");
+    let rewritten_partial = rewrite_partial(partial_aggregate);
+    let repartition =
+        Arc::clone(&parts.between_aggregate_repartition).with_new_children(vec![rewritten_partial]).unwrap();
+    let rewritten_final: Arc<dyn ExecutionPlan> =
+        Arc::new(final_aggregate.with_new_aggr_exprs(vec![rewrite_final(final_aggregate)]));
+    let rewritten_final = rewritten_final.with_new_children(vec![repartition]).unwrap();
+    rebuild_default_distributed_sql_plan(&parts, rewritten_final)
+}
+
+fn with_distributed_final_input_replaced_by_scan(plan: Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
+    let parts = default_distributed_sql_plan_parts(plan);
+    let final_aggregate =
+        Arc::clone(&parts.final_aggregate).with_new_children(vec![Arc::clone(&parts.scan_input)]).unwrap();
+    rebuild_default_distributed_sql_plan(&parts, final_aggregate)
+}
+
+fn aggregate_expr_like(
+    existing: &AggregateFunctionExpr,
+    udaf: Arc<datafusion::logical_expr::AggregateUDF>,
+    schema: Arc<Schema>,
+    distinct: bool,
+    order_by: Vec<PhysicalSortExpr>,
+) -> Arc<AggregateFunctionExpr> {
+    Arc::new(
+        AggregateExprBuilder::new(udaf, existing.expressions())
+            .schema(schema)
+            .order_by(order_by)
+            .with_distinct(distinct)
+            .alias(existing.name())
+            .build()
+            .unwrap(),
+    )
+}
+
+fn aggregate_expr_on_column_like(
+    existing: &AggregateFunctionExpr,
+    udaf: Arc<datafusion::logical_expr::AggregateUDF>,
+    schema: Arc<Schema>,
+    column_index: usize,
+    distinct: bool,
+    order_by: Vec<PhysicalSortExpr>,
+) -> Arc<AggregateFunctionExpr> {
+    let column_name = schema.field(column_index).name();
+    Arc::new(
+        AggregateExprBuilder::new(udaf, vec![col(column_name, &schema).unwrap()])
+            .schema(schema)
+            .order_by(order_by)
+            .with_distinct(distinct)
+            .alias(existing.name())
+            .build()
+            .unwrap(),
+    )
+}
+
+fn assert_distributed_aggregate_rejection(result: &NativeLoweringResult, expected_reason: FallbackReason) {
+    assert!(result.plans.is_empty());
+    assert_eq!(result.candidate_count(), 1);
+    assert_eq!(result.rewritten_count(), 0);
+    assert_eq!(result.rejected_count(), 1);
+    let CandidateOutcome::Rejected { reason, .. } = result.report.outcomes()[0].clone() else {
+        panic!("expected rejected native candidate");
+    };
+    assert_eq!(reason, expected_reason);
+}
+
 fn direct_friendly_sql_session_config() -> SessionConfig {
     let mut config = SessionConfig::new()
         .with_repartition_file_scans(false)
@@ -830,6 +1284,33 @@ ORDER BY key ASC
 LIMIT 2
 ";
 
+const SQL_AVG_AGGREGATE_QUERY: &str = "
+SELECT key, AVG(m00) AS avg_m00
+FROM bench
+WHERE payload >= 10
+GROUP BY key
+ORDER BY avg_m00 DESC, key ASC
+LIMIT 2
+";
+
+const SQL_FILTERED_AGGREGATE_QUERY: &str = "
+SELECT key, SUM(m00) FILTER (WHERE payload >= 10) AS sum_m00
+FROM bench
+WHERE payload >= 10
+GROUP BY key
+ORDER BY sum_m00 DESC, key ASC
+LIMIT 2
+";
+
+const SQL_DISTINCT_AGGREGATE_QUERY: &str = "
+SELECT key, COUNT(DISTINCT payload) AS distinct_payload
+FROM bench
+WHERE payload >= 10
+GROUP BY key
+ORDER BY distinct_payload DESC, key ASC
+LIMIT 2
+";
+
 fn parquet_scan_with_pushed_down_predicate(path: &std::path::Path) -> Arc<dyn ExecutionPlan> {
     parquet_scan_with_pushed_down_predicate_value(path, 10)
 }
@@ -871,6 +1352,31 @@ fn parquet_scan_with_access_plan(path: &std::path::Path, access_plan: ParquetAcc
 }
 
 fn parquet_scan_with_byte_range(path: &std::path::Path) -> Arc<dyn ExecutionPlan> {
+    parquet_scan_with_byte_ranges(path, |size| vec![(0, size)])
+}
+
+fn parquet_scan_with_partial_byte_range(path: &std::path::Path) -> Arc<dyn ExecutionPlan> {
+    parquet_scan_with_byte_ranges(path, |size| vec![(0, size / 2)])
+}
+
+fn parquet_scan_with_split_full_byte_ranges(path: &std::path::Path) -> Arc<dyn ExecutionPlan> {
+    parquet_scan_with_byte_ranges(path, |size| {
+        let midpoint = size / 2;
+        vec![(0, midpoint), (midpoint, size)]
+    })
+}
+
+fn parquet_scan_with_overlapping_byte_ranges(path: &std::path::Path) -> Arc<dyn ExecutionPlan> {
+    parquet_scan_with_byte_ranges(path, |size| {
+        let midpoint = size / 2;
+        vec![(0, midpoint + 1), (midpoint, size)]
+    })
+}
+
+fn parquet_scan_with_byte_ranges(
+    path: &std::path::Path,
+    ranges: impl Fn(i64) -> Vec<(i64, i64)>,
+) -> Arc<dyn ExecutionPlan> {
     let scan = parquet_scan(path);
     let data_source = scan.as_any().downcast_ref::<DataSourceExec>().expect("parquet scan should be DataSourceExec");
     let (file_scan, _parquet_source) =
@@ -883,10 +1389,12 @@ fn parquet_scan_with_byte_range(path: &std::path::Path) -> Arc<dyn ExecutionPlan
                 group
                     .files()
                     .iter()
-                    .cloned()
-                    .map(|file| {
+                    .flat_map(|file| {
                         let size = file.object_meta.size as i64;
-                        file.with_range(0, size)
+                        ranges(size)
+                            .into_iter()
+                            .map(|(start, end)| file.clone().with_range(start, end))
+                            .collect::<Vec<_>>()
                     })
                     .collect(),
             )
