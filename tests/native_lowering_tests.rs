@@ -956,7 +956,7 @@ async fn default_sql_physical_plan_lowers_to_native_plan() {
 }
 
 #[tokio::test]
-async fn default_sql_distributed_avg_aggregate_is_rejected() {
+async fn default_sql_distributed_avg_aggregate_lowers_to_native_avg() {
     let dir = unique_temp_dir("datafusion-cudf-native-lowering-distributed-avg");
     let path = dir.join("input.parquet");
     write_numeric_parquet_file(&path);
@@ -964,7 +964,29 @@ async fn default_sql_distributed_avg_aggregate_is_rejected() {
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_distributed_aggregate_rejection(&result, FallbackReason::NativeDistributedAggregateUnsupported);
+    assert_eq!(result.candidate_count(), 1);
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    let aggregate_exprs = native_aggregate_exprs(&result.plans[0]);
+    assert_eq!(aggregate_exprs.len(), 1);
+    assert_eq!(aggregate_exprs[0].function, AggregateFunction::Avg);
+    assert_eq!(aggregate_exprs[0].alias, "avg(bench.m00)");
+    assert!(matches!(&aggregate_exprs[0].expr, Expr::Column(name) if name == "__cudf_aggregate_arg_0"));
+    assert!(native_projection_exprs(&result.plans[0]).iter().any(|expr| matches!(
+        expr,
+        Expr::Alias { expr, alias }
+            if alias == "__cudf_aggregate_arg_0"
+                && matches!(
+                    expr.as_ref(),
+                    Expr::Cast { expr, target_type }
+                        if target_type == &DataType::Float64
+                            && matches!(expr.as_ref(), Expr::Column(name) if name == "m00")
+                )
+    )));
+    assert_eq!(result.plans[0].output_schema().field_with_name("avg_m00").unwrap().data_type(), &DataType::Float64);
+    let source = native_local_parquet_source(&result.plans[0]);
+    assert_eq!(source.read_columns, vec!["key".to_string(), "m00".to_string(), "payload".to_string()]);
+    assert!(source.diagnostics.direct_device_read);
 
     fs::remove_dir_all(dir).unwrap();
 }

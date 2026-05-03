@@ -1,4 +1,4 @@
-use arrow::datatypes::SchemaRef;
+use arrow::datatypes::{DataType, SchemaRef};
 use datafusion::{
     datasource::source::DataSourceExec,
     physical_expr::{LexOrdering, PhysicalSortExpr, expressions::Column},
@@ -14,6 +14,7 @@ use datafusion::{
     },
 };
 
+use super::validate::is_supported_native_type;
 use crate::{policy::FallbackReason, report::GpuCandidate};
 
 const LOCAL_LIMIT_SHAPE: &str = "LocalLimitExec(SortExec(AggregateExec(ProjectionExec(FilterExec(LocalParquetScan)))))";
@@ -292,9 +293,11 @@ fn distributed_aggregate_pair_is_safe(final_aggregate: &AggregateExec, partial_a
         && final_aggregate.aggr_expr().len() == partial_aggregate.aggr_expr().len()
         && final_aggregate.filter_expr().iter().all(Option::is_none)
         && partial_aggregate.filter_expr().iter().all(Option::is_none)
+        && distributed_group_exprs_are_native_safe(final_aggregate, partial_aggregate)
         && final_aggregate.aggr_expr().iter().zip(partial_aggregate.aggr_expr()).all(|(final_expr, partial_expr)| {
             final_expr.fun().name().eq_ignore_ascii_case(partial_expr.fun().name())
                 && distributed_aggregate_function_is_native_safe(final_expr.fun().name())
+                && distributed_final_output_is_native_safe(final_aggregate, final_expr.name(), final_expr.fun().name())
                 && !final_expr.is_distinct()
                 && !partial_expr.is_distinct()
                 && final_expr.order_bys().is_empty()
@@ -302,11 +305,39 @@ fn distributed_aggregate_pair_is_safe(final_aggregate: &AggregateExec, partial_a
         })
 }
 
+fn distributed_group_exprs_are_native_safe(final_aggregate: &AggregateExec, partial_aggregate: &AggregateExec) -> bool {
+    final_aggregate.group_expr().expr().iter().zip(partial_aggregate.group_expr().expr()).all(
+        |((final_expr, _final_alias), (_partial_expr, partial_alias))| {
+            final_expr
+                .as_any()
+                .downcast_ref::<Column>()
+                .is_some_and(|final_column| final_column.name() == partial_alias)
+        },
+    )
+}
+
 fn distributed_aggregate_function_is_native_safe(name: &str) -> bool {
-    // DataFusion distributed AVG exposes its own partial-state schema. Native AVG
-    // has a separate sum/count state model, so accepting that shape requires an
-    // explicit state mapping rather than reusing DataFusion's partial aggregate.
-    !name.eq_ignore_ascii_case("avg")
+    name.eq_ignore_ascii_case("sum")
+        || name.eq_ignore_ascii_case("min")
+        || name.eq_ignore_ascii_case("max")
+        || name.eq_ignore_ascii_case("count")
+        || name.eq_ignore_ascii_case("avg")
+}
+
+fn distributed_final_output_is_native_safe(
+    final_aggregate: &AggregateExec,
+    aggregate_name: &str,
+    function_name: &str,
+) -> bool {
+    let schema = final_aggregate.schema();
+    let Ok(field) = schema.field_with_name(aggregate_name) else {
+        return false;
+    };
+    if function_name.eq_ignore_ascii_case("avg") {
+        matches!(field.data_type(), DataType::Float32 | DataType::Float64)
+    } else {
+        is_supported_native_type(field.data_type())
+    }
 }
 
 fn peel_repartition(plan: &dyn ExecutionPlan) -> &dyn ExecutionPlan {

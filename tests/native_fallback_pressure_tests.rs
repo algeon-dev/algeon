@@ -20,7 +20,9 @@ use datafusion_cudf::{
     GpuFallbackPolicy, NATIVE_DATAFUSION_PLANNING_TSV_HEADER, NATIVE_DATAFUSION_PLANNING_TSV_SCHEMA_VERSION,
     NATIVE_FALLBACK_PRESSURE_TSV_HEADER, NATIVE_FALLBACK_PRESSURE_TSV_SCHEMA_VERSION, NativeCudfExecutionConfig,
     NativeDataFusionPlanningOutcome, NativeDataFusionPlanningReport, NativeDataFusionPostNativeExecutionPath,
-    NativeFallbackPressureOutcome, NativeFallbackPressureReport, NativeFallbackPressureWorkloadItem,
+    NativeFallbackPressureOutcome, NativeFallbackPressureReport, NativeFallbackPressureWorkloadItem, TPCH_QUERY_COUNT,
+    TPCH_TABLES, tpch_fallback_pressure_workload_items, tpch_query_ids, tpch_report_session_config,
+    write_tiny_tpch_parquet_dataset,
 };
 
 #[tokio::test]
@@ -44,16 +46,29 @@ async fn native_fallback_pressure_report_summarizes_workload_outcomes() {
             sql_plan(&path, direct_friendly_sql_session_config(), sql).await,
         ));
     }
+    for (query_id, sql) in [
+        ("distributed_avg_rewrite", SQL_AVG_QUERY),
+        ("distributed_filtered_avg_reject", SQL_FILTERED_AVG_QUERY),
+        ("distributed_distinct_avg_reject", SQL_DISTINCT_AVG_QUERY),
+    ] {
+        items.push(NativeFallbackPressureWorkloadItem::new(query_id, sql_plan(&path, SessionConfig::new(), sql).await));
+    }
     items.push(NativeFallbackPressureWorkloadItem::new(
         "count_only_rewrite",
         sql_plan(&path, count_only_sql_session_config(), SQL_COUNT_ONLY_QUERY).await,
     ));
+    items.push(NativeFallbackPressureWorkloadItem::planning_failure(
+        "q00_planning_failure",
+        "sql_to_logical_plan",
+        "sql_planning_failed",
+        "No field named missing_col",
+    ));
 
     let report = NativeFallbackPressureReport::collect(items);
 
-    assert_eq!(report.rows.len(), 7);
-    assert_eq!(report.rewritten_count(), 5);
-    assert_eq!(report.rejected_count(), 2);
+    assert_eq!(report.rows.len(), 11);
+    assert_eq!(report.rewritten_count(), 6);
+    assert_eq!(report.rejected_count(), 5);
 
     let rewritten = report_row(&report, "sum_rewrite");
     assert_eq!(rewritten.outcome, NativeFallbackPressureOutcome::Rewritten);
@@ -89,6 +104,18 @@ async fn native_fallback_pressure_report_summarizes_workload_outcomes() {
     assert_eq!(avg.unsupported_category, None);
     assert!(!avg.rejected_before_execution);
 
+    let distributed_avg = report_row(&report, "distributed_avg_rewrite");
+    assert_eq!(distributed_avg.outcome, NativeFallbackPressureOutcome::Rewritten);
+    assert_eq!(
+        distributed_avg.native_candidate_shape.as_deref(),
+        Some(
+            "SortPreservingMergeExec(fetch)(SortExec(ProjectionExec(FinalAggregateExec(RepartitionExec(PartialAggregateExec(FilterExec(RepartitionExec(LocalParquetScan)))))))",
+        )
+    );
+    assert_eq!(distributed_avg.reason_code, None);
+    assert_eq!(distributed_avg.unsupported_category, None);
+    assert!(!distributed_avg.rejected_before_execution);
+
     let count_only = report_row(&report, "count_only_rewrite");
     assert_eq!(count_only.outcome, NativeFallbackPressureOutcome::Rewritten);
     assert_eq!(count_only.native_candidate_shape.as_deref(), Some("ProjectionExec(AggregateExec(LocalParquetScan))"));
@@ -106,10 +133,30 @@ async fn native_fallback_pressure_report_summarizes_workload_outcomes() {
     assert_eq!(filtered.unsupported_category.as_deref(), Some("aggregate_filter"));
     assert!(filtered.rejected_before_execution);
 
+    let distributed_filtered_avg = report_row(&report, "distributed_filtered_avg_reject");
+    assert_eq!(distributed_filtered_avg.reason_code.as_deref(), Some("native_distributed_aggregate_unsupported"));
+    assert_eq!(distributed_filtered_avg.unsupported_category.as_deref(), Some("aggregate_filter"));
+    assert!(distributed_filtered_avg.rejected_before_execution);
+
+    let distributed_distinct_avg = report_row(&report, "distributed_distinct_avg_reject");
+    assert_eq!(distributed_distinct_avg.reason_code.as_deref(), Some("unsupported_operator"));
+    assert_eq!(distributed_distinct_avg.unsupported_category.as_deref(), Some("aggregate_avg"));
+    assert!(distributed_distinct_avg.rejected_before_execution);
+
     let modulo = report_row(&report, "modulo_reject");
     assert_eq!(modulo.reason_code.as_deref(), Some("unsupported_expression"));
     assert_eq!(modulo.unsupported_category.as_deref(), Some("expression_binary_modulo"));
     assert!(modulo.rejected_before_execution);
+
+    let planning_failure = report_row(&report, "q00_planning_failure");
+    assert_eq!(planning_failure.physical_root, "PlanningFailure");
+    assert_eq!(planning_failure.physical_shape, "sql_to_logical_plan");
+    assert_eq!(planning_failure.native_candidate_shape, None);
+    assert_eq!(planning_failure.outcome, NativeFallbackPressureOutcome::Rejected);
+    assert_eq!(planning_failure.reason_code.as_deref(), Some("sql_planning_failed"));
+    assert_eq!(planning_failure.unsupported_category.as_deref(), Some("planning"));
+    assert!(planning_failure.source_diagnostics.is_empty());
+    assert!(planning_failure.rejected_before_execution);
 
     let text = report.to_tsv();
     assert_eq!(NATIVE_FALLBACK_PRESSURE_TSV_SCHEMA_VERSION, 2);
@@ -123,11 +170,15 @@ async fn native_fallback_pressure_report_summarizes_workload_outcomes() {
     assert!(text.contains("not_rewrite\tSortExec"));
     assert!(text.contains("cast_rewrite\tSortExec"));
     assert!(text.contains("avg_rewrite\tSortExec"));
+    assert!(text.contains("distributed_avg_rewrite\tSortPreservingMergeExec"));
     assert!(text.contains("count_only_rewrite\t"));
     assert!(text.contains("zero_column_count=represented"));
     assert!(text.contains("\trewritten\tnone\tnone\t"));
+    assert!(text.contains("\tnative_distributed_aggregate_unsupported\taggregate_filter\t"));
+    assert!(text.contains("\tunsupported_operator\taggregate_avg\t"));
     assert!(text.contains("\tunsupported_expression\taggregate_filter\t"));
     assert!(text.contains("\tunsupported_expression\texpression_binary_modulo\t"));
+    assert!(text.contains("q00_planning_failure\tPlanningFailure\tsql_to_logical_plan\tnone\trejected\tsql_planning_failed\tplanning\tnone\ttrue"));
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -170,6 +221,24 @@ async fn native_datafusion_planning_report_summarizes_session_optimizer_outcomes
     assert_eq!(count_only_row.source_diagnostics[0].read_column_count, 0);
     assert_eq!(count_only_row.source_diagnostics[0].zero_column_count_disposition, "represented");
 
+    let distributed_avg = native_datafusion_planning_report_with_session(
+        "distributed_avg_session",
+        &path,
+        SQL_AVG_QUERY,
+        SessionConfig::new(),
+    )
+    .await;
+    assert_eq!(distributed_avg.rows.len(), 1);
+    assert_eq!(distributed_avg.accepted_count(), 1);
+    assert_eq!(distributed_avg.rejected_count(), 0);
+    let distributed_avg_row = &distributed_avg.rows[0];
+    assert_eq!(distributed_avg_row.outcome, NativeDataFusionPlanningOutcome::AcceptedReplaced);
+    assert_eq!(distributed_avg_row.reason_code, None);
+    assert_eq!(distributed_avg_row.unsupported_category, None);
+    assert_eq!(distributed_avg_row.post_native_plan_root, "NativeCudfExec");
+    assert_eq!(distributed_avg_row.post_native_execution_path, NativeDataFusionPostNativeExecutionPath::Native);
+    assert!(!distributed_avg_row.rejected_before_execution);
+
     let rejected = native_datafusion_planning_report("filtered_session", &path, SQL_FILTERED_QUERY).await;
     assert_eq!(rejected.rows.len(), 1);
     assert_eq!(rejected.accepted_count(), 0);
@@ -197,6 +266,25 @@ async fn native_datafusion_planning_report_summarizes_session_optimizer_outcomes
     fs::remove_dir_all(dir).unwrap();
 }
 
+#[tokio::test]
+async fn tpch_workload_builder_generates_stable_query_items() {
+    let dir = unique_temp_dir("datafusion-cudf-tpch-workload-builder");
+    write_tiny_tpch_parquet_dataset(&dir).unwrap();
+
+    for table in TPCH_TABLES {
+        assert!(dir.join(format!("{table}.parquet")).exists());
+    }
+
+    let items = tpch_fallback_pressure_workload_items(&dir, tpch_report_session_config()).await.unwrap();
+    let actual_ids = items.iter().map(|item| item.query_id.as_str()).collect::<Vec<_>>();
+    let expected_ids = tpch_query_ids().collect::<Vec<_>>();
+    assert_eq!(TPCH_QUERY_COUNT, 22);
+    assert_eq!(items.len(), TPCH_QUERY_COUNT);
+    assert_eq!(actual_ids, expected_ids);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
 fn report_row<'a>(
     report: &'a NativeFallbackPressureReport,
     query_id: &str,
@@ -216,12 +304,21 @@ async fn native_datafusion_planning_report(
     path: &std::path::Path,
     sql: &str,
 ) -> NativeDataFusionPlanningReport {
+    native_datafusion_planning_report_with_session(query_id, path, sql, direct_friendly_sql_session_config()).await
+}
+
+async fn native_datafusion_planning_report_with_session(
+    query_id: &str,
+    path: &std::path::Path,
+    sql: &str,
+    session_config: SessionConfig,
+) -> NativeDataFusionPlanningReport {
     let optimizer_config = CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred)
         .with_native_execution_config(NativeCudfExecutionConfig::bounded(256 * 1024 * 1024, 64 * 1024 * 1024, 1, 3, 1));
     let native_rule = Arc::new(CudfNativePhysicalOptimizerRule::new(optimizer_config.clone()));
     let gpu_island_rule = Arc::new(CudfPhysicalOptimizerRule::new(optimizer_config));
     let state = SessionStateBuilder::new_with_default_features()
-        .with_config(direct_friendly_sql_session_config())
+        .with_config(session_config)
         .with_cudf_native_and_gpu_island_rules(Arc::clone(&native_rule), gpu_island_rule)
         .build();
     let ctx = SessionContext::new_with_state(state);
@@ -327,6 +424,24 @@ FROM bench
 WHERE payload >= 10
 GROUP BY key
 ORDER BY sum_m00 DESC, key ASC
+LIMIT 2
+";
+
+const SQL_FILTERED_AVG_QUERY: &str = "
+SELECT key, AVG(m00) FILTER (WHERE payload >= 10) AS avg_m00
+FROM bench
+WHERE payload >= 10
+GROUP BY key
+ORDER BY avg_m00 DESC, key ASC
+LIMIT 2
+";
+
+const SQL_DISTINCT_AVG_QUERY: &str = "
+SELECT key, AVG(DISTINCT m00) AS avg_m00
+FROM bench
+WHERE payload >= 10
+GROUP BY key
+ORDER BY avg_m00 DESC, key ASC
 LIMIT 2
 ";
 

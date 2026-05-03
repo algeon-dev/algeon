@@ -37,6 +37,13 @@ async fn main() {
             sql_plan(&path, direct_friendly_sql_session_config(), sql).await,
         ));
     }
+    for (query_id, sql) in [
+        ("distributed_avg_rewrite", SQL_AVG_QUERY),
+        ("distributed_filtered_avg_reject", SQL_FILTERED_AVG_QUERY),
+        ("distributed_distinct_avg_reject", SQL_DISTINCT_AVG_QUERY),
+    ] {
+        items.push(NativeFallbackPressureWorkloadItem::new(query_id, sql_plan(&path, SessionConfig::new(), sql).await));
+    }
 
     let report = NativeFallbackPressureReport::collect(items);
     print!("{}", report.to_tsv());
@@ -136,6 +143,24 @@ FROM bench
 WHERE payload >= 10
 GROUP BY key
 ORDER BY sum_m00 DESC, key ASC
+LIMIT 2
+";
+
+const SQL_FILTERED_AVG_QUERY: &str = "
+SELECT key, AVG(m00) FILTER (WHERE payload >= 10) AS avg_m00
+FROM bench
+WHERE payload >= 10
+GROUP BY key
+ORDER BY avg_m00 DESC, key ASC
+LIMIT 2
+";
+
+const SQL_DISTINCT_AVG_QUERY: &str = "
+SELECT key, AVG(DISTINCT m00) AS avg_m00
+FROM bench
+WHERE payload >= 10
+GROUP BY key
+ORDER BY avg_m00 DESC, key ASC
 LIMIT 2
 ";
 
