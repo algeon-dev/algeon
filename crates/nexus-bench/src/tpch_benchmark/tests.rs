@@ -16,6 +16,23 @@ mod runtime_failures;
 mod strategy_gate_tests;
 
 #[test]
+fn benchmark_metric_aggregation_delegates_to_the_report_metric_owner() {
+    let source = include_str!("execution.rs");
+    let aggregate = source
+        .split_once("fn aggregate_native_execution_metrics")
+        .expect("TPC-H benchmark must aggregate native execution metrics")
+        .1
+        .split_once("fn native_started")
+        .expect("metric aggregation must end before native failure conversion")
+        .0;
+
+    assert!(aggregate.contains(".reduce("));
+    assert!(aggregate.contains("aggregate.merge_from(current);"));
+    assert!(!aggregate.contains("saturating_add"));
+    assert!(!aggregate.contains("max_optional_metric"));
+}
+
+#[test]
 fn allocator_high_water_placeholder_is_none_without_runtime_contract() {
     let config =
         NativeTpchBenchmarkConfig { query_ids: vec!["q01".to_string()], ..NativeTpchBenchmarkConfig::default() };

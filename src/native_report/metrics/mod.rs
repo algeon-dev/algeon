@@ -3,8 +3,6 @@
 //! See [`NativeDataFusionExecutionMetrics`] for the per-field unit and
 //! cumulative-versus-instantaneous semantics.
 
-use std::collections::BTreeSet;
-
 use datafusion::physical_plan::metrics::MetricsSet;
 
 use super::tsv::{metric_count, optional_observed_metric_count, optional_observed_metric_duration_nanos};
@@ -335,6 +333,233 @@ impl NativeDataFusionExecutionMetrics {
         }
     }
 
+    /// Merges one query attempt's metrics into this cross-attempt projection.
+    ///
+    /// Cumulative fields saturate, peak fields retain the maximum, and
+    /// per-attempt admission identities remain present only when both attempts
+    /// reported the same value. Nested rows retain their existing merge and
+    /// stable-order rules.
+    pub fn merge_from(&mut self, other: Self) {
+        let Self {
+            gpu_resident_input_handoffs,
+            host_to_device_uploads,
+            host_to_device_uploaded_rows,
+            host_to_device_uploaded_bytes,
+            device_to_host_materializations,
+            device_to_host_materialized_rows,
+            device_to_host_materialized_bytes,
+            device_to_device_copies,
+            device_to_device_copied_bytes,
+            parquet_files,
+            parquet_bytes_known,
+            row_groups_selected,
+            read_columns,
+            admission_sequence,
+            admission_wait_time_ns,
+            device_ordinal,
+            query_grant_bytes,
+            resident_dataframe_peak_bytes,
+            allocator_high_water_bytes,
+            reservation_requested_bytes,
+            reservation_granted_bytes,
+            reservation_live_peak_bytes,
+            reservation_denied_count,
+            max_task_reservation_bytes,
+            max_task_observed_peak_bytes,
+            max_task_retained_bytes,
+            graph_reservation_rows,
+            graph_runtime_rows,
+            task_operator_rows,
+            task_runtime_rows,
+            plan_task_mapping_rows,
+            source_chunks_planned,
+            source_chunks_attempted,
+            source_chunks_committed,
+            source_chunks_retried,
+            source_read_prefetches_started,
+            source_read_prefetches_completed,
+            source_read_prefetches_skipped,
+            source_read_prefetches_abandoned,
+            row_groups_planned,
+            row_groups_committed,
+            partial_aggregate_count,
+            partial_aggregate_input_rows,
+            partial_aggregate_rows,
+            partial_aggregate_retained_bytes,
+            final_merge_attempts,
+            final_merge_levels,
+            final_merge_max_fan_in,
+            retry_count,
+            retry_resource_exhausted_count,
+            retry_reservation_failure_count,
+            dynamic_filter_produced_count,
+            dynamic_filter_skipped_count,
+            dynamic_filter_applied_count,
+            dynamic_filter_row_groups_pruned,
+            dynamic_filter_source_bytes_pruned,
+            dynamic_filter_reader_predicate_rows_before,
+            dynamic_filter_reader_predicate_rows_after,
+            dynamic_filter_reader_predicate_rows_filtered,
+            dynamic_filter_post_decode_rows_before,
+            dynamic_filter_post_decode_rows_after,
+            dynamic_filter_post_decode_rows_filtered,
+            dynamic_filter_source_post_decode_rows_filtered,
+            dynamic_filter_filter_post_decode_rows_filtered,
+            dynamic_filter_join_probe_post_decode_rows_filtered,
+            dynamic_filter_runtime_rows,
+            source_read_runtime_rows,
+            lakehouse_cache_fill_event_snapshot_rows,
+            hash_join_build_count,
+            filtered_join_build_count,
+            one_shot_join_count,
+            hash_join_cache_hits,
+            hash_join_cache_misses,
+            hash_join_hash_table_bytes,
+            filtered_join_hash_table_bytes,
+            filtered_join_probe_state_bytes,
+            mixed_join_size_data_bytes,
+            one_shot_join_index_bytes,
+            one_shot_join_materialization_bytes,
+            one_shot_join_output_bytes,
+            join_gather_map_bytes,
+            aggregate_strategy_rows,
+            join_strategy_rows,
+        } = other;
+
+        self.gpu_resident_input_handoffs = self.gpu_resident_input_handoffs.saturating_add(gpu_resident_input_handoffs);
+        self.host_to_device_uploads = self.host_to_device_uploads.saturating_add(host_to_device_uploads);
+        self.host_to_device_uploaded_rows =
+            self.host_to_device_uploaded_rows.saturating_add(host_to_device_uploaded_rows);
+        self.host_to_device_uploaded_bytes =
+            self.host_to_device_uploaded_bytes.saturating_add(host_to_device_uploaded_bytes);
+        self.device_to_host_materializations =
+            self.device_to_host_materializations.saturating_add(device_to_host_materializations);
+        self.device_to_host_materialized_rows =
+            self.device_to_host_materialized_rows.saturating_add(device_to_host_materialized_rows);
+        self.device_to_host_materialized_bytes =
+            self.device_to_host_materialized_bytes.saturating_add(device_to_host_materialized_bytes);
+        self.device_to_device_copies = self.device_to_device_copies.saturating_add(device_to_device_copies);
+        self.device_to_device_copied_bytes =
+            self.device_to_device_copied_bytes.saturating_add(device_to_device_copied_bytes);
+        self.parquet_files = self.parquet_files.saturating_add(parquet_files);
+        self.parquet_bytes_known = self.parquet_bytes_known.saturating_add(parquet_bytes_known);
+        self.row_groups_selected = self.row_groups_selected.saturating_add(row_groups_selected);
+        self.read_columns = self.read_columns.saturating_add(read_columns);
+        self.admission_sequence = match (self.admission_sequence, admission_sequence) {
+            (Some(left), Some(right)) if left == right => Some(left),
+            _ => None,
+        };
+        self.admission_wait_time_ns = max_optional_usize(self.admission_wait_time_ns, admission_wait_time_ns);
+        self.device_ordinal = match (self.device_ordinal, device_ordinal) {
+            (Some(left), Some(right)) if left == right => Some(left),
+            _ => None,
+        };
+        self.query_grant_bytes = max_optional_usize(self.query_grant_bytes, query_grant_bytes);
+        self.resident_dataframe_peak_bytes =
+            max_optional_usize(self.resident_dataframe_peak_bytes, resident_dataframe_peak_bytes);
+        self.allocator_high_water_bytes =
+            max_optional_usize(self.allocator_high_water_bytes, allocator_high_water_bytes);
+        self.reservation_requested_bytes = self.reservation_requested_bytes.saturating_add(reservation_requested_bytes);
+        self.reservation_granted_bytes = self.reservation_granted_bytes.saturating_add(reservation_granted_bytes);
+        self.reservation_live_peak_bytes = self.reservation_live_peak_bytes.max(reservation_live_peak_bytes);
+        self.reservation_denied_count = self.reservation_denied_count.saturating_add(reservation_denied_count);
+        self.max_task_reservation_bytes = self.max_task_reservation_bytes.max(max_task_reservation_bytes);
+        self.max_task_observed_peak_bytes =
+            max_optional_usize(self.max_task_observed_peak_bytes, max_task_observed_peak_bytes);
+        self.max_task_retained_bytes = max_optional_usize(self.max_task_retained_bytes, max_task_retained_bytes);
+        self.merge_graph_reservation_rows(graph_reservation_rows);
+        self.merge_graph_runtime_rows(graph_runtime_rows);
+        self.merge_task_operator_rows(task_operator_rows);
+        self.merge_task_runtime_rows(task_runtime_rows);
+        self.plan_task_mapping_rows.extend(plan_task_mapping_rows);
+        self.plan_task_mapping_rows.sort_by_key(|row| row.to_stable_kv_row());
+        self.plan_task_mapping_rows.dedup();
+        self.source_chunks_planned = self.source_chunks_planned.saturating_add(source_chunks_planned);
+        self.source_chunks_attempted = self.source_chunks_attempted.saturating_add(source_chunks_attempted);
+        self.source_chunks_committed = self.source_chunks_committed.saturating_add(source_chunks_committed);
+        self.source_chunks_retried = self.source_chunks_retried.saturating_add(source_chunks_retried);
+        self.source_read_prefetches_started =
+            self.source_read_prefetches_started.saturating_add(source_read_prefetches_started);
+        self.source_read_prefetches_completed =
+            self.source_read_prefetches_completed.saturating_add(source_read_prefetches_completed);
+        self.source_read_prefetches_skipped =
+            self.source_read_prefetches_skipped.saturating_add(source_read_prefetches_skipped);
+        self.source_read_prefetches_abandoned =
+            self.source_read_prefetches_abandoned.saturating_add(source_read_prefetches_abandoned);
+        self.row_groups_planned = self.row_groups_planned.saturating_add(row_groups_planned);
+        self.row_groups_committed = self.row_groups_committed.saturating_add(row_groups_committed);
+        self.partial_aggregate_count = self.partial_aggregate_count.saturating_add(partial_aggregate_count);
+        self.partial_aggregate_input_rows =
+            self.partial_aggregate_input_rows.saturating_add(partial_aggregate_input_rows);
+        self.partial_aggregate_rows = self.partial_aggregate_rows.saturating_add(partial_aggregate_rows);
+        self.partial_aggregate_retained_bytes =
+            self.partial_aggregate_retained_bytes.max(partial_aggregate_retained_bytes);
+        self.final_merge_attempts = self.final_merge_attempts.saturating_add(final_merge_attempts);
+        self.final_merge_levels = self.final_merge_levels.saturating_add(final_merge_levels);
+        self.final_merge_max_fan_in = self.final_merge_max_fan_in.max(final_merge_max_fan_in);
+        self.retry_count = self.retry_count.saturating_add(retry_count);
+        self.retry_resource_exhausted_count =
+            self.retry_resource_exhausted_count.saturating_add(retry_resource_exhausted_count);
+        self.retry_reservation_failure_count =
+            self.retry_reservation_failure_count.saturating_add(retry_reservation_failure_count);
+        self.dynamic_filter_produced_count =
+            self.dynamic_filter_produced_count.saturating_add(dynamic_filter_produced_count);
+        self.dynamic_filter_skipped_count =
+            self.dynamic_filter_skipped_count.saturating_add(dynamic_filter_skipped_count);
+        self.dynamic_filter_applied_count =
+            self.dynamic_filter_applied_count.saturating_add(dynamic_filter_applied_count);
+        self.dynamic_filter_row_groups_pruned =
+            self.dynamic_filter_row_groups_pruned.saturating_add(dynamic_filter_row_groups_pruned);
+        self.dynamic_filter_source_bytes_pruned =
+            self.dynamic_filter_source_bytes_pruned.saturating_add(dynamic_filter_source_bytes_pruned);
+        self.dynamic_filter_reader_predicate_rows_before = self
+            .dynamic_filter_reader_predicate_rows_before
+            .saturating_add(dynamic_filter_reader_predicate_rows_before);
+        self.dynamic_filter_reader_predicate_rows_after =
+            self.dynamic_filter_reader_predicate_rows_after.saturating_add(dynamic_filter_reader_predicate_rows_after);
+        self.dynamic_filter_reader_predicate_rows_filtered = self
+            .dynamic_filter_reader_predicate_rows_filtered
+            .saturating_add(dynamic_filter_reader_predicate_rows_filtered);
+        self.dynamic_filter_post_decode_rows_before =
+            self.dynamic_filter_post_decode_rows_before.saturating_add(dynamic_filter_post_decode_rows_before);
+        self.dynamic_filter_post_decode_rows_after =
+            self.dynamic_filter_post_decode_rows_after.saturating_add(dynamic_filter_post_decode_rows_after);
+        self.dynamic_filter_post_decode_rows_filtered =
+            self.dynamic_filter_post_decode_rows_filtered.saturating_add(dynamic_filter_post_decode_rows_filtered);
+        self.dynamic_filter_source_post_decode_rows_filtered = self
+            .dynamic_filter_source_post_decode_rows_filtered
+            .saturating_add(dynamic_filter_source_post_decode_rows_filtered);
+        self.dynamic_filter_filter_post_decode_rows_filtered = self
+            .dynamic_filter_filter_post_decode_rows_filtered
+            .saturating_add(dynamic_filter_filter_post_decode_rows_filtered);
+        self.dynamic_filter_join_probe_post_decode_rows_filtered = self
+            .dynamic_filter_join_probe_post_decode_rows_filtered
+            .saturating_add(dynamic_filter_join_probe_post_decode_rows_filtered);
+        self.merge_dynamic_filter_runtime_rows(dynamic_filter_runtime_rows);
+        self.source_read_runtime_rows.extend(source_read_runtime_rows);
+        self.source_read_runtime_rows.sort_by_key(|row| row.to_stable_kv_row());
+        self.lakehouse_cache_fill_event_snapshot_rows.extend(lakehouse_cache_fill_event_snapshot_rows);
+        self.lakehouse_cache_fill_event_snapshot_rows.sort_by_key(|row| row.to_stable_kv_row());
+        self.hash_join_build_count = self.hash_join_build_count.saturating_add(hash_join_build_count);
+        self.filtered_join_build_count = self.filtered_join_build_count.saturating_add(filtered_join_build_count);
+        self.one_shot_join_count = self.one_shot_join_count.saturating_add(one_shot_join_count);
+        self.hash_join_cache_hits = self.hash_join_cache_hits.saturating_add(hash_join_cache_hits);
+        self.hash_join_cache_misses = self.hash_join_cache_misses.saturating_add(hash_join_cache_misses);
+        self.hash_join_hash_table_bytes = self.hash_join_hash_table_bytes.saturating_add(hash_join_hash_table_bytes);
+        self.filtered_join_hash_table_bytes =
+            self.filtered_join_hash_table_bytes.saturating_add(filtered_join_hash_table_bytes);
+        self.filtered_join_probe_state_bytes =
+            self.filtered_join_probe_state_bytes.saturating_add(filtered_join_probe_state_bytes);
+        self.mixed_join_size_data_bytes = self.mixed_join_size_data_bytes.saturating_add(mixed_join_size_data_bytes);
+        self.one_shot_join_index_bytes = self.one_shot_join_index_bytes.saturating_add(one_shot_join_index_bytes);
+        self.one_shot_join_materialization_bytes =
+            self.one_shot_join_materialization_bytes.saturating_add(one_shot_join_materialization_bytes);
+        self.one_shot_join_output_bytes = self.one_shot_join_output_bytes.saturating_add(one_shot_join_output_bytes);
+        self.join_gather_map_bytes = self.join_gather_map_bytes.saturating_add(join_gather_map_bytes);
+        self.merge_aggregate_strategy_rows(aggregate_strategy_rows);
+        self.merge_join_strategy_rows(join_strategy_rows);
+    }
+
     /// Classifies dynamic-filter runtime evidence by the strongest measured reduction.
     ///
     /// `dynamic_filter_applied_count` is intentionally not treated as a
@@ -403,38 +628,41 @@ impl NativeDataFusionExecutionMetrics {
             return NativeDynamicFilterPostDecodeReductionStage::None;
         }
 
-        let mut stages = BTreeSet::new();
         let mut classified_rows_filtered = 0_usize;
-        if self.dynamic_filter_source_post_decode_rows_filtered > 0 {
-            stages.insert("source_post_decode");
+        let source_post_decode = self.dynamic_filter_source_post_decode_rows_filtered > 0;
+        if source_post_decode {
             classified_rows_filtered =
                 classified_rows_filtered.saturating_add(self.dynamic_filter_source_post_decode_rows_filtered);
         }
-        if self.dynamic_filter_filter_post_decode_rows_filtered > 0 {
-            stages.insert("filter_post_decode");
+        let filter_post_decode = self.dynamic_filter_filter_post_decode_rows_filtered > 0;
+        if filter_post_decode {
             classified_rows_filtered =
                 classified_rows_filtered.saturating_add(self.dynamic_filter_filter_post_decode_rows_filtered);
         }
-        if self.dynamic_filter_join_probe_post_decode_rows_filtered > 0 {
-            stages.insert("join_probe_post_decode");
+        let join_probe_post_decode = self.dynamic_filter_join_probe_post_decode_rows_filtered > 0;
+        if join_probe_post_decode {
             classified_rows_filtered =
                 classified_rows_filtered.saturating_add(self.dynamic_filter_join_probe_post_decode_rows_filtered);
         }
 
-        if classified_rows_filtered < self.dynamic_filter_post_decode_rows_filtered {
-            stages.insert("unknown");
-        }
-
-        if stages.len() > 1 {
+        let stage_count = usize::from(source_post_decode)
+            + usize::from(filter_post_decode)
+            + usize::from(join_probe_post_decode)
+            + usize::from(classified_rows_filtered < self.dynamic_filter_post_decode_rows_filtered);
+        if stage_count > 1 {
             return NativeDynamicFilterPostDecodeReductionStage::MixedPostDecode;
         }
-
-        match stages.iter().next().copied() {
-            Some("source_post_decode") => NativeDynamicFilterPostDecodeReductionStage::SourcePostDecode,
-            Some("filter_post_decode") => NativeDynamicFilterPostDecodeReductionStage::FilterPostDecode,
-            Some("join_probe_post_decode") => NativeDynamicFilterPostDecodeReductionStage::JoinProbePostDecode,
-            Some(_) | None => NativeDynamicFilterPostDecodeReductionStage::Unknown,
+        if source_post_decode {
+            return NativeDynamicFilterPostDecodeReductionStage::SourcePostDecode;
         }
+        if filter_post_decode {
+            return NativeDynamicFilterPostDecodeReductionStage::FilterPostDecode;
+        }
+        if join_probe_post_decode {
+            return NativeDynamicFilterPostDecodeReductionStage::JoinProbePostDecode;
+        }
+        debug_assert!(classified_rows_filtered < self.dynamic_filter_post_decode_rows_filtered);
+        NativeDynamicFilterPostDecodeReductionStage::Unknown
     }
 
     /// Counts partial aggregate strategy rows that used libcudf groupby only
@@ -499,7 +727,7 @@ impl NativeDataFusionExecutionMetrics {
     }
 
     /// Merges aggregate strategy rows by aggregate site and keeps stable sort order.
-    pub fn merge_aggregate_strategy_rows(&mut self, rows: Vec<NativeAggregateStrategyMetricRow>) {
+    fn merge_aggregate_strategy_rows(&mut self, rows: Vec<NativeAggregateStrategyMetricRow>) {
         for row in rows {
             if let Some(existing) = self.aggregate_strategy_rows.iter_mut().find(|existing| existing.same_site(&row)) {
                 existing.merge_runtime_from(row);
@@ -511,7 +739,7 @@ impl NativeDataFusionExecutionMetrics {
     }
 
     /// Merges join strategy rows by join site and keeps stable sort order.
-    pub fn merge_join_strategy_rows(&mut self, rows: Vec<NativeJoinStrategyMetricRow>) {
+    fn merge_join_strategy_rows(&mut self, rows: Vec<NativeJoinStrategyMetricRow>) {
         for row in rows {
             if let Some(existing) = self.join_strategy_rows.iter_mut().find(|existing| existing.same_site(&row)) {
                 existing.merge_runtime_from(row);
@@ -523,7 +751,7 @@ impl NativeDataFusionExecutionMetrics {
     }
 
     /// Appends graph runtime rows and restores stable sort order.
-    pub fn merge_graph_runtime_rows(&mut self, rows: Vec<NativeGraphRuntimeMetricRow>) {
+    fn merge_graph_runtime_rows(&mut self, rows: Vec<NativeGraphRuntimeMetricRow>) {
         self.graph_runtime_rows.extend(rows);
         self.graph_runtime_rows.sort_by(|left, right| {
             left.node_id
@@ -536,7 +764,7 @@ impl NativeDataFusionExecutionMetrics {
     }
 
     /// Appends graph reservation rows and restores stable sort order.
-    pub fn merge_graph_reservation_rows(&mut self, rows: Vec<NativeGraphReservationMetricRow>) {
+    fn merge_graph_reservation_rows(&mut self, rows: Vec<NativeGraphReservationMetricRow>) {
         self.graph_reservation_rows.extend(rows);
         self.graph_reservation_rows.sort_by(|left, right| {
             left.node_id
@@ -547,7 +775,7 @@ impl NativeDataFusionExecutionMetrics {
     }
 
     /// Merges task operator rows by operator kind and keeps stable sort order.
-    pub fn merge_task_operator_rows(&mut self, rows: Vec<NativeTaskOperatorMetricRow>) {
+    fn merge_task_operator_rows(&mut self, rows: Vec<NativeTaskOperatorMetricRow>) {
         for row in rows {
             if let Some(existing) =
                 self.task_operator_rows.iter_mut().find(|existing| existing.operator_kind == row.operator_kind)
@@ -573,7 +801,7 @@ impl NativeDataFusionExecutionMetrics {
     }
 
     /// Merges task runtime rows by compiled task id and keeps stable sort order.
-    pub fn merge_task_runtime_rows(&mut self, rows: Vec<NativeTaskRuntimeMetricRow>) {
+    fn merge_task_runtime_rows(&mut self, rows: Vec<NativeTaskRuntimeMetricRow>) {
         for row in rows {
             if let Some(existing) =
                 self.task_runtime_rows.iter_mut().find(|existing| existing.compiled_task_id == row.compiled_task_id)
@@ -598,31 +826,323 @@ impl NativeDataFusionExecutionMetrics {
         self.task_runtime_rows.sort_by(|left, right| left.compiled_task_id.cmp(&right.compiled_task_id));
     }
 
-    /// Appends plan/task mapping rows and restores stable sort order.
-    pub fn merge_plan_task_mapping_rows(&mut self, rows: Vec<NativePlanTaskMappingMetricRow>) {
-        self.plan_task_mapping_rows.extend(rows);
-        self.plan_task_mapping_rows.sort_by_key(|row| row.to_stable_kv_row());
-        self.plan_task_mapping_rows.dedup();
-    }
-
     /// Appends dynamic-filter runtime rows and restores stable sort order.
-    pub fn merge_dynamic_filter_runtime_rows(&mut self, rows: Vec<NativeDynamicFilterRuntimeMetricRow>) {
+    fn merge_dynamic_filter_runtime_rows(&mut self, rows: Vec<NativeDynamicFilterRuntimeMetricRow>) {
         self.dynamic_filter_runtime_rows.extend(rows);
         self.dynamic_filter_runtime_rows.sort_by_key(|row| row.to_stable_kv_row());
     }
+}
 
-    /// Appends source-read runtime rows and restores stable sort order.
-    pub fn merge_source_read_runtime_rows(&mut self, rows: Vec<NativeSourceReadRuntimeMetricRow>) {
-        self.source_read_runtime_rows.extend(rows);
-        self.source_read_runtime_rows.sort_by_key(|row| row.to_stable_kv_row());
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn merge_from_preserves_scalar_peak_optional_and_identity_semantics() {
+        let mut metrics = NativeDataFusionExecutionMetrics {
+            gpu_resident_input_handoffs: usize::MAX - 2,
+            reservation_requested_bytes: 11,
+            reservation_live_peak_bytes: 13,
+            reservation_denied_count: 17,
+            max_task_reservation_bytes: 19,
+            partial_aggregate_retained_bytes: 23,
+            final_merge_levels: 29,
+            final_merge_max_fan_in: 31,
+            hash_join_hash_table_bytes: 37,
+            admission_sequence: Some(41),
+            admission_wait_time_ns: Some(43),
+            device_ordinal: Some(47),
+            query_grant_bytes: Some(53),
+            resident_dataframe_peak_bytes: Some(59),
+            allocator_high_water_bytes: Some(61),
+            max_task_observed_peak_bytes: Some(67),
+            max_task_retained_bytes: Some(71),
+            ..NativeDataFusionExecutionMetrics::default()
+        };
+
+        metrics.merge_from(NativeDataFusionExecutionMetrics {
+            gpu_resident_input_handoffs: 5,
+            reservation_requested_bytes: 73,
+            reservation_live_peak_bytes: 79,
+            reservation_denied_count: 83,
+            max_task_reservation_bytes: 89,
+            partial_aggregate_retained_bytes: 97,
+            final_merge_levels: 101,
+            final_merge_max_fan_in: 103,
+            hash_join_hash_table_bytes: 107,
+            admission_sequence: Some(41),
+            admission_wait_time_ns: Some(109),
+            device_ordinal: Some(47),
+            query_grant_bytes: Some(113),
+            resident_dataframe_peak_bytes: Some(127),
+            allocator_high_water_bytes: Some(131),
+            max_task_observed_peak_bytes: Some(137),
+            max_task_retained_bytes: Some(139),
+            ..NativeDataFusionExecutionMetrics::default()
+        });
+
+        assert_eq!(metrics.gpu_resident_input_handoffs, usize::MAX);
+        assert_eq!(metrics.reservation_requested_bytes, 84);
+        assert_eq!(metrics.reservation_live_peak_bytes, 79);
+        assert_eq!(metrics.reservation_denied_count, 100);
+        assert_eq!(metrics.max_task_reservation_bytes, 89);
+        assert_eq!(metrics.partial_aggregate_retained_bytes, 97);
+        assert_eq!(metrics.final_merge_levels, 130);
+        assert_eq!(metrics.final_merge_max_fan_in, 103);
+        assert_eq!(metrics.hash_join_hash_table_bytes, 144);
+        assert_eq!(metrics.admission_sequence, Some(41));
+        assert_eq!(metrics.admission_wait_time_ns, Some(109));
+        assert_eq!(metrics.device_ordinal, Some(47));
+        assert_eq!(metrics.query_grant_bytes, Some(113));
+        assert_eq!(metrics.resident_dataframe_peak_bytes, Some(127));
+        assert_eq!(metrics.allocator_high_water_bytes, Some(131));
+        assert_eq!(metrics.max_task_observed_peak_bytes, Some(137));
+        assert_eq!(metrics.max_task_retained_bytes, Some(139));
+        assert_eq!(
+            metrics,
+            NativeDataFusionExecutionMetrics {
+                gpu_resident_input_handoffs: usize::MAX,
+                reservation_requested_bytes: 84,
+                reservation_live_peak_bytes: 79,
+                reservation_denied_count: 100,
+                max_task_reservation_bytes: 89,
+                partial_aggregate_retained_bytes: 97,
+                final_merge_levels: 130,
+                final_merge_max_fan_in: 103,
+                hash_join_hash_table_bytes: 144,
+                admission_sequence: Some(41),
+                admission_wait_time_ns: Some(109),
+                device_ordinal: Some(47),
+                query_grant_bytes: Some(113),
+                resident_dataframe_peak_bytes: Some(127),
+                allocator_high_water_bytes: Some(131),
+                max_task_observed_peak_bytes: Some(137),
+                max_task_retained_bytes: Some(139),
+                ..Default::default()
+            }
+        );
+
+        metrics.merge_from(NativeDataFusionExecutionMetrics {
+            admission_sequence: Some(149),
+            device_ordinal: Some(151),
+            ..NativeDataFusionExecutionMetrics::default()
+        });
+        assert_eq!(metrics.admission_sequence, None);
+        assert_eq!(metrics.device_ordinal, None);
     }
 
-    /// Appends lakehouse cache-fill event snapshot rows and restores stable sort order.
-    pub fn merge_lakehouse_cache_fill_event_snapshot_rows(
-        &mut self,
-        rows: Vec<NativeLakehouseCacheFillEventMetricRow>,
-    ) {
-        self.lakehouse_cache_fill_event_snapshot_rows.extend(rows);
-        self.lakehouse_cache_fill_event_snapshot_rows.sort_by_key(|row| row.to_stable_kv_row());
+    #[test]
+    fn merge_from_keeps_a_single_attempt_identity_and_rejects_missing_identity() {
+        let first = NativeDataFusionExecutionMetrics {
+            admission_sequence: Some(41),
+            device_ordinal: Some(7),
+            ..NativeDataFusionExecutionMetrics::default()
+        };
+        let mut aggregate = first.clone();
+
+        assert_eq!(aggregate, first);
+
+        aggregate.merge_from(NativeDataFusionExecutionMetrics::default());
+        assert_eq!(aggregate.admission_sequence, None);
+        assert_eq!(aggregate.device_ordinal, None);
+    }
+
+    #[test]
+    fn merge_from_keeps_every_nested_row_collection_ordered() {
+        let mapping = |plan_node_id: &str| NativePlanTaskMappingMetricRow {
+            query_id: "q1".to_string(),
+            plan_node_id: Some(plan_node_id.to_string()),
+            ..Default::default()
+        };
+        let mut metrics = NativeDataFusionExecutionMetrics {
+            graph_reservation_rows: vec![NativeGraphReservationMetricRow {
+                node_id: "z-reservation".to_string(),
+                ..Default::default()
+            }],
+            graph_runtime_rows: vec![NativeGraphRuntimeMetricRow {
+                node_id: "z-runtime".to_string(),
+                ..Default::default()
+            }],
+            task_operator_rows: vec![NativeTaskOperatorMetricRow {
+                operator_kind: "source".to_string(),
+                task_count: 2,
+                elapsed_ns: 3,
+                ..Default::default()
+            }],
+            task_runtime_rows: vec![NativeTaskRuntimeMetricRow {
+                compiled_task_id: "task-z".to_string(),
+                operator_kind: "source".to_string(),
+                elapsed_ns: 5,
+                ..Default::default()
+            }],
+            plan_task_mapping_rows: vec![mapping("z-plan")],
+            dynamic_filter_runtime_rows: vec![NativeDynamicFilterRuntimeMetricRow {
+                dynamic_filter_id: "z-filter".to_string(),
+                ..Default::default()
+            }],
+            source_read_runtime_rows: vec![NativeSourceReadRuntimeMetricRow {
+                source_node_id: "z-source".to_string(),
+                ..Default::default()
+            }],
+            lakehouse_cache_fill_event_snapshot_rows: vec![NativeLakehouseCacheFillEventMetricRow {
+                outcome: "z-cache".to_string(),
+                ..Default::default()
+            }],
+            aggregate_strategy_rows: vec![NativeAggregateStrategyMetricRow {
+                node_id: "z-aggregate".to_string(),
+                input_rows: 7,
+                ..Default::default()
+            }],
+            join_strategy_rows: vec![NativeJoinStrategyMetricRow {
+                node_id: "z-join".to_string(),
+                hash_join_build_count: 11,
+                ..Default::default()
+            }],
+            ..NativeDataFusionExecutionMetrics::default()
+        };
+
+        metrics.merge_from(NativeDataFusionExecutionMetrics {
+            graph_reservation_rows: vec![NativeGraphReservationMetricRow {
+                node_id: "a-reservation".to_string(),
+                ..Default::default()
+            }],
+            graph_runtime_rows: vec![NativeGraphRuntimeMetricRow {
+                node_id: "a-runtime".to_string(),
+                ..Default::default()
+            }],
+            task_operator_rows: vec![
+                NativeTaskOperatorMetricRow {
+                    operator_kind: "aggregate".to_string(),
+                    task_count: 13,
+                    ..Default::default()
+                },
+                NativeTaskOperatorMetricRow {
+                    operator_kind: "source".to_string(),
+                    task_count: 17,
+                    elapsed_ns: 19,
+                    ..Default::default()
+                },
+            ],
+            task_runtime_rows: vec![
+                NativeTaskRuntimeMetricRow {
+                    compiled_task_id: "task-a".to_string(),
+                    operator_kind: "aggregate".to_string(),
+                    ..Default::default()
+                },
+                NativeTaskRuntimeMetricRow {
+                    compiled_task_id: "task-z".to_string(),
+                    operator_kind: "source-updated".to_string(),
+                    elapsed_ns: 23,
+                    ..Default::default()
+                },
+            ],
+            plan_task_mapping_rows: vec![mapping("a-plan"), mapping("z-plan")],
+            dynamic_filter_runtime_rows: vec![NativeDynamicFilterRuntimeMetricRow {
+                dynamic_filter_id: "a-filter".to_string(),
+                ..Default::default()
+            }],
+            source_read_runtime_rows: vec![NativeSourceReadRuntimeMetricRow {
+                source_node_id: "a-source".to_string(),
+                ..Default::default()
+            }],
+            lakehouse_cache_fill_event_snapshot_rows: vec![NativeLakehouseCacheFillEventMetricRow {
+                outcome: "a-cache".to_string(),
+                ..Default::default()
+            }],
+            aggregate_strategy_rows: vec![
+                NativeAggregateStrategyMetricRow { node_id: "a-aggregate".to_string(), ..Default::default() },
+                NativeAggregateStrategyMetricRow {
+                    node_id: "z-aggregate".to_string(),
+                    input_rows: 29,
+                    ..Default::default()
+                },
+            ],
+            join_strategy_rows: vec![
+                NativeJoinStrategyMetricRow { node_id: "a-join".to_string(), ..Default::default() },
+                NativeJoinStrategyMetricRow {
+                    node_id: "z-join".to_string(),
+                    hash_join_build_count: 31,
+                    ..Default::default()
+                },
+            ],
+            ..NativeDataFusionExecutionMetrics::default()
+        });
+
+        assert_eq!(
+            metrics.graph_reservation_rows.iter().map(|row| row.node_id.as_str()).collect::<Vec<_>>(),
+            ["a-reservation", "z-reservation"]
+        );
+        assert_eq!(
+            metrics.graph_runtime_rows.iter().map(|row| row.node_id.as_str()).collect::<Vec<_>>(),
+            ["a-runtime", "z-runtime"]
+        );
+        assert_eq!(
+            metrics.task_operator_rows.iter().map(|row| row.operator_kind.as_str()).collect::<Vec<_>>(),
+            ["aggregate", "source"]
+        );
+        assert_eq!(metrics.task_operator_rows[1].task_count, 19);
+        assert_eq!(metrics.task_operator_rows[1].elapsed_ns, 22);
+        assert_eq!(
+            metrics.task_runtime_rows.iter().map(|row| row.compiled_task_id.as_str()).collect::<Vec<_>>(),
+            ["task-a", "task-z"]
+        );
+        assert_eq!(metrics.task_runtime_rows[1].operator_kind, "source-updated");
+        assert_eq!(metrics.task_runtime_rows[1].elapsed_ns, 28);
+        assert_eq!(
+            metrics.plan_task_mapping_rows.iter().map(|row| row.plan_node_id.as_deref()).collect::<Vec<_>>(),
+            [Some("a-plan"), Some("z-plan")]
+        );
+        assert_eq!(
+            metrics.dynamic_filter_runtime_rows.iter().map(|row| row.dynamic_filter_id.as_str()).collect::<Vec<_>>(),
+            ["a-filter", "z-filter"]
+        );
+        assert_eq!(
+            metrics.source_read_runtime_rows.iter().map(|row| row.source_node_id.as_str()).collect::<Vec<_>>(),
+            ["a-source", "z-source"]
+        );
+        assert_eq!(
+            metrics.lakehouse_cache_fill_event_snapshot_rows.iter().map(|row| row.outcome.as_str()).collect::<Vec<_>>(),
+            ["a-cache", "z-cache"]
+        );
+        assert_eq!(
+            metrics.aggregate_strategy_rows.iter().map(|row| row.node_id.as_str()).collect::<Vec<_>>(),
+            ["a-aggregate", "z-aggregate"]
+        );
+        assert_eq!(metrics.aggregate_strategy_rows[1].input_rows, 36);
+        assert_eq!(
+            metrics.join_strategy_rows.iter().map(|row| row.node_id.as_str()).collect::<Vec<_>>(),
+            ["a-join", "z-join"]
+        );
+        assert_eq!(metrics.join_strategy_rows[1].hash_join_build_count, 42);
+    }
+
+    #[test]
+    fn merge_from_destructures_every_metric_field() {
+        let source = include_str!("mod.rs");
+        let merge_from =
+            source.split_once("pub fn merge_from").expect("metric aggregation owner must expose merge_from").1;
+        let destructuring = merge_from.split_once("} = other;").expect("merge_from must destructure its input").0;
+
+        assert!(destructuring.contains("let Self {"));
+        assert!(!destructuring.contains(".."));
+    }
+
+    #[test]
+    fn post_decode_stage_classification_does_not_round_trip_through_strings() {
+        let source = include_str!("mod.rs");
+        let classification = source
+            .split_once("pub fn dynamic_filter_post_decode_reduction_stage")
+            .expect("post-decode stage classifier must remain available")
+            .1
+            .split_once("/// Counts partial aggregate strategy rows")
+            .expect("post-decode stage classifier must end before aggregate accessors")
+            .0;
+
+        for stage in ["source_post_decode", "filter_post_decode", "join_probe_post_decode", "unknown"] {
+            assert!(
+                !classification.contains(&format!("\"{stage}\"")),
+                "post-decode stage classifier must retain enum values instead of {stage} strings"
+            );
+        }
     }
 }

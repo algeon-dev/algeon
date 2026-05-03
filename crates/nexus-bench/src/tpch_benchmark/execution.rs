@@ -1,5 +1,3 @@
-use nexus_query_engine::harness::max_option as max_optional_metric;
-
 use super::*;
 
 #[derive(Debug, Clone)]
@@ -342,149 +340,14 @@ pub(super) async fn run_native_query_iterations(
 }
 
 fn aggregate_native_execution_metrics(metrics: &[MetricsSet]) -> NativeDataFusionExecutionMetrics {
-    let mut aggregate = NativeDataFusionExecutionMetrics::default();
-    for metrics in metrics {
-        let current = NativeDataFusionExecutionMetrics::from_metrics(metrics);
-        aggregate.gpu_resident_input_handoffs =
-            aggregate.gpu_resident_input_handoffs.saturating_add(current.gpu_resident_input_handoffs);
-        aggregate.host_to_device_uploads =
-            aggregate.host_to_device_uploads.saturating_add(current.host_to_device_uploads);
-        aggregate.host_to_device_uploaded_rows =
-            aggregate.host_to_device_uploaded_rows.saturating_add(current.host_to_device_uploaded_rows);
-        aggregate.host_to_device_uploaded_bytes =
-            aggregate.host_to_device_uploaded_bytes.saturating_add(current.host_to_device_uploaded_bytes);
-        aggregate.device_to_host_materializations =
-            aggregate.device_to_host_materializations.saturating_add(current.device_to_host_materializations);
-        aggregate.device_to_host_materialized_rows =
-            aggregate.device_to_host_materialized_rows.saturating_add(current.device_to_host_materialized_rows);
-        aggregate.device_to_host_materialized_bytes =
-            aggregate.device_to_host_materialized_bytes.saturating_add(current.device_to_host_materialized_bytes);
-        aggregate.device_to_device_copies =
-            aggregate.device_to_device_copies.saturating_add(current.device_to_device_copies);
-        aggregate.device_to_device_copied_bytes =
-            aggregate.device_to_device_copied_bytes.saturating_add(current.device_to_device_copied_bytes);
-        aggregate.parquet_files = aggregate.parquet_files.saturating_add(current.parquet_files);
-        aggregate.parquet_bytes_known = aggregate.parquet_bytes_known.saturating_add(current.parquet_bytes_known);
-        aggregate.row_groups_selected = aggregate.row_groups_selected.saturating_add(current.row_groups_selected);
-        aggregate.read_columns = aggregate.read_columns.saturating_add(current.read_columns);
-        aggregate.resident_dataframe_peak_bytes =
-            max_optional_metric(aggregate.resident_dataframe_peak_bytes, current.resident_dataframe_peak_bytes);
-        aggregate.allocator_high_water_bytes =
-            max_optional_metric(aggregate.allocator_high_water_bytes, current.allocator_high_water_bytes);
-        aggregate.reservation_requested_bytes =
-            aggregate.reservation_requested_bytes.saturating_add(current.reservation_requested_bytes);
-        aggregate.reservation_granted_bytes =
-            aggregate.reservation_granted_bytes.saturating_add(current.reservation_granted_bytes);
-        aggregate.reservation_live_peak_bytes =
-            aggregate.reservation_live_peak_bytes.max(current.reservation_live_peak_bytes);
-        aggregate.reservation_denied_count =
-            aggregate.reservation_denied_count.saturating_add(current.reservation_denied_count);
-        aggregate.max_task_reservation_bytes =
-            aggregate.max_task_reservation_bytes.max(current.max_task_reservation_bytes);
-        aggregate.max_task_observed_peak_bytes =
-            max_optional_metric(aggregate.max_task_observed_peak_bytes, current.max_task_observed_peak_bytes);
-        aggregate.max_task_retained_bytes =
-            max_optional_metric(aggregate.max_task_retained_bytes, current.max_task_retained_bytes);
-        aggregate.merge_graph_reservation_rows(current.graph_reservation_rows);
-        aggregate.merge_graph_runtime_rows(current.graph_runtime_rows);
-        aggregate.merge_task_operator_rows(current.task_operator_rows);
-        aggregate.merge_task_runtime_rows(current.task_runtime_rows);
-        aggregate.source_chunks_planned = aggregate.source_chunks_planned.saturating_add(current.source_chunks_planned);
-        aggregate.source_chunks_attempted =
-            aggregate.source_chunks_attempted.saturating_add(current.source_chunks_attempted);
-        aggregate.source_chunks_committed =
-            aggregate.source_chunks_committed.saturating_add(current.source_chunks_committed);
-        aggregate.source_chunks_retried = aggregate.source_chunks_retried.saturating_add(current.source_chunks_retried);
-        aggregate.source_read_prefetches_started =
-            aggregate.source_read_prefetches_started.saturating_add(current.source_read_prefetches_started);
-        aggregate.source_read_prefetches_completed =
-            aggregate.source_read_prefetches_completed.saturating_add(current.source_read_prefetches_completed);
-        aggregate.source_read_prefetches_skipped =
-            aggregate.source_read_prefetches_skipped.saturating_add(current.source_read_prefetches_skipped);
-        aggregate.source_read_prefetches_abandoned =
-            aggregate.source_read_prefetches_abandoned.saturating_add(current.source_read_prefetches_abandoned);
-        aggregate.row_groups_planned = aggregate.row_groups_planned.saturating_add(current.row_groups_planned);
-        aggregate.row_groups_committed = aggregate.row_groups_committed.saturating_add(current.row_groups_committed);
-        aggregate.partial_aggregate_count =
-            aggregate.partial_aggregate_count.saturating_add(current.partial_aggregate_count);
-        aggregate.partial_aggregate_input_rows =
-            aggregate.partial_aggregate_input_rows.saturating_add(current.partial_aggregate_input_rows);
-        aggregate.partial_aggregate_rows =
-            aggregate.partial_aggregate_rows.saturating_add(current.partial_aggregate_rows);
-        aggregate.partial_aggregate_retained_bytes =
-            aggregate.partial_aggregate_retained_bytes.max(current.partial_aggregate_retained_bytes);
-        aggregate.final_merge_attempts = aggregate.final_merge_attempts.saturating_add(current.final_merge_attempts);
-        aggregate.final_merge_levels = aggregate.final_merge_levels.saturating_add(current.final_merge_levels);
-        aggregate.final_merge_max_fan_in = aggregate.final_merge_max_fan_in.max(current.final_merge_max_fan_in);
-        aggregate.retry_count = aggregate.retry_count.saturating_add(current.retry_count);
-        aggregate.retry_resource_exhausted_count =
-            aggregate.retry_resource_exhausted_count.saturating_add(current.retry_resource_exhausted_count);
-        aggregate.retry_reservation_failure_count =
-            aggregate.retry_reservation_failure_count.saturating_add(current.retry_reservation_failure_count);
-        aggregate.dynamic_filter_produced_count =
-            aggregate.dynamic_filter_produced_count.saturating_add(current.dynamic_filter_produced_count);
-        aggregate.dynamic_filter_skipped_count =
-            aggregate.dynamic_filter_skipped_count.saturating_add(current.dynamic_filter_skipped_count);
-        aggregate.dynamic_filter_applied_count =
-            aggregate.dynamic_filter_applied_count.saturating_add(current.dynamic_filter_applied_count);
-        aggregate.dynamic_filter_row_groups_pruned =
-            aggregate.dynamic_filter_row_groups_pruned.saturating_add(current.dynamic_filter_row_groups_pruned);
-        aggregate.dynamic_filter_source_bytes_pruned =
-            aggregate.dynamic_filter_source_bytes_pruned.saturating_add(current.dynamic_filter_source_bytes_pruned);
-        aggregate.dynamic_filter_reader_predicate_rows_before = aggregate
-            .dynamic_filter_reader_predicate_rows_before
-            .saturating_add(current.dynamic_filter_reader_predicate_rows_before);
-        aggregate.dynamic_filter_reader_predicate_rows_after = aggregate
-            .dynamic_filter_reader_predicate_rows_after
-            .saturating_add(current.dynamic_filter_reader_predicate_rows_after);
-        aggregate.dynamic_filter_reader_predicate_rows_filtered = aggregate
-            .dynamic_filter_reader_predicate_rows_filtered
-            .saturating_add(current.dynamic_filter_reader_predicate_rows_filtered);
-        aggregate.dynamic_filter_post_decode_rows_before = aggregate
-            .dynamic_filter_post_decode_rows_before
-            .saturating_add(current.dynamic_filter_post_decode_rows_before);
-        aggregate.dynamic_filter_post_decode_rows_after = aggregate
-            .dynamic_filter_post_decode_rows_after
-            .saturating_add(current.dynamic_filter_post_decode_rows_after);
-        aggregate.dynamic_filter_post_decode_rows_filtered = aggregate
-            .dynamic_filter_post_decode_rows_filtered
-            .saturating_add(current.dynamic_filter_post_decode_rows_filtered);
-        aggregate.dynamic_filter_source_post_decode_rows_filtered = aggregate
-            .dynamic_filter_source_post_decode_rows_filtered
-            .saturating_add(current.dynamic_filter_source_post_decode_rows_filtered);
-        aggregate.dynamic_filter_filter_post_decode_rows_filtered = aggregate
-            .dynamic_filter_filter_post_decode_rows_filtered
-            .saturating_add(current.dynamic_filter_filter_post_decode_rows_filtered);
-        aggregate.dynamic_filter_join_probe_post_decode_rows_filtered = aggregate
-            .dynamic_filter_join_probe_post_decode_rows_filtered
-            .saturating_add(current.dynamic_filter_join_probe_post_decode_rows_filtered);
-        aggregate.merge_dynamic_filter_runtime_rows(current.dynamic_filter_runtime_rows);
-        aggregate.hash_join_build_count = aggregate.hash_join_build_count.saturating_add(current.hash_join_build_count);
-        aggregate.filtered_join_build_count =
-            aggregate.filtered_join_build_count.saturating_add(current.filtered_join_build_count);
-        aggregate.one_shot_join_count = aggregate.one_shot_join_count.saturating_add(current.one_shot_join_count);
-        aggregate.hash_join_cache_hits = aggregate.hash_join_cache_hits.saturating_add(current.hash_join_cache_hits);
-        aggregate.hash_join_cache_misses =
-            aggregate.hash_join_cache_misses.saturating_add(current.hash_join_cache_misses);
-        aggregate.hash_join_hash_table_bytes =
-            aggregate.hash_join_hash_table_bytes.saturating_add(current.hash_join_hash_table_bytes);
-        aggregate.filtered_join_hash_table_bytes =
-            aggregate.filtered_join_hash_table_bytes.saturating_add(current.filtered_join_hash_table_bytes);
-        aggregate.filtered_join_probe_state_bytes =
-            aggregate.filtered_join_probe_state_bytes.saturating_add(current.filtered_join_probe_state_bytes);
-        aggregate.mixed_join_size_data_bytes =
-            aggregate.mixed_join_size_data_bytes.saturating_add(current.mixed_join_size_data_bytes);
-        aggregate.one_shot_join_index_bytes =
-            aggregate.one_shot_join_index_bytes.saturating_add(current.one_shot_join_index_bytes);
-        aggregate.one_shot_join_materialization_bytes =
-            aggregate.one_shot_join_materialization_bytes.saturating_add(current.one_shot_join_materialization_bytes);
-        aggregate.one_shot_join_output_bytes =
-            aggregate.one_shot_join_output_bytes.saturating_add(current.one_shot_join_output_bytes);
-        aggregate.join_gather_map_bytes = aggregate.join_gather_map_bytes.saturating_add(current.join_gather_map_bytes);
-        aggregate.merge_aggregate_strategy_rows(current.aggregate_strategy_rows);
-        aggregate.merge_join_strategy_rows(current.join_strategy_rows);
-    }
-    aggregate
+    metrics
+        .iter()
+        .map(NativeDataFusionExecutionMetrics::from_metrics)
+        .reduce(|mut aggregate, current| {
+            aggregate.merge_from(current);
+            aggregate
+        })
+        .unwrap_or_default()
 }
 
 fn native_started(error: DataFusionError) -> NativeRunFailure {
