@@ -196,6 +196,18 @@ pub enum cudf_binary_operator_t {
 }
 
 // ---------------------------------------------------------------------------
+// Datetime enums
+// ---------------------------------------------------------------------------
+
+#[repr(i32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum cudf_datetime_component_t {
+    CUDF_DATETIME_COMPONENT_YEAR = 0,
+    CUDF_DATETIME_COMPONENT_MONTH = 1,
+    CUDF_DATETIME_COMPONENT_DAY = 2,
+}
+
+// ---------------------------------------------------------------------------
 // Row-predicate filtering nodes
 // ---------------------------------------------------------------------------
 

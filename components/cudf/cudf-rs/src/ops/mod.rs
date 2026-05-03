@@ -32,6 +32,7 @@
 pub mod binary;
 pub mod concatenate;
 pub mod copying;
+pub mod datetime;
 pub mod dictionary;
 pub mod expr;
 pub(crate) mod factorization;

@@ -5,6 +5,8 @@ mod common;
 mod core_contracts;
 #[path = "execution/frame_contracts.rs"]
 mod frame_contracts;
+#[path = "execution/ops_contracts.rs"]
+mod ops_contracts;
 #[path = "execution/query_backend_contract_tests.rs"]
 mod query_backend_contract_tests;
 #[path = "execution/runtime_contracts.rs"]
