@@ -273,8 +273,8 @@ pub(super) struct AdmissionRequest {
     pub(super) requirement: AttemptRequirement,
     /// Monotonic FIFO identity retained independently from admission order.
     pub(super) submission_seq: u64,
-    /// Device ordinals established at submission; capability filtering hooks
-    /// belong here, while the P2 baseline admits every configured device.
+    /// Device ordinals established at submission; capability filtering belongs
+    /// here, and each configured device is considered independently.
     pub(super) compatible_devices: Vec<usize>,
     /// Finite number of compatible-device bypasses before slot protection.
     pub(super) overtakes_remaining: u32,
@@ -440,8 +440,8 @@ impl QueryCompletion {
 
     /// Seals the observation inline and returns the deferred activity tail.
     ///
-    /// P2.7 report-before-reuse: the release commit seals the report before
-    /// capacity reuse, so the seal cannot be deferred to the dispatcher lane.
+    /// The release commit seals the report before capacity reuse, so the seal
+    /// cannot be deferred to the dispatcher lane.
     /// The opaque activity lease still runs last on the dispatcher tail lane:
     /// its destructor may reenter backend close and must observe the released
     /// backend GPU permit.

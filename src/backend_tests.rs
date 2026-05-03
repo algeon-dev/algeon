@@ -120,7 +120,6 @@ fn backend_validation_projection_keeps_device_profiles_independent() {
 
     let queue_bounds = backend.queue_bounds().unwrap();
     assert_eq!(queue_bounds.max_waiters, 8);
-    assert_eq!(backend.queue_policy(), &policy);
     assert_eq!(backend.device_ordinals(), &[0, 1]);
     assert_eq!(backend.device_profiles(), profiles.as_slice());
     // Validation preserves the configured envelopes but does not resolve a

@@ -161,7 +161,7 @@ async fn native_profile_iceberg_cte_aggregate_join_back_remains_executable_on_da
          LIMIT 5",
     )
     .await
-    .expect("P0.2-unlowerable CTE join must retain an executable DataFusion plan");
+    .expect("unlowerable CTE join must retain an executable DataFusion plan");
 
     assert_executable_iceberg_datafusion_plan(physical_plan.as_ref());
     assert_plan_contains_operator(physical_plan.as_ref(), "HashJoinExec");
@@ -181,7 +181,7 @@ async fn native_profile_iceberg_not_in_count_distinct_remains_executable_on_data
          WHERE t.id NOT IN (SELECT u.id FROM iceberg_u u WHERE u.value IS NOT NULL)",
     )
     .await
-    .expect("P0.2-unlowerable NOT IN plus COUNT(DISTINCT) must retain an executable DataFusion plan");
+    .expect("unlowerable NOT IN plus COUNT(DISTINCT) must retain an executable DataFusion plan");
 
     assert_executable_iceberg_datafusion_plan(physical_plan.as_ref());
     assert_plan_contains_operator(physical_plan.as_ref(), "HashJoinExec");
@@ -262,7 +262,7 @@ async fn native_profile_iceberg_union_all_aggregate_branches_remain_executable_o
          ORDER BY bucket",
     )
     .await
-    .expect("P0.2-unlowerable UNION ALL aggregate branches must retain an executable DataFusion plan");
+    .expect("unlowerable UNION ALL aggregate branches must retain an executable DataFusion plan");
 
     assert_executable_iceberg_datafusion_plan(physical_plan.as_ref());
     assert_plan_contains_operator(physical_plan.as_ref(), "UnionExec");
@@ -314,7 +314,7 @@ async fn native_profile_iceberg_cte_aggregate_scalar_filter_remains_executable_o
          SELECT COUNT(*) AS n FROM c WHERE cnt > (SELECT AVG(cnt) FROM c)",
     )
     .await
-    .expect("P0.2-unlowerable CTE scalar filter must retain an executable DataFusion plan");
+    .expect("unlowerable CTE scalar filter must retain an executable DataFusion plan");
 
     assert_executable_iceberg_datafusion_plan(physical_plan.as_ref());
     assert_plan_contains_operator(physical_plan.as_ref(), "ScalarSubqueryExec");
@@ -339,7 +339,7 @@ async fn physical_scalar_subquery_retains_executable_iceberg_datafusion_plan() {
         session_config,
     )
     .await
-    .expect("P0.2 physical scalar subqueries must retain an executable DataFusion Iceberg plan");
+    .expect("physical scalar subqueries must retain an executable DataFusion Iceberg plan");
 
     assert!(
         plan_contains_operator(physical_plan.as_ref(), "ScalarSubqueryExec"),
@@ -375,7 +375,7 @@ async fn physical_scalar_subquery_with_mixed_parquet_retains_executable_datafusi
         session_config,
     )
     .await
-    .expect("P0.2 mixed physical scalar subqueries must retain an executable DataFusion Iceberg plan");
+    .expect("mixed physical scalar subqueries must retain an executable DataFusion Iceberg plan");
 
     assert!(
         plan_contains_operator(physical_plan.as_ref(), "ScalarSubqueryExec"),

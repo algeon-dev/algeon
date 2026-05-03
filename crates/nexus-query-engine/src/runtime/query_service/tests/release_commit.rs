@@ -1,4 +1,4 @@
-// P2.7 report-before-reuse commit: deterministic barriers for the normative
+// Report-before-reuse commit: deterministic barriers for the normative
 // order — cleanup complete → disposition/health commit → seal/report_ready →
 // capacity release — plus health disposition coverage.
 
@@ -1043,7 +1043,7 @@ fn disposition_mapping_matches_isolation_rules() {
         cudf::runtime::report_device_fault(
             device,
             cudf::runtime::DeviceFaultKind::FatalDeviceOperation,
-            "p3_3_test_native_fault",
+            "test_native_fault",
             Some(native_status),
         );
         let native_fault_decision = decide_capacity_commit(

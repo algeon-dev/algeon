@@ -22,7 +22,8 @@ const OPERATION: &str = "nexus_query_engine.exec.bounded.compiled.scheduler";
 ///
 /// The scheduler owns ordering and resource-lifetime invariants. Implementors
 /// own the operator-specific work and return the resident resources produced by
-/// each task. D.1.2 tests use mock payloads; later stages use GPU frames.
+/// each task. Scheduler unit tests use mock payloads; production tasks use GPU
+/// frames.
 #[doc(hidden)]
 pub trait CompiledTaskExecutor {
     type Resource;

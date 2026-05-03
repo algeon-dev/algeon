@@ -64,6 +64,7 @@ pub(crate) struct AllocatorEventCorrelationInput {
 }
 
 impl AllocatorEventCorrelationInput {
+    #[cfg(test)]
     pub(crate) const fn available(sequence: u64, domain: AllocatorDomainIdentity) -> Self {
         Self { sequence, availability: AllocatorEventAvailability::Available, domain: Some(domain) }
     }

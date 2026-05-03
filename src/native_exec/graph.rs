@@ -6,9 +6,9 @@
 //!
 //! Exact-request singleflight for expensive BFS calls.
 //!
-//! In P2, this holds only a transient host result until its followers consume
-//! it. The graph identity is a coalescing key, not a device-resident cache
-//! claim; a future P5 cache may reuse the identity under its own owner.
+//! This holds only a transient host result until its followers consume it. The
+//! graph identity is a coalescing key, not a device-resident cache claim; the
+//! resident cache owns any retained device allocation separately.
 //!
 //! libcugraph multi-source BFS produces one nearest-source forest, not one
 //! independent result per source. Serving coalescing therefore groups only

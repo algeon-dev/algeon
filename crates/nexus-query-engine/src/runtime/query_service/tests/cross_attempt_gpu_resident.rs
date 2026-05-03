@@ -211,7 +211,7 @@ fn cache_enabled_pagerank_promotes_one_graph_into_the_ledger_owned_domain() {
     )
     .expect("valid edge batch");
     let descriptor = crate::plan::GraphResidencyDescriptor::for_content_identity(
-        "p5-accounted-pagerank-graph-v1",
+        "accounted-pagerank-graph-v1",
         arrow::datatypes::DataType::Int32,
         None,
         None,
@@ -268,16 +268,16 @@ fn cache_enabled_pagerank_promotes_one_graph_into_the_ledger_owned_domain() {
     attempt.finish();
     drop(attempt);
     let sealed = completion.wait_timeout(std::time::Duration::from_secs(10)).expect("sealed attempt report");
-    let evidence = sealed.resource_evidence.expect("admitted cache attempt retains P3 resource evidence");
+    let evidence = sealed.resource_evidence.expect("admitted cache attempt retains sealed resource evidence");
     assert_eq!(
         evidence.cache_evictable_resident_bytes.value,
         Some(ledger_report.cache_evictable_resident_bytes),
-        "sealed P3 evidence projects the same ledger snapshot that owns the parked graph"
+        "sealed evidence projects the same ledger snapshot that owns the parked graph"
     );
     assert_eq!(
         evidence.cache_pinned_in_use_bytes.value,
         Some(ledger_report.cache_pinned_in_use_bytes),
-        "sealed P3 evidence projects the same ledger snapshot that owns the cache pin state"
+        "sealed evidence projects the same ledger snapshot that owns the cache pin state"
     );
     assert_eq!(
         evidence.ledger_sequence.value,

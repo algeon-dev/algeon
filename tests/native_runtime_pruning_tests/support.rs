@@ -96,13 +96,6 @@ pub(super) fn bounded_execution_context() -> AdmittedExecutionContext {
     AdmittedExecutionContext { context, _handle: handle }
 }
 
-pub(super) fn adapter_error(error: &DataFusionError) -> &Error {
-    let DataFusionError::External(source) = error else {
-        panic!("native execution errors should cross DataFusion as external adapter errors: {error}");
-    };
-    source.downcast_ref::<Error>().expect("DataFusion external error should preserve datafusion_nexus::error::Error")
-}
-
 pub(super) fn assert_nexus_native_exec(plan: &Arc<dyn ExecutionPlan>, context: &str) {
     assert_eq!(plan.name(), "NexusNativeExec", "{context}");
     assert!(plan.downcast_ref::<NexusNativeExec>().is_some(), "{context}");

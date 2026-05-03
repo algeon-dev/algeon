@@ -64,8 +64,7 @@ fn datafusion_nexus_session_config_rejects_invalid_values() {
     let error = options.set("datafusion_nexus.native.max_retry_attempts", "0").unwrap_err();
     assert!(error.to_string().contains("native.max_retry_attempts"));
 
-    // The pipeline-mode key was deleted with the bounded cutover and is
-    // rejected as an unknown datafusion-nexus key.
+    // The removed pipeline-mode key remains an unknown datafusion-nexus key.
     let error = options.set("datafusion_nexus.native.pipeline_execution_mode", "strict").unwrap_err();
     assert!(error.to_string().contains("pipeline_execution_mode"));
 

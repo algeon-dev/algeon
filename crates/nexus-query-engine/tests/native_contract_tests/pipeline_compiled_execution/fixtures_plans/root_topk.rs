@@ -8,7 +8,7 @@ pub(super) fn aggregate_sort_limit_plan() -> QueryPlan {
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
-        "/tmp/compiled-d1-aggregate.parquet",
+        "/tmp/compiled-aggregate-sort-limit.parquet",
         source_schema,
         vec!["k".into(), "v".into()],
     )));

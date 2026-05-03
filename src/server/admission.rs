@@ -199,7 +199,7 @@ impl QueryAdmission {
                 // This is the one dynamic observation for the whole payload.
                 // It cannot contain grant ids, query ids, CUDA/NVML payloads,
                 // or execution-pool state, because none of those are part of
-                // the bounded P4 backend metrics contract.
+                // the bounded backend metrics contract.
                 let snapshot = backend.backend_metrics_snapshot();
                 let _ = writeln!(output, "# backend_metrics_backend_generation={}", snapshot.backend_generation);
                 let _ = writeln!(output, "# backend_metrics_generation={}", snapshot.generation);
@@ -409,7 +409,7 @@ mod tests {
     }
 
     #[test]
-    fn server_config_rejects_removed_p2_cache_profile_env_before_backend_projection() {
+    fn server_config_rejects_removed_legacy_cache_profile_env_before_backend_projection() {
         let env = std::collections::BTreeMap::from([
             (super::super::config::NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES_ENV, "3072".to_string()),
             (super::super::config::NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, "1024".to_string()),
@@ -417,12 +417,12 @@ mod tests {
             ("NEXUS_SERVER_NATIVE_SOURCE_CACHE_MAX_RETAINED_BYTES", "2048".to_string()),
         ]);
         let error = server_config_with_test_device_profile(env, None)
-            .expect_err("P2 must reject cache profile configuration before backend construction");
+            .expect_err("removed cache profile configuration must fail before backend construction");
 
         assert_eq!(error.code(), crate::error::ErrorCode::InvalidRequest);
         assert_eq!(error.operation(), "datafusion_nexus.server.config");
         assert_eq!(error.fact_value("config_field"), Some("NEXUS_SERVER_NATIVE_SOURCE_CACHE_MAX_RETAINED_BYTES"));
-        assert!(error.message().contains("removed by the P2 resource-only admission cutover"));
+        assert!(error.message().contains("removed by the resource-only admission contract"));
     }
 
     #[test]
@@ -521,7 +521,7 @@ mod tests {
         );
         assert!(
             !payload.contains("[device_ledger_grants]") && !payload.contains("[gpu_execution]"),
-            "diagnostics must not combine the P4 snapshot with legacy independent service reads: {payload}"
+            "diagnostics must not combine the backend snapshot with legacy independent service reads: {payload}"
         );
 
         drop(permit);

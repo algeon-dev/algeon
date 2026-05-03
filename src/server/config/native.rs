@@ -1,5 +1,5 @@
 use super::{
-    env::{DurationZeroPolicy, EnvValues, NativeConfigValue},
+    env::{EnvValues, NativeConfigValue},
     file::ServerNativeFileConfig,
     *,
 };
@@ -353,17 +353,11 @@ pub(super) fn optional_duration_millis_value(
     optional_native_u64(values, env_name, file_field, file_value)
 }
 
-pub(super) fn duration_millis_from_value(
-    selected: NativeConfigValue<u64>,
-    zero_policy: DurationZeroPolicy,
-) -> Result<Option<Duration>> {
+pub(super) fn duration_millis_from_value(selected: NativeConfigValue<u64>) -> Result<Duration> {
     if selected.value == 0 {
-        return match zero_policy {
-            DurationZeroPolicy::Reject => Err(ServerError::invalid_config(selected.field, "must be greater than zero")),
-            DurationZeroPolicy::Indefinite => Ok(None),
-        };
+        return Err(ServerError::invalid_config(selected.field, "must be greater than zero"));
     }
-    Ok(Some(Duration::from_millis(selected.value)))
+    Ok(Duration::from_millis(selected.value))
 }
 
 pub(super) fn first_present_bounded_budget_field(

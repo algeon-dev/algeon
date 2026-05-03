@@ -174,7 +174,7 @@ fn source_adjacent_partitioned_live_working_set_fits_budget(
         return true;
     };
 
-    // Live set approximation (D5):
+    // Live set approximation:
     //   one source batch + projected/hash-partition peak + one ready partition batch
     //   + retained partition-local partial floors across partitions.
     let mut largest_source_batch_bytes = 0u64;

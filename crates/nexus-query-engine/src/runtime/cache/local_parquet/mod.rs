@@ -139,9 +139,9 @@ impl GpuLocalParquetSourceCachePin {
 
 /// Per-device cache of decoded local-Parquet results.
 ///
-/// Construction requires the P5.3 device cache allocation lease and the
-/// matching P5 ledger. There is no unaccounted constructor and no independent
-/// source-cache capacity.
+/// Construction requires a device cache allocation lease and its matching
+/// ledger. There is no unaccounted constructor and no independent source-cache
+/// capacity.
 pub(crate) struct GpuLocalParquetSourceCache {
     inner: Arc<GpuLocalParquetSourceCacheInner>,
 }
@@ -166,7 +166,7 @@ impl std::fmt::Debug for GpuLocalParquetSourceCache {
 
 impl GpuLocalParquetSourceCache {
     /// Creates one accounted source-cache subdomain on an already-created
-    /// P5.3 cache allocation domain.
+    /// cache allocation domain.
     pub(crate) fn new(allocation_lease: cudf::CacheAllocationLease, ledger: DeviceLedger) -> Result<Self> {
         let domain = allocation_lease.domain();
         if domain.device().ordinal() != ledger.device_ordinal() {
@@ -204,7 +204,7 @@ impl GpuLocalParquetSourceCache {
         })
     }
 
-    /// Stable P5.3 allocation-domain identity used by this cache.
+    /// Stable allocation-domain identity used by this cache.
     pub(crate) fn allocation_domain_id(&self) -> cudf::CacheAllocationDomainId {
         self.inner.allocation_lease.domain_id()
     }
@@ -423,9 +423,8 @@ impl GpuLocalParquetSourceCache {
 
     /// Drains all cache entries after ensuring no checkout remains pinned.
     ///
-    /// P5.5 refuses to close a pinned source cache rather than dropping its
-    /// map ownership and relying on a later pin release to discover teardown.
-    /// The P5.6 shared close path will extend this to final-pin coordination.
+    /// Refuses to close a pinned source cache rather than dropping its map
+    /// ownership and relying on a later pin release to discover teardown.
     pub(crate) fn close_and_drain(&self) -> Result<()> {
         let entries = {
             let mut state = self.lock("close_and_drain")?;
@@ -608,7 +607,7 @@ mod tests {
         let bytes = GpuDataFrame::new(frame.clone()).device_allocated_size_bytes().expect("test source size");
         let handle = GpuResultHandle::new(context.as_ref(), GpuDataFrame::new(frame), Arc::clone(&schema))
             .expect("test GPU result handle");
-        let source = LocalParquetSource::new("/tmp/nexus-p5-source-cache.parquet", schema, vec!["value".into()]);
+        let source = LocalParquetSource::new("/tmp/nexus-source-cache.parquet", schema, vec!["value".into()]);
         (context, handle, batch.schema(), GpuLocalParquetSourceCacheKey::from_source(&source), bytes)
     }
 

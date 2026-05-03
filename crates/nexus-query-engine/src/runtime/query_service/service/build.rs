@@ -516,7 +516,7 @@ fn validate_controller_policy_preflight(
 }
 
 #[cfg(test)]
-mod phase0_tests {
+mod construction_tests {
     use super::*;
     use crate::runtime::DeviceFacts;
 
@@ -532,7 +532,7 @@ mod phase0_tests {
             self.0.get(device_ordinal).cloned().ok_or_else(|| {
                 QueryError::new(
                     QueryErrorCode::InvalidPlan,
-                    "nexus_query_engine.query_service.phase0_test",
+                    "nexus_query_engine.query_service.construction_test",
                     "missing fake device facts",
                 )
             })

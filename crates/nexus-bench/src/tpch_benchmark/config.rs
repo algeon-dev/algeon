@@ -64,8 +64,8 @@ impl NativeTpchRuntimeResources {
 
 impl NativeTpchBenchmarkConfig {
     pub(super) fn from_env() -> DataFusionResult<Self> {
-        reject_p2_source_cache_env()?;
-        reject_p2_memory_policy_env()?;
+        reject_retired_source_cache_env()?;
+        reject_retired_memory_policy_env()?;
         let config = Self {
             query_ids: query_ids_from_env("NEXUS_TPCH_BENCH_QUERY_IDS")?,
             warmup_iterations: env_usize("NEXUS_TPCH_BENCH_WARMUPS", 0)?,
@@ -468,19 +468,19 @@ fn same_tpch_profile_values(profile: &NativeTpchProfileSettings, base: NativeTpc
         && profile.source_chunk_planning_mode == base.source_chunk_planning_mode
 }
 
-fn reject_p2_source_cache_env() -> DataFusionResult<()> {
+fn reject_retired_source_cache_env() -> DataFusionResult<()> {
     for name in [REMOVED_NATIVE_SOURCE_CACHE_POLICY_ENV, REMOVED_NATIVE_SOURCE_CACHE_MAX_RETAINED_BYTES_ENV] {
         if std::env::var_os(name).is_some() {
-            return Err(plan_error(format!("{name} is unavailable in P2; remove this setting")));
+            return Err(plan_error(format!("{name} is no longer supported; remove this setting")));
         }
     }
     Ok(())
 }
 
-fn reject_p2_memory_policy_env() -> DataFusionResult<()> {
+fn reject_retired_memory_policy_env() -> DataFusionResult<()> {
     if std::env::var_os(REMOVED_NATIVE_MEMORY_POLICY_ENV).is_some() {
         return Err(plan_error(format!(
-            "{REMOVED_NATIVE_MEMORY_POLICY_ENV} is unavailable in P2; the TPC-H benchmark always uses bounded backend admission"
+            "{REMOVED_NATIVE_MEMORY_POLICY_ENV} is no longer supported; the TPC-H benchmark always uses bounded backend admission"
         )));
     }
     Ok(())

@@ -63,18 +63,6 @@ impl DeviceCacheAllocationFactory {
         Ok(Some(Self { ledger, domain: Arc::new(domain) }))
     }
 
-    pub(crate) fn ledger(&self) -> &DeviceLedger {
-        &self.ledger
-    }
-
-    pub(crate) fn domain(&self) -> &cudf::CacheAllocationDomain {
-        &self.domain
-    }
-
-    pub(crate) fn domain_id(&self) -> cudf::CacheAllocationDomainId {
-        self.domain.id()
-    }
-
     /// Lease the shared domain for the source-cache subdomain.
     pub(crate) fn source_cache(&self) -> Result<GpuLocalParquetSourceCache> {
         let lease = self.domain.lease_runtime().map_err(|error| {

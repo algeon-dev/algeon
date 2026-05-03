@@ -31,14 +31,6 @@ impl NativeRuntimeObservation {
             Self::Coordinated(handle) => handle.clone(),
         }
     }
-
-    #[cfg(test)]
-    pub(crate) fn into_local_owner(self) -> RuntimeObservationOwner {
-        match self {
-            Self::Local(owner) => owner,
-            Self::Coordinated(_) => panic!("coordinated observation has no local seal owner"),
-        }
-    }
 }
 
 impl From<RuntimeObservationOwner> for NativeRuntimeObservation {

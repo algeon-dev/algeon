@@ -726,7 +726,6 @@ pub(crate) async fn native_session_context(
         max_row_groups_per_chunk: execution_projection.native_max_row_groups_per_chunk,
         max_retry_attempts: execution_projection.native_max_retry_attempts,
         min_retry_chunk_row_groups: execution_projection.native_min_retry_chunk_row_groups,
-        ..QueryExecutionConfig::default()
     };
     let backend = GpuBackendOwner::build(
         service_config,

@@ -476,16 +476,16 @@ fn native_optimizer_property_checked_ilike_boundary_is_mixed_and_idempotent() {
     assert_eq!(row.source_diagnostics.len(), 1);
     assert!(row.source_diagnostics[0].direct_device_read);
 
-    let filter = optimized.downcast_ref::<FilterExec>().expect("P2a boundary must retain the CPU root filter");
+    let filter = optimized.downcast_ref::<FilterExec>().expect("mixed boundary must retain the CPU root filter");
     let native = filter
         .input()
         .downcast_ref::<NexusNativeExec>()
-        .expect("P2a boundary must replace only the local-Parquet leaf");
-    assert_p2_mixed_properties(filter, native);
+        .expect("mixed boundary must replace only the local-Parquet leaf");
+    assert_mixed_boundary_properties(filter, native);
 
-    let report_before_repeat = rule.last_report().expect("selected P2a boundary must retain a report");
+    let report_before_repeat = rule.last_report().expect("selected mixed boundary must retain a report");
     let repeated = rule.optimize(Arc::clone(&optimized), &ConfigOptions::default()).unwrap();
-    assert!(Arc::ptr_eq(&optimized, &repeated), "P2a mixed boundary must be an optimizer fixed point");
+    assert!(Arc::ptr_eq(&optimized, &repeated), "mixed boundary must be an optimizer fixed point");
     assert_eq!(rule.last_report(), Some(report_before_repeat), "idempotence must preserve the selected-leaf report");
 
     fs::remove_dir_all(dir).unwrap();
@@ -508,7 +508,7 @@ fn native_optimizer_property_checked_ilike_boundary_allows_transparent_cooperati
         .downcast_ref::<FilterExec>()
         .expect("cooperative wrapper must still contain the root filter");
     let native = filter.input().downcast_ref::<NexusNativeExec>().expect("filter child must be the one native leaf");
-    assert_p2_mixed_properties(filter, native);
+    assert_mixed_boundary_properties(filter, native);
     assert_eq!(optimized.properties().emission_type, EmissionType::Final);
     assert_eq!(classify_final_plan(optimized.as_ref()), FinalPlanDisposition::Mixed);
 
@@ -522,7 +522,7 @@ fn native_optimizer_property_checked_ilike_boundary_rejects_nonlocal_parquet() {
     write_ilike_parquet_file(&path);
     let plan = ilike_filter_over_scan(parquet_scan_with_object_store_url(
         &path,
-        ObjectStoreUrl::parse("s3://p2-boundary-test").unwrap(),
+        ObjectStoreUrl::parse("s3://mixed-boundary-test").unwrap(),
     ));
     let rule = NexusNativePhysicalOptimizerRule::new(native_optimizer_config());
 
@@ -530,7 +530,7 @@ fn native_optimizer_property_checked_ilike_boundary_rejects_nonlocal_parquet() {
 
     assert!(
         Arc::ptr_eq(&optimized, &plan),
-        "the P2a certificate must not replace a remote Parquet source through its local-only boundary"
+        "the mixed certificate must not replace a remote Parquet source through its local-only boundary"
     );
     let report = rule.last_report().expect("native optimizer should record the whole-plan rejection");
     assert_eq!(report.selected_count(), 0);
@@ -575,7 +575,7 @@ fn native_optimizer_property_checked_ilike_boundary_matches_cpu_results() {
     let cpu = futures::executor::block_on(collect(ilike_filter_plan(&path), Arc::new(TaskContext::default()))).unwrap();
     let rule = NexusNativePhysicalOptimizerRule::new(native_optimizer_config());
     let native_plan = rule.optimize(ilike_filter_plan(&path), &ConfigOptions::default()).unwrap();
-    let native_leaf = p2_native_leaf(native_plan.as_ref());
+    let native_leaf = mixed_boundary_native_leaf(native_plan.as_ref());
     let native =
         futures::executor::block_on(collect(Arc::clone(&native_plan), Arc::new(TaskContext::default()))).unwrap();
 
@@ -607,19 +607,19 @@ fn native_optimizer_property_checked_ilike_boundary_reserves_host_output_before_
     let task_context = Arc::new(TaskContext::default().with_runtime(Arc::clone(&runtime_env)));
 
     let error = futures::executor::block_on(collect(Arc::clone(&plan), task_context))
-        .expect_err("the optimizer-built P2a boundary must reserve its host Arrow output before D2H");
+        .expect_err("the optimizer-built mixed boundary must reserve its host Arrow output before D2H");
 
     assert!(matches!(error.find_root(), DataFusionError::ResourcesExhausted(_)), "unexpected error: {error:?}");
     assert!(error.to_string().contains("NexusNativeExec[host-output]"), "unexpected error: {error}");
     assert_eq!(
-        p2_native_leaf(plan.as_ref())
+        mixed_boundary_native_leaf(plan.as_ref())
             .metrics()
             .unwrap()
             .sum_by_name("device_to_host_materializations")
             .unwrap()
             .as_usize(),
         0,
-        "host-memory denial must occur before the P2a native leaf copies data from device to host"
+        "host-memory denial must occur before the mixed native leaf copies data from device to host"
     );
     assert_eq!(runtime_env.memory_pool.reserved(), 0);
 
@@ -639,7 +639,7 @@ fn native_optimizer_property_checked_ilike_boundary_honors_pre_execution_cancell
     let plan = rule.optimize(ilike_filter_plan(&path), &ConfigOptions::default()).unwrap();
 
     let error = futures::executor::block_on(collect(plan, Arc::new(TaskContext::default())))
-        .expect_err("the P2a native leaf must observe cancellation before it starts native execution");
+        .expect_err("the mixed native leaf must observe cancellation before it starts native execution");
     assert_eq!(adapter_error(&error).code(), ErrorCode::Cancelled);
 
     fs::remove_dir_all(dir).unwrap();
@@ -653,7 +653,7 @@ fn native_optimizer_property_checked_ilike_boundary_uses_one_backend_admission_a
     let backend = test_gpu_backend();
     let rule = NexusNativePhysicalOptimizerRule::new(backend.optimizer_config().clone());
     let plan = rule.optimize(ilike_filter_plan(&path), &ConfigOptions::default()).unwrap();
-    let native_leaf = p2_native_leaf(plan.as_ref());
+    let native_leaf = mixed_boundary_native_leaf(plan.as_ref());
 
     let batches = futures::executor::block_on(collect(Arc::clone(&plan), Arc::new(TaskContext::default()))).unwrap();
 
@@ -669,7 +669,10 @@ fn native_optimizer_property_checked_ilike_boundary_uses_one_backend_admission_a
         std::thread::sleep(Duration::from_millis(1));
     }
     let snapshot = backend.admission_snapshot().unwrap();
-    assert_eq!(snapshot.active_queries, 0, "the one P2a admission ticket must release after its stream completes");
+    assert_eq!(
+        snapshot.active_queries, 0,
+        "the mixed-boundary admission ticket must release after its stream completes"
+    );
     assert_eq!(snapshot.queued_queries, 0);
 
     fs::remove_dir_all(dir).unwrap();
@@ -681,7 +684,7 @@ proptest! {
         .. ProptestConfig::default()
     })]
 
-    /// Generates only the P2a-certified family. This proves the invariant
+    /// Generates only the certified mixed-boundary family. This proves the invariant
     /// across nullable UTF-8 view inputs and deterministic ASCII prefixes
     /// without broadening the root-only local-Parquet certificate.
     #[test]
@@ -689,7 +692,7 @@ proptest! {
         mut labels in prop::collection::vec(prop::option::of("[A-Za-z]{0,12}"), 1..16),
         prefix in "[A-Za-z]{0,5}",
     ) {
-        // Retain a null in every generated P2a fixture while still varying
+        // Retain a null in every generated mixed-boundary fixture while still varying
         // nullable input values in the generated rows.
         labels.push(None);
         let dir = unique_temp_dir("datafusion-nexus-native-exec-property-based-ilike");
@@ -719,14 +722,14 @@ proptest! {
         prop_assert_eq!(row.final_disposition, FinalPlanDisposition::Mixed);
         prop_assert_eq!(row.native_plan_fragment_count, 1);
         prop_assert_eq!(row.host_datafusion_boundary_count, 1);
-        let filter = planned.downcast_ref::<FilterExec>().expect("P2a must retain the CPU root filter");
-        let native = filter.input().downcast_ref::<NexusNativeExec>().expect("P2a must replace only the source leaf");
-        assert_p2_mixed_properties(filter, native);
+        let filter = planned.downcast_ref::<FilterExec>().expect("mixed boundary must retain the CPU root filter");
+        let native = filter.input().downcast_ref::<NexusNativeExec>().expect("mixed boundary must replace only the source leaf");
+        assert_mixed_boundary_properties(filter, native);
 
         let mixed = futures::executor::block_on(collect(Arc::clone(&planned), Arc::new(TaskContext::default()))).unwrap();
         prop_assert_eq!(ilike_rows(&mixed), ilike_rows(&cpu));
 
-        let retained_report = native_rule.last_report().expect("P2a selected report should be retained");
+        let retained_report = native_rule.last_report().expect("mixed-boundary selected report should be retained");
         let repeated = native_rule.optimize(Arc::clone(&planned), &ConfigOptions::default()).unwrap();
         prop_assert!(Arc::ptr_eq(&planned, &repeated));
         prop_assert_eq!(native_rule.last_report(), Some(retained_report));
@@ -762,12 +765,12 @@ fn ilike_filter_over_scan_with_pattern(scan: Arc<dyn ExecutionPlan>, pattern: St
     Arc::new(FilterExec::try_new(predicate, scan).unwrap())
 }
 
-fn p2_native_leaf(plan: &dyn ExecutionPlan) -> &NexusNativeExec {
-    let filter = plan.downcast_ref::<FilterExec>().expect("P2a plan must retain the CPU root filter");
-    filter.input().downcast_ref::<NexusNativeExec>().expect("P2a filter input must be the native leaf")
+fn mixed_boundary_native_leaf(plan: &dyn ExecutionPlan) -> &NexusNativeExec {
+    let filter = plan.downcast_ref::<FilterExec>().expect("mixed boundary must retain the CPU root filter");
+    filter.input().downcast_ref::<NexusNativeExec>().expect("mixed-boundary filter input must be the native leaf")
 }
 
-fn assert_p2_mixed_properties(filter: &FilterExec, native: &NexusNativeExec) {
+fn assert_mixed_boundary_properties(filter: &FilterExec, native: &NexusNativeExec) {
     assert_eq!(filter.schema().as_ref(), native.schema().as_ref());
     assert!(matches!(
         filter.properties().output_partitioning(),

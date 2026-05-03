@@ -317,7 +317,7 @@ impl GpuBackendControllerDraft {
     }
 }
 
-/// Complete pure P0 construction draft.
+/// Complete pure backend construction draft.
 ///
 /// The fields stay private so validation cannot be bypassed with a struct
 /// literal. Automatic values and device-local resource profiles remain unresolved until the

@@ -159,7 +159,7 @@ async fn flight_sql_explain_gpu_reports_native_and_partial_native_local_parquet_
     declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
     let backend = build_injected_test_backend(&mut config);
-    // Match the certified P2a shape: a CPU ILIKE filter directly over the
+    // Match the certified mixed shape: a CPU ILIKE filter directly over the
     // local-Parquet native leaf. The server's normal multi-partition defaults
     // insert RepartitionExec and correctly make this candidate unsupported.
     let single_partition_config = SessionConfig::new()
@@ -233,7 +233,7 @@ async fn flight_sql_explain_gpu_reports_native_and_partial_native_local_parquet_
     assert!(cpu_boundaries.is_valid(partial_summary));
     assert!(cpu_boundaries.value(partial_summary) > 0, "partial summary={partial:?}");
 
-    // The P2a certificate clears the duplicated Parquet pruning hint only
+    // The mixed-boundary certificate clears the duplicated Parquet pruning hint only
     // after keeping the exact CPU ILIKE filter. Execute the query as a
     // semantic regression check, not merely a coverage-shape assertion.
     let result_batches =
@@ -329,7 +329,7 @@ fn utf8_values(array: &arrow::array::ArrayRef) -> Vec<String> {
     if let Some(values) = array.as_any().downcast_ref::<arrow::array::StringViewArray>() {
         return values.iter().map(|value| value.expect("fixture labels are non-null").to_string()).collect();
     }
-    panic!("P2a result label must be a UTF-8 Arrow array, got {:?}", array.data_type());
+    panic!("mixed-boundary result label must be a UTF-8 Arrow array, got {:?}", array.data_type());
 }
 
 fn coverage_string<'a>(batch: &'a RecordBatch, schema: &Schema, column: &str, row: usize) -> &'a str {

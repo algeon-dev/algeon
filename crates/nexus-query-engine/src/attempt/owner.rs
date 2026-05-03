@@ -569,8 +569,8 @@ impl AttemptOwner {
     ///
     /// The sink receives the report before completion receivers are notified,
     /// and late registration receives the already-published report. It has no
-    /// lifecycle, retry, or aggregation authority; P4 may use this handoff to
-    /// consume the exact sealed allocation without introducing another store.
+    /// lifecycle, retry, or aggregation authority; backend metrics consumes
+    /// the exact sealed allocation without introducing another store.
     pub fn register_sealed_report_sink<F>(&self, sink: F)
     where F: Fn(Arc<QueryAttemptReport>) + Send + Sync + 'static {
         self.0.core.register_sealed_report_sink(sink);

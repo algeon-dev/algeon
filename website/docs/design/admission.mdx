@@ -124,8 +124,9 @@ a detached worker cannot race libcudart finalization.
   domains stay in the device ledger.
 - The controller does not provide authentication, authorization, application
   rate limiting, idempotency, result retention, or tenant policy.
-- Native caches remain disabled in the Phase 2 baseline. Future cache work
-  needs allocator-backed ownership rather than a hidden cross-query grant.
+- Native caches start disabled with `cache_cap_bytes = 0`. An explicit
+  per-device cap enables the ledger-accounted shared cache domain; retained
+  bytes never become a hidden cross-query grant.
 - cuGraph and cuVS stages use the same per-attempt capability and reservation
   contract. A missing preflight remains a local structured rejection, never a
   fallback admission mode.

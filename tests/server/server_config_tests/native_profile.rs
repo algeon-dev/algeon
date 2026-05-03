@@ -79,7 +79,7 @@ fn server_config_accepts_extended_native_query_knobs() {
 }
 
 #[test]
-fn server_config_rejects_removed_p2_cache_profile_env() {
+fn server_config_rejects_removed_legacy_cache_profile_env() {
     for name in
         ["NEXUS_SERVER_NATIVE_SOURCE_CACHE_MAX_RETAINED_BYTES", "NEXUS_SERVER_NATIVE_GRAPH_CACHE_MAX_RETAINED_BYTES"]
     {
@@ -88,12 +88,12 @@ fn server_config_rejects_removed_p2_cache_profile_env() {
         assert_eq!(error.code(), datafusion_nexus::error::ErrorCode::InvalidRequest);
         assert_eq!(error.operation(), "datafusion_nexus.server.config");
         assert_eq!(error.fact_value("config_field"), Some(name));
-        assert!(error.message().contains("removed by the P2 resource-only admission cutover"), "{error}");
+        assert!(error.message().contains("removed by the resource-only admission contract"), "{error}");
     }
 }
 
 #[test]
-fn server_config_rejects_removed_p2_cache_profile_toml_fields() {
+fn server_config_rejects_removed_legacy_cache_profile_toml_fields() {
     for field in ["source_cache_max_retained_bytes", "graph_cache_max_retained_bytes"] {
         let toml = format!("[native]\n{field} = 256\n");
         let (_dir, env) = env_with_server_toml(&toml);

@@ -25,35 +25,7 @@ pub struct DatafusionNexusFlightSqlService {
     /// Flight/application-layer bearer-token validator. The underlying token
     /// store is shared with the handshake path and never reaches GPU control.
     pub(super) auth: AuthInterceptor,
-    pub(super) catalog_diagnostics: ServerCatalogDiagnostics,
     pub(super) cugraph_sql_config: Option<CugraphSqlConfig>,
-}
-
-#[derive(Clone, Debug, Default)]
-pub(super) struct ServerCatalogDiagnostics {
-    pub(super) iceberg_enabled: bool,
-    pub(super) workspace_catalog: Option<String>,
-    pub(super) workspace_schema: Option<String>,
-}
-
-impl ServerCatalogDiagnostics {
-    pub(super) fn from_server_config(config: &crate::server::config::ServerConfig) -> Self {
-        Self {
-            iceberg_enabled: server_config_iceberg_enabled(config),
-            workspace_catalog: config.workspace.as_ref().map(|workspace| workspace.catalog.clone()),
-            workspace_schema: config.workspace.as_ref().map(|workspace| workspace.schema.clone()),
-        }
-    }
-}
-
-#[cfg(feature = "iceberg")]
-fn server_config_iceberg_enabled(config: &crate::server::config::ServerConfig) -> bool {
-    config.iceberg.is_some()
-}
-
-#[cfg(not(feature = "iceberg"))]
-fn server_config_iceberg_enabled(_config: &crate::server::config::ServerConfig) -> bool {
-    false
 }
 
 /// Per-statement session context paired with the retained native rule that
@@ -196,7 +168,6 @@ impl DatafusionNexusFlightSqlService {
             statement_ticket_ttl,
             shutdown_token: CancellationToken::new(),
             auth,
-            catalog_diagnostics: ServerCatalogDiagnostics::default(),
             cugraph_sql_config,
         }
     }
@@ -205,7 +176,6 @@ impl DatafusionNexusFlightSqlService {
         mut self,
         config: &crate::server::config::ServerConfig,
     ) -> Self {
-        self.catalog_diagnostics = ServerCatalogDiagnostics::from_server_config(config);
         self.runtime_observation_config = config.observability.runtime_observation_config();
         self.coordinator = QueryCoordinator::new(QueryCoordinatorConfig::from_observability(&config.observability));
         self
@@ -215,12 +185,6 @@ impl DatafusionNexusFlightSqlService {
     /// existing trusted-network behavior and returns no principal.
     pub(super) fn check_auth<T>(&self, request: &Request<T>) -> Result<Option<crate::server::Principal>, Status> {
         self.auth.check(request.metadata())
-    }
-
-    #[cfg(all(test, feature = "iceberg"))]
-    pub(super) fn with_catalog_diagnostics(mut self, diagnostics: ServerCatalogDiagnostics) -> Self {
-        self.catalog_diagnostics = diagnostics;
-        self
     }
 
     pub(super) async fn build_get_tables_response(

@@ -27,10 +27,6 @@ impl TableFormatPruningPolicy {
         self.max_dimension_rows
     }
 
-    pub(in crate::native) fn target_file_guard_exceeded(self, target_file_count: usize) -> bool {
-        target_file_count > self.max_target_files_across_requests
-    }
-
     pub(in crate::native) fn max_target_files_across_requests(self) -> usize {
         self.max_target_files_across_requests
     }
@@ -69,15 +65,5 @@ mod tests {
 
         assert!(!policy.dimension_row_guard_exceeded(TableFormatPruningPolicy::DEFAULT_MAX_DIMENSION_ROWS));
         assert!(policy.dimension_row_guard_exceeded(TableFormatPruningPolicy::DEFAULT_MAX_DIMENSION_ROWS + 1));
-    }
-
-    #[test]
-    fn target_file_guard_allows_limit_but_rejects_above_it() {
-        let policy = TableFormatPruningPolicy::default();
-
-        assert!(!policy.target_file_guard_exceeded(TableFormatPruningPolicy::DEFAULT_MAX_TARGET_FILES_ACROSS_REQUESTS));
-        assert!(
-            policy.target_file_guard_exceeded(TableFormatPruningPolicy::DEFAULT_MAX_TARGET_FILES_ACROSS_REQUESTS + 1)
-        );
     }
 }

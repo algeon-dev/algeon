@@ -418,7 +418,7 @@ fn native_datafusion_metric_names_cover_bounded_runtime_contract() {
         "hash_join_durable_cache_misses",
         "hash_join_durable_cache_inserts",
     ] {
-        assert!(!names.contains(&removed), "P5-only metric must not remain public: {removed}");
+        assert!(!names.contains(&removed), "removed cache metric must not remain public: {removed}");
     }
 }
 

@@ -31,7 +31,7 @@ fallback or an unadmitted GPU path.
 
 ### cuVS retention
 
-P2 has no server-configurable cross-statement GPU artifact retention. cuVS
+The server has no configurable cross-statement cuVS artifact retention. cuVS
 indexes, models, transforms, and result relations stay within the admitted
 query and are released with it. The persistent lakehouse byte cache described
 below is filesystem storage, not a cuVS or GPU-memory cache.
@@ -63,6 +63,7 @@ memory_limit_bytes = 24_000_000_000
 attempt_floor_bytes = 536_870_912
 max_active_attempts = 1
 source_work_per_attempt = 1
+cache_cap_bytes = 0
 ```
 
 ```bash
@@ -72,7 +73,7 @@ flock /tmp/cudf-gpu.lock bash scripts/dev/run_server.sh
 ```
 
 `memory_limit_bytes`, `backend_reserve_bytes`, `attempt_floor_bytes`,
-`source_work_per_attempt`, `max_active_attempts`, `stream_pool_size`,
+`source_work_per_attempt`, `max_active_attempts`, `cache_cap_bytes`, `stream_pool_size`,
 `worker_count`, `lane_count`, `install_telemetry`, and
 `install_diagnostics` are the only accepted profile keys after
 `device_ordinal`. The installation bounds `stream_pool_size`, `worker_count`,
@@ -116,9 +117,10 @@ Set `memory_limit_bytes` or `backend_reserve_bytes` on each device profile when
 the deployment needs more headroom.
 :::
 
-The P2 controller has no cross-query GPU cache capacity setting or runtime
-diagnostic. The persistent lakehouse byte cache described below is separate
-from GPU device memory.
+Cross-query GPU cache capacity is configured per device with
+`admission.device_profiles.cache_cap_bytes`; it defaults to zero. The ledger
+reports retained cache bytes separately from live grants. The persistent
+lakehouse byte cache described below remains separate from GPU device memory.
 
 ## DataFusion session
 

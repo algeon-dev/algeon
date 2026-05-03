@@ -30,13 +30,13 @@ fn bounded_admission_rejects_row_delete_sources() {
     ]));
     let delete_file = ParquetEqualityDeleteFile::from_resolved_parquet_source(
         "delete-0001",
-        ResolvedParquetSource::local_kvikio("/tmp/compiled-d1-left-delete.parquet"),
+        ResolvedParquetSource::local_kvikio("/tmp/compiled-row-delete-left-delete.parquet"),
         vec![1],
         vec!["left_id".into()],
     )
     .expect("test equality-delete descriptor should be valid");
     let left_file =
-        LocalParquetFile::new("/tmp/compiled-d1-left.parquet").with_equality_delete_files(vec![delete_file]);
+        LocalParquetFile::new("/tmp/compiled-row-delete-left.parquet").with_equality_delete_files(vec![delete_file]);
 
     let mut builder = QueryPlanBuilder::new();
     let left = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
@@ -45,7 +45,7 @@ fn bounded_admission_rejects_row_delete_sources() {
         vec!["left_id".into(), "left_value".into()],
     )));
     let right = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
-        "/tmp/compiled-d1-right.parquet",
+        "/tmp/compiled-row-delete-right.parquet",
         right_schema,
         vec!["right_id".into(), "right_value".into()],
     )));

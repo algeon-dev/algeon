@@ -268,4 +268,4 @@ fn exact_betweenness_threshold_uses_actual_vertices_not_edge_upper_bound() {
 // BFS does not consume edge weights, so a null weight must NOT drop its edge
 // (that would silently break reachability). A null edge_id, however, is
 // consumed by the edge-id graph path here and is correctly dropped. This pins
-// the fix for the BFS null-weight reachability P0.
+// the BFS null-weight reachability fix.

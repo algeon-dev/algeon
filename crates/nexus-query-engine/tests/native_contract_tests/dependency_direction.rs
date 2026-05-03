@@ -87,7 +87,7 @@ fn parquet_execution_shapes_use_typed_path_or_uri_source_builders() {
 }
 
 #[test]
-fn ir_models_do_not_consume_executor_implementation_beyond_phase1_baseline() {
+fn ir_models_remain_independent_of_executor_implementation() {
     assert_no_edges(
         "IR plan/expr/source must remain executor-independent",
         &[
@@ -103,7 +103,7 @@ fn ir_models_do_not_consume_executor_implementation_beyond_phase1_baseline() {
 }
 
 #[test]
-fn capability_does_not_delegate_source_validation_to_executor_beyond_phase1_baseline() {
+fn capability_does_not_delegate_source_validation_to_executor() {
     assert_no_edges(
         "capability analysis must own validation rather than call executor validation",
         &["crates/nexus-query-engine/src/capability.rs", "crates/nexus-query-engine/src/capability"],
@@ -112,7 +112,7 @@ fn capability_does_not_delegate_source_validation_to_executor_beyond_phase1_base
 }
 
 #[test]
-fn optimizer_does_not_ask_executor_admission_entrypoints_beyond_phase1_baseline() {
+fn optimizer_does_not_ask_executor_admission_entrypoints() {
     assert_no_edges(
         "optimizer decisions must use analysis-owned admission contracts, not strict/adaptive executor entrypoints",
         &["crates/nexus-query-engine/src/optimizer.rs", "crates/nexus-query-engine/src/optimizer"],
@@ -121,7 +121,7 @@ fn optimizer_does_not_ask_executor_admission_entrypoints_beyond_phase1_baseline(
 }
 
 #[test]
-fn runtime_does_not_own_executor_cache_concrete_types_beyond_phase1_baseline() {
+fn runtime_does_not_own_executor_cache_concrete_types() {
     assert_no_production_edges(
         "runtime resource ownership must depend on runtime cache contracts rather than executor cache concrete types",
         &["crates/nexus-query-engine/src/runtime.rs", "crates/nexus-query-engine/src/runtime"],
@@ -255,10 +255,10 @@ fn accounted_service_cache_and_single_observation_store_boundaries_are_preserved
     let runtime = read_repo_source("crates/nexus-query-engine/src/runtime.rs");
     assert!(
         runtime.contains("pub(crate) mod cache;") && runtime.contains("pub(crate) mod source_identity;"),
-        "P5 cache ownership and source identity must remain private runtime substrate"
+        "cache ownership and source identity must remain private runtime substrate"
     );
     assert_no_edges(
-        "the retired root metrics-capture observation store must not be reintroduced beside P5 cache accounting",
+        "the retired root metrics-capture observation store must not be reintroduced beside cache accounting",
         &["src", "crates/nexus-query-engine/src"],
         &["NativeMetricsCaptureSink", "runtime_observations", "record_runtime_observation"],
     );

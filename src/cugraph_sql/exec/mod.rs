@@ -192,11 +192,6 @@ impl<'a> GraphExecutionMetrics<'a> {
             u64::try_from(get_record_batch_memory_size(batch)).unwrap_or(u64::MAX),
         );
     }
-
-    #[cfg(test)]
-    fn accumulated(&self) -> &QueryMetrics {
-        &self.accumulated
-    }
 }
 
 pub(super) fn finalize_graph_query_outcome(

@@ -108,7 +108,6 @@ pub(in crate::exec) fn assemble_brute_force_knn_output(
     Ok(GpuDataFrame::new(output))
 }
 
-#[allow(dead_code, reason = "Phase 5 KMeans execution consumes this device assembly path")]
 pub(in crate::exec) fn assemble_kmeans_output(
     context: &ExecutionContext,
     input: &GpuDataFrame,
@@ -134,7 +133,6 @@ pub(in crate::exec) fn assemble_kmeans_output(
     GpuDataFrame::try_new_with_source_residency(output, input)
 }
 
-#[allow(dead_code, reason = "Phase 5 PCA execution consumes this device assembly path")]
 pub(in crate::exec) fn assemble_pca_output(
     context: &ExecutionContext,
     input: &GpuDataFrame,

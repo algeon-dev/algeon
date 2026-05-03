@@ -26,7 +26,7 @@ const PROFILE_EVIDENCE_PATH_ENV: &str = "NEXUS_QUERY_SERVICE_TPCH_PROFILE_EVIDEN
 const OVERLOAD_PROBE_ENV: &str = "NEXUS_QUERY_SERVICE_TPCH_OVERLOAD_PROBE";
 impl StressConfig {
     pub(super) fn from_env() -> DataFusionResult<Self> {
-        reject_p2_source_cache_env()?;
+        reject_retired_source_cache_env()?;
         let dataset_root = match std::env::var_os(DATASET_ROOT_ENV) {
             Some(value) => PathBuf::from(value),
             None => default_tpch_parquet_root(TpchDefaultScale::Sf1).into(),
@@ -147,10 +147,10 @@ impl StressConfig {
     }
 }
 
-fn reject_p2_source_cache_env() -> DataFusionResult<()> {
+fn reject_retired_source_cache_env() -> DataFusionResult<()> {
     if std::env::var_os(REMOVED_SOURCE_CACHE_MAX_RETAINED_BYTES_ENV).is_some() {
         return Err(plan_error(format!(
-            "{REMOVED_SOURCE_CACHE_MAX_RETAINED_BYTES_ENV} is unavailable in P2; remove this setting"
+            "{REMOVED_SOURCE_CACHE_MAX_RETAINED_BYTES_ENV} is no longer supported; remove this setting"
         )));
     }
     Ok(())

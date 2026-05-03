@@ -65,7 +65,7 @@ fn query_tsv_row_contract_matches_columns() {
         ]
         .iter()
         .all(|column| !QUERY_COLUMNS.contains(column)),
-        "P2 reports must not project source-cache counters"
+        "reports must not project removed source-cache counters"
     );
 }
 

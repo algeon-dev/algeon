@@ -26,6 +26,7 @@ const OPERATION: &str = "nexus_query_engine.runtime.cache.residency";
 pub(crate) enum CacheResidencyState {
     /// Bytes remain owned by their producing attempt while retention is being
     /// prepared. The matching charge transaction may be rolled back.
+    #[cfg(test)]
     AttemptOwned,
     /// The cache owns the bytes and may evict the entry.
     Evictable,
@@ -82,6 +83,7 @@ pub(crate) struct CacheResidencyChargeTransaction {
 
 impl CacheResidencyChargeTransaction {
     /// State represented before the concrete cache entry accepts this charge.
+    #[cfg(test)]
     pub(crate) const fn state(&self) -> CacheResidencyState {
         CacheResidencyState::AttemptOwned
     }
@@ -175,7 +177,7 @@ impl CacheResidency {
         Ok(Some(CacheResidencyChargeTransaction { ledger, bytes, charged: true }))
     }
 
-    /// Current public lifecycle state.
+    /// Current lifecycle state.
     pub(crate) fn state(&self) -> Result<CacheResidencyState> {
         Ok(self.inner.lock("state")?.state)
     }
@@ -207,9 +209,9 @@ impl CacheResidency {
                 })?;
                 Ok(Some(CacheResidencyPin { inner: Some(Arc::clone(&self.inner)) }))
             },
-            CacheResidencyState::AttemptOwned | CacheResidencyState::Destroyed | CacheResidencyState::Evictable => {
-                Ok(None)
-            },
+            #[cfg(test)]
+            CacheResidencyState::AttemptOwned => Ok(None),
+            CacheResidencyState::Destroyed | CacheResidencyState::Evictable => Ok(None),
         }
     }
 
@@ -233,16 +235,6 @@ impl CacheResidency {
 #[must_use = "dropping a cache pin returns the entry to evictable residency after the final lease"]
 pub(crate) struct CacheResidencyPin {
     inner: Option<Arc<CacheResidencyInner>>,
-}
-
-impl CacheResidencyPin {
-    /// Explicitly releases this pin. Dropping it performs the same transition.
-    pub(crate) fn release(mut self) -> Result<()> {
-        if let Some(inner) = self.inner.take() {
-            release_pin(&inner)?;
-        }
-        Ok(())
-    }
 }
 
 impl Drop for CacheResidencyPin {
@@ -308,15 +300,6 @@ impl CacheResidencyDestruction {
         state.charge_location = CacheResidencyChargeLocation::Released;
         state.eviction_in_progress = false;
         Ok(())
-    }
-
-    /// Cancels destruction before ownership of the concrete GPU object has
-    /// been relinquished. The entry remains evictable and fully charged.
-    pub(crate) fn abort(mut self) -> Result<()> {
-        let Some(inner) = self.inner.take() else {
-            return Ok(());
-        };
-        abort_eviction(&inner)
     }
 
     /// Seals a failed or unsafe destruction attempt without releasing bytes.

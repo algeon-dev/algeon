@@ -26,11 +26,14 @@ static NEXT_ATTEMPT_ID: AtomicU64 = AtomicU64::new(1);
 fn attempt_id_seed() -> u64 {
     static SEED: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
     *SEED.get_or_init(|| {
+        let mut random = [0_u8; std::mem::size_of::<u64>()];
+        if getrandom::fill(&mut random).is_ok() {
+            return u64::from_le_bytes(random);
+        }
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|duration| duration.as_nanos() as u64)
             .unwrap_or(0);
-        // TODO: better implementation
         nanos ^ ((std::process::id() as u64) << 32) ^ 0x9e37_79b9_7f4a_7c15
     })
 }
@@ -887,9 +890,10 @@ pub struct AttemptDeviceHealth {
 
 /// Bounded cuDF/cuGraph native-fault evidence assembled by the release commit.
 ///
-/// This snapshot is deliberately terminal-only. P3.4 will add same-sequence
-/// allocator and ledger evidence; this type does not imply that a native fault
-/// was caused by a particular allocation or reconstruct a failure instant.
+/// This snapshot is deliberately terminal-only. Same-sequence allocator and
+/// ledger evidence is carried separately; this type does not imply that a
+/// native fault was caused by a particular allocation or reconstruct a failure
+/// instant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AttemptNativeFaultEvidence {
     pub isolation: AttemptFaultIsolation,
@@ -1395,8 +1399,8 @@ impl AttemptRetryAdvice {
                         Some(AttemptAllocatorEventSource::ReservationLimit) => Self::change_configuration(),
                         // An exact physical allocator failure establishes
                         // neither that capacity will drain nor that the same
-                        // demand can fit on a subsequent attempt. P3.5 has a
-                        // concrete backoff rule only for queue overload.
+                        // demand can fit on a subsequent attempt. Backoff is
+                        // defined only for queue overload.
                         Some(AttemptAllocatorEventSource::Physical) => Self::indeterminate(),
                         Some(AttemptAllocatorEventSource::Unknown) | None => Self::indeterminate(),
                     };

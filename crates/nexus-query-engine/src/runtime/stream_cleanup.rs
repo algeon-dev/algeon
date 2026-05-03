@@ -176,7 +176,7 @@ impl ServiceStreamTestProbe for TestServiceStreamProbe {
 }
 type StreamCleanupTailCallback = Box<dyn FnOnce() + Send>;
 
-/// Typed evidence handed to the pre-quiescence cleanup callback (P2.7).
+/// Typed evidence handed to the pre-quiescence cleanup callback.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum StreamCleanupOutcome {
     Completed,

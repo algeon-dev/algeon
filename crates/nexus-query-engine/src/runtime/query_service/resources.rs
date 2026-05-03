@@ -78,11 +78,6 @@ impl DeviceResidentCaches {
         }
         Ok(())
     }
-
-    #[cfg(test)]
-    pub(super) fn domain_id_for_device(&self, device_ordinal: usize) -> Option<cudf::CacheAllocationDomainId> {
-        self.devices.get(&device_ordinal).map(|cache| cache.allocation_factory.domain_id())
-    }
 }
 
 #[derive(Debug, Clone)]

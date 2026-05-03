@@ -209,7 +209,7 @@ fn bfs_keeps_null_weight_edges_but_drops_null_edge_id_rows() {
     assert_eq!(null_filter.output_rows, 4);
 }
 
-// Companion to the above isolating the pure P0: BFS with ONLY a weight binding
+// Companion to the above isolates BFS with only a weight binding
 // (no edge_id). A null weight must never drop its edge, so every vertex stays
 // reachable. Before the fix this returned i32::MAX sentinels for 1 and 2.
 #[test]

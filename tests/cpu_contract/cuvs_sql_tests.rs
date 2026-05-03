@@ -7,12 +7,14 @@ use std::{
     },
 };
 
+#[cfg(feature = "cuvs")]
+use datafusion::prelude::SessionConfig;
 use datafusion::{
     common::{DFSchema, config::Dialect},
     execution::{SessionStateBuilder, context::TaskContext},
     logical_expr::{LogicalPlan, UserDefinedLogicalNodeCore},
     physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties, SendableRecordBatchStream},
-    prelude::{SessionConfig, SessionContext},
+    prelude::SessionContext,
     sql::{
         parser::Statement as DataFusionStatement,
         sqlparser::ast::{
@@ -28,10 +30,10 @@ use datafusion_nexus::{
     error::{DataFusionErrorExt, ErrorCode},
     gpu_functions::{GPU_DESCRIBE_FUNCTION_FUNCTION, GPU_LIST_FUNCTIONS_FUNCTION, GPU_VALIDATE_CALL_FUNCTION},
     native_exec::NexusNativeExecutionConfig,
-    planner::NexusNativeOptimizerConfig,
     session::NexusSessionStateBuilderExt,
-    session_config::DataFusionNexusSessionConfig,
 };
+#[cfg(feature = "cuvs")]
+use datafusion_nexus::{planner::NexusNativeOptimizerConfig, session_config::DataFusionNexusSessionConfig};
 use nexus_query_engine::plan::{
     CUVS_ID_TYPES, CuvsOperation as NativeCuvsOperation, PlanNode, VectorAlgorithmParams, VectorRowIdBinding,
     canonicalize_cuvs_options, vector_brute_force_knn_output_schema, vector_kmeans_output_schema,

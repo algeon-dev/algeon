@@ -28,8 +28,7 @@ pub struct RuntimeObservationConfig {
 }
 
 impl RuntimeObservationConfig {
-    /// Default bounded capture used by native execution adapters until server
-    /// retention policy is introduced in Phase 4.
+    /// Default bounded capture used by native execution adapters.
     pub const NATIVE_EXECUTION_MAX_RECORDS: u64 = 65_536;
     /// Deterministic logical-byte cap paired with [`Self::NATIVE_EXECUTION_MAX_RECORDS`].
     pub const NATIVE_EXECUTION_MAX_BYTES: u64 = 8 * 1024 * 1024;
@@ -379,7 +378,7 @@ impl RuntimeObservationSealObserver {
     }
 }
 
-/// Deferred observer delivery for an already-sealed query cleanup (P2.7).
+/// Deferred observer delivery for an already-sealed query cleanup.
 /// The seal has published the report; delivery runs after capacity release
 /// and never gates reuse.
 pub(crate) struct QueryCleanupSealDelivery {
@@ -1180,8 +1179,8 @@ impl RuntimeObservationOwner {
         self.seal_query_cleanup(fallback).deliver()
     }
 
-    /// Phase one of the cleanup commit (P2.7): records cleanup completion and
-    /// seals the recorder state so the report is published, returning the
+    /// Records cleanup completion and seals the recorder state so the report
+    /// is published, returning the
     /// deferred observer delivery. Capacity release may proceed once this
     /// returns; [`QueryCleanupSealDelivery::deliver`] runs afterwards and
     /// never gates reuse.

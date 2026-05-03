@@ -1,23 +1,5 @@
 use super::*;
 
-/// Resolves only after all execution layers have observed Flight cancellation.
-///
-/// This future is passed directly to `take_until`: it establishes the
-/// cancellation ordering before that combinator can drop an attempt stream.
-/// A detached bridge would race stream drop and could misclassify shutdown as
-/// an ordinary client drop in the immutable attempt report.
-async fn cancel_execution_on_token(
-    token: CancellationToken,
-    native_cancellation: ExecutionCancellation,
-    attempt_cancellation: Option<nexus_query_engine::attempt::AttemptCancellation>,
-) {
-    token.cancelled().await;
-    native_cancellation.cancel();
-    if let Some(attempt_cancellation) = attempt_cancellation {
-        attempt_cancellation.cancel();
-    }
-}
-
 /// Keeps a Flight-owned cancellation path ahead of the attempt stream's drop
 /// implementation. `take_until` and client disconnects may discard this
 /// wrapper at any poll boundary; its `Drop` cancels the attempt before Rust

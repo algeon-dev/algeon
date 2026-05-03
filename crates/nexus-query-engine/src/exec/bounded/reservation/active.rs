@@ -372,16 +372,6 @@ impl ActiveReservation {
         refunded
     }
 
-    pub(super) fn promote_charged_bytes_to_baseline(&mut self, promoted_bytes: u64) {
-        if promoted_bytes == 0 {
-            return;
-        }
-        assert!(!self.released, "cannot promote a released reservation");
-        let promoted_charged_bytes = promoted_bytes.min(self.charged_bytes);
-        self.charged_bytes = self.charged_bytes.saturating_sub(promoted_charged_bytes);
-        self.transferred_live_charge_bytes = self.transferred_live_charge_bytes.min(self.charged_bytes);
-    }
-
     pub(super) fn record_live_delta(&self, delta_bytes: i128) {
         if let Some(grant) = &self.live_accounting {
             grant.record_live_reservation_delta(delta_bytes);

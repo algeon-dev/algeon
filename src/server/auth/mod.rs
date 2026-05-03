@@ -7,7 +7,7 @@
 //!   `do_handshake`, returns a bearer token, and requires that token on later
 //!   RPCs.
 //!
-//! # TODO: future modes
+//! # Additional authentication modes
 //!
 //! Add these through `AuthMode`, `do_handshake`, and [`AuthInterceptor`] when a
 //! deployment needs them.

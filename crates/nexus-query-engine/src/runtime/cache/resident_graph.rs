@@ -37,7 +37,6 @@ pub(crate) struct GpuResidentGraphCacheSnapshot {
 pub(crate) enum GpuResidentGraphCacheInsert {
     Inserted,
     AlreadyPresent,
-    CapacitySkipped,
     Closed,
 }
 

@@ -561,10 +561,10 @@ pub struct GraphMemoryEstimate {
     pub data_dependent: bool,
     /// Bytes needed to construct the native graph representation.
     ///
-    /// The execution-only estimate may omit this diagnostic term, but P2
-    /// admission never uses that estimate to select a grant. A future P5
-    /// cache would need its own accounted reservation before retaining a
-    /// graph across attempts.
+    /// The execution-only estimate may omit this diagnostic term, but
+    /// admission never uses that estimate to select a grant. A resident cache
+    /// needs its own accounted reservation before retaining a graph across
+    /// attempts.
     pub construction_bytes: u64,
     /// Algorithm output and workspace bytes needed after graph construction.
     pub execution_bytes: u64,
@@ -603,7 +603,7 @@ impl GraphMemoryAdmissionEvidence {
     /// Returns the execution-only model's descriptive byte estimate.
     ///
     /// This is a hypothetical cache-price diagnostic only. It is not accepted
-    /// by public admission request construction or P2 placement.
+    /// by public admission request construction or device placement.
     pub fn warm_model_requested_bytes(&self) -> u64 {
         self.warm_model_requested_bytes
     }

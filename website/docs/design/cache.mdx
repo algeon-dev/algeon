@@ -1,21 +1,22 @@
 ---
 sidebar_position: 4
 slug: /design/cache
-description: How DataFusion Nexus handles persistent lakehouse bytes while P2 has no cross-query GPU cache controller.
+description: How DataFusion Nexus accounts for persistent lakehouse bytes and optional GPU-resident caches.
 ---
 
 # Cache Design and Use
 
-P2 keeps the bounded controller's per-device allocation domain query-owned.
-Cross-query GPU retention is therefore off: an immutable query grant is the
-complete hard cap for that attempt, and no retained source frame or graph can
-consume capacity from a later attempt.
+Each device profile has an explicit `cache_cap_bytes`, which defaults to zero.
+With that default, an immutable query grant is the complete GPU allocation cap
+for an attempt. A nonzero cap creates one ledger-accounted device cache domain
+shared by decoded source frames and resident graphs; retained bytes consume
+that cache domain rather than a later attempt's grant.
 
-| Layer | P2 status | Scope and capacity |
+| Layer | Status | Scope and capacity |
 | --- | --- | --- |
 | Lakehouse byte cache | Available | Complete remote Parquet objects on local storage. `NEXUS_LAKEHOUSE_CACHE_MAX_BYTES` is a best-effort retained-byte target. |
-| Decoded source cache | Not part of P2 | No cuDF source frames are retained between bounded queries. |
-| Resident graph cache | Not part of P2 | No cuGraph graphs are parked between bounded queries. |
+| Decoded source cache | Opt-in | cuDF source frames can be retained between attempts when the device profile has a nonzero `cache_cap_bytes`. |
+| Resident graph cache | Opt-in | cuGraph graphs can be retained in that same device cache domain when the device profile has a nonzero `cache_cap_bytes`. |
 
 Query-local DAG results and repeated hash-join builds may still be memoized for
 one execution. They are released with that query and are not a cross-query
@@ -33,10 +34,10 @@ NEXUS_LAKEHOUSE_CACHE_MAX_BYTES=536870912000 \
 flock /tmp/cudf-gpu.lock bash scripts/dev/run_server.sh
 ```
 
-P2 exposes no GPU cache capacity setting. Its immutable-grant contract covers
-only query-owned allocations; a later P5 cache needs one separately accounted
-owner before it can retain device memory across attempts. The old
-query-memory-domain multiplier is not a P2 setting.
+GPU-resident retention is opt-in through the device profile's
+`cache_cap_bytes`. The immutable query grant still covers only query-owned
+allocations; the shared cache domain has its own ledger-accounted ownership.
+The old query-memory-domain multiplier is not a supported setting.
 
 ## Lakehouse byte cache
 
@@ -59,20 +60,21 @@ identity, and location fingerprint. Publication is completion-aware, active
 reads are pinned against eviction, and retention cleanup protects the file
 being filled or read.
 
-## Disabled GPU cache migration code
+## GPU-resident cache lifecycle
 
-The decoded-source and resident-graph implementations are isolated engine
-substrate for later work, not a supported P2 controller profile. They have no
-production route and must not affect device placement, reduce an attempt's
-allocation-domain cap, or retain device allocations after query cleanup.
+The decoded-source and resident-graph implementations share one per-device
+cache allocation domain. They have no independent budget, allocation domain,
+or admission state: every retained byte has one ledger charge, and a pinned
+entry remains charged until its cache lease is released. A zero cache cap
+disables both caches without changing placement or an attempt's allocation
+domain cap.
 
-P2 has no public source- or graph-cache report rows, metrics, or admission
-snapshots. Do not add a compatibility projection or a second cache state store
-before the P5 owner exists.
+Admission snapshots and backend metrics project the ledger-owned cache state.
+Do not add a compatibility projection or a second cache state store.
 
 ## Verify the active behavior
 
 Lakehouse source diagnostics report `lakehouse_cache_status`, read mode, and
 fill mode. Background fills also emit structured completion/failure events.
-P2 admission diagnostics intentionally contain no cross-query GPU-cache
-profile, retained-byte, entry, or activity fields.
+Admission snapshots report ledger-owned evictable and pinned cache bytes; both
+are zero when the device profile's cache cap is zero.

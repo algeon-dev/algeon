@@ -9,7 +9,7 @@ pub(in crate::exec::bounded) struct AlignedGroupKeyPartitionPartial {
     pub(in crate::exec::bounded) partial: CommittedPartial,
 }
 
-/// Merge already group-key-aligned partials without re-hashing (D6).
+/// Merge already group-key-aligned partials without re-hashing.
 pub(in crate::exec::bounded) fn execute_aligned_group_key_partitioned_final_aggregate_merge(
     context: &ExecutionContext,
     bounded: &BoundedPlan<'_>,

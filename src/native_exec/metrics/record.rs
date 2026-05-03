@@ -73,7 +73,6 @@ impl SealedAttemptMetricsTarget {
 #[derive(Debug, Clone)]
 pub(crate) struct NexusNativeMetrics {
     metrics_set: ExecutionPlanMetricsSet,
-    capture: Option<NativeExecutionMetricsCapture>,
     plan_task_mapping_datafusion_shape: Option<String>,
     pub(crate) baseline: BaselineMetrics,
     registry: NativeMetricRegistry,
@@ -182,7 +181,6 @@ impl NexusNativeMetrics {
             .counter(SERVER_CAPTURE_LOSS_METRIC_NAME, partition);
         Self {
             metrics_set: metrics.clone(),
-            capture,
             plan_task_mapping_datafusion_shape: plan_task_mapping_datafusion_shape.map(ToString::to_string),
             baseline: BaselineMetrics::new(metrics, partition),
             registry: NativeMetricRegistry::register(metrics, partition),

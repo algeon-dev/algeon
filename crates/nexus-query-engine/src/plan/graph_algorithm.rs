@@ -176,8 +176,8 @@ impl GraphAlgorithmSpec {
     }
 }
 
-/// Stable graph identity available to P2 transient coalescing and future P5
-/// cache work, when known at planning time.
+/// Stable graph identity available to transient coalescing and resident-cache
+/// lookup, when known at planning time.
 ///
 /// Keep this function in sync with graph execution dispatch. It intentionally
 /// returns `None` for paths whose graph construction cannot form a stable

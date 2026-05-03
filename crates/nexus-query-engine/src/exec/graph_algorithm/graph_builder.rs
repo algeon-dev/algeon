@@ -68,8 +68,9 @@ where
         return run_checked_out_resident_graph(context, &attempt_runtime, cache, checkout, operation, f);
     }
 
-    // Reservation is derived from the same snapshot that projects P3/P4/TSV
-    // state. It is deliberately conservative: the transaction shrinks to the
+    // Reservation is derived from the same snapshot projected by sealed
+    // reports, admission TSV, and backend metrics. It is deliberately
+    // conservative: the transaction shrinks to the
     // post-park physical delta before it can become an evictable entry.
     let reservation_bytes = cache.available_reservation_bytes()?;
     if reservation_bytes == 0 {
@@ -142,8 +143,7 @@ where
     match transaction.insert_if_absent(resident_key, parked)? {
         crate::runtime::cache::resident_graph::GpuResidentGraphCacheInsert::Inserted
         | crate::runtime::cache::resident_graph::GpuResidentGraphCacheInsert::AlreadyPresent
-        | crate::runtime::cache::resident_graph::GpuResidentGraphCacheInsert::Closed
-        | crate::runtime::cache::resident_graph::GpuResidentGraphCacheInsert::CapacitySkipped => outcome,
+        | crate::runtime::cache::resident_graph::GpuResidentGraphCacheInsert::Closed => outcome,
     }
 }
 

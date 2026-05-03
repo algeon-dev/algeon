@@ -101,11 +101,11 @@ pub use workspace::{
     WorkspaceOverlayConfig,
 };
 
-// P2 has one resource-only admission contract. These historical environment
-// switches must fail closed instead of silently starting a deployment with
+// The resource-only admission contract has one configuration surface. These
+// historical environment switches must fail closed instead of silently starting a deployment with
 // different defaults. Keep this list centrally adjacent to the first env
 // read so every server configuration path applies the same migration gate.
-const REMOVED_P2_SERVER_ENVIRONMENT_VARIABLES: &[&str] = &[
+const REMOVED_LEGACY_SERVER_ENVIRONMENT_VARIABLES: &[&str] = &[
     "NEXUS_SERVER_ADMISSION_MAX_ACTIVE_ATTEMPTS_PER_DEVICE",
     "NEXUS_SERVER_ADMISSION_ATTEMPT_FLOOR_BYTES",
     "NEXUS_SERVER_ADMISSION_SOURCE_WORK_PER_ATTEMPT",
@@ -178,7 +178,7 @@ impl ServerConfig {
 
     pub fn from_env_get(mut get: impl FnMut(&str) -> Option<String>) -> Result<Self> {
         let mut values = EnvValues::new(&mut get);
-        reject_removed_p2_server_environment(&mut values)?;
+        reject_removed_legacy_server_environment(&mut values)?;
         let bind_addr = values.socket_addr(NEXUS_SERVER_BIND_ENV, DEFAULT_BIND_ADDR)?;
         let log_filter = values.string(NEXUS_SERVER_LOG_ENV).unwrap_or_else(|| DEFAULT_LOG_FILTER.to_string());
         let overlay_path = values.string(NEXUS_SERVER_CONFIG_FILE_ENV).map(PathBuf::from);
@@ -291,12 +291,12 @@ fn format_device_ordinals(device_ordinals: &[usize]) -> String {
     device_ordinals.iter().map(usize::to_string).collect::<Vec<_>>().join(",")
 }
 
-fn reject_removed_p2_server_environment(values: &mut EnvValues<'_>) -> Result<()> {
-    for name in REMOVED_P2_SERVER_ENVIRONMENT_VARIABLES {
+fn reject_removed_legacy_server_environment(values: &mut EnvValues<'_>) -> Result<()> {
+    for name in REMOVED_LEGACY_SERVER_ENVIRONMENT_VARIABLES {
         if values.string(name).is_some() {
             return Err(ServerError::invalid_config(
                 name,
-                "this server setting was removed by the P2 resource-only admission cutover; remove it",
+                "this server setting was removed by the resource-only admission contract; remove it",
             ));
         }
     }

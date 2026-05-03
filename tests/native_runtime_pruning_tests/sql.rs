@@ -28,7 +28,7 @@ SELECT COUNT(*) AS count_rows
 FROM bench
 ";
 
-// Runtime-filtered empty ROLLUP contract (defect D3).
+// Runtime-filtered empty ROLLUP regression contract.
 // The parquet is nonempty; the filter selects zero rows. CPU DataFusion still
 // emits the grand-total row; native must match and stay on the native path.
 pub(super) const SQL_FILTERED_EMPTY_ROLLUP_SUM_QUERY: &str = "

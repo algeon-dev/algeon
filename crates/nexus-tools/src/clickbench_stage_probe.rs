@@ -660,7 +660,7 @@ fn parse_args(args: Vec<String>) -> ToolResult<ProbeConfig> {
 
 fn default_artifact_dir() -> PathBuf {
     let stamp = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
-    PathBuf::from(format!("target/clickbench_hang_remediation/phase2/probe_{stamp}"))
+    PathBuf::from(format!("target/clickbench_hang_remediation/probe_{stamp}"))
 }
 
 fn print_usage() {

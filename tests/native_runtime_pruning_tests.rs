@@ -12,7 +12,6 @@ use arrow::{
     util::display::array_value_to_string,
 };
 use datafusion::{
-    common::DataFusionError,
     datasource::{
         physical_plan::{
             FileGroup, FileScanConfigBuilder, ParquetSource,
@@ -42,7 +41,6 @@ use datafusion::{
 };
 use datafusion_nexus::{
     backend::{GpuDeviceMemoryLimit, GpuMemoryOwnership, NexusGpuBackend, NexusGpuDeviceProfile, NexusGpuQueuePolicy},
-    error::Error,
     native::lower_physical_plan_to_native,
     native_exec::{NexusNativeExec, NexusNativeExecutionConfig},
 };

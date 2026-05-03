@@ -794,8 +794,9 @@ impl DeviceMetricsState {
         self.admission.live_reserved_bytes = snapshot.live_reserved_bytes;
         self.admission.max_live_reserved_bytes =
             self.admission.max_live_reserved_bytes.max(snapshot.live_reserved_bytes);
-        // P3 evidence, admission TSV, and P4 descriptors all project this
-        // exact ledger transition; resident caches do not own a second gauge.
+        // Sealed reports, admission TSV, and backend descriptors all project
+        // this exact ledger transition; resident caches do not own a second
+        // gauge.
         self.admission.cache_evictable_resident_bytes = snapshot.cache_evictable_resident_bytes;
         self.admission.cache_pinned_in_use_bytes = snapshot.cache_pinned_in_use_bytes;
         self.admission.health = match snapshot.health {

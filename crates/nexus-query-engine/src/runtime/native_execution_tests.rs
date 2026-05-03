@@ -119,8 +119,7 @@ mod unbounded_pruning_regressions;
 #[cfg(feature = "cuvs")]
 #[path = "native_execution_tests/vector_algorithm_execution.rs"]
 mod vector_algorithm_execution;
-// Window cache-retention scenarios are P5 substrate; P2 execution tests run
-// with durable source caching disabled.
+// This uncached execution suite runs with durable source caching disabled.
 
 use join_test_support::*;
 use parquet_fixtures::*;
