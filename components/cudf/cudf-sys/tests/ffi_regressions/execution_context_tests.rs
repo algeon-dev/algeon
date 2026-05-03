@@ -214,6 +214,109 @@ fn test_column_create_numeric_host_source_sync_contract() {
 }
 
 #[test]
+fn test_column_create_fixed_width_from_host_ex_uses_explicit_stream_and_syncs() {
+    let _shim_state = lock_shim_state();
+    let data = [41i32, 42, 43];
+    let validity = [true, false, true];
+    let null_mask = validity_to_bitmask(&validity);
+    let null_count = validity.iter().filter(|&&is_valid| !is_valid).count() as i32;
+
+    let stream = OwnedStream::new();
+    let explicit_stream = stream_value(stream.as_raw());
+    let borrowed_stream = stream.borrowed();
+    let exec = cudf_sys::ExecutionContext::new().with_stream(&borrowed_stream);
+
+    reset_exec_observation();
+    let mut out: *mut c_void = ptr::null_mut();
+    let st = unsafe {
+        cudf_sys::cudf_column_create_fixed_width_from_host_ex(
+            cudf_sys::cudf_type_id_t::CUDF_TYPE_INT32,
+            0,
+            data.as_ptr() as *const c_void,
+            data.len() as i32,
+            null_mask.as_ptr(),
+            null_count,
+            exec.as_raw(),
+            &mut out,
+        )
+    };
+    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    assert!(!out.is_null());
+    assert_eq!(last_exec_stream_value(), explicit_stream);
+    assert_eq!(last_exec_sync_stream_value(), explicit_stream);
+    assert_eq!(read_i32_column_data(out, data.len()), data);
+
+    unsafe {
+        cudf_sys::cudf_column_destroy(out);
+    }
+}
+
+#[test]
+fn test_column_create_fixed_width_from_host_ex_syncs_on_error_after_data_copy() {
+    let _shim_state = lock_shim_state();
+    let data = [51i32, 52, 53];
+    let stream = OwnedStream::new();
+    let explicit_stream = stream_value(stream.as_raw());
+    let borrowed_stream = stream.borrowed();
+    let exec = cudf_sys::ExecutionContext::new().with_stream(&borrowed_stream);
+
+    reset_exec_observation();
+    unsafe { cudf_sys::cudf_test_fail_next_fixed_width_host_import_after_data_copy() };
+    let mut out: *mut c_void = ptr::null_mut();
+    let st = unsafe {
+        cudf_sys::cudf_column_create_fixed_width_from_host_ex(
+            cudf_sys::cudf_type_id_t::CUDF_TYPE_INT32,
+            0,
+            data.as_ptr() as *const c_void,
+            data.len() as i32,
+            ptr::null(),
+            0,
+            exec.as_raw(),
+            &mut out,
+        )
+    };
+
+    assert_ne!(st, cudf_sys::CUDF_SUCCESS);
+    assert!(out.is_null());
+    assert_eq!(last_exec_stream_value(), explicit_stream);
+    assert_eq!(last_exec_sync_stream_value(), explicit_stream);
+}
+
+#[test]
+fn test_column_create_fixed_width_from_host_ex_syncs_on_error_after_null_mask_copy() {
+    let _shim_state = lock_shim_state();
+    let data = [61i32, 62, 63];
+    let validity = [true, false, true];
+    let null_mask = validity_to_bitmask(&validity);
+    let null_count = validity.iter().filter(|&&is_valid| !is_valid).count() as i32;
+    let stream = OwnedStream::new();
+    let explicit_stream = stream_value(stream.as_raw());
+    let borrowed_stream = stream.borrowed();
+    let exec = cudf_sys::ExecutionContext::new().with_stream(&borrowed_stream);
+
+    reset_exec_observation();
+    unsafe { cudf_sys::cudf_test_fail_next_fixed_width_host_import_after_null_mask_copy() };
+    let mut out: *mut c_void = ptr::null_mut();
+    let st = unsafe {
+        cudf_sys::cudf_column_create_fixed_width_from_host_ex(
+            cudf_sys::cudf_type_id_t::CUDF_TYPE_INT32,
+            0,
+            data.as_ptr() as *const c_void,
+            data.len() as i32,
+            null_mask.as_ptr(),
+            null_count,
+            exec.as_raw(),
+            &mut out,
+        )
+    };
+
+    assert_ne!(st, cudf_sys::CUDF_SUCCESS);
+    assert!(out.is_null());
+    assert_eq!(last_exec_stream_value(), explicit_stream);
+    assert_eq!(last_exec_sync_stream_value(), explicit_stream);
+}
+
+#[test]
 fn test_column_create_strings_host_source_sync_contract() {
     let _shim_state = lock_shim_state();
     let values = ["ab", "", "cde"];

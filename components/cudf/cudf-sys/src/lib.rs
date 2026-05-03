@@ -654,8 +654,9 @@ extern "C" {
 
     /// Create a fixed-width column by copying from borrowed host buffers.
     ///
-    /// This function synchronizes cuDF's default stream before return on
-    /// success so `data` and `null_mask` are no longer in use.
+    /// If host-source copies are queued, this function synchronizes cuDF's
+    /// default stream before return on success or failure so `data` and
+    /// `null_mask` are no longer in use.
     pub fn cudf_column_create_numeric(
         type_id: cudf_type_id_t,
         data: *const c_void,
@@ -668,11 +669,46 @@ extern "C" {
     /// Create a fixed-width column by copying from borrowed host buffers with
     /// explicit execution options.
     ///
-    /// The selected stream is synchronized before return on success so `data`
-    /// and `null_mask` are no longer in use.
+    /// If host-source copies are queued, the selected stream is synchronized
+    /// before return on success or failure so `data` and `null_mask` are no
+    /// longer in use.
     /// When `options->mr` is non-null, it must outlive the returned column.
     pub fn cudf_column_create_numeric_ex(
         type_id: cudf_type_id_t,
+        data: *const c_void,
+        size: i32,
+        null_mask: *const u8,
+        null_count: i32,
+        options: *const cudf_exec_options_t,
+        out: *mut cudf_column_handle,
+    ) -> cudf_status_t;
+
+    /// Create a fixed-width column by copying from borrowed host buffers with
+    /// an explicit logical dtype.
+    ///
+    /// If host-source copies are queued, this function synchronizes cuDF's
+    /// default stream before return on success or failure so `data` and
+    /// `null_mask` are no longer in use.
+    pub fn cudf_column_create_fixed_width_from_host(
+        type_id: cudf_type_id_t,
+        scale: i32,
+        data: *const c_void,
+        size: i32,
+        null_mask: *const u8,
+        null_count: i32,
+        out: *mut cudf_column_handle,
+    ) -> cudf_status_t;
+
+    /// Create a fixed-width column by copying from borrowed host buffers with
+    /// an explicit logical dtype and execution options.
+    ///
+    /// If host-source copies are queued, the selected stream is synchronized
+    /// before return on success or failure so `data` and `null_mask` are no
+    /// longer in use.
+    /// When `options->mr` is non-null, it must outlive the returned column.
+    pub fn cudf_column_create_fixed_width_from_host_ex(
+        type_id: cudf_type_id_t,
+        scale: i32,
         data: *const c_void,
         size: i32,
         null_mask: *const u8,
@@ -2505,6 +2541,14 @@ extern "C" {
     /// Force the next column-view metadata read (`size` or `null_count`) to
     /// fail for panic-elimination regression testing.
     pub fn cudf_test_fail_next_column_view_metadata_read();
+
+    /// Force the next fixed-width host import to fail after the data copy is
+    /// queued for synchronization regression testing.
+    pub fn cudf_test_fail_next_fixed_width_host_import_after_data_copy();
+
+    /// Force the next fixed-width host import to fail after the null-mask copy
+    /// is queued for synchronization regression testing.
+    pub fn cudf_test_fail_next_fixed_width_host_import_after_null_mask_copy();
 
     /// Force the next groupby aggregate call to report a negative result
     /// column count on success for foreign-contract regression testing.
