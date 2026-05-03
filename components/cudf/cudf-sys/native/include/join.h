@@ -101,6 +101,22 @@ cudf_status_t cudf_full_join_ex(cudf_table_view_handle left_keys,
                                 cudf_table_handle* out_right,
                                 const cudf_exec_options_t* options);
 
+/// Cross join. Returns a materialized table containing left columns followed by
+/// right columns.
+cudf_status_t cudf_cross_join(cudf_table_view_handle left,
+                              cudf_table_view_handle right,
+                              cudf_table_handle* out);
+
+/// Cross join with explicit execution context.
+///
+/// Passing NULL for `options`, or leaving `options->stream` / `options->mr`
+/// NULL, uses cuDF's default stream and current device memory resource.
+/// When `options->mr` is non-NULL, it must outlive the returned table.
+cudf_status_t cudf_cross_join_ex(cudf_table_view_handle left,
+                                 cudf_table_view_handle right,
+                                 cudf_table_handle* out,
+                                 const cudf_exec_options_t* options);
+
 /// Inner join. Returns INT32 left and right gather-index columns.
 cudf_status_t cudf_inner_join_indices(cudf_table_view_handle left_keys,
                                       cudf_table_view_handle right_keys,
@@ -154,6 +170,40 @@ cudf_status_t cudf_full_join_indices_ex(cudf_table_view_handle left_keys,
                                         cudf_column_handle* out_left_indices,
                                         cudf_column_handle* out_right_indices,
                                         const cudf_exec_options_t* options);
+
+/// Left semi join. Returns an INT32 column of left/probe row indices that have
+/// at least one match in the right/filter table.
+cudf_status_t cudf_left_semi_join_indices(cudf_table_view_handle left_keys,
+                                          cudf_table_view_handle right_keys,
+                                          cudf_null_equality_t null_equality,
+                                          cudf_column_handle* out_indices);
+
+/// Left semi join indices with explicit execution context.
+///
+/// Passing NULL for `options`, or leaving `options->stream` / `options->mr`
+/// NULL, uses cuDF's default stream and current device memory resource.
+cudf_status_t cudf_left_semi_join_indices_ex(cudf_table_view_handle left_keys,
+                                             cudf_table_view_handle right_keys,
+                                             cudf_null_equality_t null_equality,
+                                             cudf_column_handle* out_indices,
+                                             const cudf_exec_options_t* options);
+
+/// Left anti join. Returns an INT32 column of left/probe row indices that have
+/// no match in the right/filter table.
+cudf_status_t cudf_left_anti_join_indices(cudf_table_view_handle left_keys,
+                                          cudf_table_view_handle right_keys,
+                                          cudf_null_equality_t null_equality,
+                                          cudf_column_handle* out_indices);
+
+/// Left anti join indices with explicit execution context.
+///
+/// Passing NULL for `options`, or leaving `options->stream` / `options->mr`
+/// NULL, uses cuDF's default stream and current device memory resource.
+cudf_status_t cudf_left_anti_join_indices_ex(cudf_table_view_handle left_keys,
+                                             cudf_table_view_handle right_keys,
+                                             cudf_null_equality_t null_equality,
+                                             cudf_column_handle* out_indices,
+                                             const cudf_exec_options_t* options);
 
 /// Build a reusable distinct-hash-join artifact from a build-key table.
 ///

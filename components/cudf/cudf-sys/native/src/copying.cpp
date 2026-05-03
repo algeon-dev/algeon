@@ -1,6 +1,7 @@
 #include "copying.h"
 
 #include "execution_context_internal.hpp"
+#include "handle_provenance.hpp"
 #include "shim_common.h"
 
 #include <cudf/column/column_view.hpp>
@@ -51,6 +52,45 @@ cudf_status_t cudf_gather_ex(cudf_table_view_handle input,
       cudf_current_device_resource_guard current_mr{exec.mr_raw};
       auto result = cudf::gather(*view, *map_view, policy, exec.stream, exec.mr);
       *out        = cudf_release_table_handle(std::move(result));
+    }
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
+cudf_status_t cudf_scatter(cudf_table_view_handle source,
+                           cudf_column_view_handle scatter_map,
+                           cudf_table_view_handle target,
+                           cudf_table_handle* out)
+{
+  return cudf_scatter_ex(source, scatter_map, target, out, nullptr);
+}
+
+cudf_status_t cudf_scatter_ex(cudf_table_view_handle source,
+                              cudf_column_view_handle scatter_map,
+                              cudf_table_view_handle target,
+                              cudf_table_handle* out,
+                              cudf_exec_options_t const* options)
+{
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = nullptr;
+  CUDF_RUST_NULL_CHECK(source, "source is null");
+  CUDF_RUST_NULL_CHECK(scatter_map, "scatter_map is null");
+  CUDF_RUST_NULL_CHECK(target, "target is null");
+
+  CUDF_RUST_TRY
+  {
+    auto* source_view               = static_cast<cudf::table_view*>(source);
+    auto* map_view                  = static_cast<cudf::column_view*>(scatter_map);
+    auto* target_view               = static_cast<cudf::table_view*>(target);
+    cudf_exec_context exec          = cudf_make_exec_context();
+    cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
+    if (exec_status != CUDF_SUCCESS) { return exec_status; }
+
+    {
+      cudf_current_device_resource_guard current_mr{exec.mr_raw};
+      auto result = cudf::scatter(*source_view, *map_view, *target_view, exec.stream, exec.mr);
+      *out = cudf_release_table_handle(std::move(result), cudf_capture_exec_provenance(exec));
     }
     return CUDF_SUCCESS;
   }

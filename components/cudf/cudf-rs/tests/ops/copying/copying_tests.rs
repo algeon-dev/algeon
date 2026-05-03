@@ -142,6 +142,74 @@ fn test_gather_succeeds_with_mixed_domains_and_uses_input_provenance() {
 }
 
 #[test]
+fn test_scatter_writes_source_rows_into_target_and_supports_negative_indices() {
+    let source = Table::from_columns(vec![column_from_slice(&[100i32, 200]).unwrap()]).unwrap();
+    let target = Table::from_columns(vec![column_from_slice(&[10i32, 20, 30, 40]).unwrap()]).unwrap();
+    let scatter_map = column_from_slice(&[1i32, -1]).unwrap();
+
+    let result = copying::scatter(
+        &source.testing_view().unwrap(),
+        &scatter_map.testing_view().unwrap(),
+        &target.testing_view().unwrap(),
+    )
+    .unwrap();
+
+    let result_view = result.testing_view().unwrap();
+    assert_eq!(result_view.num_rows().unwrap(), 4);
+    assert_eq!(result_view.column(0).unwrap().to_vec::<i32>().unwrap(), vec![10, 100, 30, 200]);
+}
+
+#[test]
+fn test_scatter_rejects_null_scatter_map() {
+    let source = Table::from_columns(vec![column_from_slice(&[100i32, 200]).unwrap()]).unwrap();
+    let target = Table::from_columns(vec![column_from_slice(&[10i32, 20, 30]).unwrap()]).unwrap();
+    let scatter_map = column_from_slice_nullable(&[0i32, 2], &[true, false]).unwrap();
+
+    let err = copying::scatter(
+        &source.testing_view().unwrap(),
+        &scatter_map.testing_view().unwrap(),
+        &target.testing_view().unwrap(),
+    )
+    .expect_err("nullable scatter_map should be rejected");
+
+    assert_eq!(err.operation(), "copying::scatter");
+}
+
+#[test]
+fn test_scatter_rejects_out_of_bounds_scatter_map() {
+    let source = Table::from_columns(vec![column_from_slice(&[100i32, 200]).unwrap()]).unwrap();
+    let target = Table::from_columns(vec![column_from_slice(&[10i32, 20, 30]).unwrap()]).unwrap();
+    let scatter_map = column_from_slice(&[0i32, 3]).unwrap();
+
+    let err = copying::scatter(
+        &source.testing_view().unwrap(),
+        &scatter_map.testing_view().unwrap(),
+        &target.testing_view().unwrap(),
+    )
+    .expect_err("safe scatter should reject out-of-bounds indices");
+
+    assert_eq!(err.operation(), "copying::scatter");
+    assert_eq!(err.detail_value("reason"), Some("index_out_of_bounds"));
+}
+
+#[test]
+fn test_scatter_rejects_duplicate_scatter_map() {
+    let source = Table::from_columns(vec![column_from_slice(&[100i32, 200]).unwrap()]).unwrap();
+    let target = Table::from_columns(vec![column_from_slice(&[10i32, 20, 30]).unwrap()]).unwrap();
+    let scatter_map = column_from_slice(&[1i32, -2]).unwrap();
+
+    let err = copying::scatter(
+        &source.testing_view().unwrap(),
+        &scatter_map.testing_view().unwrap(),
+        &target.testing_view().unwrap(),
+    )
+    .expect_err("safe scatter should reject duplicate normalized target indices");
+
+    assert_eq!(err.operation(), "copying::scatter");
+    assert_eq!(err.detail_value("reason"), Some("duplicate_target_index"));
+}
+
+#[test]
 fn test_copy_if_else_basic() {
     let lhs = column_from_slice(&[10i32, 20, 30]).unwrap();
     let rhs = column_from_slice(&[1i32, 2, 3]).unwrap();

@@ -33,6 +33,13 @@ extern "C" {
         bounds_policy: i32,
         out: *mut *mut c_void,
     ) -> i32;
+    #[link_name = "cudf_scatter"]
+    pub(crate) fn cudf_scatter_raw(
+        source: *mut c_void,
+        scatter_map: *mut c_void,
+        target: *mut c_void,
+        out: *mut *mut c_void,
+    ) -> i32;
     #[link_name = "cudf_aggregation_create_count"]
     pub(crate) fn cudf_aggregation_create_count_raw(null_policy: i32, out: *mut *mut c_void) -> i32;
     #[link_name = "cudf_groupby_aggregate"]
@@ -101,6 +108,20 @@ extern "C" {
         null_equality: i32,
         out_left_indices: *mut *mut c_void,
         out_right_indices: *mut *mut c_void,
+    ) -> i32;
+    #[link_name = "cudf_left_semi_join_indices"]
+    pub(crate) fn cudf_left_semi_join_indices_raw(
+        left_keys: *mut c_void,
+        right_keys: *mut c_void,
+        null_equality: i32,
+        out_indices: *mut *mut c_void,
+    ) -> i32;
+    #[link_name = "cudf_left_anti_join_indices"]
+    pub(crate) fn cudf_left_anti_join_indices_raw(
+        left_keys: *mut c_void,
+        right_keys: *mut c_void,
+        null_equality: i32,
+        out_indices: *mut *mut c_void,
     ) -> i32;
     #[link_name = "cudf_distinct_hash_join_create"]
     pub(crate) fn cudf_distinct_hash_join_create_raw(

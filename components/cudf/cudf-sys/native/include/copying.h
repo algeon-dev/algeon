@@ -34,6 +34,26 @@ cudf_status_t cudf_gather_ex(cudf_table_view_handle input,
                              cudf_table_handle* out,
                              const cudf_exec_options_t* options);
 
+/// Scatter rows from `source` into `target` by index.
+/// `scatter_map` must be a non-nullable integral column. libcudf rejects null
+/// maps, but duplicate or out-of-bounds indices are undefined behavior and
+/// must be validated by safe callers before using this C entry point.
+cudf_status_t cudf_scatter(cudf_table_view_handle source,
+                           cudf_column_view_handle scatter_map,
+                           cudf_table_view_handle target,
+                           cudf_table_handle* out);
+
+/// Scatter rows with explicit execution options.
+///
+/// Passing NULL for `options`, or leaving `options->stream` / `options->mr`
+/// NULL, uses cuDF's default stream and current device memory resource.
+/// When `options->mr` is non-NULL, it must outlive the returned table.
+cudf_status_t cudf_scatter_ex(cudf_table_view_handle source,
+                              cudf_column_view_handle scatter_map,
+                              cudf_table_view_handle target,
+                              cudf_table_handle* out,
+                              const cudf_exec_options_t* options);
+
 /// Conditionally select elements from two columns based on a boolean mask.
 ///
 /// `output[i] = (boolean_mask.valid(i) && boolean_mask[i]) ? lhs[i] : rhs[i]`

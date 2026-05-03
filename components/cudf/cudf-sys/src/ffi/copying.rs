@@ -24,6 +24,26 @@ extern "C" {
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
 
+    // -- Copying (scatter) ---------------------------------------------------
+
+    pub fn cudf_scatter(
+        source: cudf_table_view_handle,
+        scatter_map: cudf_column_view_handle,
+        target: cudf_table_view_handle,
+        out: *mut cudf_table_handle,
+    ) -> cudf_status_t;
+
+    /// Scatter rows with explicit execution options.
+    ///
+    /// When `options->mr` is non-null, it must outlive the returned table.
+    pub fn cudf_scatter_ex(
+        source: cudf_table_view_handle,
+        scatter_map: cudf_column_view_handle,
+        target: cudf_table_view_handle,
+        out: *mut cudf_table_handle,
+        options: *const cudf_exec_options_t,
+    ) -> cudf_status_t;
+
     // -- Copying (copy_if_else) ----------------------------------------------
 
     pub fn cudf_copy_if_else_vv(
