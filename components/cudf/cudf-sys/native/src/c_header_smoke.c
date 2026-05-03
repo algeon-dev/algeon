@@ -112,6 +112,24 @@ int cudf_rust_c_header_smoke(void)
     &cudf_scalar_create_numeric_ex;
   cudf_status_t (*f22c)(const char*, int32_t, const cudf_exec_options_t*, cudf_scalar_handle*) =
     &cudf_scalar_create_string_ex;
+  cudf_status_t (*f22c0)(cudf_type_id_t, const void*, int32_t, int32_t, cudf_scalar_handle*) =
+    &cudf_scalar_create_decimal_raw;
+  cudf_status_t (*f22c00)(cudf_type_id_t, int64_t, int32_t, cudf_scalar_handle*) =
+    &cudf_scalar_create_timestamp_raw;
+  cudf_status_t (*f22c01)(cudf_type_id_t, int64_t, int32_t, cudf_scalar_handle*) =
+    &cudf_scalar_create_duration_raw;
+  cudf_status_t (*f22c1)(cudf_type_id_t,
+                         const void*,
+                         int32_t,
+                         int32_t,
+                         const cudf_exec_options_t*,
+                         cudf_scalar_handle*) = &cudf_scalar_create_decimal_raw_ex;
+  cudf_status_t (*f22c2)(
+    cudf_type_id_t, int64_t, int32_t, const cudf_exec_options_t*, cudf_scalar_handle*) =
+    &cudf_scalar_create_timestamp_raw_ex;
+  cudf_status_t (*f22c3)(
+    cudf_type_id_t, int64_t, int32_t, const cudf_exec_options_t*, cudf_scalar_handle*) =
+    &cudf_scalar_create_duration_raw_ex;
   cudf_status_t (*f22d)(cudf_scalar_handle, int32_t*, const cudf_exec_options_t*) =
     &cudf_scalar_is_valid_ex;
   cudf_status_t (*f22e)(cudf_scalar_handle, void*, const cudf_exec_options_t*) =
@@ -187,6 +205,7 @@ int cudf_rust_c_header_smoke(void)
   (void)f1;
   (void)f2;
   (void)f2b;
+  (void)f2b2;
   (void)f2c;
   (void)f2d;
   (void)f2e;
@@ -228,6 +247,12 @@ int cudf_rust_c_header_smoke(void)
   (void)f22;
   (void)f22b;
   (void)f22c;
+  (void)f22c0;
+  (void)f22c00;
+  (void)f22c01;
+  (void)f22c1;
+  (void)f22c2;
+  (void)f22c3;
   (void)f22d;
   (void)f22e;
   (void)f22f;

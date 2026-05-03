@@ -86,7 +86,7 @@ impl fmt::Display for FactValue {
             FactValue::Str(s) => f.write_str(s),
             FactValue::Usize(v) => write!(f, "{v}"),
             FactValue::I64(v) => write!(f, "{v}"),
-            FactValue::TypeId(t) => write!(f, "{t:?}"),
+            FactValue::TypeId(t) => write!(f, "{t}"),
             FactValue::DeviceId(d) => write!(f, "{d}"),
         }
     }

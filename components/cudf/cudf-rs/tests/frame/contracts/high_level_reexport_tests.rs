@@ -55,6 +55,63 @@ fn runtime_first_factories_smoke() {
 }
 
 #[test]
+fn runtime_raw_scalar_factories_smoke() {
+    use cudf::{DataType, Runtime, TimestampResolution, TypeId};
+
+    let rt = Runtime::builder().build().unwrap();
+    let decimal32 = rt.decimal32_raw_scalar(12_345, -2).unwrap();
+    let decimal64 = rt.decimal64_raw_scalar(-98_765_432, -4).unwrap();
+    let decimal128 = rt.decimal128_raw_scalar(123_456_789_012_345_678_901i128, -6).unwrap();
+    let decimal = rt.decimal_raw_scalar(-77, DataType::fixed_point(TypeId::Decimal64, -3)).unwrap();
+    let timestamp = rt.timestamp_raw_scalar(1_700_000_123_456, TimestampResolution::Microseconds).unwrap();
+    let duration = rt.duration_raw_scalar(-42_000_000, TimestampResolution::Nanoseconds).unwrap();
+    let null_decimal = rt.null_decimal32_raw_scalar(-2).unwrap();
+    let null_timestamp = rt.null_timestamp_raw_scalar(TimestampResolution::Milliseconds).unwrap();
+    let null_duration = rt.null_duration_raw_scalar(TimestampResolution::Seconds).unwrap();
+
+    assert_eq!(decimal32.data_type().unwrap(), DataType::fixed_point(TypeId::Decimal32, -2));
+    assert_eq!(decimal32.decimal32_raw_value().unwrap(), 12_345);
+    assert_eq!(decimal64.data_type().unwrap(), DataType::fixed_point(TypeId::Decimal64, -4));
+    assert_eq!(decimal64.decimal64_raw_value().unwrap(), -98_765_432);
+    assert_eq!(decimal128.data_type().unwrap(), DataType::fixed_point(TypeId::Decimal128, -6));
+    assert_eq!(decimal128.decimal128_raw_value().unwrap(), 123_456_789_012_345_678_901i128);
+    assert_eq!(decimal.data_type().unwrap(), DataType::fixed_point(TypeId::Decimal64, -3));
+    assert_eq!(decimal.decimal64_raw_value().unwrap(), -77);
+    assert_eq!(timestamp.data_type().unwrap(), DataType::new(TypeId::TimestampMicroseconds));
+    assert_eq!(timestamp.timestamp_raw_value().unwrap(), 1_700_000_123_456);
+    assert_eq!(duration.data_type().unwrap(), DataType::new(TypeId::DurationNanoseconds));
+    assert_eq!(duration.duration_raw_value().unwrap(), -42_000_000);
+    assert_eq!(null_decimal.data_type().unwrap(), DataType::fixed_point(TypeId::Decimal32, -2));
+    assert_eq!(null_timestamp.data_type().unwrap(), DataType::new(TypeId::TimestampMilliseconds));
+    assert_eq!(null_duration.data_type().unwrap(), DataType::new(TypeId::DurationSeconds));
+    assert!(!null_decimal.is_valid().unwrap());
+    assert!(!null_timestamp.is_valid().unwrap());
+    assert!(!null_duration.is_valid().unwrap());
+}
+
+#[test]
+fn ops_expr_raw_literal_functions_are_publicly_importable() {
+    use cudf::{
+        DataFrame, DataType, Expr, Runtime, TimestampResolution, TypeId,
+        ops::expr::{lit_decimal32_raw, lit_decimal64_raw, lit_decimal128_raw, lit_duration_raw, lit_timestamp_raw},
+    };
+
+    fn assert_expr(_: Expr) {}
+
+    assert_expr(lit_decimal32_raw(12_345, -2));
+    assert_expr(lit_decimal128_raw(123_456_789_012_345_678_901i128, -6));
+    assert_expr(lit_timestamp_raw(1_700_000_123_456, TimestampResolution::Microseconds));
+    assert_expr(lit_duration_raw(-42_000_000, TimestampResolution::Nanoseconds));
+
+    let rt = Runtime::builder().build().unwrap();
+    let df = DataFrame::from_columns([("x", rt.series(&[1i32, 2, 3]).unwrap())]).unwrap();
+    let decimal = lit_decimal64_raw(-98_765_432, -4).alias("amount").eval(&df).unwrap();
+
+    assert_eq!(decimal.dtype().unwrap(), DataType::fixed_point(TypeId::Decimal64, -4));
+    assert_eq!(decimal.len(), 3);
+}
+
+#[test]
 fn execution_placement_summary_is_publicly_reexported() {
     use cudf::{DataFrame, ExecutionPlacement, Runtime};
 

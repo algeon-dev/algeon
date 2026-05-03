@@ -1,6 +1,6 @@
 //! Data type definitions mirroring `cudf::type_id` and `cudf::data_type`.
 
-use std::ptr;
+use std::{fmt, ptr};
 
 use crate::core::error::{self, Result};
 
@@ -71,6 +71,41 @@ pub enum TypeId {
 }
 
 impl TypeId {
+    /// Stable machine-readable cudf-rs type label.
+    pub const fn name(self) -> &'static str {
+        match self {
+            TypeId::Empty => "empty",
+            TypeId::Int8 => "int8",
+            TypeId::Int16 => "int16",
+            TypeId::Int32 => "int32",
+            TypeId::Int64 => "int64",
+            TypeId::UInt8 => "uint8",
+            TypeId::UInt16 => "uint16",
+            TypeId::UInt32 => "uint32",
+            TypeId::UInt64 => "uint64",
+            TypeId::Float32 => "float32",
+            TypeId::Float64 => "float64",
+            TypeId::Bool8 => "bool8",
+            TypeId::TimestampDays => "timestamp_days",
+            TypeId::TimestampSeconds => "timestamp_seconds",
+            TypeId::TimestampMilliseconds => "timestamp_milliseconds",
+            TypeId::TimestampMicroseconds => "timestamp_microseconds",
+            TypeId::TimestampNanoseconds => "timestamp_nanoseconds",
+            TypeId::DurationDays => "duration_days",
+            TypeId::DurationSeconds => "duration_seconds",
+            TypeId::DurationMilliseconds => "duration_milliseconds",
+            TypeId::DurationMicroseconds => "duration_microseconds",
+            TypeId::DurationNanoseconds => "duration_nanoseconds",
+            TypeId::Dictionary32 => "dictionary32",
+            TypeId::String => "string",
+            TypeId::List => "list",
+            TypeId::Decimal32 => "decimal32",
+            TypeId::Decimal64 => "decimal64",
+            TypeId::Decimal128 => "decimal128",
+            TypeId::Struct => "struct",
+        }
+    }
+
     /// Convert from the raw FFI type_id enum, returning an error for unknown values.
     pub(crate) fn from_raw(raw: cudf_sys::cudf_type_id_t) -> Result<Self> {
         use cudf_sys::cudf_type_id_t::*;
@@ -244,6 +279,12 @@ impl TypeId {
     }
 }
 
+impl fmt::Display for TypeId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.name())
+    }
+}
+
 /// A data type descriptor combining a [`TypeId`] with an optional scale
 /// (for fixed-point types).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -391,20 +432,20 @@ impl NullEquality {
     }
 }
 
-/// Timestamp resolution for convenience cast methods like [`Series::to_datetime`](crate::Series::to_datetime).
+/// Temporal resolution for timestamp and duration convenience APIs.
 ///
-/// Maps to the corresponding [`TypeId`] timestamp variant.
+/// Maps to the corresponding timestamp or duration [`TypeId`] variant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TimestampResolution {
-    /// Day resolution ([`TypeId::TimestampDays`]).
+    /// Day resolution.
     Days,
-    /// Second resolution ([`TypeId::TimestampSeconds`]).
+    /// Second resolution.
     Seconds,
-    /// Millisecond resolution ([`TypeId::TimestampMilliseconds`]).
+    /// Millisecond resolution.
     Milliseconds,
-    /// Microsecond resolution ([`TypeId::TimestampMicroseconds`]).
+    /// Microsecond resolution.
     Microseconds,
-    /// Nanosecond resolution ([`TypeId::TimestampNanoseconds`]).
+    /// Nanosecond resolution.
     Nanoseconds,
 }
 
@@ -474,14 +515,14 @@ impl DataType {
                 // SAFETY: handle is initialized to null and set by the C shim on success.
                 unsafe { cudf_sys::cudf_data_type_create_fixed_point(self.id.to_raw(), self.scale, &mut handle) },
                 operation,
-                [("type_id", format!("{:?}", self.id).to_lowercase()), ("scale", self.scale.to_string())],
+                [("type_id", self.id.to_string()), ("scale", self.scale.to_string())],
             )?;
         } else {
             error::check_status_in_with_details(
                 // SAFETY: handle is initialized to null and set by the C shim on success.
                 unsafe { cudf_sys::cudf_data_type_create(self.id.to_raw(), &mut handle) },
                 operation,
-                [("type_id", format!("{:?}", self.id).to_lowercase()), ("scale", self.scale.to_string())],
+                [("type_id", self.id.to_string()), ("scale", self.scale.to_string())],
             )?;
         }
         Ok(handle)

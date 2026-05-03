@@ -8,9 +8,10 @@
 use std::collections::HashMap;
 
 use cudf::{
-    Runtime, Series,
+    Runtime, Series, TimestampResolution,
     core::{DataType, TypeId},
     frame::dataframe::JsonReadOptions,
+    testing::prelude::*,
 };
 use rapids_interop::{
     BufferBinding, ColumnLayout, ExportProfile, PhysicalValidity, SchemaNullability, SemanticColumn,
@@ -18,7 +19,10 @@ use rapids_interop::{
 };
 use tempfile::TempDir;
 
-use crate::common::scalar;
+use crate::common::{
+    dependency_wait_call_count_for_stream, last_exec_mr_value, last_exec_stream_value, lock_event_observation,
+    reset_dependency_observation, reset_exec_observation, scalar,
+};
 
 fn sample_runtime() -> Runtime {
     Runtime::builder().build().unwrap()
@@ -330,6 +334,75 @@ fn copy_into_domain_null_timestamp() {
     assert_series_host_export_equivalent(&expected, &result);
 }
 
+#[test]
+fn copy_into_domain_timestamp_raw_scalar_preserves_dtype_and_value() {
+    let rt = sample_runtime();
+    let scalar = crate::common::timestamp_raw_scalar(1_700_000_000_123_456, TimestampResolution::Microseconds).unwrap();
+
+    let result = rt.series_from_scalar(&scalar, 2).unwrap();
+    let expected = crate::common::series::<i64>("out", &[1_700_000_000_123_456, 1_700_000_000_123_456])
+        .unwrap()
+        .astype(TypeId::DurationMicroseconds)
+        .unwrap()
+        .astype(TypeId::TimestampMicroseconds)
+        .unwrap();
+    assert_series_host_export_equivalent(&expected, &result);
+}
+
+#[test]
+fn copy_into_domain_timestamp_days_raw_scalar_preserves_dtype_and_value() {
+    let rt = sample_runtime();
+    let scalar = crate::common::timestamp_raw_scalar(-12, TimestampResolution::Days).unwrap();
+
+    let result = rt.series_from_scalar(&scalar, 2).unwrap();
+    let expected = crate::common::series::<i32>("out", &[-12, -12])
+        .unwrap()
+        .astype(TypeId::DurationDays)
+        .unwrap()
+        .astype(TypeId::TimestampDays)
+        .unwrap();
+    assert_series_host_export_equivalent(&expected, &result);
+}
+
+#[test]
+fn copy_into_domain_duration_raw_scalar_preserves_dtype_and_value() {
+    let rt = sample_runtime();
+    let scalar = crate::common::duration_raw_scalar(-42_000, TimestampResolution::Milliseconds).unwrap();
+
+    let result = rt.series_from_scalar(&scalar, 2).unwrap();
+    let expected =
+        crate::common::series::<i64>("out", &[-42_000, -42_000]).unwrap().astype(TypeId::DurationMilliseconds).unwrap();
+    assert_series_host_export_equivalent(&expected, &result);
+}
+
+#[test]
+fn series_from_scalar_cross_runtime_copy_waits_on_target_stream() {
+    let _event_observation = lock_event_observation();
+    let source_rt = crate::common::sample_runtime();
+    let target_rt = crate::common::sample_runtime();
+    let scalar = source_rt.scalar(42i32).unwrap();
+
+    assert_ne!(scalar.testing_execution_domain_id(), target_rt.testing_execution_domain_id());
+
+    let expected_exec_stream = target_rt.stream().testing_raw_handle_value();
+    let expected_exec_mr = target_rt.memory_resource().testing_raw_handle_value();
+
+    reset_dependency_observation();
+    reset_exec_observation();
+    let result = target_rt.series_from_scalar(&scalar, 3).unwrap();
+
+    assert_eq!(result.as_column().testing_execution_domain_id(), target_rt.testing_execution_domain_id());
+    assert_eq!(result.as_column().testing_execution_domain_stream_value(), expected_exec_stream);
+    assert_eq!(result.as_column().testing_execution_domain_mr_value(), expected_exec_mr);
+    assert_eq!(last_exec_stream_value(), expected_exec_stream);
+    assert_eq!(last_exec_mr_value(), expected_exec_mr);
+    assert!(
+        dependency_wait_call_count_for_stream(expected_exec_stream) >= 1,
+        "same-device scalar relocation must order target stream after source stream"
+    );
+    assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![42, 42, 42]);
+}
+
 // ── Decimal ─────────────────────────────────────────────────────────
 
 #[test]
@@ -359,6 +432,33 @@ fn copy_into_domain_decimal128() {
         .unwrap()
         .astype(DataType::fixed_point(TypeId::Decimal128, -3))
         .unwrap();
+    assert_series_host_export_equivalent(&expected, &result);
+}
+
+#[test]
+fn copy_into_domain_decimal32_raw_scalar_preserves_dtype_scale_and_value() {
+    let rt = sample_runtime();
+    let scalar = crate::common::decimal32_raw_scalar(12345, -2).unwrap();
+
+    let result = rt.series_from_scalar(&scalar, 2).unwrap();
+    let expected = crate::common::with_test_runtime(|source_rt| {
+        let seed = source_rt.decimal32_raw_scalar(12345, -2).unwrap();
+        source_rt.series_from_scalar(&seed, 2).unwrap()
+    });
+    assert_series_host_export_equivalent(&expected, &result);
+}
+
+#[test]
+fn copy_into_domain_decimal128_raw_scalar_preserves_dtype_scale_and_value() {
+    let rt = sample_runtime();
+    let raw = 123456789012345678901234567890i128;
+    let scalar = crate::common::decimal128_raw_scalar(raw, -8).unwrap();
+
+    let result = rt.series_from_scalar(&scalar, 2).unwrap();
+    let expected = crate::common::with_test_runtime(|source_rt| {
+        let seed = source_rt.decimal128_raw_scalar(raw, -8).unwrap();
+        source_rt.series_from_scalar(&seed, 2).unwrap()
+    });
     assert_series_host_export_equivalent(&expected, &result);
 }
 

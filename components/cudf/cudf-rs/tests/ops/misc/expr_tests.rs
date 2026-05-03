@@ -8,10 +8,14 @@
 //! All tests require a GPU.
 
 use cudf::{
-    DataFrame, ErrorCode, ErrorKind, Series, TypeId,
+    DataFrame, DataType, ErrorCode, ErrorKind, ExecutionOverrides, Runtime, Series, TimestampResolution, TypeId,
     core::error::{FactKeyName, FactValue},
-    ops::expr::{Expr, col, lit, when},
+    ops::expr::{
+        Expr, col, lit, lit_decimal32_raw, lit_decimal64_raw, lit_decimal128_raw, lit_duration_raw, lit_timestamp_raw,
+        when,
+    },
 };
+use rapids_interop::{ColumnLayout, DataType as InteropDataType, Placement};
 
 // ===========================================================================
 // Helpers
@@ -64,6 +68,47 @@ fn eval_bool(expr: Expr, df: &DataFrame) -> Vec<bool> {
     eval(expr, df).to_vec_strict::<bool>().unwrap()
 }
 
+fn host_export_fixed_width_bytes(series: &Series) -> Vec<u8> {
+    let export = series.try_prepare_host_column_export().unwrap();
+    let values_id = match export.column().layout() {
+        ColumnLayout::FixedWidth { values } => *values,
+        other => panic!("expected fixed-width host export, got {other:?}"),
+    };
+    let binding =
+        export.bindings().iter().find(|binding| binding.id() == values_id).expect("missing fixed-width values binding");
+
+    assert_eq!(*binding.placement(), Placement::Host);
+
+    // SAFETY: prepared host exports retain their backing host buffers, and the
+    // binding lifetime is tied to the export value held in this function.
+    unsafe { std::slice::from_raw_parts(binding.bytes().base_ptr() as *const u8, binding.bytes().byte_len()).to_vec() }
+}
+
+fn host_export_dtype(series: &Series) -> InteropDataType {
+    series.try_prepare_host_column_export().unwrap().column().data_type()
+}
+
+fn host_export_i32_values(series: &Series) -> Vec<i32> {
+    host_export_fixed_width_bytes(series)
+        .chunks_exact(std::mem::size_of::<i32>())
+        .map(|chunk| i32::from_ne_bytes(chunk.try_into().unwrap()))
+        .collect()
+}
+
+fn host_export_i64_values(series: &Series) -> Vec<i64> {
+    host_export_fixed_width_bytes(series)
+        .chunks_exact(std::mem::size_of::<i64>())
+        .map(|chunk| i64::from_ne_bytes(chunk.try_into().unwrap()))
+        .collect()
+}
+
+fn host_export_i128_values(series: &Series) -> Vec<i128> {
+    host_export_fixed_width_bytes(series)
+        .chunks_exact(std::mem::size_of::<i128>())
+        .map(|chunk| i128::from_ne_bytes(chunk.try_into().unwrap()))
+        .collect()
+}
+
 fn assert_output_name(expr: Expr, expected: Option<&str>) {
     assert_eq!(expr.output_name(), expected);
 }
@@ -109,6 +154,95 @@ fn lit_string_broadcasts() {
     let result = eval(lit("hello").alias("s"), &df);
     assert_eq!(result.len(), 3);
     assert_eq!(result.dtype().unwrap().id(), TypeId::String);
+}
+
+#[test]
+fn lit_decimal32_raw_broadcasts_dtype_scale_and_raw_values() {
+    let df = xy_df();
+    let result = eval(lit_decimal32_raw(12_345, -2).alias("amount"), &df);
+
+    assert_eq!(result.len(), 3);
+    assert_eq!(result.dtype().unwrap(), DataType::fixed_point(TypeId::Decimal32, -2));
+    assert_eq!(host_export_dtype(&result), InteropDataType::fixed_point(rapids_interop::TypeId::Decimal32, -2));
+    assert_eq!(host_export_i32_values(&result), vec![12_345, 12_345, 12_345]);
+}
+
+#[test]
+fn lit_decimal64_raw_broadcasts_dtype_scale_and_raw_values() {
+    let df = xy_df();
+    let result = eval(lit_decimal64_raw(-98_765_432, -4).alias("amount"), &df);
+
+    assert_eq!(result.len(), 3);
+    assert_eq!(result.dtype().unwrap(), DataType::fixed_point(TypeId::Decimal64, -4));
+    assert_eq!(host_export_dtype(&result), InteropDataType::fixed_point(rapids_interop::TypeId::Decimal64, -4));
+    assert_eq!(host_export_i64_values(&result), vec![-98_765_432, -98_765_432, -98_765_432]);
+}
+
+#[test]
+fn lit_decimal128_raw_broadcasts_dtype_scale_and_raw_values() {
+    let df = xy_df();
+    let raw = 123_456_789_012_345_678_901i128;
+    let result = eval(lit_decimal128_raw(raw, -6).alias("amount"), &df);
+
+    assert_eq!(result.len(), 3);
+    assert_eq!(result.dtype().unwrap(), DataType::fixed_point(TypeId::Decimal128, -6));
+    assert_eq!(host_export_dtype(&result), InteropDataType::fixed_point(rapids_interop::TypeId::Decimal128, -6));
+    assert_eq!(host_export_i128_values(&result), vec![raw, raw, raw]);
+}
+
+#[test]
+fn lit_timestamp_raw_broadcasts_dtype_and_raw_values() {
+    let df = xy_df();
+    let result = eval(lit_timestamp_raw(1_700_000_123_456, TimestampResolution::Microseconds).alias("ts"), &df);
+
+    assert_eq!(result.len(), 3);
+    assert_eq!(result.dtype().unwrap(), DataType::new(TypeId::TimestampMicroseconds));
+    assert_eq!(host_export_dtype(&result), InteropDataType::new(rapids_interop::TypeId::TimestampMicroseconds));
+    assert_eq!(host_export_i64_values(&result), vec![1_700_000_123_456; 3]);
+}
+
+#[test]
+fn lit_duration_raw_broadcasts_dtype_and_raw_values() {
+    let df = xy_df();
+    let result = eval(lit_duration_raw(-42_000_000, TimestampResolution::Nanoseconds).alias("duration"), &df);
+
+    assert_eq!(result.len(), 3);
+    assert_eq!(result.dtype().unwrap(), DataType::new(TypeId::DurationNanoseconds));
+    assert_eq!(host_export_dtype(&result), InteropDataType::new(rapids_interop::TypeId::DurationNanoseconds));
+    assert_eq!(host_export_i64_values(&result), vec![-42_000_000; 3]);
+}
+
+#[test]
+fn raw_literals_eval_in_use_resolved_override_domain_for_allocations() {
+    let source_rt = Runtime::builder().build().unwrap();
+    let override_rt = Runtime::builder().build().unwrap();
+    let df = DataFrame::from_columns([("x", source_rt.series(&[1i32, 2, 3]).unwrap())]).unwrap();
+    let execution =
+        ExecutionOverrides::new().with_stream(override_rt.stream()).with_memory_resource(override_rt.memory_resource());
+    let input_placement = df.placement();
+    let override_placement = override_rt.placement();
+
+    let decimal = lit_decimal64_raw(12_345, -2).eval_in(&df, &execution).unwrap();
+    let timestamp =
+        lit_timestamp_raw(1_700_000_123_456, TimestampResolution::Microseconds).eval_in(&df, &execution).unwrap();
+    let duration = lit_duration_raw(-42_000_000, TimestampResolution::Nanoseconds).eval_in(&df, &execution).unwrap();
+
+    for result in [&decimal, &timestamp, &duration] {
+        let placement = result.placement();
+        assert_eq!(placement.device, input_placement.device);
+        assert_eq!(placement.workflow_id, input_placement.workflow_id);
+        assert_ne!(placement.bundle_id, input_placement.bundle_id);
+        assert_eq!(placement.stream_debug, override_placement.stream_debug);
+        assert_eq!(placement.memory_resource_debug, override_placement.memory_resource_debug);
+        assert_ne!(placement.workflow_id, override_placement.workflow_id);
+    }
+
+    assert_eq!(decimal.dtype().unwrap(), DataType::fixed_point(TypeId::Decimal64, -2));
+    assert_eq!(host_export_i64_values(&decimal), vec![12_345; 3]);
+    assert_eq!(timestamp.dtype().unwrap(), DataType::new(TypeId::TimestampMicroseconds));
+    assert_eq!(host_export_i64_values(&timestamp), vec![1_700_000_123_456; 3]);
+    assert_eq!(duration.dtype().unwrap(), DataType::new(TypeId::DurationNanoseconds));
+    assert_eq!(host_export_i64_values(&duration), vec![-42_000_000; 3]);
 }
 
 #[test]

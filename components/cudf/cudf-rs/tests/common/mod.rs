@@ -5,7 +5,7 @@ use std::{
 };
 
 use cudf::{
-    DataFrame, DataType, DeviceId, ErrorCode, HostColumnData, Runtime, Series, TypeId,
+    DataFrame, DataType, DeviceId, ErrorCode, HostColumnData, Runtime, Series, TimestampResolution, TypeId,
     core::{
         Column, CudfType, DeviceBuffer, Scalar,
         error::{FactKeyName, FactValue},
@@ -108,6 +108,31 @@ pub fn null_scalar<T: CudfType>() -> cudf::Result<Scalar> {
 #[allow(dead_code)]
 pub fn null_string_scalar() -> cudf::Result<Scalar> {
     with_test_runtime(|rt| rt.null_string_scalar())
+}
+
+#[allow(dead_code)]
+pub fn decimal32_raw_scalar(raw: i32, scale: i32) -> cudf::Result<Scalar> {
+    with_test_runtime(|rt| rt.decimal32_raw_scalar(raw, scale))
+}
+
+#[allow(dead_code)]
+pub fn decimal64_raw_scalar(raw: i64, scale: i32) -> cudf::Result<Scalar> {
+    with_test_runtime(|rt| rt.decimal64_raw_scalar(raw, scale))
+}
+
+#[allow(dead_code)]
+pub fn decimal128_raw_scalar(raw: i128, scale: i32) -> cudf::Result<Scalar> {
+    with_test_runtime(|rt| rt.decimal128_raw_scalar(raw, scale))
+}
+
+#[allow(dead_code)]
+pub fn timestamp_raw_scalar(raw: i64, resolution: TimestampResolution) -> cudf::Result<Scalar> {
+    with_test_runtime(|rt| rt.timestamp_raw_scalar(raw, resolution))
+}
+
+#[allow(dead_code)]
+pub fn duration_raw_scalar(raw: i64, resolution: TimestampResolution) -> cudf::Result<Scalar> {
+    with_test_runtime(|rt| rt.duration_raw_scalar(raw, resolution))
 }
 
 #[allow(dead_code)]
@@ -425,16 +450,15 @@ pub fn error_context_value(err: &cudf::Error, key: &str) -> Option<String> {
     err.details().iter().find_map(|(ctx_key, ctx_value)| (*ctx_key == key).then(|| ctx_value.to_string()))
 }
 
-/// Stringify a `FactValue` using the representation that downstream tests
-/// expect (TypeId rendered in lowercase, matching the historical `type_label`
-/// convention in production code).
+/// Stringify a `FactValue` using the same canonical representation that
+/// production errors expose through `Display`.
 #[allow(dead_code)]
 fn fact_value_to_string(value: &FactValue) -> String {
     match value {
         FactValue::Str(s) => s.to_string(),
         FactValue::Usize(n) => n.to_string(),
         FactValue::I64(n) => n.to_string(),
-        FactValue::TypeId(t) => format!("{:?}", t).to_lowercase(),
+        FactValue::TypeId(t) => t.to_string(),
         FactValue::DeviceId(d) => d.to_string(),
         // `FactValue` is non_exhaustive; new variants default to their Display form.
         other => other.to_string(),

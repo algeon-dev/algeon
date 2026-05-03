@@ -36,6 +36,89 @@ cudf_status_t cudf_scalar_create_numeric_ex(cudf_type_id_t type_id,
                                             const cudf_exec_options_t* options,
                                             cudf_scalar_handle* out);
 
+/// Create a fixed-point decimal scalar from its raw integer representation.
+///
+/// `type_id` must be DECIMAL32, DECIMAL64, or DECIMAL128. `value` points to
+/// an `int32_t`, `int64_t`, or 16-byte signed integer raw representation,
+/// respectively. When `is_valid` is zero, `value` may be NULL; the returned
+/// scalar still has the requested decimal type and scale.
+///
+/// This helper enqueues any required device work on cuDF's default stream and
+/// returns without an extra stream synchronization barrier.
+cudf_status_t cudf_scalar_create_decimal_raw(cudf_type_id_t type_id,
+                                             const void* value,
+                                             int32_t scale,
+                                             int32_t is_valid,
+                                             cudf_scalar_handle* out);
+
+/// Create a fixed-point decimal scalar from its raw integer representation
+/// with explicit execution options.
+///
+/// Passing NULL for `options`, or leaving `options->stream` / `options->mr`
+/// NULL, uses cuDF's default stream and current device memory resource.
+/// This helper does not add an extra stream synchronization barrier before
+/// returning. When `options->mr` is non-NULL, it must outlive the returned
+/// scalar.
+cudf_status_t cudf_scalar_create_decimal_raw_ex(cudf_type_id_t type_id,
+                                                const void* value,
+                                                int32_t scale,
+                                                int32_t is_valid,
+                                                const cudf_exec_options_t* options,
+                                                cudf_scalar_handle* out);
+
+/// Create a timestamp scalar from a raw integer count at the requested
+/// timestamp resolution.
+///
+/// `type_id` must be one of TIMESTAMP_DAYS, TIMESTAMP_SECONDS,
+/// TIMESTAMP_MILLISECONDS, TIMESTAMP_MICROSECONDS, or TIMESTAMP_NANOSECONDS.
+/// Days are stored by libcudf as int32 and reject values outside that range;
+/// all other resolutions use int64. The raw value is interpreted directly as
+/// units since the Unix epoch. No parsing or timezone conversion is performed.
+cudf_status_t cudf_scalar_create_timestamp_raw(cudf_type_id_t type_id,
+                                               int64_t value,
+                                               int32_t is_valid,
+                                               cudf_scalar_handle* out);
+
+/// Create a timestamp scalar from a raw integer count with explicit execution
+/// options.
+///
+/// Passing NULL for `options`, or leaving `options->stream` / `options->mr`
+/// NULL, uses cuDF's default stream and current device memory resource. This
+/// helper does not add an extra stream synchronization barrier before
+/// returning. When `options->mr` is non-NULL, it must outlive the returned
+/// scalar.
+cudf_status_t cudf_scalar_create_timestamp_raw_ex(cudf_type_id_t type_id,
+                                                  int64_t value,
+                                                  int32_t is_valid,
+                                                  const cudf_exec_options_t* options,
+                                                  cudf_scalar_handle* out);
+
+/// Create a duration scalar from a raw integer count at the requested
+/// duration resolution.
+///
+/// `type_id` must be one of DURATION_DAYS, DURATION_SECONDS,
+/// DURATION_MILLISECONDS, DURATION_MICROSECONDS, or DURATION_NANOSECONDS.
+/// Days are stored by libcudf as int32 and reject values outside that range;
+/// all other resolutions use int64.
+cudf_status_t cudf_scalar_create_duration_raw(cudf_type_id_t type_id,
+                                              int64_t value,
+                                              int32_t is_valid,
+                                              cudf_scalar_handle* out);
+
+/// Create a duration scalar from a raw integer count with explicit execution
+/// options.
+///
+/// Passing NULL for `options`, or leaving `options->stream` / `options->mr`
+/// NULL, uses cuDF's default stream and current device memory resource. This
+/// helper does not add an extra stream synchronization barrier before
+/// returning. When `options->mr` is non-NULL, it must outlive the returned
+/// scalar.
+cudf_status_t cudf_scalar_create_duration_raw_ex(cudf_type_id_t type_id,
+                                                 int64_t value,
+                                                 int32_t is_valid,
+                                                 const cudf_exec_options_t* options,
+                                                 cudf_scalar_handle* out);
+
 /// Create a string scalar from a null-terminated UTF-8 string.
 ///
 /// This helper synchronizes cuDF's default stream before return on success so
@@ -99,11 +182,11 @@ cudf_status_t cudf_scalar_is_valid_ex(cudf_scalar_handle handle,
                                       int32_t* out,
                                       const cudf_exec_options_t* options);
 
-/// Get the value of a numeric scalar. `out` must point to memory large enough
-/// for the scalar's type.
+/// Get the raw value of a fixed-width scalar. `out` must point to memory large
+/// enough for the scalar's physical representation.
 cudf_status_t cudf_scalar_value(cudf_scalar_handle handle, void* out);
 
-/// Get the value of a numeric scalar with explicit execution options.
+/// Get the raw value of a fixed-width scalar with explicit execution options.
 ///
 /// On success, `out` is ready to read when this call returns because libcudf
 /// performs synchronous host materialization internally. `options->mr` is

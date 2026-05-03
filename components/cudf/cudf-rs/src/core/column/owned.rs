@@ -32,7 +32,7 @@ fn usize_to_i32_len(len: usize, what: &'static str, operation: &'static str) -> 
 }
 
 fn type_id_label(type_id: TypeId) -> String {
-    format!("{type_id:?}").to_lowercase()
+    type_id.to_string()
 }
 
 fn fixed_width_type_required_error(

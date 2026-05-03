@@ -17,7 +17,7 @@ rapids_cuda_init_architectures(CUDF_RUST)
 project(
   CUDF_RUST
   VERSION "${RAPIDS_VERSION}"
-  LANGUAGES CXX CUDA
+  LANGUAGES C CXX CUDA
 )
 
 # ##################################################################################################

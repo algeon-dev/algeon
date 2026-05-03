@@ -264,6 +264,51 @@ pub(crate) fn sort_by_key_impl(
     unsafe { Table::from_raw_with_domain(out, Arc::clone(output_domain)) }
 }
 
+pub(crate) fn sorted_order_impl(
+    input: &TableView<'_>,
+    column_order: Option<&[Order]>,
+    null_precedence: Option<&[NullOrder]>,
+    output_domain: &Arc<ExecutionDomain>,
+    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    operation: &'static str,
+) -> Result<Column> {
+    let num_keys = input.num_columns()?;
+    validate_sort_params(operation, num_keys, column_order, null_precedence)?;
+    let num_keys_i32 = checked_num_keys(operation, num_keys)?;
+    let params = sort_params(column_order, null_precedence);
+    let mut out = ptr::null_mut();
+    let status = match exec_options {
+        Some(options) => unsafe {
+            cudf_sys::cudf_sorted_order_ex(
+                input.raw_handle(),
+                params.column_order,
+                params.null_precedence,
+                num_keys_i32,
+                &mut out,
+                options,
+            )
+        },
+        None => unsafe {
+            cudf_sys::cudf_sorted_order(
+                input.raw_handle(),
+                params.column_order,
+                params.null_precedence,
+                num_keys_i32,
+                &mut out,
+            )
+        },
+    };
+
+    error::check_status_in(status, operation).map_err(|err| {
+        err.with_fact(FACT_KEYS_COUNT, num_keys).with_details([
+            ("column_order_provided", column_order.is_some().to_string()),
+            ("null_precedence_provided", null_precedence.is_some().to_string()),
+            ("execution_context_provided", exec_options.is_some().to_string()),
+        ])
+    })?;
+    unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }
+}
+
 /// Sort the rows of a table by all its columns.
 ///
 /// If `column_order` or `null_precedence` are `None`, cuDF defaults are
@@ -365,34 +410,14 @@ pub fn sorted_order(
 ) -> Result<Column> {
     let ctx = ExecutionOverrides::new();
     let execution = ResolvedExecution::unary(input.execution_domain(), &ctx, "sorting::sorted_order")?;
-    let num_keys = input.num_columns()?;
-    validate_sort_params("sorting::sorted_order", num_keys, column_order, null_precedence)?;
-    let num_keys_i32 = checked_num_keys("sorting::sorted_order", num_keys)?;
-    let params = sort_params(column_order, null_precedence);
-    let mut out = ptr::null_mut();
-    error::check_status_in(
-        // SAFETY: input handle is valid. co/np are either null or valid slices of num_keys elements.
-        unsafe {
-            cudf_sys::cudf_sorted_order_ex(
-                input.raw_handle(),
-                params.column_order,
-                params.null_precedence,
-                num_keys_i32,
-                &mut out,
-                execution.exec_options(),
-            )
-        },
+    sorted_order_impl(
+        input,
+        column_order,
+        null_precedence,
+        execution.output_domain(),
+        Some(execution.exec_options()),
         "sorting::sorted_order",
     )
-    .map_err(|err| {
-        err.with_fact(FACT_KEYS_COUNT, num_keys).with_details([
-            ("column_order_provided", column_order.is_some().to_string()),
-            ("null_precedence_provided", null_precedence.is_some().to_string()),
-            ("execution_context_provided", "true".to_string()),
-        ])
-    })?;
-    // SAFETY: out was returned by a successful FFI call.
-    unsafe { Column::from_raw_with_domain(out, Arc::clone(execution.output_domain())) }
 }
 
 /// Check whether the table is already sorted according to the given order.

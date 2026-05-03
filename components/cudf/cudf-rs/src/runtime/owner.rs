@@ -20,7 +20,7 @@ use crate::{
         memory::DeviceMemoryResource,
         scalar::Scalar,
         table::Table,
-        types::{CudfType, DataType, TypeId},
+        types::{CudfType, DataType, TimestampResolution, TypeId},
     },
     frame::{
         dataframe::DataFrame,
@@ -242,12 +242,143 @@ impl Runtime {
         Scalar::null_string_in_domain(self.execution_domain())
     }
 
+    /// Create a Decimal32 scalar from its raw fixed-point representation.
+    ///
+    /// `raw` is the stored integer representation and `scale` is the cudf
+    /// fixed-point scale. This creates a device-resident scalar in this
+    /// runtime's execution domain, using this runtime's stream and memory
+    /// resource. It does not parse or format decimal text, and does not
+    /// intentionally synchronize the host before returning.
+    pub fn decimal32_raw_scalar(&self, raw: i32, scale: i32) -> Result<Scalar> {
+        Scalar::decimal_from_raw_in_domain(
+            i128::from(raw),
+            DataType::fixed_point(TypeId::Decimal32, scale),
+            self.execution_domain(),
+        )
+    }
+
+    /// Create a Decimal64 scalar from its raw fixed-point representation.
+    ///
+    /// `raw` is the stored integer representation and `scale` is the cudf
+    /// fixed-point scale. This creates a device-resident scalar in this
+    /// runtime's execution domain, using this runtime's stream and memory
+    /// resource. It does not parse or format decimal text, and does not
+    /// intentionally synchronize the host before returning.
+    pub fn decimal64_raw_scalar(&self, raw: i64, scale: i32) -> Result<Scalar> {
+        Scalar::decimal_from_raw_in_domain(
+            i128::from(raw),
+            DataType::fixed_point(TypeId::Decimal64, scale),
+            self.execution_domain(),
+        )
+    }
+
+    /// Create a Decimal128 scalar from its raw fixed-point representation.
+    ///
+    /// `raw` is the stored integer representation and `scale` is the cudf
+    /// fixed-point scale. This creates a device-resident scalar in this
+    /// runtime's execution domain, using this runtime's stream and memory
+    /// resource. It does not parse or format decimal text, and does not
+    /// intentionally synchronize the host before returning.
+    pub fn decimal128_raw_scalar(&self, raw: i128, scale: i32) -> Result<Scalar> {
+        Scalar::decimal_from_raw_in_domain(
+            raw,
+            DataType::fixed_point(TypeId::Decimal128, scale),
+            self.execution_domain(),
+        )
+    }
+
+    /// Create a decimal scalar from its raw fixed-point representation.
+    ///
+    /// `dtype` must be Decimal32, Decimal64, or Decimal128. For Decimal32 and
+    /// Decimal64, `raw` must fit the corresponding physical representation.
+    /// This creates a device-resident scalar in this runtime's execution
+    /// domain, using this runtime's stream and memory resource. It does not
+    /// parse or format decimal text, and does not intentionally synchronize
+    /// the host before returning.
+    pub fn decimal_raw_scalar(&self, raw: i128, dtype: impl Into<DataType>) -> Result<Scalar> {
+        Scalar::decimal_from_raw_in_domain(raw, dtype.into(), self.execution_domain())
+    }
+
+    /// Create a timestamp scalar from a raw count in the requested resolution.
+    ///
+    /// `raw` is the stored epoch-unit representation for `resolution`. This
+    /// creates a device-resident scalar in this runtime's execution domain,
+    /// using this runtime's stream and memory resource. It does not parse
+    /// strings, apply timezone behavior, or intentionally synchronize the host
+    /// before returning.
+    pub fn timestamp_raw_scalar(&self, raw: i64, resolution: TimestampResolution) -> Result<Scalar> {
+        Scalar::timestamp_from_raw_in_domain(raw, resolution.type_id(), self.execution_domain())
+    }
+
+    /// Create a duration scalar from a raw count in the requested resolution.
+    ///
+    /// `raw` is the stored unit-count representation for `resolution`. This
+    /// creates a device-resident scalar in this runtime's execution domain,
+    /// using this runtime's stream and memory resource. It does not parse
+    /// strings, apply formatting behavior, or intentionally synchronize the
+    /// host before returning.
+    pub fn duration_raw_scalar(&self, raw: i64, resolution: TimestampResolution) -> Result<Scalar> {
+        Scalar::duration_from_raw_in_domain(raw, resolution.duration_type_id(), self.execution_domain())
+    }
+
+    /// Create a null Decimal32 device scalar with the requested scale.
+    pub fn null_decimal32_raw_scalar(&self, scale: i32) -> Result<Scalar> {
+        self.null_decimal_raw_scalar(DataType::fixed_point(TypeId::Decimal32, scale))
+    }
+
+    /// Create a null Decimal64 device scalar with the requested scale.
+    pub fn null_decimal64_raw_scalar(&self, scale: i32) -> Result<Scalar> {
+        self.null_decimal_raw_scalar(DataType::fixed_point(TypeId::Decimal64, scale))
+    }
+
+    /// Create a null Decimal128 device scalar with the requested scale.
+    pub fn null_decimal128_raw_scalar(&self, scale: i32) -> Result<Scalar> {
+        self.null_decimal_raw_scalar(DataType::fixed_point(TypeId::Decimal128, scale))
+    }
+
+    /// Create a null decimal device scalar.
+    ///
+    /// `dtype` must be Decimal32, Decimal64, or Decimal128. The scalar is
+    /// created in this runtime's execution domain, using this runtime's stream
+    /// and memory resource, without intentionally synchronizing the host
+    /// before returning.
+    pub fn null_decimal_raw_scalar(&self, dtype: impl Into<DataType>) -> Result<Scalar> {
+        Scalar::null_decimal_in_domain(dtype.into(), self.execution_domain())
+    }
+
+    /// Create a null timestamp device scalar in the requested resolution.
+    ///
+    /// The scalar is created in this runtime's execution domain, using this
+    /// runtime's stream and memory resource, without intentionally
+    /// synchronizing the host before returning.
+    pub fn null_timestamp_raw_scalar(&self, resolution: TimestampResolution) -> Result<Scalar> {
+        Scalar::null_timestamp_in_domain(resolution.type_id(), self.execution_domain())
+    }
+
+    /// Create a null duration device scalar in the requested resolution.
+    ///
+    /// The scalar is created in this runtime's execution domain, using this
+    /// runtime's stream and memory resource, without intentionally
+    /// synchronizing the host before returning.
+    pub fn null_duration_raw_scalar(&self, resolution: TimestampResolution) -> Result<Scalar> {
+        Scalar::null_duration_in_domain(resolution.duration_type_id(), self.execution_domain())
+    }
+
     /// Create an empty low-level `Column` inside this runtime.
     pub fn empty_column(&self, dtype: impl Into<DataType>) -> Result<Column> {
         Column::empty_with_runtime(self, dtype.into())
     }
 
     /// Create a low-level `Column` by repeating a scalar inside this runtime.
+    ///
+    /// If `scalar` already belongs to this runtime's device, same-device
+    /// cross-stream ordering is handled with a device-side dependency and the
+    /// scalar is copied on this runtime's stream. If `scalar` belongs to a
+    /// different CUDA device, cudf-rs materializes the scalar value through
+    /// the source execution domain and recreates it in this runtime before
+    /// broadcasting, which may synchronize the source stream for host
+    /// visibility. The output column is allocated with this runtime's memory
+    /// resource and retains this runtime's execution provenance.
     pub fn column_from_scalar(&self, scalar: &Scalar, size: usize) -> Result<Column> {
         Column::from_scalar_with_runtime(self, scalar, size)
     }
@@ -358,9 +489,14 @@ impl Runtime {
 
     /// Create an unnamed `Series` by repeating a scalar inside this runtime.
     ///
-    /// If `scalar` does not already belong to this runtime's execution domain,
-    /// the scalar is recreated in this runtime first so placement and
-    /// allocator selection remain honest.
+    /// If `scalar` already belongs to this runtime's device, same-device
+    /// cross-stream ordering is handled with a device-side dependency and the
+    /// scalar is copied on this runtime's stream. If `scalar` belongs to a
+    /// different CUDA device, cudf-rs materializes the scalar value through
+    /// the source execution domain and recreates it in this runtime before
+    /// broadcasting, which may synchronize the source stream for host
+    /// visibility. The output `Series` shares the newly allocated column and
+    /// retains this runtime's execution provenance.
     ///
     /// Supports all scalar types except Dictionary32 (no libcudf scalar
     /// subclass exists for dictionary-encoded scalars).
