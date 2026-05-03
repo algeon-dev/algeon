@@ -15,11 +15,15 @@ const EXPECTED_GUARDS: &[&str] = &[
     "io_parquet::write_parquet",
     "join::distinct_hash_join_create",
     "join::distinct_hash_join_destroy",
+    "join::distinct_hash_join_left_join",
     "join::hash_join_create",
     "join::hash_join_destroy",
     "join::hash_join_full_join",
     "join::hash_join_inner_join",
     "join::hash_join_left_join",
+    "join::full_join_indices",
+    "join::inner_join_indices",
+    "join::left_join_indices",
     "replace::replace_nulls_policy",
     "sorting::is_sorted",
     "sorting::sort",
@@ -134,9 +138,21 @@ fn classify_allowed_guard(file_name: &str, context: &str) -> Option<&'static str
         "join.cpp" if context.contains("void cudf_distinct_hash_join_destroy") && context.contains("delete owner") => {
             Some("join::distinct_hash_join_destroy")
         },
+        "join.cpp" if context.contains("distinct_join->left_join(*probe_view, exec.stream, exec.mr)") => {
+            Some("join::distinct_hash_join_left_join")
+        },
         "join.cpp" if context.contains("std::make_unique<cudf::hash_join>") => Some("join::hash_join_create"),
         "join.cpp" if context.contains("void cudf_hash_join_destroy") && context.contains("delete owner") => {
             Some("join::hash_join_destroy")
+        },
+        "join.cpp" if context.contains("cudf::full_join(*lk, *rk, null_eq, exec.stream, exec.mr)") => {
+            Some("join::full_join_indices")
+        },
+        "join.cpp" if context.contains("cudf::inner_join(*lk, *rk, null_eq, exec.stream, exec.mr)") => {
+            Some("join::inner_join_indices")
+        },
+        "join.cpp" if context.contains("cudf::left_join(*lk, *rk, null_eq, exec.stream, exec.mr)") => {
+            Some("join::left_join_indices")
         },
         "join.cpp" if context.contains("hash_join->full_join(*probe_view, {}, exec.stream, exec.mr)") => {
             Some("join::hash_join_full_join")

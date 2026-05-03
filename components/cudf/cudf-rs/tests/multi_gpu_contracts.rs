@@ -1254,6 +1254,55 @@ fn low_level_join_without_relocation_rejects_cross_device_runtime_inputs() {
 }
 
 #[test]
+fn join_indices_without_relocation_reject_cross_device_runtime_inputs() {
+    if !should_run_multi_gpu_test() {
+        return;
+    }
+
+    let (left_rt, right_rt) = first_two_test_runtimes();
+
+    let left_keys =
+        cudf::core::Table::from_columns(vec![left_rt.series(&[1i32, 2, 3]).unwrap().as_column().deep_copy().unwrap()])
+            .unwrap();
+    let right_keys =
+        cudf::core::Table::from_columns(vec![right_rt.series(&[2i32, 3, 4]).unwrap().as_column().deep_copy().unwrap()])
+            .unwrap();
+
+    let err = match join::inner_join_indices(
+        &left_keys.testing_view().unwrap(),
+        &right_keys.testing_view().unwrap(),
+        join::NullEquality::Equal,
+    ) {
+        Ok(_) => panic!("cross-device join indices should fail until inputs are explicitly relocated"),
+        Err(err) => err,
+    };
+    assert_cross_device_relocation_error(err, "join::inner_join_indices");
+}
+
+#[test]
+fn hash_join_probe_without_relocation_rejects_cross_device_runtime_inputs() {
+    if !should_run_multi_gpu_test() {
+        return;
+    }
+
+    let (build_rt, probe_rt) = first_two_test_runtimes();
+
+    let build_keys =
+        cudf::core::Table::from_columns(vec![build_rt.series(&[1i32, 2, 3]).unwrap().as_column().deep_copy().unwrap()])
+            .unwrap();
+    let probe_keys =
+        cudf::core::Table::from_columns(vec![probe_rt.series(&[2i32, 3, 4]).unwrap().as_column().deep_copy().unwrap()])
+            .unwrap();
+    let hash_join = join::HashJoin::new(build_keys, join::HashJoinOptions::new()).unwrap();
+
+    let err = match hash_join.inner_join_indices(&probe_keys.testing_view().unwrap()) {
+        Ok(_) => panic!("cross-device hash-join probe should fail until inputs are explicitly relocated"),
+        Err(err) => err,
+    };
+    assert_cross_device_relocation_error(err, "hash_join::inner_join_indices");
+}
+
+#[test]
 fn strings_contains_without_relocation_rejects_cross_device_runtime_inputs() {
     if !should_run_multi_gpu_test() {
         return;
