@@ -84,29 +84,98 @@ int cudf_rust_c_header_smoke(void)
   cudf_status_t (*f20)(cudf_column_view_handle,
                        cudf_column_view_handle,
                        cudf_column_handle*,
-                       const cudf_exec_options_t*)  = &cudf_replace_nulls_column_ex;
+                       const cudf_exec_options_t*)   = &cudf_replace_nulls_column_ex;
   cudf_status_t (*f21)(cudf_table_view_handle,
                        cudf_column_view_handle,
                        cudf_table_handle*,
-                       const cudf_exec_options_t*)  = &cudf_apply_boolean_mask_ex;
+                       const cudf_exec_options_t*)   = &cudf_apply_boolean_mask_ex;
   cudf_status_t (*f21b)(cudf_table_view_handle,
                         const cudf_row_predicate_node_t*,
                         int32_t,
                         int32_t,
                         cudf_table_handle*,
-                        const cudf_exec_options_t*) = &cudf_filter_rows_by_predicate_ex;
+                        const cudf_exec_options_t*)  = &cudf_filter_rows_by_predicate_ex;
   cudf_status_t (*f22)(cudf_table_view_handle,
                        cudf_column_view_handle,
                        cudf_out_of_bounds_policy_t,
                        cudf_table_handle*,
-                       const cudf_exec_options_t*)  = &cudf_gather_ex;
+                       const cudf_exec_options_t*)   = &cudf_gather_ex;
+  cudf_status_t (*f22a0)(cudf_table_view_handle,
+                         cudf_table_view_handle,
+                         cudf_null_equality_t,
+                         cudf_column_handle*,
+                         cudf_column_handle*)        = &cudf_inner_join_indices;
+  cudf_status_t (*f22a1)(cudf_table_view_handle,
+                         cudf_table_view_handle,
+                         cudf_null_equality_t,
+                         cudf_column_handle*,
+                         cudf_column_handle*,
+                         const cudf_exec_options_t*) = &cudf_inner_join_indices_ex;
+  cudf_status_t (*f22a2)(cudf_table_view_handle,
+                         cudf_table_view_handle,
+                         cudf_null_equality_t,
+                         cudf_column_handle*,
+                         cudf_column_handle*)        = &cudf_left_join_indices;
+  cudf_status_t (*f22a3)(cudf_table_view_handle,
+                         cudf_table_view_handle,
+                         cudf_null_equality_t,
+                         cudf_column_handle*,
+                         cudf_column_handle*,
+                         const cudf_exec_options_t*) = &cudf_left_join_indices_ex;
+  cudf_status_t (*f22a4)(cudf_table_view_handle,
+                         cudf_table_view_handle,
+                         cudf_null_equality_t,
+                         cudf_column_handle*,
+                         cudf_column_handle*)        = &cudf_full_join_indices;
+  cudf_status_t (*f22a5)(cudf_table_view_handle,
+                         cudf_table_view_handle,
+                         cudf_null_equality_t,
+                         cudf_column_handle*,
+                         cudf_column_handle*,
+                         const cudf_exec_options_t*) = &cudf_full_join_indices_ex;
   cudf_status_t (*f22aa)(
     cudf_table_view_handle, cudf_null_equality_t, cudf_distinct_hash_join_handle*) =
     &cudf_distinct_hash_join_create;
   cudf_status_t (*f22ab)(
     cudf_distinct_hash_join_handle, cudf_table_view_handle, cudf_column_handle*) =
     &cudf_distinct_hash_join_left_join;
-  void (*f22ac)(cudf_distinct_hash_join_handle) = &cudf_distinct_hash_join_destroy;
+  void (*f22ac)(cudf_distinct_hash_join_handle)      = &cudf_distinct_hash_join_destroy;
+  cudf_status_t (*f22ad)(cudf_table_view_handle,
+                         cudf_nullable_join_t,
+                         cudf_null_equality_t,
+                         double,
+                         cudf_hash_join_handle*)     = &cudf_hash_join_create;
+  cudf_status_t (*f22ae)(cudf_table_view_handle,
+                         cudf_nullable_join_t,
+                         cudf_null_equality_t,
+                         double,
+                         cudf_hash_join_handle*,
+                         const cudf_exec_options_t*) = &cudf_hash_join_create_ex;
+  void (*f22af)(cudf_hash_join_handle)               = &cudf_hash_join_destroy;
+  cudf_status_t (*f22ag)(
+    cudf_hash_join_handle, cudf_table_view_handle, cudf_column_handle*, cudf_column_handle*) =
+    &cudf_hash_join_inner_join;
+  cudf_status_t (*f22ah)(cudf_hash_join_handle,
+                         cudf_table_view_handle,
+                         cudf_column_handle*,
+                         cudf_column_handle*,
+                         const cudf_exec_options_t*) = &cudf_hash_join_inner_join_ex;
+  cudf_status_t (*f22ai)(
+    cudf_hash_join_handle, cudf_table_view_handle, cudf_column_handle*, cudf_column_handle*) =
+    &cudf_hash_join_left_join;
+  cudf_status_t (*f22aj)(cudf_hash_join_handle,
+                         cudf_table_view_handle,
+                         cudf_column_handle*,
+                         cudf_column_handle*,
+                         const cudf_exec_options_t*) = &cudf_hash_join_left_join_ex;
+  cudf_status_t (*f22ak)(
+    cudf_hash_join_handle, cudf_table_view_handle, cudf_column_handle*, cudf_column_handle*) =
+    &cudf_hash_join_full_join;
+  cudf_status_t (*f22al)(cudf_hash_join_handle,
+                         cudf_table_view_handle,
+                         cudf_column_handle*,
+                         cudf_column_handle*,
+                         const cudf_exec_options_t*) = &cudf_hash_join_full_join_ex;
   cudf_status_t (*f22b)(
     cudf_type_id_t, const void*, int32_t, const cudf_exec_options_t*, cudf_scalar_handle*) =
     &cudf_scalar_create_numeric_ex;
@@ -142,6 +211,7 @@ int cudf_rust_c_header_smoke(void)
   cudf_status_t (*f22i)(int32_t, cudf_reduce_aggregation_handle*) =
     &cudf_reduce_aggregation_create_nunique;
   cudf_exec_options_t opts = CUDF_EXEC_OPTIONS_INITIALIZER;
+  cudf_nullable_join_t j1  = CUDF_NULLABLE_JOIN_YES;
 
   cudf_status_t (*f23)(size_t, cudf_device_buffer_handle*) = &cudf_device_buffer_create;
   void (*f24)(cudf_device_buffer_handle)                   = &cudf_device_buffer_destroy;
@@ -275,6 +345,24 @@ int cudf_rust_c_header_smoke(void)
   (void)f20;
   (void)f21;
   (void)f22;
+  (void)f22a0;
+  (void)f22a1;
+  (void)f22a2;
+  (void)f22a3;
+  (void)f22a4;
+  (void)f22a5;
+  (void)f22aa;
+  (void)f22ab;
+  (void)f22ac;
+  (void)f22ad;
+  (void)f22ae;
+  (void)f22af;
+  (void)f22ag;
+  (void)f22ah;
+  (void)f22ai;
+  (void)f22aj;
+  (void)f22ak;
+  (void)f22al;
   (void)f22b;
   (void)f22c;
   (void)f22c0;
@@ -323,6 +411,7 @@ int cudf_rust_c_header_smoke(void)
   (void)f50;
   (void)f51;
   (void)c1;
+  (void)j1;
   (void)opts;
   return 0;
 }

@@ -9,6 +9,11 @@ extern "C" {
     /// fail for regression testing.
     pub fn cudf_test_fail_next_table_release_columns_handle_array_alloc();
 
+    /// Force a future owning-column handle publication to fail after the given
+    /// number of successful publications on this thread. Pass a negative value
+    /// to disable.
+    pub fn cudf_test_fail_column_handle_release_after(successful_releases: i32);
+
     /// Return the raw `uintptr_t` value of the last stream passed to an `_ex`
     /// shim.
     pub fn cudf_test_exec_last_stream_value(out: *mut usize) -> cudf_status_t;

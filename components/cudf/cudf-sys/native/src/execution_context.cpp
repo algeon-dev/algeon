@@ -63,6 +63,18 @@ cudf_status_t cudf_device_guard::activate(int32_t target)
   return CUDF_SUCCESS;
 }
 
+cudf_current_device_resource_guard::cudf_current_device_resource_guard(
+  rmm::mr::device_memory_resource* target)
+  : previous_(rmm::mr::get_current_device_resource())
+{
+  rmm::mr::set_current_device_resource(target);
+}
+
+cudf_current_device_resource_guard::~cudf_current_device_resource_guard()
+{
+  rmm::mr::set_current_device_resource(previous_);
+}
+
 cudf_status_t cudf_resolve_exec_options(cudf_exec_options_t const* options, cudf_exec_context* out)
 {
   if (out == nullptr) {

@@ -64,6 +64,22 @@ struct cudf_exec_context {
   cudf_device_guard guard;
 };
 
+/// RAII guard for libcudf APIs whose public constructor surface still resolves
+/// allocations through RMM's current device resource instead of an explicit MR
+/// parameter. Keep this scoped to the smallest call that performs the
+/// allocation and prefer explicit `mr` arguments whenever libcudf offers them.
+class cudf_current_device_resource_guard {
+ public:
+  explicit cudf_current_device_resource_guard(rmm::mr::device_memory_resource* target);
+  ~cudf_current_device_resource_guard();
+
+  cudf_current_device_resource_guard(cudf_current_device_resource_guard const&)            = delete;
+  cudf_current_device_resource_guard& operator=(cudf_current_device_resource_guard const&) = delete;
+
+ private:
+  rmm::mr::device_memory_resource* previous_;
+};
+
 cudf_status_t cudf_resolve_exec_options(cudf_exec_options_t const* options, cudf_exec_context* out);
 void cudf_record_synchronized_stream(rmm::cuda_stream_view stream);
 

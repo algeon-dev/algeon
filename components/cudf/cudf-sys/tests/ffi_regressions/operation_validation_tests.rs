@@ -6,8 +6,9 @@ use std::{
 use crate::{
     helpers::*,
     support::{
-        NO_SYNC_RECORDED, OwnedStream, last_error_message, last_exec_stream_value, last_exec_sync_stream_value,
-        lock_shim_state, reset_exec_observation, stream_value,
+        CurrentDeviceResourceRestore, NO_SYNC_RECORDED, OwnedMemoryResource, OwnedStream, current_device_resource_raw,
+        last_error_message, last_exec_mr_raw, last_exec_stream_value, last_exec_sync_stream_value, lock_shim_state,
+        reset_exec_observation, stream_value,
     },
 };
 
@@ -886,6 +887,33 @@ fn assert_join_invalid_null_equality_rejected(
     }
 }
 
+fn assert_join_indices_invalid_null_equality_rejected(
+    join_fn: unsafe extern "C" fn(*mut c_void, *mut c_void, i32, *mut *mut c_void, *mut *mut c_void) -> i32,
+) {
+    let left_key_col = make_i32_column(&[1, 2]);
+    let right_key_col = make_i32_column(&[2, 3]);
+    let left_keys_tbl = make_table_from_one_column(left_key_col);
+    let right_keys_tbl = make_table_from_one_column(right_key_col);
+    let left_keys_view = make_table_view(left_keys_tbl);
+    let right_keys_view = make_table_view(right_keys_tbl);
+
+    let mut out_left: *mut c_void = ptr::null_mut();
+    let mut out_right: *mut c_void = ptr::null_mut();
+    let status = unsafe { join_fn(left_keys_view, right_keys_view, 99, &mut out_left, &mut out_right) };
+
+    assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
+    assert!(out_left.is_null());
+    assert!(out_right.is_null());
+    assert!(last_error_message().contains("invalid null_equality"));
+
+    unsafe {
+        cudf_sys::cudf_table_view_destroy(right_keys_view);
+        cudf_sys::cudf_table_view_destroy(left_keys_view);
+        cudf_sys::cudf_table_destroy(right_keys_tbl);
+        cudf_sys::cudf_table_destroy(left_keys_tbl);
+    }
+}
+
 #[test]
 fn test_inner_join_invalid_null_equality_rejected() {
     let _shim_state = lock_shim_state();
@@ -905,6 +933,24 @@ fn test_full_join_invalid_null_equality_rejected() {
 }
 
 #[test]
+fn test_inner_join_indices_invalid_null_equality_rejected() {
+    let _shim_state = lock_shim_state();
+    assert_join_indices_invalid_null_equality_rejected(cudf_inner_join_indices_raw);
+}
+
+#[test]
+fn test_left_join_indices_invalid_null_equality_rejected() {
+    let _shim_state = lock_shim_state();
+    assert_join_indices_invalid_null_equality_rejected(cudf_left_join_indices_raw);
+}
+
+#[test]
+fn test_full_join_indices_invalid_null_equality_rejected() {
+    let _shim_state = lock_shim_state();
+    assert_join_indices_invalid_null_equality_rejected(cudf_full_join_indices_raw);
+}
+
+#[test]
 fn test_distinct_hash_join_create_invalid_null_equality_rejected() {
     let _shim_state = lock_shim_state();
     let col = make_i32_column(&[1, 2, 3]);
@@ -921,6 +967,233 @@ fn test_distinct_hash_join_create_invalid_null_equality_rejected() {
     unsafe {
         cudf_sys::cudf_table_view_destroy(tv);
         cudf_sys::cudf_table_destroy(tbl);
+    }
+}
+
+#[test]
+fn test_hash_join_create_invalid_nullable_join_rejected() {
+    let _shim_state = lock_shim_state();
+    let col = make_i32_column(&[1, 2, 3]);
+    let tbl = make_table_from_one_column(col);
+    let tv = make_table_view(tbl);
+
+    let mut join: *mut c_void = ptr::null_mut();
+    let status = unsafe {
+        cudf_hash_join_create_raw(
+            tv,
+            99,
+            cudf_sys::cudf_null_equality_t::CUDF_NULL_EQUALITY_EQUAL as i32,
+            0.5,
+            &mut join,
+        )
+    };
+
+    assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
+    assert!(join.is_null());
+    assert!(last_error_message().contains("invalid nullable_join"));
+
+    unsafe {
+        cudf_sys::cudf_table_view_destroy(tv);
+        cudf_sys::cudf_table_destroy(tbl);
+    }
+}
+
+#[test]
+fn test_hash_join_create_invalid_null_equality_rejected() {
+    let _shim_state = lock_shim_state();
+    let col = make_i32_column(&[1, 2, 3]);
+    let tbl = make_table_from_one_column(col);
+    let tv = make_table_view(tbl);
+
+    let mut join: *mut c_void = ptr::null_mut();
+    let status = unsafe { cudf_hash_join_create_raw(tv, 0, 99, 0.5, &mut join) };
+
+    assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
+    assert!(join.is_null());
+    assert!(last_error_message().contains("invalid null_equality"));
+
+    unsafe {
+        cudf_sys::cudf_table_view_destroy(tv);
+        cudf_sys::cudf_table_destroy(tbl);
+    }
+}
+
+#[test]
+fn test_hash_join_create_ex_uses_explicit_memory_resource_for_build_allocations() {
+    let _shim_state = lock_shim_state();
+    let previous_raw = current_device_resource_raw();
+    let target_mr = OwnedMemoryResource::new_test_stats();
+
+    let col = make_i32_column(&[1, 2, 3, 4, 5, 6, 7, 8]);
+    let tbl = make_table_from_one_column(col);
+    let tv = make_table_view(tbl);
+    let stream = OwnedStream::new();
+    let target_stream = stream.borrowed();
+    let target_borrowed = target_mr.borrowed();
+    let exec = cudf_sys::ExecutionContext::new().with_stream(&target_stream).with_memory_resource(&target_borrowed);
+
+    let target_before = target_mr.allocation_count();
+    reset_exec_observation();
+
+    let mut join: *mut c_void = ptr::null_mut();
+    let status = unsafe {
+        cudf_sys::cudf_hash_join_create_ex(
+            tv,
+            cudf_sys::cudf_nullable_join_t::CUDF_NULLABLE_JOIN_YES,
+            cudf_sys::cudf_null_equality_t::CUDF_NULL_EQUALITY_EQUAL,
+            0.5,
+            &mut join,
+            exec.as_raw(),
+        )
+    };
+
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS);
+    assert!(!join.is_null());
+    assert_eq!(last_exec_mr_raw(), target_mr.raw_device_resource());
+    assert_eq!(
+        current_device_resource_raw(),
+        previous_raw,
+        "hash-join construction must restore the caller's current device resource"
+    );
+    assert!(
+        target_mr.allocation_count() > target_before,
+        "hash-join build allocations must be charged to the explicit execution memory resource"
+    );
+
+    stream.synchronize();
+    unsafe {
+        cudf_sys::cudf_hash_join_destroy(join);
+        cudf_sys::cudf_table_view_destroy(tv);
+        cudf_sys::cudf_table_destroy(tbl);
+    }
+}
+
+#[test]
+fn test_hash_join_probe_ex_uses_explicit_memory_resource_for_probe_allocations() {
+    let _shim_state = lock_shim_state();
+    let previous_raw = current_device_resource_raw();
+    let current_mr = OwnedMemoryResource::new_test_stats();
+    let _restore = CurrentDeviceResourceRestore::new(previous_raw);
+    let target_mr = OwnedMemoryResource::new_test_stats();
+
+    let build_col = make_i32_column(&[1, 2, 3, 4, 5, 6, 7, 8]);
+    let build_tbl = make_table_from_one_column(build_col);
+    let build_tv = make_table_view(build_tbl);
+
+    let mut join: *mut c_void = ptr::null_mut();
+    let status = unsafe {
+        cudf_sys::cudf_hash_join_create(
+            build_tv,
+            cudf_sys::cudf_nullable_join_t::CUDF_NULLABLE_JOIN_YES,
+            cudf_sys::cudf_null_equality_t::CUDF_NULL_EQUALITY_EQUAL,
+            0.5,
+            &mut join,
+        )
+    };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS);
+    assert!(!join.is_null());
+
+    let probe_tbl = make_table_from_one_column(make_i32_column(&[8, 7, 42, 1, 2, 99, 3, 4]));
+    let probe_tv = make_table_view(probe_tbl);
+    let stream = OwnedStream::new();
+    let target_stream = stream.borrowed();
+    let target_borrowed = target_mr.borrowed();
+    let exec = cudf_sys::ExecutionContext::new().with_stream(&target_stream).with_memory_resource(&target_borrowed);
+
+    let current_borrowed = current_mr.borrowed();
+    cudf_sys::test_set_current_device_resource(&current_borrowed)
+        .expect("failed to install current sentinel memory resource");
+
+    for (name, probe) in [
+        (
+            "inner",
+            cudf_sys::cudf_hash_join_inner_join_ex
+                as unsafe extern "C" fn(
+                    *mut c_void,
+                    *mut c_void,
+                    *mut *mut c_void,
+                    *mut *mut c_void,
+                    *const cudf_sys::cudf_exec_options_t,
+                ) -> cudf_sys::cudf_status_t,
+        ),
+        ("left", cudf_sys::cudf_hash_join_left_join_ex),
+        ("full", cudf_sys::cudf_hash_join_full_join_ex),
+    ] {
+        let target_before = target_mr.allocation_count();
+        let current_before = current_mr.allocation_count();
+        reset_exec_observation();
+
+        let mut out_left: *mut c_void = ptr::null_mut();
+        let mut out_right: *mut c_void = ptr::null_mut();
+        let status = unsafe { probe(join, probe_tv, &mut out_left, &mut out_right, exec.as_raw()) };
+
+        assert_eq!(status, cudf_sys::CUDF_SUCCESS, "{name} hash-join probe failed");
+        assert!(!out_left.is_null(), "{name} hash-join probe did not publish left indices");
+        assert!(!out_right.is_null(), "{name} hash-join probe did not publish right indices");
+        assert_eq!(last_exec_mr_raw(), target_mr.raw_device_resource());
+        assert_eq!(
+            current_device_resource_raw(),
+            current_mr.raw_device_resource(),
+            "{name} hash-join probe must restore the caller's current device resource"
+        );
+        assert_eq!(
+            current_mr.allocation_count(),
+            current_before,
+            "{name} hash-join probe temporaries must not allocate from the caller's current memory resource"
+        );
+        assert!(
+            target_mr.allocation_count() > target_before,
+            "{name} hash-join probe allocations must be charged to the explicit execution memory resource"
+        );
+
+        unsafe {
+            cudf_sys::cudf_column_destroy(out_left);
+            cudf_sys::cudf_column_destroy(out_right);
+        }
+    }
+
+    stream.synchronize();
+    unsafe {
+        cudf_sys::cudf_table_view_destroy(probe_tv);
+        cudf_sys::cudf_table_destroy(probe_tbl);
+        cudf_sys::cudf_hash_join_destroy(join);
+        cudf_sys::cudf_table_view_destroy(build_tv);
+        cudf_sys::cudf_table_destroy(build_tbl);
+    }
+}
+
+#[test]
+fn test_join_indices_publish_no_outputs_when_second_handle_release_fails() {
+    let _shim_state = lock_shim_state();
+    let left_tbl = make_table_from_columns(vec![make_i32_column(&[1, 2, 3])]);
+    let right_tbl = make_table_from_columns(vec![make_i32_column(&[2, 3, 4])]);
+    let left_tv = make_table_view(left_tbl);
+    let right_tv = make_table_view(right_tbl);
+
+    let mut left_indices = std::ptr::NonNull::<c_void>::dangling().as_ptr();
+    let mut right_indices = std::ptr::NonNull::<c_void>::dangling().as_ptr();
+    unsafe { cudf_sys::cudf_test_fail_column_handle_release_after(1) };
+
+    let status = unsafe {
+        cudf_sys::cudf_inner_join_indices(
+            left_tv,
+            right_tv,
+            cudf_sys::cudf_null_equality_t::CUDF_NULL_EQUALITY_EQUAL,
+            &mut left_indices,
+            &mut right_indices,
+        )
+    };
+    unsafe { cudf_sys::cudf_test_fail_column_handle_release_after(-1) };
+
+    assert_eq!(status, cudf_sys::CUDF_ERROR_OUT_OF_MEMORY);
+    assert!(left_indices.is_null());
+    assert!(right_indices.is_null());
+
+    unsafe {
+        cudf_sys::cudf_table_view_destroy(left_tv);
+        cudf_sys::cudf_table_view_destroy(right_tv);
+        cudf_sys::cudf_table_destroy(left_tbl);
+        cudf_sys::cudf_table_destroy(right_tbl);
     }
 }
 

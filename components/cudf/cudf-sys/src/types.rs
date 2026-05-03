@@ -122,6 +122,13 @@ pub enum cudf_null_equality_t {
     CUDF_NULL_EQUALITY_UNEQUAL = 1,
 }
 
+#[repr(i32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum cudf_nullable_join_t {
+    CUDF_NULLABLE_JOIN_YES = 0,
+    CUDF_NULLABLE_JOIN_NO = 1,
+}
+
 // ---------------------------------------------------------------------------
 // Unary enums (mirrors cudf::unary_operator)
 // ---------------------------------------------------------------------------
@@ -318,6 +325,7 @@ pub type cudf_table_handle = *mut c_void;
 pub type cudf_table_view_handle = *mut c_void;
 pub type cudf_scalar_handle = *mut c_void;
 pub type cudf_distinct_hash_join_handle = *mut c_void;
+pub type cudf_hash_join_handle = *mut c_void;
 pub type cudf_device_buffer_handle = *mut c_void;
 pub type cudf_stream_handle = *mut c_void;
 pub type cudf_event_handle = *mut c_void;

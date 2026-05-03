@@ -7,6 +7,7 @@
 #include <cudf/column/column_view.hpp>
 #include <cudf/copying.hpp>
 #include <cudf/join/distinct_hash_join.hpp>
+#include <cudf/join/hash_join.hpp>
 #include <cudf/join/join.hpp>
 #include <cudf/table/table.hpp>
 #include <cudf/table/table_view.hpp>
@@ -17,6 +18,7 @@
 #include <rmm/device_uvector.hpp>
 
 #include <memory>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -62,10 +64,50 @@ cudf_status_t to_null_equality(cudf_null_equality_t input, cudf::null_equality* 
   }
 }
 
+cudf_status_t to_nullable_join(cudf_nullable_join_t input, cudf::nullable_join* out)
+{
+  switch (input) {
+    case CUDF_NULLABLE_JOIN_YES: *out = cudf::nullable_join::YES; return CUDF_SUCCESS;
+    case CUDF_NULLABLE_JOIN_NO: *out = cudf::nullable_join::NO; return CUDF_SUCCESS;
+    default: set_error("invalid nullable_join"); return CUDF_ERROR_INVALID_OPERATION;
+  }
+}
+
 std::unique_ptr<cudf::column> release_join_index_column(
   std::unique_ptr<rmm::device_uvector<cudf::size_type>> indices)
 {
   return std::make_unique<cudf::column>(std::move(*indices), rmm::device_buffer{}, 0);
+}
+
+using join_index_pair = std::pair<std::unique_ptr<rmm::device_uvector<cudf::size_type>>,
+                                  std::unique_ptr<rmm::device_uvector<cudf::size_type>>>;
+
+struct column_handle_deleter {
+  void operator()(void* handle) const noexcept
+  {
+    cudf_column_destroy(static_cast<cudf_column_handle>(handle));
+  }
+};
+
+using unique_column_handle = std::unique_ptr<void, column_handle_deleter>;
+
+unique_column_handle make_unique_column_handle(std::unique_ptr<cudf::column> column)
+{
+  return unique_column_handle{cudf_release_column_handle(std::move(column))};
+}
+
+void release_join_index_pair(join_index_pair indices,
+                             cudf_column_handle* out_left_indices,
+                             cudf_column_handle* out_right_indices)
+{
+  auto left_column  = release_join_index_column(std::move(indices.first));
+  auto right_column = release_join_index_column(std::move(indices.second));
+
+  auto left_handle  = make_unique_column_handle(std::move(left_column));
+  auto right_handle = make_unique_column_handle(std::move(right_column));
+
+  *out_left_indices  = static_cast<cudf_column_handle>(left_handle.release());
+  *out_right_indices = static_cast<cudf_column_handle>(right_handle.release());
 }
 
 }  // namespace
@@ -273,6 +315,138 @@ cudf_status_t cudf_full_join_ex(cudf_table_view_handle left_keys,
   CUDF_RUST_CATCH
 }
 
+cudf_status_t cudf_inner_join_indices(cudf_table_view_handle left_keys,
+                                      cudf_table_view_handle right_keys,
+                                      cudf_null_equality_t null_equality,
+                                      cudf_column_handle* out_left_indices,
+                                      cudf_column_handle* out_right_indices)
+{
+  return cudf_inner_join_indices_ex(
+    left_keys, right_keys, null_equality, out_left_indices, out_right_indices, nullptr);
+}
+
+cudf_status_t cudf_inner_join_indices_ex(cudf_table_view_handle left_keys,
+                                         cudf_table_view_handle right_keys,
+                                         cudf_null_equality_t null_equality,
+                                         cudf_column_handle* out_left_indices,
+                                         cudf_column_handle* out_right_indices,
+                                         cudf_exec_options_t const* options)
+{
+  CUDF_RUST_NULL_CHECK(out_left_indices, "out_left_indices is null");
+  *out_left_indices = nullptr;
+  CUDF_RUST_NULL_CHECK(out_right_indices, "out_right_indices is null");
+  *out_right_indices = nullptr;
+  CUDF_RUST_NULL_CHECK(left_keys, "left_keys is null");
+  CUDF_RUST_NULL_CHECK(right_keys, "right_keys is null");
+  cudf::null_equality null_eq;
+  cudf_status_t status = to_null_equality(null_equality, &null_eq);
+  if (status != CUDF_SUCCESS) { return status; }
+  CUDF_RUST_TRY
+  {
+    cudf_exec_context exec{
+      cudf::get_default_stream(), cudf::get_current_device_resource_ref(), nullptr};
+    cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
+    if (exec_status != CUDF_SUCCESS) { return exec_status; }
+
+    auto* lk = static_cast<cudf::table_view*>(left_keys);
+    auto* rk = static_cast<cudf::table_view*>(right_keys);
+
+    release_join_index_pair(cudf::inner_join(*lk, *rk, null_eq, exec.stream, exec.mr),
+                            out_left_indices,
+                            out_right_indices);
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
+cudf_status_t cudf_left_join_indices(cudf_table_view_handle left_keys,
+                                     cudf_table_view_handle right_keys,
+                                     cudf_null_equality_t null_equality,
+                                     cudf_column_handle* out_left_indices,
+                                     cudf_column_handle* out_right_indices)
+{
+  return cudf_left_join_indices_ex(
+    left_keys, right_keys, null_equality, out_left_indices, out_right_indices, nullptr);
+}
+
+cudf_status_t cudf_left_join_indices_ex(cudf_table_view_handle left_keys,
+                                        cudf_table_view_handle right_keys,
+                                        cudf_null_equality_t null_equality,
+                                        cudf_column_handle* out_left_indices,
+                                        cudf_column_handle* out_right_indices,
+                                        cudf_exec_options_t const* options)
+{
+  CUDF_RUST_NULL_CHECK(out_left_indices, "out_left_indices is null");
+  *out_left_indices = nullptr;
+  CUDF_RUST_NULL_CHECK(out_right_indices, "out_right_indices is null");
+  *out_right_indices = nullptr;
+  CUDF_RUST_NULL_CHECK(left_keys, "left_keys is null");
+  CUDF_RUST_NULL_CHECK(right_keys, "right_keys is null");
+  cudf::null_equality null_eq;
+  cudf_status_t status = to_null_equality(null_equality, &null_eq);
+  if (status != CUDF_SUCCESS) { return status; }
+  CUDF_RUST_TRY
+  {
+    cudf_exec_context exec{
+      cudf::get_default_stream(), cudf::get_current_device_resource_ref(), nullptr};
+    cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
+    if (exec_status != CUDF_SUCCESS) { return exec_status; }
+
+    auto* lk = static_cast<cudf::table_view*>(left_keys);
+    auto* rk = static_cast<cudf::table_view*>(right_keys);
+
+    release_join_index_pair(cudf::left_join(*lk, *rk, null_eq, exec.stream, exec.mr),
+                            out_left_indices,
+                            out_right_indices);
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
+cudf_status_t cudf_full_join_indices(cudf_table_view_handle left_keys,
+                                     cudf_table_view_handle right_keys,
+                                     cudf_null_equality_t null_equality,
+                                     cudf_column_handle* out_left_indices,
+                                     cudf_column_handle* out_right_indices)
+{
+  return cudf_full_join_indices_ex(
+    left_keys, right_keys, null_equality, out_left_indices, out_right_indices, nullptr);
+}
+
+cudf_status_t cudf_full_join_indices_ex(cudf_table_view_handle left_keys,
+                                        cudf_table_view_handle right_keys,
+                                        cudf_null_equality_t null_equality,
+                                        cudf_column_handle* out_left_indices,
+                                        cudf_column_handle* out_right_indices,
+                                        cudf_exec_options_t const* options)
+{
+  CUDF_RUST_NULL_CHECK(out_left_indices, "out_left_indices is null");
+  *out_left_indices = nullptr;
+  CUDF_RUST_NULL_CHECK(out_right_indices, "out_right_indices is null");
+  *out_right_indices = nullptr;
+  CUDF_RUST_NULL_CHECK(left_keys, "left_keys is null");
+  CUDF_RUST_NULL_CHECK(right_keys, "right_keys is null");
+  cudf::null_equality null_eq;
+  cudf_status_t status = to_null_equality(null_equality, &null_eq);
+  if (status != CUDF_SUCCESS) { return status; }
+  CUDF_RUST_TRY
+  {
+    cudf_exec_context exec{
+      cudf::get_default_stream(), cudf::get_current_device_resource_ref(), nullptr};
+    cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
+    if (exec_status != CUDF_SUCCESS) { return exec_status; }
+
+    auto* lk = static_cast<cudf::table_view*>(left_keys);
+    auto* rk = static_cast<cudf::table_view*>(right_keys);
+
+    release_join_index_pair(cudf::full_join(*lk, *rk, null_eq, exec.stream, exec.mr),
+                            out_left_indices,
+                            out_right_indices);
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
 cudf_status_t cudf_distinct_hash_join_create(cudf_table_view_handle build,
                                              cudf_null_equality_t null_equality,
                                              cudf_distinct_hash_join_handle* out)
@@ -299,8 +473,12 @@ cudf_status_t cudf_distinct_hash_join_create_ex(cudf_table_view_handle build,
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
     auto* build_view = static_cast<cudf::table_view*>(build);
-    auto* join       = new cudf::distinct_hash_join(*build_view, null_eq, 0.5, exec.stream);
-    *out             = static_cast<cudf_distinct_hash_join_handle>(join);
+    std::unique_ptr<cudf::distinct_hash_join> join;
+    {
+      cudf_current_device_resource_guard current_mr{exec.mr_raw};
+      join = std::make_unique<cudf::distinct_hash_join>(*build_view, null_eq, 0.5, exec.stream);
+    }
+    *out = static_cast<cudf_distinct_hash_join_handle>(join.release());
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
@@ -338,6 +516,179 @@ cudf_status_t cudf_distinct_hash_join_left_join_ex(cudf_distinct_hash_join_handl
     auto* probe_view    = static_cast<cudf::table_view*>(probe);
     auto indices        = distinct_join->left_join(*probe_view, exec.stream, exec.mr);
     *out                = cudf_release_column_handle(release_join_index_column(std::move(indices)));
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
+cudf_status_t cudf_hash_join_create(cudf_table_view_handle build,
+                                    cudf_nullable_join_t nullable_join,
+                                    cudf_null_equality_t null_equality,
+                                    double load_factor,
+                                    cudf_hash_join_handle* out)
+{
+  return cudf_hash_join_create_ex(build, nullable_join, null_equality, load_factor, out, nullptr);
+}
+
+cudf_status_t cudf_hash_join_create_ex(cudf_table_view_handle build,
+                                       cudf_nullable_join_t nullable_join,
+                                       cudf_null_equality_t null_equality,
+                                       double load_factor,
+                                       cudf_hash_join_handle* out,
+                                       cudf_exec_options_t const* options)
+{
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = nullptr;
+  CUDF_RUST_NULL_CHECK(build, "build is null");
+  cudf::nullable_join nullable;
+  cudf_status_t status = to_nullable_join(nullable_join, &nullable);
+  if (status != CUDF_SUCCESS) { return status; }
+  cudf::null_equality null_eq;
+  status = to_null_equality(null_equality, &null_eq);
+  if (status != CUDF_SUCCESS) { return status; }
+  CUDF_RUST_TRY
+  {
+    cudf_exec_context exec{
+      cudf::get_default_stream(), cudf::get_current_device_resource_ref(), nullptr};
+    cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
+    if (exec_status != CUDF_SUCCESS) { return exec_status; }
+
+    auto* build_view = static_cast<cudf::table_view*>(build);
+    std::unique_ptr<cudf::hash_join> join;
+    {
+      cudf_current_device_resource_guard current_mr{exec.mr_raw};
+      join =
+        std::make_unique<cudf::hash_join>(*build_view, nullable, null_eq, load_factor, exec.stream);
+    }
+    *out = static_cast<cudf_hash_join_handle>(join.release());
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
+void cudf_hash_join_destroy(cudf_hash_join_handle handle)
+{
+  delete static_cast<cudf::hash_join*>(handle);
+}
+
+cudf_status_t cudf_hash_join_inner_join(cudf_hash_join_handle join,
+                                        cudf_table_view_handle probe,
+                                        cudf_column_handle* out_left_indices,
+                                        cudf_column_handle* out_right_indices)
+{
+  return cudf_hash_join_inner_join_ex(join, probe, out_left_indices, out_right_indices, nullptr);
+}
+
+cudf_status_t cudf_hash_join_inner_join_ex(cudf_hash_join_handle join,
+                                           cudf_table_view_handle probe,
+                                           cudf_column_handle* out_left_indices,
+                                           cudf_column_handle* out_right_indices,
+                                           cudf_exec_options_t const* options)
+{
+  CUDF_RUST_NULL_CHECK(out_left_indices, "out_left_indices is null");
+  *out_left_indices = nullptr;
+  CUDF_RUST_NULL_CHECK(out_right_indices, "out_right_indices is null");
+  *out_right_indices = nullptr;
+  CUDF_RUST_NULL_CHECK(join, "join is null");
+  CUDF_RUST_NULL_CHECK(probe, "probe is null");
+  CUDF_RUST_TRY
+  {
+    cudf_exec_context exec{
+      cudf::get_default_stream(), cudf::get_current_device_resource_ref(), nullptr};
+    cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
+    if (exec_status != CUDF_SUCCESS) { return exec_status; }
+
+    auto* hash_join  = static_cast<cudf::hash_join*>(join);
+    auto* probe_view = static_cast<cudf::table_view*>(probe);
+
+    {
+      cudf_current_device_resource_guard current_mr{exec.mr_raw};
+      release_join_index_pair(hash_join->inner_join(*probe_view, {}, exec.stream, exec.mr),
+                              out_left_indices,
+                              out_right_indices);
+    }
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
+cudf_status_t cudf_hash_join_left_join(cudf_hash_join_handle join,
+                                       cudf_table_view_handle probe,
+                                       cudf_column_handle* out_left_indices,
+                                       cudf_column_handle* out_right_indices)
+{
+  return cudf_hash_join_left_join_ex(join, probe, out_left_indices, out_right_indices, nullptr);
+}
+
+cudf_status_t cudf_hash_join_left_join_ex(cudf_hash_join_handle join,
+                                          cudf_table_view_handle probe,
+                                          cudf_column_handle* out_left_indices,
+                                          cudf_column_handle* out_right_indices,
+                                          cudf_exec_options_t const* options)
+{
+  CUDF_RUST_NULL_CHECK(out_left_indices, "out_left_indices is null");
+  *out_left_indices = nullptr;
+  CUDF_RUST_NULL_CHECK(out_right_indices, "out_right_indices is null");
+  *out_right_indices = nullptr;
+  CUDF_RUST_NULL_CHECK(join, "join is null");
+  CUDF_RUST_NULL_CHECK(probe, "probe is null");
+  CUDF_RUST_TRY
+  {
+    cudf_exec_context exec{
+      cudf::get_default_stream(), cudf::get_current_device_resource_ref(), nullptr};
+    cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
+    if (exec_status != CUDF_SUCCESS) { return exec_status; }
+
+    auto* hash_join  = static_cast<cudf::hash_join*>(join);
+    auto* probe_view = static_cast<cudf::table_view*>(probe);
+
+    {
+      cudf_current_device_resource_guard current_mr{exec.mr_raw};
+      release_join_index_pair(hash_join->left_join(*probe_view, {}, exec.stream, exec.mr),
+                              out_left_indices,
+                              out_right_indices);
+    }
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
+cudf_status_t cudf_hash_join_full_join(cudf_hash_join_handle join,
+                                       cudf_table_view_handle probe,
+                                       cudf_column_handle* out_left_indices,
+                                       cudf_column_handle* out_right_indices)
+{
+  return cudf_hash_join_full_join_ex(join, probe, out_left_indices, out_right_indices, nullptr);
+}
+
+cudf_status_t cudf_hash_join_full_join_ex(cudf_hash_join_handle join,
+                                          cudf_table_view_handle probe,
+                                          cudf_column_handle* out_left_indices,
+                                          cudf_column_handle* out_right_indices,
+                                          cudf_exec_options_t const* options)
+{
+  CUDF_RUST_NULL_CHECK(out_left_indices, "out_left_indices is null");
+  *out_left_indices = nullptr;
+  CUDF_RUST_NULL_CHECK(out_right_indices, "out_right_indices is null");
+  *out_right_indices = nullptr;
+  CUDF_RUST_NULL_CHECK(join, "join is null");
+  CUDF_RUST_NULL_CHECK(probe, "probe is null");
+  CUDF_RUST_TRY
+  {
+    cudf_exec_context exec{
+      cudf::get_default_stream(), cudf::get_current_device_resource_ref(), nullptr};
+    cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
+    if (exec_status != CUDF_SUCCESS) { return exec_status; }
+
+    auto* hash_join  = static_cast<cudf::hash_join*>(join);
+    auto* probe_view = static_cast<cudf::table_view*>(probe);
+
+    {
+      cudf_current_device_resource_guard current_mr{exec.mr_raw};
+      release_join_index_pair(hash_join->full_join(*probe_view, {}, exec.stream, exec.mr),
+                              out_left_indices,
+                              out_right_indices);
+    }
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH

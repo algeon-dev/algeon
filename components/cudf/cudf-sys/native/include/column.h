@@ -320,6 +320,11 @@ cudf_status_t cudf_column_view_null_count(cudf_column_view_handle handle, int32_
 /// Force the next column-view metadata read (`size` or `null_count`) to fail.
 void cudf_test_fail_next_column_view_metadata_read();
 
+/// Force a future owning-column handle publication to fail after
+/// `successful_releases` successful publications on this thread. Intended only
+/// for ownership/cleanup regression tests. Pass a negative value to disable.
+void cudf_test_fail_column_handle_release_after(int32_t successful_releases);
+
 /// Force the next fixed-width host import to fail after the data copy is
 /// queued. Intended only for synchronization regression tests.
 void cudf_test_fail_next_fixed_width_host_import_after_data_copy();

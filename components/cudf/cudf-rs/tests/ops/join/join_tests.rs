@@ -6,9 +6,11 @@ use cudf::{
 };
 
 use crate::common::{
-    column_from_slice, explicit_i32_column, last_exec_mr_value, last_exec_stream_value, last_sync_stream_value,
-    reset_exec_observation, reset_sync_observation, sample_runtime,
+    column_from_slice, column_from_slice_nullable, explicit_i32_column, last_exec_mr_value, last_exec_stream_value,
+    last_sync_stream_value, reset_exec_observation, reset_sync_observation, sample_runtime,
 };
+
+const JOIN_NO_MATCH: i32 = i32::MIN;
 
 /// Helper to create an empty table (0 columns) for use as an empty payload.
 fn empty_payload() -> Table {
@@ -22,6 +24,15 @@ fn nullable_i32_table_column(table: &Table, index: usize) -> Vec<Option<i32>> {
     let validity = column.to_host_validity().unwrap().unwrap_or_else(|| vec![true; values.len()]);
 
     values.into_iter().zip(validity).map(|(value, valid)| if valid { Some(value) } else { None }).collect()
+}
+
+fn sorted_join_index_pairs(indices: &join::JoinIndices) -> Vec<(i32, i32)> {
+    let left = indices.left.testing_view().unwrap().to_vec::<i32>().unwrap();
+    let right = indices.right.testing_view().unwrap().to_vec::<i32>().unwrap();
+
+    let mut pairs: Vec<_> = left.into_iter().zip(right).collect();
+    pairs.sort();
+    pairs
 }
 
 #[test]
@@ -307,4 +318,96 @@ fn test_inner_join_succeeds_with_mixed_domains_and_uses_left_provenance() {
     assert_eq!(left_rows, vec![(2, 20), (3, 30)]);
     assert_eq!(right_rows, vec![(2, 200), (3, 300)]);
     assert_eq!(last_sync_stream_value(), expected_stream);
+}
+
+#[test]
+fn test_inner_join_indices_with_duplicate_keys_returns_all_matching_pairs() {
+    let left_keys = Table::from_columns(vec![column_from_slice(&[1i32, 2, 2, 3]).unwrap()]).unwrap();
+    let right_keys = Table::from_columns(vec![column_from_slice(&[2i32, 2, 4]).unwrap()]).unwrap();
+
+    let indices = join::inner_join_indices(
+        &left_keys.testing_view().unwrap(),
+        &right_keys.testing_view().unwrap(),
+        NullEquality::Equal,
+    )
+    .unwrap();
+
+    assert_eq!(sorted_join_index_pairs(&indices), vec![(1, 0), (1, 1), (2, 0), (2, 1)]);
+}
+
+#[test]
+fn test_left_join_indices_with_duplicate_keys_preserves_unmatched_left_rows() {
+    let left_keys = Table::from_columns(vec![column_from_slice(&[1i32, 2, 2, 3]).unwrap()]).unwrap();
+    let right_keys = Table::from_columns(vec![column_from_slice(&[2i32, 2, 4]).unwrap()]).unwrap();
+
+    let indices = join::left_join_indices(
+        &left_keys.testing_view().unwrap(),
+        &right_keys.testing_view().unwrap(),
+        NullEquality::Equal,
+    )
+    .unwrap();
+
+    assert_eq!(
+        sorted_join_index_pairs(&indices),
+        vec![(0, JOIN_NO_MATCH), (1, 0), (1, 1), (2, 0), (2, 1), (3, JOIN_NO_MATCH)]
+    );
+}
+
+#[test]
+fn test_full_join_indices_with_duplicate_keys_preserves_unmatched_rows_from_both_sides() {
+    let left_keys = Table::from_columns(vec![column_from_slice(&[1i32, 2, 2, 3]).unwrap()]).unwrap();
+    let right_keys = Table::from_columns(vec![column_from_slice(&[2i32, 2, 4]).unwrap()]).unwrap();
+
+    let indices = join::full_join_indices(
+        &left_keys.testing_view().unwrap(),
+        &right_keys.testing_view().unwrap(),
+        NullEquality::Equal,
+    )
+    .unwrap();
+
+    assert_eq!(
+        sorted_join_index_pairs(&indices),
+        vec![(JOIN_NO_MATCH, 2), (0, JOIN_NO_MATCH), (1, 0), (1, 1), (2, 0), (2, 1), (3, JOIN_NO_MATCH),]
+    );
+}
+
+#[test]
+fn test_inner_join_indices_honor_null_equality() {
+    let left_keys =
+        Table::from_columns(vec![column_from_slice_nullable(&[1i32, 0, 2, 0], &[true, false, true, false]).unwrap()])
+            .unwrap();
+    let right_keys =
+        Table::from_columns(vec![column_from_slice_nullable(&[0i32, 2, 0], &[false, true, false]).unwrap()]).unwrap();
+
+    let equal = join::inner_join_indices(
+        &left_keys.testing_view().unwrap(),
+        &right_keys.testing_view().unwrap(),
+        NullEquality::Equal,
+    )
+    .unwrap();
+    let unequal = join::inner_join_indices(
+        &left_keys.testing_view().unwrap(),
+        &right_keys.testing_view().unwrap(),
+        NullEquality::Unequal,
+    )
+    .unwrap();
+
+    assert_eq!(sorted_join_index_pairs(&equal), vec![(1, 0), (1, 2), (2, 1), (3, 0), (3, 2)]);
+    assert_eq!(sorted_join_index_pairs(&unequal), vec![(2, 1)]);
+}
+
+#[test]
+fn test_hash_join_supports_duplicate_build_keys_and_repeated_probes() {
+    use cudf::ops::join::{HashJoin, HashJoinOptions};
+
+    let build_keys = Table::from_columns(vec![column_from_slice(&[2i32, 2, 4]).unwrap()]).unwrap();
+    let first_probe = Table::from_columns(vec![column_from_slice(&[2i32, 4]).unwrap()]).unwrap();
+    let second_probe = Table::from_columns(vec![column_from_slice(&[1i32, 2]).unwrap()]).unwrap();
+    let hash_join = HashJoin::new(build_keys, HashJoinOptions::new()).unwrap();
+
+    let first = hash_join.inner_join_indices(&first_probe.testing_view().unwrap()).unwrap();
+    let second = hash_join.left_join_indices(&second_probe.testing_view().unwrap()).unwrap();
+
+    assert_eq!(sorted_join_index_pairs(&first), vec![(0, 0), (0, 1), (1, 2)]);
+    assert_eq!(sorted_join_index_pairs(&second), vec![(0, JOIN_NO_MATCH), (1, 0), (1, 1)]);
 }

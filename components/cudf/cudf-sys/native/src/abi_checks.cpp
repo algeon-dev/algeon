@@ -18,6 +18,7 @@
 
 #include <cudf/binaryop.hpp>
 #include <cudf/copying.hpp>
+#include <cudf/join/hash_join.hpp>
 #include <cudf/reduction.hpp>
 #include <cudf/stream_compaction.hpp>
 #include <cudf/strings/side_type.hpp>
@@ -37,6 +38,8 @@ static_assert(sizeof(cudf_aggregation_kind_t) == sizeof(int32_t),
 static_assert(sizeof(cudf_null_policy_t) == sizeof(int32_t), "cudf_null_policy_t must be 32-bit");
 static_assert(sizeof(cudf_null_equality_t) == sizeof(int32_t),
               "cudf_null_equality_t must be 32-bit");
+static_assert(sizeof(cudf_nullable_join_t) == sizeof(int32_t),
+              "cudf_nullable_join_t must be 32-bit");
 static_assert(sizeof(cudf_unary_operator_t) == sizeof(int32_t),
               "cudf_unary_operator_t must be 32-bit");
 static_assert(sizeof(cudf_binary_operator_t) == sizeof(int32_t),
@@ -167,6 +170,9 @@ static_assert(CUDF_NULL_POLICY_INCLUDE == static_cast<int>(cudf::null_policy::IN
 
 static_assert(CUDF_NULL_EQUALITY_EQUAL == static_cast<int>(cudf::null_equality::EQUAL));
 static_assert(CUDF_NULL_EQUALITY_UNEQUAL == static_cast<int>(cudf::null_equality::UNEQUAL));
+
+static_assert(CUDF_NULLABLE_JOIN_YES == static_cast<int>(cudf::nullable_join::YES));
+static_assert(CUDF_NULLABLE_JOIN_NO == static_cast<int>(cudf::nullable_join::NO));
 
 static_assert(CUDF_SCAN_INCLUSIVE == static_cast<int>(cudf::scan_type::INCLUSIVE));
 static_assert(CUDF_SCAN_EXCLUSIVE == static_cast<int>(cudf::scan_type::EXCLUSIVE));
