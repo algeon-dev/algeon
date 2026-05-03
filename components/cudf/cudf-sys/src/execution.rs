@@ -1,0 +1,172 @@
+use std::{marker::PhantomData, os::raw::c_void};
+
+use crate::{
+    CUDF_SUCCESS, cudf_event_handle, cudf_exec_options_t, cudf_memory_resource_handle, cudf_status_t,
+    cudf_stream_handle, cudf_test_memory_resource_set_current, cudf_test_memory_resource_set_current_raw,
+};
+
+fn status_to_result(status: cudf_status_t) -> Result<(), cudf_status_t> {
+    if status == CUDF_SUCCESS { Ok(()) } else { Err(status) }
+}
+
+/// Borrowed CUDA stream owner-handle token.
+///
+/// This wrapper is a typed, lifetime-bound view over a raw `cudf_stream_handle`.
+/// It does not own the underlying runtime resource and does not destroy it.
+///
+/// This type intentionally implements `Send` but not `Sync`: CUDA stream
+/// handles may be moved across threads, but concurrent shared-reference use
+/// still requires external synchronization by the owning layer.
+#[derive(Debug)]
+pub struct BorrowedStream<'a> {
+    raw: cudf_stream_handle,
+    _owner: PhantomData<&'a ()>,
+}
+
+// SAFETY: A borrowed CUDA stream handle may be moved to another thread for
+// submission/query, but concurrent shared-reference use still requires
+// external synchronization by the owning layer.
+unsafe impl Send for BorrowedStream<'_> {}
+
+impl<'a> BorrowedStream<'a> {
+    /// Bind a raw stream owner-handle token to an external lifetime.
+    ///
+    /// # Safety
+    /// - `raw` must refer to a valid, non-destroyed CUDA stream owner handle.
+    /// - The underlying stream resource must remain valid for the entire
+    ///   lifetime `'a`.
+    /// - The caller must not destroy the resource while any
+    ///   `BorrowedStream<'a>` derived from it is still live.
+    pub unsafe fn from_raw(raw: cudf_stream_handle) -> Self {
+        Self { raw, _owner: PhantomData }
+    }
+
+    pub fn as_raw(&self) -> cudf_stream_handle {
+        self.raw
+    }
+}
+
+/// Borrowed CUDA event owner-handle token.
+///
+/// This wrapper is a typed, lifetime-bound view over a raw `cudf_event_handle`.
+/// It does not own the underlying runtime resource and does not destroy it.
+#[derive(Debug)]
+pub struct BorrowedEvent<'a> {
+    raw: cudf_event_handle,
+    _owner: PhantomData<&'a ()>,
+}
+
+// SAFETY: Borrowed CUDA event handles may be moved across threads and queried
+// concurrently; the wrapper does not expose ownership or mutable Rust state.
+unsafe impl Send for BorrowedEvent<'_> {}
+unsafe impl Sync for BorrowedEvent<'_> {}
+
+impl<'a> BorrowedEvent<'a> {
+    /// Bind a raw event owner-handle token to an external lifetime.
+    ///
+    /// # Safety
+    /// - `raw` must refer to a valid, non-destroyed CUDA event owner handle.
+    /// - The underlying event resource must remain valid for the entire
+    ///   lifetime `'a`.
+    /// - The caller must not destroy the resource while any
+    ///   `BorrowedEvent<'a>` derived from it is still live.
+    pub unsafe fn from_raw(raw: cudf_event_handle) -> Self {
+        Self { raw, _owner: PhantomData }
+    }
+
+    pub fn as_raw(&self) -> cudf_event_handle {
+        self.raw
+    }
+}
+
+/// Borrowed device-memory-resource owner-handle token.
+///
+/// This wrapper is a typed, lifetime-bound view over a raw
+/// `cudf_memory_resource_handle`. It does not own the underlying runtime
+/// resource and does not destroy it.
+#[derive(Debug)]
+pub struct BorrowedMemoryResource<'a> {
+    raw: cudf_memory_resource_handle,
+    _owner: PhantomData<&'a ()>,
+}
+
+// SAFETY: Borrowed memory-resource handles may be moved and shared across
+// threads; the wrapper does not transfer ownership and RMM allocators are
+// intended for concurrent use.
+unsafe impl Send for BorrowedMemoryResource<'_> {}
+unsafe impl Sync for BorrowedMemoryResource<'_> {}
+
+impl<'a> BorrowedMemoryResource<'a> {
+    /// Bind a raw memory-resource owner-handle token to an external lifetime.
+    ///
+    /// # Safety
+    /// - `raw` must refer to a valid, non-destroyed memory-resource owner
+    ///   handle.
+    /// - The underlying memory resource must remain valid for the entire
+    ///   lifetime `'a`.
+    /// - The caller must not destroy the resource while any
+    ///   `BorrowedMemoryResource<'a>` derived from it is still live.
+    pub unsafe fn from_raw(raw: cudf_memory_resource_handle) -> Self {
+        Self { raw, _owner: PhantomData }
+    }
+
+    pub fn as_raw(&self) -> cudf_memory_resource_handle {
+        self.raw
+    }
+}
+
+/// Typed builder for `cudf_exec_options_t`.
+///
+/// Null stream / memory-resource fields preserve cuDF defaults.
+/// If an explicit memory resource is attached, it must outlive any outputs
+/// allocated through the `_ex` call that consumes this context.
+#[derive(Debug, Clone, Copy)]
+pub struct ExecutionContext<'a> {
+    raw: cudf_exec_options_t,
+    _stream: PhantomData<BorrowedStream<'a>>,
+    _mr: PhantomData<BorrowedMemoryResource<'a>>,
+}
+
+impl<'a> ExecutionContext<'a> {
+    pub fn new() -> Self {
+        Self { raw: cudf_exec_options_t::defaults(), _stream: PhantomData, _mr: PhantomData }
+    }
+
+    pub fn with_stream(mut self, stream: &'a BorrowedStream<'a>) -> Self {
+        self.raw.stream = stream.as_raw();
+        self
+    }
+
+    pub fn with_memory_resource(mut self, mr: &'a BorrowedMemoryResource<'a>) -> Self {
+        self.raw.mr = mr.as_raw();
+        self
+    }
+
+    pub fn raw(&self) -> &cudf_exec_options_t {
+        &self.raw
+    }
+
+    pub fn as_raw(&self) -> *const cudf_exec_options_t {
+        self.raw()
+    }
+}
+
+impl Default for ExecutionContext<'_> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Install `mr` as the process-global current device resource for tests.
+pub fn test_set_current_device_resource(mr: &BorrowedMemoryResource<'_>) -> Result<(), cudf_status_t> {
+    status_to_result(unsafe { cudf_test_memory_resource_set_current(mr.as_raw()) })
+}
+
+/// Restore a previously observed raw device resource pointer for tests.
+///
+/// # Safety
+/// `raw_mr` must be a valid pointer to an `rmm::device_memory_resource` that
+/// outlives the test scope. Passing a dangling or mistyped pointer is UB.
+pub unsafe fn test_set_current_device_resource_raw(raw_mr: *mut c_void) -> Result<(), cudf_status_t> {
+    status_to_result(unsafe { cudf_test_memory_resource_set_current_raw(raw_mr) })
+}
