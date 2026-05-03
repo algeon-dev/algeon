@@ -11,6 +11,7 @@ use datafusion::physical_plan::ExecutionPlan;
 use lowering::lower_normalized_plan;
 use normalize::normalize_native_plan;
 use source::source_diagnostics_for_normalized_plan;
+use validate::native_zero_column_count_source_is_safe;
 
 use crate::report::PlanningReport;
 
@@ -36,7 +37,40 @@ impl NativeLoweringResult {
 }
 
 pub fn lower_physical_plan_to_native(plan: Arc<dyn ExecutionPlan>) -> NativeLoweringResult {
+    lower_physical_plan_to_native_with_mode(plan, NativeLoweringMode::Final)
+}
+
+pub(crate) fn lower_count_only_physical_plan_to_native(plan: Arc<dyn ExecutionPlan>) -> NativeLoweringResult {
+    lower_physical_plan_to_native_with_mode(plan, NativeLoweringMode::CountOnly)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NativeLoweringMode {
+    Final,
+    CountOnly,
+}
+
+fn lower_physical_plan_to_native_with_mode(
+    plan: Arc<dyn ExecutionPlan>,
+    mode: NativeLoweringMode,
+) -> NativeLoweringResult {
     match normalize_native_plan(plan.as_ref()) {
+        Ok(normalized)
+            if mode == NativeLoweringMode::CountOnly
+                && !native_zero_column_count_source_is_safe(
+                    normalized.filter,
+                    normalized.pre_aggregate_projection,
+                    normalized.aggregate,
+                ) =>
+        {
+            let mut report = PlanningReport::new();
+            report.push_rejected(normalized.candidate, crate::policy::FallbackReason::UnsupportedOperator);
+            NativeLoweringResult {
+                plans: Vec::new(),
+                report,
+                source_diagnostics: source_diagnostics_for_normalized_plan(&normalized),
+            }
+        },
         Ok(normalized) => lower_normalized_plan(&normalized).map_or_else(
             |reason| {
                 let mut report = PlanningReport::new();

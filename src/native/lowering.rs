@@ -63,11 +63,17 @@ fn lower_slice1_plan(normalized: &NormalizedNativePlan<'_>) -> Result<NativeQuer
     if let Some(projection) = post_aggregate_projection {
         validate_schema(projection.schema())?;
     }
-    validate_schema(sort.schema())?;
+    if let Some(sort) = sort {
+        validate_schema(sort.schema())?;
+    }
 
     validate_slice1_parquet_scan(file_scan, parquet_source, filter, source_exec.schema())?;
     validate_aggregate(aggregate, pre_aggregate_projection.is_some(), normalized.aggregate_allows_partial)?;
-    validate_sort(sort)?;
+    if let Some(sort) = sort {
+        validate_sort(sort)?;
+    } else if !native_zero_column_count_source_is_safe(filter, pre_aggregate_projection, aggregate) {
+        return Err(FallbackReason::UnsupportedOperator);
+    }
 
     let column_requirements =
         required_parquet_column_requirements(file_scan, filter, pre_aggregate_projection, aggregate)?;
@@ -85,11 +91,12 @@ fn lower_slice1_plan(normalized: &NormalizedNativePlan<'_>) -> Result<NativeQuer
             column_requirements.projected_output_columns.clone(),
             column_requirements.pure_filter_columns.clone(),
         )
-        .with_column_file_indices(
+        .with_column_source_refs(
             column_requirements.read_column_file_indices.clone(),
-            column_requirements.projected_output_column_file_indices.clone(),
-            column_requirements.pure_filter_column_file_indices.clone(),
+            column_requirements.projected_output_column_source_refs.clone(),
+            column_requirements.pure_filter_column_source_refs.clone(),
         )
+        .with_partition_columns(column_requirements.partition_columns.clone())
     };
     source.diagnostics = local_parquet_source_diagnostics(
         file_scan,
@@ -152,10 +159,19 @@ fn lower_slice1_plan(normalized: &NormalizedNativePlan<'_>) -> Result<NativeQuer
     } else {
         aggregate_node
     };
-    let sort_node = builder.add_sort(sort_input_node, lower_sort_spec(sort)?, sort.schema());
-    let limit_node = builder.add_limit(sort_node, NativeLimitSpec::fetch(normalized.limit_fetch), sort.schema());
+    let sorted_or_projected_node = if let Some(sort) = sort {
+        builder.add_sort(sort_input_node, lower_sort_spec(sort)?, sort.schema())
+    } else {
+        sort_input_node
+    };
+    let output_node = if let Some(limit_fetch) = normalized.limit_fetch {
+        let output_schema = normalized.sort.expect("native limit requires preceding sort").schema();
+        builder.add_limit(sorted_or_projected_node, NativeLimitSpec::fetch(limit_fetch), output_schema)
+    } else {
+        sorted_or_projected_node
+    };
 
-    Ok(builder.finish_with_host_sink(limit_node))
+    Ok(builder.finish_with_host_sink(output_node))
 }
 
 struct SyntheticAggregateInputProjection {

@@ -35,6 +35,7 @@ pub(super) struct CoalescedLocalParquetFile<'a> {
 struct FileCoverage<'a> {
     location: String,
     size: u64,
+    partition_values: &'a [ScalarValue],
     representative: &'a PartitionedFile,
     entry_count: usize,
     saw_unranged: bool,
@@ -46,9 +47,6 @@ pub(super) fn coalesced_local_parquet_scan_files<'a>(
 ) -> Result<Vec<CoalescedLocalParquetFile<'a>>, FallbackReason> {
     let mut coverages = Vec::<FileCoverage<'a>>::new();
     for file in files {
-        if !file.partition_values.is_empty() {
-            return Err(FallbackReason::NativeSourcePartitionValues);
-        }
         if file.ordering.is_some() {
             return Err(FallbackReason::NativeSourceFileOrdering);
         }
@@ -70,6 +68,7 @@ pub(super) fn coalesced_local_parquet_scan_files<'a>(
             coverages.push(FileCoverage {
                 location: location.clone(),
                 size: file.object_meta.size,
+                partition_values: &file.partition_values,
                 representative: file,
                 entry_count: 0,
                 saw_unranged: false,
@@ -80,6 +79,9 @@ pub(super) fn coalesced_local_parquet_scan_files<'a>(
         let coverage = &mut coverages[coverage_index];
         if coverage.size != file.object_meta.size {
             return Err(FallbackReason::NativeSourceByteRange);
+        }
+        if coverage.partition_values != file.partition_values.as_slice() {
+            return Err(FallbackReason::NativeSourcePartitionValues);
         }
         coverage.entry_count += 1;
         if let Some(range) = &file.range {
@@ -197,14 +199,11 @@ pub(super) fn metadata_row_group_selections(
     let files = coalesced_files.iter().map(|file| file.file).collect::<Vec<_>>();
     if files.is_empty()
         || !file_scan.object_store_url.as_str().starts_with("file://")
-        || !file_scan.table_partition_cols().is_empty()
         || file_scan.expr_adapter_factory.is_some()
         || file_scan.limit.is_some()
         || file_scan.preserve_order
         || !file_scan.output_ordering.is_empty()
-        || files
-            .iter()
-            .any(|file| file.extensions.is_some() || !file.partition_values.is_empty() || file.ordering.is_some())
+        || files.iter().any(|file| file.extensions.is_some() || file.ordering.is_some())
     {
         return None;
     }

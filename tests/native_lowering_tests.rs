@@ -11,7 +11,7 @@ use arrow::{
     record_batch::RecordBatch,
 };
 use cudf_query_engine::{
-    AggregateFunction, Expr, LiteralValue, PlanNode, ResultSink, SourceNode, ZERO_COLUMN_COUNT_COLUMN,
+    AggregateFunction, Expr, LiteralValue, PlanNode, ResultSink, SourceColumnRef, SourceNode, ZERO_COLUMN_COUNT_COLUMN,
 };
 use datafusion::{
     common::ScalarValue,
@@ -112,9 +112,12 @@ fn benchmark_shape_lowers_to_one_native_query_plan() {
     );
     assert_eq!(source.read_column_file_indices, vec![0, 2, 3, 1]);
     assert_eq!(source.projected_output_columns, vec!["key".to_string(), "m00".to_string(), "m01".to_string()]);
-    assert_eq!(source.projected_output_column_file_indices, vec![0, 2, 3]);
+    assert_eq!(
+        source.projected_output_column_source_refs,
+        vec![SourceColumnRef::File(0), SourceColumnRef::File(2), SourceColumnRef::File(3)]
+    );
     assert_eq!(source.pure_filter_columns, vec!["payload".to_string()]);
-    assert_eq!(source.pure_filter_column_file_indices, vec![1]);
+    assert_eq!(source.pure_filter_column_source_refs, vec![SourceColumnRef::File(1)]);
     assert_eq!(source.diagnostics.read_column_count, 4);
     assert_eq!(source.diagnostics.projected_output_column_count, 3);
     assert_eq!(source.diagnostics.pure_filter_column_count, 1);
@@ -568,11 +571,62 @@ fn remote_parquet_object_store_is_rejected_with_source_reason() {
 }
 
 #[test]
-fn parquet_partition_columns_are_rejected_with_source_reason() {
+fn parquet_partition_columns_are_represented_in_native_source_contract() {
     let dir = unique_temp_dir("datafusion-cudf-native-lowering-partition-columns");
     let path = dir.join("input.parquet");
     write_numeric_parquet_file(&path);
+    let scan = parquet_scan_with_partition_value(&path, ScalarValue::Int32(Some(7)));
+    let plan = partition_column_group_by_plan(scan);
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.source_diagnostics.len(), 1);
+    assert_eq!(result.source_diagnostics[0].partition_column_disposition.as_str(), "represented");
+    assert!(result.source_diagnostics[0].rejected_features.is_empty());
+    let source = native_local_parquet_source(&result.plans[0]);
+    assert_eq!(source.partition_columns.len(), 1);
+    assert_eq!(source.partition_columns[0].name, "part");
+    assert_eq!(source.files[0].partition_values, vec![LiteralValue::Int32(7)]);
+    assert!(!source.read_columns.contains(&"part".to_string()));
+    assert!(source.projected_output_column_source_refs.contains(&SourceColumnRef::Partition(0)));
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn parquet_partition_columns_without_literal_values_are_rejected_with_source_reason() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-partition-missing-values");
+    let path = dir.join("input.parquet");
+    write_numeric_parquet_file(&path);
     let scan = parquet_scan_with_partition_columns(&path);
+    let plan = partition_column_group_by_plan(scan);
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert!(result.plans.is_empty());
+    assert_eq!(result.rejected_count(), 1);
+    assert!(matches!(
+        result.report.outcomes()[0],
+        CandidateOutcome::Rejected { reason: FallbackReason::NativeSourcePartitionValues, .. }
+    ));
+    assert_eq!(result.source_diagnostics.len(), 1);
+    assert_eq!(result.source_diagnostics[0].partition_column_disposition.as_str(), "rejected");
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn parquet_utf8_partition_columns_are_rejected_until_string_partition_contract_is_modeled() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-partition-utf8");
+    let path = dir.join("input.parquet");
+    write_numeric_parquet_file(&path);
+    let scan = parquet_scan_with_typed_partition_value(
+        &path,
+        Field::new("part", DataType::Utf8, false),
+        ScalarValue::Utf8(Some("2026".to_string())),
+    );
     let plan = aggregate_sort_limit_plan(scan, Operator::Plus);
 
     let result = lower_physical_plan_to_native(plan);
@@ -581,12 +635,9 @@ fn parquet_partition_columns_are_rejected_with_source_reason() {
     assert_eq!(result.rejected_count(), 1);
     assert!(matches!(
         result.report.outcomes()[0],
-        CandidateOutcome::Rejected { reason: FallbackReason::NativeSourcePartitionColumns, .. }
+        CandidateOutcome::Rejected { reason: FallbackReason::UnsupportedType, .. }
     ));
     assert_eq!(result.source_diagnostics.len(), 1);
-    assert!(
-        result.source_diagnostics[0].rejected_features.iter().any(|feature| feature.as_str() == "partition_columns")
-    );
     assert_eq!(result.source_diagnostics[0].partition_column_disposition.as_str(), "rejected");
 
     fs::remove_dir_all(dir).unwrap();
@@ -707,6 +758,45 @@ async fn direct_friendly_sql_zero_column_count_lowers_to_represented_source() {
     assert_eq!(aggregate_exprs.len(), 1);
     assert_eq!(aggregate_exprs[0].function, AggregateFunction::Sum);
     assert!(matches!(&aggregate_exprs[0].expr, Expr::Column(name) if name == ZERO_COLUMN_COUNT_COLUMN));
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn sql_count_only_lowers_to_native_zero_column_count_without_manual_plan_shape() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-sql-count-only");
+    let path = dir.join("input.parquet");
+    write_numeric_parquet_file(&path);
+    let plan = sql_plan(&path, count_only_sql_session_config(), SQL_COUNT_ONLY_QUERY).await;
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_eq!(result.candidate_count(), 1);
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(
+        result.report.outcomes()[0],
+        CandidateOutcome::Rewritten {
+            candidate: datafusion_cudf::GpuCandidate::with_operator_count(
+                "ProjectionExec(AggregateExec(LocalParquetScan))",
+                1,
+                3,
+            ),
+        }
+    );
+    assert_eq!(result.source_diagnostics.len(), 1);
+    assert!(result.source_diagnostics[0].direct_device_read);
+    assert_eq!(result.source_diagnostics[0].read_column_count, 0);
+    assert_eq!(result.source_diagnostics[0].zero_column_count_disposition.as_str(), "represented");
+
+    let source = native_local_parquet_source(&result.plans[0]);
+    assert!(source.is_zero_column_count_source());
+    assert!(source.read_columns.is_empty());
+    let aggregate_exprs = native_aggregate_exprs(&result.plans[0]);
+    assert_eq!(aggregate_exprs.len(), 1);
+    assert_eq!(aggregate_exprs[0].function, AggregateFunction::Sum);
+    assert!(matches!(&aggregate_exprs[0].expr, Expr::Column(name) if name == ZERO_COLUMN_COUNT_COLUMN));
+    assert!(matches!(result.plans[0].root_node().kind, PlanNode::Projection(_)));
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -1534,6 +1624,12 @@ fn direct_friendly_sql_session_config() -> SessionConfig {
     config
 }
 
+fn count_only_sql_session_config() -> SessionConfig {
+    let mut config = direct_friendly_sql_session_config().with_collect_statistics(false);
+    config.options_mut().execution.collect_statistics = false;
+    config
+}
+
 const SQL_BENCHMARK_QUERY: &str = "
 SELECT key, SUM(m00 + m01) AS sum_x00
 FROM bench
@@ -1567,6 +1663,11 @@ WHERE payload >= 10
 GROUP BY key
 ORDER BY key ASC
 LIMIT 2
+";
+
+const SQL_COUNT_ONLY_QUERY: &str = "
+SELECT COUNT(*) AS count_rows
+FROM bench
 ";
 
 const SQL_AVG_AGGREGATE_QUERY: &str = "
@@ -1730,22 +1831,94 @@ fn parquet_scan_with_object_store_url(
 }
 
 fn parquet_scan_with_partition_columns(path: &std::path::Path) -> Arc<dyn ExecutionPlan> {
+    parquet_scan_with_partition_field(path, Field::new("part", DataType::Int32, false))
+}
+
+fn parquet_scan_with_partition_value(path: &std::path::Path, value: ScalarValue) -> Arc<dyn ExecutionPlan> {
+    parquet_scan_with_typed_partition_value(path, Field::new("part", DataType::Int32, false), value)
+}
+
+fn parquet_scan_with_typed_partition_value(
+    path: &std::path::Path,
+    partition_field: Field,
+    value: ScalarValue,
+) -> Arc<dyn ExecutionPlan> {
+    let scan = parquet_scan_with_partition_field(path, partition_field);
+    let data_source = scan.as_any().downcast_ref::<DataSourceExec>().expect("parquet scan should be DataSourceExec");
+    let (file_scan, _parquet_source) =
+        data_source.downcast_to_file_source::<ParquetSource>().expect("parquet scan should use ParquetSource");
+    let file_groups = file_scan
+        .file_groups
+        .iter()
+        .map(|group| {
+            FileGroup::new(
+                group.files().iter().cloned().map(|file| file.with_partition_values(vec![value.clone()])).collect(),
+            )
+        })
+        .collect();
+    let file_scan = FileScanConfigBuilder::from(file_scan.clone()).with_file_groups(file_groups).build();
+    DataSourceExec::from_data_source(file_scan)
+}
+
+fn parquet_scan_with_partition_field(path: &std::path::Path, partition_field: Field) -> Arc<dyn ExecutionPlan> {
     let scan = parquet_scan(path);
     let data_source = scan.as_any().downcast_ref::<DataSourceExec>().expect("parquet scan should be DataSourceExec");
     let (file_scan, _parquet_source) =
         data_source.downcast_to_file_source::<ParquetSource>().expect("parquet scan should use ParquetSource");
-    let file_column_indices = (0..file_scan.file_schema().fields().len()).collect::<Vec<_>>();
-    let table_schema = TableSchema::new(
-        Arc::clone(file_scan.file_schema()),
-        vec![Arc::new(Field::new("part", DataType::Int32, false))],
-    );
+    let projected_indices = (0..=file_scan.file_schema().fields().len()).collect::<Vec<_>>();
+    let table_schema = TableSchema::new(Arc::clone(file_scan.file_schema()), vec![Arc::new(partition_field)]);
     let parquet_source = ParquetSource::new(table_schema);
     let file_scan = FileScanConfigBuilder::new(file_scan.object_store_url.clone(), Arc::new(parquet_source))
         .with_file_groups(file_scan.file_groups.clone())
-        .with_projection_indices(Some(file_column_indices))
+        .with_projection_indices(Some(projected_indices))
         .unwrap()
         .build();
     DataSourceExec::from_data_source(file_scan)
+}
+
+fn partition_column_group_by_plan(scan: Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
+    let scan_schema = scan.schema();
+    let predicate =
+        binary(col("part", &scan_schema).unwrap(), Operator::Eq, lit(ScalarValue::Int32(Some(7))), &scan_schema)
+            .unwrap();
+    let filter: Arc<dyn ExecutionPlan> = Arc::new(FilterExec::try_new(predicate, scan).unwrap());
+    let filter_schema = filter.schema();
+    let projection: Arc<dyn ExecutionPlan> = Arc::new(
+        ProjectionExec::try_new(
+            [
+                ProjectionExpr { expr: col("part", &filter_schema).unwrap(), alias: "part".to_string() },
+                ProjectionExpr { expr: col("m00", &filter_schema).unwrap(), alias: "m00".to_string() },
+            ],
+            filter,
+        )
+        .unwrap(),
+    );
+    let projection_schema = projection.schema();
+    let group_by = PhysicalGroupBy::new_single(vec![(col("part", &projection_schema).unwrap(), "part".to_string())]);
+    let sum = AggregateExprBuilder::new(sum_udaf(), vec![col("m00", &projection_schema).unwrap()])
+        .schema(Arc::clone(&projection_schema))
+        .alias("sum_m00")
+        .build()
+        .unwrap();
+    let aggregate: Arc<dyn ExecutionPlan> = Arc::new(
+        AggregateExec::try_new(
+            AggregateMode::Single,
+            group_by,
+            vec![Arc::new(sum)],
+            vec![None],
+            projection,
+            projection_schema,
+        )
+        .unwrap(),
+    );
+    let aggregate_schema = aggregate.schema();
+    let sort_exprs = LexOrdering::new([PhysicalSortExpr::new(
+        col("part", &aggregate_schema).unwrap(),
+        ArrowSortOptions::new(false, false),
+    )])
+    .unwrap();
+    let sort: Arc<dyn ExecutionPlan> = Arc::new(SortExec::new(sort_exprs, aggregate).with_fetch(Some(1)));
+    Arc::new(LocalLimitExec::new(sort, 1))
 }
 
 fn native_local_parquet_source(plan: &cudf_query_engine::QueryPlan) -> &cudf_query_engine::LocalParquetSource {

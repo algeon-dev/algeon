@@ -13,11 +13,11 @@ use arrow::{
 use cudf_query_engine::{
     AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, BoundaryMetrics, ByteRangeDisposition, DataPlacement,
     ExecutionContext, Expr, LimitSpec, LiteralValue, LocalParquetFile, LocalParquetSource, MemoryControlPolicy,
-    MemoryReservationRequest, PartitionColumnDisposition, PlanNode, PredicateDisposition, QueryError, QueryErrorCode,
-    QueryErrorKind, QueryErrorStatus, QueryMetrics, QueryPlanBuilder, RejectedSourceFeature, ReservationKind,
-    ResultSink, RetryFacts, SchemaBehavior, SchemaMappingDisposition, SortExpr, SortSpec, SourceChunkPlanningPolicy,
-    SourceNode, ZERO_COLUMN_COUNT_COLUMN, ZeroColumnCountDisposition, plan_local_parquet_source_chunks,
-    validate_local_parquet_source,
+    MemoryReservationRequest, PartitionColumn, PartitionColumnDisposition, PlanNode, PredicateDisposition, QueryError,
+    QueryErrorCode, QueryErrorKind, QueryErrorStatus, QueryMetrics, QueryPlanBuilder, RejectedSourceFeature,
+    ReservationKind, ResultSink, RetryFacts, SchemaBehavior, SchemaMappingDisposition, SortExpr, SortSpec,
+    SourceChunkPlanningPolicy, SourceColumnRef, SourceNode, ZERO_COLUMN_COUNT_COLUMN, ZeroColumnCountDisposition,
+    plan_local_parquet_source_chunks, validate_local_parquet_source,
 };
 use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
 
@@ -274,9 +274,9 @@ fn local_parquet_source_tracks_direct_source_diagnostics() {
     assert_eq!(source.read_column_count(), 2);
     assert_eq!(source.read_column_file_indices, vec![0, 1]);
     assert_eq!(source.projected_output_column_count(), 1);
-    assert_eq!(source.projected_output_column_file_indices, vec![0]);
+    assert_eq!(source.projected_output_column_source_refs, vec![SourceColumnRef::File(0)]);
     assert_eq!(source.pure_filter_column_count(), 1);
-    assert_eq!(source.pure_filter_column_file_indices, vec![1]);
+    assert_eq!(source.pure_filter_column_source_refs, vec![SourceColumnRef::File(1)]);
     assert_eq!(source.selected_row_group_count(), 3);
     assert_eq!(source.diagnostics.file_count, 1);
     assert_eq!(source.diagnostics.ranged_file_count, 0);
@@ -291,6 +291,63 @@ fn local_parquet_source_tracks_direct_source_diagnostics() {
     assert_eq!(source.diagnostics.zero_column_count_disposition, ZeroColumnCountDisposition::NotRequired);
     assert_eq!(source.diagnostics.schema_mapping_disposition, SchemaMappingDisposition::DirectByName);
     assert!(source.diagnostics.rejected_features.is_empty());
+}
+
+#[test]
+fn local_parquet_source_represents_partition_columns_as_synthetic_source_columns() {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::UInt32, false),
+        Field::new("payload", DataType::Int64, false),
+        Field::new("part", DataType::Int32, false),
+    ]));
+    let source = LocalParquetSource::from_files(
+        vec![LocalParquetFile::new("/tmp/phase4.parquet").with_partition_values(vec![LiteralValue::Int32(7)])],
+        schema,
+        vec!["key".to_string(), "payload".to_string()],
+    )
+    .with_partition_columns(vec![PartitionColumn::new("part", DataType::Int32, false)])
+    .with_column_roles(vec!["key".to_string(), "part".to_string()], vec!["payload".to_string(), "part".to_string()]);
+
+    validate_local_parquet_source(&source).unwrap();
+    assert_eq!(source.partition_column_count(), 1);
+    assert_eq!(source.read_columns, vec!["key".to_string(), "payload".to_string()]);
+    assert_eq!(
+        source.projected_output_column_source_refs,
+        vec![SourceColumnRef::File(0), SourceColumnRef::Partition(0)]
+    );
+    assert_eq!(source.pure_filter_column_source_refs, vec![SourceColumnRef::File(1), SourceColumnRef::Partition(0)]);
+    assert_eq!(source.diagnostics.partition_column_disposition, PartitionColumnDisposition::Represented);
+    assert!(source.diagnostics.rejected_features.is_empty());
+}
+
+#[test]
+fn local_parquet_source_rejects_invalid_partition_column_contracts() {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::UInt32, false),
+        Field::new("part", DataType::Int32, false),
+    ]));
+    let source = LocalParquetSource::from_files(
+        vec![LocalParquetFile::new("/tmp/phase4.parquet")],
+        Arc::clone(&schema),
+        vec!["key".to_string()],
+    )
+    .with_partition_columns(vec![PartitionColumn::new("part", DataType::Int32, false)]);
+
+    let error = validate_local_parquet_source(&source).unwrap_err();
+    assert_eq!(error.fact_value("reason"), Some("partition_value_count_mismatch"));
+    assert_eq!(error.fact_value("partition_columns"), Some("1"));
+    assert_eq!(error.fact_value("partition_values"), Some("0"));
+
+    let wrong_type = LocalParquetSource::from_files(
+        vec![LocalParquetFile::new("/tmp/phase4.parquet").with_partition_values(vec![LiteralValue::Int64(7)])],
+        schema,
+        vec!["key".to_string()],
+    )
+    .with_partition_columns(vec![PartitionColumn::new("part", DataType::Int32, false)]);
+
+    let error = validate_local_parquet_source(&wrong_type).unwrap_err();
+    assert_eq!(error.fact_value("reason"), Some("partition_value_type_mismatch"));
+    assert_eq!(error.fact_value("partition_column"), Some("part"));
 }
 
 #[test]
@@ -358,8 +415,8 @@ fn zero_column_count_source_contract_is_represented_without_data_columns() {
     assert_eq!(source.projected_output_column_count(), 0);
     assert_eq!(source.pure_filter_column_count(), 0);
     assert!(source.read_column_file_indices.is_empty());
-    assert!(source.projected_output_column_file_indices.is_empty());
-    assert!(source.pure_filter_column_file_indices.is_empty());
+    assert!(source.projected_output_column_source_refs.is_empty());
+    assert!(source.pure_filter_column_source_refs.is_empty());
     assert!(source.schema.field_with_name(ZERO_COLUMN_COUNT_COLUMN).is_ok());
     assert_eq!(source.diagnostics.read_column_count, 0);
     assert_eq!(source.diagnostics.projected_output_column_count, 0);
@@ -381,11 +438,10 @@ fn local_parquet_source_validation_rejects_unhonorable_source_facts_before_execu
     assert_eq!(error.fact_value("field"), Some("byte_range"));
     assert_eq!(error.fact_value("disposition"), Some("rejected"));
 
-    let mut rejected_partition_columns = base.clone();
-    rejected_partition_columns.diagnostics.partition_column_disposition = PartitionColumnDisposition::Represented;
-    let error = validate_local_parquet_source(&rejected_partition_columns).unwrap_err();
-    assert_eq!(error.fact_value("field"), Some("partition_columns"));
-    assert_eq!(error.fact_value("disposition"), Some("represented"));
+    let mut inconsistent_partition_columns = base.clone();
+    inconsistent_partition_columns.diagnostics.partition_column_disposition = PartitionColumnDisposition::Represented;
+    let error = validate_local_parquet_source(&inconsistent_partition_columns).unwrap_err();
+    assert_eq!(error.fact_value("reason"), Some("empty_partition_columns"));
 
     let mut rejected_zero_column_count = base.clone();
     rejected_zero_column_count.diagnostics.zero_column_count_disposition = ZeroColumnCountDisposition::Represented;
@@ -417,9 +473,12 @@ fn local_parquet_source_validation_rejects_inconsistent_column_and_row_group_con
     let mut missing_projected_read =
         LocalParquetSource::new("/tmp/phase4.parquet", two_column_schema, vec!["key".to_string()])
             .with_column_roles(vec!["payload".to_string()], Vec::new());
-    missing_projected_read.diagnostics.read_column_count = missing_projected_read.read_column_count();
+    missing_projected_read.diagnostics.rejected_features.clear();
+    missing_projected_read.diagnostics.direct_device_read = true;
+    missing_projected_read.diagnostics.schema_mapping_disposition = SchemaMappingDisposition::DirectByName;
+    missing_projected_read.projected_output_column_source_refs.push(SourceColumnRef::File(1));
     let error = validate_local_parquet_source(&missing_projected_read).unwrap_err();
-    assert_eq!(error.fact_value("reason"), Some("projected_column_not_read"));
+    assert_eq!(error.fact_value("reason"), Some("projected_column_not_available"));
     assert_eq!(error.fact_value("column"), Some("payload"));
 
     let mut mismatched_diagnostics =

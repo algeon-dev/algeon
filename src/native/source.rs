@@ -2,12 +2,15 @@ use std::collections::BTreeSet;
 
 use arrow::datatypes::SchemaRef;
 use cudf_query_engine::{
-    ByteRangeDisposition as NativeByteRangeDisposition, LocalParquetFile as NativeLocalParquetFile,
+    ByteRangeDisposition as NativeByteRangeDisposition, LiteralValue as NativeLiteralValue,
+    LocalParquetFile as NativeLocalParquetFile, PartitionColumn as NativePartitionColumn,
     PartitionColumnDisposition as NativePartitionColumnDisposition, PredicateDisposition as NativePredicateDisposition,
     RejectedSourceFeature as NativeRejectedSourceFeature, SchemaMappingDisposition as NativeSchemaMappingDisposition,
-    SourceDiagnostics as NativeSourceDiagnostics, ZeroColumnCountDisposition as NativeZeroColumnCountDisposition,
+    SourceColumnRef as NativeSourceColumnRef, SourceDiagnostics as NativeSourceDiagnostics,
+    ZeroColumnCountDisposition as NativeZeroColumnCountDisposition,
 };
 use datafusion::{
+    common::ScalarValue,
     datasource::physical_plan::{FileScanConfig, FileSource, ParquetSource},
     physical_plan::{ExecutionPlan, aggregates::AggregateExec, filter::FilterExec, projection::ProjectionExec},
 };
@@ -19,7 +22,7 @@ use super::{
         local_object_path_to_filesystem, metadata_row_group_selections, parquet_predicate_disposition,
         selected_row_groups_from_access_plans, validate_pruning_only_parquet_predicate,
     },
-    validate::{collect_required_columns, native_zero_column_count_source_is_safe},
+    validate::{collect_required_columns, is_supported_native_type, native_zero_column_count_source_is_safe},
 };
 use crate::policy::FallbackReason;
 
@@ -59,9 +62,7 @@ pub(super) fn validate_slice1_parquet_scan(
     if !file_scan.object_store_url.as_str().starts_with("file://") {
         return Err(FallbackReason::NativeSourceNonLocalObjectStore);
     }
-    if !file_scan.table_partition_cols().is_empty() {
-        return Err(FallbackReason::NativeSourcePartitionColumns);
-    }
+    validate_partition_columns(file_scan)?;
     if file_scan.expr_adapter_factory.is_some() {
         return Err(FallbackReason::NativeSourceExprAdapter);
     }
@@ -131,7 +132,8 @@ pub(super) fn local_parquet_source_diagnostics(
     if !file_scan.object_store_url.as_str().starts_with("file://") {
         rejected_features.push(NativeRejectedSourceFeature::NonLocalObjectStore);
     }
-    if !file_scan.table_partition_cols().is_empty() {
+    let partition_column_disposition = partition_column_disposition(file_scan, &files);
+    if partition_column_disposition == NativePartitionColumnDisposition::Rejected {
         rejected_features.push(NativeRejectedSourceFeature::PartitionColumns);
     }
     if file_scan.expr_adapter_factory.is_some() {
@@ -158,14 +160,16 @@ pub(super) fn local_parquet_source_diagnostics(
     }
     let ranges_are_safely_coalesced = ranged_file_count > 0
         && file_scan.object_store_url.as_str().starts_with("file://")
-        && file_scan.table_partition_cols().is_empty()
+        && partition_column_disposition != NativePartitionColumnDisposition::Rejected
         && file_scan.expr_adapter_factory.is_none()
         && file_scan.limit.is_none()
         && !file_scan.preserve_order
         && file_scan.output_ordering.is_empty()
         && coalesced_files.is_ok();
     for file in &files {
-        if !file.partition_values.is_empty() {
+        if partition_column_disposition == NativePartitionColumnDisposition::Rejected
+            && !file.partition_values.is_empty()
+        {
             rejected_features.push(NativeRejectedSourceFeature::PartitionValues);
         }
         if file.range.is_some() && !ranges_are_safely_coalesced {
@@ -190,13 +194,7 @@ pub(super) fn local_parquet_source_diagnostics(
         selected_row_groups,
         predicate_disposition,
         byte_range_disposition,
-        partition_column_disposition: if !file_scan.table_partition_cols().is_empty()
-            || files.iter().any(|file| !file.partition_values.is_empty())
-        {
-            NativePartitionColumnDisposition::Rejected
-        } else {
-            NativePartitionColumnDisposition::Absent
-        },
+        partition_column_disposition,
         zero_column_count_disposition,
         schema_mapping_disposition: NativeSchemaMappingDisposition::DirectByName,
         read_column_count,
@@ -222,9 +220,6 @@ pub(super) fn local_parquet_files(
     let mut native_files = Vec::with_capacity(scan_files.len());
     for (file_index, scan_file) in scan_files.iter().enumerate() {
         let file = scan_file.file;
-        if !file.partition_values.is_empty() {
-            return Err(FallbackReason::NativeSourcePartitionValues);
-        }
         if file.ordering.is_some() {
             return Err(FallbackReason::NativeSourceFileOrdering);
         }
@@ -232,6 +227,9 @@ pub(super) fn local_parquet_files(
         let stable_id = format!("local:{}:{}", path.display(), file.object_meta.size);
         let mut native_file =
             NativeLocalParquetFile::new(path).with_stable_id(stable_id).with_file_size_bytes(file.object_meta.size);
+        if !file.partition_values.is_empty() {
+            native_file = native_file.with_partition_values(native_partition_values(file)?);
+        }
         if let Some(row_groups) = explicit_row_group_selection(file)? {
             native_file = native_file.with_row_groups(row_groups);
         } else if let Some(row_groups) =
@@ -249,9 +247,10 @@ pub(super) struct NativeParquetColumnRequirements {
     pub(super) read_columns: Vec<String>,
     pub(super) read_column_file_indices: Vec<usize>,
     pub(super) projected_output_columns: Vec<String>,
-    pub(super) projected_output_column_file_indices: Vec<usize>,
+    pub(super) projected_output_column_source_refs: Vec<NativeSourceColumnRef>,
     pub(super) pure_filter_columns: Vec<String>,
-    pub(super) pure_filter_column_file_indices: Vec<usize>,
+    pub(super) pure_filter_column_source_refs: Vec<NativeSourceColumnRef>,
+    pub(super) partition_columns: Vec<NativePartitionColumn>,
 }
 
 pub(super) fn required_parquet_column_requirements(
@@ -261,14 +260,16 @@ pub(super) fn required_parquet_column_requirements(
     aggregate: &AggregateExec,
 ) -> Result<NativeParquetColumnRequirements, FallbackReason> {
     let file_schema = file_scan.file_schema();
+    let table_partition_cols = file_scan.table_partition_cols();
     if native_zero_column_count_source_is_safe(filter, pre_aggregate_projection, aggregate) {
         return Ok(NativeParquetColumnRequirements {
             read_columns: Vec::new(),
             read_column_file_indices: Vec::new(),
             projected_output_columns: Vec::new(),
-            projected_output_column_file_indices: Vec::new(),
+            projected_output_column_source_refs: Vec::new(),
             pure_filter_columns: Vec::new(),
-            pure_filter_column_file_indices: Vec::new(),
+            pure_filter_column_source_refs: Vec::new(),
+            partition_columns: native_partition_columns(file_scan)?,
         });
     }
 
@@ -278,10 +279,11 @@ pub(super) fn required_parquet_column_requirements(
 
     if let Some(projection) = file_scan.file_source().projection() {
         for index in projection.column_indices() {
-            if index >= file_schema.fields().len() {
-                return Err(FallbackReason::NativeSourcePartitionColumns);
+            if index < file_schema.fields().len() {
+                scan_projected_columns.insert(file_schema.field(index).name().clone());
+            } else if index >= file_schema.fields().len() + table_partition_cols.len() {
+                return Err(FallbackReason::UnsupportedExpression);
             }
-            scan_projected_columns.insert(file_schema.field(index).name().clone());
         }
     }
 
@@ -307,26 +309,25 @@ pub(super) fn required_parquet_column_requirements(
     read_columns.extend(filter_columns.iter().cloned());
     read_columns.extend(output_columns.iter().cloned());
 
-    for column in &read_columns {
-        if file_schema.index_of(column).is_err() {
-            return Err(FallbackReason::UnsupportedExpression);
-        }
-    }
+    let read_columns =
+        read_columns.into_iter().filter(|column| file_schema.index_of(column).is_ok()).collect::<BTreeSet<_>>();
 
     let pure_filter_columns = filter_columns.difference(&output_columns).cloned().collect::<Vec<_>>();
     let read_columns = read_columns.into_iter().collect::<Vec<_>>();
     let projected_output_columns = output_columns.into_iter().collect::<Vec<_>>();
     let read_column_file_indices = column_file_indices(&file_schema, &read_columns)?;
-    let projected_output_column_file_indices = column_file_indices(&file_schema, &projected_output_columns)?;
-    let pure_filter_column_file_indices = column_file_indices(&file_schema, &pure_filter_columns)?;
+    let projected_output_column_source_refs =
+        column_source_refs(&file_schema, table_partition_cols, &projected_output_columns)?;
+    let pure_filter_column_source_refs = column_source_refs(&file_schema, table_partition_cols, &pure_filter_columns)?;
 
     Ok(NativeParquetColumnRequirements {
         read_columns,
         read_column_file_indices,
         projected_output_columns,
-        projected_output_column_file_indices,
+        projected_output_column_source_refs,
         pure_filter_columns,
-        pure_filter_column_file_indices,
+        pure_filter_column_source_refs,
+        partition_columns: native_partition_columns(file_scan)?,
     })
 }
 
@@ -335,4 +336,102 @@ fn column_file_indices(file_schema: &SchemaRef, columns: &[String]) -> Result<Ve
         .iter()
         .map(|column| file_schema.index_of(column).map_err(|_error| FallbackReason::UnsupportedExpression))
         .collect()
+}
+
+pub(super) fn native_partition_columns(
+    file_scan: &FileScanConfig,
+) -> Result<Vec<NativePartitionColumn>, FallbackReason> {
+    file_scan
+        .table_partition_cols()
+        .iter()
+        .map(|field| {
+            if !is_supported_native_type(field.data_type()) {
+                return Err(FallbackReason::UnsupportedType);
+            }
+            Ok(NativePartitionColumn::new(field.name(), field.data_type().clone(), field.is_nullable()))
+        })
+        .collect()
+}
+
+fn column_source_refs(
+    file_schema: &SchemaRef,
+    table_partition_cols: &[arrow::datatypes::FieldRef],
+    columns: &[String],
+) -> Result<Vec<NativeSourceColumnRef>, FallbackReason> {
+    columns
+        .iter()
+        .map(|column| {
+            if let Ok(index) = file_schema.index_of(column) {
+                return Ok(NativeSourceColumnRef::File(index));
+            }
+            table_partition_cols
+                .iter()
+                .position(|field| field.name() == column)
+                .map(NativeSourceColumnRef::Partition)
+                .ok_or(FallbackReason::UnsupportedExpression)
+        })
+        .collect()
+}
+
+fn validate_partition_columns(file_scan: &FileScanConfig) -> Result<(), FallbackReason> {
+    let files = file_scan.file_groups.iter().flat_map(|group| group.files()).collect::<Vec<_>>();
+    let partition_column_count = file_scan.table_partition_cols().len();
+    if partition_column_count == 0 {
+        if files.iter().any(|file| !file.partition_values.is_empty()) {
+            return Err(FallbackReason::NativeSourcePartitionValues);
+        }
+        return Ok(());
+    }
+
+    native_partition_columns(file_scan)?;
+    for file in &files {
+        if file.partition_values.len() != partition_column_count {
+            return Err(FallbackReason::NativeSourcePartitionValues);
+        }
+        native_partition_values(file)?;
+    }
+    Ok(())
+}
+
+fn partition_column_disposition(
+    file_scan: &FileScanConfig,
+    files: &[&datafusion::datasource::listing::PartitionedFile],
+) -> NativePartitionColumnDisposition {
+    let partition_column_count = file_scan.table_partition_cols().len();
+    if partition_column_count == 0 && files.iter().all(|file| file.partition_values.is_empty()) {
+        return NativePartitionColumnDisposition::Absent;
+    }
+    if partition_column_count > 0
+        && native_partition_columns(file_scan).is_ok()
+        && files
+            .iter()
+            .all(|file| file.partition_values.len() == partition_column_count && native_partition_values(file).is_ok())
+    {
+        NativePartitionColumnDisposition::Represented
+    } else {
+        NativePartitionColumnDisposition::Rejected
+    }
+}
+
+fn native_partition_values(
+    file: &datafusion::datasource::listing::PartitionedFile,
+) -> Result<Vec<NativeLiteralValue>, FallbackReason> {
+    file.partition_values.iter().map(native_literal_value).collect()
+}
+
+fn native_literal_value(value: &datafusion::common::ScalarValue) -> Result<NativeLiteralValue, FallbackReason> {
+    match value {
+        ScalarValue::Boolean(Some(value)) => Ok(NativeLiteralValue::Boolean(*value)),
+        ScalarValue::Int8(Some(value)) => Ok(NativeLiteralValue::Int8(*value)),
+        ScalarValue::Int16(Some(value)) => Ok(NativeLiteralValue::Int16(*value)),
+        ScalarValue::Int32(Some(value)) => Ok(NativeLiteralValue::Int32(*value)),
+        ScalarValue::Int64(Some(value)) => Ok(NativeLiteralValue::Int64(*value)),
+        ScalarValue::UInt8(Some(value)) => Ok(NativeLiteralValue::UInt8(*value)),
+        ScalarValue::UInt16(Some(value)) => Ok(NativeLiteralValue::UInt16(*value)),
+        ScalarValue::UInt32(Some(value)) => Ok(NativeLiteralValue::UInt32(*value)),
+        ScalarValue::UInt64(Some(value)) => Ok(NativeLiteralValue::UInt64(*value)),
+        ScalarValue::Float32(Some(value)) => Ok(NativeLiteralValue::Float32(*value)),
+        ScalarValue::Float64(Some(value)) => Ok(NativeLiteralValue::Float64(*value)),
+        _ => Err(FallbackReason::UnsupportedType),
+    }
 }

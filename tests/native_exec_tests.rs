@@ -125,15 +125,20 @@ fn native_optimizer_rule_is_inserted_before_gpu_island_rule_when_enabled() {
     let rules = cudf_physical_optimizer_rules(native_optimizer_config());
     let names = rules.iter().map(|rule| rule.name()).collect::<Vec<_>>();
 
+    let count_only_position = names.iter().position(|name| *name == "datafusion_cudf_native_count_only").unwrap();
+    let aggregate_statistics_position = names.iter().position(|name| *name == "aggregate_statistics").unwrap();
     let native_position = names.iter().position(|name| *name == "datafusion_cudf_native").unwrap();
     let gpu_position = names.iter().position(|name| *name == "datafusion_cudf_gpu_island").unwrap();
     let sanity_position = names.iter().position(|name| *name == "SanityCheckPlan").unwrap();
+    assert!(count_only_position < aggregate_statistics_position);
+    assert!(aggregate_statistics_position < native_position);
     assert!(native_position < gpu_position);
     assert!(gpu_position < sanity_position);
 
     let default_rules = cudf_physical_optimizer_rules(CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred));
     let default_names = default_rules.iter().map(|rule| rule.name()).collect::<Vec<_>>();
     assert!(!default_names.contains(&"datafusion_cudf_native"));
+    assert!(!default_names.contains(&"datafusion_cudf_native_count_only"));
 }
 
 fn bounded_config() -> NativeCudfExecutionConfig {
