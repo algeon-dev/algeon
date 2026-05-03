@@ -584,14 +584,14 @@ fn phase_c_decision_matrix() -> Vec<PhaseCMatrixCase> {
     cases
 }
 
-const PHASE_C_DATAFUSION_NATIVE_EXEC_MATRIX_TSV_SCHEMA_VERSION: u32 = 1;
+const PHASE_C_DATAFUSION_NATIVE_EXEC_MATRIX_TSV_SCHEMA_VERSION: u32 = 2;
 const PHASE_C_DATAFUSION_NATIVE_EXEC_MATRIX_TSV_HEADER: &str = concat!(
     "schema_version\tcase_id\tscale\tcompression\tsource_layout\tnative_plan_shape\texpected_outcome\toutcome\t",
-    "planning_outcome\tplanning_reason_code\tnative_cudf_exec_accepted_count\tnative_runtime_started\t",
-    "no_silent_cpu_fallback\tzero_host_to_device_uploads\tone_device_to_host_materialization\t",
-    "row_groups_selected\trow_groups_planned\trow_groups_committed\tsource_chunks_planned\t",
-    "source_chunks_committed\tsource_chunks_retried\treservation_denied_count\tretry_count\t",
-    "retry_resource_exhausted_count\tretry_reservation_failure_count\tcpu_datafusion_wall_ms\t",
+    "planning_outcome\tplanning_reason_code\tplanning_source_diagnostics\tnative_cudf_exec_accepted_count\t",
+    "native_runtime_started\tno_silent_cpu_fallback\tzero_host_to_device_uploads\t",
+    "one_device_to_host_materialization\trow_groups_selected\trow_groups_planned\trow_groups_committed\t",
+    "source_chunks_planned\tsource_chunks_committed\tsource_chunks_retried\treservation_denied_count\t",
+    "retry_count\tretry_resource_exhausted_count\tretry_reservation_failure_count\tcpu_datafusion_wall_ms\t",
     "datafusion_native_exec_wall_ms\tdatafusion_native_exec_speedup_vs_cpu_datafusion\t",
     "datafusion_native_exec_speedup_vs_cpu_comparable\tparquet_file_bytes\tparquet_row_groups\t",
     "runtime_error_code\truntime_error_kind\truntime_error_status\truntime_error_operation\truntime_error_facts\tlog_path"
@@ -694,22 +694,23 @@ impl PhaseCMatrixReport {
         push_line(
             &mut text,
             format_args!(
-                "| case id | expected | outcome | planning | accepted | zero upload | one materialization | row groups | chunks | retries | native wall ms | speedup | error |"
+                "| case id | expected | outcome | planning | source facts | accepted | zero upload | one materialization | row groups | chunks | retries | native wall ms | speedup | error |"
             ),
         );
         push_line(
             &mut text,
-            format_args!("| --- | --- | --- | --- | ---: | --- | --- | ---: | ---: | ---: | ---: | ---: | --- |"),
+            format_args!("| --- | --- | --- | --- | --- | ---: | --- | --- | ---: | ---: | ---: | ---: | ---: | --- |"),
         );
         for row in &self.rows {
             push_line(
                 &mut text,
                 format_args!(
-                    "| {} | {} | {} | {} | {} | {} | {} | {}/{}/{} | {}/{}/{} | {}/{}/{} | {} | {} | {} |",
+                    "| {} | {} | {} | {} | {} | {} | {} | {} | {}/{}/{} | {}/{}/{} | {}/{}/{} | {} | {} | {} |",
                     row.case_id,
                     row.expected_outcome,
                     row.outcome.as_str(),
                     row.planning_outcome,
+                    markdown_table_cell(&row.planning_source_diagnostics),
                     row.native_cudf_exec_accepted_count,
                     row.zero_host_to_device_uploads,
                     row.one_device_to_host_materialization,
@@ -743,6 +744,7 @@ struct PhaseCMatrixReportRow {
     outcome: BenchmarkMatrixOutcome,
     planning_outcome: String,
     planning_reason_code: String,
+    planning_source_diagnostics: String,
     native_cudf_exec_accepted_count: String,
     native_runtime_started: &'static str,
     no_silent_cpu_fallback: &'static str,
@@ -815,6 +817,7 @@ impl PhaseCMatrixReportRow {
             outcome: BenchmarkMatrixOutcome::RuntimeFailure,
             planning_outcome: "unavailable".to_string(),
             planning_reason_code: "unavailable".to_string(),
+            planning_source_diagnostics: "unavailable".to_string(),
             native_cudf_exec_accepted_count: "unavailable".to_string(),
             native_runtime_started: "unknown",
             no_silent_cpu_fallback: "unknown",
@@ -862,6 +865,9 @@ impl PhaseCMatrixReportRow {
             outcome: BenchmarkMatrixOutcome::Pass,
             planning_outcome: planning_row.map_or("unavailable", |row| row.outcome.as_str()).to_string(),
             planning_reason_code: planning_row.and_then(|row| row.reason_code.as_deref()).unwrap_or("none").to_string(),
+            planning_source_diagnostics: planning_row
+                .map(|row| native_source_diagnostics_text(&row.source_diagnostics))
+                .unwrap_or_else(|| "unavailable".to_string()),
             native_cudf_exec_accepted_count: report
                 .final_datafusion_native_exec
                 .native_datafusion_planning_report
@@ -918,6 +924,9 @@ impl PhaseCMatrixReportRow {
             outcome: BenchmarkMatrixOutcome::PlanningRejected,
             planning_outcome: row.map_or("unavailable", |row| row.outcome.as_str()).to_string(),
             planning_reason_code: row.and_then(|row| row.reason_code.as_deref()).unwrap_or("none").to_string(),
+            planning_source_diagnostics: row
+                .map(|row| native_source_diagnostics_text(&row.source_diagnostics))
+                .unwrap_or_else(|| "unavailable".to_string()),
             native_cudf_exec_accepted_count: report.planning_report.accepted_count().to_string(),
             native_runtime_started: "false",
             no_silent_cpu_fallback: "true",
@@ -960,6 +969,9 @@ impl PhaseCMatrixReportRow {
             outcome: BenchmarkMatrixOutcome::ResourceFailure,
             planning_outcome: row.map_or("unavailable", |row| row.outcome.as_str()).to_string(),
             planning_reason_code: row.and_then(|row| row.reason_code.as_deref()).unwrap_or("none").to_string(),
+            planning_source_diagnostics: row
+                .map(|row| native_source_diagnostics_text(&row.source_diagnostics))
+                .unwrap_or_else(|| "unavailable".to_string()),
             native_cudf_exec_accepted_count: report.planning_report.accepted_count().to_string(),
             native_runtime_started: "true",
             no_silent_cpu_fallback: "true",
@@ -1011,6 +1023,7 @@ impl PhaseCMatrixReportRow {
             self.outcome.as_str().to_string(),
             self.planning_outcome.clone(),
             self.planning_reason_code.clone(),
+            self.planning_source_diagnostics.clone(),
             self.native_cudf_exec_accepted_count.clone(),
             self.native_runtime_started.to_string(),
             self.no_silent_cpu_fallback.to_string(),
@@ -1056,6 +1069,7 @@ impl PhaseCMatrixReportRow {
             "outcome": self.outcome.as_str(),
             "planning_outcome": self.planning_outcome,
             "planning_reason_code": self.planning_reason_code,
+            "planning_source_diagnostics": self.planning_source_diagnostics,
             "native_cudf_exec_accepted_count": self.native_cudf_exec_accepted_count,
             "native_runtime_started": self.native_runtime_started,
             "no_silent_cpu_fallback": self.no_silent_cpu_fallback,
@@ -1605,14 +1619,21 @@ fn native_source_diagnostics_text(diagnostics: &[datafusion_cudf::NativeSourceDi
         .iter()
         .map(|diagnostic| {
             format!(
-                "format={},direct_device_read={},file_count={},ranged_file_count={},known_bytes={},selected_row_groups={},predicate={},rejected_features={}",
+                "format={},direct_device_read={},file_count={},ranged_file_count={},known_bytes={},selected_row_groups={},read_columns={},projected_output_columns={},pure_filter_columns={},predicate={},byte_range={},partition_columns={},zero_column_count={},schema_mapping={},rejected_features={}",
                 diagnostic.format,
                 diagnostic.direct_device_read,
                 diagnostic.file_count,
                 diagnostic.ranged_file_count,
                 diagnostic.known_bytes.map_or_else(|| "unknown".to_string(), |value| value.to_string()),
                 diagnostic.selected_row_groups.map_or_else(|| "all".to_string(), |value| value.to_string()),
+                diagnostic.read_column_count,
+                diagnostic.projected_output_column_count,
+                diagnostic.pure_filter_column_count,
                 diagnostic.predicate_disposition,
+                diagnostic.byte_range_disposition,
+                diagnostic.partition_column_disposition,
+                diagnostic.zero_column_count_disposition,
+                diagnostic.schema_mapping_disposition,
                 if diagnostic.rejected_features.is_empty() {
                     "none".to_string()
                 } else {
@@ -3346,6 +3367,10 @@ fn tsv_escape(value: &str) -> String {
     sanitize_report_value(value)
 }
 
+fn markdown_table_cell(value: &str) -> String {
+    sanitize_report_value(value).replace('|', ";")
+}
+
 fn phase_c_runtime_gate(_policy: NativeMemoryControlPolicy) -> &'static str {
     "not_evaluated"
 }
@@ -3588,6 +3613,13 @@ mod tests {
                     known_bytes: Some(4096),
                     selected_row_groups: Some(2),
                     predicate_disposition: "pruning_only".to_string(),
+                    byte_range_disposition: "full_files".to_string(),
+                    partition_column_disposition: "absent".to_string(),
+                    zero_column_count_disposition: "not_required".to_string(),
+                    schema_mapping_disposition: "direct_by_name".to_string(),
+                    read_column_count: 4,
+                    projected_output_column_count: 3,
+                    pure_filter_column_count: 1,
                     rejected_features: Vec::new(),
                 }],
                 post_native_plan_root: "NativeCudfExec".to_string(),
@@ -3657,6 +3689,28 @@ mod tests {
         assert!(text.contains("datafusion_native_exec_planning_outcome=accepted_replaced"));
         assert!(text.contains("datafusion_native_exec_planning_post_native_execution_path=native"));
         assert!(text.contains("datafusion_native_exec_planning_source_diagnostics=format=Parquet"));
+        assert!(text.contains("read_columns=4,projected_output_columns=3,pure_filter_columns=1"));
+        assert!(text.contains("byte_range=full_files,partition_columns=absent,zero_column_count=not_required"));
+        let zero_column_count_artifact_text =
+            native_source_diagnostics_text(&[datafusion_cudf::NativeSourceDiagnosticSummary {
+                format: "Parquet".to_string(),
+                direct_device_read: true,
+                file_count: 1,
+                ranged_file_count: 0,
+                known_bytes: Some(4096),
+                selected_row_groups: Some(2),
+                predicate_disposition: "absent".to_string(),
+                byte_range_disposition: "full_files".to_string(),
+                partition_column_disposition: "absent".to_string(),
+                zero_column_count_disposition: "represented".to_string(),
+                schema_mapping_disposition: "direct_by_name".to_string(),
+                read_column_count: 0,
+                projected_output_column_count: 0,
+                pure_filter_column_count: 0,
+                rejected_features: Vec::new(),
+            }]);
+        assert!(zero_column_count_artifact_text.contains("read_columns=0"));
+        assert!(zero_column_count_artifact_text.contains("zero_column_count=represented"));
         assert_key_order(&text, "cpu_datafusion_wall_ms", "datafusion_native_exec_wall_ms");
         assert_key_order(&text, "datafusion_native_exec_wall_ms", "manual_native_lowering_wall_ms");
         assert_key_order(&text, "datafusion_native_exec_planning_accepted_count", "manual_native_lowering_plan");
@@ -3673,6 +3727,8 @@ mod tests {
         assert!(matrix_row.matches_expected_outcome());
         assert_eq!(matrix_row.outcome.as_str(), "pass");
         assert_eq!(matrix_row.planning_outcome, "accepted_replaced");
+        assert!(matrix_row.planning_source_diagnostics.contains("read_columns=4"));
+        assert!(matrix_row.planning_source_diagnostics.contains("schema_mapping=direct_by_name"));
         assert_eq!(matrix_row.native_cudf_exec_accepted_count, "1");
         assert_eq!(matrix_row.zero_host_to_device_uploads, "true");
         assert_eq!(matrix_row.one_device_to_host_materialization, "true");
@@ -3686,14 +3742,18 @@ mod tests {
         };
         let tsv = matrix_report.to_tsv();
         assert!(tsv.starts_with(PHASE_C_DATAFUSION_NATIVE_EXEC_MATRIX_TSV_HEADER));
-        assert!(tsv.contains("\tpass\taccepted_replaced\tnone\t1\ttrue\ttrue\ttrue\ttrue\t"));
+        assert!(tsv.contains("\tpass\taccepted_replaced\tnone\tformat=Parquet"));
+        assert!(tsv.contains("read_columns=4,projected_output_columns=3,pure_filter_columns=1"));
+        assert!(tsv.contains("\t1\ttrue\ttrue\ttrue\ttrue\t"));
         let json = matrix_report.to_json();
-        assert!(json.contains("\"schema_version\": 1"));
+        assert!(json.contains("\"schema_version\": 2"));
         assert!(json.contains("\"case_id\": \"3gib-uncompressed-multi_file-default_sql-success\""));
+        assert!(json.contains("\"planning_source_diagnostics\": \"format=Parquet"));
         assert!(json.contains("\"zero_host_to_device_uploads\": \"true\""));
         let markdown = matrix_report.to_markdown();
         assert!(markdown.contains("Decision gate: **pass**"));
         assert!(markdown.contains("3gib-uncompressed-multi_file-default_sql-success"));
+        assert!(markdown.contains("schema_mapping=direct_by_name"));
     }
 
     #[test]
@@ -3790,6 +3850,13 @@ mod tests {
                     known_bytes: Some(4096),
                     selected_row_groups: Some(2),
                     predicate_disposition: "pruning_only".to_string(),
+                    byte_range_disposition: "full_files".to_string(),
+                    partition_column_disposition: "absent".to_string(),
+                    zero_column_count_disposition: "not_required".to_string(),
+                    schema_mapping_disposition: "direct_by_name".to_string(),
+                    read_column_count: 4,
+                    projected_output_column_count: 3,
+                    pure_filter_column_count: 1,
                     rejected_features: Vec::new(),
                 }],
                 post_native_plan_root: "NativeCudfExec".to_string(),

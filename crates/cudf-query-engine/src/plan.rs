@@ -75,6 +75,10 @@ impl NodeId {
     pub const fn index(self) -> usize {
         self.0
     }
+
+    pub(crate) const fn from_index_for_internal_use(index: usize) -> Self {
+        Self(index)
+    }
 }
 
 impl fmt::Display for NodeId {
@@ -105,7 +109,7 @@ impl QueryNode {
             PlanNode::Source(SourceNode::LocalParquet(source)) => {
                 writeln!(
                     f,
-                    "{padding}{} LocalParquetSource files={} path={} format={:?} direct_device_read={} known_bytes={} selected_row_groups={} read_columns={} predicate={} rejected_features={} placement={} schema_behavior={}",
+                    "{padding}{} LocalParquetSource files={} path={} format={:?} direct_device_read={} known_bytes={} selected_row_groups={} read_columns={} projected_output_columns={} pure_filter_columns={} predicate={} byte_range={} partition_columns={} zero_column_count={} schema_mapping={} rejected_features={} placement={} schema_behavior={}",
                     self.id,
                     source.diagnostics.file_count,
                     source.files.first().map_or_else(|| "none".to_string(), |file| file.path.display().to_string()),
@@ -116,8 +120,14 @@ impl QueryNode {
                         .diagnostics
                         .selected_row_groups
                         .map_or_else(|| "all".to_string(), |row_groups| row_groups.to_string()),
-                    source.read_columns.len(),
+                    source.diagnostics.read_column_count,
+                    source.diagnostics.projected_output_column_count,
+                    source.diagnostics.pure_filter_column_count,
                     source.diagnostics.predicate_disposition.as_str(),
+                    source.diagnostics.byte_range_disposition.as_str(),
+                    source.diagnostics.partition_column_disposition.as_str(),
+                    source.diagnostics.zero_column_count_disposition.as_str(),
+                    source.diagnostics.schema_mapping_disposition.as_str(),
                     source
                         .diagnostics
                         .rejected_features

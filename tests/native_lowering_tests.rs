@@ -10,7 +10,9 @@ use arrow::{
     datatypes::{DataType, Field, Schema, TimeUnit},
     record_batch::RecordBatch,
 };
-use cudf_query_engine::{AggregateFunction, Expr, LiteralValue, PlanNode, ResultSink, SourceNode};
+use cudf_query_engine::{
+    AggregateFunction, Expr, LiteralValue, PlanNode, ResultSink, SourceNode, ZERO_COLUMN_COUNT_COLUMN,
+};
 use datafusion::{
     common::ScalarValue,
     datasource::{
@@ -22,7 +24,7 @@ use datafusion::{
         table_schema::TableSchema,
     },
     execution::object_store::ObjectStoreUrl,
-    functions_aggregate::{first_last::first_value_udaf, min_max::max_udaf, sum::sum_udaf},
+    functions_aggregate::{count::count_udaf, first_last::first_value_udaf, min_max::max_udaf, sum::sum_udaf},
     logical_expr::Operator,
     parquet::{
         arrow::{
@@ -62,8 +64,8 @@ fn benchmark_shape_lowers_to_one_native_query_plan() {
     let result = lower_physical_plan_to_native(plan);
 
     assert_eq!(result.candidate_count(), 1);
-    assert_eq!(result.rewritten_count(), 1);
-    assert_eq!(result.rejected_count(), 0);
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.plans.len(), 1);
     assert_eq!(result.plans[0].node_count(), 6);
     assert!(matches!(result.report.outcomes()[0], CandidateOutcome::Rewritten { .. }));
@@ -108,6 +110,18 @@ fn benchmark_shape_lowers_to_one_native_query_plan() {
         source.read_columns,
         vec!["key".to_string(), "m00".to_string(), "m01".to_string(), "payload".to_string()],
     );
+    assert_eq!(source.read_column_file_indices, vec![0, 2, 3, 1]);
+    assert_eq!(source.projected_output_columns, vec!["key".to_string(), "m00".to_string(), "m01".to_string()]);
+    assert_eq!(source.projected_output_column_file_indices, vec![0, 2, 3]);
+    assert_eq!(source.pure_filter_columns, vec!["payload".to_string()]);
+    assert_eq!(source.pure_filter_column_file_indices, vec![1]);
+    assert_eq!(source.diagnostics.read_column_count, 4);
+    assert_eq!(source.diagnostics.projected_output_column_count, 3);
+    assert_eq!(source.diagnostics.pure_filter_column_count, 1);
+    assert_eq!(source.diagnostics.byte_range_disposition.as_str(), "full_files");
+    assert_eq!(source.diagnostics.partition_column_disposition.as_str(), "absent");
+    assert_eq!(source.diagnostics.zero_column_count_disposition.as_str(), "not_required");
+    assert_eq!(source.diagnostics.schema_mapping_disposition.as_str(), "direct_by_name");
     assert!(result.plans[0].to_string().contains("LocalParquetSource"));
 
     fs::remove_dir_all(dir).unwrap();
@@ -124,8 +138,8 @@ fn multi_full_file_parquet_scan_lowers_to_one_native_source() {
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_eq!(result.rewritten_count(), 1);
-    assert_eq!(result.rejected_count(), 0);
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
     let plan = &result.plans[0];
     let source = plan
         .nodes()
@@ -170,6 +184,9 @@ fn explicit_parquet_row_group_access_plan_lowers_to_native_row_groups() {
     assert_eq!(source.diagnostics.ranged_file_count, 0);
     assert_eq!(source.diagnostics.selected_row_groups, Some(2));
     assert_eq!(source.diagnostics.predicate_disposition.as_str(), "absent");
+    assert_eq!(source.diagnostics.read_column_count, 4);
+    assert_eq!(source.diagnostics.projected_output_column_count, 3);
+    assert_eq!(source.diagnostics.pure_filter_column_count, 1);
     assert!(source.diagnostics.rejected_features.is_empty());
     assert_eq!(result.source_diagnostics.len(), 1);
     assert_eq!(result.source_diagnostics[0].file_count, 1);
@@ -433,12 +450,15 @@ fn full_file_byte_range_coalesces_to_native_source() {
     let source = native_local_parquet_source(&result.plans[0]);
     assert_eq!(source.file_count(), 1);
     assert_eq!(source.files[0].file_size_bytes, Some(fs::metadata(&path).unwrap().len()));
+    assert_eq!(source.files[0].stable_id, format!("local:{}:{}", path.display(), fs::metadata(&path).unwrap().len()));
     assert!(source.diagnostics.direct_device_read);
     assert_eq!(source.diagnostics.ranged_file_count, 1);
+    assert_eq!(source.diagnostics.byte_range_disposition.as_str(), "coalesced_full_files");
     assert!(source.diagnostics.rejected_features.is_empty());
     assert_eq!(result.source_diagnostics.len(), 1);
     assert_eq!(result.source_diagnostics[0].ranged_file_count, 1);
     assert!(result.source_diagnostics[0].direct_device_read);
+    assert_eq!(result.source_diagnostics[0].byte_range_disposition.as_str(), "coalesced_full_files");
     assert!(result.source_diagnostics[0].rejected_features.is_empty());
 
     fs::remove_dir_all(dir).unwrap();
@@ -462,6 +482,7 @@ fn partial_byte_range_is_rejected_with_source_reason() {
     ));
     assert_eq!(result.source_diagnostics.len(), 1);
     assert_eq!(result.source_diagnostics[0].ranged_file_count, 1);
+    assert_eq!(result.source_diagnostics[0].byte_range_disposition.as_str(), "rejected");
     assert!(result.source_diagnostics[0].rejected_features.iter().any(|feature| feature.as_str() == "byte_range"));
 
     fs::remove_dir_all(dir).unwrap();
@@ -484,6 +505,7 @@ fn split_full_file_byte_ranges_coalesce_without_duplicate_native_files() {
     assert_eq!(source.files[0].file_size_bytes, Some(fs::metadata(&path).unwrap().len()));
     assert_eq!(source.diagnostics.file_count, 1);
     assert_eq!(source.diagnostics.ranged_file_count, 2);
+    assert_eq!(source.diagnostics.byte_range_disposition.as_str(), "coalesced_full_files");
     assert!(source.diagnostics.direct_device_read);
     assert!(source.diagnostics.rejected_features.is_empty());
     assert_eq!(result.source_diagnostics[0].file_count, 1);
@@ -510,6 +532,7 @@ fn overlapping_byte_ranges_are_rejected_with_source_reason() {
         CandidateOutcome::Rejected { reason: FallbackReason::NativeSourceByteRange, .. }
     ));
     assert_eq!(result.source_diagnostics[0].ranged_file_count, 2);
+    assert_eq!(result.source_diagnostics[0].byte_range_disposition.as_str(), "rejected");
     assert!(result.source_diagnostics[0].rejected_features.iter().any(|feature| feature.as_str() == "byte_range"));
 
     fs::remove_dir_all(dir).unwrap();
@@ -539,6 +562,7 @@ fn remote_parquet_object_store_is_rejected_with_source_reason() {
             .iter()
             .any(|feature| feature.as_str() == "non_local_object_store")
     );
+    assert_eq!(result.source_diagnostics[0].partition_column_disposition.as_str(), "absent");
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -563,6 +587,7 @@ fn parquet_partition_columns_are_rejected_with_source_reason() {
     assert!(
         result.source_diagnostics[0].rejected_features.iter().any(|feature| feature.as_str() == "partition_columns")
     );
+    assert_eq!(result.source_diagnostics[0].partition_column_disposition.as_str(), "rejected");
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -649,6 +674,39 @@ async fn direct_friendly_sql_count_star_lowers_with_synthetic_argument_column() 
         vec!["key".to_string(), "m00".to_string(), "m01".to_string(), "payload".to_string()]
     );
     assert!(source.diagnostics.direct_device_read);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn direct_friendly_sql_zero_column_count_lowers_to_represented_source() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-zero-column-count");
+    let path = dir.join("input.parquet");
+    write_numeric_parquet_file(&path);
+    let plan = count_only_sort_limit_plan(parquet_scan(&path));
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_eq!(result.candidate_count(), 1);
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.source_diagnostics.len(), 1);
+    assert!(result.source_diagnostics[0].direct_device_read);
+    assert_eq!(result.source_diagnostics[0].read_column_count, 0);
+    assert_eq!(result.source_diagnostics[0].projected_output_column_count, 0);
+    assert_eq!(result.source_diagnostics[0].pure_filter_column_count, 0);
+    assert_eq!(result.source_diagnostics[0].zero_column_count_disposition.as_str(), "represented");
+    assert!(result.source_diagnostics[0].rejected_features.is_empty());
+
+    let source = native_local_parquet_source(&result.plans[0]);
+    assert!(source.is_zero_column_count_source());
+    assert!(source.read_columns.is_empty());
+    assert!(source.read_column_file_indices.is_empty());
+    assert_eq!(source.diagnostics.zero_column_count_disposition.as_str(), "represented");
+    let aggregate_exprs = native_aggregate_exprs(&result.plans[0]);
+    assert_eq!(aggregate_exprs.len(), 1);
+    assert_eq!(aggregate_exprs[0].function, AggregateFunction::Sum);
+    assert!(matches!(&aggregate_exprs[0].expr, Expr::Column(name) if name == ZERO_COLUMN_COUNT_COLUMN));
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -1737,6 +1795,35 @@ fn native_filter_expr(plan: &cudf_query_engine::QueryPlan) -> &Expr {
 fn aggregate_sort_limit_plan(scan: Arc<dyn ExecutionPlan>, projection_operator: Operator) -> Arc<dyn ExecutionPlan> {
     let sort = aggregate_sort_plan(scan, projection_operator);
     Arc::new(LocalLimitExec::new(sort, 2))
+}
+
+fn count_only_sort_limit_plan(scan: Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
+    let scan_schema = scan.schema();
+    let count = AggregateExprBuilder::new(count_udaf(), vec![lit(ScalarValue::Int64(Some(1)))])
+        .schema(Arc::clone(&scan_schema))
+        .alias("count_rows")
+        .build()
+        .unwrap();
+    let aggregate: Arc<dyn ExecutionPlan> = Arc::new(
+        AggregateExec::try_new(
+            AggregateMode::Single,
+            PhysicalGroupBy::new_single(Vec::new()),
+            vec![Arc::new(count)],
+            vec![None],
+            scan,
+            scan_schema,
+        )
+        .unwrap(),
+    );
+
+    let aggregate_schema = aggregate.schema();
+    let sort_exprs = LexOrdering::new([PhysicalSortExpr::new(
+        col("count_rows", &aggregate_schema).unwrap(),
+        ArrowSortOptions::new(true, false),
+    )])
+    .unwrap();
+    let sort: Arc<dyn ExecutionPlan> = Arc::new(SortExec::new(sort_exprs, aggregate).with_fetch(Some(1)));
+    Arc::new(LocalLimitExec::new(sort, 1))
 }
 
 fn aggregate_sort_limit_plan_with_filter(

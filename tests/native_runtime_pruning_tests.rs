@@ -15,7 +15,7 @@ use cudf_query_engine::{ExecutionContext, QueryOutput, execute_query_plan};
 use datafusion::{
     common::DataFusionError,
     execution::{SessionStateBuilder, context::TaskContext},
-    functions_aggregate::sum::sum_udaf,
+    functions_aggregate::{count::count_udaf, sum::sum_udaf},
     logical_expr::Operator,
     parquet::{
         arrow::ArrowWriter,
@@ -76,6 +76,43 @@ async fn native_runtime_default_sql_count_star_matches_cpu() {
     write_row_group_pruning_parquet_file(&path);
 
     assert_default_sql_native_parity(&path, SQL_COUNT_STAR_QUERY, None).await;
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn native_runtime_zero_column_count_matches_cpu_without_parquet_data_columns() {
+    let dir = unique_temp_dir("datafusion-cudf-native-runtime-zero-column-count");
+    let path = dir.join("input.parquet");
+    write_row_group_pruning_parquet_file(&path);
+    let native_physical_plan = count_only_sort_limit_plan(parquet_scan(&path).await);
+    let cpu_batches =
+        collect(Arc::clone(&native_physical_plan), Arc::new(datafusion::execution::context::TaskContext::default()))
+            .await
+            .unwrap();
+    let lowering = lower_physical_plan_to_native(native_physical_plan);
+    assert_eq!(lowering.rewritten_count(), 1, "outcomes={:?}", lowering.report.outcomes());
+    assert_eq!(lowering.rejected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
+    assert_eq!(lowering.source_diagnostics[0].read_column_count, 0);
+    assert_eq!(lowering.source_diagnostics[0].zero_column_count_disposition.as_str(), "represented");
+
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = ExecutionContext::from_shared_runtime(runtime);
+    let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().unwrap();
+    cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
+    let result = execute_query_plan(&context, &lowering.plans[0]).unwrap();
+    let metrics = result.metrics();
+    assert_eq!(metrics.read_columns, 0);
+    assert_eq!(metrics.input_rows, 8);
+    assert_eq!(metrics.boundary.host_to_device_uploads, 0);
+    assert_eq!(metrics.boundary.device_to_host_materializations, 1);
+    assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
+    assert_eq!(cudf::testing::arrow::arrow_host_export_call_count_for_test(), 1);
+
+    let QueryOutput::HostArrow(native_batch) = result.output() else {
+        panic!("native host sink should return a RecordBatch");
+    };
+    assert_batches_equal(&cpu_batches, std::slice::from_ref(native_batch));
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -479,6 +516,35 @@ fn aggregate_sort_limit_plan_with_filter(
     .unwrap();
     let sort: Arc<dyn ExecutionPlan> = Arc::new(SortExec::new(sort_exprs, aggregate));
     Arc::new(LocalLimitExec::new(sort, 2))
+}
+
+fn count_only_sort_limit_plan(scan: Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
+    let scan_schema = scan.schema();
+    let count = AggregateExprBuilder::new(count_udaf(), vec![lit(datafusion::common::ScalarValue::Int64(Some(1)))])
+        .schema(Arc::clone(&scan_schema))
+        .alias("count_rows")
+        .build()
+        .unwrap();
+    let aggregate: Arc<dyn ExecutionPlan> = Arc::new(
+        AggregateExec::try_new(
+            AggregateMode::Single,
+            PhysicalGroupBy::new_single(Vec::new()),
+            vec![Arc::new(count)],
+            vec![None],
+            scan,
+            scan_schema,
+        )
+        .unwrap(),
+    );
+
+    let aggregate_schema = aggregate.schema();
+    let sort_exprs = LexOrdering::new([PhysicalSortExpr::new(
+        col("count_rows", &aggregate_schema).unwrap(),
+        ArrowSortOptions::new(true, false),
+    )])
+    .unwrap();
+    let sort: Arc<dyn ExecutionPlan> = Arc::new(SortExec::new(sort_exprs, aggregate).with_fetch(Some(1)));
+    Arc::new(LocalLimitExec::new(sort, 1))
 }
 
 fn aggregate_sort_limit_plan_with_projected_x00(

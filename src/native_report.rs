@@ -23,9 +23,9 @@ use crate::{
     report::GpuCandidate,
 };
 
-pub const NATIVE_FALLBACK_PRESSURE_TSV_SCHEMA_VERSION: u32 = 1;
+pub const NATIVE_FALLBACK_PRESSURE_TSV_SCHEMA_VERSION: u32 = 2;
 pub const NATIVE_FALLBACK_PRESSURE_TSV_HEADER: &str = "query_id\tphysical_root\tphysical_shape\tnative_candidate_shape\toutcome\treason_code\tunsupported_category\tsource_diagnostics\trejected_before_execution";
-pub const NATIVE_DATAFUSION_PLANNING_TSV_SCHEMA_VERSION: u32 = 1;
+pub const NATIVE_DATAFUSION_PLANNING_TSV_SCHEMA_VERSION: u32 = 2;
 pub const NATIVE_DATAFUSION_PLANNING_TSV_HEADER: &str = "query_id\tphysical_root\tphysical_shape\tnative_candidate_shape\toutcome\treason_code\tunsupported_category\tsource_diagnostics\tpost_native_plan_root\tpost_native_execution_path\trejected_before_execution";
 
 #[derive(Debug, Clone)]
@@ -246,6 +246,13 @@ pub struct NativeSourceDiagnosticSummary {
     pub known_bytes: Option<u64>,
     pub selected_row_groups: Option<usize>,
     pub predicate_disposition: String,
+    pub byte_range_disposition: String,
+    pub partition_column_disposition: String,
+    pub zero_column_count_disposition: String,
+    pub schema_mapping_disposition: String,
+    pub read_column_count: usize,
+    pub projected_output_column_count: usize,
+    pub pure_filter_column_count: usize,
     pub rejected_features: Vec<String>,
 }
 
@@ -352,6 +359,13 @@ fn summarize_source_diagnostics(diagnostics: &NativeSourceDiagnostics) -> Native
         known_bytes: diagnostics.known_bytes,
         selected_row_groups: diagnostics.selected_row_groups,
         predicate_disposition: diagnostics.predicate_disposition.as_str().to_string(),
+        byte_range_disposition: diagnostics.byte_range_disposition.as_str().to_string(),
+        partition_column_disposition: diagnostics.partition_column_disposition.as_str().to_string(),
+        zero_column_count_disposition: diagnostics.zero_column_count_disposition.as_str().to_string(),
+        schema_mapping_disposition: diagnostics.schema_mapping_disposition.as_str().to_string(),
+        read_column_count: diagnostics.read_column_count,
+        projected_output_column_count: diagnostics.projected_output_column_count,
+        pure_filter_column_count: diagnostics.pure_filter_column_count,
         rejected_features: diagnostics.rejected_features.iter().map(|feature| feature.as_str().to_string()).collect(),
     }
 }
@@ -596,14 +610,21 @@ fn format_source_diagnostics(diagnostics: &[NativeSourceDiagnosticSummary]) -> S
             diagnostics.selected_row_groups.map_or_else(|| "all".to_string(), |row_groups| row_groups.to_string());
         let _ = write!(
             output,
-            "format={},direct_device_read={},file_count={},ranged_file_count={},known_bytes={},selected_row_groups={},predicate={},rejected_features={}",
+            "format={},direct_device_read={},file_count={},ranged_file_count={},known_bytes={},selected_row_groups={},read_columns={},projected_output_columns={},pure_filter_columns={},predicate={},byte_range={},partition_columns={},zero_column_count={},schema_mapping={},rejected_features={}",
             diagnostics.format,
             diagnostics.direct_device_read,
             diagnostics.file_count,
             diagnostics.ranged_file_count,
             known_bytes,
             selected_row_groups,
+            diagnostics.read_column_count,
+            diagnostics.projected_output_column_count,
+            diagnostics.pure_filter_column_count,
             diagnostics.predicate_disposition,
+            diagnostics.byte_range_disposition,
+            diagnostics.partition_column_disposition,
+            diagnostics.zero_column_count_disposition,
+            diagnostics.schema_mapping_disposition,
             rejected_features,
         );
     }
