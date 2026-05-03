@@ -1015,7 +1015,7 @@ impl Series {
         }
         let lhs = self.column.view()?;
         let rhs = other.column.view()?;
-        let output_type = binary::infer_binary_output_type(lhs.data_type()?.id(), rhs.data_type()?.id(), op)?;
+        let output_type = binary::infer_binary_output_dtype_in(lhs.data_type()?, rhs.data_type()?, op, operation)?;
         let exec_options = output_domain.explicit_exec_options_raw();
         let col = binary::binary_operation_vv_impl(
             &lhs,
@@ -1039,7 +1039,7 @@ impl Series {
         let output_domain = self.resolve_context_output_domain(ctx, operation)?;
         let cv = self.column.view()?;
         let scalar = value.into_runtime_scalar(&output_domain)?;
-        let output_type = binary::infer_binary_output_type(cv.data_type()?.id(), scalar.data_type()?.id(), op)?;
+        let output_type = binary::infer_binary_output_dtype_in(cv.data_type()?, scalar.data_type()?, op, operation)?;
         let exec_options = output_domain.explicit_exec_options_raw();
         let col = binary::binary_operation_vs_impl(
             &cv,

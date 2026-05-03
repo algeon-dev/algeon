@@ -251,6 +251,11 @@ impl TypeId {
         matches!(self, TypeId::Float32 | TypeId::Float64)
     }
 
+    /// Returns `true` if this is a signed or unsigned integer type.
+    pub(crate) fn is_integral(self) -> bool {
+        self.is_signed_int() || self.is_unsigned_int()
+    }
+
     /// Returns a numeric rank used for type promotion ordering.
     ///
     /// Integers get sequential ranks by width, floats get higher ranks:
@@ -276,6 +281,28 @@ impl TypeId {
     /// Returns `true` if this is a fixed-point decimal type.
     pub fn is_decimal(self) -> bool {
         matches!(self, TypeId::Decimal32 | TypeId::Decimal64 | TypeId::Decimal128)
+    }
+
+    pub(crate) fn timestamp_resolution(self) -> Option<TimestampResolution> {
+        match self {
+            TypeId::TimestampDays => Some(TimestampResolution::Days),
+            TypeId::TimestampSeconds => Some(TimestampResolution::Seconds),
+            TypeId::TimestampMilliseconds => Some(TimestampResolution::Milliseconds),
+            TypeId::TimestampMicroseconds => Some(TimestampResolution::Microseconds),
+            TypeId::TimestampNanoseconds => Some(TimestampResolution::Nanoseconds),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn duration_resolution(self) -> Option<TimestampResolution> {
+        match self {
+            TypeId::DurationDays => Some(TimestampResolution::Days),
+            TypeId::DurationSeconds => Some(TimestampResolution::Seconds),
+            TypeId::DurationMilliseconds => Some(TimestampResolution::Milliseconds),
+            TypeId::DurationMicroseconds => Some(TimestampResolution::Microseconds),
+            TypeId::DurationNanoseconds => Some(TimestampResolution::Nanoseconds),
+            _ => None,
+        }
     }
 }
 

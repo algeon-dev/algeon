@@ -418,6 +418,58 @@ fn test_is_comparison_false_for_arithmetic_ops() {
 // infer_binary_output_type
 // ---------------------------------------------------------------------------
 
+fn decimal64(scale: i32) -> DataType {
+    DataType::fixed_point(TypeId::Decimal64, scale)
+}
+
+fn infer_dtype(lhs: DataType, rhs: DataType, op: BinaryOperator) -> DataType {
+    binary::infer_binary_output_dtype(lhs, rhs, op).unwrap()
+}
+
+fn operator_name(op: BinaryOperator) -> &'static str {
+    match op {
+        BinaryOperator::TrueDiv => "true_div",
+        BinaryOperator::FloorDiv => "floor_div",
+        BinaryOperator::IntPow => "int_pow",
+        BinaryOperator::LogBase => "log_base",
+        BinaryOperator::ShiftLeft => "shift_left",
+        BinaryOperator::ShiftRight => "shift_right",
+        BinaryOperator::ShiftRightUnsigned => "shift_right_unsigned",
+        BinaryOperator::BitwiseAnd => "bitwise_and",
+        BinaryOperator::BitwiseOr => "bitwise_or",
+        BinaryOperator::BitwiseXor => "bitwise_xor",
+        BinaryOperator::LogicalAnd => "logical_and",
+        BinaryOperator::LogicalOr => "logical_or",
+        BinaryOperator::NotEqual => "not_equal",
+        BinaryOperator::LessEqual => "less_equal",
+        BinaryOperator::GreaterEqual => "greater_equal",
+        BinaryOperator::NullEquals => "null_equals",
+        BinaryOperator::NullNotEquals => "null_not_equals",
+        BinaryOperator::NullMax => "null_max",
+        BinaryOperator::NullMin => "null_min",
+        BinaryOperator::Add => "add",
+        BinaryOperator::Sub => "sub",
+        BinaryOperator::Mul => "mul",
+        BinaryOperator::Div => "div",
+        BinaryOperator::Mod => "mod",
+        BinaryOperator::Pmod => "pmod",
+        BinaryOperator::Pymod => "pymod",
+        BinaryOperator::Pow => "pow",
+        BinaryOperator::Atan2 => "atan2",
+        BinaryOperator::Equal => "equal",
+        BinaryOperator::Less => "less",
+        BinaryOperator::Greater => "greater",
+    }
+}
+
+fn assert_type_mismatch_facts(err: &cudf::Error, operation: &str, lhs: TypeId, rhs: TypeId, op: BinaryOperator) {
+    assert_eq!(err.code(), cudf::ErrorCode::TypeMismatch);
+    assert_eq!(err.operation(), operation);
+    assert_eq!(err.fact_value(FactKeyName::LeftTypeId), Some(&FactValue::TypeId(lhs)));
+    assert_eq!(err.fact_value(FactKeyName::RightTypeId), Some(&FactValue::TypeId(rhs)));
+    assert_eq!(err.detail_value("operator"), Some(operator_name(op)));
+}
+
 #[test]
 fn test_infer_same_type_arithmetic() {
     // Int32 + Int32 → Int32
@@ -521,6 +573,200 @@ fn test_infer_error_context_keys() {
 }
 
 #[test]
+fn test_infer_error_operator_detail_uses_stable_snake_case() {
+    let err = binary::infer_binary_output_type(TypeId::String, TypeId::String, BinaryOperator::TrueDiv).unwrap_err();
+    assert_eq!(err.detail_value("operator"), Some("true_div"));
+}
+
+#[test]
+fn test_infer_decimal_same_and_mixed_scale_add_sub_dtype() {
+    let same = infer_dtype(decimal64(-2), decimal64(-2), BinaryOperator::Add);
+    assert_eq!(same, decimal64(-2));
+
+    let mixed_add = infer_dtype(decimal64(-2), decimal64(-4), BinaryOperator::Add);
+    assert_eq!(mixed_add, decimal64(-4));
+
+    let mixed_sub = infer_dtype(decimal64(-5), decimal64(-3), BinaryOperator::Sub);
+    assert_eq!(mixed_sub, decimal64(-5));
+}
+
+#[test]
+fn test_infer_decimal_mul_div_scales_dtype() {
+    let product = infer_dtype(decimal64(-2), decimal64(-4), BinaryOperator::Mul);
+    assert_eq!(product, decimal64(-6));
+
+    let quotient = infer_dtype(decimal64(-6), decimal64(-2), BinaryOperator::Div);
+    assert_eq!(quotient, decimal64(-4));
+}
+
+#[test]
+fn test_infer_decimal_comparison_bool() {
+    let type_dt = binary::infer_binary_output_type(TypeId::Decimal64, TypeId::Decimal64, BinaryOperator::Less).unwrap();
+    assert_eq!(type_dt.id(), TypeId::Bool8);
+
+    let dtype_dt = infer_dtype(decimal64(-2), decimal64(-4), BinaryOperator::GreaterEqual);
+    assert_eq!(dtype_dt, DataType::new(TypeId::Bool8));
+}
+
+#[test]
+fn test_infer_mixed_resolution_temporal_comparison_bool() {
+    let timestamp_dt =
+        binary::infer_binary_output_type(TypeId::TimestampDays, TypeId::TimestampSeconds, BinaryOperator::Less)
+            .unwrap();
+    assert_eq!(timestamp_dt.id(), TypeId::Bool8);
+
+    let duration_dt = binary::infer_binary_output_type(
+        TypeId::DurationMilliseconds,
+        TypeId::DurationMicroseconds,
+        BinaryOperator::Equal,
+    )
+    .unwrap();
+    assert_eq!(duration_dt.id(), TypeId::Bool8);
+}
+
+#[test]
+fn test_infer_temporal_typeid_rules() {
+    let timestamp = TypeId::TimestampMicroseconds;
+    let duration = TypeId::DurationMicroseconds;
+
+    assert_eq!(binary::infer_binary_output_type(timestamp, duration, BinaryOperator::Add).unwrap().id(), timestamp);
+    assert_eq!(binary::infer_binary_output_type(duration, timestamp, BinaryOperator::Add).unwrap().id(), timestamp);
+    assert_eq!(binary::infer_binary_output_type(timestamp, duration, BinaryOperator::Sub).unwrap().id(), timestamp);
+    assert_eq!(binary::infer_binary_output_type(timestamp, timestamp, BinaryOperator::Sub).unwrap().id(), duration);
+    assert_eq!(binary::infer_binary_output_type(duration, TypeId::Int32, BinaryOperator::Mul).unwrap().id(), duration);
+    assert_eq!(binary::infer_binary_output_type(duration, TypeId::Int32, BinaryOperator::Div).unwrap().id(), duration);
+
+    let err = binary::infer_binary_output_type(
+        TypeId::TimestampMicroseconds,
+        TypeId::DurationMilliseconds,
+        BinaryOperator::Add,
+    )
+    .unwrap_err();
+    assert_type_mismatch_facts(
+        &err,
+        "binary::infer_binary_output_type",
+        TypeId::TimestampMicroseconds,
+        TypeId::DurationMilliseconds,
+        BinaryOperator::Add,
+    );
+}
+
+#[test]
+fn test_infer_decimal_float_arithmetic_rejected_with_type_facts_dtype() {
+    let err = binary::infer_binary_output_dtype(decimal64(-2), DataType::new(TypeId::Float64), BinaryOperator::Add)
+        .unwrap_err();
+
+    assert_type_mismatch_facts(
+        &err,
+        "binary::infer_binary_output_dtype",
+        TypeId::Decimal64,
+        TypeId::Float64,
+        BinaryOperator::Add,
+    );
+}
+
+#[test]
+fn test_infer_same_resolution_timestamp_duration_arithmetic_dtype() {
+    let timestamp = DataType::new(TypeId::TimestampMicroseconds);
+    let duration = DataType::new(TypeId::DurationMicroseconds);
+
+    assert_eq!(infer_dtype(timestamp, duration, BinaryOperator::Add), timestamp);
+    assert_eq!(infer_dtype(duration, timestamp, BinaryOperator::Add), timestamp);
+    assert_eq!(infer_dtype(timestamp, duration, BinaryOperator::Sub), timestamp);
+}
+
+#[test]
+fn test_infer_timestamp_timestamp_subtracts_to_matching_duration_dtype() {
+    let timestamp = DataType::new(TypeId::TimestampNanoseconds);
+    let duration = DataType::new(TypeId::DurationNanoseconds);
+
+    assert_eq!(infer_dtype(timestamp, timestamp, BinaryOperator::Sub), duration);
+}
+
+#[test]
+fn test_infer_duration_integer_arithmetic_preserves_duration_dtype() {
+    let duration = DataType::new(TypeId::DurationMilliseconds);
+    let int = DataType::new(TypeId::Int32);
+
+    assert_eq!(infer_dtype(duration, int, BinaryOperator::Mul), duration);
+    assert_eq!(infer_dtype(int, duration, BinaryOperator::Mul), duration);
+    assert_eq!(infer_dtype(duration, int, BinaryOperator::Div), duration);
+}
+
+#[test]
+fn test_infer_duration_modulo_rules_dtype() {
+    let duration = DataType::new(TypeId::DurationMilliseconds);
+    let int = DataType::new(TypeId::Int32);
+
+    assert_eq!(infer_dtype(duration, int, BinaryOperator::Mod), duration);
+    assert_eq!(infer_dtype(duration, duration, BinaryOperator::Mod), duration);
+    assert_eq!(infer_dtype(duration, duration, BinaryOperator::Pymod), duration);
+
+    let err = binary::infer_binary_output_dtype(duration, int, BinaryOperator::Pmod).unwrap_err();
+    assert_type_mismatch_facts(
+        &err,
+        "binary::infer_binary_output_dtype",
+        TypeId::DurationMilliseconds,
+        TypeId::Int32,
+        BinaryOperator::Pmod,
+    );
+
+    let err = binary::infer_binary_output_dtype(duration, duration, BinaryOperator::Pmod).unwrap_err();
+    assert_type_mismatch_facts(
+        &err,
+        "binary::infer_binary_output_dtype",
+        TypeId::DurationMilliseconds,
+        TypeId::DurationMilliseconds,
+        BinaryOperator::Pmod,
+    );
+
+    let err = binary::infer_binary_output_dtype(duration, int, BinaryOperator::Pymod).unwrap_err();
+    assert_type_mismatch_facts(
+        &err,
+        "binary::infer_binary_output_dtype",
+        TypeId::DurationMilliseconds,
+        TypeId::Int32,
+        BinaryOperator::Pymod,
+    );
+}
+
+#[test]
+fn test_infer_duration_float_arithmetic_rejected_dtype() {
+    let err = binary::infer_binary_output_dtype(
+        DataType::new(TypeId::DurationMilliseconds),
+        DataType::new(TypeId::Float64),
+        BinaryOperator::Mul,
+    )
+    .unwrap_err();
+
+    assert_type_mismatch_facts(
+        &err,
+        "binary::infer_binary_output_dtype",
+        TypeId::DurationMilliseconds,
+        TypeId::Float64,
+        BinaryOperator::Mul,
+    );
+}
+
+#[test]
+fn test_infer_mixed_temporal_resolution_rejected_dtype() {
+    let err = binary::infer_binary_output_dtype(
+        DataType::new(TypeId::TimestampMicroseconds),
+        DataType::new(TypeId::DurationMilliseconds),
+        BinaryOperator::Add,
+    )
+    .unwrap_err();
+
+    assert_type_mismatch_facts(
+        &err,
+        "binary::infer_binary_output_dtype",
+        TypeId::TimestampMicroseconds,
+        TypeId::DurationMilliseconds,
+        BinaryOperator::Add,
+    );
+}
+
+#[test]
 fn test_infer_uint8_uint16_promotion() {
     // UInt8 + UInt16 → UInt16 (wider unsigned)
     let dt = binary::infer_binary_output_type(TypeId::UInt8, TypeId::UInt16, BinaryOperator::Add).unwrap();
@@ -563,8 +809,13 @@ fn test_infer_non_numeric_comparison_is_bool() {
 }
 
 #[test]
-fn test_infer_mixed_string_numeric_comparison_is_bool() {
-    // Any comparison op should infer Bool8 for mixed type pairs too.
-    let dt = binary::infer_binary_output_type(TypeId::String, TypeId::Int32, BinaryOperator::Equal).unwrap();
-    assert_eq!(dt.id(), TypeId::Bool8);
+fn test_infer_mixed_string_numeric_comparison_rejected() {
+    let err = binary::infer_binary_output_type(TypeId::String, TypeId::Int32, BinaryOperator::Equal).unwrap_err();
+    assert_type_mismatch_facts(
+        &err,
+        "binary::infer_binary_output_type",
+        TypeId::String,
+        TypeId::Int32,
+        BinaryOperator::Equal,
+    );
 }

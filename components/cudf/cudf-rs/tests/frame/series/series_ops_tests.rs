@@ -7,9 +7,9 @@
 //!
 //! All tests require a GPU.
 
-use cudf::{Series, TypeId};
+use cudf::{DataType, Series, TypeId};
 
-use crate::common::column_from_slice;
+use crate::common::{column_from_slice, host_export_i32_values, host_export_i64_values};
 
 // ===========================================================================
 // Series op Series — Result<Series> contract
@@ -116,6 +116,112 @@ fn test_series_add_operator_mixed_type_promotion() {
     let result = (&a + &b).unwrap();
     assert_eq!(result.dtype().unwrap().id(), TypeId::Float64);
     assert_eq!(result.to_vec_strict::<f64>().unwrap(), vec![1.5, 2.5, 3.5]);
+}
+
+#[test]
+fn test_series_add_decimal64_same_scale_preserves_scale_and_raw_values() {
+    let a = crate::common::series("a", &[12_345i64, 20_000, 0])
+        .unwrap()
+        .astype(DataType::fixed_point(TypeId::Decimal64, -2))
+        .unwrap();
+    let b = crate::common::series("b", &[100i64, -500, 25])
+        .unwrap()
+        .astype(DataType::fixed_point(TypeId::Decimal64, -2))
+        .unwrap();
+
+    let result = (&a + &b).unwrap();
+
+    assert_eq!(result.dtype().unwrap(), DataType::fixed_point(TypeId::Decimal64, -2));
+    assert_eq!(host_export_i64_values(&result), vec![1_244_500, 1_950_000, 2_500]);
+}
+
+#[test]
+fn test_series_mul_decimal64_same_scale_sums_scales_and_raw_values() {
+    let a = crate::common::series("a", &[12_345i64, 20_000])
+        .unwrap()
+        .astype(DataType::fixed_point(TypeId::Decimal64, -2))
+        .unwrap();
+    let b = crate::common::series("b", &[100i64, -500])
+        .unwrap()
+        .astype(DataType::fixed_point(TypeId::Decimal64, -2))
+        .unwrap();
+
+    let result = (&a * &b).unwrap();
+
+    assert_eq!(result.dtype().unwrap(), DataType::fixed_point(TypeId::Decimal64, -4));
+    assert_eq!(host_export_i64_values(&result), vec![12_345_000_000, -100_000_000_000]);
+}
+
+#[test]
+fn test_series_add_decimal64_mixed_scale_uses_finer_scale_and_raw_values() {
+    let a =
+        crate::common::series("a", &[1i64, 2]).unwrap().astype(DataType::fixed_point(TypeId::Decimal64, -2)).unwrap();
+    let b =
+        crate::common::series("b", &[3i64, 4]).unwrap().astype(DataType::fixed_point(TypeId::Decimal64, -4)).unwrap();
+
+    let result = (&a + &b).unwrap();
+
+    assert_eq!(result.dtype().unwrap(), DataType::fixed_point(TypeId::Decimal64, -4));
+    assert_eq!(host_export_i64_values(&result), vec![40_000, 60_000]);
+}
+
+#[test]
+fn test_series_add_nullable_decimal64_preserves_scale_and_nulls() {
+    let a = crate::common::nullable_series("a", &[1i64, 0, 3], &[true, false, true])
+        .unwrap()
+        .astype(DataType::fixed_point(TypeId::Decimal64, -2))
+        .unwrap();
+    let b = crate::common::series("b", &[10i64, 20, 30])
+        .unwrap()
+        .astype(DataType::fixed_point(TypeId::Decimal64, -2))
+        .unwrap();
+
+    let result = (&a + &b).unwrap();
+
+    assert_eq!(result.dtype().unwrap(), DataType::fixed_point(TypeId::Decimal64, -2));
+    assert_eq!(result.null_count(), 1);
+}
+
+#[test]
+fn test_series_timestamp_days_filter_predicate_matches_tpch_date_shape() {
+    let dates = crate::common::series("shipdate", &[18_262i32, 18_263, 18_264])
+        .unwrap()
+        .astype(TypeId::DurationDays)
+        .unwrap()
+        .astype(TypeId::TimestampDays)
+        .unwrap();
+    let cutoff = crate::common::series("cutoff", &[18_263i32, 18_263, 18_263])
+        .unwrap()
+        .astype(TypeId::DurationDays)
+        .unwrap()
+        .astype(TypeId::TimestampDays)
+        .unwrap();
+
+    let result = dates.lt(&cutoff).unwrap();
+
+    assert_eq!(result.dtype().unwrap().id(), TypeId::Bool8);
+    assert_eq!(result.to_vec_strict::<bool>().unwrap(), vec![true, false, false]);
+}
+
+#[test]
+fn test_series_timestamp_minus_timestamp_returns_duration_days() {
+    let lhs = crate::common::series("lhs", &[18_265i32, 18_270])
+        .unwrap()
+        .astype(TypeId::DurationDays)
+        .unwrap()
+        .astype(TypeId::TimestampDays)
+        .unwrap();
+    let rhs = crate::common::series("rhs", &[18_262i32, 18_263])
+        .unwrap()
+        .astype(TypeId::DurationDays)
+        .unwrap()
+        .astype(TypeId::TimestampDays)
+        .unwrap();
+
+    let result = (&lhs - &rhs).unwrap();
+
+    assert_eq!(result.dtype().unwrap().id(), TypeId::DurationDays);
+    assert_eq!(host_export_i32_values(&result), vec![3, 7]);
 }
 
 // ===========================================================================
@@ -305,7 +411,9 @@ fn test_series_op_series_type_mismatch_returns_err() {
     let strs = crate::common::series("strs", &["a", "b", "c"]).unwrap();
 
     let result: cudf::Result<Series> = &nums + &strs;
-    assert!(result.is_err(), "Expected Err for type mismatch, got Ok");
+    let err = result.expect_err("Expected Err for type mismatch");
+    assert_eq!(err.operation(), "series::add");
+    assert_eq!(crate::common::error_context_value(&err, "operator").as_deref(), Some("add"));
 }
 
 // ===========================================================================

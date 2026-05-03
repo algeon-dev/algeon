@@ -94,6 +94,42 @@ pub enum BinaryOperator {
 }
 
 impl BinaryOperator {
+    pub(crate) const fn name(self) -> &'static str {
+        match self {
+            BinaryOperator::Add => "add",
+            BinaryOperator::Sub => "sub",
+            BinaryOperator::Mul => "mul",
+            BinaryOperator::Div => "div",
+            BinaryOperator::TrueDiv => "true_div",
+            BinaryOperator::FloorDiv => "floor_div",
+            BinaryOperator::Mod => "mod",
+            BinaryOperator::Pmod => "pmod",
+            BinaryOperator::Pymod => "pymod",
+            BinaryOperator::Pow => "pow",
+            BinaryOperator::IntPow => "int_pow",
+            BinaryOperator::LogBase => "log_base",
+            BinaryOperator::Atan2 => "atan2",
+            BinaryOperator::ShiftLeft => "shift_left",
+            BinaryOperator::ShiftRight => "shift_right",
+            BinaryOperator::ShiftRightUnsigned => "shift_right_unsigned",
+            BinaryOperator::BitwiseAnd => "bitwise_and",
+            BinaryOperator::BitwiseOr => "bitwise_or",
+            BinaryOperator::BitwiseXor => "bitwise_xor",
+            BinaryOperator::LogicalAnd => "logical_and",
+            BinaryOperator::LogicalOr => "logical_or",
+            BinaryOperator::Equal => "equal",
+            BinaryOperator::NotEqual => "not_equal",
+            BinaryOperator::Less => "less",
+            BinaryOperator::Greater => "greater",
+            BinaryOperator::LessEqual => "less_equal",
+            BinaryOperator::GreaterEqual => "greater_equal",
+            BinaryOperator::NullEquals => "null_equals",
+            BinaryOperator::NullNotEquals => "null_not_equals",
+            BinaryOperator::NullMax => "null_max",
+            BinaryOperator::NullMin => "null_min",
+        }
+    }
+
     pub(crate) fn to_raw(self) -> cudf_sys::cudf_binary_operator_t {
         match self {
             BinaryOperator::Add => cudf_sys::cudf_binary_operator_t::CUDF_BINARY_ADD,
@@ -146,34 +182,222 @@ impl BinaryOperator {
     }
 }
 
-/// Infer the output `DataType` for a binary operation given the operand types.
+/// Infer the output `DataType` for a binary operation given type ids only.
 ///
-/// Follows cudf/pandas promotion rules:
-/// - Comparison operators always → `Bool8`
-/// - Same type, arithmetic → same type
-/// - Int + Float → wider float
-/// - Float + Float → wider float
-/// - Signed int + unsigned int of same width → next wider signed int
-/// - Unsupported combinations → `ErrorKind::Unsupported`
+/// Decimal scale cannot be represented by [`TypeId`], so decimal callers should
+/// prefer [`infer_binary_output_dtype`].
 pub fn infer_binary_output_type(lhs: TypeId, rhs: TypeId, op: BinaryOperator) -> Result<DataType> {
+    infer_binary_output_dtype_with_operation(
+        DataType::new(lhs),
+        DataType::new(rhs),
+        op,
+        "binary::infer_binary_output_type",
+    )
+}
+
+/// Infer the output `DataType` for a binary operation given full operand dtypes.
+///
+/// This preserves decimal scale and models cudf-compatible temporal rules before
+/// falling back to primitive numeric promotion:
+/// - comparison operators return `Bool8` for comparable families.
+/// - decimal arithmetic keeps cudf fixed-point output scale rules.
+/// - timestamp/duration arithmetic requires matching resolution.
+/// - primitive numeric arithmetic follows cudf-rs rank promotion.
+pub fn infer_binary_output_dtype(lhs: DataType, rhs: DataType, op: BinaryOperator) -> Result<DataType> {
+    infer_binary_output_dtype_with_operation(lhs, rhs, op, "binary::infer_binary_output_dtype")
+}
+
+pub(crate) fn infer_binary_output_dtype_in(
+    lhs: DataType,
+    rhs: DataType,
+    op: BinaryOperator,
+    operation: &'static str,
+) -> Result<DataType> {
+    infer_binary_output_dtype_with_operation(lhs, rhs, op, operation)
+}
+
+fn infer_binary_output_dtype_with_operation(
+    lhs: DataType,
+    rhs: DataType,
+    op: BinaryOperator,
+    operation: &'static str,
+) -> Result<DataType> {
+    let lhs_id = lhs.id();
+    let rhs_id = rhs.id();
     let make_err = |msg: &str| {
-        Err(Error::new_with(ErrorCode::TypeMismatch, "binary::infer_binary_output_type", msg.to_string())
-            .with_fact(FACT_LEFT_TYPE_ID, lhs)
-            .with_fact(FACT_RIGHT_TYPE_ID, rhs)
-            .with_detail("operator", format!("{:?}", op).to_lowercase()))
+        Err(Error::new_with(ErrorCode::TypeMismatch, operation, msg.to_string())
+            .with_fact(FACT_LEFT_TYPE_ID, lhs_id)
+            .with_fact(FACT_RIGHT_TYPE_ID, rhs_id)
+            .with_detail("operator", op.name()))
     };
 
-    // Comparison operators always infer Bool8.
     if op.is_comparison() {
-        return Ok(DataType::new(TypeId::Bool8));
+        if comparable_types(lhs_id, rhs_id) {
+            return Ok(DataType::new(TypeId::Bool8));
+        }
+        return make_err("types are not comparable for binary operation");
     }
 
+    if lhs_id.is_decimal() || rhs_id.is_decimal() {
+        return infer_decimal_binary_output(lhs, rhs, op, operation, make_err);
+    }
+
+    if lhs_id.is_timestamp() || rhs_id.is_timestamp() || lhs_id.is_duration() || rhs_id.is_duration() {
+        return infer_temporal_binary_output(lhs_id, rhs_id, op, make_err);
+    }
+
+    infer_primitive_binary_output(lhs_id, rhs_id, op, make_err)
+}
+
+fn comparable_types(lhs: TypeId, rhs: TypeId) -> bool {
+    if lhs == rhs {
+        return true;
+    }
+    if lhs.is_decimal() && rhs.is_decimal() {
+        return true;
+    }
+    if lhs.is_timestamp() && rhs.is_timestamp() {
+        return true;
+    }
+    if lhs.is_duration() && rhs.is_duration() {
+        return true;
+    }
+    lhs.is_numeric() && rhs.is_numeric()
+}
+
+fn infer_decimal_binary_output(
+    lhs: DataType,
+    rhs: DataType,
+    op: BinaryOperator,
+    operation: &'static str,
+    make_err: impl Fn(&str) -> Result<DataType>,
+) -> Result<DataType> {
+    let lhs_id = lhs.id();
+    let rhs_id = rhs.id();
+    if !(lhs_id.is_decimal() && rhs_id.is_decimal()) {
+        return make_err("decimal binary operations require decimal operands; decimal-float coercion is not implicit");
+    }
+    if lhs_id != rhs_id {
+        return make_err("decimal binary operations require matching decimal storage types");
+    }
+
+    let scale = match op {
+        BinaryOperator::Add
+        | BinaryOperator::Sub
+        | BinaryOperator::Mod
+        | BinaryOperator::Pmod
+        | BinaryOperator::Pymod
+        | BinaryOperator::NullMax
+        | BinaryOperator::NullMin => lhs.scale().min(rhs.scale()),
+        BinaryOperator::Mul => lhs.scale().checked_add(rhs.scale()).ok_or_else(|| {
+            Error::new_with(ErrorCode::TypeMismatch, operation, "decimal multiplication output scale overflows i32")
+                .with_fact(FACT_LEFT_TYPE_ID, lhs_id)
+                .with_fact(FACT_RIGHT_TYPE_ID, rhs_id)
+                .with_detail("operator", op.name())
+        })?,
+        BinaryOperator::Div => lhs.scale().checked_sub(rhs.scale()).ok_or_else(|| {
+            Error::new_with(ErrorCode::TypeMismatch, operation, "decimal division output scale overflows i32")
+                .with_fact(FACT_LEFT_TYPE_ID, lhs_id)
+                .with_fact(FACT_RIGHT_TYPE_ID, rhs_id)
+                .with_detail("operator", op.name())
+        })?,
+        _ => return make_err("unsupported decimal binary operator"),
+    };
+
+    Ok(DataType::fixed_point(lhs_id, scale))
+}
+
+fn infer_temporal_binary_output(
+    lhs: TypeId,
+    rhs: TypeId,
+    op: BinaryOperator,
+    make_err: impl Fn(&str) -> Result<DataType>,
+) -> Result<DataType> {
+    match op {
+        BinaryOperator::Add => {
+            if lhs.is_timestamp() && rhs.is_duration() && lhs.timestamp_resolution() == rhs.duration_resolution() {
+                return Ok(DataType::new(lhs));
+            }
+            if lhs.is_duration() && rhs.is_timestamp() && lhs.duration_resolution() == rhs.timestamp_resolution() {
+                return Ok(DataType::new(rhs));
+            }
+            if lhs.is_duration() && rhs.is_duration() && lhs.duration_resolution() == rhs.duration_resolution() {
+                return Ok(DataType::new(lhs));
+            }
+        },
+        BinaryOperator::Sub => {
+            if lhs.is_timestamp() && rhs.is_duration() && lhs.timestamp_resolution() == rhs.duration_resolution() {
+                return Ok(DataType::new(lhs));
+            }
+            if lhs.is_timestamp() && rhs.is_timestamp() && lhs.timestamp_resolution() == rhs.timestamp_resolution() {
+                return Ok(DataType::new(lhs.timestamp_resolution().unwrap().duration_type_id()));
+            }
+            if lhs.is_duration() && rhs.is_duration() && lhs.duration_resolution() == rhs.duration_resolution() {
+                return Ok(DataType::new(lhs));
+            }
+        },
+        BinaryOperator::Mul => {
+            // libcudf compiled chrono operators accept integral duration
+            // multipliers; floating multipliers are rejected before FFI.
+            if lhs.is_duration() && rhs.is_integral() {
+                return Ok(DataType::new(lhs));
+            }
+            if lhs.is_integral() && rhs.is_duration() {
+                return Ok(DataType::new(rhs));
+            }
+        },
+        BinaryOperator::Div => {
+            // libcudf compiled chrono operators accept integral duration
+            // divisors; floating divisors are rejected before FFI.
+            if lhs.is_duration() && rhs.is_integral() {
+                return Ok(DataType::new(lhs));
+            }
+        },
+        BinaryOperator::Mod => {
+            if lhs.is_duration() && rhs.is_integral() {
+                return Ok(DataType::new(lhs));
+            }
+            if lhs.is_duration() && rhs.is_duration() && lhs.duration_resolution() == rhs.duration_resolution() {
+                return Ok(DataType::new(lhs));
+            }
+        },
+        BinaryOperator::Pymod => {
+            if lhs.is_duration() && rhs.is_duration() && lhs.duration_resolution() == rhs.duration_resolution() {
+                return Ok(DataType::new(lhs));
+            }
+        },
+        BinaryOperator::Pmod => {},
+        _ => {},
+    }
+
+    make_err("unsupported timestamp or duration binary operation")
+}
+
+fn infer_primitive_binary_output(
+    lhs: TypeId,
+    rhs: TypeId,
+    op: BinaryOperator,
+    make_err: impl Fn(&str) -> Result<DataType>,
+) -> Result<DataType> {
     // Arithmetic: string types not allowed
     if lhs == TypeId::String || rhs == TypeId::String {
         return make_err("cannot perform arithmetic on string types");
     }
 
-    // Bool8 + Bool8 → Bool8 (logical/bitwise context)
+    if matches!(op, BinaryOperator::LogicalAnd | BinaryOperator::LogicalOr) {
+        if lhs == TypeId::Bool8 && rhs == TypeId::Bool8 {
+            return Ok(DataType::new(TypeId::Bool8));
+        }
+        return make_err("logical binary operators require Bool8 operands");
+    }
+
+    if matches!(op, BinaryOperator::BitwiseAnd | BinaryOperator::BitwiseOr | BinaryOperator::BitwiseXor) {
+        if lhs == TypeId::Bool8 && rhs == TypeId::Bool8 {
+            return Ok(DataType::new(TypeId::Bool8));
+        }
+    }
+
+    // Bool8 + Bool8 → Bool8 (legacy bitwise/logical context)
     if lhs == TypeId::Bool8 && rhs == TypeId::Bool8 {
         return Ok(DataType::new(TypeId::Bool8));
     }
@@ -309,10 +533,7 @@ pub(crate) fn binary_operation_vv_impl(
     error::check_status_in_with_details(
         status,
         operation,
-        [
-            ("operator", format!("{:?}", op).to_lowercase()),
-            ("execution_context_provided", exec_options.is_some().to_string()),
-        ],
+        [("operator", op.name().to_string()), ("execution_context_provided", exec_options.is_some().to_string())],
     )?;
     // SAFETY: out was returned by a successful FFI call, transferring ownership.
     unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }
@@ -376,10 +597,7 @@ pub(crate) fn binary_operation_vs_impl(
     error::check_status_in_with_details(
         status,
         operation,
-        [
-            ("operator", format!("{:?}", op).to_lowercase()),
-            ("execution_context_provided", exec_options.is_some().to_string()),
-        ],
+        [("operator", op.name().to_string()), ("execution_context_provided", exec_options.is_some().to_string())],
     )?;
     // SAFETY: out was returned by a successful FFI call, transferring ownership.
     unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }
@@ -445,10 +663,7 @@ fn binary_operation_sv_impl(
     error::check_status_in_with_details(
         status,
         operation,
-        [
-            ("operator", format!("{:?}", op).to_lowercase()),
-            ("execution_context_provided", exec_options.is_some().to_string()),
-        ],
+        [("operator", op.name().to_string()), ("execution_context_provided", exec_options.is_some().to_string())],
     )?;
     // SAFETY: out was returned by a successful FFI call, transferring ownership.
     unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }

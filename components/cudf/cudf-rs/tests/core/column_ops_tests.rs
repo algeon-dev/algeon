@@ -1,8 +1,8 @@
 //! Tests for Column-level arithmetic, comparison, and scalar operations.
 
-use cudf::{DataType, TypeId, ops::binary::BinaryOperator, testing::prelude::*};
+use cudf::{DataType, Series, TypeId, ops::binary::BinaryOperator, testing::prelude::*};
 
-use crate::common::{column_from_slice, column_from_slice_nullable, column_from_strs, scalar};
+use crate::common::{column_from_slice, column_from_slice_nullable, column_from_strs, host_export_i64_values, scalar};
 
 // ---------------------------------------------------------------------------
 // Arithmetic methods on Column
@@ -85,6 +85,24 @@ fn test_column_add_mixed_types() {
     assert_eq!(rv.data_type().unwrap().id(), TypeId::Float64);
     let values = rv.to_vec::<f64>().unwrap();
     assert_eq!(values, vec![1.5, 3.5, 5.5]);
+}
+
+#[test]
+fn test_column_add_decimal64_same_scale_preserves_scale() {
+    let a = crate::common::series("a", &[12_345i64, 20_000])
+        .unwrap()
+        .astype(DataType::fixed_point(TypeId::Decimal64, -2))
+        .unwrap();
+    let b = crate::common::series("b", &[100i64, -500])
+        .unwrap()
+        .astype(DataType::fixed_point(TypeId::Decimal64, -2))
+        .unwrap();
+
+    let result = a.as_column().add(b.as_column()).unwrap();
+    let result = Series::from_column(result).unwrap();
+
+    assert_eq!(result.dtype().unwrap(), DataType::fixed_point(TypeId::Decimal64, -2));
+    assert_eq!(host_export_i64_values(&result), vec![1_244_500, 1_950_000]);
 }
 
 #[test]

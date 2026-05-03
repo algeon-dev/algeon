@@ -159,7 +159,8 @@ fn scalar_left_op<T: crate::core::types::CudfType>(series: &Series, lhs: T, op: 
     let col_view = series.column.view()?;
 
     // Infer output type: scalar type on the left, column type on the right.
-    let out_type = binary::infer_binary_output_type(scalar.data_type()?.id(), col_view.data_type()?.id(), op)?;
+    let out_type =
+        binary::infer_binary_output_dtype_in(scalar.data_type()?, col_view.data_type()?, op, "series::scalar_left_op")?;
 
     // Dispatch through the low-level sv primitive (preserves operand order).
     // The temporary scalar is created in the Series' execution domain so

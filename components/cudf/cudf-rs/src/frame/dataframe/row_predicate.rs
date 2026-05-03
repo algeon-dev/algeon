@@ -247,7 +247,7 @@ fn lower_binary_expr(
         | BinaryOperator::LessEqual
         | BinaryOperator::GreaterEqual => {
             validate_row_predicate_comparison_types(lhs_type.id(), rhs_type.id(), op, operation)?;
-            crate::ops::binary::infer_binary_output_type(lhs_type.id(), rhs_type.id(), op)?
+            crate::ops::binary::infer_binary_output_dtype_in(lhs_type, rhs_type, op, operation)?
         },
         BinaryOperator::LogicalAnd | BinaryOperator::LogicalOr => {
             if lhs_type.id() != TypeId::Bool8 || rhs_type.id() != TypeId::Bool8 {
@@ -258,7 +258,7 @@ fn lower_binary_expr(
                 )
                 .with_fact(FACT_LEFT_TYPE_ID, lhs_type.id())
                 .with_fact(FACT_RIGHT_TYPE_ID, rhs_type.id())
-                .with_detail("operator", format!("{:?}", op).to_lowercase()));
+                .with_detail("operator", op.name()));
             }
             DataType::new(TypeId::Bool8)
         },
@@ -326,7 +326,7 @@ fn validate_row_predicate_comparison_types(
     )
     .with_fact(FACT_LEFT_TYPE_ID, lhs_type)
     .with_fact(FACT_RIGHT_TYPE_ID, rhs_type)
-    .with_detail("operator", format!("{:?}", op).to_lowercase()))
+    .with_detail("operator", op.name()))
 }
 
 fn lower_unary_expr(

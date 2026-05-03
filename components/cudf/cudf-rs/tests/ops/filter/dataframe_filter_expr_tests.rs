@@ -220,6 +220,29 @@ fn test_filter_expr_drops_null_predicate_rows() {
 }
 
 #[test]
+fn test_filter_expr_timestamp_days_column_predicate_matches_tpch_date_shape() {
+    let shipdate = series("shipdate", &[18_262i32, 18_263, 18_264])
+        .unwrap()
+        .astype(TypeId::DurationDays)
+        .unwrap()
+        .astype(TypeId::TimestampDays)
+        .unwrap();
+    let cutoff = series("cutoff", &[18_263i32, 18_263, 18_263])
+        .unwrap()
+        .astype(TypeId::DurationDays)
+        .unwrap()
+        .astype(TypeId::TimestampDays)
+        .unwrap();
+    let id = series("id", &[1i32, 2, 3]).unwrap();
+    let df = DataFrame::from_columns([("id", id), ("shipdate", shipdate), ("cutoff", cutoff)]).unwrap();
+
+    let filtered = df.filter_expr(col("shipdate").lt(col("cutoff"))).unwrap();
+
+    assert_eq!(filtered.num_rows(), 1);
+    assert_eq!(filtered.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![1]);
+}
+
+#[test]
 fn test_filter_expr_rejects_unsupported_nodes_before_low_level_filter_runs() {
     let df = edge_df();
 
