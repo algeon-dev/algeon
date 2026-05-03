@@ -1,5 +1,7 @@
 //! Tests for high-level fused row-predicate filtering entry points.
-use cudf::{DataFrame, DataType, ErrorCode, ErrorKind, TypeId, ops::expr::col, testing::prelude::*};
+use cudf::{
+    DataFrame, DataType, ErrorCode, ErrorKind, StringSliceOptions, TypeId, ops::expr::col, testing::prelude::*,
+};
 
 use crate::common::{
     column_from_slice, column_from_strs, column_from_strs_nullable, dataframe_device_ptr, dataframe_from_columns,
@@ -243,25 +245,96 @@ fn test_filter_expr_timestamp_days_column_predicate_matches_tpch_date_shape() {
 }
 
 #[test]
-fn test_filter_expr_rejects_unsupported_nodes_before_low_level_filter_runs() {
+fn test_filter_expr_string_like_uses_boolean_mask_fallback() {
     let df = edge_df();
 
     reset_row_predicate_observation();
-    let err = df.filter_expr(col("sourceId").str().lower().eq("alice")).unwrap_err();
+    let filtered = df.filter_expr(col("sourceId").str().like("a%") | col("sourceId").str().like("f%")).unwrap();
 
-    assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
-    assert_eq!(err.kind(), ErrorKind::Unsupported);
-    assert_eq!(error_context_value(&err, "resource").as_deref(), Some("row_predicate"));
-    assert_eq!(error_context_value(&err, "reason").as_deref(), Some("unsupported_expr_kind"));
-    assert_eq!(error_context_value(&err, "expr_kind").as_deref(), Some("string_op"));
+    assert_eq!(filtered.num_rows(), 2);
     assert_eq!(
-        error_context_value(&err, "remedy").as_deref(),
-        Some("rewrite the predicate into currently supported fused-filter operators"),
+        filtered.series("sourceId").unwrap().to_strings_strict().unwrap(),
+        vec!["alice".to_string(), "frank".to_string()]
     );
+    assert_eq!(filtered.series("weight").unwrap().to_vec_strict::<i32>().unwrap(), vec![1, 6]);
     assert_eq!(last_row_predicate_filter_calls(), 0);
     assert_eq!(last_row_predicate_compute_mask_calls(), 0);
     assert_eq!(last_row_predicate_final_filter_calls(), 0);
-    assert_eq!(last_row_predicate_mask_api_calls(), 0);
+}
+
+#[test]
+fn test_filter_expr_string_like_boolean_mask_fallback_is_operand_order_independent() {
+    let df = edge_df();
+
+    reset_row_predicate_observation();
+    let filtered = df.filter_expr(col("weight").abs().gt(0i32) & col("sourceId").str().like("a%")).unwrap();
+
+    assert_eq!(filtered.num_rows(), 1);
+    assert_eq!(filtered.series("sourceId").unwrap().to_strings_strict().unwrap(), vec!["alice".to_string()]);
+    assert_eq!(filtered.series("weight").unwrap().to_vec_strict::<i32>().unwrap(), vec![1]);
+    assert_eq!(last_row_predicate_filter_calls(), 0);
+    assert_eq!(last_row_predicate_compute_mask_calls(), 0);
+    assert_eq!(last_row_predicate_final_filter_calls(), 0);
+
+    reset_row_predicate_observation();
+    let filtered = df.filter_expr(col("sourceId").str().like("a%") & col("weight").abs().gt(0i32)).unwrap();
+
+    assert_eq!(filtered.num_rows(), 1);
+    assert_eq!(filtered.series("sourceId").unwrap().to_strings_strict().unwrap(), vec!["alice".to_string()]);
+    assert_eq!(filtered.series("weight").unwrap().to_vec_strict::<i32>().unwrap(), vec![1]);
+    assert_eq!(last_row_predicate_filter_calls(), 0);
+    assert_eq!(last_row_predicate_compute_mask_calls(), 0);
+    assert_eq!(last_row_predicate_final_filter_calls(), 0);
+}
+
+#[test]
+fn test_filter_expr_string_slice_comparison_uses_boolean_mask_fallback() {
+    let df = edge_df();
+
+    reset_row_predicate_observation();
+    let filtered =
+        df.filter_expr(col("sourceId").str().slice(StringSliceOptions::new(Some(0), Some(1))).eq("a")).unwrap();
+
+    assert_eq!(filtered.num_rows(), 1);
+    assert_eq!(filtered.series("sourceId").unwrap().to_strings_strict().unwrap(), vec!["alice".to_string()]);
+    assert_eq!(last_row_predicate_filter_calls(), 0);
+    assert_eq!(last_row_predicate_compute_mask_calls(), 0);
+    assert_eq!(last_row_predicate_final_filter_calls(), 0);
+}
+
+#[test]
+fn test_filter_expr_string_slice_boolean_mask_fallback_is_operand_order_independent() {
+    let df = edge_df();
+
+    reset_row_predicate_observation();
+    let filtered = df
+        .filter_expr(
+            col("weight").abs().gt(0i32)
+                & col("sourceId").str().slice(StringSliceOptions::new(Some(0), Some(1))).eq("a"),
+        )
+        .unwrap();
+
+    assert_eq!(filtered.num_rows(), 1);
+    assert_eq!(filtered.series("sourceId").unwrap().to_strings_strict().unwrap(), vec!["alice".to_string()]);
+    assert_eq!(filtered.series("weight").unwrap().to_vec_strict::<i32>().unwrap(), vec![1]);
+    assert_eq!(last_row_predicate_filter_calls(), 0);
+    assert_eq!(last_row_predicate_compute_mask_calls(), 0);
+    assert_eq!(last_row_predicate_final_filter_calls(), 0);
+
+    reset_row_predicate_observation();
+    let filtered = df
+        .filter_expr(
+            col("sourceId").str().slice(StringSliceOptions::new(Some(0), Some(1))).eq("a")
+                & col("weight").abs().gt(0i32),
+        )
+        .unwrap();
+
+    assert_eq!(filtered.num_rows(), 1);
+    assert_eq!(filtered.series("sourceId").unwrap().to_strings_strict().unwrap(), vec!["alice".to_string()]);
+    assert_eq!(filtered.series("weight").unwrap().to_vec_strict::<i32>().unwrap(), vec![1]);
+    assert_eq!(last_row_predicate_filter_calls(), 0);
+    assert_eq!(last_row_predicate_compute_mask_calls(), 0);
+    assert_eq!(last_row_predicate_final_filter_calls(), 0);
 }
 
 #[test]

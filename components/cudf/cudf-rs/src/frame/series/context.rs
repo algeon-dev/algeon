@@ -24,7 +24,7 @@ use crate::{
         replace::{self, FillPolicy},
         sorting::SortOptions,
         stream_compaction::{self, DuplicateKeepOption, NanEquality, NullEquality},
-        strings::{self, StripSide},
+        strings::{self, StringSliceOptions, StripSide},
         unary::{self, UnaryOperator},
     },
     runtime::{ExecutionOverrides, Runtime, execution_domain::ExecutionDomain},
@@ -889,6 +889,33 @@ impl Series {
         let scalar = Scalar::from_str_in_domain(target, &output_domain)?;
         let exec_options = output_domain.explicit_exec_options_raw();
         let col = op(&cv, &scalar, &output_domain, exec_options.as_ref(), operation)?;
+        Series::from_column(col)
+    }
+
+    pub(super) fn like_in_context(
+        &self,
+        pattern: &str,
+        escape: Option<&str>,
+        ctx: &ExecutionOverrides<'_>,
+        operation: &'static str,
+    ) -> Result<Series> {
+        let output_domain = self.resolve_context_output_domain(ctx, operation)?;
+        let cv = self.column.view()?;
+        let exec_options = output_domain.explicit_exec_options_raw();
+        let col = strings::like_impl(&cv, pattern, escape, &output_domain, exec_options.as_ref(), operation)?;
+        Series::from_column(col)
+    }
+
+    pub(super) fn string_slice_in_context(
+        &self,
+        options: StringSliceOptions,
+        ctx: &ExecutionOverrides<'_>,
+        operation: &'static str,
+    ) -> Result<Series> {
+        let output_domain = self.resolve_context_output_domain(ctx, operation)?;
+        let cv = self.column.view()?;
+        let exec_options = output_domain.explicit_exec_options_raw();
+        let col = strings::slice_impl(&cv, options, &output_domain, exec_options.as_ref(), operation)?;
         Series::from_column(col)
     }
 

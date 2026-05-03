@@ -180,6 +180,27 @@ int cudf_rust_c_header_smoke(void)
   cudf_status_t (*f39)(
     cudf_column_view_handle, cudf_scalar_handle, cudf_column_handle*, const cudf_exec_options_t*) =
     &cudf_strings_ends_with_ex;
+  cudf_status_t (*f39a)(
+    cudf_column_view_handle, const char*, int32_t, const char*, int32_t, cudf_column_handle*) =
+    &cudf_strings_like;
+  cudf_status_t (*f39b)(cudf_column_view_handle,
+                        const char*,
+                        int32_t,
+                        const char*,
+                        int32_t,
+                        cudf_column_handle*,
+                        const cudf_exec_options_t*) = &cudf_strings_like_ex;
+  cudf_status_t (*f39c)(
+    cudf_column_view_handle, int32_t, int32_t, int32_t, int32_t, int32_t, cudf_column_handle*) =
+    &cudf_strings_slice;
+  cudf_status_t (*f39d)(cudf_column_view_handle,
+                        int32_t,
+                        int32_t,
+                        int32_t,
+                        int32_t,
+                        int32_t,
+                        cudf_column_handle*,
+                        const cudf_exec_options_t*) = &cudf_strings_slice_ex;
   cudf_status_t (*f40)(
     cudf_column_view_handle, cudf_strip_side_t, cudf_scalar_handle, cudf_column_handle*) =
     &cudf_strings_strip;
@@ -285,6 +306,10 @@ int cudf_rust_c_header_smoke(void)
   (void)f37;
   (void)f38;
   (void)f39;
+  (void)f39a;
+  (void)f39b;
+  (void)f39c;
+  (void)f39d;
   (void)f40;
   (void)f41;
   (void)f42;

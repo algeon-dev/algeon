@@ -3,7 +3,7 @@
 use super::{context::default_execution_context, owned::Series};
 use crate::{
     core::error::Result,
-    ops::strings::{self, StripSide},
+    ops::strings::{self, StringSliceOptions, StripSide},
     runtime::ExecutionOverrides,
 };
 
@@ -76,6 +76,47 @@ impl SeriesStringNamespace<'_> {
         self.0.string_scalar_in_context(pat, ctx, "series::str::contains_in", strings::str_contains_impl)
     }
 
+    /// SQL `LIKE` pattern match.
+    ///
+    /// Returns a `BOOL8` Series. `%` matches zero or more characters, `_`
+    /// matches one character, and null input elements produce null output.
+    /// This is not a regex API.
+    ///
+    /// # Cost
+    /// GPU-allocating: produces a new BOOL8 column. The selected stream is
+    /// synchronized before returning because libcudf temporarily borrows the
+    /// host pattern bytes.
+    pub fn like(&self, pattern: &str) -> Result<Series> {
+        self.0.like_in_context(pattern, None, &default_execution_context(), "series::str::like")
+    }
+
+    /// SQL `LIKE` pattern match using an explicit escape character.
+    ///
+    /// `escape` must be empty or a single ASCII character.
+    pub fn like_escape(&self, pattern: &str, escape: &str) -> Result<Series> {
+        self.0.like_in_context(
+            pattern,
+            if escape.is_empty() { None } else { Some(escape) },
+            &default_execution_context(),
+            "series::str::like_escape",
+        )
+    }
+
+    /// SQL `LIKE` pattern match using the explicit execution-context override.
+    pub fn like_in(&self, pattern: &str, ctx: &ExecutionOverrides<'_>) -> Result<Series> {
+        self.0.like_in_context(pattern, None, ctx, "series::str::like_in")
+    }
+
+    /// SQL `LIKE` pattern match with an escape character and explicit execution-context override.
+    pub fn like_escape_in(&self, pattern: &str, escape: &str, ctx: &ExecutionOverrides<'_>) -> Result<Series> {
+        self.0.like_in_context(
+            pattern,
+            if escape.is_empty() { None } else { Some(escape) },
+            ctx,
+            "series::str::like_escape_in",
+        )
+    }
+
     /// Element-wise starts-with test.
     ///
     /// Returns a `BOOL8` Series.
@@ -118,6 +159,25 @@ impl SeriesStringNamespace<'_> {
     /// Element-wise ends-with test using the explicit execution-context override.
     pub fn ends_with_in(&self, pat: &str, ctx: &ExecutionOverrides<'_>) -> Result<Series> {
         self.0.string_scalar_in_context(pat, ctx, "series::str::ends_with_in", strings::ends_with_impl)
+    }
+
+    // -- Slice ---------------------------------------------------------------
+
+    /// Slice each string using zero-based character positions.
+    ///
+    /// `StringSliceOptions::start` and `stop` use a half-open `[start, stop)`
+    /// range over Unicode character positions, not bytes. `None` leaves a
+    /// bound open. Null input elements produce null output.
+    ///
+    /// # Cost
+    /// GPU-allocating: produces a new STRING column.
+    pub fn slice(&self, options: StringSliceOptions) -> Result<Series> {
+        self.0.string_slice_in_context(options, &default_execution_context(), "series::str::slice")
+    }
+
+    /// Slice each string using the explicit execution-context override.
+    pub fn slice_in(&self, options: StringSliceOptions, ctx: &ExecutionOverrides<'_>) -> Result<Series> {
+        self.0.string_slice_in_context(options, ctx, "series::str::slice_in")
     }
 
     // -- Strip / trim -------------------------------------------------------

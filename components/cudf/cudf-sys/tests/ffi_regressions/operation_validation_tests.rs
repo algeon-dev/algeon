@@ -1,9 +1,42 @@
-use std::{os::raw::c_void, ptr};
+use std::{
+    os::raw::{c_char, c_void},
+    ptr,
+};
 
 use crate::{
     helpers::*,
-    support::{last_error_message, lock_shim_state},
+    support::{
+        NO_SYNC_RECORDED, OwnedStream, last_error_message, last_exec_stream_value, last_exec_sync_stream_value,
+        lock_shim_state, reset_exec_observation, stream_value,
+    },
 };
+
+fn read_bool8_column_data(col: *mut c_void) -> Vec<u8> {
+    let view = make_column_view(col);
+
+    let mut type_id = cudf_sys::cudf_type_id_t::CUDF_TYPE_EMPTY;
+    let status = unsafe { cudf_sys::cudf_column_view_type(view, &mut type_id) };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS);
+    assert_eq!(type_id, cudf_sys::cudf_type_id_t::CUDF_TYPE_BOOL8);
+
+    let mut size = 0;
+    let status = unsafe { cudf_sys::cudf_column_view_size(view, &mut size) };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS);
+    assert!(size >= 0);
+
+    let mut values = vec![0u8; size as usize];
+    let status = unsafe {
+        cudf_sys::cudf_column_view_to_host(
+            view,
+            values.as_mut_ptr() as *mut c_void,
+            std::mem::size_of_val(values.as_slice()),
+        )
+    };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS);
+
+    unsafe { cudf_sys::cudf_column_view_destroy(view) };
+    values
+}
 
 #[test]
 fn test_column_view_strings_to_host_empty_rejects_undersized_offsets_buffer() {
@@ -20,6 +53,157 @@ fn test_column_view_strings_to_host_empty_rejects_undersized_offsets_buffer() {
     assert_eq!(total_chars, 0);
 
     unsafe {
+        cudf_sys::cudf_column_view_destroy(view);
+        cudf_sys::cudf_column_destroy(col);
+    }
+}
+
+#[test]
+fn test_strings_like_validates_pattern_and_escape_arguments() {
+    let col = make_string_column(&["abc"]);
+    let view = make_column_view(col);
+    let pattern = b"a%";
+    let escape = b"/";
+
+    let mut out = std::ptr::NonNull::<c_void>::dangling().as_ptr();
+    let status =
+        unsafe { cudf_sys::cudf_strings_like(view, pattern.as_ptr() as *const c_char, -1, ptr::null(), 0, &mut out) };
+    assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
+    assert!(out.is_null());
+
+    out = std::ptr::NonNull::<c_void>::dangling().as_ptr();
+    let status = unsafe { cudf_sys::cudf_strings_like(view, ptr::null(), 1, ptr::null(), 0, &mut out) };
+    assert_eq!(status, cudf_sys::CUDF_ERROR_NULL);
+    assert!(out.is_null());
+
+    out = std::ptr::NonNull::<c_void>::dangling().as_ptr();
+    let status = unsafe {
+        cudf_sys::cudf_strings_like(
+            view,
+            pattern.as_ptr() as *const c_char,
+            pattern.len() as i32,
+            ptr::null(),
+            -1,
+            &mut out,
+        )
+    };
+    assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
+    assert!(out.is_null());
+
+    out = std::ptr::NonNull::<c_void>::dangling().as_ptr();
+    let status = unsafe {
+        cudf_sys::cudf_strings_like(
+            view,
+            pattern.as_ptr() as *const c_char,
+            pattern.len() as i32,
+            escape.as_ptr() as *const c_char,
+            2,
+            &mut out,
+        )
+    };
+    assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
+    assert!(out.is_null());
+
+    out = std::ptr::NonNull::<c_void>::dangling().as_ptr();
+    let status = unsafe {
+        cudf_sys::cudf_strings_like(
+            view,
+            pattern.as_ptr() as *const c_char,
+            pattern.len() as i32,
+            ptr::null(),
+            1,
+            &mut out,
+        )
+    };
+    assert_eq!(status, cudf_sys::CUDF_ERROR_NULL);
+    assert!(out.is_null());
+
+    unsafe {
+        cudf_sys::cudf_column_view_destroy(view);
+        cudf_sys::cudf_column_destroy(col);
+    }
+}
+
+#[test]
+fn test_strings_like_matches_and_synchronizes_explicit_stream() {
+    let _shim_state = lock_shim_state();
+    let col = make_string_column(&["abc", "adc", "ab", "axc"]);
+    let view = make_column_view(col);
+    let stream = OwnedStream::new();
+    let borrowed_stream = stream.borrowed();
+    let exec = cudf_sys::ExecutionContext::new().with_stream(&borrowed_stream);
+    let pattern = b"a_c";
+
+    reset_exec_observation();
+    let mut out: *mut c_void = ptr::null_mut();
+    let status = unsafe {
+        cudf_sys::cudf_strings_like_ex(
+            view,
+            pattern.as_ptr() as *const c_char,
+            pattern.len() as i32,
+            ptr::null(),
+            0,
+            &mut out,
+            exec.as_raw(),
+        )
+    };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS);
+    assert!(!out.is_null());
+    assert_eq!(last_exec_stream_value(), stream_value(stream.as_raw()));
+    assert_eq!(last_exec_sync_stream_value(), stream_value(stream.as_raw()));
+    assert_eq!(read_bool8_column_data(out), vec![1, 1, 0, 1]);
+
+    unsafe {
+        cudf_sys::cudf_column_destroy(out);
+        cudf_sys::cudf_column_view_destroy(view);
+        cudf_sys::cudf_column_destroy(col);
+    }
+}
+
+#[test]
+fn test_strings_slice_validates_step_and_initializes_output() {
+    let col = make_string_column(&["abcdef"]);
+    let view = make_column_view(col);
+    let mut out = std::ptr::NonNull::<c_void>::dangling().as_ptr();
+
+    let status = unsafe { cudf_sys::cudf_strings_slice(view, 0, 1, 3, 1, 0, &mut out) };
+
+    assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
+    assert!(out.is_null());
+
+    unsafe {
+        cudf_sys::cudf_column_view_destroy(view);
+        cudf_sys::cudf_column_destroy(col);
+    }
+}
+
+#[test]
+fn test_strings_slice_uses_validity_flags_and_explicit_stream() {
+    let _shim_state = lock_shim_state();
+    let col = make_string_column(&["abcdef", "xy"]);
+    let view = make_column_view(col);
+    let stream = OwnedStream::new();
+    let borrowed_stream = stream.borrowed();
+    let exec = cudf_sys::ExecutionContext::new().with_stream(&borrowed_stream);
+
+    reset_exec_observation();
+    let mut out: *mut c_void = ptr::null_mut();
+    let status = unsafe { cudf_sys::cudf_strings_slice_ex(view, 1, 1, 4, 1, 2, &mut out, exec.as_raw()) };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS);
+    assert!(!out.is_null());
+    assert_eq!(last_exec_stream_value(), stream_value(stream.as_raw()));
+    assert_eq!(last_exec_sync_stream_value(), NO_SYNC_RECORDED);
+    assert_eq!(read_string_column_data(out), vec!["bd".to_string(), "y".to_string()]);
+    unsafe { cudf_sys::cudf_column_destroy(out) };
+
+    out = ptr::null_mut();
+    let status = unsafe { cudf_sys::cudf_strings_slice(view, 2, 1, 0, 0, 1, &mut out) };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS);
+    assert!(!out.is_null());
+    assert_eq!(read_string_column_data(out), vec!["cdef".to_string(), "".to_string()]);
+
+    unsafe {
+        cudf_sys::cudf_column_destroy(out);
         cudf_sys::cudf_column_view_destroy(view);
         cudf_sys::cudf_column_destroy(col);
     }

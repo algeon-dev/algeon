@@ -71,7 +71,7 @@ use super::{
     copying,
     reduction::{self, ReduceAgg, ScanAgg, ScanType},
     replace::{self, FillPolicy},
-    strings::{self, StripSide},
+    strings::{self, StringSliceOptions, StripSide},
     unary::{self, UnaryOperator},
 };
 use crate::{
@@ -105,6 +105,17 @@ impl<'df> ExprEvalContext<'df> {
             operation,
             normalized_columns: RefCell::new(fast_hash_map_with_capacity(df.num_columns())),
         })
+    }
+
+    fn with_output_domain(df: &'df DataFrame, output_domain: Arc<ExecutionDomain>, operation: &'static str) -> Self {
+        let exec_options = output_domain.explicit_exec_options_raw();
+        Self {
+            df,
+            output_domain,
+            exec_options,
+            operation,
+            normalized_columns: RefCell::new(fast_hash_map_with_capacity(df.num_columns())),
+        }
     }
 
     fn exec_options(&self) -> Option<&cudf_sys::cudf_exec_options_t> {
@@ -157,6 +168,16 @@ where
     let output_domain = ctx.output_domain();
     let results = exprs.into_iter().map(|expr| expr.eval_with_context(&ctx)).collect::<Result<_>>()?;
     Ok((output_domain, results))
+}
+
+pub(crate) fn eval_in_output_domain(
+    df: &DataFrame,
+    output_domain: Arc<ExecutionDomain>,
+    operation: &'static str,
+    expr: &Expr,
+) -> Result<Series> {
+    let ctx = ExprEvalContext::with_output_domain(df, output_domain, operation);
+    expr.eval_with_context(&ctx)
 }
 // ===========================================================================
 // LitValue — type-erased scalar factory (crate-private)
@@ -212,6 +233,8 @@ pub enum StringOperator {
     Contains(String),
     StartsWith(String),
     EndsWith(String),
+    Like { pattern: String, escape: Option<String> },
+    Slice(StringSliceOptions),
 }
 
 // ===========================================================================
@@ -483,6 +506,36 @@ impl Expr {
         self.eval_with_context(&ctx)
     }
 
+    pub(crate) fn contains_string_like_or_slice(&self) -> bool {
+        match self {
+            Expr::StringOp { input, op } => {
+                matches!(op, StringOperator::Like { .. } | StringOperator::Slice(_))
+                    || input.contains_string_like_or_slice()
+            },
+            Expr::BinaryOp { lhs, rhs, .. } => {
+                lhs.contains_string_like_or_slice() || rhs.contains_string_like_or_slice()
+            },
+            Expr::UnaryOp { input, .. }
+            | Expr::Cast { input, .. }
+            | Expr::IsNull(input)
+            | Expr::IsNotNull(input)
+            | Expr::Alias { inner: input, .. }
+            | Expr::FillNaScalar { input, .. }
+            | Expr::FillNullPolicy { input, .. }
+            | Expr::Scan { input, .. }
+            | Expr::Reduce { input, .. } => input.contains_string_like_or_slice(),
+            Expr::FillNaExpr { input, fill } => {
+                input.contains_string_like_or_slice() || fill.contains_string_like_or_slice()
+            },
+            Expr::IfElse { condition, true_val, false_val } => {
+                condition.contains_string_like_or_slice()
+                    || true_val.contains_string_like_or_slice()
+                    || false_val.contains_string_like_or_slice()
+            },
+            Expr::Column(_) | Expr::Literal(_) => false,
+        }
+    }
+
     fn eval_with_context(&self, ctx: &ExprEvalContext<'_>) -> Result<Series> {
         match self {
             Expr::Column(name) => ctx.column(name),
@@ -669,6 +722,17 @@ impl Expr {
                     StringOperator::EndsWith(pat) => {
                         let scalar = Scalar::from_str_in_domain(pat, &ctx.output_domain)?;
                         strings::ends_with_impl(&cv, &scalar, &ctx.output_domain, ctx.exec_options(), ctx.operation)?
+                    },
+                    StringOperator::Like { pattern, escape } => strings::like_impl(
+                        &cv,
+                        pattern,
+                        escape.as_deref(),
+                        &ctx.output_domain,
+                        ctx.exec_options(),
+                        ctx.operation,
+                    )?,
+                    StringOperator::Slice(options) => {
+                        strings::slice_impl(&cv, *options, &ctx.output_domain, ctx.exec_options(), ctx.operation)?
                     },
                 };
                 ctx.wrap_column(col)
@@ -862,6 +926,27 @@ impl ExprStringNamespace {
     /// Ends-with test. Returns BOOL8.
     pub fn ends_with(self, pat: impl Into<String>) -> Expr {
         Expr::StringOp { input: Box::new(self.0), op: StringOperator::EndsWith(pat.into()) }
+    }
+
+    /// SQL `LIKE` pattern match. Returns BOOL8.
+    ///
+    /// `%` matches zero or more characters and `_` matches one character.
+    /// This is not a regex API.
+    pub fn like(self, pattern: impl Into<String>) -> Expr {
+        Expr::StringOp { input: Box::new(self.0), op: StringOperator::Like { pattern: pattern.into(), escape: None } }
+    }
+
+    /// SQL `LIKE` pattern match with an explicit escape character.
+    pub fn like_escape(self, pattern: impl Into<String>, escape: impl Into<String>) -> Expr {
+        Expr::StringOp {
+            input: Box::new(self.0),
+            op: StringOperator::Like { pattern: pattern.into(), escape: Some(escape.into()) },
+        }
+    }
+
+    /// Slice strings using zero-based character positions.
+    pub fn slice(self, options: StringSliceOptions) -> Expr {
+        Expr::StringOp { input: Box::new(self.0), op: StringOperator::Slice(options) }
     }
 }
 

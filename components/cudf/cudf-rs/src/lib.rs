@@ -197,7 +197,7 @@ pub use ops::{
     replace::FillPolicy,
     sorting::SortOptions,
     stream_compaction::DuplicateKeepOption,
-    strings::StripSide,
+    strings::{StringSliceOptions, StripSide},
 };
 pub use runtime::{
     BoundaryKind, BoundaryObservation, BoundaryObserver, DeviceId, ExecutionOverrides, ExecutionPlacement, Runtime,

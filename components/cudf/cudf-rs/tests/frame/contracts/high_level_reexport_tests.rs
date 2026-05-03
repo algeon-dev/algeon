@@ -139,6 +139,24 @@ fn datetime_extract_surface_is_publicly_importable() {
 }
 
 #[test]
+fn string_like_and_slice_surface_is_publicly_importable() {
+    use cudf::{StringSliceOptions, TypeId, ops::strings, testing::prelude::*};
+
+    fn assert_options(_: StringSliceOptions) {}
+
+    let options = StringSliceOptions::new(Some(1), Some(3)).with_step(1);
+    assert_options(options);
+
+    let s = crate::common::series("s", &["abc", "axc", "abbc"]).unwrap();
+    let view = s.as_column().testing_view().unwrap();
+    let low_level = strings::like(&view, "a_c", None).unwrap();
+    let high_level = s.str().slice(options).unwrap();
+
+    assert_eq!(low_level.testing_view().unwrap().data_type().unwrap().id(), TypeId::Bool8);
+    assert_eq!(high_level.dtype().unwrap().id(), TypeId::String);
+}
+
+#[test]
 fn execution_placement_summary_is_publicly_reexported() {
     use cudf::{DataFrame, ExecutionPlacement, Runtime};
 

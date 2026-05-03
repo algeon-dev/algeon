@@ -6,7 +6,7 @@
 //! context-aware core.
 
 use cudf::{
-    ErrorCode, ErrorKind, ExecutionOverrides, Series, SortOptions, TypeId,
+    ErrorCode, ErrorKind, ExecutionOverrides, Series, SortOptions, StringSliceOptions, TypeId,
     core::error::{FactKeyName, FactValue},
     testing::prelude::*,
 };
@@ -99,6 +99,14 @@ fn default_series_string_namespace_and_factorization_ops_match_empty_execution_c
     let contains = strings.str().contains("a").unwrap();
     let contains_in_context = strings.str().contains_in("a", &ctx).unwrap();
     assert_bool_series_eq(&contains, &contains_in_context);
+
+    let like = strings.str().like("%a").unwrap();
+    let like_in_context = strings.str().like_in("%a", &ctx).unwrap();
+    assert_bool_series_eq(&like, &like_in_context);
+
+    let sliced = strings.str().slice(StringSliceOptions::new(Some(1), Some(3))).unwrap();
+    let sliced_in_context = strings.str().slice_in(StringSliceOptions::new(Some(1), Some(3)), &ctx).unwrap();
+    assert_eq!(sliced.to_strings_strict().unwrap(), sliced_in_context.to_strings_strict().unwrap());
 
     let codebook = strings.codebook().unwrap();
     let codebook_in_context = strings.codebook_in(&ctx).unwrap();
