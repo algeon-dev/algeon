@@ -973,7 +973,8 @@ fn disposition_mapping_matches_isolation_rules() {
     let usage = usage.expect("healthy device samples domain usage");
     assert_eq!(usage.domain_id, domain.domain_id());
 
-    let residuals: [(&str, fn(&mut cudf::QueryMemoryDomainUsage)); 4] = [
+    type ResidualInjector = (&'static str, fn(&mut cudf::QueryMemoryDomainUsage));
+    let residuals: [ResidualInjector; 4] = [
         ("active_members", |usage| usage.active_members = 1),
         ("current_allocations", |usage| usage.current_allocations = 1),
         ("current_bytes", |usage| usage.current_bytes = 1),

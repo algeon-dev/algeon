@@ -877,21 +877,21 @@ impl QueryAdmissionWaiter {
             drop(state);
             return self
                 .service
-                .commit_placed_admission(
+                .commit_placed_admission(super::service::PlacedAdmissionCommit {
                     placed_query,
-                    admitted.requirement.clone(),
-                    admitted.submitted_plan_capability_evidence.clone(),
-                    admitted.compatible_devices.clone(),
-                    admitted.observation,
-                    admitted.attempt_id,
-                    admitted.completion,
-                    self.admission_request_id,
-                    self.requested_at.elapsed(),
-                    self.deadline,
-                    admitted.execution_cancellation,
-                    Some(admitted_submission_seq),
+                    admitted_requirement: admitted.requirement.clone(),
+                    submitted_plan_capability_evidence: admitted.submitted_plan_capability_evidence.clone(),
+                    admitted_compatible_devices: admitted.compatible_devices.clone(),
+                    observation: admitted.observation,
+                    attempt_id: admitted.attempt_id,
+                    completion: admitted.completion,
+                    admission_request_id: self.admission_request_id,
+                    admission_wait: self.requested_at.elapsed(),
+                    deadline: self.deadline,
+                    execution_cancellation: admitted.execution_cancellation,
+                    admitted_submission_seq: Some(admitted_submission_seq),
                     lifecycle_ticket,
-                )
+                })
                 .map(Some);
         }
 

@@ -30,7 +30,7 @@ fn bounded_native_query_executes_root_keyless_conditional_left_only_joins_with_l
     let QueryOutput::HostArrow(semi_batch) = semi.output() else {
         panic!("left semi bounded conditional join should return host output");
     };
-    let mut semi_rows = int32_array(&semi_batch, 0).values().iter().copied().collect::<Vec<_>>();
+    let mut semi_rows = int32_array(semi_batch, 0).values().iter().copied().collect::<Vec<_>>();
     semi_rows.sort();
     assert_eq!(semi_rows, vec![25, 30]);
     let semi_metrics = semi
@@ -59,7 +59,7 @@ fn bounded_native_query_executes_root_keyless_conditional_left_only_joins_with_l
     let QueryOutput::HostArrow(anti_batch) = anti.output() else {
         panic!("left anti bounded conditional join should return host output");
     };
-    let mut anti_rows = int32_array(&anti_batch, 0).values().iter().copied().collect::<Vec<_>>();
+    let mut anti_rows = int32_array(anti_batch, 0).values().iter().copied().collect::<Vec<_>>();
     anti_rows.sort();
     assert_eq!(anti_rows, vec![10, 20]);
     let anti_metrics = anti

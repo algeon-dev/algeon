@@ -8,6 +8,26 @@ use super::*;
 // until the full queue deadline.
 const ADMISSION_CANCELLATION_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
+/// All metadata committed with a provisionally placed admission.
+///
+/// Keeping these values together prevents the three admission paths from
+/// accidentally publishing different request metadata.
+pub(in crate::runtime::query_service) struct PlacedAdmissionCommit {
+    pub(in crate::runtime::query_service) placed_query: PlacedQuery,
+    pub(in crate::runtime::query_service) admitted_requirement: AttemptRequirement,
+    pub(in crate::runtime::query_service) submitted_plan_capability_evidence: Option<AttemptRequirement>,
+    pub(in crate::runtime::query_service) admitted_compatible_devices: Vec<usize>,
+    pub(in crate::runtime::query_service) observation: RuntimeObservationHandle,
+    pub(in crate::runtime::query_service) attempt_id: Option<crate::observability::AttemptId>,
+    pub(in crate::runtime::query_service) completion: QueryCompletion,
+    pub(in crate::runtime::query_service) admission_request_id: AdmissionRequestId,
+    pub(in crate::runtime::query_service) admission_wait: Duration,
+    pub(in crate::runtime::query_service) deadline: Instant,
+    pub(in crate::runtime::query_service) execution_cancellation: ExecutionCancellation,
+    pub(in crate::runtime::query_service) admitted_submission_seq: Option<u64>,
+    pub(in crate::runtime::query_service) lifecycle_ticket: super::super::admission::AdmissionTicket,
+}
+
 impl QueryService {
     pub fn admit_query(&self) -> Result<QueryHandle> {
         self.admit_query_with_request(QueryAdmissionRequest::new())
@@ -361,21 +381,21 @@ impl QueryService {
                 let lifecycle_ticket = state.lifecycle.begin_provisional();
                 self.inner.notify_admission_available();
                 drop(state);
-                return self.commit_placed_admission(
+                return self.commit_placed_admission(PlacedAdmissionCommit {
                     placed_query,
-                    admitted.requirement.clone(),
-                    admitted.submitted_plan_capability_evidence.clone(),
-                    admitted.compatible_devices.clone(),
-                    admitted.observation,
-                    admitted.attempt_id,
-                    admitted.completion,
+                    admitted_requirement: admitted.requirement.clone(),
+                    submitted_plan_capability_evidence: admitted.submitted_plan_capability_evidence.clone(),
+                    admitted_compatible_devices: admitted.compatible_devices.clone(),
+                    observation: admitted.observation,
+                    attempt_id: admitted.attempt_id,
+                    completion: admitted.completion,
                     admission_request_id,
-                    requested_at.elapsed(),
+                    admission_wait: requested_at.elapsed(),
                     deadline,
-                    admitted.execution_cancellation,
-                    Some(admitted_submission_seq),
+                    execution_cancellation: admitted.execution_cancellation,
+                    admitted_submission_seq: Some(admitted_submission_seq),
                     lifecycle_ticket,
-                );
+                });
             }
 
             let now = Instant::now();
@@ -696,20 +716,23 @@ impl QueryService {
     /// finishes the request with the primary error.
     pub(in crate::runtime::query_service) fn commit_placed_admission(
         &self,
-        placed_query: PlacedQuery,
-        admitted_requirement: AttemptRequirement,
-        submitted_plan_capability_evidence: Option<AttemptRequirement>,
-        admitted_compatible_devices: Vec<usize>,
-        observation: RuntimeObservationHandle,
-        attempt_id: Option<crate::observability::AttemptId>,
-        completion: QueryCompletion,
-        admission_request_id: AdmissionRequestId,
-        admission_wait: Duration,
-        deadline: Instant,
-        execution_cancellation: ExecutionCancellation,
-        admitted_submission_seq: Option<u64>,
-        lifecycle_ticket: super::super::admission::AdmissionTicket,
+        commit: PlacedAdmissionCommit,
     ) -> Result<QueryHandle> {
+        let PlacedAdmissionCommit {
+            placed_query,
+            admitted_requirement,
+            submitted_plan_capability_evidence,
+            admitted_compatible_devices,
+            observation,
+            attempt_id,
+            completion,
+            admission_request_id,
+            admission_wait,
+            deadline,
+            execution_cancellation,
+            admitted_submission_seq,
+            lifecycle_ticket,
+        } = commit;
         let probe =
             self.inner.admission_transaction_probe.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
         let envelope = super::transaction::AdmissionEnvelope::acquire(
@@ -1140,21 +1163,21 @@ impl QueryService {
         let configured_deadline =
             Instant::now().checked_add(self.inner.queue_bounds.max_wait).unwrap_or_else(Instant::now);
         let deadline = queue_deadline.map_or(configured_deadline, |deadline| deadline.min(configured_deadline));
-        self.commit_placed_admission(
+        self.commit_placed_admission(PlacedAdmissionCommit {
             placed_query,
-            requirement,
+            admitted_requirement: requirement,
             submitted_plan_capability_evidence,
-            compatible_devices,
-            observation_owner.handle,
+            admitted_compatible_devices: compatible_devices,
+            observation: observation_owner.handle,
             attempt_id,
             completion,
             admission_request_id,
-            Duration::ZERO,
+            admission_wait: Duration::ZERO,
             deadline,
             execution_cancellation,
-            None,
+            admitted_submission_seq: None,
             lifecycle_ticket,
-        )
+        })
         .map(Some)
     }
 
@@ -1274,10 +1297,10 @@ impl QueryService {
         }
         phases.push(QueryServiceDrainPhaseOutcome::from_result(
             QueryServiceDrainPhase::ExecutionPoolQuiescence,
-            self.inner
-                .resources
-                .as_ref()
-                .map_or(Ok(()), |resources| resources.close_and_drain_gpu_execution_pools_until(deadline)),
+            self.inner.resources.as_ref().map_or(Ok(()), |resources| {
+                resources.close_and_drain_gpu_execution_pools_until(deadline)?;
+                resources.close_and_drain_resident_caches_until(deadline)
+            }),
         ));
         phases.push(QueryServiceDrainPhaseOutcome::from_result(
             QueryServiceDrainPhase::StreamPoolQuiescence,

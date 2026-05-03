@@ -2,10 +2,97 @@
 
 use super::*;
 
+/// Cache resources owned by one installed backend resource generation.
+///
+/// The factory is deliberately retained beside the concrete cache subdomains:
+/// it owns the one physical cuDF allocation domain for an ordinal.  Keeping it
+/// here means cache allocator lifetime follows the backend resource generation,
+/// not a query controller or an individual execution context.
+#[derive(Debug, Clone)]
+pub(super) struct DeviceResidentCaches {
+    devices: HashMap<usize, DeviceResidentCache>,
+}
+
+#[derive(Debug, Clone)]
+struct DeviceResidentCache {
+    source: crate::runtime::cache::local_parquet::GpuLocalParquetSourceCache,
+    #[cfg(feature = "cugraph")]
+    graph: crate::runtime::cache::resident_graph::GpuResidentGraphCache,
+    // Declare this last: every cache lease and cached allocation must be
+    // destroyed before the domain owner becomes droppable.
+    allocation_factory: crate::runtime::cache::DeviceCacheAllocationFactory,
+}
+
+impl DeviceResidentCaches {
+    pub(super) fn install(devices: &super::DeviceRegistry) -> Result<Self> {
+        let mut installed = HashMap::new();
+        for context in devices.contexts() {
+            let Some(allocation_factory) =
+                crate::runtime::cache::DeviceCacheAllocationFactory::new(context.ledger().as_ref().clone())?
+            else {
+                continue;
+            };
+            let source = allocation_factory.source_cache()?;
+            #[cfg(feature = "cugraph")]
+            let graph = allocation_factory.graph_cache()?;
+            let previous = installed.insert(
+                context.device().ordinal(),
+                DeviceResidentCache {
+                    source,
+                    #[cfg(feature = "cugraph")]
+                    graph,
+                    allocation_factory,
+                },
+            );
+            debug_assert!(previous.is_none(), "a registry installs each CUDA ordinal only once");
+        }
+        Ok(Self { devices: installed })
+    }
+
+    pub(super) fn source_for_device(
+        &self,
+        device_ordinal: usize,
+    ) -> Option<crate::runtime::cache::local_parquet::GpuLocalParquetSourceCache> {
+        self.devices.get(&device_ordinal).map(|cache| cache.source.clone())
+    }
+
+    #[cfg(feature = "cugraph")]
+    pub(super) fn graph_for_device(
+        &self,
+        device_ordinal: usize,
+    ) -> Option<crate::runtime::cache::resident_graph::GpuResidentGraphCache> {
+        self.devices.get(&device_ordinal).map(|cache| cache.graph.clone())
+    }
+
+    pub(super) fn close_and_drain_until(&self, _deadline: Instant) -> Result<()> {
+        #[cfg(feature = "cugraph")]
+        for cache in self.devices.values() {
+            cache.graph.close()?;
+        }
+        #[cfg(feature = "cugraph")]
+        for cache in self.devices.values() {
+            cache.graph.close_and_drain_until(_deadline)?;
+        }
+        for cache in self.devices.values() {
+            cache.source.close_and_drain()?;
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(super) fn domain_id_for_device(&self, device_ordinal: usize) -> Option<cudf::CacheAllocationDomainId> {
+        self.devices.get(&device_ordinal).map(|cache| cache.allocation_factory.domain_id())
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(super) struct QueryServiceResources {
     pub(super) devices: super::DeviceRegistry,
     pub(super) gpu_execution_pools: HashMap<usize, GpuExecutionPool>,
+    /// Process-owned resident-cache allocator domains and cache subdomains.
+    /// This is declared before the registry so its leases and cached values are
+    /// released before device contexts and their memory managers are dropped.
+    pub(super) resident_caches: DeviceResidentCaches,
     pub(super) gpu_execution_query_tracker: GpuExecutionQueryTracker,
     pub(super) lakehouse_cache_fill_budget: CacheFillByteBudget,
     pub(super) lakehouse_cache_fill_concurrency: CacheFillConcurrencyGate,
@@ -18,6 +105,10 @@ pub(super) struct QueryServiceResources {
 }
 
 impl QueryServiceResources {
+    pub(super) fn install_resident_caches(devices: &super::DeviceRegistry) -> Result<DeviceResidentCaches> {
+        DeviceResidentCaches::install(devices)
+    }
+
     pub(super) fn close_stream_pools(&self) -> Result<()> {
         let operation = "nexus_query_engine.query_service.close_stream_pools";
         let mut errors = CleanupErrorPriority::default();
@@ -48,6 +139,10 @@ impl QueryServiceResources {
             }
         }
         errors.into_result()
+    }
+
+    pub(super) fn close_and_drain_resident_caches_until(&self, deadline: Instant) -> Result<()> {
+        self.resident_caches.close_and_drain_until(deadline)
     }
 
     pub(super) fn gpu_execution_pool_for_device(&self, device_ordinal: usize) -> Result<GpuExecutionPool> {
@@ -82,6 +177,13 @@ impl CleanupErrorPriority {
     fn into_result(self) -> Result<()> {
         self.first_permanent.or(self.first_deadline).map_or(Ok(()), Err)
     }
+}
+
+pub(super) fn gpu_execution_worker_count_per_device(_config: &QueryExecutionConfig) -> usize {
+    // Backend-owned profiles determine runtime worker capacities. Direct
+    // construction has no scalar compatibility override; this value is only
+    // a defensive fallback for an empty registry profile.
+    1
 }
 
 #[cfg(test)]
@@ -130,11 +232,4 @@ mod cleanup_error_priority_tests {
         let error = errors.into_result().unwrap_err();
         assert_eq!(error.fact_value("reason"), Some("first"));
     }
-}
-
-pub(super) fn gpu_execution_worker_count_per_device(_config: &QueryExecutionConfig) -> usize {
-    // Backend-owned profiles determine runtime worker capacities. Direct
-    // construction has no scalar compatibility override; this value is only
-    // a defensive fallback for an empty registry profile.
-    1
 }

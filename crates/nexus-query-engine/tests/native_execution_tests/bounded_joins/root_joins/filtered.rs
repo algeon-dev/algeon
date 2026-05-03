@@ -29,7 +29,7 @@ fn bounded_native_query_executes_root_filtered_semi_anti_joins_with_ordered_rese
     let QueryOutput::HostArrow(semi_batch) = semi.output() else {
         panic!("left semi bounded filtered join should return host output");
     };
-    let mut semi_rows = int32_array(&semi_batch, 0).values().iter().copied().collect::<Vec<_>>();
+    let mut semi_rows = int32_array(semi_batch, 0).values().iter().copied().collect::<Vec<_>>();
     semi_rows.sort();
     assert_eq!(semi_rows, vec![20, 25, 30]);
     let semi_metrics = semi
@@ -72,7 +72,7 @@ fn bounded_native_query_executes_root_filtered_semi_anti_joins_with_ordered_rese
     let QueryOutput::HostArrow(anti_batch) = anti.output() else {
         panic!("left anti bounded filtered join should return host output");
     };
-    let anti_rows = int32_array(&anti_batch, 0).values().iter().copied().collect::<Vec<_>>();
+    let anti_rows = int32_array(anti_batch, 0).values().iter().copied().collect::<Vec<_>>();
     assert_eq!(anti_rows, vec![10]);
     let anti_metrics = anti
         .metrics()

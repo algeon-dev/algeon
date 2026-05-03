@@ -15,6 +15,8 @@ pub(super) fn execute_bfs(
         .with_fact("algorithm", spec.algorithm.as_str()));
     };
 
+    let resident_key =
+        input.graph_residency().and_then(|descriptor| crate::plan::planned_resident_graph_key(descriptor, spec));
     let input = input.into_frame();
     let (mut edges, vertex_type) = project_edge_list(&input, spec)?;
     let options = table_graph_options(spec);
@@ -257,11 +259,12 @@ pub(super) fn execute_bfs(
             run_bfs,
         )
     } else {
-        run_with_cugraph_graph::<cugraph::Forward, _>(
+        run_with_accounted_resident_cugraph_graph::<cugraph::Forward, _>(
             context,
             graph_memory_limit_bytes,
             edges,
             options,
+            resident_key,
             "datafusion_nexus_cugraph_bfs",
             run_bfs,
         )

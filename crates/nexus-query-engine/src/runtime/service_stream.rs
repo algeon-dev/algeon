@@ -1254,12 +1254,12 @@ mod tests {
             )
             .unwrap_err();
         assert_eq!(error.fact_value("reason"), Some("stream_cleanup_supervisor_unexpected_exit"));
-        let mut before = vec![
+        let mut before = [
             before_receiver.recv_timeout(Duration::from_secs(5)).expect("first recovery before callback"),
             before_receiver.recv_timeout(Duration::from_secs(5)).expect("second recovery before callback"),
         ];
         before.sort_by_key(|(label, _, _)| *label);
-        let mut after = vec![
+        let mut after = [
             after_receiver.recv_timeout(Duration::from_secs(5)).expect("first recovery after callback"),
             after_receiver.recv_timeout(Duration::from_secs(5)).expect("second recovery after callback"),
         ];

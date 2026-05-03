@@ -529,7 +529,7 @@ mod tests {
         assert_eq!(error.code(), QueryErrorCode::Cancelled);
         assert_eq!(error.fact_value("reason"), Some("backend_closing"));
         assert_eq!(error.operation(), OBSERVATION_OPERATION);
-        assert_eq!(lifecycle.snapshot().closing, true);
+        assert!(lifecycle.snapshot().closing);
         drop(permit);
         assert_eq!(
             lifecycle.snapshot(),

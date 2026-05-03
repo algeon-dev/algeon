@@ -1,0 +1,7 @@
+error[E0560]: struct `QueryExecutionConfig` has no field named `cache_cap_bytes`
+ --> tests/ui/public_api/forbidden_query_execution_config_cache_cap.rs:5:9
+  |
+5 |         cache_cap_bytes: 1,
+  |         ^^^^^^^^^^^^^^^ `QueryExecutionConfig` does not have this field
+  |
+  = note: available fields are: `lakehouse_cache_fill`, `source_storage_profiles`, `boundary_policy`, `source_scheduler_policy`, `source_chunk_planning_mode` ... and 10 others

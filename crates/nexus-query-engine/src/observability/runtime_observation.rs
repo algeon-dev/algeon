@@ -6,8 +6,8 @@ use serde::{Deserialize, Serialize};
 
 use super::attempt_report::{CleanupFailureSummary, QueryAttemptReport, RuntimeTerminalOutcome};
 use crate::correlation::QueryId;
-/// JSONL schema emitted by sealed runtime observation snapshots.
 
+/// JSONL schema emitted by sealed runtime observation snapshots.
 pub const RUNTIME_OBSERVATION_JSONL_SCHEMA: &str = "nexus_query_engine.runtime_observation.v2";
 
 macro_rules! string_id {

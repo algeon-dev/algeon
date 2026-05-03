@@ -11,11 +11,11 @@ mod queue;
 mod reporting;
 mod requests;
 pub(in crate::runtime::query_service) mod transaction;
-
 pub use api::{
     QueryActivityLease, QueryAdmissionRequest, QueryServiceAdmissionSnapshot, QueryServiceDeviceAdmissionSnapshot,
 };
 pub(in crate::runtime::query_service::service) use queue::query_service_shutdown_timeout;
+pub(in crate::runtime::query_service) use requests::PlacedAdmissionCommit;
 
 /// Service-level entry point for native query admission.
 #[derive(Clone, Debug)]

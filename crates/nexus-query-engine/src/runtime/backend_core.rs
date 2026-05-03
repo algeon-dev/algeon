@@ -118,6 +118,7 @@ pub struct GpuBackendDeviceConfig {
     memory_ownership: GpuMemoryOwnership,
     memory_limit: GpuDeviceMemoryLimit,
     backend_reserve_bytes: u64,
+    cache_cap_bytes: u64,
     attempt_floor_bytes: Option<u64>,
     source_work_per_attempt: usize,
     max_active_queries: usize,
@@ -147,6 +148,7 @@ impl GpuBackendDeviceConfig {
             memory_ownership,
             memory_limit: GpuDeviceMemoryLimit::default(),
             backend_reserve_bytes: 0,
+            cache_cap_bytes: 0,
             attempt_floor_bytes: Self::DEFAULT_ATTEMPT_FLOOR_BYTES,
             source_work_per_attempt: Self::DEFAULT_SOURCE_WORK_PER_ATTEMPT,
             max_active_queries: Self::DEFAULT_MAX_ACTIVE_QUERIES,
@@ -177,6 +179,16 @@ impl GpuBackendDeviceConfig {
     pub fn with_backend_reserve_bytes(mut self, backend_reserve_bytes: u64) -> Self {
         self.backend_reserve_bytes = backend_reserve_bytes;
         self
+    }
+
+    /// Sets the aggregate accounted resident-cache ceiling for this device.
+    pub fn with_cache_cap_bytes(mut self, cache_cap_bytes: u64) -> Self {
+        self.cache_cap_bytes = cache_cap_bytes;
+        self
+    }
+
+    pub fn cache_cap_bytes(&self) -> u64 {
+        self.cache_cap_bytes
     }
 
     /// Sets the immutable minimum managed-memory floor for each active attempt.

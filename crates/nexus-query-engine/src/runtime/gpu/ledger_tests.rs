@@ -2,10 +2,11 @@
 
 use std::sync::{
     Arc, Barrier, Mutex,
-    atomic::{AtomicBool, AtomicUsize, Ordering},
+    atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
 };
 
 use super::*;
+use crate::runtime::{backend_metrics::BackendMetricsStore, gpu::DeviceCapabilities};
 
 fn requirement(floor: u64, hint: Option<u64>) -> AttemptRequirement {
     AttemptRequirement {
@@ -21,6 +22,23 @@ fn requirement(floor: u64, hint: Option<u64>) -> AttemptRequirement {
 fn profile(managed: u64, floor: u64, max_active: usize) -> DeviceResourceProfile {
     DeviceResourceProfile::resolve(0, managed, 0, 0, floor, max_active, 1, max_active * 2, max_active * 2)
         .expect("profile must resolve")
+}
+
+fn cache_profile(managed: u64, floor: u64, max_active: usize, cache_cap: u64) -> DeviceResourceProfile {
+    DeviceResourceProfile::resolve_with_capabilities_and_cache_cap(
+        0,
+        managed,
+        0,
+        0,
+        floor,
+        max_active,
+        1,
+        max_active * 2,
+        max_active * 2,
+        DeviceCapabilities::default(),
+        cache_cap,
+    )
+    .expect("profile must resolve")
 }
 
 fn request(id: u64) -> AdmissionRequestId {
@@ -43,6 +61,29 @@ fn admission_equation_preserves_empty_slot_floors() {
     let third = ledger.try_admit(request(3), &requirement(100, None)).unwrap().expect("third admits at floor");
     assert_eq!(third.budget_bytes(), 100);
     assert!(ledger.try_admit(request(4), &requirement(100, None)).unwrap().is_none());
+}
+
+#[test]
+fn cache_cap_zero_rejects_and_nonzero_cap_is_aggregate() {
+    let disabled = DeviceLedger::new(cache_profile(1_000, 100, 1, 0));
+    assert!(!disabled.try_reserve_evictable_bytes(1).unwrap());
+    let ledger = DeviceLedger::new(cache_profile(1_000, 100, 1, 300));
+    assert!(ledger.try_reserve_evictable_bytes(300).unwrap());
+    assert!(!ledger.try_reserve_evictable_bytes(1).unwrap());
+    assert_eq!(ledger.snapshot().unwrap().cache_evictable_resident_bytes, 300);
+    assert_eq!(ledger.snapshot().unwrap().cache_pinned_in_use_bytes, 0);
+}
+
+#[test]
+fn pinned_cache_bytes_reduce_admission_headroom() {
+    let ledger = DeviceLedger::new(cache_profile(300, 100, 1, 200));
+    assert!(ledger.try_reserve_evictable_bytes(200).unwrap());
+    ledger.pin_cache_residency_charge(200).unwrap();
+    assert_eq!(ledger.candidate_max_new_grant_bytes(100, request(901)).unwrap(), Some(100));
+    assert!(ledger.try_admit(request(901), &requirement(100, None)).unwrap().is_some());
+    let snapshot = ledger.snapshot().unwrap();
+    assert_eq!(snapshot.cache_evictable_resident_bytes, 0);
+    assert_eq!(snapshot.cache_pinned_in_use_bytes, 200);
 }
 
 #[test]
@@ -83,7 +124,7 @@ fn release_refunds_exactly_and_bumps_sequence() {
 #[test]
 fn transition_observer_covers_every_sequence_bump_with_its_atomic_snapshot() {
     let observations = Arc::new(Mutex::new(Vec::<LedgerTransition>::new()));
-    let first = DeviceLedger::new(profile(1_000, 100, 2));
+    let first = DeviceLedger::new(cache_profile(1_000, 100, 2, 700));
     let observations_for_first = Arc::clone(&observations);
     first
         .register_transition_observer(Arc::new(move |transition| {
@@ -132,7 +173,7 @@ fn transition_observer_covers_every_sequence_bump_with_its_atomic_snapshot() {
 
 #[test]
 fn transition_observer_snapshots_match_sequences_during_concurrent_admit_and_release() {
-    let ledger = Arc::new(DeviceLedger::new(profile(1_000, 100, 2)));
+    let ledger = Arc::new(DeviceLedger::new(cache_profile(1_000, 100, 2, 0)));
     let observations = Arc::new(Mutex::new(Vec::<LedgerTransition>::new()));
     let observations_for_observer = Arc::clone(&observations);
     ledger
@@ -174,6 +215,61 @@ fn transition_observer_snapshots_match_sequences_during_concurrent_admit_and_rel
         assert_eq!(transition.snapshot.sequence, u64::try_from(index + 1).unwrap());
         assert!(matches!(transition.kind, LedgerTransitionKind::GrantAdmitted | LedgerTransitionKind::GrantReleased));
     }
+}
+
+#[test]
+fn backend_metrics_observer_remains_exact_after_concurrent_admit_release_and_reservation_updates() {
+    let ledger = Arc::new(DeviceLedger::new(profile(1_000, 100, 2)));
+    let metrics = BackendMetricsStore::new(91, &[0]).expect("fixed metrics store accepts the fixture device");
+    let last_max_live_reserved = Arc::new(AtomicU64::new(0));
+    let metrics_for_observer = metrics.clone();
+    let last_max_for_observer = Arc::clone(&last_max_live_reserved);
+    ledger
+        .register_transition_observer(Arc::new(move |transition| {
+            metrics_for_observer.record_ledger_transition(transition);
+            last_max_for_observer.fetch_max(transition.snapshot.live_reserved_bytes, Ordering::AcqRel);
+        }))
+        .unwrap();
+
+    let start = Arc::new(Barrier::new(3));
+    let workers = (0..2)
+        .map(|worker| {
+            let ledger = Arc::clone(&ledger);
+            let start = Arc::clone(&start);
+            std::thread::spawn(move || {
+                start.wait();
+                for round in 0..8 {
+                    let request_id = u64::try_from(1_000 + worker * 100 + round).unwrap();
+                    loop {
+                        if let Some(grant) =
+                            ledger.try_admit(request(request_id), &requirement(100, Some(100))).unwrap()
+                        {
+                            assert!(grant.try_reserve_live_bytes(20).unwrap());
+                            grant.release_live_bytes(20);
+                            drop(grant);
+                            break;
+                        }
+                        std::thread::yield_now();
+                    }
+                }
+            })
+        })
+        .collect::<Vec<_>>();
+    start.wait();
+    for worker in workers {
+        worker.join().expect("ledger worker must finish");
+    }
+
+    let ledger_snapshot = ledger.snapshot().unwrap();
+    let metrics_snapshot = metrics.snapshot();
+    let device = metrics_snapshot.device(0).expect("configured metrics device exists");
+    assert_eq!(device.ledger_sequence, ledger_snapshot.sequence);
+    assert_eq!(device.admission.active_attempts, u64::try_from(ledger_snapshot.active_attempts).unwrap());
+    assert_eq!(device.admission.live_grant_bytes, ledger_snapshot.live_grants_bytes);
+    assert_eq!(device.admission.live_reserved_bytes, ledger_snapshot.live_reserved_bytes);
+    assert_eq!(device.admission.cache_evictable_resident_bytes, 0);
+    assert_eq!(device.admission.cache_pinned_in_use_bytes, 0);
+    assert_eq!(device.admission.max_live_reserved_bytes, last_max_live_reserved.load(Ordering::Acquire));
 }
 
 #[test]
@@ -462,7 +558,20 @@ fn live_reservation_accounting_stays_exact() {
 
 #[test]
 fn snapshot_aggregates_live_reservations_and_versions_every_observable_accounting_change() {
-    let profile = DeviceResourceProfile::resolve(0, 1_000, 0, 0, 100, 3, 2, 9, 9).unwrap();
+    let profile = DeviceResourceProfile::resolve_with_capabilities_and_cache_cap(
+        0,
+        1_000,
+        0,
+        0,
+        100,
+        3,
+        2,
+        9,
+        9,
+        DeviceCapabilities::default(),
+        700,
+    )
+    .expect("cache test profile must resolve");
     let ledger = DeviceLedger::new(profile);
     let empty = ledger.snapshot().unwrap();
     assert_eq!(empty.live_reserved_bytes, 0);
@@ -520,7 +629,7 @@ fn direct_retention_rejects_new_bytes_above_the_immutable_grant() {
 
 #[test]
 fn evictable_cache_accounting_is_separate_from_the_admission_equation() {
-    let ledger = DeviceLedger::new(profile(1_000, 100, 1));
+    let ledger = DeviceLedger::new(cache_profile(1_000, 100, 1, 900));
     assert!(ledger.try_reserve_evictable_bytes(300).unwrap());
     assert_eq!(ledger.evictable_bytes().unwrap(), 300);
     let snapshot = ledger.snapshot().unwrap();
@@ -535,7 +644,7 @@ fn evictable_cache_accounting_is_separate_from_the_admission_equation() {
 
 #[test]
 fn evictable_cache_bytes_obey_a_cumulative_bound_across_reserve_and_release() {
-    let ledger = DeviceLedger::new(profile(1_000, 100, 1));
+    let ledger = DeviceLedger::new(cache_profile(1_000, 100, 1, 900));
     let grant = ledger.try_admit(request(1), &requirement(100, Some(400))).unwrap().expect("admits");
     assert!(ledger.try_reserve_evictable_bytes(300).unwrap());
     assert_eq!(ledger.release_evictable_bytes(100).unwrap(), 100);

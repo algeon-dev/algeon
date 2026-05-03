@@ -125,7 +125,31 @@ pub fn read_local_parquet_source(
 ) -> Result<GpuDataFrame> {
     validate_local_parquet_source(source)?;
 
-    read_local_parquet_source_uncached(context, source_node_id, source, metrics)
+    // The DataFusion exact-statistical-order implementation carries hidden
+    // order columns whose presence depends on a thread-local execution scope.
+    // The resident value has a stable source schema, so bypass rather than
+    // cache a scope-dependent frame. This preserves the existing exact-order
+    // contract without teaching the cache a second schema producer.
+    let cache =
+        if crate::exec::order::datafusion_order_tracking_enabled() { None } else { context.resident_source_cache() };
+    let key =
+        cache.as_ref().map(|_| crate::runtime::source_identity::GpuLocalParquetSourceCacheKey::from_source(source));
+    if let (Some(cache), Some(key)) = (cache.as_ref(), key.as_ref())
+        && let Some((handle, _retained_device_bytes)) = cache.get(key, context, &source.schema)?
+    {
+        metrics.record_input_batch(handle.num_rows() as u64);
+        return Ok(handle.into_gpu_frame());
+    }
+
+    let frame = read_local_parquet_source_uncached(context, source_node_id, source, metrics)?;
+    if let (Some(cache), Some(key)) = (cache.as_ref(), key) {
+        // Promotion copies, never transfers, the attempt-owned frame. A
+        // failed promotion therefore leaves the current attempt as the sole
+        // owner and preserves its primary execution result.
+        let handle = GpuResultHandle::new(context, frame.clone(), Arc::clone(&source.schema))?;
+        let _promotion = cache.promote(key, context, &handle)?;
+    }
+    Ok(frame)
 }
 
 /// Import a literal host Arrow source into a GPU dataframe.

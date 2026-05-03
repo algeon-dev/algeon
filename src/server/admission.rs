@@ -490,8 +490,8 @@ mod tests {
         assert_eq!(device.admission.active_attempts, 1);
         assert_eq!(device.admission.live_grant_bytes, 1024);
         assert_eq!(device.admission.live_reserved_bytes, 0);
-        // P4 descriptors are present, but cache accounting does not begin
-        // until P5 owns an accounted cache state.
+        // The default zero-cap profile creates no cache allocation domain, so
+        // its ledger-backed cache projections remain byte-for-byte zero.
         assert_eq!(device.admission.cache_evictable_resident_bytes, 0);
         assert_eq!(device.admission.cache_pinned_in_use_bytes, 0);
 

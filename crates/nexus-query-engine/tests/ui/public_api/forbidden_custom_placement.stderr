@@ -1,38 +1,26 @@
 error[E0603]: struct `DeviceRegistry` is private
- --> tests/ui/public_api/forbidden_custom_placement.rs:3:15
+ --> tests/ui/public_api/forbidden_custom_placement.rs:1:35
   |
-3 |     runtime::{DeviceRegistry, PlacementPolicy, PlacementRequest},
-  |               ^^^^^^^^^^^^^^ private struct
+1 | use nexus_query_engine::runtime::{DeviceRegistry, PlacementRequest};
+  |                                   ^^^^^^^^^^^^^^ private struct
   |
 note: the struct `DeviceRegistry` is defined here
  --> src/runtime.rs
   |
-  | pub(crate) use gpu::{DeviceContext, DeviceRegistry, DeviceRegistryConfig, PlacementPolicy, PlacementRequest};
+  | pub(crate) use gpu::{DeviceContext, DeviceRegistry, DeviceRegistryConfig, PlacementRequest};
   |                                     ^^^^^^^^^^^^^^
 
-error[E0603]: trait `PlacementPolicy` is private
- --> tests/ui/public_api/forbidden_custom_placement.rs:3:31
-  |
-3 |     runtime::{DeviceRegistry, PlacementPolicy, PlacementRequest},
-  |                               ^^^^^^^^^^^^^^^ private trait
-  |
-note: the trait `PlacementPolicy` is defined here
- --> src/runtime.rs
-  |
-  | pub(crate) use gpu::{DeviceContext, DeviceRegistry, DeviceRegistryConfig, PlacementPolicy, PlacementRequest};
-  |                                                                           ^^^^^^^^^^^^^^^
-
 error[E0603]: struct `PlacementRequest` is private
- --> tests/ui/public_api/forbidden_custom_placement.rs:3:48
+ --> tests/ui/public_api/forbidden_custom_placement.rs:1:51
   |
-3 |     runtime::{DeviceRegistry, PlacementPolicy, PlacementRequest},
-  |                                                ^^^^^^^^^^^^^^^^ private struct
+1 | use nexus_query_engine::runtime::{DeviceRegistry, PlacementRequest};
+  |                                                   ^^^^^^^^^^^^^^^^ private struct
   |
 note: the struct `PlacementRequest` is defined here
  --> src/runtime.rs
   |
-  | pub(crate) use gpu::{DeviceContext, DeviceRegistry, DeviceRegistryConfig, PlacementPolicy, PlacementRequest};
-  |                                                                                            ^^^^^^^^^^^^^^^^
+  | pub(crate) use gpu::{DeviceContext, DeviceRegistry, DeviceRegistryConfig, PlacementRequest};
+  |                                                                           ^^^^^^^^^^^^^^^^
   |
  ::: src/runtime/gpu/placement.rs
   |

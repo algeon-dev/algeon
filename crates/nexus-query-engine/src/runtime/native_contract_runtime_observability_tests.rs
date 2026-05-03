@@ -117,7 +117,7 @@ fn explicit_observed_execution_uses_manifest_identity_on_query_mismatch() {
     let snapshot = outcome.observation().expect("mismatch still seals observation");
     assert_eq!(snapshot.manifest().query_id.as_str(), "manifest-query");
     assert_eq!(snapshot.manifest().trace_id.as_ref().map(RuntimeTraceId::as_str), Some("shared-trace"));
-    assert_eq!(snapshot.footer().terminal, Some(RuntimeTerminalOutcome::from_query_error(&error)));
+    assert_eq!(snapshot.footer().terminal, Some(RuntimeTerminalOutcome::from_query_error(error)));
 }
 
 #[test]

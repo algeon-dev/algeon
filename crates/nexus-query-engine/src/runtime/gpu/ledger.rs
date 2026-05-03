@@ -23,7 +23,7 @@
 //! `[required_floor, max_new_grant]` but never the fit proof.
 
 use std::{
-    cell::RefCell,
+    cell::Cell,
     collections::BTreeMap,
     fmt,
     panic::{AssertUnwindSafe, catch_unwind},
@@ -39,29 +39,6 @@ use crate::{
 };
 
 const OPERATION: &str = "nexus_query_engine.gpu.device_ledger";
-
-/// Callback used by caches to release evictable device bytes under grant pressure.
-///
-/// The returned byte count is advisory diagnostics only; the ledger always
-/// recomputes pressure from its own state after each observer callback.
-pub type EvictableMemoryObserver = Arc<dyn Fn(EvictableMemoryPressure) -> Result<u64> + Send + Sync + 'static>;
-
-/// Memory-pressure request delivered to evictable-cache observers.
-///
-/// Observers should evict up to `requested_evict_bytes` on this device and
-/// return the number of bytes actually released from the ledger's evictable
-/// accounting. They are invoked without holding the ledger state mutex.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct EvictableMemoryPressure {
-    pub device_ordinal: usize,
-    pub admission_request_id: AdmissionRequestId,
-    pub requested_evict_bytes: u64,
-    pub min_grant_bytes: u64,
-    pub want_grant_bytes: u64,
-    pub outstanding_bytes: u64,
-    pub evictable_bytes: u64,
-    pub free_bytes: u64,
-}
 
 /// Admission health of one device ledger.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -156,6 +133,8 @@ impl LedgerSnapshot {
         let max_new_grant = self
             .managed_capacity_bytes
             .checked_sub(self.live_grants_bytes)?
+            .checked_sub(self.cache_evictable_resident_bytes)?
+            .checked_sub(self.cache_pinned_in_use_bytes)?
             .checked_sub(protected_reserve)?
             .checked_sub(empty_floor_reserve)?;
         (required_floor_bytes <= max_new_grant).then_some(max_new_grant)
@@ -195,6 +174,8 @@ pub struct DeviceLedgerReport {
     pub protected_slot: bool,
     pub protected_reserve_bytes: u64,
     pub cache_evictable_resident_bytes: u64,
+    /// Resident-cache bytes temporarily pinned by an active cache lease.
+    pub cache_pinned_in_use_bytes: u64,
     pub health: String,
     pub grants: Vec<DeviceLedgerGrantRow>,
 }
@@ -221,8 +202,20 @@ pub(crate) enum LedgerTransitionKind {
     ProtectionInstalled,
     ProtectionRemoved,
     GrantReleased,
+    /// Reserved for P5's accounted resident-cache charge transition.
+    ///
+    /// The disabled-cache baseline has no production caller yet; P5 must add
+    /// its cache state-machine transition and emitter together.
     EvictableCharged,
+    /// Reserved for P5's accounted resident-cache release transition.
+    ///
+    /// The disabled-cache baseline has no production caller yet; P5 must add
+    /// its cache state-machine transition and emitter together.
     EvictableReleased,
+    /// A resident-cache entry became in-use and therefore non-evictable.
+    CachePinned,
+    /// The final in-use reference left a resident-cache entry.
+    CacheUnpinned,
     LiveReservationCharged,
     LiveReservationReleased,
 }
@@ -252,13 +245,35 @@ pub struct DeviceLedger {
 struct DeviceLedgerInner {
     profile: DeviceResourceProfile,
     state: Mutex<DeviceLedgerState>,
-    transition_observers: Mutex<Vec<LedgerTransitionObserver>>,
-    release_observers: Mutex<Vec<LedgerReleaseObserver>>,
-    evictable_memory_observers: Mutex<Vec<EvictableMemoryObserver>>,
+    // Registration is copy-on-write.  Transition delivery only clones this
+    // Arc while the ledger state mutex is held; it must never clone a Vec or
+    // allocate on an admission/resource update path.
+    transition_observers: Mutex<Arc<[LedgerTransitionObserver]>>,
+    // Release observers are outside the state mutex, but share the same
+    // allocation-free dispatch rule as transition observers.
+    release_observers: Mutex<Arc<[LedgerReleaseObserver]>>,
+}
+
+const MAX_LEDGER_TRANSITION_OBSERVER_DEPTH: usize = 64;
+
+#[derive(Clone, Copy)]
+struct LedgerTransitionObserverStack {
+    ledgers: [*const DeviceLedgerInner; MAX_LEDGER_TRANSITION_OBSERVER_DEPTH],
+    len: usize,
+}
+
+impl LedgerTransitionObserverStack {
+    const EMPTY: Self = Self { ledgers: [std::ptr::null(); MAX_LEDGER_TRANSITION_OBSERVER_DEPTH], len: 0 };
+
+    fn contains(&self, ledger: *const DeviceLedgerInner) -> bool {
+        self.ledgers[..self.len].contains(&ledger)
+    }
 }
 
 thread_local! {
-    static LEDGER_TRANSITION_OBSERVER_STACK: RefCell<Vec<*const DeviceLedgerInner>> = const { RefCell::new(Vec::new()) };
+    // The reentrancy guard is a fixed stack: in-lock observer dispatch must
+    // remain allocation-free even on a thread's first transition.
+    static LEDGER_TRANSITION_OBSERVER_STACK: Cell<LedgerTransitionObserverStack> = const { Cell::new(LedgerTransitionObserverStack::EMPTY) };
 }
 
 struct LedgerTransitionObserverGuard {
@@ -268,7 +283,16 @@ struct LedgerTransitionObserverGuard {
 impl LedgerTransitionObserverGuard {
     fn enter(ledger: &Arc<DeviceLedgerInner>) -> Self {
         let ledger = Arc::as_ptr(ledger);
-        LEDGER_TRANSITION_OBSERVER_STACK.with(|stack| stack.borrow_mut().push(ledger));
+        LEDGER_TRANSITION_OBSERVER_STACK.with(|stack| {
+            let mut active = stack.get();
+            assert!(
+                active.len < MAX_LEDGER_TRANSITION_OBSERVER_DEPTH,
+                "ledger transition observer nesting exceeds its fixed bound"
+            );
+            active.ledgers[active.len] = ledger;
+            active.len += 1;
+            stack.set(active);
+        });
         Self { ledger }
     }
 }
@@ -276,8 +300,12 @@ impl LedgerTransitionObserverGuard {
 impl Drop for LedgerTransitionObserverGuard {
     fn drop(&mut self) {
         LEDGER_TRANSITION_OBSERVER_STACK.with(|stack| {
-            let active = stack.borrow_mut().pop();
-            debug_assert_eq!(active, Some(self.ledger));
+            let mut active = stack.get();
+            debug_assert!(active.len > 0);
+            active.len = active.len.saturating_sub(1);
+            debug_assert_eq!(active.ledgers[active.len], self.ledger);
+            active.ledgers[active.len] = std::ptr::null();
+            stack.set(active);
         });
     }
 }
@@ -300,6 +328,7 @@ struct DeviceLedgerState {
     protection: Option<SlotProtection>,
     health: DeviceAdmissionHealth,
     evictable_bytes: u64,
+    pinned_bytes: u64,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -332,10 +361,10 @@ impl DeviceLedger {
                     protection: None,
                     health: DeviceAdmissionHealth::Open,
                     evictable_bytes: 0,
+                    pinned_bytes: 0,
                 }),
-                transition_observers: Mutex::new(Vec::new()),
-                release_observers: Mutex::new(Vec::new()),
-                evictable_memory_observers: Mutex::new(Vec::new()),
+                transition_observers: Mutex::new(Arc::from([])),
+                release_observers: Mutex::new(Arc::from([])),
             }),
         }
     }
@@ -467,7 +496,7 @@ impl DeviceLedger {
 
     fn in_transition_observer(&self) -> bool {
         let ledger = Arc::as_ptr(&self.inner);
-        LEDGER_TRANSITION_OBSERVER_STACK.with(|stack| stack.borrow().contains(&ledger))
+        LEDGER_TRANSITION_OBSERVER_STACK.with(|stack| stack.get().contains(ledger))
     }
 
     fn transition_observer_reentrancy_error(&self, action: &'static str) -> QueryError {
@@ -496,18 +525,26 @@ impl DeviceLedger {
         })
     }
 
-    fn transition_observers(&self) -> Vec<LedgerTransitionObserver> {
-        self.inner.transition_observers.lock().map(|observers| observers.clone()).unwrap_or_else(|_error| {
-            eprintln!("[nexus-query-engine] warning: device ledger transition-observer mutex was poisoned");
-            Vec::new()
-        })
+    fn transition_observers(&self) -> Option<Arc<[LedgerTransitionObserver]>> {
+        self.inner
+            .transition_observers
+            .lock()
+            .map(|observers| Arc::clone(&observers))
+            .map_err(|_error| {
+                eprintln!("[nexus-query-engine] warning: device ledger transition-observer mutex was poisoned");
+            })
+            .ok()
     }
 
-    fn release_observers(&self) -> Vec<LedgerReleaseObserver> {
-        self.inner.release_observers.lock().map(|observers| observers.clone()).unwrap_or_else(|_error| {
-            eprintln!("[nexus-query-engine] warning: device ledger release-observer mutex was poisoned");
-            Vec::new()
-        })
+    fn release_observers(&self) -> Option<Arc<[LedgerReleaseObserver]>> {
+        self.inner
+            .release_observers
+            .lock()
+            .map(|observers| Arc::clone(&observers))
+            .map_err(|_error| {
+                eprintln!("[nexus-query-engine] warning: device ledger release-observer mutex was poisoned");
+            })
+            .ok()
     }
 
     fn bump_sequence_and_notify_locked(
@@ -517,11 +554,12 @@ impl DeviceLedger {
     ) -> LedgerTransition {
         state.sequence = state.sequence.saturating_add(1);
         let transition = LedgerTransition { kind, snapshot: self.snapshot_locked(state) };
-        let observers = self.transition_observers();
-        for observer in observers {
-            let _delivery = LedgerTransitionObserverGuard::enter(&self.inner);
-            if catch_unwind(AssertUnwindSafe(|| observer(&transition))).is_err() {
-                eprintln!("[nexus-query-engine] warning: device ledger transition observer panicked");
+        if let Some(observers) = self.transition_observers() {
+            for observer in observers.iter() {
+                let _delivery = LedgerTransitionObserverGuard::enter(&self.inner);
+                if catch_unwind(AssertUnwindSafe(|| observer(&transition))).is_err() {
+                    eprintln!("[nexus-query-engine] warning: device ledger transition observer panicked");
+                }
             }
         }
         transition
@@ -533,18 +571,14 @@ impl DeviceLedger {
     /// sequence is exactly the transition sequence; observer panics are
     /// isolated from admission and release.
     pub(crate) fn register_transition_observer(&self, observer: LedgerTransitionObserver) -> Result<()> {
-        self.inner
-            .transition_observers
-            .lock()
-            .map_err(|_error| {
-                QueryError::new(
-                    QueryErrorCode::Internal,
-                    OPERATION,
-                    "device ledger transition-observer mutex was poisoned",
-                )
+        let mut registered = self.inner.transition_observers.lock().map_err(|_error| {
+            QueryError::new(QueryErrorCode::Internal, OPERATION, "device ledger transition-observer mutex was poisoned")
                 .with_fact("reason", "transition_observer_mutex_poisoned")
-            })?
-            .push(observer);
+        })?;
+        let mut next = Vec::with_capacity(registered.len().saturating_add(1));
+        next.extend(registered.iter().cloned());
+        next.push(observer);
+        *registered = Arc::from(next);
         Ok(())
     }
 
@@ -554,18 +588,14 @@ impl DeviceLedger {
     /// ledger mutex has been released. This preserves the queue-wakeup
     /// contract without conflating it with atomic state observation.
     pub(crate) fn register_release_observer(&self, observer: LedgerReleaseObserver) -> Result<()> {
-        self.inner
-            .release_observers
-            .lock()
-            .map_err(|_error| {
-                QueryError::new(
-                    QueryErrorCode::Internal,
-                    OPERATION,
-                    "device ledger release-observer mutex was poisoned",
-                )
+        let mut registered = self.inner.release_observers.lock().map_err(|_error| {
+            QueryError::new(QueryErrorCode::Internal, OPERATION, "device ledger release-observer mutex was poisoned")
                 .with_fact("reason", "release_observer_mutex_poisoned")
-            })?
-            .push(observer);
+        })?;
+        let mut next = Vec::with_capacity(registered.len().saturating_add(1));
+        next.extend(registered.iter().cloned());
+        next.push(observer);
+        *registered = Arc::from(next);
         Ok(())
     }
 
@@ -608,7 +638,7 @@ impl DeviceLedger {
             // charge is already ledger-owned and must share this atomic
             // snapshot sequence with grants and reservations.
             cache_evictable_resident_bytes: state.evictable_bytes,
-            cache_pinned_in_use_bytes: 0,
+            cache_pinned_in_use_bytes: state.pinned_bytes,
             health: state.health.clone(),
         }
     }
@@ -645,11 +675,13 @@ impl DeviceLedger {
             free_bytes: snapshot
                 .managed_capacity_bytes
                 .saturating_sub(snapshot.live_grants_bytes)
-                .saturating_sub(state.evictable_bytes),
+                .saturating_sub(state.evictable_bytes)
+                .saturating_sub(state.pinned_bytes),
             evictable_bytes: state.evictable_bytes,
             protected_slot: snapshot.protected_slot,
             protected_reserve_bytes: snapshot.protected_reserve_bytes,
             cache_evictable_resident_bytes: snapshot.cache_evictable_resident_bytes,
+            cache_pinned_in_use_bytes: snapshot.cache_pinned_in_use_bytes,
             health: snapshot.health.as_str().to_string(),
             grants,
         })
@@ -718,8 +750,7 @@ impl DeviceLedger {
     /// `[required_floor, max_new_grant]`. Admitting the protected waiter
     /// consumes its protection atomically: the immutable grant replaces the
     /// protected reserve and is never subtracted twice. Cache-internal
-    /// evictable bytes reduce the immediately grantable headroom; under
-    /// pressure the registered cache observers reclaim them first (the P5
+    /// evictable bytes reduce the immediately grantable headroom (the P5
     /// substrate; always zero when caches are disabled).
     pub(crate) fn try_admit(
         &self,
@@ -745,46 +776,15 @@ impl DeviceLedger {
         let Some(max_new_grant) = snapshot.max_new_grant_bytes(required_floor, is_protected) else {
             return Ok(None);
         };
-        let grantable_now = max_new_grant.saturating_sub(state.evictable_bytes);
-        if grantable_now < required_floor {
-            #[cfg(any(feature = "cugraph", test))]
-            {
-                let hint = requirement.soft_working_set_hint_bytes.unwrap_or(grantable_now);
-                drop(state);
-                self.reclaim_evictable_for_grant(waiter_id, required_floor, hint)?;
-                state = self.lock_state("try_admit")?;
-                if !matches!(state.health, DeviceAdmissionHealth::Open) {
-                    return Ok(None);
-                }
-                let is_protected = state.protection.is_some_and(|protection| protection.waiter_id == waiter_id);
-                let snapshot = self.snapshot_locked(&state);
-                let Some(max_new_grant) = snapshot.max_new_grant_bytes(required_floor, is_protected) else {
-                    return Ok(None);
-                };
-                let grantable_now = max_new_grant.saturating_sub(state.evictable_bytes);
-                if grantable_now < required_floor {
-                    return Ok(None);
-                }
-                return Ok(Some(self.commit_grant_locked(
-                    &mut state,
-                    waiter_id,
-                    requirement,
-                    required_floor,
-                    grantable_now,
-                    is_protected,
-                )));
-            }
-            #[cfg(not(any(feature = "cugraph", test)))]
-            {
-                return Ok(None);
-            }
+        if max_new_grant < required_floor {
+            return Ok(None);
         }
         Ok(Some(self.commit_grant_locked(
             &mut state,
             waiter_id,
             requirement,
             required_floor,
-            grantable_now,
+            max_new_grant,
             is_protected,
         )))
     }
@@ -913,9 +913,11 @@ impl DeviceLedger {
         }
         let transition = self.bump_sequence_and_notify_locked(&mut state, LedgerTransitionKind::GrantReleased);
         drop(state);
-        for observer in self.release_observers() {
-            if catch_unwind(AssertUnwindSafe(|| observer(&transition))).is_err() {
-                eprintln!("[nexus-query-engine] warning: device ledger release observer panicked");
+        if let Some(observers) = self.release_observers() {
+            for observer in observers.iter() {
+                if catch_unwind(AssertUnwindSafe(|| observer(&transition))).is_err() {
+                    eprintln!("[nexus-query-engine] warning: device ledger release observer panicked");
+                }
             }
         }
     }
@@ -923,26 +925,16 @@ impl DeviceLedger {
     // ---- Cache-internal evictable accounting (P5 substrate; never part of
     // the admission equation while cache caps are zero). ----
 
-    /// Registers a synchronous evictable-cache pressure observer.
-    pub(crate) fn register_evictable_memory_observer(&self, observer: EvictableMemoryObserver) -> Result<()> {
-        self.inner
-            .evictable_memory_observers
-            .lock()
-            .map_err(|_error| {
-                QueryError::new(QueryErrorCode::Internal, OPERATION, "evictable observer mutex was poisoned")
-                    .with_fact("reason", "evictable_observer_mutex_poisoned")
-            })?
-            .push(observer);
-        Ok(())
-    }
-
     /// Attempts to charge bytes retained by an evictable cache.
     pub(crate) fn try_reserve_evictable_bytes(&self, bytes: u64) -> Result<bool> {
         if bytes == 0 {
             return Ok(true);
         }
         let mut state = self.lock_state("try_reserve_evictable_bytes")?;
-        if self.free_bytes_locked(&state) < bytes {
+        if state.evictable_bytes.saturating_add(state.pinned_bytes).saturating_add(bytes)
+            > self.inner.profile.cache_cap_bytes
+            || self.free_bytes_locked(&state) < bytes
+        {
             return Ok(false);
         }
         state.evictable_bytes = state.evictable_bytes.saturating_add(bytes);
@@ -966,6 +958,103 @@ impl DeviceLedger {
         Ok(released)
     }
 
+    /// Moves one exact resident-cache charge from evictable to pinned.
+    ///
+    /// The aggregate cache charge is unchanged. This narrow transition is
+    /// deliberately private to the shared P5 residency state machine: callers
+    /// must not maintain independent pinned counters beside the ledger.
+    pub(crate) fn pin_cache_residency_charge(&self, bytes: u64) -> Result<()> {
+        if bytes == 0 {
+            return Ok(());
+        }
+        let mut state = self.lock_state("pin_cache_residency_charge")?;
+        if state.evictable_bytes < bytes {
+            return Err(QueryError::new(
+                QueryErrorCode::Internal,
+                OPERATION,
+                "resident-cache pin is missing its evictable ledger charge",
+            )
+            .with_fact("reason", "cache_evictable_charge_missing")
+            .with_fact("requested_bytes", bytes)
+            .with_fact("evictable_bytes", state.evictable_bytes));
+        }
+        let pinned_bytes = state.pinned_bytes.checked_add(bytes).ok_or_else(|| {
+            QueryError::new(QueryErrorCode::Internal, OPERATION, "resident-cache pinned ledger charge overflowed")
+                .with_fact("reason", "cache_pinned_charge_overflow")
+                .with_fact("requested_bytes", bytes)
+                .with_fact("pinned_bytes", state.pinned_bytes)
+        })?;
+        state.evictable_bytes -= bytes;
+        state.pinned_bytes = pinned_bytes;
+        self.bump_sequence_and_notify_locked(&mut state, LedgerTransitionKind::CachePinned);
+        Ok(())
+    }
+
+    /// Moves one exact resident-cache charge from pinned back to evictable.
+    pub(crate) fn unpin_cache_residency_charge(&self, bytes: u64) -> Result<()> {
+        if bytes == 0 {
+            return Ok(());
+        }
+        let mut state = self.lock_state("unpin_cache_residency_charge")?;
+        if state.pinned_bytes < bytes {
+            return Err(QueryError::new(
+                QueryErrorCode::Internal,
+                OPERATION,
+                "resident-cache unpin is missing its pinned ledger charge",
+            )
+            .with_fact("reason", "cache_pinned_charge_missing")
+            .with_fact("requested_bytes", bytes)
+            .with_fact("pinned_bytes", state.pinned_bytes));
+        }
+        let evictable_bytes = state.evictable_bytes.checked_add(bytes).ok_or_else(|| {
+            QueryError::new(QueryErrorCode::Internal, OPERATION, "resident-cache evictable ledger charge overflowed")
+                .with_fact("reason", "cache_evictable_charge_overflow")
+                .with_fact("requested_bytes", bytes)
+                .with_fact("evictable_bytes", state.evictable_bytes)
+        })?;
+        state.pinned_bytes -= bytes;
+        state.evictable_bytes = evictable_bytes;
+        self.bump_sequence_and_notify_locked(&mut state, LedgerTransitionKind::CacheUnpinned);
+        Ok(())
+    }
+
+    /// Releases the complete exact charge of a destroyed resident-cache entry.
+    ///
+    /// Unlike the legacy aggregate release helper, this refuses an
+    /// undercharged release. The residency state machine calls it only after
+    /// GPU-safe destruction has completed, so a mismatched byte count must
+    /// fail closed instead of releasing another entry's charge.
+    pub(crate) fn release_cache_residency_charge_after_destroy(&self, bytes: u64) -> Result<()> {
+        self.release_exact_evictable_cache_charge(bytes, "release_cache_residency_charge_after_destroy")
+    }
+
+    /// Returns unused conservative pre-reservation bytes before a cache entry
+    /// has been committed. No physical allocation owns this excess yet.
+    pub(crate) fn release_cache_residency_precharge_excess(&self, bytes: u64) -> Result<()> {
+        self.release_exact_evictable_cache_charge(bytes, "release_cache_residency_precharge_excess")
+    }
+
+    fn release_exact_evictable_cache_charge(&self, bytes: u64, action: &'static str) -> Result<()> {
+        if bytes == 0 {
+            return Ok(());
+        }
+        let mut state = self.lock_state(action)?;
+        if state.evictable_bytes < bytes {
+            return Err(QueryError::new(
+                QueryErrorCode::Internal,
+                OPERATION,
+                "resident-cache exact release is missing its evictable ledger charge",
+            )
+            .with_fact("reason", "cache_exact_charge_missing")
+            .with_fact("action", action)
+            .with_fact("requested_bytes", bytes)
+            .with_fact("evictable_bytes", state.evictable_bytes));
+        }
+        state.evictable_bytes -= bytes;
+        self.bump_sequence_and_notify_locked(&mut state, LedgerTransitionKind::EvictableReleased);
+        Ok(())
+    }
+
     /// Bytes currently charged to evictable caches.
     pub(crate) fn evictable_bytes(&self) -> Result<u64> {
         let state = self.lock_state("evictable_bytes")?;
@@ -979,86 +1068,9 @@ impl DeviceLedger {
     }
 
     fn free_bytes_locked(&self, state: &DeviceLedgerState) -> u64 {
-        self.inner
-            .profile
-            .managed_capacity_bytes
-            .saturating_sub(state.live_grants_bytes().saturating_add(state.evictable_bytes))
-    }
-
-    /// Runs evictable-cache pressure observers when a grant of `min_bytes`
-    /// cannot be satisfied immediately. Kept for the disabled cache
-    /// substrate; admission itself never depends on cache bytes in P2.
-    #[cfg(any(feature = "cugraph", test))]
-    pub(crate) fn reclaim_evictable_for_grant(
-        &self,
-        admission_request_id: AdmissionRequestId,
-        min_bytes: u64,
-        want_bytes: u64,
-    ) -> Result<()> {
-        let (pressure, observers) = {
-            let state = self.lock_state("reclaim_evictable_for_grant")?;
-            let free_bytes = self.free_bytes_locked(&state);
-            if free_bytes >= min_bytes || state.evictable_bytes == 0 {
-                return Ok(());
-            }
-            let grantable = self.inner.profile.managed_capacity_bytes.saturating_sub(state.live_grants_bytes());
-            if grantable < min_bytes {
-                return Ok(());
-            }
-            let pressure = EvictableMemoryPressure {
-                device_ordinal: self.inner.profile.device_ordinal,
-                admission_request_id,
-                requested_evict_bytes: min_bytes.saturating_sub(free_bytes),
-                min_grant_bytes: min_bytes,
-                want_grant_bytes: want_bytes,
-                outstanding_bytes: state.live_grants_bytes(),
-                evictable_bytes: state.evictable_bytes,
-                free_bytes,
-            };
-            let observers = self
-                .inner
-                .evictable_memory_observers
-                .lock()
-                .map_err(|_error| {
-                    QueryError::new(QueryErrorCode::Internal, OPERATION, "evictable observer mutex was poisoned")
-                        .with_fact("reason", "evictable_observer_mutex_poisoned")
-                })?
-                .clone();
-            (pressure, observers)
-        };
-        let target_free_bytes = pressure.free_bytes.saturating_add(pressure.requested_evict_bytes);
-        for observer in observers {
-            let Some(next_pressure) = self.evictable_pressure_for_target(pressure, target_free_bytes)? else {
-                break;
-            };
-            if let Err(error) = observer(next_pressure) {
-                eprintln!(
-                    "[nexus-query-engine] warning: evictable memory observer failed under grant pressure: {error}"
-                );
-            }
-        }
-        Ok(())
-    }
-
-    #[cfg(any(feature = "cugraph", test))]
-    fn evictable_pressure_for_target(
-        &self,
-        original: EvictableMemoryPressure,
-        target_free_bytes: u64,
-    ) -> Result<Option<EvictableMemoryPressure>> {
-        let state = self.lock_state("evictable_pressure_for_target")?;
-        let free_bytes = self.free_bytes_locked(&state);
-        let requested_evict_bytes = target_free_bytes.saturating_sub(free_bytes).min(state.evictable_bytes);
-        if requested_evict_bytes == 0 {
-            return Ok(None);
-        }
-        Ok(Some(EvictableMemoryPressure {
-            requested_evict_bytes,
-            outstanding_bytes: state.live_grants_bytes(),
-            evictable_bytes: state.evictable_bytes,
-            free_bytes,
-            ..original
-        }))
+        self.inner.profile.managed_capacity_bytes.saturating_sub(
+            state.live_grants_bytes().saturating_add(state.evictable_bytes).saturating_add(state.pinned_bytes),
+        )
     }
 }
 

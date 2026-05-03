@@ -251,22 +251,16 @@ fn attempt_facts_layering_has_no_error_metrics_runtime_observability_cycle() {
 }
 
 #[test]
-fn retired_service_cache_and_second_observation_store_surfaces_do_not_return() {
+fn accounted_service_cache_and_single_observation_store_boundaries_are_preserved() {
     let runtime = read_repo_source("crates/nexus-query-engine/src/runtime.rs");
     assert!(
-        !runtime.contains("mod cache;") && !runtime.contains("mod source_identity;"),
-        "P5 cache ownership must not be retained as an inactive runtime subsystem"
+        runtime.contains("pub(crate) mod cache;") && runtime.contains("pub(crate) mod source_identity;"),
+        "P5 cache ownership and source identity must remain private runtime substrate"
     );
     assert_no_edges(
-        "the retired root metrics-capture observation store must not be reintroduced",
+        "the retired root metrics-capture observation store must not be reintroduced beside P5 cache accounting",
         &["src", "crates/nexus-query-engine/src"],
-        &[
-            "NativeMetricsCaptureSink",
-            "runtime_observations",
-            "record_runtime_observation",
-            "GpuLocalParquetSourceCache",
-            "GpuResidentGraphCache",
-        ],
+        &["NativeMetricsCaptureSink", "runtime_observations", "record_runtime_observation"],
     );
 }
 

@@ -220,7 +220,7 @@ where
                     before,
                     after,
                 });
-                plan = patched;
+                plan = *patched;
                 any_applied = true;
             },
             DimensionDerivedRequestOutcome::Skipped { reason } => {
@@ -258,7 +258,7 @@ fn static_reader_predicate_source_node_ids(plan: &QueryPlan) -> Vec<NodeId> {
 }
 
 enum DimensionDerivedRequestOutcome {
-    Applied { plan: QueryPlan, before: usize, after: usize },
+    Applied { plan: Box<QueryPlan>, before: usize, after: usize },
     Skipped { reason: &'static str },
     Error { error: String },
 }
@@ -334,7 +334,11 @@ where
         &key_filter,
     );
     if result.applied {
-        DimensionDerivedRequestOutcome::Applied { plan: result.plan, before: result.before, after: result.after }
+        DimensionDerivedRequestOutcome::Applied {
+            plan: Box::new(result.plan),
+            before: result.before,
+            after: result.after,
+        }
     } else {
         DimensionDerivedRequestOutcome::Skipped { reason: "no_fact_row_group_reduction" }
     }

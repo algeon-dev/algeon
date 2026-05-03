@@ -1456,25 +1456,23 @@ impl QueryHandle {
         };
         let observation = self.lifetime.observation.clone();
         let handle = Arc::clone(self);
-        let result = pool
-            .run_observed_scoped_in_class(
-                GpuExecutionJobKind::ContextSetup,
-                job_class,
-                observation,
-                move |stream_scope| async move {
-                    let _root_setup_claim = root_setup_claim;
-                    handle.acquire_context_with_cancellation_and_stream_scope(
-                        cancellation,
-                        stream_scope,
-                        setup_claim,
-                        stream_acquire_deadline,
-                        attempt_auxiliary_permit,
-                    )
-                },
-            )
-            .await
-            .and_then(|result| result);
-        result
+        pool.run_observed_scoped_in_class(
+            GpuExecutionJobKind::ContextSetup,
+            job_class,
+            observation,
+            move |stream_scope| async move {
+                let _root_setup_claim = root_setup_claim;
+                handle.acquire_context_with_cancellation_and_stream_scope(
+                    cancellation,
+                    stream_scope,
+                    setup_claim,
+                    stream_acquire_deadline,
+                    attempt_auxiliary_permit,
+                )
+            },
+        )
+        .await
+        .and_then(|result| result)
     }
 
     /// Opaque lifecycle-bound executor for synchronous GPU work on this
@@ -1653,6 +1651,9 @@ impl QueryHandle {
             boundary_policy: service.config.boundary_policy,
             source_scheduler_policy: service.config.source_scheduler_policy,
             source_chunk_planning_mode: service.config.source_chunk_planning_mode,
+            resident_source_cache: resources.resident_caches.source_for_device(self.device_ordinal),
+            #[cfg(feature = "cugraph")]
+            resident_graph_cache: resources.resident_caches.graph_for_device(self.device_ordinal),
             lakehouse_cache_fill_config: service.config.lakehouse_cache_fill.clone(),
             service_stream_pool: device.stream_pool().clone(),
             lakehouse_cache_fill_budget: resources.lakehouse_cache_fill_budget.clone(),
