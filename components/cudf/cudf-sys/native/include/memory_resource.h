@@ -34,6 +34,10 @@ cudf_status_t cudf_memory_resource_create_pool(size_t initial_pool_size,
 ///
 /// The shim temporarily switches the calling thread to `device`, destroys the
 /// resource, then restores the previous device before returning.
+///
+/// Returns `CUDF_ERROR_INVALID_OPERATION` if `handle` is currently installed as
+/// RMM's process-global current device resource. Callers must first install a
+/// different current resource before destroying this handle.
 cudf_status_t cudf_memory_resource_destroy(cudf_memory_resource_handle handle, int32_t device);
 
 /// Borrow the underlying `device_memory_resource*` from an owning memory
@@ -55,6 +59,13 @@ cudf_status_t cudf_test_memory_resource_create_stats(cudf_memory_resource_handle
 /// memory resource created by `cudf_test_memory_resource_create_stats`.
 cudf_status_t cudf_test_memory_resource_allocation_count(cudf_memory_resource_handle handle,
                                                          int64_t* out);
+
+/// Read the current live allocation count from a statistics memory resource.
+///
+/// Test-only hook. Fails if `handle` does not refer to a statistics-enabled
+/// memory resource created by `cudf_test_memory_resource_create_stats`.
+cudf_status_t cudf_test_memory_resource_active_allocation_count(cudf_memory_resource_handle handle,
+                                                                int64_t* out);
 
 /// Resolve a memory-resource handle to its underlying `device_memory_resource*`.
 ///

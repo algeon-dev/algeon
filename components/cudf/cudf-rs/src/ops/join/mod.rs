@@ -437,9 +437,15 @@ pub fn full_join_indices(
     )
 }
 
-#[derive(Debug)]
 struct HashJoinHandle {
     handle: NonNull<c_void>,
+    _domain: Arc<ExecutionDomain>,
+}
+
+impl fmt::Debug for HashJoinHandle {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("HashJoinHandle").field("handle", &self.handle).finish()
+    }
 }
 
 // SAFETY: libcudf `hash_join` is documented as reusable for repeated and
@@ -507,7 +513,10 @@ impl HashJoin {
                     ("execution_context_provided", true.to_string()),
                 ],
             )?;
-            HashJoinHandle { handle: error::require_non_null(handle, operation, "hash join")? }
+            HashJoinHandle {
+                handle: error::require_non_null(handle, operation, "hash join")?,
+                _domain: Arc::clone(build.execution_domain()),
+            }
         };
 
         Ok(Self { handle: Arc::new(handle), build: Arc::new(build), options })

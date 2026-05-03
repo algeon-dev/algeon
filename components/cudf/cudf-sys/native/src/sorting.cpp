@@ -14,7 +14,6 @@
 #include <vector>
 
 namespace {
-
 /// Build a vector of cudf::order from the C enum array.
 cudf_status_t to_order_vec(const cudf_order_t* orders, int32_t n, std::vector<cudf::order>* out)
 {
@@ -46,11 +45,9 @@ cudf_status_t to_null_order_vec(const cudf_null_order_t* orders,
   }
   return CUDF_SUCCESS;
 }
-
 }  // namespace
 
 extern "C" {
-
 cudf_status_t cudf_sort(cudf_table_view_handle input,
                         const cudf_order_t* column_order,
                         const cudf_null_order_t* null_precedence,
@@ -76,8 +73,7 @@ cudf_status_t cudf_sort_ex(cudf_table_view_handle input,
   }
   CUDF_RUST_TRY
   {
-    cudf_exec_context exec{
-      cudf::get_default_stream(), cudf::get_current_device_resource_ref(), nullptr};
+    cudf_exec_context exec          = cudf_make_exec_context();
     cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
@@ -94,8 +90,11 @@ cudf_status_t cudf_sort_ex(cudf_table_view_handle input,
       if (status != CUDF_SUCCESS) { return status; }
     }
 
-    auto result = cudf::sort(*view, orders, null_orders, exec.stream, exec.mr);
-    *out        = cudf_release_table_handle(std::move(result));
+    {
+      cudf_current_device_resource_guard current_mr{exec.mr_raw};
+      auto result = cudf::sort(*view, orders, null_orders, exec.stream, exec.mr);
+      *out        = cudf_release_table_handle(std::move(result));
+    }
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
@@ -126,8 +125,7 @@ cudf_status_t cudf_stable_sort_ex(cudf_table_view_handle input,
   }
   CUDF_RUST_TRY
   {
-    cudf_exec_context exec{
-      cudf::get_default_stream(), cudf::get_current_device_resource_ref(), nullptr};
+    cudf_exec_context exec          = cudf_make_exec_context();
     cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
@@ -144,8 +142,11 @@ cudf_status_t cudf_stable_sort_ex(cudf_table_view_handle input,
       if (status != CUDF_SUCCESS) { return status; }
     }
 
-    auto result = cudf::stable_sort(*view, orders, null_orders, exec.stream, exec.mr);
-    *out        = cudf_release_table_handle(std::move(result));
+    {
+      cudf_current_device_resource_guard current_mr{exec.mr_raw};
+      auto result = cudf::stable_sort(*view, orders, null_orders, exec.stream, exec.mr);
+      *out        = cudf_release_table_handle(std::move(result));
+    }
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
@@ -180,8 +181,7 @@ cudf_status_t cudf_sort_by_key_ex(cudf_table_view_handle values,
   }
   CUDF_RUST_TRY
   {
-    cudf_exec_context exec{
-      cudf::get_default_stream(), cudf::get_current_device_resource_ref(), nullptr};
+    cudf_exec_context exec          = cudf_make_exec_context();
     cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
@@ -199,8 +199,11 @@ cudf_status_t cudf_sort_by_key_ex(cudf_table_view_handle values,
       if (status != CUDF_SUCCESS) { return status; }
     }
 
-    auto result = cudf::sort_by_key(*vals, *ks, orders, null_orders, exec.stream, exec.mr);
-    *out        = cudf_release_table_handle(std::move(result));
+    {
+      cudf_current_device_resource_guard current_mr{exec.mr_raw};
+      auto result = cudf::sort_by_key(*vals, *ks, orders, null_orders, exec.stream, exec.mr);
+      *out        = cudf_release_table_handle(std::move(result));
+    }
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
@@ -235,8 +238,7 @@ cudf_status_t cudf_stable_sort_by_key_ex(cudf_table_view_handle values,
   }
   CUDF_RUST_TRY
   {
-    cudf_exec_context exec{
-      cudf::get_default_stream(), cudf::get_current_device_resource_ref(), nullptr};
+    cudf_exec_context exec          = cudf_make_exec_context();
     cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
@@ -254,8 +256,11 @@ cudf_status_t cudf_stable_sort_by_key_ex(cudf_table_view_handle values,
       if (status != CUDF_SUCCESS) { return status; }
     }
 
-    auto result = cudf::stable_sort_by_key(*vals, *ks, orders, null_orders, exec.stream, exec.mr);
-    *out        = cudf_release_table_handle(std::move(result));
+    {
+      cudf_current_device_resource_guard current_mr{exec.mr_raw};
+      auto result = cudf::stable_sort_by_key(*vals, *ks, orders, null_orders, exec.stream, exec.mr);
+      *out        = cudf_release_table_handle(std::move(result));
+    }
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
@@ -286,8 +291,7 @@ cudf_status_t cudf_sorted_order_ex(cudf_table_view_handle input,
   }
   CUDF_RUST_TRY
   {
-    cudf_exec_context exec{
-      cudf::get_default_stream(), cudf::get_current_device_resource_ref(), nullptr};
+    cudf_exec_context exec          = cudf_make_exec_context();
     cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
@@ -304,8 +308,11 @@ cudf_status_t cudf_sorted_order_ex(cudf_table_view_handle input,
       if (status != CUDF_SUCCESS) { return status; }
     }
 
-    auto result = cudf::sorted_order(*view, orders, null_orders, exec.stream, exec.mr);
-    *out        = cudf_release_column_handle(std::move(result));
+    {
+      cudf_current_device_resource_guard current_mr{exec.mr_raw};
+      auto result = cudf::sorted_order(*view, orders, null_orders, exec.stream, exec.mr);
+      *out        = cudf_release_column_handle(std::move(result));
+    }
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
@@ -326,6 +333,10 @@ cudf_status_t cudf_is_sorted(cudf_table_view_handle input,
   }
   CUDF_RUST_TRY
   {
+    cudf_exec_context exec          = cudf_make_exec_context();
+    cudf_status_t const exec_status = cudf_resolve_exec_options(nullptr, &exec);
+    if (exec_status != CUDF_SUCCESS) { return exec_status; }
+
     auto* view = static_cast<cudf::table_view*>(input);
 
     std::vector<cudf::order> orders;
@@ -339,10 +350,12 @@ cudf_status_t cudf_is_sorted(cudf_table_view_handle input,
       if (status != CUDF_SUCCESS) { return status; }
     }
 
-    *out = cudf::is_sorted(*view, orders, null_orders) ? 1 : 0;
+    {
+      cudf_current_device_resource_guard current_mr{exec.mr_raw};
+      *out = cudf::is_sorted(*view, orders, null_orders, exec.stream) ? 1 : 0;
+    }
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
 }
-
 }  // extern "C"

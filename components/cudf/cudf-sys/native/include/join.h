@@ -176,7 +176,8 @@ cudf_status_t cudf_distinct_hash_join_create_ex(cudf_table_view_handle build,
                                                 cudf_distinct_hash_join_handle* out,
                                                 const cudf_exec_options_t* options);
 
-/// Destroy a reusable distinct-hash-join handle.
+/// Destroy a reusable distinct-hash-join handle under its build-time device
+/// and memory resource.
 void cudf_distinct_hash_join_destroy(cudf_distinct_hash_join_handle handle);
 
 /// Probe a reusable distinct-hash-join artifact and return build-row indices.
@@ -219,7 +220,8 @@ cudf_status_t cudf_hash_join_create_ex(cudf_table_view_handle build,
                                        cudf_hash_join_handle* out,
                                        const cudf_exec_options_t* options);
 
-/// Destroy a reusable hash-join handle.
+/// Destroy a reusable hash-join handle under its build-time device and memory
+/// resource.
 void cudf_hash_join_destroy(cudf_hash_join_handle handle);
 
 /// Probe a reusable hash-join artifact for inner-join gather indices.

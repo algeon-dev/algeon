@@ -27,6 +27,26 @@ extern "C" {
     /// is queued for synchronization regression testing.
     pub fn cudf_test_fail_next_fixed_width_host_import_after_null_mask_copy();
 
+    /// Force the next strings host import to fail after the offsets copy is
+    /// queued for synchronization regression testing.
+    pub fn cudf_test_fail_next_strings_host_import_after_offsets_copy();
+
+    /// Force the next strings host import to fail after the chars copy is
+    /// queued for synchronization regression testing.
+    pub fn cudf_test_fail_next_strings_host_import_after_chars_copy();
+
+    /// Force the next strings host import to fail after the null-mask copy is
+    /// queued for synchronization regression testing.
+    pub fn cudf_test_fail_next_strings_host_import_after_null_mask_copy();
+
+    /// Force the next strings host import to fail after host-source copies are
+    /// queued and before the libcudf strings column is assembled.
+    pub fn cudf_test_fail_next_strings_host_import_before_make_strings_column();
+
+    /// Force the next strings host import to fail after the libcudf strings
+    /// column is assembled but before the shim returns success.
+    pub fn cudf_test_fail_next_strings_host_import_after_make_strings_column();
+
     /// Force the next groupby aggregate call to report a negative result
     /// column count on success for foreign-contract regression testing.
     pub fn cudf_test_groupby_fail_next_negative_total_columns();

@@ -82,22 +82,29 @@ impl<'a> ColumnView<'a> {
         &self.domain
     }
 
+    pub(crate) fn slice_with_operation(&self, offset: i32, length: i32, operation: &'static str) -> Result<Self> {
+        let exec_options = self.domain.exec_options_raw();
+        let mut sliced = ptr::null_mut();
+        error::check_status_in(
+            unsafe {
+                cudf_sys::cudf_column_view_slice_ex(self.handle.as_ptr(), offset, length, &exec_options, &mut sliced)
+            },
+            operation,
+        )?;
+
+        Ok(Self {
+            handle: error::require_non_null(sliced, operation, "sliced column view")?,
+            domain: Arc::clone(&self.domain),
+            _lifetime: PhantomData,
+        })
+    }
+
     pub(crate) fn duplicate_with_operation(&self, operation: &'static str) -> Result<Self> {
         let row_count = self.len()?;
         let len = i32::try_from(row_count)
             .map_err(|_| error::range_limit_error(operation, "row_count", "i32::MAX", row_count))?;
 
-        let mut duplicated = ptr::null_mut();
-        error::check_status_in(
-            unsafe { cudf_sys::cudf_column_view_slice(self.handle.as_ptr(), 0, len, &mut duplicated) },
-            operation,
-        )?;
-
-        Ok(Self {
-            handle: error::require_non_null(duplicated, operation, "duplicated column view")?,
-            domain: Arc::clone(&self.domain),
-            _lifetime: PhantomData,
-        })
+        self.slice_with_operation(0, len, operation)
     }
     pub(crate) fn __debug_execution_domain_kind(&self) -> &'static str {
         self.domain.debug_kind()

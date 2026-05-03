@@ -62,11 +62,11 @@ static_assert(std::is_standard_layout_v<cudf_exec_options_t>,
               "cudf_exec_options_t must be standard layout");
 static_assert(offsetof(cudf_exec_options_t, struct_size) == 0,
               "cudf_exec_options_t::struct_size must be the first field");
-static_assert(sizeof(((cudf_exec_options_t*)nullptr)->device) == sizeof(int32_t),
+static_assert(sizeof(static_cast<cudf_exec_options_t*>(nullptr)->device) == sizeof(int32_t),
               "cudf_exec_options_t::device must be 32-bit");
 static_assert(offsetof(cudf_exec_options_t, device) > offsetof(cudf_exec_options_t, struct_size),
               "cudf_exec_options_t::device must follow struct_size");
-static_assert(sizeof(((cudf_exec_options_t*)nullptr)->flags) == sizeof(uint32_t),
+static_assert(sizeof(static_cast<cudf_exec_options_t*>(nullptr)->flags) == sizeof(uint32_t),
               "cudf_exec_options_t::flags must be 32-bit");
 static_assert(offsetof(cudf_exec_options_t, flags) > offsetof(cudf_exec_options_t, device),
               "cudf_exec_options_t::flags must follow device");
@@ -74,23 +74,28 @@ static_assert(offsetof(cudf_exec_options_t, stream) > offsetof(cudf_exec_options
               "cudf_exec_options_t::stream must follow flags");
 static_assert(offsetof(cudf_exec_options_t, mr) > offsetof(cudf_exec_options_t, stream),
               "cudf_exec_options_t::mr must follow stream");
-static_assert(sizeof(((cudf_exec_options_t*)nullptr)->reserved) == sizeof(uint64_t) * 4,
+static_assert(sizeof(static_cast<cudf_exec_options_t*>(nullptr)->reserved) == sizeof(uint64_t) * 4,
               "cudf_exec_options_t::reserved must expose four 64-bit slots");
 static_assert(std::is_standard_layout_v<cudf_row_predicate_node_t>,
               "cudf_row_predicate_node_t must be standard layout");
 static_assert(offsetof(cudf_row_predicate_node_t, kind) == 0,
               "cudf_row_predicate_node_t::kind must be the first field");
-static_assert(sizeof(((cudf_row_predicate_node_t*)nullptr)->lhs_index) == sizeof(int32_t),
+static_assert(sizeof(static_cast<cudf_row_predicate_node_t*>(nullptr)->lhs_index) ==
+                sizeof(int32_t),
               "cudf_row_predicate_node_t::lhs_index must be 32-bit");
-static_assert(sizeof(((cudf_row_predicate_node_t*)nullptr)->rhs_index) == sizeof(int32_t),
+static_assert(sizeof(static_cast<cudf_row_predicate_node_t*>(nullptr)->rhs_index) ==
+                sizeof(int32_t),
               "cudf_row_predicate_node_t::rhs_index must be 32-bit");
-static_assert(sizeof(((cudf_row_predicate_node_t*)nullptr)->column_index) == sizeof(int32_t),
+static_assert(sizeof(static_cast<cudf_row_predicate_node_t*>(nullptr)->column_index) ==
+                sizeof(int32_t),
               "cudf_row_predicate_node_t::column_index must be 32-bit");
-static_assert(sizeof(((cudf_row_predicate_node_t*)nullptr)->binary_op) == sizeof(int32_t),
+static_assert(sizeof(static_cast<cudf_row_predicate_node_t*>(nullptr)->binary_op) ==
+                sizeof(int32_t),
               "cudf_row_predicate_node_t::binary_op must be 32-bit");
-static_assert(sizeof(((cudf_row_predicate_node_t*)nullptr)->unary_op) == sizeof(int32_t),
+static_assert(sizeof(static_cast<cudf_row_predicate_node_t*>(nullptr)->unary_op) == sizeof(int32_t),
               "cudf_row_predicate_node_t::unary_op must be 32-bit");
-static_assert(sizeof(((cudf_row_predicate_node_t*)nullptr)->literal) == sizeof(cudf_scalar_handle),
+static_assert(sizeof(static_cast<cudf_row_predicate_node_t*>(nullptr)->literal) ==
+                sizeof(cudf_scalar_handle),
               "cudf_row_predicate_node_t::literal must match cudf_scalar_handle width");
 static_assert(offsetof(cudf_row_predicate_node_t, lhs_index) >
                 offsetof(cudf_row_predicate_node_t, kind),

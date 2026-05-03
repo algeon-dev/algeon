@@ -19,7 +19,6 @@ rmm::cuda_stream_view cudf_stream_view_from_handle(cudf_stream_handle handle)
 }
 
 extern "C" {
-
 /// Create a new CUDA stream.
 cudf_status_t cudf_stream_create(cudf_stream_handle* out)
 {
@@ -81,8 +80,10 @@ cudf_status_t cudf_stream_is_ready(cudf_stream_handle handle, int32_t* out)
     cudaError_t err = cudaStreamQuery(stream.value());
     if (err == cudaSuccess) {
       *out = 1;
+
     } else if (err == cudaErrorNotReady) {
       *out = 0;
+
     } else {
       auto msg = std::string("CUDA stream query failed: ") + cudaGetErrorString(err);
       set_error(msg);
@@ -105,5 +106,4 @@ cudf_status_t cudf_stream_raw(cudf_stream_handle handle, void** out)
   }
   CUDF_RUST_CATCH
 }
-
 }  // extern "C"

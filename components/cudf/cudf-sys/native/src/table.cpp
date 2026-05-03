@@ -15,12 +15,12 @@
 #include <cudf/utilities/memory_resource.hpp>
 
 #include <cstdlib>
+#include <exception>
 #include <memory>
 #include <new>
 #include <vector>
 
 namespace {
-
 // Internal fault injection for ffi_regressions.rs. Thread-local so parallel
 // tests on other threads do not see the failpoint.
 thread_local bool g_fail_next_table_release_columns_handle_array_alloc = false;
@@ -71,11 +71,9 @@ cudf_status_t validate_table_create_columns(cudf_column_handle* columns, int32_t
 
   return CUDF_SUCCESS;
 }
-
 }  // namespace
 
 extern "C" {
-
 void cudf_test_fail_next_table_release_columns_handle_array_alloc()
 {
   g_fail_next_table_release_columns_handle_array_alloc = true;
@@ -109,31 +107,18 @@ cudf_status_t cudf_table_create(cudf_column_handle* columns,
 
     std::vector<std::unique_ptr<cudf_column_handle_state>> states;
     states.reserve(num_columns);
-    bool all_native = true;
     for (int32_t i = 0; i < num_columns; ++i) {
       states.push_back(cudf_take_column_state(columns[i]));
-      all_native = all_native && states.back()->is_native();
     }
 
     for (int32_t i = 0; i < num_columns; ++i) {
       columns[i] = nullptr;
     }
 
-    if (all_native) {
-      std::vector<std::unique_ptr<cudf::column>> cols;
-      cols.reserve(states.size());
-      for (auto& state : states) {
-        cols.push_back(state->release_native_column());
-      }
-      auto native = std::make_unique<cudf::table>(std::move(cols));
-      *out        = cudf_release_table_handle(std::move(native));
-      return CUDF_SUCCESS;
-    }
-
     auto const expected_rows =
       num_columns == 0 ? static_cast<cudf::size_type>(0) : states.front()->size();
     *out = cudf_release_table_handle(
-      cudf_make_foreign_table_handle_state_from_columns(expected_rows, std::move(states)));
+      cudf_make_table_handle_state_from_columns(expected_rows, std::move(states)));
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
@@ -153,13 +138,14 @@ cudf_status_t cudf_table_copy_ex(cudf_table_handle src,
   CUDF_RUST_NULL_CHECK(src, "src is null");
   CUDF_RUST_TRY
   {
-    cudf_exec_context exec{
-      cudf::get_default_stream(), cudf::get_current_device_resource_ref(), nullptr};
+    cudf_exec_context exec          = cudf_make_exec_context();
     cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
-    auto copy = cudf_table_state_from_handle(src).deep_copy(exec.stream, exec.mr);
-    *out      = cudf_release_table_handle(std::move(copy));
+    {
+      auto copy = cudf_table_state_from_handle(src).deep_copy(exec.stream, exec.mr);
+      *out      = cudf_release_table_handle(std::move(copy), cudf_capture_exec_provenance(exec));
+    }
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
@@ -199,8 +185,7 @@ cudf_status_t cudf_table_payload_size_ex(cudf_table_handle handle,
   CUDF_RUST_NULL_CHECK(handle, "handle is null");
   CUDF_RUST_TRY
   {
-    cudf_exec_context exec{
-      cudf::get_default_stream(), cudf::get_current_device_resource_ref(), nullptr};
+    cudf_exec_context exec          = cudf_make_exec_context();
     cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
@@ -225,7 +210,14 @@ cudf_status_t cudf_table_device_allocated_size(cudf_table_handle handle, size_t*
 
 void cudf_table_destroy(cudf_table_handle handle)
 {
-  delete static_cast<cudf_table_handle_state*>(handle);
+  if (handle == nullptr) { return; }
+  auto* state = static_cast<cudf_table_handle_state*>(handle);
+  if (auto provenance = state->destroy_provenance()) {
+    auto const cleanup = cudf_destroy_under_provenance(*provenance, [state]() { delete state; });
+    if (cleanup != cudf_provenance_cleanup_result::completed) { std::terminate(); }
+  } else {
+    delete state;
+  }
 }
 
 cudf_status_t cudf_table_view(cudf_table_handle handle, cudf_table_view_handle* out)
@@ -373,7 +365,7 @@ cudf_status_t cudf_table_release_columns(cudf_table_handle table,
   CUDF_RUST_TRY
   {
     auto& table_state = cudf_table_state_from_handle(table);
-    auto num_cols     = static_cast<int32_t>(table_state.num_columns());
+    auto num_cols     = table_state.num_columns();
 
     if (num_cols == 0) {
       auto owned_table = cudf_take_table_state(table);
@@ -388,21 +380,41 @@ cudf_status_t cudf_table_release_columns(cudf_table_handle table,
       return CUDF_ERROR_OUT_OF_MEMORY;
     }
 
-    auto* arr = new (std::nothrow) cudf_column_handle[num_cols];
+    std::unique_ptr<cudf_column_handle[]> arr{new (std::nothrow) cudf_column_handle[num_cols]};
     if (arr == nullptr) {
       set_error("failed to allocate column handle array");
       return CUDF_ERROR_OUT_OF_MEMORY;
     }
 
-    // From this point onward, remaining steps are non-fallible: release the
-    // columns, transfer their handles, and destroy the now-empty table.
-    auto owned_table = cudf_take_table_state(table);
-    auto cols        = owned_table->release_columns();
     for (int32_t i = 0; i < num_cols; ++i) {
-      arr[i] = cudf_release_column_handle(std::move(cols[i]));
+      arr[i] = nullptr;
     }
 
-    *out_columns = arr;
+    auto const num_rows = table_state.num_rows();
+    std::vector<std::unique_ptr<cudf_column_handle_state>> cols;
+    try {
+      cols = table_state.release_columns();
+      for (int32_t i = 0; i < num_cols; ++i) {
+        arr[i] = cudf_publish_column_handle(cols[i]);
+      }
+    } catch (...) {
+      std::vector<std::unique_ptr<cudf_column_handle_state>> restored_cols;
+      restored_cols.reserve(static_cast<std::size_t>(num_cols));
+      for (int32_t i = 0; i < num_cols; ++i) {
+        if (arr[i] != nullptr) {
+          restored_cols.push_back(cudf_take_column_state(arr[i]));
+          arr[i] = nullptr;
+        } else if (static_cast<std::size_t>(i) < cols.size() && cols[i] != nullptr) {
+          restored_cols.push_back(std::move(cols[i]));
+        }
+      }
+      table_state.restore_released_columns(num_rows, std::move(restored_cols));
+      throw;
+    }
+
+    auto owned_table = cudf_take_table_state(table);
+    owned_table.reset();
+    *out_columns = arr.release();
     *out_count   = num_cols;
     return CUDF_SUCCESS;
   }
@@ -410,5 +422,4 @@ cudf_status_t cudf_table_release_columns(cudf_table_handle table,
 }
 
 void cudf_free_column_array(cudf_column_handle* array) { delete[] array; }
-
 }  // extern "C"

@@ -51,9 +51,10 @@ cudf_status_t cudf_io_read_parquet(const char* filepath,
 
 /// Read Parquet with explicit execution context.
 ///
-/// Passing NULL for `options`, or leaving `options->stream` / `options->mr`
-/// NULL, uses cuDF's default stream and current device memory resource.
-/// When `options->mr` is non-NULL, it must outlive the returned table.
+/// Passing NULL for `exec_options`, or leaving `exec_options->stream` /
+/// `exec_options->mr` NULL, uses cuDF's default stream and current device
+/// memory resource.
+/// When `exec_options->mr` is non-NULL, it must outlive the returned table.
 cudf_status_t cudf_io_read_parquet_ex(const char* filepath,
                                       const char** columns,
                                       int32_t num_columns,
@@ -62,7 +63,7 @@ cudf_status_t cudf_io_read_parquet_ex(const char* filepath,
                                       const int32_t* row_groups,
                                       int32_t num_row_groups,
                                       cudf_table_handle* out,
-                                      const cudf_exec_options_t* options);
+                                      const cudf_exec_options_t* exec_options);
 
 /// Read a Parquet file, returning the table and column names.
 /// `out_names` is populated with `out_num_names` null-terminated strings.
@@ -91,9 +92,10 @@ cudf_status_t cudf_io_read_parquet_with_metadata(const char* filepath,
 
 /// Read Parquet with metadata and explicit execution context.
 ///
-/// Passing NULL for `options`, or leaving `options->stream` / `options->mr`
-/// NULL, uses cuDF's default stream and current device memory resource.
-/// When `options->mr` is non-NULL, it must outlive the returned table.
+/// Passing NULL for `exec_options`, or leaving `exec_options->stream` /
+/// `exec_options->mr` NULL, uses cuDF's default stream and current device
+/// memory resource.
+/// When `exec_options->mr` is non-NULL, it must outlive the returned table.
 cudf_status_t cudf_io_read_parquet_with_metadata_ex(const char* filepath,
                                                     const char** columns,
                                                     int32_t num_columns,
@@ -104,7 +106,7 @@ cudf_status_t cudf_io_read_parquet_with_metadata_ex(const char* filepath,
                                                     cudf_table_handle* out_table,
                                                     char*** out_names,
                                                     int32_t* out_num_names,
-                                                    const cudf_exec_options_t* options);
+                                                    const cudf_exec_options_t* exec_options);
 
 /// Free column name array returned by `cudf_io_read_parquet_with_metadata`.
 void cudf_io_free_column_names(char** names, int32_t num_names);
@@ -125,13 +127,13 @@ cudf_status_t cudf_io_write_parquet(cudf_table_view_handle table,
 
 /// Write Parquet with explicit execution context.
 /// NOTE: libcudf's write_parquet only accepts stream, not mr.
-/// The mr field in options is ignored for writes.
+/// The mr field in exec_options is ignored for writes.
 cudf_status_t cudf_io_write_parquet_ex(cudf_table_view_handle table,
                                        const char* filepath,
                                        const char** column_names,
                                        int32_t num_columns,
                                        int32_t row_group_size_rows,
-                                       const cudf_exec_options_t* options);
+                                       const cudf_exec_options_t* exec_options);
 
 // ---------------------------------------------------------------------------
 // CSV
@@ -145,14 +147,15 @@ cudf_status_t cudf_io_read_csv(const char* filepath,
 
 /// Read a CSV file into a table with explicit execution context.
 ///
-/// Passing NULL for `options`, or leaving `options->stream` / `options->mr`
-/// NULL, uses cuDF's default stream and current device memory resource.
-/// When `options->mr` is non-NULL, it must outlive the returned table.
+/// Passing NULL for `exec_options`, or leaving `exec_options->stream` /
+/// `exec_options->mr` NULL, uses cuDF's default stream and current device
+/// memory resource.
+/// When `exec_options->mr` is non-NULL, it must outlive the returned table.
 cudf_status_t cudf_io_read_csv_ex(const char* filepath,
                                   char delimiter,
                                   int32_t has_header,
                                   cudf_table_handle* out,
-                                  const cudf_exec_options_t* options);
+                                  const cudf_exec_options_t* exec_options);
 
 /// Write a table to a CSV file.
 /// `column_names` is an array of null-terminated strings (one per column).
@@ -170,14 +173,14 @@ cudf_status_t cudf_io_write_csv(cudf_table_view_handle table,
 /// Write a table to a CSV file with explicit execution context.
 ///
 /// NOTE: libcudf's CSV writer accepts stream but not mr. The mr field in
-/// `options` is ignored for writes.
+/// `exec_options` is ignored for writes.
 cudf_status_t cudf_io_write_csv_ex(cudf_table_view_handle table,
                                    const char* filepath,
                                    const char** column_names,
                                    int32_t num_columns,
                                    char delimiter,
                                    int32_t include_header,
-                                   const cudf_exec_options_t* options);
+                                   const cudf_exec_options_t* exec_options);
 
 // ---------------------------------------------------------------------------
 // JSON
@@ -191,7 +194,7 @@ cudf_status_t cudf_io_read_json(const char* filepath, int32_t lines, cudf_table_
 cudf_status_t cudf_io_read_json_ex(const char* filepath,
                                    int32_t lines,
                                    cudf_table_handle* out,
-                                   const cudf_exec_options_t* options);
+                                   const cudf_exec_options_t* exec_options);
 
 /// Read a JSON file, returning the table and column names.
 /// `out_names` is populated with `out_num_names` null-terminated strings.
@@ -208,7 +211,7 @@ cudf_status_t cudf_io_read_json_with_metadata_ex(const char* filepath,
                                                  cudf_table_handle* out_table,
                                                  char*** out_names,
                                                  int32_t* out_num_names,
-                                                 const cudf_exec_options_t* options);
+                                                 const cudf_exec_options_t* exec_options);
 
 /// Write a table to a JSON file.
 /// `lines`: 1 for JSON Lines (NDJSON), 0 for standard JSON.
@@ -231,7 +234,7 @@ cudf_status_t cudf_io_write_json_ex(cudf_table_view_handle table,
                                     int32_t num_columns,
                                     int32_t lines,
                                     int32_t include_nulls,
-                                    const cudf_exec_options_t* options);
+                                    const cudf_exec_options_t* exec_options);
 
 /// Arm a one-shot malformed metadata response for the next JSON/Parquet
 /// metadata read on the current thread. Intended only for regression tests.

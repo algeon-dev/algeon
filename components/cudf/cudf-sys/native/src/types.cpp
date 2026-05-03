@@ -6,7 +6,6 @@
 #include <cudf/utilities/traits.hpp>
 
 extern "C" {
-
 cudf_status_t cudf_data_type_create(cudf_type_id_t type_id, cudf_data_type_handle* out)
 {
   CUDF_RUST_NULL_CHECK(out, "out is null");
@@ -77,6 +76,7 @@ cudf_status_t cudf_type_size(cudf_type_id_t type_id, int32_t* out)
     cudf::data_type dtype(to_cudf_type_id(type_id));
     if (cudf::is_fixed_width(dtype)) {
       *out = static_cast<int32_t>(cudf::size_of(dtype));
+
     } else {
       *out = 0;
     }
@@ -84,5 +84,4 @@ cudf_status_t cudf_type_size(cudf_type_id_t type_id, int32_t* out)
   }
   CUDF_RUST_CATCH
 }
-
 }  // extern "C"

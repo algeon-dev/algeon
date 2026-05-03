@@ -65,6 +65,12 @@ extern "C" {
         out: *mut i64,
     ) -> cudf_status_t;
 
+    /// Read the current live allocation count from a statistics memory resource.
+    pub fn cudf_test_memory_resource_active_allocation_count(
+        handle: cudf_memory_resource_handle,
+        out: *mut i64,
+    ) -> cudf_status_t;
+
     /// Resolve a memory-resource handle to its underlying `device_memory_resource*`.
     pub fn cudf_test_memory_resource_raw(handle: cudf_memory_resource_handle, out: *mut *mut c_void) -> cudf_status_t;
 

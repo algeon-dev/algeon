@@ -1,6 +1,7 @@
 #include "strings.h"
 
 #include "execution_context_internal.hpp"
+#include "scalar_handle.hpp"
 #include "shim_common.h"
 
 #include <cudf/column/column.hpp>
@@ -30,12 +31,12 @@ static cudf::strings_column_view to_strings_view(cudf_column_view_handle h)
 // Returns CUDF_SUCCESS on success, CUDF_ERROR_TYPE on type mismatch.
 static cudf_status_t check_string_scalar(cudf_scalar_handle handle, cudf::string_scalar** out)
 {
-  auto* s = static_cast<cudf::scalar*>(handle);
-  if (s->type().id() != cudf::type_id::STRING) {
+  auto& s = cudf_scalar_from_handle(handle);
+  if (s.type().id() != cudf::type_id::STRING) {
     set_error("scalar is not a string type");
     return CUDF_ERROR_TYPE;
   }
-  *out = static_cast<cudf::string_scalar*>(s);
+  *out = static_cast<cudf::string_scalar*>(&s);
   return CUDF_SUCCESS;
 }
 
@@ -56,11 +57,11 @@ static cudf_status_t validate_like_arguments(char const* pattern,
     set_error("escape_character_len must be 0 or 1");
     return CUDF_ERROR_INVALID_OPERATION;
   }
-  if ((pattern_len > 0) && (pattern == nullptr)) {
+  if (pattern_len > 0 && pattern == nullptr) {
     set_error("pattern is null");
     return CUDF_ERROR_NULL;
   }
-  if ((escape_character_len > 0) && (escape_character == nullptr)) {
+  if (escape_character_len > 0 && escape_character == nullptr) {
     set_error("escape_character is null");
     return CUDF_ERROR_NULL;
   }
@@ -73,7 +74,6 @@ static std::string_view make_host_string_view(char const* ptr, int32_t len)
 }
 
 extern "C" {
-
 // ---------------------------------------------------------------------------
 // Case conversion
 // ---------------------------------------------------------------------------
@@ -92,13 +92,14 @@ cudf_status_t cudf_strings_to_lower_ex(cudf_column_view_handle input,
   CUDF_RUST_NULL_CHECK(input, "input is null");
   CUDF_RUST_TRY
   {
-    cudf_exec_context exec{
-      cudf::get_default_stream(), cudf::get_current_device_resource_ref(), nullptr};
+    cudf_exec_context exec          = cudf_make_exec_context();
     cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
-    auto result = cudf::strings::to_lower(to_strings_view(input), exec.stream, exec.mr);
-    *out        = cudf_release_column_handle(std::move(result));
+    {
+      auto result = cudf::strings::to_lower(to_strings_view(input), exec.stream, exec.mr);
+      *out        = cudf_release_column_handle(std::move(result));
+    }
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
@@ -118,13 +119,14 @@ cudf_status_t cudf_strings_to_upper_ex(cudf_column_view_handle input,
   CUDF_RUST_NULL_CHECK(input, "input is null");
   CUDF_RUST_TRY
   {
-    cudf_exec_context exec{
-      cudf::get_default_stream(), cudf::get_current_device_resource_ref(), nullptr};
+    cudf_exec_context exec          = cudf_make_exec_context();
     cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
-    auto result = cudf::strings::to_upper(to_strings_view(input), exec.stream, exec.mr);
-    *out        = cudf_release_column_handle(std::move(result));
+    {
+      auto result = cudf::strings::to_upper(to_strings_view(input), exec.stream, exec.mr);
+      *out        = cudf_release_column_handle(std::move(result));
+    }
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
@@ -152,16 +154,17 @@ cudf_status_t cudf_strings_contains_ex(cudf_column_view_handle input,
   CUDF_RUST_NULL_CHECK(target, "target is null");
   CUDF_RUST_TRY
   {
-    cudf_exec_context exec{
-      cudf::get_default_stream(), cudf::get_current_device_resource_ref(), nullptr};
+    cudf_exec_context exec          = cudf_make_exec_context();
     cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
     cudf::string_scalar* scalar     = nullptr;
     cudf_status_t const type_status = check_string_scalar(target, &scalar);
     if (type_status != CUDF_SUCCESS) { return type_status; }
-    auto result = cudf::strings::contains(to_strings_view(input), *scalar, exec.stream, exec.mr);
-    *out        = cudf_release_column_handle(std::move(result));
+    {
+      auto result = cudf::strings::contains(to_strings_view(input), *scalar, exec.stream, exec.mr);
+      *out        = cudf_release_column_handle(std::move(result));
+    }
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
@@ -185,16 +188,18 @@ cudf_status_t cudf_strings_starts_with_ex(cudf_column_view_handle input,
   CUDF_RUST_NULL_CHECK(target, "target is null");
   CUDF_RUST_TRY
   {
-    cudf_exec_context exec{
-      cudf::get_default_stream(), cudf::get_current_device_resource_ref(), nullptr};
+    cudf_exec_context exec          = cudf_make_exec_context();
     cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
     cudf::string_scalar* scalar     = nullptr;
     cudf_status_t const type_status = check_string_scalar(target, &scalar);
     if (type_status != CUDF_SUCCESS) { return type_status; }
-    auto result = cudf::strings::starts_with(to_strings_view(input), *scalar, exec.stream, exec.mr);
-    *out        = cudf_release_column_handle(std::move(result));
+    {
+      auto result =
+        cudf::strings::starts_with(to_strings_view(input), *scalar, exec.stream, exec.mr);
+      *out = cudf_release_column_handle(std::move(result));
+    }
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
@@ -218,16 +223,17 @@ cudf_status_t cudf_strings_ends_with_ex(cudf_column_view_handle input,
   CUDF_RUST_NULL_CHECK(target, "target is null");
   CUDF_RUST_TRY
   {
-    cudf_exec_context exec{
-      cudf::get_default_stream(), cudf::get_current_device_resource_ref(), nullptr};
+    cudf_exec_context exec          = cudf_make_exec_context();
     cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
     cudf::string_scalar* scalar     = nullptr;
     cudf_status_t const type_status = check_string_scalar(target, &scalar);
     if (type_status != CUDF_SUCCESS) { return type_status; }
-    auto result = cudf::strings::ends_with(to_strings_view(input), *scalar, exec.stream, exec.mr);
-    *out        = cudf_release_column_handle(std::move(result));
+    {
+      auto result = cudf::strings::ends_with(to_strings_view(input), *scalar, exec.stream, exec.mr);
+      *out        = cudf_release_column_handle(std::move(result));
+    }
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
@@ -265,18 +271,20 @@ cudf_status_t cudf_strings_like_ex(cudf_column_view_handle input,
 
   CUDF_RUST_TRY
   {
-    cudf_exec_context exec{
-      cudf::get_default_stream(), cudf::get_current_device_resource_ref(), nullptr};
+    cudf_exec_context exec          = cudf_make_exec_context();
     cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
     auto const pattern_view = make_host_string_view(pattern, pattern_len);
     auto const escape_view  = make_host_string_view(escape_character, escape_character_len);
-    auto result =
-      cudf::strings::like(to_strings_view(input), pattern_view, escape_view, exec.stream, exec.mr);
-    exec.stream.synchronize();
-    cudf_record_synchronized_stream(exec.stream);
-    *out = cudf_release_column_handle(std::move(result));
+    {
+      cudf_current_device_resource_guard current_mr{exec.mr_raw};
+      auto result = cudf::strings::like(
+        to_strings_view(input), pattern_view, escape_view, exec.stream, exec.mr);
+      exec.stream.synchronize();
+      cudf_record_synchronized_stream(exec.stream);
+      *out = cudf_release_column_handle(std::move(result));
+    }
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
@@ -316,18 +324,21 @@ cudf_status_t cudf_strings_slice_ex(cudf_column_view_handle input,
 
   CUDF_RUST_TRY
   {
-    cudf_exec_context exec{
-      cudf::get_default_stream(), cudf::get_current_device_resource_ref(), nullptr};
+    cudf_exec_context exec          = cudf_make_exec_context();
     cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
-    cudf::numeric_scalar<cudf::size_type> start_scalar{
-      start, start_valid != 0, exec.stream, exec.mr};
-    cudf::numeric_scalar<cudf::size_type> stop_scalar{stop, stop_valid != 0, exec.stream, exec.mr};
-    cudf::numeric_scalar<cudf::size_type> step_scalar{step, true, exec.stream, exec.mr};
-    auto result = cudf::strings::slice_strings(
-      to_strings_view(input), start_scalar, stop_scalar, step_scalar, exec.stream, exec.mr);
-    *out = cudf_release_column_handle(std::move(result));
+    {
+      cudf_current_device_resource_guard current_mr{exec.mr_raw};
+      cudf::numeric_scalar<cudf::size_type> start_scalar{
+        start, start_valid != 0, exec.stream, exec.mr};
+      cudf::numeric_scalar<cudf::size_type> stop_scalar{
+        stop, stop_valid != 0, exec.stream, exec.mr};
+      cudf::numeric_scalar<cudf::size_type> step_scalar{step, true, exec.stream, exec.mr};
+      auto result = cudf::strings::slice_strings(
+        to_strings_view(input), start_scalar, stop_scalar, step_scalar, exec.stream, exec.mr);
+      *out = cudf_release_column_handle(std::move(result));
+    }
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
@@ -357,8 +368,7 @@ cudf_status_t cudf_strings_strip_ex(cudf_column_view_handle input,
   CUDF_RUST_NULL_CHECK(to_strip, "to_strip is null");
   CUDF_RUST_TRY
   {
-    cudf_exec_context exec{
-      cudf::get_default_stream(), cudf::get_current_device_resource_ref(), nullptr};
+    cudf_exec_context exec          = cudf_make_exec_context();
     cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
@@ -373,9 +383,11 @@ cudf_status_t cudf_strings_strip_ex(cudf_column_view_handle input,
     cudf::string_scalar* scalar     = nullptr;
     cudf_status_t const type_status = check_string_scalar(to_strip, &scalar);
     if (type_status != CUDF_SUCCESS) { return type_status; }
-    auto result =
-      cudf::strings::strip(to_strings_view(input), cudf_side, *scalar, exec.stream, exec.mr);
-    *out = cudf_release_column_handle(std::move(result));
+    {
+      auto result =
+        cudf::strings::strip(to_strings_view(input), cudf_side, *scalar, exec.stream, exec.mr);
+      *out = cudf_release_column_handle(std::move(result));
+    }
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
@@ -399,13 +411,14 @@ cudf_status_t cudf_strings_count_characters_ex(cudf_column_view_handle input,
   CUDF_RUST_NULL_CHECK(input, "input is null");
   CUDF_RUST_TRY
   {
-    cudf_exec_context exec{
-      cudf::get_default_stream(), cudf::get_current_device_resource_ref(), nullptr};
+    cudf_exec_context exec          = cudf_make_exec_context();
     cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
-    auto result = cudf::strings::count_characters(to_strings_view(input), exec.stream, exec.mr);
-    *out        = cudf_release_column_handle(std::move(result));
+    {
+      auto result = cudf::strings::count_characters(to_strings_view(input), exec.stream, exec.mr);
+      *out        = cudf_release_column_handle(std::move(result));
+    }
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
@@ -425,16 +438,16 @@ cudf_status_t cudf_strings_count_bytes_ex(cudf_column_view_handle input,
   CUDF_RUST_NULL_CHECK(input, "input is null");
   CUDF_RUST_TRY
   {
-    cudf_exec_context exec{
-      cudf::get_default_stream(), cudf::get_current_device_resource_ref(), nullptr};
+    cudf_exec_context exec          = cudf_make_exec_context();
     cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
-    auto result = cudf::strings::count_bytes(to_strings_view(input), exec.stream, exec.mr);
-    *out        = cudf_release_column_handle(std::move(result));
+    {
+      auto result = cudf::strings::count_bytes(to_strings_view(input), exec.stream, exec.mr);
+      *out        = cudf_release_column_handle(std::move(result));
+    }
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
 }
-
 }  // extern "C"

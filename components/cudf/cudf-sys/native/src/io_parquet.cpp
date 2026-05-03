@@ -18,7 +18,6 @@
 #include <vector>
 
 extern "C" {
-
 cudf_status_t cudf_io_read_parquet(const char* filepath,
                                    const char** columns,
                                    int32_t num_columns,
@@ -72,8 +71,7 @@ cudf_status_t cudf_io_read_parquet_ex(const char* filepath,
   if (num_columns > 0) { CUDF_RUST_NULL_CHECK(columns, "columns is null"); }
   CUDF_RUST_TRY
   {
-    cudf_exec_context exec{
-      cudf::get_default_stream(), cudf::get_current_device_resource_ref(), nullptr};
+    cudf_exec_context exec          = cudf_make_exec_context();
     cudf_status_t const exec_status = cudf_resolve_exec_options(exec_options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
@@ -88,21 +86,24 @@ cudf_status_t cudf_io_read_parquet_ex(const char* filepath,
       for (int32_t i = 0; i < num_columns; ++i) {
         col_names.emplace_back(columns[i]);
       }
-      builder.columns(col_names);
+      builder.column_names(col_names);
     }
 
     if (num_row_groups > 0) {
       std::vector<cudf::size_type> rg_indices(row_groups, row_groups + num_row_groups);
       builder.row_groups({std::move(rg_indices)});
+
     } else {
       if (skip_rows > 0) { builder.skip_rows(skip_rows); }
       if (num_rows >= 0) { builder.num_rows(num_rows); }
     }
 
-    auto options = builder.build();
-    auto result  = cudf::io::read_parquet(options, exec.stream, exec.mr);
+    {
+      auto options         = builder.build();
+      auto [tbl, metadata] = cudf::io::read_parquet(options, exec.stream, exec.mr);
 
-    *out = cudf_release_table_handle(std::move(result.tbl));
+      *out = cudf_release_table_handle(std::move(tbl));
+    }
     return CUDF_SUCCESS;
   }
   CUDF_RUST_IO_CATCH
@@ -134,8 +135,7 @@ cudf_status_t cudf_io_write_parquet_ex(cudf_table_view_handle table,
   if (num_columns > 0) { CUDF_RUST_NULL_CHECK(column_names, "column_names is null"); }
   CUDF_RUST_TRY
   {
-    cudf_exec_context exec{
-      cudf::get_default_stream(), cudf::get_current_device_resource_ref(), nullptr};
+    cudf_exec_context exec          = cudf_make_exec_context();
     cudf_status_t const exec_status = cudf_resolve_exec_options(exec_options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
@@ -159,9 +159,10 @@ cudf_status_t cudf_io_write_parquet_ex(cudf_table_view_handle table,
     auto options = builder.build();
 
     if (row_group_size_rows > 0) { options.set_row_group_size_rows(row_group_size_rows); }
-    // NOTE: write_parquet only accepts stream, not mr (it writes to a sink,
-    // not an allocator). The mr from exec_options is ignored for writes.
-    cudf::io::write_parquet(options, exec.stream);
+    {
+      cudf_current_device_resource_guard current_mr{exec.mr_raw};
+      cudf::io::write_parquet(options, exec.stream);
+    }
     return CUDF_SUCCESS;
   }
   CUDF_RUST_IO_CATCH
@@ -237,8 +238,7 @@ cudf_status_t cudf_io_read_parquet_with_metadata_ex(const char* filepath,
   if (num_columns > 0) { CUDF_RUST_NULL_CHECK(columns, "columns is null"); }
   CUDF_RUST_TRY
   {
-    cudf_exec_context exec{
-      cudf::get_default_stream(), cudf::get_current_device_resource_ref(), nullptr};
+    cudf_exec_context exec          = cudf_make_exec_context();
     cudf_status_t const exec_status = cudf_resolve_exec_options(exec_options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
@@ -253,19 +253,23 @@ cudf_status_t cudf_io_read_parquet_with_metadata_ex(const char* filepath,
       for (int32_t i = 0; i < num_columns; ++i) {
         col_names.emplace_back(columns[i]);
       }
-      builder.columns(col_names);
+      builder.column_names(col_names);
     }
 
     if (num_row_groups > 0) {
       std::vector<cudf::size_type> rg_indices(row_groups, row_groups + num_row_groups);
       builder.row_groups({std::move(rg_indices)});
+
     } else {
       if (skip_rows > 0) { builder.skip_rows(skip_rows); }
       if (num_rows >= 0) { builder.num_rows(num_rows); }
     }
 
-    auto options = builder.build();
-    auto result  = cudf::io::read_parquet(options, exec.stream, exec.mr);
+    cudf::io::table_with_metadata result;
+    {
+      auto options = builder.build();
+      result       = cudf::io::read_parquet(options, exec.stream, exec.mr);
+    }
 
     auto const fault = cudf_test_io_take_next_metadata_fault();
     if (fault != CUDF_TEST_IO_METADATA_FAULT_NONE) {
@@ -322,5 +326,4 @@ void cudf_io_free_column_names(char** names, int32_t num_names)
   }
   delete[] names;
 }
-
 }  // extern "C"

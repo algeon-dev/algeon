@@ -7,14 +7,23 @@
 #include <rmm/cuda_stream_view.hpp>
 #include <rmm/resource_ref.hpp>
 
+#include <memory>
+
 namespace rmm::mr {
 class device_memory_resource;
 }
 
 rmm::cuda_stream_view cudf_stream_view_from_handle(cudf_stream_handle handle);
+
 rmm::device_async_resource_ref cudf_memory_resource_ref_from_handle(
   cudf_memory_resource_handle handle);
+
 rmm::mr::device_memory_resource* cudf_memory_resource_raw_from_handle(
   cudf_memory_resource_handle handle);
+
+std::shared_ptr<void> cudf_memory_resource_lifetime_from_handle(cudf_memory_resource_handle handle);
+
+std::shared_ptr<void> cudf_memory_resource_lifetime_from_raw(
+  rmm::mr::device_memory_resource* raw_mr);
 
 #endif  // CUDF_RUST_HANDLE_ACCESS_HPP

@@ -9,6 +9,7 @@ use std::{
     mem,
     os::raw::c_void,
     ptr::{self, NonNull},
+    sync::Arc,
 };
 
 use crate::{
@@ -16,14 +17,15 @@ use crate::{
         error::{self, Result},
         types::CudfType,
     },
-    runtime::{Runtime, device_guard::DeviceGuard},
+    runtime::{Runtime, execution_domain::ExecutionDomain},
 };
 
 /// An owned block of GPU device memory.
 ///
 /// `DeviceBuffer` wraps an `rmm::device_buffer` via the cudf-sys C shim.
 /// The underlying GPU memory is freed when this value is dropped.
-/// It snapshots the explicit runtime device that created it so later zero-copy
+/// It retains the explicit runtime domain that created it so the stream and
+/// memory-resource owners outlive the allocation and so later zero-copy
 /// adoption into a [`Column`](super::Column) can reject cross-device misuse
 /// before handing ownership to libcudf.
 ///
@@ -47,7 +49,7 @@ use crate::{
 /// ```
 pub struct DeviceBuffer {
     handle: NonNull<c_void>,
-    device_snapshot: i32,
+    domain: Arc<ExecutionDomain>,
 }
 
 // SAFETY: DeviceBuffer owns a GPU device allocation via an opaque C++ handle.
@@ -58,27 +60,28 @@ unsafe impl Send for DeviceBuffer {}
 unsafe impl Sync for DeviceBuffer {}
 
 impl DeviceBuffer {
-    fn create_on_current_device(size_bytes: usize, device_snapshot: i32) -> Result<Self> {
+    fn create_on_current_device(size_bytes: usize, domain: Arc<ExecutionDomain>) -> Result<Self> {
         let mut handle = ptr::null_mut();
+        let exec_options = domain.exec_options_raw();
         error::check_status_in(
-            unsafe { cudf_sys::cudf_device_buffer_create(size_bytes, &mut handle) },
+            unsafe { cudf_sys::cudf_device_buffer_create_ex(size_bytes, &exec_options, &mut handle) },
             "device_buffer::create_on_current_device",
         )?;
         Ok(Self {
             handle: error::require_non_null(handle, "device_buffer::create_on_current_device", "device buffer")?,
-            device_snapshot,
+            domain,
         })
     }
 
     pub(crate) fn new_in_runtime(runtime: &Runtime, size_bytes: usize) -> Result<Self> {
-        let _guard = DeviceGuard::new(runtime.device())?;
-        Self::create_on_current_device(size_bytes, runtime.device().ordinal_raw())
+        let domain = Arc::clone(runtime.execution_domain());
+        Self::create_on_current_device(size_bytes, domain)
     }
 
     pub(crate) fn from_host_data_in_runtime<T: CudfType>(runtime: &Runtime, data: &[T]) -> Result<Self> {
-        let _guard = DeviceGuard::new(runtime.device())?;
+        let domain = Arc::clone(runtime.execution_domain());
         let byte_len = mem::size_of_val(data);
-        let buf = Self::create_on_current_device(byte_len, runtime.device().ordinal_raw())?;
+        let buf = Self::create_on_current_device(byte_len, domain)?;
         if byte_len > 0 {
             error::check_status_in(
                 unsafe {
@@ -131,13 +134,15 @@ impl DeviceBuffer {
     /// The caller is responsible for either passing the handle to an FFI
     /// function that consumes it (e.g., `cudf_column_adopt_device_buffer`) or
     /// reconstructing a `DeviceBuffer` via [`from_raw_parts`](Self::from_raw_parts).
-    pub(crate) fn into_raw_parts(self) -> (*mut c_void, i32) {
+    pub(crate) fn into_raw_parts(self) -> (*mut c_void, Arc<ExecutionDomain>) {
         let this = mem::ManuallyDrop::new(self);
-        (this.handle.as_ptr(), this.device_snapshot)
+        let Self { handle: _, domain: _ } = &*this;
+        let domain = unsafe { ptr::read(&this.domain) };
+        (this.handle.as_ptr(), domain)
     }
 
     pub(crate) fn device_snapshot(&self) -> i32 {
-        self.device_snapshot
+        self.domain.device_snapshot()
     }
 
     /// Reconstruct a `DeviceBuffer` from raw FFI parts, taking ownership.
@@ -146,11 +151,8 @@ impl DeviceBuffer {
     ///
     /// The handle must be a valid `cudf_device_buffer_handle` that has not
     /// been consumed by another FFI call.
-    pub(crate) unsafe fn from_raw_parts(handle: *mut c_void, device_snapshot: i32) -> Result<Self> {
-        Ok(Self {
-            handle: error::require_non_null(handle, "device_buffer::from_raw_parts", "device buffer")?,
-            device_snapshot,
-        })
+    pub(crate) unsafe fn from_raw_parts(handle: *mut c_void, domain: Arc<ExecutionDomain>) -> Result<Self> {
+        Ok(Self { handle: error::require_non_null(handle, "device_buffer::from_raw_parts", "device buffer")?, domain })
     }
 }
 

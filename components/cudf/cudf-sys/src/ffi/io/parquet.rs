@@ -82,8 +82,11 @@ extern "C" {
     ) -> cudf_status_t;
 
     /// Write Parquet with explicit execution context.
-    /// NOTE: libcudf's write_parquet only accepts stream, not mr.
-    /// The mr field in options is ignored for writes.
+    ///
+    /// libcudf's write_parquet surface accepts a stream but not an explicit
+    /// memory resource. The shim still treats `options->mr` as the memory
+    /// resource for writer-internal temporary allocations by installing it as
+    /// RMM's current device resource for the duration of the libcudf call.
     pub fn cudf_io_write_parquet_ex(
         table: cudf_table_view_handle,
         filepath: *const c_char,

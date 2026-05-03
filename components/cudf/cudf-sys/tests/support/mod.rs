@@ -238,6 +238,13 @@ impl OwnedMemoryResource {
         out
     }
 
+    pub fn active_allocation_count(&self) -> i64 {
+        let mut out = 0_i64;
+        let st = unsafe { cudf_sys::cudf_test_memory_resource_active_allocation_count(self.raw, &mut out) };
+        assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+        out
+    }
+
     pub fn raw_device_resource(&self) -> *mut c_void {
         let mut out = ptr::null_mut();
         let st = unsafe { cudf_sys::cudf_memory_resource_raw(self.raw, &mut out) };

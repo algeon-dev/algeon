@@ -30,7 +30,6 @@ using cudf_interop::require_non_negative_i32;
 using cudf_interop::require_size_type_from_size_t;
 
 namespace {
-
 cudf_interop_buffer_binding_t const* find_binding(binding_index_t const& index, uint32_t id)
 {
   auto const it = index.find(id);
@@ -478,11 +477,9 @@ std::unique_ptr<cudf::column> build_prepared_host_column(uint32_t root_column_id
 
   CUDF_FAIL("prepared host import layout kind is unsupported");
 }
-
 }  // namespace
 
 extern "C" {
-
 cudf_status_t cudf_column_copy_from_prepared_device_export(
   uint32_t root_column_id,
   cudf_interop_semantic_column_t const* semantic_columns,
@@ -518,16 +515,17 @@ cudf_status_t cudf_column_copy_from_prepared_device_export_ex(
   }
   CUDF_RUST_TRY
   {
-    cudf_exec_context exec{
-      cudf::get_default_stream(), cudf::get_current_device_resource_ref(), nullptr};
+    cudf_exec_context exec          = cudf_make_exec_context();
     cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
     auto const col_index  = build_column_index(semantic_columns, num_semantic_columns);
     auto const bind_index = build_binding_index(bindings, num_bindings);
     auto const view       = build_prepared_column_view(root_column_id, col_index, bind_index);
-    auto copy             = std::make_unique<cudf::column>(view, exec.stream, exec.mr);
-    *out                  = cudf_release_column_handle(std::move(copy));
+    {
+      auto copy = std::make_unique<cudf::column>(view, exec.stream, exec.mr);
+      *out      = cudf_release_column_handle(std::move(copy));
+    }
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
@@ -583,8 +581,7 @@ cudf_status_t cudf_table_copy_from_prepared_device_export_ex(
   }
   CUDF_RUST_TRY
   {
-    cudf_exec_context exec{
-      cudf::get_default_stream(), cudf::get_current_device_resource_ref(), nullptr};
+    cudf_exec_context exec          = cudf_make_exec_context();
     cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
@@ -597,8 +594,10 @@ cudf_status_t cudf_table_copy_from_prepared_device_export_ex(
         build_prepared_column_view(table->column_ids[index], col_index, bind_index));
     }
 
-    auto copy = std::make_unique<cudf::table>(cudf::table_view(columns), exec.stream, exec.mr);
-    *out      = cudf_release_table_handle(std::move(copy));
+    {
+      auto copy = std::make_unique<cudf::table>(cudf::table_view(columns), exec.stream, exec.mr);
+      *out      = cudf_release_table_handle(std::move(copy));
+    }
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
@@ -639,8 +638,7 @@ cudf_status_t cudf_column_copy_from_prepared_host_export_ex(
   }
   CUDF_RUST_TRY
   {
-    cudf_exec_context exec{
-      cudf::get_default_stream(), cudf::get_current_device_resource_ref(), nullptr};
+    cudf_exec_context exec          = cudf_make_exec_context();
     cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
@@ -703,8 +701,7 @@ cudf_status_t cudf_table_copy_from_prepared_host_export_ex(
   }
   CUDF_RUST_TRY
   {
-    cudf_exec_context exec{
-      cudf::get_default_stream(), cudf::get_current_device_resource_ref(), nullptr};
+    cudf_exec_context exec          = cudf_make_exec_context();
     cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
@@ -723,5 +720,4 @@ cudf_status_t cudf_table_copy_from_prepared_host_export_ex(
   }
   CUDF_RUST_CATCH
 }
-
 }  // extern "C"

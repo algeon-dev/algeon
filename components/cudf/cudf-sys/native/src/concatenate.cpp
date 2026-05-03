@@ -14,7 +14,6 @@
 #include <vector>
 
 extern "C" {
-
 cudf_status_t cudf_concatenate_columns(const cudf_column_view_handle* columns,
                                        int32_t num_columns,
                                        cudf_column_handle* out)
@@ -44,13 +43,14 @@ cudf_status_t cudf_concatenate_columns_ex(const cudf_column_view_handle* columns
       views.push_back(*cv);
     }
 
-    cudf_exec_context exec{
-      cudf::get_default_stream(), cudf::get_current_device_resource_ref(), nullptr};
+    cudf_exec_context exec          = cudf_make_exec_context();
     cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
-    auto result = cudf::concatenate(views, exec.stream, exec.mr);
-    *out        = cudf_release_column_handle(std::move(result));
+    {
+      auto result = cudf::concatenate(views, exec.stream, exec.mr);
+      *out        = cudf_release_column_handle(std::move(result));
+    }
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
@@ -85,16 +85,16 @@ cudf_status_t cudf_concatenate_tables_ex(const cudf_table_view_handle* tables,
       views.push_back(*tv);
     }
 
-    cudf_exec_context exec{
-      cudf::get_default_stream(), cudf::get_current_device_resource_ref(), nullptr};
+    cudf_exec_context exec          = cudf_make_exec_context();
     cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
-    auto result = cudf::concatenate(views, exec.stream, exec.mr);
-    *out        = cudf_release_table_handle(std::move(result));
+    {
+      auto result = cudf::concatenate(views, exec.stream, exec.mr);
+      *out        = cudf_release_table_handle(std::move(result));
+    }
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
 }
-
 }  // extern "C"

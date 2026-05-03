@@ -56,6 +56,7 @@ fn assert_column_type(col: *mut c_void, expected_type: cudf_sys::cudf_type_id_t)
 
 #[test]
 fn test_datetime_extract_component_returns_int16_values() {
+    let _shim_state = lock_shim_state();
     let input = make_timestamp_days_column(&[0, 10_561, 18_321]);
     let view = make_column_view(input);
     let mut out: *mut c_void = ptr::null_mut();
@@ -121,6 +122,7 @@ fn test_datetime_extract_component_ex_uses_explicit_stream_and_mr() {
 
 #[test]
 fn test_datetime_extract_component_validates_null_handles_and_invalid_component() {
+    let _shim_state = lock_shim_state();
     let input = make_timestamp_days_column(&[0]);
     let view = make_column_view(input);
     let mut out: *mut c_void = ptr::null_mut();

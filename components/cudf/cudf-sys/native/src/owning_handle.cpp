@@ -10,6 +10,7 @@
 #include <cudf/utilities/traits.hpp>
 
 #include <cstdint>
+#include <exception>
 #include <memory>
 #include <new>
 #include <unordered_set>
@@ -25,7 +26,6 @@ using cudf_interop::require_non_negative_i32;
 using cudf_interop::require_size_type_from_size_t;
 
 namespace {
-
 thread_local int32_t g_fail_column_handle_release_countdown = -1;
 
 void maybe_fail_column_handle_release()
@@ -78,9 +78,20 @@ std::size_t cudf_column_view_payload_size_bytes(cudf::column_view const& column,
 
 class native_column_handle_state final : public cudf_column_handle_state {
  public:
-  explicit native_column_handle_state(std::unique_ptr<cudf::column> column)
-    : _column(std::move(column))
+  native_column_handle_state(std::unique_ptr<cudf::column> column,
+                             cudf_handle_provenance provenance)
+    : _column(std::move(column)), _provenance(std::move(provenance))
   {
+  }
+
+  ~native_column_handle_state() override
+  {
+    auto column = std::move(_column);
+    auto const cleanup =
+      cudf_destroy_under_provenance(_provenance, [&column]() { column.reset(); });
+    if (cleanup != cudf_provenance_cleanup_result::completed && column != nullptr) {
+      std::terminate();
+    }
   }
 
   [[nodiscard]] bool is_native() const noexcept override { return true; }
@@ -102,16 +113,32 @@ class native_column_handle_state final : public cudf_column_handle_state {
 
   [[nodiscard]] std::size_t device_allocated_size() const override { return _column->alloc_size(); }
 
+  [[nodiscard]] std::optional<cudf_handle_provenance> destroy_provenance() const noexcept override
+  {
+    return _provenance;
+  }
+
   std::unique_ptr<cudf::column> release_native_column() override { return std::move(_column); }
 
  private:
   std::unique_ptr<cudf::column> _column;
+  cudf_handle_provenance _provenance;
 };
 
 class native_table_handle_state final : public cudf_table_handle_state {
  public:
-  explicit native_table_handle_state(std::unique_ptr<cudf::table> table) : _table(std::move(table))
+  native_table_handle_state(std::unique_ptr<cudf::table> table, cudf_handle_provenance provenance)
+    : _table(std::move(table)), _provenance(std::move(provenance))
   {
+  }
+
+  ~native_table_handle_state() override
+  {
+    auto table         = std::move(_table);
+    auto const cleanup = cudf_destroy_under_provenance(_provenance, [&table]() { table.reset(); });
+    if (cleanup != cudf_provenance_cleanup_result::completed && table != nullptr) {
+      std::terminate();
+    }
   }
 
   [[nodiscard]] bool is_native() const noexcept override { return true; }
@@ -139,23 +166,58 @@ class native_table_handle_state final : public cudf_table_handle_state {
 
   [[nodiscard]] std::size_t device_allocated_size() const override { return _table->alloc_size(); }
 
+  [[nodiscard]] std::optional<cudf_handle_provenance> destroy_provenance() const noexcept override
+  {
+    return _provenance;
+  }
+
   std::vector<std::unique_ptr<cudf_column_handle_state>> release_columns() override
   {
-    auto columns = _table->release();
-    std::vector<std::unique_ptr<cudf_column_handle_state>> result;
-    result.reserve(columns.size());
-    for (auto& column : columns) {
-      result.push_back(std::make_unique<native_column_handle_state>(std::move(column)));
-    }
-    return result;
+    return cudf_invoke_under_provenance(_provenance, [&] {
+      std::vector<std::unique_ptr<cudf_column_handle_state>> result;
+      result.reserve(static_cast<std::size_t>(_table->num_columns()));
+      auto columns = _table->release();
+      try {
+        for (auto& column : columns) {
+          result.push_back(
+            std::make_unique<native_column_handle_state>(std::move(column), _provenance));
+        }
+      } catch (...) {
+        std::vector<std::unique_ptr<cudf::column>> restored_columns;
+        restored_columns.reserve(columns.size());
+        for (auto& column_state : result) {
+          restored_columns.push_back(column_state->release_native_column());
+        }
+        for (auto& column : columns) {
+          if (column != nullptr) { restored_columns.push_back(std::move(column)); }
+        }
+        _table = std::make_unique<cudf::table>(std::move(restored_columns));
+        throw;
+      }
+      return result;
+    });
+  }
+
+  void restore_released_columns(
+    cudf::size_type, std::vector<std::unique_ptr<cudf_column_handle_state>> columns) override
+  {
+    cudf_invoke_under_provenance(_provenance, [&] {
+      std::vector<std::unique_ptr<cudf::column>> native_columns;
+      native_columns.reserve(columns.size());
+      for (auto& column : columns) {
+        native_columns.push_back(column->release_native_column());
+      }
+      _table = std::make_unique<cudf::table>(std::move(native_columns));
+    });
   }
 
  private:
   std::unique_ptr<cudf::table> _table;
+  cudf_handle_provenance _provenance;
 };
 
 // ---------------------------------------------------------------------------
-// Foreign (non-owning) handle states.
+// Column-state-backed handle states.
 //
 // SAFETY INVARIANT: every foreign_*_column_handle_state stores const pointers
 // into GPU buffers whose lifetime is managed by the Rust caller (via
@@ -235,7 +297,7 @@ class foreign_fixed_width_column_handle_state final : public cudf_column_handle_
   foreign_fixed_width_column_handle_state(foreign_column_common common,
                                           void const* values,
                                           std::size_t values_byte_len)
-    : _common(std::move(common)), _values(values), _values_byte_len(values_byte_len)
+    : _common(common), _values(values), _values_byte_len(values_byte_len)
   {
   }
 
@@ -278,7 +340,7 @@ class foreign_binary_like_column_handle_state final : public cudf_column_handle_
                                           std::size_t chars_byte_len,
                                           int32_t const* offsets,
                                           std::size_t offsets_byte_len)
-    : _common(std::move(common)),
+    : _common(common),
       _chars(chars),
       _chars_byte_len(chars_byte_len),
       _offsets(offsets),
@@ -294,15 +356,14 @@ class foreign_binary_like_column_handle_state final : public cudf_column_handle_
   {
     std::vector<cudf::column_view> children;
     children.reserve(1);
-    children.emplace_back(
-      cudf::data_type{cudf::type_id::INT32},
-      require_size_type_from_size_t(
-        _offsets_byte_len / sizeof(int32_t),
-        "foreign owned-transfer string offsets binding exceeds cudf::size_type"),
-      _offsets,
-      nullptr,
-      0,
-      0);
+    children.emplace_back(cudf::data_type{cudf::type_id::INT32},
+                          require_size_type_from_size_t(_offsets_byte_len / sizeof(int32_t),
+                                                        "foreign owned-transfer string offsets "
+                                                        "binding exceeds cudf::size_type"),
+                          _offsets,
+                          nullptr,
+                          0,
+                          0);
     return cudf::column_view(_common.dtype,
                              _common.size,
                              _chars,
@@ -342,7 +403,7 @@ class foreign_list_column_handle_state final : public cudf_column_handle_state {
                                    int32_t const* offsets,
                                    std::size_t offsets_byte_len,
                                    std::unique_ptr<cudf_column_handle_state> child)
-    : _common(std::move(common)),
+    : _common(common),
       _offsets(offsets),
       _offsets_byte_len(offsets_byte_len),
       _child(std::move(child))
@@ -358,9 +419,9 @@ class foreign_list_column_handle_state final : public cudf_column_handle_state {
     std::vector<cudf::column_view> children;
     children.reserve(2);
     children.emplace_back(cudf::data_type{cudf::type_id::INT32},
-                          require_size_type_from_size_t(
-                            _offsets_byte_len / sizeof(int32_t),
-                            "foreign owned-transfer list offsets binding exceeds cudf::size_type"),
+                          require_size_type_from_size_t(_offsets_byte_len / sizeof(int32_t),
+                                                        "foreign owned-transfer list offsets "
+                                                        "binding exceeds cudf::size_type"),
                           _offsets,
                           nullptr,
                           0,
@@ -402,7 +463,7 @@ class foreign_struct_column_handle_state final : public cudf_column_handle_state
  public:
   foreign_struct_column_handle_state(
     foreign_column_common common, std::vector<std::unique_ptr<cudf_column_handle_state>> children)
-    : _common(std::move(common)), _children(std::move(children))
+    : _common(common), _children(std::move(children))
   {
   }
 
@@ -457,7 +518,7 @@ class foreign_dictionary_column_handle_state final : public cudf_column_handle_s
                                          int32_t const* indices,
                                          std::size_t indices_byte_len,
                                          std::unique_ptr<cudf_column_handle_state> keys)
-    : _common(std::move(common)),
+    : _common(common),
       _indices(indices),
       _indices_byte_len(indices_byte_len),
       _keys(std::move(keys))
@@ -472,15 +533,14 @@ class foreign_dictionary_column_handle_state final : public cudf_column_handle_s
   {
     std::vector<cudf::column_view> children;
     children.reserve(2);
-    children.emplace_back(
-      cudf::data_type{cudf::type_id::INT32},
-      require_size_type_from_size_t(
-        _indices_byte_len / sizeof(int32_t),
-        "foreign owned-transfer dictionary indices binding exceeds cudf::size_type"),
-      _indices,
-      nullptr,
-      0,
-      0);
+    children.emplace_back(cudf::data_type{cudf::type_id::INT32},
+                          require_size_type_from_size_t(_indices_byte_len / sizeof(int32_t),
+                                                        "foreign owned-transfer dictionary indices "
+                                                        "binding exceeds cudf::size_type"),
+                          _indices,
+                          nullptr,
+                          0,
+                          0);
     children.emplace_back(_keys->view());
     return cudf::column_view(_common.dtype,
                              _common.size,
@@ -526,12 +586,14 @@ std::unique_ptr<cudf_column_handle_state> build_foreign_column_handle_state(
   switch (column->layout_kind) {
     case CUDF_INTEROP_LAYOUT_FIXED_WIDTH: {
       CUDF_EXPECTS(cudf::is_fixed_width(common.dtype),
-                   "foreign owned-transfer fixed-width layout requires a fixed-width type");
-      auto const* values = require_device_binding(
-        binding_index,
-        column->values_buffer_id,
-        "foreign owned-transfer import referenced a missing fixed-width values binding",
-        "foreign owned-transfer import requires CUDA-device fixed-width value bindings");
+                   "foreign owned-transfer fixed-width layout requires a "
+                   "fixed-width type");
+      auto const* values = require_device_binding(binding_index,
+                                                  column->values_buffer_id,
+                                                  "foreign owned-transfer import referenced a "
+                                                  "missing fixed-width values binding",
+                                                  "foreign owned-transfer import requires "
+                                                  "CUDA-device fixed-width value bindings");
       return std::make_unique<foreign_fixed_width_column_handle_state>(
         common, values->data, values->byte_len);
     }
@@ -539,18 +601,21 @@ std::unique_ptr<cudf_column_handle_state> build_foreign_column_handle_state(
     case CUDF_INTEROP_LAYOUT_BINARY_LIKE: {
       CUDF_EXPECTS(common.dtype.id() == cudf::type_id::STRING,
                    "foreign owned-transfer binary-like layout requires STRING type");
-      auto const* offsets = require_device_binding(
-        binding_index,
-        column->offsets_buffer_id,
-        "foreign owned-transfer import referenced a missing binary-like offsets binding",
-        "foreign owned-transfer import requires CUDA-device binary-like offsets bindings");
+      auto const* offsets = require_device_binding(binding_index,
+                                                   column->offsets_buffer_id,
+                                                   "foreign owned-transfer import referenced a "
+                                                   "missing binary-like offsets binding",
+                                                   "foreign owned-transfer import requires "
+                                                   "CUDA-device binary-like offsets bindings");
       CUDF_EXPECTS(offsets->byte_len % sizeof(int32_t) == 0,
-                   "foreign owned-transfer binary-like offsets binding must be 32-bit aligned");
-      auto const* chars = require_device_binding(
-        binding_index,
-        column->data_buffer_id,
-        "foreign owned-transfer import referenced a missing binary-like chars binding",
-        "foreign owned-transfer import requires CUDA-device binary-like chars bindings");
+                   "foreign owned-transfer binary-like offsets binding must be "
+                   "32-bit aligned");
+      auto const* chars = require_device_binding(binding_index,
+                                                 column->data_buffer_id,
+                                                 "foreign owned-transfer import referenced a "
+                                                 "missing binary-like chars binding",
+                                                 "foreign owned-transfer import requires "
+                                                 "CUDA-device binary-like chars bindings");
       return std::make_unique<foreign_binary_like_column_handle_state>(
         common,
         chars->data,
@@ -562,11 +627,12 @@ std::unique_ptr<cudf_column_handle_state> build_foreign_column_handle_state(
     case CUDF_INTEROP_LAYOUT_LIST: {
       CUDF_EXPECTS(common.dtype.id() == cudf::type_id::LIST,
                    "foreign owned-transfer list layout requires LIST type");
-      auto const* offsets = require_device_binding(
-        binding_index,
-        column->offsets_buffer_id,
-        "foreign owned-transfer import referenced a missing list offsets binding",
-        "foreign owned-transfer import requires CUDA-device list offsets bindings");
+      auto const* offsets = require_device_binding(binding_index,
+                                                   column->offsets_buffer_id,
+                                                   "foreign owned-transfer import referenced a "
+                                                   "missing list offsets binding",
+                                                   "foreign owned-transfer import requires "
+                                                   "CUDA-device list offsets bindings");
       CUDF_EXPECTS(offsets->byte_len % sizeof(int32_t) == 0,
                    "foreign owned-transfer list offsets binding must be 32-bit aligned");
       auto child =
@@ -579,7 +645,8 @@ std::unique_ptr<cudf_column_handle_state> build_foreign_column_handle_state(
       CUDF_EXPECTS(common.dtype.id() == cudf::type_id::STRUCT,
                    "foreign owned-transfer struct layout requires STRUCT type");
       CUDF_EXPECTS(column->num_child_column_ids > 0,
-                   "foreign owned-transfer struct layout must reference at least one child");
+                   "foreign owned-transfer struct layout must reference at least "
+                   "one child");
       CUDF_EXPECTS(column->child_column_ids != nullptr,
                    "foreign owned-transfer struct child ids pointer is null");
       std::vector<std::unique_ptr<cudf_column_handle_state>> children;
@@ -594,13 +661,15 @@ std::unique_ptr<cudf_column_handle_state> build_foreign_column_handle_state(
     case CUDF_INTEROP_LAYOUT_DICTIONARY: {
       CUDF_EXPECTS(common.dtype.id() == cudf::type_id::DICTIONARY32,
                    "foreign owned-transfer dictionary layout requires DICTIONARY32 type");
-      auto const* indices = require_device_binding(
-        binding_index,
-        column->indices_buffer_id,
-        "foreign owned-transfer import referenced a missing dictionary indices binding",
-        "foreign owned-transfer import requires CUDA-device dictionary indices bindings");
+      auto const* indices = require_device_binding(binding_index,
+                                                   column->indices_buffer_id,
+                                                   "foreign owned-transfer import referenced a "
+                                                   "missing dictionary indices binding",
+                                                   "foreign owned-transfer import requires "
+                                                   "CUDA-device dictionary indices bindings");
       CUDF_EXPECTS(indices->byte_len % sizeof(int32_t) == 0,
-                   "foreign owned-transfer dictionary indices binding must be 32-bit aligned");
+                   "foreign owned-transfer dictionary indices binding must be "
+                   "32-bit aligned");
       auto keys =
         build_foreign_column_handle_state(column->keys_column_id, column_index, binding_index);
       return std::make_unique<foreign_dictionary_column_handle_state>(
@@ -611,10 +680,10 @@ std::unique_ptr<cudf_column_handle_state> build_foreign_column_handle_state(
   }
 }
 
-class foreign_table_handle_state final : public cudf_table_handle_state {
+class column_state_table_handle_state final : public cudf_table_handle_state {
  public:
-  foreign_table_handle_state(cudf::size_type num_rows,
-                             std::vector<std::unique_ptr<cudf_column_handle_state>> columns)
+  column_state_table_handle_state(cudf::size_type num_rows,
+                                  std::vector<std::unique_ptr<cudf_column_handle_state>> columns)
     : _num_rows(num_rows), _columns(std::move(columns))
   {
   }
@@ -668,11 +737,18 @@ class foreign_table_handle_state final : public cudf_table_handle_state {
     return std::move(_columns);
   }
 
+  void restore_released_columns(
+    cudf::size_type num_rows,
+    std::vector<std::unique_ptr<cudf_column_handle_state>> columns) override
+  {
+    _num_rows = num_rows;
+    _columns  = std::move(columns);
+  }
+
  private:
   cudf::size_type _num_rows;
   std::vector<std::unique_ptr<cudf_column_handle_state>> _columns;
 };
-
 }  // namespace
 
 extern "C" void cudf_test_fail_column_handle_release_after(int32_t successful_releases)
@@ -685,15 +761,37 @@ std::unique_ptr<cudf::column> cudf_column_handle_state::release_native_column()
   throw cudf::logic_error("column handle is not native-backed");
 }
 
+std::optional<cudf_handle_provenance> cudf_column_handle_state::destroy_provenance() const noexcept
+{
+  return std::nullopt;
+}
+
 std::vector<std::unique_ptr<cudf_column_handle_state>> cudf_table_handle_state::release_columns()
 {
   throw cudf::logic_error("table handle cannot release columns");
 }
 
+void cudf_table_handle_state::restore_released_columns(
+  cudf::size_type, std::vector<std::unique_ptr<cudf_column_handle_state>>)
+{
+  throw cudf::logic_error("table handle cannot restore released columns");
+}
+
+std::optional<cudf_handle_provenance> cudf_table_handle_state::destroy_provenance() const noexcept
+{
+  return std::nullopt;
+}
+
 cudf_column_handle cudf_release_column_handle(std::unique_ptr<cudf::column> column)
 {
+  return cudf_release_column_handle(std::move(column), cudf_capture_current_handle_provenance());
+}
+
+cudf_column_handle cudf_release_column_handle(std::unique_ptr<cudf::column> column,
+                                              cudf_handle_provenance provenance)
+{
   return cudf_release_column_handle(
-    std::make_unique<native_column_handle_state>(std::move(column)));
+    std::make_unique<native_column_handle_state>(std::move(column), provenance));
 }
 
 cudf_column_handle cudf_release_column_handle(std::unique_ptr<cudf_column_handle_state> column)
@@ -702,14 +800,51 @@ cudf_column_handle cudf_release_column_handle(std::unique_ptr<cudf_column_handle
   return static_cast<cudf_column_handle>(column.release());
 }
 
+cudf_column_handle cudf_publish_column_handle(std::unique_ptr<cudf_column_handle_state>& column)
+{
+  maybe_fail_column_handle_release();
+  return static_cast<cudf_column_handle>(column.release());
+}
+
 cudf_table_handle cudf_release_table_handle(std::unique_ptr<cudf::table> table)
 {
-  return cudf_release_table_handle(std::make_unique<native_table_handle_state>(std::move(table)));
+  return cudf_release_table_handle(std::move(table), cudf_capture_current_handle_provenance());
+}
+
+cudf_table_handle cudf_release_table_handle(std::unique_ptr<cudf::table> table,
+                                            cudf_handle_provenance provenance)
+{
+  return cudf_release_table_handle(
+    std::make_unique<native_table_handle_state>(std::move(table), provenance));
 }
 
 cudf_table_handle cudf_release_table_handle(std::unique_ptr<cudf_table_handle_state> table)
 {
   return static_cast<cudf_table_handle>(table.release());
+}
+
+void cudf_destroy_column_handle_under_provenance(cudf_column_handle handle) noexcept
+{
+  if (handle == nullptr) { return; }
+  auto* state = static_cast<cudf_column_handle_state*>(handle);
+  if (auto provenance = state->destroy_provenance()) {
+    auto const cleanup = cudf_destroy_under_provenance(*provenance, [state]() { delete state; });
+    if (cleanup != cudf_provenance_cleanup_result::completed) { std::terminate(); }
+  } else {
+    delete state;
+  }
+}
+
+void cudf_destroy_table_handle_under_provenance(cudf_table_handle handle) noexcept
+{
+  if (handle == nullptr) { return; }
+  auto* state = static_cast<cudf_table_handle_state*>(handle);
+  if (auto provenance = state->destroy_provenance()) {
+    auto const cleanup = cudf_destroy_under_provenance(*provenance, [state]() { delete state; });
+    if (cleanup != cudf_provenance_cleanup_result::completed) { std::terminate(); }
+  } else {
+    delete state;
+  }
 }
 
 cudf_column_handle_state& cudf_column_state_from_handle(cudf_column_handle handle)
@@ -766,15 +901,22 @@ std::unique_ptr<cudf_table_handle_state> cudf_make_foreign_table_handle_state(
     auto column = cudf_make_foreign_column_handle_state(
       table->column_ids[index], semantic_columns, num_semantic_columns, bindings, num_bindings);
     CUDF_EXPECTS(column->size() == expected_rows,
-                 "foreign owned-transfer table row count must match every top-level column length");
+                 "foreign owned-transfer table row count must match every "
+                 "top-level column length");
     columns.push_back(std::move(column));
   }
 
-  return std::make_unique<foreign_table_handle_state>(expected_rows, std::move(columns));
+  return std::make_unique<column_state_table_handle_state>(expected_rows, std::move(columns));
+}
+
+std::unique_ptr<cudf_table_handle_state> cudf_make_table_handle_state_from_columns(
+  cudf::size_type num_rows, std::vector<std::unique_ptr<cudf_column_handle_state>> columns)
+{
+  return std::make_unique<column_state_table_handle_state>(num_rows, std::move(columns));
 }
 
 std::unique_ptr<cudf_table_handle_state> cudf_make_foreign_table_handle_state_from_columns(
   cudf::size_type num_rows, std::vector<std::unique_ptr<cudf_column_handle_state>> columns)
 {
-  return std::make_unique<foreign_table_handle_state>(num_rows, std::move(columns));
+  return cudf_make_table_handle_state_from_columns(num_rows, std::move(columns));
 }

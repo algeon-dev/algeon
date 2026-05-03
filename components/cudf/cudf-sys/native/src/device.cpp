@@ -7,7 +7,6 @@
 #include <string>
 
 extern "C" {
-
 cudf_status_t cudf_cuda_get_device(int32_t* device)
 {
   CUDF_RUST_NULL_CHECK(device, "device is null");
@@ -84,5 +83,4 @@ cudf_status_t cudf_cuda_pointer_get_device(void const* ptr, int32_t* device)
   }
   CUDF_RUST_CATCH
 }
-
 }  // extern "C"

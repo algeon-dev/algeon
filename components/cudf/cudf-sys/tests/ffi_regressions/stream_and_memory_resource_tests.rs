@@ -6,6 +6,7 @@ use crate::support::{
 
 #[test]
 fn test_stream_is_ready_null_out_rejected() {
+    let _shim_state = lock_shim_state();
     let mut stream: *mut c_void = ptr::null_mut();
     let st = unsafe { cudf_sys::cudf_stream_create(&mut stream) };
     assert_eq!(st, cudf_sys::CUDF_SUCCESS);
@@ -19,6 +20,7 @@ fn test_stream_is_ready_null_out_rejected() {
 
 #[test]
 fn test_stream_create_is_ready_and_synchronize_smoke() {
+    let _shim_state = lock_shim_state();
     let mut stream: *mut c_void = ptr::null_mut();
     let status = unsafe { cudf_sys::cudf_stream_create(&mut stream) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
@@ -37,6 +39,7 @@ fn test_stream_create_is_ready_and_synchronize_smoke() {
 
 #[test]
 fn test_event_create_null_out_rejected() {
+    let _shim_state = lock_shim_state();
     let status = unsafe { cudf_sys::cudf_event_create(ptr::null_mut()) };
     assert_eq!(status, cudf_sys::CUDF_ERROR_NULL);
 }
@@ -111,6 +114,7 @@ fn test_raw_cuda_event_record_and_wait_smoke() {
 
 #[test]
 fn test_memory_resource_pool_create_destroy_smoke() {
+    let _shim_state = lock_shim_state();
     let device = current_device();
     let mut mr: *mut c_void = ptr::null_mut();
     let status = unsafe { cudf_sys::cudf_memory_resource_create_pool(1 << 20, 1 << 24, &mut mr) };
@@ -123,6 +127,7 @@ fn test_memory_resource_pool_create_destroy_smoke() {
 
 #[test]
 fn test_memory_resource_cuda_create_destroy_smoke() {
+    let _shim_state = lock_shim_state();
     let device = current_device();
     let mut mr: *mut c_void = ptr::null_mut();
     let status = unsafe { cudf_sys::cudf_memory_resource_create_cuda(&mut mr) };

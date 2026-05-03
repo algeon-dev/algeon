@@ -134,9 +134,9 @@ fn ensure_unique_keys(keys: &ColumnView<'_>, key_count: usize, operation: &'stat
     Ok(())
 }
 
-#[derive(Debug)]
 struct DistinctHashJoinHandle {
     handle: NonNull<c_void>,
+    _domain: Arc<ExecutionDomain>,
 }
 
 // SAFETY: libcudf distinct_hash_join is documented as probe-safe for repeated
@@ -161,7 +161,10 @@ impl DistinctHashJoinHandle {
             operation,
             [("execution_context_provided", exec_options.is_some().to_string())],
         )?;
-        Ok(Self { handle: error::require_non_null(handle, operation, "distinct hash join")? })
+        Ok(Self {
+            handle: error::require_non_null(handle, operation, "distinct hash join")?,
+            _domain: Arc::clone(domain),
+        })
     }
 
     fn left_join_build_indices(

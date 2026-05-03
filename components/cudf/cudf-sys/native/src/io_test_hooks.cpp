@@ -5,7 +5,6 @@
 #include <new>
 
 namespace {
-
 thread_local cudf_test_io_metadata_fault_t g_next_metadata_fault = CUDF_TEST_IO_METADATA_FAULT_NONE;
 
 char** allocate_name_array(int32_t count)
@@ -17,11 +16,9 @@ char** allocate_name_array(int32_t count)
   }
   return names;
 }
-
 }  // namespace
 
 extern "C" {
-
 void cudf_test_io_set_next_metadata_fault(cudf_test_io_metadata_fault_t fault)
 {
   g_next_metadata_fault = fault;
@@ -31,7 +28,6 @@ void cudf_test_io_reset_metadata_fault()
 {
   g_next_metadata_fault = CUDF_TEST_IO_METADATA_FAULT_NONE;
 }
-
 }  // extern "C"
 
 cudf_test_io_metadata_fault_t cudf_test_io_take_next_metadata_fault()
