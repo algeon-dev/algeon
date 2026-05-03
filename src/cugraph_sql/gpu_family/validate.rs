@@ -16,8 +16,8 @@ use super::{
         types::validate_similarity_pair_table_schema, validate_vertex_id_domain_support_for_call,
         vertex_id_domain_for_call,
     },
-    ERROR_COLUMN_NOT_FOUND, ERROR_INVALID_ARGUMENT, ERROR_INVALID_CALL_JSON, ERROR_TABLE_NOT_FOUND,
-    ERROR_UNKNOWN_ALGORITHM, ERROR_UNSUPPORTED_OPTION, ERROR_UNSUPPORTED_VERTEX_DTYPE, ERROR_UNSUPPORTED_WEIGHT_DTYPE,
+    ERROR_COLUMN_NOT_FOUND, ERROR_INVALID_ARGUMENT, ERROR_TABLE_NOT_FOUND, ERROR_UNKNOWN_ALGORITHM,
+    ERROR_UNSUPPORTED_OPTION, ERROR_UNSUPPORTED_VERTEX_DTYPE, ERROR_UNSUPPORTED_WEIGHT_DTYPE,
     ERROR_VERTEX_DTYPE_MISMATCH,
     json_schema::{data_type_label, metadata_output_schema_json, normalized_options_json, schema_json},
 };
@@ -72,7 +72,7 @@ pub(super) async fn validate_graph_call(
     state: &dyn Session,
     function_name: &str,
     table_name: &str,
-    call_json: &str,
+    options: &Value,
     config: &CugraphSqlConfig,
 ) -> ValidationRow {
     let Some(algorithm) = CUGRAPH_OPERATION_REGISTRY
@@ -89,7 +89,7 @@ pub(super) async fn validate_graph_call(
     let canonical_function_name = algorithm.function_name();
     let output_schema_json = metadata_output_schema_json(algorithm);
 
-    let call = match parse_validate_call_json(algorithm, call_json) {
+    let call = match parse_validate_options(algorithm, options) {
         Ok(call) => call,
         Err((code, message)) => {
             return ValidationRow::invalid(canonical_function_name, code, message)
@@ -588,7 +588,7 @@ fn predicate_validation_error(
 }
 
 #[derive(Debug, Clone)]
-struct ValidateCallJson {
+struct ValidateCallOptions {
     source_vertex: Option<CugraphBfsSource>,
     src_col: String,
     dst_col: String,
@@ -596,31 +596,28 @@ struct ValidateCallJson {
     options: Map<String, Value>,
 }
 
-fn parse_validate_call_json(
+/// Parse the family-owned, flat `options` object from the common envelope.
+///
+/// The SQL table-function parser still owns semantic option validation. This
+/// parser only removes the common bindings it needs to form a graph call and
+/// passes every remaining option through unchanged.
+fn parse_validate_options(
     algorithm: CugraphAlgorithm,
-    call_json: &str,
-) -> std::result::Result<ValidateCallJson, (&'static str, String)> {
-    let value = serde_json::from_str::<Value>(call_json)
-        .map_err(|error| (ERROR_INVALID_CALL_JSON, format!("invalid cuGraph call JSON: {error}")))?;
-    let object = value
-        .as_object()
-        .ok_or_else(|| (ERROR_INVALID_CALL_JSON, "cuGraph call JSON must be an object".to_string()))?;
-    for key in object.keys() {
-        if !matches!(key.as_str(), "source_vertex" | "src_col" | "dst_col" | "weight_col" | "options") {
-            return Err((ERROR_INVALID_ARGUMENT, format!("unknown cuGraph validate_call key '{key}'")));
-        }
+    options: &Value,
+) -> std::result::Result<ValidateCallOptions, (&'static str, String)> {
+    let object =
+        options.as_object().ok_or_else(|| (ERROR_INVALID_ARGUMENT, "cuGraph options must be an object".to_string()))?;
+    if object.contains_key("options") {
+        return Err((
+            ERROR_INVALID_ARGUMENT,
+            "cuGraph options must be flat; move nested 'options' fields into the common options object".to_string(),
+        ));
     }
 
-    let options = match object.get("options") {
-        Some(value) => value
-            .as_object()
-            .cloned()
-            .ok_or_else(|| (ERROR_INVALID_CALL_JSON, "cuGraph call JSON options must be an object".to_string()))?,
-        None => Map::new(),
-    };
-    let source_vertex = match object.get("source_vertex") {
+    let mut options = object.clone();
+    let source_vertex = match options.remove("source_vertex") {
         Some(Value::Null) if algorithm == CugraphAlgorithm::Bfs => None,
-        Some(value) => Some(json_source_vertex(value, "source_vertex", algorithm)?),
+        Some(value) => Some(json_source_vertex(&value, "source_vertex", algorithm)?),
         None => None,
     };
     if algorithm == CugraphAlgorithm::Bfs && source_vertex.is_none() && !bfs_options_include_source_relation(&options) {
@@ -635,19 +632,19 @@ fn parse_validate_call_json(
     if !algorithm.requires_source_vertex() && source_vertex.is_some() {
         return Err((ERROR_INVALID_ARGUMENT, format!("{} does not accept source_vertex", algorithm.function_name())));
     }
-    let src_col = match object.get("src_col") {
-        Some(value) => json_string(value, "src_col")?,
+    let src_col = match options.remove("src_col") {
+        Some(value) => json_string(&value, "src_col")?,
         None => "src".to_string(),
     };
-    let dst_col = match object.get("dst_col") {
-        Some(value) => json_string(value, "dst_col")?,
+    let dst_col = match options.remove("dst_col") {
+        Some(value) => json_string(&value, "dst_col")?,
         None => "dst".to_string(),
     };
-    let weight_col = match object.get("weight_col") {
+    let weight_col = match options.remove("weight_col") {
         Some(Value::Null) | None => None,
-        Some(value) => Some(json_string(value, "weight_col")?),
+        Some(value) => Some(json_string(&value, "weight_col")?),
     };
-    Ok(ValidateCallJson { source_vertex, src_col, dst_col, weight_col, options })
+    Ok(ValidateCallOptions { source_vertex, src_col, dst_col, weight_col, options })
 }
 
 fn bfs_options_include_source_relation(options: &Map<String, Value>) -> bool {
@@ -657,7 +654,7 @@ fn bfs_options_include_source_relation(options: &Map<String, Value>) -> bool {
 fn build_validate_spec(
     algorithm: CugraphAlgorithm,
     table_name: &str,
-    call: &ValidateCallJson,
+    call: &ValidateCallOptions,
     config: &CugraphSqlConfig,
 ) -> Result<CugraphAlgorithmSpec> {
     let mut args = vec![lit(table_name)];
@@ -730,7 +727,7 @@ fn json_string(value: &Value, key: &str) -> std::result::Result<String, (&'stati
     value
         .as_str()
         .map(ToOwned::to_owned)
-        .ok_or_else(|| (ERROR_INVALID_ARGUMENT, format!("cuGraph call JSON key '{key}' must be a string")))
+        .ok_or_else(|| (ERROR_INVALID_ARGUMENT, format!("cuGraph option '{key}' must be a string")))
 }
 
 fn json_i64(value: &Value, key: &str) -> std::result::Result<i64, (&'static str, String)> {
@@ -739,9 +736,9 @@ fn json_i64(value: &Value, key: &str) -> std::result::Result<i64, (&'static str,
     }
     if let Some(value) = value.as_u64() {
         return i64::try_from(value)
-            .map_err(|_| (ERROR_INVALID_ARGUMENT, format!("cuGraph call JSON key '{key}' exceeds i64::MAX")));
+            .map_err(|_| (ERROR_INVALID_ARGUMENT, format!("cuGraph option '{key}' exceeds i64::MAX")));
     }
-    Err((ERROR_INVALID_ARGUMENT, format!("cuGraph call JSON key '{key}' must be an integer")))
+    Err((ERROR_INVALID_ARGUMENT, format!("cuGraph option '{key}' must be an integer")))
 }
 
 fn json_source_vertex(
@@ -751,10 +748,10 @@ fn json_source_vertex(
 ) -> std::result::Result<CugraphBfsSource, (&'static str, String)> {
     if let Some(values) = value.as_array() {
         if algorithm != CugraphAlgorithm::Bfs {
-            return Err((ERROR_INVALID_ARGUMENT, format!("cuGraph call JSON key '{key}' must be an integer")));
+            return Err((ERROR_INVALID_ARGUMENT, format!("cuGraph option '{key}' must be an integer")));
         }
         if values.is_empty() {
-            return Err((ERROR_INVALID_ARGUMENT, format!("cuGraph call JSON key '{key}' list must not be empty")));
+            return Err((ERROR_INVALID_ARGUMENT, format!("cuGraph option '{key}' list must not be empty")));
         }
         let values = values
             .iter()
@@ -763,7 +760,7 @@ fn json_source_vertex(
                 if value.is_null() {
                     return Err((
                         ERROR_INVALID_ARGUMENT,
-                        format!("cuGraph call JSON key '{key}' list must not contain null element at index {index}"),
+                        format!("cuGraph option '{key}' list must not contain null element at index {index}"),
                     ));
                 }
                 json_source_vertex_literal(value, key, algorithm)
@@ -773,7 +770,7 @@ fn json_source_vertex(
         if values.iter().any(|value| value.is_utf8() != first_is_utf8) {
             return Err((
                 ERROR_INVALID_ARGUMENT,
-                format!("cuGraph call JSON key '{key}' list must not mix integer and string elements"),
+                format!("cuGraph option '{key}' list must not mix integer and string elements"),
             ));
         }
         return Ok(CugraphBfsSource::LiteralList(values));
@@ -790,7 +787,7 @@ fn json_source_vertex_literal(
         return if algorithm == CugraphAlgorithm::Bfs {
             Ok(CugraphBfsSourceVertex::Utf8(value.to_string()))
         } else {
-            Err((ERROR_INVALID_ARGUMENT, format!("cuGraph call JSON key '{key}' must be an integer")))
+            Err((ERROR_INVALID_ARGUMENT, format!("cuGraph option '{key}' must be an integer")))
         };
     }
     json_i64(value, key).map(CugraphBfsSourceVertex::Int64)

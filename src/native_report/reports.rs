@@ -21,9 +21,8 @@ impl NativeFallbackPressureReport {
     /// Collects diagnostic fallback-pressure rows using the canonical bounded
     /// native execution config.
     ///
-    /// This convenience path is for legacy shape-pressure diagnostics only.
-    /// Production report surfaces should use
-    /// [`Self::collect_with_native_execution_config`] with an explicit bounded
+    /// This convenience path uses the canonical bounded execution config.
+    /// Call [`Self::collect_with_native_execution_config`] with an explicit
     /// config when its precise planning settings matter to the report.
     pub fn collect(items: impl IntoIterator<Item = NativeFallbackPressureWorkloadItem>) -> Self {
         let execution_config = NexusNativeExecutionConfig::bounded_default();
@@ -207,7 +206,6 @@ impl NativeDataFusionExecutionReport {
             let _ = writeln!(output, "# statistical_aggregate_execution_mode={}", mode.as_str());
             let _ =
                 writeln!(output, "# statistical_aggregate_tolerance_contract={}", mode.tolerance_contract().as_str());
-            let _ = writeln!(output, "# stddev_samp_execution_mode={}", mode.as_str());
         }
         write_workload_dataset_metadata(&mut output, self.workload_dataset.as_ref());
         debug_assert_eq!(NativeDataFusionExecutionRow::COLUMNS.join("\t"), NATIVE_DATAFUSION_EXECUTION_TSV_HEADER);

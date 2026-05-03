@@ -1,7 +1,7 @@
 #[cfg(not(feature = "iceberg"))]
 #[test]
 fn server_config_rejects_iceberg_env_without_iceberg_feature() {
-    let env = BTreeMap::from([(NEXUS_ICEBERG_GLUE_DATABASE_ENV, "tpch_sf1".to_string())]);
+    let env = BTreeMap::from([(NEXUS_ICEBERG_NAMESPACE_ENV, "tpch_sf1".to_string())]);
     let error = server_config_with_default_device_profile(env).unwrap_err();
 
     assert!(error.to_string().contains("--features server,iceberg"));

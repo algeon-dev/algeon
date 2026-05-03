@@ -173,7 +173,7 @@ async fn register_iceberg_catalog(ctx: &SessionContext, config: &ServerConfig) -
             },
         }
 
-        // Legacy bare alias in the default DataFusion catalog.
+        // Additional bare alias for unqualified references in the default DataFusion catalog.
         if ctx
             .register_table(table.alias.as_str(), Arc::clone(&provider))
             .map_err(|error| ServerError::session("failed to register Iceberg table as bare alias", error))?

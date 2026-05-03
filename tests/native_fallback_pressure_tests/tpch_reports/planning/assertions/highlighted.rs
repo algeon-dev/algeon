@@ -20,7 +20,7 @@ pub(super) fn assert_highlighted_planning_rows_and_tsv(
                 strict_contract_row_is_family_path_free(&rendered)
                     && strict_contract_row_excludes_adaptive_terms(&rendered)
             }),
-            "{query_id} should not expose legacy family/path facts"
+            "{query_id} should not expose retired family/path facts"
         );
     }
 

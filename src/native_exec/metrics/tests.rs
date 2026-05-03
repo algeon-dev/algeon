@@ -147,8 +147,6 @@ fn aggregate_strategy_rows_bridge_statistical_contract_labels() {
     facts.insert("statistical_aggregate_tolerance_contract", "float_tolerant".to_string());
     facts.insert("statistical_aggregate_functions", "stddev_samp".to_string());
     facts.insert("statistical_aggregate_ddof", "stddev_samp:1".to_string());
-    facts.insert("stddev_samp_execution_mode", "gpu_native_tolerant".to_string());
-    facts.insert("stddev_samp_ddof", "1".to_string());
 
     query_metrics.record_aggregate_strategy_decision("n12", &facts);
     native_metrics.record_query_metrics(&query_metrics);
@@ -163,8 +161,6 @@ fn aggregate_strategy_rows_bridge_statistical_contract_labels() {
     assert_eq!(row.statistical_aggregate_tolerance_contract, "float_tolerant");
     assert_eq!(row.statistical_aggregate_functions, "stddev_samp");
     assert_eq!(row.statistical_aggregate_ddof, "stddev_samp:1");
-    assert_eq!(row.stddev_samp_execution_mode, "gpu_native_tolerant");
-    assert_eq!(row.stddev_samp_ddof, "1");
 }
 
 #[test]

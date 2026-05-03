@@ -82,7 +82,6 @@ fn parity_report_to_tsv_emits_metadata_and_header() {
     assert_eq!(first_line, "# parity_float_tolerance_absolute=0");
     assert!(tsv.contains("# statistical_aggregate_execution_mode=gpu_native_tolerant\n"));
     assert!(tsv.contains("# statistical_aggregate_tolerance_contract=float_tolerant\n"));
-    assert!(tsv.contains("# stddev_samp_execution_mode=gpu_native_tolerant\n"));
     assert!(tsv.contains(NATIVE_TPCDS_PARITY_TSV_HEADER));
     // 30 columns separated by tabs in the data row.
     let data_line = tsv.lines().find(|line| line.starts_with("q01\t")).expect("data row should exist");

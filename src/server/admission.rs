@@ -47,7 +47,7 @@ impl QueryAdmission {
 
     /// Begin the single execution attempt owned by a production Flight
     /// invocation. The test-only admission projection intentionally has no
-    /// runtime backend, so legacy CPU-only unit fixtures return `None`; every
+    /// runtime backend, so CPU-only unit fixtures return `None`; every
     /// server-built admission facade returns one concrete attempt.
     pub(crate) fn begin_attempt(&self, options: AttemptOptions) -> crate::error::Result<Option<NexusAttempt>> {
         match &self.backend {
@@ -521,7 +521,7 @@ mod tests {
         );
         assert!(
             !payload.contains("[device_ledger_grants]") && !payload.contains("[gpu_execution]"),
-            "diagnostics must not combine the backend snapshot with legacy independent service reads: {payload}"
+            "diagnostics must not combine the backend snapshot with separate service reads: {payload}"
         );
 
         drop(permit);

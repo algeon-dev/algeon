@@ -9,32 +9,6 @@ const GITHUB_ORG = 'DataFusion-Nexus';
 const GITHUB_REPO = 'datafusion-nexus';
 const GITHUB_URL = `https://github.com/${GITHUB_ORG}/${GITHUB_REPO}`;
 
-// These pages preserve public URLs after the Guide/API split, but must never
-// become visible sidebar entries. Front-matter `unlisted` only hides a doc in
-// production, so enforce the navigation contract at generation time too.
-const LEGACY_SIDEBAR_DOC_IDS = new Set([
-  'cugraph/discovery-and-validation',
-  'reference/gpu-function-discovery',
-]);
-
-type SidebarTreeItem = {
-  type: string;
-  id?: string;
-  items?: SidebarTreeItem[];
-};
-
-function withoutLegacySidebarDocs<T extends SidebarTreeItem>(items: T[]): T[] {
-  return items.flatMap(item => {
-    if ((item.type === 'doc' || item.type === 'ref') && item.id && LEGACY_SIDEBAR_DOC_IDS.has(item.id)) {
-      return [];
-    }
-    if (item.type === 'category' && item.items) {
-      return [{...item, items: withoutLegacySidebarDocs(item.items)} as T];
-    }
-    return [item];
-  });
-}
-
 const config: Config = {
   title: 'DataFusion Nexus',
   tagline: 'A DataFusion physical-plan adapter that lowers supported plans into a native, cuDF-backed query engine.',
@@ -73,8 +47,6 @@ const config: Config = {
           // Serve content at the site root so the homepage is the Introduction.
           routeBasePath: '/',
           sidebarPath: './sidebars.ts',
-          sidebarItemsGenerator: async ({defaultSidebarItemsGenerator, ...generatorArgs}) =>
-            withoutLegacySidebarDocs(await defaultSidebarItemsGenerator(generatorArgs)),
         },
         blog: {
           routeBasePath: 'blog',

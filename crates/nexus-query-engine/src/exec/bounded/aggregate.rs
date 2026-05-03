@@ -242,7 +242,7 @@ pub(in crate::exec::bounded) fn execute_compiled_bounded_aggregate_from_frame(
     reservations: &mut ReservationTracker,
     metrics: &mut QueryMetrics,
 ) -> Result<ResidentGpuFrame> {
-    if should_execute_datafusion_exact_stddev(context, &aggregate.spec) {
+    if should_execute_datafusion_exact_floating_statistical_aggregate(context, &aggregate.spec) {
         return execute_compiled_bounded_exact_host_aggregate_from_frame(
             context,
             node_id,

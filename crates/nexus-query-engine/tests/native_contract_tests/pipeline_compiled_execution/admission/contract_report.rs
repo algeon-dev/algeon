@@ -39,7 +39,7 @@ fn contract_gate_rows_are_inventory_backed_and_family_path_free() {
             assert!(rendered.contains("contract_quality="), "{}: row must serialize contract quality", case.label);
             assert!(
                 !rendered.contains("contract_modes"),
-                "{}: row must not serialize legacy contract modes",
+                "{}: row must not serialize retired contract modes",
                 case.label
             );
 

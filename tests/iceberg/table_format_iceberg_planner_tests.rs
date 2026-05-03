@@ -7,7 +7,10 @@ use datafusion_nexus::{
         TableFormatColumnSource, TableFormatDataFileFormat, TableFormatDeleteFileContent,
         TableFormatDirectDeviceReadDisposition, TableFormatPartitionTransform, TableFormatReadCapability,
         TableFormatScalarValue, TableFormatScanRequest,
-        iceberg::{IcebergTableFormatPlanner, iceberg_file_scan_tasks_to_table_format_scan_plan},
+        iceberg::{
+            IcebergTableFormatPlanner, ResolvedIcebergTable, SourceAccessPolicy,
+            iceberg_file_scan_tasks_to_table_format_scan_plan,
+        },
     },
 };
 use iceberg::{
@@ -392,7 +395,8 @@ fn partition_spec_source_absent_from_scan_schema_is_structured_rejection() {
 async fn table_format_planner_carries_plan_files_partition_spec_into_scan_plan() {
     let fixture = MetadataOnlyIcebergFixture::new();
     fixture.write_current_manifest_list().await;
-    let planner = IcebergTableFormatPlanner::try_new(fixture.table).unwrap();
+    let resolved = ResolvedIcebergTable::from_table(fixture.table, SourceAccessPolicy::s3_default_chain(None)).unwrap();
+    let planner = IcebergTableFormatPlanner::new(resolved);
     let request = TableFormatScanRequest::default();
     let resolved = planner.resolve_table_format_scan(request.clone()).await.unwrap();
     let plan = planner.inspect_table_format_scan(request, resolved).await.unwrap();

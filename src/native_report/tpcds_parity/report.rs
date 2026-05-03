@@ -353,7 +353,6 @@ impl NativeTpcdsParityReport {
             let _ = writeln!(output, "# statistical_aggregate_execution_mode={}", mode.as_str());
             let _ =
                 writeln!(output, "# statistical_aggregate_tolerance_contract={}", mode.tolerance_contract().as_str());
-            let _ = writeln!(output, "# stddev_samp_execution_mode={}", mode.as_str());
         }
         write_workload_dataset_metadata(&mut output, self.workload_dataset.as_ref());
         debug_assert_eq!(NativeTpcdsParityRow::COLUMNS.join("\t"), NATIVE_TPCDS_PARITY_TSV_HEADER);

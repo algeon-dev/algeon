@@ -1,0 +1,29 @@
+error[E0432]: unresolved imports `nexus_query_engine::exec::execute_bounded_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_pipeline_query_plan`, `nexus_query_engine::exec::execute_bounded_join_pipeline_query_plan`, `nexus_query_engine::exec::execute_bounded_keyed_hash_join_resident_subplan_pipeline_query_plan`, `nexus_query_engine::exec::execute_bounded_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline_query_plan`, `nexus_query_engine::exec::execute_bounded_keyless_conditional_join_input_subplan_pipeline_query_plan`, `nexus_query_engine::exec::execute_bounded_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline_query_plan`, `nexus_query_engine::exec::execute_bounded_multi_join_aggregate_over_join_subplan_topk_pipeline_query_plan`, `nexus_query_engine::exec::execute_bounded_multi_join_pipeline_query_plan`, `nexus_query_engine::exec::execute_bounded_multi_join_resident_grouped_aggregate_subquery_filter_pipeline_query_plan`, `nexus_query_engine::exec::execute_bounded_root_join_query_plan`
+  --> tests/ui/public_api/forbidden_topology_specific_execution_entrypoints.rs:2:5
+   |
+ 2 |     execute_bounded_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_pipeline_query_plan,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ no `execute_bounded_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_pipeline_query_plan` in `exec`
+ 3 |     execute_bounded_join_pipeline_query_plan, execute_bounded_keyed_hash_join_resident_subplan_pipeline_query_plan,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ no `execute_bounded_keyed_hash_join_resident_subplan_pipeline_query_plan` in `exec`
+   |     |
+   |     no `execute_bounded_join_pipeline_query_plan` in `exec`
+ 4 |     execute_bounded_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline_query_plan,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ no `execute_bounded_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline_query_plan` in `exec`
+ 5 |     execute_bounded_keyless_conditional_join_input_subplan_pipeline_query_plan,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ no `execute_bounded_keyless_conditional_join_input_subplan_pipeline_query_plan` in `exec`
+ 6 |     execute_bounded_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline_query_plan,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ no `execute_bounded_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline_query_plan` in `exec`
+ 7 |     execute_bounded_multi_join_aggregate_over_join_subplan_topk_pipeline_query_plan,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ no `execute_bounded_multi_join_aggregate_over_join_subplan_topk_pipeline_query_plan` in `exec`
+ 8 |     execute_bounded_multi_join_pipeline_query_plan,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ no `execute_bounded_multi_join_pipeline_query_plan` in `exec`
+ 9 |     execute_bounded_multi_join_resident_grouped_aggregate_subquery_filter_pipeline_query_plan,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ no `execute_bounded_multi_join_resident_grouped_aggregate_subquery_filter_pipeline_query_plan` in `exec`
+10 |     execute_bounded_root_join_query_plan,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ no `execute_bounded_root_join_query_plan` in `exec`
+   |
+help: a similar name exists in the module
+   |
+10 -     execute_bounded_root_join_query_plan,
+10 +     execute_bounded_query_plan,
+   |

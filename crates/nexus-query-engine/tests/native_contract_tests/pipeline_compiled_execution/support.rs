@@ -260,11 +260,11 @@ pub(super) fn assert_compiled_graph_inventory(label: &str, pipeline: &CompiledPi
     }
 }
 
-pub(super) fn assert_no_legacy_execution_selection_terms(label: &str, rendered: &str) {
+pub(super) fn assert_no_retired_execution_selection_terms(label: &str, rendered: &str) {
     for forbidden in FORBIDDEN_FAMILY_PATH_REPORT_TERMS {
         assert!(
             !rendered.contains(forbidden),
-            "{label}: compiled graph diagnostics must not contain legacy execution selection term {forbidden}"
+            "{label}: compiled graph diagnostics must not contain retired execution selection term {forbidden}"
         );
     }
 }
@@ -273,7 +273,7 @@ pub(super) fn assert_contract_gate_row_is_family_path_free(label: &str, row: &st
     for forbidden in FORBIDDEN_FAMILY_PATH_REPORT_TERMS {
         assert!(
             !row.contains(forbidden),
-            "{label}: bounded contract gate rows must not contain legacy family/path report term {forbidden}"
+            "{label}: bounded contract gate rows must not contain retired family/path report term {forbidden}"
         );
     }
 }

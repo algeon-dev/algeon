@@ -20,7 +20,7 @@ impl NexusNativeExecutionConfig {
         self.source_scheduler_policy = handle.source_scheduler_policy();
         self.source_chunk_planning_mode = handle.source_chunk_planning_mode();
         self.lakehouse_cache_fill_config = handle.lakehouse_cache_fill_config();
-        self.stddev_samp_execution_mode = handle.stddev_samp_execution_mode();
+        self.statistical_aggregate_execution_mode = handle.statistical_aggregate_execution_mode();
         self.dynamic_filter_execution_options = handle.dynamic_filter_execution_options();
         self.keyed_hash_join_strategy_options = handle.keyed_hash_join_strategy_options();
         self.aggregate_strategy_execution_options = handle.aggregate_strategy_execution_options();

@@ -709,13 +709,9 @@ pub struct CleanupFailureSummary {
     phase: CleanupFailurePhase,
     failure: AttemptFailureSummary,
     /// `false` means another cleanup failure followed this first retained
-    /// summary. The exact count remains in the enclosing attempt report.
-    #[serde(default = "default_cleanup_failure_summary_complete")]
+    /// summary. The exact count remains in the enclosing attempt report; the
+    /// field is required so decoding never fabricates exactness.
     complete: bool,
-}
-
-const fn default_cleanup_failure_summary_complete() -> bool {
-    true
 }
 
 impl CleanupFailureSummary {
@@ -875,7 +871,6 @@ pub enum AttemptNativeStatus {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AttemptNativeFault {
     pub kind: AttemptNativeFaultKind,
-    #[serde(default)]
     pub status: Option<AttemptNativeStatus>,
 }
 
@@ -900,9 +895,7 @@ pub struct AttemptNativeFaultEvidence {
     pub teardown_health: AttemptTeardownHealth,
     /// No device health sample is retained when cleanup lost isolation before
     /// the engine could establish a truthful device-local observation.
-    #[serde(default)]
     pub device_health: Option<AttemptDeviceHealth>,
-    #[serde(default)]
     pub first_fault: Option<AttemptNativeFault>,
 }
 
@@ -1512,13 +1505,10 @@ pub struct QueryAttemptReport {
     pub outcome: RuntimeTerminalOutcome,
     /// Bounded primary terminal-failure facts retained by the attempt
     /// lifecycle. Successful attempts have no primary summary.
-    #[serde(default)]
     pub primary_failure: Option<AttemptFailureSummary>,
     /// The sole evidence-gated recovery recommendation derived as this
-    /// report is sealed. Legacy reports without this field fail closed to
-    /// `indeterminate`; it is never inferred from an error status at read
-    /// time.
-    #[serde(default = "AttemptRetryAdvice::indeterminate")]
+    /// report is sealed. It is required and never inferred from an error
+    /// status at read time.
     pub retry_advice: AttemptRetryAdvice,
     pub device_ordinal: Option<usize>,
     pub admission: Option<AttemptAdmissionFact>,
@@ -1527,31 +1517,26 @@ pub struct QueryAttemptReport {
     /// Exact when `cleanup_failure_count_complete` is true. The lifecycle
     /// never publishes a saturated arithmetic result as exact.
     pub cleanup_failure_count: u64,
-    #[serde(default = "default_cleanup_failure_count_complete")]
+    /// Required so decoding never fabricates an exact cleanup-failure count.
     pub cleanup_failure_count_complete: bool,
     /// First bounded cleanup failure. Further failures affect only the exact
     /// count; timeline retention is intentionally not authoritative.
-    #[serde(default)]
     pub first_cleanup_failure: Option<CleanupFailureSummary>,
     pub capacity_disposition: AttemptCapacityDisposition,
     /// Exact final domain usage after admitted cleanup, when sampling
     /// succeeded. `None` is an unavailable sample, never a zero sample.
-    #[serde(default)]
     pub final_domain_usage: Option<AttemptFinalDomainUsage>,
     /// Health result of the admitted release commit. `None` means no
     /// trustworthy admitted terminal release-commit fact was recorded (for
-    /// example, an unadmitted or legacy attempt).
-    #[serde(default)]
+    /// example, an unadmitted attempt).
     pub health_transition: Option<AttemptHealthTransition>,
     /// Bounded cuDF/cuGraph native status, isolation, and teardown facts from
     /// the same terminal release commit. `None` means the attempt did not own
     /// a device-backed domain, not a fabricated healthy device sample.
-    #[serde(default)]
     pub native_fault_evidence: Option<AttemptNativeFaultEvidence>,
     /// Bounded ledger, immutable-cap, domain-usage, and allocator evidence
     /// from the sole terminal release commit. `None` means the attempt did
     /// not own a device-backed admission domain.
-    #[serde(default)]
     pub resource_evidence: Option<AttemptResourceEvidence>,
     pub observation_lost_records: u64,
     pub observation_retained_records: u64,
@@ -1559,10 +1544,6 @@ pub struct QueryAttemptReport {
     pub observation_truncated: bool,
     pub observation_degraded: bool,
     pub unix_epoch_ns: Option<u64>,
-}
-
-const fn default_cleanup_failure_count_complete() -> bool {
-    true
 }
 
 impl QueryAttemptReport {

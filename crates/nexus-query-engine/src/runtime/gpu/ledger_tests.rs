@@ -136,7 +136,7 @@ fn transition_observer_covers_every_sequence_bump_with_its_atomic_snapshot() {
     assert!(grant.try_reserve_live_bytes(40).unwrap());
     grant.release_live_bytes(40);
     assert!(first.try_reserve_evictable_bytes(10).unwrap());
-    assert_eq!(first.release_evictable_bytes(10).unwrap(), 10);
+    first.release_cache_residency_precharge_excess(10).unwrap();
     assert!(first.protect_slot(request(2), 100).unwrap());
     assert!(first.end_protection(request(2)).unwrap());
     drop(grant);
@@ -300,7 +300,7 @@ fn transition_observer_panics_and_same_ledger_reentry_are_isolated() {
                 })),
                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| same_ledger.release_grant(u64::MAX))),
                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    retained_grant.record_live_reservation_delta(1);
+                    retained_grant.release_live_bytes(1);
                 })),
             ] {
                 let panic = panic.expect_err("same-ledger transition-observer reentry must panic");
@@ -607,7 +607,7 @@ fn snapshot_aggregates_live_reservations_and_versions_every_observable_accountin
     assert!(ledger.try_reserve_evictable_bytes(10).unwrap());
     let cache_charged = ledger.snapshot().unwrap();
     assert!(cache_charged.sequence > released.sequence);
-    assert_eq!(ledger.release_evictable_bytes(10).unwrap(), 10);
+    ledger.release_cache_residency_precharge_excess(10).unwrap();
     let cache_released = ledger.snapshot().unwrap();
     assert!(cache_released.sequence > cache_charged.sequence);
 }
@@ -628,33 +628,18 @@ fn direct_retention_rejects_new_bytes_above_the_immutable_grant() {
 }
 
 #[test]
-fn evictable_cache_accounting_is_separate_from_the_admission_equation() {
-    let ledger = DeviceLedger::new(cache_profile(1_000, 100, 1, 900));
-    assert!(ledger.try_reserve_evictable_bytes(300).unwrap());
-    assert_eq!(ledger.evictable_bytes().unwrap(), 300);
-    let snapshot = ledger.snapshot().unwrap();
-    assert_eq!(
-        snapshot.cache_evictable_resident_bytes, 300,
-        "resource evidence snapshots retain the same lock-held evictable charge as their sequence"
-    );
-    assert_eq!(snapshot.cache_pinned_in_use_bytes, 0);
-    assert_eq!(ledger.release_evictable_bytes(400).unwrap(), 300);
-    assert_eq!(ledger.evictable_bytes().unwrap(), 0);
-}
-
-#[test]
-fn evictable_cache_bytes_obey_a_cumulative_bound_across_reserve_and_release() {
+fn evictable_cache_bytes_obey_a_cumulative_bound_across_reserve_and_exact_precharge_return() {
     let ledger = DeviceLedger::new(cache_profile(1_000, 100, 1, 900));
     let grant = ledger.try_admit(request(1), &requirement(100, Some(400))).unwrap().expect("admits");
     assert!(ledger.try_reserve_evictable_bytes(300).unwrap());
-    assert_eq!(ledger.release_evictable_bytes(100).unwrap(), 100);
+    ledger.release_cache_residency_precharge_excess(100).unwrap();
     assert!(ledger.try_reserve_evictable_bytes(400).unwrap());
     assert_eq!(ledger.evictable_bytes().unwrap(), 600);
     assert!(
         !ledger.try_reserve_evictable_bytes(1).unwrap(),
         "live grants and all cache reservations share one device-capacity bound"
     );
-    assert_eq!(ledger.release_evictable_bytes(250).unwrap(), 250);
+    ledger.release_cache_residency_precharge_excess(250).unwrap();
     assert!(ledger.try_reserve_evictable_bytes(250).unwrap());
     assert_eq!(ledger.evictable_bytes().unwrap(), 600);
     drop(grant);

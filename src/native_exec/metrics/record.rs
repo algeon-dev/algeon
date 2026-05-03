@@ -817,8 +817,6 @@ impl NexusNativeMetrics {
                     aggregate_fact(facts, "statistical_aggregate_functions"),
                 )
                 .with_new_label("statistical_aggregate_ddof", aggregate_fact(facts, "statistical_aggregate_ddof"))
-                .with_new_label("stddev_samp_execution_mode", aggregate_fact(facts, "stddev_samp_execution_mode"))
-                .with_new_label("stddev_samp_ddof", aggregate_fact(facts, "stddev_samp_ddof"))
                 .with_new_label("aggregate_filter_count", aggregate_fact(facts, "aggregate_filter_count"))
                 .with_new_label(
                     "filtered_input_materialization_strategy",

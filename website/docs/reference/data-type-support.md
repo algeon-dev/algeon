@@ -63,7 +63,7 @@ cuGraph table functions have a narrower edge-table contract:
   source and destination columns through logical vertex-id mapping; every
   other algorithm requires integer vertex columns.
 - `cugraph_minimum_spanning_tree` and
-  `cugraph_spectral_modularity_maximization` use legacy cuGraph edge-type
+  `cugraph_spectral_modularity_maximization` use cuGraph C API edge-type
   dispatch and accept `Int32` vertex columns only.
 - Edge weight columns, when supplied, must be `Float32` or `Float64`.
 - `edge_id_col`, when supplied, must use the same vertex-id domain as the edge

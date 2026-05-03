@@ -8,7 +8,9 @@ use datafusion_nexus::{
     table_format::{
         TableFormat, TableFormatDataFile, TableFormatDataFileFormat, TableFormatParquetReadStrategyConfig,
         TableFormatReadCapability, TableFormatScanPlan, TableFormatUnsupportedFeature,
-        TableFormatUnsupportedFeatureCode, resolve_table_format_parquet_source,
+        TableFormatUnsupportedFeatureCode,
+        iceberg::{SourceAccessPolicy, catalog::GlueIcebergCatalogConfig},
+        resolve_table_format_parquet_source,
     },
 };
 use nexus_bench::iceberg_smoke::{
@@ -22,14 +24,14 @@ fn glue_s3_defaults_use_aws_profile_without_exposing_credential_value_in_report_
     let env = HashMap::from([("AWS_PROFILE", "local-dev"), ("NEXUS_ICEBERG_SMOKE_FIXTURE_MODE", "glue_s3")]);
     let config = IcebergNativeSmokeConfig::from_env_get(|name| env.get(name).map(|value| value.to_string())).unwrap();
 
-    let IcebergNativeSmokeFixture::GlueS3 { profile, database, table, catalog_id, region, .. } = &config.fixture else {
+    let IcebergNativeSmokeFixture::GlueS3 { catalog_config, database, table, .. } = &config.fixture else {
         panic!("expected glue_s3 fixture");
     };
-    assert_eq!(profile.as_deref(), Some("local-dev"));
+    assert_eq!(catalog_config.profile.as_deref(), Some("local-dev"));
     assert_eq!(database, "tpch_sf1");
     assert_eq!(table, "lineitem");
-    assert_eq!(catalog_id.as_deref(), None);
-    assert_eq!(region, "us-east-1");
+    assert_eq!(catalog_config.catalog_id.as_deref(), None);
+    assert_eq!(catalog_config.region, "us-east-1");
     assert_eq!(config.table_alias, "lineitem");
     assert_eq!(config.sql, "select count(*) as row_count from lineitem");
     assert_eq!(config.fixture.credential_source(), "aws_profile_env");
@@ -91,14 +93,17 @@ fn glue_s3_fixture_accepts_local_moto_and_rustfs_endpoints() {
     ]);
     let config = IcebergNativeSmokeConfig::from_env_get(|name| env.get(name).map(|value| value.to_string())).unwrap();
 
-    let IcebergNativeSmokeFixture::GlueS3 { uri, s3_endpoint, s3_region, s3_path_style_access, .. } = &config.fixture
-    else {
+    let IcebergNativeSmokeFixture::GlueS3 { catalog_config, .. } = &config.fixture else {
         panic!("expected glue_s3 fixture");
     };
-    assert_eq!(uri.as_deref(), Some("http://localhost:5001"));
-    assert_eq!(s3_endpoint.as_deref(), Some("http://localhost:9000"));
-    assert_eq!(s3_region.as_deref(), Some("us-east-1"));
-    assert_eq!(*s3_path_style_access, Some(true));
+    let expected = GlueIcebergCatalogConfig::new("glue", "s3://lakehouse/warehouse", "us-east-1")
+        .with_uri("http://localhost:5001")
+        .with_source_access_policy(SourceAccessPolicy::s3_custom_endpoint(
+            "http://localhost:9000",
+            Some("us-east-1".to_string()),
+            Some(true),
+        ));
+    assert_eq!(catalog_config, &expected);
 }
 
 #[test]

@@ -303,7 +303,7 @@ fn query_service_memory_failure_callback_ignores_budget_failures() {
 }
 
 #[test]
-fn second_query_service_on_same_device_is_rejected_while_backend_is_live() {
+fn direct_test_services_do_not_retain_backend_ownership() {
     if !has_required_device_inventory(1) {
         return;
     }
@@ -313,17 +313,16 @@ fn second_query_service_on_same_device_is_rejected_while_backend_is_live() {
         QueueBounds { max_waiters: 2, max_wait: Duration::from_millis(500), max_overtakes_per_waiter: 4 };
     let profiles = test_device_profiles(&[0], 1, 3, TEST_DEVICE_CAPACITY_BYTES);
     let first_service = runtime_test_service(config.clone(), queue_bounds.clone(), profiles.clone());
-    let error = QueryService::new_with_device_profiles_and_deployment_for_test(
+    let second_service = QueryService::new_with_device_profiles_and_deployment_for_test(
         config,
         queue_bounds,
         profiles,
         non_gds_deployment(),
     )
-    .expect_err("one process-owned backend must reject a second live service");
+    .expect("test-only services borrow construction authority without becoming backend owners");
 
-    assert_eq!(error.fact_value("reason"), Some("backend_already_live"));
-    assert_eq!(error.fact_value("existing_device_ordinals"), Some("0"));
     drop(first_service);
+    drop(second_service);
 }
 
 #[test]

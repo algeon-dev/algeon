@@ -161,20 +161,6 @@ fn query_attempt_report_serde_round_trips_with_stable_field_names() {
     assert_eq!(json["schema"], QUERY_ATTEMPT_REPORT_SCHEMA_V1);
     assert_eq!(json["disposition"], "native");
     assert_eq!(json["outcome"]["kind"], "succeeded");
-    let mut legacy_json = json.clone();
-    let fields = legacy_json.as_object_mut().expect("report serializes as a JSON object");
-    fields.remove("primary_failure");
-    fields.remove("cleanup_failure_count_complete");
-    fields.remove("first_cleanup_failure");
-    fields.remove("resource_evidence");
-    fields.remove("retry_advice");
-    let legacy: QueryAttemptReport = serde_json::from_value(legacy_json).expect("old report remains readable");
-    assert_eq!(legacy.primary_failure, None);
-    assert!(legacy.cleanup_failure_count_complete);
-    assert_eq!(legacy.first_cleanup_failure, None);
-    assert_eq!(legacy.resource_evidence, None);
-    assert_eq!(legacy.retry_advice, AttemptRetryAdvice::indeterminate());
-
     let decoded: QueryAttemptReport = serde_json::from_value(json).expect("deserialize report");
     assert_eq!(decoded, report);
     assert_eq!(decoded.total_ns(), Some(8));

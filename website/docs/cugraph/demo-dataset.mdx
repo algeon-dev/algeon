@@ -87,9 +87,9 @@ AWS Glue can serve the same table layout for remote demos, but it requires an
 AWS account, a warehouse bucket, and credential setup. The local REST catalog is
 the reproducible path for the website examples.
 
-## Int32 renumbering for the legacy algorithms
+## Int32 renumbering for cuGraph C API algorithms
 
-Two legacy cuGraph algorithms (`cugraph_spectral_modularity_maximization`,
+Two cuGraph C API algorithms (`cugraph_spectral_modularity_maximization`,
 `cugraph_minimum_spanning_tree`) require
 **Int32 vertex columns**. AMiner paper ids do not fit: 42% of them exceed
 2,147,483,647 (the maximum id is 3,009,038,462), so a plain `CAST` overflows.

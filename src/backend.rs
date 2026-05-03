@@ -912,7 +912,7 @@ fn backend_query_execution_config(execution_config: &NexusNativeExecutionConfig)
         boundary_policy: execution_config.boundary_policy(),
         source_scheduler_policy: execution_config.source_scheduler_policy(),
         source_chunk_planning_mode: execution_config.source_chunk_planning_mode(),
-        stddev_samp_execution_mode: execution_config.stddev_samp_execution_mode(),
+        statistical_aggregate_execution_mode: execution_config.statistical_aggregate_execution_mode(),
         dynamic_filter_execution_options: execution_config.dynamic_filter_execution_options(),
         keyed_hash_join_strategy_options: execution_config.keyed_hash_join_strategy_options(),
         aggregate_strategy_execution_options: execution_config.aggregate_strategy_execution_options(),

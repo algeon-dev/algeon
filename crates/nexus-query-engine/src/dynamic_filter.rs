@@ -831,8 +831,8 @@ fn apply_dynamic_filter_to_source(
 }
 
 /// Builds the set-aware row-group pruning filter carried by a dynamic-filter
-/// payload. Range payloads reuse their `[min,max]` bounds (one run, identical to
-/// the legacy behavior); small/large keyset payloads coalesce their materialized
+/// payload. Range payloads reuse their `[min,max]` bounds as one run; small/large
+/// keyset payloads coalesce their materialized
 /// `values` into runs so a scattered keyset prunes the gaps a single range would
 /// retain. Returns `None` when the payload carries nothing prunable.
 fn dynamic_filter_row_group_key_filter(filter: &DynamicFilter) -> Option<DimensionKeyFilter> {

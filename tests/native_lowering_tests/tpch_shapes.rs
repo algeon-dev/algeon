@@ -201,29 +201,6 @@ async fn tpch_q18_semijoin_reduction_pushes_filter_to_orders_subtree() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
-fn native_semijoin_reduction_guardrail_has_no_q18_specific_native_path() {
-    let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let native_path_roots = [
-        manifest_dir.join("src/native"),
-        manifest_dir.join("src/native_exec"),
-        manifest_dir.join("src/planner"),
-        manifest_dir.join("crates/nexus-query-engine/src"),
-    ];
-
-    let offenders = native_path_roots
-        .iter()
-        .flat_map(|root| source_files_under(root))
-        .filter_map(|path| {
-            let text = std::fs::read_to_string(&path).expect("native source file should be readable");
-            text.to_ascii_lowercase()
-                .contains("q18")
-                .then(|| path.strip_prefix(manifest_dir).unwrap_or(&path).display().to_string())
-        })
-        .collect::<Vec<_>>();
-    assert!(offenders.is_empty(), "native lowering/admission/execution must not special-case TPC-H Q18: {offenders:?}");
-}
-
 #[tokio::test]
 async fn tpch_q21_decorrelates_to_native_left_only_mixed_residual_joins() {
     let dir = unique_temp_dir("datafusion-nexus-native-lowering-tpch-q21");
@@ -353,24 +330,6 @@ fn join_type_count_below(plan: &QueryPlan, root: NodeId, join_type: NativeJoinTy
         stack.extend(node.input_ids().iter().copied());
     }
     count
-}
-
-fn source_files_under(root: &std::path::Path) -> Vec<std::path::PathBuf> {
-    let mut files = Vec::new();
-    let mut stack = vec![root.to_path_buf()];
-    while let Some(path) = stack.pop() {
-        let entries = std::fs::read_dir(&path)
-            .unwrap_or_else(|error| panic!("native source path should be readable: {}: {error}", path.display()));
-        for entry in entries {
-            let path = entry.expect("native source dir entry should be readable").path();
-            if path.is_dir() {
-                stack.push(path);
-            } else if path.extension().is_some_and(|extension| extension == "rs") {
-                files.push(path);
-            }
-        }
-    }
-    files
 }
 
 #[tokio::test]

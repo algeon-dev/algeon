@@ -94,9 +94,6 @@ pub(super) struct QueryServiceResources {
     pub(super) object_store_control_runtime: Arc<tokio::runtime::Runtime>,
     pub(super) source_object_stores: Arc<SourceObjectStoreRegistry>,
     pub(super) deployment_io_capability: DeploymentIoCapability,
-    /// Declared last so construction rollback drops every created GPU
-    /// resource before ownership can become available to a replacement.
-    pub(super) owner_lease: Option<LiveBackendLease>,
 }
 
 impl QueryServiceResources {
@@ -172,13 +169,6 @@ impl CleanupErrorPriority {
     fn into_result(self) -> Result<()> {
         self.first_permanent.or(self.first_deadline).map_or(Ok(()), Err)
     }
-}
-
-pub(super) fn gpu_execution_worker_count_per_device(_config: &QueryExecutionConfig) -> usize {
-    // Backend-owned profiles determine runtime worker capacities. Direct
-    // construction has no scalar compatibility override; this value is only
-    // a defensive fallback for an empty registry profile.
-    1
 }
 
 #[cfg(test)]

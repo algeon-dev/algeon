@@ -9,7 +9,7 @@ use crate::{
         AggregateStrategyCapabilityDecision, AggregateStrategyExecutionOptions, aggregate_strategy_capability_decision,
     },
     chunk::SourceChunk,
-    mode::StddevSampExecutionMode,
+    mode::StatisticalAggregateExecutionMode,
 };
 
 mod filter_inputs;
@@ -117,7 +117,7 @@ pub(in crate::exec) fn partial_aggregate_source_chunk_fingerprint(chunks: &[Sour
 pub(in crate::exec::operators::aggregate) fn add_floating_statistical_aggregate_contract_facts(
     facts: &mut BTreeMap<&'static str, String>,
     spec: &AggregateSpec,
-    mode: StddevSampExecutionMode,
+    mode: StatisticalAggregateExecutionMode,
 ) {
     let statistical_functions = spec
         .aggr_exprs
@@ -136,10 +136,6 @@ pub(in crate::exec::operators::aggregate) fn add_floating_statistical_aggregate_
     facts.insert("statistical_aggregate_tolerance_contract", mode.tolerance_contract().as_str().to_string());
     facts.insert("statistical_aggregate_functions", statistical_functions.join(","));
     facts.insert("statistical_aggregate_ddof", statistical_ddof.join(","));
-    if spec.aggr_exprs.iter().any(|expr| expr.function == AggregateFunction::StddevSamp) {
-        facts.insert("stddev_samp_execution_mode", mode.as_str().to_string());
-        facts.insert("stddev_samp_ddof", "1".to_string());
-    }
 }
 
 pub(in crate::exec) fn execute_aggregate(
@@ -152,7 +148,7 @@ pub(in crate::exec) fn execute_aggregate(
 ) -> Result<GpuDataFrame> {
     let (frame, spec, prepared_input_schema) =
         prepare_filtered_aggregate_frame(context, input.into_frame(), input_schema, &node.spec, None, metrics)?;
-    if should_execute_datafusion_exact_stddev(context, &spec) {
+    if should_execute_datafusion_exact_floating_statistical_aggregate(context, &spec) {
         return execute_datafusion_exact_host_aggregate(
             context,
             None,
@@ -329,8 +325,8 @@ pub(in crate::exec) fn execute_aggregate_with_budget_for_node(
     } else {
         None
     };
-    let filtered_global_exact_host =
-        filtered_global_strategy.is_some() && should_execute_datafusion_exact_stddev(context, &node.spec);
+    let filtered_global_exact_host = filtered_global_strategy.is_some()
+        && should_execute_datafusion_exact_floating_statistical_aggregate(context, &node.spec);
     let (frame, spec, prepared_input_schema) = match prepare_filtered_aggregate_frame(
         context,
         input.into_frame(),
@@ -370,7 +366,7 @@ pub(in crate::exec) fn execute_aggregate_with_budget_for_node(
             return Err(error);
         },
     };
-    if should_execute_datafusion_exact_stddev(context, &spec) {
+    if should_execute_datafusion_exact_floating_statistical_aggregate(context, &spec) {
         let output = match execute_datafusion_exact_host_aggregate(
             context,
             node_id,
@@ -625,12 +621,12 @@ pub(in crate::exec) fn execute_aggregate_with_budget_for_node(
     Ok(GpuDataFrame::new(output))
 }
 
-pub(in crate::exec) fn should_execute_datafusion_exact_stddev(
+pub(in crate::exec) fn should_execute_datafusion_exact_floating_statistical_aggregate(
     context: &ExecutionContext,
     spec: &AggregateSpec,
 ) -> bool {
     aggregate_spec_has_floating_statistical_aggregate(spec)
-        && context.stddev_samp_execution_mode().is_datafusion_exact()
+        && context.statistical_aggregate_execution_mode().is_datafusion_exact()
 }
 
 fn record_single_grouped_aggregate_strategy_decision(
@@ -678,7 +674,7 @@ pub(in crate::exec::operators::aggregate) fn record_single_grouped_aggregate_str
     elapsed: Duration,
 ) {
     if aggregate_spec_has_floating_statistical_aggregate(spec) {
-        let mode = context.stddev_samp_execution_mode();
+        let mode = context.statistical_aggregate_execution_mode();
         let selected_strategy = if spec
             .aggr_exprs
             .iter()

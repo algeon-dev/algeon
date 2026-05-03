@@ -1,0 +1,5 @@
+error[E0432]: unresolved import `nexus_bench::workload`
+ --> tests/ui/public_api/forbidden_workload_facade.rs:1:5
+  |
+1 | use nexus_bench::workload;
+  |     ^^^^^^^^^^^^^^^^^^^^^ no `workload` in the root

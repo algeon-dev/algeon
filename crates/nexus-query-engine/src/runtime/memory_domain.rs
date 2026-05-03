@@ -1,4 +1,4 @@
-//! Grant-backed allocator domains and reservation arenas.
+//! Grant-backed allocator domains.
 //!
 //! Attempt grants are immutable, so allocator domains are created once with
 //! `grant_bytes == ceiling_bytes == grant` and never resized.  Construction is
@@ -12,23 +12,6 @@ use std::sync::Arc;
 use super::MemoryGrant;
 use crate::error::{QueryError, QueryErrorCode, Result};
 
-/// Creates a private reservation arena for a direct (non-admitted) context.
-///
-/// Direct contexts may still use the legacy grant-backed arena path, but the
-/// arena capability is owned by the shared immutable grant and each builder
-/// receives an `Arc` lease to that one arena.  Admission envelopes never call
-/// this path: they create one hard [`AttemptAllocationDomain`] and propagate
-/// its member leases instead.
-pub(super) fn create_grant_reservation_arena(
-    runtime: &cudf::Runtime,
-    memory_grant: Option<&MemoryGrant>,
-) -> Result<Option<Arc<cudf::ReservationArena>>> {
-    let Some(grant) = memory_grant else {
-        return Ok(None);
-    };
-    Ok(Some(grant.reservation_arena(runtime)?))
-}
-
 /// Creates the authoritative hard allocation domain for one admitted attempt.
 ///
 /// The domain grant equals its ceiling equals the immutable admission grant;
@@ -37,11 +20,8 @@ pub(super) fn create_grant_reservation_arena(
 /// than attempting another lookup by grant identity.
 pub(super) fn create_grant_memory_domain(
     runtime: &cudf::Runtime,
-    memory_grant: Option<&MemoryGrant>,
-) -> Result<Option<Arc<cudf::QueryMemoryDomain>>> {
-    let Some(grant) = memory_grant else {
-        return Ok(None);
-    };
+    grant: &MemoryGrant,
+) -> Result<Arc<cudf::QueryMemoryDomain>> {
     let grant_bytes = grant_budget_usize(grant, "nexus_query_engine.runtime.grant_memory_domain")?;
     let manager = runtime.device_memory_manager().map_err(|error| {
         QueryError::from_cudf(
@@ -64,7 +44,7 @@ pub(super) fn create_grant_memory_domain(
             .with_fact("admission_request_id", grant.admission_request_id())
             .with_fact("budget_bytes", grant.budget_bytes())
         })?;
-    Ok(Some(Arc::new(domain)))
+    Ok(Arc::new(domain))
 }
 
 fn grant_budget_usize(grant: &MemoryGrant, operation: &'static str) -> Result<usize> {

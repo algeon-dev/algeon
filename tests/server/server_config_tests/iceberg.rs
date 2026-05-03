@@ -11,8 +11,8 @@ fn server_iceberg_config_ignores_aws_env_without_catalog_request() {
 #[test]
 fn server_iceberg_config_accepts_dynamic_catalog_without_explicit_tables() {
     let env = BTreeMap::from([
-        (NEXUS_ICEBERG_GLUE_DATABASE_ENV, "tpch_sf1".to_string()),
-        (datafusion_nexus::server::NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, "s3://bucket/warehouse/".to_string()),
+        (NEXUS_ICEBERG_NAMESPACE_ENV, "tpch_sf1".to_string()),
+        (datafusion_nexus::server::NEXUS_ICEBERG_WAREHOUSE_ENV, "s3://bucket/warehouse/".to_string()),
         (datafusion_nexus::table_format::iceberg::AWS_REGION_ENV, "us-east-1".to_string()),
     ]);
     let config = server_config_with_default_device_profile(env).unwrap();
@@ -26,8 +26,8 @@ fn server_iceberg_config_accepts_dynamic_catalog_without_explicit_tables() {
 #[test]
 fn server_iceberg_config_accepts_scan_planning_timeout() {
     let env = BTreeMap::from([
-        (NEXUS_ICEBERG_GLUE_DATABASE_ENV, "tpch_sf1".to_string()),
-        (datafusion_nexus::server::NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, "s3://bucket/warehouse/".to_string()),
+        (NEXUS_ICEBERG_NAMESPACE_ENV, "tpch_sf1".to_string()),
+        (datafusion_nexus::server::NEXUS_ICEBERG_WAREHOUSE_ENV, "s3://bucket/warehouse/".to_string()),
         (datafusion_nexus::server::NEXUS_ICEBERG_SCAN_PLANNING_TIMEOUT_SECS_ENV, "7".to_string()),
         (datafusion_nexus::table_format::iceberg::AWS_REGION_ENV, "us-east-1".to_string()),
     ]);
@@ -41,8 +41,8 @@ fn server_iceberg_config_accepts_scan_planning_timeout() {
 #[test]
 fn server_iceberg_config_rejects_zero_scan_planning_timeout() {
     let env = BTreeMap::from([
-        (NEXUS_ICEBERG_GLUE_DATABASE_ENV, "tpch_sf1".to_string()),
-        (datafusion_nexus::server::NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, "s3://bucket/warehouse/".to_string()),
+        (NEXUS_ICEBERG_NAMESPACE_ENV, "tpch_sf1".to_string()),
+        (datafusion_nexus::server::NEXUS_ICEBERG_WAREHOUSE_ENV, "s3://bucket/warehouse/".to_string()),
         (datafusion_nexus::server::NEXUS_ICEBERG_SCAN_PLANNING_TIMEOUT_SECS_ENV, "0".to_string()),
         (datafusion_nexus::table_format::iceberg::AWS_REGION_ENV, "us-east-1".to_string()),
     ]);
@@ -55,14 +55,14 @@ fn server_iceberg_config_rejects_zero_scan_planning_timeout() {
 #[test]
 fn server_iceberg_config_accepts_backend_neutral_namespace_env() {
     use datafusion_nexus::server::{
-        NEXUS_ICEBERG_CATALOG_NAME_ENV, NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, NEXUS_ICEBERG_NAMESPACE_ENV,
-        NEXUS_ICEBERG_TABLES_ENV,
+        NEXUS_ICEBERG_CATALOG_NAME_ENV, NEXUS_ICEBERG_NAMESPACE_ENV, NEXUS_ICEBERG_TABLES_ENV,
+        NEXUS_ICEBERG_WAREHOUSE_ENV,
     };
     let env = BTreeMap::from([
         (NEXUS_ICEBERG_CATALOG_NAME_ENV, "iceberg".to_string()),
         (NEXUS_ICEBERG_NAMESPACE_ENV, "analytics".to_string()),
         (NEXUS_ICEBERG_TABLES_ENV, "orders=tpch_sf1_orders,nation".to_string()),
-        (NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, "s3://bucket/warehouse/".to_string()),
+        (NEXUS_ICEBERG_WAREHOUSE_ENV, "s3://bucket/warehouse/".to_string()),
         (datafusion_nexus::table_format::iceberg::AWS_REGION_ENV, "us-east-1".to_string()),
     ]);
     let config = server_config_with_default_device_profile(env).unwrap();
@@ -83,8 +83,8 @@ fn server_iceberg_config_accepts_backend_neutral_namespace_env() {
 #[test]
 fn server_iceberg_config_catalog_name_does_not_affect_glue_catalog_handle() {
     use datafusion_nexus::server::{
-        NEXUS_ICEBERG_CATALOG_NAME_ENV, NEXUS_ICEBERG_GLUE_CATALOG_NAME_ENV, NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV,
-        NEXUS_ICEBERG_NAMESPACE_ENV, NEXUS_ICEBERG_TABLES_ENV,
+        NEXUS_ICEBERG_CATALOG_NAME_ENV, NEXUS_ICEBERG_GLUE_CATALOG_NAME_ENV, NEXUS_ICEBERG_NAMESPACE_ENV,
+        NEXUS_ICEBERG_TABLES_ENV, NEXUS_ICEBERG_WAREHOUSE_ENV,
     };
     let env = BTreeMap::from([
         (NEXUS_ICEBERG_CATALOG_NAME_ENV, "iceberg".to_string()),
@@ -92,7 +92,7 @@ fn server_iceberg_config_catalog_name_does_not_affect_glue_catalog_handle() {
         (NEXUS_ICEBERG_GLUE_CATALOG_NAME_ENV, "my_glue_handle".to_string()),
         (NEXUS_ICEBERG_NAMESPACE_ENV, "analytics".to_string()),
         (NEXUS_ICEBERG_TABLES_ENV, "nation".to_string()),
-        (NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, "s3://bucket/warehouse/".to_string()),
+        (NEXUS_ICEBERG_WAREHOUSE_ENV, "s3://bucket/warehouse/".to_string()),
         (datafusion_nexus::table_format::iceberg::AWS_REGION_ENV, "us-east-1".to_string()),
     ]);
     let config = server_config_with_default_device_profile(env).unwrap();
@@ -104,33 +104,16 @@ fn server_iceberg_config_catalog_name_does_not_affect_glue_catalog_handle() {
 
 #[cfg(feature = "iceberg")]
 #[test]
-fn server_iceberg_config_backward_compat_glue_database_maps_to_namespace() {
-    let env = BTreeMap::from([
-        (NEXUS_ICEBERG_GLUE_DATABASE_ENV, "tpch_sf1".to_string()),
-        (datafusion_nexus::server::NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, "s3://bucket/warehouse/".to_string()),
-        (datafusion_nexus::server::NEXUS_ICEBERG_GLUE_TABLES_ENV, "nation".to_string()),
-        (datafusion_nexus::table_format::iceberg::AWS_REGION_ENV, "us-east-1".to_string()),
-    ]);
-    let config = server_config_with_default_device_profile(env).unwrap();
-    let iceberg = config.iceberg.expect("iceberg config must be present");
-
-    assert_eq!(iceberg.namespace, "tpch_sf1", "GLUE_DATABASE must map to namespace field");
-    assert_eq!(iceberg.catalog_name, "glue", "default catalog name must be glue");
-    assert_eq!(expect_glue_backend(&iceberg).catalog_handle, "glue", "default glue catalog handle must be glue");
-}
-
-#[cfg(feature = "iceberg")]
-#[test]
 fn server_iceberg_config_kind_glue_explicit_selects_glue_backend() {
     use datafusion_nexus::server::{
-        NEXUS_ICEBERG_CATALOG_KIND_ENV, NEXUS_ICEBERG_GLUE_URI_ENV, NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV,
-        NEXUS_ICEBERG_NAMESPACE_ENV, NEXUS_ICEBERG_S3_ENDPOINT_ENV, NEXUS_ICEBERG_S3_PATH_STYLE_ENV,
-        NEXUS_ICEBERG_S3_REGION_ENV,
+        NEXUS_ICEBERG_CATALOG_KIND_ENV, NEXUS_ICEBERG_GLUE_URI_ENV, NEXUS_ICEBERG_NAMESPACE_ENV,
+        NEXUS_ICEBERG_S3_ENDPOINT_ENV, NEXUS_ICEBERG_S3_PATH_STYLE_ENV, NEXUS_ICEBERG_S3_REGION_ENV,
+        NEXUS_ICEBERG_WAREHOUSE_ENV,
     };
     let env = BTreeMap::from([
         (NEXUS_ICEBERG_CATALOG_KIND_ENV, "glue".to_string()),
         (NEXUS_ICEBERG_NAMESPACE_ENV, "tpch_sf1".to_string()),
-        (NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, "s3://bucket/warehouse/".to_string()),
+        (NEXUS_ICEBERG_WAREHOUSE_ENV, "s3://bucket/warehouse/".to_string()),
         (NEXUS_ICEBERG_GLUE_URI_ENV, "http://localhost:5001".to_string()),
         (NEXUS_ICEBERG_S3_ENDPOINT_ENV, "http://localhost:9000".to_string()),
         (NEXUS_ICEBERG_S3_REGION_ENV, "us-east-2".to_string()),
@@ -177,14 +160,14 @@ fn server_iceberg_config_kind_glue_explicit_selects_glue_backend() {
 #[test]
 fn server_iceberg_s3_credential_source_default_chain_keeps_default_chain_with_endpoint() {
     use datafusion_nexus::server::{
-        NEXUS_ICEBERG_CATALOG_KIND_ENV, NEXUS_ICEBERG_GLUE_URI_ENV, NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV,
-        NEXUS_ICEBERG_NAMESPACE_ENV, NEXUS_ICEBERG_S3_CREDENTIAL_SOURCE_ENV, NEXUS_ICEBERG_S3_ENDPOINT_ENV,
-        NEXUS_ICEBERG_S3_PATH_STYLE_ENV, NEXUS_ICEBERG_S3_REGION_ENV,
+        NEXUS_ICEBERG_CATALOG_KIND_ENV, NEXUS_ICEBERG_GLUE_URI_ENV, NEXUS_ICEBERG_NAMESPACE_ENV,
+        NEXUS_ICEBERG_S3_CREDENTIAL_SOURCE_ENV, NEXUS_ICEBERG_S3_ENDPOINT_ENV, NEXUS_ICEBERG_S3_PATH_STYLE_ENV,
+        NEXUS_ICEBERG_S3_REGION_ENV, NEXUS_ICEBERG_WAREHOUSE_ENV,
     };
     let env = BTreeMap::from([
         (NEXUS_ICEBERG_CATALOG_KIND_ENV, "glue".to_string()),
         (NEXUS_ICEBERG_NAMESPACE_ENV, "tpch_sf1".to_string()),
-        (NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, "s3://lakehouse/warehouse".to_string()),
+        (NEXUS_ICEBERG_WAREHOUSE_ENV, "s3://lakehouse/warehouse".to_string()),
         (NEXUS_ICEBERG_GLUE_URI_ENV, "http://localhost:5001".to_string()),
         (NEXUS_ICEBERG_S3_ENDPOINT_ENV, "http://localhost:9000".to_string()),
         (NEXUS_ICEBERG_S3_REGION_ENV, "us-east-1".to_string()),
@@ -219,15 +202,15 @@ fn server_iceberg_s3_credential_source_default_chain_keeps_default_chain_with_en
 #[test]
 fn server_iceberg_custom_endpoint_freezes_unsigned_source_policy_and_native_profile() {
     use datafusion_nexus::server::{
-        NEXUS_ICEBERG_CATALOG_KIND_ENV, NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, NEXUS_ICEBERG_NAMESPACE_ENV,
-        NEXUS_ICEBERG_REST_URI_ENV, NEXUS_ICEBERG_S3_ENDPOINT_ENV, NEXUS_ICEBERG_S3_PATH_STYLE_ENV,
-        NEXUS_ICEBERG_S3_REGION_ENV,
+        NEXUS_ICEBERG_CATALOG_KIND_ENV, NEXUS_ICEBERG_NAMESPACE_ENV, NEXUS_ICEBERG_REST_URI_ENV,
+        NEXUS_ICEBERG_S3_ENDPOINT_ENV, NEXUS_ICEBERG_S3_PATH_STYLE_ENV, NEXUS_ICEBERG_S3_REGION_ENV,
+        NEXUS_ICEBERG_WAREHOUSE_ENV,
     };
     let env = BTreeMap::from([
         (NEXUS_ICEBERG_CATALOG_KIND_ENV, "rest".to_string()),
         (NEXUS_ICEBERG_NAMESPACE_ENV, "tpch_sf1".to_string()),
         (NEXUS_ICEBERG_REST_URI_ENV, "http://localhost:8181".to_string()),
-        (NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, "s3://lakehouse/warehouse".to_string()),
+        (NEXUS_ICEBERG_WAREHOUSE_ENV, "s3://lakehouse/warehouse".to_string()),
         (NEXUS_ICEBERG_S3_ENDPOINT_ENV, "http://localhost:9000".to_string()),
         (NEXUS_ICEBERG_S3_REGION_ENV, "us-east-1".to_string()),
         (NEXUS_ICEBERG_S3_PATH_STYLE_ENV, "true".to_string()),
@@ -257,15 +240,15 @@ fn server_iceberg_custom_endpoint_freezes_unsigned_source_policy_and_native_prof
 #[test]
 fn server_iceberg_s3_credential_source_default_chain_applies_to_rest_backend() {
     use datafusion_nexus::server::{
-        NEXUS_ICEBERG_CATALOG_KIND_ENV, NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, NEXUS_ICEBERG_NAMESPACE_ENV,
-        NEXUS_ICEBERG_REST_URI_ENV, NEXUS_ICEBERG_S3_CREDENTIAL_SOURCE_ENV, NEXUS_ICEBERG_S3_ENDPOINT_ENV,
-        NEXUS_ICEBERG_S3_PATH_STYLE_ENV,
+        NEXUS_ICEBERG_CATALOG_KIND_ENV, NEXUS_ICEBERG_NAMESPACE_ENV, NEXUS_ICEBERG_REST_URI_ENV,
+        NEXUS_ICEBERG_S3_CREDENTIAL_SOURCE_ENV, NEXUS_ICEBERG_S3_ENDPOINT_ENV, NEXUS_ICEBERG_S3_PATH_STYLE_ENV,
+        NEXUS_ICEBERG_WAREHOUSE_ENV,
     };
     let env = BTreeMap::from([
         (NEXUS_ICEBERG_CATALOG_KIND_ENV, "rest".to_string()),
         (NEXUS_ICEBERG_NAMESPACE_ENV, "tpch_sf1".to_string()),
         (NEXUS_ICEBERG_REST_URI_ENV, "http://localhost:8181".to_string()),
-        (NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, "s3://lakehouse/warehouse".to_string()),
+        (NEXUS_ICEBERG_WAREHOUSE_ENV, "s3://lakehouse/warehouse".to_string()),
         (NEXUS_ICEBERG_S3_ENDPOINT_ENV, "http://localhost:9000".to_string()),
         (NEXUS_ICEBERG_S3_PATH_STYLE_ENV, "true".to_string()),
         (NEXUS_ICEBERG_S3_CREDENTIAL_SOURCE_ENV, "default_chain".to_string()),
@@ -286,13 +269,13 @@ fn server_iceberg_s3_credential_source_default_chain_applies_to_rest_backend() {
 #[test]
 fn server_iceberg_s3_credential_source_rejects_unknown_value() {
     use datafusion_nexus::server::{
-        NEXUS_ICEBERG_CATALOG_KIND_ENV, NEXUS_ICEBERG_GLUE_URI_ENV, NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV,
-        NEXUS_ICEBERG_NAMESPACE_ENV, NEXUS_ICEBERG_S3_CREDENTIAL_SOURCE_ENV,
+        NEXUS_ICEBERG_CATALOG_KIND_ENV, NEXUS_ICEBERG_GLUE_URI_ENV, NEXUS_ICEBERG_NAMESPACE_ENV,
+        NEXUS_ICEBERG_S3_CREDENTIAL_SOURCE_ENV, NEXUS_ICEBERG_WAREHOUSE_ENV,
     };
     let env = BTreeMap::from([
         (NEXUS_ICEBERG_CATALOG_KIND_ENV, "glue".to_string()),
         (NEXUS_ICEBERG_NAMESPACE_ENV, "tpch_sf1".to_string()),
-        (NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, "s3://lakehouse/warehouse".to_string()),
+        (NEXUS_ICEBERG_WAREHOUSE_ENV, "s3://lakehouse/warehouse".to_string()),
         (NEXUS_ICEBERG_GLUE_URI_ENV, "http://localhost:5001".to_string()),
         (NEXUS_ICEBERG_S3_CREDENTIAL_SOURCE_ENV, "imds".to_string()),
         (datafusion_nexus::table_format::iceberg::AWS_REGION_ENV, "us-east-1".to_string()),
@@ -306,13 +289,13 @@ fn server_iceberg_s3_credential_source_rejects_unknown_value() {
 #[test]
 fn server_iceberg_s3_credential_source_rejects_static_credential_combination() {
     use datafusion_nexus::server::{
-        NEXUS_ICEBERG_CATALOG_KIND_ENV, NEXUS_ICEBERG_GLUE_URI_ENV, NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV,
-        NEXUS_ICEBERG_NAMESPACE_ENV, NEXUS_ICEBERG_S3_CREDENTIAL_SOURCE_ENV,
+        NEXUS_ICEBERG_CATALOG_KIND_ENV, NEXUS_ICEBERG_GLUE_URI_ENV, NEXUS_ICEBERG_NAMESPACE_ENV,
+        NEXUS_ICEBERG_S3_CREDENTIAL_SOURCE_ENV, NEXUS_ICEBERG_WAREHOUSE_ENV,
     };
     let env = BTreeMap::from([
         (NEXUS_ICEBERG_CATALOG_KIND_ENV, "glue".to_string()),
         (NEXUS_ICEBERG_NAMESPACE_ENV, "tpch_sf1".to_string()),
-        (NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, "s3://lakehouse/warehouse".to_string()),
+        (NEXUS_ICEBERG_WAREHOUSE_ENV, "s3://lakehouse/warehouse".to_string()),
         (NEXUS_ICEBERG_GLUE_URI_ENV, "http://localhost:5001".to_string()),
         (NEXUS_ICEBERG_S3_CREDENTIAL_SOURCE_ENV, "default_chain".to_string()),
         (datafusion_nexus::table_format::iceberg::NEXUS_ICEBERG_S3_ACCESS_KEY_ID_ENV, "AKIA_LOCAL".to_string()),
@@ -331,13 +314,13 @@ fn server_iceberg_s3_credential_source_rejects_static_credential_combination() {
 #[test]
 fn server_iceberg_glue_config_debug_redacts_local_endpoint_urls() {
     use datafusion_nexus::server::{
-        NEXUS_ICEBERG_CATALOG_KIND_ENV, NEXUS_ICEBERG_GLUE_URI_ENV, NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV,
-        NEXUS_ICEBERG_NAMESPACE_ENV, NEXUS_ICEBERG_S3_ENDPOINT_ENV,
+        NEXUS_ICEBERG_CATALOG_KIND_ENV, NEXUS_ICEBERG_GLUE_URI_ENV, NEXUS_ICEBERG_NAMESPACE_ENV,
+        NEXUS_ICEBERG_S3_ENDPOINT_ENV, NEXUS_ICEBERG_WAREHOUSE_ENV,
     };
     let env = BTreeMap::from([
         (NEXUS_ICEBERG_CATALOG_KIND_ENV, "glue".to_string()),
         (NEXUS_ICEBERG_NAMESPACE_ENV, "tpch_sf1".to_string()),
-        (NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, "s3://bucket/warehouse/".to_string()),
+        (NEXUS_ICEBERG_WAREHOUSE_ENV, "s3://bucket/warehouse/".to_string()),
         (NEXUS_ICEBERG_GLUE_URI_ENV, "https://user:glue-secret@glue.local".to_string()),
         (NEXUS_ICEBERG_S3_ENDPOINT_ENV, "https://user:s3-secret@s3.local".to_string()),
         (datafusion_nexus::table_format::iceberg::AWS_REGION_ENV, "us-east-1".to_string()),
@@ -370,15 +353,15 @@ fn server_iceberg_config_invalid_kind_is_rejected() {
 #[test]
 fn server_iceberg_config_kind_rest_happy_path() {
     use datafusion_nexus::server::{
-        NEXUS_ICEBERG_CATALOG_KIND_ENV, NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, NEXUS_ICEBERG_NAMESPACE_ENV,
-        NEXUS_ICEBERG_REST_URI_ENV, NEXUS_ICEBERG_S3_ENDPOINT_ENV, NEXUS_ICEBERG_S3_PATH_STYLE_ENV,
-        NEXUS_ICEBERG_S3_REGION_ENV,
+        NEXUS_ICEBERG_CATALOG_KIND_ENV, NEXUS_ICEBERG_NAMESPACE_ENV, NEXUS_ICEBERG_REST_URI_ENV,
+        NEXUS_ICEBERG_S3_ENDPOINT_ENV, NEXUS_ICEBERG_S3_PATH_STYLE_ENV, NEXUS_ICEBERG_S3_REGION_ENV,
+        NEXUS_ICEBERG_WAREHOUSE_ENV,
     };
     let env = BTreeMap::from([
         (NEXUS_ICEBERG_CATALOG_KIND_ENV, "rest".to_string()),
         (NEXUS_ICEBERG_NAMESPACE_ENV, "tpch_sf1".to_string()),
         (NEXUS_ICEBERG_REST_URI_ENV, "http://localhost:8181".to_string()),
-        (NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, "s3://lakehouse/warehouse".to_string()),
+        (NEXUS_ICEBERG_WAREHOUSE_ENV, "s3://lakehouse/warehouse".to_string()),
         (NEXUS_ICEBERG_S3_ENDPOINT_ENV, "http://localhost:9000".to_string()),
         (NEXUS_ICEBERG_S3_REGION_ENV, "us-east-1".to_string()),
         (NEXUS_ICEBERG_S3_PATH_STYLE_ENV, "true".to_string()),
@@ -420,14 +403,14 @@ fn server_iceberg_config_kind_rest_happy_path() {
 #[test]
 fn server_iceberg_config_owns_table_format_parquet_strategy() {
     use datafusion_nexus::server::{
-        NEXUS_ICEBERG_CATALOG_KIND_ENV, NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, NEXUS_ICEBERG_NAMESPACE_ENV,
-        NEXUS_ICEBERG_REST_URI_ENV, NEXUS_ICEBERG_S3_ENDPOINT_ENV, NEXUS_ICEBERG_S3_REGION_ENV,
+        NEXUS_ICEBERG_CATALOG_KIND_ENV, NEXUS_ICEBERG_NAMESPACE_ENV, NEXUS_ICEBERG_REST_URI_ENV,
+        NEXUS_ICEBERG_S3_ENDPOINT_ENV, NEXUS_ICEBERG_S3_REGION_ENV, NEXUS_ICEBERG_WAREHOUSE_ENV,
     };
     let env = BTreeMap::from([
         (NEXUS_ICEBERG_CATALOG_KIND_ENV, "rest".to_string()),
         (NEXUS_ICEBERG_NAMESPACE_ENV, "tpch_sf1".to_string()),
         (NEXUS_ICEBERG_REST_URI_ENV, "http://localhost:8181".to_string()),
-        (NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, "s3://lakehouse/warehouse".to_string()),
+        (NEXUS_ICEBERG_WAREHOUSE_ENV, "s3://lakehouse/warehouse".to_string()),
         (NEXUS_ICEBERG_S3_ENDPOINT_ENV, "http://user:secret@localhost:9000/rustfs?sig=secret".to_string()),
         (NEXUS_ICEBERG_S3_REGION_ENV, "us-west-2".to_string()),
         (table_format::NEXUS_LAKEHOUSE_CACHE_ROOT_ENV, "/tmp/nexus-cache".to_string()),
@@ -451,14 +434,14 @@ fn server_iceberg_config_owns_table_format_parquet_strategy() {
 #[test]
 fn server_iceberg_config_rejects_unknown_lakehouse_cache_policy() {
     use datafusion_nexus::server::{
-        NEXUS_ICEBERG_CATALOG_KIND_ENV, NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, NEXUS_ICEBERG_NAMESPACE_ENV,
-        NEXUS_ICEBERG_REST_URI_ENV,
+        NEXUS_ICEBERG_CATALOG_KIND_ENV, NEXUS_ICEBERG_NAMESPACE_ENV, NEXUS_ICEBERG_REST_URI_ENV,
+        NEXUS_ICEBERG_WAREHOUSE_ENV,
     };
     let env = BTreeMap::from([
         (NEXUS_ICEBERG_CATALOG_KIND_ENV, "rest".to_string()),
         (NEXUS_ICEBERG_NAMESPACE_ENV, "tpch_sf1".to_string()),
         (NEXUS_ICEBERG_REST_URI_ENV, "http://localhost:8181".to_string()),
-        (NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, "s3://lakehouse/warehouse".to_string()),
+        (NEXUS_ICEBERG_WAREHOUSE_ENV, "s3://lakehouse/warehouse".to_string()),
         (table_format::NEXUS_LAKEHOUSE_CACHE_POLICY_ENV, "eventual".to_string()),
     ]);
 
@@ -472,14 +455,14 @@ fn server_iceberg_config_rejects_unknown_lakehouse_cache_policy() {
 #[test]
 fn server_iceberg_config_rejects_invalid_table_format_strategy_size() {
     use datafusion_nexus::server::{
-        NEXUS_ICEBERG_CATALOG_KIND_ENV, NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, NEXUS_ICEBERG_NAMESPACE_ENV,
-        NEXUS_ICEBERG_REST_URI_ENV,
+        NEXUS_ICEBERG_CATALOG_KIND_ENV, NEXUS_ICEBERG_NAMESPACE_ENV, NEXUS_ICEBERG_REST_URI_ENV,
+        NEXUS_ICEBERG_WAREHOUSE_ENV,
     };
     let required = [
         (NEXUS_ICEBERG_CATALOG_KIND_ENV, "rest".to_string()),
         (NEXUS_ICEBERG_NAMESPACE_ENV, "tpch_sf1".to_string()),
         (NEXUS_ICEBERG_REST_URI_ENV, "http://localhost:8181".to_string()),
-        (NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, "s3://lakehouse/warehouse".to_string()),
+        (NEXUS_ICEBERG_WAREHOUSE_ENV, "s3://lakehouse/warehouse".to_string()),
     ];
     let zero_size = required
         .iter()
@@ -494,15 +477,15 @@ fn server_iceberg_config_rejects_invalid_table_format_strategy_size() {
 #[test]
 fn server_iceberg_config_kind_rest_does_not_require_region() {
     use datafusion_nexus::server::{
-        NEXUS_ICEBERG_CATALOG_KIND_ENV, NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, NEXUS_ICEBERG_NAMESPACE_ENV,
-        NEXUS_ICEBERG_REST_URI_ENV,
+        NEXUS_ICEBERG_CATALOG_KIND_ENV, NEXUS_ICEBERG_NAMESPACE_ENV, NEXUS_ICEBERG_REST_URI_ENV,
+        NEXUS_ICEBERG_WAREHOUSE_ENV,
     };
     // No AWS_REGION_ENV present — REST must still succeed.
     let env = BTreeMap::from([
         (NEXUS_ICEBERG_CATALOG_KIND_ENV, "rest".to_string()),
         (NEXUS_ICEBERG_NAMESPACE_ENV, "tpch_sf1".to_string()),
         (NEXUS_ICEBERG_REST_URI_ENV, "http://localhost:8181".to_string()),
-        (NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, "s3://lakehouse/warehouse".to_string()),
+        (NEXUS_ICEBERG_WAREHOUSE_ENV, "s3://lakehouse/warehouse".to_string()),
     ]);
     let config = server_config_with_default_device_profile(env).unwrap();
     let iceberg = config.iceberg.expect("iceberg config must be present");
@@ -513,12 +496,12 @@ fn server_iceberg_config_kind_rest_does_not_require_region() {
 #[test]
 fn server_iceberg_config_kind_rest_requires_uri() {
     use datafusion_nexus::server::{
-        NEXUS_ICEBERG_CATALOG_KIND_ENV, NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, NEXUS_ICEBERG_NAMESPACE_ENV,
+        NEXUS_ICEBERG_CATALOG_KIND_ENV, NEXUS_ICEBERG_NAMESPACE_ENV, NEXUS_ICEBERG_WAREHOUSE_ENV,
     };
     let env = BTreeMap::from([
         (NEXUS_ICEBERG_CATALOG_KIND_ENV, "rest".to_string()),
         (NEXUS_ICEBERG_NAMESPACE_ENV, "tpch_sf1".to_string()),
-        (NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, "s3://lakehouse/warehouse".to_string()),
+        (NEXUS_ICEBERG_WAREHOUSE_ENV, "s3://lakehouse/warehouse".to_string()),
     ]);
     let error = server_config_with_default_device_profile(env).unwrap_err();
     assert!(
@@ -540,7 +523,7 @@ fn server_iceberg_config_kind_rest_requires_warehouse() {
     ]);
     let error = server_config_with_default_device_profile(env).unwrap_err();
     assert!(
-        error.to_string().contains(datafusion_nexus::server::NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV),
+        error.to_string().contains(datafusion_nexus::server::NEXUS_ICEBERG_WAREHOUSE_ENV),
         "error should name the missing warehouse env var: {error}"
     );
 }

@@ -236,7 +236,7 @@ fn compile_pipeline_root_join_uses_build_side_and_not_append_order_as_schedule_p
 
     let pipeline = compile_pipeline(&plan, &analysis).expect("root join should compile");
     pipeline.validate().expect("compiled root join pipeline should validate");
-    assert_no_legacy_execution_selection_terms("root join", &pipeline);
+    assert_no_retired_execution_selection_terms("root join", &pipeline);
     assert_join_build_probe_dependencies("root join", &plan, &analysis, &pipeline);
 
     assert_eq!(
@@ -1156,17 +1156,17 @@ fn compile_admitted_join_case(
     let pipeline =
         compile_pipeline(&plan, &analysis).unwrap_or_else(|error| panic!("{label}: compile failed: {error}"));
     pipeline.validate().unwrap_or_else(|error| panic!("{label}: compiled pipeline should validate: {error}"));
-    assert_no_legacy_execution_selection_terms(label, &pipeline);
+    assert_no_retired_execution_selection_terms(label, &pipeline);
     assert_join_build_probe_dependencies(label, &plan, &analysis, &pipeline);
     (plan, analysis, pipeline)
 }
 
-fn assert_no_legacy_execution_selection_terms(label: &str, pipeline: &CompiledPipeline) {
+fn assert_no_retired_execution_selection_terms(label: &str, pipeline: &CompiledPipeline) {
     let rendered = pipeline.debug_render();
     for forbidden in ["BoundedJoinExecutionPath", "BoundedJoinExecutionFamily"] {
         assert!(
             !rendered.contains(forbidden),
-            "{label}: compiled pipeline rendering must not name legacy execution selection type {forbidden}"
+            "{label}: compiled pipeline rendering must not name retired execution selection type {forbidden}"
         );
     }
 }

@@ -59,7 +59,7 @@ fn bounded_stddev_join_aggregate_keeps_exact_and_tolerant_statistical_contracts_
             max_retry_attempts: 1,
             min_retry_chunk_row_groups: 1,
         })
-        .with_statistical_aggregate_execution_mode(StddevSampExecutionMode::GpuNativeTolerant)
+        .with_statistical_aggregate_execution_mode(StatisticalAggregateExecutionMode::GpuNativeTolerant)
         .build()
         .unwrap();
     let tolerant_result = execute_query_plan(&tolerant_context, &plan).unwrap();
@@ -74,7 +74,7 @@ fn bounded_stddev_join_aggregate_keeps_exact_and_tolerant_statistical_contracts_
                 .facts
                 .iter()
                 .any(|(key, value)| key == "statistical_aggregate_tolerance_contract" && value == "float_tolerant")
-            && decision.facts.iter().any(|(key, value)| key == "stddev_samp_ddof" && value == "1")
+            && decision.facts.iter().any(|(key, value)| key == "statistical_aggregate_ddof" && value == "stddev_samp:1")
     }));
     assert!(tolerant_metrics.reservation_events.iter().all(|event| {
         event.memory_boundary != "host_welford_input_materialization_preflight"

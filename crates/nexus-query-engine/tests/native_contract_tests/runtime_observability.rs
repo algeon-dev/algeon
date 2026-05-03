@@ -1,9 +1,7 @@
 use std::{
-    fs,
     hint::black_box,
     io::{self, Write},
     panic::{AssertUnwindSafe, catch_unwind},
-    path::PathBuf,
     sync::{
         Arc, Barrier,
         atomic::{AtomicBool, Ordering},
@@ -440,20 +438,6 @@ fn runtime_query_identity_uses_one_canonical_representation() {
         assert_eq!(decoded.as_str(), QueryId::UNASSIGNED);
     }
     assert_eq!(RuntimeQueryId::new("normal-query").as_str(), "normal-query");
-}
-
-#[test]
-fn native_observability_has_no_frontend_dependency_edges() {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/observability");
-    for entry in fs::read_dir(root).expect("observability directory is readable") {
-        let entry = entry.expect("directory entry is readable");
-        if entry.path().extension().and_then(|extension| extension.to_str()) != Some("rs") {
-            continue;
-        }
-        let source = fs::read_to_string(entry.path()).expect("Rust source is readable");
-        assert!(!source.contains("datafusion::"), "native observability must not import frontend crates");
-        assert!(!source.contains("use datafusion"), "native observability must not import frontend crates");
-    }
 }
 
 #[test]

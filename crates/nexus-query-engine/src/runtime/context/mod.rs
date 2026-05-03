@@ -34,7 +34,7 @@ use crate::{
     error::{QueryError, QueryErrorCode, Result},
     graph_memory::GraphMemoryCalibrationOverride,
     metrics::{QueryId, TraceId},
-    mode::StddevSampExecutionMode,
+    mode::StatisticalAggregateExecutionMode,
     observability::{
         RuntimeObservationHandle, RuntimeObservationSession, RuntimeStreamLeaseScope, RuntimeTaskId, RuntimeTraceId,
         RuntimeWorkerId,
@@ -862,8 +862,6 @@ pub struct ExecutionContext {
     /// retry/fan-in decisions. Source chunk byte and row-group settings are
     /// planning thresholds where row-group metadata permits exact splitting.
     memory_control_policy: MemoryControlPolicy,
-    /// Optional native arena that mirrors the current grant budget.
-    grant_reservation_arena: Option<Arc<cudf::ReservationArena>>,
     /// Optional native query memory domain that mirrors the current grant budget.
     grant_memory_domain: Option<Arc<cudf::QueryMemoryDomain>>,
     /// Authoritative domain for this service-admitted attempt.
@@ -918,7 +916,7 @@ pub struct ExecutionContext {
     /// Cooperative cancellation flag observed at native execution boundaries.
     cancellation: ExecutionCancellation,
     /// Selected execution contract for floating statistical aggregates.
-    stddev_samp_execution_mode: StddevSampExecutionMode,
+    statistical_aggregate_execution_mode: StatisticalAggregateExecutionMode,
     /// Runtime threshold policy for grouped aggregate strategy selection.
     aggregate_strategy_execution_options: AggregateStrategyExecutionOptions,
     /// Expert policy for local-throughput source chunk planning.
@@ -1007,7 +1005,6 @@ pub(super) struct ExecutionContextParts {
     pub(super) memory_policy: MemoryResourcePolicy,
     pub(super) memory_control_policy: MemoryControlPolicy,
     pub(super) memory_grant: Option<MemoryGrant>,
-    pub(super) grant_reservation_arena: Option<Arc<cudf::ReservationArena>>,
     pub(super) grant_memory_domain: Option<Arc<cudf::QueryMemoryDomain>>,
     pub(super) attempt_allocation_domain: Option<AttemptAllocationDomain>,
     pub(super) attempt_auxiliary_slots: Option<Arc<AttemptAuxiliarySlots>>,
@@ -1028,7 +1025,7 @@ pub(super) struct ExecutionContextParts {
     pub(super) source_object_stores: Arc<SourceObjectStoreRegistry>,
     pub(super) deployment_io_capability: DeploymentIoCapability,
     pub(super) cancellation: ExecutionCancellation,
-    pub(super) stddev_samp_execution_mode: StddevSampExecutionMode,
+    pub(super) statistical_aggregate_execution_mode: StatisticalAggregateExecutionMode,
     pub(super) aggregate_strategy_execution_options: AggregateStrategyExecutionOptions,
     pub(super) source_chunk_planning_options: SourceChunkPlanningOptions,
     pub(super) graph_memory_calibration_override: GraphMemoryCalibrationOverride,
@@ -1079,7 +1076,6 @@ impl ExecutionContext {
             memory_policy: MemoryResourcePolicy::ExternalRuntime,
             memory_control_policy: MemoryControlPolicy::Unbounded,
             memory_grant: None,
-            grant_reservation_arena: None,
             grant_memory_domain: None,
             attempt_allocation_domain: None,
             attempt_auxiliary_slots: None,
@@ -1103,7 +1099,7 @@ impl ExecutionContext {
             source_object_stores: Arc::new(SourceObjectStoreRegistry::new()),
             deployment_io_capability: DeploymentIoCapability::cached_current_host(),
             cancellation: ExecutionCancellation::new(),
-            stddev_samp_execution_mode: StddevSampExecutionMode::default(),
+            statistical_aggregate_execution_mode: StatisticalAggregateExecutionMode::default(),
             aggregate_strategy_execution_options: AggregateStrategyExecutionOptions::default(),
             source_chunk_planning_options: SourceChunkPlanningOptions::default(),
             graph_memory_calibration_override: GraphMemoryCalibrationOverride::default(),
@@ -1114,14 +1110,6 @@ impl ExecutionContext {
     }
 
     pub(super) fn from_parts(parts: ExecutionContextParts) -> Self {
-        debug_assert!(
-            parts.grant_reservation_arena.is_none() || parts.grant_memory_domain.is_none(),
-            "execution context cannot carry both grant reservation arena and query memory domain"
-        );
-        debug_assert!(
-            !parts.query_service_admitted || parts.grant_reservation_arena.is_none(),
-            "admitted contexts must use an attempt domain, never a reservation arena"
-        );
         Self {
             service_epoch: parts.service_epoch,
             query_epoch: parts.query_epoch,
@@ -1139,7 +1127,6 @@ impl ExecutionContext {
             memory_policy: parts.memory_policy,
             memory_control_policy: parts.memory_control_policy,
             memory_grant: parts.memory_grant,
-            grant_reservation_arena: parts.grant_reservation_arena,
             grant_memory_domain: parts.grant_memory_domain,
             attempt_allocation_domain: parts.attempt_allocation_domain,
             attempt_auxiliary_slots: parts.attempt_auxiliary_slots,
@@ -1160,7 +1147,7 @@ impl ExecutionContext {
             source_object_stores: parts.source_object_stores,
             deployment_io_capability: parts.deployment_io_capability,
             cancellation: parts.cancellation,
-            stddev_samp_execution_mode: parts.stddev_samp_execution_mode,
+            statistical_aggregate_execution_mode: parts.statistical_aggregate_execution_mode,
             aggregate_strategy_execution_options: parts.aggregate_strategy_execution_options,
             source_chunk_planning_options: parts.source_chunk_planning_options,
             graph_memory_calibration_override: parts.graph_memory_calibration_override,
@@ -1391,7 +1378,6 @@ impl ExecutionContext {
             memory_policy: MemoryResourcePolicy::ExternalRuntime,
             memory_control_policy: self.memory_control_policy,
             memory_grant: self.memory_grant.clone(),
-            grant_reservation_arena: self.grant_reservation_arena.clone(),
             grant_memory_domain: self.grant_memory_domain.clone(),
             attempt_allocation_domain: self.attempt_allocation_domain.clone(),
             attempt_auxiliary_slots: self.attempt_auxiliary_slots.as_ref().map(Arc::clone),
@@ -1412,7 +1398,7 @@ impl ExecutionContext {
             source_object_stores: Arc::clone(&self.source_object_stores),
             deployment_io_capability: self.deployment_io_capability.clone(),
             cancellation: self.cancellation.clone(),
-            stddev_samp_execution_mode: self.stddev_samp_execution_mode,
+            statistical_aggregate_execution_mode: self.statistical_aggregate_execution_mode,
             aggregate_strategy_execution_options: self.aggregate_strategy_execution_options,
             source_chunk_planning_options: self.source_chunk_planning_options,
             graph_memory_calibration_override: self.graph_memory_calibration_override,
@@ -1570,14 +1556,10 @@ impl ExecutionContext {
     /// Creates a hard execution-budget token for this context's runtime stream.
     ///
     /// Service-admitted contexts attach a member of their immutable attempt
-    /// domain. Non-service contexts may use the legacy grant-backed arena;
-    /// contexts without either use the runtime's standalone reservation path.
+    /// domain; contexts without one use the runtime's standalone reservation
+    /// path.
     pub fn execution_budget_token(&self, request: cudf::ExecutionBudgetRequest) -> Result<cudf::ExecutionBudgetToken> {
         let runtime = self.runtime()?;
-        debug_assert!(
-            !self.query_service_admitted || self.grant_reservation_arena.is_none(),
-            "admitted contexts must use an attempt domain, never a reservation arena"
-        );
         if let Some(lease) = self.attempt_member_lease.as_ref() {
             // One member per stream for the attempt's lifetime; per-stage
             // tokens share it rather than attaching a second member.
@@ -1588,36 +1570,23 @@ impl ExecutionContext {
                 cudf::ExecutionBudgetEnforcement::QueryDomainMember,
             ));
         }
-        match (self.grant_memory_domain.as_ref(), self.grant_reservation_arena.as_ref()) {
-            (Some(domain), None) | (Some(domain), Some(_)) => {
-                cudf::ExecutionBudgetToken::from_runtime_in_query_domain(&runtime, request, domain.as_ref()).map_err(
-                    |error| {
-                        QueryError::from_cudf(
-                            "nexus_query_engine.runtime.context.execution_budget_token",
-                            "failed to create query-domain execution budget token",
-                            error,
-                        )
-                    },
-                )
-            },
-            (None, Some(arena)) => {
-                debug_assert!(!self.query_service_admitted, "admitted context cannot create an arena budget token");
-                cudf::ExecutionBudgetToken::from_runtime_in_arena(&runtime, request, arena.as_ref()).map_err(|error| {
+        if let Some(domain) = self.grant_memory_domain.as_ref() {
+            return cudf::ExecutionBudgetToken::from_runtime_in_query_domain(&runtime, request, domain.as_ref())
+                .map_err(|error| {
                     QueryError::from_cudf(
                         "nexus_query_engine.runtime.context.execution_budget_token",
-                        "failed to create arena execution budget token",
+                        "failed to create query-domain execution budget token",
                         error,
                     )
-                })
-            },
-            _ => runtime.execution_budget_token(request).map_err(|error| {
-                QueryError::from_cudf(
-                    "nexus_query_engine.runtime.context.execution_budget_token",
-                    "failed to create execution budget token",
-                    error,
-                )
-            }),
+                });
         }
+        runtime.execution_budget_token(request).map_err(|error| {
+            QueryError::from_cudf(
+                "nexus_query_engine.runtime.context.execution_budget_token",
+                "failed to create execution budget token",
+                error,
+            )
+        })
     }
 
     /// Returns the immutable domain id for this admitted attempt.
@@ -1879,14 +1848,8 @@ impl ExecutionContext {
     }
 
     /// Returns the selected execution contract for floating statistical aggregates.
-    pub fn statistical_aggregate_execution_mode(&self) -> StddevSampExecutionMode {
-        self.stddev_samp_execution_mode
-    }
-
-    /// Returns the selected execution contract through the legacy STDDEV_SAMP
-    /// accessor.
-    pub fn stddev_samp_execution_mode(&self) -> StddevSampExecutionMode {
-        self.statistical_aggregate_execution_mode()
+    pub fn statistical_aggregate_execution_mode(&self) -> StatisticalAggregateExecutionMode {
+        self.statistical_aggregate_execution_mode
     }
 
     /// Returns grouped aggregate strategy execution policy.

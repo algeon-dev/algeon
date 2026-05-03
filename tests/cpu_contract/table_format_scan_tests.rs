@@ -233,15 +233,15 @@ fn delete_file_scan_facts_preserve_rejection_without_reading_credentials() {
 }
 
 #[test]
-fn delete_file_legacy_constructor_remains_available_for_unassociated_facts() {
+fn delete_file_constructor_remains_available_for_unassociated_facts() {
     let delete_file = TableFormatDeleteFile::new(
-        "delete-legacy",
+        "delete-unassociated",
         "s3://lakehouse/table/delete.parquet",
         TableFormatDataFileFormat::Parquet,
         TableFormatDeleteFileContent::PositionDeletes,
     );
 
-    assert_eq!(delete_file.id, "delete-legacy");
+    assert_eq!(delete_file.id, "delete-unassociated");
     assert_eq!(delete_file.data_file_id, "");
     assert_eq!(delete_file.location, "s3://lakehouse/table/delete.parquet");
 }

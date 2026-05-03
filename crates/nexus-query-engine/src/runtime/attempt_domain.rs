@@ -35,7 +35,7 @@ impl AttemptAllocationDomain {
             .with_fact("grant_device_ordinal", grant.device_ordinal())
             .with_fact("runtime_device_ordinal", runtime.device().ordinal()));
         }
-        let domain = create_grant_memory_domain(runtime, Some(grant))?.expect("present grant creates a domain");
+        let domain = create_grant_memory_domain(runtime, grant)?;
         let usage = domain.usage().map_err(|error| {
             QueryError::from_cudf(
                 "nexus_query_engine.runtime.attempt_allocation_domain.create",

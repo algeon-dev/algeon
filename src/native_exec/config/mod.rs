@@ -16,7 +16,7 @@ use nexus_query_engine::{
     dynamic_filter::DynamicFilterExecutionOptions,
     graph_memory::GraphMemoryCalibrationOverride,
     metrics::{QueryId, TraceId},
-    mode::StddevSampExecutionMode,
+    mode::StatisticalAggregateExecutionMode,
     observability::{RuntimeObservationConfig, RuntimeObservationOwner, RuntimeTraceId},
     runtime::{
         AdmittedQueryContext, ExecutionBoundaryPolicy, ExecutionCancellation, ExecutionContext, IoLifecycle,
@@ -52,7 +52,7 @@ pub struct NexusNativeExecutionConfig {
     pub(super) host_output_memory_pool_accounting: bool,
     pub(super) cancellation: ExecutionCancellation,
     pub(super) io_lifecycle: Option<IoLifecycle>,
-    pub(super) stddev_samp_execution_mode: StddevSampExecutionMode,
+    pub(super) statistical_aggregate_execution_mode: StatisticalAggregateExecutionMode,
     pub(super) dynamic_filter_execution_options: DynamicFilterExecutionOptions,
     pub(super) keyed_hash_join_strategy_options: KeyedHashJoinStrategyOptions,
     pub(super) aggregate_strategy_execution_options: AggregateStrategyExecutionOptions,
@@ -147,7 +147,7 @@ impl NexusNativeExecutionConfig {
             host_output_memory_pool_accounting: false,
             cancellation: ExecutionCancellation::new(),
             io_lifecycle: None,
-            stddev_samp_execution_mode: StddevSampExecutionMode::default(),
+            statistical_aggregate_execution_mode: StatisticalAggregateExecutionMode::default(),
             dynamic_filter_execution_options: DynamicFilterExecutionOptions::default(),
             keyed_hash_join_strategy_options: KeyedHashJoinStrategyOptions::default(),
             aggregate_strategy_execution_options: AggregateStrategyExecutionOptions::default(),
@@ -306,14 +306,9 @@ impl NexusNativeExecutionConfig {
     }
 
     /// Select the execution contract for floating statistical aggregates.
-    pub fn with_statistical_aggregate_execution_mode(mut self, mode: StddevSampExecutionMode) -> Self {
-        self.stddev_samp_execution_mode = mode;
+    pub fn with_statistical_aggregate_execution_mode(mut self, mode: StatisticalAggregateExecutionMode) -> Self {
+        self.statistical_aggregate_execution_mode = mode;
         self
-    }
-
-    /// Select the execution contract through the legacy STDDEV_SAMP builder.
-    pub fn with_stddev_samp_execution_mode(self, mode: StddevSampExecutionMode) -> Self {
-        self.with_statistical_aggregate_execution_mode(mode)
     }
 
     /// Set native dynamic-filter execution policy.
@@ -438,14 +433,8 @@ impl NexusNativeExecutionConfig {
     }
 
     /// Execution contract for floating statistical aggregates.
-    pub fn statistical_aggregate_execution_mode(&self) -> StddevSampExecutionMode {
-        self.stddev_samp_execution_mode
-    }
-
-    /// Floating statistical aggregate contract returned through the legacy
-    /// STDDEV_SAMP accessor.
-    pub fn stddev_samp_execution_mode(&self) -> StddevSampExecutionMode {
-        self.statistical_aggregate_execution_mode()
+    pub fn statistical_aggregate_execution_mode(&self) -> StatisticalAggregateExecutionMode {
+        self.statistical_aggregate_execution_mode
     }
 
     /// Dynamic-filter execution policy copied into optimized native plans.

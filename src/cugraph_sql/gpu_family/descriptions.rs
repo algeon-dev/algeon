@@ -235,7 +235,7 @@ pub(super) fn limitations_json(algorithm: CugraphAlgorithm) -> String {
         algorithm.native_algorithm().vertex_id_type_support(),
         nexus_query_engine::plan::GraphVertexIdTypeSupport::Int32OnlyLegacyEdgeType
     ) {
-        limitations.push("legacy cuGraph implementation requires Int32 source and destination vertex columns");
+        limitations.push("cuGraph C API edge-type dispatch requires Int32 source and destination vertex columns");
     }
     if algorithm.native_algorithm().definition().required_graph_directedness() == Some(false) {
         limitations.push("cuGraph requires directed=false so the graph is constructed as an undirected/symmetric view");
@@ -304,182 +304,174 @@ pub(super) fn primary_example_sql(algorithm: CugraphAlgorithm) -> String {
 }
 
 pub(super) fn examples_json(algorithm: CugraphAlgorithm) -> String {
-    match algorithm {
-        CugraphAlgorithm::Bfs => bfs_examples_json(),
-        CugraphAlgorithm::PersonalizedPageRank => personalized_pagerank_examples_json(),
-        CugraphAlgorithm::Sssp => json!([
+    let examples = match algorithm {
+        CugraphAlgorithm::Bfs => bfs_examples(algorithm),
+        CugraphAlgorithm::PersonalizedPageRank => vec![common_example(
+            algorithm,
+            "basic_personalized_pagerank",
+            json!({
+                "src_col": "src",
+                "dst_col": "dst",
+                "personalization_table": "ppr_seeds",
+                "personalization_vertex_col": "vertex",
+                "personalization_value_col": "value"
+            }),
+        )],
+        CugraphAlgorithm::Sssp => vec![
             source_vertex_example(algorithm, "basic_sssp"),
-            weighted_source_vertex_example(algorithm, "weighted_sssp")
-        ])
-        .to_string(),
-        CugraphAlgorithm::MinimumSpanningTree => json!([weighted_example(algorithm, "weighted_mst")]).to_string(),
-        algorithm if is_similarity(algorithm) => json!([similarity_example(algorithm)]).to_string(),
-        _ => json!([minimal_example(algorithm)]).to_string(),
-    }
+            weighted_source_vertex_example(algorithm, "weighted_sssp"),
+        ],
+        CugraphAlgorithm::MinimumSpanningTree => vec![weighted_example(algorithm, "weighted_mst")],
+        algorithm if is_similarity(algorithm) => vec![similarity_example(algorithm)],
+        _ => vec![minimal_example(algorithm)],
+    };
+    Value::Array(examples).to_string()
+}
+
+fn common_example(algorithm: CugraphAlgorithm, name: impl Into<String>, options: Value) -> Value {
+    json!({
+        "name": name.into(),
+        "function_name": algorithm.function_name(),
+        "call_json": {
+            "schema_version": 1,
+            "relations": { "edges": { "table": "target_edges" } },
+            "options": options,
+        },
+        "execution_sql": primary_example_sql(algorithm),
+    })
 }
 
 fn similarity_example(algorithm: CugraphAlgorithm) -> Value {
-    json!({
-        "name": format!("basic_{}", algorithm.native_algorithm().definition().name),
-        "function_name": algorithm.function_name(),
-        "call_json": {
+    common_example(
+        algorithm,
+        format!("basic_{}", algorithm.native_algorithm().definition().name),
+        json!({
             "src_col": "src",
             "dst_col": "dst",
-            "options": {
-                "vertex_pairs_table": "candidate_pairs",
-                "first_vertex_col": "first",
-                "second_vertex_col": "second"
-            }
-        }
-    })
-}
-
-fn personalized_pagerank_examples_json() -> String {
-    json!([
-        {
-            "name": "basic_personalized_pagerank",
-            "function_name": "cugraph_personalized_pagerank",
-            "call_json": {
-                "src_col": "src",
-                "dst_col": "dst",
-                "options": {
-                    "personalization_table": "ppr_seeds",
-                    "personalization_vertex_col": "vertex",
-                    "personalization_value_col": "value"
-                }
-            }
-        }
-    ])
-    .to_string()
+            "vertex_pairs_table": "candidate_pairs",
+            "first_vertex_col": "first",
+            "second_vertex_col": "second"
+        }),
+    )
 }
 
 fn minimal_example(algorithm: CugraphAlgorithm) -> Value {
-    let function_name = algorithm.function_name();
-    json!({
-        "name": format!("basic_{}", algorithm.native_algorithm().definition().name),
-        "function_name": function_name,
-        "call_json": {
+    common_example(
+        algorithm,
+        format!("basic_{}", algorithm.native_algorithm().definition().name),
+        json!({
             "src_col": "src",
             "dst_col": "dst"
-        }
-    })
+        }),
+    )
 }
 
 fn source_vertex_example(algorithm: CugraphAlgorithm, name: &str) -> Value {
-    let function_name = algorithm.function_name();
-    json!({
-        "name": name,
-        "function_name": function_name,
-        "call_json": {
+    common_example(
+        algorithm,
+        name,
+        json!({
             "source_vertex": 123,
             "src_col": "src",
             "dst_col": "dst"
-        }
-    })
+        }),
+    )
 }
 
 fn weighted_example(algorithm: CugraphAlgorithm, name: &str) -> Value {
-    let function_name = algorithm.function_name();
-    json!({
-        "name": name,
-        "function_name": function_name,
-        "call_json": {
+    common_example(
+        algorithm,
+        name,
+        json!({
             "src_col": "src",
             "dst_col": "dst",
             "weight_col": "weight"
-        }
-    })
+        }),
+    )
 }
 
 fn weighted_source_vertex_example(algorithm: CugraphAlgorithm, name: &str) -> Value {
-    let function_name = algorithm.function_name();
-    json!({
-        "name": name,
-        "function_name": function_name,
-        "call_json": {
+    common_example(
+        algorithm,
+        name,
+        json!({
             "source_vertex": 123,
             "src_col": "src",
             "dst_col": "dst",
             "weight_col": "weight"
-        }
-    })
+        }),
+    )
 }
 
-fn bfs_examples_json() -> String {
-    json!([
-        {
-            "name": "basic_bfs",
-            "function_name": "cugraph_bfs",
-            "call_json": {
+fn bfs_examples(algorithm: CugraphAlgorithm) -> Vec<Value> {
+    vec![
+        common_example(
+            algorithm,
+            "basic_bfs",
+            json!({
                 "source_vertex": 123,
                 "src_col": "src",
                 "dst_col": "dst",
-                "options": {"depth_limit": 4}
-            }
-        },
-        {
-            "name": "normalized_bfs",
-            "function_name": "cugraph_bfs",
-            "call_json": {
+                "depth_limit": 4
+            }),
+        ),
+        common_example(
+            algorithm,
+            "normalized_bfs",
+            json!({
                 "source_vertex": 123,
                 "src_col": "src",
                 "dst_col": "dst",
-                "options": {"depth_limit": 4, "output_mode": "normalized"}
-            }
-        },
-        {
-            "name": "multi_source_bfs_list",
-            "function_name": "cugraph_bfs",
-            "call_json": {
+                "depth_limit": 4,
+                "output_mode": "normalized"
+            }),
+        ),
+        common_example(
+            algorithm,
+            "multi_source_bfs_list",
+            json!({
                 "source_vertex": [123, 456],
                 "src_col": "src",
                 "dst_col": "dst",
-                "options": {"output_mode": "normalized"}
-            }
-        },
-        {
-            "name": "multi_source_bfs_table",
-            "function_name": "cugraph_bfs",
-            "call_json": {
+                "output_mode": "normalized"
+            }),
+        ),
+        common_example(
+            algorithm,
+            "multi_source_bfs_table",
+            json!({
                 "source_vertex": null,
                 "src_col": "src",
                 "dst_col": "dst",
-                "options": {
-                    "source_vertices_table": "bfs_sources",
-                    "source_vertex_col": "vertex_id",
-                    "output_mode": "normalized"
-                }
-            }
-        },
-        {
-            "name": "target_metadata",
-            "function_name": "cugraph_bfs",
-            "call_json": {
+                "source_vertices_table": "bfs_sources",
+                "source_vertex_col": "vertex_id",
+                "output_mode": "normalized"
+            }),
+        ),
+        common_example(
+            algorithm,
+            "target_metadata",
+            json!({
                 "source_vertex": 123,
                 "src_col": "src",
                 "dst_col": "dst",
-                "options": {
-                    "output_mode": "normalized",
-                    "target_vertices_table": "targets",
-                    "target_vertex_col": "vertex_id",
-                    "return_target_info": true
-                }
-            }
-        },
-        {
-            "name": "path_output",
-            "function_name": "cugraph_bfs",
-            "call_json": {
+                "output_mode": "normalized",
+                "target_vertices_table": "targets",
+                "target_vertex_col": "vertex_id",
+                "return_target_info": true
+            }),
+        ),
+        common_example(
+            algorithm,
+            "path_output",
+            json!({
                 "source_vertex": 123,
                 "src_col": "src",
                 "dst_col": "dst",
-                "options": {
-                    "output_mode": "path",
-                    "target_vertices_table": "targets",
-                    "target_vertex_col": "vertex_id"
-                }
-            }
-        }
-    ])
-    .to_string()
+                "output_mode": "path",
+                "target_vertices_table": "targets",
+                "target_vertex_col": "vertex_id"
+            }),
+        ),
+    ]
 }

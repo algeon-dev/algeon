@@ -1,0 +1,66 @@
+error[E0432]: unresolved imports `datafusion_nexus::gpu_coverage::QueryGpuCudfNativeCoverage`, `datafusion_nexus::gpu_coverage::cudf_native_coverage`, `datafusion_nexus::native_exec::NATIVE_CUDF_DATAFUSION_METRIC_NAMES`, `datafusion_nexus::native_exec::NativeCudfComposedExec`, `datafusion_nexus::native_exec::NativeCudfExec`, `datafusion_nexus::native_exec::NativeCudfExecutionConfig`, `datafusion_nexus::native_exec::NativeCudfGpuProducerExec`, `datafusion_nexus::native_exec::NativeCudfMetrics`, `datafusion_nexus::planner::CudfNativePhysicalOptimizerRule`, `datafusion_nexus::planner::CudfOptimizerConfig`, `datafusion_nexus::session::CudfSessionStateBuilderExt`, `datafusion_nexus::session::cudf_native_physical_optimizer_rules`, `datafusion_nexus::session::install_cudf_native_rule_with_session_config`, `datafusion_nexus::table_format::CudfTableFormatGpuOnlyLeafGuardRule`, `datafusion_nexus::table_format::CudfTableFormatScanExec`
+  --> tests/ui/public_api/forbidden_retired_cudf_core_api.rs:5:20
+   |
+ 5 |     gpu_coverage::{QueryGpuCudfNativeCoverage, cudf_native_coverage},
+   |                    ^^^^^^^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^ no `cudf_native_coverage` in `gpu_coverage`
+   |                    |
+   |                    no `QueryGpuCudfNativeCoverage` in `gpu_coverage`
+ 6 |     native_exec::{
+ 7 |         NATIVE_CUDF_DATAFUSION_METRIC_NAMES, NativeCudfComposedExec, NativeCudfExec, NativeCudfExecutionConfig,
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^^^^^^ no `NativeCudfExecutionConfig` in `native_exec`
+   |         |                                    |                       |
+   |         |                                    |                       no `NativeCudfExec` in `native_exec`
+   |         |                                    no `NativeCudfComposedExec` in `native_exec`
+   |         no `NATIVE_CUDF_DATAFUSION_METRIC_NAMES` in `native_exec`
+ 8 |         NativeCudfGpuProducerExec, NativeCudfMetrics,
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^ no `NativeCudfMetrics` in `native_exec`
+   |         |
+   |         no `NativeCudfGpuProducerExec` in `native_exec`
+ 9 |     },
+10 |     planner::{CudfNativePhysicalOptimizerRule, CudfOptimizerConfig, NexusNativeOptimizerConfig},
+   |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^ no `CudfOptimizerConfig` in `planner`
+   |               |
+   |               no `CudfNativePhysicalOptimizerRule` in `planner`
+11 |     session::{
+12 |         CudfSessionStateBuilderExt, cudf_native_physical_optimizer_rules, install_cudf_native_rule_with_session_config,
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+13 |     },
+14 |     table_format::{CudfTableFormatGpuOnlyLeafGuardRule, CudfTableFormatScanExec},
+   |                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^^^^
+   |
+help: a similar name exists in the module
+   |
+ 7 -         NATIVE_CUDF_DATAFUSION_METRIC_NAMES, NativeCudfComposedExec, NativeCudfExec, NativeCudfExecutionConfig,
+ 7 +         NATIVE_NEXUS_DATAFUSION_METRIC_NAMES, NativeCudfComposedExec, NativeCudfExec, NativeCudfExecutionConfig,
+   |
+help: a similar name exists in the module
+   |
+10 -     planner::{CudfNativePhysicalOptimizerRule, CudfOptimizerConfig, NexusNativeOptimizerConfig},
+10 +     planner::{NexusNativePhysicalOptimizerRule, CudfOptimizerConfig, NexusNativeOptimizerConfig},
+   |
+
+error[E0599]: no method named `with_cudf_native` found for struct `SessionStateBuilder` in the current scope
+  --> tests/ui/public_api/forbidden_retired_cudf_core_api.rs:19:21
+   |
+19 |     let _ = builder.with_cudf_native(NexusNativeOptimizerConfig::default());
+   |                     ^^^^^^^^^^^^^^^^
+   |
+help: there is a method `with_nexus_native` with a similar name
+   |
+19 -     let _ = builder.with_cudf_native(NexusNativeOptimizerConfig::default());
+19 +     let _ = builder.with_nexus_native(NexusNativeOptimizerConfig::default());
+   |
+
+error[E0599]: no method named `with_cudf_native_rule` found for struct `SessionStateBuilder` in the current scope
+  --> tests/ui/public_api/forbidden_retired_cudf_core_api.rs:23:10
+   |
+22 |       let _ = builder
+   |  _____________-
+23 | |         .with_cudf_native_rule(Arc::new(CudfNativePhysicalOptimizerRule::new(NexusNativeOptimizerConfig::default())));
+   | |_________-^^^^^^^^^^^^^^^^^^^^^
+   |
+help: there is a method `with_nexus_native_rule` with a similar name
+   |
+23 -         .with_cudf_native_rule(Arc::new(CudfNativePhysicalOptimizerRule::new(NexusNativeOptimizerConfig::default())));
+23 +         .with_nexus_native_rule(Arc::new(CudfNativePhysicalOptimizerRule::new(NexusNativeOptimizerConfig::default())));
+   |

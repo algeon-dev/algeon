@@ -10,7 +10,6 @@ mod json_schema;
 mod validate;
 
 const ERROR_UNKNOWN_ALGORITHM: &str = "unknown_algorithm";
-const ERROR_INVALID_CALL_JSON: &str = "invalid_call_json";
 const ERROR_INVALID_ARGUMENT: &str = "invalid_argument";
 const ERROR_TABLE_NOT_FOUND: &str = "table_not_found";
 const ERROR_COLUMN_NOT_FOUND: &str = "column_not_found";
@@ -20,7 +19,7 @@ const ERROR_UNSUPPORTED_WEIGHT_DTYPE: &str = "unsupported_weight_dtype";
 const ERROR_UNSUPPORTED_OPTION: &str = "unsupported_option";
 
 use datafusion::catalog::Session;
-use serde_json::{Map, Value, json};
+use serde_json::{Value, json};
 
 use super::{CUGRAPH_OPERATION_REGISTRY, CugraphAlgorithm, CugraphSqlConfig};
 use crate::gpu_functions::{
@@ -90,12 +89,11 @@ impl GpuFunctionFamily for CugraphGpuFunctionFamily {
             );
         };
 
-        let legacy_call = legacy_call_json(&request.options);
         let row = validate::validate_graph_call(
             session,
             algorithm.function_name(),
             &edges.table,
-            &legacy_call.to_string(),
+            &request.options,
             &self.config,
         )
         .await;
@@ -207,10 +205,14 @@ fn argument_descriptions(algorithm: CugraphAlgorithm) -> Value {
 fn validation_request_schema(algorithm: CugraphAlgorithm, config: &CugraphSqlConfig) -> Value {
     json!({
         "type": "object",
+        "description": "The common validation envelope supports only version 1. There is no version 0 reader or version negotiation; any other schema_version is rejected before cuGraph family dispatch.",
         "additionalProperties": false,
         "required": ["schema_version", "relations", "options"],
         "properties": {
-            "schema_version": { "const": 1 },
+            "schema_version": {
+                "const": 1,
+                "description": "Common-envelope forward-compatibility marker. Only 1 dispatches to cuGraph validation; unknown versions are rejected before family dispatch."
+            },
             "relations": {
                 "type": "object",
                 "additionalProperties": false,
@@ -226,7 +228,7 @@ fn validation_request_schema(algorithm: CugraphAlgorithm, config: &CugraphSqlCon
             },
             "options": {
                 "type": "object",
-                "description": "src_col, dst_col, weight_col, source_vertex, graph options, and algorithm options. See options_schema_json.",
+                "description": "Flat cuGraph option object (no nested 'options'): src_col, dst_col, weight_col, source_vertex, graph options, and algorithm options. See options_schema_json.",
                 "x_cugraph_options_schema": value(&json_schema::options_schema_json(algorithm, config))
             }
         }
@@ -234,67 +236,7 @@ fn validation_request_schema(algorithm: CugraphAlgorithm, config: &CugraphSqlCon
 }
 
 fn examples(algorithm: CugraphAlgorithm) -> Value {
-    let examples = value(&descriptions::examples_json(algorithm));
-    let Value::Array(examples) = examples else {
-        return Value::Array(Vec::new());
-    };
-    Value::Array(
-        examples
-            .into_iter()
-            .map(|mut example| {
-                let Some(call) = example.get_mut("call_json") else {
-                    return example;
-                };
-                let legacy = std::mem::take(call);
-                *call = json!({
-                    "schema_version": 1,
-                    "relations": { "edges": { "table": "target_edges" } },
-                    "options": common_options_from_legacy(legacy),
-                });
-                if let Value::Object(object) = &mut example {
-                    object.insert(
-                        "execution_sql".to_string(),
-                        Value::String(descriptions::primary_example_sql(algorithm)),
-                    );
-                }
-                example
-            })
-            .collect(),
-    )
-}
-
-/// Maps the common `options` object into the legacy parser's split between
-/// argument bindings and `options_json`, without duplicating parser rules.
-fn legacy_call_json(options: &Value) -> Value {
-    let Value::Object(options) = options else {
-        return Value::Object(Map::new());
-    };
-    let mut legacy = Map::new();
-    let mut algorithm_options = Map::new();
-    for (name, value) in options {
-        if matches!(name.as_str(), "source_vertex" | "src_col" | "dst_col" | "weight_col") {
-            legacy.insert(name.clone(), value.clone());
-        } else {
-            algorithm_options.insert(name.clone(), value.clone());
-        }
-    }
-    if !algorithm_options.is_empty() {
-        legacy.insert("options".to_string(), Value::Object(algorithm_options));
-    }
-    Value::Object(legacy)
-}
-
-fn common_options_from_legacy(legacy: Value) -> Value {
-    let Value::Object(mut legacy) = legacy else {
-        return Value::Object(Map::new());
-    };
-    let mut options = legacy.remove("options").and_then(|value| value.as_object().cloned()).unwrap_or_default();
-    for name in ["source_vertex", "src_col", "dst_col", "weight_col"] {
-        if let Some(value) = legacy.remove(name) {
-            options.insert(name.to_string(), value);
-        }
-    }
-    Value::Object(options)
+    value(&descriptions::examples_json(algorithm))
 }
 
 fn value(json: &str) -> Value {

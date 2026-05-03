@@ -79,7 +79,7 @@ import Examples from '../../_examples/cugraph_minimum_spanning_tree.mdx';
 
 - dry-run validates table resolution, column presence, static dtypes, and options only
 - dry-run does not scan edge data, construct a graph, or prove source-vertex existence
-- legacy cuGraph implementation requires Int32 source and destination vertex columns
+- cuGraph C API edge-type dispatch requires Int32 source and destination vertex columns
 - cuGraph requires directed=false so the graph is constructed as an undirected/symmetric view
 
 ## Validate before running

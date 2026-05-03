@@ -56,10 +56,6 @@ pub const NEXUS_TPCDS_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV: &str = "NEXUS_TPCDS
 /// the caller's workload surface.
 pub const NEXUS_TPCDS_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV: &str =
     "NEXUS_TPCDS_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE";
-/// Migration alias for
-/// [`NEXUS_TPCDS_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV`], with the
-/// same accepted values.
-pub const NEXUS_TPCDS_NATIVE_STDDEV_SAMP_EXECUTION_MODE_ENV: &str = "NEXUS_TPCDS_NATIVE_STDDEV_SAMP_EXECUTION_MODE";
 /// Enables or disables native cost selection for TPC-DS analytics planning.
 ///
 /// Native all-GPU report/parity surfaces intentionally keep cost selection
@@ -213,8 +209,7 @@ pub fn tpcds_native_optimizer_config_with_profile_settings(
 ///
 /// The analytics default uses GPU-native tolerant floating statistical
 /// aggregate kernels. Set
-/// [`NEXUS_TPCDS_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV`] or the
-/// migration [`NEXUS_TPCDS_NATIVE_STDDEV_SAMP_EXECUTION_MODE_ENV`] to
+/// [`NEXUS_TPCDS_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV`] to
 /// `datafusion_exact_host_welford` when a run intentionally needs bit-exact
 /// DataFusion compatibility.
 pub fn tpcds_native_analytics_optimizer_config() -> NexusNativeOptimizerConfig {
@@ -486,9 +481,6 @@ fn parse_env_source_chunk_planning_mode(value: String) -> nexus_query_engine::ru
 fn optional_env_statistical_aggregate_execution_mode()
 -> Option<nexus_query_engine::mode::StatisticalAggregateExecutionMode> {
     optional_env_statistical_aggregate_execution_mode_for(NEXUS_TPCDS_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV)
-        .or_else(|| {
-            optional_env_statistical_aggregate_execution_mode_for(NEXUS_TPCDS_NATIVE_STDDEV_SAMP_EXECUTION_MODE_ENV)
-        })
 }
 
 fn optional_env_statistical_aggregate_execution_mode_for(

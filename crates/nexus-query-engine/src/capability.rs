@@ -4,7 +4,8 @@
 //! `CapabilityAnalysis` that classifies every node, expression, edge, and
 //! subgraph invariant. Rejections are local and structured (missing operator,
 //! expression, Arrow type, edge contract, invariant, or reservation
-//! contract); they never use legacy named "execution family" report keys.
+//! contract); they use canonical capability report keys rather than
+//! execution-family labels.
 
 use std::collections::{BTreeMap, BTreeSet};
 

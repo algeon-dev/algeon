@@ -241,14 +241,14 @@ pub(in crate::exec) fn execute_datafusion_exact_host_aggregate_batch(
     if spec.aggr_exprs.iter().any(|expr| expr.function == AggregateFunction::Median) {
         return Err(QueryError::new(
             QueryErrorCode::UnsupportedOperator,
-            "nexus_query_engine.aggregate.stddev_exact.median",
+            "nexus_query_engine.aggregate.floating_statistical_exact.median",
             "DataFusion-exact statistical aggregate path does not support median aggregate expressions",
         ));
     }
     let key_columns = spec
         .group_exprs
         .iter()
-        .map(|expr| lower_named_column_expr(expr, "nexus_query_engine.aggregate.stddev_exact.lower_key"))
+        .map(|expr| lower_named_column_expr(expr, "nexus_query_engine.aggregate.floating_statistical_exact.lower_key"))
         .collect::<Result<Vec<_>>>()?;
     let aggregate_columns = spec.aggr_exprs.iter().map(aggregate_input_column).collect::<Result<Vec<_>>>()?;
     let key_accessors =
@@ -320,7 +320,7 @@ pub(in crate::exec) fn execute_datafusion_exact_host_aggregate_batch(
             arrays.push(host_aggregate_output_array(&groups, aggregate_index, field.data_type())?);
         }
     }
-    record_datafusion_exact_stddev_strategy_decision(
+    record_datafusion_exact_floating_statistical_aggregate_strategy_decision(
         metrics,
         node_id.map(|id| id.to_string()),
         context.memory_control_policy().as_str(),
@@ -334,7 +334,7 @@ pub(in crate::exec) fn execute_datafusion_exact_host_aggregate_batch(
     let output = RecordBatch::try_new(Arc::clone(output_schema), arrays).map_err(|error| {
         QueryError::new(
             QueryErrorCode::Internal,
-            "nexus_query_engine.aggregate.stddev_exact.output",
+            "nexus_query_engine.aggregate.floating_statistical_exact.output",
             "failed to construct DataFusion-exact stddev aggregate Arrow output",
         )
         .with_source(error)
@@ -348,14 +348,14 @@ pub(in crate::exec) fn upload_datafusion_exact_host_aggregate_output(
 ) -> Result<DataFrame> {
     DataFrame::from_record_batch(&context.runtime()?, output).map_err(|error| {
         QueryError::from_cudf(
-            "nexus_query_engine.aggregate.stddev_exact.output",
+            "nexus_query_engine.aggregate.floating_statistical_exact.output",
             "failed to upload DataFusion-exact stddev aggregate output",
             error,
         )
     })
 }
 
-fn record_datafusion_exact_stddev_strategy_decision(
+fn record_datafusion_exact_floating_statistical_aggregate_strategy_decision(
     metrics: &mut QueryMetrics,
     node_id: Option<String>,
     memory_mode: &'static str,
@@ -427,7 +427,7 @@ fn record_datafusion_exact_stddev_strategy_decision(
     add_floating_statistical_aggregate_contract_facts(
         &mut facts,
         spec,
-        StddevSampExecutionMode::DataFusionExactHostWelford,
+        StatisticalAggregateExecutionMode::DataFusionExactHostWelford,
     );
     add_aggregate_strategy_execution_option_facts(&mut facts, aggregate_strategy_options);
     if let Some(extra_strategy_facts) = extra_strategy_facts {
@@ -435,7 +435,7 @@ fn record_datafusion_exact_stddev_strategy_decision(
     }
     add_partial_aggregate_input_evidence_facts(&mut facts, None);
     metrics.record_aggregate_strategy_decision(
-        node_id.unwrap_or_else(|| "aggregate.datafusion_exact_stddev".to_string()),
+        node_id.unwrap_or_else(|| "aggregate.datafusion_exact_floating_statistical_aggregate".to_string()),
         &facts,
     );
 }
@@ -510,12 +510,14 @@ fn aggregate_group_key_dtypes_for_metrics(spec: &AggregateSpec, input_schema: &a
     }
     spec.group_exprs
         .iter()
-        .map(|expr| match lower_named_column_expr(expr, "nexus_query_engine.aggregate.stddev_exact.metrics") {
-            Ok((name, _)) => input_schema
-                .field_with_name(name.as_str())
-                .map(|field| format!("{:?}", field.data_type()))
-                .unwrap_or_else(|_| "missing_column".to_string()),
-            Err(_) => "non_column_expr".to_string(),
+        .map(|expr| {
+            match lower_named_column_expr(expr, "nexus_query_engine.aggregate.floating_statistical_exact.metrics") {
+                Ok((name, _)) => input_schema
+                    .field_with_name(name.as_str())
+                    .map(|field| format!("{:?}", field.data_type()))
+                    .unwrap_or_else(|_| "missing_column".to_string()),
+                Err(_) => "non_column_expr".to_string(),
+            }
         })
         .collect::<Vec<_>>()
         .join(",")
@@ -652,7 +654,7 @@ impl<'a> HostKeyColumn<'a> {
         let array = batch.column(batch.schema().index_of(column).map_err(|error| {
             QueryError::new(
                 QueryErrorCode::InvalidPlan,
-                "nexus_query_engine.aggregate.stddev_exact.key",
+                "nexus_query_engine.aggregate.floating_statistical_exact.key",
                 "group key column is missing from aggregate input batch",
             )
             .with_fact("column", column)
@@ -688,7 +690,7 @@ impl<'a> HostKeyColumn<'a> {
             ))),
             data_type => Err(QueryError::new(
                 QueryErrorCode::UnsupportedType,
-                "nexus_query_engine.aggregate.stddev_exact.key",
+                "nexus_query_engine.aggregate.floating_statistical_exact.key",
                 "DataFusion-exact stddev aggregate does not support this group key type",
             )
             .with_fact("column", column)
@@ -814,7 +816,7 @@ impl<'a> HostNumericColumn<'a> {
         let array = batch.column(batch.schema().index_of(column).map_err(|error| {
             QueryError::new(
                 QueryErrorCode::InvalidPlan,
-                "nexus_query_engine.aggregate.stddev_exact.value",
+                "nexus_query_engine.aggregate.floating_statistical_exact.value",
                 "aggregate input column is missing from aggregate input batch",
             )
             .with_fact("column", column)
@@ -835,7 +837,7 @@ impl<'a> HostNumericColumn<'a> {
             },
             data_type => Err(QueryError::new(
                 QueryErrorCode::UnsupportedType,
-                "nexus_query_engine.aggregate.stddev_exact.value",
+                "nexus_query_engine.aggregate.floating_statistical_exact.value",
                 "DataFusion-exact stddev aggregate requires numeric aggregate inputs",
             )
             .with_fact("column", column)
@@ -868,7 +870,7 @@ fn aggregate_input_expr(expr: &Expr) -> Result<HostAggregateInput> {
         Expr::Literal(_) => Ok(HostAggregateInput::NonNullLiteral),
         _ => Err(QueryError::new(
             QueryErrorCode::UnsupportedExpression,
-            "nexus_query_engine.aggregate.stddev_exact.lower_expr",
+            "nexus_query_engine.aggregate.floating_statistical_exact.lower_expr",
             "DataFusion-exact stddev aggregate requires prepared column aggregate inputs",
         )
         .with_fact("expression", expr.to_string())),
@@ -938,7 +940,7 @@ fn host_key_output_array_from_keys<'a>(
         ))),
         data_type => Err(QueryError::new(
             QueryErrorCode::UnsupportedType,
-            "nexus_query_engine.aggregate.stddev_exact.key_output",
+            "nexus_query_engine.aggregate.floating_statistical_exact.key_output",
             "DataFusion-exact stddev aggregate does not support this output group key type",
         )
         .with_fact("data_type", format!("{data_type:?}"))),
@@ -965,7 +967,7 @@ fn host_aggregate_output_array(
         ))),
         data_type => Err(QueryError::new(
             QueryErrorCode::UnsupportedType,
-            "nexus_query_engine.aggregate.stddev_exact.aggregate_output",
+            "nexus_query_engine.aggregate.floating_statistical_exact.aggregate_output",
             "DataFusion-exact stddev aggregate does not support this aggregate output type",
         )
         .with_fact("data_type", format!("{data_type:?}"))),

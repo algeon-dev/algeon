@@ -911,10 +911,9 @@ impl FlightSqlService for DatafusionNexusFlightSqlService {
     async fn register_sql_info(&self, _id: i32, _result: &SqlInfo) {}
 }
 
-/// Record a Flight request failure that occurs before an executable result
-/// stream can own a NexusAttempt. The coordinator report remains available to
-/// clients, while the legacy registration deliberately does not require an
-/// attempt terminal report.
+/// Record a Flight request failure that occurs before an attempt begins. The
+/// coordinator report remains available to clients, but no attempt exists to
+/// provide a terminal report.
 fn record_non_attempt_failure(
     service: &DatafusionNexusFlightSqlService,
     correlation_id: &Option<String>,

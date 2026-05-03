@@ -20,9 +20,9 @@ lane = "cpu"
 reason = "Tests validate Iceberg CLI item shapes and environment handling without contacting services or CUDA."
 
 [[binary]]
-id = "nexus-bench::native_clickbench_execution_report_tests"
+id = "nexus-bench::bench_public_api_boundary"
 lane = "cpu"
-reason = "Tests validate report rows and policy evidence without executing the native GPU workload."
+reason = "Compiler-enforced benchmark public-facade checks do not execute the native GPU workload."
 
 [[binary]]
 id = "nexus-bench::clickbench_workload_tests"

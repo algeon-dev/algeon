@@ -27,7 +27,7 @@ fn query_service_handle_exposes_configured_execution_policies() {
     let config = QueryExecutionConfig {
         source_scheduler_policy: SourceSchedulerPolicy::new(4),
         source_chunk_planning_mode: SourceChunkPlanningMode::LocalParquetThroughput,
-        stddev_samp_execution_mode: StddevSampExecutionMode::GpuNativeTolerant,
+        statistical_aggregate_execution_mode: StatisticalAggregateExecutionMode::GpuNativeTolerant,
         dynamic_filter_execution_options,
         keyed_hash_join_strategy_options,
         aggregate_strategy_execution_options,
@@ -41,7 +41,7 @@ fn query_service_handle_exposes_configured_execution_policies() {
     assert_eq!(handle.boundary_policy(), ExecutionBoundaryPolicy::default());
     assert_eq!(handle.source_scheduler_policy(), SourceSchedulerPolicy::new(4));
     assert_eq!(handle.source_chunk_planning_mode(), SourceChunkPlanningMode::LocalParquetThroughput);
-    assert_eq!(handle.stddev_samp_execution_mode(), StddevSampExecutionMode::GpuNativeTolerant);
+    assert_eq!(handle.statistical_aggregate_execution_mode(), StatisticalAggregateExecutionMode::GpuNativeTolerant);
     assert_eq!(handle.dynamic_filter_execution_options(), dynamic_filter_execution_options);
     assert_eq!(handle.keyed_hash_join_strategy_options(), keyed_hash_join_strategy_options);
     assert_eq!(handle.aggregate_strategy_execution_options(), aggregate_strategy_execution_options);
@@ -107,11 +107,6 @@ fn query_service_rejects_invalid_source_chunk_planning_policy() {
     assert_eq!(error.fact_value("reason"), Some("zero"));
 }
 #[test]
-fn gpu_execution_worker_fallback_is_bounded_without_scalar_controller_config() {
-    let config = QueryExecutionConfig::default();
-    assert_eq!(gpu_execution_worker_count_per_device(&config), 1);
-}
-#[test]
 fn query_service_resources_use_shared_lakehouse_cache_fill_limits() {
     let config = QueryExecutionConfig {
         lakehouse_cache_fill: LakehouseCacheFillConfig {
@@ -121,12 +116,9 @@ fn query_service_resources_use_shared_lakehouse_cache_fill_limits() {
         },
         ..QueryExecutionConfig::default()
     };
-    let service = runtime_test_service_with_profiles(
-        config,
-        QueueBounds::default(),
-        vec![runtime_test_device_profile(2)],
-    )
-    .unwrap();
+    let service =
+        runtime_test_service_with_profiles(config, QueueBounds::default(), vec![runtime_test_device_profile(2)])
+            .unwrap();
     let resources = service.inner.resources.as_ref().unwrap();
 
     assert_eq!(resources.lakehouse_cache_fill_budget.budget_bytes(), 2048);
