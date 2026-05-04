@@ -307,7 +307,7 @@ fn frame_submodules_expose_specialized_high_level_types() {
     use cudf::{
         Runtime,
         frame::{
-            dataframe::{JsonReadOptions, MeltOptions, ParquetReadOptions},
+            dataframe::{JsonReadOptions, MeltOptions, MultiParquetReadOptions, ParquetReadOptions},
             factorization::{DictionaryEncodingOptions, DictionaryKeyOrder},
         },
     };
@@ -315,6 +315,8 @@ fn frame_submodules_expose_specialized_high_level_types() {
     let rt = Runtime::builder().build().unwrap();
     let _json = JsonReadOptions::builder().filepath("data.jsonl").with_runtime(&rt).build();
     let _parquet = ParquetReadOptions::builder().filepath("data.parquet").with_runtime(&rt).build();
+    let _multi_parquet =
+        MultiParquetReadOptions::builder().filepaths(&["part-0.parquet", "part-1.parquet"]).with_runtime(&rt).build();
     let _melt = MeltOptions::builder().id_vars(&["id"]).value_vars(&["value"]).build();
     let _factorization = DictionaryEncodingOptions::new().key_order(DictionaryKeyOrder::FirstSeen);
 }

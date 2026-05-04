@@ -7,7 +7,10 @@ use typed_builder::TypedBuilder;
 
 use super::owned::DataFrame;
 use crate::{
-    core::{error::Result, schema},
+    core::{
+        error::{Error, ErrorCode, Result},
+        schema,
+    },
     io::{
         TableReadOutput,
         csv::{self, CsvTableReadOptions, CsvTableWriteOptions},
@@ -121,6 +124,34 @@ impl ParquetReadOptions {
             self.row_groups.clone(),
             self.runtime.clone(),
         )
+    }
+}
+
+/// Options for [`DataFrame::read_parquet_many_with_options`].
+///
+/// This is a conservative host-filesystem convenience for reading multiple
+/// Parquet files in caller-provided order, then concatenating the decoded
+/// tables on device. It does not perform glob expansion; each path is passed
+/// to the low-level Parquet reader literally. If globbing is desired, expand
+/// patterns in the shell or caller before building these options. It also does
+/// not perform predicate pushdown, partition-column inference, or GDS.
+#[derive(Debug, Clone, TypedBuilder)]
+pub struct MultiParquetReadOptions {
+    #[builder(setter(transform = |paths: &[impl AsRef<Path>]| paths.iter().map(|path| path.as_ref().to_path_buf()).collect()))]
+    filepaths: Vec<PathBuf>,
+    #[builder(default, setter(transform = |names: &[&str]| Some(names.iter().map(|s| (*s).to_string()).collect())))]
+    columns: Option<Vec<String>>,
+    #[builder(setter(prefix = "with_", transform = |runtime: &Runtime| runtime.clone()))]
+    runtime: Runtime,
+}
+
+impl MultiParquetReadOptions {
+    fn from_parts(filepaths: Vec<PathBuf>, columns: Option<Vec<String>>, runtime: Runtime) -> Self {
+        Self { filepaths, columns, runtime }
+    }
+
+    fn to_single_file_options(&self, filepath: PathBuf) -> ParquetTableReadOptions {
+        ParquetTableReadOptions::from_parts(filepath, self.columns.clone(), 0, None, None, self.runtime.clone())
     }
 }
 
@@ -339,6 +370,65 @@ impl DataFrame {
         let result = parquet::read_parquet_table(&table_options).map_err(|error| error.reanchor(operation))?;
         let (table, names) = require_reader_schema_names(result, operation, "parquet reader")?;
         Self::from_table(table, names).map_err(|error| error.reanchor(operation))
+    }
+
+    /// Read multiple Parquet files into one `DataFrame`.
+    ///
+    /// Files are read in the order supplied by `paths`, using the provided
+    /// runtime for each single-file read. The decoded per-file tables are then
+    /// concatenated on device. Glob expansion is intentionally not performed
+    /// by this API: each path is treated as a literal filesystem path. If
+    /// globbing is desired, expand patterns in the shell or caller before
+    /// calling this method. Directories are not enumerated.
+    ///
+    /// # Cost
+    /// Performs host file I/O for each file, allocates GPU-backed columns for
+    /// each decoded table, then performs one device-side table concatenation.
+    /// This is not predicate pushdown, GDS, or zero-copy multi-file interop.
+    pub fn read_parquet_many<P>(runtime: &Runtime, paths: impl IntoIterator<Item = P>) -> Result<Self>
+    where P: AsRef<Path> {
+        let filepaths = paths.into_iter().map(|path| path.as_ref().to_path_buf()).collect();
+        Self::read_parquet_many_with_options(MultiParquetReadOptions::from_parts(filepaths, None, runtime.clone()))
+    }
+
+    /// Read multiple Parquet files into one `DataFrame` using caller-provided
+    /// [`MultiParquetReadOptions`].
+    ///
+    /// The same projection is applied to every file. All files must return
+    /// the same schema names and compatible column dtypes after projection.
+    /// Row order follows the order of `filepaths`.
+    ///
+    /// # Cost
+    /// Performs host file I/O for each file, allocates GPU-backed columns for
+    /// each decoded table, then performs one device-side table concatenation.
+    /// This is not predicate pushdown, GDS, or zero-copy multi-file interop.
+    pub fn read_parquet_many_with_options(options: MultiParquetReadOptions) -> Result<Self> {
+        let operation = "dataframe::read_parquet_many_with_options";
+        if options.filepaths.is_empty() {
+            return Err(Error::new_with(
+                ErrorCode::EmptyInput,
+                operation,
+                "read_parquet_many requires at least one file",
+            )
+            .with_detail("resource", "filepaths")
+            .with_detail("reason", "empty_input")
+            .with_detail("remedy", "provide one or more concrete Parquet file paths"));
+        }
+
+        let mut frames = Vec::with_capacity(options.filepaths.len());
+        for filepath in &options.filepaths {
+            let table_options = options.to_single_file_options(filepath.clone());
+            let result = parquet::read_parquet_table(&table_options).map_err(|error| error.reanchor(operation))?;
+            let (table, names) = require_reader_schema_names(result, operation, "parquet reader")?;
+            let frame = Self::from_table(table, names).map_err(|error| error.reanchor(operation))?;
+            frames.push(frame);
+        }
+
+        let Some((first, rest)) = frames.split_first() else {
+            unreachable!("empty file list was rejected before reading");
+        };
+        let rest_refs: Vec<&DataFrame> = rest.iter().collect();
+        first.concat_many(&rest_refs).map_err(|error| error.reanchor(operation))
     }
 
     /// Write this `DataFrame` to a Parquet file, embedding column names in

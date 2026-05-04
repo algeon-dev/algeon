@@ -61,3 +61,19 @@ fn slice8_ast_conditional_and_mixed_join_surface_is_publicly_importable() {
         mixed_left_anti_join_indices,
     );
 }
+
+#[test]
+fn slice9_multi_file_parquet_surface_is_publicly_importable() {
+    use std::path::PathBuf;
+
+    use cudf::{DataFrame, Runtime, frame::dataframe::MultiParquetReadOptions};
+
+    fn assert_reader(_: fn(MultiParquetReadOptions) -> cudf::Result<DataFrame>) {}
+
+    let rt = Runtime::builder().build().unwrap();
+    let paths = [PathBuf::from("part-0.parquet"), PathBuf::from("part-1.parquet")];
+    let _options = MultiParquetReadOptions::builder().filepaths(&paths).columns(&["id"]).with_runtime(&rt).build();
+    assert!(DataFrame::read_parquet_many(&rt, Vec::<PathBuf>::new()).is_err());
+
+    assert_reader(DataFrame::read_parquet_many_with_options);
+}

@@ -31,7 +31,8 @@ pub use info::{
     ColumnMemoryAccounting, DataFrameColumnInfo, DataFrameInfo, DataFrameMemoryAccounting, DataTypeCount, InfoDetail,
 };
 pub use io::{
-    CsvReadOptions, CsvWriteOptions, JsonReadOptions, JsonWriteOptions, ParquetReadOptions, ParquetWriteOptions,
+    CsvReadOptions, CsvWriteOptions, JsonReadOptions, JsonWriteOptions, MultiParquetReadOptions, ParquetReadOptions,
+    ParquetWriteOptions,
 };
 pub use owned::{DataFrame, DataFrameJoinSides};
 pub(crate) use owned::{derive_frame_domain_from_columns, resolve_frame_domain_from_authoritative_source};

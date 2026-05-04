@@ -54,6 +54,11 @@ pub enum ErrorCode {
     /// Keeping both under one leaf avoids forcing downstreams to branch on
     /// an implementation detail that does not change their response.
     NullUnexpected,
+    /// A collection-valued input was empty where at least one element was
+    /// required.
+    EmptyInput,
+    /// A file input path pointed to a directory.
+    PathIsDirectory,
 
     // -- Domestic execution-context leaves -----------------------------------
     /// An empty-column construction path requires an explicit runtime.
@@ -124,6 +129,8 @@ impl fmt::Display for ErrorCode {
             ErrorCode::IndexOutOfBounds => "IndexOutOfBounds",
             ErrorCode::NullUnexpected => "NullUnexpected",
             ErrorCode::EmptyConstructionRequiresRuntime => "EmptyConstructionRequiresRuntime",
+            ErrorCode::EmptyInput => "EmptyInput",
+            ErrorCode::PathIsDirectory => "PathIsDirectory",
             ErrorCode::CrossDeviceInputs => "CrossDeviceInputs",
             ErrorCode::CrossProvenanceInputs => "CrossProvenanceInputs",
             ErrorCode::RuntimeBindingMismatch => "RuntimeBindingMismatch",
@@ -223,7 +230,10 @@ pub const fn kind_for_code(code: ErrorCode) -> ErrorKind {
         | ErrorCode::TypeMismatch
         | ErrorCode::IndexOutOfBounds
         | ErrorCode::NullUnexpected
+        | ErrorCode::PathIsDirectory
         | ErrorCode::ForeignInvalidArgument => ErrorKind::InvalidInput,
+
+        ErrorCode::EmptyInput => ErrorKind::InvalidInput,
 
         ErrorCode::EmptyConstructionRequiresRuntime
         | ErrorCode::CrossDeviceInputs
@@ -270,6 +280,8 @@ pub const fn status_for_code(code: ErrorCode) -> ErrorStatus {
         | ErrorCode::IndexOutOfBounds
         | ErrorCode::NullUnexpected
         | ErrorCode::EmptyConstructionRequiresRuntime
+        | ErrorCode::EmptyInput
+        | ErrorCode::PathIsDirectory
         | ErrorCode::CrossDeviceInputs
         | ErrorCode::CrossProvenanceInputs
         | ErrorCode::RuntimeBindingMismatch
