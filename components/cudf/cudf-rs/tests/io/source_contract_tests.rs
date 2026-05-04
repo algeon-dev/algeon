@@ -3,8 +3,10 @@ use cudf::{
     io::source::{
         ByteRangeDisposition, LocalParquetFile, LocalParquetSource, LocalParquetSourceKind, PartitionColumn,
         PartitionColumnDisposition, PartitionValue, PredicateDisposition, RejectedSourceFeature,
-        SchemaMappingDisposition, SourceColumn, SourceColumnRef, SourceColumnRole, SourceFormat, SourceOutputColumn,
-        SourceRequiredColumn, SourceSchema, ZERO_COLUMN_COUNT_COLUMN, ZeroColumnCountDisposition,
+        SchemaMappingDisposition, SourceChunkPlanningPolicy, SourceColumn, SourceColumnRef, SourceColumnRole,
+        SourceFormat, SourceOutputColumn, SourceRequiredColumn, SourceSchema, ZERO_COLUMN_COUNT_COLUMN,
+        ZeroColumnCountDisposition, plan_local_parquet_source_chunks, source_row_count_to_i64,
+        source_row_group_index_to_i32,
     },
 };
 
@@ -292,4 +294,260 @@ fn rejected_source_feature_names_are_neutral_source_vocabulary() {
     assert!(!names.iter().any(|name| name.contains("parquet_access_plan")));
     assert!(!names.iter().any(|name| name.contains("expr_adapter")));
     assert!(!names.iter().any(|name| name.contains("preserve_order")));
+}
+
+#[test]
+fn chunk_planning_preserves_none_row_groups_as_all_without_metadata() {
+    let source = LocalParquetSource::data(
+        [LocalParquetFile::new("part-0.parquet", "part-0", [PartitionValue::String("AMER".to_string())])
+            .unwrap()
+            .with_file_size_bytes(512)],
+        base_schema(),
+        ["id", "payload"],
+        [
+            SourceOutputColumn::new("id", SourceColumnRef::ReadColumn(0)).unwrap(),
+            SourceOutputColumn::new("region", SourceColumnRef::Partition(0)).unwrap(),
+        ],
+        [],
+        [PartitionColumn::new("region", dtype(TypeId::String), false).unwrap()],
+    )
+    .unwrap();
+
+    let plan = plan_local_parquet_source_chunks(&source, SourceChunkPlanningPolicy::default()).unwrap();
+
+    assert_eq!(plan.chunks().len(), 1);
+    assert!(!plan.row_group_metadata_available());
+    assert_eq!(plan.metadata_unavailable_files(), 1);
+    assert!(plan.size_estimate_based());
+
+    let chunk = &plan.chunks()[0];
+    assert_eq!(chunk.chunk_index(), 0);
+    assert_eq!(chunk.file_index(), 0);
+    assert_eq!(chunk.path(), std::path::Path::new("part-0.parquet"));
+    assert_eq!(chunk.stable_id(), "part-0");
+    assert!(chunk.reads_all_row_groups());
+    assert!(chunk.row_group_indexes().is_empty());
+    assert_eq!(chunk.known_file_bytes(), Some(512));
+    assert_eq!(chunk.known_row_group_bytes(), None);
+    assert_eq!(chunk.estimated_chunk_bytes(), Some(512));
+    assert_eq!(chunk.read_columns(), ["id", "payload"]);
+    assert_eq!(chunk.partition_values(), [PartitionValue::String("AMER".to_string())]);
+    assert!(!chunk.zero_column_count());
+    assert_eq!(chunk.known_row_count(), None);
+}
+
+#[test]
+fn chunk_planning_policy_rejects_zero_limits() {
+    let byte_err = SourceChunkPlanningPolicy::new(Some(0), 1).unwrap_err();
+    assert_eq!(byte_err.code(), ErrorCode::ForeignInvalidArgument);
+    assert_eq!(byte_err.detail_value("reason"), Some("max_source_chunk_bytes_zero"));
+
+    let row_group_err = SourceChunkPlanningPolicy::new(None, 0).unwrap_err();
+    assert_eq!(row_group_err.code(), ErrorCode::ForeignInvalidArgument);
+    assert_eq!(row_group_err.detail_value("reason"), Some("max_row_groups_per_chunk_zero"));
+}
+
+#[test]
+fn chunk_planning_skips_explicit_empty_row_group_selections_for_data_and_count() {
+    let data_source = LocalParquetSource::data(
+        [LocalParquetFile::new("empty.parquet", "empty", []).unwrap().with_row_groups(Some(vec![]))],
+        SourceSchema::new([SourceColumn::new("id", dtype(TypeId::Int64), false).unwrap()]).unwrap(),
+        ["id"],
+        [SourceOutputColumn::new("id", SourceColumnRef::ReadColumn(0)).unwrap()],
+        [],
+        [],
+    )
+    .unwrap();
+    let data_plan = plan_local_parquet_source_chunks(&data_source, SourceChunkPlanningPolicy::default()).unwrap();
+    assert!(data_plan.chunks().is_empty());
+    assert_eq!(data_plan.known_total_row_count(), Some(0));
+    assert_eq!(data_plan.known_total_row_count_i64().unwrap(), Some(0));
+
+    let count_source =
+        LocalParquetSource::zero_column_count([LocalParquetFile::new("empty-count.parquet", "empty-count", [])
+            .unwrap()
+            .with_row_groups(Some(vec![]))])
+        .unwrap();
+    let count_plan = plan_local_parquet_source_chunks(&count_source, SourceChunkPlanningPolicy::default()).unwrap();
+    assert!(count_plan.chunks().is_empty());
+    assert_eq!(count_plan.known_total_row_count(), Some(0));
+    assert_eq!(count_plan.known_total_row_count_i64().unwrap(), Some(0));
+}
+
+#[test]
+fn chunk_planning_preserves_selected_row_group_order_and_file_facts() {
+    let source = LocalParquetSource::data(
+        [LocalParquetFile::new("part-0.parquet", "stable-part-0", [PartitionValue::Int32(7)])
+            .unwrap()
+            .with_file_size_bytes(900)
+            .with_row_groups(Some(vec![2, 0]))
+            .with_row_group_metadata(vec![100, 200, 300], vec![10, 20, 30])
+            .unwrap()],
+        SourceSchema::new([
+            SourceColumn::new("id", dtype(TypeId::Int64), false).unwrap(),
+            SourceColumn::new("part", dtype(TypeId::Int32), false).unwrap(),
+        ])
+        .unwrap(),
+        ["id"],
+        [
+            SourceOutputColumn::new("id", SourceColumnRef::ReadColumn(0)).unwrap(),
+            SourceOutputColumn::new("part", SourceColumnRef::Partition(0)).unwrap(),
+        ],
+        [],
+        [PartitionColumn::new("part", dtype(TypeId::Int32), false).unwrap()],
+    )
+    .unwrap();
+    let policy = SourceChunkPlanningPolicy::new(None, 1).unwrap();
+
+    let plan = plan_local_parquet_source_chunks(&source, policy).unwrap();
+
+    assert_eq!(plan.chunks().len(), 2);
+    assert!(plan.row_group_metadata_available());
+    assert_eq!(plan.metadata_unavailable_files(), 0);
+    assert!(!plan.size_estimate_based());
+    assert_eq!(plan.known_total_row_count(), Some(40));
+    assert_eq!(plan.known_total_row_count_i64().unwrap(), Some(40));
+
+    assert_eq!(plan.chunks()[0].chunk_index(), 0);
+    assert_eq!(plan.chunks()[0].file_index(), 0);
+    assert_eq!(plan.chunks()[0].stable_id(), "stable-part-0");
+    assert_eq!(plan.chunks()[0].row_group_indexes(), [2]);
+    assert_eq!(plan.chunks()[0].row_group_indexes_i32().unwrap(), vec![2]);
+    assert!(!plan.chunks()[0].reads_all_row_groups());
+    assert_eq!(plan.chunks()[0].known_file_bytes(), Some(900));
+    assert_eq!(plan.chunks()[0].known_row_group_bytes(), Some(300));
+    assert_eq!(plan.chunks()[0].estimated_chunk_bytes(), Some(300));
+    assert_eq!(plan.chunks()[0].known_row_count(), Some(30));
+    assert_eq!(plan.chunks()[0].known_row_count_i64().unwrap(), Some(30));
+    assert_eq!(plan.chunks()[0].read_columns(), ["id"]);
+    assert_eq!(plan.chunks()[0].partition_values(), [PartitionValue::Int32(7)]);
+
+    assert_eq!(plan.chunks()[1].chunk_index(), 1);
+    assert_eq!(plan.chunks()[1].row_group_indexes(), [0]);
+    assert_eq!(plan.chunks()[1].known_row_group_bytes(), Some(100));
+    assert_eq!(plan.chunks()[1].estimated_chunk_bytes(), Some(100));
+    assert_eq!(plan.chunks()[1].known_row_count(), Some(10));
+}
+
+#[test]
+fn chunk_planning_expands_all_row_groups_and_honors_byte_policy_with_metadata() {
+    let source = LocalParquetSource::data(
+        [LocalParquetFile::new("all.parquet", "all", [])
+            .unwrap()
+            .with_row_group_metadata(vec![100, 250, 100], vec![1, 2, 3])
+            .unwrap()],
+        SourceSchema::new([SourceColumn::new("id", dtype(TypeId::Int64), false).unwrap()]).unwrap(),
+        ["id"],
+        [SourceOutputColumn::new("id", SourceColumnRef::ReadColumn(0)).unwrap()],
+        [],
+        [],
+    )
+    .unwrap();
+    let policy = SourceChunkPlanningPolicy::new(Some(300), 10).unwrap();
+
+    let plan = plan_local_parquet_source_chunks(&source, policy).unwrap();
+
+    assert_eq!(plan.chunks().len(), 3);
+    assert!(plan.row_group_metadata_available());
+    assert_eq!(plan.known_total_row_count(), Some(6));
+    assert_eq!(plan.chunks()[0].row_group_indexes(), [0]);
+    assert!(!plan.chunks()[0].reads_all_row_groups());
+    assert_eq!(plan.chunks()[0].estimated_chunk_bytes(), Some(100));
+    assert_eq!(plan.chunks()[1].row_group_indexes(), [1]);
+    assert_eq!(plan.chunks()[1].estimated_chunk_bytes(), Some(250));
+    assert_eq!(plan.chunks()[2].row_group_indexes(), [2]);
+    assert_eq!(plan.chunks()[2].estimated_chunk_bytes(), Some(100));
+}
+
+#[test]
+fn chunk_planning_validates_selected_row_groups_against_metadata() {
+    let source = LocalParquetSource::data(
+        [LocalParquetFile::new("part-0.parquet", "part-0", [])
+            .unwrap()
+            .with_row_groups(Some(vec![2, 3]))
+            .with_row_group_metadata(vec![100, 200, 300], vec![10, 20, 30])
+            .unwrap()],
+        SourceSchema::new([SourceColumn::new("id", dtype(TypeId::Int64), false).unwrap()]).unwrap(),
+        ["id"],
+        [SourceOutputColumn::new("id", SourceColumnRef::ReadColumn(0)).unwrap()],
+        [],
+        [],
+    )
+    .unwrap();
+
+    let err = plan_local_parquet_source_chunks(&source, SourceChunkPlanningPolicy::default()).unwrap_err();
+
+    assert_eq!(err.code(), ErrorCode::IndexOutOfBounds);
+    assert_eq!(err.detail_value("reason"), Some("row_group_index_out_of_bounds"));
+    assert_eq!(err.detail_value("stable_id"), Some("part-0"));
+    assert_eq!(err.detail_value("file_index"), Some("0"));
+    assert_eq!(err.detail_value("row_group"), Some("3"));
+    assert_eq!(err.detail_value("row_group_position"), Some("1"));
+    assert_eq!(err.detail_value("max_row_group"), Some("2"));
+}
+
+#[test]
+fn zero_column_count_chunks_require_row_count_metadata_and_carry_known_counts() {
+    let missing_source =
+        LocalParquetSource::zero_column_count([LocalParquetFile::new("part-0.parquet", "part-0", []).unwrap()])
+            .unwrap();
+    let err = plan_local_parquet_source_chunks(&missing_source, SourceChunkPlanningPolicy::default()).unwrap_err();
+    assert_eq!(err.code(), ErrorCode::ForeignInvalidArgument);
+    assert_eq!(err.detail_value("reason"), Some("missing_row_group_row_count_metadata"));
+    assert_eq!(err.detail_value("stable_id"), Some("part-0"));
+
+    let count_source = LocalParquetSource::zero_column_count([LocalParquetFile::new("part-1.parquet", "part-1", [])
+        .unwrap()
+        .with_row_groups(Some(vec![1, 0]))
+        .with_row_group_metadata(vec![11, 22], vec![5, 7])
+        .unwrap()])
+    .unwrap();
+    let plan = plan_local_parquet_source_chunks(&count_source, SourceChunkPlanningPolicy::default()).unwrap();
+
+    assert_eq!(plan.chunks().len(), 1);
+    assert!(plan.chunks()[0].zero_column_count());
+    assert!(plan.chunks()[0].read_columns().is_empty());
+    assert_eq!(plan.chunks()[0].row_group_indexes(), [1, 0]);
+    assert_eq!(plan.chunks()[0].known_row_count(), Some(12));
+    assert_eq!(plan.known_total_row_count(), Some(12));
+    assert_eq!(plan.known_total_row_count_i64().unwrap(), Some(12));
+}
+
+#[test]
+fn row_group_and_row_count_execution_boundary_conversions_are_checked() {
+    assert_eq!(source_row_group_index_to_i32(i32::MAX as usize).unwrap(), i32::MAX);
+    let row_group_err = source_row_group_index_to_i32(i32::MAX as usize + 1).unwrap_err();
+    assert_eq!(row_group_err.code(), ErrorCode::UnsupportedOperation);
+    assert_eq!(row_group_err.detail_value("reason"), Some("row_group_index_exceeds_i32"));
+
+    assert_eq!(source_row_count_to_i64(i64::MAX as u64).unwrap(), i64::MAX);
+    let row_count_err = source_row_count_to_i64(i64::MAX as u64 + 1).unwrap_err();
+    assert_eq!(row_count_err.code(), ErrorCode::UnsupportedOperation);
+    assert_eq!(row_count_err.detail_value("reason"), Some("row_count_exceeds_i64"));
+
+    let source = LocalParquetSource::data(
+        [LocalParquetFile::new("large-rg.parquet", "large-rg", [])
+            .unwrap()
+            .with_row_groups(Some(vec![i32::MAX as usize + 1]))],
+        SourceSchema::new([SourceColumn::new("id", dtype(TypeId::Int64), false).unwrap()]).unwrap(),
+        ["id"],
+        [SourceOutputColumn::new("id", SourceColumnRef::ReadColumn(0)).unwrap()],
+        [],
+        [],
+    )
+    .unwrap();
+    let plan = plan_local_parquet_source_chunks(&source, SourceChunkPlanningPolicy::default()).unwrap();
+    let chunk_err = plan.chunks()[0].row_group_indexes_i32().unwrap_err();
+    assert_eq!(chunk_err.code(), ErrorCode::UnsupportedOperation);
+    assert_eq!(chunk_err.detail_value("reason"), Some("row_group_index_exceeds_i32"));
+
+    let count_source =
+        LocalParquetSource::zero_column_count([LocalParquetFile::new("huge-count.parquet", "huge-count", [])
+            .unwrap()
+            .with_row_group_metadata(vec![1], vec![i64::MAX as u64 + 1])
+            .unwrap()])
+        .unwrap();
+    let count_err = plan_local_parquet_source_chunks(&count_source, SourceChunkPlanningPolicy::default()).unwrap_err();
+    assert_eq!(count_err.code(), ErrorCode::UnsupportedOperation);
+    assert_eq!(count_err.detail_value("reason"), Some("row_count_exceeds_i64"));
 }

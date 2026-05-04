@@ -34,6 +34,10 @@ const OP_COLUMN_NEW: &str = "io::source::SourceColumn::new";
 const OP_OUTPUT_NEW: &str = "io::source::SourceOutputColumn::new";
 const OP_REQUIRED_NEW: &str = "io::source::SourceRequiredColumn::new";
 const OP_PARTITION_NEW: &str = "io::source::PartitionColumn::new";
+const OP_CHUNK_POLICY_NEW: &str = "io::source::SourceChunkPlanningPolicy::new";
+const OP_PLAN_CHUNKS: &str = "io::source::plan_local_parquet_source_chunks";
+const OP_ROW_GROUP_TO_I32: &str = "io::source::source_row_group_index_to_i32";
+const OP_ROW_COUNT_TO_I64: &str = "io::source::source_row_count_to_i64";
 
 /// A complete checked local Parquet source contract.
 ///
@@ -95,9 +99,7 @@ impl LocalParquetSource {
     /// columns, and exactly one non-null `Int64` output named
     /// [`ZERO_COLUMN_COUNT_COLUMN`].
     pub fn zero_column_count<I>(files: I) -> Result<Self>
-    where
-        I: IntoIterator<Item = LocalParquetFile>,
-    {
+    where I: IntoIterator<Item = LocalParquetFile> {
         let files: Vec<_> = files.into_iter().collect();
         for (file_index, file) in files.iter().enumerate() {
             if !file.partition_values.is_empty() {
@@ -383,6 +385,325 @@ pub enum LocalParquetSourceKind {
     MetadataRowCount,
 }
 
+/// Policy for splitting local Parquet sources into file-local row-group chunks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SourceChunkPlanningPolicy {
+    max_source_chunk_bytes: Option<u64>,
+    max_row_groups_per_chunk: usize,
+}
+
+impl SourceChunkPlanningPolicy {
+    /// Create a source chunk planning policy.
+    ///
+    /// `max_source_chunk_bytes` is applied only when row-group byte metadata is
+    /// available. `max_row_groups_per_chunk` must be non-zero.
+    pub fn new(max_source_chunk_bytes: Option<u64>, max_row_groups_per_chunk: usize) -> Result<Self> {
+        if matches!(max_source_chunk_bytes, Some(0)) {
+            return Err(Error::new_with(
+                ErrorCode::ForeignInvalidArgument,
+                OP_CHUNK_POLICY_NEW,
+                "max source chunk bytes must be greater than zero",
+            )
+            .with_detail("reason", "max_source_chunk_bytes_zero"));
+        }
+        if max_row_groups_per_chunk == 0 {
+            return Err(Error::new_with(
+                ErrorCode::ForeignInvalidArgument,
+                OP_CHUNK_POLICY_NEW,
+                "max row groups per chunk must be greater than zero",
+            )
+            .with_detail("reason", "max_row_groups_per_chunk_zero"));
+        }
+
+        Ok(Self { max_source_chunk_bytes, max_row_groups_per_chunk })
+    }
+
+    /// Maximum planned chunk bytes when row-group byte metadata is available.
+    pub fn max_source_chunk_bytes(&self) -> Option<u64> {
+        self.max_source_chunk_bytes
+    }
+
+    /// Maximum row groups per planned chunk.
+    pub fn max_row_groups_per_chunk(&self) -> usize {
+        self.max_row_groups_per_chunk
+    }
+}
+
+impl Default for SourceChunkPlanningPolicy {
+    fn default() -> Self {
+        Self { max_source_chunk_bytes: None, max_row_groups_per_chunk: usize::MAX }
+    }
+}
+
+/// Planned chunks for a local Parquet source.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SourceChunkPlan {
+    chunks: Vec<SourceChunk>,
+    row_group_metadata_available: bool,
+    size_estimate_based: bool,
+    metadata_unavailable_files: usize,
+    known_total_row_count: Option<u64>,
+}
+
+impl SourceChunkPlan {
+    /// Planned file-local chunks.
+    pub fn chunks(&self) -> &[SourceChunk] {
+        &self.chunks
+    }
+
+    /// Whether row-group byte and row-count metadata was available for every
+    /// non-empty planned file.
+    pub fn row_group_metadata_available(&self) -> bool {
+        self.row_group_metadata_available
+    }
+
+    /// Whether any chunk byte size is based on a file-level estimate rather
+    /// than row-group byte metadata.
+    pub fn size_estimate_based(&self) -> bool {
+        self.size_estimate_based
+    }
+
+    /// Number of non-empty planned files without row-group metadata.
+    pub fn metadata_unavailable_files(&self) -> usize {
+        self.metadata_unavailable_files
+    }
+
+    /// Known total row count when every chunk has row-count metadata.
+    pub fn known_total_row_count(&self) -> Option<u64> {
+        self.known_total_row_count
+    }
+
+    /// Known total row count converted for later `i64` materialization.
+    pub fn known_total_row_count_i64(&self) -> Result<Option<i64>> {
+        self.known_total_row_count.map(source_row_count_to_i64).transpose()
+    }
+}
+
+/// One file-local source chunk.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SourceChunk {
+    chunk_index: usize,
+    file_index: usize,
+    path: PathBuf,
+    stable_id: String,
+    row_group_indexes: Vec<usize>,
+    reads_all_row_groups: bool,
+    known_file_bytes: Option<u64>,
+    known_row_group_bytes: Option<u64>,
+    estimated_chunk_bytes: Option<u64>,
+    read_columns: Vec<String>,
+    partition_values: Vec<PartitionValue>,
+    zero_column_count: bool,
+    known_row_count: Option<u64>,
+    size_estimate_based: bool,
+}
+
+impl SourceChunk {
+    /// Plan-local chunk index.
+    pub fn chunk_index(&self) -> usize {
+        self.chunk_index
+    }
+
+    /// Source file index.
+    pub fn file_index(&self) -> usize {
+        self.file_index
+    }
+
+    /// Local filesystem path for this chunk's file.
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Stable caller-provided file identity.
+    pub fn stable_id(&self) -> &str {
+        &self.stable_id
+    }
+
+    /// Explicit row-group indexes for this chunk.
+    ///
+    /// An empty slice with [`reads_all_row_groups`](Self::reads_all_row_groups)
+    /// set means the later execution boundary should read the whole file.
+    pub fn row_group_indexes(&self) -> &[usize] {
+        &self.row_group_indexes
+    }
+
+    /// Row-group indexes converted to the libcudf C-shim `i32` range.
+    pub fn row_group_indexes_i32(&self) -> Result<Vec<i32>> {
+        self.row_group_indexes
+            .iter()
+            .copied()
+            .enumerate()
+            .map(|(position, row_group)| {
+                source_row_group_index_to_i32_with_context(row_group, Some(self), Some(position))
+            })
+            .collect()
+    }
+
+    /// Whether this chunk reads all row groups from its file.
+    pub fn reads_all_row_groups(&self) -> bool {
+        self.reads_all_row_groups
+    }
+
+    /// Known full-file byte size, if supplied.
+    pub fn known_file_bytes(&self) -> Option<u64> {
+        self.known_file_bytes
+    }
+
+    /// Known sum of selected row-group bytes, if available.
+    pub fn known_row_group_bytes(&self) -> Option<u64> {
+        self.known_row_group_bytes
+    }
+
+    /// Estimated chunk bytes used for source scheduling.
+    pub fn estimated_chunk_bytes(&self) -> Option<u64> {
+        self.estimated_chunk_bytes
+    }
+
+    /// Decoded Parquet read columns for this chunk.
+    pub fn read_columns(&self) -> &[String] {
+        &self.read_columns
+    }
+
+    /// Partition values carried from the source file.
+    pub fn partition_values(&self) -> &[PartitionValue] {
+        &self.partition_values
+    }
+
+    /// Whether this is a synthetic metadata row-count chunk.
+    pub fn zero_column_count(&self) -> bool {
+        self.zero_column_count
+    }
+
+    /// Known row count for this chunk, if row-count metadata was available.
+    pub fn known_row_count(&self) -> Option<u64> {
+        self.known_row_count
+    }
+
+    /// Known row count converted for later `i64` materialization.
+    pub fn known_row_count_i64(&self) -> Result<Option<i64>> {
+        self.known_row_count.map(source_row_count_to_i64).transpose()
+    }
+
+    /// Whether this chunk byte estimate is based on file-level information.
+    pub fn size_estimate_based(&self) -> bool {
+        self.size_estimate_based
+    }
+}
+
+/// Convert a source row-group index to the libcudf C-shim `i32` range.
+pub fn source_row_group_index_to_i32(row_group: usize) -> Result<i32> {
+    source_row_group_index_to_i32_with_context(row_group, None, None)
+}
+
+/// Convert a source row count to the synthetic count-column `i64` range.
+pub fn source_row_count_to_i64(row_count: u64) -> Result<i64> {
+    source_row_count_to_i64_with_context(row_count, None)
+}
+
+/// Plan file-local row-group chunks for a checked local Parquet source.
+pub fn plan_local_parquet_source_chunks(
+    source: &LocalParquetSource,
+    policy: SourceChunkPlanningPolicy,
+) -> Result<SourceChunkPlan> {
+    source.validate(OP_PLAN_CHUNKS)?;
+
+    let mut chunks = Vec::new();
+    let mut metadata_unavailable_files = 0usize;
+
+    for (file_index, file) in source.files.iter().enumerate() {
+        if matches!(file.row_groups.as_deref(), Some([])) {
+            continue;
+        }
+
+        let row_group_bytes = file.row_group_bytes.as_deref();
+        let row_group_rows = file.row_group_rows.as_deref();
+        let metadata_available = row_group_bytes.is_some() && row_group_rows.is_some();
+
+        if !metadata_available {
+            metadata_unavailable_files += 1;
+            if source.kind == LocalParquetSourceKind::MetadataRowCount {
+                return Err(missing_row_group_row_count_metadata_error(file, file_index));
+            }
+
+            let size_estimate_based = file.file_size_bytes.is_some();
+            chunks.push(SourceChunk {
+                chunk_index: chunks.len(),
+                file_index,
+                path: file.path.clone(),
+                stable_id: file.stable_id.clone(),
+                row_group_indexes: file.row_groups.clone().unwrap_or_default(),
+                reads_all_row_groups: file.row_groups.is_none(),
+                known_file_bytes: file.file_size_bytes,
+                known_row_group_bytes: None,
+                estimated_chunk_bytes: file.file_size_bytes,
+                read_columns: source.read_columns.clone(),
+                partition_values: file.partition_values.clone(),
+                zero_column_count: false,
+                known_row_count: None,
+                size_estimate_based,
+            });
+            continue;
+        }
+
+        let row_group_bytes = row_group_bytes.expect("metadata_available checked row_group_bytes");
+        let row_group_rows = row_group_rows.expect("metadata_available checked row_group_rows");
+        let reads_all_from_source = file.row_groups.is_none();
+        let selected_row_groups = match &file.row_groups {
+            Some(row_groups) => {
+                validate_selected_row_groups(file, file_index, row_groups, row_group_rows.len())?;
+                row_groups.clone()
+            },
+            None => (0..row_group_rows.len()).collect(),
+        };
+
+        if selected_row_groups.is_empty() {
+            continue;
+        }
+
+        let chunk_groups = split_row_groups_for_policy(&selected_row_groups, row_group_bytes, policy);
+        let single_all_row_group_chunk = reads_all_from_source && chunk_groups.len() == 1;
+        for row_groups in chunk_groups {
+            let known_row_group_bytes = checked_row_group_sum(row_group_bytes, &row_groups);
+            let known_row_count =
+                checked_row_group_row_count(file, file_index, chunks.len(), row_group_rows, &row_groups)?;
+
+            let reads_all_row_groups = single_all_row_group_chunk && row_groups.len() == row_group_rows.len();
+            chunks.push(SourceChunk {
+                chunk_index: chunks.len(),
+                file_index,
+                path: file.path.clone(),
+                stable_id: file.stable_id.clone(),
+                row_group_indexes: if reads_all_row_groups { Vec::new() } else { row_groups.clone() },
+                reads_all_row_groups,
+                known_file_bytes: file.file_size_bytes,
+                known_row_group_bytes,
+                estimated_chunk_bytes: known_row_group_bytes,
+                read_columns: if source.kind == LocalParquetSourceKind::MetadataRowCount {
+                    Vec::new()
+                } else {
+                    source.read_columns.clone()
+                },
+                partition_values: file.partition_values.clone(),
+                zero_column_count: source.kind == LocalParquetSourceKind::MetadataRowCount,
+                known_row_count: Some(known_row_count),
+                size_estimate_based: false,
+            });
+        }
+    }
+
+    let row_group_metadata_available = metadata_unavailable_files == 0;
+    let size_estimate_based = chunks.iter().any(|chunk| chunk.size_estimate_based);
+    let known_total_row_count = known_total_row_count(&chunks)?;
+
+    Ok(SourceChunkPlan {
+        chunks,
+        row_group_metadata_available,
+        size_estimate_based,
+        metadata_unavailable_files,
+        known_total_row_count,
+    })
+}
+
 /// File-local facts for a local Parquet source.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LocalParquetFile {
@@ -510,9 +831,7 @@ pub struct SourceSchema {
 impl SourceSchema {
     /// Create a schema with unique, non-empty column names.
     pub fn new<I>(columns: I) -> Result<Self>
-    where
-        I: IntoIterator<Item = SourceColumn>,
-    {
+    where I: IntoIterator<Item = SourceColumn> {
         let columns: Vec<_> = columns.into_iter().collect();
         if columns.is_empty() {
             return Err(Error::new_with(ErrorCode::EmptyInput, OP_SCHEMA_NEW, "source schema must not be empty")
@@ -1155,6 +1474,171 @@ fn is_supported_partition_dtype(data_type: DataType) -> bool {
 
 fn partition_value_matches_dtype(value: &PartitionValue, data_type: DataType) -> bool {
     value.data_type() == data_type
+}
+
+fn split_row_groups_for_policy(
+    selected_row_groups: &[usize],
+    row_group_bytes: &[u64],
+    policy: SourceChunkPlanningPolicy,
+) -> Vec<Vec<usize>> {
+    let mut chunks = Vec::new();
+    let mut current = Vec::new();
+    let mut current_bytes = 0u64;
+
+    for &row_group in selected_row_groups {
+        let group_bytes = row_group_bytes[row_group];
+        let would_exceed_count = current.len() >= policy.max_row_groups_per_chunk;
+        let would_exceed_bytes = policy
+            .max_source_chunk_bytes
+            .is_some_and(|max_bytes| !current.is_empty() && current_bytes.saturating_add(group_bytes) > max_bytes);
+
+        if would_exceed_count || would_exceed_bytes {
+            chunks.push(std::mem::take(&mut current));
+            current_bytes = 0;
+        }
+
+        current.push(row_group);
+        current_bytes = current_bytes.saturating_add(group_bytes);
+    }
+
+    if !current.is_empty() {
+        chunks.push(current);
+    }
+
+    chunks
+}
+
+fn validate_selected_row_groups(
+    file: &LocalParquetFile,
+    file_index: usize,
+    row_groups: &[usize],
+    row_group_count: usize,
+) -> Result<()> {
+    for (row_group_position, &row_group) in row_groups.iter().enumerate() {
+        if row_group >= row_group_count {
+            let mut err = Error::new_with(
+                ErrorCode::IndexOutOfBounds,
+                OP_PLAN_CHUNKS,
+                "selected row group index is out of bounds for source metadata",
+            )
+            .with_fact(FACT_COLUMN_INDEX, row_group)
+            .with_detail("reason", "row_group_index_out_of_bounds")
+            .with_detail("file_index", file_index.to_string())
+            .with_detail("stable_id", file.stable_id.clone())
+            .with_detail("path", file.path.display().to_string())
+            .with_detail("row_group", row_group.to_string())
+            .with_detail("row_group_position", row_group_position.to_string());
+            if row_group_count > 0 {
+                err = err.with_detail("max_row_group", (row_group_count - 1).to_string());
+            }
+            return Err(err);
+        }
+    }
+    Ok(())
+}
+
+fn checked_row_group_sum(values: &[u64], row_groups: &[usize]) -> Option<u64> {
+    row_groups.iter().try_fold(0u64, |acc, &row_group| acc.checked_add(values[row_group]))
+}
+
+fn checked_row_group_row_count(
+    file: &LocalParquetFile,
+    file_index: usize,
+    chunk_index: usize,
+    row_group_rows: &[u64],
+    row_groups: &[usize],
+) -> Result<u64> {
+    let mut total = 0u64;
+    for &row_group in row_groups {
+        total = total.checked_add(row_group_rows[row_group]).ok_or_else(|| {
+            Error::new_with(ErrorCode::UnsupportedOperation, OP_ROW_COUNT_TO_I64, "source row count exceeds i64 range")
+                .with_detail("reason", "row_count_exceeds_i64")
+                .with_detail("chunk_index", chunk_index.to_string())
+                .with_detail("file_index", file_index.to_string())
+                .with_detail("stable_id", file.stable_id.clone())
+                .with_detail("path", file.path.display().to_string())
+        })?;
+    }
+    source_row_count_to_i64_with_context(total, Some((file, file_index, chunk_index)))?;
+    Ok(total)
+}
+
+fn known_total_row_count(chunks: &[SourceChunk]) -> Result<Option<u64>> {
+    let mut total = 0u64;
+    for chunk in chunks {
+        let Some(row_count) = chunk.known_row_count else {
+            return Ok(None);
+        };
+        total = total.checked_add(row_count).ok_or_else(|| {
+            Error::new_with(
+                ErrorCode::UnsupportedOperation,
+                OP_PLAN_CHUNKS,
+                "planned source row count exceeds the supported i64 range",
+            )
+            .with_detail("reason", "row_count_exceeds_i64")
+        })?;
+    }
+    source_row_count_to_i64_with_context(total, None)?;
+    Ok(Some(total))
+}
+
+fn missing_row_group_row_count_metadata_error(file: &LocalParquetFile, file_index: usize) -> Error {
+    Error::new_with(
+        ErrorCode::ForeignInvalidArgument,
+        OP_PLAN_CHUNKS,
+        "metadata row-count source requires row-group row-count metadata",
+    )
+    .with_detail("reason", "missing_row_group_row_count_metadata")
+    .with_detail("file_index", file_index.to_string())
+    .with_detail("stable_id", file.stable_id.clone())
+    .with_detail("path", file.path.display().to_string())
+}
+
+fn source_row_group_index_to_i32_with_context(
+    row_group: usize,
+    chunk: Option<&SourceChunk>,
+    position: Option<usize>,
+) -> Result<i32> {
+    i32::try_from(row_group).map_err(|_| {
+        let mut err = Error::new_with(
+            ErrorCode::UnsupportedOperation,
+            OP_ROW_GROUP_TO_I32,
+            "row group index exceeds libcudf i32 range",
+        )
+        .with_detail("reason", "row_group_index_exceeds_i32")
+        .with_detail("row_group", row_group.to_string());
+        if let Some(position) = position {
+            err = err.with_detail("row_group_position", position.to_string());
+        }
+        if let Some(chunk) = chunk {
+            err = err
+                .with_detail("chunk_index", chunk.chunk_index.to_string())
+                .with_detail("file_index", chunk.file_index.to_string())
+                .with_detail("stable_id", chunk.stable_id.clone())
+                .with_detail("path", chunk.path.display().to_string());
+        }
+        err
+    })
+}
+
+fn source_row_count_to_i64_with_context(
+    row_count: u64,
+    context: Option<(&LocalParquetFile, usize, usize)>,
+) -> Result<i64> {
+    i64::try_from(row_count).map_err(|_| {
+        let mut err =
+            Error::new_with(ErrorCode::UnsupportedOperation, OP_ROW_COUNT_TO_I64, "source row count exceeds i64 range")
+                .with_detail("reason", "row_count_exceeds_i64")
+                .with_detail("row_count", row_count.to_string());
+        if let Some((file, file_index, chunk_index)) = context {
+            err = err
+                .with_detail("chunk_index", chunk_index.to_string())
+                .with_detail("file_index", file_index.to_string())
+                .with_detail("stable_id", file.stable_id.clone())
+                .with_detail("path", file.path.display().to_string());
+        }
+        err
+    })
 }
 
 fn dtype_label(data_type: DataType) -> String {
