@@ -63,6 +63,10 @@ mod server_iceberg_rest_multigpu_e2e;
 #[cfg(all(feature = "server-runtime-observability-e2e", test))]
 #[path = "../e2e/server_iceberg_rest_multigpu_e2e.rs"]
 mod server_iceberg_rest_multigpu_e2e;
+#[cfg(feature = "single-node-multi-gpu-validate")]
+#[cfg_attr(test, allow(dead_code))]
+#[path = "../single_node_multi_gpu_validate.rs"]
+mod single_node_multi_gpu_validate;
 #[cfg(feature = "validate-query")]
 #[path = "../validate_query.rs"]
 mod validate_query;
@@ -87,6 +91,9 @@ async fn main() -> ToolResult<()> {
         Some("clickbench-stage-probe") => run_clickbench_stage_probe(env::args().skip(2).collect()).await,
         Some("datafusion-baseline-contract-validate") => {
             run_datafusion_baseline_contract_validate(env::args().skip(2).collect()).await
+        },
+        Some("single-node-multi-gpu-validate") => {
+            run_single_node_multi_gpu_validate(env::args().skip(2).collect()).await
         },
         Some("-h" | "--help") | None => {
             print_usage();
@@ -117,7 +124,8 @@ fn print_usage() {
            flock /tmp/cudf-gpu.lock cargo run -p nexus-tools --features embedded-backend-e2e -- embedded-backend-e2e\n\
            flock /tmp/cudf-gpu.lock cargo run -p nexus-tools --features cugraph-oracle -- cugraph-fixture-e2e <pagerank|bfs-include-edges|bfs-utf8-include-edges|bfs-utf8-path|bfs-utf8-predicates>\n\
            flock /tmp/cudf-gpu.lock cargo run -p nexus-tools --features cugraph-similarity-calibrate -- cugraph-similarity-calibrate --algorithm <jaccard|sorensen|overlap|cosine> --pair-rows <N> [--weighted] [--vertex-dtype int32|int64] [--topology sparse-uniform|hub-skewed] [--edge-parquet PATH --edge-row-groups N] [--observation-out PATH]\n\
-           flock /tmp/cudf-gpu.lock cargo run -p nexus-tools --features datafusion-baseline-contract-validate -- datafusion-baseline-contract-validate [--out-dir DIR]"
+           flock /tmp/cudf-gpu.lock cargo run -p nexus-tools --features datafusion-baseline-contract-validate -- datafusion-baseline-contract-validate [--out-dir DIR]\n\
+           cargo run -p nexus-tools --features single-node-multi-gpu-validate -- single-node-multi-gpu-validate --config run-profile.json --out-dir run-artifacts --dry-run"
     );
 }
 
@@ -162,6 +170,16 @@ async fn run_datafusion_baseline_contract_validate(_args: Vec<String>) -> ToolRe
         "datafusion-baseline-contract-validate requires --features datafusion-baseline-contract-validate and normal cargo run execution"
             .into(),
     )
+}
+
+#[cfg(all(feature = "single-node-multi-gpu-validate", not(test)))]
+async fn run_single_node_multi_gpu_validate(args: Vec<String>) -> ToolResult<()> {
+    single_node_multi_gpu_validate::run(args)
+}
+
+#[cfg(not(all(feature = "single-node-multi-gpu-validate", not(test))))]
+async fn run_single_node_multi_gpu_validate(_args: Vec<String>) -> ToolResult<()> {
+    Err("single-node-multi-gpu-validate requires --features single-node-multi-gpu-validate and normal cargo run execution".into())
 }
 
 #[cfg(all(feature = "clickbench-stage-probe", not(test)))]
