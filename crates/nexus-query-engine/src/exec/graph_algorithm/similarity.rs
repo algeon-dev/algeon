@@ -56,7 +56,7 @@ pub(super) fn execute_similarity(
     let run_similarity = |runtime: &cudf::Runtime,
                           entered: &cugraph::EnteredContext<'_>,
                           graph: &mut cugraph::Graph<cugraph::Forward>| {
-        let _vertex_pairs_range = NvtxRange::new(c"datafusion_nexus.cugraph_similarity.vertex_pairs");
+        let _vertex_pairs_range = NvtxRange::static_label(c"datafusion_nexus.cugraph_similarity.vertex_pairs");
         let first = pair_frame.series(&params.vertex_pairs.first_column).map_err(|error| {
             QueryError::from_cudf(
                 "nexus_query_engine.graph_algorithm.similarity_pairs",
@@ -109,12 +109,18 @@ pub(super) fn execute_similarity(
 
         let frame = {
             let _metric_range = match algorithm {
-                crate::plan::GraphAlgorithm::Jaccard => NvtxRange::new(c"datafusion_nexus.cugraph_similarity.jaccard"),
-                crate::plan::GraphAlgorithm::Sorensen => {
-                    NvtxRange::new(c"datafusion_nexus.cugraph_similarity.sorensen")
+                crate::plan::GraphAlgorithm::Jaccard => {
+                    NvtxRange::static_label(c"datafusion_nexus.cugraph_similarity.jaccard")
                 },
-                crate::plan::GraphAlgorithm::Overlap => NvtxRange::new(c"datafusion_nexus.cugraph_similarity.overlap"),
-                crate::plan::GraphAlgorithm::Cosine => NvtxRange::new(c"datafusion_nexus.cugraph_similarity.cosine"),
+                crate::plan::GraphAlgorithm::Sorensen => {
+                    NvtxRange::static_label(c"datafusion_nexus.cugraph_similarity.sorensen")
+                },
+                crate::plan::GraphAlgorithm::Overlap => {
+                    NvtxRange::static_label(c"datafusion_nexus.cugraph_similarity.overlap")
+                },
+                crate::plan::GraphAlgorithm::Cosine => {
+                    NvtxRange::static_label(c"datafusion_nexus.cugraph_similarity.cosine")
+                },
                 _ => unreachable!("similarity executor accepts only similarity algorithms"),
             };
             match algorithm {
@@ -198,7 +204,8 @@ pub(super) fn execute_similarity(
             }
         };
         let frame = {
-            let _output_normalize_range = NvtxRange::new(c"datafusion_nexus.cugraph_similarity.output_normalize");
+            let _output_normalize_range =
+                NvtxRange::static_label(c"datafusion_nexus.cugraph_similarity.output_normalize");
             normalize_graph_result_schema(frame, &spec.output_schema)?
         };
         Ok(GraphAlgorithmExecutionResult {

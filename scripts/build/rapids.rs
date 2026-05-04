@@ -32,6 +32,12 @@ const CUVS_NATIVE_LINK_DIRS_ENV: &str = "DEP_CUVS_C_NATIVE_LINK_DIRS";
 const CUVS_LIBCUVS_RUNTIME_LIB_ENV: &str = "DEP_CUVS_C_LIBCUVS_RUNTIME_LIB";
 const CUVS_LIBCUVS_C_RUNTIME_LIB_ENV: &str = "DEP_CUVS_C_LIBCUVS_C_RUNTIME_LIB";
 
+const CUDA_HOME_ENV: &str = "CUDA_HOME";
+const CUDA_PATH_ENV: &str = "CUDA_PATH";
+const CUDA_TOOLKIT_ROOT_ENV: &str = "CUDAToolkit_ROOT";
+const NVTX3INTEROP_LIBRARY: &str = "libnvtx3interop.so";
+const CANONICAL_CUDA_ROOT: &str = "/usr/local/cuda";
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LinkArgTargets {
     all: bool,
@@ -92,6 +98,15 @@ pub struct Config {
     pub support_source: &'static str,
     pub link_arg_targets: LinkArgTargets,
     pub consumers: RapidsConsumers,
+    /// Whether this package's native execution code emits NVTX annotations.
+    pub nvtx3interop: bool,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct CudaEnvironment {
+    cuda_home: Option<PathBuf>,
+    cuda_path: Option<PathBuf>,
+    cuda_toolkit_root: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -372,6 +387,86 @@ fn link_directives(metadata: &ResolvedMetadata, consumers: RapidsConsumers, targ
     directives
 }
 
+fn read_cuda_environment() -> CudaEnvironment {
+    CudaEnvironment {
+        cuda_home: std::env::var_os(CUDA_HOME_ENV).map(PathBuf::from),
+        cuda_path: std::env::var_os(CUDA_PATH_ENV).map(PathBuf::from),
+        cuda_toolkit_root: std::env::var_os(CUDA_TOOLKIT_ROOT_ENV).map(PathBuf::from),
+    }
+}
+
+/// Candidate CUDA toolkit roots in declared-precedence order.  The installed
+/// `/usr/local/cuda` symlink remains a final fallback for normal CUDA hosts
+/// that do not export a CMake discovery variable into Cargo's environment.
+fn cuda_toolkit_roots(environment: &CudaEnvironment) -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    let canonical_root = PathBuf::from(CANONICAL_CUDA_ROOT);
+    for root in [
+        environment.cuda_toolkit_root.as_ref(),
+        environment.cuda_home.as_ref(),
+        environment.cuda_path.as_ref(),
+        Some(&canonical_root),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        push_unique_path(&mut roots, root.clone());
+    }
+    roots
+}
+
+/// CUDA names Linux target directories by architecture and OS rather than
+/// Cargo's full target triple (for example, `x86_64-linux`).
+fn cuda_target_directory(target: &str) -> Option<String> {
+    let architecture = target.split('-').next()?;
+    target.contains("-linux").then(|| format!("{architecture}-linux"))
+}
+
+fn nvtx3interop_candidate_paths(environment: &CudaEnvironment, target: &str) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    for root in cuda_toolkit_roots(environment) {
+        if let Some(cuda_target) = cuda_target_directory(target) {
+            push_unique_path(
+                &mut candidates,
+                root.join("targets").join(cuda_target).join("lib").join(NVTX3INTEROP_LIBRARY),
+            );
+        }
+        // CUDA's native toolkit layout uses lib64, while some installations
+        // expose the same library through lib.  Keep both official layouts.
+        push_unique_path(&mut candidates, root.join("lib64").join(NVTX3INTEROP_LIBRARY));
+        push_unique_path(&mut candidates, root.join("lib").join(NVTX3INTEROP_LIBRARY));
+    }
+    candidates
+}
+
+fn nvtx3interop_library_diagnostic(candidates: &[PathBuf]) -> String {
+    let candidates =
+        candidates.iter().map(|candidate| format!("  {}", candidate.display())).collect::<Vec<_>>().join("\n");
+    format!(
+        "NVTX annotations require {NVTX3INTEROP_LIBRARY}, but it was not found. Searched:\n{candidates}\n\
+         Set {CUDA_TOOLKIT_ROOT_ENV}, {CUDA_HOME_ENV}, or {CUDA_PATH_ENV} to the canonical CUDA toolkit root."
+    )
+}
+
+fn resolve_nvtx3interop_library(environment: &CudaEnvironment, target: &str) -> PathBuf {
+    let candidates = nvtx3interop_candidate_paths(environment, target);
+    candidates
+        .iter()
+        .find(|candidate| candidate.is_file())
+        .cloned()
+        .unwrap_or_else(|| panic!("{}", nvtx3interop_library_diagnostic(&candidates)))
+}
+
+fn nvtx3interop_link_directives(library: &Path, targets: LinkArgTargets) -> Vec<String> {
+    let directory = library.parent().expect("NVTX interop library always has a parent directory");
+    let mut directives = vec![
+        format!("cargo:rustc-link-search=native={}", directory.display()),
+        "cargo:rustc-link-lib=dylib=nvtx3interop".to_string(),
+    ];
+    directives.extend(targets.rpath_directives(directory));
+    directives
+}
+
 fn emit_cargo_directives(directives: impl IntoIterator<Item = String>) {
     for directive in directives {
         println!("{directive}");
@@ -396,6 +491,12 @@ fn track_cuvs_env() {
     track_env(CUVS_LIBCUVS_RUNTIME_LIB_ENV);
     track_env(CUVS_LIBCUVS_C_RUNTIME_LIB_ENV);
     track_env(CUVS_METADATA_ENV);
+}
+
+fn track_cuda_environment() {
+    track_env(CUDA_TOOLKIT_ROOT_ENV);
+    track_env(CUDA_HOME_ENV);
+    track_env(CUDA_PATH_ENV);
 }
 
 pub fn configure(config: Config) {
@@ -429,6 +530,14 @@ pub fn configure(config: Config) {
     }
 
     emit_cargo_directives(link_directives(&metadata, consumers, config.link_arg_targets));
+    if config.nvtx3interop {
+        track_cuda_environment();
+        let cuda_environment = read_cuda_environment();
+        let target = std::env::var("TARGET").expect("Cargo build scripts always receive TARGET");
+        let nvtx3interop = resolve_nvtx3interop_library(&cuda_environment, &target);
+        println!("cargo:rerun-if-changed={}", nvtx3interop.display());
+        emit_cargo_directives(nvtx3interop_link_directives(&nvtx3interop, config.link_arg_targets));
+    }
     if metadata.cudf.libcudf_runtime_lib.is_none() {
         println!(
             "cargo:warning=cudf-sys did not expose its authoritative libcudf.so; \
@@ -947,6 +1056,41 @@ mod tests {
         assert!(directives.iter().any(|line| line.contains("/cudf/libcudf.so")));
         assert!(directives.iter().any(|line| line.contains("/rmm/librmm.so")));
         assert!(!directives.iter().any(|line| line.starts_with("cargo:rustc-link-arg-bins=")));
+    }
+
+    #[test]
+    fn nvtx3interop_discovery_uses_cuda_roots_and_target_layout_before_lib64() {
+        let test_dir = TestDir::new("nvtx");
+        let toolkit = test_dir.path().join("cuda");
+        let target_directory = toolkit.join("targets/x86_64-linux/lib");
+        let fallback_directory = toolkit.join("lib64");
+        std::fs::create_dir_all(&target_directory).unwrap();
+        std::fs::create_dir_all(&fallback_directory).unwrap();
+        let selected = target_directory.join(NVTX3INTEROP_LIBRARY);
+        std::fs::write(&selected, b"target nvtx").unwrap();
+        std::fs::write(fallback_directory.join(NVTX3INTEROP_LIBRARY), b"fallback nvtx").unwrap();
+
+        let environment = CudaEnvironment {
+            cuda_toolkit_root: Some(toolkit.clone()),
+            cuda_home: Some(toolkit.clone()),
+            cuda_path: Some(toolkit.clone()),
+        };
+        assert_eq!(cuda_toolkit_roots(&environment), vec![toolkit.clone(), PathBuf::from(CANONICAL_CUDA_ROOT)]);
+        assert_eq!(resolve_nvtx3interop_library(&environment, "x86_64-unknown-linux-gnu"), selected);
+    }
+
+    #[test]
+    fn nvtx3interop_link_directives_provide_search_link_and_runtime_resolution() {
+        let library = Path::new("/cuda/targets/x86_64-linux/lib/libnvtx3interop.so");
+        assert_eq!(
+            nvtx3interop_link_directives(library, LinkArgTargets::new(true, false, true)),
+            vec![
+                "cargo:rustc-link-search=native=/cuda/targets/x86_64-linux/lib",
+                "cargo:rustc-link-lib=dylib=nvtx3interop",
+                "cargo:rustc-link-arg=-Wl,-rpath,/cuda/targets/x86_64-linux/lib",
+                "cargo:rustc-link-arg-tests=-Wl,-rpath,/cuda/targets/x86_64-linux/lib",
+            ]
+        );
     }
 
     #[test]

@@ -21,8 +21,6 @@ pub(in crate::exec) mod graph_builder;
 mod layout;
 #[path = "memory.rs"]
 pub(in crate::exec) mod memory;
-#[path = "nvtx.rs"]
-mod nvtx;
 #[path = "params.rs"]
 mod params;
 #[path = "similarity.rs"]
@@ -53,13 +51,14 @@ use empty_input::*;
 use graph_builder::*;
 use layout::*;
 use memory::*;
-use nvtx::*;
 use params::*;
 use similarity::*;
 #[cfg(test)]
 pub(crate) use statistics::force_next_graph_statistics_optional_resource_exhausted_for_test;
 use structure::*;
 use traversal::{execute_bfs, execute_sssp};
+
+use super::super::nvtx::{NvtxRange, graph_build_range};
 
 pub(in crate::exec) fn execute_graph_algorithm(
     context: &ExecutionContext,

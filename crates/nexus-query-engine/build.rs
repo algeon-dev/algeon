@@ -9,12 +9,6 @@ fn main() {
             std::env::var_os("CARGO_FEATURE_CUGRAPH").is_some(),
             std::env::var_os("CARGO_FEATURE_CUVS").is_some(),
         ),
+        nvtx3interop: true,
     });
-
-    // Nsight Systems consumes the owning execution ranges through NVTX. The
-    // CUDA toolchain provides this interop library independently of cuDF and
-    // cuGraph, so link it only for the graph-enabled engine.
-    if std::env::var_os("CARGO_FEATURE_CUGRAPH").is_some() {
-        println!("cargo:rustc-link-lib=dylib=nvtx3interop");
-    }
 }

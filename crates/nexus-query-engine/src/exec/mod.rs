@@ -42,6 +42,7 @@ mod join;
 mod lowering;
 mod lowering_policy;
 mod materialize;
+mod nvtx;
 mod operators;
 mod order;
 /// Native execution output types.
@@ -72,6 +73,7 @@ pub(crate) use graph_algorithm::{
     force_next_graph_seed_chunk_retry_chunk_attempt_resource_exhausted_for_test,
     force_next_graph_seed_chunk_retry_full_attempt_resource_exhausted_for_test,
 };
+use nvtx::attempt_execution_range;
 use output::QueryOutput;
 pub use source::{
     ResolvedRemoteParquetDatasourceProbe, probe_resolved_remote_parquet_datasource, read_gpu_resident_source,
@@ -655,6 +657,7 @@ fn execute_query_plan_output(
     context.check_cancellation("nexus_query_engine.exec.execute_query_plan")?;
     validate_query_plan(plan)?;
     context.validate_admitted_plan_capabilities(plan)?;
+    let _attempt_execution_range = attempt_execution_range(context);
     let _order_tracking = DataFusionOrderTrackingGuard::new(
         context.statistical_aggregate_execution_mode().is_datafusion_exact()
             && plan_requires_datafusion_exact_statistical_order(plan),
