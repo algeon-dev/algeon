@@ -1001,9 +1001,11 @@ pub fn lit<L: IntoLit>(value: L) -> Expr {
 /// Create a typed null literal expression that broadcasts to all rows.
 ///
 /// The dtype is part of the literal contract, so query planners can lower
-/// typed SQL/DataFusion nulls without inventing sentinel values. Evaluation
-/// creates an invalid device scalar of the requested dtype, then broadcasts it
-/// into a newly allocated device column in the resolved execution domain.
+/// typed SQL/DataFusion nulls without inventing sentinel values. Constructing
+/// the expression is cheap and does not allocate GPU memory. Evaluation creates
+/// an invalid device scalar of the requested dtype, then broadcasts it into a
+/// newly allocated device column of the input DataFrame row count in the
+/// resolved execution domain.
 pub fn lit_null(dtype: impl Into<DataType>) -> Expr {
     Expr::Literal(LitValue::null(dtype.into()))
 }

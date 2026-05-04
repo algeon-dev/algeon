@@ -19,6 +19,7 @@ pub mod factorization;
 pub mod groupby;
 pub mod interop;
 pub mod join;
+pub mod query;
 pub mod series;
 pub mod sorting;
 

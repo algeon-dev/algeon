@@ -391,10 +391,11 @@ fn infer_primitive_binary_output(
         return make_err("logical binary operators require Bool8 operands");
     }
 
-    if matches!(op, BinaryOperator::BitwiseAnd | BinaryOperator::BitwiseOr | BinaryOperator::BitwiseXor) {
-        if lhs == TypeId::Bool8 && rhs == TypeId::Bool8 {
-            return Ok(DataType::new(TypeId::Bool8));
-        }
+    if matches!(op, BinaryOperator::BitwiseAnd | BinaryOperator::BitwiseOr | BinaryOperator::BitwiseXor)
+        && lhs == TypeId::Bool8
+        && rhs == TypeId::Bool8
+    {
+        return Ok(DataType::new(TypeId::Bool8));
     }
 
     // Bool8 + Bool8 → Bool8 (legacy bitwise/logical context)

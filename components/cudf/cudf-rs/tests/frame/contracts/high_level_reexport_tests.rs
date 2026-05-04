@@ -410,6 +410,7 @@ fn hidden_internal_reexports_are_not_publicly_importable() {
     t.compile_fail("tests/public_api/ui/no_root_factorization_types.rs");
     t.compile_fail("tests/public_api/ui/no_dataframe_in_context.rs");
     t.compile_fail("tests/public_api/ui/no_named_first_runtime_series_constructors.rs");
+    t.compile_fail("tests/public_api/ui/no_query_request_public_fields_or_expr_constructors.rs");
     t.compile_fail("tests/public_api/ui/no_interop_runtime_wrappers.rs");
     t.compile_fail("tests/public_api/ui/no_interop_shared_contract_nouns.rs");
     t.compile_fail("tests/public_api/ui/no_interop_borrowed_namespace.rs");
@@ -432,6 +433,7 @@ fn testing_submodules_expose_domain_scoped_hooks() {
     let _ = cudf::testing::groupby::trigger_groupby_request_count_limit_error_for_test;
     let _ = cudf::testing::interop::trigger_interop_projection_negative_offset_for_test;
     let _ = cudf::testing::join::trigger_merge_reassembly_key_count_error_for_test;
+    let _ = cudf::testing::query::trigger_count_scalar_overflow_for_test;
     let _ = cudf::testing::series::trigger_series_row_range_overflow_error_for_test;
     let _ = cudf::testing::sorting::trigger_sort_key_count_limit_error_for_test;
 }

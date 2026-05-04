@@ -11,7 +11,7 @@ use crate::{
     DataFrame, Expr, SortOptions,
     core::{
         column::Column,
-        error::{Error, ErrorCode, Result},
+        error::{self, Error, ErrorCode, Result},
         scalar::Scalar,
         types::{DataType, TimestampResolution, TypeId},
     },
@@ -20,7 +20,7 @@ use crate::{
     ops::{
         binary::BinaryOperator,
         expr::{
-            IntoExpr, col, lit, lit_decimal32_raw, lit_decimal64_raw, lit_decimal128_raw, lit_duration_raw, lit_null,
+            IntoExpr, lit, lit_decimal32_raw, lit_decimal64_raw, lit_decimal128_raw, lit_duration_raw, lit_null,
             lit_timestamp_raw,
         },
         groupby::{AggSpec, GroupByAgg},
@@ -30,43 +30,85 @@ use crate::{
 
 const QUERY_TEMP_PREFIX: &str = "__cudf_query_tmp_";
 
-/// A named expression used by query projection and grouping requests.
+/// A named query expression.
+///
+/// Query operators use this as a lowering contract for projected columns and
+/// group keys. The expression is still eager when evaluated by a
+/// [`DataFrame`] method; this type only carries the requested output name.
 #[derive(Clone)]
 pub struct NamedExpr {
-    pub expr: Expr,
-    pub name: String,
+    expr: Expr,
+    name: String,
 }
 
 impl NamedExpr {
+    /// Build a named expression from any public expression input.
     pub fn new(expr: impl IntoExpr, name: impl Into<String>) -> Self {
         Self { expr: expr.into_expr(), name: name.into() }
+    }
+
+    /// Borrow the expression to evaluate.
+    pub fn expr(&self) -> &Expr {
+        &self.expr
+    }
+
+    /// Requested output or group-key column name.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Consume this request into its expression and output name.
+    pub fn into_parts(self) -> (Expr, String) {
+        (self.expr, self.name)
     }
 }
 
 /// Literal values accepted by query lowering.
 #[derive(Clone)]
 pub enum QueryLiteral {
+    /// Boolean scalar literal.
     Boolean(bool),
+    /// Signed 8-bit integer literal.
     Int8(i8),
+    /// Signed 16-bit integer literal.
     Int16(i16),
+    /// Signed 32-bit integer literal.
     Int32(i32),
+    /// Signed 64-bit integer literal.
     Int64(i64),
+    /// Unsigned 8-bit integer literal.
     UInt8(u8),
+    /// Unsigned 16-bit integer literal.
     UInt16(u16),
+    /// Unsigned 32-bit integer literal.
     UInt32(u32),
+    /// Unsigned 64-bit integer literal.
     UInt64(u64),
+    /// 32-bit floating point literal.
     Float32(f32),
+    /// 64-bit floating point literal.
     Float64(f64),
+    /// UTF-8 string literal.
     Utf8(String),
+    /// Typed null literal.
     Null(DataType),
+    /// Decimal32 raw fixed-point literal. `scale` is cudf scale; for example
+    /// `raw = 12345, scale = -2` represents `123.45`.
     Decimal32Raw { raw: i32, scale: i32 },
+    /// Decimal64 raw fixed-point literal. `scale` is cudf scale; for example
+    /// `raw = 12345, scale = -2` represents `123.45`.
     Decimal64Raw { raw: i64, scale: i32 },
+    /// Decimal128 raw fixed-point literal. `scale` is cudf scale; for example
+    /// `raw = 12345, scale = -2` represents `123.45`.
     Decimal128Raw { raw: i128, scale: i32 },
+    /// Timestamp raw-count literal in the requested resolution.
     TimestampRaw { raw: i64, resolution: TimestampResolution },
+    /// Duration raw-count literal in the requested resolution.
     DurationRaw { raw: i64, resolution: TimestampResolution },
 }
 
 impl QueryLiteral {
+    /// Convert this planner-facing literal into the eager expression DSL.
     pub fn into_expr(self) -> Expr {
         match self {
             Self::Boolean(value) => lit(value),
@@ -100,24 +142,40 @@ impl IntoExpr for QueryLiteral {
 /// Binary operators accepted by query lowering.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum QueryBinaryOp {
+    /// Addition.
     Add,
+    /// Subtraction.
     Sub,
+    /// Multiplication.
     Mul,
+    /// Division.
     Div,
+    /// Remainder.
     Mod,
+    /// Power.
     Pow,
+    /// Floor division.
     FloorDiv,
+    /// Equality comparison.
     Equal,
+    /// Inequality comparison.
     NotEqual,
+    /// Less-than comparison.
     Less,
+    /// Greater-than comparison.
     Greater,
+    /// Less-than-or-equal comparison.
     LessEqual,
+    /// Greater-than-or-equal comparison.
     GreaterEqual,
+    /// Boolean conjunction.
     LogicalAnd,
+    /// Boolean disjunction.
     LogicalOr,
 }
 
 impl QueryBinaryOp {
+    /// Build a binary expression from this query operator.
     pub fn expr<L, R>(self, lhs: L, rhs: R) -> Expr
     where
         L: IntoExpr,
@@ -147,35 +205,26 @@ impl QueryBinaryOp {
     }
 }
 
-impl Expr {
-    pub fn column(name: impl Into<String>) -> Self {
-        col(name)
-    }
-
-    pub fn typed_literal(value: QueryLiteral) -> Self {
-        value.into_expr()
-    }
-
-    pub fn binary<L, R>(lhs: L, op: QueryBinaryOp, rhs: R) -> Self
-    where
-        L: IntoExpr,
-        R: IntoExpr,
-    {
-        op.expr(lhs, rhs)
-    }
-}
-
 /// Query aggregate function names and parameters.
 #[derive(Debug, Clone)]
 pub enum QueryAggregateFunction {
+    /// Sum values.
     Sum,
+    /// Minimum value. String inputs are valid planner dtypes.
     Min,
+    /// Maximum value. String inputs are valid planner dtypes.
     Max,
+    /// Count rows. When `include_nulls` is false, null values are excluded.
     Count { include_nulls: bool },
+    /// Mean value.
     Mean,
+    /// Median value.
     Median,
+    /// Number of unique values.
     NUnique,
+    /// Sample or population standard deviation, controlled by `ddof`.
     Std { ddof: u32 },
+    /// Sample or population variance, controlled by `ddof`.
     Variance { ddof: u32 },
 }
 
@@ -183,9 +232,10 @@ impl QueryAggregateFunction {
     /// Return the public output dtype contract for this aggregate over an
     /// input dtype.
     ///
-    /// This is planner-facing metadata. Execution still validates against the
-    /// concrete input column and libcudf may reject unsupported dtype/function
-    /// combinations at runtime.
+    /// This is planner-facing metadata. Statically known unsupported
+    /// dtype/function pairs return an error here; execution still validates
+    /// against the concrete input column and libcudf may reject additional
+    /// runtime/backend-specific combinations.
     pub fn output_dtype(&self, input: &DataType) -> Result<DataType> {
         match self {
             Self::Count { .. } | Self::NUnique => Ok(DataType::new(TypeId::Int32)),
@@ -225,7 +275,9 @@ impl QueryAggregateFunction {
             Self::Count { include_nulls } => count_scalar(input, *include_nulls),
             Self::Mean => input.mean(),
             Self::Median => input.median(),
-            Self::NUnique => usize_count_scalar(input, input.nunique()?),
+            Self::NUnique => {
+                usize_count_scalar(input, input.nunique()?, "query::nunique_scalar", "distinct_keys_count")
+            },
             Self::Std { ddof } => input.std(*ddof),
             Self::Variance { ddof } => input.var(*ddof),
         }
@@ -233,26 +285,56 @@ impl QueryAggregateFunction {
 }
 
 /// A named aggregate expression.
+///
+/// The input is an eager expression that is materialized as a temporary GPU
+/// column before the aggregate kernel runs. The temporary column is not exposed
+/// in the output; `output_name` is the stable result column name.
 #[derive(Clone)]
 pub struct QueryAggregateExpr {
-    pub function: QueryAggregateFunction,
-    pub input: Expr,
-    pub output_name: String,
+    function: QueryAggregateFunction,
+    input: Expr,
+    output_name: String,
 }
 
 impl QueryAggregateExpr {
+    /// Build one named aggregate expression.
     pub fn new(function: QueryAggregateFunction, input: impl IntoExpr, output_name: impl Into<String>) -> Self {
         Self { function, input: input.into_expr(), output_name: output_name.into() }
+    }
+
+    /// Aggregate function and parameters.
+    pub fn function(&self) -> &QueryAggregateFunction {
+        &self.function
+    }
+
+    /// Borrow the aggregate input expression.
+    pub fn input(&self) -> &Expr {
+        &self.input
+    }
+
+    /// Stable output column name requested for this aggregate.
+    pub fn output_name(&self) -> &str {
+        &self.output_name
+    }
+
+    /// Consume this request into its function, input expression, and output name.
+    pub fn into_parts(self) -> (QueryAggregateFunction, Expr, String) {
+        (self.function, self.input, self.output_name)
     }
 }
 
 /// Complete aggregate request for one query aggregate operator.
+///
+/// Empty `group_exprs` means a global one-row aggregate. Group names and
+/// aggregate output names must be unique within a request; `aggregate_query`
+/// validates that contract before evaluating expressions.
 pub struct QueryAggregateSpec {
-    pub group_exprs: Vec<NamedExpr>,
-    pub aggr_exprs: Vec<QueryAggregateExpr>,
+    group_exprs: Vec<NamedExpr>,
+    aggr_exprs: Vec<QueryAggregateExpr>,
 }
 
 impl QueryAggregateSpec {
+    /// Build an aggregate request.
     pub fn new<G, A>(group_exprs: G, aggr_exprs: A) -> Self
     where
         G: IntoIterator<Item = NamedExpr>,
@@ -260,45 +342,112 @@ impl QueryAggregateSpec {
     {
         Self { group_exprs: group_exprs.into_iter().collect(), aggr_exprs: aggr_exprs.into_iter().collect() }
     }
+
+    /// Group-key expressions. Empty means a global aggregate.
+    pub fn group_exprs(&self) -> &[NamedExpr] {
+        &self.group_exprs
+    }
+
+    /// Aggregate expressions requested by this operator.
+    pub fn aggregate_exprs(&self) -> &[QueryAggregateExpr] {
+        &self.aggr_exprs
+    }
+
+    /// Consume this request into group and aggregate expressions.
+    pub fn into_parts(self) -> (Vec<NamedExpr>, Vec<QueryAggregateExpr>) {
+        (self.group_exprs, self.aggr_exprs)
+    }
 }
 
 /// A single query sort key.
+///
+/// The expression is materialized as a temporary GPU column used only for
+/// sorting. Defaults from [`ascending`] and [`descending`] are nulls-last.
 #[derive(Clone)]
 pub struct QuerySortExpr {
-    pub expr: Expr,
-    pub descending: bool,
-    pub nulls_first: bool,
+    expr: Expr,
+    descending: bool,
+    nulls_first: bool,
 }
 
 impl QuerySortExpr {
+    /// Build one sort key with explicit direction and null placement.
     pub fn new(expr: impl IntoExpr, descending: bool, nulls_first: bool) -> Self {
         Self { expr: expr.into_expr(), descending, nulls_first }
     }
 
+    /// Build an ascending, nulls-last sort key.
     pub fn ascending(expr: impl IntoExpr) -> Self {
         Self::new(expr, false, false)
     }
 
+    /// Build a descending, nulls-last sort key.
     pub fn descending(expr: impl IntoExpr) -> Self {
         Self::new(expr, true, false)
+    }
+
+    /// Set whether null values sort before valid values for this key.
+    pub fn with_nulls_first(mut self, nulls_first: bool) -> Self {
+        self.nulls_first = nulls_first;
+        self
+    }
+
+    /// Borrow the sort-key expression.
+    pub fn expr(&self) -> &Expr {
+        &self.expr
+    }
+
+    /// Whether this key sorts descending.
+    pub fn is_descending(&self) -> bool {
+        self.descending
+    }
+
+    /// Whether null values sort before valid values for this key.
+    pub fn nulls_first(&self) -> bool {
+        self.nulls_first
+    }
+
+    /// Consume this sort key into its expression and options.
+    pub fn into_parts(self) -> (Expr, bool, bool) {
+        (self.expr, self.descending, self.nulls_first)
     }
 }
 
 /// Complete sort request for one query sort operator.
+///
+/// Sort expressions are evaluated as temporary GPU columns and removed from
+/// the returned frame. Empty requests return the input frame unchanged.
 pub struct QuerySortSpec {
-    pub expressions: Vec<QuerySortExpr>,
-    pub stable: bool,
+    expressions: Vec<QuerySortExpr>,
+    stable: bool,
 }
 
 impl QuerySortSpec {
+    /// Build an unstable sort request from sort expressions.
     pub fn new<I>(expressions: I) -> Self
     where I: IntoIterator<Item = QuerySortExpr> {
         Self { expressions: expressions.into_iter().collect(), stable: false }
     }
 
+    /// Set whether to use stable sorting.
     pub fn with_stable(mut self, stable: bool) -> Self {
         self.stable = stable;
         self
+    }
+
+    /// Sort expressions in request order.
+    pub fn expressions(&self) -> &[QuerySortExpr] {
+        &self.expressions
+    }
+
+    /// Whether stable sorting is requested.
+    pub fn stable(&self) -> bool {
+        self.stable
+    }
+
+    /// Consume this request into its sort expressions.
+    pub fn into_expressions(self) -> Vec<QuerySortExpr> {
+        self.expressions
     }
 }
 
@@ -370,38 +519,32 @@ impl DataFrame {
     }
 
     fn aggregate_query_grouped(&self, spec: QueryAggregateSpec) -> Result<Self> {
+        let (group_exprs, aggr_exprs) = spec.into_parts();
         let mut reserved = reserved_names(
             self,
-            spec.group_exprs
+            group_exprs
                 .iter()
                 .map(|expr| expr.name.as_str())
-                .chain(spec.aggr_exprs.iter().map(|expr| expr.output_name.as_str())),
+                .chain(aggr_exprs.iter().map(|expr| expr.output_name.as_str())),
         );
-        let mut projections = Vec::with_capacity(spec.group_exprs.len() + spec.aggr_exprs.len());
-        let mut group_names = Vec::with_capacity(spec.group_exprs.len());
-        let mut agg_input_names = Vec::with_capacity(spec.aggr_exprs.len());
+        let mut projections = Vec::with_capacity(group_exprs.len() + aggr_exprs.len());
+        let mut group_names = Vec::with_capacity(group_exprs.len());
+        let mut agg_specs = Vec::with_capacity(aggr_exprs.len());
 
-        for group in &spec.group_exprs {
-            group_names.push(group.name.clone());
-            projections.push((group.name.clone(), group.expr.clone()));
+        for group in group_exprs {
+            let (expr, name) = group.into_parts();
+            group_names.push(name.clone());
+            projections.push((name, expr));
         }
 
-        for (index, aggregate) in spec.aggr_exprs.iter().enumerate() {
+        for (index, aggregate) in aggr_exprs.into_iter().enumerate() {
+            let (function, input, output_name) = aggregate.into_parts();
             let input_name = unique_temp_name(&mut reserved, &format!("{QUERY_TEMP_PREFIX}agg_{index}"));
-            agg_input_names.push(input_name.clone());
-            projections.push((input_name, aggregate.input.clone()));
+            projections.push((input_name.clone(), input));
+            agg_specs.push(AggSpec::new(input_name, function.to_groupby_agg()).with_alias(output_name));
         }
 
         let working = self.with_columns(projections)?;
-        let agg_specs: Vec<AggSpec> = spec
-            .aggr_exprs
-            .iter()
-            .zip(agg_input_names)
-            .map(|(aggregate, input_name)| {
-                AggSpec::new(input_name, aggregate.function.to_groupby_agg()).with_alias(aggregate.output_name.clone())
-            })
-            .collect();
-
         working.groupby(group_names.iter().map(String::as_str)).agg(&agg_specs)
     }
 
@@ -473,15 +616,22 @@ fn unique_temp_name(reserved: &mut HashSet<String>, base: &str) -> String {
 
 fn count_scalar(input: &Series, include_nulls: bool) -> Result<Scalar> {
     let count = if include_nulls { input.len() } else { input.len() - input.null_count() };
-    usize_count_scalar(input, count)
+    usize_count_scalar(input, count, "query::count_scalar", "actual_count")
 }
 
-fn usize_count_scalar(input: &Series, count: usize) -> Result<Scalar> {
-    let count = i32::try_from(count).map_err(|_| {
-        Error::new_with(ErrorCode::UnsupportedOperation, "query::count_scalar", "count exceeds libcudf i32 range")
-            .with_detail("resource", "query_count")
-            .with_detail("reason", "count_exceeds_i32_range")
-            .with_detail("count", count.to_string())
-    })?;
+fn usize_count_scalar(input: &Series, count: usize, operation: &'static str, field: &'static str) -> Result<Scalar> {
+    let count = count_to_i32(count, operation, field)?;
     Scalar::from_value_in_domain(count, input.as_column().execution_domain())
+}
+
+fn count_to_i32(count: usize, operation: &'static str, field: &'static str) -> Result<i32> {
+    error::usize_to_i32(count, operation, field)
+}
+
+pub(crate) mod testing_hooks {
+    use super::*;
+
+    pub(crate) fn trigger_count_scalar_overflow_for_test() -> Result<()> {
+        count_to_i32(i32::MAX as usize + 1, "query::count_scalar", "actual_count").map(|_| ())
+    }
 }
