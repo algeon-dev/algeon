@@ -14,8 +14,8 @@ use crate::{
     },
     ops::{binary::BinaryOperator, concatenate, replace::FillPolicy, sorting::SortOptions, unary::UnaryOperator},
     runtime::{
-        BoundaryKind, BoundaryObservation, ExecutionPlacement, Runtime, execution_domain::ExecutionDomain,
-        record_boundary_observation_in_domain,
+        BoundaryKind, BoundaryObservation, ExecutionPlacement, QueryStageKind, Runtime,
+        execution_domain::ExecutionDomain, record_boundary_observation_in_domain,
     },
 };
 
@@ -622,13 +622,8 @@ impl Series {
         if should_copy {
             record_boundary_observation_in_domain(
                 runtime.execution_domain(),
-                BoundaryObservation {
-                    kind: BoundaryKind::DeviceToDeviceCopy,
-                    placement: runtime.placement(),
-                    rows: self.len(),
-                    columns: 1,
-                    synchronized_for_host: false,
-                },
+                BoundaryObservation::new(BoundaryKind::DeviceToDeviceCopy, runtime.placement(), self.len(), 1, false)
+                    .with_query_stage(QueryStageKind::OperatorOutput),
             );
         }
         Ok(series)

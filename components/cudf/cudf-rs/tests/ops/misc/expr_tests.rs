@@ -12,8 +12,8 @@ use cudf::{
     TimestampResolution, TypeId,
     core::error::{FactKeyName, FactValue},
     ops::expr::{
-        Expr, col, lit, lit_decimal32_raw, lit_decimal64_raw, lit_decimal128_raw, lit_duration_raw, lit_timestamp_raw,
-        when,
+        Expr, col, lit, lit_decimal32_raw, lit_decimal64_raw, lit_decimal128_raw, lit_duration_raw, lit_null,
+        lit_timestamp_raw, when,
     },
 };
 use rapids_interop::{ColumnLayout, DataType as InteropDataType, Placement};
@@ -59,6 +59,10 @@ fn eval(expr: Expr, df: &DataFrame) -> Series {
 
 fn eval_i32(expr: Expr, df: &DataFrame) -> Vec<i32> {
     eval(expr, df).to_vec_strict::<i32>().unwrap()
+}
+
+fn eval_i16(expr: Expr, df: &DataFrame) -> Vec<i16> {
+    eval(expr, df).to_vec_strict::<i16>().unwrap()
 }
 
 fn eval_f64(expr: Expr, df: &DataFrame) -> Vec<f64> {
@@ -155,6 +159,16 @@ fn lit_string_broadcasts() {
     let result = eval(lit("hello").alias("s"), &df);
     assert_eq!(result.len(), 3);
     assert_eq!(result.dtype().unwrap().id(), TypeId::String);
+}
+
+#[test]
+fn lit_null_broadcasts_typed_nulls() {
+    let df = xy_df();
+    let result = eval(lit_null(TypeId::Int32).alias("missing"), &df);
+
+    assert_eq!(result.len(), 3);
+    assert_eq!(result.dtype().unwrap().id(), TypeId::Int32);
+    assert_eq!(result.null_count(), 3);
 }
 
 #[test]
@@ -483,6 +497,22 @@ fn timestamp_days_plus_duration_expr_preserves_timestamp_resolution() {
     assert_eq!(host_export_i32_values(&result), vec![18_267, 18_268, 18_269]);
 }
 
+#[test]
+fn timestamp_expr_datetime_namespace_extracts_components() {
+    let dates = crate::common::series("ts", &[0i32, 31, 365])
+        .unwrap()
+        .astype(TypeId::DurationDays)
+        .unwrap()
+        .astype(TypeId::TimestampDays)
+        .unwrap();
+    let df = df_with_series("ts", dates);
+
+    assert_eq!(eval_i16(col("ts").dt().year().alias("year"), &df), vec![1970, 1970, 1971]);
+    assert_eq!(eval_i16(col("ts").dt().month().alias("month"), &df), vec![1, 2, 1]);
+    assert_eq!(eval_i16(col("ts").dt().day().alias("day"), &df), vec![1, 1, 1]);
+    assert_output_name(col("ts").dt().year(), Some("ts"));
+}
+
 // ===========================================================================
 // Unary ops
 // ===========================================================================
@@ -507,6 +537,16 @@ fn cast_i32_to_f64() {
     let result = eval(col("x").cast(TypeId::Float64).alias("xf"), &df);
     assert_eq!(result.dtype().unwrap().id(), TypeId::Float64);
     assert_eq!(result.to_vec_strict::<f64>().unwrap(), vec![10.0, 20.0, 30.0]);
+}
+
+#[test]
+fn filter_expr_falls_back_to_boolean_mask_for_cast_predicates() {
+    let df = xy_df();
+
+    let filtered = df.filter_expr(col("x").cast(TypeId::Float64).gt(15.0f64)).unwrap();
+
+    assert_eq!(filtered.series("x").unwrap().to_vec_strict::<i32>().unwrap(), vec![20, 30]);
+    assert_eq!(filtered.series("y").unwrap().to_vec_strict::<i32>().unwrap(), vec![2, 3]);
 }
 
 #[test]

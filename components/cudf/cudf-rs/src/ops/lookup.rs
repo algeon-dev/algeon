@@ -30,9 +30,9 @@ use crate::{
     },
     ops::{copying, stream_compaction},
     runtime::{
-        BoundaryKind, BoundaryObservation, ExecutionPlacement, Runtime, execution_context::ExecutionOverrides,
-        execution_domain::ExecutionDomain, execution_resolver::ResolvedExecution,
-        record_boundary_observation_in_domain,
+        BoundaryKind, BoundaryObservation, ExecutionPlacement, QueryStageKind, Runtime,
+        execution_context::ExecutionOverrides, execution_domain::ExecutionDomain,
+        execution_resolver::ResolvedExecution, record_boundary_observation_in_domain,
     },
 };
 
@@ -436,13 +436,8 @@ impl LookupTable {
         let table = Self::build_from_placed(keys, values, operation)?;
         record_boundary_observation_in_domain(
             runtime.execution_domain(),
-            BoundaryObservation {
-                kind: BoundaryKind::DeviceToDeviceCopy,
-                placement: runtime.placement(),
-                rows: self.len(),
-                columns: 2,
-                synchronized_for_host: false,
-            },
+            BoundaryObservation::new(BoundaryKind::DeviceToDeviceCopy, runtime.placement(), self.len(), 2, false)
+                .with_query_stage(QueryStageKind::OperatorOutput),
         );
         Ok(table)
     }

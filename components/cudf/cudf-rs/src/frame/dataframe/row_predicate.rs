@@ -42,11 +42,9 @@ impl DataFrame {
     /// - boolean composition: `!`, `&`, `|`
     /// - alias wrappers around a supported inner predicate
     ///
-    /// Unsupported predicate nodes fail explicitly before the low-level
-    /// filtering path runs, except predicates containing string `LIKE` or
-    /// string `slice` expressions may be evaluated through the general
+    /// Unsupported predicate nodes are evaluated through the general
     /// expression engine and applied as a boolean mask until the fused
-    /// row-predicate path supports those string operations directly.
+    /// row-predicate path supports those expressions directly.
     ///
     /// The predicate must evaluate to a row-aligned `Bool8`. Rows where the
     /// predicate is `false` or null are dropped.
@@ -132,7 +130,7 @@ impl DataFrame {
     ) -> Result<Self> {
         let lowered = match lower_row_predicate(self, &predicate, operation) {
             Ok(lowered) => lowered,
-            Err(err) if should_use_string_mask_fallback(&err, &predicate) => {
+            Err(err) if should_use_mask_fallback(&err) => {
                 return self.filter_expr_via_boolean_mask(predicate, output_domain, operation);
             },
             Err(err) => return Err(err),
@@ -181,11 +179,10 @@ impl DataFrame {
     }
 }
 
-fn should_use_string_mask_fallback(err: &Error, predicate: &Expr) -> bool {
+fn should_use_mask_fallback(err: &Error) -> bool {
     err.code() == ErrorCode::UnsupportedOperation
         && err.detail_value("resource") == Some("row_predicate")
         && err.detail_value("reason") == Some("unsupported_expr_kind")
-        && predicate.contains_string_like_or_slice()
 }
 
 fn lower_row_predicate(df: &DataFrame, expr: &Expr, operation: &'static str) -> Result<LoweredRowPredicate> {
@@ -252,6 +249,7 @@ fn lower_expr(
         | Expr::Scan { .. }
         | Expr::Reduce { .. }
         | Expr::StringOp { .. }
+        | Expr::DateTimeComponent { .. }
         | Expr::IfElse { .. } => unsupported_predicate(operation, expr_kind(expr)),
     }
 }
@@ -469,6 +467,7 @@ fn expr_kind(expr: &Expr) -> &'static str {
         Expr::Scan { .. } => "scan",
         Expr::Reduce { .. } => "reduce",
         Expr::StringOp { .. } => "string_op",
+        Expr::DateTimeComponent { .. } => "datetime_component",
         Expr::IfElse { .. } => "if_else",
     }
 }
