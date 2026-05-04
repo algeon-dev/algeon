@@ -991,6 +991,26 @@ pub fn left_join_indices_in(
     join_indices_with_context(left_keys, right_keys, null_equality, JoinType::Left, ctx, "join::left_join_indices_in")
 }
 
+fn single_side_join_indices_with_context(
+    left_keys: &TableView<'_>,
+    right_keys: &TableView<'_>,
+    null_equality: NullEquality,
+    semi_join: bool,
+    ctx: &ExecutionOverrides<'_>,
+    operation: &'static str,
+) -> Result<SingleSideJoinIndices> {
+    let execution = compatible_join_indices_domain(left_keys, right_keys, ctx, operation)?;
+    single_side_join_indices_impl(
+        left_keys,
+        right_keys,
+        null_equality,
+        semi_join,
+        execution.output_domain(),
+        Some(execution.exec_options()),
+        operation,
+    )
+}
+
 /// Left semi join indices for rows from the left key table that have a match.
 ///
 /// Returns a single `INT32` device gather map indexing rows in `left_keys`.
@@ -1003,15 +1023,35 @@ pub fn left_semi_join_indices(
     null_equality: NullEquality,
 ) -> Result<SingleSideJoinIndices> {
     let ctx = ExecutionOverrides::new();
-    let execution = compatible_join_indices_domain(left_keys, right_keys, &ctx, "join::left_semi_join_indices")?;
-    single_side_join_indices_impl(
+    single_side_join_indices_with_context(
         left_keys,
         right_keys,
         null_equality,
         true,
-        execution.output_domain(),
-        Some(execution.exec_options()),
+        &ctx,
         "join::left_semi_join_indices",
+    )
+}
+
+/// Left semi join indices using a borrowed execution override.
+///
+/// Same result semantics as [`left_semi_join_indices`]. This allocates only an
+/// `INT32` device gather map and does not gather or copy payload columns. See
+/// the [join module](crate::ops::join)'s shared `_in` execution-context
+/// contract.
+pub fn left_semi_join_indices_in(
+    left_keys: &TableView<'_>,
+    right_keys: &TableView<'_>,
+    null_equality: NullEquality,
+    ctx: &ExecutionOverrides<'_>,
+) -> Result<SingleSideJoinIndices> {
+    single_side_join_indices_with_context(
+        left_keys,
+        right_keys,
+        null_equality,
+        true,
+        ctx,
+        "join::left_semi_join_indices_in",
     )
 }
 
@@ -1026,15 +1066,35 @@ pub fn left_anti_join_indices(
     null_equality: NullEquality,
 ) -> Result<SingleSideJoinIndices> {
     let ctx = ExecutionOverrides::new();
-    let execution = compatible_join_indices_domain(left_keys, right_keys, &ctx, "join::left_anti_join_indices")?;
-    single_side_join_indices_impl(
+    single_side_join_indices_with_context(
         left_keys,
         right_keys,
         null_equality,
         false,
-        execution.output_domain(),
-        Some(execution.exec_options()),
+        &ctx,
         "join::left_anti_join_indices",
+    )
+}
+
+/// Left anti join indices using a borrowed execution override.
+///
+/// Same result semantics as [`left_anti_join_indices`]. This allocates only an
+/// `INT32` device gather map and does not gather or copy payload columns. See
+/// the [join module](crate::ops::join)'s shared `_in` execution-context
+/// contract.
+pub fn left_anti_join_indices_in(
+    left_keys: &TableView<'_>,
+    right_keys: &TableView<'_>,
+    null_equality: NullEquality,
+    ctx: &ExecutionOverrides<'_>,
+) -> Result<SingleSideJoinIndices> {
+    single_side_join_indices_with_context(
+        left_keys,
+        right_keys,
+        null_equality,
+        false,
+        ctx,
+        "join::left_anti_join_indices_in",
     )
 }
 
@@ -1754,15 +1814,11 @@ pub fn full_join_indices_in(
     join_indices_with_context(left_keys, right_keys, null_equality, JoinType::Full, ctx, "join::full_join_indices_in")
 }
 
-/// Cross join two tables.
-///
-/// The output cardinality is `left.num_rows() * right.num_rows()`. This
-/// operation materializes the cartesian product into a new table and copies
-/// column data into that output; it is not a zero-copy row selection. The
-/// computed row count is checked before calling libcudf and must fit in
-/// libcudf's `INT32` row-count range.
-pub fn cross_join(left: &TableView<'_>, right: &TableView<'_>) -> Result<Table> {
-    let operation = "join::cross_join";
+fn checked_cross_join_output_rows(
+    left: &TableView<'_>,
+    right: &TableView<'_>,
+    operation: &'static str,
+) -> Result<usize> {
     let left_rows = left.num_rows().map_err(|e| e.reanchor_if_needed(operation))?;
     let right_rows = right.num_rows().map_err(|e| e.reanchor_if_needed(operation))?;
     let output_rows = left_rows.checked_mul(right_rows).ok_or_else(|| {
@@ -1787,9 +1843,18 @@ pub fn cross_join(left: &TableView<'_>, right: &TableView<'_>) -> Result<Table> 
             "reduce left or right row count before cross joining",
         ));
     }
+    Ok(output_rows)
+}
 
-    let ctx = ExecutionOverrides::new();
-    let execution = ResolvedExecution::binary(left.execution_domain(), right.execution_domain(), &ctx, operation)?;
+fn cross_join_with_context(
+    left: &TableView<'_>,
+    right: &TableView<'_>,
+    ctx: &ExecutionOverrides<'_>,
+    operation: &'static str,
+) -> Result<Table> {
+    let output_rows = checked_cross_join_output_rows(left, right, operation)?;
+
+    let execution = ResolvedExecution::binary(left.execution_domain(), right.execution_domain(), ctx, operation)?;
 
     let mut out = ptr::null_mut();
     let status = unsafe {
@@ -1801,6 +1866,27 @@ pub fn cross_join(left: &TableView<'_>, right: &TableView<'_>) -> Result<Table> 
         [("output_rows", output_rows.to_string()), ("execution_context_provided", true.to_string())],
     )?;
     unsafe { Table::from_raw_with_domain(out, Arc::clone(execution.output_domain())) }
+}
+
+/// Cross join two tables.
+///
+/// The output cardinality is `left.num_rows() * right.num_rows()`. This
+/// operation materializes the cartesian product into a new table and copies
+/// column data into that output; it is not a zero-copy row selection. The
+/// computed row count is checked before calling libcudf and must fit in
+/// libcudf's `INT32` row-count range.
+pub fn cross_join(left: &TableView<'_>, right: &TableView<'_>) -> Result<Table> {
+    let ctx = ExecutionOverrides::new();
+    cross_join_with_context(left, right, &ctx, "join::cross_join")
+}
+
+/// Cross join two tables using a borrowed execution override.
+///
+/// Same result semantics as [`cross_join`]. The borrowed override selects the
+/// stream and/or memory resource used for the newly materialized output table
+/// when compatible with the left and right input devices.
+pub fn cross_join_in(left: &TableView<'_>, right: &TableView<'_>, ctx: &ExecutionOverrides<'_>) -> Result<Table> {
+    cross_join_with_context(left, right, ctx, "join::cross_join_in")
 }
 
 struct HashJoinHandle {

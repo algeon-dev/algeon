@@ -276,6 +276,26 @@ pub fn scatter(source: &TableView<'_>, scatter_map: &ColumnView<'_>, target: &Ta
     unsafe { scatter_unchecked(source, scatter_map, target).map_err(|e| e.reanchor_if_needed(operation)) }
 }
 
+/// Scatter rows from `source` into a copy of `target` using a borrowed
+/// execution override.
+///
+/// Same result semantics as [`scatter`]. Safe Rust still validates the scatter
+/// map before calling libcudf; validation materializes the `INT32` scatter map
+/// to host memory and may synchronize the map's execution domain before
+/// launching the scatter. The borrowed override selects the stream and/or
+/// memory resource used for the newly allocated output table when compatible
+/// with the source, map, and target devices.
+pub fn scatter_in(
+    source: &TableView<'_>,
+    scatter_map: &ColumnView<'_>,
+    target: &TableView<'_>,
+    ctx: &ExecutionOverrides<'_>,
+) -> Result<Table> {
+    let operation = "copying::scatter_in";
+    validate_scatter_map(source, scatter_map, target, operation)?;
+    unsafe { scatter_unchecked_in(source, scatter_map, target, ctx).map_err(|e| e.reanchor_if_needed(operation)) }
+}
+
 /// Scatter rows from `source` into a copy of `target` without validating the map.
 ///
 /// This calls libcudf directly. The result is a newly allocated table in the
@@ -294,12 +314,45 @@ pub unsafe fn scatter_unchecked(
     scatter_map: &ColumnView<'_>,
     target: &TableView<'_>,
 ) -> Result<Table> {
-    let operation = "copying::scatter_unchecked";
     let ctx = ExecutionOverrides::new();
+    unsafe { scatter_unchecked_with_context(source, scatter_map, target, &ctx, "copying::scatter_unchecked") }
+}
+
+/// Scatter rows from `source` into a copy of `target` without validating the
+/// map, using a borrowed execution override.
+///
+/// Same result and safety requirements as [`scatter_unchecked`]. The borrowed
+/// override selects the stream and/or memory resource used for the newly
+/// allocated output table when compatible with the source, map, and target
+/// devices.
+///
+/// # Safety
+///
+/// Caller must ensure that `scatter_map` is a non-null `INT32` column whose
+/// length is no greater than the number of source rows, every index is within
+/// `[-target.num_rows(), target.num_rows())`, and no two entries address the
+/// same normalized target row. Duplicate or out-of-bounds scatter indices cause
+/// undefined behavior in libcudf.
+pub unsafe fn scatter_unchecked_in(
+    source: &TableView<'_>,
+    scatter_map: &ColumnView<'_>,
+    target: &TableView<'_>,
+    ctx: &ExecutionOverrides<'_>,
+) -> Result<Table> {
+    unsafe { scatter_unchecked_with_context(source, scatter_map, target, ctx, "copying::scatter_unchecked_in") }
+}
+
+unsafe fn scatter_unchecked_with_context(
+    source: &TableView<'_>,
+    scatter_map: &ColumnView<'_>,
+    target: &TableView<'_>,
+    ctx: &ExecutionOverrides<'_>,
+    operation: &'static str,
+) -> Result<Table> {
     let execution = ResolvedExecution::many(
         target.execution_domain(),
         [source.execution_domain(), scatter_map.execution_domain()],
-        &ctx,
+        ctx,
         operation,
     )?;
     scatter_impl(source, scatter_map, target, execution.output_domain(), Some(execution.exec_options()), operation)

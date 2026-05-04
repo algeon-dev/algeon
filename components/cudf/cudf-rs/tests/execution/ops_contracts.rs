@@ -166,6 +166,46 @@ mod join_hash_join_execution_tests {
     }
 
     #[test]
+    fn single_side_join_indices_in_uses_borrowed_stream_and_memory_resource() {
+        let left_keys = Table::from_columns(vec![explicit_i32_column(&[1, 2, 3, 4], 1022)]).unwrap();
+        let right_keys = Table::from_columns(vec![explicit_i32_column(&[2, 4], 1023)]).unwrap();
+        let override_runtime = Runtime::new().unwrap();
+        let ctx = ExecutionOverrides::new()
+            .with_stream(override_runtime.stream())
+            .with_memory_resource(override_runtime.memory_resource());
+        let expected_stream = override_runtime.stream().testing_raw_handle_value();
+        let expected_mr = override_runtime.memory_resource().testing_raw_handle_value();
+
+        reset_exec_observation();
+        let semi = join::left_semi_join_indices_in(
+            &left_keys.testing_view().unwrap(),
+            &right_keys.testing_view().unwrap(),
+            NullEquality::Equal,
+            &ctx,
+        )
+        .unwrap();
+        assert_eq!(semi.indices.testing_execution_domain_stream_value(), expected_stream);
+        assert_eq!(semi.indices.testing_execution_domain_mr_value(), expected_mr);
+        assert_eq!(last_exec_stream_value(), expected_stream);
+        assert_eq!(last_exec_mr_value(), expected_mr);
+        assert_eq!(sorted_single_side_indices(&semi), vec![1, 3]);
+
+        reset_exec_observation();
+        let anti = join::left_anti_join_indices_in(
+            &left_keys.testing_view().unwrap(),
+            &right_keys.testing_view().unwrap(),
+            NullEquality::Equal,
+            &ctx,
+        )
+        .unwrap();
+        assert_eq!(anti.indices.testing_execution_domain_stream_value(), expected_stream);
+        assert_eq!(anti.indices.testing_execution_domain_mr_value(), expected_mr);
+        assert_eq!(last_exec_stream_value(), expected_stream);
+        assert_eq!(last_exec_mr_value(), expected_mr);
+        assert_eq!(sorted_single_side_indices(&anti), vec![0, 2]);
+    }
+
+    #[test]
     fn cross_join_supports_mixed_same_device_domains_and_uses_left_provenance() {
         let left = Table::from_columns(vec![explicit_i32_column(&[1, 2], 966)]).unwrap();
         let right = Table::from_columns(vec![explicit_i32_column(&[10, 20], 967)]).unwrap();
@@ -176,6 +216,28 @@ mod join_hash_join_execution_tests {
         let result = join::cross_join(&left.testing_view().unwrap(), &right.testing_view().unwrap()).unwrap();
 
         assert_eq!(result.testing_execution_domain_id(), left.testing_execution_domain_id());
+        assert_eq!(result.testing_execution_domain_mr_value(), expected_mr);
+        assert_eq!(last_exec_stream_value(), expected_stream);
+        assert_eq!(last_exec_mr_value(), expected_mr);
+        assert_eq!(result.testing_view().unwrap().column(0).unwrap().to_vec::<i32>().unwrap(), vec![1, 1, 2, 2]);
+        assert_eq!(result.testing_view().unwrap().column(1).unwrap().to_vec::<i32>().unwrap(), vec![10, 20, 10, 20]);
+    }
+
+    #[test]
+    fn cross_join_in_uses_borrowed_stream_and_memory_resource() {
+        let left = Table::from_columns(vec![explicit_i32_column(&[1, 2], 1024)]).unwrap();
+        let right = Table::from_columns(vec![explicit_i32_column(&[10, 20], 1025)]).unwrap();
+        let override_runtime = Runtime::new().unwrap();
+        let ctx = ExecutionOverrides::new()
+            .with_stream(override_runtime.stream())
+            .with_memory_resource(override_runtime.memory_resource());
+        let expected_stream = override_runtime.stream().testing_raw_handle_value();
+        let expected_mr = override_runtime.memory_resource().testing_raw_handle_value();
+
+        reset_exec_observation();
+        let result = join::cross_join_in(&left.testing_view().unwrap(), &right.testing_view().unwrap(), &ctx).unwrap();
+
+        assert_eq!(result.testing_execution_domain_stream_value(), expected_stream);
         assert_eq!(result.testing_execution_domain_mr_value(), expected_mr);
         assert_eq!(last_exec_stream_value(), expected_stream);
         assert_eq!(last_exec_mr_value(), expected_mr);
@@ -696,7 +758,7 @@ mod join_hash_join_execution_tests {
     }
 }
 mod copying_execution_tests {
-    use cudf::{core::Table, ops::copying, testing::prelude::*};
+    use cudf::{ExecutionOverrides, Runtime, core::Table, ops::copying, testing::prelude::*};
 
     use crate::common::{explicit_i32_column, last_exec_mr_value, last_exec_stream_value, reset_exec_observation};
 
@@ -721,6 +783,64 @@ mod copying_execution_tests {
         assert_eq!(last_exec_stream_value(), expected_stream);
         assert_eq!(last_exec_mr_value(), expected_mr);
         assert_eq!(result.testing_view().unwrap().column(0).unwrap().to_vec::<i32>().unwrap(), vec![10, 100, 30, 200]);
+    }
+
+    #[test]
+    fn scatter_in_uses_borrowed_stream_and_memory_resource() {
+        let source = Table::from_columns(vec![explicit_i32_column(&[100, 200], 1026)]).unwrap();
+        let scatter_map = explicit_i32_column(&[1, -1], 1027);
+        let target = Table::from_columns(vec![explicit_i32_column(&[10, 20, 30, 40], 1028)]).unwrap();
+        let override_runtime = Runtime::new().unwrap();
+        let ctx = ExecutionOverrides::new()
+            .with_stream(override_runtime.stream())
+            .with_memory_resource(override_runtime.memory_resource());
+        let expected_stream = override_runtime.stream().testing_raw_handle_value();
+        let expected_mr = override_runtime.memory_resource().testing_raw_handle_value();
+
+        reset_exec_observation();
+        let result = copying::scatter_in(
+            &source.testing_view().unwrap(),
+            &scatter_map.testing_view().unwrap(),
+            &target.testing_view().unwrap(),
+            &ctx,
+        )
+        .unwrap();
+
+        assert_eq!(result.testing_execution_domain_stream_value(), expected_stream);
+        assert_eq!(result.testing_execution_domain_mr_value(), expected_mr);
+        assert_eq!(last_exec_stream_value(), expected_stream);
+        assert_eq!(last_exec_mr_value(), expected_mr);
+        assert_eq!(result.testing_view().unwrap().column(0).unwrap().to_vec::<i32>().unwrap(), vec![10, 100, 30, 200]);
+    }
+
+    #[test]
+    fn scatter_unchecked_in_uses_borrowed_stream_and_memory_resource() {
+        let source = Table::from_columns(vec![explicit_i32_column(&[100, 200], 1029)]).unwrap();
+        let scatter_map = explicit_i32_column(&[0, 2], 1030);
+        let target = Table::from_columns(vec![explicit_i32_column(&[10, 20, 30], 1031)]).unwrap();
+        let override_runtime = Runtime::new().unwrap();
+        let ctx = ExecutionOverrides::new()
+            .with_stream(override_runtime.stream())
+            .with_memory_resource(override_runtime.memory_resource());
+        let expected_stream = override_runtime.stream().testing_raw_handle_value();
+        let expected_mr = override_runtime.memory_resource().testing_raw_handle_value();
+
+        reset_exec_observation();
+        let result = unsafe {
+            copying::scatter_unchecked_in(
+                &source.testing_view().unwrap(),
+                &scatter_map.testing_view().unwrap(),
+                &target.testing_view().unwrap(),
+                &ctx,
+            )
+        }
+        .unwrap();
+
+        assert_eq!(result.testing_execution_domain_stream_value(), expected_stream);
+        assert_eq!(result.testing_execution_domain_mr_value(), expected_mr);
+        assert_eq!(last_exec_stream_value(), expected_stream);
+        assert_eq!(last_exec_mr_value(), expected_mr);
+        assert_eq!(result.testing_view().unwrap().column(0).unwrap().to_vec::<i32>().unwrap(), vec![100, 20, 200]);
     }
 }
 #[path = "../ops/strings/strings_tests.rs"]
