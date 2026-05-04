@@ -556,7 +556,7 @@ impl DataFrame {
             let column = Column::from_scalar(&scalar, 1)?;
             output.push((aggregate.output_name, Series::try_from(column)?));
         }
-        DataFrame::from_columns(output)
+        DataFrame::from_series(output)
     }
 }
 

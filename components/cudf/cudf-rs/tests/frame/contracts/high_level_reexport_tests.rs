@@ -14,7 +14,7 @@ fn crate_root_doc_workflow_smoke() {
     let rt = Runtime::builder().build().unwrap();
     let ids = rt.series(&[1i32, 2, 3]).unwrap();
     let scores = rt.series(&[10.0f64, 20.0, 30.0]).unwrap();
-    let df = DataFrame::from_columns([("id", ids), ("score", scores)]).unwrap();
+    let df = DataFrame::from_series([("id", ids), ("score", scores)]).unwrap();
 
     assert_eq!(df.num_columns(), 2);
     assert_eq!(df.num_rows(), 3);
@@ -104,7 +104,7 @@ fn ops_expr_raw_literal_functions_are_publicly_importable() {
     assert_expr(lit_duration_raw(-42_000_000, TimestampResolution::Nanoseconds));
 
     let rt = Runtime::builder().build().unwrap();
-    let df = DataFrame::from_columns([("x", rt.series(&[1i32, 2, 3]).unwrap())]).unwrap();
+    let df = DataFrame::from_series([("x", rt.series(&[1i32, 2, 3]).unwrap())]).unwrap();
     let decimal = lit_decimal64_raw(-98_765_432, -4).alias("amount").eval(&df).unwrap();
 
     assert_eq!(decimal.dtype().unwrap(), DataType::fixed_point(TypeId::Decimal64, -4));
@@ -164,7 +164,7 @@ fn execution_placement_summary_is_publicly_reexported() {
 
     let rt = Runtime::builder().build().unwrap();
     let series = rt.series(&[1i32, 2, 3]).unwrap();
-    let df = DataFrame::from_columns([("id", series.clone())]).unwrap();
+    let df = DataFrame::from_series([("id", series.clone())]).unwrap();
 
     let runtime_placement = rt.placement();
     let series_placement = series.placement();
@@ -193,7 +193,7 @@ fn boundary_observation_shape_is_publicly_reexported() {
     let rt = Runtime::builder().build().unwrap();
     let observer = |_observation: BoundaryObservation| {};
     assert_observer(&observer);
-    let df = DataFrame::from_columns([("id", rt.series(&[1i32, 2, 3]).unwrap())]).unwrap();
+    let df = DataFrame::from_series([("id", rt.series(&[1i32, 2, 3]).unwrap())]).unwrap();
     let memory = QueryMemoryObservation::device_resident(Some(12), Some(16)).with_downloaded_bytes(12);
     let observation =
         BoundaryObservation::new(BoundaryKind::DeviceToHost, df.placement(), df.num_rows(), df.num_columns(), true)
@@ -223,7 +223,7 @@ fn query_execution_context_is_publicly_reexported() {
     assert_eq!(query.placement(), rt.placement());
     assert_eq!(query.device(), rt.device());
 
-    let df = DataFrame::from_columns([("id", rt.series(&[2i32, 1, 3]).unwrap())]).unwrap();
+    let df = DataFrame::from_series([("id", rt.series(&[2i32, 1, 3]).unwrap())]).unwrap();
     let sorted = df.with_execution(query.overrides()).sort_values(["id"], SortOptions::new()).unwrap();
 
     assert_eq!(sorted.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![1, 2, 3]);
@@ -237,12 +237,12 @@ fn dataframe_join_helpers_are_publicly_reexported() {
     fn assert_options(_: DataFrameJoinOptions) {}
 
     let rt = Runtime::builder().build().unwrap();
-    let left = DataFrame::from_columns([
+    let left = DataFrame::from_series([
         ("id", rt.series(&[1i32, 2, 3]).unwrap()),
         ("value", rt.series(&[10i32, 20, 30]).unwrap()),
     ])
     .unwrap();
-    let right = DataFrame::from_columns([("id", rt.series(&[2i32]).unwrap())]).unwrap();
+    let right = DataFrame::from_series([("id", rt.series(&[2i32]).unwrap())]).unwrap();
     let options = DataFrameJoinOptions::new().on(["id"]);
     assert_options(options.clone());
 
@@ -302,7 +302,7 @@ fn scoped_control_plane_smoke() {
     use cudf::{AggSpec, DataFrame, ExecutionOverrides, GroupByAgg, Runtime, SortOptions, runtime::CudaStream};
 
     let rt = Runtime::builder().build().unwrap();
-    let df = DataFrame::from_columns([
+    let df = DataFrame::from_series([
         ("id", rt.series(&[2i32, 1, 2]).unwrap()),
         ("value", rt.series(&[10i64, 20, 30]).unwrap()),
     ])
@@ -326,7 +326,7 @@ fn advanced_owned_and_high_level_ops_smoke() {
 
     let ids = crate::common::unnamed_series::<i32>(&[10, 20, 30]).unwrap();
     let scores = crate::common::unnamed_series::<f64>(&[1.0, 2.0, 3.0]).unwrap();
-    let df = DataFrame::from_columns([("id", ids), ("score", scores)]).unwrap();
+    let df = DataFrame::from_series([("id", ids), ("score", scores)]).unwrap();
     let gather_map = cudf::Series::from_column(column_from_slice(&[2i32, 0]).unwrap()).unwrap();
 
     let gathered = df.gather(&gather_map).unwrap();
@@ -371,7 +371,7 @@ fn frame_submodules_expose_specialized_high_level_types() {
     let _melt = MeltOptions::builder().id_vars(&["id"]).value_vars(&["value"]).build();
     let _factorization = DictionaryEncodingOptions::new().key_order(DictionaryKeyOrder::FirstSeen);
 
-    let frame = DataFrame::from_columns([("id", rt.series(&[1i32, 2, 3]).unwrap())]).unwrap();
+    let frame = DataFrame::from_series([("id", rt.series(&[1i32, 2, 3]).unwrap())]).unwrap();
     let schema = std::sync::Arc::new(arrow::datatypes::Schema::new(vec![arrow::datatypes::Field::new(
         "id",
         arrow::datatypes::DataType::Int32,

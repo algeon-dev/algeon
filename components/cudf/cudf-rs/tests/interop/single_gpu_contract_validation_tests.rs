@@ -23,7 +23,7 @@ use crate::common;
 fn sample_edge_list(runtime: &Runtime) -> DataFrame {
     let src = runtime.series(&[1i32, 2, 1, 3, 2]).unwrap();
     let dst = runtime.series(&[2i32, 3, 3, 1, 1]).unwrap();
-    DataFrame::from_columns([("src", src), ("dst", dst)]).unwrap()
+    DataFrame::from_series([("src", src), ("dst", dst)]).unwrap()
 }
 
 fn binding_map<'a>(bindings: &'a [BufferBinding<'a>]) -> HashMap<u32, &'a BufferBinding<'a>> {

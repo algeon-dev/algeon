@@ -554,7 +554,7 @@ fn owned_transfer_modes() -> [OwnedTransferMode; 3] {
 fn sample_named_dataframe(runtime: &Runtime) -> DataFrame {
     let ids = runtime.series(&[1i32, 2, 3]).unwrap();
     let values = runtime.series(&[10i64, 20, 30]).unwrap();
-    DataFrame::from_columns([("id", ids), ("value", values)]).unwrap()
+    DataFrame::from_series([("id", ids), ("value", values)]).unwrap()
 }
 
 fn sample_table(runtime: &Runtime) -> Table {
@@ -1001,7 +1001,7 @@ fn dataframe_try_into_owned_device_transfer_deep_copies_when_dataframe_columns_a
     let runtime = Runtime::builder().build().unwrap();
     let ids = runtime.series(&[1i32, 2, 3]).unwrap();
     let values = runtime.series(&[10i64, 20, 30]).unwrap();
-    let frame = DataFrame::from_columns([("id", ids), ("value", values)]).unwrap();
+    let frame = DataFrame::from_series([("id", ids), ("value", values)]).unwrap();
     let shared = frame.clone();
     let original_id_ptr = shared.series("id").unwrap().testing_view().unwrap().device_data_ptr().unwrap();
     let original_value_ptr = shared.series("value").unwrap().testing_view().unwrap().device_data_ptr().unwrap();
@@ -1262,7 +1262,7 @@ fn owned_table_transfer_import_accepts_foreign_nested_columns_zero_copy() {
         Series::from_column(dictionary::encode(&category_source.testing_view().unwrap(), TypeId::Int32).unwrap())
             .unwrap();
     let frame =
-        DataFrame::from_columns([("name", name), ("lists", lists), ("point", point), ("category", category)]).unwrap();
+        DataFrame::from_series([("name", name), ("lists", lists), ("point", point), ("category", category)]).unwrap();
     let (source, _names) = frame.try_into_table().unwrap();
     let drops = Arc::new(AtomicUsize::new(0));
     let (transfer, snapshot) = snapshot_foreign_owned_table_transfer(source, Arc::clone(&drops));
@@ -1337,7 +1337,7 @@ fn helper_built_owned_transfer_succeeds_across_column_series_table_and_dataframe
 
         let ids = crate::common::series("id", &[1i32, 2, 3]).unwrap();
         let values = crate::common::series("value", &[10i32, 20, 30]).unwrap();
-        let frame = DataFrame::from_columns([("id", ids), ("value", values)]).unwrap();
+        let frame = DataFrame::from_series([("id", ids), ("value", values)]).unwrap();
         let frame_transfer = frame.try_into_owned_transfer().unwrap();
         let expected_names = vec!["id".to_string(), "value".to_string()];
         assert_owned_table_transfer_contract(
@@ -1375,7 +1375,7 @@ fn runtime_release_owned_table_transfer_abandoned_without_import_or_release_clea
     let runtime = Runtime::builder().build().unwrap();
     let ids = runtime.series(&[1i32, 2, 3]).unwrap();
     let vals = runtime.series(&[10i64, 20, 30]).unwrap();
-    let (table, _names) = DataFrame::from_columns([("id", ids), ("value", vals)]).unwrap().try_into_table().unwrap();
+    let (table, _names) = DataFrame::from_series([("id", ids), ("value", vals)]).unwrap().try_into_table().unwrap();
 
     let (transfer, releaser) = table.try_into_owned_transfer_with_release().unwrap();
 

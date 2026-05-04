@@ -19,7 +19,7 @@
 //! let rt = Runtime::new().unwrap();
 //! let ids = rt.series(&[1i32, 2, 3]).unwrap();
 //! let scores = rt.series(&[10.0f64, 20.0, 30.0]).unwrap();
-//! let df = DataFrame::from_columns([("id", ids), ("score", scores)]).unwrap();
+//! let df = DataFrame::from_series([("id", ids), ("score", scores)]).unwrap();
 //!
 //! // GPU → Arrow RecordBatch (host-copy)
 //! let batch = df.to_record_batch().unwrap();

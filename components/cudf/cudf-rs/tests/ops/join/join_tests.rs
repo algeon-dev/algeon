@@ -411,12 +411,12 @@ fn test_left_anti_join_indices_return_only_non_matching_left_rows() {
 #[test]
 fn test_inner_join_indices_materialize_same_rows_as_dataframe_merge() {
     let rt = sample_runtime();
-    let left = DataFrame::from_columns([
+    let left = DataFrame::from_series([
         ("id", rt.series(&[1i32, 2, 2, 3]).unwrap()),
         ("left_val", rt.series(&[10i32, 20, 21, 30]).unwrap()),
     ])
     .unwrap();
-    let right = DataFrame::from_columns([
+    let right = DataFrame::from_series([
         ("id", rt.series(&[2i32, 2, 4]).unwrap()),
         ("right_val", rt.series(&[200i32, 201, 400]).unwrap()),
     ])
@@ -439,7 +439,7 @@ fn test_inner_join_indices_materialize_same_rows_as_dataframe_merge() {
         copying::gather(&right_table.testing_view().unwrap(), &right_indices.as_column().testing_view().unwrap())
             .unwrap();
     let mut right_columns = right_gathered.into_columns().unwrap();
-    let assembled = DataFrame::from_columns([
+    let assembled = DataFrame::from_series([
         ("id", left_gathered.series("id").unwrap()),
         ("left_val", left_gathered.series("left_val").unwrap()),
         ("right_val", Series::from_column(right_columns.remove(1)).unwrap()),

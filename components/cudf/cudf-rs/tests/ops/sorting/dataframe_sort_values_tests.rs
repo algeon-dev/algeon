@@ -92,7 +92,7 @@ fn test_sort_values_multi_column() {
     // Sort by id ascending, then score descending within each id group.
     let ids = crate::common::series::<i32>("id", &[2, 1, 2, 1]).unwrap();
     let scores = crate::common::series::<f64>("score", &[20.0, 10.0, 40.0, 30.0]).unwrap();
-    let df = DataFrame::from_columns([("id", ids), ("score", scores)]).unwrap();
+    let df = DataFrame::from_series([("id", ids), ("score", scores)]).unwrap();
 
     let sorted = df.sort_values(["id", "score"], SortOptions::new().with_descending(vec![false, true])).unwrap();
 
@@ -105,7 +105,7 @@ fn test_sort_values_multi_column_with_owned_string_keys() {
     let ids = crate::common::series::<i32>("id", &[2, 1, 2, 1]).unwrap();
     let scores = crate::common::series::<f64>("score", &[20.0, 10.0, 40.0, 30.0]).unwrap();
     let tags = crate::common::series::<i32>("tag", &[200, 100, 400, 300]).unwrap();
-    let df = DataFrame::from_columns([("id", ids), ("score", scores), ("tag", tags)]).unwrap();
+    let df = DataFrame::from_series([("id", ids), ("score", scores), ("tag", tags)]).unwrap();
 
     let keys = vec!["id".to_string(), "score".to_string()];
     let sorted = df.sort_values(keys, SortOptions::new().with_descending(vec![false, true])).unwrap();
@@ -124,7 +124,7 @@ fn test_sort_values_stable_preserves_order() {
     // All ids are the same — stable sort should preserve original row order.
     let ids = crate::common::series::<i32>("id", &[1, 1, 1, 1]).unwrap();
     let tags = crate::common::series::<i32>("tag", &[10, 20, 30, 40]).unwrap();
-    let df = DataFrame::from_columns([("id", ids), ("tag", tags)]).unwrap();
+    let df = DataFrame::from_series([("id", ids), ("tag", tags)]).unwrap();
 
     let sorted = df.sort_values(["id"], SortOptions::new().with_stable(true)).unwrap();
 

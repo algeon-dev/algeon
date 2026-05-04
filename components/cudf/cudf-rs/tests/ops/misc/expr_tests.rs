@@ -26,11 +26,11 @@ use rapids_interop::{ColumnLayout, DataType as InteropDataType, Placement};
 fn xy_df() -> DataFrame {
     let x = crate::common::series::<i32>("x", &[10, 20, 30]).unwrap();
     let y = crate::common::series::<i32>("y", &[1, 2, 3]).unwrap();
-    DataFrame::from_columns([("x", x), ("y", y)]).unwrap()
+    DataFrame::from_series([("x", x), ("y", y)]).unwrap()
 }
 
 fn df_with_series(name: &str, series: Series) -> DataFrame {
-    DataFrame::from_columns([(name, series)]).unwrap()
+    DataFrame::from_series([(name, series)]).unwrap()
 }
 
 fn i32_df(name: &str, data: &[i32]) -> DataFrame {
@@ -231,7 +231,7 @@ fn lit_duration_raw_broadcasts_dtype_and_raw_values() {
 fn raw_literals_eval_in_use_resolved_override_domain_for_allocations() {
     let source_rt = Runtime::builder().build().unwrap();
     let override_rt = Runtime::builder().build().unwrap();
-    let df = DataFrame::from_columns([("x", source_rt.series(&[1i32, 2, 3]).unwrap())]).unwrap();
+    let df = DataFrame::from_series([("x", source_rt.series(&[1i32, 2, 3]).unwrap())]).unwrap();
     let execution =
         ExecutionOverrides::new().with_stream(override_rt.stream()).with_memory_resource(override_rt.memory_resource());
     let input_placement = df.placement();
@@ -352,7 +352,7 @@ fn neg_expr() {
 fn bitand_bool() {
     let a = crate::common::series::<bool>("a", &[true, true, false, false]).unwrap();
     let b = crate::common::series::<bool>("b", &[true, false, true, false]).unwrap();
-    let df = DataFrame::from_columns([("a", a), ("b", b)]).unwrap();
+    let df = DataFrame::from_series([("a", a), ("b", b)]).unwrap();
     let result = (col("a") & col("b")).alias("and").eval(&df).unwrap();
     assert_eq!(result.dtype().unwrap().id(), TypeId::Bool8);
     assert_eq!(result.to_vec_strict::<bool>().unwrap(), vec![true, false, false, false]);
@@ -370,7 +370,7 @@ fn bitand_bool_scalar_lhs_without_lit() {
 fn bitor_bool() {
     let a = crate::common::series::<bool>("a", &[true, true, false, false]).unwrap();
     let b = crate::common::series::<bool>("b", &[true, false, true, false]).unwrap();
-    let df = DataFrame::from_columns([("a", a), ("b", b)]).unwrap();
+    let df = DataFrame::from_series([("a", a), ("b", b)]).unwrap();
     let result = (col("a") | col("b")).alias("or").eval(&df).unwrap();
     assert_eq!(result.dtype().unwrap().id(), TypeId::Bool8);
     assert_eq!(result.to_vec_strict::<bool>().unwrap(), vec![true, true, true, false]);
@@ -437,7 +437,7 @@ fn gt_scalar_without_lit_produces_bool() {
 fn eq_col_col() {
     let x = crate::common::series::<i32>("a", &[1, 2, 3]).unwrap();
     let y = crate::common::series::<i32>("b", &[1, 99, 3]).unwrap();
-    let df = DataFrame::from_columns([("a", x), ("b", y)]).unwrap();
+    let df = DataFrame::from_series([("a", x), ("b", y)]).unwrap();
     let result = col("a").eq(col("b")).alias("same").eval(&df).unwrap();
     assert_eq!(result.to_vec_strict::<bool>().unwrap(), vec![true, false, true]);
 }
@@ -452,7 +452,7 @@ fn lt_lit_with_alias() {
 fn ne_col_col() {
     let x = crate::common::series::<i32>("a", &[1, 2, 3]).unwrap();
     let y = crate::common::series::<i32>("b", &[1, 99, 3]).unwrap();
-    let df = DataFrame::from_columns([("a", x), ("b", y)]).unwrap();
+    let df = DataFrame::from_series([("a", x), ("b", y)]).unwrap();
     let result = col("a").ne(col("b")).alias("diff").eval(&df).unwrap();
     assert_eq!(result.to_vec_strict::<bool>().unwrap(), vec![false, true, false]);
 }
@@ -766,7 +766,7 @@ fn fillna_scalar_preserves_output_name() {
 fn fillna_with_column_path() {
     let v = crate::common::nullable_series::<i32>("v", &[1, 0, 3], &[true, false, true]).unwrap();
     let backup = crate::common::series::<i32>("backup", &[10, 20, 30]).unwrap();
-    let df = DataFrame::from_columns([("v", v), ("backup", backup)]).unwrap();
+    let df = DataFrame::from_series([("v", v), ("backup", backup)]).unwrap();
     let result = col("v").fillna_with(col("backup")).alias("filled").eval(&df).unwrap();
     assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![1, 20, 3]);
     assert_eq!(result.null_count(), 0);
@@ -1067,7 +1067,7 @@ fn when_then_otherwise_column_branches() {
     let x = crate::common::series::<i32>("x", &[10, 20, 30]).unwrap();
     let y = crate::common::series::<i32>("y", &[1, 2, 3]).unwrap();
     let flag = crate::common::series::<bool>("f", &[true, false, true]).unwrap();
-    let df = DataFrame::from_columns([("x", x), ("y", y), ("f", flag)]).unwrap();
+    let df = DataFrame::from_series([("x", x), ("y", y), ("f", flag)]).unwrap();
     let result = when(col("f")).then(col("x")).otherwise(col("y")).alias("pick").eval(&df).unwrap();
     assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![10, 2, 30]);
 }
@@ -1078,7 +1078,7 @@ fn when_then_otherwise_with_nulls_in_condition() {
     let cond = crate::common::nullable_series::<bool>("c", &[true, false, false], &[true, false, true]).unwrap();
     let x = crate::common::series::<i32>("x", &[10, 20, 30]).unwrap();
     let y = crate::common::series::<i32>("y", &[1, 2, 3]).unwrap();
-    let df = DataFrame::from_columns([("c", cond), ("x", x), ("y", y)]).unwrap();
+    let df = DataFrame::from_series([("c", cond), ("x", x), ("y", y)]).unwrap();
     let result = when(col("c")).then(col("x")).otherwise(col("y")).alias("out").eval(&df).unwrap();
     // row 0: cond valid & true  → x[0]=10
     // row 1: cond null          → y[1]=2

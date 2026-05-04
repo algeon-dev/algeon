@@ -167,6 +167,6 @@ impl DataFrame {
             result_columns.push((&opts.value_name, concat_values));
         }
 
-        DataFrame::from_columns(result_columns)
+        DataFrame::from_series(result_columns)
     }
 }

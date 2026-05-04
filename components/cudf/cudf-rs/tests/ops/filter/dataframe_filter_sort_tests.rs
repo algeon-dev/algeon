@@ -127,7 +127,7 @@ fn test_filter_isin_with_series_succeeds_with_mixed_domains_and_orders_secondary
     let _event_observation = crate::common::lock_event_observation();
     let df_rt = sample_runtime();
     let values_rt = sample_runtime();
-    let df = DataFrame::from_columns([
+    let df = DataFrame::from_series([
         ("id", df_rt.series(&[10i32, 20, 30]).unwrap()),
         ("score", df_rt.series(&[100i32, 200, 300]).unwrap()),
     ])

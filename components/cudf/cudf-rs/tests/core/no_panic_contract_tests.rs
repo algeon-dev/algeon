@@ -5,12 +5,12 @@ use cudf::{DataFrame, ErrorCode, ErrorKind, Series};
 use crate::common::{column_from_slice, error_context_value, string_scalar};
 
 #[test]
-fn dataframe_from_columns_empty_iterator_returns_error_instead_of_panicking() {
-    let result = panic::catch_unwind(|| DataFrame::from_columns(std::iter::empty::<(&str, Series)>()));
+fn dataframe_from_series_empty_iterator_returns_error_instead_of_panicking() {
+    let result = panic::catch_unwind(|| DataFrame::from_series(std::iter::empty::<(&str, Series)>()));
 
-    let err = result.expect("from_columns should not panic").unwrap_err();
-    assert_eq!(err.kind(), ErrorKind::InvalidInput);
-    assert_eq!(err.operation(), "dataframe::from_columns");
+    let err = result.expect("from_series should not panic").unwrap_err();
+    assert_eq!(err.kind(), ErrorKind::ExecutionContext);
+    assert_eq!(err.operation(), "dataframe::from_series");
 }
 
 #[test]

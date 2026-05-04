@@ -184,7 +184,7 @@ fn test_filter_any_empty_returns_empty_dataframe_with_same_schema() {
 fn test_filter_any_empty_preserves_full_dtype_metadata() {
     let amount =
         series("amount", &[100i64, 250, 999]).unwrap().astype(DataType::fixed_point(TypeId::Decimal64, -2)).unwrap();
-    let df = DataFrame::from_columns([("amount", amount.clone())]).unwrap();
+    let df = DataFrame::from_series([("amount", amount.clone())]).unwrap();
 
     let filtered = df.filter_any(std::iter::empty::<cudf::Expr>()).unwrap();
 
@@ -236,7 +236,7 @@ fn test_filter_expr_timestamp_days_column_predicate_matches_tpch_date_shape() {
         .astype(TypeId::TimestampDays)
         .unwrap();
     let id = series("id", &[1i32, 2, 3]).unwrap();
-    let df = DataFrame::from_columns([("id", id), ("shipdate", shipdate), ("cutoff", cutoff)]).unwrap();
+    let df = DataFrame::from_series([("id", id), ("shipdate", shipdate), ("cutoff", cutoff)]).unwrap();
 
     let filtered = df.filter_expr(col("shipdate").lt(col("cutoff"))).unwrap();
 

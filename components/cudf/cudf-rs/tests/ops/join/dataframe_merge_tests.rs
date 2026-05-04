@@ -63,12 +63,12 @@ fn assert_merge_validation_error(err: &cudf::Error, operation: &str, reason: &st
 #[test]
 fn test_dataframe_left_semi_join_materializes_left_rows_without_right_duplicate_growth() {
     let rt = sample_runtime();
-    let left = DataFrame::from_columns([
+    let left = DataFrame::from_series([
         ("id", rt.series(&[1i32, 2, 2, 3, 4]).unwrap()),
         ("score", rt.series(&[10i32, 20, 21, 30, 40]).unwrap()),
     ])
     .unwrap();
-    let right = DataFrame::from_columns([
+    let right = DataFrame::from_series([
         ("id", rt.series(&[2i32, 2, 4]).unwrap()),
         ("right_payload", rt.series(&[200i32, 201, 400]).unwrap()),
     ])
@@ -86,12 +86,12 @@ fn test_dataframe_left_semi_join_materializes_left_rows_without_right_duplicate_
 #[test]
 fn test_dataframe_left_anti_join_materializes_only_non_matching_left_rows() {
     let rt = sample_runtime();
-    let left = DataFrame::from_columns([
+    let left = DataFrame::from_series([
         ("id", rt.series(&[1i32, 2, 2, 3, 4]).unwrap()),
         ("score", rt.series(&[10i32, 20, 21, 30, 40]).unwrap()),
     ])
     .unwrap();
-    let right = DataFrame::from_columns([("id", rt.series(&[2i32, 4]).unwrap())]).unwrap();
+    let right = DataFrame::from_series([("id", rt.series(&[2i32, 4]).unwrap())]).unwrap();
 
     let result = left.left_anti_join(&right, DataFrameJoinOptions::new().on(["id"])).unwrap();
 
@@ -105,13 +105,13 @@ fn test_dataframe_left_anti_join_materializes_only_non_matching_left_rows() {
 #[test]
 fn test_dataframe_join_indices_materialize_selected_payload_columns() {
     let rt = sample_runtime();
-    let left = DataFrame::from_columns([
+    let left = DataFrame::from_series([
         ("id", rt.series(&[1i32, 2, 3, 4]).unwrap()),
         ("score", rt.series(&[10i32, 20, 30, 40]).unwrap()),
         ("payload", rt.series(&[100i32, 200, 300, 400]).unwrap()),
     ])
     .unwrap();
-    let right = DataFrame::from_columns([("id", rt.series(&[2i32, 4]).unwrap())]).unwrap();
+    let right = DataFrame::from_series([("id", rt.series(&[2i32, 4]).unwrap())]).unwrap();
 
     let indices = left.left_semi_join_indices(&right, DataFrameJoinOptions::new().on(["id"])).unwrap();
     let materialized = left.materialize_join_indices(&indices, ["payload"]).unwrap();
@@ -151,12 +151,12 @@ fn test_dataframe_left_semi_join_indices_with_execution_uses_borrowed_handles() 
     let _event_observation = crate::common::lock_event_observation();
     let data_rt = sample_runtime();
     let query_rt = sample_runtime();
-    let left = DataFrame::from_columns([
+    let left = DataFrame::from_series([
         ("id", data_rt.series(&[1i32, 2, 3, 4]).unwrap()),
         ("score", data_rt.series(&[10i32, 20, 30, 40]).unwrap()),
     ])
     .unwrap();
-    let right = DataFrame::from_columns([("id", data_rt.series(&[2i32, 4]).unwrap())]).unwrap();
+    let right = DataFrame::from_series([("id", data_rt.series(&[2i32, 4]).unwrap())]).unwrap();
     let ctx = ExecutionOverrides::new().with_stream(query_rt.stream()).with_memory_resource(query_rt.memory_resource());
 
     reset_exec_observation();
@@ -251,9 +251,9 @@ fn test_dataframe_materialize_join_indices_reanchors_unknown_column() {
 fn test_dataframe_left_semi_join_empty_result_preserves_schema() {
     let rt = sample_runtime();
     let left =
-        DataFrame::from_columns([("id", rt.series(&[1i32, 2]).unwrap()), ("score", rt.series(&[10i32, 20]).unwrap())])
+        DataFrame::from_series([("id", rt.series(&[1i32, 2]).unwrap()), ("score", rt.series(&[10i32, 20]).unwrap())])
             .unwrap();
-    let right = DataFrame::from_columns([("id", rt.series(&[3i32, 4]).unwrap())]).unwrap();
+    let right = DataFrame::from_series([("id", rt.series(&[3i32, 4]).unwrap())]).unwrap();
 
     let indices = left.left_semi_join_indices(&right, DataFrameJoinOptions::new().on(["id"])).unwrap();
     let result = left.left_semi_join(&right, DataFrameJoinOptions::new().on(["id"])).unwrap();
@@ -269,9 +269,9 @@ fn test_dataframe_left_semi_join_empty_result_preserves_schema() {
 fn test_dataframe_left_anti_join_empty_result_preserves_schema() {
     let rt = sample_runtime();
     let left =
-        DataFrame::from_columns([("id", rt.series(&[1i32, 2]).unwrap()), ("score", rt.series(&[10i32, 20]).unwrap())])
+        DataFrame::from_series([("id", rt.series(&[1i32, 2]).unwrap()), ("score", rt.series(&[10i32, 20]).unwrap())])
             .unwrap();
-    let right = DataFrame::from_columns([("id", rt.series(&[1i32, 2]).unwrap())]).unwrap();
+    let right = DataFrame::from_series([("id", rt.series(&[1i32, 2]).unwrap())]).unwrap();
 
     let indices = left.left_anti_join_indices(&right, DataFrameJoinOptions::new().on(["id"])).unwrap();
     let result = left.left_anti_join(&right, DataFrameJoinOptions::new().on(["id"])).unwrap();
@@ -360,12 +360,12 @@ fn test_merge_succeeds_with_mixed_domains_and_uses_left_provenance() {
     let _event_observation = crate::common::lock_event_observation();
     let left_rt = sample_runtime();
     let right_rt = sample_runtime();
-    let left = DataFrame::from_columns([
+    let left = DataFrame::from_series([
         ("id", left_rt.series(&[1i32, 2, 3]).unwrap()),
         ("score", left_rt.series(&[10i32, 20, 30]).unwrap()),
     ])
     .unwrap();
-    let right = DataFrame::from_columns([
+    let right = DataFrame::from_series([
         ("id", right_rt.series(&[2i32, 3, 4]).unwrap()),
         ("value", right_rt.series(&[200i32, 300, 400]).unwrap()),
     ])
@@ -527,12 +527,12 @@ fn test_full_merge_succeeds_with_mixed_domains_and_reassembles_on_left_provenanc
     let _event_observation = crate::common::lock_event_observation();
     let left_rt = sample_runtime();
     let right_rt = sample_runtime();
-    let left = DataFrame::from_columns([
+    let left = DataFrame::from_series([
         ("id", left_rt.series(&[1i32, 2, 3]).unwrap()),
         ("score", left_rt.series(&[10i32, 20, 30]).unwrap()),
     ])
     .unwrap();
-    let right = DataFrame::from_columns([
+    let right = DataFrame::from_series([
         ("id", right_rt.series(&[2i32, 3, 4]).unwrap()),
         ("value", right_rt.series(&[200i32, 300, 400]).unwrap()),
     ])
@@ -593,12 +593,12 @@ fn test_full_merge_in_context_succeeds_on_mixed_domains_and_reassembles_on_conte
     let left_rt = sample_runtime();
     let right_rt = sample_runtime();
     let target_rt = sample_runtime();
-    let left = DataFrame::from_columns([
+    let left = DataFrame::from_series([
         ("id", left_rt.series(&[1i32, 2, 3]).unwrap()),
         ("score", left_rt.series(&[10i32, 20, 30]).unwrap()),
     ])
     .unwrap();
-    let right = DataFrame::from_columns([
+    let right = DataFrame::from_series([
         ("id", right_rt.series(&[2i32, 3, 4]).unwrap()),
         ("value", right_rt.series(&[200i32, 300, 400]).unwrap()),
     ])

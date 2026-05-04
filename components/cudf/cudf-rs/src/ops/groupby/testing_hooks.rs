@@ -66,7 +66,7 @@ pub(crate) fn trigger_value_counts_missing_key_columns_for_test() -> Result<Data
 
     let (key_col, count_col) =
         value_counts_result_columns(GroupByAggregationOutput { keys, results: vec![Vec::new()] }, operation)?;
-    DataFrame::from_columns([
+    DataFrame::from_series([
         ("value".to_string(), Series::from_column(key_col)?),
         ("count".to_string(), Series::from_column(count_col)?),
     ])
@@ -82,7 +82,7 @@ pub(crate) fn trigger_value_counts_missing_count_results_for_test() -> Result<Da
 
     let (key_col, count_col) =
         value_counts_result_columns(GroupByAggregationOutput { keys, results: Vec::new() }, operation)?;
-    DataFrame::from_columns([
+    DataFrame::from_series([
         ("value".to_string(), Series::from_column(key_col)?),
         ("count".to_string(), Series::from_column(count_col)?),
     ])
@@ -98,7 +98,7 @@ pub(crate) fn trigger_value_counts_empty_count_result_for_test() -> Result<DataF
 
     let (key_col, count_col) =
         value_counts_result_columns(GroupByAggregationOutput { keys, results: vec![Vec::new()] }, operation)?;
-    DataFrame::from_columns([
+    DataFrame::from_series([
         ("value".to_string(), Series::from_column(key_col)?),
         ("count".to_string(), Series::from_column(count_col)?),
     ])

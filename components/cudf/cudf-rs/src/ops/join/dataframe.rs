@@ -533,8 +533,8 @@ fn merge_key_count_mismatch_error(operation: &'static str, left_count: usize, ri
 
 pub(super) fn trigger_merge_reassembly_key_count_error_for_test_impl() -> Result<DataFrame> {
     let runtime = Runtime::new()?;
-    let left = DataFrame::from_columns([("id", runtime.series(&[1i32])?)])?;
-    let right = DataFrame::from_columns([("id", runtime.series(&[1i32])?)])?;
+    let left = DataFrame::from_series([("id", runtime.series(&[1i32])?)])?;
+    let right = DataFrame::from_series([("id", runtime.series(&[1i32])?)])?;
 
     merge_join_result_with_suffixes(
         DataFrameJoinSides { left, right },

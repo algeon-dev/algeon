@@ -24,7 +24,7 @@ use crate::common::{
 fn sample_df() -> DataFrame {
     let ids = crate::common::series::<i32>("id", &[1, 2, 3]).unwrap();
     let scores = crate::common::series::<f64>("score", &[10.0, 20.0, 30.0]).unwrap();
-    DataFrame::from_columns([("id", ids), ("score", scores)]).unwrap()
+    DataFrame::from_series([("id", ids), ("score", scores)]).unwrap()
 }
 
 // ===========================================================================

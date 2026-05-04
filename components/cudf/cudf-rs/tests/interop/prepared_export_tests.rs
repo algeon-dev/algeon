@@ -213,7 +213,7 @@ fn recursive_supported_frame() -> DataFrame {
     let id = frame.series("id").unwrap();
     let encoded = dictionary::encode(&category.testing_view().unwrap(), TypeId::Int32).unwrap();
     let category = cudf::Series::from_column(encoded).unwrap();
-    DataFrame::from_columns([("category", category), ("nested", nested), ("point", point), ("id", id)]).unwrap()
+    DataFrame::from_series([("category", category), ("nested", nested), ("point", point), ("id", id)]).unwrap()
 }
 
 mod lease_contracts {
@@ -291,7 +291,7 @@ mod lease_contracts {
         let producer_runtime = Runtime::builder().with_stream(producer_stream.clone()).build().unwrap();
         let ids = producer_runtime.series(&[1i32, 2, 3]).unwrap();
         let vals = producer_runtime.series(&[10i64, 20, 30]).unwrap();
-        let frame = DataFrame::from_columns([("id", ids), ("value", vals)]).unwrap();
+        let frame = DataFrame::from_series([("id", ids), ("value", vals)]).unwrap();
         let export = frame.try_prepare_device_table_export().unwrap();
 
         let consumer_stream = CudaStream::new().unwrap();
@@ -577,7 +577,7 @@ mod lease_contracts {
         let producer_runtime = Runtime::builder().build().unwrap();
         let ids = producer_runtime.series(&[1i32, 2, 3]).unwrap();
         let vals = producer_runtime.series(&[10i64, 20, 30]).unwrap();
-        let frame = DataFrame::from_columns([("id", ids), ("value", vals)]).unwrap();
+        let frame = DataFrame::from_series([("id", ids), ("value", vals)]).unwrap();
         let export = frame
             .try_prepare_device_table_export()
             .unwrap()
@@ -671,7 +671,7 @@ mod lease_contracts {
         let producer_runtime = Runtime::builder().with_device(device0).build().unwrap();
         let ids = producer_runtime.series(&[1i32, 2, 3]).unwrap();
         let vals = producer_runtime.series(&[10i64, 20, 30]).unwrap();
-        let frame = DataFrame::from_columns([("id", ids), ("value", vals)]).unwrap();
+        let frame = DataFrame::from_series([("id", ids), ("value", vals)]).unwrap();
         let export = frame
             .try_prepare_device_table_export()
             .unwrap()
@@ -720,7 +720,7 @@ mod lease_contracts {
         let producer_runtime = Runtime::builder().with_device(device0).build().unwrap();
         let ids = producer_runtime.series(&[1i32, 2, 3]).unwrap();
         let vals = producer_runtime.series(&[10i64, 20, 30]).unwrap();
-        let frame = DataFrame::from_columns([("id", ids), ("value", vals)]).unwrap();
+        let frame = DataFrame::from_series([("id", ids), ("value", vals)]).unwrap();
         let export = frame
             .try_prepare_device_table_export()
             .unwrap()
@@ -933,7 +933,7 @@ mod device_export_contracts {
 
             let ids = crate::common::series("id", &[1i32, 2, 3]).unwrap();
             let vals = crate::common::series("value", &[10i64, 20, 30]).unwrap();
-            let frame = DataFrame::from_columns([("id", ids), ("value", vals)]).unwrap();
+            let frame = DataFrame::from_series([("id", ids), ("value", vals)]).unwrap();
             let frame_export = frame.try_prepare_device_table_export().unwrap();
             assert_eq!(frame_export.diagnostics().profile(), ExportProfile::PreparedDeviceExport);
             assert_eq!(frame_export.table().names().unwrap(), expected_names(&["id", "value"]).as_slice());
@@ -1038,7 +1038,7 @@ mod device_export_contracts {
         let runtime = Runtime::builder().build().unwrap();
         let ids = runtime.series(&[1i32, 2, 3]).unwrap();
         let vals = runtime.nullable_series(&[10i64, 0, 30], &[true, false, true]).unwrap();
-        let frame = DataFrame::from_columns([("id", ids), ("value", vals)]).unwrap();
+        let frame = DataFrame::from_series([("id", ids), ("value", vals)]).unwrap();
         let expected_stream = frame.testing_execution_domain_stream_value();
 
         let frame_export = frame.try_prepare_device_table_export().unwrap();
@@ -1260,7 +1260,7 @@ mod host_export_contracts {
         let runtime = Runtime::builder().build().unwrap();
         let ids = runtime.series(&[1i32, 2, 3]).unwrap();
         let vals = runtime.nullable_series(&[10i64, 0, 30], &[true, false, true]).unwrap();
-        let frame = DataFrame::from_columns([("id", ids), ("value", vals)]).unwrap();
+        let frame = DataFrame::from_series([("id", ids), ("value", vals)]).unwrap();
 
         let export = frame.try_prepare_host_table_export().unwrap();
         assert_host_table_basics(&export, &["id", "value"], 3);

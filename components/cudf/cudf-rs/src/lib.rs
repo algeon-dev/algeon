@@ -23,7 +23,7 @@
 //! let scores = rt.series(&[10.0f64, 20.0, 30.0]).unwrap();
 //!
 //! // Build a DataFrame with explicit schema names.
-//! let df = DataFrame::from_columns([("id", ids), ("score", scores)]).unwrap();
+//! let df = DataFrame::from_series([("id", ids), ("score", scores)]).unwrap();
 //!
 //! assert_eq!(df.num_columns(), 2);
 //! assert_eq!(df.num_rows(), 3);

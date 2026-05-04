@@ -203,15 +203,15 @@ fn assert_runtime_builder_binding_mismatch(
 }
 
 fn dataframe1(name: &str, series: Series) -> DataFrame {
-    DataFrame::from_columns([(name, series)]).unwrap()
+    DataFrame::from_series([(name, series)]).unwrap()
 }
 
 fn dataframe2(name1: &str, series1: Series, name2: &str, series2: Series) -> DataFrame {
-    DataFrame::from_columns([(name1, series1), (name2, series2)]).unwrap()
+    DataFrame::from_series([(name1, series1), (name2, series2)]).unwrap()
 }
 
 fn dataframe3(name1: &str, series1: Series, name2: &str, series2: Series, name3: &str, series3: Series) -> DataFrame {
-    DataFrame::from_columns([(name1, series1), (name2, series2), (name3, series3)]).unwrap()
+    DataFrame::from_series([(name1, series1), (name2, series2), (name3, series3)]).unwrap()
 }
 
 fn cross_device_write_dataframe() -> (Runtime, Runtime, DataFrame) {
@@ -441,7 +441,7 @@ fn columns_from_different_devices_have_different_domains() {
     );
 
     // Mixing columns from different devices into one DataFrame must fail.
-    let result = DataFrame::from_columns([("x", s0), ("y", s1)]);
+    let result = DataFrame::from_series([("x", s0), ("y", s1)]);
     assert!(result.is_err(), "mixing columns from different devices should fail provenance check");
 }
 
@@ -1041,7 +1041,7 @@ fn same_provenance_differs_by_device() {
     let s1 = rt1.series(&[3, 4]).unwrap();
 
     // Attempting to build a DataFrame from columns on different devices should fail.
-    let result = DataFrame::from_columns([("x", s0), ("y", s1)]);
+    let result = DataFrame::from_series([("x", s0), ("y", s1)]);
     assert!(result.is_err(), "mixing columns from different devices should fail provenance check");
 }
 
@@ -1058,11 +1058,11 @@ fn dataframe_constructors_share_mixed_provenance_rejection_contract() {
     let left = rt0.series(&[1i32, 2]).unwrap();
     let right = rt1.series(&[3i32, 4]).unwrap();
 
-    let from_columns_err = DataFrame::from_columns([("left", left.clone()), ("right", right.clone())]).unwrap_err();
-    let explicit_columns_err = DataFrame::from_columns([("x", left), ("y", right)]).unwrap_err();
+    let named_series_err = DataFrame::from_series([("left", left.clone()), ("right", right.clone())]).unwrap_err();
+    let explicit_schema_err = DataFrame::from_series([("x", left), ("y", right)]).unwrap_err();
 
-    assert_constructor_mixed_provenance_error(from_columns_err, "dataframe::from_columns", "right");
-    assert_constructor_mixed_provenance_error(explicit_columns_err, "dataframe::from_columns", "y");
+    assert_constructor_mixed_provenance_error(named_series_err, "dataframe::from_series", "right");
+    assert_constructor_mixed_provenance_error(explicit_schema_err, "dataframe::from_series", "y");
 }
 
 #[test]
