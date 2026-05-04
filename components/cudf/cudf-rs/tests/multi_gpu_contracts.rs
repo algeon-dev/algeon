@@ -1083,6 +1083,23 @@ fn borrowed_stream_override_rejects_cross_device_context_with_canonical_keys() {
 }
 
 #[test]
+fn query_execution_context_rejects_cross_device_input_runtime() {
+    if !should_run_multi_gpu_test() {
+        return;
+    }
+
+    let (left_device, right_device) = first_two_test_devices();
+    let (left_rt, right_rt) = first_two_test_runtimes();
+
+    let df = dataframe1("id", left_rt.series(&[3i32, 1, 2]).unwrap());
+    let query = right_rt.query_execution();
+
+    let err = df.with_execution(query.overrides()).sort_values(["id"], SortOptions::new()).unwrap_err();
+
+    assert_borrowed_override_runtime_binding_mismatch(err, "stream", left_device, right_device);
+}
+
+#[test]
 fn with_columns_borrowed_stream_override_rejects_cross_device_context_with_canonical_keys() {
     if !should_run_multi_gpu_test() {
         return;

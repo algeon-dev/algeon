@@ -10,6 +10,7 @@ mod concat_ops;
 mod context;
 mod display;
 mod fillna_ops;
+mod gpu_record_batch;
 pub(crate) mod group_keys;
 mod info;
 mod io;
@@ -27,6 +28,7 @@ pub use concat_ops::{ConcatByNameOptions, SchemaAlignment};
 pub use context::DataFrameExecutionScope;
 pub(crate) use fillna_ops::trigger_dataframe_dropna_subset_count_limit_error_for_test;
 pub use fillna_ops::{DropDuplicatesOptions, DropNaHow, DropNaOptions};
+pub use gpu_record_batch::GpuRecordBatch;
 pub use info::{
     ColumnMemoryAccounting, DataFrameColumnInfo, DataFrameInfo, DataFrameMemoryAccounting, DataTypeCount, InfoDetail,
 };

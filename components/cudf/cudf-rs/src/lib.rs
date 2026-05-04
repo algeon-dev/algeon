@@ -200,6 +200,6 @@ pub use ops::{
     strings::{StringSliceOptions, StripSide},
 };
 pub use runtime::{
-    BoundaryKind, BoundaryObservation, BoundaryObserver, DeviceId, ExecutionOverrides, ExecutionPlacement, Runtime,
-    RuntimeBuilder, StreamDependencyOutcome,
+    BoundaryKind, BoundaryObservation, BoundaryObserver, DeviceId, ExecutionOverrides, ExecutionPlacement,
+    QueryExecutionContext, Runtime, RuntimeBuilder, StreamDependencyOutcome,
 };

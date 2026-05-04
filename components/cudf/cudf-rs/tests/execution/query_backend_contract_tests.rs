@@ -12,7 +12,9 @@ use arrow::{
     record_batch::RecordBatch,
 };
 use cudf::{
-    BoundaryKind, DataFrame, ExecutionOverrides, Runtime,
+    BoundaryKind, DataFrame, ExecutionOverrides, QueryExecutionContext, Runtime, TypeId,
+    core::error::{FactKeyName, FactValue},
+    frame::dataframe::GpuRecordBatch,
     ops::expr::col,
     testing::{self, prelude::*},
 };
@@ -115,6 +117,117 @@ fn runtime_boundary_observer_receives_opt_in_observations() {
     assert_eq!(observations[1].rows, 4);
     assert_eq!(observations[1].columns, 2);
     assert!(observations[1].synchronized_for_host);
+}
+
+#[test]
+fn query_execution_context_packages_runtime_handles_for_query_operations() {
+    let _observation_lock = lock_event_observation();
+    // Keep these as distinct same-device runtimes so the test proves the query
+    // facade replaces stream/MR without changing the input workflow provenance.
+    let data_runtime = sample_runtime();
+    let query_runtime = sample_runtime();
+    let query = query_runtime.query_execution();
+
+    fn assert_query_context(_: &QueryExecutionContext<'_>) {}
+    assert_query_context(&query);
+
+    assert_eq!(query.runtime().placement(), query_runtime.placement());
+    assert_eq!(query.placement(), query_runtime.placement());
+    assert_eq!(query.device(), query_runtime.device());
+    assert_eq!(query.stream().testing_raw_handle_value(), query_runtime.stream().testing_raw_handle_value());
+    assert_eq!(
+        query.memory_resource().testing_raw_handle_value(),
+        query_runtime.memory_resource().testing_raw_handle_value()
+    );
+    assert_eq!(query.execution_binding().unwrap().device(), query_runtime.device().ordinal() as i32);
+
+    let imported = DataFrame::from_record_batch(&data_runtime, &sample_record_batch()).unwrap();
+    reset_exec_observation();
+    let filtered = imported.with_execution(query.overrides()).filter_expr(col("id").ge(2i32)).unwrap();
+
+    assert_eq!(last_exec_stream_value(), query_runtime.stream().testing_raw_handle_value());
+    assert_eq!(last_exec_mr_value(), query_runtime.memory_resource().testing_raw_handle_value());
+    let filtered_placement = filtered.placement();
+    assert_eq!(filtered_placement.device, query_runtime.device());
+    assert_eq!(filtered_placement.workflow_id, imported.placement().workflow_id);
+    assert_eq!(filtered_placement.stream_debug, query_runtime.stream().testing_raw_handle_value());
+    assert_eq!(filtered_placement.memory_resource_debug, query_runtime.memory_resource().testing_raw_handle_value());
+}
+
+#[test]
+fn gpu_record_batch_wraps_frame_schema_and_keeps_host_materialization_explicit() {
+    let _observation_lock = lock_event_observation();
+    let runtime = sample_runtime();
+    let host = sample_record_batch();
+    let schema = host.schema();
+    let df = DataFrame::from_record_batch(&runtime, &host).unwrap();
+
+    let gpu = GpuRecordBatch::new(df.clone(), Arc::clone(&schema)).unwrap();
+
+    assert_eq!(gpu.schema().as_ref(), schema.as_ref());
+    assert_eq!(gpu.frame().column_names(), vec!["id", "value"]);
+    assert_eq!(gpu.num_rows(), 4);
+    assert_eq!(gpu.num_columns(), 2);
+    assert_eq!(gpu.placement(), df.placement());
+
+    testing::arrow::reset_arrow_host_interop_observation_for_test();
+    let export_count_before = testing::arrow::arrow_host_export_call_count_for_test();
+    let materialized = gpu.to_host_record_batch().unwrap();
+    let observation = testing::arrow::last_arrow_host_boundary_observation_for_test().unwrap();
+
+    assert_eq!(testing::arrow::arrow_host_export_call_count_for_test(), export_count_before + 1);
+    assert_eq!(materialized.schema().as_ref(), schema.as_ref());
+    assert_eq!(observation.kind, BoundaryKind::DeviceToHost);
+    assert_eq!(observation.placement, df.placement());
+    assert_eq!(observation.rows, 4);
+    assert_eq!(observation.columns, 2);
+    assert!(observation.synchronized_for_host);
+
+    let (unwrapped, unwrapped_schema, mapped_schema) = gpu.into_parts();
+    assert_eq!(unwrapped.column_names(), vec!["id", "value"]);
+    assert_eq!(unwrapped_schema.as_ref(), schema.as_ref());
+    assert_eq!(mapped_schema.row_count(), 4);
+    assert_eq!(mapped_schema.len(), 2);
+}
+
+#[test]
+fn gpu_record_batch_rejects_incompatible_external_schema_before_materialization() {
+    let runtime = sample_runtime();
+    let df = DataFrame::from_record_batch(&runtime, &sample_record_batch()).unwrap();
+
+    let wrong_type_schema = Arc::new(Schema::new(vec![
+        Field::new("id", ArrowDataType::Int64, false),
+        Field::new("value", ArrowDataType::Int32, false),
+    ]));
+    let wrong_type =
+        GpuRecordBatch::new(df.clone(), wrong_type_schema).expect_err("schema dtype mismatch should be rejected");
+    assert_eq!(wrong_type.code(), cudf::ErrorCode::UnsupportedDtype);
+    assert_eq!(wrong_type.operation(), "dataframe::GpuRecordBatch::new");
+    assert_eq!(wrong_type.fact_value(FactKeyName::LeftTypeId), Some(&FactValue::TypeId(TypeId::Int32)));
+    assert_eq!(wrong_type.fact_value(FactKeyName::RightTypeId), Some(&FactValue::TypeId(TypeId::Int64)));
+    assert_eq!(wrong_type.detail_value("field_name"), Some("id"));
+    assert_eq!(wrong_type.detail_value("field_index"), Some("0"));
+    assert_eq!(wrong_type.detail_value("frame_dtype_scale"), Some("0"));
+    assert_eq!(wrong_type.detail_value("schema_cudf_dtype_scale"), Some("0"));
+    assert_eq!(wrong_type.detail_value("frame_dtype"), None);
+    assert_eq!(wrong_type.detail_value("schema_cudf_dtype"), None);
+    assert_eq!(wrong_type.detail_value("reason"), Some("schema_dtype_mismatch"));
+
+    let wrong_name_schema = Arc::new(Schema::new(vec![
+        Field::new("other", ArrowDataType::Int32, false),
+        Field::new("value", ArrowDataType::Int32, false),
+    ]));
+    let wrong_name = GpuRecordBatch::new(df.clone(), wrong_name_schema)
+        .expect_err("schema field names must match DataFrame columns in order");
+    assert_eq!(wrong_name.code(), cudf::ErrorCode::MissingColumn);
+    assert_eq!(wrong_name.operation(), "dataframe::GpuRecordBatch::new");
+    assert_eq!(wrong_name.detail_value("field_name"), Some("other"));
+
+    let wrong_count_schema = Arc::new(Schema::new(vec![Field::new("id", ArrowDataType::Int32, false)]));
+    let wrong_count =
+        GpuRecordBatch::new(df, wrong_count_schema).expect_err("schema field count must match DataFrame column count");
+    assert_eq!(wrong_count.operation(), "dataframe::GpuRecordBatch::new");
+    assert_eq!(wrong_count.detail_value("resource"), Some("column_name_count"));
 }
 
 #[test]
