@@ -158,6 +158,70 @@ extern "C" {
         load_factor: f64,
         out: *mut *mut c_void,
     ) -> i32;
+}
+
+pub(crate) type ConditionalPairJoinRaw =
+    unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void, *mut *mut c_void, *mut *mut c_void) -> i32;
+pub(crate) type ConditionalSingleJoinRaw =
+    unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void, *mut *mut c_void) -> i32;
+
+#[allow(dead_code)]
+extern "C" {
+    #[link_name = "cudf_conditional_inner_join_indices"]
+    pub(crate) fn cudf_conditional_inner_join_indices_raw(
+        left: *mut c_void,
+        right: *mut c_void,
+        predicate: *mut c_void,
+        out_left_indices: *mut *mut c_void,
+        out_right_indices: *mut *mut c_void,
+    ) -> i32;
+    #[link_name = "cudf_conditional_left_join_indices"]
+    pub(crate) fn cudf_conditional_left_join_indices_raw(
+        left: *mut c_void,
+        right: *mut c_void,
+        predicate: *mut c_void,
+        out_left_indices: *mut *mut c_void,
+        out_right_indices: *mut *mut c_void,
+    ) -> i32;
+    #[link_name = "cudf_conditional_full_join_indices"]
+    pub(crate) fn cudf_conditional_full_join_indices_raw(
+        left: *mut c_void,
+        right: *mut c_void,
+        predicate: *mut c_void,
+        out_left_indices: *mut *mut c_void,
+        out_right_indices: *mut *mut c_void,
+    ) -> i32;
+    #[link_name = "cudf_conditional_left_semi_join_indices"]
+    pub(crate) fn cudf_conditional_left_semi_join_indices_raw(
+        left: *mut c_void,
+        right: *mut c_void,
+        predicate: *mut c_void,
+        out_indices: *mut *mut c_void,
+    ) -> i32;
+    #[link_name = "cudf_conditional_left_anti_join_indices"]
+    pub(crate) fn cudf_conditional_left_anti_join_indices_raw(
+        left: *mut c_void,
+        right: *mut c_void,
+        predicate: *mut c_void,
+        out_indices: *mut *mut c_void,
+    ) -> i32;
+}
+
+pub(crate) type MixedPairJoinRaw = unsafe extern "C" fn(
+    *mut c_void,
+    *mut c_void,
+    *mut c_void,
+    *mut c_void,
+    *mut c_void,
+    i32,
+    *mut *mut c_void,
+    *mut *mut c_void,
+) -> i32;
+pub(crate) type MixedSingleJoinRaw =
+    unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void, *mut c_void, *mut c_void, i32, *mut *mut c_void) -> i32;
+
+#[allow(dead_code)]
+extern "C" {
     #[link_name = "cudf_mixed_inner_join_indices"]
     pub(crate) fn cudf_mixed_inner_join_indices_raw(
         left_equality: *mut c_void,
@@ -211,6 +275,10 @@ extern "C" {
         null_equality: i32,
         out_indices: *mut *mut c_void,
     ) -> i32;
+}
+
+#[allow(dead_code)]
+extern "C" {
     #[link_name = "cudf_scan_aggregation_create"]
     pub(crate) fn cudf_scan_aggregation_create_raw(kind: i32, out: *mut *mut c_void) -> i32;
     #[link_name = "cudf_scan"]

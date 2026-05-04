@@ -1203,6 +1203,76 @@ fn test_ast_invalid_table_reference_operator_and_null_handle_clear_output() {
 }
 
 #[test]
+fn test_conditional_join_default_forms_validate_null_handles_and_clear_outputs() {
+    let _shim_state = lock_shim_state();
+    let left_tbl = make_table_from_one_column(make_i32_column(&[1, 4]));
+    let right_tbl = make_table_from_one_column(make_i32_column(&[2]));
+    let left_tv = make_table_view(left_tbl);
+    let right_tv = make_table_view(right_tbl);
+    let predicate = make_left_less_than_right_predicate();
+
+    for (name, join_indices) in [
+        ("inner", cudf_conditional_inner_join_indices_raw as ConditionalPairJoinRaw),
+        ("left", cudf_conditional_left_join_indices_raw),
+        ("full", cudf_conditional_full_join_indices_raw),
+    ] {
+        let mut out_right = std::ptr::NonNull::<c_void>::dangling().as_ptr();
+        let status = unsafe { join_indices(left_tv, right_tv, predicate, ptr::null_mut(), &mut out_right) };
+        assert_eq!(status, cudf_sys::CUDF_ERROR_NULL, "{name} conditional join null left output");
+        assert!(last_error_message().contains("out_left_indices is null"));
+
+        let mut out_left = std::ptr::NonNull::<c_void>::dangling().as_ptr();
+        let status = unsafe { join_indices(left_tv, right_tv, predicate, &mut out_left, ptr::null_mut()) };
+        assert_eq!(status, cudf_sys::CUDF_ERROR_NULL, "{name} conditional join null right output");
+        assert!(out_left.is_null(), "{name} conditional join must clear left output first");
+        assert!(last_error_message().contains("out_right_indices is null"));
+
+        for (case, left, right, pred, message) in [
+            ("left", ptr::null_mut(), right_tv, predicate, "left is null"),
+            ("right", left_tv, ptr::null_mut(), predicate, "right is null"),
+            ("predicate", left_tv, right_tv, ptr::null_mut(), "predicate is null"),
+        ] {
+            let mut out_left = std::ptr::NonNull::<c_void>::dangling().as_ptr();
+            let mut out_right = std::ptr::NonNull::<c_void>::dangling().as_ptr();
+            let status = unsafe { join_indices(left, right, pred, &mut out_left, &mut out_right) };
+            assert_eq!(status, cudf_sys::CUDF_ERROR_NULL, "{name} conditional join null {case} status");
+            assert!(out_left.is_null(), "{name} conditional join must clear left output for null {case}");
+            assert!(out_right.is_null(), "{name} conditional join must clear right output for null {case}");
+            assert!(last_error_message().contains(message));
+        }
+    }
+
+    for (name, join_indices) in [
+        ("semi", cudf_conditional_left_semi_join_indices_raw as ConditionalSingleJoinRaw),
+        ("anti", cudf_conditional_left_anti_join_indices_raw),
+    ] {
+        let status = unsafe { join_indices(left_tv, right_tv, predicate, ptr::null_mut()) };
+        assert_eq!(status, cudf_sys::CUDF_ERROR_NULL, "{name} conditional join null output");
+        assert!(last_error_message().contains("out_indices is null"));
+
+        for (case, left, right, pred, message) in [
+            ("left", ptr::null_mut(), right_tv, predicate, "left is null"),
+            ("right", left_tv, ptr::null_mut(), predicate, "right is null"),
+            ("predicate", left_tv, right_tv, ptr::null_mut(), "predicate is null"),
+        ] {
+            let mut out = std::ptr::NonNull::<c_void>::dangling().as_ptr();
+            let status = unsafe { join_indices(left, right, pred, &mut out) };
+            assert_eq!(status, cudf_sys::CUDF_ERROR_NULL, "{name} conditional join null {case} status");
+            assert!(out.is_null(), "{name} conditional join must clear output for null {case}");
+            assert!(last_error_message().contains(message));
+        }
+    }
+
+    unsafe {
+        cudf_sys::cudf_ast_expression_destroy(predicate);
+        cudf_sys::cudf_table_view_destroy(right_tv);
+        cudf_sys::cudf_table_view_destroy(left_tv);
+        cudf_sys::cudf_table_destroy(right_tbl);
+        cudf_sys::cudf_table_destroy(left_tbl);
+    }
+}
+
+#[test]
 fn test_hash_join_create_ex_uses_explicit_memory_resource_for_build_allocations() {
     let _shim_state = lock_shim_state();
     let previous_raw = current_device_resource_raw();
@@ -1732,6 +1802,197 @@ fn test_mixed_join_invalid_null_equality_rejected_and_clears_outputs() {
         assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_OPERATION, "{name} mixed join status");
         assert!(out.is_null(), "{name} mixed join must clear output");
         assert!(last_error_message().contains("invalid null_equality"));
+    }
+
+    unsafe {
+        cudf_sys::cudf_ast_expression_destroy(predicate);
+        cudf_sys::cudf_table_view_destroy(right_cond_tv);
+        cudf_sys::cudf_table_view_destroy(left_cond_tv);
+        cudf_sys::cudf_table_view_destroy(right_eq_tv);
+        cudf_sys::cudf_table_view_destroy(left_eq_tv);
+        cudf_sys::cudf_table_destroy(right_cond_tbl);
+        cudf_sys::cudf_table_destroy(left_cond_tbl);
+        cudf_sys::cudf_table_destroy(right_eq_tbl);
+        cudf_sys::cudf_table_destroy(left_eq_tbl);
+    }
+}
+
+#[test]
+fn test_mixed_join_null_handles_clear_outputs() {
+    let _shim_state = lock_shim_state();
+    let left_eq_tbl = make_table_from_one_column(make_i32_column(&[1, 1, 2, 3]));
+    let right_eq_tbl = make_table_from_one_column(make_i32_column(&[1, 2, 2, 4]));
+    let left_cond_tbl = make_table_from_one_column(make_i32_column(&[10, 30, 5, 7]));
+    let right_cond_tbl = make_table_from_one_column(make_i32_column(&[20, 10, 6, 8]));
+    let left_eq_tv = make_table_view(left_eq_tbl);
+    let right_eq_tv = make_table_view(right_eq_tbl);
+    let left_cond_tv = make_table_view(left_cond_tbl);
+    let right_cond_tv = make_table_view(right_cond_tbl);
+    let predicate = make_left_less_than_right_predicate();
+    let null_equality = cudf_sys::cudf_null_equality_t::CUDF_NULL_EQUALITY_EQUAL as i32;
+
+    for (name, join_indices) in [
+        ("inner", cudf_mixed_inner_join_indices_raw as MixedPairJoinRaw),
+        ("left", cudf_mixed_left_join_indices_raw),
+        ("full", cudf_mixed_full_join_indices_raw),
+    ] {
+        let mut out_right = std::ptr::NonNull::<c_void>::dangling().as_ptr();
+        let status = unsafe {
+            join_indices(
+                left_eq_tv,
+                right_eq_tv,
+                left_cond_tv,
+                right_cond_tv,
+                predicate,
+                null_equality,
+                ptr::null_mut(),
+                &mut out_right,
+            )
+        };
+        assert_eq!(status, cudf_sys::CUDF_ERROR_NULL, "{name} mixed join null left output");
+        assert!(last_error_message().contains("out_left_indices is null"));
+
+        let mut out_left = std::ptr::NonNull::<c_void>::dangling().as_ptr();
+        let status = unsafe {
+            join_indices(
+                left_eq_tv,
+                right_eq_tv,
+                left_cond_tv,
+                right_cond_tv,
+                predicate,
+                null_equality,
+                &mut out_left,
+                ptr::null_mut(),
+            )
+        };
+        assert_eq!(status, cudf_sys::CUDF_ERROR_NULL, "{name} mixed join null right output");
+        assert!(out_left.is_null(), "{name} mixed join must clear left output first");
+        assert!(last_error_message().contains("out_right_indices is null"));
+
+        for (case, left_eq, right_eq, left_cond, right_cond, pred, message) in [
+            (
+                "left_equality",
+                ptr::null_mut(),
+                right_eq_tv,
+                left_cond_tv,
+                right_cond_tv,
+                predicate,
+                "left_equality is null",
+            ),
+            (
+                "right_equality",
+                left_eq_tv,
+                ptr::null_mut(),
+                left_cond_tv,
+                right_cond_tv,
+                predicate,
+                "right_equality is null",
+            ),
+            (
+                "left_conditional",
+                left_eq_tv,
+                right_eq_tv,
+                ptr::null_mut(),
+                right_cond_tv,
+                predicate,
+                "left_conditional is null",
+            ),
+            (
+                "right_conditional",
+                left_eq_tv,
+                right_eq_tv,
+                left_cond_tv,
+                ptr::null_mut(),
+                predicate,
+                "right_conditional is null",
+            ),
+            ("predicate", left_eq_tv, right_eq_tv, left_cond_tv, right_cond_tv, ptr::null_mut(), "predicate is null"),
+        ] {
+            let mut out_left = std::ptr::NonNull::<c_void>::dangling().as_ptr();
+            let mut out_right = std::ptr::NonNull::<c_void>::dangling().as_ptr();
+            let status = unsafe {
+                join_indices(
+                    left_eq,
+                    right_eq,
+                    left_cond,
+                    right_cond,
+                    pred,
+                    null_equality,
+                    &mut out_left,
+                    &mut out_right,
+                )
+            };
+            assert_eq!(status, cudf_sys::CUDF_ERROR_NULL, "{name} mixed join null {case} status");
+            assert!(out_left.is_null(), "{name} mixed join must clear left output for null {case}");
+            assert!(out_right.is_null(), "{name} mixed join must clear right output for null {case}");
+            assert!(last_error_message().contains(message));
+        }
+    }
+
+    for (name, join_indices) in [
+        ("semi", cudf_mixed_left_semi_join_indices_raw as MixedSingleJoinRaw),
+        ("anti", cudf_mixed_left_anti_join_indices_raw),
+    ] {
+        let status = unsafe {
+            join_indices(
+                left_eq_tv,
+                right_eq_tv,
+                left_cond_tv,
+                right_cond_tv,
+                predicate,
+                null_equality,
+                ptr::null_mut(),
+            )
+        };
+        assert_eq!(status, cudf_sys::CUDF_ERROR_NULL, "{name} mixed join null output");
+        assert!(last_error_message().contains("out_indices is null"));
+
+        for (case, left_eq, right_eq, left_cond, right_cond, pred, message) in [
+            (
+                "left_equality",
+                ptr::null_mut(),
+                right_eq_tv,
+                left_cond_tv,
+                right_cond_tv,
+                predicate,
+                "left_equality is null",
+            ),
+            (
+                "right_equality",
+                left_eq_tv,
+                ptr::null_mut(),
+                left_cond_tv,
+                right_cond_tv,
+                predicate,
+                "right_equality is null",
+            ),
+            (
+                "left_conditional",
+                left_eq_tv,
+                right_eq_tv,
+                ptr::null_mut(),
+                right_cond_tv,
+                predicate,
+                "left_conditional is null",
+            ),
+            (
+                "right_conditional",
+                left_eq_tv,
+                right_eq_tv,
+                left_cond_tv,
+                ptr::null_mut(),
+                predicate,
+                "right_conditional is null",
+            ),
+            ("predicate", left_eq_tv, right_eq_tv, left_cond_tv, right_cond_tv, ptr::null_mut(), "predicate is null"),
+        ] {
+            let mut out = std::ptr::NonNull::<c_void>::dangling().as_ptr();
+            let status =
+                unsafe { join_indices(left_eq, right_eq, left_cond, right_cond, pred, null_equality, &mut out) };
+            assert_eq!(status, cudf_sys::CUDF_ERROR_NULL, "{name} mixed join null {case} status");
+            assert!(out.is_null(), "{name} mixed join must clear output for null {case}");
+            assert!(last_error_message().contains(message));
+        }
     }
 
     unsafe {

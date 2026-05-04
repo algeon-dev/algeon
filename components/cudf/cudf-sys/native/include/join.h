@@ -214,6 +214,11 @@ cudf_status_t cudf_conditional_inner_join_indices(cudf_table_view_handle left,
                                                   cudf_column_handle* out_right_indices);
 
 /// Conditional inner join indices with explicit execution context.
+///
+/// Passing NULL for `options`, or leaving `options->stream` / `options->mr`
+/// NULL, uses cuDF's default stream and current device memory resource.
+/// When `options->mr` is non-NULL, it must outlive both returned index
+/// columns.
 cudf_status_t cudf_conditional_inner_join_indices_ex(cudf_table_view_handle left,
                                                      cudf_table_view_handle right,
                                                      cudf_ast_expression_handle predicate,
@@ -229,6 +234,11 @@ cudf_status_t cudf_conditional_left_join_indices(cudf_table_view_handle left,
                                                  cudf_column_handle* out_right_indices);
 
 /// Conditional left join indices with explicit execution context.
+///
+/// Passing NULL for `options`, or leaving `options->stream` / `options->mr`
+/// NULL, uses cuDF's default stream and current device memory resource.
+/// When `options->mr` is non-NULL, it must outlive both returned index
+/// columns.
 cudf_status_t cudf_conditional_left_join_indices_ex(cudf_table_view_handle left,
                                                     cudf_table_view_handle right,
                                                     cudf_ast_expression_handle predicate,
@@ -244,6 +254,11 @@ cudf_status_t cudf_conditional_full_join_indices(cudf_table_view_handle left,
                                                  cudf_column_handle* out_right_indices);
 
 /// Conditional full join indices with explicit execution context.
+///
+/// Passing NULL for `options`, or leaving `options->stream` / `options->mr`
+/// NULL, uses cuDF's default stream and current device memory resource.
+/// When `options->mr` is non-NULL, it must outlive both returned index
+/// columns.
 cudf_status_t cudf_conditional_full_join_indices_ex(cudf_table_view_handle left,
                                                     cudf_table_view_handle right,
                                                     cudf_ast_expression_handle predicate,
@@ -258,6 +273,10 @@ cudf_status_t cudf_conditional_left_semi_join_indices(cudf_table_view_handle lef
                                                       cudf_column_handle* out_indices);
 
 /// Conditional left semi join indices with explicit execution context.
+///
+/// Passing NULL for `options`, or leaving `options->stream` / `options->mr`
+/// NULL, uses cuDF's default stream and current device memory resource.
+/// When `options->mr` is non-NULL, it must outlive the returned index column.
 cudf_status_t cudf_conditional_left_semi_join_indices_ex(cudf_table_view_handle left,
                                                          cudf_table_view_handle right,
                                                          cudf_ast_expression_handle predicate,
@@ -271,6 +290,10 @@ cudf_status_t cudf_conditional_left_anti_join_indices(cudf_table_view_handle lef
                                                       cudf_column_handle* out_indices);
 
 /// Conditional left anti join indices with explicit execution context.
+///
+/// Passing NULL for `options`, or leaving `options->stream` / `options->mr`
+/// NULL, uses cuDF's default stream and current device memory resource.
+/// When `options->mr` is non-NULL, it must outlive the returned index column.
 cudf_status_t cudf_conditional_left_anti_join_indices_ex(cudf_table_view_handle left,
                                                          cudf_table_view_handle right,
                                                          cudf_ast_expression_handle predicate,
@@ -290,6 +313,11 @@ cudf_status_t cudf_mixed_inner_join_indices(cudf_table_view_handle left_equality
                                             cudf_column_handle* out_right_indices);
 
 /// Mixed inner join indices with explicit execution context.
+///
+/// Passing NULL for `options`, or leaving `options->stream` / `options->mr`
+/// NULL, uses cuDF's default stream and current device memory resource.
+/// When `options->mr` is non-NULL, it must outlive both returned index
+/// columns.
 cudf_status_t cudf_mixed_inner_join_indices_ex(cudf_table_view_handle left_equality,
                                                cudf_table_view_handle right_equality,
                                                cudf_table_view_handle left_conditional,
@@ -311,6 +339,11 @@ cudf_status_t cudf_mixed_left_join_indices(cudf_table_view_handle left_equality,
                                            cudf_column_handle* out_right_indices);
 
 /// Mixed left join indices with explicit execution context.
+///
+/// Passing NULL for `options`, or leaving `options->stream` / `options->mr`
+/// NULL, uses cuDF's default stream and current device memory resource.
+/// When `options->mr` is non-NULL, it must outlive both returned index
+/// columns.
 cudf_status_t cudf_mixed_left_join_indices_ex(cudf_table_view_handle left_equality,
                                               cudf_table_view_handle right_equality,
                                               cudf_table_view_handle left_conditional,
@@ -332,6 +365,11 @@ cudf_status_t cudf_mixed_full_join_indices(cudf_table_view_handle left_equality,
                                            cudf_column_handle* out_right_indices);
 
 /// Mixed full join indices with explicit execution context.
+///
+/// Passing NULL for `options`, or leaving `options->stream` / `options->mr`
+/// NULL, uses cuDF's default stream and current device memory resource.
+/// When `options->mr` is non-NULL, it must outlive both returned index
+/// columns.
 cudf_status_t cudf_mixed_full_join_indices_ex(cudf_table_view_handle left_equality,
                                               cudf_table_view_handle right_equality,
                                               cudf_table_view_handle left_conditional,
@@ -352,6 +390,10 @@ cudf_status_t cudf_mixed_left_semi_join_indices(cudf_table_view_handle left_equa
                                                 cudf_column_handle* out_indices);
 
 /// Mixed left semi join indices with explicit execution context.
+///
+/// Passing NULL for `options`, or leaving `options->stream` / `options->mr`
+/// NULL, uses cuDF's default stream and current device memory resource.
+/// When `options->mr` is non-NULL, it must outlive the returned index column.
 cudf_status_t cudf_mixed_left_semi_join_indices_ex(cudf_table_view_handle left_equality,
                                                    cudf_table_view_handle right_equality,
                                                    cudf_table_view_handle left_conditional,
@@ -371,6 +413,10 @@ cudf_status_t cudf_mixed_left_anti_join_indices(cudf_table_view_handle left_equa
                                                 cudf_column_handle* out_indices);
 
 /// Mixed left anti join indices with explicit execution context.
+///
+/// Passing NULL for `options`, or leaving `options->stream` / `options->mr`
+/// NULL, uses cuDF's default stream and current device memory resource.
+/// When `options->mr` is non-NULL, it must outlive the returned index column.
 cudf_status_t cudf_mixed_left_anti_join_indices_ex(cudf_table_view_handle left_equality,
                                                    cudf_table_view_handle right_equality,
                                                    cudf_table_view_handle left_conditional,
