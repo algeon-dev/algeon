@@ -11,3 +11,5 @@ mod ops_contracts;
 mod query_backend_contract_tests;
 #[path = "execution/runtime_contracts.rs"]
 mod runtime_contracts;
+#[path = "execution/tpch_pipeline_contract_tests.rs"]
+mod tpch_pipeline_contract_tests;
