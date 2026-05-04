@@ -114,7 +114,6 @@ pub(super) fn materialize_compiled_one_shot_residual_output(
     let candidate_output_bytes = match observe_device_memory_bytes(&GpuDataFrame::new(candidate.clone()), metrics) {
         Ok(bytes) => bytes,
         Err(error) => {
-            drop(candidate);
             reservations.release(candidate_reservation, metrics);
             txn.rollback(reservations, metrics);
             return Err(error);
@@ -127,7 +126,6 @@ pub(super) fn materialize_compiled_one_shot_residual_output(
         reservations,
         metrics,
     ) {
-        drop(candidate);
         reservations.release(candidate_reservation, metrics);
         txn.rollback(reservations, metrics);
         return Err(error);
@@ -147,7 +145,6 @@ pub(super) fn materialize_compiled_one_shot_residual_output(
     ) {
         Ok(reservation) => reservation,
         Err(error) => {
-            drop(candidate);
             reservations.release(candidate_reservation, metrics);
             txn.rollback(reservations, metrics);
             return Err(error);
@@ -162,7 +159,6 @@ pub(super) fn materialize_compiled_one_shot_residual_output(
     ) {
         Ok(token) => token,
         Err(error) => {
-            drop(candidate);
             reservations.release(filtered_reservation, metrics);
             reservations.release(candidate_reservation, metrics);
             txn.rollback(reservations, metrics);
@@ -172,7 +168,6 @@ pub(super) fn materialize_compiled_one_shot_residual_output(
     let predicate = match lower_expr(&residual_candidate.predicate) {
         Ok(predicate) => predicate,
         Err(error) => {
-            drop(candidate);
             reservations.release(filtered_reservation, metrics);
             reservations.release(candidate_reservation, metrics);
             txn.rollback(reservations, metrics);
@@ -183,7 +178,6 @@ pub(super) fn materialize_compiled_one_shot_residual_output(
     let filtered = match candidate.with_execution(&filter_overrides).filter_expr(predicate) {
         Ok(filtered) => filtered,
         Err(error) => {
-            drop(candidate);
             reservations.release(filtered_reservation, metrics);
             reservations.release(candidate_reservation, metrics);
             txn.rollback(reservations, metrics);
@@ -200,7 +194,6 @@ pub(super) fn materialize_compiled_one_shot_residual_output(
             ));
         },
     };
-    drop(candidate);
     reservations.release(candidate_reservation, metrics);
     txn.set_output_reservation(filtered_reservation);
 
@@ -209,7 +202,6 @@ pub(super) fn materialize_compiled_one_shot_residual_output(
     let output = match filtered.select(final_output_names.iter().map(String::as_str)) {
         Ok(output) => output,
         Err(error) => {
-            drop(filtered);
             txn.rollback(reservations, metrics);
             return Err(QueryError::from_cudf(
                 "nexus_query_engine.bounded.join.one_shot_residual_output_projection",
@@ -218,13 +210,11 @@ pub(super) fn materialize_compiled_one_shot_residual_output(
             ));
         },
     };
-    drop(filtered);
     metrics.operator_time += timer.elapsed();
     let output_rows = output.num_rows() as u64;
     let output_bytes = match observe_device_memory_bytes(&GpuDataFrame::new(output.clone()), metrics) {
         Ok(bytes) => bytes,
         Err(error) => {
-            drop(output);
             txn.rollback(reservations, metrics);
             return Err(error);
         },
@@ -232,7 +222,6 @@ pub(super) fn materialize_compiled_one_shot_residual_output(
     if let Err(error) =
         reconcile_join_output_upper_bound(node_id, txn.output_reservation_mut(), output_bytes, reservations, metrics)
     {
-        drop(output);
         txn.rollback(reservations, metrics);
         return Err(error);
     }

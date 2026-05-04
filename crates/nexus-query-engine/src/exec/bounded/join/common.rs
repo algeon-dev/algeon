@@ -16,8 +16,7 @@ pub(in crate::exec::bounded) fn release_bounded_join_side_frame(
     reservations: &mut ReservationTracker,
     metrics: &mut QueryMetrics,
 ) {
-    let BoundedJoinSideFrame { frame, _reservation: reservation, .. } = side;
-    drop(frame);
+    let BoundedJoinSideFrame { _reservation: reservation, .. } = side;
     reservations.release(reservation, metrics);
 }
 
@@ -589,7 +588,6 @@ fn max_string_byte_length_for_join_output_sizing(
     let observed = match byte_counts.device_allocated_size_bytes() {
         Ok(bytes) => bytes as u64,
         Err(error) => {
-            drop(byte_counts);
             reservations.release(reservation, metrics);
             return Err(QueryError::from_cudf(
                 "nexus_query_engine.bounded.join.output_string_length_sizing",
@@ -606,7 +604,6 @@ fn max_string_byte_length_for_join_output_sizing(
             .with_fact("stage", "join_output_string_length_sizing")
             .with_fact("side", side)
             .with_fact("column", column);
-        drop(byte_counts);
         reservations.release(reservation, metrics);
         return Err(error);
     }
@@ -614,7 +611,6 @@ fn max_string_byte_length_for_join_output_sizing(
     let max_len = match byte_counts.max_value_in::<i32>(&token.execution_overrides()) {
         Ok(max_len) => max_len,
         Err(error) => {
-            drop(byte_counts);
             reservations.release(reservation, metrics);
             return Err(QueryError::from_cudf(
                 "nexus_query_engine.bounded.join.output_string_length_sizing",
@@ -626,7 +622,6 @@ fn max_string_byte_length_for_join_output_sizing(
             .with_fact("column", column));
         },
     };
-    drop(byte_counts);
     reservations.release(reservation, metrics);
     Ok(max_len.unwrap_or(0).max(0) as u64)
 }

@@ -74,70 +74,49 @@ pub(in crate::exec::bounded) fn concatenate_source_read_outputs(
     };
 
     let mut input_reservations = Vec::with_capacity(chunks.len());
-    let mut frames = Vec::with_capacity(chunks.len());
-    for chunk in chunks {
-        frames.push(chunk.frame.into_frame());
-        input_reservations.push(chunk.reservation);
-    }
-    let chunk_count = input_reservations.len();
-    let first_frame = frames.remove(0);
-    let rest_frame_refs = frames.iter().collect::<Vec<_>>();
-    let overrides_lease = execution_overrides(context)?;
-    let overrides = overrides_lease.overrides();
-    let timer = Instant::now();
-    let output = match first_frame.with_execution(&overrides).concat_many(&rest_frame_refs) {
-        Ok(output) => output,
-        Err(error) => {
-            drop(rest_frame_refs);
-            drop(frames);
-            drop(first_frame);
-            release_source_reservations_reverse(reservations, input_reservations, metrics);
-            reservations.release(output_reservation, metrics);
-            return Err(QueryError::from_cudf(operation, message, error)
-                .with_fact("node_id", node_id)
-                .with_fact("chunk_count", chunk_count));
-        },
-    };
-    metrics.operator_time += timer.elapsed();
-
-    let output_frame = GpuDataFrame::new(output);
-    let output_bytes = match observe_device_memory_bytes(&output_frame, metrics) {
-        Ok(bytes) => bytes,
-        Err(error) => {
-            drop(output_frame);
-            drop(rest_frame_refs);
-            drop(frames);
-            drop(first_frame);
-            release_source_reservations_reverse(reservations, input_reservations, metrics);
-            reservations.release(output_reservation, metrics);
-            return Err(error);
-        },
-    };
-    if output_bytes > output_reservation.bytes() {
-        let delta = output_bytes.saturating_sub(output_reservation.bytes());
-        if let Err(error) = reservations.try_grow(
-            &mut output_reservation,
-            MemoryReservationRequest::new(ReservationKind::SourceRead, delta, reservations.budget())
-                .with_memory_boundary(concat_output_boundary)
-                .with_node_id(node_id)
-                .with_stage(concat_output_boundary)
-                .with_attempt(1, 1),
-            metrics,
-        ) {
-            drop(output_frame);
-            drop(rest_frame_refs);
-            drop(frames);
-            drop(first_frame);
-            release_source_reservations_reverse(reservations, input_reservations, metrics);
-            reservations.release(output_reservation, metrics);
-            return Err(error);
+    let output = (|| {
+        let mut frames = Vec::with_capacity(chunks.len());
+        for chunk in chunks {
+            frames.push(chunk.frame.into_frame());
+            input_reservations.push(chunk.reservation);
         }
-    }
-    drop(rest_frame_refs);
-    drop(frames);
-    drop(first_frame);
+        let chunk_count = input_reservations.len();
+        let first_frame = frames.remove(0);
+        let rest_frame_refs = frames.iter().collect::<Vec<_>>();
+        let overrides_lease = execution_overrides(context)?;
+        let overrides = overrides_lease.overrides();
+        let timer = Instant::now();
+        let output = first_frame.with_execution(&overrides).concat_many(&rest_frame_refs).map_err(|error| {
+            QueryError::from_cudf(operation, message, error)
+                .with_fact("node_id", node_id)
+                .with_fact("chunk_count", chunk_count)
+        })?;
+        metrics.operator_time += timer.elapsed();
+
+        let output_frame = GpuDataFrame::new(output);
+        let output_bytes = observe_device_memory_bytes(&output_frame, metrics)?;
+        if output_bytes > output_reservation.bytes() {
+            let delta = output_bytes.saturating_sub(output_reservation.bytes());
+            reservations.try_grow(
+                &mut output_reservation,
+                MemoryReservationRequest::new(ReservationKind::SourceRead, delta, reservations.budget())
+                    .with_memory_boundary(concat_output_boundary)
+                    .with_node_id(node_id)
+                    .with_stage(concat_output_boundary)
+                    .with_attempt(1, 1),
+                metrics,
+            )?;
+        }
+        Ok::<_, QueryError>(output_frame)
+    })();
     release_source_reservations_reverse(reservations, input_reservations, metrics);
-    Ok(ResidentGpuFrame { frame: output_frame, reservation: output_reservation })
+    match output {
+        Ok(frame) => Ok(ResidentGpuFrame { frame, reservation: output_reservation }),
+        Err(error) => {
+            reservations.release(output_reservation, metrics);
+            Err(error)
+        },
+    }
 }
 
 fn read_local_parquet_chunks_serial(
@@ -533,7 +512,6 @@ fn read_local_parquet_chunk_required_only_attempt(
     } {
         Ok(observed_bytes) => observed_bytes,
         Err(error) => {
-            drop(output.frame);
             reservations.release(output.reservation, metrics);
             return Err(error);
         },
@@ -633,7 +611,6 @@ pub(in crate::exec::bounded) fn read_local_parquet_chunk_batch_required_only_no_
     } {
         Ok(observed_bytes) => observed_bytes,
         Err(error) => {
-            drop(frame);
             reservations.release(reservation, metrics);
             return Err(error);
         },
@@ -701,7 +678,6 @@ pub(in crate::exec::bounded) fn release_source_read_outputs_reverse(
     metrics: &mut QueryMetrics,
 ) {
     while let Some(chunk) = chunks.pop() {
-        drop(chunk.frame);
         reservations.release(chunk.reservation, metrics);
     }
 }

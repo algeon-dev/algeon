@@ -58,14 +58,12 @@ pub(super) fn read_join_leaf_source_chunks_with_scheduler(
                 1,
                 max_attempts,
             ) {
-                drop(output.frame);
                 reservations.release(output.reservation, metrics);
                 abandon_join_leaf_reads(pending, reservations, metrics);
                 release_join_source_chunks_reverse(reservations, chunks, metrics);
                 return Err(error);
             }
         } else if let Err(error) = observe_device_memory_bytes(&output.frame, metrics) {
-            drop(output.frame);
             reservations.release(output.reservation, metrics);
             abandon_join_leaf_reads(pending, reservations, metrics);
             release_join_source_chunks_reverse(reservations, chunks, metrics);

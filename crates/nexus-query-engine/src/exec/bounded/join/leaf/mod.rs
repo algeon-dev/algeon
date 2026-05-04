@@ -247,7 +247,6 @@ impl BoundedJoinLeafLocalParquetSourcePrefetch {
             1,
             self.max_attempts,
         ) {
-            drop(output.frame);
             reservations.release(output.reservation, metrics);
             return Err(error);
         }

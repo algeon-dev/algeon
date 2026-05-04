@@ -144,7 +144,6 @@ fn execute_join_leaf_source_stream_unary_with_work_bytes(
     ) {
         Ok(reservation) => reservation,
         Err(error) => {
-            drop(input.frame);
             reservations.release(input.reservation, metrics);
             return Err(error);
         },
@@ -178,7 +177,6 @@ fn execute_join_leaf_source_stream_unary_with_work_bytes(
     let output_bytes = match observe_device_memory_bytes(&frame, metrics) {
         Ok(bytes) => bytes,
         Err(error) => {
-            drop(frame);
             reservations.release(work_reservation, metrics);
             return Err(error.with_fact_if_absent("node_id", node_id));
         },
@@ -196,7 +194,6 @@ fn execute_join_leaf_source_stream_unary_with_work_bytes(
         &output_request,
         metrics,
     ) {
-        drop(frame);
         reservations.release(work_reservation, metrics);
         return Err(error);
     }

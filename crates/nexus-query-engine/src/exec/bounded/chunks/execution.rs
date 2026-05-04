@@ -115,7 +115,6 @@ pub(in crate::exec::bounded::chunks) fn release_committed_partials_reverse(
     metrics: &mut QueryMetrics,
 ) {
     while let Some(partial) = partials.pop() {
-        drop(partial.frame);
         reservations.release(partial.reservation, metrics);
     }
 }
@@ -296,7 +295,6 @@ pub(in crate::exec::bounded::chunks) fn read_bounded_chunk_source(
         ) {
             Ok(bytes) => bytes,
             Err(error) => {
-                drop(output.frame);
                 reservations.release(output.reservation, metrics);
                 return Err(error);
             },
@@ -385,7 +383,6 @@ pub(in crate::exec::bounded::chunks) fn execute_bounded_chunk_operator_from_sour
         observed_row_group_count,
     } = source;
     if let Err(error) = context.check_cancellation("nexus_query_engine.exec.bounded.chunk_operator") {
-        drop(frame);
         reservations.release(source_reservation, metrics);
         return Err(error);
     }
@@ -414,7 +411,6 @@ pub(in crate::exec::bounded::chunks) fn execute_bounded_chunk_operator_from_sour
     let operator_reservation = match reservations.try_reserve(operator_request, metrics) {
         Ok(reservation) => reservation,
         Err(error) => {
-            drop(frame);
             reservations.release(source_reservation, metrics);
             return Err(error);
         },

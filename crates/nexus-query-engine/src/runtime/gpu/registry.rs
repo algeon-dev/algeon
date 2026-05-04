@@ -559,10 +559,9 @@ fn managed_capacity_bytes(
                 .checked_sub(headroom_bytes)
                 .filter(|value| *value > 0)
                 .unwrap_or(fallback_bytes.min(owned_capacity_bytes));
-            let automatic = fraction.map_or(headroom_capacity, |fraction| {
+            fraction.map_or(headroom_capacity, |fraction| {
                 headroom_capacity.min(fraction.capacity_bytes(owned_capacity_bytes))
-            });
-            automatic
+            })
         },
         DeviceRegistryCapacityPolicy::Explicit { limit_bytes } => {
             if limit_bytes > owned_capacity_bytes {

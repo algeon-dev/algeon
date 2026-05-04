@@ -51,6 +51,14 @@ pub(super) fn release_committed_partials(
     metrics: &mut QueryMetrics,
 ) {
     for partial in partials {
-        reservations.release(partial.reservation, metrics);
+        release_committed_partial(partial, reservations, metrics);
     }
+}
+
+pub(super) fn release_committed_partial(
+    partial: CommittedPartial,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+) {
+    reservations.release(partial.reservation, metrics);
 }

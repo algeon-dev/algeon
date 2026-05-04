@@ -238,12 +238,10 @@ pub(super) fn read_join_leaf_source_batch_attempt(
             1,
             1,
         ) {
-            drop(frame);
             reservations.release(reservation, metrics);
             return Err(error);
         }
     } else if let Err(error) = observe_device_memory_bytes(&frame, metrics) {
-        drop(frame);
         reservations.release(reservation, metrics);
         return Err(error);
     }
@@ -431,12 +429,10 @@ pub(super) fn read_join_leaf_source_chunk_attempt(
             attempt,
             max_attempts,
         ) {
-            drop(frame);
             reservations.release(reservation, metrics);
             return Err(error);
         }
     } else if let Err(error) = observe_device_memory_bytes(&frame, metrics) {
-        drop(frame);
         reservations.release(reservation, metrics);
         return Err(error);
     }

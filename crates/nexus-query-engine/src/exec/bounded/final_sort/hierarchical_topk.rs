@@ -487,38 +487,39 @@ impl FinalSortExecutor<'_> {
         work_token_failure_mode: TopKWorkTokenFailureMode,
         frame_for_sort: impl FnOnce(&ExecutionBudgetToken) -> Result<GpuDataFrame>,
     ) -> Result<CommittedPartial> {
-        let work_token = match self.final_sort_budget_token_including(memory_boundary, attempt, &work_reservation) {
-            Ok(token) => token,
-            Err(error) => match work_token_failure_mode {
-                TopKWorkTokenFailureMode::Direct => {
-                    self.reservations.release(output_reservation, self.metrics);
-                    self.reservations.release(work_reservation, self.metrics);
-                    if let Some(reservation) = release_after_sort {
-                        self.reservations.release(reservation, self.metrics);
-                    }
-                    return Err(error);
+        let sorted = {
+            let work_token = match self.final_sort_budget_token_including(memory_boundary, attempt, &work_reservation) {
+                Ok(token) => token,
+                Err(error) => match work_token_failure_mode {
+                    TopKWorkTokenFailureMode::Direct => {
+                        self.reservations.release(output_reservation, self.metrics);
+                        self.reservations.release(work_reservation, self.metrics);
+                        if let Some(reservation) = release_after_sort {
+                            self.reservations.release(reservation, self.metrics);
+                        }
+                        return Err(error);
+                    },
+                    TopKWorkTokenFailureMode::RuntimeFacts => {
+                        self.reservations.release(work_reservation, self.metrics);
+                        self.reservations.release(output_reservation, self.metrics);
+                        if let Some(reservation) = release_after_sort {
+                            self.reservations.release(reservation, self.metrics);
+                        }
+                        return Err(final_sort_runtime_facts(
+                            memory_boundary,
+                            self.node_id,
+                            attempt,
+                            self.max_attempts,
+                            self.metrics,
+                            error,
+                        ));
+                    },
                 },
-                TopKWorkTokenFailureMode::RuntimeFacts => {
-                    self.reservations.release(work_reservation, self.metrics);
-                    self.reservations.release(output_reservation, self.metrics);
-                    if let Some(reservation) = release_after_sort {
-                        self.reservations.release(reservation, self.metrics);
-                    }
-                    return Err(final_sort_runtime_facts(
-                        memory_boundary,
-                        self.node_id,
-                        attempt,
-                        self.max_attempts,
-                        self.metrics,
-                        error,
-                    ));
-                },
-            },
+            };
+            frame_for_sort(&work_token).and_then(|frame| {
+                sort_topk_candidate_with_budget(self.sort, frame, &work_token, memory_boundary, self.metrics)
+            })
         };
-        let sorted = frame_for_sort(&work_token).and_then(|frame| {
-            sort_topk_candidate_with_budget(self.sort, frame, &work_token, memory_boundary, self.metrics)
-        });
-        drop(work_token);
         if let Some(reservation) = release_after_sort {
             self.reservations.release(reservation, self.metrics);
         }

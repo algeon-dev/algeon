@@ -435,7 +435,6 @@ fn execute_compiled_bounded_statistical_partial_from_frame(
     let mut work_reservation = match reservations.try_reserve_work(work_request, metrics) {
         Ok(reservation) => reservation,
         Err(error) => {
-            drop(input_frame);
             reservations.release(input_reservation, metrics);
             return Err(error);
         },
@@ -475,7 +474,6 @@ fn execute_compiled_bounded_statistical_partial_from_frame(
     let partial_bytes = match observe_device_memory_bytes(&frame, metrics) {
         Ok(bytes) => bytes,
         Err(error) => {
-            drop(frame);
             reservations.release(work_reservation, metrics);
             return Err(error);
         },
@@ -487,7 +485,6 @@ fn execute_compiled_bounded_statistical_partial_from_frame(
             .with_stage("compiled_statistical_aggregate_partial");
     if partial_bytes > work_reservation.bytes() {
         let error = partial_aggregate_upper_bound_violation_error(node_id, work_reservation.bytes(), partial_bytes);
-        drop(frame);
         reservations.release(work_reservation, metrics);
         return Err(error);
     }
@@ -537,7 +534,6 @@ fn execute_compiled_bounded_distinct_aggregate_from_stream(
     let mut concat_reservation = match reservations.try_reserve_work(request, metrics) {
         Ok(reservation) => reservation,
         Err(error) => {
-            drop(frames);
             return Err(error);
         },
     };
@@ -555,7 +551,6 @@ fn execute_compiled_bounded_distinct_aggregate_from_stream(
             Ok(token) => token,
             Err(error) => {
                 reservations.release(concat_reservation, metrics);
-                drop(first_frame);
                 return Err(error);
             },
         };
@@ -587,7 +582,6 @@ fn execute_compiled_bounded_distinct_aggregate_from_stream(
         .with_node_id(node_id)
         .with_stage("compiled_aggregate_distinct_stream_concat");
         if let Err(error) = reservations.try_grow(&mut concat_reservation, grow_request, metrics) {
-            drop(concatenated);
             reservations.release(concat_reservation, metrics);
             return Err(error);
         }
@@ -727,7 +721,6 @@ fn execute_compiled_bounded_partial_aggregate_from_frame_with_retry_budget(
         ) {
             Ok(partials) => partials,
             Err(error) => {
-                drop(right.frame);
                 reservations.release(right.reservation, metrics);
                 return Err(error);
             },
@@ -787,7 +780,6 @@ fn execute_compiled_bounded_partial_aggregate_from_frame_with_upper_bound(
     let mut work_reservation = match reservations.try_reserve_work(work_request, metrics) {
         Ok(reservation) => reservation,
         Err(error) => {
-            drop(input.frame);
             reservations.release(input.reservation, metrics);
             return Err(error);
         },
@@ -828,7 +820,6 @@ fn execute_compiled_bounded_partial_aggregate_from_frame_with_upper_bound(
     let partial_bytes = match observe_device_memory_bytes(&frame, metrics) {
         Ok(bytes) => bytes,
         Err(error) => {
-            drop(frame);
             reservations.release(work_reservation, metrics);
             reservations.release(input.reservation, metrics);
             return Err(error);
@@ -841,7 +832,6 @@ fn execute_compiled_bounded_partial_aggregate_from_frame_with_upper_bound(
             .with_stage("compiled_aggregate");
     if partial_bytes > work_reservation.bytes() {
         let error = partial_aggregate_upper_bound_violation_error(node_id, work_reservation.bytes(), partial_bytes);
-        drop(frame);
         reservations.release(work_reservation, metrics);
         reservations.release(input.reservation, metrics);
         return Err(error);
@@ -926,7 +916,6 @@ fn split_compiled_aggregate_stream_frame(
             .with_fact("split_at", split_at));
         },
     };
-    drop(source_frame);
     reservations.release(source_reservation, metrics);
     let left = GpuDataFrame::new(left);
     let right = GpuDataFrame::new(right);
@@ -1069,7 +1058,6 @@ pub(in crate::exec::bounded) fn execute_bounded_whole_input_aggregate_from_raw_c
                 .with_stage("distinct_aggregate_concat"),
             metrics,
         ) {
-            drop(concatenated);
             reservations.release(concat_reservation, metrics);
             return Err(error);
         }

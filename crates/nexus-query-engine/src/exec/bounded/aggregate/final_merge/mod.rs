@@ -63,7 +63,6 @@ pub(super) fn partition_final_merge_partial(
     ) {
         Ok(reservation) => reservation,
         Err(error) => {
-            drop(partial.frame);
             reservations.release(partial.reservation, metrics);
             return Err(error);
         },
@@ -78,7 +77,6 @@ pub(super) fn partition_final_merge_partial(
         Ok(token) => token,
         Err(error) => {
             reservations.release(partition_reservation, metrics);
-            drop(partial.frame);
             reservations.release(partial.reservation, metrics);
             return Err(error);
         },
@@ -121,7 +119,6 @@ pub(super) fn partition_final_merge_partial(
             Err(error)
         },
     };
-    drop(frame);
     reservations.release(partial.reservation, metrics);
     let partitioned = match partitioned {
         Ok(partitioned) => partitioned,
@@ -135,7 +132,6 @@ pub(super) fn partition_final_merge_partial(
     let partitioned_bytes = match observe_device_memory_bytes(&partitioned_gpu, metrics) {
         Ok(bytes) => bytes,
         Err(error) => {
-            drop(partitioned_frame);
             reservations.release(partition_reservation, metrics);
             return Err(error);
         },
@@ -151,7 +147,6 @@ pub(super) fn partition_final_merge_partial(
         .with_stage("partitioned_final_merge")
         .with_task_registration(task_id, 1, "aggregate");
         if let Err(error) = reservations.try_grow(&mut partition_reservation, grow_request, metrics) {
-            drop(partitioned_frame);
             reservations.release(partition_reservation, metrics);
             return Err(error);
         }
@@ -174,13 +169,11 @@ pub(super) fn partition_final_merge_partial(
             Ok(frame) => partitions.push(frame),
             Err(error) => {
                 release_partials_reverse(reservations, partitions, metrics);
-                drop(partitioned_frame);
                 reservations.release(partition_reservation, metrics);
                 return Err(error);
             },
         }
     }
-    drop(partitioned_frame);
     reservations.release(partition_reservation, metrics);
     Ok(partitions)
 }
@@ -430,7 +423,6 @@ pub(super) fn concatenate_partitioned_final_merge_outputs(
             )
         })
     };
-    drop(first_frame);
     reservations.release(first_reservation, metrics);
     release_partials_reverse(reservations, inputs, metrics);
     let concatenated = match concatenated {

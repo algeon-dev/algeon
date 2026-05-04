@@ -315,81 +315,62 @@ pub(in crate::exec::bounded) fn execute_bounded_generic_union(
 
     let input_count = inputs.len();
     let mut input_reservations = Vec::with_capacity(input_count);
-    let mut frames = Vec::with_capacity(input_count);
-    for input in inputs {
-        frames.push(input.frame.into_frame());
-        input_reservations.push(input.reservation);
-    }
-    let first = frames.remove(0);
-    let rest = frames.iter().collect::<Vec<_>>();
-    let overrides_lease = execution_overrides(context)?;
-    let overrides = overrides_lease.overrides();
-    let timer = Instant::now();
-    let output = match first.with_execution(&overrides).concat_many(&rest) {
-        Ok(output) => output,
-        Err(error) => {
-            drop(rest);
-            drop(frames);
-            drop(first);
-            release_reservations_reverse(reservations, input_reservations, metrics);
-            reservations.release(output_reservation, metrics);
-            return Err(QueryError::from_cudf(
+    let output = (|| {
+        let mut frames = Vec::with_capacity(input_count);
+        for input in inputs {
+            frames.push(input.frame.into_frame());
+            input_reservations.push(input.reservation);
+        }
+        let first = frames.remove(0);
+        let rest = frames.iter().collect::<Vec<_>>();
+        let overrides_lease = execution_overrides(context)?;
+        let overrides = overrides_lease.overrides();
+        let timer = Instant::now();
+        let output = first.with_execution(&overrides).concat_many(&rest).map_err(|error| {
+            QueryError::from_cudf(
                 "nexus_query_engine.bounded.union.concat",
                 "failed to concatenate bounded native union inputs",
                 error,
             )
             .with_fact("node_id", node_id)
-            .with_fact("input_count", input_count));
-        },
-    };
-    metrics.operator_time += timer.elapsed();
+            .with_fact("input_count", input_count)
+        })?;
+        metrics.operator_time += timer.elapsed();
 
-    let output_frame = GpuDataFrame::new(output);
-    let output_bytes = match observe_device_memory_bytes(&output_frame, metrics) {
-        Ok(bytes) => bytes,
-        Err(error) => {
-            drop(output_frame);
-            drop(rest);
-            drop(frames);
-            drop(first);
-            release_reservations_reverse(reservations, input_reservations, metrics);
-            reservations.release(output_reservation, metrics);
-            return Err(error);
-        },
-    };
-    let output_request =
-        MemoryReservationRequest::new(ReservationKind::OperatorOutput, output_bytes, reservations.budget())
-            .with_memory_boundary("bounded_union_concat_output")
-            .with_node_id(node_id)
-            .with_stage("bounded_union_concat")
-            .with_attempt(1, 1);
-    if output_bytes > output_reservation.bytes() {
-        let delta = output_bytes.saturating_sub(output_reservation.bytes());
-        if let Err(error) =
-            reservations.try_grow(&mut output_reservation, output_request.clone().with_requested_bytes(delta), metrics)
-        {
-            drop(output_frame);
-            drop(rest);
-            drop(frames);
-            drop(first);
-            release_reservations_reverse(reservations, input_reservations, metrics);
-            reservations.release(output_reservation, metrics);
-            return Err(error);
+        let output_frame = GpuDataFrame::new(output);
+        let output_bytes = observe_device_memory_bytes(&output_frame, metrics)?;
+        let output_request =
+            MemoryReservationRequest::new(ReservationKind::OperatorOutput, output_bytes, reservations.budget())
+                .with_memory_boundary("bounded_union_concat_output")
+                .with_node_id(node_id)
+                .with_stage("bounded_union_concat")
+                .with_attempt(1, 1);
+        if output_bytes > output_reservation.bytes() {
+            let delta = output_bytes.saturating_sub(output_reservation.bytes());
+            reservations.try_grow(
+                &mut output_reservation,
+                output_request.clone().with_requested_bytes(delta),
+                metrics,
+            )?;
+        } else {
+            reservations.shrink_to_observed_with_request(
+                &mut output_reservation,
+                output_bytes,
+                output_request.clone(),
+                metrics,
+            );
         }
-    } else {
-        reservations.shrink_to_observed_with_request(
-            &mut output_reservation,
-            output_bytes,
-            output_request.clone(),
-            metrics,
-        );
-    }
 
-    drop(rest);
-    drop(frames);
-    drop(first);
+        Ok::<_, QueryError>(output_frame)
+    })();
     release_reservations_reverse(reservations, input_reservations, metrics);
-    Ok(ResidentGpuFrame { frame: output_frame, reservation: output_reservation })
+    match output {
+        Ok(frame) => Ok(ResidentGpuFrame { frame, reservation: output_reservation }),
+        Err(error) => {
+            reservations.release(output_reservation, metrics);
+            Err(error)
+        },
+    }
 }
 
 #[cfg(not(feature = "cugraph"))]
@@ -471,7 +452,6 @@ fn execute_bounded_generic_graph_algorithm(
     let strict_pair_cardinality = match crate::graph_memory::strict_similarity_pair_cardinality_for_plan(plan, graph) {
         Ok(evidence) => evidence,
         Err(error) => {
-            drop(filtered_input);
             reservations.release(input_reservation, metrics);
             return Err(error.with_fact_if_absent("node_id", node_id));
         },
@@ -482,7 +462,6 @@ fn execute_bounded_generic_graph_algorithm(
     let query_memory_grant = match context.memory_grant() {
         Ok(grant) => grant,
         Err(error) => {
-            drop(filtered_input);
             release_reservations_reverse(reservations, live_reservations, metrics);
             return Err(error.with_fact_if_absent("node_id", node_id));
         },
@@ -504,14 +483,12 @@ fn execute_bounded_generic_graph_algorithm(
                 side_inputs.insert(*input_id, frame.frame);
             },
             Err(error) => {
-                drop(filtered_input);
                 release_reservations_reverse(reservations, live_reservations, metrics);
                 return Err(error);
             },
         }
     }
     if let Err(error) = validate_betweenness_static_seed_policy(&graph.spec) {
-        drop(filtered_input);
         release_reservations_reverse(reservations, live_reservations, metrics);
         return Err(error.with_fact_if_absent("node_id", node_id));
     }
@@ -525,7 +502,6 @@ fn execute_bounded_generic_graph_algorithm(
     ) {
         Ok(empty_input_prevalidated) => empty_input_prevalidated,
         Err(error) => {
-            drop(filtered_input);
             release_reservations_reverse(reservations, live_reservations, metrics);
             return Err(error.with_fact_if_absent("node_id", node_id));
         },
@@ -551,7 +527,6 @@ fn execute_bounded_generic_graph_algorithm(
         ) {
             Ok(probe) => probe,
             Err(error) => {
-                drop(filtered_input);
                 release_reservations_reverse(reservations, live_reservations, metrics);
                 return Err(error.with_fact_if_absent("node_id", node_id));
             },
@@ -560,7 +535,6 @@ fn execute_bounded_generic_graph_algorithm(
             && let Err(error) =
                 validate_betweenness_seed_policy_for_vertex_count(&graph.spec, probe.vertex_estimate.count)
         {
-            drop(filtered_input);
             release_reservations_reverse(reservations, live_reservations, metrics);
             return Err(error.with_fact_if_absent("node_id", node_id));
         }
@@ -569,7 +543,6 @@ fn execute_bounded_generic_graph_algorithm(
         let device_total_memory_bytes = match graph_device_total_memory_bytes(context) {
             Ok(device_total_memory_bytes) => device_total_memory_bytes,
             Err(error) => {
-                drop(filtered_input);
                 release_reservations_reverse(reservations, live_reservations, metrics);
                 return Err(error.with_fact_if_absent("node_id", node_id));
             },
@@ -577,7 +550,6 @@ fn execute_bounded_generic_graph_algorithm(
         let graph_reservable_remaining_bytes = match reservations.reservable_remaining_bytes() {
             Ok(remaining) => remaining,
             Err(error) => {
-                drop(filtered_input);
                 release_reservations_reverse(reservations, live_reservations, metrics);
                 return Err(error.with_fact_if_absent("node_id", node_id));
             },
@@ -599,7 +571,6 @@ fn execute_bounded_generic_graph_algorithm(
         ) {
             Ok(report) => report,
             Err(error) => {
-                drop(filtered_input);
                 release_reservations_reverse(reservations, live_reservations, metrics);
                 return Err(error.with_fact_if_absent("node_id", node_id));
             },
@@ -620,7 +591,6 @@ fn execute_bounded_generic_graph_algorithm(
                 graph_reservable_remaining_bytes,
                 reservations.reserved_bytes(),
             );
-            drop(filtered_input);
             release_reservations_reverse(reservations, live_reservations, metrics);
             return Err(report
                 .denied_error(&request, graph_reservable_remaining_bytes)
@@ -645,7 +615,6 @@ fn execute_bounded_generic_graph_algorithm(
                 Some(graph_execution_limit_bytes)
             },
             Err(error) => {
-                drop(filtered_input);
                 release_reservations_reverse(reservations, live_reservations, metrics);
                 return Err(error
                     .with_fact_if_absent("reason", crate::graph_memory::GRAPH_MEMORY_ESTIMATE_EXCEEDS_BUDGET_REASON));
@@ -681,7 +650,6 @@ fn execute_bounded_generic_graph_algorithm(
     let output_bytes = match observe_device_memory_bytes(&output, metrics) {
         Ok(bytes) => bytes,
         Err(error) => {
-            drop(output);
             if let Some(reservation) = graph_reservation.take() {
                 reservations.release(reservation, metrics);
             }
@@ -704,7 +672,6 @@ fn execute_bounded_generic_graph_algorithm(
             &output_request,
             metrics,
         ) {
-            drop(output);
             reservations.release(graph_reservation, metrics);
             return Err(error);
         }
@@ -716,7 +683,6 @@ fn execute_bounded_generic_graph_algorithm(
                 reservation
             },
             Err(error) => {
-                drop(output);
                 release_reservations_reverse(reservations, live_reservations, metrics);
                 return Err(error);
             },
@@ -1272,7 +1238,6 @@ fn execute_bounded_generic_regexp_projection(
     ) {
         Ok(reservation) => reservation,
         Err(error) => {
-            drop(input_frame);
             reservations.release(input_reservation, metrics);
             return Err(error);
         },
@@ -1293,7 +1258,6 @@ fn execute_bounded_generic_regexp_projection(
             ) {
                 Ok(token) => token,
                 Err(error) => {
-                    drop(input_frame);
                     reservations.release(work_reservation, metrics);
                     reservations.release(input_reservation, metrics);
                     return Err(error.with_fact_if_absent("node_id", node_id));
@@ -1325,7 +1289,6 @@ fn execute_bounded_generic_regexp_projection(
                         &output_request,
                         metrics,
                     ) {
-                        drop(frame);
                         reservations.release(work_reservation, metrics);
                         return Err(error);
                     }
@@ -1340,7 +1303,6 @@ fn execute_bounded_generic_regexp_projection(
             }
         },
         Err(error) => {
-            drop(input_frame);
             reservations.release(work_reservation, metrics);
             reservations.release(input_reservation, metrics);
             return Err(error.with_fact_if_absent("node_id", node_id));
@@ -1359,8 +1321,6 @@ fn execute_bounded_generic_regexp_projection(
                 .with_attempt(1, 1),
             metrics,
         ) {
-            drop(prepared);
-            drop(input_frame);
             reservations.release(work_reservation, metrics);
             reservations.release(input_reservation, metrics);
             return Err(error);
@@ -1376,8 +1336,6 @@ fn execute_bounded_generic_regexp_projection(
     ) {
         Ok(token) => token,
         Err(error) => {
-            drop(prepared);
-            drop(input_frame);
             reservations.release(work_reservation, metrics);
             reservations.release(input_reservation, metrics);
             return Err(error.with_fact_if_absent("node_id", node_id));
@@ -1416,7 +1374,6 @@ fn execute_bounded_generic_regexp_projection(
         &output_request,
         metrics,
     ) {
-        drop(frame);
         reservations.release(work_reservation, metrics);
         return Err(error);
     }
@@ -1487,7 +1444,6 @@ pub(in crate::exec::bounded) fn execute_bounded_generic_unary_consuming_input_wi
     ) {
         Ok(reservation) => reservation,
         Err(error) => {
-            drop(input_frame);
             reservations.release(input_reservation, metrics);
             return Err(error);
         },
@@ -1502,7 +1458,6 @@ pub(in crate::exec::bounded) fn execute_bounded_generic_unary_consuming_input_wi
         ) {
             Ok(token) => Some(token),
             Err(error) => {
-                drop(input_frame);
                 reservations.release(work_reservation, metrics);
                 reservations.release(input_reservation, metrics);
                 return Err(error.with_fact_if_absent("node_id", node_id));
@@ -1542,7 +1497,6 @@ pub(in crate::exec::bounded) fn execute_bounded_generic_unary_consuming_input_wi
         &output_request,
         metrics,
     ) {
-        drop(frame);
         reservations.release(work_reservation, metrics);
         return Err(error);
     }
@@ -1620,7 +1574,6 @@ pub(in crate::exec::bounded) fn execute_bounded_generic_unary_from_frame_with_re
         &output_request,
         metrics,
     ) {
-        drop(frame);
         reservations.release(work_reservation, metrics);
         return Err(error);
     }

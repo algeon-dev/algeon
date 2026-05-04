@@ -555,7 +555,6 @@ fn finish_scheduled_source_read(
         ) {
             Ok(bytes) => bytes,
             Err(error) => {
-                drop(output.frame);
                 reservations.release(output.reservation, metrics);
                 return Err(error);
             },

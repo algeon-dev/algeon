@@ -343,7 +343,6 @@ fn execute_compiled_bounded_exact_host_aggregate_from_frame(
     ) {
         Ok(reservation) => reservation,
         Err(error) => {
-            drop(input);
             return Err(error);
         },
     };
@@ -356,7 +355,6 @@ fn execute_compiled_bounded_exact_host_aggregate_from_frame(
     ) {
         Ok(token) => token,
         Err(error) => {
-            drop(input);
             reservations.release(work_reservation, metrics);
             return Err(error.with_fact_if_absent("node_id", node_id));
         },
@@ -388,7 +386,6 @@ fn execute_compiled_bounded_exact_host_aggregate_from_frame(
     let exact_input_bytes = match observe_device_memory_bytes(&exact_input, metrics) {
         Ok(bytes) => bytes,
         Err(error) => {
-            drop(exact_input);
             reservations.release(work_reservation, metrics);
             return Err(error.with_fact_if_absent("node_id", node_id));
         },
@@ -404,7 +401,6 @@ fn execute_compiled_bounded_exact_host_aggregate_from_frame(
         if let Err(error) =
             reservations.try_grow(&mut work_reservation, work_request.clone().with_requested_bytes(delta), metrics)
         {
-            drop(exact_input);
             reservations.release(work_reservation, metrics);
             return Err(error);
         }
@@ -421,7 +417,6 @@ fn execute_compiled_bounded_exact_host_aggregate_from_frame(
     let input_preflight = match reservations.try_reserve_work(input_preflight_request, metrics) {
         Ok(reservation) => reservation,
         Err(error) => {
-            drop(exact_input);
             reservations.release(work_reservation, metrics);
             return Err(error);
         },
@@ -464,7 +459,6 @@ fn execute_compiled_bounded_exact_host_aggregate_from_frame(
     let output_bytes = match observe_device_memory_bytes(&frame, metrics) {
         Ok(bytes) => bytes,
         Err(error) => {
-            drop(frame);
             reservations.release(output_reservation, metrics);
             return Err(error.with_fact_if_absent("node_id", node_id));
         },
@@ -477,7 +471,6 @@ fn execute_compiled_bounded_exact_host_aggregate_from_frame(
         &output_resident_request,
         metrics,
     ) {
-        drop(frame);
         reservations.release(output_reservation, metrics);
         return Err(error);
     }
@@ -572,7 +565,6 @@ pub(in crate::exec::bounded::aggregate) fn release_partials_reverse(
     metrics: &mut QueryMetrics,
 ) {
     while let Some(partial) = partials.pop() {
-        drop(partial.frame);
         reservations.release(partial.reservation, metrics);
     }
 }

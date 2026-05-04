@@ -268,57 +268,6 @@ fn direct_placement_snapshot_pause_registry() -> &'static Mutex<Vec<DirectPlacem
 }
 
 #[cfg(test)]
-pub(in crate::runtime::query_service) struct DirectPlacementSnapshotPauseHandle {
-    entered: Mutex<std::sync::mpsc::Receiver<()>>,
-    release: Mutex<Option<std::sync::mpsc::SyncSender<()>>>,
-    service: std::sync::Weak<QueryServiceInner>,
-    pause: Arc<DirectPlacementSnapshotPause>,
-}
-
-#[cfg(test)]
-impl DirectPlacementSnapshotPauseHandle {
-    pub(in crate::runtime::query_service) fn wait_until_entered(&self, timeout: std::time::Duration) {
-        self.entered
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .recv_timeout(timeout)
-            .expect("direct placement did not capture candidate snapshots before the deadline");
-    }
-
-    pub(in crate::runtime::query_service) fn entered_within(&self, timeout: std::time::Duration) -> bool {
-        match self.entered.lock().unwrap_or_else(std::sync::PoisonError::into_inner).recv_timeout(timeout) {
-            Ok(()) => true,
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => false,
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                panic!("direct placement snapshot pause sender disconnected")
-            },
-        }
-    }
-
-    pub(in crate::runtime::query_service) fn release(&self) {
-        if let Some(release) = self.release.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take() {
-            release.send(()).expect("paused direct placement remains live until release");
-        }
-    }
-}
-
-#[cfg(test)]
-impl Drop for DirectPlacementSnapshotPauseHandle {
-    fn drop(&mut self) {
-        if let Some(release) = self.release.get_mut().unwrap_or_else(std::sync::PoisonError::into_inner).take() {
-            let _ = release.send(());
-        }
-        let mut registrations =
-            direct_placement_snapshot_pause_registry().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(position) = registrations.iter().position(|registered| {
-            registered.service.ptr_eq(&self.service) && Arc::ptr_eq(&registered.pause, &self.pause)
-        }) {
-            registrations.remove(position);
-        }
-    }
-}
-
-#[cfg(test)]
 fn take_direct_placement_snapshot_pause(service: &QueryService) -> Option<Arc<DirectPlacementSnapshotPause>> {
     let mut registrations =
         direct_placement_snapshot_pause_registry().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -333,7 +282,7 @@ fn take_direct_placement_snapshot_pause(service: &QueryService) -> Option<Arc<Di
 impl QueryService {
     pub(in crate::runtime::query_service) fn pause_next_direct_placement_after_snapshot_for_test(
         &self,
-    ) -> DirectPlacementSnapshotPauseHandle {
+    ) -> TestPauseHandle {
         let (entered_sender, entered_receiver) = std::sync::mpsc::sync_channel(1);
         let (release_sender, release_receiver) = std::sync::mpsc::sync_channel(1);
         let pause =
@@ -348,11 +297,17 @@ impl QueryService {
         );
         registrations
             .push(DirectPlacementSnapshotPauseRegistration { service: service.clone(), pause: Arc::clone(&pause) });
-        DirectPlacementSnapshotPauseHandle {
-            entered: Mutex::new(entered_receiver),
-            release: Mutex::new(Some(release_sender)),
-            service,
-            pause,
-        }
+        TestPauseHandle::new("direct placement snapshot", entered_receiver, release_sender).with_drop_cleanup(
+            move || {
+                let mut registrations = direct_placement_snapshot_pause_registry()
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if let Some(position) = registrations.iter().position(|registered| {
+                    registered.service.ptr_eq(&service) && Arc::ptr_eq(&registered.pause, &pause)
+                }) {
+                    registrations.remove(position);
+                }
+            },
+        )
     }
 }

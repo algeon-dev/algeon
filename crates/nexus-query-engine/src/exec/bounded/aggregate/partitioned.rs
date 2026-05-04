@@ -25,7 +25,6 @@ pub(super) fn execute_compiled_bounded_partitioned_aggregate_from_frame(
     ) {
         Ok(reservation) => reservation,
         Err(error) => {
-            drop(input);
             return Err(error);
         },
     };
@@ -41,7 +40,6 @@ pub(super) fn execute_compiled_bounded_partitioned_aggregate_from_frame(
             Ok(token) => token,
             Err(error) => {
                 reservations.release(partition_reservation, metrics);
-                drop(frame);
                 return Err(error);
             },
         };
@@ -84,7 +82,6 @@ pub(super) fn execute_compiled_bounded_partitioned_aggregate_from_frame(
             },
         }
     };
-    drop(frame);
     let partitioned = match partitioned {
         Ok(partitioned) => partitioned,
         Err(error) => {
@@ -111,7 +108,6 @@ pub(super) fn execute_compiled_bounded_partitioned_aggregate_from_frame(
         .with_node_id(node_id)
         .with_stage("compiled_aggregate_hash_partition");
         if let Err(error) = reservations.try_grow(&mut partition_reservation, grow_request, metrics) {
-            drop(partitioned_frame);
             reservations.release(partition_reservation, metrics);
             return Err(error);
         }
@@ -133,7 +129,6 @@ pub(super) fn execute_compiled_bounded_partitioned_aggregate_from_frame(
             Ok(frame) => frame,
             Err(error) => {
                 release_partials_reverse(reservations, partials, metrics);
-                drop(partitioned_frame);
                 reservations.release(partition_reservation, metrics);
                 return Err(error);
             },
@@ -151,13 +146,11 @@ pub(super) fn execute_compiled_bounded_partitioned_aggregate_from_frame(
             Ok(partial) => partials.push(partial),
             Err(error) => {
                 release_partials_reverse(reservations, partials, metrics);
-                drop(partitioned_frame);
                 reservations.release(partition_reservation, metrics);
                 return Err(error);
             },
         }
     }
-    drop(partitioned_frame);
     reservations.release(partition_reservation, metrics);
 
     execute_compiled_bounded_final_aggregate_merge(

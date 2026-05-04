@@ -209,7 +209,6 @@ fn materialize_partitioned_hash_equi_join_partition(
     let output_bytes = match observe_device_memory_bytes(&GpuDataFrame::new(output.clone()), metrics) {
         Ok(bytes) => bytes,
         Err(error) => {
-            drop(output);
             txn.rollback(reservations, metrics);
             return Err(error);
         },
@@ -217,7 +216,6 @@ fn materialize_partitioned_hash_equi_join_partition(
     if let Err(error) =
         reconcile_join_output_upper_bound(node_id, txn.output_reservation_mut(), output_bytes, reservations, metrics)
     {
-        drop(output);
         txn.rollback(reservations, metrics);
         return Err(error);
     }

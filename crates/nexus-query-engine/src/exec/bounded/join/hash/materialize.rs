@@ -117,11 +117,7 @@ pub(in crate::exec::bounded::join::hash) fn materialize_bounded_root_hash_join_p
                 reservations,
                 &error,
             );
-            drop(left_indices);
-            drop(right_indices);
-            drop(indices);
             reservations.release(gather_map_reservation, metrics);
-            drop(probe);
             return Err(error);
         },
     };
@@ -143,11 +139,7 @@ pub(in crate::exec::bounded::join::hash) fn materialize_bounded_root_hash_join_p
                 reservations,
                 &error,
             );
-            drop(left_indices);
-            drop(right_indices);
-            drop(indices);
             reservations.release(gather_map_reservation, metrics);
-            drop(probe);
             return Err(error);
         },
     };
@@ -170,11 +162,7 @@ pub(in crate::exec::bounded::join::hash) fn materialize_bounded_root_hash_join_p
     ) {
         Ok(reservation) => reservation,
         Err(error) => {
-            drop(left_indices);
-            drop(right_indices);
-            drop(indices);
             reservations.release(gather_map_reservation, metrics);
-            drop(probe);
             return Err(error);
         },
     };
@@ -191,11 +179,7 @@ pub(in crate::exec::bounded::join::hash) fn materialize_bounded_root_hash_join_p
         Ok(output) => output,
         Err(error) => {
             reservations.release(output_reservation, metrics);
-            drop(left_indices);
-            drop(right_indices);
-            drop(indices);
             reservations.release(gather_map_reservation, metrics);
-            drop(probe);
             return Err(error);
         },
     };
@@ -205,25 +189,15 @@ pub(in crate::exec::bounded::join::hash) fn materialize_bounded_root_hash_join_p
     let output_bytes = match observe_device_memory_bytes(&GpuDataFrame::new(output.clone()), metrics) {
         Ok(bytes) => bytes,
         Err(error) => {
-            drop(output);
             reservations.release(output_reservation, metrics);
-            drop(left_indices);
-            drop(right_indices);
-            drop(indices);
             reservations.release(gather_map_reservation, metrics);
-            drop(probe);
             return Err(error);
         },
     };
     if let Err(error) =
         reconcile_join_output_upper_bound(node_id, &mut output_reservation, output_bytes, reservations, metrics)
     {
-        drop(output);
-        drop(left_indices);
-        drop(right_indices);
-        drop(indices);
         reservations.release(gather_map_reservation, metrics);
-        drop(probe);
         return Err(error);
     }
     metrics.record_operator_metrics(crate::metrics::OperatorMetrics::join(
@@ -251,16 +225,7 @@ pub(in crate::exec::bounded::join::hash) fn materialize_bounded_root_hash_join_p
         },
     ));
 
-    // `left_indices`/`right_indices` are `Series::clone`s of `indices.probe()` /
-    // `indices.build()`; the underlying columns are Arc-shared, so device memory
-    // is only released once every Arc holder drops. All three must be released
-    // before `reservations.release(gather_map_reservation)` for the budget to
-    // reflect actual residency.
-    drop(left_indices);
-    drop(right_indices);
-    drop(indices);
     reservations.release(gather_map_reservation, metrics);
-    drop(probe);
 
     Ok(CommittedPartial { frame: GpuDataFrame::new(output), reservation: output_reservation })
 }
@@ -478,7 +443,6 @@ pub(in crate::exec::bounded::join::hash) fn materialize_bounded_root_hash_join_i
     let output_bytes = match observe_device_memory_bytes(&GpuDataFrame::new(output.clone()), metrics) {
         Ok(bytes) => bytes,
         Err(error) => {
-            drop(output);
             reservations.release(output_reservation, metrics);
             reservations.release(slice_gather_map_reservation, metrics);
             return Err(error);
@@ -487,7 +451,6 @@ pub(in crate::exec::bounded::join::hash) fn materialize_bounded_root_hash_join_i
     if let Err(error) =
         reconcile_join_output_upper_bound(node_id, &mut output_reservation, output_bytes, reservations, metrics)
     {
-        drop(output);
         reservations.release(output_reservation, metrics);
         reservations.release(slice_gather_map_reservation, metrics);
         return Err(error);
@@ -507,7 +470,7 @@ pub(in crate::exec::bounded::join::hash) fn release_root_hash_join_stream_output
     metrics: &mut QueryMetrics,
 ) {
     while let Some(output) = outputs.pop() {
-        reservations.release(output.reservation, metrics);
-        drop(output.frame);
+        let ResidentGpuFrame { reservation, .. } = output;
+        reservations.release(reservation, metrics);
     }
 }

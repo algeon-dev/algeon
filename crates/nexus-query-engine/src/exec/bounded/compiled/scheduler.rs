@@ -44,8 +44,7 @@ pub trait CompiledTaskExecutor {
         self.execute_task(task, state)
     }
 
-    fn release_resource(&mut self, _resource: ResidentResourceId, payload: Self::Resource) -> Result<()> {
-        drop(payload);
+    fn release_resource(&mut self, _resource: ResidentResourceId, _payload: Self::Resource) -> Result<()> {
         Ok(())
     }
 
