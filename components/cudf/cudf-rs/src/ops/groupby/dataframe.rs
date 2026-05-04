@@ -92,8 +92,23 @@ impl AggSpec {
         self
     }
 
+    /// Input column to aggregate.
+    pub fn input_column(&self) -> &str {
+        &self.column
+    }
+
+    /// Aggregation function and parameters.
+    pub fn agg(&self) -> &GroupByAgg {
+        &self.agg
+    }
+
+    /// Explicit output alias, if one was provided.
+    pub fn alias(&self) -> Option<&str> {
+        self.alias.as_deref()
+    }
+
     /// The output column name: alias if set, otherwise `"{column}_{suffix}"`.
-    fn output_name(&self) -> String {
+    pub fn resolved_output_name(&self) -> String {
         match &self.alias {
             Some(alias) => alias.clone(),
             None => format!("{}_{}", self.column, self.agg.suffix()),
@@ -262,7 +277,7 @@ impl<'a> GroupBy<'a> {
             request_meta[group_idx].1.push(spec.agg.clone());
             output_order.push((group_idx, agg_idx_within_group));
 
-            result_names.push(spec.output_name());
+            result_names.push(spec.resolved_output_name());
         }
 
         let agg_slices: SmallVec<[Vec<GroupByAgg>; GROUPBY_AGG_SLICE_INLINE_CAPACITY]> =

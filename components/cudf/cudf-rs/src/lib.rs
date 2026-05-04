@@ -55,6 +55,8 @@
 //! - [`GroupBy`] / [`DataFrame::groupby`] — GPU-accelerated groupby aggregation.
 //! - [`LookupTable`] / [`Series::lookup`] / [`DataFrame::with_lookup`] —
 //!   row-aligned lookup operators and reusable mappings.
+//! - [`query`] — query-engine request contracts for named expressions,
+//!   aggregate requests, and expression sort keys.
 //! - [`Series::sum_value`], [`Series::mean_value`], [`Series::minmax_values`]
 //!   — high-level reductions that return host values directly.
 //!
@@ -172,6 +174,7 @@ pub mod interop;
 pub(crate) mod internal;
 pub mod io;
 pub mod ops;
+pub mod query;
 pub mod runtime;
 #[doc(hidden)]
 pub mod testing;

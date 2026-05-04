@@ -125,3 +125,23 @@ fn slice9_multi_file_parquet_surface_is_publicly_importable() {
 
     assert_reader(DataFrame::read_parquet_many_with_options);
 }
+
+#[test]
+fn query_expression_surface_is_publicly_importable() {
+    use cudf::{
+        Expr,
+        query::{
+            NamedExpr, QueryAggregateExpr, QueryAggregateFunction, QueryAggregateSpec, QueryBinaryOp, QueryLiteral,
+            QuerySortExpr, QuerySortSpec,
+        },
+    };
+
+    let expr = Expr::binary(Expr::column("x"), QueryBinaryOp::Add, QueryLiteral::Int32(1));
+    let _named = NamedExpr::new(expr.clone(), "x_plus_one");
+    let _aggregate = QueryAggregateSpec::new(
+        [NamedExpr::new(Expr::column("k"), "key")],
+        [QueryAggregateExpr::new(QueryAggregateFunction::Sum, expr, "total")],
+    );
+    let _sort = QuerySortSpec::new([QuerySortExpr::descending(Expr::column("x"))]).with_stable(true);
+    let _null = Expr::typed_literal(QueryLiteral::Null(cudf::DataType::new(cudf::TypeId::Int32)));
+}
