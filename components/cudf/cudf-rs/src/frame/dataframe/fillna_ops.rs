@@ -282,13 +282,8 @@ impl DataFrame {
         let tv = self.build_table_view()?;
         let result_table = stream_compaction::distinct_impl(
             &tv,
-            &key_indices,
-            keep,
-            NullEquality::Equal,
-            NanEquality::AllEqual,
-            &output_domain,
-            Some(resolved_exec_options),
-            operation,
+            stream_compaction::DistinctConfig::new(&key_indices, keep, NullEquality::Equal, NanEquality::AllEqual),
+            stream_compaction::StreamCompactionExecution::new(&output_domain, Some(resolved_exec_options), operation),
         )?;
         Self::from_table_with_names(result_table, self.column_names_owned())
     }
