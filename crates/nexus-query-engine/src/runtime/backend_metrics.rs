@@ -6,6 +6,8 @@
 
 use std::sync::{Arc, Mutex};
 
+use serde::Serialize;
+
 pub use crate::metrics::BACKEND_ATTEMPT_DURATION_BUCKETS_NS;
 #[cfg(test)]
 use crate::runtime::gpu::LedgerTransitionKind;
@@ -29,7 +31,7 @@ pub const BACKEND_METRIC_DEVICE_CAPACITY: usize = 64;
 pub const BACKEND_ATTEMPT_DURATION_BUCKET_COUNT: usize = BACKEND_ATTEMPT_DURATION_BUCKETS_NS.len() + 1;
 
 /// Closed disposition dimension of terminal backend-attempt metrics.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[repr(usize)]
 pub enum BackendAttemptDisposition {
     Unplanned = 0,
@@ -68,7 +70,7 @@ impl BackendAttemptDisposition {
 }
 
 /// Closed outcome dimension of terminal backend-attempt metrics.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[repr(usize)]
 pub enum BackendAttemptOutcome {
     Succeeded = 0,
@@ -110,7 +112,7 @@ impl BackendAttemptOutcome {
 }
 
 /// Closed duration dimension for the attempt-duration histogram.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[repr(usize)]
 pub enum BackendAttemptDuration {
     Total = 0,
@@ -164,7 +166,7 @@ impl BackendAttemptDurations {
 }
 
 /// Closed source of an explicit backend telemetry refresh.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum BackendTelemetrySource {
     Cuda,
     Nvml,
@@ -172,7 +174,7 @@ pub enum BackendTelemetrySource {
 }
 
 /// Closed availability state recorded with every explicit telemetry refresh.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum BackendTelemetryAvailability {
     Available,
     FeatureDisabled,
@@ -235,7 +237,7 @@ pub struct BackendTelemetryRefresh {
 }
 
 /// Closed admission health projected from the owning ledger.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum BackendAdmissionHealth {
     Open,
     Closed,
@@ -243,7 +245,7 @@ pub enum BackendAdmissionHealth {
 
 /// A fixed cumulative histogram snapshot. `bucket_counts` follows
 /// [`BACKEND_ATTEMPT_DURATION_BUCKETS_NS`] and ends with its `+Inf` bucket.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct BackendHistogramSnapshot {
     pub bucket_counts: [u64; BACKEND_ATTEMPT_DURATION_BUCKET_COUNT],
     pub count: u64,
@@ -255,7 +257,7 @@ impl BackendHistogramSnapshot {
 }
 
 /// Terminal counters and duration histograms for the complete backend.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct BackendAttemptMetricsSnapshot {
     completed: [[u64; BackendAttemptOutcome::COUNT]; BackendAttemptDisposition::COUNT],
     durations: [[[BackendHistogramSnapshot; BackendAttemptDuration::COUNT]; BackendAttemptOutcome::COUNT];
@@ -283,7 +285,7 @@ impl BackendAttemptMetricsSnapshot {
 
 /// Last refresh metadata for one telemetry source. It contains no source text
 /// or sampled device payload.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct BackendTelemetryRefreshSnapshot {
     pub source: BackendTelemetrySource,
     pub sampled_at_unix_ms: u64,
@@ -292,7 +294,7 @@ pub struct BackendTelemetryRefreshSnapshot {
 }
 
 /// Telemetry-class counters and refresh status for one configured device.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct BackendTelemetryMetricsSnapshot {
     pub last_refresh: Option<BackendTelemetryRefreshSnapshot>,
     pub allocation_failure_count: u64,
@@ -310,7 +312,7 @@ impl BackendTelemetryMetricsSnapshot {
 }
 
 /// Ledger-class backend metrics for one fixed device slot.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct BackendAdmissionMetricsSnapshot {
     pub active_attempts: u64,
     pub live_grant_bytes: u64,
@@ -337,7 +339,7 @@ impl BackendAdmissionMetricsSnapshot {
 
 /// Metrics for one configured device. The ordinal is the bounded device-label
 /// value fixed during backend construction, never an attempt or query id.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct BackendDeviceMetricsSnapshot {
     pub device_ordinal: usize,
     pub ledger_sequence: u64,
@@ -352,12 +354,23 @@ pub struct BackendDeviceMetricsSnapshot {
 /// unequal backend or store generations make a torn combination detectable.
 /// All device slots are fixed. `None` means that ordinal is not part of this
 /// backend generation.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct BackendMetricsSnapshot {
     pub backend_generation: u64,
     pub generation: u64,
+    #[serde(serialize_with = "serialize_backend_metric_devices")]
     pub devices: [Option<BackendDeviceMetricsSnapshot>; BACKEND_METRIC_DEVICE_CAPACITY],
     pub attempts: BackendAttemptMetricsSnapshot,
+}
+
+fn serialize_backend_metric_devices<S>(
+    devices: &[Option<BackendDeviceMetricsSnapshot>; BACKEND_METRIC_DEVICE_CAPACITY],
+    serializer: S,
+) -> std::result::Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    devices.as_slice().serialize(serializer)
 }
 
 impl BackendMetricsSnapshot {

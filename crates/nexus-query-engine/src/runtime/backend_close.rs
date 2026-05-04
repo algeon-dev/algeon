@@ -19,6 +19,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+use serde::Serialize;
+
 use super::{
     backend_core::{ConstructionResourceJournal, ObservationCore, ResourceCore, ResourceGeneration},
     backend_lifecycle::BackendLifecycle,
@@ -559,7 +561,7 @@ impl CloseCompletion {
 
 /// Two-scope close state. GPU quiescence can become true while observation
 /// permits still exist; at that point the device-owner lease has been released.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct GpuBackendCloseSnapshot {
     pub closing: bool,
     pub gpu_resource_quiescent: bool,

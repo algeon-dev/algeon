@@ -23,6 +23,7 @@ use std::{
 };
 
 use futures::FutureExt;
+use serde::Serialize;
 use tokio::{
     runtime::Handle,
     sync::{OwnedSemaphorePermit, Semaphore},
@@ -112,7 +113,7 @@ impl GpuExecutionJobKind {
 }
 
 /// Point-in-time counters for one device's GPU execution pool.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct GpuExecutionPoolSnapshot {
     /// Opaque process-local identity of the backend-owned pool instance.
     ///
@@ -146,7 +147,7 @@ pub struct GpuExecutionPoolSnapshot {
 }
 
 /// Point-in-time counters shared by a group of GPU execution pools.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct GpuExecutionQuerySnapshot {
     /// Query-execution jobs active across all attached pools.
     pub active_query_jobs: usize,

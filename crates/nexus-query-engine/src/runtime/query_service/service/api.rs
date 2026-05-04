@@ -1,5 +1,7 @@
 //! Public request/snapshot DTOs for query-service admission.
 
+use serde::Serialize;
+
 use super::*;
 use crate::{
     admission::{AttemptRequirement, QueryPlanCapabilityProof},
@@ -16,7 +18,7 @@ enum RuntimeObservationAttachment {
 }
 
 /// Point-in-time service admission state for bounded-queue and overload reports.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct QueryServiceAdmissionSnapshot {
     /// Number of currently admitted query handles.
     pub active_queries: usize,
@@ -28,7 +30,7 @@ pub struct QueryServiceAdmissionSnapshot {
 }
 
 /// Process-wide active-query slots currently held on one service device.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct QueryServiceDeviceAdmissionSnapshot {
     /// CUDA device ordinal.
     pub device_ordinal: usize,

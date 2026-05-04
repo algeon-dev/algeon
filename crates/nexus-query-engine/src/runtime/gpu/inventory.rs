@@ -2,10 +2,12 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use serde::Serialize;
+
 use crate::error::{QueryError, Result};
 
 /// Availability of one live device-telemetry substrate.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[non_exhaustive]
 pub enum DeviceTelemetryStatus {
     /// The substrate returned a live sample.
@@ -28,7 +30,7 @@ impl DeviceTelemetryStatus {
 }
 
 /// Live CUDA and NVML telemetry for one device.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct DeviceTelemetrySnapshot {
     /// Wall-clock sample time for correlating diagnostics with external telemetry.
     pub sampled_at_unix_ms: u64,
@@ -102,6 +104,13 @@ fn sampled_at_unix_ms() -> u64 {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeviceFacts {
     pub device: usize,
+    /// NVML product name, when the optional NVML diagnostics substrate is available.
+    pub model_name: Option<String>,
+    /// NVML UUID, when the optional NVML diagnostics substrate is available.
+    pub uuid: Option<String>,
+    /// NVML-reported physical framebuffer capacity, when the optional NVML diagnostics substrate is available.
+    pub physical_total_bytes: Option<u64>,
+    /// CUDA-visible allocation capacity. This can exclude NVML-reserved framebuffer capacity.
     pub total_bytes: u64,
     pub free_bytes: u64,
     pub sm_count: Option<u32>,
@@ -157,14 +166,37 @@ impl GpuInventory for NexusGpuInventory {
             .with_fact("device_ordinal", device.ordinal())
         })?;
         let sm_count = device.multiprocessor_count().ok().filter(|count| *count > 0);
+        let (model_name, uuid, physical_total_bytes) = nvml_device_identity(device);
         Ok(DeviceFacts {
             device: device_ordinal,
+            model_name,
+            uuid,
+            physical_total_bytes,
             total_bytes: memory.total_bytes,
             free_bytes: memory.free_bytes,
             sm_count,
             utilization_pct: utilization_pct(device),
         })
     }
+}
+
+#[cfg(feature = "nvml")]
+fn nvml_device_identity(device: cudf::DeviceId) -> (Option<String>, Option<String>, Option<u64>) {
+    let Some(nvml) = shared_nvml() else {
+        return (None, None, None);
+    };
+    let Ok(pci_bus_id) = device.pci_bus_id() else {
+        return (None, None, None);
+    };
+    let Ok(device) = nvml.device_by_pci_bus_id(pci_bus_id) else {
+        return (None, None, None);
+    };
+    (device.name().ok(), device.uuid().ok(), device.memory_info().ok().map(|memory| memory.total))
+}
+
+#[cfg(not(feature = "nvml"))]
+fn nvml_device_identity(_device: cudf::DeviceId) -> (Option<String>, Option<String>, Option<u64>) {
+    (None, None, None)
 }
 
 /// Convert stable device capacity facts into a bounded query budget.

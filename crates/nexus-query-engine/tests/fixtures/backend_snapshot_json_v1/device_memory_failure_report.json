@@ -1,0 +1,16 @@
+{
+  "fields": {
+    "allocation_failure_count": "number",
+    "callback_install_unavailable": "boolean",
+    "callback_installed": "boolean",
+    "device_ordinal": "number",
+    "largest_failed_allocation_bytes": "number",
+    "last_failed_allocation_bytes": "number",
+    "last_pool_reserved_current_bytes": "number",
+    "last_pool_used_current_bytes": "number",
+    "pool_usage_observation_count": "number",
+    "total_failed_allocation_bytes": "number",
+    "trim_retry_count": "number"
+  },
+  "type": "object"
+}

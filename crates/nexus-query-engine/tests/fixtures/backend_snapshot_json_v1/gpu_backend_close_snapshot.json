@@ -1,0 +1,13 @@
+{
+  "fields": {
+    "active_gpu_permits": "number",
+    "active_observation_permits": "number",
+    "cleanup_deadline_elapsed_count": "number",
+    "cleanup_failed": "boolean",
+    "cleanup_late_success_count": "number",
+    "closing": "boolean",
+    "gpu_resource_quiescent": "boolean",
+    "observation_quiescent": "boolean"
+  },
+  "type": "object"
+}

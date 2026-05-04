@@ -1,0 +1,78 @@
+{
+  "fields": {
+    "attempts": {
+      "fields": {
+        "completed": {
+          "items": [{ "items": ["number"], "length": 5, "type": "array" }],
+          "length": 4,
+          "type": "array"
+        },
+        "durations": {
+          "items": [
+            {
+              "items": [
+                {
+                  "items": [
+                    {
+                      "fields": {
+                        "bucket_counts": { "items": ["number"], "length": 8, "type": "array" },
+                        "count": "number",
+                        "sum": "number"
+                      },
+                      "type": "object"
+                    }
+                  ],
+                  "length": 4,
+                  "type": "array"
+                }
+              ],
+              "length": 5,
+              "type": "array"
+            }
+          ],
+          "length": 4,
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "backend_generation": "number",
+    "devices": {
+      "items": [
+        "null",
+        {
+          "fields": {
+            "admission": {
+              "fields": {
+                "active_attempts": "number",
+                "cache_evictable_resident_bytes": "number",
+                "cache_pinned_in_use_bytes": "number",
+                "health": "string",
+                "live_grant_bytes": "number",
+                "live_reserved_bytes": "number",
+                "max_live_reserved_bytes": "number"
+              },
+              "type": "object"
+            },
+            "device_ordinal": "number",
+            "ledger_sequence": "number",
+            "telemetry": {
+              "fields": {
+                "allocation_failure_bytes": "number",
+                "allocation_failure_count": "number",
+                "largest_allocation_failure_bytes": "number",
+                "last_refresh": "null"
+              },
+              "type": "object"
+            }
+          },
+          "type": "object"
+        }
+      ],
+      "length": 64,
+      "type": "array"
+    },
+    "generation": "number"
+  },
+  "type": "object"
+}

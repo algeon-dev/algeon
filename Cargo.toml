@@ -206,3 +206,7 @@ required-features = ["server", "cuvs"]
 [[test]]
 name = "cuvs_sql_gpu_tests"
 required-features = ["cuvs"]
+
+[[test]]
+name = "p6_device_identity_tests"
+required-features = ["nvml"]

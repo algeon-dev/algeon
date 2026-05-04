@@ -30,6 +30,8 @@ use std::{
     sync::{Arc, Mutex, MutexGuard},
 };
 
+use serde::Serialize;
+
 use super::DeviceResourceProfile;
 use crate::{
     admission::AttemptRequirement,
@@ -142,7 +144,7 @@ impl LedgerSnapshot {
 }
 
 /// Public diagnostic report for one device ledger.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct DeviceLedgerReport {
     pub device_ordinal: usize,
     pub sequence: u64,
@@ -181,7 +183,7 @@ pub struct DeviceLedgerReport {
 }
 
 /// One active grant row in [`DeviceLedgerReport`].
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct DeviceLedgerGrantRow {
     pub grant_id: u64,
     pub admission_request_id: AdmissionRequestId,
