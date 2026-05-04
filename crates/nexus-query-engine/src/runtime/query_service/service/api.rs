@@ -82,17 +82,6 @@ impl AdmissionObservation {
     pub(in crate::runtime::query_service::service) fn as_ref(&self) -> &RuntimeObservationHandle {
         &self.handle
     }
-
-    pub(in crate::runtime::query_service::service) fn reject_activity_error(
-        &mut self,
-        admission_request_id: AdmissionRequestId,
-    ) -> Result<()> {
-        let Some(error) = self.activity_error.take() else {
-            return Ok(());
-        };
-        record_admission_lifecycle(&self.handle, admission_request_id, admission_rejection(&error), 0, None, None);
-        Err(error)
-    }
 }
 
 /// Opaque RAII token retained until query-service cleanup is complete.

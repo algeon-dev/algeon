@@ -849,41 +849,6 @@ impl QueryService {
         Ok(())
     }
 
-    /// Returns whether the waiter's required floor is admissible on at least
-    /// one compatible device under the normative ledger equation.
-    pub(in crate::runtime::query_service::service) fn request_can_receive_required_floor(
-        &self,
-        _state: &AdmissionState,
-        request: &AdmissionRequest,
-    ) -> Result<bool> {
-        let required_capabilities = super::placement::required_capabilities_for_placement(&request.requirement);
-        let Some(resources) = &self.inner.resources else {
-            let fallback_device_ordinal = self.default_device_ordinal().ok_or_else(|| {
-                QueryError::new(
-                    QueryErrorCode::Internal,
-                    "nexus_query_engine.query_service.queue",
-                    "admission-only service has no configured device ordinal",
-                )
-            })?;
-            if !self.device_supports_capabilities(fallback_device_ordinal, &required_capabilities) {
-                return Ok(false);
-            }
-            let Some(ledger) = &self.inner.fallback_device_ledger else {
-                return Ok(false);
-            };
-            return ledger
-                .candidate_max_new_grant_for_requirement(&request.requirement, request.admission_request_id)
-                .map(|max_new_grant| max_new_grant.is_some());
-        };
-        let placement_request = PlacementRequest::new(0)
-            .with_attempt_requirement(request.requirement.clone())
-            .with_required_capabilities(required_capabilities);
-        Ok(self
-            .placement_candidates(resources, &placement_request)?
-            .into_iter()
-            .any(|candidate| candidate.can_admit_now))
-    }
-
     pub(in crate::runtime::query_service) fn memory_grant_wait_timeout_error(
         &self,
         requirement: &AttemptRequirement,

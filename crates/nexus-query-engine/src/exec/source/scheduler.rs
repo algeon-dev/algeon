@@ -378,6 +378,7 @@ where
     worker(queue_wait, observation)
 }
 
+#[cfg(test)]
 fn spawn_source_read_worker<T, F>(
     queue_start: SourceReadQueueStart,
     observation: Option<Arc<SourceReadObservation>>,

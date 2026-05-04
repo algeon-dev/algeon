@@ -314,6 +314,7 @@ impl GpuExecutionPool {
         Ok(Self { inner, resource_epoch: None })
     }
 
+    #[cfg(test)]
     fn class_semaphore(&self, kind: GpuExecutionJobKind) -> &Arc<Semaphore> {
         self.class_semaphore_for_class(kind.job_class())
     }
@@ -325,6 +326,7 @@ impl GpuExecutionPool {
         }
     }
 
+    #[cfg(test)]
     fn class_saturated_error(&self, kind: GpuExecutionJobKind) -> QueryError {
         self.class_saturated_error_for_class(kind, kind.job_class())
     }
@@ -534,12 +536,14 @@ impl GpuExecutionPool {
     /// This is intended for cleanup that must not block a serving worker. The
     /// pool still accounts for the job, and its RAII counters are released if
     /// it completes, panics, or is cancelled during runtime shutdown.
+    #[cfg(test)]
     pub fn spawn<F>(&self, kind: GpuExecutionJobKind, future: F) -> Result<()>
     where F: Future<Output = ()> + Send + 'static {
         self.spawn_observed(kind, RuntimeObservationHandle::disabled(), future)
     }
 
     /// Detaches one observed job onto the device pool.
+    #[cfg(test)]
     pub fn spawn_observed<F>(
         &self,
         kind: GpuExecutionJobKind,
@@ -577,6 +581,7 @@ impl GpuExecutionPool {
 
     /// Detaches one observed job and invokes `completion` after its terminal
     /// job event, including cancellation or panic cleanup.
+    #[cfg(test)]
     pub(crate) fn spawn_observed_with_completion<F, C>(
         &self,
         kind: GpuExecutionJobKind,
@@ -701,6 +706,7 @@ impl GpuExecutionPool {
     }
 
     /// Returns the aggregate query tracker attached to this pool.
+    #[cfg(test)]
     pub fn query_tracker(&self) -> GpuExecutionQueryTracker {
         self.inner.query_tracker.clone()
     }

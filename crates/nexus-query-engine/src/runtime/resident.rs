@@ -384,14 +384,6 @@ impl GpuResultHandle {
         self.device_placement
     }
 
-    pub(crate) fn has_live_reservation(&self) -> bool {
-        self.live_reservation.is_some()
-    }
-
-    pub(crate) fn has_source_cache_pin(&self) -> bool {
-        self.source_cache_pin.is_some()
-    }
-
     /// Observed physical device bytes for this result handle.
     ///
     /// Source-cache promotion uses this as its pre-reservation upper bound
@@ -801,67 +793,6 @@ impl GpuHashJoinBuildHandle {
     pub fn device_allocated_size_bytes(&self) -> u64 {
         self.device_allocated_size_bytes
     }
-
-    pub(crate) fn validate_for_reuse(
-        &self,
-        context: &ExecutionContext,
-        build_keys: &[String],
-        build_columns: &[GpuHashJoinBuildColumn],
-        null_equality: JoinNullEquality,
-    ) -> Result<()> {
-        let context_runtime = context.shared_runtime()?;
-        if !cudf::Runtime::shares_affinity(&self.runtime, &context_runtime) {
-            return Err(QueryError::new(
-                crate::error::QueryErrorCode::InvalidPlan,
-                "nexus_query_engine.gpu_hash_join_build_handle.reuse",
-                "native GPU hash-join build artifact runtime does not match the execution context",
-            )
-            .with_fact("reason", "runtime_mismatch")
-            .with_fact("artifact_device", self.runtime.device().ordinal())
-            .with_fact("runtime_device", context.runtime()?.device().ordinal()));
-        }
-        if self.device_placement != context.device_placement() {
-            return Err(QueryError::new(
-                crate::error::QueryErrorCode::InvalidPlan,
-                "nexus_query_engine.gpu_hash_join_build_handle.reuse",
-                "native GPU hash-join build artifact device placement does not match the execution context",
-            )
-            .with_fact("reason", "device_placement_mismatch")
-            .with_fact("artifact_device_placement", format!("{:?}", self.device_placement))
-            .with_fact("runtime_device_placement", format!("{:?}", context.device_placement())));
-        }
-        if self.build_keys != build_keys {
-            return Err(QueryError::new(
-                crate::error::QueryErrorCode::InvalidPlan,
-                "nexus_query_engine.gpu_hash_join_build_handle.reuse",
-                "native GPU hash-join build artifact key contract does not match the requested join",
-            )
-            .with_fact("reason", "build_keys_mismatch")
-            .with_fact("artifact_build_keys", self.build_keys.join(","))
-            .with_fact("requested_build_keys", build_keys.join(",")));
-        }
-        if self.build_columns != build_columns {
-            return Err(QueryError::new(
-                crate::error::QueryErrorCode::InvalidPlan,
-                "nexus_query_engine.gpu_hash_join_build_handle.reuse",
-                "native GPU hash-join build artifact schema contract does not match the requested join",
-            )
-            .with_fact("reason", "build_schema_mismatch")
-            .with_fact("artifact_build_schema", format_gpu_hash_join_build_columns(&self.build_columns))
-            .with_fact("requested_build_schema", format_gpu_hash_join_build_columns(build_columns)));
-        }
-        if self.null_equality != null_equality {
-            return Err(QueryError::new(
-                crate::error::QueryErrorCode::InvalidPlan,
-                "nexus_query_engine.gpu_hash_join_build_handle.reuse",
-                "native GPU hash-join build artifact null-equality contract does not match the requested join",
-            )
-            .with_fact("reason", "null_equality_mismatch")
-            .with_fact("artifact_null_equality", self.null_equality)
-            .with_fact("requested_null_equality", null_equality));
-        }
-        Ok(())
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -898,14 +829,6 @@ pub(crate) fn gpu_hash_join_build_columns(frame: &DataFrame) -> Result<Vec<GpuHa
 
 fn source_column_memory_identities(frame: &DataFrame) -> HashSet<ColumnMemoryIdentity> {
     frame.memory_identity().columns.into_iter().map(|column| column.identity).collect()
-}
-
-fn format_gpu_hash_join_build_columns(columns: &[GpuHashJoinBuildColumn]) -> String {
-    columns
-        .iter()
-        .map(|column| format!("{}:{:?}:nullable={}", column.name, column.data_type, column.nullable))
-        .collect::<Vec<_>>()
-        .join(",")
 }
 
 #[cfg(test)]

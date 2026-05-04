@@ -139,6 +139,7 @@ impl QueryService {
     /// created. Active queries and rejected provisional envelopes whose
     /// rollback still retains a lane or immutable grant cause the call to wait
     /// until `timeout` expires.
+    #[cfg(test)]
     pub fn wait_for_stream_pools_idle(&self, timeout: Duration) -> Result<()> {
         let Some(resources) = &self.inner.resources else {
             return Ok(());
@@ -160,6 +161,7 @@ impl QueryService {
     /// ordering applies when an unpublished envelope rolls back. Capacity
     /// remains unavailable until that callback clears the admission counters,
     /// so the public idle fence must include both phases.
+    #[cfg(test)]
     fn wait_for_release_commits_until(&self, deadline: Instant) -> Result<()> {
         let operation = "nexus_query_engine.query_service.wait_for_stream_pools_idle";
         let mut state = match crate::runtime::deadline::mutex_lock_until(&self.inner.admission, deadline) {
@@ -204,6 +206,7 @@ impl QueryService {
     /// `expected_leased_runtimes` contains `(device_ordinal, count)` pairs.
     /// Omitted configured devices expect zero leases. Duplicate or unknown
     /// ordinals are rejected instead of being silently merged.
+    #[cfg(test)]
     pub fn wait_for_stream_pools_quiescent(
         &self,
         expected_leased_runtimes: &[(usize, usize)],
@@ -283,6 +286,7 @@ impl QueryService {
     }
 }
 
+#[cfg(test)]
 fn stream_pool_release_commit_timeout(operation: &'static str, state: Option<&AdmissionState>) -> QueryError {
     let mut error = QueryError::new(
         QueryErrorCode::ServiceOverloaded,

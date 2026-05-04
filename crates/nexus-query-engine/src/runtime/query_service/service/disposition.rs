@@ -67,6 +67,7 @@ impl From<crate::runtime::service_stream::StreamCleanupOutcome> for CleanupEvide
 ///
 /// Returns the disposition and, when the sample succeeded, the domain usage
 /// evidence (current/peak) for the health commit reason.
+#[cfg(test)]
 pub(crate) fn decide_capacity_disposition(
     device_ordinal: usize,
     domain: Option<&AttemptAllocationDomain>,

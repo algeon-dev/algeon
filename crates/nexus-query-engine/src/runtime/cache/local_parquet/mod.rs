@@ -205,16 +205,19 @@ impl GpuLocalParquetSourceCache {
     }
 
     /// Stable allocation-domain identity used by this cache.
+    #[cfg(test)]
     pub(crate) fn allocation_domain_id(&self) -> cudf::CacheAllocationDomainId {
         self.inner.allocation_lease.domain_id()
     }
 
     /// Number of retained entries. A pending promotion is not an entry.
+    #[cfg(test)]
     pub(crate) fn len(&self) -> Result<usize> {
         Ok(self.lock("len")?.entries.len())
     }
 
     /// Exact cache-owned bytes currently represented by completed entries.
+    #[cfg(test)]
     pub(crate) fn retained_device_bytes(&self) -> Result<u64> {
         self.lock("retained_device_bytes")?.entries.values().try_fold(0u64, |sum, entry| {
             sum.checked_add(entry.residency.bytes()).ok_or_else(|| {

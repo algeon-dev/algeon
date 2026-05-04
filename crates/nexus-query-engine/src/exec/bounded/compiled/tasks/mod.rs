@@ -12,6 +12,8 @@ use super::{
     scheduler::{CompiledSchedulingCycle, CompiledTaskAdmission, CompiledTaskExecutor, CompiledTaskOutput},
     state::CompiledPipelineState,
 };
+#[cfg(test)]
+use crate::runtime::MemorySpaceId;
 use crate::{
     admission::{CompiledJoinExecutionStrategy, CompiledJoinStrategySelection},
     capability::{
@@ -62,7 +64,7 @@ use crate::{
         QueryPlan, ResultSink, SortNode,
     },
     runtime::{
-        ExecutionContext, MemoryControlPolicy, MemoryReservationRequest, MemorySpaceId, ReservationKind,
+        ExecutionContext, MemoryControlPolicy, MemoryReservationRequest, ReservationKind,
         resident::{GpuDataFrame, GpuResidentInputMap, GpuResultHandle},
     },
     source::SourceNode,
