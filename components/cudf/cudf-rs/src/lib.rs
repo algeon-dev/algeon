@@ -185,7 +185,7 @@ pub use core::{
 };
 
 pub use frame::{
-    dataframe::DataFrame,
+    dataframe::{DataFrame, DataFrameJoinIndices, DataFrameJoinOptions},
     series::{HostColumnData, IntoSeries, Series},
 };
 // — High-level operations —

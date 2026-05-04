@@ -1,5 +1,8 @@
 //! Tests for the high-level `DataFrame::merge` API and `MergeOptions` / `JoinType`.
-use cudf::{DataFrame, ErrorCode, ErrorKind, ExecutionOverrides, JoinType, MergeOptions, testing::prelude::*};
+use cudf::{
+    DataFrame, ErrorCode, ErrorKind, ExecutionOverrides, JoinType, MergeOptions,
+    frame::dataframe::DataFrameJoinOptions, testing::prelude::*,
+};
 
 use crate::common::{
     assert_duplicate_name_error, assert_missing_column_error, column_from_slice, column_from_slice_nullable,
@@ -51,6 +54,118 @@ fn assert_merge_validation_error(err: &cudf::Error, operation: &str, reason: &st
     assert_eq!(err.operation(), operation);
     assert_eq!(error_context_value(err, "reason").as_deref(), Some(reason));
     assert_eq!(error_context_value(err, "remedy").as_deref(), Some(remedy));
+}
+
+// ---------------------------------------------------------------------------
+// Query-planning semi/anti helpers and late materialization
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_dataframe_left_semi_join_materializes_left_rows_without_right_duplicate_growth() {
+    let rt = sample_runtime();
+    let left = DataFrame::from_columns([
+        ("id", rt.series(&[1i32, 2, 2, 3, 4]).unwrap()),
+        ("score", rt.series(&[10i32, 20, 21, 30, 40]).unwrap()),
+    ])
+    .unwrap();
+    let right = DataFrame::from_columns([
+        ("id", rt.series(&[2i32, 2, 4]).unwrap()),
+        ("right_payload", rt.series(&[200i32, 201, 400]).unwrap()),
+    ])
+    .unwrap();
+
+    let result = left.left_semi_join(&right, DataFrameJoinOptions::new().on(["id"])).unwrap();
+
+    assert_eq!(result.column_names(), vec!["id", "score"]);
+    assert_eq!(result.num_rows(), 3);
+    let mut rows: Vec<_> = i32_column(&result, "id").into_iter().zip(i32_column(&result, "score")).collect();
+    rows.sort();
+    assert_eq!(rows, vec![(2, 20), (2, 21), (4, 40)]);
+}
+
+#[test]
+fn test_dataframe_left_anti_join_materializes_only_non_matching_left_rows() {
+    let rt = sample_runtime();
+    let left = DataFrame::from_columns([
+        ("id", rt.series(&[1i32, 2, 2, 3, 4]).unwrap()),
+        ("score", rt.series(&[10i32, 20, 21, 30, 40]).unwrap()),
+    ])
+    .unwrap();
+    let right = DataFrame::from_columns([("id", rt.series(&[2i32, 4]).unwrap())]).unwrap();
+
+    let result = left.left_anti_join(&right, DataFrameJoinOptions::new().on(["id"])).unwrap();
+
+    assert_eq!(result.column_names(), vec!["id", "score"]);
+    assert_eq!(result.num_rows(), 2);
+    let mut rows: Vec<_> = i32_column(&result, "id").into_iter().zip(i32_column(&result, "score")).collect();
+    rows.sort();
+    assert_eq!(rows, vec![(1, 10), (3, 30)]);
+}
+
+#[test]
+fn test_dataframe_join_indices_materialize_selected_payload_columns() {
+    let rt = sample_runtime();
+    let left = DataFrame::from_columns([
+        ("id", rt.series(&[1i32, 2, 3, 4]).unwrap()),
+        ("score", rt.series(&[10i32, 20, 30, 40]).unwrap()),
+        ("payload", rt.series(&[100i32, 200, 300, 400]).unwrap()),
+    ])
+    .unwrap();
+    let right = DataFrame::from_columns([("id", rt.series(&[2i32, 4]).unwrap())]).unwrap();
+
+    let indices = left.left_semi_join_indices(&right, DataFrameJoinOptions::new().on(["id"])).unwrap();
+    let materialized = left.materialize_join_indices(&indices, ["payload"]).unwrap();
+
+    assert_eq!(indices.len(), 2);
+    assert_eq!(materialized.column_names(), vec!["payload"]);
+    assert_eq!(materialized.num_rows(), 2);
+    let mut payload = i32_column(&materialized, "payload");
+    payload.sort();
+    assert_eq!(payload, vec![200, 400]);
+}
+
+#[test]
+fn test_dataframe_left_semi_join_honors_null_equality() {
+    let left_ids = column_from_slice_nullable(&[1i32, 0, 2], &[true, false, true]).unwrap();
+    let scores = column_from_slice(&[10i32, 20, 30]).unwrap();
+    let right_ids = column_from_slice_nullable(&[0i32, 3], &[false, true]).unwrap();
+    let left =
+        crate::common::dataframe_from_columns(vec!["id".to_string(), "score".to_string()], vec![left_ids, scores])
+            .unwrap();
+    let right = crate::common::dataframe_from_columns(vec!["id".to_string()], vec![right_ids]).unwrap();
+
+    let nulls_equal = left
+        .left_semi_join(&right, DataFrameJoinOptions::new().on(["id"]).null_equality(cudf::NullEquality::Equal))
+        .unwrap();
+    let nulls_unequal = left
+        .left_semi_join(&right, DataFrameJoinOptions::new().on(["id"]).null_equality(cudf::NullEquality::Unequal))
+        .unwrap();
+
+    assert_eq!(nullable_i32_column(&nulls_equal, "id"), vec![None]);
+    assert_eq!(i32_column(&nulls_equal, "score"), vec![20]);
+    assert_eq!(nulls_unequal.num_rows(), 0);
+}
+
+#[test]
+fn test_dataframe_left_semi_join_indices_with_execution_uses_borrowed_handles() {
+    let _event_observation = crate::common::lock_event_observation();
+    let data_rt = sample_runtime();
+    let query_rt = sample_runtime();
+    let left = DataFrame::from_columns([
+        ("id", data_rt.series(&[1i32, 2, 3, 4]).unwrap()),
+        ("score", data_rt.series(&[10i32, 20, 30, 40]).unwrap()),
+    ])
+    .unwrap();
+    let right = DataFrame::from_columns([("id", data_rt.series(&[2i32, 4]).unwrap())]).unwrap();
+    let ctx = ExecutionOverrides::new().with_stream(query_rt.stream()).with_memory_resource(query_rt.memory_resource());
+
+    reset_exec_observation();
+    let indices =
+        left.with_execution(&ctx).left_semi_join_indices(&right, DataFrameJoinOptions::new().on(["id"])).unwrap();
+
+    assert_eq!(last_exec_stream_value(), query_rt.stream().testing_raw_handle_value());
+    assert_eq!(last_exec_mr_value(), query_rt.memory_resource().testing_raw_handle_value());
+    assert_eq!(indices.placement().device, query_rt.device());
 }
 
 // ---------------------------------------------------------------------------
