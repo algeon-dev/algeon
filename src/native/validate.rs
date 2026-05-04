@@ -17,6 +17,7 @@ use datafusion::{
     },
 };
 
+use super::literal::{NativeLiteralContext, validate_native_literal};
 use crate::policy::FallbackReason;
 
 pub(super) fn validate_schema(schema: SchemaRef) -> Result<(), FallbackReason> {
@@ -170,57 +171,7 @@ fn validate_column_type(column: &Column, input_schema: &SchemaRef) -> Result<(),
 }
 
 fn validate_literal(value: &ScalarValue) -> Result<(), FallbackReason> {
-    match value {
-        ScalarValue::Boolean(Some(_))
-        | ScalarValue::Int8(Some(_))
-        | ScalarValue::Int16(Some(_))
-        | ScalarValue::Int32(Some(_))
-        | ScalarValue::Int64(Some(_))
-        | ScalarValue::UInt8(Some(_))
-        | ScalarValue::UInt16(Some(_))
-        | ScalarValue::UInt32(Some(_))
-        | ScalarValue::UInt64(Some(_))
-        | ScalarValue::Float32(Some(_))
-        | ScalarValue::Float64(Some(_))
-        | ScalarValue::Utf8(Some(_))
-        | ScalarValue::Utf8View(Some(_))
-        | ScalarValue::LargeUtf8(Some(_))
-        | ScalarValue::Decimal128(Some(_), _, _)
-        | ScalarValue::Date32(Some(_))
-        | ScalarValue::TimestampSecond(Some(_), None)
-        | ScalarValue::TimestampMillisecond(Some(_), None)
-        | ScalarValue::TimestampMicrosecond(Some(_), None)
-        | ScalarValue::TimestampNanosecond(Some(_), None)
-        | ScalarValue::DurationSecond(Some(_))
-        | ScalarValue::DurationMillisecond(Some(_))
-        | ScalarValue::DurationMicrosecond(Some(_))
-        | ScalarValue::DurationNanosecond(Some(_))
-        | ScalarValue::Boolean(None)
-        | ScalarValue::Int8(None)
-        | ScalarValue::Int16(None)
-        | ScalarValue::Int32(None)
-        | ScalarValue::Int64(None)
-        | ScalarValue::UInt8(None)
-        | ScalarValue::UInt16(None)
-        | ScalarValue::UInt32(None)
-        | ScalarValue::UInt64(None)
-        | ScalarValue::Float32(None)
-        | ScalarValue::Float64(None)
-        | ScalarValue::Utf8(None)
-        | ScalarValue::Utf8View(None)
-        | ScalarValue::LargeUtf8(None)
-        | ScalarValue::Decimal128(None, _, _)
-        | ScalarValue::Date32(None)
-        | ScalarValue::TimestampSecond(None, None)
-        | ScalarValue::TimestampMillisecond(None, None)
-        | ScalarValue::TimestampMicrosecond(None, None)
-        | ScalarValue::TimestampNanosecond(None, None)
-        | ScalarValue::DurationSecond(None)
-        | ScalarValue::DurationMillisecond(None)
-        | ScalarValue::DurationMicrosecond(None)
-        | ScalarValue::DurationNanosecond(None) => Ok(()),
-        _ => Err(FallbackReason::UnsupportedExpression),
-    }
+    validate_native_literal(value, NativeLiteralContext::Expression)
 }
 
 fn validate_binary_operator(op: &Operator) -> Result<(), FallbackReason> {

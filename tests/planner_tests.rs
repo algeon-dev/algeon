@@ -84,6 +84,74 @@ fn projection_plan(child: Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
     )
 }
 
+fn decimal_literal_projection_plan(literal: ScalarValue) -> Arc<dyn ExecutionPlan> {
+    let input = input();
+    Arc::new(
+        ProjectionExec::try_new([ProjectionExpr { expr: lit(literal), alias: "decimal_literal".to_string() }], input)
+            .unwrap(),
+    )
+}
+
+#[test]
+fn decimal_literal_projection_is_supported_for_gpu_island() {
+    let schema = Arc::new(Schema::new(vec![Field::new("discount", DataType::Decimal128(15, 2), false)]));
+    let input: Arc<dyn ExecutionPlan> = Arc::new(EmptyExec::new(Arc::clone(&schema)));
+    let one = lit(ScalarValue::Decimal128(Some(100), 15, 2));
+    let one_minus_discount = binary(one, Operator::Minus, col("discount", &schema).unwrap(), &schema).unwrap();
+    let projection: Arc<dyn ExecutionPlan> = Arc::new(
+        ProjectionExec::try_new(
+            [ProjectionExpr { expr: one_minus_discount, alias: "one_minus_discount".to_string() }],
+            input,
+        )
+        .unwrap(),
+    );
+    let config = CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred).with_min_operators_per_island(1);
+
+    let result = optimize_plan(projection, &config).unwrap();
+
+    assert_eq!(result.plan.name(), "CudfGpuIslandExec");
+    assert_eq!(
+        result.report.outcomes()[0],
+        CandidateOutcome::Rewritten {
+            candidate: datafusion_cudf::GpuCandidate::with_operator_count("ProjectionExec(child)", 1, 1),
+        },
+    );
+}
+
+#[test]
+fn negative_scale_decimal_literal_projection_is_supported_for_gpu_island() {
+    let projection = decimal_literal_projection_plan(ScalarValue::Decimal128(Some(123), 15, -2));
+    let config = CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred).with_min_operators_per_island(1);
+
+    let result = optimize_plan(projection, &config).unwrap();
+
+    assert_eq!(result.plan.name(), "CudfGpuIslandExec");
+    assert_eq!(
+        result.report.outcomes()[0],
+        CandidateOutcome::Rewritten {
+            candidate: datafusion_cudf::GpuCandidate::with_operator_count("ProjectionExec(child)", 1, 1),
+        },
+    );
+}
+
+#[test]
+fn invalid_decimal_literal_projection_is_rejected_before_gpu_island_rewrite() {
+    let config = CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred).with_min_operators_per_island(1);
+
+    for literal in [ScalarValue::Decimal128(Some(123), 39, 2), ScalarValue::Decimal128(Some(123), 2, 3)] {
+        let result = optimize_plan(decimal_literal_projection_plan(literal), &config).unwrap();
+
+        assert_eq!(result.plan.name(), "ProjectionExec");
+        assert_eq!(
+            result.report.outcomes()[0],
+            CandidateOutcome::Rejected {
+                candidate: datafusion_cudf::GpuCandidate::with_operator_count("ProjectionExec(child)", 1, 1),
+                reason: FallbackReason::UnsupportedExpression,
+            },
+        );
+    }
+}
+
 fn sort_plan(child: Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
     let input_schema = child.schema();
     let sort_exprs = LexOrdering::new([PhysicalSortExpr::new(

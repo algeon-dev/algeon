@@ -1,5 +1,7 @@
 use std::sync::Arc;
 
+use arrow::datatypes::DataType;
+use cudf_query_engine::is_supported_arrow_type;
 use datafusion::{
     common::ScalarValue,
     logical_expr::Operator,
@@ -98,7 +100,11 @@ fn literal_supported(value: &ScalarValue) -> bool {
             | ScalarValue::UInt64(Some(_))
             | ScalarValue::Float32(Some(_))
             | ScalarValue::Float64(Some(_))
-    )
+    ) || matches!(value, ScalarValue::Decimal128(Some(_), precision, scale) if decimal128_literal_supported(*precision, *scale))
+}
+
+fn decimal128_literal_supported(precision: u8, scale: i8) -> bool {
+    is_supported_arrow_type(&DataType::Decimal128(precision, scale))
 }
 
 fn binary_operator_supported(op: &Operator) -> bool {

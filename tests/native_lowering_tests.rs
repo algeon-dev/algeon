@@ -6,7 +6,8 @@ use std::{
 
 use arrow::{
     array::{
-        Date32Array, Decimal128Array, Float64Array, Int32Array, Int64Array, StringArray, TimestampNanosecondArray,
+        BinaryArray, Date32Array, Decimal128Array, Float64Array, Int32Array, Int64Array, StringArray,
+        TimestampNanosecondArray,
     },
     compute::SortOptions as ArrowSortOptions,
     datatypes::{DataType, Field, Schema, TimeUnit},
@@ -609,6 +610,29 @@ fn parquet_partition_columns_are_represented_in_native_source_contract() {
 }
 
 #[test]
+fn parquet_partition_typed_null_values_are_represented_in_native_source_contract() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-partition-typed-null");
+    let path = dir.join("input.parquet");
+    write_numeric_parquet_file(&path);
+    let scan = parquet_scan_with_partition_value(&path, ScalarValue::Int32(None));
+    let plan = partition_column_group_by_plan(scan);
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.source_diagnostics.len(), 1);
+    assert_eq!(result.source_diagnostics[0].partition_column_disposition.as_str(), "represented");
+    assert!(result.source_diagnostics[0].rejected_features.is_empty());
+    let source = native_local_parquet_source(&result.plans[0]);
+    assert_eq!(source.partition_columns.len(), 1);
+    assert_eq!(source.partition_columns[0].data_type, DataType::Int32);
+    assert_eq!(source.files[0].partition_values, vec![LiteralValue::Null(DataType::Int32)]);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn parquet_partition_columns_without_literal_values_are_rejected_with_source_reason() {
     let dir = unique_temp_dir("datafusion-cudf-native-lowering-partition-missing-values");
     let path = dir.join("input.parquet");
@@ -623,6 +647,32 @@ fn parquet_partition_columns_without_literal_values_are_rejected_with_source_rea
     assert!(matches!(
         result.report.outcomes()[0],
         CandidateOutcome::Rejected { reason: FallbackReason::NativeSourcePartitionValues, .. }
+    ));
+    assert_eq!(result.source_diagnostics.len(), 1);
+    assert_eq!(result.source_diagnostics[0].partition_column_disposition.as_str(), "rejected");
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn parquet_binary_partition_columns_are_rejected_with_unsupported_type() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-partition-binary");
+    let path = dir.join("input.parquet");
+    write_numeric_parquet_file(&path);
+    let scan = parquet_scan_with_typed_partition_value(
+        &path,
+        Field::new("part", DataType::Binary, false),
+        ScalarValue::Binary(Some(vec![1, 2, 3])),
+    );
+    let plan = aggregate_sort_limit_plan(scan, Operator::Plus);
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert!(result.plans.is_empty());
+    assert_eq!(result.rejected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert!(matches!(
+        result.report.outcomes()[0],
+        CandidateOutcome::Rejected { reason: FallbackReason::UnsupportedType, .. }
     ));
     assert_eq!(result.source_diagnostics.len(), 1);
     assert_eq!(result.source_diagnostics[0].partition_column_disposition.as_str(), "rejected");
@@ -653,6 +703,79 @@ fn parquet_utf8_partition_columns_are_represented_in_native_source_contract() {
     assert_eq!(source.partition_columns.len(), 1);
     assert_eq!(source.partition_columns[0].data_type, DataType::Utf8);
     assert_eq!(source.files[0].partition_values, vec![LiteralValue::Utf8("2026".to_string())]);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn parquet_utf8_view_partition_values_are_canonicalized_to_native_utf8_contract() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-partition-utf8-view");
+    let path = dir.join("input.parquet");
+    write_numeric_parquet_file(&path);
+    let scan = parquet_scan_with_typed_partition_value(
+        &path,
+        Field::new("part", DataType::Utf8View, false),
+        ScalarValue::Utf8View(Some("2026".to_string())),
+    );
+    let plan = aggregate_sort_limit_plan(scan, Operator::Plus);
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.source_diagnostics.len(), 1);
+    assert_eq!(result.source_diagnostics[0].partition_column_disposition.as_str(), "represented");
+    assert!(result.source_diagnostics[0].rejected_features.is_empty());
+    let source = native_local_parquet_source(&result.plans[0]);
+    assert_eq!(source.partition_columns.len(), 1);
+    assert_eq!(source.partition_columns[0].data_type, DataType::Utf8View);
+    assert_eq!(source.files[0].partition_values, vec![LiteralValue::Utf8("2026".to_string())]);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn parquet_utf8_view_partition_typed_null_values_preserve_native_type_contract() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-partition-utf8-view-null");
+    let path = dir.join("input.parquet");
+    write_numeric_parquet_file(&path);
+    let scan = parquet_scan_with_typed_partition_value(
+        &path,
+        Field::new("part", DataType::Utf8View, true),
+        ScalarValue::Utf8View(None),
+    );
+    let plan = aggregate_sort_limit_plan(scan, Operator::Plus);
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.source_diagnostics.len(), 1);
+    assert_eq!(result.source_diagnostics[0].partition_column_disposition.as_str(), "represented");
+    assert!(result.source_diagnostics[0].rejected_features.is_empty());
+    let source = native_local_parquet_source(&result.plans[0]);
+    assert_eq!(source.partition_columns.len(), 1);
+    assert_eq!(source.partition_columns[0].data_type, DataType::Utf8View);
+    assert_eq!(source.files[0].partition_values, vec![LiteralValue::Null(DataType::Utf8View)]);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn parquet_sources_with_unsupported_binary_schema_fields_are_rejected_with_unsupported_type() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-source-binary-schema");
+    let path = dir.join("input.parquet");
+    write_binary_schema_parquet_file(&path);
+    let plan = aggregate_sort_limit_plan(parquet_scan(&path), Operator::Plus);
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert!(result.plans.is_empty());
+    assert_eq!(result.rejected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert!(matches!(
+        result.report.outcomes()[0],
+        CandidateOutcome::Rejected { reason: FallbackReason::UnsupportedType, .. }
+    ));
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -2233,6 +2356,28 @@ fn write_numeric_parquet_file(path: &std::path::Path) {
             Arc::new(Int32Array::from(vec![5, 10, 20])),
             Arc::new(Int64Array::from(vec![100, 200, 300])),
             Arc::new(Int64Array::from(vec![1, 2, 3])),
+        ],
+    )
+    .unwrap();
+    write_batch(path, schema, batch);
+}
+
+fn write_binary_schema_parquet_file(path: &std::path::Path) {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int32, false),
+        Field::new("payload", DataType::Int32, false),
+        Field::new("m00", DataType::Int64, false),
+        Field::new("m01", DataType::Int64, false),
+        Field::new("blob", DataType::Binary, false),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int32Array::from(vec![1, 2, 1])),
+            Arc::new(Int32Array::from(vec![5, 10, 20])),
+            Arc::new(Int64Array::from(vec![100, 200, 300])),
+            Arc::new(Int64Array::from(vec![1, 2, 3])),
+            Arc::new(BinaryArray::from(vec![b"a" as &[u8], b"b" as &[u8], b"c" as &[u8]])),
         ],
     )
     .unwrap();
