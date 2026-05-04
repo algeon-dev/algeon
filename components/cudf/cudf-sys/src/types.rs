@@ -196,6 +196,16 @@ pub enum cudf_nullable_join_t {
     CUDF_NULLABLE_JOIN_NO = 1,
 }
 
+#[repr(i32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum cudf_join_kind_t {
+    CUDF_JOIN_KIND_INNER_JOIN = 0,
+    CUDF_JOIN_KIND_LEFT_JOIN = 1,
+    CUDF_JOIN_KIND_FULL_JOIN = 2,
+    CUDF_JOIN_KIND_LEFT_SEMI_JOIN = 3,
+    CUDF_JOIN_KIND_LEFT_ANTI_JOIN = 4,
+}
+
 // ---------------------------------------------------------------------------
 // Unary enums (mirrors cudf::unary_operator)
 // ---------------------------------------------------------------------------

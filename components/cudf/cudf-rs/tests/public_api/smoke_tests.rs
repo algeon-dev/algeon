@@ -14,13 +14,31 @@ mod series_display_tests;
 #[test]
 fn join_indices_and_hash_join_slice6_surface_is_publicly_importable() {
     use cudf::ops::join::{
-        HashJoin, HashJoinOptions, JoinIndices, NullEquality, full_join_indices, inner_join_indices, left_join_indices,
+        HashJoin, HashJoinOptions, JoinIndices, NullEquality, full_join_indices, full_join_indices_in,
+        inner_join_indices, inner_join_indices_in, left_join_indices, left_join_indices_in,
     };
 
     let _options = HashJoinOptions::new().null_equality(NullEquality::Equal);
     let _: Option<HashJoin> = None;
     let _: Option<JoinIndices> = None;
-    let _ = (inner_join_indices, left_join_indices, full_join_indices);
+    let _ = (
+        HashJoin::new,
+        HashJoin::new_in,
+        HashJoin::inner_join_indices,
+        HashJoin::inner_join_indices_in,
+        HashJoin::left_join_indices,
+        HashJoin::left_join_indices_in,
+        HashJoin::full_join_indices,
+        HashJoin::full_join_indices_in,
+    );
+    let _ = (
+        inner_join_indices,
+        inner_join_indices_in,
+        left_join_indices,
+        left_join_indices_in,
+        full_join_indices,
+        full_join_indices_in,
+    );
 }
 
 #[test]
@@ -42,10 +60,11 @@ fn slice8_ast_conditional_and_mixed_join_surface_is_publicly_importable() {
             conditional_full_join_indices, conditional_full_join_indices_in, conditional_inner_join_indices,
             conditional_inner_join_indices_in, conditional_left_anti_join_indices,
             conditional_left_anti_join_indices_in, conditional_left_join_indices, conditional_left_join_indices_in,
-            conditional_left_semi_join_indices, conditional_left_semi_join_indices_in, mixed_full_join_indices,
-            mixed_full_join_indices_in, mixed_inner_join_indices, mixed_inner_join_indices_in,
-            mixed_left_anti_join_indices, mixed_left_anti_join_indices_in, mixed_left_join_indices,
-            mixed_left_join_indices_in, mixed_left_semi_join_indices, mixed_left_semi_join_indices_in,
+            conditional_left_semi_join_indices, conditional_left_semi_join_indices_in, filter_join_indices,
+            filter_join_indices_in, mixed_full_join_indices, mixed_full_join_indices_in, mixed_inner_join_indices,
+            mixed_inner_join_indices_in, mixed_left_anti_join_indices, mixed_left_anti_join_indices_in,
+            mixed_left_join_indices, mixed_left_join_indices_in, mixed_left_semi_join_indices,
+            mixed_left_semi_join_indices_in,
         },
     };
 
@@ -62,6 +81,8 @@ fn slice8_ast_conditional_and_mixed_join_surface_is_publicly_importable() {
         conditional_left_semi_join_indices_in,
         conditional_left_anti_join_indices,
         conditional_left_anti_join_indices_in,
+        filter_join_indices,
+        filter_join_indices_in,
         mixed_inner_join_indices,
         mixed_inner_join_indices_in,
         mixed_left_join_indices,

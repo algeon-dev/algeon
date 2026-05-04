@@ -164,6 +164,27 @@ pub(crate) type ConditionalPairJoinRaw =
     unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void, *mut *mut c_void, *mut *mut c_void) -> i32;
 pub(crate) type ConditionalSingleJoinRaw =
     unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void, *mut *mut c_void) -> i32;
+pub(crate) type FilterJoinIndicesRaw = unsafe extern "C" fn(
+    *mut c_void,
+    *mut c_void,
+    *mut c_void,
+    *mut c_void,
+    *mut c_void,
+    i32,
+    *mut *mut c_void,
+    *mut *mut c_void,
+) -> i32;
+pub(crate) type FilterJoinIndicesExRaw = unsafe extern "C" fn(
+    *mut c_void,
+    *mut c_void,
+    *mut c_void,
+    *mut c_void,
+    *mut c_void,
+    i32,
+    *mut *mut c_void,
+    *mut *mut c_void,
+    *const cudf_sys::cudf_exec_options_t,
+) -> i32;
 
 #[allow(dead_code)]
 extern "C" {
@@ -204,6 +225,29 @@ extern "C" {
         right: *mut c_void,
         predicate: *mut c_void,
         out_indices: *mut *mut c_void,
+    ) -> i32;
+    #[link_name = "cudf_filter_join_indices"]
+    pub(crate) fn cudf_filter_join_indices_raw(
+        left: *mut c_void,
+        right: *mut c_void,
+        left_indices: *mut c_void,
+        right_indices: *mut c_void,
+        predicate: *mut c_void,
+        join_kind: i32,
+        out_left_indices: *mut *mut c_void,
+        out_right_indices: *mut *mut c_void,
+    ) -> i32;
+    #[link_name = "cudf_filter_join_indices_ex"]
+    pub(crate) fn cudf_filter_join_indices_ex_raw(
+        left: *mut c_void,
+        right: *mut c_void,
+        left_indices: *mut c_void,
+        right_indices: *mut c_void,
+        predicate: *mut c_void,
+        join_kind: i32,
+        out_left_indices: *mut *mut c_void,
+        out_right_indices: *mut *mut c_void,
+        options: *const cudf_sys::cudf_exec_options_t,
     ) -> i32;
 }
 

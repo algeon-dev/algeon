@@ -6,7 +6,7 @@ mod join_hash_join_execution_tests {
         core::Table,
         ops::{
             ast::AstExpression,
-            join::{self, HashJoin, HashJoinOptions, NullEquality},
+            join::{self, HashJoin, HashJoinOptions, JoinType, NullEquality},
         },
         testing::prelude::*,
     };
@@ -59,6 +59,66 @@ mod join_hash_join_execution_tests {
         assert_eq!(last_exec_stream_value(), expected_stream);
         assert_eq!(last_exec_mr_value(), expected_mr);
         assert_eq!(sorted_join_index_pairs(&indices), vec![(1, 0), (1, 1), (2, 0), (2, 1)]);
+    }
+
+    #[test]
+    fn join_indices_in_uses_borrowed_stream_and_memory_resource() {
+        let left_keys = Table::from_columns(vec![explicit_i32_column(&[1, 2, 3], 1017)]).unwrap();
+        let right_keys = Table::from_columns(vec![explicit_i32_column(&[2, 3, 4], 1018)]).unwrap();
+        let override_runtime = Runtime::new().unwrap();
+        let ctx = ExecutionOverrides::new()
+            .with_stream(override_runtime.stream())
+            .with_memory_resource(override_runtime.memory_resource());
+        let expected_stream = override_runtime.stream().testing_raw_handle_value();
+        let expected_mr = override_runtime.memory_resource().testing_raw_handle_value();
+
+        reset_exec_observation();
+        let inner = join::inner_join_indices_in(
+            &left_keys.testing_view().unwrap(),
+            &right_keys.testing_view().unwrap(),
+            NullEquality::Equal,
+            &ctx,
+        )
+        .unwrap();
+        assert_eq!(inner.left.testing_execution_domain_stream_value(), expected_stream);
+        assert_eq!(inner.right.testing_execution_domain_stream_value(), expected_stream);
+        assert_eq!(inner.left.testing_execution_domain_mr_value(), expected_mr);
+        assert_eq!(inner.right.testing_execution_domain_mr_value(), expected_mr);
+        assert_eq!(last_exec_stream_value(), expected_stream);
+        assert_eq!(last_exec_mr_value(), expected_mr);
+        assert_eq!(sorted_join_index_pairs(&inner), vec![(1, 0), (2, 1)]);
+
+        reset_exec_observation();
+        let left = join::left_join_indices_in(
+            &left_keys.testing_view().unwrap(),
+            &right_keys.testing_view().unwrap(),
+            NullEquality::Equal,
+            &ctx,
+        )
+        .unwrap();
+        assert_eq!(left.left.testing_execution_domain_stream_value(), expected_stream);
+        assert_eq!(left.right.testing_execution_domain_stream_value(), expected_stream);
+        assert_eq!(left.left.testing_execution_domain_mr_value(), expected_mr);
+        assert_eq!(left.right.testing_execution_domain_mr_value(), expected_mr);
+        assert_eq!(last_exec_stream_value(), expected_stream);
+        assert_eq!(last_exec_mr_value(), expected_mr);
+        assert_eq!(sorted_join_index_pairs(&left), vec![(0, JOIN_NO_MATCH), (1, 0), (2, 1)]);
+
+        reset_exec_observation();
+        let full = join::full_join_indices_in(
+            &left_keys.testing_view().unwrap(),
+            &right_keys.testing_view().unwrap(),
+            NullEquality::Equal,
+            &ctx,
+        )
+        .unwrap();
+        assert_eq!(full.left.testing_execution_domain_stream_value(), expected_stream);
+        assert_eq!(full.right.testing_execution_domain_stream_value(), expected_stream);
+        assert_eq!(full.left.testing_execution_domain_mr_value(), expected_mr);
+        assert_eq!(full.right.testing_execution_domain_mr_value(), expected_mr);
+        assert_eq!(last_exec_stream_value(), expected_stream);
+        assert_eq!(last_exec_mr_value(), expected_mr);
+        assert_eq!(sorted_join_index_pairs(&full), vec![(JOIN_NO_MATCH, 2), (0, JOIN_NO_MATCH), (1, 0), (2, 1)]);
     }
 
     #[test]
@@ -142,6 +202,69 @@ mod join_hash_join_execution_tests {
         assert_eq!(last_exec_stream_value(), expected_stream);
         assert_eq!(last_exec_mr_value(), expected_mr);
         assert_eq!(sorted_join_index_pairs(&indices), vec![(0, JOIN_NO_MATCH), (1, 0), (1, 1), (2, 2)]);
+    }
+
+    #[test]
+    fn hash_join_new_in_uses_borrowed_stream_and_memory_resource() {
+        let build_keys = Table::from_columns(vec![explicit_i32_column(&[2, 2, 4], 1019)]).unwrap();
+        let retained_build_stream = build_keys.testing_execution_domain_stream_value();
+        let override_runtime = Runtime::new().unwrap();
+        let ctx = ExecutionOverrides::new()
+            .with_stream(override_runtime.stream())
+            .with_memory_resource(override_runtime.memory_resource());
+        let expected_stream = override_runtime.stream().testing_raw_handle_value();
+        let expected_mr = override_runtime.memory_resource().testing_raw_handle_value();
+
+        reset_exec_observation();
+        let hash_join =
+            HashJoin::new_in(build_keys, HashJoinOptions::new().null_equality(NullEquality::Equal), &ctx).unwrap();
+
+        assert_eq!(hash_join.build_keys().testing_execution_domain_stream_value(), retained_build_stream);
+        assert_eq!(last_exec_stream_value(), expected_stream);
+        assert_eq!(last_exec_mr_value(), expected_mr);
+    }
+
+    #[test]
+    fn hash_join_probe_indices_in_uses_borrowed_stream_and_memory_resource() {
+        let build_keys = Table::from_columns(vec![explicit_i32_column(&[2, 2, 4], 1020)]).unwrap();
+        let probe_keys = Table::from_columns(vec![explicit_i32_column(&[1, 2, 4], 1021)]).unwrap();
+        let hash_join = HashJoin::new(build_keys, HashJoinOptions::new().null_equality(NullEquality::Equal)).unwrap();
+        let override_runtime = Runtime::new().unwrap();
+        let ctx = ExecutionOverrides::new()
+            .with_stream(override_runtime.stream())
+            .with_memory_resource(override_runtime.memory_resource());
+        let expected_stream = override_runtime.stream().testing_raw_handle_value();
+        let expected_mr = override_runtime.memory_resource().testing_raw_handle_value();
+
+        reset_exec_observation();
+        let inner = hash_join.inner_join_indices_in(&probe_keys.testing_view().unwrap(), &ctx).unwrap();
+        assert_eq!(inner.left.testing_execution_domain_stream_value(), expected_stream);
+        assert_eq!(inner.right.testing_execution_domain_stream_value(), expected_stream);
+        assert_eq!(inner.left.testing_execution_domain_mr_value(), expected_mr);
+        assert_eq!(inner.right.testing_execution_domain_mr_value(), expected_mr);
+        assert_eq!(last_exec_stream_value(), expected_stream);
+        assert_eq!(last_exec_mr_value(), expected_mr);
+        assert_eq!(sorted_join_index_pairs(&inner), vec![(1, 0), (1, 1), (2, 2)]);
+
+        reset_exec_observation();
+        let left = hash_join.left_join_indices_in(&probe_keys.testing_view().unwrap(), &ctx).unwrap();
+        assert_eq!(left.left.testing_execution_domain_stream_value(), expected_stream);
+        assert_eq!(left.right.testing_execution_domain_stream_value(), expected_stream);
+        assert_eq!(left.left.testing_execution_domain_mr_value(), expected_mr);
+        assert_eq!(left.right.testing_execution_domain_mr_value(), expected_mr);
+        assert_eq!(last_exec_stream_value(), expected_stream);
+        assert_eq!(last_exec_mr_value(), expected_mr);
+        assert_eq!(sorted_join_index_pairs(&left), vec![(0, JOIN_NO_MATCH), (1, 0), (1, 1), (2, 2)]);
+
+        reset_exec_observation();
+        let full = hash_join.full_join_indices_in(&probe_keys.testing_view().unwrap(), &ctx).unwrap();
+        assert_eq!(full.left.testing_execution_domain_stream_value(), expected_stream);
+        assert_eq!(full.right.testing_execution_domain_stream_value(), expected_stream);
+        assert_eq!(full.left.testing_execution_domain_mr_value(), expected_mr);
+        assert_eq!(full.right.testing_execution_domain_mr_value(), expected_mr);
+        assert_eq!(last_exec_stream_value(), expected_stream);
+        assert_eq!(last_exec_mr_value(), expected_mr);
+        assert_eq!(sorted_join_index_pairs(&full), vec![(0, JOIN_NO_MATCH), (1, 0), (1, 1), (2, 2)]);
     }
 
     #[test]
@@ -386,6 +509,71 @@ mod join_hash_join_execution_tests {
         assert_eq!(last_exec_stream_value(), expected_stream);
         assert_eq!(last_exec_mr_value(), expected_mr);
         assert_eq!(sorted_join_index_pairs(&indices), vec![(0, 0), (2, 1)]);
+    }
+
+    #[test]
+    fn filter_join_indices_support_mixed_same_device_domains_and_use_left_index_provenance() {
+        let left = Table::from_columns(vec![explicit_i32_column(&[1, 3, 5], 1009)]).unwrap();
+        let right = Table::from_columns(vec![explicit_i32_column(&[2, 4], 1010)]).unwrap();
+        let left_indices = explicit_i32_column(&[0, 1, 2], 1011);
+        let right_indices = explicit_i32_column(&[0, 0, 1], 1012);
+        let predicate = left_less_than_right();
+        let expected_stream = left_indices.testing_execution_domain_stream_value();
+        let expected_mr = left_indices.testing_execution_domain_mr_value();
+
+        reset_exec_observation();
+        let indices = join::filter_join_indices(
+            &left.testing_view().unwrap(),
+            &right.testing_view().unwrap(),
+            &left_indices.testing_view().unwrap(),
+            &right_indices.testing_view().unwrap(),
+            &predicate,
+            JoinType::Inner,
+        )
+        .unwrap();
+
+        assert_eq!(indices.left.testing_execution_domain_id(), left_indices.testing_execution_domain_id());
+        assert_eq!(indices.right.testing_execution_domain_id(), left_indices.testing_execution_domain_id());
+        assert_eq!(indices.left.testing_execution_domain_mr_value(), expected_mr);
+        assert_eq!(indices.right.testing_execution_domain_mr_value(), expected_mr);
+        assert_eq!(last_exec_stream_value(), expected_stream);
+        assert_eq!(last_exec_mr_value(), expected_mr);
+        assert_eq!(sorted_join_index_pairs(&indices), vec![(0, 0)]);
+    }
+
+    #[test]
+    fn filter_join_indices_in_uses_borrowed_stream_and_memory_resource() {
+        let left = Table::from_columns(vec![explicit_i32_column(&[1, 3, 5], 1013)]).unwrap();
+        let right = Table::from_columns(vec![explicit_i32_column(&[2, 4], 1014)]).unwrap();
+        let left_indices = explicit_i32_column(&[0, 1, 2], 1015);
+        let right_indices = explicit_i32_column(&[0, 0, 1], 1016);
+        let predicate = left_less_than_right();
+        let override_runtime = Runtime::new().unwrap();
+        let ctx = ExecutionOverrides::new()
+            .with_stream(override_runtime.stream())
+            .with_memory_resource(override_runtime.memory_resource());
+        let expected_stream = override_runtime.stream().testing_raw_handle_value();
+        let expected_mr = override_runtime.memory_resource().testing_raw_handle_value();
+
+        reset_exec_observation();
+        let indices = join::filter_join_indices_in(
+            &left.testing_view().unwrap(),
+            &right.testing_view().unwrap(),
+            &left_indices.testing_view().unwrap(),
+            &right_indices.testing_view().unwrap(),
+            &predicate,
+            JoinType::Inner,
+            &ctx,
+        )
+        .unwrap();
+
+        assert_eq!(indices.left.testing_execution_domain_stream_value(), expected_stream);
+        assert_eq!(indices.right.testing_execution_domain_stream_value(), expected_stream);
+        assert_eq!(indices.left.testing_execution_domain_mr_value(), expected_mr);
+        assert_eq!(indices.right.testing_execution_domain_mr_value(), expected_mr);
+        assert_eq!(last_exec_stream_value(), expected_stream);
+        assert_eq!(last_exec_mr_value(), expected_mr);
+        assert_eq!(sorted_join_index_pairs(&indices), vec![(0, 0)]);
     }
 
     #[test]
