@@ -56,6 +56,49 @@ fn make_bool8_column(data: &[u8]) -> *mut c_void {
     out
 }
 
+fn column_len(col: *mut c_void) -> usize {
+    let view = make_column_view(col);
+    let mut size = 0;
+    let status = unsafe { cudf_sys::cudf_column_view_size(view, &mut size) };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS);
+    assert!(size >= 0);
+    unsafe { cudf_sys::cudf_column_view_destroy(view) };
+    size as usize
+}
+
+fn read_all_i32_column_data(col: *mut c_void) -> Vec<i32> {
+    read_i32_column_data(col, column_len(col))
+}
+
+fn assert_readable_nonempty_i32_indices(col: *mut c_void, context: &str) {
+    let indices = read_all_i32_column_data(col);
+    assert!(!indices.is_empty(), "{context} must return at least one index");
+}
+
+fn make_ast_column_reference(table_reference: cudf_sys::cudf_ast_table_reference_t) -> *mut c_void {
+    let mut out: *mut c_void = ptr::null_mut();
+    let status = unsafe { cudf_sys::cudf_ast_column_reference_create(0, table_reference, &mut out) };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS);
+    assert!(!out.is_null());
+    out
+}
+
+fn make_left_less_than_right_predicate() -> *mut c_void {
+    let left = make_ast_column_reference(cudf_sys::cudf_ast_table_reference_t::CUDF_AST_TABLE_REFERENCE_LEFT);
+    let right = make_ast_column_reference(cudf_sys::cudf_ast_table_reference_t::CUDF_AST_TABLE_REFERENCE_RIGHT);
+    let mut out: *mut c_void = ptr::null_mut();
+    let status = unsafe {
+        cudf_sys::cudf_ast_operation_binary_create(cudf_sys::cudf_ast_operator_t::CUDF_AST_LESS, left, right, &mut out)
+    };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS);
+    assert!(!out.is_null());
+    unsafe {
+        cudf_sys::cudf_ast_expression_destroy(right);
+        cudf_sys::cudf_ast_expression_destroy(left);
+    }
+    out
+}
+
 #[test]
 fn test_column_view_strings_to_host_empty_rejects_undersized_offsets_buffer() {
     let _shim_state = lock_shim_state();
@@ -1118,6 +1161,48 @@ fn test_hash_join_create_invalid_null_equality_rejected() {
 }
 
 #[test]
+fn test_ast_invalid_table_reference_operator_and_null_handle_clear_output() {
+    let _shim_state = lock_shim_state();
+
+    let mut out = std::ptr::NonNull::<c_void>::dangling().as_ptr();
+    let status = unsafe { cudf_ast_column_reference_create_raw(0, 99, &mut out) };
+    assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_ARGUMENT);
+    assert!(out.is_null());
+    assert!(last_error_message().contains("invalid AST table reference"));
+
+    let left = make_ast_column_reference(cudf_sys::cudf_ast_table_reference_t::CUDF_AST_TABLE_REFERENCE_LEFT);
+    let right = make_ast_column_reference(cudf_sys::cudf_ast_table_reference_t::CUDF_AST_TABLE_REFERENCE_RIGHT);
+
+    out = std::ptr::NonNull::<c_void>::dangling().as_ptr();
+    let status = unsafe { cudf_ast_operation_binary_create_raw(99, left, right, &mut out) };
+    assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_ARGUMENT);
+    assert!(out.is_null());
+    assert!(last_error_message().contains("invalid AST operator"));
+
+    out = std::ptr::NonNull::<c_void>::dangling().as_ptr();
+    let status = unsafe {
+        cudf_sys::cudf_ast_operation_unary_create(
+            cudf_sys::cudf_ast_operator_t::CUDF_AST_NOT,
+            ptr::null_mut(),
+            &mut out,
+        )
+    };
+    assert_eq!(status, cudf_sys::CUDF_ERROR_NULL);
+    assert!(out.is_null());
+
+    out = std::ptr::NonNull::<c_void>::dangling().as_ptr();
+    let status = unsafe { cudf_ast_operation_unary_create_raw(99, left, &mut out) };
+    assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_ARGUMENT);
+    assert!(out.is_null());
+    assert!(last_error_message().contains("invalid AST operator"));
+
+    unsafe {
+        cudf_sys::cudf_ast_expression_destroy(right);
+        cudf_sys::cudf_ast_expression_destroy(left);
+    }
+}
+
+#[test]
 fn test_hash_join_create_ex_uses_explicit_memory_resource_for_build_allocations() {
     let _shim_state = lock_shim_state();
     let previous_raw = current_device_resource_raw();
@@ -1432,6 +1517,406 @@ fn test_filtered_join_indices_ex_uses_explicit_memory_resource_for_allocations_a
         cudf_sys::cudf_table_view_destroy(left_tv);
         cudf_sys::cudf_table_destroy(right_tbl);
         cudf_sys::cudf_table_destroy(left_tbl);
+    }
+}
+
+#[test]
+fn test_conditional_join_indices_ex_uses_explicit_memory_resource_for_allocations_and_provenance() {
+    let _shim_state = lock_shim_state();
+    let previous_raw = current_device_resource_raw();
+    let current_mr = OwnedMemoryResource::new_test_stats();
+    let _restore = CurrentDeviceResourceRestore::new(previous_raw);
+    let target_mr = OwnedMemoryResource::new_test_stats();
+
+    let left_tbl = make_table_from_one_column(make_i32_column(&[1, 4]));
+    let right_tbl = make_table_from_one_column(make_i32_column(&[2]));
+    let left_tv = make_table_view(left_tbl);
+    let right_tv = make_table_view(right_tbl);
+    let predicate = make_left_less_than_right_predicate();
+    let stream = OwnedStream::new();
+    let target_stream = stream.borrowed();
+    let target_borrowed = target_mr.borrowed();
+    let exec = cudf_sys::ExecutionContext::new().with_stream(&target_stream).with_memory_resource(&target_borrowed);
+
+    for (name, join_indices) in [
+        (
+            "inner",
+            cudf_sys::cudf_conditional_inner_join_indices_ex
+                as unsafe extern "C" fn(
+                    *mut c_void,
+                    *mut c_void,
+                    *mut c_void,
+                    *mut *mut c_void,
+                    *mut *mut c_void,
+                    *const cudf_sys::cudf_exec_options_t,
+                ) -> cudf_sys::cudf_status_t,
+        ),
+        ("left", cudf_sys::cudf_conditional_left_join_indices_ex),
+        ("full", cudf_sys::cudf_conditional_full_join_indices_ex),
+    ] {
+        let target_before = target_mr.allocation_count();
+        let current_before = current_mr.allocation_count();
+        reset_exec_observation();
+
+        let mut out_left: *mut c_void = ptr::null_mut();
+        let mut out_right: *mut c_void = ptr::null_mut();
+        let current_borrowed = current_mr.borrowed();
+        cudf_sys::test_set_current_device_resource(&current_borrowed)
+            .expect("failed to install current sentinel memory resource");
+        let status =
+            unsafe { join_indices(left_tv, right_tv, predicate, &mut out_left, &mut out_right, exec.as_raw()) };
+        let restored_current = current_device_resource_raw();
+        unsafe { cudf_sys::test_set_current_device_resource_raw(previous_raw) }
+            .expect("failed to restore previous current device resource");
+
+        assert_eq!(status, cudf_sys::CUDF_SUCCESS, "{name} conditional join failed");
+        assert!(!out_left.is_null(), "{name} conditional join did not publish left indices");
+        assert!(!out_right.is_null(), "{name} conditional join did not publish right indices");
+        assert_eq!(last_exec_stream_value(), stream_value(stream.as_raw()));
+        assert_eq!(last_exec_mr_raw(), target_mr.raw_device_resource());
+        assert_eq!(
+            restored_current,
+            current_mr.raw_device_resource(),
+            "{name} conditional join must restore the caller's current memory resource"
+        );
+        assert_eq!(
+            current_mr.allocation_count(),
+            current_before,
+            "{name} conditional join temporaries must not allocate from the caller's current memory resource"
+        );
+        assert!(
+            target_mr.allocation_count() > target_before,
+            "{name} conditional join allocations must be charged to the explicit execution memory resource"
+        );
+        assert_readable_nonempty_i32_indices(out_left, &format!("{name} conditional left indices"));
+        assert_readable_nonempty_i32_indices(out_right, &format!("{name} conditional right indices"));
+
+        unsafe {
+            cudf_sys::cudf_column_destroy(out_left);
+            cudf_sys::cudf_column_destroy(out_right);
+        }
+    }
+
+    for (name, join_indices) in [
+        (
+            "semi",
+            cudf_sys::cudf_conditional_left_semi_join_indices_ex
+                as unsafe extern "C" fn(
+                    *mut c_void,
+                    *mut c_void,
+                    *mut c_void,
+                    *mut *mut c_void,
+                    *const cudf_sys::cudf_exec_options_t,
+                ) -> cudf_sys::cudf_status_t,
+        ),
+        ("anti", cudf_sys::cudf_conditional_left_anti_join_indices_ex),
+    ] {
+        let target_before = target_mr.allocation_count();
+        let current_before = current_mr.allocation_count();
+        reset_exec_observation();
+
+        let mut out: *mut c_void = ptr::null_mut();
+        let current_borrowed = current_mr.borrowed();
+        cudf_sys::test_set_current_device_resource(&current_borrowed)
+            .expect("failed to install current sentinel memory resource");
+        let status = unsafe { join_indices(left_tv, right_tv, predicate, &mut out, exec.as_raw()) };
+        let restored_current = current_device_resource_raw();
+        unsafe { cudf_sys::test_set_current_device_resource_raw(previous_raw) }
+            .expect("failed to restore previous current device resource");
+
+        assert_eq!(status, cudf_sys::CUDF_SUCCESS, "{name} conditional join failed");
+        assert!(!out.is_null(), "{name} conditional join did not publish indices");
+        assert_eq!(last_exec_stream_value(), stream_value(stream.as_raw()));
+        assert_eq!(last_exec_mr_raw(), target_mr.raw_device_resource());
+        assert_eq!(
+            restored_current,
+            current_mr.raw_device_resource(),
+            "{name} conditional join must restore the caller's current memory resource"
+        );
+        assert_eq!(
+            current_mr.allocation_count(),
+            current_before,
+            "{name} conditional join temporaries must not allocate from the caller's current memory resource"
+        );
+        assert!(
+            target_mr.allocation_count() > target_before,
+            "{name} conditional join allocations must be charged to the explicit execution memory resource"
+        );
+        assert_readable_nonempty_i32_indices(out, &format!("{name} conditional indices"));
+
+        unsafe { cudf_sys::cudf_column_destroy(out) };
+    }
+
+    stream.synchronize();
+    unsafe {
+        cudf_sys::cudf_ast_expression_destroy(predicate);
+        cudf_sys::cudf_table_view_destroy(right_tv);
+        cudf_sys::cudf_table_view_destroy(left_tv);
+        cudf_sys::cudf_table_destroy(right_tbl);
+        cudf_sys::cudf_table_destroy(left_tbl);
+    }
+}
+
+#[test]
+fn test_mixed_join_invalid_null_equality_rejected_and_clears_outputs() {
+    let _shim_state = lock_shim_state();
+    let left_eq_tbl = make_table_from_one_column(make_i32_column(&[1, 1, 2, 3]));
+    let right_eq_tbl = make_table_from_one_column(make_i32_column(&[1, 2, 2, 4]));
+    let left_cond_tbl = make_table_from_one_column(make_i32_column(&[10, 30, 5, 7]));
+    let right_cond_tbl = make_table_from_one_column(make_i32_column(&[20, 10, 6, 8]));
+    let left_eq_tv = make_table_view(left_eq_tbl);
+    let right_eq_tv = make_table_view(right_eq_tbl);
+    let left_cond_tv = make_table_view(left_cond_tbl);
+    let right_cond_tv = make_table_view(right_cond_tbl);
+    let predicate = make_left_less_than_right_predicate();
+
+    for (name, join_indices) in [
+        (
+            "inner",
+            cudf_mixed_inner_join_indices_raw
+                as unsafe extern "C" fn(
+                    *mut c_void,
+                    *mut c_void,
+                    *mut c_void,
+                    *mut c_void,
+                    *mut c_void,
+                    i32,
+                    *mut *mut c_void,
+                    *mut *mut c_void,
+                ) -> i32,
+        ),
+        ("left", cudf_mixed_left_join_indices_raw),
+        ("full", cudf_mixed_full_join_indices_raw),
+    ] {
+        let mut out_left = std::ptr::NonNull::<c_void>::dangling().as_ptr();
+        let mut out_right = std::ptr::NonNull::<c_void>::dangling().as_ptr();
+        let status = unsafe {
+            join_indices(
+                left_eq_tv,
+                right_eq_tv,
+                left_cond_tv,
+                right_cond_tv,
+                predicate,
+                99,
+                &mut out_left,
+                &mut out_right,
+            )
+        };
+
+        assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_OPERATION, "{name} mixed join status");
+        assert!(out_left.is_null(), "{name} mixed join must clear left output");
+        assert!(out_right.is_null(), "{name} mixed join must clear right output");
+        assert!(last_error_message().contains("invalid null_equality"));
+    }
+
+    for (name, join_indices) in [
+        (
+            "semi",
+            cudf_mixed_left_semi_join_indices_raw
+                as unsafe extern "C" fn(
+                    *mut c_void,
+                    *mut c_void,
+                    *mut c_void,
+                    *mut c_void,
+                    *mut c_void,
+                    i32,
+                    *mut *mut c_void,
+                ) -> i32,
+        ),
+        ("anti", cudf_mixed_left_anti_join_indices_raw),
+    ] {
+        let mut out = std::ptr::NonNull::<c_void>::dangling().as_ptr();
+        let status =
+            unsafe { join_indices(left_eq_tv, right_eq_tv, left_cond_tv, right_cond_tv, predicate, 99, &mut out) };
+
+        assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_OPERATION, "{name} mixed join status");
+        assert!(out.is_null(), "{name} mixed join must clear output");
+        assert!(last_error_message().contains("invalid null_equality"));
+    }
+
+    unsafe {
+        cudf_sys::cudf_ast_expression_destroy(predicate);
+        cudf_sys::cudf_table_view_destroy(right_cond_tv);
+        cudf_sys::cudf_table_view_destroy(left_cond_tv);
+        cudf_sys::cudf_table_view_destroy(right_eq_tv);
+        cudf_sys::cudf_table_view_destroy(left_eq_tv);
+        cudf_sys::cudf_table_destroy(right_cond_tbl);
+        cudf_sys::cudf_table_destroy(left_cond_tbl);
+        cudf_sys::cudf_table_destroy(right_eq_tbl);
+        cudf_sys::cudf_table_destroy(left_eq_tbl);
+    }
+}
+
+#[test]
+fn test_mixed_join_indices_ex_uses_explicit_memory_resource_for_allocations_and_provenance() {
+    let _shim_state = lock_shim_state();
+    let previous_raw = current_device_resource_raw();
+    let current_mr = OwnedMemoryResource::new_test_stats();
+    let _restore = CurrentDeviceResourceRestore::new(previous_raw);
+    let target_mr = OwnedMemoryResource::new_test_stats();
+
+    let left_eq_tbl = make_table_from_one_column(make_i32_column(&[1, 1, 2, 3]));
+    let right_eq_tbl = make_table_from_one_column(make_i32_column(&[1, 2, 2, 4]));
+    let left_cond_tbl = make_table_from_one_column(make_i32_column(&[10, 30, 5, 7]));
+    let right_cond_tbl = make_table_from_one_column(make_i32_column(&[20, 10, 6, 8]));
+    let left_eq_tv = make_table_view(left_eq_tbl);
+    let right_eq_tv = make_table_view(right_eq_tbl);
+    let left_cond_tv = make_table_view(left_cond_tbl);
+    let right_cond_tv = make_table_view(right_cond_tbl);
+    let predicate = make_left_less_than_right_predicate();
+    let stream = OwnedStream::new();
+    let target_stream = stream.borrowed();
+    let target_borrowed = target_mr.borrowed();
+    let exec = cudf_sys::ExecutionContext::new().with_stream(&target_stream).with_memory_resource(&target_borrowed);
+
+    for (name, join_indices) in [
+        (
+            "inner",
+            cudf_sys::cudf_mixed_inner_join_indices_ex
+                as unsafe extern "C" fn(
+                    *mut c_void,
+                    *mut c_void,
+                    *mut c_void,
+                    *mut c_void,
+                    *mut c_void,
+                    cudf_sys::cudf_null_equality_t,
+                    *mut *mut c_void,
+                    *mut *mut c_void,
+                    *const cudf_sys::cudf_exec_options_t,
+                ) -> cudf_sys::cudf_status_t,
+        ),
+        ("left", cudf_sys::cudf_mixed_left_join_indices_ex),
+        ("full", cudf_sys::cudf_mixed_full_join_indices_ex),
+    ] {
+        let target_before = target_mr.allocation_count();
+        let current_before = current_mr.allocation_count();
+        reset_exec_observation();
+
+        let mut out_left: *mut c_void = ptr::null_mut();
+        let mut out_right: *mut c_void = ptr::null_mut();
+        let current_borrowed = current_mr.borrowed();
+        cudf_sys::test_set_current_device_resource(&current_borrowed)
+            .expect("failed to install current sentinel memory resource");
+        let status = unsafe {
+            join_indices(
+                left_eq_tv,
+                right_eq_tv,
+                left_cond_tv,
+                right_cond_tv,
+                predicate,
+                cudf_sys::cudf_null_equality_t::CUDF_NULL_EQUALITY_EQUAL,
+                &mut out_left,
+                &mut out_right,
+                exec.as_raw(),
+            )
+        };
+        let restored_current = current_device_resource_raw();
+        unsafe { cudf_sys::test_set_current_device_resource_raw(previous_raw) }
+            .expect("failed to restore previous current device resource");
+
+        assert_eq!(status, cudf_sys::CUDF_SUCCESS, "{name} mixed join failed");
+        assert!(!out_left.is_null(), "{name} mixed join did not publish left indices");
+        assert!(!out_right.is_null(), "{name} mixed join did not publish right indices");
+        assert_eq!(last_exec_stream_value(), stream_value(stream.as_raw()));
+        assert_eq!(last_exec_mr_raw(), target_mr.raw_device_resource());
+        assert_eq!(
+            restored_current,
+            current_mr.raw_device_resource(),
+            "{name} mixed join must restore the caller's current memory resource"
+        );
+        assert_eq!(
+            current_mr.allocation_count(),
+            current_before,
+            "{name} mixed join temporaries must not allocate from the caller's current memory resource"
+        );
+        assert!(
+            target_mr.allocation_count() > target_before,
+            "{name} mixed join allocations must be charged to the explicit execution memory resource"
+        );
+        assert_readable_nonempty_i32_indices(out_left, &format!("{name} mixed left indices"));
+        assert_readable_nonempty_i32_indices(out_right, &format!("{name} mixed right indices"));
+
+        unsafe {
+            cudf_sys::cudf_column_destroy(out_left);
+            cudf_sys::cudf_column_destroy(out_right);
+        }
+    }
+
+    for (name, join_indices) in [
+        (
+            "semi",
+            cudf_sys::cudf_mixed_left_semi_join_indices_ex
+                as unsafe extern "C" fn(
+                    *mut c_void,
+                    *mut c_void,
+                    *mut c_void,
+                    *mut c_void,
+                    *mut c_void,
+                    cudf_sys::cudf_null_equality_t,
+                    *mut *mut c_void,
+                    *const cudf_sys::cudf_exec_options_t,
+                ) -> cudf_sys::cudf_status_t,
+        ),
+        ("anti", cudf_sys::cudf_mixed_left_anti_join_indices_ex),
+    ] {
+        let target_before = target_mr.allocation_count();
+        let current_before = current_mr.allocation_count();
+        reset_exec_observation();
+
+        let mut out: *mut c_void = ptr::null_mut();
+        let current_borrowed = current_mr.borrowed();
+        cudf_sys::test_set_current_device_resource(&current_borrowed)
+            .expect("failed to install current sentinel memory resource");
+        let status = unsafe {
+            join_indices(
+                left_eq_tv,
+                right_eq_tv,
+                left_cond_tv,
+                right_cond_tv,
+                predicate,
+                cudf_sys::cudf_null_equality_t::CUDF_NULL_EQUALITY_EQUAL,
+                &mut out,
+                exec.as_raw(),
+            )
+        };
+        let restored_current = current_device_resource_raw();
+        unsafe { cudf_sys::test_set_current_device_resource_raw(previous_raw) }
+            .expect("failed to restore previous current device resource");
+
+        assert_eq!(status, cudf_sys::CUDF_SUCCESS, "{name} mixed join failed");
+        assert!(!out.is_null(), "{name} mixed join did not publish indices");
+        assert_eq!(last_exec_stream_value(), stream_value(stream.as_raw()));
+        assert_eq!(last_exec_mr_raw(), target_mr.raw_device_resource());
+        assert_eq!(
+            restored_current,
+            current_mr.raw_device_resource(),
+            "{name} mixed join must restore the caller's current memory resource"
+        );
+        assert_eq!(
+            current_mr.allocation_count(),
+            current_before,
+            "{name} mixed join temporaries must not allocate from the caller's current memory resource"
+        );
+        assert!(
+            target_mr.allocation_count() > target_before,
+            "{name} mixed join allocations must be charged to the explicit execution memory resource"
+        );
+        assert_readable_nonempty_i32_indices(out, &format!("{name} mixed indices"));
+
+        unsafe { cudf_sys::cudf_column_destroy(out) };
+    }
+
+    stream.synchronize();
+    unsafe {
+        cudf_sys::cudf_ast_expression_destroy(predicate);
+        cudf_sys::cudf_table_view_destroy(right_cond_tv);
+        cudf_sys::cudf_table_view_destroy(left_cond_tv);
+        cudf_sys::cudf_table_view_destroy(right_eq_tv);
+        cudf_sys::cudf_table_view_destroy(left_eq_tv);
+        cudf_sys::cudf_table_destroy(right_cond_tbl);
+        cudf_sys::cudf_table_destroy(left_cond_tbl);
+        cudf_sys::cudf_table_destroy(right_eq_tbl);
+        cudf_sys::cudf_table_destroy(left_eq_tbl);
     }
 }
 

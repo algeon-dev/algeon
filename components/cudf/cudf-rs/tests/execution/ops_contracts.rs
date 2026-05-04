@@ -3,7 +3,10 @@ mod datetime_tests;
 mod join_hash_join_execution_tests {
     use cudf::{
         core::Table,
-        ops::join::{self, HashJoin, HashJoinOptions, NullEquality},
+        ops::{
+            ast::AstExpression,
+            join::{self, HashJoin, HashJoinOptions, NullEquality},
+        },
         testing::prelude::*,
     };
 
@@ -24,6 +27,10 @@ mod join_hash_join_execution_tests {
         let mut rows = indices.indices.testing_view().unwrap().to_vec::<i32>().unwrap();
         rows.sort();
         rows
+    }
+
+    fn left_less_than_right() -> AstExpression {
+        AstExpression::less(AstExpression::left_column(0).unwrap(), AstExpression::right_column(0).unwrap()).unwrap()
     }
 
     #[test]
@@ -131,6 +138,112 @@ mod join_hash_join_execution_tests {
         assert_eq!(last_exec_stream_value(), expected_stream);
         assert_eq!(last_exec_mr_value(), expected_mr);
         assert_eq!(sorted_join_index_pairs(&indices), vec![(0, JOIN_NO_MATCH), (1, 0), (1, 1), (2, 2)]);
+    }
+
+    #[test]
+    fn conditional_inner_join_indices_support_mixed_same_device_domains_and_use_left_provenance() {
+        let left = Table::from_columns(vec![explicit_i32_column(&[1, 3, 5], 971)]).unwrap();
+        let right = Table::from_columns(vec![explicit_i32_column(&[2, 4], 972)]).unwrap();
+        let predicate = left_less_than_right();
+        let expected_stream = left.testing_execution_domain_stream_value();
+        let expected_mr = left.testing_execution_domain_mr_value();
+
+        reset_exec_observation();
+        let indices = join::conditional_inner_join_indices(
+            &left.testing_view().unwrap(),
+            &right.testing_view().unwrap(),
+            &predicate,
+        )
+        .unwrap();
+
+        assert_eq!(indices.left.testing_execution_domain_id(), left.testing_execution_domain_id());
+        assert_eq!(indices.right.testing_execution_domain_id(), left.testing_execution_domain_id());
+        assert_eq!(indices.left.testing_execution_domain_mr_value(), expected_mr);
+        assert_eq!(indices.right.testing_execution_domain_mr_value(), expected_mr);
+        assert_eq!(last_exec_stream_value(), expected_stream);
+        assert_eq!(last_exec_mr_value(), expected_mr);
+        assert_eq!(sorted_join_index_pairs(&indices), vec![(0, 0), (0, 1), (1, 1)]);
+    }
+
+    #[test]
+    fn conditional_left_semi_join_indices_support_mixed_same_device_domains_and_use_left_provenance() {
+        let left = Table::from_columns(vec![explicit_i32_column(&[1, 3, 5], 973)]).unwrap();
+        let right = Table::from_columns(vec![explicit_i32_column(&[2, 4], 974)]).unwrap();
+        let predicate = left_less_than_right();
+        let expected_stream = left.testing_execution_domain_stream_value();
+        let expected_mr = left.testing_execution_domain_mr_value();
+
+        reset_exec_observation();
+        let indices = join::conditional_left_semi_join_indices(
+            &left.testing_view().unwrap(),
+            &right.testing_view().unwrap(),
+            &predicate,
+        )
+        .unwrap();
+
+        assert_eq!(indices.indices.testing_execution_domain_id(), left.testing_execution_domain_id());
+        assert_eq!(indices.indices.testing_execution_domain_mr_value(), expected_mr);
+        assert_eq!(last_exec_stream_value(), expected_stream);
+        assert_eq!(last_exec_mr_value(), expected_mr);
+        assert_eq!(sorted_single_side_indices(&indices), vec![0, 1]);
+    }
+
+    #[test]
+    fn mixed_inner_join_indices_support_mixed_same_device_domains_and_use_primary_left_provenance() {
+        let left_equality = Table::from_columns(vec![explicit_i32_column(&[1, 1, 2], 975)]).unwrap();
+        let right_equality = Table::from_columns(vec![explicit_i32_column(&[1, 2], 976)]).unwrap();
+        let left_conditional = Table::from_columns(vec![explicit_i32_column(&[5, 7, 3], 977)]).unwrap();
+        let right_conditional = Table::from_columns(vec![explicit_i32_column(&[6, 4], 978)]).unwrap();
+        let predicate = left_less_than_right();
+        let expected_stream = left_equality.testing_execution_domain_stream_value();
+        let expected_mr = left_equality.testing_execution_domain_mr_value();
+
+        reset_exec_observation();
+        let indices = join::mixed_inner_join_indices(
+            &left_equality.testing_view().unwrap(),
+            &right_equality.testing_view().unwrap(),
+            &left_conditional.testing_view().unwrap(),
+            &right_conditional.testing_view().unwrap(),
+            &predicate,
+            NullEquality::Equal,
+        )
+        .unwrap();
+
+        assert_eq!(indices.left.testing_execution_domain_id(), left_equality.testing_execution_domain_id());
+        assert_eq!(indices.right.testing_execution_domain_id(), left_equality.testing_execution_domain_id());
+        assert_eq!(indices.left.testing_execution_domain_mr_value(), expected_mr);
+        assert_eq!(indices.right.testing_execution_domain_mr_value(), expected_mr);
+        assert_eq!(last_exec_stream_value(), expected_stream);
+        assert_eq!(last_exec_mr_value(), expected_mr);
+        assert_eq!(sorted_join_index_pairs(&indices), vec![(0, 0), (2, 1)]);
+    }
+
+    #[test]
+    fn mixed_left_semi_join_indices_support_mixed_same_device_domains_and_use_primary_left_provenance() {
+        let left_equality = Table::from_columns(vec![explicit_i32_column(&[1, 1, 2], 979)]).unwrap();
+        let right_equality = Table::from_columns(vec![explicit_i32_column(&[1, 2], 980)]).unwrap();
+        let left_conditional = Table::from_columns(vec![explicit_i32_column(&[5, 7, 3], 981)]).unwrap();
+        let right_conditional = Table::from_columns(vec![explicit_i32_column(&[6, 4], 982)]).unwrap();
+        let predicate = left_less_than_right();
+        let expected_stream = left_equality.testing_execution_domain_stream_value();
+        let expected_mr = left_equality.testing_execution_domain_mr_value();
+
+        reset_exec_observation();
+        let indices = join::mixed_left_semi_join_indices(
+            &left_equality.testing_view().unwrap(),
+            &right_equality.testing_view().unwrap(),
+            &left_conditional.testing_view().unwrap(),
+            &right_conditional.testing_view().unwrap(),
+            &predicate,
+            NullEquality::Equal,
+        )
+        .unwrap();
+
+        assert_eq!(indices.indices.testing_execution_domain_id(), left_equality.testing_execution_domain_id());
+        assert_eq!(indices.indices.testing_execution_domain_mr_value(), expected_mr);
+        assert_eq!(last_exec_stream_value(), expected_stream);
+        assert_eq!(last_exec_mr_value(), expected_mr);
+        assert_eq!(sorted_single_side_indices(&indices), vec![0, 2]);
     }
 }
 mod copying_execution_tests {

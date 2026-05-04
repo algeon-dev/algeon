@@ -9,7 +9,7 @@ use cudf::{
     testing::prelude::*,
 };
 
-use crate::common::{column_from_slice, column_from_slice_nullable};
+use crate::common::{column_from_slice, column_from_slice_nullable, scalar};
 
 const JOIN_NO_MATCH: i32 = i32::MIN;
 
@@ -113,4 +113,18 @@ fn conditional_inner_join_indices_treats_null_predicate_as_not_matching() {
             .unwrap();
 
     assert_eq!(sorted_join_index_pairs(&indices), vec![(0, 0)]);
+}
+
+#[test]
+fn conditional_inner_join_indices_keeps_literal_scalar_alive_inside_ast() {
+    let left = i32_table(&[1, 3, 5]);
+    let right = i32_table(&[0, 0]);
+    let literal = AstExpression::literal(scalar(4i32).unwrap()).unwrap();
+    let predicate = AstExpression::less(AstExpression::left_column(0).unwrap(), literal).unwrap();
+
+    let indices =
+        join::conditional_inner_join_indices(&left.testing_view().unwrap(), &right.testing_view().unwrap(), &predicate)
+            .unwrap();
+
+    assert_eq!(sorted_join_index_pairs(&indices), vec![(0, 0), (0, 1), (1, 0), (1, 1)]);
 }

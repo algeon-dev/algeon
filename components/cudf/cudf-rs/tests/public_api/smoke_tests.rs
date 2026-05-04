@@ -33,3 +33,31 @@ fn slice7_join_and_copying_surface_is_publicly_importable() {
     let _: Option<SingleSideJoinIndices> = None;
     let _ = (left_semi_join_indices, left_anti_join_indices, cross_join, scatter);
 }
+
+#[test]
+fn slice8_ast_conditional_and_mixed_join_surface_is_publicly_importable() {
+    use cudf::ops::{
+        ast::{AstExpression, AstOperator},
+        join::{
+            conditional_full_join_indices, conditional_inner_join_indices, conditional_left_anti_join_indices,
+            conditional_left_join_indices, conditional_left_semi_join_indices, mixed_full_join_indices,
+            mixed_inner_join_indices, mixed_left_anti_join_indices, mixed_left_join_indices,
+            mixed_left_semi_join_indices,
+        },
+    };
+
+    let _: Option<AstExpression> = None;
+    let _operator = AstOperator::Less;
+    let _ = (
+        conditional_inner_join_indices,
+        conditional_left_join_indices,
+        conditional_full_join_indices,
+        conditional_left_semi_join_indices,
+        conditional_left_anti_join_indices,
+        mixed_inner_join_indices,
+        mixed_left_join_indices,
+        mixed_full_join_indices,
+        mixed_left_semi_join_indices,
+        mixed_left_anti_join_indices,
+    );
+}
