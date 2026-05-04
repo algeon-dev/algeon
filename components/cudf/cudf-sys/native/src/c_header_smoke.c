@@ -181,6 +181,160 @@ int cudf_rust_c_header_smoke(void)
                          cudf_column_handle*,
 
                          const cudf_exec_options_t*) = &cudf_left_anti_join_indices_ex;
+  cudf_status_t (*f22ast0)(int32_t, cudf_ast_table_reference_t, cudf_ast_expression_handle*) =
+    &cudf_ast_column_reference_create;
+  cudf_status_t (*f22ast1)(cudf_scalar_handle, cudf_ast_expression_handle*) =
+    &cudf_ast_literal_create;
+  cudf_status_t (*f22ast2)(
+    cudf_ast_operator_t, cudf_ast_expression_handle, cudf_ast_expression_handle*) =
+    &cudf_ast_operation_unary_create;
+  cudf_status_t (*f22ast3)(cudf_ast_operator_t,
+                           cudf_ast_expression_handle,
+                           cudf_ast_expression_handle,
+                           cudf_ast_expression_handle*) = &cudf_ast_operation_binary_create;
+  void (*f22ast4)(cudf_ast_expression_handle)           = &cudf_ast_expression_destroy;
+  cudf_status_t (*f22ci0)(cudf_table_view_handle,
+                          cudf_table_view_handle,
+                          cudf_ast_expression_handle,
+                          cudf_column_handle*,
+                          cudf_column_handle*)          = &cudf_conditional_inner_join_indices;
+  cudf_status_t (*f22ci1)(cudf_table_view_handle,
+                          cudf_table_view_handle,
+                          cudf_ast_expression_handle,
+                          cudf_column_handle*,
+                          cudf_column_handle*,
+
+                          const cudf_exec_options_t*)   = &cudf_conditional_inner_join_indices_ex;
+  cudf_status_t (*f22cl0)(cudf_table_view_handle,
+                          cudf_table_view_handle,
+                          cudf_ast_expression_handle,
+                          cudf_column_handle*,
+                          cudf_column_handle*)          = &cudf_conditional_left_join_indices;
+  cudf_status_t (*f22cl1)(cudf_table_view_handle,
+                          cudf_table_view_handle,
+                          cudf_ast_expression_handle,
+                          cudf_column_handle*,
+                          cudf_column_handle*,
+
+                          const cudf_exec_options_t*)   = &cudf_conditional_left_join_indices_ex;
+  cudf_status_t (*f22cf0)(cudf_table_view_handle,
+                          cudf_table_view_handle,
+                          cudf_ast_expression_handle,
+                          cudf_column_handle*,
+                          cudf_column_handle*)          = &cudf_conditional_full_join_indices;
+  cudf_status_t (*f22cf1)(cudf_table_view_handle,
+                          cudf_table_view_handle,
+                          cudf_ast_expression_handle,
+                          cudf_column_handle*,
+                          cudf_column_handle*,
+
+                          const cudf_exec_options_t*)   = &cudf_conditional_full_join_indices_ex;
+  cudf_status_t (*f22cs0)(cudf_table_view_handle,
+                          cudf_table_view_handle,
+                          cudf_ast_expression_handle,
+                          cudf_column_handle*)          = &cudf_conditional_left_semi_join_indices;
+  cudf_status_t (*f22cs1)(cudf_table_view_handle,
+                          cudf_table_view_handle,
+                          cudf_ast_expression_handle,
+                          cudf_column_handle*,
+
+                          const cudf_exec_options_t*) = &cudf_conditional_left_semi_join_indices_ex;
+  cudf_status_t (*f22ca0)(cudf_table_view_handle,
+                          cudf_table_view_handle,
+                          cudf_ast_expression_handle,
+                          cudf_column_handle*)        = &cudf_conditional_left_anti_join_indices;
+  cudf_status_t (*f22ca1)(cudf_table_view_handle,
+                          cudf_table_view_handle,
+                          cudf_ast_expression_handle,
+                          cudf_column_handle*,
+
+                          const cudf_exec_options_t*) = &cudf_conditional_left_anti_join_indices_ex;
+  cudf_status_t (*f22mi0)(cudf_table_view_handle,
+                          cudf_table_view_handle,
+                          cudf_table_view_handle,
+                          cudf_table_view_handle,
+                          cudf_ast_expression_handle,
+                          cudf_null_equality_t,
+                          cudf_column_handle*,
+                          cudf_column_handle*)        = &cudf_mixed_inner_join_indices;
+  cudf_status_t (*f22mi1)(cudf_table_view_handle,
+                          cudf_table_view_handle,
+                          cudf_table_view_handle,
+                          cudf_table_view_handle,
+                          cudf_ast_expression_handle,
+                          cudf_null_equality_t,
+                          cudf_column_handle*,
+                          cudf_column_handle*,
+
+                          const cudf_exec_options_t*) = &cudf_mixed_inner_join_indices_ex;
+  cudf_status_t (*f22ml0)(cudf_table_view_handle,
+                          cudf_table_view_handle,
+                          cudf_table_view_handle,
+                          cudf_table_view_handle,
+                          cudf_ast_expression_handle,
+                          cudf_null_equality_t,
+                          cudf_column_handle*,
+                          cudf_column_handle*)        = &cudf_mixed_left_join_indices;
+  cudf_status_t (*f22ml1)(cudf_table_view_handle,
+                          cudf_table_view_handle,
+                          cudf_table_view_handle,
+                          cudf_table_view_handle,
+                          cudf_ast_expression_handle,
+                          cudf_null_equality_t,
+                          cudf_column_handle*,
+                          cudf_column_handle*,
+
+                          const cudf_exec_options_t*) = &cudf_mixed_left_join_indices_ex;
+  cudf_status_t (*f22mf0)(cudf_table_view_handle,
+                          cudf_table_view_handle,
+                          cudf_table_view_handle,
+                          cudf_table_view_handle,
+                          cudf_ast_expression_handle,
+                          cudf_null_equality_t,
+                          cudf_column_handle*,
+                          cudf_column_handle*)        = &cudf_mixed_full_join_indices;
+  cudf_status_t (*f22mf1)(cudf_table_view_handle,
+                          cudf_table_view_handle,
+                          cudf_table_view_handle,
+                          cudf_table_view_handle,
+                          cudf_ast_expression_handle,
+                          cudf_null_equality_t,
+                          cudf_column_handle*,
+                          cudf_column_handle*,
+
+                          const cudf_exec_options_t*) = &cudf_mixed_full_join_indices_ex;
+  cudf_status_t (*f22ms0)(cudf_table_view_handle,
+                          cudf_table_view_handle,
+                          cudf_table_view_handle,
+                          cudf_table_view_handle,
+                          cudf_ast_expression_handle,
+                          cudf_null_equality_t,
+                          cudf_column_handle*)        = &cudf_mixed_left_semi_join_indices;
+  cudf_status_t (*f22ms1)(cudf_table_view_handle,
+                          cudf_table_view_handle,
+                          cudf_table_view_handle,
+                          cudf_table_view_handle,
+                          cudf_ast_expression_handle,
+                          cudf_null_equality_t,
+                          cudf_column_handle*,
+
+                          const cudf_exec_options_t*) = &cudf_mixed_left_semi_join_indices_ex;
+  cudf_status_t (*f22ma0)(cudf_table_view_handle,
+                          cudf_table_view_handle,
+                          cudf_table_view_handle,
+                          cudf_table_view_handle,
+                          cudf_ast_expression_handle,
+                          cudf_null_equality_t,
+                          cudf_column_handle*)        = &cudf_mixed_left_anti_join_indices;
+  cudf_status_t (*f22ma1)(cudf_table_view_handle,
+                          cudf_table_view_handle,
+                          cudf_table_view_handle,
+                          cudf_table_view_handle,
+                          cudf_ast_expression_handle,
+                          cudf_null_equality_t,
+                          cudf_column_handle*,
+
+                          const cudf_exec_options_t*) = &cudf_mixed_left_anti_join_indices_ex;
   cudf_status_t (*f22aa)(
     cudf_table_view_handle, cudf_null_equality_t, cudf_distinct_hash_join_handle*) =
     &cudf_distinct_hash_join_create;
@@ -426,6 +580,31 @@ int cudf_rust_c_header_smoke(void)
   (void)f22a7;
   (void)f22a8;
   (void)f22a9;
+  (void)f22ast0;
+  (void)f22ast1;
+  (void)f22ast2;
+  (void)f22ast3;
+  (void)f22ast4;
+  (void)f22ci0;
+  (void)f22ci1;
+  (void)f22cl0;
+  (void)f22cl1;
+  (void)f22cf0;
+  (void)f22cf1;
+  (void)f22cs0;
+  (void)f22cs1;
+  (void)f22ca0;
+  (void)f22ca1;
+  (void)f22mi0;
+  (void)f22mi1;
+  (void)f22ml0;
+  (void)f22ml1;
+  (void)f22mf0;
+  (void)f22mf1;
+  (void)f22ms0;
+  (void)f22ms1;
+  (void)f22ma0;
+  (void)f22ma1;
   (void)f22aa;
   (void)f22ab;
   (void)f22ac;

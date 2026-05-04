@@ -48,6 +48,7 @@ use crate::{
         error::{self, Result},
         table::{Table, TableView},
     },
+    ops::ast::AstExpression,
     runtime::{
         execution_context::ExecutionOverrides, execution_domain::ExecutionDomain, execution_resolver::ResolvedExecution,
     },
@@ -361,6 +362,350 @@ fn compatible_join_indices_domain(
     ResolvedExecution::binary(left_keys.execution_domain(), right_keys.execution_domain(), &ctx, operation)
 }
 
+fn compatible_conditional_join_domain(
+    left: &TableView<'_>,
+    right: &TableView<'_>,
+    predicate: &AstExpression,
+    operation: &'static str,
+) -> Result<ResolvedExecution> {
+    let ctx = ExecutionOverrides::new();
+    let mut secondaries = Vec::new();
+    secondaries.push(right.execution_domain());
+    predicate.literal_domains(&mut secondaries);
+    ResolvedExecution::many(left.execution_domain(), secondaries, &ctx, operation)
+}
+
+fn compatible_mixed_join_domain(
+    left_equality: &TableView<'_>,
+    right_equality: &TableView<'_>,
+    left_conditional: &TableView<'_>,
+    right_conditional: &TableView<'_>,
+    predicate: &AstExpression,
+    operation: &'static str,
+) -> Result<ResolvedExecution> {
+    let ctx = ExecutionOverrides::new();
+    let mut secondaries = Vec::new();
+    secondaries.push(right_equality.execution_domain());
+    secondaries.push(left_conditional.execution_domain());
+    secondaries.push(right_conditional.execution_domain());
+    predicate.literal_domains(&mut secondaries);
+    ResolvedExecution::many(left_equality.execution_domain(), secondaries, &ctx, operation)
+}
+
+fn conditional_join_indices_impl(
+    left: &TableView<'_>,
+    right: &TableView<'_>,
+    predicate: &AstExpression,
+    join_type: JoinType,
+    output_domain: &Arc<ExecutionDomain>,
+    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    operation: &'static str,
+) -> Result<JoinIndices> {
+    let mut out_left = ptr::null_mut();
+    let mut out_right = ptr::null_mut();
+    let status = match (join_type, exec_options) {
+        (JoinType::Inner, None) => unsafe {
+            cudf_sys::cudf_conditional_inner_join_indices(
+                left.raw_handle(),
+                right.raw_handle(),
+                predicate.raw_handle(),
+                &mut out_left,
+                &mut out_right,
+            )
+        },
+        (JoinType::Left, None) => unsafe {
+            cudf_sys::cudf_conditional_left_join_indices(
+                left.raw_handle(),
+                right.raw_handle(),
+                predicate.raw_handle(),
+                &mut out_left,
+                &mut out_right,
+            )
+        },
+        (JoinType::Full, None) => unsafe {
+            cudf_sys::cudf_conditional_full_join_indices(
+                left.raw_handle(),
+                right.raw_handle(),
+                predicate.raw_handle(),
+                &mut out_left,
+                &mut out_right,
+            )
+        },
+        (JoinType::Inner, Some(options)) => unsafe {
+            cudf_sys::cudf_conditional_inner_join_indices_ex(
+                left.raw_handle(),
+                right.raw_handle(),
+                predicate.raw_handle(),
+                &mut out_left,
+                &mut out_right,
+                options,
+            )
+        },
+        (JoinType::Left, Some(options)) => unsafe {
+            cudf_sys::cudf_conditional_left_join_indices_ex(
+                left.raw_handle(),
+                right.raw_handle(),
+                predicate.raw_handle(),
+                &mut out_left,
+                &mut out_right,
+                options,
+            )
+        },
+        (JoinType::Full, Some(options)) => unsafe {
+            cudf_sys::cudf_conditional_full_join_indices_ex(
+                left.raw_handle(),
+                right.raw_handle(),
+                predicate.raw_handle(),
+                &mut out_left,
+                &mut out_right,
+                options,
+            )
+        },
+    };
+
+    error::check_status_in_with_details(
+        status,
+        operation,
+        [
+            ("join_type", format!("{:?}", join_type).to_lowercase()),
+            ("execution_context_provided", exec_options.is_some().to_string()),
+        ],
+    )?;
+
+    Ok(JoinIndices {
+        left: unsafe { Column::from_raw_with_domain(out_left, Arc::clone(output_domain)) }?,
+        right: unsafe { Column::from_raw_with_domain(out_right, Arc::clone(output_domain)) }?,
+    })
+}
+
+fn conditional_single_side_join_indices_impl(
+    left: &TableView<'_>,
+    right: &TableView<'_>,
+    predicate: &AstExpression,
+    semi_join: bool,
+    output_domain: &Arc<ExecutionDomain>,
+    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    operation: &'static str,
+) -> Result<SingleSideJoinIndices> {
+    let mut out = ptr::null_mut();
+    let status = match (semi_join, exec_options) {
+        (true, None) => unsafe {
+            cudf_sys::cudf_conditional_left_semi_join_indices(
+                left.raw_handle(),
+                right.raw_handle(),
+                predicate.raw_handle(),
+                &mut out,
+            )
+        },
+        (false, None) => unsafe {
+            cudf_sys::cudf_conditional_left_anti_join_indices(
+                left.raw_handle(),
+                right.raw_handle(),
+                predicate.raw_handle(),
+                &mut out,
+            )
+        },
+        (true, Some(options)) => unsafe {
+            cudf_sys::cudf_conditional_left_semi_join_indices_ex(
+                left.raw_handle(),
+                right.raw_handle(),
+                predicate.raw_handle(),
+                &mut out,
+                options,
+            )
+        },
+        (false, Some(options)) => unsafe {
+            cudf_sys::cudf_conditional_left_anti_join_indices_ex(
+                left.raw_handle(),
+                right.raw_handle(),
+                predicate.raw_handle(),
+                &mut out,
+                options,
+            )
+        },
+    };
+
+    error::check_status_in_with_details(
+        status,
+        operation,
+        [
+            ("join_type", if semi_join { "left_semi" } else { "left_anti" }.to_string()),
+            ("execution_context_provided", exec_options.is_some().to_string()),
+        ],
+    )?;
+
+    Ok(SingleSideJoinIndices { indices: unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }? })
+}
+
+fn mixed_join_indices_impl(
+    left_equality: &TableView<'_>,
+    right_equality: &TableView<'_>,
+    left_conditional: &TableView<'_>,
+    right_conditional: &TableView<'_>,
+    predicate: &AstExpression,
+    null_equality: NullEquality,
+    join_type: JoinType,
+    output_domain: &Arc<ExecutionDomain>,
+    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    operation: &'static str,
+) -> Result<JoinIndices> {
+    let mut out_left = ptr::null_mut();
+    let mut out_right = ptr::null_mut();
+    let null_eq_ffi = null_equality.to_join_raw();
+    let status = match (join_type, exec_options) {
+        (JoinType::Inner, None) => unsafe {
+            cudf_sys::cudf_mixed_inner_join_indices(
+                left_equality.raw_handle(),
+                right_equality.raw_handle(),
+                left_conditional.raw_handle(),
+                right_conditional.raw_handle(),
+                predicate.raw_handle(),
+                null_eq_ffi,
+                &mut out_left,
+                &mut out_right,
+            )
+        },
+        (JoinType::Left, None) => unsafe {
+            cudf_sys::cudf_mixed_left_join_indices(
+                left_equality.raw_handle(),
+                right_equality.raw_handle(),
+                left_conditional.raw_handle(),
+                right_conditional.raw_handle(),
+                predicate.raw_handle(),
+                null_eq_ffi,
+                &mut out_left,
+                &mut out_right,
+            )
+        },
+        (JoinType::Full, None) => unsafe {
+            cudf_sys::cudf_mixed_full_join_indices(
+                left_equality.raw_handle(),
+                right_equality.raw_handle(),
+                left_conditional.raw_handle(),
+                right_conditional.raw_handle(),
+                predicate.raw_handle(),
+                null_eq_ffi,
+                &mut out_left,
+                &mut out_right,
+            )
+        },
+        (JoinType::Inner, Some(options)) => unsafe {
+            cudf_sys::cudf_mixed_inner_join_indices_ex(
+                left_equality.raw_handle(),
+                right_equality.raw_handle(),
+                left_conditional.raw_handle(),
+                right_conditional.raw_handle(),
+                predicate.raw_handle(),
+                null_eq_ffi,
+                &mut out_left,
+                &mut out_right,
+                options,
+            )
+        },
+        (JoinType::Left, Some(options)) => unsafe {
+            cudf_sys::cudf_mixed_left_join_indices_ex(
+                left_equality.raw_handle(),
+                right_equality.raw_handle(),
+                left_conditional.raw_handle(),
+                right_conditional.raw_handle(),
+                predicate.raw_handle(),
+                null_eq_ffi,
+                &mut out_left,
+                &mut out_right,
+                options,
+            )
+        },
+        (JoinType::Full, Some(options)) => unsafe {
+            cudf_sys::cudf_mixed_full_join_indices_ex(
+                left_equality.raw_handle(),
+                right_equality.raw_handle(),
+                left_conditional.raw_handle(),
+                right_conditional.raw_handle(),
+                predicate.raw_handle(),
+                null_eq_ffi,
+                &mut out_left,
+                &mut out_right,
+                options,
+            )
+        },
+    };
+
+    check_join_indices_status(status, null_equality, exec_options.is_some(), operation)?;
+
+    Ok(JoinIndices {
+        left: unsafe { Column::from_raw_with_domain(out_left, Arc::clone(output_domain)) }?,
+        right: unsafe { Column::from_raw_with_domain(out_right, Arc::clone(output_domain)) }?,
+    })
+}
+
+fn mixed_single_side_join_indices_impl(
+    left_equality: &TableView<'_>,
+    right_equality: &TableView<'_>,
+    left_conditional: &TableView<'_>,
+    right_conditional: &TableView<'_>,
+    predicate: &AstExpression,
+    null_equality: NullEquality,
+    semi_join: bool,
+    output_domain: &Arc<ExecutionDomain>,
+    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    operation: &'static str,
+) -> Result<SingleSideJoinIndices> {
+    let mut out = ptr::null_mut();
+    let null_eq_ffi = null_equality.to_join_raw();
+    let status = match (semi_join, exec_options) {
+        (true, None) => unsafe {
+            cudf_sys::cudf_mixed_left_semi_join_indices(
+                left_equality.raw_handle(),
+                right_equality.raw_handle(),
+                left_conditional.raw_handle(),
+                right_conditional.raw_handle(),
+                predicate.raw_handle(),
+                null_eq_ffi,
+                &mut out,
+            )
+        },
+        (false, None) => unsafe {
+            cudf_sys::cudf_mixed_left_anti_join_indices(
+                left_equality.raw_handle(),
+                right_equality.raw_handle(),
+                left_conditional.raw_handle(),
+                right_conditional.raw_handle(),
+                predicate.raw_handle(),
+                null_eq_ffi,
+                &mut out,
+            )
+        },
+        (true, Some(options)) => unsafe {
+            cudf_sys::cudf_mixed_left_semi_join_indices_ex(
+                left_equality.raw_handle(),
+                right_equality.raw_handle(),
+                left_conditional.raw_handle(),
+                right_conditional.raw_handle(),
+                predicate.raw_handle(),
+                null_eq_ffi,
+                &mut out,
+                options,
+            )
+        },
+        (false, Some(options)) => unsafe {
+            cudf_sys::cudf_mixed_left_anti_join_indices_ex(
+                left_equality.raw_handle(),
+                right_equality.raw_handle(),
+                left_conditional.raw_handle(),
+                right_conditional.raw_handle(),
+                predicate.raw_handle(),
+                null_eq_ffi,
+                &mut out,
+                options,
+            )
+        },
+    };
+
+    check_join_indices_status(status, null_equality, exec_options.is_some(), operation)?;
+
+    Ok(SingleSideJoinIndices { indices: unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }? })
+}
+
 /// Inner join: returns only rows with matching keys in both tables.
 ///
 /// `left_keys` and `right_keys` define the join condition.
@@ -495,6 +840,287 @@ pub fn left_anti_join_indices(
         execution.output_domain(),
         Some(execution.exec_options()),
         "join::left_anti_join_indices",
+    )
+}
+
+/// Conditional inner join indices for row pairs where `predicate` is true.
+///
+/// `predicate` is evaluated against rows from `left` and `right` using
+/// [`AstExpression`](crate::ops::ast::AstExpression) column references. The
+/// returned `INT32` device columns are gather maps only; payload columns are
+/// not copied. A predicate result of null is treated as non-matching by
+/// libcudf.
+pub fn conditional_inner_join_indices(
+    left: &TableView<'_>,
+    right: &TableView<'_>,
+    predicate: &AstExpression,
+) -> Result<JoinIndices> {
+    let operation = "join::conditional_inner_join_indices";
+    let execution = compatible_conditional_join_domain(left, right, predicate, operation)?;
+    conditional_join_indices_impl(
+        left,
+        right,
+        predicate,
+        JoinType::Inner,
+        execution.output_domain(),
+        Some(execution.exec_options()),
+        operation,
+    )
+}
+
+/// Conditional left join indices preserving all left rows.
+///
+/// Returned right-side misses contain libcudf's no-match sentinel for
+/// nullifying gather. Payload columns are not copied by this operation.
+pub fn conditional_left_join_indices(
+    left: &TableView<'_>,
+    right: &TableView<'_>,
+    predicate: &AstExpression,
+) -> Result<JoinIndices> {
+    let operation = "join::conditional_left_join_indices";
+    let execution = compatible_conditional_join_domain(left, right, predicate, operation)?;
+    conditional_join_indices_impl(
+        left,
+        right,
+        predicate,
+        JoinType::Left,
+        execution.output_domain(),
+        Some(execution.exec_options()),
+        operation,
+    )
+}
+
+/// Conditional full join indices preserving unmatched rows from both sides.
+///
+/// Misses on either side contain libcudf's no-match sentinel for nullifying
+/// gather. Payload columns are not copied by this operation.
+pub fn conditional_full_join_indices(
+    left: &TableView<'_>,
+    right: &TableView<'_>,
+    predicate: &AstExpression,
+) -> Result<JoinIndices> {
+    let operation = "join::conditional_full_join_indices";
+    let execution = compatible_conditional_join_domain(left, right, predicate, operation)?;
+    conditional_join_indices_impl(
+        left,
+        right,
+        predicate,
+        JoinType::Full,
+        execution.output_domain(),
+        Some(execution.exec_options()),
+        operation,
+    )
+}
+
+/// Conditional left semi join indices for rows from `left` with at least one
+/// matching `right` row.
+///
+/// Returns a single `INT32` device gather map and does not copy payload
+/// columns.
+pub fn conditional_left_semi_join_indices(
+    left: &TableView<'_>,
+    right: &TableView<'_>,
+    predicate: &AstExpression,
+) -> Result<SingleSideJoinIndices> {
+    let operation = "join::conditional_left_semi_join_indices";
+    let execution = compatible_conditional_join_domain(left, right, predicate, operation)?;
+    conditional_single_side_join_indices_impl(
+        left,
+        right,
+        predicate,
+        true,
+        execution.output_domain(),
+        Some(execution.exec_options()),
+        operation,
+    )
+}
+
+/// Conditional left anti join indices for rows from `left` with no matching
+/// `right` row.
+///
+/// Returns a single `INT32` device gather map and does not copy payload
+/// columns.
+pub fn conditional_left_anti_join_indices(
+    left: &TableView<'_>,
+    right: &TableView<'_>,
+    predicate: &AstExpression,
+) -> Result<SingleSideJoinIndices> {
+    let operation = "join::conditional_left_anti_join_indices";
+    let execution = compatible_conditional_join_domain(left, right, predicate, operation)?;
+    conditional_single_side_join_indices_impl(
+        left,
+        right,
+        predicate,
+        false,
+        execution.output_domain(),
+        Some(execution.exec_options()),
+        operation,
+    )
+}
+
+/// Mixed inner join indices for equality keys plus an AST predicate.
+///
+/// Equality tables are joined with `null_equality`; the AST predicate is
+/// evaluated against the conditional tables. The returned `INT32` device
+/// columns are gather maps only; payload columns are not copied.
+pub fn mixed_inner_join_indices(
+    left_equality: &TableView<'_>,
+    right_equality: &TableView<'_>,
+    left_conditional: &TableView<'_>,
+    right_conditional: &TableView<'_>,
+    predicate: &AstExpression,
+    null_equality: NullEquality,
+) -> Result<JoinIndices> {
+    let operation = "join::mixed_inner_join_indices";
+    let execution = compatible_mixed_join_domain(
+        left_equality,
+        right_equality,
+        left_conditional,
+        right_conditional,
+        predicate,
+        operation,
+    )?;
+    mixed_join_indices_impl(
+        left_equality,
+        right_equality,
+        left_conditional,
+        right_conditional,
+        predicate,
+        null_equality,
+        JoinType::Inner,
+        execution.output_domain(),
+        Some(execution.exec_options()),
+        operation,
+    )
+}
+
+/// Mixed left join indices preserving all left rows.
+pub fn mixed_left_join_indices(
+    left_equality: &TableView<'_>,
+    right_equality: &TableView<'_>,
+    left_conditional: &TableView<'_>,
+    right_conditional: &TableView<'_>,
+    predicate: &AstExpression,
+    null_equality: NullEquality,
+) -> Result<JoinIndices> {
+    let operation = "join::mixed_left_join_indices";
+    let execution = compatible_mixed_join_domain(
+        left_equality,
+        right_equality,
+        left_conditional,
+        right_conditional,
+        predicate,
+        operation,
+    )?;
+    mixed_join_indices_impl(
+        left_equality,
+        right_equality,
+        left_conditional,
+        right_conditional,
+        predicate,
+        null_equality,
+        JoinType::Left,
+        execution.output_domain(),
+        Some(execution.exec_options()),
+        operation,
+    )
+}
+
+/// Mixed full join indices preserving unmatched rows from both sides.
+pub fn mixed_full_join_indices(
+    left_equality: &TableView<'_>,
+    right_equality: &TableView<'_>,
+    left_conditional: &TableView<'_>,
+    right_conditional: &TableView<'_>,
+    predicate: &AstExpression,
+    null_equality: NullEquality,
+) -> Result<JoinIndices> {
+    let operation = "join::mixed_full_join_indices";
+    let execution = compatible_mixed_join_domain(
+        left_equality,
+        right_equality,
+        left_conditional,
+        right_conditional,
+        predicate,
+        operation,
+    )?;
+    mixed_join_indices_impl(
+        left_equality,
+        right_equality,
+        left_conditional,
+        right_conditional,
+        predicate,
+        null_equality,
+        JoinType::Full,
+        execution.output_domain(),
+        Some(execution.exec_options()),
+        operation,
+    )
+}
+
+/// Mixed left semi join indices for rows from the left equality/conditional
+/// tables with at least one equality-and-predicate match.
+pub fn mixed_left_semi_join_indices(
+    left_equality: &TableView<'_>,
+    right_equality: &TableView<'_>,
+    left_conditional: &TableView<'_>,
+    right_conditional: &TableView<'_>,
+    predicate: &AstExpression,
+    null_equality: NullEquality,
+) -> Result<SingleSideJoinIndices> {
+    let operation = "join::mixed_left_semi_join_indices";
+    let execution = compatible_mixed_join_domain(
+        left_equality,
+        right_equality,
+        left_conditional,
+        right_conditional,
+        predicate,
+        operation,
+    )?;
+    mixed_single_side_join_indices_impl(
+        left_equality,
+        right_equality,
+        left_conditional,
+        right_conditional,
+        predicate,
+        null_equality,
+        true,
+        execution.output_domain(),
+        Some(execution.exec_options()),
+        operation,
+    )
+}
+
+/// Mixed left anti join indices for rows from the left equality/conditional
+/// tables with no equality-and-predicate match.
+pub fn mixed_left_anti_join_indices(
+    left_equality: &TableView<'_>,
+    right_equality: &TableView<'_>,
+    left_conditional: &TableView<'_>,
+    right_conditional: &TableView<'_>,
+    predicate: &AstExpression,
+    null_equality: NullEquality,
+) -> Result<SingleSideJoinIndices> {
+    let operation = "join::mixed_left_anti_join_indices";
+    let execution = compatible_mixed_join_domain(
+        left_equality,
+        right_equality,
+        left_conditional,
+        right_conditional,
+        predicate,
+        operation,
+    )?;
+    mixed_single_side_join_indices_impl(
+        left_equality,
+        right_equality,
+        left_conditional,
+        right_conditional,
+        predicate,
+        null_equality,
+        false,
+        execution.output_domain(),
+        Some(execution.exec_options()),
+        operation,
     )
 }
 

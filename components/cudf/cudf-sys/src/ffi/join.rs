@@ -1,6 +1,7 @@
 use crate::{
-    cudf_column_handle, cudf_distinct_hash_join_handle, cudf_exec_options_t, cudf_hash_join_handle,
-    cudf_null_equality_t, cudf_nullable_join_t, cudf_status_t, cudf_table_handle, cudf_table_view_handle,
+    cudf_ast_expression_handle, cudf_column_handle, cudf_distinct_hash_join_handle, cudf_exec_options_t,
+    cudf_hash_join_handle, cudf_null_equality_t, cudf_nullable_join_t, cudf_status_t, cudf_table_handle,
+    cudf_table_view_handle,
 };
 
 extern "C" {
@@ -170,6 +171,198 @@ extern "C" {
     pub fn cudf_left_anti_join_indices_ex(
         left_keys: cudf_table_view_handle,
         right_keys: cudf_table_view_handle,
+        null_equality: cudf_null_equality_t,
+        out_indices: *mut cudf_column_handle,
+        options: *const cudf_exec_options_t,
+    ) -> cudf_status_t;
+
+    pub fn cudf_conditional_inner_join_indices(
+        left: cudf_table_view_handle,
+        right: cudf_table_view_handle,
+        predicate: cudf_ast_expression_handle,
+        out_left_indices: *mut cudf_column_handle,
+        out_right_indices: *mut cudf_column_handle,
+    ) -> cudf_status_t;
+
+    pub fn cudf_conditional_inner_join_indices_ex(
+        left: cudf_table_view_handle,
+        right: cudf_table_view_handle,
+        predicate: cudf_ast_expression_handle,
+        out_left_indices: *mut cudf_column_handle,
+        out_right_indices: *mut cudf_column_handle,
+        options: *const cudf_exec_options_t,
+    ) -> cudf_status_t;
+
+    pub fn cudf_conditional_left_join_indices(
+        left: cudf_table_view_handle,
+        right: cudf_table_view_handle,
+        predicate: cudf_ast_expression_handle,
+        out_left_indices: *mut cudf_column_handle,
+        out_right_indices: *mut cudf_column_handle,
+    ) -> cudf_status_t;
+
+    pub fn cudf_conditional_left_join_indices_ex(
+        left: cudf_table_view_handle,
+        right: cudf_table_view_handle,
+        predicate: cudf_ast_expression_handle,
+        out_left_indices: *mut cudf_column_handle,
+        out_right_indices: *mut cudf_column_handle,
+        options: *const cudf_exec_options_t,
+    ) -> cudf_status_t;
+
+    pub fn cudf_conditional_full_join_indices(
+        left: cudf_table_view_handle,
+        right: cudf_table_view_handle,
+        predicate: cudf_ast_expression_handle,
+        out_left_indices: *mut cudf_column_handle,
+        out_right_indices: *mut cudf_column_handle,
+    ) -> cudf_status_t;
+
+    pub fn cudf_conditional_full_join_indices_ex(
+        left: cudf_table_view_handle,
+        right: cudf_table_view_handle,
+        predicate: cudf_ast_expression_handle,
+        out_left_indices: *mut cudf_column_handle,
+        out_right_indices: *mut cudf_column_handle,
+        options: *const cudf_exec_options_t,
+    ) -> cudf_status_t;
+
+    pub fn cudf_conditional_left_semi_join_indices(
+        left: cudf_table_view_handle,
+        right: cudf_table_view_handle,
+        predicate: cudf_ast_expression_handle,
+        out_indices: *mut cudf_column_handle,
+    ) -> cudf_status_t;
+
+    pub fn cudf_conditional_left_semi_join_indices_ex(
+        left: cudf_table_view_handle,
+        right: cudf_table_view_handle,
+        predicate: cudf_ast_expression_handle,
+        out_indices: *mut cudf_column_handle,
+        options: *const cudf_exec_options_t,
+    ) -> cudf_status_t;
+
+    pub fn cudf_conditional_left_anti_join_indices(
+        left: cudf_table_view_handle,
+        right: cudf_table_view_handle,
+        predicate: cudf_ast_expression_handle,
+        out_indices: *mut cudf_column_handle,
+    ) -> cudf_status_t;
+
+    pub fn cudf_conditional_left_anti_join_indices_ex(
+        left: cudf_table_view_handle,
+        right: cudf_table_view_handle,
+        predicate: cudf_ast_expression_handle,
+        out_indices: *mut cudf_column_handle,
+        options: *const cudf_exec_options_t,
+    ) -> cudf_status_t;
+
+    pub fn cudf_mixed_inner_join_indices(
+        left_equality: cudf_table_view_handle,
+        right_equality: cudf_table_view_handle,
+        left_conditional: cudf_table_view_handle,
+        right_conditional: cudf_table_view_handle,
+        predicate: cudf_ast_expression_handle,
+        null_equality: cudf_null_equality_t,
+        out_left_indices: *mut cudf_column_handle,
+        out_right_indices: *mut cudf_column_handle,
+    ) -> cudf_status_t;
+
+    pub fn cudf_mixed_inner_join_indices_ex(
+        left_equality: cudf_table_view_handle,
+        right_equality: cudf_table_view_handle,
+        left_conditional: cudf_table_view_handle,
+        right_conditional: cudf_table_view_handle,
+        predicate: cudf_ast_expression_handle,
+        null_equality: cudf_null_equality_t,
+        out_left_indices: *mut cudf_column_handle,
+        out_right_indices: *mut cudf_column_handle,
+        options: *const cudf_exec_options_t,
+    ) -> cudf_status_t;
+
+    pub fn cudf_mixed_left_join_indices(
+        left_equality: cudf_table_view_handle,
+        right_equality: cudf_table_view_handle,
+        left_conditional: cudf_table_view_handle,
+        right_conditional: cudf_table_view_handle,
+        predicate: cudf_ast_expression_handle,
+        null_equality: cudf_null_equality_t,
+        out_left_indices: *mut cudf_column_handle,
+        out_right_indices: *mut cudf_column_handle,
+    ) -> cudf_status_t;
+
+    pub fn cudf_mixed_left_join_indices_ex(
+        left_equality: cudf_table_view_handle,
+        right_equality: cudf_table_view_handle,
+        left_conditional: cudf_table_view_handle,
+        right_conditional: cudf_table_view_handle,
+        predicate: cudf_ast_expression_handle,
+        null_equality: cudf_null_equality_t,
+        out_left_indices: *mut cudf_column_handle,
+        out_right_indices: *mut cudf_column_handle,
+        options: *const cudf_exec_options_t,
+    ) -> cudf_status_t;
+
+    pub fn cudf_mixed_full_join_indices(
+        left_equality: cudf_table_view_handle,
+        right_equality: cudf_table_view_handle,
+        left_conditional: cudf_table_view_handle,
+        right_conditional: cudf_table_view_handle,
+        predicate: cudf_ast_expression_handle,
+        null_equality: cudf_null_equality_t,
+        out_left_indices: *mut cudf_column_handle,
+        out_right_indices: *mut cudf_column_handle,
+    ) -> cudf_status_t;
+
+    pub fn cudf_mixed_full_join_indices_ex(
+        left_equality: cudf_table_view_handle,
+        right_equality: cudf_table_view_handle,
+        left_conditional: cudf_table_view_handle,
+        right_conditional: cudf_table_view_handle,
+        predicate: cudf_ast_expression_handle,
+        null_equality: cudf_null_equality_t,
+        out_left_indices: *mut cudf_column_handle,
+        out_right_indices: *mut cudf_column_handle,
+        options: *const cudf_exec_options_t,
+    ) -> cudf_status_t;
+
+    pub fn cudf_mixed_left_semi_join_indices(
+        left_equality: cudf_table_view_handle,
+        right_equality: cudf_table_view_handle,
+        left_conditional: cudf_table_view_handle,
+        right_conditional: cudf_table_view_handle,
+        predicate: cudf_ast_expression_handle,
+        null_equality: cudf_null_equality_t,
+        out_indices: *mut cudf_column_handle,
+    ) -> cudf_status_t;
+
+    pub fn cudf_mixed_left_semi_join_indices_ex(
+        left_equality: cudf_table_view_handle,
+        right_equality: cudf_table_view_handle,
+        left_conditional: cudf_table_view_handle,
+        right_conditional: cudf_table_view_handle,
+        predicate: cudf_ast_expression_handle,
+        null_equality: cudf_null_equality_t,
+        out_indices: *mut cudf_column_handle,
+        options: *const cudf_exec_options_t,
+    ) -> cudf_status_t;
+
+    pub fn cudf_mixed_left_anti_join_indices(
+        left_equality: cudf_table_view_handle,
+        right_equality: cudf_table_view_handle,
+        left_conditional: cudf_table_view_handle,
+        right_conditional: cudf_table_view_handle,
+        predicate: cudf_ast_expression_handle,
+        null_equality: cudf_null_equality_t,
+        out_indices: *mut cudf_column_handle,
+    ) -> cudf_status_t;
+
+    pub fn cudf_mixed_left_anti_join_indices_ex(
+        left_equality: cudf_table_view_handle,
+        right_equality: cudf_table_view_handle,
+        left_conditional: cudf_table_view_handle,
+        right_conditional: cudf_table_view_handle,
+        predicate: cudf_ast_expression_handle,
         null_equality: cudf_null_equality_t,
         out_indices: *mut cudf_column_handle,
         options: *const cudf_exec_options_t,

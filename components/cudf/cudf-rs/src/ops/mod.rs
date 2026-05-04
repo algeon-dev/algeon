@@ -29,6 +29,7 @@
 //! a lazy query optimizer. See [`expr`] for the row-aligned broadcast-reduction
 //! semantics and naming rules around [`Expr::agg`].
 
+pub mod ast;
 pub mod binary;
 pub mod concatenate;
 pub mod copying;

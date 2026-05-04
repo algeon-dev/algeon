@@ -20,6 +20,8 @@ const EXPECTED_GUARDS: &[&str] = &[
     "join::cross_join",
     "join::left_anti_join_indices",
     "join::left_semi_join_indices",
+    "join::conditional_pair_join_indices",
+    "join::conditional_single_side_join_indices",
     "join::hash_join_create",
     "join::hash_join_destroy",
     "join::hash_join_full_join",
@@ -28,6 +30,8 @@ const EXPECTED_GUARDS: &[&str] = &[
     "join::full_join_indices",
     "join::inner_join_indices",
     "join::left_join_indices",
+    "join::mixed_pair_join_indices",
+    "join::mixed_single_side_join_indices",
     "replace::replace_nulls_policy",
     "sorting::is_sorted",
     "sorting::sort",
@@ -172,6 +176,12 @@ fn classify_allowed_guard(file_name: &str, context: &str) -> Option<&'static str
         "join.cpp" if context.contains("join.semi_join(*lk, exec.stream, exec.mr)") => {
             Some("join::left_semi_join_indices")
         },
+        "join.cpp" if context.contains("cudf::conditional_inner_join(") => Some("join::conditional_pair_join_indices"),
+        "join.cpp" if context.contains("cudf::conditional_left_semi_join(") => {
+            Some("join::conditional_single_side_join_indices")
+        },
+        "join.cpp" if context.contains("cudf::mixed_inner_join(") => Some("join::mixed_pair_join_indices"),
+        "join.cpp" if context.contains("cudf::mixed_left_semi_join(") => Some("join::mixed_single_side_join_indices"),
         "join.cpp" if context.contains("hash_join->full_join(*probe_view, {}, exec.stream, exec.mr)") => {
             Some("join::hash_join_full_join")
         },

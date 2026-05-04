@@ -2,6 +2,7 @@
 // Rust declares FFI enums with `#[repr(i32)]`, so the C/C++ shim must keep
 // them 32-bit and preserve the discriminants expected by Rust.
 
+#include "ast.h"
 #include "binary.h"
 #include "copying.h"
 #include "datetime.h"
@@ -16,6 +17,8 @@
 #include "types.h"
 #include "unary.h"
 
+#include <cudf/ast/ast_operator.hpp>
+#include <cudf/ast/expressions.hpp>
 #include <cudf/binaryop.hpp>
 #include <cudf/copying.hpp>
 #include <cudf/join/hash_join.hpp>
@@ -30,6 +33,9 @@
 #include <type_traits>
 
 static_assert(sizeof(cudf_status_t) == sizeof(int32_t), "cudf_status_t must be 32-bit");
+static_assert(sizeof(cudf_ast_operator_t) == sizeof(int32_t), "cudf_ast_operator_t must be 32-bit");
+static_assert(sizeof(cudf_ast_table_reference_t) == sizeof(int32_t),
+              "cudf_ast_table_reference_t must be 32-bit");
 static_assert(sizeof(cudf_type_id_t) == sizeof(int32_t), "cudf_type_id_t must be 32-bit");
 static_assert(sizeof(cudf_order_t) == sizeof(int32_t), "cudf_order_t must be 32-bit");
 static_assert(sizeof(cudf_null_order_t) == sizeof(int32_t), "cudf_null_order_t must be 32-bit");
@@ -127,6 +133,35 @@ static_assert(CUDF_ERROR_INDEX == 7);
 static_assert(CUDF_ERROR_UNKNOWN == 8);
 static_assert(CUDF_ERROR_FATAL_CUDA == 9);
 static_assert(CUDF_ERROR_INVALID_ARGUMENT == 10);
+
+static_assert(CUDF_AST_TABLE_REFERENCE_LEFT == static_cast<int>(cudf::ast::table_reference::LEFT));
+static_assert(CUDF_AST_TABLE_REFERENCE_RIGHT ==
+              static_cast<int>(cudf::ast::table_reference::RIGHT));
+static_assert(CUDF_AST_TABLE_REFERENCE_OUTPUT ==
+              static_cast<int>(cudf::ast::table_reference::OUTPUT));
+
+static_assert(CUDF_AST_ADD == static_cast<int>(cudf::ast::ast_operator::ADD));
+static_assert(CUDF_AST_SUB == static_cast<int>(cudf::ast::ast_operator::SUB));
+static_assert(CUDF_AST_MUL == static_cast<int>(cudf::ast::ast_operator::MUL));
+static_assert(CUDF_AST_DIV == static_cast<int>(cudf::ast::ast_operator::DIV));
+static_assert(CUDF_AST_TRUE_DIV == static_cast<int>(cudf::ast::ast_operator::TRUE_DIV));
+static_assert(CUDF_AST_FLOOR_DIV == static_cast<int>(cudf::ast::ast_operator::FLOOR_DIV));
+static_assert(CUDF_AST_MOD == static_cast<int>(cudf::ast::ast_operator::MOD));
+static_assert(CUDF_AST_PYMOD == static_cast<int>(cudf::ast::ast_operator::PYMOD));
+static_assert(CUDF_AST_POW == static_cast<int>(cudf::ast::ast_operator::POW));
+static_assert(CUDF_AST_EQUAL == static_cast<int>(cudf::ast::ast_operator::EQUAL));
+static_assert(CUDF_AST_NULL_EQUAL == static_cast<int>(cudf::ast::ast_operator::NULL_EQUAL));
+static_assert(CUDF_AST_NOT_EQUAL == static_cast<int>(cudf::ast::ast_operator::NOT_EQUAL));
+static_assert(CUDF_AST_LESS == static_cast<int>(cudf::ast::ast_operator::LESS));
+static_assert(CUDF_AST_GREATER == static_cast<int>(cudf::ast::ast_operator::GREATER));
+static_assert(CUDF_AST_LESS_EQUAL == static_cast<int>(cudf::ast::ast_operator::LESS_EQUAL));
+static_assert(CUDF_AST_GREATER_EQUAL == static_cast<int>(cudf::ast::ast_operator::GREATER_EQUAL));
+static_assert(CUDF_AST_LOGICAL_AND == static_cast<int>(cudf::ast::ast_operator::LOGICAL_AND));
+static_assert(CUDF_AST_LOGICAL_OR == static_cast<int>(cudf::ast::ast_operator::LOGICAL_OR));
+static_assert(CUDF_AST_IS_NULL == static_cast<int>(cudf::ast::ast_operator::IS_NULL));
+static_assert(CUDF_AST_NOT == static_cast<int>(cudf::ast::ast_operator::NOT));
+static_assert(CUDF_AST_CAST_TO_FLOAT64 ==
+              static_cast<int>(cudf::ast::ast_operator::CAST_TO_FLOAT64));
 
 static_assert(CUDF_TYPE_EMPTY == static_cast<int>(cudf::type_id::EMPTY));
 static_assert(CUDF_TYPE_INT8 == static_cast<int>(cudf::type_id::INT8));
