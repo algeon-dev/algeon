@@ -1,3 +1,8 @@
+use cudf::ops::{
+    expr::{lit_decimal128_raw, lit_duration_raw, lit_timestamp_raw},
+    lit_null,
+};
+
 use super::*;
 
 pub(super) fn lower_expr(expr: &Expr) -> Result<cudf::Expr> {
@@ -6,11 +11,11 @@ pub(super) fn lower_expr(expr: &Expr) -> Result<cudf::Expr> {
         Expr::Literal(value) => lower_literal(value),
         Expr::Not(expr) => Ok(lower_expr(expr)?.not()),
         Expr::Cast { expr, target_type } => {
-            let target_type = arrow_numeric_type_to_cudf_type_id(target_type).ok_or_else(|| {
+            let target_type = cudf_dtype_from_arrow_type(target_type).ok_or_else(|| {
                 QueryError::new(
                     QueryErrorCode::UnsupportedType,
                     "cudf_query_engine.expr.lower_cast",
-                    "native execution supports casts only to primitive numeric types",
+                    "native execution does not support casts to this target type",
                 )
                 .with_fact("target_type", format!("{target_type:?}"))
             })?;
@@ -34,12 +39,25 @@ pub(super) fn lower_literal(value: &LiteralValue) -> Result<cudf::Expr> {
         LiteralValue::UInt64(value) => Ok(lit(*value)),
         LiteralValue::Float32(value) => Ok(lit(*value)),
         LiteralValue::Float64(value) => Ok(lit(*value)),
-        LiteralValue::String(_) | LiteralValue::Null => Err(QueryError::new(
-            QueryErrorCode::UnsupportedExpression,
-            "cudf_query_engine.expr.lower_literal",
-            "native execution supports only non-null numeric and boolean literals",
-        )
-        .with_fact("literal", value)),
+        LiteralValue::Utf8(value) | LiteralValue::LargeUtf8(value) => Ok(lit(value.clone())),
+        LiteralValue::Decimal128 { raw, scale, .. } => {
+            Ok(lit_decimal128_raw(*raw, crate::datatypes::arrow_decimal_scale_to_cudf_scale(*scale)))
+        },
+        LiteralValue::Date32(value) => Ok(lit_timestamp_raw(i64::from(*value), cudf::TimestampResolution::Days)),
+        LiteralValue::Timestamp { raw, unit } => Ok(lit_timestamp_raw(*raw, timestamp_unit_to_cudf_resolution(unit))),
+        LiteralValue::Duration { raw, unit } => Ok(lit_duration_raw(*raw, timestamp_unit_to_cudf_resolution(unit))),
+        LiteralValue::Null(data_type) => {
+            let dtype = cudf_dtype_from_arrow_type(data_type).ok_or_else(|| {
+                QueryError::new(
+                    QueryErrorCode::UnsupportedType,
+                    "cudf_query_engine.expr.lower_literal",
+                    "native execution does not support typed null literals for this type",
+                )
+                .with_fact("literal", value)
+                .with_fact("data_type", format!("{data_type:?}"))
+            })?;
+            Ok(lit_null(dtype))
+        },
     }
 }
 

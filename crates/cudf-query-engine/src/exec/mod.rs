@@ -8,7 +8,7 @@ use arrow::{
     record_batch::RecordBatch,
 };
 use cudf::{
-    AggSpec as CudfAggSpec, DataFrame, ExecutionOverrides, GroupByAgg, SortOptions as CudfSortOptions, TypeId,
+    AggSpec as CudfAggSpec, DataFrame, ExecutionOverrides, GroupByAgg, SortOptions as CudfSortOptions,
     frame::dataframe::{InfoDetail, ParquetReadOptions},
     ops::{col, lit},
 };
@@ -34,6 +34,7 @@ use self::{
 };
 use crate::{
     chunk::{SourceChunk, SourceChunkPlan, SourceChunkPlanningPolicy, plan_local_parquet_source_chunks},
+    datatypes::{cudf_dtype_from_arrow_type, timestamp_unit_to_cudf_resolution},
     error::{QueryError, QueryErrorCode, Result},
     expr::{AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, Expr, LimitSpec, LiteralValue, SortSpec},
     metrics::QueryMetrics,

@@ -285,6 +285,39 @@ async fn tpch_workload_builder_generates_stable_query_items() {
     fs::remove_dir_all(dir).unwrap();
 }
 
+#[tokio::test]
+async fn tpch_fallback_pressure_report_emits_one_pre_execution_reject_per_query() {
+    let dir = unique_temp_dir("datafusion-cudf-tpch-fallback-pressure");
+    write_tiny_tpch_parquet_dataset(&dir).unwrap();
+
+    let items = tpch_fallback_pressure_workload_items(&dir, tpch_report_session_config()).await.unwrap();
+    let report = NativeFallbackPressureReport::collect(items);
+
+    assert_eq!(report.rows.len(), TPCH_QUERY_COUNT);
+    assert_eq!(report.rewritten_count(), 0);
+    assert_eq!(report.rejected_count(), TPCH_QUERY_COUNT);
+
+    let actual_ids = report.rows.iter().map(|row| row.query_id.as_str()).collect::<Vec<_>>();
+    let expected_ids = tpch_query_ids().collect::<Vec<_>>();
+    assert_eq!(actual_ids, expected_ids);
+
+    for row in &report.rows {
+        assert_eq!(row.outcome, NativeFallbackPressureOutcome::Rejected);
+        assert!(row.reason_code.is_some(), "missing reason code for {}", row.query_id);
+        assert!(row.unsupported_category.is_some(), "missing unsupported category for {}", row.query_id);
+        assert!(row.rejected_before_execution, "{} should reject before native execution", row.query_id);
+    }
+
+    let text = report.to_tsv();
+    assert!(text.starts_with("# native_fallback_pressure_tsv_schema_version=2\n"));
+    assert!(text.contains(&format!("{NATIVE_FALLBACK_PRESSURE_TSV_HEADER}\n")));
+    assert!(text.contains("q01\t"));
+    assert!(text.contains("q22\t"));
+    assert!(!text.contains("\trewritten\t"));
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
 fn report_row<'a>(
     report: &'a NativeFallbackPressureReport,
     query_id: &str,

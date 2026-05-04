@@ -304,7 +304,7 @@ pub(super) fn execute_global_aggregate(
         })?;
         columns.push((expr.alias.as_str(), output));
     }
-    let output = DataFrame::from_columns(columns).map_err(|error| {
+    let output = DataFrame::from_series(columns).map_err(|error| {
         QueryError::from_cudf(
             "cudf_query_engine.global_aggregate.output",
             "failed to construct native global aggregate output frame",
@@ -329,7 +329,7 @@ pub(super) fn cast_count_output_columns(
             )
             .with_fact("alias", expr.alias.as_str())
         })?;
-        let target_type = arrow_type_to_cudf_type_id(field.data_type()).ok_or_else(|| {
+        let target_type = cudf_dtype_from_arrow_type(field.data_type()).ok_or_else(|| {
             QueryError::new(
                 QueryErrorCode::UnsupportedType,
                 "cudf_query_engine.aggregate.cast_count",
@@ -416,39 +416,6 @@ pub(super) fn validate_avg_output_fields(
         }
     }
     Ok(())
-}
-
-pub(super) fn arrow_type_to_cudf_type_id(data_type: &ArrowDataType) -> Option<TypeId> {
-    match data_type {
-        ArrowDataType::Boolean => Some(TypeId::Bool8),
-        ArrowDataType::Int8 => Some(TypeId::Int8),
-        ArrowDataType::Int16 => Some(TypeId::Int16),
-        ArrowDataType::Int32 => Some(TypeId::Int32),
-        ArrowDataType::Int64 => Some(TypeId::Int64),
-        ArrowDataType::UInt8 => Some(TypeId::UInt8),
-        ArrowDataType::UInt16 => Some(TypeId::UInt16),
-        ArrowDataType::UInt32 => Some(TypeId::UInt32),
-        ArrowDataType::UInt64 => Some(TypeId::UInt64),
-        ArrowDataType::Float32 => Some(TypeId::Float32),
-        ArrowDataType::Float64 => Some(TypeId::Float64),
-        _ => None,
-    }
-}
-
-pub(super) fn arrow_numeric_type_to_cudf_type_id(data_type: &ArrowDataType) -> Option<TypeId> {
-    match data_type {
-        ArrowDataType::Int8 => Some(TypeId::Int8),
-        ArrowDataType::Int16 => Some(TypeId::Int16),
-        ArrowDataType::Int32 => Some(TypeId::Int32),
-        ArrowDataType::Int64 => Some(TypeId::Int64),
-        ArrowDataType::UInt8 => Some(TypeId::UInt8),
-        ArrowDataType::UInt16 => Some(TypeId::UInt16),
-        ArrowDataType::UInt32 => Some(TypeId::UInt32),
-        ArrowDataType::UInt64 => Some(TypeId::UInt64),
-        ArrowDataType::Float32 => Some(TypeId::Float32),
-        ArrowDataType::Float64 => Some(TypeId::Float64),
-        _ => None,
-    }
 }
 
 pub(super) fn execute_sort(

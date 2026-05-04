@@ -1,6 +1,7 @@
 use std::{collections::BTreeSet, sync::Arc};
 
 use arrow::datatypes::{DataType, SchemaRef};
+use cudf_query_engine::{is_supported_arrow_cast, is_supported_arrow_type};
 use datafusion::{
     common::ScalarValue,
     logical_expr::Operator,
@@ -28,45 +29,11 @@ pub(super) fn validate_schema(schema: SchemaRef) -> Result<(), FallbackReason> {
 }
 
 pub(super) fn is_supported_native_type(data_type: &DataType) -> bool {
-    matches!(
-        data_type,
-        DataType::Boolean
-            | DataType::Int8
-            | DataType::Int16
-            | DataType::Int32
-            | DataType::Int64
-            | DataType::UInt8
-            | DataType::UInt16
-            | DataType::UInt32
-            | DataType::UInt64
-            | DataType::Float32
-            | DataType::Float64
-    )
+    is_supported_arrow_type(data_type)
 }
 
 pub(super) fn is_supported_native_cast(source_type: &DataType, target_type: &DataType) -> bool {
-    source_type == target_type
-        || matches!(
-            (source_type, target_type),
-            (DataType::Int8, DataType::Int16 | DataType::Int32 | DataType::Int64)
-                | (DataType::Int16, DataType::Int32 | DataType::Int64)
-                | (DataType::Int32, DataType::Int64)
-                | (DataType::UInt8, DataType::UInt16 | DataType::UInt32 | DataType::UInt64)
-                | (DataType::UInt16, DataType::UInt32 | DataType::UInt64)
-                | (DataType::UInt32, DataType::UInt64)
-                | (
-                    DataType::Int8
-                        | DataType::Int16
-                        | DataType::Int32
-                        | DataType::Int64
-                        | DataType::UInt8
-                        | DataType::UInt16
-                        | DataType::UInt32
-                        | DataType::UInt64,
-                    DataType::Float32 | DataType::Float64,
-                )
-                | (DataType::Float32, DataType::Float64)
-        )
+    is_supported_arrow_cast(source_type, target_type)
 }
 
 pub(super) fn validate_aggregate(
@@ -214,7 +181,44 @@ fn validate_literal(value: &ScalarValue) -> Result<(), FallbackReason> {
         | ScalarValue::UInt32(Some(_))
         | ScalarValue::UInt64(Some(_))
         | ScalarValue::Float32(Some(_))
-        | ScalarValue::Float64(Some(_)) => Ok(()),
+        | ScalarValue::Float64(Some(_))
+        | ScalarValue::Utf8(Some(_))
+        | ScalarValue::Utf8View(Some(_))
+        | ScalarValue::LargeUtf8(Some(_))
+        | ScalarValue::Decimal128(Some(_), _, _)
+        | ScalarValue::Date32(Some(_))
+        | ScalarValue::TimestampSecond(Some(_), None)
+        | ScalarValue::TimestampMillisecond(Some(_), None)
+        | ScalarValue::TimestampMicrosecond(Some(_), None)
+        | ScalarValue::TimestampNanosecond(Some(_), None)
+        | ScalarValue::DurationSecond(Some(_))
+        | ScalarValue::DurationMillisecond(Some(_))
+        | ScalarValue::DurationMicrosecond(Some(_))
+        | ScalarValue::DurationNanosecond(Some(_))
+        | ScalarValue::Boolean(None)
+        | ScalarValue::Int8(None)
+        | ScalarValue::Int16(None)
+        | ScalarValue::Int32(None)
+        | ScalarValue::Int64(None)
+        | ScalarValue::UInt8(None)
+        | ScalarValue::UInt16(None)
+        | ScalarValue::UInt32(None)
+        | ScalarValue::UInt64(None)
+        | ScalarValue::Float32(None)
+        | ScalarValue::Float64(None)
+        | ScalarValue::Utf8(None)
+        | ScalarValue::Utf8View(None)
+        | ScalarValue::LargeUtf8(None)
+        | ScalarValue::Decimal128(None, _, _)
+        | ScalarValue::Date32(None)
+        | ScalarValue::TimestampSecond(None, None)
+        | ScalarValue::TimestampMillisecond(None, None)
+        | ScalarValue::TimestampMicrosecond(None, None)
+        | ScalarValue::TimestampNanosecond(None, None)
+        | ScalarValue::DurationSecond(None)
+        | ScalarValue::DurationMillisecond(None)
+        | ScalarValue::DurationMicrosecond(None)
+        | ScalarValue::DurationNanosecond(None) => Ok(()),
         _ => Err(FallbackReason::UnsupportedExpression),
     }
 }
