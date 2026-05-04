@@ -5,8 +5,6 @@
 //! sort request types so downstream adapters do not need to maintain a second
 //! expression vocabulary just to carry output names and query operator shape.
 
-use std::collections::HashSet;
-
 use crate::{
     DataFrame, Expr, SortOptions,
     core::{
@@ -16,7 +14,10 @@ use crate::{
         types::{DataType, TimestampResolution, TypeId},
     },
     frame::series::{Series, reduction::infer_reduce_output_type},
-    internal::resolve::duplicate_column_name_error_with_contract,
+    internal::{
+        hash::{FastHashSet, fast_hash_set_with_capacity},
+        resolve::duplicate_column_name_error_with_contract,
+    },
     ops::{
         binary::BinaryOperator,
         expr::{
@@ -577,7 +578,7 @@ fn validate_non_empty_aggregates(count: usize, operation: &'static str) -> Resul
 
 fn validate_unique_query_names<'a>(names: impl IntoIterator<Item = &'a str>, operation: &'static str) -> Result<()> {
     let names: Vec<&str> = names.into_iter().collect();
-    let mut seen = HashSet::with_capacity(names.len());
+    let mut seen: FastHashSet<&str> = fast_hash_set_with_capacity(names.len());
     for name in &names {
         if !seen.insert(*name) {
             return Err(duplicate_column_name_error_with_contract(
@@ -593,13 +594,15 @@ fn validate_unique_query_names<'a>(names: impl IntoIterator<Item = &'a str>, ope
     Ok(())
 }
 
-fn reserved_names<'a>(df: &DataFrame, additional: impl IntoIterator<Item = &'a str>) -> HashSet<String> {
-    let mut reserved: HashSet<String> = df.column_names().into_iter().map(str::to_string).collect();
+fn reserved_names<'a>(df: &DataFrame, additional: impl IntoIterator<Item = &'a str>) -> FastHashSet<String> {
+    let column_names = df.column_names();
+    let mut reserved: FastHashSet<String> = fast_hash_set_with_capacity(column_names.len());
+    reserved.extend(column_names.into_iter().map(str::to_string));
     reserved.extend(additional.into_iter().map(str::to_string));
     reserved
 }
 
-fn unique_temp_name(reserved: &mut HashSet<String>, base: &str) -> String {
+fn unique_temp_name(reserved: &mut FastHashSet<String>, base: &str) -> String {
     if reserved.insert(base.to_string()) {
         return base.to_string();
     }

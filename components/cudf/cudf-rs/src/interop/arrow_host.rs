@@ -30,10 +30,7 @@
 //! assert_eq!(df2.num_columns(), 2);
 //! ```
 
-use std::sync::{
-    Arc, Mutex,
-    atomic::{AtomicUsize, Ordering},
-};
+use std::{cell::Cell, sync::Arc};
 
 use arrow::{
     array::*,
@@ -52,17 +49,17 @@ use crate::{
         hash::fast_index_map,
         resolve::{missing_column_error, validate_no_duplicate_names},
     },
-    runtime::{
-        BoundaryKind, BoundaryObservation, QueryStageKind, Runtime, record_boundary_observation,
-        record_boundary_observation_in_domain,
-    },
+    runtime::{BoundaryKind, BoundaryObservation, QueryStageKind, Runtime, record_boundary_observation_in_domain},
 };
 
 pub(crate) mod testing_hooks;
 
-static HOST_ARROW_EXPORT_CALL_COUNT: AtomicUsize = AtomicUsize::new(0);
-static HOST_ARROW_IMPORT_CALL_COUNT: AtomicUsize = AtomicUsize::new(0);
-static HOST_ARROW_LAST_BOUNDARY_OBSERVATION: Mutex<Option<BoundaryObservation>> = Mutex::new(None);
+thread_local! {
+    static HOST_ARROW_EXPORT_CALL_COUNT: Cell<usize> = const { Cell::new(0) };
+    static HOST_ARROW_IMPORT_CALL_COUNT: Cell<usize> = const { Cell::new(0) };
+    static HOST_ARROW_LAST_BOUNDARY_OBSERVATION: Cell<Option<BoundaryObservation>> = const { Cell::new(None) };
+}
+
 const DEFAULT_DECIMAL128_ARROW_PRECISION: u8 = 38;
 
 /// Copy-free planner view of one Arrow host field as cudf-rs would import it.
@@ -307,7 +304,7 @@ impl DataFrame {
     /// Returns an error if any column has an unsupported type, or if the
     /// underlying GPU-to-host copy fails.
     pub fn to_record_batch(&self) -> Result<RecordBatch> {
-        HOST_ARROW_EXPORT_CALL_COUNT.fetch_add(1, Ordering::Relaxed);
+        record_host_export_call();
         let names = self.column_names();
         let rows = self.num_rows();
         let column_count = self.num_columns();
@@ -419,7 +416,7 @@ impl Runtime {
 /// Returns an error if any column has an unsupported Arrow type, or if
 /// the host-to-GPU copy fails.
 pub fn dataframe_from_record_batch(runtime: &Runtime, batch: &RecordBatch) -> Result<DataFrame> {
-    HOST_ARROW_IMPORT_CALL_COUNT.fetch_add(1, Ordering::Relaxed);
+    record_host_import_call();
     let schema = batch.schema();
     let num_cols = schema.fields().len();
 
@@ -659,37 +656,36 @@ fn decimal128_to_arrow(cv: &ColumnView<'_>, dtype: DataType) -> Result<Arc<dyn A
 }
 
 pub(super) fn reset_host_interop_observation() {
-    HOST_ARROW_EXPORT_CALL_COUNT.store(0, Ordering::Relaxed);
-    HOST_ARROW_IMPORT_CALL_COUNT.store(0, Ordering::Relaxed);
-    record_host_boundary_observation(None);
+    HOST_ARROW_EXPORT_CALL_COUNT.with(|count| count.set(0));
+    HOST_ARROW_IMPORT_CALL_COUNT.with(|count| count.set(0));
+    HOST_ARROW_LAST_BOUNDARY_OBSERVATION.with(|last| last.set(None));
 }
 
 pub(super) fn host_export_call_count() -> usize {
-    HOST_ARROW_EXPORT_CALL_COUNT.load(Ordering::Relaxed)
+    HOST_ARROW_EXPORT_CALL_COUNT.with(Cell::get)
 }
 
 pub(super) fn host_import_call_count() -> usize {
-    HOST_ARROW_IMPORT_CALL_COUNT.load(Ordering::Relaxed)
+    HOST_ARROW_IMPORT_CALL_COUNT.with(Cell::get)
 }
 
 pub(super) fn last_host_boundary_observation() -> Option<BoundaryObservation> {
-    HOST_ARROW_LAST_BOUNDARY_OBSERVATION.lock().ok().and_then(|last| *last)
+    HOST_ARROW_LAST_BOUNDARY_OBSERVATION.with(Cell::get)
 }
 
-fn record_host_boundary_observation(observation: Option<BoundaryObservation>) {
-    if let Ok(mut last) = HOST_ARROW_LAST_BOUNDARY_OBSERVATION.lock() {
-        *last = observation;
-    }
-    record_boundary_observation(observation);
+fn record_host_export_call() {
+    HOST_ARROW_EXPORT_CALL_COUNT.with(|count| count.set(count.get() + 1));
+}
+
+fn record_host_import_call() {
+    HOST_ARROW_IMPORT_CALL_COUNT.with(|count| count.set(count.get() + 1));
 }
 
 fn record_host_boundary_observation_in_domain(
     domain: &Arc<crate::runtime::execution_domain::ExecutionDomain>,
     observation: BoundaryObservation,
 ) {
-    if let Ok(mut last) = HOST_ARROW_LAST_BOUNDARY_OBSERVATION.lock() {
-        *last = Some(observation);
-    }
+    HOST_ARROW_LAST_BOUNDARY_OBSERVATION.with(|last| last.set(Some(observation)));
     record_boundary_observation_in_domain(domain, observation);
 }
 

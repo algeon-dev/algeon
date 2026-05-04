@@ -10,16 +10,26 @@
 //! Iceberg table-scan contract. Richer planners should lower into this type
 //! only when the resulting scan is truthfully representable as local Parquet
 //! files with direct by-name read-column mapping and explicit metadata.
+//!
+//! Future source capabilities should be additive and explicitly named.
+//! Predicate pruning, object stores, byte ranges, row-level selection, Iceberg
+//! delete files, Iceberg field-id or name mapping, partition transforms, and
+//! GDS/KvikIO direct-read policy all need their own source facts before callers
+//! may rely on them. Phase 1 local sources therefore reject or keep those
+//! planner facts downstream instead of silently treating them as ordinary local
+//! full-file reads.
 
 use std::{
-    collections::HashSet,
     fmt,
     path::{Path, PathBuf},
 };
 
-use crate::core::{
-    error::{Error, ErrorCode, FACT_ACTUAL_COUNT, FACT_COLUMN_INDEX, FACT_EXPECTED_COUNT, Result},
-    types::{DataType, TypeId},
+use crate::{
+    core::{
+        error::{Error, ErrorCode, FACT_ACTUAL_COUNT, FACT_COLUMN_INDEX, FACT_EXPECTED_COUNT, Result},
+        types::{DataType, TypeId},
+    },
+    internal::hash::{FastHashSet, fast_hash_set_with_capacity},
 };
 
 /// Synthetic column name used by metadata-only zero-column count sources.
@@ -383,6 +393,16 @@ pub enum LocalParquetSourceKind {
     Data,
     /// Metadata-only row-count source using [`ZERO_COLUMN_COUNT_COLUMN`].
     MetadataRowCount,
+}
+
+/// Output shape requested from source execution.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SourceReadMode {
+    /// Return the final source output columns and aliases.
+    FinalOutput,
+    /// Return columns needed for source-local query execution, including
+    /// pure-filter columns.
+    ExecutionFrame,
 }
 
 /// Policy for splitting local Parquet sources into file-local row-group chunks.
@@ -1385,8 +1405,9 @@ fn validate_unique_strings<'a>(
     operation: &'static str,
     resource: &'static str,
 ) -> Result<()> {
-    let mut seen = HashSet::new();
-    for (index, name) in names.into_iter().enumerate() {
+    let names = names.into_iter();
+    let mut seen = fast_hash_set_with_capacity(names.size_hint().0);
+    for (index, name) in names.enumerate() {
         if name.is_empty() {
             return Err(Error::new_with(ErrorCode::EmptyInput, operation, "column name must not be empty")
                 .with_detail("reason", "empty_name")
@@ -1409,8 +1430,9 @@ fn validate_unique_named<'a>(
     operation: &'static str,
     reason: &'static str,
 ) -> Result<()> {
-    let mut seen = HashSet::new();
-    for (index, name) in names.into_iter().enumerate() {
+    let names = names.into_iter();
+    let mut seen = fast_hash_set_with_capacity(names.size_hint().0);
+    for (index, name) in names.enumerate() {
         if name.is_empty() {
             return Err(Error::new_with(ErrorCode::EmptyInput, operation, "column name must not be empty")
                 .with_detail("reason", "empty_name")
@@ -1431,7 +1453,7 @@ fn validate_read_partition_name_collisions(
     partition_columns: &[PartitionColumn],
     operation: &'static str,
 ) -> Result<()> {
-    let read_names: HashSet<&str> = read_columns.iter().map(String::as_str).collect();
+    let read_names: FastHashSet<&str> = read_columns.iter().map(String::as_str).collect();
     for (partition_index, column) in partition_columns.iter().enumerate() {
         if read_names.contains(column.name.as_str()) {
             return Err(Error::new_with(
@@ -1552,7 +1574,7 @@ fn checked_row_group_row_count(
     for &row_group in row_groups {
         total = total.checked_add(row_group_rows[row_group]).ok_or_else(|| {
             Error::new_with(ErrorCode::UnsupportedOperation, OP_ROW_COUNT_TO_I64, "source row count exceeds i64 range")
-                .with_detail("reason", "row_count_exceeds_i64")
+                .with_detail("reason", "row_count_total_overflow")
                 .with_detail("chunk_index", chunk_index.to_string())
                 .with_detail("file_index", file_index.to_string())
                 .with_detail("stable_id", file.stable_id.clone())

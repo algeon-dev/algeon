@@ -1,6 +1,6 @@
 //! GPU-accelerated row gathering (take / index-select), scatter, and conditional copy operations.
 
-use std::{collections::HashSet, ptr, sync::Arc};
+use std::{ptr, sync::Arc};
 
 use crate::{
     core::{
@@ -12,6 +12,7 @@ use crate::{
         table::{Table, TableView},
         types::TypeId,
     },
+    internal::hash::{FastHashSet, fast_hash_set_with_capacity},
     runtime::{
         execution_context::ExecutionOverrides, execution_domain::ExecutionDomain, execution_resolver::ResolvedExecution,
     },
@@ -214,7 +215,7 @@ fn validate_scatter_map(
 
     let target_rows = target.num_rows().map_err(|e| e.reanchor_if_needed(operation))?;
     let map = scatter_map.to_vec::<i32>().map_err(|e| e.reanchor_if_needed(operation))?;
-    let mut seen = HashSet::with_capacity(map.len());
+    let mut seen: FastHashSet<i32> = fast_hash_set_with_capacity(map.len());
     for (row, index) in map.into_iter().enumerate() {
         let normalized = if index < 0 { index + target_rows as i32 } else { index };
         if normalized < 0 || normalized as usize >= target_rows {

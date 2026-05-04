@@ -550,4 +550,15 @@ fn row_group_and_row_count_execution_boundary_conversions_are_checked() {
     let count_err = plan_local_parquet_source_chunks(&count_source, SourceChunkPlanningPolicy::default()).unwrap_err();
     assert_eq!(count_err.code(), ErrorCode::UnsupportedOperation);
     assert_eq!(count_err.detail_value("reason"), Some("row_count_exceeds_i64"));
+
+    let total_overflow_source =
+        LocalParquetSource::zero_column_count([LocalParquetFile::new("overflow-count.parquet", "overflow-count", [])
+            .unwrap()
+            .with_row_group_metadata(vec![1, 1], vec![u64::MAX, 1])
+            .unwrap()])
+        .unwrap();
+    let total_overflow_err =
+        plan_local_parquet_source_chunks(&total_overflow_source, SourceChunkPlanningPolicy::default()).unwrap_err();
+    assert_eq!(total_overflow_err.code(), ErrorCode::UnsupportedOperation);
+    assert_eq!(total_overflow_err.detail_value("reason"), Some("row_count_total_overflow"));
 }
