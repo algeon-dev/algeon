@@ -130,3 +130,59 @@ impl DataFrameJoinIndices {
         self.indices.placement()
     }
 }
+
+/// Device-side row-index pairs produced by a two-sided DataFrame join.
+///
+/// The left and right gather maps are both `INT32` device columns. They index
+/// rows in the left and right input DataFrames respectively. For outer joins,
+/// unmatched rows contain libcudf's no-match sentinel; pass each side to
+/// [`DataFrame::materialize_join_indices`](super::DataFrame::materialize_join_indices)
+/// so the gather path nullifies unmatched payload rows without copying unused
+/// columns.
+///
+/// Cloning this wrapper is cheap: it clones the wrapped [`Series`] handles and
+/// shares the same device-side index buffers.
+#[derive(Debug, Clone)]
+pub struct DataFrameJoinPairIndices {
+    left: DataFrameJoinIndices,
+    right: DataFrameJoinIndices,
+}
+
+impl DataFrameJoinPairIndices {
+    pub(crate) fn new(left: Series, right: Series) -> Self {
+        Self { left: DataFrameJoinIndices::new(left), right: DataFrameJoinIndices::new(right) }
+    }
+
+    /// Borrow the gather map for rows in the left DataFrame.
+    pub fn left(&self) -> &DataFrameJoinIndices {
+        &self.left
+    }
+
+    /// Borrow the gather map for rows in the right DataFrame.
+    pub fn right(&self) -> &DataFrameJoinIndices {
+        &self.right
+    }
+
+    /// Consume this wrapper and return the left and right gather maps.
+    pub fn into_sides(self) -> (DataFrameJoinIndices, DataFrameJoinIndices) {
+        (self.left, self.right)
+    }
+
+    /// Number of output row pairs represented by these gather maps.
+    pub fn len(&self) -> usize {
+        self.left.len()
+    }
+
+    /// Returns `true` when these gather maps contain no rows.
+    pub fn is_empty(&self) -> bool {
+        self.left.is_empty()
+    }
+
+    /// Retained execution placement of the device-side gather maps.
+    ///
+    /// This describes the index buffers themselves, not either source
+    /// DataFrame that the indices may later gather from.
+    pub fn placement(&self) -> ExecutionPlacement {
+        self.left.placement()
+    }
+}

@@ -231,9 +231,10 @@ fn query_execution_context_is_publicly_reexported() {
 
 #[test]
 fn dataframe_join_helpers_are_publicly_reexported() {
-    use cudf::{DataFrame, DataFrameJoinIndices, DataFrameJoinOptions, Runtime};
+    use cudf::{DataFrame, DataFrameJoinIndices, DataFrameJoinOptions, DataFrameJoinPairIndices, Runtime};
 
     fn assert_indices(_: &DataFrameJoinIndices) {}
+    fn assert_pair_indices(_: &DataFrameJoinPairIndices) {}
     fn assert_options(_: DataFrameJoinOptions) {}
 
     let rt = Runtime::builder().build().unwrap();
@@ -248,12 +249,17 @@ fn dataframe_join_helpers_are_publicly_reexported() {
 
     let indices = left.left_semi_join_indices(&right, options).unwrap();
     assert_indices(&indices);
+    let pair_indices = left.inner_join_indices(&right, DataFrameJoinOptions::new().on(["id"])).unwrap();
+    assert_pair_indices(&pair_indices);
     let materialized = left.materialize_join_indices(&indices, ["value"]).unwrap();
+    let pair_materialized = left.materialize_join_indices(pair_indices.left(), ["value"]).unwrap();
     let semi = left.left_semi_join(&right, DataFrameJoinOptions::new().on(["id"])).unwrap();
     let anti = left.left_anti_join(&right, DataFrameJoinOptions::new().on(["id"])).unwrap();
 
     assert_eq!(indices.len(), 1);
+    assert_eq!(pair_indices.len(), 1);
     assert_eq!(materialized.series("value").unwrap().to_vec_strict::<i32>().unwrap(), vec![20]);
+    assert_eq!(pair_materialized.series("value").unwrap().to_vec_strict::<i32>().unwrap(), vec![20]);
     assert_eq!(semi.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![2]);
     assert_eq!(anti.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![1, 3]);
 }

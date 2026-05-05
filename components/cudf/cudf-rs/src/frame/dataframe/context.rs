@@ -1,6 +1,6 @@
 use super::{
-    DataFrame, DataFrameJoinIndices, DataFrameJoinOptions, DataFrameJoinSides, DropDuplicatesOptions, DropNaOptions,
-    WithColumnExpr,
+    DataFrame, DataFrameJoinIndices, DataFrameJoinOptions, DataFrameJoinPairIndices, DataFrameJoinSides,
+    DropDuplicatesOptions, DropNaOptions, WithColumnExpr,
 };
 use crate::{
     Expr, Result,
@@ -84,6 +84,21 @@ impl<'df, 'ctx, 'handles> DataFrameExecutionScope<'df, 'ctx, 'handles> {
         self.df.filter_any_in_context(predicates, self.ctx)
     }
 
+    /// Materialize selected columns by gathering rows with join indices using
+    /// the borrowed execution override.
+    pub fn materialize_join_indices<I, S>(&self, indices: &DataFrameJoinIndices, columns: I) -> Result<DataFrame>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        self.df.materialize_join_indices_in_context(
+            indices,
+            columns,
+            self.ctx,
+            "dataframe::with_execution::materialize_join_indices",
+        )
+    }
+
     dataframe_scope_forward!(
         /// Return the first `n` rows using the borrowed execution override.
         fn head(n: usize) -> Result<DataFrame> => head_in_context;
@@ -111,6 +126,15 @@ impl<'df, 'ctx, 'handles> DataFrameExecutionScope<'df, 'ctx, 'handles> {
 
         /// Merge-split with another frame using the borrowed execution override.
         fn merge_split(right: &DataFrame, options: MergeOptions) -> Result<DataFrameJoinSides> => merge_split_in_context;
+
+        /// Produce inner join row-index pairs using the borrowed execution override.
+        fn inner_join_indices(right: &DataFrame, options: DataFrameJoinOptions) -> Result<DataFrameJoinPairIndices> => inner_join_indices_in_context;
+
+        /// Produce left join row-index pairs using the borrowed execution override.
+        fn left_join_indices(right: &DataFrame, options: DataFrameJoinOptions) -> Result<DataFrameJoinPairIndices> => left_join_indices_in_context;
+
+        /// Produce full join row-index pairs using the borrowed execution override.
+        fn full_join_indices(right: &DataFrame, options: DataFrameJoinOptions) -> Result<DataFrameJoinPairIndices> => full_join_indices_in_context;
 
         /// Produce left semi join indices using the borrowed execution override.
         fn left_semi_join_indices(right: &DataFrame, options: DataFrameJoinOptions) -> Result<DataFrameJoinIndices> => left_semi_join_indices_in_context;

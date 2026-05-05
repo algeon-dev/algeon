@@ -7,7 +7,8 @@ use crate::{
     },
     frame::{
         dataframe::{
-            DataFrame, DataFrameJoinIndices, DataFrameJoinOptions, DataFrameJoinSides, derive_frame_domain_from_columns,
+            DataFrame, DataFrameJoinIndices, DataFrameJoinOptions, DataFrameJoinPairIndices, DataFrameJoinSides,
+            derive_frame_domain_from_columns,
         },
         series::Series,
     },
@@ -92,6 +93,54 @@ impl DataFrame {
         ctx: &ExecutionOverrides<'_>,
     ) -> Result<Self> {
         self.merge_in_context(right, options, ctx)
+    }
+
+    /// Produce inner join row-index pairs using a borrowed per-operation execution override.
+    pub(crate) fn inner_join_indices_in_context(
+        &self,
+        right: &DataFrame,
+        options: DataFrameJoinOptions,
+        ctx: &ExecutionOverrides<'_>,
+    ) -> Result<DataFrameJoinPairIndices> {
+        self.two_side_join_indices_impl(
+            right,
+            options,
+            join::JoinType::Inner,
+            Some(ctx),
+            "dataframe::with_execution::inner_join_indices",
+        )
+    }
+
+    /// Produce left join row-index pairs using a borrowed per-operation execution override.
+    pub(crate) fn left_join_indices_in_context(
+        &self,
+        right: &DataFrame,
+        options: DataFrameJoinOptions,
+        ctx: &ExecutionOverrides<'_>,
+    ) -> Result<DataFrameJoinPairIndices> {
+        self.two_side_join_indices_impl(
+            right,
+            options,
+            join::JoinType::Left,
+            Some(ctx),
+            "dataframe::with_execution::left_join_indices",
+        )
+    }
+
+    /// Produce full join row-index pairs using a borrowed per-operation execution override.
+    pub(crate) fn full_join_indices_in_context(
+        &self,
+        right: &DataFrame,
+        options: DataFrameJoinOptions,
+        ctx: &ExecutionOverrides<'_>,
+    ) -> Result<DataFrameJoinPairIndices> {
+        self.two_side_join_indices_impl(
+            right,
+            options,
+            join::JoinType::Full,
+            Some(ctx),
+            "dataframe::with_execution::full_join_indices",
+        )
     }
 
     /// Produce left semi join indices using a borrowed per-operation execution override.
@@ -274,6 +323,45 @@ impl DataFrame {
         )
     }
 
+    /// Return device-side gather index pairs for an inner equality join.
+    ///
+    /// This is an index-producing query-planning helper. It allocates only the
+    /// left and right `INT32` device gather maps and does not copy payload
+    /// columns. Duplicate key matches produce one row pair per match.
+    pub fn inner_join_indices(
+        &self,
+        right: &DataFrame,
+        options: DataFrameJoinOptions,
+    ) -> Result<DataFrameJoinPairIndices> {
+        self.two_side_join_indices_impl(right, options, join::JoinType::Inner, None, "dataframe::inner_join_indices")
+    }
+
+    /// Return device-side gather index pairs for a left equality join.
+    ///
+    /// Misses on the right side contain libcudf's no-match sentinel. Use
+    /// [`materialize_join_indices`](Self::materialize_join_indices) to gather
+    /// selected right-side columns with nullification for those misses.
+    pub fn left_join_indices(
+        &self,
+        right: &DataFrame,
+        options: DataFrameJoinOptions,
+    ) -> Result<DataFrameJoinPairIndices> {
+        self.two_side_join_indices_impl(right, options, join::JoinType::Left, None, "dataframe::left_join_indices")
+    }
+
+    /// Return device-side gather index pairs for a full equality join.
+    ///
+    /// Misses on either side contain libcudf's no-match sentinel. Use
+    /// [`materialize_join_indices`](Self::materialize_join_indices) to gather
+    /// selected columns with nullification for unmatched rows.
+    pub fn full_join_indices(
+        &self,
+        right: &DataFrame,
+        options: DataFrameJoinOptions,
+    ) -> Result<DataFrameJoinPairIndices> {
+        self.two_side_join_indices_impl(right, options, join::JoinType::Full, None, "dataframe::full_join_indices")
+    }
+
     /// Return device-side gather indices for the left rows that have a match in `right`.
     ///
     /// This is an index-producing query-planning helper. It allocates only an
@@ -331,6 +419,55 @@ impl DataFrame {
     pub fn left_anti_join(&self, right: &DataFrame, options: DataFrameJoinOptions) -> Result<Self> {
         let indices = self.left_anti_join_indices(right, options)?;
         self.materialize_join_indices_impl(&indices, self.column_names_owned(), None, "dataframe::left_anti_join")
+    }
+
+    fn two_side_join_indices_impl(
+        &self,
+        right: &DataFrame,
+        options: DataFrameJoinOptions,
+        join_type: join::JoinType,
+        ctx: Option<&ExecutionOverrides<'_>>,
+        operation: &'static str,
+    ) -> Result<DataFrameJoinPairIndices> {
+        let (left_on_strs, right_on_strs) = resolve_dataframe_join_keys(&options, operation)?;
+        let left_on_refs: Vec<&str> = left_on_strs.iter().map(|s| s.as_str()).collect();
+        let right_on_refs: Vec<&str> = right_on_strs.iter().map(|s| s.as_str()).collect();
+
+        if left_on_refs.len() != right_on_refs.len() {
+            return Err(merge_key_count_mismatch_error(operation, left_on_refs.len(), right_on_refs.len()));
+        }
+
+        let left_key_indices = resolve_column_names(self.columns_map(), &left_on_refs, operation)?;
+        let right_key_indices = resolve_column_names(right.columns_map(), &right_on_refs, operation)?;
+        let lk_table = build_borrowed_table_view_from_columns(self.columns_map(), &left_key_indices)?;
+        let rk_table = build_borrowed_table_view_from_columns(right.columns_map(), &right_key_indices)?;
+
+        let raw_indices = match (join_type, ctx) {
+            (join::JoinType::Inner, Some(ctx)) => {
+                join::inner_join_indices_in(lk_table.table(), rk_table.table(), options.null_eq(), ctx)?
+            },
+            (join::JoinType::Left, Some(ctx)) => {
+                join::left_join_indices_in(lk_table.table(), rk_table.table(), options.null_eq(), ctx)?
+            },
+            (join::JoinType::Full, Some(ctx)) => {
+                join::full_join_indices_in(lk_table.table(), rk_table.table(), options.null_eq(), ctx)?
+            },
+            (join::JoinType::Inner, None) => {
+                join::inner_join_indices(lk_table.table(), rk_table.table(), options.null_eq())?
+            },
+            (join::JoinType::Left, None) => {
+                join::left_join_indices(lk_table.table(), rk_table.table(), options.null_eq())?
+            },
+            (join::JoinType::Full, None) => {
+                join::full_join_indices(lk_table.table(), rk_table.table(), options.null_eq())?
+            },
+        };
+
+        let left = Series::from_column(raw_indices.left)
+            .map_err(|e| e.reanchor(operation).with_detail("resource", "left_join_indices"))?;
+        let right = Series::from_column(raw_indices.right)
+            .map_err(|e| e.reanchor(operation).with_detail("resource", "right_join_indices"))?;
+        Ok(DataFrameJoinPairIndices::new(left, right))
     }
 
     fn single_side_join_indices_impl(
