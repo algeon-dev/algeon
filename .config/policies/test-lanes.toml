@@ -50,6 +50,11 @@ lane = "cpu"
 reason = "ClickBench catalog, deterministic fixture discovery, and Parquet metadata contracts do not create a native runtime."
 
 [[binary]]
+id = "nexus-workloads::graph_dataset_contracts"
+lane = "cpu"
+reason = "Read-only DBLP fixture discovery validates generator metadata and Parquet footers without creating a native runtime."
+
+[[binary]]
 id = "nexus-iceberg"
 lane = "cpu"
 reason = "DataFusion-free Iceberg catalog, resolved-source, and scan-candidate contracts do not initialize DataFusion or CUDA."

@@ -1,10 +1,15 @@
 use std::path::PathBuf;
 
+use serde::Serialize;
+
 /// Adapter-neutral dataset metadata shared by workload consumers.
 ///
 /// Field meanings and ordering mirror the stable report header shape; the
 /// bench/report layer owns conversion into adapter report types.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// This is the intentionally small, serde-stable projection used by external
+/// evidence artifacts. Workload-specific discovery types retain their richer
+/// table-level details and project here at the public reporting boundary.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct WorkloadDatasetMetadata {
     pub workload: &'static str,
     pub root: PathBuf,

@@ -13,6 +13,7 @@
 pub const NEXUS_PARQUET_DIR_ENV: &str = "NEXUS_PARQUET_DIR";
 
 pub mod clickbench;
+pub mod graph;
 pub mod metadata;
 pub mod tpcds;
 pub mod tpch;

@@ -204,6 +204,13 @@ class FixtureGeneratorCompatibilityTests(unittest.TestCase):
             self.assertEqual(tpcds.returncode, 0, tpcds.stderr)
             self.assertIn("tpcds parquet", tpcds.stderr)
 
+    def test_fixture_router_exposes_read_only_dblp_ingest_help(self) -> None:
+        result = run_cmd([str(FIXTURE_SH), "graph", "dblp-ingest", "--help"])
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("--source-json", result.stdout)
+        self.assertIn("--out-root", result.stdout)
+
     def test_force_flag_preserves_overwrite_behavior(self) -> None:
         with tempfile.TemporaryDirectory(prefix="nexus_fixture_force.") as tmp:
             root = Path(tmp)
