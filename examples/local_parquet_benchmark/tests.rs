@@ -207,9 +207,11 @@ fn direct_parquet_benchmark_output_names_primary_datafusion_native_path() {
             native_candidate_shape: Some(
                 "SortExec(fetch)(ProjectionExec(AggregateExec(FilterExec(LocalParquetScan))))".to_string(),
             ),
+            native_candidate_shape_family: Some("sort_fetch_local_parquet_aggregate".to_string()),
             outcome: datafusion_cudf::NativeDataFusionPlanningOutcome::AcceptedReplaced,
             reason_code: None,
             unsupported_category: None,
+            join_diagnostics: Vec::new(),
             source_diagnostics: vec![datafusion_cudf::NativeSourceDiagnosticSummary {
                 format: "Parquet".to_string(),
                 direct_device_read: true,
@@ -444,9 +446,11 @@ fn test_native_datafusion_planning_report() -> NativeDataFusionPlanningReport {
             native_candidate_shape: Some(
                 "SortExec(fetch)(ProjectionExec(AggregateExec(FilterExec(LocalParquetScan))))".to_string(),
             ),
+            native_candidate_shape_family: Some("sort_fetch_local_parquet_aggregate".to_string()),
             outcome: datafusion_cudf::NativeDataFusionPlanningOutcome::AcceptedReplaced,
             reason_code: None,
             unsupported_category: None,
+            join_diagnostics: Vec::new(),
             source_diagnostics: vec![datafusion_cudf::NativeSourceDiagnosticSummary {
                 format: "Parquet".to_string(),
                 direct_device_read: true,

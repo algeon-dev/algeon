@@ -61,12 +61,14 @@ fn lower_physical_plan_to_native_with_mode(
     match normalize_native_plan(plan.as_ref()) {
         Ok(normalized)
             if mode == NativeLoweringMode::CountOnly
-                && !normalized.single_source_input().is_some_and(|source| {
-                    native_zero_column_count_source_is_safe(
-                        source.filter,
-                        normalized.pre_aggregate_projection,
-                        normalized.aggregate,
-                    )
+                && !normalized.aggregate_root().is_some_and(|root| {
+                    normalized.single_source_input().is_some_and(|source| {
+                        native_zero_column_count_source_is_safe(
+                            source.filter,
+                            root.pre_aggregate_projection,
+                            root.aggregate,
+                        )
+                    })
                 }) =>
         {
             let mut report = PlanningReport::new();

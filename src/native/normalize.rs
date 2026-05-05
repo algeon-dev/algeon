@@ -25,19 +25,15 @@ const UNSUPPORTED_NATIVE_PLAN_SHAPE: &str = "UnsupportedNativePhysicalPlan";
 #[derive(Debug, Clone)]
 pub(super) struct NormalizedNativePlan<'a> {
     pub(super) candidate: GpuCandidate,
-    pub(super) input: NormalizedNativeInput<'a>,
-    pub(super) pre_aggregate_projection: Option<&'a ProjectionExec>,
-    pub(super) aggregate: &'a AggregateExec,
-    pub(super) aggregate_allows_partial: bool,
-    pub(super) aggregate_output_schema: SchemaRef,
-    pub(super) post_aggregate_projection: Option<&'a ProjectionExec>,
+    pub(super) root: NormalizedNativeRoot<'a>,
     pub(super) sort: Option<&'a SortExec>,
     pub(super) limit_fetch: Option<usize>,
 }
 
 impl<'a> NormalizedNativePlan<'a> {
     pub(super) fn single_source_input(&self) -> Option<&NormalizedNativeSource<'a>> {
-        match &self.input {
+        let root = self.aggregate_root()?;
+        match &root.input {
             NormalizedNativeInput::Source(source) => Some(source),
             NormalizedNativeInput::Filter(_)
             | NormalizedNativeInput::Projection(_)
@@ -46,6 +42,42 @@ impl<'a> NormalizedNativePlan<'a> {
             | NormalizedNativeInput::NestedLoopJoin(_) => None,
         }
     }
+
+    pub(super) fn root_input(&self) -> &NormalizedNativeInput<'a> {
+        match &self.root {
+            NormalizedNativeRoot::Aggregate(root) => &root.input,
+            NormalizedNativeRoot::Input(root) => &root.input,
+        }
+    }
+
+    pub(super) fn aggregate_root(&self) -> Option<&NormalizedNativeAggregateRoot<'a>> {
+        match &self.root {
+            NormalizedNativeRoot::Aggregate(root) => Some(root),
+            NormalizedNativeRoot::Input(_) => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(super) enum NormalizedNativeRoot<'a> {
+    Aggregate(NormalizedNativeAggregateRoot<'a>),
+    Input(NormalizedNativeInputRoot<'a>),
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct NormalizedNativeAggregateRoot<'a> {
+    pub(super) input: NormalizedNativeInput<'a>,
+    pub(super) pre_aggregate_projection: Option<&'a ProjectionExec>,
+    pub(super) aggregate: &'a AggregateExec,
+    pub(super) aggregate_allows_partial: bool,
+    pub(super) aggregate_output_schema: SchemaRef,
+    pub(super) post_aggregate_projection: Option<&'a ProjectionExec>,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct NormalizedNativeInputRoot<'a> {
+    pub(super) input: NormalizedNativeInput<'a>,
+    pub(super) projection: Option<&'a ProjectionExec>,
 }
 
 #[derive(Debug, Clone)]
@@ -259,12 +291,34 @@ pub(super) fn normalize_native_plan(plan: &dyn ExecutionPlan) -> Result<Normaliz
 
     if let Some(projection) = plan.as_any().downcast_ref::<ProjectionExec>() {
         let candidate = global_aggregate_candidate(plan.schema().fields().len(), true, false, false, false);
-        let aggregate = required_child::<AggregateExec>(projection.input().as_ref(), candidate)?;
-        return normalize_global_aggregate_stack(plan.schema().fields().len(), Some(projection), aggregate);
+        match required_child::<AggregateExec>(projection.input().as_ref(), candidate.clone()) {
+            Ok(aggregate) => {
+                return normalize_global_aggregate_stack(plan.schema().fields().len(), Some(projection), aggregate);
+            },
+            Err(rejection) if rejection.reason == FallbackReason::UnsupportedOperator => {
+                return normalize_input_root(
+                    plan.schema().fields().len(),
+                    None,
+                    None,
+                    None,
+                    Some(projection),
+                    projection.input().as_ref(),
+                    candidate,
+                );
+            },
+            Err(rejection) => return Err(rejection),
+        }
     }
 
     if let Some(aggregate) = plan.as_any().downcast_ref::<AggregateExec>() {
         return normalize_global_aggregate_stack(plan.schema().fields().len(), None, aggregate);
+    }
+
+    if plan.as_any().downcast_ref::<HashJoinExec>().is_some()
+        || plan.as_any().downcast_ref::<NestedLoopJoinExec>().is_some()
+    {
+        let candidate = input_root_candidate(None, plan.schema().fields().len(), plan.name().to_string(), false, 1);
+        return normalize_input_root(plan.schema().fields().len(), None, None, None, None, plan, candidate);
     }
 
     Err(NativePlanRejection {
@@ -286,7 +340,13 @@ fn normalize_sort_stack<'a>(
             reason: FallbackReason::NativePartitionPreservingSortUnsupported,
         });
     }
-    let (post_aggregate_projection, aggregate) = peel_post_aggregate_projection(sort, initial_candidate.clone())?;
+    let (post_aggregate_projection, aggregate) = match peel_post_aggregate_projection(sort, initial_candidate.clone()) {
+        Ok(stack) => stack,
+        Err(rejection) if rejection.reason == FallbackReason::UnsupportedOperator => {
+            return normalize_sort_input_root(root, output_schema_fields, sort, limit_fetch, initial_candidate);
+        },
+        Err(rejection) => return Err(rejection),
+    };
     let (aggregate, aggregate_allows_partial, has_distributed_aggregate, aggregate_output_schema) =
         peel_distributed_aggregate_pair_if_present(aggregate, initial_candidate.clone())?;
     let (pre_aggregate_projection, native_input) =
@@ -302,12 +362,14 @@ fn normalize_sort_stack<'a>(
 
     Ok(NormalizedNativePlan {
         candidate,
-        input: native_input,
-        pre_aggregate_projection,
-        aggregate,
-        aggregate_allows_partial,
-        aggregate_output_schema,
-        post_aggregate_projection,
+        root: NormalizedNativeRoot::Aggregate(NormalizedNativeAggregateRoot {
+            input: native_input,
+            pre_aggregate_projection,
+            aggregate,
+            aggregate_allows_partial,
+            aggregate_output_schema,
+            post_aggregate_projection,
+        }),
         sort: Some(sort),
         limit_fetch,
     })
@@ -334,14 +396,64 @@ fn normalize_global_aggregate_stack<'a>(
 
     Ok(NormalizedNativePlan {
         candidate,
-        input: native_input,
-        pre_aggregate_projection,
-        aggregate,
-        aggregate_allows_partial,
-        aggregate_output_schema,
-        post_aggregate_projection,
+        root: NormalizedNativeRoot::Aggregate(NormalizedNativeAggregateRoot {
+            input: native_input,
+            pre_aggregate_projection,
+            aggregate,
+            aggregate_allows_partial,
+            aggregate_output_schema,
+            post_aggregate_projection,
+        }),
         sort: None,
         limit_fetch: None,
+    })
+}
+
+fn normalize_sort_input_root<'a>(
+    root: NativeStackRoot,
+    output_schema_fields: usize,
+    sort: &'a SortExec,
+    limit_fetch: Option<usize>,
+    candidate: GpuCandidate,
+) -> Result<NormalizedNativePlan<'a>, NativePlanRejection> {
+    if sort.preserve_partitioning() && !matches!(root, NativeStackRoot::SortPreservingMergeFetch) {
+        return Err(NativePlanRejection {
+            candidate,
+            reason: FallbackReason::NativePartitionPreservingSortUnsupported,
+        });
+    }
+    let (projection, input) = peel_root_projection(sort.input().as_ref());
+    normalize_input_root(output_schema_fields, Some(root), Some(sort), limit_fetch, projection, input, candidate)
+}
+
+fn normalize_input_root<'a>(
+    output_schema_fields: usize,
+    stack_root: Option<NativeStackRoot>,
+    sort: Option<&'a SortExec>,
+    limit_fetch: Option<usize>,
+    projection: Option<&'a ProjectionExec>,
+    input_plan: &'a dyn ExecutionPlan,
+    candidate: GpuCandidate,
+) -> Result<NormalizedNativePlan<'a>, NativePlanRejection> {
+    let input = normalize_native_input(input_plan, candidate.clone())?;
+    if matches!(input, NormalizedNativeInput::Source(_)) && projection.is_none() {
+        return Err(NativePlanRejection {
+            candidate: GpuCandidate::with_operator_count(UNSUPPORTED_NATIVE_PLAN_SHAPE, output_schema_fields, 1),
+            reason: FallbackReason::UnsupportedOperator,
+        });
+    }
+    let candidate = input_root_candidate(
+        stack_root,
+        output_schema_fields,
+        input.shape(),
+        projection.is_some(),
+        input.operator_count(),
+    );
+    Ok(NormalizedNativePlan {
+        candidate,
+        root: NormalizedNativeRoot::Input(NormalizedNativeInputRoot { input, projection }),
+        sort,
+        limit_fetch,
     })
 }
 
@@ -442,6 +554,32 @@ fn native_stack_candidate_for_input(
     GpuCandidate::with_operator_count(shape, output_schema_fields, operator_count)
 }
 
+fn input_root_candidate(
+    root: Option<NativeStackRoot>,
+    output_schema_fields: usize,
+    mut input: String,
+    has_projection: bool,
+    input_operator_count: usize,
+) -> GpuCandidate {
+    if has_projection {
+        input = wrap_shape("ProjectionExec", input);
+    }
+    let shape = match root {
+        Some(NativeStackRoot::LocalLimit) => wrap_shape("LocalLimitExec", wrap_shape("SortExec", input)),
+        Some(NativeStackRoot::Sort) => wrap_shape("SortExec", input),
+        Some(NativeStackRoot::SortFetch) => wrap_shape("SortExec(fetch)", input),
+        Some(NativeStackRoot::SortPreservingMergeFetch) => {
+            wrap_shape("SortPreservingMergeExec(fetch)", wrap_shape("SortExec", input))
+        },
+        None => input,
+    };
+    let operator_count = input_operator_count
+        + usize::from(has_projection)
+        + usize::from(root.is_some())
+        + usize::from(matches!(root, Some(NativeStackRoot::LocalLimit | NativeStackRoot::SortPreservingMergeFetch)));
+    GpuCandidate::with_operator_count(shape, output_schema_fields, operator_count)
+}
+
 fn peel_post_aggregate_projection(
     sort: &SortExec,
     candidate: GpuCandidate,
@@ -450,6 +588,14 @@ fn peel_post_aggregate_projection(
         return Ok((Some(projection), required_child::<AggregateExec>(projection.input().as_ref(), candidate)?));
     }
     Ok((None, required_child::<AggregateExec>(sort.input().as_ref(), candidate)?))
+}
+
+fn peel_root_projection(plan: &dyn ExecutionPlan) -> (Option<&ProjectionExec>, &dyn ExecutionPlan) {
+    if let Some(projection) = plan.as_any().downcast_ref::<ProjectionExec>() {
+        (Some(projection), projection.input().as_ref())
+    } else {
+        (None, plan)
+    }
 }
 
 fn peel_pre_aggregate_projection(aggregate: &AggregateExec) -> (Option<&ProjectionExec>, &dyn ExecutionPlan) {
