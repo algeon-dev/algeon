@@ -10,6 +10,7 @@ use crate::{
 };
 
 pub(super) fn validate_query_plan(plan: &QueryPlan) -> Result<()> {
+    validate_reachability(plan)?;
     let mut available_columns_by_node = Vec::with_capacity(plan.node_count());
 
     for (index, node) in plan.nodes().iter().enumerate() {
@@ -70,6 +71,20 @@ pub(super) fn validate_query_plan(plan: &QueryPlan) -> Result<()> {
                 let input_available = available_columns(&available_columns_by_node, limit.input)?;
                 filter_available_columns(input_available, input.output_schema())
             },
+            PlanNode::Join(join) => {
+                let left = input_node(plan, join.inputs[0], node.id)?;
+                let right = input_node(plan, join.inputs[1], node.id)?;
+                let left_available = available_columns(&available_columns_by_node, join.inputs[0])?;
+                let right_available = available_columns(&available_columns_by_node, join.inputs[1])?;
+                for key in &join.spec.keys {
+                    validate_column(key.left.name(), left.output_schema(), left_available)?;
+                    validate_column(key.right.name(), right.output_schema(), right_available)?;
+                }
+                if let Some(predicate) = &join.spec.residual_predicate {
+                    validate_expr(predicate, node.output_schema(), &schema_column_names(node.output_schema()))?;
+                }
+                schema_column_names(node.output_schema())
+            },
         };
         available_columns_by_node.push(available_columns);
     }
@@ -92,6 +107,37 @@ pub(super) fn validate_query_plan(plan: &QueryPlan) -> Result<()> {
         }
     }
 
+    Ok(())
+}
+
+fn validate_reachability(plan: &QueryPlan) -> Result<()> {
+    let mut reachable = vec![false; plan.node_count()];
+    let mut stack = vec![plan.sink().input()];
+    while let Some(id) = stack.pop() {
+        let Some(node) = plan.node(id) else {
+            return Err(QueryError::new(
+                QueryErrorCode::InvalidPlan,
+                "cudf_query_engine.plan.validate_reachability",
+                "query plan sink reaches a missing node",
+            )
+            .with_fact("node", id));
+        };
+        if reachable[id.index()] {
+            continue;
+        }
+        reachable[id.index()] = true;
+        stack.extend(node.input_ids().iter().copied());
+    }
+
+    if let Some((index, _)) = reachable.iter().enumerate().find(|(_, reachable)| !**reachable) {
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "cudf_query_engine.plan.validate_reachability",
+            "query plan contains an unreachable node",
+        )
+        .with_fact("node", NodeId::from_index_for_internal_use(index))
+        .with_fact("sink_input", plan.sink().input()));
+    }
     Ok(())
 }
 
@@ -156,13 +202,14 @@ fn filter_available_columns(available: &BTreeSet<String>, output_schema: &Schema
     output_schema
         .fields()
         .iter()
-        .filter_map(|field| available.contains(field.name()).then(|| field.name().clone()))
+        .filter(|field| available.contains(field.name()))
+        .map(|field| field.name().clone())
         .collect()
 }
 
 fn validate_expr(expr: &Expr, input_schema: &SchemaRef, available_columns: &BTreeSet<String>) -> Result<ArrowDataType> {
     match expr {
-        Expr::Column(name) => validate_column(name, input_schema, available_columns),
+        Expr::Column(column) => validate_column(column.name(), input_schema, available_columns),
         Expr::Literal(value) => validate_literal(value),
         Expr::Not(expr) => {
             let data_type = validate_expr(expr, input_schema, available_columns)?;
@@ -438,7 +485,7 @@ fn validate_substring_bounds(start: i32, length: Option<i32>) -> Result<()> {
         .with_fact("start", start));
     }
     if let Some(length) = length
-        && (length < 0 || start.checked_add(length).is_none())
+        && (length < 0 || substring_stop_position(start, length).is_none())
     {
         return Err(QueryError::new(
             QueryErrorCode::UnsupportedExpression,
@@ -449,6 +496,11 @@ fn validate_substring_bounds(start: i32, length: Option<i32>) -> Result<()> {
         .with_fact("length", length));
     }
     Ok(())
+}
+
+fn substring_stop_position(start: i32, length: i32) -> Option<i32> {
+    let zero_based_start = start.checked_sub(1)?;
+    zero_based_start.checked_add(length)
 }
 
 fn validate_like_escape_contract(escape: &str) -> Result<()> {

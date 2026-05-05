@@ -53,15 +53,14 @@ pub(super) fn coalesced_local_parquet_scan_files<'a>(
         if file.ordering.is_some() {
             return Err(FallbackReason::NativeSourceFileOrdering);
         }
-        if let Some(range) = &file.range {
-            if file.extensions.is_some()
+        if let Some(range) = &file.range
+            && (file.extensions.is_some()
                 || range.start < 0
                 || range.end < range.start
                 || u64::try_from(range.end).map_err(|_error| FallbackReason::NativeSourceByteRange)?
-                    > file.object_meta.size
-            {
-                return Err(FallbackReason::NativeSourceByteRange);
-            }
+                    > file.object_meta.size)
+        {
+            return Err(FallbackReason::NativeSourceByteRange);
         }
 
         let location = file.object_meta.location.as_ref().to_string();

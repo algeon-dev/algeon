@@ -25,13 +25,14 @@ pub use exec::{
     validate_local_parquet_source,
 };
 pub use expr::{
-    AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, CaseWhen, DatePart, Expr, LimitSpec, LiteralValue,
-    SortExpr, SortSpec,
+    AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, CaseWhen, ColumnQualifier, ColumnRef, DatePart, Expr,
+    LimitSpec, LiteralValue, SortExpr, SortSpec,
 };
-pub use metrics::{BoundaryMetrics, QueryMetrics};
+pub use metrics::{BoundaryMetrics, JoinOperatorMetrics, OperatorMetrics, QueryMetrics};
 pub use plan::{
-    AggregateNode, DataPlacement, FilterNode, LimitNode, NodeId, PlanFacts, PlanNode, ProjectionNode, QueryNode,
-    QueryPlan, QueryPlanBuilder, ResultSink, SchemaBehavior, SortNode,
+    AggregateNode, DataPlacement, FilterNode, JoinKey, JoinNode, JoinNullEquality, JoinSide, JoinSpec, JoinType,
+    LimitNode, NodeId, PlanFacts, PlanNode, ProjectionNode, QueryNode, QueryPlan, QueryPlanBuilder, ResultSink,
+    SchemaBehavior, SortNode,
 };
 pub use runtime::{
     DevicePlacement, ExecutionContext, ExecutionContextBuilder, MemoryControlPolicy, MemoryReservationRequest,

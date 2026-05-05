@@ -70,16 +70,16 @@ fn lower_slice1_plan(normalized: &NormalizedNativePlan<'_>) -> Result<NativeQuer
 
     validate_schema(Arc::clone(&source_output_schema))?;
     validate_required_operator_schemas(normalized, filter, pre_aggregate_projection, post_aggregate_projection, sort)?;
-    validate_required_scalar_expressions(
+    validate_required_scalar_expressions(RequiredScalarExpressions {
         scan_projection,
-        &table_schema,
-        source_exec.schema(),
-        &column_requirements.scan_output_columns,
+        table_schema: &table_schema,
+        scan_output_schema: source_exec.schema(),
+        required_scan_output_columns: &column_requirements.scan_output_columns,
         filter,
         pre_aggregate_projection,
         aggregate,
         post_aggregate_projection,
-    )?;
+    })?;
     validate_slice1_parquet_scan(file_scan, parquet_source, filter, Arc::clone(&table_schema), &column_requirements)?;
     validate_aggregate(aggregate, pre_aggregate_projection.is_some(), normalized.aggregate_allows_partial)?;
     if let Some(sort) = sort {
@@ -229,40 +229,42 @@ fn validate_required_operator_schemas(
     Ok(())
 }
 
-fn validate_required_scalar_expressions(
-    scan_projection: Option<&ProjectionExprs>,
-    table_schema: &SchemaRef,
+struct RequiredScalarExpressions<'a> {
+    scan_projection: Option<&'a ProjectionExprs>,
+    table_schema: &'a SchemaRef,
     scan_output_schema: SchemaRef,
-    required_scan_output_columns: &[String],
-    filter: Option<&datafusion::physical_plan::filter::FilterExec>,
-    pre_aggregate_projection: Option<&ProjectionExec>,
-    aggregate: &AggregateExec,
-    post_aggregate_projection: Option<&ProjectionExec>,
-) -> Result<(), FallbackReason> {
-    if let Some(scan_projection) = scan_projection {
+    required_scan_output_columns: &'a [String],
+    filter: Option<&'a datafusion::physical_plan::filter::FilterExec>,
+    pre_aggregate_projection: Option<&'a ProjectionExec>,
+    aggregate: &'a AggregateExec,
+    post_aggregate_projection: Option<&'a ProjectionExec>,
+}
+
+fn validate_required_scalar_expressions(inputs: RequiredScalarExpressions<'_>) -> Result<(), FallbackReason> {
+    if let Some(scan_projection) = inputs.scan_projection {
         for projection_expr in
-            required_scan_projection(scan_projection, scan_output_schema, required_scan_output_columns)
+            required_scan_projection(scan_projection, inputs.scan_output_schema, inputs.required_scan_output_columns)
         {
-            validate_physical_expr(&projection_expr.expr, table_schema)?;
+            validate_physical_expr(projection_expr.expr, inputs.table_schema)?;
         }
     }
-    if let Some(filter) = filter {
+    if let Some(filter) = inputs.filter {
         validate_physical_expr(filter.predicate(), &filter.input().schema())?;
     }
-    if let Some(projection) = pre_aggregate_projection {
+    if let Some(projection) = inputs.pre_aggregate_projection {
         for projection_expr in projection.expr() {
             validate_physical_expr(&projection_expr.expr, &projection.input().schema())?;
         }
     }
-    for aggregate_expr in aggregate.aggr_expr() {
+    for aggregate_expr in inputs.aggregate.aggr_expr() {
         for expr in aggregate_expr.expressions() {
-            validate_physical_expr(&expr, &aggregate.input().schema())?;
+            validate_physical_expr(&expr, &inputs.aggregate.input().schema())?;
         }
     }
-    for (group_expr, _alias) in aggregate.group_expr().expr() {
-        validate_physical_expr(group_expr, &aggregate.input().schema())?;
+    for (group_expr, _alias) in inputs.aggregate.group_expr().expr() {
+        validate_physical_expr(group_expr, &inputs.aggregate.input().schema())?;
     }
-    if let Some(projection) = post_aggregate_projection {
+    if let Some(projection) = inputs.post_aggregate_projection {
         for projection_expr in projection.expr() {
             validate_physical_expr(&projection_expr.expr, &projection.input().schema())?;
         }
@@ -442,7 +444,7 @@ fn required_scan_projection_schema(
         .map(|projection_expr| {
             scan_output_schema
                 .field_with_name(projection_expr.alias)
-                .map(|field| field.clone())
+                .cloned()
                 .map_err(|_error| FallbackReason::UnsupportedExpression)
         })
         .collect::<Result<Vec<_>, _>>()?;
@@ -573,7 +575,7 @@ pub(super) fn lower_physical_expr(
         return Ok(NativeExpr::binary(left, op, right));
     }
     if let Some(not) = expr.as_any().downcast_ref::<NotExpr>() {
-        return Ok(NativeExpr::not(lower_physical_expr(not.arg(), input_schema)?));
+        return Ok(!lower_physical_expr(not.arg(), input_schema)?);
     }
     if let Some(is_null) = expr.as_any().downcast_ref::<IsNullExpr>() {
         return Ok(NativeExpr::is_null(lower_physical_expr(is_null.arg(), input_schema)?));
@@ -691,11 +693,16 @@ fn lower_substring_function(
     }
     let length = if args.len() == 3 { Some(literal_i32(&args[2])?) } else { None };
     if let Some(length) = length
-        && (length < 0 || start.checked_add(length).is_none())
+        && (length < 0 || substring_stop_position(start, length).is_none())
     {
         return Err(FallbackReason::UnsupportedExpression);
     }
     Ok(NativeExpr::substring(lower_physical_expr(&args[0], input_schema)?, start, length))
+}
+
+fn substring_stop_position(start: i32, length: i32) -> Option<i32> {
+    let zero_based_start = start.checked_sub(1)?;
+    zero_based_start.checked_add(length)
 }
 
 fn lower_extract_function(
@@ -814,7 +821,7 @@ fn literal_i32(expr: &Arc<dyn PhysicalExpr>) -> Result<i32, FallbackReason> {
 
 fn alias_if_needed(expr: NativeExpr, alias: &str) -> NativeExpr {
     match &expr {
-        NativeExpr::Column(name) if name == alias => expr,
+        NativeExpr::Column(column) if column.display_name() == alias || column.name() == alias => expr,
         _ => expr.alias(alias),
     }
 }

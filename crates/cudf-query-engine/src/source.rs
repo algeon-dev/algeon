@@ -67,13 +67,15 @@ impl LocalParquetSource {
         let partition_columns = Vec::new();
         let diagnostics = SourceDiagnostics::for_local_parquet_files(
             &files,
-            &read_columns,
-            &read_column_file_indices,
-            &projected_output_columns,
-            &projected_output_column_source_refs,
-            &pure_filter_columns,
-            &pure_filter_column_source_refs,
-            &partition_columns,
+            LocalParquetDiagnosticColumns {
+                read_columns: &read_columns,
+                read_column_file_indices: &read_column_file_indices,
+                projected_output_columns: &projected_output_columns,
+                projected_output_column_source_refs: &projected_output_column_source_refs,
+                pure_filter_columns: &pure_filter_columns,
+                pure_filter_column_source_refs: &pure_filter_column_source_refs,
+                partition_columns: &partition_columns,
+            },
         );
         Self {
             files,
@@ -152,16 +154,7 @@ impl LocalParquetSource {
 
     pub fn refresh_diagnostics(&mut self) {
         let zero_column_count_represented = self.is_zero_column_count_source();
-        self.diagnostics = SourceDiagnostics::for_local_parquet_files(
-            &self.files,
-            &self.read_columns,
-            &self.read_column_file_indices,
-            &self.projected_output_columns,
-            &self.projected_output_column_source_refs,
-            &self.pure_filter_columns,
-            &self.pure_filter_column_source_refs,
-            &self.partition_columns,
-        );
+        self.diagnostics = SourceDiagnostics::for_local_parquet_files(&self.files, self.diagnostic_columns());
         if zero_column_count_represented {
             self.mark_zero_column_count_represented();
         }
@@ -179,16 +172,7 @@ impl LocalParquetSource {
         self.pure_filter_columns.clear();
         self.pure_filter_column_source_refs.clear();
         self.partition_columns.clear();
-        self.diagnostics = SourceDiagnostics::for_local_parquet_files(
-            &self.files,
-            &self.read_columns,
-            &self.read_column_file_indices,
-            &self.projected_output_columns,
-            &self.projected_output_column_source_refs,
-            &self.pure_filter_columns,
-            &self.pure_filter_column_source_refs,
-            &self.partition_columns,
-        );
+        self.diagnostics = SourceDiagnostics::for_local_parquet_files(&self.files, self.diagnostic_columns());
         self.diagnostics.zero_column_count_disposition = ZeroColumnCountDisposition::Represented;
         self.diagnostics.rejected_features.retain(|feature| *feature != RejectedSourceFeature::ZeroColumnCount);
         self.diagnostics.direct_device_read = self.diagnostics.rejected_features.is_empty();
@@ -228,6 +212,18 @@ impl LocalParquetSource {
 
     fn source_column_refs(&self, columns: &[String]) -> Vec<SourceColumnRef> {
         columns.iter().filter_map(|column| self.source_column_ref(column)).collect()
+    }
+
+    fn diagnostic_columns(&self) -> LocalParquetDiagnosticColumns<'_> {
+        LocalParquetDiagnosticColumns {
+            read_columns: &self.read_columns,
+            read_column_file_indices: &self.read_column_file_indices,
+            projected_output_columns: &self.projected_output_columns,
+            projected_output_column_source_refs: &self.projected_output_column_source_refs,
+            pure_filter_columns: &self.pure_filter_columns,
+            pure_filter_column_source_refs: &self.pure_filter_column_source_refs,
+            partition_columns: &self.partition_columns,
+        }
     }
 
     pub fn source_column_ref(&self, column: &str) -> Option<SourceColumnRef> {
@@ -305,6 +301,17 @@ impl LocalParquetFile {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+struct LocalParquetDiagnosticColumns<'a> {
+    read_columns: &'a [String],
+    read_column_file_indices: &'a [usize],
+    projected_output_columns: &'a [String],
+    projected_output_column_source_refs: &'a [SourceColumnRef],
+    pure_filter_columns: &'a [String],
+    pure_filter_column_source_refs: &'a [SourceColumnRef],
+    partition_columns: &'a [PartitionColumn],
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceDiagnostics {
     pub format: SourceFormat,
@@ -325,16 +332,7 @@ pub struct SourceDiagnostics {
 }
 
 impl SourceDiagnostics {
-    fn for_local_parquet_files(
-        files: &[LocalParquetFile],
-        read_columns: &[String],
-        read_column_file_indices: &[usize],
-        projected_output_columns: &[String],
-        projected_output_column_source_refs: &[SourceColumnRef],
-        pure_filter_columns: &[String],
-        pure_filter_column_source_refs: &[SourceColumnRef],
-        partition_columns: &[PartitionColumn],
-    ) -> Self {
+    fn for_local_parquet_files(files: &[LocalParquetFile], columns: LocalParquetDiagnosticColumns<'_>) -> Self {
         let known_bytes = files
             .iter()
             .map(|file| file.file_size_bytes)
@@ -343,7 +341,7 @@ impl SourceDiagnostics {
             .iter()
             .any(|file| file.row_groups.is_some())
             .then(|| files.iter().map(LocalParquetFile::selected_row_group_count).sum());
-        let zero_column_count_disposition = if read_columns.is_empty() {
+        let zero_column_count_disposition = if columns.read_columns.is_empty() {
             ZeroColumnCountDisposition::Rejected
         } else {
             ZeroColumnCountDisposition::NotRequired
@@ -352,16 +350,16 @@ impl SourceDiagnostics {
         if zero_column_count_disposition == ZeroColumnCountDisposition::Rejected {
             rejected_features.push(RejectedSourceFeature::ZeroColumnCount);
         }
-        let schema_mapping_disposition = if read_columns.len() == read_column_file_indices.len()
-            && projected_output_columns.len() == projected_output_column_source_refs.len()
-            && pure_filter_columns.len() == pure_filter_column_source_refs.len()
+        let schema_mapping_disposition = if columns.read_columns.len() == columns.read_column_file_indices.len()
+            && columns.projected_output_columns.len() == columns.projected_output_column_source_refs.len()
+            && columns.pure_filter_columns.len() == columns.pure_filter_column_source_refs.len()
         {
             SchemaMappingDisposition::DirectByName
         } else {
             rejected_features.push(RejectedSourceFeature::SchemaMapping);
             SchemaMappingDisposition::Rejected
         };
-        let partition_column_disposition = if partition_columns.is_empty() {
+        let partition_column_disposition = if columns.partition_columns.is_empty() {
             PartitionColumnDisposition::Absent
         } else {
             PartitionColumnDisposition::Represented
@@ -378,9 +376,9 @@ impl SourceDiagnostics {
             partition_column_disposition,
             zero_column_count_disposition,
             schema_mapping_disposition,
-            read_column_count: read_columns.len(),
-            projected_output_column_count: projected_output_columns.len(),
-            pure_filter_column_count: pure_filter_columns.len(),
+            read_column_count: columns.read_columns.len(),
+            projected_output_column_count: columns.projected_output_columns.len(),
+            pure_filter_column_count: columns.pure_filter_columns.len(),
             rejected_features,
         }
     }

@@ -1,10 +1,10 @@
-use std::fmt;
+use std::{fmt, ops::Not};
 
 use arrow::datatypes::{DataType, IntervalUnit, TimeUnit};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Expr {
-    Column(String),
+    Column(ColumnRef),
     Literal(LiteralValue),
     Not(Box<Expr>),
     IsNull(Box<Expr>),
@@ -21,7 +21,15 @@ pub enum Expr {
 
 impl Expr {
     pub fn column(name: impl Into<String>) -> Self {
-        Self::Column(name.into())
+        Self::Column(ColumnRef::unqualified(name))
+    }
+
+    pub fn input_column(input: usize, name: impl Into<String>, display_name: impl Into<String>) -> Self {
+        Self::Column(ColumnRef::input(input, name, display_name))
+    }
+
+    pub fn node_column(node_id: impl Into<String>, name: impl Into<String>, display_name: impl Into<String>) -> Self {
+        Self::Column(ColumnRef::node(node_id, name, display_name))
     }
 
     pub fn literal(value: LiteralValue) -> Self {
@@ -32,7 +40,7 @@ impl Expr {
         Self::Binary { left: Box::new(left), op, right: Box::new(right) }
     }
 
-    pub fn not(expr: Self) -> Self {
+    pub fn logical_not(expr: Self) -> Self {
         Self::Not(Box::new(expr))
     }
 
@@ -89,10 +97,99 @@ impl Expr {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ColumnRef {
+    qualifier: Option<ColumnQualifier>,
+    name: String,
+    display_name: String,
+}
+
+impl ColumnRef {
+    pub fn unqualified(name: impl Into<String>) -> Self {
+        let name = name.into();
+        Self { qualifier: None, display_name: name.clone(), name }
+    }
+
+    pub fn input(input: usize, name: impl Into<String>, display_name: impl Into<String>) -> Self {
+        Self {
+            qualifier: Some(ColumnQualifier::Input { index: input }),
+            name: name.into(),
+            display_name: display_name.into(),
+        }
+    }
+
+    pub fn node(node_id: impl Into<String>, name: impl Into<String>, display_name: impl Into<String>) -> Self {
+        Self {
+            qualifier: Some(ColumnQualifier::Node { id: node_id.into() }),
+            name: name.into(),
+            display_name: display_name.into(),
+        }
+    }
+
+    pub fn relation(relation: impl Into<String>, name: impl Into<String>, display_name: impl Into<String>) -> Self {
+        Self {
+            qualifier: Some(ColumnQualifier::Relation { name: relation.into() }),
+            name: name.into(),
+            display_name: display_name.into(),
+        }
+    }
+
+    pub fn qualifier(&self) -> Option<&ColumnQualifier> {
+        self.qualifier.as_ref()
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn display_name(&self) -> &str {
+        &self.display_name
+    }
+
+    pub fn is_qualified(&self) -> bool {
+        self.qualifier.is_some()
+    }
+}
+
+impl fmt::Display for ColumnRef {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if let Some(qualifier) = &self.qualifier {
+            write!(f, "{qualifier}.{}", self.name)
+        } else {
+            f.write_str(&self.name)
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ColumnQualifier {
+    Input { index: usize },
+    Node { id: String },
+    Relation { name: String },
+}
+
+impl fmt::Display for ColumnQualifier {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Input { index } => write!(f, "input{index}"),
+            Self::Node { id } => write!(f, "{id}"),
+            Self::Relation { name } => f.write_str(name),
+        }
+    }
+}
+
+impl Not for Expr {
+    type Output = Self;
+
+    fn not(self) -> Self::Output {
+        Self::Not(Box::new(self))
+    }
+}
+
 impl fmt::Display for Expr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Column(name) => f.write_str(name),
+            Self::Column(column) => write!(f, "{column}"),
             Self::Literal(value) => write!(f, "{value}"),
             Self::Not(expr) => write!(f, "NOT {expr}"),
             Self::IsNull(expr) => write!(f, "{expr} IS NULL"),

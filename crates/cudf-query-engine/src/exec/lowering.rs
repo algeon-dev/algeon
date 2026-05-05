@@ -10,7 +10,7 @@ use crate::expr::{CaseWhen, DatePart};
 
 pub(super) fn lower_expr(expr: &Expr) -> Result<cudf::Expr> {
     match expr {
-        Expr::Column(name) => Ok(col(name)),
+        Expr::Column(column) => Ok(col(column.name())),
         Expr::Literal(value) => lower_literal(value),
         Expr::Not(expr) => Ok(lower_expr(expr)?.not()),
         Expr::IsNull(expr) => Ok(lower_expr(expr)?.is_null()),
@@ -185,28 +185,15 @@ fn lower_substring(expr: &Expr, start: i32, length: Option<i32>) -> Result<cudf:
     let zero_based_start = start - 1;
     let stop = length
         .map(|length| {
-            start
-                .checked_add(length)
-                .ok_or_else(|| {
-                    QueryError::new(
-                        QueryErrorCode::UnsupportedExpression,
-                        "cudf_query_engine.expr.lower_substring",
-                        "native substring stop position exceeds i32 range",
-                    )
-                    .with_fact("start", start)
-                    .with_fact("length", length)
-                })
-                .and_then(|_| {
-                    zero_based_start.checked_add(length).ok_or_else(|| {
-                        QueryError::new(
-                            QueryErrorCode::UnsupportedExpression,
-                            "cudf_query_engine.expr.lower_substring",
-                            "native substring stop position exceeds i32 range",
-                        )
-                        .with_fact("start", start)
-                        .with_fact("length", length)
-                    })
-                })
+            zero_based_start.checked_add(length).ok_or_else(|| {
+                QueryError::new(
+                    QueryErrorCode::UnsupportedExpression,
+                    "cudf_query_engine.expr.lower_substring",
+                    "native substring stop position exceeds i32 range",
+                )
+                .with_fact("start", start)
+                .with_fact("length", length)
+            })
         })
         .transpose()?;
     let options = StringSliceOptions::new(Some(zero_based_start), stop);
@@ -454,7 +441,7 @@ pub(super) fn lower_sort_spec(spec: &SortSpec) -> Result<LoweredSort> {
 
 pub(super) fn lower_named_column_expr(expr: &Expr, operation: &'static str) -> Result<(String, String)> {
     match expr {
-        Expr::Column(name) => Ok((name.clone(), name.clone())),
+        Expr::Column(column) => Ok((column.name().to_string(), column.display_name().to_string())),
         Expr::Alias { expr, alias } => Ok((lower_column_expr(expr, operation)?, alias.clone())),
         _ => Err(QueryError::new(
             QueryErrorCode::UnsupportedExpression,
@@ -467,7 +454,7 @@ pub(super) fn lower_named_column_expr(expr: &Expr, operation: &'static str) -> R
 
 pub(super) fn lower_column_expr(expr: &Expr, operation: &'static str) -> Result<String> {
     match expr {
-        Expr::Column(name) => Ok(name.clone()),
+        Expr::Column(column) => Ok(column.name().to_string()),
         Expr::Alias { expr, .. } => lower_column_expr(expr, operation),
         _ => Err(QueryError::new(
             QueryErrorCode::UnsupportedExpression,

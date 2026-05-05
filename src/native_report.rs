@@ -15,6 +15,7 @@ use datafusion::{
         ExecutionPlan,
         aggregates::AggregateExec,
         filter::FilterExec,
+        joins::{HashJoinExec, NestedLoopJoinExec},
         projection::ProjectionExec,
         sorts::{sort::SortExec, sort_preserving_merge::SortPreservingMergeExec},
     },
@@ -27,10 +28,10 @@ use crate::{
     tpch::TpchDatasetMetadata,
 };
 
-pub const NATIVE_FALLBACK_PRESSURE_TSV_SCHEMA_VERSION: u32 = 3;
-pub const NATIVE_FALLBACK_PRESSURE_TSV_HEADER: &str = "query_id\tphysical_root\tphysical_shape\tnative_candidate_shape\toutcome\treason_code\tunsupported_category\tsource_diagnostics\trejected_before_execution";
-pub const NATIVE_DATAFUSION_PLANNING_TSV_SCHEMA_VERSION: u32 = 3;
-pub const NATIVE_DATAFUSION_PLANNING_TSV_HEADER: &str = "query_id\tphysical_root\tphysical_shape\tnative_candidate_shape\toutcome\treason_code\tunsupported_category\tsource_diagnostics\tpost_native_plan_root\tpost_native_execution_path\trejected_before_execution";
+pub const NATIVE_FALLBACK_PRESSURE_TSV_SCHEMA_VERSION: u32 = 4;
+pub const NATIVE_FALLBACK_PRESSURE_TSV_HEADER: &str = "query_id\tphysical_root\tphysical_shape\tnative_candidate_shape\toutcome\treason_code\tunsupported_category\tjoin_diagnostics\tsource_diagnostics\trejected_before_execution";
+pub const NATIVE_DATAFUSION_PLANNING_TSV_SCHEMA_VERSION: u32 = 4;
+pub const NATIVE_DATAFUSION_PLANNING_TSV_HEADER: &str = "query_id\tphysical_root\tphysical_shape\tnative_candidate_shape\toutcome\treason_code\tunsupported_category\tjoin_diagnostics\tsource_diagnostics\tpost_native_plan_root\tpost_native_execution_path\trejected_before_execution";
 
 #[derive(Debug, Clone)]
 pub struct NativeFallbackPressureWorkloadItem {
@@ -51,7 +52,7 @@ impl NativeFallbackPressureWorkloadItem {
     ) -> Self {
         Self {
             query_id: query_id.into(),
-            input: NativeFallbackPressureWorkloadInput::PlanningFailure(NativeFallbackPressurePlanningFailure {
+            input: NativeFallbackPressureWorkloadInput::PlanningFailure(NativePlanningFailure {
                 stage: stage.into(),
                 reason_code: reason_code.into(),
                 message: message.into(),
@@ -63,11 +64,11 @@ impl NativeFallbackPressureWorkloadItem {
 #[derive(Debug, Clone)]
 pub enum NativeFallbackPressureWorkloadInput {
     PhysicalPlan(Arc<dyn ExecutionPlan>),
-    PlanningFailure(NativeFallbackPressurePlanningFailure),
+    PlanningFailure(NativePlanningFailure),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NativeFallbackPressurePlanningFailure {
+pub struct NativePlanningFailure {
     pub stage: String,
     pub reason_code: String,
     pub message: String,
@@ -110,7 +111,7 @@ impl NativeFallbackPressureReport {
         for row in &self.rows {
             let _ = writeln!(
                 output,
-                "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
                 row.query_id,
                 row.physical_root,
                 row.physical_shape,
@@ -118,6 +119,7 @@ impl NativeFallbackPressureReport {
                 row.outcome.as_str(),
                 row.reason_code.as_deref().unwrap_or("none"),
                 row.unsupported_category.as_deref().unwrap_or("none"),
+                format_join_diagnostics(&row.join_diagnostics),
                 format_source_diagnostics(&row.source_diagnostics),
                 row.rejected_before_execution,
             );
@@ -144,7 +146,12 @@ impl NativeDataFusionPlanningReport {
         native_rule: &CudfNativePhysicalOptimizerRule,
     ) -> Self {
         let Some(diagnostics) = native_rule.last_planning_diagnostics() else {
-            return Self { rows: Vec::new(), tpch_dataset: None };
+            return Self::collect([NativeDataFusionPlanningWorkloadItem::planning_failure(
+                query_id,
+                "native_diagnostics",
+                "missing_native_diagnostics",
+                "native optimizer rule did not retain planning diagnostics",
+            )]);
         };
         Self::collect([NativeDataFusionPlanningWorkloadItem::new(query_id, planned_plan, diagnostics)])
     }
@@ -174,7 +181,7 @@ impl NativeDataFusionPlanningReport {
         for row in &self.rows {
             let _ = writeln!(
                 output,
-                "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
                 row.query_id,
                 row.physical_root,
                 row.physical_shape,
@@ -182,6 +189,7 @@ impl NativeDataFusionPlanningReport {
                 row.outcome.as_str(),
                 row.reason_code.as_deref().unwrap_or("none"),
                 row.unsupported_category.as_deref().unwrap_or("none"),
+                format_join_diagnostics(&row.join_diagnostics),
                 format_source_diagnostics(&row.source_diagnostics),
                 row.post_native_plan_root,
                 row.post_native_execution_path.as_str(),
@@ -195,8 +203,7 @@ impl NativeDataFusionPlanningReport {
 #[derive(Debug, Clone)]
 pub struct NativeDataFusionPlanningWorkloadItem {
     pub query_id: String,
-    pub planned_plan: Arc<dyn ExecutionPlan>,
-    pub native_diagnostics: NativePlanningDiagnostics,
+    pub input: NativeDataFusionPlanningWorkloadInput,
 }
 
 impl NativeDataFusionPlanningWorkloadItem {
@@ -205,8 +212,33 @@ impl NativeDataFusionPlanningWorkloadItem {
         planned_plan: Arc<dyn ExecutionPlan>,
         native_diagnostics: NativePlanningDiagnostics,
     ) -> Self {
-        Self { query_id: query_id.into(), planned_plan, native_diagnostics }
+        Self {
+            query_id: query_id.into(),
+            input: NativeDataFusionPlanningWorkloadInput::Planned { planned_plan, native_diagnostics },
+        }
     }
+
+    pub fn planning_failure(
+        query_id: impl Into<String>,
+        stage: impl Into<String>,
+        reason_code: impl Into<String>,
+        message: impl Into<String>,
+    ) -> Self {
+        Self {
+            query_id: query_id.into(),
+            input: NativeDataFusionPlanningWorkloadInput::PlanningFailure(NativePlanningFailure {
+                stage: stage.into(),
+                reason_code: reason_code.into(),
+                message: message.into(),
+            }),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum NativeDataFusionPlanningWorkloadInput {
+    Planned { planned_plan: Arc<dyn ExecutionPlan>, native_diagnostics: NativePlanningDiagnostics },
+    PlanningFailure(NativePlanningFailure),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -218,6 +250,7 @@ pub struct NativeDataFusionPlanningRow {
     pub outcome: NativeDataFusionPlanningOutcome,
     pub reason_code: Option<String>,
     pub unsupported_category: Option<String>,
+    pub join_diagnostics: Vec<NativeJoinDiagnosticSummary>,
     pub source_diagnostics: Vec<NativeSourceDiagnosticSummary>,
     pub post_native_plan_root: String,
     pub post_native_execution_path: NativeDataFusionPostNativeExecutionPath,
@@ -265,6 +298,7 @@ pub struct NativeFallbackPressureRow {
     pub outcome: NativeFallbackPressureOutcome,
     pub reason_code: Option<String>,
     pub unsupported_category: Option<String>,
+    pub join_diagnostics: Vec<NativeJoinDiagnosticSummary>,
     pub source_diagnostics: Vec<NativeSourceDiagnosticSummary>,
     pub rejected_before_execution: bool,
 }
@@ -282,6 +316,18 @@ impl NativeFallbackPressureOutcome {
             Self::Rejected => "rejected",
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeJoinDiagnosticSummary {
+    pub operator: String,
+    pub join_type: String,
+    pub key_count: usize,
+    pub key_shape: String,
+    pub residual_predicate: bool,
+    pub null_equality: String,
+    pub build_side: String,
+    pub probe_side: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -315,6 +361,7 @@ fn report_rows_for_item(item: NativeFallbackPressureWorkloadItem) -> Vec<NativeF
 fn report_rows_for_plan(query_id: String, plan: Arc<dyn ExecutionPlan>) -> Vec<NativeFallbackPressureRow> {
     let physical_root = plan.name().to_string();
     let physical_shape = physical_plan_shape(plan.as_ref());
+    let join_diagnostics = join_diagnostics(plan.as_ref());
     let source_diagnostics_plan = Arc::clone(&plan);
     let result = lower_physical_plan_to_native(plan);
     let source_diagnostics = result.source_diagnostics.iter().map(summarize_source_diagnostics).collect::<Vec<_>>();
@@ -332,6 +379,7 @@ fn report_rows_for_plan(query_id: String, plan: Arc<dyn ExecutionPlan>) -> Vec<N
                 outcome: NativeFallbackPressureOutcome::Rewritten,
                 reason_code: None,
                 unsupported_category: None,
+                join_diagnostics: join_diagnostics.clone(),
                 source_diagnostics: source_diagnostics.clone(),
                 rejected_before_execution: false,
             },
@@ -342,7 +390,8 @@ fn report_rows_for_plan(query_id: String, plan: Arc<dyn ExecutionPlan>) -> Vec<N
                 native_candidate_shape: Some(candidate.shape.to_string()),
                 outcome: NativeFallbackPressureOutcome::Rejected,
                 reason_code: Some(reason.code().to_string()),
-                unsupported_category: unsupported_category(source_diagnostics_plan.as_ref(), *candidate, *reason),
+                unsupported_category: unsupported_category(source_diagnostics_plan.as_ref(), candidate, *reason),
+                join_diagnostics: join_diagnostics.clone(),
                 source_diagnostics: source_diagnostics.clone(),
                 rejected_before_execution: true,
             },
@@ -350,10 +399,7 @@ fn report_rows_for_plan(query_id: String, plan: Arc<dyn ExecutionPlan>) -> Vec<N
         .collect()
 }
 
-fn report_row_for_planning_failure(
-    query_id: String,
-    failure: NativeFallbackPressurePlanningFailure,
-) -> NativeFallbackPressureRow {
+fn report_row_for_planning_failure(query_id: String, failure: NativePlanningFailure) -> NativeFallbackPressureRow {
     NativeFallbackPressureRow {
         query_id,
         physical_root: "PlanningFailure".to_string(),
@@ -362,30 +408,41 @@ fn report_row_for_planning_failure(
         outcome: NativeFallbackPressureOutcome::Rejected,
         reason_code: Some(failure.reason_code),
         unsupported_category: Some("planning".to_string()),
+        join_diagnostics: Vec::new(),
         source_diagnostics: Vec::new(),
         rejected_before_execution: true,
     }
 }
 
 fn datafusion_planning_rows_for_item(item: NativeDataFusionPlanningWorkloadItem) -> Vec<NativeDataFusionPlanningRow> {
-    let post_native_plan_root = item.planned_plan.name().to_string();
-    let post_native_execution_path = post_native_execution_path(item.planned_plan.as_ref());
+    let (planned_plan, native_diagnostics) = match item.input {
+        NativeDataFusionPlanningWorkloadInput::Planned { planned_plan, native_diagnostics } => {
+            (planned_plan, native_diagnostics)
+        },
+        NativeDataFusionPlanningWorkloadInput::PlanningFailure(failure) => {
+            return vec![datafusion_planning_row_for_planning_failure(item.query_id, failure)];
+        },
+    };
+    let post_native_plan_root = planned_plan.name().to_string();
+    let post_native_execution_path = post_native_execution_path(planned_plan.as_ref());
+    let join_diagnostics = join_diagnostics(planned_plan.as_ref());
     let source_diagnostics =
-        item.native_diagnostics.source_diagnostics.iter().map(summarize_source_diagnostics).collect::<Vec<_>>();
+        native_diagnostics.source_diagnostics.iter().map(summarize_source_diagnostics).collect::<Vec<_>>();
 
-    item.native_diagnostics
+    native_diagnostics
         .report
         .outcomes()
         .iter()
         .map(|outcome| match outcome {
             CandidateOutcome::Rewritten { candidate } => NativeDataFusionPlanningRow {
                 query_id: item.query_id.clone(),
-                physical_root: item.native_diagnostics.input_plan_root.clone(),
-                physical_shape: item.native_diagnostics.input_plan_shape.clone(),
+                physical_root: native_diagnostics.input_plan_root.clone(),
+                physical_shape: native_diagnostics.input_plan_shape.clone(),
                 native_candidate_shape: Some(candidate.shape.to_string()),
                 outcome: NativeDataFusionPlanningOutcome::AcceptedReplaced,
                 reason_code: None,
                 unsupported_category: None,
+                join_diagnostics: join_diagnostics.clone(),
                 source_diagnostics: source_diagnostics.clone(),
                 post_native_plan_root: post_native_plan_root.clone(),
                 post_native_execution_path,
@@ -393,12 +450,13 @@ fn datafusion_planning_rows_for_item(item: NativeDataFusionPlanningWorkloadItem)
             },
             CandidateOutcome::Rejected { candidate, reason } => NativeDataFusionPlanningRow {
                 query_id: item.query_id.clone(),
-                physical_root: item.native_diagnostics.input_plan_root.clone(),
-                physical_shape: item.native_diagnostics.input_plan_shape.clone(),
+                physical_root: native_diagnostics.input_plan_root.clone(),
+                physical_shape: native_diagnostics.input_plan_shape.clone(),
                 native_candidate_shape: Some(candidate.shape.to_string()),
                 outcome: NativeDataFusionPlanningOutcome::RejectedBeforeExecution,
                 reason_code: Some(reason.code().to_string()),
-                unsupported_category: unsupported_category(item.planned_plan.as_ref(), *candidate, *reason),
+                unsupported_category: unsupported_category(planned_plan.as_ref(), candidate, *reason),
+                join_diagnostics: join_diagnostics.clone(),
                 source_diagnostics: source_diagnostics.clone(),
                 post_native_plan_root: post_native_plan_root.clone(),
                 post_native_execution_path,
@@ -406,6 +464,26 @@ fn datafusion_planning_rows_for_item(item: NativeDataFusionPlanningWorkloadItem)
             },
         })
         .collect()
+}
+
+fn datafusion_planning_row_for_planning_failure(
+    query_id: String,
+    failure: NativePlanningFailure,
+) -> NativeDataFusionPlanningRow {
+    NativeDataFusionPlanningRow {
+        query_id,
+        physical_root: "PlanningFailure".to_string(),
+        physical_shape: failure.stage,
+        native_candidate_shape: None,
+        outcome: NativeDataFusionPlanningOutcome::RejectedBeforeExecution,
+        reason_code: Some(failure.reason_code),
+        unsupported_category: Some("planning".to_string()),
+        join_diagnostics: Vec::new(),
+        source_diagnostics: Vec::new(),
+        post_native_plan_root: "PlanningFailure".to_string(),
+        post_native_execution_path: NativeDataFusionPostNativeExecutionPath::Cpu,
+        rejected_before_execution: true,
+    }
 }
 
 fn post_native_execution_path(plan: &dyn ExecutionPlan) -> NativeDataFusionPostNativeExecutionPath {
@@ -421,6 +499,47 @@ fn post_native_execution_path(plan: &dyn ExecutionPlan) -> NativeDataFusionPostN
 fn contains_gpu_island(plan: &dyn ExecutionPlan) -> bool {
     plan.as_any().downcast_ref::<CudfGpuIslandExec>().is_some()
         || plan.children().iter().any(|child| contains_gpu_island(child.as_ref()))
+}
+
+fn join_diagnostics(plan: &dyn ExecutionPlan) -> Vec<NativeJoinDiagnosticSummary> {
+    let mut diagnostics = Vec::new();
+    collect_join_diagnostics(plan, &mut diagnostics);
+    diagnostics
+}
+
+fn collect_join_diagnostics(plan: &dyn ExecutionPlan, diagnostics: &mut Vec<NativeJoinDiagnosticSummary>) {
+    if let Some(hash_join) = plan.as_any().downcast_ref::<HashJoinExec>() {
+        diagnostics.push(NativeJoinDiagnosticSummary {
+            operator: "HashJoinExec".to_string(),
+            join_type: stable_debug_value(hash_join.join_type()),
+            key_count: hash_join.on().len(),
+            key_shape: hash_join
+                .on()
+                .iter()
+                .map(|(left, right)| format!("{left}={right}"))
+                .collect::<Vec<_>>()
+                .join(","),
+            residual_predicate: hash_join.filter().is_some(),
+            null_equality: stable_debug_value(&hash_join.null_equality()),
+            build_side: "left".to_string(),
+            probe_side: "right".to_string(),
+        });
+    } else if let Some(nested_loop_join) = plan.as_any().downcast_ref::<NestedLoopJoinExec>() {
+        diagnostics.push(NativeJoinDiagnosticSummary {
+            operator: "NestedLoopJoinExec".to_string(),
+            join_type: stable_debug_value(nested_loop_join.join_type()),
+            key_count: 0,
+            key_shape: "none".to_string(),
+            residual_predicate: nested_loop_join.filter().is_some(),
+            null_equality: "not_applicable".to_string(),
+            build_side: "left".to_string(),
+            probe_side: "right".to_string(),
+        });
+    }
+
+    for child in plan.children() {
+        collect_join_diagnostics(child.as_ref(), diagnostics);
+    }
 }
 
 fn summarize_source_diagnostics(diagnostics: &NativeSourceDiagnostics) -> NativeSourceDiagnosticSummary {
@@ -443,6 +562,10 @@ fn summarize_source_diagnostics(diagnostics: &NativeSourceDiagnostics) -> Native
     }
 }
 
+fn stable_debug_value(value: &impl std::fmt::Debug) -> String {
+    format!("{value:?}").to_ascii_lowercase()
+}
+
 fn physical_plan_shape(plan: &dyn ExecutionPlan) -> String {
     let children = plan.children();
     if children.is_empty() {
@@ -462,7 +585,7 @@ fn physical_plan_shape(plan: &dyn ExecutionPlan) -> String {
     shape
 }
 
-fn unsupported_category(plan: &dyn ExecutionPlan, candidate: GpuCandidate, reason: FallbackReason) -> Option<String> {
+fn unsupported_category(plan: &dyn ExecutionPlan, candidate: &GpuCandidate, reason: FallbackReason) -> Option<String> {
     match reason {
         FallbackReason::UnsupportedExpression => first_unsupported_expression_category(plan)
             .or_else(|| {
@@ -475,7 +598,7 @@ fn unsupported_category(plan: &dyn ExecutionPlan, candidate: GpuCandidate, reaso
             })
             .or_else(|| Some("expression".to_string())),
         FallbackReason::UnsupportedOperator => first_aggregate_category(plan)
-            .or_else(|| first_unsupported_operator_category(plan, candidate.shape))
+            .or_else(|| first_unsupported_operator_category(plan, candidate.shape.as_str()))
             .or_else(|| first_global_aggregate_category(plan))
             .or_else(|| Some("operator_shape".to_string())),
         FallbackReason::UnsupportedType => {
@@ -540,10 +663,10 @@ fn stable_operator_identifier(name: &str) -> String {
 }
 
 fn first_aggregate_category(plan: &dyn ExecutionPlan) -> Option<String> {
-    if let Some(aggregate) = plan.as_any().downcast_ref::<AggregateExec>() {
-        if let Some(category) = aggregate_semantic_modifier_category(aggregate) {
-            return Some(category);
-        }
+    if let Some(aggregate) = plan.as_any().downcast_ref::<AggregateExec>()
+        && let Some(category) = aggregate_semantic_modifier_category(aggregate)
+    {
+        return Some(category);
     }
 
     for child in plan.children() {
@@ -759,10 +882,10 @@ fn expression_contains_interval_literal(expr: &Arc<dyn PhysicalExpr>) -> bool {
 fn interval_arithmetic_category(binary: &BinaryExpr) -> Option<String> {
     let left_interval = is_interval_literal_expr(binary.left());
     let right_interval = is_interval_literal_expr(binary.right());
-    let supported_shape = match (binary.op(), left_interval, right_interval) {
-        (Operator::Plus, true, false) | (Operator::Plus | Operator::Minus, false, true) => true,
-        _ => false,
-    };
+    let supported_shape = matches!(
+        (binary.op(), left_interval, right_interval),
+        (Operator::Plus, true, false) | (Operator::Plus | Operator::Minus, false, true)
+    );
     if !supported_shape {
         return Some("expression_interval_arithmetic".to_string());
     }
@@ -800,9 +923,14 @@ fn substring_arguments_are_supported(function: &ScalarFunctionExpr) -> bool {
         let Some(length) = literal_i32(&args[2]) else {
             return false;
         };
-        return length >= 0 && start.checked_add(length).is_some();
+        return length >= 0 && substring_stop_position(start, length).is_some();
     }
     true
+}
+
+fn substring_stop_position(start: i32, length: i32) -> Option<i32> {
+    let zero_based_start = start.checked_sub(1)?;
+    zero_based_start.checked_add(length)
 }
 
 fn extract_field_is_supported(function: &ScalarFunctionExpr) -> bool {
@@ -871,6 +999,32 @@ fn stable_identifier(value: &str) -> String {
     value.chars().map(|ch| if ch.is_ascii_alphanumeric() { ch.to_ascii_lowercase() } else { '_' }).collect()
 }
 
+fn format_join_diagnostics(diagnostics: &[NativeJoinDiagnosticSummary]) -> String {
+    if diagnostics.is_empty() {
+        return "none".to_string();
+    }
+
+    let mut output = String::new();
+    for (index, diagnostics) in diagnostics.iter().enumerate() {
+        if index > 0 {
+            output.push('|');
+        }
+        let _ = write!(
+            output,
+            "operator={},join_type={},key_count={},key_shape={},residual_predicate={},null_equality={},build_side={},probe_side={}",
+            diagnostics.operator,
+            diagnostics.join_type,
+            diagnostics.key_count,
+            diagnostics.key_shape.replace(['\t', '\n', '\r', '|'], " "),
+            diagnostics.residual_predicate,
+            diagnostics.null_equality,
+            diagnostics.build_side,
+            diagnostics.probe_side
+        );
+    }
+    output
+}
+
 fn format_source_diagnostics(diagnostics: &[NativeSourceDiagnosticSummary]) -> String {
     if diagnostics.is_empty() {
         return "none".to_string();
@@ -925,7 +1079,12 @@ fn write_tpch_dataset_metadata(output: &mut String, metadata: Option<&TpchDatase
     let _ = writeln!(output, "# tpch_dataset_file_count={}", metadata.file_count);
     let _ = writeln!(output, "# tpch_dataset_total_rows={}", metadata.total_rows);
     let _ = writeln!(output, "# tpch_dataset_total_bytes={}", metadata.total_bytes);
-    let _ = writeln!(output, "# tpch_dataset_fingerprint={}", metadata.fingerprint);
+    let _ = writeln!(output, "# tpch_dataset_metadata_fingerprint={}", metadata.metadata_fingerprint);
+    let _ = writeln!(
+        output,
+        "# tpch_dataset_content_fingerprint={}",
+        metadata.content_fingerprint.as_deref().unwrap_or("not_computed")
+    );
     let _ = writeln!(output, "# tpch_dataset_table_file_counts={}", metadata.table_file_counts());
     let _ = writeln!(output, "# tpch_dataset_table_row_counts={}", metadata.table_row_counts());
     let _ = writeln!(output, "# tpch_dataset_table_byte_sizes={}", metadata.table_byte_sizes());

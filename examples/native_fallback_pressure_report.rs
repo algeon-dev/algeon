@@ -63,7 +63,7 @@ async fn synthetic_workload_items(dir: &std::path::Path) -> Vec<NativeFallbackPr
         ("cast_rewrite", SQL_CAST_QUERY),
         ("avg_rewrite", SQL_AVG_QUERY),
         ("filtered_reject", SQL_FILTERED_QUERY),
-        ("modulo_reject", SQL_MODULO_QUERY),
+        ("modulo_rewrite", SQL_MODULO_QUERY),
     ];
     let mut items = Vec::with_capacity(workload.len());
     for (query_id, sql) in workload {

@@ -475,7 +475,9 @@ pub(super) fn native_local_parquet_read_columns(plan: &NativeQueryPlan) -> DataF
     plan.nodes()
         .iter()
         .find_map(|node| match &node.kind {
-            NativePlanNode::Source(NativeSourceNode::LocalParquet(source)) => Some(source.read_columns.clone()),
+            NativePlanNode::Source(source_node) => match source_node.as_ref() {
+                NativeSourceNode::LocalParquet(source) => Some(source.read_columns.clone()),
+            },
             _ => None,
         })
         .ok_or_else(|| plan_error("native query plan did not contain a local Parquet source"))

@@ -7,6 +7,7 @@ rust-version = "1.91.1"
 
 [workspace]
 members = [".", "crates/cudf-query-engine"]
+default-members = [".", "crates/cudf-query-engine"]
 resolver = "3"
 
 [workspace.dependencies]
@@ -24,4 +25,4 @@ parquet = { workspace = true }
 
 [dev-dependencies]
 serde_json = "1"
-tokio = { version = "1.52", features = ["macros", "rt-multi-thread"] }
+tokio = { version = "1.52", features = ["macros", "rt-multi-thread", "sync"] }
