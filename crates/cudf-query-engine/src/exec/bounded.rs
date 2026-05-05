@@ -67,6 +67,13 @@ fn execute_bounded_generic_query_plan(
     plan: &QueryPlan,
     metrics: &mut QueryMetrics,
 ) -> Result<QueryOutput> {
+    if plan.nodes().iter().any(|node| matches!(node.kind, PlanNode::Join(_))) {
+        return Err(unsupported_bounded_shape(
+            "bounded native join execution requires join-specific build/probe/hash/gather/output reservations",
+            "join_memory_reservations_not_implemented",
+        ));
+    }
+
     let MemoryControlPolicy::Bounded { device_budget_bytes, .. } = context.memory_control_policy() else {
         unreachable!("execute_bounded_query_plan is called only for bounded policies");
     };

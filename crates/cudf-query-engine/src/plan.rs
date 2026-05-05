@@ -201,7 +201,7 @@ impl QueryNode {
             ),
             PlanNode::Join(node) => writeln!(
                 f,
-                "{padding}{} Join left={} right={} type={} key_count={} residual={} null_equality={} build_side={} placement={} schema_behavior={}",
+                "{padding}{} Join left={} right={} type={} key_count={} residual={} null_equality={} build_side={} output_projection={} placement={} schema_behavior={}",
                 self.id,
                 node.inputs[0],
                 node.inputs[1],
@@ -210,6 +210,7 @@ impl QueryNode {
                 node.spec.residual_predicate.as_ref().map_or("none".to_string(), ToString::to_string),
                 node.spec.null_equality,
                 node.spec.build_side,
+                format_join_output_projection(&node.spec.output_projection),
                 self.facts.placement,
                 self.facts.schema_behavior
             ),
@@ -253,6 +254,14 @@ fn format_sort_exprs(expressions: &[SortExpr]) -> String {
             })
             .collect::<Vec<_>>()
             .join(",")
+    }
+}
+
+fn format_join_output_projection(projection: &[JoinOutputColumn]) -> String {
+    if projection.is_empty() {
+        "none".to_string()
+    } else {
+        projection.iter().map(ToString::to_string).collect::<Vec<_>>().join(",")
     }
 }
 
@@ -499,6 +508,7 @@ pub struct JoinSpec {
     pub join_type: JoinType,
     pub keys: Vec<JoinKey>,
     pub residual_predicate: Option<Expr>,
+    pub output_projection: Vec<JoinOutputColumn>,
     pub null_equality: JoinNullEquality,
     pub build_side: JoinSide,
 }
@@ -509,6 +519,7 @@ impl JoinSpec {
             join_type,
             keys,
             residual_predicate: None,
+            output_projection: Vec::new(),
             null_equality: JoinNullEquality::NullsDoNotMatch,
             build_side: JoinSide::Right,
         }
@@ -516,6 +527,11 @@ impl JoinSpec {
 
     pub fn with_residual_predicate(mut self, predicate: Expr) -> Self {
         self.residual_predicate = Some(predicate);
+        self
+    }
+
+    pub fn with_output_projection(mut self, output_projection: Vec<JoinOutputColumn>) -> Self {
+        self.output_projection = output_projection;
         self
     }
 
@@ -542,14 +558,41 @@ impl JoinKey {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JoinOutputColumn {
+    pub side: JoinSide,
+    pub column: ColumnRef,
+    pub output_name: String,
+}
+
+impl JoinOutputColumn {
+    pub fn new(side: JoinSide, column: ColumnRef, output_name: impl Into<String>) -> Self {
+        Self { side, column, output_name: output_name.into() }
+    }
+
+    pub fn left(column: ColumnRef, output_name: impl Into<String>) -> Self {
+        Self::new(JoinSide::Left, column, output_name)
+    }
+
+    pub fn right(column: ColumnRef, output_name: impl Into<String>) -> Self {
+        Self::new(JoinSide::Right, column, output_name)
+    }
+}
+
+impl fmt::Display for JoinOutputColumn {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}.{} AS {}", self.side, self.column.name(), self.output_name)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum JoinType {
     Inner,
     Left,
-    Right,
     Full,
-    Semi,
-    Anti,
+    LeftSemi,
+    LeftAnti,
+    Cross,
 }
 
 impl fmt::Display for JoinType {
@@ -557,10 +600,10 @@ impl fmt::Display for JoinType {
         f.write_str(match self {
             Self::Inner => "inner",
             Self::Left => "left",
-            Self::Right => "right",
             Self::Full => "full",
-            Self::Semi => "semi",
-            Self::Anti => "anti",
+            Self::LeftSemi => "left_semi",
+            Self::LeftAnti => "left_anti",
+            Self::Cross => "cross",
         })
     }
 }

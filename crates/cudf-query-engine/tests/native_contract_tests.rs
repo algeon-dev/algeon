@@ -13,8 +13,8 @@ use arrow::{
 use cudf::{DataType as CudfDataType, TypeId};
 use cudf_query_engine::{
     AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, BoundaryMetrics, ByteRangeDisposition, ColumnRef,
-    DataPlacement, ExecutionContext, Expr, JoinKey, JoinNullEquality, JoinOperatorMetrics, JoinSide, JoinSpec,
-    JoinType, LimitSpec, LiteralValue, LocalParquetFile, LocalParquetSource, MemoryControlPolicy,
+    DataPlacement, ExecutionContext, Expr, JoinKey, JoinNullEquality, JoinOperatorMetrics, JoinOutputColumn, JoinSide,
+    JoinSpec, JoinType, LimitSpec, LiteralValue, LocalParquetFile, LocalParquetSource, MemoryControlPolicy,
     MemoryReservationRequest, OperatorMetrics, PartitionColumn, PartitionColumnDisposition, PlanNode,
     PredicateDisposition, QueryError, QueryErrorCode, QueryErrorKind, QueryErrorStatus, QueryMetrics, QueryPlanBuilder,
     RejectedSourceFeature, ReservationKind, ResultSink, RetryFacts, SchemaBehavior, SchemaMappingDisposition, SortExpr,
@@ -387,6 +387,10 @@ fn native_plan_graph_represents_binary_join_with_same_named_inputs() {
             JoinType::Inner,
             vec![JoinKey::new(ColumnRef::input(0, "id", "left_id"), ColumnRef::input(1, "id", "right_id"))],
         )
+        .with_output_projection(vec![
+            JoinOutputColumn::left(ColumnRef::input(0, "id", "left_id"), "left_id"),
+            JoinOutputColumn::right(ColumnRef::input(1, "id", "right_id"), "right_id"),
+        ])
         .with_null_equality(JoinNullEquality::NullsDoNotMatch)
         .with_build_side(JoinSide::Right),
         Arc::clone(&output_schema),

@@ -15,10 +15,11 @@ use arrow::{
 };
 use cudf::DataFrame;
 use cudf_query_engine::{
-    AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, ExecutionContext, Expr, LimitSpec, LiteralValue,
-    LocalParquetFile, LocalParquetSource, MemoryControlPolicy, PartitionColumn, QueryErrorCode, QueryOutput,
-    QueryPlanBuilder, SortExpr, SortSpec, SourceChunkPlanningPolicy, SourceNode, ZERO_COLUMN_COUNT_COLUMN,
-    execute_query_plan, plan_local_parquet_source_chunks,
+    AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, ExecutionContext, Expr, JoinKey, JoinNullEquality,
+    JoinOutputColumn, JoinSide, JoinSpec, JoinType, LimitSpec, LiteralValue, LocalParquetFile, LocalParquetSource,
+    MemoryControlPolicy, PartitionColumn, QueryErrorCode, QueryOutput, QueryPlanBuilder, SortExpr, SortSpec,
+    SourceChunkPlanningPolicy, SourceNode, ZERO_COLUMN_COUNT_COLUMN, execute_query_plan,
+    plan_local_parquet_source_chunks,
 };
 use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
 
@@ -149,6 +150,160 @@ fn native_query_executes_multi_file_direct_parquet_source() {
     };
     assert_eq!(int32_array(batch, 0).values().as_ref(), &[3, 1]);
     assert_eq!(int64_array(batch, 1).values().as_ref(), &[808, 606]);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn native_query_executes_inner_equi_join_with_explicit_output_projection() {
+    let dir = unique_temp_dir("cudf-query-engine-native-inner-join");
+    let left_path = dir.join("lineitem.parquet");
+    let right_path = dir.join("orders.parquet");
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let left_schema = write_join_left_parquet(&runtime, &left_path);
+    let right_schema = write_join_right_parquet(&runtime, &right_path);
+    let output_schema = Arc::new(Schema::new(vec![
+        Field::new("order_id", DataType::Int32, false),
+        Field::new("qty", DataType::Int32, false),
+        Field::new("category", DataType::Utf8, false),
+    ]));
+
+    let left_source = LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(&left_path).with_file_size_bytes(fs::metadata(&left_path).unwrap().len())],
+        Arc::clone(&left_schema),
+        vec!["order_id".to_string(), "qty".to_string()],
+    );
+    let right_source = LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(&right_path).with_file_size_bytes(fs::metadata(&right_path).unwrap().len())],
+        Arc::clone(&right_schema),
+        vec!["order_id".to_string(), "category".to_string()],
+    );
+
+    let mut builder = QueryPlanBuilder::new();
+    let left = builder.add_source(SourceNode::LocalParquet(left_source));
+    let right = builder.add_source(SourceNode::LocalParquet(right_source));
+    let join = builder.add_join(
+        left,
+        right,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(
+                cudf_query_engine::ColumnRef::input(0, "order_id", "left_order_id"),
+                cudf_query_engine::ColumnRef::input(1, "order_id", "right_order_id"),
+            )],
+        )
+        .with_output_projection(vec![
+            JoinOutputColumn::left(cudf_query_engine::ColumnRef::input(0, "order_id", "order_id"), "order_id"),
+            JoinOutputColumn::left(cudf_query_engine::ColumnRef::input(0, "qty", "qty"), "qty"),
+            JoinOutputColumn::right(cudf_query_engine::ColumnRef::input(1, "category", "category"), "category"),
+        ])
+        .with_null_equality(JoinNullEquality::NullsDoNotMatch)
+        .with_build_side(JoinSide::Right),
+        Arc::clone(&output_schema),
+    );
+    let sort = builder.add_sort(
+        join,
+        SortSpec::new(vec![
+            SortExpr::new(Expr::column("order_id"), false, false),
+            SortExpr::new(Expr::column("qty"), false, false),
+        ]),
+        Arc::clone(&output_schema),
+    );
+    let plan = builder.finish_with_host_sink(sort);
+
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+    let result = execute_query_plan(&context, &plan).unwrap();
+    let metrics = result.metrics();
+    assert_eq!(metrics.parquet_files, 2);
+    assert_eq!(metrics.input_batches, 2);
+    assert_eq!(metrics.input_rows, 7);
+    assert_eq!(metrics.boundary.host_to_device_uploads, 0);
+    assert_eq!(metrics.boundary.device_to_host_materializations, 1);
+    let join_metrics =
+        metrics.operators.iter().find_map(|operator| operator.join.as_ref()).expect("join metrics should be recorded");
+    assert_eq!(join_metrics.join_type, "inner");
+    assert_eq!(join_metrics.key_count, 1);
+    assert_eq!(join_metrics.build_side, "right");
+    assert_eq!(join_metrics.probe_side, "left");
+    assert_eq!(join_metrics.build_rows, 3);
+    assert_eq!(join_metrics.probe_rows, 4);
+    assert_eq!(join_metrics.output_rows, 3);
+    assert!(join_metrics.output_bytes > 0);
+
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    assert_eq!(batch.num_rows(), 3);
+    assert_eq!(int32_array(batch, 0).values().as_ref(), &[2, 2, 3]);
+    assert_eq!(int32_array(batch, 1).values().as_ref(), &[20, 25, 30]);
+    assert_eq!(string_array(batch, 2).iter().collect::<Vec<_>>(), vec![Some("two"), Some("two"), Some("three")]);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn native_query_executes_inner_join_when_output_projection_omits_keys() {
+    let dir = unique_temp_dir("cudf-query-engine-native-inner-join-without-key-output");
+    let left_path = dir.join("lineitem.parquet");
+    let right_path = dir.join("orders.parquet");
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let left_schema = write_join_left_parquet(&runtime, &left_path);
+    let right_schema = write_join_right_parquet(&runtime, &right_path);
+    let output_schema = Arc::new(Schema::new(vec![
+        Field::new("qty", DataType::Int32, false),
+        Field::new("category", DataType::Utf8, false),
+    ]));
+
+    let left_source = LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(&left_path).with_file_size_bytes(fs::metadata(&left_path).unwrap().len())],
+        Arc::clone(&left_schema),
+        vec!["order_id".to_string(), "qty".to_string()],
+    );
+    let right_source = LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(&right_path).with_file_size_bytes(fs::metadata(&right_path).unwrap().len())],
+        Arc::clone(&right_schema),
+        vec!["order_id".to_string(), "category".to_string()],
+    );
+
+    let mut builder = QueryPlanBuilder::new();
+    let left = builder.add_source(SourceNode::LocalParquet(left_source));
+    let right = builder.add_source(SourceNode::LocalParquet(right_source));
+    let join = builder.add_join(
+        left,
+        right,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(
+                cudf_query_engine::ColumnRef::input(0, "order_id", "left_order_id"),
+                cudf_query_engine::ColumnRef::input(1, "order_id", "right_order_id"),
+            )],
+        )
+        .with_output_projection(vec![
+            JoinOutputColumn::left(cudf_query_engine::ColumnRef::input(0, "qty", "qty"), "qty"),
+            JoinOutputColumn::right(cudf_query_engine::ColumnRef::input(1, "category", "category"), "category"),
+        ])
+        .with_null_equality(JoinNullEquality::NullsDoNotMatch)
+        .with_build_side(JoinSide::Right),
+        Arc::clone(&output_schema),
+    );
+    let sort = builder.add_sort(
+        join,
+        SortSpec::new(vec![SortExpr::new(Expr::column("qty"), false, false)]),
+        Arc::clone(&output_schema),
+    );
+    let plan = builder.finish_with_host_sink(sort);
+
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+    let result = execute_query_plan(&context, &plan).unwrap();
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    assert_eq!(batch.num_rows(), 3);
+    assert_eq!(batch.num_columns(), 2);
+    assert_eq!(batch.schema().field(0).name(), "qty");
+    assert_eq!(batch.schema().field(1).name(), "category");
+    assert_eq!(int32_array(batch, 0).values().as_ref(), &[20, 25, 30]);
+    assert_eq!(string_array(batch, 1).iter().collect::<Vec<_>>(), vec![Some("two"), Some("two"), Some("three")]);
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -2325,6 +2480,34 @@ fn write_input_parquet(runtime: &cudf::Runtime, path: &std::path::Path) -> Arc<S
             Arc::new(Int64Array::from(vec![100, 200, 300, 400])),
             Arc::new(Int64Array::from(vec![1, 2, 3, 4])),
         ],
+    )
+    .unwrap();
+    DataFrame::from_record_batch(runtime, &batch).unwrap().write_parquet(path).unwrap();
+    schema
+}
+
+fn write_join_left_parquet(runtime: &cudf::Runtime, path: &std::path::Path) -> Arc<Schema> {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("order_id", DataType::Int32, false),
+        Field::new("qty", DataType::Int32, false),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![Arc::new(Int32Array::from(vec![1, 2, 2, 3])), Arc::new(Int32Array::from(vec![10, 20, 25, 30]))],
+    )
+    .unwrap();
+    DataFrame::from_record_batch(runtime, &batch).unwrap().write_parquet(path).unwrap();
+    schema
+}
+
+fn write_join_right_parquet(runtime: &cudf::Runtime, path: &std::path::Path) -> Arc<Schema> {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("order_id", DataType::Int32, false),
+        Field::new("category", DataType::Utf8, false),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![Arc::new(Int32Array::from(vec![2, 3, 4])), Arc::new(StringArray::from(vec!["two", "three", "four"]))],
     )
     .unwrap();
     DataFrame::from_record_batch(runtime, &batch).unwrap().write_parquet(path).unwrap();

@@ -14,6 +14,7 @@ use cudf::{
 };
 
 mod bounded;
+mod join;
 mod lowering;
 mod materialize;
 mod operators;
@@ -27,6 +28,7 @@ pub use types::{ExecutionMode, GpuDataFrame, QueryExecutionResult, QueryOutput};
 
 use self::{
     bounded::*,
+    join::*,
     lowering::*,
     materialize::*,
     operators::*,
@@ -40,7 +42,10 @@ use crate::{
     error::{QueryError, QueryErrorCode, Result},
     expr::{AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, Expr, LimitSpec, LiteralValue, SortSpec},
     metrics::QueryMetrics,
-    plan::{AggregateNode, FilterNode, LimitNode, NodeId, PlanNode, ProjectionNode, QueryPlan, ResultSink, SortNode},
+    plan::{
+        AggregateNode, FilterNode, JoinNode, LimitNode, NodeId, PlanNode, ProjectionNode, QueryPlan, ResultSink,
+        SortNode,
+    },
     runtime::{ExecutionContext, MemoryControlPolicy, MemoryReservationRequest, ReservationKind, RetryFacts},
     source::{
         ByteRangeDisposition, LocalParquetFile, LocalParquetSource, PartitionColumn, PartitionColumnDisposition,
@@ -98,23 +103,11 @@ fn execute_node(
             let input = execute_node(context, plan, limit.input, metrics)?;
             execute_limit(context, limit, input, metrics)
         },
-        PlanNode::Join(join) => Err(QueryError::new(
-            QueryErrorCode::UnsupportedPlanShape,
-            "cudf_query_engine.join.execute",
-            "native join execution is not implemented yet",
-        )
-        .with_fact("join_type", join.spec.join_type)
-        .with_fact("key_count", join.spec.keys.len())
-        .with_fact("residual_predicate", join.spec.residual_predicate.is_some())
-        .with_fact("null_equality", join.spec.null_equality)
-        .with_fact("build_side", join.spec.build_side)
-        .with_fact(
-            "probe_side",
-            match join.spec.build_side {
-                crate::plan::JoinSide::Left => crate::plan::JoinSide::Right,
-                crate::plan::JoinSide::Right => crate::plan::JoinSide::Left,
-            },
-        )),
+        PlanNode::Join(join) => {
+            let left = execute_node(context, plan, join.inputs[0], metrics)?;
+            let right = execute_node(context, plan, join.inputs[1], metrics)?;
+            execute_join(context, node.id, join, left, right, metrics)
+        },
     }?;
 
     record_device_memory_observation(&frame, metrics)?;
