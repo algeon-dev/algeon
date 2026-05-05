@@ -69,7 +69,7 @@ fn execute_bounded_generic_query_plan(
 ) -> Result<QueryOutput> {
     if plan.nodes().iter().any(|node| matches!(node.kind, PlanNode::Join(_))) {
         return Err(unsupported_bounded_shape(
-            "bounded native join execution requires join-specific build/probe/hash/gather/output reservations",
+            "bounded native join execution requires join-specific build/probe/hash/gather/output reservations and cudf-rs hash-table byte observability",
             "join_memory_reservations_not_implemented",
         ));
     }
@@ -78,7 +78,8 @@ fn execute_bounded_generic_query_plan(
         unreachable!("execute_bounded_query_plan is called only for bounded policies");
     };
     let mut reservations = ReservationTracker::new(device_budget_bytes);
-    let frame = execute_node(context, plan, plan.sink().input(), metrics)?;
+    let mut scratch = ExecutionScratch::default();
+    let frame = execute_node(context, plan, plan.sink().input(), &mut scratch, metrics)?;
     let frame_bytes = observe_device_memory_bytes(&frame, metrics)?;
     let reservation = reservations.try_reserve(
         MemoryReservationRequest::new(ReservationKind::OperatorOutput, frame_bytes, reservations.budget())

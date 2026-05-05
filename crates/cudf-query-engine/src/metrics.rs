@@ -31,6 +31,12 @@ pub struct QueryMetrics {
     pub retry_count: u64,
     pub retry_resource_exhausted_count: u64,
     pub retry_reservation_failure_count: u64,
+    /// Number of reusable cuDF hash-join artifacts built during this query.
+    pub hash_join_build_count: u64,
+    /// Query-scoped reusable hash-join cache hits.
+    pub hash_join_cache_hits: u64,
+    /// Query-scoped reusable hash-join cache misses.
+    pub hash_join_cache_misses: u64,
     pub parquet_files: u64,
     pub parquet_bytes_known: u64,
     pub row_groups_selected: u64,
@@ -105,6 +111,18 @@ impl QueryMetrics {
         self.retry_reservation_failure_count = self.retry_reservation_failure_count.saturating_add(1);
     }
 
+    pub fn record_hash_join_cache_hit(&mut self) {
+        self.hash_join_cache_hits = self.hash_join_cache_hits.saturating_add(1);
+    }
+
+    pub fn record_hash_join_cache_miss(&mut self) {
+        self.hash_join_cache_misses = self.hash_join_cache_misses.saturating_add(1);
+    }
+
+    pub fn record_hash_join_build(&mut self) {
+        self.hash_join_build_count = self.hash_join_build_count.saturating_add(1);
+    }
+
     pub fn record_partial_aggregate(&mut self, rows: u64) {
         self.partial_aggregate_count = self.partial_aggregate_count.saturating_add(1);
         self.partial_aggregate_rows = self.partial_aggregate_rows.saturating_add(rows);
@@ -148,6 +166,10 @@ pub struct JoinOperatorMetrics {
     pub build_bytes: u64,
     pub probe_rows: u64,
     pub probe_bytes: u64,
+    /// Bytes owned by the cuDF hash table when directly observable.
+    ///
+    /// This remains `0` until cudf-rs exposes hash-table memory observability;
+    /// callers must not treat it as an estimate.
     pub hash_table_bytes: u64,
     pub output_rows: u64,
     pub output_bytes: u64,

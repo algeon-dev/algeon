@@ -18,6 +18,7 @@ impl ExecutionMode {
     }
 }
 
+#[derive(Clone)]
 pub struct GpuDataFrame {
     frame: DataFrame,
     placement: ExecutionPlacement,

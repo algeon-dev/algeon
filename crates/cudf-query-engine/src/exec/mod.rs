@@ -1,6 +1,6 @@
 //! Native query execution.
 
-use std::{cell::Cell, rc::Rc, sync::Arc, time::Instant};
+use std::{cell::Cell, collections::HashMap, rc::Rc, sync::Arc, time::Instant};
 
 use arrow::{
     array::Array,
@@ -8,7 +8,8 @@ use arrow::{
     record_batch::RecordBatch,
 };
 use cudf::{
-    AggSpec as CudfAggSpec, DataFrame, ExecutionOverrides, GroupByAgg, GroupByOptions, SortOptions as CudfSortOptions,
+    AggSpec as CudfAggSpec, DataFrame, DataFrameHashJoin, ExecutionOverrides, GroupByAgg, GroupByOptions,
+    SortOptions as CudfSortOptions,
     frame::dataframe::{InfoDetail, ParquetReadOptions},
     ops::{col, lit},
 };
@@ -43,8 +44,8 @@ use crate::{
     expr::{AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, Expr, LimitSpec, LiteralValue, SortSpec},
     metrics::QueryMetrics,
     plan::{
-        AggregateNode, FilterNode, JoinNode, LimitNode, NodeId, PlanNode, ProjectionNode, QueryPlan, ResultSink,
-        SortNode,
+        AggregateNode, FilterNode, JoinNode, JoinNullEquality, LimitNode, NodeId, PlanNode, ProjectionNode, QueryPlan,
+        ResultSink, SortNode,
     },
     runtime::{ExecutionContext, MemoryControlPolicy, MemoryReservationRequest, ReservationKind, RetryFacts},
     source::{
@@ -53,6 +54,39 @@ use crate::{
     },
 };
 
+/// Per-query execution state for unbounded native execution.
+///
+/// `node_results` memoizes every materialized node output for the duration of
+/// one query so DAG-shaped plans reuse device-resident frames instead of
+/// re-reading or recomputing shared subplans. Entries are released together when
+/// `execute_query_plan` returns; there is intentionally no intra-query eviction
+/// policy yet.
+///
+/// `hash_join_cache` memoizes reusable cuDF hash-join artifacts for repeated
+/// probes against the same build node, build keys, and null-equality contract.
+/// The cache is scoped to this scratch object and is released at query end. It
+/// is deliberately absent from bounded join execution until cudf-rs exposes
+/// honest hash-table byte observability and the engine can reserve build,
+/// probe, gather, and output memory before constructing join artifacts.
+#[derive(Default)]
+pub(super) struct ExecutionScratch {
+    node_results: HashMap<NodeId, GpuDataFrame>,
+    hash_join_cache: HashMap<HashJoinCacheKey, DataFrameHashJoin>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(super) struct HashJoinCacheKey {
+    build_node: NodeId,
+    build_keys: Vec<String>,
+    null_equality: JoinNullEquality,
+}
+
+impl HashJoinCacheKey {
+    pub(super) fn new(build_node: NodeId, build_keys: Vec<String>, null_equality: JoinNullEquality) -> Self {
+        Self { build_node, build_keys, null_equality }
+    }
+}
+
 pub fn execute_query_plan(context: &ExecutionContext, plan: &QueryPlan) -> Result<ExecutionResult> {
     validate_query_plan(plan)?;
     let mut metrics =
@@ -60,7 +94,8 @@ pub fn execute_query_plan(context: &ExecutionContext, plan: &QueryPlan) -> Resul
     let output = if context.memory_control_policy().is_bounded() {
         execute_bounded_query_plan(context, plan, &mut metrics)?
     } else {
-        let frame = execute_node(context, plan, plan.sink().input(), &mut metrics)?;
+        let mut scratch = ExecutionScratch::default();
+        let frame = execute_node(context, plan, plan.sink().input(), &mut scratch, &mut metrics)?;
         match plan.sink() {
             ResultSink::GpuResident { .. } => Output::GpuResident(frame),
             ResultSink::HostArrow { schema, .. } => {
@@ -75,8 +110,13 @@ fn execute_node(
     context: &ExecutionContext,
     plan: &QueryPlan,
     id: NodeId,
+    scratch: &mut ExecutionScratch,
     metrics: &mut QueryMetrics,
 ) -> Result<types::GpuDataFrame> {
+    if let Some(frame) = scratch.node_results.get(&id) {
+        return Ok(frame.clone());
+    }
+
     let node = plan.node(id).ok_or_else(|| invalid_node_reference(id, "query plan references a missing node"))?;
 
     let frame = match &node.kind {
@@ -84,32 +124,33 @@ fn execute_node(
             crate::source::SourceNode::LocalParquet(source) => read_local_parquet_source(context, source, metrics),
         },
         PlanNode::Filter(filter) => {
-            let input = execute_node(context, plan, filter.input, metrics)?;
+            let input = execute_node(context, plan, filter.input, scratch, metrics)?;
             execute_filter(context, filter, input, metrics)
         },
         PlanNode::Projection(projection) => {
-            let input = execute_node(context, plan, projection.input, metrics)?;
+            let input = execute_node(context, plan, projection.input, scratch, metrics)?;
             execute_projection(context, projection, input, &node.facts.output_schema, metrics)
         },
         PlanNode::Aggregate(aggregate) => {
-            let input = execute_node(context, plan, aggregate.input, metrics)?;
+            let input = execute_node(context, plan, aggregate.input, scratch, metrics)?;
             execute_aggregate(context, aggregate, input, &node.facts.output_schema, metrics)
         },
         PlanNode::Sort(sort) => {
-            let input = execute_node(context, plan, sort.input, metrics)?;
+            let input = execute_node(context, plan, sort.input, scratch, metrics)?;
             execute_sort(context, sort, input, metrics)
         },
         PlanNode::Limit(limit) => {
-            let input = execute_node(context, plan, limit.input, metrics)?;
+            let input = execute_node(context, plan, limit.input, scratch, metrics)?;
             execute_limit(context, limit, input, metrics)
         },
         PlanNode::Join(join) => {
-            let left = execute_node(context, plan, join.inputs[0], metrics)?;
-            let right = execute_node(context, plan, join.inputs[1], metrics)?;
-            execute_join(context, node.id, join, left, right, metrics)
+            let left = execute_node(context, plan, join.inputs[0], scratch, metrics)?;
+            let right = execute_node(context, plan, join.inputs[1], scratch, metrics)?;
+            execute_join(context, node.id, join, left, right, scratch, metrics)
         },
     }?;
 
     record_device_memory_observation(&frame, metrics)?;
+    scratch.node_results.insert(id, frame.clone());
     Ok(frame)
 }

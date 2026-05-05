@@ -165,28 +165,48 @@ fn validate_join_capability(
     right_available: &BTreeSet<String>,
     output_schema: &SchemaRef,
 ) -> Result<()> {
-    if join.spec.join_type != JoinType::Inner {
+    if !matches!(
+        join.spec.join_type,
+        JoinType::Inner | JoinType::Left | JoinType::Full | JoinType::LeftSemi | JoinType::LeftAnti | JoinType::Cross
+    ) {
         return Err(QueryError::new(
             QueryErrorCode::UnsupportedPlanShape,
             "cudf_query_engine.join.validate",
-            "native join execution currently supports only inner equi joins",
+            "native join execution currently supports inner, left, full, left semi, left anti, and cross joins",
         )
         .with_fact("join_type", join.spec.join_type));
     }
-    if join.spec.keys.is_empty() {
+    if join.spec.join_type == JoinType::Cross && !join.spec.keys.is_empty() {
         return Err(QueryError::new(
             QueryErrorCode::InvalidPlan,
             "cudf_query_engine.join.validate",
-            "native join requires at least one equality key",
+            "native cross join must not carry equality keys",
+        )
+        .with_fact("key_count", join.spec.keys.len()));
+    }
+    if join.spec.join_type != JoinType::Cross && join.spec.keys.is_empty() && join.spec.residual_predicate.is_none() {
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "cudf_query_engine.join.validate",
+            "native join requires equality keys or a residual predicate",
         ));
     }
-    if join.spec.residual_predicate.is_some() {
+    if join.spec.join_type == JoinType::Cross && join.spec.residual_predicate.is_some() {
         return Err(QueryError::new(
             QueryErrorCode::UnsupportedPlanShape,
             "cudf_query_engine.join.validate",
-            "native join execution does not yet support residual predicates",
+            "native cross join execution does not support residual predicates; use conditional join IR instead",
         )
         .with_fact("join_type", join.spec.join_type));
+    }
+    if join.spec.join_type == JoinType::Left && join.spec.build_side != JoinSide::Right {
+        return Err(QueryError::new(
+            QueryErrorCode::UnsupportedPlanShape,
+            "cudf_query_engine.join.validate",
+            "native reusable hash left join execution requires the right side to be the build side",
+        )
+        .with_fact("join_type", join.spec.join_type)
+        .with_fact("build_side", join.spec.build_side));
     }
 
     for key in &join.spec.keys {
@@ -196,7 +216,14 @@ fn validate_join_capability(
         let right_type = validate_column(key.right.name(), right_schema, right_available)?;
         require_comparable_types(&left_type, &right_type)?;
     }
+    if let Some(predicate) = &join.spec.residual_predicate {
+        let predicate_type =
+            validate_join_residual_expr(predicate, left_schema, left_available, right_schema, right_available)?;
+        require_boolean(&predicate_type, "join residual predicate")?;
+        validate_join_residual_column_sides(predicate)?;
+    }
 
+    validate_join_type_projection(join)?;
     validate_join_output_projection(
         &join.spec.output_projection,
         left_schema,
@@ -205,6 +232,26 @@ fn validate_join_capability(
         right_available,
         output_schema,
     )
+}
+
+fn validate_join_type_projection(join: &JoinNode) -> Result<()> {
+    if !matches!(join.spec.join_type, JoinType::LeftSemi | JoinType::LeftAnti) {
+        return Ok(());
+    }
+
+    if let Some(output) = join.spec.output_projection.iter().find(|column| column.side == JoinSide::Right) {
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "cudf_query_engine.join.validate",
+            "left semi and left anti joins can only project left-side output columns",
+        )
+        .with_fact("join_type", join.spec.join_type)
+        .with_fact("side", output.side)
+        .with_fact("column", output.column.name())
+        .with_fact("output_name", output.output_name.as_str()));
+    }
+
+    Ok(())
 }
 
 fn validate_join_column_ref(column: &ColumnRef, side: JoinSide) -> Result<()> {
@@ -283,6 +330,140 @@ fn validate_join_output_projection(
         }
     }
     Ok(())
+}
+
+fn validate_join_residual_column_sides(expr: &Expr) -> Result<()> {
+    let mut left = false;
+    let mut right = false;
+    collect_join_residual_sides(expr, &mut left, &mut right)?;
+    if !left || !right {
+        return Err(QueryError::new(
+            QueryErrorCode::UnsupportedExpression,
+            "cudf_query_engine.join.validate_residual",
+            "native join residual predicates must reference at least one column from each input",
+        )
+        .with_fact("expression", expr)
+        .with_fact("references_left", left)
+        .with_fact("references_right", right));
+    }
+    Ok(())
+}
+
+fn collect_join_residual_sides(expr: &Expr, left: &mut bool, right: &mut bool) -> Result<()> {
+    match expr {
+        Expr::Column(column) => match column.qualifier() {
+            Some(ColumnQualifier::Input { index: 0 }) => {
+                *left = true;
+                Ok(())
+            },
+            Some(ColumnQualifier::Input { index: 1 }) => {
+                *right = true;
+                Ok(())
+            },
+            qualifier => Err(QueryError::new(
+                QueryErrorCode::UnsupportedExpression,
+                "cudf_query_engine.join.validate_residual",
+                "join residual column must be input-qualified",
+            )
+            .with_fact("column", column.name())
+            .with_fact("qualifier", qualifier.map(ToString::to_string).unwrap_or_else(|| "none".to_string()))),
+        },
+        Expr::Literal(_) => Ok(()),
+        Expr::Not(inner) | Expr::IsNull(inner) | Expr::IsNotNull(inner) | Expr::Alias { expr: inner, .. } => {
+            collect_join_residual_sides(inner, left, right)
+        },
+        Expr::Binary { left: lhs, right: rhs, .. } => {
+            collect_join_residual_sides(lhs, left, right)?;
+            collect_join_residual_sides(rhs, left, right)
+        },
+        Expr::Cast { .. }
+        | Expr::Like { .. }
+        | Expr::Substring { .. }
+        | Expr::InList { .. }
+        | Expr::Case { .. }
+        | Expr::Extract { .. } => Err(QueryError::new(
+            QueryErrorCode::UnsupportedExpression,
+            "cudf_query_engine.join.validate_residual",
+            "native join residual predicates do not yet support this expression family",
+        )
+        .with_fact("expression", expr)),
+    }
+}
+
+fn validate_join_residual_expr(
+    expr: &Expr,
+    left_schema: &SchemaRef,
+    left_available: &BTreeSet<String>,
+    right_schema: &SchemaRef,
+    right_available: &BTreeSet<String>,
+) -> Result<ArrowDataType> {
+    match expr {
+        Expr::Column(column) => match column.qualifier() {
+            Some(ColumnQualifier::Input { index: 0 }) => validate_column(column.name(), left_schema, left_available),
+            Some(ColumnQualifier::Input { index: 1 }) => validate_column(column.name(), right_schema, right_available),
+            qualifier => Err(QueryError::new(
+                QueryErrorCode::UnsupportedExpression,
+                "cudf_query_engine.join.validate_residual",
+                "join residual column must be input-qualified",
+            )
+            .with_fact("column", column.name())
+            .with_fact("qualifier", qualifier.map(ToString::to_string).unwrap_or_else(|| "none".to_string()))),
+        },
+        Expr::Literal(value) => validate_literal(value),
+        Expr::Not(expr) => {
+            let data_type =
+                validate_join_residual_expr(expr, left_schema, left_available, right_schema, right_available)?;
+            require_boolean(&data_type, "join residual NOT argument")?;
+            Ok(ArrowDataType::Boolean)
+        },
+        Expr::IsNull(expr) | Expr::IsNotNull(expr) => {
+            validate_join_residual_expr(expr, left_schema, left_available, right_schema, right_available)?;
+            Ok(ArrowDataType::Boolean)
+        },
+        Expr::Binary { left, op, right } => {
+            let left_type =
+                validate_join_residual_expr(left, left_schema, left_available, right_schema, right_available)?;
+            let right_type =
+                validate_join_residual_expr(right, left_schema, left_available, right_schema, right_available)?;
+            match op {
+                BinaryOp::Add | BinaryOp::Subtract | BinaryOp::Multiply | BinaryOp::Divide => {
+                    require_arithmetic_type(&left_type, "join residual arithmetic left operand")?;
+                    require_arithmetic_type(&right_type, "join residual arithmetic right operand")?;
+                    require_compatible_types(&left_type, &right_type, "join residual arithmetic operands")?;
+                    Ok(left_type)
+                },
+                BinaryOp::Modulo => {
+                    require_integral_type(&left_type, "join residual modulo left operand")?;
+                    require_integral_type(&right_type, "join residual modulo right operand")?;
+                    require_compatible_types(&left_type, &right_type, "join residual modulo operands")?;
+                    Ok(left_type)
+                },
+                BinaryOp::Eq | BinaryOp::NotEq | BinaryOp::Lt | BinaryOp::LtEq | BinaryOp::Gt | BinaryOp::GtEq => {
+                    require_comparable_types(&left_type, &right_type)?;
+                    Ok(ArrowDataType::Boolean)
+                },
+                BinaryOp::And | BinaryOp::Or => {
+                    require_boolean(&left_type, "join residual logical left operand")?;
+                    require_boolean(&right_type, "join residual logical right operand")?;
+                    Ok(ArrowDataType::Boolean)
+                },
+            }
+        },
+        Expr::Alias { expr, .. } => {
+            validate_join_residual_expr(expr, left_schema, left_available, right_schema, right_available)
+        },
+        Expr::Cast { .. }
+        | Expr::Like { .. }
+        | Expr::Substring { .. }
+        | Expr::InList { .. }
+        | Expr::Case { .. }
+        | Expr::Extract { .. } => Err(QueryError::new(
+            QueryErrorCode::UnsupportedExpression,
+            "cudf_query_engine.join.validate_residual",
+            "native join residual predicates do not yet support this expression family",
+        )
+        .with_fact("expression", expr)),
+    }
 }
 
 fn input_node(plan: &QueryPlan, input: NodeId, consumer: NodeId) -> Result<&QueryNode> {
