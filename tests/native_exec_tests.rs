@@ -103,7 +103,7 @@ fn native_optimizer_rule_preserves_rejected_plan_for_downstream_fallback() {
     let dir = unique_temp_dir("datafusion-cudf-native-exec-optimizer-rejected");
     let path = dir.join("input.parquet");
     write_parquet_file(&path);
-    let plan = aggregate_sort_limit_plan(parquet_scan(&path), Operator::Modulo);
+    let plan = aggregate_sort_limit_plan(parquet_scan(&path), Operator::BitwiseAnd);
     let rule = CudfNativePhysicalOptimizerRule::new(native_optimizer_config());
 
     let optimized = rule.optimize(plan, &ConfigOptions::default()).unwrap();

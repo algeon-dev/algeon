@@ -517,6 +517,14 @@ pub(super) fn partition_value_series(
         LiteralValue::Duration { raw, unit } => {
             context.runtime().duration_raw_scalar(*raw, timestamp_unit_to_cudf_resolution(unit))
         },
+        LiteralValue::IntervalMonthDayNano { .. } => {
+            return Err(QueryError::new(
+                QueryErrorCode::UnsupportedType,
+                "cudf_query_engine.local_parquet_source.partition_value",
+                "interval partition values are not supported by native parquet sources",
+            )
+            .with_fact("partition_value", value));
+        },
         LiteralValue::Null(_) => unreachable!("typed null partition values are handled before scalar construction"),
     }
     .map_err(|error| {

@@ -42,7 +42,7 @@ use datafusion::{
     physical_expr::{
         LexOrdering, PhysicalExpr, PhysicalSortExpr,
         aggregate::{AggregateExprBuilder, AggregateFunctionExpr},
-        expressions::{CastExpr, NotExpr, TryCastExpr, binary, col, lit},
+        expressions::{CastExpr, NotExpr, TryCastExpr, binary, col, in_list, lit},
     },
     physical_plan::{
         ExecutionPlan,
@@ -230,7 +230,7 @@ fn parquet_row_level_access_plan_is_rejected_with_source_reason() {
 }
 
 #[test]
-fn unsupported_projection_expression_is_rejected_during_native_planning() {
+fn modulo_projection_expression_lowers_during_native_planning() {
     let dir = unique_temp_dir("datafusion-cudf-native-lowering-unsupported-expression");
     let path = dir.join("input.parquet");
     write_numeric_parquet_file(&path);
@@ -238,20 +238,28 @@ fn unsupported_projection_expression_is_rejected_during_native_planning() {
 
     let result = lower_physical_plan_to_native(plan);
 
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.plans.len(), 1);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn modulo_with_non_integral_operands_is_rejected_during_native_planning() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-modulo-float");
+    let path = dir.join("input.parquet");
+    write_float_measure_parquet_file(&path);
+    let plan = aggregate_sort_limit_plan(parquet_scan(&path), Operator::Modulo);
+
+    let result = lower_physical_plan_to_native(plan);
+
     assert!(result.plans.is_empty());
-    assert_eq!(result.rewritten_count(), 0);
-    assert_eq!(result.rejected_count(), 1);
-    assert_eq!(
+    assert_eq!(result.rejected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert!(matches!(
         result.report.outcomes()[0],
-        CandidateOutcome::Rejected {
-            candidate: datafusion_cudf::GpuCandidate::with_operator_count(
-                "LocalLimitExec(SortExec(AggregateExec(ProjectionExec(FilterExec(LocalParquetScan)))))",
-                2,
-                5,
-            ),
-            reason: FallbackReason::UnsupportedExpression,
-        },
-    );
+        CandidateOutcome::Rejected { reason: FallbackReason::UnsupportedType, .. }
+    ));
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -271,16 +279,7 @@ fn tpch_like_source_types_do_not_reject_native_planning() {
     let source = native_local_parquet_source(&result.plans[0]);
     assert_eq!(
         source.read_columns,
-        vec![
-            "amount".to_string(),
-            "event_ts".to_string(),
-            "key".to_string(),
-            "label".to_string(),
-            "m00".to_string(),
-            "m01".to_string(),
-            "payload".to_string(),
-            "shipdate".to_string()
-        ]
+        vec!["key".to_string(), "m00".to_string(), "m01".to_string(), "payload".to_string()]
     );
 
     fs::remove_dir_all(dir).unwrap();
@@ -655,7 +654,7 @@ fn parquet_partition_columns_without_literal_values_are_rejected_with_source_rea
 }
 
 #[test]
-fn parquet_binary_partition_columns_are_rejected_with_unsupported_type() {
+fn unused_parquet_binary_partition_columns_do_not_block_native_lowering() {
     let dir = unique_temp_dir("datafusion-cudf-native-lowering-partition-binary");
     let path = dir.join("input.parquet");
     write_numeric_parquet_file(&path);
@@ -668,20 +667,19 @@ fn parquet_binary_partition_columns_are_rejected_with_unsupported_type() {
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert!(result.plans.is_empty());
-    assert_eq!(result.rejected_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert!(matches!(
-        result.report.outcomes()[0],
-        CandidateOutcome::Rejected { reason: FallbackReason::UnsupportedType, .. }
-    ));
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.source_diagnostics.len(), 1);
-    assert_eq!(result.source_diagnostics[0].partition_column_disposition.as_str(), "rejected");
+    assert_eq!(result.source_diagnostics[0].partition_column_disposition.as_str(), "absent");
+    let source = native_local_parquet_source(&result.plans[0]);
+    assert!(source.partition_columns.is_empty());
+    assert!(source.files[0].partition_values.is_empty());
 
     fs::remove_dir_all(dir).unwrap();
 }
 
 #[test]
-fn parquet_utf8_partition_columns_are_represented_in_native_source_contract() {
+fn unused_parquet_utf8_partition_columns_are_not_represented_in_native_source_contract() {
     let dir = unique_temp_dir("datafusion-cudf-native-lowering-partition-utf8");
     let path = dir.join("input.parquet");
     write_numeric_parquet_file(&path);
@@ -697,18 +695,17 @@ fn parquet_utf8_partition_columns_are_represented_in_native_source_contract() {
     assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.source_diagnostics.len(), 1);
-    assert_eq!(result.source_diagnostics[0].partition_column_disposition.as_str(), "represented");
+    assert_eq!(result.source_diagnostics[0].partition_column_disposition.as_str(), "absent");
     assert!(result.source_diagnostics[0].rejected_features.is_empty());
     let source = native_local_parquet_source(&result.plans[0]);
-    assert_eq!(source.partition_columns.len(), 1);
-    assert_eq!(source.partition_columns[0].data_type, DataType::Utf8);
-    assert_eq!(source.files[0].partition_values, vec![LiteralValue::Utf8("2026".to_string())]);
+    assert!(source.partition_columns.is_empty());
+    assert!(source.files[0].partition_values.is_empty());
 
     fs::remove_dir_all(dir).unwrap();
 }
 
 #[test]
-fn parquet_utf8_view_partition_values_are_canonicalized_to_native_utf8_contract() {
+fn unused_parquet_utf8_view_partition_values_do_not_enter_native_source_contract() {
     let dir = unique_temp_dir("datafusion-cudf-native-lowering-partition-utf8-view");
     let path = dir.join("input.parquet");
     write_numeric_parquet_file(&path);
@@ -724,18 +721,17 @@ fn parquet_utf8_view_partition_values_are_canonicalized_to_native_utf8_contract(
     assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.source_diagnostics.len(), 1);
-    assert_eq!(result.source_diagnostics[0].partition_column_disposition.as_str(), "represented");
+    assert_eq!(result.source_diagnostics[0].partition_column_disposition.as_str(), "absent");
     assert!(result.source_diagnostics[0].rejected_features.is_empty());
     let source = native_local_parquet_source(&result.plans[0]);
-    assert_eq!(source.partition_columns.len(), 1);
-    assert_eq!(source.partition_columns[0].data_type, DataType::Utf8View);
-    assert_eq!(source.files[0].partition_values, vec![LiteralValue::Utf8("2026".to_string())]);
+    assert!(source.partition_columns.is_empty());
+    assert!(source.files[0].partition_values.is_empty());
 
     fs::remove_dir_all(dir).unwrap();
 }
 
 #[test]
-fn parquet_utf8_view_partition_typed_null_values_preserve_native_type_contract() {
+fn unused_parquet_utf8_view_partition_typed_null_values_do_not_enter_native_source_contract() {
     let dir = unique_temp_dir("datafusion-cudf-native-lowering-partition-utf8-view-null");
     let path = dir.join("input.parquet");
     write_numeric_parquet_file(&path);
@@ -751,18 +747,17 @@ fn parquet_utf8_view_partition_typed_null_values_preserve_native_type_contract()
     assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.source_diagnostics.len(), 1);
-    assert_eq!(result.source_diagnostics[0].partition_column_disposition.as_str(), "represented");
+    assert_eq!(result.source_diagnostics[0].partition_column_disposition.as_str(), "absent");
     assert!(result.source_diagnostics[0].rejected_features.is_empty());
     let source = native_local_parquet_source(&result.plans[0]);
-    assert_eq!(source.partition_columns.len(), 1);
-    assert_eq!(source.partition_columns[0].data_type, DataType::Utf8View);
-    assert_eq!(source.files[0].partition_values, vec![LiteralValue::Null(DataType::Utf8View)]);
+    assert!(source.partition_columns.is_empty());
+    assert!(source.files[0].partition_values.is_empty());
 
     fs::remove_dir_all(dir).unwrap();
 }
 
 #[test]
-fn parquet_sources_with_unsupported_binary_schema_fields_are_rejected_with_unsupported_type() {
+fn unused_unsupported_binary_schema_fields_do_not_block_native_lowering() {
     let dir = unique_temp_dir("datafusion-cudf-native-lowering-source-binary-schema");
     let path = dir.join("input.parquet");
     write_binary_schema_parquet_file(&path);
@@ -770,12 +765,31 @@ fn parquet_sources_with_unsupported_binary_schema_fields_are_rejected_with_unsup
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert!(result.plans.is_empty());
-    assert_eq!(result.rejected_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert!(matches!(
-        result.report.outcomes()[0],
-        CandidateOutcome::Rejected { reason: FallbackReason::UnsupportedType, .. }
-    ));
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    let source = native_local_parquet_source(&result.plans[0]);
+    assert!(!source.read_columns.contains(&"blob".to_string()));
+    assert!(source.schema.field_with_name("blob").is_err());
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn pushed_scan_projection_reads_only_downstream_required_columns() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-scan-projection-pruning");
+    let path = dir.join("input.parquet");
+    write_numeric_parquet_file(&path);
+    let scan = parquet_scan_with_projection_indices(&path, vec![0, 1, 2, 3]);
+    let plan = aggregate_sort_limit_plan_without_filter(scan, Operator::Plus);
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    let source = native_local_parquet_source(&result.plans[0]);
+    assert_eq!(source.read_columns, vec!["key".to_string(), "m00".to_string(), "m01".to_string()]);
+    assert!(!source.read_columns.contains(&"payload".to_string()));
+    assert_eq!(source.diagnostics.read_column_count, 3);
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -1295,7 +1309,7 @@ async fn direct_friendly_sql_filter_plan_lowers_when_scan_predicate_is_absent() 
     assert_eq!(candidate.shape, "SortExec(fetch)(ProjectionExec(AggregateExec(FilterExec(LocalParquetScan))))");
     assert_eq!(candidate.operator_count, 5);
     assert_eq!(result.plans.len(), 1);
-    assert_eq!(result.plans[0].node_count(), 7);
+    assert_eq!(result.plans[0].node_count(), 8);
     assert_eq!(result.source_diagnostics.len(), 1);
     assert!(result.source_diagnostics[0].direct_device_read);
     assert_eq!(result.source_diagnostics[0].predicate_disposition.as_str(), "absent");
@@ -1357,7 +1371,7 @@ fn explicit_numeric_cast_lowers_to_native_expr_and_reads_inner_column() {
     assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
     let projection = native_projection_exprs(&result.plans[0])
-        .iter()
+        .into_iter()
         .find(|expr| matches!(expr, Expr::Alias { alias, .. } if alias == "x00"))
         .expect("native plan should include x00 projection");
     assert!(matches!(
@@ -1375,10 +1389,7 @@ fn explicit_numeric_cast_lowers_to_native_expr_and_reads_inner_column() {
             )
     ));
     let source = native_local_parquet_source(&result.plans[0]);
-    assert_eq!(
-        source.read_columns,
-        vec!["key".to_string(), "m00".to_string(), "m01".to_string(), "payload".to_string()]
-    );
+    assert_eq!(source.read_columns, vec!["key".to_string(), "m00".to_string(), "payload".to_string()]);
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -1392,6 +1403,34 @@ fn try_cast_is_rejected_during_native_planning() {
     let scan_schema = scan.schema();
     let try_cast = Arc::new(TryCastExpr::new(col("payload", &scan_schema).unwrap(), DataType::Int64));
     let predicate = binary(try_cast, Operator::GtEq, lit(ScalarValue::Int64(Some(10))), &scan_schema).unwrap();
+    let plan = aggregate_sort_limit_plan_with_filter(scan, predicate, Operator::Plus);
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert!(result.plans.is_empty());
+    assert_eq!(result.rejected_count(), 1);
+    assert!(matches!(
+        result.report.outcomes()[0],
+        CandidateOutcome::Rejected { reason: FallbackReason::UnsupportedExpression, .. }
+    ));
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn in_list_with_null_literal_is_rejected_during_native_planning() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-in-list-null");
+    let path = dir.join("input.parquet");
+    write_numeric_parquet_file(&path);
+    let scan = parquet_scan(&path);
+    let scan_schema = scan.schema();
+    let predicate = in_list(
+        col("payload", &scan_schema).unwrap(),
+        vec![lit(ScalarValue::Int32(Some(10))), lit(ScalarValue::Int32(None))],
+        &false,
+        scan_schema.as_ref(),
+    )
+    .unwrap();
     let plan = aggregate_sort_limit_plan_with_filter(scan, predicate, Operator::Plus);
 
     let result = lower_physical_plan_to_native(plan);
@@ -1531,6 +1570,21 @@ fn parquet_scan(path: &std::path::Path) -> Arc<dyn ExecutionPlan> {
     let df =
         futures::executor::block_on(ctx.read_parquet(path.to_str().unwrap(), ParquetReadOptions::default())).unwrap();
     futures::executor::block_on(df.create_physical_plan()).unwrap()
+}
+
+fn parquet_scan_with_projection_indices(
+    path: &std::path::Path,
+    projected_indices: Vec<usize>,
+) -> Arc<dyn ExecutionPlan> {
+    let scan = parquet_scan(path);
+    let data_source = scan.as_any().downcast_ref::<DataSourceExec>().expect("parquet scan should be DataSourceExec");
+    let (file_scan, _parquet_source) =
+        data_source.downcast_to_file_source::<ParquetSource>().expect("parquet scan should use ParquetSource");
+    let file_scan = FileScanConfigBuilder::from(file_scan.clone())
+        .with_projection_indices(Some(projected_indices))
+        .unwrap()
+        .build();
+    DataSourceExec::from_data_source(file_scan)
 }
 
 async fn sql_benchmark_plan(path: &std::path::Path, config: SessionConfig) -> Arc<dyn ExecutionPlan> {
@@ -2104,14 +2158,14 @@ fn native_aggregate_exprs(plan: &cudf_query_engine::QueryPlan) -> &[cudf_query_e
         .expect("native plan should contain an aggregate node")
 }
 
-fn native_projection_exprs(plan: &cudf_query_engine::QueryPlan) -> &[Expr] {
+fn native_projection_exprs(plan: &cudf_query_engine::QueryPlan) -> Vec<&Expr> {
     plan.nodes()
         .iter()
-        .find_map(|node| match &node.kind {
-            PlanNode::Projection(projection) => Some(projection.expressions.as_slice()),
-            _ => None,
+        .flat_map(|node| match &node.kind {
+            PlanNode::Projection(projection) => projection.expressions.iter().collect::<Vec<_>>(),
+            _ => Vec::new(),
         })
-        .expect("native plan should contain a projection node")
+        .collect()
 }
 
 fn native_filter_expr(plan: &cudf_query_engine::QueryPlan) -> &Expr {

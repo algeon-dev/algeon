@@ -25,7 +25,8 @@ pub use exec::{
     validate_local_parquet_source,
 };
 pub use expr::{
-    AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, Expr, LimitSpec, LiteralValue, SortExpr, SortSpec,
+    AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, CaseWhen, DatePart, Expr, LimitSpec, LiteralValue,
+    SortExpr, SortSpec,
 };
 pub use metrics::{BoundaryMetrics, QueryMetrics};
 pub use plan::{

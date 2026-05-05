@@ -50,8 +50,8 @@ pub(super) fn execute_bounded_query_plan(
             debug_assert_eq!(reservations.reserved_bytes(), 0);
             Ok(QueryOutput::GpuResident(frame.frame))
         },
-        ResultSink::HostArrow { .. } => {
-            let output = materialize_bounded_to_host(frame, plan.sink().input(), &mut reservations, metrics)?;
+        ResultSink::HostArrow { schema, .. } => {
+            let output = materialize_bounded_to_host(frame, plan.sink().input(), schema, &mut reservations, metrics)?;
             debug_assert_eq!(reservations.reserved_bytes(), 0);
             Ok(QueryOutput::HostArrow(output))
         },
@@ -186,10 +186,13 @@ pub(super) fn execute_bounded_chunk_attempt(
 
     let chunk_operator_timer = Instant::now();
     let chunk_output = (|| {
+        for (projection, output_schema) in &bounded.pre_filter_projections {
+            frame = execute_projection(context, projection, frame, output_schema, metrics)?;
+        }
         if let Some(filter) = bounded.filter {
             frame = execute_filter(context, filter, frame, metrics)?;
         }
-        if let Some((projection, output_schema)) = bounded.projection {
+        for (projection, output_schema) in &bounded.post_filter_projections {
             frame = execute_projection(context, projection, frame, output_schema, metrics)?;
         }
         execute_partial_aggregate(context, bounded.aggregate.0, frame, metrics)
@@ -225,17 +228,40 @@ pub(super) fn execute_bounded_chunk_attempt(
     Ok(CommittedPartial { frame, reservation: partial_reservation })
 }
 
-#[derive(Clone, Copy)]
+type ProjectionStage<'a> = (&'a ProjectionNode, &'a arrow::datatypes::SchemaRef);
+
+#[derive(Clone)]
 pub(super) struct BoundedPlan<'a> {
     pub(super) source_id: NodeId,
     pub(super) source: &'a LocalParquetSource,
+    pub(super) pre_filter_projections: Vec<ProjectionStage<'a>>,
     pub(super) filter: Option<&'a FilterNode>,
-    pub(super) projection: Option<(&'a ProjectionNode, &'a arrow::datatypes::SchemaRef)>,
+    pub(super) post_filter_projections: Vec<ProjectionStage<'a>>,
     pub(super) aggregate_id: NodeId,
     pub(super) aggregate: (&'a AggregateNode, &'a arrow::datatypes::SchemaRef),
-    pub(super) post_aggregate_projection: Option<(&'a ProjectionNode, &'a arrow::datatypes::SchemaRef)>,
+    pub(super) post_aggregate_projection: Option<ProjectionStage<'a>>,
     pub(super) sort: Option<&'a SortNode>,
     pub(super) limit: Option<&'a LimitNode>,
+}
+
+fn take_projection_stack<'a>(
+    plan: &'a QueryPlan,
+    current: &mut NodeId,
+    missing_message: &'static str,
+) -> Result<Vec<ProjectionStage<'a>>> {
+    let mut projections = Vec::new();
+    loop {
+        let Some(node) = plan.node(*current) else {
+            return Err(invalid_node_reference(*current, missing_message));
+        };
+        let PlanNode::Projection(projection) = &node.kind else {
+            break;
+        };
+        projections.push((projection, &node.facts.output_schema));
+        *current = projection.input;
+    }
+    projections.reverse();
+    Ok(projections)
 }
 
 impl<'a> BoundedPlan<'a> {
@@ -288,16 +314,8 @@ impl<'a> BoundedPlan<'a> {
         };
         current = aggregate.input;
 
-        let projection = match plan.node(current) {
-            Some(node) => match &node.kind {
-                PlanNode::Projection(projection) => {
-                    current = projection.input;
-                    Some((projection, &node.facts.output_schema))
-                },
-                _ => None,
-            },
-            None => return Err(invalid_node_reference(current, "bounded query plan references a missing input node")),
-        };
+        let post_filter_projections =
+            take_projection_stack(plan, &mut current, "bounded query plan references a missing aggregate input node")?;
 
         let filter = match plan.node(current).map(|node| &node.kind) {
             Some(PlanNode::Filter(node)) => {
@@ -306,6 +324,9 @@ impl<'a> BoundedPlan<'a> {
             },
             _ => None,
         };
+
+        let pre_filter_projections =
+            take_projection_stack(plan, &mut current, "bounded query plan references a missing source input node")?;
 
         let source_node = plan
             .node(current)
@@ -320,8 +341,9 @@ impl<'a> BoundedPlan<'a> {
         Ok(Self {
             source_id: current,
             source,
+            pre_filter_projections,
             filter,
-            projection,
+            post_filter_projections,
             aggregate_id,
             aggregate: (aggregate, &aggregate_node.facts.output_schema),
             post_aggregate_projection,
@@ -335,7 +357,11 @@ impl<'a> BoundedPlan<'a> {
             lower_expr(&filter.predicate)?;
         }
 
-        if let Some((projection, output_schema)) = self.projection {
+        for (projection, output_schema) in &self.pre_filter_projections {
+            validate_projection_capability(projection, output_schema)?;
+        }
+
+        for (projection, output_schema) in &self.post_filter_projections {
             validate_projection_capability(projection, output_schema)?;
         }
 
@@ -1330,6 +1356,7 @@ pub(super) fn execute_final_aggregate(
     let overrides = execution_overrides(context);
     let mut output = frame
         .groupby(aggregate.key_columns.iter().map(String::as_str).collect::<Vec<_>>())
+        .options(GroupByOptions::builder().include_null_keys(true).build())
         .with_execution(&overrides)
         .agg(&aggregate.aggregations)
         .map_err(|error| {

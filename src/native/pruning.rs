@@ -17,8 +17,11 @@ use datafusion::{
         statistics::Statistics,
     },
     physical_expr::{
-        PhysicalExpr,
-        expressions::{BinaryExpr, Column, DynamicFilterPhysicalExpr, Literal},
+        PhysicalExpr, ScalarFunctionExpr,
+        expressions::{
+            BinaryExpr, CaseExpr, CastExpr, Column, DynamicFilterPhysicalExpr, InListExpr, IsNotNullExpr, IsNullExpr,
+            LikeExpr, Literal, NotExpr,
+        },
     },
     physical_plan::filter::FilterExec,
 };
@@ -149,7 +152,7 @@ pub(super) fn validate_pruning_only_parquet_predicate(
         };
     };
     validate_physical_expr(filter.predicate(), source_schema)?;
-    if physical_expr_eq(scan_predicate.as_ref(), filter.predicate().as_ref()) {
+    if scan_predicate_matches_filter(scan_predicate.as_ref(), filter.predicate().as_ref()) {
         Ok(())
     } else {
         Err(FallbackReason::NativeSourcePushedDownParquetPredicate)
@@ -164,6 +167,31 @@ fn scan_predicate_is_dynamic_filter_hint(expr: &dyn PhysicalExpr) -> bool {
         return matches!(binary.op(), Operator::And | Operator::Or)
             && scan_predicate_is_dynamic_filter_hint(binary.left().as_ref())
             && scan_predicate_is_dynamic_filter_hint(binary.right().as_ref());
+    }
+    false
+}
+
+fn scan_predicate_matches_filter(scan_predicate: &dyn PhysicalExpr, filter_predicate: &dyn PhysicalExpr) -> bool {
+    if physical_expr_eq(scan_predicate, filter_predicate) {
+        return true;
+    }
+    let Some(scan_binary) = scan_predicate.as_any().downcast_ref::<BinaryExpr>() else {
+        return false;
+    };
+    if !matches!(scan_binary.op(), Operator::And) {
+        return false;
+    }
+    if scan_predicate_is_dynamic_filter_hint(scan_binary.left().as_ref()) {
+        return scan_predicate_matches_filter(scan_binary.right().as_ref(), filter_predicate);
+    }
+    if scan_predicate_is_dynamic_filter_hint(scan_binary.right().as_ref()) {
+        return scan_predicate_matches_filter(scan_binary.left().as_ref(), filter_predicate);
+    }
+    if let Some(filter_binary) = filter_predicate.as_any().downcast_ref::<BinaryExpr>()
+        && matches!(filter_binary.op(), Operator::And)
+    {
+        return scan_predicate_matches_filter(scan_binary.left().as_ref(), filter_binary.left().as_ref())
+            && scan_predicate_matches_filter(scan_binary.right().as_ref(), filter_binary.right().as_ref());
     }
     false
 }
@@ -185,7 +213,71 @@ fn physical_expr_eq(left: &dyn PhysicalExpr, right: &dyn PhysicalExpr) -> bool {
             && physical_expr_eq(left.left().as_ref(), right.left().as_ref())
             && physical_expr_eq(left.right().as_ref(), right.right().as_ref());
     }
+    if let (Some(left), Some(right)) =
+        (left.as_any().downcast_ref::<NotExpr>(), right.as_any().downcast_ref::<NotExpr>())
+    {
+        return physical_expr_eq(left.arg().as_ref(), right.arg().as_ref());
+    }
+    if let (Some(left), Some(right)) =
+        (left.as_any().downcast_ref::<IsNullExpr>(), right.as_any().downcast_ref::<IsNullExpr>())
+    {
+        return physical_expr_eq(left.arg().as_ref(), right.arg().as_ref());
+    }
+    if let (Some(left), Some(right)) =
+        (left.as_any().downcast_ref::<IsNotNullExpr>(), right.as_any().downcast_ref::<IsNotNullExpr>())
+    {
+        return physical_expr_eq(left.arg().as_ref(), right.arg().as_ref());
+    }
+    if let (Some(left), Some(right)) =
+        (left.as_any().downcast_ref::<CastExpr>(), right.as_any().downcast_ref::<CastExpr>())
+    {
+        return left.cast_type() == right.cast_type() && physical_expr_eq(left.expr().as_ref(), right.expr().as_ref());
+    }
+    if let (Some(left), Some(right)) =
+        (left.as_any().downcast_ref::<LikeExpr>(), right.as_any().downcast_ref::<LikeExpr>())
+    {
+        return left.negated() == right.negated()
+            && left.case_insensitive() == right.case_insensitive()
+            && physical_expr_eq(left.expr().as_ref(), right.expr().as_ref())
+            && physical_expr_eq(left.pattern().as_ref(), right.pattern().as_ref());
+    }
+    if let (Some(left), Some(right)) =
+        (left.as_any().downcast_ref::<InListExpr>(), right.as_any().downcast_ref::<InListExpr>())
+    {
+        return left.negated() == right.negated()
+            && physical_expr_eq(left.expr().as_ref(), right.expr().as_ref())
+            && physical_expr_slices_eq(left.list(), right.list());
+    }
+    if let (Some(left), Some(right)) =
+        (left.as_any().downcast_ref::<CaseExpr>(), right.as_any().downcast_ref::<CaseExpr>())
+    {
+        return optional_physical_expr_eq(left.expr(), right.expr())
+            && left.when_then_expr().len() == right.when_then_expr().len()
+            && left.when_then_expr().iter().zip(right.when_then_expr()).all(|(left, right)| {
+                physical_expr_eq(left.0.as_ref(), right.0.as_ref())
+                    && physical_expr_eq(left.1.as_ref(), right.1.as_ref())
+            })
+            && optional_physical_expr_eq(left.else_expr(), right.else_expr());
+    }
+    if let (Some(left), Some(right)) =
+        (left.as_any().downcast_ref::<ScalarFunctionExpr>(), right.as_any().downcast_ref::<ScalarFunctionExpr>())
+    {
+        return left.name().eq_ignore_ascii_case(right.name()) && physical_expr_slices_eq(left.args(), right.args());
+    }
     false
+}
+
+fn optional_physical_expr_eq(left: Option<&Arc<dyn PhysicalExpr>>, right: Option<&Arc<dyn PhysicalExpr>>) -> bool {
+    match (left, right) {
+        (Some(left), Some(right)) => physical_expr_eq(left.as_ref(), right.as_ref()),
+        (None, None) => true,
+        _ => false,
+    }
+}
+
+fn physical_expr_slices_eq(left: &[Arc<dyn PhysicalExpr>], right: &[Arc<dyn PhysicalExpr>]) -> bool {
+    left.len() == right.len()
+        && left.iter().zip(right).all(|(left, right)| physical_expr_eq(left.as_ref(), right.as_ref()))
 }
 
 pub(super) fn metadata_row_group_selections(

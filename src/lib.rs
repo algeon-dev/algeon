@@ -44,6 +44,9 @@ pub use session::{
     cudf_physical_optimizer_rules_with_rule,
 };
 pub use tpch::{
-    TPCH_QUERIES, TPCH_QUERY_COUNT, TPCH_TABLES, TpchQuery, TpchWorkloadError, TpchWorkloadResult,
-    tpch_fallback_pressure_workload_items, tpch_query_ids, tpch_report_session_config, write_tiny_tpch_parquet_dataset,
+    CUDF_TPCH_GENERATION_COMMAND_ENV, CUDF_TPCH_PARQUET_DIR_ENV, CUDF_TPCH_SCALE_FACTOR_ENV, TPCH_QUERIES,
+    TPCH_QUERY_COUNT, TPCH_TABLES, TpchDatasetMetadata, TpchQuery, TpchTableMetadata, TpchWorkloadError,
+    TpchWorkloadResult, describe_tpch_dataset, external_tpch_dataset_metadata, prepare_tpch_report_dataset,
+    tiny_tpch_dataset_metadata, tpch_datafusion_planning_workload_items, tpch_fallback_pressure_workload_items,
+    tpch_native_optimizer_config, tpch_query_ids, tpch_report_session_config, write_tiny_tpch_parquet_dataset,
 };

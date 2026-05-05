@@ -16,8 +16,8 @@ use datafusion::{
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
 use datafusion_cudf::{
-    NativeFallbackPressureReport, NativeFallbackPressureWorkloadItem, tpch_fallback_pressure_workload_items,
-    tpch_report_session_config, write_tiny_tpch_parquet_dataset,
+    NativeFallbackPressureReport, NativeFallbackPressureWorkloadItem, TpchDatasetMetadata, prepare_tpch_report_dataset,
+    tpch_fallback_pressure_workload_items, tpch_report_session_config,
 };
 
 #[tokio::main]
@@ -25,9 +25,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let dir = unique_temp_dir("datafusion-cudf-native-fallback-pressure");
     let workload = std::env::var("CUDF_NATIVE_FALLBACK_PRESSURE_WORKLOAD").unwrap_or_else(|_| "synthetic".to_string());
 
-    let items = match workload.as_str() {
-        "synthetic" => synthetic_workload_items(&dir).await,
-        "tpch" => tpch_workload_items(&dir).await?,
+    let (items, tpch_dataset) = match workload.as_str() {
+        "synthetic" => (synthetic_workload_items(&dir).await, None),
+        "tpch" => {
+            let TpchWorkload { items, metadata } = tpch_workload_items(&dir).await?;
+            (items, Some(metadata))
+        },
         value => {
             return Err(format!(
                 "unsupported CUDF_NATIVE_FALLBACK_PRESSURE_WORKLOAD={value}; expected synthetic or tpch"
@@ -36,7 +39,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
         },
     };
 
-    let report = NativeFallbackPressureReport::collect(items);
+    let mut report = NativeFallbackPressureReport::collect(items);
+    if let Some(metadata) = tpch_dataset {
+        report = report.with_tpch_dataset_metadata(metadata);
+    }
     print!("{}", report.to_tsv());
 
     fs::remove_dir_all(dir)?;
@@ -73,11 +79,15 @@ async fn synthetic_workload_items(dir: &std::path::Path) -> Vec<NativeFallbackPr
     items
 }
 
-async fn tpch_workload_items(
-    dir: &std::path::Path,
-) -> datafusion_cudf::TpchWorkloadResult<Vec<NativeFallbackPressureWorkloadItem>> {
-    write_tiny_tpch_parquet_dataset(dir)?;
-    tpch_fallback_pressure_workload_items(dir, tpch_report_session_config()).await
+async fn tpch_workload_items(dir: &std::path::Path) -> datafusion_cudf::TpchWorkloadResult<TpchWorkload> {
+    let (root, metadata) = prepare_tpch_report_dataset(dir)?;
+    let items = tpch_fallback_pressure_workload_items(&root, tpch_report_session_config()).await?;
+    Ok(TpchWorkload { items, metadata })
+}
+
+struct TpchWorkload {
+    items: Vec<NativeFallbackPressureWorkloadItem>,
+    metadata: TpchDatasetMetadata,
 }
 
 async fn sql_plan(path: &std::path::Path, config: SessionConfig, sql: &str) -> Arc<dyn ExecutionPlan> {

@@ -37,8 +37,8 @@ use datafusion_cudf::{
     NATIVE_FALLBACK_PRESSURE_TSV_HEADER, NATIVE_FALLBACK_PRESSURE_TSV_SCHEMA_VERSION, NativeCudfExecutionConfig,
     NativeDataFusionPlanningOutcome, NativeDataFusionPlanningReport, NativeDataFusionPostNativeExecutionPath,
     NativeFallbackPressureOutcome, NativeFallbackPressureReport, NativeFallbackPressureWorkloadItem, TPCH_QUERY_COUNT,
-    TPCH_TABLES, tpch_fallback_pressure_workload_items, tpch_query_ids, tpch_report_session_config,
-    write_tiny_tpch_parquet_dataset,
+    TPCH_TABLES, tiny_tpch_dataset_metadata, tpch_datafusion_planning_workload_items,
+    tpch_fallback_pressure_workload_items, tpch_query_ids, tpch_report_session_config, write_tiny_tpch_parquet_dataset,
 };
 
 #[tokio::test]
@@ -53,7 +53,7 @@ async fn native_fallback_pressure_report_summarizes_workload_outcomes() {
         ("cast_rewrite", SQL_CAST_QUERY),
         ("avg_rewrite", SQL_AVG_QUERY),
         ("filtered_reject", SQL_FILTERED_QUERY),
-        ("modulo_reject", SQL_MODULO_QUERY),
+        ("modulo_rewrite", SQL_MODULO_QUERY),
     ];
     let mut items = Vec::with_capacity(workload.len());
     for (query_id, sql) in workload {
@@ -83,8 +83,8 @@ async fn native_fallback_pressure_report_summarizes_workload_outcomes() {
     let report = NativeFallbackPressureReport::collect(items);
 
     assert_eq!(report.rows.len(), 11);
-    assert_eq!(report.rewritten_count(), 6);
-    assert_eq!(report.rejected_count(), 5);
+    assert_eq!(report.rewritten_count(), 7);
+    assert_eq!(report.rejected_count(), 4);
 
     let rewritten = report_row(&report, "sum_rewrite");
     assert_eq!(rewritten.outcome, NativeFallbackPressureOutcome::Rewritten);
@@ -156,13 +156,14 @@ async fn native_fallback_pressure_report_summarizes_workload_outcomes() {
 
     let distributed_distinct_avg = report_row(&report, "distributed_distinct_avg_reject");
     assert_eq!(distributed_distinct_avg.reason_code.as_deref(), Some("unsupported_operator"));
-    assert_eq!(distributed_distinct_avg.unsupported_category.as_deref(), Some("aggregate_avg"));
+    assert_eq!(distributed_distinct_avg.unsupported_category.as_deref(), Some("operator_sortpreservingmerge"));
     assert!(distributed_distinct_avg.rejected_before_execution);
 
-    let modulo = report_row(&report, "modulo_reject");
-    assert_eq!(modulo.reason_code.as_deref(), Some("unsupported_expression"));
-    assert_eq!(modulo.unsupported_category.as_deref(), Some("expression_binary_modulo"));
-    assert!(modulo.rejected_before_execution);
+    let modulo = report_row(&report, "modulo_rewrite");
+    assert_eq!(modulo.outcome, NativeFallbackPressureOutcome::Rewritten);
+    assert_eq!(modulo.reason_code, None);
+    assert_eq!(modulo.unsupported_category, None);
+    assert!(!modulo.rejected_before_execution);
 
     let planning_failure = report_row(&report, "q00_planning_failure");
     assert_eq!(planning_failure.physical_root, "PlanningFailure");
@@ -175,12 +176,12 @@ async fn native_fallback_pressure_report_summarizes_workload_outcomes() {
     assert!(planning_failure.rejected_before_execution);
 
     let text = report.to_tsv();
-    assert_eq!(NATIVE_FALLBACK_PRESSURE_TSV_SCHEMA_VERSION, 2);
+    assert_eq!(NATIVE_FALLBACK_PRESSURE_TSV_SCHEMA_VERSION, 3);
     assert_eq!(
         NATIVE_FALLBACK_PRESSURE_TSV_HEADER,
         "query_id\tphysical_root\tphysical_shape\tnative_candidate_shape\toutcome\treason_code\tunsupported_category\tsource_diagnostics\trejected_before_execution"
     );
-    assert!(text.starts_with("# native_fallback_pressure_tsv_schema_version=2\n"));
+    assert!(text.starts_with("# native_fallback_pressure_tsv_schema_version=3\n"));
     assert!(text.contains(&format!("{NATIVE_FALLBACK_PRESSURE_TSV_HEADER}\n")));
     assert!(text.contains("sum_rewrite\tSortExec"));
     assert!(text.contains("not_rewrite\tSortExec"));
@@ -191,9 +192,8 @@ async fn native_fallback_pressure_report_summarizes_workload_outcomes() {
     assert!(text.contains("zero_column_count=represented"));
     assert!(text.contains("\trewritten\tnone\tnone\t"));
     assert!(text.contains("\tnative_distributed_aggregate_unsupported\taggregate_filter\t"));
-    assert!(text.contains("\tunsupported_operator\taggregate_avg\t"));
+    assert!(text.contains("\tunsupported_operator\toperator_sortpreservingmerge\t"));
     assert!(text.contains("\tunsupported_expression\taggregate_filter\t"));
-    assert!(text.contains("\tunsupported_expression\texpression_binary_modulo\t"));
     assert!(text.contains("q00_planning_failure\tPlanningFailure\tsql_to_logical_plan\tnone\trejected\tsql_planning_failed\tplanning\tnone\ttrue"));
 
     fs::remove_dir_all(dir).unwrap();
@@ -292,12 +292,12 @@ async fn native_datafusion_planning_report_summarizes_session_optimizer_outcomes
     assert!(rejected_row.source_diagnostics[0].direct_device_read);
 
     let text = accepted.to_tsv();
-    assert_eq!(NATIVE_DATAFUSION_PLANNING_TSV_SCHEMA_VERSION, 2);
+    assert_eq!(NATIVE_DATAFUSION_PLANNING_TSV_SCHEMA_VERSION, 3);
     assert_eq!(
         NATIVE_DATAFUSION_PLANNING_TSV_HEADER,
         "query_id\tphysical_root\tphysical_shape\tnative_candidate_shape\toutcome\treason_code\tunsupported_category\tsource_diagnostics\tpost_native_plan_root\tpost_native_execution_path\trejected_before_execution"
     );
-    assert!(text.starts_with("# native_datafusion_planning_tsv_schema_version=2\n"));
+    assert!(text.starts_with("# native_datafusion_planning_tsv_schema_version=3\n"));
     assert!(text.contains(&format!("{NATIVE_DATAFUSION_PLANNING_TSV_HEADER}\n")));
     assert!(text.contains("sum_session\t"));
     assert!(text.contains("\taccepted_replaced\tnone\tnone\t"));
@@ -314,6 +314,22 @@ async fn tpch_workload_builder_generates_stable_query_items() {
     for table in TPCH_TABLES {
         assert!(dir.join(format!("{table}.parquet")).exists());
     }
+    let metadata = tiny_tpch_dataset_metadata(&dir).unwrap();
+    assert_eq!(metadata.scale_factor, "tiny");
+    assert_eq!(metadata.provenance, "generated_tiny");
+    assert_eq!(metadata.generation_command, "datafusion-cudf::write_tiny_tpch_parquet_dataset");
+    assert_eq!(metadata.table_count, TPCH_TABLES.len());
+    assert_eq!(metadata.file_count, TPCH_TABLES.len());
+    assert_eq!(metadata.total_rows, 26);
+    assert_eq!(
+        metadata.table_row_counts(),
+        "customer=3,lineitem=3,nation=5,orders=3,part=3,partsupp=3,region=3,supplier=3"
+    );
+    assert_eq!(
+        metadata.table_file_counts(),
+        "customer=1,lineitem=1,nation=1,orders=1,part=1,partsupp=1,region=1,supplier=1"
+    );
+    assert!(metadata.fingerprint.starts_with("metadata-fnv1a64:"));
 
     let items = tpch_fallback_pressure_workload_items(&dir, tpch_report_session_config()).await.unwrap();
     let actual_ids = items.iter().map(|item| item.query_id.as_str()).collect::<Vec<_>>();
@@ -330,8 +346,9 @@ async fn tpch_fallback_pressure_report_emits_one_pre_execution_reject_per_query(
     let dir = unique_temp_dir("datafusion-cudf-tpch-fallback-pressure");
     write_tiny_tpch_parquet_dataset(&dir).unwrap();
 
+    let metadata = tiny_tpch_dataset_metadata(&dir).unwrap();
     let items = tpch_fallback_pressure_workload_items(&dir, tpch_report_session_config()).await.unwrap();
-    let report = NativeFallbackPressureReport::collect(items);
+    let report = NativeFallbackPressureReport::collect(items).with_tpch_dataset_metadata(metadata.clone());
 
     assert_eq!(report.rows.len(), TPCH_QUERY_COUNT);
     assert_eq!(report.rewritten_count(), 0);
@@ -340,16 +357,34 @@ async fn tpch_fallback_pressure_report_emits_one_pre_execution_reject_per_query(
     let actual_ids = report.rows.iter().map(|row| row.query_id.as_str()).collect::<Vec<_>>();
     let expected_ids = tpch_query_ids().collect::<Vec<_>>();
     assert_eq!(actual_ids, expected_ids);
+    assert_eq!(TPCH_FALLBACK_PRESSURE_BASELINE.len(), TPCH_QUERY_COUNT);
 
-    for row in &report.rows {
-        assert_eq!(row.outcome, NativeFallbackPressureOutcome::Rejected);
-        assert!(row.reason_code.is_some(), "missing reason code for {}", row.query_id);
-        assert!(row.unsupported_category.is_some(), "missing unsupported category for {}", row.query_id);
+    for (row, expected) in report.rows.iter().zip(TPCH_FALLBACK_PRESSURE_BASELINE) {
+        assert_eq!(row.query_id, expected.query_id);
+        assert_eq!(row.outcome, expected.outcome, "unexpected outcome for {}", row.query_id);
+        assert_eq!(row.reason_code.as_deref(), Some(expected.reason_code), "unexpected reason for {}", row.query_id);
+        assert_eq!(
+            row.unsupported_category.as_deref(),
+            Some(expected.unsupported_category),
+            "unexpected unsupported category for {}",
+            row.query_id
+        );
         assert!(row.rejected_before_execution, "{} should reject before native execution", row.query_id);
     }
 
     let text = report.to_tsv();
-    assert!(text.starts_with("# native_fallback_pressure_tsv_schema_version=2\n"));
+    assert!(text.starts_with("# native_fallback_pressure_tsv_schema_version=3\n"));
+    assert!(text.contains("# tpch_dataset_scale_factor=tiny\n"));
+    assert!(text.contains("# tpch_dataset_provenance=generated_tiny\n"));
+    assert!(text.contains("# tpch_dataset_generation_command=datafusion-cudf::write_tiny_tpch_parquet_dataset\n"));
+    assert!(text.contains("# tpch_dataset_table_count=8\n"));
+    assert!(text.contains("# tpch_dataset_file_count=8\n"));
+    assert!(text.contains("# tpch_dataset_total_rows=26\n"));
+    assert!(text.contains(&format!("# tpch_dataset_total_bytes={}\n", metadata.total_bytes)));
+    assert!(text.contains(&format!("# tpch_dataset_fingerprint={}\n", metadata.fingerprint)));
+    assert!(text.contains("# tpch_dataset_table_file_counts=customer=1,lineitem=1,nation=1,orders=1,part=1,partsupp=1,region=1,supplier=1\n"));
+    assert!(text.contains("# tpch_dataset_table_row_counts=customer=3,lineitem=3,nation=5,orders=3,part=3,partsupp=3,region=3,supplier=3\n"));
+    assert!(text.contains(&format!("# tpch_dataset_table_byte_sizes={}\n", metadata.table_byte_sizes())));
     assert!(text.contains(&format!("{NATIVE_FALLBACK_PRESSURE_TSV_HEADER}\n")));
     assert!(text.contains("q01\t"));
     assert!(text.contains("q22\t"));
@@ -357,6 +392,186 @@ async fn tpch_fallback_pressure_report_emits_one_pre_execution_reject_per_query(
 
     fs::remove_dir_all(dir).unwrap();
 }
+
+#[tokio::test]
+async fn tpch_datafusion_planning_report_emits_one_stable_row_per_query() {
+    let dir = unique_temp_dir("datafusion-cudf-tpch-datafusion-planning");
+    write_tiny_tpch_parquet_dataset(&dir).unwrap();
+
+    let metadata = tiny_tpch_dataset_metadata(&dir).unwrap();
+    let items = tpch_datafusion_planning_workload_items(&dir, tpch_report_session_config()).await.unwrap();
+    let report = NativeDataFusionPlanningReport::collect(items).with_tpch_dataset_metadata(metadata.clone());
+
+    assert_eq!(report.rows.len(), TPCH_QUERY_COUNT);
+    assert_eq!(report.accepted_count(), 0);
+    assert_eq!(report.rejected_count(), TPCH_QUERY_COUNT);
+
+    let actual_ids = report.rows.iter().map(|row| row.query_id.as_str()).collect::<Vec<_>>();
+    let expected_ids = tpch_query_ids().collect::<Vec<_>>();
+    assert_eq!(actual_ids, expected_ids);
+
+    for row in &report.rows {
+        assert_eq!(row.outcome, NativeDataFusionPlanningOutcome::RejectedBeforeExecution);
+        assert_eq!(row.reason_code.as_deref(), Some("unsupported_operator"));
+        assert!(row.unsupported_category.is_some(), "missing unsupported category for {}", row.query_id);
+        assert_ne!(row.post_native_execution_path, NativeDataFusionPostNativeExecutionPath::Native);
+        assert!(row.rejected_before_execution, "{} should reject before native execution", row.query_id);
+    }
+
+    let text = report.to_tsv();
+    assert!(text.starts_with("# native_datafusion_planning_tsv_schema_version=3\n"));
+    assert!(text.contains("# tpch_dataset_scale_factor=tiny\n"));
+    assert!(text.contains(&format!("# tpch_dataset_fingerprint={}\n", metadata.fingerprint)));
+    assert!(text.contains(&format!("{NATIVE_DATAFUSION_PLANNING_TSV_HEADER}\n")));
+    assert!(text.contains("q01\t"));
+    assert!(text.contains("q22\t"));
+    assert!(!text.contains("\taccepted_replaced\t"));
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[derive(Debug)]
+struct TpchFallbackPressureBaseline {
+    query_id: &'static str,
+    outcome: NativeFallbackPressureOutcome,
+    reason_code: &'static str,
+    unsupported_category: &'static str,
+}
+
+const TPCH_FALLBACK_PRESSURE_BASELINE: &[TpchFallbackPressureBaseline] = &[
+    TpchFallbackPressureBaseline {
+        query_id: "q01",
+        outcome: NativeFallbackPressureOutcome::Rejected,
+        reason_code: "unsupported_operator",
+        unsupported_category: "operator_shape",
+    },
+    TpchFallbackPressureBaseline {
+        query_id: "q02",
+        outcome: NativeFallbackPressureOutcome::Rejected,
+        reason_code: "unsupported_operator",
+        unsupported_category: "operator_sort_topk",
+    },
+    TpchFallbackPressureBaseline {
+        query_id: "q03",
+        outcome: NativeFallbackPressureOutcome::Rejected,
+        reason_code: "unsupported_operator",
+        unsupported_category: "operator_sort_topk",
+    },
+    TpchFallbackPressureBaseline {
+        query_id: "q04",
+        outcome: NativeFallbackPressureOutcome::Rejected,
+        reason_code: "unsupported_operator",
+        unsupported_category: "operator_hashjoin",
+    },
+    TpchFallbackPressureBaseline {
+        query_id: "q05",
+        outcome: NativeFallbackPressureOutcome::Rejected,
+        reason_code: "unsupported_operator",
+        unsupported_category: "operator_hashjoin",
+    },
+    TpchFallbackPressureBaseline {
+        query_id: "q06",
+        outcome: NativeFallbackPressureOutcome::Rejected,
+        reason_code: "unsupported_operator",
+        unsupported_category: "aggregate_global",
+    },
+    TpchFallbackPressureBaseline {
+        query_id: "q07",
+        outcome: NativeFallbackPressureOutcome::Rejected,
+        reason_code: "unsupported_operator",
+        unsupported_category: "operator_hashjoin",
+    },
+    TpchFallbackPressureBaseline {
+        query_id: "q08",
+        outcome: NativeFallbackPressureOutcome::Rejected,
+        reason_code: "unsupported_operator",
+        unsupported_category: "operator_hashjoin",
+    },
+    TpchFallbackPressureBaseline {
+        query_id: "q09",
+        outcome: NativeFallbackPressureOutcome::Rejected,
+        reason_code: "unsupported_operator",
+        unsupported_category: "operator_hashjoin",
+    },
+    TpchFallbackPressureBaseline {
+        query_id: "q10",
+        outcome: NativeFallbackPressureOutcome::Rejected,
+        reason_code: "unsupported_operator",
+        unsupported_category: "operator_sort_topk",
+    },
+    TpchFallbackPressureBaseline {
+        query_id: "q11",
+        outcome: NativeFallbackPressureOutcome::Rejected,
+        reason_code: "unsupported_operator",
+        unsupported_category: "operator_nestedloopjoin",
+    },
+    TpchFallbackPressureBaseline {
+        query_id: "q12",
+        outcome: NativeFallbackPressureOutcome::Rejected,
+        reason_code: "unsupported_operator",
+        unsupported_category: "operator_hashjoin",
+    },
+    TpchFallbackPressureBaseline {
+        query_id: "q13",
+        outcome: NativeFallbackPressureOutcome::Rejected,
+        reason_code: "unsupported_operator",
+        unsupported_category: "operator_hashjoin",
+    },
+    TpchFallbackPressureBaseline {
+        query_id: "q14",
+        outcome: NativeFallbackPressureOutcome::Rejected,
+        reason_code: "unsupported_operator",
+        unsupported_category: "operator_hashjoin",
+    },
+    TpchFallbackPressureBaseline {
+        query_id: "q15",
+        outcome: NativeFallbackPressureOutcome::Rejected,
+        reason_code: "unsupported_operator",
+        unsupported_category: "operator_hashjoin",
+    },
+    TpchFallbackPressureBaseline {
+        query_id: "q16",
+        outcome: NativeFallbackPressureOutcome::Rejected,
+        reason_code: "unsupported_operator",
+        unsupported_category: "operator_hashjoin",
+    },
+    TpchFallbackPressureBaseline {
+        query_id: "q17",
+        outcome: NativeFallbackPressureOutcome::Rejected,
+        reason_code: "unsupported_operator",
+        unsupported_category: "operator_hashjoin",
+    },
+    TpchFallbackPressureBaseline {
+        query_id: "q18",
+        outcome: NativeFallbackPressureOutcome::Rejected,
+        reason_code: "unsupported_operator",
+        unsupported_category: "operator_sort_topk",
+    },
+    TpchFallbackPressureBaseline {
+        query_id: "q19",
+        outcome: NativeFallbackPressureOutcome::Rejected,
+        reason_code: "unsupported_operator",
+        unsupported_category: "operator_hashjoin",
+    },
+    TpchFallbackPressureBaseline {
+        query_id: "q20",
+        outcome: NativeFallbackPressureOutcome::Rejected,
+        reason_code: "unsupported_operator",
+        unsupported_category: "operator_hashjoin",
+    },
+    TpchFallbackPressureBaseline {
+        query_id: "q21",
+        outcome: NativeFallbackPressureOutcome::Rejected,
+        reason_code: "unsupported_operator",
+        unsupported_category: "operator_sort_topk",
+    },
+    TpchFallbackPressureBaseline {
+        query_id: "q22",
+        outcome: NativeFallbackPressureOutcome::Rejected,
+        reason_code: "unsupported_operator",
+        unsupported_category: "operator_nestedloopjoin",
+    },
+];
 
 fn report_row<'a>(
     report: &'a NativeFallbackPressureReport,

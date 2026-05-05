@@ -146,29 +146,33 @@ impl QueryNode {
             ),
             PlanNode::Projection(node) => writeln!(
                 f,
-                "{padding}{} Projection input={} expr_count={} placement={} schema_behavior={}",
+                "{padding}{} Projection input={} expr_count={} expressions={} placement={} schema_behavior={}",
                 self.id,
                 node.input,
                 node.expressions.len(),
+                format_exprs(&node.expressions),
                 self.facts.placement,
                 self.facts.schema_behavior
             ),
             PlanNode::Aggregate(node) => writeln!(
                 f,
-                "{padding}{} Aggregate input={} group_count={} aggr_count={} placement={} schema_behavior={}",
+                "{padding}{} Aggregate input={} group_count={} aggr_count={} groups={} aggrs={} placement={} schema_behavior={}",
                 self.id,
                 node.input,
                 node.spec.group_exprs.len(),
                 node.spec.aggr_exprs.len(),
+                format_exprs(&node.spec.group_exprs),
+                format_aggregate_exprs(&node.spec.aggr_exprs),
                 self.facts.placement,
                 self.facts.schema_behavior
             ),
             PlanNode::Sort(node) => writeln!(
                 f,
-                "{padding}{} Sort input={} expr_count={} placement={} schema_behavior={}",
+                "{padding}{} Sort input={} expr_count={} expressions={} placement={} schema_behavior={}",
                 self.id,
                 node.input,
                 node.spec.expressions.len(),
+                format_sort_exprs(&node.spec.expressions),
                 self.facts.placement,
                 self.facts.schema_behavior
             ),
@@ -178,6 +182,45 @@ impl QueryNode {
                 self.id, node.input, node.spec.skip, node.spec.fetch, self.facts.placement, self.facts.schema_behavior
             ),
         }
+    }
+}
+
+fn format_exprs(expressions: &[Expr]) -> String {
+    if expressions.is_empty() {
+        "none".to_string()
+    } else {
+        expressions.iter().map(ToString::to_string).collect::<Vec<_>>().join(",")
+    }
+}
+
+fn format_aggregate_exprs(expressions: &[crate::expr::AggregateExpr]) -> String {
+    if expressions.is_empty() {
+        "none".to_string()
+    } else {
+        expressions
+            .iter()
+            .map(|expr| format!("{:?}({}) AS {}", expr.function, expr.expr, expr.alias))
+            .collect::<Vec<_>>()
+            .join(",")
+    }
+}
+
+fn format_sort_exprs(expressions: &[SortExpr]) -> String {
+    if expressions.is_empty() {
+        "none".to_string()
+    } else {
+        expressions
+            .iter()
+            .map(|expr| {
+                format!(
+                    "{} {} NULLS {}",
+                    expr.expr,
+                    if expr.descending { "DESC" } else { "ASC" },
+                    if expr.nulls_first { "FIRST" } else { "LAST" }
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(",")
     }
 }
 

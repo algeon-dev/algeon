@@ -14,15 +14,24 @@ use arrow::{
 };
 use datafusion::{
     error::DataFusionError,
+    execution::SessionStateBuilder,
     parquet::{arrow::ArrowWriter, errors::ParquetError, file::properties::WriterProperties},
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
+use parquet::file::reader::{FileReader, SerializedFileReader};
 
-use crate::NativeFallbackPressureWorkloadItem;
 pub use crate::tpch_queries::{TPCH_QUERIES, TPCH_QUERY_COUNT, TpchQuery, tpch_query_ids};
+use crate::{
+    CudfNativePhysicalOptimizerRule, CudfOptimizerConfig, CudfPhysicalOptimizerRule, CudfSessionStateBuilderExt,
+    GpuFallbackPolicy, NativeCudfExecutionConfig, NativeDataFusionPlanningWorkloadItem,
+    NativeFallbackPressureWorkloadItem,
+};
 
 pub const TPCH_TABLES: &[&str] =
     &["customer", "lineitem", "nation", "orders", "part", "partsupp", "region", "supplier"];
+pub const CUDF_TPCH_PARQUET_DIR_ENV: &str = "CUDF_TPCH_PARQUET_DIR";
+pub const CUDF_TPCH_SCALE_FACTOR_ENV: &str = "CUDF_TPCH_SCALE_FACTOR";
+pub const CUDF_TPCH_GENERATION_COMMAND_ENV: &str = "CUDF_TPCH_GENERATION_COMMAND";
 
 pub type TpchWorkloadResult<T> = std::result::Result<T, TpchWorkloadError>;
 
@@ -33,6 +42,7 @@ pub enum TpchWorkloadError {
     Parquet(ParquetError),
     DataFusion(DataFusionError),
     NonUtf8Path(PathBuf),
+    InvalidDataset(String),
 }
 
 impl Display for TpchWorkloadError {
@@ -43,6 +53,7 @@ impl Display for TpchWorkloadError {
             Self::Parquet(error) => write!(f, "Parquet error: {error}"),
             Self::DataFusion(error) => write!(f, "DataFusion error: {error}"),
             Self::NonUtf8Path(path) => write!(f, "path is not valid UTF-8: {}", path.display()),
+            Self::InvalidDataset(message) => write!(f, "invalid TPC-H dataset: {message}"),
         }
     }
 }
@@ -55,6 +66,7 @@ impl StdError for TpchWorkloadError {
             Self::Parquet(error) => Some(error),
             Self::DataFusion(error) => Some(error),
             Self::NonUtf8Path(_) => None,
+            Self::InvalidDataset(_) => None,
         }
     }
 }
@@ -96,6 +108,11 @@ pub fn tpch_report_session_config() -> SessionConfig {
     config
 }
 
+pub fn tpch_native_optimizer_config() -> CudfOptimizerConfig {
+    CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred)
+        .with_native_execution_config(NativeCudfExecutionConfig::bounded(256 * 1024 * 1024, 64 * 1024 * 1024, 1, 3, 1))
+}
+
 pub fn write_tiny_tpch_parquet_dataset(root: &Path) -> TpchWorkloadResult<()> {
     fs::create_dir_all(root)?;
     write_customer(root)?;
@@ -107,6 +124,106 @@ pub fn write_tiny_tpch_parquet_dataset(root: &Path) -> TpchWorkloadResult<()> {
     write_region(root)?;
     write_supplier(root)?;
     Ok(())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TpchDatasetMetadata {
+    pub root: PathBuf,
+    pub scale_factor: String,
+    pub provenance: String,
+    pub generation_command: String,
+    pub table_count: usize,
+    pub file_count: usize,
+    pub total_rows: u64,
+    pub total_bytes: u64,
+    pub fingerprint: String,
+    pub tables: Vec<TpchTableMetadata>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TpchTableMetadata {
+    pub table: String,
+    pub path: PathBuf,
+    pub file_count: usize,
+    pub row_count: u64,
+    pub byte_size: u64,
+    pub row_group_count: usize,
+    pub row_group_rows: Vec<u64>,
+    pub row_group_bytes: Vec<u64>,
+}
+
+impl TpchDatasetMetadata {
+    pub fn table_row_counts(&self) -> String {
+        format_table_metadata(&self.tables, |table| table.row_count)
+    }
+
+    pub fn table_byte_sizes(&self) -> String {
+        format_table_metadata(&self.tables, |table| table.byte_size)
+    }
+
+    pub fn table_file_counts(&self) -> String {
+        format_table_metadata(&self.tables, |table| table.file_count as u64)
+    }
+
+    pub fn table_row_group_counts(&self) -> String {
+        format_table_metadata(&self.tables, |table| table.row_group_count as u64)
+    }
+}
+
+pub fn tiny_tpch_dataset_metadata(root: &Path) -> TpchWorkloadResult<TpchDatasetMetadata> {
+    describe_tpch_dataset(root, "tiny", "generated_tiny", "datafusion-cudf::write_tiny_tpch_parquet_dataset")
+}
+
+pub fn external_tpch_dataset_metadata(
+    root: &Path,
+    scale_factor: impl Into<String>,
+    generation_command: impl Into<String>,
+) -> TpchWorkloadResult<TpchDatasetMetadata> {
+    describe_tpch_dataset(root, scale_factor, "external_parquet_root", generation_command)
+}
+
+pub fn prepare_tpch_report_dataset(tiny_root: &Path) -> TpchWorkloadResult<(PathBuf, TpchDatasetMetadata)> {
+    if let Ok(root) = std::env::var(CUDF_TPCH_PARQUET_DIR_ENV) {
+        let root = PathBuf::from(root);
+        let scale_factor = std::env::var(CUDF_TPCH_SCALE_FACTOR_ENV).unwrap_or_else(|_| "unknown".to_string());
+        let generation_command =
+            std::env::var(CUDF_TPCH_GENERATION_COMMAND_ENV).unwrap_or_else(|_| "unknown_external".to_string());
+        let metadata = external_tpch_dataset_metadata(&root, scale_factor, generation_command)?;
+        return Ok((root, metadata));
+    }
+
+    write_tiny_tpch_parquet_dataset(tiny_root)?;
+    let metadata = tiny_tpch_dataset_metadata(tiny_root)?;
+    Ok((tiny_root.to_path_buf(), metadata))
+}
+
+pub fn describe_tpch_dataset(
+    root: &Path,
+    scale_factor: impl Into<String>,
+    provenance: impl Into<String>,
+    generation_command: impl Into<String>,
+) -> TpchWorkloadResult<TpchDatasetMetadata> {
+    let mut tables = Vec::with_capacity(TPCH_TABLES.len());
+    for table in TPCH_TABLES {
+        tables.push(read_tpch_table_metadata(root, table)?);
+    }
+
+    let file_count = tables.iter().map(|table| table.file_count).sum();
+    let total_rows = tables.iter().map(|table| table.row_count).sum();
+    let total_bytes = tables.iter().map(|table| table.byte_size).sum();
+    let fingerprint = tpch_dataset_fingerprint(&tables);
+    Ok(TpchDatasetMetadata {
+        root: root.to_path_buf(),
+        scale_factor: scale_factor.into(),
+        provenance: provenance.into(),
+        generation_command: generation_command.into(),
+        table_count: tables.len(),
+        file_count,
+        total_rows,
+        total_bytes,
+        fingerprint,
+        tables,
+    })
 }
 
 pub async fn tpch_fallback_pressure_workload_items(
@@ -140,6 +257,32 @@ pub async fn tpch_fallback_pressure_workload_items(
     Ok(items)
 }
 
+pub async fn tpch_datafusion_planning_workload_items(
+    root: &Path,
+    session_config: SessionConfig,
+) -> TpchWorkloadResult<Vec<NativeDataFusionPlanningWorkloadItem>> {
+    let optimizer_config = tpch_native_optimizer_config();
+    let native_rule = Arc::new(CudfNativePhysicalOptimizerRule::new(optimizer_config.clone()));
+    let gpu_island_rule = Arc::new(CudfPhysicalOptimizerRule::new(optimizer_config));
+    let state = SessionStateBuilder::new_with_default_features()
+        .with_config(session_config)
+        .with_cudf_native_and_gpu_island_rules(Arc::clone(&native_rule), gpu_island_rule)
+        .build();
+    let ctx = SessionContext::new_with_state(state);
+    register_tpch_tables(&ctx, root).await?;
+
+    let mut items = Vec::with_capacity(TPCH_QUERIES.len());
+    for query in TPCH_QUERIES {
+        let df = ctx.sql(query.sql).await?;
+        let plan = df.create_physical_plan().await?;
+        let diagnostics = native_rule.last_planning_diagnostics().ok_or_else(|| {
+            TpchWorkloadError::InvalidDataset(format!("missing retained native planning diagnostics for {}", query.id))
+        })?;
+        items.push(NativeDataFusionPlanningWorkloadItem::new(query.id, plan, diagnostics));
+    }
+    Ok(items)
+}
+
 async fn register_tpch_tables(ctx: &SessionContext, root: &Path) -> TpchWorkloadResult<()> {
     for table in TPCH_TABLES {
         let path = root.join(format!("{table}.parquet"));
@@ -147,6 +290,98 @@ async fn register_tpch_tables(ctx: &SessionContext, root: &Path) -> TpchWorkload
         ctx.register_parquet(*table, path, ParquetReadOptions::default()).await?;
     }
     Ok(())
+}
+
+fn read_tpch_table_metadata(root: &Path, table: &str) -> TpchWorkloadResult<TpchTableMetadata> {
+    let path = root.join(format!("{table}.parquet"));
+    let metadata = fs::metadata(&path)?;
+    if !metadata.is_file() {
+        return Err(TpchWorkloadError::InvalidDataset(format!("expected {} to be a Parquet file", path.display())));
+    }
+
+    let byte_size = metadata.len();
+    let file = File::open(&path)?;
+    let reader = SerializedFileReader::new(file)?;
+    let parquet_metadata = reader.metadata();
+    let row_group_count = parquet_metadata.num_row_groups();
+    let mut row_group_rows = Vec::with_capacity(row_group_count);
+    let mut row_group_bytes = Vec::with_capacity(row_group_count);
+    for row_group in parquet_metadata.row_groups() {
+        let rows = u64::try_from(row_group.num_rows()).map_err(|_| {
+            TpchWorkloadError::InvalidDataset(format!("negative row count in Parquet metadata for {}", path.display()))
+        })?;
+        let bytes = u64::try_from(row_group.compressed_size()).map_err(|_| {
+            TpchWorkloadError::InvalidDataset(format!(
+                "negative compressed byte size in Parquet metadata for {}",
+                path.display()
+            ))
+        })?;
+        row_group_rows.push(rows);
+        row_group_bytes.push(bytes);
+    }
+    let row_count = row_group_rows.iter().sum();
+    Ok(TpchTableMetadata {
+        table: table.to_string(),
+        path,
+        file_count: 1,
+        row_count,
+        byte_size,
+        row_group_count,
+        row_group_rows,
+        row_group_bytes,
+    })
+}
+
+fn format_table_metadata(tables: &[TpchTableMetadata], value: impl Fn(&TpchTableMetadata) -> u64) -> String {
+    tables.iter().map(|table| format!("{}={}", table.table, value(table))).collect::<Vec<_>>().join(",")
+}
+
+fn tpch_dataset_fingerprint(tables: &[TpchTableMetadata]) -> String {
+    let mut hasher = StableFnv1a64::new();
+    hasher.update_field("datafusion-cudf-tpch-dataset-metadata-v1");
+    for table in tables {
+        hasher.update_field(&table.table);
+        hasher.update_field(&table.file_count.to_string());
+        hasher.update_field(&table.byte_size.to_string());
+        hasher.update_field(&table.row_count.to_string());
+        hasher.update_field(&table.row_group_count.to_string());
+        for rows in &table.row_group_rows {
+            hasher.update_field(&rows.to_string());
+        }
+        for bytes in &table.row_group_bytes {
+            hasher.update_field(&bytes.to_string());
+        }
+    }
+    format!("metadata-fnv1a64:{:016x}", hasher.finish())
+}
+
+struct StableFnv1a64 {
+    state: u64,
+}
+
+impl StableFnv1a64 {
+    const OFFSET: u64 = 0xcbf29ce484222325;
+    const PRIME: u64 = 0x100000001b3;
+
+    fn new() -> Self {
+        Self { state: Self::OFFSET }
+    }
+
+    fn update_field(&mut self, value: &str) {
+        self.update_bytes(value.as_bytes());
+        self.update_bytes(&[0]);
+    }
+
+    fn update_bytes(&mut self, bytes: &[u8]) {
+        for byte in bytes {
+            self.state ^= u64::from(*byte);
+            self.state = self.state.wrapping_mul(Self::PRIME);
+        }
+    }
+
+    fn finish(self) -> u64 {
+        self.state
+    }
 }
 
 fn write_customer(root: &Path) -> TpchWorkloadResult<()> {
