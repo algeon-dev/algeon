@@ -1,6 +1,14 @@
 //! Semantic tests for conditional join index operations.
 
+use std::sync::Arc;
+
+use arrow::{
+    array::Decimal128Array,
+    datatypes::{DataType as ArrowDataType, Field, Schema},
+    record_batch::RecordBatch,
+};
 use cudf::{
+    DataFrame, Runtime,
     core::Table,
     ops::{
         ast::AstExpression,
@@ -19,6 +27,14 @@ fn i32_table(values: &[i32]) -> Table {
 
 fn nullable_i32_table(values: &[i32], validity: &[bool]) -> Table {
     Table::from_columns(vec![column_from_slice_nullable(values, validity).unwrap()]).unwrap()
+}
+
+fn decimal128_table_from_arrow(values: Vec<Option<i128>>, precision: u8, scale: i8) -> Table {
+    let amount = Decimal128Array::from(values).with_precision_and_scale(precision, scale).unwrap();
+    let schema = Schema::new(vec![Field::new("amount", ArrowDataType::Decimal128(precision, scale), true)]);
+    let batch = RecordBatch::try_new(Arc::new(schema), vec![Arc::new(amount)]).unwrap();
+    let runtime = Runtime::builder().build().unwrap();
+    DataFrame::from_record_batch(&runtime, &batch).unwrap().to_table_copy().unwrap()
 }
 
 fn left_less_than_right() -> AstExpression {
@@ -127,4 +143,64 @@ fn conditional_inner_join_indices_keeps_literal_scalar_alive_inside_ast() {
             .unwrap();
 
     assert_eq!(sorted_join_index_pairs(&indices), vec![(0, 0), (0, 1), (1, 0), (1, 1)]);
+}
+
+#[test]
+fn conditional_inner_join_indices_supports_ast_in_list_predicate() {
+    let left = i32_table(&[1, 3, 5]);
+    let right = i32_table(&[2, 4]);
+    let left_in = AstExpression::is_in_list(
+        AstExpression::left_column(0).unwrap(),
+        vec![
+            AstExpression::literal(scalar(1i32).unwrap()).unwrap(),
+            AstExpression::literal(scalar(5i32).unwrap()).unwrap(),
+        ],
+    )
+    .unwrap();
+    let right_in = AstExpression::is_in_list(
+        AstExpression::right_column(0).unwrap(),
+        vec![AstExpression::literal(scalar(2i32).unwrap()).unwrap()],
+    )
+    .unwrap();
+    let predicate = AstExpression::logical_and(left_in, right_in).unwrap();
+
+    let indices =
+        join::conditional_inner_join_indices(&left.testing_view().unwrap(), &right.testing_view().unwrap(), &predicate)
+            .unwrap();
+
+    assert_eq!(sorted_join_index_pairs(&indices), vec![(0, 0), (2, 0)]);
+}
+
+#[test]
+fn conditional_inner_join_indices_supports_ast_cast_predicate() {
+    let left = i32_table(&[1, 3, 5]);
+    let right = i32_table(&[0, 0]);
+    let predicate = AstExpression::greater(
+        AstExpression::cast_to_float64(AstExpression::left_column(0).unwrap()).unwrap(),
+        AstExpression::literal(scalar(2.5f64).unwrap()).unwrap(),
+    )
+    .unwrap();
+
+    let indices =
+        join::conditional_inner_join_indices(&left.testing_view().unwrap(), &right.testing_view().unwrap(), &predicate)
+            .unwrap();
+
+    assert_eq!(sorted_join_index_pairs(&indices), vec![(1, 0), (1, 1), (2, 0), (2, 1)]);
+}
+
+#[test]
+fn conditional_inner_join_indices_supports_decimal_ast_cast_to_float64() {
+    let left = decimal128_table_from_arrow(vec![Some(12345), Some(20_050), None], 20, 2);
+    let right = i32_table(&[0, 1]);
+    let predicate = AstExpression::greater(
+        AstExpression::cast_to_float64(AstExpression::left_column(0).unwrap()).unwrap(),
+        AstExpression::literal(scalar(200.0f64).unwrap()).unwrap(),
+    )
+    .unwrap();
+
+    let indices =
+        join::conditional_inner_join_indices(&left.testing_view().unwrap(), &right.testing_view().unwrap(), &predicate)
+            .unwrap();
+
+    assert_eq!(sorted_join_index_pairs(&indices), vec![(1, 0), (1, 1)]);
 }

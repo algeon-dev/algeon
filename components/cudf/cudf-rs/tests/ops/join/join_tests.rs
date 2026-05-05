@@ -520,6 +520,7 @@ fn test_hash_join_supports_duplicate_build_keys_and_repeated_probes() {
     let second_probe = Table::from_columns(vec![column_from_slice(&[1i32, 2]).unwrap()]).unwrap();
     let hash_join = HashJoin::new(build_keys, HashJoinOptions::new()).unwrap();
 
+    assert!(hash_join.device_allocated_size_bytes().unwrap() > 0);
     let first = hash_join.inner_join_indices(&first_probe.testing_view().unwrap()).unwrap();
     let second = hash_join.left_join_indices(&second_probe.testing_view().unwrap()).unwrap();
 

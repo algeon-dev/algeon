@@ -5,10 +5,26 @@
 //!
 //! All tests require a GPU.
 
+use std::sync::Arc;
+
+use arrow::{
+    array::{Array, Decimal128Array},
+    datatypes::{DataType as ArrowDataType, Field, Schema},
+    record_batch::RecordBatch,
+};
 use cudf::{
-    DataType, ErrorCode, ErrorKind, TimestampResolution, TypeId,
+    DataFrame, DataType, ErrorCode, ErrorKind, Runtime, TimestampResolution, TypeId,
     core::error::{FactKeyName, FactValue},
 };
+
+fn decimal128_series_from_arrow(values: Vec<Option<i128>>, precision: u8, scale: i8) -> cudf::Series {
+    let amount = Decimal128Array::from(values).with_precision_and_scale(precision, scale).unwrap();
+    let schema = Schema::new(vec![Field::new("amount", ArrowDataType::Decimal128(precision, scale), true)]);
+    let batch = RecordBatch::try_new(Arc::new(schema), vec![Arc::new(amount)]).unwrap();
+    let runtime = Runtime::builder().build().unwrap();
+    let df = DataFrame::from_record_batch(&runtime, &batch).unwrap();
+    df.series("amount").unwrap()
+}
 
 // ===========================================================================
 // Integer width widening (lossless)
@@ -64,6 +80,45 @@ fn test_cast_f64_to_f32() {
     let result = s.astype(TypeId::Float32).unwrap();
     let vals = result.to_vec_strict::<f32>().unwrap();
     assert_eq!(vals, vec![1.5, 2.5, 3.5]);
+}
+
+#[test]
+fn test_cast_decimal128_to_f64_uses_decimal_scale_and_preserves_nulls() {
+    let amount = decimal128_series_from_arrow(vec![Some(12345), None, Some(-678)], 20, 2);
+
+    let result = amount.astype(TypeId::Float64).unwrap();
+
+    assert_eq!(result.dtype().unwrap().id(), TypeId::Float64);
+    assert_eq!(result.null_count(), 1);
+    assert_eq!(result.to_optional_vec::<f64>().unwrap(), vec![Some(123.45), None, Some(-6.78)]);
+}
+
+#[test]
+fn test_cast_decimal64_to_f64_uses_decimal_scale() {
+    let amount = decimal128_series_from_arrow(vec![Some(12345), Some(-678)], 20, 2)
+        .astype(DataType::fixed_point(TypeId::Decimal64, -2))
+        .unwrap();
+
+    let result = amount.astype(TypeId::Float64).unwrap();
+
+    assert_eq!(result.dtype().unwrap().id(), TypeId::Float64);
+    assert_eq!(result.to_vec_strict::<f64>().unwrap(), vec![123.45, -6.78]);
+}
+
+#[test]
+fn test_cast_f64_to_decimal128_uses_target_scale_and_preserves_nulls() {
+    let s = crate::common::nullable_series::<f64>("x", &[123.45, 0.0, -6.78], &[true, false, true]).unwrap();
+
+    let result = s.astype(DataType::fixed_point(TypeId::Decimal128, -2)).unwrap();
+
+    assert_eq!(result.dtype().unwrap(), DataType::fixed_point(TypeId::Decimal128, -2));
+    assert_eq!(result.null_count(), 1);
+    let batch = DataFrame::from_series([("x", result)]).unwrap().to_record_batch().unwrap();
+    let values = batch.column(0).as_any().downcast_ref::<Decimal128Array>().unwrap();
+    assert_eq!(values.values().as_ref(), &[12345, 0, -678]);
+    assert!(values.is_valid(0));
+    assert!(values.is_null(1));
+    assert!(values.is_valid(2));
 }
 
 // ===========================================================================
@@ -181,6 +236,19 @@ fn test_is_supported_cast_numeric_to_float() {
     let from = DataType::new(TypeId::Int32);
     let to = DataType::new(TypeId::Float64);
     assert!(cudf::ops::unary::is_supported_cast(&from, &to).unwrap());
+}
+
+#[test]
+fn test_is_supported_cast_decimal_to_float() {
+    let to = DataType::new(TypeId::Float64);
+    assert!(cudf::ops::unary::is_supported_cast(&DataType::fixed_point(TypeId::Decimal64, -2), &to).unwrap());
+    assert!(cudf::ops::unary::is_supported_cast(&DataType::fixed_point(TypeId::Decimal128, -2), &to).unwrap());
+}
+
+#[test]
+fn test_is_supported_cast_float_to_decimal() {
+    let from = DataType::new(TypeId::Float64);
+    assert!(cudf::ops::unary::is_supported_cast(&from, &DataType::fixed_point(TypeId::Decimal128, -2)).unwrap());
 }
 
 #[test]

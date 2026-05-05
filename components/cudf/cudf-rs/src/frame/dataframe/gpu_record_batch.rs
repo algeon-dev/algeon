@@ -1,9 +1,9 @@
-use arrow::{datatypes::SchemaRef, record_batch::RecordBatch};
+use arrow::{array::ArrayRef, compute::cast, datatypes::SchemaRef, record_batch::RecordBatch};
 
 use super::DataFrame;
 use crate::{
     core::{
-        error::{Error, ErrorCode, FACT_LEFT_TYPE_ID, FACT_RIGHT_TYPE_ID, Result},
+        error::{self, Error, ErrorCode, FACT_LEFT_TYPE_ID, FACT_RIGHT_TYPE_ID, Result},
         schema,
     },
     interop::{
@@ -70,10 +70,14 @@ impl GpuRecordBatch {
 
     /// Materialize this GPU batch as a host Arrow RecordBatch.
     ///
-    /// This delegates to [`DataFrame::to_record_batch`] and therefore copies
-    /// device data to host memory and may synchronize before returning.
+    /// This delegates to [`DataFrame::to_record_batch`] for the device-to-host
+    /// copy, then attaches this batch's stored Arrow schema contract. When
+    /// cudf's host export type is a supported physical equivalent of the
+    /// stored Arrow field type, the host array is cast before the final
+    /// `RecordBatch` is built.
     pub fn to_host_record_batch(&self) -> Result<RecordBatch> {
-        self.frame.to_record_batch()
+        let batch = self.frame.to_record_batch()?;
+        record_batch_with_schema_contract(batch, &self.schema)
     }
 
     /// Prepare Arrow C Device ABI export for the wrapped GPU DataFrame.
@@ -146,6 +150,55 @@ fn validate_frame_schema(frame: &DataFrame, schema_ref: &SchemaRef) -> Result<Ar
     }
 
     Ok(mapped)
+}
+
+fn record_batch_with_schema_contract(batch: RecordBatch, schema: &SchemaRef) -> Result<RecordBatch> {
+    let operation = "dataframe::GpuRecordBatch::to_host_record_batch";
+    if batch.num_columns() != schema.fields().len() {
+        return Err(schema::column_name_count_mismatch_error(
+            operation,
+            "materialized Arrow column count must match stored schema field count",
+            schema.fields().len(),
+            batch.num_columns(),
+        ));
+    }
+
+    let columns = schema
+        .fields()
+        .iter()
+        .enumerate()
+        .map(|(index, field)| {
+            let column = batch.column(index);
+            if column.data_type() == field.data_type() {
+                return Ok(column.clone());
+            }
+
+            cast(column.as_ref(), field.data_type()).map_err(|error| {
+                map_arrow_schema_contract_error(operation, error)
+                    .with_detail("field_name", field.name().clone())
+                    .with_detail("field_index", index.to_string())
+                    .with_detail("actual_arrow_type", format!("{:?}", column.data_type()))
+                    .with_detail("expected_arrow_type", format!("{:?}", field.data_type()))
+                    .with_detail("schema_contract_failure", "schema_cast_failed")
+            })
+        })
+        .collect::<Result<Vec<ArrayRef>>>()?;
+
+    RecordBatch::try_new(schema.clone(), columns).map_err(|error| {
+        map_arrow_schema_contract_error(operation, error)
+            .with_detail("schema_contract_failure", "schema_record_batch_build_failed")
+    })
+}
+
+fn map_arrow_schema_contract_error(operation: &'static str, error: arrow::error::ArrowError) -> Error {
+    error::foreign_invariant_violation(
+        operation,
+        error.to_string(),
+        "record_batch",
+        "invalid_arrow_schema_contract",
+        "ensure materialized Arrow columns can be represented by the stored schema contract",
+    )
+    .with_source(error)
 }
 
 impl std::fmt::Debug for GpuRecordBatch {

@@ -14,7 +14,7 @@ use std::{
 
 use crate::{
     core::{
-        error::{self, Result},
+        error::{self, Error, ErrorCode, Result},
         scalar::Scalar,
     },
     runtime::execution_domain::ExecutionDomain,
@@ -237,6 +237,36 @@ impl AstExpression {
         Self::binary(AstOperator::LogicalAnd, left, right)
     }
 
+    /// Cast an AST expression to `INT64`.
+    pub fn cast_to_int64(input: AstExpression) -> Result<Self> {
+        Self::unary(AstOperator::CastToInt64, input)
+    }
+
+    /// Cast an AST expression to `UINT64`.
+    pub fn cast_to_uint64(input: AstExpression) -> Result<Self> {
+        Self::unary(AstOperator::CastToUint64, input)
+    }
+
+    /// Cast an AST expression to `FLOAT64`.
+    pub fn cast_to_float64(input: AstExpression) -> Result<Self> {
+        Self::unary(AstOperator::CastToFloat64, input)
+    }
+
+    /// Create a literal-list membership predicate.
+    ///
+    /// libcudf AST does not expose a dedicated `IN` operator, so this helper
+    /// represents membership as an owned AST disjunction of equality
+    /// predicates while retaining the shared input and value expressions for
+    /// the lifetime of the resulting predicate.
+    pub fn is_in_list(input: AstExpression, values: Vec<AstExpression>) -> Result<Self> {
+        Self::in_list(input, values, false)
+    }
+
+    /// Create a negated literal-list membership predicate.
+    pub fn is_not_in_list(input: AstExpression, values: Vec<AstExpression>) -> Result<Self> {
+        Self::in_list(input, values, true)
+    }
+
     pub(crate) fn raw_handle(&self) -> *mut c_void {
         self.handle.as_ptr()
     }
@@ -255,6 +285,74 @@ impl AstExpression {
         operation: &'static str,
     ) -> Result<Self> {
         Ok(Self { handle: error::require_non_null(handle, operation, "AST expression")?, children, literals })
+    }
+
+    fn in_list(input: AstExpression, values: Vec<AstExpression>, negated: bool) -> Result<Self> {
+        let operation = "ast::in_list";
+        if values.is_empty() {
+            return Err(Error::new_with(ErrorCode::EmptyInput, operation, "AST IN list requires at least one value")
+                .with_detail("resource", "ast_in_list_values"));
+        }
+
+        let mut children = Vec::with_capacity(1 + values.len() * 2);
+        let mut value_iter = values.iter();
+        let first = value_iter.next().expect("empty values were rejected above");
+        let mut predicate_handle = Self::binary_raw(AstOperator::Equal, &input, first, operation)?;
+        for value in value_iter {
+            let equality_handle = Self::binary_raw(AstOperator::Equal, &input, value, operation)?;
+            let mut out = ptr::null_mut();
+            error::check_status_in_with_details(
+                unsafe {
+                    cudf_sys::cudf_ast_operation_binary_create(
+                        AstOperator::LogicalOr.to_raw(),
+                        predicate_handle,
+                        equality_handle,
+                        &mut out,
+                    )
+                },
+                operation,
+                [("operator", "LogicalOr".to_string())],
+            )?;
+            children.push(Self::from_raw(predicate_handle, Vec::new(), Vec::new(), operation)?);
+            children.push(Self::from_raw(equality_handle, Vec::new(), Vec::new(), operation)?);
+            predicate_handle = out;
+        }
+
+        let handle = if negated {
+            let mut out = ptr::null_mut();
+            error::check_status_in_with_details(
+                unsafe {
+                    cudf_sys::cudf_ast_operation_unary_create(AstOperator::Not.to_raw(), predicate_handle, &mut out)
+                },
+                operation,
+                [("operator", "Not".to_string())],
+            )?;
+            children.push(Self::from_raw(predicate_handle, Vec::new(), Vec::new(), operation)?);
+            out
+        } else {
+            predicate_handle
+        };
+
+        children.push(input);
+        children.extend(values);
+        Self::from_raw(handle, children, Vec::new(), operation)
+    }
+
+    fn binary_raw(
+        op: AstOperator,
+        left: &AstExpression,
+        right: &AstExpression,
+        operation: &'static str,
+    ) -> Result<*mut c_void> {
+        let mut out = ptr::null_mut();
+        error::check_status_in_with_details(
+            unsafe {
+                cudf_sys::cudf_ast_operation_binary_create(op.to_raw(), left.raw_handle(), right.raw_handle(), &mut out)
+            },
+            operation,
+            [("operator", format!("{op:?}"))],
+        )?;
+        Ok(out)
     }
 }
 

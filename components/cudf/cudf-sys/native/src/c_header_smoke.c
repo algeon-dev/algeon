@@ -384,6 +384,8 @@ int cudf_rust_c_header_smoke(void)
 
                          const cudf_exec_options_t*)    = &cudf_hash_join_create_ex;
   void (*f22af)(cudf_hash_join_handle)                  = &cudf_hash_join_destroy;
+  cudf_status_t (*f22af_size)(cudf_hash_join_handle, size_t*) =
+    &cudf_hash_join_device_allocated_size;
   cudf_status_t (*f22ag)(
     cudf_hash_join_handle, cudf_table_view_handle, cudf_column_handle*, cudf_column_handle*) =
     &cudf_hash_join_inner_join;

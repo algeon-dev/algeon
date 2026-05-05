@@ -118,6 +118,11 @@ impl Series {
         self.column.execution_domain().placement()
     }
 
+    /// Returns bytes retained by this series' owned device column.
+    pub fn device_allocated_size_bytes(&self) -> Result<usize> {
+        self.column.device_allocated_size_bytes().map_err(|error| error.reanchor("series::device_allocated_size_bytes"))
+    }
+
     // -- Access --------------------------------------------------------------
 
     /// Returns `true` if both series share the same retained provenance

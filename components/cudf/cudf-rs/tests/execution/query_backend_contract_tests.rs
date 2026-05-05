@@ -4,10 +4,13 @@
 //! boundary semantics before the execution resolver refactor centralizes the
 //! implementation.
 
-use std::sync::{Arc, Mutex};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+};
 
 use arrow::{
-    array::{Array, Int32Array},
+    array::{Array, Int32Array, LargeStringArray},
     datatypes::{DataType as ArrowDataType, Field, Schema},
     record_batch::RecordBatch,
 };
@@ -236,6 +239,41 @@ fn gpu_record_batch_wraps_frame_schema_and_keeps_host_materialization_explicit()
     assert_eq!(unwrapped_schema.as_ref(), schema.as_ref());
     assert_eq!(mapped_schema.row_count(), 4);
     assert_eq!(mapped_schema.len(), 2);
+}
+
+#[test]
+fn gpu_record_batch_host_materialization_uses_stored_arrow_schema_contract() {
+    let runtime = sample_runtime();
+    let schema = Arc::new(
+        Schema::new(vec![
+            Field::new("label", ArrowDataType::LargeUtf8, true)
+                .with_metadata(HashMap::from([("field_owner".to_string(), "planner".to_string())])),
+        ])
+        .with_metadata(HashMap::from([("schema_owner".to_string(), "planner".to_string())])),
+    );
+    let host = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![Arc::new(LargeStringArray::from(vec!["alpha", "beta"])) as Arc<dyn Array>],
+    )
+    .unwrap();
+    let df = DataFrame::from_record_batch(&runtime, &host).unwrap();
+
+    let raw_export = df.to_record_batch().unwrap();
+    assert_eq!(raw_export.schema().field(0).data_type(), &ArrowDataType::Utf8);
+
+    let gpu = GpuRecordBatch::new(df, Arc::clone(&schema)).unwrap();
+    let materialized = gpu.to_host_record_batch().unwrap();
+    let materialized_schema = materialized.schema();
+
+    assert_eq!(materialized_schema.as_ref(), schema.as_ref());
+    assert_eq!(materialized_schema.metadata().get("schema_owner").map(String::as_str), Some("planner"));
+    assert!(materialized_schema.field(0).is_nullable());
+    assert_eq!(materialized_schema.field(0).metadata().get("field_owner").map(String::as_str), Some("planner"));
+    assert_eq!(materialized.column(0).data_type(), &ArrowDataType::LargeUtf8);
+
+    let labels = materialized.column(0).as_any().downcast_ref::<LargeStringArray>().unwrap();
+    assert_eq!(labels.value(0), "alpha");
+    assert_eq!(labels.value(1), "beta");
 }
 
 #[test]

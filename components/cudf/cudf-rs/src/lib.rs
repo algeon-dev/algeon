@@ -189,8 +189,9 @@ pub use core::{
 
 pub use frame::{
     dataframe::{
-        DataFrame, DataFrameHashJoin, DataFrameHashJoinMaterialized, DataFrameHashJoinOptions,
-        DataFrameHashJoinPairIndices, DataFrameJoinIndices, DataFrameJoinOptions, DataFrameJoinPairIndices,
+        DataFrame, DataFrameCrossJoinOptions, DataFrameHashJoin, DataFrameHashJoinMaterialized,
+        DataFrameHashJoinOptions, DataFrameHashJoinPairIndices, DataFrameJoinIndices, DataFrameJoinOptions,
+        DataFrameJoinPairIndices, DataFrameMixedJoinOptions, DataFramePredicateJoinOptions,
     },
     series::{HostColumnData, IntoSeries, Series},
 };

@@ -7,6 +7,13 @@
 //!
 //! All tests require a GPU.
 
+use std::sync::Arc;
+
+use arrow::{
+    array::Decimal128Array,
+    datatypes::{DataType as ArrowDataType, Field, Schema},
+    record_batch::RecordBatch,
+};
 use cudf::{
     DataFrame, DataType, ErrorCode, ErrorKind, ExecutionOverrides, Runtime, Series, StringSliceOptions,
     TimestampResolution, TypeId,
@@ -43,6 +50,14 @@ fn nullable_i32_df(name: &str, data: &[i32], validity: &[bool]) -> DataFrame {
 
 fn f64_df(name: &str, data: &[f64]) -> DataFrame {
     df_with_series(name, crate::common::series::<f64>(name, data).unwrap())
+}
+
+fn decimal128_df_from_arrow(name: &str, values: Vec<Option<i128>>, precision: u8, scale: i8) -> DataFrame {
+    let amount = Decimal128Array::from(values).with_precision_and_scale(precision, scale).unwrap();
+    let schema = Schema::new(vec![Field::new(name, ArrowDataType::Decimal128(precision, scale), true)]);
+    let batch = RecordBatch::try_new(Arc::new(schema), vec![Arc::new(amount)]).unwrap();
+    let runtime = Runtime::builder().build().unwrap();
+    DataFrame::from_record_batch(&runtime, &batch).unwrap()
 }
 
 fn bool_df(name: &str, data: &[bool]) -> DataFrame {
@@ -584,6 +599,16 @@ fn cast_i32_to_f64() {
     let result = eval(col("x").cast(TypeId::Float64).alias("xf"), &df);
     assert_eq!(result.dtype().unwrap().id(), TypeId::Float64);
     assert_eq!(result.to_vec_strict::<f64>().unwrap(), vec![10.0, 20.0, 30.0]);
+}
+
+#[test]
+fn cast_decimal128_to_f64_uses_decimal_scale() {
+    let df = decimal128_df_from_arrow("amount", vec![Some(12345), Some(-678), None], 20, 2);
+
+    let result = eval(col("amount").cast(TypeId::Float64).alias("amount_f64"), &df);
+
+    assert_eq!(result.dtype().unwrap().id(), TypeId::Float64);
+    assert_eq!(result.to_optional_vec::<f64>().unwrap(), vec![Some(123.45), Some(-6.78), None]);
 }
 
 #[test]
