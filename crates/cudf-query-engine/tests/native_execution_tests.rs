@@ -454,6 +454,66 @@ fn native_query_rejects_phase2_scalar_type_mismatch_before_cudf_execution() {
 }
 
 #[test]
+fn native_query_rejects_out_of_envelope_substring_before_source_read() {
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let input_schema = Arc::new(Schema::new(vec![
+        Field::new("orderkey", DataType::Int64, false),
+        Field::new("status", DataType::Utf8, true),
+    ]));
+
+    let cases = [
+        (
+            "zero_start",
+            Expr::substring(Expr::column("status"), 0, Some(1)).alias("bad_substring"),
+            QueryErrorCode::UnsupportedExpression,
+            None,
+        ),
+        (
+            "negative_length",
+            Expr::substring(Expr::column("status"), 1, Some(-1)).alias("bad_substring"),
+            QueryErrorCode::UnsupportedExpression,
+            None,
+        ),
+        (
+            "stop_overflow",
+            Expr::substring(Expr::column("status"), i32::MAX, Some(1)).alias("bad_substring"),
+            QueryErrorCode::UnsupportedExpression,
+            None,
+        ),
+        (
+            "non_string_source",
+            Expr::substring(Expr::column("orderkey"), 1, Some(1)).alias("bad_substring"),
+            QueryErrorCode::UnsupportedType,
+            Some("SUBSTRING input"),
+        ),
+    ];
+
+    for (name, expr, expected_code, expected_context) in cases {
+        let source = LocalParquetSource::new(
+            format!("/tmp/does-not-need-to-exist-for-substring-{name}.parquet"),
+            Arc::clone(&input_schema),
+            vec!["orderkey".to_string(), "status".to_string()],
+        );
+        let output_schema = Arc::new(Schema::new(vec![Field::new("bad_substring", DataType::Utf8, true)]));
+
+        let mut builder = QueryPlanBuilder::new();
+        let source = builder.add_source(SourceNode::LocalParquet(source));
+        let projection = builder.add_projection(source, vec![expr], output_schema);
+        let plan = builder.finish_with_host_sink(projection);
+        let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+
+        let error = match execute_query_plan(&context, &plan) {
+            Ok(_) => panic!("{name} should reject before source read"),
+            Err(error) => error,
+        };
+        assert_eq!(error.code(), expected_code, "{name}");
+        assert_eq!(error.operation(), "cudf_query_engine.plan.validate_expr", "{name}");
+        assert_eq!(error.fact_value("context"), expected_context, "{name}");
+        assert!(error.fact_value("path").is_none(), "{name} should fail before source read");
+    }
+}
+
+#[test]
 fn native_query_rejects_unread_source_column_in_nested_phase2_scalar_before_cudf_execution() {
     let dir = unique_temp_dir("cudf-query-engine-native-execution-phase2-source-column-reject");
     let path = dir.join("tpch-like.parquet");

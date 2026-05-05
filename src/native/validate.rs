@@ -82,9 +82,7 @@ pub(super) fn validate_aggregate(
         validate_physical_expr(arg, &aggregate.input().schema())?;
     }
     for (group_expr, _alias) in group_by.expr() {
-        if group_expr.as_any().downcast_ref::<Column>().is_none() {
-            return Err(FallbackReason::UnsupportedExpression);
-        }
+        validate_physical_expr(group_expr, &aggregate.input().schema())?;
     }
     Ok(())
 }
@@ -188,7 +186,8 @@ fn validate_like_expr(like: &LikeExpr, input_schema: &SchemaRef) -> Result<(), F
         return Err(FallbackReason::UnsupportedExpression);
     }
     validate_literal_string(like.pattern())?;
-    validate_physical_expr(like.expr(), input_schema)
+    validate_physical_expr(like.expr(), input_schema)?;
+    validate_string_expr(like.expr(), input_schema)
 }
 
 fn validate_in_list_expr(in_list: &InListExpr, input_schema: &SchemaRef) -> Result<(), FallbackReason> {
@@ -196,6 +195,7 @@ fn validate_in_list_expr(in_list: &InListExpr, input_schema: &SchemaRef) -> Resu
         return Err(FallbackReason::UnsupportedExpression);
     }
     validate_physical_expr(in_list.expr(), input_schema)?;
+    let expr_type = physical_expr_data_type(in_list.expr(), input_schema)?;
     for expr in in_list.list() {
         let Some(literal) = expr.as_any().downcast_ref::<Literal>() else {
             return Err(FallbackReason::UnsupportedExpression);
@@ -204,20 +204,43 @@ fn validate_in_list_expr(in_list: &InListExpr, input_schema: &SchemaRef) -> Resu
             return Err(FallbackReason::UnsupportedExpression);
         }
         validate_physical_expr(expr, input_schema)?;
+        let literal_type = physical_expr_data_type(expr, input_schema)?;
+        validate_compatible_expr_types(&expr_type, &literal_type)?;
     }
     Ok(())
 }
 
 fn validate_case_expr(case: &CaseExpr, input_schema: &SchemaRef) -> Result<(), FallbackReason> {
-    if let Some(expr) = case.expr() {
-        validate_physical_expr(expr, input_schema)?;
+    if case.when_then_expr().is_empty() {
+        return Err(FallbackReason::UnsupportedExpression);
     }
+    let base_type = case
+        .expr()
+        .map(|expr| {
+            validate_physical_expr(expr, input_schema)?;
+            physical_expr_data_type(expr, input_schema)
+        })
+        .transpose()?;
+    let output_type = case
+        .else_expr()
+        .map(|expr| {
+            validate_physical_expr(expr, input_schema)?;
+            physical_expr_data_type(expr, input_schema)
+        })
+        .transpose()?
+        .unwrap_or(case.data_type(input_schema.as_ref()).map_err(|_error| FallbackReason::UnsupportedExpression)?);
+
     for (when, then) in case.when_then_expr() {
         validate_physical_expr(when, input_schema)?;
+        let when_type = physical_expr_data_type(when, input_schema)?;
+        if let Some(base_type) = &base_type {
+            validate_compatible_expr_types(base_type, &when_type)?;
+        } else {
+            validate_boolean_type(&when_type)?;
+        }
         validate_physical_expr(then, input_schema)?;
-    }
-    if let Some(else_expr) = case.else_expr() {
-        validate_physical_expr(else_expr, input_schema)?;
+        let then_type = physical_expr_data_type(then, input_schema)?;
+        validate_compatible_expr_types(&output_type, &then_type)?;
     }
     Ok(())
 }
@@ -235,21 +258,9 @@ fn validate_scalar_function_expr(
 
 fn validate_substring_function(function: &ScalarFunctionExpr, input_schema: &SchemaRef) -> Result<(), FallbackReason> {
     let args = function.args();
-    if !(2..=3).contains(&args.len()) {
-        return Err(FallbackReason::UnsupportedExpression);
-    }
+    validate_substring_arguments_contract(function)?;
     validate_physical_expr(&args[0], input_schema)?;
-    let start = literal_i32(&args[1])?;
-    if start < 1 {
-        return Err(FallbackReason::UnsupportedExpression);
-    }
-    if args.len() == 3 {
-        let length = literal_i32(&args[2])?;
-        if length < 0 || (start - 1).checked_add(length).is_none() {
-            return Err(FallbackReason::UnsupportedExpression);
-        }
-    }
-    Ok(())
+    validate_string_expr(&args[0], input_schema)
 }
 
 fn validate_extract_function(function: &ScalarFunctionExpr, input_schema: &SchemaRef) -> Result<(), FallbackReason> {
@@ -260,7 +271,8 @@ fn validate_extract_function(function: &ScalarFunctionExpr, input_schema: &Schem
         "year" | "month" | "day" => {},
         _ => return Err(FallbackReason::UnsupportedExpression),
     }
-    validate_physical_expr(expr, input_schema)
+    validate_physical_expr(expr, input_schema)?;
+    validate_date_or_timestamp_expr(expr, input_schema)
 }
 
 fn validate_column_type(column: &Column, input_schema: &SchemaRef) -> Result<(), FallbackReason> {
@@ -458,14 +470,8 @@ fn collect_required_columns_for_scalar_function(
     match function.name().to_ascii_lowercase().as_str() {
         "substring" | "substr" => {
             let args = function.args();
-            if !(2..=3).contains(&args.len()) {
-                return Err(FallbackReason::UnsupportedExpression);
-            }
+            validate_substring_arguments_contract(function)?;
             collect_required_columns(&args[0], input_schema, required)?;
-            literal_i32(&args[1])?;
-            if args.len() == 3 {
-                literal_i32(&args[2])?;
-            }
             Ok(())
         },
         "date_part" | "extract" => {
@@ -529,4 +535,59 @@ fn literal_i32(expr: &Arc<dyn PhysicalExpr>) -> Result<i32, FallbackReason> {
         },
         _ => Err(FallbackReason::UnsupportedExpression),
     }
+}
+
+fn validate_substring_arguments_contract(function: &ScalarFunctionExpr) -> Result<(), FallbackReason> {
+    let args = function.args();
+    if !(2..=3).contains(&args.len()) {
+        return Err(FallbackReason::UnsupportedExpression);
+    }
+    let start = literal_i32(&args[1])?;
+    if start < 1 {
+        return Err(FallbackReason::UnsupportedExpression);
+    }
+    if args.len() == 3 {
+        let length = literal_i32(&args[2])?;
+        if length < 0 || start.checked_add(length).is_none() {
+            return Err(FallbackReason::UnsupportedExpression);
+        }
+    }
+    Ok(())
+}
+
+fn validate_string_expr(expr: &Arc<dyn PhysicalExpr>, input_schema: &SchemaRef) -> Result<(), FallbackReason> {
+    let data_type = physical_expr_data_type(expr, input_schema)?;
+    if matches!(data_type, DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View) {
+        Ok(())
+    } else {
+        Err(FallbackReason::UnsupportedType)
+    }
+}
+
+fn validate_date_or_timestamp_expr(
+    expr: &Arc<dyn PhysicalExpr>,
+    input_schema: &SchemaRef,
+) -> Result<(), FallbackReason> {
+    let data_type = physical_expr_data_type(expr, input_schema)?;
+    if matches!(data_type, DataType::Date32 | DataType::Timestamp(_, None)) {
+        Ok(())
+    } else {
+        Err(FallbackReason::UnsupportedType)
+    }
+}
+
+fn validate_boolean_type(data_type: &DataType) -> Result<(), FallbackReason> {
+    if matches!(data_type, DataType::Boolean) { Ok(()) } else { Err(FallbackReason::UnsupportedType) }
+}
+
+fn validate_compatible_expr_types(left: &DataType, right: &DataType) -> Result<(), FallbackReason> {
+    if left == right || is_supported_native_cast(left, right) || is_supported_native_cast(right, left) {
+        Ok(())
+    } else {
+        Err(FallbackReason::UnsupportedType)
+    }
+}
+
+fn physical_expr_data_type(expr: &Arc<dyn PhysicalExpr>, input_schema: &SchemaRef) -> Result<DataType, FallbackReason> {
+    expr.data_type(input_schema.as_ref()).map_err(|_error| FallbackReason::UnsupportedExpression)
 }

@@ -37,10 +37,10 @@ pub(super) fn validate_query_plan(plan: &QueryPlan) -> Result<()> {
             PlanNode::Projection(projection) => {
                 let input = input_node(plan, projection.input, node.id)?;
                 let input_available = available_columns(&available_columns_by_node, projection.input)?;
-                validate_projection_capability(projection, node.output_schema())?;
                 for expr in &projection.expressions {
                     validate_expr(expr, input.output_schema(), input_available)?;
                 }
+                validate_projection_capability(projection, node.output_schema())?;
                 schema_column_names(node.output_schema())
             },
             PlanNode::Aggregate(aggregate) => {
@@ -438,7 +438,7 @@ fn validate_substring_bounds(start: i32, length: Option<i32>) -> Result<()> {
         .with_fact("start", start));
     }
     if let Some(length) = length
-        && (length < 0 || (start - 1).checked_add(length).is_none())
+        && (length < 0 || start.checked_add(length).is_none())
     {
         return Err(QueryError::new(
             QueryErrorCode::UnsupportedExpression,

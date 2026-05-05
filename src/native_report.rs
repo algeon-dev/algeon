@@ -800,7 +800,7 @@ fn substring_arguments_are_supported(function: &ScalarFunctionExpr) -> bool {
         let Some(length) = literal_i32(&args[2]) else {
             return false;
         };
-        return length >= 0 && (start - 1).checked_add(length).is_some();
+        return length >= 0 && start.checked_add(length).is_some();
     }
     true
 }

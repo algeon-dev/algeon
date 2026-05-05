@@ -38,7 +38,8 @@ use datafusion_cudf::{
     NativeDataFusionPlanningOutcome, NativeDataFusionPlanningReport, NativeDataFusionPostNativeExecutionPath,
     NativeFallbackPressureOutcome, NativeFallbackPressureReport, NativeFallbackPressureWorkloadItem, TPCH_QUERY_COUNT,
     TPCH_TABLES, tiny_tpch_dataset_metadata, tpch_datafusion_planning_workload_items,
-    tpch_fallback_pressure_workload_items, tpch_query_ids, tpch_report_session_config, write_tiny_tpch_parquet_dataset,
+    tpch_fallback_pressure_workload_items, tpch_query_ids, tpch_report_session_config,
+    tpch_scalar_fallback_pressure_workload_items, write_tiny_tpch_parquet_dataset,
 };
 
 #[tokio::test]
@@ -402,6 +403,42 @@ async fn tpch_fallback_pressure_report_emits_one_pre_execution_reject_per_query(
     assert!(text.contains("q06\t"));
     assert!(text.contains("q22\t"));
     assert!(text.contains("\trewritten\t"));
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn tpch_scalar_fallback_pressure_report_pins_expression_categories() {
+    let dir = unique_temp_dir("datafusion-cudf-tpch-scalar-fallback-pressure");
+    write_tiny_tpch_parquet_dataset(&dir).unwrap();
+
+    let metadata = tiny_tpch_dataset_metadata(&dir).unwrap();
+    let items = tpch_scalar_fallback_pressure_workload_items(&dir, tpch_report_session_config()).await.unwrap();
+    let report = NativeFallbackPressureReport::collect(items).with_tpch_dataset_metadata(metadata);
+
+    let expected = [
+        ("q12_scalar_in_list_null", "expression_in_list"),
+        ("q22_scalar_substring_dynamic_start", "expression_substring_argument"),
+        ("q07_scalar_extract_hour", "expression_extract_field"),
+        ("q01_scalar_interval_minus_date", "expression_interval_arithmetic"),
+    ];
+    assert_eq!(report.rows.len(), expected.len());
+    assert_eq!(report.rewritten_count(), 0);
+    assert_eq!(report.rejected_count(), expected.len());
+
+    for (query_id, expected_category) in expected {
+        let row = report_row(&report, query_id);
+        assert_eq!(row.outcome, NativeFallbackPressureOutcome::Rejected, "unexpected outcome for {query_id}");
+        assert_eq!(row.reason_code.as_deref(), Some("unsupported_expression"), "unexpected reason for {query_id}");
+        assert_eq!(row.unsupported_category.as_deref(), Some(expected_category), "unexpected category for {query_id}");
+        assert!(row.rejected_before_execution, "{query_id} should reject before native execution");
+    }
+
+    let text = report.to_tsv();
+    assert!(text.contains("\tunsupported_expression\texpression_in_list\t"));
+    assert!(text.contains("\tunsupported_expression\texpression_substring_argument\t"));
+    assert!(text.contains("\tunsupported_expression\texpression_extract_field\t"));
+    assert!(text.contains("\tunsupported_expression\texpression_interval_arithmetic\t"));
 
     fs::remove_dir_all(dir).unwrap();
 }
