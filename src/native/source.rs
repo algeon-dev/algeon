@@ -17,7 +17,7 @@ use datafusion::{
 
 use super::{
     literal::{NativeLiteralContext, native_literal_value},
-    normalize::NormalizedNativePlan,
+    normalize::{NormalizedNativeInput, NormalizedNativePlan, NormalizedNativeSource},
     pruning::{
         coalesced_local_parquet_scan_files, explicit_row_group_selection, has_row_level_selection,
         local_object_path_to_filesystem, metadata_row_group_selections, parquet_predicate_disposition,
@@ -30,29 +30,58 @@ use crate::policy::FallbackReason;
 pub(super) fn source_diagnostics_for_normalized_plan(
     normalized: &NormalizedNativePlan<'_>,
 ) -> Vec<NativeSourceDiagnostics> {
-    let Some((file_scan, parquet_source)) = normalized.source_exec.downcast_to_file_source::<ParquetSource>() else {
-        return Vec::new();
-    };
+    let mut diagnostics = Vec::new();
+    collect_source_diagnostics_for_input(&normalized.input, normalized, &mut diagnostics);
+    diagnostics
+}
+
+fn collect_source_diagnostics_for_input(
+    input: &NormalizedNativeInput<'_>,
+    normalized: &NormalizedNativePlan<'_>,
+    diagnostics: &mut Vec<NativeSourceDiagnostics>,
+) {
+    match input {
+        NormalizedNativeInput::Source(source) => {
+            if let Some(diagnostic) = source_diagnostics_for_source(source, normalized) {
+                diagnostics.push(diagnostic);
+            }
+        },
+        NormalizedNativeInput::HashJoin(join) => {
+            collect_source_diagnostics_for_input(&join.left, normalized, diagnostics);
+            collect_source_diagnostics_for_input(&join.right, normalized, diagnostics);
+        },
+        NormalizedNativeInput::NestedLoopJoin(join) => {
+            collect_source_diagnostics_for_input(&join.left, normalized, diagnostics);
+            collect_source_diagnostics_for_input(&join.right, normalized, diagnostics);
+        },
+    }
+}
+
+fn source_diagnostics_for_source(
+    source: &NormalizedNativeSource<'_>,
+    normalized: &NormalizedNativePlan<'_>,
+) -> Option<NativeSourceDiagnostics> {
+    let (file_scan, parquet_source) = source.source_exec.downcast_to_file_source::<ParquetSource>()?;
     let table_schema = Arc::clone(file_scan.file_source().table_schema().table_schema());
     let column_requirements = required_parquet_column_requirements(
         file_scan,
-        normalized.filter,
-        normalized.pre_aggregate_projection,
+        source.filter,
+        normalized.single_source_input().and(normalized.pre_aggregate_projection),
         normalized.aggregate,
     )
     .ok();
-    vec![local_parquet_source_diagnostics(
+    Some(local_parquet_source_diagnostics(
         file_scan,
         parquet_source,
-        normalized.filter,
+        source.filter,
         table_schema,
         column_requirements.as_ref(),
         native_zero_column_count_source_is_safe(
-            normalized.filter,
-            normalized.pre_aggregate_projection,
+            source.filter,
+            normalized.single_source_input().and(normalized.pre_aggregate_projection),
             normalized.aggregate,
         ),
-    )]
+    ))
 }
 
 pub(super) fn validate_slice1_parquet_scan(
@@ -325,6 +354,63 @@ pub(super) fn required_parquet_column_requirements(
             collect_source_required_columns(group_expr, scan_projection, &table_schema, &mut output_columns)?;
             collect_required_columns(group_expr, &aggregate.input().schema(), &mut scan_output_columns)?;
         }
+    }
+
+    let mut read_columns: BTreeSet<String> = BTreeSet::new();
+    read_columns.extend(filter_columns.iter().cloned());
+    read_columns.extend(output_columns.iter().cloned());
+
+    let read_columns =
+        read_columns.into_iter().filter(|column| file_schema.index_of(column).is_ok()).collect::<BTreeSet<_>>();
+
+    let pure_filter_columns = filter_columns.difference(&output_columns).cloned().collect::<Vec<_>>();
+    let read_columns = read_columns.into_iter().collect::<Vec<_>>();
+    let required_source_columns = filter_columns.union(&output_columns).cloned().collect::<BTreeSet<_>>();
+    let projected_output_columns = output_columns.into_iter().collect::<Vec<_>>();
+    let (partition_columns, partition_column_indices) =
+        native_required_partition_columns(file_scan, &required_source_columns)?;
+    let read_column_file_indices = column_file_indices(file_schema, &read_columns)?;
+    let projected_output_column_source_refs =
+        column_source_refs(file_schema, &partition_columns, &projected_output_columns)?;
+    let pure_filter_column_source_refs = column_source_refs(file_schema, &partition_columns, &pure_filter_columns)?;
+
+    Ok(NativeParquetColumnRequirements {
+        read_columns,
+        read_column_file_indices,
+        projected_output_columns,
+        projected_output_column_source_refs,
+        pure_filter_columns,
+        pure_filter_column_source_refs,
+        partition_columns,
+        partition_column_indices,
+        scan_output_columns: scan_output_columns.into_iter().collect(),
+    })
+}
+
+pub(super) fn required_parquet_column_requirements_for_scan_columns(
+    file_scan: &FileScanConfig,
+    filter: Option<&FilterExec>,
+    required_scan_output_columns: &[String],
+) -> Result<NativeParquetColumnRequirements, FallbackReason> {
+    let file_schema = file_scan.file_schema();
+    let table_schema = Arc::clone(file_scan.file_source().table_schema().table_schema());
+    let scan_projection = file_scan.file_source().projection();
+    let scan_output_schema = file_scan.projected_schema().map_err(|_error| FallbackReason::UnsupportedExpression)?;
+
+    let mut filter_columns: BTreeSet<String> = BTreeSet::new();
+    let mut output_columns: BTreeSet<String> = BTreeSet::new();
+    let mut scan_output_columns: BTreeSet<String> = BTreeSet::new();
+
+    if let Some(filter) = filter {
+        collect_source_required_columns(filter.predicate(), scan_projection, &table_schema, &mut filter_columns)?;
+        collect_required_columns(filter.predicate(), &scan_output_schema, &mut scan_output_columns)?;
+    }
+
+    for column in required_scan_output_columns {
+        let index = scan_output_schema.index_of(column).map_err(|_error| FallbackReason::UnsupportedExpression)?;
+        let expr: Arc<dyn PhysicalExpr> = Arc::new(Column::new(column, index));
+        collect_source_required_columns(&expr, scan_projection, &table_schema, &mut output_columns)?;
+        scan_output_columns.insert(column.clone());
     }
 
     let mut read_columns: BTreeSet<String> = BTreeSet::new();

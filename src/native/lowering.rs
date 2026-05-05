@@ -1,18 +1,20 @@
-use std::sync::Arc;
+use std::{collections::BTreeSet, sync::Arc};
 
 use arrow::datatypes::{Field, Schema, SchemaRef};
 use cudf_query_engine::{
     AggregateExpr as NativeAggregateExpr, AggregateFunction as NativeAggregateFunction,
     AggregateSpec as NativeAggregateSpec, BinaryOp as NativeBinaryOp, CaseWhen as NativeCaseWhen,
-    DatePart as NativeDatePart, Expr as NativeExpr, LimitSpec as NativeLimitSpec,
-    LocalParquetSource as NativeLocalParquetSource, QueryPlan as NativeQueryPlan,
+    ColumnRef as NativeColumnRef, DatePart as NativeDatePart, Expr as NativeExpr, JoinKey as NativeJoinKey,
+    JoinNullEquality as NativeJoinNullEquality, JoinOutputColumn as NativeJoinOutputColumn, JoinSide as NativeJoinSide,
+    JoinSpec as NativeJoinSpec, JoinType as NativeJoinType, LimitSpec as NativeLimitSpec,
+    LocalParquetSource as NativeLocalParquetSource, NodeId as NativeNodeId, QueryPlan as NativeQueryPlan,
     QueryPlanBuilder as NativeQueryPlanBuilder, SortExpr as NativeSortExpr, SortSpec as NativeSortSpec,
     SourceNode as NativeSourceNode, ZERO_COLUMN_COUNT_COLUMN as NATIVE_ZERO_COLUMN_COUNT_COLUMN,
 };
 use datafusion::{
-    common::ScalarValue,
+    common::{JoinSide as DataFusionJoinSide, NullEquality, ScalarValue},
     datasource::physical_plan::ParquetSource,
-    logical_expr::Operator,
+    logical_expr::{JoinType, Operator},
     physical_expr::{
         PhysicalExpr, PhysicalSortExpr, ScalarFunctionExpr,
         expressions::{
@@ -24,6 +26,7 @@ use datafusion::{
     physical_plan::{
         ExecutionPlan,
         aggregates::AggregateExec,
+        joins::{NestedLoopJoinExec, utils::JoinFilter},
         projection::{ProjectionExec, ProjectionExpr},
         sorts::sort::SortExec,
     },
@@ -31,13 +34,17 @@ use datafusion::{
 
 use super::{
     literal::{NativeLiteralContext, native_literal_value},
-    normalize::NormalizedNativePlan,
+    normalize::{
+        NormalizedNativeHashJoin, NormalizedNativeInput, NormalizedNativeNestedLoopJoin, NormalizedNativePlan,
+        NormalizedNativeSource,
+    },
     source::{
         local_parquet_files, local_parquet_source_diagnostics, native_source_output_schema,
-        required_parquet_column_requirements, validate_slice1_parquet_scan,
+        required_parquet_column_requirements, required_parquet_column_requirements_for_scan_columns,
+        validate_slice1_parquet_scan,
     },
     validate::{
-        aggregate_is_count_star_only, is_supported_native_cast, is_supported_native_type,
+        aggregate_is_count_star_only, collect_required_columns, is_supported_native_cast, is_supported_native_type,
         native_zero_column_count_source_is_safe, validate_aggregate, validate_physical_expr, validate_schema,
         validate_sort,
     },
@@ -45,12 +52,22 @@ use super::{
 use crate::policy::FallbackReason;
 
 pub(super) fn lower_normalized_plan(normalized: &NormalizedNativePlan<'_>) -> Result<NativeQueryPlan, FallbackReason> {
-    lower_slice1_plan(normalized)
+    if normalized.single_source_input().is_some() {
+        lower_slice1_plan(normalized)
+    } else {
+        lower_joined_aggregate_plan(normalized)
+    }
+}
+
+struct LoweredNativeInput {
+    node: NativeNodeId,
+    schema: SchemaRef,
 }
 
 fn lower_slice1_plan(normalized: &NormalizedNativePlan<'_>) -> Result<NativeQueryPlan, FallbackReason> {
-    let source_exec = normalized.source_exec;
-    let filter = normalized.filter;
+    let source = normalized.single_source_input().ok_or(FallbackReason::UnsupportedOperator)?;
+    let source_exec = source.source_exec;
+    let filter = source.filter;
     let pre_aggregate_projection = normalized.pre_aggregate_projection;
     let aggregate = normalized.aggregate;
     let post_aggregate_projection = normalized.post_aggregate_projection;
@@ -206,6 +223,542 @@ fn lower_slice1_plan(normalized: &NormalizedNativePlan<'_>) -> Result<NativeQuer
     };
 
     Ok(builder.finish_with_host_sink(output_node))
+}
+
+fn lower_joined_aggregate_plan(normalized: &NormalizedNativePlan<'_>) -> Result<NativeQueryPlan, FallbackReason> {
+    let pre_aggregate_projection = normalized.pre_aggregate_projection;
+    let aggregate = normalized.aggregate;
+    let post_aggregate_projection = normalized.post_aggregate_projection;
+    let sort = normalized.sort;
+
+    validate_required_operator_schemas(normalized, None, pre_aggregate_projection, post_aggregate_projection, sort)?;
+    validate_aggregate(aggregate, false, normalized.aggregate_allows_partial)?;
+    validate_joined_aggregate_scalar_expressions(normalized)?;
+    if let Some(sort) = sort {
+        validate_sort(sort)?;
+    }
+
+    let required_input_columns = required_aggregate_input_columns(aggregate, pre_aggregate_projection)?;
+    let mut builder = NativeQueryPlanBuilder::new();
+    let lowered_input = lower_native_input(&normalized.input, &mut builder, &required_input_columns)?;
+    let (aggregate_input_node, aggregate_input_schema, synthetic_aggregate_args) = if let Some(projection) =
+        pre_aggregate_projection
+    {
+        let projection_node =
+            builder.add_projection(lowered_input.node, lower_projection_exprs(projection)?, projection.schema());
+        if let Some(synthetic_projection) =
+            synthetic_aggregate_input_projection_if_needed(aggregate, &projection.schema())?
+        {
+            let synthetic_projection_node = builder.add_projection(
+                projection_node,
+                synthetic_projection.expressions,
+                Arc::clone(&synthetic_projection.schema),
+            );
+            (synthetic_projection_node, synthetic_projection.schema, Some(synthetic_projection.aggregate_arg_aliases))
+        } else {
+            (projection_node, projection.schema(), None)
+        }
+    } else {
+        let synthetic_projection = synthetic_aggregate_input_projection(aggregate, &lowered_input.schema)?;
+        let projection_node = builder.add_projection(
+            lowered_input.node,
+            synthetic_projection.expressions,
+            Arc::clone(&synthetic_projection.schema),
+        );
+        (projection_node, synthetic_projection.schema, Some(synthetic_projection.aggregate_arg_aliases))
+    };
+    let aggregate_spec = lower_aggregate_spec(aggregate, &aggregate_input_schema, synthetic_aggregate_args.as_deref())?;
+    let aggregate_node =
+        builder.add_aggregate(aggregate_input_node, aggregate_spec, Arc::clone(&normalized.aggregate_output_schema));
+    let sort_input_node = if let Some(projection) = post_aggregate_projection {
+        builder.add_projection(aggregate_node, lower_projection_exprs(projection)?, projection.schema())
+    } else {
+        aggregate_node
+    };
+    let sorted_or_projected_node = if let Some(sort) = sort {
+        builder.add_sort(sort_input_node, lower_sort_spec(sort)?, sort.schema())
+    } else {
+        sort_input_node
+    };
+    let output_node = if let Some(limit_fetch) = normalized.limit_fetch {
+        let output_schema = normalized.sort.expect("native limit requires preceding sort").schema();
+        builder.add_limit(sorted_or_projected_node, NativeLimitSpec::fetch(limit_fetch), output_schema)
+    } else {
+        sorted_or_projected_node
+    };
+
+    Ok(builder.finish_with_host_sink(output_node))
+}
+
+fn validate_joined_aggregate_scalar_expressions(normalized: &NormalizedNativePlan<'_>) -> Result<(), FallbackReason> {
+    if let Some(projection) = normalized.pre_aggregate_projection {
+        for projection_expr in projection.expr() {
+            validate_physical_expr(&projection_expr.expr, &projection.input().schema())?;
+        }
+    }
+    for aggregate_expr in normalized.aggregate.aggr_expr() {
+        for expr in aggregate_expr.expressions() {
+            validate_physical_expr(&expr, &normalized.aggregate.input().schema())?;
+        }
+    }
+    for (group_expr, _alias) in normalized.aggregate.group_expr().expr() {
+        validate_physical_expr(group_expr, &normalized.aggregate.input().schema())?;
+    }
+    if let Some(projection) = normalized.post_aggregate_projection {
+        for projection_expr in projection.expr() {
+            validate_physical_expr(&projection_expr.expr, &projection.input().schema())?;
+        }
+    }
+    Ok(())
+}
+
+fn required_aggregate_input_columns(
+    aggregate: &AggregateExec,
+    pre_aggregate_projection: Option<&ProjectionExec>,
+) -> Result<Vec<String>, FallbackReason> {
+    let mut required = BTreeSet::new();
+    if let Some(projection) = pre_aggregate_projection {
+        for projection_expr in projection.expr() {
+            collect_required_columns(&projection_expr.expr, &projection.input().schema(), &mut required)?;
+        }
+    } else {
+        for aggregate_expr in aggregate.aggr_expr() {
+            for expr in aggregate_expr.expressions() {
+                collect_required_columns(&expr, &aggregate.input().schema(), &mut required)?;
+            }
+        }
+        for (group_expr, _alias) in aggregate.group_expr().expr() {
+            collect_required_columns(group_expr, &aggregate.input().schema(), &mut required)?;
+        }
+    }
+    Ok(required.into_iter().collect())
+}
+
+fn lower_native_input(
+    input: &NormalizedNativeInput<'_>,
+    builder: &mut NativeQueryPlanBuilder,
+    required_output_columns: &[String],
+) -> Result<LoweredNativeInput, FallbackReason> {
+    match input {
+        NormalizedNativeInput::Source(source) => lower_source_input(source, builder, required_output_columns),
+        NormalizedNativeInput::HashJoin(join) => lower_hash_join_input(join, builder, required_output_columns),
+        NormalizedNativeInput::NestedLoopJoin(join) => {
+            lower_nested_loop_join_input(join, builder, required_output_columns)
+        },
+    }
+}
+
+fn lower_source_input(
+    source: &NormalizedNativeSource<'_>,
+    builder: &mut NativeQueryPlanBuilder,
+    required_output_columns: &[String],
+) -> Result<LoweredNativeInput, FallbackReason> {
+    let source_exec = source.source_exec;
+    let filter = source.filter;
+    let (file_scan, parquet_source) =
+        source_exec.downcast_to_file_source::<ParquetSource>().ok_or(FallbackReason::UnsupportedOperator)?;
+    let column_requirements =
+        required_parquet_column_requirements_for_scan_columns(file_scan, filter, required_output_columns)?;
+    let table_schema = Arc::clone(file_scan.file_source().table_schema().table_schema());
+    let scan_projection = file_scan.file_source().projection();
+    let source_output_schema = native_source_output_schema(file_scan, &column_requirements)?;
+
+    validate_schema(Arc::clone(&source_output_schema))?;
+    if let Some(scan_projection) = scan_projection {
+        for projection_expr in
+            required_scan_projection(scan_projection, source_exec.schema(), &column_requirements.scan_output_columns)
+        {
+            validate_physical_expr(projection_expr.expr, &table_schema)?;
+        }
+    }
+    if let Some(filter) = filter {
+        validate_physical_expr(filter.predicate(), &filter.input().schema())?;
+    }
+    validate_slice1_parquet_scan(file_scan, parquet_source, filter, Arc::clone(&table_schema), &column_requirements)?;
+
+    let native_files =
+        local_parquet_files(file_scan, parquet_source, filter, Arc::clone(&table_schema), &column_requirements)?;
+    let mut native_source = NativeLocalParquetSource::from_files(
+        native_files,
+        Arc::clone(&source_output_schema),
+        column_requirements.read_columns.clone(),
+    )
+    .with_column_roles(
+        column_requirements.projected_output_columns.clone(),
+        column_requirements.pure_filter_columns.clone(),
+    )
+    .with_column_source_refs(
+        column_requirements.read_column_file_indices.clone(),
+        column_requirements.projected_output_column_source_refs.clone(),
+        column_requirements.pure_filter_column_source_refs.clone(),
+    )
+    .with_partition_columns(column_requirements.partition_columns.clone());
+    native_source.diagnostics = local_parquet_source_diagnostics(
+        file_scan,
+        parquet_source,
+        filter,
+        Arc::clone(&table_schema),
+        Some(&column_requirements),
+        false,
+    );
+
+    let source_node = builder.add_source(NativeSourceNode::LocalParquet(native_source));
+    let (scan_output_node, scan_output_schema) = if let Some(scan_projection) = scan_projection {
+        let required_scan_projection =
+            required_scan_projection(scan_projection, source_exec.schema(), &column_requirements.scan_output_columns);
+        if required_scan_projection_requires_native_projection(&required_scan_projection, &table_schema) {
+            let expressions = lower_required_file_source_projection_exprs(&required_scan_projection, &table_schema)?;
+            let schema = required_scan_projection_schema(&required_scan_projection, source_exec.schema())?;
+            (builder.add_projection(source_node, expressions, Arc::clone(&schema)), schema)
+        } else {
+            (source_node, Arc::clone(&source_output_schema))
+        }
+    } else {
+        (source_node, Arc::clone(&source_output_schema))
+    };
+    let filter_input_schema = source_exec.schema();
+    let (node, schema) = if let Some(filter) = filter {
+        let filtered_node = builder.add_filter(
+            scan_output_node,
+            lower_physical_expr(filter.predicate(), &scan_output_schema)?,
+            Arc::clone(&scan_output_schema),
+        );
+        if let Some(projection) = filter.projection() {
+            (
+                builder.add_projection(
+                    filtered_node,
+                    lower_filter_projection_exprs(projection, &filter_input_schema)?,
+                    filter.schema(),
+                ),
+                filter.schema(),
+            )
+        } else {
+            (filtered_node, scan_output_schema)
+        }
+    } else {
+        (scan_output_node, scan_output_schema)
+    };
+    Ok(LoweredNativeInput { node, schema })
+}
+
+fn lower_hash_join_input(
+    join: &NormalizedNativeHashJoin<'_>,
+    builder: &mut NativeQueryPlanBuilder,
+    required_output_columns: &[String],
+) -> Result<LoweredNativeInput, FallbackReason> {
+    let native_join_type = lower_join_type(join.join.join_type())?;
+    let output_columns = hash_join_output_columns(join, required_output_columns)?;
+    let residual = join
+        .join
+        .filter()
+        .map(|filter| lower_join_filter(filter, &join.join.left().schema(), &join.join.right().schema()))
+        .transpose()?;
+    let mut left_required = BTreeSet::new();
+    let mut right_required = BTreeSet::new();
+    let keys = join
+        .join
+        .on()
+        .iter()
+        .map(|(left, right)| {
+            let left_schema = join.join.left().schema();
+            let right_schema = join.join.right().schema();
+            let left_name = join_key_column_name(left, &left_schema)?;
+            let right_name = join_key_column_name(right, &right_schema)?;
+            left_required.insert(left_name.to_string());
+            right_required.insert(right_name.to_string());
+            Ok(NativeJoinKey::new(
+                NativeColumnRef::input(0, left_name, left_name),
+                NativeColumnRef::input(1, right_name, right_name),
+            ))
+        })
+        .collect::<Result<Vec<_>, FallbackReason>>()?;
+    for output in &output_columns.projection {
+        match output.side {
+            NativeJoinSide::Left => {
+                left_required.insert(output.column.name().to_string());
+            },
+            NativeJoinSide::Right => {
+                right_required.insert(output.column.name().to_string());
+            },
+        }
+    }
+    if let Some(residual) = &residual {
+        left_required.extend(residual.left_required.iter().cloned());
+        right_required.extend(residual.right_required.iter().cloned());
+    }
+    let left_required = left_required.into_iter().collect::<Vec<_>>();
+    let right_required = right_required.into_iter().collect::<Vec<_>>();
+    let left = lower_native_input(&join.left, builder, &left_required)?;
+    let right = lower_native_input(&join.right, builder, &right_required)?;
+    let mut spec = NativeJoinSpec::new(native_join_type, keys)
+        .with_output_projection(output_columns.projection)
+        .with_null_equality(lower_join_null_equality(join.join.null_equality()))
+        .with_build_side(native_build_side_for_join(native_join_type));
+    if let Some(residual) = residual {
+        spec = spec.with_residual_predicate(residual.predicate);
+    }
+    let node = builder.add_join(left.node, right.node, spec, Arc::clone(&output_columns.schema));
+    Ok(LoweredNativeInput { node, schema: output_columns.schema })
+}
+
+fn lower_nested_loop_join_input(
+    join: &NormalizedNativeNestedLoopJoin<'_>,
+    builder: &mut NativeQueryPlanBuilder,
+    required_output_columns: &[String],
+) -> Result<LoweredNativeInput, FallbackReason> {
+    let (native_join_type, residual) = lower_nested_loop_join_contract(join.join)?;
+    let output_columns = nested_loop_join_output_columns(join, required_output_columns)?;
+    let mut left_required = BTreeSet::new();
+    let mut right_required = BTreeSet::new();
+    for output in &output_columns.projection {
+        match output.side {
+            NativeJoinSide::Left => {
+                left_required.insert(output.column.name().to_string());
+            },
+            NativeJoinSide::Right => {
+                right_required.insert(output.column.name().to_string());
+            },
+        }
+    }
+    if let Some(residual) = &residual {
+        left_required.extend(residual.left_required.iter().cloned());
+        right_required.extend(residual.right_required.iter().cloned());
+    }
+    let left_required = left_required.into_iter().collect::<Vec<_>>();
+    let right_required = right_required.into_iter().collect::<Vec<_>>();
+    let left = lower_native_input(&join.left, builder, &left_required)?;
+    let right = lower_native_input(&join.right, builder, &right_required)?;
+    let mut spec = NativeJoinSpec::new(native_join_type, Vec::new())
+        .with_output_projection(output_columns.projection)
+        .with_build_side(native_build_side_for_join(native_join_type));
+    if let Some(residual) = residual {
+        spec = spec.with_residual_predicate(residual.predicate);
+    }
+    let node = builder.add_join(left.node, right.node, spec, Arc::clone(&output_columns.schema));
+    Ok(LoweredNativeInput { node, schema: output_columns.schema })
+}
+
+fn lower_nested_loop_join_contract(
+    join: &NestedLoopJoinExec,
+) -> Result<(NativeJoinType, Option<LoweredJoinResidual>), FallbackReason> {
+    if let Some(filter) = join.filter() {
+        let residual = lower_join_filter(filter, &join.left().schema(), &join.right().schema())?;
+        return Ok((lower_join_type(join.join_type())?, Some(residual)));
+    }
+    if matches!(join.join_type(), JoinType::Inner) {
+        return Ok((NativeJoinType::Cross, None));
+    }
+    Err(FallbackReason::UnsupportedOperator)
+}
+
+struct LoweredJoinResidual {
+    predicate: NativeExpr,
+    left_required: BTreeSet<String>,
+    right_required: BTreeSet<String>,
+}
+
+fn lower_join_filter(
+    filter: &JoinFilter,
+    left_schema: &SchemaRef,
+    right_schema: &SchemaRef,
+) -> Result<LoweredJoinResidual, FallbackReason> {
+    let mut left_required = BTreeSet::new();
+    let mut right_required = BTreeSet::new();
+    let predicate = lower_join_filter_expr(
+        filter.expression(),
+        filter,
+        left_schema,
+        right_schema,
+        &mut left_required,
+        &mut right_required,
+    )?;
+    if left_required.is_empty() || right_required.is_empty() {
+        return Err(FallbackReason::UnsupportedExpression);
+    }
+    Ok(LoweredJoinResidual { predicate, left_required, right_required })
+}
+
+fn lower_join_filter_expr(
+    expr: &Arc<dyn PhysicalExpr>,
+    filter: &JoinFilter,
+    left_schema: &SchemaRef,
+    right_schema: &SchemaRef,
+    left_required: &mut BTreeSet<String>,
+    right_required: &mut BTreeSet<String>,
+) -> Result<NativeExpr, FallbackReason> {
+    if let Some(column) = expr.as_any().downcast_ref::<Column>() {
+        return lower_join_filter_column(column, filter, left_schema, right_schema, left_required, right_required);
+    }
+    if let Some(literal) = expr.as_any().downcast_ref::<Literal>() {
+        return lower_literal(literal.value());
+    }
+    if let Some(binary) = expr.as_any().downcast_ref::<BinaryExpr>() {
+        let left =
+            lower_join_filter_expr(binary.left(), filter, left_schema, right_schema, left_required, right_required)?;
+        let right =
+            lower_join_filter_expr(binary.right(), filter, left_schema, right_schema, left_required, right_required)?;
+        let op = lower_binary_operator(binary.op())?;
+        return Ok(NativeExpr::binary(left, op, right));
+    }
+    if let Some(not) = expr.as_any().downcast_ref::<NotExpr>() {
+        return Ok(!lower_join_filter_expr(
+            not.arg(),
+            filter,
+            left_schema,
+            right_schema,
+            left_required,
+            right_required,
+        )?);
+    }
+    if let Some(is_null) = expr.as_any().downcast_ref::<IsNullExpr>() {
+        return Ok(NativeExpr::is_null(lower_join_filter_expr(
+            is_null.arg(),
+            filter,
+            left_schema,
+            right_schema,
+            left_required,
+            right_required,
+        )?));
+    }
+    if let Some(is_not_null) = expr.as_any().downcast_ref::<IsNotNullExpr>() {
+        return Ok(NativeExpr::is_not_null(lower_join_filter_expr(
+            is_not_null.arg(),
+            filter,
+            left_schema,
+            right_schema,
+            left_required,
+            right_required,
+        )?));
+    }
+    Err(FallbackReason::UnsupportedExpression)
+}
+
+fn lower_join_filter_column(
+    column: &Column,
+    filter: &JoinFilter,
+    left_schema: &SchemaRef,
+    right_schema: &SchemaRef,
+    left_required: &mut BTreeSet<String>,
+    right_required: &mut BTreeSet<String>,
+) -> Result<NativeExpr, FallbackReason> {
+    let column_index = filter.column_indices().get(column.index()).ok_or(FallbackReason::UnsupportedExpression)?;
+    let (native_input_index, schema, required) = match column_index.side {
+        DataFusionJoinSide::Left => (0, left_schema, left_required),
+        DataFusionJoinSide::Right => (1, right_schema, right_required),
+        DataFusionJoinSide::None => return Err(FallbackReason::UnsupportedExpression),
+    };
+    let field = schema.fields().get(column_index.index).ok_or(FallbackReason::UnsupportedExpression)?;
+    if !is_supported_native_type(field.data_type()) {
+        return Err(FallbackReason::UnsupportedType);
+    }
+    required.insert(field.name().clone());
+    Ok(NativeExpr::input_column(native_input_index, field.name(), field.name()))
+}
+
+struct JoinOutputColumns {
+    projection: Vec<NativeJoinOutputColumn>,
+    schema: SchemaRef,
+}
+
+fn hash_join_output_columns(
+    join: &NormalizedNativeHashJoin<'_>,
+    required_output_columns: &[String],
+) -> Result<JoinOutputColumns, FallbackReason> {
+    join_output_columns(
+        required_output_columns,
+        &join.join.left().schema(),
+        &join.join.right().schema(),
+        &join.join.schema(),
+        join.join.projection.as_deref(),
+    )
+}
+
+fn nested_loop_join_output_columns(
+    join: &NormalizedNativeNestedLoopJoin<'_>,
+    required_output_columns: &[String],
+) -> Result<JoinOutputColumns, FallbackReason> {
+    join_output_columns(
+        required_output_columns,
+        &join.join.left().schema(),
+        &join.join.right().schema(),
+        &join.join.schema(),
+        join.join.projection().as_deref(),
+    )
+}
+
+fn join_output_columns(
+    required_output_columns: &[String],
+    left_schema: &SchemaRef,
+    right_schema: &SchemaRef,
+    output_schema: &SchemaRef,
+    projection_indices: Option<&[usize]>,
+) -> Result<JoinOutputColumns, FallbackReason> {
+    let required = required_output_columns.iter().collect::<BTreeSet<_>>();
+    let mut output_fields = Vec::new();
+    let mut projection = Vec::new();
+    for (output_index, field) in output_schema.fields().iter().enumerate() {
+        if !required.is_empty() && !required.contains(field.name()) {
+            continue;
+        }
+        let join_schema_index = match projection_indices {
+            Some(projection) => *projection.get(output_index).ok_or(FallbackReason::UnsupportedExpression)?,
+            None => output_index,
+        };
+        let (side, input_index) = if join_schema_index < left_schema.fields().len() {
+            (NativeJoinSide::Left, join_schema_index)
+        } else {
+            (NativeJoinSide::Right, join_schema_index - left_schema.fields().len())
+        };
+        let input_schema = match side {
+            NativeJoinSide::Left => &left_schema,
+            NativeJoinSide::Right => &right_schema,
+        };
+        let input_field = input_schema.fields().get(input_index).ok_or(FallbackReason::UnsupportedExpression)?;
+        let output_name = field.name().clone();
+        let column = NativeColumnRef::input(
+            match side {
+                NativeJoinSide::Left => 0,
+                NativeJoinSide::Right => 1,
+            },
+            input_field.name(),
+            output_name.clone(),
+        );
+        projection.push(NativeJoinOutputColumn::new(side, column, output_name));
+        output_fields.push(field.as_ref().clone());
+    }
+    Ok(JoinOutputColumns { projection, schema: Arc::new(Schema::new(output_fields)) })
+}
+
+fn join_key_column_name<'a>(
+    expr: &'a Arc<dyn PhysicalExpr>,
+    input_schema: &'a SchemaRef,
+) -> Result<&'a str, FallbackReason> {
+    let Some(column) = expr.as_any().downcast_ref::<Column>() else {
+        return Err(FallbackReason::UnsupportedExpression);
+    };
+    resolved_column_name(column, input_schema)
+}
+
+fn lower_join_type(join_type: &JoinType) -> Result<NativeJoinType, FallbackReason> {
+    match join_type {
+        JoinType::Inner => Ok(NativeJoinType::Inner),
+        JoinType::Left => Ok(NativeJoinType::Left),
+        JoinType::Full => Ok(NativeJoinType::Full),
+        JoinType::LeftSemi => Ok(NativeJoinType::LeftSemi),
+        JoinType::LeftAnti => Ok(NativeJoinType::LeftAnti),
+        _ => Err(FallbackReason::UnsupportedOperator),
+    }
+}
+
+fn lower_join_null_equality(null_equality: NullEquality) -> NativeJoinNullEquality {
+    match null_equality {
+        NullEquality::NullEqualsNothing => NativeJoinNullEquality::NullsDoNotMatch,
+        NullEquality::NullEqualsNull => NativeJoinNullEquality::NullsMatch,
+    }
+}
+
+fn native_build_side_for_join(join_type: NativeJoinType) -> NativeJoinSide {
+    if join_type == NativeJoinType::Left { NativeJoinSide::Right } else { NativeJoinSide::Left }
 }
 
 fn validate_required_operator_schemas(

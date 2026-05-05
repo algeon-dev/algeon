@@ -48,6 +48,10 @@ impl QueryPlan {
         self.nodes.len()
     }
 
+    pub fn contains_join(&self) -> bool {
+        self.nodes.iter().any(|node| matches!(node.kind, PlanNode::Join(_)))
+    }
+
     pub fn unreachable_node_ids(&self) -> Vec<NodeId> {
         let mut reachable = vec![false; self.nodes.len()];
         let mut stack = vec![self.sink.input()];

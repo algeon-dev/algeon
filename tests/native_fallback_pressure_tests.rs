@@ -441,8 +441,8 @@ async fn tpch_fallback_pressure_report_emits_one_pre_execution_reject_per_query(
     let report = NativeFallbackPressureReport::collect(items).with_tpch_dataset_metadata(metadata.clone());
 
     assert_eq!(report.rows.len(), TPCH_QUERY_COUNT);
-    assert_eq!(report.rewritten_count(), 1);
-    assert_eq!(report.rejected_count(), TPCH_QUERY_COUNT - 1);
+    assert_eq!(report.rewritten_count(), 4);
+    assert_eq!(report.rejected_count(), TPCH_QUERY_COUNT - 4);
 
     let actual_ids = report.rows.iter().map(|row| row.query_id.as_str()).collect::<Vec<_>>();
     let expected_ids = tpch_query_ids().collect::<Vec<_>>();
@@ -573,9 +573,16 @@ async fn tpch_datafusion_planning_report_emits_one_stable_row_per_query() {
             assert_eq!(row.post_native_execution_path, NativeDataFusionPostNativeExecutionPath::Native);
             assert!(!row.rejected_before_execution, "{} should be replaced by native execution", row.query_id);
         } else {
+            let (expected_reason, expected_category) =
+                expected_tpch_datafusion_planning_rejection(row.query_id.as_str());
             assert_eq!(row.outcome, NativeDataFusionPlanningOutcome::RejectedBeforeExecution);
-            assert_eq!(row.reason_code.as_deref(), Some("unsupported_operator"));
-            assert!(row.unsupported_category.is_some(), "missing unsupported category for {}", row.query_id);
+            assert_eq!(row.reason_code.as_deref(), Some(expected_reason), "unexpected reason for {}", row.query_id);
+            assert_eq!(
+                row.unsupported_category.as_deref(),
+                Some(expected_category),
+                "unexpected unsupported category for {}",
+                row.query_id
+            );
             assert_ne!(row.post_native_execution_path, NativeDataFusionPostNativeExecutionPath::Native);
             assert!(row.rejected_before_execution, "{} should reject before native execution", row.query_id);
         }
@@ -621,8 +628,8 @@ const TPCH_FALLBACK_PRESSURE_BASELINE: &[TpchFallbackPressureBaseline] = &[
     TpchFallbackPressureBaseline {
         query_id: "q01",
         outcome: NativeFallbackPressureOutcome::Rejected,
-        reason_code: "unsupported_operator",
-        unsupported_category: "operator_shape",
+        reason_code: "unsupported_expression",
+        unsupported_category: "expression",
     },
     TpchFallbackPressureBaseline {
         query_id: "q02",
@@ -632,15 +639,15 @@ const TPCH_FALLBACK_PRESSURE_BASELINE: &[TpchFallbackPressureBaseline] = &[
     },
     TpchFallbackPressureBaseline {
         query_id: "q03",
-        outcome: NativeFallbackPressureOutcome::Rejected,
-        reason_code: "unsupported_operator",
-        unsupported_category: "operator_sort_topk",
+        outcome: NativeFallbackPressureOutcome::Rewritten,
+        reason_code: "none",
+        unsupported_category: "none",
     },
     TpchFallbackPressureBaseline {
         query_id: "q04",
-        outcome: NativeFallbackPressureOutcome::Rejected,
-        reason_code: "unsupported_operator",
-        unsupported_category: "operator_hashjoin",
+        outcome: NativeFallbackPressureOutcome::Rewritten,
+        reason_code: "none",
+        unsupported_category: "none",
     },
     TpchFallbackPressureBaseline {
         query_id: "q05",
@@ -686,9 +693,9 @@ const TPCH_FALLBACK_PRESSURE_BASELINE: &[TpchFallbackPressureBaseline] = &[
     },
     TpchFallbackPressureBaseline {
         query_id: "q12",
-        outcome: NativeFallbackPressureOutcome::Rejected,
-        reason_code: "unsupported_operator",
-        unsupported_category: "operator_hashjoin",
+        outcome: NativeFallbackPressureOutcome::Rewritten,
+        reason_code: "none",
+        unsupported_category: "none",
     },
     TpchFallbackPressureBaseline {
         query_id: "q13",
@@ -699,8 +706,8 @@ const TPCH_FALLBACK_PRESSURE_BASELINE: &[TpchFallbackPressureBaseline] = &[
     TpchFallbackPressureBaseline {
         query_id: "q14",
         outcome: NativeFallbackPressureOutcome::Rejected,
-        reason_code: "unsupported_operator",
-        unsupported_category: "operator_hashjoin",
+        reason_code: "unsupported_type",
+        unsupported_category: "type",
     },
     TpchFallbackPressureBaseline {
         query_id: "q15",
@@ -729,8 +736,8 @@ const TPCH_FALLBACK_PRESSURE_BASELINE: &[TpchFallbackPressureBaseline] = &[
     TpchFallbackPressureBaseline {
         query_id: "q19",
         outcome: NativeFallbackPressureOutcome::Rejected,
-        reason_code: "unsupported_operator",
-        unsupported_category: "operator_hashjoin",
+        reason_code: "unsupported_expression",
+        unsupported_category: "expression",
     },
     TpchFallbackPressureBaseline {
         query_id: "q20",
@@ -765,13 +772,49 @@ fn expected_tpch_physical_root(query_id: &str) -> &'static str {
 
 fn expected_tpch_native_candidate_shape(query_id: &str) -> &'static str {
     match query_id {
-        "q03" | "q10" | "q18" | "q21" => "SortExec(fetch)(ProjectionExec(AggregateExec(LocalParquetScan)))",
+        "q01" => "SortExec(ProjectionExec(AggregateExec(ProjectionExec(FilterExec(LocalParquetScan)))))",
+        "q02" | "q10" | "q18" | "q21" => "SortExec(fetch)(AggregateExec(ProjectionExec(FilterExec(LocalParquetScan))))",
+        "q03" => {
+            "SortExec(fetch)(ProjectionExec(AggregateExec(HashJoinExec(HashJoinExec(FilterExec(LocalParquetScan),FilterExec(LocalParquetScan)),FilterExec(LocalParquetScan)))))"
+        },
+        "q04" => {
+            "SortExec(ProjectionExec(AggregateExec(HashJoinExec(FilterExec(LocalParquetScan),FilterExec(LocalParquetScan)))))"
+        },
         "q06" => "ProjectionExec(AggregateExec(FilterExec(LocalParquetScan)))",
-        "q14" => "ProjectionExec(AggregateExec(ProjectionExec(LocalParquetScan)))",
-        "q17" | "q19" => "ProjectionExec(AggregateExec(LocalParquetScan))",
-        "q01" | "q02" | "q04" | "q05" | "q07" | "q08" | "q09" | "q11" | "q12" | "q13" | "q15" | "q16" | "q20"
-        | "q22" => "SortExec(fetch)(AggregateExec(ProjectionExec(FilterExec(LocalParquetScan))))",
+        "q12" => {
+            "SortExec(ProjectionExec(AggregateExec(ProjectionExec(HashJoinExec(FilterExec(LocalParquetScan),LocalParquetScan)))))"
+        },
+        "q14" => {
+            "ProjectionExec(AggregateExec(ProjectionExec(HashJoinExec(FilterExec(LocalParquetScan),LocalParquetScan))))"
+        },
+        "q17" => "ProjectionExec(AggregateExec(LocalParquetScan))",
+        "q19" => {
+            "ProjectionExec(AggregateExec(HashJoinExec(FilterExec(LocalParquetScan),FilterExec(LocalParquetScan))))"
+        },
+        "q05" | "q07" | "q08" | "q09" | "q11" | "q13" | "q15" | "q16" | "q20" | "q22" => {
+            "SortExec(AggregateExec(ProjectionExec(FilterExec(LocalParquetScan))))"
+        },
         other => panic!("missing TPC-H native candidate shape expectation for {other}"),
+    }
+}
+
+fn expected_tpch_datafusion_planning_rejection(query_id: &str) -> (&'static str, &'static str) {
+    match query_id {
+        "q01" => ("unsupported_expression", "expression"),
+        "q03" | "q04" | "q12" => ("native_bounded_join_unsupported", "operator_hashjoin"),
+        "q14" => ("unsupported_type", "type"),
+        "q19" => ("unsupported_expression", "expression"),
+        _ => ("unsupported_operator", expected_tpch_operator_unsupported_category(query_id)),
+    }
+}
+
+fn expected_tpch_operator_unsupported_category(query_id: &str) -> &'static str {
+    match query_id {
+        "q02" | "q10" | "q18" | "q21" => "operator_sort_topk",
+        "q11" | "q22" => "operator_nestedloopjoin",
+        "q04" | "q05" | "q07" | "q08" | "q09" | "q12" | "q13" | "q15" | "q16" | "q17" | "q20" => "operator_hashjoin",
+        "q01" => "operator_shape",
+        other => panic!("missing TPC-H operator unsupported category expectation for {other}"),
     }
 }
 

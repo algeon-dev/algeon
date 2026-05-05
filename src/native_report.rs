@@ -621,6 +621,9 @@ fn unsupported_category(plan: &dyn ExecutionPlan, candidate: &GpuCandidate, reas
         | FallbackReason::NativeSourceRowSelection => Some("source".to_string()),
         FallbackReason::NativeSortPreservingMergeUnsupported
         | FallbackReason::NativePartitionPreservingSortUnsupported => Some("operator_sort".to_string()),
+        FallbackReason::NativeBoundedJoinUnsupported => {
+            first_join_operator_category(plan).or_else(|| Some("operator_join".to_string()))
+        },
         FallbackReason::InsufficientIslandSize
         | FallbackReason::PlanPropertyMismatch
         | FallbackReason::ExplicitCpuPolicy => None,
@@ -634,6 +637,21 @@ fn first_unsupported_operator_category(plan: &dyn ExecutionPlan, candidate_shape
     }
     for child in plan.children() {
         if let Some(category) = first_unsupported_operator_category(child.as_ref(), candidate_shape) {
+            return Some(category);
+        }
+    }
+    None
+}
+
+fn first_join_operator_category(plan: &dyn ExecutionPlan) -> Option<String> {
+    if plan.as_any().downcast_ref::<HashJoinExec>().is_some() {
+        return Some("operator_hashjoin".to_string());
+    }
+    if plan.as_any().downcast_ref::<NestedLoopJoinExec>().is_some() {
+        return Some("operator_nestedloopjoin".to_string());
+    }
+    for child in plan.children() {
+        if let Some(category) = first_join_operator_category(child.as_ref()) {
             return Some(category);
         }
     }

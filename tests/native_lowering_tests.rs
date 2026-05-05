@@ -17,7 +17,7 @@ use cudf_query_engine::{
     AggregateFunction, Expr, LiteralValue, PlanNode, ResultSink, SourceColumnRef, SourceNode, ZERO_COLUMN_COUNT_COLUMN,
 };
 use datafusion::{
-    common::ScalarValue,
+    common::{JoinSide, JoinType, NullEquality, ScalarValue},
     config::ConfigOptions,
     datasource::{
         physical_plan::{
@@ -50,6 +50,10 @@ use datafusion::{
         ExecutionPlan,
         aggregates::{AggregateExec, AggregateMode, PhysicalGroupBy},
         filter::FilterExec,
+        joins::{
+            HashJoinExec, NestedLoopJoinExec, PartitionMode,
+            utils::{ColumnIndex, JoinFilter},
+        },
         limit::LocalLimitExec,
         projection::{ProjectionExec, ProjectionExpr},
         repartition::RepartitionExec,
@@ -328,6 +332,162 @@ fn topk_sort_fetch_lowers_to_native_sort_plus_limit() {
     assert_eq!(limit.spec.fetch, 2);
     let sort_node = result.plans[0].node(limit.input).expect("limit input should exist");
     assert!(matches!(sort_node.kind, PlanNode::Sort(_)));
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn phase5_sort_without_fetch_over_aggregate_lowers_without_native_limit() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-sort-no-fetch");
+    let path = dir.join("input.parquet");
+    write_numeric_parquet_file(&path);
+    let plan = aggregate_sort_plan(parquet_scan(&path), Operator::Plus);
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_eq!(result.candidate_count(), 1);
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert!(matches!(result.report.outcomes()[0], CandidateOutcome::Rewritten { .. }));
+    assert!(matches!(&result.plans[0].root_node().kind, PlanNode::Sort(_)));
+    assert!(!result.plans[0].nodes().iter().any(|node| matches!(&node.kind, PlanNode::Limit(_))));
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn hash_join_filter_lowers_to_native_residual_predicate() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-hash-join-filter");
+    let left_path = dir.join("left.parquet");
+    let right_path = dir.join("right.parquet");
+    write_join_left_parquet_file(&left_path);
+    write_join_right_parquet_file(&right_path);
+    let plan = hash_join_filter_aggregate_sort_limit_plan(parquet_scan(&left_path), parquet_scan(&right_path));
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    let native_plan = &result.plans[0];
+    let join = native_plan
+        .nodes()
+        .iter()
+        .find_map(|node| match &node.kind {
+            PlanNode::Join(join) => Some(join),
+            _ => None,
+        })
+        .expect("native plan should contain a join node");
+    let residual = join.spec.residual_predicate.as_ref().expect("join filter should lower as residual predicate");
+    assert!(matches!(
+        residual,
+        Expr::Binary { left, right, .. }
+            if matches!(left.as_ref(), Expr::Column(column) if column.to_string() == "input0.l_payload")
+                && matches!(right.as_ref(), Expr::Column(column) if column.to_string() == "input1.r_payload")
+    ));
+
+    let sources = native_plan
+        .nodes()
+        .iter()
+        .filter_map(|node| match &node.kind {
+            PlanNode::Source(source_node) => match source_node.as_ref() {
+                SourceNode::LocalParquet(source) => Some(source),
+            },
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(sources.len(), 2);
+    assert_eq!(sources[0].read_columns, vec!["key".to_string(), "l_m00".to_string(), "l_payload".to_string()]);
+    assert_eq!(sources[1].read_columns, vec!["key".to_string(), "r_m01".to_string(), "r_payload".to_string()]);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn phase5_nested_loop_join_filter_lowers_to_native_residual_predicate() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-nlj-filter");
+    let left_path = dir.join("left.parquet");
+    let right_path = dir.join("right.parquet");
+    write_join_left_parquet_file(&left_path);
+    write_join_right_parquet_file(&right_path);
+    let plan = nested_loop_join_filter_aggregate_sort_limit_plan(
+        parquet_scan(&left_path),
+        parquet_scan(&right_path),
+        JoinType::Inner,
+    );
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    let join = result.plans[0]
+        .nodes()
+        .iter()
+        .find_map(|node| match &node.kind {
+            PlanNode::Join(join) => Some(join),
+            _ => None,
+        })
+        .expect("native plan should contain a join node");
+    assert!(matches!(join.spec.join_type, cudf_query_engine::JoinType::Inner));
+    assert!(join.spec.keys.is_empty());
+    let residual = join.spec.residual_predicate.as_ref().expect("nested loop filter should lower as residual");
+    assert!(matches!(
+        residual,
+        Expr::Binary { left, right, .. }
+            if matches!(left.as_ref(), Expr::Column(column) if column.to_string() == "input0.l_payload")
+                && matches!(right.as_ref(), Expr::Column(column) if column.to_string() == "input1.r_payload")
+    ));
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn phase5_inner_nested_loop_join_without_filter_lowers_to_native_cross_join() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-nlj-cross");
+    let left_path = dir.join("left.parquet");
+    let right_path = dir.join("right.parquet");
+    write_join_left_parquet_file(&left_path);
+    write_join_right_parquet_file(&right_path);
+    let plan = nested_loop_join_without_filter_aggregate_sort_limit_plan(
+        parquet_scan(&left_path),
+        parquet_scan(&right_path),
+        JoinType::Inner,
+    );
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    let join = result.plans[0]
+        .nodes()
+        .iter()
+        .find_map(|node| match &node.kind {
+            PlanNode::Join(join) => Some(join),
+            _ => None,
+        })
+        .expect("native plan should contain a join node");
+    assert!(matches!(join.spec.join_type, cudf_query_engine::JoinType::Cross));
+    assert!(join.spec.keys.is_empty());
+    assert!(join.spec.residual_predicate.is_none());
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn phase5_right_nested_loop_join_is_rejected_during_native_planning() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-right-nlj");
+    let left_path = dir.join("left.parquet");
+    let right_path = dir.join("right.parquet");
+    write_join_left_parquet_file(&left_path);
+    write_join_right_parquet_file(&right_path);
+    let plan = nested_loop_join_filter_aggregate_sort_limit_plan(
+        parquet_scan(&left_path),
+        parquet_scan(&right_path),
+        JoinType::Right,
+    );
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_native_rejection(&result, FallbackReason::UnsupportedOperator);
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -2585,6 +2745,171 @@ fn native_filter_expr(plan: &cudf_query_engine::QueryPlan) -> &Expr {
         .expect("native plan should contain a filter node")
 }
 
+fn hash_join_filter_aggregate_sort_limit_plan(
+    left: Arc<dyn ExecutionPlan>,
+    right: Arc<dyn ExecutionPlan>,
+) -> Arc<dyn ExecutionPlan> {
+    let left_schema = left.schema();
+    let right_schema = right.schema();
+    let filter_schema = Arc::new(Schema::new(vec![
+        left_schema.field_with_name("l_payload").unwrap().clone(),
+        right_schema.field_with_name("r_payload").unwrap().clone(),
+    ]));
+    let filter_expr = binary(
+        col("l_payload", &filter_schema).unwrap(),
+        Operator::Gt,
+        col("r_payload", &filter_schema).unwrap(),
+        &filter_schema,
+    )
+    .unwrap();
+    let filter = JoinFilter::new(
+        filter_expr,
+        vec![
+            ColumnIndex { index: left_schema.index_of("l_payload").unwrap(), side: JoinSide::Left },
+            ColumnIndex { index: right_schema.index_of("r_payload").unwrap(), side: JoinSide::Right },
+        ],
+        filter_schema,
+    );
+    let join: Arc<dyn ExecutionPlan> = Arc::new(
+        HashJoinExec::try_new(
+            left,
+            right,
+            vec![(col("key", &left_schema).unwrap(), col("key", &right_schema).unwrap())],
+            Some(filter),
+            &JoinType::Inner,
+            Some(vec![
+                left_schema.index_of("key").unwrap(),
+                left_schema.index_of("l_m00").unwrap(),
+                left_schema.fields().len() + right_schema.index_of("r_m01").unwrap(),
+            ]),
+            PartitionMode::CollectLeft,
+            NullEquality::NullEqualsNothing,
+            false,
+        )
+        .unwrap(),
+    );
+
+    aggregate_sort_limit_join_plan(join)
+}
+
+fn nested_loop_join_filter_aggregate_sort_limit_plan(
+    left: Arc<dyn ExecutionPlan>,
+    right: Arc<dyn ExecutionPlan>,
+    join_type: JoinType,
+) -> Arc<dyn ExecutionPlan> {
+    let left_schema = left.schema();
+    let right_schema = right.schema();
+    let filter_schema = Arc::new(Schema::new(vec![
+        left_schema.field_with_name("l_payload").unwrap().clone(),
+        right_schema.field_with_name("r_payload").unwrap().clone(),
+    ]));
+    let filter_expr = binary(
+        col("l_payload", &filter_schema).unwrap(),
+        Operator::Gt,
+        col("r_payload", &filter_schema).unwrap(),
+        &filter_schema,
+    )
+    .unwrap();
+    let filter = JoinFilter::new(
+        filter_expr,
+        vec![
+            ColumnIndex { index: left_schema.index_of("l_payload").unwrap(), side: JoinSide::Left },
+            ColumnIndex { index: right_schema.index_of("r_payload").unwrap(), side: JoinSide::Right },
+        ],
+        filter_schema,
+    );
+    let join: Arc<dyn ExecutionPlan> = Arc::new(
+        NestedLoopJoinExec::try_new(
+            left,
+            right,
+            Some(filter),
+            &join_type,
+            Some(vec![
+                left_schema.index_of("key").unwrap(),
+                left_schema.index_of("l_m00").unwrap(),
+                left_schema.fields().len() + right_schema.index_of("r_m01").unwrap(),
+            ]),
+        )
+        .unwrap(),
+    );
+
+    aggregate_sort_limit_join_plan(join)
+}
+
+fn nested_loop_join_without_filter_aggregate_sort_limit_plan(
+    left: Arc<dyn ExecutionPlan>,
+    right: Arc<dyn ExecutionPlan>,
+    join_type: JoinType,
+) -> Arc<dyn ExecutionPlan> {
+    let left_schema = left.schema();
+    let right_schema = right.schema();
+    let join: Arc<dyn ExecutionPlan> = Arc::new(
+        NestedLoopJoinExec::try_new(
+            left,
+            right,
+            None,
+            &join_type,
+            Some(vec![
+                left_schema.index_of("key").unwrap(),
+                left_schema.index_of("l_m00").unwrap(),
+                left_schema.fields().len() + right_schema.index_of("r_m01").unwrap(),
+            ]),
+        )
+        .unwrap(),
+    );
+
+    aggregate_sort_limit_join_plan(join)
+}
+
+fn aggregate_sort_limit_join_plan(input: Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
+    let input_schema = input.schema();
+    let x00 = binary(
+        col("l_m00", &input_schema).unwrap(),
+        Operator::Plus,
+        col("r_m01", &input_schema).unwrap(),
+        &input_schema,
+    )
+    .unwrap();
+    let projection: Arc<dyn ExecutionPlan> = Arc::new(
+        ProjectionExec::try_new(
+            [
+                ProjectionExpr { expr: col("key", &input_schema).unwrap(), alias: "key".to_string() },
+                ProjectionExpr { expr: x00, alias: "x00".to_string() },
+            ],
+            input,
+        )
+        .unwrap(),
+    );
+
+    let projection_schema = projection.schema();
+    let group_by = PhysicalGroupBy::new_single(vec![(col("key", &projection_schema).unwrap(), "key".to_string())]);
+    let sum = AggregateExprBuilder::new(sum_udaf(), vec![col("x00", &projection_schema).unwrap()])
+        .schema(Arc::clone(&projection_schema))
+        .alias("sum_x00")
+        .build()
+        .unwrap();
+    let aggregate: Arc<dyn ExecutionPlan> = Arc::new(
+        AggregateExec::try_new(
+            AggregateMode::Single,
+            group_by,
+            vec![Arc::new(sum)],
+            vec![None],
+            projection,
+            projection_schema,
+        )
+        .unwrap(),
+    );
+
+    let aggregate_schema = aggregate.schema();
+    let sort_exprs = LexOrdering::new([
+        PhysicalSortExpr::new(col("sum_x00", &aggregate_schema).unwrap(), ArrowSortOptions::new(true, false)),
+        PhysicalSortExpr::new(col("key", &aggregate_schema).unwrap(), ArrowSortOptions::new(false, false)),
+    ])
+    .unwrap();
+    let sort: Arc<dyn ExecutionPlan> = Arc::new(SortExec::new(sort_exprs, aggregate).with_fetch(Some(2)));
+    Arc::new(LocalLimitExec::new(sort, 2))
+}
+
 fn aggregate_sort_limit_plan(scan: Arc<dyn ExecutionPlan>, projection_operator: Operator) -> Arc<dyn ExecutionPlan> {
     let sort = aggregate_sort_plan(scan, projection_operator);
     Arc::new(LocalLimitExec::new(sort, 2))
@@ -2855,6 +3180,42 @@ fn write_numeric_parquet_file(path: &std::path::Path) {
             Arc::new(Int32Array::from(vec![1, 2, 1])),
             Arc::new(Int32Array::from(vec![5, 10, 20])),
             Arc::new(Int64Array::from(vec![100, 200, 300])),
+            Arc::new(Int64Array::from(vec![1, 2, 3])),
+        ],
+    )
+    .unwrap();
+    write_batch(path, schema, batch);
+}
+
+fn write_join_left_parquet_file(path: &std::path::Path) {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int32, false),
+        Field::new("l_payload", DataType::Int32, false),
+        Field::new("l_m00", DataType::Int64, false),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int32Array::from(vec![1, 2, 1])),
+            Arc::new(Int32Array::from(vec![5, 20, 30])),
+            Arc::new(Int64Array::from(vec![100, 200, 300])),
+        ],
+    )
+    .unwrap();
+    write_batch(path, schema, batch);
+}
+
+fn write_join_right_parquet_file(path: &std::path::Path) {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int32, false),
+        Field::new("r_payload", DataType::Int32, false),
+        Field::new("r_m01", DataType::Int64, false),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int32Array::from(vec![1, 2, 3])),
+            Arc::new(Int32Array::from(vec![10, 10, 10])),
             Arc::new(Int64Array::from(vec![1, 2, 3])),
         ],
     )

@@ -74,6 +74,15 @@ pub struct NativeCudfExecutionConfig {
 }
 
 impl NativeCudfExecutionConfig {
+    pub fn unbounded() -> Self {
+        Self {
+            runtime: None,
+            device_ordinal: None,
+            memory_resource_policy: MemoryResourcePolicy::DefaultCuda,
+            memory_control_policy: MemoryControlPolicy::Unbounded,
+        }
+    }
+
     pub fn bounded(
         device_budget_bytes: u64,
         max_source_chunk_bytes: u64,
@@ -125,15 +134,6 @@ impl NativeCudfExecutionConfig {
     }
 
     fn execution_context(&self) -> crate::error::Result<ExecutionContext> {
-        if !self.memory_control_policy.is_bounded() {
-            return Err(Error::new(
-                ErrorCode::InvalidExecutionPlan,
-                "datafusion_cudf.native_exec.config",
-                "native DataFusion execution requires a bounded memory-control policy",
-            )
-            .with_fact("memory_control_policy", self.memory_control_policy));
-        }
-
         let mut builder = ExecutionContext::builder()
             .with_memory_policy(self.memory_resource_policy)
             .with_memory_control_policy(self.memory_control_policy);
@@ -170,14 +170,6 @@ impl NativeCudfExec {
                 "native DataFusion execution requires a host-arrow result sink",
             )
             .with_fact("result_sink", "gpu_resident"));
-        }
-        if !execution_config.memory_control_policy().is_bounded() {
-            return Err(Error::new(
-                ErrorCode::InvalidExecutionPlan,
-                "datafusion_cudf.native_exec.try_new",
-                "native DataFusion execution requires a bounded memory-control policy",
-            )
-            .with_fact("memory_control_policy", execution_config.memory_control_policy()));
         }
 
         Ok(Self {
