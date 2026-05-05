@@ -250,6 +250,8 @@ fn lower_expr(
         | Expr::Reduce { .. }
         | Expr::StringOp { .. }
         | Expr::DateTimeComponent { .. }
+        | Expr::DateTimeOffset { .. }
+        | Expr::InList { .. }
         | Expr::IfElse { .. } => unsupported_predicate(operation, expr_kind(expr)),
     }
 }
@@ -260,7 +262,20 @@ fn lower_literal(
     lowered: &mut LoweredRowPredicate,
     operation: &'static str,
 ) -> Result<(i32, DataType)> {
-    let scalar = literal.to_scalar_in_domain(df.execution_domain())?;
+    lower_literal_with_target(df, literal, None, lowered, operation)
+}
+
+fn lower_literal_with_target(
+    df: &DataFrame,
+    literal: &LitValue,
+    target_type: Option<DataType>,
+    lowered: &mut LoweredRowPredicate,
+    operation: &'static str,
+) -> Result<(i32, DataType)> {
+    let mut scalar = literal.to_scalar_in_domain(df.execution_domain())?;
+    if let Some(target_type) = target_type {
+        scalar = align_decimal_literal_scalar(df, scalar, target_type, operation)?;
+    }
     let dtype = scalar.data_type()?;
     if !row_predicate_literal_dtype_is_supported(dtype) {
         return unsupported_predicate(operation, "literal");
@@ -282,8 +297,91 @@ fn lower_literal(
     Ok((index, dtype))
 }
 
+fn align_decimal_literal_scalar(
+    df: &DataFrame,
+    scalar: Scalar,
+    target_type: DataType,
+    operation: &'static str,
+) -> Result<Scalar> {
+    if !target_type.id().is_decimal() {
+        return Ok(scalar);
+    }
+    let source_type = scalar.data_type()?;
+    if source_type == target_type {
+        return Ok(scalar);
+    }
+    let Some((raw, source_scale)) = scalar_decimal_or_integral_raw(&scalar, source_type)? else {
+        return Ok(scalar);
+    };
+    let raw = rescale_decimal_raw(raw, source_scale, target_type.scale(), operation)?;
+    Scalar::decimal_from_raw_in_domain(raw, target_type, df.execution_domain())
+}
+
+fn scalar_decimal_or_integral_raw(scalar: &Scalar, source_type: DataType) -> Result<Option<(i128, i32)>> {
+    let raw = match source_type.id() {
+        TypeId::Decimal32 => i128::from(scalar.decimal32_raw_value()?),
+        TypeId::Decimal64 => i128::from(scalar.decimal64_raw_value()?),
+        TypeId::Decimal128 => scalar.decimal128_raw_value()?,
+        TypeId::Int8 => i128::from(scalar.value::<i8>()?),
+        TypeId::Int16 => i128::from(scalar.value::<i16>()?),
+        TypeId::Int32 => i128::from(scalar.value::<i32>()?),
+        TypeId::Int64 => i128::from(scalar.value::<i64>()?),
+        TypeId::UInt8 => i128::from(scalar.value::<u8>()?),
+        TypeId::UInt16 => i128::from(scalar.value::<u16>()?),
+        TypeId::UInt32 => i128::from(scalar.value::<u32>()?),
+        TypeId::UInt64 => i128::from(scalar.value::<u64>()?),
+        _ => return Ok(None),
+    };
+    let scale = if source_type.id().is_decimal() { source_type.scale() } else { 0 };
+    Ok(Some((raw, scale)))
+}
+
+fn rescale_decimal_raw(raw: i128, source_scale: i32, target_scale: i32, operation: &'static str) -> Result<i128> {
+    let scale_delta = source_scale.checked_sub(target_scale).ok_or_else(|| {
+        Error::new_with(ErrorCode::ValueOutOfRange, operation, "decimal literal scale alignment overflowed")
+            .with_detail("source_scale", source_scale.to_string())
+            .with_detail("target_scale", target_scale.to_string())
+    })?;
+    if scale_delta >= 0 {
+        let multiplier = checked_pow10(scale_delta as u32, operation)?;
+        raw.checked_mul(multiplier).ok_or_else(|| {
+            Error::new_with(ErrorCode::ValueOutOfRange, operation, "decimal literal raw value overflows target scale")
+                .with_detail("source_scale", source_scale.to_string())
+                .with_detail("target_scale", target_scale.to_string())
+        })
+    } else {
+        let divisor = checked_pow10(scale_delta.unsigned_abs(), operation)?;
+        if raw % divisor != 0 {
+            return Err(Error::new_with(
+                ErrorCode::ValueOutOfRange,
+                operation,
+                "decimal literal cannot be represented exactly at target scale",
+            )
+            .with_detail("source_scale", source_scale.to_string())
+            .with_detail("target_scale", target_scale.to_string()));
+        }
+        Ok(raw / divisor)
+    }
+}
+
+fn checked_pow10(exponent: u32, operation: &'static str) -> Result<i128> {
+    let mut value = 1i128;
+    for _ in 0..exponent {
+        value = value.checked_mul(10).ok_or_else(|| {
+            Error::new_with(ErrorCode::ValueOutOfRange, operation, "decimal scale factor overflows i128")
+                .with_detail("exponent", exponent.to_string())
+        })?;
+    }
+    Ok(value)
+}
+
 fn row_predicate_literal_dtype_is_supported(dtype: DataType) -> bool {
-    dtype.id().is_numeric() || dtype.id() == TypeId::Bool8 || dtype.id() == TypeId::String
+    dtype.id().is_numeric()
+        || dtype.id().is_decimal()
+        || dtype.id().is_timestamp()
+        || dtype.id().is_duration()
+        || dtype.id() == TypeId::Bool8
+        || dtype.id() == TypeId::String
 }
 
 fn lower_binary_expr(
@@ -294,8 +392,23 @@ fn lower_binary_expr(
     lowered: &mut LoweredRowPredicate,
     operation: &'static str,
 ) -> Result<(i32, DataType)> {
-    let (lhs_index, lhs_type) = lower_expr(df, lhs, lowered, operation)?;
-    let (rhs_index, rhs_type) = lower_expr(df, rhs, lowered, operation)?;
+    let (lhs_index, lhs_type, rhs_index, rhs_type) = match (lhs, rhs) {
+        (Expr::Literal(literal), rhs) if op.is_comparison() => {
+            let (rhs_index, rhs_type) = lower_expr(df, rhs, lowered, operation)?;
+            let (lhs_index, lhs_type) = lower_literal_with_target(df, literal, Some(rhs_type), lowered, operation)?;
+            (lhs_index, lhs_type, rhs_index, rhs_type)
+        },
+        (lhs, Expr::Literal(literal)) if op.is_comparison() => {
+            let (lhs_index, lhs_type) = lower_expr(df, lhs, lowered, operation)?;
+            let (rhs_index, rhs_type) = lower_literal_with_target(df, literal, Some(lhs_type), lowered, operation)?;
+            (lhs_index, lhs_type, rhs_index, rhs_type)
+        },
+        _ => {
+            let (lhs_index, lhs_type) = lower_expr(df, lhs, lowered, operation)?;
+            let (rhs_index, rhs_type) = lower_expr(df, rhs, lowered, operation)?;
+            (lhs_index, lhs_type, rhs_index, rhs_type)
+        },
+    };
 
     let output_type = match op {
         BinaryOperator::Equal
@@ -480,6 +593,8 @@ fn expr_kind(expr: &Expr) -> &'static str {
         Expr::Reduce { .. } => "reduce",
         Expr::StringOp { .. } => "string_op",
         Expr::DateTimeComponent { .. } => "datetime_component",
+        Expr::DateTimeOffset { .. } => "datetime_offset",
+        Expr::InList { .. } => "in_list",
         Expr::IfElse { .. } => "if_else",
     }
 }

@@ -7,6 +7,7 @@
 #include <cudf/ast/ast_operator.hpp>
 #include <cudf/ast/expressions.hpp>
 #include <cudf/column/column.hpp>
+#include <cudf/fixed_point/fixed_point.hpp>
 #include <cudf/scalar/scalar.hpp>
 #include <cudf/stream_compaction.hpp>
 #include <cudf/table/table.hpp>
@@ -14,6 +15,8 @@
 #include <cudf/transform.hpp>
 #include <cudf/utilities/default_stream.hpp>
 #include <cudf/utilities/memory_resource.hpp>
+#include <cudf/wrappers/durations.hpp>
+#include <cudf/wrappers/timestamps.hpp>
 
 #include <cstdint>
 #include <stdexcept>
@@ -79,6 +82,45 @@ thread_local int32_t g_row_predicate_final_filter_call_count = 0;
       return exprs.emplace<cudf::ast::literal>(static_cast<cudf::numeric_scalar<bool>&>(scalar));
     case cudf::type_id::STRING:
       return exprs.emplace<cudf::ast::literal>(static_cast<cudf::string_scalar&>(scalar));
+    case cudf::type_id::DECIMAL32:
+      return exprs.emplace<cudf::ast::literal>(
+        static_cast<cudf::fixed_point_scalar<numeric::decimal32>&>(scalar));
+    case cudf::type_id::DECIMAL64:
+      return exprs.emplace<cudf::ast::literal>(
+        static_cast<cudf::fixed_point_scalar<numeric::decimal64>&>(scalar));
+    case cudf::type_id::DECIMAL128:
+      return exprs.emplace<cudf::ast::literal>(
+        static_cast<cudf::fixed_point_scalar<numeric::decimal128>&>(scalar));
+    case cudf::type_id::TIMESTAMP_DAYS:
+      return exprs.emplace<cudf::ast::literal>(
+        static_cast<cudf::timestamp_scalar<cudf::timestamp_D>&>(scalar));
+    case cudf::type_id::TIMESTAMP_SECONDS:
+      return exprs.emplace<cudf::ast::literal>(
+        static_cast<cudf::timestamp_scalar<cudf::timestamp_s>&>(scalar));
+    case cudf::type_id::TIMESTAMP_MILLISECONDS:
+      return exprs.emplace<cudf::ast::literal>(
+        static_cast<cudf::timestamp_scalar<cudf::timestamp_ms>&>(scalar));
+    case cudf::type_id::TIMESTAMP_MICROSECONDS:
+      return exprs.emplace<cudf::ast::literal>(
+        static_cast<cudf::timestamp_scalar<cudf::timestamp_us>&>(scalar));
+    case cudf::type_id::TIMESTAMP_NANOSECONDS:
+      return exprs.emplace<cudf::ast::literal>(
+        static_cast<cudf::timestamp_scalar<cudf::timestamp_ns>&>(scalar));
+    case cudf::type_id::DURATION_DAYS:
+      return exprs.emplace<cudf::ast::literal>(
+        static_cast<cudf::duration_scalar<cudf::duration_D>&>(scalar));
+    case cudf::type_id::DURATION_SECONDS:
+      return exprs.emplace<cudf::ast::literal>(
+        static_cast<cudf::duration_scalar<cudf::duration_s>&>(scalar));
+    case cudf::type_id::DURATION_MILLISECONDS:
+      return exprs.emplace<cudf::ast::literal>(
+        static_cast<cudf::duration_scalar<cudf::duration_ms>&>(scalar));
+    case cudf::type_id::DURATION_MICROSECONDS:
+      return exprs.emplace<cudf::ast::literal>(
+        static_cast<cudf::duration_scalar<cudf::duration_us>&>(scalar));
+    case cudf::type_id::DURATION_NANOSECONDS:
+      return exprs.emplace<cudf::ast::literal>(
+        static_cast<cudf::duration_scalar<cudf::duration_ns>&>(scalar));
     default: throw std::invalid_argument("unsupported row-predicate literal scalar type");
   }
 }

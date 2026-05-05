@@ -1,6 +1,8 @@
 //! Tests for high-level fused row-predicate filtering entry points.
 use cudf::{
-    DataFrame, DataType, ErrorCode, ErrorKind, StringSliceOptions, TypeId, ops::expr::col, testing::prelude::*,
+    DataFrame, DataType, ErrorCode, ErrorKind, StringSliceOptions, TimestampResolution, TypeId,
+    ops::expr::{col, lit_decimal32_raw, lit_decimal64_raw, lit_decimal128_raw, lit_timestamp_raw},
+    testing::prelude::*,
 };
 
 use crate::common::{
@@ -191,6 +193,122 @@ fn test_filter_any_empty_preserves_full_dtype_metadata() {
     assert_eq!(filtered.num_rows(), 0);
     assert_eq!(filtered.column_names(), df.column_names());
     assert_eq!(filtered.series("amount").unwrap().dtype().unwrap(), amount.dtype().unwrap());
+}
+
+#[test]
+fn test_filter_expr_decimal_literal_predicate_matches_tpch_q6_discount_shape() {
+    let discount =
+        series("discount", &[4i64, 5, 6, 7, 8]).unwrap().astype(DataType::fixed_point(TypeId::Decimal128, -2)).unwrap();
+    let id = series("id", &[1i32, 2, 3, 4, 5]).unwrap();
+    let df = DataFrame::from_series([("id", id), ("discount", discount)]).unwrap();
+
+    reset_row_predicate_observation();
+    let filtered = df
+        .filter_expr(col("discount").ge(lit_decimal128_raw(500, -2)) & col("discount").le(lit_decimal128_raw(700, -2)))
+        .unwrap();
+
+    assert_eq!(filtered.num_rows(), 3);
+    assert_eq!(filtered.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![2, 3, 4]);
+    assert_eq!(last_row_predicate_filter_calls(), 1);
+    assert_eq!(last_row_predicate_mask_api_calls(), 0);
+}
+
+#[test]
+fn test_filter_expr_integer_literal_rescales_to_decimal_column_on_fused_path() {
+    let discount =
+        series("discount", &[4i64, 5, 6, 7, 8]).unwrap().astype(DataType::fixed_point(TypeId::Decimal128, -2)).unwrap();
+    let id = series("id", &[1i32, 2, 3, 4, 5]).unwrap();
+    let df = DataFrame::from_series([("id", id), ("discount", discount)]).unwrap();
+
+    reset_row_predicate_observation();
+    let filtered = df.filter_expr(col("discount").ge(5i32) & col("discount").le(7i32)).unwrap();
+
+    assert_eq!(filtered.num_rows(), 3);
+    assert_eq!(filtered.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![2, 3, 4]);
+    assert_eq!(last_row_predicate_filter_calls(), 1);
+    assert_eq!(last_row_predicate_compute_mask_calls(), 1);
+    assert_eq!(last_row_predicate_final_filter_calls(), 1);
+    assert_eq!(last_row_predicate_mask_api_calls(), 0);
+}
+
+#[test]
+fn test_filter_expr_decimal32_literal_predicate_uses_fused_path() {
+    let amount = series("amount", &[1i32, 2, 3]).unwrap().astype(DataType::fixed_point(TypeId::Decimal32, -2)).unwrap();
+    let id = series("id", &[1i32, 2, 3]).unwrap();
+    let df = DataFrame::from_series([("id", id), ("amount", amount)]).unwrap();
+
+    reset_row_predicate_observation();
+    let filtered = df.filter_expr(col("amount").eq(lit_decimal32_raw(2000, -3))).unwrap();
+
+    assert_eq!(filtered.num_rows(), 1);
+    assert_eq!(filtered.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![2]);
+    assert_eq!(last_row_predicate_filter_calls(), 1);
+    assert_eq!(last_row_predicate_compute_mask_calls(), 1);
+    assert_eq!(last_row_predicate_final_filter_calls(), 1);
+    assert_eq!(last_row_predicate_mask_api_calls(), 0);
+}
+
+#[test]
+fn test_filter_expr_decimal64_literal_predicate_uses_fused_path() {
+    let amount = series("amount", &[1i64, 2, 3]).unwrap().astype(DataType::fixed_point(TypeId::Decimal64, -3)).unwrap();
+    let id = series("id", &[1i32, 2, 3]).unwrap();
+    let df = DataFrame::from_series([("id", id), ("amount", amount)]).unwrap();
+
+    reset_row_predicate_observation();
+    let filtered = df.filter_expr(col("amount").eq(lit_decimal64_raw(20, -1))).unwrap();
+
+    assert_eq!(filtered.num_rows(), 1);
+    assert_eq!(filtered.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![2]);
+    assert_eq!(last_row_predicate_filter_calls(), 1);
+    assert_eq!(last_row_predicate_compute_mask_calls(), 1);
+    assert_eq!(last_row_predicate_final_filter_calls(), 1);
+    assert_eq!(last_row_predicate_mask_api_calls(), 0);
+}
+
+#[test]
+fn test_filter_expr_decimal_literal_non_exact_rescale_returns_user_visible_error() {
+    let amount =
+        series("amount", &[100i64, 250, 300]).unwrap().astype(DataType::fixed_point(TypeId::Decimal64, -2)).unwrap();
+    let id = series("id", &[1i32, 2, 3]).unwrap();
+    let df = DataFrame::from_series([("id", id), ("amount", amount)]).unwrap();
+
+    reset_row_predicate_observation();
+    let err = df.filter_expr(col("amount").eq(lit_decimal64_raw(12345, -3))).unwrap_err();
+
+    assert_eq!(err.code(), ErrorCode::ValueOutOfRange);
+    assert_eq!(err.kind(), ErrorKind::InvalidInput);
+    assert_eq!(err.operation(), "dataframe::filter_expr");
+    assert_eq!(error_context_value(&err, "source_scale").as_deref(), Some("-3"));
+    assert_eq!(error_context_value(&err, "target_scale").as_deref(), Some("-2"));
+    assert_eq!(last_row_predicate_filter_calls(), 0);
+    assert_eq!(last_row_predicate_compute_mask_calls(), 0);
+    assert_eq!(last_row_predicate_final_filter_calls(), 0);
+    assert_eq!(last_row_predicate_mask_api_calls(), 0);
+}
+
+#[test]
+fn test_filter_expr_timestamp_days_literal_predicate_matches_tpch_q6_date_shape() {
+    let shipdate = series("shipdate", &[18_262i32, 18_263, 18_264])
+        .unwrap()
+        .astype(TypeId::DurationDays)
+        .unwrap()
+        .astype(TypeId::TimestampDays)
+        .unwrap();
+    let id = series("id", &[1i32, 2, 3]).unwrap();
+    let df = DataFrame::from_series([("id", id), ("shipdate", shipdate)]).unwrap();
+
+    reset_row_predicate_observation();
+    let filtered = df
+        .filter_expr(
+            col("shipdate").ge(lit_timestamp_raw(18_263, TimestampResolution::Days))
+                & col("shipdate").lt(lit_timestamp_raw(18_264, TimestampResolution::Days)),
+        )
+        .unwrap();
+
+    assert_eq!(filtered.num_rows(), 1);
+    assert_eq!(filtered.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![2]);
+    assert_eq!(last_row_predicate_filter_calls(), 1);
+    assert_eq!(last_row_predicate_mask_api_calls(), 0);
 }
 
 #[test]

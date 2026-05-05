@@ -32,6 +32,9 @@ pub enum ErrorCode {
     ColumnLengthMismatch,
     /// A value's type did not match the expected type.
     TypeMismatch,
+    /// A numeric, temporal, or fixed-point value could not fit in the
+    /// required target range or exact representation.
+    ValueOutOfRange,
     /// A row, column, or buffer index was out of bounds.
     IndexOutOfBounds,
     /// A null was present where a non-null value was required.
@@ -126,6 +129,7 @@ impl fmt::Display for ErrorCode {
             ErrorCode::DuplicateKey => "DuplicateKey",
             ErrorCode::ColumnLengthMismatch => "ColumnLengthMismatch",
             ErrorCode::TypeMismatch => "TypeMismatch",
+            ErrorCode::ValueOutOfRange => "ValueOutOfRange",
             ErrorCode::IndexOutOfBounds => "IndexOutOfBounds",
             ErrorCode::NullUnexpected => "NullUnexpected",
             ErrorCode::EmptyConstructionRequiresRuntime => "EmptyConstructionRequiresRuntime",
@@ -228,6 +232,7 @@ pub const fn kind_for_code(code: ErrorCode) -> ErrorKind {
         | ErrorCode::DuplicateKey
         | ErrorCode::ColumnLengthMismatch
         | ErrorCode::TypeMismatch
+        | ErrorCode::ValueOutOfRange
         | ErrorCode::IndexOutOfBounds
         | ErrorCode::NullUnexpected
         | ErrorCode::PathIsDirectory
@@ -277,6 +282,7 @@ pub const fn status_for_code(code: ErrorCode) -> ErrorStatus {
         | ErrorCode::DuplicateKey
         | ErrorCode::ColumnLengthMismatch
         | ErrorCode::TypeMismatch
+        | ErrorCode::ValueOutOfRange
         | ErrorCode::IndexOutOfBounds
         | ErrorCode::NullUnexpected
         | ErrorCode::EmptyConstructionRequiresRuntime

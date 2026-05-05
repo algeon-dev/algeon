@@ -18,4 +18,18 @@ extern "C" {
         out: *mut cudf_column_handle,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
+
+    pub fn cudf_datetime_add_calendrical_months_scalar(
+        input: cudf_column_view_handle,
+        months: i32,
+        out: *mut cudf_column_handle,
+    ) -> cudf_status_t;
+
+    /// When `options->mr` is non-NULL, it must outlive the returned column.
+    pub fn cudf_datetime_add_calendrical_months_scalar_ex(
+        input: cudf_column_view_handle,
+        months: i32,
+        out: *mut cudf_column_handle,
+        options: *const cudf_exec_options_t,
+    ) -> cudf_status_t;
 }

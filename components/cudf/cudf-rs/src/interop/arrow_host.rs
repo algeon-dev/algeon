@@ -152,8 +152,9 @@ pub fn cudf_dtype_from_arrow_type(dt: &ArrowDataType) -> Result<DataType> {
 /// Convert a supported cudf-rs logical type into the Arrow host type used by
 /// [`DataFrame::to_record_batch`].
 ///
-/// Decimal128 export uses Arrow precision 38 because libcudf retains decimal
-/// scale but not Arrow precision metadata.
+/// Decimal32, Decimal64, and Decimal128 export as Arrow Decimal128 with
+/// precision 38 because libcudf retains decimal scale but not Arrow precision
+/// metadata.
 pub fn arrow_type_from_cudf_dtype(dtype: DataType) -> Result<ArrowDataType> {
     arrow_type_from_cudf_dtype_in(dtype, "arrow_host::arrow_type_from_cudf_dtype")
 }
@@ -262,7 +263,7 @@ fn arrow_type_from_cudf_dtype_in(dtype: DataType, operation: &'static str) -> Re
         TypeId::TimestampMicroseconds => Ok(ArrowDataType::Timestamp(TimeUnit::Microsecond, None)),
         TypeId::TimestampNanoseconds => Ok(ArrowDataType::Timestamp(TimeUnit::Nanosecond, None)),
         TypeId::String => Ok(ArrowDataType::Utf8),
-        TypeId::Decimal128 => {
+        TypeId::Decimal32 | TypeId::Decimal64 | TypeId::Decimal128 => {
             let arrow_scale = cudf_decimal_scale_to_arrow_scale(dtype.scale(), operation)
                 .map_err(|error| error.with_fact(FACT_TYPE_ID, dtype.id()))?;
             Ok(ArrowDataType::Decimal128(DEFAULT_DECIMAL128_ARROW_PRECISION, arrow_scale))
@@ -292,8 +293,11 @@ impl DataFrame {
     /// - Numeric: `Int8`, `Int16`, `Int32`, `Int64`, `UInt8`, `UInt16`,
     ///   `UInt32`, `UInt64`, `Float32`, `Float64`
     /// - `Bool8`
-    /// - `Decimal128` as Arrow `Decimal128(38, scale)`. cuDF stores decimal
-    ///   scale but not precision, so this host path uses precision 38.
+    /// - `Decimal32`, `Decimal64`, and `Decimal128` as Arrow
+    ///   `Decimal128(38, scale)`. Decimal32 and Decimal64 raw values are
+    ///   widened to Arrow's i128 decimal storage during the host copy; Decimal128
+    ///   values are copied directly into Arrow Decimal128 storage. cuDF stores
+    ///   decimal scale but not precision, so this host path uses precision 38.
     /// - `TimestampDays` as Arrow `Date32`
     /// - `TimestampSeconds`, `TimestampMilliseconds`, `TimestampMicroseconds`,
     ///   and `TimestampNanoseconds` as Arrow timestamps without time zone.
@@ -503,6 +507,8 @@ fn column_view_to_arrow(cv: &ColumnView<'_>, dtype: DataType) -> Result<Arc<dyn 
         TypeId::Float64 => numeric_to_arrow::<f64>(cv),
         TypeId::Bool8 => bool_to_arrow(cv),
         TypeId::String => string_to_arrow(cv),
+        TypeId::Decimal32 => decimal_widening_to_arrow::<i32>(cv, dtype),
+        TypeId::Decimal64 => decimal_widening_to_arrow::<i64>(cv, dtype),
         TypeId::Decimal128 => decimal128_to_arrow(cv, dtype),
         TypeId::TimestampDays => fixed_width_to_arrow::<i32, arrow::datatypes::Date32Type>(cv),
         TypeId::TimestampSeconds => fixed_width_to_arrow::<i64, arrow::datatypes::TimestampSecondType>(cv),
@@ -641,8 +647,22 @@ fn decimal128_to_arrow(cv: &ColumnView<'_>, dtype: DataType) -> Result<Arc<dyn A
     let arrow_scale = cudf_decimal_scale_to_arrow_scale(dtype.scale(), "arrow::decimal128_to_arrow")
         .map_err(|error| error.with_fact(FACT_TYPE_ID, dtype.id()))?;
     let data = fixed_width_host_values::<i128>(cv)?;
-    let validity = cv.to_host_validity()?;
+    decimal128_array_from_values(data, cv.to_host_validity()?, arrow_scale)
+}
 
+fn decimal_widening_to_arrow<T>(cv: &ColumnView<'_>, dtype: DataType) -> Result<Arc<dyn Array>>
+where T: Copy + Default + Into<i128> {
+    let arrow_scale = cudf_decimal_scale_to_arrow_scale(dtype.scale(), "arrow::decimal_widening_to_arrow")
+        .map_err(|error| error.with_fact(FACT_TYPE_ID, dtype.id()))?;
+    let data = fixed_width_host_values::<T>(cv)?.into_iter().map(Into::into).collect::<Vec<_>>();
+    decimal128_array_from_values(data, cv.to_host_validity()?, arrow_scale)
+}
+
+fn decimal128_array_from_values(
+    data: Vec<i128>,
+    validity: Option<Vec<bool>>,
+    arrow_scale: i8,
+) -> Result<Arc<dyn Array>> {
     let arr = match validity {
         None => Decimal128Array::from(data),
         Some(mask) => Decimal128Array::from(

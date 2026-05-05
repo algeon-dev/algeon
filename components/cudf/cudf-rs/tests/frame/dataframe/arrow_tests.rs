@@ -21,6 +21,16 @@ fn decimal128_series(values: &[i64], scale: i32) -> cudf::Result<cudf::Series> {
     crate::common::series("amount", values)?.astype(DataType::fixed_point(TypeId::Decimal128, scale))
 }
 
+fn nullable_decimal32_series(values: &[i32], validity: &[bool], scale: i32) -> cudf::Result<cudf::Series> {
+    crate::common::nullable_series("amount32", values, validity)?
+        .astype(DataType::fixed_point(TypeId::Decimal32, scale))
+}
+
+fn nullable_decimal64_series(values: &[i64], validity: &[bool], scale: i32) -> cudf::Result<cudf::Series> {
+    crate::common::nullable_series("amount64", values, validity)?
+        .astype(DataType::fixed_point(TypeId::Decimal64, scale))
+}
+
 fn timestamp_series(values: &[i64], duration_type: TypeId, timestamp_type: TypeId) -> cudf::Result<cudf::Series> {
     crate::common::series("ts", values)?.astype(duration_type)?.astype(timestamp_type)
 }
@@ -122,6 +132,14 @@ fn test_arrow_host_dtype_mapping_preserves_logical_metadata() {
     assert_eq!(
         arrow_type_from_cudf_dtype(DataType::fixed_point(TypeId::Decimal128, -6)).unwrap(),
         ArrowDataType::Decimal128(38, 6)
+    );
+    assert_eq!(
+        arrow_type_from_cudf_dtype(DataType::fixed_point(TypeId::Decimal32, -2)).unwrap(),
+        ArrowDataType::Decimal128(38, 2)
+    );
+    assert_eq!(
+        arrow_type_from_cudf_dtype(DataType::fixed_point(TypeId::Decimal64, -4)).unwrap(),
+        ArrowDataType::Decimal128(38, 4)
     );
     assert_eq!(
         cudf_dtype_from_arrow_type(&ArrowDataType::Timestamp(TimeUnit::Nanosecond, None)).unwrap(),
@@ -503,6 +521,38 @@ fn test_to_record_batch_exports_decimal128_date32_and_timestamp_units() {
         batch.column(5).as_primitive::<arrow::datatypes::TimestampNanosecondType>().values().as_ref(),
         &[1_000, 2_000, 3_000]
     );
+}
+
+#[test]
+fn test_to_record_batch_exports_decimal32_and_decimal64_as_decimal128_with_nulls() {
+    let decimal32 = nullable_decimal32_series(&[123, 0, -5], &[true, false, true], -2).unwrap();
+    let decimal64 = nullable_decimal64_series(&[12345, 0, -678], &[true, false, true], -3).unwrap();
+    let df = DataFrame::from_series([("amount32", decimal32), ("amount64", decimal64)]).unwrap();
+
+    let batch = df.to_record_batch().unwrap();
+
+    assert_eq!(batch.num_columns(), 2);
+    assert_eq!(batch.num_rows(), 3);
+    assert_eq!(*batch.schema().field(0).data_type(), ArrowDataType::Decimal128(38, 2));
+    assert!(batch.schema().field(0).is_nullable());
+    assert_eq!(*batch.schema().field(1).data_type(), ArrowDataType::Decimal128(38, 3));
+    assert!(batch.schema().field(1).is_nullable());
+
+    let amount32 = batch.column(0).as_primitive::<arrow::datatypes::Decimal128Type>();
+    assert_eq!(amount32.precision(), 38);
+    assert_eq!(amount32.scale(), 2);
+    assert!(amount32.is_valid(0));
+    assert!(!amount32.is_valid(1));
+    assert!(amount32.is_valid(2));
+    assert_eq!(amount32.values().as_ref(), &[12300i128, 0, -500]);
+
+    let amount64 = batch.column(1).as_primitive::<arrow::datatypes::Decimal128Type>();
+    assert_eq!(amount64.precision(), 38);
+    assert_eq!(amount64.scale(), 3);
+    assert!(amount64.is_valid(0));
+    assert!(!amount64.is_valid(1));
+    assert!(amount64.is_valid(2));
+    assert_eq!(amount64.values().as_ref(), &[12345000i128, 0, -678000]);
 }
 
 #[test]

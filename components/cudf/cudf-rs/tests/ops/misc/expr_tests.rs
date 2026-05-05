@@ -498,6 +498,53 @@ fn timestamp_days_plus_duration_expr_preserves_timestamp_resolution() {
 }
 
 #[test]
+fn timestamp_days_datetime_offset_adds_calendrical_months() {
+    let shipdate = crate::common::series("shipdate", &[18_262i32, 18_293, 18_322])
+        .unwrap()
+        .astype(TypeId::DurationDays)
+        .unwrap()
+        .astype(TypeId::TimestampDays)
+        .unwrap();
+    let df = df_with_series("shipdate", shipdate);
+
+    let result = eval(col("shipdate").dt().offset(1, 2, 0).alias("shifted_shipdate"), &df);
+
+    assert_eq!(result.dtype().unwrap().id(), TypeId::TimestampDays);
+    assert_eq!(host_export_i32_values(&result), vec![18_295, 18_324, 18_355]);
+}
+
+#[test]
+fn timestamp_days_datetime_offset_rejects_non_exact_duration_resolution() {
+    let shipdate = crate::common::series("shipdate", &[18_262i32])
+        .unwrap()
+        .astype(TypeId::DurationDays)
+        .unwrap()
+        .astype(TypeId::TimestampDays)
+        .unwrap();
+    let df = df_with_series("shipdate", shipdate);
+
+    let err = col("shipdate").dt().offset(0, 0, 1).alias("shifted_shipdate").eval(&df).unwrap_err();
+
+    assert_eq!(err.code(), ErrorCode::ValueOutOfRange);
+    assert_eq!(err.operation(), "expr::eval_in");
+    assert_eq!(err.detail_value("resolution"), Some("Days"));
+    assert_eq!(err.detail_value("days"), Some("0"));
+    assert_eq!(err.detail_value("nanoseconds"), Some("1"));
+}
+
+#[test]
+fn datetime_offset_zero_interval_still_rejects_non_timestamp_input() {
+    let df = i32_df("x", &[1, 2, 3]);
+
+    let err = col("x").dt().offset(0, 0, 0).alias("x").eval(&df).unwrap_err();
+
+    assert_eq!(err.code(), ErrorCode::TypeMismatch);
+    assert_eq!(err.operation(), "expr::eval_in");
+    assert_eq!(err.detail_value("actual_type_id"), Some("int32"));
+    assert_eq!(err.detail_value("expected_family"), Some("timestamp"));
+}
+
+#[test]
 fn timestamp_expr_datetime_namespace_extracts_components() {
     let dates = crate::common::series("ts", &[0i32, 31, 365])
         .unwrap()
@@ -697,6 +744,46 @@ fn with_columns_is_null_no_alias_needed() {
     let df = nullable_i32_df("v", &[1, 0, 3], &[true, false, true]);
     let df2 = df.with_columns([col("v").is_null()]).unwrap();
     assert_eq!(df2.series("v").unwrap().dtype().unwrap().id(), TypeId::Bool8);
+}
+
+#[test]
+fn in_list_expression_evaluates_literal_membership_with_nulls() {
+    let df = nullable_i32_df("v", &[1, 0, 3, 4], &[true, false, true, true]);
+
+    let result = eval(col("v").is_in_list(vec![lit(1i32), lit(4i32)]).alias("member"), &df);
+    assert_eq!(result.to_optional_vec::<bool>().unwrap(), vec![Some(true), None, Some(false), Some(true)]);
+
+    let result = eval(col("v").is_not_in_list(vec![lit(1i32), lit(4i32)]).alias("not_member"), &df);
+    assert_eq!(result.to_optional_vec::<bool>().unwrap(), vec![Some(false), None, Some(true), Some(false)]);
+}
+
+#[test]
+fn in_list_expression_rejects_empty_haystack() {
+    let df = i32_df("v", &[1, 2, 3]);
+
+    let err = col("v").is_in_list(vec![]).alias("member").eval(&df).unwrap_err();
+
+    assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
+    assert_eq!(err.operation(), "expr::eval_in");
+    assert_eq!(err.detail_value("reason"), Some("empty_in_list"));
+}
+
+#[test]
+fn is_not_in_list_expression_propagates_nulls_for_all_null_input() {
+    let df = nullable_i32_df("v", &[0, 0, 0], &[false, false, false]);
+
+    let result = eval(col("v").is_not_in_list(vec![lit(1i32)]).alias("not_member"), &df);
+
+    assert_eq!(result.to_optional_vec::<bool>().unwrap(), vec![None, None, None]);
+}
+
+#[test]
+fn is_not_in_list_expression_propagates_nulls_for_all_null_haystack() {
+    let df = nullable_i32_df("v", &[1, 0, 3], &[true, false, true]);
+
+    let result = eval(col("v").is_not_in_list(vec![lit_null(TypeId::Int32)]).alias("not_member"), &df);
+
+    assert_eq!(result.to_optional_vec::<bool>().unwrap(), vec![None, None, None]);
 }
 
 #[test]

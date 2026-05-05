@@ -78,6 +78,22 @@ fn test_datetime_extract_rejects_non_timestamp_with_stable_error() {
 }
 
 #[test]
+fn test_datetime_add_calendrical_months_rejects_non_timestamp_without_component_context() {
+    let ints = series("x", &[1i32, 2, 3]).unwrap();
+    let view = ints.as_column().testing_view().unwrap();
+
+    let err = datetime::add_calendrical_months(&view, 1).unwrap_err();
+
+    assert_eq!(err.kind(), ErrorKind::InvalidInput);
+    assert_eq!(err.code(), ErrorCode::TypeMismatch);
+    assert_eq!(err.operation(), "datetime::add_calendrical_months");
+    assert_eq!(err.message(), "datetime offset requires timestamp input");
+    assert_eq!(error_context_value(&err, "type_id").as_deref(), Some("int32"));
+    assert_eq!(error_context_value(&err, "expected_family").as_deref(), Some("timestamp"));
+    assert_eq!(error_context_value(&err, "component").as_deref(), None);
+}
+
+#[test]
 fn test_datetime_low_level_extract_component_matches_series_namespace() {
     let ts = timestamp_days_series(&[9_204, 10_561]).unwrap();
     let view = ts.as_column().testing_view().unwrap();
