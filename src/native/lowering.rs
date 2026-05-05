@@ -84,8 +84,6 @@ fn lower_slice1_plan(normalized: &NormalizedNativePlan<'_>) -> Result<NativeQuer
     validate_aggregate(aggregate, pre_aggregate_projection.is_some(), normalized.aggregate_allows_partial)?;
     if let Some(sort) = sort {
         validate_sort(sort)?;
-    } else if !zero_column_count_safe {
-        return Err(FallbackReason::UnsupportedOperator);
     }
 
     let native_files =

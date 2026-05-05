@@ -195,7 +195,14 @@ pub(super) fn execute_bounded_chunk_attempt(
         for (projection, output_schema) in &bounded.post_filter_projections {
             frame = execute_projection(context, projection, frame, output_schema, metrics)?;
         }
-        execute_partial_aggregate(context, bounded.aggregate.0, frame, metrics)
+        execute_partial_aggregate(
+            context,
+            bounded.aggregate.0,
+            bounded.aggregate_input_schema,
+            bounded.aggregate.1,
+            frame,
+            metrics,
+        )
     })();
     metrics.chunk_operator_time += chunk_operator_timer.elapsed();
     let frame = match chunk_output {
@@ -238,6 +245,7 @@ pub(super) struct BoundedPlan<'a> {
     pub(super) filter: Option<&'a FilterNode>,
     pub(super) post_filter_projections: Vec<ProjectionStage<'a>>,
     pub(super) aggregate_id: NodeId,
+    pub(super) aggregate_input_schema: &'a arrow::datatypes::SchemaRef,
     pub(super) aggregate: (&'a AggregateNode, &'a arrow::datatypes::SchemaRef),
     pub(super) post_aggregate_projection: Option<ProjectionStage<'a>>,
     pub(super) sort: Option<&'a SortNode>,
@@ -312,6 +320,9 @@ impl<'a> BoundedPlan<'a> {
                 "missing_grouped_aggregate",
             ));
         };
+        let aggregate_input_node = plan.node(aggregate.input).ok_or_else(|| {
+            invalid_node_reference(aggregate.input, "bounded query plan references a missing aggregate input node")
+        })?;
         current = aggregate.input;
 
         let post_filter_projections =
@@ -345,6 +356,7 @@ impl<'a> BoundedPlan<'a> {
             filter,
             post_filter_projections,
             aggregate_id,
+            aggregate_input_schema: &aggregate_input_node.facts.output_schema,
             aggregate: (aggregate, &aggregate_node.facts.output_schema),
             post_aggregate_projection,
             sort,
@@ -504,7 +516,7 @@ pub(super) fn execute_final_aggregate_projection(
     reservations: &mut ReservationTracker,
     metrics: &mut QueryMetrics,
 ) -> Result<CommittedPartial> {
-    if !aggregate_spec_has_avg(&bounded.aggregate.0.spec) {
+    if !aggregate_spec_has_global_final_state(&bounded.aggregate.0.spec) {
         return Ok(input);
     }
 
@@ -516,18 +528,21 @@ pub(super) fn execute_final_aggregate_projection(
     let work_reservation = reservations.try_reserve(request, metrics)?;
     let expected_output_names =
         bounded.aggregate.1.fields().iter().map(|field| field.name().clone()).collect::<Vec<_>>();
-    let result =
+    let result = if aggregate_spec_has_avg(&bounded.aggregate.0.spec) {
         finalize_avg_output_columns(context, input.frame.into_frame(), &bounded.aggregate.0.spec, bounded.aggregate.1)
-            .and_then(|frame| {
-                frame.select(expected_output_names.iter().map(String::as_str).collect::<Vec<_>>()).map_err(|error| {
-                    QueryError::from_cudf(
-                        "cudf_query_engine.final_projection.select",
-                        "failed to select bounded native final aggregate output columns",
-                        error,
-                    )
-                })
-            })
-            .map(GpuDataFrame::new);
+    } else {
+        Ok(input.frame.into_frame())
+    }
+    .and_then(|frame| {
+        frame.select(expected_output_names.iter().map(String::as_str).collect::<Vec<_>>()).map_err(|error| {
+            QueryError::from_cudf(
+                "cudf_query_engine.final_projection.select",
+                "failed to select bounded native final aggregate output columns",
+                error,
+            )
+        })
+    })
+    .map(GpuDataFrame::new);
     reservations.release(work_reservation);
     let frame = match result {
         Ok(frame) => frame,
@@ -1334,7 +1349,16 @@ pub(super) fn execute_final_aggregate(
 ) -> Result<GpuDataFrame> {
     if bounded.aggregate.0.spec.group_exprs.is_empty() {
         let final_spec = final_global_aggregate_spec(&bounded.aggregate.0.spec);
-        return execute_global_aggregate(context, &final_spec, input, bounded.aggregate.1, metrics);
+        let output_schema = if aggregate_spec_has_global_final_state(&bounded.aggregate.0.spec) {
+            final_global_aggregate_state_output_schema(
+                &bounded.aggregate.0.spec,
+                bounded.aggregate_input_schema,
+                bounded.aggregate.1,
+            )?
+        } else {
+            Arc::clone(bounded.aggregate.1)
+        };
+        return execute_global_aggregate(context, &final_spec, input, &output_schema, metrics);
     }
 
     let aggregate = lower_final_aggregate_spec(&bounded.aggregate.0.spec)?;
@@ -1382,9 +1406,43 @@ pub(super) fn final_global_aggregate_spec(spec: &AggregateSpec) -> AggregateSpec
         Vec::new(),
         spec.aggr_exprs
             .iter()
-            .map(|expr| AggregateExpr::new(expr.function, Expr::column(expr.alias.clone()), expr.alias.clone()))
+            .enumerate()
+            .flat_map(|(index, expr)| match expr.function {
+                AggregateFunction::Count => vec![AggregateExpr::new(
+                    AggregateFunction::Sum,
+                    Expr::column(expr.alias.clone()),
+                    expr.alias.clone(),
+                )],
+                AggregateFunction::Avg => {
+                    let sum_alias = avg_sum_state_alias(index);
+                    let count_alias = avg_count_state_alias(index);
+                    vec![
+                        AggregateExpr::new(AggregateFunction::Sum, Expr::column(sum_alias.clone()), sum_alias),
+                        AggregateExpr::new(AggregateFunction::Sum, Expr::column(count_alias.clone()), count_alias),
+                    ]
+                },
+                AggregateFunction::Sum | AggregateFunction::Min | AggregateFunction::Max => {
+                    let valid_count_alias = global_valid_count_state_alias(expr.alias.as_str());
+                    vec![
+                        AggregateExpr::new(expr.function, Expr::column(expr.alias.clone()), expr.alias.clone()),
+                        AggregateExpr::new(
+                            AggregateFunction::Sum,
+                            Expr::column(valid_count_alias.clone()),
+                            valid_count_alias,
+                        ),
+                    ]
+                },
+            })
             .collect(),
     )
+}
+
+pub(super) fn aggregate_spec_has_global_final_state(spec: &AggregateSpec) -> bool {
+    aggregate_spec_has_avg(spec)
+        || spec.group_exprs.is_empty()
+            && spec.aggr_exprs.iter().any(|expr| {
+                matches!(expr.function, AggregateFunction::Sum | AggregateFunction::Min | AggregateFunction::Max)
+            })
 }
 
 pub(super) struct ActiveReservation {

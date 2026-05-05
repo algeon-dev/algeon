@@ -5,7 +5,7 @@ use std::{
 };
 
 use arrow::{
-    array::{ArrayRef, Date32Array, Int32Array, Int64Array, StringArray},
+    array::{ArrayRef, Date32Array, Decimal128Array, Int32Array, Int64Array, StringArray},
     compute::SortOptions as ArrowSortOptions,
     datatypes::{DataType, Field, Schema},
     record_batch::RecordBatch,
@@ -42,7 +42,7 @@ use datafusion::{
 };
 use datafusion_cudf::{
     CudfOptimizerConfig, CudfSessionStateBuilderExt, Error, ErrorCode, GpuFallbackPolicy, NativeCudfExec,
-    NativeCudfExecutionConfig, lower_physical_plan_to_native,
+    NativeCudfExecutionConfig, lower_physical_plan_to_native, write_tiny_tpch_parquet_dataset,
 };
 
 static ARROW_HOST_OBSERVATION_LOCK: Mutex<()> = Mutex::new(());
@@ -152,6 +152,126 @@ async fn native_runtime_nullable_avg_output_ordering_matches_cpu() {
     assert_default_sql_native_parity(&path, SQL_AVG_ORDER_BY_VALUE_QUERY, None).await;
 
     fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn native_runtime_q6_shaped_global_decimal_sum_matches_cpu() {
+    let dir = unique_temp_dir("datafusion-cudf-native-runtime-q6-shaped");
+    let path = dir.join("lineitem.parquet");
+    write_q6_lineitem_parquet(&path);
+
+    let cpu_batches = cpu_sql_output(&path, SQL_Q6_SHAPED_QUERY).await;
+    let native_physical_plan = sql_plan(&path, direct_friendly_sql_session_config(), SQL_Q6_SHAPED_QUERY).await;
+    let lowering = lower_physical_plan_to_native(native_physical_plan);
+    assert_eq!(lowering.rewritten_count(), 1, "outcomes={:?}", lowering.report.outcomes());
+    assert_eq!(lowering.rejected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
+    assert_eq!(lowering.plans.len(), 1);
+    assert_eq!(lowering.source_diagnostics[0].read_column_count, 4);
+
+    let context = bounded_execution_context();
+    let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().unwrap();
+    cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
+    let result = execute_query_plan(&context, &lowering.plans[0]).unwrap();
+    let metrics = result.metrics();
+    assert_eq!(metrics.boundary.host_to_device_uploads, 0);
+    assert_eq!(metrics.boundary.device_to_host_materializations, 1);
+    assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
+    assert_eq!(cudf::testing::arrow::arrow_host_export_call_count_for_test(), 1);
+
+    let QueryOutput::HostArrow(native_batch) = result.output() else {
+        panic!("native host sink should return a RecordBatch");
+    };
+    assert_batches_equal(&cpu_batches, std::slice::from_ref(native_batch));
+    let revenue = decimal128_array(native_batch, 0);
+    assert_eq!(revenue.value(0), 260_000);
+    assert_eq!(revenue.scale(), 4);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn native_datafusion_exec_q6_shaped_global_decimal_sum_matches_cpu() {
+    let dir = unique_temp_dir("datafusion-cudf-native-datafusion-q6-shaped");
+    let path = dir.join("lineitem.parquet");
+    write_q6_lineitem_parquet(&path);
+    let cpu_batches = cpu_sql_output(&path, SQL_Q6_SHAPED_QUERY).await;
+
+    let plan = native_datafusion_sql_plan(&path, SQL_Q6_SHAPED_QUERY, native_datafusion_config()).await;
+
+    assert_eq!(plan.name(), "NativeCudfExec");
+    assert!(plan.as_any().downcast_ref::<NativeCudfExec>().is_some());
+    let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().unwrap();
+    cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
+    let native_batches = collect(Arc::clone(&plan), Arc::new(TaskContext::default())).await.unwrap();
+
+    assert_batches_equal(&cpu_batches, &native_batches);
+    assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
+    assert_eq!(cudf::testing::arrow::arrow_host_export_call_count_for_test(), 1);
+
+    let metrics = plan.metrics().expect("NativeCudfExec should expose DataFusion metrics");
+    assert_eq!(metrics.sum_by_name("host_to_device_uploads").unwrap().as_usize(), 0);
+    assert_eq!(metrics.sum_by_name("device_to_host_materializations").unwrap().as_usize(), 1);
+    assert!(metrics.sum_by_name("source_chunks_planned").unwrap().as_usize() > 0);
+    assert_eq!(
+        metrics.sum_by_name("source_chunks_planned").unwrap().as_usize(),
+        metrics.sum_by_name("source_chunks_committed").unwrap().as_usize(),
+    );
+    assert!(metrics.sum_by_name("row_groups_planned").unwrap().as_usize() > 0);
+    assert_eq!(
+        metrics.sum_by_name("row_groups_planned").unwrap().as_usize(),
+        metrics.sum_by_name("row_groups_committed").unwrap().as_usize(),
+    );
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn native_runtime_global_decimal_avg_matches_cpu() {
+    let dir = unique_temp_dir("datafusion-cudf-native-runtime-global-decimal-avg");
+    let path = dir.join("lineitem.parquet");
+    write_q6_lineitem_parquet(&path);
+
+    let cpu_batches = cpu_sql_output(&path, SQL_GLOBAL_DECIMAL_AVG_QUERY).await;
+    let native_physical_plan =
+        sql_plan(&path, direct_friendly_sql_session_config(), SQL_GLOBAL_DECIMAL_AVG_QUERY).await;
+    let lowering = lower_physical_plan_to_native(native_physical_plan);
+    assert_eq!(lowering.rewritten_count(), 1, "outcomes={:?}", lowering.report.outcomes());
+    assert_eq!(lowering.rejected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
+    assert_eq!(lowering.plans.len(), 1);
+
+    let context = bounded_execution_context();
+    let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().unwrap();
+    cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
+    let result = execute_query_plan(&context, &lowering.plans[0]).unwrap();
+    let metrics = result.metrics();
+    assert_eq!(metrics.boundary.host_to_device_uploads, 0);
+    assert_eq!(metrics.boundary.device_to_host_materializations, 1);
+
+    let QueryOutput::HostArrow(native_batch) = result.output() else {
+        panic!("native host sink should return a RecordBatch");
+    };
+    assert_batches_equal(&cpu_batches, std::slice::from_ref(native_batch));
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn native_runtime_tpch_q6_tiny_matches_cpu() {
+    let dir = unique_temp_dir("datafusion-cudf-native-runtime-tpch-q6-tiny");
+    write_tiny_tpch_parquet_dataset(&dir).unwrap();
+
+    assert_tpch_q6_native_parity(&dir.join("lineitem.parquet")).await;
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires local TPC-H SF1 Parquet data"]
+async fn native_runtime_tpch_q6_sf1_matches_cpu() {
+    let root = std::env::var("CUDF_TPCH_PARQUET_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| std::path::PathBuf::from("tests/data/tpch/sf1/parquet"));
+    assert_tpch_q6_native_parity(&root.join("lineitem.parquet")).await;
 }
 
 #[tokio::test]
@@ -484,7 +604,7 @@ async fn native_datafusion_exec_unsupported_sql_falls_back_before_native_executi
     let path = dir.join("input.parquet");
     write_row_group_pruning_parquet_file(&path);
 
-    let plan = native_datafusion_sql_plan(&path, SQL_GLOBAL_AVG_QUERY, native_datafusion_config()).await;
+    let plan = native_datafusion_sql_plan(&path, SQL_FILTERED_GLOBAL_COUNT_QUERY, native_datafusion_config()).await;
 
     assert_ne!(plan.name(), "NativeCudfExec");
     assert!(plan.as_any().downcast_ref::<NativeCudfExec>().is_none());
@@ -597,6 +717,11 @@ async fn cpu_sql_output(path: &std::path::Path, sql: &str) -> Vec<RecordBatch> {
     collect(plan, Arc::new(datafusion::execution::context::TaskContext::default())).await.unwrap()
 }
 
+async fn cpu_lineitem_sql_output(path: &std::path::Path, sql: &str) -> Vec<RecordBatch> {
+    let plan = lineitem_sql_plan(path, direct_friendly_sql_session_config(), sql).await;
+    collect(plan, Arc::new(datafusion::execution::context::TaskContext::default())).await.unwrap()
+}
+
 async fn parquet_scan(path: &std::path::Path) -> Arc<dyn ExecutionPlan> {
     let ctx = SessionContext::new_with_config(
         SessionConfig::new().with_repartition_file_scans(false).with_target_partitions(1),
@@ -610,6 +735,25 @@ async fn sql_plan(path: &std::path::Path, config: SessionConfig, sql: &str) -> A
     ctx.register_parquet("bench", path.to_str().unwrap(), ParquetReadOptions::default()).await.unwrap();
     let df = ctx.sql(sql).await.unwrap();
     df.create_physical_plan().await.unwrap()
+}
+
+async fn lineitem_sql_plan(path: &std::path::Path, config: SessionConfig, sql: &str) -> Arc<dyn ExecutionPlan> {
+    let ctx = SessionContext::new_with_config(config);
+    ctx.register_parquet("lineitem", path.to_str().unwrap(), ParquetReadOptions::default()).await.unwrap();
+    let df = ctx.sql(sql).await.unwrap();
+    df.create_physical_plan().await.unwrap()
+}
+
+fn direct_friendly_sql_session_config() -> SessionConfig {
+    let mut config = SessionConfig::new()
+        .with_repartition_file_scans(false)
+        .with_repartition_aggregations(false)
+        .with_repartition_sorts(false)
+        .with_target_partitions(1);
+    config.options_mut().optimizer.enable_topk_dynamic_filter_pushdown = false;
+    config.options_mut().optimizer.enable_aggregate_dynamic_filter_pushdown = false;
+    config.options_mut().optimizer.enable_dynamic_filter_pushdown = false;
+    config
 }
 
 async fn native_datafusion_sql_plan(
@@ -653,6 +797,32 @@ fn adapter_error(error: &DataFusionError) -> &Error {
         panic!("native execution errors should cross DataFusion as external adapter errors: {error}");
     };
     source.downcast_ref::<Error>().expect("DataFusion external error should preserve datafusion_cudf::Error")
+}
+
+async fn assert_tpch_q6_native_parity(lineitem_path: &std::path::Path) {
+    assert!(lineitem_path.exists(), "missing lineitem parquet file: {}", lineitem_path.display());
+    let cpu_batches = cpu_lineitem_sql_output(lineitem_path, SQL_TPCH_Q6_QUERY).await;
+    let native_physical_plan =
+        lineitem_sql_plan(lineitem_path, direct_friendly_sql_session_config(), SQL_TPCH_Q6_QUERY).await;
+    let lowering = lower_physical_plan_to_native(native_physical_plan);
+    assert_eq!(lowering.rewritten_count(), 1, "outcomes={:?}", lowering.report.outcomes());
+    assert_eq!(lowering.rejected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
+    assert_eq!(lowering.plans.len(), 1);
+
+    let context = bounded_execution_context();
+    let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().unwrap();
+    cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
+    let result = execute_query_plan(&context, &lowering.plans[0]).unwrap();
+    let metrics = result.metrics();
+    assert_eq!(metrics.boundary.host_to_device_uploads, 0);
+    assert_eq!(metrics.boundary.device_to_host_materializations, 1);
+    assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
+    assert_eq!(cudf::testing::arrow::arrow_host_export_call_count_for_test(), 1);
+
+    let QueryOutput::HostArrow(native_batch) = result.output() else {
+        panic!("native host sink should return a RecordBatch");
+    };
+    assert_batches_equal(&cpu_batches, std::slice::from_ref(native_batch));
 }
 
 const SQL_SUM_EXPRESSION_QUERY: &str = "
@@ -710,9 +880,37 @@ ORDER BY avg_m00 DESC, key ASC
 LIMIT 3
 ";
 
-const SQL_GLOBAL_AVG_QUERY: &str = "
-SELECT AVG(m00) AS avg_m00
+const SQL_FILTERED_GLOBAL_COUNT_QUERY: &str = "
+SELECT COUNT(*) FILTER (WHERE payload >= 10) AS count_rows
 FROM bench
+";
+
+const SQL_Q6_SHAPED_QUERY: &str = "
+SELECT
+    SUM(l_extendedprice * l_discount) AS revenue
+FROM bench
+WHERE l_shipdate >= DATE '1994-01-01'
+  AND l_shipdate < DATE '1994-01-01' + INTERVAL '1' YEAR
+  AND l_discount BETWEEN 0.05 AND 0.07
+  AND l_quantity < 24
+";
+
+const SQL_GLOBAL_DECIMAL_AVG_QUERY: &str = "
+SELECT
+    AVG(l_discount) AS avg_discount
+FROM bench
+WHERE l_shipdate >= DATE '1994-01-01'
+  AND l_shipdate < DATE '1995-01-01'
+";
+
+const SQL_TPCH_Q6_QUERY: &str = "
+SELECT
+    SUM(l_extendedprice * l_discount) AS revenue
+FROM lineitem
+WHERE l_shipdate >= DATE '1994-01-01'
+  AND l_shipdate < DATE '1994-01-01' + INTERVAL '1' YEAR
+  AND l_discount BETWEEN 0.05 AND 0.07
+  AND l_quantity < 24
 ";
 
 const SQL_PHASE2_SCALAR_EXPRESSIONS_QUERY: &str = "
@@ -883,6 +1081,46 @@ fn write_phase2_scalar_input_parquet(path: &std::path::Path) {
     writer.close().unwrap();
 }
 
+fn write_q6_lineitem_parquet(path: &std::path::Path) {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("l_quantity", DataType::Decimal128(15, 2), false),
+        Field::new("l_extendedprice", DataType::Decimal128(15, 2), false),
+        Field::new("l_discount", DataType::Decimal128(15, 2), false),
+        Field::new("l_shipdate", DataType::Date32, false),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(
+                Decimal128Array::from_iter_values([2_300, 2_500, 1_000, 1_200, 1_200, 1_200, 1_200])
+                    .with_precision_and_scale(15, 2)
+                    .unwrap(),
+            ),
+            Arc::new(
+                Decimal128Array::from_iter_values([10_000, 20_000, 30_000, 40_000, 50_000, 60_000, 70_000])
+                    .with_precision_and_scale(15, 2)
+                    .unwrap(),
+            ),
+            Arc::new(Decimal128Array::from_iter_values([5, 6, 7, 6, 4, 8, 6]).with_precision_and_scale(15, 2).unwrap()),
+            Arc::new(Date32Array::from(vec![
+                date32(1994, 1, 15),
+                date32(1994, 6, 1),
+                date32(1994, 9, 30),
+                date32(1995, 1, 1),
+                date32(1994, 3, 15),
+                date32(1994, 11, 15),
+                date32(1993, 12, 31),
+            ])),
+        ],
+    )
+    .unwrap();
+    let props = WriterProperties::builder().set_max_row_group_row_count(Some(2)).build();
+    let file = File::create(path).unwrap();
+    let mut writer = ArrowWriter::try_new(file, schema, Some(props)).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
+}
+
 fn write_nullable_phase2_scalar_input_parquet(path: &std::path::Path) {
     let schema = Arc::new(Schema::new(vec![
         Field::new("orderkey", DataType::Int64, true),
@@ -981,11 +1219,25 @@ fn write_uneven_avg_input_parquet(path: &std::path::Path) {
     writer.close().unwrap();
 }
 
+fn date32(year: i32, month: u32, day: u32) -> i32 {
+    let adjusted_year = year - i32::from(month <= 2);
+    let era = if adjusted_year >= 0 { adjusted_year } else { adjusted_year - 399 } / 400;
+    let year_of_era = adjusted_year - era * 400;
+    let month = month as i32;
+    let day_of_year = (153 * (month + if month > 2 { -3 } else { 9 }) + 2) / 5 + day as i32 - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    era * 146097 + day_of_era - 719468
+}
+
 fn assert_batches_equal(left: &[RecordBatch], right: &[RecordBatch]) {
     assert!(!left.is_empty());
     assert!(!right.is_empty());
     assert_schema_names_and_types_equal(&left[0], &right[0]);
     assert_eq!(batch_rows(left), batch_rows(right));
+}
+
+fn decimal128_array(batch: &RecordBatch, index: usize) -> &Decimal128Array {
+    batch.column(index).as_any().downcast_ref::<Decimal128Array>().expect("expected Decimal128Array")
 }
 
 fn assert_schema_names_and_types_equal(left: &RecordBatch, right: &RecordBatch) {
