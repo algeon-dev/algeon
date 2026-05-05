@@ -6,6 +6,7 @@ edition = "2024"
 rust-version = { workspace = true }
 publish = false
 default-run = "nexus_tools"
+build = "build.rs"
 
 [lints]
 workspace = true
@@ -40,14 +41,36 @@ iceberg-e2e = [
 server-iceberg-e2e = ["iceberg-e2e", "datafusion-nexus/server"]
 server-runtime-observability-e2e = ["server-iceberg-e2e", "dep:nexus-query-engine"]
 embedded-backend-e2e = ["server-iceberg-e2e", "dep:reqwest"]
-# The production-validation runner is intentionally opt-in. P6.4 owns only
-# read-only fixture preflight; public GPU execution arrives in P6.5.
+# The production-validation runner is intentionally opt-in. The base feature
+# stays CPU-only so profile parsing, arrival planning, aggregation, and artifact
+# writing are unit-testable without CUDA.
 single-node-multi-gpu-validate = ["dep:nexus-workloads"]
+# P6.5 measured execution on the public backend and attempt API.
+single-node-multi-gpu-validate-run = [
+  "single-node-multi-gpu-validate",
+  "dep:cudf",
+  "dep:cudf-sys",
+  "dep:cugraph-sys",
+  "dep:cuvs-sys",
+  "dep:datafusion",
+  "dep:datafusion-nexus",
+  "dep:nexus-query-engine",
+  "datafusion-nexus/cugraph",
+  # P6.2's device identity (model name, UUID, physical framebuffer) comes from
+  # NVML, and the artifact contract requires recording it.
+  "datafusion-nexus/nvml",
+]
 
 [dependencies]
 arrow = { workspace = true }
 arrow-flight = { workspace = true }
 cudf = { workspace = true, optional = true }
+# Direct (non-transitive) dep so THIS crate's build.rs receives
+# DEP_CUDF_RUST_RUNTIME_LIB_DIR from cudf-sys's `links = "cudf_rust"` metadata,
+# mirroring the root, bench, engine, and examples rpath bake.
+cudf-sys = { workspace = true, optional = true }
+cugraph-sys = { workspace = true, optional = true }
+cuvs-sys = { workspace = true, optional = true }
 datafusion = { workspace = true, optional = true }
 datafusion-nexus = { workspace = true, optional = true }
 nexus-bench = { path = "../nexus-bench", optional = true }
