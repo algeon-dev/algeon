@@ -39,7 +39,11 @@ impl<'a> NormalizedNativePlan<'a> {
     pub(super) fn single_source_input(&self) -> Option<&NormalizedNativeSource<'a>> {
         match &self.input {
             NormalizedNativeInput::Source(source) => Some(source),
-            NormalizedNativeInput::HashJoin(_) | NormalizedNativeInput::NestedLoopJoin(_) => None,
+            NormalizedNativeInput::Filter(_)
+            | NormalizedNativeInput::Projection(_)
+            | NormalizedNativeInput::Aggregate(_)
+            | NormalizedNativeInput::HashJoin(_)
+            | NormalizedNativeInput::NestedLoopJoin(_) => None,
         }
     }
 }
@@ -47,6 +51,9 @@ impl<'a> NormalizedNativePlan<'a> {
 #[derive(Debug, Clone)]
 pub(super) enum NormalizedNativeInput<'a> {
     Source(NormalizedNativeSource<'a>),
+    Filter(NormalizedNativeFilter<'a>),
+    Projection(NormalizedNativeProjection<'a>),
+    Aggregate(NormalizedNativeAggregate<'a>),
     HashJoin(NormalizedNativeHashJoin<'a>),
     NestedLoopJoin(NormalizedNativeNestedLoopJoin<'a>),
 }
@@ -55,6 +62,9 @@ impl NormalizedNativeInput<'_> {
     fn shape(&self) -> String {
         match self {
             Self::Source(source) => source.shape(),
+            Self::Filter(filter) => filter.shape(),
+            Self::Projection(projection) => projection.shape(),
+            Self::Aggregate(aggregate) => aggregate.shape(),
             Self::HashJoin(join) => join.shape(),
             Self::NestedLoopJoin(join) => join.shape(),
         }
@@ -63,6 +73,9 @@ impl NormalizedNativeInput<'_> {
     fn operator_count(&self) -> usize {
         match self {
             Self::Source(source) => source.operator_count(),
+            Self::Filter(filter) => filter.operator_count(),
+            Self::Projection(projection) => projection.operator_count(),
+            Self::Aggregate(aggregate) => aggregate.operator_count(),
             Self::HashJoin(join) => join.operator_count(),
             Self::NestedLoopJoin(join) => join.operator_count(),
         }
@@ -86,6 +99,56 @@ impl NormalizedNativeSource<'_> {
 
     fn operator_count(&self) -> usize {
         1 + usize::from(self.filter.is_some())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct NormalizedNativeFilter<'a> {
+    pub(super) filter: &'a FilterExec,
+    pub(super) input: Box<NormalizedNativeInput<'a>>,
+}
+
+impl NormalizedNativeFilter<'_> {
+    fn shape(&self) -> String {
+        wrap_shape("FilterExec", self.input.shape())
+    }
+
+    fn operator_count(&self) -> usize {
+        1 + self.input.operator_count()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct NormalizedNativeProjection<'a> {
+    pub(super) projection: &'a ProjectionExec,
+    pub(super) input: Box<NormalizedNativeInput<'a>>,
+}
+
+impl NormalizedNativeProjection<'_> {
+    fn shape(&self) -> String {
+        wrap_shape("ProjectionExec", self.input.shape())
+    }
+
+    fn operator_count(&self) -> usize {
+        1 + self.input.operator_count()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct NormalizedNativeAggregate<'a> {
+    pub(super) aggregate: &'a AggregateExec,
+    pub(super) aggregate_allows_partial: bool,
+    pub(super) aggregate_output_schema: SchemaRef,
+    pub(super) input: Box<NormalizedNativeInput<'a>>,
+}
+
+impl NormalizedNativeAggregate<'_> {
+    fn shape(&self) -> String {
+        wrap_shape("AggregateExec", self.input.shape())
+    }
+
+    fn operator_count(&self) -> usize {
+        1 + self.input.operator_count()
     }
 }
 
@@ -409,14 +472,37 @@ fn normalize_native_input<'a>(
     plan: &'a dyn ExecutionPlan,
     candidate: GpuCandidate,
 ) -> Result<NormalizedNativeInput<'a>, NativePlanRejection> {
-    let (filter, input) = peel_filter(peel_repartition(plan));
-    if let Some(source_exec) = peel_repartition(input).as_any().downcast_ref::<DataSourceExec>() {
-        return Ok(NormalizedNativeInput::Source(NormalizedNativeSource { source_exec, filter }));
+    let plan = peel_repartition(plan);
+    if let Some(filter) = plan.as_any().downcast_ref::<FilterExec>() {
+        let input = peel_repartition(filter.input().as_ref());
+        if let Some(source_exec) = input.as_any().downcast_ref::<DataSourceExec>() {
+            return Ok(NormalizedNativeInput::Source(NormalizedNativeSource { source_exec, filter: Some(filter) }));
+        }
+        let input = normalize_native_input(input, candidate)?;
+        return Ok(NormalizedNativeInput::Filter(NormalizedNativeFilter { filter, input: Box::new(input) }));
     }
-    if filter.is_some() {
-        return Err(NativePlanRejection { candidate, reason: FallbackReason::UnsupportedOperator });
+    if let Some(source_exec) = plan.as_any().downcast_ref::<DataSourceExec>() {
+        return Ok(NormalizedNativeInput::Source(NormalizedNativeSource { source_exec, filter: None }));
     }
-    if let Some(join) = peel_repartition(input).as_any().downcast_ref::<HashJoinExec>() {
+    if let Some(projection) = plan.as_any().downcast_ref::<ProjectionExec>() {
+        let input = normalize_native_input(projection.input().as_ref(), candidate)?;
+        return Ok(NormalizedNativeInput::Projection(NormalizedNativeProjection {
+            projection,
+            input: Box::new(input),
+        }));
+    }
+    if let Some(aggregate) = plan.as_any().downcast_ref::<AggregateExec>() {
+        let (aggregate, aggregate_allows_partial, _has_distributed_aggregate, aggregate_output_schema) =
+            peel_distributed_aggregate_pair_if_present(aggregate, candidate.clone())?;
+        let input = normalize_native_input(aggregate.input().as_ref(), candidate)?;
+        return Ok(NormalizedNativeInput::Aggregate(NormalizedNativeAggregate {
+            aggregate,
+            aggregate_allows_partial,
+            aggregate_output_schema,
+            input: Box::new(input),
+        }));
+    }
+    if let Some(join) = plan.as_any().downcast_ref::<HashJoinExec>() {
         let left = normalize_native_input(join.left().as_ref(), candidate.clone())?;
         let right = normalize_native_input(join.right().as_ref(), candidate)?;
         return Ok(NormalizedNativeInput::HashJoin(NormalizedNativeHashJoin {
@@ -425,7 +511,7 @@ fn normalize_native_input<'a>(
             right: Box::new(right),
         }));
     }
-    if let Some(join) = peel_repartition(input).as_any().downcast_ref::<NestedLoopJoinExec>() {
+    if let Some(join) = plan.as_any().downcast_ref::<NestedLoopJoinExec>() {
         let left = normalize_native_input(join.left().as_ref(), candidate.clone())?;
         let right = normalize_native_input(join.right().as_ref(), candidate)?;
         return Ok(NormalizedNativeInput::NestedLoopJoin(NormalizedNativeNestedLoopJoin {
@@ -556,14 +642,6 @@ fn peel_repartition(plan: &dyn ExecutionPlan) -> &dyn ExecutionPlan {
         coalesce.input().as_ref()
     } else {
         plan
-    }
-}
-
-fn peel_filter(plan: &dyn ExecutionPlan) -> (Option<&FilterExec>, &dyn ExecutionPlan) {
-    if let Some(filter) = plan.as_any().downcast_ref::<FilterExec>() {
-        (Some(filter), filter.input().as_ref())
-    } else {
-        (None, plan)
     }
 }
 

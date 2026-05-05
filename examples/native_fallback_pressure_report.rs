@@ -75,7 +75,7 @@ async fn synthetic_workload_items(dir: &std::path::Path) -> Vec<NativeFallbackPr
     for (query_id, sql) in [
         ("distributed_avg_rewrite", SQL_AVG_QUERY),
         ("distributed_filtered_avg_reject", SQL_FILTERED_AVG_QUERY),
-        ("distributed_distinct_avg_reject", SQL_DISTINCT_AVG_QUERY),
+        ("distributed_distinct_avg_rewrite", SQL_DISTINCT_AVG_QUERY),
     ] {
         items.push(NativeFallbackPressureWorkloadItem::new(query_id, sql_plan(&path, SessionConfig::new(), sql).await));
     }

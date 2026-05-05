@@ -35,8 +35,8 @@ use datafusion::{
 use super::{
     literal::{NativeLiteralContext, native_literal_value},
     normalize::{
-        NormalizedNativeHashJoin, NormalizedNativeInput, NormalizedNativeNestedLoopJoin, NormalizedNativePlan,
-        NormalizedNativeSource,
+        NormalizedNativeAggregate, NormalizedNativeFilter, NormalizedNativeHashJoin, NormalizedNativeInput,
+        NormalizedNativeNestedLoopJoin, NormalizedNativePlan, NormalizedNativeProjection, NormalizedNativeSource,
     },
     source::{
         local_parquet_files, local_parquet_source_diagnostics, native_source_output_schema,
@@ -392,6 +392,13 @@ fn lower_native_input(
 ) -> Result<LoweredNativeInput, FallbackReason> {
     match input {
         NormalizedNativeInput::Source(source) => lower_source_input(source, builder, required_output_columns),
+        NormalizedNativeInput::Filter(filter) => lower_filter_input(filter, builder, required_output_columns),
+        NormalizedNativeInput::Projection(projection) => {
+            lower_projection_input(projection, builder, required_output_columns)
+        },
+        NormalizedNativeInput::Aggregate(aggregate) => {
+            lower_aggregate_input(aggregate, builder, required_output_columns)
+        },
         NormalizedNativeInput::HashJoin(join) => lower_hash_join_input(join, builder, required_output_columns),
         NormalizedNativeInput::NestedLoopJoin(join) => {
             lower_nested_loop_join_input(join, builder, required_output_columns)
@@ -489,6 +496,191 @@ fn lower_source_input(
     } else {
         (scan_output_node, scan_output_schema)
     };
+    Ok(LoweredNativeInput { node, schema })
+}
+
+fn lower_filter_input(
+    filter: &NormalizedNativeFilter<'_>,
+    builder: &mut NativeQueryPlanBuilder,
+    required_output_columns: &[String],
+) -> Result<LoweredNativeInput, FallbackReason> {
+    validate_physical_expr(filter.filter.predicate(), &filter.filter.input().schema())?;
+    let selection = required_filter_output_selection(filter.filter, required_output_columns)?;
+    let mut child_required = BTreeSet::new();
+    collect_required_columns(filter.filter.predicate(), &filter.filter.input().schema(), &mut child_required)?;
+    child_required.extend(selection.child_required_columns.iter().cloned());
+    let child_required = child_required.into_iter().collect::<Vec<_>>();
+    let input = lower_native_input(&filter.input, builder, &child_required)?;
+    let filtered_node = builder.add_filter(
+        input.node,
+        lower_physical_expr(filter.filter.predicate(), &input.schema)?,
+        Arc::clone(&input.schema),
+    );
+    if !selection.requires_projection_from(&input.schema) {
+        return Ok(LoweredNativeInput { node: filtered_node, schema: input.schema });
+    }
+    let node = builder.add_projection(filtered_node, selection.expressions, Arc::clone(&selection.schema));
+    Ok(LoweredNativeInput { node, schema: selection.schema })
+}
+
+struct FilterOutputSelection {
+    expressions: Vec<NativeExpr>,
+    schema: SchemaRef,
+    child_required_columns: Vec<String>,
+}
+
+impl FilterOutputSelection {
+    fn requires_projection_from(&self, input_schema: &SchemaRef) -> bool {
+        self.schema.fields().len() != input_schema.fields().len()
+            || self
+                .schema
+                .fields()
+                .iter()
+                .zip(input_schema.fields())
+                .any(|(selected, input)| selected.name() != input.name())
+    }
+}
+
+fn required_filter_output_selection(
+    filter: &datafusion::physical_plan::filter::FilterExec,
+    required_output_columns: &[String],
+) -> Result<FilterOutputSelection, FallbackReason> {
+    let required = required_output_columns.iter().map(String::as_str).collect::<BTreeSet<_>>();
+    let input_schema = filter.input().schema();
+    let output_schema = filter.schema();
+    let mut expressions = Vec::new();
+    let mut fields = Vec::new();
+    let mut child_required_columns = Vec::new();
+    for (output_index, field) in output_schema.fields().iter().enumerate() {
+        if !required.is_empty() && !required.contains(field.name().as_str()) {
+            continue;
+        }
+        let input_field = if let Some(projection) = filter.projection() {
+            let input_index = *projection.get(output_index).ok_or(FallbackReason::UnsupportedExpression)?;
+            input_schema.fields().get(input_index).ok_or(FallbackReason::UnsupportedExpression)?
+        } else {
+            input_schema.field_with_name(field.name()).map_err(|_error| FallbackReason::UnsupportedExpression)?
+        };
+        expressions.push(NativeExpr::column(input_field.name()));
+        fields.push(field.as_ref().clone());
+        child_required_columns.push(input_field.name().clone());
+    }
+    if !required.is_empty() && fields.len() != required.len() {
+        return Err(FallbackReason::UnsupportedExpression);
+    }
+    Ok(FilterOutputSelection { expressions, schema: Arc::new(Schema::new(fields)), child_required_columns })
+}
+
+fn lower_projection_input(
+    projection: &NormalizedNativeProjection<'_>,
+    builder: &mut NativeQueryPlanBuilder,
+    required_output_columns: &[String],
+) -> Result<LoweredNativeInput, FallbackReason> {
+    let required_projection = required_projection_exprs(projection.projection, required_output_columns)?;
+    let mut child_required = BTreeSet::new();
+    for projection_expr in &required_projection {
+        validate_physical_expr(projection_expr.expr, &projection.projection.input().schema())?;
+        collect_required_columns(projection_expr.expr, &projection.projection.input().schema(), &mut child_required)?;
+    }
+    let child_required = child_required.into_iter().collect::<Vec<_>>();
+    let input = lower_native_input(&projection.input, builder, &child_required)?;
+    let expressions = required_projection
+        .iter()
+        .map(|projection_expr| {
+            let expr = lower_physical_expr(projection_expr.expr, &input.schema)?;
+            Ok(alias_if_needed(expr, projection_expr.alias))
+        })
+        .collect::<Result<Vec<_>, FallbackReason>>()?;
+    let schema = required_projection_schema(&required_projection, projection.projection.schema())?;
+    let node = builder.add_projection(input.node, expressions, Arc::clone(&schema));
+    Ok(LoweredNativeInput { node, schema })
+}
+
+fn lower_aggregate_input(
+    aggregate: &NormalizedNativeAggregate<'_>,
+    builder: &mut NativeQueryPlanBuilder,
+    required_output_columns: &[String],
+) -> Result<LoweredNativeInput, FallbackReason> {
+    validate_schema(Arc::clone(&aggregate.aggregate_output_schema))?;
+    validate_aggregate(aggregate.aggregate, false, aggregate.aggregate_allows_partial)?;
+    validate_aggregate_scalar_expressions(aggregate.aggregate)?;
+    let child_required = required_aggregate_input_columns(aggregate.aggregate, None)?;
+    let input = lower_native_input(&aggregate.input, builder, &child_required)?;
+    let aggregate_node = add_native_aggregate_node(
+        builder,
+        input.node,
+        &input.schema,
+        aggregate.aggregate,
+        &aggregate.aggregate_output_schema,
+    )?;
+    project_required_output_columns(
+        builder,
+        aggregate_node,
+        Arc::clone(&aggregate.aggregate_output_schema),
+        required_output_columns,
+    )
+}
+
+fn add_native_aggregate_node(
+    builder: &mut NativeQueryPlanBuilder,
+    input_node: NativeNodeId,
+    input_schema: &SchemaRef,
+    aggregate: &AggregateExec,
+    output_schema: &SchemaRef,
+) -> Result<NativeNodeId, FallbackReason> {
+    let (aggregate_input_node, aggregate_input_schema, synthetic_aggregate_args) =
+        if let Some(synthetic_projection) = synthetic_aggregate_input_projection_if_needed(aggregate, input_schema)? {
+            let synthetic_projection_node = builder.add_projection(
+                input_node,
+                synthetic_projection.expressions,
+                Arc::clone(&synthetic_projection.schema),
+            );
+            (synthetic_projection_node, synthetic_projection.schema, Some(synthetic_projection.aggregate_arg_aliases))
+        } else {
+            (input_node, Arc::clone(input_schema), None)
+        };
+    let aggregate_spec = lower_aggregate_spec(aggregate, &aggregate_input_schema, synthetic_aggregate_args.as_deref())?;
+    Ok(builder.add_aggregate(aggregate_input_node, aggregate_spec, Arc::clone(output_schema)))
+}
+
+fn validate_aggregate_scalar_expressions(aggregate: &AggregateExec) -> Result<(), FallbackReason> {
+    for aggregate_expr in aggregate.aggr_expr() {
+        for expr in aggregate_expr.expressions() {
+            validate_physical_expr(&expr, &aggregate.input().schema())?;
+        }
+    }
+    for (group_expr, _alias) in aggregate.group_expr().expr() {
+        validate_physical_expr(group_expr, &aggregate.input().schema())?;
+    }
+    Ok(())
+}
+
+fn project_required_output_columns(
+    builder: &mut NativeQueryPlanBuilder,
+    input_node: NativeNodeId,
+    input_schema: SchemaRef,
+    required_output_columns: &[String],
+) -> Result<LoweredNativeInput, FallbackReason> {
+    if required_output_columns.is_empty() {
+        return Ok(LoweredNativeInput { node: input_node, schema: input_schema });
+    }
+    let required = required_output_columns.iter().map(String::as_str).collect::<BTreeSet<_>>();
+    let mut expressions = Vec::new();
+    let mut fields = Vec::new();
+    for field in input_schema.fields() {
+        if required.contains(field.name().as_str()) {
+            expressions.push(NativeExpr::column(field.name()));
+            fields.push(field.as_ref().clone());
+        }
+    }
+    if fields.len() != required.len() {
+        return Err(FallbackReason::UnsupportedExpression);
+    }
+    if fields.len() == input_schema.fields().len() {
+        return Ok(LoweredNativeInput { node: input_node, schema: input_schema });
+    }
+    let schema = Arc::new(Schema::new(fields));
+    let node = builder.add_projection(input_node, expressions, Arc::clone(&schema));
     Ok(LoweredNativeInput { node, schema })
 }
 
@@ -1081,6 +1273,47 @@ fn lower_projection_exprs(projection: &ProjectionExec) -> Result<Vec<NativeExpr>
         .iter()
         .map(|projection_expr| lower_projection_expr(projection_expr, &projection.input().schema()))
         .collect()
+}
+
+struct RequiredProjectionExpr<'a> {
+    expr: &'a Arc<dyn PhysicalExpr>,
+    alias: &'a str,
+}
+
+fn required_projection_exprs<'a>(
+    projection: &'a ProjectionExec,
+    required_output_columns: &[String],
+) -> Result<Vec<RequiredProjectionExpr<'a>>, FallbackReason> {
+    let required = required_output_columns.iter().map(String::as_str).collect::<BTreeSet<_>>();
+    let exprs = projection
+        .expr()
+        .iter()
+        .filter(|projection_expr| required.is_empty() || required.contains(projection_expr.alias.as_str()))
+        .map(|projection_expr| RequiredProjectionExpr {
+            expr: &projection_expr.expr,
+            alias: projection_expr.alias.as_str(),
+        })
+        .collect::<Vec<_>>();
+    if !required.is_empty() && exprs.len() != required.len() {
+        return Err(FallbackReason::UnsupportedExpression);
+    }
+    Ok(exprs)
+}
+
+fn required_projection_schema(
+    projection: &[RequiredProjectionExpr<'_>],
+    output_schema: SchemaRef,
+) -> Result<SchemaRef, FallbackReason> {
+    let fields = projection
+        .iter()
+        .map(|projection_expr| {
+            output_schema
+                .field_with_name(projection_expr.alias)
+                .cloned()
+                .map_err(|_error| FallbackReason::UnsupportedExpression)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(Arc::new(Schema::new(fields)))
 }
 
 struct RequiredScanProjectionExpr<'a> {

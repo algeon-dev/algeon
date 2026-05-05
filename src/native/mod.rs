@@ -7,7 +7,10 @@ mod validate;
 
 use std::sync::Arc;
 
-use cudf_query_engine::{QueryPlan as NativeQueryPlan, SourceDiagnostics as NativeSourceDiagnostics};
+use cudf_query_engine::{
+    PlanNode as NativePlanNode, QueryPlan as NativeQueryPlan, SourceDiagnostics as NativeSourceDiagnostics,
+    SourceNode as NativeSourceNode,
+};
 use datafusion::physical_plan::ExecutionPlan;
 use lowering::lower_normalized_plan;
 use normalize::normalize_native_plan;
@@ -85,13 +88,10 @@ fn lower_physical_plan_to_native_with_mode(
                 }
             },
             |native_plan| {
+                let source_diagnostics = source_diagnostics_for_native_plan(&native_plan);
                 let mut report = PlanningReport::new();
                 report.push_rewritten(normalized.candidate.clone());
-                NativeLoweringResult {
-                    plans: vec![native_plan],
-                    report,
-                    source_diagnostics: source_diagnostics_for_normalized_plan(&normalized),
-                }
+                NativeLoweringResult { plans: vec![native_plan], report, source_diagnostics }
             },
         ),
         Err(rejection) => {
@@ -100,4 +100,16 @@ fn lower_physical_plan_to_native_with_mode(
             NativeLoweringResult { plans: Vec::new(), report, source_diagnostics: Vec::new() }
         },
     }
+}
+
+fn source_diagnostics_for_native_plan(plan: &NativeQueryPlan) -> Vec<NativeSourceDiagnostics> {
+    plan.nodes()
+        .iter()
+        .filter_map(|node| match &node.kind {
+            NativePlanNode::Source(source) => match source.as_ref() {
+                NativeSourceNode::LocalParquet(source) => Some(source.diagnostics.clone()),
+            },
+            _ => None,
+        })
+        .collect()
 }

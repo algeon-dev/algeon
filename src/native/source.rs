@@ -46,6 +46,15 @@ fn collect_source_diagnostics_for_input(
                 diagnostics.push(diagnostic);
             }
         },
+        NormalizedNativeInput::Filter(filter) => {
+            collect_source_diagnostics_for_input(&filter.input, normalized, diagnostics);
+        },
+        NormalizedNativeInput::Projection(projection) => {
+            collect_source_diagnostics_for_input(&projection.input, normalized, diagnostics);
+        },
+        NormalizedNativeInput::Aggregate(aggregate) => {
+            collect_source_diagnostics_for_input(&aggregate.input, normalized, diagnostics);
+        },
         NormalizedNativeInput::HashJoin(join) => {
             collect_source_diagnostics_for_input(&join.left, normalized, diagnostics);
             collect_source_diagnostics_for_input(&join.right, normalized, diagnostics);
