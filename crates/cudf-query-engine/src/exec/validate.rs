@@ -376,17 +376,21 @@ fn collect_join_residual_sides(expr: &Expr, left: &mut bool, right: &mut bool) -
             collect_join_residual_sides(lhs, left, right)?;
             collect_join_residual_sides(rhs, left, right)
         },
-        Expr::Cast { .. }
-        | Expr::Like { .. }
-        | Expr::Substring { .. }
-        | Expr::InList { .. }
-        | Expr::Case { .. }
-        | Expr::Extract { .. } => Err(QueryError::new(
-            QueryErrorCode::UnsupportedExpression,
-            "cudf_query_engine.join.validate_residual",
-            "native join residual predicates do not yet support this expression family",
-        )
-        .with_fact("expression", expr)),
+        Expr::InList { expr, list, .. } => {
+            collect_join_residual_sides(expr, left, right)?;
+            for item in list {
+                collect_join_residual_sides(item, left, right)?;
+            }
+            Ok(())
+        },
+        Expr::Cast { .. } | Expr::Like { .. } | Expr::Substring { .. } | Expr::Case { .. } | Expr::Extract { .. } => {
+            Err(QueryError::new(
+                QueryErrorCode::UnsupportedExpression,
+                "cudf_query_engine.join.validate_residual",
+                "native join residual predicates do not yet support this expression family",
+            )
+            .with_fact("expression", expr))
+        },
     }
 }
 
@@ -449,20 +453,47 @@ fn validate_join_residual_expr(
                 },
             }
         },
+        Expr::InList { expr, list, .. } => {
+            let expr_type =
+                validate_join_residual_expr(expr, left_schema, left_available, right_schema, right_available)?;
+            if list.is_empty() {
+                return Err(QueryError::new(
+                    QueryErrorCode::UnsupportedExpression,
+                    "cudf_query_engine.join.validate_residual",
+                    "native join residual IN list must not be empty",
+                ));
+            }
+            for item in list {
+                let Expr::Literal(value) = item else {
+                    return Err(QueryError::new(
+                        QueryErrorCode::UnsupportedExpression,
+                        "cudf_query_engine.join.validate_residual",
+                        "native join residual IN list values must be literals",
+                    ));
+                };
+                if matches!(value, LiteralValue::Null(_)) {
+                    return Err(QueryError::new(
+                        QueryErrorCode::UnsupportedExpression,
+                        "cudf_query_engine.join.validate_residual",
+                        "native join residual IN list does not yet model SQL null-containing list semantics",
+                    ));
+                }
+                let item_type = validate_literal(value)?;
+                require_compatible_types(&expr_type, &item_type, "join residual IN list value")?;
+            }
+            Ok(ArrowDataType::Boolean)
+        },
         Expr::Alias { expr, .. } => {
             validate_join_residual_expr(expr, left_schema, left_available, right_schema, right_available)
         },
-        Expr::Cast { .. }
-        | Expr::Like { .. }
-        | Expr::Substring { .. }
-        | Expr::InList { .. }
-        | Expr::Case { .. }
-        | Expr::Extract { .. } => Err(QueryError::new(
-            QueryErrorCode::UnsupportedExpression,
-            "cudf_query_engine.join.validate_residual",
-            "native join residual predicates do not yet support this expression family",
-        )
-        .with_fact("expression", expr)),
+        Expr::Cast { .. } | Expr::Like { .. } | Expr::Substring { .. } | Expr::Case { .. } | Expr::Extract { .. } => {
+            Err(QueryError::new(
+                QueryErrorCode::UnsupportedExpression,
+                "cudf_query_engine.join.validate_residual",
+                "native join residual predicates do not yet support this expression family",
+            )
+            .with_fact("expression", expr))
+        },
     }
 }
 

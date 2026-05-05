@@ -664,17 +664,21 @@ fn collect_join_expr_columns(expr: &Expr, left: &mut BTreeSet<String>, right: &m
             collect_join_expr_columns(lhs, left, right)?;
             collect_join_expr_columns(rhs, left, right)
         },
-        Expr::Cast { .. }
-        | Expr::Like { .. }
-        | Expr::Substring { .. }
-        | Expr::InList { .. }
-        | Expr::Case { .. }
-        | Expr::Extract { .. } => Err(QueryError::new(
-            QueryErrorCode::UnsupportedExpression,
-            "cudf_query_engine.join.residual_columns",
-            "native join residual predicates do not yet support this expression family",
-        )
-        .with_fact("expression", expr)),
+        Expr::InList { expr, list, .. } => {
+            collect_join_expr_columns(expr, left, right)?;
+            for item in list {
+                collect_join_expr_columns(item, left, right)?;
+            }
+            Ok(())
+        },
+        Expr::Cast { .. } | Expr::Like { .. } | Expr::Substring { .. } | Expr::Case { .. } | Expr::Extract { .. } => {
+            Err(QueryError::new(
+                QueryErrorCode::UnsupportedExpression,
+                "cudf_query_engine.join.residual_columns",
+                "native join residual predicates do not yet support this expression family",
+            )
+            .with_fact("expression", expr))
+        },
     }
 }
 
@@ -827,18 +831,53 @@ fn lower_join_ast_expr(
                 )
             })
         },
+        Expr::InList { expr, list, negated } => {
+            if list.is_empty() {
+                return Err(QueryError::new(
+                    QueryErrorCode::UnsupportedExpression,
+                    "cudf_query_engine.join.lower_residual",
+                    "native join residual IN list must not be empty",
+                ));
+            }
+            let input = lower_join_ast_expr(context, expr, residual_columns)?;
+            let values = list
+                .iter()
+                .map(|value| {
+                    if !matches!(value, Expr::Literal(_)) {
+                        return Err(QueryError::new(
+                            QueryErrorCode::UnsupportedExpression,
+                            "cudf_query_engine.join.lower_residual",
+                            "native join residual IN list values must be literals",
+                        )
+                        .with_fact("value", value));
+                    }
+                    lower_join_ast_expr(context, value, residual_columns)
+                })
+                .collect::<Result<Vec<_>>>()?;
+            if *negated {
+                AstExpression::is_not_in_list(input, values)
+            } else {
+                AstExpression::is_in_list(input, values)
+            }
+            .map_err(|error| {
+                QueryError::from_cudf(
+                    "cudf_query_engine.join.lower_residual",
+                    "failed to build cudf AST IN list expression",
+                    error,
+                )
+                .with_fact("negated", negated.to_string())
+                .with_fact("value_count", list.len())
+            })
+        },
         Expr::Alias { expr, .. } => lower_join_ast_expr(context, expr, residual_columns),
-        Expr::Cast { .. }
-        | Expr::Like { .. }
-        | Expr::Substring { .. }
-        | Expr::InList { .. }
-        | Expr::Case { .. }
-        | Expr::Extract { .. } => Err(QueryError::new(
-            QueryErrorCode::UnsupportedExpression,
-            "cudf_query_engine.join.lower_residual",
-            "native join residual predicates do not yet support this expression family",
-        )
-        .with_fact("expression", expr)),
+        Expr::Cast { .. } | Expr::Like { .. } | Expr::Substring { .. } | Expr::Case { .. } | Expr::Extract { .. } => {
+            Err(QueryError::new(
+                QueryErrorCode::UnsupportedExpression,
+                "cudf_query_engine.join.lower_residual",
+                "native join residual predicates do not yet support this expression family",
+            )
+            .with_fact("expression", expr))
+        },
     }
 }
 
