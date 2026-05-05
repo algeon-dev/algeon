@@ -37,7 +37,10 @@ pub use io::{
     CsvReadOptions, CsvWriteOptions, JsonReadOptions, JsonWriteOptions, MultiParquetReadOptions, ParquetReadOptions,
     ParquetWriteOptions,
 };
-pub use join::{DataFrameJoinIndices, DataFrameJoinOptions, DataFrameJoinPairIndices};
+pub use join::{
+    DataFrameHashJoin, DataFrameHashJoinMaterialized, DataFrameHashJoinOptions, DataFrameHashJoinPairIndices,
+    DataFrameJoinIndices, DataFrameJoinOptions, DataFrameJoinPairIndices,
+};
 pub use owned::{DataFrame, DataFrameJoinSides};
 pub(crate) use owned::{derive_frame_domain_from_columns, resolve_frame_domain_from_authoritative_source};
 pub use reshape::MeltOptions;
