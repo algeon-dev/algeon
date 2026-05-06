@@ -110,7 +110,9 @@ fn overload_fairness_profile_is_a_finite_bounded_cohort() {
     profile.validate_overload_fairness_scenario().unwrap();
     assert_eq!(profile.scheduling.max_rounds, Some(1));
     assert_eq!(profile.scheduling.warmup_seconds, 0);
+    assert_eq!(profile.scheduling.measurement_seconds, 120);
     assert_eq!(profile.scheduling.concurrency, 8);
+    assert!(profile.backend.device_profiles.iter().all(|device| device.attempt_floor_bytes == 1_073_741_824));
 
     let mut no_overload = profile.clone();
     no_overload.scheduling.concurrency = 4;
@@ -543,6 +545,7 @@ fn the_shipped_physical_allocator_pressure_profile_pins_real_pressure_and_recove
     assert_eq!(profile.scheduling.concurrency, 1);
     assert_eq!(profile.scheduling.max_rounds, Some(2));
     assert_eq!(profile.cache.mode, CacheMode::Disabled);
+    assert_eq!(profile.backend.native_execution.max_retry_attempts, 1);
     let labels =
         profile.workloads.iter().flat_map(|workload| workload.queries.iter().map(String::as_str)).collect::<Vec<_>>();
     assert_eq!(labels, ["q01", "edge_scan"]);

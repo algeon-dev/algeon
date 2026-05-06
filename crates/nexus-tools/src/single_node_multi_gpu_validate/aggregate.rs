@@ -265,14 +265,14 @@ pub(super) struct ScenarioEvidence {
     pub(super) logical_slot_occupancy: LogicalSlotOccupancyEvidence,
 }
 
-/// Evidence for the explicit P6.6 bounded-overload and finite-overtake
-/// scenario.
+/// Evidence for the explicit P6.6 public bounded-overload and drain scenario.
 ///
 /// `AttemptAdmissionWaitFact` is controller-owned and sealed with the final
-/// report.  The reducer only checks its arithmetic and correlates its
-/// protection ordinal with other sealed timestamps from the same engine clock.
-/// It never treats task launch order or a sampled queue snapshot as fairness
-/// evidence.
+/// report. The release runner uses actual public plans, which can exercise
+/// the bounded queue but cannot author the unequal controller requirements
+/// needed to manufacture a finite overtake. Exact finite-overtake protection
+/// stays with the deterministic owning controller suite rather than being
+/// inferred from workload arrival order here.
 #[derive(Debug, Clone, Serialize)]
 pub(super) struct OverloadFairnessEvidence {
     pub(super) status: ClauseStatus,
@@ -287,6 +287,10 @@ pub(super) struct OverloadFairnessEvidence {
     pub(super) bounded_overload_shape: bool,
     pub(super) all_planned_attempts_sealed: bool,
     pub(super) all_planned_attempts_admitted_and_completed: bool,
+    /// Highest public queue depth observed while the finite cohort was live.
+    pub(super) observed_peak_queued_attempts: u64,
+    pub(super) queue_limit_reached: bool,
+    pub(super) queue_bound_respected: bool,
     pub(super) queued_admission_reports: u64,
     pub(super) wait_facts_exact: bool,
     pub(super) exhausted_waiter_count: u64,
@@ -304,6 +308,9 @@ pub(super) struct OverloadFairnessEvidence {
     /// protected waiter's admission. This is the liveness witness required by
     /// the scenario.
     pub(super) unrelated_device_completion_count: u64,
+    /// The physical public workload must nevertheless complete on more than
+    /// one eligible device while the saturated cohort drains.
+    pub(super) eligible_device_completion_count: u64,
 }
 
 /// Bounded evidence for one explicit controller-level device quarantine.
@@ -491,6 +498,9 @@ pub(super) struct PhysicalAllocatorPressureEvidence {
     pub(super) allocator_event_attempt_exact_physical: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) observed_physical_request_bytes: Option<u64>,
+    /// Diagnostic comparison against the aggregate CUDA free-memory snapshot.
+    /// A false value does not disprove an exact physical allocator decline:
+    /// CUDA's total free bytes do not establish contiguous allocatable capacity.
     pub(super) physical_request_exceeds_free_under_pressure: bool,
     pub(super) grant_cap_exceeds_physical_request: bool,
     pub(super) domain_cap_exceeds_physical_request: bool,
@@ -652,7 +662,6 @@ impl PhysicalAllocatorPressureEvidence {
             && self.failure_is_q01_on_pressure_device
             && self.allocator_event_attempt_exact_physical
             && self.observed_physical_request_bytes.is_some()
-            && self.physical_request_exceeds_free_under_pressure
             && self.grant_cap_exceeds_physical_request
             && self.domain_cap_exceeds_physical_request
             && self.manager_cap_exceeds_physical_request
@@ -680,6 +689,7 @@ impl OverloadFairnessEvidence {
         planned_cohort_attempts: usize,
         configured_queue_limit: usize,
         configured_overtake_limit: u32,
+        observed_peak_queued_attempts: usize,
         dropped_overrun_arrivals: u64,
         begin_failures: u64,
         join_failures: u64,
@@ -703,6 +713,12 @@ impl OverloadFairnessEvidence {
                     && attempt.device_ordinal.is_some()
                     && attempt.admission_sequence.is_some()
             });
+        let eligible_device_completion_count = observations
+            .iter()
+            .filter(|attempt| attempt.succeeded && attempt.reached_gpu)
+            .filter_map(|attempt| attempt.device_ordinal)
+            .collect::<BTreeSet<_>>()
+            .len() as u64;
 
         let mut submission_sequences = BTreeSet::new();
         let queued = observations
@@ -790,6 +806,11 @@ impl OverloadFairnessEvidence {
             bounded_overload_shape,
             all_planned_attempts_sealed,
             all_planned_attempts_admitted_and_completed,
+            observed_peak_queued_attempts: u64::try_from(observed_peak_queued_attempts).unwrap_or(u64::MAX),
+            queue_limit_reached: observed_peak_queued_attempts
+                == usize::try_from(configured_queue_limit).unwrap_or(usize::MAX),
+            queue_bound_respected: observed_peak_queued_attempts
+                <= usize::try_from(configured_queue_limit).unwrap_or(usize::MAX),
             queued_admission_reports: queued.len() as u64,
             wait_facts_exact,
             exhausted_waiter_count: exhausted_waiters.len() as u64,
@@ -799,6 +820,7 @@ impl OverloadFairnessEvidence {
             protection_device_ordinal,
             unrelated_device_progress_count,
             unrelated_device_completion_count,
+            eligible_device_completion_count,
         };
         evidence.status = if evidence.is_evidenced() { ClauseStatus::Evidenced } else { ClauseStatus::Failed };
         evidence
@@ -808,15 +830,11 @@ impl OverloadFairnessEvidence {
         self.bounded_overload_shape
             && self.all_planned_attempts_sealed
             && self.all_planned_attempts_admitted_and_completed
+            && self.queue_limit_reached
+            && self.queue_bound_respected
             && self.queued_admission_reports > 0
             && self.wait_facts_exact
-            && self.exhausted_waiter_count > 0
-            && self.protected_exhausted_waiter_count > 0
-            && self.protected_waiter_submission_sequence.is_some()
-            && self.protected_waiter_admission_sequence.is_some()
-            && self.protection_device_ordinal.is_some()
-            && self.unrelated_device_progress_count > 0
-            && self.unrelated_device_completion_count > 0
+            && self.eligible_device_completion_count > 1
     }
 }
 
@@ -1822,6 +1840,21 @@ mod tests {
         assert_eq!(projection["observed_physical_request_bytes"], 1024);
         assert_eq!(projection["status"], "evidenced");
 
+        let mut non_contiguous_pressure = physical_pressure_facts(false);
+        let mut non_contiguous_release = physical_pressure_facts(true);
+        non_contiguous_pressure.free_under_pressure_bytes = 2_048;
+        non_contiguous_release.free_under_pressure_bytes = 2_048;
+        let non_contiguous = PhysicalAllocatorPressureEvidence::from_observations(
+            non_contiguous_pressure,
+            non_contiguous_release,
+            true,
+            true,
+            &[failure.clone(), recovery.clone()],
+        )
+        .with_final_close_quiescent(true);
+        assert!(!non_contiguous.physical_request_exceeds_free_under_pressure);
+        assert!(non_contiguous.is_evidenced());
+
         let close_required = PhysicalAllocatorPressureEvidence::from_observations(
             physical_pressure_facts(false),
             physical_pressure_facts(true),
@@ -1860,7 +1893,7 @@ mod tests {
     }
 
     #[test]
-    fn overload_evidence_requires_a_sealed_protected_waiter_and_unrelated_device_completion() {
+    fn overload_evidence_requires_a_bounded_full_queue_and_sealed_public_rows() {
         let devices = vec![device(0, 1 << 30, 1), device(1, 1 << 30, 1)];
         let mut protected = attempt(0, 0, Some(1), Some(10), 0, 2_000, 2_000, SchedulePhase::Measurement);
         protected.admission_sequence = Some(4);
@@ -1889,7 +1922,7 @@ mod tests {
         observations[2].admission_sequence = Some(1);
         observations[3].admission_sequence = Some(2);
 
-        let evidence = OverloadFairnessEvidence::from_observations(&observations, &devices, 4, 2, 2, 0, 0, 0);
+        let evidence = OverloadFairnessEvidence::from_observations(&observations, &devices, 4, 2, 2, 2, 0, 0, 0);
         assert!(evidence.is_evidenced());
         assert_eq!(evidence.status, ClauseStatus::Evidenced);
         assert_eq!(evidence.protection_device_ordinal, Some(0));
@@ -1904,8 +1937,16 @@ mod tests {
         assert_eq!(artifact_projection["attempts"][0]["admission_requested_ns"], 100);
         assert_eq!(artifact_projection["attempts"][0]["admitted_ns"], 1_000);
 
+        let queue_not_full = OverloadFairnessEvidence::from_observations(&observations, &devices, 4, 2, 2, 1, 0, 0, 0);
+        assert!(!queue_not_full.is_evidenced());
+        assert_eq!(queue_not_full.status, ClauseStatus::Failed);
+
+        let queue_exceeded = OverloadFairnessEvidence::from_observations(&observations, &devices, 4, 2, 2, 3, 0, 0, 0);
+        assert!(!queue_exceeded.is_evidenced());
+        assert_eq!(queue_exceeded.status, ClauseStatus::Failed);
+
         observations[0].admission_wait.as_mut().unwrap().overtakes_remaining = 1;
-        let malformed = OverloadFairnessEvidence::from_observations(&observations, &devices, 4, 2, 2, 0, 0, 0);
+        let malformed = OverloadFairnessEvidence::from_observations(&observations, &devices, 4, 2, 2, 2, 0, 0, 0);
         assert!(!malformed.is_evidenced());
         assert_eq!(malformed.status, ClauseStatus::Failed);
         assert!(!malformed.wait_facts_exact);
