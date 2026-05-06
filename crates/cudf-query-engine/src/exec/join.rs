@@ -618,10 +618,25 @@ fn probe_hash_join(
     overrides: &ExecutionOverrides<'_>,
     node: &JoinNode,
 ) -> Result<DataFrameHashJoinPairIndices> {
+    let output_size = match node.spec.join_type {
+        JoinType::Inner => hash_join.inner_probe_size_in(probe, probe_keys, overrides),
+        JoinType::Left => hash_join.left_probe_size_in(probe, probe_keys, overrides),
+        JoinType::Full => hash_join.full_probe_size_in(probe, probe_keys, overrides),
+        JoinType::LeftSemi | JoinType::LeftAnti | JoinType::Cross => {
+            return Err(QueryError::new(
+                QueryErrorCode::UnsupportedPlanShape,
+                "cudf_query_engine.join.execute",
+                "native join execution currently supports only inner, left, full, left semi, and left anti equi joins",
+            )
+            .with_fact("join_type", node.spec.join_type));
+        },
+    }
+    .map_err(|error| join_index_error(error, node))?;
+
     let result = match node.spec.join_type {
-        JoinType::Inner => hash_join.inner_probe_in(probe, probe_keys, overrides),
-        JoinType::Left => hash_join.left_probe_in(probe, probe_keys, overrides),
-        JoinType::Full => hash_join.full_probe_in(probe, probe_keys, overrides),
+        JoinType::Inner => hash_join.inner_probe_with_output_size_in(probe, probe_keys, output_size, overrides),
+        JoinType::Left => hash_join.left_probe_with_output_size_in(probe, probe_keys, output_size, overrides),
+        JoinType::Full => hash_join.full_probe_with_output_size_in(probe, probe_keys, output_size, overrides),
         JoinType::LeftSemi | JoinType::LeftAnti | JoinType::Cross => {
             return Err(QueryError::new(
                 QueryErrorCode::UnsupportedPlanShape,

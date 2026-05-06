@@ -50,7 +50,10 @@ use crate::{
         AggregateNode, FilterNode, JoinNode, JoinNullEquality, LimitNode, NodeId, PlanNode, ProjectionNode, QueryPlan,
         ResultSink, SortNode,
     },
-    runtime::{ExecutionContext, MemoryControlPolicy, MemoryReservationRequest, ReservationKind, RetryFacts},
+    runtime::{
+        BoundedJoinReservationContract, ExecutionContext, MemoryControlPolicy, MemoryReservationRequest,
+        ReservationKind, RetryFacts,
+    },
     source::{
         ByteRangeDisposition, LocalParquetFile, LocalParquetSource, PartitionColumn, PartitionColumnDisposition,
         SchemaMappingDisposition, ZERO_COLUMN_COUNT_COLUMN, ZeroColumnCountDisposition,
@@ -69,9 +72,9 @@ use crate::{
 /// probes against the same build node, build keys, and null-equality contract.
 /// The repository retains the query runtime and device placement that produced
 /// the artifacts, and is released with this scratch object at query end. It is
-/// deliberately absent from bounded join execution until cudf-rs exposes honest
-/// hash-table byte observability and the engine can reserve build, probe,
-/// gather, and output memory before constructing join artifacts.
+/// deliberately absent from bounded join execution until the lower layers expose
+/// honest pre-build hash-table reservation bytes and the engine can reserve
+/// build, probe, gather, and output memory before constructing join artifacts.
 pub(super) struct ExecutionScratch {
     node_results: HashMap<NodeId, GpuDataFrame>,
     hash_join_builds: HashJoinBuildRepository,

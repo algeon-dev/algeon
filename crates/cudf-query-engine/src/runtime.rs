@@ -434,6 +434,200 @@ impl std::fmt::Display for ReservationKind {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum BoundedJoinReservationStatus {
+    Modeled,
+    BlockedByLowerLevel,
+    DeferredUntilPrerequisite,
+}
+
+impl BoundedJoinReservationStatus {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Modeled => "modeled",
+            Self::BlockedByLowerLevel => "blocked_by_lower_level",
+            Self::DeferredUntilPrerequisite => "deferred_until_prerequisite",
+        }
+    }
+}
+
+impl std::fmt::Display for BoundedJoinReservationStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct BoundedJoinReservationRequirement {
+    reservation_kind: ReservationKind,
+    memory_boundary: &'static str,
+    required_contract: &'static str,
+    status: BoundedJoinReservationStatus,
+    detail: &'static str,
+}
+
+impl BoundedJoinReservationRequirement {
+    pub const fn new(
+        reservation_kind: ReservationKind,
+        memory_boundary: &'static str,
+        required_contract: &'static str,
+        status: BoundedJoinReservationStatus,
+        detail: &'static str,
+    ) -> Self {
+        Self { reservation_kind, memory_boundary, required_contract, status, detail }
+    }
+
+    pub const fn reservation_kind(self) -> ReservationKind {
+        self.reservation_kind
+    }
+
+    pub const fn memory_boundary(self) -> &'static str {
+        self.memory_boundary
+    }
+
+    pub const fn required_contract(self) -> &'static str {
+        self.required_contract
+    }
+
+    pub const fn status(self) -> BoundedJoinReservationStatus {
+        self.status
+    }
+
+    pub const fn detail(self) -> &'static str {
+        self.detail
+    }
+}
+
+pub const BOUNDED_JOIN_RESERVATION_REQUIREMENTS: [BoundedJoinReservationRequirement; 6] = [
+    BoundedJoinReservationRequirement::new(
+        ReservationKind::BuildSide,
+        "join_build_side",
+        "query_engine_build_side_source_reservation",
+        BoundedJoinReservationStatus::Modeled,
+        "modeled_before_execution",
+    ),
+    BoundedJoinReservationRequirement::new(
+        ReservationKind::HashTable,
+        "join_hash_table",
+        "hash_join_pre_build_reservation_size_bytes",
+        BoundedJoinReservationStatus::BlockedByLowerLevel,
+        "unsupported_by_libcudf",
+    ),
+    BoundedJoinReservationRequirement::new(
+        ReservationKind::ProbeSide,
+        "join_probe_side",
+        "query_engine_probe_side_source_reservation",
+        BoundedJoinReservationStatus::DeferredUntilPrerequisite,
+        "requires_hash_table_reservation",
+    ),
+    BoundedJoinReservationRequirement::new(
+        ReservationKind::GatherMap,
+        "join_gather_map",
+        "hash_join_exact_output_size+hash_join_probe_with_output_size+join_indices_device_allocated_size_bytes",
+        BoundedJoinReservationStatus::DeferredUntilPrerequisite,
+        "requires_hash_table_reservation",
+    ),
+    BoundedJoinReservationRequirement::new(
+        ReservationKind::JoinOutput,
+        "join_output",
+        "projected_join_output_device_bytes_after_exact_gather_map_sizing",
+        BoundedJoinReservationStatus::DeferredUntilPrerequisite,
+        "requires_hash_table_reservation",
+    ),
+    BoundedJoinReservationRequirement::new(
+        ReservationKind::Materialization,
+        "host_materialization",
+        "query_engine_explicit_sink_materialization_reservation",
+        BoundedJoinReservationStatus::Modeled,
+        "modeled_by_explicit_sink_boundary",
+    ),
+];
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct BoundedJoinReservationContract;
+
+impl BoundedJoinReservationContract {
+    pub const fn requirements(self) -> &'static [BoundedJoinReservationRequirement] {
+        &BOUNDED_JOIN_RESERVATION_REQUIREMENTS
+    }
+
+    pub const fn model_status(self) -> &'static str {
+        "modeled"
+    }
+
+    pub const fn execution_status(self) -> &'static str {
+        "disabled"
+    }
+
+    pub const fn enabled(self) -> bool {
+        false
+    }
+
+    pub fn reservation_kinds_csv(self) -> String {
+        csv_join(self.requirements().iter().map(|requirement| requirement.reservation_kind().as_str()))
+    }
+
+    pub fn reservation_statuses_csv(self) -> String {
+        csv_join(self.requirements().iter().map(|requirement| {
+            format!("{}:{}", requirement.reservation_kind().as_str(), requirement.status().as_str())
+        }))
+    }
+
+    pub fn blocking_reservation_kinds_csv(self) -> String {
+        csv_join(self.requirements().iter().filter_map(|requirement| {
+            (requirement.status() != BoundedJoinReservationStatus::Modeled)
+                .then_some(requirement.reservation_kind().as_str())
+        }))
+    }
+
+    pub fn modeled_reservation_kinds_csv(self) -> String {
+        csv_join(self.requirements().iter().filter_map(|requirement| {
+            (requirement.status() == BoundedJoinReservationStatus::Modeled)
+                .then_some(requirement.reservation_kind().as_str())
+        }))
+    }
+
+    pub fn deferred_reservation_kinds_csv(self) -> String {
+        csv_join(self.requirements().iter().filter_map(|requirement| {
+            (requirement.status() == BoundedJoinReservationStatus::DeferredUntilPrerequisite)
+                .then_some(requirement.reservation_kind().as_str())
+        }))
+    }
+
+    pub fn lower_level_blockers_csv(self) -> String {
+        csv_join(self.requirements().iter().filter_map(|requirement| {
+            (requirement.status() == BoundedJoinReservationStatus::BlockedByLowerLevel)
+                .then_some(requirement.required_contract())
+        }))
+    }
+
+    pub fn requirement_details_csv(self) -> String {
+        csv_join(self.requirements().iter().map(|requirement| {
+            format!(
+                "{}:{}:{}",
+                requirement.reservation_kind().as_str(),
+                requirement.required_contract(),
+                requirement.detail()
+            )
+        }))
+    }
+}
+
+fn csv_join<I, T>(values: I) -> String
+where
+    I: IntoIterator<Item = T>,
+    T: ToString,
+{
+    let mut output = String::new();
+    for value in values {
+        if !output.is_empty() {
+            output.push(',');
+        }
+        output.push_str(&value.to_string());
+    }
+    output
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MemoryReservationRequest {
     pub reservation_kind: ReservationKind,
