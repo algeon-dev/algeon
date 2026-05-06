@@ -1,12 +1,13 @@
 use std::time::Duration;
 
-use crate::runtime::MemoryControlPolicy;
+use crate::runtime::{ExecutionBoundaryPolicy, MemoryControlPolicy};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct QueryMetrics {
     pub boundary: BoundaryMetrics,
     pub operators: Vec<OperatorMetrics>,
     pub phase_c_memory_control_policy: MemoryControlPolicy,
+    pub execution_boundary_policy: ExecutionBoundaryPolicy,
     pub input_batches: u64,
     pub input_rows: u64,
     /// Backward-compatible alias for `resident_dataframe_peak_bytes`.

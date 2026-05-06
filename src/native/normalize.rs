@@ -327,12 +327,12 @@ pub(super) fn normalize_native_plan(plan: &dyn ExecutionPlan) -> Result<Normaliz
     })
 }
 
-fn normalize_sort_stack<'a>(
+fn normalize_sort_stack(
     root: NativeStackRoot,
     output_schema_fields: usize,
-    sort: &'a SortExec,
+    sort: &SortExec,
     limit_fetch: Option<usize>,
-) -> Result<NormalizedNativePlan<'a>, NativePlanRejection> {
+) -> Result<NormalizedNativePlan, NativePlanRejection> {
     let initial_candidate = native_stack_candidate(root, output_schema_fields, false, true, true, false);
     if sort.preserve_partitioning() && !matches!(root, NativeStackRoot::SortPreservingMergeFetch) {
         return Err(NativePlanRejection {
@@ -409,13 +409,13 @@ fn normalize_global_aggregate_stack<'a>(
     })
 }
 
-fn normalize_sort_input_root<'a>(
+fn normalize_sort_input_root(
     root: NativeStackRoot,
     output_schema_fields: usize,
-    sort: &'a SortExec,
+    sort: &SortExec,
     limit_fetch: Option<usize>,
     candidate: GpuCandidate,
-) -> Result<NormalizedNativePlan<'a>, NativePlanRejection> {
+) -> Result<NormalizedNativePlan, NativePlanRejection> {
     if sort.preserve_partitioning() && !matches!(root, NativeStackRoot::SortPreservingMergeFetch) {
         return Err(NativePlanRejection {
             candidate,
@@ -606,10 +606,10 @@ fn peel_pre_aggregate_projection(aggregate: &AggregateExec) -> (Option<&Projecti
     }
 }
 
-fn peel_pre_aggregate_projection_and_input<'a>(
-    aggregate: &'a AggregateExec,
+fn peel_pre_aggregate_projection_and_input(
+    aggregate: &AggregateExec,
     candidate: GpuCandidate,
-) -> Result<(Option<&'a ProjectionExec>, NormalizedNativeInput<'a>), NativePlanRejection> {
+) -> Result<(Option<&ProjectionExec>, NormalizedNativeInput), NativePlanRejection> {
     let (projection, input) = peel_pre_aggregate_projection(aggregate);
     Ok((projection, normalize_native_input(peel_repartition(input), candidate)?))
 }

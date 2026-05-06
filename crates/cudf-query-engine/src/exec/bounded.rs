@@ -50,12 +50,20 @@ pub(super) fn execute_bounded_query_plan(
     record_device_memory_observation(&frame.frame, metrics)?;
     match plan.sink() {
         ResultSink::GpuResident { .. } => {
+            let handle = match GpuResultHandle::new(context, frame.frame, Arc::clone(plan.output_schema())) {
+                Ok(handle) => handle,
+                Err(error) => {
+                    reservations.release(frame.reservation);
+                    return Err(error);
+                },
+            };
             reservations.release(frame.reservation);
             debug_assert_eq!(reservations.reserved_bytes(), 0);
-            Ok(QueryOutput::GpuResident(frame.frame))
+            Ok(QueryOutput::GpuResident(handle))
         },
         ResultSink::HostArrow { schema, .. } => {
-            let output = materialize_bounded_to_host(frame, plan.sink().input(), schema, &mut reservations, metrics)?;
+            let output =
+                materialize_bounded_to_host(context, frame, plan.sink().input(), schema, &mut reservations, metrics)?;
             debug_assert_eq!(reservations.reserved_bytes(), 0);
             Ok(QueryOutput::HostArrow(output))
         },
@@ -71,14 +79,21 @@ fn execute_bounded_generic_query_plan(
         return Err(unsupported_bounded_shape(
             "bounded native join execution requires join-specific build/probe/hash/gather/output reservations and cudf-rs hash-table byte observability",
             "join_memory_reservations_not_implemented",
-        ));
+        )
+        .with_fact("boundary_policy", context.boundary_policy())
+        .with_fact("source_read_boundary", context.boundary_policy().source_read())
+        .with_fact("build_materialization_boundary", context.boundary_policy().build_materialization())
+        .with_fact("probe_execution_boundary", context.boundary_policy().probe_execution())
+        .with_fact("result_materialization_boundary", context.boundary_policy().result_materialization())
+        .with_fact("missing_cudf_rs_observability", "hash_table_device_allocated_size_bytes")
+        .with_fact("bounded_join_enabled", false));
     }
 
     let MemoryControlPolicy::Bounded { device_budget_bytes, .. } = context.memory_control_policy() else {
         unreachable!("execute_bounded_query_plan is called only for bounded policies");
     };
     let mut reservations = ReservationTracker::new(device_budget_bytes);
-    let mut scratch = ExecutionScratch::default();
+    let mut scratch = ExecutionScratch::new(context);
     let frame = execute_node(context, plan, plan.sink().input(), &mut scratch, metrics)?;
     let frame_bytes = observe_device_memory_bytes(&frame, metrics)?;
     let reservation = reservations.try_reserve(
@@ -93,14 +108,26 @@ fn execute_bounded_generic_query_plan(
 
     match plan.sink() {
         ResultSink::GpuResident { .. } => {
-            let frame = committed.frame;
+            let handle = match GpuResultHandle::new(context, committed.frame, Arc::clone(plan.output_schema())) {
+                Ok(handle) => handle,
+                Err(error) => {
+                    reservations.release(committed.reservation);
+                    return Err(error);
+                },
+            };
             reservations.release(committed.reservation);
             debug_assert_eq!(reservations.reserved_bytes(), 0);
-            Ok(QueryOutput::GpuResident(frame))
+            Ok(QueryOutput::GpuResident(handle))
         },
         ResultSink::HostArrow { schema, .. } => {
-            let output =
-                materialize_bounded_to_host(committed, plan.sink().input(), schema, &mut reservations, metrics)?;
+            let output = materialize_bounded_to_host(
+                context,
+                committed,
+                plan.sink().input(),
+                schema,
+                &mut reservations,
+                metrics,
+            )?;
             debug_assert_eq!(reservations.reserved_bytes(), 0);
             Ok(QueryOutput::HostArrow(output))
         },
