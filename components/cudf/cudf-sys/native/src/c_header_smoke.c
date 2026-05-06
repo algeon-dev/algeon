@@ -205,6 +205,30 @@ int cudf_rust_c_header_smoke(void)
                           cudf_column_handle*,
 
                           const cudf_exec_options_t*)   = &cudf_conditional_inner_join_indices_ex;
+  cudf_status_t (*f22ci2)(cudf_table_view_handle,
+                          cudf_table_view_handle,
+                          cudf_ast_expression_handle,
+                          size_t,
+                          cudf_column_handle*,
+                          cudf_column_handle*)          =
+    &cudf_conditional_inner_join_indices_with_output_size;
+  cudf_status_t (*f22ci3)(cudf_table_view_handle,
+                          cudf_table_view_handle,
+                          cudf_ast_expression_handle,
+                          size_t,
+                          cudf_column_handle*,
+                          cudf_column_handle*,
+                          const cudf_exec_options_t*)   =
+    &cudf_conditional_inner_join_indices_with_output_size_ex;
+  cudf_status_t (*f22ci4)(cudf_table_view_handle,
+                          cudf_table_view_handle,
+                          cudf_ast_expression_handle,
+                          size_t*)                      = &cudf_conditional_inner_join_size;
+  cudf_status_t (*f22ci5)(cudf_table_view_handle,
+                          cudf_table_view_handle,
+                          cudf_ast_expression_handle,
+                          size_t*,
+                          const cudf_exec_options_t*)   = &cudf_conditional_inner_join_size_ex;
   cudf_status_t (*f22cl0)(cudf_table_view_handle,
                           cudf_table_view_handle,
                           cudf_ast_expression_handle,
@@ -217,6 +241,30 @@ int cudf_rust_c_header_smoke(void)
                           cudf_column_handle*,
 
                           const cudf_exec_options_t*)   = &cudf_conditional_left_join_indices_ex;
+  cudf_status_t (*f22cl2)(cudf_table_view_handle,
+                          cudf_table_view_handle,
+                          cudf_ast_expression_handle,
+                          size_t,
+                          cudf_column_handle*,
+                          cudf_column_handle*)          =
+    &cudf_conditional_left_join_indices_with_output_size;
+  cudf_status_t (*f22cl3)(cudf_table_view_handle,
+                          cudf_table_view_handle,
+                          cudf_ast_expression_handle,
+                          size_t,
+                          cudf_column_handle*,
+                          cudf_column_handle*,
+                          const cudf_exec_options_t*)   =
+    &cudf_conditional_left_join_indices_with_output_size_ex;
+  cudf_status_t (*f22cl4)(cudf_table_view_handle,
+                          cudf_table_view_handle,
+                          cudf_ast_expression_handle,
+                          size_t*)                      = &cudf_conditional_left_join_size;
+  cudf_status_t (*f22cl5)(cudf_table_view_handle,
+                          cudf_table_view_handle,
+                          cudf_ast_expression_handle,
+                          size_t*,
+                          const cudf_exec_options_t*)   = &cudf_conditional_left_join_size_ex;
   cudf_status_t (*f22cf0)(cudf_table_view_handle,
                           cudf_table_view_handle,
                           cudf_ast_expression_handle,
@@ -239,6 +287,28 @@ int cudf_rust_c_header_smoke(void)
                           cudf_column_handle*,
 
                           const cudf_exec_options_t*) = &cudf_conditional_left_semi_join_indices_ex;
+  cudf_status_t (*f22cs2)(cudf_table_view_handle,
+                          cudf_table_view_handle,
+                          cudf_ast_expression_handle,
+                          size_t,
+                          cudf_column_handle*)        =
+    &cudf_conditional_left_semi_join_indices_with_output_size;
+  cudf_status_t (*f22cs3)(cudf_table_view_handle,
+                          cudf_table_view_handle,
+                          cudf_ast_expression_handle,
+                          size_t,
+                          cudf_column_handle*,
+                          const cudf_exec_options_t*) =
+    &cudf_conditional_left_semi_join_indices_with_output_size_ex;
+  cudf_status_t (*f22cs4)(cudf_table_view_handle,
+                          cudf_table_view_handle,
+                          cudf_ast_expression_handle,
+                          size_t*)                    = &cudf_conditional_left_semi_join_size;
+  cudf_status_t (*f22cs5)(cudf_table_view_handle,
+                          cudf_table_view_handle,
+                          cudf_ast_expression_handle,
+                          size_t*,
+                          const cudf_exec_options_t*) = &cudf_conditional_left_semi_join_size_ex;
   cudf_status_t (*f22ca0)(cudf_table_view_handle,
                           cudf_table_view_handle,
                           cudf_ast_expression_handle,
@@ -249,6 +319,28 @@ int cudf_rust_c_header_smoke(void)
                           cudf_column_handle*,
 
                           const cudf_exec_options_t*) = &cudf_conditional_left_anti_join_indices_ex;
+  cudf_status_t (*f22ca2)(cudf_table_view_handle,
+                          cudf_table_view_handle,
+                          cudf_ast_expression_handle,
+                          size_t,
+                          cudf_column_handle*)        =
+    &cudf_conditional_left_anti_join_indices_with_output_size;
+  cudf_status_t (*f22ca3)(cudf_table_view_handle,
+                          cudf_table_view_handle,
+                          cudf_ast_expression_handle,
+                          size_t,
+                          cudf_column_handle*,
+                          const cudf_exec_options_t*) =
+    &cudf_conditional_left_anti_join_indices_with_output_size_ex;
+  cudf_status_t (*f22ca4)(cudf_table_view_handle,
+                          cudf_table_view_handle,
+                          cudf_ast_expression_handle,
+                          size_t*)                    = &cudf_conditional_left_anti_join_size;
+  cudf_status_t (*f22ca5)(cudf_table_view_handle,
+                          cudf_table_view_handle,
+                          cudf_ast_expression_handle,
+                          size_t*,
+                          const cudf_exec_options_t*) = &cudf_conditional_left_anti_join_size_ex;
   cudf_join_kind_t f22fj_kind                         = CUDF_JOIN_KIND_INNER_JOIN;
   cudf_status_t (*f22fj0)(cudf_table_view_handle,
                           cudf_table_view_handle,
@@ -637,14 +729,30 @@ int cudf_rust_c_header_smoke(void)
   (void)f22ast4;
   (void)f22ci0;
   (void)f22ci1;
+  (void)f22ci2;
+  (void)f22ci3;
+  (void)f22ci4;
+  (void)f22ci5;
   (void)f22cl0;
   (void)f22cl1;
+  (void)f22cl2;
+  (void)f22cl3;
+  (void)f22cl4;
+  (void)f22cl5;
   (void)f22cf0;
   (void)f22cf1;
   (void)f22cs0;
   (void)f22cs1;
+  (void)f22cs2;
+  (void)f22cs3;
+  (void)f22cs4;
+  (void)f22cs5;
   (void)f22ca0;
   (void)f22ca1;
+  (void)f22ca2;
+  (void)f22ca3;
+  (void)f22ca4;
+  (void)f22ca5;
   (void)f22fj_kind;
   (void)f22fj0;
   (void)f22fj1;

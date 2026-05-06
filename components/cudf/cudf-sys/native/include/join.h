@@ -236,6 +236,41 @@ cudf_status_t cudf_conditional_inner_join_indices_ex(cudf_table_view_handle left
                                                      cudf_column_handle* out_right_indices,
                                                      const cudf_exec_options_t* options);
 
+/// Conditional inner join indices with an exact output row count supplied by
+/// the caller.
+cudf_status_t cudf_conditional_inner_join_indices_with_output_size(
+  cudf_table_view_handle left,
+  cudf_table_view_handle right,
+  cudf_ast_expression_handle predicate,
+  size_t output_size,
+  cudf_column_handle* out_left_indices,
+  cudf_column_handle* out_right_indices);
+
+/// Conditional inner join indices with an exact output row count and explicit
+/// execution context.
+cudf_status_t cudf_conditional_inner_join_indices_with_output_size_ex(
+  cudf_table_view_handle left,
+  cudf_table_view_handle right,
+  cudf_ast_expression_handle predicate,
+  size_t output_size,
+  cudf_column_handle* out_left_indices,
+  cudf_column_handle* out_right_indices,
+  const cudf_exec_options_t* options);
+
+/// Return the exact output row count for a conditional inner join.
+cudf_status_t cudf_conditional_inner_join_size(cudf_table_view_handle left,
+                                               cudf_table_view_handle right,
+                                               cudf_ast_expression_handle predicate,
+                                               size_t* out);
+
+/// Return the exact output row count for a conditional inner join with
+/// explicit execution context.
+cudf_status_t cudf_conditional_inner_join_size_ex(cudf_table_view_handle left,
+                                                  cudf_table_view_handle right,
+                                                  cudf_ast_expression_handle predicate,
+                                                  size_t* out,
+                                                  const cudf_exec_options_t* options);
+
 /// Conditional left join. Returns INT32 left and right gather-index columns.
 cudf_status_t cudf_conditional_left_join_indices(cudf_table_view_handle left,
                                                  cudf_table_view_handle right,
@@ -255,6 +290,41 @@ cudf_status_t cudf_conditional_left_join_indices_ex(cudf_table_view_handle left,
                                                     cudf_column_handle* out_left_indices,
                                                     cudf_column_handle* out_right_indices,
                                                     const cudf_exec_options_t* options);
+
+/// Conditional left join indices with an exact output row count supplied by
+/// the caller.
+cudf_status_t cudf_conditional_left_join_indices_with_output_size(
+  cudf_table_view_handle left,
+  cudf_table_view_handle right,
+  cudf_ast_expression_handle predicate,
+  size_t output_size,
+  cudf_column_handle* out_left_indices,
+  cudf_column_handle* out_right_indices);
+
+/// Conditional left join indices with an exact output row count and explicit
+/// execution context.
+cudf_status_t cudf_conditional_left_join_indices_with_output_size_ex(
+  cudf_table_view_handle left,
+  cudf_table_view_handle right,
+  cudf_ast_expression_handle predicate,
+  size_t output_size,
+  cudf_column_handle* out_left_indices,
+  cudf_column_handle* out_right_indices,
+  const cudf_exec_options_t* options);
+
+/// Return the exact output row count for a conditional left join.
+cudf_status_t cudf_conditional_left_join_size(cudf_table_view_handle left,
+                                              cudf_table_view_handle right,
+                                              cudf_ast_expression_handle predicate,
+                                              size_t* out);
+
+/// Return the exact output row count for a conditional left join with explicit
+/// execution context.
+cudf_status_t cudf_conditional_left_join_size_ex(cudf_table_view_handle left,
+                                                 cudf_table_view_handle right,
+                                                 cudf_ast_expression_handle predicate,
+                                                 size_t* out,
+                                                 const cudf_exec_options_t* options);
 
 /// Conditional full join. Returns INT32 left and right gather-index columns.
 cudf_status_t cudf_conditional_full_join_indices(cudf_table_view_handle left,
@@ -293,6 +363,39 @@ cudf_status_t cudf_conditional_left_semi_join_indices_ex(cudf_table_view_handle 
                                                          cudf_column_handle* out_indices,
                                                          const cudf_exec_options_t* options);
 
+/// Conditional left semi join indices with an exact output row count supplied
+/// by the caller.
+cudf_status_t cudf_conditional_left_semi_join_indices_with_output_size(
+  cudf_table_view_handle left,
+  cudf_table_view_handle right,
+  cudf_ast_expression_handle predicate,
+  size_t output_size,
+  cudf_column_handle* out_indices);
+
+/// Conditional left semi join indices with an exact output row count and
+/// explicit execution context.
+cudf_status_t cudf_conditional_left_semi_join_indices_with_output_size_ex(
+  cudf_table_view_handle left,
+  cudf_table_view_handle right,
+  cudf_ast_expression_handle predicate,
+  size_t output_size,
+  cudf_column_handle* out_indices,
+  const cudf_exec_options_t* options);
+
+/// Return the exact output row count for a conditional left semi join.
+cudf_status_t cudf_conditional_left_semi_join_size(cudf_table_view_handle left,
+                                                   cudf_table_view_handle right,
+                                                   cudf_ast_expression_handle predicate,
+                                                   size_t* out);
+
+/// Return the exact output row count for a conditional left semi join with
+/// explicit execution context.
+cudf_status_t cudf_conditional_left_semi_join_size_ex(cudf_table_view_handle left,
+                                                      cudf_table_view_handle right,
+                                                      cudf_ast_expression_handle predicate,
+                                                      size_t* out,
+                                                      const cudf_exec_options_t* options);
+
 /// Conditional left anti join. Returns an INT32 column of left row indices.
 cudf_status_t cudf_conditional_left_anti_join_indices(cudf_table_view_handle left,
                                                       cudf_table_view_handle right,
@@ -309,6 +412,39 @@ cudf_status_t cudf_conditional_left_anti_join_indices_ex(cudf_table_view_handle 
                                                          cudf_ast_expression_handle predicate,
                                                          cudf_column_handle* out_indices,
                                                          const cudf_exec_options_t* options);
+
+/// Conditional left anti join indices with an exact output row count supplied
+/// by the caller.
+cudf_status_t cudf_conditional_left_anti_join_indices_with_output_size(
+  cudf_table_view_handle left,
+  cudf_table_view_handle right,
+  cudf_ast_expression_handle predicate,
+  size_t output_size,
+  cudf_column_handle* out_indices);
+
+/// Conditional left anti join indices with an exact output row count and
+/// explicit execution context.
+cudf_status_t cudf_conditional_left_anti_join_indices_with_output_size_ex(
+  cudf_table_view_handle left,
+  cudf_table_view_handle right,
+  cudf_ast_expression_handle predicate,
+  size_t output_size,
+  cudf_column_handle* out_indices,
+  const cudf_exec_options_t* options);
+
+/// Return the exact output row count for a conditional left anti join.
+cudf_status_t cudf_conditional_left_anti_join_size(cudf_table_view_handle left,
+                                                   cudf_table_view_handle right,
+                                                   cudf_ast_expression_handle predicate,
+                                                   size_t* out);
+
+/// Return the exact output row count for a conditional left anti join with
+/// explicit execution context.
+cudf_status_t cudf_conditional_left_anti_join_size_ex(cudf_table_view_handle left,
+                                                      cudf_table_view_handle right,
+                                                      cudf_ast_expression_handle predicate,
+                                                      size_t* out,
+                                                      const cudf_exec_options_t* options);
 
 /// Filter already-computed join-index pairs with an AST predicate.
 ///

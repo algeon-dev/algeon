@@ -88,17 +88,28 @@ fn slice7_join_and_copying_surface_is_publicly_importable() {
 
 #[test]
 fn slice8_ast_conditional_and_mixed_join_surface_is_publicly_importable() {
-    use cudf::ops::{
-        ast::{AstExpression, AstOperator},
-        join::{
-            conditional_full_join_indices, conditional_full_join_indices_in, conditional_inner_join_indices,
-            conditional_inner_join_indices_in, conditional_left_anti_join_indices,
-            conditional_left_anti_join_indices_in, conditional_left_join_indices, conditional_left_join_indices_in,
-            conditional_left_semi_join_indices, conditional_left_semi_join_indices_in, filter_join_indices,
-            filter_join_indices_in, mixed_full_join_indices, mixed_full_join_indices_in, mixed_inner_join_indices,
-            mixed_inner_join_indices_in, mixed_left_anti_join_indices, mixed_left_anti_join_indices_in,
-            mixed_left_join_indices, mixed_left_join_indices_in, mixed_left_semi_join_indices,
-            mixed_left_semi_join_indices_in,
+    use cudf::{
+        DataFrame,
+        ops::{
+            ast::{AstExpression, AstOperator},
+            join::{
+                conditional_full_join_indices, conditional_full_join_indices_in, conditional_inner_join_indices,
+                conditional_inner_join_indices_in, conditional_inner_join_indices_with_output_size,
+                conditional_inner_join_indices_with_output_size_in, conditional_inner_join_size,
+                conditional_inner_join_size_in, conditional_left_anti_join_indices,
+                conditional_left_anti_join_indices_in, conditional_left_anti_join_indices_with_output_size,
+                conditional_left_anti_join_indices_with_output_size_in, conditional_left_anti_join_size,
+                conditional_left_anti_join_size_in, conditional_left_join_indices, conditional_left_join_indices_in,
+                conditional_left_join_indices_with_output_size, conditional_left_join_indices_with_output_size_in,
+                conditional_left_join_size, conditional_left_join_size_in, conditional_left_semi_join_indices,
+                conditional_left_semi_join_indices_in, conditional_left_semi_join_indices_with_output_size,
+                conditional_left_semi_join_indices_with_output_size_in, conditional_left_semi_join_size,
+                conditional_left_semi_join_size_in, filter_join_indices, filter_join_indices_in,
+                mixed_full_join_indices, mixed_full_join_indices_in, mixed_inner_join_indices,
+                mixed_inner_join_indices_in, mixed_left_anti_join_indices, mixed_left_anti_join_indices_in,
+                mixed_left_join_indices, mixed_left_join_indices_in, mixed_left_semi_join_indices,
+                mixed_left_semi_join_indices_in,
+            },
         },
     };
 
@@ -110,14 +121,30 @@ fn slice8_ast_conditional_and_mixed_join_surface_is_publicly_importable() {
         AstExpression::cast_to_uint64,
         conditional_inner_join_indices,
         conditional_inner_join_indices_in,
+        conditional_inner_join_size,
+        conditional_inner_join_size_in,
+        conditional_inner_join_indices_with_output_size,
+        conditional_inner_join_indices_with_output_size_in,
         conditional_left_join_indices,
         conditional_left_join_indices_in,
+        conditional_left_join_size,
+        conditional_left_join_size_in,
+        conditional_left_join_indices_with_output_size,
+        conditional_left_join_indices_with_output_size_in,
         conditional_full_join_indices,
         conditional_full_join_indices_in,
         conditional_left_semi_join_indices,
         conditional_left_semi_join_indices_in,
+        conditional_left_semi_join_size,
+        conditional_left_semi_join_size_in,
+        conditional_left_semi_join_indices_with_output_size,
+        conditional_left_semi_join_indices_with_output_size_in,
         conditional_left_anti_join_indices,
         conditional_left_anti_join_indices_in,
+        conditional_left_anti_join_size,
+        conditional_left_anti_join_size_in,
+        conditional_left_anti_join_indices_with_output_size,
+        conditional_left_anti_join_indices_with_output_size_in,
         filter_join_indices,
         filter_join_indices_in,
         mixed_inner_join_indices,
@@ -130,6 +157,16 @@ fn slice8_ast_conditional_and_mixed_join_surface_is_publicly_importable() {
         mixed_left_semi_join_indices_in,
         mixed_left_anti_join_indices,
         mixed_left_anti_join_indices_in,
+    );
+    let _ = (
+        DataFrame::conditional_inner_join_size,
+        DataFrame::conditional_inner_join_indices_with_output_size,
+        DataFrame::conditional_left_join_size,
+        DataFrame::conditional_left_join_indices_with_output_size,
+        DataFrame::conditional_left_semi_join_size,
+        DataFrame::conditional_left_semi_join_indices_with_output_size,
+        DataFrame::conditional_left_anti_join_size,
+        DataFrame::conditional_left_anti_join_indices_with_output_size,
     );
 }
 

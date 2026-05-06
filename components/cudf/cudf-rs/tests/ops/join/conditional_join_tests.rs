@@ -119,6 +119,41 @@ fn conditional_left_semi_and_anti_join_indices_return_left_existence_shapes() {
 }
 
 #[test]
+fn conditional_join_size_and_output_size_hint_match_indices() {
+    let left = i32_table(&[1, 3, 5]);
+    let right = i32_table(&[2, 4]);
+    let left_view = left.testing_view().unwrap();
+    let right_view = right.testing_view().unwrap();
+    let predicate = left_less_than_right();
+
+    let inner_size = join::conditional_inner_join_size(&left_view, &right_view, &predicate).unwrap();
+    assert_eq!(inner_size, 3);
+    let inner =
+        join::conditional_inner_join_indices_with_output_size(&left_view, &right_view, &predicate, inner_size).unwrap();
+    assert_eq!(sorted_join_index_pairs(&inner), vec![(0, 0), (0, 1), (1, 1)]);
+
+    let left_size = join::conditional_left_join_size(&left_view, &right_view, &predicate).unwrap();
+    assert_eq!(left_size, 4);
+    let left_indices =
+        join::conditional_left_join_indices_with_output_size(&left_view, &right_view, &predicate, left_size).unwrap();
+    assert_eq!(sorted_join_index_pairs(&left_indices), vec![(0, 0), (0, 1), (1, 1), (2, JOIN_NO_MATCH)]);
+
+    let semi_size = join::conditional_left_semi_join_size(&left_view, &right_view, &predicate).unwrap();
+    assert_eq!(semi_size, 2);
+    let semi =
+        join::conditional_left_semi_join_indices_with_output_size(&left_view, &right_view, &predicate, semi_size)
+            .unwrap();
+    assert_eq!(sorted_single_side_indices(&semi), vec![0, 1]);
+
+    let anti_size = join::conditional_left_anti_join_size(&left_view, &right_view, &predicate).unwrap();
+    assert_eq!(anti_size, 1);
+    let anti =
+        join::conditional_left_anti_join_indices_with_output_size(&left_view, &right_view, &predicate, anti_size)
+            .unwrap();
+    assert_eq!(sorted_single_side_indices(&anti), vec![2]);
+}
+
+#[test]
 fn conditional_inner_join_indices_treats_null_predicate_as_not_matching() {
     let left = nullable_i32_table(&[1, 0, 3], &[true, false, true]);
     let right = i32_table(&[2]);

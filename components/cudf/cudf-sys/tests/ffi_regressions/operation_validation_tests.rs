@@ -1821,6 +1821,130 @@ fn test_hash_join_size_apis_report_exact_output_rows() {
 }
 
 #[test]
+fn test_conditional_join_size_apis_report_exact_output_rows() {
+    let left_tbl = make_table_from_one_column(make_i32_column(&[1, 3, 5]));
+    let right_tbl = make_table_from_one_column(make_i32_column(&[2, 4]));
+    let left_tv = make_table_view(left_tbl);
+    let right_tv = make_table_view(right_tbl);
+    let predicate = make_left_less_than_right_predicate();
+    let exec = cudf_sys::ExecutionContext::new();
+
+    let mut out = 0usize;
+    let status = unsafe { cudf_sys::cudf_conditional_inner_join_size(left_tv, right_tv, predicate, &mut out) };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS);
+    assert_eq!(out, 3);
+
+    let status = unsafe { cudf_sys::cudf_conditional_left_join_size(left_tv, right_tv, predicate, &mut out) };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS);
+    assert_eq!(out, 4);
+
+    let status = unsafe { cudf_sys::cudf_conditional_left_semi_join_size(left_tv, right_tv, predicate, &mut out) };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS);
+    assert_eq!(out, 2);
+
+    let status = unsafe { cudf_sys::cudf_conditional_left_anti_join_size(left_tv, right_tv, predicate, &mut out) };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS);
+    assert_eq!(out, 1);
+
+    let status =
+        unsafe { cudf_sys::cudf_conditional_inner_join_size_ex(left_tv, right_tv, predicate, &mut out, exec.as_raw()) };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS);
+    assert_eq!(out, 3);
+
+    let status =
+        unsafe { cudf_sys::cudf_conditional_left_join_size_ex(left_tv, right_tv, predicate, &mut out, exec.as_raw()) };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS);
+    assert_eq!(out, 4);
+
+    let status = unsafe {
+        cudf_sys::cudf_conditional_left_semi_join_size_ex(left_tv, right_tv, predicate, &mut out, exec.as_raw())
+    };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS);
+    assert_eq!(out, 2);
+
+    let status = unsafe {
+        cudf_sys::cudf_conditional_left_anti_join_size_ex(left_tv, right_tv, predicate, &mut out, exec.as_raw())
+    };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS);
+    assert_eq!(out, 1);
+
+    let mut left_indices = ptr::null_mut();
+    let mut right_indices = ptr::null_mut();
+    let status = unsafe {
+        cudf_sys::cudf_conditional_inner_join_indices_with_output_size(
+            left_tv,
+            right_tv,
+            predicate,
+            3,
+            &mut left_indices,
+            &mut right_indices,
+        )
+    };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS);
+    assert_eq!(column_len(left_indices), 3);
+    assert_eq!(column_len(right_indices), 3);
+    unsafe {
+        cudf_sys::cudf_column_destroy(left_indices);
+        cudf_sys::cudf_column_destroy(right_indices);
+    }
+
+    let status = unsafe {
+        cudf_sys::cudf_conditional_left_join_indices_with_output_size_ex(
+            left_tv,
+            right_tv,
+            predicate,
+            4,
+            &mut left_indices,
+            &mut right_indices,
+            exec.as_raw(),
+        )
+    };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS);
+    assert_eq!(column_len(left_indices), 4);
+    assert_eq!(column_len(right_indices), 4);
+    unsafe {
+        cudf_sys::cudf_column_destroy(left_indices);
+        cudf_sys::cudf_column_destroy(right_indices);
+    }
+
+    let mut indices = ptr::null_mut();
+    let status = unsafe {
+        cudf_sys::cudf_conditional_left_semi_join_indices_with_output_size(
+            left_tv,
+            right_tv,
+            predicate,
+            2,
+            &mut indices,
+        )
+    };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS);
+    assert_eq!(column_len(indices), 2);
+    unsafe { cudf_sys::cudf_column_destroy(indices) };
+
+    let status = unsafe {
+        cudf_sys::cudf_conditional_left_anti_join_indices_with_output_size_ex(
+            left_tv,
+            right_tv,
+            predicate,
+            1,
+            &mut indices,
+            exec.as_raw(),
+        )
+    };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS);
+    assert_eq!(column_len(indices), 1);
+
+    unsafe {
+        cudf_sys::cudf_column_destroy(indices);
+        cudf_sys::cudf_ast_expression_destroy(predicate);
+        cudf_sys::cudf_table_view_destroy(right_tv);
+        cudf_sys::cudf_table_destroy(right_tbl);
+        cudf_sys::cudf_table_view_destroy(left_tv);
+        cudf_sys::cudf_table_destroy(left_tbl);
+    }
+}
+
+#[test]
 fn test_hash_join_probe_ex_uses_explicit_memory_resource_for_probe_allocations() {
     let _shim_state = lock_shim_state();
     let previous_raw = current_device_resource_raw();
