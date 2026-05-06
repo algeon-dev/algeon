@@ -160,6 +160,15 @@ impl QueryNode {
                         self.facts.schema_behavior
                     )
                 },
+                SourceNode::GpuResident(source) => writeln!(
+                    f,
+                    "{padding}{} GpuResidentSource input_name={} schema_fields={} placement={} schema_behavior={}",
+                    self.id,
+                    source.input_name,
+                    source.schema.fields().len(),
+                    self.facts.placement,
+                    self.facts.schema_behavior
+                ),
             },
             PlanNode::Filter(node) => writeln!(
                 f,
@@ -205,7 +214,7 @@ impl QueryNode {
             ),
             PlanNode::Join(node) => writeln!(
                 f,
-                "{padding}{} Join left={} right={} type={} key_count={} residual={} null_equality={} build_side={} output_projection={} placement={} schema_behavior={}",
+                "{padding}{} Join left={} right={} type={} key_count={} residual={} null_equality={} build_side={} build_artifact={} output_projection={} placement={} schema_behavior={}",
                 self.id,
                 node.inputs[0],
                 node.inputs[1],
@@ -214,6 +223,7 @@ impl QueryNode {
                 node.spec.residual_predicate.as_ref().map_or("none".to_string(), ToString::to_string),
                 node.spec.null_equality,
                 node.spec.build_side,
+                node.spec.build_artifact_id.as_ref().map_or("none", HashJoinBuildArtifactId::as_str),
                 format_join_output_projection(&node.spec.output_projection),
                 self.facts.placement,
                 self.facts.schema_behavior
@@ -515,6 +525,7 @@ pub struct JoinSpec {
     pub output_projection: Vec<JoinOutputColumn>,
     pub null_equality: JoinNullEquality,
     pub build_side: JoinSide,
+    pub build_artifact_id: Option<HashJoinBuildArtifactId>,
 }
 
 impl JoinSpec {
@@ -526,6 +537,7 @@ impl JoinSpec {
             output_projection: Vec::new(),
             null_equality: JoinNullEquality::NullsDoNotMatch,
             build_side: JoinSide::Right,
+            build_artifact_id: None,
         }
     }
 
@@ -547,6 +559,34 @@ impl JoinSpec {
     pub fn with_build_side(mut self, build_side: JoinSide) -> Self {
         self.build_side = build_side;
         self
+    }
+
+    pub fn with_build_artifact_id(mut self, id: impl Into<String>) -> Self {
+        self.build_artifact_id = Some(HashJoinBuildArtifactId::new(id));
+        self
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct HashJoinBuildArtifactId(String);
+
+impl HashJoinBuildArtifactId {
+    pub fn new(id: impl Into<String>) -> Self {
+        Self(id.into())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+impl fmt::Display for HashJoinBuildArtifactId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
     }
 }
 

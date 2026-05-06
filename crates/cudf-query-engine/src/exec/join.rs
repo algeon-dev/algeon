@@ -7,7 +7,7 @@ use cudf::{
     ops::ast::{AstExpression, AstOperator},
 };
 
-use super::*;
+use super::{types::gpu_hash_join_build_columns, *};
 use crate::{
     metrics::{JoinOperatorMetrics, OperatorMetrics},
     plan::{JoinNullEquality, JoinOutputColumn, JoinSide, JoinType},
@@ -18,18 +18,57 @@ enum EquiJoinIndices {
     LeftOnly(DataFrameJoinIndices),
 }
 
+impl EquiJoinIndices {
+    fn device_allocated_size_bytes(&self) -> Result<u64> {
+        match self {
+            Self::Pair { left, right } => {
+                let left_bytes = left.device_allocated_size_bytes().map(|bytes| bytes as u64).map_err(|error| {
+                    QueryError::from_cudf(
+                        "cudf_query_engine.join.gather_map_bytes",
+                        "failed to observe native cudf join left gather-map memory",
+                        error,
+                    )
+                })?;
+                let right_bytes = right.device_allocated_size_bytes().map(|bytes| bytes as u64).map_err(|error| {
+                    QueryError::from_cudf(
+                        "cudf_query_engine.join.gather_map_bytes",
+                        "failed to observe native cudf join right gather-map memory",
+                        error,
+                    )
+                })?;
+                Ok(left_bytes.saturating_add(right_bytes))
+            },
+            Self::LeftOnly(indices) => {
+                indices.device_allocated_size_bytes().map(|bytes| bytes as u64).map_err(|error| {
+                    QueryError::from_cudf(
+                        "cudf_query_engine.join.gather_map_bytes",
+                        "failed to observe native cudf join gather-map memory",
+                        error,
+                    )
+                })
+            },
+        }
+    }
+}
+
 struct JoinIndexResult {
     indices: EquiJoinIndices,
     hash_table_bytes: u64,
+    gather_map_bytes: u64,
 }
 
 impl JoinIndexResult {
     fn without_hash_table(indices: EquiJoinIndices) -> Self {
-        Self { indices, hash_table_bytes: 0 }
+        Self { indices, hash_table_bytes: 0, gather_map_bytes: 0 }
     }
 
     fn with_hash_table(indices: EquiJoinIndices, hash_table_bytes: u64) -> Self {
-        Self { indices, hash_table_bytes }
+        Self { indices, hash_table_bytes, gather_map_bytes: 0 }
+    }
+
+    fn with_observed_gather_maps(mut self) -> Result<Self> {
+        self.gather_map_bytes = self.indices.device_allocated_size_bytes()?;
+        Ok(self)
     }
 }
 
@@ -52,7 +91,7 @@ struct JoinIndexInput<'a, 'exec> {
 }
 
 struct BuiltHashJoin {
-    hash_join: DataFrameHashJoin,
+    hash_join: GpuHashJoinBuildHandle,
     hash_table_bytes: u64,
 }
 
@@ -108,7 +147,7 @@ pub(super) fn execute_join(
         residual_columns: &residual_columns,
         overrides: &overrides,
     };
-    let indices = execute_join_indices(input, node, scratch, metrics)?;
+    let indices = execute_join_indices(input, node, scratch, metrics)?.with_observed_gather_maps()?;
     let output = materialize_join_output(&left, &right, &indices.indices, &overrides, &node.spec.output_projection)?;
     metrics.operator_time += timer.elapsed();
 
@@ -128,6 +167,7 @@ pub(super) fn execute_join(
             probe_rows: side_metric(probe_side(node.spec.build_side), stats.left_rows, stats.right_rows),
             probe_bytes: side_metric(probe_side(node.spec.build_side), stats.left_bytes, stats.right_bytes),
             hash_table_bytes: indices.hash_table_bytes,
+            gather_map_bytes: indices.gather_map_bytes,
             output_rows,
             output_bytes,
         },
@@ -221,6 +261,7 @@ fn execute_cross_join(
             probe_rows: side_metric(probe_side(node.spec.build_side), stats.left_rows, stats.right_rows),
             probe_bytes: side_metric(probe_side(node.spec.build_side), stats.left_bytes, stats.right_bytes),
             hash_table_bytes: 0,
+            gather_map_bytes: 0,
             output_rows,
             output_bytes,
         },
@@ -282,8 +323,10 @@ fn execute_reusable_hash_join_indices(
 ) -> Result<JoinIndexResult> {
     match node.spec.build_side {
         JoinSide::Right => {
-            let build = build_hash_join(input.right, input.right_keys, input.overrides, node, scratch, metrics)?;
-            let indices = probe_hash_join(&build.hash_join, input.left, input.left_keys, input.overrides, node)?;
+            let build =
+                build_hash_join(input.context, input.right, input.right_keys, input.overrides, node, scratch, metrics)?;
+            let indices =
+                probe_hash_join(build.hash_join.hash_join(), input.left, input.left_keys, input.overrides, node)?;
             Ok(JoinIndexResult::with_hash_table(
                 EquiJoinIndices::Pair { left: indices.probe().clone(), right: indices.build().clone() },
                 build.hash_table_bytes,
@@ -299,8 +342,10 @@ fn execute_reusable_hash_join_indices(
                 .with_fact("join_type", node.spec.join_type)
                 .with_fact("build_side", node.spec.build_side));
             }
-            let build = build_hash_join(input.left, input.left_keys, input.overrides, node, scratch, metrics)?;
-            let indices = probe_hash_join(&build.hash_join, input.right, input.right_keys, input.overrides, node)?;
+            let build =
+                build_hash_join(input.context, input.left, input.left_keys, input.overrides, node, scratch, metrics)?;
+            let indices =
+                probe_hash_join(build.hash_join.hash_join(), input.right, input.right_keys, input.overrides, node)?;
             Ok(JoinIndexResult::with_hash_table(
                 EquiJoinIndices::Pair { left: indices.build().clone(), right: indices.probe().clone() },
                 build.hash_table_bytes,
@@ -460,6 +505,7 @@ fn execute_mixed_join_indices(
 }
 
 fn build_hash_join(
+    context: &ExecutionContext,
     build: &DataFrame,
     build_keys: &[String],
     overrides: &ExecutionOverrides<'_>,
@@ -474,11 +520,36 @@ fn build_hash_join(
     let cache_key = HashJoinCacheKey::new(build_node, build_keys.to_vec(), node.spec.null_equality);
     if let Some(hash_join) = scratch.hash_join_builds.get(&cache_key) {
         metrics.record_hash_join_cache_hit();
-        let hash_table_bytes = observe_hash_table_bytes(hash_join, node)?;
-        return Ok(BuiltHashJoin { hash_join: hash_join.clone(), hash_table_bytes });
+        return Ok(BuiltHashJoin {
+            hash_join: hash_join.clone(),
+            hash_table_bytes: hash_join.device_allocated_size_bytes(),
+        });
     }
 
     metrics.record_hash_join_cache_miss();
+    let durable_build_artifact_id = durable_build_artifact_id(context, node)?;
+    let durable_build_columns =
+        if durable_build_artifact_id.is_some() { Some(gpu_hash_join_build_columns(build)?) } else { None };
+    if let Some(artifact_id) = &durable_build_artifact_id
+        && let Some(cache) = scratch.durable_hash_join_builds.as_ref()
+    {
+        match cache.get(artifact_id)? {
+            Some(hash_join) => {
+                hash_join.validate_for_reuse(
+                    context,
+                    build_keys,
+                    durable_build_columns.as_deref().unwrap_or(&[]),
+                    node.spec.null_equality,
+                )?;
+                let hash_table_bytes = hash_join.device_allocated_size_bytes();
+                metrics.record_hash_join_durable_cache_hit();
+                metrics.record_hash_join_hash_table_bytes(hash_table_bytes);
+                scratch.hash_join_builds.insert(cache_key, hash_join.clone());
+                return Ok(BuiltHashJoin { hash_join, hash_table_bytes });
+            },
+            None => metrics.record_hash_join_durable_cache_miss(),
+        }
+    }
     let hash_join = build
         .with_execution(overrides)
         .build_hash_join(
@@ -496,24 +567,48 @@ fn build_hash_join(
             .with_fact("null_equality", node.spec.null_equality)
             .with_fact("build_side", node.spec.build_side)
         })?;
-    let hash_table_bytes = observe_hash_table_bytes(&hash_join, node)?;
+    let hash_join = GpuHashJoinBuildHandle::new(context, hash_join, node.spec.null_equality).map_err(|error| {
+        error
+            .with_fact("join_type", node.spec.join_type)
+            .with_fact("key_count", node.spec.keys.len())
+            .with_fact("build_side", node.spec.build_side)
+    })?;
+    let hash_table_bytes = hash_join.device_allocated_size_bytes();
     metrics.record_hash_join_build();
+    metrics.record_hash_join_hash_table_bytes(hash_table_bytes);
     scratch.hash_join_builds.insert(cache_key, hash_join.clone());
+    if let Some(artifact_id) = durable_build_artifact_id
+        && let Some(cache) = scratch.durable_hash_join_builds.as_ref()
+        && cache.insert_if_absent(artifact_id, hash_join.clone())?
+    {
+        metrics.record_hash_join_durable_cache_insert();
+    }
     Ok(BuiltHashJoin { hash_join, hash_table_bytes })
 }
 
-fn observe_hash_table_bytes(hash_join: &DataFrameHashJoin, node: &JoinNode) -> Result<u64> {
-    hash_join.device_allocated_size_bytes().map(|bytes| bytes as u64).map_err(|error| {
-        QueryError::from_cudf(
-            "cudf_query_engine.join.hash_table_bytes",
-            "failed to observe native cudf reusable hash join memory",
-            error,
+fn durable_build_artifact_id(
+    context: &ExecutionContext,
+    node: &JoinNode,
+) -> Result<Option<crate::plan::HashJoinBuildArtifactId>> {
+    if !matches!(
+        context.boundary_policy().build_materialization(),
+        crate::runtime::BuildMaterializationBoundary::DurableGpuHashJoin
+    ) {
+        return Ok(None);
+    }
+
+    let artifact_id = node.spec.build_artifact_id.clone().ok_or_else(|| {
+        QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "cudf_query_engine.join.build_hash_join",
+            "durable native GPU hash-join build materialization requires an explicit build artifact id",
         )
+        .with_fact("reason", "missing_build_artifact_id")
         .with_fact("join_type", node.spec.join_type)
         .with_fact("key_count", node.spec.keys.len())
-        .with_fact("null_equality", node.spec.null_equality)
         .with_fact("build_side", node.spec.build_side)
-    })
+    })?;
+    Ok(Some(artifact_id))
 }
 
 fn probe_hash_join(

@@ -154,6 +154,17 @@ fn validate_source_node(source: &crate::source::SourceNode) -> Result<BTreeSet<S
             }
             Ok(available)
         },
+        crate::source::SourceNode::GpuResident(source) => {
+            if source.input_name.is_empty() {
+                return Err(QueryError::new(
+                    QueryErrorCode::InvalidPlan,
+                    "cudf_query_engine.gpu_resident_source.validate",
+                    "GPU-resident source input name must not be empty",
+                )
+                .with_fact("reason", "empty_input_name"));
+            }
+            Ok(schema_column_names(&source.schema))
+        },
     }
 }
 
@@ -207,6 +218,34 @@ fn validate_join_capability(
         )
         .with_fact("join_type", join.spec.join_type)
         .with_fact("build_side", join.spec.build_side));
+    }
+    if let Some(build_artifact_id) = &join.spec.build_artifact_id {
+        if build_artifact_id.is_empty() {
+            return Err(QueryError::new(
+                QueryErrorCode::InvalidPlan,
+                "cudf_query_engine.join.validate",
+                "native reusable hash-join build artifact id must not be empty",
+            )
+            .with_fact("reason", "empty_build_artifact_id"));
+        }
+        if join.spec.keys.is_empty() {
+            return Err(QueryError::new(
+                QueryErrorCode::UnsupportedPlanShape,
+                "cudf_query_engine.join.validate",
+                "native reusable hash-join build artifacts require equality keys",
+            )
+            .with_fact("build_artifact_id", build_artifact_id)
+            .with_fact("join_type", join.spec.join_type));
+        }
+        if !matches!(join.spec.join_type, JoinType::Inner | JoinType::Left | JoinType::Full) {
+            return Err(QueryError::new(
+                QueryErrorCode::UnsupportedPlanShape,
+                "cudf_query_engine.join.validate",
+                "native durable hash-join build artifacts are supported only for reusable hash-join probe types",
+            )
+            .with_fact("build_artifact_id", build_artifact_id)
+            .with_fact("join_type", join.spec.join_type));
+        }
     }
 
     for key in &join.spec.keys {

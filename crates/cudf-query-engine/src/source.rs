@@ -9,13 +9,27 @@ pub const ZERO_COLUMN_COUNT_COLUMN: &str = "__cudf_zero_column_row_count";
 #[derive(Debug, Clone, PartialEq)]
 pub enum SourceNode {
     LocalParquet(LocalParquetSource),
+    GpuResident(GpuResidentSource),
 }
 
 impl SourceNode {
     pub fn output_schema(&self) -> &SchemaRef {
         match self {
             Self::LocalParquet(source) => &source.schema,
+            Self::GpuResident(source) => &source.schema,
         }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct GpuResidentSource {
+    pub input_name: String,
+    pub schema: SchemaRef,
+}
+
+impl GpuResidentSource {
+    pub fn new(input_name: impl Into<String>, schema: SchemaRef) -> Self {
+        Self { input_name: input_name.into(), schema }
     }
 }
 

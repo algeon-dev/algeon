@@ -115,7 +115,9 @@ fn benchmark_shape_lowers_to_one_native_query_plan() {
     let PlanNode::Source(source_node) = &source_node.kind else {
         panic!("filter input should be a local parquet source");
     };
-    let SourceNode::LocalParquet(source) = source_node.as_ref();
+    let SourceNode::LocalParquet(source) = source_node.as_ref() else {
+        panic!("filter input should be a local parquet source");
+    };
     assert_eq!(source.file_count(), 1);
     assert_eq!(source.files[0].file_size_bytes, Some(fs::metadata(&path).unwrap().len()));
     assert_eq!(
@@ -162,6 +164,7 @@ fn multi_full_file_parquet_scan_lowers_to_one_native_source() {
         .find_map(|node| match &node.kind {
             PlanNode::Source(source_node) => match source_node.as_ref() {
                 SourceNode::LocalParquet(source) => Some(source),
+                SourceNode::GpuResident(_) => None,
             },
             _ => None,
         })
@@ -393,6 +396,7 @@ fn hash_join_filter_lowers_to_native_residual_predicate() {
         .filter_map(|node| match &node.kind {
             PlanNode::Source(source_node) => match source_node.as_ref() {
                 SourceNode::LocalParquet(source) => Some(source),
+                SourceNode::GpuResident(_) => None,
             },
             _ => None,
         })
@@ -3242,6 +3246,7 @@ fn native_local_parquet_sources(plan: &cudf_query_engine::QueryPlan) -> Vec<&cud
         .filter_map(|node| match &node.kind {
             PlanNode::Source(source_node) => match source_node.as_ref() {
                 SourceNode::LocalParquet(source) => Some(source),
+                SourceNode::GpuResident(_) => None,
             },
             _ => None,
         })

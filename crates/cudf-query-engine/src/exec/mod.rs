@@ -8,8 +8,8 @@ use arrow::{
     record_batch::RecordBatch,
 };
 use cudf::{
-    AggSpec as CudfAggSpec, DataFrame, DataFrameHashJoin, DuplicateKeepOption, ExecutionOverrides, GroupByAgg,
-    GroupByOptions, SortOptions as CudfSortOptions,
+    AggSpec as CudfAggSpec, DataFrame, DuplicateKeepOption, ExecutionOverrides, GroupByAgg, GroupByOptions,
+    SortOptions as CudfSortOptions,
     frame::dataframe::{DropDuplicatesOptions, InfoDetail, ParquetReadOptions},
     ops::{col, lit},
 };
@@ -24,8 +24,11 @@ mod types;
 mod util;
 mod validate;
 
-pub use source::{read_local_parquet_source, validate_local_parquet_source};
-pub use types::{ExecutionMode, GpuDataFrame, GpuResultHandle, QueryExecutionResult, QueryOutput};
+pub use source::{read_gpu_resident_source, read_local_parquet_source, validate_local_parquet_source};
+pub use types::{
+    ExecutionMode, GpuDataFrame, GpuHashJoinBuildCache, GpuHashJoinBuildHandle, GpuResidentInputMap, GpuResultHandle,
+    QueryExecutionResult, QueryOutput,
+};
 
 use self::{
     bounded::*,
@@ -72,6 +75,7 @@ use crate::{
 pub(super) struct ExecutionScratch {
     node_results: HashMap<NodeId, GpuDataFrame>,
     hash_join_builds: HashJoinBuildRepository,
+    durable_hash_join_builds: Option<Arc<GpuHashJoinBuildCache>>,
 }
 
 impl ExecutionScratch {
@@ -79,6 +83,7 @@ impl ExecutionScratch {
         Self {
             node_results: HashMap::new(),
             hash_join_builds: HashJoinBuildRepository::new(context.shared_runtime(), context.device_placement()),
+            durable_hash_join_builds: context.hash_join_build_cache(),
         }
     }
 }
@@ -86,7 +91,7 @@ impl ExecutionScratch {
 pub(super) struct HashJoinBuildRepository {
     runtime: Arc<cudf::Runtime>,
     device_placement: crate::runtime::DevicePlacement,
-    cache: HashMap<HashJoinCacheKey, DataFrameHashJoin>,
+    cache: HashMap<HashJoinCacheKey, GpuHashJoinBuildHandle>,
 }
 
 impl HashJoinBuildRepository {
@@ -94,7 +99,7 @@ impl HashJoinBuildRepository {
         Self { runtime, device_placement, cache: HashMap::new() }
     }
 
-    pub(super) fn get(&self, key: &HashJoinCacheKey) -> Option<&DataFrameHashJoin> {
+    pub(super) fn get(&self, key: &HashJoinCacheKey) -> Option<&GpuHashJoinBuildHandle> {
         debug_assert_eq!(
             self.device_placement,
             crate::runtime::DevicePlacement::SingleDevice { device_ordinal: self.runtime.device().ordinal() }
@@ -102,7 +107,7 @@ impl HashJoinBuildRepository {
         self.cache.get(key)
     }
 
-    pub(super) fn insert(&mut self, key: HashJoinCacheKey, hash_join: DataFrameHashJoin) {
+    pub(super) fn insert(&mut self, key: HashJoinCacheKey, hash_join: GpuHashJoinBuildHandle) {
         debug_assert_eq!(
             self.device_placement,
             crate::runtime::DevicePlacement::SingleDevice { device_ordinal: self.runtime.device().ordinal() }
@@ -125,6 +130,14 @@ impl HashJoinCacheKey {
 }
 
 pub fn execute_query_plan(context: &ExecutionContext, plan: &QueryPlan) -> Result<ExecutionResult> {
+    execute_query_plan_with_gpu_inputs(context, plan, &GpuResidentInputMap::new())
+}
+
+pub fn execute_query_plan_with_gpu_inputs(
+    context: &ExecutionContext,
+    plan: &QueryPlan,
+    gpu_inputs: &GpuResidentInputMap,
+) -> Result<ExecutionResult> {
     validate_query_plan(plan)?;
     let mut metrics = QueryMetrics {
         phase_c_memory_control_policy: context.memory_control_policy(),
@@ -132,10 +145,10 @@ pub fn execute_query_plan(context: &ExecutionContext, plan: &QueryPlan) -> Resul
         ..Default::default()
     };
     let output = if context.memory_control_policy().is_bounded() {
-        execute_bounded_query_plan(context, plan, &mut metrics)?
+        execute_bounded_query_plan(context, plan, gpu_inputs, &mut metrics)?
     } else {
         let mut scratch = ExecutionScratch::new(context);
-        let frame = execute_node(context, plan, plan.sink().input(), &mut scratch, &mut metrics)?;
+        let frame = execute_node(context, plan, plan.sink().input(), gpu_inputs, &mut scratch, &mut metrics)?;
         let handle = gpu_result_handle(context, plan, frame)?;
         match plan.sink() {
             ResultSink::GpuResident { .. } => Output::GpuResident(handle),
@@ -157,6 +170,7 @@ fn execute_node(
     context: &ExecutionContext,
     plan: &QueryPlan,
     id: NodeId,
+    gpu_inputs: &GpuResidentInputMap,
     scratch: &mut ExecutionScratch,
     metrics: &mut QueryMetrics,
 ) -> Result<types::GpuDataFrame> {
@@ -169,30 +183,33 @@ fn execute_node(
     let frame = match &node.kind {
         PlanNode::Source(source) => match source.as_ref() {
             crate::source::SourceNode::LocalParquet(source) => read_local_parquet_source(context, source, metrics),
+            crate::source::SourceNode::GpuResident(source) => {
+                read_gpu_resident_source(context, source, gpu_inputs, metrics)
+            },
         },
         PlanNode::Filter(filter) => {
-            let input = execute_node(context, plan, filter.input, scratch, metrics)?;
+            let input = execute_node(context, plan, filter.input, gpu_inputs, scratch, metrics)?;
             execute_filter(context, filter, input, metrics)
         },
         PlanNode::Projection(projection) => {
-            let input = execute_node(context, plan, projection.input, scratch, metrics)?;
+            let input = execute_node(context, plan, projection.input, gpu_inputs, scratch, metrics)?;
             execute_projection(context, projection, input, &node.facts.output_schema, metrics)
         },
         PlanNode::Aggregate(aggregate) => {
-            let input = execute_node(context, plan, aggregate.input, scratch, metrics)?;
+            let input = execute_node(context, plan, aggregate.input, gpu_inputs, scratch, metrics)?;
             execute_aggregate(context, aggregate, input, &node.facts.output_schema, metrics)
         },
         PlanNode::Sort(sort) => {
-            let input = execute_node(context, plan, sort.input, scratch, metrics)?;
+            let input = execute_node(context, plan, sort.input, gpu_inputs, scratch, metrics)?;
             execute_sort(context, sort, input, metrics)
         },
         PlanNode::Limit(limit) => {
-            let input = execute_node(context, plan, limit.input, scratch, metrics)?;
+            let input = execute_node(context, plan, limit.input, gpu_inputs, scratch, metrics)?;
             execute_limit(context, limit, input, metrics)
         },
         PlanNode::Join(join) => {
-            let left = execute_node(context, plan, join.inputs[0], scratch, metrics)?;
-            let right = execute_node(context, plan, join.inputs[1], scratch, metrics)?;
+            let left = execute_node(context, plan, join.inputs[0], gpu_inputs, scratch, metrics)?;
+            let right = execute_node(context, plan, join.inputs[1], gpu_inputs, scratch, metrics)?;
             execute_join(context, node.id, join, left, right, scratch, metrics)
         },
     }?;

@@ -8,6 +8,7 @@ pub struct ExecutionContext {
     memory_policy: MemoryResourcePolicy,
     memory_control_policy: MemoryControlPolicy,
     boundary_policy: ExecutionBoundaryPolicy,
+    hash_join_build_cache: Option<Arc<crate::exec::GpuHashJoinBuildCache>>,
 }
 
 impl ExecutionContext {
@@ -25,6 +26,7 @@ impl ExecutionContext {
             memory_policy: MemoryResourcePolicy::ExternalRuntime,
             memory_control_policy: MemoryControlPolicy::Unbounded,
             boundary_policy: ExecutionBoundaryPolicy::default(),
+            hash_join_build_cache: None,
         }
     }
 
@@ -59,6 +61,10 @@ impl ExecutionContext {
     pub fn boundary_policy(&self) -> ExecutionBoundaryPolicy {
         self.boundary_policy
     }
+
+    pub fn hash_join_build_cache(&self) -> Option<Arc<crate::exec::GpuHashJoinBuildCache>> {
+        self.hash_join_build_cache.as_ref().map(Arc::clone)
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -68,6 +74,7 @@ pub struct ExecutionContextBuilder {
     memory_policy: MemoryResourcePolicy,
     memory_control_policy: MemoryControlPolicy,
     boundary_policy: ExecutionBoundaryPolicy,
+    hash_join_build_cache: Option<Arc<crate::exec::GpuHashJoinBuildCache>>,
 }
 
 impl ExecutionContextBuilder {
@@ -107,9 +114,14 @@ impl ExecutionContextBuilder {
         self
     }
 
+    pub fn with_hash_join_build_cache(mut self, cache: Arc<crate::exec::GpuHashJoinBuildCache>) -> Self {
+        self.hash_join_build_cache = Some(cache);
+        self
+    }
+
     pub fn build(self) -> Result<ExecutionContext> {
         self.memory_control_policy.validate()?;
-        self.boundary_policy.validate()?;
+        self.boundary_policy.validate(self.hash_join_build_cache.is_some())?;
 
         if let Some(runtime) = self.runtime {
             return Ok(ExecutionContext {
@@ -117,6 +129,7 @@ impl ExecutionContextBuilder {
                 memory_policy: MemoryResourcePolicy::ExternalRuntime,
                 memory_control_policy: self.memory_control_policy,
                 boundary_policy: self.boundary_policy,
+                hash_join_build_cache: self.hash_join_build_cache,
             });
         }
 
@@ -148,6 +161,7 @@ impl ExecutionContextBuilder {
             memory_policy,
             memory_control_policy: self.memory_control_policy,
             boundary_policy: self.boundary_policy,
+            hash_join_build_cache: self.hash_join_build_cache,
         })
     }
 }
@@ -265,9 +279,24 @@ impl ExecutionBoundaryPolicy {
         self.result_materialization
     }
 
-    pub fn validate(self) -> Result<()> {
+    pub const fn with_build_materialization(mut self, build_materialization: BuildMaterializationBoundary) -> Self {
+        self.build_materialization = build_materialization;
+        self
+    }
+
+    pub fn validate(self, has_hash_join_build_cache: bool) -> Result<()> {
         match self.build_materialization {
             BuildMaterializationBoundary::QueryScopedGpuHashJoin => {},
+            BuildMaterializationBoundary::DurableGpuHashJoin if has_hash_join_build_cache => {},
+            BuildMaterializationBoundary::DurableGpuHashJoin => {
+                return Err(QueryError::new(
+                    crate::error::QueryErrorCode::InvalidPlan,
+                    "cudf_query_engine.boundary_policy.validate",
+                    "durable GPU hash-join build materialization requires a hash-join build cache",
+                )
+                .with_fact("build_materialization_boundary", self.build_materialization)
+                .with_fact("reason", "missing_hash_join_build_cache"));
+            },
         }
         match self.probe_execution {
             ProbeExecutionBoundary::ReusableGpuHashJoin => {},
@@ -308,12 +337,14 @@ impl std::fmt::Display for SourceReadBoundary {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BuildMaterializationBoundary {
     QueryScopedGpuHashJoin,
+    DurableGpuHashJoin,
 }
 
 impl BuildMaterializationBoundary {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::QueryScopedGpuHashJoin => "query_scoped_gpu_hash_join",
+            Self::DurableGpuHashJoin => "durable_gpu_hash_join",
         }
     }
 }

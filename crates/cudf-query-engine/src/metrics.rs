@@ -38,6 +38,16 @@ pub struct QueryMetrics {
     pub hash_join_cache_hits: u64,
     /// Query-scoped reusable hash-join cache misses.
     pub hash_join_cache_misses: u64,
+    /// Durable reusable hash-join build-artifact cache hits.
+    pub hash_join_durable_cache_hits: u64,
+    /// Durable reusable hash-join build-artifact cache misses.
+    pub hash_join_durable_cache_misses: u64,
+    /// Durable reusable hash-join build artifacts inserted by this query.
+    pub hash_join_durable_cache_inserts: u64,
+    /// Unique device bytes retained by reusable cuDF hash-join build artifacts.
+    ///
+    /// This is recorded when an artifact is constructed, not when it is reused.
+    pub hash_join_hash_table_bytes: u64,
     pub parquet_files: u64,
     pub parquet_bytes_known: u64,
     pub row_groups_selected: u64,
@@ -120,8 +130,24 @@ impl QueryMetrics {
         self.hash_join_cache_misses = self.hash_join_cache_misses.saturating_add(1);
     }
 
+    pub fn record_hash_join_durable_cache_hit(&mut self) {
+        self.hash_join_durable_cache_hits = self.hash_join_durable_cache_hits.saturating_add(1);
+    }
+
+    pub fn record_hash_join_durable_cache_miss(&mut self) {
+        self.hash_join_durable_cache_misses = self.hash_join_durable_cache_misses.saturating_add(1);
+    }
+
+    pub fn record_hash_join_durable_cache_insert(&mut self) {
+        self.hash_join_durable_cache_inserts = self.hash_join_durable_cache_inserts.saturating_add(1);
+    }
+
     pub fn record_hash_join_build(&mut self) {
         self.hash_join_build_count = self.hash_join_build_count.saturating_add(1);
+    }
+
+    pub fn record_hash_join_hash_table_bytes(&mut self, bytes: u64) {
+        self.hash_join_hash_table_bytes = self.hash_join_hash_table_bytes.saturating_add(bytes);
     }
 
     pub fn record_partial_aggregate(&mut self, rows: u64) {
@@ -172,12 +198,18 @@ pub struct JoinOperatorMetrics {
     /// This is a direct cudf-rs observation. It remains `0` for join paths that
     /// do not build a reusable hash table.
     pub hash_table_bytes: u64,
+    /// Device bytes retained by join gather maps produced for this join.
+    ///
+    /// This is a direct cudf-rs observation over the returned device index
+    /// columns, not a row-count estimate.
+    pub gather_map_bytes: u64,
     pub output_rows: u64,
     pub output_bytes: u64,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct BoundaryMetrics {
+    pub gpu_resident_input_handoffs: u64,
     pub host_to_device_uploads: u64,
     pub host_to_device_uploaded_rows: u64,
     pub host_to_device_uploaded_bytes: u64,
@@ -189,6 +221,10 @@ pub struct BoundaryMetrics {
 }
 
 impl BoundaryMetrics {
+    pub fn record_gpu_resident_input_handoff(&mut self) {
+        self.gpu_resident_input_handoffs += 1;
+    }
+
     pub fn record_host_to_device_upload(&mut self, rows: u64, bytes: u64) {
         self.host_to_device_uploads += 1;
         self.host_to_device_uploaded_rows += rows;

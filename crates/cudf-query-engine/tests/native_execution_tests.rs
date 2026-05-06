@@ -15,11 +15,12 @@ use arrow::{
 };
 use cudf::DataFrame;
 use cudf_query_engine::{
-    AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, ExecutionBoundaryPolicy, ExecutionContext, Expr,
-    JoinKey, JoinNullEquality, JoinOutputColumn, JoinSide, JoinSpec, JoinType, LimitSpec, LiteralValue,
-    LocalParquetFile, LocalParquetSource, MemoryControlPolicy, PartitionColumn, QueryErrorCode, QueryMetrics,
-    QueryOutput, QueryPlanBuilder, SortExpr, SortSpec, SourceChunkPlanningPolicy, SourceNode, ZERO_COLUMN_COUNT_COLUMN,
-    execute_query_plan, materialize_gpu_result_to_host, plan_local_parquet_source_chunks,
+    AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, BuildMaterializationBoundary, ExecutionBoundaryPolicy,
+    ExecutionContext, Expr, GpuHashJoinBuildCache, GpuResidentInputMap, GpuResidentSource, JoinKey, JoinNullEquality,
+    JoinOutputColumn, JoinSide, JoinSpec, JoinType, LimitSpec, LiteralValue, LocalParquetFile, LocalParquetSource,
+    MemoryControlPolicy, PartitionColumn, QueryErrorCode, QueryMetrics, QueryOutput, QueryPlanBuilder, SortExpr,
+    SortSpec, SourceChunkPlanningPolicy, SourceNode, ZERO_COLUMN_COUNT_COLUMN, execute_query_plan,
+    execute_query_plan_with_gpu_inputs, materialize_gpu_result_to_host, plan_local_parquet_source_chunks,
 };
 use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
 
@@ -1137,10 +1138,97 @@ fn native_query_reuses_build_side_hash_join_for_repeated_broadcast_probe() {
     assert_eq!(metrics.hash_join_build_count, 1);
     assert_eq!(metrics.hash_join_cache_misses, 1);
     assert_eq!(metrics.hash_join_cache_hits, 1);
-    let join_count = metrics.operators.iter().filter(|operator| operator.join.is_some()).count();
+    assert!(metrics.hash_join_hash_table_bytes > 0);
+    let join_metrics = metrics.operators.iter().filter_map(|operator| operator.join.as_ref()).collect::<Vec<_>>();
+    let join_count = join_metrics.len();
     assert_eq!(join_count, 2);
+    assert!(join_metrics.iter().all(|join| join.hash_table_bytes == metrics.hash_join_hash_table_bytes));
+    assert!(join_metrics.iter().all(|join| join.gather_map_bytes > 0));
 
     let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    assert_eq!(batch.num_rows(), 3);
+    assert_eq!(int32_array(batch, 0).values().as_ref(), &[20, 25, 30]);
+    assert_eq!(string_array(batch, 1).iter().collect::<Vec<_>>(), vec![Some("two"), Some("two"), Some("three")]);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn native_query_reuses_durable_hash_join_build_across_queries() {
+    let dir = unique_temp_dir("cudf-query-engine-native-durable-hash-join-cache");
+    let left_path = dir.join("lineitem.parquet");
+    let right_path = dir.join("orders.parquet");
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let left_schema = write_join_left_parquet(&runtime, &left_path);
+    let right_schema = write_join_right_parquet(&runtime, &right_path);
+    let output_schema = Arc::new(Schema::new(vec![
+        Field::new("qty", DataType::Int32, false),
+        Field::new("category", DataType::Utf8, false),
+    ]));
+
+    let left_source = LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(&left_path).with_file_size_bytes(fs::metadata(&left_path).unwrap().len())],
+        Arc::clone(&left_schema),
+        vec!["order_id".to_string(), "qty".to_string()],
+    );
+    let right_source = LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(&right_path).with_file_size_bytes(fs::metadata(&right_path).unwrap().len())],
+        Arc::clone(&right_schema),
+        vec!["order_id".to_string(), "category".to_string()],
+    );
+
+    let mut builder = QueryPlanBuilder::new();
+    let left = builder.add_source(SourceNode::LocalParquet(left_source));
+    let right = builder.add_source(SourceNode::LocalParquet(right_source));
+    let join = builder.add_join(
+        left,
+        right,
+        JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
+            .with_output_projection(vec![
+                JoinOutputColumn::left(cudf_query_engine::ColumnRef::input(0, "qty", "qty"), "qty"),
+                JoinOutputColumn::right(cudf_query_engine::ColumnRef::input(1, "category", "category"), "category"),
+            ])
+            .with_build_side(JoinSide::Right)
+            .with_build_artifact_id("orders_by_order_id"),
+        Arc::clone(&output_schema),
+    );
+    let sort = builder.add_sort(
+        join,
+        SortSpec::new(vec![SortExpr::new(Expr::column("qty"), false, false)]),
+        Arc::clone(&output_schema),
+    );
+    let plan = builder.finish_with_host_sink(sort);
+    let cache = Arc::new(GpuHashJoinBuildCache::new());
+    let policy =
+        ExecutionBoundaryPolicy::default().with_build_materialization(BuildMaterializationBoundary::DurableGpuHashJoin);
+    let context = ExecutionContext::builder()
+        .with_shared_runtime(Arc::clone(&runtime))
+        .with_boundary_policy(policy)
+        .with_hash_join_build_cache(Arc::clone(&cache))
+        .build()
+        .unwrap();
+
+    let first = execute_query_plan(&context, &plan).unwrap();
+    assert_eq!(first.metrics().hash_join_build_count, 1);
+    assert_eq!(first.metrics().hash_join_cache_misses, 1);
+    assert_eq!(first.metrics().hash_join_durable_cache_misses, 1);
+    assert_eq!(first.metrics().hash_join_durable_cache_inserts, 1);
+    assert_eq!(first.metrics().hash_join_durable_cache_hits, 0);
+    assert_eq!(cache.len().unwrap(), 1);
+    let retained_bytes = cache.retained_hash_table_bytes().unwrap();
+    assert!(retained_bytes > 0);
+
+    let second = execute_query_plan(&context, &plan).unwrap();
+    assert_eq!(second.metrics().hash_join_build_count, 0);
+    assert_eq!(second.metrics().hash_join_cache_misses, 1);
+    assert_eq!(second.metrics().hash_join_durable_cache_hits, 1);
+    assert_eq!(second.metrics().hash_join_durable_cache_misses, 0);
+    assert_eq!(second.metrics().hash_join_durable_cache_inserts, 0);
+    assert_eq!(second.metrics().hash_join_hash_table_bytes, retained_bytes);
+
+    let QueryOutput::HostArrow(batch) = second.output() else {
         panic!("host sink should materialize one RecordBatch");
     };
     assert_eq!(batch.num_rows(), 3);
@@ -2493,6 +2581,28 @@ fn bounded_native_query_finalizes_single_chunk_global_sum_min_max_hidden_state()
         expected_names
     );
     assert_eq!(int64_array(&materialized, 0).values().as_ref(), &[1500]);
+
+    let output_schema = Arc::new(Schema::new(vec![Field::new("sum_m00", DataType::Int64, true)]));
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new(
+        "q_global_partial",
+        Arc::clone(&aggregated_schema),
+    )));
+    let projection = builder.add_projection(source, vec![Expr::column("sum_m00")], Arc::clone(&output_schema));
+    let consumer_plan = builder.finish_with_host_sink(projection);
+    let mut gpu_inputs = GpuResidentInputMap::new();
+    gpu_inputs.insert("q_global_partial".to_string(), frame.clone());
+
+    let consumed = execute_query_plan_with_gpu_inputs(&context, &consumer_plan, &gpu_inputs).unwrap();
+    assert_eq!(consumed.metrics().boundary.gpu_resident_input_handoffs, 1);
+    assert_eq!(consumed.metrics().boundary.host_to_device_uploads, 0);
+    assert_eq!(consumed.metrics().boundary.device_to_host_materializations, 1);
+    assert_eq!(consumed.metrics().parquet_files, 0);
+    let QueryOutput::HostArrow(batch) = consumed.output() else {
+        panic!("GPU-resident source consumer should materialize only at the final host sink");
+    };
+    assert_eq!(batch.schema(), output_schema);
+    assert_eq!(int64_array(batch, 0).values().as_ref(), &[1500]);
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -3904,6 +4014,7 @@ fn bounded_native_query_join_rejection_facts_record_hash_table_observability_and
     assert_eq!(error.operation(), "cudf_query_engine.bounded.plan");
     assert_eq!(error.fact_value("reason"), Some("join_memory_reservations_not_implemented"));
     assert_eq!(error.fact_value("cudf_rs_hash_table_observability"), Some("hash_table_device_allocated_size_bytes"));
+    assert_eq!(error.fact_value("cudf_rs_gather_map_observability"), Some("join_indices_device_allocated_size_bytes"));
     assert_eq!(error.fact_value("bounded_join_reservation_model"), Some("not_implemented"));
     assert_eq!(
         error.fact_value("missing_reservations"),
@@ -3985,6 +4096,7 @@ fn bounded_native_query_rejects_join_under_aggregate_before_source_read() {
     assert_eq!(error.code(), QueryErrorCode::UnsupportedPlanShape);
     assert_eq!(error.operation(), "cudf_query_engine.bounded.plan");
     assert_eq!(error.fact_value("reason"), Some("join_memory_reservations_not_implemented"));
+    assert_eq!(error.fact_value("cudf_rs_gather_map_observability"), Some("join_indices_device_allocated_size_bytes"));
     assert_eq!(error.fact_value("bounded_join_reservation_model"), Some("not_implemented"));
     assert_eq!(
         error.fact_value("missing_reservations"),

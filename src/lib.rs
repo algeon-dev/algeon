@@ -23,7 +23,10 @@ pub use benchmark::{
 pub use error::{Error, ErrorCode, ErrorKind, ErrorStatus, Facts, Result};
 pub use exec::{CudfExecutionConfig, CudfGpuIslandExec};
 pub use native::{NativeLoweringResult, lower_physical_plan_to_native};
-pub use native_exec::{NATIVE_CUDF_DATAFUSION_METRIC_NAMES, NativeCudfExec, NativeCudfExecutionConfig};
+pub use native_exec::{
+    NATIVE_CUDF_DATAFUSION_METRIC_NAMES, NativeCudfComposedExec, NativeCudfExec, NativeCudfExecutionConfig,
+    NativeCudfGpuProducerExec,
+};
 pub use native_report::{
     NATIVE_DATAFUSION_EXECUTION_TSV_HEADER, NATIVE_DATAFUSION_EXECUTION_TSV_SCHEMA_VERSION,
     NATIVE_DATAFUSION_PLANNING_TSV_HEADER, NATIVE_DATAFUSION_PLANNING_TSV_SCHEMA_VERSION,

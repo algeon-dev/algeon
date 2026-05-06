@@ -477,6 +477,7 @@ pub(super) fn native_local_parquet_read_columns(plan: &NativeQueryPlan) -> DataF
         .find_map(|node| match &node.kind {
             NativePlanNode::Source(source_node) => match source_node.as_ref() {
                 NativeSourceNode::LocalParquet(source) => Some(source.read_columns.clone()),
+                NativeSourceNode::GpuResident(_) => None,
             },
             _ => None,
         })
