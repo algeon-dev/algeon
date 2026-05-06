@@ -1,0 +1,85 @@
+{
+  "schema": "datafusion_nexus.single_node_multi_gpu.run_profile.v1",
+  "version": 1,
+  "name": "p6.6-overload-finite-overtake",
+  "backend": {
+    "device_profiles": [
+      {
+        "ordinal": 0,
+        "ownership": "whole_device_exclusive",
+        "memory_limit_bytes": 6442450944,
+        "backend_reserve_bytes": 536870912,
+        "cache_cap_bytes": 0,
+        "attempt_floor_bytes": 268435456,
+        "source_work_per_attempt": 2,
+        "max_active_attempts": 2,
+        "installation": {
+          "stream_pool_size": 6,
+          "worker_count": 2,
+          "lane_count": 2
+        }
+      },
+      {
+        "ordinal": 1,
+        "ownership": "whole_device_exclusive",
+        "memory_limit_bytes": 6442450944,
+        "backend_reserve_bytes": 536870912,
+        "cache_cap_bytes": 0,
+        "attempt_floor_bytes": 268435456,
+        "source_work_per_attempt": 2,
+        "max_active_attempts": 2,
+        "installation": {
+          "stream_pool_size": 6,
+          "worker_count": 2,
+          "lane_count": 2
+        }
+      }
+    ],
+    "queue": {
+      "max_queued_attempts": 4,
+      "max_queue_wait_ms": 30000,
+      "max_overtakes_per_waiter": 2
+    },
+    "native_execution": {
+      "device_budget_bytes": 4294967296,
+      "max_source_chunk_bytes": 268435456,
+      "max_row_groups_per_chunk": 1024,
+      "max_retry_attempts": 3,
+      "min_retry_chunk_row_groups": 1
+    }
+  },
+  "session": {
+    "shared_session_count": 2
+  },
+  "scheduling": {
+    "arrival_mode": "concurrency",
+    "concurrency": 8,
+    "seed": 20260804,
+    "warmup_seconds": 0,
+    "measurement_seconds": 70,
+    "max_rounds": 1
+  },
+  "cache": {
+    "mode": "disabled"
+  },
+  "workloads": [
+    {
+      "kind": "tpch",
+      "path": "/opt/dlami/nvme/fixture/data/tpch/sf1/parquet",
+      "scale": "sf1",
+      "preparation_command": "fixture/fixture.sh tpch generate --scale 1 --out-root /opt/dlami/nvme/fixture/data/tpch",
+      "queries": [
+        "q01"
+      ]
+    },
+    {
+      "kind": "dblp",
+      "path": "/opt/dlami/nvme/fixture/data/demo/citation_network/v1/parquet",
+      "scale": "v12",
+      "preparation_command": "fixture/fixture.sh graph dblp-ingest --source-json /path/to/dblp.v12.json --out-root /opt/dlami/nvme/fixture/data/demo",
+      "queries": [
+        "edge_scan"
+      ]
+    }
+  ]
+}

@@ -222,16 +222,21 @@ def generated_overrides(entries: list[LaneEntry]) -> str:
     if not shared or not exclusive:
         raise LanePolicyError("generated overrides require both shared and exclusive GPU entries")
 
+    # Exclusive tests must also not overlap the shared GPU group when the
+    # whole suite runs in one invocation (e.g. a bare `cargo nextest run`).
+    # A test-group cap only serializes within the group, so the exclusive
+    # override reserves the entire test-thread pool — the only nextest
+    # mechanism that excludes across groups.
     blocks = [
-        ("default", "gpu", shared),
-        ("default", "gpu-exclusive", exclusive),
+        ("default", "gpu", shared, []),
+        ("default", "gpu-exclusive", exclusive, ['threads-required = "num-test-threads"']),
     ]
     lines = [
         GENERATED_BEGIN,
         "# Source: .config/policies/test-lanes.toml. Do not edit this section by hand.",
         "# Regenerate: python3 scripts/ci/test_lane_policy.py generate-nextest --write",
     ]
-    for profile, group, group_entries in blocks:
+    for profile, group, group_entries, extra_lines in blocks:
         lines.extend(
             [
                 "",
@@ -240,6 +245,7 @@ def generated_overrides(entries: list[LaneEntry]) -> str:
                 filter_block(group_entries),
                 "'''",
                 f'test-group = "{group}"',
+                *extra_lines,
             ]
         )
     lines.extend([GENERATED_END, ""])

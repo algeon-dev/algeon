@@ -44,14 +44,14 @@ const DEFAULT_MAX_BATCH_WIDTH: usize = 32;
 
 /// Opaque construction-inclusive and execution-only graph-model output.
 ///
-/// The model remains a planning/reporting input, but its byte values do not
-/// cross the adapter-to-engine admission boundary. The installed device
-/// profile selects the immutable grant; the adapter forwards only the fixed
-/// graph-execution capability.
+/// The installed profile and ledger still own immutable-grant eligibility and
+/// capacity. The cold estimate may only refine the target inside that range,
+/// through the engine-issued proof that attests the exact graph execution.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct GraphAdmissionModelAsk {
     cold_model_requested_bytes: u64,
     warm_model_requested_bytes: u64,
+    cold_model_evidence: GraphMemoryAdmissionEvidence,
 }
 
 impl GraphAdmissionModelAsk {
@@ -61,6 +61,7 @@ impl GraphAdmissionModelAsk {
         Self {
             cold_model_requested_bytes: evidence.cold_model_requested_bytes(),
             warm_model_requested_bytes: evidence.warm_model_requested_bytes(),
+            cold_model_evidence: evidence,
         }
     }
 
@@ -74,11 +75,24 @@ impl GraphAdmissionModelAsk {
         self.warm_model_requested_bytes
     }
 
+    pub(crate) fn cold_model_evidence(&self) -> &GraphMemoryAdmissionEvidence {
+        &self.cold_model_evidence
+    }
+
     pub(crate) fn max(self, other: Self) -> Self {
-        Self {
-            cold_model_requested_bytes: self.cold_model_requested_bytes.max(other.cold_model_requested_bytes),
-            warm_model_requested_bytes: self.warm_model_requested_bytes.max(other.warm_model_requested_bytes),
-        }
+        let Self {
+            cold_model_requested_bytes: self_cold,
+            warm_model_requested_bytes: self_warm,
+            cold_model_evidence: self_evidence,
+        } = self;
+        let Self {
+            cold_model_requested_bytes: other_cold,
+            warm_model_requested_bytes: other_warm,
+            cold_model_evidence: other_evidence,
+        } = other;
+        let (cold_model_requested_bytes, cold_model_evidence) =
+            if other_cold > self_cold { (other_cold, other_evidence) } else { (self_cold, self_evidence) };
+        Self { cold_model_requested_bytes, warm_model_requested_bytes: self_warm.max(other_warm), cold_model_evidence }
     }
 }
 
@@ -457,12 +471,8 @@ pub(crate) struct GraphBfsFollower {
 impl GraphBfsFollower {
     pub(crate) async fn wait(&mut self, cancellation: &ExecutionCancellation) -> Result<GraphBfsFollowerOutcome> {
         loop {
-            if cancellation.is_cancelled() {
-                return Err(Error::from_native(
-                    OPERATION,
-                    "cancelled while waiting for a coalesced BFS result",
-                    cancellation.check(OPERATION).expect_err("cancellation checked above"),
-                ));
+            if let Err(error) = cancellation.check(OPERATION) {
+                return Err(Error::from_native(OPERATION, "cancelled while waiting for a coalesced BFS result", error));
             }
             match self.receiver.borrow().clone() {
                 PublishedResult::Ready(batch) => {

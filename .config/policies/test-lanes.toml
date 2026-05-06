@@ -195,6 +195,18 @@ resource_class = "shared"
 reason = "Heterogeneous active-limit coverage constructs a real two-device backend and validates per-device GPU ownership."
 
 [[binary]]
+id = "nexus-query-engine::gpu_backend_fault_injection"
+lane = "gpu"
+resource_class = "shared"
+reason = "Controlled quarantine coverage constructs a real two-device backend and verifies fallback through the public engine capability."
+
+[[binary]]
+id = "nexus-query-engine::gpu_allocator_event_correlation"
+lane = "gpu"
+resource_class = "exclusive"
+reason = "Real framebuffer pressure holds the process-global device allocator near exhaustion while two overlapping query domains prove exact physical callback attribution and post-release reuse."
+
+[[binary]]
 id = "nexus-query-engine::native_pipeline_execution_tests"
 lane = "gpu"
 resource_class = "shared"

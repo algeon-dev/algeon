@@ -69,6 +69,7 @@ impl QueryAdmissionSource {
 pub(crate) struct QueryAdmissionFacts {
     pub(crate) admission_sequence: u64,
     pub(crate) admission_wait: Duration,
+    pub(crate) admission_wait_fact: Option<nexus_query_engine::observability::AttemptAdmissionWaitFact>,
     pub(crate) device_ordinal: usize,
     pub(crate) query_grant_bytes: u64,
 }
@@ -78,6 +79,7 @@ impl QueryAdmissionFacts {
         Self {
             admission_sequence: handle.admission_sequence(),
             admission_wait: handle.admission_wait(),
+            admission_wait_fact: handle.admission_wait_fact(),
             device_ordinal: handle.device_ordinal(),
             query_grant_bytes: handle.device_budget_bytes(),
         }
@@ -87,6 +89,7 @@ impl QueryAdmissionFacts {
         Self {
             admission_sequence: handle.admission_sequence(),
             admission_wait: handle.admission_wait(),
+            admission_wait_fact: handle.admission_wait_fact(),
             device_ordinal: handle.device_ordinal(),
             query_grant_bytes: handle.device_budget_bytes(),
         }
@@ -103,6 +106,10 @@ impl TicketQueryHandle {
 
     fn admission_wait(&self) -> Duration {
         self.0.admission_wait()
+    }
+
+    fn admission_wait_fact(&self) -> Option<nexus_query_engine::observability::AttemptAdmissionWaitFact> {
+        self.0.admission_wait_fact()
     }
 
     fn device_ordinal(&self) -> usize {
@@ -642,6 +649,9 @@ impl QueryAdmissionTicket {
                 device_ordinal: admission_facts.device_ordinal,
                 grant_bytes: admission_facts.query_grant_bytes,
             });
+            if let Some(fact) = admission_facts.admission_wait_fact {
+                let _ = binding.handle.record_admission_wait(fact);
+            }
         }
 
         let epoch = {

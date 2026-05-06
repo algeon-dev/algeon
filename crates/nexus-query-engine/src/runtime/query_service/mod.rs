@@ -71,7 +71,7 @@ mod tests;
 pub(crate) use admission::QueryAdmissionWaiter;
 use admission::{
     AdmissionRequest, AdmissionState, PlacedQuery, QueryCompletion, QueuedAdmissionTerminal,
-    admission_cancellation_error, finish_closed_queued_requests, finish_expired_queued_requests,
+    admission_cancellation_or_deadline_error, finish_closed_queued_requests, finish_expired_queued_requests,
     finish_removed_request_cancelled, finish_removed_request_error, remove_queued_request, service_closed_error,
     service_overloaded_error,
 };
@@ -87,7 +87,8 @@ use resources::QueryServiceResources;
 pub(crate) use service::QueryService;
 use service::QueryServiceInner;
 pub use service::{
-    QueryActivityLease, QueryAdmissionRequest, QueryServiceAdmissionSnapshot, QueryServiceDeviceAdmissionSnapshot,
+    DeviceQuarantineInjection, QueryActivityLease, QueryAdmissionRequest, QueryServiceAdmissionSnapshot,
+    QueryServiceDeviceAdmissionSnapshot,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

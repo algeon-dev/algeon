@@ -5,7 +5,13 @@ use datafusion::{
     physical_optimizer::PhysicalOptimizerRule,
     physical_plan::ExecutionPlan,
 };
-use nexus_query_engine::{admission::QueryPlanCapabilityProof, metrics::QueryId, plan::PlanNode};
+use nexus_query_engine::{
+    admission::QueryPlanCapabilityProof,
+    expr::{AggregateFunction, Expr, LiteralValue},
+    metrics::QueryId,
+    plan::PlanNode,
+    source::SourceNode,
+};
 
 use super::{FinalPlanDisposition, FinalPlanRequirement, NexusNativeOptimizerConfig, classify_final_plan};
 use crate::{
@@ -562,13 +568,19 @@ fn collect_graph_model_ask_scan(
         local_has_graph =
             update_graph_model_ask_scan(native.native_plan(), calibration_override, device_total_memory_bytes, scan)?;
     } else if let Some(native) = plan.downcast_ref::<NexusNativeComposedExec>() {
-        if child_has_graph && native_plan_is_graph_ticket_light_fragment(native.native_plan()) {
+        if child_has_graph
+            && (native_plan_is_graph_ticket_light_fragment(native.native_plan())
+                || native_plan_is_graph_result_count_reduction_fragment(native.native_plan()))
+        {
             return Ok(true);
         }
         local_has_graph =
             update_graph_model_ask_scan(native.native_plan(), calibration_override, device_total_memory_bytes, scan)?;
     } else if let Some(native) = plan.downcast_ref::<NexusNativeComposedGpuProducerExec>() {
-        if child_has_graph && native_plan_is_graph_ticket_light_fragment(native.native_plan()) {
+        if child_has_graph
+            && (native_plan_is_graph_ticket_light_fragment(native.native_plan())
+                || native_plan_is_graph_result_count_reduction_fragment(native.native_plan()))
+        {
             return Ok(true);
         }
         local_has_graph =
@@ -666,14 +678,78 @@ fn native_plan_is_graph_ticket_light_fragment(native_plan: &nexus_query_engine::
     })
 }
 
+/// A terminal `COUNT(*)` over one GPU-resident graph result keeps scalar
+/// reduction state only, so it can share the graph model's admission target.
+/// Grouped, distinct, filtered, and non-count aggregates remain independent
+/// native work and therefore disqualify graph-only model admission.
+fn native_plan_is_graph_result_count_reduction_fragment(native_plan: &nexus_query_engine::plan::QueryPlan) -> bool {
+    let [source, count_argument, aggregate, result] = native_plan.nodes() else {
+        return false;
+    };
+    if !native_plan.unreachable_node_ids().is_empty() || native_plan.root_id() != result.id {
+        return false;
+    }
+    let source_id = source.id;
+    let count_argument_id = count_argument.id;
+    let aggregate_id = aggregate.id;
+    let PlanNode::Source(source) = &source.kind else {
+        return false;
+    };
+    if !matches!(source.as_ref(), SourceNode::GpuResident(_)) {
+        return false;
+    }
+    let PlanNode::Projection(count_argument) = &count_argument.kind else {
+        return false;
+    };
+    if count_argument.input != source_id
+        || count_argument.outputs.len() != 1
+        || !is_non_null_literal_projection(&count_argument.outputs[0].expr)
+    {
+        return false;
+    }
+    let PlanNode::Aggregate(aggregate) = &aggregate.kind else {
+        return false;
+    };
+    if aggregate.input != count_argument_id
+        || !aggregate.spec.group_exprs.is_empty()
+        || aggregate.spec.grouping_sets.is_some()
+        || aggregate.spec.aggr_exprs.len() != 1
+    {
+        return false;
+    }
+    let count = &aggregate.spec.aggr_exprs[0];
+    if count.function != AggregateFunction::Count
+        || count.distinct
+        || count.filter.is_some()
+        || !matches!(&count.expr, Expr::Column(column) if column.name() == count_argument.outputs[0].field.name())
+    {
+        return false;
+    }
+    let PlanNode::Projection(result) = &result.kind else {
+        return false;
+    };
+    result.input == aggregate_id
+        && result.outputs.len() == 1
+        && matches!(
+            &result.outputs[0].expr,
+            Expr::Alias { expr, .. } if matches!(expr.as_ref(), Expr::Column(column) if column.name() == count.alias)
+        )
+}
+
+fn is_non_null_literal_projection(expr: &Expr) -> bool {
+    matches!(expr, Expr::Alias { expr, .. } if matches!(expr.as_ref(), Expr::Literal(value) if !matches!(value, LiteralValue::Null(_))))
+}
+
 #[cfg(test)]
 mod tests {
     use arrow::datatypes::{DataType, Field, Schema};
     use datafusion::physical_plan::{empty::EmptyExec, union::UnionExec};
     use nexus_query_engine::{
+        expr::{AggregateExpr, AggregateFunction, AggregateSpec, Expr, LiteralValue},
         plan::{
             GraphAlgorithm, GraphAlgorithmParams, GraphAlgorithmSpec, GraphBfsParams, GraphConstructionOptions,
-            GraphConstructionPolicy, GraphEdgeColumnBindings, GraphTriangleCountAllParams, QueryPlan, QueryPlanBuilder,
+            GraphConstructionPolicy, GraphEdgeColumnBindings, GraphTriangleCountAllParams, ProjectionOutput, QueryPlan,
+            QueryPlanBuilder,
         },
         source::{GpuResidentSource, LocalParquetFile, LocalParquetSource, SourceNode},
     };
@@ -805,6 +881,45 @@ mod tests {
         builder.finish_with_host_sink(graph)
     }
 
+    fn graph_result_count_reduction_plan(function: AggregateFunction) -> QueryPlan {
+        let input_schema = Arc::new(Schema::empty());
+        let count_argument_field = Field::new("__nexus_native_aggregate_arg_0", DataType::Int64, false);
+        let count_output_field = Field::new("count(Int64(1))", DataType::Int64, false);
+        let result_field = Field::new("reached", DataType::Int64, false);
+        let mut builder = QueryPlanBuilder::new();
+        let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new(
+            "__datafusion_nexus_cugraph_result_0",
+            input_schema,
+        )));
+        let count_argument = builder.add_projection(
+            source,
+            vec![ProjectionOutput::new(
+                Expr::literal(LiteralValue::Int64(1)).alias(count_argument_field.name()),
+                count_argument_field.clone(),
+            )],
+        );
+        let aggregate = builder.add_aggregate(
+            count_argument,
+            AggregateSpec::new(
+                Vec::new(),
+                vec![AggregateExpr::new(
+                    function,
+                    Expr::column(count_argument_field.name()),
+                    count_output_field.name(),
+                )],
+            ),
+            Arc::new(Schema::new(vec![count_output_field.clone()])),
+        );
+        let result = builder.add_projection(
+            aggregate,
+            vec![ProjectionOutput::new(
+                Expr::column(count_output_field.name()).alias(result_field.name()),
+                result_field,
+            )],
+        );
+        builder.finish_with_host_sink(result)
+    }
+
     fn graph_exec(row_group_rows: Option<Vec<u64>>, config: &NexusNativeExecutionConfig) -> NexusNativeExec {
         NexusNativeExec::try_new(graph_native_plan(row_group_rows), config.clone()).unwrap()
     }
@@ -820,7 +935,7 @@ mod tests {
     }
 
     #[test]
-    fn graph_aware_ticket_keeps_lowered_graph_model_bytes_out_of_admission_grant() {
+    fn graph_aware_ticket_uses_lowered_cold_graph_model_as_immutable_grant_target() {
         let min = 64 * 1024 * 1024;
         let want = 2 * 1024 * 1024 * 1024;
         let capacity = 4 * 1024 * 1024 * 1024;
@@ -833,7 +948,11 @@ mod tests {
 
         let requested = graph_aware_model_ask_for_plan(&exec, &config).unwrap();
         let ticket = plan_query_admission_ticket_for_optimized_plan(&exec, &config, None).unwrap().unwrap();
-        let expected_proof = native_plan_capability_proof(exec.native_plan());
+        let expected_proof = native_plan_capability_proof(exec.native_plan()).map(|proof| {
+            proof.with_graph_memory_admission_evidence(
+                model_ask.as_ref().expect("known graph rows produce opaque model evidence").cold_model_evidence(),
+            )
+        });
 
         assert_eq!(requested, model_ask);
         assert_eq!(ticket.attempt_capability_proof(), expected_proof.as_ref());
@@ -851,6 +970,14 @@ mod tests {
                     requirement.required_contract
                         == nexus_query_engine::plan::GRAPH_ALGORITHM_CAPABILITY_REQUIRED_CONTRACT
                 })
+        );
+        assert_eq!(
+            ticket
+                .attempt_capability_proof()
+                .expect("native graph ticket retains its engine-issued proof")
+                .soft_working_set_hint_bytes(),
+            expected,
+            "the cold graph model only targets the immutable grant selected by the ledger"
         );
     }
 
@@ -905,14 +1032,30 @@ mod tests {
     }
 
     #[test]
-    fn graph_aware_ticket_keeps_cacheable_bfs_model_bytes_out_of_admission_grant() {
+    fn graph_aware_ticket_uses_cacheable_bfs_cold_model_as_immutable_grant_target() {
         let (_backend, config) = backend_admission_config(64 * 1024 * 1024);
         let exec = NexusNativeExec::try_new(bfs_native_plan(Some(vec![100, 200])), config.clone()).unwrap();
 
         let ask = graph_aware_model_ask_for_plan(&exec, &config).unwrap().unwrap();
         assert!(ask.cold_model_requested_bytes() > ask.warm_model_requested_bytes());
         let ticket = plan_query_admission_ticket_for_optimized_plan(&exec, &config, None).unwrap().unwrap();
-        assert_eq!(ticket.attempt_capability_proof(), native_plan_capability_proof(exec.native_plan()).as_ref());
+        assert_eq!(
+            ticket
+                .attempt_capability_proof()
+                .expect("native graph ticket retains its engine-issued proof")
+                .soft_working_set_hint_bytes(),
+            Some(ask.cold_model_requested_bytes())
+        );
+    }
+
+    #[test]
+    fn graph_model_keeps_only_terminal_count_star_reduction_light() {
+        assert!(native_plan_is_graph_result_count_reduction_fragment(&graph_result_count_reduction_plan(
+            AggregateFunction::Count,
+        )));
+        assert!(!native_plan_is_graph_result_count_reduction_fragment(&graph_result_count_reduction_plan(
+            AggregateFunction::Sum,
+        )));
     }
 
     #[test]

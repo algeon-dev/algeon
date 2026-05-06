@@ -666,10 +666,42 @@ fn duplicate_root_cleanup_handoff_marks_backend_unhealthy_before_capacity_releas
     handle.lifetime.install_foreign_root_stream_cleanup_completion_for_test();
     drop(context);
 
+    let primary_error = QueryError::new(
+        QueryErrorCode::CudfTemporaryFailure,
+        "nexus_query_engine.query_service.unknown_isolation_primary",
+        "injected primary error before abandoned cleanup",
+    );
+    attempt_owner.commit_query_error(&primary_error).expect("primary error records before cleanup");
     handle.finish();
     drop(handle);
 
     let report = completion.wait_timeout(Duration::from_secs(10)).expect("abandoned-handoff report seals");
+    assert!(matches!(
+        report.outcome,
+        RuntimeTerminalOutcome::Failed {
+            error_code: crate::observability::AttemptFailureCode::CudfTemporaryFailure,
+            error_status: crate::observability::AttemptFailureStatus::Temporary,
+        }
+    ));
+    let primary_failure = report.primary_failure.as_ref().expect("primary failure remains authoritative");
+    assert_eq!(primary_failure.code(), crate::observability::AttemptFailureCode::CudfTemporaryFailure);
+    assert_eq!(report.cleanup_disposition, crate::observability::AttemptCleanupDisposition::CompletedWithFailures);
+    assert_eq!(report.cleanup_failure_count, 1, "the abandoned callback is one cleanup failure");
+    assert!(report.cleanup_failure_count_complete);
+    let cleanup_failure = report.first_cleanup_failure.as_ref().expect("abandoned cleanup is retained");
+    assert_eq!(cleanup_failure.phase(), crate::observability::CleanupFailurePhase::QueryServiceCallbackAbandoned);
+    assert_eq!(
+        cleanup_failure.failure().code(),
+        crate::observability::AttemptFailureCode::CleanupCallbackAbandoned
+    );
+    assert!(cleanup_failure.complete(), "the sole cleanup failure remains a complete representative");
+    assert_eq!(report.capacity_disposition, crate::observability::AttemptCapacityDisposition::RetainedQuarantine);
+    assert_eq!(report.health_transition, Some(crate::observability::AttemptHealthTransition::BackendUnhealthy));
+    let fault = report.native_fault_evidence.expect("unknown isolation remains explicit");
+    assert_eq!(fault.isolation, crate::observability::AttemptFaultIsolation::Unknown);
+    assert_eq!(fault.teardown_health, crate::observability::AttemptTeardownHealth::CallbackAbandoned);
+    assert!(fault.device_health.is_none(), "unknown isolation cannot fabricate a device-local health sample");
+    assert!(fault.first_fault.is_none(), "unknown isolation cannot fabricate a device-local native fault");
     assert_eq!(
         report.retry_advice,
         crate::observability::AttemptRetryAdvice {

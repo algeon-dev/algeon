@@ -155,6 +155,11 @@ pub(super) fn edge_source_output_rows(edge_source: &dyn ExecutionPlan) -> Result
     if let Some(rows) = exact_execution_plan_output_rows(edge_source)? {
         return Ok(Some(rows));
     }
+    if let Some(source) = edge_source.downcast_ref::<datafusion::datasource::source::DataSourceExec>()
+        && let Some(rows) = crate::native::exact_row_count_for_datafusion_local_parquet_scan(source)
+    {
+        return Ok(Some(rows));
+    }
     Ok(native_edge_source_output_rows(edge_source))
 }
 

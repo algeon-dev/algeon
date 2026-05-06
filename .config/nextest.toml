@@ -16,8 +16,11 @@ max-threads = "num-cpus"
 
 [test-groups.gpu-exclusive]
 # Binaries that mutate process-global allocator state or require whole-device
-# isolation run in a separate locked invocation after the shared GPU lane. The
-# group cap and scripts/check_all.sh both fix their concurrency at one.
+# isolation. This cap serializes them against each other; the generated
+# override below adds `threads-required = "num-test-threads"` so they also run
+# alone against every other test (including the shared gpu group) in a single
+# unfiltered invocation. scripts/check_all.sh additionally serializes the lane
+# itself with flock and `--test-threads 1`.
 max-threads = 1
 
 # .config/policies/test-lanes.toml owns binary admission, reasons, and resource classes.
@@ -43,6 +46,7 @@ filter = '''
 | (package(datafusion-nexus) & binary(server_tests))
 | (package(datafusion-nexus) & binary(session_config_tests))
 | (package(nexus-query-engine) & kind(lib))
+| (package(nexus-query-engine) & binary(gpu_backend_fault_injection))
 | (package(nexus-query-engine) & binary(gpu_backend_heterogeneous_active_limits))
 | (package(nexus-query-engine) & binary(native_pipeline_execution_tests))
 '''
@@ -51,7 +55,9 @@ test-group = "gpu"
 [[profile.default.overrides]]
 filter = '''
 (package(datafusion-nexus) & binary(p6_device_identity_tests))
+| (package(nexus-query-engine) & binary(gpu_allocator_event_correlation))
 | (package(nexus-query-engine) & binary(query_service_allocator_lifecycle))
 '''
 test-group = "gpu-exclusive"
+threads-required = "num-test-threads"
 # END GENERATED TEST-LANE OVERRIDES — scripts/ci/test_lane_policy.py

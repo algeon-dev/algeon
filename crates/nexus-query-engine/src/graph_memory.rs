@@ -575,9 +575,9 @@ pub struct GraphMemoryEstimate {
 /// Opaque graph-memory model output.
 ///
 /// The model is the only constructor for this token. It contains descriptive
-/// bytes only: public callers may inspect those diagnostics, but cannot
-/// convert the token into a generic admission requirement or use it to select
-/// an immutable grant.
+/// bytes only: it cannot form a generic admission requirement or alter the
+/// ledger's floor, capability, or fit proof. An engine-issued capability proof
+/// may retain its cold estimate as a soft immutable-grant target.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GraphMemoryAdmissionEvidence {
     cold_model_requested_bytes: u64,
@@ -594,8 +594,9 @@ impl GraphMemoryAdmissionEvidence {
 
     /// Returns the construction-inclusive model's descriptive byte estimate.
     ///
-    /// This is diagnostic/model output only. It is not accepted by public
-    /// admission request construction.
+    /// This is diagnostic/model output. It may refine an engine-issued graph
+    /// capability proof's soft grant target, but is not accepted as a raw
+    /// public admission-request input.
     pub fn cold_model_requested_bytes(&self) -> u64 {
         self.cold_model_requested_bytes
     }

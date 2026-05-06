@@ -341,6 +341,11 @@ impl QueryHandleLifetime {
         operation: &'static str,
     ) -> Result<ContextSetupClaim> {
         loop {
+            // Context setup can wait in the device worker queue after its
+            // first preflight. Recheck the attempt-wide token when that work
+            // begins so an elapsed caller deadline cannot consume the root
+            // binding or start a native context.
+            cancellation.check(operation)?;
             match self.reserve_context_setup(operation)? {
                 ContextSetupClaim::WaitForRoot => self.wait_for_root_context_setup(cancellation, operation)?,
                 claim => return Ok(claim),
@@ -354,6 +359,9 @@ impl QueryHandleLifetime {
         operation: &'static str,
     ) -> Result<ContextSetupClaim> {
         loop {
+            // See the synchronous path: a queued GPU worker must recheck the
+            // one absolute attempt deadline before it consumes context state.
+            cancellation.check(operation)?;
             match self.reserve_context_setup(operation)? {
                 ContextSetupClaim::WaitForRoot => {
                     self.wait_for_root_context_setup_async(cancellation, operation).await?
@@ -1319,6 +1327,7 @@ pub struct QueryHandle {
     pub(super) admission_request_id: AdmissionRequestId,
     pub(super) admission_sequence: u64,
     pub(super) admission_wait: Duration,
+    pub(super) admission_wait_fact: Option<crate::observability::AttemptAdmissionWaitFact>,
     pub(super) device_budget_bytes: u64,
     pub(super) device_ordinal: usize,
     pub(super) lifetime: Arc<QueryHandleLifetime>,
@@ -1338,6 +1347,13 @@ impl QueryHandle {
     /// Time spent waiting in the service admission queue.
     pub fn admission_wait(&self) -> Duration {
         self.admission_wait
+    }
+
+    /// Returns the final controller-owned finite-overtake state for this
+    /// queued admission, when the handle was admitted through the bounded
+    /// queue. Direct non-queued admission intentionally has no such fact.
+    pub fn admission_wait_fact(&self) -> Option<crate::observability::AttemptAdmissionWaitFact> {
+        self.admission_wait_fact
     }
 
     /// Device-memory budget slice assigned to this query.
@@ -1400,8 +1416,9 @@ impl QueryHandle {
         self.config.source_chunk_planning_options
     }
 
-    fn context_stream_acquire_deadline(&self) -> Instant {
-        Instant::now().checked_add(self.queue_bounds.max_wait).unwrap_or_else(Instant::now)
+    fn context_stream_acquire_deadline(&self, cancellation: &ExecutionCancellation) -> Instant {
+        let configured = Instant::now().checked_add(self.queue_bounds.max_wait).unwrap_or_else(Instant::now);
+        cancellation.deadline().map_or(configured, |deadline| deadline.min(configured))
     }
 
     /// Acquires an admitted execution context from the service stream pool.
@@ -1423,7 +1440,7 @@ impl QueryHandle {
         let setup_claim = self.lifetime.reserve_context_setup_async(&cancellation, operation).await?;
         let root_setup_claim = (setup_claim == ContextSetupClaim::Root)
             .then(|| RootContextSetupClaimGuard::new(Arc::clone(&self.lifetime)));
-        let stream_acquire_deadline = self.context_stream_acquire_deadline();
+        let stream_acquire_deadline = self.context_stream_acquire_deadline(&cancellation);
         // Claim the attempt-owned share before submitting an auxiliary job.
         // Otherwise excess work from one attempt can fill every global
         // auxiliary executor permit while it waits for its own local limit.
@@ -1505,7 +1522,7 @@ impl QueryHandle {
         let setup_claim = self.lifetime.reserve_context_setup_sync(&cancellation, operation)?;
         let _root_setup_claim = (setup_claim == ContextSetupClaim::Root)
             .then(|| RootContextSetupClaimGuard::new(Arc::clone(&self.lifetime)));
-        let stream_acquire_deadline = self.context_stream_acquire_deadline();
+        let stream_acquire_deadline = self.context_stream_acquire_deadline(&cancellation);
         self.acquire_context_with_cancellation_and_stream_scope(
             cancellation,
             crate::observability::RuntimeStreamLeaseScope::default(),
@@ -1524,6 +1541,10 @@ impl QueryHandle {
         attempt_auxiliary_permit: Option<AttemptAuxiliaryPermit>,
     ) -> Result<AdmittedQueryContext> {
         let operation = "nexus_query_engine.query_service.context";
+        // This is the first instruction after an asynchronous device-worker
+        // queue wait. Do not create a context or consume a root binding after
+        // the attempt's absolute deadline has elapsed.
+        cancellation.check(operation)?;
         let query_anchor = self.lifetime.acquire_resource_anchor(operation)?;
         let service = self.lifetime.service()?;
         let Some(resources) = &service.resources else {

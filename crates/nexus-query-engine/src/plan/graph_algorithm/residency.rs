@@ -330,6 +330,24 @@ pub fn graph_residency_descriptor_for_edge_plan(
     }
 }
 
+/// Derives graph-residency facts from one fully translated local-Parquet
+/// source.
+///
+/// DataFusion adapters use this after proving that a physical scan's complete
+/// rowset can be represented by [`crate::source::LocalParquetSource`]. Keeping
+/// the descriptor construction here ensures direct scans and native plans use
+/// the same stable key contract.
+pub fn graph_residency_descriptor_for_local_parquet_source(
+    source: &crate::source::LocalParquetSource,
+    spec: &GraphAlgorithmSpec,
+) -> GraphResidencyPlanAnalysis {
+    let bindings = EffectiveGraphEdgeBindings::for_spec(spec);
+    match graph_residency_descriptor_for_local_parquet_source_with_bindings(source, &bindings) {
+        Ok(descriptor) => GraphResidencyPlanAnalysis::Keyable(descriptor),
+        Err(reason) => GraphResidencyPlanAnalysis::Bypass(reason),
+    }
+}
+
 fn graph_residency_descriptor_for_edge_node(
     plan: &QueryPlan,
     node_id: NodeId,
@@ -339,7 +357,7 @@ fn graph_residency_descriptor_for_edge_node(
     match &node.kind {
         PlanNode::Source(source) => match source.as_ref() {
             crate::source::SourceNode::LocalParquet(source) => {
-                graph_residency_descriptor_for_local_parquet_source(source, bindings)
+                graph_residency_descriptor_for_local_parquet_source_with_bindings(source, bindings)
             },
             crate::source::SourceNode::GpuResident(_) | crate::source::SourceNode::LiteralBatch(_) => {
                 Err(GraphSourceFingerprintBypassReason::NonLocalParquetSource)
@@ -376,7 +394,7 @@ fn projection_source_column(projection: &ProjectionNode, output_column: &str) ->
     }
 }
 
-fn graph_residency_descriptor_for_local_parquet_source(
+fn graph_residency_descriptor_for_local_parquet_source_with_bindings(
     source: &crate::source::LocalParquetSource,
     bindings: &EffectiveGraphEdgeBindings,
 ) -> std::result::Result<GraphResidencyDescriptor, GraphSourceFingerprintBypassReason> {

@@ -25,6 +25,7 @@ pub(in crate::runtime::query_service) struct PlacedAdmissionCommit {
     pub(in crate::runtime::query_service) deadline: Instant,
     pub(in crate::runtime::query_service) execution_cancellation: ExecutionCancellation,
     pub(in crate::runtime::query_service) admitted_submission_seq: Option<u64>,
+    pub(in crate::runtime::query_service) admission_wait_fact: Option<crate::observability::AttemptAdmissionWaitFact>,
     pub(in crate::runtime::query_service) lifecycle_ticket: super::super::admission::AdmissionTicket,
 }
 
@@ -92,7 +93,7 @@ impl QueryService {
             return Err(error);
         }
         if execution_cancellation.is_cancelled() {
-            let error = admission_cancellation_error();
+            let error = admission_cancellation_or_deadline_error(&execution_cancellation);
             record_admission_lifecycle(
                 observation_owner.as_ref(),
                 admission_request_id,
@@ -109,7 +110,7 @@ impl QueryService {
                 None,
                 None,
             );
-            completion.finish_cancelled();
+            completion.finish_error(&error);
             return Err(error);
         }
         let requirement = match self.resolve_attempt_requirement_for_submission(attempt_requirement) {
@@ -366,6 +367,8 @@ impl QueryService {
                 };
                 let admitted = state.queued.remove(position).expect("admissible request exists");
                 let admitted_submission_seq = admitted.submission_seq;
+                let admission_wait_fact =
+                    admitted.admission_wait_fact(self.inner.queue_bounds.max_overtakes_per_waiter);
                 if let Some(error) = self.admission_terminal_rejection(&state) {
                     record_admission_lifecycle(
                         &admitted.observation,
@@ -396,6 +399,7 @@ impl QueryService {
                     deadline,
                     execution_cancellation: admitted.execution_cancellation,
                     admitted_submission_seq: Some(admitted_submission_seq),
+                    admission_wait_fact: Some(admission_wait_fact),
                     lifecycle_ticket,
                 });
             }
@@ -569,7 +573,7 @@ impl QueryService {
             return Err(error);
         }
         if execution_cancellation.is_cancelled() {
-            let error = admission_cancellation_error();
+            let error = admission_cancellation_or_deadline_error(&execution_cancellation);
             record_admission_lifecycle(
                 observation_owner.as_ref(),
                 admission_request_id,
@@ -586,7 +590,7 @@ impl QueryService {
                 None,
                 None,
             );
-            completion.finish_cancelled();
+            completion.finish_error(&error);
             return Err(error);
         }
         let requirement = match self.resolve_attempt_requirement_for_submission(attempt_requirement) {
@@ -737,6 +741,7 @@ impl QueryService {
             deadline,
             execution_cancellation,
             admitted_submission_seq,
+            admission_wait_fact,
             lifecycle_ticket,
         } = commit;
         let probe =
@@ -795,9 +800,7 @@ impl QueryService {
                 }
                 self.inner.notify_admission_available();
                 drop(state);
-                if primary.code() == QueryErrorCode::Cancelled {
-                    completion.finish_cancelled();
-                } else if primary.fact_value("reason") == Some("queue_wait_elapsed") {
+                if primary.fact_value("reason") == Some("queue_wait_elapsed") {
                     completion.finish_timeout(&primary);
                 } else {
                     completion.finish_error(&primary);
@@ -833,7 +836,7 @@ impl QueryService {
             super::transaction::pause_after_rollback_accounting(probe.as_deref());
             drop(envelope);
             self.inner.notify_admission_available();
-            completion.finish_cancelled();
+            completion.finish_error(&error);
             return Err(error);
         }
         if let Some(error) = self.admission_terminal_rejection(&state) {
@@ -968,6 +971,7 @@ impl QueryService {
             admission_request_id,
             admission_sequence,
             admission_wait,
+            admission_wait_fact,
             device_budget_bytes,
             device_ordinal,
         })
@@ -1040,7 +1044,7 @@ impl QueryService {
             return Err(error);
         }
         if execution_cancellation.is_cancelled() {
-            let error = admission_cancellation_error();
+            let error = admission_cancellation_or_deadline_error(&execution_cancellation);
             record_admission_lifecycle(
                 observation_owner.as_ref(),
                 admission_request_id,
@@ -1057,7 +1061,7 @@ impl QueryService {
                 None,
                 None,
             );
-            completion.finish_cancelled();
+            completion.finish_error(&error);
             return Err(error);
         }
         let requirement = match self.resolve_attempt_requirement_for_submission(attempt_requirement) {
@@ -1185,6 +1189,7 @@ impl QueryService {
             deadline,
             execution_cancellation,
             admitted_submission_seq: None,
+            admission_wait_fact: None,
             lifecycle_ticket,
         })
         .map(Some)

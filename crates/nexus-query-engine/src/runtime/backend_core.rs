@@ -18,8 +18,8 @@ use std::{
 use super::observation_completion::ObservationCompletionWorkerLane;
 use super::{
     DeploymentIoCapability, DeviceCapabilities, DeviceFacts, DeviceLedgerReport, DeviceMemoryFailureReport,
-    DeviceTelemetrySnapshot, GpuExecutionPoolSnapshot, GpuExecutionQuerySnapshot, QueryAdmissionRequest,
-    QueryExecutionConfig, QueryHandle, QueryService, QueryServiceAdmissionSnapshot,
+    DeviceQuarantineInjection, DeviceTelemetrySnapshot, GpuExecutionPoolSnapshot, GpuExecutionQuerySnapshot,
+    QueryAdmissionRequest, QueryExecutionConfig, QueryHandle, QueryService, QueryServiceAdmissionSnapshot,
     QueryServiceDeviceAdmissionSnapshot, QueueBounds,
     backend_close::{CloseCoordinator, ConstructionRollback, reject_reentrant_observation_close},
     backend_lifecycle::{
@@ -895,6 +895,28 @@ pub struct GpuBackendCore {
     generation_id: u64,
 }
 
+/// Explicit capability for controlled fault validation on one live backend.
+///
+/// Constructing or holding this value does not alter backend behavior. Only
+/// [`Self::quarantine_device`] changes state, and it transitions the existing
+/// per-device admission ledger rather than introducing a separate validation
+/// or production scheduler mode.
+#[derive(Clone, Debug)]
+pub struct GpuBackendFaultInjector {
+    session: GpuBackendSession,
+}
+
+impl GpuBackendFaultInjector {
+    /// Closes admission on exactly one installed device ledger.
+    ///
+    /// This emulates the controller-visible quarantine result of a proven
+    /// device-local native fault without fabricating an unsafe CUDA fault. The
+    /// remaining healthy compatible ledgers remain eligible for placement.
+    pub fn quarantine_device(&self, device_ordinal: usize) -> Result<DeviceQuarantineInjection> {
+        self.session.with_service(|service| service.inject_device_quarantine(device_ordinal))
+    }
+}
+
 impl Clone for GpuBackendCore {
     fn clone(&self) -> Self {
         Self {
@@ -924,6 +946,12 @@ impl GpuBackendCore {
             observation_core: Arc::clone(&self.observation_core),
             identities: self.identity(),
         }
+    }
+
+    /// Returns an explicit capability for controlled device-quarantine
+    /// validation. This is not a backend construction or production mode.
+    pub fn fault_injector(&self) -> GpuBackendFaultInjector {
+        GpuBackendFaultInjector { session: self.session_capability() }
     }
 
     pub fn device_startup_records(&self) -> &[GpuBackendDeviceStartupRecord] {
@@ -2124,6 +2152,77 @@ mod tests {
     }
 
     #[test]
+    fn dropping_last_public_handle_retains_owner_through_timeout_then_recovers_after_late_cleanup() {
+        let _owner_test = live_backend_test_lock();
+        let ordinal = usize::MAX - 3;
+        let owner_lease = claim_live_backend(&[ordinal]).expect("test claims the live owner");
+        let journal = Arc::new(ConstructionResourceJournal::default());
+        let pool = super::super::GpuExecutionPool::new(ordinal, 1).expect("test execution pool");
+        journal.record_execution_pool(pool.clone()).expect("journal records the execution pool");
+        let gate = Arc::new(BlockingGate::default());
+        let worker_gate = Arc::clone(&gate);
+        let (started_sender, started_receiver) = mpsc::sync_channel(0);
+        pool.spawn(super::super::GpuExecutionJobKind::Cleanup, async move {
+            started_sender.send(()).expect("cleanup job start receiver remains live");
+            worker_gate.wait();
+        })
+        .expect("cleanup job submits");
+        started_receiver.recv().expect("cleanup job starts");
+
+        let generation = Arc::new(ResourceGeneration::new(next_backend_identity(), owner_lease, Arc::clone(&journal)));
+        let resource_core =
+            Arc::new(ResourceCore { identity: next_backend_identity(), generation: Mutex::new(Some(generation)) });
+        let observation_core = Arc::new(ObservationCore {
+            identity: next_backend_identity(),
+            lifecycle: BackendLifecycle::new(),
+            attempt_counters: Arc::new(AttemptBackendCounters::default()),
+            attempt_completion_queue: None,
+            backend_metrics: BackendMetricsStore::new(next_backend_identity(), &[])
+                .expect("test backend metrics store accepts an empty device set"),
+            completion_executor: ObservationCompletionExecutor::spawn().expect("test observation executor"),
+        });
+        let coordinator = CloseCoordinator::spawn(Arc::clone(&resource_core), Arc::clone(&observation_core))
+            .expect("cleanup coordinator");
+        let close_on_last = Arc::clone(&coordinator);
+        let public_handles = PublicHandleTracker::new(move || {
+            close_on_last.signal();
+        });
+        let backend = GpuBackendCore {
+            resource_core,
+            observation_core: Arc::clone(&observation_core),
+            coordinator: Arc::clone(&coordinator),
+            public_handle: public_handles.acquire().expect("first public backend handle"),
+            startup_records: Arc::from([]),
+            generation_id: next_backend_identity(),
+        };
+
+        drop(backend);
+        let timeout = coordinator
+            .state
+            .wait_until(Instant::now() + Duration::from_millis(250), &observation_core.lifecycle)
+            .expect_err("last-handle close cannot release a live execution runtime");
+        assert_eq!(timeout.fact_value("reason"), Some("backend_close_timeout"));
+        assert_eq!(timeout.fact_value("gpu_resource_quiescent"), Some("false"));
+        assert!(coordinator.state.snapshot(&observation_core.lifecycle).closing, "last handle signals the close gate");
+        let replacement =
+            claim_live_backend(&[ordinal]).expect_err("late cleanup retains the device owner after last-handle drop");
+        assert_eq!(replacement.fact_value("reason"), Some("backend_already_live"));
+
+        gate.release();
+        let snapshot = coordinator
+            .state
+            .wait_until(Instant::now() + Duration::from_secs(5), &observation_core.lifecycle)
+            .expect("late cleanup eventually quiesces both scopes");
+        assert!(snapshot.gpu_resource_quiescent);
+        assert!(snapshot.observation_quiescent);
+        assert!(snapshot.cleanup_late_success_count > 0, "the timed-out cleanup phase is recorded as a late success");
+        pool.join_supervisor().expect("cleanup joins the execution supervisor before owner release");
+        let replacement =
+            claim_live_backend(&[ordinal]).expect("owner lease becomes reusable only after late cleanup quiesces");
+        drop(replacement);
+    }
+
+    #[test]
     fn begin_attempt_after_close_is_rejected_without_creating_an_attempt() {
         let _owner_test = live_backend_test_lock();
         if cudf::DeviceId::count().unwrap_or(0) == 0 {
@@ -2168,6 +2267,79 @@ mod tests {
         assert_eq!(session.attempt_counters_snapshot().reports_ready, 1);
         let close = backend.close_and_wait(Duration::from_secs(10)).unwrap();
         assert!(close.observation_quiescent);
+    }
+
+    #[test]
+    fn close_after_report_ready_does_not_wait_for_a_held_completion_receiver() {
+        let backend = inert_backend_for_observation_delivery_test();
+        let begin = backend.begin_attempt(BeginAttemptRequest::default()).expect("attempt begins before close");
+
+        begin.owner.commit_terminal(crate::observability::RuntimeTerminalOutcome::Succeeded).unwrap();
+        let report = begin.completion.wait_timeout(Duration::from_secs(2)).expect("report is ready before close");
+        assert!(matches!(report.outcome, crate::observability::RuntimeTerminalOutcome::Succeeded));
+
+        assert!(backend.close());
+        let close = backend
+            .close_and_wait(Duration::from_secs(2))
+            .expect("reported attempt no longer holds close observation scope");
+        assert!(close.gpu_resource_quiescent);
+        assert!(close.observation_quiescent);
+        assert!(begin.completion.is_ready(), "the caller may retain its completed result after backend close");
+    }
+
+    #[test]
+    fn concurrent_begin_and_close_linearize_without_an_unaccounted_attempt() {
+        const RACE_ITERATIONS: usize = 16;
+
+        for _ in 0..RACE_ITERATIONS {
+            let backend = inert_backend_for_observation_delivery_test();
+            let session = backend.session_capability();
+            let start = Arc::new(std::sync::Barrier::new(3));
+
+            let begin_start = Arc::clone(&start);
+            let begin_session = session.clone();
+            let begin_worker = thread::spawn(move || {
+                begin_start.wait();
+                begin_session.begin_attempt(BeginAttemptRequest::default())
+            });
+
+            let close_start = Arc::clone(&start);
+            let close_backend = backend.clone();
+            let close_worker = thread::spawn(move || {
+                close_start.wait();
+                close_backend.close()
+            });
+
+            start.wait();
+            let begin = begin_worker.join().expect("begin worker does not panic");
+            assert!(close_worker.join().expect("close worker does not panic"), "the sole close signal wins");
+
+            let attempts_begun = match begin {
+                Ok(begin) => {
+                    begin.owner.commit_terminal(crate::observability::RuntimeTerminalOutcome::Succeeded).unwrap();
+                    let report =
+                        begin.completion.wait_timeout(Duration::from_secs(2)).expect("winning begin publishes");
+                    assert!(matches!(report.outcome, crate::observability::RuntimeTerminalOutcome::Succeeded));
+                    1
+                },
+                Err(error) => {
+                    assert_eq!(error.code(), QueryErrorCode::Cancelled);
+                    assert_eq!(error.fact_value("reason"), Some("backend_closing"));
+                    0
+                },
+            };
+
+            let counters = session.attempt_counters_snapshot();
+            assert_eq!(counters.attempts_begun, attempts_begun, "only a begin-gate winner is counted");
+            assert_eq!(counters.reports_ready, attempts_begun, "every counted begin publishes before close completes");
+            let error =
+                session.begin_attempt(BeginAttemptRequest::default()).expect_err("close excludes every later begin");
+            assert_eq!(error.fact_value("reason"), Some("backend_closing"));
+
+            let close = backend.close_and_wait(Duration::from_secs(2)).expect("linearized attempt state drains");
+            assert!(close.gpu_resource_quiescent);
+            assert!(close.observation_quiescent);
+        }
     }
 
     #[test]

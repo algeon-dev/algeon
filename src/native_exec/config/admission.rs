@@ -56,15 +56,16 @@ impl NexusNativeExecutionConfig {
 
     pub(crate) fn new_plan_query_admission_ticket_with_graph_model_ask_and_fragment_requirements(
         &self,
-        _graph_model_ask: Option<GraphAdmissionModelAsk>,
+        graph_model_ask: Option<GraphAdmissionModelAsk>,
         fragment_proofs: Vec<QueryPlanCapabilityProof>,
     ) -> nexus_query_engine::error::Result<Option<Arc<QueryAdmissionTicket>>> {
-        self.new_plan_query_admission_ticket_with_fragment_proofs(fragment_proofs)
+        self.new_plan_query_admission_ticket_with_fragment_proofs(fragment_proofs, graph_model_ask.as_ref())
     }
 
     fn new_plan_query_admission_ticket_with_fragment_proofs(
         &self,
         fragment_proofs: Vec<QueryPlanCapabilityProof>,
+        graph_model_ask: Option<&GraphAdmissionModelAsk>,
     ) -> nexus_query_engine::error::Result<Option<Arc<QueryAdmissionTicket>>> {
         if self.query_service_handle.is_some() {
             return Ok(None);
@@ -76,7 +77,11 @@ impl NexusNativeExecutionConfig {
         let Some(first_proof) = fragment_proofs.next() else {
             return Ok(None);
         };
-        let attempt_capability_proof = QueryPlanCapabilityProof::combine(first_proof, fragment_proofs)?;
+        let mut attempt_capability_proof = QueryPlanCapabilityProof::combine(first_proof, fragment_proofs)?;
+        if let Some(graph_model_ask) = graph_model_ask {
+            attempt_capability_proof =
+                attempt_capability_proof.with_graph_memory_admission_evidence(graph_model_ask.cold_model_evidence());
+        }
         let observation_capture = self.metrics_capture.as_ref().map(NativeMetricsCapture::new_execution);
         let observation = self.new_runtime_observation(observation_capture.as_ref());
         Ok(Some(QueryAdmissionTicket::new_with_capability_proof_and_observation(

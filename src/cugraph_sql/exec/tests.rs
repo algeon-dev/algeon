@@ -841,7 +841,7 @@ fn cugraph_execution_config_creates_plan_ticket_for_backend_admission_source() {
 }
 
 #[test]
-fn cugraph_algo_exec_keeps_graph_model_bytes_out_of_admission_grant() {
+fn cugraph_algo_exec_uses_cold_graph_model_as_immutable_grant_target() {
     let min = 64 * 1024 * 1024;
     let want = 2 * 1024 * 1024 * 1024_u64;
     let backend = test_gpu_backend();
@@ -855,6 +855,8 @@ fn cugraph_algo_exec_keeps_graph_model_bytes_out_of_admission_grant() {
         .graph_model_ask_bytes_for_admission_ticket()
         .expect("graph model should derive opaque admission evidence")
         .expect("known edge rows should produce graph model evidence");
+    let expected_proof =
+        graph_ticket_proof(&exec).with_graph_memory_admission_evidence(model_ask.cold_model_evidence());
 
     assert!(
         model_ask.cold_model_requested_bytes() < want,
@@ -866,8 +868,16 @@ fn cugraph_algo_exec_keeps_graph_model_bytes_out_of_admission_grant() {
     );
     assert_eq!(
         ticket.attempt_capability_proof(),
-        Some(&graph_ticket_proof(&exec)),
+        Some(&expected_proof),
         "the ticket must carry the exact cuGraph execution proof"
+    );
+    assert_eq!(
+        ticket
+            .attempt_capability_proof()
+            .expect("cuGraph ticket retains its engine-issued proof")
+            .soft_working_set_hint_bytes(),
+        Some(model_ask.cold_model_requested_bytes()),
+        "the cold model may target the immutable grant but cannot alter its ledger-owned fit range"
     );
 }
 
@@ -908,7 +918,7 @@ fn cugraph_graph_model_ask_prefers_exact_edge_rows_over_configured_raw_edges() {
 }
 
 #[test]
-fn cugraph_algo_exec_keeps_native_edge_model_bytes_out_of_admission_grant() {
+fn cugraph_algo_exec_uses_native_edge_cold_model_as_immutable_grant_target() {
     let min = 64 * 1024 * 1024;
     let want = 2 * 1024 * 1024 * 1024_u64;
     let backend = test_gpu_backend();
@@ -924,6 +934,7 @@ fn cugraph_algo_exec_keeps_native_edge_model_bytes_out_of_admission_grant() {
         .graph_model_ask_bytes_for_admission_ticket()
         .expect("graph model should derive opaque admission evidence")
         .expect("native edge-source rows should produce graph model evidence");
+    let expected_proof = expected_proof.with_graph_memory_admission_evidence(model_ask.cold_model_evidence());
 
     assert_eq!(
         ticket.attempt_capability_proof(),
@@ -933,6 +944,13 @@ fn cugraph_algo_exec_keeps_native_edge_model_bytes_out_of_admission_grant() {
     assert!(
         model_ask.cold_model_requested_bytes() < want,
         "native edge-source graph estimate should not default to the controller hint"
+    );
+    assert_eq!(
+        ticket
+            .attempt_capability_proof()
+            .expect("the graph ticket retains its engine-issued proof")
+            .soft_working_set_hint_bytes(),
+        Some(model_ask.cold_model_requested_bytes())
     );
 }
 
@@ -973,6 +991,38 @@ async fn cugraph_algo_exec_records_graph_residency_for_datafusion_parquet_edge_s
 }
 
 #[tokio::test]
+async fn graph_residency_translates_parallel_datafusion_parquet_scan_without_order_contract() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("edges.parquet");
+    write_edge_parquet(&path);
+    let config = SessionConfig::new()
+        .with_target_partitions(4)
+        .with_repartition_file_scans(true)
+        .with_repartition_file_min_size(0);
+    let ctx = SessionContext::new_with_config(config);
+    ctx.register_parquet("edges", path.to_str().unwrap(), ParquetReadOptions::default()).await.unwrap();
+    let edge_source =
+        ctx.sql("SELECT src, dst, weight FROM edges").await.unwrap().create_physical_plan().await.unwrap();
+    let source = edge_source
+        .as_ref()
+        .downcast_ref::<datafusion::datasource::source::DataSourceExec>()
+        .expect("parallel Parquet fixture should remain a direct DataFusion scan");
+    let native_spec = native_graph_spec_for_residency(&pagerank_spec(), false);
+
+    let descriptor = crate::native::graph_residency_descriptor_for_datafusion_local_parquet_scan(source, &native_spec)
+        .expect("parallel local-Parquet scan should retain a stable graph rowset descriptor");
+
+    assert!(descriptor.source_fingerprint.as_str().starts_with("graph-source-v1-fnv64-"));
+    assert_eq!(descriptor.vertex_data_type, DataType::Int64);
+    assert_eq!(descriptor.weight_data_type, Some(DataType::Float64));
+    assert_eq!(
+        crate::native::exact_row_count_for_datafusion_local_parquet_scan(source),
+        Some(3),
+        "the cacheable local-Parquet bridge must retain the exact footer row count for graph admission"
+    );
+}
+
+#[tokio::test]
 async fn cugraph_algo_exec_bypasses_graph_residency_for_datafusion_parquet_scan_limit() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("edges.parquet");
@@ -1000,7 +1050,7 @@ async fn cugraph_algo_exec_bypasses_graph_residency_for_logical_bfs_datafusion_p
 }
 
 #[tokio::test]
-async fn cugraph_algo_exec_keeps_cache_affinity_out_of_the_admission_ticket() {
+async fn cugraph_algo_exec_uses_footer_rows_as_a_graph_admission_target() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("edges.parquet");
     write_edge_parquet(&path);
@@ -1012,11 +1062,21 @@ async fn cugraph_algo_exec_keeps_cache_affinity_out_of_the_admission_ticket() {
     let exec = CugraphAlgoExec::try_new(pagerank_spec(), edge_source, vec![], None, None, config)
         .expect("cuGraph exec should build for keyable DataFusion edge source");
     let ticket = exec.native_execution_config.query_admission_ticket().expect("cuGraph exec should mint a plan ticket");
-    assert_eq!(ticket.attempt_capability_proof(), Some(&graph_ticket_proof(&exec)));
+    let model_ask = exec
+        .graph_model_ask_bytes_for_admission_ticket()
+        .expect("footer rows should derive graph admission evidence")
+        .expect("keyable local-Parquet source has exact graph rows");
+    assert_eq!(
+        ticket
+            .attempt_capability_proof()
+            .expect("cuGraph ticket retains its engine-issued proof")
+            .soft_working_set_hint_bytes(),
+        Some(model_ask.cold_model_requested_bytes())
+    );
 }
 
 #[tokio::test]
-async fn cugraph_algo_exec_keeps_bfs_cache_affinity_out_of_the_admission_ticket() {
+async fn cugraph_algo_exec_uses_footer_rows_for_cacheable_bfs_admission() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("edges.parquet");
     write_edge_parquet(&path);
@@ -1028,7 +1088,17 @@ async fn cugraph_algo_exec_keeps_bfs_cache_affinity_out_of_the_admission_ticket(
     let exec = CugraphAlgoExec::try_new(bfs_spec(), edge_source, vec![], None, None, config)
         .expect("cuGraph BFS exec should build for keyable DataFusion edge source");
     let ticket = exec.native_execution_config.query_admission_ticket().expect("cuGraph exec should mint a plan ticket");
-    assert_eq!(ticket.attempt_capability_proof(), Some(&graph_ticket_proof(&exec)));
+    let model_ask = exec
+        .graph_model_ask_bytes_for_admission_ticket()
+        .expect("footer rows should derive graph admission evidence")
+        .expect("keyable local-Parquet source has exact graph rows");
+    assert_eq!(
+        ticket
+            .attempt_capability_proof()
+            .expect("cacheable BFS ticket retains its engine-issued proof")
+            .soft_working_set_hint_bytes(),
+        Some(model_ask.cold_model_requested_bytes())
+    );
 }
 
 #[tokio::test]
@@ -1062,6 +1132,38 @@ async fn cugraph_sql_bfs_table_function_records_graph_residency_for_datafusion_p
         exec.graph_residency.as_ref().expect("stress-shaped SQL local-Parquet edge source should be keyable");
     let edge_schema = exec.edge_source.schema();
     assert!(graph_residency_matches_edge_schema(descriptor, edge_schema.as_ref(), &exec.spec));
+}
+
+#[tokio::test]
+async fn cugraph_sql_bfs_table_function_records_graph_residency_with_runner_default_session_config() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("edges.parquet");
+    write_edge_parquet(&path);
+    let state = datafusion::execution::SessionStateBuilder::new()
+        .with_default_features()
+        .with_cugraph_sql(CugraphSqlConfig::default())
+        .build();
+    let ctx = SessionContext::new_with_state(state);
+    ctx.register_parquet("citation_edges", path.to_str().unwrap(), ParquetReadOptions::default()).await.unwrap();
+
+    let plan = ctx
+        .sql(
+            "SELECT COUNT(*) AS reached \
+             FROM cugraph_bfs('citation_edges', 0, 'src', 'dst', NULL, \
+             '{\"depth_limit\": 3, \"output_mode\": \"normalized\"}')",
+        )
+        .await
+        .unwrap()
+        .create_physical_plan()
+        .await
+        .unwrap();
+    let exec = cugraph_exec_in_plan(Arc::clone(&plan)).expect("planned SQL should contain CugraphAlgoExec");
+    let exec = exec.downcast_ref::<CugraphAlgoExec>().unwrap();
+
+    assert!(
+        exec.graph_residency.is_some(),
+        "the P6 runner uses the default session configuration, so its DBLP BFS path must remain cacheable"
+    );
 }
 
 fn cugraph_exec_in_plan(plan: Arc<dyn ExecutionPlan>) -> Option<Arc<dyn ExecutionPlan>> {

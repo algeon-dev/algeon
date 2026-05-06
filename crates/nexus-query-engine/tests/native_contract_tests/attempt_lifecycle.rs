@@ -80,8 +80,8 @@ fn correlation_limits_are_pinned_public_constants() {
 #[test]
 fn query_attempt_report_serde_round_trips_with_stable_field_names() {
     use nexus_query_engine::observability::{
-        AttemptAdmissionFact, AttemptCapacityDisposition, AttemptCleanupDisposition, AttemptRetryAdvice,
-        AttemptTimestamps, QueryAttemptReport, RuntimeTerminalOutcome,
+        AttemptAdmissionFact, AttemptAdmissionWaitFact, AttemptCapacityDisposition, AttemptCleanupDisposition,
+        AttemptRetryAdvice, AttemptTimestamps, QueryAttemptReport, RuntimeTerminalOutcome,
     };
     let report = QueryAttemptReport {
         schema: QUERY_ATTEMPT_REPORT_SCHEMA_V1.to_string(),
@@ -98,6 +98,13 @@ fn query_attempt_report_serde_round_trips_with_stable_field_names() {
             admission_wait_ns: 12,
             device_ordinal: 1,
             grant_bytes: 2048,
+        }),
+        admission_wait: Some(AttemptAdmissionWaitFact {
+            submission_sequence: 7,
+            overtake_limit: 2,
+            overtakes_consumed: 2,
+            overtakes_remaining: 0,
+            protection_device_ordinal: Some(1),
         }),
         timestamps: AttemptTimestamps {
             submitted_ns: 0,
@@ -139,6 +146,7 @@ fn query_attempt_report_serde_round_trips_with_stable_field_names() {
         "retry_advice",
         "device_ordinal",
         "admission",
+        "admission_wait",
         "timestamps",
         "cleanup_disposition",
         "cleanup_failure_count",

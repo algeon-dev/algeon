@@ -16,8 +16,10 @@ use serde_json::Value;
 
 use super::{
     aggregate::{
-        AttemptObservation, DeviceConfiguration, DeviceOccupancyPeaks, MeasuredAggregate, scenario_clauses_pass,
+        AttemptObservation, AttemptTerminalEvidence, DeviceConfiguration, DeviceOccupancyPeaks, MeasuredAggregate,
+        scenario_clauses_pass,
     },
+    metrics_audit::{MetricSnapshotObservation, MetricsAudit},
     profile::{
         ArrivalMode, CacheMode, DeviceOwnership, DeviceProfile, FixtureKind, FixtureWorkloadProfile,
         InstallationBounds, RateOverrunPolicy, SchedulingProfile,
@@ -35,6 +37,10 @@ use super::{
 
 fn valid_profile_json() -> &'static str {
     include_str!("../../fixtures/p6-dry-run-profile.json")
+}
+
+fn overload_fairness_profile_json() -> &'static str {
+    include_str!("../../fixtures/p6-overload-fairness-profile.json")
 }
 
 #[test]
@@ -75,11 +81,62 @@ fn parser_rejects_duplicate_unknown_missing_and_non_dry_run_options() {
             vec!["--config", "a", "--out-dir", "out", "--dry-run", "--nsight-trace", "t"],
             "only valid with --measured-run",
         ),
+        (
+            vec!["--config", "a", "--out-dir", "out", "--dry-run", "--overload-fairness"],
+            "--overload-fairness is only valid with --measured-run",
+        ),
+        (
+            vec![
+                "--config",
+                "a",
+                "--out-dir",
+                "out",
+                "--measured-run",
+                "--overload-fairness",
+                "--domain-exhaustion-probe",
+            ],
+            "--overload-fairness cannot be combined with --domain-exhaustion-probe",
+        ),
         (vec!["--config", "--out-dir", "out", "--dry-run"], "missing value for --config"),
     ] {
         let error = CliOptions::parse(args.into_iter().map(str::to_string).collect()).unwrap_err();
         assert!(error.to_string().contains(expected), "{error}");
     }
+}
+
+#[test]
+fn overload_fairness_profile_is_a_finite_bounded_cohort() {
+    let profile = RunProfile::parse_bytes(overload_fairness_profile_json().as_bytes()).unwrap();
+    profile.validate_overload_fairness_scenario().unwrap();
+    assert_eq!(profile.scheduling.max_rounds, Some(1));
+    assert_eq!(profile.scheduling.warmup_seconds, 0);
+    assert_eq!(profile.scheduling.concurrency, 8);
+
+    let mut no_overload = profile.clone();
+    no_overload.scheduling.concurrency = 4;
+    let error = no_overload.validate_overload_fairness_scenario().unwrap_err();
+    assert!(error.to_string().contains("above configured active-attempt capacity"), "{error}");
+
+    let mut unbounded = profile.clone();
+    unbounded.scheduling.max_rounds = None;
+    let error = unbounded.validate_overload_fairness_scenario().unwrap_err();
+    assert!(error.to_string().contains("max_rounds=1"), "{error}");
+
+    let options = CliOptions::parse(
+        [
+            "--config",
+            "p6-overload-fairness-profile.json",
+            "--out-dir",
+            "run-artifacts",
+            "--measured-run",
+            "--overload-fairness",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect(),
+    )
+    .unwrap();
+    assert!(options.overload_fairness);
 }
 
 #[test]
@@ -350,7 +407,7 @@ fn sample_provenance() -> Provenance {
         path: format!("/fixture/{name}"),
         revision: "c".repeat(40),
         dirty_manifest: DirtyManifest {
-            format: "git-status-porcelain-v1-z",
+            format: "git-status-porcelain-v1-z+direct-worktree-content-sha256-v1",
             sha256: "d".repeat(64),
             entries: Vec::new(),
         },
@@ -416,9 +473,9 @@ fn the_shipped_measured_run_profile_parses_plans_and_is_heterogeneous() {
         .map(|device| device.installation.stream_pool_size)
         .collect::<BTreeSet<_>>();
     assert!(limits.len() > 1 && caps.len() > 1 && streams.len() > 1);
-    // Every shipped ordinal is whole-device-exclusive on purpose: placement
-    // never selects a `StaticPartition` device, so a static-partition ordinal
-    // cannot evidence scenario 2's progress clause today.
+    // The main P6.5 profile remains whole-device-exclusive; the focused
+    // StaticPartition evidence uses its own profile so neither scenario
+    // dilutes the other's immutable admission envelope.
     assert!(
         profile.backend.device_profiles.iter().all(|device| device.ownership == DeviceOwnership::WholeDeviceExclusive)
     );
@@ -437,6 +494,62 @@ fn the_shipped_measured_run_profile_parses_plans_and_is_heterogeneous() {
 }
 
 #[test]
+fn the_shipped_concurrent_quarantine_profile_has_distinct_pre_and_post_ack_cohorts() {
+    let profile =
+        RunProfile::parse_bytes(include_str!("../../fixtures/p6-concurrent-quarantine-profile.json").as_bytes())
+            .unwrap();
+    assert_eq!(profile.name, "p6.6-concurrent-quarantine");
+    assert_eq!(profile.scheduling.arrival_mode, ArrivalMode::Concurrency);
+    assert_eq!(profile.scheduling.max_rounds, Some(2));
+    let plan =
+        ArrivalPlan::plan(&profile.scheduling, profile.selected_query_count(), profile.session.shared_session_count)
+            .expect("quarantine profile plans");
+    assert_eq!(plan.arrivals.len(), plan.concurrency * 2);
+    assert!(plan.arrivals.iter().any(|arrival| arrival.round == 0));
+    assert!(plan.arrivals.iter().any(|arrival| arrival.round == 1));
+}
+
+#[test]
+fn the_shipped_domain_exhaustion_profile_pins_a_serial_cap_and_recovery_probe() {
+    let profile =
+        RunProfile::parse_bytes(include_str!("../../fixtures/p6-domain-exhaustion-probe-profile.json").as_bytes())
+            .unwrap();
+    assert_eq!(profile.name, "p6.6-domain-exhaustion-probe");
+    assert_eq!(profile.backend.device_profiles.len(), 1);
+    assert!(matches!(
+        &profile.backend.device_profiles[0].ownership,
+        DeviceOwnership::StaticPartition { allocation_limit_bytes: 402_653_184 }
+    ));
+    assert_eq!(profile.scheduling.arrival_mode, ArrivalMode::Concurrency);
+    assert_eq!(profile.scheduling.concurrency, 1);
+    assert_eq!(profile.scheduling.max_rounds, Some(2));
+    let labels =
+        profile.workloads.iter().flat_map(|workload| workload.queries.iter().map(String::as_str)).collect::<Vec<_>>();
+    assert_eq!(labels, ["q01", "edge_scan"]);
+}
+
+#[test]
+fn the_shipped_physical_allocator_pressure_profile_pins_real_pressure_and_recovery_shape() {
+    let profile =
+        RunProfile::parse_bytes(include_str!("../../fixtures/p6-physical-allocator-pressure-profile.json").as_bytes())
+            .unwrap();
+    assert_eq!(profile.name, "p6.6-physical-allocator-pressure");
+    assert_eq!(profile.backend.device_profiles.len(), 1);
+    assert!(matches!(
+        &profile.backend.device_profiles[0].ownership,
+        DeviceOwnership::StaticPartition { allocation_limit_bytes: 17_179_869_184 }
+    ));
+    assert_eq!(profile.scheduling.arrival_mode, ArrivalMode::Concurrency);
+    assert_eq!(profile.scheduling.concurrency, 1);
+    assert_eq!(profile.scheduling.max_rounds, Some(2));
+    assert_eq!(profile.cache.mode, CacheMode::Disabled);
+    let labels =
+        profile.workloads.iter().flat_map(|workload| workload.queries.iter().map(String::as_str)).collect::<Vec<_>>();
+    assert_eq!(labels, ["q01", "edge_scan"]);
+    profile.validate_physical_allocator_pressure_scenario().unwrap();
+}
+
+#[test]
 fn parser_accepts_the_measured_run_contract_with_an_external_trace() {
     let options = CliOptions::parse(
         ["--config", "run-profile.json", "--out-dir", "run-artifacts", "--measured-run", "--nsight-trace", "t.rep"]
@@ -447,6 +560,215 @@ fn parser_accepts_the_measured_run_contract_with_an_external_trace() {
     .unwrap();
     assert_eq!(options.mode, ValidationMode::MeasuredRun);
     assert_eq!(options.nsight_trace, Some(PathBuf::from("t.rep")));
+}
+
+#[test]
+fn parser_accepts_controlled_quarantine_only_for_a_measured_run() {
+    let options = CliOptions::parse(
+        ["--config", "run-profile.json", "--out-dir", "run-artifacts", "--measured-run", "--quarantine-device", "3"]
+            .into_iter()
+            .map(str::to_string)
+            .collect(),
+    )
+    .unwrap();
+    assert_eq!(options.quarantine_device, Some(3));
+
+    let error = CliOptions::parse(
+        ["--config", "run-profile.json", "--out-dir", "run-artifacts", "--dry-run", "--quarantine-device", "0"]
+            .into_iter()
+            .map(str::to_string)
+            .collect(),
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(error.contains("only valid with --measured-run"), "{error}");
+}
+
+#[test]
+fn parser_scopes_the_after_admission_deadline_probe_to_measured_runs() {
+    let options = CliOptions::parse(
+        [
+            "--config",
+            "run-profile.json",
+            "--out-dir",
+            "run-artifacts",
+            "--measured-run",
+            "--deadline-first-after-ms",
+            "2000",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect(),
+    )
+    .unwrap();
+    assert_eq!(options.deadline_first_after, Some(std::time::Duration::from_secs(2)));
+
+    let zero = CliOptions::parse(
+        [
+            "--config",
+            "run-profile.json",
+            "--out-dir",
+            "run-artifacts",
+            "--measured-run",
+            "--deadline-first-after-ms",
+            "0",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect(),
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(zero.contains("greater than zero"), "{zero}");
+
+    let combined = CliOptions::parse(
+        [
+            "--config",
+            "run-profile.json",
+            "--out-dir",
+            "run-artifacts",
+            "--measured-run",
+            "--quarantine-device",
+            "0",
+            "--deadline-first-after-ms",
+            "2000",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect(),
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(combined.contains("cannot be combined"), "{combined}");
+}
+
+#[test]
+fn parser_scopes_domain_exhaustion_to_the_measured_run_and_keeps_it_isolated() {
+    let options = CliOptions::parse(
+        ["--config", "run-profile.json", "--out-dir", "run-artifacts", "--measured-run", "--domain-exhaustion-probe"]
+            .into_iter()
+            .map(str::to_string)
+            .collect(),
+    )
+    .unwrap();
+    assert!(options.domain_exhaustion_probe);
+
+    let dry_error = CliOptions::parse(
+        ["--config", "run-profile.json", "--out-dir", "run-artifacts", "--dry-run", "--domain-exhaustion-probe"]
+            .into_iter()
+            .map(str::to_string)
+            .collect(),
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(dry_error.contains("only valid with --measured-run"), "{dry_error}");
+
+    let combined_error = CliOptions::parse(
+        [
+            "--config",
+            "run-profile.json",
+            "--out-dir",
+            "run-artifacts",
+            "--measured-run",
+            "--domain-exhaustion-probe",
+            "--deadline-first-after-ms",
+            "2000",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect(),
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(combined_error.contains("cannot be combined"), "{combined_error}");
+}
+
+#[test]
+fn parser_scopes_physical_allocator_pressure_to_the_measured_run_and_keeps_it_isolated() {
+    let options = CliOptions::parse(
+        [
+            "--config",
+            "run-profile.json",
+            "--out-dir",
+            "run-artifacts",
+            "--measured-run",
+            "--physical-allocator-pressure",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect(),
+    )
+    .unwrap();
+    assert!(options.physical_allocator_pressure);
+
+    let dry_error = CliOptions::parse(
+        ["--config", "run-profile.json", "--out-dir", "run-artifacts", "--dry-run", "--physical-allocator-pressure"]
+            .into_iter()
+            .map(str::to_string)
+            .collect(),
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(dry_error.contains("only valid with --measured-run"), "{dry_error}");
+
+    let combined_error = CliOptions::parse(
+        [
+            "--config",
+            "run-profile.json",
+            "--out-dir",
+            "run-artifacts",
+            "--measured-run",
+            "--physical-allocator-pressure",
+            "--domain-exhaustion-probe",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect(),
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(combined_error.contains("cannot be combined"), "{combined_error}");
+}
+
+#[test]
+fn parser_scopes_cache_calibration_to_the_measured_run_and_keeps_it_distinct_from_fault_injection() {
+    let options = CliOptions::parse(
+        ["--config", "run-profile.json", "--out-dir", "run-artifacts", "--measured-run", "--cache-calibration"]
+            .into_iter()
+            .map(str::to_string)
+            .collect(),
+    )
+    .unwrap();
+    assert!(options.cache_calibration);
+
+    let dry_error = CliOptions::parse(
+        ["--config", "run-profile.json", "--out-dir", "run-artifacts", "--dry-run", "--cache-calibration"]
+            .into_iter()
+            .map(str::to_string)
+            .collect(),
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(dry_error.contains("only valid with --measured-run"), "{dry_error}");
+
+    let combined_error = CliOptions::parse(
+        [
+            "--config",
+            "run-profile.json",
+            "--out-dir",
+            "run-artifacts",
+            "--measured-run",
+            "--cache-calibration",
+            "--quarantine-device",
+            "0",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect(),
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(combined_error.contains("cannot be combined"), "{combined_error}");
 }
 
 /// A measured-run profile that selects queries but supplies no device profile,
@@ -460,22 +782,133 @@ fn measured_run_preflight_rejects_an_incomplete_profile_before_touching_a_fixtur
     for workload in &mut no_queries.workloads {
         workload.queries.clear();
     }
-    assert!(measured_run_preflight(&no_queries).unwrap_err().to_string().contains("at least one workload query"),);
+    assert!(
+        measured_run_preflight(&no_queries, None, None, false, false, false, false)
+            .unwrap_err()
+            .to_string()
+            .contains("at least one workload query"),
+    );
 
     let mut no_devices = base.clone();
     no_devices.backend.device_profiles.clear();
-    assert!(measured_run_preflight(&no_devices).unwrap_err().to_string().contains("device_profiles"));
+    assert!(
+        measured_run_preflight(&no_devices, None, None, false, false, false, false)
+            .unwrap_err()
+            .to_string()
+            .contains("device_profiles")
+    );
 
     let mut no_window = base;
     no_window.scheduling.measurement_seconds = 0;
-    assert!(measured_run_preflight(&no_window).unwrap_err().to_string().contains("measurement_seconds"));
+    assert!(
+        measured_run_preflight(&no_window, None, None, false, false, false, false)
+            .unwrap_err()
+            .to_string()
+            .contains("measurement_seconds")
+    );
+}
+
+#[test]
+fn measured_run_preflight_validates_controlled_quarantine_against_configured_devices() {
+    let mut profile = measured_run_profile();
+    for workload in &mut profile.workloads {
+        workload.queries.clear();
+    }
+    // This must fail on the explicit control before a fixture is inspected;
+    // leave one query selected after checking the no-workload guard below.
+    profile.workloads[0].queries.push("q01".to_string());
+    let error = measured_run_preflight(&profile, Some(99), None, false, false, false, false).unwrap_err().to_string();
+    assert!(error.contains("not configured"), "{error}");
+
+    profile.backend.device_profiles.truncate(1);
+    let error = measured_run_preflight(&profile, Some(0), None, false, false, false, false).unwrap_err().to_string();
+    assert!(error.contains("at least two configured devices"), "{error}");
+}
+
+#[test]
+fn controlled_quarantine_requires_a_live_pre_ack_cohort_and_a_post_ack_cohort() {
+    let mut rate = measured_run_profile();
+    rate.scheduling.arrival_mode = ArrivalMode::Rate;
+    let error = measured_run_preflight(&rate, Some(0), None, false, false, false, false).unwrap_err().to_string();
+    assert!(error.contains("arrival_mode=concurrency"), "{error}");
+
+    let mut one_round = measured_run_profile();
+    one_round.scheduling.max_rounds = Some(1);
+    let error = measured_run_preflight(&one_round, Some(0), None, false, false, false, false).unwrap_err().to_string();
+    assert!(error.contains("max_rounds of at least 2"), "{error}");
+}
+
+#[test]
+fn after_admission_deadline_requires_a_follow_up_cohort() {
+    let mut rate = measured_run_profile();
+    rate.scheduling.arrival_mode = ArrivalMode::Rate;
+    let error =
+        measured_run_preflight(&rate, None, Some(std::time::Duration::from_millis(1)), false, false, false, false)
+            .unwrap_err()
+            .to_string();
+    assert!(error.contains("arrival_mode=concurrency"), "{error}");
+
+    let mut one_round = measured_run_profile();
+    one_round.scheduling.max_rounds = Some(1);
+    let error =
+        measured_run_preflight(&one_round, None, Some(std::time::Duration::from_millis(1)), false, false, false, false)
+            .unwrap_err()
+            .to_string();
+    assert!(error.contains("max_rounds of at least 2"), "{error}");
+}
+
+#[test]
+fn domain_exhaustion_probe_requires_its_fixed_serial_profile_shape() {
+    let mut profile =
+        RunProfile::parse_bytes(include_str!("../../fixtures/p6-domain-exhaustion-probe-profile.json").as_bytes())
+            .unwrap();
+    profile.scheduling.concurrency = 2;
+    let error = measured_run_preflight(&profile, None, None, true, false, false, false).unwrap_err().to_string();
+    assert!(error.contains("concurrency=1"), "{error}");
+
+    profile.scheduling.concurrency = 1;
+    profile.workloads[1].queries = vec!["bfs".to_string()];
+    let error = measured_run_preflight(&profile, None, None, true, false, false, false).unwrap_err().to_string();
+    assert!(error.contains("q01 followed by edge_scan"), "{error}");
+}
+
+#[test]
+fn physical_allocator_pressure_requires_its_fixed_static_partition_shape() {
+    let mut profile =
+        RunProfile::parse_bytes(include_str!("../../fixtures/p6-physical-allocator-pressure-profile.json").as_bytes())
+            .unwrap();
+    profile.scheduling.concurrency = 2;
+    let error = measured_run_preflight(&profile, None, None, false, false, true, false).unwrap_err().to_string();
+    assert!(error.contains("concurrency=1"), "{error}");
+
+    profile.scheduling.concurrency = 1;
+    profile.workloads[1].queries = vec!["bfs".to_string()];
+    let error = measured_run_preflight(&profile, None, None, false, false, true, false).unwrap_err().to_string();
+    assert!(error.contains("q01 followed by edge_scan"), "{error}");
 }
 
 /// The fixture paths in `measured_run_profile` do not exist, so preflight must
 /// fail with the structured fixture reason rather than proceeding.
 #[test]
 fn measured_run_preflight_reports_a_missing_fixture_with_a_structured_reason() {
-    let error = measured_run_preflight(&measured_run_profile()).unwrap_err().to_string();
+    let error = measured_run_preflight(&measured_run_profile(), None, None, false, false, false, false)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("fixture_preflight"), "{error}");
+    assert!(error.contains("reason=missing_fixture"), "{error}");
+}
+
+#[test]
+fn overload_fairness_preflight_validates_the_finite_cohort_before_fixture_access() {
+    let mut profile = measured_run_profile();
+    profile.scheduling.concurrency = 8;
+    profile.scheduling.max_rounds = Some(1);
+    profile.scheduling.warmup_seconds = 0;
+
+    // The profile's fixture paths are deliberately absent. Reaching this
+    // structured fixture error proves the overload shape was accepted before
+    // the runner touches a backend or writes an artifact.
+    let error = measured_run_preflight(&profile, None, None, false, true, false, false).unwrap_err().to_string();
     assert!(error.contains("fixture_preflight"), "{error}");
     assert!(error.contains("reason=missing_fixture"), "{error}");
 }
@@ -562,10 +995,64 @@ fn profile_rejects_a_backend_reserve_that_exhausts_the_device_limit() {
 }
 
 #[test]
+fn cache_mode_matches_the_single_p5_ledger_cache_cap() {
+    let mut profile = measured_run_profile();
+    profile.backend.device_profiles[0].cache_cap_bytes = 64 * 1024 * 1024;
+    let error = profile.validate().unwrap_err().to_string();
+    assert!(error.contains("cache.mode disabled"), "{error}");
+
+    profile.cache.mode = CacheMode::Enabled;
+    profile.validate().unwrap();
+
+    profile.backend.device_profiles[0].cache_cap_bytes = 0;
+    let error = profile.validate().unwrap_err().to_string();
+    assert!(error.contains("cache.mode enabled"), "{error}");
+}
+
+#[test]
+fn cache_calibration_derives_a_disabled_companion_without_changing_any_other_profile_surface() {
+    let mut profile = measured_run_profile();
+    profile.cache.mode = CacheMode::Enabled;
+    profile.backend.device_profiles[0].cache_cap_bytes = 64 * 1024 * 1024;
+    profile.validate().unwrap();
+
+    let companion = profile.cache_disabled_companion().unwrap();
+    assert_eq!(companion.cache.mode, CacheMode::Disabled);
+    assert!(companion.backend.device_profiles.iter().all(|device| device.cache_cap_bytes == 0));
+    assert_eq!(companion.workloads, profile.workloads);
+    assert_eq!(companion.scheduling, profile.scheduling);
+    assert_eq!(companion.session, profile.session);
+    assert_eq!(companion.backend.queue, profile.backend.queue);
+    assert_eq!(companion.backend.native_execution, profile.backend.native_execution);
+    for (before, after) in profile.backend.device_profiles.iter().zip(&companion.backend.device_profiles) {
+        assert_eq!(before.ordinal, after.ordinal);
+        assert_eq!(before.ownership, after.ownership);
+        assert_eq!(before.memory_limit_bytes, after.memory_limit_bytes);
+        assert_eq!(before.backend_reserve_bytes, after.backend_reserve_bytes);
+        assert_eq!(before.attempt_floor_bytes, after.attempt_floor_bytes);
+        assert_eq!(before.source_work_per_attempt, after.source_work_per_attempt);
+        assert_eq!(before.max_active_attempts, after.max_active_attempts);
+        assert_eq!(before.installation, after.installation);
+    }
+}
+
+#[test]
 fn profile_rejects_a_rate_overrun_policy_without_rate_scheduling() {
     let mut profile = measured_run_profile();
     profile.scheduling.rate_overrun = RateOverrunPolicy::Drop;
     assert!(profile.validate().unwrap_err().to_string().contains("rate_overrun"));
+}
+
+#[test]
+fn profile_scopes_finite_round_bounds_to_closed_loop_scheduling() {
+    let mut profile = measured_run_profile();
+    profile.scheduling.max_rounds = Some(0);
+    assert!(profile.validate().unwrap_err().to_string().contains("max_rounds"));
+
+    profile.scheduling.max_rounds = Some(1);
+    profile.scheduling.arrival_mode = ArrivalMode::Rate;
+    profile.scheduling.arrival_rate_per_second = Some(1);
+    assert!(profile.validate().unwrap_err().to_string().contains("max_rounds"));
 }
 
 /// The end-to-end artifact shape for a measured run, assembled from the pure
@@ -596,12 +1083,18 @@ fn measured_run_artifact_records_scenarios_throughput_placement_and_declared_gap
             queue_max_queue_wait_ms: profile.backend.queue.max_queue_wait_ms,
             queue_max_overtakes_per_waiter: profile.backend.queue.max_overtakes_per_waiter,
             device_startup_records: serde_json::to_value(&devices).unwrap(),
-            close: Value::Null,
+            close: test_close_evidence(),
         },
         selected_queries: queries.iter().map(super::workload::SelectedQuery::descriptor).collect(),
         arrival_plan: super::artifact::ArrivalPlanEvidence::new(&plan, 0, 0, 0),
         cache_state: "disabled",
         aggregate,
+        deadline: test_deadline_evidence(),
+        cancellation_barrier: None,
+        deadline_barrier: None,
+        domain_exhaustion: None,
+        physical_allocator_pressure: None,
+        metrics_audit: measured_metrics_audit(4),
         snapshots: Vec::new(),
         trace: super::artifact::TraceEvidence {
             captured_by_runner: false,
@@ -626,6 +1119,9 @@ fn measured_run_artifact_records_scenarios_throughput_placement_and_declared_gap
     assert!(measurement["aggregate"]["latency"]["p95_ns"].as_u64().unwrap() > 0);
     assert_eq!(measurement["aggregate"]["placement"].as_array().unwrap().len(), 2);
     assert_eq!(measurement["aggregate"]["report_aggregate_equality"]["equal"], true);
+    assert_eq!(measurement["aggregate"]["attempts"][0]["admission_sequence"], 0);
+    assert_eq!(measurement["aggregate"]["attempts"][0]["admission_requested_ns"], 0);
+    assert_eq!(measurement["aggregate"]["attempts"][0]["admitted_ns"], 1);
 
     // Streams are recorded as profile-derived accounting and Nsight is cited,
     // never claimed by this runner.
@@ -692,7 +1188,7 @@ fn a_failed_scenario_clause_marks_the_artifact_non_qualifying() {
             queue_max_queue_wait_ms: 30_000,
             queue_max_overtakes_per_waiter: 4,
             device_startup_records: Value::Null,
-            close: Value::Null,
+            close: test_close_evidence(),
         },
         selected_queries: Vec::new(),
         arrival_plan: super::artifact::ArrivalPlanEvidence::new(
@@ -703,12 +1199,66 @@ fn a_failed_scenario_clause_marks_the_artifact_non_qualifying() {
         ),
         cache_state: "disabled",
         aggregate,
+        deadline: test_deadline_evidence(),
+        cancellation_barrier: None,
+        deadline_barrier: None,
+        domain_exhaustion: None,
+        physical_allocator_pressure: None,
+        metrics_audit: measured_metrics_audit(observations.len()),
         snapshots: Vec::new(),
         trace: super::artifact::TraceEvidence { captured_by_runner: false, uri: None, sha256: None },
     };
     let artifact = RunArtifact::measured_run(profile, "a".repeat(64), Vec::new(), sample_provenance(), measurement);
     let value = serde_json::to_value(artifact).unwrap();
     assert_eq!(value["status"], "measured_run_non_qualifying");
+}
+
+fn measured_metrics_audit(reported_attempts: usize) -> MetricsAudit {
+    let snapshot = |offset_ns, completed| MetricSnapshotObservation {
+        offset_ns,
+        backend_generation: 3,
+        generation: offset_ns,
+        configured_device_ordinals: vec![0, 1],
+        // Eight ordinal-labelled descriptor series per configured device plus
+        // twenty terminal counters and eighty duration histograms.
+        projected_series_count: Some(116),
+        expected_series_count: 116,
+        terminal_completed: completed,
+        total_duration_bucket_counts: vec![0, 0, 0, completed, completed],
+        total_duration_count: completed,
+    };
+    MetricsAudit::from_snapshots(
+        &[snapshot(0, 0), snapshot(250_000_000, reported_attempts as u64)],
+        &[0, 1],
+        reported_attempts,
+        250,
+        false,
+    )
+}
+
+fn test_deadline_evidence() -> super::artifact::RunDeadlineEvidence {
+    super::artifact::RunDeadlineEvidence {
+        configured_window_ns: 2_000_000_000,
+        elapsed_until_reports_ns: 2_000_000_000,
+        overrun_ns: 0,
+        reports_sealed_within_deadline: true,
+    }
+}
+
+fn test_close_evidence() -> super::artifact::BackendCloseEvidence {
+    use super::artifact::{BackendCloseEvidence, BackendCloseOutcome, BackendCloseSnapshotEvidence};
+
+    let snapshot = BackendCloseSnapshotEvidence {
+        closing: true,
+        gpu_resource_quiescent: true,
+        observation_quiescent: true,
+        active_gpu_permits: 0,
+        active_observation_permits: 0,
+        cleanup_failed: false,
+        cleanup_deadline_elapsed_count: 0,
+        cleanup_late_success_count: 0,
+    };
+    BackendCloseEvidence { before: snapshot, outcome: BackendCloseOutcome::Quiescent { snapshot }, after: snapshot }
 }
 
 fn measured_run_profile() -> RunProfile {
@@ -723,6 +1273,7 @@ fn measured_run_profile() -> RunProfile {
         arrival_mode: ArrivalMode::Concurrency,
         concurrency: 2,
         arrival_rate_per_second: None,
+        max_rounds: None,
         seed: 7,
         warmup_seconds: 1,
         measurement_seconds: 2,
@@ -778,6 +1329,7 @@ fn measured_device(ordinal: usize, capacity_bytes: u64, max_active_attempts: usi
         uuid: Some(format!("GPU-{ordinal}")),
         physical_total_bytes: Some(46_068 * 1024 * 1024),
         capacity_bytes,
+        cache_cap_bytes: 0,
         max_active_attempts,
         stream_pool_size: 8,
         worker_count: 2,
@@ -814,12 +1366,16 @@ fn measured_observations() -> Vec<AttemptObservation> {
                 disposition: "Native".to_string(),
                 outcome: "succeeded".to_string(),
                 failure: None,
+                terminal_evidence: terminal_evidence(),
                 succeeded: true,
                 reached_gpu: true,
                 device_ordinal: Some(ordinal),
                 grant_bytes: Some(1024 * (index as u64 + 1)),
                 admission_sequence: Some(index as u64),
                 admission_wait_ns: Some(1_000),
+                admission_requested_ns: Some(0),
+                admitted_ns: Some(1),
+                admission_wait: None,
                 grant_id: Some(index as u64 + 10),
                 domain_id: Some(index as u64 + 100),
                 total_ns: Some(1_000_000 * (index as u64 + 1)),
@@ -831,4 +1387,19 @@ fn measured_observations() -> Vec<AttemptObservation> {
             }
         })
         .collect()
+}
+
+fn terminal_evidence() -> AttemptTerminalEvidence {
+    AttemptTerminalEvidence {
+        primary_failure: None,
+        cleanup_disposition: serde_json::json!("completed"),
+        cleanup_failure_count: 0,
+        cleanup_failure_count_complete: true,
+        first_cleanup_failure: None,
+        capacity_disposition: serde_json::json!("released"),
+        health_transition: Some(serde_json::json!("healthy_reuse")),
+        native_fault_evidence: None,
+        resource_evidence: None,
+        retry_advice: serde_json::json!({ "recovery": "do_not_retry", "prerequisite": "none" }),
+    }
 }

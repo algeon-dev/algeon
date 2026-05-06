@@ -9,17 +9,18 @@ mod recorder;
 mod runtime_observation;
 
 pub use attempt_report::{
-    AttemptAdmissionFact, AttemptAllocatorEvent, AttemptAllocatorEventAction, AttemptAllocatorEventSource,
-    AttemptAllocatorPoolUsage, AttemptCapacityDisposition, AttemptCleanupDisposition, AttemptDeviceHealth,
-    AttemptDeviceHealthStatus, AttemptDisposition, AttemptEvidenceField, AttemptEvidenceProvenance, AttemptFailureCode,
-    AttemptFailureFact, AttemptFailureFactKey, AttemptFailureFactValue, AttemptFailureOperation, AttemptFailureOrigin,
-    AttemptFailureStatus, AttemptFailureSummary, AttemptFailureText, AttemptFaultIsolation, AttemptFinalDomainUsage,
-    AttemptHealthTransition, AttemptId, AttemptNativeFault, AttemptNativeFaultEvidence, AttemptNativeFaultKind,
-    AttemptNativeStatus, AttemptQueryId, AttemptResourceEvidence, AttemptRetryAdvice, AttemptRetryPrerequisite,
-    AttemptRetryRecovery, AttemptTeardownHealth, AttemptTimedDomainUsage, AttemptTimestamps, AttemptTraceContext,
-    AttemptUnattributedAllocatorEvent, CleanupFailurePhase, CleanupFailureSummary, MAX_ATTEMPT_QUERY_ID_BYTES,
-    MAX_ATTEMPT_TRACE_CONTEXT_BYTES, QUERY_ATTEMPT_REPORT_SCHEMA_V1, QueryAttemptReport, RuntimeTerminalOutcome,
-    SEALED_ATTEMPT_PROJECTION_SCHEMA_V1, SealedAttemptLabels, SealedAttemptProjection,
+    AttemptAdmissionFact, AttemptAdmissionWaitFact, AttemptAllocatorEvent, AttemptAllocatorEventAction,
+    AttemptAllocatorEventSource, AttemptAllocatorPoolUsage, AttemptCapacityDisposition, AttemptCleanupDisposition,
+    AttemptDeviceHealth, AttemptDeviceHealthStatus, AttemptDisposition, AttemptEvidenceField,
+    AttemptEvidenceProvenance, AttemptFailureCode, AttemptFailureFact, AttemptFailureFactKey, AttemptFailureFactValue,
+    AttemptFailureOperation, AttemptFailureOrigin, AttemptFailureStatus, AttemptFailureSummary, AttemptFailureText,
+    AttemptFaultIsolation, AttemptFinalDomainUsage, AttemptHealthTransition, AttemptId, AttemptNativeFault,
+    AttemptNativeFaultEvidence, AttemptNativeFaultKind, AttemptNativeStatus, AttemptQueryId, AttemptResourceEvidence,
+    AttemptRetryAdvice, AttemptRetryPrerequisite, AttemptRetryRecovery, AttemptTeardownHealth, AttemptTimedDomainUsage,
+    AttemptTimestamps, AttemptTraceContext, AttemptUnattributedAllocatorEvent, CleanupFailurePhase,
+    CleanupFailureSummary, MAX_ATTEMPT_QUERY_ID_BYTES, MAX_ATTEMPT_TRACE_CONTEXT_BYTES, QUERY_ATTEMPT_REPORT_SCHEMA_V1,
+    QueryAttemptReport, RuntimeTerminalOutcome, SEALED_ATTEMPT_PROJECTION_SCHEMA_V1, SealedAttemptLabels,
+    SealedAttemptProjection,
 };
 pub(crate) use attempt_report::{
     AttemptAlternateDeviceEligibility, AttemptTerminalCommit, has_proven_device_local_fault_evidence,

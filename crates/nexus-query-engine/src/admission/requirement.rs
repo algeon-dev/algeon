@@ -7,6 +7,7 @@
 use crate::{
     capability::ReservationRequirement,
     error::{QueryError, QueryErrorCode, Result},
+    graph_memory::GraphMemoryAdmissionEvidence,
     plan::QueryPlan,
     runtime::ReservationKind,
 };
@@ -131,6 +132,16 @@ impl QueryPlanCapabilityProof {
         AttemptCapabilityEvidence::aggregate(requirements).map(|requirement| Self { requirement })
     }
 
+    /// Refines this engine-issued proof with an opaque cold graph-model hint.
+    ///
+    /// The hint selects a target within the ledger's already-proven immutable
+    /// grant range. It never changes the configured floor, capability set, or
+    /// capacity-fit equation, and callers cannot supply a raw byte value.
+    pub fn with_graph_memory_admission_evidence(mut self, evidence: &GraphMemoryAdmissionEvidence) -> Self {
+        self.requirement.extend_with_modeled_working_set_hint(evidence.cold_model_requested_bytes());
+        self
+    }
+
     /// Returns the device-capability contracts captured by the engine-issued
     /// proof. This is diagnostic-only and cannot be used to construct a new
     /// proof.
@@ -142,6 +153,12 @@ impl QueryPlanCapabilityProof {
     /// This is read-only inspection and never selects a grant target.
     pub fn required_floor_bytes_for(&self, configured_floor_bytes: u64) -> Result<u64> {
         self.requirement.required_floor_bytes_for(configured_floor_bytes)
+    }
+
+    /// Returns the proof's descriptive working-set target, if planning
+    /// supplied one. This is diagnostic-only; admission remains ledger-owned.
+    pub fn soft_working_set_hint_bytes(&self) -> Option<u64> {
+        self.requirement.soft_working_set_hint_bytes()
     }
 
     pub(crate) fn into_requirement(self) -> AttemptCapabilityEvidence {
@@ -217,6 +234,16 @@ impl AttemptCapabilityEvidence {
             estimate_quality,
             required_capabilities,
             attested_cugraph_graph_execution_scopes: Vec::new(),
+        }
+    }
+
+    fn extend_with_modeled_working_set_hint(&mut self, hint_bytes: u64) {
+        match self.soft_working_set_hint_bytes {
+            Some(existing) if existing > hint_bytes => {},
+            _ => {
+                self.soft_working_set_hint_bytes = Some(hint_bytes);
+                self.estimate_quality = EstimateQuality::Modeled;
+            },
         }
     }
 
