@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     fmt,
     sync::{Arc, Mutex},
 };
@@ -104,6 +105,7 @@ pub struct NativePlanningDiagnostics {
     pub input_plan_shape: String,
     pub report: PlanningReport,
     pub source_diagnostics: Vec<cudf_query_engine::SourceDiagnostics>,
+    pub bounded_join_reservation_facts: BTreeMap<String, String>,
 }
 
 #[derive(Debug)]
@@ -119,6 +121,7 @@ struct CudfNativePhysicalOptimizerRuleState {
     last_input_plan_shape: Mutex<Option<String>>,
     last_report: Mutex<Option<PlanningReport>>,
     last_source_diagnostics: Mutex<Vec<cudf_query_engine::SourceDiagnostics>>,
+    last_bounded_join_reservation_facts: Mutex<BTreeMap<String, String>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -137,6 +140,7 @@ impl CudfNativePhysicalOptimizerRule {
                 last_input_plan_shape: Mutex::new(None),
                 last_report: Mutex::new(None),
                 last_source_diagnostics: Mutex::new(Vec::new()),
+                last_bounded_join_reservation_facts: Mutex::new(BTreeMap::new()),
             }),
         }
     }
@@ -179,6 +183,12 @@ impl CudfNativePhysicalOptimizerRule {
                 .unwrap_or_default(),
             report,
             source_diagnostics: self.last_source_diagnostics(),
+            bounded_join_reservation_facts: self
+                .state
+                .last_bounded_join_reservation_facts
+                .lock()
+                .expect("native bounded join reservation facts mutex poisoned")
+                .clone(),
         })
     }
 }
@@ -205,6 +215,11 @@ impl PhysicalOptimizerRule for CudfNativePhysicalOptimizerRule {
             *self.state.last_report.lock().expect("native planning report mutex poisoned") =
                 Some(PlanningReport::new());
             *self.state.last_source_diagnostics.lock().expect("native source diagnostics mutex poisoned") = Vec::new();
+            *self
+                .state
+                .last_bounded_join_reservation_facts
+                .lock()
+                .expect("native bounded join reservation facts mutex poisoned") = BTreeMap::new();
             return Ok(plan);
         };
 
@@ -217,6 +232,12 @@ impl PhysicalOptimizerRule for CudfNativePhysicalOptimizerRule {
         *self.state.last_report.lock().expect("native planning report mutex poisoned") = Some(optimized.report.clone());
         *self.state.last_source_diagnostics.lock().expect("native source diagnostics mutex poisoned") =
             optimized.source_diagnostics.clone();
+        *self
+            .state
+            .last_bounded_join_reservation_facts
+            .lock()
+            .expect("native bounded join reservation facts mutex poisoned") =
+            optimized.bounded_join_reservation_facts.clone();
         Ok(optimized.plan)
     }
 
@@ -237,6 +258,7 @@ struct NativeOptimizationAttempt {
     plan: Arc<dyn ExecutionPlan>,
     report: PlanningReport,
     source_diagnostics: Vec<cudf_query_engine::SourceDiagnostics>,
+    bounded_join_reservation_facts: BTreeMap<String, String>,
     rewritten: bool,
 }
 
@@ -260,17 +282,31 @@ fn optimize_final_native_plan(
 
     let mut report = lowering.report.clone();
     let mut source_diagnostics = lowering.source_diagnostics.clone();
+    let mut bounded_join_reservation_facts = BTreeMap::new();
     let Some(rewritten_plan) = optimize_native_children_for_host_arrow_boundary(
         Arc::clone(&plan),
         native_execution_config,
         &mut report,
         &mut source_diagnostics,
+        &mut bounded_join_reservation_facts,
     )?
     else {
-        return Ok(NativeOptimizationAttempt { plan, report, source_diagnostics, rewritten: false });
+        return Ok(NativeOptimizationAttempt {
+            plan,
+            report,
+            source_diagnostics,
+            bounded_join_reservation_facts,
+            rewritten: false,
+        });
     };
 
-    Ok(NativeOptimizationAttempt { plan: rewritten_plan, report, source_diagnostics, rewritten: true })
+    Ok(NativeOptimizationAttempt {
+        plan: rewritten_plan,
+        report,
+        source_diagnostics,
+        bounded_join_reservation_facts,
+        rewritten: true,
+    })
 }
 
 fn replace_lowered_root_or_keep_plan(
@@ -283,14 +319,18 @@ fn replace_lowered_root_or_keep_plan(
             plan,
             report: lowering.report,
             source_diagnostics: lowering.source_diagnostics,
+            bounded_join_reservation_facts: BTreeMap::new(),
             rewritten: false,
         });
     }
-    if native_execution_boundary_rejection(&lowering.plans[0], native_execution_config).is_some() {
+    if let Some(bounded_join_reservation_facts) =
+        native_execution_boundary_rejection_facts(&lowering.plans[0], native_execution_config)
+    {
         return Ok(NativeOptimizationAttempt {
             plan,
             report: native_execution_boundary_report(&lowering.report),
             source_diagnostics: lowering.source_diagnostics,
+            bounded_join_reservation_facts,
             rewritten: false,
         });
     }
@@ -302,6 +342,7 @@ fn replace_lowered_root_or_keep_plan(
         plan,
         report: lowering.report,
         source_diagnostics: lowering.source_diagnostics,
+        bounded_join_reservation_facts: BTreeMap::new(),
         rewritten: true,
     })
 }
@@ -311,6 +352,7 @@ fn optimize_native_children_for_host_arrow_boundary(
     native_execution_config: &NativeCudfExecutionConfig,
     report: &mut PlanningReport,
     source_diagnostics: &mut Vec<cudf_query_engine::SourceDiagnostics>,
+    bounded_join_reservation_facts: &mut BTreeMap<String, String>,
 ) -> DataFusionResult<Option<Arc<dyn ExecutionPlan>>> {
     if !host_arrow_boundary_allows_child_replacement(plan.as_ref()) {
         return Ok(None);
@@ -330,6 +372,7 @@ fn optimize_native_children_for_host_arrow_boundary(
         rewritten |= attempt.rewritten;
         child_reports.push(attempt.report);
         child_source_diagnostics.extend(attempt.source_diagnostics);
+        bounded_join_reservation_facts.extend(attempt.bounded_join_reservation_facts);
         new_children.push(attempt.plan);
     }
 
@@ -356,12 +399,22 @@ fn host_arrow_boundary_allows_child_replacement(plan: &dyn ExecutionPlan) -> boo
         || plan.as_any().downcast_ref::<AggregateExec>().is_some()
 }
 
-fn native_execution_boundary_rejection(
+fn native_execution_boundary_rejection_facts(
     plan: &cudf_query_engine::QueryPlan,
     execution_config: &NativeCudfExecutionConfig,
-) -> Option<FallbackReason> {
-    if execution_config.memory_control_policy().is_bounded() && plan.contains_join() {
-        Some(FallbackReason::NativeBoundedJoinUnsupported)
+) -> Option<BTreeMap<String, String>> {
+    if execution_config.memory_control_policy().is_bounded()
+        && plan.contains_join()
+        && !plan.has_bounded_executable_join_pipeline()
+    {
+        let mut facts: BTreeMap<String, String> = cudf_query_engine::BoundedJoinReservationContract
+            .rejection_facts(execution_config.boundary_policy())
+            .into_iter()
+            .map(|(key, value)| (key.to_string(), value))
+            .collect();
+        facts.insert("bounded_join_execution_status".to_string(), "unsupported_plan_shape".to_string());
+        facts.insert("bounded_join_unsupported_shape".to_string(), "requires_root_reusable_hash_join".to_string());
+        Some(facts)
     } else {
         None
     }

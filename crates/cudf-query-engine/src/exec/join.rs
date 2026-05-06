@@ -176,7 +176,7 @@ pub(super) fn execute_join(
     Ok(GpuDataFrame::new(output))
 }
 
-fn validate_executable_join_subset(node: &JoinNode) -> Result<()> {
+pub(super) fn validate_executable_join_subset(node: &JoinNode) -> Result<()> {
     if !matches!(
         node.spec.join_type,
         JoinType::Inner | JoinType::Left | JoinType::Full | JoinType::LeftSemi | JoinType::LeftAnti | JoinType::Cross
@@ -695,7 +695,7 @@ fn lower_pair_join_type(join_type: JoinType) -> Result<cudf::JoinType> {
     }
 }
 
-fn join_index_error(error: cudf::Error, node: &JoinNode) -> QueryError {
+pub(super) fn join_index_error(error: cudf::Error, node: &JoinNode) -> QueryError {
     QueryError::from_cudf("cudf_query_engine.join.execute", "failed to execute native cudf join indices", error)
         .with_fact("join_type", node.spec.join_type)
         .with_fact("key_count", node.spec.keys.len())
@@ -1142,7 +1142,7 @@ fn join_side_projection(projection: &[JoinOutputColumn], side: JoinSide) -> Vec<
     projection.iter().filter(|column| column.side == side).cloned().collect()
 }
 
-fn projected_input_columns<'a>(
+pub(super) fn projected_input_columns<'a>(
     key_columns: &[String],
     output_projection: &[JoinOutputColumn],
     residual_columns: impl IntoIterator<Item = &'a str>,
@@ -1169,7 +1169,7 @@ fn projected_input_columns<'a>(
     columns
 }
 
-fn select_join_input(frame: DataFrame, columns: &[String], side: &'static str) -> Result<DataFrame> {
+pub(super) fn select_join_input(frame: DataFrame, columns: &[String], side: &'static str) -> Result<DataFrame> {
     frame.select(columns).map_err(|error| {
         QueryError::from_cudf(
             "cudf_query_engine.join.select_input",
@@ -1181,7 +1181,7 @@ fn select_join_input(frame: DataFrame, columns: &[String], side: &'static str) -
     })
 }
 
-fn materialize_join_output_projection(
+pub(super) fn materialize_join_output_projection(
     left: &DataFrame,
     right: &DataFrame,
     left_indices: &DataFrameJoinIndices,
@@ -1283,7 +1283,7 @@ fn materialize_left_only_join_output_projection(
     })
 }
 
-fn projected_output_columns(projection: &[JoinOutputColumn], side: JoinSide) -> Vec<String> {
+pub(super) fn projected_output_columns(projection: &[JoinOutputColumn], side: JoinSide) -> Vec<String> {
     let mut seen = BTreeSet::new();
     let mut columns = Vec::new();
     for column in projection.iter().filter(|column| column.side == side) {
@@ -1316,21 +1316,21 @@ fn materialize_join_side_projection(
     })
 }
 
-fn lower_null_equality(null_equality: JoinNullEquality) -> CudfNullEquality {
+pub(super) fn lower_null_equality(null_equality: JoinNullEquality) -> CudfNullEquality {
     match null_equality {
         JoinNullEquality::NullsDoNotMatch => CudfNullEquality::Unequal,
         JoinNullEquality::NullsMatch => CudfNullEquality::Equal,
     }
 }
 
-fn probe_side(build_side: JoinSide) -> JoinSide {
+pub(super) fn probe_side(build_side: JoinSide) -> JoinSide {
     match build_side {
         JoinSide::Left => JoinSide::Right,
         JoinSide::Right => JoinSide::Left,
     }
 }
 
-fn side_metric(side: JoinSide, left: u64, right: u64) -> u64 {
+pub(super) fn side_metric(side: JoinSide, left: u64, right: u64) -> u64 {
     match side {
         JoinSide::Left => left,
         JoinSide::Right => right,

@@ -1,4 +1,4 @@
-use std::{fmt::Write, sync::Arc};
+use std::{collections::BTreeMap, fmt::Write, sync::Arc};
 
 use cudf_query_engine::{SourceDiagnostics as NativeSourceDiagnostics, is_supported_arrow_type};
 use datafusion::{
@@ -23,7 +23,8 @@ use datafusion::{
 };
 
 use crate::{
-    CandidateOutcome, CudfGpuIslandExec, FallbackReason, NativeCudfExec, lower_physical_plan_to_native,
+    CandidateOutcome, CudfGpuIslandExec, FallbackReason, NativeCudfComposedExec, NativeCudfExec,
+    NativeCudfGpuProducerExec, lower_physical_plan_to_native,
     planner::{CudfNativePhysicalOptimizerRule, NativePlanningDiagnostics},
     report::GpuCandidate,
     tpch::TpchDatasetMetadata,
@@ -31,10 +32,10 @@ use crate::{
 
 pub const NATIVE_FALLBACK_PRESSURE_TSV_SCHEMA_VERSION: u32 = 5;
 pub const NATIVE_FALLBACK_PRESSURE_TSV_HEADER: &str = "query_id\tphysical_root\tphysical_shape\tnative_candidate_shape\tnative_candidate_shape_family\toutcome\treason_code\tunsupported_category\tjoin_diagnostics\tsource_diagnostics\trejected_before_execution";
-pub const NATIVE_DATAFUSION_PLANNING_TSV_SCHEMA_VERSION: u32 = 5;
-pub const NATIVE_DATAFUSION_PLANNING_TSV_HEADER: &str = "query_id\tphysical_root\tphysical_shape\tnative_candidate_shape\tnative_candidate_shape_family\toutcome\treason_code\tunsupported_category\tjoin_diagnostics\tsource_diagnostics\tpost_native_plan_root\tpost_native_execution_path\trejected_before_execution";
-pub const NATIVE_DATAFUSION_EXECUTION_TSV_SCHEMA_VERSION: u32 = 4;
-pub const NATIVE_DATAFUSION_EXECUTION_TSV_HEADER: &str = "query_id\tphysical_root\tphysical_shape\tnative_candidate_shape\tnative_candidate_shape_family\tplanning_outcome\treason_code\tunsupported_category\tpost_native_plan_root\tpost_native_execution_path\trejected_before_execution\tnative_runtime_started\truntime_outcome\truntime_failure\toutput_batches\toutput_rows\toutput_bytes\thost_to_device_uploads\thost_to_device_uploaded_rows\thost_to_device_uploaded_bytes\tdevice_to_host_materializations\tdevice_to_host_materialized_rows\tdevice_to_host_materialized_bytes\tparquet_files\tparquet_bytes_known\trow_groups_selected\tread_columns\tresident_dataframe_peak_bytes\tallocator_high_water_bytes\treservation_requested_bytes\treservation_granted_bytes\treservation_denied_count\tsource_chunks_planned\tsource_chunks_attempted\tsource_chunks_committed\tsource_chunks_retried\trow_groups_planned\trow_groups_committed\tpartial_aggregate_count\tpartial_aggregate_rows\tfinal_merge_attempts\tfinal_merge_levels\tretry_count\tretry_resource_exhausted_count\tretry_reservation_failure_count\thash_join_build_count\thash_join_cache_hits\thash_join_cache_misses\thash_join_durable_cache_hits\thash_join_durable_cache_misses\thash_join_durable_cache_inserts\thash_join_hash_table_bytes\tjoin_gather_map_bytes\tsource_diagnostics";
+pub const NATIVE_DATAFUSION_PLANNING_TSV_SCHEMA_VERSION: u32 = 6;
+pub const NATIVE_DATAFUSION_PLANNING_TSV_HEADER: &str = "query_id\tphysical_root\tphysical_shape\tnative_candidate_shape\tnative_candidate_shape_family\toutcome\treason_code\tunsupported_category\tbounded_join_reservation_facts\tjoin_diagnostics\tsource_diagnostics\tpost_native_plan_root\tpost_native_execution_path\trejected_before_execution";
+pub const NATIVE_DATAFUSION_EXECUTION_TSV_SCHEMA_VERSION: u32 = 5;
+pub const NATIVE_DATAFUSION_EXECUTION_TSV_HEADER: &str = "query_id\tphysical_root\tphysical_shape\tnative_candidate_shape\tnative_candidate_shape_family\tplanning_outcome\treason_code\tunsupported_category\tbounded_join_reservation_facts\tpost_native_plan_root\tpost_native_execution_path\trejected_before_execution\tnative_runtime_started\truntime_outcome\truntime_failure\toutput_batches\toutput_rows\toutput_bytes\tgpu_resident_input_handoffs\thost_to_device_uploads\thost_to_device_uploaded_rows\thost_to_device_uploaded_bytes\tdevice_to_host_materializations\tdevice_to_host_materialized_rows\tdevice_to_host_materialized_bytes\tdevice_to_device_copies\tdevice_to_device_copied_bytes\tparquet_files\tparquet_bytes_known\trow_groups_selected\tread_columns\tresident_dataframe_peak_bytes\tallocator_high_water_bytes\treservation_requested_bytes\treservation_granted_bytes\treservation_denied_count\tsource_chunks_planned\tsource_chunks_attempted\tsource_chunks_committed\tsource_chunks_retried\trow_groups_planned\trow_groups_committed\tpartial_aggregate_count\tpartial_aggregate_rows\tfinal_merge_attempts\tfinal_merge_levels\tretry_count\tretry_resource_exhausted_count\tretry_reservation_failure_count\thash_join_build_count\thash_join_cache_hits\thash_join_cache_misses\thash_join_durable_cache_hits\thash_join_durable_cache_misses\thash_join_durable_cache_inserts\thash_join_hash_table_bytes\tjoin_gather_map_bytes\tsource_diagnostics";
 pub const NATIVE_CANDIDATE_SHAPE_FAMILY_UNSUPPORTED_NATIVE_PHYSICAL_PLAN: &str = "unsupported_native_physical_plan";
 pub const NATIVE_CANDIDATE_SHAPE_FAMILY_SORT_LOCAL_PARQUET_AGGREGATE: &str = "sort_local_parquet_aggregate";
 pub const NATIVE_CANDIDATE_SHAPE_FAMILY_SORT_FETCH_LOCAL_PARQUET_AGGREGATE: &str = "sort_fetch_local_parquet_aggregate";
@@ -204,7 +205,7 @@ impl NativeDataFusionPlanningReport {
         for row in &self.rows {
             let _ = writeln!(
                 output,
-                "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
                 row.query_id,
                 row.physical_root,
                 row.physical_shape,
@@ -213,6 +214,7 @@ impl NativeDataFusionPlanningReport {
                 row.outcome.as_str(),
                 row.reason_code.as_deref().unwrap_or("none"),
                 row.unsupported_category.as_deref().unwrap_or("none"),
+                format_bounded_join_reservation_facts(&row.bounded_join_reservation_facts),
                 format_join_diagnostics(&row.join_diagnostics),
                 format_source_diagnostics(&row.source_diagnostics),
                 row.post_native_plan_root,
@@ -362,6 +364,7 @@ impl NativeDataFusionExecutionReport {
                 row.planning_outcome.as_str().to_string(),
                 row.reason_code.clone().unwrap_or_else(|| "none".to_string()),
                 row.unsupported_category.clone().unwrap_or_else(|| "none".to_string()),
+                format_bounded_join_reservation_facts(&row.bounded_join_reservation_facts),
                 row.post_native_plan_root.clone(),
                 row.post_native_execution_path.as_str().to_string(),
                 row.rejected_before_execution.to_string(),
@@ -371,12 +374,15 @@ impl NativeDataFusionExecutionReport {
                 row.output_batches.map_or_else(|| "not_run".to_string(), |value| value.to_string()),
                 row.output_rows.map_or_else(|| "not_run".to_string(), |value| value.to_string()),
                 row.output_bytes.map_or_else(|| "not_run".to_string(), |value| value.to_string()),
+                row.metrics.gpu_resident_input_handoffs.to_string(),
                 row.metrics.host_to_device_uploads.to_string(),
                 row.metrics.host_to_device_uploaded_rows.to_string(),
                 row.metrics.host_to_device_uploaded_bytes.to_string(),
                 row.metrics.device_to_host_materializations.to_string(),
                 row.metrics.device_to_host_materialized_rows.to_string(),
                 row.metrics.device_to_host_materialized_bytes.to_string(),
+                row.metrics.device_to_device_copies.to_string(),
+                row.metrics.device_to_device_copied_bytes.to_string(),
                 row.metrics.parquet_files.to_string(),
                 row.metrics.parquet_bytes_known.to_string(),
                 row.metrics.row_groups_selected.to_string(),
@@ -425,6 +431,7 @@ pub struct NativeDataFusionPlanningRow {
     pub outcome: NativeDataFusionPlanningOutcome,
     pub reason_code: Option<String>,
     pub unsupported_category: Option<String>,
+    pub bounded_join_reservation_facts: BTreeMap<String, String>,
     pub join_diagnostics: Vec<NativeJoinDiagnosticSummary>,
     pub source_diagnostics: Vec<NativeSourceDiagnosticSummary>,
     pub post_native_plan_root: String,
@@ -442,6 +449,7 @@ pub struct NativeDataFusionExecutionRow {
     pub planning_outcome: NativeDataFusionPlanningOutcome,
     pub reason_code: Option<String>,
     pub unsupported_category: Option<String>,
+    pub bounded_join_reservation_facts: BTreeMap<String, String>,
     pub source_diagnostics: Vec<NativeSourceDiagnosticSummary>,
     pub post_native_plan_root: String,
     pub post_native_execution_path: NativeDataFusionPostNativeExecutionPath,
@@ -489,12 +497,15 @@ impl NativeDataFusionRuntimeOutcome {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct NativeDataFusionExecutionMetrics {
+    pub gpu_resident_input_handoffs: usize,
     pub host_to_device_uploads: usize,
     pub host_to_device_uploaded_rows: usize,
     pub host_to_device_uploaded_bytes: usize,
     pub device_to_host_materializations: usize,
     pub device_to_host_materialized_rows: usize,
     pub device_to_host_materialized_bytes: usize,
+    pub device_to_device_copies: usize,
+    pub device_to_device_copied_bytes: usize,
     pub parquet_files: usize,
     pub parquet_bytes_known: usize,
     pub row_groups_selected: usize,
@@ -530,12 +541,15 @@ pub struct NativeDataFusionExecutionMetrics {
 impl NativeDataFusionExecutionMetrics {
     pub fn from_metrics(metrics: &MetricsSet) -> Self {
         Self {
+            gpu_resident_input_handoffs: metric_count(metrics, "gpu_resident_input_handoffs"),
             host_to_device_uploads: metric_count(metrics, "host_to_device_uploads"),
             host_to_device_uploaded_rows: metric_count(metrics, "host_to_device_uploaded_rows"),
             host_to_device_uploaded_bytes: metric_count(metrics, "host_to_device_uploaded_bytes"),
             device_to_host_materializations: metric_count(metrics, "device_to_host_materializations"),
             device_to_host_materialized_rows: metric_count(metrics, "device_to_host_materialized_rows"),
             device_to_host_materialized_bytes: metric_count(metrics, "device_to_host_materialized_bytes"),
+            device_to_device_copies: metric_count(metrics, "device_to_device_copies"),
+            device_to_device_copied_bytes: metric_count(metrics, "device_to_device_copied_bytes"),
             parquet_files: metric_count(metrics, "parquet_files"),
             parquet_bytes_known: metric_count(metrics, "parquet_bytes_known"),
             row_groups_selected: metric_count(metrics, "row_groups_selected"),
@@ -747,6 +761,7 @@ fn datafusion_planning_rows_for_item(item: NativeDataFusionPlanningWorkloadItem)
                 outcome: NativeDataFusionPlanningOutcome::AcceptedReplaced,
                 reason_code: None,
                 unsupported_category: None,
+                bounded_join_reservation_facts: BTreeMap::new(),
                 join_diagnostics: join_diagnostics.clone(),
                 source_diagnostics: source_diagnostics.clone(),
                 post_native_plan_root: post_native_plan_root.clone(),
@@ -762,6 +777,7 @@ fn datafusion_planning_rows_for_item(item: NativeDataFusionPlanningWorkloadItem)
                 outcome: NativeDataFusionPlanningOutcome::RejectedBeforeExecution,
                 reason_code: Some(reason.code().to_string()),
                 unsupported_category: unsupported_category(planned_plan.as_ref(), candidate, *reason),
+                bounded_join_reservation_facts: native_diagnostics.bounded_join_reservation_facts.clone(),
                 join_diagnostics: join_diagnostics.clone(),
                 source_diagnostics: source_diagnostics.clone(),
                 post_native_plan_root: post_native_plan_root.clone(),
@@ -803,6 +819,7 @@ fn datafusion_execution_rows_for_item(
                 planning_outcome: NativeDataFusionPlanningOutcome::AcceptedReplaced,
                 reason_code: None,
                 unsupported_category: None,
+                bounded_join_reservation_facts: BTreeMap::new(),
                 source_diagnostics: source_diagnostics.clone(),
                 post_native_plan_root: post_native_plan_root.clone(),
                 post_native_execution_path,
@@ -824,6 +841,7 @@ fn datafusion_execution_rows_for_item(
                 planning_outcome: NativeDataFusionPlanningOutcome::RejectedBeforeExecution,
                 reason_code: Some(reason.code().to_string()),
                 unsupported_category: unsupported_category(planned_plan.as_ref(), candidate, *reason),
+                bounded_join_reservation_facts: native_diagnostics.bounded_join_reservation_facts.clone(),
                 source_diagnostics: source_diagnostics.clone(),
                 post_native_plan_root: post_native_plan_root.clone(),
                 post_native_execution_path,
@@ -853,6 +871,7 @@ fn datafusion_planning_row_for_planning_failure(
         outcome: NativeDataFusionPlanningOutcome::RejectedBeforeExecution,
         reason_code: Some(failure.reason_code),
         unsupported_category: Some("planning".to_string()),
+        bounded_join_reservation_facts: BTreeMap::new(),
         join_diagnostics: Vec::new(),
         source_diagnostics: Vec::new(),
         post_native_plan_root: "PlanningFailure".to_string(),
@@ -874,6 +893,7 @@ fn datafusion_execution_row_for_planning_failure(
         planning_outcome: NativeDataFusionPlanningOutcome::RejectedBeforeExecution,
         reason_code: Some(failure.reason_code),
         unsupported_category: Some("planning".to_string()),
+        bounded_join_reservation_facts: BTreeMap::new(),
         source_diagnostics: Vec::new(),
         post_native_plan_root: "PlanningFailure".to_string(),
         post_native_execution_path: NativeDataFusionPostNativeExecutionPath::Cpu,
@@ -934,7 +954,9 @@ impl NativeDataFusionRuntimeSummary {
 }
 
 fn post_native_execution_path(plan: &dyn ExecutionPlan) -> NativeDataFusionPostNativeExecutionPath {
-    if plan.as_any().downcast_ref::<NativeCudfExec>().is_some() {
+    if plan.as_any().downcast_ref::<NativeCudfExec>().is_some()
+        || plan.as_any().downcast_ref::<NativeCudfComposedExec>().is_some()
+    {
         return NativeDataFusionPostNativeExecutionPath::Native;
     }
     if contains_native_exec(plan) {
@@ -948,6 +970,8 @@ fn post_native_execution_path(plan: &dyn ExecutionPlan) -> NativeDataFusionPostN
 
 fn contains_native_exec(plan: &dyn ExecutionPlan) -> bool {
     plan.as_any().downcast_ref::<NativeCudfExec>().is_some()
+        || plan.as_any().downcast_ref::<NativeCudfComposedExec>().is_some()
+        || plan.as_any().downcast_ref::<NativeCudfGpuProducerExec>().is_some()
         || plan.children().iter().any(|child| contains_native_exec(child.as_ref()))
 }
 
@@ -1632,6 +1656,21 @@ fn format_source_diagnostics(diagnostics: &[NativeSourceDiagnosticSummary]) -> S
             diagnostics.schema_mapping_disposition,
             rejected_features,
         );
+    }
+    output
+}
+
+fn format_bounded_join_reservation_facts(facts: &BTreeMap<String, String>) -> String {
+    if facts.is_empty() {
+        return "none".to_string();
+    }
+
+    let mut output = String::new();
+    for (index, (key, value)) in facts.iter().enumerate() {
+        if index > 0 {
+            output.push(';');
+        }
+        let _ = write!(output, "{}={}", stable_tsv_field(key), stable_tsv_field(value));
     }
     output
 }

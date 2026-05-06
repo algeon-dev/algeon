@@ -15,7 +15,7 @@ use cudf_query_engine::{
     QueryPlan, QueryPlanBuilder, SourceNode,
 };
 use datafusion::{
-    common::{DataFusionError, ScalarValue, config::ConfigOptions},
+    common::{DataFusionError, NullEquality, ScalarValue, config::ConfigOptions},
     execution::context::TaskContext,
     functions_aggregate::sum::sum_udaf,
     logical_expr::Operator,
@@ -32,6 +32,7 @@ use datafusion::{
         collect, displayable,
         execution_plan::Boundedness,
         filter::FilterExec,
+        joins::{HashJoinExec, PartitionMode},
         limit::LocalLimitExec,
         projection::{ProjectionExec, ProjectionExpr},
         sorts::sort::SortExec,
@@ -210,9 +211,9 @@ fn native_optimizer_rule_rejects_bounded_join_plan_before_replacement() {
     let dir = unique_temp_dir("datafusion-cudf-native-exec-bounded-join-rejected");
     let left = dir.join("left.parquet");
     let right = dir.join("right.parquet");
-    write_parquet_file(&left);
-    write_parquet_file(&right);
-    let plan = join_aggregate_sort_limit_sql_plan(&left, &right);
+    write_join_left_parquet_file(&left);
+    write_join_right_parquet_file(&right);
+    let plan = root_left_semi_join_plan(&left, &right);
     let rule = CudfNativePhysicalOptimizerRule::new(native_optimizer_config());
 
     let optimized = rule.optimize(plan, &ConfigOptions::default()).unwrap();
@@ -226,13 +227,92 @@ fn native_optimizer_rule_rejects_bounded_join_plan_before_replacement() {
         CandidateOutcome::Rejected { reason: FallbackReason::NativeBoundedJoinUnsupported, .. }
     ));
     assert_eq!(rule.last_source_diagnostics().len(), 2);
+    let diagnostics = rule.last_planning_diagnostics().expect("native optimizer should retain diagnostics");
+    assert_eq!(diagnostics.bounded_join_reservation_facts.get("blocked_reservations").map(String::as_str), Some(""));
+    assert_eq!(
+        diagnostics.bounded_join_reservation_facts.get("modeled_reservations").map(String::as_str),
+        Some("build_side,hash_table,probe_side,gather_map,join_output,materialization")
+    );
+    assert_eq!(
+        diagnostics.bounded_join_reservation_facts.get("bounded_join_lower_level_blockers").map(String::as_str),
+        Some("")
+    );
+    assert_eq!(
+        diagnostics.bounded_join_reservation_facts.get("bounded_join_unsupported_shape").map(String::as_str),
+        Some("requires_root_reusable_hash_join")
+    );
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn native_optimizer_rule_rewrites_and_executes_bounded_join_aggregate_pipeline() {
+    let dir = unique_temp_dir("datafusion-cudf-native-exec-bounded-join-aggregate");
+    let left = dir.join("left.parquet");
+    let right = dir.join("right.parquet");
+    write_parquet_file(&left);
+    write_parquet_file(&right);
+    let plan = join_aggregate_sort_limit_sql_plan(&left, &right);
+    let rule = CudfNativePhysicalOptimizerRule::new(native_optimizer_config());
+
+    let optimized = rule.optimize(plan, &ConfigOptions::default()).unwrap();
+
+    assert!(optimized.as_any().downcast_ref::<NativeCudfExec>().is_some());
+    let report = rule.last_report().expect("native optimizer should record a planning report");
+    assert_eq!(report.rewritten_count(), 1);
+    assert_eq!(report.rejected_count(), 0);
+    assert!(matches!(report.outcomes()[0], CandidateOutcome::Rewritten { .. }));
+
+    let batches = futures::executor::block_on(collect(optimized, Arc::new(TaskContext::default()))).unwrap();
+    assert_eq!(batches.len(), 1);
+    assert_eq!(batches[0].num_rows(), 2);
+    assert_eq!(batches[0].num_columns(), 2);
+    assert_eq!(int32_array(&batches[0], 0).values().as_ref(), &[1, 2]);
+    assert_eq!(int64_array(&batches[0], 1).values().as_ref(), &[303, 202]);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn native_optimizer_rule_rewrites_and_executes_bounded_root_hash_join() {
+    let dir = unique_temp_dir("datafusion-cudf-native-exec-bounded-root-join");
+    let left = dir.join("left.parquet");
+    let right = dir.join("right.parquet");
+    write_join_left_parquet_file(&left);
+    write_join_right_parquet_file(&right);
+    let plan = root_hash_join_plan(&left, &right);
+    let rule = CudfNativePhysicalOptimizerRule::new(native_optimizer_config());
+
+    let optimized = rule.optimize(plan, &ConfigOptions::default()).unwrap();
+
+    assert!(optimized.as_any().downcast_ref::<NativeCudfExec>().is_some());
+    let report = rule.last_report().expect("native optimizer should record a planning report");
+    assert_eq!(report.rewritten_count(), 1);
+    assert_eq!(report.rejected_count(), 0);
+    assert!(matches!(report.outcomes()[0], CandidateOutcome::Rewritten { .. }));
+
+    let batches = futures::executor::block_on(collect(optimized, Arc::new(TaskContext::default()))).unwrap();
+    assert_eq!(batches.len(), 1);
+    assert_eq!(batches[0].num_rows(), 3);
+    assert_eq!(batches[0].num_columns(), 3);
+    let mut rows = (0..batches[0].num_rows())
+        .map(|row| {
+            (
+                int32_array(&batches[0], 0).value(row),
+                int64_array(&batches[0], 1).value(row),
+                int64_array(&batches[0], 2).value(row),
+            )
+        })
+        .collect::<Vec<_>>();
+    rows.sort_unstable();
+    assert_eq!(rows, vec![(1, 100, 1), (1, 300, 1), (2, 200, 2)]);
 
     fs::remove_dir_all(dir).unwrap();
 }
 
 #[test]
 fn native_exec_preserves_bounded_join_rejection_facts_from_native_runtime() {
-    let native_plan = bounded_inner_join_host_sink_plan();
+    let native_plan = bounded_left_semi_join_host_sink_plan();
     let exec = Arc::new(NativeCudfExec::try_new(native_plan, bounded_config()).unwrap()) as Arc<dyn ExecutionPlan>;
 
     let error = futures::executor::block_on(collect(exec, Arc::new(TaskContext::default()))).unwrap_err();
@@ -241,8 +321,8 @@ fn native_exec_preserves_bounded_join_rejection_facts_from_native_runtime() {
     assert_eq!(adapter_error.code(), ErrorCode::UnsupportedOperator);
     assert_eq!(adapter_error.fact_value("native_code"), Some("unsupported_plan_shape"));
     assert_eq!(adapter_error.fact_value("native_operation"), Some("cudf_query_engine.bounded.plan"));
-    assert_eq!(adapter_error.fact_value("reason"), Some("join_memory_reservation_contract_blocked_by_lower_level"));
-    assert_eq!(adapter_error.fact_value("bounded_join_enabled"), Some("false"));
+    assert_eq!(adapter_error.fact_value("reason"), Some("bounded_join_plan_shape_unsupported"));
+    assert_eq!(adapter_error.fact_value("bounded_join_enabled"), Some("true"));
     assert_eq!(
         adapter_error.fact_value("boundary_policy"),
         Some(
@@ -253,16 +333,90 @@ fn native_exec_preserves_bounded_join_rejection_facts_from_native_runtime() {
     assert_eq!(adapter_error.fact_value("build_materialization_boundary"), Some("query_scoped_gpu_hash_join"));
     assert_eq!(adapter_error.fact_value("probe_execution_boundary"), Some("reusable_gpu_hash_join"));
     assert_eq!(adapter_error.fact_value("result_materialization_boundary"), Some("explicit_sink"));
-    assert_eq!(adapter_error.fact_value("blocked_reservations"), Some("hash_table,probe_side,gather_map,join_output"));
-    assert_eq!(adapter_error.fact_value("modeled_reservations"), Some("build_side,materialization"));
+    assert_eq!(adapter_error.fact_value("blocked_reservations"), Some(""));
     assert_eq!(
-        adapter_error.fact_value("bounded_join_lower_level_blockers"),
-        Some("hash_join_pre_build_reservation_size_bytes")
+        adapter_error.fact_value("modeled_reservations"),
+        Some("build_side,hash_table,probe_side,gather_map,join_output,materialization")
+    );
+    assert_eq!(adapter_error.fact_value("bounded_join_lower_level_blockers"), Some(""));
+    assert_eq!(
+        adapter_error.fact_value("cudf_rs_dataframe_gather_output_reservation_contract"),
+        Some("dataframe_gather_output_reservation_size_bytes")
     );
     assert_eq!(adapter_error.fact_value("path"), None);
     assert_eq!(adapter_error.fact_value("file_index"), None);
     assert_eq!(adapter_error.fact_value("row_groups"), None);
     assert_eq!(adapter_error.fact_value("chunk_index"), None);
+}
+
+#[test]
+fn bounded_join_rejection_split_between_planner_and_runtime_paths_is_pinned() {
+    // The planner path (`native_execution_boundary_rejection_facts`) and the
+    // runtime path (`reject_bounded_join_plan`) intentionally emit different
+    // values for `bounded_join_execution_status` for the same logical
+    // condition (an unsupported bounded-join shape). This test pins the
+    // documented split so future drift in either side is immediately visible.
+
+    // --- Planner path ---
+    let dir = unique_temp_dir("datafusion-cudf-bounded-join-rejection-split");
+    let left = dir.join("left.parquet");
+    let right = dir.join("right.parquet");
+    write_join_left_parquet_file(&left);
+    write_join_right_parquet_file(&right);
+    let plan = root_left_semi_join_plan(&left, &right);
+    let rule = CudfNativePhysicalOptimizerRule::new(native_optimizer_config());
+    let _ = rule.optimize(plan, &ConfigOptions::default()).unwrap();
+    let diagnostics = rule.last_planning_diagnostics().expect("native optimizer should retain diagnostics");
+    let planner_facts = &diagnostics.bounded_join_reservation_facts;
+
+    assert_eq!(planner_facts.get("bounded_join_enabled").map(String::as_str), Some("true"));
+    assert_eq!(planner_facts.get("bounded_join_execution_status").map(String::as_str), Some("unsupported_plan_shape"));
+    assert_eq!(
+        planner_facts.get("bounded_join_unsupported_shape").map(String::as_str),
+        Some("requires_root_reusable_hash_join")
+    );
+    assert_eq!(
+        planner_facts.get("modeled_reservations").map(String::as_str),
+        Some("build_side,hash_table,probe_side,gather_map,join_output,materialization")
+    );
+    assert_eq!(planner_facts.get("blocked_reservations").map(String::as_str), Some(""));
+
+    fs::remove_dir_all(dir).unwrap();
+
+    // --- Runtime path ---
+    let native_plan = bounded_left_semi_join_host_sink_plan();
+    let exec = Arc::new(NativeCudfExec::try_new(native_plan, bounded_config()).unwrap()) as Arc<dyn ExecutionPlan>;
+    let error = futures::executor::block_on(collect(exec, Arc::new(TaskContext::default()))).unwrap_err();
+    let runtime_error = adapter_error(&error);
+
+    assert_eq!(runtime_error.fact_value("bounded_join_enabled"), Some("true"));
+    assert_eq!(runtime_error.fact_value("bounded_join_execution_status"), Some("enabled_for_root_reusable_hash_join"));
+    assert_eq!(runtime_error.fact_value("reason"), Some("bounded_join_plan_shape_unsupported"));
+    assert_eq!(runtime_error.fact_value("bounded_join_unsupported_shape"), None);
+    assert_eq!(
+        runtime_error.fact_value("modeled_reservations"),
+        Some("build_side,hash_table,probe_side,gather_map,join_output,materialization")
+    );
+    assert_eq!(runtime_error.fact_value("blocked_reservations"), Some(""));
+
+    // --- The split itself ---
+    // Both paths advertise that the contract is enabled and the same reservation
+    // kinds are modeled, but the planner downgrades `execution_status` to
+    // `unsupported_plan_shape` and adds `bounded_join_unsupported_shape`, while
+    // the runtime keeps `enabled_for_root_reusable_hash_join` and surfaces a
+    // `reason` instead.
+    assert_ne!(
+        planner_facts.get("bounded_join_execution_status").map(String::as_str),
+        runtime_error.fact_value("bounded_join_execution_status")
+    );
+    assert_eq!(
+        planner_facts.get("modeled_reservations").map(String::as_str),
+        runtime_error.fact_value("modeled_reservations")
+    );
+    assert_eq!(
+        planner_facts.get("blocked_reservations").map(String::as_str),
+        runtime_error.fact_value("blocked_reservations")
+    );
 }
 
 #[test]
@@ -306,12 +460,12 @@ fn gpu_resident_plan() -> QueryPlan {
     builder.finish_gpu_resident(source)
 }
 
-fn bounded_inner_join_host_sink_plan() -> QueryPlan {
+fn bounded_left_semi_join_host_sink_plan() -> QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let left = builder.add_source(SourceNode::LocalParquet(local_parquet_source()));
     let right = builder.add_source(SourceNode::LocalParquet(local_parquet_source()));
     let key = JoinKey::new(ColumnRef::input(0, "key", "key"), ColumnRef::input(1, "key", "key"));
-    let spec = JoinSpec::new(JoinType::Inner, vec![key])
+    let spec = JoinSpec::new(JoinType::LeftSemi, vec![key])
         .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "key", "key"), "key")]);
     let join = builder.add_join(left, right, spec, schema());
     builder.finish_with_host_sink(join)
@@ -340,6 +494,10 @@ fn local_parquet_source() -> LocalParquetSource {
 
 fn int32_array(batch: &RecordBatch, index: usize) -> &Int32Array {
     batch.column(index).as_any().downcast_ref::<Int32Array>().unwrap()
+}
+
+fn int64_array(batch: &RecordBatch, index: usize) -> &Int64Array {
+    batch.column(index).as_any().downcast_ref::<Int64Array>().unwrap()
 }
 
 fn adapter_error(error: &DataFusionError) -> &datafusion_cudf::Error {
@@ -402,6 +560,52 @@ LIMIT 2
 ";
     let df = futures::executor::block_on(ctx.sql(sql)).unwrap();
     futures::executor::block_on(df.create_physical_plan()).unwrap()
+}
+
+fn root_hash_join_plan(left: &std::path::Path, right: &std::path::Path) -> Arc<dyn ExecutionPlan> {
+    let left = parquet_scan(left);
+    let right = parquet_scan(right);
+    let left_schema = left.schema();
+    let right_schema = right.schema();
+    Arc::new(
+        HashJoinExec::try_new(
+            left,
+            right,
+            vec![(col("key", &left_schema).unwrap(), col("key", &right_schema).unwrap())],
+            None,
+            &datafusion::logical_expr::JoinType::Inner,
+            Some(vec![
+                left_schema.index_of("key").unwrap(),
+                left_schema.index_of("l_m00").unwrap(),
+                left_schema.fields().len() + right_schema.index_of("r_m01").unwrap(),
+            ]),
+            PartitionMode::CollectLeft,
+            NullEquality::NullEqualsNothing,
+            false,
+        )
+        .unwrap(),
+    )
+}
+
+fn root_left_semi_join_plan(left: &std::path::Path, right: &std::path::Path) -> Arc<dyn ExecutionPlan> {
+    let left = parquet_scan(left);
+    let right = parquet_scan(right);
+    let left_schema = left.schema();
+    let right_schema = right.schema();
+    Arc::new(
+        HashJoinExec::try_new(
+            left,
+            right,
+            vec![(col("key", &left_schema).unwrap(), col("key", &right_schema).unwrap())],
+            None,
+            &datafusion::logical_expr::JoinType::LeftSemi,
+            None,
+            PartitionMode::CollectLeft,
+            NullEquality::NullEqualsNothing,
+            false,
+        )
+        .unwrap(),
+    )
 }
 
 fn aggregate_sort_limit_plan(scan: Arc<dyn ExecutionPlan>, projection_operator: Operator) -> Arc<dyn ExecutionPlan> {
@@ -471,6 +675,49 @@ fn write_parquet_file(path: &std::path::Path) {
         ],
     )
     .unwrap();
+    let file = File::create(path).unwrap();
+    let mut writer = ArrowWriter::try_new(file, schema, None).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
+}
+
+fn write_join_left_parquet_file(path: &std::path::Path) {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int32, false),
+        Field::new("l_payload", DataType::Int32, false),
+        Field::new("l_m00", DataType::Int64, false),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int32Array::from(vec![1, 2, 1])),
+            Arc::new(Int32Array::from(vec![5, 20, 30])),
+            Arc::new(Int64Array::from(vec![100, 200, 300])),
+        ],
+    )
+    .unwrap();
+    write_batch(path, schema, batch);
+}
+
+fn write_join_right_parquet_file(path: &std::path::Path) {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int32, false),
+        Field::new("r_payload", DataType::Int32, false),
+        Field::new("r_m01", DataType::Int64, false),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int32Array::from(vec![1, 2, 3])),
+            Arc::new(Int32Array::from(vec![10, 10, 10])),
+            Arc::new(Int64Array::from(vec![1, 2, 3])),
+        ],
+    )
+    .unwrap();
+    write_batch(path, schema, batch);
+}
+
+fn write_batch(path: &std::path::Path, schema: Arc<Schema>, batch: RecordBatch) {
     let file = File::create(path).unwrap();
     let mut writer = ArrowWriter::try_new(file, schema, None).unwrap();
     writer.write(&batch).unwrap();
