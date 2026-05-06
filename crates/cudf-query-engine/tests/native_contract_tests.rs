@@ -363,7 +363,9 @@ fn bounded_join_reservation_kinds_are_modeled_without_estimates() {
 
     assert_eq!(requirements.len(), expected.len());
     assert_eq!(contract.model_status(), "modeled");
-    assert_eq!(contract.execution_status(), "enabled_for_root_reusable_hash_join");
+    assert_eq!(contract.execution_status(), "enabled");
+    assert_eq!(contract.execution_families().len(), 2);
+    assert_eq!(contract.execution_families_csv(), "root_reusable_hash_join,keyless_conditional_join");
     assert!(contract.enabled());
 
     for (requirement, (kind, expected_name, expected_boundary, expected_status, expected_detail)) in
@@ -413,6 +415,10 @@ fn bounded_join_rejection_facts_are_shared_and_estimate_free() {
     assert_eq!(facts.get("result_materialization_boundary").map(String::as_str), Some("explicit_sink"));
     assert_eq!(facts.get("bounded_join_reservation_model").map(String::as_str), Some(contract.model_status()));
     assert_eq!(facts.get("bounded_join_execution_status").map(String::as_str), Some(contract.execution_status()));
+    assert_eq!(
+        facts.get("bounded_join_execution_families").map(String::as_str),
+        Some(contract.execution_families_csv().as_str())
+    );
     assert_eq!(facts.get("bounded_join_enabled").map(String::as_str), Some("true"));
     assert_eq!(
         facts.get("bounded_join_reservation_kinds").map(String::as_str),
@@ -453,6 +459,14 @@ fn bounded_join_rejection_facts_are_shared_and_estimate_free() {
     assert_eq!(
         facts.get("cudf_rs_dataframe_gather_output_reservation_contract").map(String::as_str),
         Some("dataframe_gather_output_reservation_size_bytes")
+    );
+    assert_eq!(
+        facts.get("cudf_rs_conditional_join_output_size_observability").map(String::as_str),
+        Some("conditional_join_exact_output_size")
+    );
+    assert_eq!(
+        facts.get("cudf_rs_conditional_join_output_size_hint").map(String::as_str),
+        Some("conditional_join_indices_with_output_size")
     );
     assert_eq!(
         facts.get("missing_reservations").map(String::as_str),
@@ -709,6 +723,7 @@ fn query_metrics_have_join_operator_contract() {
         "n2",
         JoinOperatorMetrics {
             join_type: "inner".into(),
+            execution_strategy: "hash_join".into(),
             key_count: 2,
             residual_predicate: true,
             null_equality: "nulls_do_not_match".into(),
@@ -728,6 +743,7 @@ fn query_metrics_have_join_operator_contract() {
     assert_eq!(metrics.operators.len(), 1);
     let join = metrics.operators[0].join.as_ref().expect("join metrics should be attached");
     assert_eq!(join.join_type, "inner");
+    assert_eq!(join.execution_strategy, "hash_join");
     assert_eq!(join.key_count, 2);
     assert_eq!(join.hash_table_bytes, 4096);
     assert_eq!(join.gather_map_bytes, 256);

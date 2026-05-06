@@ -239,7 +239,7 @@ fn native_optimizer_rule_rejects_bounded_join_plan_before_replacement() {
     );
     assert_eq!(
         diagnostics.bounded_join_reservation_facts.get("bounded_join_unsupported_shape").map(String::as_str),
-        Some("requires_root_reusable_hash_join")
+        Some("requires_root_reusable_hash_or_keyless_conditional_join")
     );
 
     fs::remove_dir_all(dir).unwrap();
@@ -343,6 +343,14 @@ fn native_exec_preserves_bounded_join_rejection_facts_from_native_runtime() {
         adapter_error.fact_value("cudf_rs_dataframe_gather_output_reservation_contract"),
         Some("dataframe_gather_output_reservation_size_bytes")
     );
+    assert_eq!(
+        adapter_error.fact_value("cudf_rs_conditional_join_output_size_observability"),
+        Some("conditional_join_exact_output_size")
+    );
+    assert_eq!(
+        adapter_error.fact_value("cudf_rs_conditional_join_output_size_hint"),
+        Some("conditional_join_indices_with_output_size")
+    );
     assert_eq!(adapter_error.fact_value("path"), None);
     assert_eq!(adapter_error.fact_value("file_index"), None);
     assert_eq!(adapter_error.fact_value("row_groups"), None);
@@ -373,7 +381,7 @@ fn bounded_join_rejection_split_between_planner_and_runtime_paths_is_pinned() {
     assert_eq!(planner_facts.get("bounded_join_execution_status").map(String::as_str), Some("unsupported_plan_shape"));
     assert_eq!(
         planner_facts.get("bounded_join_unsupported_shape").map(String::as_str),
-        Some("requires_root_reusable_hash_join")
+        Some("requires_root_reusable_hash_or_keyless_conditional_join")
     );
     assert_eq!(
         planner_facts.get("modeled_reservations").map(String::as_str),
@@ -390,7 +398,11 @@ fn bounded_join_rejection_split_between_planner_and_runtime_paths_is_pinned() {
     let runtime_error = adapter_error(&error);
 
     assert_eq!(runtime_error.fact_value("bounded_join_enabled"), Some("true"));
-    assert_eq!(runtime_error.fact_value("bounded_join_execution_status"), Some("enabled_for_root_reusable_hash_join"));
+    assert_eq!(runtime_error.fact_value("bounded_join_execution_status"), Some("enabled"));
+    assert_eq!(
+        runtime_error.fact_value("bounded_join_execution_families"),
+        Some("root_reusable_hash_join,keyless_conditional_join")
+    );
     assert_eq!(runtime_error.fact_value("reason"), Some("bounded_join_plan_shape_unsupported"));
     assert_eq!(runtime_error.fact_value("bounded_join_unsupported_shape"), None);
     assert_eq!(
@@ -403,7 +415,7 @@ fn bounded_join_rejection_split_between_planner_and_runtime_paths_is_pinned() {
     // Both paths advertise that the contract is enabled and the same reservation
     // kinds are modeled, but the planner downgrades `execution_status` to
     // `unsupported_plan_shape` and adds `bounded_join_unsupported_shape`, while
-    // the runtime keeps `enabled_for_root_reusable_hash_join` and surfaces a
+    // the runtime keeps the executable bounded root-join status and surfaces a
     // `reason` instead.
     assert_ne!(
         planner_facts.get("bounded_join_execution_status").map(String::as_str),

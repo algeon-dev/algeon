@@ -37,10 +37,11 @@ pub use plan::{
     QueryPlan, QueryPlanBuilder, ResultSink, SchemaBehavior, SortNode,
 };
 pub use runtime::{
-    BoundedJoinReservationContract, BoundedJoinReservationRequirement, BoundedJoinReservationStatus,
-    BuildMaterializationBoundary, DevicePlacement, ExecutionBoundaryPolicy, ExecutionContext, ExecutionContextBuilder,
-    MemoryControlPolicy, MemoryReservationRequest, MemoryResourcePolicy, ProbeExecutionBoundary, ReservationKind,
-    ResultMaterializationBoundary, RetryFacts, SourceReadBoundary,
+    BOUNDED_JOIN_EXECUTION_FAMILIES, BoundedJoinExecutionFamily, BoundedJoinReservationContract,
+    BoundedJoinReservationRequirement, BoundedJoinReservationStatus, BuildMaterializationBoundary, DevicePlacement,
+    ExecutionBoundaryPolicy, ExecutionContext, ExecutionContextBuilder, MemoryControlPolicy, MemoryReservationRequest,
+    MemoryResourcePolicy, ProbeExecutionBoundary, ReservationKind, ResultMaterializationBoundary, RetryFacts,
+    SourceReadBoundary,
 };
 pub use source::{
     ByteRangeDisposition, GpuResidentSource, LocalParquetFile, LocalParquetSource, PartitionColumn,

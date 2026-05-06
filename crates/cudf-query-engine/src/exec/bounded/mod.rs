@@ -100,7 +100,7 @@ fn reject_bounded_join_plan(context: &ExecutionContext, plan: &QueryPlan) -> Res
     if plan.nodes().iter().any(|node| matches!(node.kind, PlanNode::Join(_))) {
         let contract = BoundedJoinReservationContract;
         let mut error = unsupported_bounded_shape(
-            "bounded native join execution currently supports only root reusable hash joins with ordered reservations",
+            "bounded native join execution currently supports root reusable hash joins and keyless conditional joins with ordered reservations",
             "bounded_join_plan_shape_unsupported",
         );
         for (key, value) in contract.rejection_facts(context.boundary_policy()) {

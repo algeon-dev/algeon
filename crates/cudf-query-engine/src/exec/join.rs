@@ -157,6 +157,7 @@ pub(super) fn execute_join(
         node_id,
         JoinOperatorMetrics {
             join_type: node.spec.join_type.to_string(),
+            execution_strategy: join_execution_strategy(node).to_string(),
             key_count: node.spec.keys.len(),
             residual_predicate: node.spec.residual_predicate.is_some(),
             null_equality: node.spec.null_equality.to_string(),
@@ -251,6 +252,7 @@ fn execute_cross_join(
         node_id,
         JoinOperatorMetrics {
             join_type: node.spec.join_type.to_string(),
+            execution_strategy: "cross_join".to_string(),
             key_count: 0,
             residual_predicate: false,
             null_equality: node.spec.null_equality.to_string(),
@@ -267,6 +269,16 @@ fn execute_cross_join(
         },
     ));
     Ok(GpuDataFrame::new(output))
+}
+
+fn join_execution_strategy(node: &JoinNode) -> &'static str {
+    if node.spec.keys.is_empty() {
+        "conditional_join"
+    } else if node.spec.residual_predicate.is_some() {
+        "mixed_join"
+    } else {
+        "hash_join"
+    }
 }
 
 fn execute_join_indices(
@@ -661,7 +673,9 @@ fn dataframe_join_options(
         .null_equality(lower_null_equality(null_equality))
 }
 
-fn dataframe_predicate_join_options(residual_columns: &JoinResidualColumns) -> DataFramePredicateJoinOptions {
+pub(super) fn dataframe_predicate_join_options(
+    residual_columns: &JoinResidualColumns,
+) -> DataFramePredicateJoinOptions {
     DataFramePredicateJoinOptions::new()
         .left_columns(residual_columns.names(JoinSide::Left).iter().map(String::as_str))
         .right_columns(residual_columns.names(JoinSide::Right).iter().map(String::as_str))
@@ -746,7 +760,7 @@ impl ResidualColumnLayout {
 }
 
 #[derive(Debug, Clone)]
-struct JoinResidualColumns {
+pub(super) struct JoinResidualColumns {
     left: ResidualColumnLayout,
     right: ResidualColumnLayout,
 }
@@ -762,7 +776,7 @@ impl JoinResidualColumns {
         Self { left: ResidualColumnLayout::new(left), right: ResidualColumnLayout::new(right) }
     }
 
-    fn names(&self, side: JoinSide) -> &[String] {
+    pub(super) fn names(&self, side: JoinSide) -> &[String] {
         match side {
             JoinSide::Left => self.left.names(),
             JoinSide::Right => self.right.names(),
@@ -777,7 +791,7 @@ impl JoinResidualColumns {
     }
 }
 
-fn residual_input_columns(node: &JoinNode) -> Result<JoinResidualColumns> {
+pub(super) fn residual_input_columns(node: &JoinNode) -> Result<JoinResidualColumns> {
     let Some(predicate) = &node.spec.residual_predicate else {
         return Ok(JoinResidualColumns::default());
     };
@@ -844,7 +858,7 @@ fn collect_join_expr_columns(expr: &Expr, left: &mut BTreeSet<String>, right: &m
     }
 }
 
-fn lower_join_residual_predicate(
+pub(super) fn lower_join_residual_predicate(
     context: &ExecutionContext,
     node: &JoinNode,
     residual_columns: &JoinResidualColumns,
@@ -1232,7 +1246,7 @@ pub(super) fn materialize_join_output_projection(
     })
 }
 
-fn materialize_left_only_join_output_projection(
+pub(super) fn materialize_left_only_join_output_projection(
     left: &DataFrame,
     indices: &DataFrameJoinIndices,
     overrides: &ExecutionOverrides<'_>,

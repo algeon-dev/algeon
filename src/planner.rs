@@ -413,7 +413,10 @@ fn native_execution_boundary_rejection_facts(
             .map(|(key, value)| (key.to_string(), value))
             .collect();
         facts.insert("bounded_join_execution_status".to_string(), "unsupported_plan_shape".to_string());
-        facts.insert("bounded_join_unsupported_shape".to_string(), "requires_root_reusable_hash_join".to_string());
+        facts.insert(
+            "bounded_join_unsupported_shape".to_string(),
+            "requires_root_reusable_hash_or_keyless_conditional_join".to_string(),
+        );
         Some(facts)
     } else {
         None

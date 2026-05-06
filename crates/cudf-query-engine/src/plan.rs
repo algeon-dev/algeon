@@ -5,7 +5,7 @@ use arrow::datatypes::SchemaRef;
 use crate::{
     bounded_support::{
         BoundedJoinPlanSupport, analyze_bounded_join_pipeline, analyze_bounded_join_plan_support,
-        bounded_root_hash_join_compatible,
+        bounded_root_conditional_join_compatible, bounded_root_hash_join_compatible, bounded_root_join_compatible,
     },
     expr::{AggregateSpec, ColumnRef, Expr, LimitSpec, SortExpr, SortSpec},
     source::SourceNode,
@@ -538,6 +538,14 @@ impl JoinNode {
     /// for unmatched build rows and produce the wrong DataFusion semantics.
     pub fn is_bounded_root_hash_join_compatible(&self) -> bool {
         bounded_root_hash_join_compatible(self)
+    }
+
+    pub fn is_bounded_root_conditional_join_compatible(&self) -> bool {
+        bounded_root_conditional_join_compatible(self)
+    }
+
+    pub fn is_bounded_root_join_compatible(&self) -> bool {
+        bounded_root_join_compatible(self)
     }
 }
 

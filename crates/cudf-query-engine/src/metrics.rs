@@ -184,10 +184,18 @@ impl OperatorMetrics {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct JoinOperatorMetrics {
     pub join_type: String,
+    pub execution_strategy: String,
     pub key_count: usize,
     pub residual_predicate: bool,
     pub null_equality: String,
+    /// Planner orientation used to execute or describe this join.
+    ///
+    /// For reusable hash joins this is the side that owns the hash table. For
+    /// keyless conditional and cross joins no hash table is built, so this is an
+    /// orientation label for comparable metrics rather than a physical build
+    /// artifact.
     pub build_side: String,
+    /// The side opposite `build_side` in the planner orientation.
     pub probe_side: String,
     pub build_rows: u64,
     pub build_bytes: u64,
