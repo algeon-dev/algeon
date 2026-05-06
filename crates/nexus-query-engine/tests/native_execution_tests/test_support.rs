@@ -116,10 +116,6 @@ pub(super) fn partition_passthrough_query_plan(
     builder.finish_with_host_sink(sort)
 }
 
-pub(super) fn bounded_source_chunk_context(_runtime: Arc<cudf::Runtime>) -> BackendQueryContext {
-    backend_context()
-}
-
 pub(super) fn int32_array(batch: &RecordBatch, index: usize) -> &Int32Array {
     batch.column(index).as_any().downcast_ref::<Int32Array>().expect("expected Int32Array")
 }

@@ -60,7 +60,6 @@ pub(in crate::exec::bounded) struct BoundedJoinLeafLocalParquetSourceStream {
 
 // In-flight source read parked until its leaf resource is consumed or cached.
 pub(in crate::exec::bounded) struct BoundedJoinLeafLocalParquetSourcePrefetch {
-    source: LocalParquetSource,
     node_id: NodeId,
     scheduled: ScheduledLocalParquetRead,
     max_attempts: usize,
@@ -300,7 +299,6 @@ pub(in crate::exec::bounded) fn try_start_bounded_join_leaf_local_parquet_source
         stream.max_attempts,
     )?;
     Ok(Some(BoundedJoinLeafLocalParquetSourcePrefetch {
-        source: stream.source.clone(),
         node_id: stream.node_id,
         scheduled,
         max_attempts: stream.max_attempts,

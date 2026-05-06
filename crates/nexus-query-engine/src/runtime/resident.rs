@@ -10,7 +10,7 @@ use std::{
 
 use arrow::{datatypes::SchemaRef, record_batch::RecordBatch};
 use cudf::{
-    DataFrame, DataFrameFilteredJoin, DataFrameHashJoin, DataType, ExecutionPlacement,
+    DataFrame, DataFrameFilteredJoin, DataFrameHashJoin, ExecutionPlacement,
     frame::dataframe::{
         ColumnMemoryIdentity, GpuRecordBatch, HostBatchCursor as CudfHostBatchCursor, HostBatchCursorConfig,
         InfoDetail, PreparedHostBatch as CudfPreparedHostBatch,
@@ -515,18 +515,6 @@ impl GpuLocalParquetCachedResult {
         self.batch.schema()
     }
 
-    pub(crate) fn device_placement(&self) -> DevicePlacement {
-        self.device_placement
-    }
-
-    pub(crate) fn placement(&self) -> ExecutionPlacement {
-        self.batch.placement()
-    }
-
-    pub(crate) fn domain_id(&self) -> cudf::CacheAllocationDomainId {
-        self.allocation_lease.domain_id()
-    }
-
     /// Completes work submitted on the cache lease before the cached value is
     /// destroyed. Cache code must call this before releasing its ledger charge.
     pub(crate) fn synchronize_for_destruction(&self) -> Result<()> {
@@ -625,7 +613,7 @@ fn strip_hidden_datafusion_order_columns(frame: GpuDataFrame, schema: &SchemaRef
 
 /// Reusable cuDF hash-join build artifact.
 ///
-/// The handle is runtime/device-affine and carries the build key, build schema,
+/// The handle is runtime/device-affine and carries the build key,
 /// null-equality, and retained hash-table byte contract needed to reject unsafe
 /// reuse. Cloning shares the underlying cuDF artifact.
 #[derive(Clone)]
@@ -634,7 +622,6 @@ pub struct GpuHashJoinBuildHandle {
     runtime: Arc<cudf::Runtime>,
     device_placement: DevicePlacement,
     build_keys: Vec<String>,
-    build_columns: Vec<GpuHashJoinBuildColumn>,
     null_equality: JoinNullEquality,
     device_allocated_size_bytes: u64,
 }
@@ -748,10 +735,8 @@ impl GpuHashJoinBuildHandle {
                 .with_fact("key_count", hash_join.build_keys().len())
                 .with_fact("null_equality", null_equality)
             })?;
-        let build_columns = gpu_hash_join_build_columns(hash_join.build())?;
         Ok(Self {
             build_keys: hash_join.build_keys().to_vec(),
-            build_columns,
             hash_join,
             runtime: context.shared_runtime()?,
             device_placement: context.device_placement(),
@@ -793,38 +778,6 @@ impl GpuHashJoinBuildHandle {
     pub fn device_allocated_size_bytes(&self) -> u64 {
         self.device_allocated_size_bytes
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct GpuHashJoinBuildColumn {
-    name: String,
-    data_type: DataType,
-    nullable: bool,
-}
-
-pub(crate) fn gpu_hash_join_build_columns(frame: &DataFrame) -> Result<Vec<GpuHashJoinBuildColumn>> {
-    let info = frame.info_with(InfoDetail::COLUMNS).map_err(|error| {
-        QueryError::from_cudf(
-            "nexus_query_engine.gpu_hash_join_build_contract",
-            "failed to observe nexus native hash-join build schema contract",
-            error,
-        )
-    })?;
-    let columns = info.columns.ok_or_else(|| {
-        QueryError::new(
-            crate::error::QueryErrorCode::InvalidPlan,
-            "nexus_query_engine.gpu_hash_join_build_contract",
-            "nexus native hash-join build schema contract did not include column metadata",
-        )
-    })?;
-    Ok(columns
-        .into_iter()
-        .map(|column| GpuHashJoinBuildColumn {
-            name: column.name,
-            data_type: column.data_type,
-            nullable: column.nullable,
-        })
-        .collect())
 }
 
 fn source_column_memory_identities(frame: &DataFrame) -> HashSet<ColumnMemoryIdentity> {

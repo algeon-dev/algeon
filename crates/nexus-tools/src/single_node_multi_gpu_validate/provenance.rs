@@ -101,11 +101,7 @@ impl DirtyManifest {
         let tracked_diff = git_output_bytes(repo, ["diff", "--binary", "--no-ext-diff", "HEAD", "--"], name)?;
         let untracked_paths = git_output_bytes(repo, ["ls-files", "--others", "--exclude-standard", "-z"], name)?;
         let sha256 = dirty_content_sha256(repo, name, &output, &tracked_diff, &untracked_paths)?;
-        Ok(Self {
-            format: "git-status-porcelain-v1-z+direct-worktree-content-sha256-v1",
-            sha256,
-            entries,
-        })
+        Ok(Self { format: "git-status-porcelain-v1-z+direct-worktree-content-sha256-v1", sha256, entries })
     }
 }
 

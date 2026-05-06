@@ -23,7 +23,10 @@ pub(crate) struct DeviceContext {
 struct DeviceContextInner {
     device: cudf::DeviceId,
     stream_pool: ServiceStreamPool,
-    mr_manager: cudf::DeviceMemoryManager,
+    // Keep-alive ownership guard: the manager owns the device's installed
+    // reservation-aware memory resource (whose `Drop` tears it down), so the
+    // context must hold it for the whole service lifetime; nothing reads it.
+    _mr_manager: cudf::DeviceMemoryManager,
     memory_manager_installation: cudf::DeviceMemoryManagerInstallationState,
     engine_health_identity: EngineDeviceHealthIdentity,
     memory_failure_tracker: DeviceMemoryFailureTracker,
@@ -148,7 +151,7 @@ impl DeviceContext {
             inner: Arc::new(DeviceContextInner {
                 device,
                 stream_pool,
-                mr_manager,
+                _mr_manager: mr_manager,
                 memory_manager_installation,
                 engine_health_identity,
                 memory_failure_tracker,

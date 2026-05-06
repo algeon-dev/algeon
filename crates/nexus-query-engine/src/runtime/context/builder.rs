@@ -1,11 +1,12 @@
 //! Construction and policy validation for native execution contexts.
 
+#[cfg(test)]
+use std::time::Duration;
 use std::{
     error::Error as StdError,
     fmt,
     panic::{AssertUnwindSafe, catch_unwind},
     sync::Arc,
-    time::Duration,
 };
 
 use super::{
@@ -21,6 +22,8 @@ use super::{
     ExecutionCancellation, ExecutionContext, ExecutionContextParts, RuntimeObservedExecutionContext,
     SourceSchedulerPolicy,
 };
+#[cfg(test)]
+use crate::observability::{RuntimeObservationConfig, RuntimeQueryId, RuntimeTraceId};
 use crate::{
     capability::AggregateStrategyExecutionOptions,
     chunk::SourceChunkPlanningOptions,
@@ -28,10 +31,7 @@ use crate::{
     graph_memory::GraphMemoryCalibrationOverride,
     metrics::{QueryId, TraceId},
     mode::StatisticalAggregateExecutionMode,
-    observability::{
-        RuntimeObservationConfig, RuntimeObservationHandle, RuntimeObservationSession, RuntimeQueryId,
-        RuntimeTerminalOutcome, RuntimeTraceId,
-    },
+    observability::{RuntimeObservationHandle, RuntimeObservationSession, RuntimeTerminalOutcome},
 };
 
 /// Builder for [`ExecutionContext`].
@@ -48,6 +48,7 @@ pub(crate) struct ExecutionContextBuilder {
     /// Optional caller-provided parent trace id.
     trace_id: Option<TraceId>,
     /// Query-local bounded runtime observation policy.
+    #[cfg(test)]
     runtime_observation_config: RuntimeObservationConfig,
     /// Prebuilt runtime to use instead of constructing one.
     runtime: Option<Arc<cudf::Runtime>>,
@@ -163,12 +164,6 @@ impl Drop for RuntimeObservationBuildError {
 }
 
 impl ExecutionContextBuilder {
-    /// Creates a builder with default runtime and execution policies.
-    #[cfg(test)]
-    pub fn new() -> Self {
-        Self::default()
-    }
-
     /// Uses an already-constructed cudf runtime.
     ///
     /// This marks the memory-resource policy as
@@ -192,39 +187,29 @@ impl ExecutionContextBuilder {
         self
     }
 
-    /// Attaches a server-generation lifecycle to file-backed native I/O.
-    #[cfg(test)]
-    pub fn with_io_lifecycle(mut self, lifecycle: crate::runtime::IoLifecycle) -> Self {
-        self.io_lifecycle = Some(lifecycle);
-        self
-    }
-
-    /// Uses a caller-owned dedicated executor for synchronous GPU work.
-    #[cfg(test)]
-    pub(crate) fn with_gpu_execution_pool(mut self, pool: GpuExecutionPool) -> Self {
-        self.gpu_execution_pool = Some(pool);
-        self
-    }
-
     /// Supplies the query-wide diagnostic correlation id.
+    #[cfg(test)]
     pub fn with_query_id(mut self, query_id: impl Into<QueryId>) -> Self {
         self.query_id = Some(query_id.into());
         self
     }
 
     /// Supplies the optional parent trace id.
+    #[cfg(test)]
     pub fn with_trace_id(mut self, trace_id: impl Into<TraceId>) -> Self {
         self.trace_id = Some(trace_id.into());
         self
     }
 
     /// Enables or disables bounded runtime observation for the constructed context.
+    #[cfg(test)]
     pub fn with_runtime_observation_config(mut self, config: RuntimeObservationConfig) -> Self {
         self.runtime_observation_config = config;
         self
     }
 
     /// Supplies a caller-created query session and enters the owner-preserving build API.
+    #[cfg(test)]
     pub fn with_runtime_observation_session(
         mut self,
         session: RuntimeObservationSession,
@@ -233,60 +218,46 @@ impl ExecutionContextBuilder {
         RuntimeObservedExecutionContextBuilder { builder: self, observation: session }
     }
 
-    /// Selects the CUDA device ordinal for runtime construction.
-    ///
-    /// Ignored when a runtime is supplied by the caller.
-    pub fn with_device_ordinal(mut self, device_ordinal: usize) -> Self {
-        self.device_ordinal = Some(device_ordinal);
-        self
-    }
-
     /// Selects the memory resource used when constructing a runtime.
     ///
     /// Ignored for an injected runtime except for the recorded
     /// `ExternalRuntime` diagnostic state.
+    #[cfg(test)]
     pub fn with_memory_policy(mut self, memory_policy: MemoryResourcePolicy) -> Self {
         self.memory_policy = memory_policy;
         self
     }
 
     /// Sets the engine-level memory control contract.
+    #[cfg(test)]
     pub fn with_memory_control_policy(mut self, memory_control_policy: MemoryControlPolicy) -> Self {
         self.memory_control_policy = memory_control_policy;
         self
     }
 
-    /// Sets the execution boundary policy.
-    pub fn with_boundary_policy(mut self, boundary_policy: ExecutionBoundaryPolicy) -> Self {
-        self.boundary_policy = boundary_policy;
-        self
-    }
-
     /// Sets bounded source scheduling controls.
+    #[cfg(test)]
     pub fn with_source_scheduler_policy(mut self, source_scheduler_policy: SourceSchedulerPolicy) -> Self {
         self.source_scheduler_policy = source_scheduler_policy;
         self
     }
 
     /// Set bounded source chunk planning mode.
+    #[cfg(test)]
     pub fn with_source_chunk_planning_mode(mut self, mode: SourceChunkPlanningMode) -> Self {
         self.source_chunk_planning_mode = mode;
         self
     }
 
-    /// Sets the service-level lakehouse cache-fill resource configuration.
-    pub fn with_lakehouse_cache_fill_config(mut self, config: LakehouseCacheFillConfig) -> Self {
-        self.lakehouse_cache_fill_config = Some(config);
-        self
-    }
-
     /// Registers source object-store profiles used by remote reads and cache fills.
+    #[cfg(test)]
     pub fn with_source_storage_profiles(mut self, profiles: impl IntoIterator<Item = SourceStorageProfile>) -> Self {
         self.source_storage_profiles = profiles.into_iter().collect();
         self
     }
 
     /// Uses a caller-owned service stream pool for bounded source-read workers.
+    #[cfg(test)]
     pub(crate) fn with_service_stream_pool(mut self, service_stream_pool: ServiceStreamPool) -> Self {
         self.service_stream_pool = Some(service_stream_pool);
         self
@@ -295,72 +266,63 @@ impl ExecutionContextBuilder {
     /// Sets the size of the default process-global service stream pool.
     ///
     /// Ignored when a pool is supplied with [`Self::with_service_stream_pool`].
+    #[cfg(test)]
     pub fn with_service_stream_pool_size(mut self, pool_size: usize) -> Self {
         self.service_stream_pool_size = Some(pool_size);
         self
     }
 
-    /// Uses a caller-owned lakehouse cache-fill byte budget.
-    pub fn with_lakehouse_cache_fill_budget(mut self, budget: CacheFillByteBudget) -> Self {
-        self.lakehouse_cache_fill_budget = Some(budget);
-        self
-    }
-
     /// Sets the service-wide background lakehouse cache-fill byte budget.
+    #[cfg(test)]
     pub fn with_lakehouse_cache_fill_budget_bytes(mut self, budget_bytes: u64) -> Self {
         self.lakehouse_cache_fill_budget_bytes = Some(budget_bytes);
         self
     }
 
     /// Sets the bounded wait for blocking lakehouse cache maintenance resources.
+    #[cfg(test)]
     pub fn with_lakehouse_cache_fill_acquire_timeout(mut self, timeout: Duration) -> Self {
         self.lakehouse_cache_fill_config.get_or_insert_with(Default::default).acquire_timeout = timeout;
         self
     }
 
     /// Sets the service-wide background lakehouse cache-fill operation cap.
+    #[cfg(test)]
     pub fn with_lakehouse_cache_fill_max_concurrent_ops(mut self, max_concurrent_ops: usize) -> Self {
         self.lakehouse_cache_fill_max_concurrent_ops = Some(max_concurrent_ops);
         self
     }
 
-    /// Supplies deployment IO capability diagnostics instead of probing the current host.
-    pub fn with_deployment_io_capability(mut self, capability: DeploymentIoCapability) -> Self {
-        self.deployment_io_capability = Some(capability);
-        self
-    }
-
     /// Sets the cooperative cancellation flag for native execution.
+    #[cfg(test)]
     pub fn with_cancellation(mut self, cancellation: ExecutionCancellation) -> Self {
         self.cancellation = cancellation;
         self
     }
 
     /// Selects the execution contract for floating statistical aggregates.
+    #[cfg(test)]
     pub fn with_statistical_aggregate_execution_mode(mut self, mode: StatisticalAggregateExecutionMode) -> Self {
         self.statistical_aggregate_execution_mode = mode;
         self
     }
 
-    /// Sets grouped aggregate strategy execution policy.
-    pub fn with_aggregate_strategy_execution_options(mut self, options: AggregateStrategyExecutionOptions) -> Self {
-        self.aggregate_strategy_execution_options = options;
-        self
-    }
-
     /// Sets expert local-throughput source chunk planning policy.
+    #[cfg(test)]
     pub fn with_source_chunk_planning_options(mut self, options: SourceChunkPlanningOptions) -> Self {
         self.source_chunk_planning_options = options;
         self
     }
 
     /// Supplies fixture/config graph calibration metadata.
+    #[cfg(test)]
     pub fn with_graph_memory_calibration_override(mut self, override_: GraphMemoryCalibrationOverride) -> Self {
         self.graph_memory_calibration_override = override_;
         self
     }
 
     /// Validates policies, constructs or records the runtime, and returns a context.
+    #[cfg(test)]
     pub fn build(self) -> Result<ExecutionContext> {
         if self.runtime_observation_config.is_enabled() {
             return Err(runtime_observation_owner_required_error());
@@ -369,6 +331,7 @@ impl ExecutionContextBuilder {
     }
 
     /// Builds a cloneable execution context paired with its unique observation owner.
+    #[cfg(test)]
     pub fn build_with_runtime_observation(
         self,
     ) -> std::result::Result<RuntimeObservedExecutionContext, RuntimeObservationBuildError> {

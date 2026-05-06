@@ -174,6 +174,10 @@ impl QueryAdmissionRequest {
     }
 
     /// Internal controller/test constructor for synthetic capability evidence.
+    ///
+    /// Kept as crate-private API surface: the public-API boundary UI tests
+    /// pin that callers outside the crate cannot attach their own requirement.
+    #[allow(dead_code)]
     pub(crate) fn with_attempt_requirement(mut self, attempt_requirement: AttemptRequirement) -> Self {
         self.attempt_requirement = Some(attempt_requirement);
         self

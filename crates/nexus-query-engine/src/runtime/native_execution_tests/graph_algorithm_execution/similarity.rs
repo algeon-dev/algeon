@@ -50,20 +50,6 @@ fn symmetric_similarity_edges_i32(with_weight: bool) -> (Arc<Schema>, RecordBatc
     (schema, batch)
 }
 
-fn assert_similarity_stable_output(batch: &RecordBatch, expected_pairs: &[(i64, i64)]) {
-    assert_eq!(batch.schema().as_ref(), stable_graph_result_schema(GraphAlgorithm::Jaccard).as_ref());
-    assert_eq!(batch.num_columns(), 3);
-    assert_eq!(batch.num_rows(), expected_pairs.len());
-    let mut actual_pairs = (0..batch.num_rows())
-        .map(|row| (int64_array(batch, 0).value(row), int64_array(batch, 1).value(row)))
-        .collect::<Vec<_>>();
-    let mut expected_pairs = expected_pairs.to_vec();
-    actual_pairs.sort_unstable();
-    expected_pairs.sort_unstable();
-    assert_eq!(actual_pairs, expected_pairs, "similarity must preserve the pair-relation multiset");
-    assert!((0..batch.num_rows()).all(|row| float64_array(batch, 2).value(row).is_finite()));
-}
-
 fn assert_bounded_similarity_pair_input_overlap_is_credited() {
     let runtime = Arc::new(cudf::Runtime::new().unwrap());
     let (edge_schema, edge_batch) = symmetric_similarity_edges_i32(false);

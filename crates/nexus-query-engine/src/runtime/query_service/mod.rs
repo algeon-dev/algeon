@@ -79,8 +79,6 @@ pub use config::{QueryExecutionConfig, QueueBounds};
 use device_waiters::{
     PendingDeviceSlotNotifications, notify_shared_device_admission_available, register_shared_device_admission_waiters,
 };
-#[cfg(test)]
-use device_waiters::{prune_dead_shared_device_admission_waiters, shared_device_admission_waiters};
 use handle::QueryHandleLifetime;
 pub use handle::{AdmittedQueryContext, QueryHandle};
 use resources::QueryServiceResources;
@@ -114,6 +112,9 @@ impl QueryServiceDrainPhase {
     }
 }
 
+// The `error` payload is consumed only through `Debug` diagnostics; the
+// drain loop itself reads only the phase.
+#[allow(dead_code)]
 #[derive(Debug)]
 pub(crate) enum QueryServiceDrainPhaseOutcome {
     Quiescent { phase: QueryServiceDrainPhase },

@@ -254,6 +254,9 @@ pub(super) struct SourceObjectStoreRegistry {
 }
 
 impl SourceObjectStoreRegistry {
+    // Only called by the retained `ExecutionContext::from_shared_runtime`
+    // contract surface; no other production callers.
+    #[allow(dead_code)]
     pub(super) fn new() -> Self {
         Self {
             profiles: HashMap::new(),

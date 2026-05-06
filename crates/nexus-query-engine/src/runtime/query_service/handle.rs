@@ -247,6 +247,7 @@ impl QueryHandleLifetime {
         assert!(root_context.install_root_stream_cleanup_completion(|_| {}, || {}));
     }
 
+    #[cfg(test)]
     pub(super) fn memory_grant(&self) -> Result<MemoryGrant> {
         self.lock_envelope()?
             .as_ref()

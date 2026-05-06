@@ -176,29 +176,6 @@ impl NexusNativeComposedExec {
         &self.gpu_inputs
     }
 
-    /// Convert this already-validated composed host boundary into an internal
-    /// GPU-resident relational producer. The native consumer and all nested
-    /// accelerator producers will execute in the context supplied by the
-    /// outer consumer; no intermediate Arrow result is materialized.
-    pub(crate) fn to_gpu_resident_producer(
-        &self,
-        input_name: impl Into<String>,
-    ) -> crate::error::Result<NexusNativeComposedGpuProducerExec> {
-        NexusNativeComposedGpuProducerExec::try_new(
-            input_name,
-            self.plan.clone_with_gpu_resident_sink(),
-            self.gpu_inputs.clone(),
-            self.execution_config.clone(),
-            self.metrics_capture.clone(),
-            self.cache.equivalence_properties().clone(),
-        )
-    }
-
-    #[cfg(test)]
-    pub(crate) fn metrics_capture(&self) -> Option<NativeExecutionMetricsCapture> {
-        self.metrics_capture.clone()
-    }
-
     /// Returns the one post-seal attempt projection target for this composed
     /// root. Producer fragments are intentionally not separate owners.
     pub(crate) fn sealed_attempt_metrics_target(&self) -> SealedAttemptMetricsTarget {

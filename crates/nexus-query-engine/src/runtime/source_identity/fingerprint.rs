@@ -5,7 +5,6 @@ use std::fmt::Write;
 use arrow::datatypes::SchemaRef;
 
 use crate::{
-    chunk::SourceChunk,
     source::{LocalParquetSource, ParquetReaderDecimalType, ResolvedParquetSource, SourceColumnRef},
     util::escape_kv_delimited,
 };
@@ -172,68 +171,6 @@ pub(super) fn redact_source_cache_fingerprint(output: &mut String, source: &Loca
         }
         for (delete_index, delete_file) in file.equality_delete_files.iter().enumerate() {
             let label = format!("file.{index}.equality_delete_files.{delete_index}");
-            replace_token_value(
-                output,
-                format!("{label}.location"),
-                delete_file.location.reader_path().as_str(),
-                delete_file.location.diagnostic_location().as_str(),
-            );
-            replace_token_value(
-                output,
-                format!("{label}.stable_id"),
-                delete_file.stable_id.as_str(),
-                delete_file.location.diagnostic_stable_id(delete_file.stable_id.as_str()).as_str(),
-            );
-            redact_resolved_source_contract(output, format!("{label}.resolved"), &delete_file.resolved_source);
-        }
-    }
-}
-
-pub(super) fn redact_source_chunk_cache_fingerprint(
-    output: &mut String,
-    source: &LocalParquetSource,
-    chunk: &SourceChunk,
-) {
-    replace_token_value(
-        output,
-        "chunk.location",
-        chunk.location.reader_path().as_str(),
-        chunk.location.diagnostic_location().as_str(),
-    );
-    replace_token_value(
-        output,
-        "chunk.stable_id",
-        chunk.stable_id.as_str(),
-        chunk.location.diagnostic_stable_id(chunk.stable_id.as_str()).as_str(),
-    );
-    redact_resolved_source_contract(output, "chunk.resolved", &chunk.resolved_source);
-    if let Some(file) = source.files.get(chunk.file_index) {
-        for (delete_index, delete_file) in file.position_delete_files.iter().enumerate() {
-            let label = format!("chunk.position_delete_files.{delete_index}");
-            replace_token_value(
-                output,
-                format!("{label}.location"),
-                delete_file.location.reader_path().as_str(),
-                delete_file.location.diagnostic_location().as_str(),
-            );
-            replace_token_value(
-                output,
-                format!("{label}.stable_id"),
-                delete_file.stable_id.as_str(),
-                delete_file.location.diagnostic_stable_id(delete_file.stable_id.as_str()).as_str(),
-            );
-            if let Some(referenced_data_file) = delete_file.referenced_data_file.as_deref() {
-                replace_token_value(
-                    output,
-                    format!("{label}.referenced_data_file"),
-                    referenced_data_file,
-                    redacted_position_delete_referenced_data_file(referenced_data_file).as_str(),
-                );
-            }
-            redact_resolved_source_contract(output, format!("{label}.resolved"), &delete_file.resolved_source);
-        }
-        for (delete_index, delete_file) in file.equality_delete_files.iter().enumerate() {
-            let label = format!("chunk.equality_delete_files.{delete_index}");
             replace_token_value(
                 output,
                 format!("{label}.location"),

@@ -1200,7 +1200,12 @@ fn cugraph_algo_exec_keeps_keyable_native_affinity_out_of_the_admission_ticket()
 
     let exec = CugraphAlgoExec::try_new(pagerank_spec(), edge_source, vec![], None, None, config)
         .expect("cuGraph exec should build for keyable native edge source");
-    let expected_proof = graph_ticket_proof_for_native_source(&exec);
+    let model_ask = exec
+        .graph_model_ask_bytes_for_admission_ticket()
+        .expect("keyable native edge source should derive graph admission evidence")
+        .expect("exact native edge rows should produce graph model evidence");
+    let expected_proof = graph_ticket_proof_for_native_source(&exec)
+        .with_graph_memory_admission_evidence(model_ask.cold_model_evidence());
     let ticket = exec.native_execution_config.query_admission_ticket().expect("cuGraph exec should mint a plan ticket");
     assert_eq!(
         ticket.attempt_capability_proof(),
@@ -1217,9 +1222,16 @@ fn cugraph_algo_exec_uses_the_same_proof_for_unkeyable_edge_source() {
 
     let exec = CugraphAlgoExec::try_new(pagerank_spec(), memory_edge_source(100), vec![], None, None, config)
         .expect("cuGraph exec should build for non-native edge source");
+    let model_ask = exec
+        .graph_model_ask_bytes_for_admission_ticket()
+        .expect("unkeyable edge source should derive graph admission evidence")
+        .expect("exact in-memory edge rows should produce graph model evidence");
     let ticket = exec.native_execution_config.query_admission_ticket().expect("cuGraph exec should mint a plan ticket");
 
-    assert_eq!(ticket.attempt_capability_proof(), Some(&graph_ticket_proof(&exec)));
+    assert_eq!(
+        ticket.attempt_capability_proof(),
+        Some(&graph_ticket_proof(&exec).with_graph_memory_admission_evidence(model_ask.cold_model_evidence()))
+    );
 }
 
 #[test]

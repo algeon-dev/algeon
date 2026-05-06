@@ -161,6 +161,7 @@ impl QueryPlanCapabilityProof {
         self.requirement.soft_working_set_hint_bytes()
     }
 
+    #[cfg(test)]
     pub(crate) fn into_requirement(self) -> AttemptCapabilityEvidence {
         self.requirement
     }
@@ -184,13 +185,9 @@ impl AttemptCapabilityEvidence {
     }
 
     /// Returns the provenance quality of the descriptive working-set target.
+    #[cfg(test)]
     pub(crate) fn estimate_quality(&self) -> EstimateQuality {
         self.estimate_quality
-    }
-
-    /// Returns the capability contracts captured by the planner.
-    pub(crate) fn required_capabilities(&self) -> &[ReservationRequirement] {
-        &self.required_capabilities
     }
 
     /// Resolves this evidence against an already-installed device-profile

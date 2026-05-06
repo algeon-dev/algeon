@@ -486,11 +486,6 @@ impl DeviceLedger {
             .is_some_and(|maximum| required_floor_bytes <= maximum))
     }
 
-    /// Candidate-local version of [`Self::can_ever_fit_required_floor_bytes`].
-    pub(crate) fn can_ever_fit_requirement(&self, requirement: &AttemptRequirement) -> Result<bool> {
-        self.can_ever_fit_required_floor_bytes(self.required_floor_bytes_for(requirement)?)
-    }
-
     fn in_transition_observer(&self) -> bool {
         let ledger = Arc::as_ptr(&self.inner);
         LEDGER_TRANSITION_OBSERVER_STACK.with(|stack| stack.get().contains(ledger))
@@ -719,6 +714,7 @@ impl DeviceLedger {
 
     /// Returns whether the candidate with `required_floor_bytes` could be
     /// admitted right now (same equation as [`Self::try_admit`]).
+    #[cfg(test)]
     pub(crate) fn candidate_max_new_grant_bytes(
         &self,
         required_floor_bytes: u64,
@@ -728,16 +724,6 @@ impl DeviceLedger {
         let snapshot = self.snapshot_locked(&state);
         let is_protected = state.protection.is_some_and(|protection| protection.waiter_id == waiter_id);
         Ok(snapshot.max_new_grant_bytes(required_floor_bytes, is_protected))
-    }
-
-    /// Returns the candidate maximum after resolving a zero request floor
-    /// against this ledger's own immutable profile.
-    pub(crate) fn candidate_max_new_grant_for_requirement(
-        &self,
-        requirement: &AttemptRequirement,
-        waiter_id: AdmissionRequestId,
-    ) -> Result<Option<u64>> {
-        self.candidate_max_new_grant_bytes(self.required_floor_bytes_for(requirement)?, waiter_id)
     }
 
     /// Attempts one immutable grant admission for `waiter_id`.
@@ -880,7 +866,8 @@ impl DeviceLedger {
         Ok(false)
     }
 
-    /// Current protection state for queue/tests.
+    /// Current protection state for tests.
+    #[cfg(test)]
     pub(crate) fn protection(&self) -> Option<SlotProtection> {
         if self.in_transition_observer() {
             self.panic_on_transition_observer_reentrancy("protection");
@@ -1034,15 +1021,10 @@ impl DeviceLedger {
     }
 
     /// Bytes currently charged to evictable caches.
+    #[cfg(test)]
     pub(crate) fn evictable_bytes(&self) -> Result<u64> {
         let state = self.lock_state("evictable_bytes")?;
         Ok(state.evictable_bytes)
-    }
-
-    /// Immediate unreserved bytes, excluding bytes held by evictable caches.
-    pub(crate) fn free_bytes(&self) -> Result<u64> {
-        let state = self.lock_state("free_bytes")?;
-        Ok(self.free_bytes_locked(&state))
     }
 
     fn free_bytes_locked(&self, state: &DeviceLedgerState) -> u64 {

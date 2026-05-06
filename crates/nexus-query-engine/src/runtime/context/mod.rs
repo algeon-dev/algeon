@@ -1101,6 +1101,9 @@ pub(super) struct ExecutionContextParts {
 
 impl ExecutionContext {
     /// Starts a builder for an [`ExecutionContext`].
+    // No production callers; kept private-but-present so tests/ui/public_api
+    // pins that this factory stays unreachable outside the crate.
+    #[allow(dead_code)]
     pub(crate) fn builder() -> ExecutionContextBuilder {
         ExecutionContextBuilder::default()
     }
@@ -1110,6 +1113,9 @@ impl ExecutionContext {
     /// The resulting context records [`MemoryResourcePolicy::ExternalRuntime`]
     /// because the runtime, including its allocator and stream, has already been
     /// constructed by the caller.
+    // No production callers; kept private-but-present so tests/ui/public_api
+    // pins that this constructor stays unreachable outside the crate.
+    #[allow(dead_code)]
     pub(crate) fn from_runtime(runtime: cudf::Runtime) -> Result<Self> {
         Self::from_shared_runtime(Arc::new(runtime))
     }
@@ -1118,6 +1124,9 @@ impl ExecutionContext {
     ///
     /// Use this when multiple plans or adapter layers must share the same CUDA
     /// stream, device placement, allocator policy, or boundary observer state.
+    // No production callers; kept private-but-present so tests/ui/public_api
+    // pins that this constructor stays unreachable outside the crate.
+    #[allow(dead_code)]
     pub(crate) fn from_shared_runtime(runtime: Arc<cudf::Runtime>) -> Result<Self> {
         let service_stream_pool =
             ServiceStreamPool::new(runtime.device(), default_service_stream_pool_size_for_device(runtime.device()))
@@ -1513,6 +1522,9 @@ impl ExecutionContext {
     /// memory-control policy is relaxed. This is intentionally narrower than
     /// rebuilding from the shared cudf runtime, which would drop cancellation,
     /// source IO profiles, cache handles, and event sinks.
+    // No production callers; kept private-but-present so tests/ui/public_api
+    // pins that this downgrade stays unreachable outside the crate.
+    #[allow(dead_code)]
     pub(crate) fn for_unbounded_fragment(&self) -> Self {
         let mut context = self.clone();
         context.memory_control_policy = MemoryControlPolicy::Unbounded;
