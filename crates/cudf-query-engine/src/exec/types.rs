@@ -5,7 +5,7 @@ use std::{
 
 use arrow::{datatypes::SchemaRef, record_batch::RecordBatch};
 use cudf::{
-    DataFrame, DataFrameHashJoin, DataType, ExecutionPlacement,
+    DataFrame, DataFrameFilteredJoin, DataFrameHashJoin, DataType, ExecutionPlacement,
     frame::dataframe::{GpuRecordBatch, InfoDetail},
 };
 
@@ -138,6 +138,80 @@ pub struct GpuHashJoinBuildHandle {
     build_columns: Vec<GpuHashJoinBuildColumn>,
     null_equality: JoinNullEquality,
     device_allocated_size_bytes: u64,
+}
+
+#[derive(Clone)]
+pub struct GpuFilteredJoinBuildHandle {
+    filtered_join: DataFrameFilteredJoin,
+    runtime: Arc<cudf::Runtime>,
+    device_placement: DevicePlacement,
+    build_keys: Vec<String>,
+    null_equality: JoinNullEquality,
+    device_allocated_size_bytes: u64,
+}
+
+impl GpuFilteredJoinBuildHandle {
+    pub(crate) fn new(
+        context: &ExecutionContext,
+        filtered_join: DataFrameFilteredJoin,
+        null_equality: JoinNullEquality,
+    ) -> Result<Self> {
+        if filtered_join.build().placement() != context.runtime().placement() {
+            return Err(QueryError::new(
+                crate::error::QueryErrorCode::InvalidPlan,
+                "cudf_query_engine.gpu_filtered_join_build_handle",
+                "native GPU filtered-join build artifact placement does not match the execution context",
+            )
+            .with_fact("build_device", filtered_join.build().placement().device.ordinal())
+            .with_fact("runtime_device", context.runtime().device().ordinal()));
+        }
+        let device_allocated_size_bytes =
+            filtered_join.device_allocated_size_bytes().map(|bytes| bytes as u64).map_err(|error| {
+                QueryError::from_cudf(
+                    "cudf_query_engine.gpu_filtered_join_build_handle",
+                    "failed to observe native cudf reusable filtered join memory",
+                    error,
+                )
+                .with_fact("key_count", filtered_join.build_keys().len())
+                .with_fact("null_equality", null_equality)
+            })?;
+        Ok(Self {
+            build_keys: filtered_join.build_keys().to_vec(),
+            filtered_join,
+            runtime: context.shared_runtime(),
+            device_placement: context.device_placement(),
+            null_equality,
+            device_allocated_size_bytes,
+        })
+    }
+
+    pub(crate) fn filtered_join(&self) -> &DataFrameFilteredJoin {
+        &self.filtered_join
+    }
+
+    pub fn runtime(&self) -> &Arc<cudf::Runtime> {
+        &self.runtime
+    }
+
+    pub fn device_placement(&self) -> DevicePlacement {
+        self.device_placement
+    }
+
+    pub fn placement(&self) -> ExecutionPlacement {
+        self.filtered_join.build().placement()
+    }
+
+    pub fn build_keys(&self) -> &[String] {
+        &self.build_keys
+    }
+
+    pub fn null_equality(&self) -> JoinNullEquality {
+        self.null_equality
+    }
+
+    pub fn device_allocated_size_bytes(&self) -> u64 {
+        self.device_allocated_size_bytes
+    }
 }
 
 impl GpuHashJoinBuildHandle {

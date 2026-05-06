@@ -364,8 +364,11 @@ fn bounded_join_reservation_kinds_are_modeled_without_estimates() {
     assert_eq!(requirements.len(), expected.len());
     assert_eq!(contract.model_status(), "modeled");
     assert_eq!(contract.execution_status(), "enabled");
-    assert_eq!(contract.execution_families().len(), 2);
-    assert_eq!(contract.execution_families_csv(), "root_reusable_hash_join,keyless_conditional_join");
+    assert_eq!(contract.execution_families().len(), 3);
+    assert_eq!(
+        contract.execution_families_csv(),
+        "root_reusable_hash_join,root_filtered_semi_anti_join,keyless_conditional_join"
+    );
     assert!(contract.enabled());
 
     for (requirement, (kind, expected_name, expected_boundary, expected_status, expected_detail)) in
@@ -455,6 +458,18 @@ fn bounded_join_rejection_facts_are_shared_and_estimate_free() {
     assert_eq!(
         facts.get("cudf_rs_hash_join_pre_build_reservation_status").map(String::as_str),
         Some("available_exact_flat_hash_join_builds")
+    );
+    assert_eq!(
+        facts.get("cudf_rs_filtered_join_hash_table_observability").map(String::as_str),
+        Some("filtered_join_device_allocated_size_bytes")
+    );
+    assert_eq!(
+        facts.get("cudf_rs_filtered_join_output_size_observability").map(String::as_str),
+        Some("filtered_join_exact_output_size")
+    );
+    assert_eq!(
+        facts.get("cudf_rs_filtered_join_probe_output_size_hint").map(String::as_str),
+        Some("filtered_join_indices_with_output_size_validation")
     );
     assert_eq!(
         facts.get("cudf_rs_dataframe_gather_output_reservation_contract").map(String::as_str),
@@ -753,17 +768,21 @@ fn query_metrics_have_join_operator_contract() {
     metrics.record_hash_join_cache_miss();
     metrics.record_hash_join_build();
     metrics.record_hash_join_hash_table_bytes(4096);
+    metrics.record_filtered_join_build();
+    metrics.record_filtered_join_hash_table_bytes(2048);
     metrics.record_hash_join_cache_hit();
     metrics.record_hash_join_durable_cache_miss();
     metrics.record_hash_join_durable_cache_insert();
     metrics.record_hash_join_durable_cache_hit();
     assert_eq!(metrics.hash_join_cache_misses, 1);
     assert_eq!(metrics.hash_join_build_count, 1);
+    assert_eq!(metrics.filtered_join_build_count, 1);
     assert_eq!(metrics.hash_join_cache_hits, 1);
     assert_eq!(metrics.hash_join_durable_cache_misses, 1);
     assert_eq!(metrics.hash_join_durable_cache_inserts, 1);
     assert_eq!(metrics.hash_join_durable_cache_hits, 1);
     assert_eq!(metrics.hash_join_hash_table_bytes, 4096);
+    assert_eq!(metrics.filtered_join_hash_table_bytes, 2048);
 }
 
 #[test]

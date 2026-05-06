@@ -546,6 +546,7 @@ pub const BOUNDED_JOIN_RESERVATION_REQUIREMENTS: [BoundedJoinReservationRequirem
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum BoundedJoinExecutionFamily {
     RootReusableHashJoin,
+    RootFilteredSemiAntiJoin,
     KeylessConditionalJoin,
 }
 
@@ -553,13 +554,17 @@ impl BoundedJoinExecutionFamily {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::RootReusableHashJoin => "root_reusable_hash_join",
+            Self::RootFilteredSemiAntiJoin => "root_filtered_semi_anti_join",
             Self::KeylessConditionalJoin => "keyless_conditional_join",
         }
     }
 }
 
-pub const BOUNDED_JOIN_EXECUTION_FAMILIES: [BoundedJoinExecutionFamily; 2] =
-    [BoundedJoinExecutionFamily::RootReusableHashJoin, BoundedJoinExecutionFamily::KeylessConditionalJoin];
+pub const BOUNDED_JOIN_EXECUTION_FAMILIES: [BoundedJoinExecutionFamily; 3] = [
+    BoundedJoinExecutionFamily::RootReusableHashJoin,
+    BoundedJoinExecutionFamily::RootFilteredSemiAntiJoin,
+    BoundedJoinExecutionFamily::KeylessConditionalJoin,
+];
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct BoundedJoinReservationContract;
@@ -664,6 +669,12 @@ impl BoundedJoinReservationContract {
             ),
             ("cudf_rs_hash_join_output_size_observability", "hash_join_exact_output_size".to_string()),
             ("cudf_rs_hash_join_probe_output_size_hint", "hash_join_probe_with_output_size".to_string()),
+            ("cudf_rs_filtered_join_hash_table_observability", "filtered_join_device_allocated_size_bytes".to_string()),
+            ("cudf_rs_filtered_join_output_size_observability", "filtered_join_exact_output_size".to_string()),
+            (
+                "cudf_rs_filtered_join_probe_output_size_hint",
+                "filtered_join_indices_with_output_size_validation".to_string(),
+            ),
             ("cudf_rs_conditional_join_output_size_observability", "conditional_join_exact_output_size".to_string()),
             ("cudf_rs_conditional_join_output_size_hint", "conditional_join_indices_with_output_size".to_string()),
             (

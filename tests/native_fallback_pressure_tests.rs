@@ -406,23 +406,25 @@ fn native_datafusion_execution_report_records_runtime_boundaries() {
     assert_eq!(row.metrics.retry_resource_exhausted_count, 1);
     assert_eq!(row.metrics.retry_reservation_failure_count, 2);
     assert_eq!(row.metrics.hash_join_build_count, 1);
+    assert_eq!(row.metrics.filtered_join_build_count, 6);
     assert_eq!(row.metrics.hash_join_cache_hits, 2);
     assert_eq!(row.metrics.hash_join_cache_misses, 1);
     assert_eq!(row.metrics.hash_join_durable_cache_hits, 3);
     assert_eq!(row.metrics.hash_join_durable_cache_misses, 4);
     assert_eq!(row.metrics.hash_join_durable_cache_inserts, 5);
     assert_eq!(row.metrics.hash_join_hash_table_bytes, 16384);
+    assert_eq!(row.metrics.filtered_join_hash_table_bytes, 8192);
     assert_eq!(row.metrics.join_gather_map_bytes, 2048);
 
     let text = report.to_tsv();
-    assert_eq!(NATIVE_DATAFUSION_EXECUTION_TSV_SCHEMA_VERSION, 5);
+    assert_eq!(NATIVE_DATAFUSION_EXECUTION_TSV_SCHEMA_VERSION, 6);
     assert_eq!(
         NATIVE_DATAFUSION_EXECUTION_TSV_HEADER,
-        "query_id\tphysical_root\tphysical_shape\tnative_candidate_shape\tnative_candidate_shape_family\tplanning_outcome\treason_code\tunsupported_category\tbounded_join_reservation_facts\tpost_native_plan_root\tpost_native_execution_path\trejected_before_execution\tnative_runtime_started\truntime_outcome\truntime_failure\toutput_batches\toutput_rows\toutput_bytes\tgpu_resident_input_handoffs\thost_to_device_uploads\thost_to_device_uploaded_rows\thost_to_device_uploaded_bytes\tdevice_to_host_materializations\tdevice_to_host_materialized_rows\tdevice_to_host_materialized_bytes\tdevice_to_device_copies\tdevice_to_device_copied_bytes\tparquet_files\tparquet_bytes_known\trow_groups_selected\tread_columns\tresident_dataframe_peak_bytes\tallocator_high_water_bytes\treservation_requested_bytes\treservation_granted_bytes\treservation_denied_count\tsource_chunks_planned\tsource_chunks_attempted\tsource_chunks_committed\tsource_chunks_retried\trow_groups_planned\trow_groups_committed\tpartial_aggregate_count\tpartial_aggregate_rows\tfinal_merge_attempts\tfinal_merge_levels\tretry_count\tretry_resource_exhausted_count\tretry_reservation_failure_count\thash_join_build_count\thash_join_cache_hits\thash_join_cache_misses\thash_join_durable_cache_hits\thash_join_durable_cache_misses\thash_join_durable_cache_inserts\thash_join_hash_table_bytes\tjoin_gather_map_bytes\tsource_diagnostics"
+        "query_id\tphysical_root\tphysical_shape\tnative_candidate_shape\tnative_candidate_shape_family\tplanning_outcome\treason_code\tunsupported_category\tbounded_join_reservation_facts\tpost_native_plan_root\tpost_native_execution_path\trejected_before_execution\tnative_runtime_started\truntime_outcome\truntime_failure\toutput_batches\toutput_rows\toutput_bytes\tgpu_resident_input_handoffs\thost_to_device_uploads\thost_to_device_uploaded_rows\thost_to_device_uploaded_bytes\tdevice_to_host_materializations\tdevice_to_host_materialized_rows\tdevice_to_host_materialized_bytes\tdevice_to_device_copies\tdevice_to_device_copied_bytes\tparquet_files\tparquet_bytes_known\trow_groups_selected\tread_columns\tresident_dataframe_peak_bytes\tallocator_high_water_bytes\treservation_requested_bytes\treservation_granted_bytes\treservation_denied_count\tsource_chunks_planned\tsource_chunks_attempted\tsource_chunks_committed\tsource_chunks_retried\trow_groups_planned\trow_groups_committed\tpartial_aggregate_count\tpartial_aggregate_rows\tfinal_merge_attempts\tfinal_merge_levels\tretry_count\tretry_resource_exhausted_count\tretry_reservation_failure_count\thash_join_build_count\tfiltered_join_build_count\thash_join_cache_hits\thash_join_cache_misses\thash_join_durable_cache_hits\thash_join_durable_cache_misses\thash_join_durable_cache_inserts\thash_join_hash_table_bytes\tfiltered_join_hash_table_bytes\tjoin_gather_map_bytes\tsource_diagnostics"
     );
-    assert!(text.starts_with("# native_datafusion_execution_tsv_schema_version=5\n"));
+    assert!(text.starts_with("# native_datafusion_execution_tsv_schema_version=6\n"));
     assert!(text.contains(&format!("{NATIVE_DATAFUSION_EXECUTION_TSV_HEADER}\n")));
-    assert!(text.contains("\taccepted_replaced\tnone\tnone\tnone\tNativeCudfExec\tnative\tfalse\ttrue\tsucceeded\tnone\t1\t4\t256\t1\t0\t0\t0\t1\t4\t256\t2\t512\t1\t1024\t2\t4\t4096\t8192\t128\t128\t0\t6\t7\t5\t2\t8\t4\t5\t9\t2\t1\t3\t1\t2\t1\t2\t1\t3\t4\t5\t16384\t2048\t"));
+    assert!(text.contains("\taccepted_replaced\tnone\tnone\tnone\tNativeCudfExec\tnative\tfalse\ttrue\tsucceeded\tnone\t1\t4\t256\t1\t0\t0\t0\t1\t4\t256\t2\t512\t1\t1024\t2\t4\t4096\t8192\t128\t128\t0\t6\t7\t5\t2\t8\t4\t5\t9\t2\t1\t3\t1\t2\t1\t6\t2\t1\t3\t4\t5\t16384\t8192\t2048\t"));
 }
 
 #[test]
@@ -708,15 +710,15 @@ async fn tpch_datafusion_planning_report_emits_one_stable_row_per_query() {
     let report = NativeDataFusionPlanningReport::collect(items).with_tpch_dataset_metadata(metadata.clone());
 
     assert_eq!(report.rows.len(), TPCH_QUERY_COUNT);
-    assert_eq!(report.accepted_count(), 4);
-    assert_eq!(report.rejected_count(), TPCH_QUERY_COUNT - 4);
+    assert_eq!(report.accepted_count(), 5);
+    assert_eq!(report.rejected_count(), TPCH_QUERY_COUNT - 5);
 
     let actual_ids = report.rows.iter().map(|row| row.query_id.as_str()).collect::<Vec<_>>();
     let expected_ids = tpch_query_ids().collect::<Vec<_>>();
     assert_eq!(actual_ids, expected_ids);
 
     for row in &report.rows {
-        if matches!(row.query_id.as_str(), "q01" | "q06" | "q12" | "q14") {
+        if matches!(row.query_id.as_str(), "q01" | "q04" | "q06" | "q12" | "q14") {
             assert_eq!(row.outcome, NativeDataFusionPlanningOutcome::AcceptedReplaced);
             assert_eq!(row.reason_code.as_deref(), None);
             assert_eq!(row.unsupported_category.as_deref(), None);
@@ -773,7 +775,7 @@ async fn tpch_datafusion_planning_report_emits_one_stable_row_per_query() {
             row.query_id,
             row.physical_shape
         );
-        if matches!(row.query_id.as_str(), "q12" | "q14")
+        if matches!(row.query_id.as_str(), "q04" | "q12" | "q14")
             && row.outcome == NativeDataFusionPlanningOutcome::AcceptedReplaced
         {
             assert!(
@@ -828,7 +830,7 @@ async fn tpch_phase5_progression_contract_pairs_fallback_pressure_and_bounded_pl
                 assert_eq!(planning_row.reason_code, None);
                 assert_eq!(planning_row.post_native_execution_path, NativeDataFusionPostNativeExecutionPath::Native);
             },
-            NativeFallbackPressureOutcome::Rewritten if matches!(query_id, "q12" | "q14") => {
+            NativeFallbackPressureOutcome::Rewritten if matches!(query_id, "q04" | "q12" | "q14") => {
                 assert_eq!(planning_row.outcome, NativeDataFusionPlanningOutcome::AcceptedReplaced);
                 assert_eq!(planning_row.reason_code, None);
                 assert_eq!(planning_row.post_native_execution_path, NativeDataFusionPostNativeExecutionPath::Native);
@@ -1257,12 +1259,14 @@ fn native_execution_metrics_set() -> datafusion::physical_plan::metrics::Metrics
         ("retry_resource_exhausted_count", 1),
         ("retry_reservation_failure_count", 2),
         ("hash_join_build_count", 1),
+        ("filtered_join_build_count", 6),
         ("hash_join_cache_hits", 2),
         ("hash_join_cache_misses", 1),
         ("hash_join_durable_cache_hits", 3),
         ("hash_join_durable_cache_misses", 4),
         ("hash_join_durable_cache_inserts", 5),
         ("hash_join_hash_table_bytes", 16384),
+        ("filtered_join_hash_table_bytes", 8192),
         ("join_gather_map_bytes", 2048),
     ] {
         MetricBuilder::new(&metrics).with_type(MetricType::SUMMARY).counter(name, 0).add(value);
