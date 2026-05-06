@@ -88,6 +88,40 @@ fn native_query_executes_direct_parquet_pipeline_to_host_sink() {
 }
 
 #[test]
+fn native_query_executes_group_only_aggregate_as_distinct_keys() {
+    let dir = unique_temp_dir("cudf-query-engine-native-group-only-aggregate");
+    let path = dir.join("input.parquet");
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let input_schema = write_input_parquet(&runtime, &path);
+    let output_schema = Arc::new(Schema::new(vec![Field::new("key", DataType::Int32, false)]));
+
+    let source = LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(&path).with_file_size_bytes(fs::metadata(&path).unwrap().len())],
+        Arc::clone(&input_schema),
+        vec!["key".to_string()],
+    );
+    let aggregate = AggregateSpec::new(vec![Expr::column("key")], vec![]);
+    let sort = SortSpec::new(vec![SortExpr::new(Expr::column("key"), false, false)]);
+
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LocalParquet(source));
+    let aggregate = builder.add_aggregate(source, aggregate, Arc::clone(&output_schema));
+    let sort = builder.add_sort(aggregate, sort, Arc::clone(&output_schema));
+    let plan = builder.finish_with_host_sink(sort);
+
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+    let result = execute_query_plan(&context, &plan).unwrap();
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    assert_eq!(batch.num_rows(), 3);
+    assert_eq!(batch.num_columns(), 1);
+    assert_eq!(int32_array(batch, 0).values().as_ref(), &[1, 2, 3]);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn native_query_executes_multi_file_direct_parquet_source() {
     let dir = unique_temp_dir("cudf-query-engine-native-execution-multi-file");
     let first_path = dir.join("part-000.parquet");
@@ -788,6 +822,121 @@ fn native_query_executes_inner_join_with_equi_key_and_residual_predicate() {
 }
 
 #[test]
+fn native_query_executes_join_residual_cast_predicate() {
+    let dir = unique_temp_dir("cudf-query-engine-native-mixed-join-cast");
+    let left_path = dir.join("lineitem.parquet");
+    let right_path = dir.join("orders.parquet");
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let left_schema = write_join_left_parquet(&runtime, &left_path);
+    let right_schema = write_join_right_parquet(&runtime, &right_path);
+    let output_schema = Arc::new(Schema::new(vec![
+        Field::new("qty", DataType::Int32, false),
+        Field::new("category", DataType::Utf8, false),
+    ]));
+    let residual = Expr::binary(
+        Expr::cast(Expr::input_column(0, "qty", "qty"), DataType::Float64),
+        BinaryOp::Gt,
+        Expr::binary(
+            Expr::cast(Expr::input_column(1, "order_id", "right_order_id"), DataType::Float64),
+            BinaryOp::Multiply,
+            Expr::literal(LiteralValue::Float64(10.0)),
+        ),
+    );
+
+    let mut builder = QueryPlanBuilder::new();
+    let left =
+        builder.add_source(SourceNode::LocalParquet(join_left_source(&left_path, &left_schema, &["order_id", "qty"])));
+    let right = builder.add_source(SourceNode::LocalParquet(join_right_source(
+        &right_path,
+        &right_schema,
+        &["order_id", "category"],
+    )));
+    let join = builder.add_join(
+        left,
+        right,
+        JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
+            .with_residual_predicate(residual)
+            .with_output_projection(vec![
+                JoinOutputColumn::left(cudf_query_engine::ColumnRef::input(0, "qty", "qty"), "qty"),
+                JoinOutputColumn::right(cudf_query_engine::ColumnRef::input(1, "category", "category"), "category"),
+            ])
+            .with_build_side(JoinSide::Right),
+        Arc::clone(&output_schema),
+    );
+    let plan = builder.finish_with_host_sink(join);
+
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+    let result = execute_query_plan(&context, &plan).unwrap();
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    assert_eq!(batch.num_rows(), 1);
+    assert_eq!(int32_array(batch, 0).values().as_ref(), &[25]);
+    assert_eq!(string_array(batch, 1).iter().collect::<Vec<_>>(), vec![Some("two")]);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn native_query_executes_join_residual_decimal_to_float_cast_predicate() {
+    let dir = unique_temp_dir("cudf-query-engine-native-mixed-join-decimal-cast");
+    let left_path = dir.join("lineitem.parquet");
+    let right_path = dir.join("orders.parquet");
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let left_schema = write_join_left_decimal_parquet(&runtime, &left_path);
+    let right_schema = write_join_right_parquet(&runtime, &right_path);
+    let output_schema = Arc::new(Schema::new(vec![
+        Field::new("amount", DataType::Decimal128(15, 2), false),
+        Field::new("category", DataType::Utf8, false),
+    ]));
+    let residual = Expr::binary(
+        Expr::cast(Expr::input_column(0, "amount", "amount"), DataType::Float64),
+        BinaryOp::Eq,
+        Expr::binary(
+            Expr::cast(Expr::input_column(1, "order_id", "right_order_id"), DataType::Float64),
+            BinaryOp::Multiply,
+            Expr::literal(LiteralValue::Float64(100.0)),
+        ),
+    );
+
+    let mut builder = QueryPlanBuilder::new();
+    let left = builder.add_source(SourceNode::LocalParquet(join_left_source(
+        &left_path,
+        &left_schema,
+        &["order_id", "amount"],
+    )));
+    let right = builder.add_source(SourceNode::LocalParquet(join_right_source(
+        &right_path,
+        &right_schema,
+        &["order_id", "category"],
+    )));
+    let join = builder.add_join(
+        left,
+        right,
+        JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
+            .with_residual_predicate(residual)
+            .with_output_projection(vec![
+                JoinOutputColumn::left(cudf_query_engine::ColumnRef::input(0, "amount", "amount"), "amount"),
+                JoinOutputColumn::right(cudf_query_engine::ColumnRef::input(1, "category", "category"), "category"),
+            ])
+            .with_build_side(JoinSide::Right),
+        Arc::clone(&output_schema),
+    );
+    let plan = builder.finish_with_host_sink(join);
+
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+    let result = execute_query_plan(&context, &plan).unwrap();
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    assert_eq!(batch.num_rows(), 2);
+    assert_eq!(decimal128_array(batch, 0).values().as_ref(), &[20_000, 30_000]);
+    assert_eq!(string_array(batch, 1).iter().collect::<Vec<_>>(), vec![Some("two"), Some("three")]);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn native_query_executes_join_residual_literal_in_list_predicate() {
     let dir = unique_temp_dir("cudf-query-engine-native-join-residual-in-list");
     let left_path = dir.join("lineitem.parquet");
@@ -1395,9 +1544,26 @@ fn native_query_rejects_join_residual_in_list_with_non_literal_values_before_sou
 }
 
 #[test]
+fn native_query_rejects_unsupported_join_residual_cast_before_source_read() {
+    let error = residual_validation_error(
+        JoinType::Inner,
+        vec![id_join_key()],
+        Expr::binary(
+            Expr::cast(Expr::input_column(0, "id", "left_id"), DataType::Int32),
+            BinaryOp::Eq,
+            Expr::input_column(1, "id", "right_id"),
+        ),
+    );
+
+    assert_eq!(error.code(), QueryErrorCode::UnsupportedExpression);
+    assert_eq!(error.operation(), "cudf_query_engine.join.validate_residual");
+    assert_eq!(error.fact_value("target_type"), Some("Int32"));
+    assert!(error.fact_value("path").is_none());
+}
+
+#[test]
 fn native_query_rejects_unsupported_residual_expression_families_before_source_read() {
     let cases = vec![
-        ("CAST", Expr::cast(Expr::input_column(0, "id", "left_id"), DataType::Int64)),
         ("LIKE", Expr::like(Expr::input_column(0, "id", "left_id"), "1%")),
         ("SUBSTRING", Expr::substring(Expr::input_column(0, "id", "left_id"), 1, Some(1))),
         (
@@ -1726,6 +1892,46 @@ fn native_query_rejects_phase2_scalar_type_mismatch_before_cudf_execution() {
     assert_eq!(error.code(), QueryErrorCode::UnsupportedType);
     assert_eq!(error.operation(), "cudf_query_engine.plan.validate_expr");
     assert_eq!(error.fact_value("context"), Some("LIKE input"));
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn native_query_rejects_implicit_decimal_float_arithmetic_before_cudf_execution() {
+    let dir = unique_temp_dir("cudf-query-engine-native-execution-decimal-float-implicit-reject");
+    let path = dir.join("tpch-like.parquet");
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let input_schema = write_tpch_like_types_parquet(&runtime, &path);
+    let output_schema = Arc::new(Schema::new(vec![Field::new("bad_amount", DataType::Decimal128(15, 2), true)]));
+    let source = LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(&path).with_file_size_bytes(fs::metadata(&path).unwrap().len())],
+        Arc::clone(&input_schema),
+        vec!["amount".to_string()],
+    );
+
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LocalParquet(source));
+    let projection = builder.add_projection(
+        source,
+        vec![
+            Expr::binary(Expr::column("amount"), BinaryOp::Add, Expr::literal(LiteralValue::Float64(1.0)))
+                .alias("bad_amount"),
+        ],
+        output_schema,
+    );
+    let plan = builder.finish_with_host_sink(projection);
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+
+    let error = match execute_query_plan(&context, &plan) {
+        Ok(_) => panic!("native plan validation should reject implicit Decimal128/Float64 arithmetic"),
+        Err(error) => error,
+    };
+    assert_eq!(error.code(), QueryErrorCode::UnsupportedType);
+    assert_eq!(error.operation(), "cudf_query_engine.plan.validate_expr");
+    assert_eq!(error.fact_value("context"), Some("binary arithmetic operands"));
+    assert_eq!(error.fact_value("left_type"), Some("Decimal128(15, 2)"));
+    assert_eq!(error.fact_value("right_type"), Some("Float64"));
+    assert!(error.fact_value("path").is_none());
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -3734,6 +3940,27 @@ fn write_join_left_parquet(runtime: &cudf::Runtime, path: &std::path::Path) -> A
     let batch = RecordBatch::try_new(
         Arc::clone(&schema),
         vec![Arc::new(Int32Array::from(vec![1, 2, 2, 3])), Arc::new(Int32Array::from(vec![10, 20, 25, 30]))],
+    )
+    .unwrap();
+    DataFrame::from_record_batch(runtime, &batch).unwrap().write_parquet(path).unwrap();
+    schema
+}
+
+fn write_join_left_decimal_parquet(runtime: &cudf::Runtime, path: &std::path::Path) -> Arc<Schema> {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("order_id", DataType::Int32, false),
+        Field::new("amount", DataType::Decimal128(15, 2), false),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int32Array::from(vec![1, 2, 2, 3])),
+            Arc::new(
+                Decimal128Array::from_iter_values([12_345, 20_000, 999, 30_000])
+                    .with_precision_and_scale(15, 2)
+                    .unwrap(),
+            ),
+        ],
     )
     .unwrap();
     DataFrame::from_record_batch(runtime, &batch).unwrap().write_parquet(path).unwrap();

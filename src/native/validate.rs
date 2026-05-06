@@ -40,11 +40,7 @@ pub(super) fn is_supported_native_cast(source_type: &DataType, target_type: &Dat
     is_supported_arrow_cast(source_type, target_type)
 }
 
-pub(super) fn validate_aggregate(
-    aggregate: &AggregateExec,
-    aggregate_args_must_be_columns: bool,
-    allow_partial: bool,
-) -> Result<(), FallbackReason> {
+pub(super) fn validate_aggregate(aggregate: &AggregateExec, allow_partial: bool) -> Result<(), FallbackReason> {
     if !(matches!(aggregate.mode(), AggregateMode::Single | AggregateMode::SinglePartitioned)
         || allow_partial && matches!(aggregate.mode(), AggregateMode::Partial))
     {
@@ -73,12 +69,6 @@ pub(super) fn validate_aggregate(
         let [arg] = expressions.as_slice() else {
             return Err(FallbackReason::UnsupportedExpression);
         };
-        if aggregate_args_must_be_columns
-            && !aggregate_expr.fun().name().eq_ignore_ascii_case("count")
-            && arg.as_any().downcast_ref::<Column>().is_none()
-        {
-            return Err(FallbackReason::UnsupportedExpression);
-        }
         validate_physical_expr(arg, &aggregate.input().schema())?;
     }
     for (group_expr, _alias) in group_by.expr() {

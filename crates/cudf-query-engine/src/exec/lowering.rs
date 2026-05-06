@@ -382,14 +382,6 @@ pub(super) fn lower_aggregate_spec_keys(spec: &AggregateSpec) -> Result<LoweredA
             "native execution currently requires at least one group key",
         ));
     }
-    if spec.aggr_exprs.is_empty() {
-        return Err(QueryError::new(
-            QueryErrorCode::UnsupportedOperator,
-            "cudf_query_engine.aggregate.lower",
-            "native execution requires at least one aggregate expression",
-        ));
-    }
-
     let mut key_columns = Vec::with_capacity(spec.group_exprs.len());
     let mut output_key_names = Vec::with_capacity(spec.group_exprs.len());
     for expr in &spec.group_exprs {

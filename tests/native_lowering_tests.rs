@@ -565,6 +565,179 @@ fn hash_join_filter_literal_in_list_lowers_to_native_residual_predicate() {
 }
 
 #[test]
+fn hash_join_filter_cast_lowers_to_native_residual_predicate() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-hash-join-filter-cast");
+    let left_path = dir.join("left.parquet");
+    let right_path = dir.join("right.parquet");
+    write_join_left_parquet_file(&left_path);
+    write_join_right_parquet_file(&right_path);
+    let plan = hash_join_filter_cast_aggregate_sort_limit_plan(parquet_scan(&left_path), parquet_scan(&right_path));
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    let join = rewritten_native_join(&result);
+    let residual = join.spec.residual_predicate.as_ref().expect("join filter should lower as residual predicate");
+    assert!(matches!(
+        residual,
+        Expr::Binary { left, right, .. }
+            if matches!(
+                left.as_ref(),
+                Expr::Cast { expr, target_type }
+                    if matches!(expr.as_ref(), Expr::Column(column) if column.to_string() == "input0.l_payload")
+                        && matches!(target_type, DataType::Float64)
+            )
+                && matches!(
+                    right.as_ref(),
+                    Expr::Cast { expr, target_type }
+                        if matches!(expr.as_ref(), Expr::Column(column) if column.to_string() == "input1.r_payload")
+                            && matches!(target_type, DataType::Float64)
+                )
+    ));
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn hash_join_filter_decimal_to_float_cast_lowers_to_native_residual_predicate() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-hash-join-filter-decimal-cast");
+    let left_path = dir.join("left.parquet");
+    let right_path = dir.join("right.parquet");
+    write_join_left_decimal_payload_parquet_file(&left_path);
+    write_join_right_decimal_payload_parquet_file(&right_path);
+    let plan = hash_join_filter_cast_aggregate_sort_limit_plan(parquet_scan(&left_path), parquet_scan(&right_path));
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    let join = rewritten_native_join(&result);
+    let residual = join.spec.residual_predicate.as_ref().expect("join filter should lower as residual predicate");
+    assert!(matches!(
+        residual,
+        Expr::Binary { left, right, .. }
+            if matches!(
+                left.as_ref(),
+                Expr::Cast { expr, target_type }
+                    if matches!(expr.as_ref(), Expr::Column(column) if column.to_string() == "input0.l_payload")
+                        && matches!(target_type, DataType::Float64)
+            )
+                && matches!(
+                    right.as_ref(),
+                    Expr::Cast { expr, target_type }
+                        if matches!(expr.as_ref(), Expr::Column(column) if column.to_string() == "input1.r_payload")
+                            && matches!(target_type, DataType::Float64)
+                )
+    ));
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn hash_join_filter_decimal_cast_materializes_inputs_before_residual_predicate() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-hash-join-filter-decimal-materialized-cast");
+    let left_path = dir.join("left.parquet");
+    let right_path = dir.join("right.parquet");
+    write_join_left_parquet_file(&left_path);
+    write_join_right_parquet_file(&right_path);
+    let plan = hash_join_filter_decimal_cast_materialization_aggregate_sort_limit_plan(
+        parquet_scan(&left_path),
+        parquet_scan(&right_path),
+        JoinType::Inner,
+    );
+
+    let result = lower_physical_plan_to_native(plan);
+
+    let join = rewritten_native_join(&result);
+    let residual = join.spec.residual_predicate.as_ref().expect("join filter should lower as residual predicate");
+    assert!(matches!(
+        residual,
+        Expr::Binary { left, right, .. }
+            if matches!(
+                left.as_ref(),
+                Expr::Column(column) if column.to_string() == "input0.__cudf_join_residual_left_0"
+            )
+                && matches!(
+                    right.as_ref(),
+                    Expr::Column(column) if column.to_string() == "input1.__cudf_join_residual_right_0"
+                )
+    ));
+    assert_join_output_projection(
+        &join.spec.output_projection,
+        &[
+            (NativeJoinSide::Left, "input0.key", "key"),
+            (NativeJoinSide::Left, "input0.l_m00", "l_m00"),
+            (NativeJoinSide::Right, "input1.r_m01", "r_m01"),
+        ],
+    );
+    assert_join_input_materializes_decimal_cast(
+        &result.plans[0],
+        join.inputs[0],
+        "__cudf_join_residual_left_0",
+        "l_payload",
+    );
+    assert_join_input_materializes_decimal_cast(
+        &result.plans[0],
+        join.inputs[1],
+        "__cudf_join_residual_right_0",
+        "r_payload",
+    );
+    let sources = native_local_parquet_sources(&result.plans[0]);
+    assert_eq!(sources.len(), 2);
+    assert_eq!(sources[0].read_columns, vec!["key".to_string(), "l_m00".to_string(), "l_payload".to_string()]);
+    assert_eq!(sources[1].read_columns, vec!["key".to_string(), "r_m01".to_string(), "r_payload".to_string()]);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn right_hash_join_filter_decimal_cast_materialization_uses_swapped_native_inputs() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-right-hash-join-filter-decimal-materialized-cast");
+    let left_path = dir.join("left.parquet");
+    let right_path = dir.join("right.parquet");
+    write_join_left_parquet_file(&left_path);
+    write_join_right_parquet_file(&right_path);
+    let plan = hash_join_filter_decimal_cast_materialization_aggregate_sort_limit_plan(
+        parquet_scan(&left_path),
+        parquet_scan(&right_path),
+        JoinType::Right,
+    );
+
+    let result = lower_physical_plan_to_native(plan);
+
+    let join = rewritten_native_join(&result);
+    assert_eq!(join.spec.join_type, NativeJoinType::Left);
+    let residual = join.spec.residual_predicate.as_ref().expect("join filter should lower as residual predicate");
+    assert!(matches!(
+        residual,
+        Expr::Binary { left, right, .. }
+            if matches!(
+                left.as_ref(),
+                Expr::Column(column) if column.to_string() == "input1.__cudf_join_residual_left_0"
+            )
+                && matches!(
+                    right.as_ref(),
+                    Expr::Column(column) if column.to_string() == "input0.__cudf_join_residual_right_0"
+                )
+    ));
+    assert_join_input_materializes_decimal_cast(
+        &result.plans[0],
+        join.inputs[0],
+        "__cudf_join_residual_right_0",
+        "r_payload",
+    );
+    assert_join_input_materializes_decimal_cast(
+        &result.plans[0],
+        join.inputs[1],
+        "__cudf_join_residual_left_0",
+        "l_payload",
+    );
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn right_hash_join_lowers_to_swapped_native_left_join_spec() {
     let dir = unique_temp_dir("datafusion-cudf-native-lowering-right-hash-join");
     let left_path = dir.join("left.parquet");
@@ -805,6 +978,63 @@ fn pushed_down_parquet_predicate_with_filter_is_pruning_only_evidence() {
     assert_eq!(result.rewritten_count(), 1);
     assert_eq!(result.rejected_count(), 0);
     assert!(matches!(result.report.outcomes()[0], CandidateOutcome::Rewritten { .. }));
+    assert_eq!(result.source_diagnostics.len(), 1);
+    assert!(result.source_diagnostics[0].direct_device_read);
+    assert_eq!(result.source_diagnostics[0].predicate_disposition.as_str(), "pruning_only");
+    assert!(result.source_diagnostics[0].rejected_features.is_empty());
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn pushed_down_parquet_predicate_subset_of_filter_is_pruning_only_evidence() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-pushed-predicate-subset");
+    let path = dir.join("input.parquet");
+    write_numeric_parquet_file(&path);
+    let scan = parquet_scan_with_pushed_down_predicate(&path);
+    let scan_schema = scan.schema();
+    let pushed =
+        binary(col("payload", &scan_schema).unwrap(), Operator::GtEq, lit(ScalarValue::Int32(Some(10))), &scan_schema)
+            .unwrap();
+    let retained =
+        binary(col("key", &scan_schema).unwrap(), Operator::NotEq, lit(ScalarValue::Int32(Some(2))), &scan_schema)
+            .unwrap();
+    let filter_predicate = binary(pushed, Operator::And, retained, &scan_schema).unwrap();
+    let plan = aggregate_sort_limit_plan_with_filter(scan, filter_predicate, Operator::Plus);
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_eq!(result.rewritten_count(), 1);
+    assert_eq!(result.rejected_count(), 0);
+    assert!(matches!(result.report.outcomes()[0], CandidateOutcome::Rewritten { .. }));
+    assert_eq!(result.source_diagnostics.len(), 1);
+    assert!(result.source_diagnostics[0].direct_device_read);
+    assert_eq!(result.source_diagnostics[0].predicate_disposition.as_str(), "pruning_only");
+    assert!(result.source_diagnostics[0].rejected_features.is_empty());
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn pushed_down_parquet_predicate_uses_filter_input_schema_for_validation() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-pushed-predicate-filter-schema");
+    let path = dir.join("input.parquet");
+    write_parquet_file_with_tpch_like_columns(&path);
+    let scan = parquet_scan_with_projection_and_pushed_label_predicate(&path);
+    let scan_schema = scan.schema();
+    let predicate = binary(
+        col("label", &scan_schema).unwrap(),
+        Operator::NotEq,
+        lit(ScalarValue::Utf8View(Some("z".to_string()))),
+        &scan_schema,
+    )
+    .unwrap();
+    let plan = aggregate_sort_limit_plan_with_filter(scan, predicate, Operator::Plus);
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.source_diagnostics.len(), 1);
     assert!(result.source_diagnostics[0].direct_device_read);
     assert_eq!(result.source_diagnostics[0].predicate_disposition.as_str(), "pruning_only");
@@ -2167,7 +2397,6 @@ fn substring_unsupported_arity_is_rejected_during_native_planning() {
 fn non_numeric_cast_targets_are_rejected_during_native_planning() {
     for (name, target_type, literal) in [
         ("string", DataType::Utf8, ScalarValue::Utf8(Some("10".to_string()))),
-        ("decimal", DataType::Decimal128(10, 0), ScalarValue::Decimal128(Some(10), 10, 0)),
         (
             "timestamp",
             DataType::Timestamp(TimeUnit::Nanosecond, None),
@@ -2198,6 +2427,26 @@ fn non_numeric_cast_targets_are_rejected_during_native_planning() {
 
         fs::remove_dir_all(dir).unwrap();
     }
+}
+
+#[test]
+fn explicit_numeric_to_decimal_cast_lowers_during_native_planning() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-numeric-decimal-cast");
+    let path = dir.join("input.parquet");
+    write_numeric_parquet_file(&path);
+    let scan = parquet_scan(&path);
+    let scan_schema = scan.schema();
+    let cast = Arc::new(CastExpr::new(col("payload", &scan_schema).unwrap(), DataType::Decimal128(10, 0), None));
+    let predicate = binary(cast, Operator::Eq, lit(ScalarValue::Decimal128(Some(10), 10, 0)), &scan_schema).unwrap();
+    let plan = aggregate_sort_limit_plan_with_filter(scan, predicate, Operator::Plus);
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    let native = result.plans.first().expect("decimal cast should lower to a native plan").to_string();
+    assert!(native.contains("CAST(payload AS Decimal128(10, 0))"), "{native}");
+
+    fs::remove_dir_all(dir).unwrap();
 }
 
 #[test]
@@ -2789,6 +3038,24 @@ fn parquet_scan_with_pushed_down_predicate_value(path: &std::path::Path, value: 
     DataSourceExec::from_data_source(file_scan)
 }
 
+fn parquet_scan_with_projection_and_pushed_label_predicate(path: &std::path::Path) -> Arc<dyn ExecutionPlan> {
+    let scan = parquet_scan_with_projection_indices(path, vec![0, 4, 2, 3]);
+    let data_source = scan.as_any().downcast_ref::<DataSourceExec>().expect("parquet scan should be DataSourceExec");
+    let (file_scan, parquet_source) =
+        data_source.downcast_to_file_source::<ParquetSource>().expect("parquet scan should use ParquetSource");
+    let scan_schema = scan.schema();
+    let predicate = binary(
+        col("label", &scan_schema).unwrap(),
+        Operator::NotEq,
+        lit(ScalarValue::Utf8View(Some("z".to_string()))),
+        &scan_schema,
+    )
+    .unwrap();
+    let parquet_source = parquet_source.with_predicate(predicate);
+    let file_scan = FileScanConfigBuilder::from(file_scan.clone()).with_source(Arc::new(parquet_source)).build();
+    DataSourceExec::from_data_source(file_scan)
+}
+
 fn parquet_scan_with_access_plan(path: &std::path::Path, access_plan: ParquetAccessPlan) -> Arc<dyn ExecutionPlan> {
     let scan = parquet_scan(path);
     let data_source = scan.as_any().downcast_ref::<DataSourceExec>().expect("parquet scan should be DataSourceExec");
@@ -3082,6 +3349,39 @@ fn assert_join_output_projection(
     assert_eq!(actual, expected);
 }
 
+fn assert_join_input_materializes_decimal_cast(
+    plan: &cudf_query_engine::QueryPlan,
+    input: cudf_query_engine::NodeId,
+    alias: &str,
+    source_column: &str,
+) {
+    let input_node = plan.node(input).expect("join input should exist");
+    let PlanNode::Projection(projection) = &input_node.kind else {
+        panic!("join input should be a residual materialization projection");
+    };
+    assert!(input_node.output_schema().field_with_name(alias).is_ok());
+    assert!(
+        projection.expressions.iter().any(|expr| {
+            matches!(
+                expr,
+                Expr::Alias { expr, alias: actual_alias }
+                    if actual_alias == alias
+                        && matches!(
+                            expr.as_ref(),
+                            Expr::Cast { expr, target_type }
+                                if matches!(target_type, DataType::Decimal128(10, 0))
+                                    && matches!(
+                                        expr.as_ref(),
+                                        Expr::Column(column) if column.name() == source_column
+                                    )
+                        )
+            )
+        }),
+        "join input projection should materialize {source_column} decimal cast as {alias}: {:?}",
+        projection.expressions
+    );
+}
+
 fn hash_join_filter_aggregate_sort_limit_plan(
     left: Arc<dyn ExecutionPlan>,
     right: Arc<dyn ExecutionPlan>,
@@ -3129,6 +3429,52 @@ fn hash_join_filter_aggregate_sort_limit_plan(
     aggregate_sort_limit_join_plan(join)
 }
 
+fn hash_join_filter_decimal_cast_materialization_aggregate_sort_limit_plan(
+    left: Arc<dyn ExecutionPlan>,
+    right: Arc<dyn ExecutionPlan>,
+    join_type: JoinType,
+) -> Arc<dyn ExecutionPlan> {
+    let left_schema = left.schema();
+    let right_schema = right.schema();
+    let filter_schema = Arc::new(Schema::new(vec![
+        left_schema.field_with_name("l_payload").unwrap().clone(),
+        right_schema.field_with_name("r_payload").unwrap().clone(),
+    ]));
+    let left_cast: Arc<dyn PhysicalExpr> =
+        Arc::new(CastExpr::new(col("l_payload", &filter_schema).unwrap(), DataType::Decimal128(10, 0), None));
+    let right_cast: Arc<dyn PhysicalExpr> =
+        Arc::new(CastExpr::new(col("r_payload", &filter_schema).unwrap(), DataType::Decimal128(10, 0), None));
+    let filter_expr = binary(left_cast, Operator::Gt, right_cast, &filter_schema).unwrap();
+    let filter = JoinFilter::new(
+        filter_expr,
+        vec![
+            ColumnIndex { index: left_schema.index_of("l_payload").unwrap(), side: JoinSide::Left },
+            ColumnIndex { index: right_schema.index_of("r_payload").unwrap(), side: JoinSide::Right },
+        ],
+        filter_schema,
+    );
+    let join: Arc<dyn ExecutionPlan> = Arc::new(
+        HashJoinExec::try_new(
+            left,
+            right,
+            vec![(col("key", &left_schema).unwrap(), col("key", &right_schema).unwrap())],
+            Some(filter),
+            &join_type,
+            Some(vec![
+                left_schema.index_of("key").unwrap(),
+                left_schema.index_of("l_m00").unwrap(),
+                left_schema.fields().len() + right_schema.index_of("r_m01").unwrap(),
+            ]),
+            PartitionMode::CollectLeft,
+            NullEquality::NullEqualsNothing,
+            false,
+        )
+        .unwrap(),
+    );
+
+    aggregate_sort_limit_join_plan(join)
+}
+
 fn hash_join_filter_in_list_aggregate_sort_limit_plan(
     left: Arc<dyn ExecutionPlan>,
     right: Arc<dyn ExecutionPlan>,
@@ -3154,6 +3500,51 @@ fn hash_join_filter_in_list_aggregate_sort_limit_plan(
     )
     .unwrap();
     let filter_expr = binary(in_list_expr, Operator::And, comparison, &filter_schema).unwrap();
+    let filter = JoinFilter::new(
+        filter_expr,
+        vec![
+            ColumnIndex { index: left_schema.index_of("l_payload").unwrap(), side: JoinSide::Left },
+            ColumnIndex { index: right_schema.index_of("r_payload").unwrap(), side: JoinSide::Right },
+        ],
+        filter_schema,
+    );
+    let join: Arc<dyn ExecutionPlan> = Arc::new(
+        HashJoinExec::try_new(
+            left,
+            right,
+            vec![(col("key", &left_schema).unwrap(), col("key", &right_schema).unwrap())],
+            Some(filter),
+            &JoinType::Inner,
+            Some(vec![
+                left_schema.index_of("key").unwrap(),
+                left_schema.index_of("l_m00").unwrap(),
+                left_schema.fields().len() + right_schema.index_of("r_m01").unwrap(),
+            ]),
+            PartitionMode::CollectLeft,
+            NullEquality::NullEqualsNothing,
+            false,
+        )
+        .unwrap(),
+    );
+
+    aggregate_sort_limit_join_plan(join)
+}
+
+fn hash_join_filter_cast_aggregate_sort_limit_plan(
+    left: Arc<dyn ExecutionPlan>,
+    right: Arc<dyn ExecutionPlan>,
+) -> Arc<dyn ExecutionPlan> {
+    let left_schema = left.schema();
+    let right_schema = right.schema();
+    let filter_schema = Arc::new(Schema::new(vec![
+        left_schema.field_with_name("l_payload").unwrap().clone(),
+        right_schema.field_with_name("r_payload").unwrap().clone(),
+    ]));
+    let left_cast: Arc<dyn PhysicalExpr> =
+        Arc::new(CastExpr::new(col("l_payload", &filter_schema).unwrap(), DataType::Float64, None));
+    let right_cast: Arc<dyn PhysicalExpr> =
+        Arc::new(CastExpr::new(col("r_payload", &filter_schema).unwrap(), DataType::Float64, None));
+    let filter_expr = binary(left_cast, Operator::Gt, right_cast, &filter_schema).unwrap();
     let filter = JoinFilter::new(
         filter_expr,
         vec![
@@ -3760,6 +4151,42 @@ fn write_join_right_parquet_file(path: &std::path::Path) {
         vec![
             Arc::new(Int32Array::from(vec![1, 2, 3])),
             Arc::new(Int32Array::from(vec![10, 10, 10])),
+            Arc::new(Int64Array::from(vec![1, 2, 3])),
+        ],
+    )
+    .unwrap();
+    write_batch(path, schema, batch);
+}
+
+fn write_join_left_decimal_payload_parquet_file(path: &std::path::Path) {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int32, false),
+        Field::new("l_payload", DataType::Decimal128(15, 2), false),
+        Field::new("l_m00", DataType::Int64, false),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int32Array::from(vec![1, 2, 1])),
+            Arc::new(Decimal128Array::from_iter_values([500, 2_000, 3_000]).with_precision_and_scale(15, 2).unwrap()),
+            Arc::new(Int64Array::from(vec![100, 200, 300])),
+        ],
+    )
+    .unwrap();
+    write_batch(path, schema, batch);
+}
+
+fn write_join_right_decimal_payload_parquet_file(path: &std::path::Path) {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int32, false),
+        Field::new("r_payload", DataType::Decimal128(15, 2), false),
+        Field::new("r_m01", DataType::Int64, false),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int32Array::from(vec![1, 2, 3])),
+            Arc::new(Decimal128Array::from_iter_values([1_000, 1_000, 1_000]).with_precision_and_scale(15, 2).unwrap()),
             Arc::new(Int64Array::from(vec![1, 2, 3])),
         ],
     )

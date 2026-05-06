@@ -4,7 +4,7 @@ use std::{
 };
 
 use datafusion::{
-    common::{Result as DataFusionResult, config::ConfigOptions},
+    common::{DataFusionError, Result as DataFusionResult, config::ConfigOptions},
     datasource::{physical_plan::ParquetSource, source::DataSourceExec},
     physical_optimizer::PhysicalOptimizerRule,
     physical_plan::{
@@ -208,32 +208,16 @@ impl PhysicalOptimizerRule for CudfNativePhysicalOptimizerRule {
             return Ok(plan);
         };
 
-        let lowering_input = match self.phase {
-            NativeOptimizerPhase::CountOnlyProbe => peel_output_requirement_exec(Arc::clone(&plan)),
-            NativeOptimizerPhase::Final => Arc::clone(&plan),
-        };
-        let lowering = match self.phase {
+        let optimized = match self.phase {
             NativeOptimizerPhase::CountOnlyProbe => {
-                crate::native::lower_count_only_physical_plan_to_native(lowering_input)
+                optimize_count_only_native_plan(Arc::clone(&plan), native_execution_config)?
             },
-            NativeOptimizerPhase::Final => crate::native::lower_physical_plan_to_native(Arc::clone(&plan)),
+            NativeOptimizerPhase::Final => optimize_final_native_plan(Arc::clone(&plan), native_execution_config)?,
         };
-        *self.state.last_report.lock().expect("native planning report mutex poisoned") = Some(lowering.report.clone());
+        *self.state.last_report.lock().expect("native planning report mutex poisoned") = Some(optimized.report.clone());
         *self.state.last_source_diagnostics.lock().expect("native source diagnostics mutex poisoned") =
-            lowering.source_diagnostics.clone();
-
-        if lowering.plans.len() != 1 || lowering.rewritten_count() != 1 {
-            return Ok(plan);
-        }
-        if native_execution_boundary_rejection(&lowering.plans[0], native_execution_config).is_some() {
-            let boundary_report = native_execution_boundary_report(&lowering.report);
-            *self.state.last_report.lock().expect("native planning report mutex poisoned") = Some(boundary_report);
-            return Ok(plan);
-        }
-
-        NativeCudfExec::try_new(lowering.plans[0].clone(), native_execution_config.clone())
-            .map(|plan| Arc::new(plan) as Arc<dyn ExecutionPlan>)
-            .map_err(Into::into)
+            optimized.source_diagnostics.clone();
+        Ok(optimized.plan)
     }
 
     fn name(&self) -> &str {
@@ -246,6 +230,130 @@ impl PhysicalOptimizerRule for CudfNativePhysicalOptimizerRule {
     fn schema_check(&self) -> bool {
         true
     }
+}
+
+#[derive(Debug, Clone)]
+struct NativeOptimizationAttempt {
+    plan: Arc<dyn ExecutionPlan>,
+    report: PlanningReport,
+    source_diagnostics: Vec<cudf_query_engine::SourceDiagnostics>,
+    rewritten: bool,
+}
+
+fn optimize_count_only_native_plan(
+    plan: Arc<dyn ExecutionPlan>,
+    native_execution_config: &NativeCudfExecutionConfig,
+) -> DataFusionResult<NativeOptimizationAttempt> {
+    let lowering_input = peel_output_requirement_exec(Arc::clone(&plan));
+    let lowering = crate::native::lower_count_only_physical_plan_to_native(lowering_input);
+    replace_lowered_root_or_keep_plan(plan, lowering, native_execution_config)
+}
+
+fn optimize_final_native_plan(
+    plan: Arc<dyn ExecutionPlan>,
+    native_execution_config: &NativeCudfExecutionConfig,
+) -> DataFusionResult<NativeOptimizationAttempt> {
+    let lowering = crate::native::lower_physical_plan_to_native(Arc::clone(&plan));
+    if lowering.plans.len() == 1 && lowering.rewritten_count() == 1 {
+        return replace_lowered_root_or_keep_plan(plan, lowering, native_execution_config);
+    }
+
+    let mut report = lowering.report.clone();
+    let mut source_diagnostics = lowering.source_diagnostics.clone();
+    let Some(rewritten_plan) = optimize_native_children_for_host_arrow_boundary(
+        Arc::clone(&plan),
+        native_execution_config,
+        &mut report,
+        &mut source_diagnostics,
+    )?
+    else {
+        return Ok(NativeOptimizationAttempt { plan, report, source_diagnostics, rewritten: false });
+    };
+
+    Ok(NativeOptimizationAttempt { plan: rewritten_plan, report, source_diagnostics, rewritten: true })
+}
+
+fn replace_lowered_root_or_keep_plan(
+    plan: Arc<dyn ExecutionPlan>,
+    lowering: crate::native::NativeLoweringResult,
+    native_execution_config: &NativeCudfExecutionConfig,
+) -> DataFusionResult<NativeOptimizationAttempt> {
+    if lowering.plans.len() != 1 || lowering.rewritten_count() != 1 {
+        return Ok(NativeOptimizationAttempt {
+            plan,
+            report: lowering.report,
+            source_diagnostics: lowering.source_diagnostics,
+            rewritten: false,
+        });
+    }
+    if native_execution_boundary_rejection(&lowering.plans[0], native_execution_config).is_some() {
+        return Ok(NativeOptimizationAttempt {
+            plan,
+            report: native_execution_boundary_report(&lowering.report),
+            source_diagnostics: lowering.source_diagnostics,
+            rewritten: false,
+        });
+    }
+
+    let plan = NativeCudfExec::try_new(lowering.plans[0].clone(), native_execution_config.clone())
+        .map(|plan| Arc::new(plan) as Arc<dyn ExecutionPlan>)
+        .map_err(DataFusionError::from)?;
+    Ok(NativeOptimizationAttempt {
+        plan,
+        report: lowering.report,
+        source_diagnostics: lowering.source_diagnostics,
+        rewritten: true,
+    })
+}
+
+fn optimize_native_children_for_host_arrow_boundary(
+    plan: Arc<dyn ExecutionPlan>,
+    native_execution_config: &NativeCudfExecutionConfig,
+    report: &mut PlanningReport,
+    source_diagnostics: &mut Vec<cudf_query_engine::SourceDiagnostics>,
+) -> DataFusionResult<Option<Arc<dyn ExecutionPlan>>> {
+    if !host_arrow_boundary_allows_child_replacement(plan.as_ref()) {
+        return Ok(None);
+    }
+
+    let children = plan.children();
+    if children.is_empty() {
+        return Ok(None);
+    }
+
+    let mut rewritten = false;
+    let mut child_reports = Vec::new();
+    let mut child_source_diagnostics = Vec::new();
+    let mut new_children = Vec::with_capacity(children.len());
+    for child in children {
+        let attempt = optimize_final_native_plan(Arc::clone(child), native_execution_config)?;
+        rewritten |= attempt.rewritten;
+        child_reports.push(attempt.report);
+        child_source_diagnostics.extend(attempt.source_diagnostics);
+        new_children.push(attempt.plan);
+    }
+
+    if !rewritten {
+        return Ok(None);
+    }
+
+    for child_report in child_reports {
+        append_planning_report(report, &child_report);
+    }
+    source_diagnostics.extend(child_source_diagnostics);
+    plan.with_new_children(new_children).map(Some)
+}
+
+fn append_planning_report(report: &mut PlanningReport, extra: &PlanningReport) {
+    *report = PlanningReport::from_outcomes(report.outcomes().iter().cloned().chain(extra.outcomes().iter().cloned()));
+}
+
+fn host_arrow_boundary_allows_child_replacement(plan: &dyn ExecutionPlan) -> bool {
+    plan.as_any().downcast_ref::<FilterExec>().is_some()
+        || plan.as_any().downcast_ref::<ProjectionExec>().is_some()
+        || plan.as_any().downcast_ref::<SortExec>().is_some()
+        || plan.as_any().downcast_ref::<LocalLimitExec>().is_some()
+        || plan.as_any().downcast_ref::<AggregateExec>().is_some()
 }
 
 fn native_execution_boundary_rejection(

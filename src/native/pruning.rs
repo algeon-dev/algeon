@@ -136,7 +136,7 @@ pub(super) fn parquet_predicate_disposition(
 pub(super) fn validate_pruning_only_parquet_predicate(
     parquet_source: &ParquetSource,
     filter: Option<&FilterExec>,
-    source_schema: &SchemaRef,
+    _source_schema: &SchemaRef,
 ) -> Result<(), FallbackReason> {
     let Some(scan_predicate) = parquet_source.filter() else {
         return Ok(());
@@ -150,7 +150,8 @@ pub(super) fn validate_pruning_only_parquet_predicate(
             Err(FallbackReason::NativeSourcePushedDownParquetPredicate)
         };
     };
-    validate_physical_expr(filter.predicate(), source_schema)?;
+    let filter_schema = filter.input().schema();
+    validate_physical_expr(filter.predicate(), &filter_schema)?;
     if scan_predicate_matches_filter(scan_predicate.as_ref(), filter.predicate().as_ref()) {
         Ok(())
     } else {
@@ -171,14 +172,17 @@ fn scan_predicate_is_dynamic_filter_hint(expr: &dyn PhysicalExpr) -> bool {
 }
 
 fn scan_predicate_matches_filter(scan_predicate: &dyn PhysicalExpr, filter_predicate: &dyn PhysicalExpr) -> bool {
+    if scan_predicate_is_dynamic_filter_hint(scan_predicate) {
+        return true;
+    }
     if physical_expr_eq(scan_predicate, filter_predicate) {
         return true;
     }
     let Some(scan_binary) = scan_predicate.as_any().downcast_ref::<BinaryExpr>() else {
-        return false;
+        return filter_conjunction_contains(filter_predicate, scan_predicate);
     };
     if !matches!(scan_binary.op(), Operator::And) {
-        return false;
+        return filter_conjunction_contains(filter_predicate, scan_predicate);
     }
     if scan_predicate_is_dynamic_filter_hint(scan_binary.left().as_ref()) {
         return scan_predicate_matches_filter(scan_binary.right().as_ref(), filter_predicate);
@@ -186,13 +190,20 @@ fn scan_predicate_matches_filter(scan_predicate: &dyn PhysicalExpr, filter_predi
     if scan_predicate_is_dynamic_filter_hint(scan_binary.right().as_ref()) {
         return scan_predicate_matches_filter(scan_binary.left().as_ref(), filter_predicate);
     }
-    if let Some(filter_binary) = filter_predicate.as_any().downcast_ref::<BinaryExpr>()
-        && matches!(filter_binary.op(), Operator::And)
-    {
-        return scan_predicate_matches_filter(scan_binary.left().as_ref(), filter_binary.left().as_ref())
-            && scan_predicate_matches_filter(scan_binary.right().as_ref(), filter_binary.right().as_ref());
+    scan_predicate_matches_filter(scan_binary.left().as_ref(), filter_predicate)
+        && scan_predicate_matches_filter(scan_binary.right().as_ref(), filter_predicate)
+}
+
+fn filter_conjunction_contains(filter_predicate: &dyn PhysicalExpr, scan_predicate: &dyn PhysicalExpr) -> bool {
+    if physical_expr_eq(filter_predicate, scan_predicate) {
+        return true;
     }
-    false
+    let Some(filter_binary) = filter_predicate.as_any().downcast_ref::<BinaryExpr>() else {
+        return false;
+    };
+    matches!(filter_binary.op(), Operator::And)
+        && (filter_conjunction_contains(filter_binary.left().as_ref(), scan_predicate)
+            || filter_conjunction_contains(filter_binary.right().as_ref(), scan_predicate))
 }
 
 fn physical_expr_eq(left: &dyn PhysicalExpr, right: &dyn PhysicalExpr) -> bool {

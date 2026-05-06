@@ -121,6 +121,42 @@ fn native_optimizer_rule_preserves_rejected_plan_for_downstream_fallback() {
 }
 
 #[test]
+fn native_optimizer_rule_rewrites_supported_child_under_host_arrow_cpu_parent() {
+    let dir = unique_temp_dir("datafusion-cudf-native-exec-partial-host-arrow-boundary");
+    let path = dir.join("input.parquet");
+    write_parquet_file(&path);
+    let child = aggregate_sort_limit_plan(parquet_scan(&path), Operator::Plus);
+    let child_schema = child.schema();
+    let plan: Arc<dyn ExecutionPlan> = Arc::new(
+        ProjectionExec::try_new(
+            [ProjectionExpr { expr: col("key", &child_schema).unwrap(), alias: "key".to_string() }],
+            child,
+        )
+        .unwrap(),
+    );
+    let rule = CudfNativePhysicalOptimizerRule::new(native_optimizer_config());
+
+    let optimized = rule.optimize(plan, &ConfigOptions::default()).unwrap();
+
+    let projection = optimized
+        .as_any()
+        .downcast_ref::<ProjectionExec>()
+        .expect("unsupported CPU parent should remain above the host-arrow native boundary");
+    assert!(projection.input().as_any().downcast_ref::<NativeCudfExec>().is_some());
+    let report = rule.last_report().expect("native optimizer should record a planning report");
+    assert_eq!(report.rewritten_count(), 1);
+    assert_eq!(report.rejected_count(), 1);
+    assert!(matches!(
+        report.outcomes()[0],
+        CandidateOutcome::Rejected { reason: FallbackReason::UnsupportedOperator, .. }
+    ));
+    assert!(matches!(report.outcomes()[1], CandidateOutcome::Rewritten { .. }));
+    assert_eq!(rule.last_source_diagnostics().len(), 1);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn native_optimizer_rule_rejects_bounded_join_plan_before_replacement() {
     let dir = unique_temp_dir("datafusion-cudf-native-exec-bounded-join-rejected");
     let left = dir.join("left.parquet");

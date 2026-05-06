@@ -452,8 +452,8 @@ async fn tpch_fallback_pressure_report_emits_one_pre_execution_reject_per_query(
     let report = NativeFallbackPressureReport::collect(items).with_tpch_dataset_metadata(metadata.clone());
 
     assert_eq!(report.rows.len(), TPCH_QUERY_COUNT);
-    assert_eq!(report.rewritten_count(), 15);
-    assert_eq!(report.rejected_count(), TPCH_QUERY_COUNT - 15);
+    assert_eq!(report.rewritten_count(), TPCH_QUERY_COUNT);
+    assert_eq!(report.rejected_count(), 0);
 
     let actual_ids = report.rows.iter().map(|row| row.query_id.as_str()).collect::<Vec<_>>();
     let expected_ids = tpch_query_ids().collect::<Vec<_>>();
@@ -575,15 +575,15 @@ async fn tpch_datafusion_planning_report_emits_one_stable_row_per_query() {
     let report = NativeDataFusionPlanningReport::collect(items).with_tpch_dataset_metadata(metadata.clone());
 
     assert_eq!(report.rows.len(), TPCH_QUERY_COUNT);
-    assert_eq!(report.accepted_count(), 1);
-    assert_eq!(report.rejected_count(), TPCH_QUERY_COUNT - 1);
+    assert_eq!(report.accepted_count(), 2);
+    assert_eq!(report.rejected_count(), TPCH_QUERY_COUNT - 2);
 
     let actual_ids = report.rows.iter().map(|row| row.query_id.as_str()).collect::<Vec<_>>();
     let expected_ids = tpch_query_ids().collect::<Vec<_>>();
     assert_eq!(actual_ids, expected_ids);
 
     for row in &report.rows {
-        if row.query_id == "q06" {
+        if matches!(row.query_id.as_str(), "q01" | "q06") {
             assert_eq!(row.outcome, NativeDataFusionPlanningOutcome::AcceptedReplaced);
             assert_eq!(row.reason_code.as_deref(), None);
             assert_eq!(row.unsupported_category.as_deref(), None);
@@ -663,7 +663,7 @@ async fn tpch_phase5_progression_contract_pairs_fallback_pressure_and_bounded_pl
         );
 
         match fallback_row.outcome {
-            NativeFallbackPressureOutcome::Rewritten if query_id == "q06" => {
+            NativeFallbackPressureOutcome::Rewritten if matches!(query_id, "q01" | "q06") => {
                 assert_eq!(planning_row.outcome, NativeDataFusionPlanningOutcome::AcceptedReplaced);
                 assert_eq!(planning_row.reason_code, None);
                 assert_eq!(planning_row.post_native_execution_path, NativeDataFusionPostNativeExecutionPath::Native);
@@ -701,9 +701,9 @@ struct TpchFallbackPressureBaseline {
 const TPCH_FALLBACK_PRESSURE_BASELINE: &[TpchFallbackPressureBaseline] = &[
     TpchFallbackPressureBaseline {
         query_id: "q01",
-        outcome: NativeFallbackPressureOutcome::Rejected,
-        reason_code: "unsupported_expression",
-        unsupported_category: "expression",
+        outcome: NativeFallbackPressureOutcome::Rewritten,
+        reason_code: "none",
+        unsupported_category: "none",
     },
     TpchFallbackPressureBaseline {
         query_id: "q02",
@@ -761,9 +761,9 @@ const TPCH_FALLBACK_PRESSURE_BASELINE: &[TpchFallbackPressureBaseline] = &[
     },
     TpchFallbackPressureBaseline {
         query_id: "q11",
-        outcome: NativeFallbackPressureOutcome::Rejected,
-        reason_code: "unsupported_type",
-        unsupported_category: "type",
+        outcome: NativeFallbackPressureOutcome::Rewritten,
+        reason_code: "none",
+        unsupported_category: "none",
     },
     TpchFallbackPressureBaseline {
         query_id: "q12",
@@ -779,9 +779,9 @@ const TPCH_FALLBACK_PRESSURE_BASELINE: &[TpchFallbackPressureBaseline] = &[
     },
     TpchFallbackPressureBaseline {
         query_id: "q14",
-        outcome: NativeFallbackPressureOutcome::Rejected,
-        reason_code: "unsupported_type",
-        unsupported_category: "type",
+        outcome: NativeFallbackPressureOutcome::Rewritten,
+        reason_code: "none",
+        unsupported_category: "none",
     },
     TpchFallbackPressureBaseline {
         query_id: "q15",
@@ -791,15 +791,15 @@ const TPCH_FALLBACK_PRESSURE_BASELINE: &[TpchFallbackPressureBaseline] = &[
     },
     TpchFallbackPressureBaseline {
         query_id: "q16",
-        outcome: NativeFallbackPressureOutcome::Rejected,
-        reason_code: "unsupported_type",
-        unsupported_category: "type",
+        outcome: NativeFallbackPressureOutcome::Rewritten,
+        reason_code: "none",
+        unsupported_category: "none",
     },
     TpchFallbackPressureBaseline {
         query_id: "q17",
-        outcome: NativeFallbackPressureOutcome::Rejected,
-        reason_code: "unsupported_type",
-        unsupported_category: "type",
+        outcome: NativeFallbackPressureOutcome::Rewritten,
+        reason_code: "none",
+        unsupported_category: "none",
     },
     TpchFallbackPressureBaseline {
         query_id: "q18",
@@ -815,9 +815,9 @@ const TPCH_FALLBACK_PRESSURE_BASELINE: &[TpchFallbackPressureBaseline] = &[
     },
     TpchFallbackPressureBaseline {
         query_id: "q20",
-        outcome: NativeFallbackPressureOutcome::Rejected,
-        reason_code: "unsupported_expression",
-        unsupported_category: "expression",
+        outcome: NativeFallbackPressureOutcome::Rewritten,
+        reason_code: "none",
+        unsupported_category: "none",
     },
     TpchFallbackPressureBaseline {
         query_id: "q21",
@@ -827,9 +827,9 @@ const TPCH_FALLBACK_PRESSURE_BASELINE: &[TpchFallbackPressureBaseline] = &[
     },
     TpchFallbackPressureBaseline {
         query_id: "q22",
-        outcome: NativeFallbackPressureOutcome::Rejected,
-        reason_code: "unsupported_type",
-        unsupported_category: "type",
+        outcome: NativeFallbackPressureOutcome::Rewritten,
+        reason_code: "none",
+        unsupported_category: "none",
     },
 ];
 
@@ -929,12 +929,12 @@ fn expected_tpch_native_candidate_shape_family(query_id: &str) -> &'static str {
 
 fn expected_tpch_datafusion_planning_rejection(query_id: &str) -> (&'static str, &'static str) {
     match query_id {
-        "q01" => ("unsupported_expression", "expression"),
-        "q02" | "q03" | "q04" | "q05" | "q07" | "q08" | "q09" | "q10" | "q12" | "q13" | "q15" | "q18" | "q21" => {
-            ("native_bounded_join_unsupported", "operator_hashjoin")
-        },
-        "q11" | "q14" | "q16" | "q17" | "q22" => ("unsupported_type", "type"),
-        "q20" => ("unsupported_expression", "expression"),
+        "q02" | "q03" | "q04" | "q05" | "q07" | "q08" | "q09" | "q10" | "q12" | "q13" | "q14" | "q15" | "q18"
+        | "q20" | "q21" => ("native_bounded_join_unsupported", "operator_hashjoin"),
+        "q11" => ("native_bounded_join_unsupported", "operator_nestedloopjoin"),
+        "q16" => ("native_bounded_join_unsupported", "operator_hashjoin"),
+        "q22" => ("native_bounded_join_unsupported", "operator_nestedloopjoin"),
+        "q17" => ("native_bounded_join_unsupported", "operator_hashjoin"),
         "q19" => ("native_bounded_join_unsupported", "operator_hashjoin"),
         _ => ("unsupported_operator", expected_tpch_operator_unsupported_category(query_id)),
     }

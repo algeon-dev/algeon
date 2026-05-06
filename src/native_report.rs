@@ -297,6 +297,7 @@ impl NativeDataFusionPlanningOutcome {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NativeDataFusionPostNativeExecutionPath {
     Native,
+    PartialNative,
     GpuIsland,
     Cpu,
 }
@@ -305,6 +306,7 @@ impl NativeDataFusionPostNativeExecutionPath {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Native => "native",
+            Self::PartialNative => "partial_native",
             Self::GpuIsland => "gpu_island",
             Self::Cpu => "cpu",
         }
@@ -519,10 +521,18 @@ fn post_native_execution_path(plan: &dyn ExecutionPlan) -> NativeDataFusionPostN
     if plan.as_any().downcast_ref::<NativeCudfExec>().is_some() {
         return NativeDataFusionPostNativeExecutionPath::Native;
     }
+    if contains_native_exec(plan) {
+        return NativeDataFusionPostNativeExecutionPath::PartialNative;
+    }
     if contains_gpu_island(plan) {
         return NativeDataFusionPostNativeExecutionPath::GpuIsland;
     }
     NativeDataFusionPostNativeExecutionPath::Cpu
+}
+
+fn contains_native_exec(plan: &dyn ExecutionPlan) -> bool {
+    plan.as_any().downcast_ref::<NativeCudfExec>().is_some()
+        || plan.children().iter().any(|child| contains_native_exec(child.as_ref()))
 }
 
 fn contains_gpu_island(plan: &dyn ExecutionPlan) -> bool {
