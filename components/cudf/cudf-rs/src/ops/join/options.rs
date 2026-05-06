@@ -86,6 +86,53 @@ impl HashJoinOptions {
     }
 }
 
+/// Options for reusable [`FilteredJoin`][crate::ops::join::FilteredJoin]
+/// build artifacts used by equality left semi/anti probes.
+#[derive(Debug, Clone, Copy)]
+pub struct FilteredJoinOptions {
+    null_eq: NullEquality,
+    load_factor: f64,
+}
+
+impl Default for FilteredJoinOptions {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl FilteredJoinOptions {
+    /// Create options using nulls-equal comparison and libcudf's standard 0.5
+    /// hash-table load factor.
+    pub fn new() -> Self {
+        Self { null_eq: NullEquality::Equal, load_factor: 0.5 }
+    }
+
+    /// Set how null key values are compared.
+    pub fn null_equality(mut self, null_eq: NullEquality) -> Self {
+        self.null_eq = null_eq;
+        self
+    }
+
+    /// Set the hash-table load factor.
+    ///
+    /// libcudf accepts values in `(0, 1]`; invalid values are rejected at the
+    /// FFI boundary with an invalid-argument error.
+    pub fn load_factor(mut self, load_factor: f64) -> Self {
+        self.load_factor = load_factor;
+        self
+    }
+
+    /// Returns the configured null equality setting.
+    pub fn null_eq(&self) -> NullEquality {
+        self.null_eq
+    }
+
+    /// Returns the configured hash-table load factor.
+    pub fn load_factor_value(&self) -> f64 {
+        self.load_factor
+    }
+}
+
 /// The type of join to perform.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum JoinType {

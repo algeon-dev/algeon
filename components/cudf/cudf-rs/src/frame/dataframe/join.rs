@@ -4,7 +4,7 @@ use crate::{
         types::NullEquality,
     },
     frame::{dataframe::DataFrame, series::Series},
-    ops::join::{HashJoin, HashJoinOptions, NullableJoin},
+    ops::join::{FilteredJoin, FilteredJoinOptions, HashJoin, HashJoinOptions, NullableJoin},
     runtime::ExecutionPlacement,
 };
 
@@ -457,6 +457,52 @@ impl DataFrameHashJoinOptions {
     }
 }
 
+/// DataFrame-level options for building a reusable filtered-join artifact.
+#[derive(Debug, Clone, Copy)]
+pub struct DataFrameFilteredJoinOptions {
+    null_eq: NullEquality,
+    load_factor: f64,
+}
+
+impl Default for DataFrameFilteredJoinOptions {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl DataFrameFilteredJoinOptions {
+    /// Create filtered-join build options.
+    pub fn new() -> Self {
+        Self { null_eq: NullEquality::Equal, load_factor: 0.5 }
+    }
+
+    /// Set how null join keys compare.
+    pub fn null_equality(mut self, null_eq: NullEquality) -> Self {
+        self.null_eq = null_eq;
+        self
+    }
+
+    /// Set the libcudf hash-table load factor.
+    pub fn load_factor(mut self, load_factor: f64) -> Self {
+        self.load_factor = load_factor;
+        self
+    }
+
+    /// Returns the configured null equality setting.
+    pub fn null_eq(&self) -> NullEquality {
+        self.null_eq
+    }
+
+    /// Returns the configured hash-table load factor.
+    pub fn load_factor_value(&self) -> f64 {
+        self.load_factor
+    }
+
+    pub(crate) fn to_filtered_join_options(self) -> FilteredJoinOptions {
+        FilteredJoinOptions::new().null_equality(self.null_eq).load_factor(self.load_factor)
+    }
+}
+
 /// Device-side row indices produced by a DataFrame-level join-index helper.
 ///
 /// The wrapped series is an `INT32` gather map over the left DataFrame rows.
@@ -680,6 +726,21 @@ pub struct DataFrameHashJoin {
     pub(crate) options: DataFrameHashJoinOptions,
 }
 
+/// Reusable DataFrame-level filtered-join build artifact for equality left
+/// semi/anti probes.
+///
+/// This type owns the right-side build [`DataFrame`] and a low-level reusable
+/// [`FilteredJoin`] built from the named build key columns. Probe methods
+/// produce a single device-side gather map over the probe DataFrame; payload
+/// columns are copied only when the materialization helper is called.
+#[derive(Debug, Clone)]
+pub struct DataFrameFilteredJoin {
+    pub(crate) join: FilteredJoin,
+    pub(crate) build: DataFrame,
+    pub(crate) build_keys: Vec<String>,
+    pub(crate) options: DataFrameFilteredJoinOptions,
+}
+
 impl DataFrameHashJoin {
     /// Borrow the retained build DataFrame.
     pub fn build(&self) -> &DataFrame {
@@ -716,5 +777,39 @@ impl DataFrameHashJoin {
     pub fn probe_gather_map_reservation_size_bytes(&self, output_rows: usize) -> Result<usize> {
         DataFrameHashJoinPairIndices::reservation_size_bytes_for_len(output_rows)
             .map_err(|error| error.reanchor("dataframe::hash_join::probe_gather_map_reservation_size_bytes"))
+    }
+}
+
+impl DataFrameFilteredJoin {
+    /// Borrow the retained build DataFrame.
+    pub fn build(&self) -> &DataFrame {
+        &self.build
+    }
+
+    /// Returns the resolved build key column names.
+    pub fn build_keys(&self) -> &[String] {
+        &self.build_keys
+    }
+
+    /// Returns the options used to construct this artifact.
+    pub fn options(&self) -> DataFrameFilteredJoinOptions {
+        self.options
+    }
+
+    /// Returns bytes retained by this reusable filtered-join build artifact.
+    ///
+    /// This excludes the retained build DataFrame and any per-probe output
+    /// index allocation.
+    pub fn device_allocated_size_bytes(&self) -> crate::core::error::Result<usize> {
+        self.join
+            .device_allocated_size_bytes()
+            .map_err(|error| error.reanchor("dataframe::filtered_join::device_allocated_size_bytes"))
+    }
+
+    /// Return exact bytes that must be reserved for a reusable filtered-join
+    /// probe result with `output_rows` INT32 probe gather-map rows.
+    pub fn probe_gather_map_reservation_size_bytes(&self, output_rows: usize) -> Result<usize> {
+        DataFrameJoinIndices::reservation_size_bytes_for_len(output_rows)
+            .map_err(|error| error.reanchor("dataframe::filtered_join::probe_gather_map_reservation_size_bytes"))
     }
 }
