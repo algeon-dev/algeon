@@ -27,6 +27,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <utility>
 #include <vector>
@@ -1418,6 +1419,52 @@ cudf_status_t cudf_hash_join_create_ex(cudf_table_view_handle build,
   CUDF_RUST_CATCH
 }
 
+cudf_status_t cudf_hash_join_pre_build_reservation_size(cudf_table_view_handle build,
+                                                        cudf_nullable_join_t nullable_join,
+                                                        cudf_null_equality_t null_equality,
+                                                        double load_factor,
+                                                        size_t* out)
+{
+  return cudf_hash_join_pre_build_reservation_size_ex(
+    build, nullable_join, null_equality, load_factor, out, nullptr);
+}
+
+cudf_status_t cudf_hash_join_pre_build_reservation_size_ex(cudf_table_view_handle build,
+                                                           cudf_nullable_join_t nullable_join,
+                                                           cudf_null_equality_t null_equality,
+                                                           double load_factor,
+                                                           size_t* out,
+                                                           cudf_exec_options_t const* options)
+{
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = 0;
+  CUDF_RUST_NULL_CHECK(build, "build is null");
+  cudf::nullable_join nullable;
+  cudf_status_t status = to_nullable_join(nullable_join, &nullable);
+  if (status != CUDF_SUCCESS) { return status; }
+  cudf::null_equality null_eq;
+  status = to_null_equality(null_equality, &null_eq);
+  if (status != CUDF_SUCCESS) { return status; }
+  CUDF_RUST_TRY
+  {
+    cudf_exec_context exec          = cudf_make_exec_context();
+    cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
+    if (exec_status != CUDF_SUCCESS) { return exec_status; }
+
+    (void)build;
+    (void)nullable;
+    (void)null_eq;
+    (void)load_factor;
+    (void)exec;
+    set_error(
+      "libcudf does not expose exact pre-build hash-join reservation bytes; "
+      "callers must keep bounded hash-join execution disabled instead of "
+      "estimating this allocation");
+    return CUDF_ERROR_UNSUPPORTED;
+  }
+  CUDF_RUST_CATCH
+}
+
 void cudf_hash_join_destroy(cudf_hash_join_handle handle)
 {
   if (handle == nullptr) { return; }
@@ -1493,6 +1540,52 @@ cudf_status_t cudf_hash_join_inner_join_ex(cudf_hash_join_handle join,
   CUDF_RUST_CATCH
 }
 
+cudf_status_t cudf_hash_join_inner_join_with_output_size(cudf_hash_join_handle join,
+                                                         cudf_table_view_handle probe,
+                                                         size_t output_size,
+                                                         cudf_column_handle* out_left_indices,
+                                                         cudf_column_handle* out_right_indices)
+{
+  return cudf_hash_join_inner_join_with_output_size_ex(
+    join, probe, output_size, out_left_indices, out_right_indices, nullptr);
+}
+
+cudf_status_t cudf_hash_join_inner_join_with_output_size_ex(cudf_hash_join_handle join,
+                                                            cudf_table_view_handle probe,
+                                                            size_t output_size,
+                                                            cudf_column_handle* out_left_indices,
+                                                            cudf_column_handle* out_right_indices,
+                                                            cudf_exec_options_t const* options)
+{
+  CUDF_RUST_NULL_CHECK(out_left_indices, "out_left_indices is null");
+  *out_left_indices = nullptr;
+  CUDF_RUST_NULL_CHECK(out_right_indices, "out_right_indices is null");
+  *out_right_indices = nullptr;
+  CUDF_RUST_NULL_CHECK(join, "join is null");
+  CUDF_RUST_NULL_CHECK(probe, "probe is null");
+  CUDF_RUST_TRY
+  {
+    cudf_exec_context exec          = cudf_make_exec_context();
+    cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
+    if (exec_status != CUDF_SUCCESS) { return exec_status; }
+
+    auto* owner      = static_cast<hash_join_owner*>(join);
+    auto* hash_join  = owner->join.get();
+    auto* probe_view = static_cast<cudf::table_view*>(probe);
+
+    {
+      cudf_current_device_resource_guard current_mr{exec.mr_raw};
+      release_join_index_pair(hash_join->inner_join(
+                                *probe_view, std::optional<std::size_t>{output_size}, exec.stream, exec.mr),
+                              out_left_indices,
+                              out_right_indices,
+                              cudf_capture_exec_provenance(exec));
+    }
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
 cudf_status_t cudf_hash_join_inner_join_size(cudf_hash_join_handle join,
                                              cudf_table_view_handle probe,
                                              size_t* out)
@@ -1550,6 +1643,52 @@ cudf_status_t cudf_hash_join_left_join_ex(cudf_hash_join_handle join,
   CUDF_RUST_CATCH
 }
 
+cudf_status_t cudf_hash_join_left_join_with_output_size(cudf_hash_join_handle join,
+                                                        cudf_table_view_handle probe,
+                                                        size_t output_size,
+                                                        cudf_column_handle* out_left_indices,
+                                                        cudf_column_handle* out_right_indices)
+{
+  return cudf_hash_join_left_join_with_output_size_ex(
+    join, probe, output_size, out_left_indices, out_right_indices, nullptr);
+}
+
+cudf_status_t cudf_hash_join_left_join_with_output_size_ex(cudf_hash_join_handle join,
+                                                           cudf_table_view_handle probe,
+                                                           size_t output_size,
+                                                           cudf_column_handle* out_left_indices,
+                                                           cudf_column_handle* out_right_indices,
+                                                           cudf_exec_options_t const* options)
+{
+  CUDF_RUST_NULL_CHECK(out_left_indices, "out_left_indices is null");
+  *out_left_indices = nullptr;
+  CUDF_RUST_NULL_CHECK(out_right_indices, "out_right_indices is null");
+  *out_right_indices = nullptr;
+  CUDF_RUST_NULL_CHECK(join, "join is null");
+  CUDF_RUST_NULL_CHECK(probe, "probe is null");
+  CUDF_RUST_TRY
+  {
+    cudf_exec_context exec          = cudf_make_exec_context();
+    cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
+    if (exec_status != CUDF_SUCCESS) { return exec_status; }
+
+    auto* owner      = static_cast<hash_join_owner*>(join);
+    auto* hash_join  = owner->join.get();
+    auto* probe_view = static_cast<cudf::table_view*>(probe);
+
+    {
+      cudf_current_device_resource_guard current_mr{exec.mr_raw};
+      release_join_index_pair(hash_join->left_join(
+                                *probe_view, std::optional<std::size_t>{output_size}, exec.stream, exec.mr),
+                              out_left_indices,
+                              out_right_indices,
+                              cudf_capture_exec_provenance(exec));
+    }
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
 cudf_status_t cudf_hash_join_left_join_size(cudf_hash_join_handle join,
                                             cudf_table_view_handle probe,
                                             size_t* out)
@@ -1598,6 +1737,52 @@ cudf_status_t cudf_hash_join_full_join_ex(cudf_hash_join_handle join,
     {
       cudf_current_device_resource_guard current_mr{exec.mr_raw};
       release_join_index_pair(hash_join->full_join(*probe_view, {}, exec.stream, exec.mr),
+                              out_left_indices,
+                              out_right_indices,
+                              cudf_capture_exec_provenance(exec));
+    }
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
+cudf_status_t cudf_hash_join_full_join_with_output_size(cudf_hash_join_handle join,
+                                                        cudf_table_view_handle probe,
+                                                        size_t output_size,
+                                                        cudf_column_handle* out_left_indices,
+                                                        cudf_column_handle* out_right_indices)
+{
+  return cudf_hash_join_full_join_with_output_size_ex(
+    join, probe, output_size, out_left_indices, out_right_indices, nullptr);
+}
+
+cudf_status_t cudf_hash_join_full_join_with_output_size_ex(cudf_hash_join_handle join,
+                                                           cudf_table_view_handle probe,
+                                                           size_t output_size,
+                                                           cudf_column_handle* out_left_indices,
+                                                           cudf_column_handle* out_right_indices,
+                                                           cudf_exec_options_t const* options)
+{
+  CUDF_RUST_NULL_CHECK(out_left_indices, "out_left_indices is null");
+  *out_left_indices = nullptr;
+  CUDF_RUST_NULL_CHECK(out_right_indices, "out_right_indices is null");
+  *out_right_indices = nullptr;
+  CUDF_RUST_NULL_CHECK(join, "join is null");
+  CUDF_RUST_NULL_CHECK(probe, "probe is null");
+  CUDF_RUST_TRY
+  {
+    cudf_exec_context exec          = cudf_make_exec_context();
+    cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
+    if (exec_status != CUDF_SUCCESS) { return exec_status; }
+
+    auto* owner      = static_cast<hash_join_owner*>(join);
+    auto* hash_join  = owner->join.get();
+    auto* probe_view = static_cast<cudf::table_view*>(probe);
+
+    {
+      cudf_current_device_resource_guard current_mr{exec.mr_raw};
+      release_join_index_pair(hash_join->full_join(
+                                *probe_view, std::optional<std::size_t>{output_size}, exec.stream, exec.mr),
                               out_left_indices,
                               out_right_indices,
                               cudf_capture_exec_provenance(exec));

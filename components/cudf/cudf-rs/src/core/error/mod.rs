@@ -558,6 +558,7 @@ fn leaf_code_for_status(status: cudf_sys::cudf_status_t) -> ErrorCode {
         cudf_sys::CUDF_ERROR_CUDA => ErrorCode::CudaRuntime,
         cudf_sys::CUDF_ERROR_FATAL_CUDA => ErrorCode::FatalCuda,
         cudf_sys::CUDF_ERROR_OUT_OF_MEMORY => ErrorCode::OutOfMemory,
+        cudf_sys::CUDF_ERROR_UNSUPPORTED => ErrorCode::UnsupportedOperation,
         cudf_sys::CUDF_ERROR_IO => ErrorCode::IoFailure,
         cudf_sys::CUDF_ERROR_NULL => ErrorCode::NullUnexpected,
         cudf_sys::CUDF_ERROR_INDEX => ErrorCode::IndexOutOfBounds,

@@ -221,6 +221,20 @@ fn lit_decimal128_raw_broadcasts_dtype_scale_and_raw_values() {
 }
 
 #[test]
+fn binary_expr_aligns_mixed_decimal_storage_before_arithmetic() {
+    let discount = crate::common::series("discount", &[5i64, 25])
+        .unwrap()
+        .astype(DataType::fixed_point(TypeId::Decimal64, -2))
+        .unwrap();
+    let df = df_with_series("discount", discount);
+
+    let result = eval((lit_decimal128_raw(1, 0) - col("discount")).alias("net"), &df);
+
+    assert_eq!(result.dtype().unwrap(), DataType::fixed_point(TypeId::Decimal128, -2));
+    assert_eq!(host_export_i128_values(&result), vec![-400, -2400]);
+}
+
+#[test]
 fn lit_timestamp_raw_broadcasts_dtype_and_raw_values() {
     let df = xy_df();
     let result = eval(lit_timestamp_raw(1_700_000_123_456, TimestampResolution::Microseconds).alias("ts"), &df);

@@ -1,8 +1,10 @@
-use std::sync::{Arc, Mutex};
+use std::{cell::Cell, sync::Arc};
 
 use super::{ExecutionPlacement, execution_domain::ExecutionDomain};
 
-static LAST_BOUNDARY_OBSERVATION: Mutex<Option<BoundaryObservation>> = Mutex::new(None);
+thread_local! {
+    static LAST_BOUNDARY_OBSERVATION: Cell<Option<BoundaryObservation>> = const { Cell::new(None) };
+}
 
 /// Query-facing classification of a host/device or ownership boundary.
 ///
@@ -181,9 +183,7 @@ where F: Fn(BoundaryObservation) + Send + Sync + 'static
 pub(crate) type BoundaryObserverRef = Arc<dyn BoundaryObserver>;
 
 pub(crate) fn record_boundary_observation(observation: Option<BoundaryObservation>) {
-    if let Ok(mut last) = LAST_BOUNDARY_OBSERVATION.lock() {
-        *last = observation;
-    }
+    LAST_BOUNDARY_OBSERVATION.with(|last| last.set(observation));
 }
 
 pub(crate) fn record_boundary_observation_in_domain(domain: &Arc<ExecutionDomain>, observation: BoundaryObservation) {
@@ -202,5 +202,43 @@ pub(crate) fn record_boundary_observation_for_observer(
 }
 
 pub(crate) fn last_boundary_observation() -> Option<BoundaryObservation> {
-    LAST_BOUNDARY_OBSERVATION.lock().ok().and_then(|last| *last)
+    LAST_BOUNDARY_OBSERVATION.with(Cell::get)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::thread;
+
+    use super::*;
+
+    fn placement(workflow_id: u64) -> ExecutionPlacement {
+        ExecutionPlacement {
+            device: super::super::DeviceId::DEFAULT,
+            workflow_id,
+            bundle_id: workflow_id + 100,
+            stream_debug: workflow_id as usize + 200,
+            memory_resource_debug: workflow_id as usize + 300,
+        }
+    }
+
+    fn observation(workflow_id: u64) -> BoundaryObservation {
+        BoundaryObservation::new(BoundaryKind::QueryStage, placement(workflow_id), 1, 1, false)
+    }
+
+    #[test]
+    fn last_boundary_observation_is_thread_local_for_parallel_tests() {
+        let parent_observation = observation(1);
+        let child_observation = observation(2);
+
+        record_boundary_observation(Some(parent_observation));
+        thread::spawn(move || {
+            assert_eq!(last_boundary_observation(), None);
+            record_boundary_observation(Some(child_observation));
+            assert_eq!(last_boundary_observation(), Some(child_observation));
+        })
+        .join()
+        .unwrap();
+
+        assert_eq!(last_boundary_observation(), Some(parent_observation));
+    }
 }

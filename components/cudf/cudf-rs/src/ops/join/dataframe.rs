@@ -42,6 +42,51 @@ struct JoinSplitCall<'a> {
 }
 
 impl DataFrame {
+    /// Return exact device bytes that must be reserved before building a
+    /// reusable hash-join artifact from this DataFrame's named key columns.
+    ///
+    /// This is a planning contract for bounded engines. It does not build or
+    /// retain a hash table. While libcudf lacks exact pre-build sizing for
+    /// reusable hash joins, this returns `UnsupportedOperation` instead of a
+    /// heuristic estimate.
+    pub fn hash_join_pre_build_reservation_size_bytes<I, S>(
+        &self,
+        build_on: I,
+        options: DataFrameHashJoinOptions,
+    ) -> Result<usize>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let ctx = ExecutionOverrides::new();
+        self.hash_join_pre_build_reservation_size_bytes_in_context(build_on, options, &ctx)
+    }
+
+    pub(crate) fn hash_join_pre_build_reservation_size_bytes_in_context<I, S>(
+        &self,
+        build_on: I,
+        options: DataFrameHashJoinOptions,
+        ctx: &ExecutionOverrides<'_>,
+    ) -> Result<usize>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let operation = "dataframe::hash_join_pre_build_reservation_size_bytes";
+        let build_keys = build_on.into_iter().map(|key| key.as_ref().to_string()).collect::<Vec<_>>();
+        validate_hash_join_key_names(&build_keys, operation)?;
+
+        let build_key_refs = build_keys.iter().map(|key| key.as_str()).collect::<Vec<_>>();
+        let build_key_indices = resolve_column_names(self.columns_map(), &build_key_refs, operation)?;
+        let build_key_table = build_borrowed_table_view_from_columns(self.columns_map(), &build_key_indices)?;
+        join::HashJoin::pre_build_reservation_size_bytes_for_view(
+            build_key_table.table(),
+            options.to_hash_join_options(),
+            ctx,
+            operation,
+        )
+    }
+
     /// Build a reusable hash-join artifact from this DataFrame's named key columns.
     pub fn build_hash_join<I, S>(&self, build_on: I, options: DataFrameHashJoinOptions) -> Result<DataFrameHashJoin>
     where
@@ -1061,6 +1106,22 @@ impl DataFrameHashJoin {
         self.inner_probe_in(probe, probe_on, &ctx)
     }
 
+    /// Probe this reusable build artifact with inner-join semantics using an
+    /// exact caller-supplied output row count.
+    pub fn inner_probe_with_output_size<I, S>(
+        &self,
+        probe: &DataFrame,
+        probe_on: I,
+        output_size: usize,
+    ) -> Result<DataFrameHashJoinPairIndices>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let ctx = ExecutionOverrides::new();
+        self.inner_probe_with_output_size_in(probe, probe_on, output_size, &ctx)
+    }
+
     /// Probe this reusable build artifact with left-join semantics.
     pub fn left_probe<I, S>(&self, probe: &DataFrame, probe_on: I) -> Result<DataFrameHashJoinPairIndices>
     where
@@ -1071,6 +1132,22 @@ impl DataFrameHashJoin {
         self.left_probe_in(probe, probe_on, &ctx)
     }
 
+    /// Probe this reusable build artifact with left-join semantics using an
+    /// exact caller-supplied output row count.
+    pub fn left_probe_with_output_size<I, S>(
+        &self,
+        probe: &DataFrame,
+        probe_on: I,
+        output_size: usize,
+    ) -> Result<DataFrameHashJoinPairIndices>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let ctx = ExecutionOverrides::new();
+        self.left_probe_with_output_size_in(probe, probe_on, output_size, &ctx)
+    }
+
     /// Probe this reusable build artifact with full-join semantics.
     pub fn full_probe<I, S>(&self, probe: &DataFrame, probe_on: I) -> Result<DataFrameHashJoinPairIndices>
     where
@@ -1079,6 +1156,22 @@ impl DataFrameHashJoin {
     {
         let ctx = ExecutionOverrides::new();
         self.full_probe_in(probe, probe_on, &ctx)
+    }
+
+    /// Probe this reusable build artifact with full-join semantics using an
+    /// exact caller-supplied output row count.
+    pub fn full_probe_with_output_size<I, S>(
+        &self,
+        probe: &DataFrame,
+        probe_on: I,
+        output_size: usize,
+    ) -> Result<DataFrameHashJoinPairIndices>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let ctx = ExecutionOverrides::new();
+        self.full_probe_with_output_size_in(probe, probe_on, output_size, &ctx)
     }
 
     /// Return the exact output row count for an inner probe.
@@ -1126,8 +1219,32 @@ impl DataFrameHashJoin {
             probe,
             probe_on,
             join::JoinType::Inner,
+            None,
             ctx,
             "dataframe::hash_join::inner_probe",
+        )
+    }
+
+    /// Probe this reusable build artifact with inner-join semantics using a
+    /// borrowed execution override and an exact caller-supplied output row count.
+    pub fn inner_probe_with_output_size_in<I, S>(
+        &self,
+        probe: &DataFrame,
+        probe_on: I,
+        output_size: usize,
+        ctx: &ExecutionOverrides<'_>,
+    ) -> Result<DataFrameHashJoinPairIndices>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        self.probe_indices_with_context(
+            probe,
+            probe_on,
+            join::JoinType::Inner,
+            Some(output_size),
+            ctx,
+            "dataframe::hash_join::inner_probe_with_output_size",
         )
     }
 
@@ -1162,7 +1279,37 @@ impl DataFrameHashJoin {
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
-        self.probe_indices_with_context(probe, probe_on, join::JoinType::Left, ctx, "dataframe::hash_join::left_probe")
+        self.probe_indices_with_context(
+            probe,
+            probe_on,
+            join::JoinType::Left,
+            None,
+            ctx,
+            "dataframe::hash_join::left_probe",
+        )
+    }
+
+    /// Probe this reusable build artifact with left-join semantics using a
+    /// borrowed execution override and an exact caller-supplied output row count.
+    pub fn left_probe_with_output_size_in<I, S>(
+        &self,
+        probe: &DataFrame,
+        probe_on: I,
+        output_size: usize,
+        ctx: &ExecutionOverrides<'_>,
+    ) -> Result<DataFrameHashJoinPairIndices>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        self.probe_indices_with_context(
+            probe,
+            probe_on,
+            join::JoinType::Left,
+            Some(output_size),
+            ctx,
+            "dataframe::hash_join::left_probe_with_output_size",
+        )
     }
 
     /// Return the exact output row count for a left probe using a borrowed execution override.
@@ -1196,7 +1343,37 @@ impl DataFrameHashJoin {
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
-        self.probe_indices_with_context(probe, probe_on, join::JoinType::Full, ctx, "dataframe::hash_join::full_probe")
+        self.probe_indices_with_context(
+            probe,
+            probe_on,
+            join::JoinType::Full,
+            None,
+            ctx,
+            "dataframe::hash_join::full_probe",
+        )
+    }
+
+    /// Probe this reusable build artifact with full-join semantics using a
+    /// borrowed execution override and an exact caller-supplied output row count.
+    pub fn full_probe_with_output_size_in<I, S>(
+        &self,
+        probe: &DataFrame,
+        probe_on: I,
+        output_size: usize,
+        ctx: &ExecutionOverrides<'_>,
+    ) -> Result<DataFrameHashJoinPairIndices>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        self.probe_indices_with_context(
+            probe,
+            probe_on,
+            join::JoinType::Full,
+            Some(output_size),
+            ctx,
+            "dataframe::hash_join::full_probe_with_output_size",
+        )
     }
 
     /// Return the exact output row count for a full probe using a borrowed execution override.
@@ -1271,6 +1448,7 @@ impl DataFrameHashJoin {
         probe: &DataFrame,
         probe_on: I,
         join_type: join::JoinType,
+        output_size: Option<usize>,
         ctx: &ExecutionOverrides<'_>,
         operation: &'static str,
     ) -> Result<DataFrameHashJoinPairIndices>
@@ -1287,10 +1465,19 @@ impl DataFrameHashJoin {
         let probe_key_refs = probe_keys.iter().map(|key| key.as_str()).collect::<Vec<_>>();
         let probe_key_indices = resolve_column_names(probe.columns_map(), &probe_key_refs, operation)?;
         let probe_key_table = build_borrowed_table_view_from_columns(probe.columns_map(), &probe_key_indices)?;
-        let raw_indices = match join_type {
-            join::JoinType::Inner => self.join.inner_join_indices_in(probe_key_table.table(), ctx)?,
-            join::JoinType::Left => self.join.left_join_indices_in(probe_key_table.table(), ctx)?,
-            join::JoinType::Full => self.join.full_join_indices_in(probe_key_table.table(), ctx)?,
+        let raw_indices = match (join_type, output_size) {
+            (join::JoinType::Inner, None) => self.join.inner_join_indices_in(probe_key_table.table(), ctx)?,
+            (join::JoinType::Left, None) => self.join.left_join_indices_in(probe_key_table.table(), ctx)?,
+            (join::JoinType::Full, None) => self.join.full_join_indices_in(probe_key_table.table(), ctx)?,
+            (join::JoinType::Inner, Some(output_size)) => {
+                self.join.inner_join_indices_with_output_size_in(probe_key_table.table(), output_size, ctx)?
+            },
+            (join::JoinType::Left, Some(output_size)) => {
+                self.join.left_join_indices_with_output_size_in(probe_key_table.table(), output_size, ctx)?
+            },
+            (join::JoinType::Full, Some(output_size)) => {
+                self.join.full_join_indices_with_output_size_in(probe_key_table.table(), output_size, ctx)?
+            },
         };
         let probe = Series::from_column(raw_indices.left)
             .map_err(|error| error.reanchor(operation).with_detail("resource", "probe_join_indices"))?;

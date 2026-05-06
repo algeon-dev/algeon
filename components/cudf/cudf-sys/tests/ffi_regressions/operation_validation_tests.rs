@@ -1762,6 +1762,55 @@ fn test_hash_join_size_apis_report_exact_output_rows() {
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
     assert_eq!(out, 6);
 
+    let mut left_indices = ptr::null_mut();
+    let mut right_indices = ptr::null_mut();
+    let status = unsafe {
+        cudf_sys::cudf_hash_join_inner_join_with_output_size(join, probe_tv, 3, &mut left_indices, &mut right_indices)
+    };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS);
+    assert_eq!(column_len(left_indices), 3);
+    assert_eq!(column_len(right_indices), 3);
+    unsafe {
+        cudf_sys::cudf_column_destroy(left_indices);
+        cudf_sys::cudf_column_destroy(right_indices);
+    }
+
+    let status = unsafe {
+        cudf_sys::cudf_hash_join_left_join_with_output_size_ex(
+            join,
+            probe_tv,
+            5,
+            &mut left_indices,
+            &mut right_indices,
+            exec.as_raw(),
+        )
+    };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS);
+    assert_eq!(column_len(left_indices), 5);
+    assert_eq!(column_len(right_indices), 5);
+    unsafe {
+        cudf_sys::cudf_column_destroy(left_indices);
+        cudf_sys::cudf_column_destroy(right_indices);
+    }
+
+    let status = unsafe {
+        cudf_sys::cudf_hash_join_full_join_with_output_size_ex(
+            join,
+            probe_tv,
+            6,
+            &mut left_indices,
+            &mut right_indices,
+            exec.as_raw(),
+        )
+    };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS);
+    assert_eq!(column_len(left_indices), 6);
+    assert_eq!(column_len(right_indices), 6);
+    unsafe {
+        cudf_sys::cudf_column_destroy(left_indices);
+        cudf_sys::cudf_column_destroy(right_indices);
+    }
+
     unsafe {
         cudf_sys::cudf_table_view_destroy(probe_tv);
         cudf_sys::cudf_table_destroy(probe_tbl);

@@ -271,9 +271,12 @@ fn dataframe_join_helpers_are_publicly_reexported() {
     let hash_join = right.build_hash_join(["id"], DataFrameHashJoinOptions::new()).unwrap();
     assert_hash_join(&hash_join);
     assert!(hash_join.device_allocated_size_bytes().unwrap() > 0);
+    let hash_output_size = hash_join.inner_probe_size(&left, ["id"]).unwrap();
     let hash_indices = hash_join.inner_probe(&left, ["id"]).unwrap();
+    let sized_hash_indices = hash_join.inner_probe_with_output_size(&left, ["id"], hash_output_size).unwrap();
     assert_hash_pair_indices(&hash_indices);
     assert!(hash_indices.device_allocated_size_bytes().unwrap() > 0);
+    assert_eq!(sized_hash_indices.len(), hash_indices.len());
     let materialized = left.materialize_join_indices(&indices, ["value"]).unwrap();
     let pair_materialized = left.materialize_join_indices(pair_indices.left(), ["value"]).unwrap();
     let hash_materialized = hash_join.materialize(&left, &hash_indices, ["value"], ["id"]).unwrap();
