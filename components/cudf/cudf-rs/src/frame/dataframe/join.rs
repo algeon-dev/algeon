@@ -1,9 +1,32 @@
 use crate::{
-    core::types::NullEquality,
+    core::{
+        error::{Error, ErrorCode, Result},
+        types::NullEquality,
+    },
     frame::{dataframe::DataFrame, series::Series},
     ops::join::{HashJoin, HashJoinOptions, NullableJoin},
     runtime::ExecutionPlacement,
 };
+
+// libcudf join APIs return INT32 row indices (`cudf::size_type`).
+const JOIN_GATHER_MAP_INDEX_SIZE_BYTES: usize = std::mem::size_of::<i32>();
+
+fn join_gather_map_reservation_size_bytes(
+    output_rows: usize,
+    map_count: usize,
+    operation: &'static str,
+) -> Result<usize> {
+    output_rows
+        .checked_mul(JOIN_GATHER_MAP_INDEX_SIZE_BYTES)
+        .and_then(|single_map_bytes| single_map_bytes.checked_mul(map_count))
+        .ok_or_else(|| {
+            Error::new_with(ErrorCode::ValueOutOfRange, operation, "join gather-map reservation size overflowed usize")
+                .with_detail("reason", "size_overflowed_usize")
+                .with_detail("output_rows", output_rows.to_string())
+                .with_detail("gather_map_count", map_count.to_string())
+                .with_detail("index_size_bytes", JOIN_GATHER_MAP_INDEX_SIZE_BYTES.to_string())
+        })
+}
 
 /// DataFrame-level equality join key options for query-planning helpers.
 ///
@@ -487,6 +510,19 @@ impl DataFrameJoinIndices {
             .device_allocated_size_bytes()
             .map_err(|error| error.reanchor("dataframe::join_indices::device_allocated_size_bytes"))
     }
+
+    /// Return exact bytes that must be reserved for one device-side join gather
+    /// map with `output_rows` INT32 row indices.
+    ///
+    /// This is a pre-allocation planning contract for bounded engines. It does
+    /// not allocate the gather map.
+    pub fn reservation_size_bytes_for_len(output_rows: usize) -> Result<usize> {
+        join_gather_map_reservation_size_bytes(
+            output_rows,
+            1,
+            "dataframe::join_indices::reservation_size_bytes_for_len",
+        )
+    }
 }
 
 /// Device-side row-index pairs produced by a two-sided DataFrame join.
@@ -548,6 +584,19 @@ impl DataFrameJoinPairIndices {
     pub fn device_allocated_size_bytes(&self) -> crate::core::error::Result<usize> {
         Ok(self.left.device_allocated_size_bytes()?.saturating_add(self.right.device_allocated_size_bytes()?))
     }
+
+    /// Return exact bytes that must be reserved for a pair of device-side join
+    /// gather maps with `output_rows` INT32 row indices per side.
+    ///
+    /// This is a pre-allocation planning contract for bounded engines. It does
+    /// not allocate either gather map.
+    pub fn reservation_size_bytes_for_len(output_rows: usize) -> Result<usize> {
+        join_gather_map_reservation_size_bytes(
+            output_rows,
+            2,
+            "dataframe::join_pair_indices::reservation_size_bytes_for_len",
+        )
+    }
 }
 
 /// Device-side row-index pairs produced by probing a reusable DataFrame hash join.
@@ -592,6 +641,19 @@ impl DataFrameHashJoinPairIndices {
     /// Returns bytes retained by both device-side gather maps.
     pub fn device_allocated_size_bytes(&self) -> crate::core::error::Result<usize> {
         Ok(self.probe.device_allocated_size_bytes()?.saturating_add(self.build.device_allocated_size_bytes()?))
+    }
+
+    /// Return exact bytes that must be reserved for a reusable hash-join probe
+    /// result with `output_rows` probe/build INT32 gather-map pairs.
+    ///
+    /// This is a pre-allocation planning contract for bounded engines. It does
+    /// not probe the hash table or allocate either gather map.
+    pub fn reservation_size_bytes_for_len(output_rows: usize) -> Result<usize> {
+        join_gather_map_reservation_size_bytes(
+            output_rows,
+            2,
+            "dataframe::hash_join_pair_indices::reservation_size_bytes_for_len",
+        )
     }
 }
 
@@ -642,5 +704,17 @@ impl DataFrameHashJoin {
         self.join
             .device_allocated_size_bytes()
             .map_err(|error| error.reanchor("dataframe::hash_join::device_allocated_size_bytes"))
+    }
+
+    /// Return exact bytes that must be reserved for a reusable hash-join probe
+    /// result with `output_rows` probe/build INT32 gather-map pairs.
+    ///
+    /// This ergonomic helper delegates to
+    /// [`DataFrameHashJoinPairIndices::reservation_size_bytes_for_len`]. The
+    /// retained build metadata does not affect per-probe gather-map bytes, and
+    /// this method does not probe the hash table or allocate either gather map.
+    pub fn probe_gather_map_reservation_size_bytes(&self, output_rows: usize) -> Result<usize> {
+        DataFrameHashJoinPairIndices::reservation_size_bytes_for_len(output_rows)
+            .map_err(|error| error.reanchor("dataframe::hash_join::probe_gather_map_reservation_size_bytes"))
     }
 }

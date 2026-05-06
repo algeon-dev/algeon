@@ -2,18 +2,20 @@
 mod datetime_tests;
 mod join_hash_join_execution_tests {
     use cudf::{
-        ExecutionOverrides, Runtime,
-        core::{ErrorCode, ErrorKind, Table},
+        DataFrame, ErrorCode, ErrorKind, ExecutionOverrides, Runtime,
+        core::Table,
+        frame::dataframe::JsonReadOptions,
         ops::{
             ast::AstExpression,
             join::{self, HashJoin, HashJoinOptions, JoinType, NullEquality},
         },
         testing::prelude::*,
     };
+    use tempfile::TempDir;
 
     use crate::common::{
-        dependency_wait_call_count_for_stream, explicit_i32_column, last_exec_mr_value, last_exec_stream_value,
-        lock_event_observation, reset_dependency_observation, reset_exec_observation,
+        column_from_strs_nullable, dependency_wait_call_count_for_stream, explicit_i32_column, last_exec_mr_value,
+        last_exec_stream_value, lock_event_observation, reset_dependency_observation, reset_exec_observation,
     };
 
     const JOIN_NO_MATCH: i32 = i32::MIN;
@@ -35,6 +37,32 @@ mod join_hash_join_execution_tests {
 
     fn left_less_than_right() -> AstExpression {
         AstExpression::less(AstExpression::left_column(0).unwrap(), AstExpression::right_column(0).unwrap()).unwrap()
+    }
+
+    fn read_json_dataframe(filename: &str, rows: &str) -> DataFrame {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join(filename);
+        std::fs::write(&path, rows).unwrap();
+        let runtime = Runtime::builder().build().unwrap();
+        DataFrame::read_json_with_options(JsonReadOptions::builder().filepath(&path).with_runtime(&runtime).build())
+            .unwrap()
+    }
+
+    fn assert_hash_join_pre_build_invalid_argument(build: &Table, options: HashJoinOptions) {
+        let err = HashJoin::pre_build_reservation_size_bytes(build, options)
+            .expect_err("unsupported hash-join build table should be rejected before reservation succeeds");
+
+        assert_eq!(err.kind(), ErrorKind::InvalidInput);
+        assert_eq!(err.code(), ErrorCode::ForeignInvalidArgument);
+        assert_eq!(err.operation(), "hash_join::pre_build_reservation_size_bytes_in");
+        assert_eq!(err.detail_value("reservation_contract"), Some("hash_join_pre_build_reservation_size_bytes"));
+    }
+
+    fn assert_hash_join_pre_build_matches_built_size(build: &Table, options: HashJoinOptions) {
+        let reservation_size = HashJoin::pre_build_reservation_size_bytes(build, options).unwrap();
+        let hash_join = HashJoin::new(build.deep_copy().unwrap(), options).unwrap();
+
+        assert_eq!(reservation_size, hash_join.device_allocated_size_bytes().unwrap());
     }
 
     #[test]
@@ -287,19 +315,115 @@ mod join_hash_join_execution_tests {
     }
 
     #[test]
-    fn hash_join_pre_build_reservation_contract_is_explicitly_unsupported_until_libcudf_exposes_sizing() {
-        let build_keys = Table::from_columns(vec![explicit_i32_column(&[2, 2, 4], 12019)]).unwrap();
-        let err = HashJoin::pre_build_reservation_size_bytes(
+    fn hash_join_pre_build_reservation_contract_matches_retained_build_artifact_bytes() {
+        let runtime = Runtime::new().unwrap();
+        let build_keys = Table::from_columns(vec![
+            runtime.column_from_slice(&[2i32, 2, 4, 4, 8, 8, 16, 32]).unwrap(),
+            runtime.column_from_slice(&[10i32, 11, 10, 12, 10, 13, 14, 15]).unwrap(),
+        ])
+        .unwrap();
+
+        for load_factor in [0.5, 1.0] {
+            assert_hash_join_pre_build_matches_built_size(
+                &build_keys,
+                HashJoinOptions::new().null_equality(NullEquality::Equal).load_factor(load_factor),
+            );
+        }
+    }
+
+    #[test]
+    fn hash_join_pre_build_reservation_accepts_empty_rows_with_non_empty_schema() {
+        let runtime = Runtime::new().unwrap();
+        let build_keys = Table::from_columns(vec![
+            runtime.column_from_slice::<i32>(&[]).unwrap(),
+            runtime.column_from_slice::<i32>(&[]).unwrap(),
+        ])
+        .unwrap();
+
+        assert_hash_join_pre_build_matches_built_size(
             &build_keys,
             HashJoinOptions::new().null_equality(NullEquality::Equal),
-        )
-        .expect_err("libcudf does not expose pre-build reusable hash-join sizing yet");
+        );
+    }
 
-        assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
-        assert_eq!(err.kind(), ErrorKind::Unsupported);
-        assert_eq!(err.operation(), "hash_join::pre_build_reservation_size_bytes_in");
-        assert_eq!(err.detail_value("reservation_contract"), Some("hash_join_pre_build_reservation_size_bytes"));
-        assert_eq!(err.detail_value("reason"), Some("libcudf_pre_build_hash_join_sizing_unavailable"));
+    #[test]
+    fn hash_join_pre_build_reservation_matches_larger_build_table() {
+        let runtime = Runtime::new().unwrap();
+        let key0 = (0..4096).map(|row| row % 257).collect::<Vec<i32>>();
+        let key1 = (0..4096).map(|row| row % 31).collect::<Vec<i32>>();
+        let build_keys = Table::from_columns(vec![
+            runtime.column_from_slice(&key0).unwrap(),
+            runtime.column_from_slice(&key1).unwrap(),
+        ])
+        .unwrap();
+
+        assert_hash_join_pre_build_matches_built_size(
+            &build_keys,
+            HashJoinOptions::new().null_equality(NullEquality::Equal),
+        );
+    }
+
+    #[test]
+    fn hash_join_pre_build_reservation_rejects_empty_build_table() {
+        let runtime = Runtime::new().unwrap();
+        let build_keys = runtime.empty_table().unwrap();
+
+        assert_hash_join_pre_build_invalid_argument(
+            &build_keys,
+            HashJoinOptions::new().null_equality(NullEquality::Equal),
+        );
+    }
+
+    #[test]
+    fn hash_join_pre_build_reservation_rejects_invalid_load_factors() {
+        let build_keys = Table::from_columns(vec![explicit_i32_column(&[2, 2, 4, 8], 12023)]).unwrap();
+
+        for load_factor in [-0.1, 0.0, 1.1] {
+            let expected_load_factor = load_factor.to_string();
+            let err = HashJoin::pre_build_reservation_size_bytes(
+                &build_keys,
+                HashJoinOptions::new().null_equality(NullEquality::Equal).load_factor(load_factor),
+            )
+            .expect_err("invalid load factor should be rejected");
+
+            assert_eq!(err.kind(), ErrorKind::InvalidInput);
+            assert_eq!(err.code(), ErrorCode::ForeignInvalidArgument);
+            assert_eq!(err.operation(), "hash_join::pre_build_reservation_size_bytes_in");
+            assert_eq!(err.detail_value("reservation_contract"), Some("hash_join_pre_build_reservation_size_bytes"));
+            assert_eq!(err.detail_value("load_factor"), Some(expected_load_factor.as_str()));
+            assert_eq!(err.detail_value("unsupported_input"), None);
+        }
+    }
+
+    #[test]
+    fn hash_join_pre_build_reservation_rejects_nested_and_struct_build_keys() {
+        let frame = read_json_dataframe(
+            "hash_join_pre_build_nested.jsonl",
+            r#"{"items":[1,2],"point":{"x":1,"y":2},"id":1}
+{"items":[3],"point":{"x":3,"y":4},"id":2}
+"#,
+        );
+
+        for key in ["items", "point"] {
+            let (build_keys, _) = frame.select([key]).unwrap().try_into_table().unwrap();
+            assert_hash_join_pre_build_invalid_argument(
+                &build_keys,
+                HashJoinOptions::new().null_equality(NullEquality::Equal),
+            );
+        }
+    }
+
+    #[test]
+    fn hash_join_pre_build_reservation_rejects_nullable_string_build_key() {
+        let build_keys = Table::from_columns(vec![
+            column_from_strs_nullable(&["alpha", "null-payload", "omega"], &[true, false, true]).unwrap(),
+        ])
+        .unwrap();
+
+        assert_hash_join_pre_build_invalid_argument(
+            &build_keys,
+            HashJoinOptions::new().null_equality(NullEquality::Equal),
+        );
     }
 
     #[test]

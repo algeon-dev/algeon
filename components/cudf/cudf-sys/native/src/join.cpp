@@ -25,6 +25,7 @@
 #include <rmm/device_uvector.hpp>
 #include <rmm/mr/statistics_resource_adaptor.hpp>
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -1420,18 +1421,13 @@ cudf_status_t cudf_hash_join_create_ex(cudf_table_view_handle build,
 }
 
 cudf_status_t cudf_hash_join_pre_build_reservation_size(cudf_table_view_handle build,
-                                                        cudf_nullable_join_t nullable_join,
-                                                        cudf_null_equality_t null_equality,
                                                         double load_factor,
                                                         size_t* out)
 {
-  return cudf_hash_join_pre_build_reservation_size_ex(
-    build, nullable_join, null_equality, load_factor, out, nullptr);
+  return cudf_hash_join_pre_build_reservation_size_ex(build, load_factor, out, nullptr);
 }
 
 cudf_status_t cudf_hash_join_pre_build_reservation_size_ex(cudf_table_view_handle build,
-                                                           cudf_nullable_join_t nullable_join,
-                                                           cudf_null_equality_t null_equality,
                                                            double load_factor,
                                                            size_t* out,
                                                            cudf_exec_options_t const* options)
@@ -1439,28 +1435,15 @@ cudf_status_t cudf_hash_join_pre_build_reservation_size_ex(cudf_table_view_handl
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = 0;
   CUDF_RUST_NULL_CHECK(build, "build is null");
-  cudf::nullable_join nullable;
-  cudf_status_t status = to_nullable_join(nullable_join, &nullable);
-  if (status != CUDF_SUCCESS) { return status; }
-  cudf::null_equality null_eq;
-  status = to_null_equality(null_equality, &null_eq);
-  if (status != CUDF_SUCCESS) { return status; }
   CUDF_RUST_TRY
   {
     cudf_exec_context exec          = cudf_make_exec_context();
     cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
-    (void)build;
-    (void)nullable;
-    (void)null_eq;
-    (void)load_factor;
-    (void)exec;
-    set_error(
-      "libcudf does not expose exact pre-build hash-join reservation bytes; "
-      "callers must keep bounded hash-join execution disabled instead of "
-      "estimating this allocation");
-    return CUDF_ERROR_UNSUPPORTED;
+    auto* build_view = static_cast<cudf::table_view*>(build);
+    *out            = cudf::hash_join::pre_build_reservation_size(*build_view, load_factor);
+    return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
 }

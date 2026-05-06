@@ -45,10 +45,11 @@ impl DataFrame {
     /// Return exact device bytes that must be reserved before building a
     /// reusable hash-join artifact from this DataFrame's named key columns.
     ///
-    /// This is a planning contract for bounded engines. It does not build or
-    /// retain a hash table. While libcudf lacks exact pre-build sizing for
-    /// reusable hash joins, this returns `UnsupportedOperation` instead of a
-    /// heuristic estimate.
+    /// This is a planning contract for bounded engines. It returns the exact
+    /// retained bytes for the reusable hash table and build-key device views,
+    /// without building or retaining the hash table. libcudf rejects build keys
+    /// whose equality preprocessing may retain additional buffers, including
+    /// nested columns and nullable string columns with non-empty null payloads.
     pub fn hash_join_pre_build_reservation_size_bytes<I, S>(
         &self,
         build_on: I,

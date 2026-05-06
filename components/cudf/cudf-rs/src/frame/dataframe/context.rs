@@ -109,6 +109,20 @@ impl<'df, 'ctx, 'handles> DataFrameExecutionScope<'df, 'ctx, 'handles> {
         self.df.build_hash_join_in_context(build_on, options, self.ctx)
     }
 
+    /// Return exact pre-build reservation bytes for a reusable hash-join
+    /// artifact using the borrowed execution override.
+    pub fn hash_join_pre_build_reservation_size_bytes<I, S>(
+        &self,
+        build_on: I,
+        options: DataFrameHashJoinOptions,
+    ) -> Result<usize>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        self.df.hash_join_pre_build_reservation_size_bytes_in_context(build_on, options, self.ctx)
+    }
+
     /// Produce conditional inner join row-index pairs using the borrowed execution override.
     pub fn conditional_inner_join_indices(
         &self,

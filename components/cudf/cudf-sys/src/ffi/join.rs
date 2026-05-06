@@ -505,16 +505,12 @@ extern "C" {
 
     pub fn cudf_hash_join_pre_build_reservation_size(
         build: cudf_table_view_handle,
-        nullable_join: cudf_nullable_join_t,
-        null_equality: cudf_null_equality_t,
         load_factor: f64,
         out: *mut usize,
     ) -> cudf_status_t;
 
     pub fn cudf_hash_join_pre_build_reservation_size_ex(
         build: cudf_table_view_handle,
-        nullable_join: cudf_nullable_join_t,
-        null_equality: cudf_null_equality_t,
         load_factor: f64,
         out: *mut usize,
         options: *const cudf_exec_options_t,

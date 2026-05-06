@@ -531,28 +531,28 @@ cudf_status_t cudf_hash_join_create_ex(cudf_table_view_handle build,
                                        cudf_hash_join_handle* out,
                                        const cudf_exec_options_t* options);
 
-/// Return exact device bytes that must be reserved before building a reusable
-/// hash-join artifact.
+/// Return exact retained device bytes that must be reserved before building a
+/// reusable hash-join artifact.
 ///
 /// This is a planning contract, not a build operation. It must not allocate a
-/// hash table or retain the build table. Until libcudf exposes an exact
-/// pre-build sizing contract for `cudf::hash_join`, this function returns
-/// `CUDF_ERROR_UNSUPPORTED`.
+/// hash table or retain the build table. The result covers the device memory
+/// retained by the reusable hash-table artifact for supported build-key tables.
+/// Build-key tables that require unsupported retained preprocessing buffers
+/// (nested keys, or keys that may have non-empty nulls such as nullable string
+/// keys) fail with CUDF_ERROR_INVALID_ARGUMENT.
 cudf_status_t cudf_hash_join_pre_build_reservation_size(cudf_table_view_handle build,
-                                                        cudf_nullable_join_t nullable_join,
-                                                        cudf_null_equality_t null_equality,
                                                         double load_factor,
                                                         size_t* out);
 
-/// Return exact device bytes that must be reserved before building a reusable
-/// hash-join artifact with explicit execution context.
+/// Return exact retained device bytes that must be reserved before building a
+/// reusable hash-join artifact with explicit execution context.
 ///
 /// The execution context is part of the contract surface so callers can use the
-/// same stream and memory-resource policy as the eventual build call once
-/// libcudf exposes honest pre-build sizing.
+/// same stream and memory-resource policy as the eventual build call. Build-key
+/// tables that require unsupported retained preprocessing buffers (nested keys,
+/// or keys that may have non-empty nulls such as nullable string keys) fail
+/// with CUDF_ERROR_INVALID_ARGUMENT.
 cudf_status_t cudf_hash_join_pre_build_reservation_size_ex(cudf_table_view_handle build,
-                                                           cudf_nullable_join_t nullable_join,
-                                                           cudf_null_equality_t null_equality,
                                                            double load_factor,
                                                            size_t* out,
                                                            const cudf_exec_options_t* options);
