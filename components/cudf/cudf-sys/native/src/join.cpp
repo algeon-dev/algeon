@@ -107,6 +107,8 @@ enum class pair_join_kind { inner, left, full };
 
 enum class single_side_join_kind { semi, anti };
 
+enum class hash_join_probe_kind { inner, left, full };
+
 struct distinct_hash_join_owner {
   std::unique_ptr<cudf::distinct_hash_join> join;
   rmm::mr::device_memory_resource* mr_raw = nullptr;
@@ -423,6 +425,41 @@ cudf_status_t filter_join_indices_impl(cudf_table_view_handle left,
                               out_left_indices,
                               out_right_indices,
                               cudf_capture_exec_provenance(exec));
+    }
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
+cudf_status_t hash_join_size_impl(cudf_hash_join_handle join,
+                                  cudf_table_view_handle probe,
+                                  size_t* out,
+                                  cudf_exec_options_t const* options,
+                                  hash_join_probe_kind kind)
+{
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = 0;
+  CUDF_RUST_NULL_CHECK(join, "join is null");
+  CUDF_RUST_NULL_CHECK(probe, "probe is null");
+  CUDF_RUST_TRY
+  {
+    cudf_exec_context exec          = cudf_make_exec_context();
+    cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
+    if (exec_status != CUDF_SUCCESS) { return exec_status; }
+
+    auto* owner      = static_cast<hash_join_owner*>(join);
+    auto* hash_join  = owner->join.get();
+    auto* probe_view = static_cast<cudf::table_view*>(probe);
+
+    {
+      cudf_current_device_resource_guard current_mr{exec.mr_raw};
+      switch (kind) {
+        case hash_join_probe_kind::inner: *out = hash_join->inner_join_size(*probe_view, exec.stream); break;
+        case hash_join_probe_kind::left: *out = hash_join->left_join_size(*probe_view, exec.stream); break;
+        case hash_join_probe_kind::full:
+          *out = hash_join->full_join_size(*probe_view, exec.stream, exec.mr);
+          break;
+      }
     }
     return CUDF_SUCCESS;
   }
@@ -1456,6 +1493,21 @@ cudf_status_t cudf_hash_join_inner_join_ex(cudf_hash_join_handle join,
   CUDF_RUST_CATCH
 }
 
+cudf_status_t cudf_hash_join_inner_join_size(cudf_hash_join_handle join,
+                                             cudf_table_view_handle probe,
+                                             size_t* out)
+{
+  return cudf_hash_join_inner_join_size_ex(join, probe, out, nullptr);
+}
+
+cudf_status_t cudf_hash_join_inner_join_size_ex(cudf_hash_join_handle join,
+                                                cudf_table_view_handle probe,
+                                                size_t* out,
+                                                cudf_exec_options_t const* options)
+{
+  return hash_join_size_impl(join, probe, out, options, hash_join_probe_kind::inner);
+}
+
 cudf_status_t cudf_hash_join_left_join(cudf_hash_join_handle join,
                                        cudf_table_view_handle probe,
                                        cudf_column_handle* out_left_indices,
@@ -1498,6 +1550,21 @@ cudf_status_t cudf_hash_join_left_join_ex(cudf_hash_join_handle join,
   CUDF_RUST_CATCH
 }
 
+cudf_status_t cudf_hash_join_left_join_size(cudf_hash_join_handle join,
+                                            cudf_table_view_handle probe,
+                                            size_t* out)
+{
+  return cudf_hash_join_left_join_size_ex(join, probe, out, nullptr);
+}
+
+cudf_status_t cudf_hash_join_left_join_size_ex(cudf_hash_join_handle join,
+                                               cudf_table_view_handle probe,
+                                               size_t* out,
+                                               cudf_exec_options_t const* options)
+{
+  return hash_join_size_impl(join, probe, out, options, hash_join_probe_kind::left);
+}
+
 cudf_status_t cudf_hash_join_full_join(cudf_hash_join_handle join,
                                        cudf_table_view_handle probe,
                                        cudf_column_handle* out_left_indices,
@@ -1538,5 +1605,20 @@ cudf_status_t cudf_hash_join_full_join_ex(cudf_hash_join_handle join,
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
+}
+
+cudf_status_t cudf_hash_join_full_join_size(cudf_hash_join_handle join,
+                                            cudf_table_view_handle probe,
+                                            size_t* out)
+{
+  return cudf_hash_join_full_join_size_ex(join, probe, out, nullptr);
+}
+
+cudf_status_t cudf_hash_join_full_join_size_ex(cudf_hash_join_handle join,
+                                               cudf_table_view_handle probe,
+                                               size_t* out,
+                                               cudf_exec_options_t const* options)
+{
+  return hash_join_size_impl(join, probe, out, options, hash_join_probe_kind::full);
 }
 }  // extern "C"

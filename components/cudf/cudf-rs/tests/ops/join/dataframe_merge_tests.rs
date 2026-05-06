@@ -221,6 +221,8 @@ fn test_dataframe_hash_join_reuses_build_for_projected_inner_probes_with_duplica
     let second = hash_join.materialize(&second_probe, &second_indices, ["score"], ["value"]).unwrap();
 
     assert_eq!(hash_join.build_keys(), &["id".to_string()]);
+    assert_eq!(hash_join.inner_probe_size(&first_probe, ["pid"]).unwrap(), first_indices.len());
+    assert_eq!(hash_join.inner_probe_size(&second_probe, ["pid"]).unwrap(), second_indices.len());
     assert_eq!(first_indices.len(), 4);
     let mut first_rows: Vec<_> =
         i32_column(&first.probe, "score").into_iter().zip(i32_column(&first.build, "value")).collect();
@@ -248,6 +250,9 @@ fn test_dataframe_hash_join_left_and_full_probes_nullify_unmatched_projection() 
     let full_indices = hash_join.full_probe(&probe, ["pid"]).unwrap();
     let full_probe = hash_join.materialize_probe(&probe, &full_indices, ["score"]).unwrap();
     let full_build = hash_join.materialize_build(&full_indices, ["value"]).unwrap();
+
+    assert_eq!(hash_join.left_probe_size(&probe, ["pid"]).unwrap(), left_indices.len());
+    assert_eq!(hash_join.full_probe_size(&probe, ["pid"]).unwrap(), full_indices.len());
 
     let mut left_rows: Vec<_> =
         i32_column(&left_probe, "score").into_iter().zip(nullable_i32_column(&left_build, "value")).collect();

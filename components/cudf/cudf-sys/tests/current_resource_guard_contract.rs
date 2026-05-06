@@ -27,6 +27,7 @@ const EXPECTED_GUARDS: &[&str] = &[
     "join::hash_join_full_join",
     "join::hash_join_inner_join",
     "join::hash_join_left_join",
+    "join::hash_join_size",
     "join::full_join_indices",
     "join::inner_join_indices",
     "join::left_join_indices",
@@ -192,6 +193,9 @@ fn classify_allowed_guard(file_name: &str, context: &str) -> Option<&'static str
         },
         "join.cpp" if context.contains("hash_join->left_join(*probe_view, {}, exec.stream, exec.mr)") => {
             Some("join::hash_join_left_join")
+        },
+        "join.cpp" if context.contains("hash_join->inner_join_size(*probe_view, exec.stream)") => {
+            Some("join::hash_join_size")
         },
         "replace.cpp" if context.contains("cudf::replace_nulls(*view, rp, exec.stream, exec.mr)") => {
             Some("replace::replace_nulls_policy")

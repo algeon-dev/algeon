@@ -2002,6 +2002,20 @@ impl HashJoin {
         self.probe_indices_with_context(probe_keys, JoinType::Inner, ctx, "hash_join::inner_join_indices_in")
     }
 
+    /// Return the exact output row count for an inner probe.
+    ///
+    /// This calls libcudf's reusable hash-join size API and does not allocate
+    /// or return join gather maps.
+    pub fn inner_join_size(&self, probe_keys: &TableView<'_>) -> Result<usize> {
+        let ctx = ExecutionOverrides::new();
+        self.probe_size_with_context(probe_keys, JoinType::Inner, &ctx, "hash_join::inner_join_size")
+    }
+
+    /// Return the exact output row count for an inner probe using a borrowed execution override.
+    pub fn inner_join_size_in(&self, probe_keys: &TableView<'_>, ctx: &ExecutionOverrides<'_>) -> Result<usize> {
+        self.probe_size_with_context(probe_keys, JoinType::Inner, ctx, "hash_join::inner_join_size_in")
+    }
+
     /// Probe with left-join semantics.
     ///
     /// Misses in the returned `right` column contain libcudf's no-match
@@ -2023,6 +2037,20 @@ impl HashJoin {
         ctx: &ExecutionOverrides<'_>,
     ) -> Result<JoinIndices> {
         self.probe_indices_with_context(probe_keys, JoinType::Left, ctx, "hash_join::left_join_indices_in")
+    }
+
+    /// Return the exact output row count for a left probe.
+    ///
+    /// This calls libcudf's reusable hash-join size API and does not allocate
+    /// or return join gather maps.
+    pub fn left_join_size(&self, probe_keys: &TableView<'_>) -> Result<usize> {
+        let ctx = ExecutionOverrides::new();
+        self.probe_size_with_context(probe_keys, JoinType::Left, &ctx, "hash_join::left_join_size")
+    }
+
+    /// Return the exact output row count for a left probe using a borrowed execution override.
+    pub fn left_join_size_in(&self, probe_keys: &TableView<'_>, ctx: &ExecutionOverrides<'_>) -> Result<usize> {
+        self.probe_size_with_context(probe_keys, JoinType::Left, ctx, "hash_join::left_join_size_in")
     }
 
     /// Probe with full-join semantics.
@@ -2048,6 +2076,20 @@ impl HashJoin {
         self.probe_indices_with_context(probe_keys, JoinType::Full, ctx, "hash_join::full_join_indices_in")
     }
 
+    /// Return the exact output row count for a full probe.
+    ///
+    /// This calls libcudf's reusable hash-join size API and does not allocate
+    /// or return join gather maps.
+    pub fn full_join_size(&self, probe_keys: &TableView<'_>) -> Result<usize> {
+        let ctx = ExecutionOverrides::new();
+        self.probe_size_with_context(probe_keys, JoinType::Full, &ctx, "hash_join::full_join_size")
+    }
+
+    /// Return the exact output row count for a full probe using a borrowed execution override.
+    pub fn full_join_size_in(&self, probe_keys: &TableView<'_>, ctx: &ExecutionOverrides<'_>) -> Result<usize> {
+        self.probe_size_with_context(probe_keys, JoinType::Full, ctx, "hash_join::full_join_size_in")
+    }
+
     fn probe_indices_with_context(
         &self,
         probe_keys: &TableView<'_>,
@@ -2064,6 +2106,75 @@ impl HashJoin {
             Some(execution.exec_options()),
             operation,
         )
+    }
+
+    fn probe_size_with_context(
+        &self,
+        probe_keys: &TableView<'_>,
+        join_type: JoinType,
+        ctx: &ExecutionOverrides<'_>,
+        operation: &'static str,
+    ) -> Result<usize> {
+        let execution =
+            ResolvedExecution::many(probe_keys.execution_domain(), [self.build.execution_domain()], ctx, operation)?;
+        self.probe_size_impl(probe_keys, join_type, Some(execution.exec_options()), operation)
+    }
+
+    fn probe_size_impl(
+        &self,
+        probe_keys: &TableView<'_>,
+        join_type: JoinType,
+        exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+        operation: &'static str,
+    ) -> Result<usize> {
+        let mut out = 0usize;
+        let status = match (join_type, exec_options) {
+            (JoinType::Inner, None) => unsafe {
+                cudf_sys::cudf_hash_join_inner_join_size(self.handle.handle.as_ptr(), probe_keys.raw_handle(), &mut out)
+            },
+            (JoinType::Left, None) => unsafe {
+                cudf_sys::cudf_hash_join_left_join_size(self.handle.handle.as_ptr(), probe_keys.raw_handle(), &mut out)
+            },
+            (JoinType::Full, None) => unsafe {
+                cudf_sys::cudf_hash_join_full_join_size(self.handle.handle.as_ptr(), probe_keys.raw_handle(), &mut out)
+            },
+            (JoinType::Inner, Some(options)) => unsafe {
+                cudf_sys::cudf_hash_join_inner_join_size_ex(
+                    self.handle.handle.as_ptr(),
+                    probe_keys.raw_handle(),
+                    &mut out,
+                    options,
+                )
+            },
+            (JoinType::Left, Some(options)) => unsafe {
+                cudf_sys::cudf_hash_join_left_join_size_ex(
+                    self.handle.handle.as_ptr(),
+                    probe_keys.raw_handle(),
+                    &mut out,
+                    options,
+                )
+            },
+            (JoinType::Full, Some(options)) => unsafe {
+                cudf_sys::cudf_hash_join_full_join_size_ex(
+                    self.handle.handle.as_ptr(),
+                    probe_keys.raw_handle(),
+                    &mut out,
+                    options,
+                )
+            },
+        };
+
+        error::check_status_in_with_details(
+            status,
+            operation,
+            [
+                ("nullable_join", format!("{:?}", self.options.nullable_join_setting()).to_lowercase()),
+                ("null_equality", format!("{:?}", self.options.null_eq()).to_lowercase()),
+                ("execution_context_provided", exec_options.is_some().to_string()),
+            ],
+        )?;
+
+        Ok(out)
     }
 
     fn probe_indices_impl(

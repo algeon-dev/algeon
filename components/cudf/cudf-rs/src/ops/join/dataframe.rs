@@ -1081,6 +1081,36 @@ impl DataFrameHashJoin {
         self.full_probe_in(probe, probe_on, &ctx)
     }
 
+    /// Return the exact output row count for an inner probe.
+    pub fn inner_probe_size<I, S>(&self, probe: &DataFrame, probe_on: I) -> Result<usize>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let ctx = ExecutionOverrides::new();
+        self.inner_probe_size_in(probe, probe_on, &ctx)
+    }
+
+    /// Return the exact output row count for a left probe.
+    pub fn left_probe_size<I, S>(&self, probe: &DataFrame, probe_on: I) -> Result<usize>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let ctx = ExecutionOverrides::new();
+        self.left_probe_size_in(probe, probe_on, &ctx)
+    }
+
+    /// Return the exact output row count for a full probe.
+    pub fn full_probe_size<I, S>(&self, probe: &DataFrame, probe_on: I) -> Result<usize>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let ctx = ExecutionOverrides::new();
+        self.full_probe_size_in(probe, probe_on, &ctx)
+    }
+
     /// Probe this reusable build artifact with inner-join semantics using a borrowed execution override.
     pub fn inner_probe_in<I, S>(
         &self,
@@ -1101,6 +1131,26 @@ impl DataFrameHashJoin {
         )
     }
 
+    /// Return the exact output row count for an inner probe using a borrowed execution override.
+    pub fn inner_probe_size_in<I, S>(
+        &self,
+        probe: &DataFrame,
+        probe_on: I,
+        ctx: &ExecutionOverrides<'_>,
+    ) -> Result<usize>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        self.probe_size_with_context(
+            probe,
+            probe_on,
+            join::JoinType::Inner,
+            ctx,
+            "dataframe::hash_join::inner_probe_size",
+        )
+    }
+
     /// Probe this reusable build artifact with left-join semantics using a borrowed execution override.
     pub fn left_probe_in<I, S>(
         &self,
@@ -1115,6 +1165,26 @@ impl DataFrameHashJoin {
         self.probe_indices_with_context(probe, probe_on, join::JoinType::Left, ctx, "dataframe::hash_join::left_probe")
     }
 
+    /// Return the exact output row count for a left probe using a borrowed execution override.
+    pub fn left_probe_size_in<I, S>(
+        &self,
+        probe: &DataFrame,
+        probe_on: I,
+        ctx: &ExecutionOverrides<'_>,
+    ) -> Result<usize>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        self.probe_size_with_context(
+            probe,
+            probe_on,
+            join::JoinType::Left,
+            ctx,
+            "dataframe::hash_join::left_probe_size",
+        )
+    }
+
     /// Probe this reusable build artifact with full-join semantics using a borrowed execution override.
     pub fn full_probe_in<I, S>(
         &self,
@@ -1127,6 +1197,26 @@ impl DataFrameHashJoin {
         S: AsRef<str>,
     {
         self.probe_indices_with_context(probe, probe_on, join::JoinType::Full, ctx, "dataframe::hash_join::full_probe")
+    }
+
+    /// Return the exact output row count for a full probe using a borrowed execution override.
+    pub fn full_probe_size_in<I, S>(
+        &self,
+        probe: &DataFrame,
+        probe_on: I,
+        ctx: &ExecutionOverrides<'_>,
+    ) -> Result<usize>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        self.probe_size_with_context(
+            probe,
+            probe_on,
+            join::JoinType::Full,
+            ctx,
+            "dataframe::hash_join::full_probe_size",
+        )
     }
 
     /// Materialize selected columns from the probe DataFrame.
@@ -1207,6 +1297,35 @@ impl DataFrameHashJoin {
         let build = Series::from_column(raw_indices.right)
             .map_err(|error| error.reanchor(operation).with_detail("resource", "build_join_indices"))?;
         Ok(DataFrameHashJoinPairIndices::new(probe, build))
+    }
+
+    fn probe_size_with_context<I, S>(
+        &self,
+        probe: &DataFrame,
+        probe_on: I,
+        join_type: join::JoinType,
+        ctx: &ExecutionOverrides<'_>,
+        operation: &'static str,
+    ) -> Result<usize>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let probe_keys = probe_on.into_iter().map(|key| key.as_ref().to_string()).collect::<Vec<_>>();
+        validate_hash_join_key_names(&probe_keys, operation)?;
+        if probe_keys.len() != self.build_keys.len() {
+            return Err(merge_key_count_mismatch_error(operation, probe_keys.len(), self.build_keys.len()));
+        }
+
+        let probe_key_refs = probe_keys.iter().map(|key| key.as_str()).collect::<Vec<_>>();
+        let probe_key_indices = resolve_column_names(probe.columns_map(), &probe_key_refs, operation)?;
+        let probe_key_table = build_borrowed_table_view_from_columns(probe.columns_map(), &probe_key_indices)?;
+        let size = match join_type {
+            join::JoinType::Inner => self.join.inner_join_size_in(probe_key_table.table(), ctx)?,
+            join::JoinType::Left => self.join.left_join_size_in(probe_key_table.table(), ctx)?,
+            join::JoinType::Full => self.join.full_join_size_in(probe_key_table.table(), ctx)?,
+        };
+        Ok(size)
     }
 }
 
