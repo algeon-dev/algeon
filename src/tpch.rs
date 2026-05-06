@@ -14,9 +14,9 @@ use arrow::{
     record_batch::RecordBatch,
 };
 use datafusion::{
-    common::ScalarValue,
+    common::{ScalarValue, utils::memory::get_record_batch_memory_size},
     error::DataFusionError,
-    execution::SessionStateBuilder,
+    execution::{SessionStateBuilder, context::TaskContext},
     functions_aggregate::count::count_udaf,
     logical_expr::Operator,
     parquet::{arrow::ArrowWriter, errors::ParquetError, file::properties::WriterProperties},
@@ -28,6 +28,7 @@ use datafusion::{
     physical_plan::{
         ExecutionPlan,
         aggregates::{AggregateExec, AggregateMode, PhysicalGroupBy},
+        collect,
         filter::FilterExec,
     },
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
@@ -40,8 +41,8 @@ use parquet::{
 pub use crate::tpch_queries::{TPCH_QUERIES, TPCH_QUERY_COUNT, TpchQuery, tpch_query_ids};
 use crate::{
     CudfNativePhysicalOptimizerRule, CudfOptimizerConfig, CudfPhysicalOptimizerRule, CudfSessionStateBuilderExt,
-    GpuFallbackPolicy, NativeCudfExecutionConfig, NativeDataFusionPlanningWorkloadItem,
-    NativeFallbackPressureWorkloadItem,
+    GpuFallbackPolicy, NativeCudfExecutionConfig, NativeDataFusionExecutionWorkloadItem,
+    NativeDataFusionPlanningWorkloadItem, NativeDataFusionRuntime, NativeFallbackPressureWorkloadItem,
 };
 
 pub const TPCH_TABLES: &[&str] =
@@ -433,6 +434,72 @@ pub async fn tpch_datafusion_planning_workload_items(
         items.push(item);
     }
     Ok(items)
+}
+
+pub async fn tpch_datafusion_execution_workload_items(
+    root: &Path,
+    session_config: SessionConfig,
+) -> TpchWorkloadResult<Vec<NativeDataFusionExecutionWorkloadItem>> {
+    let optimizer_config = tpch_native_optimizer_config();
+    let native_rule = Arc::new(CudfNativePhysicalOptimizerRule::new(optimizer_config.clone()));
+    let gpu_island_rule = Arc::new(CudfPhysicalOptimizerRule::new(optimizer_config));
+    let state = SessionStateBuilder::new_with_default_features()
+        .with_config(session_config)
+        .with_cudf_native_and_gpu_island_rules(Arc::clone(&native_rule), gpu_island_rule)
+        .build();
+    let ctx = SessionContext::new_with_state(state);
+    register_tpch_tables(&ctx, root).await?;
+
+    let mut items = Vec::with_capacity(TPCH_QUERIES.len());
+    for query in TPCH_QUERIES {
+        let item = match ctx.sql(query.sql).await {
+            Ok(df) => match df.create_physical_plan().await {
+                Ok(plan) => match native_rule.last_planning_diagnostics() {
+                    Some(diagnostics) => {
+                        let runtime = if diagnostics.report.rewritten_count() > 0 {
+                            execute_tpch_native_plan(Arc::clone(&plan)).await
+                        } else {
+                            NativeDataFusionRuntime::NotStarted
+                        };
+                        NativeDataFusionExecutionWorkloadItem::new(query.id, plan, diagnostics, runtime)
+                    },
+                    None => NativeDataFusionExecutionWorkloadItem::planning_failure(
+                        query.id,
+                        "native_diagnostics",
+                        "missing_native_diagnostics",
+                        format!("missing retained native planning diagnostics for {}", query.id),
+                    ),
+                },
+                Err(error) => NativeDataFusionExecutionWorkloadItem::planning_failure(
+                    query.id,
+                    "physical_planning",
+                    "physical_planning_failed",
+                    error.to_string(),
+                ),
+            },
+            Err(error) => NativeDataFusionExecutionWorkloadItem::planning_failure(
+                query.id,
+                "sql_to_logical_plan",
+                "sql_planning_failed",
+                error.to_string(),
+            ),
+        };
+        items.push(item);
+    }
+    Ok(items)
+}
+
+async fn execute_tpch_native_plan(plan: Arc<dyn ExecutionPlan>) -> NativeDataFusionRuntime {
+    match collect(Arc::clone(&plan), Arc::new(TaskContext::default())).await {
+        Ok(batches) => {
+            let output_batches = batches.len();
+            let output_rows = batches.iter().map(RecordBatch::num_rows).sum();
+            let output_bytes = batches.iter().map(get_record_batch_memory_size).sum();
+            let metrics = plan.metrics().unwrap_or_else(datafusion::physical_plan::metrics::MetricsSet::new);
+            NativeDataFusionRuntime::Succeeded { output_batches, output_rows, output_bytes, metrics }
+        },
+        Err(error) => NativeDataFusionRuntime::Failed { message: error.to_string() },
+    }
 }
 
 struct TpchScalarFallbackPressureQuery {

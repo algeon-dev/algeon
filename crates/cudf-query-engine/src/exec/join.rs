@@ -18,6 +18,21 @@ enum EquiJoinIndices {
     LeftOnly(DataFrameJoinIndices),
 }
 
+struct JoinIndexResult {
+    indices: EquiJoinIndices,
+    hash_table_bytes: u64,
+}
+
+impl JoinIndexResult {
+    fn without_hash_table(indices: EquiJoinIndices) -> Self {
+        Self { indices, hash_table_bytes: 0 }
+    }
+
+    fn with_hash_table(indices: EquiJoinIndices, hash_table_bytes: u64) -> Self {
+        Self { indices, hash_table_bytes }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 struct JoinInputStats {
     left_rows: u64,
@@ -34,6 +49,11 @@ struct JoinIndexInput<'a, 'exec> {
     right_keys: &'a [String],
     residual_columns: &'a JoinResidualColumns,
     overrides: &'a ExecutionOverrides<'exec>,
+}
+
+struct BuiltHashJoin {
+    hash_join: DataFrameHashJoin,
+    hash_table_bytes: u64,
 }
 
 pub(super) fn execute_join(
@@ -89,7 +109,7 @@ pub(super) fn execute_join(
         overrides: &overrides,
     };
     let indices = execute_join_indices(input, node, scratch, metrics)?;
-    let output = materialize_join_output(&left, &right, &indices, &overrides, &node.spec.output_projection)?;
+    let output = materialize_join_output(&left, &right, &indices.indices, &overrides, &node.spec.output_projection)?;
     metrics.operator_time += timer.elapsed();
 
     let output_rows = output.num_rows() as u64;
@@ -107,7 +127,7 @@ pub(super) fn execute_join(
             build_bytes: side_metric(node.spec.build_side, stats.left_bytes, stats.right_bytes),
             probe_rows: side_metric(probe_side(node.spec.build_side), stats.left_rows, stats.right_rows),
             probe_bytes: side_metric(probe_side(node.spec.build_side), stats.left_bytes, stats.right_bytes),
-            hash_table_bytes: 0,
+            hash_table_bytes: indices.hash_table_bytes,
             output_rows,
             output_bytes,
         },
@@ -213,9 +233,9 @@ fn execute_join_indices(
     node: &JoinNode,
     scratch: &mut ExecutionScratch,
     metrics: &mut QueryMetrics,
-) -> Result<EquiJoinIndices> {
+) -> Result<JoinIndexResult> {
     if node.spec.keys.is_empty() {
-        return execute_conditional_join_indices(&input, node);
+        return execute_conditional_join_indices(&input, node).map(JoinIndexResult::without_hash_table);
     }
     if node.spec.residual_predicate.is_some() {
         return execute_mixed_join_indices(&input, node, scratch, metrics);
@@ -232,6 +252,7 @@ fn execute_join_indices(
                 .with_execution(input.overrides)
                 .left_semi_join_indices(input.right, options)
                 .map(EquiJoinIndices::LeftOnly)
+                .map(JoinIndexResult::without_hash_table)
                 .map_err(|error| join_index_error(error, node))
         },
         JoinType::LeftAnti => {
@@ -241,6 +262,7 @@ fn execute_join_indices(
                 .with_execution(input.overrides)
                 .left_anti_join_indices(input.right, options)
                 .map(EquiJoinIndices::LeftOnly)
+                .map(JoinIndexResult::without_hash_table)
                 .map_err(|error| join_index_error(error, node))
         },
         JoinType::Cross => Err(QueryError::new(
@@ -257,12 +279,15 @@ fn execute_reusable_hash_join_indices(
     node: &JoinNode,
     scratch: &mut ExecutionScratch,
     metrics: &mut QueryMetrics,
-) -> Result<EquiJoinIndices> {
+) -> Result<JoinIndexResult> {
     match node.spec.build_side {
         JoinSide::Right => {
-            let hash_join = build_hash_join(input.right, input.right_keys, input.overrides, node, scratch, metrics)?;
-            let indices = probe_hash_join(&hash_join, input.left, input.left_keys, input.overrides, node)?;
-            Ok(EquiJoinIndices::Pair { left: indices.probe().clone(), right: indices.build().clone() })
+            let build = build_hash_join(input.right, input.right_keys, input.overrides, node, scratch, metrics)?;
+            let indices = probe_hash_join(&build.hash_join, input.left, input.left_keys, input.overrides, node)?;
+            Ok(JoinIndexResult::with_hash_table(
+                EquiJoinIndices::Pair { left: indices.probe().clone(), right: indices.build().clone() },
+                build.hash_table_bytes,
+            ))
         },
         JoinSide::Left => {
             if node.spec.join_type == JoinType::Left {
@@ -274,9 +299,12 @@ fn execute_reusable_hash_join_indices(
                 .with_fact("join_type", node.spec.join_type)
                 .with_fact("build_side", node.spec.build_side));
             }
-            let hash_join = build_hash_join(input.left, input.left_keys, input.overrides, node, scratch, metrics)?;
-            let indices = probe_hash_join(&hash_join, input.right, input.right_keys, input.overrides, node)?;
-            Ok(EquiJoinIndices::Pair { left: indices.build().clone(), right: indices.probe().clone() })
+            let build = build_hash_join(input.left, input.left_keys, input.overrides, node, scratch, metrics)?;
+            let indices = probe_hash_join(&build.hash_join, input.right, input.right_keys, input.overrides, node)?;
+            Ok(JoinIndexResult::with_hash_table(
+                EquiJoinIndices::Pair { left: indices.build().clone(), right: indices.probe().clone() },
+                build.hash_table_bytes,
+            ))
         },
     }
 }
@@ -354,12 +382,12 @@ fn execute_mixed_join_indices(
     node: &JoinNode,
     scratch: &mut ExecutionScratch,
     metrics: &mut QueryMetrics,
-) -> Result<EquiJoinIndices> {
+) -> Result<JoinIndexResult> {
     match node.spec.join_type {
         JoinType::Inner | JoinType::Left => {
             let predicate = lower_join_residual_predicate(input.context, node, input.residual_columns)?;
             let equi = execute_reusable_hash_join_indices(input, node, scratch, metrics)?;
-            let EquiJoinIndices::Pair { left: left_indices, right: right_indices } = equi else {
+            let EquiJoinIndices::Pair { left: left_indices, right: right_indices } = equi.indices else {
                 unreachable!("inner/left reusable hash joins produce two-sided indices");
             };
             let options = dataframe_predicate_join_options(input.residual_columns);
@@ -369,7 +397,10 @@ fn execute_mixed_join_indices(
                 .with_execution(input.overrides)
                 .filter_join_indices(input.right, &left_indices, &right_indices, &predicate, options, join_type)
                 .map_err(|error| join_index_error(error, node))?;
-            Ok(EquiJoinIndices::Pair { left: filtered.left().clone(), right: filtered.right().clone() })
+            Ok(JoinIndexResult::with_hash_table(
+                EquiJoinIndices::Pair { left: filtered.left().clone(), right: filtered.right().clone() },
+                equi.hash_table_bytes,
+            ))
         },
         JoinType::Full => {
             let predicate = lower_join_match_predicate(input.context, node, input.residual_columns)?;
@@ -382,7 +413,10 @@ fn execute_mixed_join_indices(
                     dataframe_predicate_join_options(input.residual_columns),
                 )
                 .map_err(|error| join_index_error(error, node))?;
-            Ok(EquiJoinIndices::Pair { left: pairs.left().clone(), right: pairs.right().clone() })
+            Ok(JoinIndexResult::without_hash_table(EquiJoinIndices::Pair {
+                left: pairs.left().clone(),
+                right: pairs.right().clone(),
+            }))
         },
         JoinType::LeftSemi => {
             let predicate = lower_join_residual_predicate(input.context, node, input.residual_columns)?;
@@ -397,6 +431,7 @@ fn execute_mixed_join_indices(
                 .with_execution(input.overrides)
                 .mixed_left_semi_join_indices(input.right, &predicate, options)
                 .map(EquiJoinIndices::LeftOnly)
+                .map(JoinIndexResult::without_hash_table)
                 .map_err(|error| join_index_error(error, node))
         },
         JoinType::LeftAnti => {
@@ -412,6 +447,7 @@ fn execute_mixed_join_indices(
                 .with_execution(input.overrides)
                 .mixed_left_anti_join_indices(input.right, &predicate, options)
                 .map(EquiJoinIndices::LeftOnly)
+                .map(JoinIndexResult::without_hash_table)
                 .map_err(|error| join_index_error(error, node))
         },
         JoinType::Cross => Err(QueryError::new(
@@ -430,7 +466,7 @@ fn build_hash_join(
     node: &JoinNode,
     scratch: &mut ExecutionScratch,
     metrics: &mut QueryMetrics,
-) -> Result<DataFrameHashJoin> {
+) -> Result<BuiltHashJoin> {
     let build_node = match node.spec.build_side {
         JoinSide::Left => node.inputs[0],
         JoinSide::Right => node.inputs[1],
@@ -438,7 +474,8 @@ fn build_hash_join(
     let cache_key = HashJoinCacheKey::new(build_node, build_keys.to_vec(), node.spec.null_equality);
     if let Some(hash_join) = scratch.hash_join_builds.get(&cache_key) {
         metrics.record_hash_join_cache_hit();
-        return Ok(hash_join.clone());
+        let hash_table_bytes = observe_hash_table_bytes(hash_join, node)?;
+        return Ok(BuiltHashJoin { hash_join: hash_join.clone(), hash_table_bytes });
     }
 
     metrics.record_hash_join_cache_miss();
@@ -459,9 +496,24 @@ fn build_hash_join(
             .with_fact("null_equality", node.spec.null_equality)
             .with_fact("build_side", node.spec.build_side)
         })?;
+    let hash_table_bytes = observe_hash_table_bytes(&hash_join, node)?;
     metrics.record_hash_join_build();
     scratch.hash_join_builds.insert(cache_key, hash_join.clone());
-    Ok(hash_join)
+    Ok(BuiltHashJoin { hash_join, hash_table_bytes })
+}
+
+fn observe_hash_table_bytes(hash_join: &DataFrameHashJoin, node: &JoinNode) -> Result<u64> {
+    hash_join.device_allocated_size_bytes().map(|bytes| bytes as u64).map_err(|error| {
+        QueryError::from_cudf(
+            "cudf_query_engine.join.hash_table_bytes",
+            "failed to observe native cudf reusable hash join memory",
+            error,
+        )
+        .with_fact("join_type", node.spec.join_type)
+        .with_fact("key_count", node.spec.keys.len())
+        .with_fact("null_equality", node.spec.null_equality)
+        .with_fact("build_side", node.spec.build_side)
+    })
 }
 
 fn probe_hash_join(

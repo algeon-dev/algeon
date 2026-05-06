@@ -1,12 +1,10 @@
-use arrow::{array::ArrayRef, compute::cast, datatypes::SchemaRef};
+use arrow::datatypes::SchemaRef;
 
 use super::*;
 
 pub(super) fn materialize_to_host(input: GpuResultHandle, metrics: &mut QueryMetrics) -> Result<RecordBatch> {
     let timer = Instant::now();
-    let output_schema = Arc::clone(input.schema());
     let output = input.to_host_record_batch()?;
-    let output = coerce_record_batch_to_schema(output, &output_schema)?;
     metrics.materialization_time += timer.elapsed();
     metrics
         .boundary
@@ -62,74 +60,6 @@ pub(super) fn materialize_bounded_to_host(
     reservations.release(materialization_reservation);
     reservations.release(input.reservation);
     result.map_err(|error| host_materialization_failure_facts(metrics).attach_to_error(error))
-}
-
-fn coerce_record_batch_to_schema(batch: RecordBatch, output_schema: &SchemaRef) -> Result<RecordBatch> {
-    if batch.num_columns() != output_schema.fields().len() {
-        return Err(QueryError::new(
-            QueryErrorCode::InvalidPlan,
-            "cudf_query_engine.host_arrow.schema",
-            "native host materialization column count must match sink schema",
-        )
-        .with_fact("actual_columns", batch.num_columns())
-        .with_fact("expected_columns", output_schema.fields().len()));
-    }
-    validate_record_batch_column_names(&batch, output_schema)?;
-
-    let columns = output_schema
-        .fields()
-        .iter()
-        .enumerate()
-        .map(|(index, field)| {
-            let column = batch.column(index);
-            if column.data_type() == field.data_type() {
-                return Ok(Arc::clone(column));
-            }
-            cast(column.as_ref(), field.data_type()).map_err(|error| {
-                QueryError::new(
-                    QueryErrorCode::UnsupportedType,
-                    "cudf_query_engine.host_arrow.schema",
-                    "native host materialization could not cast a column to the sink schema type",
-                )
-                .with_fact("column", field.name())
-                .with_fact("actual_type", format!("{:?}", column.data_type()))
-                .with_fact("expected_type", format!("{:?}", field.data_type()))
-                .with_fact("arrow_error", error.to_string())
-            })
-        })
-        .collect::<Result<Vec<ArrayRef>>>()?;
-
-    RecordBatch::try_new(Arc::clone(output_schema), columns).map_err(|error| {
-        QueryError::new(
-            QueryErrorCode::InvalidPlan,
-            "cudf_query_engine.host_arrow.schema",
-            "native host materialization could not attach the sink schema",
-        )
-        .with_fact("arrow_error", error.to_string())
-    })
-}
-
-fn validate_record_batch_column_names(batch: &RecordBatch, output_schema: &SchemaRef) -> Result<()> {
-    let batch_schema = batch.schema();
-    let actual_names = batch_schema.fields().iter().map(|field| field.name().as_str()).collect::<Vec<_>>();
-    let expected_names = output_schema.fields().iter().map(|field| field.name().as_str()).collect::<Vec<_>>();
-
-    if actual_names == expected_names {
-        return Ok(());
-    }
-
-    let mismatch_index =
-        actual_names.iter().zip(&expected_names).position(|(actual, expected)| actual != expected).unwrap_or(0);
-    Err(QueryError::new(
-        QueryErrorCode::InvalidPlan,
-        "cudf_query_engine.host_arrow.schema",
-        "native host materialization column names must match sink schema order",
-    )
-    .with_fact("mismatch_index", mismatch_index)
-    .with_fact("actual_column", actual_names[mismatch_index])
-    .with_fact("expected_column", expected_names[mismatch_index])
-    .with_fact("actual_column_names", actual_names.join(","))
-    .with_fact("expected_column_names", expected_names.join(",")))
 }
 
 pub(super) fn host_materialization_failure_facts(metrics: &QueryMetrics) -> RetryFacts {

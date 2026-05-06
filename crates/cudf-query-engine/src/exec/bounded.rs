@@ -8,6 +8,8 @@ pub(super) fn execute_bounded_query_plan(
     plan: &QueryPlan,
     metrics: &mut QueryMetrics,
 ) -> Result<QueryOutput> {
+    reject_bounded_join_plan(context, plan)?;
+
     if !plan.nodes().iter().any(|node| matches!(node.kind, PlanNode::Aggregate(_))) {
         return execute_bounded_generic_query_plan(context, plan, metrics);
     }
@@ -75,19 +77,7 @@ fn execute_bounded_generic_query_plan(
     plan: &QueryPlan,
     metrics: &mut QueryMetrics,
 ) -> Result<QueryOutput> {
-    if plan.nodes().iter().any(|node| matches!(node.kind, PlanNode::Join(_))) {
-        return Err(unsupported_bounded_shape(
-            "bounded native join execution requires join-specific build/probe/hash/gather/output reservations and cudf-rs hash-table byte observability",
-            "join_memory_reservations_not_implemented",
-        )
-        .with_fact("boundary_policy", context.boundary_policy())
-        .with_fact("source_read_boundary", context.boundary_policy().source_read())
-        .with_fact("build_materialization_boundary", context.boundary_policy().build_materialization())
-        .with_fact("probe_execution_boundary", context.boundary_policy().probe_execution())
-        .with_fact("result_materialization_boundary", context.boundary_policy().result_materialization())
-        .with_fact("missing_cudf_rs_observability", "hash_table_device_allocated_size_bytes")
-        .with_fact("bounded_join_enabled", false));
-    }
+    reject_bounded_join_plan(context, plan)?;
 
     let MemoryControlPolicy::Bounded { device_budget_bytes, .. } = context.memory_control_policy() else {
         unreachable!("execute_bounded_query_plan is called only for bounded policies");
@@ -132,6 +122,26 @@ fn execute_bounded_generic_query_plan(
             Ok(QueryOutput::HostArrow(output))
         },
     }
+}
+
+fn reject_bounded_join_plan(context: &ExecutionContext, plan: &QueryPlan) -> Result<()> {
+    if plan.nodes().iter().any(|node| matches!(node.kind, PlanNode::Join(_))) {
+        return Err(unsupported_bounded_shape(
+            "bounded native join execution requires join-specific build/probe/hash/gather/output reservations before execution",
+            "join_memory_reservations_not_implemented",
+        )
+        .with_fact("boundary_policy", context.boundary_policy())
+        .with_fact("source_read_boundary", context.boundary_policy().source_read())
+        .with_fact("build_materialization_boundary", context.boundary_policy().build_materialization())
+        .with_fact("probe_execution_boundary", context.boundary_policy().probe_execution())
+        .with_fact("result_materialization_boundary", context.boundary_policy().result_materialization())
+        .with_fact("cudf_rs_hash_table_observability", "hash_table_device_allocated_size_bytes")
+        .with_fact("bounded_join_reservation_model", "not_implemented")
+        .with_fact("missing_reservations", "build_side,probe_side,hash_table,gather_map,join_output")
+        .with_fact("bounded_join_enabled", false));
+    }
+
+    Ok(())
 }
 
 pub(super) fn execute_bounded_chunk_with_retry(

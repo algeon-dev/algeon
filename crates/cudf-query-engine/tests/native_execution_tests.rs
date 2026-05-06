@@ -300,6 +300,7 @@ fn native_query_executes_inner_equi_join_with_explicit_output_projection() {
     assert_eq!(join_metrics.probe_side, "left");
     assert_eq!(join_metrics.build_rows, 3);
     assert_eq!(join_metrics.probe_rows, 4);
+    assert!(join_metrics.hash_table_bytes > 0);
     assert_eq!(join_metrics.output_rows, 3);
     assert!(join_metrics.output_bytes > 0);
 
@@ -3850,7 +3851,7 @@ fn bounded_native_query_rejects_unsupported_expression_before_source_read() {
 }
 
 #[test]
-fn bounded_native_query_join_rejection_facts_name_missing_hash_table_byte_observability() {
+fn bounded_native_query_join_rejection_facts_record_hash_table_observability_and_missing_reservations() {
     let runtime = Arc::new(cudf::Runtime::new().unwrap());
     let left_schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
     let right_schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
@@ -3902,7 +3903,93 @@ fn bounded_native_query_join_rejection_facts_name_missing_hash_table_byte_observ
     assert_eq!(error.code(), QueryErrorCode::UnsupportedPlanShape);
     assert_eq!(error.operation(), "cudf_query_engine.bounded.plan");
     assert_eq!(error.fact_value("reason"), Some("join_memory_reservations_not_implemented"));
-    assert_eq!(error.fact_value("missing_cudf_rs_observability"), Some("hash_table_device_allocated_size_bytes"));
+    assert_eq!(error.fact_value("cudf_rs_hash_table_observability"), Some("hash_table_device_allocated_size_bytes"));
+    assert_eq!(error.fact_value("bounded_join_reservation_model"), Some("not_implemented"));
+    assert_eq!(
+        error.fact_value("missing_reservations"),
+        Some("build_side,probe_side,hash_table,gather_map,join_output")
+    );
+}
+
+#[test]
+fn bounded_native_query_rejects_join_under_aggregate_before_source_read() {
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let left_schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int32, false),
+        Field::new("amount", DataType::Int64, false),
+    ]));
+    let right_schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+    let join_schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int32, false),
+        Field::new("amount", DataType::Int64, false),
+    ]));
+    let aggregate_schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int32, false),
+        Field::new("sum_amount", DataType::Int64, true),
+    ]));
+
+    let mut builder = QueryPlanBuilder::new();
+    let left = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+        "/tmp/bounded-aggregate-join-left-does-not-need-to-exist.parquet",
+        Arc::clone(&left_schema),
+        vec!["id".into(), "amount".into()],
+    )));
+    let right = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+        "/tmp/bounded-aggregate-join-right-does-not-need-to-exist.parquet",
+        Arc::clone(&right_schema),
+        vec!["id".into()],
+    )));
+    let join = builder.add_join(
+        left,
+        right,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(
+                cudf_query_engine::ColumnRef::input(0, "id", "left_id"),
+                cudf_query_engine::ColumnRef::input(1, "id", "right_id"),
+            )],
+        )
+        .with_output_projection(vec![
+            JoinOutputColumn::left(cudf_query_engine::ColumnRef::input(0, "id", "id"), "id"),
+            JoinOutputColumn::left(cudf_query_engine::ColumnRef::input(0, "amount", "amount"), "amount"),
+        ])
+        .with_build_side(JoinSide::Right),
+        join_schema,
+    );
+    let aggregate = builder.add_aggregate(
+        join,
+        AggregateSpec::new(
+            vec![Expr::column("id")],
+            vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("amount"), "sum_amount")],
+        ),
+        aggregate_schema,
+    );
+    let plan = builder.finish_with_host_sink(aggregate);
+    let context = ExecutionContext::builder()
+        .with_shared_runtime(runtime)
+        .with_memory_control_policy(MemoryControlPolicy::Bounded {
+            device_budget_bytes: 1024 * 1024,
+            max_source_chunk_bytes: 1024,
+            max_row_groups_per_chunk: 1,
+            max_retry_attempts: 1,
+            min_retry_chunk_row_groups: 1,
+        })
+        .build()
+        .unwrap();
+
+    let error = match execute_query_plan(&context, &plan) {
+        Ok(_) => panic!("bounded aggregate join should reject before source reads"),
+        Err(error) => error,
+    };
+
+    assert_eq!(error.code(), QueryErrorCode::UnsupportedPlanShape);
+    assert_eq!(error.operation(), "cudf_query_engine.bounded.plan");
+    assert_eq!(error.fact_value("reason"), Some("join_memory_reservations_not_implemented"));
+    assert_eq!(error.fact_value("bounded_join_reservation_model"), Some("not_implemented"));
+    assert_eq!(
+        error.fact_value("missing_reservations"),
+        Some("build_side,probe_side,hash_table,gather_map,join_output")
+    );
 }
 
 fn join_left_source(path: &Path, schema: &Arc<Schema>, columns: &[&str]) -> LocalParquetSource {

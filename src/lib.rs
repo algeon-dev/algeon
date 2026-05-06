@@ -25,13 +25,16 @@ pub use exec::{CudfExecutionConfig, CudfGpuIslandExec};
 pub use native::{NativeLoweringResult, lower_physical_plan_to_native};
 pub use native_exec::{NATIVE_CUDF_DATAFUSION_METRIC_NAMES, NativeCudfExec, NativeCudfExecutionConfig};
 pub use native_report::{
+    NATIVE_DATAFUSION_EXECUTION_TSV_HEADER, NATIVE_DATAFUSION_EXECUTION_TSV_SCHEMA_VERSION,
     NATIVE_DATAFUSION_PLANNING_TSV_HEADER, NATIVE_DATAFUSION_PLANNING_TSV_SCHEMA_VERSION,
-    NATIVE_FALLBACK_PRESSURE_TSV_HEADER, NATIVE_FALLBACK_PRESSURE_TSV_SCHEMA_VERSION, NativeDataFusionPlanningOutcome,
-    NativeDataFusionPlanningReport, NativeDataFusionPlanningRow, NativeDataFusionPlanningWorkloadInput,
-    NativeDataFusionPlanningWorkloadItem, NativeDataFusionPostNativeExecutionPath, NativeFallbackPressureOutcome,
-    NativeFallbackPressureReport, NativeFallbackPressureRow, NativeFallbackPressureWorkloadInput,
-    NativeFallbackPressureWorkloadItem, NativeJoinDiagnosticSummary, NativePlanningFailure,
-    NativeSourceDiagnosticSummary,
+    NATIVE_FALLBACK_PRESSURE_TSV_HEADER, NATIVE_FALLBACK_PRESSURE_TSV_SCHEMA_VERSION, NativeDataFusionExecutionMetrics,
+    NativeDataFusionExecutionReport, NativeDataFusionExecutionRow, NativeDataFusionExecutionWorkloadInput,
+    NativeDataFusionExecutionWorkloadItem, NativeDataFusionPlanningOutcome, NativeDataFusionPlanningReport,
+    NativeDataFusionPlanningRow, NativeDataFusionPlanningWorkloadInput, NativeDataFusionPlanningWorkloadItem,
+    NativeDataFusionPostNativeExecutionPath, NativeDataFusionRuntime, NativeDataFusionRuntimeOutcome,
+    NativeFallbackPressureOutcome, NativeFallbackPressureReport, NativeFallbackPressureRow,
+    NativeFallbackPressureWorkloadInput, NativeFallbackPressureWorkloadItem, NativeJoinDiagnosticSummary,
+    NativePlanningFailure, NativeSourceDiagnosticSummary,
 };
 pub use planner::{
     CudfNativePhysicalOptimizerRule, CudfOptimizerConfig, CudfPhysicalOptimizerRule, NativePlanningDiagnostics,
@@ -49,7 +52,7 @@ pub use tpch::{
     CUDF_TPCH_SCALE_FACTOR_ENV, TPCH_QUERIES, TPCH_QUERY_COUNT, TPCH_TABLES, TpchDatasetMetadata, TpchQuery,
     TpchTableFileMetadata, TpchTableMetadata, TpchWorkloadError, TpchWorkloadResult, describe_tpch_dataset,
     describe_tpch_dataset_with_content_fingerprint, external_tpch_dataset_metadata, prepare_tpch_report_dataset,
-    tiny_tpch_dataset_metadata, tpch_datafusion_planning_workload_items, tpch_fallback_pressure_workload_items,
-    tpch_native_optimizer_config, tpch_query_ids, tpch_report_session_config,
+    tiny_tpch_dataset_metadata, tpch_datafusion_execution_workload_items, tpch_datafusion_planning_workload_items,
+    tpch_fallback_pressure_workload_items, tpch_native_optimizer_config, tpch_query_ids, tpch_report_session_config,
     tpch_scalar_fallback_pressure_workload_items, write_tiny_tpch_parquet_dataset,
 };
