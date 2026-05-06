@@ -3,6 +3,10 @@ use std::fmt;
 use arrow::datatypes::SchemaRef;
 
 use crate::{
+    bounded_support::{
+        BoundedJoinPlanSupport, analyze_bounded_join_pipeline, analyze_bounded_join_plan_support,
+        bounded_root_hash_join_compatible,
+    },
     expr::{AggregateSpec, ColumnRef, Expr, LimitSpec, SortExpr, SortSpec},
     source::SourceNode,
 };
@@ -53,72 +57,11 @@ impl QueryPlan {
     }
 
     pub fn has_bounded_executable_root_join(&self) -> bool {
-        let Some(node) = self.node(self.sink.input()) else {
-            return false;
-        };
-        let PlanNode::Join(join) = &node.kind else {
-            return false;
-        };
-        join.is_bounded_root_hash_join_compatible()
+        matches!(analyze_bounded_join_plan_support(self), BoundedJoinPlanSupport::Root)
     }
 
     pub fn has_bounded_executable_join_pipeline(&self) -> bool {
-        let Some(join_id) = self.bounded_executable_join_pipeline_base() else {
-            return false;
-        };
-        if self.reachable_join_count() != 1 {
-            return false;
-        }
-        let Some(node) = self.node(join_id) else {
-            return false;
-        };
-        matches!(&node.kind, PlanNode::Join(join) if join.is_bounded_root_hash_join_compatible())
-    }
-
-    fn bounded_executable_join_pipeline_base(&self) -> Option<NodeId> {
-        let mut current = self.sink.input();
-        let mut saw_aggregate = false;
-        loop {
-            let node = self.node(current)?;
-            match &node.kind {
-                PlanNode::Join(_) => return Some(current),
-                PlanNode::Filter(filter) => current = filter.input,
-                PlanNode::Projection(projection) => current = projection.input,
-                PlanNode::Aggregate(aggregate) if !saw_aggregate => {
-                    saw_aggregate = true;
-                    current = aggregate.input;
-                },
-                PlanNode::Sort(sort) => current = sort.input,
-                PlanNode::Limit(limit) => {
-                    let child = self.node(limit.input)?;
-                    if !matches!(child.kind, PlanNode::Sort(_)) {
-                        return None;
-                    }
-                    current = limit.input;
-                },
-                PlanNode::Source(_) | PlanNode::Aggregate(_) => return None,
-            }
-        }
-    }
-
-    fn reachable_join_count(&self) -> usize {
-        let mut reachable = vec![false; self.nodes.len()];
-        let mut stack = vec![self.sink.input()];
-        let mut count = 0;
-        while let Some(id) = stack.pop() {
-            let Some(node) = self.node(id) else {
-                continue;
-            };
-            if reachable[id.index()] {
-                continue;
-            }
-            reachable[id.index()] = true;
-            if matches!(node.kind, PlanNode::Join(_)) {
-                count += 1;
-            }
-            stack.extend(node.input_ids().iter().copied());
-        }
-        count
+        analyze_bounded_join_pipeline(self).is_ok()
     }
 
     pub fn unreachable_node_ids(&self) -> Vec<NodeId> {
@@ -594,11 +537,7 @@ impl JoinNode {
     /// `JoinType::Left` with `build_side == Left` would keep right-side rows
     /// for unmatched build rows and produce the wrong DataFusion semantics.
     pub fn is_bounded_root_hash_join_compatible(&self) -> bool {
-        !self.spec.keys.is_empty()
-            && self.spec.residual_predicate.is_none()
-            && !self.spec.output_projection.is_empty()
-            && matches!(self.spec.join_type, JoinType::Inner | JoinType::Left | JoinType::Full)
-            && (self.spec.join_type != JoinType::Left || self.spec.build_side == JoinSide::Right)
+        bounded_root_hash_join_compatible(self)
     }
 }
 

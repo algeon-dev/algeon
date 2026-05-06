@@ -1,0 +1,67 @@
+use super::*;
+
+#[derive(Debug, Clone, Copy)]
+pub(in crate::exec) struct RuntimeResourceFacts<'a> {
+    pub(in crate::exec) memory_boundary: &'static str,
+    pub(in crate::exec) stage: &'static str,
+    pub(in crate::exec) node_id: NodeId,
+    pub(in crate::exec) attempt: usize,
+    pub(in crate::exec) max_attempts: usize,
+    pub(in crate::exec) resume_boundary: &'static str,
+    pub(in crate::exec) metrics: &'a QueryMetrics,
+}
+
+impl RuntimeResourceFacts<'_> {
+    pub(in crate::exec) fn attach_retry_context(self, error: QueryError) -> QueryError {
+        RetryFacts::new()
+            .with_resume_boundary(self.resume_boundary)
+            .with_committed_chunks(self.metrics.source_chunks_committed as usize)
+            .with_committed_partials(self.metrics.partial_aggregate_count as usize)
+            .attach_to_error(error)
+    }
+
+    pub(in crate::exec) fn attach_to(self, error: QueryError) -> QueryError {
+        if error.code() != QueryErrorCode::CudfResourceExhausted {
+            return error;
+        }
+
+        let error = error
+            .with_fact("memory_boundary", self.memory_boundary)
+            .with_fact("stage", self.stage)
+            .with_fact("node_id", self.node_id)
+            .with_fact("attempt", self.attempt)
+            .with_fact("max_attempts", self.max_attempts);
+        self.attach_retry_context(error)
+    }
+}
+
+pub(in crate::exec) fn attach_chunk_resource_facts(
+    error: QueryError,
+    chunk: &SourceChunk,
+    memory_boundary: &'static str,
+    attempt: usize,
+    max_attempts: usize,
+    metrics: &QueryMetrics,
+) -> QueryError {
+    if error.code() != QueryErrorCode::CudfResourceExhausted {
+        return error;
+    }
+
+    let mut error = RuntimeResourceFacts {
+        memory_boundary,
+        stage: memory_boundary,
+        node_id: chunk.source_node_id,
+        attempt,
+        max_attempts,
+        resume_boundary: "source_chunk",
+        metrics,
+    }
+    .attach_to(error)
+    .with_fact("chunk_index", chunk.chunk_index)
+    .with_fact("file_index", chunk.file_index)
+    .with_fact("path", chunk.path.display());
+    if !chunk.reads_all_row_groups {
+        error = error.with_fact("row_groups", comma_separated_usize(&chunk.row_group_indexes));
+    }
+    error
+}
