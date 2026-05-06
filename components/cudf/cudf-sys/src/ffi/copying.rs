@@ -24,6 +24,16 @@ extern "C" {
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
 
+    /// Return the exact retained device allocation footprint of a gather
+    /// result using explicit execution options.
+    pub fn cudf_gather_device_allocated_size_ex(
+        input: cudf_table_view_handle,
+        gather_map: cudf_column_view_handle,
+        bounds_policy: cudf_out_of_bounds_policy_t,
+        out: *mut usize,
+        options: *const cudf_exec_options_t,
+    ) -> cudf_status_t;
+
     // -- Copying (scatter) ---------------------------------------------------
 
     pub fn cudf_scatter(
