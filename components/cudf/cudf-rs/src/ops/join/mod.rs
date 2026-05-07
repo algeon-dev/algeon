@@ -168,6 +168,21 @@ impl SizedConditionalPairJoinType {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SizedMixedJoinType {
+    Inner,
+    Left,
+}
+
+impl SizedMixedJoinType {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Inner => "inner",
+            Self::Left => "left",
+        }
+    }
+}
+
 pub(crate) fn join_impl(
     tables: SplitJoinTables<'_, '_>,
     null_equality: NullEquality,
@@ -1058,6 +1073,95 @@ fn mixed_join_indices_impl(
     Ok(JoinIndices {
         left: unsafe { Column::from_raw_with_domain(out_left, Arc::clone(output_domain)) }?,
         right: unsafe { Column::from_raw_with_domain(out_right, Arc::clone(output_domain)) }?,
+    })
+}
+
+fn mixed_join_begin_size_data_impl<'a>(
+    tables: MixedJoinTables<'_, '_>,
+    predicate: &'a AstExpression,
+    null_equality: NullEquality,
+    join_type: SizedMixedJoinType,
+    output_domain: &Arc<ExecutionDomain>,
+    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    operation: &'static str,
+) -> Result<MixedJoinSizeData<'a>> {
+    let mut handle = ptr::null_mut();
+    let null_eq_ffi = null_equality.to_join_raw();
+    let status = match (join_type, exec_options) {
+        (SizedMixedJoinType::Inner, None) => unsafe {
+            cudf_sys::cudf_mixed_inner_join_begin_size_data(
+                tables.left_equality.raw_handle(),
+                tables.right_equality.raw_handle(),
+                tables.left_conditional.raw_handle(),
+                tables.right_conditional.raw_handle(),
+                predicate.raw_handle(),
+                null_eq_ffi,
+                &mut handle,
+            )
+        },
+        (SizedMixedJoinType::Left, None) => unsafe {
+            cudf_sys::cudf_mixed_left_join_begin_size_data(
+                tables.left_equality.raw_handle(),
+                tables.right_equality.raw_handle(),
+                tables.left_conditional.raw_handle(),
+                tables.right_conditional.raw_handle(),
+                predicate.raw_handle(),
+                null_eq_ffi,
+                &mut handle,
+            )
+        },
+        (SizedMixedJoinType::Inner, Some(options)) => unsafe {
+            cudf_sys::cudf_mixed_inner_join_begin_size_data_ex(
+                tables.left_equality.raw_handle(),
+                tables.right_equality.raw_handle(),
+                tables.left_conditional.raw_handle(),
+                tables.right_conditional.raw_handle(),
+                predicate.raw_handle(),
+                null_eq_ffi,
+                &mut handle,
+                options,
+            )
+        },
+        (SizedMixedJoinType::Left, Some(options)) => unsafe {
+            cudf_sys::cudf_mixed_left_join_begin_size_data_ex(
+                tables.left_equality.raw_handle(),
+                tables.right_equality.raw_handle(),
+                tables.left_conditional.raw_handle(),
+                tables.right_conditional.raw_handle(),
+                predicate.raw_handle(),
+                null_eq_ffi,
+                &mut handle,
+                options,
+            )
+        },
+    };
+
+    error::check_status_in_with_details(
+        status,
+        operation,
+        [
+            ("join_type", join_type.as_str().to_string()),
+            ("null_equality", format!("{:?}", null_equality).to_lowercase()),
+            ("execution_context_provided", exec_options.is_some().to_string()),
+            ("reservation_contract", "mixed_join_retained_size_data".to_string()),
+        ],
+    )?;
+
+    let handle = MixedJoinSizeDataHandle {
+        handle: error::require_non_null(handle, operation, "mixed join size data")?,
+        _domain: Arc::clone(output_domain),
+    };
+    let mut output_size = 0usize;
+    error::check_status_in(
+        unsafe { cudf_sys::cudf_mixed_join_size_data_output_size(handle.handle.as_ptr(), &mut output_size) },
+        operation,
+    )?;
+    Ok(MixedJoinSizeData {
+        handle,
+        output_domain: Arc::clone(output_domain),
+        output_size,
+        join_type,
+        _predicate: predicate,
     })
 }
 
@@ -2030,6 +2134,26 @@ fn mixed_join_indices_with_context(
     )
 }
 
+fn mixed_join_begin_size_data_with_context<'a>(
+    tables: MixedJoinTables<'_, '_>,
+    predicate: &'a AstExpression,
+    null_equality: NullEquality,
+    join_type: SizedMixedJoinType,
+    ctx: &ExecutionOverrides<'_>,
+    operation: &'static str,
+) -> Result<MixedJoinSizeData<'a>> {
+    let execution = compatible_mixed_join_domain(tables, predicate, ctx, operation)?;
+    mixed_join_begin_size_data_impl(
+        tables,
+        predicate,
+        null_equality,
+        join_type,
+        execution.output_domain(),
+        Some(execution.exec_options()),
+        operation,
+    )
+}
+
 fn mixed_single_side_join_indices_with_context(
     tables: MixedJoinTables<'_, '_>,
     predicate: &AstExpression,
@@ -2104,6 +2228,26 @@ pub fn mixed_inner_join_indices_in(
     )
 }
 
+pub(crate) fn mixed_inner_join_begin_size_data_in<'a>(
+    left_equality: &TableView<'_>,
+    right_equality: &TableView<'_>,
+    left_conditional: &TableView<'_>,
+    right_conditional: &TableView<'_>,
+    predicate: &'a AstExpression,
+    null_equality: NullEquality,
+    ctx: &ExecutionOverrides<'_>,
+) -> Result<MixedJoinSizeData<'a>> {
+    let operation = "join::mixed_inner_join_begin_size_data_in";
+    mixed_join_begin_size_data_with_context(
+        MixedJoinTables { left_equality, right_equality, left_conditional, right_conditional },
+        predicate,
+        null_equality,
+        SizedMixedJoinType::Inner,
+        ctx,
+        operation,
+    )
+}
+
 /// Mixed left join indices preserving all left equality/conditional rows.
 ///
 /// Returned right-side misses contain libcudf's no-match sentinel for
@@ -2151,6 +2295,26 @@ pub fn mixed_left_join_indices_in(
         predicate,
         null_equality,
         JoinType::Left,
+        ctx,
+        operation,
+    )
+}
+
+pub(crate) fn mixed_left_join_begin_size_data_in<'a>(
+    left_equality: &TableView<'_>,
+    right_equality: &TableView<'_>,
+    left_conditional: &TableView<'_>,
+    right_conditional: &TableView<'_>,
+    predicate: &'a AstExpression,
+    null_equality: NullEquality,
+    ctx: &ExecutionOverrides<'_>,
+) -> Result<MixedJoinSizeData<'a>> {
+    let operation = "join::mixed_left_join_begin_size_data_in";
+    mixed_join_begin_size_data_with_context(
+        MixedJoinTables { left_equality, right_equality, left_conditional, right_conditional },
+        predicate,
+        null_equality,
+        SizedMixedJoinType::Left,
         ctx,
         operation,
     )
@@ -2456,6 +2620,11 @@ struct FilteredJoinProbeHandle {
     _domain: Arc<ExecutionDomain>,
 }
 
+struct MixedJoinSizeDataHandle {
+    handle: NonNull<c_void>,
+    _domain: Arc<ExecutionDomain>,
+}
+
 impl fmt::Debug for HashJoinHandle {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("HashJoinHandle").field("handle", &self.handle).finish()
@@ -2471,6 +2640,12 @@ impl fmt::Debug for FilteredJoinHandle {
 impl fmt::Debug for FilteredJoinProbeHandle {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("FilteredJoinProbeHandle").field("handle", &self.handle).finish()
+    }
+}
+
+impl fmt::Debug for MixedJoinSizeDataHandle {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("MixedJoinSizeDataHandle").field("handle", &self.handle).finish()
     }
 }
 
@@ -2492,6 +2667,12 @@ unsafe impl Sync for FilteredJoinHandle {}
 unsafe impl Send for FilteredJoinProbeHandle {}
 unsafe impl Sync for FilteredJoinProbeHandle {}
 
+// SAFETY: The retained mixed-join size-data handle owns its device-side
+// matches-per-row buffer. The safe DataFrame wrapper retains the input
+// DataFrames, and the Rust state lifetime keeps AST literal owners alive.
+unsafe impl Send for MixedJoinSizeDataHandle {}
+unsafe impl Sync for MixedJoinSizeDataHandle {}
+
 impl Drop for HashJoinHandle {
     fn drop(&mut self) {
         unsafe { cudf_sys::cudf_hash_join_destroy(self.handle.as_ptr()) };
@@ -2507,6 +2688,12 @@ impl Drop for FilteredJoinHandle {
 impl Drop for FilteredJoinProbeHandle {
     fn drop(&mut self) {
         unsafe { cudf_sys::cudf_filtered_join_probe_destroy(self.handle.as_ptr()) };
+    }
+}
+
+impl Drop for MixedJoinSizeDataHandle {
+    fn drop(&mut self) {
+        unsafe { cudf_sys::cudf_mixed_join_size_data_destroy(self.handle.as_ptr()) };
     }
 }
 
@@ -2554,6 +2741,21 @@ pub struct FilteredJoinProbeState {
     semi_join: bool,
 }
 
+/// Retained mixed equality-plus-predicate join size data.
+///
+/// This state owns libcudf's device-side size-data buffer for one mixed inner
+/// or left join. It exposes the exact output size before gather-map allocation
+/// and materializes the two gather maps from the retained size data. The
+/// lifetime keeps AST literal owners alive; higher-level wrappers retain input
+/// tables whose column memory is borrowed by the C handle.
+pub(crate) struct MixedJoinSizeData<'a> {
+    handle: MixedJoinSizeDataHandle,
+    output_domain: Arc<ExecutionDomain>,
+    output_size: usize,
+    join_type: SizedMixedJoinType,
+    _predicate: &'a AstExpression,
+}
+
 impl fmt::Debug for HashJoin {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("HashJoin")
@@ -2576,6 +2778,16 @@ impl fmt::Debug for FilteredJoinProbeState {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("FilteredJoinProbeState")
             .field("join_type", &if self.semi_join { "left_semi" } else { "left_anti" })
+            .field("output_size", &self.output_size)
+            .field("placement", &self.output_domain.placement())
+            .finish()
+    }
+}
+
+impl fmt::Debug for MixedJoinSizeData<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("MixedJoinSizeData")
+            .field("join_type", &self.join_type.as_str())
             .field("output_size", &self.output_size)
             .field("placement", &self.output_domain.placement())
             .finish()
@@ -3724,6 +3936,78 @@ impl FilteredJoinProbeState {
         )?;
         Ok(SingleSideJoinIndices {
             indices: unsafe { Column::from_raw_with_domain(out, Arc::clone(execution.output_domain())) }?,
+        })
+    }
+}
+
+impl MixedJoinSizeData<'_> {
+    /// Returns the exact output row count for this mixed join.
+    pub(crate) fn output_size(&self) -> usize {
+        self.output_size
+    }
+
+    /// Returns bytes retained by libcudf's mixed join size-data buffer.
+    pub(crate) fn device_allocated_size_bytes(&self) -> Result<usize> {
+        let mut out = 0usize;
+        error::check_status_in(
+            unsafe { cudf_sys::cudf_mixed_join_size_data_device_allocated_size(self.handle.handle.as_ptr(), &mut out) },
+            "mixed_join_size_data::device_allocated_size_bytes",
+        )?;
+        Ok(out)
+    }
+
+    /// Return exact bytes that must be reserved for this mixed join's output
+    /// gather-map pair.
+    pub(crate) fn gather_map_reservation_size_bytes(&self) -> Result<usize> {
+        self.output_size
+            .checked_mul(std::mem::size_of::<i32>())
+            .and_then(|single_map_bytes| single_map_bytes.checked_mul(2))
+            .ok_or_else(|| {
+                Error::new_with(
+                    ErrorCode::ValueOutOfRange,
+                    "mixed_join_size_data::gather_map_reservation_size_bytes",
+                    "mixed join gather-map reservation size overflowed usize",
+                )
+                .with_detail("reason", "size_overflowed_usize")
+                .with_detail("output_rows", self.output_size.to_string())
+                .with_detail("gather_map_count", "2")
+                .with_detail("index_size_bytes", std::mem::size_of::<i32>().to_string())
+            })
+    }
+
+    /// Materialize mixed join gather-map pairs from retained size data.
+    pub(crate) fn materialize_indices(self) -> Result<JoinIndices> {
+        let ctx = ExecutionOverrides::new();
+        self.materialize_indices_in(&ctx)
+    }
+
+    /// Materialize mixed join gather-map pairs from retained size data using a
+    /// borrowed execution override.
+    pub(crate) fn materialize_indices_in(self, ctx: &ExecutionOverrides<'_>) -> Result<JoinIndices> {
+        let operation = "mixed_join_size_data::materialize_indices_in";
+        let execution = ResolvedExecution::unary(&self.output_domain, ctx, operation)?;
+        let mut out_left = ptr::null_mut();
+        let mut out_right = ptr::null_mut();
+        error::check_status_in_with_details(
+            unsafe {
+                cudf_sys::cudf_mixed_join_size_data_materialize_indices_ex(
+                    self.handle.handle.as_ptr(),
+                    &mut out_left,
+                    &mut out_right,
+                    execution.exec_options(),
+                )
+            },
+            operation,
+            [
+                ("join_type", self.join_type.as_str().to_string()),
+                ("output_size", self.output_size.to_string()),
+                ("execution_context_provided", true.to_string()),
+                ("reservation_contract", "mixed_join_retained_size_data_materialize_indices".to_string()),
+            ],
+        )?;
+        Ok(JoinIndices {
+            left: unsafe { Column::from_raw_with_domain(out_left, Arc::clone(execution.output_domain())) }?,
+            right: unsafe { Column::from_raw_with_domain(out_right, Arc::clone(execution.output_domain())) }?,
         })
     }
 }

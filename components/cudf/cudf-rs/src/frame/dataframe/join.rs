@@ -4,7 +4,10 @@ use crate::{
         types::NullEquality,
     },
     frame::{dataframe::DataFrame, series::Series},
-    ops::join::{FilteredJoin, FilteredJoinOptions, FilteredJoinProbeState, HashJoin, HashJoinOptions, NullableJoin},
+    ops::join::{
+        FilteredJoin, FilteredJoinOptions, FilteredJoinProbeState, HashJoin, HashJoinOptions, MixedJoinSizeData,
+        NullableJoin,
+    },
     runtime::ExecutionPlacement,
 };
 
@@ -751,6 +754,18 @@ pub struct DataFrameFilteredJoinProbeState {
     pub(crate) state: FilteredJoinProbeState,
 }
 
+/// Retained DataFrame-level mixed join size data for inner/left joins.
+///
+/// This state owns libcudf's retained size-data buffer and retains both input
+/// DataFrames so copied table views inside the lower-level handle continue to
+/// point at live device columns. The lifetime keeps AST literal owners alive.
+#[derive(Debug)]
+pub struct DataFrameMixedJoinSizeData<'a> {
+    pub(crate) state: MixedJoinSizeData<'a>,
+    pub(crate) _left: DataFrame,
+    pub(crate) _right: DataFrame,
+}
+
 impl DataFrameHashJoin {
     /// Borrow the retained build DataFrame.
     pub fn build(&self) -> &DataFrame {
@@ -864,5 +879,47 @@ impl DataFrameFilteredJoinProbeState {
             .materialize_indices_in(ctx)
             .map_err(|error| error.reanchor("dataframe::filtered_join_probe_state::materialize_indices"))?;
         Ok(DataFrameJoinIndices::new(Series::from_column(raw.indices)?))
+    }
+}
+
+impl DataFrameMixedJoinSizeData<'_> {
+    /// Returns the exact output row count for this mixed join.
+    pub fn output_size(&self) -> usize {
+        self.state.output_size()
+    }
+
+    /// Returns bytes retained by libcudf's mixed join size-data buffer.
+    pub fn device_allocated_size_bytes(&self) -> crate::core::error::Result<usize> {
+        self.state
+            .device_allocated_size_bytes()
+            .map_err(|error| error.reanchor("dataframe::mixed_join_size_data::device_allocated_size_bytes"))
+    }
+
+    /// Return exact bytes that must be reserved for the two output gather maps.
+    pub fn gather_map_reservation_size_bytes(&self) -> Result<usize> {
+        self.state
+            .gather_map_reservation_size_bytes()
+            .map_err(|error| error.reanchor("dataframe::mixed_join_size_data::gather_map_reservation_size_bytes"))
+    }
+
+    /// Materialize the two mixed join gather maps from retained size data.
+    pub fn materialize_indices(self) -> crate::core::error::Result<DataFrameJoinPairIndices> {
+        let raw = self
+            .state
+            .materialize_indices()
+            .map_err(|error| error.reanchor("dataframe::mixed_join_size_data::materialize_indices"))?;
+        Ok(DataFrameJoinPairIndices::new(Series::from_column(raw.left)?, Series::from_column(raw.right)?))
+    }
+
+    /// Materialize the two mixed join gather maps using a borrowed execution override.
+    pub fn materialize_indices_in(
+        self,
+        ctx: &crate::runtime::execution_context::ExecutionOverrides<'_>,
+    ) -> crate::core::error::Result<DataFrameJoinPairIndices> {
+        let raw = self
+            .state
+            .materialize_indices_in(ctx)
+            .map_err(|error| error.reanchor("dataframe::mixed_join_size_data::materialize_indices_in"))?;
+        Ok(DataFrameJoinPairIndices::new(Series::from_column(raw.left)?, Series::from_column(raw.right)?))
     }
 }

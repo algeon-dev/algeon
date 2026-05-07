@@ -10,8 +10,8 @@ use crate::{
             DataFrame, DataFrameCrossJoinOptions, DataFrameFilteredJoin, DataFrameFilteredJoinOptions,
             DataFrameFilteredJoinProbeState, DataFrameHashJoin, DataFrameHashJoinMaterialized,
             DataFrameHashJoinOptions, DataFrameHashJoinPairIndices, DataFrameJoinIndices, DataFrameJoinOptions,
-            DataFrameJoinPairIndices, DataFrameJoinSides, DataFrameMixedJoinOptions, DataFramePredicateJoinOptions,
-            derive_frame_domain_from_columns,
+            DataFrameJoinPairIndices, DataFrameJoinSides, DataFrameMixedJoinOptions, DataFrameMixedJoinSizeData,
+            DataFramePredicateJoinOptions, derive_frame_domain_from_columns,
         },
         series::Series,
     },
@@ -782,6 +782,28 @@ impl DataFrame {
         self.mixed_join_indices_in_context(right, predicate, options, join::JoinType::Left, &ctx)
     }
 
+    /// Begin retained size-data computation for a mixed inner join.
+    pub fn mixed_inner_join_size_data<'a>(
+        &self,
+        right: &DataFrame,
+        predicate: &'a AstExpression,
+        options: DataFrameMixedJoinOptions,
+    ) -> Result<DataFrameMixedJoinSizeData<'a>> {
+        let ctx = ExecutionOverrides::new();
+        self.mixed_join_size_data_in_context(right, predicate, options, join::SizedMixedJoinType::Inner, &ctx)
+    }
+
+    /// Begin retained size-data computation for a mixed left join.
+    pub fn mixed_left_join_size_data<'a>(
+        &self,
+        right: &DataFrame,
+        predicate: &'a AstExpression,
+        options: DataFrameMixedJoinOptions,
+    ) -> Result<DataFrameMixedJoinSizeData<'a>> {
+        let ctx = ExecutionOverrides::new();
+        self.mixed_join_size_data_in_context(right, predicate, options, join::SizedMixedJoinType::Left, &ctx)
+    }
+
     /// Mixed equality-plus-predicate full join indices.
     pub fn mixed_full_join_indices(
         &self,
@@ -1188,6 +1210,39 @@ impl DataFrame {
             )?,
         };
         pair_indices_from_raw(raw, operation)
+    }
+
+    pub(crate) fn mixed_join_size_data_in_context<'a>(
+        &self,
+        right: &DataFrame,
+        predicate: &'a AstExpression,
+        options: DataFrameMixedJoinOptions,
+        join_type: join::SizedMixedJoinType,
+        ctx: &ExecutionOverrides<'_>,
+    ) -> Result<DataFrameMixedJoinSizeData<'a>> {
+        let operation = "dataframe::with_execution::mixed_join_size_data";
+        let tables = mixed_join_tables(self, right, &options, operation)?;
+        let state = match join_type {
+            join::SizedMixedJoinType::Inner => join::mixed_inner_join_begin_size_data_in(
+                tables.left_equality.table(),
+                tables.right_equality.table(),
+                tables.left_conditional.table(),
+                tables.right_conditional.table(),
+                predicate,
+                options.null_eq(),
+                ctx,
+            )?,
+            join::SizedMixedJoinType::Left => join::mixed_left_join_begin_size_data_in(
+                tables.left_equality.table(),
+                tables.right_equality.table(),
+                tables.left_conditional.table(),
+                tables.right_conditional.table(),
+                predicate,
+                options.null_eq(),
+                ctx,
+            )?,
+        };
+        Ok(DataFrameMixedJoinSizeData { state, _left: self.clone(), _right: right.clone() })
     }
 
     pub(crate) fn mixed_single_side_join_indices_in_context(

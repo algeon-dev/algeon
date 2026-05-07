@@ -1,7 +1,8 @@
 use super::{
     DataFrame, DataFrameCrossJoinOptions, DataFrameFilteredJoin, DataFrameFilteredJoinOptions, DataFrameHashJoin,
     DataFrameHashJoinOptions, DataFrameJoinIndices, DataFrameJoinOptions, DataFrameJoinPairIndices, DataFrameJoinSides,
-    DataFrameMixedJoinOptions, DataFramePredicateJoinOptions, DropDuplicatesOptions, DropNaOptions, WithColumnExpr,
+    DataFrameMixedJoinOptions, DataFrameMixedJoinSizeData, DataFramePredicateJoinOptions, DropDuplicatesOptions,
+    DropNaOptions, WithColumnExpr,
 };
 use crate::{
     Expr, JoinType, Result,
@@ -371,6 +372,38 @@ impl<'df, 'ctx, 'handles> DataFrameExecutionScope<'df, 'ctx, 'handles> {
         options: DataFrameMixedJoinOptions,
     ) -> Result<DataFrameJoinPairIndices> {
         self.df.mixed_join_indices_in_context(right, predicate, options, JoinType::Left, self.ctx)
+    }
+
+    /// Begin retained size-data computation for a mixed inner join using the borrowed execution override.
+    pub fn mixed_inner_join_size_data<'a>(
+        &self,
+        right: &DataFrame,
+        predicate: &'a AstExpression,
+        options: DataFrameMixedJoinOptions,
+    ) -> Result<DataFrameMixedJoinSizeData<'a>> {
+        self.df.mixed_join_size_data_in_context(
+            right,
+            predicate,
+            options,
+            crate::ops::join::SizedMixedJoinType::Inner,
+            self.ctx,
+        )
+    }
+
+    /// Begin retained size-data computation for a mixed left join using the borrowed execution override.
+    pub fn mixed_left_join_size_data<'a>(
+        &self,
+        right: &DataFrame,
+        predicate: &'a AstExpression,
+        options: DataFrameMixedJoinOptions,
+    ) -> Result<DataFrameMixedJoinSizeData<'a>> {
+        self.df.mixed_join_size_data_in_context(
+            right,
+            predicate,
+            options,
+            crate::ops::join::SizedMixedJoinType::Left,
+            self.ctx,
+        )
     }
 
     /// Produce mixed full join row-index pairs using the borrowed execution override.
