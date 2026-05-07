@@ -52,6 +52,9 @@ use datafusion_cudf::{
     tpch_report_session_config, tpch_scalar_fallback_pressure_workload_items, write_tiny_tpch_parquet_dataset,
 };
 
+const EXPECTED_BOUNDED_TPCH_ACCEPTED: &[&str] = &["q01", "q03", "q04", "q05", "q06", "q08", "q09", "q10", "q12", "q14"];
+const EXPECTED_BOUNDED_TPCH_JOIN_ACCEPTED: &[&str] = &["q03", "q04", "q05", "q08", "q09", "q10", "q12", "q14"];
+
 #[tokio::test]
 async fn native_fallback_pressure_report_summarizes_workload_outcomes() {
     let dir = unique_temp_dir("datafusion-cudf-native-fallback-pressure");
@@ -355,7 +358,7 @@ fn native_datafusion_execution_report_records_runtime_boundaries() {
     let report = NativeDataFusionExecutionReport::collect([NativeDataFusionExecutionWorkloadItem::new(
         "q01",
         native_exec_leaf_for_report(),
-        accepted_native_diagnostics(),
+        accepted_bounded_join_native_diagnostics(),
         NativeDataFusionRuntime::Succeeded {
             output_batches: 1,
             output_rows: 4,
@@ -369,6 +372,11 @@ fn native_datafusion_execution_report_records_runtime_boundaries() {
     assert_eq!(report.rejected_before_execution_count(), 0);
     let row = &report.rows[0];
     assert_eq!(row.planning_outcome, NativeDataFusionPlanningOutcome::AcceptedReplaced);
+    assert_eq!(
+        row.bounded_join_reservation_facts.get("bounded_join_execution_status").map(String::as_str),
+        Some("enabled")
+    );
+    assert_eq!(row.bounded_join_reservation_facts.get("blocked_reservations").map(String::as_str), Some(""));
     assert_eq!(row.post_native_plan_root, "NativeCudfExec");
     assert_eq!(row.post_native_execution_path, NativeDataFusionPostNativeExecutionPath::Native);
     assert!(!row.rejected_before_execution);
@@ -425,7 +433,83 @@ fn native_datafusion_execution_report_records_runtime_boundaries() {
     );
     assert!(text.starts_with("# native_datafusion_execution_tsv_schema_version=7\n"));
     assert!(text.contains(&format!("{NATIVE_DATAFUSION_EXECUTION_TSV_HEADER}\n")));
-    assert!(text.contains("\taccepted_replaced\tnone\tnone\tnone\tNativeCudfExec\tnative\tfalse\ttrue\tsucceeded\tnone\t1\t4\t256\t1\t0\t0\t0\t1\t4\t256\t2\t512\t1\t1024\t2\t4\t4096\t8192\t128\t128\t0\t6\t7\t5\t2\t8\t4\t5\t9\t2\t1\t3\t1\t2\t1\t6\t2\t1\t3\t4\t5\t16384\t8192\t1024\t2048\t"));
+    assert!(text.contains("bounded_join_execution_status=enabled"));
+    assert!(text.contains("\tNativeCudfExec\tnative\tfalse\ttrue\tsucceeded\tnone\t1\t4\t256\t1\t0\t0\t0\t1\t4\t256\t2\t512\t1\t1024\t2\t4\t4096\t8192\t128\t128\t0\t6\t7\t5\t2\t8\t4\t5\t9\t2\t1\t3\t1\t2\t1\t6\t2\t1\t3\t4\t5\t16384\t8192\t1024\t2048\t"));
+}
+
+#[test]
+fn native_datafusion_execution_report_keeps_unobserved_optional_memory_metrics_empty() {
+    let metrics = ExecutionPlanMetricsSet::new();
+    MetricBuilder::new(&metrics).with_type(MetricType::SUMMARY).counter("resident_dataframe_peak_bytes", 0);
+    MetricBuilder::new(&metrics).with_type(MetricType::SUMMARY).counter("allocator_high_water_bytes", 0);
+    let report = NativeDataFusionExecutionReport::collect([NativeDataFusionExecutionWorkloadItem::new(
+        "q01",
+        native_exec_leaf_for_report(),
+        accepted_native_diagnostics(),
+        NativeDataFusionRuntime::Succeeded {
+            output_batches: 1,
+            output_rows: 4,
+            output_bytes: 256,
+            metrics: metrics.clone_inner(),
+        },
+    )]);
+
+    let row = &report.rows[0];
+    assert_eq!(row.metrics.resident_dataframe_peak_bytes, None);
+    assert_eq!(row.metrics.allocator_high_water_bytes, None);
+}
+
+#[test]
+fn native_datafusion_reports_scope_bounded_join_facts_to_join_candidates() {
+    let mut report = PlanningReport::new();
+    report.push_rewritten(GpuCandidate::new(
+        "SortExec(fetch)(AggregateExec(HashJoinExec(LocalParquetScan,LocalParquetScan)))",
+        1,
+    ));
+    report.push_rejected(
+        GpuCandidate::new("SortExec(fetch)(AggregateExec(LocalParquetScan))", 1),
+        datafusion_cudf::FallbackReason::UnsupportedExpression,
+    );
+    let diagnostics = NativePlanningDiagnostics {
+        input_plan_root: "SortExec".to_string(),
+        input_plan_shape: "SortExec(fetch)(AggregateExec(HashJoinExec(LocalParquetScan,LocalParquetScan)))".to_string(),
+        report,
+        source_diagnostics: Vec::new(),
+        bounded_join_reservation_facts: BoundedJoinReservationContract
+            .facts(ExecutionBoundaryPolicy::default())
+            .into_iter()
+            .map(|(key, value)| (key.to_string(), value))
+            .collect(),
+    };
+    let planning = NativeDataFusionPlanningReport::collect([NativeDataFusionPlanningWorkloadItem::new(
+        "mixed",
+        native_exec_leaf_for_report(),
+        diagnostics,
+    )]);
+
+    let join_row = planning
+        .rows
+        .iter()
+        .find(|row| row.native_candidate_shape.as_deref().is_some_and(|shape| shape.contains("HashJoinExec")))
+        .expect("join candidate row should exist");
+    let non_join_row = planning
+        .rows
+        .iter()
+        .find(|row| {
+            row.native_candidate_shape
+                .as_deref()
+                .is_some_and(|shape| shape == "SortExec(fetch)(AggregateExec(LocalParquetScan))")
+        })
+        .expect("non-join candidate row should exist");
+
+    assert_eq!(
+        join_row.bounded_join_reservation_facts.get("bounded_join_execution_status").map(String::as_str),
+        Some("enabled")
+    );
+    assert!(
+        non_join_row.bounded_join_reservation_facts.is_empty(),
+        "bounded join facts must not bleed into unrelated candidate rows"
+    );
 }
 
 #[test]
@@ -711,22 +795,63 @@ async fn tpch_datafusion_planning_report_emits_one_stable_row_per_query() {
     let report = NativeDataFusionPlanningReport::collect(items).with_tpch_dataset_metadata(metadata.clone());
 
     assert_eq!(report.rows.len(), TPCH_QUERY_COUNT);
-    assert_eq!(report.accepted_count(), 10);
-    assert_eq!(report.rejected_count(), TPCH_QUERY_COUNT - 10);
+    assert_eq!(report.accepted_count(), EXPECTED_BOUNDED_TPCH_ACCEPTED.len());
+    assert_eq!(report.rejected_count(), TPCH_QUERY_COUNT - EXPECTED_BOUNDED_TPCH_ACCEPTED.len());
 
     let actual_ids = report.rows.iter().map(|row| row.query_id.as_str()).collect::<Vec<_>>();
     let expected_ids = tpch_query_ids().collect::<Vec<_>>();
     assert_eq!(actual_ids, expected_ids);
 
+    let contract = BoundedJoinReservationContract;
+    let expected_execution_families = contract.execution_families_csv();
+    let expected_modeled_reservations = contract.modeled_reservation_kinds_csv();
+    let expected_reservation_statuses = contract.reservation_statuses_csv();
+    let expected_supported_shape = contract.supported_shape_requirement();
     for row in &report.rows {
-        if matches!(
-            row.query_id.as_str(),
-            "q01" | "q03" | "q04" | "q05" | "q06" | "q08" | "q09" | "q10" | "q12" | "q14"
-        ) {
+        if EXPECTED_BOUNDED_TPCH_ACCEPTED.contains(&row.query_id.as_str()) {
             assert_eq!(row.outcome, NativeDataFusionPlanningOutcome::AcceptedReplaced);
             assert_eq!(row.reason_code.as_deref(), None);
             assert_eq!(row.unsupported_category.as_deref(), None);
-            assert!(row.bounded_join_reservation_facts.is_empty());
+            if matches!(row.query_id.as_str(), "q01" | "q06") {
+                assert!(row.bounded_join_reservation_facts.is_empty());
+            } else {
+                assert_eq!(
+                    row.bounded_join_reservation_facts.get("bounded_join_execution_status").map(String::as_str),
+                    Some("enabled"),
+                    "accepted bounded join row should preserve modeled reservation facts for {}",
+                    row.query_id
+                );
+                assert_eq!(
+                    row.bounded_join_reservation_facts.get("blocked_reservations").map(String::as_str),
+                    Some(""),
+                    "accepted bounded join row should report no blocked modeled reservations for {}",
+                    row.query_id
+                );
+                assert_eq!(
+                    row.bounded_join_reservation_facts.get("bounded_join_execution_families").map(String::as_str),
+                    Some(expected_execution_families.as_str()),
+                    "accepted bounded join row should preserve execution family facts for {}",
+                    row.query_id
+                );
+                assert_eq!(
+                    row.bounded_join_reservation_facts.get("modeled_reservations").map(String::as_str),
+                    Some(expected_modeled_reservations.as_str()),
+                    "accepted bounded join row should preserve modeled reservation facts for {}",
+                    row.query_id
+                );
+                assert_eq!(
+                    row.bounded_join_reservation_facts.get("bounded_join_reservation_statuses").map(String::as_str),
+                    Some(expected_reservation_statuses.as_str()),
+                    "accepted bounded join row should preserve reservation status facts for {}",
+                    row.query_id
+                );
+                assert_eq!(
+                    row.bounded_join_reservation_facts.get("bounded_join_lower_level_blockers").map(String::as_str),
+                    Some(""),
+                    "accepted bounded join row should report no lower-level blockers for {}",
+                    row.query_id
+                );
+            }
             assert_eq!(row.post_native_plan_root, "NativeCudfExec");
             assert_eq!(row.post_native_execution_path, NativeDataFusionPostNativeExecutionPath::Native);
             assert!(!row.rejected_before_execution, "{} should be replaced by native execution", row.query_id);
@@ -754,6 +879,12 @@ async fn tpch_datafusion_planning_report_emits_one_stable_row_per_query() {
                     "missing lower-level blocker facts for {}",
                     row.query_id
                 );
+                assert_eq!(
+                    row.bounded_join_reservation_facts.get("bounded_join_unsupported_shape").map(String::as_str),
+                    Some(expected_supported_shape.as_str()),
+                    "missing supported bounded join family fact for {}",
+                    row.query_id
+                );
             } else {
                 assert!(row.bounded_join_reservation_facts.is_empty());
             }
@@ -779,7 +910,7 @@ async fn tpch_datafusion_planning_report_emits_one_stable_row_per_query() {
             row.query_id,
             row.physical_shape
         );
-        if matches!(row.query_id.as_str(), "q03" | "q04" | "q05" | "q08" | "q09" | "q10" | "q12" | "q14")
+        if EXPECTED_BOUNDED_TPCH_JOIN_ACCEPTED.contains(&row.query_id.as_str())
             && row.outcome == NativeDataFusionPlanningOutcome::AcceptedReplaced
         {
             assert!(
@@ -834,9 +965,7 @@ async fn tpch_phase5_progression_contract_pairs_fallback_pressure_and_bounded_pl
                 assert_eq!(planning_row.reason_code, None);
                 assert_eq!(planning_row.post_native_execution_path, NativeDataFusionPostNativeExecutionPath::Native);
             },
-            NativeFallbackPressureOutcome::Rewritten
-                if matches!(query_id, "q03" | "q04" | "q05" | "q08" | "q09" | "q10" | "q12" | "q14") =>
-            {
+            NativeFallbackPressureOutcome::Rewritten if EXPECTED_BOUNDED_TPCH_JOIN_ACCEPTED.contains(&query_id) => {
                 assert_eq!(planning_row.outcome, NativeDataFusionPlanningOutcome::AcceptedReplaced);
                 assert_eq!(planning_row.reason_code, None);
                 assert_eq!(planning_row.post_native_execution_path, NativeDataFusionPostNativeExecutionPath::Native);
@@ -1211,6 +1340,27 @@ fn accepted_native_diagnostics() -> NativePlanningDiagnostics {
     }
 }
 
+fn accepted_bounded_join_native_diagnostics() -> NativePlanningDiagnostics {
+    let mut report = PlanningReport::new();
+    report.push_rewritten(GpuCandidate::new(
+        "SortExec(fetch)(AggregateExec(HashJoinExec(LocalParquetScan,LocalParquetScan)))",
+        1,
+    ));
+    let mut diagnostics = NativePlanningDiagnostics {
+        input_plan_root: "SortExec".to_string(),
+        input_plan_shape: "SortExec(fetch)(AggregateExec(HashJoinExec(LocalParquetScan,LocalParquetScan)))".to_string(),
+        report,
+        source_diagnostics: Vec::new(),
+        bounded_join_reservation_facts: Default::default(),
+    };
+    diagnostics.bounded_join_reservation_facts = BoundedJoinReservationContract
+        .facts(ExecutionBoundaryPolicy::default())
+        .into_iter()
+        .map(|(key, value)| (key.to_string(), value))
+        .collect();
+    diagnostics
+}
+
 fn rejected_native_diagnostics() -> NativePlanningDiagnostics {
     let mut report = PlanningReport::new();
     report.push_rejected(
@@ -1247,7 +1397,9 @@ fn native_execution_metrics_set() -> datafusion::physical_plan::metrics::Metrics
         ("row_groups_selected", 2),
         ("read_columns", 4),
         ("resident_dataframe_peak_bytes", 4096),
+        ("resident_dataframe_peak_bytes_observed", 1),
         ("allocator_high_water_bytes", 8192),
+        ("allocator_high_water_bytes_observed", 1),
         ("reservation_requested_bytes", 128),
         ("reservation_granted_bytes", 128),
         ("reservation_denied_count", 0),

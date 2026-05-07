@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     fs,
     path::{Path, PathBuf},
     sync::Arc,
@@ -15,10 +15,10 @@ use datafusion::{
 };
 use datafusion_cudf::{
     CudfNativePhysicalOptimizerRule, CudfOptimizerConfig, CudfPhysicalOptimizerRule, CudfSessionStateBuilderExt,
-    GpuFallbackPolicy, NativeCudfExecutionConfig, NativeDataFusionExecutionMetrics, NativeDataFusionPlanningOutcome,
-    NativeDataFusionPlanningReport, NativeDataFusionPlanningRow, NativeDataFusionPostNativeExecutionPath,
-    NativeDataFusionRuntimeOutcome, TPCH_QUERIES, TpchDatasetMetadata, TpchQuery, TpchWorkloadError,
-    prepare_tpch_report_dataset, tpch_report_session_config,
+    Error as AdapterError, GpuFallbackPolicy, NativeCudfExecutionConfig, NativeDataFusionExecutionMetrics,
+    NativeDataFusionPlanningOutcome, NativeDataFusionPlanningReport, NativeDataFusionPlanningRow,
+    NativeDataFusionPostNativeExecutionPath, NativeDataFusionRuntimeOutcome, TPCH_QUERIES, TpchDatasetMetadata,
+    TpchQuery, TpchWorkloadError, prepare_tpch_report_dataset, tpch_report_session_config,
 };
 
 #[path = "native_tpch_benchmark/case_runner.rs"]

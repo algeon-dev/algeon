@@ -14,6 +14,44 @@ pub(super) struct TimedQueryRun {
     pub(super) final_measurement: QueryMeasurement,
 }
 
+#[derive(Clone)]
+pub(super) struct PlannedCpuQuery {
+    _ctx: SessionContext,
+    plan: Arc<dyn ExecutionPlan>,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct CpuRunFailure {
+    pub(super) runtime_started: bool,
+    pub(super) message: String,
+    pub(super) details: FailureDetails,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(super) struct FailureDetails {
+    pub(super) code: Option<String>,
+    pub(super) kind: Option<String>,
+    pub(super) status: Option<String>,
+    pub(super) operation: Option<String>,
+    pub(super) facts: BTreeMap<String, String>,
+}
+
+impl FailureDetails {
+    pub(super) fn from_datafusion_error(error: &DataFusionError) -> Self {
+        adapter_error_from_datafusion(error).map(Self::from_adapter_error).unwrap_or_default()
+    }
+
+    fn from_adapter_error(error: &AdapterError) -> Self {
+        Self {
+            code: Some(error.code().as_str().to_string()),
+            kind: Some(error.kind().as_str().to_string()),
+            status: Some(error.status().as_str().to_string()),
+            operation: Some(error.operation().to_string()),
+            facts: error.facts().iter().map(|(key, value)| (key.to_string(), value.to_string())).collect(),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(super) struct TimedNativeQueryRun {
     pub(super) samples: Vec<Duration>,
@@ -26,6 +64,7 @@ pub(super) struct TimedNativeQueryRun {
 pub(super) struct NativeRunFailure {
     pub(super) runtime_started: bool,
     pub(super) message: String,
+    pub(super) details: FailureDetails,
 }
 
 #[derive(Debug, Clone)]
@@ -65,18 +104,20 @@ pub(super) async fn run_cpu_query_iterations(
     metadata: &TpchDatasetMetadata,
     query: &TpchQuery,
     config: &NativeTpchBenchmarkConfig,
-) -> DataFusionResult<TimedQueryRun> {
+) -> Result<TimedQueryRun, CpuRunFailure> {
     for _ in 0..config.warmup_iterations {
-        let _ = collect_cpu_query_once(metadata, query).await?;
+        let planned = plan_cpu_query(metadata, query).await?;
+        let _ = collect_cpu_plan_once(planned).await?;
     }
 
     let mut samples = Vec::with_capacity(config.iterations);
     let mut final_measurement = None;
     for _ in 0..config.iterations {
+        let planned = plan_cpu_query(metadata, query).await?;
         let started = Instant::now();
-        let batches = collect_cpu_query_once(metadata, query).await?;
+        let batches = collect_cpu_plan_once(planned).await?;
         samples.push(started.elapsed());
-        final_measurement = Some(measure_output(&batches)?);
+        final_measurement = Some(measure_output(&batches).map_err(cpu_started)?);
     }
     Ok(TimedQueryRun {
         samples,
@@ -93,6 +134,12 @@ pub(super) async fn run_native_query_iterations(
         let planned = plan_native_query(metadata, query, config).await.map_err(native_not_started)?;
         if planned.planning_row.outcome == NativeDataFusionPlanningOutcome::AcceptedReplaced {
             let _ = collect_native_plan_once(planned.plan).await.map_err(native_started)?;
+        } else {
+            return Err(NativeRunFailure {
+                runtime_started: false,
+                message: format!("{} stopped being a native accepted query during warmup", query.id),
+                details: FailureDetails::default(),
+            });
         }
     }
 
@@ -105,6 +152,7 @@ pub(super) async fn run_native_query_iterations(
             return Err(NativeRunFailure {
                 runtime_started: false,
                 message: format!("{} stopped being a native accepted query during execution", query.id),
+                details: FailureDetails::default(),
             });
         }
         let started = Instant::now();
@@ -124,22 +172,26 @@ pub(super) async fn run_native_query_iterations(
 }
 
 fn native_started(error: DataFusionError) -> NativeRunFailure {
-    NativeRunFailure { runtime_started: true, message: error.to_string() }
+    let details = FailureDetails::from_datafusion_error(&error);
+    NativeRunFailure { runtime_started: true, message: error.to_string(), details }
 }
 
 fn native_not_started(error: DataFusionError) -> NativeRunFailure {
-    NativeRunFailure { runtime_started: false, message: error.to_string() }
+    let details = FailureDetails::from_datafusion_error(&error);
+    NativeRunFailure { runtime_started: false, message: error.to_string(), details }
 }
 
-async fn collect_cpu_query_once(
-    metadata: &TpchDatasetMetadata,
-    query: &TpchQuery,
-) -> DataFusionResult<Vec<RecordBatch>> {
+async fn plan_cpu_query(metadata: &TpchDatasetMetadata, query: &TpchQuery) -> Result<PlannedCpuQuery, CpuRunFailure> {
     let ctx = SessionContext::new_with_config(cpu_session_config());
-    dataset::register_tpch_tables(&ctx, metadata).await?;
-    let df = ctx.sql(query.sql).await?;
-    let plan = df.create_physical_plan().await?;
-    collect(plan, Arc::new(TaskContext::default())).await
+    dataset::register_tpch_tables(&ctx, metadata).await.map_err(cpu_not_started)?;
+    let df = ctx.sql(query.sql).await.map_err(cpu_not_started)?;
+    let plan = df.create_physical_plan().await.map_err(cpu_not_started)?;
+    Ok(PlannedCpuQuery { _ctx: ctx, plan })
+}
+
+async fn collect_cpu_plan_once(planned: PlannedCpuQuery) -> Result<Vec<RecordBatch>, CpuRunFailure> {
+    let PlannedCpuQuery { _ctx, plan } = planned;
+    collect(plan, Arc::new(TaskContext::default())).await.map_err(cpu_started)
 }
 
 async fn collect_native_plan_once(plan: Arc<dyn ExecutionPlan>) -> DataFusionResult<(Vec<RecordBatch>, MetricsSet)> {
@@ -159,4 +211,26 @@ fn measure_output(batches: &[RecordBatch]) -> DataFusionResult<QueryMeasurement>
         output_bytes: batches.iter().map(get_record_batch_memory_size).sum(),
         output_fingerprint: validation::fingerprint_batches(batches)?,
     })
+}
+
+fn cpu_started(error: DataFusionError) -> CpuRunFailure {
+    let details = FailureDetails::from_datafusion_error(&error);
+    CpuRunFailure { runtime_started: true, message: error.to_string(), details }
+}
+
+fn cpu_not_started(error: DataFusionError) -> CpuRunFailure {
+    let details = FailureDetails::from_datafusion_error(&error);
+    CpuRunFailure { runtime_started: false, message: error.to_string(), details }
+}
+
+fn adapter_error_from_datafusion(error: &DataFusionError) -> Option<&AdapterError> {
+    match error {
+        DataFusionError::External(source) => source.downcast_ref::<AdapterError>(),
+        DataFusionError::Context(_, source) | DataFusionError::Diagnostic(_, source) => {
+            adapter_error_from_datafusion(source)
+        },
+        DataFusionError::Collection(errors) => errors.iter().find_map(adapter_error_from_datafusion),
+        DataFusionError::Shared(source) => adapter_error_from_datafusion(source),
+        _ => None,
+    }
 }

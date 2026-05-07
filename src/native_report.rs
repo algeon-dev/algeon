@@ -560,8 +560,8 @@ impl NativeDataFusionExecutionMetrics {
             parquet_bytes_known: metric_count(metrics, "parquet_bytes_known"),
             row_groups_selected: metric_count(metrics, "row_groups_selected"),
             read_columns: metric_count(metrics, "read_columns"),
-            resident_dataframe_peak_bytes: optional_metric_count(metrics, "resident_dataframe_peak_bytes"),
-            allocator_high_water_bytes: optional_metric_count(metrics, "allocator_high_water_bytes"),
+            resident_dataframe_peak_bytes: optional_observed_metric_count(metrics, "resident_dataframe_peak_bytes"),
+            allocator_high_water_bytes: optional_observed_metric_count(metrics, "allocator_high_water_bytes"),
             reservation_requested_bytes: metric_count(metrics, "reservation_requested_bytes"),
             reservation_granted_bytes: metric_count(metrics, "reservation_granted_bytes"),
             reservation_denied_count: metric_count(metrics, "reservation_denied_count"),
@@ -770,7 +770,11 @@ fn datafusion_planning_rows_for_item(item: NativeDataFusionPlanningWorkloadItem)
                 outcome: NativeDataFusionPlanningOutcome::AcceptedReplaced,
                 reason_code: None,
                 unsupported_category: None,
-                bounded_join_reservation_facts: BTreeMap::new(),
+                bounded_join_reservation_facts: bounded_join_facts_for_candidate(
+                    &native_diagnostics.bounded_join_reservation_facts,
+                    candidate,
+                    None,
+                ),
                 join_diagnostics: join_diagnostics.clone(),
                 source_diagnostics: source_diagnostics.clone(),
                 post_native_plan_root: post_native_plan_root.clone(),
@@ -786,7 +790,11 @@ fn datafusion_planning_rows_for_item(item: NativeDataFusionPlanningWorkloadItem)
                 outcome: NativeDataFusionPlanningOutcome::RejectedBeforeExecution,
                 reason_code: Some(reason.code().to_string()),
                 unsupported_category: unsupported_category(planned_plan.as_ref(), candidate, *reason),
-                bounded_join_reservation_facts: native_diagnostics.bounded_join_reservation_facts.clone(),
+                bounded_join_reservation_facts: bounded_join_facts_for_candidate(
+                    &native_diagnostics.bounded_join_reservation_facts,
+                    candidate,
+                    Some(*reason),
+                ),
                 join_diagnostics: join_diagnostics.clone(),
                 source_diagnostics: source_diagnostics.clone(),
                 post_native_plan_root: post_native_plan_root.clone(),
@@ -828,7 +836,11 @@ fn datafusion_execution_rows_for_item(
                 planning_outcome: NativeDataFusionPlanningOutcome::AcceptedReplaced,
                 reason_code: None,
                 unsupported_category: None,
-                bounded_join_reservation_facts: BTreeMap::new(),
+                bounded_join_reservation_facts: bounded_join_facts_for_candidate(
+                    &native_diagnostics.bounded_join_reservation_facts,
+                    candidate,
+                    None,
+                ),
                 source_diagnostics: source_diagnostics.clone(),
                 post_native_plan_root: post_native_plan_root.clone(),
                 post_native_execution_path,
@@ -850,7 +862,11 @@ fn datafusion_execution_rows_for_item(
                 planning_outcome: NativeDataFusionPlanningOutcome::RejectedBeforeExecution,
                 reason_code: Some(reason.code().to_string()),
                 unsupported_category: unsupported_category(planned_plan.as_ref(), candidate, *reason),
-                bounded_join_reservation_facts: native_diagnostics.bounded_join_reservation_facts.clone(),
+                bounded_join_reservation_facts: bounded_join_facts_for_candidate(
+                    &native_diagnostics.bounded_join_reservation_facts,
+                    candidate,
+                    Some(*reason),
+                ),
                 source_diagnostics: source_diagnostics.clone(),
                 post_native_plan_root: post_native_plan_root.clone(),
                 post_native_execution_path,
@@ -914,6 +930,21 @@ fn datafusion_execution_row_for_planning_failure(
         output_rows: None,
         output_bytes: None,
         metrics: NativeDataFusionExecutionMetrics::default(),
+    }
+}
+
+fn bounded_join_facts_for_candidate(
+    facts: &BTreeMap<String, String>,
+    candidate: &GpuCandidate,
+    reason: Option<FallbackReason>,
+) -> BTreeMap<String, String> {
+    if facts.is_empty() {
+        return BTreeMap::new();
+    }
+    if reason == Some(FallbackReason::NativeBoundedJoinUnsupported) || candidate.shape.contains("JoinExec") {
+        facts.clone()
+    } else {
+        BTreeMap::new()
     }
 }
 
@@ -1721,6 +1752,8 @@ fn metric_count(metrics: &MetricsSet, name: &str) -> usize {
     metrics.sum_by_name(name).map(|value| value.as_usize()).unwrap_or(0)
 }
 
-fn optional_metric_count(metrics: &MetricsSet, name: &str) -> Option<usize> {
-    metrics.sum_by_name(name).map(|value| value.as_usize())
+fn optional_observed_metric_count(metrics: &MetricsSet, name: &str) -> Option<usize> {
+    let observed_name = format!("{name}_observed");
+    let observed = metrics.sum_by_name(&observed_name).map(|value| value.as_usize()).unwrap_or(0);
+    (observed > 0).then(|| metric_count(metrics, name))
 }

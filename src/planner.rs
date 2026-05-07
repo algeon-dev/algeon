@@ -377,11 +377,13 @@ fn replace_lowered_root_or_keep_plan(
     let plan = NativeCudfExec::try_new(lowering.plans[0].clone(), native_execution_config.clone())
         .map(|plan| Arc::new(plan) as Arc<dyn ExecutionPlan>)
         .map_err(DataFusionError::from)?;
+    let bounded_join_reservation_facts =
+        native_execution_boundary_modeled_facts(&lowering.plans[0], native_execution_config).unwrap_or_default();
     Ok(NativeOptimizationAttempt {
         plan,
         report: lowering.report,
         source_diagnostics: lowering.source_diagnostics,
-        bounded_join_reservation_facts: BTreeMap::new(),
+        bounded_join_reservation_facts,
         rewritten: true,
     })
 }
@@ -456,9 +458,26 @@ fn native_execution_boundary_rejection_facts(
         facts.insert("bounded_join_execution_status".to_string(), "unsupported_plan_shape".to_string());
         facts.insert(
             "bounded_join_unsupported_shape".to_string(),
-            "requires_root_reusable_hash_filtered_or_keyless_conditional_join".to_string(),
+            cudf_query_engine::BoundedJoinReservationContract.supported_shape_requirement(),
         );
         Some(facts)
+    } else {
+        None
+    }
+}
+
+fn native_execution_boundary_modeled_facts(
+    plan: &cudf_query_engine::QueryPlan,
+    execution_config: &NativeCudfExecutionConfig,
+) -> Option<BTreeMap<String, String>> {
+    if execution_config.memory_control_policy().is_bounded() && plan.contains_join() {
+        Some(
+            cudf_query_engine::BoundedJoinReservationContract
+                .facts(execution_config.boundary_policy())
+                .into_iter()
+                .map(|(key, value)| (key.to_string(), value))
+                .collect(),
+        )
     } else {
         None
     }

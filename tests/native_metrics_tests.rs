@@ -79,6 +79,8 @@ fn native_datafusion_metric_names_cover_bounded_runtime_contract() {
         "source_chunks_retried",
         "row_groups_planned",
         "row_groups_committed",
+        "resident_dataframe_peak_bytes_observed",
+        "allocator_high_water_bytes_observed",
         "reservation_requested_bytes",
         "reservation_granted_bytes",
         "reservation_denied_count",

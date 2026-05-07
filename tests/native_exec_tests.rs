@@ -11,8 +11,8 @@ use arrow::{
     record_batch::RecordBatch,
 };
 use cudf_query_engine::{
-    ColumnRef, GpuResidentSource, JoinKey, JoinOutputColumn, JoinSide, JoinSpec, JoinType, LocalParquetFile,
-    LocalParquetSource, QueryPlan, QueryPlanBuilder, SourceNode,
+    BoundedJoinReservationContract, ColumnRef, GpuResidentSource, JoinKey, JoinOutputColumn, JoinSide, JoinSpec,
+    JoinType, LocalParquetFile, LocalParquetSource, QueryPlan, QueryPlanBuilder, SourceNode,
 };
 use datafusion::{
     common::{DataFusionError, NullEquality, ScalarValue, config::ConfigOptions},
@@ -472,9 +472,10 @@ fn bounded_join_rejection_split_between_planner_and_runtime_paths_is_pinned() {
 
     assert_eq!(planner_facts.get("bounded_join_enabled").map(String::as_str), Some("true"));
     assert_eq!(planner_facts.get("bounded_join_execution_status").map(String::as_str), Some("unsupported_plan_shape"));
+    let expected_unsupported_shape = BoundedJoinReservationContract.supported_shape_requirement();
     assert_eq!(
         planner_facts.get("bounded_join_unsupported_shape").map(String::as_str),
-        Some("requires_root_reusable_hash_filtered_or_keyless_conditional_join")
+        Some(expected_unsupported_shape.as_str())
     );
     assert_eq!(
         planner_facts.get("modeled_reservations").map(String::as_str),

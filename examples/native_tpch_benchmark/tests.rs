@@ -1,3 +1,8 @@
+use arrow::{
+    array::Int32Array,
+    datatypes::{DataType, Field, Schema},
+};
+
 use super::*;
 
 #[test]
@@ -11,10 +16,500 @@ fn default_config_selects_all_tpch_queries() {
 }
 
 #[test]
+fn query_id_filter_preserves_configured_order_and_rejects_duplicates() {
+    let config = NativeTpchBenchmarkConfig {
+        query_ids: vec!["q03".to_string(), "q01".to_string()],
+        ..NativeTpchBenchmarkConfig::default()
+    };
+
+    let selected = config.selected_queries().into_iter().map(|query| query.id).collect::<Vec<_>>();
+
+    assert_eq!(selected, vec!["q03", "q01"]);
+
+    let duplicate = NativeTpchBenchmarkConfig {
+        query_ids: vec!["q01".to_string(), "q01".to_string()],
+        ..NativeTpchBenchmarkConfig::default()
+    };
+    let error = duplicate.validate().expect_err("duplicate query ids must not silently collapse rows");
+    assert!(error.to_string().contains("duplicate TPC-H query id q01"));
+}
+
+#[tokio::test]
+async fn benchmark_runner_validates_direct_config_before_selecting_queries() {
+    let config =
+        NativeTpchBenchmarkConfig { query_ids: vec!["q99".to_string()], ..NativeTpchBenchmarkConfig::default() };
+    let dir = unique_temp_dir("datafusion-cudf-native-tpch-invalid-config");
+    let error = run_native_tpch_benchmark(&config, &dir).await.expect_err("invalid direct configs must not panic");
+
+    assert!(error.to_string().contains("unknown TPC-H query id q99"));
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn benchmark_report_header_and_rejected_rows_are_stable() {
     let config =
         NativeTpchBenchmarkConfig { query_ids: vec!["q02".to_string()], ..NativeTpchBenchmarkConfig::default() };
-    let metadata = TpchDatasetMetadata {
+    let metadata = benchmark_metadata();
+    let mut bounded_join_reservation_facts = BTreeMap::new();
+    bounded_join_reservation_facts
+        .insert("bounded_join_execution_status".to_string(), "unsupported_plan_shape".to_string());
+    bounded_join_reservation_facts.insert(
+        "bounded_join_unsupported_shape".to_string(),
+        cudf_query_engine::BoundedJoinReservationContract.supported_shape_requirement(),
+    );
+    let planning = NativeDataFusionPlanningRow {
+        query_id: "q02".to_string(),
+        physical_root: "SortExec".to_string(),
+        physical_shape: "SortExec(HashJoinExec)".to_string(),
+        native_candidate_shape: Some("SortExec(HashJoinExec)".to_string()),
+        native_candidate_shape_family: Some("sort_hash_join_aggregate".to_string()),
+        outcome: NativeDataFusionPlanningOutcome::RejectedBeforeExecution,
+        reason_code: Some("native_bounded_join_unsupported".to_string()),
+        unsupported_category: Some("operator_hashjoin".to_string()),
+        bounded_join_reservation_facts,
+        join_diagnostics: Vec::new(),
+        source_diagnostics: Vec::new(),
+        post_native_plan_root: "SortExec".to_string(),
+        post_native_execution_path: NativeDataFusionPostNativeExecutionPath::Cpu,
+        rejected_before_execution: true,
+    };
+    let report =
+        NativeTpchBenchmarkReport { metadata, config, rows: vec![NativeTpchBenchmarkRow::rejected("q02", planning)] };
+
+    let text = report.to_tsv();
+    assert!(text.starts_with("# native_tpch_benchmark_tsv_schema_version=3\n"));
+    assert!(text.contains(&format!("{NATIVE_TPCH_BENCHMARK_TSV_HEADER}\n")));
+    assert!(text.contains("# tpch_dataset_scale_factor=sf1\n"));
+    assert!(text.contains("# tpch_benchmark_query_ids=q02\n"));
+    assert!(text.contains("# tpch_benchmark_native_device_budget_bytes=8589934592\n"));
+    assert!(text.contains("# tpch_benchmark_native_max_source_chunk_bytes=536870912\n"));
+    assert!(text.contains(
+        "q02\trejected_before_execution\tbounded_rejected\tnative_bounded_join_unsupported\toperator_hashjoin"
+    ));
+    assert!(text.contains(&format!(
+        "bounded_join_execution_status=unsupported_plan_shape;bounded_join_unsupported_shape={}",
+        cudf_query_engine::BoundedJoinReservationContract.supported_shape_requirement()
+    )));
+    assert!(text.contains("\ttrue\tfalse\tfalse\tnot_started\tnone\tnone\tnone\tnone\tnone\tnone\tnone\tnone\tnone\tnone\tnone\tnone\tnot_run\t"));
+}
+
+#[test]
+fn benchmark_report_accepted_rows_include_bounded_status_and_resource_metrics() {
+    let config =
+        NativeTpchBenchmarkConfig { query_ids: vec!["q01".to_string()], ..NativeTpchBenchmarkConfig::default() };
+    let row = NativeTpchBenchmarkRow {
+        query_id: "q01".to_string(),
+        planning_outcome: NativeDataFusionPlanningOutcome::AcceptedReplaced,
+        bounded_join_reservation_facts: BTreeMap::new(),
+        reason_code: None,
+        unsupported_category: None,
+        native_candidate_shape_family: Some("sort_local_parquet_aggregate".to_string()),
+        post_native_execution_path: NativeDataFusionPostNativeExecutionPath::Native,
+        rejected_before_execution: false,
+        cpu_runtime_started: true,
+        native_runtime_started: true,
+        runtime_outcome: NativeDataFusionRuntimeOutcome::Succeeded,
+        cpu_failure: None,
+        cpu_failure_details: execution::FailureDetails::default(),
+        runtime_failure: None,
+        runtime_failure_details: execution::FailureDetails::default(),
+        parity_status: validation::ParityStatus::Matched,
+        cpu_wall_ms: Some(20.0),
+        native_wall_ms: Some(5.0),
+        speedup_vs_cpu: Some(4.0),
+        cpu_output_batches: Some(1),
+        native_output_batches: Some(1),
+        cpu_output_rows: Some(4),
+        native_output_rows: Some(4),
+        cpu_output_bytes: Some(128),
+        native_output_bytes: Some(128),
+        cpu_output_fingerprint: Some("output-fnv1a64:1111111111111111".to_string()),
+        native_output_fingerprint: Some("output-fnv1a64:1111111111111111".to_string()),
+        output_fingerprint: Some("output-fnv1a64:1111111111111111".to_string()),
+        metrics: NativeDataFusionExecutionMetrics {
+            gpu_resident_input_handoffs: 1,
+            host_to_device_uploads: 2,
+            host_to_device_uploaded_rows: 3,
+            host_to_device_uploaded_bytes: 4,
+            device_to_host_materializations: 5,
+            device_to_host_materialized_rows: 6,
+            device_to_host_materialized_bytes: 7,
+            device_to_device_copies: 8,
+            device_to_device_copied_bytes: 9,
+            parquet_files: 10,
+            parquet_bytes_known: 11,
+            row_groups_selected: 12,
+            read_columns: 13,
+            resident_dataframe_peak_bytes: Some(14),
+            allocator_high_water_bytes: Some(15),
+            reservation_requested_bytes: 16,
+            reservation_granted_bytes: 17,
+            reservation_denied_count: 18,
+            source_chunks_planned: 19,
+            source_chunks_attempted: 20,
+            source_chunks_committed: 21,
+            source_chunks_retried: 22,
+            row_groups_planned: 23,
+            row_groups_committed: 24,
+            partial_aggregate_count: 25,
+            partial_aggregate_rows: 26,
+            final_merge_attempts: 27,
+            final_merge_levels: 28,
+            retry_count: 29,
+            retry_resource_exhausted_count: 30,
+            retry_reservation_failure_count: 31,
+            hash_join_build_count: 32,
+            filtered_join_build_count: 33,
+            hash_join_cache_hits: 34,
+            hash_join_cache_misses: 35,
+            hash_join_durable_cache_hits: 36,
+            hash_join_durable_cache_misses: 37,
+            hash_join_durable_cache_inserts: 38,
+            hash_join_hash_table_bytes: 39,
+            filtered_join_hash_table_bytes: 40,
+            filtered_join_probe_state_bytes: 41,
+            join_gather_map_bytes: 42,
+        },
+        timing_metrics: NativeTpchTimingMetrics {
+            parquet_read_time_ms: Some(1.0),
+            source_read_time_ms: Some(2.0),
+            operator_time_ms: Some(3.0),
+            chunk_operator_time_ms: Some(4.0),
+            final_merge_time_ms: Some(5.0),
+            final_sort_time_ms: Some(6.0),
+            materialization_time_ms: Some(7.0),
+        },
+    };
+    let report = NativeTpchBenchmarkReport { metadata: benchmark_metadata(), config, rows: vec![row] };
+
+    let text = report.to_tsv();
+    assert!(text.contains(
+        "q01\taccepted_replaced\tbounded_accepted_parity_matched\tnone\tnone\tnone\tsort_local_parquet_aggregate\tnative\tfalse\ttrue\ttrue\tsucceeded"
+    ));
+    assert!(text.contains(
+        "\t20.000\t5.000\t4.000\t1\t1\t4\t4\t128\t128\toutput-fnv1a64:1111111111111111\toutput-fnv1a64:1111111111111111\toutput-fnv1a64:1111111111111111\t"
+    ));
+    assert!(text.contains("\t23\t24\t25\t26\t27\t28\t29\t30\t31\t32\t33\t34\t35\t36\t37\t38\t39\t40\t41\t42\t"));
+    assert!(text.contains("\t1.000\t2.000\t3.000\t4.000\t5.000\t6.000\t7.000\n"));
+}
+
+#[test]
+fn accepted_row_preserves_native_not_started_failure_status() {
+    let row = NativeTpchBenchmarkRow::accepted(
+        "q01",
+        accepted_planning_row("q01"),
+        Ok(timed_cpu_run("output-fnv1a64:0000000000000001")),
+        Err(execution::NativeRunFailure {
+            runtime_started: false,
+            message: "native planning failed\nwith details".to_string(),
+            details: execution::FailureDetails::default(),
+        }),
+    );
+
+    assert!(row.cpu_runtime_started);
+    assert!(!row.native_runtime_started);
+    assert_eq!(row.runtime_outcome, NativeDataFusionRuntimeOutcome::Failed);
+    assert_eq!(row.runtime_failure.as_deref(), Some("native planning failed with details"));
+    assert_eq!(row.parity_status, validation::ParityStatus::NativeFailed);
+    assert_eq!(row.cpu_output_rows, Some(4));
+    assert_eq!(row.native_output_rows, None);
+    assert_eq!(row.output_fingerprint, None);
+    assert_eq!(bounded_status(NativeTpchMemoryPolicy::default(), &row), "bounded_accepted_native_failed");
+}
+
+#[test]
+fn accepted_row_distinguishes_cpu_planning_failure_from_started_runtime() {
+    let row = NativeTpchBenchmarkRow::accepted(
+        "q01",
+        accepted_planning_row("q01"),
+        Err(execution::CpuRunFailure {
+            runtime_started: false,
+            message: "cpu physical planning failed\tbefore execution".to_string(),
+            details: execution::FailureDetails::default(),
+        }),
+        Ok(timed_native_run("output-fnv1a64:0000000000000001")),
+    );
+
+    assert!(!row.cpu_runtime_started);
+    assert!(row.native_runtime_started);
+    assert_eq!(row.runtime_outcome, NativeDataFusionRuntimeOutcome::Succeeded);
+    assert_eq!(row.cpu_failure.as_deref(), Some("cpu physical planning failed before execution"));
+    assert_eq!(row.runtime_failure, None);
+    assert_eq!(row.parity_status, validation::ParityStatus::CpuFailed);
+    assert_eq!(row.cpu_output_rows, None);
+    assert_eq!(row.native_output_rows, Some(4));
+    assert_eq!(row.output_fingerprint, None);
+    assert_eq!(bounded_status(NativeTpchMemoryPolicy::default(), &row), "bounded_accepted_cpu_failed");
+}
+
+#[test]
+fn accepted_row_reports_fingerprint_mismatch_without_canonical_output_fingerprint() {
+    let row = NativeTpchBenchmarkRow::accepted(
+        "q01",
+        accepted_planning_row("q01"),
+        Ok(timed_cpu_run("output-fnv1a64:0000000000000001")),
+        Ok(timed_native_run("output-fnv1a64:0000000000000002")),
+    );
+
+    assert!(row.cpu_runtime_started);
+    assert!(row.native_runtime_started);
+    assert_eq!(row.runtime_outcome, NativeDataFusionRuntimeOutcome::Succeeded);
+    assert_eq!(row.parity_status, validation::ParityStatus::Mismatched);
+    assert_eq!(row.cpu_output_fingerprint.as_deref(), Some("output-fnv1a64:0000000000000001"));
+    assert_eq!(row.native_output_fingerprint.as_deref(), Some("output-fnv1a64:0000000000000002"));
+    assert_eq!(row.output_fingerprint, None);
+    assert_eq!(bounded_status(NativeTpchMemoryPolicy::default(), &row), "bounded_accepted_parity_mismatched");
+}
+
+#[test]
+fn native_runtime_failure_preserves_adapter_error_facts() {
+    let adapter_error = AdapterError::new(
+        datafusion_cudf::ErrorCode::MemoryReservationFailed,
+        "datafusion_cudf.native_exec.execute",
+        "native cudf query execution failed",
+    )
+    .with_fact("native_code", "memory_reservation_failed")
+    .with_fact("native_kind", "resource_exhausted")
+    .with_fact("native_status", "temporary")
+    .with_fact("native_operation", "cudf_query_engine.memory.reserve")
+    .with_fact("memory_boundary", "final_sort")
+    .with_fact("requested_bytes", 2048)
+    .with_fact("granted_bytes", 1024);
+    let datafusion_error = DataFusionError::from(adapter_error);
+    let details = execution::FailureDetails::from_datafusion_error(&datafusion_error);
+
+    assert_eq!(details.code.as_deref(), Some("memory_reservation_failed"));
+    assert_eq!(details.kind.as_deref(), Some("resource_exhausted"));
+    assert_eq!(details.status.as_deref(), Some("temporary"));
+    assert_eq!(details.operation.as_deref(), Some("datafusion_cudf.native_exec.execute"));
+    assert_eq!(details.facts.get("memory_boundary").map(String::as_str), Some("final_sort"));
+    assert_eq!(details.facts.get("requested_bytes").map(String::as_str), Some("2048"));
+
+    let row = NativeTpchBenchmarkRow::accepted(
+        "q01",
+        accepted_planning_row("q01"),
+        Ok(timed_cpu_run("output-fnv1a64:0000000000000001")),
+        Err(execution::NativeRunFailure { runtime_started: true, message: datafusion_error.to_string(), details }),
+    );
+    let report = NativeTpchBenchmarkReport {
+        metadata: benchmark_metadata(),
+        config: NativeTpchBenchmarkConfig {
+            query_ids: vec!["q01".to_string()],
+            ..NativeTpchBenchmarkConfig::default()
+        },
+        rows: vec![row],
+    };
+    let text = report.to_tsv();
+    let mut lines = text.lines().filter(|line| !line.starts_with('#'));
+    let header = lines.next().expect("benchmark report should contain a TSV header");
+    let row = lines.next().expect("benchmark report should contain a data row");
+    let header_fields = header.split('\t').collect::<Vec<_>>();
+    let row_fields = row.split('\t').collect::<Vec<_>>();
+    let facts = row_fields[header_index(&header_fields, "runtime_failure_facts")];
+
+    assert_eq!(row_fields[header_index(&header_fields, "runtime_outcome")], "failed");
+    assert_eq!(row_fields[header_index(&header_fields, "runtime_failure_code")], "memory_reservation_failed");
+    assert_eq!(row_fields[header_index(&header_fields, "runtime_failure_kind")], "resource_exhausted");
+    assert_eq!(row_fields[header_index(&header_fields, "runtime_failure_status")], "temporary");
+    assert_eq!(
+        row_fields[header_index(&header_fields, "runtime_failure_operation")],
+        "datafusion_cudf.native_exec.execute"
+    );
+    assert!(facts.contains("memory_boundary=final_sort"));
+    assert!(facts.contains("native_operation=cudf_query_engine.memory.reserve"));
+    assert!(facts.contains("requested_bytes=2048"));
+}
+
+#[test]
+fn planning_failure_preserves_adapter_error_facts() {
+    let adapter_error = AdapterError::new(
+        datafusion_cudf::ErrorCode::InvalidExecutionPlan,
+        "datafusion_cudf.native_planner",
+        "native physical planning failed",
+    )
+    .with_fact("query_id", "q01")
+    .with_fact("planner_stage", "native_lowering");
+    let row = NativeTpchBenchmarkRow::planning_failure("q01", DataFusionError::from(adapter_error));
+
+    assert_eq!(row.reason_code.as_deref(), Some("physical_planning_failed"));
+    assert_eq!(row.unsupported_category.as_deref(), Some("planning"));
+    assert!(!row.cpu_runtime_started);
+    assert!(!row.native_runtime_started);
+    assert_eq!(row.runtime_outcome, NativeDataFusionRuntimeOutcome::NotStarted);
+    assert_eq!(row.runtime_failure_details.code.as_deref(), Some("invalid_execution_plan"));
+    assert_eq!(row.runtime_failure_details.kind.as_deref(), Some("planning"));
+    assert_eq!(row.runtime_failure_details.status.as_deref(), Some("permanent"));
+    assert_eq!(row.runtime_failure_details.operation.as_deref(), Some("datafusion_cudf.native_planner"));
+    assert_eq!(row.runtime_failure_details.facts.get("planner_stage").map(String::as_str), Some("native_lowering"));
+    assert_eq!(bounded_status(NativeTpchMemoryPolicy::default(), &row), "bounded_planning_failed");
+}
+
+#[test]
+fn cpu_runtime_failure_preserves_adapter_error_facts() {
+    let adapter_error = AdapterError::new(
+        datafusion_cudf::ErrorCode::InvalidExecutionPlan,
+        "datafusion_cudf.cpu_collect",
+        "cpu collection failed",
+    )
+    .with_fact("query_id", "q01")
+    .with_fact("phase", "collect");
+    let datafusion_error = DataFusionError::from(adapter_error);
+    let details = execution::FailureDetails::from_datafusion_error(&datafusion_error);
+    let row = NativeTpchBenchmarkRow::accepted(
+        "q01",
+        accepted_planning_row("q01"),
+        Err(execution::CpuRunFailure { runtime_started: true, message: datafusion_error.to_string(), details }),
+        Ok(timed_native_run("output-fnv1a64:0000000000000001")),
+    );
+    let report = NativeTpchBenchmarkReport {
+        metadata: benchmark_metadata(),
+        config: NativeTpchBenchmarkConfig {
+            query_ids: vec!["q01".to_string()],
+            ..NativeTpchBenchmarkConfig::default()
+        },
+        rows: vec![row],
+    };
+    let text = report.to_tsv();
+    let mut lines = text.lines().filter(|line| !line.starts_with('#'));
+    let header = lines.next().expect("benchmark report should contain a TSV header");
+    let row = lines.next().expect("benchmark report should contain a data row");
+    let header_fields = header.split('\t').collect::<Vec<_>>();
+    let row_fields = row.split('\t').collect::<Vec<_>>();
+    let facts = row_fields[header_index(&header_fields, "cpu_failure_facts")];
+
+    assert_eq!(row_fields[header_index(&header_fields, "parity_status")], "cpu_failed");
+    assert_eq!(row_fields[header_index(&header_fields, "cpu_failure_code")], "invalid_execution_plan");
+    assert_eq!(row_fields[header_index(&header_fields, "cpu_failure_kind")], "planning");
+    assert_eq!(row_fields[header_index(&header_fields, "cpu_failure_status")], "permanent");
+    assert_eq!(row_fields[header_index(&header_fields, "cpu_failure_operation")], "datafusion_cudf.cpu_collect");
+    assert!(facts.contains("phase=collect"));
+    assert!(facts.contains("query_id=q01"));
+}
+
+#[test]
+fn allocator_high_water_placeholder_is_none_without_runtime_contract() {
+    let config =
+        NativeTpchBenchmarkConfig { query_ids: vec!["q01".to_string()], ..NativeTpchBenchmarkConfig::default() };
+    let report = NativeTpchBenchmarkReport {
+        metadata: benchmark_metadata(),
+        config,
+        rows: vec![NativeTpchBenchmarkRow::accepted(
+            "q01",
+            accepted_planning_row("q01"),
+            Ok(timed_cpu_run("output-fnv1a64:0000000000000001")),
+            Ok(timed_native_run("output-fnv1a64:0000000000000001")),
+        )],
+    };
+    let text = report.to_tsv();
+    let mut lines = text.lines().filter(|line| !line.starts_with('#'));
+    let header = lines.next().expect("benchmark report should contain a TSV header");
+    let row = lines.next().expect("benchmark report should contain a data row");
+    let header_fields = header.split('\t').collect::<Vec<_>>();
+    let row_fields = row.split('\t').collect::<Vec<_>>();
+
+    assert_eq!(
+        row_fields[header_index(&header_fields, "allocator_high_water_bytes")],
+        "none",
+        "allocator high-water must stay unset until the lower runtime exposes a real contract"
+    );
+}
+
+#[test]
+fn output_fingerprint_is_independent_of_record_batch_boundaries() {
+    let single_batch = vec![int_batch(&[1, 2, 3, 4])];
+    let split_batches = vec![int_batch(&[1, 2]), int_batch(&[3, 4])];
+    let different_rows = vec![int_batch(&[1, 2, 4, 3])];
+
+    let single_fingerprint = validation::fingerprint_batches(&single_batch).unwrap();
+    let split_fingerprint = validation::fingerprint_batches(&split_batches).unwrap();
+    let different_fingerprint = validation::fingerprint_batches(&different_rows).unwrap();
+
+    assert_eq!(single_fingerprint, split_fingerprint);
+    assert_ne!(single_fingerprint, different_fingerprint);
+    assert_eq!(
+        validation::parity_status(
+            Some(&execution::QueryMeasurement {
+                output_batches: single_batch.len(),
+                output_rows: 4,
+                output_bytes: 0,
+                output_fingerprint: single_fingerprint,
+            }),
+            Some(&execution::QueryMeasurement {
+                output_batches: split_batches.len(),
+                output_rows: 4,
+                output_bytes: 0,
+                output_fingerprint: split_fingerprint,
+            }),
+        ),
+        validation::ParityStatus::Matched
+    );
+}
+
+#[test]
+fn benchmark_report_schema_v3_rows_match_header_columns() {
+    let config = NativeTpchBenchmarkConfig {
+        query_ids: vec!["q01".to_string(), "q02".to_string(), "q03".to_string()],
+        ..NativeTpchBenchmarkConfig::default()
+    };
+    let report = NativeTpchBenchmarkReport {
+        metadata: benchmark_metadata(),
+        config,
+        rows: vec![
+            NativeTpchBenchmarkRow::accepted(
+                "q01",
+                accepted_planning_row("q01"),
+                Ok(timed_cpu_run("output-fnv1a64:0000000000000001")),
+                Ok(timed_native_run("output-fnv1a64:0000000000000001")),
+            ),
+            NativeTpchBenchmarkRow::rejected("q02", rejected_planning_row("q02")),
+            NativeTpchBenchmarkRow::planning_failure(
+                "q03",
+                DataFusionError::Plan("planning failed before execution".to_string()),
+            ),
+        ],
+    };
+
+    let text = report.to_tsv();
+    let mut lines = text.lines().filter(|line| !line.starts_with('#'));
+    let header = lines.next().expect("benchmark report should contain a TSV header");
+    let header_fields = header.split('\t').collect::<Vec<_>>();
+    assert_eq!(header, NATIVE_TPCH_BENCHMARK_TSV_HEADER);
+
+    let bounded_status_index = header_index(&header_fields, "bounded_status");
+    let native_started_index = header_index(&header_fields, "native_runtime_started");
+    let output_fingerprint_index = header_index(&header_fields, "output_fingerprint");
+    let runtime_outcome_index = header_index(&header_fields, "runtime_outcome");
+    let rows = lines.collect::<Vec<_>>();
+    assert_eq!(rows.len(), 3);
+    for row in rows {
+        let fields = row.split('\t').collect::<Vec<_>>();
+        assert_eq!(fields.len(), header_fields.len(), "row has wrong schema width: {row}");
+        match fields[0] {
+            "q01" => {
+                assert_eq!(fields[bounded_status_index], "bounded_accepted_parity_matched");
+                assert_eq!(fields[native_started_index], "true");
+                assert_eq!(fields[runtime_outcome_index], "succeeded");
+                assert_eq!(fields[output_fingerprint_index], "output-fnv1a64:0000000000000001");
+            },
+            "q02" => {
+                assert_eq!(fields[bounded_status_index], "bounded_rejected");
+                assert_eq!(fields[native_started_index], "false");
+                assert_eq!(fields[runtime_outcome_index], "not_started");
+                assert_eq!(fields[output_fingerprint_index], "not_run");
+            },
+            "q03" => {
+                assert_eq!(fields[bounded_status_index], "bounded_planning_failed");
+                assert_eq!(fields[native_started_index], "false");
+                assert_eq!(fields[runtime_outcome_index], "not_started");
+                assert_eq!(fields[output_fingerprint_index], "not_run");
+            },
+            query_id => panic!("unexpected benchmark row {query_id}"),
+        }
+    }
+}
+
+fn benchmark_metadata() -> TpchDatasetMetadata {
+    TpchDatasetMetadata {
         root: PathBuf::from("/tmp/tpch"),
         scale_factor: "sf1".to_string(),
         provenance: "external_parquet_root".to_string(),
@@ -26,9 +521,31 @@ fn benchmark_report_header_and_rejected_rows_are_stable() {
         metadata_fingerprint: "metadata-fnv1a64:0000000000000001".to_string(),
         content_fingerprint: None,
         tables: Vec::new(),
-    };
-    let planning = NativeDataFusionPlanningRow {
-        query_id: "q02".to_string(),
+    }
+}
+
+fn accepted_planning_row(query_id: &str) -> NativeDataFusionPlanningRow {
+    NativeDataFusionPlanningRow {
+        query_id: query_id.to_string(),
+        physical_root: "NativeCudfExec".to_string(),
+        physical_shape: "NativeCudfExec".to_string(),
+        native_candidate_shape: Some("NativeCudfExec".to_string()),
+        native_candidate_shape_family: Some("sort_local_parquet_aggregate".to_string()),
+        outcome: NativeDataFusionPlanningOutcome::AcceptedReplaced,
+        reason_code: None,
+        unsupported_category: None,
+        bounded_join_reservation_facts: BTreeMap::new(),
+        join_diagnostics: Vec::new(),
+        source_diagnostics: Vec::new(),
+        post_native_plan_root: "NativeCudfExec".to_string(),
+        post_native_execution_path: NativeDataFusionPostNativeExecutionPath::Native,
+        rejected_before_execution: false,
+    }
+}
+
+fn rejected_planning_row(query_id: &str) -> NativeDataFusionPlanningRow {
+    NativeDataFusionPlanningRow {
+        query_id: query_id.to_string(),
         physical_root: "SortExec".to_string(),
         physical_shape: "SortExec(HashJoinExec)".to_string(),
         native_candidate_shape: Some("SortExec(HashJoinExec)".to_string()),
@@ -36,21 +553,45 @@ fn benchmark_report_header_and_rejected_rows_are_stable() {
         outcome: NativeDataFusionPlanningOutcome::RejectedBeforeExecution,
         reason_code: Some("native_bounded_join_unsupported".to_string()),
         unsupported_category: Some("operator_hashjoin".to_string()),
-        bounded_join_reservation_facts: Default::default(),
+        bounded_join_reservation_facts: BTreeMap::new(),
         join_diagnostics: Vec::new(),
         source_diagnostics: Vec::new(),
         post_native_plan_root: "SortExec".to_string(),
         post_native_execution_path: NativeDataFusionPostNativeExecutionPath::Cpu,
         rejected_before_execution: true,
-    };
-    let report =
-        NativeTpchBenchmarkReport { metadata, config, rows: vec![NativeTpchBenchmarkRow::rejected("q02", planning)] };
+    }
+}
 
-    let text = report.to_tsv();
-    assert!(text.starts_with("# native_tpch_benchmark_tsv_schema_version=1\n"));
-    assert!(text.contains(&format!("{NATIVE_TPCH_BENCHMARK_TSV_HEADER}\n")));
-    assert!(text.contains("# tpch_dataset_scale_factor=sf1\n"));
-    assert!(text.contains("# tpch_benchmark_query_ids=q02\n"));
-    assert!(text.contains("q02\trejected_before_execution\tnative_bounded_join_unsupported\toperator_hashjoin"));
-    assert!(text.contains("\tfalse\tfalse\tnot_started\tnone\tnone\tnot_run\t"));
+fn timed_cpu_run(fingerprint: &str) -> execution::TimedQueryRun {
+    execution::TimedQueryRun {
+        samples: vec![Duration::from_millis(10)],
+        final_measurement: query_measurement(fingerprint),
+    }
+}
+
+fn timed_native_run(fingerprint: &str) -> execution::TimedNativeQueryRun {
+    execution::TimedNativeQueryRun {
+        samples: vec![Duration::from_millis(5)],
+        final_measurement: query_measurement(fingerprint),
+        metrics: NativeDataFusionExecutionMetrics::default(),
+        raw_metrics: MetricsSet::new(),
+    }
+}
+
+fn query_measurement(fingerprint: &str) -> execution::QueryMeasurement {
+    execution::QueryMeasurement {
+        output_batches: 1,
+        output_rows: 4,
+        output_bytes: 128,
+        output_fingerprint: fingerprint.to_string(),
+    }
+}
+
+fn int_batch(values: &[i32]) -> RecordBatch {
+    let schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Int32, false)]));
+    RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int32Array::from(values.to_vec()))]).unwrap()
+}
+
+fn header_index(header: &[&str], name: &str) -> usize {
+    header.iter().position(|field| *field == name).unwrap_or_else(|| panic!("missing TSV field {name}"))
 }

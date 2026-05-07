@@ -45,7 +45,9 @@ pub const NATIVE_CUDF_DATAFUSION_METRIC_NAMES: &[&str] = &[
     "reservation_denied_count",
     "peak_device_memory_bytes",
     "resident_dataframe_peak_bytes",
+    "resident_dataframe_peak_bytes_observed",
     "allocator_high_water_bytes",
+    "allocator_high_water_bytes_observed",
     "source_chunks_planned",
     "source_chunks_attempted",
     "source_chunks_committed",
@@ -754,7 +756,9 @@ struct NativeCudfMetrics {
     reservation_denied_count: Count,
     peak_device_memory_bytes: Count,
     resident_dataframe_peak_bytes: Count,
+    resident_dataframe_peak_bytes_observed: Count,
     allocator_high_water_bytes: Count,
+    allocator_high_water_bytes_observed: Count,
     source_chunks_planned: Count,
     source_chunks_attempted: Count,
     source_chunks_committed: Count,
@@ -833,7 +837,17 @@ impl NativeCudfMetrics {
             reservation_denied_count: summary_counter(metrics, "reservation_denied_count", partition),
             peak_device_memory_bytes: summary_counter(metrics, "peak_device_memory_bytes", partition),
             resident_dataframe_peak_bytes: summary_counter(metrics, "resident_dataframe_peak_bytes", partition),
+            resident_dataframe_peak_bytes_observed: summary_counter(
+                metrics,
+                "resident_dataframe_peak_bytes_observed",
+                partition,
+            ),
             allocator_high_water_bytes: summary_counter(metrics, "allocator_high_water_bytes", partition),
+            allocator_high_water_bytes_observed: summary_counter(
+                metrics,
+                "allocator_high_water_bytes_observed",
+                partition,
+            ),
             source_chunks_planned: summary_counter(metrics, "source_chunks_planned", partition),
             source_chunks_attempted: summary_counter(metrics, "source_chunks_attempted", partition),
             source_chunks_committed: summary_counter(metrics, "source_chunks_committed", partition),
@@ -888,9 +902,17 @@ impl NativeCudfMetrics {
         self.reservation_requested_bytes.add(count(metrics.reservation_requested_bytes));
         self.reservation_granted_bytes.add(count(metrics.reservation_granted_bytes));
         self.reservation_denied_count.add(count(metrics.reservation_denied_count));
-        add_optional_count(&self.peak_device_memory_bytes, metrics.peak_device_memory_bytes);
-        add_optional_count(&self.resident_dataframe_peak_bytes, metrics.resident_dataframe_peak_bytes);
-        add_optional_count(&self.allocator_high_water_bytes, metrics.allocator_high_water_bytes);
+        add_optional_count(&self.peak_device_memory_bytes, None, metrics.peak_device_memory_bytes);
+        add_optional_count(
+            &self.resident_dataframe_peak_bytes,
+            Some(&self.resident_dataframe_peak_bytes_observed),
+            metrics.resident_dataframe_peak_bytes,
+        );
+        add_optional_count(
+            &self.allocator_high_water_bytes,
+            Some(&self.allocator_high_water_bytes_observed),
+            metrics.allocator_high_water_bytes,
+        );
         self.source_chunks_planned.add(count(metrics.source_chunks_planned));
         self.source_chunks_attempted.add(count(metrics.source_chunks_attempted));
         self.source_chunks_committed.add(count(metrics.source_chunks_committed));
@@ -959,8 +981,11 @@ fn join_gather_map_bytes(metrics: &QueryMetrics) -> u64 {
     metrics.operators.iter().filter_map(|operator| operator.join.as_ref()).map(|join| join.gather_map_bytes).sum()
 }
 
-fn add_optional_count(metric: &Count, value: Option<u64>) {
+fn add_optional_count(metric: &Count, observed: Option<&Count>, value: Option<u64>) {
     if let Some(value) = value {
+        if let Some(observed) = observed {
+            observed.add(1);
+        }
         metric.add(count(value));
     }
 }

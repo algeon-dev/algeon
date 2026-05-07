@@ -377,6 +377,10 @@ fn bounded_join_reservation_kinds_are_modeled_without_estimates() {
         contract.execution_families_csv(),
         "root_reusable_hash_join,root_filtered_semi_anti_join,keyless_conditional_join,multi_join_reusable_hash_pipeline"
     );
+    assert_eq!(
+        contract.supported_shape_requirement(),
+        "requires_one_of(root_reusable_hash_join,root_filtered_semi_anti_join,keyless_conditional_join,multi_join_reusable_hash_pipeline)"
+    );
     assert!(contract.enabled());
 
     for (requirement, (kind, expected_name, expected_boundary, expected_status, expected_detail)) in
