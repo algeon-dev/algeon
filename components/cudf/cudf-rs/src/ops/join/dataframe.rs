@@ -8,9 +8,10 @@ use crate::{
     frame::{
         dataframe::{
             DataFrame, DataFrameCrossJoinOptions, DataFrameFilteredJoin, DataFrameFilteredJoinOptions,
-            DataFrameHashJoin, DataFrameHashJoinMaterialized, DataFrameHashJoinOptions, DataFrameHashJoinPairIndices,
-            DataFrameJoinIndices, DataFrameJoinOptions, DataFrameJoinPairIndices, DataFrameJoinSides,
-            DataFrameMixedJoinOptions, DataFramePredicateJoinOptions, derive_frame_domain_from_columns,
+            DataFrameFilteredJoinProbeState, DataFrameHashJoin, DataFrameHashJoinMaterialized,
+            DataFrameHashJoinOptions, DataFrameHashJoinPairIndices, DataFrameJoinIndices, DataFrameJoinOptions,
+            DataFrameJoinPairIndices, DataFrameJoinSides, DataFrameMixedJoinOptions, DataFramePredicateJoinOptions,
+            derive_frame_domain_from_columns,
         },
         series::Series,
     },
@@ -1923,6 +1924,26 @@ impl DataFrameFilteredJoin {
         self.left_anti_probe_in(probe, probe_on, &ctx)
     }
 
+    /// Begin a retained left semi probe without materializing its gather map.
+    pub fn begin_left_semi_probe<I, S>(&self, probe: &DataFrame, probe_on: I) -> Result<DataFrameFilteredJoinProbeState>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let ctx = ExecutionOverrides::new();
+        self.begin_left_semi_probe_in(probe, probe_on, &ctx)
+    }
+
+    /// Begin a retained left anti probe without materializing its gather map.
+    pub fn begin_left_anti_probe<I, S>(&self, probe: &DataFrame, probe_on: I) -> Result<DataFrameFilteredJoinProbeState>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let ctx = ExecutionOverrides::new();
+        self.begin_left_anti_probe_in(probe, probe_on, &ctx)
+    }
+
     /// Return the exact output row count for a left semi probe.
     pub fn left_semi_probe_size<I, S>(&self, probe: &DataFrame, probe_on: I) -> Result<usize>
     where
@@ -2001,6 +2022,46 @@ impl DataFrameFilteredJoin {
         S: AsRef<str>,
     {
         self.probe_indices_with_context(probe, probe_on, false, None, ctx, "dataframe::filtered_join::left_anti_probe")
+    }
+
+    /// Begin a retained left semi probe using a borrowed execution override.
+    pub fn begin_left_semi_probe_in<I, S>(
+        &self,
+        probe: &DataFrame,
+        probe_on: I,
+        ctx: &ExecutionOverrides<'_>,
+    ) -> Result<DataFrameFilteredJoinProbeState>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        self.begin_probe_state_with_context(
+            probe,
+            probe_on,
+            true,
+            ctx,
+            "dataframe::filtered_join::begin_left_semi_probe",
+        )
+    }
+
+    /// Begin a retained left anti probe using a borrowed execution override.
+    pub fn begin_left_anti_probe_in<I, S>(
+        &self,
+        probe: &DataFrame,
+        probe_on: I,
+        ctx: &ExecutionOverrides<'_>,
+    ) -> Result<DataFrameFilteredJoinProbeState>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        self.begin_probe_state_with_context(
+            probe,
+            probe_on,
+            false,
+            ctx,
+            "dataframe::filtered_join::begin_left_anti_probe",
+        )
     }
 
     /// Return the exact output row count for a left semi probe using a borrowed execution override.
@@ -2123,15 +2184,44 @@ impl DataFrameFilteredJoin {
                 self.join.left_anti_join_indices_with_output_size_in(probe_key_table.table(), output_size, ctx)?
             },
             (true, None) => {
-                let output_size = self.join.left_semi_join_size_in(probe_key_table.table(), ctx)?;
-                self.join.left_semi_join_indices_with_output_size_in(probe_key_table.table(), output_size, ctx)?
+                let state = self.join.begin_left_semi_probe_in(probe_key_table.table(), ctx)?;
+                state.materialize_indices_in(ctx)?
             },
             (false, None) => {
-                let output_size = self.join.left_anti_join_size_in(probe_key_table.table(), ctx)?;
-                self.join.left_anti_join_indices_with_output_size_in(probe_key_table.table(), output_size, ctx)?
+                let state = self.join.begin_left_anti_probe_in(probe_key_table.table(), ctx)?;
+                state.materialize_indices_in(ctx)?
             },
         };
         single_side_indices_from_raw(raw_indices, operation)
+    }
+
+    fn begin_probe_state_with_context<I, S>(
+        &self,
+        probe: &DataFrame,
+        probe_on: I,
+        semi_join: bool,
+        ctx: &ExecutionOverrides<'_>,
+        operation: &'static str,
+    ) -> Result<DataFrameFilteredJoinProbeState>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let probe_keys = probe_on.into_iter().map(|key| key.as_ref().to_string()).collect::<Vec<_>>();
+        validate_hash_join_key_names(&probe_keys, operation)?;
+        if probe_keys.len() != self.build_keys.len() {
+            return Err(merge_key_count_mismatch_error(operation, probe_keys.len(), self.build_keys.len()));
+        }
+
+        let probe_key_refs = probe_keys.iter().map(|key| key.as_str()).collect::<Vec<_>>();
+        let probe_key_indices = resolve_column_names(probe.columns_map(), &probe_key_refs, operation)?;
+        let probe_key_table = build_borrowed_table_view_from_columns(probe.columns_map(), &probe_key_indices)?;
+        let state = if semi_join {
+            self.join.begin_left_semi_probe_in(probe_key_table.table(), ctx)?
+        } else {
+            self.join.begin_left_anti_probe_in(probe_key_table.table(), ctx)?
+        };
+        Ok(DataFrameFilteredJoinProbeState { state })
     }
 
     fn probe_size_with_context<I, S>(

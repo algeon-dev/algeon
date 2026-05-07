@@ -40,6 +40,9 @@ typedef void* cudf_distinct_hash_join_handle;
 /// Opaque handle to a reusable libcudf filtered-join build artifact.
 typedef void* cudf_filtered_join_handle;
 
+/// Opaque handle to a retained libcudf filtered-join probe state.
+typedef void* cudf_filtered_join_probe_handle;
+
 /// Opaque handle to a reusable libcudf hash-join build artifact.
 typedef void* cudf_hash_join_handle;
 
@@ -689,6 +692,48 @@ void cudf_filtered_join_destroy(cudf_filtered_join_handle handle);
 /// Return device bytes retained by a reusable filtered-join build artifact.
 cudf_status_t cudf_filtered_join_device_allocated_size(cudf_filtered_join_handle handle,
                                                        size_t* out);
+
+/// Begin a retained left semi probe over a reusable filtered join.
+cudf_status_t cudf_filtered_join_begin_left_semi_probe(cudf_filtered_join_handle join,
+                                                       cudf_table_view_handle probe,
+                                                       cudf_filtered_join_probe_handle* out);
+
+/// Begin a retained left semi probe with explicit execution context.
+cudf_status_t cudf_filtered_join_begin_left_semi_probe_ex(cudf_filtered_join_handle join,
+                                                          cudf_table_view_handle probe,
+                                                          cudf_filtered_join_probe_handle* out,
+                                                          const cudf_exec_options_t* options);
+
+/// Begin a retained left anti probe over a reusable filtered join.
+cudf_status_t cudf_filtered_join_begin_left_anti_probe(cudf_filtered_join_handle join,
+                                                       cudf_table_view_handle probe,
+                                                       cudf_filtered_join_probe_handle* out);
+
+/// Begin a retained left anti probe with explicit execution context.
+cudf_status_t cudf_filtered_join_begin_left_anti_probe_ex(cudf_filtered_join_handle join,
+                                                          cudf_table_view_handle probe,
+                                                          cudf_filtered_join_probe_handle* out,
+                                                          const cudf_exec_options_t* options);
+
+/// Destroy a retained filtered-join probe state.
+void cudf_filtered_join_probe_destroy(cudf_filtered_join_probe_handle handle);
+
+/// Return the exact output row count retained by a filtered-join probe state.
+cudf_status_t cudf_filtered_join_probe_output_size(cudf_filtered_join_probe_handle handle,
+                                                   size_t* out);
+
+/// Return device bytes retained by a filtered-join probe state.
+cudf_status_t cudf_filtered_join_probe_device_allocated_size(cudf_filtered_join_probe_handle handle,
+                                                             size_t* out);
+
+/// Materialize selected probe indices from a retained filtered-join probe state.
+cudf_status_t cudf_filtered_join_probe_materialize_indices(cudf_filtered_join_probe_handle handle,
+                                                           cudf_column_handle* out_indices);
+
+/// Materialize selected probe indices with explicit execution context.
+cudf_status_t cudf_filtered_join_probe_materialize_indices_ex(cudf_filtered_join_probe_handle handle,
+                                                              cudf_column_handle* out_indices,
+                                                              const cudf_exec_options_t* options);
 
 /// Return the exact row count for a left semi probe.
 cudf_status_t cudf_filtered_join_left_semi_join_size(cudf_filtered_join_handle join,

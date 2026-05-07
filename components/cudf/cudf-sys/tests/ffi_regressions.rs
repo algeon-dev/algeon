@@ -4,6 +4,8 @@ mod arrow_device_tests;
 mod datetime_tests;
 #[path = "ffi_regressions/execution_context_tests.rs"]
 mod execution_context_tests;
+#[path = "ffi_regressions/filtered_join_probe_tests.rs"]
+mod filtered_join_probe_tests;
 #[path = "ffi_regressions/helpers.rs"]
 mod helpers;
 #[path = "ffi_regressions/io_and_dictionary_tests.rs"]

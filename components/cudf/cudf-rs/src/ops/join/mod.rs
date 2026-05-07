@@ -2451,6 +2451,11 @@ struct FilteredJoinHandle {
     _domain: Arc<ExecutionDomain>,
 }
 
+struct FilteredJoinProbeHandle {
+    handle: NonNull<c_void>,
+    _domain: Arc<ExecutionDomain>,
+}
+
 impl fmt::Debug for HashJoinHandle {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("HashJoinHandle").field("handle", &self.handle).finish()
@@ -2460,6 +2465,12 @@ impl fmt::Debug for HashJoinHandle {
 impl fmt::Debug for FilteredJoinHandle {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("FilteredJoinHandle").field("handle", &self.handle).finish()
+    }
+}
+
+impl fmt::Debug for FilteredJoinProbeHandle {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("FilteredJoinProbeHandle").field("handle", &self.handle).finish()
     }
 }
 
@@ -2475,6 +2486,12 @@ unsafe impl Sync for HashJoinHandle {}
 unsafe impl Send for FilteredJoinHandle {}
 unsafe impl Sync for FilteredJoinHandle {}
 
+// SAFETY: The retained probe-state handle owns its device membership buffer and
+// no longer borrows the probe table. The wrapper retains the filtered join so
+// build-side device memory remains live until the state is dropped.
+unsafe impl Send for FilteredJoinProbeHandle {}
+unsafe impl Sync for FilteredJoinProbeHandle {}
+
 impl Drop for HashJoinHandle {
     fn drop(&mut self) {
         unsafe { cudf_sys::cudf_hash_join_destroy(self.handle.as_ptr()) };
@@ -2484,6 +2501,12 @@ impl Drop for HashJoinHandle {
 impl Drop for FilteredJoinHandle {
     fn drop(&mut self) {
         unsafe { cudf_sys::cudf_filtered_join_destroy(self.handle.as_ptr()) };
+    }
+}
+
+impl Drop for FilteredJoinProbeHandle {
+    fn drop(&mut self) {
+        unsafe { cudf_sys::cudf_filtered_join_probe_destroy(self.handle.as_ptr()) };
     }
 }
 
@@ -2517,6 +2540,20 @@ pub struct FilteredJoin {
     options: FilteredJoinOptions,
 }
 
+/// Retained filtered-join probe state for equality left semi/anti probes.
+///
+/// `FilteredJoinProbeState` owns the device-side membership map produced by a
+/// single filtered-join hash-table probe. It exposes the exact selected row
+/// count before the gather map is allocated, then materializes the gather map
+/// from retained state without probing the hash table again.
+pub struct FilteredJoinProbeState {
+    handle: FilteredJoinProbeHandle,
+    join: FilteredJoin,
+    output_domain: Arc<ExecutionDomain>,
+    output_size: usize,
+    semi_join: bool,
+}
+
 impl fmt::Debug for HashJoin {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("HashJoin")
@@ -2531,6 +2568,16 @@ impl fmt::Debug for FilteredJoin {
         f.debug_struct("FilteredJoin")
             .field("options", &self.options)
             .field("placement", &self.build.execution_domain().placement())
+            .finish()
+    }
+}
+
+impl fmt::Debug for FilteredJoinProbeState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("FilteredJoinProbeState")
+            .field("join_type", &if self.semi_join { "left_semi" } else { "left_anti" })
+            .field("output_size", &self.output_size)
+            .field("placement", &self.output_domain.placement())
             .finish()
     }
 }
@@ -3292,29 +3339,82 @@ impl FilteredJoin {
         Ok(out)
     }
 
+    /// Begin a retained left-semi probe.
+    ///
+    /// This probes the filtered hash table once and returns a state object
+    /// that exposes the exact output size before the gather map is allocated.
+    pub fn begin_left_semi_probe(&self, probe_keys: &TableView<'_>) -> Result<FilteredJoinProbeState> {
+        let ctx = ExecutionOverrides::new();
+        self.begin_probe_with_context(probe_keys, true, &ctx, "filtered_join::begin_left_semi_probe")
+    }
+
+    /// Begin a retained left-semi probe using a borrowed execution override.
+    pub fn begin_left_semi_probe_in(
+        &self,
+        probe_keys: &TableView<'_>,
+        ctx: &ExecutionOverrides<'_>,
+    ) -> Result<FilteredJoinProbeState> {
+        self.begin_probe_with_context(probe_keys, true, ctx, "filtered_join::begin_left_semi_probe_in")
+    }
+
+    /// Begin a retained left-anti probe.
+    pub fn begin_left_anti_probe(&self, probe_keys: &TableView<'_>) -> Result<FilteredJoinProbeState> {
+        let ctx = ExecutionOverrides::new();
+        self.begin_probe_with_context(probe_keys, false, &ctx, "filtered_join::begin_left_anti_probe")
+    }
+
+    /// Begin a retained left-anti probe using a borrowed execution override.
+    pub fn begin_left_anti_probe_in(
+        &self,
+        probe_keys: &TableView<'_>,
+        ctx: &ExecutionOverrides<'_>,
+    ) -> Result<FilteredJoinProbeState> {
+        self.begin_probe_with_context(probe_keys, false, ctx, "filtered_join::begin_left_anti_probe_in")
+    }
+
     /// Return the exact output row count for a left semi probe.
+    ///
+    /// This legacy sizing API does not retain probe membership. Bounded
+    /// callers that need to reserve state and then materialize indices from
+    /// the same probe must use [`Self::begin_left_semi_probe`] instead.
     pub fn left_semi_join_size(&self, probe_keys: &TableView<'_>) -> Result<usize> {
         let ctx = ExecutionOverrides::new();
         self.probe_size_with_context(probe_keys, true, &ctx, "filtered_join::left_semi_join_size")
     }
 
     /// Return the exact output row count for a left semi probe using a borrowed execution override.
+    ///
+    /// This legacy sizing API does not retain probe membership. Bounded
+    /// callers that need to reserve state and then materialize indices from
+    /// the same probe must use [`Self::begin_left_semi_probe_in`] instead.
     pub fn left_semi_join_size_in(&self, probe_keys: &TableView<'_>, ctx: &ExecutionOverrides<'_>) -> Result<usize> {
         self.probe_size_with_context(probe_keys, true, ctx, "filtered_join::left_semi_join_size_in")
     }
 
     /// Return the exact output row count for a left anti probe.
+    ///
+    /// This legacy sizing API does not retain probe membership. Bounded
+    /// callers that need to reserve state and then materialize indices from
+    /// the same probe must use [`Self::begin_left_anti_probe`] instead.
     pub fn left_anti_join_size(&self, probe_keys: &TableView<'_>) -> Result<usize> {
         let ctx = ExecutionOverrides::new();
         self.probe_size_with_context(probe_keys, false, &ctx, "filtered_join::left_anti_join_size")
     }
 
     /// Return the exact output row count for a left anti probe using a borrowed execution override.
+    ///
+    /// This legacy sizing API does not retain probe membership. Bounded
+    /// callers that need to reserve state and then materialize indices from
+    /// the same probe must use [`Self::begin_left_anti_probe_in`] instead.
     pub fn left_anti_join_size_in(&self, probe_keys: &TableView<'_>, ctx: &ExecutionOverrides<'_>) -> Result<usize> {
         self.probe_size_with_context(probe_keys, false, ctx, "filtered_join::left_anti_join_size_in")
     }
 
     /// Probe with left semi semantics using an exact caller-supplied output row count.
+    ///
+    /// The supplied size is a validation hint, not a retained-probe bounded
+    /// memory contract. Bounded callers must use [`Self::begin_left_semi_probe`]
+    /// and materialize indices from the returned probe state.
     pub fn left_semi_join_indices_with_output_size(
         &self,
         probe_keys: &TableView<'_>,
@@ -3332,6 +3432,11 @@ impl FilteredJoin {
 
     /// Probe with left semi semantics using a borrowed execution override and
     /// an exact caller-supplied output row count.
+    ///
+    /// The supplied size is a validation hint, not a retained-probe bounded
+    /// memory contract. Bounded callers must use
+    /// [`Self::begin_left_semi_probe_in`] and materialize indices from the
+    /// returned probe state.
     pub fn left_semi_join_indices_with_output_size_in(
         &self,
         probe_keys: &TableView<'_>,
@@ -3348,6 +3453,10 @@ impl FilteredJoin {
     }
 
     /// Probe with left anti semantics using an exact caller-supplied output row count.
+    ///
+    /// The supplied size is a validation hint, not a retained-probe bounded
+    /// memory contract. Bounded callers must use [`Self::begin_left_anti_probe`]
+    /// and materialize indices from the returned probe state.
     pub fn left_anti_join_indices_with_output_size(
         &self,
         probe_keys: &TableView<'_>,
@@ -3365,6 +3474,11 @@ impl FilteredJoin {
 
     /// Probe with left anti semantics using a borrowed execution override and
     /// an exact caller-supplied output row count.
+    ///
+    /// The supplied size is a validation hint, not a retained-probe bounded
+    /// memory contract. Bounded callers must use
+    /// [`Self::begin_left_anti_probe_in`] and materialize indices from the
+    /// returned probe state.
     pub fn left_anti_join_indices_with_output_size_in(
         &self,
         probe_keys: &TableView<'_>,
@@ -3468,6 +3582,146 @@ impl FilteredJoin {
             ],
         )?;
 
+        Ok(SingleSideJoinIndices {
+            indices: unsafe { Column::from_raw_with_domain(out, Arc::clone(execution.output_domain())) }?,
+        })
+    }
+
+    fn begin_probe_with_context(
+        &self,
+        probe_keys: &TableView<'_>,
+        semi_join: bool,
+        ctx: &ExecutionOverrides<'_>,
+        operation: &'static str,
+    ) -> Result<FilteredJoinProbeState> {
+        let execution =
+            ResolvedExecution::many(probe_keys.execution_domain(), [self.build.execution_domain()], ctx, operation)?;
+        let mut handle = ptr::null_mut();
+        let status = if semi_join {
+            unsafe {
+                cudf_sys::cudf_filtered_join_begin_left_semi_probe_ex(
+                    self.handle.handle.as_ptr(),
+                    probe_keys.raw_handle(),
+                    &mut handle,
+                    execution.exec_options(),
+                )
+            }
+        } else {
+            unsafe {
+                cudf_sys::cudf_filtered_join_begin_left_anti_probe_ex(
+                    self.handle.handle.as_ptr(),
+                    probe_keys.raw_handle(),
+                    &mut handle,
+                    execution.exec_options(),
+                )
+            }
+        };
+
+        error::check_status_in_with_details(
+            status,
+            operation,
+            [
+                ("join_type", if semi_join { "left_semi" } else { "left_anti" }.to_string()),
+                ("null_equality", format!("{:?}", self.options.null_eq()).to_lowercase()),
+                ("execution_context_provided", true.to_string()),
+                ("reservation_contract", "filtered_join_retained_probe_state".to_string()),
+            ],
+        )?;
+        let handle = FilteredJoinProbeHandle {
+            handle: error::require_non_null(handle, operation, "filtered join probe state")?,
+            _domain: Arc::clone(execution.output_domain()),
+        };
+        let mut output_size = 0usize;
+        error::check_status_in(
+            unsafe { cudf_sys::cudf_filtered_join_probe_output_size(handle.handle.as_ptr(), &mut output_size) },
+            operation,
+        )?;
+        Ok(FilteredJoinProbeState {
+            handle,
+            join: self.clone(),
+            output_domain: Arc::clone(execution.output_domain()),
+            output_size,
+            semi_join,
+        })
+    }
+}
+
+impl FilteredJoinProbeState {
+    /// Returns the reusable filtered join that produced this probe state.
+    pub fn join(&self) -> &FilteredJoin {
+        &self.join
+    }
+
+    /// Returns the exact selected row count for this probe.
+    pub fn output_size(&self) -> usize {
+        self.output_size
+    }
+
+    /// Returns bytes retained by this probe state.
+    pub fn device_allocated_size_bytes(&self) -> Result<usize> {
+        let mut out = 0usize;
+        error::check_status_in(
+            unsafe { cudf_sys::cudf_filtered_join_probe_device_allocated_size(self.handle.handle.as_ptr(), &mut out) },
+            "filtered_join_probe_state::device_allocated_size_bytes",
+        )?;
+        Ok(out)
+    }
+
+    /// Return exact bytes that must be reserved for this probe state's output
+    /// gather map.
+    pub fn gather_map_reservation_size_bytes(&self) -> Result<usize> {
+        self.output_size.checked_mul(std::mem::size_of::<i32>()).ok_or_else(|| {
+            Error::new_with(
+                ErrorCode::ValueOutOfRange,
+                "filtered_join_probe_state::gather_map_reservation_size_bytes",
+                "filtered join gather-map reservation size overflowed usize",
+            )
+            .with_detail("reason", "size_overflowed_usize")
+            .with_detail("output_rows", self.output_size.to_string())
+            .with_detail("index_size_bytes", std::mem::size_of::<i32>().to_string())
+        })
+    }
+
+    /// Materialize selected probe indices from retained membership state.
+    pub fn materialize_indices(self) -> Result<SingleSideJoinIndices> {
+        let mut out = ptr::null_mut();
+        error::check_status_in_with_details(
+            unsafe { cudf_sys::cudf_filtered_join_probe_materialize_indices(self.handle.handle.as_ptr(), &mut out) },
+            "filtered_join_probe_state::materialize_indices",
+            [
+                ("join_type", if self.semi_join { "left_semi" } else { "left_anti" }.to_string()),
+                ("output_size", self.output_size.to_string()),
+                ("reservation_contract", "filtered_join_retained_probe_state_materialize_indices".to_string()),
+            ],
+        )?;
+        Ok(SingleSideJoinIndices {
+            indices: unsafe { Column::from_raw_with_domain(out, Arc::clone(&self.output_domain)) }?,
+        })
+    }
+
+    /// Materialize selected probe indices from retained membership state using
+    /// a borrowed execution override.
+    pub fn materialize_indices_in(self, ctx: &ExecutionOverrides<'_>) -> Result<SingleSideJoinIndices> {
+        let operation = "filtered_join_probe_state::materialize_indices_in";
+        let execution =
+            ResolvedExecution::many(&self.output_domain, [self.join.build.execution_domain()], ctx, operation)?;
+        let mut out = ptr::null_mut();
+        error::check_status_in_with_details(
+            unsafe {
+                cudf_sys::cudf_filtered_join_probe_materialize_indices_ex(
+                    self.handle.handle.as_ptr(),
+                    &mut out,
+                    execution.exec_options(),
+                )
+            },
+            operation,
+            [
+                ("join_type", if self.semi_join { "left_semi" } else { "left_anti" }.to_string()),
+                ("output_size", self.output_size.to_string()),
+                ("execution_context_provided", true.to_string()),
+                ("reservation_contract", "filtered_join_retained_probe_state_materialize_indices".to_string()),
+            ],
+        )?;
         Ok(SingleSideJoinIndices {
             indices: unsafe { Column::from_raw_with_domain(out, Arc::clone(execution.output_domain())) }?,
         })

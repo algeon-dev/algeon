@@ -405,6 +405,7 @@ pub type cudf_scalar_handle = *mut c_void;
 pub type cudf_ast_expression_handle = *mut c_void;
 pub type cudf_distinct_hash_join_handle = *mut c_void;
 pub type cudf_filtered_join_handle = *mut c_void;
+pub type cudf_filtered_join_probe_handle = *mut c_void;
 pub type cudf_hash_join_handle = *mut c_void;
 pub type cudf_device_buffer_handle = *mut c_void;
 pub type cudf_stream_handle = *mut c_void;

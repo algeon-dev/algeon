@@ -4,7 +4,7 @@ use crate::{
         types::NullEquality,
     },
     frame::{dataframe::DataFrame, series::Series},
-    ops::join::{FilteredJoin, FilteredJoinOptions, HashJoin, HashJoinOptions, NullableJoin},
+    ops::join::{FilteredJoin, FilteredJoinOptions, FilteredJoinProbeState, HashJoin, HashJoinOptions, NullableJoin},
     runtime::ExecutionPlacement,
 };
 
@@ -741,6 +741,16 @@ pub struct DataFrameFilteredJoin {
     pub(crate) options: DataFrameFilteredJoinOptions,
 }
 
+/// Retained DataFrame-level filtered-join probe state.
+///
+/// This state owns the device-side membership result of probing a reusable
+/// filtered join and can materialize a single gather map for the probe
+/// DataFrame after bounded callers reserve the exact output size.
+#[derive(Debug)]
+pub struct DataFrameFilteredJoinProbeState {
+    pub(crate) state: FilteredJoinProbeState,
+}
+
 impl DataFrameHashJoin {
     /// Borrow the retained build DataFrame.
     pub fn build(&self) -> &DataFrame {
@@ -811,5 +821,48 @@ impl DataFrameFilteredJoin {
     pub fn probe_gather_map_reservation_size_bytes(&self, output_rows: usize) -> Result<usize> {
         DataFrameJoinIndices::reservation_size_bytes_for_len(output_rows)
             .map_err(|error| error.reanchor("dataframe::filtered_join::probe_gather_map_reservation_size_bytes"))
+    }
+}
+
+impl DataFrameFilteredJoinProbeState {
+    /// Returns the exact selected row count for this probe.
+    pub fn output_size(&self) -> usize {
+        self.state.output_size()
+    }
+
+    /// Returns bytes retained by this probe state.
+    pub fn device_allocated_size_bytes(&self) -> crate::core::error::Result<usize> {
+        self.state
+            .device_allocated_size_bytes()
+            .map_err(|error| error.reanchor("dataframe::filtered_join_probe_state::device_allocated_size_bytes"))
+    }
+
+    /// Return exact bytes that must be reserved for this probe state's output
+    /// gather map.
+    pub fn probe_gather_map_reservation_size_bytes(&self) -> Result<usize> {
+        DataFrameJoinIndices::reservation_size_bytes_for_len(self.output_size()).map_err(|error| {
+            error.reanchor("dataframe::filtered_join_probe_state::probe_gather_map_reservation_size_bytes")
+        })
+    }
+
+    /// Materialize selected probe indices from retained probe state.
+    pub fn materialize_indices(self) -> crate::core::error::Result<DataFrameJoinIndices> {
+        let raw = self
+            .state
+            .materialize_indices()
+            .map_err(|error| error.reanchor("dataframe::filtered_join_probe_state::materialize_indices"))?;
+        Ok(DataFrameJoinIndices::new(Series::from_column(raw.indices)?))
+    }
+
+    /// Materialize selected probe indices using a borrowed execution override.
+    pub fn materialize_indices_in(
+        self,
+        ctx: &crate::runtime::execution_context::ExecutionOverrides<'_>,
+    ) -> crate::core::error::Result<DataFrameJoinIndices> {
+        let raw = self
+            .state
+            .materialize_indices_in(ctx)
+            .map_err(|error| error.reanchor("dataframe::filtered_join_probe_state::materialize_indices"))?;
+        Ok(DataFrameJoinIndices::new(Series::from_column(raw.indices)?))
     }
 }

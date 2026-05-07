@@ -38,9 +38,10 @@ pub use io::{
     ParquetWriteOptions,
 };
 pub use join::{
-    DataFrameCrossJoinOptions, DataFrameFilteredJoin, DataFrameFilteredJoinOptions, DataFrameHashJoin,
-    DataFrameHashJoinMaterialized, DataFrameHashJoinOptions, DataFrameHashJoinPairIndices, DataFrameJoinIndices,
-    DataFrameJoinOptions, DataFrameJoinPairIndices, DataFrameMixedJoinOptions, DataFramePredicateJoinOptions,
+    DataFrameCrossJoinOptions, DataFrameFilteredJoin, DataFrameFilteredJoinOptions, DataFrameFilteredJoinProbeState,
+    DataFrameHashJoin, DataFrameHashJoinMaterialized, DataFrameHashJoinOptions, DataFrameHashJoinPairIndices,
+    DataFrameJoinIndices, DataFrameJoinOptions, DataFrameJoinPairIndices, DataFrameMixedJoinOptions,
+    DataFramePredicateJoinOptions,
 };
 pub use owned::{DataFrame, DataFrameJoinSides};
 pub(crate) use owned::{derive_frame_domain_from_columns, resolve_frame_domain_from_authoritative_source};
