@@ -4,10 +4,11 @@ use arrow::datatypes::SchemaRef;
 
 use crate::{
     bounded_support::{
-        BoundedJoinPlanSupport, analyze_bounded_join_pipeline, analyze_bounded_join_plan_support,
-        bounded_join_unsupported_shape_facts, bounded_root_conditional_join_compatible,
-        bounded_root_filtered_join_compatible, bounded_root_hash_join_compatible, bounded_root_join_compatible,
-        bounded_root_mixed_join_compatible, bounded_root_projected_cross_join_compatible,
+        BoundedJoinPlanSupport, analyze_bounded_conditional_join_input_subplan_pipeline, analyze_bounded_join_pipeline,
+        analyze_bounded_join_plan_support, bounded_join_unsupported_shape_facts,
+        bounded_root_conditional_join_compatible, bounded_root_filtered_join_compatible,
+        bounded_root_hash_join_compatible, bounded_root_join_compatible, bounded_root_mixed_join_compatible,
+        bounded_root_projected_cross_join_compatible,
     },
     expr::{AggregateSpec, ColumnRef, Expr, LimitSpec, SortExpr, SortSpec},
     runtime::ExecutionBoundaryPolicy,
@@ -67,6 +68,10 @@ impl QueryPlan {
         analyze_bounded_join_pipeline(self).is_ok()
     }
 
+    pub fn has_bounded_executable_conditional_join_input_subplan_pipeline(&self) -> bool {
+        analyze_bounded_conditional_join_input_subplan_pipeline(self).is_ok()
+    }
+
     pub fn has_bounded_executable_multi_join_pipeline(&self) -> bool {
         crate::bounded_support::analyze_bounded_multi_join_pipeline(self).is_ok()
     }
@@ -78,6 +83,7 @@ impl QueryPlan {
         if self.contains_join()
             && !self.has_bounded_executable_root_join()
             && !self.has_bounded_executable_join_pipeline()
+            && !self.has_bounded_executable_conditional_join_input_subplan_pipeline()
             && !self.has_bounded_executable_multi_join_pipeline()
         {
             Some(bounded_join_unsupported_shape_facts(self, boundary_policy))

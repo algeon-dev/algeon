@@ -456,13 +456,13 @@ async fn native_runtime_tpch_q17_tiny_decimal_residual_matches_cpu() {
 }
 
 #[tokio::test]
-async fn native_runtime_tpch_q22_tiny_nested_loop_scalar_subquery_matches_cpu() {
+async fn native_runtime_tpch_q22_tiny_bounded_scalar_subquery_matches_cpu() {
     let dir = unique_temp_dir("datafusion-cudf-native-runtime-tpch-q22-tiny");
     write_tiny_tpch_parquet_dataset(&dir).unwrap();
     let q22 = TPCH_QUERIES.iter().find(|query| query.id == "q22").expect("TPC-H Q22 query must exist");
     let cpu_batches = cpu_tpch_sql_output(&dir, q22.sql).await;
 
-    let native_plan = native_datafusion_tpch_sql_plan(&dir, q22.sql, unbounded_native_datafusion_config()).await;
+    let native_plan = native_datafusion_tpch_sql_plan(&dir, q22.sql, native_datafusion_config()).await;
     assert!(
         displayable(native_plan.as_ref()).indent(false).to_string().contains("NativeCudfExec"),
         "TPC-H Q22 should be replaced by NativeCudfExec"

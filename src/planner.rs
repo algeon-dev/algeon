@@ -444,22 +444,12 @@ fn native_execution_boundary_rejection_facts(
     plan: &cudf_query_engine::QueryPlan,
     execution_config: &NativeCudfExecutionConfig,
 ) -> Option<BTreeMap<String, String>> {
-    if execution_config.memory_control_policy().is_bounded()
-        && plan.contains_join()
-        && !plan.has_bounded_executable_root_join()
-        && !plan.has_bounded_executable_join_pipeline()
-        && !plan.has_bounded_executable_multi_join_pipeline()
-    {
-        let facts: BTreeMap<String, String> = plan
-            .bounded_join_unsupported_shape_facts(execution_config.boundary_policy())
-            .expect("bounded join unsupported precondition must produce facts")
-            .into_iter()
-            .map(|(key, value)| (key.to_string(), value))
-            .collect();
-        Some(facts)
-    } else {
-        None
-    }
+    execution_config
+        .memory_control_policy()
+        .is_bounded()
+        .then(|| plan.bounded_join_unsupported_shape_facts(execution_config.boundary_policy()))
+        .flatten()
+        .map(|facts| facts.into_iter().map(|(key, value)| (key.to_string(), value)).collect())
 }
 
 fn native_execution_boundary_modeled_facts(
