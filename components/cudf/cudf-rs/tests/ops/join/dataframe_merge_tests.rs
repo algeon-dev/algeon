@@ -1,16 +1,16 @@
 //! Tests for the high-level `DataFrame::merge` API and `MergeOptions` / `JoinType`.
 use cudf::{
-    DataFrame, DataFrameFilteredJoinOptions, DataFrameHashJoinOptions, DataFrameHashJoinPairIndices,
-    DataFrameJoinIndices, DataFrameJoinOptions, DataFrameJoinPairIndices, DataFrameMixedJoinOptions, ErrorCode,
-    ErrorKind, ExecutionOverrides, JoinType, MergeOptions, frame::dataframe::InfoDetail, ops::ast::AstExpression,
-    testing::prelude::*,
+    DataFrame, DataFrameCrossJoinOptions, DataFrameFilteredJoinOptions, DataFrameHashJoinOptions,
+    DataFrameHashJoinPairIndices, DataFrameJoinIndices, DataFrameJoinOptions, DataFrameJoinPairIndices,
+    DataFrameMixedJoinOptions, ErrorCode, ErrorKind, ExecutionOverrides, JoinType, MergeOptions,
+    frame::dataframe::InfoDetail, ops::ast::AstExpression, testing::prelude::*,
 };
 
 use crate::common::{
     assert_duplicate_name_error, assert_missing_column_error, column_from_slice, column_from_slice_nullable,
-    dependency_wait_call_count_for_stream, error_context_value, last_exec_mr_value, last_exec_stream_value,
-    last_sync_stream_value, reset_dependency_observation, reset_exec_observation, reset_sync_observation,
-    sample_runtime,
+    dependency_wait_call_count, dependency_wait_call_count_for_stream, error_context_value, last_exec_mr_value,
+    last_exec_stream_value, last_sync_stream_value, reset_dependency_observation, reset_exec_observation,
+    reset_sync_observation, sample_runtime,
 };
 
 // ---------------------------------------------------------------------------
@@ -61,6 +61,24 @@ fn assert_merge_validation_error(err: &cudf::Error, operation: &str, reason: &st
     assert_eq!(err.operation(), operation);
     assert_eq!(error_context_value(err, "reason").as_deref(), Some(reason));
     assert_eq!(error_context_value(err, "remedy").as_deref(), Some(remedy));
+}
+
+fn cross_left_df(rt: &cudf::Runtime) -> DataFrame {
+    DataFrame::from_series([
+        ("id", rt.series(&[1i32, 2]).unwrap()),
+        ("left_val", rt.series(&[10i32, 20]).unwrap()),
+        ("unused_left", rt.series(&[1000i32, 2000]).unwrap()),
+    ])
+    .unwrap()
+}
+
+fn cross_right_df(rt: &cudf::Runtime) -> DataFrame {
+    DataFrame::from_series([
+        ("id", rt.series(&[100i32, 200, 300]).unwrap()),
+        ("right_val", rt.series(&[7i32, 8, 9]).unwrap()),
+        ("unused_right", rt.series(&[70i32, 80, 90]).unwrap()),
+    ])
+    .unwrap()
 }
 
 fn assert_single_side_indices_reservation_matches_allocated(indices: &DataFrameJoinIndices) {
@@ -191,6 +209,202 @@ fn test_dataframe_join_indices_materialization_reservation_is_zero_for_empty_gat
     assert!(indices.is_empty());
     assert_eq!(reservation, 0);
     assert_eq!(device_allocated_bytes(&materialized), 0);
+}
+
+#[test]
+fn test_projected_cross_join_plan_reports_size_and_materializes_both_sides() {
+    let rt = sample_runtime();
+    let left = cross_left_df(&rt);
+    let right = cross_right_df(&rt);
+
+    let plan = left
+        .projected_cross_join_plan(
+            &right,
+            DataFrameCrossJoinOptions::new()
+                .left_projection([("id", "left_id"), ("left_val", "left_val")])
+                .right_projection([("id", "right_id"), ("right_val", "right_val")]),
+        )
+        .unwrap();
+
+    assert_eq!(plan.output_rows(), 6);
+    assert_eq!(plan.output_column_names(), ["left_id", "left_val", "right_id", "right_val"]);
+    let reservation = plan.reservation_size_bytes().unwrap();
+    let materialized = plan.materialize().unwrap();
+
+    assert_eq!(materialized.num_rows(), 6);
+    assert_eq!(materialized.column_names(), vec!["left_id", "left_val", "right_id", "right_val"]);
+    assert_eq!(i32_column(&materialized, "left_id"), vec![1, 1, 1, 2, 2, 2]);
+    assert_eq!(i32_column(&materialized, "left_val"), vec![10, 10, 10, 20, 20, 20]);
+    assert_eq!(i32_column(&materialized, "right_id"), vec![100, 200, 300, 100, 200, 300]);
+    assert_eq!(i32_column(&materialized, "right_val"), vec![7, 8, 9, 7, 8, 9]);
+    assert_eq!(reservation, device_allocated_bytes(&materialized));
+    assert!(reservation > 0);
+}
+
+#[test]
+fn test_projected_cross_join_plan_supports_left_only_projection() {
+    let rt = sample_runtime();
+    let left = cross_left_df(&rt);
+    let right = cross_right_df(&rt);
+
+    let plan = left
+        .projected_cross_join_plan(
+            &right,
+            DataFrameCrossJoinOptions::new().left_projection([("left_val", "left_only")]),
+        )
+        .unwrap();
+    let reservation = plan.reservation_size_bytes().unwrap();
+    let materialized = plan.materialize().unwrap();
+
+    assert_eq!(plan.output_rows(), 6);
+    assert_eq!(materialized.column_names(), vec!["left_only"]);
+    assert_eq!(i32_column(&materialized, "left_only"), vec![10, 10, 10, 20, 20, 20]);
+    assert_eq!(reservation, device_allocated_bytes(&materialized));
+}
+
+#[test]
+fn test_projected_cross_join_plan_supports_right_only_projection() {
+    let rt = sample_runtime();
+    let left = cross_left_df(&rt);
+    let right = cross_right_df(&rt);
+
+    let plan = left
+        .projected_cross_join_plan(
+            &right,
+            DataFrameCrossJoinOptions::new().right_projection([("right_val", "right_only")]),
+        )
+        .unwrap();
+    let reservation = plan.reservation_size_bytes().unwrap();
+    let materialized = plan.materialize().unwrap();
+
+    assert_eq!(plan.output_rows(), 6);
+    assert_eq!(materialized.column_names(), vec!["right_only"]);
+    assert_eq!(i32_column(&materialized, "right_only"), vec![7, 8, 9, 7, 8, 9]);
+    assert_eq!(reservation, device_allocated_bytes(&materialized));
+}
+
+#[test]
+fn test_legacy_projected_cross_join_supports_one_sided_projection() {
+    let rt = sample_runtime();
+    let left = cross_left_df(&rt);
+    let right = cross_right_df(&rt);
+
+    let left_only = left
+        .cross_join_projected(&right, DataFrameCrossJoinOptions::new().left_projection([("left_val", "left_only")]))
+        .unwrap();
+    let right_only = left
+        .cross_join_projected(&right, DataFrameCrossJoinOptions::new().right_projection([("right_val", "right_only")]))
+        .unwrap();
+
+    assert_eq!(left_only.column_names(), vec!["left_only"]);
+    assert_eq!(i32_column(&left_only, "left_only"), vec![10, 10, 10, 20, 20, 20]);
+    assert_eq!(right_only.column_names(), vec!["right_only"]);
+    assert_eq!(i32_column(&right_only, "right_only"), vec![7, 8, 9, 7, 8, 9]);
+}
+
+#[test]
+fn test_projected_cross_join_plan_reservation_and_materialize_use_execution_override() {
+    let data_rt = sample_runtime();
+    let exec_rt = sample_runtime();
+    let left = cross_left_df(&data_rt);
+    let right = cross_right_df(&data_rt);
+    let ctx = ExecutionOverrides::new().with_stream(exec_rt.stream()).with_memory_resource(exec_rt.memory_resource());
+    let plan = left
+        .projected_cross_join_plan(
+            &right,
+            DataFrameCrossJoinOptions::new()
+                .left_projection([("left_val", "left_val")])
+                .right_projection([("right_val", "right_val")]),
+        )
+        .unwrap();
+
+    reset_exec_observation();
+    let reservation = plan.reservation_size_bytes_in(&ctx).unwrap();
+    assert_eq!(last_exec_stream_value(), exec_rt.stream().testing_raw_handle_value());
+    assert_eq!(last_exec_mr_value(), exec_rt.memory_resource().testing_raw_handle_value());
+
+    reset_exec_observation();
+    let materialized = plan.materialize_in(&ctx).unwrap();
+    assert_eq!(last_exec_stream_value(), exec_rt.stream().testing_raw_handle_value());
+    assert_eq!(last_exec_mr_value(), exec_rt.memory_resource().testing_raw_handle_value());
+    assert_eq!(materialized.testing_execution_domain_stream_value(), exec_rt.stream().testing_raw_handle_value());
+    assert_eq!(materialized.testing_execution_domain_mr_value(), exec_rt.memory_resource().testing_raw_handle_value());
+    assert_eq!(reservation, device_allocated_bytes(&materialized));
+}
+
+#[test]
+fn test_projected_cross_join_one_sided_projection_does_not_order_unselected_side() {
+    let _event_observation = crate::common::lock_event_observation();
+    let left_rt = sample_runtime();
+    let right_rt = sample_runtime();
+    let left = cross_left_df(&left_rt);
+    let right = cross_right_df(&right_rt);
+    let plan = left
+        .projected_cross_join_plan(
+            &right,
+            DataFrameCrossJoinOptions::new().left_projection([("left_val", "left_only")]),
+        )
+        .unwrap();
+
+    reset_dependency_observation();
+    let materialized = plan.materialize().unwrap();
+
+    assert_eq!(materialized.testing_execution_domain_stream_value(), left.testing_execution_domain_stream_value());
+    assert_eq!(dependency_wait_call_count(), 0);
+}
+
+#[test]
+fn test_projected_cross_join_plan_rejects_duplicate_output_names_at_creation() {
+    let rt = sample_runtime();
+    let left = cross_left_df(&rt);
+    let right = cross_right_df(&rt);
+
+    let err = left
+        .projected_cross_join_plan(
+            &right,
+            DataFrameCrossJoinOptions::new().left_projection([("id", "dup")]).right_projection([("id", "dup")]),
+        )
+        .unwrap_err();
+
+    assert_eq!(err.kind(), ErrorKind::InvalidInput);
+    assert_eq!(err.code(), ErrorCode::DuplicateColumnName);
+    assert_eq!(err.operation(), "dataframe::projected_cross_join_plan");
+}
+
+#[test]
+fn test_projected_cross_join_plan_rejects_zero_output_columns_explicitly() {
+    let rt = sample_runtime();
+    let left = cross_left_df(&rt);
+    let right = cross_right_df(&rt);
+
+    let err = left.projected_cross_join_plan(&right, DataFrameCrossJoinOptions::new()).unwrap_err();
+
+    assert_merge_validation_error(
+        &err,
+        "dataframe::projected_cross_join_plan",
+        "empty_cross_join_projection",
+        "select at least one left or right output column",
+    );
+}
+
+#[test]
+fn test_projected_cross_join_plan_rejects_row_count_overflow_before_execution() {
+    let err = cudf::testing::join::trigger_projected_cross_join_output_row_overflow_for_test().unwrap_err();
+
+    assert_eq!(err.kind(), ErrorKind::Unsupported);
+    assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
+    assert_eq!(err.operation(), "dataframe::projected_cross_join_plan");
+    assert_eq!(error_context_value(&err, "resource").as_deref(), Some("output_rows"));
+}
+
+#[test]
+fn test_projected_cross_join_plan_rejects_input_row_count_above_cudf_limit_even_with_zero_output() {
+    let err = cudf::testing::join::trigger_projected_cross_join_input_row_limit_for_test().unwrap_err();
+
+    assert_eq!(err.kind(), ErrorKind::Unsupported);
+    assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
+    assert_eq!(err.operation(), "dataframe::projected_cross_join_plan");
+    assert_eq!(error_context_value(&err, "resource").as_deref(), Some("left_rows"));
 }
 
 #[test]

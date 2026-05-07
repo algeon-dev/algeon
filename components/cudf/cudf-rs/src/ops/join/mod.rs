@@ -2832,6 +2832,16 @@ fn checked_cross_join_output_rows(
 ) -> Result<usize> {
     let left_rows = left.num_rows().map_err(|e| e.reanchor_if_needed(operation))?;
     let right_rows = right.num_rows().map_err(|e| e.reanchor_if_needed(operation))?;
+    checked_cross_join_output_rows_for_counts(left_rows, right_rows, operation)
+}
+
+pub(crate) fn checked_cross_join_output_rows_for_counts(
+    left_rows: usize,
+    right_rows: usize,
+    operation: &'static str,
+) -> Result<usize> {
+    checked_cross_join_side_rows(left_rows, "left_rows", operation)?;
+    checked_cross_join_side_rows(right_rows, "right_rows", operation)?;
     let output_rows = left_rows.checked_mul(right_rows).ok_or_else(|| {
         error::limit_validation_error(
             operation,
@@ -2855,6 +2865,110 @@ fn checked_cross_join_output_rows(
         ));
     }
     Ok(output_rows)
+}
+
+fn checked_cross_join_side_rows(rows: usize, value_key: &'static str, operation: &'static str) -> Result<()> {
+    if rows > i32::MAX as usize {
+        return Err(error::limit_validation_error(
+            operation,
+            "cross join input row count exceeds i32::MAX",
+            value_key,
+            value_key,
+            "i32::MAX",
+            rows,
+            "reduce left or right row count before cross joining",
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn projected_cross_join_impl(
+    left_selected: Option<&TableView<'_>>,
+    right_selected: Option<&TableView<'_>>,
+    left_rows: usize,
+    right_rows: usize,
+    output_domain: &Arc<ExecutionDomain>,
+    exec_options: &cudf_sys::cudf_exec_options_t,
+    operation: &'static str,
+) -> Result<Table> {
+    let output_rows = checked_cross_join_output_rows_for_counts(left_rows, right_rows, operation)?;
+    if left_selected.is_none() && right_selected.is_none() {
+        return Err(Error::new_with(
+            ErrorCode::UnsupportedOperation,
+            operation,
+            "projected cross join requires at least one selected output column",
+        )
+        .with_detail("reason", "empty_cross_join_projection")
+        .with_detail("remedy", "select at least one left or right output column"));
+    }
+
+    let mut out = ptr::null_mut();
+    let status = unsafe {
+        cudf_sys::cudf_projected_cross_join_ex(
+            left_selected.map_or(ptr::null_mut(), TableView::raw_handle),
+            right_selected.map_or(ptr::null_mut(), TableView::raw_handle),
+            left_rows,
+            right_rows,
+            &mut out,
+            exec_options,
+        )
+    };
+    error::check_status_in_with_details(
+        status,
+        operation,
+        [
+            ("output_rows", output_rows.to_string()),
+            ("left_projected_columns", left_selected.is_some().to_string()),
+            ("right_projected_columns", right_selected.is_some().to_string()),
+            ("execution_context_provided", true.to_string()),
+        ],
+    )?;
+    unsafe { Table::from_raw_with_domain(out, Arc::clone(output_domain)) }
+}
+
+pub(crate) fn projected_cross_join_device_allocated_size_impl(
+    left_selected: Option<&TableView<'_>>,
+    right_selected: Option<&TableView<'_>>,
+    left_rows: usize,
+    right_rows: usize,
+    exec_options: &cudf_sys::cudf_exec_options_t,
+    operation: &'static str,
+    reservation_contract: &'static str,
+) -> Result<usize> {
+    let output_rows = checked_cross_join_output_rows_for_counts(left_rows, right_rows, operation)?;
+    if left_selected.is_none() && right_selected.is_none() {
+        return Err(Error::new_with(
+            ErrorCode::UnsupportedOperation,
+            operation,
+            "projected cross join requires at least one selected output column",
+        )
+        .with_detail("reason", "empty_cross_join_projection")
+        .with_detail("remedy", "select at least one left or right output column"));
+    }
+
+    let mut out = 0usize;
+    let status = unsafe {
+        cudf_sys::cudf_projected_cross_join_device_allocated_size_ex(
+            left_selected.map_or(ptr::null_mut(), TableView::raw_handle),
+            right_selected.map_or(ptr::null_mut(), TableView::raw_handle),
+            left_rows,
+            right_rows,
+            &mut out,
+            exec_options,
+        )
+    };
+    error::check_status_in_with_details(
+        status,
+        operation,
+        [
+            ("output_rows", output_rows.to_string()),
+            ("left_projected_columns", left_selected.is_some().to_string()),
+            ("right_projected_columns", right_selected.is_some().to_string()),
+            ("execution_context_provided", true.to_string()),
+            ("reservation_contract", reservation_contract.to_string()),
+        ],
+    )?;
+    Ok(out)
 }
 
 fn cross_join_with_context(

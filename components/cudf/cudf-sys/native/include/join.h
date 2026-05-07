@@ -140,6 +140,42 @@ cudf_status_t cudf_cross_join_ex(cudf_table_view_handle left,
                                  cudf_table_handle* out,
                                  const cudf_exec_options_t* options);
 
+/// Projected cross join with explicit input row counts.
+///
+/// `left_selected` or `right_selected` may be NULL to represent no projected
+/// output columns from that side. At least one side must contain selected
+/// columns. `left_num_rows` and `right_num_rows` define the cartesian
+/// cardinality even when a side has no projected columns.
+cudf_status_t cudf_projected_cross_join(cudf_table_view_handle left_selected,
+                                        cudf_table_view_handle right_selected,
+                                        size_t left_num_rows,
+                                        size_t right_num_rows,
+                                        cudf_table_handle* out);
+
+/// Projected cross join with explicit input row counts and execution context.
+///
+/// Passing NULL for `options`, or leaving `options->stream` / `options->mr`
+/// NULL, uses cuDF's default stream and current device memory resource.
+/// When `options->mr` is non-NULL, it must outlive the returned table.
+cudf_status_t cudf_projected_cross_join_ex(cudf_table_view_handle left_selected,
+                                           cudf_table_view_handle right_selected,
+                                           size_t left_num_rows,
+                                           size_t right_num_rows,
+                                           cudf_table_handle* out,
+                                           const cudf_exec_options_t* options);
+
+/// Return exact device bytes retained by a projected cross join result.
+///
+/// This materializes the projected result under the supplied execution context,
+/// reports `table::alloc_size()`, and releases the temporary result.
+cudf_status_t cudf_projected_cross_join_device_allocated_size_ex(
+  cudf_table_view_handle left_selected,
+  cudf_table_view_handle right_selected,
+  size_t left_num_rows,
+  size_t right_num_rows,
+  size_t* out,
+  const cudf_exec_options_t* options);
+
 /// Inner join. Returns INT32 left and right gather-index columns.
 cudf_status_t cudf_inner_join_indices(cudf_table_view_handle left_keys,
                                       cudf_table_view_handle right_keys,

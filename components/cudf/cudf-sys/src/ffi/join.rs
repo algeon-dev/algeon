@@ -97,6 +97,32 @@ extern "C" {
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
 
+    pub fn cudf_projected_cross_join(
+        left_selected: cudf_table_view_handle,
+        right_selected: cudf_table_view_handle,
+        left_num_rows: usize,
+        right_num_rows: usize,
+        out: *mut cudf_table_handle,
+    ) -> cudf_status_t;
+
+    pub fn cudf_projected_cross_join_ex(
+        left_selected: cudf_table_view_handle,
+        right_selected: cudf_table_view_handle,
+        left_num_rows: usize,
+        right_num_rows: usize,
+        out: *mut cudf_table_handle,
+        options: *const cudf_exec_options_t,
+    ) -> cudf_status_t;
+
+    pub fn cudf_projected_cross_join_device_allocated_size_ex(
+        left_selected: cudf_table_view_handle,
+        right_selected: cudf_table_view_handle,
+        left_num_rows: usize,
+        right_num_rows: usize,
+        out: *mut usize,
+        options: *const cudf_exec_options_t,
+    ) -> cudf_status_t;
+
     pub fn cudf_inner_join_indices(
         left_keys: cudf_table_view_handle,
         right_keys: cudf_table_view_handle,

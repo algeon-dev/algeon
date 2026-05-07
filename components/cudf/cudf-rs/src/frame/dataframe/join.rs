@@ -230,6 +230,22 @@ impl DataFrameCrossJoinOptions {
     }
 }
 
+/// Validated projected cross-join plan for bounded execution.
+///
+/// This object resolves source columns, validates output names, and checks the
+/// cartesian output row count once at construction. Reservation and
+/// materialization then use the retained plan so callers do not repeat
+/// admission logic or accidentally materialize unselected columns.
+#[derive(Debug, Clone)]
+pub struct DataFrameProjectedCrossJoinPlan {
+    pub(crate) left: DataFrame,
+    pub(crate) right: DataFrame,
+    pub(crate) left_indices: Vec<usize>,
+    pub(crate) right_indices: Vec<usize>,
+    pub(crate) output_names: Vec<String>,
+    pub(crate) output_rows: usize,
+}
+
 /// Named predicate-table columns for DataFrame conditional join helpers.
 ///
 /// The public [`crate::ops::ast::AstExpression`] still uses positional column

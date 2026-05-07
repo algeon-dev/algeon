@@ -18,6 +18,8 @@ const EXPECTED_GUARDS: &[&str] = &[
     "join::distinct_hash_join_destroy",
     "join::distinct_hash_join_left_join",
     "join::cross_join",
+    "join::projected_cross_join",
+    "join::projected_cross_join_device_allocated_size",
     "join::left_anti_join_indices",
     "join::left_semi_join_indices",
     "join::conditional_pair_join_indices",
@@ -162,6 +164,14 @@ fn classify_allowed_guard(file_name: &str, context: &str) -> Option<&'static str
         },
         "join.cpp" if context.contains("cudf::cross_join(*left_view, *right_view, exec.stream, exec.mr)") => {
             Some("join::cross_join")
+        },
+        "join.cpp"
+            if context.contains("projected_cross_join_table(") && context.contains("cudf_release_table_handle") =>
+        {
+            Some("join::projected_cross_join")
+        },
+        "join.cpp" if context.contains("projected_cross_join_table(") && context.contains("result->alloc_size()") => {
+            Some("join::projected_cross_join_device_allocated_size")
         },
         "join.cpp" if context.contains("std::make_unique<cudf::hash_join>") => Some("join::hash_join_create"),
         "join.cpp" if context.contains("void cudf_hash_join_destroy") && context.contains("delete owner") => {

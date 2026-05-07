@@ -127,6 +127,26 @@ int cudf_rust_c_header_smoke(void)
                                 cudf_table_handle*,
 
                                 const cudf_exec_options_t*) = &cudf_cross_join_ex;
+  cudf_status_t (*f22_projected_cross)(cudf_table_view_handle,
+                                       cudf_table_view_handle,
+                                       size_t,
+                                       size_t,
+                                       cudf_table_handle*) = &cudf_projected_cross_join;
+  cudf_status_t (*f22_projected_cross_ex)(cudf_table_view_handle,
+                                          cudf_table_view_handle,
+                                          size_t,
+                                          size_t,
+                                          cudf_table_handle*,
+
+                                          const cudf_exec_options_t*) = &cudf_projected_cross_join_ex;
+  cudf_status_t (*f22_projected_cross_size)(cudf_table_view_handle,
+                                            cudf_table_view_handle,
+                                            size_t,
+                                            size_t,
+                                            size_t*,
+
+                                            const cudf_exec_options_t*) =
+    &cudf_projected_cross_join_device_allocated_size_ex;
   cudf_status_t (*f22a0)(cudf_table_view_handle,
                          cudf_table_view_handle,
                          cudf_null_equality_t,
@@ -848,6 +868,9 @@ int cudf_rust_c_header_smoke(void)
   (void)f22_scatter_ex;
   (void)f22_cross;
   (void)f22_cross_ex;
+  (void)f22_projected_cross;
+  (void)f22_projected_cross_ex;
+  (void)f22_projected_cross_size;
   (void)f22a0;
   (void)f22a1;
   (void)f22a2;
