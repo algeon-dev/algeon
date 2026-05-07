@@ -14,6 +14,7 @@ pub(crate) enum BoundedJoinPlanSupport {
     Root,
     UnaryPipeline,
     ConditionalJoinInputSubplanPipeline,
+    ConditionalJoinJoinedAggregateInputSubplanPipeline,
     MultiJoinPipeline,
     Unsupported,
 }
@@ -86,9 +87,12 @@ pub(crate) fn analyze_bounded_join_plan_support(plan: &QueryPlan) -> BoundedJoin
         Ok(_) => BoundedJoinPlanSupport::UnaryPipeline,
         Err(_) => match analyze_bounded_conditional_join_input_subplan_pipeline(plan) {
             Ok(_) => BoundedJoinPlanSupport::ConditionalJoinInputSubplanPipeline,
-            Err(_) => match analyze_bounded_multi_join_pipeline(plan) {
-                Ok(_) => BoundedJoinPlanSupport::MultiJoinPipeline,
-                Err(_) => BoundedJoinPlanSupport::Unsupported,
+            Err(_) => match analyze_bounded_conditional_join_joined_aggregate_input_subplan_pipeline(plan) {
+                Ok(_) => BoundedJoinPlanSupport::ConditionalJoinJoinedAggregateInputSubplanPipeline,
+                Err(_) => match analyze_bounded_multi_join_pipeline(plan) {
+                    Ok(_) => BoundedJoinPlanSupport::MultiJoinPipeline,
+                    Err(_) => BoundedJoinPlanSupport::Unsupported,
+                },
             },
         },
     }
@@ -160,6 +164,19 @@ pub(crate) fn analyze_bounded_conditional_join_input_subplan_pipeline(
     Ok(shape)
 }
 
+pub(crate) fn analyze_bounded_conditional_join_joined_aggregate_input_subplan_pipeline(
+    plan: &QueryPlan,
+) -> std::result::Result<BoundedJoinPipelineShape<'_>, BoundedJoinPipelineRejection<'_>> {
+    let shape = analyze_bounded_join_pipeline_shape(plan, false)?;
+    if !bounded_root_conditional_join_joined_aggregate_input_subplan_pipeline_compatible(shape.join) {
+        return Err(BoundedJoinPipelineRejection::UnsupportedJoin { join: shape.join });
+    }
+    validate_bounded_conditional_join_joined_aggregate_post_root_pipeline(&shape)?;
+    validate_projection_wrapped_joined_aggregate_input(plan, shape.join.inputs[0], JoinedAggregateInputKind::Grouped)?;
+    validate_projection_wrapped_joined_aggregate_input(plan, shape.join.inputs[1], JoinedAggregateInputKind::Scalar)?;
+    Ok(shape)
+}
+
 pub(crate) fn bounded_root_hash_join_compatible(join: &JoinNode) -> bool {
     !join.spec.keys.is_empty()
         && join.spec.residual_predicate.is_none()
@@ -183,6 +200,13 @@ pub(crate) fn bounded_root_conditional_join_compatible(join: &JoinNode) -> bool 
 
 pub(crate) fn bounded_root_conditional_join_input_subplan_pipeline_compatible(join: &JoinNode) -> bool {
     matches!(BoundedConditionalJoinType::try_from_join(join), Some(BoundedConditionalJoinType::Inner))
+}
+
+pub(crate) fn bounded_root_conditional_join_joined_aggregate_input_subplan_pipeline_compatible(
+    join: &JoinNode,
+) -> bool {
+    matches!(BoundedConditionalJoinType::try_from_join(join), Some(BoundedConditionalJoinType::Inner))
+        && join.spec.output_projection.iter().all(|column| column.side == JoinSide::Left)
 }
 
 pub(crate) fn bounded_root_projected_cross_join_compatible(join: &JoinNode) -> bool {
@@ -380,6 +404,109 @@ fn validate_bounded_conditional_join_input_subplan_inner(
 
 fn bounded_conditional_join_input_subplan_join_compatible(join: &JoinNode) -> bool {
     join.spec.join_type == JoinType::LeftAnti && bounded_root_filtered_join_compatible(join)
+}
+
+#[derive(Debug, Clone, Copy)]
+enum JoinedAggregateInputKind {
+    Grouped,
+    Scalar,
+}
+
+fn validate_bounded_conditional_join_joined_aggregate_post_root_pipeline<'a>(
+    shape: &BoundedJoinPipelineShape<'a>,
+) -> std::result::Result<(), BoundedJoinPipelineRejection<'a>> {
+    let mut seen_projection = false;
+    let mut seen_sort = false;
+    for stage in &shape.stages {
+        match stage {
+            BoundedJoinPipelineStage::Projection { node_id, .. } => {
+                if seen_projection || seen_sort {
+                    return Err(BoundedJoinPipelineRejection::UnsupportedLeaf {
+                        node_id: *node_id,
+                        node_kind: "projection",
+                    });
+                }
+                seen_projection = true;
+            },
+            BoundedJoinPipelineStage::Sort { node_id, .. } => {
+                if seen_sort {
+                    return Err(BoundedJoinPipelineRejection::UnsupportedLeaf { node_id: *node_id, node_kind: "sort" });
+                }
+                seen_sort = true;
+            },
+            BoundedJoinPipelineStage::Filter { node_id, .. } => {
+                return Err(BoundedJoinPipelineRejection::UnsupportedLeaf { node_id: *node_id, node_kind: "filter" });
+            },
+            BoundedJoinPipelineStage::Aggregate { node_id, .. } => {
+                return Err(BoundedJoinPipelineRejection::UnsupportedLeaf {
+                    node_id: *node_id,
+                    node_kind: "aggregate",
+                });
+            },
+            BoundedJoinPipelineStage::Limit { node_id, .. } => {
+                return Err(BoundedJoinPipelineRejection::UnsupportedLeaf { node_id: *node_id, node_kind: "limit" });
+            },
+        }
+    }
+    Ok(())
+}
+
+fn validate_projection_wrapped_joined_aggregate_input(
+    plan: &QueryPlan,
+    node_id: NodeId,
+    kind: JoinedAggregateInputKind,
+) -> std::result::Result<(), BoundedJoinPipelineRejection<'_>> {
+    let node = plan.node(node_id).ok_or(BoundedJoinPipelineRejection::MissingNode {
+        node_id,
+        message: "bounded conditional joined aggregate input subplan references a missing plan node",
+    })?;
+    let PlanNode::Projection(projection) = &node.kind else {
+        return Err(BoundedJoinPipelineRejection::UnsupportedLeaf { node_id, node_kind: "bare_aggregate_input" });
+    };
+
+    let aggregate_node = plan.node(projection.input).ok_or(BoundedJoinPipelineRejection::MissingNode {
+        node_id: projection.input,
+        message: "bounded conditional joined aggregate input subplan projection references a missing aggregate",
+    })?;
+    let PlanNode::Aggregate(aggregate) = &aggregate_node.kind else {
+        return Err(BoundedJoinPipelineRejection::UnsupportedLeaf {
+            node_id: projection.input,
+            node_kind: "non_aggregate_input",
+        });
+    };
+
+    match kind {
+        JoinedAggregateInputKind::Grouped if aggregate.spec.group_exprs.is_empty() => {
+            return Err(BoundedJoinPipelineRejection::UnsupportedLeaf {
+                node_id: projection.input,
+                node_kind: "scalar_aggregate",
+            });
+        },
+        JoinedAggregateInputKind::Scalar if !aggregate.spec.group_exprs.is_empty() => {
+            return Err(BoundedJoinPipelineRejection::UnsupportedLeaf {
+                node_id: projection.input,
+                node_kind: "grouped_aggregate",
+            });
+        },
+        JoinedAggregateInputKind::Grouped | JoinedAggregateInputKind::Scalar => {},
+    }
+
+    validate_bounded_join_subtree_rooted_at_join(plan, aggregate.input)
+}
+
+fn validate_bounded_join_subtree_rooted_at_join(
+    plan: &QueryPlan,
+    node_id: NodeId,
+) -> std::result::Result<(), BoundedJoinPipelineRejection<'_>> {
+    let node = plan.node(node_id).ok_or(BoundedJoinPipelineRejection::MissingNode {
+        node_id,
+        message: "bounded conditional joined aggregate input subplan references a missing join subtree",
+    })?;
+    match &node.kind {
+        PlanNode::Join(_) => validate_bounded_multi_join_subtree(plan, node_id),
+        PlanNode::Projection(projection) => validate_bounded_join_subtree_rooted_at_join(plan, projection.input),
+        _ => Err(BoundedJoinPipelineRejection::UnsupportedLeaf { node_id, node_kind: "non_join_subtree_root" }),
+    }
 }
 
 fn bounded_join_inputs_include_resident_subplan<'a>(

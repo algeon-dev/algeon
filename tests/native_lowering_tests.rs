@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeSet,
     fs::{self, File},
     sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
@@ -1043,6 +1044,102 @@ async fn tpch_q22_lowers_scalar_avg_anti_join_conditional_join_and_final_groupin
 }
 
 #[tokio::test]
+async fn tpch_q11_lowers_joined_grouped_and_scalar_aggregate_inputs_for_bounded_admission() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-tpch-q11");
+    write_tiny_tpch_parquet_dataset(&dir).unwrap();
+    let items = tpch_fallback_pressure_workload_items(&dir, tpch_report_session_config()).await.unwrap();
+    let q11 = items.into_iter().find(|item| item.query_id == "q11").expect("TPC-H workload should include q11");
+    let NativeFallbackPressureWorkloadInput::PhysicalPlan(plan) = q11.input else {
+        panic!("q11 should produce a physical plan");
+    };
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    let CandidateOutcome::Rewritten { candidate } = &result.report.outcomes()[0] else {
+        panic!("q11 should lower to native");
+    };
+    assert_eq!(
+        candidate.shape,
+        "SortExec(ProjectionExec(NestedLoopJoinExec(ProjectionExec(AggregateExec(HashJoinExec(FilterExec(LocalParquetScan),ProjectionExec(HashJoinExec(LocalParquetScan,LocalParquetScan))))),ProjectionExec(AggregateExec(HashJoinExec(FilterExec(LocalParquetScan),ProjectionExec(HashJoinExec(LocalParquetScan,LocalParquetScan))))))))"
+    );
+
+    let plan = &result.plans[0];
+    assert!(plan.has_bounded_executable_conditional_join_joined_aggregate_input_subplan_pipeline());
+    assert!(plan.bounded_join_unsupported_shape_facts(cudf_query_engine::ExecutionBoundaryPolicy::default()).is_none());
+    let output_fields = plan.output_schema().fields().iter().map(|field| field.name().as_str()).collect::<Vec<_>>();
+    assert_eq!(output_fields, vec!["ps_partkey", "value"]);
+    assert!(
+        output_fields.iter().all(|field| !field.to_ascii_lowercase().contains("threshold")),
+        "Q11 scalar threshold must not leak into final output schema"
+    );
+
+    let PlanNode::Sort(sort) = &plan.root_node().kind else {
+        panic!("q11 native root should be the final ORDER BY sort");
+    };
+    assert_eq!(sort.spec.expressions.len(), 1);
+    assert_eq!(sort.spec.expressions[0].expr.to_string(), "value");
+    assert!(sort.spec.expressions[0].descending);
+
+    let final_projection_node = plan.node(sort.input).expect("q11 sort input should exist");
+    let PlanNode::Projection(final_projection) = &final_projection_node.kind else {
+        panic!("q11 sort input should be the final output projection");
+    };
+    let final_projection_text = final_projection.expressions.iter().map(ToString::to_string).collect::<Vec<_>>();
+    assert_eq!(final_projection_text.len(), 2);
+    assert!(final_projection_text.iter().any(|expr| expr == "ps_partkey"));
+    assert!(
+        final_projection_text.iter().any(|expr| expr.ends_with(" AS value") || expr == "value"),
+        "q11 final projection should expose value without exposing scalar threshold output: {final_projection_text:?}"
+    );
+
+    let join_node = plan.node(final_projection.input).expect("q11 final projection input should exist");
+    let PlanNode::Join(root_join) = &join_node.kind else {
+        panic!("q11 final projection input should be the root conditional join");
+    };
+    assert_eq!(root_join.spec.join_type, NativeJoinType::Inner);
+    assert!(root_join.spec.keys.is_empty());
+    assert!(root_join.spec.residual_predicate.is_some());
+    assert!(
+        root_join.spec.output_projection.iter().all(|column| column.side == NativeJoinSide::Left),
+        "q11 root join output projection should be left-only: {:?}",
+        root_join.spec.output_projection
+    );
+    assert_eq!(root_join.spec.output_projection.len(), 2);
+    assert_eq!(root_join.spec.output_projection[0].column.to_string(), "input0.ps_partkey");
+    assert_eq!(root_join.spec.output_projection[0].output_name, "ps_partkey");
+    assert!(
+        root_join.spec.output_projection[1].column.to_string().contains("ps_supplycost"),
+        "q11 root join should project the grouped value from the left branch: {:?}",
+        root_join.spec.output_projection
+    );
+
+    let left_aggregate = projection_wrapped_aggregate(plan, root_join.inputs[0], "q11 left input");
+    assert_eq!(
+        left_aggregate.spec.group_exprs.iter().map(ToString::to_string).collect::<Vec<_>>(),
+        vec!["ps_partkey".to_string()]
+    );
+    assert_eq!(left_aggregate.spec.aggr_exprs.len(), 1);
+    assert_eq!(left_aggregate.spec.aggr_exprs[0].function, AggregateFunction::Sum);
+    assert_eq!(
+        source_tables_below(plan, left_aggregate.input),
+        BTreeSet::from(["nation".to_string(), "partsupp".to_string(), "supplier".to_string()])
+    );
+
+    let right_aggregate = projection_wrapped_aggregate(plan, root_join.inputs[1], "q11 right input");
+    assert!(right_aggregate.spec.group_exprs.is_empty(), "q11 right branch should be a scalar/global aggregate");
+    assert_eq!(right_aggregate.spec.aggr_exprs.len(), 1);
+    assert_eq!(right_aggregate.spec.aggr_exprs[0].function, AggregateFunction::Sum);
+    assert_eq!(
+        source_tables_below(plan, right_aggregate.input),
+        BTreeSet::from(["nation".to_string(), "partsupp".to_string(), "supplier".to_string()])
+    );
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
 async fn tpch_q13_lowers_left_join_filter_aggregates_and_final_sort() {
     let dir = unique_temp_dir("datafusion-cudf-native-lowering-tpch-q13");
     write_tiny_tpch_parquet_dataset(&dir).unwrap();
@@ -1201,6 +1298,46 @@ fn skip_projection_nodes(plan: &QueryPlan, mut node_id: NodeId) -> NodeId {
         node_id = projection.input;
     }
     node_id
+}
+
+fn projection_wrapped_aggregate<'a>(
+    plan: &'a QueryPlan,
+    node_id: NodeId,
+    context: &str,
+) -> &'a cudf_query_engine::AggregateNode {
+    let projection_node = plan.node(node_id).unwrap_or_else(|| panic!("{context} projection should exist"));
+    let PlanNode::Projection(projection) = &projection_node.kind else {
+        panic!("{context} should be projection-wrapped");
+    };
+    let aggregate_node = plan.node(projection.input).unwrap_or_else(|| panic!("{context} aggregate should exist"));
+    let PlanNode::Aggregate(aggregate) = &aggregate_node.kind else {
+        panic!("{context} projection input should be an aggregate");
+    };
+    aggregate
+}
+
+fn source_tables_below(plan: &QueryPlan, root: NodeId) -> BTreeSet<String> {
+    let mut tables = BTreeSet::new();
+    let mut stack = vec![root];
+    while let Some(node_id) = stack.pop() {
+        let node = plan.node(node_id).expect("native subtree node should exist");
+        match &node.kind {
+            PlanNode::Source(source_node) => {
+                if let SourceNode::LocalParquet(source) = source_node.as_ref()
+                    && let Some(table) = local_parquet_source_table(source)
+                {
+                    tables.insert(table.to_string());
+                }
+            },
+            PlanNode::Filter(_)
+            | PlanNode::Projection(_)
+            | PlanNode::Aggregate(_)
+            | PlanNode::Sort(_)
+            | PlanNode::Limit(_)
+            | PlanNode::Join(_) => stack.extend(node.input_ids().iter().copied()),
+        }
+    }
+    tables
 }
 
 #[test]

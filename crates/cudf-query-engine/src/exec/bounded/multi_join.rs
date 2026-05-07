@@ -11,7 +11,7 @@ pub(super) fn execute_bounded_multi_join_pipeline_query_plan(
 ) -> Result<QueryOutput> {
     let shape = analyze_bounded_multi_join_pipeline(plan).map_err(bounded_join_pipeline_rejection_error)?;
     validate_bounded_join_pipeline_stages(&shape.stages)?;
-    validate_bounded_multi_join_subtree_capabilities(plan, shape.join_id)?;
+    validate_bounded_multi_join_subtree_capabilities(context, plan, shape.join_id)?;
 
     let MemoryControlPolicy::Bounded { device_budget_bytes, .. } = context.memory_control_policy() else {
         unreachable!("execute_bounded_multi_join_pipeline_query_plan is called only for bounded policies");
@@ -52,7 +52,7 @@ pub(super) fn execute_bounded_multi_join_pipeline_query_plan(
     }
 }
 
-fn execute_bounded_multi_join_subtree(
+pub(super) fn execute_bounded_multi_join_subtree(
     context: &ExecutionContext,
     plan: &QueryPlan,
     node_id: NodeId,
@@ -130,12 +130,17 @@ fn execute_bounded_multi_join_unary_input(
     execute_bounded_join_pipeline_stage(context, &stage, input, reservations, metrics)
 }
 
-fn validate_bounded_multi_join_subtree_capabilities(plan: &QueryPlan, node_id: NodeId) -> Result<()> {
+pub(super) fn validate_bounded_multi_join_subtree_capabilities(
+    context: &ExecutionContext,
+    plan: &QueryPlan,
+    node_id: NodeId,
+) -> Result<()> {
     let node = plan
         .node(node_id)
         .ok_or_else(|| invalid_node_reference(node_id, "bounded multi-join references a missing node"))?;
     match &node.kind {
         PlanNode::Join(join) => {
+            validate_executable_join_subset(join)?;
             if !bounded_multi_join_compatible(join) {
                 return Err(unsupported_bounded_shape(
                     "bounded multi-join pipeline execution supports reusable hash equi joins, filtered equality semi/anti joins, and mixed keyed-residual inner, left semi, and left anti joins",
@@ -147,17 +152,21 @@ fn validate_bounded_multi_join_subtree_capabilities(plan: &QueryPlan, node_id: N
                 .with_fact("residual_predicate", join.spec.residual_predicate.is_some())
                 .with_fact("output_projection_len", join.spec.output_projection.len()));
             }
-            validate_bounded_multi_join_subtree_capabilities(plan, join.inputs[0])?;
-            validate_bounded_multi_join_subtree_capabilities(plan, join.inputs[1])
+            if join.spec.residual_predicate.is_some() {
+                let residual_columns = residual_input_columns(join)?;
+                lower_join_residual_predicate(context, join, &residual_columns)?;
+            }
+            validate_bounded_multi_join_subtree_capabilities(context, plan, join.inputs[0])?;
+            validate_bounded_multi_join_subtree_capabilities(context, plan, join.inputs[1])
         },
         PlanNode::Source(_) => Ok(()),
         PlanNode::Filter(filter) => {
             lower_expr(&filter.predicate)?;
-            validate_bounded_multi_join_subtree_capabilities(plan, filter.input)
+            validate_bounded_multi_join_subtree_capabilities(context, plan, filter.input)
         },
         PlanNode::Projection(projection) => {
             validate_projection_capability(projection, &node.facts.output_schema)?;
-            validate_bounded_multi_join_subtree_capabilities(plan, projection.input)
+            validate_bounded_multi_join_subtree_capabilities(context, plan, projection.input)
         },
         PlanNode::Aggregate(_) | PlanNode::Sort(_) | PlanNode::Limit(_) => Err(unsupported_bounded_shape(
             "bounded multi-join pipeline execution supports only source/filter/projection leaf subtrees below joins",

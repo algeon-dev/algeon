@@ -495,6 +495,63 @@ fn benchmark_report_q21_accepted_join_rows_preserve_expanded_mixed_residual_fact
 }
 
 #[test]
+fn benchmark_report_q11_accepted_rows_preserve_keyless_joined_aggregate_input_subplan_facts() {
+    let config =
+        NativeTpchBenchmarkConfig { query_ids: vec!["q11".to_string()], ..NativeTpchBenchmarkConfig::default() };
+    let mut planning = accepted_planning_row("q11");
+    planning.native_candidate_shape_family = Some("sort_mixed_hash_nested_loop_join_input".to_string());
+    planning.bounded_join_reservation_facts = cudf_query_engine::BoundedJoinReservationContract
+        .facts(cudf_query_engine::ExecutionBoundaryPolicy::default())
+        .into_iter()
+        .map(|(key, value)| (key.to_string(), value))
+        .collect();
+    let expected_bounded_join_facts = expected_key_value_facts(&planning.bounded_join_reservation_facts);
+    let row = NativeTpchBenchmarkRow::accepted(
+        "q11",
+        planning,
+        Ok(timed_cpu_run("output-fnv1a64:0000000000000011")),
+        Ok(timed_native_run("output-fnv1a64:0000000000000011")),
+    );
+    let report = NativeTpchBenchmarkReport { metadata: benchmark_metadata(), config, rows: vec![row] };
+
+    let text = report.to_tsv();
+    let mut lines = text.lines().filter(|line| !line.starts_with('#'));
+    let header = lines.next().expect("benchmark report should contain a TSV header");
+    let header_fields = header.split('\t').collect::<Vec<_>>();
+    let row = lines.next().expect("benchmark report should contain the q11 row");
+    assert!(lines.next().is_none(), "benchmark report should contain only the q11 row");
+    let fields = row.split('\t').collect::<Vec<_>>();
+    assert_eq!(fields.len(), header_fields.len(), "row has wrong schema width: {row}");
+
+    let bounded_status_index = header_index(&header_fields, "bounded_status");
+    let bounded_join_facts_index = header_index(&header_fields, "bounded_join_reservation_facts");
+    let shape_family_index = header_index(&header_fields, "native_candidate_shape_family");
+    let execution_path_index = header_index(&header_fields, "post_native_execution_path");
+    let native_started_index = header_index(&header_fields, "native_runtime_started");
+    let runtime_outcome_index = header_index(&header_fields, "runtime_outcome");
+    let parity_status_index = header_index(&header_fields, "parity_status");
+
+    assert_eq!(fields[0], "q11");
+    assert_eq!(fields[bounded_status_index], "bounded_accepted_parity_matched");
+    assert_eq!(fields[bounded_join_facts_index], expected_bounded_join_facts);
+    assert!(fields[bounded_join_facts_index].contains("bounded_join_execution_status=enabled"));
+    assert!(
+        fields[bounded_join_facts_index].contains("keyless_conditional_join_joined_aggregate_input_subplan_pipeline")
+    );
+    assert!(fields[bounded_join_facts_index].contains(
+        "bounded_join_keyless_conditional_joined_aggregate_input_subplan_pipeline_capability=keyless_conditional_join_joined_aggregate_input_subplan_pipeline"
+    ));
+    assert!(fields[bounded_join_facts_index].contains(
+        "bounded_join_keyless_conditional_joined_aggregate_input_subplan_pipeline_capability_detail=root_join=keyless_conditional_inner;left_input=projection_wrapped_grouped_aggregate_over_bounded_join_subplan;right_input=projection_wrapped_scalar_global_aggregate_over_bounded_join_subplan;root_output=left_only;post_root=projection_sort"
+    ));
+    assert_eq!(fields[shape_family_index], "sort_mixed_hash_nested_loop_join_input");
+    assert_eq!(fields[execution_path_index], "native");
+    assert_eq!(fields[native_started_index], "true");
+    assert_eq!(fields[runtime_outcome_index], "succeeded");
+    assert_eq!(fields[parity_status_index], "matched");
+}
+
+#[test]
 fn benchmark_report_q22_accepted_rows_preserve_keyless_input_subplan_facts() {
     let config =
         NativeTpchBenchmarkConfig { query_ids: vec!["q22".to_string()], ..NativeTpchBenchmarkConfig::default() };
@@ -1207,6 +1264,7 @@ fn expanded_mixed_residual_multi_join_facts() -> BTreeMap<String, String> {
             "root_filtered_semi_anti_join",
             "keyless_conditional_join",
             "keyless_conditional_join_input_subplan_pipeline",
+            "keyless_conditional_join_joined_aggregate_input_subplan_pipeline",
             "root_projected_cross_join",
             "root_mixed_inner_left_join",
             "multi_join_reusable_hash_pipeline",

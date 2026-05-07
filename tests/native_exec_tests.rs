@@ -42,7 +42,8 @@ use datafusion::{
 use datafusion_cudf::{
     CandidateOutcome, CudfNativePhysicalOptimizerRule, CudfOptimizerConfig, ErrorCode, FallbackReason,
     GpuFallbackPolicy, NativeCudfComposedExec, NativeCudfExec, NativeCudfExecutionConfig, NativeCudfGpuProducerExec,
-    cudf_physical_optimizer_rules,
+    TPCH_QUERIES, TPCH_TABLES, cudf_physical_optimizer_rules, lower_physical_plan_to_native,
+    tpch_report_session_config, write_tiny_tpch_parquet_dataset,
 };
 
 #[test]
@@ -342,6 +343,72 @@ fn native_optimizer_rule_rewrites_and_executes_bounded_join_aggregate_pipeline()
     assert_eq!(batches[0].num_columns(), 2);
     assert_eq!(int32_array(&batches[0], 0).values().as_ref(), &[1, 2]);
     assert_eq!(int64_array(&batches[0], 1).values().as_ref(), &[303, 202]);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn native_optimizer_rule_rewrites_bounded_q11_joined_aggregate_input_subplan() {
+    let dir = unique_temp_dir("datafusion-cudf-native-exec-bounded-q11-admission");
+    write_tiny_tpch_parquet_dataset(&dir).unwrap();
+    let q11 = TPCH_QUERIES.iter().find(|query| query.id == "q11").expect("TPC-H Q11 query must exist");
+    let plan = tpch_sql_plan(&dir, q11.sql);
+    let lowering = lower_physical_plan_to_native(Arc::clone(&plan));
+    assert_eq!(lowering.rewritten_count(), 1, "outcomes={:?}", lowering.report.outcomes());
+    assert!(
+        lowering.plans[0].has_bounded_executable_conditional_join_joined_aggregate_input_subplan_pipeline(),
+        "direct Q11 lowering should be bounded executable:\n{}",
+        lowering.plans[0]
+    );
+    let rule = CudfNativePhysicalOptimizerRule::new(native_optimizer_config());
+
+    let optimized = rule.optimize(plan, &ConfigOptions::default()).unwrap();
+
+    let report = rule.last_report().expect("native optimizer should record a planning report");
+    assert!(
+        optimized.as_any().downcast_ref::<NativeCudfExec>().is_some(),
+        "Q11 should optimize to NativeCudfExec; report={report:?}; diagnostics={:?}",
+        rule.last_planning_diagnostics()
+    );
+    assert_eq!(report.rewritten_count(), 1);
+    assert_eq!(report.rejected_count(), 0);
+    assert!(matches!(report.outcomes()[0], CandidateOutcome::Rewritten { .. }));
+
+    let diagnostics = rule.last_planning_diagnostics().expect("native optimizer should retain diagnostics");
+    assert_eq!(
+        diagnostics.bounded_join_reservation_facts.get("bounded_join_enabled").map(String::as_str),
+        Some("true")
+    );
+    assert_eq!(
+        diagnostics.bounded_join_reservation_facts.get("bounded_join_execution_status").map(String::as_str),
+        Some("enabled")
+    );
+    assert_eq!(
+        diagnostics.bounded_join_reservation_facts.get("bounded_join_lower_level_blockers").map(String::as_str),
+        Some("")
+    );
+    assert!(
+        diagnostics.bounded_join_reservation_facts.get("bounded_join_execution_families").is_some_and(|families| {
+            families.contains("keyless_conditional_join_joined_aggregate_input_subplan_pipeline")
+        }),
+        "Q11 bounded planner facts must name the joined-aggregate input-subplan family"
+    );
+    assert_eq!(
+        diagnostics
+            .bounded_join_reservation_facts
+            .get("bounded_join_keyless_conditional_joined_aggregate_input_subplan_pipeline_capability")
+            .map(String::as_str),
+        Some("keyless_conditional_join_joined_aggregate_input_subplan_pipeline")
+    );
+    assert_eq!(
+        diagnostics
+            .bounded_join_reservation_facts
+            .get("bounded_join_keyless_conditional_joined_aggregate_input_subplan_pipeline_capability_detail")
+            .map(String::as_str),
+        Some(
+            "root_join=keyless_conditional_inner;left_input=projection_wrapped_grouped_aggregate_over_bounded_join_subplan;right_input=projection_wrapped_scalar_global_aggregate_over_bounded_join_subplan;root_output=left_only;post_root=projection_sort"
+        )
+    );
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -709,6 +776,21 @@ GROUP BY l.key
 ORDER BY sum_x00 DESC, l.key ASC
 LIMIT 2
 ";
+    let df = futures::executor::block_on(ctx.sql(sql)).unwrap();
+    futures::executor::block_on(df.create_physical_plan()).unwrap()
+}
+
+fn tpch_sql_plan(root: &std::path::Path, sql: &str) -> Arc<dyn ExecutionPlan> {
+    let ctx = SessionContext::new_with_config(tpch_report_session_config());
+    for table in TPCH_TABLES {
+        let path = root.join(format!("{table}.parquet"));
+        futures::executor::block_on(ctx.register_parquet(
+            *table,
+            path.to_str().unwrap(),
+            ParquetReadOptions::default(),
+        ))
+        .unwrap();
+    }
     let df = futures::executor::block_on(ctx.sql(sql)).unwrap();
     futures::executor::block_on(df.create_physical_plan()).unwrap()
 }

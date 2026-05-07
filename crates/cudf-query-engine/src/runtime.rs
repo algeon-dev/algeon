@@ -588,6 +588,7 @@ pub enum BoundedJoinExecutionFamily {
     RootFilteredSemiAntiJoin,
     KeylessConditionalJoin,
     KeylessConditionalJoinInputSubplanPipeline,
+    KeylessConditionalJoinJoinedAggregateInputSubplanPipeline,
     RootProjectedCrossJoin,
     RootMixedInnerLeftJoin,
     MultiJoinReusableHashPipeline,
@@ -601,6 +602,9 @@ impl BoundedJoinExecutionFamily {
             Self::RootFilteredSemiAntiJoin => "root_filtered_semi_anti_join",
             Self::KeylessConditionalJoin => "keyless_conditional_join",
             Self::KeylessConditionalJoinInputSubplanPipeline => "keyless_conditional_join_input_subplan_pipeline",
+            Self::KeylessConditionalJoinJoinedAggregateInputSubplanPipeline => {
+                "keyless_conditional_join_joined_aggregate_input_subplan_pipeline"
+            },
             Self::RootProjectedCrossJoin => "root_projected_cross_join",
             Self::RootMixedInnerLeftJoin => "root_mixed_inner_left_join",
             Self::MultiJoinReusableHashPipeline => "multi_join_reusable_hash_pipeline",
@@ -611,11 +615,12 @@ impl BoundedJoinExecutionFamily {
     }
 }
 
-pub const BOUNDED_JOIN_EXECUTION_FAMILIES: [BoundedJoinExecutionFamily; 8] = [
+pub const BOUNDED_JOIN_EXECUTION_FAMILIES: [BoundedJoinExecutionFamily; 9] = [
     BoundedJoinExecutionFamily::RootReusableHashJoin,
     BoundedJoinExecutionFamily::RootFilteredSemiAntiJoin,
     BoundedJoinExecutionFamily::KeylessConditionalJoin,
     BoundedJoinExecutionFamily::KeylessConditionalJoinInputSubplanPipeline,
+    BoundedJoinExecutionFamily::KeylessConditionalJoinJoinedAggregateInputSubplanPipeline,
     BoundedJoinExecutionFamily::RootProjectedCrossJoin,
     BoundedJoinExecutionFamily::RootMixedInnerLeftJoin,
     BoundedJoinExecutionFamily::MultiJoinReusableHashPipeline,
@@ -784,6 +789,14 @@ impl BoundedJoinReservationContract {
             (
                 "bounded_join_keyless_conditional_input_subplan_pipeline_capability_detail",
                 "root_join=keyless_conditional_inner;input_subplans=source_filter_projection_or_projection_wrapped_left_anti_hash_join_or_scalar_global_aggregate".to_string(),
+            ),
+            (
+                "bounded_join_keyless_conditional_joined_aggregate_input_subplan_pipeline_capability",
+                "keyless_conditional_join_joined_aggregate_input_subplan_pipeline".to_string(),
+            ),
+            (
+                "bounded_join_keyless_conditional_joined_aggregate_input_subplan_pipeline_capability_detail",
+                "root_join=keyless_conditional_inner;left_input=projection_wrapped_grouped_aggregate_over_bounded_join_subplan;right_input=projection_wrapped_scalar_global_aggregate_over_bounded_join_subplan;root_output=left_only;post_root=projection_sort".to_string(),
             ),
             (
                 "cudf_rs_mixed_join_pair_materialization_contract",
