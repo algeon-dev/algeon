@@ -95,7 +95,7 @@ pub(crate) fn bounded_join_unsupported_shape_facts(
     boundary_policy: ExecutionBoundaryPolicy,
 ) -> BTreeMap<&'static str, String> {
     let mut facts = BoundedJoinReservationContract.unsupported_shape_facts(boundary_policy);
-    if let Some(join) = first_keyed_residual_semi_anti_join(plan) {
+    if let Some(join) = first_unsupported_keyed_residual_semi_anti_join(plan) {
         facts.insert("bounded_join_specific_blocker", mixed_keyed_residual_left_only_blocker(plan, join).to_string());
         facts.insert("bounded_join_blocked_join_family", "mixed_keyed_residual_left_semi_left_anti".to_string());
         facts.insert("bounded_join_blocked_join_type", join.spec.join_type.to_string());
@@ -196,14 +196,22 @@ pub(crate) fn bounded_root_join_compatible(join: &JoinNode) -> bool {
 pub(crate) fn bounded_multi_join_compatible(join: &JoinNode) -> bool {
     bounded_root_hash_join_compatible(join)
         || bounded_root_filtered_join_compatible(join)
-        || bounded_multi_join_mixed_inner_compatible(join)
+        || bounded_multi_join_mixed_keyed_residual_compatible(join)
 }
 
-pub(crate) fn bounded_multi_join_mixed_inner_compatible(join: &JoinNode) -> bool {
-    !join.spec.keys.is_empty()
-        && join.spec.residual_predicate.is_some()
-        && !join.spec.output_projection.is_empty()
-        && join.spec.join_type == JoinType::Inner
+pub(crate) fn bounded_multi_join_mixed_keyed_residual_compatible(join: &JoinNode) -> bool {
+    if join.spec.keys.is_empty() || join.spec.residual_predicate.is_none() || join.spec.output_projection.is_empty() {
+        return false;
+    }
+
+    match join.spec.join_type {
+        JoinType::Inner => true,
+        JoinType::LeftSemi | JoinType::LeftAnti => {
+            join.spec.build_side == JoinSide::Right
+                && join.spec.output_projection.iter().all(|column| column.side == JoinSide::Left)
+        },
+        JoinType::Left | JoinType::Full | JoinType::Cross => false,
+    }
 }
 
 fn analyze_bounded_join_pipeline_shape(
@@ -245,7 +253,7 @@ fn analyze_bounded_join_pipeline_shape(
                 });
                 current = projection.input;
             },
-            PlanNode::Aggregate(aggregate) if !saw_aggregate => {
+            PlanNode::Aggregate(aggregate) if require_single_reachable_join || !saw_aggregate => {
                 saw_aggregate = true;
                 stages.push(BoundedJoinPipelineStage::Aggregate {
                     node_id: current,
@@ -350,15 +358,24 @@ fn bounded_join_subtree_join_count(
     Ok(count)
 }
 
-fn first_keyed_residual_semi_anti_join(plan: &QueryPlan) -> Option<&JoinNode> {
+fn first_unsupported_keyed_residual_semi_anti_join(plan: &QueryPlan) -> Option<&JoinNode> {
+    let multi_join = reachable_join_count(plan) > 1;
     plan.nodes().iter().find_map(|node| {
         let PlanNode::Join(join) = &node.kind else {
             return None;
         };
-        (!join.spec.keys.is_empty()
-            && join.spec.residual_predicate.is_some()
-            && matches!(join.spec.join_type, JoinType::LeftSemi | JoinType::LeftAnti))
-        .then_some(join)
+        if join.spec.keys.is_empty()
+            || join.spec.residual_predicate.is_none()
+            || !matches!(join.spec.join_type, JoinType::LeftSemi | JoinType::LeftAnti)
+        {
+            return None;
+        }
+
+        if multi_join {
+            (!bounded_multi_join_mixed_keyed_residual_compatible(join)).then_some(join)
+        } else {
+            (!bounded_root_mixed_join_compatible(join) || root_join_leaf_blocker(plan, join).is_some()).then_some(join)
+        }
     })
 }
 
@@ -384,7 +401,15 @@ fn first_keyed_residual_left_join(plan: &QueryPlan) -> Option<&JoinNode> {
 
 fn mixed_keyed_residual_left_only_blocker(plan: &QueryPlan, join: &JoinNode) -> &'static str {
     if reachable_join_count(plan) > 1 {
-        "bounded_multi_join_mixed_keyed_residual_semi_anti_topology_unsupported"
+        if join.spec.build_side != JoinSide::Right {
+            "multi_join_mixed_keyed_residual_semi_anti_requires_right_build_side"
+        } else if join.spec.output_projection.is_empty() {
+            "multi_join_mixed_keyed_residual_semi_anti_requires_left_projection"
+        } else if join.spec.output_projection.iter().any(|column| column.side != JoinSide::Left) {
+            "multi_join_mixed_keyed_residual_semi_anti_requires_left_only_projection"
+        } else {
+            "bounded_multi_join_mixed_keyed_residual_semi_anti_shape_unsupported"
+        }
     } else if join.spec.build_side != JoinSide::Right {
         "root_mixed_keyed_residual_semi_anti_requires_right_build_side"
     } else if join.spec.output_projection.is_empty() {
@@ -400,7 +425,14 @@ fn mixed_keyed_residual_left_only_blocker(plan: &QueryPlan, join: &JoinNode) -> 
 
 fn mixed_keyed_residual_left_only_shape_contract(plan: &QueryPlan, join: &JoinNode) -> String {
     if reachable_join_count(plan) > 1 {
-        "multi_join_pipeline_requires_reusable_hash_filtered_semi_anti_or_mixed_keyed_residual_inner_joins".to_string()
+        if join.spec.build_side != JoinSide::Right
+            || join.spec.output_projection.is_empty()
+            || join.spec.output_projection.iter().any(|column| column.side != JoinSide::Left)
+        {
+            "multi_join_mixed_keyed_residual_left_only_join_requires_right_build_left_projection".to_string()
+        } else {
+            "multi_join_pipeline_requires_reusable_hash_filtered_semi_anti_or_mixed_keyed_residual_inner_left_semi_left_anti_joins".to_string()
+        }
     } else if join.spec.build_side != JoinSide::Right
         || join.spec.output_projection.is_empty()
         || join.spec.output_projection.iter().any(|column| column.side != JoinSide::Left)
@@ -427,7 +459,7 @@ fn mixed_keyed_residual_full_blocker(plan: &QueryPlan, join: &JoinNode) -> &'sta
 
 fn mixed_keyed_residual_full_shape_contract(plan: &QueryPlan, join: &JoinNode) -> String {
     if reachable_join_count(plan) > 1 {
-        "multi_join_pipeline_requires_reusable_hash_filtered_semi_anti_or_mixed_keyed_residual_inner_joins".to_string()
+        "multi_join_pipeline_requires_reusable_hash_filtered_semi_anti_or_mixed_keyed_residual_inner_left_semi_left_anti_joins".to_string()
     } else if join.spec.output_projection.is_empty() {
         "root_mixed_keyed_residual_full_join_requires_projected_output".to_string()
     } else if root_join_leaf_blocker(plan, join).is_some() {
@@ -453,7 +485,7 @@ fn mixed_keyed_residual_left_blocker(plan: &QueryPlan, join: &JoinNode) -> &'sta
 
 fn mixed_keyed_residual_left_shape_contract(plan: &QueryPlan, join: &JoinNode) -> String {
     if reachable_join_count(plan) > 1 {
-        "multi_join_pipeline_requires_reusable_hash_filtered_semi_anti_or_mixed_keyed_residual_inner_joins".to_string()
+        "multi_join_pipeline_requires_reusable_hash_filtered_semi_anti_or_mixed_keyed_residual_inner_left_semi_left_anti_joins".to_string()
     } else if join.spec.build_side != JoinSide::Right {
         "root_mixed_keyed_residual_left_join_requires_right_build".to_string()
     } else if join.spec.output_projection.is_empty() {

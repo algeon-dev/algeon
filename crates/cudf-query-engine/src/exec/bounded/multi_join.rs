@@ -138,7 +138,7 @@ fn validate_bounded_multi_join_subtree_capabilities(plan: &QueryPlan, node_id: N
         PlanNode::Join(join) => {
             if !bounded_multi_join_compatible(join) {
                 return Err(unsupported_bounded_shape(
-                    "bounded multi-join pipeline execution supports reusable hash equi joins, filtered equality semi/anti joins, and mixed keyed-residual inner joins",
+                    "bounded multi-join pipeline execution supports reusable hash equi joins, filtered equality semi/anti joins, and mixed keyed-residual inner, left semi, and left anti joins",
                     "bounded_join_plan_shape_unsupported",
                 )
                 .with_fact("join_type", join.spec.join_type)

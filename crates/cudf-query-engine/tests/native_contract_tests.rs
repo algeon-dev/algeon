@@ -404,11 +404,11 @@ fn bounded_join_reservation_kinds_are_modeled_without_estimates() {
     assert_eq!(contract.execution_families().len(), 7);
     assert_eq!(
         contract.execution_families_csv(),
-        "root_reusable_hash_join,root_filtered_semi_anti_join,keyless_conditional_join,root_projected_cross_join,root_mixed_inner_left_join,multi_join_reusable_hash_pipeline,multi_join_mixed_keyed_residual_inner_pipeline"
+        "root_reusable_hash_join,root_filtered_semi_anti_join,keyless_conditional_join,root_projected_cross_join,root_mixed_inner_left_join,multi_join_reusable_hash_pipeline,multi_join_mixed_keyed_residual_inner_left_semi_left_anti_pipeline"
     );
     assert_eq!(
         contract.supported_shape_requirement(),
-        "requires_one_of(root_reusable_hash_join,root_filtered_semi_anti_join,keyless_conditional_join,root_projected_cross_join,root_mixed_inner_left_join,multi_join_reusable_hash_pipeline,multi_join_mixed_keyed_residual_inner_pipeline)"
+        "requires_one_of(root_reusable_hash_join,root_filtered_semi_anti_join,keyless_conditional_join,root_projected_cross_join,root_mixed_inner_left_join,multi_join_reusable_hash_pipeline,multi_join_mixed_keyed_residual_inner_left_semi_left_anti_pipeline)"
     );
     assert!(contract.enabled());
 
@@ -465,7 +465,7 @@ fn bounded_join_rejection_facts_are_shared_and_estimate_free() {
     assert_eq!(
         unsupported_shape_facts.get("bounded_join_unsupported_shape").map(String::as_str),
         Some(
-            "requires_one_of(root_reusable_hash_join,root_filtered_semi_anti_join,keyless_conditional_join,root_projected_cross_join,root_mixed_inner_left_join,multi_join_reusable_hash_pipeline,multi_join_mixed_keyed_residual_inner_pipeline)"
+            "requires_one_of(root_reusable_hash_join,root_filtered_semi_anti_join,keyless_conditional_join,root_projected_cross_join,root_mixed_inner_left_join,multi_join_reusable_hash_pipeline,multi_join_mixed_keyed_residual_inner_left_semi_left_anti_pipeline)"
         )
     );
     assert_eq!(
@@ -586,11 +586,11 @@ fn bounded_join_rejection_facts_are_shared_and_estimate_free() {
     );
     assert_eq!(
         facts.get("bounded_join_mixed_keyed_residual_multi_join_capability").map(String::as_str),
-        Some("multi_join_mixed_keyed_residual_inner_pipeline")
+        Some("multi_join_mixed_keyed_residual_inner_left_semi_left_anti_pipeline")
     );
     assert_eq!(
         facts.get("bounded_join_mixed_keyed_residual_multi_join_capability_detail").map(String::as_str),
-        Some("mixed_keyed_residual_multi_join_types=inner")
+        Some("mixed_keyed_residual_multi_join_types=inner,left_semi,left_anti")
     );
     assert_eq!(
         facts.get("cudf_rs_mixed_join_pair_materialization_contract").map(String::as_str),
@@ -749,20 +749,31 @@ fn bounded_mixed_residual_full_root_supports_pair_projection() {
 }
 
 #[test]
-fn bounded_multi_join_admits_mixed_keyed_residual_inner_only() {
-    let plan = mixed_residual_multi_join_plan(
-        JoinType::Inner,
-        JoinSide::Right,
-        vec![
-            JoinOutputColumn::left(ColumnRef::input(0, "left_payload", "left_payload"), "left_payload"),
-            JoinOutputColumn::right(ColumnRef::input(1, "right_payload", "right_payload"), "right_payload"),
-        ],
-    );
+fn bounded_multi_join_admits_mixed_keyed_residual_inner_left_semi_and_left_anti() {
+    for (join_type, projection) in [
+        (
+            JoinType::Inner,
+            vec![
+                JoinOutputColumn::left(ColumnRef::input(0, "left_payload", "left_payload"), "left_payload"),
+                JoinOutputColumn::right(ColumnRef::input(1, "right_payload", "right_payload"), "right_payload"),
+            ],
+        ),
+        (
+            JoinType::LeftSemi,
+            vec![JoinOutputColumn::left(ColumnRef::input(0, "left_payload", "left_payload"), "left_payload")],
+        ),
+        (
+            JoinType::LeftAnti,
+            vec![JoinOutputColumn::left(ColumnRef::input(0, "left_payload", "left_payload"), "left_payload")],
+        ),
+    ] {
+        let plan = mixed_residual_multi_join_plan(join_type, JoinSide::Right, projection);
 
-    assert!(!plan.has_bounded_executable_root_join());
-    assert!(!plan.has_bounded_executable_join_pipeline());
-    assert!(plan.has_bounded_executable_multi_join_pipeline());
-    assert!(plan.bounded_join_unsupported_shape_facts(ExecutionBoundaryPolicy::default()).is_none());
+        assert!(!plan.has_bounded_executable_root_join());
+        assert!(!plan.has_bounded_executable_join_pipeline());
+        assert!(plan.has_bounded_executable_multi_join_pipeline());
+        assert!(plan.bounded_join_unsupported_shape_facts(ExecutionBoundaryPolicy::default()).is_none());
+    }
 
     let plan = mixed_residual_multi_join_plan(
         JoinType::Left,
@@ -787,7 +798,9 @@ fn bounded_multi_join_admits_mixed_keyed_residual_inner_only() {
     assert_eq!(facts.get("bounded_join_blocked_join_type").map(String::as_str), Some("left"));
     assert_eq!(
         facts.get("bounded_join_required_shape_contract").map(String::as_str),
-        Some("multi_join_pipeline_requires_reusable_hash_filtered_semi_anti_or_mixed_keyed_residual_inner_joins")
+        Some(
+            "multi_join_pipeline_requires_reusable_hash_filtered_semi_anti_or_mixed_keyed_residual_inner_left_semi_left_anti_joins"
+        )
     );
     assert_eq!(facts.get("bounded_join_required_lower_level_contract").map(String::as_str), None);
     assert!(facts.iter().all(|(key, value)| !key.contains("estimate") && !value.contains("estimate")));
@@ -806,13 +819,62 @@ fn bounded_multi_join_admits_mixed_keyed_residual_inner_only() {
 }
 
 #[test]
-fn bounded_multi_join_rejects_mixed_residual_semi_anti_with_explicit_blocker_facts() {
-    for join_type in [JoinType::LeftSemi, JoinType::LeftAnti] {
-        let plan = mixed_residual_multi_join_plan(
-            join_type,
-            JoinSide::Right,
-            vec![JoinOutputColumn::left(ColumnRef::input(0, "left_payload", "left_payload"), "left_payload")],
+fn bounded_multi_join_reports_left_full_blocker_after_valid_mixed_residual_semi_anti() {
+    for (valid_join_type, invalid_join_type, expected_family, expected_blocker) in [
+        (
+            JoinType::LeftSemi,
+            JoinType::Left,
+            "mixed_keyed_residual_left",
+            "bounded_multi_join_mixed_keyed_residual_left_topology_unsupported",
+        ),
+        (
+            JoinType::LeftAnti,
+            JoinType::Full,
+            "mixed_keyed_residual_full",
+            "bounded_multi_join_mixed_keyed_residual_full_topology_unsupported",
+        ),
+    ] {
+        let plan =
+            valid_mixed_residual_semi_anti_then_invalid_mixed_residual_join_plan(valid_join_type, invalid_join_type);
+
+        assert!(!plan.has_bounded_executable_root_join());
+        assert!(!plan.has_bounded_executable_join_pipeline());
+        assert!(!plan.has_bounded_executable_multi_join_pipeline());
+        let facts = plan
+            .bounded_join_unsupported_shape_facts(ExecutionBoundaryPolicy::default())
+            .expect("unsupported mixed left/full multi-join shape should produce facts");
+        assert_eq!(facts.get("bounded_join_lower_level_blockers").map(String::as_str), Some(""));
+        assert_eq!(facts.get("bounded_join_specific_blocker").map(String::as_str), Some(expected_blocker));
+        assert_eq!(facts.get("bounded_join_blocked_join_family").map(String::as_str), Some(expected_family));
+        let expected_join_type = invalid_join_type.to_string();
+        assert_eq!(facts.get("bounded_join_blocked_join_type").map(String::as_str), Some(expected_join_type.as_str()));
+        assert_eq!(
+            facts.get("bounded_join_required_shape_contract").map(String::as_str),
+            Some(
+                "multi_join_pipeline_requires_reusable_hash_filtered_semi_anti_or_mixed_keyed_residual_inner_left_semi_left_anti_joins"
+            )
         );
+        assert_eq!(facts.get("bounded_join_required_lower_level_contract").map(String::as_str), None);
+    }
+}
+
+#[test]
+fn bounded_multi_join_rejects_invalid_mixed_residual_semi_anti_with_explicit_blocker_facts() {
+    for (join_type, build_side, projection, expected_blocker) in [
+        (
+            JoinType::LeftSemi,
+            JoinSide::Left,
+            vec![JoinOutputColumn::left(ColumnRef::input(0, "left_payload", "left_payload"), "left_payload")],
+            "multi_join_mixed_keyed_residual_semi_anti_requires_right_build_side",
+        ),
+        (
+            JoinType::LeftAnti,
+            JoinSide::Right,
+            vec![JoinOutputColumn::right(ColumnRef::input(1, "right_payload", "right_payload"), "right_payload")],
+            "multi_join_mixed_keyed_residual_semi_anti_requires_left_only_projection",
+        ),
+    ] {
+        let plan = mixed_residual_multi_join_plan(join_type, build_side, projection);
 
         assert!(!plan.has_bounded_executable_root_join());
         assert!(!plan.has_bounded_executable_join_pipeline());
@@ -821,10 +883,7 @@ fn bounded_multi_join_rejects_mixed_residual_semi_anti_with_explicit_blocker_fac
             .bounded_join_unsupported_shape_facts(ExecutionBoundaryPolicy::default())
             .expect("unsupported mixed semi/anti multi-join shape should produce facts");
         assert_eq!(facts.get("bounded_join_lower_level_blockers").map(String::as_str), Some(""));
-        assert_eq!(
-            facts.get("bounded_join_specific_blocker").map(String::as_str),
-            Some("bounded_multi_join_mixed_keyed_residual_semi_anti_topology_unsupported")
-        );
+        assert_eq!(facts.get("bounded_join_specific_blocker").map(String::as_str), Some(expected_blocker));
         assert_eq!(
             facts.get("bounded_join_blocked_join_family").map(String::as_str),
             Some("mixed_keyed_residual_left_semi_left_anti")
@@ -833,7 +892,7 @@ fn bounded_multi_join_rejects_mixed_residual_semi_anti_with_explicit_blocker_fac
         assert_eq!(facts.get("bounded_join_blocked_join_type").map(String::as_str), Some(expected_join_type.as_str()));
         assert_eq!(
             facts.get("bounded_join_required_shape_contract").map(String::as_str),
-            Some("multi_join_pipeline_requires_reusable_hash_filtered_semi_anti_or_mixed_keyed_residual_inner_joins")
+            Some("multi_join_mixed_keyed_residual_left_only_join_requires_right_build_left_projection")
         );
         assert_eq!(facts.get("bounded_join_required_lower_level_contract").map(String::as_str), None);
         assert!(facts.iter().all(|(key, value)| !key.contains("estimate") && !value.contains("estimate")));
@@ -847,6 +906,191 @@ fn bounded_multi_join_keeps_aggregate_inputs_out_of_join_subtrees() {
     assert!(!plan.has_bounded_executable_root_join());
     assert!(!plan.has_bounded_executable_join_pipeline());
     assert!(!plan.has_bounded_executable_multi_join_pipeline());
+}
+
+#[test]
+fn bounded_single_join_pipeline_admits_q13_shaped_serial_aggregate_spine() {
+    let plan = q13_shaped_serial_aggregate_spine_plan();
+
+    assert!(!plan.has_bounded_executable_root_join());
+    assert!(plan.has_bounded_executable_join_pipeline());
+    assert!(!plan.has_bounded_executable_multi_join_pipeline());
+    assert!(plan.bounded_join_unsupported_shape_facts(ExecutionBoundaryPolicy::default()).is_none());
+}
+
+#[test]
+fn bounded_single_join_pipeline_rejects_aggregate_join_input_leaves() {
+    for aggregate_side in [JoinSide::Left, JoinSide::Right] {
+        let plan = single_join_with_aggregate_input_plan(aggregate_side);
+
+        assert!(!plan.has_bounded_executable_root_join());
+        assert!(!plan.has_bounded_executable_join_pipeline());
+        assert!(!plan.has_bounded_executable_multi_join_pipeline());
+        assert!(
+            plan.bounded_join_unsupported_shape_facts(ExecutionBoundaryPolicy::default()).is_some(),
+            "aggregate {aggregate_side} join input must not be accepted as a bounded root join leaf"
+        );
+    }
+}
+
+fn q13_shaped_serial_aggregate_spine_plan() -> cudf_query_engine::QueryPlan {
+    let customer_schema = Arc::new(Schema::new(vec![Field::new("c_custkey", DataType::Int32, false)]));
+    let orders_schema = Arc::new(Schema::new(vec![
+        Field::new("o_orderkey", DataType::Int32, false),
+        Field::new("o_custkey", DataType::Int32, false),
+    ]));
+    let join_schema = Arc::new(Schema::new(vec![
+        Field::new("c_custkey", DataType::Int32, false),
+        Field::new("o_orderkey", DataType::Int32, true),
+    ]));
+    let first_aggregate_schema = Arc::new(Schema::new(vec![
+        Field::new("c_custkey", DataType::Int32, false),
+        Field::new("c_count", DataType::Int64, false),
+    ]));
+    let c_count_schema = Arc::new(Schema::new(vec![Field::new("c_count", DataType::Int64, false)]));
+    let final_schema = Arc::new(Schema::new(vec![
+        Field::new("c_count", DataType::Int64, false),
+        Field::new("custdist", DataType::Int64, false),
+    ]));
+
+    let mut builder = QueryPlanBuilder::new();
+    let customers = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+        "/tmp/q13-customers.parquet",
+        customer_schema,
+        vec!["c_custkey".into()],
+    )));
+    let orders = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+        "/tmp/q13-orders.parquet",
+        orders_schema,
+        vec!["o_orderkey".into(), "o_custkey".into()],
+    )));
+    let join = builder.add_join(
+        customers,
+        orders,
+        JoinSpec::new(
+            JoinType::Left,
+            vec![JoinKey::new(
+                ColumnRef::input(0, "c_custkey", "c_custkey"),
+                ColumnRef::input(1, "o_custkey", "o_custkey"),
+            )],
+        )
+        .with_output_projection(vec![
+            JoinOutputColumn::left(ColumnRef::input(0, "c_custkey", "c_custkey"), "c_custkey"),
+            JoinOutputColumn::right(ColumnRef::input(1, "o_orderkey", "o_orderkey"), "o_orderkey"),
+        ])
+        .with_build_side(JoinSide::Right),
+        Arc::clone(&join_schema),
+    );
+    let projection = builder.add_projection(
+        join,
+        vec![Expr::column("c_custkey"), Expr::column("o_orderkey")],
+        Arc::clone(&join_schema),
+    );
+    let customer_counts = builder.add_aggregate(
+        projection,
+        AggregateSpec::new(
+            vec![Expr::column("c_custkey")],
+            vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("o_orderkey"), "c_count")],
+        ),
+        first_aggregate_schema,
+    );
+    let count_projection =
+        builder.add_projection(customer_counts, vec![Expr::column("c_count")], Arc::clone(&c_count_schema));
+    let distribution = builder.add_aggregate(
+        count_projection,
+        AggregateSpec::new(
+            vec![Expr::column("c_count")],
+            vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("c_count"), "custdist")],
+        ),
+        Arc::clone(&final_schema),
+    );
+    let sort = builder.add_sort(
+        distribution,
+        SortSpec::new(vec![
+            SortExpr::new(Expr::column("custdist"), true, false),
+            SortExpr::new(Expr::column("c_count"), true, false),
+        ]),
+        Arc::clone(&final_schema),
+    );
+    builder.finish_with_host_sink(sort)
+}
+
+fn single_join_with_aggregate_input_plan(aggregate_side: JoinSide) -> cudf_query_engine::QueryPlan {
+    let customer_schema = Arc::new(Schema::new(vec![Field::new("c_custkey", DataType::Int32, false)]));
+    let orders_schema = Arc::new(Schema::new(vec![
+        Field::new("o_orderkey", DataType::Int32, false),
+        Field::new("o_custkey", DataType::Int32, false),
+    ]));
+    let customer_aggregate_schema = Arc::new(Schema::new(vec![
+        Field::new("c_custkey", DataType::Int32, false),
+        Field::new("c_count", DataType::Int64, false),
+    ]));
+    let order_aggregate_schema = Arc::new(Schema::new(vec![
+        Field::new("o_custkey", DataType::Int32, false),
+        Field::new("o_count", DataType::Int64, false),
+    ]));
+
+    let mut builder = QueryPlanBuilder::new();
+    let customers = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+        "/tmp/q13-customers.parquet",
+        customer_schema,
+        vec!["c_custkey".into()],
+    )));
+    let orders = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+        "/tmp/q13-orders.parquet",
+        orders_schema,
+        vec!["o_orderkey".into(), "o_custkey".into()],
+    )));
+    let customer_counts = builder.add_aggregate(
+        customers,
+        AggregateSpec::new(
+            vec![Expr::column("c_custkey")],
+            vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("c_custkey"), "c_count")],
+        ),
+        Arc::clone(&customer_aggregate_schema),
+    );
+    let order_counts = builder.add_aggregate(
+        orders,
+        AggregateSpec::new(
+            vec![Expr::column("o_custkey")],
+            vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("o_orderkey"), "o_count")],
+        ),
+        Arc::clone(&order_aggregate_schema),
+    );
+
+    let (left, right, left_key, right_key, output_schema, output_projection) = match aggregate_side {
+        JoinSide::Left => (
+            customer_counts,
+            orders,
+            ColumnRef::input(0, "c_custkey", "c_custkey"),
+            ColumnRef::input(1, "o_custkey", "o_custkey"),
+            customer_aggregate_schema,
+            vec![
+                JoinOutputColumn::left(ColumnRef::input(0, "c_custkey", "c_custkey"), "c_custkey"),
+                JoinOutputColumn::left(ColumnRef::input(0, "c_count", "c_count"), "c_count"),
+            ],
+        ),
+        JoinSide::Right => (
+            customers,
+            order_counts,
+            ColumnRef::input(0, "c_custkey", "c_custkey"),
+            ColumnRef::input(1, "o_custkey", "o_custkey"),
+            order_aggregate_schema,
+            vec![
+                JoinOutputColumn::right(ColumnRef::input(1, "o_custkey", "o_custkey"), "o_custkey"),
+                JoinOutputColumn::right(ColumnRef::input(1, "o_count", "o_count"), "o_count"),
+            ],
+        ),
+    };
+    let join = builder.add_join(
+        left,
+        right,
+        JoinSpec::new(JoinType::Inner, vec![JoinKey::new(left_key, right_key)])
+            .with_output_projection(output_projection)
+            .with_build_side(JoinSide::Right),
+        output_schema,
+    );
+    builder.finish_with_host_sink(join)
 }
 
 fn mixed_residual_join_plan(
@@ -951,6 +1195,88 @@ fn mixed_residual_multi_join_plan(
         ))
         .with_output_projection(second_join_projection)
         .with_build_side(second_join_build_side),
+        second_join_schema,
+    );
+    builder.finish_with_host_sink(second_join)
+}
+
+fn valid_mixed_residual_semi_anti_then_invalid_mixed_residual_join_plan(
+    first_join_type: JoinType,
+    second_join_type: JoinType,
+) -> cudf_query_engine::QueryPlan {
+    let base_schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int32, false),
+        Field::new("left_payload", DataType::Int32, false),
+    ]));
+    let first_right_schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int32, false),
+        Field::new("right_payload", DataType::Int32, false),
+    ]));
+    let second_right_schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int32, false),
+        Field::new("right_payload", DataType::Int32, false),
+    ]));
+    let first_join_schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int32, false),
+        Field::new("left_payload", DataType::Int32, false),
+    ]));
+    let second_join_schema = Arc::new(Schema::new(vec![
+        Field::new("left_payload", DataType::Int32, false),
+        Field::new("right_payload", DataType::Int32, false),
+    ]));
+
+    let mut builder = QueryPlanBuilder::new();
+    let base = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+        "/tmp/base.parquet",
+        base_schema,
+        vec!["id".into(), "left_payload".into()],
+    )));
+    let first_right = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+        "/tmp/first_right.parquet",
+        first_right_schema,
+        vec!["id".into(), "right_payload".into()],
+    )));
+    let second_right = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+        "/tmp/second_right.parquet",
+        second_right_schema,
+        vec!["id".into(), "right_payload".into()],
+    )));
+    let first_join = builder.add_join(
+        base,
+        first_right,
+        JoinSpec::new(
+            first_join_type,
+            vec![JoinKey::new(ColumnRef::input(0, "id", "id"), ColumnRef::input(1, "id", "id"))],
+        )
+        .with_residual_predicate(Expr::binary(
+            Expr::input_column(0, "left_payload", "left_payload"),
+            BinaryOp::Gt,
+            Expr::input_column(1, "right_payload", "right_payload"),
+        ))
+        .with_output_projection(vec![
+            JoinOutputColumn::left(ColumnRef::input(0, "id", "id"), "id"),
+            JoinOutputColumn::left(ColumnRef::input(0, "left_payload", "left_payload"), "left_payload"),
+        ])
+        .with_build_side(JoinSide::Right),
+        first_join_schema,
+    );
+    let second_join = builder.add_join(
+        first_join,
+        second_right,
+        JoinSpec::new(
+            second_join_type,
+            vec![JoinKey::new(ColumnRef::input(0, "id", "id"), ColumnRef::input(1, "id", "id"))],
+        )
+        .with_residual_predicate(Expr::binary(
+            Expr::input_column(0, "left_payload", "left_payload"),
+            BinaryOp::Gt,
+            Expr::input_column(1, "right_payload", "right_payload"),
+        ))
+        .with_output_projection(vec![
+            JoinOutputColumn::left(ColumnRef::input(0, "left_payload", "left_payload"), "left_payload"),
+            JoinOutputColumn::right(ColumnRef::input(1, "right_payload", "right_payload"), "right_payload"),
+        ])
+        .with_build_side(JoinSide::Right),
         second_join_schema,
     );
     builder.finish_with_host_sink(second_join)

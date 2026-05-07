@@ -331,6 +331,110 @@ fn benchmark_report_q07_accepted_join_rows_preserve_bounded_join_facts() {
 }
 
 #[test]
+fn benchmark_report_q13_accepted_join_rows_preserve_bounded_facts_and_parity_fields() {
+    let config =
+        NativeTpchBenchmarkConfig { query_ids: vec!["q13".to_string()], ..NativeTpchBenchmarkConfig::default() };
+    let mut planning = accepted_planning_row("q13");
+    planning.native_candidate_shape_family = Some("sort_hash_join_aggregate".to_string());
+    planning.bounded_join_reservation_facts = cudf_query_engine::BoundedJoinReservationContract
+        .facts(cudf_query_engine::ExecutionBoundaryPolicy::default())
+        .into_iter()
+        .map(|(key, value)| (key.to_string(), value))
+        .collect();
+    let expected_bounded_join_facts = expected_key_value_facts(&planning.bounded_join_reservation_facts);
+    let row = NativeTpchBenchmarkRow::accepted(
+        "q13",
+        planning,
+        Ok(timed_cpu_run("output-fnv1a64:0000000000000013")),
+        Ok(timed_native_run("output-fnv1a64:0000000000000013")),
+    );
+    let report = NativeTpchBenchmarkReport { metadata: benchmark_metadata(), config, rows: vec![row] };
+
+    let text = report.to_tsv();
+    let mut lines = text.lines().filter(|line| !line.starts_with('#'));
+    let header = lines.next().expect("benchmark report should contain a TSV header");
+    let header_fields = header.split('\t').collect::<Vec<_>>();
+    let row = lines.next().expect("benchmark report should contain the q13 row");
+    assert!(lines.next().is_none(), "benchmark report should contain only the q13 row");
+    let fields = row.split('\t').collect::<Vec<_>>();
+    assert_eq!(fields.len(), header_fields.len(), "row has wrong schema width: {row}");
+
+    let bounded_status_index = header_index(&header_fields, "bounded_status");
+    let bounded_join_facts_index = header_index(&header_fields, "bounded_join_reservation_facts");
+    let shape_family_index = header_index(&header_fields, "native_candidate_shape_family");
+    let execution_path_index = header_index(&header_fields, "post_native_execution_path");
+    let cpu_started_index = header_index(&header_fields, "cpu_runtime_started");
+    let native_started_index = header_index(&header_fields, "native_runtime_started");
+    let runtime_outcome_index = header_index(&header_fields, "runtime_outcome");
+    let parity_status_index = header_index(&header_fields, "parity_status");
+    let cpu_fingerprint_index = header_index(&header_fields, "cpu_output_fingerprint");
+    let native_fingerprint_index = header_index(&header_fields, "native_output_fingerprint");
+    let output_fingerprint_index = header_index(&header_fields, "output_fingerprint");
+
+    assert_eq!(fields[0], "q13");
+    assert_eq!(fields[bounded_status_index], "bounded_accepted_parity_matched");
+    assert_eq!(fields[bounded_join_facts_index], expected_bounded_join_facts);
+    assert!(fields[bounded_join_facts_index].contains("bounded_join_execution_status=enabled"));
+    assert!(fields[bounded_join_facts_index].contains("bounded_join_lower_level_blockers="));
+    assert_eq!(fields[shape_family_index], "sort_hash_join_aggregate");
+    assert_eq!(fields[execution_path_index], "native");
+    assert_eq!(fields[cpu_started_index], "true");
+    assert_eq!(fields[native_started_index], "true");
+    assert_eq!(fields[runtime_outcome_index], "succeeded");
+    assert_eq!(fields[parity_status_index], "matched");
+    assert_eq!(fields[cpu_fingerprint_index], "output-fnv1a64:0000000000000013");
+    assert_eq!(fields[native_fingerprint_index], "output-fnv1a64:0000000000000013");
+    assert_eq!(fields[output_fingerprint_index], "output-fnv1a64:0000000000000013");
+}
+
+#[test]
+fn benchmark_report_q21_accepted_join_rows_preserve_expanded_mixed_residual_facts() {
+    let config =
+        NativeTpchBenchmarkConfig { query_ids: vec!["q21".to_string()], ..NativeTpchBenchmarkConfig::default() };
+    let mut planning = accepted_planning_row("q21");
+    planning.native_candidate_shape_family = Some("sort_fetch_hash_join_aggregate".to_string());
+    planning.bounded_join_reservation_facts = expanded_mixed_residual_multi_join_facts();
+    let expected_bounded_join_facts = expected_key_value_facts(&planning.bounded_join_reservation_facts);
+    let row = NativeTpchBenchmarkRow::accepted(
+        "q21",
+        planning,
+        Ok(timed_cpu_run("output-fnv1a64:0000000000000021")),
+        Ok(timed_native_run("output-fnv1a64:0000000000000021")),
+    );
+    let report = NativeTpchBenchmarkReport { metadata: benchmark_metadata(), config, rows: vec![row] };
+
+    let text = report.to_tsv();
+    let mut lines = text.lines().filter(|line| !line.starts_with('#'));
+    let header = lines.next().expect("benchmark report should contain a TSV header");
+    let header_fields = header.split('\t').collect::<Vec<_>>();
+    let row = lines.next().expect("benchmark report should contain the q21 row");
+    assert!(lines.next().is_none(), "benchmark report should contain only the q21 row");
+    let fields = row.split('\t').collect::<Vec<_>>();
+    assert_eq!(fields.len(), header_fields.len(), "row has wrong schema width: {row}");
+
+    let bounded_status_index = header_index(&header_fields, "bounded_status");
+    let bounded_join_facts_index = header_index(&header_fields, "bounded_join_reservation_facts");
+    let shape_family_index = header_index(&header_fields, "native_candidate_shape_family");
+    let execution_path_index = header_index(&header_fields, "post_native_execution_path");
+    let native_started_index = header_index(&header_fields, "native_runtime_started");
+    let runtime_outcome_index = header_index(&header_fields, "runtime_outcome");
+
+    assert_eq!(fields[0], "q21");
+    assert_eq!(fields[bounded_status_index], "bounded_accepted_parity_matched");
+    assert_eq!(fields[bounded_join_facts_index], expected_bounded_join_facts);
+    assert!(fields[bounded_join_facts_index].contains("bounded_join_execution_status=enabled"));
+    assert!(fields[bounded_join_facts_index].contains(
+        "bounded_join_mixed_keyed_residual_multi_join_capability=multi_join_mixed_keyed_residual_inner_left_semi_left_anti_pipeline"
+    ));
+    assert!(fields[bounded_join_facts_index]
+        .contains("bounded_join_mixed_keyed_residual_multi_join_capability_detail=mixed_keyed_residual_multi_join_types=inner,left_semi,left_anti"));
+    assert_eq!(fields[shape_family_index], "sort_fetch_hash_join_aggregate");
+    assert_eq!(fields[execution_path_index], "native");
+    assert_eq!(fields[native_started_index], "true");
+    assert_eq!(fields[runtime_outcome_index], "succeeded");
+}
+
+#[test]
 fn accepted_row_preserves_native_not_started_failure_status() {
     let row = NativeTpchBenchmarkRow::accepted(
         "q01",
@@ -974,4 +1078,34 @@ fn expected_key_value_facts(facts: &BTreeMap<String, String>) -> String {
 
 fn expected_stable_tsv_field(value: &str) -> String {
     value.replace(['\t', '\n', '\r'], " ")
+}
+
+fn expanded_mixed_residual_multi_join_facts() -> BTreeMap<String, String> {
+    let mut facts = cudf_query_engine::BoundedJoinReservationContract
+        .facts(cudf_query_engine::ExecutionBoundaryPolicy::default())
+        .into_iter()
+        .map(|(key, value)| (key.to_string(), value))
+        .collect::<BTreeMap<_, _>>();
+    facts.insert(
+        "bounded_join_execution_families".to_string(),
+        [
+            "root_reusable_hash_join",
+            "root_filtered_semi_anti_join",
+            "keyless_conditional_join",
+            "root_projected_cross_join",
+            "root_mixed_inner_left_join",
+            "multi_join_reusable_hash_pipeline",
+            "multi_join_mixed_keyed_residual_inner_left_semi_left_anti_pipeline",
+        ]
+        .join(","),
+    );
+    facts.insert(
+        "bounded_join_mixed_keyed_residual_multi_join_capability".to_string(),
+        "multi_join_mixed_keyed_residual_inner_left_semi_left_anti_pipeline".to_string(),
+    );
+    facts.insert(
+        "bounded_join_mixed_keyed_residual_multi_join_capability_detail".to_string(),
+        "mixed_keyed_residual_multi_join_types=inner,left_semi,left_anti".to_string(),
+    );
+    facts
 }
