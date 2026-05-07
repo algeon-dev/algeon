@@ -890,13 +890,19 @@ async fn tpch_datafusion_planning_report_emits_one_stable_row_per_query() {
                 if row.query_id == "q21" {
                     assert_eq!(
                         row.bounded_join_reservation_facts.get("bounded_join_specific_blocker").map(String::as_str),
-                        Some("mixed_keyed_residual_semi_anti_join_unsupported")
+                        Some("bounded_multi_join_mixed_keyed_residual_semi_anti_topology_unsupported")
+                    );
+                    assert_eq!(
+                        row.bounded_join_reservation_facts
+                            .get("bounded_join_required_shape_contract")
+                            .map(String::as_str),
+                        Some("multi_join_reusable_hash_pipeline_requires_reusable_hash_or_filtered_semi_anti_joins")
                     );
                     assert_eq!(
                         row.bounded_join_reservation_facts
                             .get("bounded_join_required_lower_level_contract")
                             .map(String::as_str),
-                        Some("mixed_left_semi_left_anti_retained_size_data_and_projected_output_reservation")
+                        None
                     );
                 }
             } else {
@@ -1256,11 +1262,8 @@ fn expected_tpch_datafusion_planning_rejection(query_id: &str) -> (&'static str,
     }
 }
 
-fn expected_tpch_bounded_join_lower_level_blockers(query_id: &str) -> &'static str {
-    match query_id {
-        "q21" => "mixed_semi_anti_retained_size_data,projected_output_reservation",
-        _ => "",
-    }
+fn expected_tpch_bounded_join_lower_level_blockers(_query_id: &str) -> &'static str {
+    ""
 }
 
 fn expected_tpch_operator_unsupported_category(query_id: &str) -> &'static str {

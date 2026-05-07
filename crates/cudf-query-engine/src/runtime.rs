@@ -741,9 +741,18 @@ impl BoundedJoinReservationContract {
                 "mixed_inner_left_join_size_data_gather_map_reservation_size_bytes".to_string(),
             ),
             ("cudf_rs_mixed_join_output_size_hint", "mixed_inner_left_join_size_data_materialize_indices".to_string()),
+            ("cudf_rs_mixed_join_remaining_blockers", "".to_string()),
             (
-                "cudf_rs_mixed_join_remaining_blockers",
-                "blocked_until_mixed_full_semi_anti_retained_size_data".to_string(),
+                "bounded_join_mixed_keyed_residual_capability",
+                "root_mixed_inner_left_join_extended_to_full_left_semi_left_anti".to_string(),
+            ),
+            (
+                "cudf_rs_mixed_join_pair_materialization_contract",
+                "mixed_join_retained_size_data_materialize_indices".to_string(),
+            ),
+            (
+                "cudf_rs_mixed_join_single_side_materialization_contract",
+                "mixed_join_retained_size_data_materialize_single_indices".to_string(),
             ),
             (
                 "cudf_rs_projected_cross_join_reservation_contract",
