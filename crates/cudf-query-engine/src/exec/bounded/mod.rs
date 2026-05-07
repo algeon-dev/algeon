@@ -5,6 +5,7 @@ mod chunks;
 mod facts;
 mod final_sort;
 mod join;
+mod multi_join;
 mod pipeline;
 mod reservation;
 
@@ -15,6 +16,7 @@ use facts::*;
 pub(in crate::exec) use final_sort::topk_candidate_rows;
 use final_sort::*;
 use join::*;
+use multi_join::*;
 use pipeline::*;
 pub(in crate::exec) use reservation::{CommittedPartial, ReservationTracker};
 
@@ -30,6 +32,9 @@ pub(super) fn execute_bounded_query_plan(
         }
         if plan.has_bounded_executable_join_pipeline() {
             return execute_bounded_join_pipeline_query_plan(context, plan, gpu_inputs, metrics);
+        }
+        if plan.has_bounded_executable_multi_join_pipeline() {
+            return execute_bounded_multi_join_pipeline_query_plan(context, plan, gpu_inputs, metrics);
         }
         reject_bounded_join_plan(context, plan)?;
     }
@@ -100,7 +105,7 @@ fn reject_bounded_join_plan(context: &ExecutionContext, plan: &QueryPlan) -> Res
     if plan.nodes().iter().any(|node| matches!(node.kind, PlanNode::Join(_))) {
         let contract = BoundedJoinReservationContract;
         let mut error = unsupported_bounded_shape(
-            "bounded native join execution currently supports root reusable hash joins and keyless conditional joins with ordered reservations",
+            bounded_join_unsupported_message(contract),
             "bounded_join_plan_shape_unsupported",
         );
         for (key, value) in contract.rejection_facts(context.boundary_policy()) {
@@ -110,6 +115,13 @@ fn reject_bounded_join_plan(context: &ExecutionContext, plan: &QueryPlan) -> Res
     }
 
     Ok(())
+}
+
+fn bounded_join_unsupported_message(contract: BoundedJoinReservationContract) -> String {
+    format!(
+        "bounded native join execution currently supports these ordered-reservation families: {}",
+        contract.execution_families_csv()
+    )
 }
 
 fn execute_bounded_generic_query_plan(
@@ -124,6 +136,9 @@ fn execute_bounded_generic_query_plan(
         }
         if plan.has_bounded_executable_join_pipeline() {
             return execute_bounded_join_pipeline_query_plan(context, plan, gpu_inputs, metrics);
+        }
+        if plan.has_bounded_executable_multi_join_pipeline() {
+            return execute_bounded_multi_join_pipeline_query_plan(context, plan, gpu_inputs, metrics);
         }
         reject_bounded_join_plan(context, plan)?;
     }

@@ -1,6 +1,60 @@
 use std::time::Duration;
 
-use crate::runtime::{ExecutionBoundaryPolicy, MemoryControlPolicy};
+use crate::runtime::{ExecutionBoundaryPolicy, MemoryControlPolicy, MemoryReservationRequest, ReservationKind};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MemoryReservationEventOutcome {
+    Granted,
+    Denied,
+}
+
+impl MemoryReservationEventOutcome {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Granted => "granted",
+            Self::Denied => "denied",
+        }
+    }
+}
+
+impl std::fmt::Display for MemoryReservationEventOutcome {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MemoryReservationEvent {
+    pub reservation_kind: ReservationKind,
+    pub memory_boundary: String,
+    pub requested_bytes: u64,
+    pub granted_bytes: u64,
+    pub outcome: MemoryReservationEventOutcome,
+    pub node_id: Option<String>,
+    pub stage: Option<String>,
+}
+
+impl MemoryReservationEvent {
+    pub fn granted(request: &MemoryReservationRequest, granted_bytes: u64) -> Self {
+        Self::new(request, granted_bytes, MemoryReservationEventOutcome::Granted)
+    }
+
+    pub fn denied(request: &MemoryReservationRequest, granted_bytes: u64) -> Self {
+        Self::new(request, granted_bytes, MemoryReservationEventOutcome::Denied)
+    }
+
+    fn new(request: &MemoryReservationRequest, granted_bytes: u64, outcome: MemoryReservationEventOutcome) -> Self {
+        Self {
+            reservation_kind: request.reservation_kind,
+            memory_boundary: request.memory_boundary.clone(),
+            requested_bytes: request.requested_bytes,
+            granted_bytes,
+            outcome,
+            node_id: request.node_id.clone(),
+            stage: request.stage.clone(),
+        }
+    }
+}
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct QueryMetrics {
@@ -19,6 +73,7 @@ pub struct QueryMetrics {
     pub reservation_requested_bytes: u64,
     pub reservation_granted_bytes: u64,
     pub reservation_denied_count: u64,
+    pub reservation_events: Vec<MemoryReservationEvent>,
     pub source_chunks_planned: u64,
     pub source_chunks_attempted: u64,
     pub source_chunks_committed: u64,
@@ -54,6 +109,8 @@ pub struct QueryMetrics {
     ///
     /// This is recorded when an artifact is constructed, not when it is reused.
     pub filtered_join_hash_table_bytes: u64,
+    /// Unique device bytes retained by filtered-join probe states.
+    pub filtered_join_probe_state_bytes: u64,
     pub parquet_files: u64,
     pub parquet_bytes_known: u64,
     pub row_groups_selected: u64,
@@ -98,6 +155,16 @@ impl QueryMetrics {
     pub fn record_reservation_denied(&mut self, requested_bytes: u64) {
         self.reservation_requested_bytes = self.reservation_requested_bytes.saturating_add(requested_bytes);
         self.reservation_denied_count = self.reservation_denied_count.saturating_add(1);
+    }
+
+    pub fn record_reservation_granted_event(&mut self, request: &MemoryReservationRequest, granted_bytes: u64) {
+        self.record_reservation_granted(request.requested_bytes, granted_bytes);
+        self.reservation_events.push(MemoryReservationEvent::granted(request, granted_bytes));
+    }
+
+    pub fn record_reservation_denied_event(&mut self, request: &MemoryReservationRequest, granted_bytes: u64) {
+        self.record_reservation_denied(request.requested_bytes);
+        self.reservation_events.push(MemoryReservationEvent::denied(request, granted_bytes));
     }
 
     pub fn record_source_chunk_planned(&mut self, row_groups: u64) {
@@ -164,6 +231,10 @@ impl QueryMetrics {
         self.filtered_join_hash_table_bytes = self.filtered_join_hash_table_bytes.saturating_add(bytes);
     }
 
+    pub fn record_filtered_join_probe_state_bytes(&mut self, bytes: u64) {
+        self.filtered_join_probe_state_bytes = self.filtered_join_probe_state_bytes.saturating_add(bytes);
+    }
+
     pub fn record_partial_aggregate(&mut self, rows: u64) {
         self.partial_aggregate_count = self.partial_aggregate_count.saturating_add(1);
         self.partial_aggregate_rows = self.partial_aggregate_rows.saturating_add(rows);
@@ -221,6 +292,8 @@ pub struct JoinOperatorMetrics {
     /// hash table; for filtered joins it is the retained filtered-join build
     /// artifact. It remains `0` for join paths without a reusable build artifact.
     pub hash_table_bytes: u64,
+    /// Device bytes retained by a filtered-join probe state.
+    pub filtered_probe_state_bytes: u64,
     /// Device bytes retained by join gather maps produced for this join.
     ///
     /// This is a direct cudf-rs observation over the returned device index

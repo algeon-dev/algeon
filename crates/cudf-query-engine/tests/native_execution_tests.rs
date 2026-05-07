@@ -19,9 +19,9 @@ use cudf_query_engine::{
     BuildMaterializationBoundary, ExecutionBoundaryPolicy, ExecutionContext, Expr, GpuHashJoinBuildCache,
     GpuResidentInputMap, GpuResidentSource, JoinKey, JoinNullEquality, JoinOutputColumn, JoinSide, JoinSpec, JoinType,
     LimitSpec, LiteralValue, LocalParquetFile, LocalParquetSource, MemoryControlPolicy, PartitionColumn,
-    QueryErrorCode, QueryMetrics, QueryOutput, QueryPlanBuilder, SortExpr, SortSpec, SourceChunkPlanningPolicy,
-    SourceNode, ZERO_COLUMN_COUNT_COLUMN, execute_query_plan, execute_query_plan_with_gpu_inputs,
-    materialize_gpu_result_to_host, plan_local_parquet_source_chunks,
+    QueryErrorCode, QueryMetrics, QueryOutput, QueryPlanBuilder, ReservationKind, SortExpr, SortSpec,
+    SourceChunkPlanningPolicy, SourceNode, ZERO_COLUMN_COUNT_COLUMN, execute_query_plan,
+    execute_query_plan_with_gpu_inputs, materialize_gpu_result_to_host, plan_local_parquet_source_chunks,
 };
 use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
 
@@ -4140,12 +4140,26 @@ fn bounded_native_query_executes_root_filtered_semi_anti_joins_with_ordered_rese
     assert_eq!(semi_metrics.key_count, 1);
     assert!(!semi_metrics.residual_predicate);
     assert!(semi_metrics.hash_table_bytes > 0);
+    assert!(semi_metrics.filtered_probe_state_bytes > 0);
     assert!(semi_metrics.gather_map_bytes > 0);
     assert_eq!(semi_metrics.output_rows, 3);
     assert_eq!(semi.metrics().hash_join_build_count, 0);
     assert_eq!(semi.metrics().hash_join_hash_table_bytes, 0);
     assert_eq!(semi.metrics().filtered_join_build_count, 1);
     assert_eq!(semi.metrics().filtered_join_hash_table_bytes, semi_metrics.hash_table_bytes);
+    assert_eq!(semi.metrics().filtered_join_probe_state_bytes, semi_metrics.filtered_probe_state_bytes);
+    assert_reservation_kind_subsequence(
+        semi.metrics(),
+        &[
+            ReservationKind::BuildSide,
+            ReservationKind::HashTable,
+            ReservationKind::ProbeSide,
+            ReservationKind::FilteredProbeState,
+            ReservationKind::GatherMap,
+            ReservationKind::JoinOutput,
+            ReservationKind::Materialization,
+        ],
+    );
 
     let QueryOutput::HostArrow(anti_batch) = anti.output() else {
         panic!("left anti bounded filtered join should return host output");
@@ -4164,12 +4178,26 @@ fn bounded_native_query_executes_root_filtered_semi_anti_joins_with_ordered_rese
     assert_eq!(anti_metrics.probe_side, "left");
     assert_eq!(anti_metrics.key_count, 1);
     assert!(anti_metrics.hash_table_bytes > 0);
+    assert!(anti_metrics.filtered_probe_state_bytes > 0);
     assert!(anti_metrics.gather_map_bytes > 0);
     assert_eq!(anti_metrics.output_rows, 1);
     assert_eq!(anti.metrics().hash_join_build_count, 0);
     assert_eq!(anti.metrics().hash_join_hash_table_bytes, 0);
     assert_eq!(anti.metrics().filtered_join_build_count, 1);
     assert_eq!(anti.metrics().filtered_join_hash_table_bytes, anti_metrics.hash_table_bytes);
+    assert_eq!(anti.metrics().filtered_join_probe_state_bytes, anti_metrics.filtered_probe_state_bytes);
+    assert_reservation_kind_subsequence(
+        anti.metrics(),
+        &[
+            ReservationKind::BuildSide,
+            ReservationKind::HashTable,
+            ReservationKind::ProbeSide,
+            ReservationKind::FilteredProbeState,
+            ReservationKind::GatherMap,
+            ReservationKind::JoinOutput,
+            ReservationKind::Materialization,
+        ],
+    );
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -4193,6 +4221,7 @@ fn bounded_native_query_executes_empty_root_filtered_left_semi_join_with_zero_ga
     );
 
     assert_empty_bounded_filtered_join_result(&result, "left_semi");
+    assert_zero_byte_gather_map_reservation(result.metrics());
     fs::remove_dir_all(dir).unwrap();
 }
 
@@ -4215,6 +4244,7 @@ fn bounded_native_query_executes_empty_root_filtered_left_anti_join_with_zero_ga
     );
 
     assert_empty_bounded_filtered_join_result(&result, "left_anti");
+    assert_zero_byte_gather_map_reservation(result.metrics());
     fs::remove_dir_all(dir).unwrap();
 }
 
@@ -4707,6 +4737,109 @@ fn bounded_native_query_executes_root_hash_join_under_aggregate_with_ordered_res
 }
 
 #[test]
+fn bounded_native_query_executes_pure_hash_multi_join_pipeline_with_ordered_reservations() {
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let dir = unique_temp_dir("cudf-query-engine-bounded-pure-hash-multi-join");
+    let left_path = dir.join("lineitem.parquet");
+    let orders_path = dir.join("orders.parquet");
+    let region_path = dir.join("regions.parquet");
+    let left_schema = write_join_left_parquet(&runtime, &left_path);
+    let orders_schema = write_join_right_parquet(&runtime, &orders_path);
+    let region_schema = write_join_region_parquet(&runtime, &region_path);
+    let first_join_schema = Arc::new(Schema::new(vec![
+        Field::new("order_id", DataType::Int32, false),
+        Field::new("qty", DataType::Int32, false),
+        Field::new("category", DataType::Utf8, false),
+    ]));
+    let second_join_schema = Arc::new(Schema::new(vec![
+        Field::new("order_id", DataType::Int32, false),
+        Field::new("qty", DataType::Int32, false),
+        Field::new("region", DataType::Utf8, false),
+    ]));
+    let aggregate_schema = Arc::new(Schema::new(vec![
+        Field::new("region", DataType::Utf8, false),
+        Field::new("line_count", DataType::Int64, false),
+    ]));
+    let sort = SortSpec::new(vec![SortExpr::new(Expr::column("region"), false, false)]);
+
+    let mut builder = QueryPlanBuilder::new();
+    let lineitem =
+        builder.add_source(SourceNode::LocalParquet(join_left_source(&left_path, &left_schema, &["order_id", "qty"])));
+    let orders = builder.add_source(SourceNode::LocalParquet(join_right_source(
+        &orders_path,
+        &orders_schema,
+        &["order_id", "category"],
+    )));
+    let regions = builder.add_source(SourceNode::LocalParquet(join_right_source(
+        &region_path,
+        &region_schema,
+        &["order_id", "region"],
+    )));
+    let first_join = builder.add_join(
+        lineitem,
+        orders,
+        JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
+            .with_output_projection(vec![
+                JoinOutputColumn::left(cudf_query_engine::ColumnRef::input(0, "order_id", "order_id"), "order_id"),
+                JoinOutputColumn::left(cudf_query_engine::ColumnRef::input(0, "qty", "qty"), "qty"),
+                JoinOutputColumn::right(cudf_query_engine::ColumnRef::input(1, "category", "category"), "category"),
+            ])
+            .with_build_side(JoinSide::Right),
+        first_join_schema,
+    );
+    let second_join = builder.add_join(
+        first_join,
+        regions,
+        JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
+            .with_output_projection(vec![
+                JoinOutputColumn::left(cudf_query_engine::ColumnRef::input(0, "order_id", "order_id"), "order_id"),
+                JoinOutputColumn::left(cudf_query_engine::ColumnRef::input(0, "qty", "qty"), "qty"),
+                JoinOutputColumn::right(cudf_query_engine::ColumnRef::input(1, "region", "region"), "region"),
+            ])
+            .with_build_side(JoinSide::Right),
+        second_join_schema,
+    );
+    let aggregate = builder.add_aggregate(
+        second_join,
+        AggregateSpec::new(
+            vec![Expr::column("region")],
+            vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("qty"), "line_count")],
+        ),
+        Arc::clone(&aggregate_schema),
+    );
+    let sort = builder.add_sort(aggregate, sort, Arc::clone(&aggregate_schema));
+    let plan = builder.finish_with_host_sink(sort);
+    assert!(!plan.has_bounded_executable_root_join());
+    assert!(!plan.has_bounded_executable_join_pipeline());
+    assert!(plan.has_bounded_executable_multi_join_pipeline());
+
+    let context = bounded_join_execution_context(&runtime);
+    let result = execute_query_plan(&context, &plan).unwrap();
+    let metrics = result.metrics();
+    assert_eq!(metrics.phase_c_memory_control_policy.as_str(), "bounded");
+    assert_eq!(metrics.parquet_files, 3);
+    assert_eq!(metrics.reservation_denied_count, 0);
+    assert_eq!(metrics.hash_join_build_count, 2);
+    assert_eq!(metrics.operators.iter().filter(|operator| operator.join.is_some()).count(), 2);
+    assert!(metrics.operators.iter().filter_map(|operator| operator.join.as_ref()).all(|join| {
+        join.execution_strategy == "bounded_reusable_hash_join"
+            && join.key_count == 1
+            && !join.residual_predicate
+            && join.gather_map_bytes > 0
+    }));
+
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    assert_eq!(batch.num_rows(), 2);
+    assert_eq!(batch.num_columns(), 2);
+    assert_eq!(string_array(batch, 0).iter().collect::<Vec<_>>(), vec![Some("east"), Some("west")]);
+    assert_eq!(int64_array(batch, 1).values().as_ref(), &[2, 1]);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn bounded_native_query_rejects_unsupported_join_under_aggregate_before_source_read() {
     let runtime = Arc::new(cudf::Runtime::new().unwrap());
     let left_schema = Arc::new(Schema::new(vec![
@@ -4849,11 +4982,19 @@ fn assert_bounded_join_rejection_contract(error: &cudf_query_engine::QueryError)
     );
     assert_eq!(
         error.fact_value("cudf_rs_filtered_join_output_size_observability"),
-        Some("filtered_join_exact_output_size")
+        Some("filtered_join_probe_state_output_size")
     );
     assert_eq!(
-        error.fact_value("cudf_rs_filtered_join_probe_output_size_hint"),
-        Some("filtered_join_indices_with_output_size_validation")
+        error.fact_value("cudf_rs_filtered_join_probe_state_contract"),
+        Some("filtered_join_retained_probe_state")
+    );
+    assert_eq!(
+        error.fact_value("cudf_rs_filtered_join_probe_state_observability"),
+        Some("filtered_join_probe_device_allocated_size_bytes")
+    );
+    assert_eq!(
+        error.fact_value("cudf_rs_filtered_join_probe_materialization_contract"),
+        Some("filtered_join_probe_state_materialize_indices")
     );
     assert_eq!(
         error.fact_value("cudf_rs_dataframe_gather_output_reservation_contract"),
@@ -4948,7 +5089,7 @@ fn execute_bounded_keyless_left_only_conditional_join(
                 cudf_query_engine::ColumnRef::input(0, "qty", "qty"),
                 "qty",
             )])
-            .with_build_side(JoinSide::Left),
+            .with_build_side(JoinSide::Right),
         Arc::clone(&output_schema),
     );
     let plan = builder.finish_with_host_sink(join);
@@ -5004,10 +5145,31 @@ fn assert_empty_bounded_filtered_join_result(result: &cudf_query_engine::QueryEx
     assert_eq!(join_metrics.output_rows, 0);
     assert_eq!(join_metrics.gather_map_bytes, 0);
     assert!(join_metrics.hash_table_bytes > 0);
+    assert!(join_metrics.filtered_probe_state_bytes > 0);
     assert_eq!(metrics.hash_join_build_count, 0);
     assert_eq!(metrics.hash_join_hash_table_bytes, 0);
     assert_eq!(metrics.filtered_join_build_count, 1);
     assert_eq!(metrics.filtered_join_hash_table_bytes, join_metrics.hash_table_bytes);
+    assert_eq!(metrics.filtered_join_probe_state_bytes, join_metrics.filtered_probe_state_bytes);
+}
+
+fn assert_reservation_kind_subsequence(metrics: &QueryMetrics, expected: &[ReservationKind]) {
+    let mut events = metrics.reservation_events.iter();
+    for expected_kind in expected {
+        events
+            .find(|event| event.reservation_kind == *expected_kind)
+            .unwrap_or_else(|| panic!("missing ordered reservation event {expected_kind:?}"));
+    }
+}
+
+fn assert_zero_byte_gather_map_reservation(metrics: &QueryMetrics) {
+    let gather_map = metrics
+        .reservation_events
+        .iter()
+        .find(|event| event.reservation_kind == ReservationKind::GatherMap)
+        .expect("filtered zero-output join should still record a gather-map reservation boundary");
+    assert_eq!(gather_map.requested_bytes, 0);
+    assert_eq!(gather_map.granted_bytes, 0);
 }
 
 fn execute_left_only_residual_join(
@@ -5165,6 +5327,20 @@ fn write_join_right_keys_parquet(runtime: &cudf::Runtime, path: &std::path::Path
     let batch = RecordBatch::try_new(
         Arc::clone(&schema),
         vec![Arc::new(Int32Array::from(order_ids.to_vec())), Arc::new(StringArray::from(categories))],
+    )
+    .unwrap();
+    DataFrame::from_record_batch(runtime, &batch).unwrap().write_parquet(path).unwrap();
+    schema
+}
+
+fn write_join_region_parquet(runtime: &cudf::Runtime, path: &std::path::Path) -> Arc<Schema> {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("order_id", DataType::Int32, false),
+        Field::new("region", DataType::Utf8, false),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![Arc::new(Int32Array::from(vec![2, 3, 5])), Arc::new(StringArray::from(vec!["east", "west", "unused"]))],
     )
     .unwrap();
     DataFrame::from_record_batch(runtime, &batch).unwrap().write_parquet(path).unwrap();

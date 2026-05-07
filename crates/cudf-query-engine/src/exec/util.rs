@@ -52,7 +52,7 @@ pub(super) fn invalid_node_reference(id: NodeId, message: &'static str) -> Query
     QueryError::new(QueryErrorCode::InvalidPlan, "cudf_query_engine.plan.execute", message).with_fact("node", id)
 }
 
-pub(super) fn unsupported_bounded_shape(message: &'static str, reason: &'static str) -> QueryError {
+pub(super) fn unsupported_bounded_shape(message: impl Into<String>, reason: &'static str) -> QueryError {
     QueryError::new(QueryErrorCode::UnsupportedPlanShape, "cudf_query_engine.bounded.plan", message)
         .with_fact("reason", reason)
 }

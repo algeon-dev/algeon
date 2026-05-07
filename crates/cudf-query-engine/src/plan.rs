@@ -65,6 +65,10 @@ impl QueryPlan {
         analyze_bounded_join_pipeline(self).is_ok()
     }
 
+    pub fn has_bounded_executable_multi_join_pipeline(&self) -> bool {
+        crate::bounded_support::analyze_bounded_multi_join_pipeline(self).is_ok()
+    }
+
     pub fn unreachable_node_ids(&self) -> Vec<NodeId> {
         let mut reachable = vec![false; self.nodes.len()];
         let mut stack = vec![self.sink.input()];

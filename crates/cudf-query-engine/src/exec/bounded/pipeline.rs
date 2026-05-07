@@ -8,7 +8,7 @@ pub(super) fn execute_bounded_join_pipeline_query_plan(
     metrics: &mut QueryMetrics,
 ) -> Result<QueryOutput> {
     let pipeline = BoundedJoinPipelinePlan::analyze(plan)?;
-    pipeline.validate_capabilities()?;
+    validate_bounded_join_pipeline_stages(&pipeline.stages)?;
 
     let MemoryControlPolicy::Bounded { device_budget_bytes, .. } = context.memory_control_policy() else {
         unreachable!("execute_bounded_join_pipeline_query_plan is called only for bounded policies");
@@ -63,32 +63,32 @@ impl<'a> BoundedJoinPipelinePlan<'a> {
         let shape = analyze_bounded_join_pipeline(plan).map_err(bounded_join_pipeline_rejection_error)?;
         Ok(Self { join_id: shape.join_id, join: shape.join, stages: shape.stages })
     }
-
-    fn validate_capabilities(&self) -> Result<()> {
-        for stage in &self.stages {
-            match stage {
-                BoundedJoinPipelineStage::Filter { node, .. } => {
-                    lower_expr(&node.predicate)?;
-                },
-                BoundedJoinPipelineStage::Projection { node, output_schema, .. } => {
-                    validate_projection_capability(node, output_schema)?;
-                },
-                BoundedJoinPipelineStage::Aggregate { node, output_schema, .. } => {
-                    validate_aggregate_capability(node, output_schema)?;
-                },
-                BoundedJoinPipelineStage::Sort { node, .. } => {
-                    lower_sort_spec(&node.spec)?;
-                },
-                BoundedJoinPipelineStage::Limit { node, .. } => {
-                    topk_candidate_rows(node.spec)?;
-                },
-            }
-        }
-        Ok(())
-    }
 }
 
-fn execute_bounded_join_pipeline_stage(
+pub(super) fn validate_bounded_join_pipeline_stages(stages: &[BoundedJoinPipelineStage<'_>]) -> Result<()> {
+    for stage in stages {
+        match stage {
+            BoundedJoinPipelineStage::Filter { node, .. } => {
+                lower_expr(&node.predicate)?;
+            },
+            BoundedJoinPipelineStage::Projection { node, output_schema, .. } => {
+                validate_projection_capability(node, output_schema)?;
+            },
+            BoundedJoinPipelineStage::Aggregate { node, output_schema, .. } => {
+                validate_aggregate_capability(node, output_schema)?;
+            },
+            BoundedJoinPipelineStage::Sort { node, .. } => {
+                lower_sort_spec(&node.spec)?;
+            },
+            BoundedJoinPipelineStage::Limit { node, .. } => {
+                topk_candidate_rows(node.spec)?;
+            },
+        }
+    }
+    Ok(())
+}
+
+pub(super) fn execute_bounded_join_pipeline_stage(
     context: &ExecutionContext,
     stage: &BoundedJoinPipelineStage<'_>,
     input: CommittedPartial,
@@ -179,11 +179,11 @@ fn execute_bounded_join_pipeline_stage(
     Ok(CommittedPartial { frame, reservation: output_reservation })
 }
 
-fn bounded_join_pipeline_rejection_error(rejection: BoundedJoinPipelineRejection<'_>) -> QueryError {
+pub(super) fn bounded_join_pipeline_rejection_error(rejection: BoundedJoinPipelineRejection<'_>) -> QueryError {
     match rejection {
         BoundedJoinPipelineRejection::MissingNode { node_id, message } => invalid_node_reference(node_id, message),
         BoundedJoinPipelineRejection::UnsupportedJoin { join } => unsupported_bounded_shape(
-            "bounded join pipeline execution currently supports reusable hash equi joins and keyless conditional joins",
+            bounded_join_pipeline_supported_families_message(),
             "bounded_join_plan_shape_unsupported",
         )
         .with_fact("join_type", join.spec.join_type)
@@ -191,19 +191,35 @@ fn bounded_join_pipeline_rejection_error(rejection: BoundedJoinPipelineRejection
         .with_fact("key_count", join.spec.keys.len())
         .with_fact("residual_predicate", join.spec.residual_predicate.is_some())
         .with_fact("output_projection_len", join.spec.output_projection.len()),
+        BoundedJoinPipelineRejection::UnsupportedLeaf { node_id, node_kind } => unsupported_bounded_shape(
+            "bounded multi-join pipeline execution supports only source/filter/projection leaf subtrees below joins",
+            "bounded_join_plan_shape_unsupported",
+        )
+        .with_fact("node_id", node_id)
+        .with_fact("node_kind", node_kind),
         BoundedJoinPipelineRejection::LimitWithoutSort => unsupported_bounded_shape(
             "bounded join pipeline execution does not support limit without a preceding global sort",
             "limit_without_sort",
         ),
-        BoundedJoinPipelineRejection::MissingRootJoin => unsupported_bounded_shape(
-            "bounded join pipeline execution requires a reusable hash join or keyless conditional join below supported unary operators",
-            "missing_root_join",
-        ),
+        BoundedJoinPipelineRejection::MissingRootJoin => {
+            unsupported_bounded_shape(bounded_join_pipeline_supported_families_message(), "missing_root_join")
+        },
         BoundedJoinPipelineRejection::MultipleReachableJoins => unsupported_bounded_shape(
             "bounded join pipeline execution requires exactly one reachable native join",
             "multiple_reachable_joins",
         ),
+        BoundedJoinPipelineRejection::SingleReachableJoin => unsupported_bounded_shape(
+            "bounded multi-join pipeline execution requires more than one reachable native join",
+            "single_reachable_join",
+        ),
     }
+}
+
+fn bounded_join_pipeline_supported_families_message() -> String {
+    format!(
+        "bounded join pipeline execution requires one of these ordered-reservation families below supported unary operators: {}",
+        BoundedJoinReservationContract.execution_families_csv()
+    )
 }
 
 fn pipeline_stage_node_id(stage: &BoundedJoinPipelineStage<'_>) -> NodeId {

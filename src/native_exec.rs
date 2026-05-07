@@ -72,6 +72,7 @@ pub const NATIVE_CUDF_DATAFUSION_METRIC_NAMES: &[&str] = &[
     "hash_join_durable_cache_inserts",
     "hash_join_hash_table_bytes",
     "filtered_join_hash_table_bytes",
+    "filtered_join_probe_state_bytes",
     "join_gather_map_bytes",
     "parquet_read_time",
     "source_read_time",
@@ -780,6 +781,7 @@ struct NativeCudfMetrics {
     hash_join_durable_cache_inserts: Count,
     hash_join_hash_table_bytes: Count,
     filtered_join_hash_table_bytes: Count,
+    filtered_join_probe_state_bytes: Count,
     join_gather_map_bytes: Count,
     parquet_read_time: Time,
     source_read_time: Time,
@@ -858,6 +860,7 @@ impl NativeCudfMetrics {
             hash_join_durable_cache_inserts: summary_counter(metrics, "hash_join_durable_cache_inserts", partition),
             hash_join_hash_table_bytes: summary_counter(metrics, "hash_join_hash_table_bytes", partition),
             filtered_join_hash_table_bytes: summary_counter(metrics, "filtered_join_hash_table_bytes", partition),
+            filtered_join_probe_state_bytes: summary_counter(metrics, "filtered_join_probe_state_bytes", partition),
             join_gather_map_bytes: summary_counter(metrics, "join_gather_map_bytes", partition),
             parquet_read_time: summary_timer(metrics, "parquet_read_time", partition),
             source_read_time: summary_timer(metrics, "source_read_time", partition),
@@ -914,6 +917,7 @@ impl NativeCudfMetrics {
         self.hash_join_durable_cache_inserts.add(count(metrics.hash_join_durable_cache_inserts));
         self.hash_join_hash_table_bytes.add(count(metrics.hash_join_hash_table_bytes));
         self.filtered_join_hash_table_bytes.add(count(metrics.filtered_join_hash_table_bytes));
+        self.filtered_join_probe_state_bytes.add(count(metrics.filtered_join_probe_state_bytes));
         self.join_gather_map_bytes.add(count(join_gather_map_bytes(metrics)));
         self.parquet_read_time.add_duration(metrics.parquet_read_time);
         self.source_read_time.add_duration(metrics.source_read_time);
