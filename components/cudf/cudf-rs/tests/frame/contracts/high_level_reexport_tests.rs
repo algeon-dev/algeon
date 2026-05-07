@@ -234,7 +234,8 @@ fn dataframe_join_helpers_are_publicly_reexported() {
     use cudf::{
         DataFrame, DataFrameCrossJoinOptions, DataFrameHashJoin, DataFrameHashJoinMaterialized,
         DataFrameHashJoinOptions, DataFrameHashJoinPairIndices, DataFrameJoinIndices, DataFrameJoinOptions,
-        DataFrameJoinPairIndices, DataFrameMixedJoinOptions, DataFramePredicateJoinOptions, Runtime,
+        DataFrameJoinPairIndices, DataFrameMixedJoinOptions, DataFrameMixedSingleSideJoinSizeData,
+        DataFramePredicateJoinOptions, Runtime,
     };
 
     fn assert_hash_join(_: &DataFrameHashJoin) {}
@@ -243,6 +244,7 @@ fn dataframe_join_helpers_are_publicly_reexported() {
     fn assert_hash_options(_: DataFrameHashJoinOptions) {}
     fn assert_indices(_: &DataFrameJoinIndices) {}
     fn assert_pair_indices(_: &DataFrameJoinPairIndices) {}
+    fn assert_mixed_single_size_data(_: Option<DataFrameMixedSingleSideJoinSizeData<'_>>) {}
     fn assert_options(_: DataFrameJoinOptions) {}
     fn assert_cross_options(_: DataFrameCrossJoinOptions) {}
     fn assert_predicate_options(_: DataFramePredicateJoinOptions) {}
@@ -261,6 +263,7 @@ fn dataframe_join_helpers_are_publicly_reexported() {
     assert_cross_options(DataFrameCrossJoinOptions::new());
     assert_predicate_options(DataFramePredicateJoinOptions::new());
     assert_mixed_options(DataFrameMixedJoinOptions::new());
+    assert_mixed_single_size_data(None);
 
     let indices = left.left_semi_join_indices(&right, options).unwrap();
     assert_indices(&indices);

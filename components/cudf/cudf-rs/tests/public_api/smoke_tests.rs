@@ -89,7 +89,7 @@ fn slice7_join_and_copying_surface_is_publicly_importable() {
 #[test]
 fn slice8_ast_conditional_and_mixed_join_surface_is_publicly_importable() {
     use cudf::{
-        DataFrame, DataFrameMixedJoinSizeData,
+        DataFrame, DataFrameMixedJoinSizeData, DataFrameMixedSingleSideJoinSizeData,
         ops::{
             ast::{AstExpression, AstOperator},
             join::{
@@ -169,14 +169,25 @@ fn slice8_ast_conditional_and_mixed_join_surface_is_publicly_importable() {
         DataFrame::conditional_left_anti_join_indices_with_output_size,
         DataFrame::mixed_inner_join_size_data,
         DataFrame::mixed_left_join_size_data,
+        DataFrame::mixed_full_join_size_data,
+        DataFrame::mixed_left_semi_join_size_data,
+        DataFrame::mixed_left_anti_join_size_data,
     );
     let _: Option<DataFrameMixedJoinSizeData<'_>> = None;
+    let _: Option<DataFrameMixedSingleSideJoinSizeData<'_>> = None;
     let _ = (
         DataFrameMixedJoinSizeData::output_size,
         DataFrameMixedJoinSizeData::device_allocated_size_bytes,
         DataFrameMixedJoinSizeData::gather_map_reservation_size_bytes,
         DataFrameMixedJoinSizeData::materialize_indices,
         DataFrameMixedJoinSizeData::materialize_indices_in,
+    );
+    let _ = (
+        DataFrameMixedSingleSideJoinSizeData::output_size,
+        DataFrameMixedSingleSideJoinSizeData::device_allocated_size_bytes,
+        DataFrameMixedSingleSideJoinSizeData::gather_map_reservation_size_bytes,
+        DataFrameMixedSingleSideJoinSizeData::materialize_indices,
+        DataFrameMixedSingleSideJoinSizeData::materialize_indices_in,
     );
 }
 
