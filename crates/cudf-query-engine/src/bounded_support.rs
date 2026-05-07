@@ -1,8 +1,13 @@
+use std::collections::BTreeMap;
+
 use arrow::datatypes::SchemaRef;
 
-use crate::plan::{
-    AggregateNode, FilterNode, JoinNode, JoinSide, JoinType, LimitNode, NodeId, PlanNode, ProjectionNode, QueryPlan,
-    SortNode,
+use crate::{
+    plan::{
+        AggregateNode, FilterNode, JoinNode, JoinSide, JoinType, LimitNode, NodeId, PlanNode, ProjectionNode,
+        QueryPlan, SortNode,
+    },
+    runtime::{BoundedJoinReservationContract, ExecutionBoundaryPolicy},
 };
 
 pub(crate) enum BoundedJoinPlanSupport {
@@ -81,6 +86,26 @@ pub(crate) fn analyze_bounded_join_plan_support(plan: &QueryPlan) -> BoundedJoin
     }
 }
 
+pub(crate) fn bounded_join_unsupported_shape_facts(
+    plan: &QueryPlan,
+    boundary_policy: ExecutionBoundaryPolicy,
+) -> BTreeMap<&'static str, String> {
+    let mut facts = BoundedJoinReservationContract.unsupported_shape_facts(boundary_policy);
+    if contains_keyed_residual_semi_anti_join(plan) {
+        facts.insert("bounded_join_specific_blocker", "mixed_keyed_residual_semi_anti_join_unsupported".to_string());
+        facts.insert("bounded_join_blocked_join_family", "mixed_keyed_residual_left_semi_left_anti".to_string());
+        facts.insert(
+            "bounded_join_required_lower_level_contract",
+            "mixed_left_semi_left_anti_retained_size_data_and_projected_output_reservation".to_string(),
+        );
+        facts.insert(
+            "bounded_join_lower_level_blockers",
+            "mixed_semi_anti_retained_size_data,projected_output_reservation".to_string(),
+        );
+    }
+    facts
+}
+
 pub(crate) fn analyze_bounded_join_pipeline(
     plan: &QueryPlan,
 ) -> std::result::Result<BoundedJoinPipelineShape<'_>, BoundedJoinPipelineRejection<'_>> {
@@ -120,10 +145,19 @@ pub(crate) fn bounded_root_conditional_join_compatible(join: &JoinNode) -> bool 
     BoundedConditionalJoinType::try_from_join(join).is_some()
 }
 
+pub(crate) fn bounded_root_mixed_join_compatible(join: &JoinNode) -> bool {
+    !join.spec.keys.is_empty()
+        && join.spec.residual_predicate.is_some()
+        && !join.spec.output_projection.is_empty()
+        && matches!(join.spec.join_type, JoinType::Inner | JoinType::Left)
+        && (join.spec.join_type != JoinType::Left || join.spec.build_side == JoinSide::Right)
+}
+
 pub(crate) fn bounded_root_join_compatible(join: &JoinNode) -> bool {
     bounded_root_hash_join_compatible(join)
         || bounded_root_filtered_join_compatible(join)
         || bounded_root_conditional_join_compatible(join)
+        || bounded_root_mixed_join_compatible(join)
 }
 
 pub(crate) fn bounded_multi_join_compatible(join: &JoinNode) -> bool {
@@ -236,6 +270,17 @@ fn bounded_join_subtree_join_count(
         count += bounded_join_subtree_join_count(plan, *input)?;
     }
     Ok(count)
+}
+
+fn contains_keyed_residual_semi_anti_join(plan: &QueryPlan) -> bool {
+    plan.nodes().iter().any(|node| {
+        let PlanNode::Join(join) = &node.kind else {
+            return false;
+        };
+        !join.spec.keys.is_empty()
+            && join.spec.residual_predicate.is_some()
+            && matches!(join.spec.join_type, JoinType::LeftSemi | JoinType::LeftAnti)
+    })
 }
 
 fn reachable_join_count(plan: &QueryPlan) -> usize {

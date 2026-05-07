@@ -70,9 +70,11 @@ pub(super) fn execute_bounded_root_join(
         execute_bounded_root_filtered_join(context, node_id, node, left, right, reservations, metrics)
     } else if node.is_bounded_root_conditional_join_compatible() {
         execute_bounded_root_conditional_join(context, node_id, node, left, right, reservations, metrics)
+    } else if node.is_bounded_root_mixed_join_compatible() {
+        execute_bounded_root_mixed_join(context, node_id, node, left, right, reservations, metrics)
     } else {
         Err(unsupported_bounded_shape(
-            "bounded root join execution currently supports reusable hash equi joins, filtered equality semi/anti joins, and keyless conditional joins",
+            "bounded root join execution currently supports reusable hash equi joins, filtered equality semi/anti joins, keyless conditional joins, and mixed inner/left joins",
             "bounded_join_plan_shape_unsupported",
         )
         .with_fact("join_type", node.spec.join_type)
@@ -292,6 +294,7 @@ pub(super) fn execute_bounded_root_hash_join(
             probe_bytes,
             hash_table_bytes,
             filtered_probe_state_bytes: 0,
+            mixed_size_data_bytes: 0,
             gather_map_bytes,
             output_rows,
             output_bytes,
@@ -499,6 +502,7 @@ fn execute_bounded_root_filtered_join(
             probe_bytes: left_bytes,
             hash_table_bytes,
             filtered_probe_state_bytes: probe_state_bytes,
+            mixed_size_data_bytes: 0,
             gather_map_bytes,
             output_rows,
             output_bytes,
@@ -509,6 +513,199 @@ fn execute_bounded_root_filtered_join(
     reservations.release(gather_map_reservation);
     drop(filtered_join);
     reservations.release(hash_table_reservation);
+    drop(left);
+    drop(right);
+    reservations.release(probe_reservation);
+    reservations.release(build_reservation);
+
+    Ok(CommittedPartial { frame: GpuDataFrame::new(output), reservation: output_reservation })
+}
+
+fn execute_bounded_root_mixed_join(
+    context: &ExecutionContext,
+    node_id: NodeId,
+    node: &JoinNode,
+    left: GpuDataFrame,
+    right: GpuDataFrame,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+) -> Result<CommittedPartial> {
+    validate_executable_join_subset(node)?;
+    if !node.is_bounded_root_mixed_join_compatible() {
+        return Err(unsupported_bounded_shape(
+            "bounded root mixed join execution currently supports mixed inner and left joins",
+            "bounded_join_plan_shape_unsupported",
+        )
+        .with_fact("join_type", node.spec.join_type)
+        .with_fact("build_side", node.spec.build_side)
+        .with_fact("key_count", node.spec.keys.len())
+        .with_fact("residual_predicate", node.spec.residual_predicate.is_some())
+        .with_fact("output_projection_len", node.spec.output_projection.len()));
+    }
+
+    let residual_columns = residual_input_columns(node)?;
+    let left_keys = node.spec.keys.iter().map(|key| key.left.name().to_string()).collect::<Vec<_>>();
+    let right_keys = node.spec.keys.iter().map(|key| key.right.name().to_string()).collect::<Vec<_>>();
+    let left_columns = projected_input_columns(
+        &left_keys,
+        &node.spec.output_projection,
+        residual_columns.names(JoinSide::Left).iter().map(String::as_str),
+        JoinSide::Left,
+    );
+    let right_columns = projected_input_columns(
+        &right_keys,
+        &node.spec.output_projection,
+        residual_columns.names(JoinSide::Right).iter().map(String::as_str),
+        JoinSide::Right,
+    );
+
+    let left = select_join_input(left.into_frame(), &left_columns, "left")?;
+    let right = select_join_input(right.into_frame(), &right_columns, "right")?;
+    let left_rows = left.num_rows() as u64;
+    let right_rows = right.num_rows() as u64;
+    let left_bytes = observe_device_memory_bytes(&GpuDataFrame::new(left.clone()), metrics)?;
+    let right_bytes = observe_device_memory_bytes(&GpuDataFrame::new(right.clone()), metrics)?;
+    let build_side = node.spec.build_side;
+    let probe_side = probe_side(build_side);
+    let build_bytes = side_metric(build_side, left_bytes, right_bytes);
+    let probe_bytes = side_metric(probe_side, left_bytes, right_bytes);
+
+    let build_reservation = reservations.try_reserve(
+        bounded_join_request(
+            ReservationKind::BuildSide,
+            "join_build_side",
+            build_bytes,
+            reservations.budget(),
+            node_id,
+        ),
+        metrics,
+    )?;
+    let probe_reservation = reservations.try_reserve(
+        bounded_join_request(
+            ReservationKind::ProbeSide,
+            "join_probe_side",
+            probe_bytes,
+            reservations.budget(),
+            node_id,
+        ),
+        metrics,
+    )?;
+
+    let overrides = execution_overrides(context);
+    let predicate = lower_join_residual_predicate(context, node, &residual_columns)?;
+    let options = dataframe_mixed_join_options(&left_keys, &right_keys, &residual_columns, node.spec.null_equality);
+    let timer = Instant::now();
+    let size_data = match node.spec.join_type {
+        JoinType::Inner => left.with_execution(&overrides).mixed_inner_join_size_data(&right, &predicate, options),
+        JoinType::Left => left.with_execution(&overrides).mixed_left_join_size_data(&right, &predicate, options),
+        JoinType::Full | JoinType::LeftSemi | JoinType::LeftAnti | JoinType::Cross => unreachable!("validated above"),
+    }
+    .map_err(|error| join_index_error(error, node))?;
+    let size_data_bytes = size_data.device_allocated_size_bytes().map(|bytes| bytes as u64).map_err(|error| {
+        QueryError::from_cudf(
+            "cudf_query_engine.bounded.join.mixed_size_data_bytes",
+            "failed to observe bounded native mixed join size-data memory",
+            error,
+        )
+        .with_fact("join_type", node.spec.join_type)
+    })?;
+    let size_data_reservation = reservations.try_reserve(
+        bounded_join_request(
+            ReservationKind::MixedSizeData,
+            "join_mixed_size_data",
+            size_data_bytes,
+            reservations.budget(),
+            node_id,
+        ),
+        metrics,
+    )?;
+    metrics.record_mixed_join_size_data_bytes(size_data_bytes);
+    let gather_map_reservation_bytes =
+        size_data.gather_map_reservation_size_bytes().map(|bytes| bytes as u64).map_err(|error| {
+            QueryError::from_cudf(
+                "cudf_query_engine.bounded.join.mixed_gather_map_reservation",
+                "failed to size bounded native mixed join gather maps",
+                error,
+            )
+            .with_fact("join_type", node.spec.join_type)
+        })?;
+    let gather_map_reservation = reservations.try_reserve(
+        bounded_join_request(
+            ReservationKind::GatherMap,
+            "join_gather_map",
+            gather_map_reservation_bytes,
+            reservations.budget(),
+            node_id,
+        ),
+        metrics,
+    )?;
+    let indices = size_data.materialize_indices_in(&overrides).map_err(|error| join_index_error(error, node))?;
+    reservations.release(size_data_reservation);
+    let gather_map_bytes = indices.device_allocated_size_bytes().map(|bytes| bytes as u64).map_err(|error| {
+        QueryError::from_cudf(
+            "cudf_query_engine.bounded.join.mixed_gather_map_bytes",
+            "failed to observe bounded native mixed join gather-map memory",
+            error,
+        )
+    })?;
+    let left_indices = indices.left().clone();
+    let right_indices = indices.right().clone();
+    let left_projection = projected_output_columns(&node.spec.output_projection, JoinSide::Left);
+    let right_projection = projected_output_columns(&node.spec.output_projection, JoinSide::Right);
+    let left_output_bytes =
+        join_side_output_reservation_bytes(&left, &left_indices, &left_projection, &overrides, JoinSide::Left)?;
+    let right_output_bytes =
+        join_side_output_reservation_bytes(&right, &right_indices, &right_projection, &overrides, JoinSide::Right)?;
+    let output_reservation_bytes = left_output_bytes.saturating_add(right_output_bytes);
+    let output_reservation = reservations.try_reserve(
+        bounded_join_request(
+            ReservationKind::JoinOutput,
+            "join_output",
+            output_reservation_bytes,
+            reservations.budget(),
+            node_id,
+        ),
+        metrics,
+    )?;
+    let output = materialize_join_output_projection(
+        &left,
+        &right,
+        &left_indices,
+        &right_indices,
+        &overrides,
+        &node.spec.output_projection,
+    )?;
+    metrics.operator_time += timer.elapsed();
+
+    let output_rows = output.num_rows() as u64;
+    let output_bytes = observe_device_memory_bytes(&GpuDataFrame::new(output.clone()), metrics)?;
+    metrics.record_operator_metrics(crate::metrics::OperatorMetrics::join(
+        node_id,
+        crate::metrics::JoinOperatorMetrics {
+            join_type: node.spec.join_type.to_string(),
+            execution_strategy: "bounded_mixed_inner_left_join".to_string(),
+            key_count: node.spec.keys.len(),
+            residual_predicate: true,
+            null_equality: node.spec.null_equality.to_string(),
+            build_side: build_side.to_string(),
+            probe_side: probe_side.to_string(),
+            build_rows: side_metric(build_side, left_rows, right_rows),
+            build_bytes,
+            probe_rows: side_metric(probe_side, left_rows, right_rows),
+            probe_bytes,
+            hash_table_bytes: 0,
+            filtered_probe_state_bytes: 0,
+            mixed_size_data_bytes: size_data_bytes,
+            gather_map_bytes,
+            output_rows,
+            output_bytes,
+        },
+    ));
+
+    drop(left_indices);
+    drop(right_indices);
+    drop(indices);
+    reservations.release(gather_map_reservation);
     drop(left);
     drop(right);
     reservations.release(probe_reservation);
@@ -630,6 +827,7 @@ fn execute_bounded_root_conditional_join(
             probe_bytes: right_bytes,
             hash_table_bytes: 0,
             filtered_probe_state_bytes: 0,
+            mixed_size_data_bytes: 0,
             gather_map_bytes,
             output_rows,
             output_bytes,

@@ -92,12 +92,50 @@ pub(super) async fn plan_native_query(
     let plan = df.create_physical_plan().await?;
     let planning_report =
         NativeDataFusionPlanningReport::from_retained_rule(query.id, Arc::clone(&plan), native_rule.as_ref());
-    let planning_row = planning_report
-        .rows
-        .into_iter()
-        .next()
-        .ok_or_else(|| plan_error(format!("native planning report was empty for {}", query.id)))?;
+    let planning_row = select_benchmark_planning_row(query.id, planning_report.rows)?;
     Ok(PlannedNativeQuery { plan, planning_row })
+}
+
+pub(super) fn select_benchmark_planning_row(
+    query_id: &str,
+    rows: Vec<NativeDataFusionPlanningRow>,
+) -> DataFusionResult<NativeDataFusionPlanningRow> {
+    match rows.len() {
+        0 => Err(plan_error(format!("native planning report was empty for {query_id}"))),
+        1 => Ok(rows.into_iter().next().expect("single planning row must exist")),
+        count => Err(plan_error(format!(
+            "native TPC-H benchmark requires exactly one native planning row per query; {query_id} produced {count}"
+        ))),
+    }
+}
+
+pub(super) fn validate_decision_grade_native_planning_row(
+    query_id: &str,
+    row: &NativeDataFusionPlanningRow,
+) -> DataFusionResult<()> {
+    if row.outcome == NativeDataFusionPlanningOutcome::AcceptedReplaced
+        && row.post_native_execution_path != NativeDataFusionPostNativeExecutionPath::Native
+    {
+        return Err(plan_error(format!(
+            "native TPC-H benchmark requires post_native_execution_path=native for accepted query {query_id}; observed {}",
+            row.post_native_execution_path.as_str()
+        )));
+    }
+    Ok(())
+}
+
+fn validate_replanned_native_row(
+    query_id: &str,
+    expected: &NativeDataFusionPlanningRow,
+    actual: &NativeDataFusionPlanningRow,
+) -> DataFusionResult<()> {
+    validate_decision_grade_native_planning_row(query_id, actual)?;
+    if actual != expected {
+        return Err(plan_error(format!(
+            "native TPC-H benchmark planning row changed during execution for {query_id}; refusing to merge metrics with a different planning contract"
+        )));
+    }
+    Ok(())
 }
 
 pub(super) async fn run_cpu_query_iterations(
@@ -129,10 +167,13 @@ pub(super) async fn run_native_query_iterations(
     metadata: &TpchDatasetMetadata,
     query: &TpchQuery,
     config: &NativeTpchBenchmarkConfig,
+    expected_planning_row: &NativeDataFusionPlanningRow,
 ) -> Result<TimedNativeQueryRun, NativeRunFailure> {
     for _ in 0..config.warmup_iterations {
         let planned = plan_native_query(metadata, query, config).await.map_err(native_not_started)?;
         if planned.planning_row.outcome == NativeDataFusionPlanningOutcome::AcceptedReplaced {
+            validate_replanned_native_row(query.id, expected_planning_row, &planned.planning_row)
+                .map_err(native_not_started)?;
             let _ = collect_native_plan_once(planned.plan).await.map_err(native_started)?;
         } else {
             return Err(NativeRunFailure {
@@ -155,6 +196,8 @@ pub(super) async fn run_native_query_iterations(
                 details: FailureDetails::default(),
             });
         }
+        validate_replanned_native_row(query.id, expected_planning_row, &planned.planning_row)
+            .map_err(native_not_started)?;
         let started = Instant::now();
         let (batches, metrics) = collect_native_plan_once(Arc::clone(&planned.plan)).await.map_err(native_started)?;
         samples.push(started.elapsed());

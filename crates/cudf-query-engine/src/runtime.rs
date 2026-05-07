@@ -402,6 +402,7 @@ pub enum ReservationKind {
     ProbeSide,
     HashTable,
     FilteredProbeState,
+    MixedSizeData,
     GatherMap,
     JoinOutput,
     PartialState,
@@ -420,6 +421,7 @@ impl ReservationKind {
             Self::ProbeSide => "probe_side",
             Self::HashTable => "hash_table",
             Self::FilteredProbeState => "filtered_probe_state",
+            Self::MixedSizeData => "mixed_size_data",
             Self::GatherMap => "gather_map",
             Self::JoinOutput => "join_output",
             Self::PartialState => "partial_state",
@@ -500,7 +502,7 @@ impl BoundedJoinReservationRequirement {
     }
 }
 
-pub const BOUNDED_JOIN_RESERVATION_REQUIREMENTS: [BoundedJoinReservationRequirement; 7] = [
+pub const BOUNDED_JOIN_RESERVATION_REQUIREMENTS: [BoundedJoinReservationRequirement; 8] = [
     BoundedJoinReservationRequirement::new(
         ReservationKind::BuildSide,
         "join_build_side",
@@ -530,6 +532,13 @@ pub const BOUNDED_JOIN_RESERVATION_REQUIREMENTS: [BoundedJoinReservationRequirem
         "modeled_by_cudf_rs_filtered_probe_state_observability",
     ),
     BoundedJoinReservationRequirement::new(
+        ReservationKind::MixedSizeData,
+        "join_mixed_size_data",
+        "mixed_inner_left_join_retained_size_data",
+        BoundedJoinReservationStatus::Modeled,
+        "modeled_by_cudf_rs_mixed_join_size_data_observability",
+    ),
+    BoundedJoinReservationRequirement::new(
         ReservationKind::GatherMap,
         "join_gather_map",
         "join_gather_map_reservation_size_bytes",
@@ -557,6 +566,7 @@ pub enum BoundedJoinExecutionFamily {
     RootReusableHashJoin,
     RootFilteredSemiAntiJoin,
     KeylessConditionalJoin,
+    RootMixedInnerLeftJoin,
     MultiJoinReusableHashPipeline,
 }
 
@@ -566,15 +576,17 @@ impl BoundedJoinExecutionFamily {
             Self::RootReusableHashJoin => "root_reusable_hash_join",
             Self::RootFilteredSemiAntiJoin => "root_filtered_semi_anti_join",
             Self::KeylessConditionalJoin => "keyless_conditional_join",
+            Self::RootMixedInnerLeftJoin => "root_mixed_inner_left_join",
             Self::MultiJoinReusableHashPipeline => "multi_join_reusable_hash_pipeline",
         }
     }
 }
 
-pub const BOUNDED_JOIN_EXECUTION_FAMILIES: [BoundedJoinExecutionFamily; 4] = [
+pub const BOUNDED_JOIN_EXECUTION_FAMILIES: [BoundedJoinExecutionFamily; 5] = [
     BoundedJoinExecutionFamily::RootReusableHashJoin,
     BoundedJoinExecutionFamily::RootFilteredSemiAntiJoin,
     BoundedJoinExecutionFamily::KeylessConditionalJoin,
+    BoundedJoinExecutionFamily::RootMixedInnerLeftJoin,
     BoundedJoinExecutionFamily::MultiJoinReusableHashPipeline,
 ];
 
@@ -699,10 +711,18 @@ impl BoundedJoinReservationContract {
             ("cudf_rs_conditional_join_output_size_observability", "conditional_join_exact_output_size".to_string()),
             ("cudf_rs_conditional_join_output_size_hint", "conditional_join_indices_with_output_size".to_string()),
             ("cudf_rs_mixed_join_output_size_observability", "mixed_inner_left_join_size_data_output_size".to_string()),
+            (
+                "cudf_rs_mixed_join_size_data_observability",
+                "mixed_inner_left_join_size_data_device_allocated_size_bytes".to_string(),
+            ),
+            (
+                "cudf_rs_mixed_join_gather_map_reservation_contract",
+                "mixed_inner_left_join_size_data_gather_map_reservation_size_bytes".to_string(),
+            ),
             ("cudf_rs_mixed_join_output_size_hint", "mixed_inner_left_join_size_data_materialize_indices".to_string()),
             (
                 "cudf_rs_mixed_join_remaining_blockers",
-                "blocked_until_mixed_full_semi_anti_retained_size_data_and_projected_output_reservation".to_string(),
+                "blocked_until_mixed_full_semi_anti_retained_size_data".to_string(),
             ),
             (
                 "cudf_rs_projected_cross_join_reservation_contract",
@@ -727,6 +747,13 @@ impl BoundedJoinReservationContract {
 
     pub fn rejection_facts(self, boundary_policy: ExecutionBoundaryPolicy) -> BTreeMap<&'static str, String> {
         self.facts(boundary_policy)
+    }
+
+    pub fn unsupported_shape_facts(self, boundary_policy: ExecutionBoundaryPolicy) -> BTreeMap<&'static str, String> {
+        let mut facts = self.rejection_facts(boundary_policy);
+        facts.insert("bounded_join_execution_status", "unsupported_plan_shape".to_string());
+        facts.insert("bounded_join_unsupported_shape", self.supported_shape_requirement());
+        facts
     }
 }
 

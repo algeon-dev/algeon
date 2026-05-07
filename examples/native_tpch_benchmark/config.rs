@@ -11,6 +11,7 @@ pub(super) struct NativeTpchBenchmarkConfig {
     pub(super) query_ids: Vec<String>,
     pub(super) warmup_iterations: usize,
     pub(super) iterations: usize,
+    pub(super) dataset_mode: NativeTpchDatasetMode,
     pub(super) native_memory_policy: NativeTpchMemoryPolicy,
 }
 
@@ -20,6 +21,7 @@ impl NativeTpchBenchmarkConfig {
             query_ids: query_ids_from_env("CUDF_TPCH_BENCH_QUERY_IDS")?,
             warmup_iterations: env_usize("CUDF_TPCH_BENCH_WARMUPS", 0)?,
             iterations: env_usize("CUDF_TPCH_BENCH_ITERATIONS", 1)?,
+            dataset_mode: NativeTpchDatasetMode::from_env("CUDF_TPCH_BENCH_DATASET_MODE")?,
             native_memory_policy: NativeTpchMemoryPolicy::from_env("CUDF_TPCH_BENCH_NATIVE_MEMORY_POLICY")?,
         };
         config.validate()?;
@@ -70,7 +72,35 @@ impl Default for NativeTpchBenchmarkConfig {
             query_ids: TPCH_QUERIES.iter().map(|query| query.id.to_string()).collect(),
             warmup_iterations: 0,
             iterations: 1,
+            dataset_mode: NativeTpchDatasetMode::Sf1External,
             native_memory_policy: NativeTpchMemoryPolicy::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum NativeTpchDatasetMode {
+    Sf1External,
+    AllowTiny,
+}
+
+impl NativeTpchDatasetMode {
+    fn from_env(name: &'static str) -> DataFusionResult<Self> {
+        let mode = match std::env::var_os(name) {
+            None => "sf1_external".to_string(),
+            Some(value) => value.to_string_lossy().to_ascii_lowercase(),
+        };
+        match mode.as_str() {
+            "sf1_external" | "external" | "sf1" => Ok(Self::Sf1External),
+            "allow_tiny" | "dev_tiny" | "tiny" => Ok(Self::AllowTiny),
+            other => Err(plan_error(format!("invalid {name}: {other}; expected sf1_external or allow_tiny"))),
+        }
+    }
+
+    pub(super) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Sf1External => "sf1_external",
+            Self::AllowTiny => "allow_tiny",
         }
     }
 }
@@ -178,6 +208,10 @@ fn query_ids_from_env(name: &'static str) -> DataFusionResult<Vec<String>> {
 }
 
 fn validate_query_ids(query_ids: &[String]) -> DataFusionResult<()> {
+    if query_ids.is_empty() {
+        return Err(plan_error("CUDF_TPCH_BENCH_QUERY_IDS must name at least one query id"));
+    }
+
     let known = TPCH_QUERIES.iter().map(|query| query.id).collect::<BTreeSet<_>>();
     let mut seen = BTreeSet::new();
     for query_id in query_ids {

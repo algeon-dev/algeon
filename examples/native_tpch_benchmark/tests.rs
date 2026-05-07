@@ -2,6 +2,7 @@ use arrow::{
     array::Int32Array,
     datatypes::{DataType, Field, Schema},
 };
+use datafusion_cudf::TpchTableMetadata;
 
 use super::*;
 
@@ -11,8 +12,43 @@ fn default_config_selects_all_tpch_queries() {
     assert_eq!(config.query_ids.len(), TPCH_QUERIES.len());
     assert_eq!(config.selected_queries().len(), TPCH_QUERIES.len());
     assert_eq!(config.iterations, 1);
+    assert_eq!(config.dataset_mode.as_str(), "sf1_external");
     assert_eq!(config.native_memory_policy.as_str(), "bounded");
     config.validate().unwrap();
+}
+
+#[test]
+fn sf1_external_dataset_mode_rejects_tiny_or_unknown_metadata() {
+    dataset::validate_sf1_external_metadata(&benchmark_metadata()).unwrap();
+
+    let tiny = TpchDatasetMetadata {
+        scale_factor: "tiny".to_string(),
+        provenance: "generated_tiny".to_string(),
+        ..benchmark_metadata()
+    };
+    let error =
+        dataset::validate_sf1_external_metadata(&tiny).expect_err("SF1 benchmark mode must not accept tiny metadata");
+    assert!(error.to_string().contains("requires CUDF_TPCH_SCALE_FACTOR=sf1"));
+
+    let unknown = TpchDatasetMetadata {
+        scale_factor: "unknown".to_string(),
+        provenance: "external_parquet_root".to_string(),
+        ..benchmark_metadata()
+    };
+    let error = dataset::validate_sf1_external_metadata(&unknown)
+        .expect_err("SF1 benchmark mode must not accept an unknown scale factor");
+    assert!(error.to_string().contains("observed unknown"));
+
+    let without_content_fingerprint = TpchDatasetMetadata { content_fingerprint: None, ..benchmark_metadata() };
+    let error = dataset::validate_sf1_external_metadata(&without_content_fingerprint)
+        .expect_err("SF1 benchmark mode must preserve a content fingerprint");
+    assert!(error.to_string().contains("requires a content fingerprint"));
+
+    let mut mislabeled_tiny = benchmark_metadata();
+    mislabeled_tiny.tables.iter_mut().find(|table| table.table == "lineitem").unwrap().row_count = 3;
+    let error = dataset::validate_sf1_external_metadata(&mislabeled_tiny)
+        .expect_err("SF1 benchmark mode must reject mislabeled tiny data");
+    assert!(error.to_string().contains("requires SF1 row count lineitem=6001215"));
 }
 
 #[test]
@@ -32,6 +68,13 @@ fn query_id_filter_preserves_configured_order_and_rejects_duplicates() {
     };
     let error = duplicate.validate().expect_err("duplicate query ids must not silently collapse rows");
     assert!(error.to_string().contains("duplicate TPC-H query id q01"));
+}
+
+#[test]
+fn direct_config_rejects_empty_query_list() {
+    let empty = NativeTpchBenchmarkConfig { query_ids: Vec::new(), ..NativeTpchBenchmarkConfig::default() };
+    let error = empty.validate().expect_err("empty direct query lists must not produce empty benchmark reports");
+    assert!(error.to_string().contains("must name at least one query id"));
 }
 
 #[tokio::test]
@@ -77,10 +120,11 @@ fn benchmark_report_header_and_rejected_rows_are_stable() {
         NativeTpchBenchmarkReport { metadata, config, rows: vec![NativeTpchBenchmarkRow::rejected("q02", planning)] };
 
     let text = report.to_tsv();
-    assert!(text.starts_with("# native_tpch_benchmark_tsv_schema_version=3\n"));
+    assert!(text.starts_with("# native_tpch_benchmark_tsv_schema_version=4\n"));
     assert!(text.contains(&format!("{NATIVE_TPCH_BENCHMARK_TSV_HEADER}\n")));
     assert!(text.contains("# tpch_dataset_scale_factor=sf1\n"));
     assert!(text.contains("# tpch_benchmark_query_ids=q02\n"));
+    assert!(text.contains("# tpch_benchmark_dataset_mode=sf1_external\n"));
     assert!(text.contains("# tpch_benchmark_native_device_budget_bytes=8589934592\n"));
     assert!(text.contains("# tpch_benchmark_native_max_source_chunk_bytes=536870912\n"));
     assert!(text.contains(
@@ -168,7 +212,8 @@ fn benchmark_report_accepted_rows_include_bounded_status_and_resource_metrics() 
             hash_join_hash_table_bytes: 39,
             filtered_join_hash_table_bytes: 40,
             filtered_join_probe_state_bytes: 41,
-            join_gather_map_bytes: 42,
+            mixed_join_size_data_bytes: 42,
+            join_gather_map_bytes: 43,
         },
         timing_metrics: NativeTpchTimingMetrics {
             parquet_read_time_ms: Some(1.0),
@@ -446,7 +491,52 @@ fn output_fingerprint_is_independent_of_record_batch_boundaries() {
 }
 
 #[test]
-fn benchmark_report_schema_v3_rows_match_header_columns() {
+fn output_fingerprint_includes_schema_nullability_and_metadata() {
+    let nullable = vec![int_batch_with_field(Field::new("value", DataType::Int32, true), None, &[1, 2])];
+    let non_nullable = vec![int_batch_with_field(Field::new("value", DataType::Int32, false), None, &[1, 2])];
+    let mut metadata = std::collections::HashMap::new();
+    metadata.insert("logical_source".to_string(), "cpu".to_string());
+    let schema_metadata =
+        vec![int_batch_with_field(Field::new("value", DataType::Int32, false), Some(metadata), &[1, 2])];
+
+    let nullable_fingerprint = validation::fingerprint_batches(&nullable).unwrap();
+    let non_nullable_fingerprint = validation::fingerprint_batches(&non_nullable).unwrap();
+    let schema_metadata_fingerprint = validation::fingerprint_batches(&schema_metadata).unwrap();
+
+    assert_ne!(nullable_fingerprint, non_nullable_fingerprint);
+    assert_ne!(non_nullable_fingerprint, schema_metadata_fingerprint);
+}
+
+#[test]
+fn benchmark_planning_row_selection_rejects_ambiguous_reports() {
+    let selected = execution::select_benchmark_planning_row("q01", vec![accepted_planning_row("q01")]).unwrap();
+    assert_eq!(selected.query_id, "q01");
+
+    let error = execution::select_benchmark_planning_row(
+        "q01",
+        vec![accepted_planning_row("q01"), rejected_planning_row("q01")],
+    )
+    .expect_err("benchmark planning must not silently choose one row from an ambiguous report");
+    assert!(error.to_string().contains("requires exactly one native planning row per query"));
+
+    let error = execution::select_benchmark_planning_row("q01", Vec::new())
+        .expect_err("benchmark planning must reject empty reports explicitly");
+    assert!(error.to_string().contains("native planning report was empty for q01"));
+}
+
+#[test]
+fn accepted_planning_row_must_use_native_execution_path() {
+    execution::validate_decision_grade_native_planning_row("q01", &accepted_planning_row("q01")).unwrap();
+
+    let mut gpu_island = accepted_planning_row("q01");
+    gpu_island.post_native_execution_path = NativeDataFusionPostNativeExecutionPath::GpuIsland;
+    let error = execution::validate_decision_grade_native_planning_row("q01", &gpu_island)
+        .expect_err("TPC-H native readiness benchmark must not accept GPU-island execution");
+    assert!(error.to_string().contains("requires post_native_execution_path=native"));
+}
+
+#[test]
+fn benchmark_report_schema_v4_rows_match_header_columns() {
     let config = NativeTpchBenchmarkConfig {
         query_ids: vec!["q01".to_string(), "q02".to_string(), "q03".to_string()],
         ..NativeTpchBenchmarkConfig::default()
@@ -516,11 +606,103 @@ fn benchmark_metadata() -> TpchDatasetMetadata {
         generation_command: "dbgen".to_string(),
         table_count: 8,
         file_count: 8,
-        total_rows: 1,
-        total_bytes: 2,
+        total_rows: 8_661_245,
+        total_bytes: 8,
         metadata_fingerprint: "metadata-fnv1a64:0000000000000001".to_string(),
-        content_fingerprint: None,
-        tables: Vec::new(),
+        content_fingerprint: Some("content-fnv1a64:0000000000000001".to_string()),
+        tables: benchmark_sf1_tables(),
+    }
+}
+
+fn benchmark_sf1_tables() -> Vec<TpchTableMetadata> {
+    [
+        (
+            "customer",
+            150_000,
+            &["c_custkey", "c_name", "c_address", "c_nationkey", "c_phone", "c_acctbal", "c_mktsegment", "c_comment"][..],
+        ),
+        (
+            "lineitem",
+            6_001_215,
+            &[
+                "l_orderkey",
+                "l_partkey",
+                "l_suppkey",
+                "l_linenumber",
+                "l_quantity",
+                "l_extendedprice",
+                "l_discount",
+                "l_tax",
+                "l_returnflag",
+                "l_linestatus",
+                "l_shipdate",
+                "l_commitdate",
+                "l_receiptdate",
+                "l_shipinstruct",
+                "l_shipmode",
+                "l_comment",
+            ][..],
+        ),
+        ("nation", 25, &["n_nationkey", "n_name", "n_regionkey", "n_comment"][..]),
+        (
+            "orders",
+            1_500_000,
+            &[
+                "o_orderkey",
+                "o_custkey",
+                "o_orderstatus",
+                "o_totalprice",
+                "o_orderdate",
+                "o_orderpriority",
+                "o_clerk",
+                "o_shippriority",
+                "o_comment",
+            ][..],
+        ),
+        (
+            "part",
+            200_000,
+            &[
+                "p_partkey",
+                "p_name",
+                "p_mfgr",
+                "p_brand",
+                "p_type",
+                "p_size",
+                "p_container",
+                "p_retailprice",
+                "p_comment",
+            ][..],
+        ),
+        ("partsupp", 800_000, &["ps_partkey", "ps_suppkey", "ps_availqty", "ps_supplycost", "ps_comment"][..]),
+        ("region", 5, &["r_regionkey", "r_name", "r_comment"][..]),
+        (
+            "supplier",
+            10_000,
+            &["s_suppkey", "s_name", "s_address", "s_nationkey", "s_phone", "s_acctbal", "s_comment"][..],
+        ),
+    ]
+    .into_iter()
+    .map(|(table, row_count, columns)| benchmark_table_metadata(table, row_count, columns))
+    .collect()
+}
+
+fn benchmark_table_metadata(table: &str, row_count: u64, columns: &[&str]) -> TpchTableMetadata {
+    TpchTableMetadata {
+        table: table.to_string(),
+        path: PathBuf::from(format!("/tmp/tpch/{table}.parquet")),
+        schema: columns
+            .iter()
+            .map(|column| format!("{column}:Int64:nullable=false:metadata={{}}"))
+            .collect::<Vec<_>>()
+            .join("|"),
+        files: Vec::new(),
+        file_count: 1,
+        row_count,
+        byte_size: 1,
+        row_group_count: 1,
+        row_group_rows: vec![row_count],
+        row_group_bytes: vec![1],
     }
 }
 
@@ -589,6 +771,19 @@ fn query_measurement(fingerprint: &str) -> execution::QueryMeasurement {
 
 fn int_batch(values: &[i32]) -> RecordBatch {
     let schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Int32, false)]));
+    RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int32Array::from(values.to_vec()))]).unwrap()
+}
+
+fn int_batch_with_field(
+    field: Field,
+    metadata: Option<std::collections::HashMap<String, String>>,
+    values: &[i32],
+) -> RecordBatch {
+    let schema = match metadata {
+        Some(metadata) => Schema::new_with_metadata(vec![field], metadata),
+        None => Schema::new(vec![field]),
+    };
+    let schema = Arc::new(schema);
     RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int32Array::from(values.to_vec()))]).unwrap()
 }
 

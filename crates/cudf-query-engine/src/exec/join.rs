@@ -169,6 +169,7 @@ pub(super) fn execute_join(
             probe_bytes: side_metric(probe_side(node.spec.build_side), stats.left_bytes, stats.right_bytes),
             hash_table_bytes: indices.hash_table_bytes,
             filtered_probe_state_bytes: 0,
+            mixed_size_data_bytes: 0,
             gather_map_bytes: indices.gather_map_bytes,
             output_rows,
             output_bytes,
@@ -265,6 +266,7 @@ fn execute_cross_join(
             probe_bytes: side_metric(probe_side(node.spec.build_side), stats.left_bytes, stats.right_bytes),
             hash_table_bytes: 0,
             filtered_probe_state_bytes: 0,
+            mixed_size_data_bytes: 0,
             gather_map_bytes: 0,
             output_rows,
             output_bytes,
@@ -439,27 +441,40 @@ fn execute_conditional_join_indices(input: &JoinIndexInput<'_, '_>, node: &JoinN
 fn execute_mixed_join_indices(
     input: &JoinIndexInput<'_, '_>,
     node: &JoinNode,
-    scratch: &mut ExecutionScratch,
-    metrics: &mut QueryMetrics,
+    _scratch: &mut ExecutionScratch,
+    _metrics: &mut QueryMetrics,
 ) -> Result<JoinIndexResult> {
     match node.spec.join_type {
         JoinType::Inner | JoinType::Left => {
             let predicate = lower_join_residual_predicate(input.context, node, input.residual_columns)?;
-            let equi = execute_reusable_hash_join_indices(input, node, scratch, metrics)?;
-            let EquiJoinIndices::Pair { left: left_indices, right: right_indices } = equi.indices else {
-                unreachable!("inner/left reusable hash joins produce two-sided indices");
-            };
-            let options = dataframe_predicate_join_options(input.residual_columns);
-            let join_type = lower_pair_join_type(node.spec.join_type)?;
-            let filtered = input
-                .left
-                .with_execution(input.overrides)
-                .filter_join_indices(input.right, &left_indices, &right_indices, &predicate, options, join_type)
-                .map_err(|error| join_index_error(error, node))?;
-            Ok(JoinIndexResult::with_hash_table(
-                EquiJoinIndices::Pair { left: filtered.left().clone(), right: filtered.right().clone() },
-                equi.hash_table_bytes,
-            ))
+            let options = dataframe_mixed_join_options(
+                input.left_keys,
+                input.right_keys,
+                input.residual_columns,
+                node.spec.null_equality,
+            );
+            let size_data = match node.spec.join_type {
+                JoinType::Inner => input.left.with_execution(input.overrides).mixed_inner_join_size_data(
+                    input.right,
+                    &predicate,
+                    options,
+                ),
+                JoinType::Left => input.left.with_execution(input.overrides).mixed_left_join_size_data(
+                    input.right,
+                    &predicate,
+                    options,
+                ),
+                JoinType::Full | JoinType::LeftSemi | JoinType::LeftAnti | JoinType::Cross => {
+                    unreachable!("matched above")
+                },
+            }
+            .map_err(|error| join_index_error(error, node))?;
+            let pairs =
+                size_data.materialize_indices_in(input.overrides).map_err(|error| join_index_error(error, node))?;
+            Ok(JoinIndexResult::without_hash_table(EquiJoinIndices::Pair {
+                left: pairs.left().clone(),
+                right: pairs.right().clone(),
+            }))
         },
         JoinType::Full => {
             let predicate = lower_join_match_predicate(input.context, node, input.residual_columns)?;
@@ -683,7 +698,7 @@ pub(super) fn dataframe_predicate_join_options(
         .right_columns(residual_columns.names(JoinSide::Right).iter().map(String::as_str))
 }
 
-fn dataframe_mixed_join_options(
+pub(super) fn dataframe_mixed_join_options(
     left_keys: &[String],
     right_keys: &[String],
     residual_columns: &JoinResidualColumns,
@@ -695,20 +710,6 @@ fn dataframe_mixed_join_options(
         .left_predicate_columns(residual_columns.names(JoinSide::Left).iter().map(String::as_str))
         .right_predicate_columns(residual_columns.names(JoinSide::Right).iter().map(String::as_str))
         .null_equality(lower_null_equality(null_equality))
-}
-
-fn lower_pair_join_type(join_type: JoinType) -> Result<cudf::JoinType> {
-    match join_type {
-        JoinType::Inner => Ok(cudf::JoinType::Inner),
-        JoinType::Left => Ok(cudf::JoinType::Left),
-        JoinType::Full => Ok(cudf::JoinType::Full),
-        JoinType::LeftSemi | JoinType::LeftAnti | JoinType::Cross => Err(QueryError::new(
-            QueryErrorCode::UnsupportedPlanShape,
-            "cudf_query_engine.join.lower_join_type",
-            "join-index pair filtering supports only inner, left, and full joins",
-        )
-        .with_fact("join_type", join_type)),
-    }
 }
 
 pub(super) fn join_index_error(error: cudf::Error, node: &JoinNode) -> QueryError {
