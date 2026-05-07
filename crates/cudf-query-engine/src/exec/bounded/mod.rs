@@ -18,7 +18,7 @@ use final_sort::*;
 use join::*;
 use multi_join::*;
 use pipeline::*;
-pub(in crate::exec) use reservation::{CommittedPartial, ReservationTracker};
+pub(in crate::exec) use reservation::{ActiveReservation, CommittedPartial, ReservationTracker, ResidentGpuFrame};
 
 pub(super) fn execute_bounded_query_plan(
     context: &ExecutionContext,

@@ -76,6 +76,15 @@ pub struct GpuResultHandle {
 
 impl GpuResultHandle {
     pub fn new(context: &ExecutionContext, frame: GpuDataFrame, schema: SchemaRef) -> Result<Self> {
+        if frame.placement() != context.runtime().placement() {
+            return Err(QueryError::new(
+                crate::error::QueryErrorCode::InvalidPlan,
+                "cudf_query_engine.gpu_result_handle",
+                "native GPU result frame placement does not match the execution context",
+            )
+            .with_fact("frame_device", frame.placement().device.ordinal())
+            .with_fact("runtime_device", context.runtime().device().ordinal()));
+        }
         let batch = GpuRecordBatch::new(frame.into_frame(), schema).map_err(|error| {
             QueryError::from_cudf(
                 "cudf_query_engine.gpu_result_handle",

@@ -1,5 +1,5 @@
 use arrow::{
-    array::Int32Array,
+    array::{Int32Array, StringArray},
     datatypes::{DataType, Field, Schema},
 };
 use datafusion_cudf::TpchTableMetadata;
@@ -44,11 +44,52 @@ fn sf1_external_dataset_mode_rejects_tiny_or_unknown_metadata() {
         .expect_err("SF1 benchmark mode must preserve a content fingerprint");
     assert!(error.to_string().contains("requires a content fingerprint"));
 
+    let unknown_generation =
+        TpchDatasetMetadata { generation_command: "unknown_external".to_string(), ..benchmark_metadata() };
+    let error = dataset::validate_sf1_external_metadata(&unknown_generation)
+        .expect_err("SF1 benchmark mode must preserve reproducible generation metadata");
+    assert!(error.to_string().contains("requires a reproducible CUDF_TPCH_GENERATION_COMMAND"));
+
     let mut mislabeled_tiny = benchmark_metadata();
     mislabeled_tiny.tables.iter_mut().find(|table| table.table == "lineitem").unwrap().row_count = 3;
     let error = dataset::validate_sf1_external_metadata(&mislabeled_tiny)
         .expect_err("SF1 benchmark mode must reject mislabeled tiny data");
     assert!(error.to_string().contains("requires SF1 row count lineitem=6001215"));
+}
+
+#[test]
+fn sf1_external_dataset_mode_rejects_inconsistent_row_group_metadata_lengths() {
+    let mut rows_len_mismatch = benchmark_metadata();
+    let table = rows_len_mismatch.tables.iter_mut().find(|table| table.table == "lineitem").unwrap();
+    table.row_group_count = 2;
+    table.row_group_rows = vec![3_000_000];
+    table.row_group_bytes = vec![1, 1];
+    let error = dataset::validate_sf1_external_metadata(&rows_len_mismatch)
+        .expect_err("SF1 benchmark metadata must reject row group row length mismatches");
+    assert!(error.to_string().contains("inconsistent row_group_rows length for table lineitem"));
+
+    let mut bytes_len_mismatch = benchmark_metadata();
+    let table = bytes_len_mismatch.tables.iter_mut().find(|table| table.table == "lineitem").unwrap();
+    table.row_group_count = 2;
+    table.row_group_rows = vec![3_000_000, 3_001_215];
+    table.row_group_bytes = vec![1];
+    let error = dataset::validate_sf1_external_metadata(&bytes_len_mismatch)
+        .expect_err("SF1 benchmark metadata must reject row group byte length mismatches");
+    assert!(error.to_string().contains("inconsistent row_group_bytes length for table lineitem"));
+
+    let mut zero_row_group_bytes = benchmark_metadata();
+    zero_row_group_bytes.tables.iter_mut().find(|table| table.table == "lineitem").unwrap().row_group_bytes = vec![0];
+    let error = dataset::validate_sf1_external_metadata(&zero_row_group_bytes)
+        .expect_err("SF1 benchmark metadata must reject zero-byte row groups");
+    assert!(error.to_string().contains("zero-byte row groups for table lineitem"));
+
+    let mut oversized_row_group_bytes = benchmark_metadata();
+    let table = oversized_row_group_bytes.tables.iter_mut().find(|table| table.table == "lineitem").unwrap();
+    table.byte_size = 1;
+    table.row_group_bytes = vec![2];
+    let error = dataset::validate_sf1_external_metadata(&oversized_row_group_bytes)
+        .expect_err("SF1 benchmark metadata must reject row-group byte totals larger than table bytes");
+    assert!(error.to_string().contains("row-group bytes greater than table bytes for table lineitem"));
 }
 
 #[test]
@@ -124,6 +165,10 @@ fn benchmark_report_header_and_rejected_rows_are_stable() {
     assert!(text.contains(&format!("{NATIVE_TPCH_BENCHMARK_TSV_HEADER}\n")));
     assert!(text.contains("# tpch_dataset_scale_factor=sf1\n"));
     assert!(text.contains("# tpch_benchmark_query_ids=q02\n"));
+    assert!(text.contains("# tpch_benchmark_wall_time_fields=per_measured_iteration_mean\n"));
+    assert!(text.contains("# tpch_benchmark_native_counter_fields=measured_iteration_totals\n"));
+    assert!(text.contains("# tpch_benchmark_native_peak_memory_fields=max_across_measured_iterations\n"));
+    assert!(text.contains("# tpch_benchmark_native_timing_fields=per_measured_iteration_mean\n"));
     assert!(text.contains("# tpch_benchmark_dataset_mode=sf1_external\n"));
     assert!(text.contains("# tpch_benchmark_native_device_budget_bytes=8589934592\n"));
     assert!(text.contains("# tpch_benchmark_native_max_source_chunk_bytes=536870912\n"));
@@ -464,10 +509,11 @@ fn output_fingerprint_is_independent_of_record_batch_boundaries() {
     let single_batch = vec![int_batch(&[1, 2, 3, 4])];
     let split_batches = vec![int_batch(&[1, 2]), int_batch(&[3, 4])];
     let different_rows = vec![int_batch(&[1, 2, 4, 3])];
+    let schema = single_batch[0].schema();
 
-    let single_fingerprint = validation::fingerprint_batches(&single_batch).unwrap();
-    let split_fingerprint = validation::fingerprint_batches(&split_batches).unwrap();
-    let different_fingerprint = validation::fingerprint_batches(&different_rows).unwrap();
+    let single_fingerprint = validation::fingerprint_batches(&schema, &single_batch).unwrap();
+    let split_fingerprint = validation::fingerprint_batches(&schema, &split_batches).unwrap();
+    let different_fingerprint = validation::fingerprint_batches(&schema, &different_rows).unwrap();
 
     assert_eq!(single_fingerprint, split_fingerprint);
     assert_ne!(single_fingerprint, different_fingerprint);
@@ -499,12 +545,35 @@ fn output_fingerprint_includes_schema_nullability_and_metadata() {
     let schema_metadata =
         vec![int_batch_with_field(Field::new("value", DataType::Int32, false), Some(metadata), &[1, 2])];
 
-    let nullable_fingerprint = validation::fingerprint_batches(&nullable).unwrap();
-    let non_nullable_fingerprint = validation::fingerprint_batches(&non_nullable).unwrap();
-    let schema_metadata_fingerprint = validation::fingerprint_batches(&schema_metadata).unwrap();
+    let nullable_fingerprint = validation::fingerprint_batches(&nullable[0].schema(), &nullable).unwrap();
+    let non_nullable_fingerprint = validation::fingerprint_batches(&non_nullable[0].schema(), &non_nullable).unwrap();
+    let schema_metadata_fingerprint =
+        validation::fingerprint_batches(&schema_metadata[0].schema(), &schema_metadata).unwrap();
 
     assert_ne!(nullable_fingerprint, non_nullable_fingerprint);
     assert_ne!(non_nullable_fingerprint, schema_metadata_fingerprint);
+}
+
+#[test]
+fn output_fingerprint_includes_schema_for_empty_outputs() {
+    let nullable_schema = int_batch_with_field(Field::new("value", DataType::Int32, true), None, &[]).schema();
+    let non_nullable_schema = int_batch_with_field(Field::new("value", DataType::Int32, false), None, &[]).schema();
+
+    assert_ne!(
+        validation::fingerprint_batches(&nullable_schema, &[]).unwrap(),
+        validation::fingerprint_batches(&non_nullable_schema, &[]).unwrap()
+    );
+}
+
+#[test]
+fn output_fingerprint_distinguishes_null_from_empty_string() {
+    let null_string = vec![string_batch(&[None])];
+    let empty_string = vec![string_batch(&[Some("")])];
+
+    assert_ne!(
+        validation::fingerprint_batches(&null_string[0].schema(), &null_string).unwrap(),
+        validation::fingerprint_batches(&empty_string[0].schema(), &empty_string).unwrap()
+    );
 }
 
 #[test]
@@ -522,6 +591,10 @@ fn benchmark_planning_row_selection_rejects_ambiguous_reports() {
     let error = execution::select_benchmark_planning_row("q01", Vec::new())
         .expect_err("benchmark planning must reject empty reports explicitly");
     assert!(error.to_string().contains("native planning report was empty for q01"));
+
+    let error = execution::select_benchmark_planning_row("q01", vec![accepted_planning_row("q02")])
+        .expect_err("benchmark planning must reject a single row for a different query");
+    assert!(error.to_string().contains("planning row query_id mismatch"));
 }
 
 #[test]
@@ -533,6 +606,50 @@ fn accepted_planning_row_must_use_native_execution_path() {
     let error = execution::validate_decision_grade_native_planning_row("q01", &gpu_island)
         .expect_err("TPC-H native readiness benchmark must not accept GPU-island execution");
     assert!(error.to_string().contains("requires post_native_execution_path=native"));
+}
+
+#[test]
+fn accepted_planning_row_must_not_carry_rejection_fields() {
+    let mut rejected_flag = accepted_planning_row("q01");
+    rejected_flag.rejected_before_execution = true;
+    let error = execution::validate_decision_grade_native_planning_row("q01", &rejected_flag)
+        .expect_err("accepted benchmark planning rows must not carry rejected_before_execution");
+    assert!(error.to_string().contains("must not set rejected_before_execution=true"));
+
+    let mut reason_code = accepted_planning_row("q01");
+    reason_code.reason_code = Some("unsupported_operator".to_string());
+    let error = execution::validate_decision_grade_native_planning_row("q01", &reason_code)
+        .expect_err("accepted benchmark planning rows must not carry a rejection reason");
+    assert!(error.to_string().contains("must not include a rejection reason_code"));
+
+    let mut unsupported_category = accepted_planning_row("q01");
+    unsupported_category.unsupported_category = Some("operator_hashjoin".to_string());
+    let error = execution::validate_decision_grade_native_planning_row("q01", &unsupported_category)
+        .expect_err("accepted benchmark planning rows must not carry an unsupported category");
+    assert!(error.to_string().contains("must not include an unsupported_category"));
+}
+
+#[test]
+fn rejected_planning_row_must_carry_stable_rejection_fields() {
+    execution::validate_decision_grade_native_rejection_row("q02", &rejected_planning_row("q02")).unwrap();
+
+    let mut missing_rejected_flag = rejected_planning_row("q02");
+    missing_rejected_flag.rejected_before_execution = false;
+    let error = execution::validate_decision_grade_native_rejection_row("q02", &missing_rejected_flag)
+        .expect_err("benchmark rejected rows must identify pre-execution rejection");
+    assert!(error.to_string().contains("must set rejected_before_execution=true"));
+
+    let mut missing_reason = rejected_planning_row("q02");
+    missing_reason.reason_code = None;
+    let error = execution::validate_decision_grade_native_rejection_row("q02", &missing_reason)
+        .expect_err("benchmark rejected rows must carry stable reason codes");
+    assert!(error.to_string().contains("must include a stable reason_code"));
+
+    let mut native_path = rejected_planning_row("q02");
+    native_path.post_native_execution_path = NativeDataFusionPostNativeExecutionPath::Native;
+    let error = execution::validate_decision_grade_native_rejection_row("q02", &native_path)
+        .expect_err("benchmark rejected rows must not be classified as native execution");
+    assert!(error.to_string().contains("must not report post_native_execution_path=native"));
 }
 
 #[test]
@@ -756,7 +873,7 @@ fn timed_native_run(fingerprint: &str) -> execution::TimedNativeQueryRun {
         samples: vec![Duration::from_millis(5)],
         final_measurement: query_measurement(fingerprint),
         metrics: NativeDataFusionExecutionMetrics::default(),
-        raw_metrics: MetricsSet::new(),
+        timing_metrics: NativeTpchTimingMetrics::default(),
     }
 }
 
@@ -785,6 +902,11 @@ fn int_batch_with_field(
     };
     let schema = Arc::new(schema);
     RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int32Array::from(values.to_vec()))]).unwrap()
+}
+
+fn string_batch(values: &[Option<&str>]) -> RecordBatch {
+    let schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Utf8, true)]));
+    RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(StringArray::from(values.to_vec()))]).unwrap()
 }
 
 fn header_index(header: &[&str], name: &str) -> usize {

@@ -15,16 +15,8 @@ pub(super) fn execute_bounded_multi_join_pipeline_query_plan(
         unreachable!("execute_bounded_multi_join_pipeline_query_plan is called only for bounded policies");
     };
     let mut reservations = ReservationTracker::new(device_budget_bytes);
-    let mut scratch = ExecutionScratch::new(context);
-    let mut committed = execute_bounded_multi_join_subtree(
-        context,
-        plan,
-        shape.join_id,
-        gpu_inputs,
-        &mut scratch,
-        &mut reservations,
-        metrics,
-    )?;
+    let mut committed =
+        execute_bounded_multi_join_subtree(context, plan, shape.join_id, gpu_inputs, &mut reservations, metrics)?;
 
     for stage in &shape.stages {
         committed = execute_bounded_join_pipeline_stage(context, stage, committed, &mut reservations, metrics)?;
@@ -58,40 +50,15 @@ pub(super) fn execute_bounded_multi_join_pipeline_query_plan(
     }
 }
 
-enum BoundedMultiJoinInput {
-    Unreserved(GpuDataFrame),
-    Committed(CommittedPartial),
-}
-
-impl BoundedMultiJoinInput {
-    fn into_unreserved_frame(self, reservations: &mut ReservationTracker) -> GpuDataFrame {
-        match self {
-            Self::Unreserved(frame) => frame,
-            Self::Committed(committed) => {
-                reservations.release(committed.reservation);
-                committed.frame
-            },
-        }
-    }
-}
-
 fn execute_bounded_multi_join_subtree(
     context: &ExecutionContext,
     plan: &QueryPlan,
     node_id: NodeId,
     gpu_inputs: &GpuResidentInputMap,
-    scratch: &mut ExecutionScratch,
     reservations: &mut ReservationTracker,
     metrics: &mut QueryMetrics,
 ) -> Result<CommittedPartial> {
-    let input = execute_bounded_multi_join_input(context, plan, node_id, gpu_inputs, scratch, reservations, metrics)?;
-    match input {
-        BoundedMultiJoinInput::Committed(committed) => Ok(committed),
-        BoundedMultiJoinInput::Unreserved(_) => Err(unsupported_bounded_shape(
-            "bounded multi-join pipeline execution requires a native join root below unary stages",
-            "missing_root_join",
-        )),
-    }
+    execute_bounded_multi_join_input(context, plan, node_id, gpu_inputs, reservations, metrics)
 }
 
 fn execute_bounded_multi_join_input(
@@ -99,48 +66,23 @@ fn execute_bounded_multi_join_input(
     plan: &QueryPlan,
     node_id: NodeId,
     gpu_inputs: &GpuResidentInputMap,
-    scratch: &mut ExecutionScratch,
     reservations: &mut ReservationTracker,
     metrics: &mut QueryMetrics,
-) -> Result<BoundedMultiJoinInput> {
+) -> Result<CommittedPartial> {
     let node = plan
         .node(node_id)
         .ok_or_else(|| invalid_node_reference(node_id, "bounded multi-join references a missing node"))?;
     match &node.kind {
         PlanNode::Join(join) => {
-            let left_input = execute_bounded_multi_join_input(
-                context,
-                plan,
-                join.inputs[0],
-                gpu_inputs,
-                scratch,
-                reservations,
-                metrics,
-            )?;
-            let right_input = execute_bounded_multi_join_input(
-                context,
-                plan,
-                join.inputs[1],
-                gpu_inputs,
-                scratch,
-                reservations,
-                metrics,
-            )?;
-            let left = left_input.into_unreserved_frame(reservations);
-            let right = right_input.into_unreserved_frame(reservations);
-            let committed = execute_bounded_root_join(context, node.id, join, left, right, reservations, metrics)?;
-            Ok(BoundedMultiJoinInput::Committed(committed))
+            let left_input =
+                execute_bounded_multi_join_input(context, plan, join.inputs[0], gpu_inputs, reservations, metrics)?;
+            let right_input =
+                execute_bounded_multi_join_input(context, plan, join.inputs[1], gpu_inputs, reservations, metrics)?;
+            execute_bounded_root_join(context, node.id, join, left_input, right_input, reservations, metrics)
         },
         PlanNode::Filter(filter) => {
-            let input = execute_bounded_multi_join_input(
-                context,
-                plan,
-                filter.input,
-                gpu_inputs,
-                scratch,
-                reservations,
-                metrics,
-            )?;
+            let input =
+                execute_bounded_multi_join_input(context, plan, filter.input, gpu_inputs, reservations, metrics)?;
             execute_bounded_multi_join_unary_input(
                 context,
                 BoundedJoinPipelineStage::Filter { node_id, node: filter },
@@ -150,15 +92,8 @@ fn execute_bounded_multi_join_input(
             )
         },
         PlanNode::Projection(projection) => {
-            let input = execute_bounded_multi_join_input(
-                context,
-                plan,
-                projection.input,
-                gpu_inputs,
-                scratch,
-                reservations,
-                metrics,
-            )?;
+            let input =
+                execute_bounded_multi_join_input(context, plan, projection.input, gpu_inputs, reservations, metrics)?;
             execute_bounded_multi_join_unary_input(
                 context,
                 BoundedJoinPipelineStage::Projection {
@@ -172,8 +107,7 @@ fn execute_bounded_multi_join_input(
             )
         },
         PlanNode::Source(_) => {
-            let frame = execute_node(context, plan, node_id, gpu_inputs, scratch, metrics)?;
-            Ok(BoundedMultiJoinInput::Unreserved(frame))
+            execute_bounded_join_leaf_input(context, plan, node_id, gpu_inputs, reservations, metrics)
         },
         PlanNode::Aggregate(_) | PlanNode::Sort(_) | PlanNode::Limit(_) => Err(unsupported_bounded_shape(
             "bounded multi-join pipeline execution supports only source/filter/projection leaf subtrees below joins",
@@ -187,30 +121,11 @@ fn execute_bounded_multi_join_input(
 fn execute_bounded_multi_join_unary_input(
     context: &ExecutionContext,
     stage: BoundedJoinPipelineStage<'_>,
-    input: BoundedMultiJoinInput,
+    input: CommittedPartial,
     reservations: &mut ReservationTracker,
     metrics: &mut QueryMetrics,
-) -> Result<BoundedMultiJoinInput> {
-    match input {
-        BoundedMultiJoinInput::Committed(committed) => {
-            execute_bounded_join_pipeline_stage(context, &stage, committed, reservations, metrics)
-                .map(BoundedMultiJoinInput::Committed)
-        },
-        BoundedMultiJoinInput::Unreserved(frame) => {
-            let frame = match stage {
-                BoundedJoinPipelineStage::Filter { node, .. } => execute_filter(context, node, frame, metrics),
-                BoundedJoinPipelineStage::Projection { node, output_schema, .. } => {
-                    execute_projection(context, node, frame, output_schema, metrics)
-                },
-                BoundedJoinPipelineStage::Aggregate { .. }
-                | BoundedJoinPipelineStage::Sort { .. }
-                | BoundedJoinPipelineStage::Limit { .. } => {
-                    unreachable!("multi-join leaf unary only uses filter/projection")
-                },
-            }?;
-            Ok(BoundedMultiJoinInput::Unreserved(frame))
-        },
-    }
+) -> Result<CommittedPartial> {
+    execute_bounded_join_pipeline_stage(context, &stage, input, reservations, metrics)
 }
 
 fn validate_bounded_multi_join_subtree_capabilities(plan: &QueryPlan, node_id: NodeId) -> Result<()> {

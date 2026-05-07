@@ -502,7 +502,21 @@ impl BoundedJoinReservationRequirement {
     }
 }
 
-pub const BOUNDED_JOIN_RESERVATION_REQUIREMENTS: [BoundedJoinReservationRequirement; 8] = [
+pub const BOUNDED_JOIN_RESERVATION_REQUIREMENTS: [BoundedJoinReservationRequirement; 11] = [
+    BoundedJoinReservationRequirement::new(
+        ReservationKind::SourceRead,
+        "join_source_read",
+        "query_engine_source_read_reservation",
+        BoundedJoinReservationStatus::Modeled,
+        "modeled_before_source_handoff",
+    ),
+    BoundedJoinReservationRequirement::new(
+        ReservationKind::OperatorOutput,
+        "join_operator_output",
+        "query_engine_unary_output_reservation",
+        BoundedJoinReservationStatus::Modeled,
+        "modeled_by_bounded_resident_frame_ownership",
+    ),
     BoundedJoinReservationRequirement::new(
         ReservationKind::BuildSide,
         "join_build_side",
@@ -551,6 +565,13 @@ pub const BOUNDED_JOIN_RESERVATION_REQUIREMENTS: [BoundedJoinReservationRequirem
         "dataframe_gather_output_reservation_size_bytes",
         BoundedJoinReservationStatus::Modeled,
         "modeled_by_cudf_rs_dataframe_gather_output_sizing",
+    ),
+    BoundedJoinReservationRequirement::new(
+        ReservationKind::FinalSort,
+        "join_pipeline_final_sort",
+        "query_engine_final_sort_reservation",
+        BoundedJoinReservationStatus::Modeled,
+        "modeled_by_bounded_resident_frame_ownership",
     ),
     BoundedJoinReservationRequirement::new(
         ReservationKind::Materialization,

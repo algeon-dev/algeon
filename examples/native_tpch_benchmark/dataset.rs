@@ -80,8 +80,11 @@ fn prepare_sf1_external_dataset() -> DataFusionResult<(PathBuf, TpchDatasetMetad
 
     let root = PathBuf::from(root);
     let scale_factor = std::env::var(CUDF_TPCH_SCALE_FACTOR_ENV).unwrap_or_else(|_| "unknown".to_string());
-    let generation_command =
-        std::env::var(CUDF_TPCH_GENERATION_COMMAND_ENV).unwrap_or_else(|_| "unknown_external".to_string());
+    let generation_command = std::env::var(CUDF_TPCH_GENERATION_COMMAND_ENV).map_err(|_| {
+        plan_error(format!(
+            "native TPC-H benchmark dataset_mode=sf1_external requires {CUDF_TPCH_GENERATION_COMMAND_ENV} so SF1 provenance is reproducible"
+        ))
+    })?;
     let metadata = describe_tpch_dataset_with_content_fingerprint(
         &root,
         scale_factor,
@@ -105,6 +108,12 @@ pub(super) fn validate_sf1_external_metadata(metadata: &TpchDatasetMetadata) -> 
         return Err(plan_error(format!(
             "native TPC-H benchmark dataset_mode=sf1_external requires an external Parquet root; observed provenance {}",
             metadata.provenance
+        )));
+    }
+    if metadata.generation_command.trim().is_empty() || metadata.generation_command == "unknown_external" {
+        return Err(plan_error(format!(
+            "native TPC-H benchmark dataset_mode=sf1_external requires a reproducible {CUDF_TPCH_GENERATION_COMMAND_ENV}; observed {}",
+            metadata.generation_command
         )));
     }
     if metadata.content_fingerprint.is_none() {
@@ -142,9 +151,40 @@ pub(super) fn validate_sf1_external_metadata(metadata: &TpchDatasetMetadata) -> 
                 "native TPC-H benchmark dataset_mode=sf1_external requires non-empty Parquet metadata for table {expected_table}"
             )));
         }
+        if table.row_group_rows.len() != table.row_group_count {
+            return Err(plan_error(format!(
+                "native TPC-H benchmark dataset_mode=sf1_external has inconsistent row_group_rows length for table {expected_table}; row_group_count={} row_group_rows_len={}",
+                table.row_group_count,
+                table.row_group_rows.len()
+            )));
+        }
+        if table.row_group_bytes.len() != table.row_group_count {
+            return Err(plan_error(format!(
+                "native TPC-H benchmark dataset_mode=sf1_external has inconsistent row_group_bytes length for table {expected_table}; row_group_count={} row_group_bytes_len={}",
+                table.row_group_count,
+                table.row_group_bytes.len()
+            )));
+        }
         if table.row_group_rows.iter().sum::<u64>() != table.row_count {
             return Err(plan_error(format!(
                 "native TPC-H benchmark dataset_mode=sf1_external has inconsistent row-group rows for table {expected_table}"
+            )));
+        }
+        if table.row_group_rows.contains(&0) {
+            return Err(plan_error(format!(
+                "native TPC-H benchmark dataset_mode=sf1_external has zero-row row groups for table {expected_table}"
+            )));
+        }
+        if table.row_group_bytes.contains(&0) {
+            return Err(plan_error(format!(
+                "native TPC-H benchmark dataset_mode=sf1_external has zero-byte row groups for table {expected_table}"
+            )));
+        }
+        let row_group_bytes = table.row_group_bytes.iter().sum::<u64>();
+        if row_group_bytes > table.byte_size {
+            return Err(plan_error(format!(
+                "native TPC-H benchmark dataset_mode=sf1_external has row-group bytes greater than table bytes for table {expected_table}; row_group_bytes={row_group_bytes} table_bytes={}",
+                table.byte_size
             )));
         }
         for column in required_columns[expected_table] {

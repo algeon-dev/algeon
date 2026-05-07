@@ -848,10 +848,12 @@ fn native_query_executes_inner_join_with_equi_key_and_residual_predicate() {
     let metrics = result.metrics();
     assert_eq!(metrics.hash_join_build_count, 0);
     assert_eq!(metrics.hash_join_cache_misses, 0);
+    assert!(metrics.mixed_join_size_data_bytes > 0);
     let join_metrics =
         metrics.operators.iter().find_map(|operator| operator.join.as_ref()).expect("join metrics should be recorded");
     assert!(join_metrics.residual_predicate);
     assert_eq!(join_metrics.hash_table_bytes, 0);
+    assert_eq!(join_metrics.mixed_size_data_bytes, metrics.mixed_join_size_data_bytes);
     assert_eq!(join_metrics.output_rows, 1);
 
     let QueryOutput::HostArrow(batch) = result.output() else {
@@ -1365,15 +1367,14 @@ fn native_query_executes_left_join_with_equi_key_and_residual_predicate() {
 
     let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
     let result = execute_query_plan(&context, &plan).unwrap();
-    let join_metrics = result
-        .metrics()
-        .operators
-        .iter()
-        .find_map(|operator| operator.join.as_ref())
-        .expect("join metrics should be recorded");
+    let metrics = result.metrics();
+    assert!(metrics.mixed_join_size_data_bytes > 0);
+    let join_metrics =
+        metrics.operators.iter().find_map(|operator| operator.join.as_ref()).expect("join metrics should be recorded");
     assert_eq!(join_metrics.join_type, "left");
     assert_eq!(join_metrics.key_count, 1);
     assert!(join_metrics.residual_predicate);
+    assert_eq!(join_metrics.mixed_size_data_bytes, metrics.mixed_join_size_data_bytes);
     assert_eq!(join_metrics.output_rows, 4);
 
     let QueryOutput::HostArrow(batch) = result.output() else {
@@ -4083,6 +4084,21 @@ fn bounded_native_query_executes_root_hash_join_with_ordered_reservations() {
     assert_eq!(join_metrics.probe_side, "left");
     assert!(join_metrics.gather_map_bytes > 0);
     assert_eq!(join_metrics.output_rows, 3);
+    assert_granted_reservation_trace(
+        metrics,
+        &[
+            (ReservationKind::SourceRead, "join_source_read"),
+            (ReservationKind::SourceRead, "join_source_read"),
+            (ReservationKind::OperatorOutput, "join_input_projection"),
+            (ReservationKind::BuildSide, "join_build_side"),
+            (ReservationKind::HashTable, "join_hash_table"),
+            (ReservationKind::OperatorOutput, "join_input_projection"),
+            (ReservationKind::ProbeSide, "join_probe_side"),
+            (ReservationKind::GatherMap, "join_gather_map"),
+            (ReservationKind::JoinOutput, "join_output"),
+            (ReservationKind::Materialization, "host_materialization"),
+        ],
+    );
 
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");
@@ -4149,16 +4165,20 @@ fn bounded_native_query_executes_root_filtered_semi_anti_joins_with_ordered_rese
     assert_eq!(semi.metrics().filtered_join_build_count, 1);
     assert_eq!(semi.metrics().filtered_join_hash_table_bytes, semi_metrics.hash_table_bytes);
     assert_eq!(semi.metrics().filtered_join_probe_state_bytes, semi_metrics.filtered_probe_state_bytes);
-    assert_reservation_kind_subsequence(
+    assert_granted_reservation_trace(
         semi.metrics(),
         &[
-            ReservationKind::BuildSide,
-            ReservationKind::HashTable,
-            ReservationKind::ProbeSide,
-            ReservationKind::FilteredProbeState,
-            ReservationKind::GatherMap,
-            ReservationKind::JoinOutput,
-            ReservationKind::Materialization,
+            (ReservationKind::SourceRead, "join_source_read"),
+            (ReservationKind::SourceRead, "join_source_read"),
+            (ReservationKind::OperatorOutput, "join_input_projection"),
+            (ReservationKind::BuildSide, "join_build_side"),
+            (ReservationKind::HashTable, "join_hash_table"),
+            (ReservationKind::OperatorOutput, "join_input_projection"),
+            (ReservationKind::ProbeSide, "join_probe_side"),
+            (ReservationKind::FilteredProbeState, "join_filtered_probe_state"),
+            (ReservationKind::GatherMap, "join_gather_map"),
+            (ReservationKind::JoinOutput, "join_output"),
+            (ReservationKind::Materialization, "host_materialization"),
         ],
     );
 
@@ -4187,16 +4207,20 @@ fn bounded_native_query_executes_root_filtered_semi_anti_joins_with_ordered_rese
     assert_eq!(anti.metrics().filtered_join_build_count, 1);
     assert_eq!(anti.metrics().filtered_join_hash_table_bytes, anti_metrics.hash_table_bytes);
     assert_eq!(anti.metrics().filtered_join_probe_state_bytes, anti_metrics.filtered_probe_state_bytes);
-    assert_reservation_kind_subsequence(
+    assert_granted_reservation_trace(
         anti.metrics(),
         &[
-            ReservationKind::BuildSide,
-            ReservationKind::HashTable,
-            ReservationKind::ProbeSide,
-            ReservationKind::FilteredProbeState,
-            ReservationKind::GatherMap,
-            ReservationKind::JoinOutput,
-            ReservationKind::Materialization,
+            (ReservationKind::SourceRead, "join_source_read"),
+            (ReservationKind::SourceRead, "join_source_read"),
+            (ReservationKind::OperatorOutput, "join_input_projection"),
+            (ReservationKind::BuildSide, "join_build_side"),
+            (ReservationKind::HashTable, "join_hash_table"),
+            (ReservationKind::OperatorOutput, "join_input_projection"),
+            (ReservationKind::ProbeSide, "join_probe_side"),
+            (ReservationKind::FilteredProbeState, "join_filtered_probe_state"),
+            (ReservationKind::GatherMap, "join_gather_map"),
+            (ReservationKind::JoinOutput, "join_output"),
+            (ReservationKind::Materialization, "host_materialization"),
         ],
     );
 
@@ -4302,6 +4326,16 @@ fn bounded_native_query_executes_root_keyless_conditional_join_with_ordered_rese
     assert_eq!(metrics.reservation_denied_count, 0);
     assert!(metrics.reservation_requested_bytes > 0);
     assert!(metrics.reservation_granted_bytes > 0);
+    assert_reservation_kind_subsequence(
+        metrics,
+        &[
+            ReservationKind::BuildSide,
+            ReservationKind::ProbeSide,
+            ReservationKind::GatherMap,
+            ReservationKind::JoinOutput,
+            ReservationKind::Materialization,
+        ],
+    );
     assert_eq!(metrics.hash_join_build_count, 0);
     assert_eq!(metrics.hash_join_hash_table_bytes, 0);
     let join_metrics =
@@ -4367,6 +4401,16 @@ fn bounded_native_query_executes_root_keyless_conditional_left_join_with_unmatch
     let metrics = result.metrics();
     assert_eq!(metrics.phase_c_memory_control_policy.as_str(), "bounded");
     assert_eq!(metrics.reservation_denied_count, 0);
+    assert_reservation_kind_subsequence(
+        metrics,
+        &[
+            ReservationKind::BuildSide,
+            ReservationKind::ProbeSide,
+            ReservationKind::GatherMap,
+            ReservationKind::JoinOutput,
+            ReservationKind::Materialization,
+        ],
+    );
     assert_eq!(metrics.hash_join_build_count, 0);
     let join_metrics =
         metrics.operators.iter().find_map(|operator| operator.join.as_ref()).expect("join metrics should be recorded");
@@ -4548,6 +4592,7 @@ fn bounded_native_query_executes_root_keyless_conditional_left_only_joins_with_l
         &left_schema,
         &right_schema,
         JoinType::LeftSemi,
+        JoinSide::Left,
     );
     let anti = execute_bounded_keyless_left_only_conditional_join(
         &runtime,
@@ -4556,6 +4601,7 @@ fn bounded_native_query_executes_root_keyless_conditional_left_only_joins_with_l
         &left_schema,
         &right_schema,
         JoinType::LeftAnti,
+        JoinSide::Left,
     );
 
     let QueryOutput::HostArrow(semi_batch) = semi.output() else {
@@ -4576,6 +4622,16 @@ fn bounded_native_query_executes_root_keyless_conditional_left_only_joins_with_l
     assert_eq!(semi_metrics.key_count, 0);
     assert_eq!(semi_metrics.output_rows, 2);
     assert!(semi_metrics.gather_map_bytes > 0);
+    assert_reservation_kind_subsequence(
+        semi.metrics(),
+        &[
+            ReservationKind::BuildSide,
+            ReservationKind::ProbeSide,
+            ReservationKind::GatherMap,
+            ReservationKind::JoinOutput,
+            ReservationKind::Materialization,
+        ],
+    );
 
     let QueryOutput::HostArrow(anti_batch) = anti.output() else {
         panic!("left anti bounded conditional join should return host output");
@@ -4595,6 +4651,16 @@ fn bounded_native_query_executes_root_keyless_conditional_left_only_joins_with_l
     assert_eq!(anti_metrics.key_count, 0);
     assert_eq!(anti_metrics.output_rows, 2);
     assert!(anti_metrics.gather_map_bytes > 0);
+    assert_reservation_kind_subsequence(
+        anti.metrics(),
+        &[
+            ReservationKind::BuildSide,
+            ReservationKind::ProbeSide,
+            ReservationKind::GatherMap,
+            ReservationKind::JoinOutput,
+            ReservationKind::Materialization,
+        ],
+    );
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -4862,6 +4928,27 @@ fn bounded_native_query_executes_root_hash_join_under_aggregate_with_ordered_res
         metrics.operators.iter().find_map(|operator| operator.join.as_ref()).expect("join metrics should be recorded");
     assert_eq!(join_metrics.join_type, "inner");
     assert_eq!(join_metrics.output_rows, 3);
+    assert_granted_reservation_trace(
+        metrics,
+        &[
+            (ReservationKind::SourceRead, "join_source_read"),
+            (ReservationKind::SourceRead, "join_source_read"),
+            (ReservationKind::OperatorOutput, "join_input_projection"),
+            (ReservationKind::BuildSide, "join_build_side"),
+            (ReservationKind::HashTable, "join_hash_table"),
+            (ReservationKind::OperatorOutput, "join_input_projection"),
+            (ReservationKind::ProbeSide, "join_probe_side"),
+            (ReservationKind::GatherMap, "join_gather_map"),
+            (ReservationKind::JoinOutput, "join_output"),
+            (ReservationKind::OperatorOutput, "join_pipeline_aggregate"),
+            (ReservationKind::OperatorOutput, "join_pipeline_aggregate_output"),
+            (ReservationKind::FinalSort, "join_pipeline_sort"),
+            (ReservationKind::FinalSort, "join_pipeline_sort_output"),
+            (ReservationKind::FinalSort, "join_pipeline_limit"),
+            (ReservationKind::FinalSort, "join_pipeline_limit_output"),
+            (ReservationKind::Materialization, "host_materialization"),
+        ],
+    );
 
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");
@@ -4965,6 +5052,33 @@ fn bounded_native_query_executes_pure_hash_multi_join_pipeline_with_ordered_rese
             && !join.residual_predicate
             && join.gather_map_bytes > 0
     }));
+    assert_granted_reservation_trace(
+        metrics,
+        &[
+            (ReservationKind::SourceRead, "join_source_read"),
+            (ReservationKind::SourceRead, "join_source_read"),
+            (ReservationKind::OperatorOutput, "join_input_projection"),
+            (ReservationKind::BuildSide, "join_build_side"),
+            (ReservationKind::HashTable, "join_hash_table"),
+            (ReservationKind::OperatorOutput, "join_input_projection"),
+            (ReservationKind::ProbeSide, "join_probe_side"),
+            (ReservationKind::GatherMap, "join_gather_map"),
+            (ReservationKind::JoinOutput, "join_output"),
+            (ReservationKind::SourceRead, "join_source_read"),
+            (ReservationKind::OperatorOutput, "join_input_projection"),
+            (ReservationKind::BuildSide, "join_build_side"),
+            (ReservationKind::HashTable, "join_hash_table"),
+            (ReservationKind::OperatorOutput, "join_input_projection"),
+            (ReservationKind::ProbeSide, "join_probe_side"),
+            (ReservationKind::GatherMap, "join_gather_map"),
+            (ReservationKind::JoinOutput, "join_output"),
+            (ReservationKind::OperatorOutput, "join_pipeline_aggregate"),
+            (ReservationKind::OperatorOutput, "join_pipeline_aggregate_output"),
+            (ReservationKind::FinalSort, "join_pipeline_sort"),
+            (ReservationKind::FinalSort, "join_pipeline_sort_output"),
+            (ReservationKind::Materialization, "host_materialization"),
+        ],
+    );
 
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");
@@ -5054,14 +5168,100 @@ fn bounded_native_query_rejects_unsupported_join_under_aggregate_before_source_r
     assert_bounded_join_rejection_contract(&error);
 }
 
+#[test]
+fn bounded_native_query_rejects_aggregate_join_input_before_source_read() {
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let left_schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int32, false),
+        Field::new("amount", DataType::Int64, false),
+    ]));
+    let right_schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+    let aggregate_schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int32, false),
+        Field::new("sum_amount", DataType::Int64, true),
+    ]));
+    let join_schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int32, false),
+        Field::new("sum_amount", DataType::Int64, true),
+    ]));
+
+    let mut builder = QueryPlanBuilder::new();
+    let left = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+        "/tmp/bounded-aggregate-join-input-left-does-not-need-to-exist.parquet",
+        Arc::clone(&left_schema),
+        vec!["id".into(), "amount".into()],
+    )));
+    let right = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+        "/tmp/bounded-aggregate-join-input-right-does-not-need-to-exist.parquet",
+        Arc::clone(&right_schema),
+        vec!["id".into()],
+    )));
+    let aggregate = builder.add_aggregate(
+        left,
+        AggregateSpec::new(
+            vec![Expr::column("id")],
+            vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("amount"), "sum_amount")],
+        ),
+        Arc::clone(&aggregate_schema),
+    );
+    let join = builder.add_join(
+        aggregate,
+        right,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(
+                cudf_query_engine::ColumnRef::input(0, "id", "left_id"),
+                cudf_query_engine::ColumnRef::input(1, "id", "right_id"),
+            )],
+        )
+        .with_output_projection(vec![
+            JoinOutputColumn::left(cudf_query_engine::ColumnRef::input(0, "id", "id"), "id"),
+            JoinOutputColumn::left(cudf_query_engine::ColumnRef::input(0, "sum_amount", "sum_amount"), "sum_amount"),
+        ])
+        .with_build_side(JoinSide::Right),
+        join_schema,
+    );
+    let plan = builder.finish_with_host_sink(join);
+    assert!(!plan.has_bounded_executable_root_join());
+    assert!(!plan.has_bounded_executable_join_pipeline());
+
+    let context = ExecutionContext::builder()
+        .with_shared_runtime(runtime)
+        .with_memory_control_policy(MemoryControlPolicy::Bounded {
+            device_budget_bytes: 1024 * 1024,
+            max_source_chunk_bytes: 1024,
+            max_row_groups_per_chunk: 1,
+            max_retry_attempts: 1,
+            min_retry_chunk_row_groups: 1,
+        })
+        .build()
+        .unwrap();
+
+    let error = match execute_query_plan(&context, &plan) {
+        Ok(_) => panic!("bounded join with aggregate input should reject before source reads"),
+        Err(error) => error,
+    };
+
+    assert_bounded_join_rejection_contract(&error);
+}
+
 fn assert_bounded_join_rejection_contract(error: &cudf_query_engine::QueryError) {
     let contract = BoundedJoinReservationContract;
+    let expected_facts = contract.unsupported_shape_facts(ExecutionBoundaryPolicy::default());
 
     assert_eq!(error.code(), QueryErrorCode::UnsupportedPlanShape);
     assert_eq!(error.operation(), "cudf_query_engine.bounded.plan");
     assert_eq!(error.fact_value("reason"), Some("bounded_join_plan_shape_unsupported"));
+
+    for (key, expected) in &expected_facts {
+        assert_eq!(
+            error.fact_value(key),
+            Some(expected.as_str()),
+            "bounded join unsupported-shape fact mismatch for {key}"
+        );
+    }
+
     assert_eq!(error.fact_value("bounded_join_reservation_model"), Some(contract.model_status()));
-    assert_eq!(error.fact_value("bounded_join_execution_status"), Some(contract.execution_status()));
     assert_eq!(error.fact_value("bounded_join_execution_families"), Some(contract.execution_families_csv().as_str()));
     assert_eq!(error.fact_value("bounded_join_enabled"), Some("true"));
     assert_eq!(
@@ -5211,6 +5411,7 @@ fn execute_bounded_keyless_left_only_conditional_join(
     left_schema: &Arc<Schema>,
     right_schema: &Arc<Schema>,
     join_type: JoinType,
+    build_side: JoinSide,
 ) -> cudf_query_engine::QueryExecutionResult {
     let output_schema = Arc::new(Schema::new(vec![Field::new("qty", DataType::Int32, false)]));
 
@@ -5227,7 +5428,7 @@ fn execute_bounded_keyless_left_only_conditional_join(
                 cudf_query_engine::ColumnRef::input(0, "qty", "qty"),
                 "qty",
             )])
-            .with_build_side(JoinSide::Right),
+            .with_build_side(build_side),
         Arc::clone(&output_schema),
     );
     let plan = builder.finish_with_host_sink(join);
@@ -5298,6 +5499,17 @@ fn assert_reservation_kind_subsequence(metrics: &QueryMetrics, expected: &[Reser
             .find(|event| event.reservation_kind == *expected_kind)
             .unwrap_or_else(|| panic!("missing ordered reservation event {expected_kind:?}"));
     }
+}
+
+fn assert_granted_reservation_trace(metrics: &QueryMetrics, expected: &[(ReservationKind, &'static str)]) {
+    assert_eq!(metrics.reservation_denied_count, 0);
+    let actual = metrics
+        .reservation_events
+        .iter()
+        .filter(|event| event.outcome.as_str() == "granted")
+        .map(|event| (event.reservation_kind, event.memory_boundary.as_str()))
+        .collect::<Vec<_>>();
+    assert_eq!(actual, expected);
 }
 
 fn assert_zero_byte_gather_map_reservation(metrics: &QueryMetrics) {

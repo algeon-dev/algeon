@@ -9,14 +9,29 @@ pub(super) fn execute_bounded_join_pipeline_query_plan(
 ) -> Result<QueryOutput> {
     let pipeline = BoundedJoinPipelinePlan::analyze(plan)?;
     validate_bounded_join_pipeline_stages(&pipeline.stages)?;
+    validate_bounded_join_leaf_input_capabilities(plan, pipeline.join.inputs[0])?;
+    validate_bounded_join_leaf_input_capabilities(plan, pipeline.join.inputs[1])?;
 
     let MemoryControlPolicy::Bounded { device_budget_bytes, .. } = context.memory_control_policy() else {
         unreachable!("execute_bounded_join_pipeline_query_plan is called only for bounded policies");
     };
     let mut reservations = ReservationTracker::new(device_budget_bytes);
-    let mut scratch = ExecutionScratch::new(context);
-    let left = execute_node(context, plan, pipeline.join.inputs[0], gpu_inputs, &mut scratch, metrics)?;
-    let right = execute_node(context, plan, pipeline.join.inputs[1], gpu_inputs, &mut scratch, metrics)?;
+    let left = execute_bounded_join_leaf_input(
+        context,
+        plan,
+        pipeline.join.inputs[0],
+        gpu_inputs,
+        &mut reservations,
+        metrics,
+    )?;
+    let right = execute_bounded_join_leaf_input(
+        context,
+        plan,
+        pipeline.join.inputs[1],
+        gpu_inputs,
+        &mut reservations,
+        metrics,
+    )?;
     let mut committed =
         execute_bounded_root_join(context, pipeline.join_id, pipeline.join, left, right, &mut reservations, metrics)?;
 
@@ -126,11 +141,11 @@ pub(super) fn execute_bounded_join_pipeline_stage(
         BoundedJoinPipelineStage::Sort { node, .. } => execute_sort(context, node, input.frame, metrics),
         BoundedJoinPipelineStage::Limit { node, .. } => execute_limit(context, node, input.frame, metrics),
     };
-    reservations.release(work_reservation);
 
     let frame = match result {
         Ok(frame) => frame,
         Err(error) => {
+            reservations.release(work_reservation);
             reservations.release(input.reservation);
             return Err(RuntimeResourceFacts {
                 memory_boundary: stage_name,
@@ -145,37 +160,48 @@ pub(super) fn execute_bounded_join_pipeline_stage(
         },
     };
 
-    reservations.release(input.reservation);
     let output_boundary = pipeline_stage_output_memory_boundary(stage);
-    let output_bytes = observe_device_memory_bytes(&frame, metrics).map_err(|error| {
-        RuntimeResourceFacts {
-            memory_boundary: output_boundary,
-            stage: stage_name,
-            node_id,
-            attempt: 1,
-            max_attempts: 1,
-            resume_boundary: stage_name,
-            metrics,
-        }
-        .attach_to(error)
-    })?;
+    let output_bytes = match observe_device_memory_bytes(&frame, metrics) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            reservations.release(work_reservation);
+            reservations.release(input.reservation);
+            return Err(RuntimeResourceFacts {
+                memory_boundary: output_boundary,
+                stage: stage_name,
+                node_id,
+                attempt: 1,
+                max_attempts: 1,
+                resume_boundary: stage_name,
+                metrics,
+            }
+            .attach_to(error));
+        },
+    };
     let output_request = MemoryReservationRequest::new(kind, output_bytes, reservations.budget())
         .with_memory_boundary(output_boundary)
         .with_node_id(node_id)
         .with_stage(stage_name)
         .with_attempt(1, 1);
-    let output_reservation = reservations.try_reserve(output_request, metrics).map_err(|error| {
-        RuntimeResourceFacts {
-            memory_boundary: output_boundary,
-            stage: stage_name,
-            node_id,
-            attempt: 1,
-            max_attempts: 1,
-            resume_boundary: stage_name,
-            metrics,
-        }
-        .attach_retry_context(error)
-    })?;
+    let output_reservation = match reservations.try_reserve(output_request, metrics) {
+        Ok(reservation) => reservation,
+        Err(error) => {
+            reservations.release(work_reservation);
+            reservations.release(input.reservation);
+            return Err(RuntimeResourceFacts {
+                memory_boundary: output_boundary,
+                stage: stage_name,
+                node_id,
+                attempt: 1,
+                max_attempts: 1,
+                resume_boundary: stage_name,
+                metrics,
+            }
+            .attach_retry_context(error));
+        },
+    };
+    reservations.release(work_reservation);
+    reservations.release(input.reservation);
     Ok(CommittedPartial { frame, reservation: output_reservation })
 }
 
