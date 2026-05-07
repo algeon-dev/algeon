@@ -46,6 +46,9 @@ typedef void* cudf_filtered_join_probe_handle;
 /// Opaque handle to a reusable libcudf hash-join build artifact.
 typedef void* cudf_hash_join_handle;
 
+/// Opaque handle to retained libcudf conditional full join output-size data.
+typedef void* cudf_conditional_full_join_size_data_handle;
+
 /// Opaque handle to retained libcudf mixed-join output-size data.
 typedef void* cudf_mixed_join_size_data_handle;
 
@@ -354,6 +357,61 @@ cudf_status_t cudf_conditional_full_join_indices_ex(cudf_table_view_handle left,
                                                     cudf_column_handle* out_left_indices,
                                                     cudf_column_handle* out_right_indices,
                                                     const cudf_exec_options_t* options);
+
+/// Compute and retain exact output-size data for a conditional full join.
+///
+/// The returned handle owns libcudf's retained conditional full join state and
+/// stores copies of the table views plus a shared AST predicate owner. The
+/// underlying table columns and predicate inputs must outlive the handle.
+cudf_status_t cudf_conditional_full_join_begin_size_data(
+  cudf_table_view_handle left,
+  cudf_table_view_handle right,
+  cudf_ast_expression_handle predicate,
+  cudf_conditional_full_join_size_data_handle* out);
+
+/// Compute and retain exact output-size data for a conditional full join with
+/// explicit execution context.
+cudf_status_t cudf_conditional_full_join_begin_size_data_ex(
+  cudf_table_view_handle left,
+  cudf_table_view_handle right,
+  cudf_ast_expression_handle predicate,
+  cudf_conditional_full_join_size_data_handle* out,
+  const cudf_exec_options_t* options);
+
+/// Destroy retained conditional full join output-size data.
+void cudf_conditional_full_join_size_data_destroy(
+  cudf_conditional_full_join_size_data_handle handle);
+
+/// Return the exact output row count retained in conditional full join size data.
+cudf_status_t cudf_conditional_full_join_size_data_output_size(
+  cudf_conditional_full_join_size_data_handle handle,
+  size_t* out);
+
+/// Return device bytes retained by conditional full join size data.
+cudf_status_t cudf_conditional_full_join_size_data_device_allocated_size(
+  cudf_conditional_full_join_size_data_handle handle,
+  size_t* out);
+
+/// Return exact materialized gather-map bytes for retained conditional full join size data.
+///
+/// Conditional full joins report two INT32 gather maps.
+cudf_status_t cudf_conditional_full_join_size_data_gather_map_size(
+  cudf_conditional_full_join_size_data_handle handle,
+  size_t* out);
+
+/// Materialize conditional full join indices using retained exact output-size data.
+cudf_status_t cudf_conditional_full_join_size_data_materialize_indices(
+  cudf_conditional_full_join_size_data_handle size_data,
+  cudf_column_handle* out_left_indices,
+  cudf_column_handle* out_right_indices);
+
+/// Materialize conditional full join indices using retained exact output-size
+/// data and explicit execution context.
+cudf_status_t cudf_conditional_full_join_size_data_materialize_indices_ex(
+  cudf_conditional_full_join_size_data_handle size_data,
+  cudf_column_handle* out_left_indices,
+  cudf_column_handle* out_right_indices,
+  const cudf_exec_options_t* options);
 
 /// Conditional left semi join. Returns an INT32 column of left row indices.
 cudf_status_t cudf_conditional_left_semi_join_indices(cudf_table_view_handle left,

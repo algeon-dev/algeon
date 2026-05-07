@@ -825,6 +825,62 @@ fn conditional_join_size_impl(
     Ok(out)
 }
 
+fn conditional_full_join_begin_size_data_impl<'a>(
+    left: &TableView<'_>,
+    right: &TableView<'_>,
+    predicate: &'a AstExpression,
+    output_domain: &Arc<ExecutionDomain>,
+    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    operation: &'static str,
+) -> Result<ConditionalFullJoinSizeData<'a>> {
+    let mut handle = ptr::null_mut();
+    let status = match exec_options {
+        None => unsafe {
+            cudf_sys::cudf_conditional_full_join_begin_size_data(
+                left.raw_handle(),
+                right.raw_handle(),
+                predicate.raw_handle(),
+                &mut handle,
+            )
+        },
+        Some(options) => unsafe {
+            cudf_sys::cudf_conditional_full_join_begin_size_data_ex(
+                left.raw_handle(),
+                right.raw_handle(),
+                predicate.raw_handle(),
+                &mut handle,
+                options,
+            )
+        },
+    };
+
+    error::check_status_in_with_details(
+        status,
+        operation,
+        [
+            ("join_type", "full".to_string()),
+            ("execution_context_provided", exec_options.is_some().to_string()),
+            ("reservation_contract", "conditional_full_join_retained_size_data".to_string()),
+        ],
+    )?;
+
+    let handle = ConditionalFullJoinSizeDataHandle {
+        handle: error::require_non_null(handle, operation, "conditional full join size data")?,
+        _domain: Arc::clone(output_domain),
+    };
+    let mut output_size = 0usize;
+    error::check_status_in(
+        unsafe { cudf_sys::cudf_conditional_full_join_size_data_output_size(handle.handle.as_ptr(), &mut output_size) },
+        operation,
+    )?;
+    Ok(ConditionalFullJoinSizeData {
+        handle,
+        output_domain: Arc::clone(output_domain),
+        output_size,
+        _predicate: predicate,
+    })
+}
+
 fn conditional_single_side_join_size_impl(
     left: &TableView<'_>,
     right: &TableView<'_>,
@@ -1683,6 +1739,24 @@ fn conditional_join_size_with_context(
     conditional_join_size_impl(left, right, predicate, join_type, Some(execution.exec_options()), operation)
 }
 
+fn conditional_full_join_begin_size_data_with_context<'a>(
+    left: &TableView<'_>,
+    right: &TableView<'_>,
+    predicate: &'a AstExpression,
+    ctx: &ExecutionOverrides<'_>,
+    operation: &'static str,
+) -> Result<ConditionalFullJoinSizeData<'a>> {
+    let execution = compatible_conditional_join_domain(left, right, predicate, ctx, operation)?;
+    conditional_full_join_begin_size_data_impl(
+        left,
+        right,
+        predicate,
+        execution.output_domain(),
+        Some(execution.exec_options()),
+        operation,
+    )
+}
+
 fn conditional_single_side_join_size_with_context(
     left: &TableView<'_>,
     right: &TableView<'_>,
@@ -1952,6 +2026,18 @@ pub fn conditional_full_join_indices_in(
 ) -> Result<JoinIndices> {
     let operation = "join::conditional_full_join_indices_in";
     conditional_join_indices_with_context(left, right, predicate, JoinType::Full, ctx, operation)
+}
+
+/// Begin retained size-data computation for a conditional full join using a
+/// borrowed execution override.
+pub(crate) fn conditional_full_join_begin_size_data_in<'a>(
+    left: &TableView<'_>,
+    right: &TableView<'_>,
+    predicate: &'a AstExpression,
+    ctx: &ExecutionOverrides<'_>,
+) -> Result<ConditionalFullJoinSizeData<'a>> {
+    let operation = "join::conditional_full_join_begin_size_data_in";
+    conditional_full_join_begin_size_data_with_context(left, right, predicate, ctx, operation)
 }
 
 /// Conditional left semi join indices for rows from `left` with at least one
@@ -2829,6 +2915,11 @@ struct FilteredJoinProbeHandle {
     _domain: Arc<ExecutionDomain>,
 }
 
+struct ConditionalFullJoinSizeDataHandle {
+    handle: NonNull<c_void>,
+    _domain: Arc<ExecutionDomain>,
+}
+
 struct MixedJoinSizeDataHandle {
     handle: NonNull<c_void>,
     _domain: Arc<ExecutionDomain>,
@@ -2849,6 +2940,12 @@ impl fmt::Debug for FilteredJoinHandle {
 impl fmt::Debug for FilteredJoinProbeHandle {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("FilteredJoinProbeHandle").field("handle", &self.handle).finish()
+    }
+}
+
+impl fmt::Debug for ConditionalFullJoinSizeDataHandle {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ConditionalFullJoinSizeDataHandle").field("handle", &self.handle).finish()
     }
 }
 
@@ -2876,6 +2973,12 @@ unsafe impl Sync for FilteredJoinHandle {}
 unsafe impl Send for FilteredJoinProbeHandle {}
 unsafe impl Sync for FilteredJoinProbeHandle {}
 
+// SAFETY: The retained conditional full join size-data handle owns its
+// device-side size state. The safe DataFrame wrapper retains input DataFrames,
+// and the Rust state lifetime keeps AST literal owners alive.
+unsafe impl Send for ConditionalFullJoinSizeDataHandle {}
+unsafe impl Sync for ConditionalFullJoinSizeDataHandle {}
+
 // SAFETY: The retained mixed-join size-data handle owns its device-side
 // matches-per-row buffer. The safe DataFrame wrapper retains the input
 // DataFrames, and the Rust state lifetime keeps AST literal owners alive.
@@ -2897,6 +3000,12 @@ impl Drop for FilteredJoinHandle {
 impl Drop for FilteredJoinProbeHandle {
     fn drop(&mut self) {
         unsafe { cudf_sys::cudf_filtered_join_probe_destroy(self.handle.as_ptr()) };
+    }
+}
+
+impl Drop for ConditionalFullJoinSizeDataHandle {
+    fn drop(&mut self) {
+        unsafe { cudf_sys::cudf_conditional_full_join_size_data_destroy(self.handle.as_ptr()) };
     }
 }
 
@@ -2948,6 +3057,20 @@ pub struct FilteredJoinProbeState {
     output_domain: Arc<ExecutionDomain>,
     output_size: usize,
     semi_join: bool,
+}
+
+/// Retained conditional full join size data.
+///
+/// This state owns libcudf's device-side size data for one conditional full
+/// join. It exposes the exact output size before gather-map allocation and
+/// materializes the two gather maps from the retained size data. The lifetime
+/// keeps AST literal owners alive; higher-level wrappers retain input tables
+/// whose column memory is borrowed by the C handle.
+pub(crate) struct ConditionalFullJoinSizeData<'a> {
+    handle: ConditionalFullJoinSizeDataHandle,
+    output_domain: Arc<ExecutionDomain>,
+    output_size: usize,
+    _predicate: &'a AstExpression,
 }
 
 /// Retained mixed equality-plus-predicate pair-output join size data.
@@ -3002,6 +3125,16 @@ impl fmt::Debug for FilteredJoinProbeState {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("FilteredJoinProbeState")
             .field("join_type", &if self.semi_join { "left_semi" } else { "left_anti" })
+            .field("output_size", &self.output_size)
+            .field("placement", &self.output_domain.placement())
+            .finish()
+    }
+}
+
+impl fmt::Debug for ConditionalFullJoinSizeData<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ConditionalFullJoinSizeData")
+            .field("join_type", &"full")
             .field("output_size", &self.output_size)
             .field("placement", &self.output_domain.placement())
             .finish()
@@ -4170,6 +4303,77 @@ impl FilteredJoinProbeState {
         )?;
         Ok(SingleSideJoinIndices {
             indices: unsafe { Column::from_raw_with_domain(out, Arc::clone(execution.output_domain())) }?,
+        })
+    }
+}
+
+impl ConditionalFullJoinSizeData<'_> {
+    /// Returns the exact output row count for this conditional full join.
+    pub(crate) fn output_size(&self) -> usize {
+        self.output_size
+    }
+
+    /// Returns bytes retained by libcudf's conditional full join size-data state.
+    pub(crate) fn device_allocated_size_bytes(&self) -> Result<usize> {
+        let mut out = 0usize;
+        error::check_status_in(
+            unsafe {
+                cudf_sys::cudf_conditional_full_join_size_data_device_allocated_size(
+                    self.handle.handle.as_ptr(),
+                    &mut out,
+                )
+            },
+            "conditional_full_join_size_data::device_allocated_size_bytes",
+        )?;
+        Ok(out)
+    }
+
+    /// Return exact bytes that must be reserved for this conditional full
+    /// join's output gather-map pair.
+    pub(crate) fn gather_map_reservation_size_bytes(&self) -> Result<usize> {
+        let mut out = 0usize;
+        error::check_status_in(
+            unsafe {
+                cudf_sys::cudf_conditional_full_join_size_data_gather_map_size(self.handle.handle.as_ptr(), &mut out)
+            },
+            "conditional_full_join_size_data::gather_map_reservation_size_bytes",
+        )?;
+        Ok(out)
+    }
+
+    /// Materialize conditional full join gather-map pairs from retained size data.
+    pub(crate) fn materialize_indices(self) -> Result<JoinIndices> {
+        let ctx = ExecutionOverrides::new();
+        self.materialize_indices_in(&ctx)
+    }
+
+    /// Materialize conditional full join gather-map pairs from retained size
+    /// data using a borrowed execution override.
+    pub(crate) fn materialize_indices_in(self, ctx: &ExecutionOverrides<'_>) -> Result<JoinIndices> {
+        let operation = "conditional_full_join_size_data::materialize_indices_in";
+        let execution = ResolvedExecution::unary(&self.output_domain, ctx, operation)?;
+        let mut out_left = ptr::null_mut();
+        let mut out_right = ptr::null_mut();
+        error::check_status_in_with_details(
+            unsafe {
+                cudf_sys::cudf_conditional_full_join_size_data_materialize_indices_ex(
+                    self.handle.handle.as_ptr(),
+                    &mut out_left,
+                    &mut out_right,
+                    execution.exec_options(),
+                )
+            },
+            operation,
+            [
+                ("join_type", "full".to_string()),
+                ("output_size", self.output_size.to_string()),
+                ("execution_context_provided", true.to_string()),
+                ("reservation_contract", "conditional_full_join_retained_size_data_materialize_indices".to_string()),
+            ],
+        )?;
+        Ok(JoinIndices {
+            left: unsafe { Column::from_raw_with_domain(out_left, Arc::clone(execution.output_domain())) }?,
+            right: unsafe { Column::from_raw_with_domain(out_right, Arc::clone(execution.output_domain())) }?,
         })
     }
 }

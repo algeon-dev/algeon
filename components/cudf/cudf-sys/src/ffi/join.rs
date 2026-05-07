@@ -1,8 +1,9 @@
 use crate::{
-    cudf_ast_expression_handle, cudf_column_handle, cudf_column_view_handle, cudf_distinct_hash_join_handle,
-    cudf_exec_options_t, cudf_filtered_join_handle, cudf_filtered_join_probe_handle, cudf_hash_join_handle,
-    cudf_join_kind_t, cudf_mixed_join_size_data_handle, cudf_null_equality_t, cudf_nullable_join_t, cudf_status_t,
-    cudf_table_handle, cudf_table_view_handle,
+    cudf_ast_expression_handle, cudf_column_handle, cudf_column_view_handle,
+    cudf_conditional_full_join_size_data_handle, cudf_distinct_hash_join_handle, cudf_exec_options_t,
+    cudf_filtered_join_handle, cudf_filtered_join_probe_handle, cudf_hash_join_handle, cudf_join_kind_t,
+    cudf_mixed_join_size_data_handle, cudf_null_equality_t, cudf_nullable_join_t, cudf_status_t, cudf_table_handle,
+    cudf_table_view_handle,
 };
 
 extern "C" {
@@ -309,6 +310,51 @@ extern "C" {
         left: cudf_table_view_handle,
         right: cudf_table_view_handle,
         predicate: cudf_ast_expression_handle,
+        out_left_indices: *mut cudf_column_handle,
+        out_right_indices: *mut cudf_column_handle,
+        options: *const cudf_exec_options_t,
+    ) -> cudf_status_t;
+
+    pub fn cudf_conditional_full_join_begin_size_data(
+        left: cudf_table_view_handle,
+        right: cudf_table_view_handle,
+        predicate: cudf_ast_expression_handle,
+        out: *mut cudf_conditional_full_join_size_data_handle,
+    ) -> cudf_status_t;
+
+    pub fn cudf_conditional_full_join_begin_size_data_ex(
+        left: cudf_table_view_handle,
+        right: cudf_table_view_handle,
+        predicate: cudf_ast_expression_handle,
+        out: *mut cudf_conditional_full_join_size_data_handle,
+        options: *const cudf_exec_options_t,
+    ) -> cudf_status_t;
+
+    pub fn cudf_conditional_full_join_size_data_destroy(handle: cudf_conditional_full_join_size_data_handle);
+
+    pub fn cudf_conditional_full_join_size_data_output_size(
+        handle: cudf_conditional_full_join_size_data_handle,
+        out: *mut usize,
+    ) -> cudf_status_t;
+
+    pub fn cudf_conditional_full_join_size_data_device_allocated_size(
+        handle: cudf_conditional_full_join_size_data_handle,
+        out: *mut usize,
+    ) -> cudf_status_t;
+
+    pub fn cudf_conditional_full_join_size_data_gather_map_size(
+        handle: cudf_conditional_full_join_size_data_handle,
+        out: *mut usize,
+    ) -> cudf_status_t;
+
+    pub fn cudf_conditional_full_join_size_data_materialize_indices(
+        size_data: cudf_conditional_full_join_size_data_handle,
+        out_left_indices: *mut cudf_column_handle,
+        out_right_indices: *mut cudf_column_handle,
+    ) -> cudf_status_t;
+
+    pub fn cudf_conditional_full_join_size_data_materialize_indices_ex(
+        size_data: cudf_conditional_full_join_size_data_handle,
         out_left_indices: *mut cudf_column_handle,
         out_right_indices: *mut cudf_column_handle,
         options: *const cudf_exec_options_t,

@@ -277,6 +277,34 @@ int cudf_rust_c_header_smoke(void)
                           cudf_column_handle*,
 
                           const cudf_exec_options_t*)   = &cudf_conditional_full_join_indices_ex;
+  cudf_status_t (*f22cfsd0)(cudf_table_view_handle,
+                            cudf_table_view_handle,
+                            cudf_ast_expression_handle,
+                            cudf_conditional_full_join_size_data_handle*) =
+    &cudf_conditional_full_join_begin_size_data;
+  cudf_status_t (*f22cfsd1)(cudf_table_view_handle,
+                            cudf_table_view_handle,
+                            cudf_ast_expression_handle,
+                            cudf_conditional_full_join_size_data_handle*,
+                            const cudf_exec_options_t*) =
+    &cudf_conditional_full_join_begin_size_data_ex;
+  void (*f22cfsd2)(cudf_conditional_full_join_size_data_handle) =
+    &cudf_conditional_full_join_size_data_destroy;
+  cudf_status_t (*f22cfsd3)(cudf_conditional_full_join_size_data_handle, size_t*) =
+    &cudf_conditional_full_join_size_data_output_size;
+  cudf_status_t (*f22cfsd4)(cudf_conditional_full_join_size_data_handle, size_t*) =
+    &cudf_conditional_full_join_size_data_device_allocated_size;
+  cudf_status_t (*f22cfsd5)(cudf_conditional_full_join_size_data_handle, size_t*) =
+    &cudf_conditional_full_join_size_data_gather_map_size;
+  cudf_status_t (*f22cfsd6)(cudf_conditional_full_join_size_data_handle,
+                            cudf_column_handle*,
+                            cudf_column_handle*) =
+    &cudf_conditional_full_join_size_data_materialize_indices;
+  cudf_status_t (*f22cfsd7)(cudf_conditional_full_join_size_data_handle,
+                            cudf_column_handle*,
+                            cudf_column_handle*,
+                            const cudf_exec_options_t*) =
+    &cudf_conditional_full_join_size_data_materialize_indices_ex;
   cudf_status_t (*f22cs0)(cudf_table_view_handle,
                           cudf_table_view_handle,
                           cudf_ast_expression_handle,
@@ -849,6 +877,14 @@ int cudf_rust_c_header_smoke(void)
   (void)f22cl5;
   (void)f22cf0;
   (void)f22cf1;
+  (void)f22cfsd0;
+  (void)f22cfsd1;
+  (void)f22cfsd2;
+  (void)f22cfsd3;
+  (void)f22cfsd4;
+  (void)f22cfsd5;
+  (void)f22cfsd6;
+  (void)f22cfsd7;
   (void)f22cs0;
   (void)f22cs1;
   (void)f22cs2;

@@ -5,20 +5,32 @@ use crate::{
     },
     frame::{dataframe::DataFrame, series::Series},
     ops::join::{
-        FilteredJoin, FilteredJoinOptions, FilteredJoinProbeState, HashJoin, HashJoinOptions, MixedJoinSizeData,
-        MixedSingleSideJoinSizeData, NullableJoin,
+        ConditionalFullJoinSizeData, FilteredJoin, FilteredJoinOptions, FilteredJoinProbeState, HashJoin,
+        HashJoinOptions, MixedJoinSizeData, MixedSingleSideJoinSizeData, NullableJoin,
     },
     runtime::ExecutionPlacement,
 };
 
 // libcudf join APIs return INT32 row indices (`cudf::size_type`).
 const JOIN_GATHER_MAP_INDEX_SIZE_BYTES: usize = std::mem::size_of::<i32>();
+const JOIN_GATHER_MAP_MAX_ROWS: usize = i32::MAX as usize;
 
 fn join_gather_map_reservation_size_bytes(
     output_rows: usize,
     map_count: usize,
     operation: &'static str,
 ) -> Result<usize> {
+    if output_rows > JOIN_GATHER_MAP_MAX_ROWS {
+        return Err(Error::new_with(
+            ErrorCode::ValueOutOfRange,
+            operation,
+            "join gather-map row count exceeds INT32_MAX",
+        )
+        .with_detail("reason", "row_count_exceeds_cudf_size_type")
+        .with_detail("output_rows", output_rows.to_string())
+        .with_detail("max_output_rows", JOIN_GATHER_MAP_MAX_ROWS.to_string()));
+    }
+
     output_rows
         .checked_mul(JOIN_GATHER_MAP_INDEX_SIZE_BYTES)
         .and_then(|single_map_bytes| single_map_bytes.checked_mul(map_count))
@@ -754,6 +766,20 @@ pub struct DataFrameFilteredJoinProbeState {
     pub(crate) state: FilteredJoinProbeState,
 }
 
+/// Retained DataFrame-level conditional full join size data.
+///
+/// This state owns libcudf's retained conditional full join size-data state and
+/// retains both input DataFrames so copied table views inside the lower-level
+/// handle continue to point at live device columns. The lifetime keeps AST
+/// literal owners alive. It materializes left/right gather-map pairs for a
+/// conditional full join.
+#[derive(Debug)]
+pub struct DataFrameConditionalFullJoinSizeData<'a> {
+    pub(crate) state: ConditionalFullJoinSizeData<'a>,
+    pub(crate) _left: DataFrame,
+    pub(crate) _right: DataFrame,
+}
+
 /// Retained DataFrame-level mixed join size data for pair-output joins.
 ///
 /// This state owns libcudf's retained size-data buffer and retains both input
@@ -895,6 +921,49 @@ impl DataFrameFilteredJoinProbeState {
             .materialize_indices_in(ctx)
             .map_err(|error| error.reanchor("dataframe::filtered_join_probe_state::materialize_indices"))?;
         Ok(DataFrameJoinIndices::new(Series::from_column(raw.indices)?))
+    }
+}
+
+impl DataFrameConditionalFullJoinSizeData<'_> {
+    /// Returns the exact output row count for this conditional full join.
+    pub fn output_size(&self) -> usize {
+        self.state.output_size()
+    }
+
+    /// Returns bytes retained by libcudf's conditional full join size-data state.
+    pub fn device_allocated_size_bytes(&self) -> crate::core::error::Result<usize> {
+        self.state
+            .device_allocated_size_bytes()
+            .map_err(|error| error.reanchor("dataframe::conditional_full_join_size_data::device_allocated_size_bytes"))
+    }
+
+    /// Return exact bytes that must be reserved for the two output gather maps.
+    pub fn gather_map_reservation_size_bytes(&self) -> Result<usize> {
+        self.state.gather_map_reservation_size_bytes().map_err(|error| {
+            error.reanchor("dataframe::conditional_full_join_size_data::gather_map_reservation_size_bytes")
+        })
+    }
+
+    /// Materialize the two conditional full join gather maps from retained size data.
+    pub fn materialize_indices(self) -> crate::core::error::Result<DataFrameJoinPairIndices> {
+        let raw = self
+            .state
+            .materialize_indices()
+            .map_err(|error| error.reanchor("dataframe::conditional_full_join_size_data::materialize_indices"))?;
+        Ok(DataFrameJoinPairIndices::new(Series::from_column(raw.left)?, Series::from_column(raw.right)?))
+    }
+
+    /// Materialize the two conditional full join gather maps using a borrowed
+    /// execution override.
+    pub fn materialize_indices_in(
+        self,
+        ctx: &crate::runtime::execution_context::ExecutionOverrides<'_>,
+    ) -> crate::core::error::Result<DataFrameJoinPairIndices> {
+        let raw = self
+            .state
+            .materialize_indices_in(ctx)
+            .map_err(|error| error.reanchor("dataframe::conditional_full_join_size_data::materialize_indices_in"))?;
+        Ok(DataFrameJoinPairIndices::new(Series::from_column(raw.left)?, Series::from_column(raw.right)?))
     }
 }
 

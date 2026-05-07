@@ -7,11 +7,12 @@ use crate::{
     },
     frame::{
         dataframe::{
-            DataFrame, DataFrameCrossJoinOptions, DataFrameFilteredJoin, DataFrameFilteredJoinOptions,
-            DataFrameFilteredJoinProbeState, DataFrameHashJoin, DataFrameHashJoinMaterialized,
-            DataFrameHashJoinOptions, DataFrameHashJoinPairIndices, DataFrameJoinIndices, DataFrameJoinOptions,
-            DataFrameJoinPairIndices, DataFrameJoinSides, DataFrameMixedJoinOptions, DataFrameMixedJoinSizeData,
-            DataFrameMixedSingleSideJoinSizeData, DataFramePredicateJoinOptions, derive_frame_domain_from_columns,
+            DataFrame, DataFrameConditionalFullJoinSizeData, DataFrameCrossJoinOptions, DataFrameFilteredJoin,
+            DataFrameFilteredJoinOptions, DataFrameFilteredJoinProbeState, DataFrameHashJoin,
+            DataFrameHashJoinMaterialized, DataFrameHashJoinOptions, DataFrameHashJoinPairIndices,
+            DataFrameJoinIndices, DataFrameJoinOptions, DataFrameJoinPairIndices, DataFrameJoinSides,
+            DataFrameMixedJoinOptions, DataFrameMixedJoinSizeData, DataFrameMixedSingleSideJoinSizeData,
+            DataFramePredicateJoinOptions, derive_frame_domain_from_columns,
         },
         series::Series,
     },
@@ -678,6 +679,17 @@ impl DataFrame {
         self.conditional_join_indices_in_context(right, predicate, options, join::JoinType::Full, &ctx)
     }
 
+    /// Begin retained size-data computation for a conditional full join.
+    pub fn conditional_full_join_size_data<'a>(
+        &self,
+        right: &DataFrame,
+        predicate: &'a AstExpression,
+        options: DataFramePredicateJoinOptions,
+    ) -> Result<DataFrameConditionalFullJoinSizeData<'a>> {
+        let ctx = ExecutionOverrides::new();
+        self.conditional_full_join_size_data_in_context(right, predicate, options, &ctx)
+    }
+
     /// Conditional left semi join indices.
     pub fn conditional_left_semi_join_indices(
         &self,
@@ -1085,6 +1097,20 @@ impl DataFrame {
             },
         };
         pair_indices_from_raw(raw, operation)
+    }
+
+    pub(crate) fn conditional_full_join_size_data_in_context<'a>(
+        &self,
+        right: &DataFrame,
+        predicate: &'a AstExpression,
+        options: DataFramePredicateJoinOptions,
+        ctx: &ExecutionOverrides<'_>,
+    ) -> Result<DataFrameConditionalFullJoinSizeData<'a>> {
+        let operation = "dataframe::with_execution::conditional_full_join_size_data";
+        let (left_table, right_table) = predicate_tables(self, right, &options, operation)?;
+        let state =
+            join::conditional_full_join_begin_size_data_in(left_table.table(), right_table.table(), predicate, ctx)?;
+        Ok(DataFrameConditionalFullJoinSizeData { state, _left: self.clone(), _right: right.clone() })
     }
 
     pub(crate) fn conditional_join_indices_with_output_size_in_context(
