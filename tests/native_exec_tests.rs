@@ -446,6 +446,22 @@ fn native_exec_preserves_bounded_join_rejection_facts_from_native_runtime() {
         adapter_error.fact_value("cudf_rs_conditional_join_output_size_hint"),
         Some("conditional_join_indices_with_output_size")
     );
+    assert_eq!(
+        adapter_error.fact_value("bounded_join_execution_family_alias_compatibility"),
+        Some(
+            "root_mixed_inner_left_join_is_legacy_alias_for_mixed_keyed_residual_inner_left_full_left_semi_left_anti_root_joins"
+        )
+    );
+    assert_eq!(
+        adapter_error.fact_value("cudf_rs_mixed_join_size_data_alias_compatibility"),
+        Some(
+            "mixed_inner_left_join_size_data_values_are_legacy_aliases_for_mixed_keyed_residual_inner_left_full_left_semi_left_anti_size_data"
+        )
+    );
+    assert_eq!(
+        adapter_error.fact_value("bounded_join_mixed_keyed_residual_capability_detail"),
+        Some("mixed_keyed_residual_root_join_types=inner,left,full,left_semi,left_anti")
+    );
     assert_eq!(adapter_error.fact_value("path"), None);
     assert_eq!(adapter_error.fact_value("file_index"), None);
     assert_eq!(adapter_error.fact_value("row_groups"), None);
@@ -453,7 +469,7 @@ fn native_exec_preserves_bounded_join_rejection_facts_from_native_runtime() {
 }
 
 #[test]
-fn bounded_join_rejection_facts_match_between_planner_and_runtime_paths() {
+fn bounded_join_facts_cover_planner_supported_and_runtime_rejected_paths() {
     let dir = unique_temp_dir("datafusion-cudf-bounded-join-rejection-split");
     let left = dir.join("left.parquet");
     let right = dir.join("right.parquet");
@@ -466,12 +482,9 @@ fn bounded_join_rejection_facts_match_between_planner_and_runtime_paths() {
     let planner_facts = &diagnostics.bounded_join_reservation_facts;
 
     assert_eq!(planner_facts.get("bounded_join_enabled").map(String::as_str), Some("true"));
-    assert_eq!(planner_facts.get("bounded_join_execution_status").map(String::as_str), Some("unsupported_plan_shape"));
+    assert_eq!(planner_facts.get("bounded_join_execution_status").map(String::as_str), Some("enabled"));
     let expected_unsupported_shape = BoundedJoinReservationContract.supported_shape_requirement();
-    assert_eq!(
-        planner_facts.get("bounded_join_unsupported_shape").map(String::as_str),
-        Some(expected_unsupported_shape.as_str())
-    );
+    assert_eq!(planner_facts.get("bounded_join_unsupported_shape").map(String::as_str), None);
     assert_eq!(
         planner_facts.get("modeled_reservations").map(String::as_str),
         Some(
@@ -479,6 +492,22 @@ fn bounded_join_rejection_facts_match_between_planner_and_runtime_paths() {
         )
     );
     assert_eq!(planner_facts.get("blocked_reservations").map(String::as_str), Some(""));
+    assert_eq!(
+        planner_facts.get("bounded_join_execution_family_alias_compatibility").map(String::as_str),
+        Some(
+            "root_mixed_inner_left_join_is_legacy_alias_for_mixed_keyed_residual_inner_left_full_left_semi_left_anti_root_joins"
+        )
+    );
+    assert_eq!(
+        planner_facts.get("cudf_rs_mixed_join_size_data_alias_compatibility").map(String::as_str),
+        Some(
+            "mixed_inner_left_join_size_data_values_are_legacy_aliases_for_mixed_keyed_residual_inner_left_full_left_semi_left_anti_size_data"
+        )
+    );
+    assert_eq!(
+        planner_facts.get("bounded_join_mixed_keyed_residual_capability_detail").map(String::as_str),
+        Some("mixed_keyed_residual_root_join_types=inner,left,full,left_semi,left_anti")
+    );
 
     fs::remove_dir_all(dir).unwrap();
 
@@ -494,7 +523,7 @@ fn bounded_join_rejection_facts_match_between_planner_and_runtime_paths() {
     assert_eq!(
         runtime_error.fact_value("bounded_join_execution_families"),
         Some(
-            "root_reusable_hash_join,root_filtered_semi_anti_join,keyless_conditional_join,root_mixed_inner_left_join,multi_join_reusable_hash_pipeline"
+            "root_reusable_hash_join,root_filtered_semi_anti_join,keyless_conditional_join,root_projected_cross_join,root_mixed_inner_left_join,multi_join_reusable_hash_pipeline,multi_join_mixed_keyed_residual_inner_pipeline"
         )
     );
     assert_eq!(runtime_error.fact_value("reason"), Some("bounded_join_plan_shape_unsupported"));
@@ -505,15 +534,23 @@ fn bounded_join_rejection_facts_match_between_planner_and_runtime_paths() {
         )
     );
     assert_eq!(runtime_error.fact_value("blocked_reservations"), Some(""));
+    assert_eq!(
+        runtime_error.fact_value("bounded_join_execution_family_alias_compatibility"),
+        Some(
+            "root_mixed_inner_left_join_is_legacy_alias_for_mixed_keyed_residual_inner_left_full_left_semi_left_anti_root_joins"
+        )
+    );
+    assert_eq!(
+        runtime_error.fact_value("cudf_rs_mixed_join_size_data_alias_compatibility"),
+        Some(
+            "mixed_inner_left_join_size_data_values_are_legacy_aliases_for_mixed_keyed_residual_inner_left_full_left_semi_left_anti_size_data"
+        )
+    );
+    assert_eq!(
+        runtime_error.fact_value("bounded_join_mixed_keyed_residual_capability_detail"),
+        Some("mixed_keyed_residual_root_join_types=inner,left,full,left_semi,left_anti")
+    );
 
-    assert_eq!(
-        planner_facts.get("bounded_join_execution_status").map(String::as_str),
-        runtime_error.fact_value("bounded_join_execution_status")
-    );
-    assert_eq!(
-        planner_facts.get("bounded_join_unsupported_shape").map(String::as_str),
-        runtime_error.fact_value("bounded_join_unsupported_shape")
-    );
     assert_eq!(
         planner_facts.get("modeled_reservations").map(String::as_str),
         runtime_error.fact_value("modeled_reservations")
@@ -521,6 +558,18 @@ fn bounded_join_rejection_facts_match_between_planner_and_runtime_paths() {
     assert_eq!(
         planner_facts.get("blocked_reservations").map(String::as_str),
         runtime_error.fact_value("blocked_reservations")
+    );
+    assert_eq!(
+        planner_facts.get("bounded_join_execution_family_alias_compatibility").map(String::as_str),
+        runtime_error.fact_value("bounded_join_execution_family_alias_compatibility")
+    );
+    assert_eq!(
+        planner_facts.get("cudf_rs_mixed_join_size_data_alias_compatibility").map(String::as_str),
+        runtime_error.fact_value("cudf_rs_mixed_join_size_data_alias_compatibility")
+    );
+    assert_eq!(
+        planner_facts.get("bounded_join_mixed_keyed_residual_capability_detail").map(String::as_str),
+        runtime_error.fact_value("bounded_join_mixed_keyed_residual_capability_detail")
     );
 }
 

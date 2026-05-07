@@ -787,6 +787,191 @@ fn native_query_executes_cross_join_with_explicit_output_projection() {
 }
 
 #[test]
+fn native_query_preserves_cross_join_right_then_left_projection_order() {
+    let dir = unique_temp_dir("cudf-query-engine-native-cross-join-right-left-order");
+    let left_path = dir.join("lineitem.parquet");
+    let right_path = dir.join("orders.parquet");
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let left_schema = write_join_left_parquet(&runtime, &left_path);
+    let right_schema = write_join_right_parquet(&runtime, &right_path);
+    let output_schema = Arc::new(Schema::new(vec![
+        Field::new("category", DataType::Utf8, false),
+        Field::new("qty", DataType::Int32, false),
+    ]));
+
+    let left_source = LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(&left_path).with_file_size_bytes(fs::metadata(&left_path).unwrap().len())],
+        Arc::clone(&left_schema),
+        vec!["qty".to_string()],
+    );
+    let right_source = LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(&right_path).with_file_size_bytes(fs::metadata(&right_path).unwrap().len())],
+        Arc::clone(&right_schema),
+        vec!["category".to_string()],
+    );
+
+    let mut builder = QueryPlanBuilder::new();
+    let left = builder.add_source(SourceNode::LocalParquet(left_source));
+    let right = builder.add_source(SourceNode::LocalParquet(right_source));
+    let join = builder.add_join(
+        left,
+        right,
+        JoinSpec::new(JoinType::Cross, vec![]).with_output_projection(vec![
+            JoinOutputColumn::right(cudf_query_engine::ColumnRef::input(1, "category", "category"), "category"),
+            JoinOutputColumn::left(cudf_query_engine::ColumnRef::input(0, "qty", "qty"), "qty"),
+        ]),
+        Arc::clone(&output_schema),
+    );
+    let sort = builder.add_sort(
+        join,
+        SortSpec::new(vec![
+            SortExpr::new(Expr::column("category"), false, false),
+            SortExpr::new(Expr::column("qty"), false, false),
+        ]),
+        Arc::clone(&output_schema),
+    );
+    let plan = builder.finish_with_host_sink(sort);
+
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+    let result = execute_query_plan(&context, &plan).unwrap();
+    let join_metrics =
+        result.metrics().operators.iter().find_map(|operator| operator.join.as_ref()).expect("join metrics");
+    assert_eq!(join_metrics.join_type, "cross");
+    assert_eq!(join_metrics.output_rows, 12);
+
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    assert_eq!(batch.schema().field(0).name(), "category");
+    assert_eq!(batch.schema().field(1).name(), "qty");
+    let rows = (0..batch.num_rows())
+        .map(|row| (string_array(batch, 0).value(row).to_string(), int32_array(batch, 1).value(row)))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        rows,
+        vec![
+            ("four".to_string(), 10),
+            ("four".to_string(), 20),
+            ("four".to_string(), 25),
+            ("four".to_string(), 30),
+            ("three".to_string(), 10),
+            ("three".to_string(), 20),
+            ("three".to_string(), 25),
+            ("three".to_string(), 30),
+            ("two".to_string(), 10),
+            ("two".to_string(), 20),
+            ("two".to_string(), 25),
+            ("two".to_string(), 30),
+        ]
+    );
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn native_query_preserves_cross_join_interleaved_projection_order() {
+    let dir = unique_temp_dir("cudf-query-engine-native-cross-join-interleaved-order");
+    let left_path = dir.join("lineitem.parquet");
+    let right_path = dir.join("orders.parquet");
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let left_schema = write_join_left_parquet(&runtime, &left_path);
+    let right_schema = write_join_right_parquet(&runtime, &right_path);
+    let output_schema = Arc::new(Schema::new(vec![
+        Field::new("right_order_id", DataType::Int32, false),
+        Field::new("qty", DataType::Int32, false),
+        Field::new("category", DataType::Utf8, false),
+        Field::new("left_order_id", DataType::Int32, false),
+    ]));
+
+    let left_source = LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(&left_path).with_file_size_bytes(fs::metadata(&left_path).unwrap().len())],
+        Arc::clone(&left_schema),
+        vec!["order_id".to_string(), "qty".to_string()],
+    );
+    let right_source = LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(&right_path).with_file_size_bytes(fs::metadata(&right_path).unwrap().len())],
+        Arc::clone(&right_schema),
+        vec!["order_id".to_string(), "category".to_string()],
+    );
+
+    let mut builder = QueryPlanBuilder::new();
+    let left = builder.add_source(SourceNode::LocalParquet(left_source));
+    let right = builder.add_source(SourceNode::LocalParquet(right_source));
+    let join = builder.add_join(
+        left,
+        right,
+        JoinSpec::new(JoinType::Cross, vec![]).with_output_projection(vec![
+            JoinOutputColumn::right(
+                cudf_query_engine::ColumnRef::input(1, "order_id", "right_order_id"),
+                "right_order_id",
+            ),
+            JoinOutputColumn::left(cudf_query_engine::ColumnRef::input(0, "qty", "qty"), "qty"),
+            JoinOutputColumn::right(cudf_query_engine::ColumnRef::input(1, "category", "category"), "category"),
+            JoinOutputColumn::left(
+                cudf_query_engine::ColumnRef::input(0, "order_id", "left_order_id"),
+                "left_order_id",
+            ),
+        ]),
+        Arc::clone(&output_schema),
+    );
+    let sort = builder.add_sort(
+        join,
+        SortSpec::new(vec![
+            SortExpr::new(Expr::column("right_order_id"), false, false),
+            SortExpr::new(Expr::column("qty"), false, false),
+            SortExpr::new(Expr::column("category"), false, false),
+            SortExpr::new(Expr::column("left_order_id"), false, false),
+        ]),
+        Arc::clone(&output_schema),
+    );
+    let plan = builder.finish_with_host_sink(sort);
+
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+    let result = execute_query_plan(&context, &plan).unwrap();
+    let join_metrics =
+        result.metrics().operators.iter().find_map(|operator| operator.join.as_ref()).expect("join metrics");
+    assert_eq!(join_metrics.join_type, "cross");
+    assert_eq!(join_metrics.output_rows, 12);
+
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    assert_eq!(batch.schema().field(0).name(), "right_order_id");
+    assert_eq!(batch.schema().field(1).name(), "qty");
+    assert_eq!(batch.schema().field(2).name(), "category");
+    assert_eq!(batch.schema().field(3).name(), "left_order_id");
+    let rows = (0..batch.num_rows())
+        .map(|row| {
+            (
+                int32_array(batch, 0).value(row),
+                int32_array(batch, 1).value(row),
+                string_array(batch, 2).value(row).to_string(),
+                int32_array(batch, 3).value(row),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        rows,
+        vec![
+            (2, 10, "two".to_string(), 1),
+            (2, 20, "two".to_string(), 2),
+            (2, 25, "two".to_string(), 2),
+            (2, 30, "two".to_string(), 3),
+            (3, 10, "three".to_string(), 1),
+            (3, 20, "three".to_string(), 2),
+            (3, 25, "three".to_string(), 2),
+            (3, 30, "three".to_string(), 3),
+            (4, 10, "four".to_string(), 1),
+            (4, 20, "four".to_string(), 2),
+            (4, 25, "four".to_string(), 2),
+            (4, 30, "four".to_string(), 3),
+        ]
+    );
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn native_query_executes_inner_join_with_equi_key_and_residual_predicate() {
     let dir = unique_temp_dir("cudf-query-engine-native-mixed-join");
     let left_path = dir.join("lineitem.parquet");
@@ -4440,6 +4625,303 @@ fn bounded_native_query_executes_root_keyless_conditional_left_join_with_unmatch
 }
 
 #[test]
+fn bounded_native_query_executes_root_keyless_conditional_full_join_with_retained_size_data() {
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let dir = unique_temp_dir("cudf-query-engine-bounded-root-conditional-full-join");
+    let left_path = dir.join("lineitem.parquet");
+    let right_path = dir.join("orders.parquet");
+    let left_schema = write_join_left_parquet(&runtime, &left_path);
+    let right_schema = write_join_right_parquet(&runtime, &right_path);
+    let output_schema = Arc::new(Schema::new(vec![
+        Field::new("left_order_id", DataType::Int32, true),
+        Field::new("right_order_id", DataType::Int32, true),
+        Field::new("qty", DataType::Int32, true),
+        Field::new("category", DataType::Utf8, true),
+    ]));
+
+    let mut builder = QueryPlanBuilder::new();
+    let left =
+        builder.add_source(SourceNode::LocalParquet(join_left_source(&left_path, &left_schema, &["order_id", "qty"])));
+    let right = builder.add_source(SourceNode::LocalParquet(join_right_source(
+        &right_path,
+        &right_schema,
+        &["order_id", "category"],
+    )));
+    let join = builder.add_join(
+        left,
+        right,
+        JoinSpec::new(JoinType::Full, vec![])
+            .with_residual_predicate(qty_gt_right_order_id_times_ten())
+            .with_output_projection(vec![
+                JoinOutputColumn::left(
+                    cudf_query_engine::ColumnRef::input(0, "order_id", "left_order_id"),
+                    "left_order_id",
+                ),
+                JoinOutputColumn::right(
+                    cudf_query_engine::ColumnRef::input(1, "order_id", "right_order_id"),
+                    "right_order_id",
+                ),
+                JoinOutputColumn::left(cudf_query_engine::ColumnRef::input(0, "qty", "qty"), "qty"),
+                JoinOutputColumn::right(cudf_query_engine::ColumnRef::input(1, "category", "category"), "category"),
+            ]),
+        Arc::clone(&output_schema),
+    );
+    let plan = builder.finish_with_host_sink(join);
+    assert!(plan.has_bounded_executable_root_join());
+
+    let context = bounded_join_execution_context(&runtime);
+    let result = execute_query_plan(&context, &plan).unwrap();
+    let metrics = result.metrics();
+    assert_eq!(metrics.hash_join_build_count, 0);
+    assert!(metrics.mixed_join_size_data_bytes > 0);
+    assert_granted_reservation_trace(
+        metrics,
+        &[
+            (ReservationKind::SourceRead, "join_source_read"),
+            (ReservationKind::SourceRead, "join_source_read"),
+            (ReservationKind::OperatorOutput, "join_input_projection"),
+            (ReservationKind::BuildSide, "join_build_side"),
+            (ReservationKind::OperatorOutput, "join_input_projection"),
+            (ReservationKind::ProbeSide, "join_probe_side"),
+            (ReservationKind::MixedSizeData, "join_mixed_size_data"),
+            (ReservationKind::GatherMap, "join_gather_map"),
+            (ReservationKind::JoinOutput, "join_output"),
+            (ReservationKind::Materialization, "host_materialization"),
+        ],
+    );
+    let join_metrics =
+        metrics.operators.iter().find_map(|operator| operator.join.as_ref()).expect("join metrics should be recorded");
+    assert_eq!(join_metrics.join_type, "full");
+    assert_eq!(join_metrics.execution_strategy, "bounded_keyless_conditional_join");
+    assert_eq!(join_metrics.key_count, 0);
+    assert!(join_metrics.residual_predicate);
+    assert_eq!(join_metrics.hash_table_bytes, 0);
+    assert_eq!(join_metrics.mixed_size_data_bytes, metrics.mixed_join_size_data_bytes);
+    assert_eq!(join_metrics.output_rows, 6);
+    assert_eq!(
+        granted_reservation_requested_bytes(metrics, ReservationKind::GatherMap, "join_gather_map"),
+        cudf::DataFrameJoinPairIndices::reservation_size_bytes_for_len(6).unwrap() as u64
+    );
+
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    let left_order_id = int32_array(batch, 0);
+    let right_order_id = int32_array(batch, 1);
+    let qty = int32_array(batch, 2);
+    let category = string_array(batch, 3);
+    let mut rows = (0..batch.num_rows())
+        .map(|row| {
+            (
+                if left_order_id.is_null(row) { None } else { Some(left_order_id.value(row)) },
+                if right_order_id.is_null(row) { None } else { Some(right_order_id.value(row)) },
+                if qty.is_null(row) { None } else { Some(qty.value(row)) },
+                if category.is_null(row) { None } else { Some(category.value(row).to_string()) },
+            )
+        })
+        .collect::<Vec<_>>();
+    rows.sort();
+    assert_eq!(
+        rows,
+        vec![
+            (None, Some(3), None, Some("three".to_string())),
+            (None, Some(4), None, Some("four".to_string())),
+            (Some(1), None, Some(10), None),
+            (Some(2), None, Some(20), None),
+            (Some(2), Some(2), Some(25), Some("two".to_string())),
+            (Some(3), Some(2), Some(30), Some("two".to_string())),
+        ]
+    );
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn bounded_native_query_preserves_right_then_left_projected_cross_output_order() {
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let dir = unique_temp_dir("cudf-query-engine-bounded-root-projected-cross-join");
+    let left_path = dir.join("lineitem.parquet");
+    let right_path = dir.join("orders.parquet");
+    let left_schema = write_join_left_parquet(&runtime, &left_path);
+    let right_schema = write_join_right_parquet(&runtime, &right_path);
+    let output_schema = Arc::new(Schema::new(vec![
+        Field::new("category", DataType::Utf8, false),
+        Field::new("qty", DataType::Int32, false),
+    ]));
+
+    let mut builder = QueryPlanBuilder::new();
+    let left = builder.add_source(SourceNode::LocalParquet(join_left_source(&left_path, &left_schema, &["qty"])));
+    let right =
+        builder.add_source(SourceNode::LocalParquet(join_right_source(&right_path, &right_schema, &["category"])));
+    let join = builder.add_join(
+        left,
+        right,
+        JoinSpec::new(JoinType::Cross, vec![]).with_output_projection(vec![
+            JoinOutputColumn::right(cudf_query_engine::ColumnRef::input(1, "category", "category"), "category"),
+            JoinOutputColumn::left(cudf_query_engine::ColumnRef::input(0, "qty", "qty"), "qty"),
+        ]),
+        Arc::clone(&output_schema),
+    );
+    let plan = builder.finish_with_host_sink(join);
+    assert!(plan.has_bounded_executable_root_join());
+
+    let context = bounded_join_execution_context(&runtime);
+    let result = execute_query_plan(&context, &plan).unwrap();
+    let metrics = result.metrics();
+    assert_eq!(metrics.hash_join_build_count, 0);
+    assert_eq!(metrics.filtered_join_build_count, 0);
+    assert_eq!(metrics.mixed_join_size_data_bytes, 0);
+    assert!(metrics.reservation_events.iter().all(|event| event.reservation_kind != ReservationKind::GatherMap));
+    assert_reservation_kind_subsequence(
+        metrics,
+        &[
+            ReservationKind::BuildSide,
+            ReservationKind::ProbeSide,
+            ReservationKind::JoinOutput,
+            ReservationKind::Materialization,
+        ],
+    );
+    let join_metrics =
+        metrics.operators.iter().find_map(|operator| operator.join.as_ref()).expect("join metrics should be recorded");
+    assert_eq!(join_metrics.join_type, "cross");
+    assert_eq!(join_metrics.execution_strategy, "bounded_projected_cross_join");
+    assert_eq!(join_metrics.key_count, 0);
+    assert!(!join_metrics.residual_predicate);
+    assert_eq!(join_metrics.hash_table_bytes, 0);
+    assert_eq!(join_metrics.filtered_probe_state_bytes, 0);
+    assert_eq!(join_metrics.mixed_size_data_bytes, 0);
+    assert_eq!(join_metrics.gather_map_bytes, 0);
+    assert_eq!(join_metrics.output_rows, 12);
+    assert_eq!(
+        granted_reservation_requested_bytes(metrics, ReservationKind::JoinOutput, "join_output"),
+        join_metrics.output_bytes
+    );
+
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    assert_eq!(batch.num_rows(), 12);
+    assert_eq!(batch.num_columns(), 2);
+    assert_eq!(batch.schema().field(0).name(), "category");
+    assert_eq!(batch.schema().field(1).name(), "qty");
+    let mut rows = (0..batch.num_rows())
+        .map(|row| (string_array(batch, 0).value(row).to_string(), int32_array(batch, 1).value(row)))
+        .collect::<Vec<_>>();
+    rows.sort();
+    assert_eq!(
+        rows,
+        vec![
+            ("four".to_string(), 10),
+            ("four".to_string(), 20),
+            ("four".to_string(), 25),
+            ("four".to_string(), 30),
+            ("three".to_string(), 10),
+            ("three".to_string(), 20),
+            ("three".to_string(), 25),
+            ("three".to_string(), 30),
+            ("two".to_string(), 10),
+            ("two".to_string(), 20),
+            ("two".to_string(), 25),
+            ("two".to_string(), 30),
+        ]
+    );
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn bounded_native_query_preserves_mixed_projected_cross_output_order() {
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let dir = unique_temp_dir("cudf-query-engine-bounded-root-projected-cross-join-mixed-order");
+    let left_path = dir.join("lineitem.parquet");
+    let right_path = dir.join("orders.parquet");
+    let left_schema = write_join_left_parquet(&runtime, &left_path);
+    let right_schema = write_join_right_parquet(&runtime, &right_path);
+    let output_schema = Arc::new(Schema::new(vec![
+        Field::new("right_order_id", DataType::Int32, false),
+        Field::new("qty", DataType::Int32, false),
+        Field::new("category", DataType::Utf8, false),
+        Field::new("left_order_id", DataType::Int32, false),
+    ]));
+
+    let mut builder = QueryPlanBuilder::new();
+    let left =
+        builder.add_source(SourceNode::LocalParquet(join_left_source(&left_path, &left_schema, &["order_id", "qty"])));
+    let right = builder.add_source(SourceNode::LocalParquet(join_right_source(
+        &right_path,
+        &right_schema,
+        &["order_id", "category"],
+    )));
+    let join = builder.add_join(
+        left,
+        right,
+        JoinSpec::new(JoinType::Cross, vec![]).with_output_projection(vec![
+            JoinOutputColumn::right(
+                cudf_query_engine::ColumnRef::input(1, "order_id", "right_order_id"),
+                "right_order_id",
+            ),
+            JoinOutputColumn::left(cudf_query_engine::ColumnRef::input(0, "qty", "qty"), "qty"),
+            JoinOutputColumn::right(cudf_query_engine::ColumnRef::input(1, "category", "category"), "category"),
+            JoinOutputColumn::left(
+                cudf_query_engine::ColumnRef::input(0, "order_id", "left_order_id"),
+                "left_order_id",
+            ),
+        ]),
+        Arc::clone(&output_schema),
+    );
+    let plan = builder.finish_with_host_sink(join);
+    assert!(plan.has_bounded_executable_root_join());
+
+    let context = bounded_join_execution_context(&runtime);
+    let result = execute_query_plan(&context, &plan).unwrap();
+    let metrics = result.metrics();
+    let join_metrics =
+        metrics.operators.iter().find_map(|operator| operator.join.as_ref()).expect("join metrics should be recorded");
+    assert_eq!(join_metrics.join_type, "cross");
+    assert_eq!(join_metrics.execution_strategy, "bounded_projected_cross_join");
+    assert_eq!(join_metrics.output_rows, 12);
+    assert_eq!(join_metrics.gather_map_bytes, 0);
+
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    assert_eq!(batch.schema().field(0).name(), "right_order_id");
+    assert_eq!(batch.schema().field(1).name(), "qty");
+    assert_eq!(batch.schema().field(2).name(), "category");
+    assert_eq!(batch.schema().field(3).name(), "left_order_id");
+    let mut rows = (0..batch.num_rows())
+        .map(|row| {
+            (
+                int32_array(batch, 0).value(row),
+                int32_array(batch, 1).value(row),
+                string_array(batch, 2).value(row).to_string(),
+                int32_array(batch, 3).value(row),
+            )
+        })
+        .collect::<Vec<_>>();
+    rows.sort();
+    assert_eq!(
+        rows,
+        vec![
+            (2, 10, "two".to_string(), 1),
+            (2, 20, "two".to_string(), 2),
+            (2, 25, "two".to_string(), 2),
+            (2, 30, "two".to_string(), 3),
+            (3, 10, "three".to_string(), 1),
+            (3, 20, "three".to_string(), 2),
+            (3, 25, "three".to_string(), 2),
+            (3, 30, "three".to_string(), 3),
+            (4, 10, "four".to_string(), 1),
+            (4, 20, "four".to_string(), 2),
+            (4, 25, "four".to_string(), 2),
+            (4, 30, "four".to_string(), 3),
+        ]
+    );
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn bounded_native_query_executes_root_mixed_inner_join_with_ordered_reservations() {
     let runtime = Arc::new(cudf::Runtime::new().unwrap());
     let dir = unique_temp_dir("cudf-query-engine-bounded-root-mixed-inner-join");
@@ -5253,6 +5735,151 @@ fn bounded_native_query_executes_pure_hash_multi_join_pipeline_with_ordered_rese
 }
 
 #[test]
+fn bounded_native_query_executes_mixed_inner_multi_join_pipeline_with_ordered_reservations() {
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let dir = unique_temp_dir("cudf-query-engine-bounded-mixed-inner-multi-join");
+    let left_path = dir.join("lineitem.parquet");
+    let orders_path = dir.join("orders.parquet");
+    let region_path = dir.join("regions.parquet");
+    let left_schema = write_join_left_parquet(&runtime, &left_path);
+    let orders_schema = write_join_right_parquet(&runtime, &orders_path);
+    let region_schema = write_join_region_parquet(&runtime, &region_path);
+    let first_join_schema = Arc::new(Schema::new(vec![
+        Field::new("order_id", DataType::Int32, false),
+        Field::new("qty", DataType::Int32, false),
+        Field::new("category", DataType::Utf8, false),
+    ]));
+    let second_join_schema = Arc::new(Schema::new(vec![
+        Field::new("order_id", DataType::Int32, false),
+        Field::new("qty", DataType::Int32, false),
+        Field::new("region", DataType::Utf8, false),
+    ]));
+    let aggregate_schema = Arc::new(Schema::new(vec![
+        Field::new("region", DataType::Utf8, false),
+        Field::new("line_count", DataType::Int64, false),
+    ]));
+
+    let mut builder = QueryPlanBuilder::new();
+    let lineitem =
+        builder.add_source(SourceNode::LocalParquet(join_left_source(&left_path, &left_schema, &["order_id", "qty"])));
+    let orders = builder.add_source(SourceNode::LocalParquet(join_right_source(
+        &orders_path,
+        &orders_schema,
+        &["order_id", "category"],
+    )));
+    let regions = builder.add_source(SourceNode::LocalParquet(join_right_source(
+        &region_path,
+        &region_schema,
+        &["order_id", "region"],
+    )));
+    let first_join = builder.add_join(
+        lineitem,
+        orders,
+        JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
+            .with_output_projection(vec![
+                JoinOutputColumn::left(cudf_query_engine::ColumnRef::input(0, "order_id", "order_id"), "order_id"),
+                JoinOutputColumn::left(cudf_query_engine::ColumnRef::input(0, "qty", "qty"), "qty"),
+                JoinOutputColumn::right(cudf_query_engine::ColumnRef::input(1, "category", "category"), "category"),
+            ])
+            .with_build_side(JoinSide::Right),
+        first_join_schema,
+    );
+    let second_join = builder.add_join(
+        first_join,
+        regions,
+        JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
+            .with_residual_predicate(qty_gt_right_order_id_times_ten())
+            .with_output_projection(vec![
+                JoinOutputColumn::left(cudf_query_engine::ColumnRef::input(0, "order_id", "order_id"), "order_id"),
+                JoinOutputColumn::left(cudf_query_engine::ColumnRef::input(0, "qty", "qty"), "qty"),
+                JoinOutputColumn::right(cudf_query_engine::ColumnRef::input(1, "region", "region"), "region"),
+            ])
+            .with_build_side(JoinSide::Right),
+        second_join_schema,
+    );
+    let aggregate = builder.add_aggregate(
+        second_join,
+        AggregateSpec::new(
+            vec![Expr::column("region")],
+            vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("qty"), "line_count")],
+        ),
+        Arc::clone(&aggregate_schema),
+    );
+    let sort = builder.add_sort(
+        aggregate,
+        SortSpec::new(vec![SortExpr::new(Expr::column("region"), false, false)]),
+        Arc::clone(&aggregate_schema),
+    );
+    let plan = builder.finish_with_host_sink(sort);
+    assert!(!plan.has_bounded_executable_root_join());
+    assert!(!plan.has_bounded_executable_join_pipeline());
+    assert!(plan.has_bounded_executable_multi_join_pipeline());
+
+    let context = bounded_join_execution_context(&runtime);
+    let result = execute_query_plan(&context, &plan).unwrap();
+    let metrics = result.metrics();
+    assert_eq!(metrics.phase_c_memory_control_policy.as_str(), "bounded");
+    assert_eq!(metrics.parquet_files, 3);
+    assert_eq!(metrics.reservation_denied_count, 0);
+    assert_eq!(metrics.hash_join_build_count, 1);
+    assert!(metrics.mixed_join_size_data_bytes > 0);
+    assert_eq!(metrics.operators.iter().filter(|operator| operator.join.is_some()).count(), 2);
+    let join_metrics = metrics.operators.iter().filter_map(|operator| operator.join.as_ref()).collect::<Vec<_>>();
+    assert_eq!(join_metrics[0].execution_strategy, "bounded_reusable_hash_join");
+    assert_eq!(join_metrics[1].execution_strategy, "bounded_mixed_keyed_residual_join");
+    assert_eq!(join_metrics[1].join_type, "inner");
+    assert_eq!(join_metrics[1].mixed_size_data_bytes, metrics.mixed_join_size_data_bytes);
+    assert!(join_metrics[1].gather_map_bytes > 0);
+    assert_eq!(join_metrics[1].output_rows, 1);
+    assert_granted_reservation_trace(
+        metrics,
+        &[
+            (ReservationKind::SourceRead, "join_source_read"),
+            (ReservationKind::SourceRead, "join_source_read"),
+            (ReservationKind::OperatorOutput, "join_input_projection"),
+            (ReservationKind::BuildSide, "join_build_side"),
+            (ReservationKind::HashTable, "join_hash_table"),
+            (ReservationKind::OperatorOutput, "join_input_projection"),
+            (ReservationKind::ProbeSide, "join_probe_side"),
+            (ReservationKind::GatherMap, "join_gather_map"),
+            (ReservationKind::JoinOutput, "join_output"),
+            (ReservationKind::SourceRead, "join_source_read"),
+            (ReservationKind::OperatorOutput, "join_input_projection"),
+            (ReservationKind::BuildSide, "join_build_side"),
+            (ReservationKind::OperatorOutput, "join_input_projection"),
+            (ReservationKind::ProbeSide, "join_probe_side"),
+            (ReservationKind::MixedSizeData, "join_mixed_size_data"),
+            (ReservationKind::GatherMap, "join_gather_map"),
+            (ReservationKind::JoinOutput, "join_output"),
+            (ReservationKind::OperatorOutput, "join_pipeline_aggregate"),
+            (ReservationKind::OperatorOutput, "join_pipeline_aggregate_output"),
+            (ReservationKind::FinalSort, "join_pipeline_sort"),
+            (ReservationKind::FinalSort, "join_pipeline_sort_output"),
+            (ReservationKind::Materialization, "host_materialization"),
+        ],
+    );
+    assert!(granted_reservation_requested_bytes(metrics, ReservationKind::MixedSizeData, "join_mixed_size_data") > 0);
+    let join_gather_maps =
+        granted_reservation_requested_bytes_for_boundary(metrics, ReservationKind::GatherMap, "join_gather_map");
+    assert_eq!(join_gather_maps.len(), 2);
+    assert!(join_gather_maps[1] > 0);
+    let join_outputs =
+        granted_reservation_requested_bytes_for_boundary(metrics, ReservationKind::JoinOutput, "join_output");
+    assert_eq!(join_outputs.len(), 2);
+    assert!(join_outputs[1] > 0);
+
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    assert_eq!(batch.num_rows(), 1);
+    assert_eq!(batch.num_columns(), 2);
+    assert_eq!(string_array(batch, 0).iter().collect::<Vec<_>>(), vec![Some("east")]);
+    assert_eq!(int64_array(batch, 1).values().as_ref(), &[1]);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn bounded_native_query_rejects_unsupported_join_under_aggregate_before_source_read() {
     let runtime = Arc::new(cudf::Runtime::new().unwrap());
     let left_schema = Arc::new(Schema::new(vec![
@@ -5684,6 +6311,23 @@ fn granted_reservation_requested_bytes(metrics: &QueryMetrics, kind: Reservation
         })
         .unwrap_or_else(|| panic!("missing granted reservation event {kind:?}/{memory_boundary}"))
         .requested_bytes
+}
+
+fn granted_reservation_requested_bytes_for_boundary(
+    metrics: &QueryMetrics,
+    kind: ReservationKind,
+    memory_boundary: &str,
+) -> Vec<u64> {
+    metrics
+        .reservation_events
+        .iter()
+        .filter(|event| {
+            event.outcome.as_str() == "granted"
+                && event.reservation_kind == kind
+                && event.memory_boundary == memory_boundary
+        })
+        .map(|event| event.requested_bytes)
+        .collect()
 }
 
 fn assert_bounded_mixed_left_only_join_metrics(metrics: &QueryMetrics, join_type: &str, output_rows: u64) {

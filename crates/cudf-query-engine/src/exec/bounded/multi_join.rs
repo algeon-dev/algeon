@@ -1,5 +1,7 @@
 use super::*;
-use crate::bounded_support::{BoundedJoinPipelineStage, analyze_bounded_multi_join_pipeline};
+use crate::bounded_support::{
+    BoundedJoinPipelineStage, analyze_bounded_multi_join_pipeline, bounded_multi_join_compatible,
+};
 
 pub(super) fn execute_bounded_multi_join_pipeline_query_plan(
     context: &ExecutionContext,
@@ -134,9 +136,9 @@ fn validate_bounded_multi_join_subtree_capabilities(plan: &QueryPlan, node_id: N
         .ok_or_else(|| invalid_node_reference(node_id, "bounded multi-join references a missing node"))?;
     match &node.kind {
         PlanNode::Join(join) => {
-            if !join.is_bounded_root_hash_join_compatible() && !join.is_bounded_root_filtered_join_compatible() {
+            if !bounded_multi_join_compatible(join) {
                 return Err(unsupported_bounded_shape(
-                    "bounded multi-join pipeline execution supports only reusable hash equi and filtered equality semi/anti joins",
+                    "bounded multi-join pipeline execution supports reusable hash equi joins, filtered equality semi/anti joins, and mixed keyed-residual inner joins",
                     "bounded_join_plan_shape_unsupported",
                 )
                 .with_fact("join_type", join.spec.join_type)
