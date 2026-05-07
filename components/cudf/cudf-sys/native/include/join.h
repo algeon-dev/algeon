@@ -659,6 +659,78 @@ cudf_status_t cudf_mixed_left_join_begin_size_data_ex(cudf_table_view_handle lef
                                                       cudf_mixed_join_size_data_handle* out,
                                                       const cudf_exec_options_t* options);
 
+/// Compute and retain exact output-size data for a mixed full join.
+///
+/// The returned handle owns libcudf's retained mixed full join state and stores
+/// copies of the table views plus a shared AST predicate owner. The underlying
+/// table columns and predicate inputs must outlive the handle.
+cudf_status_t cudf_mixed_full_join_begin_size_data(cudf_table_view_handle left_equality,
+                                                   cudf_table_view_handle right_equality,
+                                                   cudf_table_view_handle left_conditional,
+                                                   cudf_table_view_handle right_conditional,
+                                                   cudf_ast_expression_handle predicate,
+                                                   cudf_null_equality_t null_equality,
+                                                   cudf_mixed_join_size_data_handle* out);
+
+/// Compute and retain exact output-size data for a mixed full join with
+/// explicit execution context.
+cudf_status_t cudf_mixed_full_join_begin_size_data_ex(cudf_table_view_handle left_equality,
+                                                      cudf_table_view_handle right_equality,
+                                                      cudf_table_view_handle left_conditional,
+                                                      cudf_table_view_handle right_conditional,
+                                                      cudf_ast_expression_handle predicate,
+                                                      cudf_null_equality_t null_equality,
+                                                      cudf_mixed_join_size_data_handle* out,
+                                                      const cudf_exec_options_t* options);
+
+/// Compute and retain exact output-size data for a mixed left semi join.
+///
+/// The returned handle owns libcudf's retained mixed semi join state and stores
+/// copies of the table views plus a shared AST predicate owner. The underlying
+/// table columns and predicate inputs must outlive the handle.
+cudf_status_t cudf_mixed_left_semi_join_begin_size_data(cudf_table_view_handle left_equality,
+                                                        cudf_table_view_handle right_equality,
+                                                        cudf_table_view_handle left_conditional,
+                                                        cudf_table_view_handle right_conditional,
+                                                        cudf_ast_expression_handle predicate,
+                                                        cudf_null_equality_t null_equality,
+                                                        cudf_mixed_join_size_data_handle* out);
+
+/// Compute and retain exact output-size data for a mixed left semi join with
+/// explicit execution context.
+cudf_status_t cudf_mixed_left_semi_join_begin_size_data_ex(cudf_table_view_handle left_equality,
+                                                           cudf_table_view_handle right_equality,
+                                                           cudf_table_view_handle left_conditional,
+                                                           cudf_table_view_handle right_conditional,
+                                                           cudf_ast_expression_handle predicate,
+                                                           cudf_null_equality_t null_equality,
+                                                           cudf_mixed_join_size_data_handle* out,
+                                                           const cudf_exec_options_t* options);
+
+/// Compute and retain exact output-size data for a mixed left anti join.
+///
+/// The returned handle owns libcudf's retained mixed anti join state and stores
+/// copies of the table views plus a shared AST predicate owner. The underlying
+/// table columns and predicate inputs must outlive the handle.
+cudf_status_t cudf_mixed_left_anti_join_begin_size_data(cudf_table_view_handle left_equality,
+                                                        cudf_table_view_handle right_equality,
+                                                        cudf_table_view_handle left_conditional,
+                                                        cudf_table_view_handle right_conditional,
+                                                        cudf_ast_expression_handle predicate,
+                                                        cudf_null_equality_t null_equality,
+                                                        cudf_mixed_join_size_data_handle* out);
+
+/// Compute and retain exact output-size data for a mixed left anti join with
+/// explicit execution context.
+cudf_status_t cudf_mixed_left_anti_join_begin_size_data_ex(cudf_table_view_handle left_equality,
+                                                           cudf_table_view_handle right_equality,
+                                                           cudf_table_view_handle left_conditional,
+                                                           cudf_table_view_handle right_conditional,
+                                                           cudf_ast_expression_handle predicate,
+                                                           cudf_null_equality_t null_equality,
+                                                           cudf_mixed_join_size_data_handle* out,
+                                                           const cudf_exec_options_t* options);
+
 /// Destroy retained mixed-join output-size data.
 void cudf_mixed_join_size_data_destroy(cudf_mixed_join_size_data_handle handle);
 
@@ -669,6 +741,13 @@ cudf_status_t cudf_mixed_join_size_data_output_size(cudf_mixed_join_size_data_ha
 /// Return device bytes retained by mixed-join size data.
 cudf_status_t cudf_mixed_join_size_data_device_allocated_size(cudf_mixed_join_size_data_handle handle,
                                                               size_t* out);
+
+/// Return exact materialized gather-map bytes for retained mixed-join size data.
+///
+/// Pair joins report two INT32 gather maps. Left semi/anti joins report one
+/// INT32 gather map.
+cudf_status_t cudf_mixed_join_size_data_gather_map_size(cudf_mixed_join_size_data_handle handle,
+                                                        size_t* out);
 
 /// Materialize mixed join indices using retained exact output-size data.
 cudf_status_t cudf_mixed_join_size_data_materialize_indices(
@@ -682,6 +761,18 @@ cudf_status_t cudf_mixed_join_size_data_materialize_indices_ex(
   cudf_mixed_join_size_data_handle size_data,
   cudf_column_handle* out_left_indices,
   cudf_column_handle* out_right_indices,
+  const cudf_exec_options_t* options);
+
+/// Materialize a single left gather map from retained mixed semi/anti size data.
+cudf_status_t cudf_mixed_join_size_data_materialize_single_indices(
+  cudf_mixed_join_size_data_handle size_data,
+  cudf_column_handle* out_indices);
+
+/// Materialize a single left gather map from retained mixed semi/anti size data
+/// with explicit execution context.
+cudf_status_t cudf_mixed_join_size_data_materialize_single_indices_ex(
+  cudf_mixed_join_size_data_handle size_data,
+  cudf_column_handle* out_indices,
   const cudf_exec_options_t* options);
 
 /// Build a reusable distinct-hash-join artifact from a build-key table.

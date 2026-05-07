@@ -628,6 +628,69 @@ extern "C" {
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
 
+    pub fn cudf_mixed_full_join_begin_size_data(
+        left_equality: cudf_table_view_handle,
+        right_equality: cudf_table_view_handle,
+        left_conditional: cudf_table_view_handle,
+        right_conditional: cudf_table_view_handle,
+        predicate: cudf_ast_expression_handle,
+        null_equality: cudf_null_equality_t,
+        out: *mut cudf_mixed_join_size_data_handle,
+    ) -> cudf_status_t;
+
+    pub fn cudf_mixed_full_join_begin_size_data_ex(
+        left_equality: cudf_table_view_handle,
+        right_equality: cudf_table_view_handle,
+        left_conditional: cudf_table_view_handle,
+        right_conditional: cudf_table_view_handle,
+        predicate: cudf_ast_expression_handle,
+        null_equality: cudf_null_equality_t,
+        out: *mut cudf_mixed_join_size_data_handle,
+        options: *const cudf_exec_options_t,
+    ) -> cudf_status_t;
+
+    pub fn cudf_mixed_left_semi_join_begin_size_data(
+        left_equality: cudf_table_view_handle,
+        right_equality: cudf_table_view_handle,
+        left_conditional: cudf_table_view_handle,
+        right_conditional: cudf_table_view_handle,
+        predicate: cudf_ast_expression_handle,
+        null_equality: cudf_null_equality_t,
+        out: *mut cudf_mixed_join_size_data_handle,
+    ) -> cudf_status_t;
+
+    pub fn cudf_mixed_left_semi_join_begin_size_data_ex(
+        left_equality: cudf_table_view_handle,
+        right_equality: cudf_table_view_handle,
+        left_conditional: cudf_table_view_handle,
+        right_conditional: cudf_table_view_handle,
+        predicate: cudf_ast_expression_handle,
+        null_equality: cudf_null_equality_t,
+        out: *mut cudf_mixed_join_size_data_handle,
+        options: *const cudf_exec_options_t,
+    ) -> cudf_status_t;
+
+    pub fn cudf_mixed_left_anti_join_begin_size_data(
+        left_equality: cudf_table_view_handle,
+        right_equality: cudf_table_view_handle,
+        left_conditional: cudf_table_view_handle,
+        right_conditional: cudf_table_view_handle,
+        predicate: cudf_ast_expression_handle,
+        null_equality: cudf_null_equality_t,
+        out: *mut cudf_mixed_join_size_data_handle,
+    ) -> cudf_status_t;
+
+    pub fn cudf_mixed_left_anti_join_begin_size_data_ex(
+        left_equality: cudf_table_view_handle,
+        right_equality: cudf_table_view_handle,
+        left_conditional: cudf_table_view_handle,
+        right_conditional: cudf_table_view_handle,
+        predicate: cudf_ast_expression_handle,
+        null_equality: cudf_null_equality_t,
+        out: *mut cudf_mixed_join_size_data_handle,
+        options: *const cudf_exec_options_t,
+    ) -> cudf_status_t;
+
     pub fn cudf_mixed_join_size_data_destroy(handle: cudf_mixed_join_size_data_handle);
 
     pub fn cudf_mixed_join_size_data_output_size(
@@ -636,6 +699,11 @@ extern "C" {
     ) -> cudf_status_t;
 
     pub fn cudf_mixed_join_size_data_device_allocated_size(
+        handle: cudf_mixed_join_size_data_handle,
+        out: *mut usize,
+    ) -> cudf_status_t;
+
+    pub fn cudf_mixed_join_size_data_gather_map_size(
         handle: cudf_mixed_join_size_data_handle,
         out: *mut usize,
     ) -> cudf_status_t;
@@ -650,6 +718,17 @@ extern "C" {
         size_data: cudf_mixed_join_size_data_handle,
         out_left_indices: *mut cudf_column_handle,
         out_right_indices: *mut cudf_column_handle,
+        options: *const cudf_exec_options_t,
+    ) -> cudf_status_t;
+
+    pub fn cudf_mixed_join_size_data_materialize_single_indices(
+        size_data: cudf_mixed_join_size_data_handle,
+        out_indices: *mut cudf_column_handle,
+    ) -> cudf_status_t;
+
+    pub fn cudf_mixed_join_size_data_materialize_single_indices_ex(
+        size_data: cudf_mixed_join_size_data_handle,
+        out_indices: *mut cudf_column_handle,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
 
