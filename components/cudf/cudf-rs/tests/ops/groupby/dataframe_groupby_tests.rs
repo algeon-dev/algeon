@@ -1,12 +1,16 @@
 //! Tests for DataFrame groupby aggregation.
 
 use cudf::{
-    AggSpec, ErrorCode, ErrorKind, GroupByAgg,
+    AggSpec, DataFrame, ErrorCode, ErrorKind, ExecutionBudgetEnforcement, ExecutionBudgetRequest,
+    ExecutionBudgetStatus, GroupByAgg,
     core::error::{FactKeyName, FactValue},
+    frame::dataframe::InfoDetail,
+    testing::prelude::*,
 };
 
 use crate::common::{
     arm_next_groupby_negative_total_columns_fault, assert_missing_column_error, column_from_slice, error_context_value,
+    last_exec_mr_value, reset_exec_observation, with_test_runtime,
 };
 
 fn assert_high_level_groupby_validation_error(err: &cudf::Error, operation: &str, reason: &str, remedy: &str) {
@@ -15,6 +19,24 @@ fn assert_high_level_groupby_validation_error(err: &cudf::Error, operation: &str
     assert_eq!(err.operation(), operation);
     assert_eq!(error_context_value(err, "reason").as_deref(), Some(reason));
     assert_eq!(error_context_value(err, "remedy").as_deref(), Some(remedy));
+}
+
+fn dataframe_device_allocated_size_bytes(df: &DataFrame) -> usize {
+    df.info_with(InfoDetail::DEVICE_ALLOCATED).unwrap().memory_accounting.unwrap().device_allocated_bytes.unwrap()
+}
+
+fn groupby_sum_pairs(result: &DataFrame) -> Vec<(i32, i64)> {
+    let key_data = result.series("key").unwrap().to_vec_strict::<i32>().unwrap();
+    let sum_data = result.series("value_sum").unwrap().to_vec_strict::<i64>().unwrap();
+    let mut pairs: Vec<(i32, i64)> = key_data.into_iter().zip(sum_data).collect();
+    pairs.sort_by_key(|&(key, _)| key);
+    pairs
+}
+
+fn assert_no_budget_error_details(err: &cudf::Error) {
+    for key in ["budget_boundary", "budget_bytes", "budget_enforcement", "budget_status"] {
+        assert_eq!(error_context_value(err, key).as_deref(), None, "{key} should not be attached");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -50,6 +72,169 @@ fn test_groupby_single_key_sum() {
     pairs.sort_by_key(|&(k, _)| k);
 
     assert_eq!(pairs, vec![(1, 40), (2, 60)]);
+}
+
+#[test]
+fn test_groupby_agg_with_budget_applies_token_reports_output_and_matches_agg() {
+    let keys = column_from_slice(&[1i32, 2, 1, 2]).unwrap();
+    let vals = column_from_slice(&[10i64, 20, 30, 40]).unwrap();
+    let df =
+        crate::common::dataframe_from_columns(vec!["key".to_string(), "value".to_string()], vec![keys, vals]).unwrap();
+    let specs = [AggSpec::new("value", GroupByAgg::Sum)];
+    let expected = df.groupby(["key"]).agg(&specs).unwrap();
+    let token = with_test_runtime(|runtime| {
+        runtime
+            .execution_budget_token(ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("grouped_sum"))
+            .unwrap()
+    });
+
+    reset_exec_observation();
+    let outcome = df.groupby(["key"]).agg_with_budget(&specs, &token).unwrap();
+    let budgeted_exec_mr = last_exec_mr_value();
+    let result = outcome.value();
+    let report = outcome.report();
+    let output_bytes = dataframe_device_allocated_size_bytes(result);
+
+    assert_eq!(groupby_sum_pairs(result), groupby_sum_pairs(&expected));
+    assert_eq!(report.request().boundary(), "grouped_sum");
+    assert_eq!(report.request().budget_bytes(), 64 * 1024 * 1024);
+    assert_eq!(report.enforcement(), ExecutionBudgetEnforcement::HardMemoryResourceLimit);
+    assert_eq!(report.status(), ExecutionBudgetStatus::HardEnforced);
+    assert_eq!(report.output_rows(), Some(result.num_rows()));
+    assert_eq!(report.output_bytes(), Some(output_bytes));
+    assert_eq!(report.retained_bytes(), Some(output_bytes));
+    assert_eq!(
+        report.unresolved_contract(),
+        Some("libcudf_groupby_aggregate_temporary_workspace_preflight_unavailable")
+    );
+    assert_eq!(
+        result.testing_execution_domain_mr_value(),
+        token.memory_resource().testing_raw_handle_value(),
+        "budgeted groupby output should retain the budget token allocator",
+    );
+    assert_eq!(
+        budgeted_exec_mr,
+        token.memory_resource().testing_raw_handle_value(),
+        "budgeted groupby execution should route through the budget token allocator",
+    );
+}
+
+#[test]
+fn test_groupby_agg_with_budget_reports_exceeded_budget_details() {
+    let keys = column_from_slice(&[1i32, 2, 1, 2]).unwrap();
+    let vals = column_from_slice(&[10i64, 20, 30, 40]).unwrap();
+    let df =
+        crate::common::dataframe_from_columns(vec!["key".to_string(), "value".to_string()], vec![keys, vals]).unwrap();
+    let token = with_test_runtime(|runtime| {
+        runtime.execution_budget_token(ExecutionBudgetRequest::new(1).with_boundary("grouped_sum")).unwrap()
+    });
+
+    let err = df
+        .groupby(["key"])
+        .agg_with_budget(&[AggSpec::new("value", GroupByAgg::Sum)], &token)
+        .expect_err("one-byte budget should not cover grouped aggregate allocations");
+
+    assert_eq!(err.code(), ErrorCode::OutOfMemory);
+    assert_eq!(err.operation(), "groupby::GroupBy::agg_with_budget");
+    assert_eq!(error_context_value(&err, "budget_boundary").as_deref(), Some("grouped_sum"));
+    assert_eq!(error_context_value(&err, "budget_bytes").as_deref(), Some("1"));
+    assert_eq!(error_context_value(&err, "budget_enforcement").as_deref(), Some("hard_memory_resource_limit"));
+    assert_eq!(error_context_value(&err, "budget_status").as_deref(), Some("exceeded_or_lower_layer_rejected"));
+}
+
+#[test]
+fn test_groupby_agg_with_budget_preserves_empty_specs_validation_without_budget_details() {
+    let keys = column_from_slice(&[1i32, 2, 1]).unwrap();
+    let vals = column_from_slice(&[10i64, 20, 30]).unwrap();
+    let df =
+        crate::common::dataframe_from_columns(vec!["key".to_string(), "value".to_string()], vec![keys, vals]).unwrap();
+    let token = with_test_runtime(|runtime| {
+        runtime
+            .execution_budget_token(ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("grouped_sum"))
+            .unwrap()
+    });
+
+    let err = df.groupby(["key"]).agg_with_budget(&[], &token).expect_err("expected error for empty aggregation");
+
+    assert_high_level_groupby_validation_error(
+        &err,
+        "groupby::GroupBy::agg_with_budget",
+        "empty_agg_specs",
+        "provide at least one AggSpec or use a shortcut like .sum([...])",
+    );
+    assert_no_budget_error_details(&err);
+}
+
+#[test]
+fn test_groupby_agg_with_budget_preserves_missing_column_validation_without_budget_details() {
+    let keys = column_from_slice(&[1i32, 2, 1]).unwrap();
+    let vals = column_from_slice(&[10i64, 20, 30]).unwrap();
+    let df =
+        crate::common::dataframe_from_columns(vec!["key".to_string(), "value".to_string()], vec![keys, vals]).unwrap();
+    let token = with_test_runtime(|runtime| {
+        runtime
+            .execution_budget_token(ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("grouped_sum"))
+            .unwrap()
+    });
+
+    let err = df
+        .groupby(["key"])
+        .agg_with_budget(&[AggSpec::new("missing_value", GroupByAgg::Sum)], &token)
+        .expect_err("expected error for missing aggregation column");
+
+    assert_missing_column_error(&err, "missing_value");
+    assert_eq!(err.operation(), "groupby::GroupBy::agg_with_budget");
+    assert_no_budget_error_details(&err);
+}
+
+#[test]
+fn test_groupby_agg_with_budget_preserves_empty_keys_validation_without_budget_details() {
+    let keys = column_from_slice(&[1i32, 2, 1]).unwrap();
+    let vals = column_from_slice(&[10i64, 20, 30]).unwrap();
+    let df =
+        crate::common::dataframe_from_columns(vec!["key".to_string(), "value".to_string()], vec![keys, vals]).unwrap();
+    let token = with_test_runtime(|runtime| {
+        runtime
+            .execution_budget_token(ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("grouped_sum"))
+            .unwrap()
+    });
+
+    let err = df
+        .groupby(Vec::<&str>::new())
+        .agg_with_budget(&[AggSpec::new("value", GroupByAgg::Sum)], &token)
+        .expect_err("expected error for empty group keys");
+
+    assert_high_level_groupby_validation_error(
+        &err,
+        "groupby::GroupBy::agg_with_budget",
+        "empty_group_keys",
+        "provide at least one group key column",
+    );
+    assert_no_budget_error_details(&err);
+}
+
+#[test]
+fn test_groupby_agg_with_budget_preserves_foreign_output_invariant_without_budget_details() {
+    let keys = column_from_slice(&[1i32, 2, 1]).unwrap();
+    let vals = column_from_slice(&[10i64, 20, 30]).unwrap();
+    let df =
+        crate::common::dataframe_from_columns(vec!["key".to_string(), "value".to_string()], vec![keys, vals]).unwrap();
+    let token = with_test_runtime(|runtime| {
+        runtime
+            .execution_budget_token(ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("grouped_sum"))
+            .unwrap()
+    });
+
+    arm_next_groupby_negative_total_columns_fault();
+    let err = df
+        .groupby(["key"])
+        .agg_with_budget(&[AggSpec::new("value", GroupByAgg::Sum)], &token)
+        .expect_err("expected foreign invariant error");
+
+    assert_eq!(err.kind(), ErrorKind::InvariantViolation);
+    assert_eq!(err.code(), ErrorCode::ForeignInvariantViolation);
+    assert_eq!(err.operation(), "groupby::GroupBy::agg_with_budget");
+    assert_no_budget_error_details(&err);
 }
 
 #[test]

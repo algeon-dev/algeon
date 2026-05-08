@@ -1,5 +1,5 @@
 use cudf::{
-    DataType, ErrorCode, TypeId,
+    DataType, ErrorCode, TimestampResolution, TypeId,
     io::source::{
         ByteRangeDisposition, LocalParquetFile, LocalParquetSource, LocalParquetSourceKind, PartitionColumn,
         PartitionColumnDisposition, PartitionValue, PredicateDisposition, RejectedSourceFeature,
@@ -135,21 +135,193 @@ fn source_validation_checks_partition_value_count_type_and_supported_dtype() {
     assert_eq!(type_err.detail_value("reason"), Some("partition_value_type_mismatch"));
 
     let unsupported_err = LocalParquetSource::data(
-        [LocalParquetFile::new("part-0.parquet", "part-0", [PartitionValue::String("2026-05-04".to_string())])
-            .unwrap()],
+        [LocalParquetFile::new("part-0.parquet", "part-0", [PartitionValue::Int64(7)]).unwrap()],
         SourceSchema::new([
             SourceColumn::new("id", dtype(TypeId::Int64), false).unwrap(),
-            SourceColumn::new("ts", dtype(TypeId::TimestampMicroseconds), false).unwrap(),
+            SourceColumn::new("unsupported", dtype(TypeId::List), false).unwrap(),
         ])
         .unwrap(),
         ["id"],
         [SourceOutputColumn::new("id", SourceColumnRef::ReadColumn(0)).unwrap()],
         [],
-        [PartitionColumn::new("ts", dtype(TypeId::TimestampMicroseconds), false).unwrap()],
+        [PartitionColumn::new("unsupported", dtype(TypeId::List), false).unwrap()],
     )
     .unwrap_err();
     assert_eq!(unsupported_err.code(), ErrorCode::UnsupportedDtype);
     assert_eq!(unsupported_err.detail_value("reason"), Some("unsupported_partition_dtype"));
+
+    let scaled_non_decimal = DataType::fixed_point(TypeId::Int32, 7);
+    let scaled_column_err = LocalParquetSource::data(
+        [LocalParquetFile::new("part-0.parquet", "part-0", [PartitionValue::Null(scaled_non_decimal)]).unwrap()],
+        SourceSchema::new([SourceColumn::new("part", scaled_non_decimal, true).unwrap()]).unwrap(),
+        Vec::<String>::new(),
+        [SourceOutputColumn::new("part", SourceColumnRef::Partition(0)).unwrap()],
+        [],
+        [PartitionColumn::new("part", scaled_non_decimal, true).unwrap()],
+    )
+    .unwrap_err();
+    assert_eq!(scaled_column_err.code(), ErrorCode::UnsupportedDtype);
+    assert_eq!(scaled_column_err.detail_value("reason"), Some("unsupported_partition_dtype"));
+    assert_eq!(scaled_column_err.detail_value("partition_dtype"), Some("int32(scale=7)"));
+
+    let scaled_null_value_err = LocalParquetSource::data(
+        [LocalParquetFile::new("part-0.parquet", "part-0", [PartitionValue::Null(scaled_non_decimal)]).unwrap()],
+        SourceSchema::new([SourceColumn::new("part", dtype(TypeId::Int32), true).unwrap()]).unwrap(),
+        Vec::<String>::new(),
+        [SourceOutputColumn::new("part", SourceColumnRef::Partition(0)).unwrap()],
+        [],
+        [PartitionColumn::new("part", dtype(TypeId::Int32), true).unwrap()],
+    )
+    .unwrap_err();
+    assert_eq!(scaled_null_value_err.code(), ErrorCode::UnsupportedDtype);
+    assert_eq!(scaled_null_value_err.detail_value("reason"), Some("unsupported_partition_value_dtype"));
+    assert_eq!(scaled_null_value_err.detail_value("actual_partition_dtype"), Some("int32(scale=7)"));
+
+    let duration_days_err = LocalParquetSource::data(
+        [LocalParquetFile::new(
+            "part-0.parquet",
+            "part-0",
+            [PartitionValue::Duration { raw: 1, resolution: TimestampResolution::Days }],
+        )
+        .unwrap()],
+        SourceSchema::new([SourceColumn::new("duration", dtype(TypeId::DurationDays), false).unwrap()]).unwrap(),
+        Vec::<String>::new(),
+        [SourceOutputColumn::new("duration", SourceColumnRef::Partition(0)).unwrap()],
+        [],
+        [PartitionColumn::new("duration", dtype(TypeId::DurationDays), false).unwrap()],
+    )
+    .unwrap_err();
+    assert_eq!(duration_days_err.code(), ErrorCode::UnsupportedDtype);
+    assert_eq!(duration_days_err.detail_value("reason"), Some("unsupported_partition_dtype"));
+
+    let duration_days_value_err = LocalParquetSource::data(
+        [LocalParquetFile::new(
+            "part-0.parquet",
+            "part-0",
+            [PartitionValue::Duration { raw: 1, resolution: TimestampResolution::Days }],
+        )
+        .unwrap()],
+        SourceSchema::new([SourceColumn::new("duration", dtype(TypeId::DurationNanoseconds), false).unwrap()]).unwrap(),
+        Vec::<String>::new(),
+        [SourceOutputColumn::new("duration", SourceColumnRef::Partition(0)).unwrap()],
+        [],
+        [PartitionColumn::new("duration", dtype(TypeId::DurationNanoseconds), false).unwrap()],
+    )
+    .unwrap_err();
+    assert_eq!(duration_days_value_err.code(), ErrorCode::UnsupportedDtype);
+    assert_eq!(duration_days_value_err.detail_value("reason"), Some("unsupported_partition_value_dtype"));
+    assert_eq!(duration_days_value_err.detail_value("actual_partition_dtype"), Some("duration_days"));
+}
+
+#[test]
+fn source_validation_accepts_extended_partition_values_and_rejects_mismatches() {
+    let decimal_dtype = DataType::fixed_point(TypeId::Decimal128, -2);
+    let nullable_i32 = dtype(TypeId::Int32);
+
+    let source = LocalParquetSource::data(
+        [LocalParquetFile::new(
+            "part-0.parquet",
+            "part-0",
+            [
+                PartitionValue::Decimal128 { raw: 12345, scale: -2 },
+                PartitionValue::Date32(19_481),
+                PartitionValue::Timestamp { raw: 1_700_000_123_456, resolution: TimestampResolution::Microseconds },
+                PartitionValue::Duration { raw: -42_000_000, resolution: TimestampResolution::Nanoseconds },
+                PartitionValue::Null(nullable_i32),
+            ],
+        )
+        .unwrap()],
+        SourceSchema::new([
+            SourceColumn::new("id", dtype(TypeId::Int64), false).unwrap(),
+            SourceColumn::new("amount", decimal_dtype, false).unwrap(),
+            SourceColumn::new("date", dtype(TypeId::TimestampDays), false).unwrap(),
+            SourceColumn::new("ts", dtype(TypeId::TimestampMicroseconds), false).unwrap(),
+            SourceColumn::new("duration", dtype(TypeId::DurationNanoseconds), false).unwrap(),
+            SourceColumn::new("maybe_id", nullable_i32, true).unwrap(),
+        ])
+        .unwrap(),
+        ["id"],
+        [
+            SourceOutputColumn::new("id", SourceColumnRef::ReadColumn(0)).unwrap(),
+            SourceOutputColumn::new("amount", SourceColumnRef::Partition(0)).unwrap(),
+            SourceOutputColumn::new("date", SourceColumnRef::Partition(1)).unwrap(),
+            SourceOutputColumn::new("ts", SourceColumnRef::Partition(2)).unwrap(),
+            SourceOutputColumn::new("duration", SourceColumnRef::Partition(3)).unwrap(),
+            SourceOutputColumn::new("maybe_id", SourceColumnRef::Partition(4)).unwrap(),
+        ],
+        [],
+        [
+            PartitionColumn::new("amount", decimal_dtype, false).unwrap(),
+            PartitionColumn::new("date", dtype(TypeId::TimestampDays), false).unwrap(),
+            PartitionColumn::new("ts", dtype(TypeId::TimestampMicroseconds), false).unwrap(),
+            PartitionColumn::new("duration", dtype(TypeId::DurationNanoseconds), false).unwrap(),
+            PartitionColumn::new("maybe_id", nullable_i32, true).unwrap(),
+        ],
+    )
+    .unwrap();
+
+    assert_eq!(source.partition_columns().len(), 5);
+    assert_eq!(source.files()[0].partition_values()[0].data_type(), decimal_dtype);
+    assert_eq!(source.files()[0].partition_values()[1].data_type(), dtype(TypeId::TimestampDays));
+    assert_eq!(source.files()[0].partition_values()[2].data_type(), dtype(TypeId::TimestampMicroseconds));
+    assert_eq!(source.files()[0].partition_values()[3].data_type(), dtype(TypeId::DurationNanoseconds));
+    assert_eq!(source.files()[0].partition_values()[4].data_type(), nullable_i32);
+
+    let scale_err = LocalParquetSource::data(
+        [LocalParquetFile::new("part-1.parquet", "part-1", [PartitionValue::Decimal128 { raw: 12345, scale: -3 }])
+            .unwrap()],
+        SourceSchema::new([SourceColumn::new("amount", decimal_dtype, false).unwrap()]).unwrap(),
+        Vec::<String>::new(),
+        [SourceOutputColumn::new("amount", SourceColumnRef::Partition(0)).unwrap()],
+        [],
+        [PartitionColumn::new("amount", decimal_dtype, false).unwrap()],
+    )
+    .unwrap_err();
+    assert_eq!(scale_err.code(), ErrorCode::TypeMismatch);
+    assert_eq!(scale_err.detail_value("reason"), Some("partition_value_type_mismatch"));
+
+    let nullability_err = LocalParquetSource::data(
+        [LocalParquetFile::new("part-2.parquet", "part-2", [PartitionValue::Null(nullable_i32)]).unwrap()],
+        SourceSchema::new([SourceColumn::new("maybe_id", nullable_i32, false).unwrap()]).unwrap(),
+        Vec::<String>::new(),
+        [SourceOutputColumn::new("maybe_id", SourceColumnRef::Partition(0)).unwrap()],
+        [],
+        [PartitionColumn::new("maybe_id", nullable_i32, false).unwrap()],
+    )
+    .unwrap_err();
+    assert_eq!(nullability_err.code(), ErrorCode::NullUnexpected);
+    assert_eq!(nullability_err.detail_value("reason"), Some("partition_null_for_non_nullable_column"));
+
+    let schema_truth_err = LocalParquetSource::data(
+        [LocalParquetFile::new("part-2.parquet", "part-2", [PartitionValue::Null(nullable_i32)]).unwrap()],
+        SourceSchema::new([SourceColumn::new("maybe_id", nullable_i32, false).unwrap()]).unwrap(),
+        Vec::<String>::new(),
+        [SourceOutputColumn::new("maybe_id", SourceColumnRef::Partition(0)).unwrap()],
+        [],
+        [PartitionColumn::new("maybe_id", nullable_i32, true).unwrap()],
+    )
+    .unwrap_err();
+    assert_eq!(schema_truth_err.code(), ErrorCode::TypeMismatch);
+    assert_eq!(schema_truth_err.detail_value("reason"), Some("source_ref_nullability_mismatch"));
+    assert_eq!(schema_truth_err.detail_value("target_nullable"), Some("false"));
+    assert_eq!(schema_truth_err.detail_value("source_nullable"), Some("true"));
+
+    let temporal_err = LocalParquetSource::data(
+        [LocalParquetFile::new(
+            "part-3.parquet",
+            "part-3",
+            [PartitionValue::Timestamp { raw: 19_481, resolution: TimestampResolution::Days }],
+        )
+        .unwrap()],
+        SourceSchema::new([SourceColumn::new("ts", dtype(TypeId::TimestampMicroseconds), false).unwrap()]).unwrap(),
+        Vec::<String>::new(),
+        [SourceOutputColumn::new("ts", SourceColumnRef::Partition(0)).unwrap()],
+        [],
+        [PartitionColumn::new("ts", dtype(TypeId::TimestampMicroseconds), false).unwrap()],
+    )
+    .unwrap_err();
+    assert_eq!(temporal_err.code(), ErrorCode::TypeMismatch);
+    assert_eq!(temporal_err.detail_value("reason"), Some("partition_value_type_mismatch"));
 }
 
 #[test]

@@ -144,7 +144,8 @@ impl ArrowHostSchema {
 ///
 /// This is a copy-free planner/schema helper. It follows the same support
 /// envelope as [`DataFrame::from_record_batch`]: numeric types, Boolean,
-/// Decimal128, Date32, timezone-free timestamps, Utf8, LargeUtf8, and Utf8View.
+/// Decimal128, Date32, timezone-free timestamps, durations with Arrow time
+/// units, Utf8, LargeUtf8, and Utf8View.
 pub fn cudf_dtype_from_arrow_type(dt: &ArrowDataType) -> Result<DataType> {
     cudf_dtype_from_arrow_type_in(dt, "arrow_host::cudf_dtype_from_arrow_type")
 }
@@ -235,6 +236,10 @@ fn cudf_dtype_from_arrow_type_in(dt: &ArrowDataType, operation: &'static str) ->
         ArrowDataType::Timestamp(TimeUnit::Millisecond, None) => DataType::new(TypeId::TimestampMilliseconds),
         ArrowDataType::Timestamp(TimeUnit::Microsecond, None) => DataType::new(TypeId::TimestampMicroseconds),
         ArrowDataType::Timestamp(TimeUnit::Nanosecond, None) => DataType::new(TypeId::TimestampNanoseconds),
+        ArrowDataType::Duration(TimeUnit::Second) => DataType::new(TypeId::DurationSeconds),
+        ArrowDataType::Duration(TimeUnit::Millisecond) => DataType::new(TypeId::DurationMilliseconds),
+        ArrowDataType::Duration(TimeUnit::Microsecond) => DataType::new(TypeId::DurationMicroseconds),
+        ArrowDataType::Duration(TimeUnit::Nanosecond) => DataType::new(TypeId::DurationNanoseconds),
         ArrowDataType::Timestamp(_, Some(_)) => {
             return Err(Error::new_with(
                 ErrorCode::UnsupportedDtype,
@@ -280,6 +285,10 @@ fn arrow_type_from_cudf_dtype_in(dtype: DataType, operation: &'static str) -> Re
         TypeId::TimestampMilliseconds => Ok(ArrowDataType::Timestamp(TimeUnit::Millisecond, None)),
         TypeId::TimestampMicroseconds => Ok(ArrowDataType::Timestamp(TimeUnit::Microsecond, None)),
         TypeId::TimestampNanoseconds => Ok(ArrowDataType::Timestamp(TimeUnit::Nanosecond, None)),
+        TypeId::DurationSeconds => Ok(ArrowDataType::Duration(TimeUnit::Second)),
+        TypeId::DurationMilliseconds => Ok(ArrowDataType::Duration(TimeUnit::Millisecond)),
+        TypeId::DurationMicroseconds => Ok(ArrowDataType::Duration(TimeUnit::Microsecond)),
+        TypeId::DurationNanoseconds => Ok(ArrowDataType::Duration(TimeUnit::Nanosecond)),
         TypeId::String => Ok(ArrowDataType::Utf8),
         TypeId::Decimal32 | TypeId::Decimal64 | TypeId::Decimal128 => {
             let arrow_scale = cudf_decimal_scale_to_arrow_scale(dtype.scale(), operation)
@@ -319,6 +328,8 @@ impl DataFrame {
     /// - `TimestampDays` as Arrow `Date32`
     /// - `TimestampSeconds`, `TimestampMilliseconds`, `TimestampMicroseconds`,
     ///   and `TimestampNanoseconds` as Arrow timestamps without time zone.
+    /// - `DurationSeconds`, `DurationMilliseconds`, `DurationMicroseconds`,
+    ///   and `DurationNanoseconds` as Arrow durations.
     /// - `String` (converted to Arrow `Utf8`)
     ///
     /// # Errors
@@ -386,6 +397,7 @@ impl DataFrame {
     ///   as 38)
     /// - `Date32`
     /// - `Timestamp(Second|Millisecond|Microsecond|Nanosecond, None)`
+    /// - `Duration(Second|Millisecond|Microsecond|Nanosecond)`
     /// - `Utf8` / `LargeUtf8` / `Utf8View` (converted to cudf `String`)
     ///
     /// # Errors
@@ -429,6 +441,7 @@ impl Runtime {
 /// - `Decimal128` (preserves values and scale; precision is re-exported as 38)
 /// - `Date32`
 /// - `Timestamp(Second|Millisecond|Microsecond|Nanosecond, None)`
+/// - `Duration(Second|Millisecond|Microsecond|Nanosecond)`
 /// - `Utf8` / `LargeUtf8` / `Utf8View` (converted to cudf `String`)
 ///
 /// Unsupported Arrow types will return an error.
@@ -533,6 +546,10 @@ fn column_view_to_arrow(cv: &ColumnView<'_>, dtype: DataType) -> Result<Arc<dyn 
         TypeId::TimestampMilliseconds => fixed_width_to_arrow::<i64, arrow::datatypes::TimestampMillisecondType>(cv),
         TypeId::TimestampMicroseconds => fixed_width_to_arrow::<i64, arrow::datatypes::TimestampMicrosecondType>(cv),
         TypeId::TimestampNanoseconds => fixed_width_to_arrow::<i64, arrow::datatypes::TimestampNanosecondType>(cv),
+        TypeId::DurationSeconds => fixed_width_to_arrow::<i64, arrow::datatypes::DurationSecondType>(cv),
+        TypeId::DurationMilliseconds => fixed_width_to_arrow::<i64, arrow::datatypes::DurationMillisecondType>(cv),
+        TypeId::DurationMicroseconds => fixed_width_to_arrow::<i64, arrow::datatypes::DurationMicrosecondType>(cv),
+        TypeId::DurationNanoseconds => fixed_width_to_arrow::<i64, arrow::datatypes::DurationNanosecondType>(cv),
         _ => Err(Error::new_with(
             ErrorCode::UnsupportedDtype,
             "arrow::column_view_to_arrow",
@@ -807,6 +824,24 @@ fn arrow_array_to_column(runtime: &Runtime, arr: &dyn Array, field_name: &str) -
                 DataType::new(TypeId::TimestampNanoseconds),
             )
         },
+        ArrowDataType::Duration(TimeUnit::Second) => primitive_arrow_to_fixed_width_column::<
+            arrow::datatypes::DurationSecondType,
+        >(runtime, arr, DataType::new(TypeId::DurationSeconds)),
+        ArrowDataType::Duration(TimeUnit::Millisecond) => primitive_arrow_to_fixed_width_column::<
+            arrow::datatypes::DurationMillisecondType,
+        >(
+            runtime, arr, DataType::new(TypeId::DurationMilliseconds)
+        ),
+        ArrowDataType::Duration(TimeUnit::Microsecond) => primitive_arrow_to_fixed_width_column::<
+            arrow::datatypes::DurationMicrosecondType,
+        >(
+            runtime, arr, DataType::new(TypeId::DurationMicroseconds)
+        ),
+        ArrowDataType::Duration(TimeUnit::Nanosecond) => primitive_arrow_to_fixed_width_column::<
+            arrow::datatypes::DurationNanosecondType,
+        >(
+            runtime, arr, DataType::new(TypeId::DurationNanoseconds)
+        ),
         ArrowDataType::Timestamp(_, Some(_)) => Err(Error::new_with(
             ErrorCode::UnsupportedDtype,
             "arrow::arrow_array_to_column",

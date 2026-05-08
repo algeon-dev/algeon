@@ -9,7 +9,9 @@ use super::{info::InfoDetail, owned::DataFrame};
 use crate::{
     core::{
         error::{Error, ErrorCode, Result},
+        scalar::Scalar,
         schema,
+        types::{DataType, TimestampResolution, TypeId},
     },
     frame::series::Series,
     internal::hash::{FastHashSet, fast_hash_set_with_capacity},
@@ -449,8 +451,63 @@ fn empty_parquet_source_frame(
     DataFrame::from_series(pairs).map_err(|error| error.reanchor("dataframe::read_parquet_source"))
 }
 
+fn null_partition_scalar(runtime: &Runtime, data_type: DataType) -> Result<Scalar> {
+    match data_type.id() {
+        TypeId::Bool8 => runtime.null_scalar::<bool>(),
+        TypeId::Int8 => runtime.null_scalar::<i8>(),
+        TypeId::Int16 => runtime.null_scalar::<i16>(),
+        TypeId::Int32 => runtime.null_scalar::<i32>(),
+        TypeId::Int64 => runtime.null_scalar::<i64>(),
+        TypeId::UInt8 => runtime.null_scalar::<u8>(),
+        TypeId::UInt16 => runtime.null_scalar::<u16>(),
+        TypeId::UInt32 => runtime.null_scalar::<u32>(),
+        TypeId::UInt64 => runtime.null_scalar::<u64>(),
+        TypeId::Float32 => runtime.null_scalar::<f32>(),
+        TypeId::Float64 => runtime.null_scalar::<f64>(),
+        TypeId::Decimal128 => runtime.null_decimal128_raw_scalar(data_type.scale()),
+        TypeId::TimestampDays
+        | TypeId::TimestampSeconds
+        | TypeId::TimestampMilliseconds
+        | TypeId::TimestampMicroseconds
+        | TypeId::TimestampNanoseconds => {
+            let resolution = data_type.id().timestamp_resolution().ok_or_else(|| {
+                Error::new_with(
+                    ErrorCode::UnsupportedDtype,
+                    "dataframe::read_parquet_source",
+                    "partition null timestamp dtype is not supported",
+                )
+                .with_detail("reason", "unsupported_partition_null_dtype")
+            })?;
+            runtime.null_timestamp_raw_scalar(resolution)
+        },
+        TypeId::DurationDays
+        | TypeId::DurationSeconds
+        | TypeId::DurationMilliseconds
+        | TypeId::DurationMicroseconds
+        | TypeId::DurationNanoseconds => {
+            let resolution = data_type.id().duration_resolution().ok_or_else(|| {
+                Error::new_with(
+                    ErrorCode::UnsupportedDtype,
+                    "dataframe::read_parquet_source",
+                    "partition null duration dtype is not supported",
+                )
+                .with_detail("reason", "unsupported_partition_null_dtype")
+            })?;
+            runtime.null_duration_raw_scalar(resolution)
+        },
+        TypeId::String => runtime.null_string_scalar(),
+        _ => Err(Error::new_with(
+            ErrorCode::UnsupportedDtype,
+            "dataframe::read_parquet_source",
+            "partition null dtype is not supported",
+        )
+        .with_detail("reason", "unsupported_partition_null_dtype")),
+    }
+}
+
 fn partition_scalar_series(runtime: &Runtime, value: &PartitionValue, len: usize) -> Result<Series> {
     let scalar = match value {
+        PartitionValue::Null(data_type) => null_partition_scalar(runtime, *data_type)?,
         PartitionValue::Boolean(value) => runtime.scalar(*value)?,
         PartitionValue::Int8(value) => runtime.scalar(*value)?,
         PartitionValue::Int16(value) => runtime.scalar(*value)?,
@@ -462,6 +519,10 @@ fn partition_scalar_series(runtime: &Runtime, value: &PartitionValue, len: usize
         PartitionValue::UInt64(value) => runtime.scalar(*value)?,
         PartitionValue::Float32(value) => runtime.scalar(*value)?,
         PartitionValue::Float64(value) => runtime.scalar(*value)?,
+        PartitionValue::Decimal128 { raw, scale } => runtime.decimal128_raw_scalar(*raw, *scale)?,
+        PartitionValue::Date32(value) => runtime.timestamp_raw_scalar(i64::from(*value), TimestampResolution::Days)?,
+        PartitionValue::Timestamp { raw, resolution } => runtime.timestamp_raw_scalar(*raw, *resolution)?,
+        PartitionValue::Duration { raw, resolution } => runtime.duration_raw_scalar(*raw, *resolution)?,
         PartitionValue::String(value) => runtime.string_scalar(value)?,
     };
     runtime.series_from_scalar(&scalar, len)
@@ -506,31 +567,25 @@ fn read_parquet_source_chunk_frame(
     source: &LocalParquetSource,
     chunk: &SourceChunk,
     mode: SourceReadMode,
+    operation: &'static str,
 ) -> Result<DataFrame> {
+    source.validate_chunk_partition_values(chunk, operation)?;
+
     if source.kind() == LocalParquetSourceKind::MetadataRowCount {
-        let count = chunk
-            .known_row_count_i64()?
-            .ok_or_else(|| missing_source_row_count_error("dataframe::read_parquet_source_chunk", chunk))?;
+        let count = chunk.known_row_count_i64()?.ok_or_else(|| missing_source_row_count_error(operation, chunk))?;
         let count_series = runtime.series(&[count])?;
         let frame = DataFrame::from_series([(crate::io::source::ZERO_COLUMN_COUNT_COLUMN, count_series)])
-            .map_err(|error| error.reanchor("dataframe::read_parquet_source_chunk"))?;
-        return project_source_frame(&frame, source, mode)
-            .map_err(|error| error.reanchor("dataframe::read_parquet_source_chunk"));
+            .map_err(|error| error.reanchor(operation))?;
+        return project_source_frame(&frame, source, mode).map_err(|error| error.reanchor(operation));
     }
 
     let (mut frame, row_count_override) = if chunk.read_columns().is_empty() {
-        let row_count = chunk
-            .known_row_count()
-            .ok_or_else(|| missing_source_row_count_error("dataframe::read_parquet_source_chunk", chunk))?;
+        let row_count = chunk.known_row_count().ok_or_else(|| missing_source_row_count_error(operation, chunk))?;
         let row_count = usize::try_from(row_count).map_err(|_| {
-            Error::new_with(
-                ErrorCode::UnsupportedOperation,
-                "dataframe::read_parquet_source_chunk",
-                "source chunk row count exceeds usize",
-            )
-            .with_detail("reason", "row_count_exceeds_usize")
-            .with_detail("row_count", row_count.to_string())
-            .with_detail("chunk_index", chunk.chunk_index().to_string())
+            Error::new_with(ErrorCode::UnsupportedOperation, operation, "source chunk row count exceeds usize")
+                .with_detail("reason", "row_count_exceeds_usize")
+                .with_detail("row_count", row_count.to_string())
+                .with_detail("chunk_index", chunk.chunk_index().to_string())
         })?;
         (runtime.empty_dataframe(), Some(row_count))
     } else {
@@ -545,32 +600,25 @@ fn read_parquet_source_chunk_frame(
         );
         let result = parquet::read_parquet_table(&table_options).map_err(|error| {
             error
-                .reanchor("dataframe::read_parquet_source_chunk")
+                .reanchor(operation)
                 .with_detail("chunk_index", chunk.chunk_index().to_string())
                 .with_detail("file_index", chunk.file_index().to_string())
                 .with_detail("stable_id", chunk.stable_id().to_string())
                 .with_detail_if_absent("path", chunk.path().display().to_string())
         })?;
-        let (table, names) =
-            require_reader_schema_names(result, "dataframe::read_parquet_source_chunk", "parquet reader").map_err(
-                |error| {
-                    error
-                        .reanchor("dataframe::read_parquet_source_chunk")
-                        .with_detail("chunk_index", chunk.chunk_index().to_string())
-                        .with_detail("file_index", chunk.file_index().to_string())
-                        .with_detail("stable_id", chunk.stable_id().to_string())
-                        .with_detail("path", chunk.path().display().to_string())
-                },
-            )?;
-        (
-            DataFrame::from_table(table, names)
-                .map_err(|error| error.reanchor("dataframe::read_parquet_source_chunk"))?,
-            None,
-        )
+        let (table, names) = require_reader_schema_names(result, operation, "parquet reader").map_err(|error| {
+            error
+                .reanchor(operation)
+                .with_detail("chunk_index", chunk.chunk_index().to_string())
+                .with_detail("file_index", chunk.file_index().to_string())
+                .with_detail("stable_id", chunk.stable_id().to_string())
+                .with_detail("path", chunk.path().display().to_string())
+        })?;
+        (DataFrame::from_table(table, names).map_err(|error| error.reanchor(operation))?, None)
     };
 
     frame = materialize_partition_columns(runtime, source, chunk, frame, row_count_override)?;
-    project_source_frame(&frame, source, mode).map_err(|error| error.reanchor("dataframe::read_parquet_source_chunk"))
+    project_source_frame(&frame, source, mode).map_err(|error| error.reanchor(operation))
 }
 
 fn dataframe_device_allocated_size_bytes(frame: &DataFrame, operation: &'static str) -> Result<usize> {
@@ -812,7 +860,7 @@ impl DataFrame {
             let mut frames = Vec::with_capacity(plan.chunks().len());
             for chunk in plan.chunks() {
                 frames.push(
-                    read_parquet_source_chunk_frame(runtime, source, chunk, mode)
+                    read_parquet_source_chunk_frame(runtime, source, chunk, mode, operation)
                         .map_err(|error| error.reanchor(operation))?,
                 );
             }
@@ -844,7 +892,7 @@ impl DataFrame {
         mode: SourceReadMode,
     ) -> Result<Self> {
         let operation = "dataframe::read_parquet_source_chunk";
-        let frame = read_parquet_source_chunk_frame(runtime, source, chunk, mode)?;
+        let frame = read_parquet_source_chunk_frame(runtime, source, chunk, mode, operation)?;
         frame.record_boundary_observation_for_query_stage(
             BoundaryKind::HostToDevice,
             QueryStageKind::SourceRead,
@@ -876,7 +924,7 @@ impl DataFrame {
         let budget_runtime = runtime
             .with_memory_resource_override(token.memory_resource(), operation)
             .map_err(|error| token.annotate_error(error, operation))?;
-        let frame = read_parquet_source_chunk_frame(&budget_runtime, source, chunk, mode)
+        let frame = read_parquet_source_chunk_frame(&budget_runtime, source, chunk, mode, operation)
             .map_err(|error| token.annotate_error(error, operation))?;
         let output_rows = frame.num_rows();
         let output_bytes = dataframe_device_allocated_size_bytes(&frame, operation)
