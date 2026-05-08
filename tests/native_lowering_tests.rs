@@ -1527,6 +1527,46 @@ async fn tpch_q7_lowers_duplicate_nation_names_through_distinct_native_identity_
 }
 
 #[tokio::test]
+async fn tpch_q8_final_mkt_share_projection_preserves_decimal_schema() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-tpch-q8");
+    write_tiny_tpch_parquet_dataset(&dir).unwrap();
+    let items = tpch_fallback_pressure_workload_items(&dir, tpch_report_session_config()).await.unwrap();
+    let q8 = items.into_iter().find(|item| item.query_id == "q08").expect("TPC-H workload should include q08");
+    let NativeFallbackPressureWorkloadInput::PhysicalPlan(plan) = q8.input else {
+        panic!("q8 should produce a physical plan");
+    };
+    let datafusion_mkt_share_field = physical_projection_field_with_name(plan.as_ref(), "mkt_share");
+    let DataType::Decimal128(_, datafusion_scale) = datafusion_mkt_share_field.data_type() else {
+        panic!("DataFusion should declare q8 mkt_share as Decimal128: {datafusion_mkt_share_field:?}");
+    };
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    let native_plan = &result.plans[0];
+    let PlanNode::Sort(sort) = &native_plan.root_node().kind else {
+        panic!("q8 native root should be the final ORDER BY sort");
+    };
+    let projection_node = native_plan.node(sort.input).expect("q8 final sort input should exist");
+    let PlanNode::Projection(projection) = &projection_node.kind else {
+        panic!("q8 final sort input should be the final projection");
+    };
+    let mkt_share_output = projection
+        .outputs
+        .iter()
+        .find(|output| output.field.name() == "mkt_share")
+        .expect("q8 final projection should include mkt_share");
+    let DataType::Decimal128(_, native_scale) = mkt_share_output.field.data_type() else {
+        panic!("native q8 mkt_share projection output should be Decimal128: {mkt_share_output:?}");
+    };
+    assert_eq!(native_scale, datafusion_scale);
+    assert_eq!(&mkt_share_output.field, &datafusion_mkt_share_field);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
 async fn tpch_q11_lowers_joined_grouped_and_scalar_aggregate_inputs_for_bounded_admission() {
     let dir = unique_temp_dir("datafusion-cudf-native-lowering-tpch-q11");
     write_tiny_tpch_parquet_dataset(&dir).unwrap();
@@ -3665,6 +3705,28 @@ fn filtered_payload_scan(scan: Arc<dyn ExecutionPlan>, payload_column: &str, min
     )
     .unwrap();
     Arc::new(FilterExec::try_new(predicate, scan).unwrap())
+}
+
+fn physical_projection_field_with_name(plan: &dyn ExecutionPlan, field_name: &str) -> Field {
+    let mut fields = Vec::new();
+    collect_physical_projection_fields_with_name(plan, field_name, &mut fields);
+    assert_eq!(
+        fields.len(),
+        1,
+        "expected exactly one DataFusion ProjectionExec field named {field_name}, found {fields:?}"
+    );
+    fields.pop().unwrap()
+}
+
+fn collect_physical_projection_fields_with_name(plan: &dyn ExecutionPlan, field_name: &str, fields: &mut Vec<Field>) {
+    if plan.as_any().is::<ProjectionExec>() {
+        if let Ok(field) = plan.schema().field_with_name(field_name) {
+            fields.push(field.clone());
+        }
+    }
+    for child in plan.children() {
+        collect_physical_projection_fields_with_name(child.as_ref(), field_name, fields);
+    }
 }
 
 async fn sql_benchmark_plan(path: &std::path::Path, config: SessionConfig) -> Arc<dyn ExecutionPlan> {

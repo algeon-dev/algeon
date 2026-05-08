@@ -2398,6 +2398,187 @@ fn bounded_native_projection_coerces_decimal_output_to_declared_scale() {
 }
 
 #[test]
+fn native_projection_decimal_division_uses_declared_output_scale() {
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let input_schema = Arc::new(Schema::new(vec![
+        Field::new("numerator", DataType::Decimal128(38, 8), false),
+        Field::new("denominator", DataType::Decimal128(38, 8), false),
+    ]));
+    let output_schema = Arc::new(Schema::new(vec![Field::new("ratio", DataType::Decimal128(38, 8), false)]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&input_schema),
+        vec![
+            Arc::new(
+                Decimal128Array::from_iter_values([100_000_000, 300_000_000]).with_precision_and_scale(38, 8).unwrap(),
+            ),
+            Arc::new(
+                Decimal128Array::from_iter_values([400_000_000, 600_000_000]).with_precision_and_scale(38, 8).unwrap(),
+            ),
+        ],
+    )
+    .unwrap();
+    let frame = DataFrame::from_record_batch(&runtime, &batch).unwrap();
+
+    let projection_expr =
+        Expr::binary(Expr::column("numerator"), BinaryOp::Divide, Expr::column("denominator")).alias("ratio");
+    let mut builder = QueryPlanBuilder::new();
+    let source =
+        builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("decimal_input", Arc::clone(&input_schema))));
+    let projection =
+        builder.add_projection(source, projection_outputs(vec![projection_expr], Arc::clone(&output_schema)));
+    let plan = builder.finish_with_host_sink(projection);
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+    let mut gpu_inputs = GpuResidentInputMap::new();
+    gpu_inputs.insert(
+        "decimal_input".to_string(),
+        GpuResultHandle::new(&context, GpuDataFrame::new(frame), Arc::clone(&input_schema)).unwrap(),
+    );
+
+    let result = execute_query_plan_with_gpu_inputs(&context, &plan, &gpu_inputs).unwrap();
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    assert_eq!(batch.schema().as_ref(), output_schema.as_ref());
+    let ratio = decimal128_array(batch, 0);
+    assert_eq!(ratio.data_type(), &DataType::Decimal128(38, 8));
+    assert_eq!(ratio.values().as_ref(), &[25_000_000, 50_000_000]);
+}
+
+#[test]
+fn bounded_native_projection_decimal_division_uses_declared_output_scale() {
+    let dir = unique_temp_dir("cudf-query-engine-bounded-projection-decimal-division");
+    let path = dir.join("input.parquet");
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let input_schema = write_decimal_ratio_parquet(&path);
+    let output_schema = Arc::new(Schema::new(vec![Field::new("ratio", DataType::Decimal128(38, 8), false)]));
+    let source = LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(&path).with_file_size_bytes(fs::metadata(&path).unwrap().len())],
+        Arc::clone(&input_schema),
+        vec!["numerator".to_string(), "denominator".to_string()],
+    );
+
+    let projection_expr =
+        Expr::binary(Expr::column("numerator"), BinaryOp::Divide, Expr::column("denominator")).alias("ratio");
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LocalParquet(source));
+    let projection =
+        builder.add_projection(source, projection_outputs(vec![projection_expr], Arc::clone(&output_schema)));
+    let plan = builder.finish_with_host_sink(projection);
+    let context = ExecutionContext::builder()
+        .with_shared_runtime(Arc::clone(&runtime))
+        .with_memory_control_policy(MemoryControlPolicy::Bounded {
+            device_budget_bytes: 8 * 1024 * 1024 * 1024,
+            max_source_chunk_bytes: 1024 * 1024,
+            max_row_groups_per_chunk: 1,
+            max_retry_attempts: 1,
+            min_retry_chunk_row_groups: 1,
+        })
+        .build()
+        .unwrap();
+
+    let result = execute_query_plan(&context, &plan).unwrap();
+    assert!(
+        result
+            .metrics()
+            .budgeted_execution_events
+            .iter()
+            .any(|event| event.operation == "cudf_query_engine.projection.execute")
+    );
+    assert!(
+        !result
+            .metrics()
+            .budgeted_execution_events
+            .iter()
+            .any(|event| event.operation == "cudf_query_engine.projection.schema_coerce")
+    );
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    assert_eq!(batch.schema().as_ref(), output_schema.as_ref());
+    let ratio = decimal128_array(batch, 0);
+    assert_eq!(ratio.data_type(), &DataType::Decimal128(38, 8));
+    assert_eq!(ratio.values().as_ref(), &[25_000_000, 50_000_000]);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn bounded_native_query_executes_q8_shaped_decimal_sum_ratio_at_output_scale() {
+    let dir = unique_temp_dir("cudf-query-engine-bounded-q8-shaped-decimal-ratio");
+    let path = dir.join("input.parquet");
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let input_schema = write_q8_mini_decimal_ratio_parquet(&path);
+    let projected_schema = Arc::new(Schema::new(vec![
+        Field::new("o_year", DataType::Int32, false),
+        Field::new("target_volume", DataType::Decimal128(38, 8), true),
+        Field::new("volume", DataType::Decimal128(38, 8), false),
+    ]));
+    let aggregate_schema = Arc::new(Schema::new(vec![
+        Field::new("o_year", DataType::Int32, false),
+        Field::new("sum_target_volume", DataType::Decimal128(38, 8), true),
+        Field::new("sum_volume", DataType::Decimal128(38, 8), true),
+    ]));
+    let output_schema = Arc::new(Schema::new(vec![
+        Field::new("o_year", DataType::Int32, false),
+        Field::new("mkt_share", DataType::Decimal128(38, 8), true),
+    ]));
+    let source = LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(&path).with_file_size_bytes(fs::metadata(&path).unwrap().len())],
+        Arc::clone(&input_schema),
+        vec!["o_year".to_string(), "is_target".to_string(), "volume".to_string()],
+    );
+    let target_volume = Expr::case(
+        vec![cudf_query_engine::CaseWhen::new(Expr::column("is_target"), Expr::column("volume"))],
+        Expr::literal(LiteralValue::Decimal128 { raw: 0, precision: 38, scale: 8 }),
+    )
+    .alias("target_volume");
+    let aggregate = AggregateSpec::new(
+        vec![Expr::column("o_year")],
+        vec![
+            AggregateExpr::new(AggregateFunction::Sum, Expr::column("target_volume"), "sum_target_volume"),
+            AggregateExpr::new(AggregateFunction::Sum, Expr::column("volume"), "sum_volume"),
+        ],
+    );
+    let mkt_share = Expr::binary(Expr::column("sum_target_volume"), BinaryOp::Divide, Expr::column("sum_volume"))
+        .alias("mkt_share");
+
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LocalParquet(source));
+    let projection = builder.add_projection(
+        source,
+        projection_outputs(vec![Expr::column("o_year"), target_volume, Expr::column("volume")], projected_schema),
+    );
+    let aggregate = builder.add_aggregate(projection, aggregate, aggregate_schema);
+    let projection =
+        builder.add_projection(aggregate, projection_outputs(vec![Expr::column("o_year"), mkt_share], output_schema));
+    let plan = builder.finish_with_host_sink(projection);
+    let context = ExecutionContext::builder()
+        .with_shared_runtime(Arc::clone(&runtime))
+        .with_memory_control_policy(MemoryControlPolicy::Bounded {
+            device_budget_bytes: 8 * 1024 * 1024 * 1024,
+            max_source_chunk_bytes: 1024 * 1024,
+            max_row_groups_per_chunk: 1,
+            max_retry_attempts: 1,
+            min_retry_chunk_row_groups: 1,
+        })
+        .build()
+        .unwrap();
+
+    let result = execute_query_plan(&context, &plan).unwrap();
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    let years = int32_array(batch, 0);
+    let shares = decimal128_array(batch, 1);
+    let mut rows = (0..batch.num_rows()).map(|row| (years.value(row), shares.value(row))).collect::<Vec<_>>();
+    rows.sort_unstable();
+    assert_eq!(shares.data_type(), &DataType::Decimal128(38, 8));
+    assert_eq!(rows, vec![(2020, 25_000_000), (2021, 50_000_000)]);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn native_projection_schema_coercion_rejects_unsupported_output_type_mismatch() {
     let runtime = Arc::new(cudf::Runtime::new().unwrap());
     let input_schema = Arc::new(Schema::new(vec![Field::new("key", DataType::Int32, false)]));
@@ -2673,6 +2854,42 @@ fn native_query_rejects_implicit_decimal_float_arithmetic_before_cudf_execution(
     assert_eq!(error.fact_value("left_type"), Some("Decimal128(15, 2)"));
     assert_eq!(error.fact_value("right_type"), Some("Float64"));
     assert!(error.fact_value("path").is_none());
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn native_query_rejects_untyped_decimal_division_before_cudf_execution() {
+    let dir = unique_temp_dir("cudf-query-engine-native-execution-untyped-decimal-divide-reject");
+    let path = dir.join("input.parquet");
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let input_schema = write_decimal_ratio_parquet(&path);
+    let source = LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(&path).with_file_size_bytes(fs::metadata(&path).unwrap().len())],
+        Arc::clone(&input_schema),
+        vec!["numerator".to_string(), "denominator".to_string()],
+    );
+    let untyped_divide = Expr::binary(
+        Expr::binary(Expr::column("numerator"), BinaryOp::Divide, Expr::column("denominator")),
+        BinaryOp::Gt,
+        Expr::literal(LiteralValue::Decimal128 { raw: 0, precision: 38, scale: 8 }),
+    );
+
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LocalParquet(source));
+    let filter = builder.add_filter(source, untyped_divide, Arc::clone(&input_schema));
+    let plan = builder.finish_with_host_sink(filter);
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+
+    let error = match execute_query_plan(&context, &plan) {
+        Ok(_) => panic!("native plan validation should reject decimal division without a declared output type"),
+        Err(error) => error,
+    };
+    assert_eq!(error.code(), QueryErrorCode::UnsupportedType);
+    assert_eq!(error.operation(), "cudf_query_engine.plan.validate_expr");
+    assert_eq!(error.fact_value("left_type"), Some("Decimal128(38, 8)"));
+    assert_eq!(error.fact_value("right_type"), Some("Decimal128(38, 8)"));
+    assert_eq!(error.fact_value("operator"), Some("/"));
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -9756,6 +9973,58 @@ fn write_decimal_scale0_grouped_parquet(path: &Path) -> Arc<Schema> {
         vec![
             Arc::new(Int32Array::from(vec![1, 1, 2])),
             Arc::new(Decimal128Array::from_iter_values([120, 340, 500]).with_precision_and_scale(20, 0).unwrap()),
+        ],
+    )
+    .unwrap();
+    let props = WriterProperties::builder().set_max_row_group_row_count(Some(1)).build();
+    let file = File::create(path).unwrap();
+    let mut writer = ArrowWriter::try_new(file, Arc::clone(&schema), Some(props)).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
+    schema
+}
+
+fn write_decimal_ratio_parquet(path: &Path) -> Arc<Schema> {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("numerator", DataType::Decimal128(38, 8), false),
+        Field::new("denominator", DataType::Decimal128(38, 8), false),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(
+                Decimal128Array::from_iter_values([100_000_000, 300_000_000]).with_precision_and_scale(38, 8).unwrap(),
+            ),
+            Arc::new(
+                Decimal128Array::from_iter_values([400_000_000, 600_000_000]).with_precision_and_scale(38, 8).unwrap(),
+            ),
+        ],
+    )
+    .unwrap();
+    let props = WriterProperties::builder().set_max_row_group_row_count(Some(1)).build();
+    let file = File::create(path).unwrap();
+    let mut writer = ArrowWriter::try_new(file, Arc::clone(&schema), Some(props)).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
+    schema
+}
+
+fn write_q8_mini_decimal_ratio_parquet(path: &Path) -> Arc<Schema> {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("o_year", DataType::Int32, false),
+        Field::new("is_target", DataType::Boolean, false),
+        Field::new("volume", DataType::Decimal128(38, 8), false),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int32Array::from(vec![2020, 2020, 2021, 2021])),
+            Arc::new(BooleanArray::from(vec![true, false, true, false])),
+            Arc::new(
+                Decimal128Array::from_iter_values([100_000_000, 300_000_000, 300_000_000, 300_000_000])
+                    .with_precision_and_scale(38, 8)
+                    .unwrap(),
+            ),
         ],
     )
     .unwrap();
