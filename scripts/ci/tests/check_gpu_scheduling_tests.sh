@@ -69,10 +69,6 @@ JSON
   exit 0
 fi
 if [[ "${1:-}" == "nextest" && "${2:-}" == "run" ]]; then
-  if [[ " $* " == *" -p nexus-bench "* ]]; then
-    echo "Summary [ 0.100s] 7 tests run: 7 passed, 0 skipped"
-    exit 0
-  fi
   if [[ " $* " == *" not group(gpu) & not group(gpu-exclusive) "* ]]; then
     if [[ "${FAKE_CPU_SUMMARY_MISSING:-0}" -eq 1 ]]; then
       echo "CPU_OUTPUT_WITHOUT_SUMMARY"
@@ -214,8 +210,8 @@ assert_phase_contains() {
   local phase=$2
   local expected=$3
   local row
-  # Anchor on the leading phase-id cell so shorter names such as clippy do not
-  # match longer sibling phases such as bench-clippy.
+  # Anchor on the leading phase-id cell so a shorter phase id cannot match a
+  # longer one that merely starts with it.
   row=$(grep -E "^${phase} \| " "${file}" | tail -n 1) || {
     echo "FAIL: ${file} has no phase-table row for ${phase}" >&2
     sed 's/^/  /' "${file}" >&2
@@ -337,47 +333,36 @@ assert_contains "${tmp_dir}/default.output" "gpu_profile=default gpu_threads=16(
 assert_contains "${tmp_dir}/default.output" "GPU scheduling preflight: shared: profile=default group=gpu configured_cap=num-cpus explicit_test_threads=16"
 assert_contains "${tmp_dir}/default.output" "exclusive: group=gpu-exclusive configured_cap=1 explicit_test_threads=1"
 assert_contains "${tmp_dir}/default.output" "GPU scheduling final: shared: profile=default group=gpu configured_cap=num-cpus explicit_test_threads=16"
-assert_contains "${tmp_dir}/default.log" "cargo <nextest> <show-config> <--color> <never> <-P> <default> <test-groups> <--all-features>"
-assert_contains "${tmp_dir}/default.log" "cargo <nextest> <run> <--all-features> <-E> <not group(gpu) & not group(gpu-exclusive)> <--no-fail-fast>"
-assert_contains "${tmp_dir}/default.log" "cargo <nextest> <run> <-P> <default> <--all-features> <-E> <group(gpu)> <--no-fail-fast> <--test-threads> <16>"
-assert_contains "${tmp_dir}/default.log" "cargo <nextest> <run> <-P> <default> <--all-features> <-E> <group(gpu-exclusive)> <--no-fail-fast> <--test-threads> <1>"
-assert_contains "${tmp_dir}/default.log" "cargo <test> <--all-features> <--doc> <--no-fail-fast>"
+assert_contains "${tmp_dir}/default.log" "cargo <nextest> <show-config> <--color> <never> <-P> <default> <test-groups> <--workspace> <--all-features>"
+assert_contains "${tmp_dir}/default.log" "cargo <nextest> <run> <--workspace> <--all-features> <-E> <not group(gpu) & not group(gpu-exclusive)> <--no-fail-fast>"
+assert_contains "${tmp_dir}/default.log" "cargo <nextest> <run> <-P> <default> <--workspace> <--all-features> <-E> <group(gpu)> <--no-fail-fast> <--test-threads> <16>"
+assert_contains "${tmp_dir}/default.log" "cargo <nextest> <run> <-P> <default> <--workspace> <--all-features> <-E> <group(gpu-exclusive)> <--no-fail-fast> <--test-threads> <1>"
+assert_contains "${tmp_dir}/default.log" "cargo <test> <--workspace> <--all-features> <--doc> <--no-fail-fast>"
 assert_contains "${tmp_dir}/default.log" "cargo <+nightly> <fmt> <--all> <--check>"
-assert_contains "${tmp_dir}/default.log" "cargo <check> <--all-features>"
-assert_contains "${tmp_dir}/default.log" "cargo <clippy> <--all-targets> <--all-features>"
-assert_contains "${tmp_dir}/default.log" "cargo <check> <-p> <nexus-tools> <--all-targets> <--all-features>"
-assert_contains "${tmp_dir}/default.log" "cargo <check> <-p> <nexus-examples> <--all-targets>"
-assert_contains "${tmp_dir}/default.log" "cargo <check> <-p> <nexus-bench> <--all-targets> <--all-features>"
-assert_contains "${tmp_dir}/default.log" "cargo <nextest> <run> <-p> <nexus-bench> <--all-features> <-E> <not group(gpu) & not group(gpu-exclusive)> <--no-fail-fast>"
-assert_contains "${tmp_dir}/default.log" "cargo <clippy> <-p> <nexus-bench> <--all-targets> <--all-features>"
-assert_contains "${tmp_dir}/default.log" "cargo <doc> <-p> <nexus-bench> <--all-features> <--no-deps> <--keep-going>"
+assert_contains "${tmp_dir}/default.log" "cargo <clippy> <--workspace> <--all-targets> <--all-features>"
 assert_contains "${tmp_dir}/default.log" "bash <scripts/build/check_cpu_packaging_policy.sh>"
 assert_contains "${tmp_dir}/default.log" "bash <scripts/ci/tests/check_gpu_test_lane_tests.sh>"
 assert_contains "${tmp_dir}/default.log" "bash <scripts/ci/tests/check_doctest_rustdoc_tests.sh>"
 assert_contains "${tmp_dir}/default.log" "bash <scripts/ci/tests/check_gpu_scheduling_tests.sh>"
 assert_contains "${tmp_dir}/default.output" "Phase | Command | Duration | Status | Test counts | GPU cap | Lock | Features | Log"
 assert_phase_contains "${tmp_dir}/default.output" policy-selftests "0.100s | PASS | checks=10 | - | - | all | ${tmp_dir}/phase-logs/policy-selftests.log"
-assert_phase_contains "${tmp_dir}/default.output" cpu-tests "cpu-tests | cargo nextest run --all-features -E 'not group(gpu) & not group(gpu-exclusive)' --no-fail-fast | 0.100s"
+assert_phase_contains "${tmp_dir}/default.output" cpu-tests "cpu-tests | cargo nextest run --workspace --all-features -E 'not group(gpu) & not group(gpu-exclusive)' --no-fail-fast | 0.100s"
 assert_phase_contains "${tmp_dir}/default.output" cpu-tests "0.100s | PASS | run=3 passed=3 failed=0 skipped=5 | - | - | all | ${tmp_dir}/phase-logs/cpu-tests.log"
-assert_phase_contains "${tmp_dir}/default.output" bench-tests "0.100s | PASS | run=7 passed=7 failed=0 skipped=0 | - | - | all(fixed) | ${tmp_dir}/phase-logs/bench-tests.log"
-assert_phase_contains "${tmp_dir}/default.output" gpu-shared-tests "gpu-shared-tests | flock /tmp/cudf-gpu.lock cargo nextest run -P default --all-features -E group(gpu) --no-fail-fast --test-threads 16 | 0.100s"
+assert_phase_contains "${tmp_dir}/default.output" gpu-shared-tests "gpu-shared-tests | flock /tmp/cudf-gpu.lock cargo nextest run -P default --workspace --all-features -E group(gpu) --no-fail-fast --test-threads 16 | 0.100s"
 assert_phase_contains "${tmp_dir}/default.output" gpu-shared-tests "0.100s | PASS | run=2 passed=2 failed=0 skipped=6 | 16 | /tmp/cudf-gpu.lock | all | ${tmp_dir}/phase-logs/gpu-shared-tests.log"
-assert_phase_contains "${tmp_dir}/default.output" gpu-exclusive-tests "gpu-exclusive-tests | flock /tmp/cudf-gpu.lock cargo nextest run -P default --all-features -E group(gpu-exclusive) --no-fail-fast --test-threads 1 | 0.100s"
+assert_phase_contains "${tmp_dir}/default.output" gpu-exclusive-tests "gpu-exclusive-tests | flock /tmp/cudf-gpu.lock cargo nextest run -P default --workspace --all-features -E group(gpu-exclusive) --no-fail-fast --test-threads 1 | 0.100s"
 assert_phase_contains "${tmp_dir}/default.output" gpu-exclusive-tests "0.100s | PASS | run=1 passed=1 failed=0 skipped=7 | 1 | /tmp/cudf-gpu.lock | all | ${tmp_dir}/phase-logs/gpu-exclusive-tests.log"
 assert_phase_contains "${tmp_dir}/default.output" doctests "0.100s | PASS | harnesses=1 executed=0 passed=0 failed=0 ignored=0 measured=0 filtered=0 | - | /tmp/cudf-gpu.lock | all | ${tmp_dir}/phase-logs/doctests.log"
-assert_phase_contains "${tmp_dir}/default.output" bench-rustdoc "all(fixed) | ${tmp_dir}/phase-logs/bench-rustdoc.log"
-assert_phase_contains "${tmp_dir}/default.output" bench-clippy "all(fixed) | ${tmp_dir}/phase-logs/bench-clippy.log"
-assert_phase_contains "${tmp_dir}/default.output" bench-check "all(fixed) | ${tmp_dir}/phase-logs/bench-check.log"
-for phase_log in policy-selftests cpu-tests bench-tests gpu-shared-tests gpu-exclusive-tests doctests rustdoc bench-rustdoc clippy bench-clippy tools-check examples-check bench-check; do
+for phase_log in policy-selftests cpu-tests gpu-shared-tests gpu-exclusive-tests doctests rustdoc clippy; do
   [[ -f "${tmp_dir}/phase-logs/${phase_log}.log" ]] || {
     echo "FAIL: expected persistent phase log ${phase_log}.log" >&2
     exit 1
   }
 done
-default_shared_flock="flock </tmp/cudf-gpu.lock> <cargo> <nextest> <run> <-P> <default> <--all-features> <-E> <group(gpu)> <--no-fail-fast> <--test-threads> <16>"
-default_exclusive_flock="flock </tmp/cudf-gpu.lock> <cargo> <nextest> <run> <-P> <default> <--all-features> <-E> <group(gpu-exclusive)> <--no-fail-fast> <--test-threads> <1>"
+default_shared_flock="flock </tmp/cudf-gpu.lock> <cargo> <nextest> <run> <-P> <default> <--workspace> <--all-features> <-E> <group(gpu)> <--no-fail-fast> <--test-threads> <16>"
+default_exclusive_flock="flock </tmp/cudf-gpu.lock> <cargo> <nextest> <run> <-P> <default> <--workspace> <--all-features> <-E> <group(gpu-exclusive)> <--no-fail-fast> <--test-threads> <1>"
 assert_before "${tmp_dir}/default.log" "${default_shared_flock}" "${default_exclusive_flock}"
-default_doctest_flock="flock </tmp/cudf-gpu.lock> <cargo> <test> <--all-features> <--doc> <--no-fail-fast>"
+default_doctest_flock="flock </tmp/cudf-gpu.lock> <cargo> <test> <--workspace> <--all-features> <--doc> <--no-fail-fast>"
 assert_before "${tmp_dir}/default.log" "${default_exclusive_flock}" "${default_doctest_flock}"
 if [[ $(grep -c '^flock ' "${tmp_dir}/default.log") -ne 3 ]]; then
   echo "FAIL: default scheduling must use one flock invocation per GPU resource class plus doctests" >&2
@@ -385,12 +370,12 @@ if [[ $(grep -c '^flock ' "${tmp_dir}/default.log") -ne 3 ]]; then
   exit 1
 fi
 echo "PASS: CPU exclusion and sequential default GPU resource classes"
-echo "PASS: full surface includes pinned fmt, default compile, clippy, tools, examples, bench phases, and isolated policies"
+echo "PASS: full surface includes pinned fmt, one workspace-wide test/doc/clippy unification, and isolated policies"
 
 run_check feature_env env FEATURES=server /usr/bin/bash scripts/check_all.sh --lane cpu
 assert_status feature_env 0
 assert_contains "${tmp_dir}/feature_env.output" "features=features:server(env)"
-assert_contains "${tmp_dir}/feature_env.log" "cargo <nextest> <run> <--features> <server>"
+assert_contains "${tmp_dir}/feature_env.log" "cargo <nextest> <run> <--workspace> <--features> <server>"
 
 run_check lock_env env GPU_LOCK=/tmp/custom-cudf.lock /usr/bin/bash scripts/check_all.sh --lane gpu-shared
 assert_status lock_env 0
@@ -406,7 +391,7 @@ echo "PASS: retired same-process Cargo runners fail closed before work"
 run_check twelve_cores env FAKE_NPROC_OUTPUT=12 /usr/bin/bash scripts/check_all.sh --lane gpu-shared
 assert_status twelve_cores 0
 assert_contains "${tmp_dir}/twelve_cores.output" "configured_cap=num-cpus explicit_test_threads=12"
-assert_contains "${tmp_dir}/twelve_cores.log" "cargo <nextest> <run> <-P> <default> <--all-features> <-E> <group(gpu)> <--no-fail-fast> <--test-threads> <12>"
+assert_contains "${tmp_dir}/twelve_cores.log" "cargo <nextest> <run> <-P> <default> <--workspace> <--all-features> <-E> <group(gpu)> <--no-fail-fast> <--test-threads> <12>"
 assert_phase_contains "${tmp_dir}/twelve_cores.output" gpu-shared-tests "0.100s | PASS | run=2 passed=2 failed=0 skipped=6 | 12 | /tmp/cudf-gpu.lock | all | ${tmp_dir}/phase-logs/gpu-shared-tests.log"
 echo "PASS: shared-GPU concurrency follows the available CPU count"
 
@@ -414,7 +399,7 @@ run_check cli_precedence env FEATURES=server TEST_RUNNER=cargo STRICT=1 \
   /usr/bin/bash scripts/check_all.sh --all-features --runner nextest --strict
 assert_status cli_precedence 0
 assert_contains "${tmp_dir}/cli_precedence.output" "runner=nextest(cli) features=all(cli) gpu_profile=default gpu_threads=16(nproc) strict=always(cli)"
-assert_contains "${tmp_dir}/cli_precedence.log" "cargo <nextest> <run> <-P> <default> <--all-features> <-E> <group(gpu)> <--no-fail-fast> <--test-threads> <16>"
+assert_contains "${tmp_dir}/cli_precedence.log" "cargo <nextest> <run> <-P> <default> <--workspace> <--all-features> <-E> <group(gpu)> <--no-fail-fast> <--test-threads> <16>"
 echo "PASS: explicit nextest CLI selection takes precedence over a retired runner environment value"
 
 run_check fast /usr/bin/bash scripts/check_all.sh --fast --features server
@@ -422,7 +407,7 @@ assert_status fast 0
 assert_contains "${tmp_dir}/fast.output" "PARTIAL SURFACE: mode=fast lane=cpu"
 assert_contains "${tmp_dir}/fast.output" "fast edit-loop surface passed"
 assert_contains "${tmp_dir}/fast.log" "cargo <+nightly> <fmt> <--all> <--check>"
-assert_contains "${tmp_dir}/fast.log" "cargo <nextest> <run> <--features> <server> <-E> <not group(gpu) & not group(gpu-exclusive)> <--no-fail-fast>"
+assert_contains "${tmp_dir}/fast.log" "cargo <nextest> <run> <--workspace> <--features> <server> <-E> <not group(gpu) & not group(gpu-exclusive)> <--no-fail-fast>"
 assert_not_contains "${tmp_dir}/fast.log" "flock"
 assert_not_contains "${tmp_dir}/fast.log" "<doc>"
 assert_not_contains "${tmp_dir}/fast.log" "<clippy>"
@@ -430,7 +415,6 @@ assert_not_contains "${tmp_dir}/fast.log" "nexus-tools"
 assert_not_contains "${tmp_dir}/fast.log" "nexus-bench"
 assert_not_contains "${tmp_dir}/fast.log" "bash <scripts/ci/check_gpu_test_lane.sh>"
 assert_phase_contains "${tmp_dir}/fast.output" cpu-tests "0.100s | PASS | run=3 passed=3 failed=0 skipped=5 | - | - | features:server | ${tmp_dir}/phase-logs/cpu-tests.log"
-assert_phase_contains "${tmp_dir}/fast.output" bench-tests "- | SKIPPED | - | - | - | all(fixed) | -"
 assert_phase_contains "${tmp_dir}/fast.output" live-inventory "- | SKIPPED | - | - | - | features:server | -"
 assert_phase_contains "${tmp_dir}/fast.output" gpu-shared-tests "- | SKIPPED | - | - | - | features:server | -"
 assert_phase_contains "${tmp_dir}/fast.output" doctests "- | SKIPPED | - | - | - | features:server | -"
@@ -438,46 +422,37 @@ echo "PASS: fast surface runs policies/fmt/structure/CPU without live inventory 
 
 run_check no_default_features /usr/bin/bash scripts/check_all.sh --lane cpu --no-default-features --features server
 assert_status no_default_features 0
-assert_contains "${tmp_dir}/no_default_features.log" "cargo <nextest> <run> <--no-default-features> <--features> <server>"
+assert_contains "${tmp_dir}/no_default_features.log" "cargo <nextest> <run> <--workspace> <--no-default-features> <--features> <server>"
 
 run_check full_narrow_features /usr/bin/bash scripts/check_all.sh --no-default-features --features server
 assert_status full_narrow_features 0
-assert_contains "${tmp_dir}/full_narrow_features.log" "cargo <check> <--no-default-features> <--features> <server>"
-assert_contains "${tmp_dir}/full_narrow_features.log" "cargo <test> <--no-default-features> <--features> <server> <--doc> <--no-fail-fast>"
-assert_contains "${tmp_dir}/full_narrow_features.log" "cargo <doc> <--no-default-features> <--features> <server> <--no-deps> <--keep-going>"
-assert_contains "${tmp_dir}/full_narrow_features.log" "cargo <clippy> <--all-targets> <--no-default-features> <--features> <server>"
-assert_phase_contains "${tmp_dir}/full_narrow_features.output" default-members "no-default+features:server | ${tmp_dir}/phase-logs/default-members.log"
+assert_contains "${tmp_dir}/full_narrow_features.log" "cargo <test> <--workspace> <--no-default-features> <--features> <server> <--doc> <--no-fail-fast>"
+assert_contains "${tmp_dir}/full_narrow_features.log" "cargo <doc> <--workspace> <--no-default-features> <--features> <server> <--no-deps> <--keep-going>"
+assert_contains "${tmp_dir}/full_narrow_features.log" "cargo <clippy> <--workspace> <--all-targets> <--no-default-features> <--features> <server>"
 assert_phase_contains "${tmp_dir}/full_narrow_features.output" clippy "no-default+features:server | ${tmp_dir}/phase-logs/clippy.log"
-assert_phase_contains "${tmp_dir}/full_narrow_features.output" bench-tests "all(fixed) | ${tmp_dir}/phase-logs/bench-tests.log"
-assert_phase_contains "${tmp_dir}/full_narrow_features.output" bench-check "all(fixed) | ${tmp_dir}/phase-logs/bench-check.log"
-assert_phase_contains "${tmp_dir}/full_narrow_features.output" bench-clippy "all(fixed) | ${tmp_dir}/phase-logs/bench-clippy.log"
-assert_phase_contains "${tmp_dir}/full_narrow_features.output" bench-rustdoc "all(fixed) | ${tmp_dir}/phase-logs/bench-rustdoc.log"
 echo "PASS: feature selectors propagate consistently"
 
 run_check lane_cpu /usr/bin/bash scripts/check_all.sh --lane cpu
 assert_status lane_cpu 0
 assert_contains "${tmp_dir}/lane_cpu.output" "selected lane 'cpu' passed. PARTIAL"
 assert_contains "${tmp_dir}/lane_cpu.log" "cargo <nextest> <run>"
-assert_contains "${tmp_dir}/lane_cpu.log" "cargo <nextest> <run> <-p> <nexus-bench> <--all-features>"
 assert_not_contains "${tmp_dir}/lane_cpu.log" "flock"
 assert_not_contains "${tmp_dir}/lane_cpu.log" "<clippy>"
 assert_phase_contains "${tmp_dir}/lane_cpu.output" cpu-tests "0.100s | PASS | run=3 passed=3 failed=0 skipped=5 | - | - | all | ${tmp_dir}/phase-logs/cpu-tests.log"
-assert_phase_contains "${tmp_dir}/lane_cpu.output" bench-tests "0.100s | PASS | run=7 passed=7 failed=0 skipped=0 | - | - | all(fixed) | ${tmp_dir}/phase-logs/bench-tests.log"
 assert_phase_contains "${tmp_dir}/lane_cpu.output" gpu-shared-tests "- | SKIPPED | - | - | - | all | -"
 
 run_check lane_shared /usr/bin/bash scripts/check_all.sh --lane gpu-shared
 assert_status lane_shared 0
-assert_contains "${tmp_dir}/lane_shared.log" "flock </tmp/cudf-gpu.lock> <cargo> <nextest> <run> <-P> <default> <--all-features> <-E> <group(gpu)> <--no-fail-fast> <--test-threads> <16>"
-assert_not_contains "${tmp_dir}/lane_shared.log" "cargo <nextest> <run> <--all-features> <-E> <not group(gpu) & not group(gpu-exclusive)>"
+assert_contains "${tmp_dir}/lane_shared.log" "flock </tmp/cudf-gpu.lock> <cargo> <nextest> <run> <-P> <default> <--workspace> <--all-features> <-E> <group(gpu)> <--no-fail-fast> <--test-threads> <16>"
+assert_not_contains "${tmp_dir}/lane_shared.log" "cargo <nextest> <run> <--workspace> <--all-features> <-E> <not group(gpu) & not group(gpu-exclusive)>"
 assert_not_contains "${tmp_dir}/lane_shared.log" "group(gpu-exclusive)"
 assert_not_contains "${tmp_dir}/lane_shared.log" "nexus-bench"
-assert_phase_contains "${tmp_dir}/lane_shared.output" bench-tests "- | SKIPPED | - | - | - | all(fixed) | -"
 assert_phase_contains "${tmp_dir}/lane_shared.output" gpu-shared-tests "0.100s | PASS | run=2 passed=2 failed=0 skipped=6 | 16 | /tmp/cudf-gpu.lock | all | ${tmp_dir}/phase-logs/gpu-shared-tests.log"
 
 run_check lane_exclusive /usr/bin/bash scripts/check_all.sh --lane gpu-exclusive
 assert_status lane_exclusive 0
-assert_contains "${tmp_dir}/lane_exclusive.log" "flock </tmp/cudf-gpu.lock> <cargo> <nextest> <run> <-P> <default> <--all-features> <-E> <group(gpu-exclusive)>"
-assert_not_contains "${tmp_dir}/lane_exclusive.log" "cargo <nextest> <run> <--all-features> <-E> <not group(gpu) & not group(gpu-exclusive)>"
+assert_contains "${tmp_dir}/lane_exclusive.log" "flock </tmp/cudf-gpu.lock> <cargo> <nextest> <run> <-P> <default> <--workspace> <--all-features> <-E> <group(gpu-exclusive)>"
+assert_not_contains "${tmp_dir}/lane_exclusive.log" "cargo <nextest> <run> <--workspace> <--all-features> <-E> <not group(gpu) & not group(gpu-exclusive)>"
 assert_not_contains "${tmp_dir}/lane_exclusive.log" "<group(gpu)>"
 
 run_check lane_gpu /usr/bin/bash scripts/check_all.sh --lane gpu
@@ -487,7 +462,7 @@ if [[ $(grep -c '^flock ' "${tmp_dir}/lane_gpu.log") -ne 2 ]]; then
   sed 's/^/  /' "${tmp_dir}/lane_gpu.log" >&2
   exit 1
 fi
-assert_not_contains "${tmp_dir}/lane_gpu.log" "cargo <nextest> <run> <--all-features> <-E> <not group(gpu) & not group(gpu-exclusive)>"
+assert_not_contains "${tmp_dir}/lane_gpu.log" "cargo <nextest> <run> <--workspace> <--all-features> <-E> <not group(gpu) & not group(gpu-exclusive)>"
 
 run_check lane_all /usr/bin/bash scripts/check_all.sh --lane all
 assert_status lane_all 0
@@ -536,7 +511,6 @@ assert_status live_inventory_failure 1
 assert_contains "${tmp_dir}/live_inventory_failure.output" "RAW_LIVE_INVENTORY_FAILURE"
 assert_phase_contains "${tmp_dir}/live_inventory_failure.output" live-inventory "0.100s | FAIL(42) | - | - | - | all | ${tmp_dir}/phase-logs/live-inventory.log"
 assert_phase_contains "${tmp_dir}/live_inventory_failure.output" cpu-tests "- | SKIPPED(blocked) | - | - | - | all | -"
-assert_phase_contains "${tmp_dir}/live_inventory_failure.output" bench-tests "- | SKIPPED(blocked) | - | - | - | all(fixed) | -"
 assert_phase_contains "${tmp_dir}/live_inventory_failure.output" gpu-shared-tests "- | SKIPPED(blocked) | - | - | - | all | -"
 assert_contains "${tmp_dir}/phase-logs/live-inventory.log" "RAW_LIVE_INVENTORY_FAILURE"
 echo "PASS: failed live inventory is logged and blocks selected lanes"

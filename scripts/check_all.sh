@@ -11,6 +11,16 @@ readonly GPU_EXCLUSIVE_CAP=1
 readonly GPU_NEXTEST_PROFILE=default
 readonly GPU_NEXTEST_GROUP=gpu
 
+# Incremental compilation is disabled per compiling phase, never exported
+# process-wide. This is the cold full-gate entry point, so the incremental
+# cache only costs I/O and disk here. A process-wide export would also reach
+# scripts/build/, whose packaging policy self-tests assert that redistributable
+# builds inherit no ambient Cargo flags, and would fail them. Interactive
+# `cargo build`/`cargo check` keep incremental compilation either way.
+compiling_phase() {
+  CARGO_INCREMENTAL=0 "$@"
+}
+
 usage() {
   cat <<'USAGE'
 Usage: bash scripts/check_all.sh [OPTIONS]
@@ -23,13 +33,14 @@ Modes:
   --lane LANE                    Partial lane: all, cpu, gpu, gpu-shared,
                                  gpu-exclusive, or policy
 
-Feature selection (CLI selectors replace FEATURES; core default-member surface only):
-  --all-features                 Enable all default-member features (default)
+Feature selection (CLI selectors replace FEATURES):
+  --all-features                 Enable all workspace features (default)
   --features LIST               Enable a comma-separated feature list
   --no-default-features         Disable default features; may accompany --features
 
-  Explicit full-pre-merge bench phases always use --all-features independently
-  (reported as all(fixed)) and are not controlled by the core selectors above.
+  Every compiling phase runs one `--workspace` invocation under the selected
+  features, so a run builds a single Cargo feature unification instead of one
+  per package selection.
 
 Execution:
   --runner RUNNER               nextest only; same-process Cargo runners fail closed
@@ -347,26 +358,14 @@ PHASE_ORDER=(
   policy-selftests
   rustfmt
   lane-structure
-  default-members
-  iceberg-fmt
   live-inventory
   gpu-preflight
   cpu-tests
-  bench-tests
-  iceberg-tests
   gpu-shared-tests
   gpu-exclusive-tests
   doctests
   rustdoc
-  bench-rustdoc
   clippy
-  bench-clippy
-  iceberg-clippy
-  tools-check
-  examples-check
-  examples-otlp-tests
-  bench-check
-  iceberg-check
 )
 declare -A PHASE_COMMAND PHASE_DURATION PHASE_STATUS PHASE_COUNTS
 declare -A PHASE_GPU_CAP PHASE_LOCK PHASE_FEATURES PHASE_LOG PHASE_EXIT
@@ -388,33 +387,19 @@ define_phase() {
 define_phase policy-selftests "${policy_selftest_count} isolated policy/orchestration scripts"
 define_phase rustfmt "cargo +${RUSTFMT_TOOLCHAIN} fmt --all --check"
 define_phase lane-structure "test_lane_policy.py check-catalog + generated override check"
-define_phase default-members "cargo check ${FEATURE_ARGS[*]}"
-define_phase iceberg-fmt "cargo +${RUSTFMT_TOOLCHAIN} fmt -p nexus-iceberg -- --check"
+# Every compiling phase below selects `--workspace` under the same
+# ${FEATURE_ARGS}, so one run builds one Cargo feature unification. The lane
+# inventory must enumerate that identical surface or the catalog reports stale
+# entries for packages it cannot see; see AGENTS.md for why per-package
+# selections are expensive.
 define_phase live-inventory "bash scripts/ci/check_gpu_test_lane.sh ${FEATURE_ARGS[*]}"
-define_phase gpu-preflight "cargo nextest show-config --color never -P ${GPU_NEXTEST_PROFILE} test-groups ${FEATURE_ARGS[*]}"
-define_phase cpu-tests "cargo nextest run ${FEATURE_ARGS[*]} -E 'not group(gpu) & not group(gpu-exclusive)' --no-fail-fast"
-define_phase bench-tests "cargo nextest run -p nexus-bench --all-features -E 'not group(gpu) & not group(gpu-exclusive)' --no-fail-fast"
-define_phase iceberg-tests "cargo nextest run -p nexus-iceberg --all-features --no-fail-fast"
-define_phase gpu-shared-tests "flock ${GPU_LOCK} cargo nextest run -P ${GPU_NEXTEST_PROFILE} ${FEATURE_ARGS[*]} -E group(${GPU_NEXTEST_GROUP}) --no-fail-fast --test-threads ${gpu_threads}"
-define_phase gpu-exclusive-tests "flock ${GPU_LOCK} cargo nextest run -P ${GPU_NEXTEST_PROFILE} ${FEATURE_ARGS[*]} -E group(gpu-exclusive) --no-fail-fast --test-threads ${GPU_EXCLUSIVE_CAP}"
-define_phase doctests "flock ${GPU_LOCK} cargo test ${FEATURE_ARGS[*]} --doc --no-fail-fast"
-define_phase rustdoc "RUSTDOCFLAGS='${DOC_RUSTDOCFLAGS}' cargo doc ${FEATURE_ARGS[*]} --no-deps --keep-going"
-define_phase bench-rustdoc "RUSTDOCFLAGS='${DOC_RUSTDOCFLAGS}' cargo doc -p nexus-bench --all-features --no-deps --keep-going"
-define_phase clippy "cargo clippy --all-targets ${FEATURE_ARGS[*]}"
-define_phase bench-clippy "cargo clippy -p nexus-bench --all-targets --all-features"
-define_phase iceberg-clippy "cargo clippy -p nexus-iceberg --all-targets --all-features"
-define_phase tools-check "cargo check -p nexus-tools --all-targets --all-features"
-define_phase examples-check "cargo check -p nexus-examples --all-targets --features otlp-metrics"
-define_phase examples-otlp-tests "cargo test -p nexus-examples --test otlp_metrics_exporter --features otlp-metrics"
-define_phase bench-check "cargo check -p nexus-bench --all-targets --all-features"
-define_phase iceberg-check "cargo check -p nexus-iceberg --all-targets --all-features"
-PHASE_FEATURES[bench-tests]='all(fixed)'
-PHASE_FEATURES[bench-rustdoc]='all(fixed)'
-PHASE_FEATURES[bench-clippy]='all(fixed)'
-PHASE_FEATURES[bench-check]='all(fixed)'
-PHASE_FEATURES[iceberg-tests]='all(fixed)'
-PHASE_FEATURES[iceberg-clippy]='all(fixed)'
-PHASE_FEATURES[iceberg-check]='all(fixed)'
+define_phase gpu-preflight "cargo nextest show-config --color never -P ${GPU_NEXTEST_PROFILE} test-groups --workspace ${FEATURE_ARGS[*]}"
+define_phase cpu-tests "cargo nextest run --workspace ${FEATURE_ARGS[*]} -E 'not group(gpu) & not group(gpu-exclusive)' --no-fail-fast"
+define_phase gpu-shared-tests "flock ${GPU_LOCK} cargo nextest run -P ${GPU_NEXTEST_PROFILE} --workspace ${FEATURE_ARGS[*]} -E group(${GPU_NEXTEST_GROUP}) --no-fail-fast --test-threads ${gpu_threads}"
+define_phase gpu-exclusive-tests "flock ${GPU_LOCK} cargo nextest run -P ${GPU_NEXTEST_PROFILE} --workspace ${FEATURE_ARGS[*]} -E group(gpu-exclusive) --no-fail-fast --test-threads ${GPU_EXCLUSIVE_CAP}"
+define_phase doctests "flock ${GPU_LOCK} cargo test --workspace ${FEATURE_ARGS[*]} --doc --no-fail-fast"
+define_phase rustdoc "RUSTDOCFLAGS='${DOC_RUSTDOCFLAGS}' cargo doc --workspace ${FEATURE_ARGS[*]} --no-deps --keep-going"
+define_phase clippy "cargo clippy --workspace --all-targets ${FEATURE_ARGS[*]}"
 
 phase_now_ms() {
   local value
@@ -588,7 +573,7 @@ esac
 
 run_gpu_config_preflight() {
   local gpu_show_config gpu_show_config_status=0
-  gpu_show_config=$(cargo nextest show-config --color never -P "${GPU_NEXTEST_PROFILE}" test-groups "${FEATURE_ARGS[@]}" 2>&1) \
+  gpu_show_config=$(compiling_phase cargo nextest show-config --color never -P "${GPU_NEXTEST_PROFILE}" test-groups --workspace "${FEATURE_ARGS[@]}" 2>&1) \
     || gpu_show_config_status=$?
   if [[ "${gpu_show_config_status}" -ne 0 ]]; then
     printf '%s\n' "${gpu_show_config}" >&2
@@ -627,37 +612,27 @@ run_gpu_config_preflight() {
 }
 
 cpu_test_command() {
-  cargo nextest run "${FEATURE_ARGS[@]}" \
-    -E 'not group(gpu) & not group(gpu-exclusive)' --no-fail-fast
-}
-
-bench_test_command() {
-  cargo nextest run -p nexus-bench --all-features \
+  compiling_phase cargo nextest run --workspace "${FEATURE_ARGS[@]}" \
     -E 'not group(gpu) & not group(gpu-exclusive)' --no-fail-fast
 }
 
 gpu_shared_test_command() {
-  flock "${GPU_LOCK}" cargo nextest run -P "${GPU_NEXTEST_PROFILE}" \
-    "${FEATURE_ARGS[@]}" -E "group(${GPU_NEXTEST_GROUP})" --no-fail-fast --test-threads "${gpu_threads}"
+  compiling_phase flock "${GPU_LOCK}" cargo nextest run -P "${GPU_NEXTEST_PROFILE}" \
+    --workspace "${FEATURE_ARGS[@]}" -E "group(${GPU_NEXTEST_GROUP})" --no-fail-fast --test-threads "${gpu_threads}"
 }
 
 gpu_exclusive_test_command() {
-  flock "${GPU_LOCK}" cargo nextest run -P "${GPU_NEXTEST_PROFILE}" \
-    "${FEATURE_ARGS[@]}" -E 'group(gpu-exclusive)' --no-fail-fast --test-threads "${GPU_EXCLUSIVE_CAP}"
+  compiling_phase flock "${GPU_LOCK}" cargo nextest run -P "${GPU_NEXTEST_PROFILE}" \
+    --workspace "${FEATURE_ARGS[@]}" -E 'group(gpu-exclusive)' --no-fail-fast --test-threads "${GPU_EXCLUSIVE_CAP}"
 }
 
 doctest_command() {
-  flock "${GPU_LOCK}" cargo test \
-    "${FEATURE_ARGS[@]}" --doc --no-fail-fast
+  compiling_phase flock "${GPU_LOCK}" cargo test \
+    --workspace "${FEATURE_ARGS[@]}" --doc --no-fail-fast
 }
 
 rustdoc_command() {
-  RUSTDOCFLAGS="${DOC_RUSTDOCFLAGS}" cargo doc "${FEATURE_ARGS[@]}" --no-deps --keep-going
-}
-
-bench_rustdoc_command() {
-  RUSTDOCFLAGS="${DOC_RUSTDOCFLAGS}" cargo doc \
-    -p nexus-bench --all-features --no-deps --keep-going
+  RUSTDOCFLAGS="${DOC_RUSTDOCFLAGS}" compiling_phase cargo doc --workspace "${FEATURE_ARGS[@]}" --no-deps --keep-going
 }
 
 if [[ "${mode}" == full || "${lane}" == policy || "${mode}" == fast ]]; then
@@ -672,14 +647,9 @@ else
   fi
 fi
 
-if [[ "${mode}" == full ]]; then
-  run_phase default-members none - - cargo check "${FEATURE_ARGS[@]}" || true
-  run_phase iceberg-fmt none - - cargo "+${RUSTFMT_TOOLCHAIN}" fmt -p nexus-iceberg -- --check || true
-fi
-
 if [[ "${lane}" != policy ]]; then
   if [[ "${mode}" != fast ]]; then
-    if ! run_phase live-inventory none - - bash scripts/ci/check_gpu_test_lane.sh "${FEATURE_ARGS[@]}"; then
+    if ! run_phase live-inventory none - - compiling_phase bash scripts/ci/check_gpu_test_lane.sh "${FEATURE_ARGS[@]}"; then
       lane_safe=0
       echo "ABORT: live lane inventory failed; selected nextest lanes will not run." >&2
     fi
@@ -708,14 +678,12 @@ if [[ "${lane}" != policy ]]; then
     fi
   fi
   if [[ "${lane_safe}" -eq 1 ]]; then
+    # cpu-tests is one workspace-wide invocation: it covers what used to be
+    # three separately-unified configs (default members, nexus-bench,
+    # nexus-iceberg), plus nexus-tools and nexus-examples, whose tests this
+    # script previously only type-checked and never ran.
     [[ "${needs_cpu}" -eq 0 ]] \
       || run_phase cpu-tests nextest - - cpu_test_command || true
-    # Full and --lane cpu keep bench CPU pins; --fast and GPU-only lanes omit them.
-    if [[ "${needs_cpu}" -eq 1 && "${mode}" != fast ]]; then
-      run_phase bench-tests nextest - - bench_test_command || true
-      [[ "${mode}" != full ]] \
-        || run_phase iceberg-tests nextest - - cargo nextest run -p nexus-iceberg --all-features --no-fail-fast || true
-    fi
     [[ "${needs_shared_gpu}" -eq 0 ]] \
       || run_phase gpu-shared-tests nextest "${gpu_threads}" "${GPU_LOCK}" gpu_shared_test_command || true
     [[ "${needs_exclusive_gpu}" -eq 0 ]] \
@@ -723,9 +691,6 @@ if [[ "${lane}" != policy ]]; then
   else
     [[ "${needs_cpu}" -eq 0 || "${PHASE_STATUS[cpu-tests]}" != SKIPPED ]] \
       || PHASE_STATUS[cpu-tests]='SKIPPED(blocked)'
-    if [[ "${needs_cpu}" -eq 1 && "${mode}" != fast && "${PHASE_STATUS[bench-tests]}" == SKIPPED ]]; then
-      PHASE_STATUS[bench-tests]='SKIPPED(blocked)'
-    fi
     [[ "${needs_shared_gpu}" -eq 0 || "${PHASE_STATUS[gpu-shared-tests]}" != SKIPPED ]] \
       || PHASE_STATUS[gpu-shared-tests]='SKIPPED(blocked)'
     [[ "${needs_exclusive_gpu}" -eq 0 || "${PHASE_STATUS[gpu-exclusive-tests]}" != SKIPPED ]] \
@@ -736,16 +701,8 @@ fi
 if [[ "${mode}" == full ]]; then
   run_phase doctests doctest - "${GPU_LOCK}" doctest_command || true
   run_phase rustdoc none - - rustdoc_command || true
-  run_phase bench-rustdoc none - - bench_rustdoc_command || true
   rustdoc_summary="command_status=${PHASE_EXIT[rustdoc]} warnings=denied"
-  run_phase clippy none - - cargo clippy --all-targets "${FEATURE_ARGS[@]}" || true
-  run_phase bench-clippy none - - cargo clippy -p nexus-bench --all-targets --all-features || true
-  run_phase iceberg-clippy none - - cargo clippy -p nexus-iceberg --all-targets --all-features || true
-  run_phase tools-check none - - cargo check -p nexus-tools --all-targets --all-features || true
-  run_phase examples-check none - - cargo check -p nexus-examples --all-targets --features otlp-metrics || true
-  run_phase examples-otlp-tests cargo - - cargo test -p nexus-examples --test otlp_metrics_exporter --features otlp-metrics || true
-  run_phase bench-check none - - cargo check -p nexus-bench --all-targets --all-features || true
-  run_phase iceberg-check none - - cargo check -p nexus-iceberg --all-targets --all-features || true
+  run_phase clippy none - - compiling_phase cargo clippy --workspace --all-targets "${FEATURE_ARGS[@]}" || true
 fi
 
 sanitize_phase_cell() {

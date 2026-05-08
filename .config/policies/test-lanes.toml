@@ -60,6 +60,16 @@ lane = "cpu"
 reason = "DataFusion-free Iceberg catalog, resolved-source, and scan-candidate contracts do not initialize DataFusion or CUDA."
 
 [[binary]]
+id = "nexus-tools::bin/nexus_tools"
+lane = "cpu"
+reason = "The tools binary's built-in unit tests cover CLI parsing, profile/fixture validation, artifact writing, and evidence aggregation; every external-service and GPU E2E runner in this binary stays behind `not(test)` and is invoked explicitly through `cargo run` per AGENTS.md, never through this test harness."
+
+[[binary]]
+id = "nexus-examples::otlp_metrics_exporter"
+lane = "cpu"
+reason = "Reference OTLP histogram/export-request construction tests validate protobuf shape against fixed inputs without a collector, network, or CUDA runtime."
+
+[[binary]]
 id = "datafusion-nexus::bin/datafusion_nexus_server"
 lane = "cpu"
 reason = "Server binary unit tests exercise error/log formatting and configuration without starting CUDA or the service."
@@ -86,6 +96,11 @@ reason = "P6 device identity coverage constructs one public backend across all f
 id = "datafusion-nexus::cpu_contract_tests"
 lane = "cpu"
 reason = "Merged CPU contract harness covering structured errors, policy reports, public facade reachability, and table-format scan planning without creating a native runtime."
+
+[[binary]]
+id = "datafusion-nexus::rapids_build_support_tests"
+lane = "cpu"
+reason = "The std-only RAPIDS build-support harness validates metadata and link-directive policy without loading CUDA or creating a native runtime."
 
 [[binary]]
 id = "datafusion-nexus::iceberg_tests"
