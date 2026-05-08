@@ -404,11 +404,11 @@ fn bounded_join_reservation_kinds_are_modeled_without_estimates() {
     assert_eq!(contract.execution_families().len(), 9);
     assert_eq!(
         contract.execution_families_csv(),
-        "root_reusable_hash_join,root_filtered_semi_anti_join,keyless_conditional_join,keyless_conditional_join_input_subplan_pipeline,keyless_conditional_join_joined_aggregate_input_subplan_pipeline,root_projected_cross_join,root_mixed_inner_left_join,multi_join_reusable_hash_pipeline,multi_join_mixed_keyed_residual_inner_left_semi_left_anti_pipeline"
+        "root_reusable_hash_join,root_filtered_semi_anti_join,keyless_conditional_join,keyless_conditional_join_input_subplan_pipeline,keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline,root_projected_cross_join,root_mixed_keyed_residual_join,multi_join_reusable_hash_pipeline,multi_join_mixed_keyed_residual_inner_left_semi_left_anti_pipeline"
     );
     assert_eq!(
         contract.supported_shape_requirement(),
-        "requires_one_of(root_reusable_hash_join,root_filtered_semi_anti_join,keyless_conditional_join,keyless_conditional_join_input_subplan_pipeline,keyless_conditional_join_joined_aggregate_input_subplan_pipeline,root_projected_cross_join,root_mixed_inner_left_join,multi_join_reusable_hash_pipeline,multi_join_mixed_keyed_residual_inner_left_semi_left_anti_pipeline)"
+        "requires_one_of(root_reusable_hash_join,root_filtered_semi_anti_join,keyless_conditional_join,keyless_conditional_join_input_subplan_pipeline,keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline,root_projected_cross_join,root_mixed_keyed_residual_join,multi_join_reusable_hash_pipeline,multi_join_mixed_keyed_residual_inner_left_semi_left_anti_pipeline)"
     );
     assert!(contract.enabled());
 
@@ -465,7 +465,7 @@ fn bounded_join_rejection_facts_are_shared_and_estimate_free() {
     assert_eq!(
         unsupported_shape_facts.get("bounded_join_unsupported_shape").map(String::as_str),
         Some(
-            "requires_one_of(root_reusable_hash_join,root_filtered_semi_anti_join,keyless_conditional_join,keyless_conditional_join_input_subplan_pipeline,keyless_conditional_join_joined_aggregate_input_subplan_pipeline,root_projected_cross_join,root_mixed_inner_left_join,multi_join_reusable_hash_pipeline,multi_join_mixed_keyed_residual_inner_left_semi_left_anti_pipeline)"
+            "requires_one_of(root_reusable_hash_join,root_filtered_semi_anti_join,keyless_conditional_join,keyless_conditional_join_input_subplan_pipeline,keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline,root_projected_cross_join,root_mixed_keyed_residual_join,multi_join_reusable_hash_pipeline,multi_join_mixed_keyed_residual_inner_left_semi_left_anti_pipeline)"
         )
     );
     assert_eq!(
@@ -507,12 +507,7 @@ fn bounded_join_rejection_facts_are_shared_and_estimate_free() {
         facts.get("bounded_join_reservation_requirements").map(String::as_str),
         Some(contract.requirement_details_csv().as_str())
     );
-    assert_eq!(
-        facts.get("bounded_join_execution_family_alias_compatibility").map(String::as_str),
-        Some(
-            "root_mixed_inner_left_join_is_legacy_alias_for_mixed_keyed_residual_inner_left_full_left_semi_left_anti_root_joins"
-        )
-    );
+    assert_eq!(facts.get("bounded_join_execution_family_alias_compatibility").map(String::as_str), None);
     assert_eq!(
         facts.get("cudf_rs_hash_join_pre_build_reservation_contract").map(String::as_str),
         Some("hash_join_pre_build_reservation_size_bytes")
@@ -578,7 +573,7 @@ fn bounded_join_rejection_facts_are_shared_and_estimate_free() {
     assert_eq!(facts.get("cudf_rs_mixed_join_remaining_blockers").map(String::as_str), Some(""));
     assert_eq!(
         facts.get("bounded_join_mixed_keyed_residual_capability").map(String::as_str),
-        Some("root_mixed_inner_left_join_extended_to_full_left_semi_left_anti")
+        Some("root_mixed_keyed_residual_join")
     );
     assert_eq!(
         facts.get("bounded_join_mixed_keyed_residual_capability_detail").map(String::as_str),
@@ -593,24 +588,24 @@ fn bounded_join_rejection_facts_are_shared_and_estimate_free() {
         Some("mixed_keyed_residual_multi_join_types=inner,left_semi,left_anti")
     );
     assert_eq!(
-        facts.get("bounded_join_keyless_conditional_input_subplan_pipeline_capability").map(String::as_str),
+        facts.get("bounded_join_keyless_conditional_join_input_subplan_pipeline_capability").map(String::as_str),
         Some("keyless_conditional_join_input_subplan_pipeline")
     );
     assert_eq!(
-        facts.get("bounded_join_keyless_conditional_input_subplan_pipeline_capability_detail").map(String::as_str),
+        facts.get("bounded_join_keyless_conditional_join_input_subplan_pipeline_capability_detail").map(String::as_str),
         Some(
             "root_join=keyless_conditional_inner;input_subplans=source_filter_projection_or_projection_wrapped_left_anti_hash_join_or_scalar_global_aggregate"
         )
     );
     assert_eq!(
         facts
-            .get("bounded_join_keyless_conditional_joined_aggregate_input_subplan_pipeline_capability")
+            .get("bounded_join_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline_capability")
             .map(String::as_str),
-        Some("keyless_conditional_join_joined_aggregate_input_subplan_pipeline")
+        Some("keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline")
     );
     assert_eq!(
         facts
-            .get("bounded_join_keyless_conditional_joined_aggregate_input_subplan_pipeline_capability_detail")
+            .get("bounded_join_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline_capability_detail")
             .map(String::as_str),
         Some(
             "root_join=keyless_conditional_inner;left_input=projection_wrapped_grouped_aggregate_over_bounded_join_subplan;right_input=projection_wrapped_scalar_global_aggregate_over_bounded_join_subplan;root_output=left_only;post_root=projection_sort"
@@ -983,12 +978,12 @@ fn bounded_single_join_pipeline_rejects_aggregate_join_input_leaves() {
 
 #[test]
 fn bounded_keyless_conditional_join_input_subplan_pipeline_admits_only_q22_bounded_shapes() {
-    let plan = q22_keyless_conditional_input_subplan_plan(Q22InputSubplanVariant::Admitted);
+    let plan = q22_keyless_conditional_join_input_subplan_plan(Q22InputSubplanVariant::Admitted);
 
     assert!(!plan.has_bounded_executable_root_join());
     assert!(!plan.has_bounded_executable_join_pipeline());
-    assert!(plan.has_bounded_executable_conditional_join_input_subplan_pipeline());
-    assert!(!plan.has_bounded_executable_conditional_join_joined_aggregate_input_subplan_pipeline());
+    assert!(plan.has_bounded_executable_keyless_conditional_join_input_subplan_pipeline());
+    assert!(!plan.has_bounded_executable_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline());
     assert!(!plan.has_bounded_executable_multi_join_pipeline());
     assert!(plan.bounded_join_unsupported_shape_facts(ExecutionBoundaryPolicy::default()).is_none());
 
@@ -1000,18 +995,21 @@ fn bounded_keyless_conditional_join_input_subplan_pipeline_admits_only_q22_bound
         Q22InputSubplanVariant::InnerJoinInput,
         Q22InputSubplanVariant::NestedJoinInput,
     ] {
-        let plan = q22_keyless_conditional_input_subplan_plan(variant);
+        let plan = q22_keyless_conditional_join_input_subplan_plan(variant);
 
         assert!(!plan.has_bounded_executable_root_join(), "{variant:?}");
         assert!(!plan.has_bounded_executable_join_pipeline(), "{variant:?}");
-        assert!(!plan.has_bounded_executable_conditional_join_input_subplan_pipeline(), "{variant:?}");
-        assert!(!plan.has_bounded_executable_conditional_join_joined_aggregate_input_subplan_pipeline(), "{variant:?}");
+        assert!(!plan.has_bounded_executable_keyless_conditional_join_input_subplan_pipeline(), "{variant:?}");
+        assert!(
+            !plan.has_bounded_executable_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline(),
+            "{variant:?}"
+        );
         assert!(!plan.has_bounded_executable_multi_join_pipeline(), "{variant:?}");
         let facts = plan
             .bounded_join_unsupported_shape_facts(ExecutionBoundaryPolicy::default())
             .expect("unsupported Q22-like subplan shape should produce facts");
         assert_eq!(
-            facts.get("bounded_join_keyless_conditional_input_subplan_pipeline_capability").map(String::as_str),
+            facts.get("bounded_join_keyless_conditional_join_input_subplan_pipeline_capability").map(String::as_str),
             Some("keyless_conditional_join_input_subplan_pipeline")
         );
         assert_eq!(facts.get("bounded_join_lower_level_blockers").map(String::as_str), Some(""));
@@ -1019,60 +1017,64 @@ fn bounded_keyless_conditional_join_input_subplan_pipeline_admits_only_q22_bound
 }
 
 #[test]
-fn bounded_keyless_conditional_join_joined_aggregate_input_subplan_pipeline_admits_only_q11_bounded_shapes() {
-    let plan =
-        q11_keyless_conditional_joined_aggregate_input_subplan_plan(Q11JoinedAggregateInputSubplanVariant::Admitted);
+fn bounded_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline_admits_only_q11_bounded_shapes() {
+    let plan = q11_keyless_conditional_aggregate_over_join_subplan_inputs_plan(
+        Q11AggregateOverJoinSubplanInputsVariant::Admitted,
+    );
 
     assert!(!plan.has_bounded_executable_root_join());
     assert!(!plan.has_bounded_executable_join_pipeline());
-    assert!(!plan.has_bounded_executable_conditional_join_input_subplan_pipeline());
-    assert!(plan.has_bounded_executable_conditional_join_joined_aggregate_input_subplan_pipeline());
+    assert!(!plan.has_bounded_executable_keyless_conditional_join_input_subplan_pipeline());
+    assert!(plan.has_bounded_executable_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline());
     assert!(!plan.has_bounded_executable_multi_join_pipeline());
     assert!(plan.bounded_join_unsupported_shape_facts(ExecutionBoundaryPolicy::default()).is_none());
     let facts = BoundedJoinReservationContract.facts(ExecutionBoundaryPolicy::default());
     assert_eq!(
         facts
-            .get("bounded_join_keyless_conditional_joined_aggregate_input_subplan_pipeline_capability")
+            .get("bounded_join_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline_capability")
             .map(String::as_str),
-        Some("keyless_conditional_join_joined_aggregate_input_subplan_pipeline")
+        Some("keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline")
     );
     assert_eq!(
         facts.get("bounded_join_execution_families").map(String::as_str),
         Some(
-            "root_reusable_hash_join,root_filtered_semi_anti_join,keyless_conditional_join,keyless_conditional_join_input_subplan_pipeline,keyless_conditional_join_joined_aggregate_input_subplan_pipeline,root_projected_cross_join,root_mixed_inner_left_join,multi_join_reusable_hash_pipeline,multi_join_mixed_keyed_residual_inner_left_semi_left_anti_pipeline"
+            "root_reusable_hash_join,root_filtered_semi_anti_join,keyless_conditional_join,keyless_conditional_join_input_subplan_pipeline,keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline,root_projected_cross_join,root_mixed_keyed_residual_join,multi_join_reusable_hash_pipeline,multi_join_mixed_keyed_residual_inner_left_semi_left_anti_pipeline"
         )
     );
 
     for variant in [
-        Q11JoinedAggregateInputSubplanVariant::GroupedAggregateOverUnsupportedInput,
-        Q11JoinedAggregateInputSubplanVariant::ScalarAggregateOverUnsupportedInput,
-        Q11JoinedAggregateInputSubplanVariant::SortBelowAggregateInput,
-        Q11JoinedAggregateInputSubplanVariant::LimitBelowAggregateInput,
-        Q11JoinedAggregateInputSubplanVariant::BareGroupedAggregateInput,
-        Q11JoinedAggregateInputSubplanVariant::BareJoinInput,
-        Q11JoinedAggregateInputSubplanVariant::AggregateOverAggregateShortcut,
-        Q11JoinedAggregateInputSubplanVariant::NestedUnsupportedJoinInput,
-        Q11JoinedAggregateInputSubplanVariant::PostRootReversedStages,
-        Q11JoinedAggregateInputSubplanVariant::PostRootRepeatedProjection,
-        Q11JoinedAggregateInputSubplanVariant::PostRootRepeatedSort,
-        Q11JoinedAggregateInputSubplanVariant::RootOutputIncludesRight,
-        Q11JoinedAggregateInputSubplanVariant::LimitAfterRoot,
+        Q11AggregateOverJoinSubplanInputsVariant::GroupedAggregateOverUnsupportedInput,
+        Q11AggregateOverJoinSubplanInputsVariant::ScalarAggregateOverUnsupportedInput,
+        Q11AggregateOverJoinSubplanInputsVariant::SortBelowAggregateInput,
+        Q11AggregateOverJoinSubplanInputsVariant::LimitBelowAggregateInput,
+        Q11AggregateOverJoinSubplanInputsVariant::BareGroupedAggregateInput,
+        Q11AggregateOverJoinSubplanInputsVariant::BareJoinInput,
+        Q11AggregateOverJoinSubplanInputsVariant::AggregateOverAggregateShortcut,
+        Q11AggregateOverJoinSubplanInputsVariant::NestedUnsupportedJoinInput,
+        Q11AggregateOverJoinSubplanInputsVariant::PostRootReversedStages,
+        Q11AggregateOverJoinSubplanInputsVariant::PostRootRepeatedProjection,
+        Q11AggregateOverJoinSubplanInputsVariant::PostRootRepeatedSort,
+        Q11AggregateOverJoinSubplanInputsVariant::RootOutputIncludesRight,
+        Q11AggregateOverJoinSubplanInputsVariant::LimitAfterRoot,
     ] {
-        let plan = q11_keyless_conditional_joined_aggregate_input_subplan_plan(variant);
+        let plan = q11_keyless_conditional_aggregate_over_join_subplan_inputs_plan(variant);
 
         assert!(!plan.has_bounded_executable_root_join(), "{variant:?}");
         assert!(!plan.has_bounded_executable_join_pipeline(), "{variant:?}");
-        assert!(!plan.has_bounded_executable_conditional_join_input_subplan_pipeline(), "{variant:?}");
-        assert!(!plan.has_bounded_executable_conditional_join_joined_aggregate_input_subplan_pipeline(), "{variant:?}");
+        assert!(!plan.has_bounded_executable_keyless_conditional_join_input_subplan_pipeline(), "{variant:?}");
+        assert!(
+            !plan.has_bounded_executable_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline(),
+            "{variant:?}"
+        );
         assert!(!plan.has_bounded_executable_multi_join_pipeline(), "{variant:?}");
         let facts = plan
             .bounded_join_unsupported_shape_facts(ExecutionBoundaryPolicy::default())
-            .expect("unsupported Q11-like joined aggregate input subplan shape should produce facts");
+            .expect("unsupported Q11-like aggregate-over-join subplan inputs shape should produce facts");
         assert_eq!(
             facts
-                .get("bounded_join_keyless_conditional_joined_aggregate_input_subplan_pipeline_capability")
+                .get("bounded_join_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline_capability")
                 .map(String::as_str),
-            Some("keyless_conditional_join_joined_aggregate_input_subplan_pipeline")
+            Some("keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline")
         );
         assert_eq!(facts.get("bounded_join_lower_level_blockers").map(String::as_str), Some(""));
     }
@@ -1090,7 +1092,7 @@ enum Q22InputSubplanVariant {
 }
 
 #[derive(Debug, Clone, Copy)]
-enum Q11JoinedAggregateInputSubplanVariant {
+enum Q11AggregateOverJoinSubplanInputsVariant {
     Admitted,
     GroupedAggregateOverUnsupportedInput,
     ScalarAggregateOverUnsupportedInput,
@@ -1107,7 +1109,7 @@ enum Q11JoinedAggregateInputSubplanVariant {
     LimitAfterRoot,
 }
 
-fn q22_keyless_conditional_input_subplan_plan(variant: Q22InputSubplanVariant) -> cudf_query_engine::QueryPlan {
+fn q22_keyless_conditional_join_input_subplan_plan(variant: Q22InputSubplanVariant) -> cudf_query_engine::QueryPlan {
     let lineitem_schema = Arc::new(Schema::new(vec![
         Field::new("order_id", DataType::Int32, false),
         Field::new("qty", DataType::Int32, false),
@@ -1252,8 +1254,8 @@ fn q22_keyless_conditional_input_subplan_plan(variant: Q22InputSubplanVariant) -
     builder.finish_with_host_sink(root)
 }
 
-fn q11_keyless_conditional_joined_aggregate_input_subplan_plan(
-    variant: Q11JoinedAggregateInputSubplanVariant,
+fn q11_keyless_conditional_aggregate_over_join_subplan_inputs_plan(
+    variant: Q11AggregateOverJoinSubplanInputsVariant,
 ) -> cudf_query_engine::QueryPlan {
     let left_join_schema = q11_join_subtree_schema();
     let right_join_schema = q11_join_subtree_schema();
@@ -1274,7 +1276,7 @@ fn q11_keyless_conditional_joined_aggregate_input_subplan_plan(
 
     let mut builder = QueryPlanBuilder::new();
     let left_join_input =
-        if matches!(variant, Q11JoinedAggregateInputSubplanVariant::GroupedAggregateOverUnsupportedInput) {
+        if matches!(variant, Q11AggregateOverJoinSubplanInputsVariant::GroupedAggregateOverUnsupportedInput) {
             builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
                 "/tmp/q11-left-unsupported-partsupp.parquet",
                 Arc::clone(&left_join_schema),
@@ -1284,16 +1286,16 @@ fn q11_keyless_conditional_joined_aggregate_input_subplan_plan(
             build_q11_bounded_join_subtree(
                 &mut builder,
                 "left",
-                matches!(variant, Q11JoinedAggregateInputSubplanVariant::NestedUnsupportedJoinInput),
+                matches!(variant, Q11AggregateOverJoinSubplanInputsVariant::NestedUnsupportedJoinInput),
             )
         };
     let left_join_input = match variant {
-        Q11JoinedAggregateInputSubplanVariant::SortBelowAggregateInput => builder.add_sort(
+        Q11AggregateOverJoinSubplanInputsVariant::SortBelowAggregateInput => builder.add_sort(
             left_join_input,
             SortSpec::new(vec![SortExpr::new(Expr::column("ps_partkey"), false, false)]),
             Arc::clone(&left_join_schema),
         ),
-        Q11JoinedAggregateInputSubplanVariant::LimitBelowAggregateInput => {
+        Q11AggregateOverJoinSubplanInputsVariant::LimitBelowAggregateInput => {
             let sort = builder.add_sort(
                 left_join_input,
                 SortSpec::new(vec![SortExpr::new(Expr::column("ps_partkey"), false, false)]),
@@ -1301,7 +1303,7 @@ fn q11_keyless_conditional_joined_aggregate_input_subplan_plan(
             );
             builder.add_limit(sort, LimitSpec::fetch(10), Arc::clone(&left_join_schema))
         },
-        Q11JoinedAggregateInputSubplanVariant::AggregateOverAggregateShortcut => builder.add_aggregate(
+        Q11AggregateOverJoinSubplanInputsVariant::AggregateOverAggregateShortcut => builder.add_aggregate(
             left_join_input,
             AggregateSpec::new(
                 vec![Expr::column("ps_partkey")],
@@ -1309,19 +1311,19 @@ fn q11_keyless_conditional_joined_aggregate_input_subplan_plan(
             ),
             Arc::clone(&left_aggregate_schema),
         ),
-        Q11JoinedAggregateInputSubplanVariant::Admitted
-        | Q11JoinedAggregateInputSubplanVariant::GroupedAggregateOverUnsupportedInput
-        | Q11JoinedAggregateInputSubplanVariant::ScalarAggregateOverUnsupportedInput
-        | Q11JoinedAggregateInputSubplanVariant::BareGroupedAggregateInput
-        | Q11JoinedAggregateInputSubplanVariant::BareJoinInput
-        | Q11JoinedAggregateInputSubplanVariant::NestedUnsupportedJoinInput
-        | Q11JoinedAggregateInputSubplanVariant::PostRootReversedStages
-        | Q11JoinedAggregateInputSubplanVariant::PostRootRepeatedProjection
-        | Q11JoinedAggregateInputSubplanVariant::PostRootRepeatedSort
-        | Q11JoinedAggregateInputSubplanVariant::RootOutputIncludesRight
-        | Q11JoinedAggregateInputSubplanVariant::LimitAfterRoot => left_join_input,
+        Q11AggregateOverJoinSubplanInputsVariant::Admitted
+        | Q11AggregateOverJoinSubplanInputsVariant::GroupedAggregateOverUnsupportedInput
+        | Q11AggregateOverJoinSubplanInputsVariant::ScalarAggregateOverUnsupportedInput
+        | Q11AggregateOverJoinSubplanInputsVariant::BareGroupedAggregateInput
+        | Q11AggregateOverJoinSubplanInputsVariant::BareJoinInput
+        | Q11AggregateOverJoinSubplanInputsVariant::NestedUnsupportedJoinInput
+        | Q11AggregateOverJoinSubplanInputsVariant::PostRootReversedStages
+        | Q11AggregateOverJoinSubplanInputsVariant::PostRootRepeatedProjection
+        | Q11AggregateOverJoinSubplanInputsVariant::PostRootRepeatedSort
+        | Q11AggregateOverJoinSubplanInputsVariant::RootOutputIncludesRight
+        | Q11AggregateOverJoinSubplanInputsVariant::LimitAfterRoot => left_join_input,
     };
-    let left_input = if matches!(variant, Q11JoinedAggregateInputSubplanVariant::BareJoinInput) {
+    let left_input = if matches!(variant, Q11AggregateOverJoinSubplanInputsVariant::BareJoinInput) {
         left_join_input
     } else {
         let left_aggregate = builder.add_aggregate(
@@ -1332,7 +1334,7 @@ fn q11_keyless_conditional_joined_aggregate_input_subplan_plan(
             ),
             Arc::clone(&left_aggregate_schema),
         );
-        if matches!(variant, Q11JoinedAggregateInputSubplanVariant::BareGroupedAggregateInput) {
+        if matches!(variant, Q11AggregateOverJoinSubplanInputsVariant::BareGroupedAggregateInput) {
             left_aggregate
         } else {
             builder.add_projection(
@@ -1344,7 +1346,7 @@ fn q11_keyless_conditional_joined_aggregate_input_subplan_plan(
     };
 
     let right_join_input =
-        if matches!(variant, Q11JoinedAggregateInputSubplanVariant::ScalarAggregateOverUnsupportedInput) {
+        if matches!(variant, Q11AggregateOverJoinSubplanInputsVariant::ScalarAggregateOverUnsupportedInput) {
             builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
                 "/tmp/q11-right-unsupported-partsupp.parquet",
                 Arc::clone(&right_join_schema),
@@ -1364,7 +1366,7 @@ fn q11_keyless_conditional_joined_aggregate_input_subplan_plan(
     let right_input =
         builder.add_projection(right_aggregate, vec![Expr::column("threshold")], Arc::clone(&right_aggregate_schema));
 
-    let root_projection = if matches!(variant, Q11JoinedAggregateInputSubplanVariant::RootOutputIncludesRight) {
+    let root_projection = if matches!(variant, Q11AggregateOverJoinSubplanInputsVariant::RootOutputIncludesRight) {
         vec![
             JoinOutputColumn::left(ColumnRef::input(0, "ps_partkey", "ps_partkey"), "ps_partkey"),
             JoinOutputColumn::left(ColumnRef::input(0, "value", "value"), "value"),
@@ -1376,7 +1378,7 @@ fn q11_keyless_conditional_joined_aggregate_input_subplan_plan(
             JoinOutputColumn::left(ColumnRef::input(0, "value", "value"), "value"),
         ]
     };
-    let root_schema = if matches!(variant, Q11JoinedAggregateInputSubplanVariant::RootOutputIncludesRight) {
+    let root_schema = if matches!(variant, Q11AggregateOverJoinSubplanInputsVariant::RootOutputIncludesRight) {
         Arc::clone(&root_output_with_threshold_schema)
     } else {
         Arc::clone(&root_output_schema)
@@ -1395,7 +1397,7 @@ fn q11_keyless_conditional_joined_aggregate_input_subplan_plan(
         root_schema,
     );
     let output = match variant {
-        Q11JoinedAggregateInputSubplanVariant::PostRootReversedStages => {
+        Q11AggregateOverJoinSubplanInputsVariant::PostRootReversedStages => {
             let sort = builder.add_sort(
                 root,
                 SortSpec::new(vec![SortExpr::new(Expr::column("value"), true, false)]),
@@ -1407,7 +1409,7 @@ fn q11_keyless_conditional_joined_aggregate_input_subplan_plan(
                 Arc::clone(&root_output_schema),
             )
         },
-        Q11JoinedAggregateInputSubplanVariant::PostRootRepeatedProjection => {
+        Q11AggregateOverJoinSubplanInputsVariant::PostRootRepeatedProjection => {
             let projection = builder.add_projection(
                 root,
                 vec![Expr::column("ps_partkey"), Expr::column("value")],
@@ -1419,7 +1421,7 @@ fn q11_keyless_conditional_joined_aggregate_input_subplan_plan(
                 Arc::clone(&root_output_schema),
             )
         },
-        Q11JoinedAggregateInputSubplanVariant::PostRootRepeatedSort => {
+        Q11AggregateOverJoinSubplanInputsVariant::PostRootRepeatedSort => {
             let sort = builder.add_sort(
                 root,
                 SortSpec::new(vec![SortExpr::new(Expr::column("value"), true, false)]),
@@ -1431,7 +1433,7 @@ fn q11_keyless_conditional_joined_aggregate_input_subplan_plan(
                 Arc::clone(&root_output_schema),
             )
         },
-        Q11JoinedAggregateInputSubplanVariant::LimitAfterRoot => {
+        Q11AggregateOverJoinSubplanInputsVariant::LimitAfterRoot => {
             let projection = builder.add_projection(
                 root,
                 vec![Expr::column("ps_partkey"), Expr::column("value")],
@@ -1444,16 +1446,16 @@ fn q11_keyless_conditional_joined_aggregate_input_subplan_plan(
             );
             builder.add_limit(sort, LimitSpec::fetch(100), root_output_schema)
         },
-        Q11JoinedAggregateInputSubplanVariant::Admitted
-        | Q11JoinedAggregateInputSubplanVariant::GroupedAggregateOverUnsupportedInput
-        | Q11JoinedAggregateInputSubplanVariant::ScalarAggregateOverUnsupportedInput
-        | Q11JoinedAggregateInputSubplanVariant::SortBelowAggregateInput
-        | Q11JoinedAggregateInputSubplanVariant::LimitBelowAggregateInput
-        | Q11JoinedAggregateInputSubplanVariant::BareGroupedAggregateInput
-        | Q11JoinedAggregateInputSubplanVariant::BareJoinInput
-        | Q11JoinedAggregateInputSubplanVariant::AggregateOverAggregateShortcut
-        | Q11JoinedAggregateInputSubplanVariant::NestedUnsupportedJoinInput
-        | Q11JoinedAggregateInputSubplanVariant::RootOutputIncludesRight => {
+        Q11AggregateOverJoinSubplanInputsVariant::Admitted
+        | Q11AggregateOverJoinSubplanInputsVariant::GroupedAggregateOverUnsupportedInput
+        | Q11AggregateOverJoinSubplanInputsVariant::ScalarAggregateOverUnsupportedInput
+        | Q11AggregateOverJoinSubplanInputsVariant::SortBelowAggregateInput
+        | Q11AggregateOverJoinSubplanInputsVariant::LimitBelowAggregateInput
+        | Q11AggregateOverJoinSubplanInputsVariant::BareGroupedAggregateInput
+        | Q11AggregateOverJoinSubplanInputsVariant::BareJoinInput
+        | Q11AggregateOverJoinSubplanInputsVariant::AggregateOverAggregateShortcut
+        | Q11AggregateOverJoinSubplanInputsVariant::NestedUnsupportedJoinInput
+        | Q11AggregateOverJoinSubplanInputsVariant::RootOutputIncludesRight => {
             let projection = builder.add_projection(
                 root,
                 vec![Expr::column("ps_partkey"), Expr::column("value")],

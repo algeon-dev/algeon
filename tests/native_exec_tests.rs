@@ -348,7 +348,7 @@ fn native_optimizer_rule_rewrites_and_executes_bounded_join_aggregate_pipeline()
 }
 
 #[test]
-fn native_optimizer_rule_rewrites_bounded_q11_joined_aggregate_input_subplan() {
+fn native_optimizer_rule_rewrites_bounded_q11_aggregate_over_join_subplan_inputs() {
     let dir = unique_temp_dir("datafusion-cudf-native-exec-bounded-q11-admission");
     write_tiny_tpch_parquet_dataset(&dir).unwrap();
     let q11 = TPCH_QUERIES.iter().find(|query| query.id == "q11").expect("TPC-H Q11 query must exist");
@@ -356,7 +356,7 @@ fn native_optimizer_rule_rewrites_bounded_q11_joined_aggregate_input_subplan() {
     let lowering = lower_physical_plan_to_native(Arc::clone(&plan));
     assert_eq!(lowering.rewritten_count(), 1, "outcomes={:?}", lowering.report.outcomes());
     assert!(
-        lowering.plans[0].has_bounded_executable_conditional_join_joined_aggregate_input_subplan_pipeline(),
+        lowering.plans[0].has_bounded_executable_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline(),
         "direct Q11 lowering should be bounded executable:\n{}",
         lowering.plans[0]
     );
@@ -389,21 +389,21 @@ fn native_optimizer_rule_rewrites_bounded_q11_joined_aggregate_input_subplan() {
     );
     assert!(
         diagnostics.bounded_join_reservation_facts.get("bounded_join_execution_families").is_some_and(|families| {
-            families.contains("keyless_conditional_join_joined_aggregate_input_subplan_pipeline")
+            families.contains("keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline")
         }),
-        "Q11 bounded planner facts must name the joined-aggregate input-subplan family"
+        "Q11 bounded planner facts must name the aggregate-over-join subplan inputs family"
     );
     assert_eq!(
         diagnostics
             .bounded_join_reservation_facts
-            .get("bounded_join_keyless_conditional_joined_aggregate_input_subplan_pipeline_capability")
+            .get("bounded_join_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline_capability")
             .map(String::as_str),
-        Some("keyless_conditional_join_joined_aggregate_input_subplan_pipeline")
+        Some("keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline")
     );
     assert_eq!(
         diagnostics
             .bounded_join_reservation_facts
-            .get("bounded_join_keyless_conditional_joined_aggregate_input_subplan_pipeline_capability_detail")
+            .get("bounded_join_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline_capability_detail")
             .map(String::as_str),
         Some(
             "root_join=keyless_conditional_inner;left_input=projection_wrapped_grouped_aggregate_over_bounded_join_subplan;right_input=projection_wrapped_scalar_global_aggregate_over_bounded_join_subplan;root_output=left_only;post_root=projection_sort"
@@ -513,12 +513,7 @@ fn native_exec_preserves_bounded_join_rejection_facts_from_native_runtime() {
         adapter_error.fact_value("cudf_rs_conditional_join_output_size_hint"),
         Some("conditional_join_indices_with_output_size")
     );
-    assert_eq!(
-        adapter_error.fact_value("bounded_join_execution_family_alias_compatibility"),
-        Some(
-            "root_mixed_inner_left_join_is_legacy_alias_for_mixed_keyed_residual_inner_left_full_left_semi_left_anti_root_joins"
-        )
-    );
+    assert_eq!(adapter_error.fact_value("bounded_join_execution_family_alias_compatibility"), None);
     assert_eq!(
         adapter_error.fact_value("cudf_rs_mixed_join_size_data_alias_compatibility"),
         Some(
@@ -559,12 +554,7 @@ fn bounded_join_facts_cover_planner_supported_and_runtime_rejected_paths() {
         )
     );
     assert_eq!(planner_facts.get("blocked_reservations").map(String::as_str), Some(""));
-    assert_eq!(
-        planner_facts.get("bounded_join_execution_family_alias_compatibility").map(String::as_str),
-        Some(
-            "root_mixed_inner_left_join_is_legacy_alias_for_mixed_keyed_residual_inner_left_full_left_semi_left_anti_root_joins"
-        )
-    );
+    assert_eq!(planner_facts.get("bounded_join_execution_family_alias_compatibility").map(String::as_str), None);
     assert_eq!(
         planner_facts.get("cudf_rs_mixed_join_size_data_alias_compatibility").map(String::as_str),
         Some(
@@ -597,12 +587,7 @@ fn bounded_join_facts_cover_planner_supported_and_runtime_rejected_paths() {
         )
     );
     assert_eq!(runtime_error.fact_value("blocked_reservations"), Some(""));
-    assert_eq!(
-        runtime_error.fact_value("bounded_join_execution_family_alias_compatibility"),
-        Some(
-            "root_mixed_inner_left_join_is_legacy_alias_for_mixed_keyed_residual_inner_left_full_left_semi_left_anti_root_joins"
-        )
-    );
+    assert_eq!(runtime_error.fact_value("bounded_join_execution_family_alias_compatibility"), None);
     assert_eq!(
         runtime_error.fact_value("cudf_rs_mixed_join_size_data_alias_compatibility"),
         Some(

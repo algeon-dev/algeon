@@ -516,9 +516,7 @@ fn native_datafusion_reports_scope_bounded_join_facts_to_join_candidates() {
             .bounded_join_reservation_facts
             .get("bounded_join_execution_family_alias_compatibility")
             .map(String::as_str),
-        Some(
-            "root_mixed_inner_left_join_is_legacy_alias_for_mixed_keyed_residual_inner_left_full_left_semi_left_anti_root_joins"
-        )
+        None
     );
     assert_eq!(
         join_row
@@ -834,15 +832,14 @@ async fn tpch_datafusion_planning_report_emits_one_stable_row_per_query() {
     let expected_modeled_reservations = contract.modeled_reservation_kinds_csv();
     let expected_reservation_statuses = contract.reservation_statuses_csv();
     let expected_supported_shape = contract.supported_shape_requirement();
-    let expected_mixed_alias_compatibility = "root_mixed_inner_left_join_is_legacy_alias_for_mixed_keyed_residual_inner_left_full_left_semi_left_anti_root_joins";
     let expected_mixed_capability_detail = "mixed_keyed_residual_root_join_types=inner,left,full,left_semi,left_anti";
     let expected_mixed_multi_join_capability = "multi_join_mixed_keyed_residual_inner_left_semi_left_anti_pipeline";
     let expected_mixed_multi_join_capability_detail = "mixed_keyed_residual_multi_join_types=inner,left_semi,left_anti";
     let expected_keyless_input_subplan_capability = "keyless_conditional_join_input_subplan_pipeline";
     let expected_keyless_input_subplan_capability_detail = "root_join=keyless_conditional_inner;input_subplans=source_filter_projection_or_projection_wrapped_left_anti_hash_join_or_scalar_global_aggregate";
-    let expected_keyless_joined_aggregate_input_subplan_capability =
-        "keyless_conditional_join_joined_aggregate_input_subplan_pipeline";
-    let expected_keyless_joined_aggregate_input_subplan_capability_detail = "root_join=keyless_conditional_inner;left_input=projection_wrapped_grouped_aggregate_over_bounded_join_subplan;right_input=projection_wrapped_scalar_global_aggregate_over_bounded_join_subplan;root_output=left_only;post_root=projection_sort";
+    let expected_keyless_aggregate_over_join_subplan_inputs_capability =
+        "keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline";
+    let expected_keyless_aggregate_over_join_subplan_inputs_capability_detail = "root_join=keyless_conditional_inner;left_input=projection_wrapped_grouped_aggregate_over_bounded_join_subplan;right_input=projection_wrapped_scalar_global_aggregate_over_bounded_join_subplan;root_output=left_only;post_root=projection_sort";
     let expected_mixed_size_data_alias_compatibility = "mixed_inner_left_join_size_data_values_are_legacy_aliases_for_mixed_keyed_residual_inner_left_full_left_semi_left_anti_size_data";
     for row in &report.rows {
         if EXPECTED_BOUNDED_TPCH_ACCEPTED.contains(&row.query_id.as_str()) {
@@ -892,8 +889,8 @@ async fn tpch_datafusion_planning_report_emits_one_stable_row_per_query() {
                     row.bounded_join_reservation_facts
                         .get("bounded_join_execution_family_alias_compatibility")
                         .map(String::as_str),
-                    Some(expected_mixed_alias_compatibility),
-                    "accepted bounded join row should document mixed family alias compatibility for {}",
+                    None,
+                    "accepted bounded join row should not preserve mixed family alias compatibility for {}",
                     row.query_id
                 );
                 assert_eq!(
@@ -922,7 +919,7 @@ async fn tpch_datafusion_planning_report_emits_one_stable_row_per_query() {
                 );
                 assert_eq!(
                     row.bounded_join_reservation_facts
-                        .get("bounded_join_keyless_conditional_input_subplan_pipeline_capability")
+                        .get("bounded_join_keyless_conditional_join_input_subplan_pipeline_capability")
                         .map(String::as_str),
                     Some(expected_keyless_input_subplan_capability),
                     "accepted bounded join row should document keyless conditional input-subplan capability for {}",
@@ -930,7 +927,7 @@ async fn tpch_datafusion_planning_report_emits_one_stable_row_per_query() {
                 );
                 assert_eq!(
                     row.bounded_join_reservation_facts
-                        .get("bounded_join_keyless_conditional_input_subplan_pipeline_capability_detail")
+                        .get("bounded_join_keyless_conditional_join_input_subplan_pipeline_capability_detail")
                         .map(String::as_str),
                     Some(expected_keyless_input_subplan_capability_detail),
                     "accepted bounded join row should document keyless conditional input-subplan scope for {}",
@@ -982,8 +979,8 @@ async fn tpch_datafusion_planning_report_emits_one_stable_row_per_query() {
                     row.bounded_join_reservation_facts
                         .get("bounded_join_execution_family_alias_compatibility")
                         .map(String::as_str),
-                    Some(expected_mixed_alias_compatibility),
-                    "missing mixed family alias compatibility fact for {}",
+                    None,
+                    "unsupported bounded join row should not preserve mixed family alias compatibility for {}",
                     row.query_id
                 );
                 assert_eq!(
@@ -1012,7 +1009,7 @@ async fn tpch_datafusion_planning_report_emits_one_stable_row_per_query() {
                 );
                 assert_eq!(
                     row.bounded_join_reservation_facts
-                        .get("bounded_join_keyless_conditional_input_subplan_pipeline_capability")
+                        .get("bounded_join_keyless_conditional_join_input_subplan_pipeline_capability")
                         .map(String::as_str),
                     Some(expected_keyless_input_subplan_capability),
                     "missing keyless conditional input-subplan capability fact for {}",
@@ -1020,7 +1017,7 @@ async fn tpch_datafusion_planning_report_emits_one_stable_row_per_query() {
                 );
                 assert_eq!(
                     row.bounded_join_reservation_facts
-                        .get("bounded_join_keyless_conditional_input_subplan_pipeline_capability_detail")
+                        .get("bounded_join_keyless_conditional_join_input_subplan_pipeline_capability_detail")
                         .map(String::as_str),
                     Some(expected_keyless_input_subplan_capability_detail),
                     "missing keyless conditional input-subplan scope fact for {}",
@@ -1140,21 +1137,21 @@ async fn tpch_datafusion_planning_report_emits_one_stable_row_per_query() {
     );
     assert!(
         q11.bounded_join_reservation_facts.get("bounded_join_execution_families").is_some_and(|families| {
-            families.contains("keyless_conditional_join_joined_aggregate_input_subplan_pipeline")
+            families.contains("keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline")
         }),
-        "q11 accepted facts must name the bounded keyless conditional joined-aggregate input-subplan family"
+        "q11 accepted facts must name the bounded keyless conditional aggregate-over-join subplan inputs family"
     );
     assert_eq!(
         q11.bounded_join_reservation_facts
-            .get("bounded_join_keyless_conditional_joined_aggregate_input_subplan_pipeline_capability")
+            .get("bounded_join_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline_capability")
             .map(String::as_str),
-        Some(expected_keyless_joined_aggregate_input_subplan_capability)
+        Some(expected_keyless_aggregate_over_join_subplan_inputs_capability)
     );
     assert_eq!(
         q11.bounded_join_reservation_facts
-            .get("bounded_join_keyless_conditional_joined_aggregate_input_subplan_pipeline_capability_detail")
+            .get("bounded_join_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline_capability_detail")
             .map(String::as_str),
-        Some(expected_keyless_joined_aggregate_input_subplan_capability_detail)
+        Some(expected_keyless_aggregate_over_join_subplan_inputs_capability_detail)
     );
 
     let q22 = planning_row(&report, "q22");
@@ -1175,13 +1172,13 @@ async fn tpch_datafusion_planning_report_emits_one_stable_row_per_query() {
     );
     assert_eq!(
         q22.bounded_join_reservation_facts
-            .get("bounded_join_keyless_conditional_input_subplan_pipeline_capability")
+            .get("bounded_join_keyless_conditional_join_input_subplan_pipeline_capability")
             .map(String::as_str),
         Some("keyless_conditional_join_input_subplan_pipeline")
     );
     assert_eq!(
         q22.bounded_join_reservation_facts
-            .get("bounded_join_keyless_conditional_input_subplan_pipeline_capability_detail")
+            .get("bounded_join_keyless_conditional_join_input_subplan_pipeline_capability_detail")
             .map(String::as_str),
         Some(
             "root_join=keyless_conditional_inner;input_subplans=source_filter_projection_or_projection_wrapped_left_anti_hash_join_or_scalar_global_aggregate"

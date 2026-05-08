@@ -1,3 +1,11 @@
+//! Error taxonomy for the DataFusion adapter boundary.
+//!
+//! Adapter errors classify failures from DataFusion planning/execution,
+//! GPU-island execution, cuDF calls made directly by the adapter, and native
+//! `cudf-query-engine` errors wrapped by [`Error::from_native`]. Native errors
+//! keep their original classification in `native_*` facts while this layer maps
+//! them into adapter-level [`ErrorCode`] values suitable for DataFusion.
+
 use std::{collections::BTreeMap, error::Error as StdError, fmt};
 
 use datafusion::common::DataFusionError;
@@ -6,23 +14,57 @@ type BoxedSourceError = Box<dyn StdError + Send + Sync + 'static>;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// Stable, machine-readable adapter error codes.
+///
+/// Codes describe the closest adapter-level cause. [`ErrorKind`] and
+/// [`ErrorStatus`] are derived from the code by [`kind_for_code`] and
+/// [`status_for_code`]; consumers should treat those functions as the policy
+/// contract rather than inferring behavior from variant names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum ErrorCode {
+    /// The optimizer intentionally rejected a GPU candidate.
     GpuCandidateRejected,
+    /// A physical operator is unsupported by the GPU/native adapter path.
     UnsupportedOperator,
+    /// A physical expression or expression form is unsupported.
     UnsupportedExpression,
+    /// A data type, physical representation, or type combination is unsupported.
     UnsupportedType,
+    /// A DataFusion physical plan is invalid for the adapter boundary.
+    ///
+    /// Use this for malformed or inconsistent plans, not for well-formed plans
+    /// that are merely outside the supported capability catalogue.
     InvalidExecutionPlan,
+    /// An execution plan had an impossible child count for the adapter node.
     InvalidChildCount,
+    /// cuDF rejected an input, including permanent `NotFound` conditions.
     CudfInvalidInput,
+    /// cuDF reported a permanent unsupported capability.
     CudfUnsupported,
+    /// cuDF reported resource exhaustion.
+    ///
+    /// This is classified as temporary because reducing memory pressure or
+    /// retrying with a different admission decision can remediate it.
     CudfResourceExhausted,
+    /// cuDF reported a temporary dependency/runtime failure.
     CudfTemporaryFailure,
+    /// cuDF reported a persistent dependency/runtime failure.
+    ///
+    /// `Persistent` is cuDF's retry classification: not immediately transient,
+    /// but distinct from this crate's `Permanent` status for caller-fixable or
+    /// deterministic non-retryable failures.
     CudfPersistentFailure,
+    /// cuDF reported a permanent dependency failure.
     CudfDependencyFailure,
+    /// cuDF reported an invariant or execution-context violation.
     CudfInvariantViolation,
+    /// The native admission controller could not reserve requested memory.
+    ///
+    /// This is a temporary resource condition copied through from native
+    /// execution, separate from a cuDF allocator failure.
     MemoryReservationFailed,
+    /// An internal adapter bug or unreachable condition.
     Internal,
 }
 
@@ -65,13 +107,21 @@ impl fmt::Display for ErrorCode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum ErrorKind {
+    /// Planning, validation, or physical-plan construction failure.
     Planning,
+    /// Caller-provided input is invalid for the requested operation.
     InvalidInput,
+    /// Requested operator, expression, type, or native shape is unsupported.
     Unsupported,
+    /// Runtime execution failure at the adapter boundary.
     Execution,
+    /// Memory or another bounded resource was exhausted or could not be reserved.
     ResourceExhausted,
+    /// cuDF or another dependency failed outside resource-exhaustion handling.
     DependencyFailure,
+    /// An adapter or cuDF invariant was violated.
     InvariantViolation,
+    /// Internal bug or unreachable condition.
     Internal,
 }
 
@@ -98,8 +148,15 @@ impl fmt::Display for ErrorKind {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ErrorStatus {
+    /// Non-retryable without changing the query, input, configuration, or code.
     Permanent,
+    /// Retry or smaller resource admission may succeed without external repair.
     Temporary,
+    /// cuDF classified the condition as not immediately transient.
+    ///
+    /// This name is intentionally distinct from `Permanent`: persistent failures
+    /// are dependency/runtime classifications, while permanent failures are
+    /// deterministic non-retryable outcomes at this API boundary.
     Persistent,
 }
 
@@ -119,6 +176,11 @@ impl fmt::Display for ErrorStatus {
     }
 }
 
+/// Maps each adapter error code to its stable coarse category.
+///
+/// `kind` is the broad bucket used for diagnostics and aggregation. It is less
+/// specific than [`ErrorCode`] and should remain stable for consumers that group
+/// failures without depending on every code variant.
 pub const fn kind_for_code(code: ErrorCode) -> ErrorKind {
     match code {
         ErrorCode::GpuCandidateRejected | ErrorCode::InvalidExecutionPlan => ErrorKind::Planning,
@@ -137,6 +199,12 @@ pub const fn kind_for_code(code: ErrorCode) -> ErrorKind {
     }
 }
 
+/// Maps each adapter error code to its stable retry/remediation status.
+///
+/// `status` answers what kind of remediation is plausible. `Permanent` means
+/// retrying the same operation is not expected to help. `Persistent` preserves
+/// cuDF's dependency/runtime status and is deliberately not a synonym for
+/// `Permanent`.
 pub const fn status_for_code(code: ErrorCode) -> ErrorStatus {
     match code {
         ErrorCode::CudfResourceExhausted | ErrorCode::CudfTemporaryFailure | ErrorCode::MemoryReservationFailed => {
@@ -157,20 +225,35 @@ pub const fn status_for_code(code: ErrorCode) -> ErrorStatus {
     }
 }
 
+/// Machine-readable facts attached to an [`Error`].
+///
+/// Fact keys are static strings so they can be treated as a documented contract
+/// by tests, reports, and callers. Values are stringified with [`ToString`].
+/// Iteration is sorted by key because facts are stored in a [`BTreeMap`].
+///
+/// Empty keys panic, and inserting the same key twice panics. The adapter
+/// uses `cudf_code`, `cudf_kind`, `cudf_status`, and `cudf_operation` for cuDF
+/// source classification. Those keys may come from direct adapter cuDF calls or
+/// from native facts copied unchanged by [`Error::from_native`]. The
+/// `native_code`, `native_kind`, `native_status`, and `native_operation` keys
+/// describe errors wrapped from `cudf-query-engine`.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Facts {
     values: BTreeMap<&'static str, String>,
 }
 
 impl Facts {
+    /// Creates an empty fact set.
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Returns the string value for `key` when present.
     pub fn get(&self, key: &str) -> Option<&str> {
         self.values.get(key).map(String::as_str)
     }
 
+    /// Iterates facts in sorted key order.
     pub fn iter(&self) -> impl Iterator<Item = (&'static str, &str)> {
         self.values.iter().map(|(key, value)| (*key, value.as_str()))
     }
@@ -191,6 +274,11 @@ pub struct Error {
 }
 
 impl Error {
+    /// Creates an adapter error with a stable operation id and message.
+    ///
+    /// `operation` should be a stable dotted identifier such as
+    /// `datafusion_cudf.native_exec.execute`. `message` is human-facing
+    /// diagnostic text. Add machine-readable context with [`Self::with_fact`].
     pub fn new(code: ErrorCode, operation: &'static str, message: impl Into<String>) -> Self {
         let message = message.into();
         assert!(!operation.is_empty(), "datafusion-cudf error operation must not be empty");
@@ -198,12 +286,18 @@ impl Error {
         Self { code, operation, message, facts: Facts::new(), source: None }
     }
 
+    /// Adds one machine-readable fact.
+    ///
+    /// `key` must be a non-empty static string and should be treated as part of
+    /// the diagnostic contract once exposed. `value` is stringified with
+    /// [`ToString`]. Duplicate keys panic.
     #[must_use]
     pub fn with_fact(mut self, key: &'static str, value: impl ToString) -> Self {
         self.facts.insert(key, value.to_string());
         self
     }
 
+    /// Attaches the source error, replacing any source already present.
     #[must_use]
     pub fn with_source<E>(mut self, source: E) -> Self
     where E: StdError + Send + Sync + 'static {
@@ -211,6 +305,12 @@ impl Error {
         self
     }
 
+    /// Wraps a `cudf::Error` at the adapter boundary.
+    ///
+    /// `operation` should be the stable dotted id for the adapter operation that
+    /// called cuDF, and `message` should describe the failure for humans. The
+    /// cuDF code, kind, status, and operation are preserved as reserved facts:
+    /// `cudf_code`, `cudf_kind`, `cudf_status`, and `cudf_operation`.
     pub fn from_cudf(operation: &'static str, message: impl Into<String>, source: cudf::Error) -> Self {
         let code = code_for_cudf_error(&source);
         Self::new(code, operation, message)
@@ -221,6 +321,18 @@ impl Error {
             .with_source(source)
     }
 
+    /// Wraps a native-engine error at the DataFusion adapter boundary.
+    ///
+    /// The adapter maps the native code into the closest [`ErrorCode`] and
+    /// preserves the native classification under reserved facts: `native_code`,
+    /// `native_kind`, `native_status`, and `native_operation`. Native facts are
+    /// copied unprefixed so existing machine-readable context is not hidden.
+    /// Collisions with already-inserted adapter/native classification keys,
+    /// especially the `native_*` keys, or duplicate native fact keys currently
+    /// panic through [`Facts`] insertion.
+    ///
+    /// `operation` should be the stable dotted id for the adapter operation, and
+    /// `message` should be human-facing adapter context.
     pub fn from_native(
         operation: &'static str,
         message: impl Into<String>,
@@ -324,12 +436,20 @@ impl StdError for Error {
     }
 }
 
+// Adapter errors cross the DataFusion boundary as `External` so callers can
+// downcast the boxed source back to `datafusion_cudf::Error` and inspect code,
+// kind, status, operation, facts, and source.
 impl From<Error> for DataFusionError {
     fn from(error: Error) -> Self {
         Self::External(Box::new(error))
     }
 }
 
+// cuDF classification priority is resource exhaustion first, then retry status
+// (`Temporary`/`Persistent`), then permanent failures by cuDF kind. Notable
+// permanent mappings: `NotFound` is treated as invalid input,
+// `ExecutionContext` is treated as an invariant violation, and unknown kinds
+// fall back to dependency failure.
 fn code_for_cudf_error(error: &cudf::Error) -> ErrorCode {
     if error.kind() == cudf::ErrorKind::ResourceExhausted {
         return ErrorCode::CudfResourceExhausted;
@@ -350,6 +470,10 @@ fn code_for_cudf_error(error: &cudf::Error) -> ErrorCode {
     }
 }
 
+// Native-to-adapter mapping is intentionally lossy at the top-level code:
+// native `UnsupportedPlanShape` becomes adapter `UnsupportedOperator` because
+// the adapter has no shape-specific code. The exact native code remains
+// available in the `native_code` fact attached by `Error::from_native`.
 fn code_for_native_error(error: &cudf_query_engine::QueryError) -> ErrorCode {
     match error.code() {
         cudf_query_engine::QueryErrorCode::UnsupportedPlanShape => ErrorCode::UnsupportedOperator,

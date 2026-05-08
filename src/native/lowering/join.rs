@@ -24,6 +24,9 @@ use crate::{
     policy::FallbackReason,
 };
 
+/// Native join shape after mapping DataFusion-only join variants to the native
+/// side convention. `swap_inputs` records whether DataFusion left/right inputs
+/// are reversed before building the native join.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct CanonicalJoin {
     join_type: NativeJoinType,
@@ -47,6 +50,8 @@ impl CanonicalJoin {
         self,
         side: DataFusionJoinSide,
     ) -> Result<usize, FallbackReason> {
+        // Residual predicates are expressed in DataFusion sides, while the
+        // native IR addresses ordered join inputs. This is the shared mapping.
         match (self.swap_inputs, side) {
             (false, DataFusionJoinSide::Left) | (true, DataFusionJoinSide::Right) => Ok(0),
             (false, DataFusionJoinSide::Right) | (true, DataFusionJoinSide::Left) => Ok(1),
@@ -70,6 +75,8 @@ impl CanonicalJoin {
     }
 
     const fn build_side(self) -> NativeJoinSide {
+        // Left, semi, and anti joins preserve the native left side, so their
+        // default build side is right. Inner/full/cross keep the native default.
         match self.join_type {
             NativeJoinType::Left | NativeJoinType::LeftSemi | NativeJoinType::LeftAnti => NativeJoinSide::Right,
             NativeJoinType::Inner | NativeJoinType::Full => NativeJoinSide::Left,
@@ -83,6 +90,9 @@ fn add_join_residual_materializations(
     input: LoweredNativeInput,
     materializations: &[JoinResidualMaterialization],
 ) -> Result<LoweredNativeInput, FallbackReason> {
+    // Residual casts that cannot live in the predicate AST are appended as
+    // synthetic pre-join projection columns on the original DataFusion side.
+    // Canonical input ordering happens after this step.
     if materializations.is_empty() {
         return Ok(input);
     }
@@ -104,6 +114,9 @@ pub(super) fn lower_hash_join_input(
     builder: &mut NativeQueryPlanBuilder,
     required_output_columns: &[String],
 ) -> Result<LoweredNativeInput, FallbackReason> {
+    // Flow: canonicalize the join type, derive DataFusion-output-preserving
+    // projection, collect keys/residual requirements, lower both children, add
+    // residual materializations, then order inputs for the native spec.
     let canonical = canonical_join(join.join.join_type())?;
     let output_columns = hash_join_output_columns(join, required_output_columns, canonical)?;
     let residual = join
@@ -190,6 +203,9 @@ pub(super) fn lower_nested_loop_join_input(
     builder: &mut NativeQueryPlanBuilder,
     required_output_columns: &[String],
 ) -> Result<LoweredNativeInput, FallbackReason> {
+    // Nested-loop lowering shares the residual/materialization path with hash
+    // joins, but has no equality keys. Cross joins are represented as keyless
+    // native joins without residual predicates.
     let canonical = nested_loop_join_canonical(join, required_output_columns)?;
     let residual = nested_loop_join_residual(join.join, canonical)?;
     let output_columns = nested_loop_join_output_columns(join, required_output_columns, canonical)?;
@@ -243,6 +259,9 @@ pub(super) fn lower_nested_loop_join_input(
 }
 
 fn native_join_build_side(canonical: CanonicalJoin, key_count: usize, has_residual: bool) -> NativeJoinSide {
+    // Keyless semi/anti joins with residuals need the preserved side as the
+    // build side so the native executor can evaluate the condition without
+    // emitting build-side rows.
     if key_count == 0
         && has_residual
         && matches!(canonical.join_type, NativeJoinType::LeftSemi | NativeJoinType::LeftAnti)
@@ -257,6 +276,9 @@ fn nested_loop_join_canonical(
     join: &NormalizedNativeNestedLoopJoin<'_>,
     required_output_columns: &[String],
 ) -> Result<CanonicalJoin, FallbackReason> {
+    // Predicate-free inner nested-loop joins are native cross joins. Predicate
+    // inner joins may swap when only DataFusion-right columns are required,
+    // which keeps the output side compact while preserving DataFusion schema.
     if join.join.filter().is_none() && matches!(join.join.join_type(), JoinType::Inner) {
         return Ok(CanonicalJoin::new(NativeJoinType::Cross, false));
     }
@@ -274,6 +296,8 @@ fn nested_loop_join_residual(
     join: &NestedLoopJoinExec,
     canonical: CanonicalJoin,
 ) -> Result<Option<LoweredJoinResidual>, FallbackReason> {
+    // Non-inner nested-loop joins require a residual predicate today; a
+    // predicate-free inner join has already canonicalized to cross join.
     if let Some(filter) = join.filter() {
         let residual = lower_join_filter(filter, &join.left().schema(), &join.right().schema(), canonical)?;
         return Ok(Some(residual));
@@ -308,6 +332,8 @@ fn nested_loop_join_required_outputs_are_right_only(
     Ok(saw_output)
 }
 
+/// Join output projection plus the exact DataFusion output schema requested by
+/// the parent. Native input ordering may change, but this schema must not.
 struct JoinOutputColumns {
     projection: Vec<NativeJoinOutputColumn>,
     schema: SchemaRef,
@@ -354,6 +380,9 @@ fn join_output_columns(
     datafusion_join_type: &JoinType,
     canonical: CanonicalJoin,
 ) -> Result<JoinOutputColumns, FallbackReason> {
+    // DataFusion owns output ordering, projection, aliases, and semi/anti
+    // output-side rules. Convert each requested DataFusion output field into a
+    // native side/column reference after canonicalization.
     let required = required_output_columns.iter().collect::<BTreeSet<_>>();
     let mut output_fields = Vec::new();
     let mut projection = Vec::new();
@@ -396,6 +425,9 @@ fn join_key_column_name<'a>(
 }
 
 fn canonical_join(join_type: &JoinType) -> Result<CanonicalJoin, FallbackReason> {
+    // Native join variants are left-oriented for right/semi/anti cases. Right
+    // joins become left joins with swapped inputs, and right semi/anti become
+    // left semi/anti with swapped inputs.
     match join_type {
         JoinType::Inner => Ok(CanonicalJoin::new(NativeJoinType::Inner, false)),
         JoinType::Left => Ok(CanonicalJoin::new(NativeJoinType::Left, false)),

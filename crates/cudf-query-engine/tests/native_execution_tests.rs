@@ -7,8 +7,8 @@ use std::{
 
 use arrow::{
     array::{
-        Array, BooleanArray, Date32Array, Decimal128Array, Float64Array, Int32Array, Int64Array, StringArray,
-        TimestampNanosecondArray,
+        Array, BooleanArray, Date32Array, Decimal128Array, Float32Array, Float64Array, Int8Array, Int32Array,
+        Int64Array, StringArray, TimestampNanosecondArray,
     },
     datatypes::{DataType, Field, Schema, TimeUnit},
     record_batch::RecordBatch,
@@ -2906,6 +2906,54 @@ fn bounded_native_query_executes_global_avg_from_sum_count_state() {
 }
 
 #[test]
+fn bounded_native_query_executes_global_avg_with_wide_sum_state_for_narrow_integer_input() {
+    let dir = unique_temp_dir("cudf-query-engine-bounded-native-global-avg-int8");
+    let path = dir.join("input.parquet");
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let input_schema = write_narrow_global_avg_input_parquet(&path);
+
+    let aggregated_schema = Arc::new(Schema::new(vec![Field::new("avg_m00", DataType::Float64, true)]));
+    let source = LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(&path).with_file_size_bytes(fs::metadata(&path).unwrap().len())],
+        Arc::clone(&input_schema),
+        vec!["m00".to_string()],
+    );
+    let aggregate = AggregateSpec::new(
+        Vec::new(),
+        vec![AggregateExpr::new(AggregateFunction::Avg, Expr::column("m00"), "avg_m00")],
+    );
+
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LocalParquet(source));
+    let aggregate = builder.add_aggregate(source, aggregate, aggregated_schema);
+    let plan = builder.finish_with_host_sink(aggregate);
+
+    let context = ExecutionContext::builder()
+        .with_shared_runtime(Arc::clone(&runtime))
+        .with_memory_control_policy(MemoryControlPolicy::Bounded {
+            device_budget_bytes: 8 * 1024 * 1024 * 1024,
+            max_source_chunk_bytes: 1024 * 1024,
+            max_row_groups_per_chunk: 1,
+            max_retry_attempts: 1,
+            min_retry_chunk_row_groups: 1,
+        })
+        .build()
+        .unwrap();
+    let result = execute_query_plan(&context, &plan).unwrap();
+    assert_eq!(result.metrics().source_chunks_planned, 2);
+    assert_eq!(result.metrics().partial_aggregate_count, 2);
+    assert_eq!(result.metrics().final_merge_attempts, 1);
+
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    assert_eq!(batch.num_rows(), 1);
+    assert_eq!(float64_array(batch, 0).value(0), 100.0);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn bounded_native_query_executes_global_null_on_empty_sum_avg_for_all_null_input() {
     let dir = unique_temp_dir("cudf-query-engine-bounded-native-global-all-null");
     let path = dir.join("input.parquet");
@@ -3031,6 +3079,59 @@ fn bounded_native_query_executes_decimal_global_avg_from_sum_count_state() {
     assert_eq!(batch.num_rows(), 1);
     let avg_amount = decimal128_array(batch, 0);
     assert_eq!(avg_amount.value(0), 2_000_000);
+    assert_eq!(avg_amount.precision(), 19);
+    assert_eq!(avg_amount.scale(), 6);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn bounded_native_query_executes_fractional_decimal_global_avg_at_output_scale() {
+    let dir = unique_temp_dir("cudf-query-engine-bounded-native-fractional-decimal-global-avg");
+    let path = dir.join("input.parquet");
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let input_schema = write_fractional_decimal_avg_input_parquet(&path);
+
+    let aggregated_schema = Arc::new(Schema::new(vec![Field::new("avg_amount", DataType::Decimal128(19, 6), true)]));
+    let source = LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(&path).with_file_size_bytes(fs::metadata(&path).unwrap().len())],
+        Arc::clone(&input_schema),
+        vec!["amount".to_string()],
+    );
+    let aggregate = AggregateSpec::new(
+        Vec::new(),
+        vec![AggregateExpr::new(AggregateFunction::Avg, Expr::column("amount"), "avg_amount")],
+    );
+
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LocalParquet(source));
+    let aggregate = builder.add_aggregate(source, aggregate, aggregated_schema);
+    let plan = builder.finish_with_host_sink(aggregate);
+
+    let context = ExecutionContext::builder()
+        .with_shared_runtime(Arc::clone(&runtime))
+        .with_memory_control_policy(MemoryControlPolicy::Bounded {
+            device_budget_bytes: 8 * 1024 * 1024 * 1024,
+            max_source_chunk_bytes: 1024 * 1024,
+            max_row_groups_per_chunk: 1,
+            max_retry_attempts: 1,
+            min_retry_chunk_row_groups: 1,
+        })
+        .build()
+        .unwrap();
+    let result = execute_query_plan(&context, &plan).unwrap();
+    let metrics = result.metrics();
+    assert_eq!(metrics.source_chunks_planned, 3);
+    assert_eq!(metrics.source_chunks_committed, 3);
+    assert_eq!(metrics.partial_aggregate_count, 3);
+    assert_eq!(metrics.final_merge_attempts, 1);
+
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    assert_eq!(batch.num_rows(), 1);
+    let avg_amount = decimal128_array(batch, 0);
+    assert_eq!(avg_amount.value(0), 1_666_666);
     assert_eq!(avg_amount.precision(), 19);
     assert_eq!(avg_amount.scale(), 6);
 
@@ -3204,6 +3305,7 @@ fn bounded_native_query_executes_avg_from_sum_count_state() {
     let aggregated_schema = Arc::new(Schema::new(vec![
         Field::new("key", DataType::Int32, false),
         Field::new("avg_m00", DataType::Float64, true),
+        Field::new("count_m00", DataType::Int64, false),
     ]));
 
     let source = LocalParquetSource::from_files(
@@ -3214,7 +3316,10 @@ fn bounded_native_query_executes_avg_from_sum_count_state() {
     let filter = Expr::binary(Expr::column("payload"), BinaryOp::GtEq, Expr::literal(LiteralValue::Int64(10)));
     let aggregate = AggregateSpec::new(
         vec![Expr::column("key")],
-        vec![AggregateExpr::new(AggregateFunction::Avg, Expr::column("m00"), "avg_m00")],
+        vec![
+            AggregateExpr::new(AggregateFunction::Avg, Expr::column("m00"), "avg_m00"),
+            AggregateExpr::new(AggregateFunction::Count, Expr::column("m00"), "count_m00"),
+        ],
     );
     let sort = SortSpec::new(vec![
         SortExpr::new(Expr::column("avg_m00"), true, false),
@@ -3255,6 +3360,7 @@ fn bounded_native_query_executes_avg_from_sum_count_state() {
     assert_eq!(batch.num_rows(), 3);
     assert_eq!(int32_array(batch, 0).values().as_ref(), &[3, 2, 1]);
     assert_eq!(float64_array(batch, 1).values().as_ref(), &[300.0, 150.0, 20.0]);
+    assert_eq!(int64_array(batch, 2).values().as_ref(), &[1, 2, 3]);
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -3309,6 +3415,47 @@ fn bounded_native_query_executes_single_chunk_avg_finalization() {
     };
     assert_eq!(int32_array(batch, 0).values().as_ref(), &[1, 2, 3]);
     assert_eq!(float64_array(batch, 1).values().as_ref(), &[20.0, 150.0, 300.0]);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn native_query_executes_grouped_avg_with_float32_output_schema() {
+    let dir = unique_temp_dir("cudf-query-engine-native-grouped-avg-float32");
+    let path = dir.join("input.parquet");
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let input_schema = write_uneven_avg_input_parquet(&path);
+
+    let aggregated_schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int32, false),
+        Field::new("avg_m00", DataType::Float32, true),
+    ]));
+
+    let source = LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(&path).with_file_size_bytes(fs::metadata(&path).unwrap().len())],
+        Arc::clone(&input_schema),
+        vec!["key".to_string(), "m00".to_string()],
+    );
+    let aggregate = AggregateSpec::new(
+        vec![Expr::column("key")],
+        vec![AggregateExpr::new(AggregateFunction::Avg, Expr::column("m00"), "avg_m00")],
+    );
+    let sort = SortSpec::new(vec![SortExpr::new(Expr::column("key"), false, false)]);
+
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LocalParquet(source));
+    let aggregate = builder.add_aggregate(source, aggregate, Arc::clone(&aggregated_schema));
+    let sort = builder.add_sort(aggregate, sort, Arc::clone(&aggregated_schema));
+    let plan = builder.finish_with_host_sink(sort);
+
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+    let result = execute_query_plan(&context, &plan).unwrap();
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    assert_eq!(batch.schema(), aggregated_schema);
+    assert_eq!(int32_array(batch, 0).values().as_ref(), &[1, 2, 3]);
+    assert_eq!(float32_array(batch, 1).values().as_ref(), &[20.0, 150.0, 300.0]);
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -3420,6 +3567,73 @@ fn bounded_native_query_rejects_avg_with_unsupported_output_schema() {
     }
 
     fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn native_query_rejects_grouped_avg_with_unsupported_output_schema_before_source_read() {
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let input_schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int32, false),
+        Field::new("m00", DataType::Int64, false),
+    ]));
+    let aggregated_schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int32, false),
+        Field::new("avg_m00", DataType::Int64, true),
+    ]));
+
+    let source = LocalParquetSource::new(
+        "/tmp/does-not-need-to-exist-for-avg-output-validation.parquet",
+        Arc::clone(&input_schema),
+        vec!["key".to_string(), "m00".to_string()],
+    );
+    let aggregate = AggregateSpec::new(
+        vec![Expr::column("key")],
+        vec![AggregateExpr::new(AggregateFunction::Avg, Expr::column("m00"), "avg_m00")],
+    );
+
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LocalParquet(source));
+    let aggregate = builder.add_aggregate(source, aggregate, aggregated_schema);
+    let plan = builder.finish_with_host_sink(aggregate);
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+
+    match execute_query_plan(&context, &plan) {
+        Ok(_) => panic!("grouped avg with unsupported output schema should be rejected before source read"),
+        Err(error) => {
+            assert_eq!(error.code(), QueryErrorCode::UnsupportedType);
+            assert_eq!(error.operation(), "cudf_query_engine.aggregate.validate_avg");
+            assert_eq!(error.fact_value("alias"), Some("avg_m00"));
+            assert_eq!(error.fact_value("data_type"), Some("Int64"));
+        },
+    }
+}
+
+#[test]
+fn native_query_rejects_global_avg_reserved_state_alias_collision_before_source_read() {
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let input_schema = Arc::new(Schema::new(vec![Field::new("m00", DataType::Int64, false)]));
+    let aggregated_schema = Arc::new(Schema::new(vec![Field::new("__cudf_avg_0_sum", DataType::Float64, true)]));
+    let aggregate = AggregateSpec::new(
+        Vec::new(),
+        vec![AggregateExpr::new(AggregateFunction::Avg, Expr::column("m00"), "__cudf_avg_0_sum")],
+    );
+
+    let mut builder = QueryPlanBuilder::new();
+    let source =
+        builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("missing_input", Arc::clone(&input_schema))));
+    let aggregate = builder.add_aggregate(source, aggregate, aggregated_schema);
+    let plan = builder.finish_with_host_sink(aggregate);
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+
+    match execute_query_plan(&context, &plan) {
+        Ok(_) => panic!("global avg reserved state alias collision should be rejected before source read"),
+        Err(error) => {
+            assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
+            assert_eq!(error.operation(), "cudf_query_engine.global_aggregate.validate_avg_state_alias");
+            assert_eq!(error.fact_value("alias"), Some("__cudf_avg_0_sum"));
+            assert_eq!(error.fact_value("reserved_aliases"), Some("__cudf_avg_0_sum,__cudf_avg_0_count"));
+        },
+    }
 }
 
 #[test]
@@ -6467,7 +6681,7 @@ fn bounded_native_query_executes_q22_like_keyless_conditional_join_with_resident
         Field::new("threshold", DataType::Int32, true),
     ]));
 
-    let plan = q22_like_keyless_conditional_input_subplan_plan(
+    let plan = q22_like_keyless_conditional_join_input_subplan_plan(
         &lineitem_path,
         &anti_path,
         &threshold_path,
@@ -6481,7 +6695,7 @@ fn bounded_native_query_executes_q22_like_keyless_conditional_join_with_resident
     );
     assert!(!plan.has_bounded_executable_root_join());
     assert!(!plan.has_bounded_executable_join_pipeline());
-    assert!(plan.has_bounded_executable_conditional_join_input_subplan_pipeline());
+    assert!(plan.has_bounded_executable_keyless_conditional_join_input_subplan_pipeline());
     assert!(!plan.has_bounded_executable_multi_join_pipeline());
 
     let context = bounded_join_execution_context(&runtime);
@@ -6542,7 +6756,7 @@ fn bounded_native_query_executes_q22_like_keyless_conditional_join_with_resident
     assert_eq!(int32_array(batch, 1).values().as_ref(), &[20, 25, 30]);
     assert_eq!(int32_array(batch, 2).values().as_ref(), &[15, 15, 15]);
 
-    let gpu_plan = q22_like_keyless_conditional_input_subplan_plan(
+    let gpu_plan = q22_like_keyless_conditional_join_input_subplan_plan(
         &lineitem_path,
         &anti_path,
         &threshold_path,
@@ -6554,7 +6768,7 @@ fn bounded_native_query_executes_q22_like_keyless_conditional_join_with_resident
         output_schema,
         true,
     );
-    assert!(gpu_plan.has_bounded_executable_conditional_join_input_subplan_pipeline());
+    assert!(gpu_plan.has_bounded_executable_keyless_conditional_join_input_subplan_pipeline());
     let gpu_result = execute_query_plan(&context, &gpu_plan).unwrap();
     assert_eq!(gpu_result.metrics().boundary.host_to_device_uploads, 0);
     assert_eq!(gpu_result.metrics().boundary.device_to_host_materializations, 0);
@@ -6586,9 +6800,9 @@ fn bounded_native_query_executes_q22_like_keyless_conditional_join_with_resident
 }
 
 #[test]
-fn bounded_native_query_executes_q11_like_keyless_conditional_join_with_joined_aggregate_input_subplans() {
+fn bounded_native_query_executes_q11_like_keyless_conditional_join_with_aggregate_over_join_subplan_inputs() {
     let runtime = Arc::new(cudf::Runtime::new().unwrap());
-    let dir = unique_temp_dir("cudf-query-engine-bounded-q11-joined-aggregate-input-subplans");
+    let dir = unique_temp_dir("cudf-query-engine-bounded-q11-aggregate-over-join-subplan-inputs");
     let grouped_fact_path = dir.join("grouped_partsupp.parquet");
     let scalar_fact_path = dir.join("scalar_partsupp.parquet");
     let supplier_path = dir.join("supplier.parquet");
@@ -6601,7 +6815,7 @@ fn bounded_native_query_executes_q11_like_keyless_conditional_join_with_joined_a
     );
     let scalar_fact_schema = write_q11_partsupp_parquet(&runtime, &scalar_fact_path, &[8, 9], &[10, 20], &[7, 5]);
     let supplier_schema = write_q11_supplier_parquet(&runtime, &supplier_path);
-    let plan = q11_like_keyless_conditional_joined_aggregate_input_subplan_plan(
+    let plan = q11_like_keyless_conditional_aggregate_over_join_subplan_inputs_plan(
         &grouped_fact_path,
         &scalar_fact_path,
         &supplier_path,
@@ -6611,8 +6825,8 @@ fn bounded_native_query_executes_q11_like_keyless_conditional_join_with_joined_a
     );
     assert!(!plan.has_bounded_executable_root_join());
     assert!(!plan.has_bounded_executable_join_pipeline());
-    assert!(!plan.has_bounded_executable_conditional_join_input_subplan_pipeline());
-    assert!(plan.has_bounded_executable_conditional_join_joined_aggregate_input_subplan_pipeline());
+    assert!(!plan.has_bounded_executable_keyless_conditional_join_input_subplan_pipeline());
+    assert!(plan.has_bounded_executable_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline());
     assert!(!plan.has_bounded_executable_multi_join_pipeline());
     assert!(plan.bounded_join_unsupported_shape_facts(ExecutionBoundaryPolicy::default()).is_none());
 
@@ -6698,13 +6912,13 @@ fn bounded_native_query_executes_q11_like_keyless_conditional_join_with_joined_a
         .build()
         .unwrap();
     let error = match execute_query_plan(&constrained_context, &plan) {
-        Ok(_) => panic!("constrained Q11 joined-aggregate input-subplan pipeline should fail reservation"),
+        Ok(_) => panic!("constrained Q11 aggregate-over-join subplan inputs pipeline should fail reservation"),
         Err(error) => error,
     };
     assert_eq!(error.code(), QueryErrorCode::MemoryReservationFailed);
     assert_eq!(
         error.fact_value("bounded_join_execution_family"),
-        Some("keyless_conditional_join_joined_aggregate_input_subplan_pipeline")
+        Some("keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline")
     );
     assert_eq!(error.fact_value("memory_boundary"), Some("join_source_read"));
     assert_eq!(error.fact_value("reservation_kind"), Some("source_read"));
@@ -7098,7 +7312,7 @@ fn execute_bounded_equality_left_only_filtered_join(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn q22_like_keyless_conditional_input_subplan_plan(
+fn q22_like_keyless_conditional_join_input_subplan_plan(
     lineitem_path: &Path,
     anti_path: &Path,
     threshold_path: &Path,
@@ -7175,7 +7389,7 @@ fn q22_like_keyless_conditional_input_subplan_plan(
     if gpu_sink { builder.finish_gpu_resident(sort) } else { builder.finish_with_host_sink(sort) }
 }
 
-fn q11_like_keyless_conditional_joined_aggregate_input_subplan_plan(
+fn q11_like_keyless_conditional_aggregate_over_join_subplan_inputs_plan(
     grouped_fact_path: &Path,
     scalar_fact_path: &Path,
     supplier_path: &Path,
@@ -7937,11 +8151,38 @@ fn write_uneven_global_avg_input_parquet(path: &Path) -> Arc<Schema> {
     schema
 }
 
+fn write_narrow_global_avg_input_parquet(path: &Path) -> Arc<Schema> {
+    let schema = Arc::new(Schema::new(vec![Field::new("m00", DataType::Int8, false)]));
+    let batch =
+        RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int8Array::from(vec![100, 100, 100, 100]))]).unwrap();
+    let props = WriterProperties::builder().set_max_row_group_row_count(Some(2)).build();
+    let file = File::create(path).unwrap();
+    let mut writer = ArrowWriter::try_new(file, Arc::clone(&schema), Some(props)).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
+    schema
+}
+
 fn write_decimal_avg_input_parquet(path: &Path) -> Arc<Schema> {
     let schema = Arc::new(Schema::new(vec![Field::new("amount", DataType::Decimal128(15, 2), false)]));
     let batch = RecordBatch::try_new(
         Arc::clone(&schema),
         vec![Arc::new(Decimal128Array::from_iter_values([100, 200, 300]).with_precision_and_scale(15, 2).unwrap())],
+    )
+    .unwrap();
+    let props = WriterProperties::builder().set_max_row_group_row_count(Some(1)).build();
+    let file = File::create(path).unwrap();
+    let mut writer = ArrowWriter::try_new(file, Arc::clone(&schema), Some(props)).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
+    schema
+}
+
+fn write_fractional_decimal_avg_input_parquet(path: &Path) -> Arc<Schema> {
+    let schema = Arc::new(Schema::new(vec![Field::new("amount", DataType::Decimal128(15, 2), false)]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![Arc::new(Decimal128Array::from_iter_values([100, 200, 200]).with_precision_and_scale(15, 2).unwrap())],
     )
     .unwrap();
     let props = WriterProperties::builder().set_max_row_group_row_count(Some(1)).build();
@@ -8083,6 +8324,10 @@ fn boolean_array(batch: &RecordBatch, index: usize) -> &BooleanArray {
 
 fn float64_array(batch: &RecordBatch, index: usize) -> &Float64Array {
     batch.column(index).as_any().downcast_ref::<Float64Array>().expect("expected Float64Array")
+}
+
+fn float32_array(batch: &RecordBatch, index: usize) -> &Float32Array {
+    batch.column(index).as_any().downcast_ref::<Float32Array>().expect("expected Float32Array")
 }
 
 fn decimal128_array(batch: &RecordBatch, index: usize) -> &Decimal128Array {

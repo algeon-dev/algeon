@@ -23,6 +23,13 @@ use futures::TryStreamExt;
 
 use crate::error::{Error, ErrorCode};
 
+/// Stable public DataFusion metric-name contract exposed by native cuDF execution plans.
+///
+/// Every name in this list is registered as a DataFusion `MetricType::SUMMARY` metric by
+/// `NativeCudfMetrics`. Timer names are DataFusion `Time` metrics stored in nanoseconds and
+/// populated from native query `Duration` values. Keep this list, the `NativeCudfMetrics` fields,
+/// and `NativeCudfMetrics::new` in exact sync because adapter consumers assert and parse these
+/// names through DataFusion metrics.
 pub const NATIVE_CUDF_DATAFUSION_METRIC_NAMES: &[&str] = &[
     "input_batches",
     "input_rows",
@@ -86,6 +93,12 @@ pub const NATIVE_CUDF_DATAFUSION_METRIC_NAMES: &[&str] = &[
     "materialization_time",
 ];
 
+/// Adapter-side native execution configuration.
+///
+/// This type holds the DataFusion-facing knobs for native cuDF execution. It does not eagerly create
+/// cuDF runtime state; `execution_context` builds the native `ExecutionContext` at execution time so
+/// runtime injection, allocator setup, memory-control validation, boundary policy, and durable build
+/// cache wiring happen at the DataFusion/native boundary.
 #[derive(Debug, Clone)]
 pub struct NativeCudfExecutionConfig {
     runtime: Option<Arc<cudf::Runtime>>,
@@ -97,6 +110,7 @@ pub struct NativeCudfExecutionConfig {
 }
 
 impl NativeCudfExecutionConfig {
+    /// Use the default allocator policy with no native bounded-memory execution controls.
     pub fn unbounded() -> Self {
         Self {
             runtime: None,
@@ -108,6 +122,11 @@ impl NativeCudfExecutionConfig {
         }
     }
 
+    /// Use default runtime allocator construction with bounded native memory-control settings.
+    ///
+    /// The bounded fields are expected to be nonzero where the native engine requires positive
+    /// limits. Validation is performed when the native `ExecutionContext` is built, which keeps this
+    /// builder lightweight and reports native validation failures as adapter execution errors.
     pub fn bounded(
         device_budget_bytes: u64,
         max_source_chunk_bytes: u64,
@@ -131,36 +150,50 @@ impl NativeCudfExecutionConfig {
         }
     }
 
+    /// Own `runtime` and share it with native execution through an `Arc`.
     pub fn with_runtime(mut self, runtime: cudf::Runtime) -> Self {
         self.runtime = Some(Arc::new(runtime));
         self
     }
 
+    /// Use a caller-shared runtime, preserving its device, stream, allocator, and observer state.
     pub fn with_shared_runtime(mut self, runtime: Arc<cudf::Runtime>) -> Self {
         self.runtime = Some(runtime);
         self
     }
 
+    /// Select the device for lazily created runtimes.
+    ///
+    /// This setting only matters when no runtime is supplied with `with_runtime` or
+    /// `with_shared_runtime`; injected runtimes keep their own device selection.
     pub fn with_device_ordinal(mut self, device_ordinal: usize) -> Self {
         self.device_ordinal = Some(device_ordinal);
         self
     }
 
+    /// Set the allocator construction policy used when native execution builds a runtime.
     pub fn with_memory_resource_policy(mut self, memory_resource_policy: MemoryResourcePolicy) -> Self {
         self.memory_resource_policy = memory_resource_policy;
         self
     }
 
+    /// Set bounded execution controls such as chunk sizing, reservations, and retry limits.
     pub fn with_memory_control_policy(mut self, memory_control_policy: MemoryControlPolicy) -> Self {
         self.memory_control_policy = memory_control_policy;
         self
     }
 
+    /// Set source, build, probe, and result boundary choices for native execution.
+    ///
+    /// `ExecutionBoundaryPolicy` controls where data may remain device-resident across source reads,
+    /// hash-join build/probe work, and result materialization. Durable hash-join build boundaries
+    /// require `with_hash_join_build_cache` so the native context has a cache to write to and probe.
     pub fn with_boundary_policy(mut self, boundary_policy: ExecutionBoundaryPolicy) -> Self {
         self.boundary_policy = boundary_policy;
         self
     }
 
+    /// Attach the durable GPU hash-join build cache required by durable build-boundary policy.
     pub fn with_hash_join_build_cache(mut self, cache: Arc<GpuHashJoinBuildCache>) -> Self {
         self.hash_join_build_cache = Some(cache);
         self
@@ -174,6 +207,8 @@ impl NativeCudfExecutionConfig {
         self.boundary_policy
     }
 
+    // DataFusion-to-native config boundary. Native context construction and validation errors are
+    // converted here into adapter errors before any query execution starts.
     fn execution_context(&self) -> crate::error::Result<ExecutionContext> {
         let mut builder = ExecutionContext::builder()
             .with_memory_policy(self.memory_resource_policy)
@@ -198,6 +233,11 @@ impl NativeCudfExecutionConfig {
     }
 }
 
+/// Leaf DataFusion execution plan for a host-materializing native cuDF query.
+///
+/// `NativeCudfExec` has no children and exposes exactly one output partition. It executes a
+/// DataFusion-free native `QueryPlan`, then materializes the final GPU result back to host Arrow
+/// because normal DataFusion execution consumes a `RecordBatch` stream.
 #[derive(Debug, Clone)]
 pub struct NativeCudfExec {
     plan: QueryPlan,
@@ -207,6 +247,10 @@ pub struct NativeCudfExec {
 }
 
 impl NativeCudfExec {
+    /// Create a native DataFusion execution plan.
+    ///
+    /// GPU-resident sinks are rejected here because regular `ExecutionPlan::execute` must stream
+    /// host Arrow `RecordBatch` output to DataFusion.
     pub fn try_new(plan: QueryPlan, execution_config: NativeCudfExecutionConfig) -> crate::error::Result<Self> {
         if !plan.sink().materializes_host_boundary() {
             return Err(Error::new(
@@ -225,6 +269,7 @@ impl NativeCudfExec {
         })
     }
 
+    /// Return the lowered native query plan wrapped by this DataFusion execution node.
     pub fn native_plan(&self) -> &QueryPlan {
         &self.plan
     }
@@ -285,6 +330,7 @@ impl ExecutionPlan for NativeCudfExec {
     }
 
     fn execute(&self, partition: usize, _context: Arc<TaskContext>) -> DataFusionResult<SendableRecordBatchStream> {
+        // Native DataFusion execution currently exposes a single final output partition.
         if partition != 0 {
             return Err(Error::new(
                 ErrorCode::InvalidExecutionPlan,
@@ -295,14 +341,20 @@ impl ExecutionPlan for NativeCudfExec {
             .into());
         }
 
+        // The DataFusion `TaskContext` is intentionally unused: runtime, allocator, boundary, and
+        // memory-control state come from `NativeCudfExecutionConfig`.
         let schema = self.schema();
         let plan = self.plan.clone();
         let execution_config = self.execution_config.clone();
         let metrics = NativeCudfMetrics::new(&self.metrics, partition);
         let output = futures::stream::once(async move {
+            // Context construction is the configuration/validation phase. Failures here happen
+            // before the native query starts.
             let context = execution_config
                 .execution_context()
                 .map_err(|error| DataFusionError::from(mark_native_runtime_error(error, "runtime_context")))?;
+            // Once native execution starts there is no CPU fallback; errors are surfaced with stable
+            // facts by `native_query_runtime_error`.
             let result = execute_query_plan(&context, &plan).map_err(|error| {
                 DataFusionError::from(native_query_runtime_error(
                     "datafusion_cudf.native_exec.execute",
@@ -334,6 +386,11 @@ impl ExecutionPlan for NativeCudfExec {
     }
 }
 
+/// Internal GPU-resident native fragment producer.
+///
+/// This plan is valid only as a child of composed native execution. It produces a device-resident
+/// `GpuResultHandle` for another native plan and is not directly streamable through
+/// `ExecutionPlan::execute`.
 #[derive(Debug, Clone)]
 pub struct NativeCudfGpuProducerExec {
     input_name: String,
@@ -387,6 +444,10 @@ impl NativeCudfGpuProducerExec {
         &self.plan
     }
 
+    /// Execute this producer inside a composed exec's shared native context.
+    ///
+    /// The result stays on the GPU and is returned as `(input_name, GpuResultHandle)` so the composed
+    /// consumer can populate its `GpuResidentInputMap` without host materialization.
     fn execute_gpu_result_with_context(
         &self,
         native_context: &ExecutionContext,
@@ -493,6 +554,11 @@ impl ExecutionPlan for NativeCudfGpuProducerExec {
     }
 }
 
+/// DataFusion wrapper for composed native execution with GPU-resident producer fragments.
+///
+/// The wrapper executes producer children into `GpuResultHandle`s, maps those handles into a
+/// `GpuResidentInputMap`, then runs a host-sink native consumer plan that materializes the final
+/// result as Arrow for DataFusion.
 #[derive(Debug, Clone)]
 pub struct NativeCudfComposedExec {
     plan: QueryPlan,
@@ -508,6 +574,9 @@ impl NativeCudfComposedExec {
         gpu_inputs: Vec<Arc<dyn ExecutionPlan>>,
         execution_config: NativeCudfExecutionConfig,
     ) -> crate::error::Result<Self> {
+        // Constructor validation preserves the composed execution contract: the final consumer must
+        // host-materialize, every child must be a GPU-resident producer, and required/provided GPU
+        // input names must match exactly.
         if !plan.sink().materializes_host_boundary() {
             return Err(Error::new(
                 ErrorCode::InvalidExecutionPlan,
@@ -629,6 +698,7 @@ impl ExecutionPlan for NativeCudfComposedExec {
     }
 
     fn execute(&self, partition: usize, _context: Arc<TaskContext>) -> DataFusionResult<SendableRecordBatchStream> {
+        // Composed native execution also presents one final DataFusion output partition.
         if partition != 0 {
             return Err(Error::new(
                 ErrorCode::InvalidExecutionPlan,
@@ -645,6 +715,8 @@ impl ExecutionPlan for NativeCudfComposedExec {
         let gpu_inputs = self.gpu_inputs.clone();
         let metrics = NativeCudfMetrics::new(&self.metrics, partition);
         let output = futures::stream::once(async move {
+            // Build one native context for all producer fragments and the consumer so device-resident
+            // handles are compatible across the composed execution.
             let context = execution_config
                 .execution_context()
                 .map_err(|error| DataFusionError::from(mark_native_runtime_error(error, "runtime_context")))?;
@@ -664,6 +736,8 @@ impl ExecutionPlan for NativeCudfComposedExec {
                 input_map.insert(input_name, handle);
             }
 
+            // The consumer query starts after all GPU-resident producer handles are registered. No
+            // CPU fallback is attempted after this point.
             let result = execute_query_plan_with_gpu_inputs(&context, &plan, &input_map).map_err(|error| {
                 DataFusionError::from(native_query_runtime_error(
                     "datafusion_cudf.native_composed.execute",
@@ -696,6 +770,7 @@ impl ExecutionPlan for NativeCudfComposedExec {
 }
 
 fn conservative_properties(schema: SchemaRef) -> Arc<PlanProperties> {
+    // Deliberately conservative: one unknown, bounded, final partition and no ordering guarantees.
     Arc::new(PlanProperties::new(
         EquivalenceProperties::new(schema),
         Partitioning::UnknownPartitioning(1),
@@ -721,6 +796,8 @@ fn comma_separated<'a>(values: impl IntoIterator<Item = &'a str>) -> String {
     values.into_iter().collect::<Vec<_>>().join(",")
 }
 
+// Convert native query-runtime failures at the DataFusion boundary while preserving stable facts:
+// `native_datafusion_phase` and `cpu_fallback_after_native_start=false`.
 fn native_query_runtime_error(
     operation: &'static str,
     message: impl Into<String>,
@@ -729,10 +806,14 @@ fn native_query_runtime_error(
     mark_native_runtime_error(Error::from_native(operation, message, source), "runtime_execution")
 }
 
+// Attach stable diagnostic facts used by callers to distinguish context setup from query runtime and
+// to assert that native execution does not silently fall back to CPU once started.
 fn mark_native_runtime_error(error: Error, phase: &'static str) -> Error {
     error.with_fact("native_datafusion_phase", phase).with_fact("cpu_fallback_after_native_start", false)
 }
 
+// Private translation layer from native `QueryMetrics` into DataFusion metrics. Field names must
+// match `NATIVE_CUDF_DATAFUSION_METRIC_NAMES` and the registration names in `new`.
 #[derive(Debug, Clone)]
 struct NativeCudfMetrics {
     baseline: BaselineMetrics,
@@ -955,6 +1036,8 @@ impl NativeCudfMetrics {
     }
 
     fn record_boundary_policy(&self, policy: ExecutionBoundaryPolicy) {
+        // These counters record which boundary policy was selected for this native query execution,
+        // not rows or bytes crossing that boundary.
         if matches!(policy.source_read(), cudf_query_engine::SourceReadBoundary::DirectDeviceLocalParquet) {
             self.source_read_boundary_direct_device.add(1);
         }
@@ -987,6 +1070,7 @@ fn join_gather_map_bytes(metrics: &QueryMetrics) -> u64 {
 
 fn add_optional_count(metric: &Count, observed: Option<&Count>, value: Option<u64>) {
     if let Some(value) = value {
+        // `*_observed` distinguishes a real `Some(0)` sample from no observation at all.
         if let Some(observed) = observed {
             observed.add(1);
         }

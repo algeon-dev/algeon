@@ -18,12 +18,20 @@ use datafusion::{
 use super::validate::is_supported_native_type;
 use crate::{policy::FallbackReason, report::GpuCandidate};
 
+// Shape strings are diagnostics/report contract values. The grammar is a
+// compact wrapper form: `Operator`, `Operator(child)`, and for binary inputs
+// `Operator(left,right)`. Suffixes such as `(fetch)` are part of the operator
+// token, not parsed metadata, so do not rename them casually.
 const SORT_PRESERVING_MERGE_SHAPE: &str = "SortPreservingMergeExec";
 const SORT_PRESERVING_MERGE_FETCH_SHAPE: &str = "SortPreservingMergeExec(fetch)(SortExec)";
 const UNSUPPORTED_NATIVE_PLAN_SHAPE: &str = "UnsupportedNativePhysicalPlan";
 
+/// Borrowed, normalized representation of a DataFusion physical subtree that
+/// the native path knows how to lower.
 #[derive(Debug, Clone)]
 pub(super) struct NormalizedNativePlan<'a> {
+    /// Candidate metadata emitted in planning reports. The shape and operator
+    /// count must stay aligned with the normalized tree below.
     pub(super) candidate: GpuCandidate,
     pub(super) root: NormalizedNativeRoot<'a>,
     pub(super) sort: Option<&'a SortExec>,
@@ -31,6 +39,15 @@ pub(super) struct NormalizedNativePlan<'a> {
 }
 
 impl<'a> NormalizedNativePlan<'a> {
+    /// Returns the source-shaped aggregate input for the slice1 path.
+    ///
+    /// This only proves that the aggregate root input is a source variant,
+    /// optionally with a filter attached to that source. Parquet/source
+    /// validity is checked later during source lowering. Unary wrappers,
+    /// aggregate inputs, or join subtrees inside the normalized input subtree
+    /// use the general input lowering path instead; root-level pre/post
+    /// aggregate projection, sort, and limit may still belong to the slice1
+    /// path.
     pub(super) fn single_source_input(&self) -> Option<&NormalizedNativeSource<'a>> {
         let root = self.aggregate_root()?;
         match &root.input {
@@ -58,28 +75,43 @@ impl<'a> NormalizedNativePlan<'a> {
     }
 }
 
+/// Native roots are either aggregate stacks or input stacks. Aggregate roots
+/// keep pre/post aggregate operators separate because distributed aggregate
+/// provenance and output schemas are semantic contracts.
 #[derive(Debug, Clone)]
 pub(super) enum NormalizedNativeRoot<'a> {
     Aggregate(NormalizedNativeAggregateRoot<'a>),
     Input(NormalizedNativeInputRoot<'a>),
 }
 
+/// Root aggregate plus the operators that DataFusion may place immediately
+/// before or after it in the supported native shapes.
 #[derive(Debug, Clone)]
 pub(super) struct NormalizedNativeAggregateRoot<'a> {
     pub(super) input: NormalizedNativeInput<'a>,
     pub(super) pre_aggregate_projection: Option<&'a ProjectionExec>,
     pub(super) aggregate: &'a AggregateExec,
+    /// True when `aggregate` is a safe partial side of a DataFusion
+    /// partial/final pair. Lowering may then accept partial aggregate state
+    /// layouts, but only after the safety predicates below have matched them.
     pub(super) aggregate_allows_partial: bool,
+    /// Output schema for the native aggregate node. For distributed pairs this
+    /// is the final aggregate schema, even though `aggregate` points at the
+    /// partial `AggregateExec` that computes the state.
     pub(super) aggregate_output_schema: SchemaRef,
     pub(super) post_aggregate_projection: Option<&'a ProjectionExec>,
 }
 
+/// Root whose result is the input subtree itself, optionally followed by a
+/// projection, sort, and fetch.
 #[derive(Debug, Clone)]
 pub(super) struct NormalizedNativeInputRoot<'a> {
     pub(super) input: NormalizedNativeInput<'a>,
     pub(super) projection: Option<&'a ProjectionExec>,
 }
 
+/// Recursive native input tree. These variants are the boundary between shape
+/// recognition and lowering; adding one requires matching lowering support.
 #[derive(Debug, Clone)]
 pub(super) enum NormalizedNativeInput<'a> {
     Source(NormalizedNativeSource<'a>),
@@ -91,6 +123,9 @@ pub(super) enum NormalizedNativeInput<'a> {
 }
 
 impl NormalizedNativeInput<'_> {
+    // Shape strings are consumed by reports/tests, so these helpers describe
+    // the accepted physical tree rather than debug-printing implementation
+    // details.
     fn shape(&self) -> String {
         match self {
             Self::Source(source) => source.shape(),
@@ -102,6 +137,9 @@ impl NormalizedNativeInput<'_> {
         }
     }
 
+    // Operator counts are planning diagnostics. They should count the matched
+    // physical operators represented by the normalized tree and the root
+    // wrappers that candidate helpers add.
     fn operator_count(&self) -> usize {
         match self {
             Self::Source(source) => source.operator_count(),
@@ -114,6 +152,9 @@ impl NormalizedNativeInput<'_> {
     }
 }
 
+/// Local Parquet source recognized by the native path. A directly attached
+/// `FilterExec` is stored here so Parquet pruning/projection can reason about
+/// scan, filter, and output columns together.
 #[derive(Debug, Clone)]
 pub(super) struct NormalizedNativeSource<'a> {
     pub(super) source_exec: &'a DataSourceExec,
@@ -134,6 +175,7 @@ impl NormalizedNativeSource<'_> {
     }
 }
 
+/// Non-source filter in a recursive native input tree.
 #[derive(Debug, Clone)]
 pub(super) struct NormalizedNativeFilter<'a> {
     pub(super) filter: &'a FilterExec,
@@ -150,6 +192,7 @@ impl NormalizedNativeFilter<'_> {
     }
 }
 
+/// Projection inside a recursive native input tree.
 #[derive(Debug, Clone)]
 pub(super) struct NormalizedNativeProjection<'a> {
     pub(super) projection: &'a ProjectionExec,
@@ -166,10 +209,15 @@ impl NormalizedNativeProjection<'_> {
     }
 }
 
+/// Aggregate inside a recursive native input tree, for example above a join.
 #[derive(Debug, Clone)]
 pub(super) struct NormalizedNativeAggregate<'a> {
     pub(super) aggregate: &'a AggregateExec,
+    /// Mirrors root aggregate semantics: true only for a validated partial
+    /// aggregate from a distributed final/partial pair.
     pub(super) aggregate_allows_partial: bool,
+    /// Native aggregate output schema. For distributed pairs this preserves the
+    /// final schema while lowering the partial aggregate state producer.
     pub(super) aggregate_output_schema: SchemaRef,
     pub(super) input: Box<NormalizedNativeInput<'a>>,
 }
@@ -184,6 +232,8 @@ impl NormalizedNativeAggregate<'_> {
     }
 }
 
+/// Hash join with both inputs recursively normalized before join lowering
+/// canonicalizes DataFusion join sides.
 #[derive(Debug, Clone)]
 pub(super) struct NormalizedNativeHashJoin<'a> {
     pub(super) join: &'a HashJoinExec,
@@ -201,6 +251,7 @@ impl NormalizedNativeHashJoin<'_> {
     }
 }
 
+/// Nested-loop or cross join with normalized children.
 #[derive(Debug, Clone)]
 pub(super) struct NormalizedNativeNestedLoopJoin<'a> {
     pub(super) join: &'a NestedLoopJoinExec,
@@ -218,12 +269,16 @@ impl NormalizedNativeNestedLoopJoin<'_> {
     }
 }
 
+/// Rejection paired with the candidate shape that was being tested. Reports
+/// rely on both pieces to explain native fallback pressure.
 #[derive(Debug, Clone)]
 pub(super) struct NativePlanRejection {
     pub(super) candidate: GpuCandidate,
     pub(super) reason: FallbackReason,
 }
 
+/// Supported root wrappers outside the aggregate/input subtree. These variants
+/// encode ordering semantics, not just display names.
 #[derive(Debug, Clone, Copy)]
 enum NativeStackRoot {
     LocalLimit,
@@ -232,6 +287,7 @@ enum NativeStackRoot {
     SortPreservingMergeFetch,
 }
 
+/// Aggregate shape family used by diagnostics string builders.
 #[derive(Debug, Clone, Copy)]
 enum NativeAggregateShapeKind {
     Global,
@@ -239,6 +295,10 @@ enum NativeAggregateShapeKind {
 }
 
 pub(super) fn normalize_native_plan(plan: &dyn ExecutionPlan) -> Result<NormalizedNativePlan<'_>, NativePlanRejection> {
+    // Match root shapes from most specific to most general. The ordering keeps
+    // diagnostic candidates stable: SPM(fetch) is not reported as a plain sort,
+    // projection roots first try aggregate stacks, and bare joins are input
+    // roots rather than unsupported unary stacks.
     if let Some(merge) = plan.as_any().downcast_ref::<SortPreservingMergeExec>() {
         let Some(fetch) = merge.fetch() else {
             return Err(NativePlanRejection {
@@ -464,6 +524,9 @@ fn global_aggregate_candidate(
     has_filter: bool,
     has_distributed_aggregate: bool,
 ) -> GpuCandidate {
+    // Candidate helpers are the single source of truth for report shape strings
+    // and operator counts. Keep these in lockstep with the normalized type
+    // family and the explicit shape grammar at the top of the file.
     let shape = native_aggregate_shape(
         NativeAggregateShapeKind::Global,
         has_post_projection,
@@ -673,6 +736,9 @@ fn peel_distributed_aggregate_pair_if_present(
     aggregate: &AggregateExec,
     candidate: GpuCandidate,
 ) -> Result<(&AggregateExec, bool, bool, SchemaRef), NativePlanRejection> {
+    // DataFusion distributed aggregates appear as final aggregate over a
+    // repartition/coalesce boundary over a partial aggregate. Lowering keeps the
+    // partial node as the executable aggregate but preserves the final schema.
     if !matches!(aggregate.mode(), AggregateMode::Final | AggregateMode::FinalPartitioned) {
         return Ok((aggregate, false, false, aggregate.schema()));
     }
@@ -691,6 +757,9 @@ fn peel_distributed_aggregate_pair_if_present(
 }
 
 fn distributed_aggregate_pair_is_safe(final_aggregate: &AggregateExec, partial_aggregate: &AggregateExec) -> bool {
+    // Safety is structural: group columns must be the partial output columns,
+    // aggregate functions and state fields must match, and no distinct/order
+    // by/filter semantics may be hidden in the pair.
     matches!(partial_aggregate.mode(), AggregateMode::Partial)
         && final_aggregate.group_expr().expr().len() == partial_aggregate.group_expr().expr().len()
         && final_aggregate.aggr_expr().len() == partial_aggregate.aggr_expr().len()
@@ -721,6 +790,9 @@ fn distributed_group_exprs_are_native_safe(final_aggregate: &AggregateExec, part
 }
 
 fn distributed_aggregate_function_is_native_safe(name: &str) -> bool {
+    // AVG is allowed only because the state schema checks below require
+    // DataFusion's explicit sum/count state layout and the final output check
+    // requires a floating result. It is not an average-of-averages shortcut.
     name.eq_ignore_ascii_case("sum")
         || name.eq_ignore_ascii_case("min")
         || name.eq_ignore_ascii_case("max")
@@ -732,6 +804,9 @@ fn distributed_aggregate_state_exprs_are_native_safe(
     final_aggregate: &AggregateExec,
     partial_aggregate: &AggregateExec,
 ) -> bool {
+    // The final aggregate input must expose exactly the partial state fields in
+    // schema order. This is the provenance check that lets lowering execute the
+    // partial aggregate while reporting the final aggregate output schema.
     let mut state_index_base = final_aggregate.group_expr().expr().len();
     let final_input_schema = final_aggregate.input().schema();
     let partial_output_schema = partial_aggregate.schema();
@@ -770,6 +845,8 @@ fn distributed_final_output_is_native_safe(
     aggregate_name: &str,
     function_name: &str,
 ) -> bool {
+    // AVG finalization consumes numeric state and produces a floating value;
+    // other distributed functions use the normal native type whitelist.
     let schema = final_aggregate.schema();
     let Ok(field) = schema.field_with_name(aggregate_name) else {
         return false;
@@ -782,6 +859,8 @@ fn distributed_final_output_is_native_safe(
 }
 
 fn peel_repartition(plan: &dyn ExecutionPlan) -> &dyn ExecutionPlan {
+    // Native shapes treat repartition and coalesce-partitions as exchange
+    // boundaries that can be peeled while preserving the child semantics.
     if let Some(repartition) = plan.as_any().downcast_ref::<RepartitionExec>() {
         repartition.input().as_ref()
     } else if let Some(coalesce) = plan.as_any().downcast_ref::<CoalescePartitionsExec>() {

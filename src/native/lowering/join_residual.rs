@@ -20,6 +20,8 @@ use crate::{
     policy::FallbackReason,
 };
 
+/// Residual predicate lowered for a native join, plus the input columns and
+/// pre-join synthetic expressions needed to evaluate it.
 pub(super) struct LoweredJoinResidual {
     pub(super) predicate: NativeExpr,
     pub(super) left_required: BTreeSet<String>,
@@ -27,6 +29,8 @@ pub(super) struct LoweredJoinResidual {
     pub(super) materializations: JoinResidualMaterializations,
 }
 
+/// Side-partitioned materializations. They are keyed by original DataFusion
+/// side because projections are inserted before canonical join input ordering.
 #[derive(Default)]
 pub(super) struct JoinResidualMaterializations {
     left: Vec<JoinResidualMaterialization>,
@@ -51,6 +55,9 @@ impl JoinResidualMaterializations {
     }
 }
 
+/// Synthetic column appended to one join input so the residual predicate can
+/// reference an expression that cannot be represented directly in the native
+/// join predicate AST.
 pub(super) struct JoinResidualMaterialization {
     pub(super) alias: String,
     pub(super) expr: NativeExpr,
@@ -71,6 +78,10 @@ pub(super) fn lower_join_filter(
     right_schema: &SchemaRef,
     canonical: CanonicalJoin,
 ) -> Result<LoweredJoinResidual, FallbackReason> {
+    // Supported residual vocabulary is deliberately small: columns, literals,
+    // binary operators, NOT, null checks, casts, and literal IN lists. A join
+    // residual must reference both sides; single-side predicates belong in
+    // input filters or materializations, not as join conditions.
     let mut left_required = BTreeSet::new();
     let mut right_required = BTreeSet::new();
     let mut materializations = JoinResidualMaterializations::default();
@@ -145,6 +156,9 @@ fn lower_join_filter_expr(
             return Err(FallbackReason::UnsupportedType);
         }
         if !is_supported_join_residual_ast_cast_target(cast.cast_type()) {
+            // Some casts are valid native expressions but not accepted in the
+            // join residual AST. Materialize those on one input side and let
+            // the residual predicate reference the synthetic column.
             if !is_supported_join_residual_materialized_cast_target(cast.cast_type()) {
                 return Err(FallbackReason::UnsupportedExpression);
             }
@@ -197,6 +211,8 @@ fn materialize_join_residual_expr(
     right_required: &mut BTreeSet<String>,
     materializations: &mut JoinResidualMaterializations,
 ) -> Result<NativeExpr, FallbackReason> {
+    // Materializations are valid only when the whole expression belongs to one
+    // DataFusion side. Cross-side expressions must remain in the residual AST.
     let side = join_filter_expr_single_side(expr, context.filter)?;
     let (schema, required) = match side {
         DataFusionJoinSide::Left => (context.left_schema, left_required),
@@ -365,6 +381,8 @@ fn unique_synthetic_join_residual_alias(
     input_schema: &SchemaRef,
     materializations: &[JoinResidualMaterialization],
 ) -> String {
+    // The `__cudf_join_residual_*` prefix is visible in native plans and tests.
+    // Treat it as stable unless a migration updates diagnostics consumers.
     let side_name = match side {
         DataFusionJoinSide::Left => "left",
         DataFusionJoinSide::Right => "right",

@@ -58,7 +58,7 @@ impl<'a> BoundedPlan<'a> {
         if limit.is_some() && sort.is_none() {
             return Err(unsupported_bounded_shape(
                 "bounded execution does not support limit without a preceding global sort",
-                "limit_without_sort",
+                "limit_not_directly_above_sort",
             ));
         }
 
@@ -615,11 +615,10 @@ pub(super) fn final_global_aggregate_spec(spec: &AggregateSpec) -> AggregateSpec
                     expr.alias.clone(),
                 )],
                 AggregateFunction::Avg => {
-                    let sum_alias = avg_sum_state_alias(index);
-                    let count_alias = avg_count_state_alias(index);
+                    let state = AvgStateAliases::for_aggregate_index(index);
                     vec![
-                        AggregateExpr::new(AggregateFunction::Sum, Expr::column(sum_alias.clone()), sum_alias),
-                        AggregateExpr::new(AggregateFunction::Sum, Expr::column(count_alias.clone()), count_alias),
+                        AggregateExpr::new(AggregateFunction::Sum, state.sum_expr(), state.sum().to_string()),
+                        AggregateExpr::new(AggregateFunction::Sum, state.count_expr(), state.count().to_string()),
                     ]
                 },
                 AggregateFunction::Sum | AggregateFunction::Min | AggregateFunction::Max => {

@@ -1,25 +1,67 @@
+//! Error taxonomy for the DataFusion-free native query engine.
+//!
+//! Native errors stop at the `cudf-query-engine` API boundary as [`QueryError`].
+//! The DataFusion adapter wraps them in its own `datafusion_cudf::Error` so it
+//! can preserve native classification facts while exposing adapter-level
+//! planning and execution categories to DataFusion.
+
 use std::{collections::BTreeMap, error::Error as StdError, fmt};
 
 type BoxedSourceError = Box<dyn StdError + Send + Sync + 'static>;
 
 pub type Result<T> = std::result::Result<T, QueryError>;
 
+/// Stable, machine-readable native-engine error codes.
+///
+/// Codes describe the closest actionable cause. [`QueryErrorKind`] and
+/// [`QueryErrorStatus`] are derived from the code by [`kind_for_code`] and
+/// [`status_for_code`]; consumers should not infer those policies from variant
+/// names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum QueryErrorCode {
+    /// The requested IR shape is not implemented by the native executor.
+    ///
+    /// This is a capability rejection rather than a malformed-plan error.
     UnsupportedPlanShape,
+    /// A specific operator within an otherwise recognizable plan is unsupported.
     UnsupportedOperator,
+    /// An expression or expression form is unsupported.
     UnsupportedExpression,
+    /// A data type, physical representation, or type combination is unsupported.
     UnsupportedType,
+    /// The native IR violates executor invariants or cannot be validated.
+    ///
+    /// Use this when the plan is malformed for the native engine, not when the
+    /// plan is well-formed but outside the supported catalogue.
     InvalidPlan,
+    /// cuDF rejected an input, including permanent `NotFound` conditions.
     CudfInvalidInput,
+    /// cuDF reported a permanent unsupported capability.
     CudfUnsupported,
+    /// cuDF reported resource exhaustion.
+    ///
+    /// This is classified as temporary because reducing memory pressure or
+    /// retrying with a different admission decision can remediate it.
     CudfResourceExhausted,
+    /// cuDF reported a temporary dependency/runtime failure.
     CudfTemporaryFailure,
+    /// cuDF reported a persistent dependency/runtime failure.
+    ///
+    /// `Persistent` is cuDF's retry classification: not immediately transient,
+    /// but distinct from this crate's `Permanent` status for caller-fixable or
+    /// deterministic non-retryable failures.
     CudfPersistentFailure,
+    /// cuDF reported a permanent dependency failure.
     CudfDependencyFailure,
+    /// cuDF reported an invariant or execution-context violation.
     CudfInvariantViolation,
+    /// The native admission controller could not reserve requested memory.
+    ///
+    /// This is a temporary resource condition, separate from a cuDF allocator
+    /// failure, and is intended to drive retry/backoff decisions.
     MemoryReservationFailed,
+    /// An internal native-engine bug or unreachable condition.
     Internal,
 }
 
@@ -61,12 +103,19 @@ impl fmt::Display for QueryErrorCode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum QueryErrorKind {
+    /// Planning, validation, or IR construction failure.
     Planning,
+    /// Caller-provided input is invalid for the requested operation.
     InvalidInput,
+    /// Requested plan, operator, expression, or type is not supported.
     Unsupported,
+    /// Memory or other bounded resource was exhausted or could not be reserved.
     ResourceExhausted,
+    /// cuDF or another dependency failed outside resource-exhaustion handling.
     DependencyFailure,
+    /// A native-engine or cuDF invariant was violated.
     InvariantViolation,
+    /// Internal bug or unreachable condition.
     Internal,
 }
 
@@ -92,8 +141,15 @@ impl fmt::Display for QueryErrorKind {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum QueryErrorStatus {
+    /// Non-retryable without changing the query, input, configuration, or code.
     Permanent,
+    /// Retry or smaller resource admission may succeed without external repair.
     Temporary,
+    /// cuDF classified the condition as not immediately transient.
+    ///
+    /// This name is intentionally distinct from `Permanent`: persistent failures
+    /// are dependency/runtime classifications, while permanent failures are
+    /// deterministic non-retryable outcomes at this API boundary.
     Persistent,
 }
 
@@ -113,6 +169,11 @@ impl fmt::Display for QueryErrorStatus {
     }
 }
 
+/// Maps each native error code to its stable coarse category.
+///
+/// `kind` is the broad bucket used for diagnostics and aggregation. It is less
+/// specific than [`QueryErrorCode`] and should remain stable for consumers that
+/// group failures without depending on every code variant.
 pub const fn kind_for_code(code: QueryErrorCode) -> QueryErrorKind {
     match code {
         QueryErrorCode::UnsupportedPlanShape
@@ -133,6 +194,12 @@ pub const fn kind_for_code(code: QueryErrorCode) -> QueryErrorKind {
     }
 }
 
+/// Maps each native error code to its stable retry/remediation status.
+///
+/// `status` answers what kind of remediation is plausible. `Permanent` means
+/// retrying the same operation is not expected to help. `Persistent` preserves
+/// cuDF's dependency/runtime status and is deliberately not a synonym for
+/// `Permanent`.
 pub const fn status_for_code(code: QueryErrorCode) -> QueryErrorStatus {
     match code {
         QueryErrorCode::CudfResourceExhausted
@@ -152,20 +219,32 @@ pub const fn status_for_code(code: QueryErrorCode) -> QueryErrorStatus {
     }
 }
 
+/// Machine-readable facts attached to a [`QueryError`].
+///
+/// Fact keys are static strings so they can be treated as a documented contract
+/// by tests, reports, and callers. Values are stringified with [`ToString`].
+/// Iteration is sorted by key because facts are stored in a [`BTreeMap`].
+///
+/// Empty keys panic, and inserting the same key twice panics. The native engine
+/// reserves `cudf_code`, `cudf_kind`, `cudf_status`, and `cudf_operation` for
+/// facts copied from an underlying `cudf::Error`.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Facts {
     values: BTreeMap<&'static str, String>,
 }
 
 impl Facts {
+    /// Creates an empty fact set.
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Returns the string value for `key` when present.
     pub fn get(&self, key: &str) -> Option<&str> {
         self.values.get(key).map(String::as_str)
     }
 
+    /// Iterates facts in sorted key order.
     pub fn iter(&self) -> impl Iterator<Item = (&'static str, &str)> {
         self.values.iter().map(|(key, value)| (*key, value.as_str()))
     }
@@ -186,6 +265,11 @@ pub struct QueryError {
 }
 
 impl QueryError {
+    /// Creates a native-engine error with a stable operation id and message.
+    ///
+    /// `operation` should be a stable dotted identifier such as
+    /// `cudf_query_engine.plan.execute`. `message` is human-facing diagnostic
+    /// text. Add machine-readable context with [`Self::with_fact`].
     pub fn new(code: QueryErrorCode, operation: &'static str, message: impl Into<String>) -> Self {
         let message = message.into();
         assert!(!operation.is_empty(), "cudf-query-engine error operation must not be empty");
@@ -193,12 +277,18 @@ impl QueryError {
         Self { code, operation, message, facts: Facts::new(), source: None }
     }
 
+    /// Adds one machine-readable fact.
+    ///
+    /// `key` must be a non-empty static string and should be treated as part of
+    /// the diagnostic contract once exposed. `value` is stringified with
+    /// [`ToString`]. Duplicate keys panic.
     #[must_use]
     pub fn with_fact(mut self, key: &'static str, value: impl ToString) -> Self {
         self.facts.insert(key, value.to_string());
         self
     }
 
+    /// Attaches the source error, replacing any source already present.
     #[must_use]
     pub fn with_source<E>(mut self, source: E) -> Self
     where E: StdError + Send + Sync + 'static {
@@ -206,6 +296,12 @@ impl QueryError {
         self
     }
 
+    /// Wraps a `cudf::Error` at the native-engine boundary.
+    ///
+    /// `operation` should be the stable dotted id for the native operation that
+    /// called cuDF, and `message` should describe the failure for humans. The
+    /// cuDF code, kind, status, and operation are preserved as reserved facts:
+    /// `cudf_code`, `cudf_kind`, `cudf_status`, and `cudf_operation`.
     pub fn from_cudf(operation: &'static str, message: impl Into<String>, source: cudf::Error) -> Self {
         let code = code_for_cudf_error(&source);
         Self::new(code, operation, message)
@@ -302,6 +398,11 @@ impl StdError for QueryError {
     }
 }
 
+// cuDF classification priority is resource exhaustion first, then retry status
+// (`Temporary`/`Persistent`), then permanent failures by cuDF kind. Notable
+// permanent mappings: `NotFound` is treated as invalid input,
+// `ExecutionContext` is treated as an invariant violation, and unknown kinds
+// fall back to dependency failure.
 fn code_for_cudf_error(error: &cudf::Error) -> QueryErrorCode {
     if error.kind() == cudf::ErrorKind::ResourceExhausted {
         return QueryErrorCode::CudfResourceExhausted;

@@ -35,7 +35,11 @@ pub(super) fn validate_aggregate_capability(
         output_schema,
         "cudf_query_engine.aggregate.validate",
         "aggregate output names must match output schema fields",
-    )
+    )?;
+    if aggregate_spec_has_avg(&node.spec) {
+        validate_avg_output_fields(&node.spec, output_schema)?;
+    }
+    Ok(())
 }
 
 pub(super) fn validate_final_aggregate_capability(
@@ -47,6 +51,7 @@ pub(super) fn validate_final_aggregate_capability(
     }
     let aggregate = lower_final_aggregate_spec(&node.spec)?;
     if aggregate_spec_has_avg(&node.spec) {
+        validate_avg_state_alias_collisions(&node.spec, "cudf_query_engine.final_merge.validate_avg_state_alias")?;
         validate_avg_output_fields(&node.spec, output_schema)?;
         return Ok(());
     }
@@ -62,6 +67,9 @@ pub(super) fn validate_global_aggregate_capability(
     spec: &AggregateSpec,
     output_schema: &arrow::datatypes::SchemaRef,
 ) -> Result<()> {
+    if aggregate_spec_has_avg(spec) {
+        validate_avg_state_alias_collisions(spec, "cudf_query_engine.global_aggregate.validate_avg_state_alias")?;
+    }
     let expected_output_names = spec.aggr_exprs.iter().map(|expr| expr.alias.clone()).collect::<Vec<_>>();
     let schema_output_names = output_schema.fields().iter().map(|field| field.name().clone()).collect::<Vec<_>>();
     if expected_output_names != schema_output_names {
@@ -189,6 +197,7 @@ pub(super) fn execute_aggregate(
     let timer = Instant::now();
     let mut output = execute_groupby_aggregate(&overrides, frame, &aggregate, "cudf_query_engine.aggregate.execute")?;
     output = cast_count_output_columns(output, &node.spec, output_schema)?;
+    output = cast_avg_output_columns(output, &node.spec, output_schema)?;
     output = output.select(expected_output_names.iter().map(String::as_str).collect::<Vec<_>>()).map_err(|error| {
         QueryError::from_cudf(
             "cudf_query_engine.aggregate.select",
@@ -323,13 +332,29 @@ pub(super) fn execute_global_aggregate(
     for (index, expr) in spec.aggr_exprs.iter().enumerate() {
         match expr.function {
             AggregateFunction::Avg => {
-                let sum_alias = avg_sum_state_alias(index);
-                let count_alias = avg_count_state_alias(index);
+                let state = AvgStateAliases::for_aggregate_index(index);
+                let field = output_schema.field_with_name(expr.alias.as_str()).map_err(|_error| {
+                    QueryError::new(
+                        QueryErrorCode::InvalidPlan,
+                        "cudf_query_engine.global_aggregate.avg_state_type",
+                        "avg aggregate output field is missing from output schema",
+                    )
+                    .with_fact("alias", expr.alias.as_str())
+                })?;
+                let input_type = global_aggregate_frame_input_data_type(&frame, &expr.expr)?;
+                let sum_state_type = avg_sum_state_data_type(&input_type, field.data_type())?;
                 columns.push((
-                    sum_alias,
-                    reduce_global_aggregate_column(context, &frame, &overrides, expr, AggregateFunction::Sum, None)?,
+                    state.sum().to_string(),
+                    reduce_global_aggregate_column(
+                        context,
+                        &frame,
+                        &overrides,
+                        expr,
+                        AggregateFunction::Sum,
+                        Some(&sum_state_type),
+                    )?,
                 ));
-                columns.push((count_alias, global_count_series(context, &frame, expr)?));
+                columns.push((state.count().to_string(), global_count_series(context, &frame, expr)?));
             },
             AggregateFunction::Count => {
                 columns.push((expr.alias.clone(), global_count_series(context, &frame, expr)?));
@@ -395,6 +420,40 @@ pub(super) fn reduce_global_aggregate_column(
     {
         return global_null_output_series(context, output_type, expr.alias.as_str());
     }
+    let series = if matches!(function, AggregateFunction::Sum)
+        && let Some(output_type) = output_type
+    {
+        let target_type = cudf_dtype_from_arrow_type(output_type).ok_or_else(|| {
+            QueryError::new(
+                QueryErrorCode::UnsupportedType,
+                "cudf_query_engine.global_aggregate.cast_input",
+                "global aggregate input cast target type is not supported by native execution",
+            )
+            .with_fact("alias", expr.alias.as_str())
+            .with_fact("data_type", format!("{output_type:?}"))
+        })?;
+        let casted = frame.cast_column(input_column.as_str(), target_type).map_err(|error| {
+            QueryError::from_cudf(
+                "cudf_query_engine.global_aggregate.cast_input",
+                "failed to cast native global aggregate input column before reduction",
+                error,
+            )
+            .with_fact("column", input_column.as_str())
+            .with_fact("alias", expr.alias.as_str())
+            .with_fact("data_type", format!("{output_type:?}"))
+        })?;
+        casted.series(input_column.as_str()).map_err(|error| {
+            QueryError::from_cudf(
+                "cudf_query_engine.global_aggregate.cast_input",
+                "failed to access casted native global aggregate input column",
+                error,
+            )
+            .with_fact("column", input_column.as_str())
+            .with_fact("alias", expr.alias.as_str())
+        })?
+    } else {
+        series
+    };
     let scalar = match function {
         AggregateFunction::Sum => series.sum_in(overrides),
         AggregateFunction::Min => series.min_in(overrides),
@@ -443,6 +502,24 @@ fn global_null_output_series(
         )
         .with_fact("alias", alias)
         .with_fact("data_type", format!("{output_type:?}"))
+    })
+}
+
+fn global_aggregate_frame_input_data_type(frame: &DataFrame, expr: &Expr) -> Result<ArrowDataType> {
+    let input_column = lower_column_expr(expr, "cudf_query_engine.global_aggregate.avg_state_type")?;
+    frame_column_arrow_data_type(frame, input_column.as_str(), "cudf_query_engine.global_aggregate.avg_state_type")
+}
+
+fn frame_column_arrow_data_type(frame: &DataFrame, column: &str, operation: &'static str) -> Result<ArrowDataType> {
+    let series = frame.series(column).map_err(|error| {
+        QueryError::from_cudf(operation, "failed to access native column while inspecting its type", error)
+            .with_fact("column", column)
+    })?;
+    let dtype = series.dtype().map_err(|error| {
+        QueryError::from_cudf(operation, "failed to inspect native column type", error).with_fact("column", column)
+    })?;
+    cudf::interop::arrow_host::arrow_type_from_cudf_dtype(dtype).map_err(|error| {
+        QueryError::from_cudf(operation, "failed to map native column type to Arrow", error).with_fact("column", column)
     })
 }
 
@@ -525,10 +602,13 @@ pub(super) fn partial_global_aggregate_spec(spec: &AggregateSpec) -> AggregateSp
             .iter()
             .enumerate()
             .flat_map(|(index, expr)| match expr.function {
-                AggregateFunction::Avg => vec![
-                    AggregateExpr::new(AggregateFunction::Sum, expr.expr.clone(), avg_sum_state_alias(index)),
-                    AggregateExpr::new(AggregateFunction::Count, expr.expr.clone(), avg_count_state_alias(index)),
-                ],
+                AggregateFunction::Avg => {
+                    let state = AvgStateAliases::for_aggregate_index(index);
+                    vec![
+                        AggregateExpr::new(AggregateFunction::Sum, expr.expr.clone(), state.sum().to_string()),
+                        AggregateExpr::new(AggregateFunction::Count, expr.expr.clone(), state.count().to_string()),
+                    ]
+                },
                 AggregateFunction::Sum | AggregateFunction::Min | AggregateFunction::Max => vec![
                     expr.clone(),
                     AggregateExpr::new(
@@ -552,9 +632,12 @@ pub(super) fn partial_global_aggregate_output_schema(
     for (index, expr) in spec.aggr_exprs.iter().enumerate() {
         match expr.function {
             AggregateFunction::Avg => {
+                let state = AvgStateAliases::for_aggregate_index(index);
                 let input_type = global_aggregate_input_data_type(&expr.expr, input_schema)?;
-                fields.push(Field::new(avg_sum_state_alias(index), input_type, true));
-                fields.push(Field::new(avg_count_state_alias(index), ArrowDataType::Int64, false));
+                let output_field = global_aggregate_output_field(expr.alias.as_str(), aggregate_output_schema)?;
+                let sum_state_type = avg_sum_state_data_type(&input_type, output_field.data_type())?;
+                fields.push(Field::new(state.sum(), sum_state_type, true));
+                fields.push(Field::new(state.count(), ArrowDataType::Int64, false));
             },
             AggregateFunction::Count => {
                 fields.push(Field::new(expr.alias.as_str(), ArrowDataType::Int64, false));
@@ -642,6 +725,42 @@ pub(super) fn cast_count_output_columns(
     Ok(frame)
 }
 
+pub(super) fn cast_avg_output_columns(
+    mut frame: DataFrame,
+    spec: &AggregateSpec,
+    output_schema: &arrow::datatypes::SchemaRef,
+) -> Result<DataFrame> {
+    for expr in spec.aggr_exprs.iter().filter(|expr| expr.function == AggregateFunction::Avg) {
+        let field = output_schema.field_with_name(expr.alias.as_str()).map_err(|_error| {
+            QueryError::new(
+                QueryErrorCode::InvalidPlan,
+                "cudf_query_engine.aggregate.cast_avg",
+                "avg aggregate output field is missing from output schema",
+            )
+            .with_fact("alias", expr.alias.as_str())
+        })?;
+        let target_type = cudf_dtype_from_arrow_type(field.data_type()).ok_or_else(|| {
+            QueryError::new(
+                QueryErrorCode::UnsupportedType,
+                "cudf_query_engine.aggregate.cast_avg",
+                "avg aggregate output schema type is not supported by native execution",
+            )
+            .with_fact("alias", expr.alias.as_str())
+            .with_fact("data_type", format!("{:?}", field.data_type()))
+        })?;
+        frame = frame.cast_column(expr.alias.as_str(), target_type).map_err(|error| {
+            QueryError::from_cudf(
+                "cudf_query_engine.aggregate.cast_avg",
+                "failed to cast native avg aggregate output column",
+                error,
+            )
+            .with_fact("alias", expr.alias.as_str())
+            .with_fact("data_type", format!("{:?}", field.data_type()))
+        })?;
+    }
+    Ok(frame)
+}
+
 pub(super) fn cast_global_reduction_output_columns(
     mut frame: DataFrame,
     spec: &AggregateSpec,
@@ -697,6 +816,7 @@ pub(super) fn finalize_avg_output_columns(
         .enumerate()
         .filter(|(_, expr)| expr.function == AggregateFunction::Avg)
         .map(|(index, expr)| {
+            let state = AvgStateAliases::for_aggregate_index(index);
             let field = output_schema.field_with_name(expr.alias.as_str()).map_err(|_error| {
                 QueryError::new(
                     QueryErrorCode::InvalidPlan,
@@ -705,21 +825,20 @@ pub(super) fn finalize_avg_output_columns(
                 )
                 .with_fact("alias", expr.alias.as_str())
             })?;
-            let sum = Expr::cast(Expr::column(avg_sum_state_alias(index)), field.data_type().clone());
-            let count =
-                Expr::cast(Expr::column(avg_count_state_alias(index)), avg_count_output_data_type(field.data_type()));
+            let state_sum_type =
+                frame_column_arrow_data_type(&frame, state.sum(), "cudf_query_engine.aggregate.finalize_avg")?;
+            let division_type = avg_division_data_type(&state_sum_type, field.data_type())?;
+            let sum = Expr::cast(state.sum_expr(), division_type.clone());
+            let count = Expr::cast(state.count_expr(), avg_count_output_data_type(&division_type));
             let alias = expr.alias.clone();
-            let count_is_zero = Expr::binary(
-                Expr::column(avg_count_state_alias(index)),
-                BinaryOp::Eq,
-                Expr::literal(LiteralValue::Int64(0)),
-            );
+            let count_is_zero = Expr::binary(state.count_expr(), BinaryOp::Eq, Expr::literal(LiteralValue::Int64(0)));
+            let avg = Expr::cast(Expr::binary(sum, BinaryOp::Divide, count), field.data_type().clone());
             let nullable_value = Expr::case(
                 vec![crate::expr::CaseWhen::new(
                     count_is_zero,
                     Expr::literal(LiteralValue::Null(field.data_type().clone())),
                 )],
-                Expr::binary(sum, BinaryOp::Divide, count),
+                avg,
             );
             lower_expr(&nullable_value).map(|lowered| (alias, lowered))
         })
@@ -740,11 +859,116 @@ pub(super) fn global_valid_count_state_alias(alias: &str) -> String {
 
 const GLOBAL_VALID_COUNT_STATE_ALIAS_PREFIX: &str = "__cudf_global_valid_count_";
 
+fn avg_sum_state_data_type(input_type: &ArrowDataType, avg_output_type: &ArrowDataType) -> Result<ArrowDataType> {
+    match avg_output_type {
+        ArrowDataType::Float32 | ArrowDataType::Float64 => Ok(ArrowDataType::Float64),
+        ArrowDataType::Decimal128(_, output_scale) => match input_type {
+            ArrowDataType::Decimal128(_, input_scale) => {
+                Ok(ArrowDataType::Decimal128(arrow::datatypes::DECIMAL128_MAX_PRECISION, *input_scale))
+            },
+            ArrowDataType::Int8
+            | ArrowDataType::Int16
+            | ArrowDataType::Int32
+            | ArrowDataType::Int64
+            | ArrowDataType::UInt8
+            | ArrowDataType::UInt16
+            | ArrowDataType::UInt32
+            | ArrowDataType::UInt64
+            | ArrowDataType::Float32
+            | ArrowDataType::Float64 => {
+                Ok(ArrowDataType::Decimal128(arrow::datatypes::DECIMAL128_MAX_PRECISION, *output_scale))
+            },
+            _ => Err(QueryError::new(
+                QueryErrorCode::UnsupportedType,
+                "cudf_query_engine.aggregate.avg_state_type",
+                "avg sum state does not support this input type for Decimal128 output",
+            )
+            .with_fact("input_type", format!("{input_type:?}"))
+            .with_fact("output_type", format!("{avg_output_type:?}"))),
+        },
+        _ => Err(QueryError::new(
+            QueryErrorCode::UnsupportedType,
+            "cudf_query_engine.aggregate.avg_state_type",
+            "avg sum state output schema must be Float32, Float64, or Decimal128",
+        )
+        .with_fact("input_type", format!("{input_type:?}"))
+        .with_fact("output_type", format!("{avg_output_type:?}"))),
+    }
+}
+
+fn avg_division_data_type(state_sum_type: &ArrowDataType, avg_output_type: &ArrowDataType) -> Result<ArrowDataType> {
+    match avg_output_type {
+        ArrowDataType::Float32 | ArrowDataType::Float64 => Ok(ArrowDataType::Float64),
+        ArrowDataType::Decimal128(_, output_scale) => match state_sum_type {
+            ArrowDataType::Decimal128(_, _)
+            | ArrowDataType::Int8
+            | ArrowDataType::Int16
+            | ArrowDataType::Int32
+            | ArrowDataType::Int64
+            | ArrowDataType::UInt8
+            | ArrowDataType::UInt16
+            | ArrowDataType::UInt32
+            | ArrowDataType::UInt64
+            | ArrowDataType::Float32
+            | ArrowDataType::Float64 => {
+                Ok(ArrowDataType::Decimal128(arrow::datatypes::DECIMAL128_MAX_PRECISION, *output_scale))
+            },
+            _ => Err(QueryError::new(
+                QueryErrorCode::UnsupportedType,
+                "cudf_query_engine.aggregate.avg_division_type",
+                "avg division does not support this sum state type for Decimal128 output",
+            )
+            .with_fact("state_sum_type", format!("{state_sum_type:?}"))
+            .with_fact("output_type", format!("{avg_output_type:?}"))),
+        },
+        _ => Err(QueryError::new(
+            QueryErrorCode::UnsupportedType,
+            "cudf_query_engine.aggregate.avg_division_type",
+            "avg division output schema must be Float32, Float64, or Decimal128",
+        )
+        .with_fact("state_sum_type", format!("{state_sum_type:?}"))
+        .with_fact("output_type", format!("{avg_output_type:?}"))),
+    }
+}
+
 fn avg_count_output_data_type(avg_output_type: &ArrowDataType) -> ArrowDataType {
     match avg_output_type {
         ArrowDataType::Decimal128(_, _) => ArrowDataType::Decimal128(arrow::datatypes::DECIMAL128_MAX_PRECISION, 0),
         _ => avg_output_type.clone(),
     }
+}
+
+pub(super) fn validate_avg_state_alias_collisions(spec: &AggregateSpec, operation: &'static str) -> Result<()> {
+    if !aggregate_spec_has_avg(spec) {
+        return Ok(());
+    }
+
+    let reserved_aliases = spec
+        .aggr_exprs
+        .iter()
+        .enumerate()
+        .filter(|(_, expr)| expr.function == AggregateFunction::Avg)
+        .flat_map(|(index, _)| AvgStateAliases::for_aggregate_index(index).output_names())
+        .collect::<Vec<_>>();
+    let visible_aliases = spec
+        .group_exprs
+        .iter()
+        .map(|expr| lower_named_column_expr(expr, operation).map(|(_, alias)| alias))
+        .chain(spec.aggr_exprs.iter().map(|expr| Ok(expr.alias.clone())))
+        .collect::<Result<Vec<_>>>()?;
+    for alias in visible_aliases {
+        if reserved_aliases.iter().any(|reserved| reserved == &alias) {
+            return Err(QueryError::new(
+                QueryErrorCode::InvalidPlan,
+                operation,
+                "visible aggregate output alias conflicts with reserved internal AVG state column",
+            )
+            .with_fact("alias", alias)
+            .with_fact("reserved_aliases", reserved_aliases.join(",")));
+        }
+    }
+
+    Ok(())
 }
 
 pub(super) fn validate_avg_output_fields(

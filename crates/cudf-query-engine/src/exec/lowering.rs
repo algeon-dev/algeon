@@ -288,23 +288,20 @@ pub(super) fn lower_aggregate_spec(spec: &AggregateSpec) -> Result<LoweredAggreg
 
 pub(super) fn lower_partial_aggregate_spec(spec: &AggregateSpec) -> Result<LoweredAggregate> {
     let mut aggregate = lower_aggregate_spec_keys(spec)?;
-    let mut aggregations = Vec::with_capacity(spec.aggr_exprs.len());
+    let mut aggregations = Vec::with_capacity(spec.aggr_exprs.len().saturating_mul(2));
     let mut output_names = aggregate.output_key_names.clone();
 
     for (index, expr) in spec.aggr_exprs.iter().enumerate() {
         let input_column = lower_column_expr(&expr.expr, "cudf_query_engine.aggregate.lower_partial_expr")?;
         match expr.function {
             AggregateFunction::Avg => {
-                let sum_alias = avg_sum_state_alias(index);
-                let count_alias = avg_count_state_alias(index);
-                aggregations
-                    .push(CudfAggSpec::new(input_column.as_str(), GroupByAgg::Sum).with_alias(sum_alias.as_str()));
+                let state = AvgStateAliases::for_aggregate_index(index);
+                aggregations.push(CudfAggSpec::new(input_column.as_str(), GroupByAgg::Sum).with_alias(state.sum()));
                 aggregations.push(
                     CudfAggSpec::new(input_column.as_str(), GroupByAgg::Count { include_nulls: false })
-                        .with_alias(count_alias.as_str()),
+                        .with_alias(state.count()),
                 );
-                output_names.push(sum_alias);
-                output_names.push(count_alias);
+                output_names.extend(state.output_names());
             },
             _ => {
                 aggregations.push(
@@ -328,13 +325,10 @@ pub(super) fn lower_final_aggregate_spec(spec: &AggregateSpec) -> Result<Lowered
     for (index, expr) in spec.aggr_exprs.iter().enumerate() {
         match expr.function {
             AggregateFunction::Avg => {
-                let sum_alias = avg_sum_state_alias(index);
-                let count_alias = avg_count_state_alias(index);
-                aggregations.push(CudfAggSpec::new(sum_alias.as_str(), GroupByAgg::Sum).with_alias(sum_alias.as_str()));
-                aggregations
-                    .push(CudfAggSpec::new(count_alias.as_str(), GroupByAgg::Sum).with_alias(count_alias.as_str()));
-                output_names.push(sum_alias);
-                output_names.push(count_alias);
+                let state = AvgStateAliases::for_aggregate_index(index);
+                aggregations.push(CudfAggSpec::new(state.sum(), GroupByAgg::Sum).with_alias(state.sum()));
+                aggregations.push(CudfAggSpec::new(state.count(), GroupByAgg::Sum).with_alias(state.count()));
+                output_names.extend(state.output_names());
             },
             _ => {
                 aggregations.push(
@@ -397,12 +391,41 @@ pub(super) fn aggregate_spec_has_avg(spec: &AggregateSpec) -> bool {
     spec.aggr_exprs.iter().any(|expr| expr.function == AggregateFunction::Avg)
 }
 
-pub(super) fn avg_sum_state_alias(index: usize) -> String {
-    format!("__cudf_avg_{index}_sum")
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct AvgStateAliases {
+    sum_alias: String,
+    count_alias: String,
 }
 
-pub(super) fn avg_count_state_alias(index: usize) -> String {
-    format!("__cudf_avg_{index}_count")
+impl AvgStateAliases {
+    /// Stable internal columns for logical AVG partial/final state.
+    ///
+    /// The public aggregate output keeps the logical AVG alias. These names
+    /// exist only while carrying SUM and non-null COUNT state between partial
+    /// and final aggregate stages.
+    pub(super) fn for_aggregate_index(index: usize) -> Self {
+        Self { sum_alias: format!("__cudf_avg_{index}_sum"), count_alias: format!("__cudf_avg_{index}_count") }
+    }
+
+    pub(super) fn sum(&self) -> &str {
+        self.sum_alias.as_str()
+    }
+
+    pub(super) fn count(&self) -> &str {
+        self.count_alias.as_str()
+    }
+
+    pub(super) fn sum_expr(&self) -> Expr {
+        Expr::column(self.sum_alias.clone())
+    }
+
+    pub(super) fn count_expr(&self) -> Expr {
+        Expr::column(self.count_alias.clone())
+    }
+
+    pub(super) fn output_names(&self) -> [String; 2] {
+        [self.sum_alias.clone(), self.count_alias.clone()]
+    }
 }
 
 pub(super) struct LoweredSort {

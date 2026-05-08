@@ -1,7 +1,8 @@
 use super::*;
 use crate::bounded_support::{
-    BoundedJoinPipelineRejection, BoundedJoinPipelineStage, analyze_bounded_conditional_join_input_subplan_pipeline,
-    analyze_bounded_conditional_join_joined_aggregate_input_subplan_pipeline, analyze_bounded_join_pipeline,
+    BoundedJoinPipelineRejection, BoundedJoinPipelineStage, analyze_bounded_join_pipeline,
+    analyze_bounded_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline,
+    analyze_bounded_keyless_conditional_join_input_subplan_pipeline,
 };
 
 const KEYLESS_CONDITIONAL_INPUT_SUBPLAN_EXECUTION_FAMILY_FACT: &str = "bounded_join_execution_family";
@@ -17,17 +18,19 @@ fn attach_bounded_join_execution_family(
     error.with_fact(KEYLESS_CONDITIONAL_INPUT_SUBPLAN_EXECUTION_FAMILY_FACT, family.as_str())
 }
 
-fn attach_keyless_conditional_input_subplan_execution_family(error: QueryError) -> QueryError {
+fn attach_keyless_conditional_join_input_subplan_execution_family(error: QueryError) -> QueryError {
     attach_bounded_join_execution_family(
         error,
         crate::runtime::BoundedJoinExecutionFamily::KeylessConditionalJoinInputSubplanPipeline,
     )
 }
 
-fn attach_keyless_conditional_joined_aggregate_input_subplan_execution_family(error: QueryError) -> QueryError {
+fn attach_keyless_conditional_join_aggregate_over_join_subplan_inputs_execution_family(
+    error: QueryError,
+) -> QueryError {
     attach_bounded_join_execution_family(
         error,
-        crate::runtime::BoundedJoinExecutionFamily::KeylessConditionalJoinJoinedAggregateInputSubplanPipeline,
+        crate::runtime::BoundedJoinExecutionFamily::KeylessConditionalJoinAggregateOverJoinSubplanInputsPipeline,
     )
 }
 
@@ -97,49 +100,49 @@ pub(super) fn execute_bounded_join_pipeline_query_plan(
     }
 }
 
-pub(super) fn execute_bounded_conditional_join_input_subplan_pipeline_query_plan(
+pub(super) fn execute_bounded_keyless_conditional_join_input_subplan_pipeline_query_plan(
     context: &ExecutionContext,
     plan: &QueryPlan,
     gpu_inputs: &GpuResidentInputMap,
     metrics: &mut QueryMetrics,
 ) -> Result<QueryOutput> {
-    execute_bounded_conditional_join_input_subplan_pipeline_query_plan_inner(context, plan, gpu_inputs, metrics)
-        .map_err(attach_keyless_conditional_input_subplan_execution_family)
+    execute_bounded_keyless_conditional_join_input_subplan_pipeline_query_plan_inner(context, plan, gpu_inputs, metrics)
+        .map_err(attach_keyless_conditional_join_input_subplan_execution_family)
 }
 
-pub(super) fn execute_bounded_conditional_join_joined_aggregate_input_subplan_pipeline_query_plan(
+pub(super) fn execute_bounded_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline_query_plan(
     context: &ExecutionContext,
     plan: &QueryPlan,
     gpu_inputs: &GpuResidentInputMap,
     metrics: &mut QueryMetrics,
 ) -> Result<QueryOutput> {
-    execute_bounded_conditional_join_joined_aggregate_input_subplan_pipeline_query_plan_inner(
+    execute_bounded_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline_query_plan_inner(
         context, plan, gpu_inputs, metrics,
     )
-    .map_err(attach_keyless_conditional_joined_aggregate_input_subplan_execution_family)
+    .map_err(attach_keyless_conditional_join_aggregate_over_join_subplan_inputs_execution_family)
 }
 
-fn execute_bounded_conditional_join_input_subplan_pipeline_query_plan_inner(
+fn execute_bounded_keyless_conditional_join_input_subplan_pipeline_query_plan_inner(
     context: &ExecutionContext,
     plan: &QueryPlan,
     gpu_inputs: &GpuResidentInputMap,
     metrics: &mut QueryMetrics,
 ) -> Result<QueryOutput> {
-    let pipeline = BoundedConditionalJoinInputSubplanPipelinePlan::analyze(plan)?;
+    let pipeline = BoundedKeylessConditionalJoinInputSubplanPipelinePlan::analyze(plan)?;
     validate_bounded_join_pipeline_stages(&pipeline.stages)?;
-    validate_bounded_conditional_join_input_subplan_capabilities(plan, pipeline.join.inputs[0])?;
-    validate_bounded_conditional_join_input_subplan_capabilities(plan, pipeline.join.inputs[1])?;
+    validate_bounded_keyless_conditional_join_input_subplan_capabilities(plan, pipeline.join.inputs[0])?;
+    validate_bounded_keyless_conditional_join_input_subplan_capabilities(plan, pipeline.join.inputs[1])?;
     validate_executable_join_subset(pipeline.join)?;
     let residual_columns = residual_input_columns(pipeline.join)?;
     lower_join_residual_predicate(context, pipeline.join, &residual_columns)?;
 
     let MemoryControlPolicy::Bounded { device_budget_bytes, .. } = context.memory_control_policy() else {
         unreachable!(
-            "execute_bounded_conditional_join_input_subplan_pipeline_query_plan is called only for bounded policies"
+            "execute_bounded_keyless_conditional_join_input_subplan_pipeline_query_plan is called only for bounded policies"
         );
     };
     let mut reservations = ReservationTracker::new(device_budget_bytes);
-    let left = execute_bounded_conditional_join_input_subplan(
+    let left = execute_bounded_keyless_conditional_join_input_subplan(
         context,
         plan,
         pipeline.join.inputs[0],
@@ -147,7 +150,7 @@ fn execute_bounded_conditional_join_input_subplan_pipeline_query_plan_inner(
         &mut reservations,
         metrics,
     )?;
-    let right = execute_bounded_conditional_join_input_subplan(
+    let right = execute_bounded_keyless_conditional_join_input_subplan(
         context,
         plan,
         pipeline.join.inputs[1],
@@ -190,25 +193,25 @@ fn execute_bounded_conditional_join_input_subplan_pipeline_query_plan_inner(
     }
 }
 
-fn execute_bounded_conditional_join_joined_aggregate_input_subplan_pipeline_query_plan_inner(
+fn execute_bounded_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline_query_plan_inner(
     context: &ExecutionContext,
     plan: &QueryPlan,
     gpu_inputs: &GpuResidentInputMap,
     metrics: &mut QueryMetrics,
 ) -> Result<QueryOutput> {
-    let pipeline = BoundedConditionalJoinJoinedAggregateInputSubplanPipelinePlan::analyze(plan)?;
+    let pipeline = BoundedKeylessConditionalJoinAggregateOverJoinSubplanInputsPipelinePlan::analyze(plan)?;
     validate_bounded_join_pipeline_stages(&pipeline.stages)?;
-    validate_bounded_conditional_join_joined_aggregate_input_subplan_capabilities(
+    validate_bounded_keyless_conditional_join_aggregate_over_join_subplan_inputs_capabilities(
         context,
         plan,
         pipeline.join.inputs[0],
-        JoinedAggregateInputKind::Grouped,
+        AggregateOverJoinSubplanInputKind::Grouped,
     )?;
-    validate_bounded_conditional_join_joined_aggregate_input_subplan_capabilities(
+    validate_bounded_keyless_conditional_join_aggregate_over_join_subplan_inputs_capabilities(
         context,
         plan,
         pipeline.join.inputs[1],
-        JoinedAggregateInputKind::Scalar,
+        AggregateOverJoinSubplanInputKind::Scalar,
     )?;
     validate_executable_join_subset(pipeline.join)?;
     let residual_columns = residual_input_columns(pipeline.join)?;
@@ -216,24 +219,24 @@ fn execute_bounded_conditional_join_joined_aggregate_input_subplan_pipeline_quer
 
     let MemoryControlPolicy::Bounded { device_budget_bytes, .. } = context.memory_control_policy() else {
         unreachable!(
-            "execute_bounded_conditional_join_joined_aggregate_input_subplan_pipeline_query_plan is called only for bounded policies"
+            "execute_bounded_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline_query_plan is called only for bounded policies"
         );
     };
     let mut reservations = ReservationTracker::new(device_budget_bytes);
-    let left = execute_bounded_conditional_join_joined_aggregate_input_subplan(
+    let left = execute_bounded_keyless_conditional_join_aggregate_over_join_subplan_inputs(
         context,
         plan,
         pipeline.join.inputs[0],
-        JoinedAggregateInputKind::Grouped,
+        AggregateOverJoinSubplanInputKind::Grouped,
         gpu_inputs,
         &mut reservations,
         metrics,
     )?;
-    let right = execute_bounded_conditional_join_joined_aggregate_input_subplan(
+    let right = execute_bounded_keyless_conditional_join_aggregate_over_join_subplan_inputs(
         context,
         plan,
         pipeline.join.inputs[1],
-        JoinedAggregateInputKind::Scalar,
+        AggregateOverJoinSubplanInputKind::Scalar,
         gpu_inputs,
         &mut reservations,
         metrics,
@@ -286,35 +289,37 @@ impl<'a> BoundedJoinPipelinePlan<'a> {
     }
 }
 
-struct BoundedConditionalJoinInputSubplanPipelinePlan<'a> {
+struct BoundedKeylessConditionalJoinInputSubplanPipelinePlan<'a> {
     join_id: NodeId,
     join: &'a JoinNode,
     stages: Vec<BoundedJoinPipelineStage<'a>>,
 }
 
-struct BoundedConditionalJoinJoinedAggregateInputSubplanPipelinePlan<'a> {
+struct BoundedKeylessConditionalJoinAggregateOverJoinSubplanInputsPipelinePlan<'a> {
     join_id: NodeId,
     join: &'a JoinNode,
     stages: Vec<BoundedJoinPipelineStage<'a>>,
 }
 
-impl<'a> BoundedConditionalJoinJoinedAggregateInputSubplanPipelinePlan<'a> {
+impl<'a> BoundedKeylessConditionalJoinAggregateOverJoinSubplanInputsPipelinePlan<'a> {
     fn analyze(plan: &'a QueryPlan) -> Result<Self> {
-        let shape = analyze_bounded_conditional_join_joined_aggregate_input_subplan_pipeline(plan)
+        let shape = analyze_bounded_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline(plan)
             .map_err(bounded_join_pipeline_rejection_error)?;
         Ok(Self { join_id: shape.join_id, join: shape.join, stages: shape.stages })
     }
 }
 
 #[derive(Debug, Clone, Copy)]
-enum JoinedAggregateInputKind {
+enum AggregateOverJoinSubplanInputKind {
+    /// Execute and validate a grouped aggregate over a bounded join subplan.
     Grouped,
+    /// Execute and validate a scalar/global aggregate over a bounded join subplan.
     Scalar,
 }
 
-impl<'a> BoundedConditionalJoinInputSubplanPipelinePlan<'a> {
+impl<'a> BoundedKeylessConditionalJoinInputSubplanPipelinePlan<'a> {
     fn analyze(plan: &'a QueryPlan) -> Result<Self> {
-        let shape = analyze_bounded_conditional_join_input_subplan_pipeline(plan)
+        let shape = analyze_bounded_keyless_conditional_join_input_subplan_pipeline(plan)
             .map_err(bounded_join_pipeline_rejection_error)?;
         Ok(Self { join_id: shape.join_id, join: shape.join, stages: shape.stages })
     }
@@ -343,29 +348,35 @@ pub(super) fn validate_bounded_join_pipeline_stages(stages: &[BoundedJoinPipelin
     Ok(())
 }
 
-fn validate_bounded_conditional_join_input_subplan_capabilities(plan: &QueryPlan, node_id: NodeId) -> Result<()> {
-    validate_bounded_conditional_join_input_subplan_capabilities_inner(plan, node_id, false)
+fn validate_bounded_keyless_conditional_join_input_subplan_capabilities(
+    plan: &QueryPlan,
+    node_id: NodeId,
+) -> Result<()> {
+    validate_bounded_keyless_conditional_join_input_subplan_capabilities_inner(plan, node_id, false)
 }
 
-fn validate_bounded_conditional_join_input_subplan_capabilities_inner(
+fn validate_bounded_keyless_conditional_join_input_subplan_capabilities_inner(
     plan: &QueryPlan,
     node_id: NodeId,
     join_reached_through_projection: bool,
 ) -> Result<()> {
     let node = plan.node(node_id).ok_or_else(|| {
-        invalid_node_reference(node_id, "bounded conditional join input subplan references a missing node")
+        invalid_node_reference(
+            node_id,
+            "bounded keyless conditional join input-subplan pipeline references a missing node",
+        )
     })?;
     match &node.kind {
         PlanNode::Source(_) => Ok(()),
         PlanNode::Filter(_) => validate_bounded_join_leaf_input_capabilities(plan, node_id),
         PlanNode::Projection(projection) => {
             validate_projection_capability(projection, &node.facts.output_schema)?;
-            validate_bounded_conditional_join_input_subplan_capabilities_inner(plan, projection.input, true)
+            validate_bounded_keyless_conditional_join_input_subplan_capabilities_inner(plan, projection.input, true)
         },
         PlanNode::Aggregate(aggregate) => {
             if !aggregate.spec.group_exprs.is_empty() {
                 return Err(unsupported_bounded_shape(
-                    "bounded conditional join input subplan execution supports only scalar/global aggregate inputs",
+                    "bounded keyless conditional join input-subplan pipeline execution supports only scalar/global aggregate inputs",
                     "bounded_join_plan_shape_unsupported",
                 )
                 .with_fact("node_id", node_id)
@@ -377,7 +388,7 @@ fn validate_bounded_conditional_join_input_subplan_capabilities_inner(
         PlanNode::Join(join) => {
             if !join_reached_through_projection {
                 return Err(unsupported_bounded_shape(
-                    "bounded conditional join input subplan execution requires left anti hash-join subplans to be projection-wrapped",
+                    "bounded keyless conditional join input-subplan pipeline execution requires left anti hash-join subplans to be projection-wrapped",
                     "bounded_join_plan_shape_unsupported",
                 )
                 .with_fact("node_id", node_id)
@@ -387,7 +398,7 @@ fn validate_bounded_conditional_join_input_subplan_capabilities_inner(
             validate_executable_join_subset(join)?;
             if !(join.spec.join_type == JoinType::LeftAnti && join.is_bounded_root_filtered_join_compatible()) {
                 return Err(unsupported_bounded_shape(
-                    "bounded conditional join input subplan execution supports only left anti hash-join subplans",
+                    "bounded keyless conditional join input-subplan pipeline execution supports only left anti hash-join subplans",
                     "bounded_join_plan_shape_unsupported",
                 )
                 .with_fact("join_type", join.spec.join_type)
@@ -400,71 +411,74 @@ fn validate_bounded_conditional_join_input_subplan_capabilities_inner(
             validate_bounded_join_leaf_input_capabilities(plan, join.inputs[1])
         },
         PlanNode::Sort(_) | PlanNode::Limit(_) => Err(unsupported_bounded_shape(
-            "bounded conditional join input subplan execution does not support sort or limit below root join inputs",
+            "bounded keyless conditional join input-subplan pipeline execution does not support sort or limit below root join inputs",
             "bounded_join_plan_shape_unsupported",
         )
         .with_fact("node_id", node_id)
-        .with_fact("node_kind", bounded_conditional_join_input_subplan_node_kind(&node.kind))),
+        .with_fact("node_kind", bounded_keyless_conditional_join_input_subplan_node_kind(&node.kind))),
     }
 }
 
-fn validate_bounded_conditional_join_joined_aggregate_input_subplan_capabilities(
+fn validate_bounded_keyless_conditional_join_aggregate_over_join_subplan_inputs_capabilities(
     context: &ExecutionContext,
     plan: &QueryPlan,
     node_id: NodeId,
-    kind: JoinedAggregateInputKind,
+    kind: AggregateOverJoinSubplanInputKind,
 ) -> Result<()> {
     let projection_node = plan.node(node_id).ok_or_else(|| {
-        invalid_node_reference(node_id, "bounded conditional joined aggregate input subplan references a missing node")
+        invalid_node_reference(
+            node_id,
+            "bounded keyless conditional join aggregate-over-join subplan inputs pipeline references a missing node",
+        )
     })?;
     let PlanNode::Projection(projection) = &projection_node.kind else {
         return Err(unsupported_bounded_shape(
-            "bounded conditional joined aggregate input subplan execution requires projection-wrapped aggregate inputs",
+            "bounded keyless conditional join aggregate-over-join subplan inputs pipeline execution requires projection-wrapped aggregate inputs",
             "bounded_join_plan_shape_unsupported",
         )
         .with_fact("node_id", node_id)
-        .with_fact("node_kind", bounded_conditional_join_input_subplan_node_kind(&projection_node.kind)));
+        .with_fact("node_kind", bounded_keyless_conditional_join_input_subplan_node_kind(&projection_node.kind)));
     };
     validate_projection_capability(projection, &projection_node.facts.output_schema)?;
 
     let aggregate_node = plan.node(projection.input).ok_or_else(|| {
         invalid_node_reference(
             projection.input,
-            "bounded conditional joined aggregate input subplan projection references a missing aggregate",
+            "bounded keyless conditional join aggregate-over-join subplan inputs pipeline projection references a missing aggregate",
         )
     })?;
     let PlanNode::Aggregate(aggregate) = &aggregate_node.kind else {
         return Err(unsupported_bounded_shape(
-            "bounded conditional joined aggregate input subplan execution requires projection-wrapped aggregate inputs",
+            "bounded keyless conditional join aggregate-over-join subplan inputs pipeline execution requires projection-wrapped aggregate inputs",
             "bounded_join_plan_shape_unsupported",
         )
         .with_fact("node_id", projection.input)
-        .with_fact("node_kind", bounded_conditional_join_input_subplan_node_kind(&aggregate_node.kind)));
+        .with_fact("node_kind", bounded_keyless_conditional_join_input_subplan_node_kind(&aggregate_node.kind)));
     };
     match kind {
-        JoinedAggregateInputKind::Grouped if aggregate.spec.group_exprs.is_empty() => {
+        AggregateOverJoinSubplanInputKind::Grouped if aggregate.spec.group_exprs.is_empty() => {
             return Err(unsupported_bounded_shape(
-                "bounded conditional joined aggregate input subplan execution requires grouped aggregate on the left input",
+                "bounded keyless conditional join aggregate-over-join subplan inputs pipeline execution requires grouped aggregate on the left input",
                 "bounded_join_plan_shape_unsupported",
             )
             .with_fact("node_id", projection.input)
             .with_fact("node_kind", "scalar_aggregate"));
         },
-        JoinedAggregateInputKind::Scalar if !aggregate.spec.group_exprs.is_empty() => {
+        AggregateOverJoinSubplanInputKind::Scalar if !aggregate.spec.group_exprs.is_empty() => {
             return Err(unsupported_bounded_shape(
-                "bounded conditional joined aggregate input subplan execution requires scalar/global aggregate on the right input",
+                "bounded keyless conditional join aggregate-over-join subplan inputs pipeline execution requires scalar/global aggregate on the right input",
                 "bounded_join_plan_shape_unsupported",
             )
             .with_fact("node_id", projection.input)
             .with_fact("node_kind", "grouped_aggregate"));
         },
-        JoinedAggregateInputKind::Grouped | JoinedAggregateInputKind::Scalar => {},
+        AggregateOverJoinSubplanInputKind::Grouped | AggregateOverJoinSubplanInputKind::Scalar => {},
     }
     validate_aggregate_capability(aggregate, &aggregate_node.facts.output_schema)?;
-    validate_bounded_joined_aggregate_input_join_subplan_capabilities(context, plan, aggregate.input)
+    validate_bounded_aggregate_over_join_subplan_inputs_join_subplan_capabilities(context, plan, aggregate.input)
 }
 
-fn validate_bounded_joined_aggregate_input_join_subplan_capabilities(
+fn validate_bounded_aggregate_over_join_subplan_inputs_join_subplan_capabilities(
     context: &ExecutionContext,
     plan: &QueryPlan,
     node_id: NodeId,
@@ -472,25 +486,29 @@ fn validate_bounded_joined_aggregate_input_join_subplan_capabilities(
     let node = plan.node(node_id).ok_or_else(|| {
         invalid_node_reference(
             node_id,
-            "bounded conditional joined aggregate input subplan aggregate references a missing join subtree",
+            "bounded keyless conditional join aggregate-over-join subplan inputs pipeline aggregate references a missing join subtree",
         )
     })?;
     match &node.kind {
         PlanNode::Join(_) => validate_bounded_multi_join_subtree_capabilities(context, plan, node_id),
         PlanNode::Projection(projection) => {
             validate_projection_capability(projection, &node.facts.output_schema)?;
-            validate_bounded_joined_aggregate_input_join_subplan_capabilities(context, plan, projection.input)
+            validate_bounded_aggregate_over_join_subplan_inputs_join_subplan_capabilities(
+                context,
+                plan,
+                projection.input,
+            )
         },
         _ => Err(unsupported_bounded_shape(
-            "bounded conditional joined aggregate input subplan execution requires aggregate inputs rooted at joins",
+            "bounded keyless conditional join aggregate-over-join subplan inputs pipeline execution requires aggregate inputs rooted at joins",
             "bounded_join_plan_shape_unsupported",
         )
         .with_fact("node_id", node_id)
-        .with_fact("node_kind", bounded_conditional_join_input_subplan_node_kind(&node.kind))),
+        .with_fact("node_kind", bounded_keyless_conditional_join_input_subplan_node_kind(&node.kind))),
     }
 }
 
-fn execute_bounded_conditional_join_input_subplan(
+fn execute_bounded_keyless_conditional_join_input_subplan(
     context: &ExecutionContext,
     plan: &QueryPlan,
     node_id: NodeId,
@@ -498,7 +516,7 @@ fn execute_bounded_conditional_join_input_subplan(
     reservations: &mut ReservationTracker,
     metrics: &mut QueryMetrics,
 ) -> Result<CommittedPartial> {
-    execute_bounded_conditional_join_input_subplan_inner(
+    execute_bounded_keyless_conditional_join_input_subplan_inner(
         context,
         plan,
         node_id,
@@ -509,7 +527,7 @@ fn execute_bounded_conditional_join_input_subplan(
     )
 }
 
-fn execute_bounded_conditional_join_input_subplan_inner(
+fn execute_bounded_keyless_conditional_join_input_subplan_inner(
     context: &ExecutionContext,
     plan: &QueryPlan,
     node_id: NodeId,
@@ -519,14 +537,17 @@ fn execute_bounded_conditional_join_input_subplan_inner(
     join_reached_through_projection: bool,
 ) -> Result<CommittedPartial> {
     let node = plan.node(node_id).ok_or_else(|| {
-        invalid_node_reference(node_id, "bounded conditional join input subplan references a missing node")
+        invalid_node_reference(
+            node_id,
+            "bounded keyless conditional join input-subplan pipeline references a missing node",
+        )
     })?;
     match &node.kind {
         PlanNode::Source(_) => {
             execute_bounded_join_leaf_input(context, plan, node_id, gpu_inputs, reservations, metrics)
         },
         PlanNode::Filter(filter) => {
-            let input = execute_bounded_conditional_join_input_subplan_inner(
+            let input = execute_bounded_keyless_conditional_join_input_subplan_inner(
                 context,
                 plan,
                 filter.input,
@@ -535,7 +556,7 @@ fn execute_bounded_conditional_join_input_subplan_inner(
                 metrics,
                 join_reached_through_projection,
             )?;
-            execute_bounded_conditional_join_input_subplan_unary(
+            execute_bounded_keyless_conditional_join_input_subplan_unary(
                 context,
                 node_id,
                 "join_input_subplan_filter",
@@ -547,7 +568,7 @@ fn execute_bounded_conditional_join_input_subplan_inner(
             )
         },
         PlanNode::Projection(projection) => {
-            let input = execute_bounded_conditional_join_input_subplan_inner(
+            let input = execute_bounded_keyless_conditional_join_input_subplan_inner(
                 context,
                 plan,
                 projection.input,
@@ -556,7 +577,7 @@ fn execute_bounded_conditional_join_input_subplan_inner(
                 metrics,
                 true,
             )?;
-            execute_bounded_conditional_join_input_subplan_unary(
+            execute_bounded_keyless_conditional_join_input_subplan_unary(
                 context,
                 node_id,
                 "join_input_subplan_projection",
@@ -570,7 +591,7 @@ fn execute_bounded_conditional_join_input_subplan_inner(
             )
         },
         PlanNode::Aggregate(aggregate) => {
-            let input = execute_bounded_conditional_join_input_subplan_inner(
+            let input = execute_bounded_keyless_conditional_join_input_subplan_inner(
                 context,
                 plan,
                 aggregate.input,
@@ -579,7 +600,7 @@ fn execute_bounded_conditional_join_input_subplan_inner(
                 metrics,
                 join_reached_through_projection,
             )?;
-            execute_bounded_conditional_join_input_subplan_unary(
+            execute_bounded_keyless_conditional_join_input_subplan_unary(
                 context,
                 node_id,
                 "join_input_subplan_global_aggregate",
@@ -595,7 +616,7 @@ fn execute_bounded_conditional_join_input_subplan_inner(
         PlanNode::Join(join) => {
             if !join_reached_through_projection {
                 return Err(unsupported_bounded_shape(
-                    "bounded conditional join input subplan execution requires left anti hash-join subplans to be projection-wrapped",
+                    "bounded keyless conditional join input-subplan pipeline execution requires left anti hash-join subplans to be projection-wrapped",
                     "bounded_join_plan_shape_unsupported",
                 )
                 .with_fact("node_id", node_id)
@@ -609,51 +630,54 @@ fn execute_bounded_conditional_join_input_subplan_inner(
             execute_bounded_root_join(context, node_id, join, left, right, reservations, metrics)
         },
         PlanNode::Sort(_) | PlanNode::Limit(_) => Err(unsupported_bounded_shape(
-            "bounded conditional join input subplan execution does not support sort or limit below root join inputs",
+            "bounded keyless conditional join input-subplan pipeline execution does not support sort or limit below root join inputs",
             "bounded_join_plan_shape_unsupported",
         )
         .with_fact("node_id", node_id)
-        .with_fact("node_kind", bounded_conditional_join_input_subplan_node_kind(&node.kind))),
+        .with_fact("node_kind", bounded_keyless_conditional_join_input_subplan_node_kind(&node.kind))),
     }
 }
 
-fn execute_bounded_conditional_join_joined_aggregate_input_subplan(
+fn execute_bounded_keyless_conditional_join_aggregate_over_join_subplan_inputs(
     context: &ExecutionContext,
     plan: &QueryPlan,
     node_id: NodeId,
-    kind: JoinedAggregateInputKind,
+    kind: AggregateOverJoinSubplanInputKind,
     gpu_inputs: &GpuResidentInputMap,
     reservations: &mut ReservationTracker,
     metrics: &mut QueryMetrics,
 ) -> Result<CommittedPartial> {
     let projection_node = plan.node(node_id).ok_or_else(|| {
-        invalid_node_reference(node_id, "bounded conditional joined aggregate input subplan references a missing node")
+        invalid_node_reference(
+            node_id,
+            "bounded keyless conditional join aggregate-over-join subplan inputs pipeline references a missing node",
+        )
     })?;
     let PlanNode::Projection(projection) = &projection_node.kind else {
         return Err(unsupported_bounded_shape(
-            "bounded conditional joined aggregate input subplan execution requires projection-wrapped aggregate inputs",
+            "bounded keyless conditional join aggregate-over-join subplan inputs pipeline execution requires projection-wrapped aggregate inputs",
             "bounded_join_plan_shape_unsupported",
         )
         .with_fact("node_id", node_id)
-        .with_fact("node_kind", bounded_conditional_join_input_subplan_node_kind(&projection_node.kind)));
+        .with_fact("node_kind", bounded_keyless_conditional_join_input_subplan_node_kind(&projection_node.kind)));
     };
 
     let aggregate_node = plan.node(projection.input).ok_or_else(|| {
         invalid_node_reference(
             projection.input,
-            "bounded conditional joined aggregate input subplan projection references a missing aggregate",
+            "bounded keyless conditional join aggregate-over-join subplan inputs pipeline projection references a missing aggregate",
         )
     })?;
     let PlanNode::Aggregate(aggregate) = &aggregate_node.kind else {
         return Err(unsupported_bounded_shape(
-            "bounded conditional joined aggregate input subplan execution requires projection-wrapped aggregate inputs",
+            "bounded keyless conditional join aggregate-over-join subplan inputs pipeline execution requires projection-wrapped aggregate inputs",
             "bounded_join_plan_shape_unsupported",
         )
         .with_fact("node_id", projection.input)
-        .with_fact("node_kind", bounded_conditional_join_input_subplan_node_kind(&aggregate_node.kind)));
+        .with_fact("node_kind", bounded_keyless_conditional_join_input_subplan_node_kind(&aggregate_node.kind)));
     };
 
-    let joined = execute_bounded_joined_aggregate_input_join_subplan(
+    let joined = execute_bounded_aggregate_over_join_subplan_inputs_join_subplan(
         context,
         plan,
         aggregate.input,
@@ -662,14 +686,14 @@ fn execute_bounded_conditional_join_joined_aggregate_input_subplan(
         metrics,
     )?;
     let (aggregate_stage, aggregate_output_boundary) = match kind {
-        JoinedAggregateInputKind::Grouped => {
+        AggregateOverJoinSubplanInputKind::Grouped => {
             ("join_input_subplan_grouped_aggregate", "join_input_subplan_grouped_aggregate_output")
         },
-        JoinedAggregateInputKind::Scalar => {
+        AggregateOverJoinSubplanInputKind::Scalar => {
             ("join_input_subplan_global_aggregate", "join_input_subplan_global_aggregate_output")
         },
     };
-    let aggregated = execute_bounded_conditional_join_input_subplan_unary(
+    let aggregated = execute_bounded_keyless_conditional_join_input_subplan_unary(
         context,
         projection.input,
         aggregate_stage,
@@ -682,7 +706,7 @@ fn execute_bounded_conditional_join_joined_aggregate_input_subplan(
         },
     )?;
 
-    execute_bounded_conditional_join_input_subplan_unary(
+    execute_bounded_keyless_conditional_join_input_subplan_unary(
         context,
         node_id,
         "join_input_subplan_projection",
@@ -696,7 +720,7 @@ fn execute_bounded_conditional_join_joined_aggregate_input_subplan(
     )
 }
 
-fn execute_bounded_joined_aggregate_input_join_subplan(
+fn execute_bounded_aggregate_over_join_subplan_inputs_join_subplan(
     context: &ExecutionContext,
     plan: &QueryPlan,
     node_id: NodeId,
@@ -705,14 +729,17 @@ fn execute_bounded_joined_aggregate_input_join_subplan(
     metrics: &mut QueryMetrics,
 ) -> Result<CommittedPartial> {
     let node = plan.node(node_id).ok_or_else(|| {
-        invalid_node_reference(node_id, "bounded conditional joined aggregate input subplan references a missing node")
+        invalid_node_reference(
+            node_id,
+            "bounded keyless conditional join aggregate-over-join subplan inputs pipeline references a missing node",
+        )
     })?;
     match &node.kind {
         PlanNode::Join(_) => {
             execute_bounded_multi_join_subtree(context, plan, node_id, gpu_inputs, reservations, metrics)
         },
         PlanNode::Projection(projection) => {
-            let input = execute_bounded_joined_aggregate_input_join_subplan(
+            let input = execute_bounded_aggregate_over_join_subplan_inputs_join_subplan(
                 context,
                 plan,
                 projection.input,
@@ -720,7 +747,7 @@ fn execute_bounded_joined_aggregate_input_join_subplan(
                 reservations,
                 metrics,
             )?;
-            execute_bounded_conditional_join_input_subplan_unary(
+            execute_bounded_keyless_conditional_join_input_subplan_unary(
                 context,
                 node_id,
                 "join_input_projection",
@@ -734,15 +761,15 @@ fn execute_bounded_joined_aggregate_input_join_subplan(
             )
         },
         _ => Err(unsupported_bounded_shape(
-            "bounded conditional joined aggregate input subplan execution requires aggregate inputs rooted at joins",
+            "bounded keyless conditional join aggregate-over-join subplan inputs pipeline execution requires aggregate inputs rooted at joins",
             "bounded_join_plan_shape_unsupported",
         )
         .with_fact("node_id", node_id)
-        .with_fact("node_kind", bounded_conditional_join_input_subplan_node_kind(&node.kind))),
+        .with_fact("node_kind", bounded_keyless_conditional_join_input_subplan_node_kind(&node.kind))),
     }
 }
 
-fn execute_bounded_conditional_join_input_subplan_unary(
+fn execute_bounded_keyless_conditional_join_input_subplan_unary(
     context: &ExecutionContext,
     node_id: NodeId,
     stage: &'static str,
@@ -921,7 +948,7 @@ pub(super) fn execute_bounded_join_pipeline_stage(
     Ok(CommittedPartial { frame, reservation: output_reservation })
 }
 
-fn bounded_conditional_join_input_subplan_node_kind(node: &PlanNode) -> &'static str {
+fn bounded_keyless_conditional_join_input_subplan_node_kind(node: &PlanNode) -> &'static str {
     match node {
         PlanNode::Source(_) => "source",
         PlanNode::Filter(_) => "filter",
@@ -945,15 +972,15 @@ pub(super) fn bounded_join_pipeline_rejection_error(rejection: BoundedJoinPipeli
         .with_fact("key_count", join.spec.keys.len())
         .with_fact("residual_predicate", join.spec.residual_predicate.is_some())
         .with_fact("output_projection_len", join.spec.output_projection.len()),
-        BoundedJoinPipelineRejection::UnsupportedLeaf { node_id, node_kind } => unsupported_bounded_shape(
+        BoundedJoinPipelineRejection::UnsupportedShapeNode { node_id, node_kind } => unsupported_bounded_shape(
             "bounded multi-join pipeline execution supports only source/filter/projection leaf subtrees below joins",
             "bounded_join_plan_shape_unsupported",
         )
         .with_fact("node_id", node_id)
         .with_fact("node_kind", node_kind),
-        BoundedJoinPipelineRejection::LimitWithoutSort => unsupported_bounded_shape(
+        BoundedJoinPipelineRejection::LimitNotDirectlyAboveSort => unsupported_bounded_shape(
             "bounded join pipeline execution does not support limit without a preceding global sort",
-            "limit_without_sort",
+            "limit_not_directly_above_sort",
         ),
         BoundedJoinPipelineRejection::MissingRootJoin => {
             unsupported_bounded_shape(bounded_join_pipeline_supported_families_message(), "missing_root_join")

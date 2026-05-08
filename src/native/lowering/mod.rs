@@ -15,6 +15,12 @@ use cudf_query_engine::{
 use super::normalize::{NormalizedNativeInput, NormalizedNativePlan, NormalizedNativeRoot};
 use crate::policy::FallbackReason;
 
+/// Lowers a normalized native tree into the DataFusion-free query IR.
+///
+/// Aggregate roots over `single_source_input` use the slice1 path so source
+/// pruning, filter pushdown, zero-column count, aggregate, sort, and limit can
+/// be planned together. All other aggregate roots lower their input tree first,
+/// which covers joins and recursive unary/aggregate inputs.
 pub(super) fn lower_normalized_plan(normalized: &NormalizedNativePlan<'_>) -> Result<NativeQueryPlan, FallbackReason> {
     match &normalized.root {
         NormalizedNativeRoot::Aggregate(root) if normalized.single_source_input().is_some() => {
@@ -25,11 +31,19 @@ pub(super) fn lower_normalized_plan(normalized: &NormalizedNativePlan<'_>) -> Re
     }
 }
 
+/// Native node plus the schema visible to its parent lowering step.
 pub(super) struct LoweredNativeInput {
     pub(super) node: NativeNodeId,
     pub(super) schema: SchemaRef,
 }
 
+/// Recursively lowers a normalized input subtree.
+///
+/// `required_output_columns` is the set of output columns requested by the
+/// parent lowering step. An empty slice means the parent requested no output
+/// columns. Some root/non-source callers use that as no explicit pruning, but
+/// source and filter lowering may still emit only columns needed by predicates,
+/// or zero output columns when nothing needs to be projected upward.
 fn lower_native_input(
     input: &NormalizedNativeInput<'_>,
     builder: &mut NativeQueryPlanBuilder,
