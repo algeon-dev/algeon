@@ -1,7 +1,0 @@
-error[E0432]: unresolved imports `datafusion_nexus::backend::GrantBand`, `datafusion_nexus::backend::MemoryShare`
- --> tests/ui/public_api/forbidden_grant_band_memory_share.rs:1:33
-  |
-1 | use datafusion_nexus::backend::{GrantBand, MemoryShare};
-  |                                 ^^^^^^^^^  ^^^^^^^^^^^ no `MemoryShare` in `backend`
-  |                                 |
-  |                                 no `GrantBand` in `backend`

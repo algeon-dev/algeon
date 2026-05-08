@@ -1,5 +1,0 @@
-error[E0599]: no associated function or constant named `memory_governor_reports` found for struct `GpuBackendSession` in the current scope
- --> tests/ui/public_api/forbidden_memory_governor_reports.rs:4:32
-  |
-4 |     let _ = GpuBackendSession::memory_governor_reports;
-  |                                ^^^^^^^^^^^^^^^^^^^^^^^ associated function or constant not found in `GpuBackendSession`

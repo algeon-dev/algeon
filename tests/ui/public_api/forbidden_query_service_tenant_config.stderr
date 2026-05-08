@@ -1,5 +1,0 @@
-error[E0432]: unresolved import `nexus_query_engine::runtime::QueryServiceTenantConfig`
- --> tests/ui/public_api/forbidden_query_service_tenant_config.rs:1:5
-  |
-1 | use nexus_query_engine::runtime::QueryServiceTenantConfig;
-  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ no `QueryServiceTenantConfig` in `runtime`

@@ -1,8 +1,0 @@
-error[E0432]: unresolved imports `nexus_query_engine::runtime::QueryGrantBand`, `nexus_query_engine::runtime::QueryGrantRequest`, `nexus_query_engine::runtime::QueryServiceTenantConfig`
- --> tests/ui/public_api/forbidden_removed_tenant_types.rs:1:35
-  |
-1 | use nexus_query_engine::runtime::{QueryGrantBand, QueryGrantRequest, QueryServiceTenantConfig};
-  |                                   ^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^^^^^ no `QueryServiceTenantConfig` in `runtime`
-  |                                   |               |
-  |                                   |               no `QueryGrantRequest` in `runtime`
-  |                                   no `QueryGrantBand` in `runtime`

@@ -1,5 +1,0 @@
-error[E0432]: unresolved import `datafusion_nexus::iceberg`
- --> tests/ui/public_api/forbidden_iceberg_facade.rs:1:5
-  |
-1 | use datafusion_nexus::iceberg;
-  |     ^^^^^^^^^^^^^^^^^^^^^^^^^ no `iceberg` in the root

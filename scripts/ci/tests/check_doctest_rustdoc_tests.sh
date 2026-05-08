@@ -13,7 +13,7 @@ mkdir -p "${tmp_dir}/bin" "${tmp_dir}/phase-logs"
 cat >"${tmp_dir}/bin/bash" <<'SH'
 #!/usr/bin/bash
 case "${1:-}" in
-  scripts/build/check_cpu_packaging_policy.sh | scripts/build/check_build_support.sh | scripts/ci/tests/check_doctest_report_tests.sh | scripts/ci/tests/check_phase_test_counts_tests.sh | scripts/ci/tests/check_gpu_test_lane_tests.sh | scripts/ci/check_gpu_test_lane.sh | scripts/ci/tests/check_doctest_rustdoc_tests.sh | scripts/ci/tests/check_gpu_scheduling_tests.sh | scripts/ci/tests/check_clean_target_artifacts_tests.sh | scripts/ci/tests/check_pass_as_skip_policy_tests.sh)
+  scripts/build/check_cpu_packaging_policy.sh | scripts/build/check_build_support.sh | scripts/ci/tests/check_doctest_report_tests.sh | scripts/ci/tests/check_phase_test_counts_tests.sh | scripts/ci/tests/check_gpu_test_lane_tests.sh | scripts/ci/check_gpu_test_lane.sh | scripts/ci/tests/check_doctest_rustdoc_tests.sh | scripts/ci/tests/check_gpu_scheduling_tests.sh | scripts/ci/tests/check_clean_target_artifacts_tests.sh | scripts/ci/tests/check_pass_as_skip_policy_tests.sh | scripts/ci/tests/check_public_api_surface_tests.sh | scripts/ci/check_public_api_surface.sh)
     exit 0
     ;;
 esac

@@ -40,8 +40,14 @@ case "${1:-}" in
     fi
     exit "${FAKE_LIVE_INVENTORY_STATUS:-0}"
     ;;
-  scripts/build/check_cpu_packaging_policy.sh | scripts/ci/tests/check_doctest_report_tests.sh | scripts/ci/tests/check_phase_test_counts_tests.sh | scripts/ci/tests/check_gpu_test_lane_tests.sh | scripts/ci/tests/check_doctest_rustdoc_tests.sh | scripts/ci/tests/check_gpu_scheduling_tests.sh | scripts/ci/tests/check_clean_target_artifacts_tests.sh | scripts/ci/tests/check_pass_as_skip_policy_tests.sh)
+  scripts/build/check_cpu_packaging_policy.sh | scripts/ci/tests/check_doctest_report_tests.sh | scripts/ci/tests/check_phase_test_counts_tests.sh | scripts/ci/tests/check_gpu_test_lane_tests.sh | scripts/ci/tests/check_doctest_rustdoc_tests.sh | scripts/ci/tests/check_gpu_scheduling_tests.sh | scripts/ci/tests/check_clean_target_artifacts_tests.sh | scripts/ci/tests/check_pass_as_skip_policy_tests.sh | scripts/ci/tests/check_public_api_surface_tests.sh)
     exit 0
+    ;;
+  scripts/ci/check_public_api_surface.sh)
+    if [[ "${FAKE_PUBLIC_API_STATUS:-0}" -ne 0 ]]; then
+      echo "RAW_PUBLIC_API_FAILURE" >&2
+    fi
+    exit "${FAKE_PUBLIC_API_STATUS:-0}"
     ;;
 esac
 exec /usr/bin/bash "$@"
@@ -353,12 +359,13 @@ assert_contains "${tmp_dir}/default.log" "cargo <nextest> <run> <-P> <default> <
 assert_contains "${tmp_dir}/default.log" "cargo <test> <--workspace> <--all-features> <--doc> <--no-fail-fast>"
 assert_contains "${tmp_dir}/default.log" "cargo <+nightly> <fmt> <--all> <--check>"
 assert_contains "${tmp_dir}/default.log" "cargo <clippy> <--workspace> <--all-targets> <--all-features>"
+assert_contains "${tmp_dir}/default.log" "bash <scripts/ci/check_public_api_surface.sh> <check> <--all-features>"
 assert_contains "${tmp_dir}/default.log" "bash <scripts/build/check_cpu_packaging_policy.sh>"
 assert_contains "${tmp_dir}/default.log" "bash <scripts/ci/tests/check_gpu_test_lane_tests.sh>"
 assert_contains "${tmp_dir}/default.log" "bash <scripts/ci/tests/check_doctest_rustdoc_tests.sh>"
 assert_contains "${tmp_dir}/default.log" "bash <scripts/ci/tests/check_gpu_scheduling_tests.sh>"
 assert_contains "${tmp_dir}/default.output" "Phase | Command | Duration | Status | Test counts | GPU cap | Lock | Features | Log | Cache"
-assert_phase_contains "${tmp_dir}/default.output" policy-selftests "0.100s | PASS | checks=10 | - | - | all | ${tmp_dir}/phase-logs/policy-selftests.log | MISS"
+assert_phase_contains "${tmp_dir}/default.output" policy-selftests "0.100s | PASS | checks=11 | - | - | all | ${tmp_dir}/phase-logs/policy-selftests.log | MISS"
 assert_phase_contains "${tmp_dir}/default.output" cpu-tests "cpu-tests | cargo nextest run --workspace --all-features -E 'not group(gpu) & not group(gpu-exclusive)' --no-fail-fast | 0.100s"
 assert_phase_contains "${tmp_dir}/default.output" cpu-tests "0.100s | PASS | run=3 passed=3 failed=0 skipped=5 | - | - | all | ${tmp_dir}/phase-logs/cpu-tests.log | MISS"
 assert_phase_contains "${tmp_dir}/default.output" gpu-shared-tests "gpu-shared-tests | flock /tmp/cudf-gpu.lock cargo nextest run -P default --workspace --all-features -E group(gpu) --no-fail-fast --test-threads 16 | 0.100s"
@@ -366,7 +373,9 @@ assert_phase_contains "${tmp_dir}/default.output" gpu-shared-tests "0.100s | PAS
 assert_phase_contains "${tmp_dir}/default.output" gpu-exclusive-tests "gpu-exclusive-tests | flock /tmp/cudf-gpu.lock cargo nextest run -P default --workspace --all-features -E group(gpu-exclusive) --no-fail-fast --test-threads 1 | 0.100s"
 assert_phase_contains "${tmp_dir}/default.output" gpu-exclusive-tests "0.100s | PASS | run=1 passed=1 failed=0 skipped=7 | 1 | /tmp/cudf-gpu.lock | all | ${tmp_dir}/phase-logs/gpu-exclusive-tests.log | n/a"
 assert_phase_contains "${tmp_dir}/default.output" doctests "0.100s | PASS | harnesses=1 executed=0 passed=0 failed=0 ignored=0 measured=0 filtered=0 | - | /tmp/cudf-gpu.lock | all | ${tmp_dir}/phase-logs/doctests.log | n/a"
-for phase_log in policy-selftests cpu-tests gpu-shared-tests gpu-exclusive-tests doctests rustdoc clippy; do
+assert_phase_contains "${tmp_dir}/default.output" public-api-surface "public-api-surface | bash scripts/ci/check_public_api_surface.sh check --all-features | 0.100s"
+assert_phase_contains "${tmp_dir}/default.output" public-api-surface "0.100s | PASS | crates=3 | - | - | all | ${tmp_dir}/phase-logs/public-api-surface.log | MISS"
+for phase_log in policy-selftests cpu-tests gpu-shared-tests gpu-exclusive-tests doctests rustdoc public-api-surface clippy; do
   [[ -f "${tmp_dir}/phase-logs/${phase_log}.log" ]] || {
     echo "FAIL: expected persistent phase log ${phase_log}.log" >&2
     exit 1
@@ -495,14 +504,14 @@ assert_contains "${tmp_dir}/lane_policy.output" "selected lane 'policy' passed. 
 assert_contains "${tmp_dir}/lane_policy.log" "cargo <+nightly> <fmt> <--all> <--check>"
 assert_not_contains "${tmp_dir}/lane_policy.log" "cargo <nextest>"
 assert_not_contains "${tmp_dir}/lane_policy.log" "flock"
-assert_phase_contains "${tmp_dir}/lane_policy.output" policy-selftests "0.100s | PASS | checks=10 | - | - | all | ${tmp_dir}/phase-logs/policy-selftests.log | MISS"
+assert_phase_contains "${tmp_dir}/lane_policy.output" policy-selftests "0.100s | PASS | checks=11 | - | - | all | ${tmp_dir}/phase-logs/policy-selftests.log | MISS"
 assert_phase_contains "${tmp_dir}/lane_policy.output" cpu-tests "- | SKIPPED | - | - | - | all | - | n/a"
 echo "PASS: lane selection runs only the selected lane and necessary preflight"
 
 run_check policy_failure env FAKE_POLICY_STATUS=9 /usr/bin/bash scripts/check_all.sh --lane policy
 assert_status policy_failure 1
 assert_contains "${tmp_dir}/policy_failure.output" "RAW_POLICY_FAILURE"
-assert_phase_contains "${tmp_dir}/policy_failure.output" policy-selftests "0.100s | FAIL(1) | checks=10 | - | - | all | ${tmp_dir}/phase-logs/policy-selftests.log | MISS"
+assert_phase_contains "${tmp_dir}/policy_failure.output" policy-selftests "0.100s | FAIL(1) | checks=11 | - | - | all | ${tmp_dir}/phase-logs/policy-selftests.log | MISS"
 assert_contains "${tmp_dir}/phase-logs/policy-selftests.log" "RAW_POLICY_FAILURE"
 assert_phase_contains "${tmp_dir}/policy_failure.output" rustfmt "0.100s | PASS"
 echo "PASS: grouped policy failure is logged while later safe phases continue"
@@ -550,6 +559,7 @@ assert_phase_contains "${tmp_dir}/cache_seed.output" cpu-tests "0.100s | PASS | 
 run_check_with_phase_log_dir cache_hit "${cache_root}/replay" /usr/bin/bash scripts/check_all.sh
 assert_status cache_hit 0
 assert_phase_contains "${tmp_dir}/cache_hit.output" cpu-tests "0.000s | CACHED | cached | - | - | all | ${cache_root}/replay/cpu-tests.log | HIT"
+assert_phase_contains "${tmp_dir}/cache_hit.output" public-api-surface "0.000s | CACHED | cached | - | - | all | ${cache_root}/replay/public-api-surface.log | HIT"
 assert_phase_contains "${tmp_dir}/cache_hit.output" gpu-shared-tests "0.100s | PASS | run=2 passed=2 failed=0 skipped=6 | 16 | /tmp/cudf-gpu.lock | all | ${cache_root}/replay/gpu-shared-tests.log | n/a"
 assert_not_contains "${tmp_dir}/cache_hit.log" "cargo <nextest> <run> <--workspace> <--all-features> <-E> <not group(gpu) & not group(gpu-exclusive)>"
 if [[ $(grep -c '^flock ' "${tmp_dir}/cache_hit.log") -ne 3 ]]; then
