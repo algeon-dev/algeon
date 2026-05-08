@@ -13,6 +13,7 @@
 
 use std::{ptr, sync::Arc};
 
+use super::unary;
 use crate::{
     core::{
         column::{Column, ColumnView},
@@ -509,7 +510,33 @@ pub(crate) fn binary_operation_vv_impl(
     exec_options: Option<&cudf_sys::cudf_exec_options_t>,
     operation: &'static str,
 ) -> Result<Column> {
-    let dtype_handle = output_type.to_raw_handle_for("binary::binary_operation_vv")?;
+    let lhs_decimal_division_cast;
+    let rhs_decimal_division_cast;
+    let lhs_decimal_division_view;
+    let rhs_decimal_division_view;
+    let (lhs, rhs) = match decimal_division_explicit_type_operand_targets(lhs, rhs, op, output_type, operation)? {
+        Some((lhs_target, rhs_target)) => {
+            lhs_decimal_division_cast =
+                cast_decimal_division_operand(lhs, lhs_target, output_domain, exec_options, operation)?;
+            rhs_decimal_division_cast =
+                cast_decimal_division_operand(rhs, rhs_target, output_domain, exec_options, operation)?;
+            let lhs = if let Some(column) = lhs_decimal_division_cast.as_ref() {
+                lhs_decimal_division_view = column.view()?;
+                &lhs_decimal_division_view
+            } else {
+                lhs
+            };
+            let rhs = if let Some(column) = rhs_decimal_division_cast.as_ref() {
+                rhs_decimal_division_view = column.view()?;
+                &rhs_decimal_division_view
+            } else {
+                rhs
+            };
+            (lhs, rhs)
+        },
+        None => (lhs, rhs),
+    };
+    let dtype_handle = output_type.to_raw_handle_for(operation)?;
     let mut out = ptr::null_mut();
     let op_ffi = op.to_raw();
     // SAFETY: lhs and rhs handles are valid (NonNull). dtype_handle was
@@ -534,10 +561,255 @@ pub(crate) fn binary_operation_vv_impl(
     error::check_status_in_with_details(
         status,
         operation,
-        [("operator", op.name().to_string()), ("execution_context_provided", exec_options.is_some().to_string())],
+        [
+            ("operator", op.name().to_string()),
+            ("output_type_id", output_type.id().to_string()),
+            ("output_type_scale", output_type.scale().to_string()),
+            ("execution_context_provided", exec_options.is_some().to_string()),
+        ],
     )?;
     // SAFETY: out was returned by a successful FFI call, transferring ownership.
     unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }
+}
+
+fn decimal_division_explicit_type_operand_targets(
+    lhs: &ColumnView<'_>,
+    rhs: &ColumnView<'_>,
+    op: BinaryOperator,
+    output_type: &DataType,
+    operation: &'static str,
+) -> Result<Option<(DataType, DataType)>> {
+    if op != BinaryOperator::Div || !output_type.id().is_decimal() {
+        return Ok(None);
+    }
+
+    let lhs_type = lhs.data_type()?;
+    let rhs_type = rhs.data_type()?;
+    if !(lhs_type.id().is_decimal() && rhs_type.id().is_decimal()) {
+        return Ok(None);
+    }
+
+    // libcudf fixed-point DIV divides the raw representations and labels the
+    // output with the requested scale. To make a caller-selected result scale
+    // affect the numeric quotient, preserve the RHS value and pre-scale LHS so
+    // raw_lhs / raw_rhs is already in the requested output scale.
+    let lhs_scale = rhs_type.scale().checked_add(output_type.scale()).ok_or_else(|| {
+        Error::new_with(
+            ErrorCode::TypeMismatch,
+            operation,
+            "decimal division explicit output scale requires operand scale adjustment that overflows i32",
+        )
+        .with_fact(FACT_LEFT_TYPE_ID, lhs_type.id())
+        .with_fact(FACT_RIGHT_TYPE_ID, rhs_type.id())
+        .with_detail("operator", op.name())
+        .with_detail("output_type_id", output_type.id().to_string())
+        .with_detail("output_type_scale", output_type.scale().to_string())
+        .with_detail("rhs_type_scale", rhs_type.scale().to_string())
+    })?;
+
+    Ok(Some((
+        DataType::fixed_point(output_type.id(), lhs_scale),
+        DataType::fixed_point(output_type.id(), rhs_type.scale()),
+    )))
+}
+
+fn decimal_division_explicit_type_column_scalar_targets(
+    lhs: &ColumnView<'_>,
+    rhs: &Scalar,
+    op: BinaryOperator,
+    output_type: &DataType,
+    operation: &'static str,
+) -> Result<Option<(DataType, DataType)>> {
+    if op != BinaryOperator::Div || !output_type.id().is_decimal() {
+        return Ok(None);
+    }
+
+    let lhs_type = lhs.data_type()?;
+    let rhs_type = rhs.data_type()?;
+    if !(lhs_type.id().is_decimal() && rhs_type.id().is_decimal()) {
+        return Ok(None);
+    }
+
+    let lhs_scale = adjusted_decimal_division_lhs_scale(
+        rhs_type.scale(),
+        output_type,
+        lhs_type.id(),
+        rhs_type.id(),
+        op,
+        operation,
+    )?;
+    Ok(Some((
+        DataType::fixed_point(output_type.id(), lhs_scale),
+        DataType::fixed_point(output_type.id(), rhs_type.scale()),
+    )))
+}
+
+fn decimal_division_explicit_type_scalar_column_targets(
+    lhs: &Scalar,
+    rhs: &ColumnView<'_>,
+    op: BinaryOperator,
+    output_type: &DataType,
+    operation: &'static str,
+) -> Result<Option<(DataType, DataType)>> {
+    if op != BinaryOperator::Div || !output_type.id().is_decimal() {
+        return Ok(None);
+    }
+
+    let lhs_type = lhs.data_type()?;
+    let rhs_type = rhs.data_type()?;
+    if !(lhs_type.id().is_decimal() && rhs_type.id().is_decimal()) {
+        return Ok(None);
+    }
+
+    let lhs_scale = adjusted_decimal_division_lhs_scale(
+        rhs_type.scale(),
+        output_type,
+        lhs_type.id(),
+        rhs_type.id(),
+        op,
+        operation,
+    )?;
+    Ok(Some((
+        DataType::fixed_point(output_type.id(), lhs_scale),
+        DataType::fixed_point(output_type.id(), rhs_type.scale()),
+    )))
+}
+
+fn adjusted_decimal_division_lhs_scale(
+    rhs_scale: i32,
+    output_type: &DataType,
+    lhs_type_id: TypeId,
+    rhs_type_id: TypeId,
+    op: BinaryOperator,
+    operation: &'static str,
+) -> Result<i32> {
+    rhs_scale.checked_add(output_type.scale()).ok_or_else(|| {
+        Error::new_with(
+            ErrorCode::TypeMismatch,
+            operation,
+            "decimal division explicit output scale requires operand scale adjustment that overflows i32",
+        )
+        .with_fact(FACT_LEFT_TYPE_ID, lhs_type_id)
+        .with_fact(FACT_RIGHT_TYPE_ID, rhs_type_id)
+        .with_detail("operator", op.name())
+        .with_detail("output_type_id", output_type.id().to_string())
+        .with_detail("output_type_scale", output_type.scale().to_string())
+        .with_detail("rhs_type_scale", rhs_scale.to_string())
+    })
+}
+
+fn cast_decimal_division_operand(
+    input: &ColumnView<'_>,
+    target: DataType,
+    output_domain: &Arc<ExecutionDomain>,
+    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    operation: &'static str,
+) -> Result<Option<Column>> {
+    if input.data_type()? == target {
+        return Ok(None);
+    }
+
+    unary::cast_impl(input, &target, output_domain, exec_options, operation).map(Some).map_err(|error| {
+        error
+            .with_detail_if_absent("operator", BinaryOperator::Div.name())
+            .with_detail_if_absent("decimal_division_operand_target_type_id", target.id().to_string())
+            .with_detail_if_absent("decimal_division_operand_target_scale", target.scale().to_string())
+            .with_detail_if_absent("reason", "explicit_decimal_division_operand_scale_adjustment")
+    })
+}
+
+fn rescale_decimal_division_scalar(
+    input: &Scalar,
+    target: DataType,
+    output_domain: &Arc<ExecutionDomain>,
+    operation: &'static str,
+) -> Result<Option<Scalar>> {
+    let source = input.data_type()?;
+    if source == target && ExecutionDomain::same_provenance(input.execution_domain(), output_domain) {
+        return Ok(None);
+    }
+    if !input.is_valid()? {
+        return Scalar::null_decimal_in_domain(target, output_domain).map(Some).map_err(|error| {
+            error
+                .with_detail_if_absent("operator", BinaryOperator::Div.name())
+                .with_detail_if_absent("decimal_division_scalar_target_type_id", target.id().to_string())
+                .with_detail_if_absent("decimal_division_scalar_target_scale", target.scale().to_string())
+                .with_detail_if_absent("reason", "explicit_decimal_division_scalar_scale_adjustment")
+        });
+    }
+
+    let raw = decimal_scalar_raw_value(input, source, operation)?;
+    let raw = rescale_decimal_raw(raw, source.scale(), target.scale(), operation).map_err(|error| {
+        error
+            .with_detail_if_absent("operator", BinaryOperator::Div.name())
+            .with_detail_if_absent("decimal_division_scalar_target_type_id", target.id().to_string())
+            .with_detail_if_absent("decimal_division_scalar_target_scale", target.scale().to_string())
+            .with_detail_if_absent("reason", "explicit_decimal_division_scalar_scale_adjustment")
+    })?;
+    Scalar::decimal_from_raw_in_domain(raw, target, output_domain).map(Some).map_err(|error| {
+        error
+            .with_detail_if_absent("operator", BinaryOperator::Div.name())
+            .with_detail_if_absent("decimal_division_scalar_target_type_id", target.id().to_string())
+            .with_detail_if_absent("decimal_division_scalar_target_scale", target.scale().to_string())
+            .with_detail_if_absent("reason", "explicit_decimal_division_scalar_scale_adjustment")
+    })
+}
+
+fn decimal_scalar_raw_value(input: &Scalar, source: DataType, operation: &'static str) -> Result<i128> {
+    match source.id() {
+        TypeId::Decimal32 => input.decimal32_raw_value().map(i128::from),
+        TypeId::Decimal64 => input.decimal64_raw_value().map(i128::from),
+        TypeId::Decimal128 => input.decimal128_raw_value(),
+        other => Err(Error::new_with(
+            ErrorCode::TypeMismatch,
+            operation,
+            "decimal division scalar scale adjustment requires decimal scalar input",
+        )
+        .with_fact(FACT_LEFT_TYPE_ID, other)
+        .with_detail("operator", BinaryOperator::Div.name())),
+    }
+}
+
+fn rescale_decimal_raw(raw: i128, source_scale: i32, target_scale: i32, operation: &'static str) -> Result<i128> {
+    let delta = source_scale.checked_sub(target_scale).ok_or_else(|| {
+        Error::new_with(ErrorCode::ValueOutOfRange, operation, "decimal scalar scale adjustment overflows i32")
+            .with_detail("source_scale", source_scale.to_string())
+            .with_detail("target_scale", target_scale.to_string())
+    })?;
+    if delta == 0 {
+        return Ok(raw);
+    }
+
+    let factor = pow10_i128(delta.unsigned_abs(), operation)?;
+    if delta > 0 {
+        raw.checked_mul(factor).ok_or_else(|| {
+            Error::new_with(ErrorCode::ValueOutOfRange, operation, "decimal scalar raw value overflows target scale")
+                .with_detail("source_scale", source_scale.to_string())
+                .with_detail("target_scale", target_scale.to_string())
+        })
+    } else {
+        if raw % factor != 0 {
+            return Err(Error::new_with(
+                ErrorCode::ValueOutOfRange,
+                operation,
+                "decimal scalar raw value cannot be represented exactly at target scale",
+            )
+            .with_detail("source_scale", source_scale.to_string())
+            .with_detail("target_scale", target_scale.to_string()));
+        }
+        Ok(raw / factor)
+    }
+}
+
+fn pow10_i128(exponent: u32, operation: &'static str) -> Result<i128> {
+    let mut value = 1i128;
+    for _ in 0..exponent {
+        value = value.checked_mul(10).ok_or_else(|| {
+            Error::new_with(ErrorCode::ValueOutOfRange, operation, "decimal scale adjustment factor overflows i128")
+                .with_detail("exponent", exponent.to_string())
+        })?;
+    }
+    Ok(value)
 }
 
 /// Binary operation: column op scalar.
@@ -573,7 +845,26 @@ pub(crate) fn binary_operation_vs_impl(
     exec_options: Option<&cudf_sys::cudf_exec_options_t>,
     operation: &'static str,
 ) -> Result<Column> {
-    let dtype_handle = output_type.to_raw_handle_for("binary::binary_operation_vs")?;
+    let lhs_decimal_division_cast;
+    let lhs_decimal_division_view;
+    let rhs_decimal_division_scalar;
+    let (lhs, rhs) = match decimal_division_explicit_type_column_scalar_targets(lhs, rhs, op, output_type, operation)? {
+        Some((lhs_target, rhs_target)) => {
+            lhs_decimal_division_cast =
+                cast_decimal_division_operand(lhs, lhs_target, output_domain, exec_options, operation)?;
+            rhs_decimal_division_scalar = rescale_decimal_division_scalar(rhs, rhs_target, output_domain, operation)?;
+            let lhs = if let Some(column) = lhs_decimal_division_cast.as_ref() {
+                lhs_decimal_division_view = column.view()?;
+                &lhs_decimal_division_view
+            } else {
+                lhs
+            };
+            let rhs = if let Some(scalar) = rhs_decimal_division_scalar.as_ref() { scalar } else { rhs };
+            (lhs, rhs)
+        },
+        None => (lhs, rhs),
+    };
+    let dtype_handle = output_type.to_raw_handle_for(operation)?;
     let mut out = ptr::null_mut();
     let op_ffi = op.to_raw();
     // SAFETY: lhs (ColumnView) and rhs (Scalar) handles are valid (NonNull).
@@ -598,7 +889,12 @@ pub(crate) fn binary_operation_vs_impl(
     error::check_status_in_with_details(
         status,
         operation,
-        [("operator", op.name().to_string()), ("execution_context_provided", exec_options.is_some().to_string())],
+        [
+            ("operator", op.name().to_string()),
+            ("output_type_id", output_type.id().to_string()),
+            ("output_type_scale", output_type.scale().to_string()),
+            ("execution_context_provided", exec_options.is_some().to_string()),
+        ],
     )?;
     // SAFETY: out was returned by a successful FFI call, transferring ownership.
     unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }
@@ -639,7 +935,26 @@ fn binary_operation_sv_impl(
     exec_options: Option<&cudf_sys::cudf_exec_options_t>,
     operation: &'static str,
 ) -> Result<Column> {
-    let dtype_handle = output_type.to_raw_handle_for("binary::binary_operation_sv")?;
+    let lhs_decimal_division_scalar;
+    let rhs_decimal_division_cast;
+    let rhs_decimal_division_view;
+    let (lhs, rhs) = match decimal_division_explicit_type_scalar_column_targets(lhs, rhs, op, output_type, operation)? {
+        Some((lhs_target, rhs_target)) => {
+            lhs_decimal_division_scalar = rescale_decimal_division_scalar(lhs, lhs_target, output_domain, operation)?;
+            rhs_decimal_division_cast =
+                cast_decimal_division_operand(rhs, rhs_target, output_domain, exec_options, operation)?;
+            let lhs = if let Some(scalar) = lhs_decimal_division_scalar.as_ref() { scalar } else { lhs };
+            let rhs = if let Some(column) = rhs_decimal_division_cast.as_ref() {
+                rhs_decimal_division_view = column.view()?;
+                &rhs_decimal_division_view
+            } else {
+                rhs
+            };
+            (lhs, rhs)
+        },
+        None => (lhs, rhs),
+    };
+    let dtype_handle = output_type.to_raw_handle_for(operation)?;
     let mut out = ptr::null_mut();
     let op_ffi = op.to_raw();
     // SAFETY: lhs (Scalar) and rhs (ColumnView) handles are valid (NonNull).
@@ -664,7 +979,12 @@ fn binary_operation_sv_impl(
     error::check_status_in_with_details(
         status,
         operation,
-        [("operator", op.name().to_string()), ("execution_context_provided", exec_options.is_some().to_string())],
+        [
+            ("operator", op.name().to_string()),
+            ("output_type_id", output_type.id().to_string()),
+            ("output_type_scale", output_type.scale().to_string()),
+            ("execution_context_provided", exec_options.is_some().to_string()),
+        ],
     )?;
     // SAFETY: out was returned by a successful FFI call, transferring ownership.
     unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }
