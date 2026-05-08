@@ -10,6 +10,14 @@ use crate::{
     runtime::{BoundedJoinReservationContract, ExecutionBoundaryPolicy},
 };
 
+const KEYED_HASH_JOIN_RESIDENT_SUBPLAN_PIPELINE_FAMILY: &str = "keyed_hash_join_resident_subplan_pipeline";
+const KEYED_HASH_JOIN_RESIDENT_SUBPLAN_PIPELINE_BLOCKER: &str =
+    "bounded_keyed_hash_join_resident_subplan_lower_level_contracts";
+const KEYED_HASH_JOIN_RESIDENT_SUBPLAN_PIPELINE_SHAPE_CONTRACT: &str =
+    "sort_root_keyed_inner_hash_join_with_projection_wrapped_keyed_inner_join_and_scalar_revenue_aggregate";
+const KEYED_HASH_JOIN_RESIDENT_SUBPLAN_PIPELINE_LOWER_LEVEL_CONTRACT: &str =
+    "source_contract,aggregate_contract,final_sort_contract";
+
 /// Bounded join admission result, ordered from the narrowest root shape to
 /// progressively broader bounded pipeline families.
 pub(crate) enum BoundedJoinPlanSupport {
@@ -137,7 +145,23 @@ pub(crate) fn bounded_join_unsupported_shape_facts(
     boundary_policy: ExecutionBoundaryPolicy,
 ) -> BTreeMap<&'static str, String> {
     let mut facts = BoundedJoinReservationContract.unsupported_shape_facts(boundary_policy);
-    if let Some(join) = first_unsupported_keyed_residual_semi_anti_join(plan) {
+    if matches_keyed_hash_join_resident_subplan_pipeline(plan) {
+        facts.insert("bounded_join_blocked_join_family", KEYED_HASH_JOIN_RESIDENT_SUBPLAN_PIPELINE_FAMILY.to_string());
+        facts.insert("bounded_join_specific_blocker", KEYED_HASH_JOIN_RESIDENT_SUBPLAN_PIPELINE_BLOCKER.to_string());
+        facts.insert("bounded_join_shape_blocker", KEYED_HASH_JOIN_RESIDENT_SUBPLAN_PIPELINE_BLOCKER.to_string());
+        facts.insert(
+            "bounded_join_required_shape_contract",
+            KEYED_HASH_JOIN_RESIDENT_SUBPLAN_PIPELINE_SHAPE_CONTRACT.to_string(),
+        );
+        facts.insert(
+            "bounded_join_required_lower_level_contract",
+            KEYED_HASH_JOIN_RESIDENT_SUBPLAN_PIPELINE_LOWER_LEVEL_CONTRACT.to_string(),
+        );
+        facts.insert(
+            "bounded_join_lower_level_blockers",
+            KEYED_HASH_JOIN_RESIDENT_SUBPLAN_PIPELINE_LOWER_LEVEL_CONTRACT.to_string(),
+        );
+    } else if let Some(join) = first_unsupported_keyed_residual_semi_anti_join(plan) {
         facts.insert("bounded_join_specific_blocker", mixed_keyed_residual_left_only_blocker(plan, join).to_string());
         facts.insert("bounded_join_blocked_join_family", "mixed_keyed_residual_left_semi_left_anti".to_string());
         facts.insert("bounded_join_blocked_join_type", join.spec.join_type.to_string());
@@ -631,6 +655,173 @@ fn bounded_join_subtree_join_count(
         count += bounded_join_subtree_join_count(plan, *input)?;
     }
     Ok(count)
+}
+
+fn matches_keyed_hash_join_resident_subplan_pipeline(plan: &QueryPlan) -> bool {
+    let Some(root_join_id) = final_sort_root_join_input(plan) else {
+        return false;
+    };
+    let counts = reachable_node_kind_counts(plan);
+    if counts.joins != 2 || counts.aggregates != 3 || counts.sorts != 1 || counts.limits != 0 {
+        return false;
+    }
+
+    let Some(root_join) = join_node(plan, root_join_id) else {
+        return false;
+    };
+    keyed_inner_hash_join_without_residual(root_join)
+        && validate_projection_wrapped_keyed_hash_join_with_leaf_and_grouped_aggregate(plan, root_join.inputs[0])
+        && validate_scalar_aggregate_over_projected_grouped_aggregate_leaf(plan, root_join.inputs[1])
+}
+
+fn final_sort_root_join_input(plan: &QueryPlan) -> Option<NodeId> {
+    let node = plan.node(plan.sink().input())?;
+    let PlanNode::Sort(sort) = &node.kind else {
+        return None;
+    };
+    Some(sort.input)
+}
+
+fn validate_projection_wrapped_keyed_hash_join_with_leaf_and_grouped_aggregate(
+    plan: &QueryPlan,
+    node_id: NodeId,
+) -> bool {
+    let Some(projection) = projection_node(plan, node_id) else {
+        return false;
+    };
+    let Some(join) = join_node(plan, projection.input) else {
+        return false;
+    };
+    if !keyed_inner_hash_join_without_residual(join) {
+        return false;
+    }
+
+    let left_leaf = validate_source_filter_projection_leaf_pipeline(plan, join.inputs[0]);
+    let right_leaf = validate_source_filter_projection_leaf_pipeline(plan, join.inputs[1]);
+    let left_grouped_aggregate = validate_projection_wrapped_grouped_aggregate_leaf(plan, join.inputs[0]);
+    let right_grouped_aggregate = validate_projection_wrapped_grouped_aggregate_leaf(plan, join.inputs[1]);
+
+    (left_leaf && right_grouped_aggregate) || (right_leaf && left_grouped_aggregate)
+}
+
+fn validate_scalar_aggregate_over_projected_grouped_aggregate_leaf(plan: &QueryPlan, node_id: NodeId) -> bool {
+    let Some(scalar_aggregate) = aggregate_node(plan, node_id) else {
+        return false;
+    };
+    if !scalar_aggregate.spec.group_exprs.is_empty() {
+        return false;
+    }
+    validate_projected_grouped_aggregate_leaf(plan, scalar_aggregate.input, 1, 2)
+}
+
+fn validate_projection_wrapped_grouped_aggregate_leaf(plan: &QueryPlan, node_id: NodeId) -> bool {
+    validate_projected_grouped_aggregate_leaf(plan, node_id, 1, 1)
+}
+
+fn validate_projected_grouped_aggregate_leaf(
+    plan: &QueryPlan,
+    node_id: NodeId,
+    min_projection_count: usize,
+    max_projection_count: usize,
+) -> bool {
+    let Some((aggregate_id, projection_count)) = peel_projection_chain(plan, node_id, max_projection_count) else {
+        return false;
+    };
+    if projection_count < min_projection_count {
+        return false;
+    }
+    let Some(aggregate) = aggregate_node(plan, aggregate_id) else {
+        return false;
+    };
+    !aggregate.spec.group_exprs.is_empty() && validate_source_filter_projection_leaf_pipeline(plan, aggregate.input)
+}
+
+fn peel_projection_chain(plan: &QueryPlan, node_id: NodeId, max_projection_count: usize) -> Option<(NodeId, usize)> {
+    let mut current = node_id;
+    let mut projection_count = 0;
+    while let Some(projection) = projection_node(plan, current) {
+        if projection_count == max_projection_count {
+            return None;
+        }
+        projection_count += 1;
+        current = projection.input;
+    }
+    Some((current, projection_count))
+}
+
+fn validate_source_filter_projection_leaf_pipeline(plan: &QueryPlan, node_id: NodeId) -> bool {
+    let Some(node) = plan.node(node_id) else {
+        return false;
+    };
+    match &node.kind {
+        PlanNode::Source(_) => true,
+        PlanNode::Filter(filter) => validate_source_filter_projection_leaf_pipeline(plan, filter.input),
+        PlanNode::Projection(projection) => validate_source_filter_projection_leaf_pipeline(plan, projection.input),
+        PlanNode::Join(_) | PlanNode::Aggregate(_) | PlanNode::Sort(_) | PlanNode::Limit(_) => false,
+    }
+}
+
+fn keyed_inner_hash_join_without_residual(join: &JoinNode) -> bool {
+    join.spec.join_type == JoinType::Inner
+        && !join.spec.keys.is_empty()
+        && join.spec.residual_predicate.is_none()
+        && !join.spec.output_projection.is_empty()
+}
+
+fn projection_node(plan: &QueryPlan, node_id: NodeId) -> Option<&ProjectionNode> {
+    let node = plan.node(node_id)?;
+    match &node.kind {
+        PlanNode::Projection(projection) => Some(projection),
+        _ => None,
+    }
+}
+
+fn aggregate_node(plan: &QueryPlan, node_id: NodeId) -> Option<&AggregateNode> {
+    let node = plan.node(node_id)?;
+    match &node.kind {
+        PlanNode::Aggregate(aggregate) => Some(aggregate),
+        _ => None,
+    }
+}
+
+fn join_node(plan: &QueryPlan, node_id: NodeId) -> Option<&JoinNode> {
+    let node = plan.node(node_id)?;
+    match &node.kind {
+        PlanNode::Join(join) => Some(join),
+        _ => None,
+    }
+}
+
+#[derive(Default)]
+struct ReachableNodeKindCounts {
+    joins: usize,
+    aggregates: usize,
+    sorts: usize,
+    limits: usize,
+}
+
+fn reachable_node_kind_counts(plan: &QueryPlan) -> ReachableNodeKindCounts {
+    let mut reachable = vec![false; plan.nodes().len()];
+    let mut stack = vec![plan.sink().input()];
+    let mut counts = ReachableNodeKindCounts::default();
+    while let Some(id) = stack.pop() {
+        let Some(node) = plan.node(id) else {
+            continue;
+        };
+        if reachable[id.index()] {
+            continue;
+        }
+        reachable[id.index()] = true;
+        match &node.kind {
+            PlanNode::Join(_) => counts.joins += 1,
+            PlanNode::Aggregate(_) => counts.aggregates += 1,
+            PlanNode::Sort(_) => counts.sorts += 1,
+            PlanNode::Limit(_) => counts.limits += 1,
+            PlanNode::Source(_) | PlanNode::Filter(_) | PlanNode::Projection(_) => {},
+        }
+        stack.extend(node.input_ids().iter().copied());
+    }
+    counts
 }
 
 fn first_unsupported_keyed_residual_semi_anti_join(plan: &QueryPlan) -> Option<&JoinNode> {
