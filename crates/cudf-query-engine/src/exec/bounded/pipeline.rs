@@ -600,7 +600,7 @@ fn execute_bounded_keyless_conditional_join_input_subplan_inner(
                 metrics,
                 join_reached_through_projection,
             )?;
-            execute_bounded_keyless_conditional_join_input_subplan_unary(
+            execute_bounded_keyless_conditional_join_input_subplan_aggregate(
                 context,
                 node_id,
                 "join_input_subplan_global_aggregate",
@@ -608,9 +608,8 @@ fn execute_bounded_keyless_conditional_join_input_subplan_inner(
                 input,
                 reservations,
                 metrics,
-                |context, input, metrics| {
-                    execute_aggregate(context, aggregate, input, &node.facts.output_schema, metrics)
-                },
+                aggregate,
+                &node.facts.output_schema,
             )
         },
         PlanNode::Join(join) => {
@@ -693,7 +692,7 @@ fn execute_bounded_keyless_conditional_join_aggregate_over_join_subplan_inputs(
             ("join_input_subplan_global_aggregate", "join_input_subplan_global_aggregate_output")
         },
     };
-    let aggregated = execute_bounded_keyless_conditional_join_input_subplan_unary(
+    let aggregated = execute_bounded_keyless_conditional_join_input_subplan_aggregate(
         context,
         projection.input,
         aggregate_stage,
@@ -701,9 +700,8 @@ fn execute_bounded_keyless_conditional_join_aggregate_over_join_subplan_inputs(
         joined,
         reservations,
         metrics,
-        |context, input, metrics| {
-            execute_aggregate(context, aggregate, input, &aggregate_node.facts.output_schema, metrics)
-        },
+        aggregate,
+        &aggregate_node.facts.output_schema,
     )?;
 
     execute_bounded_keyless_conditional_join_input_subplan_unary(
@@ -779,6 +777,70 @@ fn execute_bounded_keyless_conditional_join_input_subplan_unary(
     metrics: &mut QueryMetrics,
     execute: impl FnOnce(&ExecutionContext, GpuDataFrame, &mut QueryMetrics) -> Result<GpuDataFrame>,
 ) -> Result<CommittedPartial> {
+    execute_bounded_keyless_conditional_join_input_subplan_unary_impl(
+        context,
+        node_id,
+        stage,
+        output_boundary,
+        input,
+        reservations,
+        metrics,
+        false,
+        |context, input, _token, metrics| execute(context, input, metrics),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn execute_bounded_keyless_conditional_join_input_subplan_aggregate(
+    context: &ExecutionContext,
+    node_id: NodeId,
+    stage: &'static str,
+    output_boundary: &'static str,
+    input: CommittedPartial,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+    aggregate: &AggregateNode,
+    output_schema: &arrow::datatypes::SchemaRef,
+) -> Result<CommittedPartial> {
+    execute_bounded_keyless_conditional_join_input_subplan_unary_impl(
+        context,
+        node_id,
+        stage,
+        output_boundary,
+        input,
+        reservations,
+        metrics,
+        true,
+        |context, input, token, metrics| {
+            execute_aggregate_with_budget(
+                context,
+                aggregate,
+                input,
+                output_schema,
+                token.expect("budget token is created for aggregate subplan stages"),
+                metrics,
+            )
+        },
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn execute_bounded_keyless_conditional_join_input_subplan_unary_impl(
+    context: &ExecutionContext,
+    node_id: NodeId,
+    stage: &'static str,
+    output_boundary: &'static str,
+    input: CommittedPartial,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+    use_budget_token: bool,
+    execute: impl FnOnce(
+        &ExecutionContext,
+        GpuDataFrame,
+        Option<&ExecutionBudgetToken>,
+        &mut QueryMetrics,
+    ) -> Result<GpuDataFrame>,
+) -> Result<CommittedPartial> {
     let work_reservation = reservations.try_reserve(
         MemoryReservationRequest::new(
             ReservationKind::OperatorOutput,
@@ -791,7 +853,34 @@ fn execute_bounded_keyless_conditional_join_input_subplan_unary(
         .with_attempt(1, 1),
         metrics,
     )?;
-    let result = execute(context, input.frame, metrics);
+    let token = if use_budget_token {
+        match execution_budget_token_for_boundary(
+            context,
+            reservations.available_bytes_including(&work_reservation),
+            stage,
+            "cudf_query_engine.bounded_pipeline.budget_token",
+            "failed to create bounded native pipeline operator budget token",
+        ) {
+            Ok(token) => Some(token),
+            Err(error) => {
+                reservations.release(work_reservation);
+                reservations.release(input.reservation);
+                return Err(RuntimeResourceFacts {
+                    memory_boundary: stage,
+                    stage,
+                    node_id,
+                    attempt: 1,
+                    max_attempts: 1,
+                    resume_boundary: stage,
+                    metrics,
+                }
+                .attach_to(error));
+            },
+        }
+    } else {
+        None
+    };
+    let result = execute(context, input.frame, token.as_ref(), metrics);
     let frame = match result {
         Ok(frame) => frame,
         Err(error) => {
@@ -873,14 +962,46 @@ pub(super) fn execute_bounded_join_pipeline_stage(
         }
         .attach_retry_context(error)
     })?;
+    let aggregate_token = if matches!(stage, BoundedJoinPipelineStage::Aggregate { .. }) {
+        match execution_budget_token_for_boundary(
+            context,
+            reservations.available_bytes_including(&work_reservation),
+            stage_name,
+            "cudf_query_engine.bounded_pipeline.budget_token",
+            "failed to create bounded native pipeline aggregate budget token",
+        ) {
+            Ok(token) => Some(token),
+            Err(error) => {
+                reservations.release(work_reservation);
+                reservations.release(input.reservation);
+                return Err(RuntimeResourceFacts {
+                    memory_boundary: stage_name,
+                    stage: stage_name,
+                    node_id,
+                    attempt: 1,
+                    max_attempts: 1,
+                    resume_boundary: stage_name,
+                    metrics,
+                }
+                .attach_to(error));
+            },
+        }
+    } else {
+        None
+    };
     let result = match stage {
         BoundedJoinPipelineStage::Filter { node, .. } => execute_filter(context, node, input.frame, metrics),
         BoundedJoinPipelineStage::Projection { node, output_schema, .. } => {
             execute_projection(context, node, input.frame, output_schema, metrics)
         },
-        BoundedJoinPipelineStage::Aggregate { node, output_schema, .. } => {
-            execute_aggregate(context, node, input.frame, output_schema, metrics)
-        },
+        BoundedJoinPipelineStage::Aggregate { node, output_schema, .. } => execute_aggregate_with_budget(
+            context,
+            node,
+            input.frame,
+            output_schema,
+            aggregate_token.as_ref().expect("aggregate pipeline stages create a budget token"),
+            metrics,
+        ),
         BoundedJoinPipelineStage::Sort { node, .. } => execute_sort(context, node, input.frame, metrics),
         BoundedJoinPipelineStage::Limit { node, .. } => execute_limit(context, node, input.frame, metrics),
     };

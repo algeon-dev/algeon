@@ -31,6 +31,16 @@ impl ActiveReservation {
         self.reserved_bytes.set(self.reserved_bytes.get().saturating_add(bytes));
         self.bytes = self.bytes.saturating_add(bytes);
     }
+
+    fn shrink_to(&mut self, bytes: u64) {
+        if bytes >= self.bytes {
+            return;
+        }
+        debug_assert!(!self.released, "cannot shrink a released reservation");
+        let refunded = self.bytes - bytes;
+        self.reserved_bytes.set(self.reserved_bytes.get().saturating_sub(refunded));
+        self.bytes = bytes;
+    }
 }
 
 impl Drop for ActiveReservation {
@@ -101,6 +111,10 @@ impl ReservationTracker {
         reservation.grow(request.requested_bytes);
         metrics.record_reservation_granted_event(&request, request.requested_bytes);
         Ok(())
+    }
+
+    pub(in crate::exec) fn shrink_to_observed(&mut self, reservation: &mut ActiveReservation, observed_bytes: u64) {
+        reservation.shrink_to(observed_bytes);
     }
 }
 

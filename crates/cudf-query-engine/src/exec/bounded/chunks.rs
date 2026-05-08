@@ -152,24 +152,42 @@ pub(super) fn execute_bounded_chunk_attempt(
             return Err(error);
         },
     };
+    let operator_token_budget = reservations.available_bytes_including(&operator_reservation);
+    let operator_token = match execution_budget_token_for_boundary(
+        context,
+        operator_token_budget,
+        "chunk_operator",
+        "cudf_query_engine.chunk_operator.budget_token",
+        "failed to create bounded native chunk operator budget token",
+    ) {
+        Ok(token) => token,
+        Err(error) => {
+            reservations.release(operator_reservation);
+            reservations.release(source_reservation);
+            return Err(attach_chunk_resource_facts(error, chunk, "chunk_operator", attempt, max_attempts, metrics));
+        },
+    };
 
     let chunk_operator_timer = Instant::now();
     let chunk_output = (|| {
         for (projection, output_schema) in &bounded.pre_filter_projections {
-            frame = execute_projection(context, projection, frame, output_schema, metrics)?;
+            frame =
+                execute_projection_with_budget(context, projection, frame, output_schema, &operator_token, metrics)?;
         }
         if let Some(filter) = bounded.filter {
-            frame = execute_filter(context, filter, frame, metrics)?;
+            frame = execute_filter_with_budget(context, filter, frame, &operator_token, metrics)?;
         }
         for (projection, output_schema) in &bounded.post_filter_projections {
-            frame = execute_projection(context, projection, frame, output_schema, metrics)?;
+            frame =
+                execute_projection_with_budget(context, projection, frame, output_schema, &operator_token, metrics)?;
         }
-        execute_partial_aggregate(
+        execute_partial_aggregate_with_budget(
             context,
             bounded.aggregate.0,
             bounded.aggregate_input_schema,
             bounded.aggregate.1,
             frame,
+            &operator_token,
             metrics,
         )
     })();

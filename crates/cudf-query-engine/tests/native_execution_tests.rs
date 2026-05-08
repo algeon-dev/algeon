@@ -15,7 +15,7 @@ use arrow::{
 };
 use cudf::DataFrame;
 use cudf_query_engine::{
-    AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, BoundedJoinReservationContract,
+    AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, BoundedJoinReservationContract, BudgetedExecutionEvent,
     BuildMaterializationBoundary, ExecutionBoundaryPolicy, ExecutionContext, Expr, GpuHashJoinBuildCache,
     GpuResidentInputMap, GpuResidentSource, JoinKey, JoinNullEquality, JoinOutputColumn, JoinSide, JoinSpec, JoinType,
     LimitSpec, LiteralValue, LocalParquetFile, LocalParquetSource, MemoryControlPolicy, PartitionColumn,
@@ -42,7 +42,11 @@ fn native_query_executes_direct_parquet_pipeline_to_host_sink() {
     ]));
 
     let source = LocalParquetSource::from_files(
-        vec![LocalParquetFile::new(&path).with_file_size_bytes(fs::metadata(&path).unwrap().len())],
+        vec![
+            LocalParquetFile::new(&path)
+                .with_file_size_bytes(fs::metadata(&path).unwrap().len())
+                .with_row_group_bytes(vec![4096, 4096, 4096]),
+        ],
         Arc::clone(&input_schema),
         vec!["key".to_string(), "m00".to_string(), "m01".to_string(), "payload".to_string()],
     );
@@ -158,6 +162,54 @@ fn native_query_executes_group_only_aggregate_as_distinct_keys() {
     assert_eq!(batch.num_rows(), 3);
     assert_eq!(batch.num_columns(), 1);
     assert_eq!(int32_array(batch, 0).values().as_ref(), &[1, 2, 3]);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn bounded_native_query_executes_group_only_aggregate_with_budgeted_distinct() {
+    let dir = unique_temp_dir("cudf-query-engine-bounded-group-only-aggregate");
+    let path = dir.join("input.parquet");
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let input_schema = write_final_merge_retry_input_parquet(&path, 4);
+    let output_schema = Arc::new(Schema::new(vec![Field::new("key", DataType::Int32, false)]));
+
+    let source = LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(&path).with_file_size_bytes(fs::metadata(&path).unwrap().len())],
+        Arc::clone(&input_schema),
+        vec!["key".to_string()],
+    );
+    let aggregate = AggregateSpec::new(vec![Expr::column("key")], vec![]);
+    let sort = SortSpec::new(vec![SortExpr::new(Expr::column("key"), false, false)]);
+
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LocalParquet(source));
+    let aggregate = builder.add_aggregate(source, aggregate, Arc::clone(&output_schema));
+    let sort = builder.add_sort(aggregate, sort, Arc::clone(&output_schema));
+    let plan = builder.finish_with_host_sink(sort);
+
+    let context = ExecutionContext::builder()
+        .with_shared_runtime(Arc::clone(&runtime))
+        .with_memory_control_policy(MemoryControlPolicy::Bounded {
+            device_budget_bytes: 8 * 1024 * 1024 * 1024,
+            max_source_chunk_bytes: 1024 * 1024,
+            max_row_groups_per_chunk: 1,
+            max_retry_attempts: 1,
+            min_retry_chunk_row_groups: 1,
+        })
+        .build()
+        .unwrap();
+    let result = execute_query_plan(&context, &plan).unwrap();
+    let metrics = result.metrics();
+    assert_eq!(metrics.source_chunks_committed, 3);
+    assert_eq!(metrics.final_merge_attempts, 1);
+
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    assert_eq!(batch.num_rows(), 4);
+    assert_eq!(batch.num_columns(), 1);
+    assert_eq!(int32_array(batch, 0).values().as_ref(), &[0, 1, 2, 3]);
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -2837,6 +2889,14 @@ fn bounded_native_query_executes_global_sum_min_max_count_and_final_merge() {
     assert_eq!(metrics.final_merge_attempts, 1);
     assert_eq!(metrics.boundary.host_to_device_uploads, 0);
     assert_eq!(metrics.boundary.device_to_host_materializations, 1);
+    assert_budgeted_success_event_with_rows(metrics, "cudf_query_engine.aggregate.cast_reduction", 1);
+    assert_budgeted_success_event_with_contract(
+        metrics,
+        "cudf_query_engine.global_aggregate.count_output",
+        1,
+        "chunk_operator",
+        Some("libcudf_scalar_to_series_temporary_workspace_preflight_unavailable"),
+    );
 
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");
@@ -3003,6 +3063,7 @@ fn bounded_native_query_executes_global_avg_from_sum_count_state() {
     assert_eq!(metrics.final_merge_attempts, 1);
     assert_eq!(metrics.boundary.host_to_device_uploads, 0);
     assert_eq!(metrics.boundary.device_to_host_materializations, 1);
+    assert_budgeted_success_event_with_rows(metrics, "cudf_query_engine.aggregate.finalize_avg", 1);
 
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");
@@ -3081,10 +3142,18 @@ fn bounded_native_query_executes_global_null_on_empty_sum_avg_for_all_null_input
         .build()
         .unwrap();
     let result = execute_query_plan(&context, &plan).unwrap();
-    assert_eq!(result.metrics().source_chunks_planned, 2);
-    assert_eq!(result.metrics().source_chunks_committed, 2);
-    assert_eq!(result.metrics().partial_aggregate_count, 2);
-    assert_eq!(result.metrics().final_merge_attempts, 1);
+    let metrics = result.metrics();
+    assert_eq!(metrics.source_chunks_planned, 2);
+    assert_eq!(metrics.source_chunks_committed, 2);
+    assert_eq!(metrics.partial_aggregate_count, 2);
+    assert_eq!(metrics.final_merge_attempts, 1);
+    assert_budgeted_success_event_with_contract(
+        metrics,
+        "cudf_query_engine.global_aggregate.null_output",
+        1,
+        "final_aggregate_merge",
+        None,
+    );
 
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");
@@ -3121,10 +3190,18 @@ fn bounded_native_query_executes_global_null_on_empty_sum_avg_for_filtered_empty
         .build()
         .unwrap();
     let result = execute_query_plan(&context, &plan).unwrap();
-    assert_eq!(result.metrics().source_chunks_planned, 2);
-    assert_eq!(result.metrics().source_chunks_committed, 2);
-    assert_eq!(result.metrics().partial_aggregate_count, 2);
-    assert_eq!(result.metrics().final_merge_attempts, 1);
+    let metrics = result.metrics();
+    assert_eq!(metrics.source_chunks_planned, 2);
+    assert_eq!(metrics.source_chunks_committed, 2);
+    assert_eq!(metrics.partial_aggregate_count, 2);
+    assert_eq!(metrics.final_merge_attempts, 1);
+    assert_budgeted_success_event_with_contract(
+        metrics,
+        "cudf_query_engine.global_aggregate.null_output",
+        1,
+        "final_aggregate_merge",
+        None,
+    );
 
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");
@@ -3395,6 +3472,7 @@ fn bounded_native_zero_column_count_uses_row_group_metadata_without_read_columns
     assert_eq!(metrics.input_rows, 16);
     assert_eq!(metrics.boundary.host_to_device_uploads, 0);
     assert_eq!(metrics.boundary.device_to_host_materializations, 1);
+    assert_budgeted_success_event_with_rows(metrics, "cudf_query_engine.local_parquet_chunk.zero_column_count", 1);
 
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");
@@ -3461,6 +3539,7 @@ fn bounded_native_query_executes_avg_from_sum_count_state() {
     assert_eq!(metrics.final_merge_attempts, 1);
     assert_eq!(metrics.boundary.host_to_device_uploads, 0);
     assert_eq!(metrics.boundary.device_to_host_materializations, 1);
+    assert_budgeted_success_event_with_rows(metrics, "cudf_query_engine.aggregate.finalize_avg", 3);
 
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");
@@ -3515,8 +3594,10 @@ fn bounded_native_query_executes_single_chunk_avg_finalization() {
         .build()
         .unwrap();
     let result = execute_query_plan(&context, &plan).unwrap();
-    assert_eq!(result.metrics().source_chunks_planned, 1);
-    assert_eq!(result.metrics().final_merge_attempts, 0);
+    let metrics = result.metrics();
+    assert_eq!(metrics.source_chunks_planned, 1);
+    assert_eq!(metrics.final_merge_attempts, 0);
+    assert_budgeted_success_event_with_rows(metrics, "cudf_query_engine.aggregate.finalize_avg", 3);
 
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");
@@ -3796,6 +3877,24 @@ fn bounded_native_query_executes_post_aggregate_projection_before_final_sort() {
         .build()
         .unwrap();
     let result = execute_query_plan(&context, &plan).unwrap();
+    let metrics = result.metrics();
+    assert!(metrics.reservation_events.iter().any(|event| {
+        event.outcome.as_str() == "granted"
+            && event.reservation_kind == ReservationKind::FinalMerge
+            && event.memory_boundary == "post_aggregate_projection"
+    }));
+    assert!(metrics.reservation_events.iter().any(|event| {
+        event.outcome.as_str() == "granted"
+            && event.reservation_kind == ReservationKind::FinalMerge
+            && event.memory_boundary == "post_aggregate_projection_output"
+    }));
+    assert_budgeted_success_event_with_contract(
+        metrics,
+        "cudf_query_engine.projection.execute",
+        3,
+        "post_aggregate_projection",
+        Some("libcudf_dataframe_expression_temporary_workspace_and_transient_relocation_preflight_unavailable"),
+    );
 
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");
@@ -3818,7 +3917,6 @@ fn bounded_native_query_reports_reservation_failure_before_chunk_read() {
         Field::new("key", DataType::Int32, false),
         Field::new("sum_m00", DataType::Int64, true),
     ]));
-
     let source = LocalParquetSource::from_files(
         vec![LocalParquetFile::new(&path).with_file_size_bytes(fs::metadata(&path).unwrap().len())],
         Arc::clone(&input_schema),
@@ -3873,7 +3971,6 @@ fn bounded_native_query_reports_retry_facts_when_chunk_retry_exhausts() {
         Field::new("key", DataType::Int32, false),
         Field::new("sum_m00", DataType::Int64, true),
     ]));
-
     let source = LocalParquetSource::from_files(
         vec![LocalParquetFile::new(&path).with_file_size_bytes(fs::metadata(&path).unwrap().len())],
         Arc::clone(&input_schema),
@@ -3984,6 +4081,160 @@ fn bounded_native_query_reports_source_chunk_hard_budget_failure_after_reservati
 }
 
 #[test]
+fn bounded_native_query_reports_chunk_operator_hard_budget_failure_after_reservation_admission() {
+    let dir = unique_temp_dir("cudf-query-engine-bounded-chunk-operator-hard-budget-failure");
+    let path = dir.join("input.parquet");
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let input_schema = write_final_merge_retry_input_parquet(&path, 512);
+    let repeated_sums = 256;
+    let mut fields = vec![Field::new("key", DataType::Int32, false)];
+    fields.extend((0..repeated_sums).map(|index| Field::new(format!("sum_m00_{index}"), DataType::Int64, true)));
+    let aggregated_schema = Arc::new(Schema::new(fields));
+
+    let source = LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(&path).with_file_size_bytes(fs::metadata(&path).unwrap().len())],
+        Arc::clone(&input_schema),
+        vec!["key".to_string(), "m00".to_string()],
+    );
+    let aggregate = AggregateSpec::new(
+        vec![Expr::column("key")],
+        (0..repeated_sums)
+            .map(|index| AggregateExpr::new(AggregateFunction::Sum, Expr::column("m00"), format!("sum_m00_{index}")))
+            .collect(),
+    );
+
+    let mut builder = QueryPlanBuilder::new();
+    let source_id = builder.add_source(SourceNode::LocalParquet(source));
+    let aggregate = builder.add_aggregate(source_id, aggregate, aggregated_schema);
+    let plan = builder.finish_with_host_sink(aggregate);
+
+    let baseline_context = ExecutionContext::builder()
+        .with_shared_runtime(Arc::clone(&runtime))
+        .with_memory_control_policy(MemoryControlPolicy::Bounded {
+            device_budget_bytes: 8 * 1024 * 1024 * 1024,
+            max_source_chunk_bytes: 1024 * 1024,
+            max_row_groups_per_chunk: 1,
+            max_retry_attempts: 1,
+            min_retry_chunk_row_groups: 1,
+        })
+        .build()
+        .unwrap();
+    let baseline = execute_query_plan(&baseline_context, &plan).unwrap();
+    let mut source_budget = 0_u64;
+    let mut operator_budget = None;
+    for event in &baseline.metrics().reservation_events {
+        if event.outcome.as_str() != "granted" {
+            continue;
+        }
+        match (event.reservation_kind, event.memory_boundary.as_str()) {
+            (ReservationKind::SourceRead, "source_chunk_read") => {
+                source_budget = source_budget.saturating_add(event.requested_bytes);
+            },
+            (ReservationKind::ChunkOperator, "chunk_operator") => {
+                operator_budget = Some(event.requested_bytes);
+                break;
+            },
+            _ => {},
+        }
+    }
+    let operator_budget = operator_budget.expect("baseline should reserve chunk operator work");
+    assert!(source_budget > 0);
+    assert!(operator_budget > 0);
+
+    let operator_token_budget = operator_budget.saturating_mul(4);
+    let constrained_context = ExecutionContext::builder()
+        .with_shared_runtime(Arc::clone(&runtime))
+        .with_memory_control_policy(MemoryControlPolicy::Bounded {
+            device_budget_bytes: source_budget.saturating_add(operator_token_budget),
+            max_source_chunk_bytes: 1024 * 1024,
+            max_row_groups_per_chunk: 1,
+            max_retry_attempts: 1,
+            min_retry_chunk_row_groups: 1,
+        })
+        .build()
+        .unwrap();
+
+    let error = match execute_query_plan(&constrained_context, &plan) {
+        Ok(_) => panic!("hard cudf chunk operator budget should fail"),
+        Err(error) => error,
+    };
+    let operator_budget = operator_token_budget.to_string();
+    assert_eq!(error.code(), QueryErrorCode::CudfResourceExhausted);
+    assert_eq!(error.fact_value("budget_boundary"), Some("chunk_operator"));
+    assert_eq!(error.fact_value("budget_bytes"), Some(operator_budget.as_str()));
+    assert_eq!(error.fact_value("budget_enforcement"), Some("hard_memory_resource_limit"));
+    assert_eq!(error.fact_value("memory_boundary"), Some("chunk_operator"));
+    assert_eq!(error.fact_value("stage"), Some("chunk_operator"));
+    assert_eq!(error.fact_value("chunk_index"), Some("0"));
+    assert_eq!(error.fact_value("file_index"), Some("0"));
+    assert_eq!(error.fact_value("row_groups"), Some("0"));
+    assert_eq!(error.fact_value("attempt"), Some("1"));
+    assert_eq!(error.fact_value("max_attempts"), Some("1"));
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn bounded_native_query_reports_global_count_scalar_output_hard_budget_failure() {
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let output_schema = Arc::new(Schema::new(vec![
+        Field::new("count_rows_0", DataType::Int64, false),
+        Field::new("count_rows_1", DataType::Int64, false),
+        Field::new("count_rows_2", DataType::Int64, false),
+        Field::new("count_rows_3", DataType::Int64, false),
+    ]));
+    let source = LocalParquetSource::zero_column_count(vec![
+        LocalParquetFile::new("/tmp/count-only-budgeted-output.parquet")
+            .with_stable_id("count-only-budgeted-output")
+            .with_file_size_bytes(0)
+            .with_row_groups(vec![0])
+            .with_row_group_bytes(vec![0])
+            .with_row_group_rows(vec![4096]),
+    ]);
+    let aggregate = AggregateSpec::new(
+        Vec::new(),
+        (0..4)
+            .map(|index| {
+                AggregateExpr::new(
+                    AggregateFunction::Count,
+                    Expr::literal(LiteralValue::Int64(1)),
+                    format!("count_rows_{index}"),
+                )
+            })
+            .collect(),
+    );
+
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LocalParquet(source));
+    let aggregate = builder.add_aggregate(source, aggregate, output_schema);
+    let plan = builder.finish_with_host_sink(aggregate);
+    let context = ExecutionContext::builder()
+        .with_shared_runtime(Arc::clone(&runtime))
+        .with_memory_control_policy(MemoryControlPolicy::Bounded {
+            device_budget_bytes: 1024,
+            max_source_chunk_bytes: 1,
+            max_row_groups_per_chunk: 1,
+            max_retry_attempts: 1,
+            min_retry_chunk_row_groups: 1,
+        })
+        .build()
+        .unwrap();
+
+    let error = match execute_query_plan(&context, &plan) {
+        Ok(_) => panic!("bounded scalar-to-series output should fail the hard operator budget"),
+        Err(error) => error,
+    };
+    assert_eq!(error.code(), QueryErrorCode::CudfResourceExhausted);
+    assert_eq!(error.operation(), "cudf_query_engine.global_aggregate.count_output");
+    assert_eq!(error.fact_value("budget_boundary"), Some("chunk_operator"));
+    assert_eq!(error.fact_value("budget_bytes"), Some("1016"));
+    assert_eq!(error.fact_value("budget_enforcement"), Some("hard_memory_resource_limit"));
+    assert_eq!(error.fact_value("budget_operation"), Some("runtime::series_from_value_with_budget"));
+    assert_eq!(error.fact_value("memory_boundary"), Some("chunk_operator"));
+    assert_eq!(error.fact_value("stage"), Some("chunk_operator"));
+}
+
+#[test]
 fn bounded_native_query_reports_reservation_failure_before_host_materialization() {
     let dir = unique_temp_dir("cudf-query-engine-bounded-materialization-reservation-failure");
     let path = dir.join("input.parquet");
@@ -3993,6 +4244,7 @@ fn bounded_native_query_reports_reservation_failure_before_host_materialization(
         Field::new("key", DataType::Int32, false),
         Field::new("sum_m00", DataType::Int64, true),
     ]));
+    let materialized_schema = wide_final_sort_schema(32);
 
     let source = LocalParquetSource::from_files(
         vec![LocalParquetFile::new(&path).with_file_size_bytes(fs::metadata(&path).unwrap().len())],
@@ -4009,10 +4261,10 @@ fn bounded_native_query_reports_reservation_failure_before_host_materialization(
     let one_chunk_plan =
         plan_local_parquet_source_chunks(source_id, &source, SourceChunkPlanningPolicy::new(None, 1)).unwrap();
     assert_eq!(one_chunk_plan.chunk_count(), 1);
-    let source_chunk_bytes =
-        one_chunk_plan.chunks[0].known_row_group_bytes.expect("test parquet metadata should expose row-group bytes");
     let aggregate = builder.add_aggregate(source_id, aggregate, Arc::clone(&aggregated_schema));
-    let plan = builder.finish_with_host_sink(aggregate);
+    let projection =
+        builder.add_projection(aggregate, wide_final_sort_projection(32), Arc::clone(&materialized_schema));
+    let plan = builder.finish_with_host_sink(projection);
 
     let baseline_context = ExecutionContext::builder()
         .with_shared_runtime(Arc::clone(&runtime))
@@ -4026,10 +4278,25 @@ fn bounded_native_query_reports_reservation_failure_before_host_materialization(
         .build()
         .unwrap();
     let baseline = execute_query_plan(&baseline_context, &plan).unwrap();
-    let resident_peak = baseline.metrics().resident_dataframe_peak_bytes.unwrap();
-    let constrained_budget = source_chunk_bytes.saturating_add(resident_peak).saturating_add(4096);
+    let baseline_metrics = baseline.metrics();
+    let source_read_bytes = baseline_metrics
+        .reservation_events
+        .iter()
+        .filter(|event| {
+            event.outcome.as_str() == "granted"
+                && event.reservation_kind == ReservationKind::SourceRead
+                && event.memory_boundary == "source_chunk_read"
+        })
+        .map(|event| event.requested_bytes)
+        .sum::<u64>();
+    let chunk_operator_bytes =
+        granted_reservation_requested_bytes(baseline_metrics, ReservationKind::ChunkOperator, "chunk_operator");
+    let host_materialization_bytes =
+        granted_reservation_requested_bytes(baseline_metrics, ReservationKind::Materialization, "host_materialization");
+    let execution_peak = source_read_bytes.saturating_add(chunk_operator_bytes);
+    let constrained_budget = execution_peak.max(host_materialization_bytes).saturating_add(4096);
     assert!(
-        constrained_budget < resident_peak.saturating_mul(2),
+        constrained_budget < host_materialization_bytes.saturating_mul(2),
         "test data must leave a budget window where execution fits but materialization reservation fails"
     );
 
@@ -4052,7 +4319,7 @@ fn bounded_native_query_reports_reservation_failure_before_host_materialization(
     assert_eq!(error.code(), QueryErrorCode::MemoryReservationFailed);
     assert_eq!(error.fact_value("memory_boundary"), Some("host_materialization"));
     assert_eq!(error.fact_value("reservation_kind"), Some("materialization"));
-    assert_eq!(error.fact_value("node_id"), Some("n1"));
+    assert_eq!(error.fact_value("node_id"), Some("n2"));
     assert_eq!(error.fact_value("stage"), Some("materialization"));
     assert_eq!(error.fact_value("attempt"), Some("1"));
     assert_eq!(error.fact_value("max_attempts"), Some("1"));
@@ -4080,7 +4347,11 @@ fn bounded_native_query_retries_chunk_after_source_reservation_failure() {
     ]));
 
     let source = LocalParquetSource::from_files(
-        vec![LocalParquetFile::new(&path).with_file_size_bytes(fs::metadata(&path).unwrap().len())],
+        vec![
+            LocalParquetFile::new(&path)
+                .with_file_size_bytes(fs::metadata(&path).unwrap().len())
+                .with_row_group_bytes(vec![4096, 4096, 4096]),
+        ],
         Arc::clone(&input_schema),
         vec!["key".to_string(), "m00".to_string(), "m01".to_string(), "payload".to_string()],
     );
@@ -4124,14 +4395,15 @@ fn bounded_native_query_retries_chunk_after_source_reservation_failure() {
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
     assert_eq!(metrics.source_chunks_planned, 1);
-    assert_eq!(metrics.source_chunks_retried, 1);
-    assert_eq!(metrics.retry_count, 1);
+    assert_eq!(metrics.source_chunks_retried, 2);
+    assert_eq!(metrics.retry_count, 2);
     assert_eq!(metrics.retry_reservation_failure_count, 1);
+    assert_eq!(metrics.retry_resource_exhausted_count, 1);
     assert_eq!(metrics.reservation_denied_count, 1);
-    assert_eq!(metrics.source_chunks_attempted, 3);
-    assert_eq!(metrics.source_chunks_committed, 2);
+    assert_eq!(metrics.source_chunks_attempted, 5);
+    assert_eq!(metrics.source_chunks_committed, 3);
     assert_eq!(metrics.row_groups_committed, 3);
-    assert_eq!(metrics.partial_aggregate_count, 2);
+    assert_eq!(metrics.partial_aggregate_count, 3);
     assert_eq!(metrics.final_merge_attempts, 1);
 
     let QueryOutput::HostArrow(batch) = result.output() else {
@@ -4176,7 +4448,7 @@ fn bounded_native_query_retries_final_merge_with_reduced_fan_in() {
     let context = ExecutionContext::builder()
         .with_shared_runtime(Arc::clone(&runtime))
         .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: 65_000,
+            device_budget_bytes: 140_000,
             max_source_chunk_bytes: 1024 * 1024,
             max_row_groups_per_chunk: 1,
             max_retry_attempts: 3,
@@ -4192,8 +4464,9 @@ fn bounded_native_query_retries_final_merge_with_reduced_fan_in() {
     assert_eq!(metrics.final_merge_attempts, 3);
     assert_eq!(metrics.final_merge_levels, 2);
     assert_eq!(metrics.retry_count, 1);
-    assert_eq!(metrics.retry_reservation_failure_count, 1);
-    assert_eq!(metrics.reservation_denied_count, 1);
+    assert_eq!(metrics.retry_resource_exhausted_count, 1);
+    assert_eq!(metrics.retry_reservation_failure_count, 0);
+    assert_eq!(metrics.reservation_denied_count, 0);
 
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");
@@ -4206,7 +4479,7 @@ fn bounded_native_query_retries_final_merge_with_reduced_fan_in() {
 }
 
 #[test]
-fn bounded_native_query_retries_global_final_merge_with_consistent_state_schema() {
+fn bounded_native_query_executes_global_final_merge_with_consistent_state_schema() {
     let dir = unique_temp_dir("cudf-query-engine-bounded-global-final-merge-retry");
     let path = dir.join("input.parquet");
     let runtime = Arc::new(cudf::Runtime::new().unwrap());
@@ -4245,7 +4518,7 @@ fn bounded_native_query_retries_global_final_merge_with_consistent_state_schema(
     let context = ExecutionContext::builder()
         .with_shared_runtime(Arc::clone(&runtime))
         .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: 90_000,
+            device_budget_bytes: 4_000_000,
             max_source_chunk_bytes: 1024 * 1024,
             max_row_groups_per_chunk: 1,
             max_retry_attempts: 3,
@@ -4258,10 +4531,10 @@ fn bounded_native_query_retries_global_final_merge_with_consistent_state_schema(
     let metrics = result.metrics();
     assert_eq!(metrics.source_chunks_planned, 3);
     assert_eq!(metrics.source_chunks_committed, 3);
-    assert_eq!(metrics.final_merge_attempts, 3);
-    assert_eq!(metrics.final_merge_levels, 2);
-    assert_eq!(metrics.retry_count, 1);
-    assert_eq!(metrics.retry_reservation_failure_count, 1);
+    assert_eq!(metrics.final_merge_attempts, 1);
+    assert_eq!(metrics.final_merge_levels, 1);
+    assert_eq!(metrics.retry_count, 0);
+    assert_eq!(metrics.retry_reservation_failure_count, 0);
 
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");
@@ -4308,7 +4581,7 @@ fn bounded_native_query_reports_retry_facts_when_final_merge_retry_exhausts() {
     let context = ExecutionContext::builder()
         .with_shared_runtime(Arc::clone(&runtime))
         .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: 50_000,
+            device_budget_bytes: 70_000,
             max_source_chunk_bytes: 1024 * 1024,
             max_row_groups_per_chunk: 1,
             max_retry_attempts: 3,
@@ -4322,9 +4595,8 @@ fn bounded_native_query_reports_retry_facts_when_final_merge_retry_exhausts() {
         Err(error) => error,
     };
 
-    assert_eq!(error.code(), QueryErrorCode::MemoryReservationFailed);
+    assert!(matches!(error.code(), QueryErrorCode::MemoryReservationFailed | QueryErrorCode::CudfResourceExhausted));
     assert_eq!(error.fact_value("memory_boundary"), Some("final_aggregate_merge"));
-    assert_eq!(error.fact_value("reservation_kind"), Some("final_merge"));
     assert_eq!(error.fact_value("stage"), Some("final_merge"));
     assert_eq!(error.fact_value("attempt"), Some("2"));
     assert_eq!(error.fact_value("max_attempts"), Some("3"));
@@ -4334,6 +4606,12 @@ fn bounded_native_query_reports_retry_facts_when_final_merge_retry_exhausts() {
     assert_eq!(error.fact_value("committed_partials"), Some("3"));
     assert_eq!(error.fact_value("merge_level"), Some("1"));
     assert_eq!(error.fact_value("merge_fan_in"), Some("2"));
+    if error.code() == QueryErrorCode::MemoryReservationFailed {
+        assert_eq!(error.fact_value("reservation_kind"), Some("final_merge"));
+    } else {
+        assert_eq!(error.fact_value("budget_boundary"), Some("final_aggregate_merge"));
+        assert_eq!(error.fact_value("budget_enforcement"), Some("hard_memory_resource_limit"));
+    }
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -4348,6 +4626,7 @@ fn bounded_native_query_retries_final_sort_with_hierarchical_topk() {
         Field::new("key", DataType::Int32, false),
         Field::new("sum_m00", DataType::Int64, true),
     ]));
+    let final_sort_schema = wide_final_sort_schema(16);
 
     let source = LocalParquetSource::from_files(
         vec![LocalParquetFile::new(&path).with_file_size_bytes(fs::metadata(&path).unwrap().len())],
@@ -4366,11 +4645,10 @@ fn bounded_native_query_retries_final_sort_with_hierarchical_topk() {
     let one_chunk_plan =
         plan_local_parquet_source_chunks(source_id, &source, SourceChunkPlanningPolicy::new(None, 1)).unwrap();
     assert_eq!(one_chunk_plan.chunk_count(), 1);
-    let source_chunk_bytes =
-        one_chunk_plan.chunks[0].known_row_group_bytes.expect("test parquet metadata should expose row-group bytes");
     let aggregate = builder.add_aggregate(source_id, aggregate, Arc::clone(&aggregated_schema));
-    let sort = builder.add_sort(aggregate, sort, Arc::clone(&aggregated_schema));
-    let limit = builder.add_limit(sort, limit, Arc::clone(&aggregated_schema));
+    let projection = builder.add_projection(aggregate, wide_final_sort_projection(16), Arc::clone(&final_sort_schema));
+    let sort = builder.add_sort(projection, sort, Arc::clone(&final_sort_schema));
+    let limit = builder.add_limit(sort, limit, Arc::clone(&final_sort_schema));
     let plan = builder.finish_with_host_sink(limit);
 
     let baseline_context = ExecutionContext::builder()
@@ -4388,10 +4666,36 @@ fn bounded_native_query_retries_final_sort_with_hierarchical_topk() {
     let QueryOutput::HostArrow(expected) = baseline.output() else {
         panic!("host sink should materialize one RecordBatch");
     };
-    let resident_peak = baseline.metrics().resident_dataframe_peak_bytes.unwrap();
-    let constrained_budget = source_chunk_bytes.saturating_add(resident_peak).saturating_add(4096);
+    let baseline_metrics = baseline.metrics();
+    let first_final_sort_event = baseline_metrics
+        .reservation_events
+        .iter()
+        .position(|event| {
+            event.outcome.as_str() == "granted"
+                && event.reservation_kind == ReservationKind::FinalSort
+                && event.memory_boundary == "final_sort"
+        })
+        .expect("baseline should reserve final sort work");
+    let input_bytes = baseline_metrics.reservation_events[..first_final_sort_event]
+        .iter()
+        .rfind(|event| event.outcome.as_str() == "granted")
+        .expect("baseline should have a resident aggregate input before final sort")
+        .requested_bytes;
+    let final_sort_bytes = baseline_metrics
+        .reservation_events
+        .iter()
+        .filter(|event| {
+            event.outcome.as_str() == "granted"
+                && event.reservation_kind == ReservationKind::FinalSort
+                && event.memory_boundary == "final_sort"
+        })
+        .map(|event| event.requested_bytes)
+        .collect::<Vec<_>>();
+    assert_eq!(final_sort_bytes.len(), 2, "full final sort should reserve sort order and materialized output");
+    let sequential_peak = input_bytes.saturating_add(final_sort_bytes[0]).saturating_add(final_sort_bytes[1]);
+    let constrained_budget = sequential_peak - 1;
     assert!(
-        constrained_budget < resident_peak.saturating_mul(2),
+        constrained_budget > input_bytes,
         "test data must leave a budget window where source read fits but full final sort reservation fails"
     );
 
@@ -4416,6 +4720,43 @@ fn bounded_native_query_retries_final_sort_with_hierarchical_topk() {
         metrics.retry_reservation_failure_count >= 1 || metrics.retry_resource_exhausted_count >= 1,
         "full final sort must fail through a retryable bounded-memory path"
     );
+    assert_final_sort_prepare_budget_event(
+        metrics,
+        "cudf_query_engine.final_sort.prepare",
+        "final_sort",
+        Some(final_sort_bytes[0]),
+    );
+    assert_final_sort_prepare_budget_event(
+        metrics,
+        "cudf_query_engine.final_sort.topk_prepare",
+        "final_sort_topk_chunk",
+        None,
+    );
+    assert_final_sort_materialize_budget_event(
+        metrics,
+        "cudf_query_engine.final_sort.topk_materialize",
+        "final_sort_topk_chunk",
+        None,
+    );
+    assert_final_sort_prepare_budget_event(
+        metrics,
+        "cudf_query_engine.final_sort.topk_prepare",
+        "final_sort_topk_merge",
+        None,
+    );
+    assert_final_sort_materialize_budget_event(
+        metrics,
+        "cudf_query_engine.final_sort.topk_materialize",
+        "final_sort_topk_merge",
+        None,
+    );
+    assert!(metrics.reservation_events.iter().any(|event| {
+        event.outcome.as_str() == "granted"
+            && event.reservation_kind == ReservationKind::FinalSort
+            && event.memory_boundary == "final_sort_output"
+            && event.requested_bytes > 0
+            && event.requested_bytes < final_sort_bytes[1]
+    }));
 
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");
@@ -4428,7 +4769,7 @@ fn bounded_native_query_retries_final_sort_with_hierarchical_topk() {
 }
 
 #[test]
-fn bounded_native_query_releases_full_final_sort_reservation_before_limited_output() {
+fn bounded_native_query_accounts_full_final_sort_reservation_during_limited_output() {
     let dir = unique_temp_dir("cudf-query-engine-bounded-final-sort-limit-reservation");
     let path = dir.join("input.parquet");
     let runtime = Arc::new(cudf::Runtime::new().unwrap());
@@ -4437,6 +4778,7 @@ fn bounded_native_query_releases_full_final_sort_reservation_before_limited_outp
         Field::new("key", DataType::Int32, false),
         Field::new("sum_m00", DataType::Int64, true),
     ]));
+    let final_sort_schema = wide_final_sort_schema(16);
 
     let source = LocalParquetSource::from_files(
         vec![LocalParquetFile::new(&path).with_file_size_bytes(fs::metadata(&path).unwrap().len())],
@@ -4452,8 +4794,9 @@ fn bounded_native_query_releases_full_final_sort_reservation_before_limited_outp
     let mut builder = QueryPlanBuilder::new();
     let source_id = builder.add_source(SourceNode::LocalParquet(source));
     let aggregate = builder.add_aggregate(source_id, aggregate, Arc::clone(&aggregated_schema));
-    let sort = builder.add_sort(aggregate, sort, Arc::clone(&aggregated_schema));
-    let limit = builder.add_limit(sort, LimitSpec::fetch(4095), Arc::clone(&aggregated_schema));
+    let projection = builder.add_projection(aggregate, wide_final_sort_projection(16), Arc::clone(&final_sort_schema));
+    let sort = builder.add_sort(projection, sort, Arc::clone(&final_sort_schema));
+    let limit = builder.add_limit(sort, LimitSpec::fetch(4095), Arc::clone(&final_sort_schema));
     let plan = builder.finish_with_host_sink(limit);
 
     let baseline_context = ExecutionContext::builder()
@@ -4506,7 +4849,7 @@ fn bounded_native_query_releases_full_final_sort_reservation_before_limited_outp
         "test data must create a budget window between sequential and overlapping final-sort reservations"
     );
     let constrained_budget = sequential_peak + ((overlapping_peak - sequential_peak) / 2);
-    assert!(constrained_budget >= sequential_peak);
+    assert!(constrained_budget > sequential_peak);
     assert!(constrained_budget < overlapping_peak);
 
     let constrained_context = ExecutionContext::builder()
@@ -4521,17 +4864,22 @@ fn bounded_native_query_releases_full_final_sort_reservation_before_limited_outp
         .build()
         .unwrap();
 
-    let result = execute_query_plan(&constrained_context, &plan).unwrap();
-    let metrics = result.metrics();
-    assert_eq!(metrics.retry_count, 0);
-    assert_eq!(metrics.reservation_denied_count, 0);
-
-    let QueryOutput::HostArrow(batch) = result.output() else {
-        panic!("host sink should materialize one RecordBatch");
+    let error = match execute_query_plan(&constrained_context, &plan) {
+        Ok(_) => panic!("bounded execution should account full final-sort output while producing limited output"),
+        Err(error) => error,
     };
-    assert_eq!(batch.num_rows(), 4095);
-    assert_eq!(int32_array(batch, 0).value(0), 4095);
-    assert_eq!(int64_array(batch, 1).value(0), 1);
+    assert_eq!(error.code(), QueryErrorCode::MemoryReservationFailed);
+    assert_eq!(error.fact_value("memory_boundary"), Some("final_sort_output"));
+    assert_eq!(error.fact_value("reservation_kind"), Some("final_sort"));
+    assert_eq!(error.fact_value("stage"), Some("final_sort"));
+    assert_eq!(error.fact_value("attempt"), Some("1"));
+    assert_eq!(error.fact_value("max_attempts"), Some("1"));
+    assert_eq!(error.fact_value("retry_action"), Some("retry_attempts_exhausted"));
+    assert_eq!(error.fact_value("resume_boundary"), Some("final_sort"));
+    let constrained_budget = constrained_budget.to_string();
+    let limited_output_bytes = limited_output_bytes.to_string();
+    assert_eq!(error.fact_value("budget_bytes"), Some(constrained_budget.as_str()));
+    assert_eq!(error.fact_value("requested_bytes"), Some(limited_output_bytes.as_str()));
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -4546,6 +4894,7 @@ fn bounded_native_query_reports_retry_facts_when_final_sort_without_limit_fails(
         Field::new("key", DataType::Int32, false),
         Field::new("sum_m00", DataType::Int64, true),
     ]));
+    let final_sort_schema = wide_final_sort_schema(16);
 
     let source = LocalParquetSource::from_files(
         vec![LocalParquetFile::new(&path).with_file_size_bytes(fs::metadata(&path).unwrap().len())],
@@ -4559,14 +4908,10 @@ fn bounded_native_query_reports_retry_facts_when_final_sort_without_limit_fails(
     let sort = SortSpec::new(vec![SortExpr::new(Expr::column("key"), true, false)]);
 
     let mut builder = QueryPlanBuilder::new();
-    let source_id = builder.add_source(SourceNode::LocalParquet(source.clone()));
-    let one_chunk_plan =
-        plan_local_parquet_source_chunks(source_id, &source, SourceChunkPlanningPolicy::new(None, 1)).unwrap();
-    assert_eq!(one_chunk_plan.chunk_count(), 1);
-    let source_chunk_bytes =
-        one_chunk_plan.chunks[0].known_row_group_bytes.expect("test parquet metadata should expose row-group bytes");
+    let source_id = builder.add_source(SourceNode::LocalParquet(source));
     let aggregate = builder.add_aggregate(source_id, aggregate, Arc::clone(&aggregated_schema));
-    let sort = builder.add_sort(aggregate, sort, aggregated_schema);
+    let projection = builder.add_projection(aggregate, wide_final_sort_projection(16), Arc::clone(&final_sort_schema));
+    let sort = builder.add_sort(projection, sort, final_sort_schema);
     let plan = builder.finish_with_host_sink(sort);
 
     let baseline_context = ExecutionContext::builder()
@@ -4581,8 +4926,34 @@ fn bounded_native_query_reports_retry_facts_when_final_sort_without_limit_fails(
         .build()
         .unwrap();
     let baseline = execute_query_plan(&baseline_context, &plan).unwrap();
-    let resident_peak = baseline.metrics().resident_dataframe_peak_bytes.unwrap();
-    let constrained_budget = source_chunk_bytes.saturating_add(resident_peak).saturating_add(4096);
+    let baseline_metrics = baseline.metrics();
+    let first_final_sort_event = baseline_metrics
+        .reservation_events
+        .iter()
+        .position(|event| {
+            event.outcome.as_str() == "granted"
+                && event.reservation_kind == ReservationKind::FinalSort
+                && event.memory_boundary == "final_sort"
+        })
+        .expect("baseline should reserve final sort work");
+    let input_bytes = baseline_metrics.reservation_events[..first_final_sort_event]
+        .iter()
+        .rfind(|event| event.outcome.as_str() == "granted")
+        .expect("baseline should have a resident aggregate input before final sort")
+        .requested_bytes;
+    let final_sort_bytes = baseline_metrics
+        .reservation_events
+        .iter()
+        .filter(|event| {
+            event.outcome.as_str() == "granted"
+                && event.reservation_kind == ReservationKind::FinalSort
+                && event.memory_boundary == "final_sort"
+        })
+        .map(|event| event.requested_bytes)
+        .collect::<Vec<_>>();
+    assert_eq!(final_sort_bytes.len(), 2, "full final sort should reserve sort order and materialized output");
+    let sequential_peak = input_bytes.saturating_add(final_sort_bytes[0]).saturating_add(final_sort_bytes[1]);
+    let constrained_budget = sequential_peak - 1;
 
     let constrained_context = ExecutionContext::builder()
         .with_shared_runtime(Arc::clone(&runtime))
@@ -7977,6 +8348,195 @@ fn assert_empty_bounded_filtered_join_result(result: &cudf_query_engine::QueryEx
     assert_eq!(metrics.filtered_join_build_count, 1);
     assert_eq!(metrics.filtered_join_hash_table_bytes, join_metrics.hash_table_bytes);
     assert_eq!(metrics.filtered_join_probe_state_bytes, join_metrics.filtered_probe_state_bytes);
+}
+
+fn budgeted_events<'a>(metrics: &'a QueryMetrics, operation: &str) -> Vec<&'a BudgetedExecutionEvent> {
+    metrics.budgeted_execution_events.iter().filter(|event| event.operation == operation).collect()
+}
+
+fn assert_budgeted_success_event(metrics: &QueryMetrics, operation: &str) {
+    let events = budgeted_events(metrics, operation);
+    assert!(!events.is_empty(), "missing budgeted execution event for {operation}");
+    for event in events {
+        assert!(!event.boundary.is_empty(), "budgeted event should record boundary: {event:?}");
+        assert!(event.budget_bytes > 0, "budgeted event should record budget bytes: {event:?}");
+        assert_eq!(event.enforcement, "hard_memory_resource_limit");
+        assert_eq!(event.status, "hard_enforced");
+        assert!(event.retained_bytes.is_some(), "budgeted event should record retained bytes: {event:?}");
+        assert!(event.output_bytes.is_some(), "budgeted event should record output bytes: {event:?}");
+        assert!(event.output_rows.is_some(), "budgeted event should record output rows: {event:?}");
+        assert_representative_budgeted_contract(event);
+    }
+}
+
+fn assert_budgeted_success_event_with_rows(metrics: &QueryMetrics, operation: &str, output_rows: u64) {
+    let events = budgeted_events(metrics, operation);
+    assert!(
+        events.iter().any(|event| event.output_rows == Some(output_rows)),
+        "missing budgeted execution event for {operation} with {output_rows} rows: {events:?}"
+    );
+    assert_budgeted_success_event(metrics, operation);
+}
+
+fn assert_budgeted_success_event_with_contract(
+    metrics: &QueryMetrics,
+    operation: &str,
+    output_rows: u64,
+    boundary: &str,
+    unresolved_contract: Option<&str>,
+) {
+    let events = budgeted_events(metrics, operation);
+    assert!(
+        events.iter().any(|event| {
+            event.output_rows == Some(output_rows)
+                && event.boundary == boundary
+                && event.unresolved_contract.as_deref() == unresolved_contract
+        }),
+        "missing budgeted execution event for {operation} with rows={output_rows}, boundary={boundary}, \
+         unresolved_contract={unresolved_contract:?}: {events:?}"
+    );
+    assert_budgeted_success_event(metrics, operation);
+}
+
+fn assert_final_sort_prepare_budget_event(
+    metrics: &QueryMetrics,
+    operation: &str,
+    boundary: &str,
+    retained_bytes: Option<u64>,
+) {
+    let events = budgeted_events(metrics, operation);
+    assert!(
+        events.iter().any(|event| {
+            final_sort_budget_event_has_common_contract(event, boundary)
+                && retained_bytes.map_or(event.retained_bytes.is_some_and(|bytes| bytes > 0), |bytes| {
+                    event.retained_bytes == Some(bytes)
+                })
+                && event.output_bytes.is_none()
+                && event.output_rows.is_none()
+        }),
+        "missing final-sort prepare event for operation={operation}, boundary={boundary}, \
+         retained_bytes={retained_bytes:?}: {events:?}"
+    );
+}
+
+fn assert_final_sort_materialize_budget_event(
+    metrics: &QueryMetrics,
+    operation: &str,
+    boundary: &str,
+    output_bytes: Option<u64>,
+) {
+    let events = budgeted_events(metrics, operation);
+    assert!(
+        events.iter().any(|event| {
+            final_sort_budget_event_has_common_contract(event, boundary)
+                && event.retained_bytes.is_some_and(|bytes| bytes > 0)
+                && output_bytes.map_or(event.output_bytes.is_some_and(|bytes| bytes > 0), |bytes| {
+                    event.output_bytes == Some(bytes)
+                })
+                && event.output_rows.is_none()
+        }),
+        "missing final-sort materialize event for operation={operation}, boundary={boundary}, \
+         output_bytes={output_bytes:?}: {events:?}"
+    );
+}
+
+fn final_sort_budget_event_has_common_contract(event: &BudgetedExecutionEvent, boundary: &str) -> bool {
+    event.boundary == boundary
+        && event.budget_bytes > 0
+        && event.enforcement == "hard_memory_resource_limit"
+        && event.status == "hard_enforced"
+        && event.unresolved_contract.as_deref() == Some("libcudf_sort_temporary_workspace_preflight_unavailable")
+}
+
+fn assert_representative_budgeted_contract(event: &BudgetedExecutionEvent) {
+    match event.operation.as_str() {
+        "cudf_query_engine.aggregate.cast_count"
+        | "cudf_query_engine.aggregate.cast_reduction"
+        | "cudf_query_engine.aggregate.finalize_avg"
+        | "cudf_query_engine.projection.execute" => {
+            assert!(
+                matches!(
+                    event.boundary.as_str(),
+                    "chunk_operator"
+                        | "final_aggregate_merge"
+                        | "final_aggregate_projection"
+                        | "post_aggregate_projection"
+                ),
+                "DataFrame expression event should record its execution boundary: {event:?}"
+            );
+            assert_eq!(
+                event.unresolved_contract.as_deref(),
+                Some("libcudf_dataframe_expression_temporary_workspace_and_transient_relocation_preflight_unavailable")
+            );
+        },
+        "cudf_query_engine.aggregate.execute_partial" => {
+            assert_eq!(event.boundary, "chunk_operator");
+            assert_eq!(
+                event.unresolved_contract.as_deref(),
+                Some("libcudf_groupby_aggregate_temporary_workspace_preflight_unavailable")
+            );
+        },
+        "cudf_query_engine.global_aggregate.count_output" => {
+            assert_eq!(event.boundary, "chunk_operator");
+            assert_eq!(
+                event.unresolved_contract.as_deref(),
+                Some("libcudf_scalar_to_series_temporary_workspace_preflight_unavailable")
+            );
+        },
+        "cudf_query_engine.global_aggregate.null_output" => {
+            assert!(matches!(event.boundary.as_str(), "chunk_operator" | "final_aggregate_merge"));
+            assert_eq!(
+                event.unresolved_contract.as_deref(),
+                None,
+                "fixed-width null output is directly budgeted; only scaled decimal nulls carry a lower-level gap"
+            );
+        },
+        "cudf_query_engine.final_sort.prepare" => {
+            assert_eq!(event.boundary, "final_sort");
+            assert_eq!(
+                event.unresolved_contract.as_deref(),
+                Some("libcudf_sort_temporary_workspace_preflight_unavailable")
+            );
+        },
+        "cudf_query_engine.final_sort.materialize" => {
+            assert_eq!(event.boundary, "final_sort");
+            assert_eq!(
+                event.unresolved_contract.as_deref(),
+                Some("libcudf_sort_temporary_workspace_preflight_unavailable")
+            );
+        },
+        "cudf_query_engine.final_sort.topk_prepare" | "cudf_query_engine.final_sort.topk_materialize" => {
+            assert!(matches!(event.boundary.as_str(), "final_sort_topk_chunk" | "final_sort_topk_merge"));
+            assert_eq!(
+                event.unresolved_contract.as_deref(),
+                Some("libcudf_sort_temporary_workspace_preflight_unavailable")
+            );
+        },
+        "cudf_query_engine.local_parquet_chunk.zero_column_count" => {
+            assert_eq!(event.boundary, "source_chunk_read");
+            assert_eq!(
+                event.unresolved_contract.as_deref(),
+                Some("libcudf_scalar_to_series_temporary_workspace_preflight_unavailable")
+            );
+        },
+        _ => {},
+    }
+}
+
+fn wide_final_sort_schema(column_count: usize) -> Arc<Schema> {
+    assert!(column_count >= 2);
+    let mut fields = Vec::with_capacity(column_count);
+    fields.push(Field::new("key", DataType::Int32, false));
+    fields.extend((0..(column_count - 1)).map(|index| Field::new(format!("sum_m{index:02}"), DataType::Int64, true)));
+    Arc::new(Schema::new(fields))
+}
+
+fn wide_final_sort_projection(column_count: usize) -> Vec<Expr> {
+    assert!(column_count >= 2);
+    let mut projection = Vec::with_capacity(column_count);
+    projection.push(Expr::column("key"));
+    projection.extend((0..(column_count - 1)).map(|index| Expr::column("sum_m00").alias(format!("sum_m{index:02}"))));
+    projection
 }
 
 fn assert_reservation_kind_subsequence(metrics: &QueryMetrics, expected: &[ReservationKind]) {
