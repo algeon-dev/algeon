@@ -15,8 +15,148 @@ use crate::{
         reduction::{ReduceAgg, ScanAgg, ScanType},
         unary::UnaryOperator,
     },
-    runtime::{ExecutionOverrides, Runtime},
+    runtime::{BudgetedExecutionOutcome, ExecutionBudgetToken, ExecutionOverrides, Runtime},
 };
+
+const SCALAR_REDUCTION_TEMPORARY_WORKSPACE_CONTRACT_GAP: &str =
+    "libcudf_scalar_reduction_temporary_workspace_preflight_unavailable";
+
+/// Conservative output-shape facts for a prepared scalar reduction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScalarReductionOutputShape {
+    output_type: DataType,
+    output_rows: usize,
+}
+
+impl ScalarReductionOutputShape {
+    fn new(output_type: DataType) -> Self {
+        Self { output_type, output_rows: 1 }
+    }
+
+    /// Data type of the scalar produced by the reduction.
+    pub fn output_type(&self) -> DataType {
+        self.output_type
+    }
+
+    /// Number of logical rows produced by a scalar reduction.
+    pub fn output_rows(&self) -> usize {
+        self.output_rows
+    }
+}
+
+/// Result of a prepared scalar reduction.
+pub struct ScalarReductionOutput {
+    scalar: Scalar,
+}
+
+impl ScalarReductionOutput {
+    fn new(scalar: Scalar) -> Self {
+        Self { scalar }
+    }
+
+    /// Borrow the produced scalar.
+    pub fn scalar(&self) -> &Scalar {
+        &self.scalar
+    }
+
+    /// Consume this output and return the produced scalar.
+    pub fn into_scalar(self) -> Scalar {
+        self.scalar
+    }
+
+    /// Number of logical rows produced by a scalar reduction.
+    pub fn output_rows(&self) -> usize {
+        1
+    }
+}
+
+/// Prepared scalar reduction over a retained input series.
+///
+/// Preparation validates the reduction output type and records the stable
+/// scalar output shape. Execution may then be routed through a default
+/// execution context or a hard execution-budget token.
+pub struct SeriesPreparedScalarReduction<'a> {
+    input: &'a Series,
+    aggregation: ReduceAgg,
+    output_shape: ScalarReductionOutputShape,
+}
+
+impl<'a> SeriesPreparedScalarReduction<'a> {
+    fn new(input: &'a Series, aggregation: ReduceAgg, output_shape: ScalarReductionOutputShape) -> Self {
+        Self { input, aggregation, output_shape }
+    }
+
+    /// Borrow the retained input series.
+    pub fn input(&self) -> &Series {
+        self.input
+    }
+
+    /// Borrow the reduction aggregation.
+    pub fn aggregation(&self) -> &ReduceAgg {
+        &self.aggregation
+    }
+
+    /// Data type of the scalar produced by this prepared reduction.
+    pub fn output_type(&self) -> DataType {
+        self.output_shape.output_type()
+    }
+
+    /// Borrow the prepared output-shape facts.
+    pub fn output_shape(&self) -> &ScalarReductionOutputShape {
+        &self.output_shape
+    }
+
+    /// Execute the prepared scalar reduction.
+    pub fn execute(&self) -> Result<ScalarReductionOutput> {
+        self.execute_in_context(&default_execution_context(), "series::prepared_scalar_reduction::execute", |error| {
+            error
+        })
+    }
+
+    /// Execute the prepared scalar reduction with a hard execution-budget token.
+    ///
+    /// Execution allocations are routed through the token's limiting memory
+    /// resource. The report records the fixed scalar output row count and the
+    /// unresolved libcudf temporary-workspace preflight contract. It does not
+    /// estimate scalar retained/output bytes.
+    pub fn execute_with_budget(
+        &self,
+        token: &ExecutionBudgetToken,
+    ) -> Result<BudgetedExecutionOutcome<ScalarReductionOutput>> {
+        let operation = "series::prepared_scalar_reduction::execute_with_budget";
+        let ctx = token.execution_overrides();
+        let output = self.execute_in_context(&ctx, operation, |error| {
+            annotate_scalar_reduction_budget_execution_error(error, token, operation)
+        })?;
+        let report = token
+            .hard_enforced_report()
+            .with_output_rows(output.output_rows())
+            .with_unresolved_contract(SCALAR_REDUCTION_TEMPORARY_WORKSPACE_CONTRACT_GAP);
+
+        Ok(BudgetedExecutionOutcome::new(output, report))
+    }
+
+    fn execute_in_context<F>(
+        &self,
+        ctx: &ExecutionOverrides<'_>,
+        operation: &'static str,
+        map_execution_error: F,
+    ) -> Result<ScalarReductionOutput>
+    where
+        F: FnOnce(Error) -> Error,
+    {
+        self.input
+            .reduce_prepared_in_context(
+                &self.aggregation,
+                &self.output_shape.output_type,
+                ctx,
+                operation,
+                map_execution_error,
+            )
+            .map(ScalarReductionOutput::new)
+            .map_err(|error| error.reanchor_if_needed(operation))
+    }
+}
 
 /// Infer the output `DataType` for a reduction aggregation, matching cuDF
 /// Python behavior.
@@ -95,6 +235,18 @@ pub(crate) fn trigger_nunique_negative_distinct_count_for_test() -> Result<()> {
 }
 
 impl Series {
+    /// Prepare a scalar reduction over this series.
+    ///
+    /// This validates and records the reduction's output type and fixed scalar
+    /// output shape without claiming any libcudf temporary-workspace preflight
+    /// coverage.
+    pub fn prepare_scalar_reduction(&self, agg: ReduceAgg) -> Result<SeriesPreparedScalarReduction<'_>> {
+        let operation = "series::prepare_scalar_reduction";
+        let input_type = self.dtype().map_err(|error| error.reanchor_if_needed(operation))?;
+        let output_type = infer_reduce_output_type(&input_type, &agg, operation)?;
+        Ok(SeriesPreparedScalarReduction::new(self, agg, ScalarReductionOutputShape::new(output_type)))
+    }
+
     pub(super) fn nunique_with_context(&self, ctx: &ExecutionOverrides<'_>, operation: &'static str) -> Result<usize> {
         let scalar = self.reduce_in_context(ReduceAgg::NUnique { null_policy: NullPolicy::Exclude }, ctx, operation)?;
         scalar_to_usize_count(scalar, operation)
@@ -400,5 +552,18 @@ impl Series {
     /// GPU-allocating: produces a new BOOL8 column.
     pub fn logical_not(&self) -> Result<Series> {
         self.logical_not_with_context(&default_execution_context(), "series::logical_not")
+    }
+}
+
+fn annotate_scalar_reduction_budget_execution_error(
+    error: Error,
+    token: &ExecutionBudgetToken,
+    operation: &'static str,
+) -> Error {
+    match error.kind() {
+        crate::core::error::ErrorKind::ResourceExhausted | crate::core::error::ErrorKind::DependencyFailure => {
+            token.annotate_error(error, operation)
+        },
+        _ => error.reanchor_if_needed(operation),
     }
 }

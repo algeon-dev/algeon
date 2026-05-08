@@ -235,6 +235,21 @@ pub(crate) fn reduce_impl(
     exec_options: Option<&cudf_sys::cudf_exec_options_t>,
     operation: &'static str,
 ) -> Result<Scalar> {
+    reduce_impl_with_status_error_mapper(input, agg, output_type, output_domain, exec_options, operation, |error| error)
+}
+
+pub(crate) fn reduce_impl_with_status_error_mapper<F>(
+    input: &ColumnView<'_>,
+    agg: &ReduceAgg,
+    output_type: &DataType,
+    output_domain: &Arc<ExecutionDomain>,
+    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    operation: &'static str,
+    map_status_error: F,
+) -> Result<Scalar>
+where
+    F: FnOnce(Error) -> Error,
+{
     // SAFETY: create_reduce_agg_handle calls FFI with valid parameters.
     let agg_handle = unsafe { create_reduce_agg_handle(agg).map_err(|error| error.reanchor(operation))? };
     let dtype_handle = output_type.to_raw_handle_for(operation)?;
@@ -264,7 +279,8 @@ pub(crate) fn reduce_impl(
             ("output_type_id", format!("{:?}", output_type.id()).to_lowercase()),
             ("execution_context_provided", exec_options.is_some().to_string()),
         ],
-    )?;
+    )
+    .map_err(map_status_error)?;
     // SAFETY: out was returned by a successful FFI call, transferring ownership.
     unsafe { Scalar::from_raw_with_domain(out, Arc::clone(output_domain)) }
 }
