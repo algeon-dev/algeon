@@ -5,7 +5,7 @@ use std::{
 
 use typed_builder::TypedBuilder;
 
-use super::owned::DataFrame;
+use super::{info::InfoDetail, owned::DataFrame};
 use crate::{
     core::{
         error::{Error, ErrorCode, Result},
@@ -23,8 +23,14 @@ use crate::{
             plan_local_parquet_source_chunks,
         },
     },
-    runtime::{BoundaryKind, QueryStageKind, Runtime, execution_domain::ExecutionDomain},
+    runtime::{
+        BoundaryKind, BudgetedExecutionOutcome, ExecutionBudgetToken, QueryStageKind, Runtime,
+        execution_domain::ExecutionDomain,
+    },
 };
+
+const PARQUET_SOURCE_DECODED_OUTPUT_PREFLIGHT_CONTRACT_GAP: &str =
+    "libcudf_parquet_decoded_output_preflight_unavailable";
 
 /// Options for [`DataFrame::read_csv_with_options`].
 ///
@@ -567,6 +573,16 @@ fn read_parquet_source_chunk_frame(
     project_source_frame(&frame, source, mode).map_err(|error| error.reanchor("dataframe::read_parquet_source_chunk"))
 }
 
+fn dataframe_device_allocated_size_bytes(frame: &DataFrame, operation: &'static str) -> Result<usize> {
+    let info = frame.info_with(InfoDetail::DEVICE_ALLOCATED).map_err(|error| error.reanchor(operation))?;
+    let memory = info.memory_accounting.ok_or_else(|| {
+        crate::core::error::invariant_violation(operation, "device allocation accounting was not populated")
+    })?;
+    memory
+        .device_allocated_bytes
+        .ok_or_else(|| crate::core::error::invariant_violation(operation, "device allocated bytes were not populated"))
+}
+
 impl DataFrame {
     /// Read a CSV file into a `DataFrame`.
     ///
@@ -836,6 +852,51 @@ impl DataFrame {
             operation,
         )?;
         Ok(frame)
+    }
+
+    /// Execute one planned local Parquet source chunk under a hard budget token.
+    ///
+    /// The Parquet decode, partition-column materialization, and final source
+    /// projection run in a scoped execution domain whose memory resource is
+    /// the token's hard-limiting allocator. The report records observed
+    /// retained/output device allocation bytes and output rows after the read.
+    ///
+    /// libcudf does not expose exact decoded Parquet output preflight sizing
+    /// for this path, so the report always records that lower-level contract
+    /// as unresolved. Source compressed bytes are not reported as decoded
+    /// output bytes.
+    pub fn read_parquet_source_chunk_with_budget(
+        runtime: &Runtime,
+        source: &LocalParquetSource,
+        chunk: &SourceChunk,
+        mode: SourceReadMode,
+        token: &ExecutionBudgetToken,
+    ) -> Result<BudgetedExecutionOutcome<Self>> {
+        let operation = "dataframe::read_parquet_source_chunk_with_budget";
+        let budget_runtime = runtime
+            .with_memory_resource_override(token.memory_resource(), operation)
+            .map_err(|error| token.annotate_error(error, operation))?;
+        let frame = read_parquet_source_chunk_frame(&budget_runtime, source, chunk, mode)
+            .map_err(|error| token.annotate_error(error, operation))?;
+        let output_rows = frame.num_rows();
+        let output_bytes = dataframe_device_allocated_size_bytes(&frame, operation)
+            .map_err(|error| token.annotate_error(error, operation))?;
+        frame
+            .record_boundary_observation_for_query_stage(
+                BoundaryKind::HostToDevice,
+                QueryStageKind::SourceRead,
+                false,
+                operation,
+            )
+            .map_err(|error| token.annotate_error(error, operation))?;
+        let report = token
+            .hard_enforced_report()
+            .with_retained_bytes(output_bytes)
+            .with_output_bytes(output_bytes)
+            .with_output_rows(output_rows)
+            .with_unresolved_contract(PARQUET_SOURCE_DECODED_OUTPUT_PREFLIGHT_CONTRACT_GAP);
+
+        Ok(BudgetedExecutionOutcome::new(frame, report))
     }
 
     /// Write this `DataFrame` to a Parquet file, embedding column names in

@@ -6,6 +6,7 @@ use rapids_interop::{ExecutionBinding, InteropError, InteropErrorKind};
 
 use super::{
     boundary::{BoundaryObserver, BoundaryObserverRef},
+    budget::{ExecutionBudgetRequest, ExecutionBudgetToken},
     device::DeviceId,
     device_guard::DeviceGuard,
     event::CudaEvent,
@@ -134,6 +135,21 @@ impl Runtime {
     /// Access the runtime's owned device memory resource.
     pub fn memory_resource(&self) -> &DeviceMemoryResource {
         self.domain.memory_resource()
+    }
+
+    /// Create a hard execution-budget token using this runtime's default
+    /// memory resource as the upstream allocator.
+    pub fn execution_budget_token(&self, request: ExecutionBudgetRequest) -> Result<ExecutionBudgetToken> {
+        ExecutionBudgetToken::from_runtime(self, request)
+    }
+
+    pub(crate) fn with_memory_resource_override(
+        &self,
+        mr: &DeviceMemoryResource,
+        operation: &'static str,
+    ) -> Result<Self> {
+        let domain = ExecutionDomain::resolve_with_borrowed_override(&self.domain, None, Some(mr), operation)?;
+        Ok(Self { domain })
     }
 
     /// Borrow this runtime's explicit execution binding for cross-crate interop.

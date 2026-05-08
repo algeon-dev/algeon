@@ -1,13 +1,17 @@
 //! Tests for `SortOptions` and the high-level `DataFrame::sort_values`.
 
 use cudf::{
-    DataFrame, ErrorCode, ErrorKind, SortOptions,
+    DataFrame, ErrorCode, ErrorKind, ExecutionBudgetEnforcement, ExecutionBudgetRequest, ExecutionBudgetStatus,
+    SortOptions,
     core::error::{FactKeyName, FactValue},
+    frame::dataframe::InfoDetail,
+    ops::sorting,
     testing::prelude::*,
 };
 
 use crate::common::{
-    assert_missing_column_error, column_from_slice, column_from_slice_nullable, error_context_value, sample_df,
+    assert_missing_column_error, column_from_slice, column_from_slice_nullable, error_context_value,
+    last_exec_mr_value, observed_exec_mr_values, reset_exec_observation, sample_df, with_test_runtime,
 };
 
 fn assert_sort_options_validation_error(
@@ -30,6 +34,18 @@ fn assert_sort_options_validation_error(
     assert_eq!(error_context_value(err, "num_keys").as_deref(), None);
     assert_eq!(error_context_value(err, "descending_len").as_deref(), None);
     assert_eq!(error_context_value(err, "nulls_first_len").as_deref(), None);
+}
+
+fn assert_i32_column_eq(left: &DataFrame, right: &DataFrame, column: &str) {
+    assert_eq!(
+        left.series(column).unwrap().to_optional_vec::<i32>().unwrap(),
+        right.series(column).unwrap().to_optional_vec::<i32>().unwrap(),
+        "column {column} differed",
+    );
+}
+
+fn dataframe_device_allocated_size_bytes(df: &DataFrame) -> usize {
+    df.info_with(InfoDetail::DEVICE_ALLOCATED).unwrap().memory_accounting.unwrap().device_allocated_bytes.unwrap()
 }
 
 // ---------------------------------------------------------------------------
@@ -316,4 +332,232 @@ fn test_sort_values_explicit_ascending() {
     let df = sample_df();
     let sorted = df.sort_values(["id"], SortOptions::new().with_descending(vec![false])).unwrap();
     assert_eq!(sorted.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![1, 1, 3, 4, 5]);
+}
+
+#[test]
+fn test_prepare_sort_values_single_key_matches_sort_values() {
+    let df = sample_df();
+    let options = SortOptions::new();
+    let expected = df.sort_values(["id"], options.clone()).unwrap();
+
+    let prepared = df.prepare_sort_values(["id"], options).unwrap();
+    let actual = prepared.materialize().unwrap();
+
+    assert_eq!(prepared.output_rows(), df.num_rows());
+    assert_i32_column_eq(&actual, &expected, "id");
+}
+
+#[test]
+fn test_prepare_sort_values_multi_key_descending_matches_sort_values() {
+    let ids = crate::common::series::<i32>("id", &[2, 1, 2, 1]).unwrap();
+    let scores = crate::common::series::<i32>("score", &[20, 10, 40, 30]).unwrap();
+    let tags = crate::common::series::<i32>("tag", &[200, 100, 400, 300]).unwrap();
+    let df = DataFrame::from_series([("id", ids), ("score", scores), ("tag", tags)]).unwrap();
+    let options = SortOptions::new().with_descending(vec![false, true]);
+    let expected = df.sort_values(["id", "score"], options.clone()).unwrap();
+
+    let prepared = df.prepare_sort_values(["id", "score"], options).unwrap();
+    let actual = prepared.execute().unwrap();
+
+    assert_i32_column_eq(&actual, &expected, "id");
+    assert_i32_column_eq(&actual, &expected, "score");
+    assert_i32_column_eq(&actual, &expected, "tag");
+}
+
+#[test]
+fn test_prepare_sort_values_descending_null_placement_matches_sort_values() {
+    let ids = column_from_slice_nullable(&[0i32, 2, 3, 0, 1], &[false, true, true, false, true]);
+    let vals = column_from_slice(&[10i32, 20, 30, 40, 50]);
+    let df = crate::common::dataframe_from_columns(
+        vec!["id".to_string(), "val".to_string()],
+        vec![ids.unwrap(), vals.unwrap()],
+    )
+    .unwrap();
+    let options = SortOptions::new().with_descending(vec![true]).with_nulls_first(vec![true]);
+    let expected = df.sort_values(["id"], options.clone()).unwrap();
+
+    let prepared = df.prepare_sort_values(["id"], options).unwrap();
+    let actual = prepared.materialize().unwrap();
+
+    assert_i32_column_eq(&actual, &expected, "id");
+    assert_i32_column_eq(&actual, &expected, "val");
+}
+
+#[test]
+fn test_prepare_sort_values_stable_matches_sort_values_for_ties() {
+    let ids = crate::common::series::<i32>("id", &[1, 1, 1, 1]).unwrap();
+    let tags = crate::common::series::<i32>("tag", &[10, 20, 30, 40]).unwrap();
+    let df = DataFrame::from_series([("id", ids), ("tag", tags)]).unwrap();
+    let options = SortOptions::new().with_stable(true);
+    let expected = df.sort_values(["id"], options.clone()).unwrap();
+
+    let prepared = df.prepare_sort_values(["id"], options).unwrap();
+    let actual = prepared.materialize().unwrap();
+
+    assert_i32_column_eq(&actual, &expected, "id");
+    assert_i32_column_eq(&actual, &expected, "tag");
+}
+
+#[test]
+fn test_sorted_order_reservation_matches_retained_prepared_sort_allocation() {
+    let df = sample_df();
+    let prepared = df.prepare_sort_values(["id"], SortOptions::new()).unwrap();
+    let expected = sorting::sorted_order_reservation_size_bytes_for_len(prepared.output_rows()).unwrap();
+
+    assert_eq!(expected, prepared.sorted_order_reservation_size_bytes().unwrap());
+    assert_eq!(expected, prepared.retained_sorted_order_device_allocated_size_bytes().unwrap());
+    assert_eq!(expected, prepared.output_rows() * std::mem::size_of::<i32>());
+}
+
+#[test]
+fn test_sorted_order_reservation_rejects_rows_above_cudf_size_type() {
+    let output_rows = i32::MAX as usize + 1;
+
+    sorting::sorted_order_reservation_size_bytes_for_len(output_rows)
+        .expect_err("sorted-order reservation must reject rows above cudf::size_type");
+}
+
+#[test]
+fn test_prepared_sort_materialized_output_reservation_matches_actual_numeric_output() {
+    let ids = crate::common::series::<i32>("id", &[3, 1, 2]).unwrap();
+    let vals = crate::common::series::<i32>("val", &[30, 10, 20]).unwrap();
+    let df = DataFrame::from_series([("id", ids), ("val", vals)]).unwrap();
+    let prepared = df.prepare_sort_values(["id"], SortOptions::new()).unwrap();
+
+    let reservation = prepared.materialized_output_reservation_size_bytes().unwrap();
+    let materialized = prepared.materialize().unwrap();
+
+    assert_eq!(reservation, dataframe_device_allocated_size_bytes(&materialized));
+    assert_eq!(materialized.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![1, 2, 3]);
+}
+
+#[test]
+fn test_prepare_sort_values_with_budget_applies_token_and_reports_retained_order() {
+    let df = sample_df();
+    let token = with_test_runtime(|runtime| {
+        runtime
+            .execution_budget_token(ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("final_sort"))
+            .unwrap()
+    });
+
+    reset_exec_observation();
+    let outcome = df.prepare_sort_values_with_budget(["id"], SortOptions::new(), &token).unwrap();
+    let prepared = outcome.value();
+    let report = outcome.report();
+    let expected_order_bytes = prepared.sorted_order_reservation_size_bytes().unwrap();
+
+    assert_eq!(report.request().boundary(), "final_sort");
+    assert_eq!(report.request().budget_bytes(), 64 * 1024 * 1024);
+    assert_eq!(report.enforcement(), ExecutionBudgetEnforcement::HardMemoryResourceLimit);
+    assert_eq!(report.status(), ExecutionBudgetStatus::HardEnforced);
+    assert_eq!(report.retained_bytes(), Some(expected_order_bytes));
+    assert_eq!(report.output_bytes(), None);
+    assert_eq!(report.unresolved_contract(), Some("libcudf_sort_temporary_workspace_preflight_unavailable"));
+    assert_eq!(
+        prepared.sorted_order().as_column().testing_execution_domain_mr_value(),
+        token.memory_resource().testing_raw_handle_value(),
+        "prepared sorted-order output should retain the budget token allocator",
+    );
+    assert_eq!(
+        last_exec_mr_value(),
+        token.memory_resource().testing_raw_handle_value(),
+        "prepared sort execution should route through the budget token allocator",
+    );
+}
+
+#[test]
+fn test_prepare_sort_values_with_budget_stable_uses_token_and_matches_sort_values_for_ties() {
+    let ids = crate::common::series::<i32>("id", &[1, 1, 1, 1]).unwrap();
+    let tags = crate::common::series::<i32>("tag", &[10, 20, 30, 40]).unwrap();
+    let df = DataFrame::from_series([("id", ids), ("tag", tags)]).unwrap();
+    let options = SortOptions::new().with_stable(true);
+    let expected = df.sort_values(["id"], options.clone()).unwrap();
+    let token = with_test_runtime(|runtime| {
+        runtime
+            .execution_budget_token(ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("stable_final_sort"))
+            .unwrap()
+    });
+
+    reset_exec_observation();
+    let outcome = df.prepare_sort_values_with_budget(["id"], options, &token).unwrap();
+    let prepare_exec_mrs = observed_exec_mr_values();
+    let prepared = outcome.value();
+    let actual = prepared.materialize().unwrap();
+    let token_mr = token.memory_resource().testing_raw_handle_value();
+
+    assert_i32_column_eq(&actual, &expected, "id");
+    assert_i32_column_eq(&actual, &expected, "tag");
+    assert_eq!(actual.series("tag").unwrap().to_vec_strict::<i32>().unwrap(), vec![10, 20, 30, 40]);
+    assert_eq!(
+        prepared.sorted_order().as_column().testing_execution_domain_mr_value(),
+        token_mr,
+        "stable prepared sorted-order output should retain the budget token allocator",
+    );
+    assert!(
+        prepare_exec_mrs.len() >= 3,
+        "stable prepared sort should observe at least key copy, tie-breaker sequence, and sorted-order execution; got {prepare_exec_mrs:?}",
+    );
+    assert!(
+        prepare_exec_mrs.iter().all(|&observed| observed == token_mr),
+        "stable prepared sort tie-breaker, stable key copies, and sorted-order execution should route through the budget token allocator; got {prepare_exec_mrs:?}, expected {token_mr}",
+    );
+    assert_eq!(outcome.report().request().boundary(), "stable_final_sort");
+    assert_eq!(outcome.report().retained_bytes(), Some(prepared.sorted_order_reservation_size_bytes().unwrap()));
+    assert_eq!(outcome.report().unresolved_contract(), Some("libcudf_sort_temporary_workspace_preflight_unavailable"));
+}
+
+#[test]
+fn test_prepared_sort_materialize_with_budget_reports_output_size_and_allocator() {
+    let df = sample_df();
+    let prepare_token = with_test_runtime(|runtime| {
+        runtime
+            .execution_budget_token(ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("final_sort_order"))
+            .unwrap()
+    });
+    let materialize_token = with_test_runtime(|runtime| {
+        runtime
+            .execution_budget_token(ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("final_sort_output"))
+            .unwrap()
+    });
+    let prepared = df.prepare_sort_values_with_budget(["id"], SortOptions::new(), &prepare_token).unwrap().into_value();
+
+    reset_exec_observation();
+    let outcome = prepared.materialize_with_budget(&materialize_token).unwrap();
+    let sorted = outcome.value();
+    let report = outcome.report();
+    let output_bytes = dataframe_device_allocated_size_bytes(sorted);
+
+    assert_eq!(sorted.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![1, 1, 3, 4, 5]);
+    assert_eq!(report.request().boundary(), "final_sort_output");
+    assert_eq!(report.retained_bytes(), Some(prepared.retained_sorted_order_device_allocated_size_bytes().unwrap()));
+    assert_eq!(report.output_bytes(), Some(output_bytes));
+    assert_eq!(report.unresolved_contract(), Some("libcudf_sort_temporary_workspace_preflight_unavailable"));
+    assert_eq!(
+        sorted.testing_execution_domain_mr_value(),
+        materialize_token.memory_resource().testing_raw_handle_value(),
+        "materialized output should retain the budget token allocator",
+    );
+    assert_eq!(
+        last_exec_mr_value(),
+        materialize_token.memory_resource().testing_raw_handle_value(),
+        "materialize execution should route through the budget token allocator",
+    );
+}
+
+#[test]
+fn test_prepare_sort_values_with_budget_reports_exceeded_budget_honestly() {
+    let df = sample_df();
+    let token = with_test_runtime(|runtime| {
+        runtime.execution_budget_token(ExecutionBudgetRequest::new(1).with_boundary("final_sort")).unwrap()
+    });
+
+    let err = df
+        .prepare_sort_values_with_budget(["id"], SortOptions::new(), &token)
+        .expect_err("one-byte budget should not cover prepared sort allocations");
+
+    assert_eq!(err.code(), ErrorCode::OutOfMemory);
+    assert_eq!(error_context_value(&err, "budget_boundary").as_deref(), Some("final_sort"));
+    assert_eq!(error_context_value(&err, "budget_bytes").as_deref(), Some("1"));
+    assert_eq!(error_context_value(&err, "budget_enforcement").as_deref(), Some("hard_memory_resource_limit"),);
+    assert_eq!(error_context_value(&err, "budget_status").as_deref(), Some("exceeded_or_lower_layer_rejected"),);
 }

@@ -30,6 +30,16 @@ cudf_status_t cudf_memory_resource_create_pool(size_t initial_pool_size,
                                                size_t maximum_pool_size,
                                                cudf_memory_resource_handle* out);
 
+/// Create a limiting memory resource that wraps an existing memory resource.
+///
+/// `allocation_limit` is the maximum number of live bytes this adaptor will
+/// allow through itself. Existing upstream allocations are not counted. The
+/// returned handle retains the upstream resource lifetime and does not change
+/// the allocator used by unrelated `cudf-sys` APIs.
+cudf_status_t cudf_memory_resource_create_limiting(cudf_memory_resource_handle upstream,
+                                                   size_t allocation_limit,
+                                                   cudf_memory_resource_handle* out);
+
 /// Destroy a memory resource handle on the CUDA device that owns it.
 ///
 /// The shim temporarily switches the calling thread to `device`, destroys the

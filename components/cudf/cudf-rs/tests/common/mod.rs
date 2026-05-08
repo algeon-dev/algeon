@@ -17,7 +17,8 @@ use cudf_sys::{
     CUDF_SUCCESS, cudf_cuda_get_device, cudf_cuda_set_device, cudf_test_event_last_wait_stream_raw,
     cudf_test_event_reset_observation, cudf_test_event_stream_wait_call_count,
     cudf_test_event_stream_wait_call_count_for_stream_raw, cudf_test_exec_last_device, cudf_test_exec_last_mr_raw,
-    cudf_test_exec_last_stream_value, cudf_test_exec_last_sync_stream_value, cudf_test_exec_reset_observation,
+    cudf_test_exec_last_stream_value, cudf_test_exec_last_sync_stream_value, cudf_test_exec_observed_mr_count,
+    cudf_test_exec_observed_mr_raw_at, cudf_test_exec_reset_observation,
 };
 use rapids_interop::{ColumnLayout, InteropError, Placement};
 
@@ -338,6 +339,22 @@ pub fn last_exec_mr_value() -> usize {
     let status = unsafe { cudf_test_exec_last_mr_raw(&mut out) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS, "failed to read last exec mr observation");
     out as usize
+}
+
+#[allow(dead_code)]
+pub fn observed_exec_mr_values() -> Vec<usize> {
+    let mut count: usize = 0;
+    let status = unsafe { cudf_test_exec_observed_mr_count(&mut count) };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS, "failed to read exec mr observation count");
+
+    let mut values = Vec::with_capacity(count);
+    for index in 0..count {
+        let mut out: *mut c_void = ptr::null_mut();
+        let status = unsafe { cudf_test_exec_observed_mr_raw_at(index, &mut out) };
+        assert_eq!(status, cudf_sys::CUDF_SUCCESS, "failed to read exec mr observation at index {index}");
+        values.push(out as usize);
+    }
+    values
 }
 
 #[allow(dead_code)]

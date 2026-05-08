@@ -178,6 +178,36 @@ impl DeviceMemoryResource {
         Self::from_created_handle(handle, device, "memory::device_memory_resource::pool_on")
     }
 
+    /// Create a hard-limiting memory resource around this resource.
+    ///
+    /// The returned resource uses `self` as its upstream allocator and rejects
+    /// allocations once the adaptor's live allocated bytes would exceed
+    /// `allocation_limit_bytes`. Existing upstream allocations are not counted.
+    ///
+    /// This is an execution boundary, not a preflight sizing contract: callers
+    /// still need operation-specific sizing APIs for retained outputs they
+    /// intend to reserve before execution.
+    pub fn limiting(&self, allocation_limit_bytes: usize) -> Result<Self> {
+        let _guard = DeviceGuard::new(self.device())?;
+        let mut handle = ptr::null_mut();
+        // SAFETY: handle is initialized to null and set by the C shim on success.
+        error::check_status_in_with_details(
+            unsafe {
+                cudf_sys::cudf_memory_resource_create_limiting(
+                    self.handle.raw.as_ptr(),
+                    allocation_limit_bytes,
+                    &mut handle,
+                )
+            },
+            "memory::device_memory_resource::limiting",
+            [
+                ("allocation_limit_bytes", allocation_limit_bytes.to_string()),
+                ("upstream_device", self.device().ordinal().to_string()),
+            ],
+        )?;
+        Self::from_created_handle(handle, self.device(), "memory::device_memory_resource::limiting")
+    }
+
     /// The CUDA device this memory resource was created on.
     pub fn device(&self) -> DeviceId {
         self.handle.device

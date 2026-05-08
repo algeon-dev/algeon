@@ -7,6 +7,7 @@
 
 #include <rmm/mr/cuda_memory_resource.hpp>
 #include <rmm/mr/device_memory_resource.hpp>
+#include <rmm/mr/limiting_resource_adaptor.hpp>
 #include <rmm/mr/per_device_resource.hpp>
 #include <rmm/mr/pool_memory_resource.hpp>
 #include <rmm/mr/statistics_resource_adaptor.hpp>
@@ -20,6 +21,7 @@
 namespace {
 struct memory_resource_owner {
   std::shared_ptr<rmm::mr::cuda_memory_resource> upstream;
+  std::shared_ptr<void> upstream_lifetime;
   std::unique_ptr<rmm::mr::device_memory_resource> mr;
   rmm::mr::statistics_resource_adaptor<rmm::mr::cuda_memory_resource>* stats = nullptr;
 };
@@ -129,6 +131,29 @@ cudf_status_t cudf_memory_resource_create_pool(size_t initial_pool_size,
       owner.mr = std::make_unique<rmm::mr::pool_memory_resource<rmm::mr::cuda_memory_resource>>(
         owner.upstream.get(), initial_pool_size);
     }
+    register_memory_resource_lifetime(state->owner);
+    *out = static_cast<cudf_memory_resource_handle>(state.release());
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
+cudf_status_t cudf_memory_resource_create_limiting(cudf_memory_resource_handle upstream,
+                                                   size_t allocation_limit,
+                                                   cudf_memory_resource_handle* out)
+{
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = nullptr;
+  CUDF_RUST_NULL_CHECK(upstream, "upstream is null");
+  CUDF_RUST_TRY
+  {
+    auto state                    = std::make_unique<memory_resource_handle_state>();
+    state->owner                  = std::make_shared<memory_resource_owner>();
+    auto& owner                   = *state->owner;
+    owner.upstream_lifetime       = cudf_memory_resource_lifetime_from_handle(upstream);
+    auto* upstream_mr             = cudf_memory_resource_raw_from_handle(upstream);
+    owner.mr = std::make_unique<rmm::mr::limiting_resource_adaptor<rmm::mr::device_memory_resource>>(
+      upstream_mr, allocation_limit);
     register_memory_resource_lifetime(state->owner);
     *out = static_cast<cudf_memory_resource_handle>(state.release());
     return CUDF_SUCCESS;

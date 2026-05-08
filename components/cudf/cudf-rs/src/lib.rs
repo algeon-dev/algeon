@@ -193,7 +193,8 @@ pub use frame::{
         DataFrameFilteredJoinOptions, DataFrameFilteredJoinProbeState, DataFrameHashJoin,
         DataFrameHashJoinMaterialized, DataFrameHashJoinOptions, DataFrameHashJoinPairIndices, DataFrameJoinIndices,
         DataFrameJoinOptions, DataFrameJoinPairIndices, DataFrameMixedJoinOptions, DataFrameMixedJoinSizeData,
-        DataFrameMixedSingleSideJoinSizeData, DataFramePredicateJoinOptions, DataFrameProjectedCrossJoinPlan,
+        DataFrameMixedSingleSideJoinSizeData, DataFramePredicateJoinOptions, DataFramePreparedSort,
+        DataFrameProjectedCrossJoinPlan,
     },
     series::{HostColumnData, IntoSeries, Series},
 };
@@ -209,6 +210,8 @@ pub use ops::{
     strings::{StringSliceOptions, StripSide},
 };
 pub use runtime::{
-    BoundaryKind, BoundaryObservation, BoundaryObserver, DeviceId, ExecutionOverrides, ExecutionPlacement,
-    QueryExecutionContext, Runtime, RuntimeBuilder, StreamDependencyOutcome,
+    BoundaryKind, BoundaryObservation, BoundaryObserver, BudgetedExecutionOutcome, DeviceId,
+    ExecutionBudgetEnforcement, ExecutionBudgetReport, ExecutionBudgetRequest, ExecutionBudgetStatus,
+    ExecutionBudgetToken, ExecutionOverrides, ExecutionPlacement, QueryExecutionContext, Runtime, RuntimeBuilder,
+    StreamDependencyOutcome,
 };

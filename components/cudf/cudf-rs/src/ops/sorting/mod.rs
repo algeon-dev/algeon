@@ -38,6 +38,9 @@ use crate::{
     },
 };
 
+const SORTED_ORDER_INDEX_SIZE_BYTES: usize = std::mem::size_of::<i32>();
+const SORTED_ORDER_MAX_ROWS: usize = i32::MAX as usize;
+
 /// Column sort order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(i32)]
@@ -426,6 +429,37 @@ pub fn sorted_order(
         SortKeyConfig::new(column_order, null_precedence),
         SortExecution::new(execution.output_domain(), Some(execution.exec_options()), "sorting::sorted_order"),
     )
+}
+
+/// Return exact bytes required for a sorted-order INT32 row-index column.
+///
+/// This is a pre-allocation planning helper for bounded callers. It mirrors
+/// the row-index reservation shape used by DataFrame join gather maps:
+/// libcudf sorted-order output uses `cudf::size_type` / `INT32` row indices,
+/// so `output_rows` is rejected above `INT32_MAX`. This helper performs no
+/// allocation and does not estimate libcudf sort temporary workspace.
+pub fn sorted_order_reservation_size_bytes_for_len(output_rows: usize) -> Result<usize> {
+    if output_rows > SORTED_ORDER_MAX_ROWS {
+        return Err(error::Error::new_with(
+            error::ErrorCode::ValueOutOfRange,
+            "sorting::sorted_order_reservation_size_bytes_for_len",
+            "sorted-order row count exceeds INT32_MAX",
+        )
+        .with_detail("reason", "row_count_exceeds_cudf_size_type")
+        .with_detail("output_rows", output_rows.to_string())
+        .with_detail("max_output_rows", SORTED_ORDER_MAX_ROWS.to_string()));
+    }
+
+    output_rows.checked_mul(SORTED_ORDER_INDEX_SIZE_BYTES).ok_or_else(|| {
+        error::Error::new_with(
+            error::ErrorCode::ValueOutOfRange,
+            "sorting::sorted_order_reservation_size_bytes_for_len",
+            "sorted-order reservation size overflowed usize",
+        )
+        .with_detail("reason", "size_overflowed_usize")
+        .with_detail("output_rows", output_rows.to_string())
+        .with_detail("index_size_bytes", SORTED_ORDER_INDEX_SIZE_BYTES.to_string())
+    })
 }
 
 /// Check whether the table is already sorted according to the given order.

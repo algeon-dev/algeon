@@ -9,6 +9,8 @@
 
 #include <cuda_runtime_api.h>
 
+#include <array>
+#include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <mutex>
@@ -16,19 +18,43 @@
 #include <utility>
 
 namespace {
+constexpr std::size_t k_exec_mr_observation_capacity = 64;
+
 thread_local std::uintptr_t g_last_exec_stream_value = std::numeric_limits<std::uintptr_t>::max();
 thread_local std::uintptr_t g_last_exec_sync_stream_value =
   std::numeric_limits<std::uintptr_t>::max();
 thread_local void* g_last_exec_mr_raw   = nullptr;
 thread_local int32_t g_last_exec_device = -1;
+thread_local std::array<void*, k_exec_mr_observation_capacity> g_exec_mr_observations{};
+thread_local std::size_t g_exec_mr_observation_start = 0;
+thread_local std::size_t g_exec_mr_observation_count = 0;
+thread_local bool g_exec_mr_observation_overflowed   = false;
 
 void record_exec_context(rmm::cuda_stream_view stream, rmm::mr::device_memory_resource* mr_raw)
 {
   g_last_exec_stream_value = reinterpret_cast<std::uintptr_t>(stream.value());
   g_last_exec_mr_raw       = mr_raw;
+  if (g_exec_mr_observation_count < g_exec_mr_observations.size()) {
+    auto const physical = (g_exec_mr_observation_start + g_exec_mr_observation_count) %
+                          g_exec_mr_observations.size();
+    g_exec_mr_observations[physical] = mr_raw;
+    ++g_exec_mr_observation_count;
+  } else {
+    g_exec_mr_observations[g_exec_mr_observation_start] = mr_raw;
+    g_exec_mr_observation_start =
+      (g_exec_mr_observation_start + 1) % g_exec_mr_observations.size();
+    g_exec_mr_observation_overflowed = true;
+  }
 
   int32_t dev = -1;
   if (cudaGetDevice(&dev) == cudaSuccess) { g_last_exec_device = dev; }
+}
+
+void* exec_mr_observation_at(std::size_t index)
+{
+  auto const physical =
+    (g_exec_mr_observation_start + index) % g_exec_mr_observations.size();
+  return g_exec_mr_observations[physical];
 }
 
 cudf_status_t get_current_device_or_error(int32_t* out)
@@ -227,6 +253,10 @@ void cudf_test_exec_reset_observation()
   g_last_exec_sync_stream_value = std::numeric_limits<std::uintptr_t>::max();
   g_last_exec_mr_raw            = nullptr;
   g_last_exec_device            = -1;
+  g_exec_mr_observations.fill(nullptr);
+  g_exec_mr_observation_start      = 0;
+  g_exec_mr_observation_count      = 0;
+  g_exec_mr_observation_overflowed = false;
 }
 
 cudf_status_t cudf_test_exec_last_stream_value(std::uintptr_t* out)
@@ -247,6 +277,31 @@ cudf_status_t cudf_test_exec_last_mr_raw(void** out)
 {
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = g_last_exec_mr_raw;
+  return CUDF_SUCCESS;
+}
+
+cudf_status_t cudf_test_exec_observed_mr_count(std::size_t* out)
+{
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = g_exec_mr_observation_count;
+  return CUDF_SUCCESS;
+}
+
+cudf_status_t cudf_test_exec_observed_mr_overflowed(int32_t* out)
+{
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = g_exec_mr_observation_overflowed ? 1 : 0;
+  return CUDF_SUCCESS;
+}
+
+cudf_status_t cudf_test_exec_observed_mr_raw_at(std::size_t index, void** out)
+{
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  if (index >= g_exec_mr_observation_count) {
+    set_error("execution memory-resource observation index is out of range");
+    return CUDF_ERROR_INVALID_OPERATION;
+  }
+  *out = exec_mr_observation_at(index);
   return CUDF_SUCCESS;
 }
 
