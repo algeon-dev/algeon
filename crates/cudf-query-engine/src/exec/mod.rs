@@ -155,10 +155,19 @@ pub fn execute_query_plan_with_gpu_inputs(
     } else {
         let mut scratch = ExecutionScratch::new(context);
         let frame = execute_node(context, plan, plan.sink().input(), gpu_inputs, &mut scratch, &mut metrics)?;
-        let handle = gpu_result_handle(context, plan, frame)?;
         match plan.sink() {
-            ResultSink::GpuResident { .. } => Output::GpuResident(handle),
-            ResultSink::HostArrow { .. } => Output::HostArrow(materialize_to_host(handle, &mut metrics)?),
+            ResultSink::GpuResident { .. } => Output::GpuResident(gpu_result_handle(context, plan, frame)?),
+            ResultSink::HostArrow { schema, .. } => {
+                let executable_schema =
+                    plan.node(plan.sink().input()).expect("validated sink input exists").output_schema().clone();
+                Output::HostArrow(materialize_gpu_frame_to_host(
+                    context,
+                    frame,
+                    executable_schema,
+                    schema,
+                    &mut metrics,
+                )?)
+            },
         }
     };
     Ok(ExecutionResult::new(output, metrics))

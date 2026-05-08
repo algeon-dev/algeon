@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{collections::BTreeSet, sync::Arc};
 
 use arrow::datatypes::{Schema, SchemaRef};
 use cudf_query_engine::{
@@ -12,9 +12,8 @@ use datafusion::{
 };
 
 use super::{
-    LoweredNativeInput,
-    expr::{alias_if_needed, lower_physical_expr},
-    unary::lower_filter_projection_exprs,
+    LoweredNativeInput, RequiredFields, executable_schema_and_bindings,
+    expr::{alias_if_needed, lower_physical_expr, lower_physical_expr_with_bindings},
 };
 use crate::{
     native::{
@@ -31,14 +30,16 @@ use crate::{
 pub(super) fn lower_source_input(
     source: &NormalizedNativeSource<'_>,
     builder: &mut NativeQueryPlanBuilder,
-    required_output_columns: &[String],
+    required_output_fields: &RequiredFields,
 ) -> Result<LoweredNativeInput, FallbackReason> {
     let source_exec = source.source_exec;
     let filter = source.filter;
     let (file_scan, parquet_source) =
         source_exec.downcast_to_file_source::<ParquetSource>().ok_or(FallbackReason::UnsupportedOperator)?;
+    let required_scan_output_indices =
+        required_source_scan_output_indices(source_exec.schema(), filter, required_output_fields)?;
     let column_requirements =
-        required_parquet_column_requirements_for_scan_columns(file_scan, filter, required_output_columns)?;
+        required_parquet_column_requirements_for_scan_columns(file_scan, filter, &required_scan_output_indices)?;
     let table_schema = Arc::clone(file_scan.file_source().table_schema().table_schema());
     let scan_projection = file_scan.file_source().projection();
     let source_output_schema = native_source_output_schema(file_scan, &column_requirements)?;
@@ -96,32 +97,106 @@ pub(super) fn lower_source_input(
     } else {
         (source_node, Arc::clone(&source_output_schema))
     };
-    let filter_input_schema = source_exec.schema();
-    let (node, schema) = if let Some(filter) = filter {
+    let scan_output_bindings = source_bindings_for_schema(&scan_output_schema, source_exec.schema());
+    let scan_output = LoweredNativeInput::with_bindings(scan_output_node, scan_output_schema, scan_output_bindings);
+    if let Some(filter) = filter {
         let filtered_node = builder.add_filter(
-            scan_output_node,
-            lower_physical_expr(filter.predicate(), &scan_output_schema)?,
-            Arc::clone(&scan_output_schema),
+            scan_output.node,
+            lower_physical_expr_with_bindings(
+                filter.predicate(),
+                &filter.input().schema(),
+                Some(&scan_output.bindings),
+            )?,
+            Arc::clone(&scan_output.schema),
         );
         if let Some(projection) = filter.projection() {
-            (
-                builder.add_projection(
-                    filtered_node,
-                    lower_filter_projection_exprs(projection, &filter_input_schema)?,
-                    filter.schema(),
-                ),
+            let projected = add_source_filter_projection(
+                builder,
+                filtered_node,
+                &scan_output,
                 filter.schema(),
-            )
+                projection,
+                required_output_fields,
+            )?;
+            return Ok(projected);
         } else {
-            (filtered_node, scan_output_schema)
+            return Ok(LoweredNativeInput::with_bindings(filtered_node, scan_output.schema, scan_output.bindings));
         }
     } else {
-        (scan_output_node, scan_output_schema)
-    };
-    Ok(LoweredNativeInput { node, schema })
+        Ok(scan_output)
+    }
+}
+
+pub(super) fn source_bindings_for_schema(schema: &SchemaRef, frontend_schema: SchemaRef) -> Vec<super::FieldBinding> {
+    let mut used_frontend_indices = BTreeSet::new();
+    schema
+        .fields()
+        .iter()
+        .filter_map(|field| {
+            let frontend_index = frontend_schema
+                .fields()
+                .iter()
+                .enumerate()
+                .find(|(index, frontend_field)| {
+                    !used_frontend_indices.contains(index) && frontend_field.name() == field.name()
+                })
+                .map(|(index, _)| index)?;
+            used_frontend_indices.insert(frontend_index);
+            Some(super::FieldBinding {
+                frontend_index,
+                frontend_name: field.name().clone(),
+                native_name: field.name().clone(),
+            })
+        })
+        .collect()
+}
+
+fn required_source_scan_output_indices(
+    source_schema: SchemaRef,
+    filter: Option<&datafusion::physical_plan::filter::FilterExec>,
+    required_output_fields: &RequiredFields,
+) -> Result<Vec<usize>, FallbackReason> {
+    if let Some(filter) = filter
+        && let Some(projection) = filter.projection()
+    {
+        return required_output_fields
+            .requested_indices(filter.schema().fields().len())?
+            .into_iter()
+            .map(|output_index| projection.get(output_index).copied().ok_or(FallbackReason::UnsupportedExpression))
+            .collect();
+    }
+    required_output_fields.requested_indices(source_schema.fields().len())
+}
+
+pub(super) fn add_source_filter_projection(
+    builder: &mut NativeQueryPlanBuilder,
+    filtered_node: cudf_query_engine::NodeId,
+    scan_output: &LoweredNativeInput,
+    filter_schema: SchemaRef,
+    projection: &[usize],
+    required_output_fields: &RequiredFields,
+) -> Result<LoweredNativeInput, FallbackReason> {
+    let requested_output_indices = required_output_fields.requested_indices(filter_schema.fields().len())?;
+    let requested = RequiredFields::only(requested_output_indices.iter().copied().collect());
+    let (schema, bindings) = executable_schema_and_bindings(&filter_schema, &requested)?;
+    let expressions = requested_output_indices
+        .iter()
+        .zip(bindings.iter())
+        .map(|(output_index, output_binding)| {
+            let input_index = projection.get(*output_index).copied().ok_or(FallbackReason::UnsupportedExpression)?;
+            let input_binding = scan_output.binding_for_frontend_index(input_index)?;
+            Ok(alias_if_needed(
+                cudf_query_engine::Expr::column(input_binding.native_name.as_str()),
+                output_binding.native_name.as_str(),
+            ))
+        })
+        .collect::<Result<Vec<_>, FallbackReason>>()?;
+    let node = builder.add_projection(filtered_node, expressions, Arc::clone(&schema));
+    Ok(LoweredNativeInput::with_bindings(node, schema, bindings))
 }
 
 pub(super) struct RequiredScanProjectionExpr<'a> {
+    pub(super) output_index: usize,
     pub(super) expr: &'a Arc<dyn PhysicalExpr>,
     pub(super) alias: &'a str,
 }
@@ -133,7 +208,9 @@ pub(super) fn required_scan_projection<'a>(
 ) -> Vec<RequiredScanProjectionExpr<'a>> {
     projection
         .iter()
+        .enumerate()
         .filter(|projection_expr| {
+            let (_output_index, projection_expr) = projection_expr;
             required_scan_output_columns.iter().any(|column| column == &projection_expr.alias)
                 || scan_output_schema.index_of(projection_expr.alias.as_str()).is_ok_and(|index| {
                     scan_output_schema
@@ -142,7 +219,8 @@ pub(super) fn required_scan_projection<'a>(
                         .is_some_and(|field| required_scan_output_columns.iter().any(|column| column == field.name()))
                 })
         })
-        .map(|projection_expr| RequiredScanProjectionExpr {
+        .map(|(output_index, projection_expr)| RequiredScanProjectionExpr {
+            output_index,
             expr: &projection_expr.expr,
             alias: projection_expr.alias.as_str(),
         })
@@ -182,9 +260,10 @@ pub(super) fn required_scan_projection_schema(
         .iter()
         .map(|projection_expr| {
             scan_output_schema
-                .field_with_name(projection_expr.alias)
+                .fields()
+                .get(projection_expr.output_index)
                 .cloned()
-                .map_err(|_error| FallbackReason::UnsupportedExpression)
+                .ok_or(FallbackReason::UnsupportedExpression)
         })
         .collect::<Result<Vec<_>, _>>()?;
     Ok(Arc::new(Schema::new(fields)))

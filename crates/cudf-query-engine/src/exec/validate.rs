@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use arrow::datatypes::{DataType as ArrowDataType, SchemaRef, TimeUnit};
+use arrow::datatypes::{DataType as ArrowDataType, Field, SchemaRef, TimeUnit};
 
 use super::*;
 use crate::{
@@ -25,6 +25,7 @@ pub(super) fn validate_query_plan(plan: &QueryPlan) -> Result<()> {
         }
 
         validate_schema_supported(node.output_schema(), "cudf_query_engine.plan.validate_schema")?;
+        validate_output_names_unique(node)?;
         let available_columns = match &node.kind {
             PlanNode::Source(source) => validate_source_node(source)?,
             PlanNode::Filter(filter) => {
@@ -94,21 +95,54 @@ pub(super) fn validate_query_plan(plan: &QueryPlan) -> Result<()> {
     let sink_available = available_columns(&available_columns_by_node, plan.sink().input())?;
     if let ResultSink::HostArrow { schema, .. } = plan.sink() {
         validate_schema_supported(schema, "cudf_query_engine.plan.validate_sink_schema")?;
-        for field in schema.fields() {
-            if !sink_available.contains(field.name()) {
+        if schema.fields().len() != sink_input.output_schema().fields().len() {
+            return Err(QueryError::new(
+                QueryErrorCode::InvalidPlan,
+                "cudf_query_engine.plan.validate_sink",
+                "host sink schema field count must match the root node output",
+            )
+            .with_fact("root_node", sink_input.id)
+            .with_fact("sink_fields", schema.fields().len())
+            .with_fact("root_fields", sink_input.output_schema().fields().len()));
+        }
+        for (index, (sink_field, root_field)) in
+            schema.fields().iter().zip(sink_input.output_schema().fields().iter()).enumerate()
+        {
+            if !sink_available.contains(root_field.name()) {
                 return Err(QueryError::new(
                     QueryErrorCode::InvalidPlan,
                     "cudf_query_engine.plan.validate_sink",
-                    "host sink schema references a column not produced by the root node",
+                    "host sink root schema references a column not produced by the root node",
                 )
-                .with_fact("column", field.name())
+                .with_fact("column", root_field.name())
                 .with_fact("root_node", sink_input.id)
                 .with_fact("available_columns", comma_separated(sink_available)));
+            }
+            if !fields_match_except_name(sink_field.as_ref(), root_field.as_ref()) {
+                return Err(QueryError::new(
+                    QueryErrorCode::InvalidPlan,
+                    "cudf_query_engine.plan.validate_sink",
+                    "host sink schema field must match the root node output by ordinal except for field name",
+                )
+                .with_fact("root_node", sink_input.id)
+                .with_fact("field_index", index)
+                .with_fact("sink_field", sink_field.name())
+                .with_fact("root_field", root_field.name())
+                .with_fact("sink_type", format!("{:?}", sink_field.data_type()))
+                .with_fact("root_type", format!("{:?}", root_field.data_type()))
+                .with_fact("sink_nullable", sink_field.is_nullable())
+                .with_fact("root_nullable", root_field.is_nullable())
+                .with_fact("sink_metadata", format!("{:?}", sink_field.metadata()))
+                .with_fact("root_metadata", format!("{:?}", root_field.metadata())));
             }
         }
     }
 
     Ok(())
+}
+
+fn fields_match_except_name(sink_field: &Field, root_field: &Field) -> bool {
+    sink_field.clone().with_name(root_field.name().clone()) == *root_field
 }
 
 fn validate_reachability(plan: &QueryPlan) -> Result<()> {
@@ -590,6 +624,39 @@ fn validate_schema_supported(schema: &SchemaRef, operation: &'static str) -> Res
         }
     }
     Ok(())
+}
+
+fn validate_output_names_unique(node: &QueryNode) -> Result<()> {
+    let output_names = node.output_schema().fields().iter().map(|field| field.name().as_str()).collect::<Vec<_>>();
+    for (duplicate_output_index, name) in output_names.iter().enumerate() {
+        if let Some(first_output_index) = output_names[..duplicate_output_index].iter().position(|seen| seen == name) {
+            return Err(QueryError::new(
+                QueryErrorCode::InvalidPlan,
+                "cudf_query_engine.plan.validate_output_names",
+                "query plan node output schema contains duplicate executable column names",
+            )
+            .with_fact("node_id", node.id)
+            .with_fact("node_kind", plan_node_kind(&node.kind))
+            .with_fact("schema_behavior", node.facts.schema_behavior)
+            .with_fact("duplicate_output_name", *name)
+            .with_fact("first_output_index", first_output_index)
+            .with_fact("duplicate_output_index", duplicate_output_index)
+            .with_fact("output_names", output_names.join(",")));
+        }
+    }
+    Ok(())
+}
+
+fn plan_node_kind(node: &PlanNode) -> &'static str {
+    match node {
+        PlanNode::Source(_) => "source",
+        PlanNode::Filter(_) => "filter",
+        PlanNode::Projection(_) => "projection",
+        PlanNode::Aggregate(_) => "aggregate",
+        PlanNode::Sort(_) => "sort",
+        PlanNode::Limit(_) => "limit",
+        PlanNode::Join(_) => "join",
+    }
 }
 
 fn schema_column_names(schema: &SchemaRef) -> BTreeSet<String> {

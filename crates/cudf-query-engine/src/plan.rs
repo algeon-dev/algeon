@@ -654,6 +654,12 @@ impl QueryPlanBuilder {
         self.finish(root, ResultSink::HostArrow { input: root, schema })
     }
 
+    /// Finishes the plan with a host Arrow materialization sink whose external
+    /// schema may differ from the executable root schema by field names.
+    pub fn finish_with_host_sink_schema(self, root: NodeId, schema: SchemaRef) -> QueryPlan {
+        self.finish(root, ResultSink::HostArrow { input: root, schema })
+    }
+
     /// Finishes the plan with a GPU-resident result sink.
     pub fn finish_gpu_resident(self, root: NodeId) -> QueryPlan {
         self.finish(root, ResultSink::GpuResident { input: root })

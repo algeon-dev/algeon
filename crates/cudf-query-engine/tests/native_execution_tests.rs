@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     fs::{self, File},
     path::Path,
     sync::Arc,
@@ -1853,6 +1854,154 @@ fn native_query_rejects_cross_join_with_residual_before_source_read() {
     assert_eq!(error.operation(), "cudf_query_engine.join.validate");
     assert_eq!(error.fact_value("join_type"), Some("cross"));
     assert!(error.fact_value("path").is_none());
+}
+
+#[test]
+fn native_query_rejects_duplicate_join_output_names_before_runtime_materialization() {
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let left_schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int32, false),
+        Field::new("n_name", DataType::Utf8, false),
+    ]));
+    let right_schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int32, false),
+        Field::new("n_name", DataType::Utf8, false),
+    ]));
+    let duplicate_join_schema = Arc::new(Schema::new(vec![
+        Field::new("n_name", DataType::Utf8, false),
+        Field::new("n_name", DataType::Utf8, false),
+    ]));
+    let projected_schema = Arc::new(Schema::new(vec![
+        Field::new("supp_nation", DataType::Utf8, false),
+        Field::new("cust_nation", DataType::Utf8, false),
+    ]));
+
+    let mut builder = QueryPlanBuilder::new();
+    let left =
+        builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("left_input", Arc::clone(&left_schema))));
+    let right =
+        builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("right_input", Arc::clone(&right_schema))));
+    let join = builder.add_join(
+        left,
+        right,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(
+                cudf_query_engine::ColumnRef::input(0, "id", "left_id"),
+                cudf_query_engine::ColumnRef::input(1, "id", "right_id"),
+            )],
+        )
+        .with_output_projection(vec![
+            JoinOutputColumn::left(cudf_query_engine::ColumnRef::input(0, "n_name", "supp_n_name"), "n_name"),
+            JoinOutputColumn::right(cudf_query_engine::ColumnRef::input(1, "n_name", "cust_n_name"), "n_name"),
+        ])
+        .with_null_equality(JoinNullEquality::NullsDoNotMatch)
+        .with_build_side(JoinSide::Right),
+        duplicate_join_schema,
+    );
+    let projection = builder.add_projection(
+        join,
+        vec![Expr::column("n_name").alias("supp_nation"), Expr::column("n_name").alias("cust_nation")],
+        projected_schema,
+    );
+    let plan = builder.finish_with_host_sink(projection);
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+
+    let error = match execute_query_plan(&context, &plan) {
+        Ok(_) => panic!("native validation should reject duplicate join output names before runtime materialization"),
+        Err(error) => error,
+    };
+    assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
+    assert_eq!(error.operation(), "cudf_query_engine.plan.validate_output_names");
+    assert_eq!(error.fact_value("duplicate_output_name"), Some("n_name"));
+    assert_eq!(error.fact_value("first_output_index"), Some("0"));
+    assert_eq!(error.fact_value("duplicate_output_index"), Some("1"));
+    assert_eq!(error.fact_value("output_names"), Some("n_name,n_name"));
+    assert_eq!(error.fact_value("node_kind"), Some("join"));
+    assert_eq!(error.fact_value("schema_behavior"), Some("join"));
+    assert!(error.fact_value("input_name").is_none());
+}
+
+#[test]
+fn native_query_rejects_duplicate_projection_output_names_generically_before_runtime_materialization() {
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let input_schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int32, false),
+        Field::new("payload", DataType::Int64, false),
+    ]));
+    let duplicate_projection_schema = Arc::new(Schema::new(vec![
+        Field::new("dup", DataType::Int32, false),
+        Field::new("dup", DataType::Int64, false),
+    ]));
+
+    let mut builder = QueryPlanBuilder::new();
+    let source =
+        builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("missing_input", Arc::clone(&input_schema))));
+    let projection = builder.add_projection(
+        source,
+        vec![Expr::column("key").alias("dup"), Expr::column("payload").alias("dup")],
+        duplicate_projection_schema,
+    );
+    let plan = builder.finish_with_host_sink(projection);
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+
+    let error = match execute_query_plan(&context, &plan) {
+        Ok(_) => {
+            panic!("native validation should reject duplicate projection output names before runtime materialization")
+        },
+        Err(error) => error,
+    };
+    assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
+    assert_eq!(error.operation(), "cudf_query_engine.plan.validate_output_names");
+    assert_eq!(error.fact_value("duplicate_output_name"), Some("dup"));
+    assert_eq!(error.fact_value("first_output_index"), Some("0"));
+    assert_eq!(error.fact_value("duplicate_output_index"), Some("1"));
+    assert_eq!(error.fact_value("output_names"), Some("dup,dup"));
+    assert_eq!(error.fact_value("node_kind"), Some("projection"));
+    assert_eq!(error.fact_value("schema_behavior"), Some("projection"));
+    assert!(error.fact_value("input_name").is_none());
+}
+
+#[test]
+fn native_query_restores_duplicate_host_sink_schema_without_swapping_columns() {
+    assert_duplicate_host_sink_schema_restoration(false);
+}
+
+#[test]
+fn bounded_native_query_restores_duplicate_host_sink_schema_without_swapping_columns() {
+    assert_duplicate_host_sink_schema_restoration(true);
+}
+
+#[test]
+fn native_query_rejects_host_sink_schema_nullability_drift_before_source_read() {
+    let root_schema = Arc::new(Schema::new(vec![Field::new("exec_key", DataType::Int32, false)]));
+    let sink_schema = Arc::new(Schema::new(vec![Field::new("frontend_key", DataType::Int32, true)]));
+
+    let error = host_sink_schema_validation_error(root_schema, sink_schema);
+
+    assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
+    assert_eq!(error.operation(), "cudf_query_engine.plan.validate_sink");
+    assert_eq!(error.fact_value("field_index"), Some("0"));
+    assert_eq!(error.fact_value("sink_nullable"), Some("true"));
+    assert_eq!(error.fact_value("root_nullable"), Some("false"));
+    assert!(error.fact_value("input_name").is_none());
+}
+
+#[test]
+fn native_query_rejects_host_sink_schema_metadata_drift_before_source_read() {
+    let root_schema = Arc::new(Schema::new(vec![Field::new("exec_key", DataType::Int32, false)]));
+    let sink_field = Field::new("frontend_key", DataType::Int32, false)
+        .with_metadata(HashMap::from([("field_role".to_string(), "frontend".to_string())]));
+    let sink_schema = Arc::new(Schema::new(vec![sink_field]));
+
+    let error = host_sink_schema_validation_error(root_schema, sink_schema);
+
+    assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
+    assert_eq!(error.operation(), "cudf_query_engine.plan.validate_sink");
+    assert_eq!(error.fact_value("field_index"), Some("0"));
+    assert!(error.fact_value("sink_metadata").is_some_and(|metadata| metadata.contains("field_role")));
+    assert!(error.fact_value("root_metadata").is_some_and(|metadata| metadata == "{}"));
+    assert!(error.fact_value("input_name").is_none());
 }
 
 #[test]
@@ -8737,6 +8886,79 @@ fn residual_validation_error(join_type: JoinType, keys: Vec<JoinKey>, residual: 
 
     match execute_query_plan(&context, &plan) {
         Ok(_) => panic!("native residual validation should reject invalid predicates before source read"),
+        Err(error) => error,
+    }
+}
+
+fn assert_duplicate_host_sink_schema_restoration(bounded: bool) {
+    let dir = unique_temp_dir(if bounded {
+        "cudf-query-engine-bounded-duplicate-host-sink-schema"
+    } else {
+        "cudf-query-engine-duplicate-host-sink-schema"
+    });
+    let path = dir.join("input.parquet");
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let input_schema = write_input_parquet(&runtime, &path);
+    let executable_schema = Arc::new(Schema::new(vec![
+        Field::new("exec_left_value", DataType::Int64, false),
+        Field::new("exec_right_value", DataType::Int64, false),
+    ]));
+    let frontend_sink_schema = Arc::new(Schema::new(vec![
+        Field::new("value", DataType::Int64, false),
+        Field::new("value", DataType::Int64, false),
+    ]));
+    let source = LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(&path).with_file_size_bytes(fs::metadata(&path).unwrap().len())],
+        Arc::clone(&input_schema),
+        vec!["m00".to_string(), "m01".to_string()],
+    );
+
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LocalParquet(source));
+    let projection = builder.add_projection(
+        source,
+        vec![Expr::column("m00").alias("exec_left_value"), Expr::column("m01").alias("exec_right_value")],
+        executable_schema,
+    );
+    let plan = builder.finish_with_host_sink_schema(projection, Arc::clone(&frontend_sink_schema));
+    let mut context_builder = ExecutionContext::builder().with_shared_runtime(Arc::clone(&runtime));
+    if bounded {
+        context_builder = context_builder.with_memory_control_policy(MemoryControlPolicy::Bounded {
+            device_budget_bytes: 8 * 1024 * 1024 * 1024,
+            max_source_chunk_bytes: 1024 * 1024,
+            max_row_groups_per_chunk: 1,
+            max_retry_attempts: 1,
+            min_retry_chunk_row_groups: 1,
+        });
+    }
+    let context = context_builder.build().unwrap();
+
+    let result = execute_query_plan(&context, &plan).unwrap();
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    assert_eq!(batch.schema().as_ref(), frontend_sink_schema.as_ref());
+    assert_eq!(batch.schema().field(0).name(), "value");
+    assert_eq!(batch.schema().field(1).name(), "value");
+    assert_eq!(int64_array(batch, 0).values().as_ref(), &[100, 200, 300, 400]);
+    assert_eq!(int64_array(batch, 1).values().as_ref(), &[1, 2, 3, 4]);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+fn host_sink_schema_validation_error(
+    root_schema: Arc<Schema>,
+    sink_schema: Arc<Schema>,
+) -> cudf_query_engine::QueryError {
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let mut builder = QueryPlanBuilder::new();
+    let source =
+        builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("missing_input", Arc::clone(&root_schema))));
+    let plan = builder.finish_with_host_sink_schema(source, sink_schema);
+    let context = ExecutionContext::from_shared_runtime(runtime);
+
+    match execute_query_plan(&context, &plan) {
+        Ok(_) => panic!("native validation should reject host sink schema drift before source read"),
         Err(error) => error,
     }
 }
