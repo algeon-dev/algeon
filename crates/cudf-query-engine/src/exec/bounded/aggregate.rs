@@ -232,6 +232,7 @@ pub(super) fn execute_post_aggregate_projection(
     let Some((projection, output_schema)) = bounded.post_aggregate_projection else {
         return Ok(input);
     };
+    debug_assert_eq!(projection.output_schema().as_ref(), output_schema.as_ref());
 
     let request =
         MemoryReservationRequest::new(ReservationKind::FinalMerge, input.reservation.bytes(), reservations.budget())
@@ -280,7 +281,7 @@ pub(super) fn execute_post_aggregate_projection(
             .attach_to(error));
         },
     };
-    let result = execute_projection_with_budget(context, projection, input.frame, output_schema, &token, metrics);
+    let result = execute_projection_with_budget(context, projection, input.frame, &token, metrics);
     reservations.release(work_reservation);
     let frame = match result {
         Ok(frame) => frame,

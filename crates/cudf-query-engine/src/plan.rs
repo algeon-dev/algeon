@@ -1,6 +1,6 @@
-use std::{collections::BTreeMap, fmt};
+use std::{collections::BTreeMap, fmt, sync::Arc};
 
-use arrow::datatypes::SchemaRef;
+use arrow::datatypes::{Field, Schema, SchemaRef};
 
 use crate::{
     bounded_support::{
@@ -225,7 +225,10 @@ pub struct QueryNode {
 impl QueryNode {
     /// Returns the schema produced by this node.
     pub fn output_schema(&self) -> &SchemaRef {
-        &self.facts.output_schema
+        match &self.kind {
+            PlanNode::Projection(projection) => projection.output_schema(),
+            _ => &self.facts.output_schema,
+        }
     }
 
     /// Returns input node ids referenced by this operation.
@@ -287,11 +290,11 @@ impl QueryNode {
             ),
             PlanNode::Projection(node) => writeln!(
                 f,
-                "{padding}{} Projection input={} expr_count={} expressions={} placement={} schema_behavior={}",
+                "{padding}{} Projection input={} output_count={} expressions={} placement={} schema_behavior={}",
                 self.id,
                 node.input,
-                node.expressions.len(),
-                format_exprs(&node.expressions),
+                node.outputs.len(),
+                format_exprs(&node.expressions().cloned().collect::<Vec<_>>()),
                 self.facts.placement,
                 self.facts.schema_behavior
             ),
@@ -592,13 +595,12 @@ impl QueryPlanBuilder {
         )
     }
 
-    /// Adds a projection node whose expressions define the output schema.
-    pub fn add_projection(&mut self, input: NodeId, expressions: Vec<Expr>, output_schema: SchemaRef) -> NodeId {
+    /// Adds a projection node from explicit typed outputs.
+    pub fn add_projection(&mut self, input: NodeId, outputs: Vec<ProjectionOutput>) -> NodeId {
         self.assert_input_exists(input);
-        self.push(
-            PlanNode::Projection(ProjectionNode { input, expressions }),
-            PlanFacts::device(output_schema, SchemaBehavior::Projection),
-        )
+        let node = ProjectionNode::new(input, outputs);
+        let output_schema = Arc::clone(node.output_schema());
+        self.push(PlanNode::Projection(node), PlanFacts::device(output_schema, SchemaBehavior::Projection))
     }
 
     /// Adds an aggregate node.
@@ -650,7 +652,7 @@ impl QueryPlanBuilder {
 
     /// Finishes the plan with a host Arrow materialization sink.
     pub fn finish_with_host_sink(self, root: NodeId) -> QueryPlan {
-        let schema = self.node(root).facts.output_schema.clone();
+        let schema = self.node(root).output_schema().clone();
         self.finish(root, ResultSink::HostArrow { input: root, schema })
     }
 
@@ -700,8 +702,47 @@ pub struct FilterNode {
 pub struct ProjectionNode {
     /// Input whose columns and computed expressions are projected.
     pub input: NodeId,
-    /// Output expressions in schema order.
-    pub expressions: Vec<Expr>,
+    /// Output expressions and fields in result schema order.
+    pub outputs: Vec<ProjectionOutput>,
+    output_schema: SchemaRef,
+}
+
+impl ProjectionNode {
+    pub fn new(input: NodeId, outputs: Vec<ProjectionOutput>) -> Self {
+        let output_schema = projection_output_schema(&outputs);
+        Self { input, outputs, output_schema }
+    }
+
+    pub fn output_schema(&self) -> &SchemaRef {
+        &self.output_schema
+    }
+
+    pub fn expressions(&self) -> impl Iterator<Item = &Expr> {
+        self.outputs.iter().map(|output| &output.expr)
+    }
+
+    pub fn output_fields(&self) -> impl Iterator<Item = &Field> {
+        self.outputs.iter().map(|output| &output.field)
+    }
+}
+
+/// One typed output of a projection node.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProjectionOutput {
+    /// Expression evaluated for this output column.
+    pub expr: Expr,
+    /// Arrow field that names and types the executable output column.
+    pub field: Field,
+}
+
+impl ProjectionOutput {
+    pub fn new(expr: Expr, field: Field) -> Self {
+        Self { expr, field }
+    }
+}
+
+fn projection_output_schema(outputs: &[ProjectionOutput]) -> SchemaRef {
+    Arc::new(Schema::new(outputs.iter().map(|output| output.field.clone()).collect::<Vec<_>>()))
 }
 
 /// Aggregate operation over one input.

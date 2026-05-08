@@ -318,6 +318,43 @@ async fn native_runtime_tpch_q3_tiny_join_matches_cpu() {
 }
 
 #[tokio::test]
+async fn native_runtime_tpch_q7_tiny_bounded_duplicate_nation_identity_matches_cpu() {
+    let dir = unique_temp_dir("datafusion-cudf-native-runtime-tpch-q7-tiny-bounded");
+    write_q7_nonempty_tpch_parquet_dataset(&dir);
+    let q7 = TPCH_QUERIES.iter().find(|query| query.id == "q07").expect("TPC-H Q7 query must exist");
+    let cpu_batches = cpu_tpch_sql_output(&dir, q7.sql).await;
+    assert_q7_nation_identity_rows(&cpu_batches);
+
+    let physical_plan = tpch_sql_plan(&dir, tpch_report_session_config(), q7.sql).await;
+    let lowering = lower_physical_plan_to_native(Arc::clone(&physical_plan));
+    assert_eq!(lowering.rewritten_count(), 1, "outcomes={:?}", lowering.report.outcomes());
+    assert_eq!(lowering.rejected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
+    assert!(
+        lowering.plans[0].has_bounded_executable_multi_join_pipeline(),
+        "Q7 should use the bounded multi-join native path:\n{}",
+        lowering.plans[0]
+    );
+
+    let native_plan = native_datafusion_tpch_sql_plan(&dir, q7.sql, native_datafusion_config()).await;
+    assert_native_cudf_exec(&native_plan, "bounded TPC-H Q7 should be replaced by NativeCudfExec");
+
+    let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
+    cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
+    let native_batches = collect(Arc::clone(&native_plan), Arc::new(TaskContext::default())).await.unwrap();
+    assert_batches_equal(&cpu_batches, &native_batches);
+    assert_q7_nation_identity_rows(&native_batches);
+    assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
+    assert_eq!(cudf::testing::arrow::arrow_host_export_call_count_for_test(), 1);
+
+    let metrics = native_plan.metrics().expect("NativeCudfExec should expose DataFusion metrics");
+    assert_eq!(metrics.sum_by_name("host_to_device_uploads").unwrap().as_usize(), 0);
+    assert_eq!(metrics.sum_by_name("device_to_host_materializations").unwrap().as_usize(), 1);
+    assert_eq!(metrics.sum_by_name("reservation_denied_count").unwrap().as_usize(), 0);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
 async fn native_runtime_tpch_q2_tiny_root_topk_join_matches_cpu() {
     let dir = unique_temp_dir("datafusion-cudf-native-runtime-tpch-q2-tiny");
     write_tiny_tpch_parquet_dataset(&dir).unwrap();
@@ -1685,6 +1722,70 @@ fn write_q6_lineitem_parquet(path: &std::path::Path) {
     writer.close().unwrap();
 }
 
+fn write_q7_nonempty_tpch_parquet_dataset(root: &std::path::Path) {
+    write_tiny_tpch_parquet_dataset(root).unwrap();
+    write_q7_table(
+        &root.join("customer.parquet"),
+        Arc::new(Schema::new(vec![
+            Field::new("c_custkey", DataType::Int64, false),
+            Field::new("c_nationkey", DataType::Int64, false),
+        ])),
+        vec![Arc::new(Int64Array::from(vec![10, 20])), Arc::new(Int64Array::from(vec![3, 4]))],
+    );
+    write_q7_table(
+        &root.join("supplier.parquet"),
+        Arc::new(Schema::new(vec![
+            Field::new("s_suppkey", DataType::Int64, false),
+            Field::new("s_nationkey", DataType::Int64, false),
+        ])),
+        vec![Arc::new(Int64Array::from(vec![100, 200])), Arc::new(Int64Array::from(vec![3, 4]))],
+    );
+    write_q7_table(
+        &root.join("orders.parquet"),
+        Arc::new(Schema::new(vec![
+            Field::new("o_orderkey", DataType::Int64, false),
+            Field::new("o_custkey", DataType::Int64, false),
+        ])),
+        vec![Arc::new(Int64Array::from(vec![1000, 2000, 3000])), Arc::new(Int64Array::from(vec![20, 10, 20]))],
+    );
+    write_q7_table(
+        &root.join("nation.parquet"),
+        Arc::new(Schema::new(vec![
+            Field::new("n_nationkey", DataType::Int64, false),
+            Field::new("n_name", DataType::Utf8, false),
+        ])),
+        vec![Arc::new(Int64Array::from(vec![3, 4])), Arc::new(StringArray::from(vec!["FRANCE", "GERMANY"]))],
+    );
+    write_q7_table(
+        &root.join("lineitem.parquet"),
+        Arc::new(Schema::new(vec![
+            Field::new("l_orderkey", DataType::Int64, false),
+            Field::new("l_suppkey", DataType::Int64, false),
+            Field::new("l_shipdate", DataType::Date32, false),
+            Field::new("l_extendedprice", DataType::Decimal128(15, 2), false),
+            Field::new("l_discount", DataType::Decimal128(15, 2), false),
+        ])),
+        vec![
+            Arc::new(Int64Array::from(vec![1000, 2000, 3000])),
+            Arc::new(Int64Array::from(vec![100, 200, 200])),
+            Arc::new(Date32Array::from(vec![date32(1995, 6, 1), date32(1996, 7, 1), date32(1995, 8, 1)])),
+            Arc::new(
+                Decimal128Array::from_iter_values([10_000, 20_000, 30_000]).with_precision_and_scale(15, 2).unwrap(),
+            ),
+            Arc::new(Decimal128Array::from_iter_values([10, 5, 0]).with_precision_and_scale(15, 2).unwrap()),
+        ],
+    );
+}
+
+fn write_q7_table(path: &std::path::Path, schema: Arc<Schema>, columns: Vec<ArrayRef>) {
+    let batch = RecordBatch::try_new(Arc::clone(&schema), columns).unwrap();
+    let props = WriterProperties::builder().set_max_row_group_row_count(Some(2)).build();
+    let file = File::create(path).unwrap();
+    let mut writer = ArrowWriter::try_new(file, schema, Some(props)).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
+}
+
 fn write_nullable_phase2_scalar_input_parquet(path: &std::path::Path) {
     let schema = Arc::new(Schema::new(vec![
         Field::new("row_id", DataType::Int32, false),
@@ -1821,6 +1922,31 @@ fn assert_batches_equal_allow_empty(left: &[RecordBatch], right: &[RecordBatch])
     } else {
         assert_batches_equal(left, right);
     }
+}
+
+fn assert_q7_nation_identity_rows(batches: &[RecordBatch]) {
+    assert!(!batches.is_empty());
+    assert_eq!(batches[0].schema().field(0).name(), "supp_nation");
+    assert_eq!(batches[0].schema().field(1).name(), "cust_nation");
+    assert_eq!(batches[0].schema().field(2).name(), "l_year");
+    let mut rows = Vec::new();
+    for batch in batches {
+        for row in 0..batch.num_rows() {
+            rows.push((
+                array_value(batch.column(0), row),
+                array_value(batch.column(1), row),
+                array_value(batch.column(2), row),
+            ));
+        }
+    }
+    rows.sort_unstable();
+    assert_eq!(
+        rows,
+        vec![
+            ("FRANCE".to_string(), "GERMANY".to_string(), "1995".to_string()),
+            ("GERMANY".to_string(), "FRANCE".to_string(), "1996".to_string()),
+        ]
+    );
 }
 
 fn decimal128_array(batch: &RecordBatch, index: usize) -> &Decimal128Array {

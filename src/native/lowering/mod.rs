@@ -11,7 +11,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use arrow::datatypes::{Field, Schema, SchemaRef};
 use cudf_query_engine::{
-    NodeId as NativeNodeId, QueryPlan as NativeQueryPlan, QueryPlanBuilder as NativeQueryPlanBuilder,
+    Expr as NativeExpr, NodeId as NativeNodeId, ProjectionOutput as NativeProjectionOutput,
+    QueryPlan as NativeQueryPlan, QueryPlanBuilder as NativeQueryPlanBuilder,
 };
 use datafusion::physical_expr::expressions::Column;
 
@@ -32,6 +33,20 @@ pub(super) fn lower_normalized_plan(normalized: &NormalizedNativePlan<'_>) -> Re
         NormalizedNativeRoot::Aggregate(root) => root::lower_joined_aggregate_plan(normalized, root),
         NormalizedNativeRoot::Input(root) => root::lower_input_root_plan(normalized, root),
     }
+}
+
+pub(super) fn projection_outputs(
+    expressions: Vec<NativeExpr>,
+    schema: &SchemaRef,
+) -> Result<Vec<NativeProjectionOutput>, FallbackReason> {
+    if expressions.len() != schema.fields().len() {
+        return Err(FallbackReason::UnsupportedExpression);
+    }
+    Ok(expressions
+        .into_iter()
+        .zip(schema.fields().iter())
+        .map(|(expr, field)| NativeProjectionOutput::new(expr, field.as_ref().clone()))
+        .collect())
 }
 
 /// Native node plus the schema visible to its parent lowering step.

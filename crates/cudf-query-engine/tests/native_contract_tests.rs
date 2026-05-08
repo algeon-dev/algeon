@@ -17,8 +17,8 @@ use cudf_query_engine::{
     ExecutionBoundaryPolicy, ExecutionContext, Expr, GpuResidentSource, JoinKey, JoinNullEquality, JoinOperatorMetrics,
     JoinOutputColumn, JoinSide, JoinSpec, JoinType, LimitSpec, LiteralValue, LocalParquetFile, LocalParquetSource,
     MemoryControlPolicy, MemoryReservationRequest, OperatorMetrics, PartitionColumn, PartitionColumnDisposition,
-    PlanNode, PredicateDisposition, ProbeExecutionBoundary, QueryError, QueryErrorCode, QueryErrorKind,
-    QueryErrorStatus, QueryMetrics, QueryPlanBuilder, RejectedSourceFeature, ReservationKind,
+    PlanNode, PredicateDisposition, ProbeExecutionBoundary, ProjectionOutput, QueryError, QueryErrorCode,
+    QueryErrorKind, QueryErrorStatus, QueryMetrics, QueryPlanBuilder, RejectedSourceFeature, ReservationKind,
     ResultMaterializationBoundary, ResultSink, RetryFacts, SchemaBehavior, SchemaMappingDisposition, SortExpr,
     SortSpec, SourceChunkPlanningPolicy, SourceColumnRef, SourceNode, SourceReadBoundary, ZERO_COLUMN_COUNT_COLUMN,
     ZeroColumnCountDisposition, cudf_dtype_from_arrow_type,
@@ -27,6 +27,15 @@ use cudf_query_engine::{
     plan_local_parquet_source_chunks, validate_local_parquet_source,
 };
 use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
+
+fn projection_outputs(expressions: Vec<Expr>, schema: Arc<Schema>) -> Vec<ProjectionOutput> {
+    assert_eq!(expressions.len(), schema.fields().len(), "projection outputs must match schema");
+    expressions
+        .into_iter()
+        .zip(schema.fields().iter())
+        .map(|(expr, field)| ProjectionOutput::new(expr, field.as_ref().clone()))
+        .collect()
+}
 
 #[test]
 fn decimal128_type_support_policy_accepts_valid_arrow_decimals() {
@@ -117,7 +126,7 @@ fn native_plan_can_represent_proven_benchmark_shape() {
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
     let filter = builder.add_filter(source, filter, Arc::clone(&input_schema));
-    let projection = builder.add_projection(filter, projection, projected_schema);
+    let projection = builder.add_projection(filter, projection_outputs(projection, projected_schema));
     let aggregate = builder.add_aggregate(projection, aggregate, Arc::clone(&aggregated_schema));
     let sort = builder.add_sort(aggregate, sort, Arc::clone(&aggregated_schema));
     let limit = builder.add_limit(sort, LimitSpec::fetch(100), Arc::clone(&aggregated_schema));
@@ -142,6 +151,33 @@ fn native_plan_can_represent_proven_benchmark_shape() {
 }
 
 #[test]
+fn projection_plan_facts_schema_is_derived_from_typed_outputs() {
+    let input_schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int32, false),
+        Field::new("payload", DataType::Int64, false),
+    ]));
+    let output_field = Field::new("payload_copy", DataType::Int64, false);
+
+    let mut builder = QueryPlanBuilder::new();
+    let source =
+        builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", Arc::clone(&input_schema))));
+    let projection = builder.add_projection(
+        source,
+        vec![ProjectionOutput::new(Expr::column("payload").alias("payload_copy"), output_field.clone())],
+    );
+    let plan = builder.finish_gpu_resident(projection);
+    let node = plan.node(projection).unwrap();
+    let PlanNode::Projection(projection_node) = &node.kind else {
+        panic!("expected projection node");
+    };
+
+    assert_eq!(projection_node.outputs.len(), 1);
+    assert_eq!(projection_node.outputs[0].field, output_field);
+    assert_eq!(projection_node.output_schema().as_ref(), node.facts.output_schema.as_ref());
+    assert_eq!(plan.output_schema().as_ref(), projection_node.output_schema().as_ref());
+}
+
+#[test]
 fn native_plan_can_represent_gpu_resident_fragment_input() {
     let input_schema = Arc::new(Schema::new(vec![
         Field::new("key", DataType::Int32, false),
@@ -152,7 +188,7 @@ fn native_plan_can_represent_gpu_resident_fragment_input() {
     let mut builder = QueryPlanBuilder::new();
     let source =
         builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("q1_partial", Arc::clone(&input_schema))));
-    let projection = builder.add_projection(source, vec![Expr::column("sum_x00")], output_schema);
+    let projection = builder.add_projection(source, projection_outputs(vec![Expr::column("sum_x00")], output_schema));
     let plan = builder.finish_with_host_sink(projection);
 
     assert_eq!(plan.node_count(), 2);
@@ -1225,6 +1261,7 @@ fn keyed_hash_join_resident_subplan_pipeline_plan(
         Field::new("supplier_no", DataType::Int32, false),
         Field::new("total_revenue", DataType::Int64, true),
     ]));
+    let scalar_revenue_input_schema = Arc::new(Schema::new(vec![Field::new("total_revenue", DataType::Int64, true)]));
     let supplier_revenue_schema = Arc::new(Schema::new(vec![
         Field::new("s_suppkey", DataType::Int32, false),
         Field::new("s_name", DataType::Utf8, false),
@@ -1279,8 +1316,10 @@ fn keyed_hash_join_resident_subplan_pipeline_plan(
     );
     let supplier_revenue = builder.add_projection(
         supplier_revenue,
-        vec![Expr::column("s_suppkey"), Expr::column("s_name"), Expr::column("total_revenue")],
-        Arc::clone(&supplier_revenue_schema),
+        projection_outputs(
+            vec![Expr::column("s_suppkey"), Expr::column("s_name"), Expr::column("total_revenue")],
+            Arc::clone(&supplier_revenue_schema),
+        ),
     );
 
     let revenue_for_max = build_resident_subplan_revenue_aggregate(
@@ -1292,8 +1331,10 @@ fn keyed_hash_join_resident_subplan_pipeline_plan(
         Arc::clone(&revenue_schema),
         grouped_revenue_function,
     );
-    let revenue_for_max =
-        builder.add_projection(revenue_for_max, vec![Expr::column("total_revenue")], Arc::clone(&revenue_schema));
+    let revenue_for_max = builder.add_projection(
+        revenue_for_max,
+        projection_outputs(vec![Expr::column("total_revenue")], Arc::clone(&scalar_revenue_input_schema)),
+    );
     let max_revenue = builder.add_aggregate(
         revenue_for_max,
         AggregateSpec::new(
@@ -1350,7 +1391,10 @@ fn build_resident_subplan_revenue_branch(
         Arc::clone(&revenue_schema),
         aggregate_function,
     );
-    builder.add_projection(aggregate, vec![Expr::column("supplier_no"), Expr::column("total_revenue")], revenue_schema)
+    builder.add_projection(
+        aggregate,
+        projection_outputs(vec![Expr::column("supplier_no"), Expr::column("total_revenue")], revenue_schema),
+    )
 }
 
 fn build_resident_subplan_revenue_aggregate(
@@ -1374,8 +1418,10 @@ fn build_resident_subplan_revenue_aggregate(
     );
     let projected = builder.add_projection(
         filtered,
-        vec![Expr::column("l_suppkey").alias("supplier_no"), Expr::column("l_extendedprice").alias("revenue")],
-        Arc::clone(&revenue_projection_schema),
+        projection_outputs(
+            vec![Expr::column("l_suppkey").alias("supplier_no"), Expr::column("l_extendedprice").alias("revenue")],
+            Arc::clone(&revenue_projection_schema),
+        ),
     );
     let aggregate_input = if sort_below_root {
         builder.add_sort(
@@ -1485,8 +1531,7 @@ fn q22_keyless_conditional_join_input_subplan_plan(variant: Q22InputSubplanVaria
     } else {
         builder.add_projection(
             anti_join,
-            vec![Expr::column("order_id"), Expr::column("qty")],
-            Arc::clone(&left_subplan_schema),
+            projection_outputs(vec![Expr::column("order_id"), Expr::column("qty")], Arc::clone(&left_subplan_schema)),
         )
     };
 
@@ -1626,8 +1671,10 @@ fn q11_keyless_conditional_aggregate_over_join_subplan_inputs_plan(
         } else {
             builder.add_projection(
                 left_aggregate,
-                vec![Expr::column("ps_partkey"), Expr::column("value")],
-                Arc::clone(&left_aggregate_schema),
+                projection_outputs(
+                    vec![Expr::column("ps_partkey"), Expr::column("value")],
+                    Arc::clone(&left_aggregate_schema),
+                ),
             )
         }
     };
@@ -1650,8 +1697,10 @@ fn q11_keyless_conditional_aggregate_over_join_subplan_inputs_plan(
         ),
         Arc::clone(&right_aggregate_schema),
     );
-    let right_input =
-        builder.add_projection(right_aggregate, vec![Expr::column("threshold")], Arc::clone(&right_aggregate_schema));
+    let right_input = builder.add_projection(
+        right_aggregate,
+        projection_outputs(vec![Expr::column("threshold")], Arc::clone(&right_aggregate_schema)),
+    );
 
     let root_projection = if matches!(variant, Q11AggregateOverJoinSubplanInputsVariant::RootOutputIncludesRight) {
         vec![
@@ -1692,20 +1741,26 @@ fn q11_keyless_conditional_aggregate_over_join_subplan_inputs_plan(
             );
             builder.add_projection(
                 sort,
-                vec![Expr::column("ps_partkey"), Expr::column("value")],
-                Arc::clone(&root_output_schema),
+                projection_outputs(
+                    vec![Expr::column("ps_partkey"), Expr::column("value")],
+                    Arc::clone(&root_output_schema),
+                ),
             )
         },
         Q11AggregateOverJoinSubplanInputsVariant::PostRootRepeatedProjection => {
             let projection = builder.add_projection(
                 root,
-                vec![Expr::column("ps_partkey"), Expr::column("value")],
-                Arc::clone(&root_output_schema),
+                projection_outputs(
+                    vec![Expr::column("ps_partkey"), Expr::column("value")],
+                    Arc::clone(&root_output_schema),
+                ),
             );
             builder.add_projection(
                 projection,
-                vec![Expr::column("ps_partkey"), Expr::column("value")],
-                Arc::clone(&root_output_schema),
+                projection_outputs(
+                    vec![Expr::column("ps_partkey"), Expr::column("value")],
+                    Arc::clone(&root_output_schema),
+                ),
             )
         },
         Q11AggregateOverJoinSubplanInputsVariant::PostRootRepeatedSort => {
@@ -1723,8 +1778,10 @@ fn q11_keyless_conditional_aggregate_over_join_subplan_inputs_plan(
         Q11AggregateOverJoinSubplanInputsVariant::LimitAfterRoot => {
             let projection = builder.add_projection(
                 root,
-                vec![Expr::column("ps_partkey"), Expr::column("value")],
-                Arc::clone(&root_output_schema),
+                projection_outputs(
+                    vec![Expr::column("ps_partkey"), Expr::column("value")],
+                    Arc::clone(&root_output_schema),
+                ),
             );
             let sort = builder.add_sort(
                 projection,
@@ -1745,8 +1802,10 @@ fn q11_keyless_conditional_aggregate_over_join_subplan_inputs_plan(
         | Q11AggregateOverJoinSubplanInputsVariant::RootOutputIncludesRight => {
             let projection = builder.add_projection(
                 root,
-                vec![Expr::column("ps_partkey"), Expr::column("value")],
-                Arc::clone(&root_output_schema),
+                projection_outputs(
+                    vec![Expr::column("ps_partkey"), Expr::column("value")],
+                    Arc::clone(&root_output_schema),
+                ),
             );
             builder.add_sort(
                 projection,
@@ -1900,8 +1959,7 @@ fn q13_shaped_serial_aggregate_spine_plan() -> cudf_query_engine::QueryPlan {
     );
     let projection = builder.add_projection(
         join,
-        vec![Expr::column("c_custkey"), Expr::column("o_orderkey")],
-        Arc::clone(&join_schema),
+        projection_outputs(vec![Expr::column("c_custkey"), Expr::column("o_orderkey")], Arc::clone(&join_schema)),
     );
     let customer_counts = builder.add_aggregate(
         projection,
@@ -1911,8 +1969,10 @@ fn q13_shaped_serial_aggregate_spine_plan() -> cudf_query_engine::QueryPlan {
         ),
         first_aggregate_schema,
     );
-    let count_projection =
-        builder.add_projection(customer_counts, vec![Expr::column("c_count")], Arc::clone(&c_count_schema));
+    let count_projection = builder.add_projection(
+        customer_counts,
+        projection_outputs(vec![Expr::column("c_count")], Arc::clone(&c_count_schema)),
+    );
     let distribution = builder.add_aggregate(
         count_projection,
         AggregateSpec::new(
@@ -2041,8 +2101,10 @@ fn q16_shaped_serial_aggregate_multi_join_spine_plan() -> cudf_query_engine::Que
     );
     let projection = builder.add_projection(
         supplier_counts,
-        vec![Expr::column("supplier_cnt"), Expr::column("p_brand"), Expr::column("p_type"), Expr::column("p_size")],
-        Arc::clone(&projected_schema),
+        projection_outputs(
+            vec![Expr::column("supplier_cnt"), Expr::column("p_brand"), Expr::column("p_type"), Expr::column("p_size")],
+            Arc::clone(&projected_schema),
+        ),
     );
     let sort = builder.add_sort(
         projection,

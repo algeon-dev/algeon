@@ -866,7 +866,7 @@ fn projection_defines_column_with_role(plan: &QueryPlan, node_id: NodeId, column
     let Some(projection) = projection_node(plan, node_id) else {
         return false;
     };
-    projection.expressions.iter().any(|expr| expr_output_name_matches_column(expr, column) && expr_has_role(expr, role))
+    projection.expressions().any(|expr| expr_output_name_matches_column(expr, column) && expr_has_role(expr, role))
 }
 
 fn projection_chain_outputs_role(
@@ -881,7 +881,7 @@ fn projection_chain_outputs_role(
         if projection_count == max_projection_count {
             return false;
         }
-        if projection.expressions.iter().any(|expr| expr_output_has_role(expr, role)) {
+        if projection.expressions().any(|expr| expr_output_has_role(expr, role)) {
             return true;
         }
         projection_count += 1;

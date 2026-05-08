@@ -19,7 +19,7 @@ use super::{
     },
     executable_schema_and_bindings,
     expr::{collect_required_field_indices, lower_physical_expr_with_bindings},
-    lower_native_input,
+    lower_native_input, projection_outputs,
     sort::lower_sort_spec_with_input,
     source::{
         add_source_filter_projection, lower_required_file_source_projection_exprs, required_scan_projection,
@@ -125,7 +125,7 @@ pub(super) fn lower_slice1_plan(
         if required_scan_projection_requires_native_projection(&required_scan_projection, &table_schema) {
             let expressions = lower_required_file_source_projection_exprs(&required_scan_projection, &table_schema)?;
             let schema = required_scan_projection_schema(&required_scan_projection, source_exec.schema())?;
-            (builder.add_projection(source_node, expressions, Arc::clone(&schema)), schema)
+            (builder.add_projection(source_node, projection_outputs(expressions, &schema)?), schema)
         } else {
             (source_node, Arc::clone(&source_output_schema))
         }
