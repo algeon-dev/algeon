@@ -18,7 +18,7 @@ use cudf_sys::{
     cudf_test_event_reset_observation, cudf_test_event_stream_wait_call_count,
     cudf_test_event_stream_wait_call_count_for_stream_raw, cudf_test_exec_last_device, cudf_test_exec_last_mr_raw,
     cudf_test_exec_last_stream_value, cudf_test_exec_last_sync_stream_value, cudf_test_exec_observed_mr_count,
-    cudf_test_exec_observed_mr_raw_at, cudf_test_exec_reset_observation,
+    cudf_test_exec_observed_mr_overflowed, cudf_test_exec_observed_mr_raw_at, cudf_test_exec_reset_observation,
 };
 use rapids_interop::{ColumnLayout, InteropError, Placement};
 
@@ -355,6 +355,14 @@ pub fn observed_exec_mr_values() -> Vec<usize> {
         values.push(out as usize);
     }
     values
+}
+
+#[allow(dead_code)]
+pub fn observed_exec_mr_overflowed() -> bool {
+    let mut out: i32 = 0;
+    let status = unsafe { cudf_test_exec_observed_mr_overflowed(&mut out) };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS, "failed to read exec mr observation overflow status");
+    out != 0
 }
 
 #[allow(dead_code)]

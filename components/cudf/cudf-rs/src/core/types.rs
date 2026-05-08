@@ -542,14 +542,14 @@ impl DataType {
                 // SAFETY: handle is initialized to null and set by the C shim on success.
                 unsafe { cudf_sys::cudf_data_type_create_fixed_point(self.id.to_raw(), self.scale, &mut handle) },
                 operation,
-                [("type_id", self.id.to_string()), ("scale", self.scale.to_string())],
+                [("type_id_label", self.id.to_string()), ("scale", self.scale.to_string())],
             )?;
         } else {
             error::check_status_in_with_details(
                 // SAFETY: handle is initialized to null and set by the C shim on success.
                 unsafe { cudf_sys::cudf_data_type_create(self.id.to_raw(), &mut handle) },
                 operation,
-                [("type_id", self.id.to_string()), ("scale", self.scale.to_string())],
+                [("type_id_label", self.id.to_string()), ("scale", self.scale.to_string())],
             )?;
         }
         Ok(handle)

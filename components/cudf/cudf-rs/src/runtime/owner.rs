@@ -6,7 +6,7 @@ use rapids_interop::{ExecutionBinding, InteropError, InteropErrorKind};
 
 use super::{
     boundary::{BoundaryObserver, BoundaryObserverRef},
-    budget::{ExecutionBudgetRequest, ExecutionBudgetToken},
+    budget::{BudgetedExecutionOutcome, ExecutionBudgetReport, ExecutionBudgetRequest, ExecutionBudgetToken},
     device::DeviceId,
     device_guard::DeviceGuard,
     event::CudaEvent,
@@ -17,7 +17,7 @@ use super::{
 use crate::{
     core::{
         column::{Column, DeviceBuffer},
-        error::{self, DeviceIdFact, Error, ErrorCode, FACT_LEFT_DEVICE, FACT_RIGHT_DEVICE, Result},
+        error::{self, DeviceIdFact, Error, ErrorCode, ErrorKind, FACT_LEFT_DEVICE, FACT_RIGHT_DEVICE, Result},
         memory::DeviceMemoryResource,
         scalar::Scalar,
         table::Table,
@@ -40,6 +40,51 @@ pub enum StreamDependencyOutcome {
 fn map_stream_dependency_error(kind: InteropErrorKind, operation: &'static str, error: Error) -> InteropError {
     let message = error.to_string();
     InteropError::new(kind, message).with_context("operation", operation).set_source(error)
+}
+
+fn annotate_runtime_budget_execution_error(
+    error: Error,
+    token: &ExecutionBudgetToken,
+    operation: &'static str,
+) -> Error {
+    match error.kind() {
+        ErrorKind::ResourceExhausted | ErrorKind::DependencyFailure => token.annotate_error(error, operation),
+        _ => error.reanchor_if_needed(operation),
+    }
+}
+
+const RUNTIME_SCALAR_TO_SERIES_TEMPORARY_WORKSPACE_CONTRACT_GAP: &str =
+    "libcudf_scalar_to_series_temporary_workspace_preflight_unavailable";
+const RUNTIME_DECIMAL_SCALED_NULLS_BUDGETED_CAST_CONTRACT_GAP: &str =
+    "libcudf_decimal_scaled_nulls_budgeted_cast_preflight_unavailable";
+
+fn budgeted_runtime_for_operation(
+    runtime: &Runtime,
+    token: &ExecutionBudgetToken,
+    operation: &'static str,
+) -> Result<Runtime> {
+    runtime
+        .with_memory_resource_override(token.memory_resource(), operation)
+        .map_err(|error| annotate_runtime_budget_execution_error(error, token, operation))
+}
+
+fn budgeted_series_report(
+    series: &Series,
+    token: &ExecutionBudgetToken,
+    rows: usize,
+    operation: &'static str,
+    unresolved_contract: Option<&'static str>,
+) -> Result<ExecutionBudgetReport> {
+    let output_bytes = series.device_allocated_size_bytes().map_err(|error| error.reanchor(operation))?;
+    let mut report = token
+        .hard_enforced_report()
+        .with_retained_bytes(output_bytes)
+        .with_output_bytes(output_bytes)
+        .with_output_rows(rows);
+    if let Some(unresolved_contract) = unresolved_contract {
+        report = report.with_unresolved_contract(unresolved_contract);
+    }
+    Ok(report)
 }
 
 /// Owns one device-pinned retained-provenance bundle for a `cudf-rs` pipeline.
@@ -399,6 +444,34 @@ impl Runtime {
         Column::from_scalar_with_runtime(self, scalar, size)
     }
 
+    /// Create a low-level `Column` by repeating a scalar under a hard execution-budget token.
+    ///
+    /// This has the same scalar placement semantics as
+    /// [`column_from_scalar`](Self::column_from_scalar), but the scalar
+    /// relocation, if needed, and the output column allocation are routed
+    /// through the token allocator. The returned report records the observed
+    /// output column footprint and row count.
+    pub fn column_from_scalar_with_budget(
+        &self,
+        scalar: &Scalar,
+        size: usize,
+        token: &ExecutionBudgetToken,
+    ) -> Result<BudgetedExecutionOutcome<Column>> {
+        let operation = "runtime::column_from_scalar_with_budget";
+        let budgeted_runtime = budgeted_runtime_for_operation(self, token, operation)?;
+        let output = budgeted_runtime
+            .column_from_scalar(scalar, size)
+            .map_err(|error| annotate_runtime_budget_execution_error(error, token, operation))?;
+        let output_bytes = output.device_allocated_size_bytes().map_err(|error| error.reanchor(operation))?;
+        let report = token
+            .hard_enforced_report()
+            .with_retained_bytes(output_bytes)
+            .with_output_bytes(output_bytes)
+            .with_output_rows(size);
+
+        Ok(BudgetedExecutionOutcome::new(output, report))
+    }
+
     /// Create an empty low-level `Table` inside this runtime.
     pub fn empty_table(&self) -> Result<Table> {
         Table::empty_in_domain(Arc::clone(self.execution_domain()), "runtime::empty_table")
@@ -498,6 +571,32 @@ impl Runtime {
         Series::from_column(self.null_column(dtype, len)?)
     }
 
+    /// Create an unnamed all-null `Series` under a hard execution-budget token.
+    ///
+    /// The all-null column construction and output allocation are routed
+    /// through the token allocator. The returned report records the resulting
+    /// `Series` footprint and row count.
+    pub fn nulls_with_budget(
+        &self,
+        dtype: impl Into<DataType>,
+        len: usize,
+        token: &ExecutionBudgetToken,
+    ) -> Result<BudgetedExecutionOutcome<Series>> {
+        let operation = "runtime::nulls_with_budget";
+        let dtype = dtype.into();
+        let unresolved_contract = if dtype.id().is_decimal() && dtype.scale() != 0 {
+            Some(RUNTIME_DECIMAL_SCALED_NULLS_BUDGETED_CAST_CONTRACT_GAP)
+        } else {
+            None
+        };
+        let budgeted_runtime = budgeted_runtime_for_operation(self, token, operation)?;
+        let series = budgeted_runtime
+            .nulls(dtype, len)
+            .map_err(|error| annotate_runtime_budget_execution_error(error, token, operation))?;
+        let report = budgeted_series_report(&series, token, len, operation, unresolved_contract)?;
+        Ok(BudgetedExecutionOutcome::new(series, report))
+    }
+
     /// Create an unnamed empty `Series` inside this runtime.
     pub fn empty_series(&self, dtype: impl Into<DataType>) -> Result<Series> {
         Series::from_column(self.empty_column(dtype)?)
@@ -518,6 +617,61 @@ impl Runtime {
     /// subclass exists for dictionary-encoded scalars).
     pub fn series_from_scalar(&self, scalar: &Scalar, size: usize) -> Result<Series> {
         Series::from_column(self.column_from_scalar(scalar, size)?)
+    }
+
+    /// Create an unnamed `Series` by repeating a scalar under a hard execution-budget token.
+    ///
+    /// This is the budgeted counterpart to
+    /// [`series_from_scalar`](Self::series_from_scalar). The underlying
+    /// scalar-to-column construction is executed through the token allocator,
+    /// and the returned report records the observed output footprint and row
+    /// count.
+    pub fn series_from_scalar_with_budget(
+        &self,
+        scalar: &Scalar,
+        size: usize,
+        token: &ExecutionBudgetToken,
+    ) -> Result<BudgetedExecutionOutcome<Series>> {
+        let operation = "runtime::series_from_scalar_with_budget";
+        let budgeted_runtime = budgeted_runtime_for_operation(self, token, operation)?;
+        let column = budgeted_runtime
+            .column_from_scalar(scalar, size)
+            .map_err(|error| annotate_runtime_budget_execution_error(error, token, operation))?;
+        let series = Series::from_column(column).map_err(|error| error.reanchor(operation))?;
+        let report = budgeted_series_report(&series, token, size, operation, None)?;
+        Ok(BudgetedExecutionOutcome::new(series, report))
+    }
+
+    /// Create an unnamed fixed-width `Series` by repeating a Rust value under
+    /// a hard execution-budget token.
+    ///
+    /// Both the temporary device scalar and the output column are created in a
+    /// token-routed execution domain. The report records the retained/output
+    /// footprint of the resulting `Series`; it also marks the current scalar
+    /// construction/broadcast preflight gap because libcudf does not expose an
+    /// exact temporary workspace bound for this fused path.
+    pub fn series_from_value_with_budget<T: CudfType>(
+        &self,
+        value: T,
+        len: usize,
+        token: &ExecutionBudgetToken,
+    ) -> Result<BudgetedExecutionOutcome<Series>> {
+        let operation = "runtime::series_from_value_with_budget";
+        let budgeted_runtime = budgeted_runtime_for_operation(self, token, operation)?;
+        let scalar = budgeted_runtime
+            .scalar(value)
+            .map_err(|error| annotate_runtime_budget_execution_error(error, token, operation))?;
+        let series = budgeted_runtime
+            .series_from_scalar(&scalar, len)
+            .map_err(|error| annotate_runtime_budget_execution_error(error, token, operation))?;
+        let report = budgeted_series_report(
+            &series,
+            token,
+            len,
+            operation,
+            Some(RUNTIME_SCALAR_TO_SERIES_TEMPORARY_WORKSPACE_CONTRACT_GAP),
+        )?;
+        Ok(BudgetedExecutionOutcome::new(series, report))
     }
 
     /// Create an unnamed fixed-width arithmetic sequence `Series` inside this runtime.

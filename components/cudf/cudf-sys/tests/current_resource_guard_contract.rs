@@ -2,6 +2,7 @@ use std::{collections::BTreeSet, fs, path::Path};
 
 const EXPECTED_GUARDS: &[&str] = &[
     "copying::gather",
+    "copying::gather_device_allocated_size",
     "copying::scatter",
     "column::list_sliced_child",
     "dictionary::decode",
@@ -25,6 +26,9 @@ const EXPECTED_GUARDS: &[&str] = &[
     "join::conditional_pair_join_indices",
     "join::conditional_single_side_join_indices",
     "join::conditional_join_size",
+    "join::conditional_full_join_size_data_create",
+    "join::conditional_full_join_size_data_destroy",
+    "join::conditional_full_join_size_data_materialize_indices",
     "join::hash_join_create",
     "join::hash_join_destroy",
     "join::hash_join_full_join",
@@ -38,7 +42,18 @@ const EXPECTED_GUARDS: &[&str] = &[
     "join::inner_join_indices",
     "join::left_join_indices",
     "join::filter_join_indices",
+    "join::filtered_join_begin_probe",
+    "join::filtered_join_create",
+    "join::filtered_join_destroy",
+    "join::filtered_join_indices_with_output_size",
+    "join::filtered_join_probe_destroy",
+    "join::filtered_join_probe_materialize_indices",
+    "join::filtered_join_size",
     "join::mixed_pair_join_indices",
+    "join::mixed_join_size_data_create",
+    "join::mixed_join_size_data_destroy",
+    "join::mixed_join_size_data_materialize_pair_indices",
+    "join::mixed_join_size_data_materialize_single_indices",
     "join::mixed_single_side_join_indices",
     "replace::replace_nulls_policy",
     "sorting::is_sorted",
@@ -115,7 +130,11 @@ fn context_around(lines: &[&str], index: usize) -> String {
 fn classify_allowed_guard(file_name: &str, context: &str) -> Option<&'static str> {
     match file_name {
         "copying.cpp" if context.contains("cudf::gather(*view, *map_view, policy, exec.stream, exec.mr)") => {
-            Some("copying::gather")
+            if context.contains("result->alloc_size()") {
+                Some("copying::gather_device_allocated_size")
+            } else {
+                Some("copying::gather")
+            }
         },
         "copying.cpp"
             if context.contains("cudf::scatter(*source_view, *map_view, *target_view, exec.stream, exec.mr)") =>
@@ -197,9 +216,65 @@ fn classify_allowed_guard(file_name: &str, context: &str) -> Option<&'static str
             Some("join::conditional_single_side_join_indices")
         },
         "join.cpp" if context.contains("cudf::conditional_inner_join_size(") => Some("join::conditional_join_size"),
+        "join.cpp" if context.contains("cudf::conditional_full_join_size(") => {
+            Some("join::conditional_full_join_size_data_create")
+        },
+        "join.cpp"
+            if context.contains("conditional full join size data missing state")
+                && context.contains("owner->size_data->materialize_indices(exec.stream, exec.mr)") =>
+        {
+            Some("join::conditional_full_join_size_data_materialize_indices")
+        },
+        "join.cpp"
+            if context.contains("void cudf_conditional_full_join_size_data_destroy")
+                && context.contains("delete owner") =>
+        {
+            Some("join::conditional_full_join_size_data_destroy")
+        },
         "join.cpp" if context.contains("cudf::filter_join_indices(") => Some("join::filter_join_indices"),
+        "join.cpp" if context.contains("std::make_unique<cudf::filtered_join>") => Some("join::filtered_join_create"),
+        "join.cpp" if context.contains("*out = indices->size()") && context.contains("owner->join->semi_join") => {
+            Some("join::filtered_join_size")
+        },
+        "join.cpp"
+            if context.contains("filtered join output_size does not match produced index count")
+                && context.contains("owner->join->semi_join") =>
+        {
+            Some("join::filtered_join_indices_with_output_size")
+        },
+        "join.cpp" if context.contains("owner->join->begin_left_semi_probe") => Some("join::filtered_join_begin_probe"),
+        "join.cpp"
+            if context.contains("filtered join probe is null")
+                && context.contains("owner->probe->materialize_indices(exec.stream, exec.mr)") =>
+        {
+            Some("join::filtered_join_probe_materialize_indices")
+        },
+        "join.cpp" if context.contains("void cudf_filtered_join_destroy") && context.contains("delete owner") => {
+            Some("join::filtered_join_destroy")
+        },
+        "join.cpp" if context.contains("void cudf_filtered_join_probe_destroy") && context.contains("delete owner") => {
+            Some("join::filtered_join_probe_destroy")
+        },
         "join.cpp" if context.contains("cudf::mixed_inner_join(") => Some("join::mixed_pair_join_indices"),
         "join.cpp" if context.contains("cudf::mixed_left_semi_join(") => Some("join::mixed_single_side_join_indices"),
+        "join.cpp" if context.contains("cudf::mixed_inner_join_size(") => Some("join::mixed_join_size_data_create"),
+        "join.cpp"
+            if context.contains("join_index_pair indices")
+                && context.contains("mixed join size data missing left equality view") =>
+        {
+            Some("join::mixed_join_size_data_materialize_pair_indices")
+        },
+        "join.cpp"
+            if context.contains("mixed semi/anti join size data missing state")
+                && context.contains("owner->single_size_data->materialize_indices(exec.stream, exec.mr)") =>
+        {
+            Some("join::mixed_join_size_data_materialize_single_indices")
+        },
+        "join.cpp"
+            if context.contains("void cudf_mixed_join_size_data_destroy") && context.contains("delete owner") =>
+        {
+            Some("join::mixed_join_size_data_destroy")
+        },
         "join.cpp" if context.contains("hash_join->full_join(*probe_view, {}, exec.stream, exec.mr)") => {
             Some("join::hash_join_full_join")
         },

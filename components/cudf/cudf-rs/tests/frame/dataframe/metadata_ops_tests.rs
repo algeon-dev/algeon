@@ -6,10 +6,11 @@
 
 use std::sync::Arc;
 
-use cudf::{DataFrame, ErrorCode, ErrorKind, Runtime, Series};
+use cudf::{DataFrame, ErrorCode, ErrorKind, Runtime, Series, testing::prelude::*};
 
 use crate::common::{
     assert_duplicate_name_error, assert_missing_column_error, dataframe_device_ptr as device_ptr, error_context_value,
+    last_exec_stream_value, lock_event_observation, reset_exec_observation,
 };
 
 /// Helper: build a 3-row, 3-column DataFrame.
@@ -238,6 +239,24 @@ fn test_select_wide_projection_reorders_columns_without_copying() {
     assert_eq!(device_ptr(&df, "c0"), device_ptr(&selected, "c0"));
     assert_eq!(device_ptr(&df, "c7"), device_ptr(&selected, "c7"));
     assert_eq!(device_ptr(&df, "c3"), device_ptr(&selected, "c3"));
+}
+
+#[test]
+fn test_select_is_metadata_only_no_execution_or_device_copy() {
+    let df = sample_df();
+    let id_ptr = device_ptr(&df, "id");
+    let flag_ptr = device_ptr(&df, "flag");
+    let _event_observation = lock_event_observation();
+
+    reset_exec_observation();
+    let selected = df.select(["flag", "id"]).unwrap();
+
+    assert_eq!(last_exec_stream_value(), usize::MAX);
+    assert_eq!(device_ptr(&selected, "id"), id_ptr);
+    assert_eq!(device_ptr(&selected, "flag"), flag_ptr);
+    assert_eq!(selected.testing_execution_domain_id(), df.testing_execution_domain_id());
+    assert_eq!(selected.testing_execution_domain_stream_value(), df.testing_execution_domain_stream_value());
+    assert_eq!(selected.testing_execution_domain_mr_value(), df.testing_execution_domain_mr_value());
 }
 
 // ===========================================================================

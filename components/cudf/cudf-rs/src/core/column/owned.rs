@@ -348,7 +348,7 @@ impl Column {
             },
             operation,
             [
-                ("type_id", type_id_label(type_id)),
+                ("type_id_label", type_id_label(type_id)),
                 ("scale", dtype.scale().to_string()),
                 ("row_count", row_count.to_string()),
             ],
@@ -592,7 +592,7 @@ impl Column {
                 )
             },
             operation,
-            [("row_count", len.to_string()), ("type_id", type_id_label(type_id))],
+            [("row_count", len.to_string()), ("type_id_label", type_id_label(type_id))],
         )?;
         Self::from_handle_with_domain(handle, output_domain)
     }
@@ -715,7 +715,7 @@ impl Column {
                         )
                     },
                     operation,
-                    [("type_id", type_id_label(type_id)), ("row_count", len.to_string())],
+                    [("type_id_label", type_id_label(type_id)), ("row_count", len.to_string())],
                 )?;
                 Self::from_handle_with_domain(handle, Arc::clone(domain))
             },

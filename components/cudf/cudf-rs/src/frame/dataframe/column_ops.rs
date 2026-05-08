@@ -1,9 +1,12 @@
 use std::sync::Arc;
 
-use super::owned::{DataFrame, derive_frame_domain_from_columns};
+use super::{
+    InfoDetail,
+    owned::{DataFrame, derive_frame_domain_from_columns},
+};
 use crate::{
     core::{
-        error::{Error, ErrorCode, FACT_ACTUAL_ROWS, FACT_EXPECTED_ROWS, Result},
+        error::{Error, ErrorCode, ErrorKind, FACT_ACTUAL_ROWS, FACT_EXPECTED_ROWS, Result},
         scalar::Scalar,
         types::DataType,
     },
@@ -13,8 +16,11 @@ use crate::{
         resolve::missing_column_error,
     },
     ops::{self, unary},
-    runtime::{ExecutionOverrides, execution_domain::ExecutionDomain},
+    runtime::{BudgetedExecutionOutcome, ExecutionBudgetToken, ExecutionOverrides, execution_domain::ExecutionDomain},
 };
+
+const DATAFRAME_EXPRESSION_TEMPORARY_WORKSPACE_AND_RELOCATION_CONTRACT_GAP: &str =
+    "libcudf_dataframe_expression_temporary_workspace_and_transient_relocation_preflight_unavailable";
 
 /// One item accepted by [`DataFrame::with_columns`](super::DataFrame::with_columns).
 ///
@@ -210,6 +216,38 @@ impl DataFrame {
         self.with_columns_in_context(exprs, &ExecutionOverrides::new(), "dataframe::with_columns")
     }
 
+    /// Evaluate expressions and add/replace columns under a hard execution-budget token.
+    ///
+    /// This has the same expression semantics and validation as
+    /// [`with_columns`](Self::with_columns), but expression evaluation and any
+    /// required unchanged-column relocation are routed through the token's
+    /// execution overrides. The returned report records the resulting
+    /// DataFrame device footprint and row count.
+    pub fn with_columns_with_budget<I, T>(
+        &self,
+        exprs: I,
+        token: &ExecutionBudgetToken,
+    ) -> Result<BudgetedExecutionOutcome<Self>>
+    where
+        I: IntoIterator<Item = T>,
+        T: Into<WithColumnExpr>,
+    {
+        let operation = "dataframe::with_columns_with_budget";
+        let ctx = token.execution_overrides();
+        let output = self
+            .with_columns_in_context(exprs, &ctx, operation)
+            .map_err(|error| annotate_dataframe_budget_execution_error(error, token, operation))?;
+        let output_bytes = dataframe_device_allocated_size_bytes(&output, operation)?;
+        let report = token
+            .hard_enforced_report()
+            .with_retained_bytes(output_bytes)
+            .with_output_bytes(output_bytes)
+            .with_output_rows(output.num_rows())
+            .with_unresolved_contract(DATAFRAME_EXPRESSION_TEMPORARY_WORKSPACE_AND_RELOCATION_CONTRACT_GAP);
+
+        Ok(BudgetedExecutionOutcome::new(output, report))
+    }
+
     pub(crate) fn with_columns_in_context<I, T>(
         &self,
         exprs: I,
@@ -334,6 +372,25 @@ impl DataFrame {
         Ok(Self { columns: new_columns, row_count: self.row_count, domain })
     }
 
+    /// Return a new DataFrame with one column cast under a hard execution-budget token.
+    ///
+    /// This is the budgeted counterpart to [`cast_column`](Self::cast_column).
+    /// It uses the expression materialization path so the cast allocation, and
+    /// any required unchanged-column relocation into the budgeted output
+    /// provenance, are routed through the token allocator.
+    pub fn cast_column_with_budget(
+        &self,
+        column: &str,
+        target_type: impl Into<DataType>,
+        token: &ExecutionBudgetToken,
+    ) -> Result<BudgetedExecutionOutcome<Self>> {
+        let operation = "dataframe::cast_column_with_budget";
+        let target_type = target_type.into();
+        self.columns.get(column).ok_or_else(|| missing_column_error(operation, column))?;
+        self.with_columns_with_budget([(column, ops::expr::col(column).cast(target_type))], token)
+            .map_err(|error| error.reanchor(operation))
+    }
+
     /// Return a new DataFrame with null values in the named column replaced
     /// by a scalar value.
     ///
@@ -364,4 +421,31 @@ impl DataFrame {
         let domain = derive_frame_domain_from_columns(&new_columns, operation)?;
         Ok(Self { columns: new_columns, row_count: self.row_count, domain })
     }
+}
+
+fn annotate_dataframe_budget_execution_error(
+    error: Error,
+    token: &ExecutionBudgetToken,
+    operation: &'static str,
+) -> Error {
+    match error.kind() {
+        ErrorKind::ResourceExhausted | ErrorKind::DependencyFailure => token.annotate_error(error, operation),
+        _ => error.reanchor_if_needed(operation),
+    }
+}
+
+fn dataframe_device_allocated_size_bytes(frame: &DataFrame, operation: &'static str) -> Result<usize> {
+    let info = frame.info_with(InfoDetail::DEVICE_ALLOCATED).map_err(|error| error.reanchor_if_needed(operation))?;
+    let Some(memory) = info.memory_accounting else {
+        return Err(crate::core::error::invariant_violation(
+            operation,
+            "InfoDetail::DEVICE_ALLOCATED must populate dataframe memory accounting",
+        ));
+    };
+    memory.device_allocated_bytes.ok_or_else(|| {
+        crate::core::error::invariant_violation(
+            operation,
+            "InfoDetail::DEVICE_ALLOCATED must populate dataframe device-allocated bytes",
+        )
+    })
 }

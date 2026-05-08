@@ -90,6 +90,7 @@ fn read_all_i32(col: *mut c_void) -> Vec<i32> {
 
 #[test]
 fn conditional_full_join_size_data_reports_and_materializes_pair_contract() {
+    let _shim_state = lock_shim_state();
     let inputs = ConditionalJoinInputs::new(&[2, 5, 9], &[1, 3, 6]);
     let mut size_data: *mut c_void = ptr::null_mut();
     let status = unsafe {
@@ -136,6 +137,7 @@ fn conditional_full_join_size_data_reports_and_materializes_pair_contract() {
 
 #[test]
 fn conditional_full_join_size_data_empty_input_rejects_non_boolean_predicate() {
+    let _shim_state = lock_shim_state();
     let inputs = ConditionalJoinInputs::new_with_predicate(&[], &[1, 2], make_left_add_right_predicate());
     let mut size_data: *mut c_void = ptr::null_mut();
     let status = unsafe {

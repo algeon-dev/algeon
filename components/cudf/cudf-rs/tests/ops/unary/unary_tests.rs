@@ -6,7 +6,7 @@ use cudf::{
     testing::prelude::*,
 };
 
-use crate::common::{column_from_slice, column_from_slice_nullable};
+use crate::common::{column_from_slice, column_from_slice_nullable, error_context_value};
 
 #[test]
 fn test_sqrt() {
@@ -114,7 +114,10 @@ fn test_cast_error_contains_operation_context() {
     let err = unary::cast(&view, &unsupported).expect_err("expected error");
 
     assert_eq!(err.operation(), "unary::cast");
-    assert!(err.details().iter().any(|(k, _)| *k == "output_type_id"));
+    assert_eq!(error_context_value(&err, "input_type_id").as_deref(), Some("int32"));
+    assert_eq!(error_context_value(&err, "input_type_scale").as_deref(), Some("0"));
+    assert_eq!(error_context_value(&err, "output_type_id").as_deref(), Some("struct"));
+    assert_eq!(error_context_value(&err, "output_type_scale").as_deref(), Some("0"));
 }
 
 #[test]
