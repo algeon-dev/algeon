@@ -1401,22 +1401,22 @@ impl RetryFacts {
     /// facts. Fact keys are stable diagnostic contracts.
     pub fn attach_to_error(&self, mut error: QueryError) -> QueryError {
         if let Some(retry_action) = &self.retry_action {
-            error = error.with_fact("retry_action", retry_action);
+            error = error.with_fact_if_absent("retry_action", retry_action);
         }
         if let Some(resume_boundary) = &self.resume_boundary {
-            error = error.with_fact("resume_boundary", resume_boundary);
+            error = error.with_fact_if_absent("resume_boundary", resume_boundary);
         }
         if let Some(committed_chunks) = self.committed_chunks {
-            error = error.with_fact("committed_chunks", committed_chunks);
+            error = error.with_fact_if_absent("committed_chunks", committed_chunks);
         }
         if let Some(committed_partials) = self.committed_partials {
-            error = error.with_fact("committed_partials", committed_partials);
+            error = error.with_fact_if_absent("committed_partials", committed_partials);
         }
         if let Some(merge_level) = self.merge_level {
-            error = error.with_fact("merge_level", merge_level);
+            error = error.with_fact_if_absent("merge_level", merge_level);
         }
         if let Some(merge_fan_in) = self.merge_fan_in {
-            error = error.with_fact("merge_fan_in", merge_fan_in);
+            error = error.with_fact_if_absent("merge_fan_in", merge_fan_in);
         }
         error
     }

@@ -8,9 +8,10 @@ use arrow::{
     record_batch::RecordBatch,
 };
 use cudf::{
-    AggSpec as CudfAggSpec, DataFrame, DuplicateKeepOption, ExecutionOverrides, GroupByAgg, GroupByOptions,
-    SortOptions as CudfSortOptions,
+    AggSpec as CudfAggSpec, DataFrame, DuplicateKeepOption, ExecutionBudgetRequest, ExecutionOverrides, GroupByAgg,
+    GroupByOptions, SortOptions as CudfSortOptions,
     frame::dataframe::{DropDuplicatesOptions, InfoDetail, ParquetReadOptions},
+    io::source::SourceReadMode,
     ops::{col, lit},
 };
 

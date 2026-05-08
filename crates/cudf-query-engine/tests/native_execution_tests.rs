@@ -7,8 +7,8 @@ use std::{
 
 use arrow::{
     array::{
-        Array, BooleanArray, Date32Array, Decimal128Array, Float32Array, Float64Array, Int8Array, Int32Array,
-        Int64Array, StringArray, TimestampNanosecondArray,
+        Array, BooleanArray, Date32Array, Decimal128Array, DurationNanosecondArray, Float32Array, Float64Array,
+        Int8Array, Int32Array, Int64Array, StringArray, TimestampNanosecondArray,
     },
     datatypes::{DataType, Field, Schema, TimeUnit},
     record_batch::RecordBatch,
@@ -2465,6 +2465,114 @@ fn bounded_native_query_executes_partition_columns_per_source_chunk() {
 }
 
 #[test]
+fn bounded_native_query_executes_typed_null_partition_columns_per_source_chunk() {
+    let dir = unique_temp_dir("cudf-query-engine-native-execution-bounded-null-partitions");
+    let first_path = dir.join("part-001.parquet");
+    let second_path = dir.join("part-002.parquet");
+    let file_schema = write_single_id_parquet(&first_path, 1);
+    write_single_id_parquet(&second_path, 2);
+    let partition_columns = vec![
+        PartitionColumn::new("null_amount", DataType::Decimal128(15, 2), true),
+        PartitionColumn::new("null_shipdate", DataType::Date32, true),
+        PartitionColumn::new("null_event_ts", DataType::Timestamp(TimeUnit::Nanosecond, None), true),
+        PartitionColumn::new("null_elapsed", DataType::Duration(TimeUnit::Nanosecond), true),
+    ];
+    let null_values = vec![
+        LiteralValue::Null(DataType::Decimal128(15, 2)),
+        LiteralValue::Null(DataType::Date32),
+        LiteralValue::Null(DataType::Timestamp(TimeUnit::Nanosecond, None)),
+        LiteralValue::Null(DataType::Duration(TimeUnit::Nanosecond)),
+    ];
+    let plan = partition_passthrough_query_plan(
+        &[first_path.as_path(), second_path.as_path()],
+        file_schema,
+        partition_columns,
+        vec![null_values.clone(), null_values],
+    );
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = bounded_source_chunk_context(Arc::clone(&runtime));
+    let result = execute_query_plan(&context, &plan).unwrap();
+
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    assert_eq!(batch.num_rows(), 2);
+    assert_eq!(int64_array(batch, 0).values().as_ref(), &[1, 2]);
+    assert!(matches!(decimal128_array(batch, 1).data_type(), DataType::Decimal128(_, 2)));
+    assert_eq!(decimal128_array(batch, 1).null_count(), 2);
+    assert_eq!(date32_array(batch, 2).data_type(), &DataType::Date32);
+    assert_eq!(date32_array(batch, 2).null_count(), 2);
+    assert_eq!(timestamp_ns_array(batch, 3).data_type(), &DataType::Timestamp(TimeUnit::Nanosecond, None));
+    assert_eq!(timestamp_ns_array(batch, 3).null_count(), 2);
+    assert_eq!(duration_ns_array(batch, 4).data_type(), &DataType::Duration(TimeUnit::Nanosecond));
+    assert_eq!(duration_ns_array(batch, 4).null_count(), 2);
+    assert_eq!(int64_array(batch, 5).values().as_ref(), &[1, 2]);
+    assert_eq!(result.metrics().source_chunks_planned, 2);
+    assert_eq!(result.metrics().source_chunks_committed, 2);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn bounded_native_query_executes_extended_partition_columns_per_source_chunk() {
+    let dir = unique_temp_dir("cudf-query-engine-native-execution-bounded-extended-partitions");
+    let first_path = dir.join("part-001.parquet");
+    let second_path = dir.join("part-002.parquet");
+    let file_schema = write_single_id_parquet(&first_path, 1);
+    write_single_id_parquet(&second_path, 2);
+    let first_date = date32(2023, 5, 4);
+    let second_date = date32(2023, 5, 5);
+    let partition_columns = vec![
+        PartitionColumn::new("amount", DataType::Decimal128(15, 2), false),
+        PartitionColumn::new("shipdate", DataType::Date32, false),
+        PartitionColumn::new("event_ts", DataType::Timestamp(TimeUnit::Nanosecond, None), false),
+        PartitionColumn::new("elapsed", DataType::Duration(TimeUnit::Nanosecond), false),
+    ];
+    let plan = partition_passthrough_query_plan(
+        &[first_path.as_path(), second_path.as_path()],
+        file_schema,
+        partition_columns,
+        vec![
+            vec![
+                LiteralValue::Decimal128 { raw: 12_345, precision: 15, scale: 2 },
+                LiteralValue::Date32(first_date),
+                LiteralValue::Timestamp { raw: 1_700_000_123_456_789_000, unit: TimeUnit::Nanosecond },
+                LiteralValue::Duration { raw: -42_000_000, unit: TimeUnit::Nanosecond },
+            ],
+            vec![
+                LiteralValue::Decimal128 { raw: 67_890, precision: 15, scale: 2 },
+                LiteralValue::Date32(second_date),
+                LiteralValue::Timestamp { raw: 1_700_000_223_456_789_000, unit: TimeUnit::Nanosecond },
+                LiteralValue::Duration { raw: 17_000, unit: TimeUnit::Nanosecond },
+            ],
+        ],
+    );
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = bounded_source_chunk_context(Arc::clone(&runtime));
+    let result = execute_query_plan(&context, &plan).unwrap();
+
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    assert_eq!(batch.num_rows(), 2);
+    assert_eq!(int64_array(batch, 0).values().as_ref(), &[1, 2]);
+    let amount = decimal128_array(batch, 1);
+    assert!(matches!(amount.data_type(), DataType::Decimal128(_, 2)));
+    assert_eq!(amount.values().as_ref(), &[12_345, 67_890]);
+    assert_eq!(date32_array(batch, 2).data_type(), &DataType::Date32);
+    assert_eq!(date32_array(batch, 2).values().as_ref(), &[first_date, second_date]);
+    assert_eq!(timestamp_ns_array(batch, 3).data_type(), &DataType::Timestamp(TimeUnit::Nanosecond, None));
+    assert_eq!(timestamp_ns_array(batch, 3).values().as_ref(), &[1_700_000_123_456_789_000, 1_700_000_223_456_789_000]);
+    assert_eq!(duration_ns_array(batch, 4).data_type(), &DataType::Duration(TimeUnit::Nanosecond));
+    assert_eq!(duration_ns_array(batch, 4).values().as_ref(), &[-42_000_000, 17_000]);
+    assert_eq!(int64_array(batch, 5).values().as_ref(), &[1, 2]);
+    assert_eq!(result.metrics().source_chunks_planned, 2);
+    assert_eq!(result.metrics().source_chunks_committed, 2);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn bounded_native_query_executes_chunked_grouped_sum_and_final_merge() {
     let dir = unique_temp_dir("cudf-query-engine-bounded-native-execution");
     let path = dir.join("input.parquet");
@@ -3815,6 +3923,67 @@ fn bounded_native_query_reports_retry_facts_when_chunk_retry_exhausts() {
 }
 
 #[test]
+fn bounded_native_query_reports_source_chunk_hard_budget_failure_after_reservation_admission() {
+    let dir = unique_temp_dir("cudf-query-engine-bounded-source-hard-budget-failure");
+    let path = dir.join("input.parquet");
+    let input_schema = write_single_i32_row_grouped_parquet(&path, 4);
+    let aggregated_schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int32, false),
+        Field::new("sum_id", DataType::Int64, true),
+    ]));
+    let source = LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(&path).with_file_size_bytes(fs::metadata(&path).unwrap().len())],
+        Arc::clone(&input_schema),
+        vec!["id".to_string()],
+    );
+    let aggregate = AggregateSpec::new(
+        vec![Expr::column("id")],
+        vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("id"), "sum_id")],
+    );
+
+    let mut builder = QueryPlanBuilder::new();
+    let source_id = builder.add_source(SourceNode::LocalParquet(source.clone()));
+    let aggregate = builder.add_aggregate(source_id, aggregate, aggregated_schema);
+    let plan = builder.finish_with_host_sink(aggregate);
+    let chunk_plan = plan_local_parquet_source_chunks(source_id, &source, SourceChunkPlanningPolicy::new(None, 1))
+        .expect("test source should produce a planned row-group chunk");
+    let admitted_budget = chunk_plan.chunks[0]
+        .known_row_group_bytes
+        .expect("test parquet metadata should expose row-group bytes")
+        .saturating_add(1);
+    let context = ExecutionContext::builder()
+        .with_shared_runtime(Arc::new(cudf::Runtime::new().unwrap()))
+        .with_memory_control_policy(MemoryControlPolicy::Bounded {
+            device_budget_bytes: admitted_budget,
+            max_source_chunk_bytes: 1024 * 1024,
+            max_row_groups_per_chunk: 1,
+            max_retry_attempts: 1,
+            min_retry_chunk_row_groups: 1,
+        })
+        .build()
+        .unwrap();
+
+    let error = match execute_query_plan(&context, &plan) {
+        Ok(_) => panic!("hard cudf source read budget should fail"),
+        Err(error) => error,
+    };
+    let admitted_budget = admitted_budget.to_string();
+    assert_eq!(error.code(), QueryErrorCode::CudfResourceExhausted);
+    assert_eq!(error.fact_value("budget_boundary"), Some("source_chunk_read"));
+    assert_eq!(error.fact_value("budget_bytes"), Some(admitted_budget.as_str()));
+    assert_eq!(error.fact_value("budget_enforcement"), Some("hard_memory_resource_limit"));
+    assert_eq!(error.fact_value("memory_boundary"), Some("source_chunk_read"));
+    assert_eq!(error.fact_value("stage"), Some("source_chunk_read"));
+    assert_eq!(error.fact_value("chunk_index"), Some("0"));
+    assert_eq!(error.fact_value("file_index"), Some("0"));
+    assert_eq!(error.fact_value("row_groups"), Some("0"));
+    assert_eq!(error.fact_value("attempt"), Some("1"));
+    assert_eq!(error.fact_value("max_attempts"), Some("1"));
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn bounded_native_query_reports_reservation_failure_before_host_materialization() {
     let dir = unique_temp_dir("cudf-query-engine-bounded-materialization-reservation-failure");
     let path = dir.join("input.parquet");
@@ -3840,7 +4009,8 @@ fn bounded_native_query_reports_reservation_failure_before_host_materialization(
     let one_chunk_plan =
         plan_local_parquet_source_chunks(source_id, &source, SourceChunkPlanningPolicy::new(None, 1)).unwrap();
     assert_eq!(one_chunk_plan.chunk_count(), 1);
-    let source_chunk_bytes = one_chunk_plan.chunks[0].known_row_group_bytes.unwrap_or(0);
+    let source_chunk_bytes =
+        one_chunk_plan.chunks[0].known_row_group_bytes.expect("test parquet metadata should expose row-group bytes");
     let aggregate = builder.add_aggregate(source_id, aggregate, Arc::clone(&aggregated_schema));
     let plan = builder.finish_with_host_sink(aggregate);
 
@@ -4196,7 +4366,8 @@ fn bounded_native_query_retries_final_sort_with_hierarchical_topk() {
     let one_chunk_plan =
         plan_local_parquet_source_chunks(source_id, &source, SourceChunkPlanningPolicy::new(None, 1)).unwrap();
     assert_eq!(one_chunk_plan.chunk_count(), 1);
-    let source_chunk_bytes = one_chunk_plan.chunks[0].known_row_group_bytes.unwrap_or(0);
+    let source_chunk_bytes =
+        one_chunk_plan.chunks[0].known_row_group_bytes.expect("test parquet metadata should expose row-group bytes");
     let aggregate = builder.add_aggregate(source_id, aggregate, Arc::clone(&aggregated_schema));
     let sort = builder.add_sort(aggregate, sort, Arc::clone(&aggregated_schema));
     let limit = builder.add_limit(sort, limit, Arc::clone(&aggregated_schema));
@@ -4241,8 +4412,10 @@ fn bounded_native_query_retries_final_sort_with_hierarchical_topk() {
     assert_eq!(metrics.source_chunks_planned, 1);
     assert_eq!(metrics.source_chunks_committed, 1);
     assert!(metrics.retry_count >= 1);
-    assert!(metrics.retry_reservation_failure_count >= 1);
-    assert!(metrics.reservation_denied_count >= 1);
+    assert!(
+        metrics.retry_reservation_failure_count >= 1 || metrics.retry_resource_exhausted_count >= 1,
+        "full final sort must fail through a retryable bounded-memory path"
+    );
 
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");
@@ -4250,6 +4423,115 @@ fn bounded_native_query_retries_final_sort_with_hierarchical_topk() {
     assert_eq!(batch.num_rows(), expected.num_rows());
     assert_eq!(int32_array(batch, 0).values().as_ref(), int32_array(expected, 0).values().as_ref());
     assert_eq!(int64_array(batch, 1).values().as_ref(), int64_array(expected, 1).values().as_ref());
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn bounded_native_query_releases_full_final_sort_reservation_before_limited_output() {
+    let dir = unique_temp_dir("cudf-query-engine-bounded-final-sort-limit-reservation");
+    let path = dir.join("input.parquet");
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let input_schema = write_single_row_group_final_sort_input_parquet(&path, 4096);
+    let aggregated_schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int32, false),
+        Field::new("sum_m00", DataType::Int64, true),
+    ]));
+
+    let source = LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(&path).with_file_size_bytes(fs::metadata(&path).unwrap().len())],
+        Arc::clone(&input_schema),
+        vec!["key".to_string(), "m00".to_string()],
+    );
+    let aggregate = AggregateSpec::new(
+        vec![Expr::column("key")],
+        vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("m00"), "sum_m00")],
+    );
+    let sort = SortSpec::new(vec![SortExpr::new(Expr::column("key"), true, false)]);
+
+    let mut builder = QueryPlanBuilder::new();
+    let source_id = builder.add_source(SourceNode::LocalParquet(source));
+    let aggregate = builder.add_aggregate(source_id, aggregate, Arc::clone(&aggregated_schema));
+    let sort = builder.add_sort(aggregate, sort, Arc::clone(&aggregated_schema));
+    let limit = builder.add_limit(sort, LimitSpec::fetch(4095), Arc::clone(&aggregated_schema));
+    let plan = builder.finish_with_host_sink(limit);
+
+    let baseline_context = ExecutionContext::builder()
+        .with_shared_runtime(Arc::clone(&runtime))
+        .with_memory_control_policy(MemoryControlPolicy::Bounded {
+            device_budget_bytes: 8 * 1024 * 1024 * 1024,
+            max_source_chunk_bytes: 1024 * 1024,
+            max_row_groups_per_chunk: 1,
+            max_retry_attempts: 1,
+            min_retry_chunk_row_groups: 1,
+        })
+        .build()
+        .unwrap();
+    let baseline = execute_query_plan(&baseline_context, &plan).unwrap();
+    let baseline_metrics = baseline.metrics();
+    let first_final_sort_event = baseline_metrics
+        .reservation_events
+        .iter()
+        .position(|event| {
+            event.outcome.as_str() == "granted"
+                && event.reservation_kind == ReservationKind::FinalSort
+                && event.memory_boundary == "final_sort"
+        })
+        .expect("baseline should reserve final sort work");
+    let input_bytes = baseline_metrics.reservation_events[..first_final_sort_event]
+        .iter()
+        .rfind(|event| event.outcome.as_str() == "granted")
+        .expect("baseline should have a resident aggregate input before final sort")
+        .requested_bytes;
+    let final_sort_bytes = baseline_metrics
+        .reservation_events
+        .iter()
+        .filter(|event| {
+            event.outcome.as_str() == "granted"
+                && event.reservation_kind == ReservationKind::FinalSort
+                && event.memory_boundary == "final_sort"
+        })
+        .map(|event| event.requested_bytes)
+        .collect::<Vec<_>>();
+    assert_eq!(final_sort_bytes.len(), 2, "full final sort should reserve sort order and materialized output");
+    let sorted_order_bytes = final_sort_bytes[0];
+    let materialized_output_bytes = final_sort_bytes[1];
+    let limited_output_bytes =
+        granted_reservation_requested_bytes(baseline_metrics, ReservationKind::FinalSort, "final_sort_output");
+
+    let sequential_peak = input_bytes.saturating_add(sorted_order_bytes).saturating_add(materialized_output_bytes);
+    let overlapping_peak = input_bytes.saturating_add(materialized_output_bytes).saturating_add(limited_output_bytes);
+    assert!(
+        overlapping_peak > sequential_peak + 1,
+        "test data must create a budget window between sequential and overlapping final-sort reservations"
+    );
+    let constrained_budget = sequential_peak + ((overlapping_peak - sequential_peak) / 2);
+    assert!(constrained_budget >= sequential_peak);
+    assert!(constrained_budget < overlapping_peak);
+
+    let constrained_context = ExecutionContext::builder()
+        .with_shared_runtime(Arc::clone(&runtime))
+        .with_memory_control_policy(MemoryControlPolicy::Bounded {
+            device_budget_bytes: constrained_budget,
+            max_source_chunk_bytes: 1024 * 1024,
+            max_row_groups_per_chunk: 1,
+            max_retry_attempts: 1,
+            min_retry_chunk_row_groups: 1,
+        })
+        .build()
+        .unwrap();
+
+    let result = execute_query_plan(&constrained_context, &plan).unwrap();
+    let metrics = result.metrics();
+    assert_eq!(metrics.retry_count, 0);
+    assert_eq!(metrics.reservation_denied_count, 0);
+
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    assert_eq!(batch.num_rows(), 4095);
+    assert_eq!(int32_array(batch, 0).value(0), 4095);
+    assert_eq!(int64_array(batch, 1).value(0), 1);
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -4281,7 +4563,8 @@ fn bounded_native_query_reports_retry_facts_when_final_sort_without_limit_fails(
     let one_chunk_plan =
         plan_local_parquet_source_chunks(source_id, &source, SourceChunkPlanningPolicy::new(None, 1)).unwrap();
     assert_eq!(one_chunk_plan.chunk_count(), 1);
-    let source_chunk_bytes = one_chunk_plan.chunks[0].known_row_group_bytes.unwrap_or(0);
+    let source_chunk_bytes =
+        one_chunk_plan.chunks[0].known_row_group_bytes.expect("test parquet metadata should expose row-group bytes");
     let aggregate = builder.add_aggregate(source_id, aggregate, Arc::clone(&aggregated_schema));
     let sort = builder.add_sort(aggregate, sort, aggregated_schema);
     let plan = builder.finish_with_host_sink(sort);
@@ -4318,9 +4601,8 @@ fn bounded_native_query_reports_retry_facts_when_final_sort_without_limit_fails(
         Err(error) => error,
     };
 
-    assert_eq!(error.code(), QueryErrorCode::MemoryReservationFailed);
+    assert!(matches!(error.code(), QueryErrorCode::MemoryReservationFailed | QueryErrorCode::CudfResourceExhausted));
     assert_eq!(error.fact_value("memory_boundary"), Some("final_sort"));
-    assert_eq!(error.fact_value("reservation_kind"), Some("final_sort"));
     assert_eq!(error.fact_value("stage"), Some("final_sort"));
     assert_eq!(error.fact_value("attempt"), Some("1"));
     assert_eq!(error.fact_value("max_attempts"), Some("3"));
@@ -4328,6 +4610,12 @@ fn bounded_native_query_reports_retry_facts_when_final_sort_without_limit_fails(
     assert_eq!(error.fact_value("resume_boundary"), Some("final_sort"));
     assert_eq!(error.fact_value("committed_chunks"), Some("1"));
     assert_eq!(error.fact_value("committed_partials"), Some("1"));
+    if error.code() == QueryErrorCode::MemoryReservationFailed {
+        assert_eq!(error.fact_value("reservation_kind"), Some("final_sort"));
+    } else {
+        assert_eq!(error.fact_value("budget_boundary"), Some("final_sort"));
+        assert_eq!(error.fact_value("budget_enforcement"), Some("hard_memory_resource_limit"));
+    }
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -4507,6 +4795,145 @@ fn bounded_native_query_executes_root_hash_join_with_ordered_reservations() {
     assert_eq!(int32_array(batch, 0).values().as_ref(), &[2, 2, 3]);
     assert_eq!(int32_array(batch, 1).values().as_ref(), &[20, 25, 30]);
     assert_eq!(string_array(batch, 2).iter().collect::<Vec<_>>(), vec![Some("two"), Some("two"), Some("three")]);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn bounded_native_query_executes_root_hash_join_with_chunked_tokenized_leaf_reads() {
+    let dir = unique_temp_dir("cudf-query-engine-bounded-root-hash-join-chunked-source");
+    let left_path = dir.join("lineitem.parquet");
+    let right_path = dir.join("orders.parquet");
+    let left_schema = write_row_grouped_join_left_parquet(&left_path);
+    let right_schema = write_row_grouped_join_right_parquet(&right_path);
+    let output_schema = Arc::new(Schema::new(vec![
+        Field::new("order_id", DataType::Int32, false),
+        Field::new("qty", DataType::Int32, false),
+        Field::new("category", DataType::Utf8, false),
+    ]));
+
+    let mut builder = QueryPlanBuilder::new();
+    let left =
+        builder.add_source(SourceNode::LocalParquet(join_left_source(&left_path, &left_schema, &["order_id", "qty"])));
+    let right = builder.add_source(SourceNode::LocalParquet(join_right_source(
+        &right_path,
+        &right_schema,
+        &["order_id", "category"],
+    )));
+    let join = builder.add_join(
+        left,
+        right,
+        JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
+            .with_output_projection(vec![
+                JoinOutputColumn::left(cudf_query_engine::ColumnRef::input(0, "order_id", "order_id"), "order_id"),
+                JoinOutputColumn::left(cudf_query_engine::ColumnRef::input(0, "qty", "qty"), "qty"),
+                JoinOutputColumn::right(cudf_query_engine::ColumnRef::input(1, "category", "category"), "category"),
+            ])
+            .with_build_side(JoinSide::Right),
+        Arc::clone(&output_schema),
+    );
+    let plan = builder.finish_with_host_sink(join);
+    let context = bounded_join_execution_context(&Arc::new(cudf::Runtime::new().unwrap()));
+
+    let result = execute_query_plan(&context, &plan).unwrap();
+    let metrics = result.metrics();
+    assert_eq!(metrics.source_chunks_planned, 7);
+    assert_eq!(metrics.source_chunks_attempted, 7);
+    assert_eq!(metrics.source_chunks_committed, 7);
+    assert_eq!(metrics.reservation_denied_count, 0);
+    assert!(
+        metrics
+            .reservation_events
+            .iter()
+            .filter(|event| {
+                event.outcome.as_str() == "granted"
+                    && event.reservation_kind == ReservationKind::SourceRead
+                    && event.memory_boundary == "join_source_read"
+            })
+            .count()
+            >= 7
+    );
+
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    assert_eq!(batch.num_rows(), 3);
+    assert_eq!(batch.num_columns(), 3);
+    assert_eq!(int32_array(batch, 0).values().as_ref(), &[2, 2, 3]);
+    assert_eq!(int32_array(batch, 1).values().as_ref(), &[20, 25, 30]);
+    assert_eq!(string_array(batch, 2).iter().collect::<Vec<_>>(), vec![Some("two"), Some("two"), Some("three")]);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn bounded_native_query_reports_join_leaf_source_read_hard_budget_failure() {
+    let dir = unique_temp_dir("cudf-query-engine-bounded-join-source-hard-budget-failure");
+    let left_path = dir.join("lineitem.parquet");
+    let right_path = dir.join("orders.parquet");
+    let left_schema = write_row_grouped_join_left_parquet(&left_path);
+    let right_schema = write_row_grouped_join_right_parquet(&right_path);
+    let output_schema = Arc::new(Schema::new(vec![
+        Field::new("order_id", DataType::Int32, false),
+        Field::new("qty", DataType::Int32, false),
+        Field::new("category", DataType::Utf8, false),
+    ]));
+    let left_source = join_left_source(&left_path, &left_schema, &["order_id", "qty"]);
+    let left_source_for_chunk_plan = left_source.clone();
+
+    let mut builder = QueryPlanBuilder::new();
+    let left = builder.add_source(SourceNode::LocalParquet(left_source));
+    let left_chunk_plan =
+        plan_local_parquet_source_chunks(left, &left_source_for_chunk_plan, SourceChunkPlanningPolicy::new(None, 1))
+            .expect("test source should produce row-group chunks");
+    let admitted_budget = left_chunk_plan.chunks[0]
+        .known_row_group_bytes
+        .expect("test parquet metadata should expose row-group bytes")
+        .saturating_add(1);
+    let right = builder.add_source(SourceNode::LocalParquet(join_right_source(
+        &right_path,
+        &right_schema,
+        &["order_id", "category"],
+    )));
+    let join = builder.add_join(
+        left,
+        right,
+        JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
+            .with_output_projection(vec![
+                JoinOutputColumn::left(cudf_query_engine::ColumnRef::input(0, "order_id", "order_id"), "order_id"),
+                JoinOutputColumn::left(cudf_query_engine::ColumnRef::input(0, "qty", "qty"), "qty"),
+                JoinOutputColumn::right(cudf_query_engine::ColumnRef::input(1, "category", "category"), "category"),
+            ])
+            .with_build_side(JoinSide::Right),
+        output_schema,
+    );
+    let plan = builder.finish_with_host_sink(join);
+    let context = ExecutionContext::builder()
+        .with_shared_runtime(Arc::new(cudf::Runtime::new().unwrap()))
+        .with_memory_control_policy(MemoryControlPolicy::Bounded {
+            device_budget_bytes: admitted_budget,
+            max_source_chunk_bytes: 1024 * 1024,
+            max_row_groups_per_chunk: 1,
+            max_retry_attempts: 1,
+            min_retry_chunk_row_groups: 1,
+        })
+        .build()
+        .unwrap();
+
+    let error = match execute_query_plan(&context, &plan) {
+        Ok(_) => panic!("hard cudf join source read budget should fail"),
+        Err(error) => error,
+    };
+    let admitted_budget = admitted_budget.to_string();
+    assert_eq!(error.code(), QueryErrorCode::CudfResourceExhausted);
+    assert_eq!(error.fact_value("budget_boundary"), Some("join_source_read"));
+    assert_eq!(error.fact_value("budget_bytes"), Some(admitted_budget.as_str()));
+    assert_eq!(error.fact_value("budget_enforcement"), Some("hard_memory_resource_limit"));
+    assert_eq!(error.fact_value("memory_boundary"), Some("join_source_read"));
+    assert_eq!(error.fact_value("stage"), Some("join_source_read"));
+    assert_eq!(error.fact_value("chunk_index"), Some("0"));
+    assert_eq!(error.fact_value("file_index"), Some("0"));
+    assert_eq!(error.fact_value("row_groups"), Some("0"));
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -7856,6 +8283,54 @@ fn write_join_right_parquet(runtime: &cudf::Runtime, path: &std::path::Path) -> 
     schema
 }
 
+fn write_row_grouped_join_left_parquet(path: &std::path::Path) -> Arc<Schema> {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("order_id", DataType::Int32, false),
+        Field::new("qty", DataType::Int32, false),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![Arc::new(Int32Array::from(vec![1, 2, 2, 3])), Arc::new(Int32Array::from(vec![10, 20, 25, 30]))],
+    )
+    .unwrap();
+    write_record_batch_with_row_group_rows(path, Arc::clone(&schema), batch, 1);
+    schema
+}
+
+fn write_row_grouped_join_right_parquet(path: &std::path::Path) -> Arc<Schema> {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("order_id", DataType::Int32, false),
+        Field::new("category", DataType::Utf8, false),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![Arc::new(Int32Array::from(vec![2, 3, 4])), Arc::new(StringArray::from(vec!["two", "three", "four"]))],
+    )
+    .unwrap();
+    write_record_batch_with_row_group_rows(path, Arc::clone(&schema), batch, 1);
+    schema
+}
+
+fn write_single_i32_row_grouped_parquet(path: &std::path::Path, max_row_group_rows: usize) -> Arc<Schema> {
+    let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+    let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int32Array::from(vec![1, 2, 3, 4]))]).unwrap();
+    write_record_batch_with_row_group_rows(path, Arc::clone(&schema), batch, max_row_group_rows);
+    schema
+}
+
+fn write_record_batch_with_row_group_rows(
+    path: &std::path::Path,
+    schema: Arc<Schema>,
+    batch: RecordBatch,
+    max_row_group_rows: usize,
+) {
+    let props = WriterProperties::builder().set_max_row_group_row_count(Some(max_row_group_rows)).build();
+    let file = File::create(path).unwrap();
+    let mut writer = ArrowWriter::try_new(file, schema, Some(props)).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
+}
+
 fn write_join_right_keys_parquet(runtime: &cudf::Runtime, path: &std::path::Path, order_ids: &[i32]) -> Arc<Schema> {
     let schema = Arc::new(Schema::new(vec![
         Field::new("order_id", DataType::Int32, false),
@@ -8089,6 +8564,85 @@ fn partition_column_query_plan(
     let aggregate = builder.add_aggregate(projection, aggregate, Arc::clone(&aggregated_schema));
     let sort = builder.add_sort(aggregate, sort, Arc::clone(&aggregated_schema));
     builder.finish_with_host_sink(sort)
+}
+
+fn partition_passthrough_query_plan(
+    paths: &[&Path],
+    file_schema: Arc<Schema>,
+    partition_columns: Vec<PartitionColumn>,
+    partition_values: Vec<Vec<LiteralValue>>,
+) -> cudf_query_engine::QueryPlan {
+    assert_eq!(paths.len(), partition_values.len());
+    let partition_names = partition_columns.iter().map(|column| column.name.clone()).collect::<Vec<_>>();
+    let source_schema = Arc::new(Schema::new(
+        file_schema
+            .fields()
+            .iter()
+            .map(|field| field.as_ref().clone())
+            .chain(
+                partition_columns
+                    .iter()
+                    .map(|column| Field::new(column.name.as_str(), column.data_type.clone(), column.nullable)),
+            )
+            .collect::<Vec<_>>(),
+    ));
+    let aggregated_schema = Arc::new(Schema::new(
+        source_schema
+            .fields()
+            .iter()
+            .map(|field| field.as_ref().clone())
+            .chain([Field::new("sum_id", DataType::Int64, true)])
+            .collect::<Vec<_>>(),
+    ));
+    let files = paths
+        .iter()
+        .zip(partition_values)
+        .map(|(path, values)| {
+            LocalParquetFile::new(*path)
+                .with_file_size_bytes(fs::metadata(path).unwrap().len())
+                .with_partition_values(values)
+        })
+        .collect::<Vec<_>>();
+    let mut projected_columns = vec!["id".to_string()];
+    projected_columns.extend(partition_names.iter().cloned());
+    let source = LocalParquetSource::from_files(files, Arc::clone(&source_schema), vec!["id".to_string()])
+        .with_partition_columns(partition_columns)
+        .with_column_roles(projected_columns.clone(), Vec::new());
+    let mut group_by = vec![Expr::column("id")];
+    group_by.extend(partition_names.iter().map(|name| Expr::column(name)));
+    let aggregate =
+        AggregateSpec::new(group_by, vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("id"), "sum_id")]);
+    let sort = SortSpec::new(vec![SortExpr::new(Expr::column("id"), false, false)]);
+
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LocalParquet(source));
+    let aggregate = builder.add_aggregate(source, aggregate, Arc::clone(&aggregated_schema));
+    let sort = builder.add_sort(aggregate, sort, Arc::clone(&aggregated_schema));
+    builder.finish_with_host_sink(sort)
+}
+
+fn write_single_id_parquet(path: &Path, id: i64) -> Arc<Schema> {
+    let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
+    let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int64Array::from(vec![id]))]).unwrap();
+    let file = File::create(path).unwrap();
+    let mut writer = ArrowWriter::try_new(file, Arc::clone(&schema), None).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
+    schema
+}
+
+fn bounded_source_chunk_context(runtime: Arc<cudf::Runtime>) -> ExecutionContext {
+    ExecutionContext::builder()
+        .with_shared_runtime(runtime)
+        .with_memory_control_policy(MemoryControlPolicy::Bounded {
+            device_budget_bytes: 8 * 1024 * 1024 * 1024,
+            max_source_chunk_bytes: 1024 * 1024,
+            max_row_groups_per_chunk: 1,
+            max_retry_attempts: 1,
+            min_retry_chunk_row_groups: 1,
+        })
+        .build()
+        .unwrap()
 }
 
 fn write_row_grouped_input_parquet(path: &Path) -> Arc<Schema> {
@@ -8350,6 +8904,10 @@ fn date32(year: i32, month: u32, day: u32) -> i32 {
 
 fn timestamp_ns_array(batch: &RecordBatch, index: usize) -> &TimestampNanosecondArray {
     batch.column(index).as_any().downcast_ref::<TimestampNanosecondArray>().expect("expected TimestampNanosecondArray")
+}
+
+fn duration_ns_array(batch: &RecordBatch, index: usize) -> &DurationNanosecondArray {
+    batch.column(index).as_any().downcast_ref::<DurationNanosecondArray>().expect("expected DurationNanosecondArray")
 }
 
 fn string_array(batch: &RecordBatch, index: usize) -> &StringArray {

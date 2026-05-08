@@ -93,8 +93,16 @@ pub(super) fn execute_bounded_chunk_attempt(
         attempt,
         max_attempts,
     );
-    let source_reservation = reservations.try_reserve(source_request, metrics)?;
-    let mut frame = match read_local_parquet_chunk(context, bounded.source, chunk, metrics) {
+    let mut source_reservation = reservations.try_reserve(source_request, metrics)?;
+    let source_token_budget = reservations.available_bytes_including(&source_reservation);
+    let mut frame = match read_local_parquet_chunk(
+        context,
+        bounded.source,
+        chunk,
+        source_token_budget,
+        "source_chunk_read",
+        metrics,
+    ) {
         Ok(frame) => frame,
         Err(error) => {
             reservations.release(source_reservation);
@@ -104,10 +112,28 @@ pub(super) fn execute_bounded_chunk_attempt(
     let source_observed_bytes = match observe_device_memory_bytes(&frame, metrics) {
         Ok(bytes) => bytes,
         Err(error) => {
+            drop(frame);
             reservations.release(source_reservation);
             return Err(attach_chunk_resource_facts(error, chunk, "source_chunk_read", attempt, max_attempts, metrics));
         },
     };
+    if source_observed_bytes > source_reservation.bytes() {
+        let source_delta = source_observed_bytes.saturating_sub(source_reservation.bytes());
+        let grow_request = chunk_reservation_request(
+            ReservationKind::SourceRead,
+            "source_chunk_read",
+            source_delta,
+            reservations.budget(),
+            chunk,
+            attempt,
+            max_attempts,
+        );
+        if let Err(error) = reservations.try_grow(&mut source_reservation, grow_request, metrics) {
+            drop(frame);
+            reservations.release(source_reservation);
+            return Err(error);
+        }
+    }
 
     let operator_request = chunk_reservation_request(
         ReservationKind::ChunkOperator,
@@ -121,6 +147,7 @@ pub(super) fn execute_bounded_chunk_attempt(
     let operator_reservation = match reservations.try_reserve(operator_request, metrics) {
         Ok(reservation) => reservation,
         Err(error) => {
+            drop(frame);
             reservations.release(source_reservation);
             return Err(error);
         },

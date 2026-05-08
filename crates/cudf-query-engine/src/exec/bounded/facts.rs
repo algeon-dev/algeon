@@ -26,11 +26,11 @@ impl RuntimeResourceFacts<'_> {
         }
 
         let error = error
-            .with_fact("memory_boundary", self.memory_boundary)
-            .with_fact("stage", self.stage)
-            .with_fact("node_id", self.node_id)
-            .with_fact("attempt", self.attempt)
-            .with_fact("max_attempts", self.max_attempts);
+            .with_fact_if_absent("memory_boundary", self.memory_boundary)
+            .with_fact_if_absent("stage", self.stage)
+            .with_fact_if_absent("node_id", self.node_id)
+            .with_fact_if_absent("attempt", self.attempt)
+            .with_fact_if_absent("max_attempts", self.max_attempts);
         self.attach_retry_context(error)
     }
 }
@@ -57,11 +57,11 @@ pub(in crate::exec) fn attach_chunk_resource_facts(
         metrics,
     }
     .attach_to(error)
-    .with_fact("chunk_index", chunk.chunk_index)
-    .with_fact("file_index", chunk.file_index)
-    .with_fact("path", chunk.path.display());
+    .with_fact_if_absent("chunk_index", chunk.chunk_index)
+    .with_fact_if_absent("file_index", chunk.file_index)
+    .with_fact_if_absent("path", chunk.path.display());
     if !chunk.reads_all_row_groups {
-        error = error.with_fact("row_groups", comma_separated_usize(&chunk.row_group_indexes));
+        error = error.with_fact_if_absent("row_groups", comma_separated_usize(&chunk.row_group_indexes));
     }
     error
 }

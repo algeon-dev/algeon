@@ -288,6 +288,14 @@ impl QueryError {
         self
     }
 
+    #[must_use]
+    pub(crate) fn with_fact_if_absent(mut self, key: &'static str, value: impl ToString) -> Self {
+        if self.facts.get(key).is_none() {
+            self.facts.insert(key, value.to_string());
+        }
+        self
+    }
+
     /// Attaches the source error, replacing any source already present.
     #[must_use]
     pub fn with_source<E>(mut self, source: E) -> Self
@@ -310,6 +318,28 @@ impl QueryError {
             .with_fact("cudf_status", source.status())
             .with_fact("cudf_operation", source.operation())
             .with_source(source)
+    }
+
+    /// Creates a native-engine error from cuDF and preserves budget-token
+    /// diagnostics when the lower layer attached them.
+    pub fn from_cudf_with_budget_details(
+        operation: &'static str,
+        message: impl Into<String>,
+        source: cudf::Error,
+    ) -> Self {
+        let budget_details = source
+            .details()
+            .iter()
+            .filter(|(key, _)| {
+                matches!(*key, "budget_boundary" | "budget_bytes" | "budget_enforcement" | "budget_status")
+            })
+            .map(|(key, value)| (*key, value.clone()))
+            .collect::<Vec<_>>();
+        let mut error = Self::from_cudf(operation, message, source);
+        for (key, value) in budget_details {
+            error = error.with_fact(key, value);
+        }
+        error
     }
 
     pub fn code(&self) -> QueryErrorCode {
