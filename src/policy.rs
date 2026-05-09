@@ -30,6 +30,7 @@ pub enum FallbackReason {
     NativeSourceByteRange,
     NativeSourceFileOrdering,
     NativeSourceRowSelection,
+    NativeSourceSchemaMapping,
 }
 
 impl FallbackReason {
@@ -57,6 +58,7 @@ impl FallbackReason {
             Self::NativeSourceByteRange => "native_source_byte_range",
             Self::NativeSourceFileOrdering => "native_source_file_ordering",
             Self::NativeSourceRowSelection => "native_source_row_selection",
+            Self::NativeSourceSchemaMapping => "native_source_schema_mapping",
         }
     }
 }

@@ -17,7 +17,7 @@ pub(super) use metrics::{format_row_groups, record_bounded_parquet_source_metric
 use partition::inject_partition_columns;
 use read::read_local_parquet_file;
 pub(in crate::exec) use scheduler::{ScheduledLocalParquetRead, ScheduledLocalParquetReadOutput};
-use schema::coerce_local_parquet_source_schema;
+use schema::{coerce_local_parquet_source_schema, materialize_missing_columns};
 pub use validate::validate_local_parquet_source;
 use zero_column_count::{read_zero_column_count_source, zero_column_count_chunk_frame_with_budget};
 
@@ -36,8 +36,14 @@ pub fn read_local_parquet_source(
     let mut frames = Vec::with_capacity(source.files.len());
     let mut remaining_rows = source.scan_limit;
     for file in &source.files {
-        let frame = read_local_parquet_file(context, file, &columns, metrics)?;
+        let row_count_override = if columns.is_empty() { Some(local_parquet_file_row_count(file)?) } else { None };
+        let frame = if columns.is_empty() {
+            context.runtime().empty_dataframe()
+        } else {
+            read_local_parquet_file(context, file, &columns, metrics)?
+        };
         let frame = inject_partition_columns(context, source, &file.partition_values, frame, metrics)?.into_frame();
+        let frame = materialize_missing_columns(context, source, frame, row_count_override, metrics)?;
         let frame = coerce_local_parquet_source_schema(frame, source, None, metrics)?;
         let (frame, remaining) = apply_source_scan_limit_to_frame(context, frame, remaining_rows, metrics)?;
         frames.push(frame);
@@ -69,6 +75,45 @@ pub fn read_local_parquet_source(
     metrics.operator_time += timer.elapsed();
 
     Ok(GpuDataFrame::new(output))
+}
+
+fn local_parquet_file_row_count(file: &LocalParquetFile) -> Result<usize> {
+    let rows = match (&file.row_groups, &file.row_group_rows) {
+        (_, None) => {
+            return Err(QueryError::new(
+                QueryErrorCode::InvalidPlan,
+                "cudf_query_engine.local_parquet_source.row_count",
+                "local parquet source with no read columns requires row-count metadata",
+            )
+            .with_fact("path", file.path.display())
+            .with_fact("stable_id", file.stable_id.as_str())
+            .with_fact("reason", "missing_row_count_metadata"));
+        },
+        (None, Some(row_group_rows)) => row_group_rows.iter().try_fold(0u64, |total, rows| total.checked_add(*rows)),
+        (Some(row_groups), Some(row_group_rows)) => row_groups.iter().try_fold(0u64, |total, row_group| {
+            row_group_rows.get(*row_group).and_then(|rows| total.checked_add(*rows))
+        }),
+    }
+    .ok_or_else(|| {
+        QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "cudf_query_engine.local_parquet_source.row_count",
+            "local parquet source row-count metadata is invalid or overflows",
+        )
+        .with_fact("path", file.path.display())
+        .with_fact("stable_id", file.stable_id.as_str())
+        .with_fact("reason", "invalid_row_count_metadata")
+    })?;
+    usize::try_from(rows).map_err(|_error| {
+        QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "cudf_query_engine.local_parquet_source.row_count",
+            "local parquet source row count exceeds platform usize range",
+        )
+        .with_fact("path", file.path.display())
+        .with_fact("stable_id", file.stable_id.as_str())
+        .with_fact("rows", rows)
+    })
 }
 
 pub(super) fn read_local_parquet_chunk(

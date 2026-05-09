@@ -9,6 +9,7 @@ pub(super) struct LocalParquetDiagnosticColumns<'a> {
     pub(super) pure_filter_columns: &'a [String],
     pub(super) pure_filter_column_source_refs: &'a [SourceColumnRef],
     pub(super) partition_columns: &'a [PartitionColumn],
+    pub(super) missing_columns: &'a [super::MissingColumn],
     pub(super) scan_limit: Option<usize>,
 }
 
@@ -67,7 +68,7 @@ impl SourceDiagnostics {
             .iter()
             .any(|file| file.row_groups.is_some())
             .then(|| files.iter().map(LocalParquetFile::selected_row_group_count).sum());
-        let zero_column_count_disposition = if columns.read_columns.is_empty() {
+        let zero_column_count_disposition = if columns.read_columns.is_empty() && columns.missing_columns.is_empty() {
             ZeroColumnCountDisposition::Rejected
         } else {
             ZeroColumnCountDisposition::NotRequired
@@ -76,11 +77,20 @@ impl SourceDiagnostics {
         if zero_column_count_disposition == ZeroColumnCountDisposition::Rejected {
             rejected_features.push(RejectedSourceFeature::ZeroColumnCount);
         }
-        let schema_mapping_disposition = if columns.read_columns.len() == columns.read_column_file_indices.len()
+        let schema_refs_are_valid = columns.read_columns.len() == columns.read_column_file_indices.len()
             && columns.projected_output_columns.len() == columns.projected_output_column_source_refs.len()
-            && columns.pure_filter_columns.len() == columns.pure_filter_column_source_refs.len()
-        {
-            SchemaMappingDisposition::DirectByName
+            && columns.pure_filter_columns.len() == columns.pure_filter_column_source_refs.len();
+        let schema_mapping_disposition = if schema_refs_are_valid {
+            if columns
+                .projected_output_column_source_refs
+                .iter()
+                .chain(columns.pure_filter_column_source_refs.iter())
+                .any(|source_ref| matches!(source_ref, SourceColumnRef::MissingNull(_)))
+            {
+                SchemaMappingDisposition::MissingNullableColumns
+            } else {
+                SchemaMappingDisposition::DirectByName
+            }
         } else {
             rejected_features.push(RejectedSourceFeature::SchemaMapping);
             SchemaMappingDisposition::Rejected
@@ -235,6 +245,9 @@ impl ZeroColumnCountDisposition {
 pub enum SchemaMappingDisposition {
     /// Logical columns map directly by name to file or partition columns.
     DirectByName,
+    /// Nullable logical columns absent from the physical file are represented
+    /// as typed null columns.
+    MissingNullableColumns,
     /// Required column mapping could not be represented.
     Rejected,
 }
@@ -244,6 +257,7 @@ impl SchemaMappingDisposition {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::DirectByName => "direct_by_name",
+            Self::MissingNullableColumns => "missing_nullable_columns",
             Self::Rejected => "rejected",
         }
     }

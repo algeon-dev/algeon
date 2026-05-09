@@ -51,13 +51,28 @@ pub fn validate_local_parquet_source(source: &LocalParquetSource) -> Result<()> 
         }
     }
 
-    if source.read_columns.is_empty() && !source.is_zero_column_count_source() {
+    if source.read_columns.is_empty() && !source.is_zero_column_count_source() && source.missing_columns.is_empty() {
         return Err(QueryError::new(
             QueryErrorCode::InvalidPlan,
             "cudf_query_engine.local_parquet_source.validate",
             "local parquet source must name at least one required read column",
         )
         .with_fact("reason", "empty_read_columns"));
+    }
+    if source.read_columns.is_empty() && !source.missing_columns.is_empty() {
+        for (file_index, file) in source.files.iter().enumerate() {
+            if file.row_group_rows.is_none() {
+                return Err(QueryError::new(
+                    QueryErrorCode::InvalidPlan,
+                    "cudf_query_engine.local_parquet_source.validate",
+                    "local parquet source with only missing columns requires row-count metadata",
+                )
+                .with_fact("reason", "missing_row_count_metadata")
+                .with_fact("file_index", file_index)
+                .with_fact("path", file.path.display())
+                .with_fact("stable_id", file.stable_id.as_str()));
+            }
+        }
     }
 
     validate_local_parquet_source_contract(source)?;
@@ -194,11 +209,19 @@ fn validate_local_parquet_source_contract(source: &LocalParquetSource) -> Result
             return Err(unsupported_source_contract_fact("scan_limit", diagnostics.scan_limit_disposition.as_str()));
         },
     }
-    if diagnostics.schema_mapping_disposition != SchemaMappingDisposition::DirectByName {
-        return Err(unsupported_source_contract_fact(
-            "schema_mapping",
-            diagnostics.schema_mapping_disposition.as_str(),
-        ));
+    match diagnostics.schema_mapping_disposition {
+        SchemaMappingDisposition::DirectByName => {
+            if !source.missing_columns.is_empty() {
+                return Err(unsupported_source_contract_fact("schema_mapping", "diagnostic_direct_but_missing"));
+            }
+        },
+        SchemaMappingDisposition::MissingNullableColumns => validate_represented_missing_columns(source)?,
+        SchemaMappingDisposition::Rejected => {
+            return Err(unsupported_source_contract_fact(
+                "schema_mapping",
+                diagnostics.schema_mapping_disposition.as_str(),
+            ));
+        },
     }
     if diagnostics.read_column_count != source.read_columns.len()
         || source.read_column_file_indices.len() != source.read_columns.len()
@@ -222,6 +245,75 @@ fn validate_local_parquet_source_contract(source: &LocalParquetSource) -> Result
         .with_fact("diagnostic_pure_filter_columns", diagnostics.pure_filter_column_count)
         .with_fact("pure_filter_columns", source.pure_filter_columns.len())
         .with_fact("pure_filter_column_source_refs", source.pure_filter_column_source_refs.len()));
+    }
+
+    Ok(())
+}
+
+fn validate_represented_missing_columns(source: &LocalParquetSource) -> Result<()> {
+    if source.missing_columns.is_empty() {
+        return Err(unsupported_source_contract_fact("schema_mapping", "diagnostic_missing_but_empty"));
+    }
+
+    for (missing_index, missing_column) in source.missing_columns.iter().enumerate() {
+        if source.read_columns.iter().any(|column| column == &missing_column.name)
+            || source.partition_columns.iter().any(|column| column.name == missing_column.name)
+        {
+            return Err(QueryError::new(
+                QueryErrorCode::InvalidPlan,
+                "cudf_query_engine.local_parquet_source.validate",
+                "missing source column must not also be read from parquet or partition metadata",
+            )
+            .with_fact("reason", "missing_column_name_collision")
+            .with_fact("missing_index", missing_index)
+            .with_fact("missing_column", missing_column.name.as_str()));
+        }
+        let field = source.schema.field_with_name(missing_column.name.as_str()).map_err(|_error| {
+            QueryError::new(
+                QueryErrorCode::InvalidPlan,
+                "cudf_query_engine.local_parquet_source.validate",
+                "represented missing source column must exist in source output schema",
+            )
+            .with_fact("reason", "missing_column_schema_field_absent")
+            .with_fact("missing_index", missing_index)
+            .with_fact("missing_column", missing_column.name.as_str())
+        })?;
+        if field.data_type() != &missing_column.data_type || field.is_nullable() != missing_column.nullable {
+            return Err(QueryError::new(
+                QueryErrorCode::InvalidPlan,
+                "cudf_query_engine.local_parquet_source.validate",
+                "missing source column descriptor must match source output schema",
+            )
+            .with_fact("reason", "missing_column_schema_mismatch")
+            .with_fact("missing_index", missing_index)
+            .with_fact("missing_column", missing_column.name.as_str())
+            .with_fact("field_type", format!("{:?}", field.data_type()))
+            .with_fact("missing_type", format!("{:?}", missing_column.data_type))
+            .with_fact("field_nullable", field.is_nullable())
+            .with_fact("missing_nullable", missing_column.nullable));
+        }
+        if !missing_column.nullable {
+            return Err(QueryError::new(
+                QueryErrorCode::InvalidPlan,
+                "cudf_query_engine.local_parquet_source.validate",
+                "missing source columns can only represent nullable logical columns",
+            )
+            .with_fact("reason", "non_nullable_missing_column")
+            .with_fact("missing_index", missing_index)
+            .with_fact("missing_column", missing_column.name.as_str())
+            .with_fact("missing_type", format!("{:?}", missing_column.data_type)));
+        }
+        if cudf_dtype_from_arrow_type(&missing_column.data_type).is_none() {
+            return Err(QueryError::new(
+                QueryErrorCode::UnsupportedType,
+                "cudf_query_engine.local_parquet_source.validate",
+                "missing source column type is not supported by native execution",
+            )
+            .with_fact("reason", "unsupported_missing_column_type")
+            .with_fact("missing_index", missing_index)
+            .with_fact("missing_column", missing_column.name.as_str())
+            .with_fact("missing_type", format!("{:?}", missing_column.data_type)));
+        }
     }
 
     Ok(())

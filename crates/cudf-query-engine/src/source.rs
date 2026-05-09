@@ -88,6 +88,28 @@ impl PartitionColumn {
     }
 }
 
+/// Nullable logical column absent from the physical Parquet file schema.
+///
+/// Missing columns are explicit source facts. They are materialized as typed
+/// null GPU columns after the file/chunk row count is known and before
+/// source-local filters or projections run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MissingColumn {
+    /// Column name exposed to native expressions.
+    pub name: String,
+    /// Arrow type of the typed null column.
+    pub data_type: DataType,
+    /// Whether the logical table column is nullable.
+    pub nullable: bool,
+}
+
+impl MissingColumn {
+    /// Creates a missing-column descriptor.
+    pub fn new(name: impl Into<String>, data_type: DataType, nullable: bool) -> Self {
+        Self { name: name.into(), data_type, nullable }
+    }
+}
+
 /// Reference to the source location for a logical column.
 ///
 /// File columns are indexed against the Parquet file schema. Partition columns
@@ -98,6 +120,8 @@ pub enum SourceColumnRef {
     File(usize),
     /// Synthetic column from partition metadata.
     Partition(usize),
+    /// Nullable logical column missing from the physical file schema.
+    MissingNull(usize),
 }
 
 /// Local Parquet source accepted by the native query engine.
@@ -147,6 +171,8 @@ pub struct LocalParquetSource {
     pub pure_filter_column_source_refs: Vec<SourceColumnRef>,
     /// Synthetic source columns populated from file partition values.
     pub partition_columns: Vec<PartitionColumn>,
+    /// Nullable logical source columns materialized as typed null columns.
+    pub missing_columns: Vec<MissingColumn>,
     /// Source-level scan limit applied before source-adjacent native filters.
     pub scan_limit: Option<usize>,
     /// Source capability and rejection details captured during lowering.
@@ -167,6 +193,7 @@ impl LocalParquetSource {
         let pure_filter_columns = Vec::new();
         let pure_filter_column_source_refs = Vec::new();
         let partition_columns = Vec::new();
+        let missing_columns = Vec::new();
         let diagnostics = SourceDiagnostics::for_local_parquet_files(
             &files,
             LocalParquetDiagnosticColumns {
@@ -177,6 +204,7 @@ impl LocalParquetSource {
                 pure_filter_columns: &pure_filter_columns,
                 pure_filter_column_source_refs: &pure_filter_column_source_refs,
                 partition_columns: &partition_columns,
+                missing_columns: &missing_columns,
                 scan_limit: None,
             },
         );
@@ -190,6 +218,7 @@ impl LocalParquetSource {
             pure_filter_columns,
             pure_filter_column_source_refs,
             partition_columns,
+            missing_columns,
             scan_limit: None,
             diagnostics,
         }
@@ -277,6 +306,13 @@ impl LocalParquetSource {
         self
     }
 
+    /// Adds nullable logical columns represented as typed null source columns.
+    pub fn with_missing_columns(mut self, missing_columns: Vec<MissingColumn>) -> Self {
+        self.missing_columns = missing_columns;
+        self.refresh_diagnostics();
+        self
+    }
+
     /// Sets an order-insensitive source-level scan limit.
     pub fn with_scan_limit(mut self, scan_limit: Option<usize>) -> Self {
         self.scan_limit = scan_limit;
@@ -306,6 +342,7 @@ impl LocalParquetSource {
         self.pure_filter_columns.clear();
         self.pure_filter_column_source_refs.clear();
         self.partition_columns.clear();
+        self.missing_columns.clear();
         self.diagnostics = SourceDiagnostics::for_local_parquet_files(&self.files, self.diagnostic_columns());
         self.diagnostics.zero_column_count_disposition = ZeroColumnCountDisposition::Represented;
         self.diagnostics.rejected_features.retain(|feature| *feature != RejectedSourceFeature::ZeroColumnCount);
@@ -363,6 +400,7 @@ impl LocalParquetSource {
             pure_filter_columns: &self.pure_filter_columns,
             pure_filter_column_source_refs: &self.pure_filter_column_source_refs,
             partition_columns: &self.partition_columns,
+            missing_columns: &self.missing_columns,
             scan_limit: self.scan_limit,
         }
     }
@@ -378,6 +416,12 @@ impl LocalParquetSource {
                     .iter()
                     .position(|partition_column| partition_column.name == column)
                     .map(SourceColumnRef::Partition)
+                    .or_else(|| {
+                        self.missing_columns
+                            .iter()
+                            .position(|missing_column| missing_column.name == column)
+                            .map(SourceColumnRef::MissingNull)
+                    })
             })
     }
 }

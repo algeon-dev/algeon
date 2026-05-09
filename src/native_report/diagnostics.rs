@@ -136,7 +136,8 @@ pub(super) fn unsupported_category(
         | FallbackReason::NativeSourcePartitionValues
         | FallbackReason::NativeSourceByteRange
         | FallbackReason::NativeSourceFileOrdering
-        | FallbackReason::NativeSourceRowSelection => Some("source".to_string()),
+        | FallbackReason::NativeSourceRowSelection
+        | FallbackReason::NativeSourceSchemaMapping => Some("source".to_string()),
         FallbackReason::NativeSortPreservingMergeUnsupported
         | FallbackReason::NativePartitionPreservingSortUnsupported => Some("operator_sort".to_string()),
         FallbackReason::NativeBoundedJoinUnsupported => {

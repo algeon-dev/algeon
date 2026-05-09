@@ -187,6 +187,7 @@ fn validate_source_node(source: &crate::source::SourceNode) -> Result<BTreeSet<S
             let mut available = BTreeSet::new();
             available.extend(source.read_columns.iter().cloned());
             available.extend(source.partition_columns.iter().map(|column| column.name.clone()));
+            available.extend(source.missing_columns.iter().map(|column| column.name.clone()));
             if source.is_zero_column_count_source() {
                 available.insert(ZERO_COLUMN_COUNT_COLUMN.to_string());
             }

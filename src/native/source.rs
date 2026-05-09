@@ -185,7 +185,7 @@ fn attach_row_group_byte_metadata(
 fn file_source_ref_index(source_ref: &NativeSourceColumnRef) -> Option<usize> {
     match source_ref {
         NativeSourceColumnRef::File(index) => Some(*index),
-        NativeSourceColumnRef::Partition(_) => None,
+        NativeSourceColumnRef::Partition(_) | NativeSourceColumnRef::MissingNull(_) => None,
     }
 }
 

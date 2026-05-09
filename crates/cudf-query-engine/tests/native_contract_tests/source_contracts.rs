@@ -92,6 +92,51 @@ fn local_parquet_source_represents_partition_columns_as_synthetic_source_columns
 }
 
 #[test]
+fn local_parquet_source_represents_missing_nullable_columns_as_typed_nulls() {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::UInt32, false),
+        Field::new("missing_payload", DataType::Int64, true),
+    ]));
+    let source = LocalParquetSource::from_files(
+        vec![LocalParquetFile::new("/tmp/phase4.parquet").with_row_group_rows(vec![3, 4])],
+        schema,
+        vec!["key".to_string()],
+    )
+    .with_missing_columns(vec![MissingColumn::new("missing_payload", DataType::Int64, true)])
+    .with_column_roles(vec!["key".to_string(), "missing_payload".to_string()], Vec::new());
+
+    validate_local_parquet_source(&source).unwrap();
+    assert_eq!(source.missing_columns.len(), 1);
+    assert_eq!(
+        source.projected_output_column_source_refs,
+        vec![SourceColumnRef::File(0), SourceColumnRef::MissingNull(0)]
+    );
+    assert_eq!(source.diagnostics.schema_mapping_disposition, SchemaMappingDisposition::MissingNullableColumns);
+    assert_eq!(source.diagnostics.zero_column_count_disposition, ZeroColumnCountDisposition::NotRequired);
+    assert!(source.diagnostics.rejected_features.is_empty());
+}
+
+#[test]
+fn local_parquet_source_rejects_non_nullable_missing_columns() {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::UInt32, false),
+        Field::new("missing_payload", DataType::Int64, false),
+    ]));
+    let source = LocalParquetSource::from_files(
+        vec![LocalParquetFile::new("/tmp/phase4.parquet").with_row_group_rows(vec![3])],
+        schema,
+        vec!["key".to_string()],
+    )
+    .with_missing_columns(vec![MissingColumn::new("missing_payload", DataType::Int64, false)])
+    .with_column_roles(vec!["key".to_string(), "missing_payload".to_string()], Vec::new());
+
+    let error = validate_local_parquet_source(&source).unwrap_err();
+    assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
+    assert_eq!(error.fact_value("reason"), Some("non_nullable_missing_column"));
+    assert_eq!(error.fact_value("missing_column"), Some("missing_payload"));
+}
+
+#[test]
 fn local_parquet_source_rejects_invalid_partition_column_contracts() {
     let schema = Arc::new(Schema::new(vec![
         Field::new("key", DataType::UInt32, false),
@@ -174,6 +219,7 @@ fn source_disposition_names_are_stable_manifest_values() {
     assert_eq!(ScanLimitDisposition::Rejected.as_str(), "rejected");
     assert_eq!(ScanLimitDisposition::Represented.as_str(), "represented");
     assert_eq!(SchemaMappingDisposition::DirectByName.as_str(), "direct_by_name");
+    assert_eq!(SchemaMappingDisposition::MissingNullableColumns.as_str(), "missing_nullable_columns");
     assert_eq!(SchemaMappingDisposition::Rejected.as_str(), "rejected");
 }
 

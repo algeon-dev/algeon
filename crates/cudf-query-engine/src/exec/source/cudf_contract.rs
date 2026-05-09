@@ -233,6 +233,7 @@ fn cudf_source_column_ref(
                 .with_fact("file_column_index", file_index)
             }),
         crate::source::SourceColumnRef::Partition(index) => Ok(cudf::io::source::SourceColumnRef::Partition(index)),
+        crate::source::SourceColumnRef::MissingNull(_index) => Ok(cudf::io::source::SourceColumnRef::MissingNull),
     }
 }
 

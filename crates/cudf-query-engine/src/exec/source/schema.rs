@@ -1,5 +1,104 @@
 use super::*;
 
+pub(super) fn materialize_missing_columns(
+    context: &ExecutionContext,
+    source: &LocalParquetSource,
+    mut frame: DataFrame,
+    row_count_override: Option<usize>,
+    metrics: &mut QueryMetrics,
+) -> Result<DataFrame> {
+    if source.missing_columns.is_empty() {
+        return Ok(frame);
+    }
+
+    let rows = row_count_override.unwrap_or_else(|| frame.num_rows());
+    let timer = Instant::now();
+    for (missing_index, missing_column) in source.missing_columns.iter().enumerate() {
+        let series = missing_column_series(context, missing_column, rows).map_err(|error| {
+            error.with_fact("missing_index", missing_index).with_fact("missing_column", missing_column.name.as_str())
+        })?;
+        frame = frame.with_column(missing_column.name.as_str(), series).map_err(|error| {
+            QueryError::from_cudf(
+                "cudf_query_engine.local_parquet_source.missing_column",
+                "failed to materialize native parquet missing nullable column",
+                error,
+            )
+            .with_fact("missing_index", missing_index)
+            .with_fact("missing_column", missing_column.name.as_str())
+            .with_fact("missing_type", format!("{:?}", missing_column.data_type))
+        })?;
+    }
+    metrics.source_read_time += timer.elapsed();
+    Ok(frame)
+}
+
+fn missing_column_series(
+    context: &ExecutionContext,
+    missing_column: &crate::source::MissingColumn,
+    rows: usize,
+) -> Result<cudf::Series> {
+    if !missing_column.nullable {
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "cudf_query_engine.local_parquet_source.missing_column",
+            "missing source columns can only represent nullable logical columns",
+        )
+        .with_fact("reason", "non_nullable_missing_column")
+        .with_fact("missing_type", format!("{:?}", missing_column.data_type)));
+    }
+
+    let scalar = match &missing_column.data_type {
+        ArrowDataType::Boolean => context.runtime().null_scalar::<bool>(),
+        ArrowDataType::Int8 => context.runtime().null_scalar::<i8>(),
+        ArrowDataType::Int16 => context.runtime().null_scalar::<i16>(),
+        ArrowDataType::Int32 => context.runtime().null_scalar::<i32>(),
+        ArrowDataType::Int64 => context.runtime().null_scalar::<i64>(),
+        ArrowDataType::UInt8 => context.runtime().null_scalar::<u8>(),
+        ArrowDataType::UInt16 => context.runtime().null_scalar::<u16>(),
+        ArrowDataType::UInt32 => context.runtime().null_scalar::<u32>(),
+        ArrowDataType::UInt64 => context.runtime().null_scalar::<u64>(),
+        ArrowDataType::Float32 => context.runtime().null_scalar::<f32>(),
+        ArrowDataType::Float64 => context.runtime().null_scalar::<f64>(),
+        ArrowDataType::Utf8 | ArrowDataType::LargeUtf8 | ArrowDataType::Utf8View => {
+            context.runtime().null_string_scalar()
+        },
+        ArrowDataType::Decimal128(_precision, scale) => {
+            context.runtime().null_decimal128_raw_scalar(crate::datatypes::arrow_decimal_scale_to_cudf_scale(*scale))
+        },
+        ArrowDataType::Date32 => context.runtime().null_timestamp_raw_scalar(cudf::TimestampResolution::Days),
+        ArrowDataType::Timestamp(unit, None) => {
+            context.runtime().null_timestamp_raw_scalar(timestamp_unit_to_cudf_resolution(unit))
+        },
+        ArrowDataType::Duration(unit) => {
+            context.runtime().null_duration_raw_scalar(timestamp_unit_to_cudf_resolution(unit))
+        },
+        data_type => {
+            return Err(QueryError::new(
+                QueryErrorCode::UnsupportedType,
+                "cudf_query_engine.local_parquet_source.missing_column",
+                "missing source column type is not supported by native execution",
+            )
+            .with_fact("reason", "unsupported_missing_column_type")
+            .with_fact("missing_type", format!("{data_type:?}")));
+        },
+    }
+    .map_err(|error| {
+        QueryError::from_cudf(
+            "cudf_query_engine.local_parquet_source.missing_column",
+            "failed to construct native parquet missing nullable scalar",
+            error,
+        )
+    })?;
+
+    context.runtime().series_from_scalar(&scalar, rows).map_err(|error| {
+        QueryError::from_cudf(
+            "cudf_query_engine.local_parquet_source.missing_column",
+            "failed to construct native parquet missing nullable column",
+            error,
+        )
+    })
+}
+
 pub(super) fn coerce_local_parquet_source_schema(
     mut frame: DataFrame,
     source: &LocalParquetSource,

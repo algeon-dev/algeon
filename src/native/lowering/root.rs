@@ -105,6 +105,7 @@ pub(super) fn lower_slice1_plan(
             column_requirements.pure_filter_column_source_refs.clone(),
         )
         .with_partition_columns(column_requirements.partition_columns.clone())
+        .with_missing_columns(column_requirements.missing_columns.clone())
     };
     source = source.with_scan_limit(file_scan.limit);
     source.diagnostics = local_parquet_source_diagnostics(
