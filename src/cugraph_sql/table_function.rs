@@ -611,24 +611,27 @@ fn predicate_source_specs(spec: &CugraphAlgorithmSpec) -> Vec<PredicateSourceSpe
 
 fn validate_edge_source_schema(spec: &CugraphAlgorithmSpec, schema: &SchemaRef) -> Result<CugraphVertexIdDomain> {
     let src = schema.field_with_name(&spec.src_col).map_err(|_| {
-        DataFusionError::Plan(format!(
-            "cuGraph edge source '{}' is missing source column '{}'",
-            spec.table_name, spec.src_col
+        DataFusionError::from(crate::error::Error::new(
+            crate::error::ErrorCode::FieldNotFound,
+            "datafusion_nexus.cugraph_sql.edge_source_schema",
+            format!("cuGraph edge source '{}' is missing source column '{}'", spec.table_name, spec.src_col),
         ))
     })?;
     let dst = schema.field_with_name(&spec.dst_col).map_err(|_| {
-        DataFusionError::Plan(format!(
-            "cuGraph edge source '{}' is missing destination column '{}'",
-            spec.table_name, spec.dst_col
+        DataFusionError::from(crate::error::Error::new(
+            crate::error::ErrorCode::FieldNotFound,
+            "datafusion_nexus.cugraph_sql.edge_source_schema",
+            format!("cuGraph edge source '{}' is missing destination column '{}'", spec.table_name, spec.dst_col),
         ))
     })?;
     let domain = vertex_id_domain_for_call(spec.algorithm, &spec.params, src.data_type(), dst.data_type())?;
     validate_vertex_id_domain_support_for_call(spec.algorithm, &domain)?;
     if let Some(edge_id_col) = &spec.edge_id_col {
         let edge_id = schema.field_with_name(edge_id_col).map_err(|_| {
-            DataFusionError::Plan(format!(
-                "cuGraph edge source '{}' is missing edge-id column '{edge_id_col}'",
-                spec.table_name
+            DataFusionError::from(crate::error::Error::new(
+                crate::error::ErrorCode::FieldNotFound,
+                "datafusion_nexus.cugraph_sql.edge_source_schema",
+                format!("cuGraph edge source '{}' is missing edge-id column '{edge_id_col}'", spec.table_name),
             ))
         })?;
         if !domain.accepts(edge_id.data_type()) {

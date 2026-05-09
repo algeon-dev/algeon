@@ -389,9 +389,12 @@ impl CugraphTableReference {
     pub fn parse(raw: &str) -> Result<Self> {
         let parts = raw.split('.').collect::<Vec<_>>();
         if !(1..=3).contains(&parts.len()) || parts.iter().any(|part| !is_simple_identifier(part)) {
-            return Err(DataFusionError::Plan(format!(
-                "cuGraph table source '{raw}' must be a simple table, schema.table, or catalog.schema.table identifier"
-            )));
+            return Err(crate::error::Error::new(
+                crate::error::ErrorCode::InvalidRequest,
+                "datafusion_nexus.cugraph_sql.table_reference",
+                format!("cuGraph table source '{raw}' must be a simple table, schema.table, or catalog.schema.table identifier"),
+            )
+            .into());
         }
         Ok(Self { parts: parts.into_iter().map(ToOwned::to_owned).collect() })
     }

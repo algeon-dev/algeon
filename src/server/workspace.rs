@@ -6,7 +6,7 @@ use datafusion::{
         CatalogProvider, SchemaProvider,
         memory::{MemoryCatalogProvider, MemorySchemaProvider},
     },
-    common::{DataFusionError, Result as DataFusionResult},
+    common::Result as DataFusionResult,
     datasource::{TableProvider, TableType},
     prelude::SessionContext,
 };
@@ -121,9 +121,12 @@ impl SchemaProvider for NexusWorkspaceSchemaProvider {
         table: Arc<dyn TableProvider>,
     ) -> DataFusionResult<Option<Arc<dyn TableProvider>>> {
         if self.backing_table_exists(&name) {
-            return Err(DataFusionError::Plan(format!(
-                "workspace table `{name}` would shadow a backing source table; choose a different workspace name"
-            )));
+            return Err(crate::error::Error::new(
+                crate::error::ErrorCode::InvalidRequest,
+                "datafusion_nexus.server.workspace.shadow_guard",
+                format!("workspace table `{name}` would shadow a backing source table; choose a different workspace name"),
+            )
+            .into());
         }
         self.local.register_table(name, table)
     }

@@ -599,29 +599,18 @@ fn redact_uri_tokens(message: &str) -> String {
 // `NotFound` is treated as invalid input, `ExecutionContext` is treated as an
 // invariant violation, and unknown kinds fall back to dependency failure.
 fn code_for_cudf_error(error: &cudf::Error) -> ErrorCode {
-    match error.code() {
-        cudf::ErrorCode::SizeOverflow => return ErrorCode::SizeOverflow,
-        cudf::ErrorCode::HostMaterializationLimitExceeded => {
-            return ErrorCode::HostMaterializationLimitExceeded;
+    match cudf::classify_cudf_error(error) {
+        cudf::CudfErrorClassification::SizeOverflow => ErrorCode::SizeOverflow,
+        cudf::CudfErrorClassification::HostMaterializationLimitExceeded => {
+            ErrorCode::HostMaterializationLimitExceeded
         },
-        _ => {},
-    }
-    if error.kind() == cudf::ErrorKind::ResourceExhausted {
-        return ErrorCode::CudfResourceExhausted;
-    }
-
-    match error.status() {
-        cudf::ErrorStatus::Temporary => return ErrorCode::CudfTemporaryFailure,
-        cudf::ErrorStatus::Persistent => return ErrorCode::CudfPersistentFailure,
-        cudf::ErrorStatus::Permanent => {},
-    }
-
-    match error.kind() {
-        cudf::ErrorKind::InvalidInput | cudf::ErrorKind::NotFound => ErrorCode::CudfInvalidInput,
-        cudf::ErrorKind::Unsupported => ErrorCode::CudfUnsupported,
-        cudf::ErrorKind::DependencyFailure => ErrorCode::CudfDependencyFailure,
-        cudf::ErrorKind::InvariantViolation | cudf::ErrorKind::ExecutionContext => ErrorCode::CudfInvariantViolation,
-        _ => ErrorCode::CudfDependencyFailure,
+        cudf::CudfErrorClassification::ResourceExhausted => ErrorCode::CudfResourceExhausted,
+        cudf::CudfErrorClassification::TemporaryFailure => ErrorCode::CudfTemporaryFailure,
+        cudf::CudfErrorClassification::PersistentFailure => ErrorCode::CudfPersistentFailure,
+        cudf::CudfErrorClassification::InvalidInput => ErrorCode::CudfInvalidInput,
+        cudf::CudfErrorClassification::Unsupported => ErrorCode::CudfUnsupported,
+        cudf::CudfErrorClassification::DependencyFailure => ErrorCode::CudfDependencyFailure,
+        cudf::CudfErrorClassification::InvariantViolation => ErrorCode::CudfInvariantViolation,
     }
 }
 

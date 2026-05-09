@@ -140,8 +140,15 @@ impl ServerError {
             },
             Err(source) => source,
         };
+        #[cfg(feature = "iceberg")]
+        let source = match source.downcast::<nexus_iceberg::IcebergError>() {
+            Ok(iceberg_error) => {
+                return Self { inner: error_from_iceberg_error(message, *iceberg_error) };
+            },
+            Err(source) => source,
+        };
         Self {
-            inner: Error::new(ErrorCode::CudfDependencyFailure, "datafusion_nexus.server.session", message)
+            inner: Error::new(ErrorCode::Internal, "datafusion_nexus.server.session", message)
                 .with_source(ServerSource(source)),
         }
     }
@@ -214,6 +221,66 @@ impl ServerError {
 fn adapter_error_with_message(message: String, source: Error) -> Error {
     let facts = source.facts().clone();
     Error::new(source.code(), source.operation(), message).with_preserved_facts(facts).with_source(source)
+}
+
+#[cfg(feature = "iceberg")]
+fn error_from_iceberg_error(message: String, source: nexus_iceberg::IcebergError) -> Error {
+    use nexus_iceberg::{IcebergErrorCode, IcebergErrorStatus};
+    let code = if source.status == IcebergErrorStatus::Temporary {
+        ErrorCode::SourceTemporaryFailure
+    } else {
+        match source.code {
+            IcebergErrorCode::Authentication => ErrorCode::SourceUnauthenticated,
+            IcebergErrorCode::Access => ErrorCode::SourceAccessDenied,
+            IcebergErrorCode::NotFound => ErrorCode::SourceObjectNotFound,
+            IcebergErrorCode::TemporaryDependency | IcebergErrorCode::Timeout => ErrorCode::SourceTemporaryFailure,
+            IcebergErrorCode::Cancelled => ErrorCode::Cancelled,
+            IcebergErrorCode::InvalidMetadata => ErrorCode::InvalidExecutionPlan,
+            IcebergErrorCode::UnsupportedSchema => ErrorCode::UnsupportedType,
+            IcebergErrorCode::Internal => ErrorCode::SourceDependencyFailure,
+        }
+    };
+    let mut error = Error::new(code, "datafusion_nexus.server.session", message)
+        .with_log_safe_fact("iceberg_error_code", source.code.as_str())
+        .with_log_safe_fact(
+            "iceberg_error_status",
+            match source.status {
+                IcebergErrorStatus::Permanent => "permanent",
+                IcebergErrorStatus::Temporary => "temporary",
+                IcebergErrorStatus::Cancelled => "cancelled",
+            },
+        )
+        .with_log_safe_fact("iceberg_operation", source.operation.as_str())
+        .with_fact("iceberg_message", source.sanitized_message.clone());
+    let context = source.typed_context.as_ref();
+    if let Some(kind) = context.catalog_kind {
+        error = error.with_log_safe_fact(
+            "iceberg_catalog_kind",
+            match kind {
+                nexus_iceberg::IcebergCatalogErrorKind::Glue => "glue",
+                nexus_iceberg::IcebergCatalogErrorKind::Rest => "rest",
+            },
+        );
+    }
+    if let Some(catalog_handle) = context.catalog_handle.as_ref() {
+        error = error.with_fact("iceberg_catalog_handle", catalog_handle.clone());
+    }
+    if let Some(table_identifier) = context.table_identifier.as_ref() {
+        error = error.with_fact("iceberg_table_identifier", table_identifier.clone());
+    }
+    if let Some(snapshot_id) = context.snapshot_id {
+        error = error.with_fact("snapshot_id", snapshot_id);
+    }
+    if let Some(schema_id) = context.schema_id {
+        error = error.with_fact("iceberg_schema_id", schema_id);
+    }
+    if let Some(field_id) = context.field_id {
+        error = error.with_fact("field_id", field_id);
+    }
+    if let Some(file_count) = context.file_count {
+        error = error.with_fact("iceberg_file_count", file_count);
+    }
+    error
 }
 
 fn server_error_from_datafusion_error(message: String, source: DataFusionError) -> Error {

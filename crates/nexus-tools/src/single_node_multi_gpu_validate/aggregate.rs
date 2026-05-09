@@ -108,6 +108,12 @@ pub(super) struct GraphClaimCalibrationSnapshot {
 }
 
 /// Typed execution semantics sealed with one graph calibration snapshot.
+///
+/// This is the artifact-versioned serde projection. The closed vocabulary
+/// itself is owned by the adapter
+/// (`datafusion_nexus::attempt::GraphClaimCalibrationExecution`); this
+/// wrapper stays `snake_case`-serialized so the stress artifact JSON is
+/// byte-identical while the measured run converts via `From`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(super) enum GraphClaimCalibrationExecution {
@@ -117,6 +123,8 @@ pub(super) enum GraphClaimCalibrationExecution {
 
 /// Closed vocabulary for graph attempts that intentionally did not execute
 /// a physical graph algorithm locally.
+///
+/// Artifact serde shape is frozen; variant names are the wire contract.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(super) enum GraphClaimCalibrationNonPhysicalReason {
@@ -125,6 +133,36 @@ pub(super) enum GraphClaimCalibrationNonPhysicalReason {
         leader_attempt_id: Option<String>,
     },
     GraphMemoryAdmissionDenied,
+}
+
+#[cfg(feature = "single-node-multi-gpu-validate-run")]
+impl From<datafusion_nexus::attempt::GraphClaimCalibrationExecution> for GraphClaimCalibrationExecution {
+    fn from(value: datafusion_nexus::attempt::GraphClaimCalibrationExecution) -> Self {
+        match value {
+            datafusion_nexus::attempt::GraphClaimCalibrationExecution::Physical => Self::Physical,
+            datafusion_nexus::attempt::GraphClaimCalibrationExecution::NonPhysical(reason) => {
+                Self::NonPhysical(reason.into())
+            },
+        }
+    }
+}
+
+#[cfg(feature = "single-node-multi-gpu-validate-run")]
+impl From<datafusion_nexus::attempt::GraphClaimCalibrationNonPhysicalReason>
+    for GraphClaimCalibrationNonPhysicalReason
+{
+    fn from(value: datafusion_nexus::attempt::GraphClaimCalibrationNonPhysicalReason) -> Self {
+        match value {
+            datafusion_nexus::attempt::GraphClaimCalibrationNonPhysicalReason::BfsSingleflightFollower {
+                leader_attempt_id,
+            } => Self::BfsSingleflightFollower {
+                leader_attempt_id: leader_attempt_id.map(|id| id.to_string()),
+            },
+            datafusion_nexus::attempt::GraphClaimCalibrationNonPhysicalReason::GraphMemoryAdmissionDenied => {
+                Self::GraphMemoryAdmissionDenied
+            },
+        }
+    }
 }
 
 /// One engine-owned graph model claim and its correlated runtime peak.

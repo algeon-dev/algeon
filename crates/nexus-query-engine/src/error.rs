@@ -832,31 +832,18 @@ impl StdError for QueryError {
 // `NotFound` is treated as invalid input, `ExecutionContext` is treated as an
 // invariant violation, and unknown kinds fall back to dependency failure.
 fn code_for_cudf_error(error: &cudf::Error) -> QueryErrorCode {
-    match error.code() {
-        cudf::ErrorCode::SizeOverflow => return QueryErrorCode::SizeOverflow,
-        cudf::ErrorCode::HostMaterializationLimitExceeded => {
-            return QueryErrorCode::HostMaterializationLimitExceeded;
+    match cudf::classify_cudf_error(error) {
+        cudf::CudfErrorClassification::SizeOverflow => QueryErrorCode::SizeOverflow,
+        cudf::CudfErrorClassification::HostMaterializationLimitExceeded => {
+            QueryErrorCode::HostMaterializationLimitExceeded
         },
-        _ => {},
-    }
-    if error.kind() == cudf::ErrorKind::ResourceExhausted {
-        return QueryErrorCode::CudfResourceExhausted;
-    }
-
-    match error.status() {
-        cudf::ErrorStatus::Temporary => return QueryErrorCode::CudfTemporaryFailure,
-        cudf::ErrorStatus::Persistent => return QueryErrorCode::CudfPersistentFailure,
-        cudf::ErrorStatus::Permanent => {},
-    }
-
-    match error.kind() {
-        cudf::ErrorKind::InvalidInput | cudf::ErrorKind::NotFound => QueryErrorCode::CudfInvalidInput,
-        cudf::ErrorKind::Unsupported => QueryErrorCode::CudfUnsupported,
-        cudf::ErrorKind::DependencyFailure => QueryErrorCode::CudfDependencyFailure,
-        cudf::ErrorKind::InvariantViolation | cudf::ErrorKind::ExecutionContext => {
-            QueryErrorCode::CudfInvariantViolation
-        },
-        _ => QueryErrorCode::CudfDependencyFailure,
+        cudf::CudfErrorClassification::ResourceExhausted => QueryErrorCode::CudfResourceExhausted,
+        cudf::CudfErrorClassification::TemporaryFailure => QueryErrorCode::CudfTemporaryFailure,
+        cudf::CudfErrorClassification::PersistentFailure => QueryErrorCode::CudfPersistentFailure,
+        cudf::CudfErrorClassification::InvalidInput => QueryErrorCode::CudfInvalidInput,
+        cudf::CudfErrorClassification::Unsupported => QueryErrorCode::CudfUnsupported,
+        cudf::CudfErrorClassification::DependencyFailure => QueryErrorCode::CudfDependencyFailure,
+        cudf::CudfErrorClassification::InvariantViolation => QueryErrorCode::CudfInvariantViolation,
     }
 }
 

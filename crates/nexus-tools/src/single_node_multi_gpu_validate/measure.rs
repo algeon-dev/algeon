@@ -3447,26 +3447,7 @@ fn project_graph_claim_calibration_snapshot(
 ) -> GraphClaimCalibrationSnapshot {
     GraphClaimCalibrationSnapshot {
         truncated: snapshot.truncated(),
-        execution: match snapshot.execution() {
-            Some(datafusion_nexus::attempt::GraphClaimCalibrationExecution::Physical) => {
-                Some(super::aggregate::GraphClaimCalibrationExecution::Physical)
-            },
-            Some(datafusion_nexus::attempt::GraphClaimCalibrationExecution::NonPhysical(
-                datafusion_nexus::attempt::GraphClaimCalibrationNonPhysicalReason::BfsSingleflightFollower {
-                    leader_attempt_id,
-                },
-            )) => Some(super::aggregate::GraphClaimCalibrationExecution::NonPhysical(
-                super::aggregate::GraphClaimCalibrationNonPhysicalReason::BfsSingleflightFollower {
-                    leader_attempt_id: leader_attempt_id.as_ref().map(ToString::to_string),
-                },
-            )),
-            Some(datafusion_nexus::attempt::GraphClaimCalibrationExecution::NonPhysical(
-                datafusion_nexus::attempt::GraphClaimCalibrationNonPhysicalReason::GraphMemoryAdmissionDenied,
-            )) => Some(super::aggregate::GraphClaimCalibrationExecution::NonPhysical(
-                super::aggregate::GraphClaimCalibrationNonPhysicalReason::GraphMemoryAdmissionDenied,
-            )),
-            None => None,
-        },
+        execution: snapshot.execution().cloned().map(Into::into),
         execution_complete: snapshot.execution_complete(),
         rows: snapshot
             .rows()

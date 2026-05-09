@@ -13,7 +13,10 @@
 pub const NEXUS_PARQUET_DIR_ENV: &str = "NEXUS_PARQUET_DIR";
 
 pub mod clickbench;
+pub mod error;
 pub mod graph;
 pub mod metadata;
 pub mod tpcds;
 pub mod tpch;
+
+pub use error::{WorkloadError, WorkloadResult};
