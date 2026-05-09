@@ -12,11 +12,15 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_ALLOWLIST = ROOT / ".config" / "policies" / "pass-as-skip-allowlist.toml"
-CANONICAL_TEST_ROOTS = (ROOT / "tests", ROOT / "crates")
+CANONICAL_TEST_ROOTS = (ROOT / "tests", ROOT / "crates", ROOT / "src")
 RULES = {
     "optional_sf1_fixture": re.compile(r"\bsf1_fixture_root_or_skip\s*\("),
     "optional_gpu_runtime": re.compile(
         r"let\s+Ok\s*\([^)]*runtime[^)]*\)\s*=\s*cudf::Runtime::new\s*\(\s*\)\s*else\s*\{\s*return\s*;\s*\}",
+        re.DOTALL,
+    ),
+    "device_count_skip": re.compile(
+        r"(?:if\s+)?(?:cudf::)?DeviceId::count\s*\(\)(?:\s*\.unwrap_or\s*\(\s*0\s*\))?\s*==\s*0\s*\{\s*return\s*;\s*\}",
         re.DOTALL,
     ),
     "optional_python_oracle": re.compile(

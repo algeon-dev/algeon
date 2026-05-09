@@ -96,10 +96,51 @@ fn queued_placement_folds_a_native_fault_into_the_ledger_before_retargeting() {
 }
 
 #[test]
-fn direct_placement_reports_a_post_snapshot_fleet_closure_as_a_health_failure() {
-    if cudf::DeviceId::count().unwrap_or(0) == 0 {
-        return;
+fn direct_placement_missing_resolution_cleans_up_before_waking_a_close_waiter() {
+    let service = test_service(1, 8);
+    service.service.fail_next_direct_placement_resolution_for_test();
+    let pause = service.service.pause_next_direct_provisional_cleanup_for_test();
+    let admission_service = service.service.clone();
+    let admission = std::thread::spawn(move || admission_service.try_admit_query());
+    pause.wait_until_entered(Duration::from_secs(2));
+
+    let close_service = service.service.clone();
+    let (close_sender, close_receiver) = std::sync::mpsc::sync_channel(1);
+    let close = std::thread::spawn(move || {
+        close_sender
+            .send(close_service.close_and_wait_for_quiescence(Duration::from_secs(2)))
+            .expect("test receives close result");
+    });
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while service.shutdown_waiter_count() == 0 {
+        assert!(Instant::now() < deadline, "close must wait for the unpublished provisional ticket");
+        std::thread::yield_now();
     }
+    assert!(
+        matches!(close_receiver.try_recv(), Err(std::sync::mpsc::TryRecvError::Empty)),
+        "the initial provisional-ticket notification must not let close report quiescence"
+    );
+
+    pause.release();
+    let error = admission
+        .join()
+        .expect("direct placement thread does not panic")
+        .expect_err("the injected post-placement resolution failure rejects the direct admission");
+    assert_eq!(error.fact_value("reason"), Some("missing_device_specific_admission_resolution"));
+    close_receiver
+        .recv_timeout(Duration::from_secs(2))
+        .expect("close wakes after unpublished provisional cleanup")
+        .expect("direct placement defensive failure leaves the service quiescent");
+    close.join().expect("close thread does not panic");
+
+    assert_eq!(service.admission_snapshot().expect("admission snapshot").active_queries, 0);
+    let state = service.service.inner.admission.lock().expect("admission state");
+    assert!(state.lifecycle.is_quiescent(), "the unpublished provisional ticket must be cleaned up exactly once");
+}
+
+#[test]
+#[ignore = "requires GPU: DeviceId::count() guard would silently pass on GPU-less hosts"]
+fn direct_placement_reports_a_post_snapshot_fleet_closure_as_a_health_failure() {
     let service = QueryService::new_with_device_ordinals_and_deployment(
         QueryExecutionConfig::default(),
         QueueBounds { max_waiters: 8, max_wait: Duration::from_secs(2), max_overtakes_per_waiter: 4 },
@@ -202,8 +243,9 @@ fn protected_waiter_retargets_after_native_fault_before_candidate_ranking() {
             .iter_mut()
             .find(|request| request.admission_request_id == admission_request_id)
             .expect("queued request");
-        let required_floor =
-            device_zero_ledger.required_floor_bytes_for(&request.requirement).expect("device zero attempt floor");
+        let required_floor = device_zero_ledger
+            .required_floor_bytes_for(request.requirement_for_device(0).expect("device-zero admission requirement"))
+            .expect("device zero attempt floor");
         assert!(
             device_zero_ledger
                 .protect_slot(admission_request_id, required_floor)
@@ -280,8 +322,9 @@ fn failed_protection_retarget_terminalizes_its_waiter_without_rejecting_the_next
             .iter_mut()
             .find(|request| request.admission_request_id == affected_request_id)
             .expect("affected waiter remains queued");
-        let required_floor =
-            device_zero_ledger.required_floor_bytes_for(&request.requirement).expect("device zero attempt floor");
+        let required_floor = device_zero_ledger
+            .required_floor_bytes_for(request.requirement_for_device(0).expect("device-zero admission requirement"))
+            .expect("device zero attempt floor");
         assert!(
             device_zero_ledger
                 .protect_slot(affected_request_id, required_floor)
@@ -303,9 +346,7 @@ fn failed_protection_retarget_terminalizes_its_waiter_without_rejecting_the_next
     assert!(device_zero_ledger.protection().is_none(), "closed device retains no stale protection");
     assert!(device_one_ledger.protection().is_none(), "failed replacement did not install a competing protection");
 
-    let error = affected
-        .try_admit()
-        .expect_err("the affected waiter receives the injected retarget failure");
+    let error = affected.try_admit().expect_err("the affected waiter receives the injected retarget failure");
     assert_eq!(error.code(), QueryErrorCode::Internal);
     assert_eq!(error.fact_value("reason"), Some("injected_protection_retarget_failure"));
 

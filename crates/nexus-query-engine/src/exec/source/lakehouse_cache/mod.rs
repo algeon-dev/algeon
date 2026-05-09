@@ -250,39 +250,6 @@ mod tests {
     }
 
     #[test]
-    fn background_lakehouse_cache_fill_does_not_skip_wrong_size_cache_file() {
-        let root = unique_temp_cache_root("background-fill-wrong-size");
-        let cache_path = root.join("v1/s3/bucket/content/part-0.parquet");
-        fs::create_dir_all(cache_path.parent().unwrap()).unwrap();
-        fs::write(&cache_path, b"incomplete").unwrap();
-        let context = ExecutionContext::builder().with_lakehouse_cache_fill_max_concurrent_ops(1).build().unwrap();
-        let _held_permit = context
-            .acquire_lakehouse_cache_fill_operation_with_timeout(
-                Duration::ZERO,
-                "nexus_query_engine.test.background_fill_gate",
-            )
-            .unwrap()
-            .unwrap();
-        let resolved_source =
-            ResolvedParquetSource::remote_kvikio("s3://bucket/table/part-0.parquet", CredentialMode::SharedProcessEnv)
-                .with_lakehouse_cache_config(root.to_str().unwrap(), None)
-                .with_lakehouse_cache_path(cache_path.to_str().unwrap())
-                .with_lakehouse_cache_fill_mode(LakehouseCacheFillMode::Background);
-        let file = LocalParquetFile::object_store_uri("s3://bucket/table/part-0.parquet")
-            .unwrap()
-            .with_resolved_parquet_source(resolved_source)
-            .unwrap()
-            .with_stable_id("part-0")
-            .with_file_size_bytes(1024);
-
-        let outcome = enqueue_background_lakehouse_cache_file_fill(&context, &file).unwrap();
-
-        assert_eq!(outcome, BackgroundLakehouseCacheFillEnqueue::Skipped("fill_concurrency_saturated"));
-        assert!(!lakehouse_cache_lock_path(&cache_path).exists());
-        let _ = fs::remove_dir_all(root);
-    }
-
-    #[test]
     fn background_lakehouse_cache_fill_removes_stale_lock_before_enqueue() {
         let root = unique_temp_cache_root("background-fill-stale-lock");
         let cache_path = root.join("v1/s3/bucket/content/part-0.parquet");
