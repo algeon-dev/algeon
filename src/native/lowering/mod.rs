@@ -1,6 +1,7 @@
 mod aggregate;
 mod expr;
 mod join;
+mod join_output;
 mod join_residual;
 mod root;
 mod sort;
