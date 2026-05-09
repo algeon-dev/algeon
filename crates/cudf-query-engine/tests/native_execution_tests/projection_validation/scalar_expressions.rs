@@ -1,0 +1,368 @@
+use super::*;
+
+#[test]
+fn native_query_executes_phase2_scalar_expression_families() {
+    let dir = unique_temp_dir("cudf-query-engine-native-execution-phase2-scalars");
+    let path = dir.join("tpch-like.parquet");
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let input_schema = write_phase2_scalar_expression_parquet(&runtime, &path);
+    let projected_schema = Arc::new(Schema::new(vec![
+        Field::new("orderkey", DataType::Int64, false),
+        Field::new("order_mod", DataType::Int64, false),
+        Field::new("ship_year", DataType::Int32, false),
+        Field::new("ship_month", DataType::Int32, false),
+        Field::new("ship_day", DataType::Int32, false),
+        Field::new("event_ts_minus_interval", DataType::Timestamp(TimeUnit::Nanosecond, None), false),
+        Field::new("status_prefix", DataType::Utf8, true),
+        Field::new("status_label", DataType::Utf8, false),
+        Field::new("status_known", DataType::Boolean, false),
+        Field::new("status_is_null", DataType::Boolean, false),
+        Field::new("status_not_f", DataType::Boolean, true),
+        Field::new("status_like_o", DataType::Boolean, true),
+        Field::new("status_not_like_f", DataType::Boolean, true),
+    ]));
+    let source = LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(&path).with_file_size_bytes(fs::metadata(&path).unwrap().len())],
+        Arc::clone(&input_schema),
+        vec!["orderkey".to_string(), "shipdate".to_string(), "event_ts".to_string(), "status".to_string()],
+    );
+    let filter = Expr::binary(
+        Expr::in_list(
+            Expr::column("orderkey"),
+            vec![
+                Expr::literal(LiteralValue::Int64(1)),
+                Expr::literal(LiteralValue::Int64(3)),
+                Expr::literal(LiteralValue::Int64(4)),
+            ],
+        ),
+        BinaryOp::And,
+        Expr::is_not_null(Expr::column("shipdate")),
+    );
+    let projection = vec![
+        Expr::column("orderkey"),
+        Expr::binary(Expr::column("orderkey"), BinaryOp::Modulo, Expr::literal(LiteralValue::Int64(2)))
+            .alias("order_mod"),
+        Expr::extract(cudf_query_engine::DatePart::Year, Expr::column("shipdate")).alias("ship_year"),
+        Expr::extract(cudf_query_engine::DatePart::Month, Expr::column("shipdate")).alias("ship_month"),
+        Expr::extract(cudf_query_engine::DatePart::Day, Expr::column("shipdate")).alias("ship_day"),
+        Expr::binary(
+            Expr::column("event_ts"),
+            BinaryOp::Subtract,
+            Expr::literal(LiteralValue::IntervalMonthDayNano { months: 0, days: 0, nanoseconds: 50 }),
+        )
+        .alias("event_ts_minus_interval"),
+        Expr::substring(Expr::column("status"), 1, Some(1)).alias("status_prefix"),
+        Expr::case(
+            vec![cudf_query_engine::CaseWhen::new(
+                Expr::binary(Expr::column("status"), BinaryOp::Eq, Expr::literal(LiteralValue::Utf8("O".to_string()))),
+                Expr::literal(LiteralValue::Utf8("open".to_string())),
+            )],
+            Expr::literal(LiteralValue::Utf8("other".to_string())),
+        )
+        .alias("status_label"),
+        Expr::is_not_null(Expr::column("status")).alias("status_known"),
+        Expr::is_null(Expr::column("status")).alias("status_is_null"),
+        Expr::not_in_list(Expr::column("status"), vec![Expr::literal(LiteralValue::Utf8("F".to_string()))])
+            .alias("status_not_f"),
+        Expr::like(Expr::column("status"), "O%").alias("status_like_o"),
+        Expr::not_like(Expr::column("status"), "F%").alias("status_not_like_f"),
+    ];
+
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LocalParquet(source));
+    let filter = builder.add_filter(source, filter, Arc::clone(&input_schema));
+    let projection = builder.add_projection(filter, projection_outputs(projection, projected_schema));
+    let plan = builder.finish_with_host_sink(projection);
+
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+    let result = execute_query_plan(&context, &plan).unwrap();
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    assert_eq!(batch.num_rows(), 3);
+    assert_eq!(int64_array(batch, 0).values().as_ref(), &[1, 3, 4]);
+    assert_eq!(int64_array(batch, 1).values().as_ref(), &[1, 1, 0]);
+    assert_eq!(int32_array(batch, 2).values().as_ref(), &[2020, 2020, 2020]);
+    assert_eq!(int32_array(batch, 3).values().as_ref(), &[1, 3, 3]);
+    assert_eq!(int32_array(batch, 4).values().as_ref(), &[1, 1, 15]);
+    assert_eq!(timestamp_ns_array(batch, 5).values().as_ref(), &[50, 250, 350]);
+    assert_eq!(string_array(batch, 6).value(0), "O");
+    assert_eq!(string_array(batch, 6).value(1), "O");
+    assert!(string_array(batch, 6).is_null(2));
+    assert_eq!(string_array(batch, 7).value(0), "open");
+    assert_eq!(string_array(batch, 7).value(1), "open");
+    assert_eq!(string_array(batch, 7).value(2), "other");
+    assert_eq!(boolean_array(batch, 8).values().iter().collect::<Vec<_>>(), vec![true, true, false]);
+    assert_eq!(boolean_array(batch, 9).values().iter().collect::<Vec<_>>(), vec![false, false, true]);
+    assert!(boolean_array(batch, 10).value(0));
+    assert!(boolean_array(batch, 10).value(1));
+    assert!(boolean_array(batch, 10).is_null(2));
+    assert!(boolean_array(batch, 11).value(0));
+    assert!(boolean_array(batch, 11).value(1));
+    assert!(boolean_array(batch, 11).is_null(2));
+    assert!(boolean_array(batch, 12).value(0));
+    assert!(boolean_array(batch, 12).value(1));
+    assert!(boolean_array(batch, 12).is_null(2));
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn native_query_rejects_phase2_scalar_type_mismatch_before_cudf_execution() {
+    let dir = unique_temp_dir("cudf-query-engine-native-execution-phase2-type-reject");
+    let path = dir.join("tpch-like.parquet");
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let input_schema = write_phase2_scalar_expression_parquet(&runtime, &path);
+    let output_schema = Arc::new(Schema::new(vec![Field::new("bad_like", DataType::Boolean, true)]));
+    let source = LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(&path).with_file_size_bytes(fs::metadata(&path).unwrap().len())],
+        Arc::clone(&input_schema),
+        vec!["orderkey".to_string()],
+    );
+
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LocalParquet(source));
+    let projection = builder.add_projection(
+        source,
+        projection_outputs(vec![Expr::like(Expr::column("orderkey"), "1%").alias("bad_like")], output_schema),
+    );
+    let plan = builder.finish_with_host_sink(projection);
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+
+    let error = match execute_query_plan(&context, &plan) {
+        Ok(_) => panic!("native plan validation should reject LIKE over an integral input before cuDF execution"),
+        Err(error) => error,
+    };
+    assert_eq!(error.code(), QueryErrorCode::UnsupportedType);
+    assert_eq!(error.operation(), "cudf_query_engine.plan.validate_expr");
+    assert_eq!(error.fact_value("context"), Some("LIKE input"));
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn native_query_rejects_implicit_decimal_float_arithmetic_before_cudf_execution() {
+    let dir = unique_temp_dir("cudf-query-engine-native-execution-decimal-float-implicit-reject");
+    let path = dir.join("tpch-like.parquet");
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let input_schema = write_tpch_like_types_parquet(&runtime, &path);
+    let output_schema = Arc::new(Schema::new(vec![Field::new("bad_amount", DataType::Decimal128(15, 2), true)]));
+    let source = LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(&path).with_file_size_bytes(fs::metadata(&path).unwrap().len())],
+        Arc::clone(&input_schema),
+        vec!["amount".to_string()],
+    );
+
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LocalParquet(source));
+    let projection = builder.add_projection(
+        source,
+        projection_outputs(
+            vec![
+                Expr::binary(Expr::column("amount"), BinaryOp::Add, Expr::literal(LiteralValue::Float64(1.0)))
+                    .alias("bad_amount"),
+            ],
+            output_schema,
+        ),
+    );
+    let plan = builder.finish_with_host_sink(projection);
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+
+    let error = match execute_query_plan(&context, &plan) {
+        Ok(_) => panic!("native plan validation should reject implicit Decimal128/Float64 arithmetic"),
+        Err(error) => error,
+    };
+    assert_eq!(error.code(), QueryErrorCode::UnsupportedType);
+    assert_eq!(error.operation(), "cudf_query_engine.plan.validate_expr");
+    assert_eq!(error.fact_value("context"), Some("binary arithmetic operands"));
+    assert_eq!(error.fact_value("left_type"), Some("Decimal128(15, 2)"));
+    assert_eq!(error.fact_value("right_type"), Some("Float64"));
+    assert!(error.fact_value("path").is_none());
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn native_query_rejects_untyped_decimal_division_before_cudf_execution() {
+    let dir = unique_temp_dir("cudf-query-engine-native-execution-untyped-decimal-divide-reject");
+    let path = dir.join("input.parquet");
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let input_schema = write_decimal_ratio_parquet(&path);
+    let source = LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(&path).with_file_size_bytes(fs::metadata(&path).unwrap().len())],
+        Arc::clone(&input_schema),
+        vec!["numerator".to_string(), "denominator".to_string()],
+    );
+    let untyped_divide = Expr::binary(
+        Expr::binary(Expr::column("numerator"), BinaryOp::Divide, Expr::column("denominator")),
+        BinaryOp::Gt,
+        Expr::literal(LiteralValue::Decimal128 { raw: 0, precision: 38, scale: 8 }),
+    );
+
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LocalParquet(source));
+    let filter = builder.add_filter(source, untyped_divide, Arc::clone(&input_schema));
+    let plan = builder.finish_with_host_sink(filter);
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+
+    let error = match execute_query_plan(&context, &plan) {
+        Ok(_) => panic!("native plan validation should reject decimal division without a declared output type"),
+        Err(error) => error,
+    };
+    assert_eq!(error.code(), QueryErrorCode::UnsupportedType);
+    assert_eq!(error.operation(), "cudf_query_engine.plan.validate_expr");
+    assert_eq!(error.fact_value("left_type"), Some("Decimal128(38, 8)"));
+    assert_eq!(error.fact_value("right_type"), Some("Decimal128(38, 8)"));
+    assert_eq!(error.fact_value("operator"), Some("/"));
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn native_query_rejects_date64_temporal_scalars_before_source_read() {
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let input_schema = Arc::new(Schema::new(vec![Field::new("event_date64", DataType::Date64, true)]));
+
+    let cases = [
+        (
+            "extract_date64",
+            vec![Expr::extract(cudf_query_engine::DatePart::Year, Expr::column("event_date64")).alias("event_year")],
+            Arc::new(Schema::new(vec![Field::new("event_year", DataType::Int32, true)])),
+        ),
+        (
+            "interval_date64",
+            vec![
+                Expr::binary(
+                    Expr::column("event_date64"),
+                    BinaryOp::Add,
+                    Expr::literal(LiteralValue::IntervalMonthDayNano { months: 0, days: 1, nanoseconds: 0 }),
+                )
+                .alias("event_plus_one_day"),
+            ],
+            Arc::new(Schema::new(vec![Field::new(
+                "event_plus_one_day",
+                DataType::Timestamp(TimeUnit::Millisecond, None),
+                true,
+            )])),
+        ),
+    ];
+
+    for (name, projection, output_schema) in cases {
+        let source = LocalParquetSource::new(
+            format!("/tmp/does-not-need-to-exist-for-date64-{name}.parquet"),
+            Arc::clone(&input_schema),
+            vec!["event_date64".to_string()],
+        );
+        let mut builder = QueryPlanBuilder::new();
+        let source = builder.add_source(SourceNode::LocalParquet(source));
+        let projection = builder.add_projection(source, projection_outputs(projection, output_schema));
+        let plan = builder.finish_with_host_sink(projection);
+        let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+
+        let error = match execute_query_plan(&context, &plan) {
+            Ok(_) => panic!("{name} should reject Date64 before source read"),
+            Err(error) => error,
+        };
+        assert_eq!(error.code(), QueryErrorCode::UnsupportedType, "{name}");
+        assert!(error.fact_value("path").is_none(), "{name} should fail before source read");
+    }
+}
+
+#[test]
+fn native_query_rejects_out_of_envelope_substring_before_source_read() {
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let input_schema = Arc::new(Schema::new(vec![
+        Field::new("orderkey", DataType::Int64, false),
+        Field::new("status", DataType::Utf8, true),
+    ]));
+
+    let cases = [
+        (
+            "zero_start",
+            Expr::substring(Expr::column("status"), 0, Some(1)).alias("bad_substring"),
+            QueryErrorCode::UnsupportedExpression,
+            None,
+        ),
+        (
+            "negative_length",
+            Expr::substring(Expr::column("status"), 1, Some(-1)).alias("bad_substring"),
+            QueryErrorCode::UnsupportedExpression,
+            None,
+        ),
+        (
+            "stop_overflow",
+            Expr::substring(Expr::column("status"), i32::MAX, Some(2)).alias("bad_substring"),
+            QueryErrorCode::UnsupportedExpression,
+            None,
+        ),
+        (
+            "non_string_source",
+            Expr::substring(Expr::column("orderkey"), 1, Some(1)).alias("bad_substring"),
+            QueryErrorCode::UnsupportedType,
+            Some("SUBSTRING input"),
+        ),
+    ];
+
+    for (name, expr, expected_code, expected_context) in cases {
+        let source = LocalParquetSource::new(
+            format!("/tmp/does-not-need-to-exist-for-substring-{name}.parquet"),
+            Arc::clone(&input_schema),
+            vec!["orderkey".to_string(), "status".to_string()],
+        );
+        let output_schema = Arc::new(Schema::new(vec![Field::new("bad_substring", DataType::Utf8, true)]));
+
+        let mut builder = QueryPlanBuilder::new();
+        let source = builder.add_source(SourceNode::LocalParquet(source));
+        let projection = builder.add_projection(source, projection_outputs(vec![expr], output_schema));
+        let plan = builder.finish_with_host_sink(projection);
+        let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+
+        let error = match execute_query_plan(&context, &plan) {
+            Ok(_) => panic!("{name} should reject before source read"),
+            Err(error) => error,
+        };
+        assert_eq!(error.code(), expected_code, "{name}");
+        assert_eq!(error.operation(), "cudf_query_engine.plan.validate_expr", "{name}");
+        assert_eq!(error.fact_value("context"), expected_context, "{name}");
+        assert!(error.fact_value("path").is_none(), "{name} should fail before source read");
+    }
+}
+
+#[test]
+fn native_query_rejects_unread_source_column_in_nested_phase2_scalar_before_cudf_execution() {
+    let dir = unique_temp_dir("cudf-query-engine-native-execution-phase2-source-column-reject");
+    let path = dir.join("tpch-like.parquet");
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let input_schema = write_phase2_scalar_expression_parquet(&runtime, &path);
+    let output_schema = Arc::new(Schema::new(vec![Field::new("status_label", DataType::Utf8, true)]));
+    let source = LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(&path).with_file_size_bytes(fs::metadata(&path).unwrap().len())],
+        Arc::clone(&input_schema),
+        vec!["orderkey".to_string()],
+    );
+    let label = Expr::case(
+        vec![cudf_query_engine::CaseWhen::new(
+            Expr::like(Expr::column("status"), "O%"),
+            Expr::literal(LiteralValue::Utf8("open".to_string())),
+        )],
+        Expr::literal(LiteralValue::Utf8("other".to_string())),
+    )
+    .alias("status_label");
+
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LocalParquet(source));
+    let projection = builder.add_projection(source, projection_outputs(vec![label], output_schema));
+    let plan = builder.finish_with_host_sink(projection);
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+
+    let error = match execute_query_plan(&context, &plan) {
+        Ok(_) => panic!("native plan validation should reject unread nested scalar columns before cuDF execution"),
+        Err(error) => error,
+    };
+    assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
+    assert_eq!(error.operation(), "cudf_query_engine.plan.validate_expr");
+    assert_eq!(error.fact_value("column"), Some("status"));
+    assert!(error.fact_value("path").is_none());
+
+    fs::remove_dir_all(dir).unwrap();
+}
