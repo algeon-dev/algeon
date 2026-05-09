@@ -1,19 +1,14 @@
-use std::{
-    fs::{self, File},
-    sync::{Arc, Mutex},
-    time::{SystemTime, UNIX_EPOCH},
-};
+use std::sync::Arc;
 
 use arrow::{
-    array::{Array, Decimal128Array, Int32Array, Int64Array},
+    array::{Decimal128Array, Int32Array, Int64Array},
     compute::SortOptions as ArrowSortOptions,
-    datatypes::{DataType, Field, Schema, SchemaRef},
+    datatypes::{DataType, Field, Schema},
     record_batch::RecordBatch,
 };
-use cudf::{BoundaryKind, Runtime};
 use datafusion::{
     common::ScalarValue,
-    execution::{SessionStateBuilder, context::TaskContext},
+    execution::context::TaskContext,
     functions_aggregate::sum::sum_udaf,
     logical_expr::Operator,
     physical_expr::{
@@ -31,99 +26,19 @@ use datafusion::{
         sorts::sort::SortExec,
         test::TestMemoryExec,
     },
-    prelude::{ParquetReadOptions, SessionContext},
 };
-use datafusion_cudf::{CudfOptimizerConfig, CudfSessionStateBuilderExt, GpuFallbackPolicy, optimize_plan};
+use datafusion_cudf::{CudfOptimizerConfig, GpuFallbackPolicy, optimize_plan};
 
-static ARROW_HOST_OBSERVATION_LOCK: Mutex<()> = Mutex::new(());
+#[path = "gpu_execution_tests/local_parquet.rs"]
+mod local_parquet;
+#[path = "gpu_execution_tests/metrics.rs"]
+mod metrics;
+#[path = "gpu_execution_tests/support.rs"]
+mod support;
 
-fn schema() -> SchemaRef {
-    Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false), Field::new("value", DataType::Int32, false)]))
-}
-
-fn input_batch() -> RecordBatch {
-    RecordBatch::try_new(
-        schema(),
-        vec![Arc::new(Int32Array::from(vec![1, 2, 3, 4])), Arc::new(Int32Array::from(vec![10, 20, 30, 40]))],
-    )
-    .unwrap()
-}
-
-fn sort_input_batches() -> Vec<RecordBatch> {
-    vec![
-        RecordBatch::try_new(
-            schema(),
-            vec![Arc::new(Int32Array::from(vec![4, 2])), Arc::new(Int32Array::from(vec![40, 20]))],
-        )
-        .unwrap(),
-        RecordBatch::try_new(
-            schema(),
-            vec![Arc::new(Int32Array::from(vec![5, 3])), Arc::new(Int32Array::from(vec![50, 30]))],
-        )
-        .unwrap(),
-    ]
-}
-
-fn int32_values(batch: &RecordBatch, index: usize) -> Vec<i32> {
-    batch.column(index).as_any().downcast_ref::<Int32Array>().expect("expected Int32Array").values().to_vec()
-}
-
-fn int64_values(batch: &RecordBatch, index: usize) -> Vec<i64> {
-    batch.column(index).as_any().downcast_ref::<Int64Array>().expect("expected Int64Array").values().to_vec()
-}
-
-fn decimal128_values(batch: &RecordBatch, index: usize) -> Vec<i128> {
-    batch.column(index).as_any().downcast_ref::<Decimal128Array>().expect("expected Decimal128Array").values().to_vec()
-}
-
-fn write_parquet_file(path: &std::path::Path, batch: &RecordBatch) {
-    let file = File::create(path).unwrap();
-    let mut writer = datafusion::parquet::arrow::ArrowWriter::try_new(file, Arc::clone(&batch.schema()), None).unwrap();
-    writer.write(batch).unwrap();
-    writer.close().unwrap();
-}
-
-fn unique_temp_dir(prefix: &str) -> std::path::PathBuf {
-    let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
-    let path = std::env::temp_dir().join(format!("{prefix}-{}-{nonce}", std::process::id()));
-    fs::create_dir_all(&path).unwrap();
-    path
-}
-
-#[test]
-fn gpu_island_reads_local_parquet_without_record_batch_upload() {
-    let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().unwrap();
-    cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
-    let dir = unique_temp_dir("datafusion-cudf-local-parquet");
-    let path = dir.join("sample.parquet");
-    write_parquet_file(&path, &input_batch());
-
-    let config = CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred).with_min_operators_per_island(1);
-    let state = SessionStateBuilder::new().with_cudf_gpu_islands(config).build();
-    let ctx = SessionContext::new_with_state(state);
-    let df = futures::executor::block_on(ctx.read_parquet(path.to_str().unwrap(), ParquetReadOptions::default()))
-        .unwrap()
-        .select_columns(&["id", "value"])
-        .unwrap();
-    let plan = futures::executor::block_on(df.create_physical_plan()).unwrap();
-
-    assert_eq!(plan.name(), "CudfGpuIslandExec");
-    let batches = futures::executor::block_on(collect(Arc::clone(&plan), Arc::new(TaskContext::default()))).unwrap();
-
-    assert_eq!(batches.len(), 1);
-    assert_eq!(int32_values(&batches[0], 0), vec![1, 2, 3, 4]);
-    assert_eq!(int32_values(&batches[0], 1), vec![10, 20, 30, 40]);
-    assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
-    assert_eq!(cudf::testing::arrow::arrow_host_export_call_count_for_test(), 1);
-
-    let metrics = plan.metrics().expect("GPU island should expose execution metrics");
-    assert_eq!(metrics.sum_by_name("parquet_files").unwrap().as_usize(), 1);
-    assert!(metrics.sum_by_name("parquet_bytes_known").unwrap().as_usize() > 0);
-    assert_eq!(metrics.sum_by_name("read_columns").unwrap().as_usize(), 2);
-    assert_eq!(metrics.sum_by_name("host_to_device_uploads").unwrap().as_usize(), 0);
-
-    fs::remove_dir_all(dir).unwrap();
-}
+use support::{
+    ARROW_HOST_OBSERVATION_LOCK, decimal128_values, input_batch, int32_values, int64_values, schema, sort_input_batches,
+};
 
 #[test]
 fn gpu_island_executes_filter_and_projection_roundtrip() {
@@ -372,129 +287,5 @@ fn gpu_island_executes_groupby_after_fused_filter_and_projection_across_input_ba
     assert_eq!(metrics.sum_by_name("host_to_device_uploads").unwrap().as_usize(), 2);
     assert_eq!(metrics.sum_by_name("device_to_host_materializations").unwrap().as_usize(), 1);
     assert_eq!(metrics.sum_by_name("device_to_host_materialized_rows").unwrap().as_usize(), 2);
-    assert_eq!(metrics.output_rows(), Some(2));
-}
-
-#[test]
-fn gpu_island_records_one_upload_and_one_materialization_boundary() {
-    let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().unwrap();
-    cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
-    let observed = Arc::new(Mutex::new(Vec::new()));
-    let observer_records = Arc::clone(&observed);
-    let runtime = Runtime::builder()
-        .with_boundary_observer(move |observation| {
-            observer_records.lock().unwrap().push(observation);
-        })
-        .build()
-        .unwrap();
-
-    let schema = schema();
-    let source: Arc<dyn ExecutionPlan> =
-        TestMemoryExec::try_new_exec(&[vec![input_batch()]], Arc::clone(&schema), None).unwrap();
-    let predicate =
-        binary(col("id", &schema).unwrap(), Operator::GtEq, lit(ScalarValue::Int32(Some(2))), &schema).unwrap();
-    let filter: Arc<dyn ExecutionPlan> = Arc::new(FilterExec::try_new(predicate, source).unwrap());
-    let filter_schema = filter.schema();
-    let total = binary(
-        col("id", &filter_schema).unwrap(),
-        Operator::Plus,
-        col("value", &filter_schema).unwrap(),
-        &filter_schema,
-    )
-    .unwrap();
-    let projection: Arc<dyn ExecutionPlan> = Arc::new(
-        ProjectionExec::try_new(
-            [
-                ProjectionExpr { expr: col("id", &filter_schema).unwrap(), alias: "id".to_string() },
-                ProjectionExpr { expr: total, alias: "total".to_string() },
-            ],
-            filter,
-        )
-        .unwrap(),
-    );
-
-    let config = CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred)
-        .with_min_operators_per_island(1)
-        .with_runtime(runtime);
-    let result = optimize_plan(projection, &config).unwrap();
-
-    let batches = futures::executor::block_on(collect(result.plan, Arc::new(TaskContext::default()))).unwrap();
-
-    assert_eq!(batches.len(), 1);
-    assert_eq!(int32_values(&batches[0], 0), vec![2, 3, 4]);
-    assert_eq!(int32_values(&batches[0], 1), vec![22, 33, 44]);
-    assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 1);
-    assert_eq!(cudf::testing::arrow::arrow_host_export_call_count_for_test(), 1);
-
-    let observations = observed.lock().unwrap();
-    assert_eq!(observations.len(), 2);
-    assert_eq!(observations[0].kind, BoundaryKind::HostToDevice);
-    assert_eq!(observations[0].rows, 4);
-    assert_eq!(observations[0].columns, 2);
-    assert!(!observations[0].synchronized_for_host);
-    assert_eq!(observations[1].kind, BoundaryKind::DeviceToHost);
-    assert_eq!(observations[1].rows, 3);
-    assert_eq!(observations[1].columns, 2);
-    assert!(observations[1].synchronized_for_host);
-
-    let observation = cudf::testing::arrow::last_arrow_host_boundary_observation_for_test()
-        .expect("GPU island should record its final host materialization boundary");
-    assert_eq!(observation.kind, BoundaryKind::DeviceToHost);
-    assert_eq!(observation.rows, 3);
-    assert_eq!(observation.columns, 2);
-    assert!(observation.synchronized_for_host);
-}
-
-#[test]
-fn gpu_island_records_boundary_and_operator_metrics() {
-    let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().unwrap();
-    let schema = schema();
-    let source: Arc<dyn ExecutionPlan> =
-        TestMemoryExec::try_new_exec(&[vec![input_batch()]], Arc::clone(&schema), None).unwrap();
-    let predicate =
-        binary(col("id", &schema).unwrap(), Operator::GtEq, lit(ScalarValue::Int32(Some(2))), &schema).unwrap();
-    let filter: Arc<dyn ExecutionPlan> = Arc::new(FilterExec::try_new(predicate, source).unwrap());
-    let filter_schema = filter.schema();
-    let total = binary(
-        col("id", &filter_schema).unwrap(),
-        Operator::Plus,
-        col("value", &filter_schema).unwrap(),
-        &filter_schema,
-    )
-    .unwrap();
-    let projection: Arc<dyn ExecutionPlan> = Arc::new(
-        ProjectionExec::try_new(
-            [
-                ProjectionExpr { expr: col("id", &filter_schema).unwrap(), alias: "id".to_string() },
-                ProjectionExpr { expr: total, alias: "total".to_string() },
-            ],
-            filter,
-        )
-        .unwrap(),
-    );
-    let limit: Arc<dyn ExecutionPlan> = Arc::new(LocalLimitExec::new(projection, 2));
-
-    let config = CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred).with_min_operators_per_island(2);
-    let result = optimize_plan(limit, &config).unwrap();
-
-    let batches =
-        futures::executor::block_on(collect(Arc::clone(&result.plan), Arc::new(TaskContext::default()))).unwrap();
-
-    assert_eq!(batches.len(), 1);
-    assert_eq!(int32_values(&batches[0], 0), vec![2, 3]);
-    assert_eq!(int32_values(&batches[0], 1), vec![22, 33]);
-
-    let metrics = result.plan.metrics().expect("GPU island should expose execution metrics");
-    assert_eq!(metrics.sum_by_name("input_batches").unwrap().as_usize(), 1);
-    assert_eq!(metrics.sum_by_name("input_rows").unwrap().as_usize(), 4);
-    assert_eq!(metrics.sum_by_name("host_to_device_uploads").unwrap().as_usize(), 1);
-    assert_eq!(metrics.sum_by_name("host_to_device_uploaded_rows").unwrap().as_usize(), 4);
-    assert!(metrics.sum_by_name("host_to_device_uploaded_bytes").unwrap().as_usize() > 0);
-    assert_eq!(metrics.sum_by_name("device_to_host_materializations").unwrap().as_usize(), 1);
-    assert_eq!(metrics.sum_by_name("device_to_host_materialized_rows").unwrap().as_usize(), 2);
-    assert!(metrics.sum_by_name("device_to_host_materialized_bytes").unwrap().as_usize() > 0);
-    assert!(metrics.sum_by_name("record_batch_upload_time").unwrap().as_usize() > 0);
-    assert!(metrics.sum_by_name("cudf_operator_time").unwrap().as_usize() > 0);
-    assert!(metrics.sum_by_name("record_batch_materialization_time").unwrap().as_usize() > 0);
     assert_eq!(metrics.output_rows(), Some(2));
 }

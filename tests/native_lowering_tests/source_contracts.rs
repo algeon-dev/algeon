@@ -1,0 +1,459 @@
+use super::*;
+
+#[test]
+fn pushed_down_parquet_predicate_with_filter_is_pruning_only_evidence() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-pushed-predicate");
+    let path = dir.join("input.parquet");
+    write_numeric_parquet_file(&path);
+    let scan = parquet_scan_with_pushed_down_predicate(&path);
+    let plan = aggregate_sort_limit_plan(scan, Operator::Plus);
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_eq!(result.rewritten_count(), 1);
+    assert_eq!(result.rejected_count(), 0);
+    assert!(matches!(result.report.outcomes()[0], CandidateOutcome::Rewritten { .. }));
+    assert_eq!(result.source_diagnostics.len(), 1);
+    assert!(result.source_diagnostics[0].direct_device_read);
+    assert_eq!(result.source_diagnostics[0].predicate_disposition.as_str(), "pruning_only");
+    assert!(result.source_diagnostics[0].rejected_features.is_empty());
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn pushed_down_parquet_predicate_subset_of_filter_is_pruning_only_evidence() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-pushed-predicate-subset");
+    let path = dir.join("input.parquet");
+    write_numeric_parquet_file(&path);
+    let scan = parquet_scan_with_pushed_down_predicate(&path);
+    let scan_schema = scan.schema();
+    let pushed =
+        binary(col("payload", &scan_schema).unwrap(), Operator::GtEq, lit(ScalarValue::Int32(Some(10))), &scan_schema)
+            .unwrap();
+    let retained =
+        binary(col("key", &scan_schema).unwrap(), Operator::NotEq, lit(ScalarValue::Int32(Some(2))), &scan_schema)
+            .unwrap();
+    let filter_predicate = binary(pushed, Operator::And, retained, &scan_schema).unwrap();
+    let plan = aggregate_sort_limit_plan_with_filter(scan, filter_predicate, Operator::Plus);
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_eq!(result.rewritten_count(), 1);
+    assert_eq!(result.rejected_count(), 0);
+    assert!(matches!(result.report.outcomes()[0], CandidateOutcome::Rewritten { .. }));
+    assert_eq!(result.source_diagnostics.len(), 1);
+    assert!(result.source_diagnostics[0].direct_device_read);
+    assert_eq!(result.source_diagnostics[0].predicate_disposition.as_str(), "pruning_only");
+    assert!(result.source_diagnostics[0].rejected_features.is_empty());
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn pushed_down_parquet_predicate_uses_filter_input_schema_for_validation() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-pushed-predicate-filter-schema");
+    let path = dir.join("input.parquet");
+    write_parquet_file_with_tpch_like_columns(&path);
+    let scan = parquet_scan_with_projection_and_pushed_label_predicate(&path);
+    let scan_schema = scan.schema();
+    let predicate = binary(
+        col("label", &scan_schema).unwrap(),
+        Operator::NotEq,
+        lit(ScalarValue::Utf8View(Some("z".to_string()))),
+        &scan_schema,
+    )
+    .unwrap();
+    let plan = aggregate_sort_limit_plan_with_filter(scan, predicate, Operator::Plus);
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.source_diagnostics.len(), 1);
+    assert!(result.source_diagnostics[0].direct_device_read);
+    assert_eq!(result.source_diagnostics[0].predicate_disposition.as_str(), "pruning_only");
+    assert!(result.source_diagnostics[0].rejected_features.is_empty());
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn pushed_down_parquet_predicate_without_filter_is_rejected_with_source_reason() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-pushed-predicate-without-filter");
+    let path = dir.join("input.parquet");
+    write_numeric_parquet_file(&path);
+    let scan = parquet_scan_with_pushed_down_predicate(&path);
+    let plan = aggregate_sort_limit_plan_without_filter(scan, Operator::Plus);
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert!(result.plans.is_empty());
+    assert_eq!(result.rejected_count(), 1);
+    assert!(matches!(
+        result.report.outcomes()[0],
+        CandidateOutcome::Rejected { reason: FallbackReason::NativeSourcePushedDownParquetPredicate, .. }
+    ));
+    assert_eq!(result.source_diagnostics.len(), 1);
+    assert_eq!(result.source_diagnostics[0].predicate_disposition.as_str(), "rejected");
+    assert!(
+        result.source_diagnostics[0]
+            .rejected_features
+            .iter()
+            .any(|feature| feature.as_str() == "pushed_down_parquet_predicate")
+    );
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn pushed_down_parquet_predicate_with_different_filter_is_rejected_with_source_reason() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-pushed-predicate-mismatch");
+    let path = dir.join("input.parquet");
+    write_numeric_parquet_file(&path);
+    let scan = parquet_scan_with_pushed_down_predicate_value(&path, 20);
+    let plan = aggregate_sort_limit_plan(scan, Operator::Plus);
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert!(result.plans.is_empty());
+    assert_eq!(result.rejected_count(), 1);
+    assert!(matches!(
+        result.report.outcomes()[0],
+        CandidateOutcome::Rejected { reason: FallbackReason::NativeSourcePushedDownParquetPredicate, .. }
+    ));
+    assert_eq!(result.source_diagnostics.len(), 1);
+    assert!(!result.source_diagnostics[0].direct_device_read);
+    assert_eq!(result.source_diagnostics[0].predicate_disposition.as_str(), "rejected");
+    assert!(
+        result.source_diagnostics[0]
+            .rejected_features
+            .iter()
+            .any(|feature| feature.as_str() == "pushed_down_parquet_predicate")
+    );
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn full_file_byte_range_coalesces_to_native_source() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-ranged-file");
+    let path = dir.join("input.parquet");
+    write_numeric_parquet_file(&path);
+    let scan = parquet_scan_with_byte_range(&path);
+    let plan = aggregate_sort_limit_plan(scan, Operator::Plus);
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_eq!(result.rewritten_count(), 1);
+    assert_eq!(result.rejected_count(), 0);
+    let source = native_local_parquet_source(&result.plans[0]);
+    assert_eq!(source.file_count(), 1);
+    assert_eq!(source.files[0].file_size_bytes, Some(fs::metadata(&path).unwrap().len()));
+    assert_eq!(source.files[0].stable_id, format!("local:{}:{}", path.display(), fs::metadata(&path).unwrap().len()));
+    assert!(source.diagnostics.direct_device_read);
+    assert_eq!(source.diagnostics.ranged_file_count, 1);
+    assert_eq!(source.diagnostics.byte_range_disposition.as_str(), "coalesced_full_files");
+    assert!(source.diagnostics.rejected_features.is_empty());
+    assert_eq!(result.source_diagnostics.len(), 1);
+    assert_eq!(result.source_diagnostics[0].ranged_file_count, 1);
+    assert!(result.source_diagnostics[0].direct_device_read);
+    assert_eq!(result.source_diagnostics[0].byte_range_disposition.as_str(), "coalesced_full_files");
+    assert!(result.source_diagnostics[0].rejected_features.is_empty());
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn partial_byte_range_is_rejected_with_source_reason() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-partial-ranged-file");
+    let path = dir.join("input.parquet");
+    write_numeric_parquet_file(&path);
+    let scan = parquet_scan_with_partial_byte_range(&path);
+    let plan = aggregate_sort_limit_plan(scan, Operator::Plus);
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert!(result.plans.is_empty());
+    assert_eq!(result.rejected_count(), 1);
+    assert!(matches!(
+        result.report.outcomes()[0],
+        CandidateOutcome::Rejected { reason: FallbackReason::NativeSourceByteRange, .. }
+    ));
+    assert_eq!(result.source_diagnostics.len(), 1);
+    assert_eq!(result.source_diagnostics[0].ranged_file_count, 1);
+    assert_eq!(result.source_diagnostics[0].byte_range_disposition.as_str(), "rejected");
+    assert!(result.source_diagnostics[0].rejected_features.iter().any(|feature| feature.as_str() == "byte_range"));
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn split_full_file_byte_ranges_coalesce_without_duplicate_native_files() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-split-ranged-file");
+    let path = dir.join("input.parquet");
+    write_numeric_parquet_file(&path);
+    let scan = parquet_scan_with_split_full_byte_ranges(&path);
+    let plan = aggregate_sort_limit_plan(scan, Operator::Plus);
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_eq!(result.rewritten_count(), 1);
+    assert_eq!(result.rejected_count(), 0);
+    let source = native_local_parquet_source(&result.plans[0]);
+    assert_eq!(source.file_count(), 1);
+    assert_eq!(source.files[0].file_size_bytes, Some(fs::metadata(&path).unwrap().len()));
+    assert_eq!(source.diagnostics.file_count, 1);
+    assert_eq!(source.diagnostics.ranged_file_count, 2);
+    assert_eq!(source.diagnostics.byte_range_disposition.as_str(), "coalesced_full_files");
+    assert!(source.diagnostics.direct_device_read);
+    assert!(source.diagnostics.rejected_features.is_empty());
+    assert_eq!(result.source_diagnostics[0].file_count, 1);
+    assert_eq!(result.source_diagnostics[0].ranged_file_count, 2);
+    assert!(result.source_diagnostics[0].rejected_features.is_empty());
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn overlapping_byte_ranges_are_rejected_with_source_reason() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-overlap-ranged-file");
+    let path = dir.join("input.parquet");
+    write_numeric_parquet_file(&path);
+    let scan = parquet_scan_with_overlapping_byte_ranges(&path);
+    let plan = aggregate_sort_limit_plan(scan, Operator::Plus);
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert!(result.plans.is_empty());
+    assert_eq!(result.rejected_count(), 1);
+    assert!(matches!(
+        result.report.outcomes()[0],
+        CandidateOutcome::Rejected { reason: FallbackReason::NativeSourceByteRange, .. }
+    ));
+    assert_eq!(result.source_diagnostics[0].ranged_file_count, 2);
+    assert_eq!(result.source_diagnostics[0].byte_range_disposition.as_str(), "rejected");
+    assert!(result.source_diagnostics[0].rejected_features.iter().any(|feature| feature.as_str() == "byte_range"));
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn remote_parquet_object_store_is_rejected_with_source_reason() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-remote-store");
+    let path = dir.join("input.parquet");
+    write_numeric_parquet_file(&path);
+    let scan = parquet_scan_with_object_store_url(&path, ObjectStoreUrl::parse("test:///").unwrap());
+    let plan = aggregate_sort_limit_plan(scan, Operator::Plus);
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert!(result.plans.is_empty());
+    assert_eq!(result.rejected_count(), 1);
+    assert!(matches!(
+        result.report.outcomes()[0],
+        CandidateOutcome::Rejected { reason: FallbackReason::NativeSourceNonLocalObjectStore, .. }
+    ));
+    assert_eq!(result.source_diagnostics.len(), 1);
+    assert_eq!(result.source_diagnostics[0].file_count, 1);
+    assert!(
+        result.source_diagnostics[0]
+            .rejected_features
+            .iter()
+            .any(|feature| feature.as_str() == "non_local_object_store")
+    );
+    assert_eq!(result.source_diagnostics[0].partition_column_disposition.as_str(), "absent");
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn parquet_partition_columns_are_represented_in_native_source_contract() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-partition-columns");
+    let path = dir.join("input.parquet");
+    write_numeric_parquet_file(&path);
+    let scan = parquet_scan_with_partition_value(&path, ScalarValue::Int32(Some(7)));
+    let plan = partition_column_group_by_plan(scan);
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.source_diagnostics.len(), 1);
+    assert_eq!(result.source_diagnostics[0].partition_column_disposition.as_str(), "represented");
+    assert!(result.source_diagnostics[0].rejected_features.is_empty());
+    let source = native_local_parquet_source(&result.plans[0]);
+    assert_eq!(source.partition_columns.len(), 1);
+    assert_eq!(source.partition_columns[0].name, "part");
+    assert_eq!(source.files[0].partition_values, vec![LiteralValue::Int32(7)]);
+    assert!(!source.read_columns.contains(&"part".to_string()));
+    assert!(source.projected_output_column_source_refs.contains(&SourceColumnRef::Partition(0)));
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn parquet_partition_typed_null_values_are_represented_in_native_source_contract() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-partition-typed-null");
+    let path = dir.join("input.parquet");
+    write_numeric_parquet_file(&path);
+    let scan = parquet_scan_with_partition_value(&path, ScalarValue::Int32(None));
+    let plan = partition_column_group_by_plan(scan);
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.source_diagnostics.len(), 1);
+    assert_eq!(result.source_diagnostics[0].partition_column_disposition.as_str(), "represented");
+    assert!(result.source_diagnostics[0].rejected_features.is_empty());
+    let source = native_local_parquet_source(&result.plans[0]);
+    assert_eq!(source.partition_columns.len(), 1);
+    assert_eq!(source.partition_columns[0].data_type, DataType::Int32);
+    assert_eq!(source.files[0].partition_values, vec![LiteralValue::Null(DataType::Int32)]);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn parquet_partition_columns_without_literal_values_are_rejected_with_source_reason() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-partition-missing-values");
+    let path = dir.join("input.parquet");
+    write_numeric_parquet_file(&path);
+    let scan = parquet_scan_with_partition_columns(&path);
+    let plan = partition_column_group_by_plan(scan);
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert!(result.plans.is_empty());
+    assert_eq!(result.rejected_count(), 1);
+    assert!(matches!(
+        result.report.outcomes()[0],
+        CandidateOutcome::Rejected { reason: FallbackReason::NativeSourcePartitionValues, .. }
+    ));
+    assert_eq!(result.source_diagnostics.len(), 1);
+    assert_eq!(result.source_diagnostics[0].partition_column_disposition.as_str(), "rejected");
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn unused_parquet_binary_partition_columns_do_not_block_native_lowering() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-partition-binary");
+    let path = dir.join("input.parquet");
+    write_numeric_parquet_file(&path);
+    let scan = parquet_scan_with_typed_partition_value(
+        &path,
+        Field::new("part", DataType::Binary, false),
+        ScalarValue::Binary(Some(vec![1, 2, 3])),
+    );
+    let plan = aggregate_sort_limit_plan(scan, Operator::Plus);
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.source_diagnostics.len(), 1);
+    assert_eq!(result.source_diagnostics[0].partition_column_disposition.as_str(), "absent");
+    let source = native_local_parquet_source(&result.plans[0]);
+    assert!(source.partition_columns.is_empty());
+    assert!(source.files[0].partition_values.is_empty());
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn unused_parquet_utf8_partition_columns_are_not_represented_in_native_source_contract() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-partition-utf8");
+    let path = dir.join("input.parquet");
+    write_numeric_parquet_file(&path);
+    let scan = parquet_scan_with_typed_partition_value(
+        &path,
+        Field::new("part", DataType::Utf8, false),
+        ScalarValue::Utf8(Some("2026".to_string())),
+    );
+    let plan = aggregate_sort_limit_plan(scan, Operator::Plus);
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.source_diagnostics.len(), 1);
+    assert_eq!(result.source_diagnostics[0].partition_column_disposition.as_str(), "absent");
+    assert!(result.source_diagnostics[0].rejected_features.is_empty());
+    let source = native_local_parquet_source(&result.plans[0]);
+    assert!(source.partition_columns.is_empty());
+    assert!(source.files[0].partition_values.is_empty());
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn unused_parquet_utf8_view_partition_values_do_not_enter_native_source_contract() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-partition-utf8-view");
+    let path = dir.join("input.parquet");
+    write_numeric_parquet_file(&path);
+    let scan = parquet_scan_with_typed_partition_value(
+        &path,
+        Field::new("part", DataType::Utf8View, false),
+        ScalarValue::Utf8View(Some("2026".to_string())),
+    );
+    let plan = aggregate_sort_limit_plan(scan, Operator::Plus);
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.source_diagnostics.len(), 1);
+    assert_eq!(result.source_diagnostics[0].partition_column_disposition.as_str(), "absent");
+    assert!(result.source_diagnostics[0].rejected_features.is_empty());
+    let source = native_local_parquet_source(&result.plans[0]);
+    assert!(source.partition_columns.is_empty());
+    assert!(source.files[0].partition_values.is_empty());
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn unused_parquet_utf8_view_partition_typed_null_values_do_not_enter_native_source_contract() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-partition-utf8-view-null");
+    let path = dir.join("input.parquet");
+    write_numeric_parquet_file(&path);
+    let scan = parquet_scan_with_typed_partition_value(
+        &path,
+        Field::new("part", DataType::Utf8View, true),
+        ScalarValue::Utf8View(None),
+    );
+    let plan = aggregate_sort_limit_plan(scan, Operator::Plus);
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.source_diagnostics.len(), 1);
+    assert_eq!(result.source_diagnostics[0].partition_column_disposition.as_str(), "absent");
+    assert!(result.source_diagnostics[0].rejected_features.is_empty());
+    let source = native_local_parquet_source(&result.plans[0]);
+    assert!(source.partition_columns.is_empty());
+    assert!(source.files[0].partition_values.is_empty());
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn unused_unsupported_binary_schema_fields_do_not_block_native_lowering() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-source-binary-schema");
+    let path = dir.join("input.parquet");
+    write_binary_schema_parquet_file(&path);
+    let plan = aggregate_sort_limit_plan(parquet_scan(&path), Operator::Plus);
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    let source = native_local_parquet_source(&result.plans[0]);
+    assert!(!source.read_columns.contains(&"blob".to_string()));
+    assert!(source.schema.field_with_name("blob").is_err());
+
+    fs::remove_dir_all(dir).unwrap();
+}
