@@ -22,7 +22,7 @@ struct DeviceResidentCache {
     // destroyed before the domain owner becomes droppable. Keep-alive only:
     // the factory owns the one physical cuDF allocation domain for the
     // ordinal, so it is retained but never read directly.
-    _allocation_factory: crate::runtime::cache::DeviceCacheAllocationFactory,
+    allocation_factory: crate::runtime::cache::DeviceCacheAllocationFactory,
 }
 
 impl DeviceResidentCaches {
@@ -43,7 +43,7 @@ impl DeviceResidentCaches {
                     source,
                     #[cfg(feature = "cugraph")]
                     graph,
-                    _allocation_factory: allocation_factory,
+                    allocation_factory,
                 },
             );
             debug_assert!(previous.is_none(), "a registry installs each CUDA ordinal only once");
@@ -64,6 +64,41 @@ impl DeviceResidentCaches {
         device_ordinal: usize,
     ) -> Option<crate::runtime::cache::resident_graph::GpuResidentGraphCache> {
         self.devices.get(&device_ordinal).map(|cache| cache.graph.clone())
+    }
+
+    /// Samples each enabled device's one physical cache allocator alongside
+    /// activity observed from its two subdomains.  Logical resident bytes stay
+    /// in `DeviceLedgerReport`; this is the independent physical comparison
+    /// surface used by service operators and S7.
+    pub(super) fn reports(&self) -> Result<Vec<crate::runtime::cache::DeviceCacheReport>> {
+        self.devices
+            .values()
+            .map(|cache| {
+                let mut report = cache.allocation_factory.report()?;
+                report.source = cache.source.activity()?;
+                #[cfg(feature = "cugraph")]
+                {
+                    report.graph = cache.graph.activity()?;
+                }
+                Ok(report)
+            })
+            .collect()
+    }
+
+    /// Returns the bounded source-cache events emitted by the ordinal-local
+    /// cache owners.  These are diagnostic observations only; the paired
+    /// ledger and allocation-domain reports remain byte-residency authority.
+    pub(super) fn source_event_snapshots(&self) -> Result<Vec<crate::runtime::cache::CacheSourceEventSnapshot>> {
+        let mut events = self
+            .devices
+            .values()
+            .map(|cache| cache.source.event_snapshots())
+            .collect::<Result<Vec<_>>>()?
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>();
+        events.sort_by_key(|event| (event.device_ordinal, event.allocation_domain_id, event.sequence));
+        Ok(events)
     }
 
     pub(super) fn close_and_drain_until(&self, _deadline: Instant) -> Result<()> {

@@ -8,28 +8,110 @@
 //! reaches these values from tests alone.
 #![cfg_attr(not(feature = "single-node-multi-gpu-validate-run"), allow(dead_code))]
 
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::Duration,
+};
+
 use serde::Serialize;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use super::profile::{FixtureKind, FixtureWorkloadProfile};
 use crate::ToolResult;
 
 /// A resolved query the runner will submit through an attempt.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub(super) struct SelectedQuery {
+    /// Position of the owning fixture workload in the recorded profile. The
+    /// same fixture kind may name multiple independent DBLP graph slices, so
+    /// kind alone is not a session-routing key.
+    pub(super) fixture_index: usize,
     pub(super) kind: FixtureKind,
     pub(super) label: String,
     pub(super) sql: String,
     /// True when the query drives a cuGraph construction/algorithm path rather
     /// than a cuDF relational path.
     pub(super) graph: bool,
+    /// Whether the query is expected to acquire a device placement. The
+    /// runner-owned feature-disabled capability probe is deliberately
+    /// non-executing, and its separate operability clause owns that contract.
+    pub(super) placement_required: bool,
+    /// I8's deliberately serialized public completion receiver. This is
+    /// attached only by the dedicated slow-report-sink probe, so ordinary
+    /// workload selection remains free of collector backpressure.
+    completion_sink: Option<CompletionSink>,
 }
 
 impl SelectedQuery {
+    pub(super) fn attach_completion_sink(&mut self, sink: CompletionSink) {
+        self.completion_sink = Some(sink);
+    }
+
+    pub(super) fn completion_sink(&self) -> Option<&CompletionSink> {
+        self.completion_sink.as_ref()
+    }
+
     pub(super) fn descriptor(&self) -> SelectedQueryDescriptor {
         SelectedQueryDescriptor {
+            fixture_index: self.fixture_index,
             kind: self.kind,
             label: self.label.clone(),
             workload_class: if self.graph { "cugraph" } else { "cudf_relational" },
+        }
+    }
+}
+
+/// One intentionally serialized completion consumer for I8. The semaphore
+/// permit is acquired before the public completion receiver is awaited and is
+/// held until that receiver has drained, creating the real handoff pressure
+/// the probe is meant to test rather than merely sleeping each task.
+#[derive(Debug, Clone)]
+pub(super) struct CompletionSink {
+    delay: Duration,
+    permit: Arc<Semaphore>,
+    drains_started: Arc<AtomicU64>,
+    drains_completed: Arc<AtomicU64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct CompletionSinkCounters {
+    pub(super) delay: Duration,
+    pub(super) drains_started: u64,
+    pub(super) drains_completed: u64,
+}
+
+impl CompletionSink {
+    pub(super) fn new(delay: Duration) -> Self {
+        Self {
+            delay,
+            permit: Arc::new(Semaphore::new(1)),
+            drains_started: Arc::new(AtomicU64::new(0)),
+            drains_completed: Arc::new(AtomicU64::new(0)),
+        }
+    }
+
+    pub(super) async fn acquire(&self) -> OwnedSemaphorePermit {
+        let permit = Arc::clone(&self.permit).acquire_owned().await.expect("completion sink semaphore is never closed");
+        self.drains_started.fetch_add(1, Ordering::AcqRel);
+        permit
+    }
+
+    pub(super) const fn delay(&self) -> Duration {
+        self.delay
+    }
+
+    pub(super) fn mark_drained(&self) {
+        self.drains_completed.fetch_add(1, Ordering::AcqRel);
+    }
+
+    pub(super) fn counters(&self) -> CompletionSinkCounters {
+        CompletionSinkCounters {
+            delay: self.delay,
+            drains_started: self.drains_started.load(Ordering::Acquire),
+            drains_completed: self.drains_completed.load(Ordering::Acquire),
         }
     }
 }
@@ -38,6 +120,7 @@ impl SelectedQuery {
 /// persisted: the artifact records identity, not raw statements.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(super) struct SelectedQueryDescriptor {
+    pub(super) fixture_index: usize,
     pub(super) kind: FixtureKind,
     pub(super) label: String,
     pub(super) workload_class: &'static str,
@@ -60,6 +143,8 @@ const CUGRAPH_PAGERANK_FUNCTION: &str = "cugraph_pagerank";
 const CUGRAPH_BFS_FUNCTION: &str = "cugraph_bfs";
 const CUGRAPH_SSSP_FUNCTION: &str = "cugraph_sssp";
 const CUGRAPH_WEAKLY_CONNECTED_COMPONENTS_FUNCTION: &str = "cugraph_weakly_connected_components";
+const CUGRAPH_FORCE_ATLAS2_FUNCTION: &str = "cugraph_force_atlas2";
+const CUGRAPH_BETWEENNESS_CENTRALITY_FUNCTION: &str = "cugraph_betweenness_centrality";
 
 /// cuGraph construction, algorithm, and result-path queries plus the two cuDF
 /// relational queries over the same fixture.
@@ -85,7 +170,7 @@ fn dblp_queries() -> Vec<(&'static str, String, bool)> {
             "bfs",
             format!(
                 "SELECT COUNT(*) AS reached FROM {CUGRAPH_BFS_FUNCTION}('{DBLP_EDGE_TABLE}', {DBLP_TRAVERSAL_SOURCE}, 'src', 'dst', NULL, \
-                 '{{\"depth_limit\": 3, \"output_mode\": \"normalized\"}}')"
+                 '{{\"output_mode\": \"normalized\"}}')"
             ),
             true,
         ),
@@ -113,6 +198,43 @@ fn dblp_queries() -> Vec<(&'static str, String, bool)> {
                 .to_string(),
             false,
         ),
+        // The backend-service stress priority set (G1-G4).
+        (
+            "force_atlas2",
+            format!(
+                "SELECT COUNT(*) AS vertices, SUM(x) AS sum_x, SUM(y) AS sum_y \
+                 FROM {CUGRAPH_FORCE_ATLAS2_FUNCTION}('{DBLP_EDGE_TABLE}', 'src', 'dst', 'weight', \
+                 '{{\"max_iter\": 200, \"seed\": 20260804, \"barnes_hut_optimize\": true}}')"
+            ),
+            true,
+        ),
+        (
+            "bfs_deep",
+            format!(
+                "SELECT vertex, distance, reachable \
+                 FROM {CUGRAPH_BFS_FUNCTION}('{DBLP_EDGE_TABLE}', {DBLP_TRAVERSAL_SOURCE}, 'src', 'dst', NULL, \
+                 '{{\"depth_limit\": 8, \"output_mode\": \"normalized\"}}')"
+            ),
+            true,
+        ),
+        (
+            "betweenness_centrality",
+            format!(
+                "SELECT COUNT(*) AS vertices, SUM(value) AS total \
+                 FROM {CUGRAPH_BETWEENNESS_CENTRALITY_FUNCTION}('{DBLP_EDGE_TABLE}', 'src', 'dst', NULL, \
+                 '{{\"k\": 64}}')"
+            ),
+            true,
+        ),
+        (
+            "betweenness_centrality_wide",
+            format!(
+                "SELECT COUNT(*) AS vertices, SUM(value) AS total \
+                 FROM {CUGRAPH_BETWEENNESS_CENTRALITY_FUNCTION}('{DBLP_EDGE_TABLE}', 'src', 'dst', NULL, \
+                 '{{\"k\": 512}}')"
+            ),
+            true,
+        ),
     ]
 }
 
@@ -121,25 +243,44 @@ fn dblp_queries() -> Vec<(&'static str, String, bool)> {
 /// Selection order is profile order, so a recorded plan replays identically.
 pub(super) fn select_queries(workloads: &[FixtureWorkloadProfile]) -> ToolResult<Vec<SelectedQuery>> {
     let mut selected = Vec::new();
-    for workload in workloads {
+    for (fixture_index, workload) in workloads.iter().enumerate() {
         for label in &workload.queries {
-            selected.push(resolve(workload.kind, label)?);
+            selected.push(resolve(fixture_index, workload.kind, label)?);
         }
     }
     Ok(selected)
 }
 
-fn resolve(kind: FixtureKind, label: &str) -> ToolResult<SelectedQuery> {
+fn resolve(fixture_index: usize, kind: FixtureKind, label: &str) -> ToolResult<SelectedQuery> {
+    let selected = |label: &str, sql: &str, graph: bool| SelectedQuery {
+        fixture_index,
+        kind,
+        label: label.to_string(),
+        sql: sql.to_string(),
+        graph,
+        placement_required: true,
+        completion_sink: None,
+    };
     match kind {
         FixtureKind::Tpch => nexus_workloads::tpch::TPCH_QUERIES
             .iter()
             .find(|query| query.id == label)
-            .map(|query| SelectedQuery { kind, label: label.to_string(), sql: query.sql.to_string(), graph: false })
+            .map(|query| selected(label, query.sql, false))
+            .ok_or_else(|| unknown_label(kind, label).into()),
+        FixtureKind::Tpcds => nexus_workloads::tpcds::TPCDS_QUERIES
+            .iter()
+            .find(|query| query.id == label)
+            .map(|query| selected(label, query.sql, false))
+            .ok_or_else(|| unknown_label(kind, label).into()),
+        FixtureKind::Clickbench => nexus_workloads::clickbench::CLICKBENCH_QUERIES
+            .iter()
+            .find(|query| query.id == label)
+            .map(|query| selected(label, query.sql, false))
             .ok_or_else(|| unknown_label(kind, label).into()),
         FixtureKind::Dblp => dblp_queries()
             .into_iter()
             .find(|(id, _, _)| *id == label)
-            .map(|(_, sql, graph)| SelectedQuery { kind, label: label.to_string(), sql, graph })
+            .map(|(_, sql, graph)| selected(label, &sql, graph))
             .ok_or_else(|| unknown_label(kind, label).into()),
     }
 }
@@ -152,6 +293,10 @@ fn unknown_label(kind: FixtureKind, label: &str) -> String {
 pub(super) fn known_labels(kind: FixtureKind) -> Vec<&'static str> {
     match kind {
         FixtureKind::Tpch => nexus_workloads::tpch::TPCH_QUERIES.iter().map(|query| query.id).collect(),
+        FixtureKind::Tpcds => nexus_workloads::tpcds::TPCDS_QUERIES.iter().map(|query| query.id).collect(),
+        FixtureKind::Clickbench => {
+            nexus_workloads::clickbench::CLICKBENCH_QUERIES.iter().map(|query| query.id).collect()
+        },
         FixtureKind::Dblp => dblp_queries().into_iter().map(|(label, _, _)| label).collect(),
     }
 }
@@ -190,6 +335,17 @@ mod tests {
     }
 
     #[test]
+    fn distinct_dblp_workloads_keep_their_own_session_routing_indices() {
+        let selected =
+            select_queries(&[workload(FixtureKind::Dblp, &["pagerank"]), workload(FixtureKind::Dblp, &["pagerank"])])
+                .unwrap();
+
+        assert_eq!(selected.iter().map(|query| query.fixture_index).collect::<Vec<_>>(), [0, 1]);
+        assert_eq!(selected.iter().map(|query| query.kind).collect::<Vec<_>>(), [FixtureKind::Dblp, FixtureKind::Dblp]);
+        assert_eq!(selected[1].descriptor().fixture_index, 1);
+    }
+
+    #[test]
     fn an_unknown_label_is_rejected_rather_than_skipped() {
         let error = select_queries(&[workload(FixtureKind::Tpch, &["q99"])]).unwrap_err();
         assert!(error.to_string().contains("unknown tpch query label q99"), "{error}");
@@ -199,16 +355,35 @@ mod tests {
 
     #[test]
     fn every_catalog_label_resolves_and_the_graph_catalog_covers_construction_and_algorithms() {
-        for kind in [FixtureKind::Tpch, FixtureKind::Dblp] {
+        for kind in [FixtureKind::Tpch, FixtureKind::Tpcds, FixtureKind::Clickbench, FixtureKind::Dblp] {
             for label in known_labels(kind) {
-                resolve(kind, label).unwrap();
+                resolve(0, kind, label).unwrap();
             }
         }
         assert_eq!(known_labels(FixtureKind::Tpch).len(), nexus_workloads::tpch::TPCH_QUERY_COUNT);
+        assert_eq!(known_labels(FixtureKind::Tpcds).len(), nexus_workloads::tpcds::TPCDS_QUERY_COUNT);
+        assert_eq!(known_labels(FixtureKind::Clickbench).len(), nexus_workloads::clickbench::CLICKBENCH_QUERY_COUNT);
         let graph = known_labels(FixtureKind::Dblp);
-        for required in ["pagerank", "bfs", "wcc", "edge_scan"] {
+        for required in [
+            "pagerank",
+            "bfs",
+            "wcc",
+            "edge_scan",
+            "force_atlas2",
+            "bfs_deep",
+            "betweenness_centrality",
+            "betweenness_centrality_wide",
+        ] {
             assert!(graph.contains(&required), "{required}");
         }
+    }
+
+    #[test]
+    fn basic_bfs_catalog_entry_keeps_the_unbounded_singleflight_shape() {
+        let bfs = resolve(0, FixtureKind::Dblp, "bfs").expect("bfs catalog entry");
+        assert!(bfs.graph);
+        assert!(bfs.sql.contains("\"output_mode\": \"normalized\""));
+        assert!(!bfs.sql.contains("depth_limit"));
     }
 
     /// The literals above must equal the adapter's exported names, or the graph
@@ -223,6 +398,11 @@ mod tests {
             CUGRAPH_WEAKLY_CONNECTED_COMPONENTS_FUNCTION,
             datafusion_nexus::cugraph_sql::CUGRAPH_WEAKLY_CONNECTED_COMPONENTS_FUNCTION
         );
+        assert_eq!(CUGRAPH_FORCE_ATLAS2_FUNCTION, datafusion_nexus::cugraph_sql::CUGRAPH_FORCE_ATLAS2_FUNCTION);
+        assert_eq!(
+            CUGRAPH_BETWEENNESS_CENTRALITY_FUNCTION,
+            datafusion_nexus::cugraph_sql::CUGRAPH_BETWEENNESS_CENTRALITY_FUNCTION
+        );
     }
 
     #[test]
@@ -231,5 +411,24 @@ mod tests {
         let descriptor = serde_json::to_value(selected[0].descriptor()).unwrap();
         assert_eq!(descriptor["label"], "q01");
         assert!(descriptor.get("sql").is_none());
+    }
+
+    #[tokio::test]
+    async fn completion_sink_allows_only_one_completion_receiver_to_enter() {
+        let sink = CompletionSink::new(std::time::Duration::from_millis(1));
+        let first = sink.acquire().await;
+        let waiting_sink = sink.clone();
+        let waiting = tokio::spawn(async move {
+            let permit = waiting_sink.acquire().await;
+            waiting_sink.mark_drained();
+            permit
+        });
+        tokio::task::yield_now().await;
+        assert_eq!(sink.counters().drains_started, 1);
+        drop(first);
+        drop(waiting.await.unwrap());
+        let counters = sink.counters();
+        assert_eq!(counters.drains_started, 2);
+        assert_eq!(counters.drains_completed, 1);
     }
 }

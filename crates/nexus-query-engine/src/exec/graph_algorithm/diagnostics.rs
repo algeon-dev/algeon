@@ -218,11 +218,22 @@ pub(super) fn map_cugraph_error(
     message: &'static str,
 ) -> impl FnOnce(cugraph::Error) -> QueryError {
     move |error| {
-        QueryError::new(code_for_cugraph_error(&error), operation, message)
+        let query_error = QueryError::new(code_for_cugraph_error(&error), operation, message)
             .with_fact("cugraph_kind", error.kind())
             .with_fact("cugraph_status", error.status())
-            .with_fact("cugraph_operation", error.operation())
-            .with_source(error)
+            .with_fact("cugraph_operation", error.operation());
+        let query_error = if error.kind() == cugraph::ErrorKind::OutOfMemory {
+            let source = match error.allocation_source() {
+                cugraph::AllocationSource::Unknown => crate::error::CugraphAllocationSource::Unknown,
+                cugraph::AllocationSource::RmmOutOfMemory => crate::error::CugraphAllocationSource::RmmOutOfMemory,
+                cugraph::AllocationSource::RmmBadAlloc => crate::error::CugraphAllocationSource::RmmBadAlloc,
+                cugraph::AllocationSource::StdBadAlloc => crate::error::CugraphAllocationSource::StdBadAlloc,
+            };
+            query_error.with_cugraph_allocation_source(source)
+        } else {
+            query_error
+        };
+        query_error.with_source(error)
     }
 }
 
@@ -239,5 +250,29 @@ fn code_for_cugraph_error(error: &cugraph::Error) -> QueryErrorCode {
             cugraph::ErrorStatus::Permanent => QueryErrorCode::CudfDependencyFailure,
         },
         _ => QueryErrorCode::CudfDependencyFailure,
+    }
+}
+
+#[cfg(all(test, feature = "cugraph"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cugraph_oom_mapping_preserves_fail_closed_allocation_source_fact() {
+        let source = cugraph::Error::new(cugraph::ErrorKind::OutOfMemory, "cugraph.test.oom").set_temporary();
+
+        let error = map_cugraph_error("nexus_query_engine.graph_algorithm.test", "cuGraph test OOM")(source);
+
+        assert_eq!(error.code(), QueryErrorCode::CudfResourceExhausted);
+        assert_eq!(error.fact_value("cugraph_allocation_source"), Some("unknown"));
+        assert_eq!(error.cugraph_allocation_source(), Some(crate::error::CugraphAllocationSource::Unknown));
+
+        let dependency_error =
+            map_cugraph_error("nexus_query_engine.graph_algorithm.test", "cuGraph dependency failure")(
+                cugraph::Error::new(cugraph::ErrorKind::InvalidInput, "cugraph.test.invalid_input"),
+            );
+
+        assert_eq!(dependency_error.fact_value("cugraph_allocation_source"), None);
+        assert_eq!(dependency_error.cugraph_allocation_source(), None);
     }
 }

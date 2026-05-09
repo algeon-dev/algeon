@@ -5,11 +5,16 @@
 //! admission decision.
 
 use crate::{
+    admission::{
+        AttemptReservationEnvelope, AttemptReservationPolicy,
+        envelope::{AttemptReservationShape, canonical_execution_scope_fingerprint},
+    },
     capability::ReservationRequirement,
     error::{QueryError, QueryErrorCode, Result},
     graph_memory::GraphMemoryAdmissionEvidence,
-    plan::QueryPlan,
+    plan::{PlanNode, QueryPlan, estimated_local_parquet_source_bytes, estimated_reachable_local_parquet_source_bytes},
     runtime::ReservationKind,
+    source::{LocalParquetSource, SourceNode},
 };
 
 /// Trustworthiness of the descriptive working-set hint.
@@ -37,6 +42,10 @@ pub(crate) struct AttemptCapabilityEvidence {
     pub(crate) configured_floor_bytes: u64,
     /// Additional lower-layer workspace contracts proven before admission.
     pub(crate) capability_floor_raise_bytes: u64,
+    /// Hard lower bound for the service-resolved physical phase envelope.
+    pub(crate) required_phase_floor_bytes: u64,
+    /// Descriptive local-Parquet stage, distinct from a whole-attempt target.
+    pub(crate) source_stage_bytes: Option<u64>,
     /// Descriptive target only; it never proves fit or admission.
     pub(crate) soft_working_set_hint_bytes: Option<u64>,
     /// Evidence quality for [`Self::soft_working_set_hint_bytes`].
@@ -51,27 +60,33 @@ pub(crate) struct AttemptCapabilityEvidence {
     /// to make that substitution: it would let a combined proof authorize an
     /// unrelated graph plan.
     pub(crate) attested_cugraph_graph_execution_scopes: Vec<AttestedCugraphGraphExecutionScope>,
+    /// Private, exact plan scopes resolved only after the service fixes
+    /// scheduling and chunk policy for this admission.
+    pub(crate) reservation_shapes: Vec<AttemptReservationShape>,
 }
 
 /// Collision-free structural identity for one graph plan whose frontend owns
 /// construction and workspace lifetimes.
 ///
-/// The identity retains the full derived structural form instead of a
-/// fixed-width hash. These scopes are short-lived admission evidence, not
-/// externally stored keys, so a hash collision cannot become an authorization
-/// path.
+/// The identity retains the full canonical execution form rather than a
+/// fixed-width hash. These scopes are short-lived admission evidence, so a
+/// graph contract cannot widen to a separately materialized plan.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct AttestedCugraphGraphExecutionScope {
-    structural_fingerprint: String,
+    execution_scope_fingerprint: String,
 }
 
 impl AttestedCugraphGraphExecutionScope {
     fn for_plan(plan: &QueryPlan) -> Self {
-        Self { structural_fingerprint: format!("{plan:#?}") }
+        Self { execution_scope_fingerprint: canonical_execution_scope_fingerprint(plan) }
     }
 
     fn matches(&self, plan: &QueryPlan) -> bool {
-        self.structural_fingerprint == Self::for_plan(plan).structural_fingerprint
+        self.execution_scope_fingerprint == canonical_execution_scope_fingerprint(plan)
+    }
+
+    fn matches_reservation_shape(&self, shape: &AttemptReservationShape) -> bool {
+        shape.matches_execution_scope_fingerprint(&self.execution_scope_fingerprint)
     }
 }
 
@@ -80,8 +95,9 @@ impl AttestedCugraphGraphExecutionScope {
 ///
 /// Public callers can forward a proof into admission, but cannot author a
 /// capability set, a floor, or a working-set target.  In particular, there is
-/// deliberately no empty-proof constructor: the absence of a native fragment
-/// remains absence of proof rather than authorization for an exact profile.
+/// deliberately no empty-proof constructor: every proof comes from an exact
+/// native plan and carries its private execution scope, even when that plan
+/// has no resource-capability requirement.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QueryPlanCapabilityProof {
     requirement: AttemptCapabilityEvidence,
@@ -90,11 +106,54 @@ pub struct QueryPlanCapabilityProof {
 impl QueryPlanCapabilityProof {
     /// Derives proof from one lowered native query plan.
     ///
-    /// `None` means the plan has no modeled capability contracts and must not
-    /// be used to manufacture an explicit empty admission proof.
+    /// The proof always retains the plan's exact private execution scope. A
+    /// capability-free native fragment therefore still cannot run under a
+    /// grant issued for a different fragment, while adding no resource
+    /// capability or grant-floor allowance of its own.
     pub fn for_query_plan(plan: &QueryPlan) -> Option<Self> {
         let requirement = AttemptCapabilityEvidence::for_query_plan(plan);
-        (!requirement.required_capabilities.is_empty()).then_some(Self { requirement })
+        Some(Self { requirement })
+    }
+
+    /// Derives the proof for the exact native fragment that materializes the
+    /// cuGraph edge input. The graph-memory model owns that final resident
+    /// frame, so its scope is retained for execution equality but contributes
+    /// no second whole-attempt phase.
+    pub fn for_cugraph_graph_input_plan(plan: &QueryPlan) -> Option<Self> {
+        let mut requirement = AttemptCapabilityEvidence::for_query_plan(plan);
+        requirement.mark_cugraph_graph_input_scope();
+        Some(Self { requirement })
+    }
+
+    /// Derives proof for an exact host handoff of one frontend-attested graph
+    /// result. The plan must do no native work: it can only expose the named
+    /// GPU-resident graph result to its host sink. Its device frame is still
+    /// owned by the graph-execution phase, while its structural scope remains
+    /// available for execution-time equality validation.
+    pub fn for_attested_graph_result_passthrough_plan(plan: &QueryPlan, graph_result_input_name: &str) -> Option<Self> {
+        if !is_attested_graph_result_passthrough_plan(plan, graph_result_input_name) {
+            return None;
+        }
+        let mut requirement = AttemptCapabilityEvidence::for_query_plan(plan);
+        requirement.mark_attested_graph_result_passthrough_scope();
+        Some(Self { requirement })
+    }
+
+    /// Derives proof for the bounded native sort phase that follows one
+    /// frontend-attested graph result. The graph result remains the only
+    /// external GPU frame; the engine executes the sort through the same
+    /// immutable bounded-attempt resource, so it cannot exceed that attempt's
+    /// grant while the graph and sort phases remain sequential.
+    pub fn for_attested_graph_result_bounded_consumer_plan(
+        plan: &QueryPlan,
+        graph_result_input_name: &str,
+    ) -> Option<Self> {
+        if !is_attested_graph_result_bounded_consumer_plan(plan, graph_result_input_name) {
+            return None;
+        }
+        let mut requirement = AttemptCapabilityEvidence::for_query_plan(plan);
+        requirement.mark_attested_graph_result_bounded_consumer_scope();
+        Some(Self { requirement })
     }
 
     /// Derives a plan-scoped proof for the exact internal plan issued by the
@@ -108,8 +167,9 @@ impl QueryPlanCapabilityProof {
     /// cuGraph execution capability. The replacement is bound to a private,
     /// collision-free structural scope for this exact plan; combining proofs
     /// preserves every scope, and execution rechecks it against the plan
-    /// about to run. All other plan requirements, including edge
-    /// normalization and result-sink materialization, remain exact.
+    /// about to run. The adapter-only host/deferred-GPU sink boundary is
+    /// canonicalized; all execution-relevant graph and operator facts remain
+    /// exact.
     pub fn for_cugraph_graph_execution_plan(plan: &QueryPlan) -> Option<Self> {
         let mut requirement = AttemptCapabilityEvidence::for_query_plan(plan);
         let graph_requirement = generic_graph_execution_blocker();
@@ -134,11 +194,27 @@ impl QueryPlanCapabilityProof {
 
     /// Refines this engine-issued proof with an opaque cold graph-model hint.
     ///
-    /// The hint selects a target within the ledger's already-proven immutable
-    /// grant range. It never changes the configured floor, capability set, or
-    /// capacity-fit equation, and callers cannot supply a raw byte value.
+    /// The model-owned graph evidence classifies whether the source frame and
+    /// graph input share one owner or are concurrently live through explicit
+    /// normalization. It becomes a complete phase only when it can be bound
+    /// to one exact cuGraph execution scope; callers cannot supply raw
+    /// graph-model bytes or a lifecycle choice.
     pub fn with_graph_memory_admission_evidence(mut self, evidence: &GraphMemoryAdmissionEvidence) -> Self {
-        self.requirement.extend_with_modeled_working_set_hint(evidence.cold_model_requested_bytes());
+        self.requirement.extend_with_graph_memory_admission_evidence(evidence);
+        self
+    }
+
+    /// Adds the retained source stage for the exact local-Parquet rowset that
+    /// a frontend passes directly into a graph execution boundary.
+    ///
+    /// This accepts the engine-owned source model rather than a caller-supplied
+    /// byte count. It is descriptive only and therefore cannot alter the
+    /// immutable floor, capability contracts, or ledger fit decision. Native
+    /// plans acquire the same hint through [`Self::for_query_plan`]; this
+    /// narrow entry point exists for DataFusion scans that a graph frontend
+    /// consumes before general native lowering.
+    pub fn with_local_parquet_source_stage(mut self, source: &LocalParquetSource) -> Self {
+        self.requirement.extend_with_local_parquet_source_stage(source);
         self
     }
 
@@ -161,6 +237,15 @@ impl QueryPlanCapabilityProof {
         self.requirement.soft_working_set_hint_bytes()
     }
 
+    /// Resolves the proof's private plan shapes against the policy installed
+    /// by the query service that is about to admit it.
+    pub(crate) fn resolve_reservation_envelope(
+        &self,
+        policy: AttemptReservationPolicy,
+    ) -> Result<AttemptReservationEnvelope> {
+        AttemptReservationEnvelope::resolve(&self.requirement.reservation_shapes, policy)
+    }
+
     #[cfg(test)]
     pub(crate) fn into_requirement(self) -> AttemptCapabilityEvidence {
         self.requirement
@@ -176,7 +261,35 @@ impl AttemptCapabilityEvidence {
     /// lowered native plan.  The plan, rather than an embedding caller,
     /// determines the capability set.
     pub(crate) fn for_query_plan(plan: &QueryPlan) -> Self {
-        Self::from_parts(0, 0, None, EstimateQuality::Unknown, plan.capability_analysis().requirements)
+        let source_stage_bytes = estimated_reachable_local_parquet_source_bytes(plan);
+        let mut evidence = Self::from_parts(
+            0,
+            0,
+            None,
+            source_stage_bytes.map_or(EstimateQuality::Unknown, |_| EstimateQuality::Modeled),
+            plan.capability_analysis().requirements,
+        );
+        evidence.source_stage_bytes = source_stage_bytes;
+        evidence.reservation_shapes.push(AttemptReservationShape::for_query_plan(plan));
+        evidence
+    }
+
+    fn mark_cugraph_graph_input_scope(&mut self) {
+        if let [shape] = self.reservation_shapes.as_mut_slice() {
+            shape.mark_cugraph_graph_input_scope();
+        }
+    }
+
+    fn mark_attested_graph_result_passthrough_scope(&mut self) {
+        if let [shape] = self.reservation_shapes.as_mut_slice() {
+            shape.mark_attested_graph_result_passthrough_scope();
+        }
+    }
+
+    fn mark_attested_graph_result_bounded_consumer_scope(&mut self) {
+        if let [shape] = self.reservation_shapes.as_mut_slice() {
+            shape.mark_attested_graph_result_bounded_consumer_scope();
+        }
     }
 
     /// Returns the descriptive working-set target, if a planner produced one.
@@ -193,16 +306,21 @@ impl AttemptCapabilityEvidence {
     /// Resolves this evidence against an already-installed device-profile
     /// floor.  This is read-only inspection; it never selects a grant.
     pub(crate) fn required_floor_bytes_for(&self, configured_floor_bytes: u64) -> Result<u64> {
-        configured_floor_bytes.checked_add(self.capability_floor_raise_bytes).ok_or_else(|| {
-            QueryError::new(
-                QueryErrorCode::InvalidPlan,
-                "nexus_query_engine.admission.requirement",
-                "attempt capability floor overflows u64",
-            )
-            .with_fact("reason", "attempt_requirement_floor_overflow")
-            .with_fact("configured_floor_bytes", configured_floor_bytes)
-            .with_fact("capability_floor_raise_bytes", self.capability_floor_raise_bytes)
-        })
+        configured_floor_bytes
+            .max(self.configured_floor_bytes)
+            .max(self.required_phase_floor_bytes)
+            .checked_add(self.capability_floor_raise_bytes)
+            .ok_or_else(|| {
+                QueryError::new(
+                    QueryErrorCode::InvalidPlan,
+                    "nexus_query_engine.admission.requirement",
+                    "attempt capability floor overflows u64",
+                )
+                .with_fact("reason", "attempt_requirement_floor_overflow")
+                .with_fact("configured_floor_bytes", configured_floor_bytes)
+                .with_fact("required_phase_floor_bytes", self.required_phase_floor_bytes)
+                .with_fact("capability_floor_raise_bytes", self.capability_floor_raise_bytes)
+            })
     }
 
     /// Combines evidence from all fragments in one invocation.
@@ -227,21 +345,158 @@ impl AttemptCapabilityEvidence {
         Self {
             configured_floor_bytes,
             capability_floor_raise_bytes,
+            required_phase_floor_bytes: 0,
+            source_stage_bytes: None,
             soft_working_set_hint_bytes,
             estimate_quality,
             required_capabilities,
             attested_cugraph_graph_execution_scopes: Vec::new(),
+            reservation_shapes: Vec::new(),
         }
     }
 
-    fn extend_with_modeled_working_set_hint(&mut self, hint_bytes: u64) {
-        match self.soft_working_set_hint_bytes {
-            Some(existing) if existing > hint_bytes => {},
-            _ => {
-                self.soft_working_set_hint_bytes = Some(hint_bytes);
-                self.estimate_quality = EstimateQuality::Modeled;
-            },
+    /// Applies a service-resolved envelope immediately before placement. A
+    /// graph envelope with an incomplete scope is rejected before this point;
+    /// non-graph incomplete shapes retain the ledger's conservative candidate
+    /// ceiling rather than a partial phase estimate.
+    pub(crate) fn with_reservation_envelope(mut self, envelope: &AttemptReservationEnvelope) -> Self {
+        self.required_phase_floor_bytes = self.required_phase_floor_bytes.max(envelope.required_phase_floor_bytes());
+        self.soft_working_set_hint_bytes = envelope.complete_phase_peak_bytes();
+        self.estimate_quality =
+            envelope.complete_phase_peak_bytes().map_or(EstimateQuality::Unknown, |_| EstimateQuality::Modeled);
+        self
+    }
+
+    /// Combines an engine-issued graph-native cold peak with the matching
+    /// native source stage using the graph model's exact source/graph lifetime
+    /// classification. Raw graph input shares its prepared frame with the
+    /// graph peak; explicit normalization retains the source while producing
+    /// a separate graph input and therefore composes additively.
+    fn extend_with_graph_memory_admission_evidence(&mut self, evidence: &GraphMemoryAdmissionEvidence) {
+        let graph_native_peak_bytes = evidence.cold_model_requested_bytes();
+        let whole_attempt_peak_bytes = self.source_stage_bytes.map_or(graph_native_peak_bytes, |source_stage_bytes| {
+            evidence.cold_model_with_source_stage_bytes(source_stage_bytes)
+        });
+        self.soft_working_set_hint_bytes = Some(whole_attempt_peak_bytes);
+        self.estimate_quality = EstimateQuality::Modeled;
+        let source_stage_bytes = self.source_stage_bytes;
+        let Some(graph_shape_index) = self.exact_attested_graph_reservation_shape_index() else {
+            return;
+        };
+
+        self.reservation_shapes[graph_shape_index].set_graph_memory_phase(evidence, source_stage_bytes);
+
+        self.account_graph_owned_runtime_scopes(graph_shape_index);
+
+        // A logical BFS decode/projection remains a distinct exact runtime
+        // scope. It has a typed post-graph peak only for BFS and only for the
+        // adapter's private fragment shape; every other GPU-resident scope
+        // stays incomplete and therefore clears the whole-attempt target.
+        let logical_output_scope_indices = self
+            .reservation_shapes
+            .iter()
+            .enumerate()
+            .filter_map(|(index, shape)| shape.is_bfs_logical_output_scope().then_some(index))
+            .collect::<Vec<_>>();
+        if let (Some(logical_output_peak), [logical_output_scope_index]) =
+            (evidence.post_graph_bfs_logical_output_peak_bytes(), logical_output_scope_indices.as_slice())
+        {
+            self.reservation_shapes[graph_shape_index]
+                .set_post_graph_bfs_logical_output_peak_bytes(logical_output_peak);
+            self.reservation_shapes[*logical_output_scope_index].account_for_by_graph_phase();
         }
+    }
+
+    /// Retains exact scopes for graph-owned frames while treating each one as
+    /// part of the already-modeled graph phase. This must run again after
+    /// composition, because a prepared graph ticket is refined before an
+    /// outer native host-passthrough adds its exact result scope.
+    fn account_graph_owned_runtime_scopes(&mut self, graph_shape_index: usize) {
+        // The graph phase consumes each exact local-Parquet stage carried by
+        // this invocation. Keep those scopes for execution-time equality
+        // validation, but do not add their bytes a second time after the
+        // graph model already classified their lifetime.
+        for (index, shape) in self.reservation_shapes.iter_mut().enumerate() {
+            if index != graph_shape_index && shape.has_modeled_source_stage() {
+                shape.account_for_by_graph_phase();
+            }
+        }
+
+        // The adapter identifies exactly one native fragment as the producer
+        // of the graph's prepared edge frame. Its output is the graph model's
+        // input owner, including literal/DataFusion sources that do not have a
+        // local-Parquet stage. Retain the structural scope for execution-time
+        // validation while folding that known lifetime into the graph phase.
+        let graph_input_scope_indices = self
+            .reservation_shapes
+            .iter()
+            .enumerate()
+            .filter_map(|(index, shape)| shape.is_cugraph_graph_input_scope().then_some(index))
+            .collect::<Vec<_>>();
+        if let [graph_input_scope_index] = graph_input_scope_indices.as_slice() {
+            self.reservation_shapes[*graph_input_scope_index].account_for_by_graph_phase();
+        }
+
+        // A composed native root may merely expose the graph executor's
+        // already-live result frame to its host sink. Only the graph frontend
+        // can attest that exact source identity; keep the scope for runtime
+        // equality while charging no second phase for the same frame.
+        let graph_result_passthrough_scope_indices = self
+            .reservation_shapes
+            .iter()
+            .enumerate()
+            .filter_map(|(index, shape)| shape.is_attested_graph_result_passthrough_scope().then_some(index))
+            .collect::<Vec<_>>();
+        if let [graph_result_passthrough_scope_index] = graph_result_passthrough_scope_indices.as_slice() {
+            self.reservation_shapes[*graph_result_passthrough_scope_index].account_for_by_graph_phase();
+        }
+
+        // A native full sort over that same graph result is executed only
+        // after the graph producer has yielded. Its scratch/output allocations
+        // are charged to the engine's existing immutable attempt resource;
+        // unlike another graph/input source, it cannot introduce an
+        // unbounded external GPU owner. Keep its exact scope for execution
+        // validation and account the sequential bounded phase once.
+        let graph_result_bounded_consumer_scope_indices = self
+            .reservation_shapes
+            .iter()
+            .enumerate()
+            .filter_map(|(index, shape)| shape.is_attested_graph_result_bounded_consumer_scope().then_some(index))
+            .collect::<Vec<_>>();
+        if let [graph_result_bounded_consumer_scope_index] = graph_result_bounded_consumer_scope_indices.as_slice() {
+            self.reservation_shapes[*graph_result_bounded_consumer_scope_index].account_for_by_graph_phase();
+        }
+    }
+
+    fn extend_with_local_parquet_source_stage(&mut self, source: &LocalParquetSource) {
+        let Some(source_stage_bytes) = estimated_local_parquet_source_bytes(source) else {
+            return;
+        };
+        self.source_stage_bytes = Some(match self.source_stage_bytes {
+            Some(existing) => existing.saturating_add(source_stage_bytes),
+            None => source_stage_bytes,
+        });
+        if let Some(shape_index) = self.exact_attested_graph_reservation_shape_index() {
+            self.reservation_shapes[shape_index].add_source_stage_bytes(source_stage_bytes);
+        }
+        self.estimate_quality = EstimateQuality::Modeled;
+    }
+
+    /// A graph model token has no caller-provided plan identity. It can only
+    /// refine a proof that attests exactly one graph execution scope, and it
+    /// must attach to the corresponding reservation shape rather than a
+    /// generic fragment in a composed proof.
+    fn exact_attested_graph_reservation_shape_index(&self) -> Option<usize> {
+        let [scope] = self.attested_cugraph_graph_execution_scopes.as_slice() else {
+            return None;
+        };
+        let mut matching_shapes = self
+            .reservation_shapes
+            .iter()
+            .enumerate()
+            .filter_map(|(index, shape)| scope.matches_reservation_shape(shape).then_some(index));
+        let index = matching_shapes.next()?;
+        matching_shapes.next().is_none().then_some(index)
     }
 
     /// Stable, human-readable identities for structured device-capability
@@ -302,10 +557,13 @@ impl AttemptCapabilityEvidence {
         fragments: I,
     ) -> Result<Self> {
         let mut capability_floor_raise_bytes = 0_u64;
-        let mut soft_working_set_hint_bytes: Option<u64> = None;
+        let mut required_phase_floor_bytes = 0_u64;
+        let mut source_stage_bytes = Some(0_u64);
+        let mut soft_working_set_hint_bytes = Some(0_u64);
         let mut estimate_quality = EstimateQuality::Measured;
         let mut required_capabilities = Vec::new();
         let mut attested_cugraph_graph_execution_scopes = Vec::new();
+        let mut reservation_shapes = Vec::new();
         for fragment in fragments {
             capability_floor_raise_bytes =
                 capability_floor_raise_bytes.checked_add(fragment.capability_floor_raise_bytes).ok_or_else(|| {
@@ -316,10 +574,14 @@ impl AttemptCapabilityEvidence {
                     )
                     .with_fact("reason", "attempt_requirement_capability_raise_overflow")
                 })?;
+            required_phase_floor_bytes = required_phase_floor_bytes.max(fragment.required_phase_floor_bytes);
+            source_stage_bytes = match (source_stage_bytes, fragment.source_stage_bytes) {
+                (Some(left), Some(right)) => left.checked_add(right),
+                _ => None,
+            };
             soft_working_set_hint_bytes = match (soft_working_set_hint_bytes, fragment.soft_working_set_hint_bytes) {
                 (Some(left), Some(right)) => Some(left.max(right)),
-                (left @ Some(_), None) => left,
-                (None, right) => right,
+                _ => None,
             };
             estimate_quality = estimate_quality.min(fragment.estimate_quality);
             for capability in fragment.required_capabilities {
@@ -332,6 +594,11 @@ impl AttemptCapabilityEvidence {
                     attested_cugraph_graph_execution_scopes.push(scope);
                 }
             }
+            for shape in fragment.reservation_shapes {
+                if !reservation_shapes.contains(&shape) {
+                    reservation_shapes.push(shape);
+                }
+            }
         }
         let mut aggregate = Self::from_parts(
             configured_floor_bytes,
@@ -340,7 +607,15 @@ impl AttemptCapabilityEvidence {
             estimate_quality,
             required_capabilities,
         );
+        aggregate.required_phase_floor_bytes = required_phase_floor_bytes;
+        aggregate.source_stage_bytes = source_stage_bytes;
         aggregate.attested_cugraph_graph_execution_scopes = attested_cugraph_graph_execution_scopes;
+        aggregate.reservation_shapes = reservation_shapes;
+        if let Some(graph_shape_index) = aggregate.exact_attested_graph_reservation_shape_index()
+            && aggregate.reservation_shapes[graph_shape_index].has_graph_memory_phase()
+        {
+            aggregate.account_graph_owned_runtime_scopes(graph_shape_index);
+        }
         Ok(aggregate)
     }
 }
@@ -367,6 +642,38 @@ fn is_generic_graph_execution_blocker(requirement: &ReservationRequirement) -> b
     requirement == &generic_graph_execution_blocker()
 }
 
+fn is_attested_graph_result_passthrough_plan(plan: &QueryPlan, graph_result_input_name: &str) -> bool {
+    let [node] = plan.nodes() else {
+        return false;
+    };
+    if !plan.unreachable_node_ids().is_empty() || plan.root_id() != node.id {
+        return false;
+    }
+    matches!(
+        &node.kind,
+        PlanNode::Source(source)
+            if matches!(source.as_ref(), SourceNode::GpuResident(source) if source.input_name == graph_result_input_name)
+    )
+}
+
+fn is_attested_graph_result_bounded_consumer_plan(plan: &QueryPlan, graph_result_input_name: &str) -> bool {
+    let mut graph_result_source_count = 0_usize;
+    for node in plan.nodes() {
+        if plan.unreachable_node_ids().contains(&node.id) {
+            continue;
+        }
+        match &node.kind {
+            PlanNode::Source(source) if matches!(source.as_ref(), SourceNode::GpuResident(source) if source.input_name == graph_result_input_name) =>
+            {
+                graph_result_source_count += 1;
+            },
+            PlanNode::Sort(_) => {},
+            _ => return false,
+        }
+    }
+    graph_result_source_count == 1
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -376,12 +683,14 @@ mod tests {
     use super::*;
     use crate::{
         capability::{ContractQuality, ReservationRequirement},
+        chunk::SourceChunkPlanningOptions,
+        graph_memory::{GraphMemoryCalibrationOverride, graph_memory_admission_evidence_for_edge_list},
         plan::{
             GraphAlgorithm, GraphAlgorithmParams, GraphAlgorithmSpec, GraphBfsParams, GraphConstructionOptions,
             GraphEdgeColumnBindings, QueryPlan, QueryPlanBuilder,
         },
-        runtime::ReservationKind,
-        source::{GpuResidentSource, SourceNode},
+        runtime::{ReservationKind, SourceChunkPlanningMode, SourceSchedulerPolicy},
+        source::{GpuResidentSource, LocalParquetFile, LocalParquetSource, SourceNode},
     };
 
     fn capability() -> ReservationRequirement {
@@ -424,6 +733,206 @@ mod tests {
         builder.finish_with_host_sink(source)
     }
 
+    fn reservation_policy() -> AttemptReservationPolicy {
+        AttemptReservationPolicy::new(
+            64 * 1024,
+            1,
+            3,
+            1,
+            SourceSchedulerPolicy::new(2),
+            SourceChunkPlanningMode::default(),
+            SourceChunkPlanningOptions::default(),
+        )
+    }
+
+    #[test]
+    fn known_local_parquet_sources_keep_a_separate_modeled_source_stage() {
+        let schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Int64, false)]));
+        let mut builder = QueryPlanBuilder::new();
+        let source = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
+            vec![
+                LocalParquetFile::new("/tmp/requirement-known.parquet")
+                    .with_row_groups(vec![0])
+                    .with_row_group_bytes(vec![100])
+                    .with_projected_row_group_bytes(vec![40], vec![96]),
+            ],
+            schema,
+            vec!["value".to_owned()],
+        )));
+        let plan = builder.finish_with_host_sink(source);
+
+        let requirement = AttemptCapabilityEvidence::for_query_plan(&plan);
+        assert_eq!(requirement.source_stage_bytes, Some(96));
+        assert_eq!(requirement.soft_working_set_hint_bytes(), None);
+        assert_eq!(requirement.estimate_quality(), EstimateQuality::Modeled);
+    }
+
+    #[test]
+    fn unknown_local_parquet_sources_issue_no_modeled_source_stage() {
+        let schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Int64, false)]));
+        let mut builder = QueryPlanBuilder::new();
+        let source = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+            "/tmp/requirement-unknown.parquet",
+            schema,
+            vec!["value".to_owned()],
+        )));
+        let plan = builder.finish_with_host_sink(source);
+
+        let requirement = AttemptCapabilityEvidence::for_query_plan(&plan);
+        assert_eq!(requirement.source_stage_bytes, None);
+        assert_eq!(requirement.soft_working_set_hint_bytes(), None);
+        assert_eq!(requirement.estimate_quality(), EstimateQuality::Unknown);
+    }
+
+    #[test]
+    fn zero_column_count_source_resolves_a_parquet_read_floor_without_a_partial_target() {
+        let source = LocalParquetSource::zero_column_count(vec![
+            LocalParquetFile::new("/tmp/requirement-count.parquet")
+                .with_row_groups(vec![0])
+                .with_row_group_bytes(vec![4_096])
+                .with_projected_row_group_bytes(vec![0], vec![0]),
+        ]);
+        let mut builder = QueryPlanBuilder::new();
+        let source = builder.add_source(SourceNode::LocalParquet(source));
+        let plan = builder.finish_with_host_sink(source);
+
+        let minimum_read_budget = u64::try_from(cudf::DataFrame::minimum_parquet_source_read_budget_bytes()).unwrap();
+        let proof = QueryPlanCapabilityProof::for_query_plan(&plan).expect("sink plan must issue a proof");
+        let envelope = proof.resolve_reservation_envelope(reservation_policy()).unwrap();
+        let requirement = proof.into_requirement().with_reservation_envelope(&envelope);
+
+        assert_eq!(requirement.source_stage_bytes, Some(0));
+        assert_eq!(envelope.required_phase_floor_bytes(), minimum_read_budget);
+        assert_eq!(envelope.complete_phase_peak_bytes(), None);
+        assert_eq!(requirement.soft_working_set_hint_bytes(), None);
+        assert_eq!(requirement.required_floor_bytes_for(1).unwrap(), minimum_read_budget);
+    }
+
+    #[test]
+    fn graph_evidence_does_not_double_count_its_prepared_local_source_frame() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("src", DataType::Int64, false),
+            Field::new("dst", DataType::Int64, false),
+        ]));
+        let spec = GraphAlgorithmSpec::with_stable_schema(
+            GraphAlgorithm::Bfs,
+            GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
+            GraphConstructionOptions::default(),
+            GraphAlgorithmParams::Bfs(Box::new(GraphBfsParams::new(0, None))),
+        );
+        let mut builder = QueryPlanBuilder::new();
+        let source = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
+            vec![
+                LocalParquetFile::new("/tmp/retained-graph-source.parquet")
+                    .with_row_groups(vec![0])
+                    .with_row_group_bytes(vec![64])
+                    .with_projected_row_group_bytes(vec![32], vec![96]),
+            ],
+            Arc::clone(&schema),
+            vec!["src".to_owned(), "dst".to_owned()],
+        )));
+        let graph = builder.add_graph_algorithm(source, spec.clone());
+        let plan = builder.finish_with_host_sink(graph);
+        let evidence = graph_memory_admission_evidence_for_edge_list(
+            &spec,
+            &schema,
+            10,
+            None,
+            GraphMemoryCalibrationOverride::none(),
+            None,
+        )
+        .unwrap();
+        let proof = QueryPlanCapabilityProof::for_cugraph_graph_execution_plan(&plan)
+            .expect("graph plan must issue an engine-owned capability proof");
+
+        assert_eq!(proof.soft_working_set_hint_bytes(), None);
+        assert_eq!(proof.as_requirement().source_stage_bytes, Some(96));
+        assert_eq!(
+            proof.with_graph_memory_admission_evidence(&evidence).soft_working_set_hint_bytes(),
+            Some(96_u64.max(evidence.cold_model_requested_bytes())),
+            "the graph cold peak already owns the prepared edge frame"
+        );
+    }
+
+    #[test]
+    fn graph_evidence_adds_a_source_stage_that_normalizes_into_a_separate_graph_input() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("src", DataType::Int64, false),
+            Field::new("dst", DataType::Int64, false),
+        ]));
+        let spec = GraphAlgorithmSpec::with_stable_schema(
+            GraphAlgorithm::Bfs,
+            GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
+            GraphConstructionOptions::default(),
+            GraphAlgorithmParams::Bfs(Box::new(GraphBfsParams::new(0, None))),
+        )
+        .with_edge_normalize_inserted(true);
+        let mut builder = QueryPlanBuilder::new();
+        let source = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
+            vec![
+                LocalParquetFile::new("/tmp/normalized-graph-source.parquet")
+                    .with_row_groups(vec![0])
+                    .with_row_group_bytes(vec![64])
+                    .with_projected_row_group_bytes(vec![32], vec![96]),
+            ],
+            Arc::clone(&schema),
+            vec!["src".to_owned(), "dst".to_owned()],
+        )));
+        let graph = builder.add_graph_algorithm(source, spec.clone());
+        let plan = builder.finish_with_host_sink(graph);
+        let evidence = graph_memory_admission_evidence_for_edge_list(
+            &spec,
+            &schema,
+            10,
+            None,
+            GraphMemoryCalibrationOverride::none(),
+            None,
+        )
+        .unwrap();
+        let proof = QueryPlanCapabilityProof::for_cugraph_graph_execution_plan(&plan)
+            .expect("graph plan must issue an engine-owned capability proof");
+
+        assert_eq!(proof.soft_working_set_hint_bytes(), None);
+        assert_eq!(proof.as_requirement().source_stage_bytes, Some(96));
+        assert_eq!(
+            proof.with_graph_memory_admission_evidence(&evidence).soft_working_set_hint_bytes(),
+            Some(96_u64.saturating_add(evidence.cold_model_requested_bytes())),
+            "the explicit normalize source and derived graph input are separate live owners"
+        );
+    }
+
+    #[test]
+    fn graph_evidence_without_a_source_stage_remains_the_native_peak() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("src", DataType::Int64, false),
+            Field::new("dst", DataType::Int64, false),
+            Field::new("weight", DataType::Float64, false),
+        ]));
+        let spec = GraphAlgorithmSpec::with_stable_schema(
+            GraphAlgorithm::Bfs,
+            GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
+            GraphConstructionOptions::default(),
+            GraphAlgorithmParams::Bfs(Box::new(GraphBfsParams::new(0, None))),
+        );
+        let evidence = graph_memory_admission_evidence_for_edge_list(
+            &spec,
+            &schema,
+            10,
+            None,
+            GraphMemoryCalibrationOverride::none(),
+            None,
+        )
+        .unwrap();
+        let proof = QueryPlanCapabilityProof::for_cugraph_graph_execution_plan(&graph_bfs_plan())
+            .expect("graph plan must issue an engine-owned capability proof");
+
+        assert_eq!(proof.soft_working_set_hint_bytes(), None);
+        assert_eq!(
+            proof.with_graph_memory_admission_evidence(&evidence).soft_working_set_hint_bytes(),
+            Some(evidence.cold_model_requested_bytes())
+        );
+    }
+
     #[test]
     fn required_floor_uses_checked_arithmetic() {
         let requirement =
@@ -464,6 +973,17 @@ mod tests {
         assert_eq!(result.soft_working_set_hint_bytes, Some(20));
         assert_eq!(result.estimate_quality, EstimateQuality::Unknown);
         assert_eq!(result.required_capabilities.len(), 1);
+    }
+
+    #[test]
+    fn aggregate_clears_the_target_when_any_fragment_is_unmodeled() {
+        let result = AttemptCapabilityEvidence::aggregate([
+            AttemptCapabilityEvidence::from_parts(0, 0, Some(12), EstimateQuality::Modeled, Vec::new()),
+            AttemptCapabilityEvidence::from_parts(0, 0, None, EstimateQuality::Unknown, Vec::new()),
+        ])
+        .unwrap();
+
+        assert_eq!(result.soft_working_set_hint_bytes(), None);
     }
 
     #[test]

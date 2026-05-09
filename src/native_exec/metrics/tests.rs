@@ -86,7 +86,11 @@ fn ordered_descriptors_drive_names_registration_and_legacy_categories() {
 fn every_ordered_descriptor_has_a_compile_time_recording_mapping() {
     let recording_names = NATIVE_NEXUS_RECORDING_DESCRIPTORS.iter().map(|(name, _kind)| *name).collect::<Vec<_>>();
     assert_eq!(recording_names, NATIVE_NEXUS_DATAFUSION_METRIC_NAMES);
-    assert_eq!(recording_names.len(), 111, "the ordered public metric count must include the sealed-attempt row");
+    assert_eq!(
+        recording_names.len(),
+        112,
+        "the ordered public metric count must include the sealed-attempt and graph-claim calibration rows"
+    );
 
     for expected_kind in [
         NativeMetricRecordingKind::Query,

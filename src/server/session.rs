@@ -56,10 +56,24 @@ pub(crate) fn cugraph_sql_config(
 
 /// Build the `SessionConfig` for the Flight SQL server from DataFusion's
 /// standard environment configuration. The server enables catalog discovery
-/// but does not change optimizer or execution settings.
-pub fn build_session_config(_config: &ServerConfig) -> super::error::Result<SessionConfig> {
+/// but does not change optimizer or execution settings beyond what the
+/// configured final plan requirement implies (see below).
+pub fn build_session_config(config: &ServerConfig) -> super::error::Result<SessionConfig> {
+    let gpu_only = config
+        .native_optimizer_config
+        .final_plan_requirements()
+        .contains(&crate::planner::FinalPlanRequirement::NoDataFusionCpu);
     SessionConfig::from_env()
         .map(enable_session_discovery)
+        .map(|session_config| {
+            // Under the GPU-only requirement no query can execute on the CPU,
+            // so DataFusion-side parallelism is unreachable. Single-group
+            // scan planning keeps sort-declared fixtures (the source-sorted
+            // DBLP layout) eligible for native lowering: a declared scan
+            // ordering cannot be reproduced across parallel byte-range
+            // groups.
+            if gpu_only { session_config.with_target_partitions(1) } else { session_config }
+        })
         .map_err(|error| ServerError::session("failed to build DataFusion session config from environment", error))
 }
 

@@ -372,8 +372,37 @@ pub struct QueryError {
     operation: &'static str,
     message: String,
     facts: Box<Facts>,
+    cugraph_allocation_source: Option<CugraphAllocationSource>,
+    graph_cache_scope_peak_bytes: Option<u64>,
     source: Option<BoxedSourceError>,
     cleanup_disposition: Option<CleanupDisposition>,
+}
+
+/// Closed cuGraph allocation-failure provenance retained independently of
+/// diagnostic string facts.
+///
+/// `RmmOutOfMemory` is the callback-backed path through the query memory
+/// resource. The `bad_alloc` variants identify direct cuGraph/RAFT throwing
+/// paths; when they traverse a resident cache allocation scope that scope
+/// publishes an exact allocator event independently. `Unknown` remains
+/// fail-closed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CugraphAllocationSource {
+    Unknown,
+    RmmOutOfMemory,
+    RmmBadAlloc,
+    StdBadAlloc,
+}
+
+impl CugraphAllocationSource {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Unknown => "unknown",
+            Self::RmmOutOfMemory => "rmm_out_of_memory",
+            Self::RmmBadAlloc => "rmm_bad_alloc",
+            Self::StdBadAlloc => "std_bad_alloc",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -398,6 +427,8 @@ impl QueryError {
             operation,
             message,
             facts: Box::new(Facts::new()),
+            cugraph_allocation_source: None,
+            graph_cache_scope_peak_bytes: None,
             source: None,
             cleanup_disposition: None,
         }
@@ -435,6 +466,40 @@ impl QueryError {
             self.facts.insert(key, value.to_string());
         }
         self
+    }
+
+    /// Retains typed cuGraph allocation provenance and mirrors its stable label
+    /// into ordinary error facts for existing diagnostic consumers.
+    #[cfg(any(feature = "cugraph", test))]
+    #[must_use]
+    pub(crate) fn with_cugraph_allocation_source(mut self, source: CugraphAllocationSource) -> Self {
+        self.facts.insert("cugraph_allocation_source", source.as_str().to_string());
+        self.cugraph_allocation_source = Some(source);
+        self
+    }
+
+    /// Returns the closed cuGraph allocation provenance, when the cuGraph
+    /// boundary supplied one.
+    pub const fn cugraph_allocation_source(&self) -> Option<CugraphAllocationSource> {
+        self.cugraph_allocation_source
+    }
+
+    /// Retains an exact high-water mark from a completed resident-graph cache
+    /// scope. This is an internal typed sideband, deliberately distinct from
+    /// error facts so consumers cannot mistake diagnostic text for a peak.
+    #[cfg(feature = "cugraph")]
+    #[must_use]
+    pub(crate) fn with_graph_cache_scope_peak_bytes(mut self, peak_bytes: u64) -> Self {
+        self.graph_cache_scope_peak_bytes = Some(peak_bytes);
+        self
+    }
+
+    /// Returns the exact resident-cache scope high-water carried from a graph
+    /// execution error only after that scope completed its fence and health
+    /// proof.
+    #[cfg(feature = "cugraph")]
+    pub(crate) const fn graph_cache_scope_peak_bytes(&self) -> Option<u64> {
+        self.graph_cache_scope_peak_bytes
     }
 
     /// Assigns a query-wide diagnostic correlation id and mirrors it into facts.
@@ -745,6 +810,8 @@ impl fmt::Debug for QueryError {
             .field("operation", &self.operation)
             .field("message", &self.message)
             .field("facts", &self.facts)
+            .field("cugraph_allocation_source", &self.cugraph_allocation_source)
+            .field("graph_cache_scope_peak_bytes", &self.graph_cache_scope_peak_bytes)
             .field("source", &self.source.as_ref().map(|source| source.to_string()))
             .finish()
     }
@@ -880,6 +947,21 @@ mod tests {
             "failed to open <redacted-uri> for read"
         );
         assert_eq!(redact_uri_tokens("  spaced   message  "), "spaced message");
+    }
+
+    #[cfg(feature = "cugraph")]
+    #[test]
+    fn graph_cache_scope_peak_is_a_typed_sideband_not_an_error_fact() {
+        let error = QueryError::new(
+            QueryErrorCode::CudfResourceExhausted,
+            "nexus_query_engine.test.cache_scope",
+            "cache scope failed",
+        )
+        .with_graph_cache_scope_peak_bytes(4_096);
+
+        assert_eq!(error.graph_cache_scope_peak_bytes(), Some(4_096));
+        assert_eq!(error.fact_value("graph_cache_scope_peak_bytes"), None);
+        assert!(error.to_json()["facts"].get("graph_cache_scope_peak_bytes").is_none());
     }
 
     #[cfg(feature = "cuvs")]

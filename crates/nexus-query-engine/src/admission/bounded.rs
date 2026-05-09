@@ -7,16 +7,12 @@
 
 use std::collections::BTreeMap;
 
-#[cfg(test)]
-use super::{AttemptCapabilityEvidence, EstimateQuality};
 use super::{
     CompiledBoundedPipelineSupport, compiled_bounded_query_plan_support,
     shared::{
         CapabilityFirstCandidateStatus, CapabilityFirstPipelineAdmission, capability_first_bounded_pipeline_admission,
     },
 };
-#[cfg(test)]
-use crate::plan::estimated_output_bytes;
 use crate::{
     capability::{
         CapabilityAnalysis, CapabilityEnvelope, CapabilityRejectionCategory, CapabilityRejectionOwner,
@@ -57,25 +53,6 @@ impl BoundedPipelineAdmission {
     pub const fn envelope(&self) -> CapabilityEnvelope {
         self.envelope
     }
-}
-
-/// Derives opaque planner evidence for a fixture bounded pipeline.
-///
-/// This fixture helper is available only to crate tests. A caller must not
-/// turn arbitrary source-byte metadata into an admission preference.
-#[cfg(test)]
-pub(crate) fn bounded_pipeline_attempt_requirement(plan: &QueryPlan) -> Result<Option<AttemptCapabilityEvidence>> {
-    let Some(admission) = bounded_pipeline_admission(plan)? else {
-        return Ok(None);
-    };
-    let soft_working_set_hint_bytes = estimated_output_bytes(plan, plan.root_id());
-    Ok(Some(AttemptCapabilityEvidence::from_parts(
-        0,
-        0,
-        soft_working_set_hint_bytes,
-        soft_working_set_hint_bytes.map_or(EstimateQuality::Unknown, |_| EstimateQuality::Modeled),
-        admission.analysis().requirements.clone(),
-    )))
 }
 
 pub fn bounded_pipeline_admission(plan: &QueryPlan) -> Result<Option<BoundedPipelineAdmission>> {

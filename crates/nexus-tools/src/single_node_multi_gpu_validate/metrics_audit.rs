@@ -98,17 +98,16 @@ impl MetricsAudit {
         }
     }
 
-    /// A metric audit is blocking only when a directly measured clause fails.
+    /// A metric audit is blocking only when a projection-integrity clause
+    /// fails. Histogram saturation is an I1 usability finding: it must stay
+    /// explicit in the artifact, but it cannot turn a bounded, otherwise
+    /// coherent workload into a false negative simply because the metric
+    /// cannot estimate that workload's p99.
     /// The delivery field is intentionally not a synthetic success claim.
     pub(super) fn passes(&self) -> bool {
-        [
-            &self.snapshot_cadence,
-            &self.fixed_cardinality,
-            &self.report_to_metric_equality,
-            &self.duration_bucket_suitability,
-        ]
-        .into_iter()
-        .all(|clause| clause.status != ClauseStatus::Failed)
+        [&self.snapshot_cadence, &self.fixed_cardinality, &self.report_to_metric_equality]
+            .into_iter()
+            .all(|clause| clause.status != ClauseStatus::Failed)
     }
 }
 
@@ -368,6 +367,15 @@ mod tests {
         assert_eq!(audit.snapshot_cadence.status, ClauseStatus::Failed);
         assert_eq!(audit.duration_bucket_suitability.status, ClauseStatus::Failed);
         assert!(!audit.passes());
+    }
+
+    #[test]
+    fn all_overflow_histograms_are_reported_without_failing_projection_integrity() {
+        let mut snapshots = vec![snapshot(0, 0), snapshot(250_000_000, 2)];
+        snapshots[1].total_duration_bucket_counts = vec![0, 0, 0, 0, 2];
+        let audit = MetricsAudit::from_snapshots(&snapshots, &[0, 1], 2, 250, false);
+        assert_eq!(audit.duration_bucket_suitability.status, ClauseStatus::Failed);
+        assert!(audit.passes());
     }
 
     #[test]

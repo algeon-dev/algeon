@@ -228,10 +228,13 @@ fn query_service_memory_failure_callback_ignores_budget_failures() {
             AttemptRequirement {
                 configured_floor_bytes: GRANT_BYTES,
                 capability_floor_raise_bytes: 0,
+                required_phase_floor_bytes: 0,
+                source_stage_bytes: None,
                 soft_working_set_hint_bytes: Some(GRANT_BYTES),
                 estimate_quality: EstimateQuality::Modeled,
                 required_capabilities: Vec::new(),
                 attested_cugraph_graph_execution_scopes: Vec::new(),
+                reservation_shapes: Vec::new(),
             },
         ))
         .unwrap()
@@ -551,10 +554,13 @@ fn protection_retargets_on_health_close_and_unrelated_devices_stay_work_conservi
             AttemptRequirement {
                 configured_floor_bytes: floor,
                 capability_floor_raise_bytes: 0,
+                required_phase_floor_bytes: 0,
+                source_stage_bytes: None,
                 soft_working_set_hint_bytes: Some(floor),
                 estimate_quality: EstimateQuality::Modeled,
                 required_capabilities: Vec::new(),
                 attested_cugraph_graph_execution_scopes: Vec::new(),
+                reservation_shapes: Vec::new(),
             },
         ))
         .unwrap();

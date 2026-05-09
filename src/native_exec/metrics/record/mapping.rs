@@ -273,6 +273,14 @@ impl_query_rows_recording! {
     native_plan_task_mapping_rows => record_plan_task_mapping_rows,
 }
 
+impl NativeMetricRecording<recording_marker::native_graph_claim_calibration_rows> for NexusNativeMetrics {
+    recording_kind!(Query);
+
+    fn record_query(&self, metrics: &QueryMetrics) {
+        self.native_graph_claim_calibration_rows.add(metrics.graph_claim_calibration_rows.len());
+    }
+}
+
 impl NativeMetricRecording<recording_marker::source_read_boundary_direct_device> for NexusNativeMetrics {
     recording_kind!(Query);
 

@@ -39,6 +39,19 @@ pub const DBLP_EXPECTED_EDGES: u64 = 45_564_149;
 pub const DBLP_EXPECTED_AUTHOR_ROWS: u64 = 14_934_850;
 /// Canonical DBLP / AMiner Citation Network V12 paper-field-of-study row count.
 pub const DBLP_EXPECTED_FOS_ROWS: u64 = 45_029_892;
+/// Parquet-footer key carrying the full edge rowset's graph vertex upper
+/// bound. The fixture generator writes it only for a complete DBLP V12
+/// fixture; prefix samples cannot safely make this claim.
+pub const DBLP_GRAPH_VERTEX_UPPER_BOUND_FOOTER_KEY: &str = "nexus.graph.vertex_upper_bound.v1";
+/// Parquet-footer key certifying that one complete DBLP edge file is a simple
+/// directed relation over the declared physical source/destination columns.
+/// The execution adapter may use this source-bound fact to omit Python edge
+/// normalization only when the exact complete file rowset remains intact.
+pub const DBLP_SIMPLE_DIRECTED_EDGE_TOPOLOGY_FOOTER_KEY: &str = "nexus.graph.simple_directed_edge_topology.v1";
+/// Manifest contract for a DBLP-derived source-hash graph slice.
+pub const DBLP_MULTI_GRAPH_SLICE_PARTITION: &str = "source_hash_splitmix64_v1";
+/// Version of the DBLP multi-graph slice manifest contract.
+pub const DBLP_MULTI_GRAPH_SLICE_SCHEMA_VERSION: u64 = 1;
 /// Required Parquet tables in deterministic artifact/report order.
 pub const DBLP_TABLES: &[&str] =
     &["edges_by_src", "edges_by_dst", "profiles_by_paper_id", "paper_authors", "paper_fos"];
@@ -129,6 +142,18 @@ pub struct DblpTableMetadata {
     pub schema: Vec<String>,
 }
 
+/// Generator-attested identity for one independently discoverable DBLP graph
+/// slice. The hash is over the logical source-sorted edge rows, not Parquet
+/// bytes, so it identifies the graph rowset across writer implementations.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DblpMultiGraphSliceMetadata {
+    pub partition: String,
+    pub slice_count: u64,
+    pub slice_index: u64,
+    pub hash_seed: u64,
+    pub edge_rowset_sha256: String,
+}
+
 /// Typed DBLP fixture metadata. It mirrors the TPC-H dataset metadata shape
 /// while retaining the graph fixture's source and generated-manifest SHA-256
 /// identities.
@@ -150,6 +175,8 @@ pub struct DblpDatasetMetadata {
     pub source_metadata_sha256: String,
     /// SHA-256 of the original source JSON, recorded by the fixture generator.
     pub source_content_sha256: String,
+    /// Present only for a DBLP-derived independently discoverable graph slice.
+    pub multi_graph_slice: Option<DblpMultiGraphSliceMetadata>,
     /// Per-table layout metadata in [`DBLP_TABLES`] order.
     pub tables: Vec<DblpTableMetadata>,
 }
@@ -279,12 +306,20 @@ fn describe_dblp_dataset_with_contract(
     let manifest = read_json_document(&layout.manifest_path, "manifest")?;
     let source = read_json_document(&layout.source_path, "source metadata")?;
     let provenance = validate_manifest(&manifest)?;
+    let multi_graph_slice = parse_multi_graph_slice(&manifest)?;
     if require_canonical_v12 {
+        if multi_graph_slice.is_some() {
+            return Err(GraphDatasetError::InvalidDataset(
+                "P6 preflight requires the canonical DBLP V12 fixture, not a derived multi-graph slice".to_string(),
+            ));
+        }
+        validate_canonical_edge_vertex_footer_bounds(&layout, &manifest)?;
         validate_canonical_v12_manifest(&manifest)?;
     }
-    let source_content_sha256 = validate_source_metadata(&source)?;
+    let source_content_sha256 = validate_source_metadata(&source, multi_graph_slice.as_ref())?;
     let tables = read_table_metadata(&layout, &manifest)?;
     validate_manifest_counts(&manifest, &tables)?;
+    validate_simple_directed_edge_topology_footer(&layout)?;
 
     let file_count = tables.len();
     let total_rows = tables.iter().map(|table| table.row_count).sum();
@@ -302,6 +337,7 @@ fn describe_dblp_dataset_with_contract(
         manifest_sha256: sha256_file(&layout.manifest_path)?,
         source_metadata_sha256: sha256_file(&layout.source_path)?,
         source_content_sha256,
+        multi_graph_slice,
         tables,
     })
 }
@@ -339,6 +375,55 @@ fn validate_manifest(manifest: &Value) -> GraphDatasetResult<String> {
     required_string(manifest, &["dataset", "source"], "manifest dataset source").map(str::to_string)
 }
 
+fn parse_multi_graph_slice(manifest: &Value) -> GraphDatasetResult<Option<DblpMultiGraphSliceMetadata>> {
+    let Some(slice) = manifest.get("multi_graph_slice") else {
+        return Ok(None);
+    };
+    parse_multi_graph_slice_value(slice, "manifest multi_graph_slice").map(Some)
+}
+
+fn parse_multi_graph_slice_value(slice: &Value, label: &str) -> GraphDatasetResult<DblpMultiGraphSliceMetadata> {
+    if !slice.is_object() {
+        return Err(GraphDatasetError::InvalidDataset(format!("{label} must be an object")));
+    }
+    let schema_version = required_u64(slice, &["schema_version"], &format!("{label} schema_version"))?;
+    if schema_version != DBLP_MULTI_GRAPH_SLICE_SCHEMA_VERSION {
+        return Err(GraphDatasetError::InvalidDataset(format!(
+            "unsupported {label} schema_version {schema_version}; expected {DBLP_MULTI_GRAPH_SLICE_SCHEMA_VERSION}"
+        )));
+    }
+    let partition = required_string(slice, &["partition"], &format!("{label} partition"))?;
+    if partition != DBLP_MULTI_GRAPH_SLICE_PARTITION {
+        return Err(GraphDatasetError::InvalidDataset(format!(
+            "{label} partition must be {DBLP_MULTI_GRAPH_SLICE_PARTITION}, found {partition}"
+        )));
+    }
+    let slice_count = required_u64(slice, &["slice_count"], &format!("{label} count"))?;
+    if slice_count < 2 {
+        return Err(GraphDatasetError::InvalidDataset(format!("{label} count must be at least two")));
+    }
+    let slice_index = required_u64(slice, &["slice_index"], &format!("{label} index"))?;
+    if slice_index >= slice_count {
+        return Err(GraphDatasetError::InvalidDataset(format!(
+            "{label} index {slice_index} is outside slice_count {slice_count}"
+        )));
+    }
+    let hash_seed = required_u64(slice, &["hash_seed"], &format!("{label} hash seed"))?;
+    let edge_rowset_sha256 = required_string(slice, &["edge_rowset_sha256"], &format!("{label} edge rowset SHA-256"))?;
+    if !is_sha256(edge_rowset_sha256) {
+        return Err(GraphDatasetError::InvalidDataset(format!(
+            "{label} edge_rowset_sha256 must be a 64-character hexadecimal digest"
+        )));
+    }
+    Ok(DblpMultiGraphSliceMetadata {
+        partition: partition.to_string(),
+        slice_count,
+        slice_index,
+        hash_seed,
+        edge_rowset_sha256: edge_rowset_sha256.to_ascii_lowercase(),
+    })
+}
+
 fn validate_canonical_v12_manifest(manifest: &Value) -> GraphDatasetResult<()> {
     if !required_value(manifest, &["max_papers"], "manifest max_papers")?.is_null() {
         return Err(GraphDatasetError::InvalidDataset(
@@ -368,7 +453,125 @@ fn validate_canonical_v12_manifest(manifest: &Value) -> GraphDatasetResult<()> {
     Ok(())
 }
 
-fn validate_source_metadata(source: &Value) -> GraphDatasetResult<String> {
+/// Verifies the graph-cardinality source contract before the runner accepts a
+/// full fixture. The footer belongs to each concrete edge file, rather than a
+/// detached manifest/config value, so the planner can use it only when the
+/// physical scan still denotes that whole rowset.
+fn validate_canonical_edge_vertex_footer_bounds(
+    layout: &DblpFixtureLayout,
+    manifest: &Value,
+) -> GraphDatasetResult<()> {
+    let expected = required_u64(manifest, &["counts", "papers"], "manifest paper count")?;
+    for table in ["edges_by_src", "edges_by_dst"] {
+        let path = layout.parquet_root.join(format!("{table}.parquet"));
+        let reader = SerializedFileReader::new(File::open(&path)?)?;
+        let actual =
+            parse_graph_vertex_upper_bound_footer(reader.metadata().file_metadata().key_value_metadata(), table)?;
+        if actual != expected {
+            return Err(GraphDatasetError::InvalidDataset(format!(
+                "{table} footer {DBLP_GRAPH_VERTEX_UPPER_BOUND_FOOTER_KEY}={actual} does not match manifest paper count {expected}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn parse_graph_vertex_upper_bound_footer(
+    metadata: Option<&Vec<parquet::file::metadata::KeyValue>>,
+    table: &str,
+) -> GraphDatasetResult<u64> {
+    let mut entries =
+        metadata.into_iter().flatten().filter(|entry| entry.key == DBLP_GRAPH_VERTEX_UPPER_BOUND_FOOTER_KEY);
+    let Some(entry) = entries.next() else {
+        return Err(GraphDatasetError::InvalidDataset(format!(
+            "{table} is missing required footer key {DBLP_GRAPH_VERTEX_UPPER_BOUND_FOOTER_KEY}"
+        )));
+    };
+    if entries.next().is_some() {
+        return Err(GraphDatasetError::InvalidDataset(format!(
+            "{table} has duplicate footer key {DBLP_GRAPH_VERTEX_UPPER_BOUND_FOOTER_KEY}"
+        )));
+    }
+    entry.value.as_deref().and_then(|value| value.parse::<u64>().ok()).ok_or_else(|| {
+        GraphDatasetError::InvalidDataset(format!(
+            "{table} footer key {DBLP_GRAPH_VERTEX_UPPER_BOUND_FOOTER_KEY} must contain one unsigned integer"
+        ))
+    })
+}
+
+/// Verifies the edge-topology contract shared by canonical DBLP and its
+/// source-hash slices. The certificate belongs to the physical edge files,
+/// rather than a manifest claim, so source registration and graph lowering see
+/// the same rowset-bound fact.
+fn validate_simple_directed_edge_topology_footer(layout: &DblpFixtureLayout) -> GraphDatasetResult<()> {
+    for table in ["edges_by_src", "edges_by_dst"] {
+        let path = layout.parquet_root.join(format!("{table}.parquet"));
+        let reader = SerializedFileReader::new(File::open(&path)?)?;
+        let (source_column_index, destination_column_index) =
+            parse_simple_directed_edge_topology_footer(reader.metadata().file_metadata().key_value_metadata(), table)?;
+        if (source_column_index, destination_column_index) != (1, 2) {
+            return Err(GraphDatasetError::InvalidDataset(format!(
+                "{table} footer {DBLP_SIMPLE_DIRECTED_EDGE_TOPOLOGY_FOOTER_KEY} must bind src/dst physical columns (1, 2), found ({source_column_index}, {destination_column_index})"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn parse_simple_directed_edge_topology_footer(
+    metadata: Option<&Vec<parquet::file::metadata::KeyValue>>,
+    table: &str,
+) -> GraphDatasetResult<(u64, u64)> {
+    let mut entries =
+        metadata.into_iter().flatten().filter(|entry| entry.key == DBLP_SIMPLE_DIRECTED_EDGE_TOPOLOGY_FOOTER_KEY);
+    let Some(entry) = entries.next() else {
+        return Err(GraphDatasetError::InvalidDataset(format!(
+            "{table} is missing required footer key {DBLP_SIMPLE_DIRECTED_EDGE_TOPOLOGY_FOOTER_KEY}"
+        )));
+    };
+    if entries.next().is_some() {
+        return Err(GraphDatasetError::InvalidDataset(format!(
+            "{table} has duplicate footer key {DBLP_SIMPLE_DIRECTED_EDGE_TOPOLOGY_FOOTER_KEY}"
+        )));
+    }
+    let Some(value) = entry.value.as_deref() else {
+        return Err(GraphDatasetError::InvalidDataset(format!(
+            "{table} footer key {DBLP_SIMPLE_DIRECTED_EDGE_TOPOLOGY_FOOTER_KEY} must contain JSON"
+        )));
+    };
+    let Value::Object(topology) = serde_json::from_str(value).map_err(|_| {
+        GraphDatasetError::InvalidDataset(format!(
+            "{table} footer key {DBLP_SIMPLE_DIRECTED_EDGE_TOPOLOGY_FOOTER_KEY} must contain a JSON object"
+        ))
+    })?
+    else {
+        return Err(GraphDatasetError::InvalidDataset(format!(
+            "{table} footer key {DBLP_SIMPLE_DIRECTED_EDGE_TOPOLOGY_FOOTER_KEY} must contain a JSON object"
+        )));
+    };
+    if topology.len() != 2 {
+        return Err(GraphDatasetError::InvalidDataset(format!(
+            "{table} footer key {DBLP_SIMPLE_DIRECTED_EDGE_TOPOLOGY_FOOTER_KEY} has an invalid schema"
+        )));
+    }
+    let source_column_index = topology.get("source_column_index").and_then(Value::as_u64).ok_or_else(|| {
+        GraphDatasetError::InvalidDataset(format!(
+            "{table} footer key {DBLP_SIMPLE_DIRECTED_EDGE_TOPOLOGY_FOOTER_KEY} is missing source_column_index"
+        ))
+    })?;
+    let destination_column_index =
+        topology.get("destination_column_index").and_then(Value::as_u64).ok_or_else(|| {
+            GraphDatasetError::InvalidDataset(format!(
+                "{table} footer key {DBLP_SIMPLE_DIRECTED_EDGE_TOPOLOGY_FOOTER_KEY} is missing destination_column_index"
+            ))
+        })?;
+    Ok((source_column_index, destination_column_index))
+}
+
+fn validate_source_metadata(
+    source: &Value,
+    expected_multi_graph_slice: Option<&DblpMultiGraphSliceMetadata>,
+) -> GraphDatasetResult<String> {
     let schema_version = required_u64(source, &["schema_version"], "source schema_version")?;
     if schema_version != DBLP_FIXTURE_SCHEMA_VERSION {
         return Err(GraphDatasetError::InvalidDataset(format!(
@@ -391,6 +594,27 @@ fn validate_source_metadata(source: &Value) -> GraphDatasetResult<String> {
             "source JSON SHA-256 must be a 64-character hexadecimal digest; rerun generation without --skip-sha256"
                 .to_string(),
         ));
+    }
+    match (expected_multi_graph_slice, source.get("derived_fixture")) {
+        (None, None) => {},
+        (None, Some(_)) => {
+            return Err(GraphDatasetError::InvalidDataset(
+                "source metadata declares derived_fixture but manifest is not a multi-graph slice".to_string(),
+            ));
+        },
+        (Some(_), None) => {
+            return Err(GraphDatasetError::InvalidDataset(
+                "multi-graph slice source metadata is missing derived_fixture".to_string(),
+            ));
+        },
+        (Some(expected), Some(derived)) => {
+            let actual = parse_multi_graph_slice_value(derived, "source metadata derived_fixture")?;
+            if &actual != expected {
+                return Err(GraphDatasetError::InvalidDataset(
+                    "source metadata derived_fixture does not match manifest multi_graph_slice".to_string(),
+                ));
+            }
+        },
     }
     Ok(sha256.to_ascii_lowercase())
 }

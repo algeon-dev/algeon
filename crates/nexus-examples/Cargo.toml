@@ -4,6 +4,7 @@ description = "Runnable embedding examples for datafusion-nexus."
 version = { workspace = true }
 edition = "2024"
 rust-version = { workspace = true }
+build = "build.rs"
 publish = false
 default-run = "embedded_backend"
 
@@ -12,7 +13,7 @@ workspace = true
 
 [features]
 default = []
-cuvs = ["dep:cuvs-sys", "datafusion-nexus/server-cuvs", "nexus-query-engine/cuvs"]
+cuvs = ["dep:cuvs-sys", "datafusion-nexus/server-cuvs"]
 # The reference OTLP exporter is deliberately opt-in: it adds a tonic transport
 # stack that ordinary embedding examples do not need.
 otlp-metrics = [
@@ -32,8 +33,8 @@ datafusion = { workspace = true }
 futures = { workspace = true }
 datafusion-nexus = { workspace = true, features = ["server-cugraph", "iceberg"] }
 nexus-query-engine = { workspace = true }
-opentelemetry = { version = "0.32.0", default-features = false, features = ["metrics"], optional = true }
-opentelemetry-proto = { version = "0.32.0", default-features = false, features = ["gen-tonic-messages", "metrics", "gen-tonic"], optional = true }
+opentelemetry = { workspace = true, optional = true }
+opentelemetry-proto = { workspace = true, optional = true }
 parquet = { workspace = true }
 tempfile = { workspace = true }
 serde = { workspace = true }

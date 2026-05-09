@@ -25,15 +25,14 @@ use arrow::{
 };
 use cudf::DataFrame;
 use nexus_query_engine::{
-    admission::bounded_pipeline_attempt_requirement,
     chunk::{SourceChunkPlanningPolicy, plan_local_parquet_source_chunks},
     error::QueryErrorCode,
     exec::{
         execute_query_plan, execute_query_plan_with_gpu_inputs, materialize_gpu_result_to_host, output::QueryOutput,
     },
     expr::{
-        AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, ColumnRef, Expr, GroupingSetsSpec, LimitSpec,
-        LiteralValue, SortExpr, SortSpec,
+        AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, Expr, GroupingSetsSpec, LimitSpec, LiteralValue,
+        SortExpr, SortSpec,
     },
     metrics::{MemoryReservationEventAction, QueryMetrics},
     plan::{
@@ -222,50 +221,19 @@ fn backend_context_with_policy_and_grant(
     BackendQueryContext { context, _handle: handle }
 }
 
-/// Derives a placement-only budget hint through the same bounded-plan analysis
-/// used by a frontend. It is not submitted-plan proof and cannot authorize an
-/// arbitrary test plan at execution.
+/// Creates the exact synthetic placement request used to bound one test
+/// execution. It is not submitted-plan proof and cannot authorize an
+/// arbitrary plan at execution. Production source-stage estimates deliberately
+/// are not whole-attempt grant targets, so the fixture must state its test
+/// grant directly rather than laundering it through a Parquet source model.
 fn fixture_placement_requirement(bytes: u64) -> nexus_query_engine::admission::AttemptCapabilityEvidence {
-    let schema = Arc::new(Schema::new(vec![Field::new("fixture_key", DataType::Int64, false)]));
-    let fixture_source = LocalParquetSource::from_files(
-        vec![
-            LocalParquetFile::new("/tmp/nexus-native-execution-budget-fixture.parquet")
-                .with_row_groups(vec![0])
-                .with_row_group_bytes(vec![bytes])
-                .with_projected_row_group_bytes(vec![bytes], vec![bytes])
-                .with_row_group_rows(vec![1]),
-        ],
-        Arc::clone(&schema),
-        vec!["fixture_key".to_owned()],
-    );
-    let mut builder = QueryPlanBuilder::new();
-    let left = builder.add_source(SourceNode::LocalParquet(fixture_source));
-    let right = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
-        "/tmp/nexus-native-execution-budget-build-fixture.parquet",
-        Arc::clone(&schema),
-        vec!["fixture_key".to_owned()],
-    )));
-    let join = builder.add_join(
-        left,
-        right,
-        JoinSpec::new(
-            JoinType::LeftSemi,
-            vec![JoinKey::new(
-                ColumnRef::input(0, "fixture_key", "fixture_key"),
-                ColumnRef::input(1, "fixture_key", "fixture_key"),
-            )],
-        )
-        .with_output_projection(vec![JoinOutputColumn::left(
-            ColumnRef::input(0, "fixture_key", "fixture_key"),
-            "fixture_key",
-        )])
-        .with_build_side(JoinSide::Right),
-        schema,
-    );
-    let plan = builder.finish_with_host_sink(join);
-    bounded_pipeline_attempt_requirement(&plan)
-        .expect("fixture plan capability analysis")
-        .expect("fixture plan remains in bounded-pipeline support")
+    nexus_query_engine::admission::AttemptCapabilityEvidence::from_parts(
+        0,
+        0,
+        Some(bytes),
+        nexus_query_engine::admission::EstimateQuality::Measured,
+        Vec::new(),
+    )
 }
 
 fn backend_runtime() -> Arc<cudf::Runtime> {

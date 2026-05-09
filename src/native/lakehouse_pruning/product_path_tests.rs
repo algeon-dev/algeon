@@ -235,14 +235,8 @@ fn prunable_query_plan(uri: &str, file_size_bytes: usize, gpu_resident_sink: boo
 }
 
 fn admission_execution_config(backend: &InstalledTestGpuBackend) -> NexusNativeExecutionConfig {
-    let source = backend
-        .optimizer_config()
-        .native_execution_config()
-        .query_admission_source()
-        .expect("installed backend must provide admission authority");
     NexusNativeExecutionConfig::bounded(1024 * 1024, 512, 1, 3, 1)
-        .with_query_admission_source(source)
-        .with_plan_query_admission_ticket()
+        .with_query_service_handle(Arc::new(backend.admit_query().expect("test query must be admitted by the backend")))
         .with_lakehouse_footer_pruning(true)
 }
 

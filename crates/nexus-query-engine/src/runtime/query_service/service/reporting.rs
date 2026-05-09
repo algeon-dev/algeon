@@ -50,6 +50,26 @@ impl QueryService {
         resources.devices.contexts().map(|context| context.ledger().report()).collect()
     }
 
+    /// Returns physical allocation-domain usage and cache activity for every
+    /// cache-enabled device.  It is diagnostic-only and never participates in
+    /// admission; `device_ledger_reports` remains the ownership authority.
+    pub fn device_cache_reports(&self) -> Result<Vec<crate::runtime::cache::DeviceCacheReport>> {
+        let Some(resources) = &self.inner.resources else {
+            return Ok(Vec::new());
+        };
+        resources.resident_caches.reports()
+    }
+
+    /// Returns bounded source-cache state-machine observations across enabled
+    /// device domains. They are correlation diagnostics, never admission or
+    /// residency accounting inputs.
+    pub fn device_cache_source_event_snapshots(&self) -> Result<Vec<crate::runtime::cache::CacheSourceEventSnapshot>> {
+        let Some(resources) = &self.inner.resources else {
+            return Ok(Vec::new());
+        };
+        resources.resident_caches.source_event_snapshots()
+    }
+
     /// Returns process-wide active-query slot counts for each service device.
     pub fn device_admission_snapshots(&self) -> Vec<QueryServiceDeviceAdmissionSnapshot> {
         let Some(resources) = &self.inner.resources else {
@@ -82,7 +102,8 @@ impl QueryService {
             .collect()
     }
 
-    /// Samples current CUDA and optional NVML telemetry for each service device.
+    /// Samples current CUDA and optional NVML telemetry for each service
+    /// device whose immutable profile enables telemetry.
     ///
     /// Telemetry is observability-only and is never consulted by admission or
     /// placement. A failed substrate is represented by status fields in each
@@ -98,7 +119,10 @@ impl QueryService {
         let Some(resources) = &self.inner.resources else {
             return Vec::new();
         };
-        gpu::inventory::device_telemetry_snapshots_for_ordinals(telemetry, resources.devices.device_ordinals())
+        gpu::inventory::device_telemetry_snapshots_for_ordinals(
+            telemetry,
+            resources.devices.telemetry_device_ordinals(),
+        )
     }
 
     /// Returns one device memory allocation-failure report for each installed service device.
@@ -269,6 +293,7 @@ impl QueryService {
         let snapshot = QueryServiceAdmissionSnapshot {
             active_queries,
             queued_queries: state.queued.len(),
+            queue_high_watermark: state.queue_high_watermark(),
             protected_devices: self
                 .device_ledger_snapshots()
                 .map(|snapshots| {

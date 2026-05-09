@@ -58,32 +58,6 @@ fn service_acquired_context_applies_only_configured_adapter_graph_calibration_fi
 }
 
 #[test]
-fn plan_query_admission_ticket_is_shared_by_config_clones() {
-    let backend = InstalledTestGpuBackend::new();
-    let source = backend
-        .optimizer_config()
-        .native_execution_config()
-        .query_admission_source()
-        .expect("installed backend must provide admission authority");
-    let base = NexusNativeExecutionConfig::bounded(1024, 512, 1, 3, 1)
-        .with_query_id("ticket-query")
-        .with_trace_id("ticket-trace")
-        .with_query_admission_source(source);
-    let config = base.clone().with_plan_query_admission_ticket();
-
-    let cloned = config.clone().with_plan_query_admission_ticket();
-    let separate_plan = base.with_plan_query_admission_ticket();
-
-    assert_eq!(config.query_admission_ticket_id(), cloned.query_admission_ticket_id());
-    assert_ne!(config.query_admission_ticket_id(), separate_plan.query_admission_ticket_id());
-    let ticket = config.query_admission_ticket().expect("plan ticket should be created");
-    assert!(ticket.attempt_capability_proof().is_none());
-    let owner = ticket.observation_owner();
-    assert_eq!(owner.query_id().map(|query_id| query_id.as_str()), Some("ticket-query"));
-    assert_eq!(owner.trace_id().map(|trace_id| trace_id.as_str()), Some("ticket-trace"));
-}
-
-#[test]
 fn query_admission_ticket_selection_prefers_ambient_query_admission_ticket() {
     let backend = InstalledTestGpuBackend::new();
     let source = backend
@@ -92,13 +66,15 @@ fn query_admission_ticket_selection_prefers_ambient_query_admission_ticket() {
         .query_admission_source()
         .expect("installed backend must provide admission authority");
     let ambient_ticket = QueryAdmissionTicket::new(source.clone(), None);
+    let child_ticket = QueryAdmissionTicket::new(source.clone(), None);
     let child_config = NexusNativeExecutionConfig::bounded(256, 512, 1, 3, 1)
         .with_query_admission_source(source)
-        .with_plan_query_admission_ticket();
+        .with_existing_query_admission_ticket(Arc::clone(&child_ticket));
     let child_ticket_id = child_config.query_admission_ticket_id();
     let task_context =
         task_context_with_query_admission_ticket(Arc::new(TaskContext::default()), Arc::clone(&ambient_ticket));
 
+    assert_eq!(child_ticket_id, Some(child_ticket.id()));
     assert_ne!(Some(ambient_ticket.id()), child_ticket_id);
     assert_eq!(
         child_config.query_admission_ticket_id_for_task_context(&task_context),

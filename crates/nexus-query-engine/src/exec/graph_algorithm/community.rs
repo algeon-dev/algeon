@@ -39,6 +39,7 @@ pub(super) fn execute_louvain(
                 frame: normalize_graph_result_schema(frame, &spec.output_schema)?,
                 algorithm_metadata,
                 budget_observations: Vec::new(),
+                cache_scope_peak_bytes: None,
             })
         },
     )
@@ -88,6 +89,7 @@ pub(super) fn execute_leiden(
                 frame: normalize_graph_result_schema(frame, &spec.output_schema)?,
                 algorithm_metadata,
                 budget_observations: Vec::new(),
+                cache_scope_peak_bytes: None,
             })
         },
     )
@@ -137,6 +139,7 @@ pub(super) fn execute_ecg(
                 frame: normalize_graph_result_schema(frame, &spec.output_schema)?,
                 algorithm_metadata,
                 budget_observations: Vec::new(),
+                cache_scope_peak_bytes: None,
             })
         },
     )
@@ -189,6 +192,7 @@ pub(super) fn execute_spectral_modularity_maximization(
                 frame: normalize_graph_result_schema(frame, &spec.output_schema)?,
                 algorithm_metadata,
                 budget_observations: Vec::new(),
+                cache_scope_peak_bytes: None,
             })
         },
     )

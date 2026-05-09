@@ -1,0 +1,139 @@
+{
+  "schema": "datafusion_nexus.single_node_multi_gpu.run_profile.v1",
+  "version": 1,
+  "completion_drain_grace_seconds": 30,
+  "name": "stress-s1-embedded-cache-sf10",
+  "scenario_requirements": { "require_all_device_progress": true },
+  "graph_claim_calibration": {},
+  "backend": {
+    "device_profiles": [
+      {
+        "ordinal": 0,
+        "ownership": "whole_device_exclusive",
+        "memory_limit_bytes": 47244640256,
+        "backend_reserve_bytes": 1073741824,
+        "cache_cap_bytes": 6442450944,
+        "attempt_floor_bytes": 268435456,
+        "source_work_per_attempt": 2,
+        "max_active_attempts": 2,
+        "installation": {
+          "stream_pool_size": 6,
+          "worker_count": 4,
+          "lane_count": 4
+        }
+      },
+      {
+        "ordinal": 1,
+        "ownership": "whole_device_exclusive",
+        "memory_limit_bytes": 47244640256,
+        "backend_reserve_bytes": 1073741824,
+        "cache_cap_bytes": 6442450944,
+        "attempt_floor_bytes": 268435456,
+        "source_work_per_attempt": 2,
+        "max_active_attempts": 2,
+        "installation": {
+          "stream_pool_size": 6,
+          "worker_count": 4,
+          "lane_count": 4
+        }
+      },
+      {
+        "ordinal": 2,
+        "ownership": "whole_device_exclusive",
+        "memory_limit_bytes": 47244640256,
+        "backend_reserve_bytes": 1073741824,
+        "cache_cap_bytes": 6442450944,
+        "attempt_floor_bytes": 268435456,
+        "source_work_per_attempt": 2,
+        "max_active_attempts": 2,
+        "installation": {
+          "stream_pool_size": 6,
+          "worker_count": 4,
+          "lane_count": 4
+        }
+      },
+      {
+        "ordinal": 3,
+        "ownership": "whole_device_exclusive",
+        "memory_limit_bytes": 47244640256,
+        "backend_reserve_bytes": 1073741824,
+        "cache_cap_bytes": 6442450944,
+        "attempt_floor_bytes": 268435456,
+        "source_work_per_attempt": 2,
+        "max_active_attempts": 2,
+        "installation": {
+          "stream_pool_size": 6,
+          "worker_count": 4,
+          "lane_count": 4
+        }
+      }
+    ],
+    "queue": {
+      "max_queued_attempts": 64,
+      "max_queue_wait_ms": 30000,
+      "max_overtakes_per_waiter": 4
+    },
+    "native_execution": {
+      "device_budget_bytes": 1073741824,
+      "max_source_chunk_bytes": 268435456,
+      "max_row_groups_per_chunk": 1024,
+      "max_retry_attempts": 3,
+      "min_retry_chunk_row_groups": 1
+    }
+  },
+  "session": {
+    "shared_session_count": 2
+  },
+  "scheduling": {
+    "arrival_mode": "concurrency",
+    "concurrency": 8,
+    "seed": 20260804,
+    "warmup_seconds": 0,
+    "measurement_seconds": 600
+  },
+  "cache": {
+    "mode": "enabled"
+  },
+  "workloads": [
+    {
+      "kind": "tpch",
+      "path": "/opt/dlami/nvme/fixture/data/tpch/sf10/parquet",
+      "scale": "sf10",
+      "preparation_command": "fixture/fixture.sh tpch generate --scale 10 --out-root /opt/dlami/nvme/fixture/data/tpch",
+      "queries": [
+        "q01",
+        "q06"
+      ]
+    },
+    {
+      "kind": "tpcds",
+      "path": "/opt/dlami/nvme/fixture/data/tpcds/sf10/parquet",
+      "scale": "sf10",
+      "preparation_command": "fixture/fixture.sh tpcds generate --scale 10 --out-root /opt/dlami/nvme/fixture/data/tpcds",
+      "queries": [
+        "q10"
+      ]
+    },
+    {
+      "kind": "clickbench",
+      "path": "/opt/dlami/nvme/fixture/data/clickbench",
+      "scale": "single",
+      "preparation_command": "fixture/fixture.sh clickbench fetch --layout single --out /opt/dlami/nvme/fixture/data/clickbench",
+      "queries": [
+        "q28"
+      ]
+    },
+    {
+      "kind": "dblp",
+      "path": "/opt/dlami/nvme/fixture/data/demo-v12-topology-r1/citation_network/v1/parquet",
+      "scale": "v12",
+      "preparation_command": "fixture/fixture.sh graph dblp-ingest --source-json /path/to/dblp.v12.json --out-root /opt/dlami/nvme/fixture/data/demo-v12-topology-r1",
+      "queries": [
+        "force_atlas2",
+        "bfs_deep",
+        "pagerank",
+        "betweenness_centrality"
+      ]
+    }
+  ]
+}

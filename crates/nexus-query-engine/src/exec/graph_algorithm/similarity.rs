@@ -215,6 +215,7 @@ pub(super) fn execute_similarity(
                 cugraph_params.use_weight,
             ),
             budget_observations: Vec::new(),
+            cache_scope_peak_bytes: None,
         })
     };
 

@@ -38,6 +38,7 @@ pub(super) fn execute_degrees_all(
                 frame: normalize_graph_result_schema(frame, &spec.output_schema)?,
                 algorithm_metadata: String::new(),
                 budget_observations: Vec::new(),
+                cache_scope_peak_bytes: None,
             })
         },
     )
@@ -81,6 +82,7 @@ pub(super) fn execute_in_degrees_all(
                 frame: normalize_graph_result_schema(frame, &spec.output_schema)?,
                 algorithm_metadata: String::new(),
                 budget_observations: Vec::new(),
+                cache_scope_peak_bytes: None,
             })
         },
     )
@@ -126,6 +128,7 @@ pub(super) fn execute_out_degrees_all(
                 frame: normalize_graph_result_schema(frame, &spec.output_schema)?,
                 algorithm_metadata: String::new(),
                 budget_observations: Vec::new(),
+                cache_scope_peak_bytes: None,
             })
         },
     )
@@ -170,6 +173,7 @@ pub(super) fn execute_weakly_connected_components(
                 frame: normalize_graph_result_schema(frame, &spec.output_schema)?,
                 algorithm_metadata: String::new(),
                 budget_observations: Vec::new(),
+                cache_scope_peak_bytes: None,
             })
         },
     )
@@ -214,6 +218,7 @@ pub(super) fn execute_strongly_connected_components(
                 frame: normalize_graph_result_schema(frame, &spec.output_schema)?,
                 algorithm_metadata: String::new(),
                 budget_observations: Vec::new(),
+                cache_scope_peak_bytes: None,
             })
         },
     )
@@ -258,6 +263,7 @@ pub(super) fn execute_triangle_count_all(
                 frame: normalize_graph_result_schema(frame, &spec.output_schema)?,
                 algorithm_metadata: String::new(),
                 budget_observations: Vec::new(),
+                cache_scope_peak_bytes: None,
             })
         },
     )
@@ -305,6 +311,7 @@ pub(super) fn execute_core_number(
                 frame: normalize_graph_result_schema(frame, &spec.output_schema)?,
                 algorithm_metadata: format!("degree_type={}", params.degree_type.as_str()),
                 budget_observations: Vec::new(),
+                cache_scope_peak_bytes: None,
             })
         },
     )
@@ -356,6 +363,7 @@ pub(super) fn execute_k_core(
                 frame: normalize_graph_result_schema(frame, &spec.output_schema)?,
                 algorithm_metadata: format!("k={},degree_type={}", params.k, params.degree_type.as_str()),
                 budget_observations: Vec::new(),
+                cache_scope_peak_bytes: None,
             })
         },
     )
@@ -408,6 +416,7 @@ pub(super) fn execute_minimum_spanning_tree(
                 frame: normalize_graph_result_schema(frame, &spec.output_schema)?,
                 algorithm_metadata: String::new(),
                 budget_observations: Vec::new(),
+                cache_scope_peak_bytes: None,
             })
         },
     )

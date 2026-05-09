@@ -45,6 +45,7 @@ pub(super) fn execute_force_atlas2(
                 frame: normalize_graph_result_schema(frame, &spec.output_schema)?,
                 algorithm_metadata,
                 budget_observations: Vec::new(),
+                cache_scope_peak_bytes: None,
             })
         },
     )

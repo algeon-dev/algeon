@@ -22,6 +22,7 @@ fn betweenness_seed_count_reports_requested_sources_and_prices_resident_source_s
                 vertex_estimate: None,
                 statistics: None,
                 edge_normalize_inserted: false,
+                construction_sort_workspace_bound_bytes: None,
                 pair_rows: None,
                 pair_vertex_width_bytes: None,
                 pair_cardinality_source: None,
@@ -55,6 +56,7 @@ fn betweenness_seed_count_reports_requested_sources_and_prices_resident_source_s
                 vertex_estimate: None,
                 statistics: None,
                 edge_normalize_inserted: false,
+                construction_sort_workspace_bound_bytes: None,
                 pair_rows: None,
                 pair_vertex_width_bytes: None,
                 pair_cardinality_source: None,
@@ -86,6 +88,7 @@ fn betweenness_seed_count_reports_requested_sources_and_prices_resident_source_s
                 vertex_estimate: Some(GraphVertexEstimate::runtime_exact_distinct(7)),
                 statistics: None,
                 edge_normalize_inserted: false,
+                construction_sort_workspace_bound_bytes: None,
                 pair_rows: None,
                 pair_vertex_width_bytes: None,
                 pair_cardinality_source: None,
@@ -129,6 +132,7 @@ fn vertex_betweenness_source_workspace_uses_cugraph_physical_batch_cap() {
         vertex_estimate: Some(GraphVertexEstimate::runtime_exact_distinct(vertex_estimate)),
         statistics: None,
         edge_normalize_inserted: false,
+        construction_sort_workspace_bound_bytes: None,
         pair_rows: None,
         pair_vertex_width_bytes: None,
         pair_cardinality_source: None,
@@ -170,6 +174,7 @@ fn vertex_betweenness_push_batch_workspace_scales_with_resident_sources() {
         vertex_estimate: Some(GraphVertexEstimate::runtime_exact_distinct(10)),
         statistics: Some(GraphStatistics::runtime_exact_vertices(10).with_sum_out_degree(100)),
         edge_normalize_inserted: false,
+        construction_sort_workspace_bound_bytes: None,
         pair_rows: None,
         pair_vertex_width_bytes: None,
         pair_cardinality_source: None,
@@ -211,6 +216,7 @@ fn vertex_betweenness_push_batch_workspace_caps_statistics_present_branch() {
         vertex_estimate: Some(GraphVertexEstimate::runtime_exact_distinct(1_000)),
         statistics: Some(GraphStatistics::runtime_exact_vertices(1_000).with_sum_out_degree(sum_out_degree)),
         edge_normalize_inserted: false,
+        construction_sort_workspace_bound_bytes: None,
         pair_rows: None,
         pair_vertex_width_bytes: None,
         pair_cardinality_source: None,
@@ -250,6 +256,7 @@ fn vertex_betweenness_dblp_top64_statistics_fits_24gb_budget() {
         vertex_estimate: Some(GraphVertexEstimate::runtime_exact_distinct(4_146_772)),
         statistics: Some(GraphStatistics::runtime_exact_vertices(4_146_772).with_sum_out_degree(35_893)),
         edge_normalize_inserted: false,
+        construction_sort_workspace_bound_bytes: None,
         pair_rows: None,
         pair_vertex_width_bytes: None,
         pair_cardinality_source: None,
@@ -257,7 +264,7 @@ fn vertex_betweenness_dblp_top64_statistics_fits_24gb_budget() {
 
     let estimate = GraphMemoryModel.estimate(&spec, input).unwrap();
 
-    assert_eq!(estimate.requested_bytes, 15_323_491_202);
+    assert_eq!(estimate.requested_bytes, 16_052_517_586);
     assert!(
         estimate.requested_bytes < 24 * 1024 * 1024 * 1024,
         "DBLP betweenness k=64 with resident-source degree statistics should fit a 24 GiB graph budget"
@@ -287,6 +294,7 @@ fn edge_betweenness_seed_count_does_not_price_all_requested_sources_as_resident(
         vertex_estimate: Some(GraphVertexEstimate::runtime_exact_distinct(1_000)),
         statistics: None,
         edge_normalize_inserted: false,
+        construction_sort_workspace_bound_bytes: None,
         pair_rows: None,
         pair_vertex_width_bytes: None,
         pair_cardinality_source: None,
@@ -324,6 +332,7 @@ fn edge_betweenness_output_pricing_scales_with_edges() {
         vertex_estimate: Some(GraphVertexEstimate::runtime_exact_distinct(1_000)),
         statistics: None,
         edge_normalize_inserted: false,
+        construction_sort_workspace_bound_bytes: None,
         pair_rows: None,
         pair_vertex_width_bytes: None,
         pair_cardinality_source: None,
@@ -371,6 +380,7 @@ fn betweenness_k_seed_selection_prices_endpoint_distinct_sort_transient() {
         vertex_estimate: Some(GraphVertexEstimate::runtime_exact_distinct(1_000)),
         statistics: None,
         edge_normalize_inserted: false,
+        construction_sort_workspace_bound_bytes: None,
         pair_rows: None,
         pair_vertex_width_bytes: None,
         pair_cardinality_source: None,

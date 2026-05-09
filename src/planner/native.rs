@@ -85,8 +85,16 @@ impl PhysicalOptimizerRule for NexusFinalPlanRequirementRule {
             return Ok(plan);
         }
         let disposition = classify_final_plan(plan.as_ref());
+        // A feature-disabled cuGraph plan is a zero-child terminal capability
+        // rejection. It executes neither a CPU fallback nor a GPU operator,
+        // so it satisfies the no-CPU-execution contract without being
+        // misclassified as a native workload.
+        let feature_disabled_terminal = crate::cugraph_sql::is_feature_disabled_execution_plan(plan.as_ref());
         for requirement in self.config.final_plan_requirements() {
-            if *requirement == FinalPlanRequirement::NoDataFusionCpu && disposition != FinalPlanDisposition::Native {
+            if *requirement == FinalPlanRequirement::NoDataFusionCpu
+                && disposition != FinalPlanDisposition::Native
+                && !feature_disabled_terminal
+            {
                 return Err(final_plan_requirement_error(
                     plan.as_ref(),
                     disposition,
@@ -419,6 +427,13 @@ fn plan_query_admission_ticket_for_optimized_plan(
     native_execution_config: &NexusNativeExecutionConfig,
     attempt: Option<&NexusAttemptExtension>,
 ) -> DataFusionResult<Option<Arc<QueryAdmissionTicket>>> {
+    // Frontend graph roots may resolve lakehouse footer metadata asynchronously
+    // before admission.  A planner-time ticket would freeze the incomplete
+    // cardinality evidence, so that root mints its sole immutable ticket only
+    // after the metadata is bound to the exact execution plan.
+    if plan_contains_deferred_graph_admission(plan) {
+        return Ok(None);
+    }
     let graph_model_ask = graph_aware_model_ask_for_plan(plan, native_execution_config)?;
     let fragment_proofs = native_fragment_capability_proofs(plan)?;
     let ticket = native_execution_config
@@ -446,6 +461,11 @@ fn plan_query_admission_ticket_for_optimized_plan(
         None => ticket,
     };
     Ok(Some(ticket))
+}
+
+fn plan_contains_deferred_graph_admission(plan: &dyn ExecutionPlan) -> bool {
+    graph_execution_plan(plan).is_some()
+        || plan.children().iter().any(|child| plan_contains_deferred_graph_admission(child.as_ref()))
 }
 
 fn native_fragment_capability_proofs(plan: &dyn ExecutionPlan) -> DataFusionResult<Vec<QueryPlanCapabilityProof>> {
@@ -743,6 +763,8 @@ fn is_non_null_literal_projection(expr: &Expr) -> bool {
 #[cfg(test)]
 mod tests {
     use arrow::datatypes::{DataType, Field, Schema};
+    #[cfg(feature = "cugraph")]
+    use datafusion::physical_plan::coop::CooperativeExec;
     use datafusion::physical_plan::{empty::EmptyExec, union::UnionExec};
     use nexus_query_engine::{
         expr::{AggregateExpr, AggregateFunction, AggregateSpec, Expr, LiteralValue},
@@ -755,6 +777,12 @@ mod tests {
     };
 
     use super::*;
+    #[cfg(feature = "cugraph")]
+    use crate::cugraph_sql::{
+        CugraphAlgoExec, CugraphAlgorithm, CugraphAlgorithmParams, CugraphAlgorithmSpec,
+        CugraphGraphConstructionPolicy, CugraphGraphOptions, CugraphTableReference, CugraphTriangleCountAllParams,
+        result_schema_for_params,
+    };
     use crate::{
         backend::InstalledTestGpuBackend,
         error::{DataFusionErrorExt, ErrorCode, ErrorStatus},
@@ -934,6 +962,31 @@ mod tests {
         builder.finish_with_host_sink_schema(union, output_schema)
     }
 
+    #[cfg(feature = "cugraph")]
+    fn deferred_cugraph_exec(config: &NexusNativeExecutionConfig) -> Arc<dyn ExecutionPlan> {
+        let params = CugraphAlgorithmParams::TriangleCountAll(CugraphTriangleCountAllParams);
+        let spec = CugraphAlgorithmSpec {
+            algorithm: CugraphAlgorithm::TriangleCountAll,
+            table_name: CugraphTableReference::parse("edges").expect("fixture table name is valid"),
+            src_col: "src".to_string(),
+            dst_col: "dst".to_string(),
+            weight_col: Some("weight".to_string()),
+            edge_id_col: None,
+            graph_options: CugraphGraphOptions {
+                directed: false,
+                renumber: true,
+                construction_policy: CugraphGraphConstructionPolicy::PythonCugraph,
+            },
+            output_schema: result_schema_for_params(CugraphAlgorithm::TriangleCountAll, &params),
+            params,
+        };
+        let edges = Arc::new(EmptyExec::new(edge_schema())) as Arc<dyn ExecutionPlan>;
+        Arc::new(
+            CugraphAlgoExec::try_new(spec, edges, vec![], None, None, config.clone())
+                .expect("deferred cuGraph fixture should build"),
+        ) as Arc<dyn ExecutionPlan>
+    }
+
     #[test]
     fn graph_aware_ticket_uses_lowered_cold_graph_model_as_immutable_grant_target() {
         let min = 64 * 1024 * 1024;
@@ -1018,6 +1071,38 @@ mod tests {
             ticket.attempt_capability_proof().expect("planner ticket retains its proof").required_capabilities().len()
                 < unaggregated_capability_count,
             "the repeated producer capability must be deduplicated"
+        );
+    }
+
+    #[cfg(feature = "cugraph")]
+    #[test]
+    fn planner_defers_outer_ticket_for_registered_graph_descendant() {
+        let (_backend, config) = backend_admission_config(64 * 1024 * 1024);
+        let graph = deferred_cugraph_exec(&config);
+        let plan = Arc::new(CooperativeExec::new(graph)) as Arc<dyn ExecutionPlan>;
+
+        assert!(plan_contains_deferred_graph_admission(plan.as_ref()));
+        assert!(
+            plan_query_admission_ticket_for_optimized_plan(plan.as_ref(), &config, None)
+                .expect("registered cuGraph discovery should not fail")
+                .is_none(),
+            "the planner must not wrap a graph descendant before footer metadata is hydrated",
+        );
+    }
+
+    #[test]
+    fn planner_keeps_outer_ticket_for_non_graph_native_plan() {
+        let (_backend, config) = backend_admission_config(64 * 1024 * 1024);
+        let plan = native_exec_leaf();
+
+        let ticket = plan_query_admission_ticket_for_optimized_plan(plan.as_ref(), &config, None)
+            .expect("non-graph native ticket planning should succeed")
+            .expect("non-graph native plan must retain normal outer admission");
+        let wrapped = wrap_plan_with_query_admission_ticket(plan, ticket);
+
+        assert!(
+            plan_is_query_admission_wrapped(wrapped.as_ref()),
+            "deferring cuGraph admission must not suppress ordinary native admission wrappers",
         );
     }
 

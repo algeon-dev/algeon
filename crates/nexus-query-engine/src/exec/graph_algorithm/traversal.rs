@@ -247,6 +247,7 @@ pub(super) fn execute_bfs(
                 target_metadata,
             ),
             budget_observations: Vec::new(),
+            cache_scope_peak_bytes: None,
         })
     };
     if spec.edge_columns.edge_id.is_some() {
@@ -966,6 +967,7 @@ fn empty_bfs_result(
             membership.valid_target_rows,
         ),
         budget_observations: Vec::new(),
+        cache_scope_peak_bytes: None,
     })
 }
 
@@ -1283,6 +1285,7 @@ pub(super) fn execute_sssp(
                     params.cutoff.map_or_else(|| "none".to_string(), |v| v.to_string()),
                 ),
                 budget_observations: Vec::new(),
+                cache_scope_peak_bytes: None,
             })
         },
     )

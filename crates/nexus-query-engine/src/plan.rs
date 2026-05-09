@@ -29,7 +29,10 @@ mod vector_algorithm;
 pub use core::{NodeId, PlanNode, QueryNode, QueryPlan};
 
 pub use builder::QueryPlanBuilder;
-pub(crate) use estimates::{estimated_output_bytes, estimated_output_rows};
+pub(crate) use estimates::{
+    estimated_local_parquet_source_bytes, estimated_output_bytes, estimated_output_rows,
+    estimated_reachable_local_parquet_source_bytes,
+};
 pub use facts::{DataPlacement, PlanFacts, SchemaBehavior};
 pub use graph_algorithm::{
     DEFAULT_BETWEENNESS_EXACT_VERTEX_THRESHOLD, EdgeDedupStrategy, EdgeNormalizeSpec, EdgeWeightCombiner,
@@ -48,8 +51,9 @@ pub use graph_algorithm::{
     GraphSccParams, GraphSimilarityParams, GraphSourceFingerprint, GraphSourceFingerprintBypassReason,
     GraphSourceVertexRequirement, GraphSpectralClusteringParams, GraphSsspParams, GraphTriangleCountAllParams,
     GraphVertexIdTypeSupport, GraphVertexPairInput, GraphWccParams, GraphWeightPolicy, ResidentGraphKey,
-    graph_residency_descriptor_for_edge_plan, graph_residency_descriptor_for_local_parquet_source,
-    graph_result_schema_for_params, planned_resident_graph_key, stable_graph_result_schema,
+    edge_plan_has_simple_directed_edge_topology, graph_residency_descriptor_for_edge_plan,
+    graph_residency_descriptor_for_local_parquet_source, graph_result_schema_for_params, planned_resident_graph_key,
+    stable_graph_result_schema,
 };
 pub use join::{
     HashJoinBuildArtifactId, JoinKey, JoinNode, JoinNullEquality, JoinOutputColumn, JoinSide, JoinSpec, JoinType,

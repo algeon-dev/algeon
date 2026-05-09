@@ -101,6 +101,7 @@ const NATIVE_REPORT_DESCRIPTOR_NAMES: &[&str] = &[
     "native_candidate_shape",
     "native_candidate_shape_family",
     "native_dynamic_filter_runtime_rows",
+    "native_graph_claim_calibration_rows",
     "native_graph_reservation_rows",
     "native_graph_runtime_rows",
     "native_join_strategy_rows",
@@ -368,6 +369,7 @@ fn is_nested_row_count_metric(name: &str) -> bool {
     matches!(
         name,
         "native_graph_reservation_rows"
+            | "native_graph_claim_calibration_rows"
             | "native_graph_runtime_rows"
             | "native_task_operator_rows"
             | "native_task_runtime_rows"

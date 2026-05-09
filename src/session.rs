@@ -161,7 +161,22 @@ pub(crate) fn session_state_with_native_execution_config(
     let rule = Arc::new(NexusNativePhysicalOptimizerRule::new(optimizer_config));
     let mut rules = state.physical_optimizers().to_vec();
     insert_nexus_native_rules_for_cugraph_subplan(&mut rules, rule);
-    Some(SessionStateBuilder::new_from_existing(state.clone()).with_physical_optimizer_rules(rules).build())
+    // Graph edge and predicate sources feed device-resident construction, so
+    // the subplan must present each scan as one ordered run: a declared
+    // fixture ordering (the source-sorted DBLP layout) only survives to
+    // native lowering from a single file group, and the native device
+    // pipeline parallelizes reads internally regardless of this setting.
+    // `new_from_existing` disables default catalog creation because the nested
+    // planner shares the parent catalog list. Preserve that property after
+    // changing subplan parallelism: recreating the default catalog would
+    // overwrite the parent's registered relation providers.
+    let subplan_config = state.config().clone().with_target_partitions(1).with_create_default_catalog_and_schema(false);
+    Some(
+        SessionStateBuilder::new_from_existing(state.clone())
+            .with_config(subplan_config)
+            .with_physical_optimizer_rules(rules)
+            .build(),
+    )
 }
 
 pub(crate) fn installed_nexus_native_optimizer_config(state: &SessionState) -> Option<NexusNativeOptimizerConfig> {
@@ -323,6 +338,9 @@ fn insert_nexus_native_rules_for_cugraph_subplan(
 
 #[cfg(all(test, feature = "cugraph"))]
 mod tests {
+    use arrow::datatypes::{DataType, Field, Schema};
+    use datafusion::{datasource::MemTable, prelude::SessionContext};
+
     use super::*;
     use crate::{backend::InstalledTestGpuBackend, native_exec::QueryAdmissionSource};
 
@@ -364,5 +382,39 @@ mod tests {
 
         assert!(rules.iter().any(|rule| rule.name() == NEXUS_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME));
         assert!(!rules.iter().any(|rule| rule.name() == NEXUS_FINAL_PLAN_REQUIREMENT_RULE_NAME));
+    }
+
+    #[test]
+    fn cugraph_subplanning_plans_single_group_scans_for_declared_orderings() {
+        let optimizer_config = NexusNativeOptimizerConfig::default().with_no_datafusion_cpu_requirement();
+        let state = SessionStateBuilder::new().with_nexus_native(optimizer_config.clone()).build();
+        let nested =
+            session_state_with_native_execution_config(&state, optimizer_config.native_execution_config().clone())
+                .expect("nested cuGraph planning requires installed native selection");
+        assert_eq!(nested.config().target_partitions(), 1);
+        // The caller's own session keeps whatever parallelism it configured.
+        assert!(state.config().target_partitions() >= 1);
+    }
+
+    #[test]
+    fn cugraph_subplanning_preserves_parent_catalog_relations() {
+        let optimizer_config = NexusNativeOptimizerConfig::default().with_no_datafusion_cpu_requirement();
+        let state =
+            SessionStateBuilder::new_with_default_features().with_nexus_native(optimizer_config.clone()).build();
+        let ctx = SessionContext::new_with_state(state);
+        let schema = Arc::new(Schema::new(vec![Field::new("vertex", DataType::Int32, false)]));
+        let table = Arc::new(MemTable::try_new(schema, vec![Vec::new()]).expect("empty test table"));
+        ctx.register_table("graph_edges", table).expect("test relation registers");
+
+        let _nested = session_state_with_native_execution_config(
+            &ctx.state(),
+            optimizer_config.native_execution_config().clone(),
+        )
+        .expect("nested cuGraph planning requires installed native selection");
+
+        assert!(
+            futures::executor::block_on(ctx.table("graph_edges")).is_ok(),
+            "cuGraph subplanning must not overwrite the parent catalog"
+        );
     }
 }

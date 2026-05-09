@@ -522,6 +522,31 @@ pub(super) fn apply_gpu_projection_limit(
     let input_name = "__datafusion_nexus_cugraph_logical_output";
     let mut inputs = GpuResidentInputMap::new();
     inputs.insert(input_name.to_string(), handle);
+    let plan = bfs_logical_output_projection_plan(schema, projection, limit)?;
+    let outcome =
+        execute_query_plan_with_gpu_inputs_observed(context, &plan, &inputs, metrics.runtime_observation_config());
+    let output = finalize_graph_query_outcome(
+        metrics,
+        outcome,
+        "datafusion_nexus.cugraph_sql.logical_output",
+        "failed to apply GPU projection/limit to decoded cuGraph logical BFS output",
+    )?;
+    let QueryOutput::GpuResident(handle) = output else {
+        return Err(plan_error("decoded cuGraph logical BFS projection did not produce a GPU output"));
+    };
+    Ok(handle)
+}
+
+/// Builds the exact GPU-resident native fragment used after decoding logical
+/// BFS vertex identifiers. Admission attests this alongside the raw graph
+/// fragment before execution, so the immutable envelope does not authorize a
+/// different post-graph plan.
+pub(super) fn bfs_logical_output_projection_plan(
+    schema: SchemaRef,
+    projection: Option<&Vec<usize>>,
+    limit: Option<usize>,
+) -> Result<nexus_query_engine::plan::QueryPlan> {
+    let input_name = "__datafusion_nexus_cugraph_logical_output";
     let mut builder = QueryPlanBuilder::new();
     let mut root = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new(input_name, Arc::clone(&schema))));
     let input_schema = Arc::clone(&schema);
@@ -543,17 +568,5 @@ pub(super) fn apply_gpu_projection_limit(
     if let Some(limit) = limit {
         root = builder.add_limit(root, LimitSpec::fetch(limit), Arc::clone(&root_schema));
     }
-    let plan = builder.finish_gpu_resident(root);
-    let outcome =
-        execute_query_plan_with_gpu_inputs_observed(context, &plan, &inputs, metrics.runtime_observation_config());
-    let output = finalize_graph_query_outcome(
-        metrics,
-        outcome,
-        "datafusion_nexus.cugraph_sql.logical_output",
-        "failed to apply GPU projection/limit to decoded cuGraph logical BFS output",
-    )?;
-    let QueryOutput::GpuResident(handle) = output else {
-        return Err(plan_error("decoded cuGraph logical BFS projection did not produce a GPU output"));
-    };
-    Ok(handle)
+    Ok(builder.finish_gpu_resident(root))
 }

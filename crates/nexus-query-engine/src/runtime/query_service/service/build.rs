@@ -403,6 +403,7 @@ fn device_registry_config(
                 // remain the pool's own lazily-grown count.
                 worker_job_capacity: profile.stream_pool_size(),
                 lane_count: profile.lane_count(),
+                install_telemetry: profile.install_telemetry(),
                 memory_partition,
             },
         );
@@ -503,6 +504,7 @@ mod construction_tests {
             source_work_per_attempt: 1,
             worker_job_capacity: 2,
             lane_count: 1,
+            install_telemetry: true,
             memory_partition: DeviceRegistryMemoryPartition::WholeDevice,
         };
         let registry_config = DeviceRegistryConfig::new(vec![0, 1], 1)
@@ -531,10 +533,12 @@ mod construction_tests {
             "test_operator_contract",
         )]);
         let device = GpuBackendDeviceConfig::new(0, GpuMemoryOwnership::WholeDeviceExclusive)
-            .with_device_capabilities(capabilities.clone());
+            .with_device_capabilities(capabilities.clone())
+            .with_telemetry(false);
 
         let registry = device_registry_config(vec![0], &[device]).unwrap();
 
         assert_eq!(registry.profile(0).expect("backend profile").device_capabilities, capabilities);
+        assert!(!registry.profile(0).expect("backend profile").install_telemetry);
     }
 }

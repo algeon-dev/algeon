@@ -1,0 +1,186 @@
+{
+  "schema": "datafusion_nexus.single_node_multi_gpu.run_profile.v1",
+  "version": 1,
+  "completion_drain_grace_seconds": 30,
+  "name": "s2-relational-rate-base",
+  "scenario_requirements": { "require_all_device_progress": true },
+  "qps_envelope": {
+    "recovery": {
+      "baseline_step_index": 0,
+      "recovery_step_index": 12,
+      "max_p95_latency_multiplier": 3
+    }
+  },
+  "vram_calibration": {
+    "max_underclaim_bytes": 67108864,
+    "max_observed_to_claim_ratio_milli": 1000,
+    "max_overclaim_bytes": 67108864,
+    "max_claim_to_observed_ratio_milli": 1000
+  },
+  "backend": {
+    "device_profiles": [
+      {
+        "ordinal": 0,
+        "ownership": "whole_device_exclusive",
+        "memory_limit_bytes": 8589934592,
+        "backend_reserve_bytes": 536870912,
+        "cache_cap_bytes": 0,
+        "attempt_floor_bytes": 268435456,
+        "source_work_per_attempt": 2,
+        "max_active_attempts": 4,
+        "installation": {
+          "stream_pool_size": 12,
+          "worker_count": 4,
+          "lane_count": 4
+        }
+      },
+      {
+        "ordinal": 1,
+        "ownership": "whole_device_exclusive",
+        "memory_limit_bytes": 8589934592,
+        "backend_reserve_bytes": 536870912,
+        "cache_cap_bytes": 0,
+        "attempt_floor_bytes": 268435456,
+        "source_work_per_attempt": 2,
+        "max_active_attempts": 4,
+        "installation": {
+          "stream_pool_size": 12,
+          "worker_count": 4,
+          "lane_count": 4
+        }
+      },
+      {
+        "ordinal": 2,
+        "ownership": "whole_device_exclusive",
+        "memory_limit_bytes": 8589934592,
+        "backend_reserve_bytes": 536870912,
+        "cache_cap_bytes": 0,
+        "attempt_floor_bytes": 268435456,
+        "source_work_per_attempt": 2,
+        "max_active_attempts": 4,
+        "installation": {
+          "stream_pool_size": 12,
+          "worker_count": 4,
+          "lane_count": 4
+        }
+      },
+      {
+        "ordinal": 3,
+        "ownership": "whole_device_exclusive",
+        "memory_limit_bytes": 8589934592,
+        "backend_reserve_bytes": 536870912,
+        "cache_cap_bytes": 0,
+        "attempt_floor_bytes": 268435456,
+        "source_work_per_attempt": 2,
+        "max_active_attempts": 4,
+        "installation": {
+          "stream_pool_size": 12,
+          "worker_count": 4,
+          "lane_count": 4
+        }
+      }
+    ],
+    "queue": {
+      "max_queued_attempts": 64,
+      "max_queue_wait_ms": 30000,
+      "max_overtakes_per_waiter": 4
+    },
+    "native_execution": {
+      "device_budget_bytes": 1073741824,
+      "max_source_chunk_bytes": 268435456,
+      "max_row_groups_per_chunk": 1024,
+      "max_retry_attempts": 3,
+      "min_retry_chunk_row_groups": 1
+    }
+  },
+  "session": {
+    "shared_session_count": 2
+  },
+  "scheduling": {
+    "arrival_mode": "rate",
+    "seed": 20260804,
+    "warmup_seconds": 10,
+    "measurement_seconds": 0,
+    "steps": [
+      {
+        "arrival_rate_per_second": "__KNEE_QPS_X0.5__",
+        "measurement_seconds": "__RATE_PHASE_SECONDS__",
+        "rate_overrun": "delay"
+      },
+      {
+        "arrival_rate_per_second": "__KNEE_QPS_X1__",
+        "measurement_seconds": "__RATE_PHASE_SECONDS__",
+        "rate_overrun": "delay"
+      },
+      {
+        "arrival_rate_per_second": "__KNEE_QPS_X1.5__",
+        "measurement_seconds": "__RATE_PHASE_SECONDS__",
+        "rate_overrun": "delay"
+      },
+      {
+        "arrival_rate_per_second": "__KNEE_QPS_X2__",
+        "measurement_seconds": "__RATE_PHASE_SECONDS__",
+        "rate_overrun": "delay"
+      },
+      {
+        "arrival_rate_per_second": "__KNEE_QPS_X5__",
+        "measurement_seconds": "__RATE_PHASE_SECONDS__",
+        "rate_overrun": "delay"
+      },
+      {
+        "arrival_rate_per_second": "__KNEE_QPS_X10__",
+        "measurement_seconds": "__RATE_PHASE_SECONDS__",
+        "rate_overrun": "delay"
+      },
+      {
+        "arrival_rate_per_second": "__KNEE_QPS_X0.5__",
+        "measurement_seconds": "__RATE_PHASE_SECONDS__",
+        "rate_overrun": "drop"
+      },
+      {
+        "arrival_rate_per_second": "__KNEE_QPS_X1__",
+        "measurement_seconds": "__RATE_PHASE_SECONDS__",
+        "rate_overrun": "drop"
+      },
+      {
+        "arrival_rate_per_second": "__KNEE_QPS_X1.5__",
+        "measurement_seconds": "__RATE_PHASE_SECONDS__",
+        "rate_overrun": "drop"
+      },
+      {
+        "arrival_rate_per_second": "__KNEE_QPS_X2__",
+        "measurement_seconds": "__RATE_PHASE_SECONDS__",
+        "rate_overrun": "drop"
+      },
+      {
+        "arrival_rate_per_second": "__KNEE_QPS_X5__",
+        "measurement_seconds": "__RATE_PHASE_SECONDS__",
+        "rate_overrun": "drop"
+      },
+      {
+        "arrival_rate_per_second": "__KNEE_QPS_X10__",
+        "measurement_seconds": "__RATE_PHASE_SECONDS__",
+        "rate_overrun": "drop"
+      },
+      {
+        "arrival_rate_per_second": "__KNEE_QPS_X0.5__",
+        "measurement_seconds": "__RATE_PHASE_SECONDS__",
+        "rate_overrun": "delay"
+      }
+    ]
+  },
+  "cache": {
+    "mode": "disabled"
+  },
+  "workloads": [
+    {
+      "kind": "tpch",
+      "path": "/opt/dlami/nvme/fixture/data/tpch/sf10/parquet",
+      "scale": "sf10",
+      "preparation_command": "fixture/fixture.sh tpch generate --scale 10 --out-root /opt/dlami/nvme/fixture/data/tpch",
+      "queries": [
+        "q06"
+      ]
+    }
+  ]
+}

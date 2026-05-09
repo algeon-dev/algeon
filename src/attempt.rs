@@ -30,6 +30,9 @@ pub use nexus_query_engine::{
     observability::{AttemptId, AttemptQueryId, AttemptTraceContext, QueryAttemptReport, RuntimeObservationConfig},
 };
 
+pub use crate::native_exec::{
+    GraphClaimCalibrationExecution, GraphClaimCalibrationNonPhysicalReason, SealedAttemptGraphClaimCalibrationSnapshot,
+};
 use crate::{
     backend::NexusGpuBackend,
     error::{DataFusionErrorExt, Error, Result},
@@ -81,6 +84,9 @@ struct AttemptExecutionState {
     /// attempt metric after this attempt's report has sealed. The target is
     /// consumed at seal, so no wrapper can publish a second row.
     sealed_metrics_target: Mutex<Option<SealedAttemptMetricsTarget>>,
+    /// Typed graph claim/peak rows frozen by the elected target at the same
+    /// seal point as the immutable attempt report.
+    sealed_graph_claim_calibration: Mutex<Option<SealedAttemptGraphClaimCalibrationSnapshot>>,
 }
 
 impl AttemptExecutionState {
@@ -96,8 +102,14 @@ impl AttemptExecutionState {
     fn publish_sealed_metrics(&self, report: &QueryAttemptReport) {
         let target = self.sealed_metrics_target.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
         if let Some(target) = target {
-            target.record(report);
+            let snapshot = target.record(report);
+            *self.sealed_graph_claim_calibration.lock().unwrap_or_else(std::sync::PoisonError::into_inner) =
+                Some(snapshot);
         }
+    }
+
+    fn sealed_graph_claim_calibration_snapshot(&self) -> Option<SealedAttemptGraphClaimCalibrationSnapshot> {
+        self.sealed_graph_claim_calibration.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
     }
 }
 
@@ -117,6 +129,13 @@ impl NexusAttemptExtension {
     /// supplied one. This is planning metadata only.
     pub(crate) fn query_id(&self) -> Option<&AttemptQueryId> {
         self.state.query_id.as_ref()
+    }
+
+    /// Engine-minted execution identity for this invocation. Graph execution
+    /// services use it only to link an intentional non-physical follower to
+    /// its physical leader in the sealed diagnostic projection.
+    pub(crate) fn attempt_id(&self) -> AttemptId {
+        self.state.handle.attempt_id()
     }
 
     /// Create the opaque native-admission binding for this invocation.
@@ -232,6 +251,7 @@ impl NexusGpuBackend {
             cancellation: begin.owner.cancellation(),
             ticket: Mutex::new(None),
             sealed_metrics_target: Mutex::new(None),
+            sealed_graph_claim_calibration: Mutex::new(None),
         });
         // The attempt object is a factory, not a receiver: the begin
         // completion is dropped here so only caller-held receivers count
@@ -265,6 +285,16 @@ impl NexusAttempt {
     }
     pub fn completion(&self) -> AttemptCompletion {
         self.completion.clone()
+    }
+
+    /// Returns the immutable graph claim-versus-peak snapshot after this
+    /// attempt has sealed a native execution root.
+    ///
+    /// `None` means either the attempt has not sealed yet or no native root
+    /// was elected. The snapshot is diagnostic only and cannot mutate the
+    /// engine's admission, ledger, or allocator state.
+    pub fn sealed_graph_claim_calibration_snapshot(&self) -> Option<SealedAttemptGraphClaimCalibrationSnapshot> {
+        self.state.sealed_graph_claim_calibration_snapshot()
     }
     pub fn cancellation(&self) -> AttemptCancellation {
         self.state.cancellation.clone()
@@ -664,6 +694,13 @@ impl AttemptStream {
         self.completion.clone()
     }
 
+    /// Returns the immutable graph claim-versus-peak snapshot once the owning
+    /// attempt has sealed. This is the same projection exposed by
+    /// [`NexusAttempt::sealed_graph_claim_calibration_snapshot`].
+    pub fn sealed_graph_claim_calibration_snapshot(&self) -> Option<SealedAttemptGraphClaimCalibrationSnapshot> {
+        self.state.sealed_graph_claim_calibration_snapshot()
+    }
+
     fn commit(&self, outcome: RuntimeTerminalOutcome) {
         let _ = self.owner.commit_terminal(outcome);
     }
@@ -787,5 +824,77 @@ impl Drop for AttemptStream {
 impl std::fmt::Debug for AttemptStream {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AttemptStream").field("attempt_id", &self.owner.attempt_id()).finish_non_exhaustive()
+    }
+}
+
+#[cfg(all(test, not(feature = "cugraph")))]
+mod tests {
+    use std::sync::Arc;
+
+    use arrow::{
+        datatypes::{DataType, Field, Schema},
+        record_batch::RecordBatch,
+    };
+    use datafusion::{
+        datasource::MemTable,
+        execution::SessionStateBuilder,
+        prelude::{SessionConfig, SessionContext},
+    };
+    use futures::StreamExt;
+
+    use super::*;
+    use crate::{
+        backend::{GpuDeviceMemoryLimit, InstalledTestGpuBackend, NexusGpuDeviceProfile, NexusGpuQueuePolicy},
+        cugraph_sql::CugraphSqlConfig,
+        error::ErrorCode,
+        native_exec::NexusNativeExecutionConfig,
+        planner::FinalPlanRequirement,
+    };
+
+    #[tokio::test]
+    async fn feature_disabled_cugraph_rejection_stays_typed_through_an_attempt_stream() {
+        let backend = InstalledTestGpuBackend::with_config_and_final_plan_requirements(
+            NexusNativeExecutionConfig::bounded(256 * 1024 * 1024, 64 * 1024 * 1024, 2, 3, 1),
+            NexusGpuDeviceProfile::new(0)
+                .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: 256 * 1024 * 1024 }),
+            NexusGpuQueuePolicy::default(),
+            [FinalPlanRequirement::NoDataFusionCpu],
+        );
+        let state = backend
+            .backend()
+            .install_on_with_cugraph_sql(
+                SessionStateBuilder::new_with_default_features()
+                    .with_config(SessionConfig::new().with_target_partitions(1)),
+                CugraphSqlConfig::default(),
+            )
+            .expect("feature-off cuGraph SQL must install on an attempt-capable backend")
+            .build();
+        let ctx = SessionContext::new_with_state(state);
+        let edges = Arc::new(Schema::new(vec![
+            Field::new("src", DataType::Int64, false),
+            Field::new("dst", DataType::Int64, false),
+        ]));
+        let empty_batch = RecordBatch::new_empty(Arc::clone(&edges));
+        ctx.register_table("edges", Arc::new(MemTable::try_new(edges, vec![vec![empty_batch]]).unwrap()))
+            .expect("feature-off source schema must register");
+
+        let attempt = backend.backend().begin_attempt(AttemptOptions::default()).unwrap();
+        let mut stream = attempt
+            .sql(&ctx, "SELECT * FROM cugraph_pagerank('edges')")
+            .await
+            .expect("feature-off execution must fail from the returned result stream");
+        let error = stream
+            .next()
+            .await
+            .expect("feature-off stream must emit one terminal rejection")
+            .expect_err("feature-off cuGraph execution must reject");
+        let typed = error.find_nexus_error().expect("attempt stream must retain the typed feature rejection");
+        assert_eq!(typed.code(), ErrorCode::UnsupportedOperator);
+        assert_eq!(typed.operation(), "datafusion_nexus.cugraph_sql.execute");
+        assert_eq!(typed.fact_value("reason"), Some("required_feature_disabled"));
+        assert_eq!(typed.fact_value("required_feature"), Some("cugraph"));
+        assert_eq!(typed.fact_value("host_fallback"), Some("disabled"));
+        drop(stream);
+        let _report = attempt.completion().await;
     }
 }

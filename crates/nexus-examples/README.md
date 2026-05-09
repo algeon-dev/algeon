@@ -1,32 +1,105 @@
-# Embedded Backend Examples
+# Embedding Examples
 
-## Attempt lifecycle (`attempt_lifecycle`)
+DataFusion Nexus is a GPU query engine for
+[Apache DataFusion](https://datafusion.apache.org/) that is designed to sit
+inside your own process: your service keeps its HTTP framework, session
+lifecycle, and catalogs, while Nexus evaluates supported physical plans on CUDA
+with cuDF and exposes cuGraph/cuVS algorithms as ordinary SQL table functions.
 
-The minimal supported embedding path: one bounded backend installed into two
-sessions, with every invocation driven through the explicit execution-attempt
-adapter. It begins an attempt before planning, consumes the result stream,
-and awaits the independent `AttemptCompletion` report for CPU-only,
-native, and stream-drop paths:
+This crate is the runnable entry point for embedding Nexus. Each binary is a
+complete program you can read top to bottom, run, and copy from. The examples
+are **layers, not alternatives**: start with the smallest one that builds, and
+move up only when you need the next capability.
+
+## The embedding model
+
+Every example is assembled from the same three pieces:
+
+1. **One bounded backend per process.** `NexusGpuBackend` owns the CUDA
+   devices, the admission queue, and the per-device memory-grant ledger. All
+   bounds (device memory limits, maximum active attempts) are fixed on the
+   builder and shared by everything installed from it.
+2. **Sessions installed from that backend.** `backend.install_on(...)` wires
+   the native optimizer into a DataFusion `SessionStateBuilder`. Many sessions
+   — and therefore many frontends — share one backend and one admission
+   ledger.
+3. **An attempt per query.** Every query execution is an explicit attempt:
+   begin it before planning, consume the result stream, then await the
+   completion report. The `QueryAttemptReport` is the machine-readable record
+   of what happened: disposition (native cuDF execution or DataFusion CPU
+   fallback), admission grant, terminal outcome, and timing.
+
+Planning decisions are structured values, not log text. Assert
+`PlanningReport`s and attempt reports; never depend on printed physical plans.
+`nexus_explain_coverage('<sql>')` in SQL and `EXPLAIN GPU <sql>` over Flight
+SQL return the same coverage evidence before a query runs.
+
+## Choosing an example
+
+| Example | Layer it teaches | Query entry point | Needs | Runs in |
+| --- | --- | --- | --- | --- |
+| [`attempt_lifecycle`](#attempt_lifecycle-the-per-query-contract) | The per-query contract every embedding uses | Explicit `backend.begin_attempt()` | One CUDA device | Seconds |
+| [`embedded_backend`](#embedded_backend-one-process-two-frontends) | A production-shaped service topology | `SessionContext::sql` (REST) and Flight SQL tickets | CUDA device, Docker stack, demo dataset | Minutes |
+| [`otlp_metrics_exporter`](#otlp_metrics_exporter-backend-metrics-over-otlp) | The metrics ownership split | `BackendMetricsOtlpExporter` in your process | Nothing; an OTLP collector is optional | Seconds |
+
+A common point of confusion: `embedded_backend` does **not** call
+`begin_attempt`. Its admission is plan-scoped (REST path) or ticket-scoped
+(Flight path), driven by the installed optimizer rule and the Flight server
+under the hood. `attempt_lifecycle` is the example that drives the attempt API
+directly — read it to understand the contract those frameworks manage for you.
+
+## `attempt_lifecycle`: the per-query contract
+
+The minimal supported embedding path. One bounded backend is installed into
+two sessions, and every invocation goes through the explicit execution-attempt
+adapter:
+
+```rust
+let attempt = backend.begin_attempt(AttemptOptions::default())?; // before planning
+let stream = attempt.sql(&ctx, sql).await?;                      // plan + execute
+// ... consume the stream ...
+let report = attempt.completion().await;                         // terminal report
+```
+
+The binary walks the three dispositions an attempt can reach:
+
+- **CPU-only fallback.** `approx_distinct` is outside the native capability
+  catalogue, so the plan keeps its executable DataFusion CPU baseline. The
+  report records the fallback disposition.
+- **Native execution.** Two attempts run `SUM ... WHERE value > 0`
+  concurrently on the same explicitly owned device 0, proving that concurrent
+  attempts keep distinct identities and receive independent admission grants
+  from one ledger.
+- **Stream drop.** Completion is independent of result consumption: dropping
+  the stream without reading it still produces a bounded terminal report, so
+  observability survives clients that disconnect early.
 
 ```bash
 cargo run -p nexus-examples --bin attempt_lifecycle
 ```
 
-Requires one CUDA device; exits with a clear message when none is present.
+Requires one CUDA device; exits with a clear message when none is present. Set
+`NEXUS_ATTEMPT_LIFECYCLE_PROFILING_ROWS` (default 1,000,000) for an
+Nsight-sized input — the binary doubles as a public-API profiling probe for
+the native concurrent path.
 
-## Embedded backend (`embedded_backend`)
+The executable contract behind this example lives in
+[`tests/attempt_lifecycle_tests.rs`](../../tests/attempt_lifecycle_tests.rs)
+of the root `datafusion-nexus` package.
 
-This crate is a runnable embedding example for a real-world process that
-serves two frontends over one GPU backend:
+## `embedded_backend`: one process, two frontends
 
-- REST endpoints for predefined GPU pipelines.
-- Arrow Flight SQL for ad-hoc SQL, metadata, prepared statements, and cancellation.
+A realistic service shape built on the same primitives: one shared
+`NexusGpuBackend` serving two frontends in one process.
 
-Both frontends use the same `NexusGpuBackend` and the same base
-`SessionContext`. REST requests use plan-scoped admission from the shared
-session. Flight SQL issues statement tickets first and acquires GPU admission
-only when a native plan starts executing. Native work from both paths draws
-from one `QueryService` ledger, visible at `GET /api/gpu`.
+- REST endpoints for predefined, parameter-validated GPU pipelines.
+- Arrow Flight SQL for ad-hoc SQL, metadata, prepared statements, and
+  cancellation.
+
+REST requests use plan-scoped admission from the shared session. Flight SQL
+issues statement tickets first and acquires GPU admission only when a native
+plan starts executing. Native work from both paths draws from one
+`QueryService` ledger, visible at `GET /api/gpu`.
 
 ```text
                                    one backend process
@@ -63,7 +136,7 @@ BI tools. The important property is not the REST framework; it is that every
 frontend in the process shares one backend and one catalog view. GPU-native
 execution shares one admission ledger.
 
-## Data
+### Data
 
 The example runs against the DBLP / AMiner Citation Network V12 demo dataset:
 4,894,081 papers and 45,564,149 citation edges. The E2E runner expects the
@@ -104,7 +177,7 @@ fixture/fixture.sh iceberg rest load \
 If the Parquet files are missing, the loader and E2E suite fail fast with the
 same acquisition instructions instead of downloading the dataset automatically.
 
-## Run
+### Run
 
 The example consumes the normal Flight SQL server environment plus
 `EXAMPLE_REST_BIND`. `EXAMPLE_REST_BIND` is the bind address for this example's
@@ -146,12 +219,21 @@ flock /tmp/cudf-gpu.lock \
 cargo run -p nexus-examples --bin embedded_backend
 ```
 
+`embedded_backend` is the crate's `default-run` binary, so a bare
+`cargo run -p nexus-examples` with the same environment works too.
+
 Use the exact Iceberg keys shown above. `NEXUS_ICEBERG_CATALOG=rest` is not a
 server config key, and `NEXUS_ICEBERG_REST_WAREHOUSE` is not read by the REST
 catalog path. If startup reports `AWS_REGION is required for Glue Iceberg`, the
 server did not see `NEXUS_ICEBERG_CATALOG_KIND=rest`.
 
-REST examples:
+> **cuVS note.** The example is intentionally unsuitable for current `cuvs_*`
+> execution: until cuVS has a bounded peak-memory preflight, its calls reject
+> locally with structured `unsupported_operator`. Building with
+> `--features cuvs` registers the `cuvs_*` table functions so discovery and
+> planning surfaces can list them.
+
+### REST examples
 
 ```bash
 curl http://127.0.0.1:8080/healthz
@@ -187,7 +269,7 @@ printf '%s\n' \
   arrow_cli --host 127.0.0.1 -P 50051 --timeout 120 --output table
 ```
 
-## Pipelines
+### Pipelines
 
 | Pipeline | Capability |
 | --- | --- |
@@ -201,7 +283,7 @@ for that pipeline's default parameters. Use a `Selected` outcome as native
 execution evidence; `NotSupported` and `NotSelectedByCost` retain the reason
 for a non-native choice. Do not depend on printed physical plans.
 
-## E2E
+### E2E
 
 The black-box E2E suite starts the local stack, loads the citation network with
 `--load-mode add-files`, starts this example, and checks REST, Flight SQL,
@@ -214,3 +296,46 @@ crates/nexus-examples/scripts/e2e.sh
 - `--skip-stack` when the REST catalog and RustFS are already running.
 - `--reload` to drop and re-add the Iceberg tables before the run.
 - `--gpu-parity` flag is reserved but not implemented yet.
+
+## `otlp_metrics_exporter`: backend metrics over OTLP
+
+A reference embedding shape for backend-owned metrics, kept deliberately
+opt-in via the `otlp-metrics` feature because it adds a tonic transport stack
+that ordinary embeddings do not need.
+
+The ownership split is the point of the example:
+
+- **The engine owns measurement** — labels, units, bucket conversion, and
+  aggregation semantics — and exposes one coherent `BackendMetricsSnapshot`
+  per backend generation.
+- **Your application owns the OpenTelemetry SDK** — the meter provider, export
+  schedule, resource attributes, and endpoint policy.
+
+The pattern: construct your SDK meter/provider, pass the meter and a
+backend-snapshot closure to `BackendMetricsOtlpExporter::new`, and call
+`export_histograms` on your own export schedule with your OTLP `Resource`, the
+current backend generation's cumulative start time, and the collection
+timestamp. The binary is a pointer, not a service; the embeddable code is
+[`src/otlp_metrics.rs`](src/otlp_metrics.rs), and its protobuf contracts are
+pinned by [`tests/otlp_metrics_exporter.rs`](tests/otlp_metrics_exporter.rs):
+
+```bash
+cargo test -p nexus-examples --features otlp-metrics
+```
+
+No CUDA device is required for this one.
+
+## Where to go next
+
+- [Integrating Nexus](https://datafusion.nexus/integration) — choosing between
+  a DataFusion session, this embedded example, and the Flight SQL server.
+- [DataFusion Session](https://datafusion.nexus/integration/datafusion-session) —
+  backend builder, admission configuration, and final-plan requirements.
+- [Flight SQL Server](https://datafusion.nexus/integration/flight-sql-server) —
+  the server environment contract `embedded_backend` consumes.
+- [Configuration](https://datafusion.nexus/integration/configuration) — the
+  full environment-variable reference.
+- [GPU Coverage Validation](https://datafusion.nexus/integration/gpu-coverage-validation) —
+  `nexus_explain_coverage` / `EXPLAIN GPU` before shipping a query.
+- [Handling Errors](https://datafusion.nexus/integration/handling-errors) —
+  typed errors at your application boundary.

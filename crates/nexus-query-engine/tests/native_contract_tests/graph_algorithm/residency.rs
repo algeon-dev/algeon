@@ -14,6 +14,8 @@ fn graph_residency_descriptor_sees_through_edge_projection() {
     assert!(descriptor.source_fingerprint.as_str().starts_with("graph-source-v1-fnv64-"));
     assert_eq!(descriptor.vertex_data_type, DataType::Int64);
     assert_eq!(descriptor.weight_data_type, Some(DataType::Float64));
+    assert_eq!(descriptor.graph_vertex_upper_bound(), None);
+    assert_eq!(descriptor.graph_raw_edge_row_count(), None);
 
     let forward = descriptor.resident_key(&spec, GraphResidencyOrientation::Forward);
     let transposed = descriptor.resident_key(&spec, GraphResidencyOrientation::Transposed);
@@ -49,10 +51,85 @@ fn graph_residency_descriptor_for_content_identity_requires_a_stable_nonempty_id
     assert_ne!(first.source_fingerprint, different.source_fingerprint);
     assert_eq!(first.vertex_data_type, DataType::Int32);
     assert_eq!(first.weight_data_type, Some(DataType::Float64));
+    assert_eq!(first.graph_vertex_upper_bound(), None);
+    assert_eq!(first.graph_raw_edge_row_count(), None);
 
     let error = GraphResidencyDescriptor::for_content_identity(" ", DataType::Int32, None, None).unwrap_err();
     assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
     assert_eq!(error.fact_value("reason"), Some("missing_content_identity"));
+}
+
+#[test]
+fn graph_residency_descriptor_carries_a_footer_vertex_bound_only_for_the_complete_source_rowset() {
+    let source = graph_local_parquet_source_with_file(
+        &["src", "dst"],
+        LocalParquetFile::new("/tmp/graph-residency-footer.parquet")
+            .with_stable_id("local:/tmp/graph-residency-footer.parquet:1024:mtime=2026-08-05T00:00:00Z")
+            .with_file_size_bytes(1024)
+            .with_row_group_rows(vec![45_564_149])
+            .with_graph_vertex_upper_bound(4_894_081),
+    );
+    let plan = graph_edge_source_plan_from_source(source, Some(&["src", "dst"]));
+    let spec = graph_residency_bfs_spec(GraphEdgeColumnBindings::new("src", "dst", None::<String>));
+
+    let GraphResidencyPlanAnalysis::Keyable(descriptor) = graph_residency_descriptor_for_edge_plan(&plan, &spec) else {
+        panic!("complete local parquet source should retain its footer graph bound");
+    };
+    assert_eq!(descriptor.graph_vertex_upper_bound(), Some(4_894_081));
+    assert_eq!(descriptor.graph_raw_edge_row_count(), Some(45_564_149));
+
+    let partial_source = graph_local_parquet_source_with_file(
+        &["src", "dst"],
+        LocalParquetFile::new("/tmp/graph-residency-partial.parquet")
+            .with_stable_id("local:/tmp/graph-residency-partial.parquet:1024:mtime=2026-08-05T00:00:00Z")
+            .with_file_size_bytes(1024)
+            .with_row_group_rows(vec![7, 11])
+            .with_row_groups(vec![0])
+            .with_graph_vertex_upper_bound(18),
+    );
+    let partial_plan = graph_edge_source_plan_from_source(partial_source, Some(&["src", "dst"]));
+    let GraphResidencyPlanAnalysis::Keyable(partial_descriptor) =
+        graph_residency_descriptor_for_edge_plan(&partial_plan, &spec)
+    else {
+        panic!("partial local parquet source remains cache-keyable but cannot retain full-source facts");
+    };
+    assert_eq!(partial_descriptor.graph_vertex_upper_bound(), None);
+    assert_eq!(partial_descriptor.graph_raw_edge_row_count(), None);
+}
+
+#[test]
+fn simple_directed_topology_proof_survives_only_column_preserving_native_projections() {
+    let topology = nexus_query_engine::source::GraphSimpleDirectedEdgeTopology::new(0, 1)
+        .expect("source and destination columns differ");
+    let source = graph_local_parquet_source_with_file(
+        &["src", "dst"],
+        LocalParquetFile::new("/tmp/graph-residency-simple-directed.parquet")
+            .with_stable_id("local:/tmp/graph-residency-simple-directed.parquet:1024:mtime=2026-08-06T00:00:00Z")
+            .with_file_size_bytes(1024)
+            .with_graph_simple_directed_edge_topology(topology),
+    );
+    let projected_plan = graph_edge_source_plan_from_source(source, Some(&["src", "dst"]));
+
+    assert!(edge_plan_has_simple_directed_edge_topology(&projected_plan, "src", "dst"));
+    assert!(!edge_plan_has_simple_directed_edge_topology(&projected_plan, "dst", "src"));
+
+    let source = graph_local_parquet_source_with_file(
+        &["src", "dst"],
+        LocalParquetFile::new("/tmp/graph-residency-simple-directed-filtered.parquet")
+            .with_stable_id("local:/tmp/graph-residency-simple-directed-filtered.parquet:1024:mtime=2026-08-06T00:00:00Z")
+            .with_file_size_bytes(1024)
+            .with_graph_simple_directed_edge_topology(topology),
+    );
+    let output_schema = Arc::clone(source.output_schema());
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LocalParquet(source));
+    let filtered = builder.add_filter(source, Expr::literal(LiteralValue::Boolean(true)), output_schema);
+    let filtered_plan = builder.finish_gpu_resident(filtered);
+
+    assert!(
+        !edge_plan_has_simple_directed_edge_topology(&filtered_plan, "src", "dst"),
+        "a file footer cannot prove a rowset after a row-changing native node"
+    );
 }
 
 #[test]

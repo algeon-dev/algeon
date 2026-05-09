@@ -26,16 +26,18 @@ class InclusionSite:
     tests: bool
     cugraph_feature_gated: bool
     cuvs_feature_gated: bool
+    nvtx3interop: bool
 
 
 SITES = (
-    InclusionSite("root", "build.rs", "scripts/build/rapids.rs", True, True, True, True, True),
+    InclusionSite("root", "build.rs", "scripts/build/rapids.rs", True, True, True, True, True, False),
     InclusionSite(
         "engine",
         "crates/nexus-query-engine/build.rs",
         "../../scripts/build/rapids.rs",
         True,
         False,
+        True,
         True,
         True,
         True,
@@ -49,6 +51,7 @@ SITES = (
         True,
         True,
         True,
+        False,
     ),
     InclusionSite(
         "examples",
@@ -59,6 +62,7 @@ SITES = (
         False,
         False,
         True,
+        False,
     ),
 )
 
@@ -96,11 +100,13 @@ def fake_environment(
     graph_native = root / "graph native"
     graph_runtime = root / "graph runtime"
     cuvs_runtime = root / "cuvs install" / "lib"
+    cuda_target_lib = root / "cuda" / "targets" / "x86_64-linux" / "lib"
     libcudf = cudf_dir / "libcudf.so"
     rmm = cudf_dir / "librmm.so"
     logger_path = cudf_dir / "librapids_logger.so"
     write_library(libcudf, b"fake libcudf")
     write_library(rmm, b"one rmm build")
+    write_library(cuda_target_lib / "libnvtx3interop.so", b"fake nvtx interop")
     if logger:
         write_library(logger_path, b"one logger build")
     canonical_cuvs = cuvs_runtime / "libcuvs.so"
@@ -148,7 +154,13 @@ def fake_environment(
         "libcuvs-c-runtime-lib": str(cuvs_runtime / "libcuvs_c.so"),
     }
 
-    environment: dict[str, str] = {}
+    # The smoke executables stand in for Cargo build scripts. Give the one
+    # NVTX-enabled build script the same target and hermetic toolkit contract
+    # that Cargo supplies, rather than resolving a host CUDA installation.
+    environment: dict[str, str] = {
+        "TARGET": "x86_64-unknown-linux-gnu",
+        "CUDAToolkit_ROOT": str(root / "cuda"),
+    }
     if metadata_mode == "direct":
         direct_names = {
             "runtime-lib-dir": "DEP_CUDF_RUST_RUNTIME_LIB_DIR",
@@ -207,6 +219,14 @@ def assert_link_target_output(site: InclusionSite, output: str, runtime_dir: Pat
         raise AssertionError(f"{site.name}: missing support-source tracking directive {tracked!r}\n{output}")
 
 
+def assert_nvtx3interop_output(site: InclusionSite, output: str, fixture_root: Path) -> None:
+    library = fixture_root / "cuda" / "targets" / "x86_64-linux" / "lib" / "libnvtx3interop.so"
+    tracked = f"cargo:rerun-if-changed={library}"
+    linked = "cargo:rustc-link-lib=dylib=nvtx3interop"
+    if (tracked in output) != site.nvtx3interop or (linked in output) != site.nvtx3interop:
+        raise AssertionError(f"{site.name}: unexpected NVTX interop linkage state\n{output}")
+
+
 def run_site_scenario(
     site: InclusionSite,
     executable: Path,
@@ -236,6 +256,7 @@ def run_site_scenario(
         f"{site.name} cugraph={cugraph} cuvs={cuvs} metadata={metadata_mode} logger={logger}",
     )
     assert_link_target_output(site, result.stdout, cudf_dir)
+    assert_nvtx3interop_output(site, result.stdout, fixture_root)
     cugraph_tracking = "cargo:rerun-if-env-changed=DEP_CUGRAPH_METADATA"
     if (cugraph_tracking in result.stdout) != cugraph:
         raise AssertionError(f"{site.name}: unexpected cugraph tracking state\n{result.stdout}")

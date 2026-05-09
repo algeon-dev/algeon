@@ -24,6 +24,40 @@ pub(super) struct RunProfile {
     pub(super) schema: String,
     pub(super) version: u32,
     pub(super) name: String,
+    /// Extra bounded time after the warmup-plus-measurement submission window
+    /// for already-admitted attempts to reach a native safe boundary, release
+    /// their grants, and seal their reports. Legacy P6 profiles leave this at
+    /// zero; sustained stress profiles make their drain allowance explicit.
+    #[serde(default)]
+    pub(super) completion_drain_grace_seconds: u64,
+    /// Explicitly selects which P6 overlap/placement clauses are meaningful
+    /// for this profile. Absent retains the legacy P6 contract; stress
+    /// profiles opt into only the clauses their declared suite can prove.
+    #[serde(default)]
+    pub(super) scenario_requirements: Option<ScenarioRequirementsProfile>,
+    /// Opt-in S2 envelope contract.  The generic runner only asserts the
+    /// queue/recovery rules when a profile explicitly declares this workload
+    /// class measurement, rather than guessing from a file name.
+    #[serde(default)]
+    pub(super) qps_envelope: Option<QpsEnvelopeProfile>,
+    /// Explicit calibration contract between the admission/cache claims and
+    /// the load-induced CUDA memory delta.  The runner never guesses a band
+    /// from a workload name: qualification profiles name the tolerated fixed
+    /// overhead and multiplicative pricing slack themselves.
+    #[serde(default)]
+    pub(super) vram_calibration: Option<VramCalibrationProfile>,
+    /// Explicit I11 contract for graph profiles. The artifact must retain one
+    /// typed engine model/request/budget/peak row for every measured graph
+    /// attempt; missing, duplicate, unavailable, or truncated rows fail
+    /// closed. This profile intentionally owns no numeric tolerance band.
+    #[serde(default)]
+    pub(super) graph_claim_calibration: Option<GraphClaimCalibrationProfile>,
+    /// S1's base-build cell. The runner schedules its schema-only cuGraph UDTF
+    /// requests beside, but separately from, the relational mix and proves
+    /// the feature-disabled contract from each structured source error and
+    /// sealed report.
+    #[serde(default)]
+    pub(super) feature_off_cugraph_probe: Option<FeatureOffCugraphProbeProfile>,
     #[serde(default)]
     pub(super) backend: BackendProfile,
     #[serde(default)]
@@ -34,6 +68,140 @@ pub(super) struct RunProfile {
     pub(super) cache: CacheProfile,
     #[serde(default)]
     pub(super) workloads: Vec<FixtureWorkloadProfile>,
+}
+
+/// The reusable P6 reducer carries more structural clauses than every stress
+/// suite needs. A scan-envelope run, for example, must prove placement
+/// progress but cannot be rejected merely because it does not create two
+/// concurrent jobs on one device. This profile-owned selector prevents a raw
+/// P6 proof obligation from silently becoming a stress qualification gate.
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub(super) struct ScenarioRequirementsProfile {
+    /// Require the complete same-device P6 overlap/grant/domain witness.
+    #[serde(default)]
+    pub(super) require_same_device_overlap: bool,
+    /// Require at least one successful placement on every ordinal that was
+    /// eligible when the backend started.
+    #[serde(default)]
+    pub(super) require_all_device_progress: bool,
+    /// Require the resolved device envelopes to be heterogeneous.
+    #[serde(default)]
+    pub(super) require_heterogeneous_device_profiles: bool,
+}
+
+/// Profile-owned S2 QPS-envelope requirements.
+///
+/// A measured envelope must be a real multi-phase curve, and every phase must
+/// retain some successful GPU work.  Rate profiles may additionally name a
+/// post-overload recovery phase and the latency band it must return to.
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub(super) struct QpsEnvelopeProfile {
+    /// The minimum number of successful GPU-reaching completions required in
+    /// each configured step.  A zero-QPS all-failure cell is diagnostic, not
+    /// a workload knee.
+    #[serde(default = "default_qps_min_gpu_reaching_completions_per_step")]
+    pub(super) min_gpu_reaching_completions_per_step: u64,
+    /// The explicit low-rate recovery phase after the highest offered rate.
+    /// Omitted for a closed-loop sweep, whose role is only knee discovery.
+    #[serde(default)]
+    pub(super) recovery: Option<QpsEnvelopeRecoveryProfile>,
+}
+
+const fn default_qps_min_gpu_reaching_completions_per_step() -> u64 {
+    1
+}
+
+/// One rate-envelope recovery assertion.  The two named steps use the same
+/// offered rate; the recovery p95 total and queue wait must stay inside the
+/// profile-owned multiple of that baseline after the overload step.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub(super) struct QpsEnvelopeRecoveryProfile {
+    pub(super) baseline_step_index: usize,
+    pub(super) recovery_step_index: usize,
+    pub(super) max_p95_latency_multiplier: u32,
+}
+
+/// Profile-owned acceptance band for a claim-versus-device-VRAM calibration.
+///
+/// `max_*_ratio_milli` avoids floating point in a qualification predicate.
+/// The fixed-byte terms accommodate measured, named floors (for example a
+/// runtime context) without turning a large pricing error into a harmless
+/// percentage.  The reducer always retains the raw deltas and both directions
+/// of error; these bounds only decide whether this profile is qualifying.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub(super) struct VramCalibrationProfile {
+    /// Maximum bytes by which CUDA's load-induced used delta may exceed the
+    /// ledger/cache claim at the same sampled peak.
+    pub(super) max_underclaim_bytes: u64,
+    /// Maximum `observed_cuda_delta / accounted_claim` ratio, in thousandths.
+    /// A value of 1_000 permits no proportional underclaim.
+    pub(super) max_observed_to_claim_ratio_milli: u64,
+    /// Maximum bytes by which the ledger/cache claim may exceed the observed
+    /// CUDA delta at the sampled peak before it is a capacity-pricing defect.
+    pub(super) max_overclaim_bytes: u64,
+    /// Maximum `accounted_claim / observed_cuda_delta` ratio, in thousandths.
+    /// A value of 1_000 permits no proportional overclaim.
+    pub(super) max_claim_to_observed_ratio_milli: u64,
+}
+
+/// Opt-in graph I11 projection contract.
+///
+/// The graph-memory model owns any future pricing adjustment. The stress
+/// runner only requires complete typed measurement provenance and reports the
+/// raw model-to-peak ratio; it must not invent an acceptable ratio band.
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub(super) struct GraphClaimCalibrationProfile {}
+
+/// The bounded feature-off cuGraph UDTF contract exercised by S1. The graph
+/// request itself is owned by the runner so this profile never needs a DBLP
+/// fixture merely to prove that disabled execution does not stage graph data.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub(super) struct FeatureOffCugraphProbeProfile {
+    /// A graph UDTF rejection is a control-plane operation, not an unbounded
+    /// work item. The measured report latency must stay below this cap.
+    pub(super) max_rejection_latency_ms: u64,
+    /// Exact number of runner-owned UDTF requests issued before the observed
+    /// warmup boundary.  Keeping it explicit prevents round-robin workload
+    /// selection from silently changing the qualification denominator.
+    pub(super) warmup_probe_attempts: usize,
+    /// Exact number of runner-owned UDTF requests issued after the observed
+    /// warmup boundary, while relational work is still live in the measured
+    /// cell.
+    pub(super) measurement_probe_attempts: usize,
+    /// GPU-reaching relational successes required during the measurement
+    /// phase, proving that the rejection cell ran alongside live native work.
+    pub(super) min_relational_gpu_reaching_attempts: u64,
+}
+
+impl RunProfile {
+    /// The stress runner never grants an unbounded post-window drain. This
+    /// matches its bounded backend-close window while allowing a declared
+    /// measurement window to stop submission before long GPU work is forced
+    /// to a synthetic deadline at its final instant.
+    pub(super) const MAX_COMPLETION_DRAIN_GRACE_SECONDS: u64 = 60;
+    /// Keeps the feature-off rejection bound meaningful for a service control
+    /// path. The configured value still becomes evidence in every artifact.
+    pub(super) const MAX_FEATURE_OFF_CUGRAPH_REJECTION_LATENCY_MS: u64 = 1_000;
+
+    /// P6 profiles that predate the stress library omit this section and keep
+    /// their complete historical scenario contract. Stress profiles spell out
+    /// their reduced requirements instead of relying on their filename.
+    pub(super) const fn scenario_requirements(&self) -> ScenarioRequirementsProfile {
+        match self.scenario_requirements {
+            Some(requirements) => requirements,
+            None => ScenarioRequirementsProfile {
+                require_same_device_overlap: true,
+                require_all_device_progress: true,
+                require_heterogeneous_device_profiles: true,
+            },
+        }
+    }
 }
 
 /// A selected fixture and the command used to prepare it before measurement.
@@ -55,6 +223,8 @@ pub(super) struct FixtureWorkloadProfile {
 #[serde(rename_all = "snake_case")]
 pub(super) enum FixtureKind {
     Tpch,
+    Tpcds,
+    Clickbench,
     Dblp,
 }
 
@@ -62,6 +232,8 @@ impl FixtureKind {
     pub(super) const fn label(self) -> &'static str {
         match self {
             Self::Tpch => "tpch",
+            Self::Tpcds => "tpcds",
+            Self::Clickbench => "clickbench",
             Self::Dblp => "dblp",
         }
     }
@@ -91,17 +263,25 @@ pub(super) struct DeviceProfile {
     pub(super) attempt_floor_bytes: u64,
     pub(super) source_work_per_attempt: usize,
     pub(super) max_active_attempts: usize,
+    /// Whether this ordinal installs diagnostic CUDA/NVML telemetry. The
+    /// telemetry-on/off S3 pair changes only this profile-owned control.
+    #[serde(default = "default_install_telemetry")]
+    pub(super) install_telemetry: bool,
     pub(super) installation: InstallationBounds,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+const fn default_install_telemetry() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub(super) enum DeviceOwnership {
     WholeDeviceExclusive,
     StaticPartition { allocation_limit_bytes: u64 },
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub(super) struct InstallationBounds {
     pub(super) stream_pool_size: usize,
@@ -206,7 +386,7 @@ const fn default_shared_session_count() -> usize {
     1
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub(super) struct SchedulingProfile {
     #[serde(default = "default_arrival_mode")]
@@ -231,6 +411,43 @@ pub(super) struct SchedulingProfile {
     /// arrival rate.
     #[serde(default)]
     pub(super) rate_overrun: RateOverrunPolicy,
+    /// W3 multi-phase arrival. A non-empty list switches the run to steps
+    /// mode: steps execute sequentially inside one run, each with its own
+    /// window and its own concurrency/rate, so one artifact holds a whole
+    /// envelope curve. The scalar window/rate fields stay at their defaults.
+    #[serde(default)]
+    pub(super) steps: Vec<ScheduleStepProfile>,
+    /// S5 deadline storm: every attempt receives a caller deadline of
+    /// `min(submission + attempt_deadline_ms, run deadline)`.
+    #[serde(default)]
+    pub(super) attempt_deadline_ms: Option<u64>,
+    /// S5 cancellation storm: every Nth submitted attempt is cancelled
+    /// mid-flight through the public attempt cancellation handle.
+    #[serde(default)]
+    pub(super) cancel_every_n: Option<usize>,
+    /// S5 cancellation storm: delay before each storm cancellation fires.
+    /// Requires `cancel_every_n`; a zero delay cancels at the planning
+    /// boundary.
+    #[serde(default)]
+    pub(super) cancel_after_ms: Option<u64>,
+}
+
+/// One sequential phase of a W3 step schedule. Which of `concurrency` /
+/// `arrival_rate_per_second` is set must agree with the profile's
+/// `arrival_mode`.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub(super) struct ScheduleStepProfile {
+    /// Closed-loop in-flight ceiling for this step (concurrency mode only).
+    #[serde(default)]
+    pub(super) concurrency: Option<usize>,
+    /// Poisson offered rate for this step (rate mode only).
+    #[serde(default)]
+    pub(super) arrival_rate_per_second: Option<u64>,
+    pub(super) measurement_seconds: u64,
+    /// Per-step overrun policy for rate steps; defaults to `delay`.
+    #[serde(default)]
+    pub(super) rate_overrun: Option<RateOverrunPolicy>,
 }
 
 impl Default for SchedulingProfile {
@@ -244,6 +461,10 @@ impl Default for SchedulingProfile {
             warmup_seconds: 0,
             measurement_seconds: 0,
             rate_overrun: RateOverrunPolicy::Delay,
+            steps: Vec::new(),
+            attempt_deadline_ms: None,
+            cancel_every_n: None,
+            cancel_after_ms: None,
         }
     }
 }
@@ -273,16 +494,21 @@ const fn default_concurrency() -> usize {
     1
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub(super) struct CacheProfile {
     #[serde(default)]
     pub(super) mode: CacheMode,
+    /// S7's explicit evidence contract. Ordinary cache-enabled profiles keep
+    /// this absent; only a stress cell turns activity observations into hard
+    /// qualification obligations.
+    #[serde(default)]
+    pub(super) stress: Option<CacheStressProfile>,
 }
 
 impl Default for CacheProfile {
     fn default() -> Self {
-        Self { mode: CacheMode::Disabled }
+        Self { mode: CacheMode::Disabled, stress: None }
     }
 }
 
@@ -292,6 +518,66 @@ pub(super) enum CacheMode {
     #[default]
     Disabled,
     Enabled,
+}
+
+/// Profile-owned S7 cache evidence requirements.  The cache implementations
+/// still own eviction, promotion, and coalescing; this merely says which
+/// public observations a named load cell must produce before it qualifies.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub(super) struct CacheStressProfile {
+    #[serde(default)]
+    pub(super) require_resident_quarantine: bool,
+    /// Exact cap expected on every configured cache-enabled ordinal.
+    pub(super) required_per_device_cap_bytes: u64,
+    /// A thrash cell must cumulatively copy at least this many source-cache
+    /// bytes.  Together with an eviction witness this proves the workload
+    /// crossed its configured working-set boundary without hard-coding file
+    /// sizes in the runner.
+    #[serde(default)]
+    pub(super) minimum_source_promoted_bytes: u64,
+    #[serde(default)]
+    pub(super) require_source_eviction: bool,
+    #[serde(default)]
+    pub(super) require_source_coalescing: bool,
+    #[serde(default)]
+    pub(super) require_bfs_singleflight: bool,
+    #[serde(default)]
+    pub(super) require_explained_admission_delta: bool,
+    /// Dedicated same-key cohorts run by the validation runner against one
+    /// ordinal-local cache domain. Aggregate traffic counters cannot prove
+    /// this: equal keys placed on different devices are intentionally
+    /// independent caches.
+    #[serde(default)]
+    pub(super) same_key_probe: Option<CacheSameKeyProbeProfile>,
+}
+
+/// Profile-owned exact-key cache probe used by S7.
+///
+/// The runner creates a fresh single-ordinal backend for this bounded probe,
+/// then drives source and BFS cohorts separately. That makes cold-cache,
+/// cohort width, and allocation-domain ownership explicit rather than
+/// inferring them from an unrelated QPS window.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub(super) struct CacheSameKeyProbeProfile {
+    /// Existing ordinal whose device profile is isolated for this probe.
+    pub(super) target_device_ordinal: usize,
+    /// Number of concurrent requests in each source/BFS same-key cohort.
+    pub(super) cohort_width: usize,
+    /// Bound for each cohort's public-attempt completion drain.
+    pub(super) max_cohort_seconds: u64,
+    pub(super) source: CacheSameKeyQueryProfile,
+    pub(super) bfs: CacheSameKeyQueryProfile,
+}
+
+/// One selected query owned by a same-key probe cohort. Fixture kind is part
+/// of identity because common labels such as `q01` exist in multiple suites.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub(super) struct CacheSameKeyQueryProfile {
+    pub(super) kind: FixtureKind,
+    pub(super) label: String,
 }
 
 impl RunProfile {
@@ -326,6 +612,7 @@ impl RunProfile {
         }
         let mut companion = self.clone();
         companion.cache.mode = CacheMode::Disabled;
+        companion.cache.stress = None;
         for device in &mut companion.backend.device_profiles {
             device.cache_cap_bytes = 0;
         }
@@ -445,22 +732,135 @@ impl RunProfile {
                     .into(),
             );
         }
+        if self.completion_drain_grace_seconds > Self::MAX_COMPLETION_DRAIN_GRACE_SECONDS {
+            return Err(format!(
+                "completion_drain_grace_seconds must not exceed {}",
+                Self::MAX_COMPLETION_DRAIN_GRACE_SECONDS
+            )
+            .into());
+        }
         if self.session.shared_session_count == 0 {
             return Err("session.shared_session_count must be greater than zero".into());
         }
         self.validate_scheduling()?;
+        self.validate_qps_envelope()?;
+        self.validate_vram_calibration()?;
         validate_native_execution(&self.backend.native_execution)?;
         validate_queue(&self.backend.queue)?;
         validate_device_profiles(&self.backend.device_profiles)?;
         self.validate_cache_mode()?;
-        self.validate_workloads()
+        self.validate_workloads()?;
+        self.validate_graph_claim_calibration()?;
+        self.validate_feature_off_cugraph_probe()
+    }
+
+    fn validate_qps_envelope(&self) -> ToolResult<()> {
+        let Some(envelope) = self.qps_envelope else {
+            return Ok(());
+        };
+        if self.scheduling.steps.len() < 2 {
+            return Err("qps_envelope requires at least two explicit scheduling.steps".into());
+        }
+        if envelope.min_gpu_reaching_completions_per_step == 0 {
+            return Err("qps_envelope.min_gpu_reaching_completions_per_step must be greater than zero".into());
+        }
+        let Some(recovery) = envelope.recovery else {
+            return Ok(());
+        };
+        if self.scheduling.arrival_mode != ArrivalMode::Rate {
+            return Err("qps_envelope.recovery requires scheduling.arrival_mode=rate".into());
+        }
+        if recovery.max_p95_latency_multiplier == 0 {
+            return Err("qps_envelope.recovery.max_p95_latency_multiplier must be greater than zero".into());
+        }
+        let steps = &self.scheduling.steps;
+        let Some(baseline) = steps.get(recovery.baseline_step_index) else {
+            return Err("qps_envelope.recovery.baseline_step_index is outside scheduling.steps".into());
+        };
+        let Some(recovery_step) = steps.get(recovery.recovery_step_index) else {
+            return Err("qps_envelope.recovery.recovery_step_index is outside scheduling.steps".into());
+        };
+        if recovery.recovery_step_index <= recovery.baseline_step_index {
+            return Err("qps_envelope.recovery_step_index must follow its baseline_step_index".into());
+        }
+        let baseline_rate =
+            baseline.arrival_rate_per_second.ok_or("qps_envelope recovery baseline must be a rate step")?;
+        let recovery_rate =
+            recovery_step.arrival_rate_per_second.ok_or("qps_envelope recovery step must be a rate step")?;
+        if baseline_rate != recovery_rate {
+            return Err("qps_envelope recovery step must use the baseline offered rate".into());
+        }
+        if !steps[..recovery.recovery_step_index]
+            .iter()
+            .filter_map(|step| step.arrival_rate_per_second)
+            .any(|rate| rate > baseline_rate)
+        {
+            return Err("qps_envelope recovery requires a prior offered rate above the baseline".into());
+        }
+        if steps[recovery.recovery_step_index.saturating_add(1)..]
+            .iter()
+            .filter_map(|step| step.arrival_rate_per_second)
+            .any(|rate| rate > baseline_rate)
+        {
+            return Err("qps_envelope recovery step must follow the final above-baseline offered rate".into());
+        }
+        Ok(())
+    }
+
+    fn validate_vram_calibration(&self) -> ToolResult<()> {
+        let Some(calibration) = self.vram_calibration else {
+            if self.qps_envelope.is_some() {
+                return Err(
+                    "qps_envelope requires vram_calibration; S2 claims must be checked against CUDA VRAM".into()
+                );
+            }
+            return Ok(());
+        };
+        if calibration.max_observed_to_claim_ratio_milli < 1_000 {
+            return Err("vram_calibration.max_observed_to_claim_ratio_milli must be at least 1000".into());
+        }
+        if calibration.max_claim_to_observed_ratio_milli < 1_000 {
+            return Err("vram_calibration.max_claim_to_observed_ratio_milli must be at least 1000".into());
+        }
+        let telemetry_off = self
+            .backend
+            .device_profiles
+            .iter()
+            .filter(|device| !device.install_telemetry)
+            .map(|device| device.ordinal)
+            .collect::<Vec<_>>();
+        if !telemetry_off.is_empty() {
+            return Err(format!(
+                "vram_calibration requires CUDA telemetry on every configured device; disabled ordinals {telemetry_off:?}"
+            )
+            .into());
+        }
+        Ok(())
+    }
+
+    fn validate_graph_claim_calibration(&self) -> ToolResult<()> {
+        if self.graph_claim_calibration.is_none() {
+            return Ok(());
+        }
+        let selected = super::workload::select_queries(&self.workloads)?;
+        if !selected.iter().any(|query| query.graph) {
+            return Err("graph_claim_calibration requires at least one selected cuGraph algorithm workload".into());
+        }
+        Ok(())
     }
 
     fn validate_scheduling(&self) -> ToolResult<()> {
-        let scheduling = &self.scheduling;
-        if scheduling.concurrency == 0 {
+        if self.scheduling.concurrency == 0 {
             return Err("scheduling.concurrency must be greater than zero".into());
         }
+        if self.scheduling.steps.is_empty() {
+            return self.validate_single_phase_scheduling();
+        }
+        self.validate_steps_scheduling()
+    }
+
+    fn validate_single_phase_scheduling(&self) -> ToolResult<()> {
+        let scheduling = &self.scheduling;
         match (scheduling.arrival_mode, scheduling.arrival_rate_per_second) {
             (ArrivalMode::Concurrency, None) => {},
             (ArrivalMode::Concurrency, Some(_)) => {
@@ -487,14 +887,149 @@ impl RunProfile {
             },
             _ => {},
         }
+        self.validate_storm_knobs()
+    }
+
+    /// Steps mode replaces the scalar window/rate fields with an explicit
+    /// sequential phase list. The shape rules keep a steps profile from
+    /// silently reading as the single-phase profile it no longer is.
+    fn validate_steps_scheduling(&self) -> ToolResult<()> {
+        let scheduling = &self.scheduling;
+        if scheduling.measurement_seconds != 0 {
+            return Err(
+                "scheduling.measurement_seconds must be 0 when scheduling.steps is used; each step declares its own window"
+                    .into(),
+            );
+        }
+        if scheduling.arrival_rate_per_second.is_some() {
+            return Err("scheduling.arrival_rate_per_second is set per step when scheduling.steps is used".into());
+        }
+        if scheduling.max_rounds.is_some() {
+            return Err("scheduling.max_rounds is not valid when scheduling.steps is used".into());
+        }
+        if scheduling.rate_overrun != RateOverrunPolicy::default() {
+            return Err("scheduling.rate_overrun is set per step when scheduling.steps is used".into());
+        }
+        for (index, step) in scheduling.steps.iter().enumerate() {
+            if step.measurement_seconds == 0 {
+                return Err(format!("scheduling.steps[{index}].measurement_seconds must be greater than zero").into());
+            }
+            match (scheduling.arrival_mode, step.concurrency, step.arrival_rate_per_second) {
+                (ArrivalMode::Concurrency, Some(width), None) if width > 0 => {
+                    if step.rate_overrun.is_some() {
+                        return Err(
+                            format!("scheduling.steps[{index}].rate_overrun is only valid for rate steps").into()
+                        );
+                    }
+                },
+                (ArrivalMode::Concurrency, _, _) => {
+                    return Err(format!(
+                        "scheduling.steps[{index}] requires concurrency for concurrency-mode steps and no arrival_rate_per_second"
+                    )
+                    .into());
+                },
+                (ArrivalMode::Rate, None, Some(rate)) if rate > 0 => {},
+                (ArrivalMode::Rate, _, _) => {
+                    return Err(format!(
+                        "scheduling.steps[{index}] requires arrival_rate_per_second for rate-mode steps and no concurrency"
+                    )
+                    .into());
+                },
+            }
+        }
+        self.validate_storm_knobs()
+    }
+
+    fn validate_storm_knobs(&self) -> ToolResult<()> {
+        let scheduling = &self.scheduling;
+        if scheduling.attempt_deadline_ms == Some(0) {
+            return Err("scheduling.attempt_deadline_ms must be greater than zero when present".into());
+        }
+        if scheduling.cancel_every_n == Some(0) {
+            return Err("scheduling.cancel_every_n must be greater than zero when present".into());
+        }
+        if scheduling.cancel_after_ms.is_some() && scheduling.cancel_every_n.is_none() {
+            return Err("scheduling.cancel_after_ms requires scheduling.cancel_every_n".into());
+        }
+        Ok(())
+    }
+
+    fn validate_feature_off_cugraph_probe(&self) -> ToolResult<()> {
+        let Some(probe) = self.feature_off_cugraph_probe.as_ref() else {
+            return Ok(());
+        };
+        if probe.max_rejection_latency_ms == 0
+            || probe.max_rejection_latency_ms > Self::MAX_FEATURE_OFF_CUGRAPH_REJECTION_LATENCY_MS
+        {
+            return Err(format!(
+                "feature_off_cugraph_probe.max_rejection_latency_ms must be between 1 and {}",
+                Self::MAX_FEATURE_OFF_CUGRAPH_REJECTION_LATENCY_MS
+            )
+            .into());
+        }
+        if probe.min_relational_gpu_reaching_attempts == 0 {
+            return Err(
+                "feature_off_cugraph_probe.min_relational_gpu_reaching_attempts must be greater than zero".into()
+            );
+        }
+        if probe.warmup_probe_attempts == 0 || probe.measurement_probe_attempts == 0 {
+            return Err(
+                "feature_off_cugraph_probe.warmup_probe_attempts and feature_off_cugraph_probe.measurement_probe_attempts must both be greater than zero"
+                    .into(),
+            );
+        }
+        if probe
+            .warmup_probe_attempts
+            .checked_add(probe.measurement_probe_attempts)
+            .is_none_or(|attempts| attempts > MAX_PLANNED_ATTEMPTS)
+        {
+            return Err(format!(
+                "feature_off_cugraph_probe total probe attempts must not exceed {MAX_PLANNED_ATTEMPTS}"
+            )
+            .into());
+        }
+        if self.scheduling.concurrency < 2 {
+            return Err(
+                "feature_off_cugraph_probe requires scheduling.concurrency of at least 2 for mixed concurrent traffic"
+                    .into(),
+            );
+        }
+        if self.scheduling.arrival_mode != ArrivalMode::Concurrency
+            || self.scheduling.max_rounds.is_some()
+            || !self.scheduling.steps.is_empty()
+        {
+            return Err(
+                "feature_off_cugraph_probe requires one duration-paced concurrency cell with scheduling.max_rounds omitted"
+                    .into(),
+            );
+        }
+        if self.scheduling.warmup_seconds == 0 {
+            return Err(
+                "feature_off_cugraph_probe requires scheduling.warmup_seconds greater than zero for its warmup probes"
+                    .into(),
+            );
+        }
+        if self.workloads.iter().any(|workload| workload.kind == FixtureKind::Dblp && !workload.queries.is_empty()) {
+            return Err(
+                "feature_off_cugraph_probe owns the only graph UDTF request and does not permit selected dblp workloads"
+                    .into(),
+            );
+        }
+        if !self.workloads.iter().any(|workload| workload.kind != FixtureKind::Dblp && !workload.queries.is_empty()) {
+            return Err("feature_off_cugraph_probe requires at least one selected relational workload query".into());
+        }
         Ok(())
     }
 
     fn validate_workloads(&self) -> ToolResult<()> {
         let mut workload_kinds = BTreeSet::new();
+        let mut dblp_paths = BTreeSet::new();
         for workload in &self.workloads {
-            if !workload_kinds.insert(workload.kind) {
+            if workload.kind != FixtureKind::Dblp && !workload_kinds.insert(workload.kind) {
                 return Err(format!("workloads contains duplicate {} fixture selections", workload.kind.label()).into());
+            }
+            if workload.kind == FixtureKind::Dblp && !dblp_paths.insert(workload.path.clone()) {
+                return Err("workloads contains the same DBLP fixture path more than once".into());
             }
             if workload.path.as_os_str().is_empty() {
                 return Err(format!("{} fixture path must not be empty", workload.kind.label()).into());
@@ -520,7 +1055,6 @@ impl RunProfile {
                 )
                 .into());
             }
-            let mut query_labels = BTreeSet::new();
             for query in &workload.queries {
                 if !is_fixture_label(query) {
                     return Err(format!(
@@ -528,11 +1062,6 @@ impl RunProfile {
                         workload.kind.label()
                     )
                     .into());
-                }
-                if !query_labels.insert(query.as_str()) {
-                    return Err(
-                        format!("{} workload selects query {query} more than once", workload.kind.label()).into()
-                    );
                 }
             }
         }
@@ -551,7 +1080,35 @@ impl RunProfile {
             .map(|profile| profile.ordinal)
             .collect::<Vec<_>>();
         match (self.cache.mode, enabled_ordinals.is_empty()) {
-            (CacheMode::Disabled, true) | (CacheMode::Enabled, false) => Ok(()),
+            (CacheMode::Disabled, true) => {
+                if self.cache.stress.is_some() {
+                    return Err("cache.stress requires cache.mode enabled".into());
+                }
+                Ok(())
+            },
+            (CacheMode::Enabled, false) => {
+                if let Some(stress) = self.cache.stress.as_ref() {
+                    if stress.required_per_device_cap_bytes == 0 {
+                        return Err("cache.stress.required_per_device_cap_bytes must be nonzero".into());
+                    }
+                    let mismatched = self
+                        .backend
+                        .device_profiles
+                        .iter()
+                        .filter(|device| device.cache_cap_bytes != stress.required_per_device_cap_bytes)
+                        .map(|device| device.ordinal)
+                        .collect::<Vec<_>>();
+                    if !mismatched.is_empty() {
+                        return Err(format!(
+                            "cache.stress requires cache_cap_bytes={} on every configured device; mismatched ordinals {mismatched:?}",
+                            stress.required_per_device_cap_bytes
+                        )
+                        .into());
+                    }
+                    self.validate_cache_same_key_probe(stress)?;
+                }
+                Ok(())
+            },
             (CacheMode::Disabled, false) => Err(format!(
                 "cache.mode disabled requires cache_cap_bytes = 0 on every configured device; nonzero on ordinals {enabled_ordinals:?}"
             )
@@ -560,6 +1117,74 @@ impl RunProfile {
                 Err("cache.mode enabled requires a nonzero cache_cap_bytes on at least one configured device".into())
             },
         }
+    }
+
+    fn validate_cache_same_key_probe(&self, stress: &CacheStressProfile) -> ToolResult<()> {
+        let Some(probe) = stress.same_key_probe.as_ref() else {
+            return Ok(());
+        };
+        if probe.cohort_width < 2 {
+            return Err("cache.stress.same_key_probe.cohort_width must be at least 2".into());
+        }
+        if probe.max_cohort_seconds == 0 || probe.max_cohort_seconds > Self::MAX_COMPLETION_DRAIN_GRACE_SECONDS {
+            return Err(format!(
+                "cache.stress.same_key_probe.max_cohort_seconds must be between 1 and {}",
+                Self::MAX_COMPLETION_DRAIN_GRACE_SECONDS
+            )
+            .into());
+        }
+        let target = self
+            .backend
+            .device_profiles
+            .iter()
+            .find(|device| device.ordinal == probe.target_device_ordinal)
+            .ok_or_else(|| {
+            format!(
+                "cache.stress.same_key_probe.target_device_ordinal {} is not configured",
+                probe.target_device_ordinal
+            )
+        })?;
+        if target.max_active_attempts < probe.cohort_width {
+            return Err(format!(
+                "cache.stress.same_key_probe.cohort_width {} exceeds target ordinal {} max_active_attempts {}",
+                probe.cohort_width, probe.target_device_ordinal, target.max_active_attempts
+            )
+            .into());
+        }
+        if probe.source.kind == FixtureKind::Dblp {
+            return Err("cache.stress.same_key_probe.source must select a relational local-Parquet workload".into());
+        }
+        if probe.bfs.kind != FixtureKind::Dblp || !matches!(probe.bfs.label.as_str(), "bfs" | "bfs_deep") {
+            return Err(
+                "cache.stress.same_key_probe.bfs must select the DBLP bfs or bfs_deep query for exact-request singleflight"
+                    .into(),
+            );
+        }
+        for (name, query) in [("source", &probe.source), ("bfs", &probe.bfs)] {
+            let selected = self
+                .workloads
+                .iter()
+                .filter(|workload| workload.kind == query.kind)
+                .filter(|workload| workload.queries.iter().any(|label| label == &query.label))
+                .count();
+            if selected == 0 {
+                return Err(format!(
+                    "cache.stress.same_key_probe.{name} must name a selected {} query {}",
+                    query.kind.label(),
+                    query.label
+                )
+                .into());
+            }
+            if selected != 1 {
+                return Err(format!(
+                    "cache.stress.same_key_probe.{name} matches {selected} selected {} query {} entries; a same-key probe requires exactly one fixture selection",
+                    query.kind.label(),
+                    query.label
+                )
+                .into());
+            }
+        }
+        Ok(())
     }
 }
 
@@ -604,6 +1229,30 @@ fn is_safe_preparation_command(kind: FixtureKind, command: &str) -> bool {
             .as_slice(),
             ["--scale"].as_slice(),
         ),
+        FixtureKind::Tpcds => (
+            ["fixture/fixture.sh", "tpcds", "generate"].as_slice(),
+            [
+                "--scale",
+                "--out",
+                "--out-root",
+                "--variant",
+                "--row-group-bytes",
+                "--compression",
+                "--tpchgen-root",
+                "--profile",
+                "--num-threads",
+                "--parts",
+                "--optimize-engine",
+                "--staging-root",
+            ]
+            .as_slice(),
+            ["--scale"].as_slice(),
+        ),
+        FixtureKind::Clickbench => (
+            ["fixture/fixture.sh", "clickbench", "fetch"].as_slice(),
+            ["--layout", "--mode", "--out", "--output-dir", "--jobs"].as_slice(),
+            [].as_slice(),
+        ),
         FixtureKind::Dblp => (
             ["fixture/fixture.sh", "graph", "dblp-ingest"].as_slice(),
             [
@@ -616,6 +1265,8 @@ fn is_safe_preparation_command(kind: FixtureKind, command: &str) -> bool {
                 "--merge-fan-in",
                 "--sort-temp-dir",
                 "--progress-interval",
+                "--edge-slice-count",
+                "--edge-slice-seed",
             ]
             .as_slice(),
             ["--source-json", "--out-root"].as_slice(),
@@ -640,7 +1291,8 @@ fn is_safe_preparation_command(kind: FixtureKind, command: &str) -> bool {
     }
     required_options.iter().all(|required| seen.contains(required))
         && match kind {
-            FixtureKind::Tpch => seen.contains("--out") || seen.contains("--out-root"),
+            FixtureKind::Tpch | FixtureKind::Tpcds => seen.contains("--out") || seen.contains("--out-root"),
+            FixtureKind::Clickbench => seen.contains("--out") || seen.contains("--output-dir"),
             FixtureKind::Dblp => true,
         }
 }

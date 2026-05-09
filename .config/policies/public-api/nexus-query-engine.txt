@@ -8,7 +8,10 @@ pub fn nexus_query_engine::admission::BoundedPipelineAdmission::pipeline(&self) 
 pub struct nexus_query_engine::admission::QueryPlanCapabilityProof
 impl nexus_query_engine::admission::QueryPlanCapabilityProof
 pub fn nexus_query_engine::admission::QueryPlanCapabilityProof::combine(Self, impl core::iter::traits::collect::IntoIterator<Item = Self>) -> nexus_query_engine::error::Result<Self>
+pub fn nexus_query_engine::admission::QueryPlanCapabilityProof::for_attested_graph_result_bounded_consumer_plan(&nexus_query_engine::plan::QueryPlan, &str) -> core::option::Option<Self>
+pub fn nexus_query_engine::admission::QueryPlanCapabilityProof::for_attested_graph_result_passthrough_plan(&nexus_query_engine::plan::QueryPlan, &str) -> core::option::Option<Self>
 pub fn nexus_query_engine::admission::QueryPlanCapabilityProof::for_cugraph_graph_execution_plan(&nexus_query_engine::plan::QueryPlan) -> core::option::Option<Self>
+pub fn nexus_query_engine::admission::QueryPlanCapabilityProof::for_cugraph_graph_input_plan(&nexus_query_engine::plan::QueryPlan) -> core::option::Option<Self>
 pub fn nexus_query_engine::admission::QueryPlanCapabilityProof::for_query_plan(&nexus_query_engine::plan::QueryPlan) -> core::option::Option<Self>
 pub fn nexus_query_engine::admission::QueryPlanCapabilityProof::required_capabilities(&self) -> &[nexus_query_engine::capability::ReservationRequirement]
 pub fn nexus_query_engine::admission::QueryPlanCapabilityProof::required_floor_bytes_for(&self, u64) -> nexus_query_engine::error::Result<u64>

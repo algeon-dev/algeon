@@ -104,6 +104,7 @@ fn p6_snapshot_json_v1_samples() -> [(&'static str, Value); 9] {
             serde_json::to_value(QueryServiceAdmissionSnapshot {
                 active_queries: 2,
                 queued_queries: 1,
+                queue_high_watermark: 4,
                 protected_devices: vec![1, 3],
             })
             .expect("admission snapshot serializes"),

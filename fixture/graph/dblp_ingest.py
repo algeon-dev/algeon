@@ -36,6 +36,8 @@ import hashlib
 import json
 import math
 import os
+import shutil
+import struct
 import sys
 import time
 from dataclasses import dataclass
@@ -55,6 +57,13 @@ DEFAULT_BUCKET_WIDTH = 100_000_000  # AMiner ids reach ~3e9; keep bucket ids com
 
 DATASET_ID = "citation-network"
 DISPLAY_NAME = "DBLP / AMiner Citation Network V12"
+GRAPH_VERTEX_UPPER_BOUND_METADATA_KEY = "nexus.graph.vertex_upper_bound.v1"
+_GRAPH_VERTEX_UPPER_BOUND_METADATA_KEY_BYTES = GRAPH_VERTEX_UPPER_BOUND_METADATA_KEY.encode("ascii")
+GRAPH_SIMPLE_DIRECTED_EDGE_TOPOLOGY_METADATA_KEY = "nexus.graph.simple_directed_edge_topology.v1"
+_GRAPH_SIMPLE_DIRECTED_EDGE_TOPOLOGY_METADATA_KEY_BYTES = GRAPH_SIMPLE_DIRECTED_EDGE_TOPOLOGY_METADATA_KEY.encode("ascii")
+MULTI_GRAPH_SLICE_PARTITION = "source_hash_splitmix64_v1"
+MULTI_GRAPH_SLICE_SCHEMA_VERSION = 1
+_U64_MASK = (1 << 64) - 1
 
 # ---------------------------------------------------------------------------
 # Schemas
@@ -206,6 +215,22 @@ def parse_args() -> argparse.Namespace:
         help="Skip hashing the (large) source JSON when writing source.json.",
     )
     parser.add_argument(
+        "--edge-slice-count",
+        type=int,
+        default=1,
+        help=(
+            "Emit this many additional independently discoverable DBLP graph fixtures under "
+            "<dataset-root>/slices/. Every edge and paper-owned metadata row is assigned to one "
+            "source-id hash slice. The canonical full fixture is always retained."
+        ),
+    )
+    parser.add_argument(
+        "--edge-slice-seed",
+        type=int,
+        default=0,
+        help="Unsigned 64-bit seed for deterministic source-id edge slicing (default: 0).",
+    )
+    parser.add_argument(
         "--progress-interval",
         type=float,
         default=os.getenv("DBLP_PROGRESS_INTERVAL_SECONDS", "5"),
@@ -303,6 +328,28 @@ def write_json(path: Path, payload: dict[str, Any]) -> None:
 def dataset_root(out_root: Path, max_papers: int) -> Path:
     suffix = f"_sample_papers{max_papers}" if max_papers > 0 else ""
     return out_root / DATASET_ID.replace("-", "_") / f"v1{suffix}"
+
+
+def edge_slice_index(source_paper_id: int, slice_count: int, seed: int) -> int:
+    """Return the deterministic owner for one source paper's outgoing edges.
+
+    The fixed SplitMix64 finalizer gives a stable, well-distributed partition
+    without relying on Python's process-randomized ``hash``. Partitioning by
+    source keeps every paper's outgoing adjacency list in one graph fixture;
+    the edge rowsets are disjoint and the paper-owned metadata tables use the
+    same ownership rule.
+    """
+    if slice_count < 1:
+        raise ValueError("edge slice count must be positive")
+    value = (int(source_paper_id) & _U64_MASK) ^ (int(seed) & _U64_MASK)
+    value = (value ^ (value >> 30)) * 0xBF58476D1CE4E5B9 & _U64_MASK
+    value = (value ^ (value >> 27)) * 0x94D049BB133111EB & _U64_MASK
+    value ^= value >> 31
+    return value % slice_count
+
+
+def multi_graph_slice_root(root: Path, index: int) -> Path:
+    return root / "slices" / f"source-hash-{index:02d}"
 
 
 def nullable_text(value: Any) -> str | None:
@@ -766,11 +813,48 @@ def sorting_columns(schema: pa.Schema, names: list[str]) -> list[pq.SortingColum
     return [pq.SortingColumn(schema.get_field_index(name)) for name in names]
 
 
-def open_edge_writer(path: Path, order: str, row_group_size: int, dataset_ndv: int) -> pq.ParquetWriter:
+def edge_footer_metadata(vertex_upper_bound: int | None) -> dict[bytes, bytes]:
+    """Return edge-rowset contracts bound to the Parquet footer.
+
+    Every generated edge file is a simple directed relation: ``src``/``dst``
+    are non-null and unique as an ordered pair. The writer verifies that
+    invariant while it streams the sorted rows below. The topology certificate
+    lets a consumer prove that Python-compatible null filtering and directed
+    deduplication would be no-ops without trusting a detached manifest.
+
+    The optional vertex bound is narrower: it is emitted only for the complete
+    canonical rowset, because a sample can contain endpoints outside its paper
+    prefix.
+    """
+    if vertex_upper_bound is not None and vertex_upper_bound < 0:
+        raise ValueError("graph vertex upper bound must not be negative")
+    metadata = {
+        _GRAPH_SIMPLE_DIRECTED_EDGE_TOPOLOGY_METADATA_KEY_BYTES: json.dumps(
+            {
+                "source_column_index": EDGE_SCHEMA.get_field_index("src"),
+                "destination_column_index": EDGE_SCHEMA.get_field_index("dst"),
+            },
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8"),
+    }
+    if vertex_upper_bound is not None:
+        metadata[_GRAPH_VERTEX_UPPER_BOUND_METADATA_KEY_BYTES] = str(vertex_upper_bound).encode("ascii")
+    return metadata
+
+
+def open_edge_writer(
+    path: Path,
+    order: str,
+    row_group_size: int,
+    dataset_ndv: int,
+    graph_vertex_upper_bound: int | None,
+) -> pq.ParquetWriter:
     sort_names = ["src", "dst", "edge_id"] if order == "src" else ["dst", "src", "edge_id"]
+    edge_schema = EDGE_SCHEMA.with_metadata(edge_footer_metadata(graph_vertex_upper_bound))
     return pq.ParquetWriter(
         path,
-        EDGE_SCHEMA,
+        edge_schema,
         compression="snappy",
         version="2.6",
         write_statistics=True,
@@ -816,7 +900,7 @@ def parquet_metadata(path: Path) -> dict[str, Any]:
                 entry[f"{column}_min"] = _stat_scalar(stats.min)
                 entry[f"{column}_max"] = _stat_scalar(stats.max)
         row_groups.append(entry)
-    return {
+    result = {
         "path": str(path),
         "bytes": path.stat().st_size,
         "num_rows": meta.num_rows,
@@ -824,6 +908,17 @@ def parquet_metadata(path: Path) -> dict[str, Any]:
         "schema": column_names,
         "sample_row_groups": row_groups,
     }
+    footer_metadata = {}
+    for key, encoding in (
+        (_GRAPH_VERTEX_UPPER_BOUND_METADATA_KEY_BYTES, "ascii"),
+        (_GRAPH_SIMPLE_DIRECTED_EDGE_TOPOLOGY_METADATA_KEY_BYTES, "utf-8"),
+    ):
+        value = (meta.metadata or {}).get(key)
+        if value is not None:
+            footer_metadata[key.decode("ascii")] = value.decode(encoding)
+    if footer_metadata:
+        result["footer_metadata"] = footer_metadata
+    return result
 
 
 def _stat_scalar(value: Any) -> Any:
@@ -847,7 +942,311 @@ def validate_full_counts(spec: DatasetSpec, counters: dict[str, Any], max_papers
         raise SystemExit(f"expected {spec.expected_edges:,} citation edges, got {edges:,}.")
 
 
+def full_edge_rowset_vertex_upper_bound(counters: dict[str, Any], max_papers: int) -> int | None:
+    """Return a bound only when the edge files contain the complete source rowset.
+
+    A sampled prefix can include references to papers outside that prefix, so its
+    paper counter is not an upper bound for the vertices in its emitted edges.
+    """
+    if max_papers > 0:
+        return None
+    return int(counters["papers"])
+
+
+def _open_multi_graph_slice_writer(
+    table: str,
+    path: Path,
+    args: argparse.Namespace,
+    dataset_ndv: int,
+) -> pq.ParquetWriter:
+    if table.startswith("edges_by_"):
+        # A slice is a complete fixture of its own, but not the complete V12
+        # edge rowset. It must not inherit the full-graph footer bound.
+        return open_edge_writer(
+            path,
+            table.removeprefix("edges_by_"),
+            args.row_group_size,
+            dataset_ndv,
+            graph_vertex_upper_bound=None,
+        )
+
+    if table == "profiles_by_paper_id":
+        schema = PROFILE_SCHEMA
+        sort_names = ["paper_id"]
+        dictionary_columns = list(PROFILE_DICTIONARY_COLUMNS)
+        bloom = bloom_options(PROFILE_BLOOM_COLUMNS, args.profile_row_group_size, dataset_ndv)
+    elif table == "paper_authors":
+        schema = AUTHOR_SCHEMA
+        sort_names = ["paper_id", "author_ordinal"]
+        dictionary_columns = ["author_org"]
+        bloom = bloom_options(AUTHOR_BLOOM_COLUMNS, args.row_group_size, dataset_ndv * 3)
+    elif table == "paper_fos":
+        schema = FOS_SCHEMA
+        sort_names = ["paper_id", "fos_ordinal"]
+        dictionary_columns = ["fos_name"]
+        bloom = bloom_options(FOS_BLOOM_COLUMNS, args.row_group_size, dataset_ndv * 5)
+    else:
+        raise ValueError(f"unknown DBLP table {table}")
+
+    return pq.ParquetWriter(
+        path,
+        schema,
+        compression="snappy",
+        version="2.6",
+        write_statistics=True,
+        write_page_index=True,
+        use_dictionary=dictionary_columns,
+        sorting_columns=sorting_columns(schema, sort_names),
+        bloom_filter_options=bloom,
+    )
+
+
+def _new_multi_graph_slice_counters(slice_count: int) -> list[dict[str, Any]]:
+    return [
+        {
+            "papers": 0,
+            "edges": 0,
+            "papers_with_abstract": 0,
+            "author_rows": 0,
+            "fos_rows": 0,
+            "min_paper_id": math.inf,
+            "max_paper_id": -1,
+        }
+        for _ in range(slice_count)
+    ]
+
+
+def _record_slice_rows(
+    table: str,
+    slice_index: int,
+    rows: pa.Table,
+    counters: list[dict[str, Any]],
+    rowset_hashers: list[hashlib._Hash],
+) -> None:
+    counter = counters[slice_index]
+    if table == "edges_by_src":
+        counter["edges"] += rows.num_rows
+        edge_ids = rows.column("edge_id").to_pylist()
+        srcs = rows.column("src").to_pylist()
+        dsts = rows.column("dst").to_pylist()
+        for edge_id, src, dst in zip(edge_ids, srcs, dsts, strict=True):
+            # The digest is over the logical, source-sorted edge rowset rather
+            # than Parquet bytes, so it stays stable across writer versions.
+            rowset_hashers[slice_index].update(struct.pack(">qqq", int(edge_id), int(src), int(dst)))
+        return
+    if table == "edges_by_dst":
+        # The same logical rows were counted and fingerprinted from the
+        # source-sorted layout. This layout is its independently sorted copy.
+        return
+    if table == "profiles_by_paper_id":
+        counter["papers"] += rows.num_rows
+        counter["papers_with_abstract"] += rows.num_rows - rows.column("abstract_text").null_count
+        paper_ids = [int(value) for value in rows.column("paper_id").to_pylist()]
+        if paper_ids:
+            counter["min_paper_id"] = min(counter["min_paper_id"], paper_ids[0])
+            counter["max_paper_id"] = max(counter["max_paper_id"], paper_ids[-1])
+        return
+    if table == "paper_authors":
+        counter["author_rows"] += rows.num_rows
+        return
+    if table == "paper_fos":
+        counter["fos_rows"] += rows.num_rows
+        return
+    raise ValueError(f"unknown DBLP table {table}")
+
+
+def _write_multi_graph_slice_table(
+    source_path: Path,
+    table: str,
+    slice_roots: list[Path],
+    args: argparse.Namespace,
+    counters: list[dict[str, Any]],
+    rowset_hashers: list[hashlib._Hash],
+) -> None:
+    slice_count = len(slice_roots)
+    partition_column = "src" if table.startswith("edges_by_") else "paper_id"
+    row_group_size = args.row_group_size if table != "profiles_by_paper_id" else args.profile_row_group_size
+    dataset_ndv = max(1, (args.max_papers if args.max_papers > 0 else DatasetSpec().expected_papers) // slice_count)
+    writers = [
+        _open_multi_graph_slice_writer(table, root / "parquet" / f"{table}.parquet", args, dataset_ndv)
+        for root in slice_roots
+    ]
+    try:
+        parquet_file = pq.ParquetFile(source_path)
+        for batch in parquet_file.iter_batches(batch_size=row_group_size):
+            rows = pa.Table.from_batches([batch])
+            positions = [[] for _ in range(slice_count)]
+            for row_index, source_paper_id in enumerate(rows.column(partition_column).to_pylist()):
+                positions[edge_slice_index(int(source_paper_id), slice_count, args.edge_slice_seed)].append(row_index)
+            for index, selected_positions in enumerate(positions):
+                if not selected_positions:
+                    continue
+                selected = rows.take(pa.array(selected_positions, type=pa.int64()))
+                writers[index].write_table(selected, row_group_size=row_group_size)
+                _record_slice_rows(table, index, selected, counters, rowset_hashers)
+    finally:
+        for writer in writers:
+            writer.close()
+
+
+def _slice_sql_registration(spec: DatasetSpec, parquet_dir: Path) -> dict[str, str]:
+    table_prefix = spec.dataset_id.replace("-", "_")
+    return {
+        "edges_by_src": (
+            f"CREATE EXTERNAL TABLE {table_prefix}_edges_by_src "
+            f"STORED AS PARQUET LOCATION '{parquet_dir / 'edges_by_src.parquet'}'"
+        ),
+        "edges_by_dst": (
+            f"CREATE EXTERNAL TABLE {table_prefix}_edges_by_dst "
+            f"STORED AS PARQUET LOCATION '{parquet_dir / 'edges_by_dst.parquet'}'"
+        ),
+        "profiles_by_paper_id": (
+            f"CREATE EXTERNAL TABLE {table_prefix}_profiles "
+            f"STORED AS PARQUET LOCATION '{parquet_dir / 'profiles_by_paper_id.parquet'}'"
+        ),
+        "paper_authors": (
+            f"CREATE EXTERNAL TABLE {table_prefix}_authors "
+            f"STORED AS PARQUET LOCATION '{parquet_dir / 'paper_authors.parquet'}'"
+        ),
+        "paper_fos": (
+            f"CREATE EXTERNAL TABLE {table_prefix}_fos "
+            f"STORED AS PARQUET LOCATION '{parquet_dir / 'paper_fos.parquet'}'"
+        ),
+    }
+
+
+def write_multi_graph_slices(
+    spec: DatasetSpec,
+    args: argparse.Namespace,
+    root: Path,
+    source_payload: dict[str, Any],
+    logger: ProgressLogger,
+) -> list[dict[str, Any]]:
+    """Emit independently discoverable source-hash graph fixtures.
+
+    Each slice receives all five fixture tables, its own manifest/source
+    provenance, and a logical edge-rowset SHA-256. The source-hash ownership
+    is applied to both outgoing edge rows and paper-owned metadata rows; no
+    slice borrows Parquet data from another slice at read time.
+    """
+    slice_count = args.edge_slice_count
+    if slice_count <= 1:
+        return []
+
+    slices_root = root / "slices"
+    slice_roots = [multi_graph_slice_root(root, index) for index in range(slice_count)]
+    for slice_root in slice_roots:
+        (slice_root / "parquet").mkdir(parents=True, exist_ok=True)
+
+    counters = _new_multi_graph_slice_counters(slice_count)
+    rowset_hashers = [hashlib.sha256() for _ in range(slice_count)]
+    for index, rowset_hasher in enumerate(rowset_hashers):
+        rowset_hasher.update(b"datafusion-nexus.dblp.source-hash-edge-rowset.v1\\0")
+        rowset_hasher.update(struct.pack(">QQQ", slice_count, index, args.edge_slice_seed))
+
+    parquet_dir = root / "parquet"
+    logger.log(f"multi-graph slices: write {slice_count} source-hash fixtures")
+    for table in ("edges_by_src", "edges_by_dst", "profiles_by_paper_id", "paper_authors", "paper_fos"):
+        logger.log(f"multi-graph slices: partition {table}")
+        _write_multi_graph_slice_table(
+            parquet_dir / f"{table}.parquet",
+            table,
+            slice_roots,
+            args,
+            counters,
+            rowset_hashers,
+        )
+
+    if any(counter["edges"] == 0 for counter in counters):
+        empty = [index for index, counter in enumerate(counters) if counter["edges"] == 0]
+        raise SystemExit(
+            f"--edge-slice-count={slice_count} produced empty edge slices {empty}; reduce the count or choose another seed"
+        )
+
+    entries: list[dict[str, Any]] = []
+    for index, (slice_root, counter, rowset_hasher) in enumerate(zip(slice_roots, counters, rowset_hashers, strict=True)):
+        slice_parquet_dir = slice_root / "parquet"
+        edge_layouts = {}
+        for order in ("src", "dst"):
+            edge_meta = parquet_metadata(slice_parquet_dir / f"edges_by_{order}.parquet")
+            edge_layouts[order] = {
+                "sort_order": ["src", "dst", "edge_id"] if order == "src" else ["dst", "src", "edge_id"],
+                "clustered_for": f"{order}-range filters and row-group / bloom pruning",
+                "footer_metadata": edge_meta.get("footer_metadata", {}),
+                "parquet": edge_meta,
+            }
+        rowset_sha256 = rowset_hasher.hexdigest()
+        slice_metadata = {
+            "schema_version": MULTI_GRAPH_SLICE_SCHEMA_VERSION,
+            "partition": MULTI_GRAPH_SLICE_PARTITION,
+            "slice_count": slice_count,
+            "slice_index": index,
+            "hash_seed": args.edge_slice_seed,
+            "edge_rowset_sha256": rowset_sha256,
+        }
+        manifest = {
+            "schema_version": 1,
+            "generator": "fixture/graph/dblp_ingest.py",
+            "generated_at_unix": int(time.time()),
+            "repo_root": str(REPO_ROOT),
+            "dataset": {
+                "dataset_id": spec.dataset_id,
+                "display_name": spec.display_name,
+                "source": spec.source,
+                "directed": spec.directed,
+                "graph_kind": spec.graph_kind,
+                "expected_papers": spec.expected_papers,
+                "expected_edges": spec.expected_edges,
+                "notes": spec.notes,
+            },
+            "root": str(slice_root),
+            "max_papers": None if args.max_papers <= 0 else args.max_papers,
+            "row_group_size": args.row_group_size,
+            "profile_row_group_size": args.profile_row_group_size,
+            "bucket_width": args.bucket_width,
+            "multi_graph_slice": slice_metadata,
+            "bloom_filter_columns": {
+                "edges": list(EDGE_BLOOM_COLUMNS),
+                "profiles": list(PROFILE_BLOOM_COLUMNS),
+                "paper_authors": list(AUTHOR_BLOOM_COLUMNS),
+                "paper_fos": list(FOS_BLOOM_COLUMNS),
+            },
+            "counts": {
+                "papers": counter["papers"],
+                "edges": counter["edges"],
+                "papers_with_abstract": counter["papers_with_abstract"],
+                "author_rows": counter["author_rows"],
+                "fos_rows": counter["fos_rows"],
+                "min_paper_id": None if counter["papers"] == 0 else int(counter["min_paper_id"]),
+                "max_paper_id": None if counter["papers"] == 0 else int(counter["max_paper_id"]),
+            },
+            "edge_layouts": edge_layouts,
+            "profiles": parquet_metadata(slice_parquet_dir / "profiles_by_paper_id.parquet"),
+            "paper_authors": parquet_metadata(slice_parquet_dir / "paper_authors.parquet"),
+            "paper_fos": parquet_metadata(slice_parquet_dir / "paper_fos.parquet"),
+            "sql_registration": _slice_sql_registration(spec, slice_parquet_dir),
+        }
+        slice_source_payload = json.loads(json.dumps(source_payload))
+        slice_source_payload["derived_fixture"] = slice_metadata
+        write_json(slice_root / "manifest.json", manifest)
+        write_json(slice_root / "source.json", slice_source_payload)
+        entries.append({"index": index, "root": str(slice_root), "edge_rowset_sha256": rowset_sha256})
+
+    logger.log(f"multi-graph slices: complete root={slices_root}")
+    return entries
+
+
 def convert(spec: DatasetSpec, args: argparse.Namespace) -> dict[str, Any]:
+    edge_slice_count = getattr(args, "edge_slice_count", 1)
+    edge_slice_seed = getattr(args, "edge_slice_seed", 0)
+    if edge_slice_count < 1:
+        raise SystemExit("--edge-slice-count must be >= 1")
+    if edge_slice_seed < 0 or edge_slice_seed > _U64_MASK:
+        raise SystemExit("--edge-slice-seed must be an unsigned 64-bit integer")
+    # Unit tests construct a minimal Namespace directly; normalize it to the
+    # public CLI shape before helpers consume the optional slice settings.
+    args.edge_slice_count = edge_slice_count
+    args.edge_slice_seed = edge_slice_seed
     root = dataset_root(args.out_root.resolve(), args.max_papers)
     parquet_dir = root / "parquet"
     work_dir = (args.sort_temp_dir or (root / "work")).resolve()
@@ -859,11 +1258,17 @@ def convert(spec: DatasetSpec, args: argparse.Namespace) -> dict[str, Any]:
         f"dataset={spec.dataset_id} root={root} source={args.source_json} "
         f"source_bytes={source_bytes:,} overwrite={args.overwrite} max_papers={args.max_papers or 'all'} "
         f"row_group_size={args.row_group_size:,} profile_row_group_size={args.profile_row_group_size:,} "
-        f"sort_buffer_rows={args.sort_buffer_rows:,} merge_fan_in={args.merge_fan_in}"
+        f"sort_buffer_rows={args.sort_buffer_rows:,} merge_fan_in={args.merge_fan_in} "
+        f"edge_slice_count={edge_slice_count} edge_slice_seed={edge_slice_seed}"
     )
 
     if parquet_dir.exists() and any(parquet_dir.glob("*.parquet")) and not args.overwrite:
         raise SystemExit(f"{parquet_dir}: existing Parquet found; pass --overwrite to regenerate")
+    slices_root = root / "slices"
+    if args.overwrite and slices_root.exists():
+        # Slice roots are generated children of this selected dataset root;
+        # retaining an old count would advertise stale graph fixtures.
+        shutil.rmtree(slices_root)
     parquet_dir.mkdir(parents=True, exist_ok=True)
 
     # Bloom NDV targets the number of *distinct values* in the filtered column. For src/dst that is
@@ -1091,13 +1496,22 @@ def convert(spec: DatasetSpec, args: argparse.Namespace) -> dict[str, Any]:
         raise
 
     edge_layouts: dict[str, Any] = {}
+    graph_vertex_upper_bound = full_edge_rowset_vertex_upper_bound(counters, args.max_papers)
     try:
         for order, sorter in (("src", edge_src_sorter), ("dst", edge_dst_sorter)):
             logger.log(f"write edge Parquet: edges_by_{order}.parquet")
-            edge_meta = _write_sorted_edges(sorter, parquet_dir, order, ndv_edges, args)
+            edge_meta = _write_sorted_edges(
+                sorter,
+                parquet_dir,
+                order,
+                ndv_edges,
+                graph_vertex_upper_bound,
+                args,
+            )
             edge_layouts[order] = {
                 "sort_order": ["src", "dst", "edge_id"] if order == "src" else ["dst", "src", "edge_id"],
                 "clustered_for": f"{order}-range filters and row-group / bloom pruning",
+                "footer_metadata": edge_meta.get("footer_metadata", {}),
                 "parquet": edge_meta,
             }
     except BaseException:
@@ -1114,30 +1528,6 @@ def convert(spec: DatasetSpec, args: argparse.Namespace) -> dict[str, Any]:
 
     if not args.keep_work and work_dir.exists() and not any(work_dir.iterdir()):
         work_dir.rmdir()
-
-    table_prefix = spec.dataset_id.replace("-", "_")
-    sql_registration = {
-        "edges_by_src": (
-            f"CREATE EXTERNAL TABLE {table_prefix}_edges_by_src "
-            f"STORED AS PARQUET LOCATION '{parquet_dir / 'edges_by_src.parquet'}'"
-        ),
-        "edges_by_dst": (
-            f"CREATE EXTERNAL TABLE {table_prefix}_edges_by_dst "
-            f"STORED AS PARQUET LOCATION '{parquet_dir / 'edges_by_dst.parquet'}'"
-        ),
-        "profiles_by_paper_id": (
-            f"CREATE EXTERNAL TABLE {table_prefix}_profiles "
-            f"STORED AS PARQUET LOCATION '{parquet_dir / 'profiles_by_paper_id.parquet'}'"
-        ),
-        "paper_authors": (
-            f"CREATE EXTERNAL TABLE {table_prefix}_authors "
-            f"STORED AS PARQUET LOCATION '{parquet_dir / 'paper_authors.parquet'}'"
-        ),
-        "paper_fos": (
-            f"CREATE EXTERNAL TABLE {table_prefix}_fos "
-            f"STORED AS PARQUET LOCATION '{parquet_dir / 'paper_fos.parquet'}'"
-        ),
-    }
 
     manifest = {
         "schema_version": 1,
@@ -1178,11 +1568,9 @@ def convert(spec: DatasetSpec, args: argparse.Namespace) -> dict[str, Any]:
         "profiles": profile_meta,
         "paper_authors": author_meta,
         "paper_fos": fos_meta,
-        "sql_registration": sql_registration,
+        "sql_registration": _slice_sql_registration(spec, parquet_dir),
         "elapsed_ms": (time.perf_counter() - started) * 1000.0,
     }
-    logger.log(f"write manifest: {root / 'manifest.json'}")
-    write_json(root / "manifest.json", manifest)
 
     if args.skip_sha256:
         logger.log("source hash: skipped (--skip-sha256)")
@@ -1202,6 +1590,17 @@ def convert(spec: DatasetSpec, args: argparse.Namespace) -> dict[str, Any]:
     }
     logger.log(f"write source metadata: {root / 'source.json'}")
     write_json(root / "source.json", source_payload)
+    if edge_slice_count > 1:
+        slice_entries = write_multi_graph_slices(spec, args, root, source_payload, logger)
+        manifest["multi_graph_slices"] = {
+            "schema_version": MULTI_GRAPH_SLICE_SCHEMA_VERSION,
+            "partition": MULTI_GRAPH_SLICE_PARTITION,
+            "slice_count": edge_slice_count,
+            "hash_seed": edge_slice_seed,
+            "slices": slice_entries,
+        }
+    logger.log(f"write manifest: {root / 'manifest.json'}")
+    write_json(root / "manifest.json", manifest)
     logger.log(f"complete elapsed_ms={manifest['elapsed_ms']:.3f}")
 
     return manifest
@@ -1212,19 +1611,28 @@ def _write_sorted_edges(
     parquet_dir: Path,
     order: str,
     ndv: int,
+    graph_vertex_upper_bound: int | None,
     args: argparse.Namespace,
 ) -> dict[str, Any]:
     path = parquet_dir / f"edges_by_{order}.parquet"
-    writer = open_edge_writer(path, order, args.row_group_size, ndv)
+    writer = open_edge_writer(path, order, args.row_group_size, ndv, graph_vertex_upper_bound)
     src_buf: list[int] = []
     dst_buf: list[int] = []
     id_buf: list[int] = []
     written = 0
+    previous_endpoint_pair: tuple[int, int] | None = None
     started = time.perf_counter()
     if sorter.logger is not None:
         sorter.logger.log(f"edges_by_{order}: stream merge/write start path={path}")
     try:
         for src, dst, edge in sorter.merged_rows():
+            endpoint_pair = (src, dst)
+            if endpoint_pair == previous_endpoint_pair:
+                raise SystemExit(
+                    f"edges_by_{order} contains duplicate directed edge ({src}, {dst}); "
+                    "cannot emit a simple-directed topology certificate"
+                )
+            previous_endpoint_pair = endpoint_pair
             src_buf.append(src)
             dst_buf.append(dst)
             id_buf.append(edge)
@@ -1326,8 +1734,11 @@ def main() -> int:
     require_positive("--profile-row-group-size", args.profile_row_group_size)
     require_positive("--bucket-width", args.bucket_width)
     require_positive("--sort-buffer-rows", args.sort_buffer_rows)
+    require_positive("--edge-slice-count", args.edge_slice_count)
     if args.max_papers < 0:
         raise SystemExit("--max-papers must be >= 0")
+    if args.edge_slice_seed < 0 or args.edge_slice_seed > _U64_MASK:
+        raise SystemExit("--edge-slice-seed must be an unsigned 64-bit integer")
     if args.progress_interval < 0.0:
         raise SystemExit("--progress-interval must be >= 0")
     if not args.source_json.exists():

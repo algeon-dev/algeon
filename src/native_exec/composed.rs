@@ -18,6 +18,7 @@ use datafusion::{
 };
 use futures::future::BoxFuture;
 use nexus_query_engine::{
+    admission::QueryPlanCapabilityProof,
     exec::{execute_query_plan_with_gpu_inputs_observed, output::QueryOutput},
     plan::QueryPlan,
     runtime::{
@@ -27,19 +28,27 @@ use nexus_query_engine::{
 };
 
 use super::{
+    admission::query_admission_ticket_from_task_context,
     common::{
         NATIVE_NEXUS_COMPOSED_EXEC_HOST_OUTPUT_MEMORY_CONSUMER, NativeHostOutputCursor, conservative_properties,
         gpu_resident_source_names, mark_native_runtime_error, native_host_output_stream, native_plan_one_line,
         native_query_runtime_error, properties_with_equivalence, run_gpu_execution_task, write_native_plan_tree,
     },
     config::NexusNativeExecutionConfig,
-    metrics::{NativeExecutionMetricsCapture, NexusNativeMetrics, SealedAttemptMetricsTarget},
+    metrics::{
+        GraphClaimCalibrationCapture, NativeExecutionMetricsCapture, NexusNativeMetrics, SealedAttemptMetricsTarget,
+    },
     producer::{
         GpuResidentProducer, execute_gpu_resident_producer_with_context, gpu_resident_producer_input_name,
-        prepare_gpu_resident_producer_for_execution, register_gpu_resident_producer_discovery,
+        prepare_gpu_resident_producer_for_execution, prepared_gpu_resident_producer_admission_tickets,
+        register_gpu_resident_producer_discovery,
     },
 };
-use crate::error::{Error, ErrorCode};
+use crate::{
+    attempt::NexusAttemptExtension,
+    error::{Error, ErrorCode},
+    native_exec::graph::graph_execution_plan,
+};
 
 /// DataFusion wrapper for composed native execution with GPU-resident producer fragments.
 ///
@@ -52,6 +61,7 @@ pub struct NexusNativeComposedExec {
     gpu_inputs: Vec<Arc<dyn ExecutionPlan>>,
     execution_config: NexusNativeExecutionConfig,
     metrics_capture: Option<NativeExecutionMetricsCapture>,
+    graph_claim_calibration_capture: GraphClaimCalibrationCapture,
     metrics: ExecutionPlanMetricsSet,
     cache: Arc<PlanProperties>,
 }
@@ -159,7 +169,15 @@ impl NexusNativeComposedExec {
                 Arc::new(producer.clone().with_metrics_capture(metrics_capture.clone())) as Arc<dyn ExecutionPlan>
             })
             .collect();
-        Ok(Self { cache, plan, gpu_inputs, execution_config, metrics_capture, metrics: ExecutionPlanMetricsSet::new() })
+        Ok(Self {
+            cache,
+            plan,
+            gpu_inputs,
+            execution_config,
+            metrics_capture,
+            graph_claim_calibration_capture: GraphClaimCalibrationCapture::default(),
+            metrics: ExecutionPlanMetricsSet::new(),
+        })
     }
 
     pub fn native_plan(&self) -> &QueryPlan {
@@ -179,7 +197,12 @@ impl NexusNativeComposedExec {
     /// Returns the one post-seal attempt projection target for this composed
     /// root. Producer fragments are intentionally not separate owners.
     pub(crate) fn sealed_attempt_metrics_target(&self) -> SealedAttemptMetricsTarget {
-        SealedAttemptMetricsTarget::new(&self.metrics)
+        let producer_captures = self.gpu_inputs.iter().filter_map(|input| {
+            super::sealed_attempt_metrics_target(input.as_ref())
+                .map(|target| target.graph_claim_calibration_captures().collect::<Vec<_>>())
+        });
+        SealedAttemptMetricsTarget::new(&self.metrics, self.graph_claim_calibration_capture.clone())
+            .with_graph_claim_calibration_captures(producer_captures.flatten())
     }
 
     pub(crate) async fn prepare_lakehouse_metadata(&self, task_context: Arc<TaskContext>) -> DataFusionResult<Self> {
@@ -198,6 +221,110 @@ impl NexusNativeComposedExec {
         prepared.execution_config = prepared.execution_config.with_lakehouse_footer_pruning(false);
         Ok(prepared)
     }
+}
+
+/// Replaces provisional producer tickets with the one proof for the complete
+/// composed GPU island.  Child preparation is the only phase that can resolve
+/// footer-bound graph evidence, while the outer consumer is the only owner of
+/// its aggregate/filter capability requirements.
+fn complete_composed_admission_proof(
+    execution_config: NexusNativeExecutionConfig,
+    consumer_plan: &QueryPlan,
+    prepared_gpu_inputs: &[Arc<dyn ExecutionPlan>],
+    task_context: &TaskContext,
+) -> DataFusionResult<NexusNativeExecutionConfig> {
+    let mut producer_tickets = Vec::new();
+    for input in prepared_gpu_inputs {
+        for ticket in prepared_gpu_resident_producer_admission_tickets(input.as_ref()) {
+            if !producer_tickets.iter().any(|existing| Arc::ptr_eq(existing, &ticket)) {
+                producer_tickets.push(ticket);
+            }
+        }
+    }
+
+    let mut proofs =
+        producer_tickets.iter().filter_map(|ticket| ticket.attempt_capability_proof_for_rebind()).collect::<Vec<_>>();
+    let graph_result_input_names = prepared_gpu_inputs
+        .iter()
+        .filter_map(|input| graph_execution_plan(input.as_ref()).map(|graph| graph.graph_result_input_name()))
+        .collect::<Vec<_>>();
+    let consumer_proof = match graph_result_input_names.as_slice() {
+        [graph_result_input_name] => {
+            let passthrough = QueryPlanCapabilityProof::for_attested_graph_result_passthrough_plan(
+                consumer_plan,
+                graph_result_input_name,
+            );
+            let bounded_consumer = QueryPlanCapabilityProof::for_attested_graph_result_bounded_consumer_plan(
+                consumer_plan,
+                graph_result_input_name,
+            );
+            passthrough.or(bounded_consumer).or_else(|| QueryPlanCapabilityProof::for_query_plan(consumer_plan))
+        },
+        _ => QueryPlanCapabilityProof::for_query_plan(consumer_plan),
+    };
+    if let Some(consumer_proof) = consumer_proof {
+        proofs.push(consumer_proof);
+    }
+    let Some(first_proof) = proofs.first().cloned() else {
+        return Ok(execution_config);
+    };
+    let Some(first_ticket) = producer_tickets.first() else {
+        // The outer consumer alone needs a capability proof, so retain the
+        // existing ordinary admission path rather than manufacturing a second
+        // ticket without a prepared producer to own its lifecycle.
+        return Ok(execution_config);
+    };
+
+    let source = execution_config.query_admission_source().unwrap_or_else(|| first_ticket.source());
+    if producer_tickets.iter().any(|ticket| !source.same_backend(&ticket.source())) {
+        return Err(Error::new(
+            ErrorCode::InvalidExecutionPlan,
+            "datafusion_nexus.native_composed.admission_proof",
+            "prepared GPU producers belong to different admission backends",
+        )
+        .with_fact("reason", "composed_producer_admission_backend_mismatch")
+        .into());
+    }
+
+    let complete_proof =
+        QueryPlanCapabilityProof::combine(first_proof, proofs.into_iter().skip(1)).map_err(|error| {
+            DataFusionError::from(Error::from_native(
+                "datafusion_nexus.native_composed.admission_proof",
+                "failed to aggregate prepared producer and consumer capability proofs",
+                error,
+            ))
+        })?;
+    // The admission stream has already selected its ambient ticket before a
+    // footer-bound producer can finish preparation. Rebinding a new ticket
+    // here would create a second query-service lifecycle whose release can
+    // revoke the deferred host cursor before it reaches EOF. Update that
+    // still-unadmitted ambient ticket in place; standalone callers retain the
+    // replacement-ticket path because they have no active stream to preserve.
+    if let Some(active_ticket) = query_admission_ticket_from_task_context(task_context) {
+        if !source.same_backend(&active_ticket.source()) {
+            return Err(Error::new(
+                ErrorCode::InvalidExecutionPlan,
+                "datafusion_nexus.native_composed.admission_proof",
+                "the composed root and its active admission ticket belong to different backends",
+            )
+            .with_fact("reason", "composed_active_admission_backend_mismatch")
+            .into());
+        }
+        active_ticket.rebind_capability_proof_before_admission(complete_proof).map_err(|error| {
+            DataFusionError::from(Error::from_native(
+                "datafusion_nexus.native_composed.admission_proof",
+                "failed to rebind the active composed admission ticket before query-service admission",
+                error,
+            ))
+        })?;
+        return Ok(execution_config.with_existing_query_admission_ticket(active_ticket));
+    }
+
+    let ticket = first_ticket.rebind_with_source_and_capability_proof(source, complete_proof);
+    if let Some(attempt) = task_context.session_config().options().extensions.get::<NexusAttemptExtension>() {
+        attempt.bind_ticket(Arc::clone(&ticket));
+    }
+    Ok(execution_config.with_existing_query_admission_ticket(ticket))
 }
 
 impl DisplayAs for NexusNativeComposedExec {
@@ -286,7 +413,6 @@ impl ExecutionPlan for NexusNativeComposedExec {
         let schema = self.schema();
         let plan = self.plan.clone();
         let execution_config = self.execution_config.clone();
-        let runtime_observation_config = execution_config.runtime_observation_config();
         let account_memory_pool = execution_config.host_output_memory_pool_accounting();
         let gpu_inputs = self.gpu_inputs.clone();
         let metrics = NexusNativeMetrics::new_with_capture_and_shape(
@@ -294,7 +420,8 @@ impl ExecutionPlan for NexusNativeComposedExec {
             partition,
             self.metrics_capture.clone(),
             self.execution_config.plan_task_mapping_datafusion_shape(),
-        );
+        )
+        .with_graph_claim_calibration_capture(self.graph_claim_calibration_capture.clone());
         let output_schema = Arc::clone(&schema);
         let output = native_host_output_stream(
             NATIVE_NEXUS_COMPOSED_EXEC_HOST_OUTPUT_MEMORY_CONSUMER,
@@ -308,6 +435,13 @@ impl ExecutionPlan for NexusNativeComposedExec {
                     prepared_gpu_inputs
                         .push(prepare_gpu_resident_producer_for_execution(input, Arc::clone(&task_context)).await?);
                 }
+                let execution_config = complete_composed_admission_proof(
+                    execution_config,
+                    &plan,
+                    &prepared_gpu_inputs,
+                    task_context.as_ref(),
+                )?;
+                let runtime_observation_config = execution_config.runtime_observation_config();
                 // Build one native context for all producer fragments and the consumer so device-resident
                 // handles are compatible across the composed execution.
                 let context_lease = execution_config
@@ -407,6 +541,7 @@ impl ExecutionPlan for NexusNativeComposedExec {
                             cursor_executor,
                             cursor_observation,
                             cursor_metrics,
+                            context_lease,
                         ))
                     },
                 )
@@ -426,7 +561,7 @@ impl ExecutionPlan for NexusNativeComposedExec {
 /// producer children.
 ///
 /// This is an internal composition boundary. It cannot stream Arrow through
-/// [`ExecutionPlan::execute`]; an outer [`GpuResidentProducer`] consumer must
+/// [`ExecutionPlan::execute`]; an outer GPU-resident consumer must
 /// prepare it before native admission and execute it with the same native
 /// context used by the final accelerator operation.
 #[derive(Debug, Clone)]
@@ -484,11 +619,27 @@ impl NexusNativeComposedGpuProducerExec {
     pub fn native_plan(&self) -> &QueryPlan {
         &self.plan
     }
+
+    pub(crate) fn execution_config(&self) -> &NexusNativeExecutionConfig {
+        &self.execution_config
+    }
 }
 
 impl GpuResidentProducer for NexusNativeComposedGpuProducerExec {
     fn gpu_result_input_name(&self) -> &str {
         &self.input_name
+    }
+
+    fn prepared_admission_tickets(&self) -> Vec<Arc<super::admission::QueryAdmissionTicket>> {
+        let mut tickets = self.execution_config.query_admission_ticket().into_iter().collect::<Vec<_>>();
+        for child in &self.gpu_inputs {
+            for ticket in prepared_gpu_resident_producer_admission_tickets(child.as_ref()) {
+                if !tickets.iter().any(|existing| Arc::ptr_eq(existing, &ticket)) {
+                    tickets.push(ticket);
+                }
+            }
+        }
+        tickets
     }
 
     fn prepare_execution_plan<'a>(
@@ -732,4 +883,195 @@ fn composed_gpu_producer_discovery(plan: &dyn ExecutionPlan) -> Option<&dyn GpuR
 fn register_composed_gpu_producer() {
     static REGISTER: std::sync::Once = std::sync::Once::new();
     REGISTER.call_once(|| register_gpu_resident_producer_discovery(composed_gpu_producer_discovery));
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use arrow::datatypes::{DataType, Field, Schema};
+    use datafusion::{
+        common::{DataFusionError, Result as DataFusionResult},
+        execution::context::TaskContext,
+        physical_plan::{
+            DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties, SendableRecordBatchStream, empty::EmptyExec,
+        },
+    };
+    use futures::future::BoxFuture;
+    use nexus_query_engine::{
+        admission::QueryPlanCapabilityProof,
+        plan::{QueryPlan, QueryPlanBuilder},
+        runtime::{ExecutionContext, resident::GpuResultHandle},
+        source::{GpuResidentSource, LocalParquetFile, LocalParquetSource, SourceNode},
+    };
+
+    use super::*;
+    use crate::{
+        backend::InstalledTestGpuBackend,
+        native_exec::admission::{QueryAdmissionTicket, task_context_with_query_admission_ticket},
+    };
+
+    #[derive(Debug)]
+    struct FakeGpuResidentProducer {
+        input_name: String,
+        ticket: Arc<QueryAdmissionTicket>,
+        inner: EmptyExec,
+    }
+
+    impl DisplayAs for FakeGpuResidentProducer {
+        fn fmt_as(&self, format: DisplayFormatType, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            self.inner.fmt_as(format, formatter)
+        }
+    }
+
+    impl ExecutionPlan for FakeGpuResidentProducer {
+        fn name(&self) -> &str {
+            "FakeGpuResidentProducer"
+        }
+
+        fn properties(&self) -> &Arc<PlanProperties> {
+            self.inner.properties()
+        }
+
+        fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
+            Vec::new()
+        }
+
+        fn with_new_children(
+            self: Arc<Self>,
+            children: Vec<Arc<dyn ExecutionPlan>>,
+        ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
+            if children.is_empty() {
+                Ok(self)
+            } else {
+                Err(DataFusionError::Execution("fake GPU-resident producer has no children".to_string()))
+            }
+        }
+
+        fn execute(
+            &self,
+            partition: usize,
+            task_context: Arc<TaskContext>,
+        ) -> DataFusionResult<SendableRecordBatchStream> {
+            self.inner.execute(partition, task_context)
+        }
+    }
+
+    impl GpuResidentProducer for FakeGpuResidentProducer {
+        fn gpu_result_input_name(&self) -> &str {
+            &self.input_name
+        }
+
+        fn prepared_admission_tickets(&self) -> Vec<Arc<QueryAdmissionTicket>> {
+            vec![Arc::clone(&self.ticket)]
+        }
+
+        fn execute_gpu_result_with_context<'a>(
+            &'a self,
+            _native_context: &'a ExecutionContext,
+            _partition: usize,
+            _task_context: Arc<TaskContext>,
+        ) -> BoxFuture<'a, DataFusionResult<(String, GpuResultHandle)>> {
+            Box::pin(async {
+                Err(DataFusionError::Execution(
+                    "fake GPU-resident producer is only used to test composed admission proof completion".to_string(),
+                ))
+            })
+        }
+    }
+
+    fn fake_gpu_resident_producer(plan: &dyn ExecutionPlan) -> Option<&dyn GpuResidentProducer> {
+        plan.downcast_ref::<FakeGpuResidentProducer>().map(|producer| producer as &dyn GpuResidentProducer)
+    }
+
+    fn admission_source(backend: &InstalledTestGpuBackend) -> crate::native_exec::QueryAdmissionSource {
+        backend
+            .optimizer_config()
+            .native_execution_config()
+            .query_admission_source()
+            .expect("installed backend must provide admission authority")
+    }
+
+    fn schema() -> Arc<Schema> {
+        Arc::new(Schema::new(vec![Field::new("value", DataType::Int64, false)]))
+    }
+
+    fn producer_plan(schema: Arc<Schema>) -> QueryPlan {
+        let mut builder = QueryPlanBuilder::new();
+        let source = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
+            vec![LocalParquetFile::new("/tmp/composed-admission-proof.parquet")],
+            schema,
+            vec!["value".to_string()],
+        )));
+        builder.finish_gpu_resident(source)
+    }
+
+    fn consumer_plan(schema: Arc<Schema>) -> QueryPlan {
+        let mut builder = QueryPlanBuilder::new();
+        let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("fake_input", schema)));
+        builder.finish_with_host_sink(source)
+    }
+
+    #[test]
+    fn complete_composed_admission_proof_rebinds_fake_producer_with_full_cpu_only_proof() {
+        register_gpu_resident_producer_discovery(fake_gpu_resident_producer);
+        let backend = InstalledTestGpuBackend::new();
+        let source = admission_source(&backend);
+        let schema = schema();
+        let producer_proof = QueryPlanCapabilityProof::for_query_plan(&producer_plan(Arc::clone(&schema)))
+            .expect("local parquet producer has a capability proof");
+        let consumer_plan = consumer_plan(Arc::clone(&schema));
+        let consumer_proof = QueryPlanCapabilityProof::for_query_plan(&consumer_plan)
+            .expect("host-materializing consumer has a capability proof");
+        let expected_proof = QueryPlanCapabilityProof::combine(producer_proof.clone(), [consumer_proof])
+            .expect("producer and consumer proofs combine");
+        let producer_ticket = QueryAdmissionTicket::new(source.clone(), Some(producer_proof));
+        let prepared_inputs: Vec<Arc<dyn ExecutionPlan>> = vec![Arc::new(FakeGpuResidentProducer {
+            input_name: "fake_input".to_string(),
+            ticket: Arc::clone(&producer_ticket),
+            inner: EmptyExec::new(schema),
+        })];
+        let config = NexusNativeExecutionConfig::bounded(1024, 512, 1, 3, 1).with_query_admission_source(source);
+        let task_context = TaskContext::default();
+
+        let completed = complete_composed_admission_proof(config, &consumer_plan, &prepared_inputs, &task_context)
+            .expect("proof completion is CPU-only and does not acquire CUDA");
+        let completed_ticket = completed.query_admission_ticket().expect("complete proof installs one ticket");
+
+        assert!(!Arc::ptr_eq(&completed_ticket, &producer_ticket), "completion reissues the prepared ticket");
+        assert_eq!(completed_ticket.attempt_capability_proof(), Some(&expected_proof));
+    }
+
+    #[test]
+    fn complete_composed_admission_proof_preserves_the_active_stream_ticket_before_admission() {
+        register_gpu_resident_producer_discovery(fake_gpu_resident_producer);
+        let backend = InstalledTestGpuBackend::new();
+        let source = admission_source(&backend);
+        let schema = schema();
+        let producer_proof = QueryPlanCapabilityProof::for_query_plan(&producer_plan(Arc::clone(&schema)))
+            .expect("local parquet producer has a capability proof");
+        let consumer_plan = consumer_plan(Arc::clone(&schema));
+        let consumer_proof = QueryPlanCapabilityProof::for_query_plan(&consumer_plan)
+            .expect("host-materializing consumer has a capability proof");
+        let expected_proof = QueryPlanCapabilityProof::combine(producer_proof.clone(), [consumer_proof])
+            .expect("producer and consumer proofs combine");
+        let producer_ticket = QueryAdmissionTicket::new(source.clone(), Some(producer_proof.clone()));
+        let active_ticket = QueryAdmissionTicket::new(source.clone(), Some(producer_proof));
+        let prepared_inputs: Vec<Arc<dyn ExecutionPlan>> = vec![Arc::new(FakeGpuResidentProducer {
+            input_name: "fake_input".to_string(),
+            ticket: producer_ticket,
+            inner: EmptyExec::new(schema),
+        })];
+        let config = NexusNativeExecutionConfig::bounded(1024, 512, 1, 3, 1).with_query_admission_source(source);
+        let task_context =
+            task_context_with_query_admission_ticket(Arc::new(TaskContext::default()), Arc::clone(&active_ticket));
+
+        let completed =
+            complete_composed_admission_proof(config, &consumer_plan, &prepared_inputs, task_context.as_ref())
+                .expect("proof completion must preserve the already-active stream ticket");
+        let completed_ticket = completed.query_admission_ticket().expect("completion retains the active ticket");
+
+        assert!(Arc::ptr_eq(&completed_ticket, &active_ticket));
+        assert_eq!(active_ticket.attempt_capability_proof(), Some(&expected_proof));
+    }
 }

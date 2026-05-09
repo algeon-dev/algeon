@@ -56,6 +56,7 @@ macro_rules! for_each_native_nexus_metric {
             max_task_retained_bytes => "max_task_retained_bytes": bytes,
             max_task_retained_bytes_observed => "max_task_retained_bytes_observed": rows,
             native_graph_reservation_rows => "native_graph_reservation_rows": rows,
+            native_graph_claim_calibration_rows => "native_graph_claim_calibration_rows": rows,
             native_graph_runtime_rows => "native_graph_runtime_rows": rows,
             native_task_operator_rows => "native_task_operator_rows": rows,
             native_task_runtime_rows => "native_task_runtime_rows": rows,

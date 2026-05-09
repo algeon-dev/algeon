@@ -45,6 +45,12 @@ mod flight_sql_cugraph_smoke;
 #[cfg(not(test))]
 #[path = "../flight_sql_query.rs"]
 mod flight_sql_query;
+// The stress driver carries pure parser/reduction unit tests, so it compiles
+// under `test` like single_node_multi_gpu_validate; only its network runner
+// stays behind `not(test)` inside the module.
+#[cfg_attr(test, allow(dead_code))]
+#[path = "../flight_sql_stress.rs"]
+mod flight_sql_stress;
 #[cfg(all(feature = "iceberg-e2e", not(test)))]
 #[path = "../e2e/iceberg_glue_moto_e2e.rs"]
 mod iceberg_glue_moto_e2e;
@@ -76,6 +82,7 @@ async fn main() -> ToolResult<()> {
     match command.as_deref() {
         Some("flight-sql-cugraph-smoke") => run_flight_sql_cugraph_smoke(env::args().nth(2)).await,
         Some("flight-sql-query") => run_flight_sql_query(env::args().skip(2).collect()).await,
+        Some("flight-sql-stress") => run_flight_sql_stress(env::args().skip(2).collect()).await,
         Some("iceberg-rest-local-e2e") => run_iceberg_rest_local_e2e().await,
         Some("iceberg-glue-moto-e2e") => run_iceberg_glue_moto_e2e().await,
         Some("server-iceberg-glue-moto-e2e") => run_server_iceberg_glue_moto_e2e().await,
@@ -115,6 +122,7 @@ fn print_usage() {
            flock /tmp/cudf-gpu.lock cargo run -p nexus-tools --features clickbench-stage-probe -- clickbench-stage-probe [OPTIONS]\n\
            cargo run -p nexus-tools -- flight-sql-cugraph-smoke [URL]\n\
            cargo run -p nexus-tools -- flight-sql-query [URL] [SQL]\n\
+           cargo run -p nexus-tools -- flight-sql-stress --config flight-stress-profile.json --out-dir DIR\n\
            cargo run -p nexus-tools --features iceberg-e2e -- iceberg-rest-local-e2e\n\
            cargo run -p nexus-tools --features iceberg-e2e -- iceberg-glue-moto-e2e\n\
            cargo run -p nexus-tools --features server-iceberg-e2e -- server-iceberg-glue-moto-e2e\n\
@@ -147,6 +155,16 @@ async fn run_flight_sql_query(args: Vec<String>) -> ToolResult<()> {
 #[cfg(test)]
 async fn run_flight_sql_query(_args: Vec<String>) -> ToolResult<()> {
     Err("flight-sql-query requires normal cargo run execution".into())
+}
+
+#[cfg(not(test))]
+async fn run_flight_sql_stress(args: Vec<String>) -> ToolResult<()> {
+    flight_sql_stress::run(args).await
+}
+
+#[cfg(test)]
+async fn run_flight_sql_stress(_args: Vec<String>) -> ToolResult<()> {
+    Err("flight-sql-stress requires normal cargo run execution".into())
 }
 
 #[cfg(feature = "validate-query")]

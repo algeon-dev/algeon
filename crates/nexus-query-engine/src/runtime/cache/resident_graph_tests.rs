@@ -3,7 +3,12 @@ use std::{
     time::{Duration, Instant},
 };
 
-use arrow::datatypes::DataType;
+use arrow::{
+    array::Int64Array,
+    datatypes::{DataType, Field, Schema},
+    record_batch::RecordBatch,
+};
+use cudf::DataFrame;
 use cugraph::cudf_interop::{SeriesGraphOptions, graph_from_series};
 
 use super::*;
@@ -12,7 +17,16 @@ use crate::{
         GraphAlgorithm, GraphAlgorithmParams, GraphAlgorithmSpec, GraphBfsParams, GraphConstructionOptions,
         GraphConstructionPolicy, GraphEdgeColumnBindings, GraphResidencyDescriptor,
     },
-    runtime::gpu::{DeviceCapabilities, DeviceResourceProfile},
+    runtime::{
+        ExecutionContext,
+        cache::{
+            DeviceCacheAllocationFactory,
+            local_parquet::{GpuLocalParquetSourceCacheKey, GpuLocalParquetSourceCachePromotion},
+        },
+        gpu::{DeviceAdmissionHealth, DeviceCapabilities, DeviceResourceProfile},
+        resident::{GpuDataFrame, GpuResultHandle},
+    },
+    source::LocalParquetSource,
 };
 
 const CACHE_CAP_BYTES: u64 = 64 * 1024 * 1024;
@@ -41,9 +55,12 @@ fn cache_test_parts() -> (GpuResidentGraphCache, DeviceLedger) {
 }
 
 fn resident_key() -> ResidentGraphKey {
-    let descriptor =
-        GraphResidencyDescriptor::for_content_identity("resident-graph-cache-test-v1", DataType::Int32, None, None)
-            .expect("test identity is stable");
+    resident_key_for_identity("resident-graph-cache-test-v1")
+}
+
+fn resident_key_for_identity(identity: &str) -> ResidentGraphKey {
+    let descriptor = GraphResidencyDescriptor::for_content_identity(identity, DataType::Int32, None, None)
+        .expect("test identity is stable");
     let spec = GraphAlgorithmSpec::with_stable_schema(
         GraphAlgorithm::Bfs,
         GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
@@ -54,12 +71,23 @@ fn resident_key() -> ResidentGraphKey {
 }
 
 fn insert_forward_graph(cache: &GpuResidentGraphCache, key: ResidentGraphKey) -> u64 {
+    let reservation_bytes = cache.available_reservation_bytes().expect("available graph cache reservation");
+    assert!(reservation_bytes > 0, "resident graph insertion must have cache headroom");
     let transaction = cache
-        .begin_insert(CACHE_CAP_BYTES)
+        .begin_insert(reservation_bytes)
         .expect("cache pre-reservation succeeds")
         .expect("cache cap accepts the graph charge");
-    let before = cache.allocation_usage().expect("read cache-domain usage before graph build");
-    let runtime = Arc::clone(transaction.runtime());
+    let parked = build_forward_graph(&transaction);
+    let mut transaction = transaction;
+    assert!(transaction.shrink_to_scope_usage().expect("measure retained graph bytes"));
+    let retained_graph_bytes = transaction.bytes();
+    assert!(retained_graph_bytes > 0, "parked graph must retain measured cache-domain bytes");
+    assert_eq!(transaction.insert_if_absent(key, parked).expect("retain graph"), GpuResidentGraphCacheInsert::Inserted);
+    retained_graph_bytes
+}
+
+fn build_forward_graph(transaction: &GpuResidentGraphInsertTransaction) -> cugraph::ParkedGraph<cugraph::Forward> {
+    let runtime = transaction.runtime();
     let handle = cugraph::ResourceHandle::for_runtime(Arc::clone(&runtime)).expect("cache runtime gets a handle");
     let entered = handle.enter("nexus_query_engine.resident_graph_cache_test.build").expect("enter cache runtime");
     let src = runtime.series(&[0_i32, 1, 2]).expect("source series");
@@ -72,12 +100,144 @@ fn insert_forward_graph(cache: &GpuResidentGraphCache, key: ResidentGraphKey) ->
     drop(handle);
     drop(src);
     drop(dst);
+    parked
+}
+
+fn source_fixture() -> (Arc<ExecutionContext>, GpuResultHandle, GpuLocalParquetSourceCacheKey) {
+    let runtime = Arc::new(cudf::Runtime::new().expect("test CUDA runtime"));
+    let context = Arc::new(
+        ExecutionContext::builder().with_shared_runtime(Arc::clone(&runtime)).build().expect("test execution context"),
+    );
+    let schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Int64, false)]));
+    let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int64Array::from_iter_values(0..4096))])
+        .expect("test Arrow batch");
+    let frame = DataFrame::from_record_batch(runtime.as_ref(), &batch).expect("test GPU frame");
+    let handle = GpuResultHandle::new(context.as_ref(), GpuDataFrame::new(frame), Arc::clone(&schema))
+        .expect("test GPU result handle");
+    let source = LocalParquetSource::new("/tmp/nexus-shared-cache-test.parquet", schema, vec!["value".into()]);
+    (context, handle, GpuLocalParquetSourceCacheKey::from_source(&source))
+}
+
+#[test]
+fn separate_resident_graph_scopes_keep_distinct_current_resource_routes() {
+    let (cache, ledger) = cache_test_parts();
+    let first_bytes = insert_forward_graph(&cache, resident_key_for_identity("resident-graph-cache-route-first"));
+    let second_bytes = insert_forward_graph(&cache, resident_key_for_identity("resident-graph-cache-route-second"));
+
+    let snapshot = ledger.snapshot().unwrap();
+    assert_eq!(snapshot.cache_evictable_resident_bytes, first_bytes + second_bytes);
+    assert_eq!(cache.snapshot().unwrap().available_entries, 2);
+
+    cache.close_and_drain_until(Instant::now() + Duration::from_secs(10)).expect("drain independent graph scopes");
+    let drained = ledger.snapshot().unwrap();
+    assert_eq!(drained.cache_evictable_resident_bytes, 0);
+    assert_eq!(drained.cache_pinned_in_use_bytes, 0);
+}
+
+#[test]
+fn graph_scope_charge_survives_source_cache_eviction_between_build_and_commit() {
+    let device = cudf::DeviceId::current().expect("shared cache test requires a CUDA device");
+    let profile = DeviceResourceProfile::resolve_with_capabilities_and_cache_cap(
+        device.ordinal(),
+        512 * 1024 * 1024,
+        0,
+        0,
+        1024 * 1024,
+        1,
+        1,
+        2,
+        2,
+        DeviceCapabilities::default(),
+        CACHE_CAP_BYTES,
+    )
+    .expect("shared cache test profile must resolve");
+    let ledger = DeviceLedger::new(profile);
+    let factory = DeviceCacheAllocationFactory::new(ledger.clone())
+        .expect("cache factory must be created")
+        .expect("non-zero cache cap creates a factory");
+    let source_cache = factory.source_cache().expect("source cache lease");
+    let graph_cache = factory.graph_cache().expect("graph cache lease");
+    let (context, source, source_key) = source_fixture();
+    assert_eq!(
+        source_cache.promote(source_key, context.as_ref(), &source).expect("populate source cache").outcome,
+        GpuLocalParquetSourceCachePromotion::Inserted
+    );
+
+    let reservation_bytes = graph_cache.available_reservation_bytes().expect("remaining graph reservation");
+    assert!(reservation_bytes > 0, "source cache must leave graph insertion headroom");
+    let transaction = graph_cache
+        .begin_insert(reservation_bytes)
+        .expect("begin graph insertion")
+        .expect("graph insertion precharge fits");
+    let parked = build_forward_graph(&transaction);
+
+    // This is the former aggregate-delta hole: source residency disappears
+    // after graph construction but before graph charge reconciliation. The
+    // graph scope is allocator-owned and excludes that source mutation.
+    source_cache.close_and_drain().expect("evict source cache between graph build and commit");
+
     let mut transaction = transaction;
-    assert!(transaction.shrink_to_domain_delta(before).expect("measure retained graph bytes"));
-    let retained_graph_bytes = transaction.bytes();
-    assert!(retained_graph_bytes > 0, "parked graph must retain measured cache-domain bytes");
-    assert_eq!(transaction.insert_if_absent(key, parked).expect("retain graph"), GpuResidentGraphCacheInsert::Inserted);
-    retained_graph_bytes
+    assert!(transaction.shrink_to_scope_usage().expect("measure exact graph scope bytes"));
+    let graph_bytes = transaction.bytes();
+    assert!(graph_bytes > 0);
+    assert_eq!(
+        transaction.insert_if_absent(resident_key(), parked).expect("commit graph cache entry"),
+        GpuResidentGraphCacheInsert::Inserted
+    );
+
+    let report = factory.report().expect("coherent paired cache report");
+    assert_eq!(report.ledger_evictable_resident_bytes, graph_bytes);
+    assert_eq!(report.ledger_pinned_in_use_bytes, 0);
+    assert_eq!(report.physical_current_bytes, graph_bytes);
+
+    graph_cache.close_and_drain_until(Instant::now() + Duration::from_secs(10)).expect("drain graph cache");
+    let drained = factory.report().expect("coherent drained cache report");
+    assert_eq!(drained.ledger_evictable_resident_bytes, 0);
+    assert_eq!(drained.ledger_pinned_in_use_bytes, 0);
+    assert_eq!(drained.physical_current_bytes, 0);
+}
+
+#[test]
+fn empty_graph_candidate_abort_releases_precharge_only_after_scope_proof() {
+    let (cache, ledger) = cache_test_parts();
+    let transaction = cache
+        .begin_insert(CACHE_CAP_BYTES)
+        .expect("cache pre-reservation succeeds")
+        .expect("cache cap accepts the graph charge");
+    let reserved_bytes = transaction.bytes();
+    assert_eq!(ledger.snapshot().unwrap().cache_evictable_resident_bytes, reserved_bytes);
+
+    transaction.abort_after_candidate_destroyed().expect("empty scope proves candidate teardown");
+
+    let snapshot = ledger.snapshot().unwrap();
+    assert_eq!(snapshot.cache_evictable_resident_bytes, 0);
+    assert_eq!(snapshot.cache_pinned_in_use_bytes, 0);
+    assert_eq!(snapshot.health, DeviceAdmissionHealth::Open);
+}
+
+#[test]
+fn live_scope_candidate_drop_retains_precharge_and_closes_admission() {
+    let (cache, ledger) = cache_test_parts();
+    let transaction = cache
+        .begin_insert(CACHE_CAP_BYTES)
+        .expect("cache pre-reservation succeeds")
+        .expect("cache cap accepts the graph charge");
+    let reserved_bytes = transaction.bytes();
+
+    // Keep a scope-routed allocation alive across the transaction drop. The
+    // destructor must see that its candidate teardown is unproven and leave
+    // the prospective ledger charge in place rather than releasing it.
+    let runtime = transaction.runtime();
+    let live_candidate_allocation = runtime.device_buffer(1024).expect("allocate a live candidate object");
+    drop(transaction);
+
+    let snapshot = ledger.snapshot().unwrap();
+    assert_eq!(snapshot.cache_evictable_resident_bytes, reserved_bytes);
+    assert_eq!(snapshot.cache_pinned_in_use_bytes, 0);
+    assert!(matches!(snapshot.health, DeviceAdmissionHealth::Closed { .. }));
+
+    drop(live_candidate_allocation);
+    runtime.synchronize().expect("retire the test candidate allocation");
 }
 
 #[test]
@@ -106,7 +266,7 @@ fn resident_graph_refuses_final_preparation_pin_after_close_and_drains_charge() 
 }
 
 #[test]
-fn resident_graph_return_after_close_destroys_before_releasing_ledger_charge() {
+fn resident_graph_closed_before_an_untrusted_return_never_reopens_the_key() {
     let (cache, ledger) = cache_test_parts();
     let key = resident_key();
     let retained_graph_bytes = insert_forward_graph(&cache, key.clone());
@@ -120,6 +280,12 @@ fn resident_graph_return_after_close_destroys_before_releasing_ledger_charge() {
     let snapshot = ledger.snapshot().unwrap();
     assert_eq!(snapshot.cache_evictable_resident_bytes, 0);
     assert_eq!(snapshot.cache_pinned_in_use_bytes, 0);
-    assert_eq!(cache.snapshot().unwrap().available_entries, 0);
-    assert_eq!(cache.snapshot().unwrap().checked_out_entries, 0);
+    let cache_snapshot = cache.snapshot().unwrap();
+    assert!(cache_snapshot.closed);
+    assert_eq!(cache_snapshot.available_entries, 0);
+    assert_eq!(cache_snapshot.checked_out_entries, 0);
+    assert!(
+        cache.checkout::<cugraph::Forward>(&key, None).is_err(),
+        "a graph returned after cache closure must not become reusable"
+    );
 }

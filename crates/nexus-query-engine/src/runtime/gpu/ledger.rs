@@ -400,10 +400,13 @@ impl DeviceLedger {
             &AttemptRequirement {
                 configured_floor_bytes,
                 capability_floor_raise_bytes: 0,
+                required_phase_floor_bytes: 0,
+                source_stage_bytes: None,
                 soft_working_set_hint_bytes: Some(soft_working_set_hint_bytes),
                 estimate_quality: crate::admission::EstimateQuality::Modeled,
                 required_capabilities: Vec::new(),
                 attested_cugraph_graph_execution_scopes: Vec::new(),
+                reservation_shapes: Vec::new(),
             },
         )
     }
@@ -426,7 +429,8 @@ impl DeviceLedger {
     /// Resolves an attempt requirement against this immutable device profile.
     pub(crate) fn required_floor_bytes_for(&self, requirement: &AttemptRequirement) -> Result<u64> {
         let configured_floor_bytes = self.inner.profile.attempt_floor_bytes.max(requirement.configured_floor_bytes);
-        configured_floor_bytes.checked_add(requirement.capability_floor_raise_bytes).ok_or_else(|| {
+        let required_phase_floor_bytes = configured_floor_bytes.max(requirement.required_phase_floor_bytes);
+        required_phase_floor_bytes.checked_add(requirement.capability_floor_raise_bytes).ok_or_else(|| {
             QueryError::new(
                 QueryErrorCode::InvalidPlan,
                 OPERATION,
@@ -435,6 +439,7 @@ impl DeviceLedger {
             .with_fact("reason", "attempt_requirement_floor_overflow")
             .with_fact("device_ordinal", self.inner.profile.device_ordinal)
             .with_fact("configured_floor_bytes", configured_floor_bytes)
+            .with_fact("required_phase_floor_bytes", requirement.required_phase_floor_bytes)
             .with_fact("capability_floor_raise_bytes", requirement.capability_floor_raise_bytes)
         })
     }
@@ -1087,6 +1092,7 @@ impl MemoryGrant {
         self.inner.admission_request_id
     }
 
+    #[cfg(any(feature = "cugraph", test))]
     pub(crate) fn identity_key(&self) -> usize {
         Arc::as_ptr(&self.inner) as usize
     }
@@ -1219,11 +1225,13 @@ impl MemoryGrant {
 
 impl MemoryGrantLiveReservation {
     /// Bytes retained by this handle in the owning memory grant.
+    #[cfg(any(feature = "cugraph", test))]
     pub(crate) fn bytes(&self) -> u64 {
         self.inner.bytes
     }
 
     /// Whether this retention consumes capacity from `grant`.
+    #[cfg(any(feature = "cugraph", test))]
     pub(crate) fn belongs_to(&self, grant: &MemoryGrant) -> bool {
         self.inner.grant.identity_key() == grant.identity_key()
     }

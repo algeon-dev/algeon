@@ -111,13 +111,24 @@ fn assert_bounded_similarity_pair_input_overlap_is_credited() {
     let pair_input_overlap_bytes = u64::try_from(pair_rows).unwrap() * 2 * 4;
     let credited_bytes = pair_input_overlap_bytes.min(pair_source_bytes);
     assert!(credited_bytes > 0);
+    let normalized_edge_credit = baseline
+        .metrics()
+        .reservation_events
+        .iter()
+        .find(|event| {
+            event.memory_boundary == "bounded_generic_edge_normalize_output"
+                && event.action == MemoryReservationEventAction::Transfer
+        })
+        .expect("edge normalization must transfer its one live graph-input charge")
+        .requested_bytes;
     assert_eq!(
         baseline_report.requested_bytes,
         baseline_report
             .model_requested_bytes
+            .saturating_sub(normalized_edge_credit)
             .saturating_sub(credited_bytes)
             .max(GRAPH_MEMORY_BUDGET_TRACKING_MIN_LIMIT_BYTES),
-        "the graph reservation must be the incremental price after retaining the literal pair relation"
+        "the graph reservation must price the graph-input and literal-pair frames exactly once"
     );
     let graph_capacity = baseline_report.requested_bytes.saturating_add(credited_bytes / 2);
     assert!(
@@ -129,9 +140,8 @@ fn assert_bounded_similarity_pair_input_overlap_is_credited() {
 
     let context = context_with_budget(pair_source_bytes.saturating_add(graph_capacity));
     let gpu_inputs = gpu_inputs_for(&context);
-    let result = execute_query_plan_with_gpu_inputs(&context, &plan, &gpu_inputs).unwrap_or_else(|error| {
-        panic!("bounded similarity must admit its live pair input exactly once: {error:#?}")
-    });
+    let result = execute_query_plan_with_gpu_inputs(&context, &plan, &gpu_inputs)
+        .unwrap_or_else(|error| panic!("bounded similarity must admit its live pair input exactly once: {error:#?}"));
     assert_eq!(result.metrics().graph_reservation_rows.len(), 1);
     let report = &result.metrics().graph_reservation_rows[0];
     assert_eq!(report.outcome, GraphReservationOutcome::Admitted);

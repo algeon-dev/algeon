@@ -27,13 +27,40 @@ pub(super) enum SchedulePhase {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub(super) struct ScheduledArrival {
     pub(super) sequence: usize,
-    /// Closed-loop round this arrival belongs to. The driver drains a round
-    /// before submitting the next, making `concurrency` an in-flight ceiling.
+    /// Closed-loop round this arrival belongs to within its step. The driver
+    /// drains a round before submitting the next, making `concurrency` an
+    /// in-flight ceiling. Rounds restart at zero for each step.
     pub(super) round: usize,
+    /// W3 step this arrival belongs to. Single-phase profiles place every
+    /// arrival in step zero.
+    pub(super) step_index: usize,
     pub(super) offset_ns: u64,
     pub(super) phase: SchedulePhase,
+    /// The overrun policy this arrival was planned under. Rate steps may mix
+    /// `delay` and `drop` phases inside one run, so the driver reads the
+    /// policy from the arrival rather than from one plan-level knob.
+    pub(super) rate_overrun: RateOverrunPolicy,
     pub(super) query_index: usize,
     pub(super) session_index: usize,
+}
+
+/// One sequential phase of the plan. A single-phase profile produces exactly
+/// one step spanning the whole measurement window, which keeps the driver on
+/// one code path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub(super) struct StepPlan {
+    pub(super) step_index: usize,
+    /// Closed-loop in-flight ceiling for this step (concurrency mode).
+    pub(super) concurrency: usize,
+    /// Poisson offered rate for this step (rate mode).
+    pub(super) arrival_rate_per_second: Option<u64>,
+    pub(super) rate_overrun: &'static str,
+    /// Offset of the step's start from the run's t0 (after warmup).
+    pub(super) start_ns: u64,
+    pub(super) measurement_ns: u64,
+    /// Arrivals this step planned. Concurrency mode over-plans rounds and is
+    /// paced by the step window, so its count is an upper bound there.
+    pub(super) planned_arrivals: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -45,6 +72,12 @@ pub(super) struct ArrivalPlan {
     /// Explicit closed-loop batch bound, when the profile chose one. A
     /// `None` value preserves duration-paced closed-loop scheduling.
     pub(super) max_rounds: Option<usize>,
+    /// Duration-paced closed-loop profiles construct each round at the driver
+    /// boundary instead of materializing a speculative wall-clock number of
+    /// arrivals. This prevents the planning cap from omitting later W3 steps
+    /// while retaining a finite, reproducible plan for rate and fixed-cohort
+    /// P6 scenarios.
+    pub(super) duration_paced_concurrency: bool,
     pub(super) rate_overrun: &'static str,
     pub(super) warmup_ns: u64,
     pub(super) measurement_ns: u64,
@@ -55,6 +88,14 @@ pub(super) struct ArrivalPlan {
     /// asked for. Concurrency mode over-plans rounds on purpose and is paced by
     /// the measurement window, so the cap is never a truncation there.
     pub(super) truncated_by_attempt_cap: bool,
+    /// Sequential phases of this plan. Always non-empty; a single-phase
+    /// profile contributes exactly one step.
+    pub(super) steps: Vec<StepPlan>,
+    /// S5 storm knobs, echoed from the profile so the driver can arm them
+    /// per attempt.
+    pub(super) attempt_deadline_ms: Option<u64>,
+    pub(super) cancel_every_n: Option<usize>,
+    pub(super) cancel_after_ms: Option<u64>,
     pub(super) arrivals: Vec<ScheduledArrival>,
 }
 
@@ -64,7 +105,10 @@ impl ArrivalPlan {
     ///
     /// Concurrency mode issues `concurrency` simultaneous arrivals per round
     /// and needs no seed. Rate mode draws exponential interarrival gaps, so
-    /// the offered process is Poisson at the configured rate.
+    /// the offered process is Poisson at the configured rate. In steps mode
+    /// the steps are planned sequentially against their own windows; one
+    /// seeded stream spans every rate step so the recorded seed still maps to
+    /// exactly one schedule.
     pub(super) fn plan(scheduling: &SchedulingProfile, query_count: usize, session_count: usize) -> ToolResult<Self> {
         if query_count == 0 {
             return Err("a measured run requires at least one selected workload query".into());
@@ -72,30 +116,99 @@ impl ArrivalPlan {
         if session_count == 0 {
             return Err("a measured run requires at least one shared session".into());
         }
-        if scheduling.measurement_seconds == 0 {
-            return Err("scheduling.measurement_seconds must be greater than zero for a measured run".into());
-        }
         let warmup_ns = seconds_to_ns(scheduling.warmup_seconds)?;
-        let measurement_ns = seconds_to_ns(scheduling.measurement_seconds)?;
-        let horizon_ns = warmup_ns.checked_add(measurement_ns).ok_or("scheduling window overflows nanoseconds")?;
-
-        let arrivals = match scheduling.arrival_mode {
-            ArrivalMode::Concurrency => plan_concurrency(
-                scheduling.concurrency,
-                scheduling.max_rounds,
-                horizon_ns,
-                warmup_ns,
-                query_count,
-                session_count,
-            ),
-            ArrivalMode::Rate => {
-                let rate = scheduling
-                    .arrival_rate_per_second
-                    .ok_or("rate scheduling requires scheduling.arrival_rate_per_second")?;
-                plan_rate(rate, scheduling.seed, horizon_ns, warmup_ns, query_count, session_count)?
-            },
+        let rate_overrun = scheduling.rate_overrun;
+        let (step_shapes, measurement_ns) = if scheduling.steps.is_empty() {
+            if scheduling.measurement_seconds == 0 {
+                return Err("scheduling.measurement_seconds must be greater than zero for a measured run".into());
+            }
+            let shape = StepShape {
+                concurrency: scheduling.concurrency,
+                arrival_rate_per_second: scheduling.arrival_rate_per_second,
+                rate_overrun,
+                measurement_ns: seconds_to_ns(scheduling.measurement_seconds)?,
+            };
+            (vec![shape], shape.measurement_ns)
+        } else {
+            let mut shapes = Vec::with_capacity(scheduling.steps.len());
+            let mut total_ns = 0_u64;
+            for step in &scheduling.steps {
+                let measurement_ns = seconds_to_ns(step.measurement_seconds)?;
+                total_ns =
+                    total_ns.checked_add(measurement_ns).ok_or("scheduling steps window overflows nanoseconds")?;
+                shapes.push(StepShape {
+                    concurrency: step.concurrency.unwrap_or(0),
+                    arrival_rate_per_second: step.arrival_rate_per_second,
+                    rate_overrun: step.rate_overrun.unwrap_or(RateOverrunPolicy::Delay),
+                    measurement_ns,
+                });
+            }
+            (shapes, total_ns)
         };
-        if arrivals.is_empty() {
+        // The total horizon itself must fit the clock even though each step
+        // accumulates its own checked window.
+        let _ = warmup_ns.checked_add(measurement_ns).ok_or("scheduling window overflows nanoseconds")?;
+
+        let duration_paced_concurrency =
+            scheduling.arrival_mode == ArrivalMode::Concurrency && scheduling.max_rounds.is_none();
+        let mut rng = SplitMix64::new(scheduling.seed);
+        let mut arrivals = Vec::new();
+        let mut steps = Vec::with_capacity(step_shapes.len());
+        let mut step_start_ns = warmup_ns;
+        for (step_index, shape) in step_shapes.iter().enumerate() {
+            let first_arrival = arrivals.len();
+            // The step's measurement window ends where the next begins; the
+            // final step ends at the run horizon. Step zero additionally owns
+            // the warmup phase, so its rate arrivals draw from offset zero.
+            let step_end_ns = step_start_ns
+                .checked_add(shape.measurement_ns)
+                .ok_or("scheduling steps window overflows nanoseconds")?;
+            match scheduling.arrival_mode {
+                ArrivalMode::Concurrency if !duration_paced_concurrency => plan_concurrency(
+                    shape.concurrency,
+                    scheduling.max_rounds,
+                    shape.measurement_ns,
+                    step_index,
+                    shape.rate_overrun,
+                    warmup_ns,
+                    query_count,
+                    session_count,
+                    &mut arrivals,
+                ),
+                ArrivalMode::Concurrency => {},
+                ArrivalMode::Rate => {
+                    let rate = shape
+                        .arrival_rate_per_second
+                        .ok_or("rate scheduling requires scheduling.arrival_rate_per_second")?;
+                    plan_rate(
+                        rate,
+                        &mut rng,
+                        if step_index == 0 { 0 } else { step_start_ns },
+                        step_end_ns,
+                        step_index,
+                        shape.rate_overrun,
+                        warmup_ns,
+                        query_count,
+                        session_count,
+                        &mut arrivals,
+                    );
+                },
+            }
+            steps.push(StepPlan {
+                step_index,
+                concurrency: shape.concurrency,
+                arrival_rate_per_second: shape.arrival_rate_per_second,
+                rate_overrun: rate_overrun_label(shape.rate_overrun),
+                start_ns: step_start_ns,
+                measurement_ns: shape.measurement_ns,
+                planned_arrivals: arrivals.len() - first_arrival,
+            });
+            step_start_ns = step_end_ns;
+            if !duration_paced_concurrency && arrivals.len() >= MAX_PLANNED_ATTEMPTS {
+                break;
+            }
+        }
+        if arrivals.is_empty() && !duration_paced_concurrency {
             return Err("the scheduling window planned zero arrivals".into());
         }
 
@@ -111,17 +224,40 @@ impl ArrivalPlan {
             concurrency: scheduling.concurrency,
             arrival_rate_per_second: scheduling.arrival_rate_per_second,
             max_rounds: scheduling.max_rounds,
-            rate_overrun: match scheduling.rate_overrun {
-                RateOverrunPolicy::Delay => "delay",
-                RateOverrunPolicy::Drop => "drop",
-            },
+            duration_paced_concurrency,
+            rate_overrun: rate_overrun_label(scheduling.rate_overrun),
             warmup_ns,
             measurement_ns,
             warmup_arrivals,
             measurement_arrivals: arrivals.len() - warmup_arrivals,
             truncated_by_attempt_cap,
+            steps,
+            attempt_deadline_ms: scheduling.attempt_deadline_ms,
+            cancel_every_n: scheduling.cancel_every_n,
+            cancel_after_ms: scheduling.cancel_after_ms,
             arrivals,
         })
+    }
+
+    pub(super) const fn is_duration_paced_concurrency(&self) -> bool {
+        self.duration_paced_concurrency
+    }
+}
+
+/// The resolved per-step planning inputs, shared by the single-phase and
+/// steps-mode paths above.
+#[derive(Clone, Copy)]
+struct StepShape {
+    concurrency: usize,
+    arrival_rate_per_second: Option<u64>,
+    rate_overrun: RateOverrunPolicy,
+    measurement_ns: u64,
+}
+
+fn rate_overrun_label(policy: RateOverrunPolicy) -> &'static str {
+    match policy {
+        RateOverrunPolicy::Delay => "delay",
+        RateOverrunPolicy::Drop => "drop",
     }
 }
 
@@ -130,51 +266,54 @@ impl ArrivalPlan {
 /// Every arrival in a round shares offset zero and carries the round index; the
 /// driver submits round `N + 1` only once round `N` has drained. `concurrency`
 /// is therefore an in-flight ceiling, not an offered arrival rate, and the
-/// measurement window bounds the run rather than pacing it.
+/// step window bounds the step rather than pacing it.
 ///
-/// Rounds are planned generously against the horizon because completion pacing
-/// is observed. The driver stops at the measurement deadline, and unsubmitted
+/// Rounds are planned generously against the step horizon because completion
+/// pacing is observed. The driver stops at the step deadline, and unsubmitted
 /// arrivals never become attempt rows.
+#[allow(clippy::too_many_arguments)]
 fn plan_concurrency(
     concurrency: usize,
     max_rounds: Option<usize>,
-    horizon_ns: u64,
+    step_window_ns: u64,
+    step_index: usize,
+    rate_overrun: RateOverrunPolicy,
     warmup_ns: u64,
     query_count: usize,
     session_count: usize,
-) -> Vec<ScheduledArrival> {
-    // A generous round budget: the driver ends on the wall-clock deadline, and
-    // an attempt cannot be shorter than this floor in practice.
+    arrivals: &mut Vec<ScheduledArrival>,
+) {
+    // A generous round budget: the driver ends on the wall-clock step
+    // deadline, and an attempt cannot be shorter than this floor in practice.
     const MIN_ROUND_NS: u64 = 1_000_000;
-    let duration_paced_rounds = usize::try_from(horizon_ns / MIN_ROUND_NS).unwrap_or(usize::MAX).max(1);
+    let duration_paced_rounds = usize::try_from(step_window_ns / MIN_ROUND_NS).unwrap_or(usize::MAX).max(1);
     let rounds = max_rounds.unwrap_or(duration_paced_rounds).min(duration_paced_rounds);
-    let mut arrivals = Vec::new();
-    let mut sequence = 0;
     for round in 0..rounds {
         for _ in 0..concurrency {
             if arrivals.len() >= MAX_PLANNED_ATTEMPTS {
-                return arrivals;
+                return;
             }
-            arrivals.push(arrival(sequence, round, 0, warmup_ns, query_count, session_count));
-            sequence += 1;
+            let sequence = arrivals.len();
+            arrivals.push(arrival(sequence, round, step_index, 0, rate_overrun, warmup_ns, query_count, session_count));
         }
     }
-    arrivals
 }
 
+#[allow(clippy::too_many_arguments)]
 fn plan_rate(
     rate_per_second: u64,
-    seed: u64,
+    rng: &mut SplitMix64,
+    step_start_ns: u64,
     horizon_ns: u64,
+    step_index: usize,
+    rate_overrun: RateOverrunPolicy,
     warmup_ns: u64,
     query_count: usize,
     session_count: usize,
-) -> ToolResult<Vec<ScheduledArrival>> {
-    let mut rng = SplitMix64::new(seed);
+    arrivals: &mut Vec<ScheduledArrival>,
+) {
     let mean_gap_ns = 1_000_000_000_f64 / rate_per_second as f64;
-    let mut arrivals = Vec::new();
-    let mut offset_ns = 0_u64;
-    let mut sequence = 0;
+    let mut offset_ns = step_start_ns;
     while arrivals.len() < MAX_PLANNED_ATTEMPTS {
         // Exponential interarrival: -mean * ln(U), U in (0, 1].
         let gap_ns = (-mean_gap_ns * rng.next_unit_interval().ln()).round();
@@ -183,16 +322,18 @@ fn plan_rate(
         if offset_ns >= horizon_ns {
             break;
         }
-        arrivals.push(arrival(sequence, 0, offset_ns, warmup_ns, query_count, session_count));
-        sequence += 1;
+        let sequence = arrivals.len();
+        arrivals.push(arrival(sequence, 0, step_index, offset_ns, rate_overrun, warmup_ns, query_count, session_count));
     }
-    Ok(arrivals)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn arrival(
     sequence: usize,
     round: usize,
+    step_index: usize,
     offset_ns: u64,
+    rate_overrun: RateOverrunPolicy,
     warmup_ns: u64,
     query_count: usize,
     session_count: usize,
@@ -200,11 +341,13 @@ fn arrival(
     ScheduledArrival {
         sequence,
         round,
+        step_index,
         offset_ns,
         // Concurrency mode has no planned offsets, so the driver reclassifies
         // its arrivals against the observed warmup deadline; rate mode's
         // offsets already place each arrival in a window.
         phase: if offset_ns < warmup_ns { SchedulePhase::Warmup } else { SchedulePhase::Measurement },
+        rate_overrun,
         query_index: sequence % query_count,
         session_index: sequence % session_count,
     }
@@ -255,28 +398,26 @@ mod tests {
             warmup_seconds: 2,
             measurement_seconds: 8,
             rate_overrun: RateOverrunPolicy::Delay,
+            steps: Vec::new(),
+            attempt_deadline_ms: None,
+            cancel_every_n: None,
+            cancel_after_ms: None,
         }
     }
 
-    /// Concurrency mode is closed-loop: rounds of exactly `concurrency`
-    /// arrivals, all at offset zero, with the driver pacing them.
+    /// Duration-paced concurrency profiles stay compact: the runner creates
+    /// their closed-loop rounds at the step boundary instead of silently
+    /// dropping later rounds or steps at the static planning cap.
     #[test]
-    fn concurrency_mode_plans_closed_loop_rounds_of_the_configured_width() {
+    fn concurrency_mode_defers_duration_paced_rounds_to_the_driver() {
         let plan = ArrivalPlan::plan(&scheduling(ArrivalMode::Concurrency, None, 0), 3, 2).unwrap();
         assert_eq!(plan.arrival_mode, "concurrency");
         assert_eq!(plan.concurrency, 4);
         assert_eq!(plan.warmup_ns, 2_000_000_000);
         assert_eq!(plan.measurement_ns, 8_000_000_000);
-        // Every round carries exactly `concurrency` arrivals, in order.
-        assert_eq!(plan.arrivals.len() % 4, 0);
-        for (index, arrival) in plan.arrivals.iter().enumerate() {
-            assert_eq!(arrival.round, index / 4, "sequence {index}");
-            // Pacing is observed, so a closed-loop arrival carries no offset.
-            assert_eq!(arrival.offset_ns, 0);
-        }
-        // The plan is generous against the horizon; the driver stops on the
-        // measurement deadline rather than exhausting the plan.
-        assert!(plan.arrivals.len() > 4 * 10);
+        assert!(plan.is_duration_paced_concurrency());
+        assert!(plan.arrivals.is_empty());
+        assert_eq!(plan.steps[0].planned_arrivals, 0);
     }
 
     #[test]
@@ -328,7 +469,9 @@ mod tests {
 
     #[test]
     fn queries_and_sessions_are_assigned_round_robin_over_the_selected_sets() {
-        let plan = ArrivalPlan::plan(&scheduling(ArrivalMode::Concurrency, None, 0), 3, 2).unwrap();
+        let mut profile = scheduling(ArrivalMode::Concurrency, None, 0);
+        profile.max_rounds = Some(2);
+        let plan = ArrivalPlan::plan(&profile, 3, 2).unwrap();
         for arrival in &plan.arrivals {
             assert_eq!(arrival.query_index, arrival.sequence % 3);
             assert_eq!(arrival.session_index, arrival.sequence % 2);
@@ -360,12 +503,96 @@ mod tests {
         let modest = scheduling(ArrivalMode::Rate, Some(10), 1);
         assert!(!ArrivalPlan::plan(&modest, 1, 1).unwrap().truncated_by_attempt_cap);
 
-        // Concurrency mode over-plans rounds deliberately and is paced by the
-        // measurement window, so the cap is never a truncation there.
+        // Duration-paced concurrency mode carries no speculative round vector,
+        // so no later step can be silently cut off by the planning cap.
         let mut closed_loop = scheduling(ArrivalMode::Concurrency, None, 0);
         closed_loop.measurement_seconds = 3_600;
         let plan = ArrivalPlan::plan(&closed_loop, 1, 1).unwrap();
-        assert_eq!(plan.arrivals.len(), MAX_PLANNED_ATTEMPTS);
+        assert!(plan.is_duration_paced_concurrency());
+        assert!(plan.arrivals.is_empty());
         assert!(!plan.truncated_by_attempt_cap);
+    }
+
+    /// A single-phase profile produces exactly one step spanning the whole
+    /// measurement window, so the driver walks one code path.
+    #[test]
+    fn single_phase_profiles_plan_exactly_one_step() {
+        let plan = ArrivalPlan::plan(&scheduling(ArrivalMode::Concurrency, None, 0), 3, 2).unwrap();
+        assert_eq!(plan.steps.len(), 1);
+        assert_eq!(plan.steps[0].step_index, 0);
+        assert_eq!(plan.steps[0].concurrency, 4);
+        assert_eq!(plan.steps[0].start_ns, plan.warmup_ns);
+        assert_eq!(plan.steps[0].measurement_ns, plan.measurement_ns);
+        assert!(plan.is_duration_paced_concurrency());
+        assert_eq!(plan.steps[0].planned_arrivals, 0);
+        assert!(plan.arrivals.is_empty());
+    }
+
+    #[test]
+    fn concurrency_steps_plan_sequential_phases_with_restarted_rounds() {
+        let mut profile = scheduling(ArrivalMode::Concurrency, None, 0);
+        profile.measurement_seconds = 0;
+        profile.steps = vec![
+            super::super::profile::ScheduleStepProfile {
+                concurrency: Some(2),
+                arrival_rate_per_second: None,
+                measurement_seconds: 5,
+                rate_overrun: None,
+            },
+            super::super::profile::ScheduleStepProfile {
+                concurrency: Some(8),
+                arrival_rate_per_second: None,
+                measurement_seconds: 3,
+                rate_overrun: None,
+            },
+        ];
+        let plan = ArrivalPlan::plan(&profile, 3, 2).unwrap();
+        assert_eq!(plan.steps.len(), 2);
+        assert_eq!(plan.measurement_ns, 8_000_000_000);
+        assert_eq!(plan.steps[0].concurrency, 2);
+        assert_eq!(plan.steps[1].concurrency, 8);
+        assert_eq!(plan.steps[1].start_ns, plan.warmup_ns + 5_000_000_000);
+        assert!(plan.is_duration_paced_concurrency());
+        assert_eq!(plan.steps[0].planned_arrivals, 0);
+        assert_eq!(plan.steps[1].planned_arrivals, 0);
+        assert!(plan.arrivals.is_empty());
+    }
+
+    #[test]
+    fn rate_steps_mix_overrun_policies_and_share_one_seeded_stream() {
+        let mut profile = scheduling(ArrivalMode::Rate, None, 42);
+        profile.measurement_seconds = 0;
+        profile.steps = vec![
+            super::super::profile::ScheduleStepProfile {
+                concurrency: None,
+                arrival_rate_per_second: Some(1_000),
+                measurement_seconds: 4,
+                rate_overrun: Some(RateOverrunPolicy::Delay),
+            },
+            super::super::profile::ScheduleStepProfile {
+                concurrency: None,
+                arrival_rate_per_second: Some(10_000),
+                measurement_seconds: 4,
+                rate_overrun: Some(RateOverrunPolicy::Drop),
+            },
+        ];
+        let plan = ArrivalPlan::plan(&profile, 2, 1).unwrap();
+        let repeat = ArrivalPlan::plan(&profile, 2, 1).unwrap();
+        assert_eq!(serde_json::to_vec(&plan).unwrap(), serde_json::to_vec(&repeat).unwrap());
+        assert_eq!(plan.steps.len(), 2);
+        let step1 = plan.arrivals.iter().filter(|arrival| arrival.step_index == 1).collect::<Vec<_>>();
+        assert!(!step1.is_empty());
+        assert!(step1.iter().all(|arrival| arrival.rate_overrun == RateOverrunPolicy::Drop));
+        assert!(
+            plan.arrivals
+                .iter()
+                .filter(|arrival| arrival.step_index == 0)
+                .all(|arrival| arrival.rate_overrun == RateOverrunPolicy::Delay)
+        );
+        // The denser second step offers meaningfully more arrivals.
+        let step0 = plan.arrivals.iter().filter(|arrival| arrival.step_index == 0).count();
+        assert!(step1.len() > step0 * 3, "step0 {step0} step1 {}", step1.len());
+        // Offsets stay global: a later step never plans inside an earlier window.
+        assert!(step1.iter().all(|arrival| arrival.offset_ns >= plan.steps[1].start_ns));
     }
 }

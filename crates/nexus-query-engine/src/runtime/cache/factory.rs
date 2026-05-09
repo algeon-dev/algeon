@@ -11,7 +11,10 @@ use std::sync::Arc;
 use super::resident_graph::GpuResidentGraphCache;
 use crate::{
     error::{QueryError, QueryErrorCode, Result},
-    runtime::{cache::local_parquet::GpuLocalParquetSourceCache, gpu::DeviceLedger},
+    runtime::{
+        cache::{DeviceCacheReport, local_parquet::GpuLocalParquetSourceCache},
+        gpu::DeviceLedger,
+    },
 };
 
 /// One per-device cache allocation owner.
@@ -79,6 +82,57 @@ impl DeviceCacheAllocationFactory {
     #[cfg(feature = "cugraph")]
     pub(crate) fn graph_cache(&self) -> Result<GpuResidentGraphCache> {
         GpuResidentGraphCache::new(self.ledger.clone(), (*self.domain).clone())
+    }
+
+    /// Samples the one physical allocation domain shared by both cache
+    /// subdomains.  Callers add their own activity observations; this owner
+    /// intentionally has no duplicate resident-byte counter.
+    pub(crate) fn report(&self) -> Result<DeviceCacheReport> {
+        const MAX_COHERENCE_ATTEMPTS: usize = 4;
+        for _ in 0..MAX_COHERENCE_ATTEMPTS {
+            let before = self.ledger.report()?;
+            let usage = self.domain.usage().map_err(|error| {
+                QueryError::from_cudf(
+                    "nexus_query_engine.runtime.cache.factory.report",
+                    "failed to sample the shared cache allocation domain",
+                    error,
+                )
+                .with_fact("device_ordinal", self.ledger.device_ordinal())
+                .with_fact("cache_allocation_domain_id", self.domain.id())
+            })?;
+            let after = self.ledger.report()?;
+            let cache_residency_unchanged = before.cache_evictable_resident_bytes
+                == after.cache_evictable_resident_bytes
+                && before.cache_pinned_in_use_bytes == after.cache_pinned_in_use_bytes;
+            if before.sequence != after.sequence && !cache_residency_unchanged {
+                continue;
+            }
+            return Ok(DeviceCacheReport {
+                device_ordinal: self.ledger.device_ordinal(),
+                allocation_domain_id: self.domain.id().get(),
+                cache_cap_bytes: self.domain.capacity_bytes(),
+                ledger_sequence: after.sequence,
+                ledger_evictable_resident_bytes: after.cache_evictable_resident_bytes,
+                ledger_pinned_in_use_bytes: after.cache_pinned_in_use_bytes,
+                allocation_limit_bytes: usage.allocation_limit_bytes,
+                physical_current_bytes: usage.current_bytes,
+                physical_current_aligned_bytes: usage.current_aligned_bytes,
+                physical_peak_bytes: usage.peak_bytes,
+                physical_total_bytes: usage.total_bytes,
+                physical_total_allocations: usage.total_allocations,
+                source: Default::default(),
+                graph: Default::default(),
+            });
+        }
+        Err(QueryError::new(
+            QueryErrorCode::ServiceOverloaded,
+            "nexus_query_engine.runtime.cache.factory.report",
+            "cache residency changed throughout the paired physical usage sample",
+        )
+        .with_fact("reason", "cache_report_residency_unstable")
+        .with_fact("device_ordinal", self.ledger.device_ordinal())
+        .with_fact("cache_allocation_domain_id", self.domain.id())
+        .with_fact("max_coherence_attempts", MAX_COHERENCE_ATTEMPTS))
     }
 }
 

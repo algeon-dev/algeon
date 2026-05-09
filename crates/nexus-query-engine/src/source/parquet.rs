@@ -30,6 +30,48 @@ use crate::expr::{Expr, LiteralValue};
 /// from file or row-group metadata instead of projecting normal source columns.
 pub const ZERO_COLUMN_COUNT_COLUMN: &str = "__nexus_native_zero_column_row_count";
 
+/// Parquet-footer key for a graph vertex upper bound tied to the complete edge
+/// rowset in one file.
+///
+/// The producer must derive the value from the same edge artifact it writes.
+/// Consumers only use it when the native source still represents the complete,
+/// unfiltered file rowset; it is deliberately not a query/session override.
+pub const GRAPH_VERTEX_UPPER_BOUND_PARQUET_METADATA_KEY: &str = "nexus.graph.vertex_upper_bound.v1";
+
+/// Parquet-footer key for a complete, simple directed edge rowset.
+///
+/// Its JSON value declares the physical root-column indices for the source and
+/// destination endpoints. The producer attests that both endpoints are
+/// non-null and each ordered endpoint pair appears exactly once. Consumers use
+/// it only for one complete, unfiltered file; a per-file proof cannot establish
+/// uniqueness across a multi-file source.
+pub const GRAPH_SIMPLE_DIRECTED_EDGE_TOPOLOGY_PARQUET_METADATA_KEY: &str =
+    "nexus.graph.simple_directed_edge_topology.v1";
+
+/// Footer-proven topology needed to skip Python-compatible edge normalization.
+///
+/// This is deliberately a narrow source contract. It says nothing about graph
+/// algorithms or their workspace: it only proves that filtering null endpoints
+/// and deduplicating a directed edge list are semantic no-ops for these two
+/// physical Parquet columns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GraphSimpleDirectedEdgeTopology {
+    /// Zero-based physical Parquet root-column index for the source endpoint.
+    pub source_column_index: usize,
+    /// Zero-based physical Parquet root-column index for the destination endpoint.
+    pub destination_column_index: usize,
+}
+
+impl GraphSimpleDirectedEdgeTopology {
+    /// Creates a simple-directed topology proof for two distinct endpoint columns.
+    pub const fn new(source_column_index: usize, destination_column_index: usize) -> Option<Self> {
+        if source_column_index == destination_column_index {
+            return None;
+        }
+        Some(Self { source_column_index, destination_column_index })
+    }
+}
+
 fn schema_column_indices(schema: &SchemaRef, columns: &[String]) -> Vec<usize> {
     columns.iter().filter_map(|column| schema.index_of(column).ok()).collect()
 }
@@ -562,6 +604,61 @@ impl LocalParquetSource {
         })
     }
 
+    /// Returns a footer-proven graph vertex upper bound when this source still
+    /// denotes complete, unfiltered edge-file rowsets.
+    ///
+    /// A graph vertex count belongs to the exact source rowset that produced
+    /// it. A scan limit, reader predicate, row-level delete, or selected
+    /// row-group subset changes that rowset, so this deliberately refuses to
+    /// carry the file-level value across such a transformation. Multiple whole
+    /// files are safe to sum: duplicate vertices only make the result more
+    /// conservative.
+    pub fn graph_vertex_upper_bound(&self) -> Option<u64> {
+        if !self.has_complete_untransformed_graph_rowset() {
+            return None;
+        }
+
+        self.files.iter().try_fold(0_u64, |total, file| total.checked_add(file.graph_vertex_upper_bound?))
+    }
+
+    /// Returns the footer-proven raw edge-row count when this source still
+    /// denotes complete, unfiltered edge-file rowsets.
+    ///
+    /// Edge normalization retains this raw source frame while its normalized
+    /// graph frame is live. The count therefore belongs to the source rowset,
+    /// not to a transformed graph operator or a caller-provided estimate.
+    pub fn graph_raw_edge_row_count(&self) -> Option<u64> {
+        self.has_complete_untransformed_graph_rowset().then(|| self.exact_selected_row_count()).flatten()
+    }
+
+    /// Returns whether this source proves a simple directed edge relation for
+    /// the two requested physical file columns.
+    ///
+    /// A file footer cannot prove that endpoint pairs are unique *across*
+    /// several files, so this deliberately accepts exactly one complete local
+    /// Parquet file. Column roles must resolve directly to physical file
+    /// columns, which prevents aliases, partitions, or materialized nulls from
+    /// borrowing the proof.
+    pub fn has_simple_directed_edge_topology(&self, source_column: &str, destination_column: &str) -> bool {
+        if !self.has_complete_untransformed_graph_rowset() || self.files.len() != 1 {
+            return false;
+        }
+        let (Some(SourceColumnRef::File(source_column_index)), Some(SourceColumnRef::File(destination_column_index))) =
+            (self.source_column_ref(source_column), self.source_column_ref(destination_column))
+        else {
+            return false;
+        };
+        self.files[0].graph_simple_directed_edge_topology
+            == GraphSimpleDirectedEdgeTopology::new(source_column_index, destination_column_index)
+    }
+
+    fn has_complete_untransformed_graph_rowset(&self) -> bool {
+        self.scan_limit.is_none()
+            && self.reader_predicate.is_none()
+            && !self.has_row_delete_files()
+            && self.files.iter().all(|file| file.row_groups.is_none())
+    }
+
     /// Number of file entries represented as byte-ranged in diagnostics.
     pub fn ranged_file_count(&self) -> usize {
         self.diagnostics.ranged_file_count
@@ -672,6 +769,19 @@ pub struct LocalParquetFile {
     pub pure_filter_row_group_uncompressed_bytes: Option<Vec<u64>>,
     /// Estimated or known row counts for selected row groups.
     pub row_group_rows: Option<Vec<u64>>,
+    /// Footer-proven upper bound on distinct graph vertices in this complete
+    /// edge file, when the fixture/data producer attached one.
+    ///
+    /// This is not applied to a partial row-group selection or a transformed
+    /// source. [`LocalParquetSource::graph_vertex_upper_bound`] enforces that
+    /// rowset-identity boundary before admission consumes it.
+    pub graph_vertex_upper_bound: Option<u64>,
+    /// Footer-proven simple directed-edge topology for this complete file.
+    ///
+    /// The proof is intentionally stored per file and becomes usable only
+    /// through [`LocalParquetSource::has_simple_directed_edge_topology`], which
+    /// refuses partial or multi-file sources.
+    pub graph_simple_directed_edge_topology: Option<GraphSimpleDirectedEdgeTopology>,
     /// Per-file-column null counts by row group, keyed by physical root column index.
     ///
     /// Inner vectors are indexed by physical row-group number, not selected
@@ -705,6 +815,8 @@ impl fmt::Debug for LocalParquetFile {
             .field("pure_filter_row_group_compressed_bytes", &self.pure_filter_row_group_compressed_bytes)
             .field("pure_filter_row_group_uncompressed_bytes", &self.pure_filter_row_group_uncompressed_bytes)
             .field("row_group_rows", &self.row_group_rows)
+            .field("graph_vertex_upper_bound", &self.graph_vertex_upper_bound)
+            .field("graph_simple_directed_edge_topology", &self.graph_simple_directed_edge_topology)
             .field("row_group_null_counts", &self.row_group_null_counts)
             .field("reader_decimal_types", &self.reader_decimal_types)
             .field("field_id_read_bindings", &self.field_id_read_bindings)
@@ -734,6 +846,8 @@ impl LocalParquetFile {
             pure_filter_row_group_compressed_bytes: None,
             pure_filter_row_group_uncompressed_bytes: None,
             row_group_rows: None,
+            graph_vertex_upper_bound: None,
+            graph_simple_directed_edge_topology: None,
             row_group_null_counts: BTreeMap::new(),
             reader_decimal_types: Vec::new(),
             field_id_read_bindings: Vec::new(),
@@ -761,6 +875,8 @@ impl LocalParquetFile {
             pure_filter_row_group_compressed_bytes: None,
             pure_filter_row_group_uncompressed_bytes: None,
             row_group_rows: None,
+            graph_vertex_upper_bound: None,
+            graph_simple_directed_edge_topology: None,
             row_group_null_counts: BTreeMap::new(),
             reader_decimal_types: Vec::new(),
             field_id_read_bindings: Vec::new(),
@@ -787,6 +903,8 @@ impl LocalParquetFile {
             pure_filter_row_group_compressed_bytes: None,
             pure_filter_row_group_uncompressed_bytes: None,
             row_group_rows: None,
+            graph_vertex_upper_bound: None,
+            graph_simple_directed_edge_topology: None,
             row_group_null_counts: BTreeMap::new(),
             reader_decimal_types: Vec::new(),
             field_id_read_bindings: Vec::new(),
@@ -849,6 +967,33 @@ impl LocalParquetFile {
     /// Sets row-count metadata for selected row groups.
     pub fn with_row_group_rows(mut self, row_group_rows: Vec<u64>) -> Self {
         self.row_group_rows = Some(row_group_rows);
+        self
+    }
+
+    /// Attaches a footer-proven graph vertex upper bound for this complete
+    /// edge-file rowset.
+    ///
+    /// Frontend code should populate this only by reading
+    /// [`GRAPH_VERTEX_UPPER_BOUND_PARQUET_METADATA_KEY`] from this file's
+    /// Parquet footer. It stays on the file descriptor so source identity and
+    /// graph admission cannot accidentally borrow a detached query setting.
+    pub fn with_graph_vertex_upper_bound(mut self, graph_vertex_upper_bound: u64) -> Self {
+        self.graph_vertex_upper_bound = Some(graph_vertex_upper_bound);
+        self
+    }
+
+    /// Attaches a footer-proven simple-directed edge topology for this complete
+    /// Parquet file.
+    ///
+    /// Frontends must populate this only from
+    /// [`GRAPH_SIMPLE_DIRECTED_EDGE_TOPOLOGY_PARQUET_METADATA_KEY`]. The source
+    /// contract checks complete-rowset and single-file identity before graph
+    /// lowering can use it.
+    pub fn with_graph_simple_directed_edge_topology(
+        mut self,
+        graph_simple_directed_edge_topology: GraphSimpleDirectedEdgeTopology,
+    ) -> Self {
+        self.graph_simple_directed_edge_topology = Some(graph_simple_directed_edge_topology);
         self
     }
 
@@ -1099,5 +1244,84 @@ mod tests {
         );
 
         assert_eq!(source.exact_selected_row_count(), Some(21));
+    }
+
+    #[test]
+    fn graph_vertex_upper_bound_requires_complete_untransformed_file_rowsets() {
+        let schema = Arc::new(Schema::new(vec![Field::new("src", DataType::Int64, false)]));
+        let complete = LocalParquetSource::from_files(
+            vec![
+                LocalParquetFile::new("first.parquet").with_graph_vertex_upper_bound(7),
+                LocalParquetFile::new("second.parquet").with_graph_vertex_upper_bound(11),
+            ],
+            Arc::clone(&schema),
+            vec!["src".to_string()],
+        );
+
+        assert_eq!(complete.graph_vertex_upper_bound(), Some(18));
+        assert_eq!(complete.graph_raw_edge_row_count(), None);
+        assert_eq!(complete.clone().with_scan_limit(Some(1)).graph_vertex_upper_bound(), None);
+        assert_eq!(complete.with_scan_limit(Some(1)).graph_raw_edge_row_count(), None);
+
+        let selected_row_groups = LocalParquetSource::from_files(
+            vec![LocalParquetFile::new("first.parquet").with_row_groups(vec![0]).with_graph_vertex_upper_bound(7)],
+            schema,
+            vec!["src".to_string()],
+        );
+        assert_eq!(selected_row_groups.graph_vertex_upper_bound(), None);
+        assert_eq!(selected_row_groups.graph_raw_edge_row_count(), None);
+    }
+
+    #[test]
+    fn graph_raw_edge_row_count_requires_complete_footer_proven_rowsets() {
+        let schema = Arc::new(Schema::new(vec![Field::new("src", DataType::Int64, false)]));
+        let complete = LocalParquetSource::from_files(
+            vec![
+                LocalParquetFile::new("first.parquet").with_row_group_rows(vec![3, 5]),
+                LocalParquetFile::new("second.parquet").with_row_group_rows(vec![7]),
+            ],
+            Arc::clone(&schema),
+            vec!["src".to_string()],
+        );
+        assert_eq!(complete.graph_raw_edge_row_count(), Some(15));
+
+        let partial = LocalParquetSource::from_files(
+            vec![LocalParquetFile::new("first.parquet").with_row_group_rows(vec![3, 5]).with_row_groups(vec![0])],
+            schema,
+            vec!["src".to_string()],
+        );
+        assert_eq!(partial.graph_raw_edge_row_count(), None);
+    }
+
+    #[test]
+    fn simple_directed_edge_topology_requires_one_complete_matching_file() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("src", DataType::Int64, false),
+            Field::new("dst", DataType::Int64, false),
+        ]));
+        let topology = GraphSimpleDirectedEdgeTopology::new(0, 1).expect("distinct endpoint columns");
+        let complete = LocalParquetSource::from_files(
+            vec![
+                LocalParquetFile::new("edges.parquet")
+                    .with_row_group_rows(vec![3])
+                    .with_graph_simple_directed_edge_topology(topology),
+            ],
+            Arc::clone(&schema),
+            vec!["src".to_string(), "dst".to_string()],
+        );
+
+        assert!(complete.has_simple_directed_edge_topology("src", "dst"));
+        assert!(!complete.has_simple_directed_edge_topology("dst", "src"));
+        assert!(!complete.clone().with_scan_limit(Some(1)).has_simple_directed_edge_topology("src", "dst"));
+
+        let multi_file = LocalParquetSource::from_files(
+            vec![
+                LocalParquetFile::new("first.parquet").with_graph_simple_directed_edge_topology(topology),
+                LocalParquetFile::new("second.parquet").with_graph_simple_directed_edge_topology(topology),
+            ],
+            schema,
+            vec!["src".to_string(), "dst".to_string()],
+        );
+        assert!(!multi_file.has_simple_directed_edge_topology("src", "dst"));
     }
 }

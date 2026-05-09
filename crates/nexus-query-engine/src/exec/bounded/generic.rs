@@ -415,9 +415,33 @@ fn execute_bounded_generic_graph_algorithm(
         execute_bounded_generic_node(context, plan, graph.input, gpu_inputs, reservations, metrics)?
     };
     let ResidentGpuFrame { frame: input_frame, reservation: input_reservation } = input;
+    let query_memory_grant = match context.memory_grant() {
+        Ok(grant) => grant,
+        Err(error) => {
+            reservations.release(input_reservation, metrics);
+            return Err(error.with_fact_if_absent("node_id", node_id));
+        },
+    };
+    // The cold graph model includes the normalized semantic edge frame.
+    // Retain only the bytes that this tracker or the same query grant already
+    // accounts, then cap the credit at that physically live frame in
+    // graph_memory.rs. Source provenance is not a retained DataFrame owner.
+    // A source reservation and a handle-carried grant charge can describe the
+    // same live frame. They are alternative owners, never concurrent bytes;
+    // retain the larger exact charge rather than counting that frame twice.
+    let already_accounted_graph_input_bytes =
+        input_reservation.charged_bytes().max(input_frame.live_reservation_bytes_for(query_memory_grant.as_ref()));
     let input_rows = input_frame.num_rows() as u64;
     let input_columns = input_frame.num_columns() as u64;
     let input_graph_residency = input_frame.graph_residency().cloned();
+    // Capture the source-bound vertex evidence before null filtering. The
+    // descriptor may be dropped from the transformed frame to keep graph-cache
+    // identity strict, but a filter can only shrink this edge rowset and the
+    // footer bound remains a conservative memory-admission upper bound.
+    let source_vertex_estimate =
+        crate::exec::graph_algorithm::memory::source_graph_vertex_estimate(input_graph_residency.as_ref());
+    let source_raw_input_edges =
+        crate::exec::graph_algorithm::memory::source_graph_raw_edge_row_count(input_graph_residency.as_ref());
     let prior_null_edge_rows_dropped = graph_input_null_edge_rows_dropped(metrics, graph.input);
     let null_filter_scope = super::edge_null_filter::EdgeNullFilterScope {
         weight: graph.spec.algorithm.consumes_weight(),
@@ -441,6 +465,14 @@ fn execute_bounded_generic_graph_algorithm(
     let sanitized_input_rows = filtered_input_frame.num_rows() as u64;
     let null_edge_rows_dropped =
         prior_null_edge_rows_dropped.saturating_add(input_rows.saturating_sub(sanitized_input_rows));
+    // EdgeNormalize projects exactly the graph columns and has already
+    // transferred ownership to `input_reservation`. Its physical tracker
+    // charge can include native alias bytes beyond the semantic row widths,
+    // but it still names just this one live normalized graph frame. A later
+    // null filter may materialize a different frame, so retain the ordinary
+    // semantic cap in that case.
+    let exact_normalized_graph_input_charge_bytes = (graph.spec.edge_normalize_inserted && null_edge_rows_dropped == 0)
+        .then_some(already_accounted_graph_input_bytes);
     let mut filtered_input = GpuDataFrame::new(filtered_input_frame);
     if null_edge_rows_dropped == 0
         && let Some(graph_residency) = input_graph_residency
@@ -459,13 +491,6 @@ fn execute_bounded_generic_graph_algorithm(
     let mut live_reservations = vec![input_reservation];
     let mut side_inputs = std::collections::BTreeMap::new();
     let mut side_input_accounted_bytes = std::collections::BTreeMap::new();
-    let query_memory_grant = match context.memory_grant() {
-        Ok(grant) => grant,
-        Err(error) => {
-            release_reservations_reverse(reservations, live_reservations, metrics);
-            return Err(error.with_fact_if_absent("node_id", node_id));
-        },
-    };
     for input_id in graph.inputs.iter().skip(1) {
         match execute_bounded_generic_node(context, plan, *input_id, gpu_inputs, reservations, metrics) {
             Ok(frame) => {
@@ -477,7 +502,7 @@ fn execute_bounded_generic_graph_algorithm(
                 let accounted_bytes = frame
                     .reservation
                     .charged_bytes()
-                    .saturating_add(frame.frame.live_reservation_bytes_for(query_memory_grant.as_ref()));
+                    .max(frame.frame.live_reservation_bytes_for(query_memory_grant.as_ref()));
                 side_input_accounted_bytes.insert(*input_id, accounted_bytes);
                 live_reservations.push(frame.reservation);
                 side_inputs.insert(*input_id, frame.frame);
@@ -554,21 +579,27 @@ fn execute_bounded_generic_graph_algorithm(
                 return Err(error.with_fact_if_absent("node_id", node_id));
             },
         };
-        let report = match graph_memory_reservation_report(
+        let report = match graph_memory_reservation_report(GraphMemoryReservationRequest {
             context,
             node_id,
-            &graph.spec,
-            filtered_input.frame(),
-            &side_inputs,
-            sanitized_input_rows,
+            spec: &graph.spec,
+            input: filtered_input.frame(),
+            side_inputs: &side_inputs,
+            input_edges: sanitized_input_rows,
+            raw_input_edges: source_raw_input_edges,
             strict_pair_cardinality,
-            Some(graph_reservable_remaining_bytes),
+            budget_bytes: Some(graph_reservable_remaining_bytes),
             device_total_memory_bytes,
-            false,
-            graph_statistics_probe.as_ref().map(|probe| probe.vertex_estimate),
-            graph_statistics_probe.as_ref().map(|probe| probe.statistics),
+            allow_nulls: false,
+            vertex_estimate: graph_vertex_estimate_for_bounded_admission(
+                graph_statistics_probe.as_ref().map(|probe| probe.vertex_estimate),
+                source_vertex_estimate,
+            ),
+            statistics: graph_statistics_probe.as_ref().map(|probe| probe.statistics),
+            already_accounted_graph_input_bytes,
+            exact_normalized_graph_input_charge_bytes,
             already_accounted_similarity_pair_input_bytes,
-        ) {
+        }) {
             Ok(report) => report,
             Err(error) => {
                 release_reservations_reverse(reservations, live_reservations, metrics);
@@ -583,8 +614,10 @@ fn execute_bounded_generic_graph_algorithm(
         .with_memory_boundary(crate::graph_memory::GRAPH_MEMORY_BOUNDARY)
         .with_node_id(node_id)
         .with_stage("graph_memory_admission");
+        metrics.record_graph_claim_calibration(report.clone(), node_id);
         metrics.record_graph_reservation(report.clone());
         if report.outcome == crate::graph_memory::GraphReservationOutcome::Denied {
+            metrics.record_graph_claim_calibration_graph_memory_admission_denied(node_id, graph.spec.algorithm);
             metrics.record_reservation_denied_timeline_event(
                 &request,
                 crate::metrics::MemoryReservationEventAction::Reserve,
@@ -620,6 +653,50 @@ fn execute_bounded_generic_graph_algorithm(
                     .with_fact_if_absent("reason", crate::graph_memory::GRAPH_MEMORY_ESTIMATE_EXCEEDS_BUDGET_REASON));
             },
         }
+    } else if !empty_input_prevalidated {
+        // BFS currently remains outside the live graph-tier reservation, but
+        // its graph memory model is still an I11 claim that must be retained
+        // and compared with the attempt's own measured peak.
+        let device_total_memory_bytes = match graph_device_total_memory_bytes(context) {
+            Ok(device_total_memory_bytes) => device_total_memory_bytes,
+            Err(error) => {
+                release_reservations_reverse(reservations, live_reservations, metrics);
+                return Err(error.with_fact_if_absent("node_id", node_id));
+            },
+        };
+        let graph_reservable_remaining_bytes = match reservations.reservable_remaining_bytes() {
+            Ok(remaining) => remaining,
+            Err(error) => {
+                release_reservations_reverse(reservations, live_reservations, metrics);
+                return Err(error.with_fact_if_absent("node_id", node_id));
+            },
+        };
+        let report = match graph_memory_reservation_report(GraphMemoryReservationRequest {
+            context,
+            node_id,
+            spec: &graph.spec,
+            input: filtered_input.frame(),
+            side_inputs: &side_inputs,
+            input_edges: sanitized_input_rows,
+            raw_input_edges: source_raw_input_edges,
+            strict_pair_cardinality,
+            budget_bytes: Some(graph_reservable_remaining_bytes),
+            device_total_memory_bytes,
+            allow_nulls: false,
+            vertex_estimate: source_vertex_estimate,
+            statistics: None,
+            already_accounted_graph_input_bytes,
+            exact_normalized_graph_input_charge_bytes,
+            already_accounted_similarity_pair_input_bytes,
+        }) {
+            Ok(report) => report,
+            Err(error) => {
+                release_reservations_reverse(reservations, live_reservations, metrics);
+                return Err(error.with_fact_if_absent("node_id", node_id));
+            },
+        };
+        metrics.record_graph_claim_calibration(report, node_id);
+        None
     } else {
         None
     };
@@ -699,6 +776,14 @@ pub(in crate::exec::bounded) fn release_resident_frames_reverse(
     while let Some(frame) = frames.pop() {
         reservations.release(frame.reservation, metrics);
     }
+}
+
+#[cfg(feature = "cugraph")]
+fn graph_vertex_estimate_for_bounded_admission(
+    runtime_vertex_estimate: Option<crate::graph_memory::GraphVertexEstimate>,
+    source_vertex_estimate: Option<crate::graph_memory::GraphVertexEstimate>,
+) -> Option<crate::graph_memory::GraphVertexEstimate> {
+    runtime_vertex_estimate.or(source_vertex_estimate)
 }
 
 #[cfg(feature = "cugraph")]
@@ -1595,5 +1680,30 @@ fn bounded_generic_node_kind(node: &PlanNode) -> &'static str {
         PlanNode::EdgeNormalize(_) => "edge_normalize",
         PlanNode::GraphAlgorithm(_) => "graph_algorithm",
         PlanNode::VectorAlgorithm(_) => "vector_algorithm",
+    }
+}
+
+#[cfg(all(test, feature = "cugraph"))]
+mod tests {
+    use super::graph_vertex_estimate_for_bounded_admission;
+    use crate::graph_memory::{GraphVertexEstimate, GraphVertexEstimateSource};
+
+    #[test]
+    fn bounded_graph_admission_uses_footer_provenance_when_runtime_probe_is_unavailable() {
+        let footer = GraphVertexEstimate::graph_metadata(4_894_081);
+
+        assert_eq!(
+            graph_vertex_estimate_for_bounded_admission(None, Some(footer)),
+            Some(footer),
+            "bounded graph admission must not fall back to 2E after a probe resource exhaustion"
+        );
+
+        let runtime = GraphVertexEstimate::runtime_exact_distinct(4_100_000);
+        assert_eq!(
+            graph_vertex_estimate_for_bounded_admission(Some(runtime), Some(footer)),
+            Some(runtime),
+            "the exact runtime probe remains stronger than the source upper bound"
+        );
+        assert_eq!(runtime.source, GraphVertexEstimateSource::RuntimeExactDistinct);
     }
 }

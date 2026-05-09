@@ -14,14 +14,22 @@ use serde_json::Value;
 
 use super::{
     REDACTION_POLICY, RUN_ARTIFACT_SCHEMA, RUN_ARTIFACT_VERSION,
-    aggregate::{DomainExhaustionEvidence, MeasuredAggregate, PhysicalAllocatorPressureEvidence},
-    cache_calibration::CacheCalibrationEvidence,
+    aggregate::{
+        ClauseStatus, DomainExhaustionEvidence, GraphClaimCalibrationEvidence, MeasuredAggregate,
+        PhysicalAllocatorPressureEvidence, QuarantineCyclesEvidence, StepAggregate,
+    },
+    cache_calibration::{CacheCalibrationEvidence, CacheSameKeyProbeEvidence},
     metrics_audit::MetricsAudit,
+    operability::{AttributionCompleteness, FeatureOffCugraphEvidence, OtlpExportEvidence},
     preflight::FixturePreflightArtifact,
-    profile::RunProfile,
+    profile::{QpsEnvelopeProfile, RunProfile},
     provenance::Provenance,
     redact::ensure_redacted_json,
     schedule::ArrivalPlan,
+    timeseries::{
+        DeviceSeriesRow, DriftSummary, ObservationPullSummary, OrdinalUtilizationSummary, ProcessSeriesRow,
+        VramCalibrationEvidence,
+    },
     util::write_new_artifact,
     workload::SelectedQueryDescriptor,
 };
@@ -84,7 +92,7 @@ impl RunArtifact {
         cache_disabled: MeasuredRunArtifact,
         cache_opt_in: MeasuredRunArtifact,
     ) -> Self {
-        let evidence = CacheCalibrationEvidence::new(cache_disabled, cache_opt_in);
+        let evidence = CacheCalibrationEvidence::new(cache_disabled, cache_opt_in, profile.cache.stress.clone());
         let status = if evidence.qualifies() { "cache_calibration" } else { "cache_calibration_non_qualifying" };
         let attempted_backend_attempts =
             evidence.cache_disabled.aggregate.attempts.len() + evidence.cache_opt_in.aggregate.attempts.len();
@@ -164,6 +172,21 @@ pub(super) struct MeasuredRunArtifact {
     pub(super) selected_queries: Vec<SelectedQueryDescriptor>,
     pub(super) arrival_plan: ArrivalPlanEvidence,
     pub(super) cache_state: &'static str,
+    /// S7's dedicated exact-key source/BFS cohorts, when the opt-in profile
+    /// asked the runner to establish cache-singleflight evidence separately
+    /// from the throughput window.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) cache_same_key_probe: Option<CacheSameKeyProbeEvidence>,
+    /// S2's profile-owned QPS envelope contract.  It joins the engine-owned
+    /// queue high-watermark with sealed attempt throughput rather than
+    /// treating the runner's submission loop as queue evidence.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) qps_envelope: Option<QpsEnvelopeEvidence>,
+    /// I11's graph-model calibration gate. It retains typed per-attempt
+    /// model/request/budget/peak rows and never derives an algorithm peak from
+    /// device-wide telemetry.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) graph_claim_calibration: Option<GraphClaimCalibrationEvidence>,
     pub(super) aggregate: MeasuredAggregate,
     /// The shared measured-window deadline and the observed time required to
     /// seal every submitted report. A cooperative deadline cannot preempt a
@@ -192,9 +215,261 @@ pub(super) struct MeasuredRunArtifact {
     /// same-device recovery, and a quiescent backend close.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) physical_allocator_pressure: Option<PhysicalAllocatorPressureEvidence>,
+    /// Present only for the S6 repeated-quarantine probe. Each cycle reuses
+    /// the controlled-quarantine barrier semantics against a rotation target.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) quarantine_cycles: Option<QuarantineCyclesEvidence>,
+    /// Present only for the S6 close-under-saturation probe. Close begins at
+    /// the measurement-window midpoint with a cohort in flight; queued
+    /// waiters must seal `backend_closing`, in-flight attempts must finish,
+    /// and every submitted attempt must be accounted for exactly once.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) close_under_load: Option<CloseUnderLoadEvidence>,
+    /// I8's serialized public completion-receiver probe. It records the
+    /// offered rate against the single sink's drain limit, then proves every
+    /// submitted report was collected and the backend closed quiescently.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) completion_sink: Option<CompletionSinkEvidence>,
+    /// S1's feature-off cell. This is present only when the profile asks the
+    /// base runner to issue its dedicated schema-only cuGraph UDTF request
+    /// beside relational traffic.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) feature_off_cugraph: Option<FeatureOffCugraphEvidence>,
     pub(super) metrics_audit: MetricsAudit,
+    /// W8's embedded-library operability evidence. Every field is reduced
+    /// from public sealed reports or public snapshot accessors.
+    pub(super) operability: OperabilityEvidence,
+    /// W1 compact time series: per-device utilization/ledger/cache rows and
+    /// process rows at the sampler cadence, plus their pure summaries. The
+    /// raw snapshots below remain the retained evidence; the series is the
+    /// queryable projection the S3/S4/S7 suites read.
+    pub(super) time_series: TimeSeriesEvidence,
     pub(super) snapshots: Vec<BackendSnapshotSample>,
     pub(super) trace: TraceEvidence,
+}
+
+/// Evidence for one profile that declares the S2 QPS-envelope contract.
+///
+/// The queue high-water mark comes from the service-owned public admission
+/// snapshot and is recorded cumulatively through each sequential step.  A
+/// cumulative value still proves the global queue bound for every preceding
+/// phase; it intentionally does not claim an invented per-step resettable
+/// controller metric.
+#[derive(Debug, Clone, Serialize)]
+pub(super) struct QpsEnvelopeEvidence {
+    pub(super) status: ClauseStatus,
+    pub(super) configured_active_attempt_capacity: u64,
+    pub(super) configured_queue_limit: u64,
+    pub(super) arrival_plan_truncated_by_attempt_cap: bool,
+    pub(super) global_queue_high_watermark: u64,
+    pub(super) queue_bound_respected: bool,
+    pub(super) gpu_only_successes: bool,
+    pub(super) steps: Vec<QpsEnvelopeStepEvidence>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) recovery: Option<QpsEnvelopeRecoveryEvidence>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(super) struct QpsEnvelopeStepEvidence {
+    pub(super) step_index: usize,
+    pub(super) concurrency: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) arrival_rate_per_second: Option<u64>,
+    pub(super) successful_completions: u64,
+    pub(super) gpu_reaching_completions: u64,
+    pub(super) minimum_gpu_reaching_completions: u64,
+    /// Service-owned maximum depth observed from backend construction through
+    /// the end of this step.  `None` is a hard evidence gap.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) queue_high_watermark_through_step: Option<u64>,
+    pub(super) queue_bound_respected: bool,
+    pub(super) gpu_only_successes: bool,
+    pub(super) has_required_gpu_progress: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(super) struct QpsEnvelopeRecoveryEvidence {
+    pub(super) baseline_step_index: usize,
+    pub(super) recovery_step_index: usize,
+    pub(super) max_p95_latency_multiplier: u32,
+    pub(super) baseline_p95_total_ns: u64,
+    pub(super) recovery_p95_total_ns: u64,
+    pub(super) baseline_p95_queue_wait_ns: u64,
+    pub(super) recovery_p95_queue_wait_ns: u64,
+    pub(super) total_latency_within_band: bool,
+    pub(super) queue_wait_within_band: bool,
+}
+
+impl QpsEnvelopeEvidence {
+    #[allow(clippy::cast_possible_truncation)]
+    pub(super) fn from_measurement(
+        profile: QpsEnvelopeProfile,
+        aggregate: &MeasuredAggregate,
+        configured_active_attempt_capacity: usize,
+        configured_queue_limit: usize,
+        arrival_plan_truncated_by_attempt_cap: bool,
+        queue_high_watermarks: &[(usize, u64)],
+    ) -> Self {
+        Self::from_steps(
+            profile,
+            &aggregate.steps,
+            configured_active_attempt_capacity,
+            configured_queue_limit,
+            arrival_plan_truncated_by_attempt_cap,
+            queue_high_watermarks,
+        )
+    }
+
+    fn from_steps(
+        profile: QpsEnvelopeProfile,
+        aggregate_steps: &[StepAggregate],
+        configured_active_attempt_capacity: usize,
+        configured_queue_limit: usize,
+        arrival_plan_truncated_by_attempt_cap: bool,
+        queue_high_watermarks: &[(usize, u64)],
+    ) -> Self {
+        let queue_limit = u64::try_from(configured_queue_limit).unwrap_or(u64::MAX);
+        let minimum = profile.min_gpu_reaching_completions_per_step;
+        let steps = aggregate_steps
+            .iter()
+            .map(|step| QpsEnvelopeStepEvidence::from_aggregate(step, minimum, queue_limit, queue_high_watermarks))
+            .collect::<Vec<_>>();
+        let global_queue_high_watermark = queue_high_watermarks.iter().map(|(_, peak)| *peak).max().unwrap_or_default();
+        let queue_bound_respected = !steps.is_empty()
+            && steps.iter().all(|step| step.queue_high_watermark_through_step.is_some() && step.queue_bound_respected);
+        let gpu_only_successes = !steps.is_empty() && steps.iter().all(|step| step.gpu_only_successes);
+        let all_steps_have_gpu_progress = !steps.is_empty() && steps.iter().all(|step| step.has_required_gpu_progress);
+        let recovery = profile.recovery.and_then(|recovery| {
+            let baseline = aggregate_steps.iter().find(|step| step.step_index == recovery.baseline_step_index)?;
+            let recovered = aggregate_steps.iter().find(|step| step.step_index == recovery.recovery_step_index)?;
+            Some(QpsEnvelopeRecoveryEvidence::from_steps(recovery, baseline, recovered))
+        });
+        let recovery_evidenced =
+            profile.recovery.is_none_or(|_| recovery.as_ref().is_some_and(QpsEnvelopeRecoveryEvidence::within_band));
+        let status = if !arrival_plan_truncated_by_attempt_cap
+            && queue_bound_respected
+            && gpu_only_successes
+            && all_steps_have_gpu_progress
+            && recovery_evidenced
+        {
+            ClauseStatus::Evidenced
+        } else {
+            ClauseStatus::Failed
+        };
+        Self {
+            status,
+            configured_active_attempt_capacity: u64::try_from(configured_active_attempt_capacity).unwrap_or(u64::MAX),
+            configured_queue_limit: queue_limit,
+            arrival_plan_truncated_by_attempt_cap,
+            global_queue_high_watermark,
+            queue_bound_respected,
+            gpu_only_successes,
+            steps,
+            recovery,
+        }
+    }
+
+    pub(super) fn passes(&self) -> bool {
+        self.status == ClauseStatus::Evidenced
+    }
+}
+
+impl QpsEnvelopeStepEvidence {
+    fn from_aggregate(
+        step: &StepAggregate,
+        minimum_gpu_reaching_completions: u64,
+        queue_limit: u64,
+        queue_high_watermarks: &[(usize, u64)],
+    ) -> Self {
+        let queue_high_watermark_through_step =
+            queue_high_watermarks.iter().find(|(step_index, _)| *step_index == step.step_index).map(|(_, peak)| *peak);
+        let successful_completions = step.throughput.successful_completions;
+        let gpu_reaching_completions = step.throughput.gpu_reaching_completions;
+        Self {
+            step_index: step.step_index,
+            concurrency: step.concurrency,
+            arrival_rate_per_second: step.arrival_rate_per_second,
+            successful_completions,
+            gpu_reaching_completions,
+            minimum_gpu_reaching_completions,
+            queue_high_watermark_through_step,
+            queue_bound_respected: queue_high_watermark_through_step.is_some_and(|peak| peak <= queue_limit),
+            gpu_only_successes: successful_completions == gpu_reaching_completions,
+            has_required_gpu_progress: gpu_reaching_completions >= minimum_gpu_reaching_completions,
+        }
+    }
+}
+
+impl QpsEnvelopeRecoveryEvidence {
+    fn from_steps(
+        recovery: super::profile::QpsEnvelopeRecoveryProfile,
+        baseline: &StepAggregate,
+        recovered: &StepAggregate,
+    ) -> Self {
+        let multiplier = u64::from(recovery.max_p95_latency_multiplier);
+        let baseline_p95_total_ns = baseline.latency.p95_ns;
+        let recovery_p95_total_ns = recovered.latency.p95_ns;
+        let baseline_p95_queue_wait_ns = baseline.latency.queue_wait_p95_ns;
+        let recovery_p95_queue_wait_ns = recovered.latency.queue_wait_p95_ns;
+        Self {
+            baseline_step_index: recovery.baseline_step_index,
+            recovery_step_index: recovery.recovery_step_index,
+            max_p95_latency_multiplier: recovery.max_p95_latency_multiplier,
+            baseline_p95_total_ns,
+            recovery_p95_total_ns,
+            baseline_p95_queue_wait_ns,
+            recovery_p95_queue_wait_ns,
+            total_latency_within_band: within_latency_band(baseline_p95_total_ns, recovery_p95_total_ns, multiplier),
+            queue_wait_within_band: within_latency_band(
+                baseline_p95_queue_wait_ns,
+                recovery_p95_queue_wait_ns,
+                multiplier,
+            ),
+        }
+    }
+
+    fn within_band(&self) -> bool {
+        self.total_latency_within_band && self.queue_wait_within_band
+    }
+}
+
+fn within_latency_band(baseline: u64, recovered: u64, multiplier: u64) -> bool {
+    if baseline == 0 {
+        return recovered == 0;
+    }
+    u128::from(recovered) <= u128::from(baseline).saturating_mul(u128::from(multiplier))
+}
+
+/// Operability facts an embedder needs in addition to throughput.  The OTLP
+/// export cell is attached here once explicitly requested; ordinary runs keep
+/// the attribution section without pretending that an exporter was used.
+#[derive(Debug, Serialize)]
+pub(super) struct OperabilityEvidence {
+    pub(super) attribution: AttributionCompleteness,
+    pub(super) otlp_export: OtlpExportEvidence,
+}
+
+/// The W1 sampled time series and its reductions. `sample_interval_ns` is
+/// the cadence the sampler actually used: it adapts to the configured window
+/// so a 10-minute plateau stays inside the bounded retention instead of
+/// silently truncating mid-window.
+#[derive(Debug, Serialize)]
+pub(super) struct TimeSeriesEvidence {
+    pub(super) sample_interval_ns: u64,
+    /// True when the window required a coarser cadence than the 250 ms base
+    /// interval to stay inside bounded retention.
+    pub(super) retention_downsampled: bool,
+    pub(super) device_rows: Vec<DeviceSeriesRow>,
+    pub(super) process_rows: Vec<ProcessSeriesRow>,
+    pub(super) utilization: Vec<OrdinalUtilizationSummary>,
+    pub(super) drift: DriftSummary,
+    /// Claim-versus-VRAM calibration reduced from the same rows above. It is
+    /// absent only when this profile did not opt into a calibration gate.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) vram_calibration: Option<VramCalibrationEvidence>,
+    /// W8/I13 monitoring cost over exactly the public snapshot pulls recorded
+    /// in `process_rows`.
+    pub(super) observation_pull: ObservationPullSummary,
 }
 
 /// The immutable backend envelope this run measured against.
@@ -218,10 +493,54 @@ pub(super) struct BackendEvidence {
 /// query in a measured run.
 #[derive(Debug, Clone, Copy, Serialize)]
 pub(super) struct RunDeadlineEvidence {
+    /// Warmup plus measurement time during which the runner may submit work.
+    pub(super) measurement_window_ns: u64,
+    /// Bounded post-submission allowance for already-admitted work to reach a
+    /// safe boundary and seal its report. Zero retains P6's original shape.
+    pub(super) completion_drain_grace_ns: u64,
+    /// The total completion deadline: `measurement_window_ns` plus the
+    /// profile-owned bounded drain grace. The retained pass/fail flag below is
+    /// evaluated against this deadline, not against a fabricated extension of
+    /// the measurement interval.
     pub(super) configured_window_ns: u64,
     pub(super) elapsed_until_reports_ns: u64,
     pub(super) overrun_ns: u64,
     pub(super) reports_sealed_within_deadline: bool,
+}
+
+/// Evidence for I8's deliberately slow, serialized completion consumer.
+/// `offered_rate_exceeds_serial_drain_capacity` is integer arithmetic for
+/// `offered_rate_per_second > 1 / sink_delay`; no rounded rate estimate can
+/// accidentally turn a non-probe into a pass.
+#[derive(Debug, Clone, Serialize)]
+pub(super) struct CompletionSinkEvidence {
+    pub(super) sink_delay_ms: u64,
+    pub(super) offered_rate_per_second: u64,
+    pub(super) offered_rate_exceeds_serial_drain_capacity: bool,
+    pub(super) submitted_attempts: u64,
+    pub(super) sealed_reports: u64,
+    pub(super) begin_failures: u64,
+    pub(super) join_failures: u64,
+    pub(super) drains_started: u64,
+    pub(super) drains_completed: u64,
+    pub(super) report_accounting_exact: bool,
+    pub(super) bounded_drain: bool,
+    pub(super) close_quiescent: bool,
+}
+
+impl CompletionSinkEvidence {
+    pub(super) fn is_evidenced(&self) -> bool {
+        self.sink_delay_ms != 0
+            && self.offered_rate_exceeds_serial_drain_capacity
+            && self.submitted_attempts != 0
+            && self.report_accounting_exact
+            && self.begin_failures == 0
+            && self.join_failures == 0
+            && self.drains_started == self.sealed_reports
+            && self.drains_completed == self.sealed_reports
+            && self.bounded_drain
+            && self.close_quiescent
+    }
 }
 
 /// One explicit public-API cancellation action and the sealed outcomes it
@@ -265,6 +584,50 @@ impl DeadlineBarrierEvidence {
             && self.typed_deadline_cancelled_reports == 1
             && self.released_after_deadline
             && self.healthy_reuse_completed
+    }
+}
+
+/// S6 close-under-saturation evidence. The runner initiates close at the
+/// measurement-window midpoint through the public `close()` path and then
+/// only observes: every fact below comes from public snapshots or sealed
+/// attempt reports, never from runner-side assumptions about who was queued.
+#[derive(Debug, Clone, Serialize)]
+pub(super) struct CloseUnderLoadEvidence {
+    pub(super) close_requested_offset_ns: u64,
+    /// True when this call was the one that transitioned the backend to
+    /// closing (the public `close()` returns exactly that).
+    pub(super) close_initiated: bool,
+    /// Public admission snapshot at the moment close began.
+    pub(super) admitted_at_close: u64,
+    pub(super) queued_at_close: u64,
+    /// Attempt tasks the runner had not yet collected when close began.
+    pub(super) in_flight_at_close: u64,
+    pub(super) submitted_attempts: u64,
+    pub(super) sealed_reports: u64,
+    pub(super) join_failures: u64,
+    /// Sealed reports whose bounded failure class is `BackendClosing`: the
+    /// queued waiters close had to account for.
+    pub(super) backend_closing_sealed: u64,
+    /// In-flight attempts that sealed any terminal report after close began.
+    /// Closing is allowed to cancel active work; the probe requires the
+    /// in-flight cohort to finish, not to fabricate successful execution.
+    pub(super) in_flight_terminal_after_close: u64,
+    /// Successful subset of the terminal in-flight cohort, retained as a
+    /// diagnostic rather than a close-under-load pass condition.
+    pub(super) in_flight_succeeded_after_close: u64,
+    /// submitted == sealed + join-failures, exactly.
+    pub(super) accounting_exact: bool,
+}
+
+impl CloseUnderLoadEvidence {
+    pub(super) fn is_evidenced(&self) -> bool {
+        self.close_initiated
+            && self.accounting_exact
+            && self.admitted_at_close > 0
+            && self.queued_at_close > 0
+            && self.in_flight_at_close > 0
+            && self.backend_closing_sealed > 0
+            && self.in_flight_terminal_after_close == self.in_flight_at_close
     }
 }
 
@@ -333,8 +696,15 @@ pub(super) struct ArrivalPlanEvidence {
     pub(super) arrival_rate_per_second: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) max_rounds: Option<usize>,
+    /// True when a closed-loop service profile creates rounds only as the
+    /// preceding round drains, rather than serializing a speculative number
+    /// of future arrivals into the artifact plan.
+    pub(super) duration_paced_concurrency: bool,
     pub(super) rate_overrun: &'static str,
     pub(super) planned_arrivals: usize,
+    /// The bound every plan is checked against, recorded so a truncation flag
+    /// is auditable against the profile's intended offered process (W6).
+    pub(super) max_planned_attempts: usize,
     /// Planned phase split, present only for rate mode. Concurrency mode paces
     /// closed-loop rounds and assigns phases at submission, so a planned split
     /// would be meaningless; the observed split is in the measurement window.
@@ -345,11 +715,41 @@ pub(super) struct ArrivalPlanEvidence {
     /// A plan cut short by the attempt cap is disclosed, never presented as the
     /// profile's intended plan.
     pub(super) truncated_by_attempt_cap: bool,
+    /// W3 sequential phases. Present whenever the plan carried more than one
+    /// step; single-phase runs omit the section.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub(super) steps: Vec<StepPlanEvidence>,
+    /// S5 storm knobs and the number of storm cancellations the driver armed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) storm: Option<StormEvidence>,
     pub(super) dropped_overrun_arrivals: u64,
     /// Arrivals the backend refused to begin, which ends submission early.
     pub(super) begin_failures: u64,
     /// Attempt tasks that panicked or were cancelled, losing only their row.
     pub(super) join_failures: u64,
+}
+
+#[derive(Debug, Serialize)]
+pub(super) struct StepPlanEvidence {
+    pub(super) step_index: usize,
+    pub(super) concurrency: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) arrival_rate_per_second: Option<u64>,
+    pub(super) rate_overrun: &'static str,
+    pub(super) start_ns: u64,
+    pub(super) measurement_ns: u64,
+    pub(super) planned_arrivals: usize,
+}
+
+#[derive(Debug, Serialize)]
+pub(super) struct StormEvidence {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) attempt_deadline_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) cancel_every_n: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) cancel_after_ms: Option<u64>,
+    pub(super) cancellations_requested: u64,
 }
 
 impl ArrivalPlanEvidence {
@@ -358,21 +758,74 @@ impl ArrivalPlanEvidence {
         dropped_overrun_arrivals: u64,
         begin_failures: u64,
         join_failures: u64,
+        storm_cancellations_requested: u64,
     ) -> Self {
+        let storm = (plan.attempt_deadline_ms.is_some() || plan.cancel_every_n.is_some()).then(|| StormEvidence {
+            attempt_deadline_ms: plan.attempt_deadline_ms,
+            cancel_every_n: plan.cancel_every_n,
+            cancel_after_ms: plan.cancel_after_ms,
+            cancellations_requested: storm_cancellations_requested,
+        });
         Self {
             arrival_mode: plan.arrival_mode,
             seed: plan.seed,
             concurrency: plan.concurrency,
             arrival_rate_per_second: plan.arrival_rate_per_second,
             max_rounds: plan.max_rounds,
+            duration_paced_concurrency: plan.duration_paced_concurrency,
             rate_overrun: plan.rate_overrun,
             planned_arrivals: plan.arrivals.len(),
+            max_planned_attempts: super::profile::MAX_PLANNED_ATTEMPTS,
             planned_warmup_arrivals: (plan.arrival_mode == "rate").then_some(plan.warmup_arrivals),
             planned_measurement_arrivals: (plan.arrival_mode == "rate").then_some(plan.measurement_arrivals),
             truncated_by_attempt_cap: plan.truncated_by_attempt_cap,
+            steps: if plan.steps.len() > 1 {
+                plan.steps
+                    .iter()
+                    .map(|step| StepPlanEvidence {
+                        step_index: step.step_index,
+                        concurrency: step.concurrency,
+                        arrival_rate_per_second: step.arrival_rate_per_second,
+                        rate_overrun: step.rate_overrun,
+                        start_ns: step.start_ns,
+                        measurement_ns: step.measurement_ns,
+                        planned_arrivals: step.planned_arrivals,
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            },
+            storm,
             dropped_overrun_arrivals,
             begin_failures,
             join_failures,
+        }
+    }
+}
+
+#[cfg(test)]
+impl TimeSeriesEvidence {
+    pub(super) fn empty() -> Self {
+        Self {
+            sample_interval_ns: 0,
+            retention_downsampled: false,
+            device_rows: Vec::new(),
+            process_rows: Vec::new(),
+            utilization: Vec::new(),
+            drift: super::timeseries::DriftSummary {
+                ordinals: Vec::new(),
+                generations_monotonic: true,
+                ledger_sequences_monotonic: true,
+            },
+            vram_calibration: None,
+            observation_pull: super::timeseries::ObservationPullSummary {
+                samples: 0,
+                min_ns: 0,
+                p50_ns: 0,
+                p95_ns: 0,
+                max_ns: 0,
+                mean_ns: 0,
+            },
         }
     }
 }
@@ -386,9 +839,15 @@ pub(super) struct BackendSnapshotSample {
     pub(super) backend_metrics_snapshot: Value,
     pub(super) admission: Value,
     pub(super) device_ledger_reports: Value,
+    /// Physical cache allocation-domain reports, each paired with its own
+    /// canonical ledger sample by the engine before serialization.
+    pub(super) device_cache_reports: Value,
     pub(super) device_memory_failure_reports: Value,
     pub(super) gpu_execution_pool_reports: Value,
     pub(super) device_telemetry_snapshots: Value,
+    /// Exact-request BFS coalescing counters, when the cugraph build exposes
+    /// them.  Feature-off samples retain JSON null instead of inventing zeros.
+    pub(super) cugraph_bfs_singleflight_snapshot: Value,
 }
 
 /// Nsight trace identity. This runner never captures the trace itself; it
@@ -415,4 +874,86 @@ pub(super) fn write_artifact(out_dir: &Path, artifact: &RunArtifact) -> ToolResu
     let encoded = serde_json::to_vec_pretty(artifact)?;
     ensure_redacted_json(&serde_json::from_slice(&encoded)?, "")?;
     write_new_artifact(out_dir, &encoded)
+}
+
+#[cfg(test)]
+mod qps_envelope_tests {
+    use super::{QpsEnvelopeEvidence, QpsEnvelopeProfile};
+    use crate::single_node_multi_gpu_validate::{
+        aggregate::{ClauseStatus, LatencyAggregate, StepAggregate, ThroughputAggregate},
+        profile::QpsEnvelopeRecoveryProfile,
+    };
+
+    fn step(
+        index: usize,
+        rate: u64,
+        successful: u64,
+        gpu_reaching: u64,
+        p95_ns: u64,
+        queue_p95_ns: u64,
+    ) -> StepAggregate {
+        StepAggregate {
+            step_index: index,
+            concurrency: 0,
+            arrival_rate_per_second: Some(rate),
+            rate_overrun: "delay",
+            measurement_ns: 1_000_000_000,
+            throughput: ThroughputAggregate {
+                measurement_seconds: 1.0,
+                completions: successful,
+                successful_completions: successful,
+                gpu_reaching_completions: gpu_reaching,
+                application_qps: successful as f64,
+                gpu_reaching_qps: gpu_reaching as f64,
+            },
+            latency: LatencyAggregate {
+                samples: successful,
+                min_ns: p95_ns,
+                p50_ns: p95_ns,
+                p95_ns,
+                p99_ns: p95_ns,
+                max_ns: p95_ns,
+                mean_ns: p95_ns,
+                queue_wait_p95_ns: queue_p95_ns,
+                admission_wait_samples: successful,
+                admission_wait_p50_ns: queue_p95_ns,
+                admission_wait_p95_ns: queue_p95_ns,
+                admission_wait_p99_ns: queue_p95_ns,
+            },
+            placements: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn qps_envelope_requires_complete_gpu_progress_bounded_queue_and_recovery() {
+        let profile = QpsEnvelopeProfile {
+            min_gpu_reaching_completions_per_step: 1,
+            recovery: Some(QpsEnvelopeRecoveryProfile {
+                baseline_step_index: 0,
+                recovery_step_index: 2,
+                max_p95_latency_multiplier: 3,
+            }),
+        };
+        let steps = [step(0, 10, 10, 10, 100, 10), step(1, 100, 4, 4, 900, 80), step(2, 10, 8, 8, 250, 30)];
+        let evidence = QpsEnvelopeEvidence::from_steps(profile, &steps, 16, 64, false, &[(0, 0), (1, 64), (2, 64)]);
+        assert_eq!(evidence.status, ClauseStatus::Evidenced);
+        assert!(evidence.passes());
+        assert!(evidence.recovery.as_ref().is_some_and(|recovery| recovery.total_latency_within_band));
+
+        let missing_high_water = QpsEnvelopeEvidence::from_steps(profile, &steps, 16, 64, false, &[(0, 0), (1, 64)]);
+        assert_eq!(missing_high_water.status, ClauseStatus::Failed);
+
+        let non_gpu_success = QpsEnvelopeEvidence::from_steps(
+            profile,
+            &[step(0, 10, 10, 10, 100, 10), step(1, 100, 4, 3, 900, 80), step(2, 10, 8, 8, 250, 30)],
+            16,
+            64,
+            false,
+            &[(0, 0), (1, 64), (2, 64)],
+        );
+        assert_eq!(non_gpu_success.status, ClauseStatus::Failed);
+
+        let truncated = QpsEnvelopeEvidence::from_steps(profile, &steps, 16, 64, true, &[(0, 0), (1, 64), (2, 64)]);
+        assert_eq!(truncated.status, ClauseStatus::Failed);
+    }
 }

@@ -45,6 +45,26 @@ pub(super) fn cugraph_edge_canonical_facts(
         }
     }
 
+    if let Some(source) = plan.downcast_ref::<DataSourceExec>()
+        && crate::native::datafusion_local_parquet_scan_has_simple_directed_edge_topology(
+            source,
+            &spec.src_col,
+            &spec.dst_col,
+        )
+    {
+        return CugraphEdgeCanonicalFacts { dedup_present: true, ..Default::default() };
+    }
+
+    if let Some(native_plan) = super::admission::lowered_native_edge_plan(plan)
+        && nexus_query_engine::plan::edge_plan_has_simple_directed_edge_topology(
+            native_plan,
+            &spec.src_col,
+            &spec.dst_col,
+        )
+    {
+        return CugraphEdgeCanonicalFacts { dedup_present: true, ..Default::default() };
+    }
+
     CugraphEdgeCanonicalFacts::default()
 }
 

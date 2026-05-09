@@ -207,7 +207,50 @@ impl Drop for AdmissionTicket {
 pub(super) struct AdmissionState {
     pub(super) lifecycle: AdmissionLifecycleTracker,
     pub(super) queued: VecDeque<AdmissionRequest>,
+    /// Largest queue depth observed by this service since construction.
+    ///
+    /// The admission mutex owns both the queue and this value, so snapshots
+    /// cannot miss an enqueue that raced with a later drain.  It deliberately
+    /// never decreases while requests leave the queue.
+    queue_high_watermark: usize,
     pub(super) closed: bool,
+}
+
+impl AdmissionState {
+    /// Inserts a request and records the resulting queue high-water mark.
+    pub(super) fn enqueue_request(&mut self, request: AdmissionRequest) {
+        self.queued.push_back(request);
+        self.record_queue_depth();
+    }
+
+    /// Removes one request while retaining the historical queue peak.
+    pub(super) fn remove_queued_at(&mut self, position: usize) -> Option<AdmissionRequest> {
+        let request = self.queued.remove(position);
+        self.record_queue_depth();
+        request
+    }
+
+    /// Takes the queue for a service-owned sweep. The subsequent replacement
+    /// records the post-sweep transition before another snapshot can observe
+    /// the state.
+    pub(super) fn take_queued_requests(&mut self) -> VecDeque<AdmissionRequest> {
+        std::mem::take(&mut self.queued)
+    }
+
+    /// Reinstalls the queue after a service-owned sweep and retains its peak.
+    pub(super) fn replace_queued_requests(&mut self, queued: VecDeque<AdmissionRequest>) {
+        self.queued = queued;
+        self.record_queue_depth();
+    }
+
+    /// Returns the service-owned queue high-water mark.
+    pub(super) const fn queue_high_watermark(&self) -> usize {
+        self.queue_high_watermark
+    }
+
+    fn record_queue_depth(&mut self) {
+        self.queue_high_watermark = self.queue_high_watermark.max(self.queued.len());
+    }
 }
 
 /// Shared terminal result for a queued admission owner.
@@ -269,6 +312,9 @@ pub(super) struct AdmissionRequest {
     /// coverage validation remains unavailable, rather than asserting an
     /// empty proof.
     pub(super) submitted_plan_capability_evidence: Option<AttemptRequirement>,
+    /// Policy-resolved plan envelope retained from submission through the
+    /// execution context that consumes this admitted grant.
+    pub(super) admitted_reservation_envelope: Option<AttemptReservationEnvelope>,
     pub(super) requirement: AttemptRequirement,
     /// Monotonic FIFO identity retained independently from admission order.
     pub(super) submission_seq: u64,
@@ -868,7 +914,7 @@ impl QueryAdmissionWaiter {
                 }
                 return Ok(None);
             };
-            let admitted = state.queued.remove(position).expect("admissible request exists");
+            let admitted = state.remove_queued_at(position).expect("admissible request exists");
             let admitted_submission_seq = admitted.submission_seq;
             let admission_wait_fact =
                 admitted.admission_wait_fact(self.service.inner.queue_bounds.max_overtakes_per_waiter);
@@ -898,6 +944,7 @@ impl QueryAdmissionWaiter {
                     placed_query,
                     admitted_requirement: admitted.requirement.clone(),
                     submitted_plan_capability_evidence: admitted.submitted_plan_capability_evidence.clone(),
+                    admitted_reservation_envelope: admitted.admitted_reservation_envelope.clone(),
                     admitted_compatible_devices: admitted.compatible_devices.clone(),
                     observation: admitted.observation,
                     attempt_id: admitted.attempt_id,
@@ -996,7 +1043,7 @@ pub(super) fn remove_queued_request(
 ) -> Option<AdmissionRequest> {
     if let Some(position) = state.queued.iter().position(|request| request.admission_request_id == admission_request_id)
     {
-        state.queued.remove(position)
+        state.remove_queued_at(position)
     } else {
         None
     }

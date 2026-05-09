@@ -1,6 +1,7 @@
 use nexus_query_engine::admission::QueryPlanCapabilityProof;
 
 use super::*;
+use crate::attempt::NexusAttemptExtension;
 
 impl NexusNativeExecutionConfig {
     /// Execute through an admitted query-service handle.
@@ -37,19 +38,6 @@ impl NexusNativeExecutionConfig {
             self.query_admission_source = Some(source);
             self.query_admission_facts_recorded = None;
             self.query_admission_ticket = None;
-        }
-        self
-    }
-
-    pub(crate) fn with_plan_query_admission_ticket(mut self) -> Self {
-        if self.query_service_handle.is_none()
-            && self.query_admission_ticket.is_none()
-            && let Some(source) = self.query_admission_source.clone()
-        {
-            let observation_capture = self.metrics_capture.as_ref().map(NativeMetricsCapture::new_execution);
-            let observation = self.new_runtime_observation(observation_capture.as_ref());
-            self.query_admission_ticket =
-                Some(QueryAdmissionTicket::new_with_observation_and_capture(source, observation, observation_capture));
         }
         self
     }
@@ -125,11 +113,35 @@ impl NexusNativeExecutionConfig {
         self.query_admission_source.clone()
     }
 
-    #[cfg(feature = "cugraph")]
     pub(crate) fn with_existing_query_admission_ticket(mut self, ticket: Arc<QueryAdmissionTicket>) -> Self {
         if self.query_service_handle.is_none() {
             self.query_admission_ticket = Some(ticket);
         }
+        self
+    }
+
+    /// Drops a planner-time ticket before a frontend resolves metadata that
+    /// participates in its immutable admission proof.
+    #[cfg(feature = "cugraph")]
+    pub(crate) fn without_query_admission_ticket(mut self) -> Self {
+        self.query_admission_ticket = None;
+        self
+    }
+
+    /// Removes admission authority while retaining the execution policies
+    /// needed to lower a nested cuGraph input relation.
+    ///
+    /// A cuGraph table function first plans its edge and predicate relations
+    /// in a nested DataFusion state. Those relations are later executed under
+    /// the graph root's one post-metadata ticket, so letting the nested
+    /// optimizer mint a ticket would bind a source-only claim to the parent
+    /// attempt before the graph root has exact footer evidence.
+    #[cfg(feature = "cugraph")]
+    pub(crate) fn without_query_admission_for_cugraph_subplan(mut self) -> Self {
+        self.query_service_handle = None;
+        self.query_admission_facts_recorded = None;
+        self.query_admission_source = None;
+        self.query_admission_ticket = None;
         self
     }
 
@@ -143,6 +155,14 @@ impl NexusNativeExecutionConfig {
         task_context: &TaskContext,
     ) -> Option<Arc<QueryAdmissionTicket>> {
         query_admission_ticket_from_task_context(task_context)
+            .or_else(|| {
+                task_context
+                    .session_config()
+                    .options()
+                    .extensions
+                    .get::<NexusAttemptExtension>()
+                    .and_then(NexusAttemptExtension::bound_ticket)
+            })
             .or_else(|| self.query_admission_ticket.as_ref().map(Arc::clone))
     }
 
@@ -151,7 +171,6 @@ impl NexusNativeExecutionConfig {
         self.query_admission_ticket_for_task_context(task_context).map(|ticket| ticket.id())
     }
 
-    #[cfg(any(test, feature = "cugraph"))]
     pub(crate) fn query_admission_ticket(&self) -> Option<Arc<QueryAdmissionTicket>> {
         self.query_admission_ticket.as_ref().map(Arc::clone)
     }

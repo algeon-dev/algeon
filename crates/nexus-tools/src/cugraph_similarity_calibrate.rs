@@ -491,6 +491,7 @@ fn calibration_model_breakdown(
             vertex_estimate: None,
             statistics: None,
             edge_normalize_inserted: false,
+            construction_sort_workspace_bound_bytes: None,
             pair_rows: None,
             pair_vertex_width_bytes: None,
             pair_cardinality_source: None,

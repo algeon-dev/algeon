@@ -18,6 +18,27 @@ pub(super) fn graph_pool_high_water_delta(
     Some(after.used_high_bytes.saturating_sub(before.used_current_bytes))
 }
 
+/// Converts source-bound graph provenance carried by a resident edge frame to
+/// the graph-memory model's typed input. External content identities do not
+/// prove a footer vertex bound and therefore deliberately retain the fallback.
+pub(in crate::exec) fn source_graph_vertex_estimate(
+    graph_residency: Option<&crate::plan::GraphResidencyDescriptor>,
+) -> Option<crate::graph_memory::GraphVertexEstimate> {
+    graph_residency
+        .and_then(crate::plan::GraphResidencyDescriptor::graph_vertex_upper_bound)
+        .map(crate::graph_memory::GraphVertexEstimate::graph_metadata)
+}
+
+/// Returns the exact raw edge count carried by a complete source-bound graph
+/// descriptor. External identities and partial sources cannot prove this
+/// provenance fact; it never asserts that edge normalization retains a raw
+/// DataFrame allocation.
+pub(in crate::exec) fn source_graph_raw_edge_row_count(
+    graph_residency: Option<&crate::plan::GraphResidencyDescriptor>,
+) -> Option<u64> {
+    graph_residency.and_then(crate::plan::GraphResidencyDescriptor::graph_raw_edge_row_count)
+}
+
 #[cfg(feature = "cugraph")]
 pub(super) fn admit_graph_memory(
     context: &ExecutionContext,
@@ -26,26 +47,35 @@ pub(super) fn admit_graph_memory(
     input: &DataFrame,
     side_inputs: &BTreeMap<NodeId, GpuDataFrame>,
     input_edges: u64,
+    vertex_estimate: Option<crate::graph_memory::GraphVertexEstimate>,
+    raw_input_edges: Option<u64>,
     metrics: &mut QueryMetrics,
 ) -> Result<Option<u64>> {
-    if !crate::graph_memory::graph_memory_reservation_required(spec.algorithm) {
-        return Ok(None);
-    }
-    let report = graph_memory_reservation_report(
+    let report = graph_memory_reservation_report(GraphMemoryReservationRequest {
         context,
         node_id,
         spec,
         input,
         side_inputs,
         input_edges,
-        None,
-        context.bounded_device_budget_bytes(),
-        graph_device_total_memory_bytes(context)?,
-        false,
-        None,
-        None,
-        0,
-    )?;
+        raw_input_edges,
+        strict_pair_cardinality: None,
+        budget_bytes: context.bounded_device_budget_bytes(),
+        device_total_memory_bytes: graph_device_total_memory_bytes(context)?,
+        allow_nulls: false,
+        vertex_estimate,
+        statistics: None,
+        already_accounted_graph_input_bytes: 0,
+        exact_normalized_graph_input_charge_bytes: None,
+        already_accounted_similarity_pair_input_bytes: 0,
+    })?;
+    // Every non-empty graph executor gets an I11 calibration row, including
+    // algorithms whose model is currently diagnostic-only rather than a live
+    // graph-tier reservation.
+    metrics.record_graph_claim_calibration(report.clone(), node_id);
+    if !crate::graph_memory::graph_memory_reservation_required(spec.algorithm) {
+        return Ok(None);
+    }
     let model = crate::graph_memory::GraphMemoryModel;
     let request = model.reservation_request(node_id, &report, context.device_memory_space());
     metrics.record_graph_reservation(report.clone());
@@ -57,6 +87,7 @@ pub(super) fn admit_graph_memory(
         request.query_id = Some(metrics.query_id().clone());
     }
     if report.outcome == crate::graph_memory::GraphReservationOutcome::Denied {
+        metrics.record_graph_claim_calibration_graph_memory_admission_denied(node_id, spec.algorithm);
         let granted_bytes = request.budget_bytes;
         metrics.record_reservation_denied_event(&request, granted_bytes);
         return Err(report.denied_error(&request, granted_bytes));
@@ -74,23 +105,115 @@ pub(super) fn admit_graph_memory(
     Ok(None)
 }
 
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use arrow::datatypes::{DataType, Field, Schema};
+
+    use super::{source_graph_raw_edge_row_count, source_graph_vertex_estimate};
+    use crate::{
+        graph_memory::{GraphVertexEstimate, GraphVertexEstimateSource},
+        plan::{
+            GraphAlgorithm, GraphAlgorithmParams, GraphAlgorithmSpec, GraphConstructionOptions,
+            GraphEdgeColumnBindings, GraphForceAtlas2Params, GraphResidencyDescriptor, GraphResidencyPlanAnalysis,
+            graph_residency_descriptor_for_local_parquet_source,
+        },
+        source::{LocalParquetFile, LocalParquetSource},
+    };
+
+    #[test]
+    fn source_graph_vertex_estimate_uses_only_source_bound_footer_provenance() {
+        let source = LocalParquetSource::from_files(
+            vec![
+                LocalParquetFile::new("/tmp/source-bound-force-atlas2.parquet")
+                    .with_stable_id("local:/tmp/source-bound-force-atlas2.parquet:1024:mtime=2026-08-05T00:00:00Z")
+                    .with_file_size_bytes(1024)
+                    .with_row_group_rows(vec![45_564_149])
+                    .with_graph_vertex_upper_bound(4_894_081),
+            ],
+            Arc::new(Schema::new(vec![
+                Field::new("src", DataType::Int64, false),
+                Field::new("dst", DataType::Int64, false),
+            ])),
+            vec!["src".to_string(), "dst".to_string()],
+        );
+        let force_atlas2 = GraphAlgorithmSpec::with_stable_schema(
+            GraphAlgorithm::ForceAtlas2,
+            GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
+            GraphConstructionOptions::default(),
+            GraphAlgorithmParams::ForceAtlas2(GraphForceAtlas2Params::default()),
+        );
+        let GraphResidencyPlanAnalysis::Keyable(source_bound) =
+            graph_residency_descriptor_for_local_parquet_source(&source, &force_atlas2)
+        else {
+            panic!("complete footer-backed Local Parquet graph source must be keyable");
+        };
+        let external_identity =
+            GraphResidencyDescriptor::for_content_identity("external-graph-edges", DataType::Int64, None, None)
+                .expect("stable external graph identity");
+
+        let estimate = source_graph_vertex_estimate(Some(&source_bound)).expect("footer graph bound");
+        assert_eq!(estimate.count, 4_894_081);
+        assert_eq!(estimate.source, GraphVertexEstimateSource::GraphMetadata);
+        assert_eq!(estimate, GraphVertexEstimate::graph_metadata(4_894_081));
+        assert_eq!(source_graph_raw_edge_row_count(Some(&source_bound)), Some(45_564_149));
+        assert_eq!(source_graph_vertex_estimate(Some(&external_identity)), None);
+        assert_eq!(source_graph_vertex_estimate(None), None);
+        assert_eq!(source_graph_raw_edge_row_count(Some(&external_identity)), None);
+        assert_eq!(source_graph_raw_edge_row_count(None), None);
+    }
+}
+
+#[cfg(feature = "cugraph")]
+pub(in crate::exec) struct GraphMemoryReservationRequest<'a> {
+    pub(in crate::exec) context: &'a ExecutionContext,
+    pub(in crate::exec) node_id: NodeId,
+    pub(in crate::exec) spec: &'a crate::plan::GraphAlgorithmSpec,
+    pub(in crate::exec) input: &'a DataFrame,
+    pub(in crate::exec) side_inputs: &'a BTreeMap<NodeId, GpuDataFrame>,
+    pub(in crate::exec) input_edges: u64,
+    pub(in crate::exec) raw_input_edges: Option<u64>,
+    pub(in crate::exec) strict_pair_cardinality: Option<(u64, crate::graph_memory::GraphPairCardinalitySource)>,
+    pub(in crate::exec) budget_bytes: Option<u64>,
+    pub(in crate::exec) device_total_memory_bytes: Option<u64>,
+    pub(in crate::exec) allow_nulls: bool,
+    pub(in crate::exec) vertex_estimate: Option<crate::graph_memory::GraphVertexEstimate>,
+    pub(in crate::exec) statistics: Option<crate::graph_memory::GraphStatistics>,
+    pub(in crate::exec) already_accounted_graph_input_bytes: u64,
+    /// The exact tracker charge for a live `EdgeNormalize` output. Unlike a
+    /// generic source frame, this is the sole logical graph-edge frame and may
+    /// safely credit its full physical charge against the whole-peak model.
+    pub(in crate::exec) exact_normalized_graph_input_charge_bytes: Option<u64>,
+    pub(in crate::exec) already_accounted_similarity_pair_input_bytes: u64,
+}
+
 #[cfg(feature = "cugraph")]
 pub(in crate::exec) fn graph_memory_reservation_report(
-    context: &ExecutionContext,
-    node_id: NodeId,
-    spec: &crate::plan::GraphAlgorithmSpec,
-    input: &DataFrame,
-    side_inputs: &BTreeMap<NodeId, GpuDataFrame>,
-    input_edges: u64,
-    strict_pair_cardinality: Option<(u64, crate::graph_memory::GraphPairCardinalitySource)>,
-    budget_bytes: Option<u64>,
-    device_total_memory_bytes: Option<u64>,
-    allow_nulls: bool,
-    vertex_estimate: Option<crate::graph_memory::GraphVertexEstimate>,
-    statistics: Option<crate::graph_memory::GraphStatistics>,
-    already_accounted_similarity_pair_input_bytes: u64,
+    request: GraphMemoryReservationRequest<'_>,
 ) -> Result<crate::graph_memory::GraphReservationReport> {
+    let GraphMemoryReservationRequest {
+        context,
+        node_id,
+        spec,
+        input,
+        side_inputs,
+        input_edges,
+        raw_input_edges,
+        strict_pair_cardinality,
+        budget_bytes,
+        device_total_memory_bytes,
+        allow_nulls,
+        vertex_estimate,
+        statistics,
+        already_accounted_graph_input_bytes,
+        exact_normalized_graph_input_charge_bytes,
+        already_accounted_similarity_pair_input_bytes,
+    } = request;
     let mut model_input = graph_memory_model_input_for_frame(input, spec, input_edges, allow_nulls)?;
+    if let Some(raw_input_edges) = raw_input_edges {
+        model_input = model_input.with_raw_input_edges(raw_input_edges);
+    }
     if let Some((runtime_pair_rows, pair_vertex_width_bytes, runtime_pair_cardinality_source)) =
         graph_similarity_pair_memory_evidence(spec, side_inputs)?
     {
@@ -112,12 +235,17 @@ pub(in crate::exec) fn graph_memory_reservation_report(
     if let Some(statistics) = statistics {
         model_input = model_input.with_statistics(statistics);
     }
+    // This is the last pre-execution point with the exact materialized edge
+    // shape. Attach the owner-provided raw-BFS sort bound before bounded
+    // pricing so relation-backed source/target inputs do not erase it.
+    model_input = crate::graph_memory::with_raw_bfs_sort_workspace_bound_from_owner(spec, model_input);
     let model = crate::graph_memory::GraphMemoryModel;
     let estimate = match budget_bytes.is_some() {
         true => model.estimate_for_bounded(spec, model_input)?,
         false => model.estimate(spec, model_input)?,
     };
     let report = crate::graph_memory::GraphReservationReport::from_estimate(node_id, estimate, budget_bytes)
+        .credit_live_graph_input(already_accounted_graph_input_bytes, exact_normalized_graph_input_charge_bytes)
         .credit_live_similarity_pair_input(already_accounted_similarity_pair_input_bytes);
     Ok(match statistics {
         Some(statistics) => report.with_statistics(statistics),
@@ -206,6 +334,13 @@ impl GraphBudgetObservation {
 
     pub(super) fn record(&self, metrics: &mut QueryMetrics) {
         self.record_with_boundary(metrics, crate::graph_memory::GRAPH_MEMORY_BOUNDARY, None);
+    }
+
+    /// Returns the typed reservation high-water mark captured with this
+    /// observation. Callers that calibrate graph pricing must use this direct
+    /// value rather than reconstructing a peak from error facts.
+    pub(super) const fn allocator_high_water_bytes(&self) -> Option<u64> {
+        self.allocator_high_water_bytes
     }
 
     pub(super) fn record_with_boundary(
@@ -390,6 +525,22 @@ pub(super) fn record_graph_budget_observation_from_error(metrics: &mut QueryMetr
         crate::graph_memory::GRAPH_MEMORY_BOUNDARY,
         None,
     );
+}
+
+/// Returns the exact reservation high-water retained by a graph-execution
+/// error after the token-owning executor sealed its structured evidence.
+///
+/// This deliberately requires the complete token projection rather than
+/// treating an arbitrary numeric error fact as a physical peak. The caller
+/// may use the returned value for graph-claim calibration while the existing
+/// recorder retains the full diagnostic row.
+#[cfg(feature = "cugraph")]
+pub(super) fn graph_budget_peak_from_error(error: &QueryError) -> Option<u64> {
+    error.fact_value("graph_budget_operation")?;
+    error.fact_value("graph_budget_enforcement")?;
+    error.fact_value("graph_budget_status")?;
+    error.fact_value("graph_budget_limit_bytes")?.parse::<u64>().ok()?;
+    error.fact_value("graph_budget_peak_bytes")?.parse::<u64>().ok()
 }
 
 #[cfg(feature = "cugraph")]

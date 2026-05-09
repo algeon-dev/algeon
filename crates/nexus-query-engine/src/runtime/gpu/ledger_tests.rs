@@ -12,10 +12,13 @@ fn requirement(floor: u64, hint: Option<u64>) -> AttemptRequirement {
     AttemptRequirement {
         configured_floor_bytes: floor,
         capability_floor_raise_bytes: 0,
+        required_phase_floor_bytes: 0,
+        source_stage_bytes: None,
         soft_working_set_hint_bytes: hint,
         estimate_quality: crate::admission::EstimateQuality::Modeled,
         required_capabilities: Vec::new(),
         attested_cugraph_graph_execution_scopes: Vec::new(),
+        reservation_shapes: Vec::new(),
     }
 }
 
@@ -72,6 +75,31 @@ fn cache_cap_zero_rejects_and_nonzero_cap_is_aggregate() {
     assert!(!ledger.try_reserve_evictable_bytes(1).unwrap());
     assert_eq!(ledger.snapshot().unwrap().cache_evictable_resident_bytes, 300);
     assert_eq!(ledger.snapshot().unwrap().cache_pinned_in_use_bytes, 0);
+}
+
+#[test]
+fn two_modeled_attempts_leave_space_for_the_first_source_cache_promotion() {
+    // The immutable grants remain the sole admission and cache-capacity
+    // authority. A planner-issued source target merely avoids giving each
+    // small source attempt the full device envelope.
+    let ledger = DeviceLedger::new(cache_profile(1_000, 100, 2, 400));
+    let first = ledger.try_admit(request(1), &requirement(100, Some(250))).unwrap().expect("first admits");
+    let second = ledger.try_admit(request(2), &requirement(100, Some(250))).unwrap().expect("second admits");
+
+    assert_eq!(first.budget_bytes(), 250);
+    assert_eq!(second.budget_bytes(), 250);
+    assert!(ledger.try_reserve_evictable_bytes(400).unwrap(), "cache charge fits beside immutable grants");
+    let charged = ledger.snapshot().unwrap();
+    assert_eq!(charged.live_grants_bytes, 500);
+    assert_eq!(charged.cache_evictable_resident_bytes, 400);
+    assert_eq!(charged.live_reserved_bytes, 0);
+    assert!(
+        !ledger.try_reserve_evictable_bytes(1).unwrap(),
+        "the cache must not exceed the remaining capacity behind immutable grants"
+    );
+    ledger.release_cache_residency_precharge_excess(400).unwrap();
+    drop(second);
+    drop(first);
 }
 
 #[test]
@@ -468,10 +496,13 @@ fn zero_request_floor_resolves_against_each_candidate_profile() {
     let zero_floor = AttemptRequirement {
         configured_floor_bytes: 0,
         capability_floor_raise_bytes: 0,
+        required_phase_floor_bytes: 0,
+        source_stage_bytes: None,
         soft_working_set_hint_bytes: Some(1),
         estimate_quality: crate::admission::EstimateQuality::Unknown,
         required_capabilities: Vec::new(),
         attested_cugraph_graph_execution_scopes: Vec::new(),
+        reservation_shapes: Vec::new(),
     };
 
     assert_eq!(small.required_floor_bytes_for(&zero_floor).unwrap(), 8);
@@ -487,10 +518,13 @@ fn request_floor_cannot_lower_the_candidate_profile_floor() {
     let requirement = AttemptRequirement {
         configured_floor_bytes: 1,
         capability_floor_raise_bytes: 7,
+        required_phase_floor_bytes: 0,
+        source_stage_bytes: None,
         soft_working_set_hint_bytes: Some(1),
         estimate_quality: crate::admission::EstimateQuality::Unknown,
         required_capabilities: Vec::new(),
         attested_cugraph_graph_execution_scopes: Vec::new(),
+        reservation_shapes: Vec::new(),
     };
 
     assert_eq!(ledger.required_floor_bytes_for(&requirement).unwrap(), 107);
@@ -503,14 +537,30 @@ fn requirement_floor_above_the_candidate_profile_floor_is_preserved() {
     let requirement = AttemptRequirement {
         configured_floor_bytes: 120,
         capability_floor_raise_bytes: 7,
+        required_phase_floor_bytes: 0,
+        source_stage_bytes: None,
         soft_working_set_hint_bytes: Some(1),
         estimate_quality: crate::admission::EstimateQuality::Unknown,
         required_capabilities: Vec::new(),
         attested_cugraph_graph_execution_scopes: Vec::new(),
+        reservation_shapes: Vec::new(),
     };
 
     assert_eq!(ledger.required_floor_bytes_for(&requirement).unwrap(), 127);
     assert_eq!(ledger.try_admit(request(1), &requirement).unwrap().unwrap().budget_bytes(), 127);
+}
+
+#[test]
+fn phase_floor_is_a_hard_candidate_minimum_without_adding_the_profile_floor() {
+    let ledger = DeviceLedger::new(profile(191, 64, 2));
+    let mut requirement = requirement(0, None);
+    requirement.required_phase_floor_bytes = 128;
+
+    assert_eq!(ledger.required_floor_bytes_for(&requirement).unwrap(), 128);
+    assert!(
+        ledger.try_admit(request(1), &requirement).unwrap().is_none(),
+        "the candidate ceiling is 127 after reserving the other profile floor, below the resolved phase minimum"
+    );
 }
 
 #[test]
@@ -519,10 +569,13 @@ fn overflowing_floor_is_rejected_structurally() {
     let overflowing = AttemptRequirement {
         configured_floor_bytes: 0,
         capability_floor_raise_bytes: u64::MAX,
+        required_phase_floor_bytes: 0,
+        source_stage_bytes: None,
         soft_working_set_hint_bytes: None,
         estimate_quality: crate::admission::EstimateQuality::Unknown,
         required_capabilities: Vec::new(),
         attested_cugraph_graph_execution_scopes: Vec::new(),
+        reservation_shapes: Vec::new(),
     };
     assert!(ledger.try_admit(request(1), &overflowing).is_err());
 }

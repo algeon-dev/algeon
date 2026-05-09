@@ -23,13 +23,11 @@ iceberg = [
 ]
 cugraph = [
   "datafusion-nexus/cugraph",
-  "nexus-query-engine/cugraph",
   "dep:cugraph",
   "dep:cugraph-sys",
 ]
 cuvs = [
   "datafusion-nexus/cuvs",
-  "nexus-query-engine/cuvs",
   "dep:cuvs-sys",
 ]
 
@@ -39,7 +37,7 @@ nexus-workloads = { workspace = true }
 nexus-query-engine = { workspace = true }
 datafusion = { workspace = true }
 arrow = { workspace = true }
-async-trait = "0.1"
+async-trait = { workspace = true }
 parquet = { workspace = true }
 cudf = { workspace = true }
 # Direct (non-transitive) dep on cudf-sys so THIS crate's build.rs receives
@@ -62,7 +60,6 @@ tempfile = { workspace = true, optional = true }
 [lib]
 name = "nexus_bench"
 path = "src/lib.rs"
-
 
 [[bin]]
 name = "native_iceberg_tpch_benchmark"
@@ -103,11 +100,9 @@ test = false
 name = "native_datafusion_planning_report"
 test = false
 
-
 [[bin]]
 name = "native_fallback_pressure_report"
 test = false
-
 
 [[bin]]
 name = "native_tpcds_execution_report"

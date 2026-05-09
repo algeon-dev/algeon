@@ -50,15 +50,30 @@ single-node-multi-gpu-validate-run = [
   "single-node-multi-gpu-validate",
   "dep:cudf",
   "dep:cudf-sys",
-  "dep:cugraph-sys",
   "dep:cuvs-sys",
   "dep:datafusion",
   "dep:datafusion-nexus",
   "dep:nexus-query-engine",
-  "datafusion-nexus/cugraph",
   # P6.2's device identity (model name, UUID, physical framebuffer) comes from
   # NVML, and the artifact contract requires recording it.
   "datafusion-nexus/nvml",
+]
+# The base run feature intentionally keeps `cugraph` off. It is the required
+# feature-off service cell: graph UDTFs must reject structurally while the
+# relational load continues. Graph qualification opts in explicitly.
+single-node-multi-gpu-validate-run-cugraph = [
+  "single-node-multi-gpu-validate-run",
+  "dep:cugraph-sys",
+  "datafusion-nexus/cugraph",
+]
+# W8's OTLP cell exercises the public reference exporter from
+# `nexus-examples`. That package's reference embedding is cugraph-enabled, so
+# keep it separate from the feature-off service cell.
+single-node-multi-gpu-validate-run-otlp = [
+  "single-node-multi-gpu-validate-run-cugraph",
+  "dep:nexus-examples",
+  "dep:opentelemetry",
+  "dep:opentelemetry-proto",
 ]
 
 [dependencies]
@@ -74,14 +89,17 @@ cuvs-sys = { workspace = true, optional = true }
 datafusion = { workspace = true, optional = true }
 datafusion-nexus = { workspace = true, optional = true }
 nexus-bench = { path = "../nexus-bench", optional = true }
+nexus-examples = { path = "../nexus-examples", optional = true, features = ["otlp-metrics"] }
 nexus-workloads = { workspace = true, optional = true }
 nexus-query-engine = { workspace = true, optional = true }
 futures = { workspace = true }
 iceberg = { workspace = true, optional = true }
 iceberg-catalog-glue = { workspace = true, optional = true }
 parquet = { workspace = true }
-prost = "0.14"
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"], optional = true }
+opentelemetry = { workspace = true, optional = true }
+opentelemetry-proto = { workspace = true, optional = true }
+prost = { workspace = true }
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"], optional = true }
 serde_json = { workspace = true }
 serde = { workspace = true }
 sha2 = { workspace = true }

@@ -16,7 +16,8 @@ use crate::{
     runtime::{
         GpuExecutorLease,
         allocator_correlation::{
-            AllocatorDomainAttempt, AllocatorEventEvidenceRead, discard_admitted_domain, retire_admitted_domain,
+            AllocatorDomainAttempt, AllocatorEventEvidenceRead, AttemptCacheScopeAllocatorCorrelation,
+            discard_admitted_domain, retire_admitted_domain,
         },
     },
 };
@@ -80,6 +81,10 @@ pub(super) struct QueryHandleLifetime {
     pub(super) admission_request_id: AdmissionRequestId,
     observation: RuntimeObservationHandle,
     attempt_id: Option<crate::observability::AttemptId>,
+    /// The admitted attempt owns the collector until every outward execution
+    /// context has drained. Report commit then consumes its one unambiguous
+    /// cache-scope event after CUDA cleanup is fenced.
+    cache_scope_allocator_correlation: Mutex<AttemptCacheScopeAllocatorCorrelation>,
     completion: Mutex<Option<QueryCompletion>>,
     service_epoch_user: Mutex<Option<QueryServiceEpochUser>>,
     device_ordinal: usize,
@@ -136,6 +141,9 @@ impl QueryHandleLifetime {
                 admission_request_id,
                 observation,
                 attempt_id,
+                cache_scope_allocator_correlation: Mutex::new(
+                    AttemptCacheScopeAllocatorCorrelation::for_admitted_attempt(attempt_id),
+                ),
                 completion: Mutex::new(Some(completion)),
                 service_epoch_user: Mutex::new(Some(service_epoch_user)),
                 device_ordinal,
@@ -167,6 +175,22 @@ impl QueryHandleLifetime {
                 "query service admission envelope mutex was poisoned",
             )
         })
+    }
+
+    fn cache_scope_allocator_correlation(&self) -> AttemptCacheScopeAllocatorCorrelation {
+        self.cache_scope_allocator_correlation.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
+    }
+
+    fn take_cache_scope_allocator_correlation(&self) -> AttemptCacheScopeAllocatorCorrelation {
+        match self.cache_scope_allocator_correlation.lock() {
+            Ok(mut correlation) => std::mem::take(&mut *correlation),
+            Err(error) => {
+                eprintln!(
+                    "[nexus-query-engine] warning: recovering poisoned query service cache scope allocator correlation"
+                );
+                std::mem::take(&mut *error.into_inner())
+            },
+        }
     }
 
     /// Attempt allocation domain clone for disposition tests.
@@ -414,6 +438,7 @@ impl QueryHandleLifetime {
         let envelope = take_owned_for_cleanup(&self.envelope, "admission envelope");
         let completion = take_owned_for_cleanup(&self.completion, "query completion");
         let service_epoch_user = take_owned_for_cleanup(&self.service_epoch_user, "service epoch user");
+        let cache_scope_allocator_correlation = self.take_cache_scope_allocator_correlation();
         #[cfg(test)]
         let release_commit_gate = take_owned_for_cleanup(&self.release_commit_gate, "release commit gate");
         let terminal_domain_usage = take_owned_for_cleanup(&self.terminal_domain_usage, "terminal domain usage");
@@ -425,6 +450,7 @@ impl QueryHandleLifetime {
             observation: self.observation.clone(),
             completion,
             service_epoch_user,
+            cache_scope_allocator_correlation,
             device_ordinal: self.device_ordinal,
             admitted_requirement: self.admitted_requirement.clone(),
             compatible_devices: self.compatible_devices.clone(),
@@ -574,6 +600,7 @@ struct QueryHandleRelease {
     observation: RuntimeObservationHandle,
     completion: Option<QueryCompletion>,
     service_epoch_user: Option<QueryServiceEpochUser>,
+    cache_scope_allocator_correlation: AttemptCacheScopeAllocatorCorrelation,
     device_ordinal: usize,
     admitted_requirement: AttemptRequirement,
     compatible_devices: Vec<usize>,
@@ -602,6 +629,7 @@ struct QueryHandleReportCommit {
     domain: Option<super::super::attempt_domain::AttemptAllocationDomain>,
     memory_grant: Option<MemoryGrant>,
     allocator_domain_attempt: Option<AllocatorDomainAttempt>,
+    cache_scope_allocator_correlation: AttemptCacheScopeAllocatorCorrelation,
     outcome_terminal_domain_usage: Option<AttemptTimedDomainUsage>,
     #[cfg(test)]
     release_commit_gate: Option<Arc<ReleaseCommitGate>>,
@@ -616,7 +644,16 @@ impl QueryHandleReportCommit {
         evidence: super::service::disposition::CleanupEvidence,
     ) -> Option<super::admission::QueryCompletionActivityTail> {
         use super::service::disposition::{CapacityCommitDisposition, CleanupEvidence, decide_capacity_commit};
+        // Seal attempt-owned cache-scope windows before this report chooses
+        // any allocator evidence. A context clone cannot append to a report
+        // in flight, and an unclosed checkout remains unavailable rather than
+        // racing its private ring against the terminal commit.
+        let cache_scope_allocator_event = self.cache_scope_allocator_correlation.seal_and_take_exact_event();
         let allocator_event_evidence = self.finish_allocator_domain_correlation(evidence);
+        // The admitted-domain event remains the canonical source when it is
+        // exact. Resident cache scopes are independent allocation domains and
+        // only fill that exact-evidence gap; they never become a device-wide
+        // snapshot or a second event store.
         let decision =
             decide_capacity_commit(self.device_ordinal, self.domain.as_ref(), evidence, self.terminal_domain_usage);
         let super::service::disposition::CapacityCommitDecision { disposition, usage, native_fault_evidence } =
@@ -671,6 +708,7 @@ impl QueryHandleReportCommit {
             post_cleanup_usage,
             native_fault_evidence,
             allocator_event_evidence.as_ref(),
+            cache_scope_allocator_event,
         );
         // This is the sole projection of the exact final usage sample and
         // health transition above. Typed fault and retry evidence shares this
@@ -900,6 +938,7 @@ impl QueryHandleReportCommit {
         post_cleanup_usage: Option<AttemptTimedDomainUsage>,
         native_fault_evidence: Option<crate::observability::AttemptNativeFaultEvidence>,
         allocator_event_evidence: Option<&AllocatorEventEvidenceRead>,
+        cache_scope_allocator_event: Option<cudf::AllocatorEvent>,
     ) -> Option<AttemptResourceEvidence> {
         let (memory_grant, domain) = self.memory_grant.as_ref().zip(self.domain.as_ref())?;
         let mut evidence = AttemptResourceEvidence::unavailable();
@@ -954,6 +993,8 @@ impl QueryHandleReportCommit {
         if let Some(allocator_event_evidence) = allocator_event_evidence {
             if let Some(event) = allocator_event_evidence.exact {
                 evidence.allocator_event = AttemptEvidenceField::attempt_exact(Self::allocator_event(event, true));
+            } else if let Some(event) = cache_scope_allocator_event {
+                evidence.allocator_event = AttemptEvidenceField::attempt_exact(Self::allocator_event(event, true));
             } else if let (Some(sampled_ns), Some(event)) = (device_sample_ns, allocator_event_evidence.unattributed) {
                 evidence.unattributed_device_allocator_event =
                     AttemptEvidenceField::device_snapshot(AttemptUnattributedAllocatorEvent {
@@ -962,6 +1003,8 @@ impl QueryHandleReportCommit {
                         event: Self::allocator_event(event, false),
                     });
             }
+        } else if let Some(event) = cache_scope_allocator_event {
+            evidence.allocator_event = AttemptEvidenceField::attempt_exact(Self::allocator_event(event, true));
         }
         Some(evidence)
     }
@@ -970,6 +1013,7 @@ impl QueryHandleReportCommit {
         let source = match event.source {
             cudf::DeviceMemoryFailureSource::Physical => AttemptAllocatorEventSource::Physical,
             cudf::DeviceMemoryFailureSource::ReservationLimit => AttemptAllocatorEventSource::ReservationLimit,
+            cudf::DeviceMemoryFailureSource::AllocationLimit => AttemptAllocatorEventSource::AllocationLimit,
             cudf::DeviceMemoryFailureSource::Unknown(_) => AttemptAllocatorEventSource::Unknown,
         };
         let action = event.action.map(|action| match action {
@@ -1198,6 +1242,7 @@ impl QueryHandleRelease {
             observation: RuntimeObservationHandle::disabled(),
             completion: None,
             service_epoch_user: None,
+            cache_scope_allocator_correlation: AttemptCacheScopeAllocatorCorrelation::default(),
             device_ordinal: 0,
             admitted_requirement: AttemptRequirement::empty(),
             compatible_devices: Vec::new(),
@@ -1238,6 +1283,7 @@ impl QueryHandleRelease {
             domain,
             memory_grant,
             allocator_domain_attempt,
+            cache_scope_allocator_correlation: std::mem::take(&mut self.cache_scope_allocator_correlation),
             outcome_terminal_domain_usage: self.outcome_terminal_domain_usage.take(),
             #[cfg(test)]
             release_commit_gate: self.release_commit_gate.take(),
@@ -1325,6 +1371,9 @@ pub struct QueryHandle {
     /// validation.  It remains absent when admission resolved a requirement
     /// solely for placement/accounting.
     pub(super) submitted_plan_capability_evidence: Option<crate::admission::AttemptRequirement>,
+    /// Exact policy-resolved physical envelope used to size this immutable
+    /// grant. It is revalidated before execution can reuse the handle.
+    pub(super) admitted_reservation_envelope: Option<crate::admission::AttemptReservationEnvelope>,
     pub(super) admission_request_id: AdmissionRequestId,
     pub(super) admission_sequence: u64,
     pub(super) admission_wait: Duration,
@@ -1653,6 +1702,7 @@ impl QueryHandle {
             query_id,
             trace_id,
             attempt_id: self.lifetime.attempt_id,
+            cache_scope_allocator_correlation: self.lifetime.cache_scope_allocator_correlation(),
             runtime_observation,
             runtime_observation_owner: observation_owner,
             runtime_execution_scope: None,
@@ -1666,6 +1716,7 @@ impl QueryHandle {
             attempt_allocation_domain: Some(attempt_allocation_domain),
             attempt_auxiliary_slots: Some(Arc::clone(&self.lifetime.attempt_auxiliary_slots)),
             admitted_capability_evidence: self.submitted_plan_capability_evidence.clone(),
+            admitted_reservation_envelope: self.admitted_reservation_envelope.clone(),
             attempt_member_lease: Some(attempt_member_lease),
             boundary_policy: service.config.boundary_policy,
             source_scheduler_policy: service.config.source_scheduler_policy,

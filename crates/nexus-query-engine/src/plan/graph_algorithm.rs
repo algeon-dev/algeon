@@ -36,8 +36,8 @@ pub use definition::{
 pub use layout::{GraphForceAtlas2Params, GraphLayoutRequirement};
 pub use residency::{
     GraphResidencyDescriptor, GraphResidencyOrientation, GraphResidencyPlanAnalysis, GraphSourceFingerprint,
-    GraphSourceFingerprintBypassReason, ResidentGraphKey, graph_residency_descriptor_for_edge_plan,
-    graph_residency_descriptor_for_local_parquet_source,
+    GraphSourceFingerprintBypassReason, ResidentGraphKey, edge_plan_has_simple_directed_edge_topology,
+    graph_residency_descriptor_for_edge_plan, graph_residency_descriptor_for_local_parquet_source,
 };
 pub use similarity::{GraphSimilarityParams, GraphVertexPairInput};
 pub use structure::{

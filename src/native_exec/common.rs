@@ -36,7 +36,7 @@ use nexus_query_engine::{
     source::SourceNode,
 };
 
-use super::metrics::NexusNativeMetrics;
+use super::{config::NexusNativeExecutionContext, metrics::NexusNativeMetrics};
 use crate::error::{Error, ErrorCode};
 
 pub(super) const NATIVE_NEXUS_EXEC_HOST_OUTPUT_MEMORY_CONSUMER: &str = "NexusNativeExec[host-output]";
@@ -129,6 +129,11 @@ pub(super) struct NativeHostOutputCursor {
     executor: GpuExecutorLease,
     observation: RuntimeObservationHandle,
     metrics: NexusNativeMetrics,
+    /// The admitted context owns the ticket/handle whose resource epoch must
+    /// remain live for each deferred GPU-to-host cursor step. A resident
+    /// result alone retains CUDA allocations, but not the query-service
+    /// admission lifetime that authorizes the next executor submission.
+    _context_lease: NexusNativeExecutionContext,
 }
 
 impl NativeHostOutputCursor {
@@ -137,8 +142,9 @@ impl NativeHostOutputCursor {
         executor: GpuExecutorLease,
         observation: RuntimeObservationHandle,
         metrics: NexusNativeMetrics,
+        context_lease: NexusNativeExecutionContext,
     ) -> Self {
-        Self { cursor, executor, observation, metrics }
+        Self { cursor, executor, observation, metrics, _context_lease: context_lease }
     }
 
     fn next(
@@ -148,7 +154,7 @@ impl NativeHostOutputCursor {
         consumer_name: &'static str,
     ) -> BoxedNativeHostOutputStepFuture {
         Box::pin(async move {
-            let Self { cursor, executor, observation, metrics } = self;
+            let Self { cursor, executor, observation, metrics, _context_lease } = self;
             let task_executor = executor.clone();
             let task_observation = observation.clone();
             let (cursor, batch, reservation) = run_gpu_execution_task(
@@ -197,7 +203,7 @@ impl NativeHostOutputCursor {
             metrics.record_deferred_host_materialization(batch.num_rows(), get_record_batch_memory_size(&batch));
             let batch = batch.record_output(&metrics.baseline);
             Ok(NativeHostOutputStep {
-                cursor: Some(Self { cursor, executor, observation, metrics }),
+                cursor: Some(Self { cursor, executor, observation, metrics, _context_lease }),
                 batch: Some(batch),
                 reservation,
             })

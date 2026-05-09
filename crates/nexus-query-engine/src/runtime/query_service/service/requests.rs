@@ -16,6 +16,7 @@ pub(in crate::runtime::query_service) struct PlacedAdmissionCommit {
     pub(in crate::runtime::query_service) placed_query: PlacedQuery,
     pub(in crate::runtime::query_service) admitted_requirement: AttemptRequirement,
     pub(in crate::runtime::query_service) submitted_plan_capability_evidence: Option<AttemptRequirement>,
+    pub(in crate::runtime::query_service) admitted_reservation_envelope: Option<AttemptReservationEnvelope>,
     pub(in crate::runtime::query_service) admitted_compatible_devices: Vec<usize>,
     pub(in crate::runtime::query_service) observation: RuntimeObservationHandle,
     pub(in crate::runtime::query_service) attempt_id: Option<crate::observability::AttemptId>,
@@ -67,6 +68,8 @@ impl QueryService {
         let execution_cancellation = request.execution_cancellation.clone();
         let attempt_requirement = request.resolved_attempt_requirement();
         let submitted_plan_capability_evidence = request.submitted_plan_capability_evidence();
+        let reservation_envelope_result =
+            request.resolved_reservation_envelope(self.inner.config.attempt_reservation_policy());
         let mut observation_owner = request.into_runtime_observation();
         let attempt_id = observation_owner.attempt_id;
         let admission_request_id =
@@ -113,6 +116,21 @@ impl QueryService {
             completion.finish_error(&error);
             return Err(error);
         }
+        let admitted_reservation_envelope = match reservation_envelope_result {
+            Ok(envelope) => envelope,
+            Err(error) => {
+                record_admission_lifecycle(
+                    observation_owner.as_ref(),
+                    admission_request_id,
+                    admission_rejection(&error),
+                    0,
+                    None,
+                    None,
+                );
+                completion.finish_error(&error);
+                return Err(error);
+            },
+        };
         let requirement = match self.resolve_attempt_requirement_for_submission(attempt_requirement) {
             Ok(requirement) => requirement,
             Err(error) => {
@@ -127,6 +145,10 @@ impl QueryService {
                 completion.finish_error(&error);
                 return Err(error);
             },
+        };
+        let requirement = match admitted_reservation_envelope.as_ref() {
+            Some(envelope) => requirement.with_reservation_envelope(envelope),
+            None => requirement,
         };
         let requested_at = Instant::now();
         let configured_deadline = requested_at.checked_add(self.inner.queue_bounds.max_wait).unwrap_or(requested_at);
@@ -153,6 +175,7 @@ impl QueryService {
             attempt_id,
             completion,
             submitted_plan_capability_evidence,
+            admitted_reservation_envelope,
             requirement: requirement.clone(),
             submission_seq: self.inner.next_submission_seq.fetch_add(1, Ordering::Relaxed),
             compatible_devices,
@@ -203,7 +226,7 @@ impl QueryService {
             finish_removed_request_error(Some(request), &error);
             return Err(error);
         }
-        state.queued.push_back(request);
+        state.enqueue_request(request);
         record_admission_lifecycle(
             observation_owner.as_ref(),
             admission_request_id,
@@ -365,7 +388,7 @@ impl QueryService {
                     }
                     continue;
                 };
-                let admitted = state.queued.remove(position).expect("admissible request exists");
+                let admitted = state.remove_queued_at(position).expect("admissible request exists");
                 let admitted_submission_seq = admitted.submission_seq;
                 let admission_wait_fact =
                     admitted.admission_wait_fact(self.inner.queue_bounds.max_overtakes_per_waiter);
@@ -390,6 +413,7 @@ impl QueryService {
                     placed_query,
                     admitted_requirement: admitted.requirement.clone(),
                     submitted_plan_capability_evidence: admitted.submitted_plan_capability_evidence.clone(),
+                    admitted_reservation_envelope: admitted.admitted_reservation_envelope.clone(),
                     admitted_compatible_devices: admitted.compatible_devices.clone(),
                     observation: admitted.observation,
                     attempt_id: admitted.attempt_id,
@@ -547,6 +571,8 @@ impl QueryService {
         let execution_cancellation = request.execution_cancellation.clone();
         let attempt_requirement = request.resolved_attempt_requirement();
         let submitted_plan_capability_evidence = request.submitted_plan_capability_evidence();
+        let reservation_envelope_result =
+            request.resolved_reservation_envelope(self.inner.config.attempt_reservation_policy());
         let mut observation_owner = request.into_runtime_observation();
         let attempt_id = observation_owner.attempt_id;
         let admission_request_id =
@@ -593,6 +619,21 @@ impl QueryService {
             completion.finish_error(&error);
             return Err(error);
         }
+        let admitted_reservation_envelope = match reservation_envelope_result {
+            Ok(envelope) => envelope,
+            Err(error) => {
+                record_admission_lifecycle(
+                    observation_owner.as_ref(),
+                    admission_request_id,
+                    admission_rejection(&error),
+                    0,
+                    None,
+                    None,
+                );
+                completion.finish_error(&error);
+                return Err(error);
+            },
+        };
         let requirement = match self.resolve_attempt_requirement_for_submission(attempt_requirement) {
             Ok(requirement) => requirement,
             Err(error) => {
@@ -607,6 +648,10 @@ impl QueryService {
                 completion.finish_error(&error);
                 return Err(error);
             },
+        };
+        let requirement = match admitted_reservation_envelope.as_ref() {
+            Some(envelope) => requirement.with_reservation_envelope(envelope),
+            None => requirement,
         };
         let requested_at = Instant::now();
         let configured_deadline = requested_at.checked_add(self.inner.queue_bounds.max_wait).unwrap_or(requested_at);
@@ -678,12 +723,13 @@ impl QueryService {
             completion.finish_error(&error);
             return Err(error);
         }
-        state.queued.push_back(AdmissionRequest {
+        state.enqueue_request(AdmissionRequest {
             admission_request_id,
             observation: observation_owner.handle.clone(),
             attempt_id,
             completion,
             submitted_plan_capability_evidence,
+            admitted_reservation_envelope,
             requirement: requirement.clone(),
             submission_seq: self.inner.next_submission_seq.fetch_add(1, Ordering::Relaxed),
             compatible_devices,
@@ -732,6 +778,7 @@ impl QueryService {
             placed_query,
             admitted_requirement,
             submitted_plan_capability_evidence,
+            admitted_reservation_envelope,
             admitted_compatible_devices,
             observation,
             attempt_id,
@@ -973,6 +1020,7 @@ impl QueryService {
             config: self.inner.config.clone(),
             queue_bounds: self.inner.queue_bounds.clone(),
             submitted_plan_capability_evidence,
+            admitted_reservation_envelope,
             admission_request_id,
             admission_sequence,
             admission_wait,
@@ -1023,6 +1071,8 @@ impl QueryService {
         let execution_cancellation = request.execution_cancellation.clone();
         let attempt_requirement = request.resolved_attempt_requirement();
         let submitted_plan_capability_evidence = request.submitted_plan_capability_evidence();
+        let reservation_envelope_result =
+            request.resolved_reservation_envelope(self.inner.config.attempt_reservation_policy());
         let mut observation_owner = request.into_runtime_observation();
         let attempt_id = observation_owner.attempt_id;
         let admission_request_id =
@@ -1069,6 +1119,21 @@ impl QueryService {
             completion.finish_error(&error);
             return Err(error);
         }
+        let admitted_reservation_envelope = match reservation_envelope_result {
+            Ok(envelope) => envelope,
+            Err(error) => {
+                record_admission_lifecycle(
+                    observation_owner.as_ref(),
+                    admission_request_id,
+                    admission_rejection(&error),
+                    0,
+                    None,
+                    None,
+                );
+                completion.finish_error(&error);
+                return Err(error);
+            },
+        };
         let requirement = match self.resolve_attempt_requirement_for_submission(attempt_requirement) {
             Ok(requirement) => requirement,
             Err(error) => {
@@ -1083,6 +1148,10 @@ impl QueryService {
                 completion.finish_error(&error);
                 return Err(error);
             },
+        };
+        let requirement = match admitted_reservation_envelope.as_ref() {
+            Some(envelope) => requirement.with_reservation_envelope(envelope),
+            None => requirement,
         };
         let mut slot_notifications = PendingDeviceSlotNotifications::default();
         let required_capabilities = super::placement::required_capabilities_for_placement(&requirement);
@@ -1185,6 +1254,7 @@ impl QueryService {
             placed_query,
             admitted_requirement: requirement,
             submitted_plan_capability_evidence,
+            admitted_reservation_envelope,
             admitted_compatible_devices: compatible_devices,
             observation: observation_owner.handle,
             attempt_id,
