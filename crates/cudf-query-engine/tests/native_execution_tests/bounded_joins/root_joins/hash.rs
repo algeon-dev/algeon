@@ -125,26 +125,50 @@ fn bounded_native_query_executes_root_hash_join_with_chunked_tokenized_leaf_read
         Arc::clone(&output_schema),
     );
     let plan = builder.finish_with_host_sink(join);
-    let context = bounded_join_execution_context(&Arc::new(cudf::Runtime::new().unwrap()));
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = ExecutionContext::builder()
+        .with_shared_runtime(Arc::clone(&runtime))
+        .with_memory_control_policy(MemoryControlPolicy::Bounded {
+            device_budget_bytes: 8 * 1024 * 1024 * 1024,
+            max_source_chunk_bytes: 1024 * 1024,
+            max_row_groups_per_chunk: 1,
+            max_retry_attempts: 1,
+            min_retry_chunk_row_groups: 1,
+        })
+        .with_source_scheduler_policy(SourceSchedulerPolicy::new(3))
+        .build()
+        .unwrap();
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
     assert_eq!(metrics.source_chunks_planned, 7);
     assert_eq!(metrics.source_chunks_attempted, 7);
     assert_eq!(metrics.source_chunks_committed, 7);
+    assert_eq!(metrics.source_read_prefetches_started, 5);
+    assert_eq!(metrics.source_read_prefetches_completed, 5);
+    assert_eq!(metrics.source_read_prefetches_skipped, 0);
+    assert_eq!(metrics.source_read_prefetches_abandoned, 0);
     assert_eq!(metrics.reservation_denied_count, 0);
-    assert!(
-        metrics
-            .reservation_events
-            .iter()
-            .filter(|event| {
-                event.outcome.as_str() == "granted"
-                    && event.reservation_kind == ReservationKind::SourceRead
-                    && event.memory_boundary == "join_source_read"
-            })
-            .count()
-            >= 7
-    );
+    let join_source_reads = metrics
+        .reservation_events
+        .iter()
+        .filter(|event| {
+            event.outcome.as_str() == "granted"
+                && event.reservation_kind == ReservationKind::SourceRead
+                && matches!(event.memory_boundary.as_str(), "join_source_read" | "join_source_read_prefetch")
+        })
+        .count();
+    assert!(join_source_reads >= 7);
+    let join_source_prefetches = metrics
+        .reservation_events
+        .iter()
+        .filter(|event| {
+            event.outcome.as_str() == "granted"
+                && event.reservation_kind == ReservationKind::SourceRead
+                && event.memory_boundary == "join_source_read_prefetch"
+        })
+        .count();
+    assert_eq!(join_source_prefetches, 5);
 
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");

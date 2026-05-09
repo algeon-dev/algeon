@@ -190,18 +190,8 @@ fn execute_bounded_generic_query_plan(
         unreachable!("execute_bounded_query_plan is called only for bounded policies");
     };
     let mut reservations = ReservationTracker::new(context.device_memory_space(), device_budget_bytes);
-    let mut scratch = ExecutionScratch::new(context);
-    let frame = execute_bounded_generic_node(context, plan, plan.sink().input(), gpu_inputs, &mut scratch, metrics)?;
-    let frame_bytes = observe_device_memory_bytes(&frame, metrics)?;
-    let reservation = reservations.try_reserve(
-        MemoryReservationRequest::new(ReservationKind::OperatorOutput, frame_bytes, reservations.budget())
-            .with_memory_boundary("operator_output")
-            .with_node_id(plan.sink().input())
-            .with_stage("bounded_generic")
-            .with_attempt(1, 1),
-        metrics,
-    )?;
-    let committed = CommittedPartial { frame, reservation };
+    let committed =
+        execute_bounded_generic_node(context, plan, plan.sink().input(), gpu_inputs, &mut reservations, metrics)?;
 
     match plan.sink() {
         ResultSink::GpuResident { .. } => {
@@ -237,52 +227,93 @@ fn execute_bounded_generic_node(
     plan: &QueryPlan,
     id: NodeId,
     gpu_inputs: &GpuResidentInputMap,
-    scratch: &mut ExecutionScratch,
+    reservations: &mut ReservationTracker,
     metrics: &mut QueryMetrics,
-) -> Result<GpuDataFrame> {
-    if let Some(frame) = scratch.node_results.get(&id) {
-        return Ok(frame.clone());
-    }
-
+) -> Result<ResidentGpuFrame> {
     let node = plan
         .node(id)
         .ok_or_else(|| invalid_node_reference(id, "bounded generic query plan references a missing node"))?;
     let frame = match &node.kind {
         PlanNode::Source(source) => match source.as_ref() {
-            crate::source::SourceNode::LocalParquet(source) => read_local_parquet_source(context, source, metrics),
+            crate::source::SourceNode::LocalParquet(source) => {
+                execute_bounded_generic_local_parquet_source(context, source, id, reservations, metrics)
+            },
             crate::source::SourceNode::GpuResident(source) => {
-                read_gpu_resident_source(context, source, gpu_inputs, metrics)
+                execute_bounded_generic_gpu_resident_source(context, source, id, gpu_inputs, reservations, metrics)
             },
         },
         PlanNode::Filter(filter) => {
-            let input = execute_bounded_generic_node(context, plan, filter.input, gpu_inputs, scratch, metrics)?;
-            let token = bounded_generic_budget_token(
+            let input = execute_bounded_generic_node(context, plan, filter.input, gpu_inputs, reservations, metrics)?;
+            execute_bounded_generic_unary(
                 context,
                 id,
                 "bounded_generic_filter",
-                "cudf_query_engine.bounded_generic.filter_budget_token",
-                "failed to create bounded generic filter budget token",
-            )?;
-            execute_filter_with_budget(context, filter, input, &token, metrics)
+                "bounded_generic_filter_output",
+                input,
+                reservations,
+                metrics,
+                true,
+                |context, input, token, metrics| {
+                    execute_filter_with_budget(
+                        context,
+                        filter,
+                        input,
+                        token.expect("budget token is created for bounded generic filter stages"),
+                        metrics,
+                    )
+                },
+            )
         },
         PlanNode::Projection(projection) => {
-            let input = execute_bounded_generic_node(context, plan, projection.input, gpu_inputs, scratch, metrics)?;
-            let token = bounded_generic_budget_token(
+            let input =
+                execute_bounded_generic_node(context, plan, projection.input, gpu_inputs, reservations, metrics)?;
+            execute_bounded_generic_unary(
                 context,
                 id,
                 "bounded_generic_projection",
-                "cudf_query_engine.bounded_generic.projection_budget_token",
-                "failed to create bounded generic projection budget token",
-            )?;
-            execute_projection_with_budget(context, projection, input, &token, metrics)
+                "bounded_generic_projection_output",
+                input,
+                reservations,
+                metrics,
+                true,
+                |context, input, token, metrics| {
+                    execute_projection_with_budget(
+                        context,
+                        projection,
+                        input,
+                        token.expect("budget token is created for bounded generic projection stages"),
+                        metrics,
+                    )
+                },
+            )
         },
         PlanNode::Sort(sort) => {
-            let input = execute_bounded_generic_node(context, plan, sort.input, gpu_inputs, scratch, metrics)?;
-            execute_sort(context, sort, input, metrics)
+            let input = execute_bounded_generic_node(context, plan, sort.input, gpu_inputs, reservations, metrics)?;
+            execute_bounded_generic_unary(
+                context,
+                id,
+                "bounded_generic_sort",
+                "bounded_generic_sort_output",
+                input,
+                reservations,
+                metrics,
+                false,
+                |context, input, _token, metrics| execute_sort(context, sort, input, metrics),
+            )
         },
         PlanNode::Limit(limit) => {
-            let input = execute_bounded_generic_node(context, plan, limit.input, gpu_inputs, scratch, metrics)?;
-            execute_limit(context, limit, input, metrics)
+            let input = execute_bounded_generic_node(context, plan, limit.input, gpu_inputs, reservations, metrics)?;
+            execute_bounded_generic_unary(
+                context,
+                id,
+                "bounded_generic_limit",
+                "bounded_generic_limit_output",
+                input,
+                reservations,
+                metrics,
+                false,
+                |context, input, _token, metrics| execute_limit(context, limit, input, metrics),
+            )
         },
         PlanNode::Aggregate(_) | PlanNode::Join(_) => Err(unsupported_bounded_shape(
             "bounded generic execution supports only source, filter, projection, sort, and limit nodes",
@@ -292,23 +323,158 @@ fn execute_bounded_generic_node(
         .with_fact("node_kind", bounded_generic_node_kind(&node.kind))),
     }?;
 
-    record_device_memory_observation(&frame, metrics)?;
-    scratch.node_results.insert(id, frame.clone());
     Ok(frame)
 }
 
-fn bounded_generic_budget_token(
+fn execute_bounded_generic_local_parquet_source(
+    context: &ExecutionContext,
+    source: &LocalParquetSource,
+    node_id: NodeId,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+) -> Result<ResidentGpuFrame> {
+    validate_local_parquet_source(source)?;
+    let chunk_plan = plan_local_parquet_source_chunks(
+        node_id,
+        source,
+        SourceChunkPlanningPolicy::from(context.memory_control_policy()),
+    )?;
+    for chunk in &chunk_plan.chunks {
+        metrics.record_source_chunk_planned(chunk.row_group_count() as u64);
+    }
+    if chunk_plan.chunks.is_empty() {
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "cudf_query_engine.bounded.generic.source",
+            "bounded generic local parquet source requires at least one planned source chunk",
+        )
+        .with_fact("source_node_id", node_id));
+    }
+    record_bounded_parquet_source_metrics(source, &chunk_plan, metrics);
+
+    let chunks = read_local_parquet_chunks_ordered(
+        context,
+        source,
+        &chunk_plan.chunks,
+        reservations,
+        metrics,
+        SourceReadSchedulerBoundaries::new("bounded_generic_source_read", "bounded_generic_source_read_prefetch"),
+    )?;
+
+    concatenate_source_read_outputs(
+        context,
+        node_id,
+        chunks,
+        reservations,
+        metrics,
+        "bounded_generic_source_read",
+        "cudf_query_engine.bounded.generic.source_concat",
+        "failed to concatenate bounded generic local parquet source chunks",
+    )
+}
+
+fn execute_bounded_generic_gpu_resident_source(
+    context: &ExecutionContext,
+    source: &GpuResidentSource,
+    node_id: NodeId,
+    gpu_inputs: &GpuResidentInputMap,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+) -> Result<ResidentGpuFrame> {
+    let frame = read_gpu_resident_source(context, source, gpu_inputs, metrics)?;
+    let requested_bytes = observe_device_memory_bytes(&frame, metrics)?;
+    let reservation = reservations.try_reserve(
+        MemoryReservationRequest::new(ReservationKind::SourceRead, requested_bytes, reservations.budget())
+            .with_memory_boundary("bounded_generic_gpu_resident_source")
+            .with_node_id(node_id)
+            .with_stage("bounded_generic_gpu_resident_source")
+            .with_attempt(1, 1),
+        metrics,
+    )?;
+    Ok(ResidentGpuFrame { frame, reservation })
+}
+
+fn execute_bounded_generic_unary(
     context: &ExecutionContext,
     node_id: NodeId,
-    budget_boundary: &'static str,
-    operation: &'static str,
-    message: &'static str,
-) -> Result<ExecutionBudgetToken> {
-    let MemoryControlPolicy::Bounded { device_budget_bytes, .. } = context.memory_control_policy() else {
-        unreachable!("bounded generic budget tokens are created only for bounded policies");
+    stage: &'static str,
+    output_boundary: &'static str,
+    input: ResidentGpuFrame,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+    use_budget_token: bool,
+    execute: impl FnOnce(
+        &ExecutionContext,
+        GpuDataFrame,
+        Option<&ExecutionBudgetToken>,
+        &mut QueryMetrics,
+    ) -> Result<GpuDataFrame>,
+) -> Result<ResidentGpuFrame> {
+    let work_reservation = reservations.try_reserve(
+        MemoryReservationRequest::new(
+            ReservationKind::OperatorOutput,
+            input.reservation.bytes(),
+            reservations.budget(),
+        )
+        .with_memory_boundary(stage)
+        .with_node_id(node_id)
+        .with_stage(stage)
+        .with_attempt(1, 1),
+        metrics,
+    )?;
+    let token = if use_budget_token {
+        match execution_budget_token_for_boundary(
+            context,
+            reservations.available_bytes_including(&work_reservation),
+            stage,
+            "cudf_query_engine.bounded_generic.budget_token",
+            "failed to create bounded native generic operator budget token",
+        ) {
+            Ok(token) => Some(token),
+            Err(error) => {
+                reservations.release(work_reservation);
+                reservations.release(input.reservation);
+                return Err(error.with_fact_if_absent("node_id", node_id));
+            },
+        }
+    } else {
+        None
     };
-    execution_budget_token_for_boundary(context, device_budget_bytes, budget_boundary, operation, message)
-        .map_err(|error| error.with_fact_if_absent("node_id", node_id))
+    let result = execute(context, input.frame, token.as_ref(), metrics);
+    let frame = match result {
+        Ok(frame) => frame,
+        Err(error) => {
+            reservations.release(work_reservation);
+            reservations.release(input.reservation);
+            return Err(error.with_fact_if_absent("node_id", node_id));
+        },
+    };
+    let output_bytes = match observe_device_memory_bytes(&frame, metrics) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            reservations.release(work_reservation);
+            reservations.release(input.reservation);
+            return Err(error.with_fact_if_absent("node_id", node_id));
+        },
+    };
+    let output_reservation = match reservations.try_reserve(
+        MemoryReservationRequest::new(ReservationKind::OperatorOutput, output_bytes, reservations.budget())
+            .with_memory_boundary(output_boundary)
+            .with_node_id(node_id)
+            .with_stage(stage)
+            .with_attempt(1, 1),
+        metrics,
+    ) {
+        Ok(reservation) => reservation,
+        Err(error) => {
+            reservations.release(work_reservation);
+            reservations.release(input.reservation);
+            return Err(error);
+        },
+    };
+    reservations.release(work_reservation);
+    reservations.release(input.reservation);
+    Ok(ResidentGpuFrame { frame, reservation: output_reservation })
 }
 
 fn bounded_generic_node_kind(node: &PlanNode) -> &'static str {

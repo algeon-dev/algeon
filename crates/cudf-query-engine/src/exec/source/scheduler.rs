@@ -10,6 +10,7 @@ pub(in crate::exec) struct ScheduledLocalParquetRead {
     chunk: SourceChunk,
     reservation: ActiveReservation,
     handle: JoinHandle<ScheduledLocalParquetReadResult>,
+    budget_boundary: &'static str,
     prefetch: bool,
 }
 
@@ -43,11 +44,15 @@ impl ScheduledLocalParquetRead {
                 read_local_parquet_chunk(&context, &source, &thread_chunk, budget_bytes, budget_boundary, &mut metrics);
             ScheduledLocalParquetReadResult { frame, metrics }
         });
-        Self { chunk, reservation, handle, prefetch }
+        Self { chunk, reservation, handle, budget_boundary, prefetch }
     }
 
     pub(in crate::exec) fn is_prefetch(&self) -> bool {
         self.prefetch
+    }
+
+    pub(in crate::exec) fn budget_boundary(&self) -> &'static str {
+        self.budget_boundary
     }
 
     pub(in crate::exec) fn finish(

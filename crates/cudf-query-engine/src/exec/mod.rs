@@ -58,8 +58,8 @@ use crate::{
         ReservationKind, RetryFacts,
     },
     source::{
-        ByteRangeDisposition, LocalParquetFile, LocalParquetSource, PartitionColumn, PartitionColumnDisposition,
-        SchemaMappingDisposition, ZERO_COLUMN_COUNT_COLUMN, ZeroColumnCountDisposition,
+        ByteRangeDisposition, GpuResidentSource, LocalParquetFile, LocalParquetSource, PartitionColumn,
+        PartitionColumnDisposition, SchemaMappingDisposition, ZERO_COLUMN_COUNT_COLUMN, ZeroColumnCountDisposition,
     },
 };
 

@@ -51,7 +51,7 @@ fn bounded_native_query_executes_chunked_grouped_sum_and_final_merge() {
             max_retry_attempts: 1,
             min_retry_chunk_row_groups: 1,
         })
-        .with_source_scheduler_policy(SourceSchedulerPolicy::new(2))
+        .with_source_scheduler_policy(SourceSchedulerPolicy::new(3))
         .build()
         .unwrap();
     let result = execute_query_plan(&context, &plan).unwrap();
@@ -64,6 +64,16 @@ fn bounded_native_query_executes_chunked_grouped_sum_and_final_merge() {
     assert_eq!(metrics.source_read_prefetches_completed, 2);
     assert_eq!(metrics.source_read_prefetches_skipped, 0);
     assert_eq!(metrics.source_read_prefetches_abandoned, 0);
+    let first_chunk_operator = metrics
+        .reservation_events
+        .iter()
+        .position(|event| event.outcome.as_str() == "granted" && event.memory_boundary == "chunk_operator")
+        .expect("chunk operator reservation should be recorded");
+    let prefetches_before_first_operator = metrics.reservation_events[..first_chunk_operator]
+        .iter()
+        .filter(|event| event.outcome.as_str() == "granted" && event.memory_boundary == "source_chunk_prefetch")
+        .count();
+    assert_eq!(prefetches_before_first_operator, 2);
     assert_eq!(metrics.row_groups_planned, 3);
     assert_eq!(metrics.row_groups_committed, 3);
     assert_eq!(metrics.partial_aggregate_count, 3);

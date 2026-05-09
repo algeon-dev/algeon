@@ -1,7 +1,29 @@
+use std::collections::VecDeque;
+
 use super::{
     super::source::{ScheduledLocalParquetRead, ScheduledLocalParquetReadOutput, read_local_parquet_chunk},
     *,
 };
+
+#[derive(Debug, Clone, Copy)]
+pub(in crate::exec::bounded) struct SourceReadSchedulerBoundaries {
+    required: &'static str,
+    prefetch: &'static str,
+}
+
+impl SourceReadSchedulerBoundaries {
+    pub(in crate::exec::bounded) const fn new(required: &'static str, prefetch: &'static str) -> Self {
+        Self { required, prefetch }
+    }
+
+    const fn required(self) -> &'static str {
+        self.required
+    }
+
+    const fn prefetch(self) -> &'static str {
+        self.prefetch
+    }
+}
 
 pub(super) fn execute_bounded_chunk_with_retry(
     context: &ExecutionContext,
@@ -51,36 +73,30 @@ pub(super) fn execute_bounded_chunks_with_source_scheduler(
     }
 
     let mut partials = Vec::with_capacity(chunks.len());
-    let mut pending = Some(start_required_scheduled_source_read(
+    let mut queue = OrderedSourceReadQueue::start(
         context,
         bounded.source,
-        &chunks[0],
+        chunks,
         reservations,
         metrics,
-        1,
         max_attempts,
-    )?);
+        context.source_scheduler_policy().max_source_reads_in_flight(),
+    )?;
 
     for (index, chunk) in chunks.iter().enumerate() {
         let scheduled =
-            pending.take().expect("source scheduler should always have a current read before processing a chunk");
+            queue.pop_front().expect("source scheduler should always have a current read before processing a chunk");
         let source = match finish_scheduled_source_read(scheduled, reservations, metrics, 1, max_attempts) {
             Ok(source) => source,
             Err(error) if is_prefetch_chunk_error(&error) && is_retryable_chunk_error(&error) => {
                 metrics.record_source_read_prefetch_abandoned();
+                queue.abandon_all(index + 1, reservations, metrics);
                 partials.extend(execute_bounded_chunk_with_retry(context, bounded, chunk, reservations, metrics)?);
-                pending = start_next_required_read(
-                    context,
-                    bounded.source,
-                    chunks,
-                    index + 1,
-                    reservations,
-                    metrics,
-                    max_attempts,
-                )?;
+                queue.ensure_current_required(context, bounded.source, chunks, reservations, metrics, max_attempts)?;
                 continue;
             },
             Err(error) if is_retryable_chunk_error(&error) => {
+                queue.abandon_all(index + 1, reservations, metrics);
                 partials.extend(retry_after_chunk_error(
                     context,
                     bounded,
@@ -92,21 +108,12 @@ pub(super) fn execute_bounded_chunks_with_source_scheduler(
                     max_attempts,
                     min_retry_chunk_row_groups,
                 )?);
-                pending = start_next_required_read(
-                    context,
-                    bounded.source,
-                    chunks,
-                    index + 1,
-                    reservations,
-                    metrics,
-                    max_attempts,
-                )?;
+                queue.ensure_current_required(context, bounded.source, chunks, reservations, metrics, max_attempts)?;
                 continue;
             },
             Err(error) => return Err(error),
         };
 
-        let mut next_prefetch = None;
         let result = execute_bounded_chunk_operator_from_source(
             context,
             bounded,
@@ -116,25 +123,14 @@ pub(super) fn execute_bounded_chunks_with_source_scheduler(
             1,
             max_attempts,
             |reservations, metrics| {
-                next_prefetch = try_start_optional_scheduled_source_read(
-                    context,
-                    bounded.source,
-                    chunks.get(index + 1),
-                    reservations,
-                    metrics,
-                    1,
-                    max_attempts,
-                )?;
-                Ok(())
+                queue.fill_optional(context, bounded.source, chunks, reservations, metrics, max_attempts)
             },
         );
 
         match result {
             Ok(partial) => partials.push(partial),
             Err(error) if is_retryable_chunk_error(&error) => {
-                if let Some(prefetch) = next_prefetch.take() {
-                    prefetch.abandon(reservations, metrics);
-                }
+                queue.abandon_all(index + 1, reservations, metrics);
                 partials.extend(retry_after_chunk_error(
                     context,
                     bounded,
@@ -146,47 +142,491 @@ pub(super) fn execute_bounded_chunks_with_source_scheduler(
                     max_attempts,
                     min_retry_chunk_row_groups,
                 )?);
+                queue.ensure_current_required(context, bounded.source, chunks, reservations, metrics, max_attempts)?;
             },
             Err(error) => {
-                if let Some(prefetch) = next_prefetch.take() {
-                    prefetch.abandon(reservations, metrics);
-                }
+                queue.abandon_all(index + 1, reservations, metrics);
                 return Err(error);
             },
         }
-
-        pending = match next_prefetch {
-            Some(prefetch) => Some(prefetch),
-            None => start_next_required_read(
-                context,
-                bounded.source,
-                chunks,
-                index + 1,
-                reservations,
-                metrics,
-                max_attempts,
-            )?,
-        };
+        queue.ensure_current_required(context, bounded.source, chunks, reservations, metrics, max_attempts)?;
     }
 
     Ok(partials)
 }
 
-fn start_next_required_read(
+pub(in crate::exec::bounded) fn read_local_parquet_chunks_ordered(
     context: &ExecutionContext,
     source: &LocalParquetSource,
     chunks: &[SourceChunk],
-    index: usize,
     reservations: &mut ReservationTracker,
     metrics: &mut QueryMetrics,
-    max_attempts: usize,
-) -> Result<Option<ScheduledLocalParquetRead>> {
-    chunks
-        .get(index)
-        .map(|chunk| {
-            start_required_scheduled_source_read(context, source, chunk, reservations, metrics, 1, max_attempts)
-        })
-        .transpose()
+    boundaries: SourceReadSchedulerBoundaries,
+) -> Result<Vec<ScheduledLocalParquetReadOutput>> {
+    if !context.source_scheduler_policy().enables_prefetch() || chunks.len() <= 1 {
+        return read_local_parquet_chunks_serial(context, source, chunks, reservations, metrics, boundaries);
+    }
+
+    read_local_parquet_chunks_with_ordered_scheduler(context, source, chunks, reservations, metrics, boundaries)
+}
+
+pub(in crate::exec::bounded) fn concatenate_source_read_outputs(
+    context: &ExecutionContext,
+    node_id: NodeId,
+    mut chunks: Vec<ScheduledLocalParquetReadOutput>,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+    memory_boundary: &'static str,
+    operation: &'static str,
+    message: &'static str,
+) -> Result<ResidentGpuFrame> {
+    if chunks.len() == 1 {
+        let ScheduledLocalParquetReadOutput { frame, reservation, .. } =
+            chunks.pop().expect("single source chunk checked");
+        return Ok(ResidentGpuFrame { frame, reservation });
+    }
+
+    let output_reservation_bytes =
+        chunks.iter().fold(0u64, |total, chunk| total.saturating_add(chunk.reservation.bytes()));
+    let mut output_reservation = match reservations.try_reserve(
+        MemoryReservationRequest::new(ReservationKind::SourceRead, output_reservation_bytes, reservations.budget())
+            .with_memory_boundary(memory_boundary)
+            .with_node_id(node_id)
+            .with_stage(memory_boundary)
+            .with_attempt(1, 1),
+        metrics,
+    ) {
+        Ok(reservation) => reservation,
+        Err(error) => {
+            release_source_read_outputs_reverse(reservations, chunks);
+            return Err(error);
+        },
+    };
+
+    let mut input_reservations = Vec::with_capacity(chunks.len());
+    let mut frames = Vec::with_capacity(chunks.len());
+    for chunk in chunks {
+        frames.push(chunk.frame.into_frame());
+        input_reservations.push(chunk.reservation);
+    }
+    let chunk_count = input_reservations.len();
+    let first_frame = frames.remove(0);
+    let rest_frame_refs = frames.iter().collect::<Vec<_>>();
+    let overrides = execution_overrides(context);
+    let timer = Instant::now();
+    let output = match first_frame.with_execution(&overrides).concat_many(&rest_frame_refs) {
+        Ok(output) => output,
+        Err(error) => {
+            drop(rest_frame_refs);
+            drop(frames);
+            drop(first_frame);
+            release_source_reservations_reverse(reservations, input_reservations);
+            reservations.release(output_reservation);
+            return Err(QueryError::from_cudf(operation, message, error)
+                .with_fact("node_id", node_id)
+                .with_fact("chunk_count", chunk_count));
+        },
+    };
+    metrics.operator_time += timer.elapsed();
+
+    let output_frame = GpuDataFrame::new(output);
+    let output_bytes = match observe_device_memory_bytes(&output_frame, metrics) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            drop(output_frame);
+            drop(rest_frame_refs);
+            drop(frames);
+            drop(first_frame);
+            release_source_reservations_reverse(reservations, input_reservations);
+            reservations.release(output_reservation);
+            return Err(error);
+        },
+    };
+    if output_bytes > output_reservation.bytes() {
+        let delta = output_bytes.saturating_sub(output_reservation.bytes());
+        if let Err(error) = reservations.try_grow(
+            &mut output_reservation,
+            MemoryReservationRequest::new(ReservationKind::SourceRead, delta, reservations.budget())
+                .with_memory_boundary(memory_boundary)
+                .with_node_id(node_id)
+                .with_stage(memory_boundary)
+                .with_attempt(1, 1),
+            metrics,
+        ) {
+            drop(output_frame);
+            drop(rest_frame_refs);
+            drop(frames);
+            drop(first_frame);
+            release_source_reservations_reverse(reservations, input_reservations);
+            reservations.release(output_reservation);
+            return Err(error);
+        }
+    }
+    drop(rest_frame_refs);
+    drop(frames);
+    drop(first_frame);
+    release_source_reservations_reverse(reservations, input_reservations);
+    Ok(ResidentGpuFrame { frame: output_frame, reservation: output_reservation })
+}
+
+fn read_local_parquet_chunks_serial(
+    context: &ExecutionContext,
+    source: &LocalParquetSource,
+    chunks: &[SourceChunk],
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+    boundaries: SourceReadSchedulerBoundaries,
+) -> Result<Vec<ScheduledLocalParquetReadOutput>> {
+    let mut outputs = Vec::with_capacity(chunks.len());
+    for chunk in chunks {
+        metrics.record_source_chunk_attempt();
+        let requested_bytes = chunk_requested_bytes(context.memory_control_policy(), chunk);
+        let source_request = chunk_reservation_request(
+            ReservationKind::SourceRead,
+            boundaries.required(),
+            requested_bytes,
+            reservations.budget(),
+            chunk,
+            1,
+            1,
+        );
+        let reservation = match reservations.try_reserve(source_request, metrics) {
+            Ok(reservation) => reservation,
+            Err(error) => {
+                release_source_read_outputs_reverse(reservations, outputs);
+                return Err(error);
+            },
+        };
+        let source_token_budget = reservations.available_bytes_including(&reservation);
+        let frame =
+            match read_local_parquet_chunk(context, source, chunk, source_token_budget, boundaries.required(), metrics)
+            {
+                Ok(frame) => frame,
+                Err(error) => {
+                    reservations.release(reservation);
+                    release_source_read_outputs_reverse(reservations, outputs);
+                    return Err(error);
+                },
+            };
+        let mut output =
+            ScheduledLocalParquetReadOutput { chunk: chunk.clone(), frame, reservation, observed_bytes: 0 };
+        output.observed_bytes = match grow_source_reservation_to_observed(
+            &output.frame,
+            &mut output.reservation,
+            reservations,
+            &output.chunk,
+            metrics,
+            boundaries.required(),
+            1,
+            1,
+        ) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                drop(output.frame);
+                reservations.release(output.reservation);
+                release_source_read_outputs_reverse(reservations, outputs);
+                return Err(error);
+            },
+        };
+        metrics.record_source_chunk_commit(chunk.row_group_count() as u64);
+        outputs.push(output);
+    }
+    Ok(outputs)
+}
+
+fn read_local_parquet_chunks_with_ordered_scheduler(
+    context: &ExecutionContext,
+    source: &LocalParquetSource,
+    chunks: &[SourceChunk],
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+    boundaries: SourceReadSchedulerBoundaries,
+) -> Result<Vec<ScheduledLocalParquetReadOutput>> {
+    let mut queue = OrderedSourceReadQueue::start_with_boundaries(
+        context,
+        source,
+        chunks,
+        reservations,
+        metrics,
+        1,
+        context.source_scheduler_policy().max_source_reads_in_flight(),
+        boundaries,
+    )?;
+    let mut outputs = Vec::with_capacity(chunks.len());
+    for (index, _chunk) in chunks.iter().enumerate() {
+        let scheduled =
+            queue.pop_front().expect("source scheduler should always have a current read before processing a chunk");
+        let output = match finish_ordered_scheduled_source_read(scheduled, reservations, metrics) {
+            Ok(output) => output,
+            Err(error) => {
+                queue.abandon_all(index + 1, reservations, metrics);
+                release_source_read_outputs_reverse(reservations, outputs);
+                return Err(error);
+            },
+        };
+        metrics.record_source_chunk_commit(output.chunk.row_group_count() as u64);
+        outputs.push(output);
+        if let Err(error) =
+            queue.fill_optional_with_boundaries(context, source, chunks, reservations, metrics, 1, boundaries)
+        {
+            queue.abandon_all(index + 1, reservations, metrics);
+            release_source_read_outputs_reverse(reservations, outputs);
+            return Err(error);
+        }
+        if queue.pending.is_empty()
+            && index + 1 < chunks.len()
+            && let Err(error) = queue.ensure_current_required_with_boundary(
+                context,
+                source,
+                chunks,
+                reservations,
+                metrics,
+                1,
+                boundaries,
+            )
+        {
+            release_source_read_outputs_reverse(reservations, outputs);
+            return Err(error);
+        }
+    }
+    Ok(outputs)
+}
+
+fn finish_ordered_scheduled_source_read(
+    scheduled: ScheduledLocalParquetRead,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+) -> Result<ScheduledLocalParquetReadOutput> {
+    let is_prefetch = scheduled.is_prefetch();
+    let memory_boundary = scheduled.budget_boundary();
+    let mut output = scheduled.finish(reservations, metrics)?;
+    output.observed_bytes = grow_source_reservation_to_observed(
+        &output.frame,
+        &mut output.reservation,
+        reservations,
+        &output.chunk,
+        metrics,
+        memory_boundary,
+        1,
+        1,
+    )?;
+    if is_prefetch {
+        metrics.record_source_read_prefetch_completed();
+    }
+    Ok(output)
+}
+
+fn release_source_read_outputs_reverse(
+    reservations: &mut ReservationTracker,
+    mut chunks: Vec<ScheduledLocalParquetReadOutput>,
+) {
+    while let Some(chunk) = chunks.pop() {
+        drop(chunk.frame);
+        reservations.release(chunk.reservation);
+    }
+}
+
+fn release_source_reservations_reverse(reservations: &mut ReservationTracker, mut active: Vec<ActiveReservation>) {
+    while let Some(reservation) = active.pop() {
+        reservations.release(reservation);
+    }
+}
+
+struct OrderedSourceReadQueue {
+    pending: VecDeque<ScheduledLocalParquetRead>,
+    next_chunk_index: usize,
+    max_in_flight: usize,
+}
+
+impl OrderedSourceReadQueue {
+    fn start(
+        context: &ExecutionContext,
+        source: &LocalParquetSource,
+        chunks: &[SourceChunk],
+        reservations: &mut ReservationTracker,
+        metrics: &mut QueryMetrics,
+        max_attempts: usize,
+        max_in_flight: usize,
+    ) -> Result<Self> {
+        let mut queue = Self { pending: VecDeque::new(), next_chunk_index: 0, max_in_flight: max_in_flight.max(1) };
+        queue.ensure_current_required(context, source, chunks, reservations, metrics, max_attempts)?;
+        queue.fill_optional(context, source, chunks, reservations, metrics, max_attempts)?;
+        Ok(queue)
+    }
+
+    fn start_with_boundaries(
+        context: &ExecutionContext,
+        source: &LocalParquetSource,
+        chunks: &[SourceChunk],
+        reservations: &mut ReservationTracker,
+        metrics: &mut QueryMetrics,
+        max_attempts: usize,
+        max_in_flight: usize,
+        boundaries: SourceReadSchedulerBoundaries,
+    ) -> Result<Self> {
+        let mut queue = Self { pending: VecDeque::new(), next_chunk_index: 0, max_in_flight: max_in_flight.max(1) };
+        queue.ensure_current_required_with_boundary(
+            context,
+            source,
+            chunks,
+            reservations,
+            metrics,
+            max_attempts,
+            boundaries,
+        )?;
+        queue.fill_optional_with_boundaries(
+            context,
+            source,
+            chunks,
+            reservations,
+            metrics,
+            max_attempts,
+            boundaries,
+        )?;
+        Ok(queue)
+    }
+
+    fn pop_front(&mut self) -> Option<ScheduledLocalParquetRead> {
+        self.pending.pop_front()
+    }
+
+    fn ensure_current_required(
+        &mut self,
+        context: &ExecutionContext,
+        source: &LocalParquetSource,
+        chunks: &[SourceChunk],
+        reservations: &mut ReservationTracker,
+        metrics: &mut QueryMetrics,
+        max_attempts: usize,
+    ) -> Result<()> {
+        if self.pending.is_empty()
+            && let Some(chunk) = chunks.get(self.next_chunk_index)
+        {
+            self.pending.push_back(start_required_scheduled_source_read(
+                context,
+                source,
+                chunk,
+                reservations,
+                metrics,
+                1,
+                max_attempts,
+            )?);
+            self.next_chunk_index += 1;
+        }
+        Ok(())
+    }
+
+    fn ensure_current_required_with_boundary(
+        &mut self,
+        context: &ExecutionContext,
+        source: &LocalParquetSource,
+        chunks: &[SourceChunk],
+        reservations: &mut ReservationTracker,
+        metrics: &mut QueryMetrics,
+        max_attempts: usize,
+        boundaries: SourceReadSchedulerBoundaries,
+    ) -> Result<()> {
+        if self.pending.is_empty()
+            && let Some(chunk) = chunks.get(self.next_chunk_index)
+        {
+            self.pending.push_back(start_scheduled_source_read(
+                context,
+                source,
+                chunk,
+                reservations,
+                metrics,
+                chunk_requested_bytes(context.memory_control_policy(), chunk),
+                boundaries.required(),
+                1,
+                max_attempts,
+                false,
+                false,
+            )?);
+            self.next_chunk_index += 1;
+        }
+        Ok(())
+    }
+
+    fn fill_optional(
+        &mut self,
+        context: &ExecutionContext,
+        source: &LocalParquetSource,
+        chunks: &[SourceChunk],
+        reservations: &mut ReservationTracker,
+        metrics: &mut QueryMetrics,
+        max_attempts: usize,
+    ) -> Result<()> {
+        while self.pending.len() < self.max_in_flight {
+            let Some(chunk) = chunks.get(self.next_chunk_index) else {
+                break;
+            };
+            let Some(prefetch) = try_start_optional_scheduled_source_read(
+                context,
+                source,
+                Some(chunk),
+                reservations,
+                metrics,
+                1,
+                max_attempts,
+            )?
+            else {
+                break;
+            };
+            self.pending.push_back(prefetch);
+            self.next_chunk_index += 1;
+        }
+        Ok(())
+    }
+
+    fn fill_optional_with_boundaries(
+        &mut self,
+        context: &ExecutionContext,
+        source: &LocalParquetSource,
+        chunks: &[SourceChunk],
+        reservations: &mut ReservationTracker,
+        metrics: &mut QueryMetrics,
+        max_attempts: usize,
+        boundaries: SourceReadSchedulerBoundaries,
+    ) -> Result<()> {
+        while self.pending.len() < self.max_in_flight {
+            let Some(chunk) = chunks.get(self.next_chunk_index) else {
+                break;
+            };
+            let requested_bytes = prefetch_requested_bytes(context.memory_control_policy(), chunk);
+            if !reservations.can_reserve(requested_bytes) {
+                metrics.record_source_read_prefetch_skipped();
+                break;
+            }
+            metrics.record_source_read_prefetch_started();
+            self.pending.push_back(start_scheduled_source_read(
+                context,
+                source,
+                chunk,
+                reservations,
+                metrics,
+                requested_bytes,
+                boundaries.prefetch(),
+                1,
+                max_attempts,
+                true,
+                true,
+            )?);
+            self.next_chunk_index += 1;
+        }
+        Ok(())
+    }
+
+    fn abandon_all(
+        &mut self,
+        next_chunk_index: usize,
+        reservations: &mut ReservationTracker,
+        metrics: &mut QueryMetrics,
+    ) {
+        while let Some(prefetch) = self.pending.pop_back() {
+            prefetch.abandon(reservations, metrics);
+        }
+        self.next_chunk_index = next_chunk_index;
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -210,6 +650,7 @@ fn start_required_scheduled_source_read(
         "source_chunk_read",
         attempt,
         max_attempts,
+        false,
         false,
     )
 }
@@ -244,6 +685,7 @@ fn try_start_optional_scheduled_source_read(
         attempt,
         max_attempts,
         true,
+        true,
     )
     .map(Some)
 }
@@ -260,6 +702,7 @@ fn start_scheduled_source_read(
     attempt: usize,
     max_attempts: usize,
     strict_token_budget: bool,
+    prefetch: bool,
 ) -> Result<ScheduledLocalParquetRead> {
     metrics.record_source_chunk_attempt();
     let request = chunk_reservation_request(
@@ -281,7 +724,7 @@ fn start_scheduled_source_read(
         reservation,
         source_token_budget,
         budget_boundary,
-        budget_boundary == "source_chunk_prefetch",
+        prefetch,
     ))
 }
 
@@ -293,6 +736,7 @@ fn finish_scheduled_source_read(
     max_attempts: usize,
 ) -> Result<ScheduledLocalParquetReadOutput> {
     let is_prefetch = scheduled.is_prefetch();
+    let memory_boundary = scheduled.budget_boundary();
     let mut source = scheduled.finish(reservations, metrics)?;
     source.observed_bytes = grow_source_reservation_to_observed(
         &source.frame,
@@ -300,6 +744,7 @@ fn finish_scheduled_source_read(
         reservations,
         &source.chunk,
         metrics,
+        memory_boundary,
         attempt,
         max_attempts,
     )?;
@@ -449,6 +894,7 @@ fn read_bounded_chunk_source(
         reservations,
         &output.chunk,
         metrics,
+        "source_chunk_read",
         attempt,
         max_attempts,
     )?;
@@ -573,13 +1019,14 @@ fn grow_source_reservation_to_observed(
     reservations: &mut ReservationTracker,
     chunk: &SourceChunk,
     metrics: &mut QueryMetrics,
+    memory_boundary: &'static str,
     attempt: usize,
     max_attempts: usize,
 ) -> Result<u64> {
     let source_observed_bytes = match observe_device_memory_bytes(frame, metrics) {
         Ok(bytes) => bytes,
         Err(error) => {
-            return Err(attach_chunk_resource_facts(error, chunk, "source_chunk_read", attempt, max_attempts, metrics));
+            return Err(attach_chunk_resource_facts(error, chunk, memory_boundary, attempt, max_attempts, metrics));
         },
     };
     if source_observed_bytes <= source_reservation.bytes() {
@@ -589,7 +1036,7 @@ fn grow_source_reservation_to_observed(
     let source_delta = source_observed_bytes.saturating_sub(source_reservation.bytes());
     let grow_request = chunk_reservation_request(
         ReservationKind::SourceRead,
-        "source_chunk_read",
+        memory_boundary,
         source_delta,
         reservations.budget(),
         chunk,
@@ -613,7 +1060,7 @@ pub(super) fn chunk_requested_bytes(policy: MemoryControlPolicy, chunk: &SourceC
         .unwrap_or(fallback)
 }
 
-fn prefetch_requested_bytes(policy: MemoryControlPolicy, chunk: &SourceChunk) -> u64 {
+pub(super) fn prefetch_requested_bytes(policy: MemoryControlPolicy, chunk: &SourceChunk) -> u64 {
     let requested = chunk_requested_bytes(policy, chunk);
     match policy {
         MemoryControlPolicy::Unbounded => requested,
