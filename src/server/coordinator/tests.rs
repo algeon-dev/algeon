@@ -133,6 +133,7 @@ fn cpu_attempt_report(query_id: &str) -> QueryAttemptReport {
         device_ordinal: None,
         admission: None,
         admission_wait: None,
+        composed_schedule: None,
         timestamps: AttemptTimestamps {
             submitted_ns: 1,
             planning_started_ns: Some(2),

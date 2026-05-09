@@ -1,5 +1,7 @@
 //! Public request/snapshot DTOs for query-service admission.
 
+use std::time::Duration;
+
 use serde::Serialize;
 
 use super::*;
@@ -77,6 +79,225 @@ pub struct QueryServiceDeviceAdmissionSnapshot {
     pub process_active_query_slots: usize,
     /// Whether this device currently protects a future slot for a waiter.
     pub has_protection: bool,
+}
+
+/// Caller-facing classification for a failed native admission or execution
+/// attempt. This projection is intentionally policy-neutral: applications
+/// decide whether a capacity result should be queued, shed, or surfaced.
+///
+/// Admission and execution are separate caller boundaries. Use
+/// [`Self::from_error`] for an error returned while an admission is being
+/// attempted, and [`Self::from_execution_error`] after a handle has been
+/// published. The engine does not infer that boundary from a diagnostic
+/// reason or message.
+///
+/// A frontend can keep its own protocol policy at the edge without teaching
+/// the engine about HTTP:
+///
+/// ```text
+/// match QueryAdmissionOutcome::from_error_with_queue_bounds(&error, &queue_bounds) {
+///     Capacity { queued_queries, queue_capacity, max_queue_wait } => {
+///         // Enqueue when the application's wait budget allows it. If its
+///         // own bounded queue is full, return 429. `max_queue_wait` is only
+///         // the engine's rejection bound; it is not a relief-time ETA.
+///         if should_enqueue(queued_queries, queue_capacity, max_queue_wait) {
+///             AppAction::Enqueue
+///         } else {
+///             AppAction::Http429
+///         }
+///     }
+///     CapabilityRejected | InvalidInput => AppAction::Shed,
+///     Cancelled => AppAction::Shed,
+///     ExecutionFailure => AppAction::Http503,
+/// }
+/// ```
+///
+/// `AppAction` and `should_enqueue` belong to the application. The original
+/// [`QueryError`] remains the structured diagnostic source; this enum is only
+/// its stable policy-selection projection.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub enum QueryAdmissionOutcome {
+    /// Bounded capacity is temporarily unavailable.  Queue facts are present
+    /// when the service attached them to the structured error; the configured
+    /// wait bound is supplied by [`Self::from_error_with_queue_bounds`].
+    Capacity { queued_queries: Option<usize>, queue_capacity: Option<usize>, max_queue_wait: Option<Duration> },
+    /// The plan or operator is permanently outside the supported capability
+    /// catalogue.
+    CapabilityRejected,
+    /// The request, plan, or materialized input is invalid for this operation.
+    InvalidInput,
+    /// Caller cancellation or deadline stopped the attempt before completion.
+    Cancelled,
+    /// A dependency, invariant, or native execution failure occurred after
+    /// admission.  No retry policy is implied by this label.
+    ExecutionFailure,
+}
+
+impl QueryAdmissionOutcome {
+    /// Classifies an error returned while admission is being attempted.
+    ///
+    /// This method does not inspect diagnostic reason strings. A caller that
+    /// has already published a handle must use [`Self::from_execution_error`]
+    /// instead, even when the execution error has a resource-exhaustion code.
+    pub fn from_error(error: &QueryError) -> Self {
+        Self::from_error_with_optional_queue_bounds(error, None)
+    }
+
+    /// Classifies a structured native error and attaches the service-owned
+    /// queue wait bound when the caller has the corresponding configuration.
+    pub fn from_error_with_queue_bounds(error: &QueryError, queue_bounds: &QueueBounds) -> Self {
+        Self::from_error_with_optional_queue_bounds(error, Some(queue_bounds))
+    }
+
+    /// Classifies an error observed after admission published a handle.
+    ///
+    /// Execution-time resource errors are deliberately not projected as
+    /// admission capacity: the service cannot ask the caller to queue an
+    /// attempt that has already started. Cancellation remains cancellation;
+    /// every other post-admission error is an execution failure.
+    pub fn from_execution_error(error: &QueryError) -> Self {
+        if error.code() == QueryErrorCode::Cancelled { Self::Cancelled } else { Self::ExecutionFailure }
+    }
+
+    fn from_error_with_optional_queue_bounds(error: &QueryError, queue_bounds: Option<&QueueBounds>) -> Self {
+        match error.code() {
+            QueryErrorCode::ServiceOverloaded
+            | QueryErrorCode::MemoryReservationFailed
+            | QueryErrorCode::CudfResourceExhausted => Self::Capacity {
+                queued_queries: fact_usize(error, "queued_queries"),
+                queue_capacity: fact_usize(error, "max_waiters")
+                    .or_else(|| queue_bounds.map(|bounds| bounds.max_waiters)),
+                max_queue_wait: queue_bounds.map(|bounds| bounds.max_wait),
+            },
+            QueryErrorCode::UnsupportedPlanShape
+            | QueryErrorCode::UnsupportedOperator
+            | QueryErrorCode::UnsupportedExpression
+            | QueryErrorCode::UnsupportedType
+            | QueryErrorCode::CudfUnsupported => Self::CapabilityRejected,
+            QueryErrorCode::InvalidPlan
+            | QueryErrorCode::InvalidAttemptCorrelation
+            | QueryErrorCode::GraphInputInvalid
+            | QueryErrorCode::CudfInvalidInput => Self::InvalidInput,
+            QueryErrorCode::Cancelled => Self::Cancelled,
+            QueryErrorCode::CudfTemporaryFailure
+            | QueryErrorCode::CudfPersistentFailure
+            | QueryErrorCode::CudfDependencyFailure
+            | QueryErrorCode::SourceAccessDenied
+            | QueryErrorCode::SourceUnauthenticated
+            | QueryErrorCode::SourceObjectNotFound
+            | QueryErrorCode::SourceTemporaryFailure
+            | QueryErrorCode::CudfInvariantViolation
+            | QueryErrorCode::SizeOverflow
+            | QueryErrorCode::HostMaterializationLimitExceeded
+            | QueryErrorCode::Internal => Self::ExecutionFailure,
+        }
+    }
+
+    /// Returns the queue depth attached to a capacity result, if known.
+    pub fn queued_queries(&self) -> Option<usize> {
+        match self {
+            Self::Capacity { queued_queries, .. } => *queued_queries,
+            _ => None,
+        }
+    }
+
+    /// Returns the configured queue capacity attached to a capacity result,
+    /// if the rejection carried it.
+    pub fn queue_capacity(&self) -> Option<usize> {
+        match self {
+            Self::Capacity { queue_capacity, .. } => *queue_capacity,
+            _ => None,
+        }
+    }
+
+    /// Returns the configured maximum queue wait when supplied by the caller.
+    pub fn max_queue_wait(&self) -> Option<Duration> {
+        match self {
+            Self::Capacity { max_queue_wait, .. } => *max_queue_wait,
+            _ => None,
+        }
+    }
+}
+
+fn fact_usize(error: &QueryError, key: &str) -> Option<usize> {
+    error.fact_value(key)?.parse().ok()
+}
+
+#[cfg(test)]
+mod outcome_tests {
+    use super::*;
+
+    fn error(code: QueryErrorCode) -> QueryError {
+        QueryError::new(code, "nexus_query_engine.test", "test error")
+    }
+
+    #[test]
+    fn capacity_projection_preserves_queue_facts_and_configured_wait_bound() {
+        let error = error(QueryErrorCode::ServiceOverloaded)
+            .with_fact("reason", "admission_queue_full")
+            .with_fact("queued_queries", 7)
+            .with_fact("max_waiters", 8);
+        let bounds = QueueBounds { max_waiters: 8, max_wait: Duration::from_secs(11), max_overtakes_per_waiter: 2 };
+
+        let outcome = QueryAdmissionOutcome::from_error_with_queue_bounds(&error, &bounds);
+        assert_eq!(outcome.queued_queries(), Some(7));
+        assert_eq!(outcome.queue_capacity(), Some(8));
+        assert_eq!(outcome.max_queue_wait(), Some(Duration::from_secs(11)));
+        assert!(matches!(outcome, QueryAdmissionOutcome::Capacity { .. }));
+    }
+
+    #[test]
+    fn admission_projection_is_exhaustive_and_does_not_parse_reason_strings() {
+        let cases = [
+            (QueryErrorCode::MemoryReservationFailed, "capacity"),
+            (QueryErrorCode::UnsupportedPlanShape, "capability"),
+            (QueryErrorCode::InvalidPlan, "invalid"),
+            (QueryErrorCode::Cancelled, "cancelled"),
+            (QueryErrorCode::CudfInvariantViolation, "execution"),
+        ];
+        for (code, expected) in cases {
+            let outcome = QueryAdmissionOutcome::from_error(&error(code).with_fact("reason", "unrelated_reason_name"));
+            let actual = match outcome {
+                QueryAdmissionOutcome::Capacity { .. } => "capacity",
+                QueryAdmissionOutcome::CapabilityRejected => "capability",
+                QueryAdmissionOutcome::InvalidInput => "invalid",
+                QueryAdmissionOutcome::Cancelled => "cancelled",
+                QueryAdmissionOutcome::ExecutionFailure => "execution",
+            };
+            assert_eq!(actual, expected, "classification for {code:?}");
+        }
+    }
+
+    #[test]
+    fn capacity_projection_leaves_unknown_queue_metrics_unknown() {
+        let outcome = QueryAdmissionOutcome::from_error(&error(QueryErrorCode::CudfResourceExhausted));
+        assert!(matches!(
+            outcome,
+            QueryAdmissionOutcome::Capacity { queued_queries: None, queue_capacity: None, max_queue_wait: None }
+        ));
+
+        let bounds = QueueBounds { max_waiters: 4, max_wait: Duration::from_secs(3), max_overtakes_per_waiter: 1 };
+        let outcome =
+            QueryAdmissionOutcome::from_error_with_queue_bounds(&error(QueryErrorCode::CudfResourceExhausted), &bounds);
+        assert_eq!(outcome.queued_queries(), None);
+        assert_eq!(outcome.queue_capacity(), Some(4));
+        assert_eq!(outcome.max_queue_wait(), Some(Duration::from_secs(3)));
+    }
+
+    #[test]
+    fn execution_projection_does_not_reclassify_post_admission_resource_errors() {
+        for code in [QueryErrorCode::MemoryReservationFailed, QueryErrorCode::CudfResourceExhausted] {
+            assert_eq!(
+                QueryAdmissionOutcome::from_execution_error(&error(code)),
+                QueryAdmissionOutcome::ExecutionFailure,
+                "post-admission {code:?} is an execution failure"
+            );
+        }
+        assert_eq!(
+            QueryAdmissionOutcome::from_execution_error(&error(QueryErrorCode::Cancelled)),
+            QueryAdmissionOutcome::Cancelled
+        );
+    }
 }
 
 /// Complete request-scoped metadata for one query-service admission attempt.

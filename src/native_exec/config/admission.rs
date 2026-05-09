@@ -50,6 +50,13 @@ impl NexusNativeExecutionConfig {
         self.new_plan_query_admission_ticket_with_fragment_proofs(fragment_proofs, graph_model_ask.as_ref())
     }
 
+    pub(crate) fn new_plan_query_admission_ticket_with_fragment_requirements(
+        &self,
+        fragment_proofs: Vec<QueryPlanCapabilityProof>,
+    ) -> nexus_query_engine::error::Result<Option<Arc<QueryAdmissionTicket>>> {
+        self.new_plan_query_admission_ticket_with_fragment_proofs(fragment_proofs, None)
+    }
+
     fn new_plan_query_admission_ticket_with_fragment_proofs(
         &self,
         fragment_proofs: Vec<QueryPlanCapabilityProof>,

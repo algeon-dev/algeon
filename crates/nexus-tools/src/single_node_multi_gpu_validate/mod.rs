@@ -34,8 +34,10 @@ use crate::ToolResult;
 
 const RUN_PROFILE_SCHEMA: &str = "datafusion_nexus.single_node_multi_gpu.run_profile.v1";
 const RUN_PROFILE_VERSION: u32 = 1;
-const RUN_ARTIFACT_SCHEMA: &str = "datafusion_nexus.single_node_multi_gpu.run_artifact.v2";
-const RUN_ARTIFACT_VERSION: u32 = 2;
+const RUN_ARTIFACT_SCHEMA: &str = "datafusion_nexus.single_node_multi_gpu.run_artifact.v3";
+const RUN_ARTIFACT_VERSION: u32 = 3;
+const COMPOSED_SCHEDULE_SCHEMA: &str = "datafusion_nexus.single_node_multi_gpu.composed_schedule.v1";
+const COMPOSED_SCHEDULE_VERSION: u32 = 1;
 const REDACTION_POLICY: &str = "datafusion_nexus.single_node_multi_gpu.redaction.v1";
 const ARTIFACT_FILE_NAME: &str = "run-artifact.json";
 const MAX_TOOL_VERSION_BYTES: usize = 16 * 1024;

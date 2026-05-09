@@ -9,6 +9,8 @@ use serde::{
     Deserialize, Serialize,
     de::{self, SeqAccess, Visitor},
 };
+
+use crate::harness::StableFnv1a64;
 pub const QUERY_ATTEMPT_REPORT_SCHEMA_V1: &str = "nexus_query_engine.query_attempt_report.v1";
 /// Schema label for the bounded public projection of a sealed attempt report.
 ///
@@ -16,6 +18,9 @@ pub const QUERY_ATTEMPT_REPORT_SCHEMA_V1: &str = "nexus_query_engine.query_attem
 /// events, and other payloads that are not suitable for fixed-cardinality
 /// consumers such as DataFusion metrics and retained Flight control metadata.
 pub const SEALED_ATTEMPT_PROJECTION_SCHEMA_V1: &str = "nexus_query_engine.sealed_attempt_projection.v1";
+/// Schema label for the immutable engine-owned projection of a composed graph
+/// reservation schedule.
+pub const COMPOSED_SCHEDULE_PROJECTION_SCHEMA_V1: &str = "nexus_query_engine.composed_schedule_projection.v1";
 /// Maximum UTF-8 byte length for caller-supplied attempt query correlation.
 pub const MAX_ATTEMPT_QUERY_ID_BYTES: usize = 256;
 /// Maximum UTF-8 byte length for caller-supplied opaque trace context.
@@ -1487,6 +1492,89 @@ pub struct AttemptAdmissionFact {
     pub grant_bytes: u64,
 }
 
+/// One ordered producer occurrence in a composed graph reservation schedule.
+///
+/// `isolated_peak_bytes` is the producer's owner-model peak. `stage_peak_bytes`
+/// includes the attempt-wide fixed bytes and all retained outputs from earlier
+/// occurrences, so a consumer can verify the schedule fold without using
+/// telemetry or reconstructing live allocations.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct AttemptComposedScheduleOccurrence {
+    pub occurrence_id: String,
+    pub execution_scope_fingerprint: String,
+    pub isolated_peak_bytes: u64,
+    pub retained_output_bytes: u64,
+    pub stage_peak_bytes: u64,
+}
+
+/// Immutable engine-owned projection of one admitted composed graph schedule.
+///
+/// This is attached to the sealed attempt report only after admission. The
+/// grant and device fields bind the schedule to the immutable placement that
+/// priced it; the fingerprint covers only deterministic schedule contents, so
+/// the same schedule has the same identity across attempts and devices.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct AttemptComposedScheduleProjection {
+    pub schema: String,
+    pub attempt_id: AttemptId,
+    pub device_ordinal: usize,
+    pub grant_id: u64,
+    pub grant_bytes: u64,
+    pub attempt_wide_fixed_bytes: u64,
+    pub producer_occurrences: Vec<AttemptComposedScheduleOccurrence>,
+    pub consumer_scope_fingerprint: String,
+    pub consumer_additional_peak_bytes: u64,
+    pub consumer_stage_peak_bytes: u64,
+    pub complete_peak_bytes: u64,
+    pub fingerprint: String,
+}
+
+impl AttemptComposedScheduleProjection {
+    /// Verifies that this projection's deterministic fingerprint covers its
+    /// exact schedule contents. Consumers can reject a corrupted or
+    /// contradictory projection without reconstructing admission bytes.
+    pub fn fingerprint_matches_contents(&self) -> bool {
+        self.schema == COMPOSED_SCHEDULE_PROJECTION_SCHEMA_V1
+            && self.fingerprint
+                == Self::fingerprint_for(
+                    self.attempt_wide_fixed_bytes,
+                    &self.producer_occurrences,
+                    &self.consumer_scope_fingerprint,
+                    self.consumer_additional_peak_bytes,
+                    self.consumer_stage_peak_bytes,
+                    self.complete_peak_bytes,
+                )
+    }
+
+    pub(crate) fn fingerprint_for(
+        attempt_wide_fixed_bytes: u64,
+        producer_occurrences: &[AttemptComposedScheduleOccurrence],
+        consumer_scope_fingerprint: &str,
+        consumer_additional_peak_bytes: u64,
+        consumer_stage_peak_bytes: u64,
+        complete_peak_bytes: u64,
+    ) -> String {
+        let mut hasher = StableFnv1a64::new();
+        hasher.update_field(COMPOSED_SCHEDULE_PROJECTION_SCHEMA_V1);
+        hasher.update_field(&attempt_wide_fixed_bytes.to_string());
+        hasher.update_field(&producer_occurrences.len().to_string());
+        for occurrence in producer_occurrences {
+            hasher.update_field(&occurrence.occurrence_id);
+            hasher.update_field(&occurrence.execution_scope_fingerprint);
+            hasher.update_field(&occurrence.isolated_peak_bytes.to_string());
+            hasher.update_field(&occurrence.retained_output_bytes.to_string());
+            hasher.update_field(&occurrence.stage_peak_bytes.to_string());
+        }
+        hasher.update_field(consumer_scope_fingerprint);
+        hasher.update_field(&consumer_additional_peak_bytes.to_string());
+        hasher.update_field(&consumer_stage_peak_bytes.to_string());
+        hasher.update_field(&complete_peak_bytes.to_string());
+        format!("composed-schedule-fnv1a64:{:016x}", hasher.finish())
+    }
+}
+
 /// Final finite-overtake state captured when a queued admission receives its
 /// immutable grant.
 ///
@@ -1537,6 +1625,11 @@ pub struct QueryAttemptReport {
     /// execution path did not retain a queue-backed admission handle; it is
     /// never reconstructed from snapshots after the report is sealed.
     pub admission_wait: Option<AttemptAdmissionWaitFact>,
+    /// Immutable engine-owned composed schedule, when this admitted attempt
+    /// used the composed graph execution contract. Ordinary attempts leave it
+    /// absent; it is never reconstructed from runtime observations.
+    #[serde(default)]
+    pub composed_schedule: Option<AttemptComposedScheduleProjection>,
     pub timestamps: AttemptTimestamps,
     pub cleanup_disposition: AttemptCleanupDisposition,
     /// Exact when `cleanup_failure_count_complete` is true. The lifecycle

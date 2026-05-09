@@ -12,8 +12,8 @@ mod reporting;
 mod requests;
 pub(in crate::runtime::query_service) mod transaction;
 pub use api::{
-    DeviceQuarantineInjection, QueryActivityLease, QueryAdmissionRequest, QueryServiceAdmissionSnapshot,
-    QueryServiceDeviceAdmissionSnapshot,
+    DeviceQuarantineInjection, QueryActivityLease, QueryAdmissionOutcome, QueryAdmissionRequest,
+    QueryServiceAdmissionSnapshot, QueryServiceDeviceAdmissionSnapshot,
 };
 pub(in crate::runtime::query_service::service) use queue::query_service_shutdown_timeout;
 pub(in crate::runtime::query_service) use requests::PlacedAdmissionCommit;

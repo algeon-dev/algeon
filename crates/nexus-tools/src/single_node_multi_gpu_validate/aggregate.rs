@@ -14,7 +14,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::Serialize;
 use serde_json::Value;
 
-use super::{profile::FixtureKind, schedule::SchedulePhase};
+use super::{artifact::ComposedScheduleArtifact, profile::FixtureKind, schedule::SchedulePhase};
 
 /// One attempt's measured outcome, projected from `QueryAttemptReport`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -50,6 +50,10 @@ pub(super) struct AttemptObservation {
     /// It is absent for non-native attempts, attempts that have not reached
     /// their seal point, or an unexpectedly missing native-root projection.
     pub(super) graph_claim_calibration: Option<GraphClaimCalibrationSnapshot>,
+    /// The exact engine-owned composed schedule attached to this sealed report.
+    /// It is retained separately from normal aggregate rows because schedule
+    /// qualification needs its full ordered byte contract.
+    pub(super) composed_schedule: Option<ComposedScheduleArtifact>,
     pub(super) device_ordinal: Option<usize>,
     pub(super) grant_bytes: Option<u64>,
     pub(super) admission_sequence: Option<u64>,
@@ -1917,6 +1921,7 @@ pub(super) const SUCCEEDED_OUTCOME: &str = "succeeded";
 
 /// True when no scenario clause failed. `not_evidenced` clauses are declared
 /// gaps and do not fail the run.
+#[cfg(test)]
 pub(super) fn scenario_clauses_pass(evidence: &ScenarioEvidence) -> bool {
     evidence
         .same_device
@@ -1975,6 +1980,7 @@ mod tests {
             succeeded: true,
             reached_gpu: true,
             graph_claim_calibration: None,
+            composed_schedule: None,
             device_ordinal: Some(ordinal),
             grant_bytes: Some(1024),
             admission_sequence: Some(sequence as u64),

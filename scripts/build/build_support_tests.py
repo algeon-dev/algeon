@@ -101,9 +101,11 @@ def fake_environment(
     graph_runtime = root / "graph runtime"
     cuvs_runtime = root / "cuvs install" / "lib"
     cuda_target_lib = root / "cuda" / "targets" / "x86_64-linux" / "lib"
+    libcudf_rust = cudf_dir / "libcudf_rust.so"
     libcudf = cudf_dir / "libcudf.so"
     rmm = cudf_dir / "librmm.so"
     logger_path = cudf_dir / "librapids_logger.so"
+    write_library(libcudf_rust, b"fake libcudf Rust bridge")
     write_library(libcudf, b"fake libcudf")
     write_library(rmm, b"one rmm build")
     write_library(cuda_target_lib / "libnvtx3interop.so", b"fake nvtx interop")
@@ -134,6 +136,7 @@ def fake_environment(
 
     cudf_values = {
         "runtime-lib-dir": str(cudf_dir),
+        "cudf-rust-runtime-lib": str(libcudf_rust),
         "libcudf-runtime-lib": str(libcudf),
         "rapids-logger-linkage": logger_linkage or ("shared" if logger else "static"),
     }
@@ -164,6 +167,7 @@ def fake_environment(
     if metadata_mode == "direct":
         direct_names = {
             "runtime-lib-dir": "DEP_CUDF_RUST_RUNTIME_LIB_DIR",
+            "cudf-rust-runtime-lib": "DEP_CUDF_RUST_CUDF_RUST_RUNTIME_LIB",
             "libcudf-runtime-lib": "DEP_CUDF_RUST_LIBCUDF_RUNTIME_LIB",
             "rmm-runtime-lib": "DEP_CUDF_RUST_RMM_RUNTIME_LIB",
             "rapids-logger-runtime-lib": "DEP_CUDF_RUST_RAPIDS_LOGGER_RUNTIME_LIB",
@@ -189,6 +193,7 @@ def fake_environment(
     elif metadata_mode == "mixed":
         environment["DEP_CUDF_RUST_METADATA"] = ";".join(f"{key}={value}" for key, value in cudf_values.items())
         environment["DEP_CUDF_RUST_RUNTIME_LIB_DIR"] = str(cudf_dir)
+        environment["DEP_CUDF_RUST_CUDF_RUST_RUNTIME_LIB"] = str(libcudf_rust)
         environment["DEP_CUDF_RUST_LIBCUDF_RUNTIME_LIB"] = str(libcudf)
         if cugraph:
             environment["DEP_CUGRAPH_METADATA"] = f"native-link-dirs={graph_values['native-link-dirs']}"
@@ -217,6 +222,13 @@ def assert_link_target_output(site: InclusionSite, output: str, runtime_dir: Pat
     tracked = f"cargo:rerun-if-changed={site.support_source}"
     if tracked not in output:
         raise AssertionError(f"{site.name}: missing support-source tracking directive {tracked!r}\n{output}")
+
+
+def assert_cudf_rust_runtime_tracking(output: str, runtime_dir: Path) -> None:
+    library = runtime_dir / "libcudf_rust.so"
+    tracked = f"cargo:rerun-if-changed={library}"
+    if tracked not in output:
+        raise AssertionError(f"missing cudf Rust bridge tracking directive {tracked!r}\n{output}")
 
 
 def assert_nvtx3interop_output(site: InclusionSite, output: str, fixture_root: Path) -> None:
@@ -256,6 +268,7 @@ def run_site_scenario(
         f"{site.name} cugraph={cugraph} cuvs={cuvs} metadata={metadata_mode} logger={logger}",
     )
     assert_link_target_output(site, result.stdout, cudf_dir)
+    assert_cudf_rust_runtime_tracking(result.stdout, cudf_dir)
     assert_nvtx3interop_output(site, result.stdout, fixture_root)
     cugraph_tracking = "cargo:rerun-if-env-changed=DEP_CUGRAPH_METADATA"
     if (cugraph_tracking in result.stdout) != cugraph:

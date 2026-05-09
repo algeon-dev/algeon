@@ -547,6 +547,40 @@ impl GraphMemoryModelInput {
     }
 }
 
+/// Typed retained-output contribution from the graph-memory owner.
+///
+/// The retained output is kept as a typed contribution instead of being
+/// recovered from a difference between rounded phase peaks.  That distinction
+/// matters when composing graph producers: a producer's output handle remains
+/// live after its isolated phase and is therefore an independent owner in the
+/// schedule fold.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct GraphMemoryRetainedOutputContribution {
+    bytes: u64,
+    row_count_upper_bound: u64,
+}
+
+impl GraphMemoryRetainedOutputContribution {
+    /// Builds a model-owned retained-output contribution.
+    pub(crate) const fn new(bytes: u64, row_count_upper_bound: u64) -> Self {
+        Self { bytes, row_count_upper_bound }
+    }
+
+    /// Device bytes retained by the producer after its isolated phase.
+    pub const fn bytes(self) -> u64 {
+        self.bytes
+    }
+
+    /// Upper bound on rows represented by the retained producer output.
+    ///
+    /// The row bound is carried with the bytes so an engine-owned consumer
+    /// preflight can price a downstream join without asking an adapter to
+    /// reverse-engineer graph output cardinality.
+    pub const fn row_count_upper_bound(self) -> u64 {
+        self.row_count_upper_bound
+    }
+}
+
 /// Approximate graph memory estimate.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GraphMemoryEstimate {
@@ -582,6 +616,12 @@ pub struct GraphMemoryEstimate {
     pub construction_bytes: u64,
     /// Peak bytes needed by the algorithm after graph construction.
     pub execution_bytes: u64,
+    /// Typed bytes and row-count bound retained by the producer result handle.
+    ///
+    /// This is the owner-calculated `output_bytes` contribution. It is not
+    /// inferred from `requested_bytes` or `execution_bytes`, both of which may
+    /// include rounded workspace and phase terms.
+    pub retained_output_bytes: GraphMemoryRetainedOutputContribution,
     /// Cold native-graph peak estimate. For algorithms with distinct native
     /// lifetime phases this is the phase-aware peak, not a naïve sum of
     /// construction and execution estimates. Admission composes any retained
@@ -609,6 +649,7 @@ enum GraphSourceStageLifetime {
 pub struct GraphMemoryAdmissionEvidence {
     cold_model_requested_bytes: u64,
     warm_model_requested_bytes: u64,
+    retained_output_bytes: GraphMemoryRetainedOutputContribution,
     source_stage_lifetime: GraphSourceStageLifetime,
     phase_peaks: GraphMemoryPhasePeaks,
 }
@@ -647,6 +688,7 @@ impl GraphMemoryAdmissionEvidence {
         Self {
             cold_model_requested_bytes: phase_peaks.graph_peak_bytes(),
             warm_model_requested_bytes: estimate.execution_bytes,
+            retained_output_bytes: estimate.retained_output_bytes,
             source_stage_lifetime: if estimate.edge_normalize_inserted {
                 GraphSourceStageLifetime::SeparateNormalizedInput
             } else {
@@ -671,6 +713,23 @@ impl GraphMemoryAdmissionEvidence {
     /// by public admission request construction or device placement.
     pub fn warm_model_requested_bytes(&self) -> u64 {
         self.warm_model_requested_bytes
+    }
+
+    /// Returns the typed producer output contribution retained through the
+    /// composed consumer phase.
+    pub fn retained_output(&self) -> GraphMemoryRetainedOutputContribution {
+        self.retained_output_bytes
+    }
+
+    /// Returns the retained output bytes without exposing a caller-authored
+    /// byte input path.
+    pub fn retained_output_bytes(&self) -> u64 {
+        self.retained_output_bytes.bytes()
+    }
+
+    /// Returns the model-owned retained output row bound.
+    pub fn retained_output_rows_upper_bound(&self) -> u64 {
+        self.retained_output_bytes.row_count_upper_bound()
     }
 
     /// Composes the model's cold graph peak with the exact source-stage hint
@@ -1193,6 +1252,10 @@ impl GraphMemoryModel {
                 0
             });
         let output_bytes = output_bytes_for_algorithm(spec.algorithm, input, vertex_estimate, pair_rows);
+        let output_row_count_upper_bound =
+            output_row_count_upper_bound_for_algorithm(spec.algorithm, input, vertex_estimate, pair_rows);
+        let retained_output_bytes =
+            GraphMemoryRetainedOutputContribution::new(output_bytes, output_row_count_upper_bound);
         let seed_input = graph_seed_memory_input(&spec.params, vertex_estimate);
         let seed_count = seed_input.map(|seed_input| seed_input.requested_count);
         let seed_mode = seed_input.map(|seed_input| seed_input.mode);
@@ -1253,6 +1316,7 @@ impl GraphMemoryModel {
             data_dependent: class.is_data_dependent(),
             construction_bytes,
             execution_bytes,
+            retained_output_bytes,
             requested_bytes,
         })
     }
@@ -1411,6 +1475,32 @@ fn output_bytes_for_algorithm(
         GraphAlgorithm::Bfs | GraphAlgorithm::Sssp => vertex_estimate.saturating_mul(24),
         GraphAlgorithm::ForceAtlas2 => vertex_estimate.saturating_mul(16),
         _ => vertex_estimate.saturating_mul(16),
+    }
+}
+
+/// Returns the model-owned row bound represented by a graph result.
+///
+/// Every supported graph algorithm emits one result row per vertex/edge/pair
+/// (depending on its output contract).  Keeping this cardinality beside the
+/// retained byte contribution lets an engine-owned consumer proof derive a
+/// downstream output bound without asking an adapter to guess bytes or rows.
+fn output_row_count_upper_bound_for_algorithm(
+    algorithm: GraphAlgorithm,
+    input: GraphMemoryModelInput,
+    vertex_estimate: u64,
+    pair_rows: Option<u64>,
+) -> u64 {
+    match algorithm {
+        GraphAlgorithm::Jaccard | GraphAlgorithm::Sorensen | GraphAlgorithm::Overlap | GraphAlgorithm::Cosine => {
+            pair_rows.unwrap_or(0)
+        },
+        GraphAlgorithm::EdgeBetweennessCentrality | GraphAlgorithm::KCore | GraphAlgorithm::MinimumSpanningTree => {
+            input.input_edges
+        },
+        GraphAlgorithm::Hits | GraphAlgorithm::DegreesAll | GraphAlgorithm::Bfs | GraphAlgorithm::Sssp => {
+            vertex_estimate
+        },
+        _ => vertex_estimate,
     }
 }
 
@@ -2736,8 +2826,8 @@ mod tests {
     use super::*;
     use crate::{
         plan::{
-            GraphBfsParams, GraphConstructionOptions, GraphForceAtlas2Params, GraphSimilarityParams,
-            GraphTriangleCountAllParams, QueryPlanBuilder,
+            GraphBfsParams, GraphConstructionOptions, GraphForceAtlas2Params, GraphPageRankParams,
+            GraphSimilarityParams, GraphTriangleCountAllParams, QueryPlanBuilder,
         },
         source::{LocalParquetFile, LocalParquetSource, SourceNode},
     };
@@ -2881,6 +2971,78 @@ mod tests {
         assert_eq!(estimate.requested_bytes, estimate.construction_bytes.saturating_add(estimate.execution_bytes));
         assert!(estimate.construction_bytes > 0);
         assert!(estimate.execution_bytes < estimate.requested_bytes);
+    }
+
+    #[test]
+    fn graph_memory_evidence_keeps_typed_retained_output_distinct_from_execution_workspace() {
+        let spec = GraphAlgorithmSpec::with_stable_schema(
+            GraphAlgorithm::ForceAtlas2,
+            GraphEdgeColumnBindings::new("src", "dst", Some("weight")),
+            GraphConstructionOptions {
+                directed: false,
+                renumber: true,
+                policy: GraphConstructionPolicy::PythonCugraph,
+            },
+            GraphAlgorithmParams::ForceAtlas2(GraphForceAtlas2Params::default()),
+        );
+        let input = GraphMemoryModelInput {
+            input_edges: 20,
+            vertex_width_bytes: 8,
+            weight_width_bytes: Some(8),
+            vertex_estimate: Some(GraphVertexEstimate::graph_metadata(10)),
+            edge_normalize_inserted: true,
+            ..graph_memory_model_input(20, 8, &spec.edge_columns, true, Some(8))
+        };
+        let estimate = GraphMemoryModel.estimate(&spec, input).unwrap();
+        let evidence = GraphMemoryAdmissionEvidence::from_modeled_estimate(&estimate);
+
+        assert_eq!(estimate.retained_output_bytes.bytes(), 10 * 16);
+        assert_eq!(estimate.retained_output_bytes.row_count_upper_bound(), 10);
+        assert_eq!(evidence.retained_output(), estimate.retained_output_bytes);
+        assert_eq!(evidence.retained_output_bytes(), 10 * 16);
+        assert_eq!(evidence.retained_output_rows_upper_bound(), 10);
+        assert!(estimate.execution_bytes > estimate.retained_output_bytes.bytes());
+        assert_ne!(
+            evidence.retained_output_bytes(),
+            evidence.warm_model_requested_bytes(),
+            "retained output must not be recovered from the rounded execution peak"
+        );
+    }
+
+    #[test]
+    fn graph_memory_source_lifetime_composes_from_owner_evidence() {
+        let base_spec = GraphAlgorithmSpec::with_stable_schema(
+            GraphAlgorithm::PageRank,
+            GraphEdgeColumnBindings::new("src", "dst", Some("weight")),
+            GraphConstructionOptions { directed: true, renumber: true, policy: GraphConstructionPolicy::PythonCugraph },
+            GraphAlgorithmParams::PageRank(GraphPageRankParams::default()),
+        );
+        let source_bytes = 2_048;
+        let shared = GraphMemoryAdmissionEvidence::from_modeled_estimate(
+            &GraphMemoryModel
+                .estimate(&base_spec, graph_memory_model_input(20, 8, &base_spec.edge_columns, true, Some(8)))
+                .unwrap(),
+        );
+        let normalized = GraphMemoryAdmissionEvidence::from_modeled_estimate(
+            &GraphMemoryModel
+                .estimate(
+                    &base_spec,
+                    graph_memory_model_input(20, 8, &base_spec.edge_columns, true, Some(8))
+                        .with_edge_normalize_inserted(true),
+                )
+                .unwrap(),
+        );
+
+        assert_eq!(
+            shared.cold_model_with_source_stage_bytes(source_bytes),
+            shared.cold_model_requested_bytes().max(source_bytes),
+            "a prepared edge frame is already owned by the shared graph peak"
+        );
+        assert_eq!(
+            normalized.cold_model_with_source_stage_bytes(source_bytes),
+            source_bytes.saturating_add(normalized.cold_model_requested_bytes()),
+            "explicit normalization retains source and normalized graph input together"
+        );
     }
 
     #[test]

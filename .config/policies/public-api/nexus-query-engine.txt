@@ -1,13 +1,20 @@
 pub mod nexus_query_engine
 pub mod nexus_query_engine::admission
+pub enum nexus_query_engine::admission::ComposedGraphAttemptResolution
+pub nexus_query_engine::admission::ComposedGraphAttemptResolution::PreserveSingleProducer
+pub nexus_query_engine::admission::ComposedGraphAttemptResolution::Scheduled(nexus_query_engine::admission::QueryPlanCapabilityProof)
 pub struct nexus_query_engine::admission::BoundedPipelineAdmission
 impl nexus_query_engine::admission::BoundedPipelineAdmission
 pub fn nexus_query_engine::admission::BoundedPipelineAdmission::analysis(&self) -> &nexus_query_engine::capability::CapabilityAnalysis
 pub const fn nexus_query_engine::admission::BoundedPipelineAdmission::envelope(&self) -> nexus_query_engine::capability::CapabilityEnvelope
 pub fn nexus_query_engine::admission::BoundedPipelineAdmission::pipeline(&self) -> &nexus_query_engine::pipeline::CompiledPipeline
+pub struct nexus_query_engine::admission::ComposedGraphProducerCandidate
+impl nexus_query_engine::admission::ComposedGraphProducerCandidate
+pub fn nexus_query_engine::admission::ComposedGraphProducerCandidate::new(core::option::Option<alloc::string::String>, core::option::Option<alloc::string::String>, core::option::Option<nexus_query_engine::admission::QueryPlanCapabilityProof>) -> Self
 pub struct nexus_query_engine::admission::QueryPlanCapabilityProof
 impl nexus_query_engine::admission::QueryPlanCapabilityProof
 pub fn nexus_query_engine::admission::QueryPlanCapabilityProof::combine(Self, impl core::iter::traits::collect::IntoIterator<Item = Self>) -> nexus_query_engine::error::Result<Self>
+pub fn nexus_query_engine::admission::QueryPlanCapabilityProof::combine_composed_graph_attempt(&nexus_query_engine::plan::QueryPlan, Self, impl core::iter::traits::collect::IntoIterator<Item = (alloc::string::String, Self)>) -> nexus_query_engine::error::Result<Self>
 pub fn nexus_query_engine::admission::QueryPlanCapabilityProof::for_attested_graph_result_bounded_consumer_plan(&nexus_query_engine::plan::QueryPlan, &str) -> core::option::Option<Self>
 pub fn nexus_query_engine::admission::QueryPlanCapabilityProof::for_attested_graph_result_passthrough_plan(&nexus_query_engine::plan::QueryPlan, &str) -> core::option::Option<Self>
 pub fn nexus_query_engine::admission::QueryPlanCapabilityProof::for_cugraph_graph_execution_plan(&nexus_query_engine::plan::QueryPlan) -> core::option::Option<Self>
@@ -15,6 +22,7 @@ pub fn nexus_query_engine::admission::QueryPlanCapabilityProof::for_cugraph_grap
 pub fn nexus_query_engine::admission::QueryPlanCapabilityProof::for_query_plan(&nexus_query_engine::plan::QueryPlan) -> core::option::Option<Self>
 pub fn nexus_query_engine::admission::QueryPlanCapabilityProof::required_capabilities(&self) -> &[nexus_query_engine::capability::ReservationRequirement]
 pub fn nexus_query_engine::admission::QueryPlanCapabilityProof::required_floor_bytes_for(&self, u64) -> nexus_query_engine::error::Result<u64>
+pub fn nexus_query_engine::admission::QueryPlanCapabilityProof::resolve_composed_graph_attempt(&nexus_query_engine::plan::QueryPlan, Self, impl core::iter::traits::collect::IntoIterator<Item = nexus_query_engine::admission::ComposedGraphProducerCandidate>) -> nexus_query_engine::error::Result<nexus_query_engine::admission::ComposedGraphAttemptResolution>
 pub fn nexus_query_engine::admission::QueryPlanCapabilityProof::soft_working_set_hint_bytes(&self) -> core::option::Option<u64>
 pub fn nexus_query_engine::admission::QueryPlanCapabilityProof::with_graph_memory_admission_evidence(self, &nexus_query_engine::graph_memory::GraphMemoryAdmissionEvidence) -> Self
 pub fn nexus_query_engine::admission::QueryPlanCapabilityProof::with_local_parquet_source_stage(self, &nexus_query_engine::source::LocalParquetSource) -> Self
@@ -119,6 +127,7 @@ pub fn nexus_query_engine::attempt::AttemptHandle::record_admission_requested(&s
 pub fn nexus_query_engine::attempt::AttemptHandle::record_admission_wait(&self, nexus_query_engine::observability::AttemptAdmissionWaitFact) -> core::result::Result<(), nexus_query_engine::attempt::AttemptLifecycleError>
 pub fn nexus_query_engine::attempt::AttemptHandle::record_admitted(&self, nexus_query_engine::observability::AttemptAdmissionFact) -> core::result::Result<(), nexus_query_engine::attempt::AttemptLifecycleError>
 pub fn nexus_query_engine::attempt::AttemptHandle::record_cleanup_failure(&self, nexus_query_engine::observability::CleanupFailurePhase, &nexus_query_engine::error::QueryError)
+pub fn nexus_query_engine::attempt::AttemptHandle::record_composed_schedule_projection(&self, nexus_query_engine::observability::AttemptComposedScheduleProjection) -> core::result::Result<(), nexus_query_engine::attempt::AttemptLifecycleError>
 pub fn nexus_query_engine::attempt::AttemptHandle::record_gpu_execution_started(&self) -> core::result::Result<(), nexus_query_engine::attempt::AttemptLifecycleError>
 pub fn nexus_query_engine::attempt::AttemptHandle::record_native_failure(&self, &nexus_query_engine::error::QueryError)
 pub fn nexus_query_engine::attempt::AttemptHandle::record_physical_execution_started(&self) -> core::result::Result<(), nexus_query_engine::attempt::AttemptLifecycleError>
@@ -1455,6 +1464,9 @@ pub fn nexus_query_engine::graph_memory::GraphClaimCalibrationRow::to_json(&self
 pub struct nexus_query_engine::graph_memory::GraphMemoryAdmissionEvidence
 impl nexus_query_engine::graph_memory::GraphMemoryAdmissionEvidence
 pub fn nexus_query_engine::graph_memory::GraphMemoryAdmissionEvidence::cold_model_requested_bytes(&self) -> u64
+pub fn nexus_query_engine::graph_memory::GraphMemoryAdmissionEvidence::retained_output(&self) -> nexus_query_engine::graph_memory::GraphMemoryRetainedOutputContribution
+pub fn nexus_query_engine::graph_memory::GraphMemoryAdmissionEvidence::retained_output_bytes(&self) -> u64
+pub fn nexus_query_engine::graph_memory::GraphMemoryAdmissionEvidence::retained_output_rows_upper_bound(&self) -> u64
 pub fn nexus_query_engine::graph_memory::GraphMemoryAdmissionEvidence::warm_model_requested_bytes(&self) -> u64
 pub struct nexus_query_engine::graph_memory::GraphMemoryCalibrationOverride
 pub nexus_query_engine::graph_memory::GraphMemoryCalibrationOverride::raw_input_edges: core::option::Option<u64>
@@ -1481,6 +1493,7 @@ pub nexus_query_engine::graph_memory::GraphMemoryEstimate::pair_vertex_width_byt
 pub nexus_query_engine::graph_memory::GraphMemoryEstimate::raw_input_edges: core::option::Option<u64>
 pub nexus_query_engine::graph_memory::GraphMemoryEstimate::renumber: bool
 pub nexus_query_engine::graph_memory::GraphMemoryEstimate::requested_bytes: u64
+pub nexus_query_engine::graph_memory::GraphMemoryEstimate::retained_output_bytes: nexus_query_engine::graph_memory::GraphMemoryRetainedOutputContribution
 pub nexus_query_engine::graph_memory::GraphMemoryEstimate::seed_count: core::option::Option<u64>
 pub nexus_query_engine::graph_memory::GraphMemoryEstimate::seed_mode: core::option::Option<nexus_query_engine::graph_memory::GraphSeedMode>
 pub nexus_query_engine::graph_memory::GraphMemoryEstimate::vertex_estimate: u64
@@ -1516,6 +1529,10 @@ pub fn nexus_query_engine::graph_memory::GraphMemoryModelInput::with_raw_input_e
 pub fn nexus_query_engine::graph_memory::GraphMemoryModelInput::with_similarity_pair_input(self, u64, u64, nexus_query_engine::graph_memory::GraphPairCardinalitySource) -> Self
 pub fn nexus_query_engine::graph_memory::GraphMemoryModelInput::with_statistics(self, nexus_query_engine::graph_memory::GraphStatistics) -> Self
 pub fn nexus_query_engine::graph_memory::GraphMemoryModelInput::with_vertex_estimate(self, nexus_query_engine::graph_memory::GraphVertexEstimate) -> Self
+pub struct nexus_query_engine::graph_memory::GraphMemoryRetainedOutputContribution
+impl nexus_query_engine::graph_memory::GraphMemoryRetainedOutputContribution
+pub const fn nexus_query_engine::graph_memory::GraphMemoryRetainedOutputContribution::bytes(self) -> u64
+pub const fn nexus_query_engine::graph_memory::GraphMemoryRetainedOutputContribution::row_count_upper_bound(self) -> u64
 pub struct nexus_query_engine::graph_memory::GraphModelErrorRatio
 impl nexus_query_engine::graph_memory::GraphModelErrorRatio
 pub fn nexus_query_engine::graph_memory::GraphModelErrorRatio::as_decimal_string(self) -> alloc::string::String
@@ -2769,6 +2786,27 @@ pub nexus_query_engine::observability::AttemptAllocatorPoolUsage::reserved_curre
 pub nexus_query_engine::observability::AttemptAllocatorPoolUsage::reserved_high_bytes: u64
 pub nexus_query_engine::observability::AttemptAllocatorPoolUsage::used_current_bytes: u64
 pub nexus_query_engine::observability::AttemptAllocatorPoolUsage::used_high_bytes: u64
+#[non_exhaustive] pub struct nexus_query_engine::observability::AttemptComposedScheduleOccurrence
+pub nexus_query_engine::observability::AttemptComposedScheduleOccurrence::execution_scope_fingerprint: alloc::string::String
+pub nexus_query_engine::observability::AttemptComposedScheduleOccurrence::isolated_peak_bytes: u64
+pub nexus_query_engine::observability::AttemptComposedScheduleOccurrence::occurrence_id: alloc::string::String
+pub nexus_query_engine::observability::AttemptComposedScheduleOccurrence::retained_output_bytes: u64
+pub nexus_query_engine::observability::AttemptComposedScheduleOccurrence::stage_peak_bytes: u64
+#[non_exhaustive] pub struct nexus_query_engine::observability::AttemptComposedScheduleProjection
+pub nexus_query_engine::observability::AttemptComposedScheduleProjection::attempt_id: nexus_query_engine::observability::AttemptId
+pub nexus_query_engine::observability::AttemptComposedScheduleProjection::attempt_wide_fixed_bytes: u64
+pub nexus_query_engine::observability::AttemptComposedScheduleProjection::complete_peak_bytes: u64
+pub nexus_query_engine::observability::AttemptComposedScheduleProjection::consumer_additional_peak_bytes: u64
+pub nexus_query_engine::observability::AttemptComposedScheduleProjection::consumer_scope_fingerprint: alloc::string::String
+pub nexus_query_engine::observability::AttemptComposedScheduleProjection::consumer_stage_peak_bytes: u64
+pub nexus_query_engine::observability::AttemptComposedScheduleProjection::device_ordinal: usize
+pub nexus_query_engine::observability::AttemptComposedScheduleProjection::fingerprint: alloc::string::String
+pub nexus_query_engine::observability::AttemptComposedScheduleProjection::grant_bytes: u64
+pub nexus_query_engine::observability::AttemptComposedScheduleProjection::grant_id: u64
+pub nexus_query_engine::observability::AttemptComposedScheduleProjection::producer_occurrences: alloc::vec::Vec<nexus_query_engine::observability::AttemptComposedScheduleOccurrence>
+pub nexus_query_engine::observability::AttemptComposedScheduleProjection::schema: alloc::string::String
+impl nexus_query_engine::observability::AttemptComposedScheduleProjection
+pub fn nexus_query_engine::observability::AttemptComposedScheduleProjection::fingerprint_matches_contents(&self) -> bool
 pub struct nexus_query_engine::observability::AttemptDeviceHealth
 pub nexus_query_engine::observability::AttemptDeviceHealth::fault_count: u64
 pub nexus_query_engine::observability::AttemptDeviceHealth::quarantined_teardown_count: u64
@@ -2988,6 +3026,7 @@ pub nexus_query_engine::observability::QueryAttemptReport::capacity_disposition:
 pub nexus_query_engine::observability::QueryAttemptReport::cleanup_disposition: nexus_query_engine::observability::AttemptCleanupDisposition
 pub nexus_query_engine::observability::QueryAttemptReport::cleanup_failure_count: u64
 pub nexus_query_engine::observability::QueryAttemptReport::cleanup_failure_count_complete: bool
+pub nexus_query_engine::observability::QueryAttemptReport::composed_schedule: core::option::Option<nexus_query_engine::observability::AttemptComposedScheduleProjection>
 pub nexus_query_engine::observability::QueryAttemptReport::device_ordinal: core::option::Option<usize>
 pub nexus_query_engine::observability::QueryAttemptReport::disposition: nexus_query_engine::observability::AttemptDisposition
 pub nexus_query_engine::observability::QueryAttemptReport::final_domain_usage: core::option::Option<nexus_query_engine::observability::AttemptFinalDomainUsage>
@@ -3570,6 +3609,7 @@ pub nexus_query_engine::observability::WorkerDefinitionRow::device_ordinal: core
 pub nexus_query_engine::observability::WorkerDefinitionRow::plan_execution_id: core::option::Option<nexus_query_engine::observability::PlanExecutionId>
 pub nexus_query_engine::observability::WorkerDefinitionRow::worker_id: nexus_query_engine::observability::RuntimeWorkerId
 pub nexus_query_engine::observability::WorkerDefinitionRow::worker_kind: alloc::string::String
+pub const nexus_query_engine::observability::COMPOSED_SCHEDULE_PROJECTION_SCHEMA_V1: &str
 pub const nexus_query_engine::observability::MAX_ATTEMPT_QUERY_ID_BYTES: usize
 pub const nexus_query_engine::observability::MAX_ATTEMPT_TRACE_CONTEXT_BYTES: usize
 pub const nexus_query_engine::observability::QUERY_ATTEMPT_REPORT_SCHEMA_V1: &str
@@ -5519,6 +5559,22 @@ impl nexus_query_engine::runtime::ProbeExecutionBoundary
 pub const fn nexus_query_engine::runtime::ProbeExecutionBoundary::as_str(self) -> &'static str
 impl core::fmt::Display for nexus_query_engine::runtime::ProbeExecutionBoundary
 pub fn nexus_query_engine::runtime::ProbeExecutionBoundary::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum nexus_query_engine::runtime::QueryAdmissionOutcome
+pub nexus_query_engine::runtime::QueryAdmissionOutcome::Cancelled
+pub nexus_query_engine::runtime::QueryAdmissionOutcome::CapabilityRejected
+pub nexus_query_engine::runtime::QueryAdmissionOutcome::Capacity
+pub nexus_query_engine::runtime::QueryAdmissionOutcome::Capacity::max_queue_wait: core::option::Option<core::time::Duration>
+pub nexus_query_engine::runtime::QueryAdmissionOutcome::Capacity::queue_capacity: core::option::Option<usize>
+pub nexus_query_engine::runtime::QueryAdmissionOutcome::Capacity::queued_queries: core::option::Option<usize>
+pub nexus_query_engine::runtime::QueryAdmissionOutcome::ExecutionFailure
+pub nexus_query_engine::runtime::QueryAdmissionOutcome::InvalidInput
+impl nexus_query_engine::runtime::QueryAdmissionOutcome
+pub fn nexus_query_engine::runtime::QueryAdmissionOutcome::from_error(&nexus_query_engine::error::QueryError) -> Self
+pub fn nexus_query_engine::runtime::QueryAdmissionOutcome::from_error_with_queue_bounds(&nexus_query_engine::error::QueryError, &nexus_query_engine::runtime::QueueBounds) -> Self
+pub fn nexus_query_engine::runtime::QueryAdmissionOutcome::from_execution_error(&nexus_query_engine::error::QueryError) -> Self
+pub fn nexus_query_engine::runtime::QueryAdmissionOutcome::max_queue_wait(&self) -> core::option::Option<core::time::Duration>
+pub fn nexus_query_engine::runtime::QueryAdmissionOutcome::queue_capacity(&self) -> core::option::Option<usize>
+pub fn nexus_query_engine::runtime::QueryAdmissionOutcome::queued_queries(&self) -> core::option::Option<usize>
 pub enum nexus_query_engine::runtime::ReservationKind
 pub nexus_query_engine::runtime::ReservationKind::BuildSide
 pub nexus_query_engine::runtime::ReservationKind::CapabilityContract
@@ -5892,6 +5948,7 @@ pub fn nexus_query_engine::runtime::ExecutionContext::boundary_policy(&self) -> 
 pub fn nexus_query_engine::runtime::ExecutionContext::bounded_device_budget_bytes(&self) -> core::option::Option<u64>
 pub fn nexus_query_engine::runtime::ExecutionContext::cancellation(&self) -> &nexus_query_engine::runtime::ExecutionCancellation
 pub fn nexus_query_engine::runtime::ExecutionContext::check_cancellation(&self, &'static str) -> nexus_query_engine::error::Result<()>
+pub fn nexus_query_engine::runtime::ExecutionContext::composed_schedule_projection(&self) -> nexus_query_engine::error::Result<nexus_query_engine::observability::AttemptComposedScheduleProjection>
 pub fn nexus_query_engine::runtime::ExecutionContext::deployment_io_capability(&self) -> &nexus_query_engine::runtime::DeploymentIoCapability
 pub fn nexus_query_engine::runtime::ExecutionContext::device_memory_space(&self) -> nexus_query_engine::metrics::MemorySpaceId
 pub fn nexus_query_engine::runtime::ExecutionContext::device_placement(&self) -> nexus_query_engine::runtime::DevicePlacement
@@ -5919,6 +5976,7 @@ pub fn nexus_query_engine::runtime::ExecutionContext::source_chunk_planning_opti
 pub fn nexus_query_engine::runtime::ExecutionContext::source_scheduler_policy(&self) -> nexus_query_engine::runtime::SourceSchedulerPolicy
 pub fn nexus_query_engine::runtime::ExecutionContext::statistical_aggregate_execution_mode(&self) -> nexus_query_engine::mode::StatisticalAggregateExecutionMode
 pub fn nexus_query_engine::runtime::ExecutionContext::trace_id(&self) -> core::option::Option<&nexus_query_engine::metrics::TraceId>
+pub fn nexus_query_engine::runtime::ExecutionContext::validate_admitted_composed_graph_attempt(&self, &nexus_query_engine::plan::QueryPlan, &[alloc::string::String]) -> nexus_query_engine::error::Result<()>
 pub fn nexus_query_engine::runtime::ExecutionContext::with_graph_memory_calibration_override(&self, nexus_query_engine::graph_memory::GraphMemoryCalibrationOverride) -> Self
 pub fn nexus_query_engine::runtime::ExecutionContext::with_io_lifecycle(self, nexus_query_engine::runtime::IoLifecycle) -> Self
 pub fn nexus_query_engine::runtime::ExecutionContext::with_owned_stream_lease(&self, nexus_query_engine::runtime::StreamLease) -> nexus_query_engine::error::Result<nexus_query_engine::runtime::LeasedExecutionContext>

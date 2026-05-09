@@ -2,6 +2,7 @@ use datafusion::{common::config::ConfigOptions, physical_optimizer::PhysicalOpti
 use datafusion_nexus::planner::{
     FinalPlanDisposition, NexusFinalPlanRequirementRule, NexusNativeOptimizerConfig, classify_final_plan,
 };
+use futures::StreamExt;
 
 use super::{support::*, *};
 
@@ -12,6 +13,17 @@ const CPU_INPUT_BFS_SQL: &str = "SELECT vertex, distance, predecessor \
              \"include_edge_src_col\":\"allowed_src\",\
              \"include_edge_dst_col\":\"allowed_dst\"}') \
      ORDER BY vertex";
+
+const PAGERANK_FORCEATLAS2_JOIN_SQL: &str = "WITH pagerank AS (\n\
+        SELECT vertex, value AS pagerank_value\n\
+        FROM cugraph_pagerank('graph_edges', 'src', 'dst', 'weight')\n\
+    ), layout AS (\n\
+        SELECT vertex, x, y\n\
+        FROM cugraph_force_atlas2('graph_edges', 'src', 'dst', 'weight')\n\
+    )\n\
+    SELECT p.vertex, p.pagerank_value, l.x, l.y\n\
+    FROM layout l JOIN pagerank p ON p.vertex = l.vertex\n\
+    WHERE p.pagerank_value > 0";
 
 fn cugraph_input_is_runtime_native(plan: &dyn datafusion::physical_plan::ExecutionPlan) -> bool {
     if plan.downcast_ref::<NexusNativeExec>().is_some() {
@@ -158,6 +170,290 @@ async fn cugraph_sql_keeps_native_inputs_device_resident_for_native_downstream()
     assert_eq!(bfs_distance_for(batch, 1), None);
     assert_eq!(bfs_distance_for(batch, 2), Some(1));
     assert_eq!(bfs_distance_for(batch, 3), Some(2));
+}
+
+#[tokio::test]
+async fn cugraph_sql_gpu_pagerank_forceatlas2_join_executes_as_one_scheduled_composed_attempt() {
+    let (_backend, ctx) = default_backend_cugraph_sql_context();
+    register_edge_memtable(&ctx, "graph_edges", DataType::Int64, DataType::Int64, DataType::Float64);
+    let plan = ctx.sql(PAGERANK_FORCEATLAS2_JOIN_SQL).await.unwrap().create_physical_plan().await.unwrap();
+    let composed =
+        find_composed_exec(plan.as_ref()).expect("the canonical two-producer topology lowers to one composed root");
+    assert_eq!(composed.children().len(), 2, "the composed root keeps both scheduled graph occurrences");
+
+    cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
+    let batches = datafusion::physical_plan::collect(plan, ctx.task_ctx())
+        .await
+        .expect("the complete composed schedule must execute both graph producers and their join");
+    let batch = single_batch(&batches);
+    assert_eq!(schema_field_names(batch.schema().as_ref()), vec!["vertex", "pagerank_value", "x", "y"]);
+    assert_eq!(batch.num_rows(), 2);
+    let mut vertices = int64_column(batch, 0);
+    vertices.sort_unstable();
+    assert_eq!(vertices, vec![0, 1]);
+    let pagerank = batch.column(1).as_any().downcast_ref::<Float64Array>().unwrap();
+    let x = batch.column(2).as_any().downcast_ref::<Float32Array>().unwrap();
+    let y = batch.column(3).as_any().downcast_ref::<Float32Array>().unwrap();
+    for row in 0..batch.num_rows() {
+        assert!(pagerank.value(row).is_finite() && pagerank.value(row) > 0.0);
+        assert!(x.value(row).is_finite());
+        assert!(y.value(row).is_finite());
+    }
+}
+
+#[tokio::test]
+async fn cugraph_sql_gpu_composed_attempt_retains_context_grant_and_gpu_results_until_consumer_output_drains() {
+    let (backend, ctx) = default_backend_cugraph_sql_context();
+    register_edge_memtable(&ctx, "graph_edges", DataType::Int64, DataType::Int64, DataType::Float64);
+
+    let attempt = backend.begin_attempt(datafusion_nexus::attempt::AttemptOptions::default()).unwrap();
+    let completion = attempt.completion();
+    cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
+    let plan = attempt.plan_sql(&ctx, PAGERANK_FORCEATLAS2_JOIN_SQL).await.unwrap();
+    let mut stream = attempt.execute_physical_plan(Arc::clone(&plan), &ctx).unwrap();
+
+    // The first result batch is materialized only after both graph producer
+    // handles feed the native join consumer. The deferred cursor still owns
+    // the final GPU result and its admitted context until the stream reaches
+    // EOF, so admission must remain live here.
+    let first = stream.next().await.expect("the composed consumer must produce a host batch").unwrap();
+    assert_eq!(first.num_rows(), 2);
+    assert!(!completion.is_ready(), "the attempt cannot seal while its deferred native cursor remains live");
+
+    let metrics = NativeDataFusionExecutionMetrics::from_metrics(&plan_metrics_recursive(plan.as_ref()));
+    assert_eq!(metrics.graph_runtime_rows.len(), 2, "the composed attempt must record both graph producers");
+    assert!(metrics.graph_runtime_rows.iter().all(|row| {
+        row.runtime_outcome == "succeeded"
+            && row.input_boundary == "gpu_resident"
+            && row.output_boundary == "gpu_resident"
+            && row.device_to_host_materializations == 0
+    }));
+
+    let dynamic_filter_producers =
+        metrics.dynamic_filter_runtime_rows.iter().filter(|row| row.event == "produced").collect::<Vec<_>>();
+    assert_eq!(
+        metrics.dynamic_filter_produced_count, 1,
+        "the filter predicate must produce one bounded control payload"
+    );
+    assert_eq!(dynamic_filter_producers.len(), 1, "exactly one dynamic-filter producer may export a key payload");
+    assert_eq!(dynamic_filter_producers[0].producer_kind, "hash_join_build");
+    assert!(dynamic_filter_producers[0].producer_rows.is_some_and(|rows| rows > 0));
+    assert_eq!(
+        plan_metric_usize(plan.as_ref(), "compiled_pipeline_host_arrow_sinks"),
+        1,
+        "the composed consumer must retain one deferred host-output sink",
+    );
+    assert_eq!(
+        metrics.device_to_host_materializations,
+        dynamic_filter_producers.len() + 1,
+        "one dynamic-filter key export plus the deferred composed consumer output must be the only D2H boundaries",
+    );
+    assert_eq!(
+        cudf::testing::arrow::arrow_host_export_call_count_for_test(),
+        metrics.device_to_host_materializations,
+        "the cuDF interop observation must match the categorized native D2H boundaries",
+    );
+
+    let admission = backend.admission_snapshot().unwrap();
+    assert_eq!(admission.active_queries, 1, "the context lease must survive the first deferred host batch");
+    let live_ledgers = backend.device_ledger_reports().unwrap();
+    let [live_ledger] = live_ledgers.as_slice() else {
+        panic!("one-device fixture must expose exactly one ledger: {live_ledgers:#?}");
+    };
+    assert_eq!(live_ledger.active_attempts, 1);
+    assert_eq!(live_ledger.grants.len(), 1, "the immutable attempt grant remains owned by the deferred cursor");
+    let live_grant = &live_ledger.grants[0];
+    assert!(live_grant.grant_bytes > 0);
+    let live_ledger_sequence = live_ledger.sequence;
+
+    while let Some(batch) = stream.next().await {
+        batch.expect("the composed consumer stream must complete without a second execution path");
+    }
+    let report = completion.await;
+    assert!(matches!(report.outcome, nexus_query_engine::observability::RuntimeTerminalOutcome::Succeeded));
+    assert_eq!(
+        report.cleanup_disposition,
+        nexus_query_engine::observability::AttemptCleanupDisposition::Completed,
+        "the terminal owner must complete one context/grant cleanup before it seals",
+    );
+    assert_eq!(
+        report.capacity_disposition,
+        nexus_query_engine::observability::AttemptCapacityDisposition::Released,
+        "the successful attempt must release rather than retain its immutable grant",
+    );
+    assert_eq!(report.cleanup_failure_count, 0);
+    assert!(report.cleanup_failure_count_complete);
+
+    let admission_fact = report.admission.as_ref().expect("the composed query must be admitted");
+    let schedule = report.composed_schedule.as_ref().expect("the composed graph attempt must seal its exact schedule");
+    assert!(schedule.fingerprint_matches_contents());
+    assert_eq!(schedule.attempt_id, report.attempt_id);
+    assert_eq!(schedule.device_ordinal, live_ledger.device_ordinal);
+    assert_eq!(report.device_ordinal, Some(live_ledger.device_ordinal));
+    assert_eq!(admission_fact.device_ordinal, live_ledger.device_ordinal);
+    assert_eq!(schedule.grant_id, live_grant.grant_id);
+    assert_eq!(schedule.grant_bytes, live_grant.grant_bytes);
+    assert_eq!(admission_fact.grant_bytes, live_grant.grant_bytes);
+    assert!(schedule.grant_bytes >= schedule.complete_peak_bytes);
+    assert_eq!(schedule.producer_occurrences.len(), 2, "the native consumer must retain both graph producer results");
+
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let admission = backend.admission_snapshot().unwrap();
+            let released_ledgers = backend.device_ledger_reports().unwrap();
+            if admission.active_queries == 0
+                && released_ledgers.iter().all(|ledger| ledger.active_attempts == 0 && ledger.grants.is_empty())
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .expect("stream EOF must release the context lease and immutable grant exactly once");
+
+    let released_ledgers = backend.device_ledger_reports().unwrap();
+    let [released_ledger] = released_ledgers.as_slice() else {
+        panic!("one-device fixture must expose exactly one ledger after cleanup: {released_ledgers:#?}");
+    };
+    assert_eq!(released_ledger.active_attempts, 0);
+    assert_eq!(released_ledger.live_grants_bytes, 0);
+    assert!(released_ledger.grants.is_empty());
+    assert!(
+        released_ledger.sequence > live_ledger_sequence,
+        "the live grant must transition to one completed release after the cursor drains",
+    );
+}
+
+#[tokio::test]
+async fn cugraph_sql_gpu_composed_attempt_returns_cache_checkouts_before_deferred_output_and_preserves_cache_affinity()
+{
+    const CACHE_CAP_BYTES: u64 = 16 * 1024 * 1024;
+
+    let dir = unique_temp_dir("datafusion-nexus-cugraph-composed-cache-lifecycle");
+    let path = dir.join("graph_edges.parquet");
+    write_tiny_directed_edges(&path);
+
+    let backend = NexusGpuBackend::builder()
+        .device_memory_ownership([(0, GpuMemoryOwnership::WholeDeviceExclusive)])
+        .device_profiles([
+            datafusion_nexus::backend::NexusGpuDeviceProfile::new(0).with_cache_cap_bytes(CACHE_CAP_BYTES)
+        ])
+        .build()
+        .unwrap();
+    let cugraph = CugraphSqlConfig::default()
+        .with_native_execution_config(backend.optimizer_config().native_execution_config().clone());
+    let mut config = SessionConfig::new()
+        .with_target_partitions(1)
+        .with_repartition_file_scans(false)
+        .with_repartition_aggregations(false)
+        .with_repartition_sorts(false);
+    config.options_mut().optimizer.enable_dynamic_filter_pushdown = false;
+    let state = backend
+        .install_on(SessionStateBuilder::new().with_config(config).with_default_features())
+        .unwrap()
+        .with_cugraph_sql(cugraph)
+        .build();
+    let ctx = SessionContext::new_with_state(state);
+    ctx.register_parquet("graph_edges", path.to_str().unwrap(), ParquetReadOptions::default()).await.unwrap();
+
+    // Prime the graph cache from the production two-producer SQL shape. The
+    // local Parquet source gives PageRank a stable cacheable identity;
+    // ForceAtlas2 currently stays on its owning uncached graph-builder path.
+    let primer = backend.begin_attempt(datafusion_nexus::attempt::AttemptOptions::default()).unwrap();
+    let primer_completion = primer.completion();
+    let mut primer_stream = primer.sql(&ctx, PAGERANK_FORCEATLAS2_JOIN_SQL).await.unwrap();
+    while let Some(batch) = primer_stream.next().await {
+        batch.expect("the cache-primer attempt must complete");
+    }
+    let primer_report = primer_completion.await;
+    assert!(matches!(primer_report.outcome, nexus_query_engine::observability::RuntimeTerminalOutcome::Succeeded));
+
+    let primed_ledgers = backend.device_ledger_reports().unwrap();
+    let [primed_ledger] = primed_ledgers.as_slice() else {
+        panic!("one-device fixture must expose one cache-backed ledger: {primed_ledgers:#?}");
+    };
+    let primed_caches = backend.device_cache_reports().unwrap();
+    let [primed_cache] = primed_caches.as_slice() else {
+        panic!("one cache-enabled device must expose one cache report: {primed_caches:#?}");
+    };
+    assert_eq!(primed_cache.device_ordinal, primed_ledger.device_ordinal);
+    assert_eq!(primed_cache.cache_cap_bytes, CACHE_CAP_BYTES);
+    assert_eq!(primed_cache.ledger_sequence, primed_ledger.sequence);
+    assert_eq!(primed_cache.ledger_evictable_resident_bytes, primed_ledger.cache_evictable_resident_bytes);
+    assert_eq!(primed_cache.ledger_pinned_in_use_bytes, primed_ledger.cache_pinned_in_use_bytes);
+    assert!(primed_cache.ledger_evictable_resident_bytes > 0, "the primed graphs must remain cache-owned");
+    assert_eq!(primed_cache.ledger_pinned_in_use_bytes, 0, "the primer must not strand a graph checkout pin");
+    assert_eq!(primed_cache.graph.insertions, 1, "the cacheable PageRank producer must retain one parked graph");
+    assert_eq!(primed_cache.graph.available_entries, 1);
+    assert_eq!(primed_cache.graph.checked_out_entries, 0);
+    assert_eq!(primed_cache.graph.preparation_pins, 0);
+
+    let attempt = backend.begin_attempt(datafusion_nexus::attempt::AttemptOptions::default()).unwrap();
+    let completion = attempt.completion();
+    let plan = attempt.plan_sql(&ctx, PAGERANK_FORCEATLAS2_JOIN_SQL).await.unwrap();
+    let mut stream = attempt.execute_physical_plan(Arc::clone(&plan), &ctx).unwrap();
+    let first =
+        stream.next().await.expect("the composed cache-hit attempt must yield its deferred host output").unwrap();
+    assert!(first.num_rows() > 0);
+    assert!(!completion.is_ready(), "the deferred host cursor must still own the live attempt after its first batch");
+
+    let live_ledgers = backend.device_ledger_reports().unwrap();
+    let [live_ledger] = live_ledgers.as_slice() else {
+        panic!("one-device fixture must expose one live cache-backed ledger: {live_ledgers:#?}");
+    };
+    assert_eq!(live_ledger.active_attempts, 1);
+    assert_eq!(live_ledger.grants.len(), 1);
+    let live_caches = backend.device_cache_reports().unwrap();
+    let [live_cache] = live_caches.as_slice() else {
+        panic!("one cache-enabled device must expose one live cache report: {live_caches:#?}");
+    };
+    assert_eq!(live_cache.device_ordinal, live_ledger.device_ordinal);
+    assert_eq!(live_cache.allocation_domain_id, primed_cache.allocation_domain_id);
+    assert_eq!(live_cache.cache_cap_bytes, CACHE_CAP_BYTES);
+    assert_eq!(live_cache.ledger_sequence, live_ledger.sequence);
+    assert_eq!(live_cache.ledger_evictable_resident_bytes, live_ledger.cache_evictable_resident_bytes);
+    assert_eq!(live_cache.ledger_pinned_in_use_bytes, live_ledger.cache_pinned_in_use_bytes);
+    assert_eq!(live_cache.graph.lookup_hits, primed_cache.graph.lookup_hits + 1);
+    assert_eq!(live_cache.graph.available_entries, 1);
+    assert_eq!(
+        live_cache.graph.checked_out_entries, 0,
+        "the PageRank graph checkout must return before the composed host cursor drains"
+    );
+    assert_eq!(live_cache.graph.preparation_pins, 0);
+    assert_eq!(
+        live_cache.ledger_pinned_in_use_bytes, 0,
+        "the retained consumer output must not retain a graph-cache pin"
+    );
+    assert!(
+        live_cache.ledger_evictable_resident_bytes > 0,
+        "the returned graphs must remain owned by the cache domain"
+    );
+
+    while let Some(batch) = stream.next().await {
+        batch.expect("the cache-hit composed consumer stream must complete");
+    }
+    let report = completion.await;
+    let admission = report.admission.as_ref().expect("cache-hit attempt must retain its admission fact");
+    assert_eq!(
+        admission.device_ordinal, live_cache.device_ordinal,
+        "the cache domain and admitted attempt must retain device affinity"
+    );
+    let evidence = report.resource_evidence.expect("cache-backed attempt must seal resource evidence");
+    assert_eq!(evidence.cache_evictable_resident_bytes.value, Some(live_ledger.cache_evictable_resident_bytes));
+    assert_eq!(evidence.cache_pinned_in_use_bytes.value, Some(0));
+
+    let released_caches = backend.device_cache_reports().unwrap();
+    let [released_cache] = released_caches.as_slice() else {
+        panic!("one cache-enabled device must retain one report after attempt cleanup: {released_caches:#?}");
+    };
+    assert_eq!(released_cache.allocation_domain_id, live_cache.allocation_domain_id);
+    assert_eq!(released_cache.graph.lookup_hits, live_cache.graph.lookup_hits);
+    assert_eq!(released_cache.graph.available_entries, 1);
+    assert_eq!(released_cache.graph.checked_out_entries, 0);
+    assert_eq!(released_cache.graph.preparation_pins, 0);
+
+    fs::remove_dir_all(dir).ok();
 }
 
 // Per-algorithm Python-oracle GPU tests for PageRank, BFS, and Louvain

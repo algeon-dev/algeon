@@ -85,8 +85,8 @@ use resources::QueryServiceResources;
 pub(crate) use service::QueryService;
 use service::QueryServiceInner;
 pub use service::{
-    DeviceQuarantineInjection, QueryActivityLease, QueryAdmissionRequest, QueryServiceAdmissionSnapshot,
-    QueryServiceDeviceAdmissionSnapshot,
+    DeviceQuarantineInjection, QueryActivityLease, QueryAdmissionOutcome, QueryAdmissionRequest,
+    QueryServiceAdmissionSnapshot, QueryServiceDeviceAdmissionSnapshot,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

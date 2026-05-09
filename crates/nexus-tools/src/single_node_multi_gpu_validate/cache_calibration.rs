@@ -1035,6 +1035,7 @@ mod tests {
                 join_failures: 0,
             },
             cache_state: "disabled",
+            composed_schedules: Vec::new(),
             cache_same_key_probe: None,
             qps_envelope: None,
             graph_claim_calibration: None,

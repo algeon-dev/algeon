@@ -209,6 +209,23 @@ fn dblp_queries() -> Vec<(&'static str, String, bool)> {
             true,
         ),
         (
+            "pagerank_forceatlas2_join",
+            format!(
+                "WITH pagerank AS ( \
+                 SELECT vertex, value AS pagerank_value \
+                 FROM {CUGRAPH_PAGERANK_FUNCTION}('{DBLP_EDGE_TABLE}', 'src', 'dst', 'weight') \
+                 ), layout AS ( \
+                 SELECT vertex, x, y \
+                 FROM {CUGRAPH_FORCE_ATLAS2_FUNCTION}('{DBLP_EDGE_TABLE}', 'src', 'dst', 'weight', \
+                 '{{\"max_iter\": 200, \"seed\": 20260804, \"barnes_hut_optimize\": true}}') \
+                 ) \
+                 SELECT p.vertex, p.pagerank_value, l.x, l.y \
+                 FROM layout l JOIN pagerank p ON p.vertex = l.vertex \
+                 WHERE p.pagerank_value > 0"
+            ),
+            true,
+        ),
+        (
             "bfs_deep",
             format!(
                 "SELECT vertex, distance, reachable \
@@ -370,6 +387,7 @@ mod tests {
             "wcc",
             "edge_scan",
             "force_atlas2",
+            "pagerank_forceatlas2_join",
             "bfs_deep",
             "betweenness_centrality",
             "betweenness_centrality_wide",
@@ -384,6 +402,16 @@ mod tests {
         assert!(bfs.graph);
         assert!(bfs.sql.contains("\"output_mode\": \"normalized\""));
         assert!(!bfs.sql.contains("depth_limit"));
+    }
+
+    #[test]
+    fn composed_catalog_entry_keeps_two_graph_producers_and_native_join_consumer() {
+        let composed = resolve(0, FixtureKind::Dblp, "pagerank_forceatlas2_join").expect("composed catalog entry");
+        assert!(composed.graph);
+        assert!(composed.sql.contains(CUGRAPH_PAGERANK_FUNCTION));
+        assert!(composed.sql.contains(CUGRAPH_FORCE_ATLAS2_FUNCTION));
+        assert!(composed.sql.contains("JOIN pagerank"));
+        assert!(composed.sql.contains("pagerank_value > 0"));
     }
 
     /// The literals above must equal the adapter's exported names, or the graph

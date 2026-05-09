@@ -22,9 +22,9 @@ pub(crate) use diagnostics::{
 pub(crate) use envelope::{AttemptReservationEnvelope, AttemptReservationPolicy};
 pub(crate) use join_strategy::{CompiledJoinExecutionStrategy, CompiledJoinStrategySelection};
 pub(crate) use requirement::AttemptCapabilityEvidence as AttemptRequirement;
-pub use requirement::QueryPlanCapabilityProof;
 #[cfg(test)]
 pub(crate) use requirement::{AttemptCapabilityEvidence, EstimateQuality};
+pub use requirement::{ComposedGraphProducerCandidate, QueryPlanCapabilityProof};
 #[doc(hidden)]
 pub use support::{
     CompiledBoundedPipelineSupport, compiled_bounded_pipeline_support, compiled_bounded_query_plan_support,

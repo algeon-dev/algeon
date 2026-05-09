@@ -1,3 +1,13 @@
+use datafusion::physical_plan::ExecutionPlan;
+use datafusion_nexus::{
+    cugraph_sql::CugraphAlgoExec,
+    native_exec::{NexusNativeComposedExec, NexusNativeExecutionConfig, NexusNativeGpuProducerExec},
+};
+use nexus_query_engine::{
+    plan::{PlanNode, QueryPlanBuilder},
+    source::{LiteralBatchSource, SourceNode},
+};
+
 use super::{support::*, *};
 
 #[tokio::test]
@@ -23,6 +33,147 @@ async fn cugraph_sql_planning_preserves_structured_logical_edge_id_capability_er
         assert_eq!(nexus.fact_value("edge_id_col"), Some("true"));
         assert_eq!(nexus.fact_value("include_edge_ids"), Some(expected_include_edge_ids));
     }
+}
+
+#[tokio::test]
+async fn cugraph_sql_phase0_pagerank_forceatlas2_join_lowers_to_one_composed_consumer() {
+    let (_backend, ctx) = default_backend_cugraph_sql_context();
+    register_edge_memtable(&ctx, "graph_edges", DataType::Int64, DataType::Int64, DataType::Float64);
+    let sql = "WITH pagerank AS (\n\
+        SELECT vertex, value AS pagerank_value\n\
+        FROM cugraph_pagerank('graph_edges', 'src', 'dst', 'weight')\n\
+    ), layout AS (\n\
+        SELECT vertex, x, y\n\
+        FROM cugraph_force_atlas2('graph_edges', 'src', 'dst', 'weight')\n\
+    )\n\
+    SELECT p.vertex, p.pagerank_value, l.x, l.y\n\
+    FROM layout l JOIN pagerank p ON p.vertex = l.vertex\n\
+    WHERE p.pagerank_value > 0";
+    let df = ctx.sql(sql).await.unwrap();
+    let plan = df.create_physical_plan().await.unwrap();
+
+    let composed = plan
+        .downcast_ref::<NexusNativeComposedExec>()
+        .expect("the canonical graph topology must lower at the root to one composed native consumer");
+    let producers = composed.children();
+    assert_eq!(producers.len(), 2, "the composed boundary must retain both graph producer occurrences");
+    assert!(producers.iter().all(|producer| producer.downcast_ref::<CugraphAlgoExec>().is_some()));
+    assert_eq!(
+        producers
+            .iter()
+            .map(|producer| producer.schema().fields().iter().map(|field| field.name().to_string()).collect::<Vec<_>>())
+            .collect::<Vec<_>>(),
+        vec![
+            vec!["vertex".to_string(), "value".to_string()],
+            vec!["vertex".to_string(), "x".to_string(), "y".to_string()]
+        ],
+        "producer order must be PageRank followed by ForceAtlas2"
+    );
+
+    let graph_edge_inputs = producers
+        .iter()
+        .map(|producer| {
+            assert_eq!(producer.children().len(), 1, "each graph producer must have one shared edge relation input");
+            let edge_input = producer.children()[0]
+                .downcast_ref::<NexusNativeExec>()
+                .expect("graph edge input must be lowered through the native source boundary");
+            assert_eq!(
+                edge_input.schema().fields().iter().map(|field| field.name().to_string()).collect::<Vec<_>>(),
+                vec!["src".to_string(), "dst".to_string(), "weight".to_string()]
+            );
+            edge_input.native_plan()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(graph_edge_inputs[0], graph_edge_inputs[1], "both graph producers must use the same edge-source plan");
+
+    let native_consumer = composed.native_plan();
+    assert!(native_consumer.sink().materializes_host_boundary());
+    assert_eq!(
+        native_consumer
+            .nodes()
+            .iter()
+            .filter(|node| matches!(&node.kind, PlanNode::Source(source) if matches!(source.as_ref(), SourceNode::GpuResident(_))))
+            .count(),
+        2,
+        "the native consumer must declare one GPU input for each graph producer"
+    );
+    assert!(native_consumer.contains_join(), "the native consumer must retain the vertex join");
+    assert_eq!(
+        native_consumer.nodes().iter().filter(|node| matches!(&node.kind, PlanNode::Filter(_))).count(),
+        1,
+        "the native consumer must retain the relational PageRank filter"
+    );
+    assert_eq!(
+        native_consumer.nodes().iter().filter(|node| matches!(&node.kind, PlanNode::Projection(_))).count(),
+        1,
+        "the native consumer must retain the relational projection"
+    );
+    assert!(matches!(&native_consumer.root_node().kind, PlanNode::Join(_)));
+}
+
+#[test]
+fn phase0_synthetic_n3_composed_fixture_preserves_equal_producer_occurrences() {
+    let schema = Arc::new(Schema::new(vec![Field::new("vertex", DataType::Int64, false)]));
+    let producer_plan = || {
+        let mut builder = QueryPlanBuilder::new();
+        let source = builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::empty(Arc::clone(&schema))));
+        builder.finish_gpu_resident(source)
+    };
+    let producers = ["producer-0", "producer-1", "producer-2"]
+        .into_iter()
+        .map(|name| {
+            Arc::new(
+                NexusNativeGpuProducerExec::try_new(name, producer_plan())
+                    .expect("synthetic GPU producer must satisfy the production constructor contract"),
+            ) as Arc<dyn ExecutionPlan>
+        })
+        .collect::<Vec<_>>();
+
+    let mut consumer_builder = QueryPlanBuilder::new();
+    let consumer_inputs = ["producer-0", "producer-1", "producer-2"]
+        .into_iter()
+        .map(|name| {
+            consumer_builder.add_source(SourceNode::GpuResident(nexus_query_engine::source::GpuResidentSource::new(
+                name,
+                Arc::clone(&schema),
+            )))
+        })
+        .collect::<Vec<_>>();
+    let union = consumer_builder.add_union(consumer_inputs, Arc::clone(&schema));
+    let consumer = consumer_builder.finish_with_host_sink(union);
+    let composed = NexusNativeComposedExec::try_new(consumer, producers, NexusNativeExecutionConfig::bounded_default())
+        .expect("synthetic N=3 topology must reach the composed production boundary");
+
+    let children = composed.children();
+    assert_eq!(children.len(), 3, "equal native producer shapes must not be structurally deduplicated");
+    assert_eq!(
+        children
+            .iter()
+            .map(|child| child
+                .downcast_ref::<NexusNativeGpuProducerExec>()
+                .expect("synthetic children must remain native GPU producers")
+                .input_name())
+            .collect::<Vec<_>>(),
+        vec!["producer-0", "producer-1", "producer-2"]
+    );
+    let native_producer_plans = children
+        .iter()
+        .map(|child| child.downcast_ref::<NexusNativeGpuProducerExec>().unwrap().native_plan())
+        .collect::<Vec<_>>();
+    assert_eq!(native_producer_plans[0], native_producer_plans[1]);
+    assert_eq!(native_producer_plans[1], native_producer_plans[2]);
+
+    let native_consumer = composed.native_plan();
+    assert_eq!(
+        native_consumer
+            .nodes()
+            .iter()
+            .filter(|node| matches!(&node.kind, PlanNode::Source(source) if matches!(source.as_ref(), SourceNode::GpuResident(_))))
+            .count(),
+        3,
+        "the native consumer must retain all three runtime input occurrences"
+    );
+    assert_eq!(native_consumer.nodes().iter().filter(|node| matches!(&node.kind, PlanNode::Union(_))).count(), 1);
 }
 
 #[tokio::test]
