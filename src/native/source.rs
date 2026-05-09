@@ -1,11 +1,17 @@
+use std::collections::BTreeSet;
+
 use arrow::datatypes::SchemaRef;
 use cudf_query_engine::{
     LiteralValue as NativeLiteralValue, LocalParquetFile as NativeLocalParquetFile,
-    PartitionColumnDisposition as NativePartitionColumnDisposition,
+    PartitionColumnDisposition as NativePartitionColumnDisposition, SourceColumnRef as NativeSourceColumnRef,
 };
 use datafusion::{
     datasource::physical_plan::{FileScanConfig, FileSource, ParquetSource},
     physical_plan::filter::FilterExec,
+};
+use parquet::file::{
+    metadata::RowGroupMetaData,
+    reader::{FileReader, SerializedFileReader},
 };
 
 use super::{
@@ -96,9 +102,116 @@ pub(super) fn local_parquet_files(
         {
             native_file = native_file.with_row_groups(row_groups.clone());
         }
+        native_file = attach_row_group_byte_metadata(native_file, &column_requirements);
         native_files.push(native_file);
     }
     Ok(native_files)
+}
+
+fn attach_row_group_byte_metadata(
+    native_file: NativeLocalParquetFile,
+    column_requirements: &NativeParquetColumnRequirements,
+) -> NativeLocalParquetFile {
+    let Ok(reader) = SerializedFileReader::try_from(native_file.path.as_path()) else {
+        return native_file;
+    };
+    let metadata = reader.metadata();
+    let read_column_indexes = column_requirements.read_column_file_indices.iter().copied().collect::<BTreeSet<_>>();
+    let projected_column_indexes = column_requirements
+        .projected_output_column_source_refs
+        .iter()
+        .filter_map(file_source_ref_index)
+        .collect::<BTreeSet<_>>();
+    let pure_filter_column_indexes = column_requirements
+        .pure_filter_column_source_refs
+        .iter()
+        .filter_map(file_source_ref_index)
+        .filter(|index| !projected_column_indexes.contains(index))
+        .collect::<BTreeSet<_>>();
+
+    let Some(row_group_bytes) = metadata
+        .row_groups()
+        .iter()
+        .map(|row_group| row_group_column_bytes(row_group, &read_column_indexes, ColumnByteKind::Compressed))
+        .collect::<Option<Vec<_>>>()
+    else {
+        return native_file;
+    };
+    let Some(projected_compressed_bytes) = metadata
+        .row_groups()
+        .iter()
+        .map(|row_group| row_group_column_bytes(row_group, &projected_column_indexes, ColumnByteKind::Compressed))
+        .collect::<Option<Vec<_>>>()
+    else {
+        return native_file;
+    };
+    let Some(projected_uncompressed_bytes) = metadata
+        .row_groups()
+        .iter()
+        .map(|row_group| row_group_column_bytes(row_group, &projected_column_indexes, ColumnByteKind::Uncompressed))
+        .collect::<Option<Vec<_>>>()
+    else {
+        return native_file;
+    };
+    let Some(pure_filter_compressed_bytes) = metadata
+        .row_groups()
+        .iter()
+        .map(|row_group| row_group_column_bytes(row_group, &pure_filter_column_indexes, ColumnByteKind::Compressed))
+        .collect::<Option<Vec<_>>>()
+    else {
+        return native_file;
+    };
+    let Some(pure_filter_uncompressed_bytes) = metadata
+        .row_groups()
+        .iter()
+        .map(|row_group| row_group_column_bytes(row_group, &pure_filter_column_indexes, ColumnByteKind::Uncompressed))
+        .collect::<Option<Vec<_>>>()
+    else {
+        return native_file;
+    };
+    let Some(row_group_rows) = metadata
+        .row_groups()
+        .iter()
+        .map(|row_group| u64::try_from(row_group.num_rows()).ok())
+        .collect::<Option<Vec<_>>>()
+    else {
+        return native_file;
+    };
+
+    native_file
+        .with_row_group_bytes(row_group_bytes)
+        .with_projected_row_group_bytes(projected_compressed_bytes, projected_uncompressed_bytes)
+        .with_pure_filter_row_group_bytes(pure_filter_compressed_bytes, pure_filter_uncompressed_bytes)
+        .with_row_group_rows(row_group_rows)
+}
+
+fn file_source_ref_index(source_ref: &NativeSourceColumnRef) -> Option<usize> {
+    match source_ref {
+        NativeSourceColumnRef::File(index) => Some(*index),
+        NativeSourceColumnRef::Partition(_) => None,
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ColumnByteKind {
+    Compressed,
+    Uncompressed,
+}
+
+fn row_group_column_bytes(
+    row_group: &RowGroupMetaData,
+    column_indexes: &BTreeSet<usize>,
+    kind: ColumnByteKind,
+) -> Option<u64> {
+    column_indexes.iter().try_fold(0u64, |total, column_index| {
+        let column = row_group.columns().get(*column_index)?;
+        let bytes = match kind {
+            ColumnByteKind::Compressed => column.compressed_size(),
+            ColumnByteKind::Uncompressed => column.uncompressed_size(),
+        };
+        let bytes = u64::try_from(bytes).ok()?;
+        total.checked_add(bytes)
+    })
 }
 
 fn validate_partition_columns(

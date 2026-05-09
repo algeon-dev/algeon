@@ -104,7 +104,7 @@ pub(super) fn partition_passthrough_query_plan(
         .with_partition_columns(partition_columns)
         .with_column_roles(projected_columns.clone(), Vec::new());
     let mut group_by = vec![Expr::column("id")];
-    group_by.extend(partition_names.iter().map(|name| Expr::column(name)));
+    group_by.extend(partition_names.iter().map(Expr::column));
     let aggregate =
         AggregateSpec::new(group_by, vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("id"), "sum_id")]);
     let sort = SortSpec::new(vec![SortExpr::new(Expr::column("id"), false, false)]);

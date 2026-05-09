@@ -181,92 +181,117 @@ fn benchmark_report_schema_v4_rows_match_header_columns() {
 }
 
 fn benchmark_metadata() -> TpchDatasetMetadata {
+    benchmark_metadata_for_scale("sf1", 8_661_245, benchmark_sf1_tables())
+}
+
+fn benchmark_sf10_metadata() -> TpchDatasetMetadata {
+    benchmark_metadata_for_scale("sf10", 86_586_082, benchmark_sf10_tables())
+}
+
+fn benchmark_metadata_for_scale(
+    scale_factor: impl Into<String>,
+    total_rows: u64,
+    tables: Vec<TpchTableMetadata>,
+) -> TpchDatasetMetadata {
     TpchDatasetMetadata {
         root: PathBuf::from("/tmp/tpch"),
-        scale_factor: "sf1".to_string(),
+        scale_factor: scale_factor.into(),
         provenance: "external_parquet_root".to_string(),
         generation_command: "dbgen".to_string(),
         table_count: 8,
         file_count: 8,
-        total_rows: 8_661_245,
+        total_rows,
         total_bytes: 8,
         metadata_fingerprint: "metadata-fnv1a64:0000000000000001".to_string(),
         content_fingerprint: Some("content-fnv1a64:0000000000000001".to_string()),
-        tables: benchmark_sf1_tables(),
+        tables,
     }
 }
 
 fn benchmark_sf1_tables() -> Vec<TpchTableMetadata> {
-    [
-        (
-            "customer",
-            150_000,
-            &["c_custkey", "c_name", "c_address", "c_nationkey", "c_phone", "c_acctbal", "c_mktsegment", "c_comment"][..],
-        ),
-        (
-            "lineitem",
-            6_001_215,
-            &[
-                "l_orderkey",
-                "l_partkey",
-                "l_suppkey",
-                "l_linenumber",
-                "l_quantity",
-                "l_extendedprice",
-                "l_discount",
-                "l_tax",
-                "l_returnflag",
-                "l_linestatus",
-                "l_shipdate",
-                "l_commitdate",
-                "l_receiptdate",
-                "l_shipinstruct",
-                "l_shipmode",
-                "l_comment",
-            ][..],
-        ),
-        ("nation", 25, &["n_nationkey", "n_name", "n_regionkey", "n_comment"][..]),
-        (
-            "orders",
-            1_500_000,
-            &[
-                "o_orderkey",
-                "o_custkey",
-                "o_orderstatus",
-                "o_totalprice",
-                "o_orderdate",
-                "o_orderpriority",
-                "o_clerk",
-                "o_shippriority",
-                "o_comment",
-            ][..],
-        ),
-        (
-            "part",
-            200_000,
-            &[
-                "p_partkey",
-                "p_name",
-                "p_mfgr",
-                "p_brand",
-                "p_type",
-                "p_size",
-                "p_container",
-                "p_retailprice",
-                "p_comment",
-            ][..],
-        ),
-        ("partsupp", 800_000, &["ps_partkey", "ps_suppkey", "ps_availqty", "ps_supplycost", "ps_comment"][..]),
-        ("region", 5, &["r_regionkey", "r_name", "r_comment"][..]),
-        (
-            "supplier",
-            10_000,
-            &["s_suppkey", "s_name", "s_address", "s_nationkey", "s_phone", "s_acctbal", "s_comment"][..],
-        ),
-    ]
-    .into_iter()
-    .map(|(table, row_count, columns)| benchmark_table_metadata(table, row_count, columns))
-    .collect()
+    benchmark_tables(&[
+        ("customer", 150_000),
+        ("lineitem", 6_001_215),
+        ("nation", 25),
+        ("orders", 1_500_000),
+        ("part", 200_000),
+        ("partsupp", 800_000),
+        ("region", 5),
+        ("supplier", 10_000),
+    ])
+}
+
+fn benchmark_sf10_tables() -> Vec<TpchTableMetadata> {
+    benchmark_tables(&[
+        ("customer", 1_500_000),
+        ("lineitem", 59_986_052),
+        ("nation", 25),
+        ("orders", 15_000_000),
+        ("part", 2_000_000),
+        ("partsupp", 8_000_000),
+        ("region", 5),
+        ("supplier", 100_000),
+    ])
+}
+
+fn benchmark_tables(row_counts: &[(&str, u64)]) -> Vec<TpchTableMetadata> {
+    row_counts
+        .iter()
+        .map(|(table, row_count)| benchmark_table_metadata(table, *row_count, benchmark_table_columns(table)))
+        .collect()
+}
+
+fn benchmark_table_columns(table: &str) -> &'static [&'static str] {
+    match table {
+        "customer" => {
+            &["c_custkey", "c_name", "c_address", "c_nationkey", "c_phone", "c_acctbal", "c_mktsegment", "c_comment"]
+        },
+        "lineitem" => &[
+            "l_orderkey",
+            "l_partkey",
+            "l_suppkey",
+            "l_linenumber",
+            "l_quantity",
+            "l_extendedprice",
+            "l_discount",
+            "l_tax",
+            "l_returnflag",
+            "l_linestatus",
+            "l_shipdate",
+            "l_commitdate",
+            "l_receiptdate",
+            "l_shipinstruct",
+            "l_shipmode",
+            "l_comment",
+        ],
+        "nation" => &["n_nationkey", "n_name", "n_regionkey", "n_comment"],
+        "orders" => &[
+            "o_orderkey",
+            "o_custkey",
+            "o_orderstatus",
+            "o_totalprice",
+            "o_orderdate",
+            "o_orderpriority",
+            "o_clerk",
+            "o_shippriority",
+            "o_comment",
+        ],
+        "part" => &[
+            "p_partkey",
+            "p_name",
+            "p_mfgr",
+            "p_brand",
+            "p_type",
+            "p_size",
+            "p_container",
+            "p_retailprice",
+            "p_comment",
+        ],
+        "partsupp" => &["ps_partkey", "ps_suppkey", "ps_availqty", "ps_supplycost", "ps_comment"],
+        "region" => &["r_regionkey", "r_name", "r_comment"],
+        "supplier" => &["s_suppkey", "s_name", "s_address", "s_nationkey", "s_phone", "s_acctbal", "s_comment"],
+        other => panic!("unknown benchmark table {other}"),
+    }
 }
 
 fn benchmark_table_metadata(table: &str, row_count: u64, columns: &[&str]) -> TpchTableMetadata {

@@ -52,7 +52,7 @@ pub(super) fn execute_bounded_root_hash_join(
                 node,
                 &left.frame,
                 &left_keys,
-                hash_options.clone(),
+                hash_options,
                 build_side,
                 reservations,
                 metrics,
@@ -85,7 +85,7 @@ pub(super) fn execute_bounded_root_hash_join(
                 node,
                 &right.frame,
                 &right_keys,
-                hash_options.clone(),
+                hash_options,
                 build_side,
                 reservations,
                 metrics,
@@ -258,7 +258,7 @@ fn reserve_and_build_bounded_hash_join(
 ) -> Result<(GpuHashJoinBuildHandle, ActiveReservation, u64)> {
     let hash_table_reservation_bytes = build
         .with_execution(overrides)
-        .hash_join_pre_build_reservation_size_bytes(build_keys, hash_options.clone())
+        .hash_join_pre_build_reservation_size_bytes(build_keys, hash_options)
         .map(|bytes| bytes as u64)
         .map_err(|error| {
             QueryError::from_cudf(

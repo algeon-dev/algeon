@@ -100,8 +100,8 @@ pub fn validate_local_parquet_source(source: &LocalParquetSource) -> Result<()> 
                 .with_fact("row_group", row_group)
                 .with_fact("max_row_group", i32::MAX));
             }
-            if let Some(row_group_bytes) = &file.row_group_bytes
-                && *row_group >= row_group_bytes.len()
+            if let Some(row_group_count) = local_parquet_file_row_group_metadata_count(file)
+                && *row_group >= row_group_count
             {
                 return Err(QueryError::new(
                     QueryErrorCode::InvalidPlan,
@@ -112,12 +112,23 @@ pub fn validate_local_parquet_source(source: &LocalParquetSource) -> Result<()> 
                 .with_fact("file_index", file_index)
                 .with_fact("row_group_position", index)
                 .with_fact("row_group", row_group)
-                .with_fact("max_row_group", row_group_bytes.len().saturating_sub(1)));
+                .with_fact("max_row_group", row_group_count.saturating_sub(1)));
             }
         }
     }
 
     Ok(())
+}
+
+fn local_parquet_file_row_group_metadata_count(file: &LocalParquetFile) -> Option<usize> {
+    file.row_group_bytes
+        .as_ref()
+        .or(file.projected_row_group_uncompressed_bytes.as_ref())
+        .or(file.projected_row_group_compressed_bytes.as_ref())
+        .or(file.pure_filter_row_group_uncompressed_bytes.as_ref())
+        .or(file.pure_filter_row_group_compressed_bytes.as_ref())
+        .or(file.row_group_rows.as_ref())
+        .map(Vec::len)
 }
 
 fn validate_local_parquet_source_contract(source: &LocalParquetSource) -> Result<()> {

@@ -53,7 +53,7 @@ fn cast_count_output_columns_impl(
                     .with_fact("alias", expr.alias.as_str())
                     .with_fact("data_type", format!("{:?}", field.data_type()))
                 })?,
-                *metrics,
+                metrics,
                 "cudf_query_engine.aggregate.cast_count",
             ),
             None => frame.cast_column(expr.alias.as_str(), target_type).map_err(|error| {
@@ -123,7 +123,7 @@ fn cast_avg_output_columns_impl(
                     .with_fact("alias", expr.alias.as_str())
                     .with_fact("data_type", format!("{:?}", field.data_type()))
                 })?,
-                *metrics,
+                metrics,
                 "cudf_query_engine.aggregate.cast_avg",
             ),
             None => frame.cast_column(expr.alias.as_str(), target_type).map_err(|error| {
@@ -195,7 +195,7 @@ fn cast_reduction_output_columns_impl(
                     .with_fact("alias", expr.alias.as_str())
                     .with_fact("data_type", format!("{:?}", field.data_type()))
                 })?,
-                *metrics,
+                metrics,
                 "cudf_query_engine.aggregate.cast_reduction",
             ),
             None => frame.cast_column(expr.alias.as_str(), target_type).map_err(|error| {

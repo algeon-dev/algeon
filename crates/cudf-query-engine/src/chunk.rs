@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::{collections::BTreeSet, path::PathBuf};
 
 use parquet::file::reader::{FileReader, SerializedFileReader};
 
@@ -72,7 +72,12 @@ pub struct SourceChunk {
     pub reads_all_row_groups: bool,
     pub known_file_bytes: Option<u64>,
     pub known_row_group_bytes: Option<u64>,
+    pub known_projected_compressed_bytes: Option<u64>,
+    pub known_projected_uncompressed_bytes: Option<u64>,
+    pub known_pure_filter_compressed_bytes: Option<u64>,
+    pub known_pure_filter_uncompressed_bytes: Option<u64>,
     pub estimated_chunk_bytes: Option<u64>,
+    pub estimated_source_read_bytes: Option<u64>,
     pub read_columns: Vec<String>,
     pub partition_values: Vec<LiteralValue>,
     pub zero_column_count: bool,
@@ -100,7 +105,7 @@ pub fn plan_local_parquet_source_chunks(
     let mut metadata_unavailable_files = 0;
 
     for (file_index, file) in source.files.iter().enumerate() {
-        let metadata = read_parquet_metadata(file);
+        let metadata = read_parquet_metadata(source, file);
         saw_metadata |= metadata.is_some();
         if metadata.is_none() {
             saw_missing_metadata = true;
@@ -190,35 +195,194 @@ fn validate_chunk_planning_source(source: &LocalParquetSource) -> Result<()> {
             )
             .with_fact("file_index", file_index));
         }
+        validate_file_row_group_metadata_lengths(file, file_index)?;
     }
 
     Ok(())
 }
 
-fn read_parquet_metadata(file: &LocalParquetFile) -> Option<RowGroupMetadata> {
-    let file_metadata = SerializedFileReader::try_from(file.path.as_path()).ok().map(|reader| {
-        let metadata = reader.metadata().clone();
-        let row_group_bytes = metadata
-            .row_groups()
-            .iter()
-            .map(|row_group| u64::try_from(row_group.compressed_size()).ok())
-            .collect::<Option<Vec<_>>>();
-        let row_group_rows = metadata
-            .row_groups()
-            .iter()
-            .map(|row_group| u64::try_from(row_group.num_rows()).ok())
-            .collect::<Option<Vec<_>>>();
-        (row_group_bytes, row_group_rows)
-    });
+fn validate_file_row_group_metadata_lengths(file: &LocalParquetFile, file_index: usize) -> Result<()> {
+    let expected_len = [
+        file.row_group_bytes.as_ref(),
+        file.projected_row_group_compressed_bytes.as_ref(),
+        file.projected_row_group_uncompressed_bytes.as_ref(),
+        file.pure_filter_row_group_compressed_bytes.as_ref(),
+        file.pure_filter_row_group_uncompressed_bytes.as_ref(),
+        file.row_group_rows.as_ref(),
+    ]
+    .into_iter()
+    .flatten()
+    .next()
+    .map(Vec::len);
+    let Some(expected_len) = expected_len else {
+        return Ok(());
+    };
+
+    for (field, values) in [
+        ("row_group_bytes", file.row_group_bytes.as_ref()),
+        ("projected_row_group_compressed_bytes", file.projected_row_group_compressed_bytes.as_ref()),
+        ("projected_row_group_uncompressed_bytes", file.projected_row_group_uncompressed_bytes.as_ref()),
+        ("pure_filter_row_group_compressed_bytes", file.pure_filter_row_group_compressed_bytes.as_ref()),
+        ("pure_filter_row_group_uncompressed_bytes", file.pure_filter_row_group_uncompressed_bytes.as_ref()),
+        ("row_group_rows", file.row_group_rows.as_ref()),
+    ] {
+        if let Some(values) = values
+            && values.len() != expected_len
+        {
+            return Err(QueryError::new(
+                QueryErrorCode::InvalidPlan,
+                "cudf_query_engine.source_chunk.plan",
+                "local parquet source row-group metadata vectors must have matching lengths",
+            )
+            .with_fact("reason", "row_group_metadata_count_mismatch")
+            .with_fact("file_index", file_index)
+            .with_fact("field", field)
+            .with_fact("expected_count", expected_len)
+            .with_fact("actual_count", values.len()));
+        }
+    }
+    Ok(())
+}
+
+fn read_parquet_metadata(source: &LocalParquetSource, file: &LocalParquetFile) -> Option<RowGroupMetadata> {
+    let needs_footer_metadata = file.row_group_bytes.is_none()
+        || file.projected_row_group_compressed_bytes.is_none()
+        || file.projected_row_group_uncompressed_bytes.is_none()
+        || file.pure_filter_row_group_compressed_bytes.is_none()
+        || file.pure_filter_row_group_uncompressed_bytes.is_none()
+        || file.row_group_rows.is_none();
+    let file_metadata = if needs_footer_metadata {
+        SerializedFileReader::try_from(file.path.as_path()).ok().map(|reader| {
+            let metadata = reader.metadata().clone();
+            let read_column_indexes = source.read_column_file_indices.iter().copied().collect::<BTreeSet<_>>();
+            let projected_column_indexes = source
+                .projected_output_column_source_refs
+                .iter()
+                .filter_map(|source_ref| match source_ref {
+                    crate::source::SourceColumnRef::File(index) => Some(*index),
+                    crate::source::SourceColumnRef::Partition(_) => None,
+                })
+                .collect::<BTreeSet<_>>();
+            let pure_filter_column_indexes = source
+                .pure_filter_column_source_refs
+                .iter()
+                .filter_map(|source_ref| match source_ref {
+                    crate::source::SourceColumnRef::File(index) if !projected_column_indexes.contains(index) => {
+                        Some(*index)
+                    },
+                    crate::source::SourceColumnRef::File(_) | crate::source::SourceColumnRef::Partition(_) => None,
+                })
+                .collect::<BTreeSet<_>>();
+            let row_group_bytes = metadata
+                .row_groups()
+                .iter()
+                .map(|row_group| row_group_column_bytes(row_group, &read_column_indexes, ColumnByteKind::Compressed))
+                .collect::<Option<Vec<_>>>();
+            let projected_compressed_bytes = metadata
+                .row_groups()
+                .iter()
+                .map(|row_group| {
+                    row_group_column_bytes(row_group, &projected_column_indexes, ColumnByteKind::Compressed)
+                })
+                .collect::<Option<Vec<_>>>();
+            let projected_uncompressed_bytes = metadata
+                .row_groups()
+                .iter()
+                .map(|row_group| {
+                    row_group_column_bytes(row_group, &projected_column_indexes, ColumnByteKind::Uncompressed)
+                })
+                .collect::<Option<Vec<_>>>();
+            let pure_filter_compressed_bytes = metadata
+                .row_groups()
+                .iter()
+                .map(|row_group| {
+                    row_group_column_bytes(row_group, &pure_filter_column_indexes, ColumnByteKind::Compressed)
+                })
+                .collect::<Option<Vec<_>>>();
+            let pure_filter_uncompressed_bytes = metadata
+                .row_groups()
+                .iter()
+                .map(|row_group| {
+                    row_group_column_bytes(row_group, &pure_filter_column_indexes, ColumnByteKind::Uncompressed)
+                })
+                .collect::<Option<Vec<_>>>();
+            let row_group_rows = metadata
+                .row_groups()
+                .iter()
+                .map(|row_group| u64::try_from(row_group.num_rows()).ok())
+                .collect::<Option<Vec<_>>>();
+            (
+                row_group_bytes,
+                projected_compressed_bytes,
+                projected_uncompressed_bytes,
+                pure_filter_compressed_bytes,
+                pure_filter_uncompressed_bytes,
+                row_group_rows,
+            )
+        })
+    } else {
+        None
+    };
     let row_group_bytes =
-        file.row_group_bytes.clone().or_else(|| file_metadata.as_ref().and_then(|(bytes, _rows)| bytes.clone()));
+        file.row_group_bytes.clone().or_else(|| file_metadata.as_ref().and_then(|(bytes, ..)| bytes.clone()));
+    let projected_compressed_bytes = file
+        .projected_row_group_compressed_bytes
+        .clone()
+        .or_else(|| file_metadata.as_ref().and_then(|(_, bytes, ..)| bytes.clone()));
+    let projected_uncompressed_bytes = file
+        .projected_row_group_uncompressed_bytes
+        .clone()
+        .or_else(|| file_metadata.as_ref().and_then(|(_, _, bytes, ..)| bytes.clone()));
+    let pure_filter_compressed_bytes = file
+        .pure_filter_row_group_compressed_bytes
+        .clone()
+        .or_else(|| file_metadata.as_ref().and_then(|(_, _, _, bytes, ..)| bytes.clone()));
+    let pure_filter_uncompressed_bytes = file
+        .pure_filter_row_group_uncompressed_bytes
+        .clone()
+        .or_else(|| file_metadata.as_ref().and_then(|(_, _, _, _, bytes, _rows)| bytes.clone()));
     let row_group_rows =
-        file.row_group_rows.clone().or_else(|| file_metadata.as_ref().and_then(|(_bytes, rows)| rows.clone()));
-    if row_group_bytes.is_some() || row_group_rows.is_some() {
-        Some(RowGroupMetadata { row_group_bytes, row_group_rows })
+        file.row_group_rows.clone().or_else(|| file_metadata.as_ref().and_then(|(_, _, _, _, _, rows)| rows.clone()));
+    if row_group_bytes.is_some()
+        || projected_compressed_bytes.is_some()
+        || projected_uncompressed_bytes.is_some()
+        || pure_filter_compressed_bytes.is_some()
+        || pure_filter_uncompressed_bytes.is_some()
+        || row_group_rows.is_some()
+    {
+        Some(RowGroupMetadata {
+            row_group_bytes,
+            projected_compressed_bytes,
+            projected_uncompressed_bytes,
+            pure_filter_compressed_bytes,
+            pure_filter_uncompressed_bytes,
+            row_group_rows,
+        })
     } else {
         None
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ColumnByteKind {
+    Compressed,
+    Uncompressed,
+}
+
+fn row_group_column_bytes(
+    row_group: &parquet::file::metadata::RowGroupMetaData,
+    column_indexes: &BTreeSet<usize>,
+    kind: ColumnByteKind,
+) -> Option<u64> {
+    column_indexes.iter().try_fold(0u64, |total, column_index| {
+        let column = row_group.columns().get(*column_index)?;
+        let bytes = match kind {
+            ColumnByteKind::Compressed => column.compressed_size(),
+            ColumnByteKind::Uncompressed => column.uncompressed_size(),
+        };
+        let bytes = u64::try_from(bytes).ok()?;
+        total.checked_add(bytes)
+    })
 }
 
 fn planned_row_groups(
@@ -284,11 +448,28 @@ fn append_row_group_chunks(
 
     for row_group in row_groups {
         let row_group_bytes = metadata.and_then(|metadata| metadata.row_group_bytes(*row_group));
+        let projected_compressed_bytes = metadata.and_then(|metadata| metadata.projected_compressed_bytes(*row_group));
+        let projected_uncompressed_bytes =
+            metadata.and_then(|metadata| metadata.projected_uncompressed_bytes(*row_group));
+        let pure_filter_compressed_bytes =
+            metadata.and_then(|metadata| metadata.pure_filter_compressed_bytes(*row_group));
+        let pure_filter_uncompressed_bytes =
+            metadata.and_then(|metadata| metadata.pure_filter_uncompressed_bytes(*row_group));
         let row_group_rows = metadata.and_then(|metadata| metadata.row_group_rows(*row_group));
-        if current.should_flush_before(row_group_bytes, max_row_groups, policy.max_source_chunk_bytes) {
+        let planning_bytes = projected_uncompressed_bytes.or(row_group_bytes);
+        if current.should_flush_before(planning_bytes, max_row_groups, policy.max_source_chunk_bytes) {
             push_pending_chunk(source_node_id, source, file, file_index, row_groups.len(), &mut current, chunks);
         }
-        current.push(*row_group, row_group_bytes, row_group_rows);
+        current.push(
+            *row_group,
+            row_group_bytes,
+            planning_bytes,
+            projected_compressed_bytes,
+            projected_uncompressed_bytes,
+            pure_filter_compressed_bytes,
+            pure_filter_uncompressed_bytes,
+            row_group_rows,
+        );
     }
 
     push_pending_chunk(source_node_id, source, file, file_index, row_groups.len(), &mut current, chunks);
@@ -308,9 +489,19 @@ fn push_pending_chunk(
     }
 
     let known_row_group_bytes = pending.known_bytes();
+    let known_projected_compressed_bytes = pending.known_projected_compressed_bytes();
+    let known_projected_uncompressed_bytes = pending.known_projected_uncompressed_bytes();
+    let known_pure_filter_compressed_bytes = pending.known_pure_filter_compressed_bytes();
+    let known_pure_filter_uncompressed_bytes = pending.known_pure_filter_uncompressed_bytes();
     let known_row_count = pending.known_rows();
-    let estimated_chunk_bytes = known_row_group_bytes
+    let estimated_chunk_bytes = known_projected_uncompressed_bytes
+        .or(known_row_group_bytes)
         .or_else(|| proportional_bytes(file.file_size_bytes, pending.row_groups.len(), planned_row_group_count));
+    let estimated_source_read_bytes = known_projected_uncompressed_bytes
+        .zip(known_pure_filter_uncompressed_bytes)
+        .and_then(|(projected, filter)| projected.checked_add(filter))
+        .or(known_row_group_bytes)
+        .or(estimated_chunk_bytes);
     chunks.push(SourceChunk {
         source_node_id,
         chunk_index: chunks.len(),
@@ -320,7 +511,12 @@ fn push_pending_chunk(
         reads_all_row_groups: false,
         known_file_bytes: file.file_size_bytes,
         known_row_group_bytes,
+        known_projected_compressed_bytes,
+        known_projected_uncompressed_bytes,
+        known_pure_filter_compressed_bytes,
+        known_pure_filter_uncompressed_bytes,
         estimated_chunk_bytes,
+        estimated_source_read_bytes,
         read_columns: source.read_columns.clone(),
         partition_values: file.partition_values.clone(),
         zero_column_count: source.is_zero_column_count_source(),
@@ -346,7 +542,12 @@ fn single_all_row_groups_chunk(
         reads_all_row_groups: true,
         known_file_bytes: file.file_size_bytes,
         known_row_group_bytes: None,
+        known_projected_compressed_bytes: None,
+        known_projected_uncompressed_bytes: None,
+        known_pure_filter_compressed_bytes: None,
+        known_pure_filter_uncompressed_bytes: None,
         estimated_chunk_bytes: file.file_size_bytes,
+        estimated_source_read_bytes: file.file_size_bytes,
         read_columns: source.read_columns.clone(),
         partition_values: file.partition_values.clone(),
         zero_column_count: source.is_zero_column_count_source(),
@@ -369,16 +570,43 @@ fn proportional_bytes(total_bytes: Option<u64>, child_row_groups: usize, parent_
 #[derive(Debug)]
 struct RowGroupMetadata {
     row_group_bytes: Option<Vec<u64>>,
+    projected_compressed_bytes: Option<Vec<u64>>,
+    projected_uncompressed_bytes: Option<Vec<u64>>,
+    pure_filter_compressed_bytes: Option<Vec<u64>>,
+    pure_filter_uncompressed_bytes: Option<Vec<u64>>,
     row_group_rows: Option<Vec<u64>>,
 }
 
 impl RowGroupMetadata {
     fn row_group_count(&self) -> usize {
-        self.row_group_bytes.as_ref().or(self.row_group_rows.as_ref()).map_or(0, Vec::len)
+        self.row_group_bytes
+            .as_ref()
+            .or(self.projected_uncompressed_bytes.as_ref())
+            .or(self.projected_compressed_bytes.as_ref())
+            .or(self.pure_filter_uncompressed_bytes.as_ref())
+            .or(self.pure_filter_compressed_bytes.as_ref())
+            .or(self.row_group_rows.as_ref())
+            .map_or(0, Vec::len)
     }
 
     fn row_group_bytes(&self, row_group: usize) -> Option<u64> {
         self.row_group_bytes.as_ref().and_then(|bytes| bytes.get(row_group).copied())
+    }
+
+    fn projected_compressed_bytes(&self, row_group: usize) -> Option<u64> {
+        self.projected_compressed_bytes.as_ref().and_then(|bytes| bytes.get(row_group).copied())
+    }
+
+    fn projected_uncompressed_bytes(&self, row_group: usize) -> Option<u64> {
+        self.projected_uncompressed_bytes.as_ref().and_then(|bytes| bytes.get(row_group).copied())
+    }
+
+    fn pure_filter_compressed_bytes(&self, row_group: usize) -> Option<u64> {
+        self.pure_filter_compressed_bytes.as_ref().and_then(|bytes| bytes.get(row_group).copied())
+    }
+
+    fn pure_filter_uncompressed_bytes(&self, row_group: usize) -> Option<u64> {
+        self.pure_filter_uncompressed_bytes.as_ref().and_then(|bytes| bytes.get(row_group).copied())
     }
 
     fn row_group_rows(&self, row_group: usize) -> Option<u64> {
@@ -390,18 +618,65 @@ impl RowGroupMetadata {
 struct PendingChunk {
     row_groups: Vec<usize>,
     known_bytes: u64,
+    known_planning_bytes: u64,
+    known_projected_compressed_bytes: u64,
+    known_projected_uncompressed_bytes: u64,
+    known_pure_filter_compressed_bytes: u64,
+    known_pure_filter_uncompressed_bytes: u64,
     known_rows: u64,
     has_unknown_bytes: bool,
+    has_unknown_projected_compressed_bytes: bool,
+    has_unknown_projected_uncompressed_bytes: bool,
+    has_unknown_pure_filter_compressed_bytes: bool,
+    has_unknown_pure_filter_uncompressed_bytes: bool,
     has_unknown_rows: bool,
 }
 
 impl PendingChunk {
-    fn push(&mut self, row_group: usize, row_group_bytes: Option<u64>, row_group_rows: Option<u64>) {
+    #[allow(clippy::too_many_arguments)]
+    fn push(
+        &mut self,
+        row_group: usize,
+        row_group_bytes: Option<u64>,
+        planning_bytes: Option<u64>,
+        projected_compressed_bytes: Option<u64>,
+        projected_uncompressed_bytes: Option<u64>,
+        pure_filter_compressed_bytes: Option<u64>,
+        pure_filter_uncompressed_bytes: Option<u64>,
+        row_group_rows: Option<u64>,
+    ) {
         self.row_groups.push(row_group);
         if let Some(row_group_bytes) = row_group_bytes {
             self.known_bytes = self.known_bytes.saturating_add(row_group_bytes);
         } else {
             self.has_unknown_bytes = true;
+        }
+        if let Some(planning_bytes) = planning_bytes {
+            self.known_planning_bytes = self.known_planning_bytes.saturating_add(planning_bytes);
+        }
+        if let Some(projected_compressed_bytes) = projected_compressed_bytes {
+            self.known_projected_compressed_bytes =
+                self.known_projected_compressed_bytes.saturating_add(projected_compressed_bytes);
+        } else {
+            self.has_unknown_projected_compressed_bytes = true;
+        }
+        if let Some(projected_uncompressed_bytes) = projected_uncompressed_bytes {
+            self.known_projected_uncompressed_bytes =
+                self.known_projected_uncompressed_bytes.saturating_add(projected_uncompressed_bytes);
+        } else {
+            self.has_unknown_projected_uncompressed_bytes = true;
+        }
+        if let Some(pure_filter_compressed_bytes) = pure_filter_compressed_bytes {
+            self.known_pure_filter_compressed_bytes =
+                self.known_pure_filter_compressed_bytes.saturating_add(pure_filter_compressed_bytes);
+        } else {
+            self.has_unknown_pure_filter_compressed_bytes = true;
+        }
+        if let Some(pure_filter_uncompressed_bytes) = pure_filter_uncompressed_bytes {
+            self.known_pure_filter_uncompressed_bytes =
+                self.known_pure_filter_uncompressed_bytes.saturating_add(pure_filter_uncompressed_bytes);
+        } else {
+            self.has_unknown_pure_filter_uncompressed_bytes = true;
         }
         if let Some(row_group_rows) = row_group_rows {
             self.known_rows = self.known_rows.saturating_add(row_group_rows);
@@ -430,11 +705,27 @@ impl PendingChunk {
             return false;
         };
 
-        self.known_bytes.saturating_add(next_row_group_bytes) > max_source_chunk_bytes
+        self.known_planning_bytes.saturating_add(next_row_group_bytes) > max_source_chunk_bytes
     }
 
     fn known_bytes(&self) -> Option<u64> {
         (!self.has_unknown_bytes).then_some(self.known_bytes)
+    }
+
+    fn known_projected_compressed_bytes(&self) -> Option<u64> {
+        (!self.has_unknown_projected_compressed_bytes).then_some(self.known_projected_compressed_bytes)
+    }
+
+    fn known_projected_uncompressed_bytes(&self) -> Option<u64> {
+        (!self.has_unknown_projected_uncompressed_bytes).then_some(self.known_projected_uncompressed_bytes)
+    }
+
+    fn known_pure_filter_compressed_bytes(&self) -> Option<u64> {
+        (!self.has_unknown_pure_filter_compressed_bytes).then_some(self.known_pure_filter_compressed_bytes)
+    }
+
+    fn known_pure_filter_uncompressed_bytes(&self) -> Option<u64> {
+        (!self.has_unknown_pure_filter_uncompressed_bytes).then_some(self.known_pure_filter_uncompressed_bytes)
     }
 
     fn known_rows(&self) -> Option<u64> {
@@ -444,8 +735,17 @@ impl PendingChunk {
     fn clear(&mut self) {
         self.row_groups.clear();
         self.known_bytes = 0;
+        self.known_planning_bytes = 0;
+        self.known_projected_compressed_bytes = 0;
+        self.known_projected_uncompressed_bytes = 0;
+        self.known_pure_filter_compressed_bytes = 0;
+        self.known_pure_filter_uncompressed_bytes = 0;
         self.known_rows = 0;
         self.has_unknown_bytes = false;
+        self.has_unknown_projected_compressed_bytes = false;
+        self.has_unknown_projected_uncompressed_bytes = false;
+        self.has_unknown_pure_filter_compressed_bytes = false;
+        self.has_unknown_pure_filter_uncompressed_bytes = false;
         self.has_unknown_rows = false;
     }
 }

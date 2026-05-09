@@ -166,7 +166,8 @@ fn bounded_native_query_executes_root_full_hash_join_with_symmetric_unmatched_ro
     let right_order_id = int32_array(batch, 1);
     let qty = int32_array(batch, 2);
     let category = string_array(batch, 3);
-    let mut rows: Vec<(Option<i32>, Option<i32>, Option<i32>, Option<String>)> = (0..batch.num_rows())
+    type Row = (Option<i32>, Option<i32>, Option<i32>, Option<String>);
+    let mut rows: Vec<Row> = (0..batch.num_rows())
         .map(|row| {
             (
                 if left_order_id.is_null(row) { None } else { Some(left_order_id.value(row)) },

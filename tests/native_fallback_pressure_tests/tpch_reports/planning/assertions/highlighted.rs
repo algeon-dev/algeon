@@ -5,7 +5,7 @@ pub(super) fn assert_highlighted_planning_rows_and_tsv(
     metadata_fingerprint: &str,
     expected: &PlanningReportExpectations,
 ) {
-    let q07 = planning_row(&report, "q07");
+    let q07 = planning_row(report, "q07");
     assert_eq!(q07.outcome, NativeDataFusionPlanningOutcome::AcceptedReplaced);
     assert_eq!(q07.post_native_plan_root, "NativeCudfExec");
     assert_eq!(q07.post_native_execution_path, NativeDataFusionPostNativeExecutionPath::Native);
@@ -26,7 +26,7 @@ pub(super) fn assert_highlighted_planning_rows_and_tsv(
         Some("mixed_keyed_residual_multi_join_types=inner,left_semi,left_anti")
     );
 
-    let q21 = planning_row(&report, "q21");
+    let q21 = planning_row(report, "q21");
     assert_eq!(q21.outcome, NativeDataFusionPlanningOutcome::AcceptedReplaced);
     assert_eq!(q21.reason_code, None);
     assert_eq!(q21.unsupported_category, None);
@@ -50,7 +50,7 @@ pub(super) fn assert_highlighted_planning_rows_and_tsv(
     );
     assert!(!q21.rejected_before_execution, "q21 should be replaced by native execution");
 
-    let q11 = planning_row(&report, "q11");
+    let q11 = planning_row(report, "q11");
     assert_eq!(q11.outcome, NativeDataFusionPlanningOutcome::AcceptedReplaced);
     assert_eq!(q11.reason_code, None);
     assert_eq!(q11.unsupported_category, None);
@@ -90,7 +90,7 @@ pub(super) fn assert_highlighted_planning_rows_and_tsv(
         Some(expected.keyless_aggregate_over_join_subplan_inputs_capability_detail)
     );
 
-    let q22 = planning_row(&report, "q22");
+    let q22 = planning_row(report, "q22");
     assert_eq!(q22.outcome, NativeDataFusionPlanningOutcome::AcceptedReplaced);
     assert_eq!(q22.reason_code, None);
     assert_eq!(q22.unsupported_category, None);
@@ -122,7 +122,7 @@ pub(super) fn assert_highlighted_planning_rows_and_tsv(
     );
     assert!(!q22.rejected_before_execution, "q22 should be replaced by native execution");
 
-    let q13 = planning_row(&report, "q13");
+    let q13 = planning_row(report, "q13");
     assert_eq!(q13.outcome, NativeDataFusionPlanningOutcome::AcceptedReplaced);
     assert_eq!(q13.reason_code, None);
     assert_eq!(q13.unsupported_category, None);
@@ -138,7 +138,7 @@ pub(super) fn assert_highlighted_planning_rows_and_tsv(
     );
     assert!(!q13.rejected_before_execution, "q13 should be replaced by native execution");
 
-    let q16 = planning_row(&report, "q16");
+    let q16 = planning_row(report, "q16");
     assert_eq!(q16.outcome, NativeDataFusionPlanningOutcome::AcceptedReplaced);
     assert_eq!(q16.reason_code, None);
     assert_eq!(q16.unsupported_category, None);
@@ -168,7 +168,7 @@ pub(super) fn assert_highlighted_planning_rows_and_tsv(
         .collect::<Vec<_>>();
     assert_eq!(rejected_query_ids, vec!["q02", "q15", "q18", "q20"]);
 
-    let q15 = planning_row(&report, "q15");
+    let q15 = planning_row(report, "q15");
     assert_eq!(q15.outcome, NativeDataFusionPlanningOutcome::RejectedBeforeExecution);
     assert_eq!(q15.reason_code.as_deref(), Some("native_bounded_join_unsupported"));
     assert_eq!(q15.unsupported_category.as_deref(), Some("operator_hashjoin"));
@@ -195,7 +195,7 @@ pub(super) fn assert_highlighted_planning_rows_and_tsv(
     assert_eq!(q15.bounded_join_reservation_facts.get("bounded_join_contract_modes").map(String::as_str), None);
     assert!(q15.rejected_before_execution, "q15 should remain rejected before native execution");
 
-    let q17 = planning_row(&report, "q17");
+    let q17 = planning_row(report, "q17");
     assert_eq!(q17.outcome, NativeDataFusionPlanningOutcome::AcceptedReplaced);
     assert_eq!(q17.reason_code, None);
     assert_eq!(q17.unsupported_category, None);

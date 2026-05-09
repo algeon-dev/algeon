@@ -352,7 +352,9 @@ fn bounded_native_query_retries_chunk_after_source_reservation_failure() {
         vec![
             LocalParquetFile::new(&path)
                 .with_file_size_bytes(fs::metadata(&path).unwrap().len())
-                .with_row_group_bytes(vec![4096, 4096, 4096]),
+                .with_row_group_bytes(vec![4096, 4096, 4096])
+                .with_projected_row_group_bytes(vec![4096, 4096, 4096], vec![4096, 4096, 4096])
+                .with_row_group_rows(vec![2, 2, 2]),
         ],
         Arc::clone(&input_schema),
         vec!["key".to_string(), "m00".to_string(), "m01".to_string(), "payload".to_string()],
@@ -375,6 +377,7 @@ fn bounded_native_query_retries_chunk_after_source_reservation_failure() {
         plan_local_parquet_source_chunks(source_id, &source, SourceChunkPlanningPolicy::new(None, 3)).unwrap();
     assert_eq!(one_chunk_plan.chunk_count(), 1);
     let initial_chunk_bytes = one_chunk_plan.chunks[0].known_row_group_bytes.unwrap();
+    let initial_source_read_bytes = one_chunk_plan.chunks[0].estimated_source_read_bytes.unwrap_or(initial_chunk_bytes);
     let filter = builder.add_filter(source_id, filter, Arc::clone(&input_schema));
     let projection = builder.add_projection(filter, projection_outputs(projection, projected_schema));
     let aggregate = builder.add_aggregate(projection, aggregate, Arc::clone(&aggregated_schema));
@@ -385,7 +388,7 @@ fn bounded_native_query_retries_chunk_after_source_reservation_failure() {
     let context = ExecutionContext::builder()
         .with_shared_runtime(Arc::clone(&runtime))
         .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: initial_chunk_bytes.saturating_sub(1),
+            device_budget_bytes: initial_source_read_bytes.saturating_sub(1),
             max_source_chunk_bytes: initial_chunk_bytes,
             max_row_groups_per_chunk: 3,
             max_retry_attempts: 3,
