@@ -1,3 +1,5 @@
+use aws_smithy_types::error::ErrorMetadata;
+
 use super::*;
 
 pub(super) const CATALOG_BACKEND_OP: &str = "datafusion_nexus.iceberg.catalog_backend";
@@ -109,12 +111,22 @@ struct AwsCatalogErrorFacts {
 impl AwsCatalogErrorFacts {
     fn from_error(source: &(dyn StdError + 'static)) -> Option<Self> {
         let text = error_chain_text(source);
-        let error_code = aws_error_code_fact(&text);
-        let detail = aws_error_detail_fact(&text, error_code);
+        let typed = typed_aws_facts(source);
+        let error_code = typed
+            .as_ref()
+            .and_then(|metadata| metadata.code().and_then(canonical_aws_error_code))
+            .or_else(|| aws_error_code_fact(&text));
+        let detail = typed
+            .as_ref()
+            .and_then(|metadata| metadata.code().and_then(canonical_aws_error_detail))
+            .or_else(|| aws_error_detail_fact(&text, error_code));
         let facts = Self {
             error_code,
             request_id: aws_request_id_fact(&text),
-            http_status: aws_http_status_fact(&text),
+            http_status: typed
+                .as_ref()
+                .and_then(|metadata| metadata.code().and_then(aws_http_status_from_code))
+                .or_else(|| aws_http_status_fact(&text)),
             retryable: aws_retryable_fact(&text),
             detail,
         };
@@ -155,6 +167,50 @@ fn error_chain_text(source: &(dyn StdError + 'static)) -> String {
         current = source.source();
     }
     text
+}
+
+fn typed_aws_facts<'a>(source: &'a (dyn StdError + 'static)) -> Option<&'a ErrorMetadata> {
+    let mut current: &(dyn StdError + 'static) = source;
+    for _ in 0..32 {
+        if let Some(metadata) = current.downcast_ref::<ErrorMetadata>() {
+            return Some(metadata);
+        }
+        current = current.source()?;
+    }
+    None
+}
+
+fn canonical_aws_error_code(code: &str) -> Option<&'static str> {
+    match code {
+        "ExpiredTokenException" | "ExpiredToken" => Some("ExpiredTokenException"),
+        "InvalidAccessKeyId" => Some("InvalidAccessKeyId"),
+        "UnrecognizedClientException" => Some("UnrecognizedClientException"),
+        "AccessDeniedException" | "AccessDenied" => Some("AccessDeniedException"),
+        "SignatureDoesNotMatch" => Some("SignatureDoesNotMatch"),
+        "EntityNotFoundException" => Some("EntityNotFoundException"),
+        _ => None,
+    }
+}
+
+fn canonical_aws_error_detail(code: &str) -> Option<&'static str> {
+    match canonical_aws_error_code(code) {
+        Some("ExpiredTokenException") => Some("expired_token"),
+        Some("InvalidAccessKeyId") => Some("invalid_access_key"),
+        Some("UnrecognizedClientException") => Some("invalid_client"),
+        Some("AccessDeniedException") => Some("access_denied"),
+        Some("SignatureDoesNotMatch") => Some("signature_mismatch"),
+        Some("EntityNotFoundException") => Some("not_found"),
+        _ => None,
+    }
+}
+
+fn aws_http_status_from_code(code: &str) -> Option<&'static str> {
+    match canonical_aws_error_code(code) {
+        Some("AccessDeniedException") | Some("SignatureDoesNotMatch") => Some("403"),
+        Some("ExpiredTokenException") | Some("InvalidAccessKeyId") | Some("UnrecognizedClientException") => Some("401"),
+        Some("EntityNotFoundException") => Some("404"),
+        _ => None,
+    }
 }
 
 fn aws_error_code_fact(text: &str) -> Option<&'static str> {
@@ -238,6 +294,22 @@ fn extract_quoted_marker(text: &str, marker: &str) -> Option<String> {
     let end = value.find('"')?;
     let value = &value[..end];
     (!value.is_empty()).then(|| value.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn typed_smithy_metadata_precedes_rendered_error_text() {
+        let metadata = ErrorMetadata::builder().code("AccessDeniedException").build();
+        let source = std::io::Error::new(std::io::ErrorKind::Other, metadata);
+        let facts = AwsCatalogErrorFacts::from_error(&source).expect("typed metadata should be discovered");
+
+        assert_eq!(facts.error_code, Some("AccessDeniedException"));
+        assert_eq!(facts.detail, Some("access_denied"));
+        assert_eq!(facts.http_status, Some("403"));
+    }
 }
 
 fn extract_value_after(text: &str, marker: &str) -> Option<String> {
