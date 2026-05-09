@@ -512,6 +512,40 @@ fn test_inner_join_indices_honor_null_equality() {
 }
 
 #[test]
+fn test_outer_join_indices_honor_null_equality_and_preserve_unmatched_rows() {
+    let left_keys =
+        Table::from_columns(vec![column_from_slice_nullable(&[1i32, 0, 2, 0], &[true, false, true, false]).unwrap()])
+            .unwrap();
+    let right_keys =
+        Table::from_columns(vec![column_from_slice_nullable(&[0i32, 2, 0], &[false, true, false]).unwrap()]).unwrap();
+    let left_view = left_keys.testing_view().unwrap();
+    let right_view = right_keys.testing_view().unwrap();
+
+    let left_equal = join::left_join_indices(&left_view, &right_view, NullEquality::Equal).unwrap();
+    let left_unequal = join::left_join_indices(&left_view, &right_view, NullEquality::Unequal).unwrap();
+    let full_equal = join::full_join_indices(&left_view, &right_view, NullEquality::Equal).unwrap();
+    let full_unequal = join::full_join_indices(&left_view, &right_view, NullEquality::Unequal).unwrap();
+
+    assert_eq!(sorted_join_index_pairs(&left_equal), vec![(0, JOIN_NO_MATCH), (1, 0), (1, 2), (2, 1), (3, 0), (3, 2)]);
+    assert_eq!(
+        sorted_join_index_pairs(&left_unequal),
+        vec![(0, JOIN_NO_MATCH), (1, JOIN_NO_MATCH), (2, 1), (3, JOIN_NO_MATCH)]
+    );
+    assert_eq!(sorted_join_index_pairs(&full_equal), sorted_join_index_pairs(&left_equal));
+    assert_eq!(
+        sorted_join_index_pairs(&full_unequal),
+        vec![
+            (JOIN_NO_MATCH, 0),
+            (JOIN_NO_MATCH, 2),
+            (0, JOIN_NO_MATCH),
+            (1, JOIN_NO_MATCH),
+            (2, 1),
+            (3, JOIN_NO_MATCH),
+        ]
+    );
+}
+
+#[test]
 fn test_hash_join_supports_duplicate_build_keys_and_repeated_probes() {
     use cudf::ops::join::{HashJoin, HashJoinOptions};
 

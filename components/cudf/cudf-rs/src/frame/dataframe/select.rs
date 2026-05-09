@@ -1,8 +1,11 @@
 use std::sync::Arc;
 
-use super::owned::DataFrame;
+use super::{
+    info::{ColumnMemoryIdentity, FrameColumnMemoryAlias, FrameMemoryEffect},
+    owned::DataFrame,
+};
 use crate::{
-    core::error::Result,
+    core::{column::Column, error::Result},
     frame::{
         factorization::{Codebook, Factorized},
         series::Series,
@@ -12,6 +15,12 @@ use crate::{
         resolve::{duplicate_column_name_error, missing_column_error},
     },
 };
+
+struct ResolvedSelectColumn {
+    name: String,
+    input_position: usize,
+    column: Arc<Column>,
+}
 
 impl DataFrame {
     /// Return the [`Series`] values for the given column.
@@ -158,6 +167,48 @@ impl DataFrame {
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
+        let resolved = self.resolve_select_columns(columns, "dataframe::select")?;
+        let mut new_columns = fast_index_map_with_capacity(resolved.len());
+        for column in resolved {
+            new_columns.insert(column.name, column.column);
+        }
+
+        Ok(Self { columns: new_columns, row_count: self.row_count, domain: Arc::clone(&self.domain) })
+    }
+
+    /// Return the lower-level memory ownership effect for
+    /// [`select`](Self::select) with the same validation contract.
+    ///
+    /// `select` is schema-only: every output column aliases a retained input
+    /// column owner through `Arc::clone`; no GPU data is allocated or copied.
+    pub fn select_memory_effect<I, S>(&self, columns: I) -> Result<FrameMemoryEffect>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let resolved = self.resolve_select_columns(columns, "dataframe::select_memory_effect")?;
+        let output_columns = resolved
+            .into_iter()
+            .enumerate()
+            .map(|(output_position, column)| {
+                let identity = ColumnMemoryIdentity::from_column_arc(&column.column);
+                FrameColumnMemoryAlias {
+                    input_position: column.input_position,
+                    input_name: column.name.clone(),
+                    output_position,
+                    output_name: column.name,
+                    identity,
+                }
+            })
+            .collect();
+        Ok(FrameMemoryEffect::AliasOfInput { input: self.memory_identity(), output_columns })
+    }
+
+    fn resolve_select_columns<I, S>(&self, columns: I, operation: &'static str) -> Result<Vec<ResolvedSelectColumn>>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
         let columns: Vec<String> = columns.into_iter().map(|name| name.as_ref().to_string()).collect();
 
         // Reject duplicates to keep schema (name -> index) consistent.
@@ -165,7 +216,7 @@ impl DataFrame {
         for name in &columns {
             if !seen.insert(name.as_str()) {
                 return Err(duplicate_column_name_error(
-                    "dataframe::select",
+                    operation,
                     name.clone(),
                     columns.len(),
                     "selected columns must be unique",
@@ -173,13 +224,14 @@ impl DataFrame {
             }
         }
 
-        let mut new_columns = fast_index_map_with_capacity(columns.len());
-        for name in &columns {
-            let col = self.columns.get(name.as_str()).ok_or_else(|| missing_column_error("dataframe::select", name))?;
-            new_columns.insert(name.clone(), Arc::clone(col));
+        let mut resolved = Vec::with_capacity(columns.len());
+        for name in columns {
+            let input_position =
+                self.columns.get_index_of(name.as_str()).ok_or_else(|| missing_column_error(operation, &name))?;
+            let column = Arc::clone(self.columns.get_index(input_position).expect("column index was just resolved").1);
+            resolved.push(ResolvedSelectColumn { name, input_position, column });
         }
-
-        Ok(Self { columns: new_columns, row_count: self.row_count, domain: Arc::clone(&self.domain) })
+        Ok(resolved)
     }
 
     /// Returns a new `DataFrame` value that excludes the specified columns.

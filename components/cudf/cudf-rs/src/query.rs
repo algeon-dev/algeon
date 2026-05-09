@@ -1,7 +1,7 @@
 //! Query-oriented public request types.
 //!
 //! This module is a stable lowering target for query engines. It reuses the
-//! eager [`Expr`](crate::Expr) DSL and adds named projection, aggregate, and
+//! eager [`Expr`] DSL and adds named projection, aggregate, and
 //! sort request types so downstream adapters do not need to maintain a second
 //! expression vocabulary just to carry output names and query operator shape.
 
@@ -363,7 +363,7 @@ impl QueryAggregateSpec {
 /// A single query sort key.
 ///
 /// The expression is materialized as a temporary GPU column used only for
-/// sorting. Defaults from [`ascending`] and [`descending`] are nulls-last.
+/// sorting. Defaults from [`Self::ascending`] and [`Self::descending`] are nulls-last.
 #[derive(Clone)]
 pub struct QuerySortExpr {
     expr: Expr,

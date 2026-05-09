@@ -16,6 +16,7 @@ use cudf::{
         SourceColumnRole, SourceOutputColumn, SourceReadMode, SourceRequiredColumn, SourceSchema,
         ZERO_COLUMN_COUNT_COLUMN, plan_local_parquet_source_chunks,
     },
+    ops::ast::AstExpression,
     runtime::QueryStageKind,
     testing::prelude::*,
 };
@@ -133,6 +134,53 @@ fn read_parquet_source_single_file_projects_and_records_boundary() {
         DataFrame::read_parquet_source_with_mode(&rt, &source, SourceReadMode::ExecutionFrame).unwrap();
     assert_eq!(execution_frame.column_names(), vec!["id_alias", "filter_only"]);
     assert_eq!(execution_frame.series("filter_only").unwrap().to_vec_strict::<i32>().unwrap(), vec![7, 8, 9]);
+}
+
+#[test]
+fn read_parquet_source_chunk_applies_reader_predicate() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("reader_predicate.parquet");
+    let rt = sample_runtime();
+
+    write_parquet_df(
+        &path,
+        &["id", "value"],
+        vec![column_from_slice(&[1i32, 2, 3]).unwrap(), column_from_slice(&[10i64, 20, 30]).unwrap()],
+        0,
+    );
+
+    let predicate = AstExpression::greater(
+        AstExpression::left_column(0).unwrap(),
+        AstExpression::literal(rt.scalar(1i32).unwrap()).unwrap(),
+    )
+    .unwrap();
+    let source = LocalParquetSource::data(
+        [LocalParquetFile::new(&path, "part-0", []).unwrap()],
+        SourceSchema::new([
+            SourceColumn::new("id", dtype(TypeId::Int32), false).unwrap(),
+            SourceColumn::new("value", dtype(TypeId::Int64), false).unwrap(),
+        ])
+        .unwrap(),
+        ["id", "value"],
+        [
+            SourceOutputColumn::new("id", SourceColumnRef::ReadColumn(0)).unwrap(),
+            SourceOutputColumn::new("value", SourceColumnRef::ReadColumn(1)).unwrap(),
+        ],
+        [],
+        [],
+    )
+    .unwrap()
+    .with_reader_predicate(std::sync::Arc::new(predicate))
+    .unwrap();
+
+    let plan = plan_local_parquet_source_chunks(&source, Default::default()).unwrap();
+    let frame =
+        DataFrame::read_parquet_source_chunk(&rt, &source, &plan.chunks()[0], SourceReadMode::FinalOutput).unwrap();
+
+    assert_eq!(source.diagnostics().predicate_disposition(), cudf::io::source::PredicateDisposition::ReaderPushdown);
+    assert_eq!(frame.column_names(), vec!["id", "value"]);
+    assert_eq!(frame.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![2, 3]);
+    assert_eq!(frame.series("value").unwrap().to_vec_strict::<i64>().unwrap(), vec![20, 30]);
 }
 
 #[test]

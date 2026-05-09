@@ -1,6 +1,8 @@
+use std::{fmt, sync::Arc};
+
 use super::owned::DataFrame;
 use crate::{
-    core::{error::Result, types::DataType},
+    core::{column::Column, error::Result, types::DataType},
     internal::hash::{FastHashMap, fast_hash_map_with_capacity},
     runtime::{
         BoundaryKind, BoundaryObservation, QueryMemoryObservation, QueryStageKind,
@@ -141,6 +143,94 @@ pub struct ColumnMemoryAccounting {
     pub device_allocated_bytes: Option<usize>,
 }
 
+/// Opaque retained-owner identity for a DataFrame column.
+///
+/// This identity is stable while the retained column owner is alive and is
+/// intended for alias/ownership accounting. It is deliberately not an
+/// allocation pointer contract.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ColumnMemoryIdentity(usize);
+
+impl ColumnMemoryIdentity {
+    pub(crate) fn from_column_arc(column: &Arc<Column>) -> Self {
+        Self(Arc::as_ptr(column) as usize)
+    }
+}
+
+impl fmt::Debug for ColumnMemoryIdentity {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("ColumnMemoryIdentity(<opaque>)")
+    }
+}
+
+/// Retained-owner identity for one DataFrame column.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DataFrameColumnMemoryIdentity {
+    /// Zero-based schema position in the observed DataFrame.
+    pub position: usize,
+    /// Column name at that position.
+    pub name: String,
+    /// Opaque retained-owner identity for the column.
+    pub identity: ColumnMemoryIdentity,
+}
+
+/// Retained-owner identity snapshot for a DataFrame.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DataFrameMemoryIdentity {
+    /// Logical row count.
+    pub row_count: usize,
+    /// Schema column identities in order.
+    pub columns: Vec<DataFrameColumnMemoryIdentity>,
+}
+
+impl DataFrameMemoryIdentity {
+    /// Schema column count.
+    pub fn column_count(&self) -> usize {
+        self.columns.len()
+    }
+}
+
+/// Mapping proving that one output column aliases one input column owner.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FrameColumnMemoryAlias {
+    /// Input column position.
+    pub input_position: usize,
+    /// Input column name.
+    pub input_name: String,
+    /// Output column position.
+    pub output_position: usize,
+    /// Output column name.
+    pub output_name: String,
+    /// Shared retained-owner identity.
+    pub identity: ColumnMemoryIdentity,
+}
+
+/// Operation-level DataFrame memory ownership effect.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FrameMemoryEffect {
+    /// Output columns are metadata aliases of input columns and retain the
+    /// same column owners.
+    AliasOfInput {
+        /// Retained-owner identity of the input frame.
+        input: DataFrameMemoryIdentity,
+        /// Column-level alias proof in output schema order.
+        output_columns: Vec<FrameColumnMemoryAlias>,
+    },
+    /// The operation returns newly owned output allocations unless a more
+    /// specific lower-level contract says otherwise.
+    NewAllocation {
+        /// Retained-owner identity of the output frame.
+        output: DataFrameMemoryIdentity,
+    },
+}
+
+impl FrameMemoryEffect {
+    /// Returns true when the effect proves that no output column owner is new.
+    pub fn is_alias_of_input(&self) -> bool {
+        matches!(self, Self::AliasOfInput { .. })
+    }
+}
+
 fn data_type_sort_key(dtype: DataType) -> (i32, i32) {
     (dtype.id() as i32, dtype.scale())
 }
@@ -268,6 +358,26 @@ impl DataFrame {
                 None
             },
         })
+    }
+
+    /// Return retained-owner identities for this DataFrame's columns.
+    ///
+    /// This is a metadata-only ownership snapshot for query engines that need
+    /// to distinguish schema aliases from newly materialized output columns.
+    /// The identity is based on retained column ownership, not byte counts or
+    /// raw allocation addresses.
+    pub fn memory_identity(&self) -> DataFrameMemoryIdentity {
+        let columns = self
+            .columns
+            .iter()
+            .enumerate()
+            .map(|(position, (name, column))| DataFrameColumnMemoryIdentity {
+                position,
+                name: name.clone(),
+                identity: ColumnMemoryIdentity::from_column_arc(column),
+            })
+            .collect();
+        DataFrameMemoryIdentity { row_count: self.row_count, columns }
     }
 
     /// Return query-stage memory facts without requiring callers to use `info_with` as a metrics API.

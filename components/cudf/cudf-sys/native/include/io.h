@@ -3,6 +3,7 @@
 
 #include "error.h"
 #include "execution_context.h"
+#include "ast.h"
 #include "table.h"
 
 #include <stddef.h>
@@ -107,6 +108,23 @@ cudf_status_t cudf_io_read_parquet_with_metadata_ex(const char* filepath,
                                                     char*** out_names,
                                                     int32_t* out_num_names,
                                                     const cudf_exec_options_t* exec_options);
+
+/// Read Parquet with metadata, explicit execution context, and an optional
+/// libcudf AST reader predicate.
+///
+/// `predicate` may be NULL. When non-NULL, it must outlive this call.
+cudf_status_t cudf_io_read_parquet_with_metadata_filter_ex(const char* filepath,
+                                                           const char** columns,
+                                                           int32_t num_columns,
+                                                           int64_t skip_rows,
+                                                           int64_t num_rows,
+                                                           const int32_t* row_groups,
+                                                           int32_t num_row_groups,
+                                                           cudf_ast_expression_handle predicate,
+                                                           cudf_table_handle* out_table,
+                                                           char*** out_names,
+                                                           int32_t* out_num_names,
+                                                           const cudf_exec_options_t* exec_options);
 
 /// Free column name array returned by `cudf_io_read_parquet_with_metadata`.
 void cudf_io_free_column_names(char** names, int32_t num_names);

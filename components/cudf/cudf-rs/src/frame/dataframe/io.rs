@@ -26,6 +26,7 @@ use crate::{
             plan_local_parquet_source_chunks,
         },
     },
+    ops::ast::AstExpression,
     runtime::{
         BoundaryKind, BudgetedExecutionOutcome, ExecutionBudgetToken, QueryStageKind, Runtime,
         execution_domain::ExecutionDomain,
@@ -103,8 +104,26 @@ fn parquet_source_budget_context(
     if let Some(known_row_group_bytes) = chunk.known_row_group_bytes() {
         facts.insert("known_row_group_bytes".to_string(), known_row_group_bytes.to_string());
     }
+    if let Some(known_projected_compressed_bytes) = chunk.known_projected_compressed_bytes() {
+        facts.insert("known_projected_compressed_bytes".to_string(), known_projected_compressed_bytes.to_string());
+    }
+    if let Some(known_projected_uncompressed_bytes) = chunk.known_projected_uncompressed_bytes() {
+        facts.insert("known_projected_uncompressed_bytes".to_string(), known_projected_uncompressed_bytes.to_string());
+    }
+    if let Some(known_pure_filter_compressed_bytes) = chunk.known_pure_filter_compressed_bytes() {
+        facts.insert("known_pure_filter_compressed_bytes".to_string(), known_pure_filter_compressed_bytes.to_string());
+    }
+    if let Some(known_pure_filter_uncompressed_bytes) = chunk.known_pure_filter_uncompressed_bytes() {
+        facts.insert(
+            "known_pure_filter_uncompressed_bytes".to_string(),
+            known_pure_filter_uncompressed_bytes.to_string(),
+        );
+    }
     if let Some(estimated_chunk_bytes) = chunk.estimated_chunk_bytes() {
         facts.insert("estimated_chunk_bytes".to_string(), estimated_chunk_bytes.to_string());
+    }
+    if let Some(estimated_source_read_bytes) = chunk.estimated_source_read_bytes() {
+        facts.insert("estimated_source_read_bytes".to_string(), estimated_source_read_bytes.to_string());
     }
     if let Some(known_row_count) = chunk.known_row_count() {
         facts.insert("known_row_count".to_string(), known_row_count.to_string());
@@ -203,6 +222,8 @@ pub struct ParquetReadOptions {
     num_rows: Option<usize>,
     #[builder(default, setter(transform = |groups: &[i32]| if groups.is_empty() { None } else { Some(groups.to_vec()) }))]
     row_groups: Option<Vec<i32>>,
+    #[builder(default, setter(strip_option, into))]
+    predicate: Option<Arc<AstExpression>>,
     #[builder(setter(prefix = "with_", transform = |runtime: &Runtime| runtime.clone()))]
     runtime: Runtime,
 }
@@ -215,6 +236,7 @@ impl ParquetReadOptions {
             self.skip_rows,
             self.num_rows,
             self.row_groups.clone(),
+            self.predicate.clone(),
             self.runtime.clone(),
         )
     }
@@ -246,7 +268,7 @@ impl MultiParquetReadOptions {
     }
 
     fn to_single_file_options(&self, filepath: PathBuf) -> ParquetTableReadOptions {
-        ParquetTableReadOptions::from_parts(filepath, self.columns.clone(), 0, None, None, self.runtime.clone())
+        ParquetTableReadOptions::from_parts(filepath, self.columns.clone(), 0, None, None, None, self.runtime.clone())
     }
 }
 
@@ -419,7 +441,12 @@ fn missing_source_row_count_error(operation: &'static str, chunk: &SourceChunk) 
     .with_detail("path", chunk.path().display().to_string())
 }
 
-fn source_ref_series(frame: &DataFrame, source: &LocalParquetSource, source_ref: SourceColumnRef) -> Result<Series> {
+fn source_ref_series(
+    frame: &DataFrame,
+    source: &LocalParquetSource,
+    source_ref: SourceColumnRef,
+    materialized_name: &str,
+) -> Result<Series> {
     match source_ref {
         SourceColumnRef::ReadColumn(index) => {
             let name = source.read_columns().get(index).ok_or_else(|| {
@@ -446,6 +473,7 @@ fn source_ref_series(frame: &DataFrame, source: &LocalParquetSource, source_ref:
             frame.series(column.name())
         },
         SourceColumnRef::ZeroColumnCount => frame.series(crate::io::source::ZERO_COLUMN_COUNT_COLUMN),
+        SourceColumnRef::MissingNull => frame.series(materialized_name),
     }
 }
 
@@ -456,7 +484,7 @@ fn project_source_frame(frame: &DataFrame, source: &LocalParquetSource, mode: So
     let mut seen: FastHashSet<String> = fast_hash_set_with_capacity(seen_capacity);
 
     for output in source.output_columns() {
-        let series = source_ref_series(frame, source, output.source())?;
+        let series = source_ref_series(frame, source, output.source(), output.name())?;
         seen.insert(output.name().to_string());
         pairs.push((output.name().to_string(), series));
     }
@@ -466,7 +494,7 @@ fn project_source_frame(frame: &DataFrame, source: &LocalParquetSource, mode: So
             if seen.contains(required.name()) {
                 continue;
             }
-            let series = source_ref_series(frame, source, required.source())?;
+            let series = source_ref_series(frame, source, required.source(), required.name())?;
             seen.insert(required.name().to_string());
             pairs.push((required.name().to_string(), series));
         }
@@ -529,7 +557,7 @@ fn empty_parquet_source_frame(
     DataFrame::from_series(pairs).map_err(|error| error.reanchor("dataframe::read_parquet_source"))
 }
 
-fn null_partition_scalar(runtime: &Runtime, data_type: DataType) -> Result<Scalar> {
+fn null_source_scalar(runtime: &Runtime, data_type: DataType) -> Result<Scalar> {
     match data_type.id() {
         TypeId::Bool8 => runtime.null_scalar::<bool>(),
         TypeId::Int8 => runtime.null_scalar::<i8>(),
@@ -552,9 +580,9 @@ fn null_partition_scalar(runtime: &Runtime, data_type: DataType) -> Result<Scala
                 Error::new_with(
                     ErrorCode::UnsupportedDtype,
                     "dataframe::read_parquet_source",
-                    "partition null timestamp dtype is not supported",
+                    "source null timestamp dtype is not supported",
                 )
-                .with_detail("reason", "unsupported_partition_null_dtype")
+                .with_detail("reason", "unsupported_source_null_dtype")
             })?;
             runtime.null_timestamp_raw_scalar(resolution)
         },
@@ -567,9 +595,9 @@ fn null_partition_scalar(runtime: &Runtime, data_type: DataType) -> Result<Scala
                 Error::new_with(
                     ErrorCode::UnsupportedDtype,
                     "dataframe::read_parquet_source",
-                    "partition null duration dtype is not supported",
+                    "source null duration dtype is not supported",
                 )
-                .with_detail("reason", "unsupported_partition_null_dtype")
+                .with_detail("reason", "unsupported_source_null_dtype")
             })?;
             runtime.null_duration_raw_scalar(resolution)
         },
@@ -577,15 +605,15 @@ fn null_partition_scalar(runtime: &Runtime, data_type: DataType) -> Result<Scala
         _ => Err(Error::new_with(
             ErrorCode::UnsupportedDtype,
             "dataframe::read_parquet_source",
-            "partition null dtype is not supported",
+            "source null dtype is not supported",
         )
-        .with_detail("reason", "unsupported_partition_null_dtype")),
+        .with_detail("reason", "unsupported_source_null_dtype")),
     }
 }
 
 fn partition_scalar_series(runtime: &Runtime, value: &PartitionValue, len: usize) -> Result<Series> {
     let scalar = match value {
-        PartitionValue::Null(data_type) => null_partition_scalar(runtime, *data_type)?,
+        PartitionValue::Null(data_type) => null_source_scalar(runtime, *data_type)?,
         PartitionValue::Boolean(value) => runtime.scalar(*value)?,
         PartitionValue::Int8(value) => runtime.scalar(*value)?,
         PartitionValue::Int16(value) => runtime.scalar(*value)?,
@@ -604,6 +632,83 @@ fn partition_scalar_series(runtime: &Runtime, value: &PartitionValue, len: usize
         PartitionValue::String(value) => runtime.string_scalar(value)?,
     };
     runtime.series_from_scalar(&scalar, len)
+}
+
+fn materialize_missing_null_columns(
+    runtime: &Runtime,
+    source: &LocalParquetSource,
+    frame: DataFrame,
+    row_count_override: Option<usize>,
+    mode: SourceReadMode,
+) -> Result<DataFrame> {
+    let row_count = row_count_override.unwrap_or_else(|| frame.num_rows());
+    let mut frame = frame;
+    let planned_count = source.output_columns().len()
+        + if mode == SourceReadMode::ExecutionFrame { source.required_columns().len() } else { 0 };
+    let mut seen = fast_hash_set_with_capacity(planned_count);
+
+    for output in source.output_columns() {
+        if output.source() != SourceColumnRef::MissingNull || !seen.insert(output.name().to_string()) {
+            continue;
+        }
+        frame = materialize_one_missing_null_column(runtime, source, frame, output.name(), row_count)?;
+    }
+
+    if mode == SourceReadMode::ExecutionFrame {
+        for required in source.required_columns() {
+            if required.source() != SourceColumnRef::MissingNull || !seen.insert(required.name().to_string()) {
+                continue;
+            }
+            frame = materialize_one_missing_null_column(runtime, source, frame, required.name(), row_count)?;
+        }
+    }
+
+    Ok(frame)
+}
+
+fn materialize_one_missing_null_column(
+    runtime: &Runtime,
+    source: &LocalParquetSource,
+    frame: DataFrame,
+    name: &str,
+    row_count: usize,
+) -> Result<DataFrame> {
+    let schema_column = source.schema().column(name).ok_or_else(|| {
+        Error::new_with(
+            ErrorCode::MissingColumn,
+            "dataframe::read_parquet_source",
+            "source schema does not contain missing nullable column",
+        )
+        .with_column(name.to_string())
+        .with_detail("reason", "schema_column_missing")
+    })?;
+    if !schema_column.nullable() {
+        return Err(Error::new_with(
+            ErrorCode::NullUnexpected,
+            "dataframe::read_parquet_source",
+            "missing source columns can only materialize nullable target columns",
+        )
+        .with_column(name.to_string())
+        .with_detail("reason", "missing_null_for_non_nullable_column"));
+    }
+    let scalar = null_source_scalar(runtime, schema_column.data_type()).map_err(|error| {
+        error
+            .reanchor("dataframe::read_parquet_source")
+            .with_detail("reason", "missing_null_materialization_failed")
+            .with_column(name.to_string())
+    })?;
+    let series = runtime.series_from_scalar(&scalar, row_count).map_err(|error| {
+        error
+            .reanchor("dataframe::read_parquet_source")
+            .with_detail("reason", "missing_null_materialization_failed")
+            .with_column(name.to_string())
+    })?;
+    frame.with_column(name, series).map_err(|error| {
+        error
+            .reanchor("dataframe::read_parquet_source")
+            .with_detail("reason", "missing_null_column_insert_failed")
+            .with_column(name.to_string())
+    })
 }
 
 fn materialize_partition_columns(
@@ -674,6 +779,7 @@ fn read_parquet_source_chunk_frame(
             0,
             None,
             row_groups,
+            source.reader_predicate().cloned(),
             runtime.clone(),
         );
         let result = parquet::read_parquet_table(&table_options).map_err(|error| {
@@ -696,6 +802,7 @@ fn read_parquet_source_chunk_frame(
     };
 
     frame = materialize_partition_columns(runtime, source, chunk, frame, row_count_override)?;
+    frame = materialize_missing_null_columns(runtime, source, frame, row_count_override, mode)?;
     project_source_frame(&frame, source, mode).map_err(|error| error.reanchor(operation))
 }
 

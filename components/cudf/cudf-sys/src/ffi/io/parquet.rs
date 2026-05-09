@@ -1,6 +1,8 @@
 use std::os::raw::c_char;
 
-use crate::{cudf_exec_options_t, cudf_status_t, cudf_table_handle, cudf_table_view_handle};
+use crate::{
+    cudf_ast_expression_handle, cudf_exec_options_t, cudf_status_t, cudf_table_handle, cudf_table_view_handle,
+};
 
 extern "C" {
     // -- I/O: Parquet --------------------------------------------------------
@@ -61,6 +63,28 @@ extern "C" {
         num_rows: i64,
         row_groups: *const i32,
         num_row_groups: i32,
+        out_table: *mut cudf_table_handle,
+        out_names: *mut *mut *mut c_char,
+        out_num_names: *mut i32,
+        options: *const cudf_exec_options_t,
+    ) -> cudf_status_t;
+
+    /// Read Parquet with metadata, explicit execution context, and an optional
+    /// libcudf AST reader predicate.
+    ///
+    /// Passing null for `predicate` preserves ordinary unfiltered reader
+    /// behavior. Passing null for `options`, or leaving `options->stream` /
+    /// `options->mr` null, uses cuDF's default stream and current device
+    /// memory resource.
+    pub fn cudf_io_read_parquet_with_metadata_filter_ex(
+        filepath: *const c_char,
+        columns: *const *const c_char,
+        num_columns: i32,
+        skip_rows: i64,
+        num_rows: i64,
+        row_groups: *const i32,
+        num_row_groups: i32,
+        predicate: cudf_ast_expression_handle,
         out_table: *mut cudf_table_handle,
         out_names: *mut *mut *mut c_char,
         out_num_names: *mut i32,
