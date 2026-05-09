@@ -1,6 +1,6 @@
 use std::os::raw::c_void;
 
-use crate::{cudf_memory_resource_handle, cudf_status_t};
+use crate::{cudf_memory_resource_handle, cudf_memory_resource_usage_t, cudf_status_t};
 
 extern "C" {
     // -- Memory Resource -----------------------------------------------------
@@ -27,6 +27,19 @@ extern "C" {
         upstream: cudf_memory_resource_handle,
         allocation_limit: usize,
         out: *mut cudf_memory_resource_handle,
+    ) -> cudf_status_t;
+
+    /// Create an owned budget-tracking memory resource handle around `upstream`.
+    pub fn cudf_memory_resource_create_budget_tracking(
+        upstream: cudf_memory_resource_handle,
+        allocation_limit: usize,
+        out: *mut cudf_memory_resource_handle,
+    ) -> cudf_status_t;
+
+    /// Read usage counters from a budget-tracking memory resource.
+    pub fn cudf_memory_resource_usage(
+        handle: cudf_memory_resource_handle,
+        out: *mut cudf_memory_resource_usage_t,
     ) -> cudf_status_t;
 
     /// Destroy a memory resource created by this shim on its owning device.

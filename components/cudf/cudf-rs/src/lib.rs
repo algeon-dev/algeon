@@ -183,6 +183,7 @@ pub mod testing;
 // — Types and error —
 pub use core::{
     error::{Error, ErrorCode, ErrorKind, ErrorStatus, Result},
+    memory::{DeviceMemoryResource, DeviceMemoryResourceUsage},
     scalar::IntoRuntimeScalar,
     types::{CudfType, DataType, NullEquality, NullPolicy, TimestampResolution, TypeId},
 };

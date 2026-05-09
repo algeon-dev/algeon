@@ -416,6 +416,52 @@ pub type cudf_memory_resource_handle = *mut c_void;
 pub type cudf_arrow_schema_handle = *mut c_void;
 pub type cudf_arrow_device_array_handle = *mut c_void;
 
+pub const CUDF_MEMORY_RESOURCE_USAGE_RESERVED_SLOTS: usize = 8;
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct cudf_memory_resource_usage_t {
+    pub struct_size: usize,
+    pub allocation_limit_bytes: u64,
+    pub current_bytes: u64,
+    pub peak_bytes: u64,
+    pub total_bytes: u64,
+    pub current_aligned_bytes: u64,
+    pub peak_aligned_bytes: u64,
+    pub total_allocations: u64,
+    pub current_allocations: u64,
+    pub peak_allocations: u64,
+    pub failed_allocation_count: u64,
+    pub largest_failed_allocation_bytes: u64,
+    pub reserved: [u64; CUDF_MEMORY_RESOURCE_USAGE_RESERVED_SLOTS],
+}
+
+impl cudf_memory_resource_usage_t {
+    pub const fn defaults() -> Self {
+        Self {
+            struct_size: std::mem::size_of::<Self>(),
+            allocation_limit_bytes: 0,
+            current_bytes: 0,
+            peak_bytes: 0,
+            total_bytes: 0,
+            current_aligned_bytes: 0,
+            peak_aligned_bytes: 0,
+            total_allocations: 0,
+            current_allocations: 0,
+            peak_allocations: 0,
+            failed_allocation_count: 0,
+            largest_failed_allocation_bytes: 0,
+            reserved: [0; CUDF_MEMORY_RESOURCE_USAGE_RESERVED_SLOTS],
+        }
+    }
+}
+
+impl Default for cudf_memory_resource_usage_t {
+    fn default() -> Self {
+        Self::defaults()
+    }
+}
+
 pub const CUDF_ARROW_DEVICE_TYPE_CPU: i32 = 1;
 pub const CUDF_ARROW_DEVICE_TYPE_CUDA: i32 = 2;
 pub const CUDF_ARROW_DEVICE_TYPE_CUDA_HOST: i32 = 3;

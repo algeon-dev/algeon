@@ -78,6 +78,40 @@ use crate::{
     runtime::device_guard::DeviceGuard,
 };
 
+/// Usage counters reported by a production budget-tracking memory resource.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DeviceMemoryResourceUsage {
+    pub allocation_limit_bytes: u64,
+    pub current_bytes: u64,
+    pub peak_bytes: u64,
+    pub total_bytes: u64,
+    pub current_aligned_bytes: u64,
+    pub peak_aligned_bytes: u64,
+    pub total_allocations: u64,
+    pub current_allocations: u64,
+    pub peak_allocations: u64,
+    pub failed_allocation_count: u64,
+    pub largest_failed_allocation_bytes: u64,
+}
+
+impl From<cudf_sys::cudf_memory_resource_usage_t> for DeviceMemoryResourceUsage {
+    fn from(value: cudf_sys::cudf_memory_resource_usage_t) -> Self {
+        Self {
+            allocation_limit_bytes: value.allocation_limit_bytes,
+            current_bytes: value.current_bytes,
+            peak_bytes: value.peak_bytes,
+            total_bytes: value.total_bytes,
+            current_aligned_bytes: value.current_aligned_bytes,
+            peak_aligned_bytes: value.peak_aligned_bytes,
+            total_allocations: value.total_allocations,
+            current_allocations: value.current_allocations,
+            peak_allocations: value.peak_allocations,
+            failed_allocation_count: value.failed_allocation_count,
+            largest_failed_allocation_bytes: value.largest_failed_allocation_bytes,
+        }
+    }
+}
+
 /// An owned device memory resource.
 ///
 /// Wraps an `rmm::mr::device_memory_resource` via the C shim.
@@ -206,6 +240,51 @@ impl DeviceMemoryResource {
             ],
         )?;
         Self::from_created_handle(handle, self.device(), "memory::device_memory_resource::limiting")
+    }
+
+    /// Create a hard-limiting memory resource that also reports current and
+    /// peak allocation counters.
+    ///
+    /// The returned resource uses `self` as its upstream allocator, rejects
+    /// allocations once aligned live bytes through the adaptor would exceed
+    /// `allocation_limit_bytes`, and exposes requested/aligned live-byte
+    /// counters through [`DeviceMemoryResource::budget_tracking_usage`].
+    pub fn budget_tracking_limit(&self, allocation_limit_bytes: usize) -> Result<Self> {
+        let _guard = DeviceGuard::new(self.device())?;
+        let mut handle = ptr::null_mut();
+        // SAFETY: handle is initialized to null and set by the C shim on success.
+        error::check_status_in_with_details(
+            unsafe {
+                cudf_sys::cudf_memory_resource_create_budget_tracking(
+                    self.handle.raw.as_ptr(),
+                    allocation_limit_bytes,
+                    &mut handle,
+                )
+            },
+            "memory::device_memory_resource::budget_tracking_limit",
+            [
+                ("allocation_limit_bytes", allocation_limit_bytes.to_string()),
+                ("upstream_device", self.device().ordinal().to_string()),
+            ],
+        )?;
+        Self::from_created_handle(handle, self.device(), "memory::device_memory_resource::budget_tracking_limit")
+    }
+
+    /// Read usage counters from a budget-tracking memory resource.
+    ///
+    /// The returned counters are diagnostic snapshots loaded independently;
+    /// they are not a multi-field atomic live-polling snapshot. Operation
+    /// reports should query usage after the budgeted call returns.
+    ///
+    /// Returns an error if this resource was not created by
+    /// [`DeviceMemoryResource::budget_tracking_limit`].
+    pub fn budget_tracking_usage(&self) -> Result<DeviceMemoryResourceUsage> {
+        let mut usage = cudf_sys::cudf_memory_resource_usage_t::default();
+        error::check_status_in(
+            unsafe { cudf_sys::cudf_memory_resource_usage(self.handle.raw.as_ptr(), &mut usage) },
+            "memory::device_memory_resource::budget_tracking_usage",
+        )?;
+        Ok(usage.into())
     }
 
     /// The CUDA device this memory resource was created on.
