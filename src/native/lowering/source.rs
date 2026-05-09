@@ -74,7 +74,8 @@ pub(super) fn lower_source_input(
         column_requirements.projected_output_column_source_refs.clone(),
         column_requirements.pure_filter_column_source_refs.clone(),
     )
-    .with_partition_columns(column_requirements.partition_columns.clone());
+    .with_partition_columns(column_requirements.partition_columns.clone())
+    .with_scan_limit(file_scan.limit);
     native_source.diagnostics = local_parquet_source_diagnostics(
         file_scan,
         parquet_source,

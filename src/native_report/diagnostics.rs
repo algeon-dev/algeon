@@ -86,6 +86,7 @@ pub(super) fn summarize_source_diagnostics(diagnostics: &NativeSourceDiagnostics
         byte_range_disposition: diagnostics.byte_range_disposition.as_str().to_string(),
         partition_column_disposition: diagnostics.partition_column_disposition.as_str().to_string(),
         zero_column_count_disposition: diagnostics.zero_column_count_disposition.as_str().to_string(),
+        scan_limit_disposition: diagnostics.scan_limit_disposition.as_str().to_string(),
         schema_mapping_disposition: diagnostics.schema_mapping_disposition.as_str().to_string(),
         read_column_count: diagnostics.read_column_count,
         projected_output_column_count: diagnostics.projected_output_column_count,

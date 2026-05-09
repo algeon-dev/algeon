@@ -48,6 +48,7 @@ pub use runtime::{
 };
 pub use source::{
     ByteRangeDisposition, GpuResidentSource, LocalParquetFile, LocalParquetSource, PartitionColumn,
-    PartitionColumnDisposition, PredicateDisposition, RejectedSourceFeature, SchemaMappingDisposition, SourceColumnRef,
-    SourceDiagnostics, SourceFormat, SourceNode, ZERO_COLUMN_COUNT_COLUMN, ZeroColumnCountDisposition,
+    PartitionColumnDisposition, PredicateDisposition, RejectedSourceFeature, ScanLimitDisposition,
+    SchemaMappingDisposition, SourceColumnRef, SourceDiagnostics, SourceFormat, SourceNode, ZERO_COLUMN_COUNT_COLUMN,
+    ZeroColumnCountDisposition,
 };

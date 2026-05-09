@@ -9,6 +9,7 @@ pub(super) struct LocalParquetDiagnosticColumns<'a> {
     pub(super) pure_filter_columns: &'a [String],
     pub(super) pure_filter_column_source_refs: &'a [SourceColumnRef],
     pub(super) partition_columns: &'a [PartitionColumn],
+    pub(super) scan_limit: Option<usize>,
 }
 
 /// Frontend-visible source capability and lowering diagnostics.
@@ -38,6 +39,8 @@ pub struct SourceDiagnostics {
     pub partition_column_disposition: PartitionColumnDisposition,
     /// Whether metadata-only zero-column count was required and represented.
     pub zero_column_count_disposition: ZeroColumnCountDisposition,
+    /// Whether a source-level scan limit is absent or represented.
+    pub scan_limit_disposition: ScanLimitDisposition,
     /// How logical source columns map to physical or synthetic source columns.
     pub schema_mapping_disposition: SchemaMappingDisposition,
     /// Number of physical Parquet columns read by the native source.
@@ -87,6 +90,8 @@ impl SourceDiagnostics {
         } else {
             PartitionColumnDisposition::Represented
         };
+        let scan_limit_disposition =
+            if columns.scan_limit.is_some() { ScanLimitDisposition::Represented } else { ScanLimitDisposition::Absent };
         Self {
             format: SourceFormat::Parquet,
             direct_device_read: rejected_features.is_empty(),
@@ -98,11 +103,34 @@ impl SourceDiagnostics {
             byte_range_disposition: ByteRangeDisposition::FullFiles,
             partition_column_disposition,
             zero_column_count_disposition,
+            scan_limit_disposition,
             schema_mapping_disposition,
             read_column_count: columns.read_columns.len(),
             projected_output_column_count: columns.projected_output_columns.len(),
             pure_filter_column_count: columns.pure_filter_columns.len(),
             rejected_features,
+        }
+    }
+}
+
+/// Disposition of a source-level scan limit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ScanLimitDisposition {
+    /// No scan limit was attached to the source.
+    Absent,
+    /// Scan limit is represented by native source execution.
+    Represented,
+    /// Scan limit was present but could not be represented safely.
+    Rejected,
+}
+
+impl ScanLimitDisposition {
+    /// Stable lower-case code used by reports.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Absent => "absent",
+            Self::Represented => "represented",
+            Self::Rejected => "rejected",
         }
     }
 }

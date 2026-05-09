@@ -4,8 +4,8 @@ use arrow::datatypes::SchemaRef;
 use cudf_query_engine::{
     ByteRangeDisposition as NativeByteRangeDisposition, PartitionColumnDisposition as NativePartitionColumnDisposition,
     PredicateDisposition as NativePredicateDisposition, RejectedSourceFeature as NativeRejectedSourceFeature,
-    SchemaMappingDisposition as NativeSchemaMappingDisposition, SourceDiagnostics as NativeSourceDiagnostics,
-    ZeroColumnCountDisposition as NativeZeroColumnCountDisposition,
+    ScanLimitDisposition as NativeScanLimitDisposition, SchemaMappingDisposition as NativeSchemaMappingDisposition,
+    SourceDiagnostics as NativeSourceDiagnostics, ZeroColumnCountDisposition as NativeZeroColumnCountDisposition,
 };
 use datafusion::{
     datasource::physical_plan::{FileScanConfig, ParquetSource},
@@ -160,7 +160,8 @@ pub(in crate::native) fn local_parquet_source_diagnostics(
     if file_scan.expr_adapter_factory.is_some() {
         rejected_features.push(NativeRejectedSourceFeature::ExprAdapter);
     }
-    if file_scan.limit.is_some() {
+    let scan_limit_disposition = scan_limit_disposition(file_scan, &files);
+    if scan_limit_disposition == NativeScanLimitDisposition::Rejected {
         rejected_features.push(NativeRejectedSourceFeature::ScanLimit);
     }
     if file_scan.preserve_order {
@@ -183,7 +184,7 @@ pub(in crate::native) fn local_parquet_source_diagnostics(
         && file_scan.object_store_url.as_str().starts_with("file://")
         && partition_column_disposition != NativePartitionColumnDisposition::Rejected
         && file_scan.expr_adapter_factory.is_none()
-        && file_scan.limit.is_none()
+        && scan_limit_disposition != NativeScanLimitDisposition::Rejected
         && !file_scan.preserve_order
         && file_scan.output_ordering.is_empty()
         && coalesced_files.is_ok();
@@ -217,10 +218,28 @@ pub(in crate::native) fn local_parquet_source_diagnostics(
         byte_range_disposition,
         partition_column_disposition,
         zero_column_count_disposition,
+        scan_limit_disposition,
         schema_mapping_disposition: NativeSchemaMappingDisposition::DirectByName,
         read_column_count,
         projected_output_column_count,
         pure_filter_column_count,
         rejected_features,
+    }
+}
+
+fn scan_limit_disposition(
+    file_scan: &FileScanConfig,
+    files: &[&datafusion::datasource::listing::PartitionedFile],
+) -> NativeScanLimitDisposition {
+    if file_scan.limit.is_none() {
+        return NativeScanLimitDisposition::Absent;
+    }
+    if file_scan.preserve_order
+        || !file_scan.output_ordering.is_empty()
+        || files.iter().any(|file| file.ordering.is_some())
+    {
+        NativeScanLimitDisposition::Rejected
+    } else {
+        NativeScanLimitDisposition::Represented
     }
 }

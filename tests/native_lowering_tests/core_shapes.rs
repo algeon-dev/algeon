@@ -235,7 +235,7 @@ fn tpch_like_source_types_do_not_reject_native_planning() {
 }
 
 #[test]
-fn pushed_down_scan_limit_is_rejected_during_native_planning() {
+fn order_insensitive_pushed_down_scan_limit_lowers_to_native_source() {
     let dir = unique_temp_dir("datafusion-cudf-native-lowering-scan-property");
     let path = dir.join("input.parquet");
     write_numeric_parquet_file(&path);
@@ -244,12 +244,14 @@ fn pushed_down_scan_limit_is_rejected_during_native_planning() {
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert!(result.plans.is_empty());
-    assert_eq!(result.rejected_count(), 1);
-    assert!(matches!(
-        result.report.outcomes()[0],
-        CandidateOutcome::Rejected { reason: FallbackReason::NativeSourceScanLimit, .. }
-    ));
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    let source = native_local_parquet_source(&result.plans[0]);
+    assert_eq!(source.scan_limit, Some(1));
+    assert_eq!(source.diagnostics.scan_limit_disposition.as_str(), "represented");
+    assert!(source.diagnostics.rejected_features.is_empty());
+    assert_eq!(result.source_diagnostics.len(), 1);
+    assert_eq!(result.source_diagnostics[0].scan_limit_disposition.as_str(), "represented");
 
     fs::remove_dir_all(dir).unwrap();
 }

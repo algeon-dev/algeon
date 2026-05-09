@@ -100,6 +100,7 @@ pub struct SourceChunk {
     pub partition_values: Vec<LiteralValue>,
     pub zero_column_count: bool,
     pub known_row_count: Option<u64>,
+    pub scan_limit_rows: Option<usize>,
     pub size_estimate_based: bool,
 }
 
@@ -163,6 +164,8 @@ pub fn plan_local_parquet_source_chunks_with_metadata_cache(
         );
     }
 
+    chunks = apply_source_scan_limit_to_chunks(source, chunks)?;
+
     if source.is_zero_column_count_source()
         && let Some(chunk) = chunks.iter().find(|chunk| chunk.known_row_count.is_none())
     {
@@ -186,6 +189,70 @@ pub fn plan_local_parquet_source_chunks_with_metadata_cache(
         metadata_load_time,
         metadata_load_count,
     })
+}
+
+fn apply_source_scan_limit_to_chunks(
+    source: &LocalParquetSource,
+    chunks: Vec<SourceChunk>,
+) -> Result<Vec<SourceChunk>> {
+    let Some(scan_limit) = source.scan_limit else {
+        return Ok(chunks);
+    };
+    if chunks.is_empty() {
+        return Ok(chunks);
+    }
+
+    let mut remaining = u64::try_from(scan_limit).map_err(|_error| {
+        QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "cudf_query_engine.source_chunk.scan_limit",
+            "source scan limit exceeds native row-count range",
+        )
+        .with_fact("scan_limit", scan_limit)
+    })?;
+    let mut limited = Vec::new();
+    for mut chunk in chunks {
+        let known_row_count = chunk.known_row_count.ok_or_else(|| {
+            QueryError::new(
+                QueryErrorCode::InvalidPlan,
+                "cudf_query_engine.source_chunk.scan_limit",
+                "source scan limit requires row-count metadata for planned chunks",
+            )
+            .with_fact("path", chunk.path.display())
+            .with_fact("file_index", chunk.file_index)
+            .with_fact("chunk_index", chunk.chunk_index)
+        })?;
+
+        if remaining == 0 {
+            if limited.is_empty() {
+                chunk.scan_limit_rows = Some(0);
+                chunk.known_row_count = Some(0);
+                limited.push(chunk);
+            }
+            break;
+        }
+
+        if known_row_count <= remaining {
+            remaining = remaining.saturating_sub(known_row_count);
+            limited.push(chunk);
+            continue;
+        }
+
+        let keep_rows = usize::try_from(remaining).map_err(|_error| {
+            QueryError::new(
+                QueryErrorCode::InvalidPlan,
+                "cudf_query_engine.source_chunk.scan_limit",
+                "source scan limit chunk slice exceeds native row-count range",
+            )
+            .with_fact("scan_limit", scan_limit)
+            .with_fact("remaining_rows", remaining)
+        })?;
+        chunk.scan_limit_rows = Some(keep_rows);
+        chunk.known_row_count = Some(remaining);
+        limited.push(chunk);
+        break;
+    }
+    Ok(limited)
 }
 
 #[derive(Debug, Default)]
@@ -627,6 +694,7 @@ fn push_pending_chunk(
         partition_values: file.partition_values.clone(),
         zero_column_count: source.is_zero_column_count_source(),
         known_row_count,
+        scan_limit_rows: None,
         size_estimate_based: known_row_group_bytes.is_none(),
     });
     pending.clear();
@@ -666,6 +734,7 @@ fn single_all_row_groups_chunk(
         partition_values: file.partition_values.clone(),
         zero_column_count: source.is_zero_column_count_source(),
         known_row_count: None,
+        scan_limit_rows: None,
         size_estimate_based: true,
     }
 }

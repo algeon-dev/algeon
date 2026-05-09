@@ -43,7 +43,24 @@ fn local_parquet_source_tracks_direct_source_diagnostics() {
     assert_eq!(source.diagnostics.byte_range_disposition, ByteRangeDisposition::FullFiles);
     assert_eq!(source.diagnostics.partition_column_disposition, PartitionColumnDisposition::Absent);
     assert_eq!(source.diagnostics.zero_column_count_disposition, ZeroColumnCountDisposition::NotRequired);
+    assert_eq!(source.diagnostics.scan_limit_disposition, ScanLimitDisposition::Absent);
     assert_eq!(source.diagnostics.schema_mapping_disposition, SchemaMappingDisposition::DirectByName);
+    assert!(source.diagnostics.rejected_features.is_empty());
+}
+
+#[test]
+fn local_parquet_source_represents_order_insensitive_scan_limit() {
+    let schema = Arc::new(Schema::new(vec![Field::new("key", DataType::UInt32, false)]));
+    let source = LocalParquetSource::from_files(
+        vec![LocalParquetFile::new("/tmp/phase4.parquet").with_row_group_rows(vec![5, 7])],
+        schema,
+        vec!["key".to_string()],
+    )
+    .with_scan_limit(Some(9));
+
+    validate_local_parquet_source(&source).unwrap();
+    assert_eq!(source.scan_limit, Some(9));
+    assert_eq!(source.diagnostics.scan_limit_disposition, ScanLimitDisposition::Represented);
     assert!(source.diagnostics.rejected_features.is_empty());
 }
 
@@ -153,6 +170,9 @@ fn source_disposition_names_are_stable_manifest_values() {
     assert_eq!(ZeroColumnCountDisposition::NotRequired.as_str(), "not_required");
     assert_eq!(ZeroColumnCountDisposition::Rejected.as_str(), "rejected");
     assert_eq!(ZeroColumnCountDisposition::Represented.as_str(), "represented");
+    assert_eq!(ScanLimitDisposition::Absent.as_str(), "absent");
+    assert_eq!(ScanLimitDisposition::Rejected.as_str(), "rejected");
+    assert_eq!(ScanLimitDisposition::Represented.as_str(), "represented");
     assert_eq!(SchemaMappingDisposition::DirectByName.as_str(), "direct_by_name");
     assert_eq!(SchemaMappingDisposition::Rejected.as_str(), "rejected");
 }

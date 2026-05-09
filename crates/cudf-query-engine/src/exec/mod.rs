@@ -59,7 +59,8 @@ use crate::{
     },
     source::{
         ByteRangeDisposition, GpuResidentSource, LocalParquetFile, LocalParquetSource, PartitionColumn,
-        PartitionColumnDisposition, SchemaMappingDisposition, ZERO_COLUMN_COUNT_COLUMN, ZeroColumnCountDisposition,
+        PartitionColumnDisposition, ScanLimitDisposition, SchemaMappingDisposition, ZERO_COLUMN_COUNT_COLUMN,
+        ZeroColumnCountDisposition,
     },
 };
 

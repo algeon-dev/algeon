@@ -46,9 +46,6 @@ pub(super) fn validate_slice1_parquet_scan(
     if file_scan.expr_adapter_factory.is_some() {
         return Err(FallbackReason::NativeSourceExprAdapter);
     }
-    if file_scan.limit.is_some() {
-        return Err(FallbackReason::NativeSourceScanLimit);
-    }
     if file_scan.preserve_order {
         return Err(FallbackReason::NativeSourcePreserveOrder);
     }
