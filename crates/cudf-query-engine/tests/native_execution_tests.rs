@@ -20,8 +20,8 @@ use cudf_query_engine::{
     GpuResidentInputMap, GpuResidentSource, GpuResultHandle, JoinKey, JoinNullEquality, JoinOutputColumn, JoinSide,
     JoinSpec, JoinType, LimitSpec, LiteralValue, LocalParquetFile, LocalParquetSource, MemoryControlPolicy,
     MemorySpaceId, PartitionColumn, ProjectionOutput, QueryErrorCode, QueryMetrics, QueryOutput, QueryPlanBuilder,
-    ReservationKind, SortExpr, SortSpec, SourceChunkPlanningPolicy, SourceNode, ZERO_COLUMN_COUNT_COLUMN,
-    execute_query_plan, execute_query_plan_with_gpu_inputs, materialize_gpu_result_to_host,
+    ReservationKind, SortExpr, SortSpec, SourceChunkPlanningPolicy, SourceNode, SourceSchedulerPolicy,
+    ZERO_COLUMN_COUNT_COLUMN, execute_query_plan, execute_query_plan_with_gpu_inputs, materialize_gpu_result_to_host,
     plan_local_parquet_source_chunks,
 };
 use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};

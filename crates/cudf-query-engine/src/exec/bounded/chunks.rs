@@ -1,4 +1,7 @@
-use super::{super::source::read_local_parquet_chunk, *};
+use super::{
+    super::source::{ScheduledLocalParquetRead, ScheduledLocalParquetReadOutput, read_local_parquet_chunk},
+    *,
+};
 
 pub(super) fn execute_bounded_chunk_with_retry(
     context: &ExecutionContext,
@@ -25,6 +28,287 @@ pub(super) fn execute_bounded_chunk_with_retry(
     )
 }
 
+pub(super) fn execute_bounded_chunks_with_source_scheduler(
+    context: &ExecutionContext,
+    bounded: &BoundedPlan<'_>,
+    chunks: &[SourceChunk],
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+) -> Result<Vec<CommittedPartial>> {
+    let MemoryControlPolicy::Bounded { max_retry_attempts, min_retry_chunk_row_groups, .. } =
+        context.memory_control_policy()
+    else {
+        unreachable!("execute_bounded_chunks_with_source_scheduler is called only for bounded policies");
+    };
+    let max_attempts = max_retry_attempts.max(1);
+    let min_retry_chunk_row_groups = min_retry_chunk_row_groups.max(1);
+    if !context.source_scheduler_policy().enables_prefetch() || chunks.len() <= 1 {
+        let mut partials = Vec::with_capacity(chunks.len());
+        for chunk in chunks {
+            partials.extend(execute_bounded_chunk_with_retry(context, bounded, chunk, reservations, metrics)?);
+        }
+        return Ok(partials);
+    }
+
+    let mut partials = Vec::with_capacity(chunks.len());
+    let mut pending = Some(start_required_scheduled_source_read(
+        context,
+        bounded.source,
+        &chunks[0],
+        reservations,
+        metrics,
+        1,
+        max_attempts,
+    )?);
+
+    for (index, chunk) in chunks.iter().enumerate() {
+        let scheduled =
+            pending.take().expect("source scheduler should always have a current read before processing a chunk");
+        let source = match finish_scheduled_source_read(scheduled, reservations, metrics, 1, max_attempts) {
+            Ok(source) => source,
+            Err(error) if is_prefetch_chunk_error(&error) && is_retryable_chunk_error(&error) => {
+                metrics.record_source_read_prefetch_abandoned();
+                partials.extend(execute_bounded_chunk_with_retry(context, bounded, chunk, reservations, metrics)?);
+                pending = start_next_required_read(
+                    context,
+                    bounded.source,
+                    chunks,
+                    index + 1,
+                    reservations,
+                    metrics,
+                    max_attempts,
+                )?;
+                continue;
+            },
+            Err(error) if is_retryable_chunk_error(&error) => {
+                partials.extend(retry_after_chunk_error(
+                    context,
+                    bounded,
+                    chunk.clone(),
+                    error,
+                    reservations,
+                    metrics,
+                    1,
+                    max_attempts,
+                    min_retry_chunk_row_groups,
+                )?);
+                pending = start_next_required_read(
+                    context,
+                    bounded.source,
+                    chunks,
+                    index + 1,
+                    reservations,
+                    metrics,
+                    max_attempts,
+                )?;
+                continue;
+            },
+            Err(error) => return Err(error),
+        };
+
+        let mut next_prefetch = None;
+        let result = execute_bounded_chunk_operator_from_source(
+            context,
+            bounded,
+            source,
+            reservations,
+            metrics,
+            1,
+            max_attempts,
+            |reservations, metrics| {
+                next_prefetch = try_start_optional_scheduled_source_read(
+                    context,
+                    bounded.source,
+                    chunks.get(index + 1),
+                    reservations,
+                    metrics,
+                    1,
+                    max_attempts,
+                )?;
+                Ok(())
+            },
+        );
+
+        match result {
+            Ok(partial) => partials.push(partial),
+            Err(error) if is_retryable_chunk_error(&error) => {
+                if let Some(prefetch) = next_prefetch.take() {
+                    prefetch.abandon(reservations, metrics);
+                }
+                partials.extend(retry_after_chunk_error(
+                    context,
+                    bounded,
+                    chunk.clone(),
+                    error,
+                    reservations,
+                    metrics,
+                    1,
+                    max_attempts,
+                    min_retry_chunk_row_groups,
+                )?);
+            },
+            Err(error) => {
+                if let Some(prefetch) = next_prefetch.take() {
+                    prefetch.abandon(reservations, metrics);
+                }
+                return Err(error);
+            },
+        }
+
+        pending = match next_prefetch {
+            Some(prefetch) => Some(prefetch),
+            None => start_next_required_read(
+                context,
+                bounded.source,
+                chunks,
+                index + 1,
+                reservations,
+                metrics,
+                max_attempts,
+            )?,
+        };
+    }
+
+    Ok(partials)
+}
+
+fn start_next_required_read(
+    context: &ExecutionContext,
+    source: &LocalParquetSource,
+    chunks: &[SourceChunk],
+    index: usize,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+    max_attempts: usize,
+) -> Result<Option<ScheduledLocalParquetRead>> {
+    chunks
+        .get(index)
+        .map(|chunk| {
+            start_required_scheduled_source_read(context, source, chunk, reservations, metrics, 1, max_attempts)
+        })
+        .transpose()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn start_required_scheduled_source_read(
+    context: &ExecutionContext,
+    source: &LocalParquetSource,
+    chunk: &SourceChunk,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+    attempt: usize,
+    max_attempts: usize,
+) -> Result<ScheduledLocalParquetRead> {
+    let requested_bytes = chunk_requested_bytes(context.memory_control_policy(), chunk);
+    start_scheduled_source_read(
+        context,
+        source,
+        chunk,
+        reservations,
+        metrics,
+        requested_bytes,
+        "source_chunk_read",
+        attempt,
+        max_attempts,
+        false,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn try_start_optional_scheduled_source_read(
+    context: &ExecutionContext,
+    source: &LocalParquetSource,
+    chunk: Option<&SourceChunk>,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+    attempt: usize,
+    max_attempts: usize,
+) -> Result<Option<ScheduledLocalParquetRead>> {
+    let Some(chunk) = chunk else {
+        return Ok(None);
+    };
+    let requested_bytes = prefetch_requested_bytes(context.memory_control_policy(), chunk);
+    if !reservations.can_reserve(requested_bytes) {
+        metrics.record_source_read_prefetch_skipped();
+        return Ok(None);
+    }
+    metrics.record_source_read_prefetch_started();
+    start_scheduled_source_read(
+        context,
+        source,
+        chunk,
+        reservations,
+        metrics,
+        requested_bytes,
+        "source_chunk_prefetch",
+        attempt,
+        max_attempts,
+        true,
+    )
+    .map(Some)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn start_scheduled_source_read(
+    context: &ExecutionContext,
+    source: &LocalParquetSource,
+    chunk: &SourceChunk,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+    requested_bytes: u64,
+    budget_boundary: &'static str,
+    attempt: usize,
+    max_attempts: usize,
+    strict_token_budget: bool,
+) -> Result<ScheduledLocalParquetRead> {
+    metrics.record_source_chunk_attempt();
+    let request = chunk_reservation_request(
+        ReservationKind::SourceRead,
+        budget_boundary,
+        requested_bytes,
+        reservations.budget(),
+        chunk,
+        attempt,
+        max_attempts,
+    );
+    let reservation = reservations.try_reserve(request, metrics)?;
+    let source_token_budget =
+        if strict_token_budget { reservation.bytes() } else { reservations.available_bytes_including(&reservation) };
+    Ok(ScheduledLocalParquetRead::spawn(
+        context.clone(),
+        source.clone(),
+        chunk.clone(),
+        reservation,
+        source_token_budget,
+        budget_boundary,
+        budget_boundary == "source_chunk_prefetch",
+    ))
+}
+
+fn finish_scheduled_source_read(
+    scheduled: ScheduledLocalParquetRead,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+    attempt: usize,
+    max_attempts: usize,
+) -> Result<ScheduledLocalParquetReadOutput> {
+    let is_prefetch = scheduled.is_prefetch();
+    let mut source = scheduled.finish(reservations, metrics)?;
+    source.observed_bytes = grow_source_reservation_to_observed(
+        &source.frame,
+        &mut source.reservation,
+        reservations,
+        &source.chunk,
+        metrics,
+        attempt,
+        max_attempts,
+    )?;
+    if is_prefetch {
+        metrics.record_source_read_prefetch_completed();
+    }
+    Ok(source)
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn execute_bounded_chunk_retry_attempt(
     context: &ExecutionContext,
@@ -38,39 +322,62 @@ pub(super) fn execute_bounded_chunk_retry_attempt(
 ) -> Result<Vec<CommittedPartial>> {
     match execute_bounded_chunk_attempt(context, bounded, &chunk, reservations, metrics, attempt, max_attempts) {
         Ok(partial) => Ok(vec![partial]),
-        Err(error) if is_retryable_chunk_error(&error) => {
-            record_chunk_retry_error(&error, metrics);
-            if attempt < max_attempts
-                && let Some((left, right)) = split_retryable_chunk(&chunk, min_retry_chunk_row_groups)
-            {
-                metrics.record_source_chunk_retry();
-                let mut partials = execute_bounded_chunk_retry_attempt(
-                    context,
-                    bounded,
-                    left,
-                    reservations,
-                    metrics,
-                    attempt + 1,
-                    max_attempts,
-                    min_retry_chunk_row_groups,
-                )?;
-                partials.extend(execute_bounded_chunk_retry_attempt(
-                    context,
-                    bounded,
-                    right,
-                    reservations,
-                    metrics,
-                    attempt + 1,
-                    max_attempts,
-                    min_retry_chunk_row_groups,
-                )?);
-                return Ok(partials);
-            }
-
-            Err(chunk_retry_facts(&chunk, metrics).attach_to_error(error))
-        },
+        Err(error) if is_retryable_chunk_error(&error) => retry_after_chunk_error(
+            context,
+            bounded,
+            chunk,
+            error,
+            reservations,
+            metrics,
+            attempt,
+            max_attempts,
+            min_retry_chunk_row_groups,
+        ),
         Err(error) => Err(error),
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn retry_after_chunk_error(
+    context: &ExecutionContext,
+    bounded: &BoundedPlan<'_>,
+    chunk: SourceChunk,
+    error: QueryError,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+    attempt: usize,
+    max_attempts: usize,
+    min_retry_chunk_row_groups: usize,
+) -> Result<Vec<CommittedPartial>> {
+    record_chunk_retry_error(&error, metrics);
+    if attempt < max_attempts
+        && let Some((left, right)) = split_retryable_chunk(&chunk, min_retry_chunk_row_groups)
+    {
+        metrics.record_source_chunk_retry();
+        let mut partials = execute_bounded_chunk_retry_attempt(
+            context,
+            bounded,
+            left,
+            reservations,
+            metrics,
+            attempt + 1,
+            max_attempts,
+            min_retry_chunk_row_groups,
+        )?;
+        partials.extend(execute_bounded_chunk_retry_attempt(
+            context,
+            bounded,
+            right,
+            reservations,
+            metrics,
+            attempt + 1,
+            max_attempts,
+            min_retry_chunk_row_groups,
+        )?);
+        return Ok(partials);
+    }
+
+    Err(chunk_retry_facts(&chunk, metrics).attach_to_error(error))
 }
 
 pub(super) fn execute_bounded_chunk_attempt(
@@ -82,6 +389,33 @@ pub(super) fn execute_bounded_chunk_attempt(
     attempt: usize,
     max_attempts: usize,
 ) -> Result<CommittedPartial> {
+    let source =
+        read_bounded_chunk_source(context, bounded.source, chunk, reservations, metrics, attempt, max_attempts)
+            .map_err(|error| {
+                attach_chunk_resource_facts(error, chunk, "source_chunk_read", attempt, max_attempts, metrics)
+            })?;
+    execute_bounded_chunk_operator_from_source(
+        context,
+        bounded,
+        source,
+        reservations,
+        metrics,
+        attempt,
+        max_attempts,
+        |_reservations, _metrics| Ok(()),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn read_bounded_chunk_source(
+    context: &ExecutionContext,
+    source: &LocalParquetSource,
+    chunk: &SourceChunk,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+    attempt: usize,
+    max_attempts: usize,
+) -> Result<ScheduledLocalParquetReadOutput> {
     metrics.record_source_chunk_attempt();
 
     let source_request = chunk_reservation_request(
@@ -93,54 +427,59 @@ pub(super) fn execute_bounded_chunk_attempt(
         attempt,
         max_attempts,
     );
-    let mut source_reservation = reservations.try_reserve(source_request, metrics)?;
+    let source_reservation = reservations.try_reserve(source_request, metrics)?;
     let source_token_budget = reservations.available_bytes_including(&source_reservation);
-    let mut frame = match read_local_parquet_chunk(
-        context,
-        bounded.source,
-        chunk,
-        source_token_budget,
-        "source_chunk_read",
+    let frame =
+        match read_local_parquet_chunk(context, source, chunk, source_token_budget, "source_chunk_read", metrics) {
+            Ok(frame) => frame,
+            Err(error) => {
+                reservations.release(source_reservation);
+                return Err(error);
+            },
+        };
+    let mut output = ScheduledLocalParquetReadOutput {
+        chunk: chunk.clone(),
+        frame,
+        reservation: source_reservation,
+        observed_bytes: 0,
+    };
+    output.observed_bytes = grow_source_reservation_to_observed(
+        &output.frame,
+        &mut output.reservation,
+        reservations,
+        &output.chunk,
         metrics,
-    ) {
-        Ok(frame) => frame,
-        Err(error) => {
-            reservations.release(source_reservation);
-            return Err(attach_chunk_resource_facts(error, chunk, "source_chunk_read", attempt, max_attempts, metrics));
-        },
-    };
-    let source_observed_bytes = match observe_device_memory_bytes(&frame, metrics) {
-        Ok(bytes) => bytes,
-        Err(error) => {
-            drop(frame);
-            reservations.release(source_reservation);
-            return Err(attach_chunk_resource_facts(error, chunk, "source_chunk_read", attempt, max_attempts, metrics));
-        },
-    };
-    if source_observed_bytes > source_reservation.bytes() {
-        let source_delta = source_observed_bytes.saturating_sub(source_reservation.bytes());
-        let grow_request = chunk_reservation_request(
-            ReservationKind::SourceRead,
-            "source_chunk_read",
-            source_delta,
-            reservations.budget(),
-            chunk,
-            attempt,
-            max_attempts,
-        );
-        if let Err(error) = reservations.try_grow(&mut source_reservation, grow_request, metrics) {
-            drop(frame);
-            reservations.release(source_reservation);
-            return Err(error);
-        }
-    }
+        attempt,
+        max_attempts,
+    )?;
+    Ok(output)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn execute_bounded_chunk_operator_from_source(
+    context: &ExecutionContext,
+    bounded: &BoundedPlan<'_>,
+    source: ScheduledLocalParquetReadOutput,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+    attempt: usize,
+    max_attempts: usize,
+    before_operator: impl FnOnce(&mut ReservationTracker, &mut QueryMetrics) -> Result<()>,
+) -> Result<CommittedPartial> {
+    let ScheduledLocalParquetReadOutput {
+        chunk,
+        frame,
+        reservation: source_reservation,
+        observed_bytes: source_observed_bytes,
+    } = source;
+    let mut frame = frame;
 
     let operator_request = chunk_reservation_request(
         ReservationKind::ChunkOperator,
         "chunk_operator",
         source_observed_bytes,
         reservations.budget(),
-        chunk,
+        &chunk,
         attempt,
         max_attempts,
     );
@@ -164,9 +503,14 @@ pub(super) fn execute_bounded_chunk_attempt(
         Err(error) => {
             reservations.release(operator_reservation);
             reservations.release(source_reservation);
-            return Err(attach_chunk_resource_facts(error, chunk, "chunk_operator", attempt, max_attempts, metrics));
+            return Err(attach_chunk_resource_facts(error, &chunk, "chunk_operator", attempt, max_attempts, metrics));
         },
     };
+    if let Err(error) = before_operator(reservations, metrics) {
+        reservations.release(operator_reservation);
+        reservations.release(source_reservation);
+        return Err(error);
+    }
 
     let chunk_operator_timer = Instant::now();
     let chunk_output = (|| {
@@ -197,7 +541,7 @@ pub(super) fn execute_bounded_chunk_attempt(
         Err(error) => {
             reservations.release(operator_reservation);
             reservations.release(source_reservation);
-            return Err(attach_chunk_resource_facts(error, chunk, "chunk_operator", attempt, max_attempts, metrics));
+            return Err(attach_chunk_resource_facts(error, &chunk, "chunk_operator", attempt, max_attempts, metrics));
         },
     };
 
@@ -205,13 +549,13 @@ pub(super) fn execute_bounded_chunk_attempt(
     reservations.release(source_reservation);
 
     let partial_bytes = observe_device_memory_bytes(&frame, metrics)
-        .map_err(|error| attach_chunk_resource_facts(error, chunk, "partial_state", attempt, max_attempts, metrics))?;
+        .map_err(|error| attach_chunk_resource_facts(error, &chunk, "partial_state", attempt, max_attempts, metrics))?;
     let partial_request = chunk_reservation_request(
         ReservationKind::PartialState,
         "partial_state",
         partial_bytes,
         reservations.budget(),
-        chunk,
+        &chunk,
         attempt,
         max_attempts,
     );
@@ -220,6 +564,40 @@ pub(super) fn execute_bounded_chunk_attempt(
     metrics.record_partial_aggregate(frame.num_rows() as u64);
 
     Ok(CommittedPartial { frame, reservation: partial_reservation })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn grow_source_reservation_to_observed(
+    frame: &GpuDataFrame,
+    source_reservation: &mut ActiveReservation,
+    reservations: &mut ReservationTracker,
+    chunk: &SourceChunk,
+    metrics: &mut QueryMetrics,
+    attempt: usize,
+    max_attempts: usize,
+) -> Result<u64> {
+    let source_observed_bytes = match observe_device_memory_bytes(frame, metrics) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            return Err(attach_chunk_resource_facts(error, chunk, "source_chunk_read", attempt, max_attempts, metrics));
+        },
+    };
+    if source_observed_bytes <= source_reservation.bytes() {
+        return Ok(source_observed_bytes);
+    }
+
+    let source_delta = source_observed_bytes.saturating_sub(source_reservation.bytes());
+    let grow_request = chunk_reservation_request(
+        ReservationKind::SourceRead,
+        "source_chunk_read",
+        source_delta,
+        reservations.budget(),
+        chunk,
+        attempt,
+        max_attempts,
+    );
+    reservations.try_grow(source_reservation, grow_request, metrics)?;
+    Ok(source_observed_bytes)
 }
 
 pub(super) fn chunk_requested_bytes(policy: MemoryControlPolicy, chunk: &SourceChunk) -> u64 {
@@ -233,6 +611,14 @@ pub(super) fn chunk_requested_bytes(policy: MemoryControlPolicy, chunk: &SourceC
         .or(chunk.estimated_chunk_bytes)
         .or(chunk.known_file_bytes)
         .unwrap_or(fallback)
+}
+
+fn prefetch_requested_bytes(policy: MemoryControlPolicy, chunk: &SourceChunk) -> u64 {
+    let requested = chunk_requested_bytes(policy, chunk);
+    match policy {
+        MemoryControlPolicy::Unbounded => requested,
+        MemoryControlPolicy::Bounded { max_source_chunk_bytes, .. } => requested.max(max_source_chunk_bytes),
+    }
 }
 
 pub(super) fn chunk_reservation_request(
@@ -260,6 +646,11 @@ pub(super) fn chunk_reservation_request(
 
 pub(super) fn is_retryable_chunk_error(error: &QueryError) -> bool {
     matches!(error.code(), QueryErrorCode::MemoryReservationFailed | QueryErrorCode::CudfResourceExhausted)
+}
+
+fn is_prefetch_chunk_error(error: &QueryError) -> bool {
+    error.fact_value("budget_boundary") == Some("source_chunk_prefetch")
+        || error.fact_value("memory_boundary") == Some("source_chunk_prefetch")
 }
 
 pub(super) fn record_chunk_retry_error(error: &QueryError, metrics: &mut QueryMetrics) {
@@ -293,18 +684,39 @@ pub(super) fn split_retryable_chunk(
 pub(super) fn retry_child_chunk(parent: &SourceChunk, row_group_indexes: Vec<usize>) -> SourceChunk {
     let parent_row_group_count = parent.row_group_indexes.len();
     let known_row_group_bytes =
-        proportional_bytes(parent.known_row_group_bytes, row_group_indexes.len(), parent_row_group_count);
-    let known_projected_compressed_bytes =
-        proportional_bytes(parent.known_projected_compressed_bytes, row_group_indexes.len(), parent_row_group_count);
-    let known_projected_uncompressed_bytes =
-        proportional_bytes(parent.known_projected_uncompressed_bytes, row_group_indexes.len(), parent_row_group_count);
-    let known_pure_filter_compressed_bytes =
-        proportional_bytes(parent.known_pure_filter_compressed_bytes, row_group_indexes.len(), parent_row_group_count);
-    let known_pure_filter_uncompressed_bytes = proportional_bytes(
-        parent.known_pure_filter_uncompressed_bytes,
-        row_group_indexes.len(),
-        parent_row_group_count,
-    );
+        checked_row_group_sum(parent.source_file_row_group_bytes.as_deref(), &row_group_indexes).or_else(|| {
+            proportional_bytes(parent.known_row_group_bytes, row_group_indexes.len(), parent_row_group_count)
+        });
+    let known_projected_compressed_bytes = checked_row_group_sum(
+        parent.source_file_projected_compressed_bytes.as_deref(),
+        &row_group_indexes,
+    )
+    .or_else(|| {
+        proportional_bytes(parent.known_projected_compressed_bytes, row_group_indexes.len(), parent_row_group_count)
+    });
+    let known_projected_uncompressed_bytes = checked_row_group_sum(
+        parent.source_file_projected_uncompressed_bytes.as_deref(),
+        &row_group_indexes,
+    )
+    .or_else(|| {
+        proportional_bytes(parent.known_projected_uncompressed_bytes, row_group_indexes.len(), parent_row_group_count)
+    });
+    let known_pure_filter_compressed_bytes = checked_row_group_sum(
+        parent.source_file_pure_filter_compressed_bytes.as_deref(),
+        &row_group_indexes,
+    )
+    .or_else(|| {
+        proportional_bytes(parent.known_pure_filter_compressed_bytes, row_group_indexes.len(), parent_row_group_count)
+    });
+    let known_pure_filter_uncompressed_bytes =
+        checked_row_group_sum(parent.source_file_pure_filter_uncompressed_bytes.as_deref(), &row_group_indexes)
+            .or_else(|| {
+                proportional_bytes(
+                    parent.known_pure_filter_uncompressed_bytes,
+                    row_group_indexes.len(),
+                    parent_row_group_count,
+                )
+            });
     let known_file_bytes = if parent.known_row_group_bytes.is_some() {
         parent.known_file_bytes
     } else {
@@ -324,13 +736,15 @@ pub(super) fn retry_child_chunk(parent: &SourceChunk, row_group_indexes: Vec<usi
         row_group_indexes.len(),
         parent_row_group_count,
     );
-    let known_row_count = proportional_bytes(parent.known_row_count, row_group_indexes.len(), parent_row_group_count);
+    let known_row_count = checked_row_group_sum(parent.source_file_row_group_rows.as_deref(), &row_group_indexes)
+        .or_else(|| proportional_bytes(parent.known_row_count, row_group_indexes.len(), parent_row_group_count));
 
     SourceChunk {
         source_node_id: parent.source_node_id,
         chunk_index: parent.chunk_index,
         file_index: parent.file_index,
         path: parent.path.clone(),
+        stable_id: parent.stable_id.clone(),
         row_group_indexes,
         reads_all_row_groups: false,
         known_file_bytes,
@@ -341,12 +755,23 @@ pub(super) fn retry_child_chunk(parent: &SourceChunk, row_group_indexes: Vec<usi
         known_pure_filter_uncompressed_bytes,
         estimated_chunk_bytes,
         estimated_source_read_bytes,
+        source_file_row_groups: parent.source_file_row_groups.clone(),
+        source_file_row_group_bytes: parent.source_file_row_group_bytes.clone(),
+        source_file_projected_compressed_bytes: parent.source_file_projected_compressed_bytes.clone(),
+        source_file_projected_uncompressed_bytes: parent.source_file_projected_uncompressed_bytes.clone(),
+        source_file_pure_filter_compressed_bytes: parent.source_file_pure_filter_compressed_bytes.clone(),
+        source_file_pure_filter_uncompressed_bytes: parent.source_file_pure_filter_uncompressed_bytes.clone(),
+        source_file_row_group_rows: parent.source_file_row_group_rows.clone(),
         read_columns: parent.read_columns.clone(),
         partition_values: parent.partition_values.clone(),
         zero_column_count: parent.zero_column_count,
         known_row_count,
         size_estimate_based: true,
     }
+}
+
+fn checked_row_group_sum(values: Option<&[u64]>, row_group_indexes: &[usize]) -> Option<u64> {
+    row_group_indexes.iter().try_fold(0u64, |total, row_group| total.checked_add(*values?.get(*row_group)?))
 }
 
 pub(super) fn proportional_bytes(

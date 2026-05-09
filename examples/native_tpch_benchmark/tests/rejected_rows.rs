@@ -32,7 +32,7 @@ fn benchmark_report_header_and_rejected_rows_are_stable() {
         NativeTpchBenchmarkReport { metadata, config, rows: vec![NativeTpchBenchmarkRow::rejected("q02", planning)] };
 
     let text = report.to_tsv();
-    assert!(text.starts_with("# native_tpch_benchmark_tsv_schema_version=4\n"));
+    assert!(text.starts_with("# native_tpch_benchmark_tsv_schema_version=5\n"));
     assert!(text.contains(&format!("{NATIVE_TPCH_BENCHMARK_TSV_HEADER}\n")));
     assert!(text.contains("# tpch_dataset_scale_factor=sf1\n"));
     assert!(text.contains("# tpch_benchmark_query_ids=q02\n"));
@@ -43,6 +43,7 @@ fn benchmark_report_header_and_rejected_rows_are_stable() {
     assert!(text.contains("# tpch_benchmark_dataset_mode=sf1_external\n"));
     assert!(text.contains("# tpch_benchmark_native_device_budget_bytes=15032385536\n"));
     assert!(text.contains("# tpch_benchmark_native_max_source_chunk_bytes=536870912\n"));
+    assert!(text.contains("# tpch_benchmark_native_max_source_reads_in_flight=2\n"));
     assert!(text.contains(
         "q02\trejected_before_execution\tbounded_rejected\tnative_bounded_join_unsupported\toperator_hashjoin"
     ));

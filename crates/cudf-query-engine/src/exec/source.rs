@@ -7,6 +7,7 @@ mod gpu_resident;
 mod metrics;
 mod partition;
 mod read;
+mod scheduler;
 mod schema;
 mod zero_column_count;
 
@@ -15,6 +16,7 @@ pub use gpu_resident::read_gpu_resident_source;
 pub(super) use metrics::{format_row_groups, record_bounded_parquet_source_metrics};
 use partition::inject_partition_columns;
 use read::read_local_parquet_file;
+pub(in crate::exec) use scheduler::{ScheduledLocalParquetRead, ScheduledLocalParquetReadOutput};
 use schema::coerce_local_parquet_source_schema;
 pub use validate::validate_local_parquet_source;
 use zero_column_count::{read_zero_column_count_source, zero_column_count_chunk_frame_with_budget};

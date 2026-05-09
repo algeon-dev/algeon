@@ -26,6 +26,59 @@ pub use bounded_join::{
 pub use policy::{DevicePlacement, MemoryControlPolicy, MemoryResourcePolicy, MemorySpaceId, ReservationKind};
 pub use reservation::{MemoryReservationRequest, RetryFacts};
 
+/// Native source scheduling controls.
+///
+/// The scheduler preserves source order by default and uses `max_source_reads_in_flight`
+/// as an upper bound on active source reads. A value of `1` keeps the historical
+/// serialized source path. Values greater than `1` allow bounded execution to
+/// prefetch the next source chunk while chunk-local operators consume the
+/// current chunk.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SourceSchedulerPolicy {
+    max_source_reads_in_flight: usize,
+}
+
+impl SourceSchedulerPolicy {
+    /// Serialized source execution.
+    pub const fn serialized() -> Self {
+        Self { max_source_reads_in_flight: 1 }
+    }
+
+    /// Creates a source scheduler policy.
+    pub const fn new(max_source_reads_in_flight: usize) -> Self {
+        Self { max_source_reads_in_flight }
+    }
+
+    /// Maximum active source reads allowed by the scheduler.
+    pub const fn max_source_reads_in_flight(self) -> usize {
+        self.max_source_reads_in_flight
+    }
+
+    /// Returns whether source prefetch is enabled.
+    pub const fn enables_prefetch(self) -> bool {
+        self.max_source_reads_in_flight > 1
+    }
+
+    fn validate(self) -> Result<()> {
+        if self.max_source_reads_in_flight == 0 {
+            return Err(QueryError::new(
+                crate::error::QueryErrorCode::InvalidPlan,
+                "cudf_query_engine.source_scheduler_policy.validate",
+                "source scheduler max_source_reads_in_flight must be greater than zero",
+            )
+            .with_fact("field", "max_source_reads_in_flight")
+            .with_fact("reason", "zero"));
+        }
+        Ok(())
+    }
+}
+
+impl Default for SourceSchedulerPolicy {
+    fn default() -> Self {
+        Self::serialized()
+    }
+}
+
 /// Immutable execution configuration shared by native query execution.
 ///
 /// The context owns or shares the [`cudf::Runtime`] used for all device work in
@@ -56,6 +109,8 @@ pub struct ExecutionContext {
     /// Execution boundary contract used by source reads, build/probe reuse, and
     /// result materialization.
     boundary_policy: ExecutionBoundaryPolicy,
+    /// Source scheduling policy for bounded local Parquet reads.
+    source_scheduler_policy: SourceSchedulerPolicy,
     /// Optional durable GPU hash-join build cache.
     ///
     /// Required when the boundary policy asks for durable build
@@ -89,6 +144,7 @@ impl ExecutionContext {
             memory_policy: MemoryResourcePolicy::ExternalRuntime,
             memory_control_policy: MemoryControlPolicy::Unbounded,
             boundary_policy: ExecutionBoundaryPolicy::default(),
+            source_scheduler_policy: SourceSchedulerPolicy::default(),
             hash_join_build_cache: None,
         }
     }
@@ -141,6 +197,11 @@ impl ExecutionContext {
         self.boundary_policy
     }
 
+    /// Returns source scheduling controls for bounded source execution.
+    pub fn source_scheduler_policy(&self) -> SourceSchedulerPolicy {
+        self.source_scheduler_policy
+    }
+
     /// Returns the durable GPU hash-join build cache, when configured.
     ///
     /// A clone of the `Arc` is returned so callers can retain the cache without
@@ -169,6 +230,8 @@ pub struct ExecutionContextBuilder {
     memory_control_policy: MemoryControlPolicy,
     /// Source/build/probe/result boundary contract.
     boundary_policy: ExecutionBoundaryPolicy,
+    /// Source read scheduling contract.
+    source_scheduler_policy: SourceSchedulerPolicy,
     /// Optional durable hash-join build cache.
     hash_join_build_cache: Option<Arc<crate::exec::GpuHashJoinBuildCache>>,
 }
@@ -230,6 +293,12 @@ impl ExecutionContextBuilder {
         self
     }
 
+    /// Sets bounded source scheduling controls.
+    pub fn with_source_scheduler_policy(mut self, source_scheduler_policy: SourceSchedulerPolicy) -> Self {
+        self.source_scheduler_policy = source_scheduler_policy;
+        self
+    }
+
     /// Provides the cache required by durable GPU hash-join materialization.
     pub fn with_hash_join_build_cache(mut self, cache: Arc<crate::exec::GpuHashJoinBuildCache>) -> Self {
         self.hash_join_build_cache = Some(cache);
@@ -243,6 +312,7 @@ impl ExecutionContextBuilder {
     pub fn build(self) -> Result<ExecutionContext> {
         self.memory_control_policy.validate()?;
         self.boundary_policy.validate(self.hash_join_build_cache.is_some())?;
+        self.source_scheduler_policy.validate()?;
 
         if let Some(runtime) = self.runtime {
             return Ok(ExecutionContext {
@@ -250,6 +320,7 @@ impl ExecutionContextBuilder {
                 memory_policy: MemoryResourcePolicy::ExternalRuntime,
                 memory_control_policy: self.memory_control_policy,
                 boundary_policy: self.boundary_policy,
+                source_scheduler_policy: self.source_scheduler_policy,
                 hash_join_build_cache: self.hash_join_build_cache,
             });
         }
@@ -282,6 +353,7 @@ impl ExecutionContextBuilder {
             memory_policy,
             memory_control_policy: self.memory_control_policy,
             boundary_policy: self.boundary_policy,
+            source_scheduler_policy: self.source_scheduler_policy,
             hash_join_build_cache: self.hash_join_build_cache,
         })
     }

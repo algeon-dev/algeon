@@ -26,6 +26,7 @@ fn query_metrics_phase_c_memory_control_defaults_are_zero() {
     assert_eq!(metrics.source_chunks_attempted, 0);
     assert_eq!(metrics.source_chunks_committed, 0);
     assert_eq!(metrics.source_chunks_retried, 0);
+    assert_eq!(metrics.source_metadata_load_time, std::time::Duration::ZERO);
     assert_eq!(metrics.retry_count, 0);
     assert_eq!(metrics.final_merge_attempts, 0);
     assert_eq!(metrics.final_merge_levels, 0);
@@ -98,6 +99,10 @@ fn native_datafusion_metric_names_cover_bounded_runtime_contract() {
         "source_chunks_attempted",
         "source_chunks_committed",
         "source_chunks_retried",
+        "source_read_prefetches_started",
+        "source_read_prefetches_completed",
+        "source_read_prefetches_skipped",
+        "source_read_prefetches_abandoned",
         "row_groups_planned",
         "row_groups_committed",
         "resident_dataframe_peak_bytes_observed",
@@ -119,6 +124,8 @@ fn native_datafusion_metric_names_cover_bounded_runtime_contract() {
         "filtered_join_probe_state_bytes",
         "mixed_join_size_data_bytes",
         "join_gather_map_bytes",
+        "source_metadata_load_time",
+        "source_read_queue_wait_time",
         "parquet_read_time",
         "operator_time",
         "final_merge_time",

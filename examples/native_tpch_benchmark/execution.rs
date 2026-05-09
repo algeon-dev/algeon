@@ -314,6 +314,14 @@ fn aggregate_native_execution_metrics(metrics: &[MetricsSet]) -> NativeDataFusio
         aggregate.source_chunks_committed =
             aggregate.source_chunks_committed.saturating_add(current.source_chunks_committed);
         aggregate.source_chunks_retried = aggregate.source_chunks_retried.saturating_add(current.source_chunks_retried);
+        aggregate.source_read_prefetches_started =
+            aggregate.source_read_prefetches_started.saturating_add(current.source_read_prefetches_started);
+        aggregate.source_read_prefetches_completed =
+            aggregate.source_read_prefetches_completed.saturating_add(current.source_read_prefetches_completed);
+        aggregate.source_read_prefetches_skipped =
+            aggregate.source_read_prefetches_skipped.saturating_add(current.source_read_prefetches_skipped);
+        aggregate.source_read_prefetches_abandoned =
+            aggregate.source_read_prefetches_abandoned.saturating_add(current.source_read_prefetches_abandoned);
         aggregate.row_groups_planned = aggregate.row_groups_planned.saturating_add(current.row_groups_planned);
         aggregate.row_groups_committed = aggregate.row_groups_committed.saturating_add(current.row_groups_committed);
         aggregate.partial_aggregate_count =

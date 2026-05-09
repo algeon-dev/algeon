@@ -15,7 +15,10 @@ pub mod plan;
 pub mod runtime;
 pub mod source;
 
-pub use chunk::{SourceChunk, SourceChunkPlan, SourceChunkPlanningPolicy, plan_local_parquet_source_chunks};
+pub use chunk::{
+    SourceChunk, SourceChunkPlan, SourceChunkPlanningPolicy, SourceMetadataCache, plan_local_parquet_source_chunks,
+    plan_local_parquet_source_chunks_with_metadata_cache,
+};
 pub use datatypes::{
     arrow_decimal_scale_to_cudf_scale, cudf_dtype_from_arrow_type, is_supported_arrow_cast,
     is_supported_arrow_implicit_cast, is_supported_arrow_type, timestamp_unit_to_cudf_resolution,
@@ -41,7 +44,7 @@ pub use runtime::{
     BoundedJoinReservationRequirement, BoundedJoinReservationStatus, BuildMaterializationBoundary, DevicePlacement,
     ExecutionBoundaryPolicy, ExecutionContext, ExecutionContextBuilder, MemoryControlPolicy, MemoryReservationRequest,
     MemoryResourcePolicy, MemorySpaceId, ProbeExecutionBoundary, ReservationKind, ResultMaterializationBoundary,
-    RetryFacts, SourceReadBoundary,
+    RetryFacts, SourceReadBoundary, SourceSchedulerPolicy,
 };
 pub use source::{
     ByteRangeDisposition, GpuResidentSource, LocalParquetFile, LocalParquetSource, PartitionColumn,

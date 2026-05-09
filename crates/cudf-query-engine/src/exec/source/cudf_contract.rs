@@ -5,43 +5,30 @@ pub(super) fn cudf_local_parquet_source_chunk(
     chunk: &SourceChunk,
 ) -> Result<(cudf::io::source::LocalParquetSource, cudf::io::source::SourceChunk)> {
     let source = cudf_local_parquet_source_for_chunk(source, chunk)?;
-    let chunk_plan = cudf::io::source::plan_local_parquet_source_chunks(
-        &source,
-        cudf::io::source::SourceChunkPlanningPolicy::default(),
-    )
-    .map_err(|error| {
-        QueryError::from_cudf(
-            "cudf_query_engine.local_parquet_chunk.plan_cudf",
-            "failed to plan cudf local parquet source chunk",
-            error,
-        )
-        .with_fact("path", chunk.path.display())
-        .with_fact("chunk_index", chunk.chunk_index)
-        .with_fact("file_index", chunk.file_index)
-        .with_fact("read_columns", chunk.read_columns.len())
-        .with_fact("row_groups", format_row_groups(chunk))
-    })?;
-    if chunk_plan.chunks().len() != 1 {
-        return Err(QueryError::new(
-            QueryErrorCode::InvalidPlan,
-            "cudf_query_engine.local_parquet_chunk.plan_cudf",
-            "cudf local parquet source chunk conversion must produce exactly one chunk",
-        )
-        .with_fact("path", chunk.path.display())
-        .with_fact("chunk_index", chunk.chunk_index)
-        .with_fact("file_index", chunk.file_index)
-        .with_fact("planned_chunks", chunk_plan.chunks().len())
-        .with_fact("row_groups", format_row_groups(chunk)));
-    }
-
-    Ok((source, chunk_plan.chunks()[0].clone()))
+    let row_groups = if chunk.reads_all_row_groups { None } else { Some(chunk.row_group_indexes.clone()) };
+    let cudf_chunk =
+        cudf::io::source::SourceChunk::from_source_file_selection(&source, 0, chunk.chunk_index, row_groups).map_err(
+            |error| {
+                QueryError::from_cudf(
+                    "cudf_query_engine.local_parquet_chunk.descriptor_cudf",
+                    "failed to convert native local parquet source chunk descriptor into cudf source chunk",
+                    error,
+                )
+                .with_fact("path", chunk.path.display())
+                .with_fact("chunk_index", chunk.chunk_index)
+                .with_fact("file_index", chunk.file_index)
+                .with_fact("read_columns", chunk.read_columns.len())
+                .with_fact("row_groups", format_row_groups(chunk))
+            },
+        )?;
+    Ok((source, cudf_chunk))
 }
 
 fn cudf_local_parquet_source_for_chunk(
     source: &LocalParquetSource,
     chunk: &SourceChunk,
 ) -> Result<cudf::io::source::LocalParquetSource> {
-    let file = source.files.get(chunk.file_index).ok_or_else(|| {
+    source.files.get(chunk.file_index).ok_or_else(|| {
         QueryError::new(
             QueryErrorCode::InvalidPlan,
             "cudf_query_engine.local_parquet_chunk.source_cudf",
@@ -52,7 +39,7 @@ fn cudf_local_parquet_source_for_chunk(
         .with_fact("file_index", chunk.file_index)
         .with_fact("source_files", source.files.len())
     })?;
-    let cudf_file = cudf_local_parquet_file_for_chunk(file, chunk)?;
+    let cudf_file = cudf_local_parquet_file_for_chunk(chunk)?;
     let cudf_schema = cudf_source_schema(source)?;
     let output_columns = cudf_source_output_columns(source)?;
     let required_columns = cudf_source_required_columns(source)?;
@@ -79,31 +66,28 @@ fn cudf_local_parquet_source_for_chunk(
     })
 }
 
-fn cudf_local_parquet_file_for_chunk(
-    file: &LocalParquetFile,
-    chunk: &SourceChunk,
-) -> Result<cudf::io::source::LocalParquetFile> {
+fn cudf_local_parquet_file_for_chunk(chunk: &SourceChunk) -> Result<cudf::io::source::LocalParquetFile> {
     let partition_values = chunk.partition_values.iter().map(cudf_partition_value).collect::<Result<Vec<_>>>()?;
-    let mut cudf_file = cudf::io::source::LocalParquetFile::new(&chunk.path, file.stable_id.as_str(), partition_values)
-        .map_err(|error| {
-            QueryError::from_cudf(
-                "cudf_query_engine.local_parquet_chunk.file_cudf",
-                "failed to convert native local parquet file into cudf source contract",
-                error,
-            )
-            .with_fact("path", chunk.path.display())
-            .with_fact("chunk_index", chunk.chunk_index)
-            .with_fact("file_index", chunk.file_index)
-        })?;
+    let mut cudf_file =
+        cudf::io::source::LocalParquetFile::new(&chunk.path, chunk.stable_id.as_str(), partition_values).map_err(
+            |error| {
+                QueryError::from_cudf(
+                    "cudf_query_engine.local_parquet_chunk.file_cudf",
+                    "failed to convert native local parquet file into cudf source contract",
+                    error,
+                )
+                .with_fact("path", chunk.path.display())
+                .with_fact("chunk_index", chunk.chunk_index)
+                .with_fact("file_index", chunk.file_index)
+            },
+        )?;
     if let Some(file_size_bytes) = chunk.known_file_bytes {
         cudf_file = cudf_file.with_file_size_bytes(file_size_bytes);
     }
-    cudf_file = cudf_file.with_row_groups(if chunk.reads_all_row_groups {
-        None
-    } else {
-        Some(chunk.row_group_indexes.clone())
-    });
-    if let (Some(row_group_bytes), Some(row_group_rows)) = (&file.row_group_bytes, &file.row_group_rows) {
+    cudf_file = cudf_file.with_row_groups(chunk.source_file_row_groups.clone());
+    if let (Some(row_group_bytes), Some(row_group_rows)) =
+        (chunk.source_file_row_group_bytes.as_ref(), chunk.source_file_row_group_rows.as_ref())
+    {
         cudf_file =
             cudf_file.with_row_group_metadata(row_group_bytes.clone(), row_group_rows.clone()).map_err(|error| {
                 QueryError::from_cudf(
@@ -117,7 +101,7 @@ fn cudf_local_parquet_file_for_chunk(
             })?;
     }
     if let (Some(compressed_bytes), Some(uncompressed_bytes)) =
-        (&file.projected_row_group_compressed_bytes, &file.projected_row_group_uncompressed_bytes)
+        (&chunk.source_file_projected_compressed_bytes, &chunk.source_file_projected_uncompressed_bytes)
     {
         cudf_file = cudf_file
             .with_projected_row_group_bytes(compressed_bytes.clone(), uncompressed_bytes.clone())
@@ -133,7 +117,7 @@ fn cudf_local_parquet_file_for_chunk(
             })?;
     }
     if let (Some(compressed_bytes), Some(uncompressed_bytes)) =
-        (&file.pure_filter_row_group_compressed_bytes, &file.pure_filter_row_group_uncompressed_bytes)
+        (&chunk.source_file_pure_filter_compressed_bytes, &chunk.source_file_pure_filter_uncompressed_bytes)
     {
         cudf_file = cudf_file
             .with_pure_filter_row_group_bytes(compressed_bytes.clone(), uncompressed_bytes.clone())

@@ -271,10 +271,8 @@ fn execute_bounded_projection_wrapped_local_aggregate_input(
     }
     record_bounded_parquet_source_metrics(bounded.source, &chunk_plan, metrics);
 
-    let mut partials = Vec::with_capacity(chunk_plan.chunks.len());
-    for chunk in &chunk_plan.chunks {
-        partials.extend(execute_bounded_chunk_with_retry(context, bounded, chunk, reservations, metrics)?);
-    }
+    let partials =
+        execute_bounded_chunks_with_source_scheduler(context, bounded, &chunk_plan.chunks, reservations, metrics)?;
 
     let frame = execute_final_aggregate_merge(context, bounded, partials, reservations, metrics)?;
     execute_post_aggregate_projection(context, bounded, frame, reservations, metrics)

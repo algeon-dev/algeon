@@ -1,6 +1,10 @@
 use super::*;
 
-pub(super) fn write_native_memory_policy_metadata(output: &mut String, memory_policy: NativeTpchMemoryPolicy) {
+pub(super) fn write_native_memory_policy_metadata(
+    output: &mut String,
+    memory_policy: NativeTpchMemoryPolicy,
+    max_source_reads_in_flight: usize,
+) {
     match memory_policy {
         NativeTpchMemoryPolicy::Unbounded => {
             push_line(output, format_args!("# tpch_benchmark_native_device_budget_bytes=none"));
@@ -29,6 +33,7 @@ pub(super) fn write_native_memory_policy_metadata(output: &mut String, memory_po
             );
         },
     }
+    push_line(output, format_args!("# tpch_benchmark_native_max_source_reads_in_flight={max_source_reads_in_flight}"));
 }
 
 pub(super) fn write_tpch_dataset_metadata(output: &mut String, metadata: &TpchDatasetMetadata) {

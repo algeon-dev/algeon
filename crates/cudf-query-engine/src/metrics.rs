@@ -89,6 +89,10 @@ pub struct QueryMetrics {
     pub source_chunks_attempted: u64,
     pub source_chunks_committed: u64,
     pub source_chunks_retried: u64,
+    pub source_read_prefetches_started: u64,
+    pub source_read_prefetches_completed: u64,
+    pub source_read_prefetches_skipped: u64,
+    pub source_read_prefetches_abandoned: u64,
     pub row_groups_planned: u64,
     pub row_groups_committed: u64,
     pub partial_aggregate_count: u64,
@@ -128,6 +132,8 @@ pub struct QueryMetrics {
     pub parquet_bytes_known: u64,
     pub row_groups_selected: u64,
     pub read_columns: u64,
+    pub source_metadata_load_time: Duration,
+    pub source_read_queue_wait_time: Duration,
     pub parquet_read_time: Duration,
     pub source_read_time: Duration,
     pub operator_time: Duration,
@@ -202,6 +208,26 @@ impl QueryMetrics {
         self.source_chunks_retried = self.source_chunks_retried.saturating_add(1);
     }
 
+    pub fn record_source_read_prefetch_started(&mut self) {
+        self.source_read_prefetches_started = self.source_read_prefetches_started.saturating_add(1);
+    }
+
+    pub fn record_source_read_prefetch_completed(&mut self) {
+        self.source_read_prefetches_completed = self.source_read_prefetches_completed.saturating_add(1);
+    }
+
+    pub fn record_source_read_prefetch_skipped(&mut self) {
+        self.source_read_prefetches_skipped = self.source_read_prefetches_skipped.saturating_add(1);
+    }
+
+    pub fn record_source_read_prefetch_abandoned(&mut self) {
+        self.source_read_prefetches_abandoned = self.source_read_prefetches_abandoned.saturating_add(1);
+    }
+
+    pub fn record_source_read_queue_wait(&mut self, elapsed: Duration) {
+        self.source_read_queue_wait_time += elapsed;
+    }
+
     pub fn record_retry_resource_exhausted(&mut self) {
         self.retry_count = self.retry_count.saturating_add(1);
         self.retry_resource_exhausted_count = self.retry_resource_exhausted_count.saturating_add(1);
@@ -267,6 +293,86 @@ impl QueryMetrics {
 
     pub fn record_final_merge_level(&mut self) {
         self.final_merge_levels = self.final_merge_levels.saturating_add(1);
+    }
+
+    pub fn merge_from(&mut self, other: QueryMetrics) {
+        self.boundary.merge_from(other.boundary);
+        self.operators.extend(other.operators);
+        self.input_batches = self.input_batches.saturating_add(other.input_batches);
+        self.input_rows = self.input_rows.saturating_add(other.input_rows);
+        self.peak_device_memory_bytes = max_optional(self.peak_device_memory_bytes, other.peak_device_memory_bytes);
+        self.resident_dataframe_peak_bytes =
+            max_optional(self.resident_dataframe_peak_bytes, other.resident_dataframe_peak_bytes);
+        self.allocator_high_water_bytes =
+            max_optional(self.allocator_high_water_bytes, other.allocator_high_water_bytes);
+        self.reservation_requested_bytes =
+            self.reservation_requested_bytes.saturating_add(other.reservation_requested_bytes);
+        self.reservation_granted_bytes = self.reservation_granted_bytes.saturating_add(other.reservation_granted_bytes);
+        self.reservation_denied_count = self.reservation_denied_count.saturating_add(other.reservation_denied_count);
+        self.reservation_events.extend(other.reservation_events);
+        self.budgeted_execution_events.extend(other.budgeted_execution_events);
+        self.source_chunks_planned = self.source_chunks_planned.saturating_add(other.source_chunks_planned);
+        self.source_chunks_attempted = self.source_chunks_attempted.saturating_add(other.source_chunks_attempted);
+        self.source_chunks_committed = self.source_chunks_committed.saturating_add(other.source_chunks_committed);
+        self.source_chunks_retried = self.source_chunks_retried.saturating_add(other.source_chunks_retried);
+        self.source_read_prefetches_started =
+            self.source_read_prefetches_started.saturating_add(other.source_read_prefetches_started);
+        self.source_read_prefetches_completed =
+            self.source_read_prefetches_completed.saturating_add(other.source_read_prefetches_completed);
+        self.source_read_prefetches_skipped =
+            self.source_read_prefetches_skipped.saturating_add(other.source_read_prefetches_skipped);
+        self.source_read_prefetches_abandoned =
+            self.source_read_prefetches_abandoned.saturating_add(other.source_read_prefetches_abandoned);
+        self.row_groups_planned = self.row_groups_planned.saturating_add(other.row_groups_planned);
+        self.row_groups_committed = self.row_groups_committed.saturating_add(other.row_groups_committed);
+        self.partial_aggregate_count = self.partial_aggregate_count.saturating_add(other.partial_aggregate_count);
+        self.partial_aggregate_rows = self.partial_aggregate_rows.saturating_add(other.partial_aggregate_rows);
+        self.final_merge_attempts = self.final_merge_attempts.saturating_add(other.final_merge_attempts);
+        self.final_merge_levels = self.final_merge_levels.saturating_add(other.final_merge_levels);
+        self.retry_count = self.retry_count.saturating_add(other.retry_count);
+        self.retry_resource_exhausted_count =
+            self.retry_resource_exhausted_count.saturating_add(other.retry_resource_exhausted_count);
+        self.retry_reservation_failure_count =
+            self.retry_reservation_failure_count.saturating_add(other.retry_reservation_failure_count);
+        self.hash_join_build_count = self.hash_join_build_count.saturating_add(other.hash_join_build_count);
+        self.filtered_join_build_count = self.filtered_join_build_count.saturating_add(other.filtered_join_build_count);
+        self.hash_join_cache_hits = self.hash_join_cache_hits.saturating_add(other.hash_join_cache_hits);
+        self.hash_join_cache_misses = self.hash_join_cache_misses.saturating_add(other.hash_join_cache_misses);
+        self.hash_join_durable_cache_hits =
+            self.hash_join_durable_cache_hits.saturating_add(other.hash_join_durable_cache_hits);
+        self.hash_join_durable_cache_misses =
+            self.hash_join_durable_cache_misses.saturating_add(other.hash_join_durable_cache_misses);
+        self.hash_join_durable_cache_inserts =
+            self.hash_join_durable_cache_inserts.saturating_add(other.hash_join_durable_cache_inserts);
+        self.hash_join_hash_table_bytes =
+            self.hash_join_hash_table_bytes.saturating_add(other.hash_join_hash_table_bytes);
+        self.filtered_join_hash_table_bytes =
+            self.filtered_join_hash_table_bytes.saturating_add(other.filtered_join_hash_table_bytes);
+        self.filtered_join_probe_state_bytes =
+            self.filtered_join_probe_state_bytes.saturating_add(other.filtered_join_probe_state_bytes);
+        self.mixed_join_size_data_bytes =
+            self.mixed_join_size_data_bytes.saturating_add(other.mixed_join_size_data_bytes);
+        self.parquet_files = self.parquet_files.saturating_add(other.parquet_files);
+        self.parquet_bytes_known = self.parquet_bytes_known.saturating_add(other.parquet_bytes_known);
+        self.row_groups_selected = self.row_groups_selected.saturating_add(other.row_groups_selected);
+        self.read_columns = self.read_columns.saturating_add(other.read_columns);
+        self.source_metadata_load_time += other.source_metadata_load_time;
+        self.source_read_queue_wait_time += other.source_read_queue_wait_time;
+        self.parquet_read_time += other.parquet_read_time;
+        self.source_read_time += other.source_read_time;
+        self.operator_time += other.operator_time;
+        self.chunk_operator_time += other.chunk_operator_time;
+        self.final_merge_time += other.final_merge_time;
+        self.final_sort_time += other.final_sort_time;
+        self.materialization_time += other.materialization_time;
+    }
+}
+
+fn max_optional(left: Option<u64>, right: Option<u64>) -> Option<u64> {
+    match (left, right) {
+        (Some(left), Some(right)) => Some(left.max(right)),
+        (Some(value), None) | (None, Some(value)) => Some(value),
+        (None, None) => None,
     }
 }
 
@@ -392,5 +498,24 @@ impl BoundaryMetrics {
     pub fn record_device_to_device_copy(&mut self, bytes: u64) {
         self.device_to_device_copies += 1;
         self.device_to_device_copied_bytes += bytes;
+    }
+
+    fn merge_from(&mut self, other: BoundaryMetrics) {
+        self.gpu_resident_input_handoffs =
+            self.gpu_resident_input_handoffs.saturating_add(other.gpu_resident_input_handoffs);
+        self.host_to_device_uploads = self.host_to_device_uploads.saturating_add(other.host_to_device_uploads);
+        self.host_to_device_uploaded_rows =
+            self.host_to_device_uploaded_rows.saturating_add(other.host_to_device_uploaded_rows);
+        self.host_to_device_uploaded_bytes =
+            self.host_to_device_uploaded_bytes.saturating_add(other.host_to_device_uploaded_bytes);
+        self.device_to_host_materializations =
+            self.device_to_host_materializations.saturating_add(other.device_to_host_materializations);
+        self.device_to_host_materialized_rows =
+            self.device_to_host_materialized_rows.saturating_add(other.device_to_host_materialized_rows);
+        self.device_to_host_materialized_bytes =
+            self.device_to_host_materialized_bytes.saturating_add(other.device_to_host_materialized_bytes);
+        self.device_to_device_copies = self.device_to_device_copies.saturating_add(other.device_to_device_copies);
+        self.device_to_device_copied_bytes =
+            self.device_to_device_copied_bytes.saturating_add(other.device_to_device_copied_bytes);
     }
 }

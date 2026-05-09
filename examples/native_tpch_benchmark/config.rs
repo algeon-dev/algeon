@@ -5,6 +5,7 @@ pub(super) const DEFAULT_NATIVE_MAX_SOURCE_CHUNK_BYTES: u64 = 512 * 1024 * 1024;
 pub(super) const DEFAULT_NATIVE_MAX_ROW_GROUPS_PER_CHUNK: usize = 1;
 pub(super) const DEFAULT_NATIVE_MAX_RETRY_ATTEMPTS: usize = 4;
 pub(super) const DEFAULT_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS: usize = 1;
+pub(super) const DEFAULT_NATIVE_MAX_SOURCE_READS_IN_FLIGHT: usize = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct NativeTpchBenchmarkConfig {
@@ -13,6 +14,7 @@ pub(super) struct NativeTpchBenchmarkConfig {
     pub(super) iterations: usize,
     pub(super) dataset_mode: NativeTpchDatasetMode,
     pub(super) native_memory_policy: NativeTpchMemoryPolicy,
+    pub(super) max_source_reads_in_flight: usize,
 }
 
 impl NativeTpchBenchmarkConfig {
@@ -23,6 +25,10 @@ impl NativeTpchBenchmarkConfig {
             iterations: env_usize("CUDF_TPCH_BENCH_ITERATIONS", 1)?,
             dataset_mode: NativeTpchDatasetMode::from_env("CUDF_TPCH_BENCH_DATASET_MODE")?,
             native_memory_policy: NativeTpchMemoryPolicy::from_env("CUDF_TPCH_BENCH_NATIVE_MEMORY_POLICY")?,
+            max_source_reads_in_flight: env_usize(
+                "CUDF_TPCH_BENCH_NATIVE_MAX_SOURCE_READS_IN_FLIGHT",
+                DEFAULT_NATIVE_MAX_SOURCE_READS_IN_FLIGHT,
+            )?,
         };
         config.validate()?;
         Ok(config)
@@ -31,6 +37,7 @@ impl NativeTpchBenchmarkConfig {
     pub(super) fn validate(&self) -> DataFusionResult<()> {
         validate_nonzero("CUDF_TPCH_BENCH_ITERATIONS", self.iterations)?;
         validate_query_ids(&self.query_ids)?;
+        validate_nonzero("CUDF_TPCH_BENCH_NATIVE_MAX_SOURCE_READS_IN_FLIGHT", self.max_source_reads_in_flight)?;
         self.native_memory_policy.validate()
     }
 
@@ -61,7 +68,10 @@ impl NativeTpchBenchmarkConfig {
                 max_row_groups_per_chunk,
                 max_retry_attempts,
                 min_retry_chunk_row_groups,
-            ),
+            )
+            .with_source_scheduler_policy(cudf_query_engine::SourceSchedulerPolicy::new(
+                self.max_source_reads_in_flight,
+            )),
         }
     }
 }
@@ -74,6 +84,7 @@ impl Default for NativeTpchBenchmarkConfig {
             iterations: 1,
             dataset_mode: NativeTpchDatasetMode::External(NativeTpchScaleFactor::Sf1),
             native_memory_policy: NativeTpchMemoryPolicy::default(),
+            max_source_reads_in_flight: DEFAULT_NATIVE_MAX_SOURCE_READS_IN_FLIGHT,
         }
     }
 }

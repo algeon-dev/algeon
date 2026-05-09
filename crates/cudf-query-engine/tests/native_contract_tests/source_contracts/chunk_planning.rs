@@ -228,10 +228,48 @@ fn source_chunk_planning_expands_all_row_groups_from_parquet_metadata() {
     assert!(plan.row_group_metadata_available);
     assert!(!plan.size_estimate_based);
     assert_eq!(plan.metadata_unavailable_files, 0);
+    assert_eq!(plan.metadata_load_count, 1);
     assert_eq!(plan.chunks[0].row_group_indexes, vec![0, 1]);
     assert_eq!(plan.chunks[1].row_group_indexes, vec![2]);
+    assert_eq!(plan.chunks[0].stable_id, path.display().to_string());
+    assert_eq!(plan.chunks[0].source_file_row_group_rows, Some(vec![2, 2, 2]));
     assert!(plan.chunks.iter().all(|chunk| chunk.known_row_group_bytes.unwrap() > 0));
+    assert!(plan.chunks.iter().all(|chunk| chunk.source_file_row_group_bytes.as_ref().unwrap().len() == 3));
     assert!(plan.chunks.iter().all(|chunk| !chunk.reads_all_row_groups));
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn source_chunk_planning_reuses_footer_metadata_cache() {
+    let dir = unique_temp_dir("cudf-query-engine-source-chunk-cache");
+    let path = dir.join("input.parquet");
+    let schema = write_row_grouped_parquet(&path, 6, 2);
+    let source = LocalParquetSource::from_files(vec![LocalParquetFile::new(&path)], schema, vec!["key".to_string()]);
+    let mut builder = QueryPlanBuilder::new();
+    let source_id = builder.add_source(SourceNode::LocalParquet(source.clone()));
+    let mut metadata_cache = SourceMetadataCache::default();
+
+    let first = plan_local_parquet_source_chunks_with_metadata_cache(
+        source_id,
+        &source,
+        SourceChunkPlanningPolicy::new(None, 2),
+        &mut metadata_cache,
+    )
+    .unwrap();
+    let second = plan_local_parquet_source_chunks_with_metadata_cache(
+        source_id,
+        &source,
+        SourceChunkPlanningPolicy::new(None, 2),
+        &mut metadata_cache,
+    )
+    .unwrap();
+
+    assert_eq!(metadata_cache.cached_footer_count(), 1);
+    assert_eq!(first.metadata_load_count, 1);
+    assert_eq!(second.metadata_load_count, 0);
+    assert_eq!(second.metadata_load_time, std::time::Duration::ZERO);
+    assert_eq!(first.chunks, second.chunks);
 
     fs::remove_dir_all(dir).unwrap();
 }
