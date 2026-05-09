@@ -1,14 +1,20 @@
 use super::*;
+use crate::runtime::MemorySpaceId;
 
 pub(in crate::exec) struct ActiveReservation {
+    memory_space: MemorySpaceId,
     reserved_bytes: Rc<Cell<u64>>,
     bytes: u64,
     released: bool,
 }
 
 impl ActiveReservation {
-    pub(in crate::exec) fn new(reserved_bytes: Rc<Cell<u64>>, bytes: u64) -> Self {
-        Self { reserved_bytes, bytes, released: false }
+    pub(in crate::exec) fn new(memory_space: MemorySpaceId, reserved_bytes: Rc<Cell<u64>>, bytes: u64) -> Self {
+        Self { memory_space, reserved_bytes, bytes, released: false }
+    }
+
+    pub(in crate::exec) fn memory_space(&self) -> MemorySpaceId {
+        self.memory_space
     }
 
     pub(in crate::exec) fn bytes(&self) -> u64 {
@@ -27,7 +33,7 @@ impl ActiveReservation {
         if bytes == 0 {
             return;
         }
-        debug_assert!(!self.released, "cannot grow a released reservation");
+        assert!(!self.released, "cannot grow a released reservation");
         self.reserved_bytes.set(self.reserved_bytes.get().saturating_add(bytes));
         self.bytes = self.bytes.saturating_add(bytes);
     }
@@ -36,7 +42,7 @@ impl ActiveReservation {
         if bytes >= self.bytes {
             return;
         }
-        debug_assert!(!self.released, "cannot shrink a released reservation");
+        assert!(!self.released, "cannot shrink a released reservation");
         let refunded = self.bytes - bytes;
         self.reserved_bytes.set(self.reserved_bytes.get().saturating_sub(refunded));
         self.bytes = bytes;
@@ -51,13 +57,14 @@ impl Drop for ActiveReservation {
 
 #[derive(Debug)]
 pub(in crate::exec) struct ReservationTracker {
+    memory_space: MemorySpaceId,
     budget_bytes: u64,
     reserved_bytes: Rc<Cell<u64>>,
 }
 
 impl ReservationTracker {
-    pub(in crate::exec) fn new(budget_bytes: u64) -> Self {
-        Self { budget_bytes, reserved_bytes: Rc::new(Cell::new(0)) }
+    pub(in crate::exec) fn new(memory_space: MemorySpaceId, budget_bytes: u64) -> Self {
+        Self { memory_space, budget_bytes, reserved_bytes: Rc::new(Cell::new(0)) }
     }
 
     pub(in crate::exec) fn budget(&self) -> u64 {
@@ -73,6 +80,7 @@ impl ReservationTracker {
     }
 
     pub(in crate::exec) fn available_bytes_including(&self, reservation: &ActiveReservation) -> u64 {
+        self.assert_reservation_belongs_to_tracker(reservation, "available_bytes_including");
         reservation.bytes().saturating_add(self.remaining_bytes())
     }
 
@@ -81,6 +89,7 @@ impl ReservationTracker {
         request: MemoryReservationRequest,
         metrics: &mut QueryMetrics,
     ) -> Result<ActiveReservation> {
+        let request = self.stamp_request(request);
         let remaining = self.remaining_bytes();
         if request.requested_bytes > remaining {
             metrics.record_reservation_denied_event(&request, remaining);
@@ -89,10 +98,11 @@ impl ReservationTracker {
 
         self.reserved_bytes.set(self.reserved_bytes().saturating_add(request.requested_bytes));
         metrics.record_reservation_granted_event(&request, request.requested_bytes);
-        Ok(ActiveReservation::new(Rc::clone(&self.reserved_bytes), request.requested_bytes))
+        Ok(ActiveReservation::new(self.memory_space, Rc::clone(&self.reserved_bytes), request.requested_bytes))
     }
 
     pub(in crate::exec) fn release(&mut self, mut reservation: ActiveReservation) {
+        self.assert_reservation_belongs_to_tracker(&reservation, "release");
         reservation.release();
     }
 
@@ -102,6 +112,8 @@ impl ReservationTracker {
         request: MemoryReservationRequest,
         metrics: &mut QueryMetrics,
     ) -> Result<()> {
+        self.validate_reservation_belongs_to_tracker(reservation, "try_grow")?;
+        let request = self.stamp_request(request);
         let remaining = self.remaining_bytes();
         if request.requested_bytes > remaining {
             metrics.record_reservation_denied_event(&request, remaining);
@@ -114,7 +126,46 @@ impl ReservationTracker {
     }
 
     pub(in crate::exec) fn shrink_to_observed(&mut self, reservation: &mut ActiveReservation, observed_bytes: u64) {
+        self.assert_reservation_belongs_to_tracker(reservation, "shrink_to_observed");
         reservation.shrink_to(observed_bytes);
+    }
+
+    fn stamp_request(&self, mut request: MemoryReservationRequest) -> MemoryReservationRequest {
+        request.memory_space = self.memory_space;
+        request.budget_bytes = self.budget_bytes;
+        request
+    }
+
+    fn reservation_belongs_to_tracker(&self, reservation: &ActiveReservation) -> bool {
+        reservation.memory_space() == self.memory_space && Rc::ptr_eq(&reservation.reserved_bytes, &self.reserved_bytes)
+    }
+
+    fn assert_reservation_belongs_to_tracker(&self, reservation: &ActiveReservation, operation: &'static str) {
+        assert!(
+            self.reservation_belongs_to_tracker(reservation),
+            "reservation tracker invariant failed during {operation}: reservation memory_space={} tracker memory_space={}",
+            reservation.memory_space(),
+            self.memory_space
+        );
+    }
+
+    fn validate_reservation_belongs_to_tracker(
+        &self,
+        reservation: &ActiveReservation,
+        operation: &'static str,
+    ) -> Result<()> {
+        if self.reservation_belongs_to_tracker(reservation) {
+            return Ok(());
+        }
+
+        Err(QueryError::new(
+            QueryErrorCode::Internal,
+            "cudf_query_engine.bounded.reservation_tracker",
+            "active reservation does not belong to this reservation tracker",
+        )
+        .with_fact("operation", operation)
+        .with_fact("reservation_memory_space", reservation.memory_space())
+        .with_fact("tracker_memory_space", self.memory_space))
     }
 }
 

@@ -20,7 +20,7 @@ pub(super) fn execute_bounded_root_join_query_plan(
     let MemoryControlPolicy::Bounded { device_budget_bytes, .. } = context.memory_control_policy() else {
         unreachable!("execute_bounded_root_join_query_plan is called only for bounded policies");
     };
-    let mut reservations = ReservationTracker::new(device_budget_bytes);
+    let mut reservations = ReservationTracker::new(context.device_memory_space(), device_budget_bytes);
     let join_node_id = plan.sink().input();
     let node = plan
         .node(join_node_id)

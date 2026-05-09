@@ -3,6 +3,7 @@ use crate::bounded_support::{
     BoundedJoinPipelineRejection, BoundedJoinPipelineStage, analyze_bounded_join_pipeline,
     analyze_bounded_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline,
     analyze_bounded_keyless_conditional_join_input_subplan_pipeline,
+    analyze_bounded_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline,
 };
 
 const KEYLESS_CONDITIONAL_INPUT_SUBPLAN_EXECUTION_FAMILY_FACT: &str = "bounded_join_execution_family";
@@ -34,6 +35,13 @@ fn attach_keyless_conditional_join_aggregate_over_join_subplan_inputs_execution_
     )
 }
 
+fn attach_mixed_keyed_residual_join_resident_grouped_aggregate_input_execution_family(error: QueryError) -> QueryError {
+    attach_bounded_join_execution_family(
+        error,
+        crate::runtime::BoundedJoinExecutionFamily::MixedKeyedResidualJoinResidentGroupedAggregateInputPipeline,
+    )
+}
+
 pub(super) fn execute_bounded_join_pipeline_query_plan(
     context: &ExecutionContext,
     plan: &QueryPlan,
@@ -48,7 +56,7 @@ pub(super) fn execute_bounded_join_pipeline_query_plan(
     let MemoryControlPolicy::Bounded { device_budget_bytes, .. } = context.memory_control_policy() else {
         unreachable!("execute_bounded_join_pipeline_query_plan is called only for bounded policies");
     };
-    let mut reservations = ReservationTracker::new(device_budget_bytes);
+    let mut reservations = ReservationTracker::new(context.device_memory_space(), device_budget_bytes);
     let left = execute_bounded_join_leaf_input(
         context,
         plan,
@@ -123,6 +131,18 @@ pub(super) fn execute_bounded_keyless_conditional_join_aggregate_over_join_subpl
     .map_err(attach_keyless_conditional_join_aggregate_over_join_subplan_inputs_execution_family)
 }
 
+pub(super) fn execute_bounded_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline_query_plan(
+    context: &ExecutionContext,
+    plan: &QueryPlan,
+    gpu_inputs: &GpuResidentInputMap,
+    metrics: &mut QueryMetrics,
+) -> Result<QueryOutput> {
+    execute_bounded_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline_query_plan_inner(
+        context, plan, gpu_inputs, metrics,
+    )
+    .map_err(attach_mixed_keyed_residual_join_resident_grouped_aggregate_input_execution_family)
+}
+
 fn execute_bounded_keyless_conditional_join_input_subplan_pipeline_query_plan_inner(
     context: &ExecutionContext,
     plan: &QueryPlan,
@@ -142,7 +162,7 @@ fn execute_bounded_keyless_conditional_join_input_subplan_pipeline_query_plan_in
             "execute_bounded_keyless_conditional_join_input_subplan_pipeline_query_plan is called only for bounded policies"
         );
     };
-    let mut reservations = ReservationTracker::new(device_budget_bytes);
+    let mut reservations = ReservationTracker::new(context.device_memory_space(), device_budget_bytes);
     let left = execute_bounded_keyless_conditional_join_input_subplan(
         context,
         plan,
@@ -224,7 +244,7 @@ fn execute_bounded_keyless_conditional_join_aggregate_over_join_subplan_inputs_p
             "execute_bounded_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline_query_plan is called only for bounded policies"
         );
     };
-    let mut reservations = ReservationTracker::new(device_budget_bytes);
+    let mut reservations = ReservationTracker::new(context.device_memory_space(), device_budget_bytes);
     let left = execute_bounded_keyless_conditional_join_aggregate_over_join_subplan_inputs(
         context,
         plan,
@@ -243,6 +263,89 @@ fn execute_bounded_keyless_conditional_join_aggregate_over_join_subplan_inputs_p
         &mut reservations,
         metrics,
     )?;
+    let mut committed =
+        execute_bounded_root_join(context, pipeline.join_id, pipeline.join, left, right, &mut reservations, metrics)?;
+
+    for stage in &pipeline.stages {
+        committed = execute_bounded_join_pipeline_stage(context, stage, committed, &mut reservations, metrics)?;
+    }
+
+    match plan.sink() {
+        ResultSink::GpuResident { .. } => {
+            let handle = match GpuResultHandle::new(context, committed.frame, Arc::clone(plan.output_schema())) {
+                Ok(handle) => handle,
+                Err(error) => {
+                    reservations.release(committed.reservation);
+                    return Err(error);
+                },
+            };
+            reservations.release(committed.reservation);
+            debug_assert_eq!(reservations.reserved_bytes(), 0);
+            Ok(QueryOutput::GpuResident(handle))
+        },
+        ResultSink::HostArrow { schema, .. } => {
+            let output = materialize_bounded_to_host(
+                context,
+                committed,
+                plan.sink().input(),
+                plan.node(plan.sink().input()).expect("validated sink input exists").output_schema(),
+                schema,
+                &mut reservations,
+                metrics,
+            )?;
+            debug_assert_eq!(reservations.reserved_bytes(), 0);
+            Ok(QueryOutput::HostArrow(output))
+        },
+    }
+}
+
+fn execute_bounded_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline_query_plan_inner(
+    context: &ExecutionContext,
+    plan: &QueryPlan,
+    gpu_inputs: &GpuResidentInputMap,
+    metrics: &mut QueryMetrics,
+) -> Result<QueryOutput> {
+    let pipeline = analyze_bounded_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline(plan)
+        .map_err(bounded_join_pipeline_rejection_error)?;
+    validate_bounded_join_pipeline_stages(&pipeline.stages)?;
+    validate_bounded_multi_join_subtree_capabilities(
+        context,
+        plan,
+        pipeline.join.inputs[join_side_index(pipeline.join_subtree_side)],
+    )?;
+    let grouped_aggregate_input = BoundedPlan::analyze_projection_wrapped_local_aggregate_subplan(
+        plan,
+        pipeline.join.inputs[join_side_index(pipeline.grouped_aggregate_side)],
+    )?;
+    grouped_aggregate_input.validate_capabilities()?;
+    validate_executable_join_subset(pipeline.join)?;
+    let residual_columns = residual_input_columns(pipeline.join)?;
+    lower_join_residual_predicate(context, pipeline.join, &residual_columns)?;
+
+    let MemoryControlPolicy::Bounded { device_budget_bytes, .. } = context.memory_control_policy() else {
+        unreachable!(
+            "execute_bounded_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline_query_plan is called only for bounded policies"
+        );
+    };
+    let mut reservations = ReservationTracker::new(context.device_memory_space(), device_budget_bytes);
+    let join_subtree = execute_bounded_multi_join_subtree(
+        context,
+        plan,
+        pipeline.join.inputs[join_side_index(pipeline.join_subtree_side)],
+        gpu_inputs,
+        &mut reservations,
+        metrics,
+    )?;
+    let grouped_aggregate = execute_bounded_projection_wrapped_local_aggregate_input(
+        context,
+        &grouped_aggregate_input,
+        &mut reservations,
+        metrics,
+    )?;
+    let (left, right) = match pipeline.join_subtree_side {
+        JoinSide::Left => (join_subtree, grouped_aggregate),
+        JoinSide::Right => (grouped_aggregate, join_subtree),
+    };
     let mut committed =
         execute_bounded_root_join(context, pipeline.join_id, pipeline.join, left, right, &mut reservations, metrics)?;
 
@@ -764,6 +867,40 @@ fn execute_bounded_aggregate_over_join_subplan_inputs_join_subplan(
     }
 }
 
+fn execute_bounded_projection_wrapped_local_aggregate_input(
+    context: &ExecutionContext,
+    bounded: &BoundedPlan<'_>,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+) -> Result<CommittedPartial> {
+    validate_local_parquet_source(bounded.source)?;
+    let chunk_plan = plan_local_parquet_source_chunks(
+        bounded.source_id,
+        bounded.source,
+        SourceChunkPlanningPolicy::from(context.memory_control_policy()),
+    )?;
+    for chunk in &chunk_plan.chunks {
+        metrics.record_source_chunk_planned(chunk.row_group_count() as u64);
+    }
+    if chunk_plan.chunks.is_empty() {
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "cudf_query_engine.bounded.plan",
+            "bounded grouped aggregate join input requires at least one planned source chunk",
+        )
+        .with_fact("source_node_id", bounded.source_id));
+    }
+    record_bounded_parquet_source_metrics(bounded.source, &chunk_plan, metrics);
+
+    let mut partials = Vec::with_capacity(chunk_plan.chunks.len());
+    for chunk in &chunk_plan.chunks {
+        partials.extend(execute_bounded_chunk_with_retry(context, bounded, chunk, reservations, metrics)?);
+    }
+
+    let frame = execute_final_aggregate_merge(context, bounded, partials, reservations, metrics)?;
+    execute_post_aggregate_projection(context, bounded, frame, reservations, metrics)
+}
+
 fn execute_bounded_keyless_conditional_join_input_subplan_unary(
     context: &ExecutionContext,
     node_id: NodeId,
@@ -1115,6 +1252,13 @@ fn bounded_keyless_conditional_join_input_subplan_node_kind(node: &PlanNode) -> 
         PlanNode::Sort(_) => "sort",
         PlanNode::Limit(_) => "limit",
         PlanNode::Join(_) => "join",
+    }
+}
+
+fn join_side_index(side: JoinSide) -> usize {
+    match side {
+        JoinSide::Left => 0,
+        JoinSide::Right => 1,
     }
 }
 

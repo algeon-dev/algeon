@@ -1,8 +1,10 @@
-use std::time::Duration;
+use std::{collections::BTreeMap, time::Duration};
 
 use cudf::ExecutionBudgetReport;
 
-use crate::runtime::{ExecutionBoundaryPolicy, MemoryControlPolicy, MemoryReservationRequest, ReservationKind};
+use crate::runtime::{
+    ExecutionBoundaryPolicy, MemoryControlPolicy, MemoryReservationRequest, MemorySpaceId, ReservationKind,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MemoryReservationEventOutcome {
@@ -28,6 +30,7 @@ impl std::fmt::Display for MemoryReservationEventOutcome {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MemoryReservationEvent {
     pub reservation_kind: ReservationKind,
+    pub memory_space: MemorySpaceId,
     pub memory_boundary: String,
     pub requested_bytes: u64,
     pub granted_bytes: u64,
@@ -48,6 +51,7 @@ impl MemoryReservationEvent {
     fn new(request: &MemoryReservationRequest, granted_bytes: u64, outcome: MemoryReservationEventOutcome) -> Self {
         Self {
             reservation_kind: request.reservation_kind,
+            memory_space: request.memory_space,
             memory_boundary: request.memory_boundary.clone(),
             requested_bytes: request.requested_bytes,
             granted_bytes,
@@ -273,10 +277,12 @@ pub struct BudgetedExecutionEvent {
     pub budget_bytes: u64,
     pub enforcement: String,
     pub status: String,
+    pub allocator_high_water_bytes: Option<u64>,
     pub retained_bytes: Option<u64>,
     pub output_bytes: Option<u64>,
     pub output_rows: Option<u64>,
     pub unresolved_contract: Option<String>,
+    pub context_facts: BTreeMap<String, String>,
 }
 
 impl BudgetedExecutionEvent {
@@ -287,10 +293,12 @@ impl BudgetedExecutionEvent {
             budget_bytes: report.request().budget_bytes() as u64,
             enforcement: report.enforcement().as_str().to_string(),
             status: report.status().as_str().to_string(),
+            allocator_high_water_bytes: report.allocator_high_water_bytes().map(|bytes| bytes as u64),
             retained_bytes: report.retained_bytes().map(|bytes| bytes as u64),
             output_bytes: report.output_bytes().map(|bytes| bytes as u64),
             output_rows: report.output_rows().map(|rows| rows as u64),
             unresolved_contract: report.unresolved_contract().map(str::to_string),
+            context_facts: report.context_facts().clone(),
         }
     }
 }

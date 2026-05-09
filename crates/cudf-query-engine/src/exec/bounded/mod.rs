@@ -46,6 +46,11 @@ pub(super) fn execute_bounded_query_plan(
         if plan.has_bounded_executable_multi_join_pipeline() {
             return execute_bounded_multi_join_pipeline_query_plan(context, plan, gpu_inputs, metrics);
         }
+        if plan.has_bounded_executable_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline() {
+            return execute_bounded_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline_query_plan(
+                context, plan, gpu_inputs, metrics,
+            );
+        }
         reject_bounded_join_plan(context, plan)?;
     }
 
@@ -78,7 +83,7 @@ pub(super) fn execute_bounded_query_plan(
     }
     record_bounded_parquet_source_metrics(bounded.source, &chunk_plan, metrics);
 
-    let mut reservations = ReservationTracker::new(device_budget_bytes);
+    let mut reservations = ReservationTracker::new(context.device_memory_space(), device_budget_bytes);
     let mut partials = Vec::with_capacity(chunk_plan.chunks.len());
     for chunk in &chunk_plan.chunks {
         partials.extend(execute_bounded_chunk_with_retry(context, &bounded, chunk, &mut reservations, metrics)?);
@@ -170,13 +175,18 @@ fn execute_bounded_generic_query_plan(
         if plan.has_bounded_executable_multi_join_pipeline() {
             return execute_bounded_multi_join_pipeline_query_plan(context, plan, gpu_inputs, metrics);
         }
+        if plan.has_bounded_executable_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline() {
+            return execute_bounded_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline_query_plan(
+                context, plan, gpu_inputs, metrics,
+            );
+        }
         reject_bounded_join_plan(context, plan)?;
     }
 
     let MemoryControlPolicy::Bounded { device_budget_bytes, .. } = context.memory_control_policy() else {
         unreachable!("execute_bounded_query_plan is called only for bounded policies");
     };
-    let mut reservations = ReservationTracker::new(device_budget_bytes);
+    let mut reservations = ReservationTracker::new(context.device_memory_space(), device_budget_bytes);
     let mut scratch = ExecutionScratch::new(context);
     let frame = execute_bounded_generic_node(context, plan, plan.sink().input(), gpu_inputs, &mut scratch, metrics)?;
     let frame_bytes = observe_device_memory_bytes(&frame, metrics)?;

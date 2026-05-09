@@ -457,13 +457,8 @@ fn native_execution_boundary_modeled_facts(
     execution_config: &NativeCudfExecutionConfig,
 ) -> Option<BTreeMap<String, String>> {
     if execution_config.memory_control_policy().is_bounded() && plan.contains_join() {
-        Some(
-            cudf_query_engine::BoundedJoinReservationContract
-                .facts(execution_config.boundary_policy())
-                .into_iter()
-                .map(|(key, value)| (key.to_string(), value))
-                .collect(),
-        )
+        plan.bounded_join_modeled_facts(execution_config.boundary_policy())
+            .map(|facts| facts.into_iter().map(|(key, value)| (key.to_string(), value)).collect())
     } else {
         None
     }

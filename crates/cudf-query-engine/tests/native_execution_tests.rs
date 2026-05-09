@@ -20,9 +20,10 @@ use cudf_query_engine::{
     BuildMaterializationBoundary, ExecutionBoundaryPolicy, ExecutionContext, Expr, GpuDataFrame, GpuHashJoinBuildCache,
     GpuResidentInputMap, GpuResidentSource, GpuResultHandle, JoinKey, JoinNullEquality, JoinOutputColumn, JoinSide,
     JoinSpec, JoinType, LimitSpec, LiteralValue, LocalParquetFile, LocalParquetSource, MemoryControlPolicy,
-    PartitionColumn, ProjectionOutput, QueryErrorCode, QueryMetrics, QueryOutput, QueryPlanBuilder, ReservationKind,
-    SortExpr, SortSpec, SourceChunkPlanningPolicy, SourceNode, ZERO_COLUMN_COUNT_COLUMN, execute_query_plan,
-    execute_query_plan_with_gpu_inputs, materialize_gpu_result_to_host, plan_local_parquet_source_chunks,
+    MemorySpaceId, PartitionColumn, ProjectionOutput, QueryErrorCode, QueryMetrics, QueryOutput, QueryPlanBuilder,
+    ReservationKind, SortExpr, SortSpec, SourceChunkPlanningPolicy, SourceNode, ZERO_COLUMN_COUNT_COLUMN,
+    execute_query_plan, execute_query_plan_with_gpu_inputs, materialize_gpu_result_to_host,
+    plan_local_parquet_source_chunks,
 };
 use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
 
@@ -3099,6 +3100,18 @@ fn bounded_native_query_executes_partition_columns_per_source_chunk() {
     assert_eq!(int64_array(batch, 1).values().as_ref(), &[1000]);
     assert_eq!(result.metrics().source_chunks_planned, 2);
     assert_eq!(result.metrics().source_chunks_committed, 2);
+    let source_events = budgeted_events(result.metrics(), "cudf_query_engine.local_parquet_chunk.read");
+    assert_eq!(source_events.len(), 2);
+    for event in source_events {
+        assert_source_budget_event_context(event, "m00", "part,m00");
+        assert_eq!(event.context_facts.get("reads_all_row_groups").map(String::as_str), Some("false"));
+        assert_eq!(event.context_facts.get("selected_row_groups").map(String::as_str), Some("0"));
+        assert_eq!(event.context_facts.get("selected_row_group_count").map(String::as_str), Some("1"));
+        assert_eq!(event.context_facts.get("read_column_count").map(String::as_str), Some("1"));
+        assert_eq!(event.context_facts.get("projected_column_count").map(String::as_str), Some("2"));
+        assert_eq!(event.context_facts.get("required_columns").map(String::as_str), Some("part"));
+        assert_eq!(event.context_facts.get("partition_columns").map(String::as_str), Some("part"));
+    }
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -3289,6 +3302,16 @@ fn bounded_native_query_executes_chunked_grouped_sum_and_final_merge() {
     assert_eq!(batch.num_rows(), 3);
     assert_eq!(int32_array(batch, 0).values().as_ref(), &[2, 1, 3]);
     assert_eq!(int64_array(batch, 1).values().as_ref(), &[707, 404, 404]);
+    let source_events = budgeted_events(metrics, "cudf_query_engine.local_parquet_chunk.read");
+    assert_eq!(source_events.len(), 3);
+    let selected_row_groups =
+        source_events.iter().map(|event| event.context_facts["selected_row_groups"].as_str()).collect::<Vec<_>>();
+    assert_eq!(selected_row_groups, vec!["0", "1", "2"]);
+    for event in source_events {
+        assert_source_budget_event_context(event, "key,m00,m01,payload", "key,m00,m01,payload");
+        assert_eq!(event.context_facts.get("reads_all_row_groups").map(String::as_str), Some("false"));
+        assert_eq!(event.context_facts.get("selected_row_group_count").map(String::as_str), Some("1"));
+    }
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -4658,6 +4681,11 @@ fn bounded_native_query_reports_source_chunk_hard_budget_failure_after_reservati
     assert_eq!(error.fact_value("budget_boundary"), Some("source_chunk_read"));
     assert_eq!(error.fact_value("budget_bytes"), Some(admitted_budget.as_str()));
     assert_eq!(error.fact_value("budget_enforcement"), Some("hard_memory_resource_limit"));
+    assert_eq!(error.fact_value("budget_status"), Some("exceeded_or_lower_layer_rejected"));
+    assert!(error.fact_value("budget_peak_bytes").is_some());
+    assert!(error.fact_value("budget_current_bytes").is_some());
+    assert!(error.fact_value("budget_failed_allocation_count").is_some());
+    assert!(error.fact_value("budget_largest_failed_allocation_bytes").is_some());
     assert_eq!(error.fact_value("memory_boundary"), Some("source_chunk_read"));
     assert_eq!(error.fact_value("stage"), Some("source_chunk_read"));
     assert_eq!(error.fact_value("chunk_index"), Some("0"));
@@ -4991,6 +5019,7 @@ fn bounded_native_query_retries_chunk_after_source_reservation_failure() {
     assert_eq!(metrics.retry_reservation_failure_count, 1);
     assert_eq!(metrics.retry_resource_exhausted_count, 1);
     assert_eq!(metrics.reservation_denied_count, 1);
+    assert_reservation_events_memory_space(metrics, MemorySpaceId::Device { device_ordinal: 0 });
     assert_eq!(metrics.source_chunks_attempted, 5);
     assert_eq!(metrics.source_chunks_committed, 3);
     assert_eq!(metrics.row_groups_committed, 3);
@@ -8328,6 +8357,236 @@ fn bounded_native_query_executes_q11_like_keyless_conditional_join_with_aggregat
 }
 
 #[test]
+fn bounded_native_query_executes_mixed_keyed_residual_join_with_grouped_aggregate_input() {
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let dir = unique_temp_dir("cudf-query-engine-bounded-mixed-aggregate-input");
+    let fact_path = dir.join("fact.parquet");
+    let grouped_fact_path = dir.join("grouped_fact.parquet");
+    let dim_path = dir.join("dim.parquet");
+    let fact_schema = write_mixed_aggregate_input_fact_parquet(&runtime, &fact_path);
+    let grouped_fact_schema = write_mixed_aggregate_input_fact_row_grouped_parquet(&grouped_fact_path);
+    let dim_schema = write_mixed_aggregate_input_dim_parquet(&runtime, &dim_path);
+    let plan = mixed_keyed_residual_join_grouped_aggregate_input_plan(
+        &fact_path,
+        &grouped_fact_path,
+        &dim_path,
+        &fact_schema,
+        &grouped_fact_schema,
+        &dim_schema,
+    );
+    assert!(!plan.has_bounded_executable_root_join());
+    assert!(!plan.has_bounded_executable_join_pipeline());
+    assert!(!plan.has_bounded_executable_keyless_conditional_join_input_subplan_pipeline());
+    assert!(!plan.has_bounded_executable_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline());
+    assert!(!plan.has_bounded_executable_multi_join_pipeline());
+    assert!(plan.has_bounded_executable_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline());
+    assert!(plan.bounded_join_unsupported_shape_facts(ExecutionBoundaryPolicy::default()).is_none());
+
+    let context = bounded_join_execution_context(&runtime);
+    let result = execute_query_plan(&context, &plan).unwrap();
+    let metrics = result.metrics();
+    assert_eq!(metrics.phase_c_memory_control_policy.as_str(), "bounded");
+    assert_eq!(metrics.boundary.host_to_device_uploads, 0);
+    assert_eq!(metrics.boundary.device_to_host_materializations, 1);
+    assert_eq!(metrics.reservation_denied_count, 0);
+    assert_eq!(metrics.hash_join_build_count, 1);
+    assert_eq!(metrics.operators.iter().filter(|operator| operator.join.is_some()).count(), 2);
+    let join_metrics = metrics.operators.iter().filter_map(|operator| operator.join.as_ref()).collect::<Vec<_>>();
+    assert_eq!(join_metrics[0].execution_strategy, "bounded_reusable_hash_join");
+    assert_eq!(join_metrics[0].join_type, "inner");
+    assert_eq!(join_metrics[1].execution_strategy, "bounded_mixed_keyed_residual_join");
+    assert_eq!(join_metrics[1].join_type, "inner");
+    assert!(join_metrics[1].residual_predicate);
+    assert_eq!(join_metrics[1].output_rows, 2);
+    assert!(metrics.reservation_events.iter().all(|event| event.memory_boundary != "join_pipeline_sort"));
+    assert!(metrics.reservation_events.iter().all(|event| event.reservation_kind != ReservationKind::FinalSort));
+    assert_granted_reservation_trace(
+        metrics,
+        &[
+            (ReservationKind::SourceRead, "join_source_read"),
+            (ReservationKind::SourceRead, "join_source_read"),
+            (ReservationKind::OperatorOutput, "join_input_projection"),
+            (ReservationKind::BuildSide, "join_build_side"),
+            (ReservationKind::HashTable, "join_hash_table"),
+            (ReservationKind::OperatorOutput, "join_input_projection"),
+            (ReservationKind::ProbeSide, "join_probe_side"),
+            (ReservationKind::GatherMap, "join_gather_map"),
+            (ReservationKind::JoinOutput, "join_output"),
+            (ReservationKind::OperatorOutput, "join_pipeline_projection"),
+            (ReservationKind::OperatorOutput, "join_pipeline_projection_output"),
+            (ReservationKind::OperatorOutput, "join_pipeline_projection"),
+            (ReservationKind::OperatorOutput, "join_pipeline_projection_output"),
+            (ReservationKind::SourceRead, "source_chunk_read"),
+            (ReservationKind::SourceRead, "source_chunk_read"),
+            (ReservationKind::ChunkOperator, "chunk_operator"),
+            (ReservationKind::PartialState, "partial_state"),
+            (ReservationKind::SourceRead, "source_chunk_read"),
+            (ReservationKind::SourceRead, "source_chunk_read"),
+            (ReservationKind::ChunkOperator, "chunk_operator"),
+            (ReservationKind::PartialState, "partial_state"),
+            (ReservationKind::FinalMerge, "final_aggregate_merge"),
+            (ReservationKind::FinalMerge, "final_aggregate_merge_output"),
+            (ReservationKind::FinalMerge, "final_aggregate_projection"),
+            (ReservationKind::FinalMerge, "final_aggregate_projection_output"),
+            (ReservationKind::FinalMerge, "post_aggregate_projection"),
+            (ReservationKind::FinalMerge, "post_aggregate_projection_output"),
+            (ReservationKind::OperatorOutput, "join_input_projection"),
+            (ReservationKind::BuildSide, "join_build_side"),
+            (ReservationKind::OperatorOutput, "join_input_projection"),
+            (ReservationKind::ProbeSide, "join_probe_side"),
+            (ReservationKind::MixedSizeData, "join_mixed_size_data"),
+            (ReservationKind::GatherMap, "join_gather_map"),
+            (ReservationKind::JoinOutput, "join_output"),
+            (ReservationKind::OperatorOutput, "join_pipeline_projection"),
+            (ReservationKind::OperatorOutput, "join_pipeline_projection_output"),
+            (ReservationKind::OperatorOutput, "join_pipeline_aggregate"),
+            (ReservationKind::OperatorOutput, "join_pipeline_aggregate_output"),
+            (ReservationKind::OperatorOutput, "join_pipeline_projection"),
+            (ReservationKind::OperatorOutput, "join_pipeline_projection_output"),
+            (ReservationKind::Materialization, "host_materialization"),
+        ],
+    );
+    assert_budgeted_success_event_with_contract(
+        metrics,
+        "cudf_query_engine.local_parquet_chunk.read",
+        25_000,
+        "source_chunk_read",
+        Some("libcudf_parquet_decoded_output_preflight_unavailable"),
+    );
+    assert_budgeted_success_event_with_contract(
+        metrics,
+        "cudf_query_engine.aggregate.execute_partial",
+        2,
+        "chunk_operator",
+        Some("libcudf_groupby_aggregate_temporary_workspace_preflight_unavailable"),
+    );
+    assert_budgeted_success_event_with_contract(
+        metrics,
+        "cudf_query_engine.final_merge.aggregate",
+        2,
+        "final_aggregate_merge",
+        Some("libcudf_groupby_aggregate_temporary_workspace_preflight_unavailable"),
+    );
+
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    assert_eq!(batch.num_rows(), 1);
+    assert_eq!(batch.num_columns(), 1);
+    assert_eq!(float64_array(batch, 0).values().as_ref(), &[40.0]);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn bounded_native_query_denies_mixed_keyed_residual_grouped_aggregate_source_before_root_join() {
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let dir = unique_temp_dir("cudf-query-engine-bounded-mixed-aggregate-input-source-denial");
+    let fact_path = dir.join("fact.parquet");
+    let grouped_fact_path = dir.join("grouped_fact.parquet");
+    let dim_path = dir.join("dim.parquet");
+    let fact_schema = write_mixed_aggregate_input_fact_parquet(&runtime, &fact_path);
+    let grouped_fact_schema = write_mixed_aggregate_input_fact_row_grouped_parquet(&grouped_fact_path);
+    let dim_schema = write_mixed_aggregate_input_dim_parquet(&runtime, &dim_path);
+    let plan = mixed_keyed_residual_join_grouped_aggregate_input_plan(
+        &fact_path,
+        &grouped_fact_path,
+        &dim_path,
+        &fact_schema,
+        &grouped_fact_schema,
+        &dim_schema,
+    );
+
+    let baseline = execute_query_plan(&bounded_join_execution_context(&runtime), &plan).unwrap();
+    let retained_join_subtree_bytes =
+        retained_bytes_before_grouped_aggregate_source_read(baseline.metrics()).saturating_add(8192);
+    let constrained_context = ExecutionContext::builder()
+        .with_shared_runtime(Arc::clone(&runtime))
+        .with_memory_control_policy(MemoryControlPolicy::Bounded {
+            device_budget_bytes: retained_join_subtree_bytes,
+            max_source_chunk_bytes: 1024,
+            max_row_groups_per_chunk: 1,
+            max_retry_attempts: 1,
+            min_retry_chunk_row_groups: 1,
+        })
+        .build()
+        .unwrap();
+    let error = match execute_query_plan(&constrained_context, &plan) {
+        Ok(_) => panic!("constrained mixed keyed residual grouped aggregate input should fail source reservation"),
+        Err(error) => error,
+    };
+
+    assert_eq!(error.code(), QueryErrorCode::MemoryReservationFailed);
+    assert_eq!(
+        error.fact_value("bounded_join_execution_family"),
+        Some("mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline")
+    );
+    assert_eq!(error.fact_value("memory_boundary"), Some("source_chunk_read"));
+    assert_eq!(error.fact_value("reservation_kind"), Some("source_read"));
+    assert_eq!(error.fact_value("stage"), Some("source_chunk_read"));
+    assert_eq!(error.fact_value("attempt"), Some("1"));
+    assert_eq!(error.fact_value("max_attempts"), Some("1"));
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn bounded_native_query_enforces_mixed_keyed_residual_grouped_aggregate_hard_budget_before_root_join() {
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let dir = unique_temp_dir("cudf-query-engine-bounded-mixed-aggregate-input-hard-budget");
+    let fact_path = dir.join("fact.parquet");
+    let grouped_fact_path = dir.join("grouped_fact.parquet");
+    let dim_path = dir.join("dim.parquet");
+    let fact_schema = write_mixed_aggregate_input_fact_parquet(&runtime, &fact_path);
+    let grouped_fact_schema = write_mixed_aggregate_input_fact_row_grouped_parquet(&grouped_fact_path);
+    let dim_schema = write_mixed_aggregate_input_dim_parquet(&runtime, &dim_path);
+    let plan = mixed_keyed_residual_join_grouped_aggregate_input_plan(
+        &fact_path,
+        &grouped_fact_path,
+        &dim_path,
+        &fact_schema,
+        &grouped_fact_schema,
+        &dim_schema,
+    );
+
+    let baseline = execute_query_plan(&bounded_join_execution_context(&runtime), &plan).unwrap();
+    let (retained_join_subtree_bytes, _source_read_bytes, chunk_operator_bytes) =
+        grouped_aggregate_chunk_budget_window(baseline.metrics());
+    let operator_token_budget = chunk_operator_bytes;
+    let constrained_budget =
+        retained_join_subtree_bytes.saturating_add(chunk_operator_bytes).saturating_add(operator_token_budget);
+    let constrained_context = ExecutionContext::builder()
+        .with_shared_runtime(Arc::clone(&runtime))
+        .with_memory_control_policy(MemoryControlPolicy::Bounded {
+            device_budget_bytes: constrained_budget,
+            max_source_chunk_bytes: 1024,
+            max_row_groups_per_chunk: 1,
+            max_retry_attempts: 1,
+            min_retry_chunk_row_groups: 1,
+        })
+        .build()
+        .unwrap();
+    let error = match execute_query_plan(&constrained_context, &plan) {
+        Ok(_) => panic!("constrained mixed keyed residual grouped aggregate input should fail aggregate hard budget"),
+        Err(error) => error,
+    };
+    assert_eq!(error.code(), QueryErrorCode::CudfResourceExhausted);
+    assert_eq!(
+        error.fact_value("bounded_join_execution_family"),
+        Some("mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline")
+    );
+    assert_eq!(error.fact_value("budget_boundary"), Some("chunk_operator"));
+    assert_eq!(error.fact_value("budget_bytes"), Some(operator_token_budget.to_string().as_str()));
+    assert_eq!(error.fact_value("budget_enforcement"), Some("hard_memory_resource_limit"));
+    assert_eq!(error.fact_value("memory_boundary"), Some("chunk_operator"));
+    assert_eq!(error.fact_value("stage"), Some("chunk_operator"));
+    assert_eq!(error.fact_value("attempt"), Some("1"));
+    assert_eq!(error.fact_value("max_attempts"), Some("1"));
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn bounded_native_query_rejects_unsupported_join_under_aggregate_before_source_read() {
     let runtime = Arc::new(cudf::Runtime::new().unwrap());
     let left_schema = Arc::new(Schema::new(vec![
@@ -8923,6 +9182,162 @@ fn q11_suppkey_join_key(left_name: &str, right_name: &str) -> JoinKey {
     )
 }
 
+fn mixed_keyed_residual_join_grouped_aggregate_input_plan(
+    fact_path: &Path,
+    grouped_fact_path: &Path,
+    dim_path: &Path,
+    fact_schema: &Arc<Schema>,
+    grouped_fact_schema: &Arc<Schema>,
+    dim_schema: &Arc<Schema>,
+) -> cudf_query_engine::QueryPlan {
+    let joined_fact_schema = Arc::new(Schema::new(vec![
+        Field::new("entity_id", DataType::Int32, false),
+        Field::new("measure", DataType::Float64, false),
+        Field::new("quantity", DataType::Float64, false),
+    ]));
+    let joined_fact_residual_schema = Arc::new(Schema::new(vec![
+        Field::new("entity_id", DataType::Int32, false),
+        Field::new("measure", DataType::Float64, false),
+        Field::new("quantity", DataType::Float64, false),
+        Field::new("__cudf_join_residual_left_0", DataType::Float64, false),
+    ]));
+    let grouped_schema = Arc::new(Schema::new(vec![
+        Field::new("entity_id", DataType::Int32, false),
+        Field::new("avg_quantity", DataType::Float64, true),
+    ]));
+    let root_output_schema = Arc::new(Schema::new(vec![Field::new("measure", DataType::Float64, false)]));
+    let aggregate_input_schema = Arc::new(Schema::new(vec![Field::new("aggregate_arg", DataType::Float64, false)]));
+    let aggregate_schema = Arc::new(Schema::new(vec![Field::new("sum_measure", DataType::Float64, true)]));
+    let output_schema = Arc::new(Schema::new(vec![Field::new("result", DataType::Float64, true)]));
+
+    let mut builder = QueryPlanBuilder::new();
+    let fact = builder.add_source(SourceNode::LocalParquet(mixed_aggregate_fact_source(
+        fact_path,
+        fact_schema,
+        &["entity_id", "quantity", "measure"],
+    )));
+    let dim = builder.add_source(SourceNode::LocalParquet(mixed_aggregate_dim_source(dim_path, dim_schema)));
+    let fact_dim = builder.add_join(
+        fact,
+        dim,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(
+                cudf_query_engine::ColumnRef::input(0, "entity_id", "entity_id"),
+                cudf_query_engine::ColumnRef::input(1, "entity_id", "entity_id"),
+            )],
+        )
+        .with_output_projection(vec![
+            JoinOutputColumn::left(cudf_query_engine::ColumnRef::input(0, "entity_id", "entity_id"), "entity_id"),
+            JoinOutputColumn::left(cudf_query_engine::ColumnRef::input(0, "measure", "measure"), "measure"),
+            JoinOutputColumn::left(cudf_query_engine::ColumnRef::input(0, "quantity", "quantity"), "quantity"),
+        ])
+        .with_build_side(JoinSide::Right),
+        Arc::clone(&joined_fact_schema),
+    );
+    let joined_projection = builder.add_projection(
+        fact_dim,
+        projection_outputs(
+            vec![Expr::column("entity_id"), Expr::column("measure"), Expr::column("quantity")],
+            Arc::clone(&joined_fact_schema),
+        ),
+    );
+    let joined_projection = builder.add_projection(
+        joined_projection,
+        projection_outputs(
+            vec![
+                Expr::column("entity_id"),
+                Expr::column("measure"),
+                Expr::column("quantity"),
+                Expr::cast(Expr::column("quantity"), DataType::Float64).alias("__cudf_join_residual_left_0"),
+            ],
+            Arc::clone(&joined_fact_residual_schema),
+        ),
+    );
+
+    let grouped_fact = builder.add_source(SourceNode::LocalParquet(mixed_aggregate_grouped_fact_source(
+        grouped_fact_path,
+        grouped_fact_schema,
+        &["entity_id", "quantity"],
+    )));
+    let grouped = builder.add_aggregate(
+        grouped_fact,
+        AggregateSpec::new(
+            vec![Expr::column("entity_id")],
+            vec![AggregateExpr::new(AggregateFunction::Avg, Expr::column("quantity"), "avg_quantity")],
+        ),
+        Arc::clone(&grouped_schema),
+    );
+    let grouped = builder.add_projection(
+        grouped,
+        projection_outputs(vec![Expr::column("entity_id"), Expr::column("avg_quantity")], Arc::clone(&grouped_schema)),
+    );
+
+    let root = builder.add_join(
+        joined_projection,
+        grouped,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(
+                cudf_query_engine::ColumnRef::input(0, "entity_id", "entity_id"),
+                cudf_query_engine::ColumnRef::input(1, "entity_id", "entity_id"),
+            )],
+        )
+        .with_residual_predicate(Expr::binary(
+            Expr::input_column(0, "quantity", "quantity"),
+            BinaryOp::Lt,
+            Expr::input_column(1, "avg_quantity", "avg_quantity"),
+        ))
+        .with_output_projection(vec![JoinOutputColumn::left(
+            cudf_query_engine::ColumnRef::input(0, "measure", "measure"),
+            "measure",
+        )])
+        .with_build_side(JoinSide::Right),
+        Arc::clone(&root_output_schema),
+    );
+    let aggregate_input = builder.add_projection(
+        root,
+        projection_outputs(vec![Expr::column("measure").alias("aggregate_arg")], Arc::clone(&aggregate_input_schema)),
+    );
+    let aggregate = builder.add_aggregate(
+        aggregate_input,
+        AggregateSpec::new(
+            Vec::new(),
+            vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("aggregate_arg"), "sum_measure")],
+        ),
+        Arc::clone(&aggregate_schema),
+    );
+    let output = builder.add_projection(
+        aggregate,
+        projection_outputs(vec![Expr::column("sum_measure").alias("result")], output_schema),
+    );
+    builder.finish_with_host_sink(output)
+}
+
+fn mixed_aggregate_fact_source(path: &Path, schema: &Arc<Schema>, columns: &[&str]) -> LocalParquetSource {
+    LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(path).with_file_size_bytes(fs::metadata(path).unwrap().len())],
+        Arc::clone(schema),
+        columns.iter().map(|column| (*column).to_string()).collect(),
+    )
+}
+
+fn mixed_aggregate_grouped_fact_source(path: &Path, schema: &Arc<Schema>, columns: &[&str]) -> LocalParquetSource {
+    LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(path)],
+        Arc::clone(schema),
+        columns.iter().map(|column| (*column).to_string()).collect(),
+    )
+}
+
+fn mixed_aggregate_dim_source(path: &Path, schema: &Arc<Schema>) -> LocalParquetSource {
+    LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(path).with_file_size_bytes(fs::metadata(path).unwrap().len())],
+        Arc::clone(schema),
+        vec!["entity_id".to_string()],
+    )
+}
+
 fn assert_empty_bounded_filtered_join_result(result: &cudf_query_engine::QueryExecutionResult, join_type: &str) {
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("empty bounded filtered join should return host output");
@@ -8963,6 +9378,38 @@ fn assert_budgeted_success_event(metrics: &QueryMetrics, operation: &str) {
         assert!(event.output_rows.is_some(), "budgeted event should record output rows: {event:?}");
         assert_representative_budgeted_contract(event);
     }
+}
+
+fn assert_budget_event_high_water(event: &BudgetedExecutionEvent, lower_bound_bytes: Option<u64>) {
+    let high_water =
+        event.allocator_high_water_bytes.expect("budgeted execution event should record allocator high-water bytes");
+    assert!(high_water > 0, "allocator high-water should be positive: {event:?}");
+    assert!(
+        high_water <= event.budget_bytes,
+        "allocator high-water should stay within the hard budget: high_water={high_water}, event={event:?}",
+    );
+    if let Some(lower_bound_bytes) = lower_bound_bytes {
+        assert!(
+            high_water >= lower_bound_bytes,
+            "allocator high-water should cover retained/output bytes: high_water={high_water}, lower_bound={lower_bound_bytes}, event={event:?}",
+        );
+    }
+}
+
+fn assert_source_budget_event_context(event: &BudgetedExecutionEvent, read_columns: &str, projected_columns: &str) {
+    assert_eq!(event.unresolved_contract.as_deref(), Some("libcudf_parquet_decoded_output_preflight_unavailable"));
+    assert_eq!(event.context_facts.get("source_kind").map(String::as_str), Some("data"));
+    assert_eq!(event.context_facts.get("source_read_mode").map(String::as_str), Some("execution_frame"));
+    assert_eq!(event.context_facts.get("read_columns").map(String::as_str), Some(read_columns));
+    assert_eq!(event.context_facts.get("projected_columns").map(String::as_str), Some(projected_columns));
+    assert!(event.context_facts.get("path").is_some(), "source event should record source path: {event:?}");
+    assert!(event.output_rows.is_some_and(|rows| rows > 0), "source event should record decoded rows: {event:?}");
+    assert!(
+        event.retained_bytes.is_some_and(|bytes| bytes > 0),
+        "source event should record retained bytes: {event:?}"
+    );
+    assert_eq!(event.retained_bytes, event.output_bytes);
+    assert_budget_event_high_water(event, event.output_bytes);
 }
 
 fn assert_budgeted_success_event_with_rows(metrics: &QueryMetrics, operation: &str, output_rows: u64) {
@@ -9007,6 +9454,9 @@ fn assert_final_sort_prepare_budget_event(
                 && retained_bytes.map_or(event.retained_bytes.is_some_and(|bytes| bytes > 0), |bytes| {
                     event.retained_bytes == Some(bytes)
                 })
+                && event.allocator_high_water_bytes.is_some_and(|bytes| {
+                    bytes > 0 && bytes <= event.budget_bytes && bytes >= event.retained_bytes.unwrap_or(0)
+                })
                 && event.output_bytes.is_none()
                 && event.output_rows.is_none()
         }),
@@ -9028,6 +9478,9 @@ fn assert_final_sort_materialize_budget_event(
                 && event.retained_bytes.is_some_and(|bytes| bytes > 0)
                 && output_bytes.map_or(event.output_bytes.is_some_and(|bytes| bytes > 0), |bytes| {
                     event.output_bytes == Some(bytes)
+                })
+                && event.allocator_high_water_bytes.is_some_and(|bytes| {
+                    bytes > 0 && bytes <= event.budget_bytes && bytes >= event.output_bytes.unwrap_or(0)
                 })
                 && event.output_rows.is_none()
         }),
@@ -9067,6 +9520,7 @@ fn assert_representative_budgeted_contract(event: &BudgetedExecutionEvent) {
         },
         "cudf_query_engine.aggregate.execute_partial" => {
             assert_eq!(event.boundary, "chunk_operator");
+            assert_budget_event_high_water(event, event.output_bytes.or(event.retained_bytes));
             assert_eq!(
                 event.unresolved_contract.as_deref(),
                 Some("libcudf_groupby_aggregate_temporary_workspace_preflight_unavailable")
@@ -9115,6 +9569,14 @@ fn assert_representative_budgeted_contract(event: &BudgetedExecutionEvent) {
                 Some("libcudf_scalar_to_series_temporary_workspace_preflight_unavailable")
             );
         },
+        "cudf_query_engine.local_parquet_chunk.read" => {
+            assert!(matches!(event.boundary.as_str(), "source_chunk_read" | "join_source_read"));
+            assert_source_budget_event_context(
+                event,
+                event.context_facts["read_columns"].as_str(),
+                event.context_facts["projected_columns"].as_str(),
+            );
+        },
         _ => {},
     }
 }
@@ -9136,6 +9598,7 @@ fn wide_final_sort_projection(column_count: usize) -> Vec<Expr> {
 }
 
 fn assert_reservation_kind_subsequence(metrics: &QueryMetrics, expected: &[ReservationKind]) {
+    assert_reservation_events_memory_space(metrics, MemorySpaceId::Device { device_ordinal: 0 });
     let mut events = metrics.reservation_events.iter();
     for expected_kind in expected {
         events
@@ -9146,6 +9609,7 @@ fn assert_reservation_kind_subsequence(metrics: &QueryMetrics, expected: &[Reser
 
 fn assert_granted_reservation_trace(metrics: &QueryMetrics, expected: &[(ReservationKind, &'static str)]) {
     assert_eq!(metrics.reservation_denied_count, 0);
+    assert_reservation_events_memory_space(metrics, MemorySpaceId::Device { device_ordinal: 0 });
     let actual = metrics
         .reservation_events
         .iter()
@@ -9153,6 +9617,13 @@ fn assert_granted_reservation_trace(metrics: &QueryMetrics, expected: &[(Reserva
         .map(|event| (event.reservation_kind, event.memory_boundary.as_str()))
         .collect::<Vec<_>>();
     assert_eq!(actual, expected);
+}
+
+fn assert_reservation_events_memory_space(metrics: &QueryMetrics, expected: MemorySpaceId) {
+    assert!(!metrics.reservation_events.is_empty(), "expected reservation events to be recorded");
+    for event in &metrics.reservation_events {
+        assert_eq!(event.memory_space, expected);
+    }
 }
 
 fn granted_reservation_requested_bytes(metrics: &QueryMetrics, kind: ReservationKind, memory_boundary: &str) -> u64 {
@@ -9166,6 +9637,36 @@ fn granted_reservation_requested_bytes(metrics: &QueryMetrics, kind: Reservation
         })
         .unwrap_or_else(|| panic!("missing granted reservation event {kind:?}/{memory_boundary}"))
         .requested_bytes
+}
+
+fn retained_bytes_before_grouped_aggregate_source_read(metrics: &QueryMetrics) -> u64 {
+    let source_index = metrics
+        .reservation_events
+        .iter()
+        .position(|event| event.outcome.as_str() == "granted" && event.memory_boundary == "source_chunk_read")
+        .expect("mixed aggregate input metrics should include grouped source read");
+    metrics.reservation_events[..source_index]
+        .iter()
+        .rev()
+        .find(|event| event.outcome.as_str() == "granted" && event.memory_boundary == "join_pipeline_projection_output")
+        .expect("join subtree output should be retained before grouped source read")
+        .requested_bytes
+}
+
+fn grouped_aggregate_chunk_budget_window(metrics: &QueryMetrics) -> (u64, u64, u64) {
+    let source_index = metrics
+        .reservation_events
+        .iter()
+        .position(|event| event.outcome.as_str() == "granted" && event.memory_boundary == "source_chunk_read")
+        .expect("mixed aggregate input metrics should include grouped source read");
+    let retained_join_subtree_bytes = retained_bytes_before_grouped_aggregate_source_read(metrics);
+    let source_read_bytes = metrics.reservation_events[source_index].requested_bytes;
+    let chunk_operator_bytes = metrics.reservation_events[source_index + 1..]
+        .iter()
+        .find(|event| event.outcome.as_str() == "granted" && event.memory_boundary == "chunk_operator")
+        .expect("mixed aggregate input metrics should include grouped chunk operator")
+        .requested_bytes;
+    (retained_join_subtree_bytes, source_read_bytes, chunk_operator_bytes)
 }
 
 fn granted_reservation_requested_bytes_for_boundary(
@@ -9475,6 +9976,59 @@ fn write_q11_partsupp_parquet(
 fn write_q11_supplier_parquet(runtime: &cudf::Runtime, path: &std::path::Path) -> Arc<Schema> {
     let schema = Arc::new(Schema::new(vec![Field::new("s_suppkey", DataType::Int32, false)]));
     let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int32Array::from(vec![10, 20, 30]))]).unwrap();
+    DataFrame::from_record_batch(runtime, &batch).unwrap().write_parquet(path).unwrap();
+    schema
+}
+
+fn write_mixed_aggregate_input_fact_parquet(runtime: &cudf::Runtime, path: &std::path::Path) -> Arc<Schema> {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("entity_id", DataType::Int32, false),
+        Field::new("quantity", DataType::Float64, false),
+        Field::new("measure", DataType::Float64, false),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int32Array::from(vec![1, 1, 2, 2])),
+            Arc::new(Float64Array::from(vec![1.0, 5.0, 2.0, 20.0])),
+            Arc::new(Float64Array::from(vec![10.0, 20.0, 30.0, 40.0])),
+        ],
+    )
+    .unwrap();
+    DataFrame::from_record_batch(runtime, &batch).unwrap().write_parquet(path).unwrap();
+    schema
+}
+
+fn write_mixed_aggregate_input_fact_row_grouped_parquet(path: &std::path::Path) -> Arc<Schema> {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("entity_id", DataType::Int32, false),
+        Field::new("quantity", DataType::Float64, false),
+        Field::new("measure", DataType::Float64, false),
+    ]));
+    let mut entity_ids = Vec::with_capacity(50_000);
+    let mut quantities = Vec::with_capacity(50_000);
+    let mut measures = Vec::with_capacity(50_000);
+    for _ in 0..12_500 {
+        entity_ids.extend([1, 1, 2, 2]);
+        quantities.extend([1.0, 5.0, 2.0, 20.0]);
+        measures.extend([10.0, 20.0, 30.0, 40.0]);
+    }
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int32Array::from(entity_ids)),
+            Arc::new(Float64Array::from(quantities)),
+            Arc::new(Float64Array::from(measures)),
+        ],
+    )
+    .unwrap();
+    write_record_batch_with_row_group_rows(path, Arc::clone(&schema), batch, 25_000);
+    schema
+}
+
+fn write_mixed_aggregate_input_dim_parquet(runtime: &cudf::Runtime, path: &std::path::Path) -> Arc<Schema> {
+    let schema = Arc::new(Schema::new(vec![Field::new("entity_id", DataType::Int32, false)]));
+    let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int32Array::from(vec![1, 2, 99]))]).unwrap();
     DataFrame::from_record_batch(runtime, &batch).unwrap().write_parquet(path).unwrap();
     schema
 }

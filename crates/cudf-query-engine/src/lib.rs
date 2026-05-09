@@ -40,8 +40,8 @@ pub use runtime::{
     BOUNDED_JOIN_EXECUTION_FAMILIES, BoundedJoinExecutionFamily, BoundedJoinReservationContract,
     BoundedJoinReservationRequirement, BoundedJoinReservationStatus, BuildMaterializationBoundary, DevicePlacement,
     ExecutionBoundaryPolicy, ExecutionContext, ExecutionContextBuilder, MemoryControlPolicy, MemoryReservationRequest,
-    MemoryResourcePolicy, ProbeExecutionBoundary, ReservationKind, ResultMaterializationBoundary, RetryFacts,
-    SourceReadBoundary,
+    MemoryResourcePolicy, MemorySpaceId, ProbeExecutionBoundary, ReservationKind, ResultMaterializationBoundary,
+    RetryFacts, SourceReadBoundary,
 };
 pub use source::{
     ByteRangeDisposition, GpuResidentSource, LocalParquetFile, LocalParquetSource, PartitionColumn,

@@ -331,7 +331,19 @@ impl QueryError {
             .details()
             .iter()
             .filter(|(key, _)| {
-                matches!(*key, "budget_boundary" | "budget_bytes" | "budget_enforcement" | "budget_status")
+                matches!(
+                    *key,
+                    "budget_boundary"
+                        | "budget_bytes"
+                        | "budget_enforcement"
+                        | "budget_status"
+                        | "budget_peak_bytes"
+                        | "budget_current_bytes"
+                        | "budget_peak_aligned_bytes"
+                        | "budget_current_aligned_bytes"
+                        | "budget_failed_allocation_count"
+                        | "budget_largest_failed_allocation_bytes"
+                )
             })
             .map(|(key, value)| (*key, value.clone()))
             .collect::<Vec<_>>();

@@ -1,4 +1,4 @@
-use cudf_query_engine::QueryMetrics;
+use cudf_query_engine::{MemoryReservationRequest, MemorySpaceId, QueryMetrics, ReservationKind};
 use datafusion_cudf::NATIVE_CUDF_DATAFUSION_METRIC_NAMES;
 
 #[test]
@@ -52,6 +52,27 @@ fn query_metrics_count_retries_attempts_and_commits_separately() {
     assert_eq!(metrics.retry_count, 2);
     assert_eq!(metrics.retry_reservation_failure_count, 1);
     assert_eq!(metrics.retry_resource_exhausted_count, 1);
+}
+
+#[test]
+fn query_metrics_reservation_events_record_memory_space() {
+    let mut metrics = QueryMetrics::default();
+    let memory_space = MemorySpaceId::Device { device_ordinal: 1 };
+    let granted = MemoryReservationRequest::new(ReservationKind::SourceRead, 1024, 4096)
+        .with_memory_space(memory_space)
+        .with_memory_boundary("source_chunk_read");
+    let denied = MemoryReservationRequest::new(ReservationKind::JoinOutput, 8192, 4096)
+        .with_memory_space(memory_space)
+        .with_memory_boundary("join_output");
+
+    metrics.record_reservation_granted_event(&granted, 1024);
+    metrics.record_reservation_denied_event(&denied, 4096);
+
+    assert_eq!(metrics.reservation_events.len(), 2);
+    assert_eq!(metrics.reservation_events[0].memory_space, memory_space);
+    assert_eq!(metrics.reservation_events[0].memory_space.to_string(), "GPU:1");
+    assert_eq!(metrics.reservation_events[1].memory_space, memory_space);
+    assert_eq!(metrics.reservation_denied_count, 1);
 }
 
 #[test]
