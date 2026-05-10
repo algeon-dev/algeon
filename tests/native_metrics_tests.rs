@@ -158,6 +158,59 @@ fn local_parquet_source_cache_key_tracks_bounded_chunk_contract() {
 }
 
 #[test]
+fn local_parquet_source_cache_key_ignores_bounded_planner_identity() {
+    let schema = Arc::new(Schema::new(vec![Field::new("payload", DataType::Int32, true)]));
+    let file = LocalParquetFile::new("/tmp/source-cache-planner-identity.parquet")
+        .with_stable_id("file-id")
+        .with_file_size_bytes(512)
+        .with_row_groups(vec![0, 1])
+        .with_row_group_rows(vec![10, 20]);
+    let source = LocalParquetSource::from_files(vec![file], Arc::clone(&schema), vec!["payload".to_string()]);
+    let mut builder = QueryPlanBuilder::new();
+    let first_source_node_id = builder.add_source(SourceNode::LocalParquet(source.clone()));
+    let second_source_node_id = builder.add_source(SourceNode::LocalParquet(source.clone()));
+    let first = SourceChunk {
+        source_node_id: first_source_node_id,
+        chunk_index: 0,
+        file_index: 0,
+        path: "/tmp/source-cache-planner-identity.parquet".into(),
+        stable_id: "file-id".into(),
+        row_group_indexes: vec![0],
+        reads_all_row_groups: false,
+        known_file_bytes: Some(512),
+        known_row_group_bytes: Some(128),
+        known_projected_compressed_bytes: Some(64),
+        known_projected_uncompressed_bytes: Some(128),
+        known_pure_filter_compressed_bytes: Some(0),
+        known_pure_filter_uncompressed_bytes: Some(0),
+        estimated_chunk_bytes: Some(128),
+        estimated_source_read_bytes: Some(128),
+        source_file_row_groups: Some(vec![0, 1]),
+        source_file_row_group_bytes: Some(vec![128, 384]),
+        source_file_projected_compressed_bytes: Some(vec![64, 192]),
+        source_file_projected_uncompressed_bytes: Some(vec![128, 384]),
+        source_file_pure_filter_compressed_bytes: Some(vec![0, 0]),
+        source_file_pure_filter_uncompressed_bytes: Some(vec![0, 0]),
+        source_file_row_group_rows: Some(vec![10, 20]),
+        read_columns: vec!["payload".to_string()],
+        partition_values: vec![],
+        zero_column_count: false,
+        known_row_count: Some(10),
+        scan_limit_rows: None,
+        size_estimate_based: false,
+    };
+    let mut same_contract_different_plan_identity = first.clone();
+    same_contract_different_plan_identity.source_node_id = second_source_node_id;
+    same_contract_different_plan_identity.chunk_index = 7;
+
+    assert_eq!(
+        GpuLocalParquetSourceCacheKey::from_source_chunk(&source, &first),
+        GpuLocalParquetSourceCacheKey::from_source_chunk(&source, &same_contract_different_plan_identity),
+        "bounded source cache keys must be based on the reusable scan contract, not local planner ids"
+    );
+}
+
+#[test]
 fn bounded_context_accepts_source_cache_with_reservation_accounting() {
     let cache = Arc::new(GpuLocalParquetSourceCache::new(1024));
     let context = ExecutionContext::builder()

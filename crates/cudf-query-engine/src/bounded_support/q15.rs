@@ -14,9 +14,8 @@ pub(super) fn matches_keyed_hash_join_resident_subplan_pipeline(plan: &QueryPlan
     };
     keyed_inner_hash_join_without_residual(root_join)
         && final_sort_is_ascending_supplier_key(final_sort)
-        && root_join_matches_q15_revenue_max_join(plan, root_join)
-        && validate_q15_supplier_revenue_branch(plan, root_join.inputs[0])
-        && validate_q15_scalar_max_revenue_branch(plan, root_join.inputs[1])
+        && (root_join_matches_q15_revenue_max_join(plan, root_join, JoinSide::Left, JoinSide::Right)
+            || root_join_matches_q15_revenue_max_join(plan, root_join, JoinSide::Right, JoinSide::Left))
 }
 
 fn final_sort_root_join_input(plan: &QueryPlan) -> Option<(&SortNode, NodeId)> {
@@ -34,21 +33,34 @@ fn final_sort_is_ascending_supplier_key(sort: &SortNode) -> bool {
     !sort_expr.descending && expr_has_role(&sort_expr.expr, Q15Role::SupplierKey)
 }
 
-fn root_join_matches_q15_revenue_max_join(plan: &QueryPlan, join: &JoinNode) -> bool {
-    if !join_has_one_key_with_roles(join, Q15Role::TotalRevenue, Q15Role::MaxRevenue) {
+fn root_join_matches_q15_revenue_max_join(
+    plan: &QueryPlan,
+    join: &JoinNode,
+    supplier_revenue_side: JoinSide,
+    scalar_max_side: JoinSide,
+) -> bool {
+    if !join_has_one_key_with_roles_by_side(join, supplier_revenue_side, Q15Role::TotalRevenue, Q15Role::MaxRevenue) {
         return false;
     }
-    root_join_outputs_expected_q15_left_roles(plan, join)
+    root_join_outputs_expected_q15_supplier_roles(plan, join, supplier_revenue_side)
+        && validate_q15_supplier_revenue_branch(plan, join.inputs[join_side_index(supplier_revenue_side)])
+        && validate_q15_scalar_max_revenue_branch(plan, join.inputs[join_side_index(scalar_max_side)])
 }
 
-fn root_join_outputs_expected_q15_left_roles(plan: &QueryPlan, join: &JoinNode) -> bool {
+fn root_join_outputs_expected_q15_supplier_roles(
+    plan: &QueryPlan,
+    join: &JoinNode,
+    supplier_revenue_side: JoinSide,
+) -> bool {
     if join.spec.output_projection.is_empty()
-        || join.spec.output_projection.iter().any(|column| column.side != JoinSide::Left)
+        || join.spec.output_projection.iter().any(|column| column.side != supplier_revenue_side)
     {
         return false;
     }
 
-    let Some(left_input_schema) = plan.node(join.inputs[0]).map(|node| node.output_schema()) else {
+    let Some(supplier_input_schema) =
+        plan.node(join.inputs[join_side_index(supplier_revenue_side)]).map(|node| node.output_schema())
+    else {
         return false;
     };
     let projected_roles =
@@ -62,16 +74,13 @@ fn root_join_outputs_expected_q15_left_roles(plan: &QueryPlan, join: &JoinNode) 
 
     [Q15Role::SupplierName, Q15Role::SupplierAddress, Q15Role::SupplierPhone]
         .iter()
-        .all(|role| !schema_has_role(left_input_schema, *role) || projected_roles.contains(role))
+        .all(|role| !schema_has_role(supplier_input_schema, *role) || projected_roles.contains(role))
 }
 
 fn validate_q15_supplier_revenue_branch(plan: &QueryPlan, node_id: NodeId) -> bool {
-    let Some((join_id, projection_count)) = peel_projection_chain(plan, node_id, 2) else {
+    let Some((join_id, _projection_count)) = peel_projection_chain(plan, node_id, 2) else {
         return false;
     };
-    if projection_count == 0 {
-        return false;
-    }
     let Some(join) = join_node(plan, join_id) else {
         return false;
     };
@@ -148,6 +157,25 @@ fn join_has_one_key_with_roles(join: &JoinNode, left_role: Q15Role, right_role: 
         return false;
     };
     column_has_role(&key.left, left_role) && column_has_role(&key.right, right_role)
+}
+
+fn join_has_one_key_with_roles_by_side(
+    join: &JoinNode,
+    supplier_revenue_side: JoinSide,
+    supplier_revenue_role: Q15Role,
+    scalar_max_role: Q15Role,
+) -> bool {
+    match supplier_revenue_side {
+        JoinSide::Left => join_has_one_key_with_roles(join, supplier_revenue_role, scalar_max_role),
+        JoinSide::Right => join_has_one_key_with_roles(join, scalar_max_role, supplier_revenue_role),
+    }
+}
+
+fn join_side_index(side: JoinSide) -> usize {
+    match side {
+        JoinSide::Left => 0,
+        JoinSide::Right => 1,
+    }
 }
 
 fn aggregate_argument_has_role(plan: &QueryPlan, aggregate: &AggregateNode, expr: &Expr, role: Q15Role) -> bool {
@@ -264,7 +292,7 @@ fn q15_role_for_names<'a>(names: impl IntoIterator<Item = &'a str>) -> Option<Q1
 }
 
 fn q15_role_for_name(name: &str) -> Option<Q15Role> {
-    match normalized_role_name(name).as_str() {
+    match normalized_role_name_without_disambiguator(name).as_str() {
         "ssuppkey" | "suppkey" | "supplierkey" => Some(Q15Role::SupplierKey),
         "sname" | "suppliername" => Some(Q15Role::SupplierName),
         "saddress" | "supplieraddress" => Some(Q15Role::SupplierAddress),
@@ -275,6 +303,40 @@ fn q15_role_for_name(name: &str) -> Option<Q15Role> {
         "maxrevenue" | "maximumrevenue" | "maxrevenuetotalrevenue" => Some(Q15Role::MaxRevenue),
         _ => None,
     }
+}
+
+fn normalized_role_name_without_disambiguator(name: &str) -> String {
+    let normalized = normalized_role_name(name);
+    for role_name in [
+        "ssuppkey",
+        "suppkey",
+        "supplierkey",
+        "sname",
+        "suppliername",
+        "saddress",
+        "supplieraddress",
+        "sphone",
+        "supplierphone",
+        "supplierno",
+        "revenuesupplierno",
+        "lsuppkey",
+        "revenue",
+        "revenueamount",
+        "extendedprice",
+        "lextendedprice",
+        "totalrevenue",
+        "maxrevenue",
+        "maximumrevenue",
+        "maxrevenuetotalrevenue",
+    ] {
+        if normalized
+            .strip_prefix(role_name)
+            .is_some_and(|suffix| !suffix.is_empty() && suffix.chars().all(|character| character.is_ascii_digit()))
+        {
+            return role_name.to_string();
+        }
+    }
+    normalized
 }
 
 fn normalized_role_name(name: &str) -> String {

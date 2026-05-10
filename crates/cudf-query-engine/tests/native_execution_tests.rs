@@ -17,10 +17,10 @@ use cudf::DataFrame;
 use cudf_query_engine::{
     AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, BoundedJoinReservationContract,
     BuildMaterializationBoundary, ExecutionBoundaryPolicy, ExecutionContext, Expr, GpuDataFrame, GpuHashJoinBuildCache,
-    GpuResidentInputMap, GpuResidentSource, GpuResultHandle, JoinKey, JoinNullEquality, JoinOutputColumn, JoinSide,
-    JoinSpec, JoinType, LimitSpec, LiteralValue, LocalParquetFile, LocalParquetSource, MemoryControlPolicy,
-    MemorySpaceId, MissingColumn, PartitionColumn, ProjectionOutput, QueryErrorCode, QueryMetrics, QueryOutput,
-    QueryPlanBuilder, ReservationKind, SortExpr, SortSpec, SourceChunkPlanningPolicy, SourceNode,
+    GpuLocalParquetSourceCache, GpuResidentInputMap, GpuResidentSource, GpuResultHandle, JoinKey, JoinNullEquality,
+    JoinOutputColumn, JoinSide, JoinSpec, JoinType, LimitSpec, LiteralValue, LocalParquetFile, LocalParquetSource,
+    MemoryControlPolicy, MemorySpaceId, MissingColumn, PartitionColumn, ProjectionOutput, QueryErrorCode, QueryMetrics,
+    QueryOutput, QueryPlanBuilder, ReservationKind, SortExpr, SortSpec, SourceChunkPlanningPolicy, SourceNode,
     SourceSchedulerPolicy, ZERO_COLUMN_COUNT_COLUMN, execute_query_plan, execute_query_plan_with_gpu_inputs,
     materialize_gpu_result_to_host, plan_local_parquet_source_chunks,
 };

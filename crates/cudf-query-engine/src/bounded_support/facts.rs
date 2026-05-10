@@ -7,7 +7,7 @@ const KEYED_HASH_JOIN_RESIDENT_SUBPLAN_PIPELINE_FAMILY: &str = "keyed_hash_join_
 const KEYED_HASH_JOIN_RESIDENT_SUBPLAN_PIPELINE_BLOCKER: &str =
     "bounded_keyed_hash_join_resident_subplan_lower_level_contracts";
 const KEYED_HASH_JOIN_RESIDENT_SUBPLAN_PIPELINE_SHAPE_CONTRACT: &str =
-    "sort_root_keyed_inner_hash_join_with_projection_wrapped_keyed_inner_join_and_scalar_revenue_aggregate";
+    "sort_root_keyed_inner_hash_join_with_optional_projection_wrapped_keyed_inner_join_and_scalar_revenue_aggregate";
 const KEYED_HASH_JOIN_RESIDENT_SUBPLAN_PIPELINE_LOWER_LEVEL_CONTRACT: &str =
     "source_contract,aggregate_contract,final_sort_contract";
 const KEYED_HASH_JOIN_RESIDENT_SUBPLAN_PIPELINE_BLOCKED_RESERVATIONS: &str = "source_read,operator_output,final_sort";
@@ -31,6 +31,21 @@ const MIXED_KEYED_RESIDUAL_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_PIPELINE_RESERV
 const MIXED_KEYED_RESIDUAL_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_PIPELINE_RESERVATION_STATUSES: &str = "source_read:modeled,operator_output:modeled,build_side:modeled,hash_table:modeled,probe_side:modeled,filtered_probe_state:modeled,mixed_size_data:modeled,gather_map:modeled,join_output:modeled,materialization:modeled";
 const MIXED_KEYED_RESIDUAL_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_PIPELINE_RESERVATION_REQUIREMENTS: &str = "source_read:source_contract:modeled_by_cudf_rs_hard_budgeted_report_with_unresolved_preflight,operator_output:aggregate_contract:modeled_by_cudf_rs_hard_budgeted_report_with_unresolved_preflight,build_side:query_engine_build_side_source_reservation:modeled_before_execution,hash_table:hash_join_pre_build_reservation_size_bytes:modeled_by_cudf_rs_pre_build_sizing,probe_side:query_engine_probe_side_source_reservation:modeled_by_ordered_bounded_join_execution_path,filtered_probe_state:filtered_join_retained_probe_state:modeled_by_cudf_rs_filtered_probe_state_observability,mixed_size_data:mixed_keyed_residual_or_conditional_full_retained_size_data:modeled_by_cudf_rs_retained_join_size_data_observability,gather_map:join_gather_map_reservation_size_bytes:modeled_by_cudf_rs_join_gather_map_sizing,join_output:dataframe_gather_output_reservation_size_bytes+projected_cross_join_reservation_size_bytes:modeled_by_cudf_rs_dataframe_gather_or_projected_cross_output_sizing,materialization:query_engine_explicit_sink_materialization_reservation:modeled_by_explicit_sink_boundary";
 const MIXED_KEYED_RESIDUAL_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_PIPELINE_MODELED_RESERVATIONS: &str = "source_read,operator_output,build_side,hash_table,probe_side,filtered_probe_state,mixed_size_data,gather_map,join_output,materialization";
+const MULTI_JOIN_AGGREGATE_OVER_JOIN_SUBPLAN_TOPK_FAMILY: &str = "multi_join_with_aggregate_over_join_subplan_topk";
+const MULTI_JOIN_AGGREGATE_OVER_JOIN_SUBPLAN_TOPK_BLOCKER: &str =
+    "bounded_multi_join_aggregate_over_join_subplan_topk_executor_missing";
+const MULTI_JOIN_AGGREGATE_OVER_JOIN_SUBPLAN_TOPK_SHAPE_CONTRACT: &str = "final_topk_over_projection_over_root_hash_join_with_multi_join_input_and_projection_wrapped_aggregate_over_join_subplan_input";
+const HASH_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_POST_JOIN_AGGREGATE_TOPK_FAMILY: &str =
+    "hash_join_with_resident_grouped_aggregate_input_post_join_aggregate_topk";
+const HASH_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_POST_JOIN_AGGREGATE_TOPK_BLOCKER: &str =
+    "bounded_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_executor_missing";
+const HASH_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_POST_JOIN_AGGREGATE_TOPK_SHAPE_CONTRACT: &str = "final_topk_over_projection_over_grouped_aggregate_over_hash_join_with_grouped_aggregate_input_and_multi_join_input";
+const MULTI_JOIN_RESIDENT_GROUPED_AGGREGATE_SUBQUERY_FILTER_FAMILY: &str =
+    "multi_join_with_resident_grouped_aggregate_subquery_filter";
+const MULTI_JOIN_RESIDENT_GROUPED_AGGREGATE_SUBQUERY_FILTER_BLOCKER: &str =
+    "bounded_multi_join_resident_grouped_aggregate_subquery_filter_executor_missing";
+const MULTI_JOIN_RESIDENT_GROUPED_AGGREGATE_SUBQUERY_FILTER_SHAPE_CONTRACT: &str =
+    "final_sort_over_multi_join_tree_with_projection_wrapped_grouped_aggregate_subquery_input_and_residual_filter";
 
 pub(crate) fn bounded_join_unsupported_shape_facts(
     plan: &QueryPlan,
@@ -116,6 +131,27 @@ pub(crate) fn bounded_join_unsupported_shape_facts(
             "bounded_join_lower_level_blockers",
             KEYED_HASH_JOIN_RESIDENT_SUBPLAN_PIPELINE_LOWER_LEVEL_CONTRACT.to_string(),
         );
+    } else if matches_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk(plan) {
+        insert_structural_topology_blocker(
+            &mut facts,
+            HASH_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_POST_JOIN_AGGREGATE_TOPK_FAMILY,
+            HASH_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_POST_JOIN_AGGREGATE_TOPK_BLOCKER,
+            HASH_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_POST_JOIN_AGGREGATE_TOPK_SHAPE_CONTRACT,
+        );
+    } else if matches_multi_join_aggregate_over_join_subplan_topk(plan) {
+        insert_structural_topology_blocker(
+            &mut facts,
+            MULTI_JOIN_AGGREGATE_OVER_JOIN_SUBPLAN_TOPK_FAMILY,
+            MULTI_JOIN_AGGREGATE_OVER_JOIN_SUBPLAN_TOPK_BLOCKER,
+            MULTI_JOIN_AGGREGATE_OVER_JOIN_SUBPLAN_TOPK_SHAPE_CONTRACT,
+        );
+    } else if matches_multi_join_resident_grouped_aggregate_subquery_filter(plan) {
+        insert_structural_topology_blocker(
+            &mut facts,
+            MULTI_JOIN_RESIDENT_GROUPED_AGGREGATE_SUBQUERY_FILTER_FAMILY,
+            MULTI_JOIN_RESIDENT_GROUPED_AGGREGATE_SUBQUERY_FILTER_BLOCKER,
+            MULTI_JOIN_RESIDENT_GROUPED_AGGREGATE_SUBQUERY_FILTER_SHAPE_CONTRACT,
+        );
     } else if let Some(join) = first_unsupported_keyed_residual_semi_anti_join(plan) {
         facts.insert("bounded_join_specific_blocker", mixed_keyed_residual_left_only_blocker(plan, join).to_string());
         facts.insert("bounded_join_blocked_join_family", "mixed_keyed_residual_left_semi_left_anti".to_string());
@@ -196,6 +232,131 @@ pub(crate) fn bounded_join_modeled_facts(
 
 fn matches_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline(plan: &QueryPlan) -> bool {
     analyze_bounded_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline(plan).is_ok()
+}
+
+fn insert_structural_topology_blocker(
+    facts: &mut BTreeMap<&'static str, String>,
+    family: &'static str,
+    blocker: &'static str,
+    shape_contract: &'static str,
+) {
+    facts.insert("bounded_join_blocked_join_family", family.to_string());
+    facts.insert("bounded_join_specific_blocker", blocker.to_string());
+    facts.insert("bounded_join_shape_blocker", blocker.to_string());
+    facts.insert("bounded_join_required_shape_contract", shape_contract.to_string());
+}
+
+fn matches_multi_join_aggregate_over_join_subplan_topk(plan: &QueryPlan) -> bool {
+    let Some(root_join_id) = final_sort_projection_root_join(plan) else {
+        return false;
+    };
+    if bounded_join_subtree_join_count(plan, root_join_id).unwrap_or_default() < 4 {
+        return false;
+    }
+    let Some(root_join) = join_node(plan, root_join_id) else {
+        return false;
+    };
+    keyed_hash_join(root_join)
+        && root_join.inputs.iter().any(|input| contains_projection_wrapped_aggregate_over_join_subplan(plan, *input))
+        && root_join.inputs.iter().any(|input| bounded_join_subtree_join_count(plan, *input).unwrap_or_default() >= 3)
+}
+
+fn matches_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk(plan: &QueryPlan) -> bool {
+    let Some(root_join_id) = final_sort_projection_post_join_aggregate_root_join(plan) else {
+        return false;
+    };
+    let Some(root_join) = join_node(plan, root_join_id) else {
+        return false;
+    };
+    keyed_hash_join(root_join)
+        && root_join.inputs.iter().any(|input| contains_grouped_aggregate_without_join_input(plan, *input))
+        && root_join.inputs.iter().any(|input| bounded_join_subtree_join_count(plan, *input).unwrap_or_default() >= 2)
+}
+
+fn matches_multi_join_resident_grouped_aggregate_subquery_filter(plan: &QueryPlan) -> bool {
+    let Some(root_join_id) = final_sort_root_join(plan) else {
+        return false;
+    };
+    let Some(root_join) = join_node(plan, root_join_id) else {
+        return false;
+    };
+    keyed_hash_join(root_join)
+        && bounded_join_subtree_join_count(plan, root_join_id).unwrap_or_default() >= 4
+        && root_join.inputs.iter().all(|input| bounded_join_subtree_join_count(plan, *input).unwrap_or_default() >= 1)
+        && contains_grouped_aggregate_without_join_input(plan, root_join_id)
+        && !contains_aggregate_over_join_subplan(plan, root_join_id)
+}
+
+fn final_sort_projection_root_join(plan: &QueryPlan) -> Option<NodeId> {
+    let (node_id, _) = peel_projection_chain(plan, final_sort_input(plan)?, 1)?;
+    join_node(plan, node_id)?;
+    Some(node_id)
+}
+
+fn final_sort_projection_post_join_aggregate_root_join(plan: &QueryPlan) -> Option<NodeId> {
+    let (aggregate_id, _) = peel_projection_chain(plan, final_sort_input(plan)?, 1)?;
+    let aggregate = aggregate_node(plan, aggregate_id)?;
+    let (join_id, _) = peel_projection_chain(plan, aggregate.input, 1)?;
+    join_node(plan, join_id)?;
+    Some(join_id)
+}
+
+fn final_sort_root_join(plan: &QueryPlan) -> Option<NodeId> {
+    let (join_id, _) = peel_projection_chain(plan, final_sort_input(plan)?, 1)?;
+    join_node(plan, join_id)?;
+    Some(join_id)
+}
+
+fn final_sort_input(plan: &QueryPlan) -> Option<NodeId> {
+    let sink_input = plan.sink().input();
+    if let Some(limit) = limit_node(plan, sink_input) {
+        let sort = sort_node(plan, limit.input)?;
+        return Some(sort.input);
+    }
+    sort_node(plan, sink_input).map(|sort| sort.input)
+}
+
+fn keyed_hash_join(join: &JoinNode) -> bool {
+    !join.spec.keys.is_empty() && !join.spec.output_projection.is_empty()
+}
+
+fn contains_projection_wrapped_aggregate_over_join_subplan(plan: &QueryPlan, node_id: NodeId) -> bool {
+    let Some((aggregate_id, projection_count)) = peel_projection_chain(plan, node_id, 2) else {
+        return false;
+    };
+    projection_count > 0
+        && aggregate_node(plan, aggregate_id).is_some_and(|aggregate| contains_join(plan, aggregate.input))
+}
+
+fn contains_aggregate_over_join_subplan(plan: &QueryPlan, node_id: NodeId) -> bool {
+    visit_subtree(plan, node_id, &mut |node| match &node.kind {
+        PlanNode::Aggregate(aggregate) => contains_join(plan, aggregate.input),
+        _ => false,
+    })
+}
+
+fn contains_grouped_aggregate_without_join_input(plan: &QueryPlan, node_id: NodeId) -> bool {
+    visit_subtree(plan, node_id, &mut |node| match &node.kind {
+        PlanNode::Aggregate(aggregate) => {
+            !aggregate.spec.group_exprs.is_empty() && !contains_join(plan, aggregate.input)
+        },
+        _ => false,
+    })
+}
+
+fn contains_join(plan: &QueryPlan, node_id: NodeId) -> bool {
+    visit_subtree(plan, node_id, &mut |node| matches!(node.kind, PlanNode::Join(_)))
+}
+
+fn visit_subtree(
+    plan: &QueryPlan,
+    node_id: NodeId,
+    predicate: &mut impl FnMut(&crate::plan::QueryNode) -> bool,
+) -> bool {
+    let Some(node) = plan.node(node_id) else {
+        return false;
+    };
+    predicate(node) || node.input_ids().iter().any(|input| visit_subtree(plan, *input, predicate))
 }
 
 fn first_unsupported_keyed_residual_semi_anti_join(plan: &QueryPlan) -> Option<&JoinNode> {
@@ -351,5 +512,37 @@ fn root_join_input_leaf_blocker(plan: &QueryPlan, node_id: NodeId) -> Option<&'s
         PlanNode::Aggregate(_) => Some("bounded_root_join_aggregate_leaf_unsupported"),
         PlanNode::Sort(_) => Some("bounded_root_join_sort_leaf_unsupported"),
         PlanNode::Limit(_) => Some("bounded_root_join_limit_leaf_unsupported"),
+    }
+}
+
+fn aggregate_node(plan: &QueryPlan, node_id: NodeId) -> Option<&AggregateNode> {
+    let node = plan.node(node_id)?;
+    match &node.kind {
+        PlanNode::Aggregate(aggregate) => Some(aggregate),
+        _ => None,
+    }
+}
+
+fn join_node(plan: &QueryPlan, node_id: NodeId) -> Option<&JoinNode> {
+    let node = plan.node(node_id)?;
+    match &node.kind {
+        PlanNode::Join(join) => Some(join),
+        _ => None,
+    }
+}
+
+fn sort_node(plan: &QueryPlan, node_id: NodeId) -> Option<&SortNode> {
+    let node = plan.node(node_id)?;
+    match &node.kind {
+        PlanNode::Sort(sort) => Some(sort),
+        _ => None,
+    }
+}
+
+fn limit_node(plan: &QueryPlan, node_id: NodeId) -> Option<&LimitNode> {
+    let node = plan.node(node_id)?;
+    match &node.kind {
+        PlanNode::Limit(limit) => Some(limit),
+        _ => None,
     }
 }

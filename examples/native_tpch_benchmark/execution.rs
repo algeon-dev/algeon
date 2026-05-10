@@ -78,17 +78,23 @@ pub(super) async fn plan_native_query(
     query: &TpchQuery,
     config: &NativeTpchBenchmarkConfig,
 ) -> DataFusionResult<PlannedNativeQuery> {
-    plan_native_query_with_source_cache(metadata, query, config, None).await
+    plan_native_query_with_resources(
+        metadata,
+        query,
+        config,
+        &NativeTpchRuntimeResources { runtime: None, source_cache: None },
+    )
+    .await
 }
 
-async fn plan_native_query_with_source_cache(
+async fn plan_native_query_with_resources(
     metadata: &TpchDatasetMetadata,
     query: &TpchQuery,
     config: &NativeTpchBenchmarkConfig,
-    source_cache: Option<Arc<cudf_query_engine::GpuLocalParquetSourceCache>>,
+    resources: &NativeTpchRuntimeResources,
 ) -> DataFusionResult<PlannedNativeQuery> {
     let optimizer_config = CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred)
-        .with_native_execution_config(config.native_execution_config_with_source_cache(source_cache));
+        .with_native_execution_config(config.native_execution_config_with_resources(resources));
     let native_rule = Arc::new(CudfNativePhysicalOptimizerRule::new(optimizer_config.clone()));
     let gpu_island_rule = Arc::new(CudfPhysicalOptimizerRule::new(optimizer_config));
     let state = SessionStateBuilder::new_with_default_features()
@@ -234,12 +240,11 @@ pub(super) async fn run_native_query_iterations(
     query: &TpchQuery,
     config: &NativeTpchBenchmarkConfig,
     expected_planning_row: &NativeDataFusionPlanningRow,
+    resources: &NativeTpchRuntimeResources,
 ) -> Result<TimedNativeQueryRun, NativeRunFailure> {
-    let source_cache = config.new_source_cache();
     for _ in 0..config.warmup_iterations {
-        let planned = plan_native_query_with_source_cache(metadata, query, config, source_cache.clone())
-            .await
-            .map_err(native_not_started)?;
+        let planned =
+            plan_native_query_with_resources(metadata, query, config, resources).await.map_err(native_not_started)?;
         if planned.planning_row.outcome == NativeDataFusionPlanningOutcome::AcceptedReplaced {
             validate_replanned_native_row(query.id, expected_planning_row, &planned.planning_row)
                 .map_err(native_not_started)?;
@@ -257,9 +262,8 @@ pub(super) async fn run_native_query_iterations(
     let mut final_measurement = None;
     let mut measured_metrics = Vec::with_capacity(config.iterations);
     for _ in 0..config.iterations {
-        let planned = plan_native_query_with_source_cache(metadata, query, config, source_cache.clone())
-            .await
-            .map_err(native_not_started)?;
+        let planned =
+            plan_native_query_with_resources(metadata, query, config, resources).await.map_err(native_not_started)?;
         if planned.planning_row.outcome != NativeDataFusionPlanningOutcome::AcceptedReplaced {
             return Err(NativeRunFailure {
                 runtime_started: false,
