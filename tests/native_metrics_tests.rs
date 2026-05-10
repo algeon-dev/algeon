@@ -3,7 +3,8 @@ use std::sync::Arc;
 use arrow::datatypes::{DataType, Field, Schema};
 use cudf_query_engine::{
     ExecutionContext, GpuLocalParquetSourceCache, GpuLocalParquetSourceCacheKey, LocalParquetFile, LocalParquetSource,
-    MemoryControlPolicy, MemoryReservationRequest, MemorySpaceId, QueryMetrics, ReservationKind,
+    MemoryControlPolicy, MemoryReservationRequest, MemorySpaceId, QueryMetrics, QueryPlanBuilder, ReservationKind,
+    SourceChunk, SourceNode,
 };
 use datafusion_cudf::NATIVE_CUDF_DATAFUSION_METRIC_NAMES;
 
@@ -104,9 +105,62 @@ fn local_parquet_source_cache_key_tracks_scan_contract() {
 }
 
 #[test]
-fn bounded_context_rejects_source_cache_until_reservations_are_modeled() {
+fn local_parquet_source_cache_key_tracks_bounded_chunk_contract() {
+    let schema = Arc::new(Schema::new(vec![Field::new("payload", DataType::Int32, true)]));
+    let file = LocalParquetFile::new("/tmp/source-cache-chunk-key.parquet")
+        .with_stable_id("file-id")
+        .with_file_size_bytes(512)
+        .with_row_groups(vec![0, 1])
+        .with_row_group_rows(vec![10, 20]);
+    let source = LocalParquetSource::from_files(vec![file], Arc::clone(&schema), vec!["payload".to_string()]);
+    let mut builder = QueryPlanBuilder::new();
+    let source_node_id = builder.add_source(SourceNode::LocalParquet(source.clone()));
+    let first = SourceChunk {
+        source_node_id,
+        chunk_index: 0,
+        file_index: 0,
+        path: "/tmp/source-cache-chunk-key.parquet".into(),
+        stable_id: "file-id".into(),
+        row_group_indexes: vec![0],
+        reads_all_row_groups: false,
+        known_file_bytes: Some(512),
+        known_row_group_bytes: Some(128),
+        known_projected_compressed_bytes: Some(64),
+        known_projected_uncompressed_bytes: Some(128),
+        known_pure_filter_compressed_bytes: Some(0),
+        known_pure_filter_uncompressed_bytes: Some(0),
+        estimated_chunk_bytes: Some(128),
+        estimated_source_read_bytes: Some(128),
+        source_file_row_groups: Some(vec![0, 1]),
+        source_file_row_group_bytes: Some(vec![128, 384]),
+        source_file_projected_compressed_bytes: Some(vec![64, 192]),
+        source_file_projected_uncompressed_bytes: Some(vec![128, 384]),
+        source_file_pure_filter_compressed_bytes: Some(vec![0, 0]),
+        source_file_pure_filter_uncompressed_bytes: Some(vec![0, 0]),
+        source_file_row_group_rows: Some(vec![10, 20]),
+        read_columns: vec!["payload".to_string()],
+        partition_values: vec![],
+        zero_column_count: false,
+        known_row_count: Some(10),
+        scan_limit_rows: None,
+        size_estimate_based: false,
+    };
+    let mut second = first.clone();
+    second.chunk_index = 1;
+    second.row_group_indexes = vec![1];
+    second.known_row_count = Some(20);
+
+    assert_ne!(
+        GpuLocalParquetSourceCacheKey::from_source_chunk(&source, &first),
+        GpuLocalParquetSourceCacheKey::from_source_chunk(&source, &second),
+        "source cache key must distinguish bounded source chunks"
+    );
+}
+
+#[test]
+fn bounded_context_accepts_source_cache_with_reservation_accounting() {
     let cache = Arc::new(GpuLocalParquetSourceCache::new(1024));
-    let error = ExecutionContext::builder()
+    let context = ExecutionContext::builder()
         .with_memory_control_policy(MemoryControlPolicy::Bounded {
             device_budget_bytes: 1024,
             max_source_chunk_bytes: 512,
@@ -116,9 +170,9 @@ fn bounded_context_rejects_source_cache_until_reservations_are_modeled() {
         })
         .with_local_parquet_source_cache(cache)
         .build()
-        .expect_err("bounded source cache must stay rejected until retained bytes are reservation-accounted");
+        .expect("bounded source cache retained bytes are represented in the reservation ledger");
 
-    assert_eq!(error.fact_value("reason"), Some("source_cache_requires_reservation_accounting"));
+    assert!(context.local_parquet_source_cache().is_some());
 }
 
 #[test]

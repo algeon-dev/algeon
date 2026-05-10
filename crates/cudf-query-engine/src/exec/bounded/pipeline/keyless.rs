@@ -37,7 +37,7 @@ pub(super) fn execute_bounded_keyless_conditional_join_input_subplan_pipeline_qu
             "execute_bounded_keyless_conditional_join_input_subplan_pipeline_query_plan is called only for bounded policies"
         );
     };
-    let mut reservations = ReservationTracker::new(context.device_memory_space(), device_budget_bytes);
+    let mut reservations = ReservationTracker::new_for_context(context, device_budget_bytes, metrics)?;
     let left = execute_bounded_keyless_conditional_join_input_subplan(
         context,
         plan,
@@ -119,7 +119,7 @@ pub(super) fn execute_bounded_keyless_conditional_join_aggregate_over_join_subpl
             "execute_bounded_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline_query_plan is called only for bounded policies"
         );
     };
-    let mut reservations = ReservationTracker::new(context.device_memory_space(), device_budget_bytes);
+    let mut reservations = ReservationTracker::new_for_context(context, device_budget_bytes, metrics)?;
     let left = execute_bounded_keyless_conditional_join_aggregate_over_join_subplan_inputs(
         context,
         plan,

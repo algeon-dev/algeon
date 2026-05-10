@@ -258,7 +258,7 @@ impl QueryMetrics {
         self.source_cache_lookup_time += elapsed;
     }
 
-    fn record_source_cache_retained_bytes(&mut self, retained_bytes: u64) {
+    pub fn record_source_cache_retained_bytes(&mut self, retained_bytes: u64) {
         self.source_cache_retained_bytes = self.source_cache_retained_bytes.max(retained_bytes);
     }
 

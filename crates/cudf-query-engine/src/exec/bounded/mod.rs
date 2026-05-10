@@ -83,7 +83,7 @@ pub(super) fn execute_bounded_query_plan(
     }
     record_bounded_parquet_source_metrics(bounded.source, &chunk_plan, metrics);
 
-    let mut reservations = ReservationTracker::new(context.device_memory_space(), device_budget_bytes);
+    let mut reservations = ReservationTracker::new_for_context(context, device_budget_bytes, metrics)?;
     let partials = execute_bounded_chunks_with_source_scheduler(
         context,
         &bounded,
@@ -189,7 +189,7 @@ fn execute_bounded_generic_query_plan(
     let MemoryControlPolicy::Bounded { device_budget_bytes, .. } = context.memory_control_policy() else {
         unreachable!("execute_bounded_query_plan is called only for bounded policies");
     };
-    let mut reservations = ReservationTracker::new(context.device_memory_space(), device_budget_bytes);
+    let mut reservations = ReservationTracker::new_for_context(context, device_budget_bytes, metrics)?;
     let committed =
         execute_bounded_generic_node(context, plan, plan.sink().input(), gpu_inputs, &mut reservations, metrics)?;
 

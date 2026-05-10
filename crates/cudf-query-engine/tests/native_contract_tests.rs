@@ -133,6 +133,7 @@ fn memory_control_policy_names_bounded_and_unbounded_modes() {
     assert_eq!(bounded.as_str(), "bounded");
     assert!(bounded.is_bounded());
     assert_eq!(ReservationKind::SourceRead.as_str(), "source_read");
+    assert_eq!(ReservationKind::SourceCacheRetained.as_str(), "source_cache_retained");
     assert_eq!(ReservationKind::ChunkOperator.as_str(), "chunk_operator");
     assert_eq!(ReservationKind::OperatorOutput.as_str(), "operator_output");
     assert_eq!(ReservationKind::FinalMerge.as_str(), "final_merge");
