@@ -129,6 +129,48 @@ fn bounded_join_reservation_kinds_are_modeled_without_estimates() {
 }
 
 #[test]
+fn bounded_join_family_catalogue_is_explicitly_transitional_and_topology_scoped() {
+    let contract = BoundedJoinReservationContract;
+    let family_contracts = contract.execution_family_contracts();
+
+    assert_eq!(contract.admission_model(), cudf_query_engine::BOUNDED_JOIN_TRANSITIONAL_ADMISSION_MODEL);
+    assert_eq!(contract.admission_scope(), cudf_query_engine::BOUNDED_JOIN_TOPOLOGY_ONLY_SCOPE);
+    assert_eq!(family_contracts.len(), contract.execution_families().len());
+    assert_eq!(family_contracts, cudf_query_engine::BOUNDED_JOIN_EXECUTION_FAMILY_CONTRACTS);
+
+    for (family, family_contract) in contract.execution_families().iter().zip(family_contracts) {
+        assert_eq!(*family, family_contract.family());
+        assert_eq!(family_contract.admission_model(), cudf_query_engine::BOUNDED_JOIN_TRANSITIONAL_ADMISSION_MODEL);
+        assert!(
+            !family_contract.topology_contract().is_empty(),
+            "{} must document a Phase A topology contract",
+            family.as_str()
+        );
+        assert_topology_contract_avoids_query_specific_terms(family.as_str(), family_contract.topology_contract());
+    }
+
+    let facts = contract.facts(ExecutionBoundaryPolicy::default());
+    assert_eq!(
+        facts.get("bounded_join_admission_model").map(String::as_str),
+        Some(cudf_query_engine::BOUNDED_JOIN_TRANSITIONAL_ADMISSION_MODEL)
+    );
+    assert_eq!(
+        facts.get("bounded_join_admission_scope").map(String::as_str),
+        Some(cudf_query_engine::BOUNDED_JOIN_TOPOLOGY_ONLY_SCOPE)
+    );
+    assert_eq!(
+        facts.get("bounded_join_execution_family_contracts").map(String::as_str),
+        Some(contract.execution_family_contracts_csv().as_str())
+    );
+}
+
+#[test]
+fn bounded_join_modeled_reservation_facts_match_statuses() {
+    let contract = BoundedJoinReservationContract;
+    assert_modeled_reservations_match_statuses(&contract.facts(ExecutionBoundaryPolicy::default()));
+}
+
+#[test]
 fn bounded_join_rejection_facts_are_shared_and_estimate_free() {
     let contract = BoundedJoinReservationContract;
     let facts = contract.rejection_facts(ExecutionBoundaryPolicy::default());
@@ -330,4 +372,78 @@ fn bounded_join_rejection_facts_are_shared_and_estimate_free() {
         Some(contract.blocking_reservation_kinds_csv().as_str())
     );
     assert!(facts.iter().all(|(key, value)| !key.contains("estimate") && !value.contains("estimate")));
+}
+
+fn assert_topology_contract_avoids_query_specific_terms(family: &str, topology_contract: &str) {
+    let normalized = topology_contract.replace('-', "_").to_ascii_lowercase();
+    for disallowed in [
+        "tpch",
+        "query_id",
+        "q01",
+        "q02",
+        "q03",
+        "q04",
+        "q05",
+        "q06",
+        "q07",
+        "q08",
+        "q09",
+        "q10",
+        "q11",
+        "q12",
+        "q13",
+        "q14",
+        "q15",
+        "q16",
+        "q17",
+        "q18",
+        "q19",
+        "q20",
+        "q21",
+        "q22",
+        "lineitem",
+        "orders",
+        "customer",
+        "supplier",
+        "part",
+        "partsupp",
+        "nation",
+        "region",
+        "suppkey",
+        "extendedprice",
+        "totalrevenue",
+        "maxrevenue",
+        "literal",
+        "parquet_path",
+        "sql_text",
+    ] {
+        assert!(
+            !normalized.contains(disallowed),
+            "{family} topology contract must stay query-independent, found {disallowed} in {topology_contract}"
+        );
+    }
+}
+
+fn assert_modeled_reservations_match_statuses(facts: &std::collections::BTreeMap<&'static str, String>) {
+    let statuses =
+        facts.get("bounded_join_reservation_statuses").expect("bounded join facts must include reservation statuses");
+    let modeled = facts.get("modeled_reservations").expect("bounded join facts must include modeled reservations");
+    let blocked = facts.get("blocked_reservations").expect("bounded join facts must include blocked reservations");
+    let missing = facts.get("missing_reservations").expect("bounded join facts must include missing reservations");
+    let expected_modeled = statuses
+        .split(',')
+        .filter_map(|status| status.split_once(':'))
+        .filter_map(|(kind, status)| (status == "modeled").then_some(kind))
+        .collect::<Vec<_>>()
+        .join(",");
+    let expected_blocked = statuses
+        .split(',')
+        .filter_map(|status| status.split_once(':'))
+        .filter_map(|(kind, status)| (status != "modeled").then_some(kind))
+        .collect::<Vec<_>>()
+        .join(",");
+
+    assert_eq!(modeled, &expected_modeled);
+    assert_eq!(blocked, &expected_blocked);
+    assert_eq!(missing, &expected_blocked);
 }

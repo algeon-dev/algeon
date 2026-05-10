@@ -58,6 +58,10 @@ fn bounded_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline_i
             !facts.get("bounded_join_contract_modes").is_some_and(|value| value.contains("final_sort_contract")),
             "{variant:?}"
         );
+        assert_modeled_family_reservation_facts_are_consistent(
+            &facts,
+            "mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline",
+        );
     }
 }
 

@@ -20,8 +20,9 @@ pub use boundary::{
     SourceReadBoundary,
 };
 pub use bounded_join::{
-    BOUNDED_JOIN_EXECUTION_FAMILIES, BoundedJoinExecutionFamily, BoundedJoinReservationContract,
-    BoundedJoinReservationRequirement, BoundedJoinReservationStatus,
+    BOUNDED_JOIN_EXECUTION_FAMILIES, BOUNDED_JOIN_EXECUTION_FAMILY_CONTRACTS, BOUNDED_JOIN_TOPOLOGY_ONLY_SCOPE,
+    BOUNDED_JOIN_TRANSITIONAL_ADMISSION_MODEL, BoundedJoinExecutionFamily, BoundedJoinExecutionFamilyContract,
+    BoundedJoinReservationContract, BoundedJoinReservationRequirement, BoundedJoinReservationStatus,
 };
 pub use policy::{DevicePlacement, MemoryControlPolicy, MemoryResourcePolicy, MemorySpaceId, ReservationKind};
 pub use reservation::{MemoryReservationRequest, RetryFacts};

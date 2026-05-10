@@ -5,6 +5,7 @@
 //! `datafusion-cudf`.
 
 pub(crate) mod bounded;
+pub mod capability;
 pub mod chunk;
 pub mod datatypes;
 pub mod error;
@@ -41,11 +42,12 @@ pub use plan::{
     ProjectionOutput, QueryNode, QueryPlan, QueryPlanBuilder, ResultSink, SchemaBehavior, SortNode,
 };
 pub use runtime::{
-    BOUNDED_JOIN_EXECUTION_FAMILIES, BoundedJoinExecutionFamily, BoundedJoinReservationContract,
-    BoundedJoinReservationRequirement, BoundedJoinReservationStatus, BuildMaterializationBoundary, DevicePlacement,
-    ExecutionBoundaryPolicy, ExecutionContext, ExecutionContextBuilder, MemoryControlPolicy, MemoryReservationRequest,
-    MemoryResourcePolicy, MemorySpaceId, ProbeExecutionBoundary, ReservationKind, ResultMaterializationBoundary,
-    RetryFacts, SourceReadBoundary, SourceSchedulerPolicy,
+    BOUNDED_JOIN_EXECUTION_FAMILIES, BOUNDED_JOIN_EXECUTION_FAMILY_CONTRACTS, BOUNDED_JOIN_TOPOLOGY_ONLY_SCOPE,
+    BOUNDED_JOIN_TRANSITIONAL_ADMISSION_MODEL, BoundedJoinExecutionFamily, BoundedJoinExecutionFamilyContract,
+    BoundedJoinReservationContract, BoundedJoinReservationRequirement, BoundedJoinReservationStatus,
+    BuildMaterializationBoundary, DevicePlacement, ExecutionBoundaryPolicy, ExecutionContext, ExecutionContextBuilder,
+    MemoryControlPolicy, MemoryReservationRequest, MemoryResourcePolicy, MemorySpaceId, ProbeExecutionBoundary,
+    ReservationKind, ResultMaterializationBoundary, RetryFacts, SourceReadBoundary, SourceSchedulerPolicy,
 };
 pub use source::{
     ByteRangeDisposition, GpuResidentSource, LocalParquetFile, LocalParquetSource, MissingColumn, PartitionColumn,

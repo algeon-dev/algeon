@@ -255,6 +255,57 @@ impl BoundedJoinExecutionFamily {
     }
 }
 
+/// Stable admission model label for the current bounded join family catalogue.
+///
+/// Phase A of the native pipeline-DAG migration keeps these families as a
+/// strict transitional admission/dispatch surface. The value is intentionally
+/// reportable so downstream diagnostics do not mistake family admission for the
+/// future capability-analysis source of truth.
+pub const BOUNDED_JOIN_TRANSITIONAL_ADMISSION_MODEL: &str = "transitional_topology_family_catalogue";
+
+/// Stable scope label for newly added bounded join families.
+///
+/// New family recognizers must be topology-only: they may describe plan shape,
+/// join kinds, blocking operators, residency, and ordered boundaries, but not a
+/// TPC-H query id, table name, column name, literal constant, file path, or SQL
+/// text.
+pub const BOUNDED_JOIN_TOPOLOGY_ONLY_SCOPE: &str =
+    "new_families_must_be_topology_only_no_query_id_table_name_column_name_literal";
+
+/// Phase A contract row for a report-facing bounded join execution family.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct BoundedJoinExecutionFamilyContract {
+    family: BoundedJoinExecutionFamily,
+    admission_model: &'static str,
+    topology_contract: &'static str,
+}
+
+impl BoundedJoinExecutionFamilyContract {
+    /// Creates a static execution-family contract row.
+    pub const fn new(
+        family: BoundedJoinExecutionFamily,
+        admission_model: &'static str,
+        topology_contract: &'static str,
+    ) -> Self {
+        Self { family, admission_model, topology_contract }
+    }
+
+    /// Execution family described by this row.
+    pub const fn family(self) -> BoundedJoinExecutionFamily {
+        self.family
+    }
+
+    /// Admission model for this family.
+    pub const fn admission_model(self) -> &'static str {
+        self.admission_model
+    }
+
+    /// Topology-only shape contract for this family.
+    pub const fn topology_contract(self) -> &'static str {
+        self.topology_contract
+    }
+}
+
 /// Report-facing catalogue of bounded join execution families.
 ///
 /// Ordering is preserved in CSV facts and tests.
@@ -273,6 +324,84 @@ pub const BOUNDED_JOIN_EXECUTION_FAMILIES: [BoundedJoinExecutionFamily; 14] = [
     BoundedJoinExecutionFamily::HashJoinResidentGroupedAggregateInputPostJoinAggregateTopKPipeline,
     BoundedJoinExecutionFamily::MultiJoinResidentGroupedAggregateSubqueryFilterPipeline,
     BoundedJoinExecutionFamily::KeyedHashJoinResidentSubplanPipeline,
+];
+
+/// Phase A topology contracts for bounded join execution families.
+///
+/// Ordering mirrors `BOUNDED_JOIN_EXECUTION_FAMILIES`. These strings are
+/// intentionally structural; avoid query-id, table-name, column-name, literal,
+/// path, or SQL-text vocabulary when adding a family.
+pub const BOUNDED_JOIN_EXECUTION_FAMILY_CONTRACTS: [BoundedJoinExecutionFamilyContract; 14] = [
+    BoundedJoinExecutionFamilyContract::new(
+        BoundedJoinExecutionFamily::RootReusableHashJoin,
+        BOUNDED_JOIN_TRANSITIONAL_ADMISSION_MODEL,
+        "single_root_equi_hash_join_with_source_filter_projection_leaf_inputs",
+    ),
+    BoundedJoinExecutionFamilyContract::new(
+        BoundedJoinExecutionFamily::RootFilteredSemiAntiJoin,
+        BOUNDED_JOIN_TRANSITIONAL_ADMISSION_MODEL,
+        "single_root_filtered_semi_anti_hash_join_with_source_filter_projection_leaf_inputs",
+    ),
+    BoundedJoinExecutionFamilyContract::new(
+        BoundedJoinExecutionFamily::KeylessConditionalJoin,
+        BOUNDED_JOIN_TRANSITIONAL_ADMISSION_MODEL,
+        "single_root_keyless_conditional_join_with_source_filter_projection_leaf_inputs",
+    ),
+    BoundedJoinExecutionFamilyContract::new(
+        BoundedJoinExecutionFamily::KeylessConditionalJoinInputSubplanPipeline,
+        BOUNDED_JOIN_TRANSITIONAL_ADMISSION_MODEL,
+        "keyless_conditional_root_join_with_bounded_projection_wrapped_input_subplans",
+    ),
+    BoundedJoinExecutionFamilyContract::new(
+        BoundedJoinExecutionFamily::KeylessConditionalJoinAggregateOverJoinSubplanInputsPipeline,
+        BOUNDED_JOIN_TRANSITIONAL_ADMISSION_MODEL,
+        "keyless_conditional_root_join_with_aggregate_over_join_subplan_inputs_and_unary_post_root_pipeline",
+    ),
+    BoundedJoinExecutionFamilyContract::new(
+        BoundedJoinExecutionFamily::RootProjectedCrossJoin,
+        BOUNDED_JOIN_TRANSITIONAL_ADMISSION_MODEL,
+        "single_root_projected_cross_join_with_source_filter_projection_leaf_inputs",
+    ),
+    BoundedJoinExecutionFamilyContract::new(
+        BoundedJoinExecutionFamily::RootMixedKeyedResidualJoin,
+        BOUNDED_JOIN_TRANSITIONAL_ADMISSION_MODEL,
+        "single_root_keyed_hash_join_with_residual_predicate_and_source_filter_projection_leaf_inputs",
+    ),
+    BoundedJoinExecutionFamilyContract::new(
+        BoundedJoinExecutionFamily::MultiJoinReusableHashPipeline,
+        BOUNDED_JOIN_TRANSITIONAL_ADMISSION_MODEL,
+        "multi_join_tree_of_reusable_hash_join_operators_with_unary_post_root_pipeline",
+    ),
+    BoundedJoinExecutionFamilyContract::new(
+        BoundedJoinExecutionFamily::MultiJoinMixedKeyedResidualInnerLeftSemiLeftAntiPipeline,
+        BOUNDED_JOIN_TRANSITIONAL_ADMISSION_MODEL,
+        "multi_join_tree_with_keyed_residual_inner_semi_anti_joins_and_unary_post_root_pipeline",
+    ),
+    BoundedJoinExecutionFamilyContract::new(
+        BoundedJoinExecutionFamily::MultiJoinAggregateOverJoinSubplanTopKPipeline,
+        BOUNDED_JOIN_TRANSITIONAL_ADMISSION_MODEL,
+        "topk_over_projection_over_root_hash_join_with_multi_join_input_and_aggregate_over_join_subplan_input",
+    ),
+    BoundedJoinExecutionFamilyContract::new(
+        BoundedJoinExecutionFamily::MixedKeyedResidualJoinResidentGroupedAggregateInputPipeline,
+        BOUNDED_JOIN_TRANSITIONAL_ADMISSION_MODEL,
+        "projected_aggregate_over_keyed_residual_root_join_with_join_subtree_input_and_resident_grouped_aggregate_input",
+    ),
+    BoundedJoinExecutionFamilyContract::new(
+        BoundedJoinExecutionFamily::HashJoinResidentGroupedAggregateInputPostJoinAggregateTopKPipeline,
+        BOUNDED_JOIN_TRANSITIONAL_ADMISSION_MODEL,
+        "topk_over_grouped_aggregate_over_hash_join_with_multi_join_input_and_resident_grouped_aggregate_input",
+    ),
+    BoundedJoinExecutionFamilyContract::new(
+        BoundedJoinExecutionFamily::MultiJoinResidentGroupedAggregateSubqueryFilterPipeline,
+        BOUNDED_JOIN_TRANSITIONAL_ADMISSION_MODEL,
+        "final_sort_over_multi_join_tree_with_resident_grouped_aggregate_subquery_filter_branch",
+    ),
+    BoundedJoinExecutionFamilyContract::new(
+        BoundedJoinExecutionFamily::KeyedHashJoinResidentSubplanPipeline,
+        BOUNDED_JOIN_TRANSITIONAL_ADMISSION_MODEL,
+        "final_sort_over_keyed_hash_joins_with_resident_grouped_subplan_and_scalar_aggregate_branch",
+    ),
 ];
 
 /// Public bounded join reservation contract and fact builder.
@@ -307,5 +436,20 @@ impl BoundedJoinReservationContract {
     /// Returns supported bounded join execution families in report order.
     pub const fn execution_families(self) -> &'static [BoundedJoinExecutionFamily] {
         &BOUNDED_JOIN_EXECUTION_FAMILIES
+    }
+
+    /// Returns the Phase A topology contract rows in report order.
+    pub const fn execution_family_contracts(self) -> &'static [BoundedJoinExecutionFamilyContract] {
+        &BOUNDED_JOIN_EXECUTION_FAMILY_CONTRACTS
+    }
+
+    /// Stable admission-model fact value.
+    pub const fn admission_model(self) -> &'static str {
+        BOUNDED_JOIN_TRANSITIONAL_ADMISSION_MODEL
+    }
+
+    /// Stable admission-scope fact value for new bounded join families.
+    pub const fn admission_scope(self) -> &'static str {
+        BOUNDED_JOIN_TOPOLOGY_ONLY_SCOPE
     }
 }

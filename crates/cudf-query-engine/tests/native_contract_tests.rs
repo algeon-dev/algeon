@@ -22,6 +22,10 @@ use cudf_query_engine::{
     ReservationKind, ResultMaterializationBoundary, ResultSink, RetryFacts, ScanLimitDisposition, SchemaBehavior,
     SchemaMappingDisposition, SortExpr, SortSpec, SourceChunkPlanningPolicy, SourceColumnRef, SourceMetadataCache,
     SourceNode, SourceReadBoundary, SourceSchedulerPolicy, ZERO_COLUMN_COUNT_COLUMN, ZeroColumnCountDisposition,
+    capability::{
+        CapabilityDecision, CompatibilityFamilyProjection, ContractQuality, ContractStatus, EdgeConsumer, InputRole,
+        NodeOperator, ResultSinkKind, SubgraphInvariantKind,
+    },
     cudf_dtype_from_arrow_type,
     expr::{CaseWhen, DatePart},
     is_supported_arrow_cast, is_supported_arrow_implicit_cast, is_supported_arrow_type,
