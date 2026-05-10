@@ -379,6 +379,18 @@ fn bounded_capability_analysis_solves_phase5_multi_join_invariants() {
 }
 
 #[test]
+fn bounded_multi_join_phase6_admission_uses_closed_subgraph_capability_proof() {
+    let plan = serial_aggregate_multi_join_spine_plan();
+    let analysis = plan.capability_analysis();
+
+    assert_eq!(plan.has_bounded_executable_multi_join_pipeline(), analysis.admits_closed_multi_join_subgraph());
+    assert_eq!(
+        analysis.compatibility_family_projection,
+        Some(CompatibilityFamilyProjection::MultiJoinTreePostRootPipeline)
+    );
+}
+
+#[test]
 fn bounded_capability_analysis_rejects_phase5_multi_join_admission_without_family_recognizer() {
     let plan = multi_join_candidate_with_aggregate_inside_join_subtree_plan();
 
@@ -386,6 +398,7 @@ fn bounded_capability_analysis_rejects_phase5_multi_join_admission_without_famil
     let analysis = plan.capability_analysis();
 
     assert!(!analysis.admits_closed_multi_join_subgraph());
+    assert_eq!(plan.has_bounded_executable_multi_join_pipeline(), analysis.admits_closed_multi_join_subgraph());
     assert!(!analysis.has_rejections(), "the local node and edge capability layers still accept this plan");
     let CapabilityDecision::Rejected { reason, facts } = &analysis.closed_multi_join_subgraph_admission else {
         panic!("aggregate inside the join subtree should reject the closed multi-join subgraph proof");
@@ -846,12 +859,77 @@ fn bounded_keyed_hash_join_resident_subplan_pipeline_is_executable_with_modeled_
 }
 
 #[test]
-fn bounded_keyed_hash_join_resident_subplan_pipeline_recognizer_stays_narrow() {
+fn bounded_keyed_hash_join_resident_subplan_phase6_admission_uses_capability_proof() {
+    let plan =
+        keyed_hash_join_resident_subplan_pipeline_plan(KeyedHashJoinResidentSubplanPipelineVariant::BlockedFamily);
+    let analysis = plan.capability_analysis();
+
+    assert_eq!(
+        plan.has_bounded_executable_keyed_hash_join_resident_subplan_pipeline(),
+        analysis.admits_keyed_hash_join_resident_subplan_pipeline()
+    );
+    assert_eq!(
+        analysis.compatibility_family_projection,
+        Some(CompatibilityFamilyProjection::KeyedHashJoinResidentSubplanPipeline)
+    );
+    assert_eq!(analysis.keyed_hash_join_resident_subplan_admission, CapabilityDecision::Satisfied);
+    assert!(analysis.edges.iter().any(|edge| {
+        edge.contract_kinds
+            .contains(&EdgeContractKind::SharedProducer { identity: SharedProducerIdentity::SameNodeIdAfterCse })
+    }));
+    assert!(analysis.invariants.iter().any(|invariant| {
+        matches!(invariant.kind, SubgraphInvariantKind::SharedResidentSubplan)
+            && invariant.decision == CapabilityDecision::Satisfied
+    }));
+    assert!(analysis.invariants.iter().any(|invariant| {
+        matches!(invariant.kind, SubgraphInvariantKind::AggregateDerivesFromSharedProducer)
+            && invariant.decision == CapabilityDecision::Satisfied
+    }));
+    assert!(analysis.invariants.iter().any(|invariant| {
+        matches!(invariant.kind, SubgraphInvariantKind::FinalBarrierOrder)
+            && invariant.decision == CapabilityDecision::Satisfied
+    }));
+}
+
+#[test]
+fn bounded_keyed_hash_join_resident_subplan_rejects_structural_equivalence_without_same_node_id() {
+    let plan = keyed_hash_join_resident_subplan_pipeline_plan(
+        KeyedHashJoinResidentSubplanPipelineVariant::StructurallyEquivalentGroupedAggregate,
+    );
+    let analysis = plan.capability_analysis();
+
+    assert!(!plan.has_bounded_executable_keyed_hash_join_resident_subplan_pipeline());
+    let CapabilityDecision::Rejected { reason, facts } = &analysis.keyed_hash_join_resident_subplan_admission else {
+        panic!("structurally equivalent grouped aggregates must not satisfy resident-subplan admission");
+    };
+    assert_eq!(*reason, "resident_subplan_requires_same_node_id_after_cse");
+    assert_eq!(facts.get("identity").map(String::as_str), Some("same_node_id_after_cse"));
+}
+
+#[test]
+fn bounded_keyed_hash_join_resident_subplan_preserves_node_failure_locality() {
+    let plan = keyed_hash_join_resident_subplan_pipeline_plan(
+        KeyedHashJoinResidentSubplanPipelineVariant::UnsupportedRootResidualExpression,
+    );
+    let analysis = plan.capability_analysis();
+
+    assert!(!plan.has_bounded_executable_keyed_hash_join_resident_subplan_pipeline());
+    let CapabilityDecision::Rejected { reason, facts } = &analysis.keyed_hash_join_resident_subplan_admission else {
+        panic!("unsupported residual expression should reject keyed hash resident-subplan admission");
+    };
+    assert_eq!(*reason, "unsupported_join_residual_expression_capability");
+    assert_eq!(facts.get("expression_family").map(String::as_str), Some("case"));
+}
+
+#[test]
+fn bounded_keyed_hash_join_resident_subplan_pipeline_admission_stays_narrow() {
     for variant in [
         KeyedHashJoinResidentSubplanPipelineVariant::ResidualRootJoin,
+        KeyedHashJoinResidentSubplanPipelineVariant::UnsupportedRootResidualExpression,
         KeyedHashJoinResidentSubplanPipelineVariant::SortBelowRoot,
         KeyedHashJoinResidentSubplanPipelineVariant::ScalarAggregateNotMax,
         KeyedHashJoinResidentSubplanPipelineVariant::GroupedAggregateNotSum,
+        KeyedHashJoinResidentSubplanPipelineVariant::StructurallyEquivalentGroupedAggregate,
     ] {
         let plan = keyed_hash_join_resident_subplan_pipeline_plan(variant);
 
@@ -1004,6 +1082,76 @@ fn bounded_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_p
         &facts,
         "hash_join_with_resident_grouped_aggregate_input_post_join_aggregate_topk",
     );
+}
+
+#[test]
+fn bounded_hash_join_resident_grouped_aggregate_topk_phase6_admission_uses_capability_proof() {
+    let plan = resident_grouped_aggregate_input_post_join_aggregate_topk_plan();
+    let analysis = plan.capability_analysis();
+
+    assert_eq!(
+        plan.has_bounded_executable_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_pipeline(),
+        analysis.admits_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_pipeline()
+    );
+    assert_eq!(
+        analysis.compatibility_family_projection,
+        Some(CompatibilityFamilyProjection::HashJoinResidentGroupedAggregateInputPostJoinAggregateTopKPipeline)
+    );
+    assert_eq!(
+        analysis.hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_admission,
+        CapabilityDecision::Satisfied
+    );
+    assert!(analysis.invariants.iter().any(|invariant| {
+        matches!(invariant.kind, SubgraphInvariantKind::PostRootStageOrder { .. })
+            && invariant.decision == CapabilityDecision::Satisfied
+    }));
+    assert!(analysis.invariants.iter().any(|invariant| {
+        matches!(invariant.kind, SubgraphInvariantKind::FinalBarrierOrder)
+            && invariant.decision == CapabilityDecision::Satisfied
+    }));
+    assert!(analysis.edges.iter().any(|edge| {
+        edge.contract_kinds.contains(&EdgeContractKind::SortInput)
+            && edge.reservation_requirements.iter().any(|requirement| {
+                requirement.kind == ReservationKind::FinalSort
+                    && requirement.quality == ContractQuality::HardBudgetedReportWithUnresolvedPreflight
+            })
+    }));
+}
+
+#[test]
+fn bounded_hash_join_resident_grouped_aggregate_topk_preserves_node_failure_locality() {
+    let plan = resident_grouped_aggregate_input_post_join_aggregate_topk_variant_plan(
+        ResidentGroupedAggregateInputPostJoinAggregateTopKVariant::UnsupportedGroupedInputFilter,
+    );
+    let analysis = plan.capability_analysis();
+
+    assert!(
+        !plan.has_bounded_executable_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_pipeline()
+    );
+    let CapabilityDecision::Rejected { reason, facts } =
+        &analysis.hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_admission
+    else {
+        panic!("unsupported filter should reject resident grouped-aggregate TopK admission");
+    };
+    assert_eq!(*reason, "unsupported_filter_expression_capability");
+    assert_eq!(facts.get("expression_family").map(String::as_str), Some("in_list"));
+    assert_eq!(facts.get("reason").map(String::as_str), Some("in_list_must_not_be_empty"));
+}
+
+#[test]
+fn bounded_hash_join_resident_grouped_aggregate_topk_admission_stays_narrow() {
+    for variant in [
+        ResidentGroupedAggregateInputPostJoinAggregateTopKVariant::MissingFetchLimit,
+        ResidentGroupedAggregateInputPostJoinAggregateTopKVariant::ScalarPostJoinAggregate,
+        ResidentGroupedAggregateInputPostJoinAggregateTopKVariant::UnsupportedGroupedInputFilter,
+    ] {
+        let plan = resident_grouped_aggregate_input_post_join_aggregate_topk_variant_plan(variant);
+
+        assert!(
+            !plan.has_bounded_executable_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_pipeline(),
+            "{variant:?} must not be admitted by the resident grouped-aggregate TopK family"
+        );
+    }
 }
 
 #[test]

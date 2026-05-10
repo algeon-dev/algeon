@@ -71,6 +71,14 @@ fn aggregate_over_join_subplan_topk_plan_inner(
 
 pub(in crate::bounded_join_admission) fn resident_grouped_aggregate_input_post_join_aggregate_topk_plan()
 -> cudf_query_engine::QueryPlan {
+    resident_grouped_aggregate_input_post_join_aggregate_topk_variant_plan(
+        ResidentGroupedAggregateInputPostJoinAggregateTopKVariant::Admitted,
+    )
+}
+
+pub(in crate::bounded_join_admission) fn resident_grouped_aggregate_input_post_join_aggregate_topk_variant_plan(
+    variant: ResidentGroupedAggregateInputPostJoinAggregateTopKVariant,
+) -> cudf_query_engine::QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let a = source(&mut builder, "resident-aggregate-post-aggregate-topk-a");
     let b = source(&mut builder, "resident-aggregate-post-aggregate-topk-b");
@@ -78,26 +86,59 @@ pub(in crate::bounded_join_admission) fn resident_grouped_aggregate_input_post_j
     let lineitem = source(&mut builder, "resident-aggregate-post-aggregate-topk-lineitem");
 
     let grouped_input = grouped_aggregate(&mut builder, lineitem);
-    let grouped_input = builder.add_projection(
+    let mut grouped_input = builder.add_projection(
         grouped_input,
         projection_outputs(
             vec![Expr::column("k")],
             Arc::new(Schema::new(vec![Field::new("k", DataType::Int32, false)])),
         ),
     );
+    if matches!(variant, ResidentGroupedAggregateInputPostJoinAggregateTopKVariant::UnsupportedGroupedInputFilter) {
+        grouped_input = builder.add_filter(
+            grouped_input,
+            Expr::in_list(Expr::column("k"), Vec::new()),
+            Arc::new(Schema::new(vec![Field::new("k", DataType::Int32, false)])),
+        );
+    }
     let ab = join(&mut builder, a, b, "ab");
     let right_tree = join(&mut builder, ab, c, "right_tree");
     let root = semi_join(&mut builder, right_tree, grouped_input);
     let root = project_key_value(&mut builder, root);
-    let post_join_aggregate = grouped_aggregate(&mut builder, root);
+    let post_join_aggregate = match variant {
+        ResidentGroupedAggregateInputPostJoinAggregateTopKVariant::ScalarPostJoinAggregate => {
+            scalar_aggregate(&mut builder, root)
+        },
+        ResidentGroupedAggregateInputPostJoinAggregateTopKVariant::Admitted
+        | ResidentGroupedAggregateInputPostJoinAggregateTopKVariant::MissingFetchLimit
+        | ResidentGroupedAggregateInputPostJoinAggregateTopKVariant::UnsupportedGroupedInputFilter => {
+            grouped_aggregate(&mut builder, root)
+        },
+    };
     let projection = project_key_value(&mut builder, post_join_aggregate);
     let sort = builder.add_sort(
         projection,
         SortSpec::new(vec![SortExpr::new(Expr::column("v"), true, false)]),
         key_value_schema(),
     );
-    let limit = builder.add_limit(sort, LimitSpec::fetch(100), key_value_schema());
-    builder.finish_with_host_sink(limit)
+    match variant {
+        ResidentGroupedAggregateInputPostJoinAggregateTopKVariant::MissingFetchLimit => {
+            builder.finish_with_host_sink(sort)
+        },
+        ResidentGroupedAggregateInputPostJoinAggregateTopKVariant::Admitted
+        | ResidentGroupedAggregateInputPostJoinAggregateTopKVariant::ScalarPostJoinAggregate
+        | ResidentGroupedAggregateInputPostJoinAggregateTopKVariant::UnsupportedGroupedInputFilter => {
+            let limit = builder.add_limit(sort, LimitSpec::fetch(100), key_value_schema());
+            builder.finish_with_host_sink(limit)
+        },
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(in crate::bounded_join_admission) enum ResidentGroupedAggregateInputPostJoinAggregateTopKVariant {
+    Admitted,
+    MissingFetchLimit,
+    ScalarPostJoinAggregate,
+    UnsupportedGroupedInputFilter,
 }
 
 pub(in crate::bounded_join_admission) fn resident_grouped_aggregate_subquery_filter_plan()

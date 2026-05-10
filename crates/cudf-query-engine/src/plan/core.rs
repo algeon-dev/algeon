@@ -95,7 +95,7 @@ impl QueryPlan {
 
     /// Returns true when the plan matches the supported bounded multi-join pipeline.
     pub fn has_bounded_executable_multi_join_pipeline(&self) -> bool {
-        crate::bounded::analyze_bounded_multi_join_pipeline(self).is_ok()
+        crate::capability::admits_closed_multi_join_subgraph(self)
     }
 
     /// Returns true when the plan matches the supported multi-join plus
@@ -107,7 +107,7 @@ impl QueryPlan {
     /// Returns true when the plan matches the supported keyed-residual join
     /// with a resident grouped local-Parquet aggregate input.
     pub fn has_bounded_executable_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline(&self) -> bool {
-        analyze_bounded_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline(self).is_ok()
+        crate::capability::admits_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline(self)
     }
 
     /// Returns true when the plan matches the supported hash join with resident
@@ -115,7 +115,7 @@ impl QueryPlan {
     pub fn has_bounded_executable_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_pipeline(
         &self,
     ) -> bool {
-        analyze_bounded_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_pipeline(self).is_ok()
+        crate::capability::admits_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_pipeline(self)
     }
 
     /// Returns true when the plan matches the supported multi-join resident
@@ -127,7 +127,7 @@ impl QueryPlan {
     /// Returns true when the plan matches the supported keyed hash join
     /// resident subplan pipeline.
     pub fn has_bounded_executable_keyed_hash_join_resident_subplan_pipeline(&self) -> bool {
-        analyze_keyed_hash_join_resident_subplan_pipeline(self).is_ok()
+        crate::capability::admits_keyed_hash_join_resident_subplan_pipeline(self)
     }
 
     /// Returns diagnostic facts for join plans rejected by every bounded join path.

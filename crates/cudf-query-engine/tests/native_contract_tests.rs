@@ -25,7 +25,8 @@ use cudf_query_engine::{
     capability::{
         CapabilityDecision, CompatibilityFamilyProjection, ContractQuality, ContractStatus, EdgeConsumer,
         EdgeContractKind, InputRole, NodeOperator, OrderingRequirement, RequiredProperty, ReservationRequirementScope,
-        ResidualRequirement, ResultSinkKind, ScheduleConstraint, SourceFormatCapability, SubgraphInvariantKind,
+        ResidualRequirement, ResultSinkKind, ScheduleConstraint, SharedProducerIdentity, SourceFormatCapability,
+        SubgraphInvariantKind,
     },
     cudf_dtype_from_arrow_type,
     expr::{CaseWhen, DatePart},

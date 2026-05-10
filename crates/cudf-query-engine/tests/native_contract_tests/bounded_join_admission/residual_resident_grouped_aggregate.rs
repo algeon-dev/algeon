@@ -172,6 +172,50 @@ fn bounded_capability_analysis_extracts_phase4_mixed_residual_resident_aggregate
     );
 }
 
+#[test]
+fn bounded_mixed_residual_resident_grouped_aggregate_phase6_admission_uses_capability_proof() {
+    let plan =
+        residual_resident_grouped_aggregate_input_plan(ResidualResidentGroupedAggregateInputVariant::BlockedFamily);
+    let analysis = plan.capability_analysis();
+
+    assert_eq!(
+        plan.has_bounded_executable_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline(),
+        analysis.admits_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline()
+    );
+    assert_eq!(
+        analysis.compatibility_family_projection,
+        Some(CompatibilityFamilyProjection::MixedKeyedResidualJoinResidentGroupedAggregateInputPipeline)
+    );
+    assert_eq!(
+        analysis.mixed_keyed_residual_join_resident_grouped_aggregate_input_admission,
+        CapabilityDecision::Satisfied
+    );
+}
+
+#[test]
+fn bounded_mixed_residual_resident_grouped_aggregate_phase6_preserves_node_failure_locality() {
+    let plan = residual_resident_grouped_aggregate_input_plan(
+        ResidualResidentGroupedAggregateInputVariant::UnsupportedResidualExpression,
+    );
+    let analysis = plan.capability_analysis();
+
+    assert!(!plan.has_bounded_executable_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline());
+    let CapabilityDecision::Rejected { reason, facts } =
+        &analysis.mixed_keyed_residual_join_resident_grouped_aggregate_input_admission
+    else {
+        panic!("unsupported residual expression should reject mixed residual admission");
+    };
+    assert_eq!(*reason, "unsupported_join_residual_expression_capability");
+    assert_eq!(facts.get("expression_family").map(String::as_str), Some("case"));
+    assert!(
+        analysis.invariants.iter().any(|invariant| {
+            matches!(invariant.kind, SubgraphInvariantKind::ResidualUsesBothInputs { .. })
+                && invariant.decision == CapabilityDecision::Satisfied
+        }),
+        "residual input coverage is satisfied, so admission must report the node-local expression failure first"
+    );
+}
+
 #[derive(Debug, Clone, Copy)]
 enum ResidualResidentGroupedAggregateInputVariant {
     BlockedFamily,
@@ -187,6 +231,7 @@ enum ResidualResidentGroupedAggregateInputVariant {
     ResidualWrongMultiplier,
     PreprojectedResidualWrongMultiplier,
     RootOutputIncludesGroupedAggregate,
+    UnsupportedResidualExpression,
 }
 
 fn residual_resident_grouped_aggregate_input_plan(
@@ -300,7 +345,8 @@ fn residual_resident_grouped_aggregate_input_plan(
         | ResidualResidentGroupedAggregateInputVariant::ResidualWithoutScaledAverage
         | ResidualResidentGroupedAggregateInputVariant::ResidualWrongMultiplier
         | ResidualResidentGroupedAggregateInputVariant::PreprojectedResidualWrongMultiplier
-        | ResidualResidentGroupedAggregateInputVariant::RootOutputIncludesGroupedAggregate => {
+        | ResidualResidentGroupedAggregateInputVariant::RootOutputIncludesGroupedAggregate
+        | ResidualResidentGroupedAggregateInputVariant::UnsupportedResidualExpression => {
             builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
                 "/tmp/residual-resident-lineitem-aggregate.parquet",
                 Arc::clone(&lineitem_schema),
@@ -381,32 +427,46 @@ fn residual_resident_grouped_aggregate_input_plan(
             Arc::clone(&root_output_schema)
         };
     if !matches!(variant, ResidualResidentGroupedAggregateInputVariant::RootJoinWithoutResidual) {
-        let residual_right =
-            if matches!(variant, ResidualResidentGroupedAggregateInputVariant::ResidualWithoutScaledAverage) {
-                Expr::input_column(1, "avg_quantity", "avg_quantity")
-            } else if matches!(
-                variant,
-                ResidualResidentGroupedAggregateInputVariant::PreprojectedResidualWrongMultiplier
-            ) {
-                Expr::input_column(1, "scaled_avg_quantity", "scaled_avg_quantity")
-            } else {
-                let multiplier =
-                    if matches!(variant, ResidualResidentGroupedAggregateInputVariant::ResidualWrongMultiplier) {
-                        2.0
-                    } else {
-                        0.2
-                    };
-                Expr::binary(
-                    Expr::input_column(1, "avg_quantity", "avg_quantity"),
-                    BinaryOp::Multiply,
-                    Expr::literal(LiteralValue::Float64(multiplier)),
-                )
-            };
-        root_spec = root_spec.with_residual_predicate(Expr::binary(
-            Expr::input_column(0, "l_quantity", "l_quantity"),
-            BinaryOp::Lt,
-            residual_right,
-        ));
+        root_spec = if matches!(variant, ResidualResidentGroupedAggregateInputVariant::UnsupportedResidualExpression) {
+            root_spec.with_residual_predicate(Expr::case(
+                vec![CaseWhen::new(
+                    Expr::binary(
+                        Expr::input_column(0, "l_quantity", "l_quantity"),
+                        BinaryOp::Lt,
+                        Expr::input_column(1, "avg_quantity", "avg_quantity"),
+                    ),
+                    Expr::literal(LiteralValue::Boolean(true)),
+                )],
+                Expr::literal(LiteralValue::Boolean(false)),
+            ))
+        } else {
+            let residual_right =
+                if matches!(variant, ResidualResidentGroupedAggregateInputVariant::ResidualWithoutScaledAverage) {
+                    Expr::input_column(1, "avg_quantity", "avg_quantity")
+                } else if matches!(
+                    variant,
+                    ResidualResidentGroupedAggregateInputVariant::PreprojectedResidualWrongMultiplier
+                ) {
+                    Expr::input_column(1, "scaled_avg_quantity", "scaled_avg_quantity")
+                } else {
+                    let multiplier =
+                        if matches!(variant, ResidualResidentGroupedAggregateInputVariant::ResidualWrongMultiplier) {
+                            2.0
+                        } else {
+                            0.2
+                        };
+                    Expr::binary(
+                        Expr::input_column(1, "avg_quantity", "avg_quantity"),
+                        BinaryOp::Multiply,
+                        Expr::literal(LiteralValue::Float64(multiplier)),
+                    )
+                };
+            root_spec.with_residual_predicate(Expr::binary(
+                Expr::input_column(0, "l_quantity", "l_quantity"),
+                BinaryOp::Lt,
+                residual_right,
+            ))
+        };
     }
     let root = builder.add_join(joined_input, grouped_input, root_spec, root_schema);
     let aggregate_input = if matches!(variant, ResidualResidentGroupedAggregateInputVariant::BareGlobalAggregateInput) {

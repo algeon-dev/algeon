@@ -114,16 +114,23 @@ fn resident_revenue_keyed_hash_join_subplan_plan(
         supplier_schema,
         &["s_suppkey", "s_name"],
     )));
-    let revenue = build_resident_revenue_branch(
+    let revenue = build_resident_revenue_aggregate(
         &mut builder,
         lineitem_path,
         lineitem_schema,
         Arc::clone(&revenue_projection_schema),
         Arc::clone(&revenue_schema),
     );
+    let revenue_for_supplier = builder.add_projection(
+        revenue,
+        projection_outputs(
+            vec![Expr::column("supplier_no"), Expr::column("total_revenue")],
+            Arc::clone(&revenue_schema),
+        ),
+    );
     let supplier_revenue = builder.add_join(
         supplier,
-        revenue,
+        revenue_for_supplier,
         JoinSpec::new(
             JoinType::Inner,
             vec![JoinKey::new(
@@ -150,17 +157,8 @@ fn resident_revenue_keyed_hash_join_subplan_plan(
         ),
     );
 
-    let revenue_for_max = build_resident_revenue_aggregate(
-        &mut builder,
-        lineitem_path,
-        lineitem_schema,
-        revenue_projection_schema,
-        Arc::clone(&revenue_schema),
-    );
-    let revenue_for_max = builder.add_projection(
-        revenue_for_max,
-        projection_outputs(vec![Expr::column("total_revenue")], scalar_revenue_input_schema),
-    );
+    let revenue_for_max = builder
+        .add_projection(revenue, projection_outputs(vec![Expr::column("total_revenue")], scalar_revenue_input_schema));
     let max_revenue = builder.add_aggregate(
         revenue_for_max,
         AggregateSpec::new(
@@ -196,26 +194,6 @@ fn resident_revenue_keyed_hash_join_subplan_plan(
         supplier_revenue_schema,
     );
     builder.finish_with_host_sink(output)
-}
-
-fn build_resident_revenue_branch(
-    builder: &mut QueryPlanBuilder,
-    lineitem_path: &Path,
-    lineitem_schema: &Arc<Schema>,
-    revenue_projection_schema: Arc<Schema>,
-    revenue_schema: Arc<Schema>,
-) -> cudf_query_engine::NodeId {
-    let aggregate = build_resident_revenue_aggregate(
-        builder,
-        lineitem_path,
-        lineitem_schema,
-        revenue_projection_schema,
-        Arc::clone(&revenue_schema),
-    );
-    builder.add_projection(
-        aggregate,
-        projection_outputs(vec![Expr::column("supplier_no"), Expr::column("total_revenue")], revenue_schema),
-    )
 }
 
 fn build_resident_revenue_aggregate(
