@@ -1,6 +1,6 @@
 use super::*;
 use crate::{
-    bounded_support::BoundedKeylessConditionalJoinType,
+    bounded::BoundedKeylessConditionalJoinType,
     exec::bounded::join::common::{
         bounded_join_request, join_side_output_reservation_bytes, prepare_bounded_join_side_input,
     },

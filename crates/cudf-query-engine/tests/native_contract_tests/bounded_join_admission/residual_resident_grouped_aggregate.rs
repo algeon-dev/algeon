@@ -3,14 +3,14 @@ use super::*;
 #[test]
 fn bounded_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline_is_executable() {
     for variant in [
-        Q17ResidentGroupedAggregateInputVariant::BlockedFamily,
-        Q17ResidentGroupedAggregateInputVariant::GlobalAggregateNotSum,
-        Q17ResidentGroupedAggregateInputVariant::GroupedAggregateNotAvg,
-        Q17ResidentGroupedAggregateInputVariant::ResidualWithoutScaledAverage,
-        Q17ResidentGroupedAggregateInputVariant::ResidualWrongMultiplier,
-        Q17ResidentGroupedAggregateInputVariant::PreprojectedResidualWrongMultiplier,
+        ResidualResidentGroupedAggregateInputVariant::BlockedFamily,
+        ResidualResidentGroupedAggregateInputVariant::GlobalAggregateNotSum,
+        ResidualResidentGroupedAggregateInputVariant::GroupedAggregateNotAvg,
+        ResidualResidentGroupedAggregateInputVariant::ResidualWithoutScaledAverage,
+        ResidualResidentGroupedAggregateInputVariant::ResidualWrongMultiplier,
+        ResidualResidentGroupedAggregateInputVariant::PreprojectedResidualWrongMultiplier,
     ] {
-        let plan = q17_shaped_resident_grouped_aggregate_input_plan(variant);
+        let plan = residual_resident_grouped_aggregate_input_plan(variant);
 
         assert!(!plan.has_bounded_executable_root_join(), "{variant:?}");
         assert!(!plan.has_bounded_executable_join_pipeline(), "{variant:?}");
@@ -27,7 +27,7 @@ fn bounded_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline_i
         assert!(plan.bounded_join_unsupported_shape_facts(ExecutionBoundaryPolicy::default()).is_none(), "{variant:?}");
         let facts = plan
             .bounded_join_modeled_facts(ExecutionBoundaryPolicy::default())
-            .expect("executable q17-style family should emit modeled facts");
+            .expect("executable residual-resident grouped aggregate family should emit modeled facts");
         assert_eq!(
             facts.get("bounded_join_execution_family").map(String::as_str),
             Some("mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline"),
@@ -64,15 +64,15 @@ fn bounded_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline_i
 #[test]
 fn bounded_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline_recognizer_stays_narrow() {
     for variant in [
-        Q17ResidentGroupedAggregateInputVariant::RootJoinWithoutResidual,
-        Q17ResidentGroupedAggregateInputVariant::BareGroupedAggregateInput,
-        Q17ResidentGroupedAggregateInputVariant::ScalarAggregateInput,
-        Q17ResidentGroupedAggregateInputVariant::GroupedAggregateGpuResidentInput,
-        Q17ResidentGroupedAggregateInputVariant::BareGlobalAggregateInput,
-        Q17ResidentGroupedAggregateInputVariant::FinalSort,
-        Q17ResidentGroupedAggregateInputVariant::RootOutputIncludesGroupedAggregate,
+        ResidualResidentGroupedAggregateInputVariant::RootJoinWithoutResidual,
+        ResidualResidentGroupedAggregateInputVariant::BareGroupedAggregateInput,
+        ResidualResidentGroupedAggregateInputVariant::ScalarAggregateInput,
+        ResidualResidentGroupedAggregateInputVariant::GroupedAggregateGpuResidentInput,
+        ResidualResidentGroupedAggregateInputVariant::BareGlobalAggregateInput,
+        ResidualResidentGroupedAggregateInputVariant::FinalSort,
+        ResidualResidentGroupedAggregateInputVariant::RootOutputIncludesGroupedAggregate,
     ] {
-        let plan = q17_shaped_resident_grouped_aggregate_input_plan(variant);
+        let plan = residual_resident_grouped_aggregate_input_plan(variant);
 
         assert!(!plan.has_bounded_executable_root_join(), "{variant:?}");
         assert!(!plan.has_bounded_executable_join_pipeline(), "{variant:?}");
@@ -92,14 +92,14 @@ fn bounded_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline_r
         assert_ne!(
             facts.get("bounded_join_blocked_join_family").map(String::as_str),
             Some("mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline"),
-            "{variant:?} must not be classified as the blocked Q17-shaped family"
+            "{variant:?} must not be classified as the blocked residual-resident grouped aggregate family"
         );
         assert_eq!(facts.get("bounded_join_lower_level_blockers").map(String::as_str), Some(""));
     }
 }
 
 #[derive(Debug, Clone, Copy)]
-enum Q17ResidentGroupedAggregateInputVariant {
+enum ResidualResidentGroupedAggregateInputVariant {
     BlockedFamily,
     RootJoinWithoutResidual,
     BareGroupedAggregateInput,
@@ -115,8 +115,8 @@ enum Q17ResidentGroupedAggregateInputVariant {
     RootOutputIncludesGroupedAggregate,
 }
 
-fn q17_shaped_resident_grouped_aggregate_input_plan(
-    variant: Q17ResidentGroupedAggregateInputVariant,
+fn residual_resident_grouped_aggregate_input_plan(
+    variant: ResidualResidentGroupedAggregateInputVariant,
 ) -> cudf_query_engine::QueryPlan {
     let part_schema = Arc::new(Schema::new(vec![
         Field::new("p_partkey", DataType::Int32, false),
@@ -151,7 +151,7 @@ fn q17_shaped_resident_grouped_aggregate_input_plan(
 
     let mut builder = QueryPlanBuilder::new();
     let lineitem = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
-        "/tmp/q17-lineitem.parquet",
+        "/tmp/residual-resident-lineitem.parquet",
         Arc::clone(&lineitem_schema),
         vec!["l_partkey".into(), "l_quantity".into(), "l_extendedprice".into()],
     )));
@@ -161,7 +161,7 @@ fn q17_shaped_resident_grouped_aggregate_input_plan(
         Arc::clone(&lineitem_schema),
     );
     let part = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
-        "/tmp/q17-part.parquet",
+        "/tmp/residual-resident-part.parquet",
         part_schema,
         vec!["p_partkey".into(), "p_brand".into(), "p_container".into()],
     )));
@@ -209,29 +209,33 @@ fn q17_shaped_resident_grouped_aggregate_input_plan(
     );
 
     let grouped_quantity_source = match variant {
-        Q17ResidentGroupedAggregateInputVariant::GroupedAggregateGpuResidentInput => builder.add_source(
-            SourceNode::GpuResident(GpuResidentSource::new("q17_lineitem_grouped", Arc::clone(&lineitem_schema))),
-        ),
-        Q17ResidentGroupedAggregateInputVariant::BlockedFamily
-        | Q17ResidentGroupedAggregateInputVariant::RootJoinWithoutResidual
-        | Q17ResidentGroupedAggregateInputVariant::BareGroupedAggregateInput
-        | Q17ResidentGroupedAggregateInputVariant::ScalarAggregateInput
-        | Q17ResidentGroupedAggregateInputVariant::BareGlobalAggregateInput
-        | Q17ResidentGroupedAggregateInputVariant::FinalSort
-        | Q17ResidentGroupedAggregateInputVariant::GlobalAggregateNotSum
-        | Q17ResidentGroupedAggregateInputVariant::GroupedAggregateNotAvg
-        | Q17ResidentGroupedAggregateInputVariant::ResidualWithoutScaledAverage
-        | Q17ResidentGroupedAggregateInputVariant::ResidualWrongMultiplier
-        | Q17ResidentGroupedAggregateInputVariant::PreprojectedResidualWrongMultiplier
-        | Q17ResidentGroupedAggregateInputVariant::RootOutputIncludesGroupedAggregate => {
+        ResidualResidentGroupedAggregateInputVariant::GroupedAggregateGpuResidentInput => {
+            builder.add_source(SourceNode::GpuResident(GpuResidentSource::new(
+                "residual_resident_lineitem_grouped",
+                Arc::clone(&lineitem_schema),
+            )))
+        },
+        ResidualResidentGroupedAggregateInputVariant::BlockedFamily
+        | ResidualResidentGroupedAggregateInputVariant::RootJoinWithoutResidual
+        | ResidualResidentGroupedAggregateInputVariant::BareGroupedAggregateInput
+        | ResidualResidentGroupedAggregateInputVariant::ScalarAggregateInput
+        | ResidualResidentGroupedAggregateInputVariant::BareGlobalAggregateInput
+        | ResidualResidentGroupedAggregateInputVariant::FinalSort
+        | ResidualResidentGroupedAggregateInputVariant::GlobalAggregateNotSum
+        | ResidualResidentGroupedAggregateInputVariant::GroupedAggregateNotAvg
+        | ResidualResidentGroupedAggregateInputVariant::ResidualWithoutScaledAverage
+        | ResidualResidentGroupedAggregateInputVariant::ResidualWrongMultiplier
+        | ResidualResidentGroupedAggregateInputVariant::PreprojectedResidualWrongMultiplier
+        | ResidualResidentGroupedAggregateInputVariant::RootOutputIncludesGroupedAggregate => {
             builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
-                "/tmp/q17-lineitem-aggregate.parquet",
+                "/tmp/residual-resident-lineitem-aggregate.parquet",
                 Arc::clone(&lineitem_schema),
                 vec!["l_partkey".into(), "l_quantity".into()],
             )))
         },
     };
-    let aggregate_group_exprs = if matches!(variant, Q17ResidentGroupedAggregateInputVariant::ScalarAggregateInput) {
+    let aggregate_group_exprs = if matches!(variant, ResidualResidentGroupedAggregateInputVariant::ScalarAggregateInput)
+    {
         Vec::new()
     } else {
         vec![Expr::column("l_partkey")]
@@ -241,7 +245,7 @@ fn q17_shaped_resident_grouped_aggregate_input_plan(
         AggregateSpec::new(
             aggregate_group_exprs,
             vec![AggregateExpr::new(
-                if matches!(variant, Q17ResidentGroupedAggregateInputVariant::GroupedAggregateNotAvg) {
+                if matches!(variant, ResidualResidentGroupedAggregateInputVariant::GroupedAggregateNotAvg) {
                     AggregateFunction::Sum
                 } else {
                     AggregateFunction::Avg
@@ -252,9 +256,9 @@ fn q17_shaped_resident_grouped_aggregate_input_plan(
         ),
         Arc::clone(&grouped_quantity_schema),
     );
-    let grouped_input = if matches!(variant, Q17ResidentGroupedAggregateInputVariant::BareGroupedAggregateInput) {
+    let grouped_input = if matches!(variant, ResidualResidentGroupedAggregateInputVariant::BareGroupedAggregateInput) {
         grouped_quantity
-    } else if matches!(variant, Q17ResidentGroupedAggregateInputVariant::PreprojectedResidualWrongMultiplier) {
+    } else if matches!(variant, ResidualResidentGroupedAggregateInputVariant::PreprojectedResidualWrongMultiplier) {
         builder.add_projection(
             grouped_quantity,
             projection_outputs(
@@ -292,34 +296,38 @@ fn q17_shaped_resident_grouped_aggregate_input_plan(
         "l_extendedprice",
     )])
     .with_build_side(JoinSide::Right);
-    let root_schema = if matches!(variant, Q17ResidentGroupedAggregateInputVariant::RootOutputIncludesGroupedAggregate)
-    {
-        root_spec = root_spec.with_output_projection(vec![
-            JoinOutputColumn::left(ColumnRef::input(0, "l_extendedprice", "l_extendedprice"), "l_extendedprice"),
-            JoinOutputColumn::right(ColumnRef::input(1, "avg_quantity", "avg_quantity"), "avg_quantity"),
-        ]);
-        Arc::clone(&root_output_with_grouped_aggregate_schema)
-    } else {
-        Arc::clone(&root_output_schema)
-    };
-    if !matches!(variant, Q17ResidentGroupedAggregateInputVariant::RootJoinWithoutResidual) {
-        let residual_right = if matches!(variant, Q17ResidentGroupedAggregateInputVariant::ResidualWithoutScaledAverage)
-        {
-            Expr::input_column(1, "avg_quantity", "avg_quantity")
-        } else if matches!(variant, Q17ResidentGroupedAggregateInputVariant::PreprojectedResidualWrongMultiplier) {
-            Expr::input_column(1, "scaled_avg_quantity", "scaled_avg_quantity")
+    let root_schema =
+        if matches!(variant, ResidualResidentGroupedAggregateInputVariant::RootOutputIncludesGroupedAggregate) {
+            root_spec = root_spec.with_output_projection(vec![
+                JoinOutputColumn::left(ColumnRef::input(0, "l_extendedprice", "l_extendedprice"), "l_extendedprice"),
+                JoinOutputColumn::right(ColumnRef::input(1, "avg_quantity", "avg_quantity"), "avg_quantity"),
+            ]);
+            Arc::clone(&root_output_with_grouped_aggregate_schema)
         } else {
-            let multiplier = if matches!(variant, Q17ResidentGroupedAggregateInputVariant::ResidualWrongMultiplier) {
-                2.0
-            } else {
-                0.2
-            };
-            Expr::binary(
-                Expr::input_column(1, "avg_quantity", "avg_quantity"),
-                BinaryOp::Multiply,
-                Expr::literal(LiteralValue::Float64(multiplier)),
-            )
+            Arc::clone(&root_output_schema)
         };
+    if !matches!(variant, ResidualResidentGroupedAggregateInputVariant::RootJoinWithoutResidual) {
+        let residual_right =
+            if matches!(variant, ResidualResidentGroupedAggregateInputVariant::ResidualWithoutScaledAverage) {
+                Expr::input_column(1, "avg_quantity", "avg_quantity")
+            } else if matches!(
+                variant,
+                ResidualResidentGroupedAggregateInputVariant::PreprojectedResidualWrongMultiplier
+            ) {
+                Expr::input_column(1, "scaled_avg_quantity", "scaled_avg_quantity")
+            } else {
+                let multiplier =
+                    if matches!(variant, ResidualResidentGroupedAggregateInputVariant::ResidualWrongMultiplier) {
+                        2.0
+                    } else {
+                        0.2
+                    };
+                Expr::binary(
+                    Expr::input_column(1, "avg_quantity", "avg_quantity"),
+                    BinaryOp::Multiply,
+                    Expr::literal(LiteralValue::Float64(multiplier)),
+                )
+            };
         root_spec = root_spec.with_residual_predicate(Expr::binary(
             Expr::input_column(0, "l_quantity", "l_quantity"),
             BinaryOp::Lt,
@@ -327,7 +335,7 @@ fn q17_shaped_resident_grouped_aggregate_input_plan(
         ));
     }
     let root = builder.add_join(joined_input, grouped_input, root_spec, root_schema);
-    let aggregate_input = if matches!(variant, Q17ResidentGroupedAggregateInputVariant::BareGlobalAggregateInput) {
+    let aggregate_input = if matches!(variant, ResidualResidentGroupedAggregateInputVariant::BareGlobalAggregateInput) {
         root
     } else {
         builder.add_projection(
@@ -343,7 +351,7 @@ fn q17_shaped_resident_grouped_aggregate_input_plan(
         AggregateSpec::new(
             Vec::new(),
             vec![AggregateExpr::new(
-                if matches!(variant, Q17ResidentGroupedAggregateInputVariant::GlobalAggregateNotSum) {
+                if matches!(variant, ResidualResidentGroupedAggregateInputVariant::GlobalAggregateNotSum) {
                     AggregateFunction::Count
                 } else {
                     AggregateFunction::Sum
@@ -368,7 +376,7 @@ fn q17_shaped_resident_grouped_aggregate_input_plan(
             Arc::clone(&output_schema),
         ),
     );
-    let output = if matches!(variant, Q17ResidentGroupedAggregateInputVariant::FinalSort) {
+    let output = if matches!(variant, ResidualResidentGroupedAggregateInputVariant::FinalSort) {
         builder.add_sort(
             projected,
             SortSpec::new(vec![SortExpr::new(Expr::column("avg_yearly"), false, false)]),

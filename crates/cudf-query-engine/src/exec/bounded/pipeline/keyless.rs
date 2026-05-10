@@ -13,7 +13,7 @@ use validate::{
     validate_bounded_keyless_conditional_join_input_subplan_capabilities,
 };
 
-use crate::bounded_support::{
+use crate::bounded::{
     BoundedJoinPipelineStage, analyze_bounded_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline,
     analyze_bounded_keyless_conditional_join_input_subplan_pipeline,
 };

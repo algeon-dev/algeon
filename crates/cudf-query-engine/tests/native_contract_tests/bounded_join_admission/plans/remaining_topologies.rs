@@ -1,14 +1,13 @@
 use super::*;
 
-pub(in crate::bounded_join_support) fn q02_shaped_aggregate_over_join_subplan_topk_plan() -> cudf_query_engine::QueryPlan
-{
+pub(in crate::bounded_join_admission) fn aggregate_over_join_subplan_topk_plan() -> cudf_query_engine::QueryPlan {
     let mut builder = QueryPlanBuilder::new();
-    let a = source(&mut builder, "q02-a");
-    let b = source(&mut builder, "q02-b");
-    let c = source(&mut builder, "q02-c");
-    let d = source(&mut builder, "q02-d");
-    let e = source(&mut builder, "q02-e");
-    let f = source(&mut builder, "q02-f");
+    let a = source(&mut builder, "aggregate-over-join-topk-a");
+    let b = source(&mut builder, "aggregate-over-join-topk-b");
+    let c = source(&mut builder, "aggregate-over-join-topk-c");
+    let d = source(&mut builder, "aggregate-over-join-topk-d");
+    let e = source(&mut builder, "aggregate-over-join-topk-e");
+    let f = source(&mut builder, "aggregate-over-join-topk-f");
 
     let ab = join(&mut builder, a, b, "ab");
     let abc = join(&mut builder, ab, c, "abc");
@@ -26,13 +25,13 @@ pub(in crate::bounded_join_support) fn q02_shaped_aggregate_over_join_subplan_to
     builder.finish_with_host_sink(sort)
 }
 
-pub(in crate::bounded_join_support) fn q18_shaped_grouped_aggregate_input_post_join_aggregate_topk_plan()
+pub(in crate::bounded_join_admission) fn resident_grouped_aggregate_input_post_join_aggregate_topk_plan()
 -> cudf_query_engine::QueryPlan {
     let mut builder = QueryPlanBuilder::new();
-    let a = source(&mut builder, "q18-a");
-    let b = source(&mut builder, "q18-b");
-    let c = source(&mut builder, "q18-c");
-    let lineitem = source(&mut builder, "q18-lineitem");
+    let a = source(&mut builder, "resident-aggregate-post-aggregate-topk-a");
+    let b = source(&mut builder, "resident-aggregate-post-aggregate-topk-b");
+    let c = source(&mut builder, "resident-aggregate-post-aggregate-topk-c");
+    let lineitem = source(&mut builder, "resident-aggregate-post-aggregate-topk-lineitem");
 
     let grouped_input = grouped_aggregate(&mut builder, lineitem);
     let ab = join(&mut builder, a, b, "ab");
@@ -48,14 +47,14 @@ pub(in crate::bounded_join_support) fn q18_shaped_grouped_aggregate_input_post_j
     builder.finish_with_host_sink(sort)
 }
 
-pub(in crate::bounded_join_support) fn q20_shaped_grouped_aggregate_subquery_filter_plan()
+pub(in crate::bounded_join_admission) fn resident_grouped_aggregate_subquery_filter_plan()
 -> cudf_query_engine::QueryPlan {
     let mut builder = QueryPlanBuilder::new();
-    let a = source(&mut builder, "q20-a");
-    let b = source(&mut builder, "q20-b");
-    let c = source(&mut builder, "q20-c");
-    let d = source(&mut builder, "q20-d");
-    let lineitem = source(&mut builder, "q20-lineitem");
+    let a = source(&mut builder, "resident-aggregate-subquery-filter-a");
+    let b = source(&mut builder, "resident-aggregate-subquery-filter-b");
+    let c = source(&mut builder, "resident-aggregate-subquery-filter-c");
+    let d = source(&mut builder, "resident-aggregate-subquery-filter-d");
+    let lineitem = source(&mut builder, "resident-aggregate-subquery-filter-lineitem");
 
     let left_tree = join(&mut builder, a, b, "left_tree");
     let grouped_input = grouped_aggregate(&mut builder, lineitem);

@@ -97,8 +97,10 @@ fn native_plan_can_represent_gpu_resident_fragment_input() {
     let output_schema = Arc::new(Schema::new(vec![Field::new("sum_x00", DataType::Int64, true)]));
 
     let mut builder = QueryPlanBuilder::new();
-    let source =
-        builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("q1_partial", Arc::clone(&input_schema))));
+    let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new(
+        "partial_aggregate_input",
+        Arc::clone(&input_schema),
+    )));
     let projection = builder.add_projection(source, projection_outputs(vec![Expr::column("sum_x00")], output_schema));
     let plan = builder.finish_with_host_sink(projection);
 
@@ -107,7 +109,7 @@ fn native_plan_can_represent_gpu_resident_fragment_input() {
     assert_eq!(plan.node(source).unwrap().facts.placement, DataPlacement::Device);
     assert_eq!(plan.node(source).unwrap().facts.schema_behavior, SchemaBehavior::SourceOutput);
     assert!(matches!(plan.node(source).unwrap().kind, PlanNode::Source(_)));
-    assert!(plan.to_string().contains("GpuResidentSource input_name=q1_partial"));
+    assert!(plan.to_string().contains("GpuResidentSource input_name=partial_aggregate_input"));
     assert!(plan.to_string().contains("Sink id=sink input=n1 mode=host_arrow materialization=device_to_host"));
 }
 

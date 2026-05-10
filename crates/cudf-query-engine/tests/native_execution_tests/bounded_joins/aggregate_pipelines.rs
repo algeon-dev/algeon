@@ -105,13 +105,13 @@ fn bounded_native_query_executes_root_hash_join_under_aggregate_with_ordered_res
 }
 
 #[test]
-fn bounded_native_query_executes_q13_like_serial_aggregate_join_spine() {
+fn bounded_native_query_executes_serial_aggregate_join_spine() {
     let runtime = Arc::new(cudf::Runtime::new().unwrap());
-    let dir = unique_temp_dir("cudf-query-engine-bounded-q13-like-spine");
+    let dir = unique_temp_dir("cudf-query-engine-bounded-serial-aggregate-spine");
     let customer_path = dir.join("customer.parquet");
     let orders_path = dir.join("orders.parquet");
-    let customer_schema = write_q13_customer_parquet(&runtime, &customer_path);
-    let orders_schema = write_q13_orders_parquet(&runtime, &orders_path);
+    let customer_schema = write_customer_order_count_customer_parquet(&runtime, &customer_path);
+    let orders_schema = write_customer_order_count_orders_parquet(&runtime, &orders_path);
     let join_schema = Arc::new(Schema::new(vec![
         Field::new("c_custkey", DataType::Int32, false),
         Field::new("o_orderkey", DataType::Int32, true),

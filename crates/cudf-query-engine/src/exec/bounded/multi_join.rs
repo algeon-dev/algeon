@@ -1,7 +1,5 @@
 use super::*;
-use crate::bounded_support::{
-    BoundedJoinPipelineStage, analyze_bounded_multi_join_pipeline, bounded_multi_join_compatible,
-};
+use crate::bounded::{BoundedJoinPipelineStage, analyze_bounded_multi_join_pipeline, bounded_multi_join_compatible};
 
 pub(super) fn execute_bounded_multi_join_pipeline_query_plan(
     context: &ExecutionContext,

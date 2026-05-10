@@ -1,20 +1,20 @@
 use super::*;
 
-#[path = "bounded_join_support/mixed_residual.rs"]
+#[path = "bounded_join_admission/aggregate_over_join_subplans.rs"]
+mod aggregate_over_join_subplans;
+#[path = "bounded_join_admission/mixed_residual.rs"]
 mod mixed_residual;
-#[path = "bounded_join_support/plans.rs"]
+#[path = "bounded_join_admission/plans.rs"]
 mod plans;
-#[path = "bounded_join_support/q11_aggregate_subplans.rs"]
-mod q11_aggregate_subplans;
-#[path = "bounded_join_support/q17_resident.rs"]
-mod q17_resident;
-#[path = "bounded_join_support/reservation_contract.rs"]
+#[path = "bounded_join_admission/reservation_contract.rs"]
 mod reservation_contract;
+#[path = "bounded_join_admission/residual_resident_grouped_aggregate.rs"]
+mod residual_resident_grouped_aggregate;
 use plans::*;
 
 #[test]
-fn bounded_single_join_pipeline_admits_q13_shaped_serial_aggregate_spine() {
-    let plan = q13_shaped_serial_aggregate_spine_plan();
+fn bounded_single_join_pipeline_admits_serial_aggregate_spine() {
+    let plan = serial_aggregate_single_join_spine_plan();
 
     assert!(!plan.has_bounded_executable_root_join());
     assert!(plan.has_bounded_executable_join_pipeline());
@@ -24,7 +24,7 @@ fn bounded_single_join_pipeline_admits_q13_shaped_serial_aggregate_spine() {
 
 #[test]
 fn bounded_multi_join_pipeline_admits_serial_aggregate_spine_with_projection_and_sort() {
-    let plan = q16_shaped_serial_aggregate_multi_join_spine_plan();
+    let plan = serial_aggregate_multi_join_spine_plan();
 
     assert!(!plan.has_bounded_executable_root_join());
     assert!(!plan.has_bounded_executable_join_pipeline());
@@ -78,7 +78,7 @@ fn bounded_keyed_hash_join_resident_subplan_pipeline_is_executable_with_modeled_
     }));
     let reservation_requirements = facts
         .get("bounded_join_reservation_requirements")
-        .expect("q15-like blocked family should report shape-local reservation requirements");
+        .expect("resident-revenue blocked family should report shape-local reservation requirements");
     assert!(
         reservation_requirements
             .contains("source_read:source_contract:modeled_by_cudf_rs_hard_budgeted_report_with_unresolved_preflight")
@@ -132,7 +132,7 @@ fn bounded_keyed_hash_join_resident_subplan_pipeline_recognizer_stays_narrow() {
         assert_ne!(
             facts.get("bounded_join_blocked_join_family").map(String::as_str),
             Some("keyed_hash_join_resident_subplan_pipeline"),
-            "{variant:?} must not be classified as the blocked q15-like family"
+            "{variant:?} must not be classified as the blocked resident-revenue family"
         );
         assert_eq!(facts.get("bounded_join_lower_level_blockers").map(String::as_str), Some(""));
     }
@@ -142,17 +142,17 @@ fn bounded_keyed_hash_join_resident_subplan_pipeline_recognizer_stays_narrow() {
 fn bounded_remaining_tpch_topologies_report_structural_blockers_without_admission() {
     for (plan, expected_family, expected_blocker) in [
         (
-            q02_shaped_aggregate_over_join_subplan_topk_plan(),
+            aggregate_over_join_subplan_topk_plan(),
             "multi_join_with_aggregate_over_join_subplan_topk",
             "bounded_multi_join_aggregate_over_join_subplan_topk_executor_missing",
         ),
         (
-            q18_shaped_grouped_aggregate_input_post_join_aggregate_topk_plan(),
+            resident_grouped_aggregate_input_post_join_aggregate_topk_plan(),
             "hash_join_with_resident_grouped_aggregate_input_post_join_aggregate_topk",
             "bounded_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_executor_missing",
         ),
         (
-            q20_shaped_grouped_aggregate_subquery_filter_plan(),
+            resident_grouped_aggregate_subquery_filter_plan(),
             "multi_join_with_resident_grouped_aggregate_subquery_filter",
             "bounded_multi_join_resident_grouped_aggregate_subquery_filter_executor_missing",
         ),
@@ -184,8 +184,8 @@ fn bounded_remaining_tpch_topologies_report_structural_blockers_without_admissio
 }
 
 #[test]
-fn bounded_keyless_conditional_join_input_subplan_pipeline_admits_only_q22_bounded_shapes() {
-    let plan = q22_keyless_conditional_join_input_subplan_plan(Q22InputSubplanVariant::Admitted);
+fn bounded_keyless_conditional_join_input_subplan_pipeline_admits_only_keyless_input_subplan_bounded_shapes() {
+    let plan = keyless_conditional_join_input_subplan_plan(KeylessInputSubplanVariant::Admitted);
 
     assert!(!plan.has_bounded_executable_root_join());
     assert!(!plan.has_bounded_executable_join_pipeline());
@@ -195,14 +195,14 @@ fn bounded_keyless_conditional_join_input_subplan_pipeline_admits_only_q22_bound
     assert!(plan.bounded_join_unsupported_shape_facts(ExecutionBoundaryPolicy::default()).is_none());
 
     for variant in [
-        Q22InputSubplanVariant::GroupedAggregate,
-        Q22InputSubplanVariant::SortInput,
-        Q22InputSubplanVariant::LimitInput,
-        Q22InputSubplanVariant::BareLeftAntiInput,
-        Q22InputSubplanVariant::InnerJoinInput,
-        Q22InputSubplanVariant::NestedJoinInput,
+        KeylessInputSubplanVariant::GroupedAggregate,
+        KeylessInputSubplanVariant::SortInput,
+        KeylessInputSubplanVariant::LimitInput,
+        KeylessInputSubplanVariant::BareLeftAntiInput,
+        KeylessInputSubplanVariant::InnerJoinInput,
+        KeylessInputSubplanVariant::NestedJoinInput,
     ] {
-        let plan = q22_keyless_conditional_join_input_subplan_plan(variant);
+        let plan = keyless_conditional_join_input_subplan_plan(variant);
 
         assert!(!plan.has_bounded_executable_root_join(), "{variant:?}");
         assert!(!plan.has_bounded_executable_join_pipeline(), "{variant:?}");
@@ -214,7 +214,7 @@ fn bounded_keyless_conditional_join_input_subplan_pipeline_admits_only_q22_bound
         assert!(!plan.has_bounded_executable_multi_join_pipeline(), "{variant:?}");
         let facts = plan
             .bounded_join_unsupported_shape_facts(ExecutionBoundaryPolicy::default())
-            .expect("unsupported Q22-like subplan shape should produce facts");
+            .expect("unsupported keyless input-subplan subplan shape should produce facts");
         assert_eq!(
             facts.get("bounded_join_keyless_conditional_join_input_subplan_pipeline_capability").map(String::as_str),
             Some("keyless_conditional_join_input_subplan_pipeline")

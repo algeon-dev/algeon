@@ -1,5 +1,5 @@
 use super::*;
-use crate::bounded_support::{
+use crate::bounded::{
     BoundedJoinPipelineRejection, BoundedJoinPipelineStage, analyze_bounded_join_pipeline,
     analyze_bounded_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline,
     analyze_keyed_hash_join_resident_subplan_pipeline,
@@ -282,7 +282,7 @@ fn execute_bounded_keyed_hash_join_resident_subplan_pipeline_query_plan_inner(
 fn execute_bounded_keyed_hash_join_resident_supplier_revenue_branch(
     context: &ExecutionContext,
     plan: &QueryPlan,
-    branch: &crate::bounded_support::BoundedKeyedHashJoinResidentSupplierRevenueBranchShape<'_>,
+    branch: &crate::bounded::BoundedKeyedHashJoinResidentSupplierRevenueBranchShape<'_>,
     grouped_aggregate: &BoundedPlan<'_>,
     gpu_inputs: &GpuResidentInputMap,
     reservations: &mut ReservationTracker,
@@ -306,7 +306,7 @@ fn execute_bounded_keyed_hash_join_resident_supplier_revenue_branch(
 
 fn execute_bounded_keyed_hash_join_resident_scalar_max_branch(
     context: &ExecutionContext,
-    branch: &crate::bounded_support::BoundedKeyedHashJoinResidentScalarMaxBranchShape<'_>,
+    branch: &crate::bounded::BoundedKeyedHashJoinResidentScalarMaxBranchShape<'_>,
     grouped_aggregate: &BoundedPlan<'_>,
     reservations: &mut ReservationTracker,
     metrics: &mut QueryMetrics,

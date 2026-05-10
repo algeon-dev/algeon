@@ -1,7 +1,7 @@
 use super::*;
 
 #[derive(Debug, Clone, Copy)]
-pub(in crate::bounded_join_support) enum KeyedHashJoinResidentSubplanPipelineVariant {
+pub(in crate::bounded_join_admission) enum KeyedHashJoinResidentSubplanPipelineVariant {
     BlockedFamily,
     ResidualRootJoin,
     SortBelowRoot,
@@ -9,7 +9,7 @@ pub(in crate::bounded_join_support) enum KeyedHashJoinResidentSubplanPipelineVar
     GroupedAggregateNotSum,
 }
 
-pub(in crate::bounded_join_support) fn keyed_hash_join_resident_subplan_pipeline_plan(
+pub(in crate::bounded_join_admission) fn keyed_hash_join_resident_subplan_pipeline_plan(
     variant: KeyedHashJoinResidentSubplanPipelineVariant,
 ) -> cudf_query_engine::QueryPlan {
     let supplier_schema = Arc::new(Schema::new(vec![

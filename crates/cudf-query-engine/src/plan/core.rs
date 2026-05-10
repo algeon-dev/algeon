@@ -95,7 +95,7 @@ impl QueryPlan {
 
     /// Returns true when the plan matches the supported bounded multi-join pipeline.
     pub fn has_bounded_executable_multi_join_pipeline(&self) -> bool {
-        crate::bounded_support::analyze_bounded_multi_join_pipeline(self).is_ok()
+        crate::bounded::analyze_bounded_multi_join_pipeline(self).is_ok()
     }
 
     /// Returns true when the plan matches the supported keyed-residual join

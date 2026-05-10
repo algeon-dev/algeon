@@ -54,18 +54,21 @@ fn analyze_keyed_hash_join_resident_subplan_pipeline_sides<'a>(
     if !join_has_one_key_with_roles_by_side(
         root_join,
         supplier_revenue_side,
-        Q15Role::TotalRevenue,
-        Q15Role::MaxRevenue,
+        ResidentRevenueRole::TotalRevenue,
+        ResidentRevenueRole::MaxRevenue,
     ) {
         return Err(BoundedJoinPipelineRejection::UnsupportedJoin { join: root_join });
     }
-    if !root_join_outputs_expected_q15_supplier_roles(plan, root_join, supplier_revenue_side) {
+    if !root_join_outputs_expected_resident_revenue_supplier_roles(plan, root_join, supplier_revenue_side) {
         return Err(BoundedJoinPipelineRejection::UnsupportedJoin { join: root_join });
     }
 
-    let supplier_revenue =
-        analyze_q15_supplier_revenue_branch(plan, root_join.inputs[join_side_index(supplier_revenue_side)])?;
-    let scalar_max = analyze_q15_scalar_max_revenue_branch(plan, root_join.inputs[join_side_index(scalar_max_side)])?;
+    let supplier_revenue = analyze_resident_revenue_supplier_revenue_branch(
+        plan,
+        root_join.inputs[join_side_index(supplier_revenue_side)],
+    )?;
+    let scalar_max =
+        analyze_resident_revenue_scalar_max_revenue_branch(plan, root_join.inputs[join_side_index(scalar_max_side)])?;
     Ok(BoundedKeyedHashJoinResidentSubplanPipelineShape {
         final_sort_id,
         final_sort,
@@ -88,7 +91,7 @@ fn final_sort_root_join_input(
     let PlanNode::Sort(sort) = &node.kind else {
         return Err(BoundedJoinPipelineRejection::UnsupportedShapeNode {
             node_id: final_sort_id,
-            node_kind: bounded_q15_node_kind(&node.kind),
+            node_kind: bounded_resident_revenue_node_kind(&node.kind),
         });
     };
     Ok((final_sort_id, sort, sort.input))
@@ -98,10 +101,10 @@ fn final_sort_is_ascending_supplier_key(sort: &SortNode) -> bool {
     let [sort_expr] = sort.spec.expressions.as_slice() else {
         return false;
     };
-    !sort_expr.descending && expr_has_role(&sort_expr.expr, Q15Role::SupplierKey)
+    !sort_expr.descending && expr_has_role(&sort_expr.expr, ResidentRevenueRole::SupplierKey)
 }
 
-fn root_join_outputs_expected_q15_supplier_roles(
+fn root_join_outputs_expected_resident_revenue_supplier_roles(
     plan: &QueryPlan,
     join: &JoinNode,
     supplier_revenue_side: JoinSide,
@@ -118,26 +121,27 @@ fn root_join_outputs_expected_q15_supplier_roles(
         return false;
     };
     let projected_roles =
-        join.spec.output_projection.iter().filter_map(q15_role_for_join_output_column).collect::<Vec<_>>();
+        join.spec.output_projection.iter().filter_map(resident_revenue_role_for_join_output_column).collect::<Vec<_>>();
     if projected_roles.len() != join.spec.output_projection.len()
-        || !projected_roles.contains(&Q15Role::SupplierKey)
-        || !projected_roles.contains(&Q15Role::TotalRevenue)
+        || !projected_roles.contains(&ResidentRevenueRole::SupplierKey)
+        || !projected_roles.contains(&ResidentRevenueRole::TotalRevenue)
     {
         return false;
     }
 
-    [Q15Role::SupplierName, Q15Role::SupplierAddress, Q15Role::SupplierPhone]
+    [ResidentRevenueRole::SupplierName, ResidentRevenueRole::SupplierAddress, ResidentRevenueRole::SupplierPhone]
         .iter()
         .all(|role| !schema_has_role(supplier_input_schema, *role) || projected_roles.contains(role))
 }
 
-fn analyze_q15_supplier_revenue_branch(
+fn analyze_resident_revenue_supplier_revenue_branch(
     plan: &QueryPlan,
     node_id: NodeId,
 ) -> std::result::Result<BoundedKeyedHashJoinResidentSupplierRevenueBranchShape<'_>, BoundedJoinPipelineRejection<'_>> {
-    let (join_id, projection_stages) = peel_q15_projection_stages(plan, node_id, 2)?;
+    let (join_id, projection_stages) = peel_resident_revenue_projection_stages(plan, node_id, 2)?;
     let Some(join) = join_node(plan, join_id) else {
-        let node_kind = plan.node(join_id).map(|node| bounded_q15_node_kind(&node.kind)).unwrap_or("missing");
+        let node_kind =
+            plan.node(join_id).map(|node| bounded_resident_revenue_node_kind(&node.kind)).unwrap_or("missing");
         return Err(BoundedJoinPipelineRejection::UnsupportedShapeNode { node_id: join_id, node_kind });
     };
 
@@ -145,9 +149,9 @@ fn analyze_q15_supplier_revenue_branch(
         return Err(BoundedJoinPipelineRejection::UnsupportedJoin { join });
     }
 
-    if join_has_one_key_with_roles(join, Q15Role::SupplierKey, Q15Role::RevenueSupplierNo)
+    if join_has_one_key_with_roles(join, ResidentRevenueRole::SupplierKey, ResidentRevenueRole::RevenueSupplierNo)
         && validate_source_filter_projection_leaf_pipeline(plan, join.inputs[0])
-        && validate_q15_projection_wrapped_grouped_revenue_aggregate(plan, join.inputs[1])
+        && validate_resident_revenue_projection_wrapped_grouped_revenue_aggregate(plan, join.inputs[1])
     {
         return Ok(BoundedKeyedHashJoinResidentSupplierRevenueBranchShape {
             join_id,
@@ -157,8 +161,8 @@ fn analyze_q15_supplier_revenue_branch(
             projection_stages,
         });
     }
-    if join_has_one_key_with_roles(join, Q15Role::RevenueSupplierNo, Q15Role::SupplierKey)
-        && validate_q15_projection_wrapped_grouped_revenue_aggregate(plan, join.inputs[0])
+    if join_has_one_key_with_roles(join, ResidentRevenueRole::RevenueSupplierNo, ResidentRevenueRole::SupplierKey)
+        && validate_resident_revenue_projection_wrapped_grouped_revenue_aggregate(plan, join.inputs[0])
         && validate_source_filter_projection_leaf_pipeline(plan, join.inputs[1])
     {
         return Ok(BoundedKeyedHashJoinResidentSupplierRevenueBranchShape {
@@ -173,12 +177,13 @@ fn analyze_q15_supplier_revenue_branch(
     Err(BoundedJoinPipelineRejection::UnsupportedJoin { join })
 }
 
-fn analyze_q15_scalar_max_revenue_branch(
+fn analyze_resident_revenue_scalar_max_revenue_branch(
     plan: &QueryPlan,
     node_id: NodeId,
 ) -> std::result::Result<BoundedKeyedHashJoinResidentScalarMaxBranchShape<'_>, BoundedJoinPipelineRejection<'_>> {
     let Some(scalar_aggregate) = aggregate_node(plan, node_id) else {
-        let node_kind = plan.node(node_id).map(|node| bounded_q15_node_kind(&node.kind)).unwrap_or("missing");
+        let node_kind =
+            plan.node(node_id).map(|node| bounded_resident_revenue_node_kind(&node.kind)).unwrap_or("missing");
         return Err(BoundedJoinPipelineRejection::UnsupportedShapeNode { node_id, node_kind });
     };
     if !scalar_aggregate.spec.group_exprs.is_empty() {
@@ -187,7 +192,8 @@ fn analyze_q15_scalar_max_revenue_branch(
     let [aggregate_expr] = scalar_aggregate.spec.aggr_exprs.as_slice() else {
         return Err(BoundedJoinPipelineRejection::UnsupportedShapeNode { node_id, node_kind: "aggregate" });
     };
-    let (grouped_aggregate_id, projection_stages) = peel_q15_projection_stages(plan, scalar_aggregate.input, 2)?;
+    let (grouped_aggregate_id, projection_stages) =
+        peel_resident_revenue_projection_stages(plan, scalar_aggregate.input, 2)?;
     if projection_stages.is_empty() {
         return Err(BoundedJoinPipelineRejection::UnsupportedShapeNode {
             node_id: scalar_aggregate.input,
@@ -195,9 +201,12 @@ fn analyze_q15_scalar_max_revenue_branch(
         });
     }
     if aggregate_expr.function != AggregateFunction::Max
-        || !expr_has_any_role(&aggregate_expr.expr, &[Q15Role::TotalRevenue, Q15Role::RevenueMeasure])
+        || !expr_has_any_role(
+            &aggregate_expr.expr,
+            &[ResidentRevenueRole::TotalRevenue, ResidentRevenueRole::RevenueMeasure],
+        )
         || aggregate_node(plan, grouped_aggregate_id)
-            .is_none_or(|aggregate| !validate_q15_grouped_revenue_aggregate(plan, aggregate))
+            .is_none_or(|aggregate| !validate_resident_revenue_grouped_revenue_aggregate(plan, aggregate))
         || !aggregate_node(plan, grouped_aggregate_id)
             .is_some_and(|aggregate| validate_source_filter_projection_leaf_pipeline(plan, aggregate.input))
     {
@@ -221,7 +230,7 @@ fn analyze_q15_scalar_max_revenue_branch(
     })
 }
 
-fn peel_q15_projection_stages(
+fn peel_resident_revenue_projection_stages(
     plan: &QueryPlan,
     node_id: NodeId,
     max_projection_count: usize,
@@ -255,7 +264,7 @@ fn peel_q15_projection_stages(
     Ok((current, stages))
 }
 
-fn bounded_q15_node_kind(node: &PlanNode) -> &'static str {
+fn bounded_resident_revenue_node_kind(node: &PlanNode) -> &'static str {
     match node {
         PlanNode::Source(_) => "source",
         PlanNode::Filter(_) => "filter",
@@ -269,16 +278,16 @@ fn bounded_q15_node_kind(node: &PlanNode) -> &'static str {
 
 fn projection_stage_node_id(stage: &BoundedJoinPipelineStage<'_>) -> NodeId {
     let BoundedJoinPipelineStage::Projection { node_id, .. } = stage else {
-        unreachable!("q15 projection chain contains only projection stages")
+        unreachable!("resident revenue projection chain contains only projection stages")
     };
     *node_id
 }
 
-fn validate_q15_projection_wrapped_grouped_revenue_aggregate(plan: &QueryPlan, node_id: NodeId) -> bool {
-    validate_q15_projected_grouped_revenue_aggregate(plan, node_id, 1, 1)
+fn validate_resident_revenue_projection_wrapped_grouped_revenue_aggregate(plan: &QueryPlan, node_id: NodeId) -> bool {
+    validate_resident_revenue_projected_grouped_revenue_aggregate(plan, node_id, 1, 1)
 }
 
-fn validate_q15_projected_grouped_revenue_aggregate(
+fn validate_resident_revenue_projected_grouped_revenue_aggregate(
     plan: &QueryPlan,
     node_id: NodeId,
     min_projection_count: usize,
@@ -293,21 +302,21 @@ fn validate_q15_projected_grouped_revenue_aggregate(
     let Some(aggregate) = aggregate_node(plan, aggregate_id) else {
         return false;
     };
-    projection_chain_outputs_role(plan, node_id, max_projection_count, Q15Role::TotalRevenue)
-        && validate_q15_grouped_revenue_aggregate(plan, aggregate)
+    projection_chain_outputs_role(plan, node_id, max_projection_count, ResidentRevenueRole::TotalRevenue)
+        && validate_resident_revenue_grouped_revenue_aggregate(plan, aggregate)
         && validate_source_filter_projection_leaf_pipeline(plan, aggregate.input)
 }
 
-fn validate_q15_grouped_revenue_aggregate(plan: &QueryPlan, aggregate: &AggregateNode) -> bool {
+fn validate_resident_revenue_grouped_revenue_aggregate(plan: &QueryPlan, aggregate: &AggregateNode) -> bool {
     let [group_expr] = aggregate.spec.group_exprs.as_slice() else {
         return false;
     };
     let [aggregate_expr] = aggregate.spec.aggr_exprs.as_slice() else {
         return false;
     };
-    expr_has_any_role(group_expr, &[Q15Role::RevenueSupplierNo, Q15Role::SupplierKey])
+    expr_has_any_role(group_expr, &[ResidentRevenueRole::RevenueSupplierNo, ResidentRevenueRole::SupplierKey])
         && aggregate_expr.function == AggregateFunction::Sum
-        && aggregate_argument_has_role(plan, aggregate, &aggregate_expr.expr, Q15Role::RevenueMeasure)
+        && aggregate_argument_has_role(plan, aggregate, &aggregate_expr.expr, ResidentRevenueRole::RevenueMeasure)
 }
 
 fn keyed_inner_hash_join_without_residual(join: &JoinNode) -> bool {
@@ -317,7 +326,11 @@ fn keyed_inner_hash_join_without_residual(join: &JoinNode) -> bool {
         && !join.spec.output_projection.is_empty()
 }
 
-fn join_has_one_key_with_roles(join: &JoinNode, left_role: Q15Role, right_role: Q15Role) -> bool {
+fn join_has_one_key_with_roles(
+    join: &JoinNode,
+    left_role: ResidentRevenueRole,
+    right_role: ResidentRevenueRole,
+) -> bool {
     let [key] = join.spec.keys.as_slice() else {
         return false;
     };
@@ -327,8 +340,8 @@ fn join_has_one_key_with_roles(join: &JoinNode, left_role: Q15Role, right_role: 
 fn join_has_one_key_with_roles_by_side(
     join: &JoinNode,
     supplier_revenue_side: JoinSide,
-    supplier_revenue_role: Q15Role,
-    scalar_max_role: Q15Role,
+    supplier_revenue_role: ResidentRevenueRole,
+    scalar_max_role: ResidentRevenueRole,
 ) -> bool {
     match supplier_revenue_side {
         JoinSide::Left => join_has_one_key_with_roles(join, supplier_revenue_role, scalar_max_role),
@@ -343,7 +356,12 @@ fn join_side_index(side: JoinSide) -> usize {
     }
 }
 
-fn aggregate_argument_has_role(plan: &QueryPlan, aggregate: &AggregateNode, expr: &Expr, role: Q15Role) -> bool {
+fn aggregate_argument_has_role(
+    plan: &QueryPlan,
+    aggregate: &AggregateNode,
+    expr: &Expr,
+    role: ResidentRevenueRole,
+) -> bool {
     if expr_has_role(expr, role) {
         return true;
     }
@@ -353,7 +371,12 @@ fn aggregate_argument_has_role(plan: &QueryPlan, aggregate: &AggregateNode, expr
     projection_defines_column_with_role(plan, aggregate.input, column, role)
 }
 
-fn projection_defines_column_with_role(plan: &QueryPlan, node_id: NodeId, column: &ColumnRef, role: Q15Role) -> bool {
+fn projection_defines_column_with_role(
+    plan: &QueryPlan,
+    node_id: NodeId,
+    column: &ColumnRef,
+    role: ResidentRevenueRole,
+) -> bool {
     let Some(projection) = projection_node(plan, node_id) else {
         return false;
     };
@@ -364,7 +387,7 @@ fn projection_chain_outputs_role(
     plan: &QueryPlan,
     node_id: NodeId,
     max_projection_count: usize,
-    role: Q15Role,
+    role: ResidentRevenueRole,
 ) -> bool {
     let mut current = node_id;
     let mut projection_count = 0;
@@ -382,7 +405,7 @@ fn projection_chain_outputs_role(
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Q15Role {
+enum ResidentRevenueRole {
     SupplierKey,
     SupplierName,
     SupplierAddress,
@@ -393,15 +416,15 @@ enum Q15Role {
     MaxRevenue,
 }
 
-fn q15_role_for_join_output_column(column: &crate::plan::JoinOutputColumn) -> Option<Q15Role> {
-    q15_role_for_names([column.output_name.as_str(), column.column.display_name(), column.column.name()])
+fn resident_revenue_role_for_join_output_column(column: &crate::plan::JoinOutputColumn) -> Option<ResidentRevenueRole> {
+    resident_revenue_role_for_names([column.output_name.as_str(), column.column.display_name(), column.column.name()])
 }
 
-fn schema_has_role(schema: &SchemaRef, role: Q15Role) -> bool {
+fn schema_has_role(schema: &SchemaRef, role: ResidentRevenueRole) -> bool {
     schema.fields().iter().any(|field| name_has_role(field.name(), role))
 }
 
-fn expr_has_any_role(expr: &Expr, roles: &[Q15Role]) -> bool {
+fn expr_has_any_role(expr: &Expr, roles: &[ResidentRevenueRole]) -> bool {
     roles.iter().any(|role| expr_has_role(expr, *role))
 }
 
@@ -409,7 +432,7 @@ fn expr_output_name_matches_column(expr: &Expr, column: &ColumnRef) -> bool {
     expr_output_name(expr).is_some_and(|name| name == column.display_name() || name == column.name())
 }
 
-fn expr_output_has_role(expr: &Expr, role: Q15Role) -> bool {
+fn expr_output_has_role(expr: &Expr, role: ResidentRevenueRole) -> bool {
     expr_output_name(expr).is_some_and(|name| name_has_role(name, role))
 }
 
@@ -421,7 +444,7 @@ fn expr_output_name(expr: &Expr) -> Option<&str> {
     }
 }
 
-fn expr_has_role(expr: &Expr, role: Q15Role) -> bool {
+fn expr_has_role(expr: &Expr, role: ResidentRevenueRole) -> bool {
     match expr {
         Expr::Column(column) => column_has_role(column, role),
         Expr::Alias { expr, alias } => name_has_role(alias, role) || expr_has_role(expr, role),
@@ -444,28 +467,29 @@ fn expr_has_role(expr: &Expr, role: Q15Role) -> bool {
     }
 }
 
-fn column_has_role(column: &ColumnRef, role: Q15Role) -> bool {
-    q15_role_for_names([column.display_name(), column.name()]).is_some_and(|column_role| column_role == role)
+fn column_has_role(column: &ColumnRef, role: ResidentRevenueRole) -> bool {
+    resident_revenue_role_for_names([column.display_name(), column.name()])
+        .is_some_and(|column_role| column_role == role)
 }
 
-fn name_has_role(name: &str, role: Q15Role) -> bool {
-    q15_role_for_name(name).is_some_and(|name_role| name_role == role)
+fn name_has_role(name: &str, role: ResidentRevenueRole) -> bool {
+    resident_revenue_role_for_name(name).is_some_and(|name_role| name_role == role)
 }
 
-fn q15_role_for_names<'a>(names: impl IntoIterator<Item = &'a str>) -> Option<Q15Role> {
-    names.into_iter().find_map(q15_role_for_name)
+fn resident_revenue_role_for_names<'a>(names: impl IntoIterator<Item = &'a str>) -> Option<ResidentRevenueRole> {
+    names.into_iter().find_map(resident_revenue_role_for_name)
 }
 
-fn q15_role_for_name(name: &str) -> Option<Q15Role> {
+fn resident_revenue_role_for_name(name: &str) -> Option<ResidentRevenueRole> {
     match normalized_role_name_without_disambiguator(name).as_str() {
-        "ssuppkey" | "suppkey" | "supplierkey" => Some(Q15Role::SupplierKey),
-        "sname" | "suppliername" => Some(Q15Role::SupplierName),
-        "saddress" | "supplieraddress" => Some(Q15Role::SupplierAddress),
-        "sphone" | "supplierphone" => Some(Q15Role::SupplierPhone),
-        "supplierno" | "revenuesupplierno" | "lsuppkey" => Some(Q15Role::RevenueSupplierNo),
-        "revenue" | "revenueamount" | "extendedprice" | "lextendedprice" => Some(Q15Role::RevenueMeasure),
-        "totalrevenue" => Some(Q15Role::TotalRevenue),
-        "maxrevenue" | "maximumrevenue" | "maxrevenuetotalrevenue" => Some(Q15Role::MaxRevenue),
+        "ssuppkey" | "suppkey" | "supplierkey" => Some(ResidentRevenueRole::SupplierKey),
+        "sname" | "suppliername" => Some(ResidentRevenueRole::SupplierName),
+        "saddress" | "supplieraddress" => Some(ResidentRevenueRole::SupplierAddress),
+        "sphone" | "supplierphone" => Some(ResidentRevenueRole::SupplierPhone),
+        "supplierno" | "revenuesupplierno" | "lsuppkey" => Some(ResidentRevenueRole::RevenueSupplierNo),
+        "revenue" | "revenueamount" | "extendedprice" | "lextendedprice" => Some(ResidentRevenueRole::RevenueMeasure),
+        "totalrevenue" => Some(ResidentRevenueRole::TotalRevenue),
+        "maxrevenue" | "maximumrevenue" | "maxrevenuetotalrevenue" => Some(ResidentRevenueRole::MaxRevenue),
         _ => None,
     }
 }

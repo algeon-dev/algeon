@@ -40,7 +40,7 @@ pub(super) fn write_join_left_parquet(runtime: &cudf::Runtime, path: &std::path:
     schema
 }
 
-pub(super) fn write_q11_partsupp_parquet(
+pub(super) fn write_supplier_cost_partsupp_parquet(
     runtime: &cudf::Runtime,
     path: &std::path::Path,
     partkeys: &[i32],
@@ -65,7 +65,7 @@ pub(super) fn write_q11_partsupp_parquet(
     schema
 }
 
-pub(super) fn write_q11_supplier_parquet(runtime: &cudf::Runtime, path: &std::path::Path) -> Arc<Schema> {
+pub(super) fn write_supplier_cost_supplier_parquet(runtime: &cudf::Runtime, path: &std::path::Path) -> Arc<Schema> {
     let schema = Arc::new(Schema::new(vec![Field::new("s_suppkey", DataType::Int32, false)]));
     let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int32Array::from(vec![10, 20, 30]))]).unwrap();
     DataFrame::from_record_batch(runtime, &batch).unwrap().write_parquet(path).unwrap();
@@ -227,14 +227,20 @@ pub(super) fn write_join_right_keys_parquet(
     schema
 }
 
-pub(super) fn write_q13_customer_parquet(runtime: &cudf::Runtime, path: &std::path::Path) -> Arc<Schema> {
+pub(super) fn write_customer_order_count_customer_parquet(
+    runtime: &cudf::Runtime,
+    path: &std::path::Path,
+) -> Arc<Schema> {
     let schema = Arc::new(Schema::new(vec![Field::new("c_custkey", DataType::Int32, false)]));
     let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int32Array::from(vec![1, 2, 3, 4]))]).unwrap();
     DataFrame::from_record_batch(runtime, &batch).unwrap().write_parquet(path).unwrap();
     schema
 }
 
-pub(super) fn write_q13_orders_parquet(runtime: &cudf::Runtime, path: &std::path::Path) -> Arc<Schema> {
+pub(super) fn write_customer_order_count_orders_parquet(
+    runtime: &cudf::Runtime,
+    path: &std::path::Path,
+) -> Arc<Schema> {
     let schema = Arc::new(Schema::new(vec![
         Field::new("o_orderkey", DataType::Int32, false),
         Field::new("o_custkey", DataType::Int32, false),
@@ -248,7 +254,7 @@ pub(super) fn write_q13_orders_parquet(runtime: &cudf::Runtime, path: &std::path
     schema
 }
 
-pub(super) fn write_q16_part_parquet(runtime: &cudf::Runtime, path: &std::path::Path) -> Arc<Schema> {
+pub(super) fn write_part_distinct_count_part_parquet(runtime: &cudf::Runtime, path: &std::path::Path) -> Arc<Schema> {
     let schema = Arc::new(Schema::new(vec![
         Field::new("p_partkey", DataType::Int32, false),
         Field::new("p_brand", DataType::Utf8, false),
@@ -269,7 +275,10 @@ pub(super) fn write_q16_part_parquet(runtime: &cudf::Runtime, path: &std::path::
     schema
 }
 
-pub(super) fn write_q16_partsupp_parquet(runtime: &cudf::Runtime, path: &std::path::Path) -> Arc<Schema> {
+pub(super) fn write_part_distinct_count_partsupp_parquet(
+    runtime: &cudf::Runtime,
+    path: &std::path::Path,
+) -> Arc<Schema> {
     let schema = Arc::new(Schema::new(vec![
         Field::new("ps_partkey", DataType::Int32, false),
         Field::new("ps_suppkey", DataType::Int32, false),
@@ -286,7 +295,10 @@ pub(super) fn write_q16_partsupp_parquet(runtime: &cudf::Runtime, path: &std::pa
     schema
 }
 
-pub(super) fn write_q16_supplier_parquet(runtime: &cudf::Runtime, path: &std::path::Path) -> Arc<Schema> {
+pub(super) fn write_part_distinct_count_supplier_parquet(
+    runtime: &cudf::Runtime,
+    path: &std::path::Path,
+) -> Arc<Schema> {
     let schema = Arc::new(Schema::new(vec![Field::new("s_suppkey", DataType::Int32, false)]));
     let batch =
         RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int32Array::from(vec![10, 11, 12, 13]))]).unwrap();

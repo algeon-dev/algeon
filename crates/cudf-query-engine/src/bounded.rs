@@ -11,7 +11,7 @@ use crate::{
 
 mod compatibility;
 mod facts;
-mod q15;
+mod resident_revenue;
 mod shape;
 
 pub(crate) use compatibility::{
@@ -25,7 +25,7 @@ pub(crate) use compatibility::{
     bounded_root_projected_cross_join_compatible,
 };
 pub(crate) use facts::{bounded_join_modeled_facts, bounded_join_unsupported_shape_facts};
-pub(crate) use q15::analyze_keyed_hash_join_resident_subplan_pipeline;
+pub(crate) use resident_revenue::analyze_keyed_hash_join_resident_subplan_pipeline;
 use shape::{
     AggregateOverJoinSubplanInputKind, analyze_bounded_join_pipeline_shape,
     bounded_join_inputs_include_resident_subplan, bounded_join_source_leaf_inputs_compatible,
@@ -75,7 +75,7 @@ pub(crate) struct BoundedJoinPipelineShape<'a> {
     pub(crate) stages: Vec<BoundedJoinPipelineStage<'a>>,
 }
 
-/// Normalized shape for the Q17-style family. The name is intentionally
+/// Normalized shape for the residual-resident family. The name is intentionally
 /// topology-based: admission must not depend on query id, table names, column
 /// names, or literal constants.
 pub(crate) struct BoundedMixedKeyedResidualJoinResidentGroupedAggregateInputPipelineShape<'a> {
@@ -86,7 +86,7 @@ pub(crate) struct BoundedMixedKeyedResidualJoinResidentGroupedAggregateInputPipe
     pub(crate) grouped_aggregate_side: JoinSide,
 }
 
-/// Normalized shape for the Q15-style family. The name describes the topology:
+/// Normalized shape for the resident-revenue family. The name describes the topology:
 /// two keyed hash joins where one branch owns a resident grouped aggregate
 /// subplan and the other derives a scalar aggregate from the same logical
 /// revenue subplan, followed by a final full sort.
