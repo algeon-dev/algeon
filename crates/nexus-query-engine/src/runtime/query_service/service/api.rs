@@ -393,8 +393,8 @@ impl QueryAdmissionRequest {
     ///
     /// This sizes an admission only; it is intentionally not an execution
     /// plan proof and therefore cannot authorize a later-built plan.
-    #[cfg(test)]
-    pub(crate) fn with_test_placement_requirement(mut self, attempt_requirement: AttemptRequirement) -> Self {
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub fn with_test_placement_requirement(mut self, attempt_requirement: AttemptRequirement) -> Self {
         self.attempt_requirement = Some(attempt_requirement);
         self
     }

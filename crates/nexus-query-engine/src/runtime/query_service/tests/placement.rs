@@ -1,8 +1,5 @@
 #[test]
 fn queued_placement_folds_a_native_fault_into_the_ledger_before_retargeting() {
-    if cudf::DeviceId::count().unwrap_or(0) < 2 {
-        return;
-    }
     let service = QueryService::new_with_device_ordinals_and_deployment(
         QueryExecutionConfig::default(),
         QueueBounds { max_waiters: 8, max_wait: Duration::from_secs(2), max_overtakes_per_waiter: 4 },
@@ -139,7 +136,6 @@ fn direct_placement_missing_resolution_cleans_up_before_waking_a_close_waiter() 
 }
 
 #[test]
-#[ignore = "requires GPU: DeviceId::count() guard would silently pass on GPU-less hosts"]
 fn direct_placement_reports_a_post_snapshot_fleet_closure_as_a_health_failure() {
     let service = QueryService::new_with_device_ordinals_and_deployment(
         QueryExecutionConfig::default(),
@@ -171,9 +167,6 @@ fn direct_placement_reports_a_post_snapshot_fleet_closure_as_a_health_failure() 
 
 #[test]
 fn unknown_isolation_fleet_closure_excludes_a_mid_closure_admission() {
-    if cudf::DeviceId::count().unwrap_or(0) < 2 {
-        return;
-    }
     let service = QueryService::new_with_device_ordinals_and_deployment(
         QueryExecutionConfig::default(),
         QueueBounds { max_waiters: 8, max_wait: Duration::from_secs(2), max_overtakes_per_waiter: 4 },

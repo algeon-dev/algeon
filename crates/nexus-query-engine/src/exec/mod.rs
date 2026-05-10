@@ -65,11 +65,12 @@ pub use bounded::{
     STRING_OFFSET_BYTES_CONSERVATIVE, join_output_upper_bound_bytes, partial_aggregate_upper_bound_bytes,
 };
 use edge_normalize::execute_edge_normalize;
-#[cfg(all(test, feature = "cugraph"))]
-pub(crate) use graph_algorithm::force_next_graph_statistics_optional_resource_exhausted_for_test;
-#[cfg(all(test, feature = "cugraph"))]
+#[cfg(all(any(test, feature = "test-hooks"), feature = "cugraph"))]
 #[doc(hidden)]
-pub(crate) use graph_algorithm::{
+pub use graph_algorithm::force_next_graph_statistics_optional_resource_exhausted_for_test;
+#[cfg(all(any(test, feature = "test-hooks"), feature = "cugraph"))]
+#[doc(hidden)]
+pub use graph_algorithm::{
     force_next_graph_seed_chunk_retry_chunk_attempt_resource_exhausted_for_test,
     force_next_graph_seed_chunk_retry_full_attempt_resource_exhausted_for_test,
 };
@@ -80,10 +81,11 @@ pub use source::{
     read_literal_batch_source, read_local_parquet_source,
 };
 #[cfg(test)]
-pub(crate) mod reservation_contract_testing {
+#[doc(hidden)]
+pub mod reservation_contract_testing {
     #![allow(missing_docs)]
 
-    use super::bounded::{JoinMaterializationTxn, ReservationTracker};
+    use super::bounded::{ReservationTracker, join::compiled::JoinMaterializationTxn};
     use crate::{
         error::{QueryError, Result},
         metrics::QueryMetrics,

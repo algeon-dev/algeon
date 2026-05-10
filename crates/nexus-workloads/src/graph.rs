@@ -49,7 +49,7 @@ pub const DBLP_MULTI_GRAPH_SLICE_SCHEMA_VERSION: u64 = 1;
 pub const DBLP_TABLES: &[&str] =
     &["edges_by_src", "edges_by_dst", "profiles_by_paper_id", "paper_authors", "paper_fos"];
 
-pub use crate::error::{GraphDatasetError, GraphDatasetResult};
+pub use crate::error::{WorkloadError, WorkloadResult};
 
 /// Fully resolved DBLP fixture layout.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -142,29 +142,29 @@ impl DblpDatasetMetadata {
 
 /// Finds and validates the DBLP fixture layout rooted either at
 /// `<out-root>/citation_network/v1` or at its `parquet/` subdirectory.
-pub fn discover_dblp_fixture_layout(root: &Path) -> GraphDatasetResult<DblpFixtureLayout> {
+pub fn discover_dblp_fixture_layout(root: &Path) -> WorkloadResult<DblpFixtureLayout> {
     let (dataset_root, parquet_root) = if root.join("parquet").is_dir() {
         (root.to_path_buf(), root.join("parquet"))
     } else if root.file_name().is_some_and(|name| name == "parquet") {
         let dataset_root = root.parent().ok_or_else(|| {
-            GraphDatasetError::InvalidDataset(format!("Parquet root {} has no dataset parent", root.display()))
+            WorkloadError::InvalidDataset(format!("Parquet root {} has no dataset parent", root.display()))
         })?;
         (dataset_root.to_path_buf(), root.to_path_buf())
     } else {
-        return Err(GraphDatasetError::InvalidDataset(format!(
+        return Err(WorkloadError::InvalidDataset(format!(
             "expected DBLP dataset root with parquet/ or its parquet directory at {}",
             root.display()
         )));
     };
 
     if !dataset_root.is_dir() {
-        return Err(GraphDatasetError::InvalidDataset(format!(
+        return Err(WorkloadError::InvalidDataset(format!(
             "dataset root {} is not a directory",
             dataset_root.display()
         )));
     }
     if !parquet_root.is_dir() {
-        return Err(GraphDatasetError::InvalidDataset(format!(
+        return Err(WorkloadError::InvalidDataset(format!(
             "Parquet root {} is not a directory",
             parquet_root.display()
         )));
@@ -174,13 +174,13 @@ pub fn discover_dblp_fixture_layout(root: &Path) -> GraphDatasetResult<DblpFixtu
     let source_path = dataset_root.join("source.json");
     for (label, path) in [("manifest", &manifest_path), ("source metadata", &source_path)] {
         if !path.is_file() {
-            return Err(GraphDatasetError::InvalidDataset(format!("missing {label} file {}", path.display())));
+            return Err(WorkloadError::InvalidDataset(format!("missing {label} file {}", path.display())));
         }
     }
     for table in DBLP_TABLES {
         let path = parquet_root.join(format!("{table}.parquet"));
         if !path.is_file() {
-            return Err(GraphDatasetError::InvalidDataset(format!("missing required Parquet file {}", path.display())));
+            return Err(WorkloadError::InvalidDataset(format!("missing required Parquet file {}", path.display())));
         }
     }
 
@@ -191,11 +191,11 @@ pub fn discover_dblp_fixture_layout(root: &Path) -> GraphDatasetResult<DblpFixtu
 ///
 /// Each table is exactly one file, so this needs no listing-table fan-in. The
 /// returned layout lets a caller record the resolved roots it registered from.
-pub async fn register_dblp_tables(ctx: &SessionContext, root: &Path) -> GraphDatasetResult<DblpFixtureLayout> {
+pub async fn register_dblp_tables(ctx: &SessionContext, root: &Path) -> WorkloadResult<DblpFixtureLayout> {
     let layout = discover_dblp_fixture_layout(root)?;
     for table in DBLP_TABLES {
         let path = layout.parquet_root.join(format!("{table}.parquet"));
-        let path_str = path.to_str().ok_or_else(|| GraphDatasetError::NonUtf8Path(path.clone()))?;
+        let path_str = path.to_str().ok_or_else(|| WorkloadError::NonUtf8Path(path.clone()))?;
         ctx.register_parquet(*table, path_str, ParquetReadOptions::default()).await?;
     }
     Ok(layout)
@@ -211,7 +211,7 @@ pub fn describe_dblp_dataset(
     root: &Path,
     scale_factor: impl Into<String>,
     generation_command: impl Into<String>,
-) -> GraphDatasetResult<DblpDatasetMetadata> {
+) -> WorkloadResult<DblpDatasetMetadata> {
     describe_dblp_dataset_with_contract(root, scale_factor.into(), generation_command.into(), false)
 }
 
@@ -224,7 +224,7 @@ pub fn describe_canonical_dblp_dataset(
     root: &Path,
     scale_factor: impl Into<String>,
     generation_command: impl Into<String>,
-) -> GraphDatasetResult<DblpDatasetMetadata> {
+) -> WorkloadResult<DblpDatasetMetadata> {
     describe_dblp_dataset_with_contract(root, scale_factor.into(), generation_command.into(), true)
 }
 
@@ -233,7 +233,7 @@ fn describe_dblp_dataset_with_contract(
     scale_factor: String,
     generation_command: String,
     require_canonical_v12: bool,
-) -> GraphDatasetResult<DblpDatasetMetadata> {
+) -> WorkloadResult<DblpDatasetMetadata> {
     let layout = discover_dblp_fixture_layout(root)?;
     let manifest = read_json_document(&layout.manifest_path, "manifest")?;
     let source = read_json_document(&layout.source_path, "source metadata")?;
@@ -241,7 +241,7 @@ fn describe_dblp_dataset_with_contract(
     let multi_graph_slice = parse_multi_graph_slice(&manifest)?;
     if require_canonical_v12 {
         if multi_graph_slice.is_some() {
-            return Err(GraphDatasetError::InvalidDataset(
+            return Err(WorkloadError::InvalidDataset(
                 "P6 preflight requires the canonical DBLP V12 fixture, not a derived multi-graph slice".to_string(),
             ));
         }
@@ -274,76 +274,76 @@ fn describe_dblp_dataset_with_contract(
     })
 }
 
-fn read_json_document(path: &Path, label: &str) -> GraphDatasetResult<Value> {
+fn read_json_document(path: &Path, label: &str) -> WorkloadResult<Value> {
     let bytes = fs::read(path)?;
     let document: Value = serde_json::from_slice(&bytes)
-        .map_err(|_| GraphDatasetError::InvalidDataset(format!("{label} {} is not valid JSON", path.display())))?;
+        .map_err(|_| WorkloadError::InvalidDataset(format!("{label} {} is not valid JSON", path.display())))?;
     if !document.is_object() {
-        return Err(GraphDatasetError::InvalidDataset(format!("{label} {} must be a JSON object", path.display())));
+        return Err(WorkloadError::InvalidDataset(format!("{label} {} must be a JSON object", path.display())));
     }
     Ok(document)
 }
 
-fn validate_manifest(manifest: &Value) -> GraphDatasetResult<String> {
+fn validate_manifest(manifest: &Value) -> WorkloadResult<String> {
     let schema_version = required_u64(manifest, &["schema_version"], "manifest schema_version")?;
     if schema_version != DBLP_FIXTURE_SCHEMA_VERSION {
-        return Err(GraphDatasetError::InvalidDataset(format!(
+        return Err(WorkloadError::InvalidDataset(format!(
             "unsupported manifest schema_version {schema_version}; expected {DBLP_FIXTURE_SCHEMA_VERSION}"
         )));
     }
     let generator = required_string(manifest, &["generator"], "manifest generator")?;
     if !generator.ends_with("dblp_ingest.py") {
-        return Err(GraphDatasetError::InvalidDataset(
+        return Err(WorkloadError::InvalidDataset(
             "manifest generator must identify fixture/graph/dblp_ingest.py".to_string(),
         ));
     }
     validate_dataset_id(manifest, "manifest")?;
     let max_papers = required_value(manifest, &["max_papers"], "manifest max_papers")?;
     if !max_papers.is_null() && max_papers.as_u64().filter(|value| *value > 0).is_none() {
-        return Err(GraphDatasetError::InvalidDataset(
+        return Err(WorkloadError::InvalidDataset(
             "manifest max_papers must be null or a positive unsigned integer".to_string(),
         ));
     }
     required_string(manifest, &["dataset", "source"], "manifest dataset source").map(str::to_string)
 }
 
-fn parse_multi_graph_slice(manifest: &Value) -> GraphDatasetResult<Option<DblpMultiGraphSliceMetadata>> {
+fn parse_multi_graph_slice(manifest: &Value) -> WorkloadResult<Option<DblpMultiGraphSliceMetadata>> {
     let Some(slice) = manifest.get("multi_graph_slice") else {
         return Ok(None);
     };
     parse_multi_graph_slice_value(slice, "manifest multi_graph_slice").map(Some)
 }
 
-fn parse_multi_graph_slice_value(slice: &Value, label: &str) -> GraphDatasetResult<DblpMultiGraphSliceMetadata> {
+fn parse_multi_graph_slice_value(slice: &Value, label: &str) -> WorkloadResult<DblpMultiGraphSliceMetadata> {
     if !slice.is_object() {
-        return Err(GraphDatasetError::InvalidDataset(format!("{label} must be an object")));
+        return Err(WorkloadError::InvalidDataset(format!("{label} must be an object")));
     }
     let schema_version = required_u64(slice, &["schema_version"], &format!("{label} schema_version"))?;
     if schema_version != DBLP_MULTI_GRAPH_SLICE_SCHEMA_VERSION {
-        return Err(GraphDatasetError::InvalidDataset(format!(
+        return Err(WorkloadError::InvalidDataset(format!(
             "unsupported {label} schema_version {schema_version}; expected {DBLP_MULTI_GRAPH_SLICE_SCHEMA_VERSION}"
         )));
     }
     let partition = required_string(slice, &["partition"], &format!("{label} partition"))?;
     if partition != DBLP_MULTI_GRAPH_SLICE_PARTITION {
-        return Err(GraphDatasetError::InvalidDataset(format!(
+        return Err(WorkloadError::InvalidDataset(format!(
             "{label} partition must be {DBLP_MULTI_GRAPH_SLICE_PARTITION}, found {partition}"
         )));
     }
     let slice_count = required_u64(slice, &["slice_count"], &format!("{label} count"))?;
     if slice_count < 2 {
-        return Err(GraphDatasetError::InvalidDataset(format!("{label} count must be at least two")));
+        return Err(WorkloadError::InvalidDataset(format!("{label} count must be at least two")));
     }
     let slice_index = required_u64(slice, &["slice_index"], &format!("{label} index"))?;
     if slice_index >= slice_count {
-        return Err(GraphDatasetError::InvalidDataset(format!(
+        return Err(WorkloadError::InvalidDataset(format!(
             "{label} index {slice_index} is outside slice_count {slice_count}"
         )));
     }
     let hash_seed = required_u64(slice, &["hash_seed"], &format!("{label} hash seed"))?;
     let edge_rowset_sha256 = required_string(slice, &["edge_rowset_sha256"], &format!("{label} edge rowset SHA-256"))?;
     if !is_sha256(edge_rowset_sha256) {
-        return Err(GraphDatasetError::InvalidDataset(format!(
+        return Err(WorkloadError::InvalidDataset(format!(
             "{label} edge_rowset_sha256 must be a 64-character hexadecimal digest"
         )));
     }
@@ -356,9 +356,9 @@ fn parse_multi_graph_slice_value(slice: &Value, label: &str) -> GraphDatasetResu
     })
 }
 
-fn validate_canonical_v12_manifest(manifest: &Value) -> GraphDatasetResult<()> {
+fn validate_canonical_v12_manifest(manifest: &Value) -> WorkloadResult<()> {
     if !required_value(manifest, &["max_papers"], "manifest max_papers")?.is_null() {
-        return Err(GraphDatasetError::InvalidDataset(
+        return Err(WorkloadError::InvalidDataset(
             "P6 preflight requires the full canonical DBLP V12 fixture, not a max_papers sample".to_string(),
         ));
     }
@@ -377,7 +377,7 @@ fn validate_canonical_v12_manifest(manifest: &Value) -> GraphDatasetResult<()> {
         ),
     ] {
         if actual != expected {
-            return Err(GraphDatasetError::InvalidDataset(format!(
+            return Err(WorkloadError::InvalidDataset(format!(
                 "P6 preflight requires canonical DBLP V12 {label}={expected}, found {actual}"
             )));
         }
@@ -389,10 +389,7 @@ fn validate_canonical_v12_manifest(manifest: &Value) -> GraphDatasetResult<()> {
 /// full fixture. The footer belongs to each concrete edge file, rather than a
 /// detached manifest/config value, so the planner can use it only when the
 /// physical scan still denotes that whole rowset.
-fn validate_canonical_edge_vertex_footer_bounds(
-    layout: &DblpFixtureLayout,
-    manifest: &Value,
-) -> GraphDatasetResult<()> {
+fn validate_canonical_edge_vertex_footer_bounds(layout: &DblpFixtureLayout, manifest: &Value) -> WorkloadResult<()> {
     let expected = required_u64(manifest, &["counts", "papers"], "manifest paper count")?;
     for table in ["edges_by_src", "edges_by_dst"] {
         let path = layout.parquet_root.join(format!("{table}.parquet"));
@@ -400,7 +397,7 @@ fn validate_canonical_edge_vertex_footer_bounds(
         let actual =
             parse_graph_vertex_upper_bound_footer(reader.metadata().file_metadata().key_value_metadata(), table)?;
         if actual != expected {
-            return Err(GraphDatasetError::InvalidDataset(format!(
+            return Err(WorkloadError::InvalidDataset(format!(
                 "{table} footer {DBLP_GRAPH_VERTEX_UPPER_BOUND_FOOTER_KEY}={actual} does not match manifest paper count {expected}"
             )));
         }
@@ -411,21 +408,21 @@ fn validate_canonical_edge_vertex_footer_bounds(
 fn parse_graph_vertex_upper_bound_footer(
     metadata: Option<&Vec<parquet::file::metadata::KeyValue>>,
     table: &str,
-) -> GraphDatasetResult<u64> {
+) -> WorkloadResult<u64> {
     let mut entries =
         metadata.into_iter().flatten().filter(|entry| entry.key == DBLP_GRAPH_VERTEX_UPPER_BOUND_FOOTER_KEY);
     let Some(entry) = entries.next() else {
-        return Err(GraphDatasetError::InvalidDataset(format!(
+        return Err(WorkloadError::InvalidDataset(format!(
             "{table} is missing required footer key {DBLP_GRAPH_VERTEX_UPPER_BOUND_FOOTER_KEY}"
         )));
     };
     if entries.next().is_some() {
-        return Err(GraphDatasetError::InvalidDataset(format!(
+        return Err(WorkloadError::InvalidDataset(format!(
             "{table} has duplicate footer key {DBLP_GRAPH_VERTEX_UPPER_BOUND_FOOTER_KEY}"
         )));
     }
     entry.value.as_deref().and_then(|value| value.parse::<u64>().ok()).ok_or_else(|| {
-        GraphDatasetError::InvalidDataset(format!(
+        WorkloadError::InvalidDataset(format!(
             "{table} footer key {DBLP_GRAPH_VERTEX_UPPER_BOUND_FOOTER_KEY} must contain one unsigned integer"
         ))
     })
@@ -435,14 +432,14 @@ fn parse_graph_vertex_upper_bound_footer(
 /// source-hash slices. The certificate belongs to the physical edge files,
 /// rather than a manifest claim, so source registration and graph lowering see
 /// the same rowset-bound fact.
-fn validate_simple_directed_edge_topology_footer(layout: &DblpFixtureLayout) -> GraphDatasetResult<()> {
+fn validate_simple_directed_edge_topology_footer(layout: &DblpFixtureLayout) -> WorkloadResult<()> {
     for table in ["edges_by_src", "edges_by_dst"] {
         let path = layout.parquet_root.join(format!("{table}.parquet"));
         let reader = SerializedFileReader::new(File::open(&path)?)?;
         let (source_column_index, destination_column_index) =
             parse_simple_directed_edge_topology_footer(reader.metadata().file_metadata().key_value_metadata(), table)?;
         if (source_column_index, destination_column_index) != (1, 2) {
-            return Err(GraphDatasetError::InvalidDataset(format!(
+            return Err(WorkloadError::InvalidDataset(format!(
                 "{table} footer {DBLP_SIMPLE_DIRECTED_EDGE_TOPOLOGY_FOOTER_KEY} must bind src/dst physical columns (1, 2), found ({source_column_index}, {destination_column_index})"
             )));
         }
@@ -453,47 +450,47 @@ fn validate_simple_directed_edge_topology_footer(layout: &DblpFixtureLayout) -> 
 fn parse_simple_directed_edge_topology_footer(
     metadata: Option<&Vec<parquet::file::metadata::KeyValue>>,
     table: &str,
-) -> GraphDatasetResult<(u64, u64)> {
+) -> WorkloadResult<(u64, u64)> {
     let mut entries =
         metadata.into_iter().flatten().filter(|entry| entry.key == DBLP_SIMPLE_DIRECTED_EDGE_TOPOLOGY_FOOTER_KEY);
     let Some(entry) = entries.next() else {
-        return Err(GraphDatasetError::InvalidDataset(format!(
+        return Err(WorkloadError::InvalidDataset(format!(
             "{table} is missing required footer key {DBLP_SIMPLE_DIRECTED_EDGE_TOPOLOGY_FOOTER_KEY}"
         )));
     };
     if entries.next().is_some() {
-        return Err(GraphDatasetError::InvalidDataset(format!(
+        return Err(WorkloadError::InvalidDataset(format!(
             "{table} has duplicate footer key {DBLP_SIMPLE_DIRECTED_EDGE_TOPOLOGY_FOOTER_KEY}"
         )));
     }
     let Some(value) = entry.value.as_deref() else {
-        return Err(GraphDatasetError::InvalidDataset(format!(
+        return Err(WorkloadError::InvalidDataset(format!(
             "{table} footer key {DBLP_SIMPLE_DIRECTED_EDGE_TOPOLOGY_FOOTER_KEY} must contain JSON"
         )));
     };
     let Value::Object(topology) = serde_json::from_str(value).map_err(|_| {
-        GraphDatasetError::InvalidDataset(format!(
+        WorkloadError::InvalidDataset(format!(
             "{table} footer key {DBLP_SIMPLE_DIRECTED_EDGE_TOPOLOGY_FOOTER_KEY} must contain a JSON object"
         ))
     })?
     else {
-        return Err(GraphDatasetError::InvalidDataset(format!(
+        return Err(WorkloadError::InvalidDataset(format!(
             "{table} footer key {DBLP_SIMPLE_DIRECTED_EDGE_TOPOLOGY_FOOTER_KEY} must contain a JSON object"
         )));
     };
     if topology.len() != 2 {
-        return Err(GraphDatasetError::InvalidDataset(format!(
+        return Err(WorkloadError::InvalidDataset(format!(
             "{table} footer key {DBLP_SIMPLE_DIRECTED_EDGE_TOPOLOGY_FOOTER_KEY} has an invalid schema"
         )));
     }
     let source_column_index = topology.get("source_column_index").and_then(Value::as_u64).ok_or_else(|| {
-        GraphDatasetError::InvalidDataset(format!(
+        WorkloadError::InvalidDataset(format!(
             "{table} footer key {DBLP_SIMPLE_DIRECTED_EDGE_TOPOLOGY_FOOTER_KEY} is missing source_column_index"
         ))
     })?;
     let destination_column_index =
         topology.get("destination_column_index").and_then(Value::as_u64).ok_or_else(|| {
-            GraphDatasetError::InvalidDataset(format!(
+            WorkloadError::InvalidDataset(format!(
                 "{table} footer key {DBLP_SIMPLE_DIRECTED_EDGE_TOPOLOGY_FOOTER_KEY} is missing destination_column_index"
             ))
         })?;
@@ -503,26 +500,26 @@ fn parse_simple_directed_edge_topology_footer(
 fn validate_source_metadata(
     source: &Value,
     expected_multi_graph_slice: Option<&DblpMultiGraphSliceMetadata>,
-) -> GraphDatasetResult<String> {
+) -> WorkloadResult<String> {
     let schema_version = required_u64(source, &["schema_version"], "source schema_version")?;
     if schema_version != DBLP_FIXTURE_SCHEMA_VERSION {
-        return Err(GraphDatasetError::InvalidDataset(format!(
+        return Err(WorkloadError::InvalidDataset(format!(
             "unsupported source metadata schema_version {schema_version}; expected {DBLP_FIXTURE_SCHEMA_VERSION}"
         )));
     }
     validate_dataset_id(source, "source metadata")?;
     let source_description = required_string(source, &["source"], "source metadata source")?;
     if source_description.is_empty() {
-        return Err(GraphDatasetError::InvalidDataset("source metadata source must not be empty".to_string()));
+        return Err(WorkloadError::InvalidDataset("source metadata source must not be empty".to_string()));
     }
     required_string(source, &["source_json", "path"], "source JSON path")?;
     let source_bytes = required_u64(source, &["source_json", "bytes"], "source JSON byte size")?;
     if source_bytes == 0 {
-        return Err(GraphDatasetError::InvalidDataset("source JSON byte size must be greater than zero".to_string()));
+        return Err(WorkloadError::InvalidDataset("source JSON byte size must be greater than zero".to_string()));
     }
     let sha256 = required_string(source, &["source_json", "sha256"], "source JSON SHA-256")?;
     if !is_sha256(sha256) {
-        return Err(GraphDatasetError::InvalidDataset(
+        return Err(WorkloadError::InvalidDataset(
             "source JSON SHA-256 must be a 64-character hexadecimal digest; rerun generation without --skip-sha256"
                 .to_string(),
         ));
@@ -530,19 +527,19 @@ fn validate_source_metadata(
     match (expected_multi_graph_slice, source.get("derived_fixture")) {
         (None, None) => {},
         (None, Some(_)) => {
-            return Err(GraphDatasetError::InvalidDataset(
+            return Err(WorkloadError::InvalidDataset(
                 "source metadata declares derived_fixture but manifest is not a multi-graph slice".to_string(),
             ));
         },
         (Some(_), None) => {
-            return Err(GraphDatasetError::InvalidDataset(
+            return Err(WorkloadError::InvalidDataset(
                 "multi-graph slice source metadata is missing derived_fixture".to_string(),
             ));
         },
         (Some(expected), Some(derived)) => {
             let actual = parse_multi_graph_slice_value(derived, "source metadata derived_fixture")?;
             if &actual != expected {
-                return Err(GraphDatasetError::InvalidDataset(
+                return Err(WorkloadError::InvalidDataset(
                     "source metadata derived_fixture does not match manifest multi_graph_slice".to_string(),
                 ));
             }
@@ -551,7 +548,7 @@ fn validate_source_metadata(
     Ok(sha256.to_ascii_lowercase())
 }
 
-fn validate_dataset_id(document: &Value, label: &str) -> GraphDatasetResult<()> {
+fn validate_dataset_id(document: &Value, label: &str) -> WorkloadResult<()> {
     let path = if document.get("dataset_id").is_some() {
         ["dataset_id"].as_slice()
     } else {
@@ -559,14 +556,14 @@ fn validate_dataset_id(document: &Value, label: &str) -> GraphDatasetResult<()> 
     };
     let dataset_id = required_string(document, path, &format!("{label} dataset_id"))?;
     if dataset_id != DBLP_DATASET_ID {
-        return Err(GraphDatasetError::InvalidDataset(format!(
+        return Err(WorkloadError::InvalidDataset(format!(
             "{label} dataset_id must be {DBLP_DATASET_ID}, found {dataset_id}"
         )));
     }
     Ok(())
 }
 
-fn read_table_metadata(layout: &DblpFixtureLayout, manifest: &Value) -> GraphDatasetResult<Vec<DblpTableMetadata>> {
+fn read_table_metadata(layout: &DblpFixtureLayout, manifest: &Value) -> WorkloadResult<Vec<DblpTableMetadata>> {
     let mut tables = Vec::with_capacity(DBLP_TABLES.len());
     for table in DBLP_TABLES {
         let manifest_path = match *table {
@@ -581,12 +578,12 @@ fn read_table_metadata(layout: &DblpFixtureLayout, manifest: &Value) -> GraphDat
         let path = layout.parquet_root.join(format!("{table}.parquet"));
         let metadata = fs::metadata(&path)?;
         if !metadata.is_file() {
-            return Err(GraphDatasetError::InvalidDataset(format!("expected {path:?} to be a regular file")));
+            return Err(WorkloadError::InvalidDataset(format!("expected {path:?} to be a regular file")));
         }
         let byte_size = metadata.len();
         let expected_bytes = required_u64(entry, &["bytes"], &format!("manifest {table} bytes"))?;
         if byte_size != expected_bytes {
-            return Err(GraphDatasetError::InvalidDataset(format!(
+            return Err(WorkloadError::InvalidDataset(format!(
                 "manifest {table} byte size {expected_bytes} does not match filesystem size {byte_size}"
             )));
         }
@@ -594,12 +591,12 @@ fn read_table_metadata(layout: &DblpFixtureLayout, manifest: &Value) -> GraphDat
         let row_group_count = required_u64(entry, &["num_row_groups"], &format!("manifest {table} row-group count"))?;
         let schema = required_string_array(entry, &["schema"], &format!("manifest {table} schema"))?;
         if schema.is_empty() {
-            return Err(GraphDatasetError::InvalidDataset(format!("manifest {table} schema must not be empty")));
+            return Err(WorkloadError::InvalidDataset(format!("manifest {table} schema must not be empty")));
         }
         let arrow_schema = ParquetRecordBatchReaderBuilder::try_new(File::open(&path)?)?.schema().clone();
         let actual_schema = arrow_schema.fields().iter().map(|field| field.name().to_string()).collect::<Vec<_>>();
         if actual_schema != schema {
-            return Err(GraphDatasetError::InvalidDataset(format!(
+            return Err(WorkloadError::InvalidDataset(format!(
                 "manifest {table} schema {:?} does not match Parquet schema {:?}",
                 schema, actual_schema
             )));
@@ -607,29 +604,23 @@ fn read_table_metadata(layout: &DblpFixtureLayout, manifest: &Value) -> GraphDat
         let reader = SerializedFileReader::new(File::open(&path)?)?;
         let parquet_metadata = reader.metadata();
         let actual_row_group_count = u64::try_from(parquet_metadata.num_row_groups()).map_err(|_| {
-            GraphDatasetError::InvalidDataset(format!(
-                "Parquet row-group count does not fit u64 for {}",
-                path.display()
-            ))
+            WorkloadError::InvalidDataset(format!("Parquet row-group count does not fit u64 for {}", path.display()))
         })?;
         if actual_row_group_count != row_group_count {
-            return Err(GraphDatasetError::InvalidDataset(format!(
+            return Err(WorkloadError::InvalidDataset(format!(
                 "manifest {table} row-group count {row_group_count} does not match Parquet row-group count {actual_row_group_count}"
             )));
         }
         let actual_row_count = parquet_metadata.row_groups().iter().try_fold(0_u64, |total, row_group| {
             let rows = u64::try_from(row_group.num_rows()).map_err(|_| {
-                GraphDatasetError::InvalidDataset(format!(
-                    "negative row count in Parquet metadata for {}",
-                    path.display()
-                ))
+                WorkloadError::InvalidDataset(format!("negative row count in Parquet metadata for {}", path.display()))
             })?;
             total.checked_add(rows).ok_or_else(|| {
-                GraphDatasetError::InvalidDataset(format!("Parquet row count overflows u64 for {}", path.display()))
+                WorkloadError::InvalidDataset(format!("Parquet row count overflows u64 for {}", path.display()))
             })
         })?;
         if actual_row_count != row_count {
-            return Err(GraphDatasetError::InvalidDataset(format!(
+            return Err(WorkloadError::InvalidDataset(format!(
                 "manifest {table} row count {row_count} does not match Parquet row count {actual_row_count}"
             )));
         }
@@ -646,12 +637,12 @@ fn read_table_metadata(layout: &DblpFixtureLayout, manifest: &Value) -> GraphDat
     Ok(tables)
 }
 
-fn validate_manifest_counts(manifest: &Value, tables: &[DblpTableMetadata]) -> GraphDatasetResult<()> {
+fn validate_manifest_counts(manifest: &Value, tables: &[DblpTableMetadata]) -> WorkloadResult<()> {
     let table = |name: &str| {
         tables
             .iter()
             .find(|table| table.table == name)
-            .ok_or_else(|| GraphDatasetError::InvalidDataset(format!("missing discovered table {name}")))
+            .ok_or_else(|| WorkloadError::InvalidDataset(format!("missing discovered table {name}")))
     };
     let papers = required_u64(manifest, &["counts", "papers"], "manifest paper count")?;
     let edges = required_u64(manifest, &["counts", "edges"], "manifest edge count")?;
@@ -665,7 +656,7 @@ fn validate_manifest_counts(manifest: &Value, tables: &[DblpTableMetadata]) -> G
         ("paper_fos", table("paper_fos")?.row_count, fos_rows),
     ] {
         if actual != expected {
-            return Err(GraphDatasetError::InvalidDataset(format!(
+            return Err(WorkloadError::InvalidDataset(format!(
                 "manifest count mismatch for {label}: table has {actual} rows, manifest records {expected}"
             )));
         }
@@ -673,40 +664,42 @@ fn validate_manifest_counts(manifest: &Value, tables: &[DblpTableMetadata]) -> G
     Ok(())
 }
 
-fn required_value<'a>(value: &'a Value, path: &[&str], label: &str) -> GraphDatasetResult<&'a Value> {
+fn required_value<'a>(value: &'a Value, path: &[&str], label: &str) -> WorkloadResult<&'a Value> {
     let mut current = value;
     for key in path {
         current = current
             .as_object()
             .and_then(|object| object.get(*key))
-            .ok_or_else(|| GraphDatasetError::InvalidDataset(format!("missing {label}")))?;
+            .ok_or_else(|| WorkloadError::InvalidDataset(format!("missing {label}")))?;
     }
     Ok(current)
 }
 
-fn required_string<'a>(value: &'a Value, path: &[&str], label: &str) -> GraphDatasetResult<&'a str> {
+fn required_string<'a>(value: &'a Value, path: &[&str], label: &str) -> WorkloadResult<&'a str> {
     required_value(value, path, label)?
         .as_str()
         .filter(|value| !value.is_empty())
-        .ok_or_else(|| GraphDatasetError::InvalidDataset(format!("{label} must be a non-empty string")))
+        .ok_or_else(|| WorkloadError::InvalidDataset(format!("{label} must be a non-empty string")))
 }
 
-fn required_u64(value: &Value, path: &[&str], label: &str) -> GraphDatasetResult<u64> {
+fn required_u64(value: &Value, path: &[&str], label: &str) -> WorkloadResult<u64> {
     required_value(value, path, label)?
         .as_u64()
-        .ok_or_else(|| GraphDatasetError::InvalidDataset(format!("{label} must be an unsigned integer")))
+        .ok_or_else(|| WorkloadError::InvalidDataset(format!("{label} must be an unsigned integer")))
 }
 
-fn required_string_array(value: &Value, path: &[&str], label: &str) -> GraphDatasetResult<Vec<String>> {
+fn required_string_array(value: &Value, path: &[&str], label: &str) -> WorkloadResult<Vec<String>> {
     let values = required_value(value, path, label)?
         .as_array()
-        .ok_or_else(|| GraphDatasetError::InvalidDataset(format!("{label} must be an array of strings")))?;
+        .ok_or_else(|| WorkloadError::InvalidDataset(format!("{label} must be an array of strings")))?;
     values
         .iter()
         .map(|value| {
-            value.as_str().filter(|value| !value.is_empty()).map(str::to_string).ok_or_else(|| {
-                GraphDatasetError::InvalidDataset(format!("{label} must contain only non-empty strings"))
-            })
+            value
+                .as_str()
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+                .ok_or_else(|| WorkloadError::InvalidDataset(format!("{label} must contain only non-empty strings")))
         })
         .collect()
 }
@@ -719,7 +712,7 @@ fn format_table_metadata(tables: &[DblpTableMetadata], value: impl Fn(&DblpTable
     tables.iter().map(|table| format!("{}={}", table.table, value(table))).collect::<Vec<_>>().join(",")
 }
 
-fn sha256_file(path: &Path) -> GraphDatasetResult<String> {
+fn sha256_file(path: &Path) -> WorkloadResult<String> {
     let mut file = File::open(path)?;
     let mut hasher = Sha256::new();
     let mut buffer = [0_u8; 64 * 1024];

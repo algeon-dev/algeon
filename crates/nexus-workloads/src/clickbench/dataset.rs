@@ -11,7 +11,7 @@ use parquet::{
     file::reader::{FileReader, SerializedFileReader},
 };
 
-use super::{ClickbenchWorkloadError, ClickbenchWorkloadResult};
+use super::{WorkloadError, WorkloadResult};
 use crate::NEXUS_PARQUET_DIR_ENV;
 
 /// The single logical table exposed by the ClickBench fixture. Upstream uses
@@ -178,13 +178,13 @@ impl ClickbenchDatasetMetadata {
 /// Mixed layouts (both a `hits.parquet` and `hits_*.parquet` shards at the
 /// same level) error out — that combination has no upstream meaning and is
 /// almost always a stale-fixture bug.
-pub fn discover_clickbench_layout(root: &Path) -> ClickbenchWorkloadResult<ClickbenchLayout> {
+pub fn discover_clickbench_layout(root: &Path) -> WorkloadResult<ClickbenchLayout> {
     if root.is_file() {
         ensure_parquet_extension(root)?;
         return Ok(ClickbenchLayout::Single { file: root.to_path_buf() });
     }
     if !root.is_dir() {
-        return Err(ClickbenchWorkloadError::InvalidDataset(format!(
+        return Err(WorkloadError::InvalidDataset(format!(
             "expected ClickBench fixture at {} (must be a Parquet file or a directory containing one)",
             root.display()
         )));
@@ -196,7 +196,7 @@ pub fn discover_clickbench_layout(root: &Path) -> ClickbenchWorkloadResult<Click
     match (single.is_file(), shards.is_empty()) {
         (true, true) => Ok(ClickbenchLayout::Single { file: single }),
         (false, false) => Ok(ClickbenchLayout::Partitioned { dir: root.to_path_buf(), files: shards }),
-        (true, false) => Err(ClickbenchWorkloadError::InvalidDataset(format!(
+        (true, false) => Err(WorkloadError::InvalidDataset(format!(
             "ambiguous ClickBench fixture under {}: both hits.parquet and hits_*.parquet present",
             root.display()
         ))),
@@ -205,14 +205,14 @@ pub fn discover_clickbench_layout(root: &Path) -> ClickbenchWorkloadResult<Click
             if nested.is_dir() {
                 let shards = collect_hits_shards(&nested)?;
                 if shards.is_empty() {
-                    return Err(ClickbenchWorkloadError::InvalidDataset(format!(
+                    return Err(WorkloadError::InvalidDataset(format!(
                         "expected hits_*.parquet shards under {}",
                         nested.display()
                     )));
                 }
                 return Ok(ClickbenchLayout::Partitioned { dir: nested, files: shards });
             }
-            Err(ClickbenchWorkloadError::InvalidDataset(format!(
+            Err(WorkloadError::InvalidDataset(format!(
                 "no ClickBench fixture found under {}: expected hits.parquet, hits_*.parquet, or partitioned/hits_*.parquet",
                 root.display()
             )))
@@ -220,11 +220,11 @@ pub fn discover_clickbench_layout(root: &Path) -> ClickbenchWorkloadResult<Click
     }
 }
 
-fn ensure_parquet_extension(path: &Path) -> ClickbenchWorkloadResult<()> {
+fn ensure_parquet_extension(path: &Path) -> WorkloadResult<()> {
     if path.extension() == Some(OsStr::new("parquet")) {
         Ok(())
     } else {
-        Err(ClickbenchWorkloadError::InvalidDataset(format!(
+        Err(WorkloadError::InvalidDataset(format!(
             "expected ClickBench Parquet file at {} (got non-.parquet extension)",
             path.display()
         )))
@@ -238,7 +238,7 @@ fn ensure_parquet_extension(path: &Path) -> ClickbenchWorkloadResult<()> {
 /// or `.parquet.tmp` half-writes. Anything that does not match is ignored
 /// rather than rejected, since `partitioned/` directories are routinely
 /// shared with unrelated data on staging volumes.
-fn collect_hits_shards(dir: &Path) -> ClickbenchWorkloadResult<Vec<PathBuf>> {
+fn collect_hits_shards(dir: &Path) -> WorkloadResult<Vec<PathBuf>> {
     let mut shards = Vec::new();
     for entry in fs::read_dir(dir)? {
         let entry = entry?;
@@ -268,7 +268,7 @@ pub fn describe_clickbench_dataset(
     root: &Path,
     provenance: impl Into<String>,
     generation_command: impl Into<String>,
-) -> ClickbenchWorkloadResult<ClickbenchDatasetMetadata> {
+) -> WorkloadResult<ClickbenchDatasetMetadata> {
     describe_clickbench_dataset_with_content_fingerprint(root, provenance, generation_command, false)
 }
 
@@ -282,18 +282,19 @@ pub fn describe_clickbench_dataset_with_content_fingerprint(
     provenance: impl Into<String>,
     generation_command: impl Into<String>,
     include_content_fingerprint: bool,
-) -> ClickbenchWorkloadResult<ClickbenchDatasetMetadata> {
+) -> WorkloadResult<ClickbenchDatasetMetadata> {
     let layout = discover_clickbench_layout(root)?;
     let mut files_meta = Vec::with_capacity(layout.file_count());
     for path in layout.files() {
         files_meta.push(read_parquet_file_metadata(root, path)?);
     }
 
-    let schema = files_meta.first().map(|f| f.schema.clone()).ok_or_else(|| {
-        ClickbenchWorkloadError::InvalidDataset("ClickBench fixture has no Parquet files".to_string())
-    })?;
+    let schema = files_meta
+        .first()
+        .map(|f| f.schema.clone())
+        .ok_or_else(|| WorkloadError::InvalidDataset("ClickBench fixture has no Parquet files".to_string()))?;
     if let Some(mismatched) = files_meta.iter().find(|f| f.schema != schema) {
-        return Err(ClickbenchWorkloadError::InvalidDataset(format!(
+        return Err(WorkloadError::InvalidDataset(format!(
             "schema mismatch in ClickBench fixture: {} differs from first shard",
             mismatched.path.display()
         )));
@@ -334,7 +335,7 @@ pub fn describe_clickbench_dataset_with_content_fingerprint(
 pub fn external_clickbench_dataset_metadata(
     root: &Path,
     generation_command: impl Into<String>,
-) -> ClickbenchWorkloadResult<ClickbenchDatasetMetadata> {
+) -> WorkloadResult<ClickbenchDatasetMetadata> {
     describe_clickbench_dataset(root, "external_parquet_root", generation_command)
 }
 
@@ -350,7 +351,7 @@ pub fn external_clickbench_dataset_metadata(
 /// `unknown_external`. Invalid implicit local candidates are skipped
 /// during fallback. A truthy `NEXUS_CLICKBENCH_CONTENT_FINGERPRINT` requests the
 /// expensive content hash. Returns `Ok(None)` when no implicit fixture exists.
-pub fn prepare_clickbench_report_dataset() -> ClickbenchWorkloadResult<Option<(PathBuf, ClickbenchDatasetMetadata)>> {
+pub fn prepare_clickbench_report_dataset() -> WorkloadResult<Option<(PathBuf, ClickbenchDatasetMetadata)>> {
     if let Ok(root) = std::env::var(NEXUS_PARQUET_DIR_ENV) {
         let root_path = PathBuf::from(&root);
         let generation_command =
@@ -403,13 +404,10 @@ struct ClickbenchFileMetadata {
     row_group_bytes: Vec<u64>,
 }
 
-fn read_parquet_file_metadata(root: &Path, path: &Path) -> ClickbenchWorkloadResult<ClickbenchFileMetadata> {
+fn read_parquet_file_metadata(root: &Path, path: &Path) -> WorkloadResult<ClickbenchFileMetadata> {
     let metadata = fs::metadata(path)?;
     if !metadata.is_file() {
-        return Err(ClickbenchWorkloadError::InvalidDataset(format!(
-            "expected {} to be a Parquet file",
-            path.display()
-        )));
+        return Err(WorkloadError::InvalidDataset(format!("expected {} to be a Parquet file", path.display())));
     }
 
     let byte_size = metadata.len();
@@ -423,13 +421,10 @@ fn read_parquet_file_metadata(root: &Path, path: &Path) -> ClickbenchWorkloadRes
     let mut row_group_bytes = Vec::with_capacity(row_group_count);
     for row_group in parquet_metadata.row_groups() {
         let rows = u64::try_from(row_group.num_rows()).map_err(|_| {
-            ClickbenchWorkloadError::InvalidDataset(format!(
-                "negative row count in Parquet metadata for {}",
-                path.display()
-            ))
+            WorkloadError::InvalidDataset(format!("negative row count in Parquet metadata for {}", path.display()))
         })?;
         let bytes = u64::try_from(row_group.compressed_size()).map_err(|_| {
-            ClickbenchWorkloadError::InvalidDataset(format!(
+            WorkloadError::InvalidDataset(format!(
                 "negative compressed byte size in Parquet metadata for {}",
                 path.display()
             ))
@@ -481,7 +476,7 @@ fn clickbench_dataset_metadata_fingerprint(
     format!("metadata-fnv1a64:{:016x}", hasher.finish())
 }
 
-fn clickbench_dataset_content_fingerprint(files: &[ClickbenchFileMetadata]) -> ClickbenchWorkloadResult<String> {
+fn clickbench_dataset_content_fingerprint(files: &[ClickbenchFileMetadata]) -> WorkloadResult<String> {
     let mut hasher = StableFnv1a64::new();
     hasher.update_field("datafusion-nexus-clickbench-dataset-content-v1");
     let mut buffer = vec![0_u8; 1024 * 1024];

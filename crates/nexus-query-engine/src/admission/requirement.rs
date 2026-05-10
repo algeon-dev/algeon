@@ -33,7 +33,7 @@ use crate::{
 /// Ordering is `Unknown < Modeled < Measured`; aggregation retains the weakest
 /// evidence so a multi-fragment invocation never overstates its estimate.
 #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) enum EstimateQuality {
+pub enum EstimateQuality {
     #[default]
     Unknown,
     Modeled,
@@ -47,7 +47,7 @@ pub(crate) enum EstimateQuality {
 /// grant sizing; planner evidence may only record a proven lower-layer raise
 /// and a descriptive model result.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct AttemptCapabilityEvidence {
+pub struct AttemptCapabilityEvidence {
     /// Deployment-wide floor supplied by the installed device profile.  This
     /// remains crate-visible only for synthetic controller tests.
     pub(crate) configured_floor_bytes: u64,
@@ -333,7 +333,8 @@ impl QueryPlanCapabilityProof {
         ordered_producers: impl IntoIterator<Item = ComposedGraphProducerCandidate>,
     ) -> Result<Self> {
         let ordered_producers = ordered_producers.into_iter().collect::<Vec<_>>();
-        let complete_schedule = (|| {
+
+        (|| {
             let ordered_proofs = ordered_producers
                 .into_iter()
                 .map(|producer| {
@@ -357,9 +358,7 @@ impl QueryPlanCapabilityProof {
                 })
                 .collect::<Result<Vec<_>>>()?;
             Self::combine_composed_graph_attempt(consumer_plan, consumer, ordered_proofs)
-        })();
-
-        complete_schedule
+        })()
     }
 
     /// Refines this engine-issued proof with an opaque cold graph-model hint.
@@ -505,7 +504,7 @@ impl AttemptCapabilityEvidence {
         Self::from_parts(0, 0, None, EstimateQuality::Unknown, Vec::new())
     }
 
-    pub(crate) fn from_parts(
+    pub fn from_parts(
         configured_floor_bytes: u64,
         capability_floor_raise_bytes: u64,
         soft_working_set_hint_bytes: Option<u64>,

@@ -10,7 +10,7 @@ use parquet::{
     file::reader::{FileReader, SerializedFileReader},
 };
 
-use super::{TpcdsWorkloadError, TpcdsWorkloadResult, fixture::write_tiny_tpcds_parquet_dataset};
+use super::{WorkloadError, WorkloadResult, fixture::write_tiny_tpcds_parquet_dataset};
 use crate::NEXUS_PARQUET_DIR_ENV;
 
 /// Canonical TPC-DS table names in registration/report order.
@@ -178,7 +178,7 @@ impl TpcdsDatasetMetadata {
 }
 
 /// Describes the generated tiny TPC-DS fixture under `root`.
-pub fn tiny_tpcds_dataset_metadata(root: &Path) -> TpcdsWorkloadResult<TpcdsDatasetMetadata> {
+pub fn tiny_tpcds_dataset_metadata(root: &Path) -> WorkloadResult<TpcdsDatasetMetadata> {
     describe_tpcds_dataset(root, "tiny", "generated_tiny", "datafusion-nexus::write_tiny_tpcds_parquet_dataset")
 }
 
@@ -187,7 +187,7 @@ pub fn external_tpcds_dataset_metadata(
     root: &Path,
     scale_factor: impl Into<String>,
     generation_command: impl Into<String>,
-) -> TpcdsWorkloadResult<TpcdsDatasetMetadata> {
+) -> WorkloadResult<TpcdsDatasetMetadata> {
     describe_tpcds_dataset(root, scale_factor, "external_parquet_root", generation_command)
 }
 
@@ -197,7 +197,7 @@ pub fn external_tpcds_dataset_metadata(
 /// When unset, the helper tries the implicit SF1 default and falls back to
 /// generating tiny data under `tiny_root`. A truthy
 /// `NEXUS_TPCDS_CONTENT_FINGERPRINT` requests the expensive content hash.
-pub fn prepare_tpcds_report_dataset(tiny_root: &Path) -> TpcdsWorkloadResult<(PathBuf, TpcdsDatasetMetadata)> {
+pub fn prepare_tpcds_report_dataset(tiny_root: &Path) -> WorkloadResult<(PathBuf, TpcdsDatasetMetadata)> {
     if let Ok(root) = std::env::var(NEXUS_PARQUET_DIR_ENV) {
         let root = PathBuf::from(root);
         let scale_factor = std::env::var(NEXUS_TPCDS_SCALE_FACTOR_ENV).unwrap_or_else(|_| "unknown".to_string());
@@ -249,7 +249,7 @@ pub fn describe_tpcds_dataset(
     scale_factor: impl Into<String>,
     provenance: impl Into<String>,
     generation_command: impl Into<String>,
-) -> TpcdsWorkloadResult<TpcdsDatasetMetadata> {
+) -> WorkloadResult<TpcdsDatasetMetadata> {
     describe_tpcds_dataset_with_content_fingerprint(root, scale_factor, provenance, generation_command, false)
 }
 
@@ -264,7 +264,7 @@ pub fn describe_tpcds_dataset_with_content_fingerprint(
     provenance: impl Into<String>,
     generation_command: impl Into<String>,
     include_content_fingerprint: bool,
-) -> TpcdsWorkloadResult<TpcdsDatasetMetadata> {
+) -> WorkloadResult<TpcdsDatasetMetadata> {
     let scale_factor = scale_factor.into();
     let provenance = provenance.into();
     let generation_command = generation_command.into();
@@ -315,7 +315,7 @@ impl TpcdsTableLayout {
 ///
 /// Accepted layouts are `<table>.parquet` or `<table>/` containing Parquet
 /// files recursively. Missing or empty layouts are fixture errors.
-pub fn discover_tpcds_table_layout(root: &Path, table: &str) -> TpcdsWorkloadResult<TpcdsTableLayout> {
+pub fn discover_tpcds_table_layout(root: &Path, table: &str) -> WorkloadResult<TpcdsTableLayout> {
     let file_path = root.join(format!("{table}.parquet"));
     if file_path.is_file() {
         return Ok(TpcdsTableLayout { anchor: file_path.clone(), files: vec![file_path] });
@@ -327,7 +327,7 @@ pub fn discover_tpcds_table_layout(root: &Path, table: &str) -> TpcdsWorkloadRes
         collect_parquet_files(&directory_path, &mut files)?;
         files.sort();
         if files.is_empty() {
-            return Err(TpcdsWorkloadError::InvalidDataset(format!(
+            return Err(WorkloadError::InvalidDataset(format!(
                 "expected at least one Parquet file under {}",
                 directory_path.display()
             )));
@@ -335,7 +335,7 @@ pub fn discover_tpcds_table_layout(root: &Path, table: &str) -> TpcdsWorkloadRes
         return Ok(TpcdsTableLayout { anchor: directory_path, files });
     }
 
-    Err(TpcdsWorkloadError::InvalidDataset(format!(
+    Err(WorkloadError::InvalidDataset(format!(
         "expected TPC-DS table {table} at {} or {}/ under {}",
         file_path.display(),
         directory_path.display(),
@@ -343,7 +343,7 @@ pub fn discover_tpcds_table_layout(root: &Path, table: &str) -> TpcdsWorkloadRes
     )))
 }
 
-fn read_tpcds_table_metadata(root: &Path, table: &str) -> TpcdsWorkloadResult<TpcdsTableMetadata> {
+fn read_tpcds_table_metadata(root: &Path, table: &str) -> WorkloadResult<TpcdsTableMetadata> {
     let layout = discover_tpcds_table_layout(root, table)?;
     let mut files = Vec::with_capacity(layout.files.len());
     for file_path in &layout.files {
@@ -353,9 +353,9 @@ fn read_tpcds_table_metadata(root: &Path, table: &str) -> TpcdsWorkloadResult<Tp
     let schema = files
         .first()
         .map(|file| file.schema.clone())
-        .ok_or_else(|| TpcdsWorkloadError::InvalidDataset(format!("expected at least one Parquet file for {table}")))?;
+        .ok_or_else(|| WorkloadError::InvalidDataset(format!("expected at least one Parquet file for {table}")))?;
     if let Some(mismatched) = files.iter().find(|file| file.schema != schema) {
-        return Err(TpcdsWorkloadError::InvalidDataset(format!(
+        return Err(WorkloadError::InvalidDataset(format!(
             "schema mismatch in TPC-DS table {table}: {} differs from first file",
             mismatched.path.display()
         )));
@@ -381,7 +381,7 @@ fn read_tpcds_table_metadata(root: &Path, table: &str) -> TpcdsWorkloadResult<Tp
     })
 }
 
-fn collect_parquet_files(path: &Path, files: &mut Vec<PathBuf>) -> TpcdsWorkloadResult<()> {
+fn collect_parquet_files(path: &Path, files: &mut Vec<PathBuf>) -> WorkloadResult<()> {
     for entry in fs::read_dir(path)? {
         let entry = entry?;
         let entry_path = entry.path();
@@ -395,10 +395,10 @@ fn collect_parquet_files(path: &Path, files: &mut Vec<PathBuf>) -> TpcdsWorkload
     Ok(())
 }
 
-fn read_tpcds_table_file_metadata(root: &Path, path: &Path) -> TpcdsWorkloadResult<TpcdsTableFileMetadata> {
+fn read_tpcds_table_file_metadata(root: &Path, path: &Path) -> WorkloadResult<TpcdsTableFileMetadata> {
     let metadata = fs::metadata(path)?;
     if !metadata.is_file() {
-        return Err(TpcdsWorkloadError::InvalidDataset(format!("expected {} to be a Parquet file", path.display())));
+        return Err(WorkloadError::InvalidDataset(format!("expected {} to be a Parquet file", path.display())));
     }
 
     let byte_size = metadata.len();
@@ -412,10 +412,10 @@ fn read_tpcds_table_file_metadata(root: &Path, path: &Path) -> TpcdsWorkloadResu
     let mut row_group_bytes = Vec::with_capacity(row_group_count);
     for row_group in parquet_metadata.row_groups() {
         let rows = u64::try_from(row_group.num_rows()).map_err(|_| {
-            TpcdsWorkloadError::InvalidDataset(format!("negative row count in Parquet metadata for {}", path.display()))
+            WorkloadError::InvalidDataset(format!("negative row count in Parquet metadata for {}", path.display()))
         })?;
         let bytes = u64::try_from(row_group.compressed_size()).map_err(|_| {
-            TpcdsWorkloadError::InvalidDataset(format!(
+            WorkloadError::InvalidDataset(format!(
                 "negative compressed byte size in Parquet metadata for {}",
                 path.display()
             ))
@@ -477,7 +477,7 @@ fn tpcds_dataset_metadata_fingerprint(
     format!("metadata-fnv1a64:{:016x}", hasher.finish())
 }
 
-fn tpcds_dataset_content_fingerprint(tables: &[TpcdsTableMetadata]) -> TpcdsWorkloadResult<String> {
+fn tpcds_dataset_content_fingerprint(tables: &[TpcdsTableMetadata]) -> WorkloadResult<String> {
     let mut hasher = StableFnv1a64::new();
     hasher.update_field("datafusion-nexus-tpcds-dataset-content-v1");
     let mut buffer = vec![0_u8; 1024 * 1024];

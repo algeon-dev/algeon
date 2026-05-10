@@ -366,7 +366,7 @@ async fn run_measured(
     validate_cugraph_runner_mode(profile, &queries)?;
     let plan = ArrivalPlan::plan(&profile.scheduling, relational_query_count, profile.session.shared_session_count)?;
     let feature_off_cugraph_schedule =
-        profile.feature_off_cugraph_probe.clone().zip(feature_off_cugraph_probe).map(|(profile, query_index)| {
+        profile.feature_off_cugraph_probe.zip(feature_off_cugraph_probe).map(|(profile, query_index)| {
             FeatureOffCugraphProbeSchedule {
                 query_index,
                 warmup_probe_attempts: profile.warmup_probe_attempts,
@@ -672,7 +672,7 @@ async fn run_measured(
         sampler.raw_snapshot_retention_truncated,
     );
     let attribution = AttributionCompleteness::from_observations(&driven.observations);
-    let feature_off_cugraph = profile.feature_off_cugraph_probe.clone().map(|probe| {
+    let feature_off_cugraph = profile.feature_off_cugraph_probe.map(|probe| {
         FeatureOffCugraphEvidence::from_observations(
             probe,
             &driven.observations,

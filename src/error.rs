@@ -16,6 +16,7 @@ use datafusion::common::DataFusionError;
 
 mod code;
 
+use code::code_for_native_error as adapter_code_for_native_error;
 pub use code::{ErrorCode, ErrorKind, ErrorStatus, kind_for_code, status_for_code};
 
 type BoxedSourceError = Box<dyn StdError + Send + Sync + 'static>;
@@ -617,34 +618,7 @@ fn code_for_cudf_error(error: &cudf::Error) -> ErrorCode {
 // the adapter has no shape-specific code. The exact native code remains
 // available in the `native_code` fact attached by `Error::from_native`.
 fn code_for_native_error(error: &nexus_query_engine::error::QueryError) -> ErrorCode {
-    match error.code() {
-        nexus_query_engine::error::QueryErrorCode::Cancelled => ErrorCode::Cancelled,
-        nexus_query_engine::error::QueryErrorCode::UnsupportedPlanShape => ErrorCode::UnsupportedOperator,
-        nexus_query_engine::error::QueryErrorCode::UnsupportedOperator => ErrorCode::UnsupportedOperator,
-        nexus_query_engine::error::QueryErrorCode::UnsupportedExpression => ErrorCode::UnsupportedExpression,
-        nexus_query_engine::error::QueryErrorCode::UnsupportedType => ErrorCode::UnsupportedType,
-        nexus_query_engine::error::QueryErrorCode::InvalidPlan => ErrorCode::InvalidExecutionPlan,
-        nexus_query_engine::error::QueryErrorCode::InvalidAttemptCorrelation => ErrorCode::InvalidRequest,
-        nexus_query_engine::error::QueryErrorCode::GraphInputInvalid => ErrorCode::GraphInputInvalid,
-        nexus_query_engine::error::QueryErrorCode::CudfInvalidInput => ErrorCode::CudfInvalidInput,
-        nexus_query_engine::error::QueryErrorCode::CudfUnsupported => ErrorCode::CudfUnsupported,
-        nexus_query_engine::error::QueryErrorCode::CudfResourceExhausted => ErrorCode::CudfResourceExhausted,
-        nexus_query_engine::error::QueryErrorCode::SizeOverflow => ErrorCode::SizeOverflow,
-        nexus_query_engine::error::QueryErrorCode::HostMaterializationLimitExceeded => {
-            ErrorCode::HostMaterializationLimitExceeded
-        },
-        nexus_query_engine::error::QueryErrorCode::CudfTemporaryFailure => ErrorCode::CudfTemporaryFailure,
-        nexus_query_engine::error::QueryErrorCode::CudfPersistentFailure => ErrorCode::CudfPersistentFailure,
-        nexus_query_engine::error::QueryErrorCode::CudfDependencyFailure => ErrorCode::CudfDependencyFailure,
-        nexus_query_engine::error::QueryErrorCode::SourceAccessDenied => ErrorCode::SourceAccessDenied,
-        nexus_query_engine::error::QueryErrorCode::SourceUnauthenticated => ErrorCode::SourceUnauthenticated,
-        nexus_query_engine::error::QueryErrorCode::SourceObjectNotFound => ErrorCode::SourceObjectNotFound,
-        nexus_query_engine::error::QueryErrorCode::SourceTemporaryFailure => ErrorCode::SourceTemporaryFailure,
-        nexus_query_engine::error::QueryErrorCode::CudfInvariantViolation => ErrorCode::CudfInvariantViolation,
-        nexus_query_engine::error::QueryErrorCode::MemoryReservationFailed => ErrorCode::MemoryReservationFailed,
-        nexus_query_engine::error::QueryErrorCode::ServiceOverloaded => ErrorCode::ServiceOverloaded,
-        nexus_query_engine::error::QueryErrorCode::Internal => ErrorCode::Internal,
-    }
+    adapter_code_for_native_error(error.code())
 }
 
 fn diagnostic_error_message(error: &(dyn StdError + 'static)) -> String {

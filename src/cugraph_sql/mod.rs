@@ -71,7 +71,7 @@ pub(crate) fn cugraph_feature_disabled(algorithm: CugraphAlgorithm) -> DataFusio
 }
 
 fn plan_error(message: impl Into<String>) -> DataFusionError {
-    Error::new(ErrorCode::DataFusionPlanning, "datafusion_nexus.cugraph_sql.plan", message).into()
+    Error::new(ErrorCode::InvalidExecutionPlan, "datafusion_nexus.cugraph_sql.plan", message).into()
 }
 
 /// Builds a structured rejection for a syntactically valid option that this

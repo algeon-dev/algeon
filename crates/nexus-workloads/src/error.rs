@@ -9,9 +9,7 @@ use datafusion::error::DataFusionError;
 use parquet::errors::ParquetError;
 
 /// Single shared workload error for all dataset discovery and registration
-/// paths. Hand-rolled Display/Error/From per house style (no thiserror).
-/// This replaces four byte-identical enums previously duplicated across
-/// clickbench, tpcds, tpch, and graph modules (~200 LOC).
+/// paths. Hand-rolled Display/Error/From per house style.
 #[derive(Debug)]
 pub enum WorkloadError {
     Io(std::io::Error),
@@ -34,17 +32,6 @@ impl Display for WorkloadError {
         }
     }
 }
-
-/// Backwards-compatible aliases preserving the four previously duplicated
-/// public error names. All map to the single shared `WorkloadError`.
-pub type ClickbenchWorkloadError = WorkloadError;
-pub type TpcdsWorkloadError = WorkloadError;
-pub type TpchWorkloadError = WorkloadError;
-pub type GraphDatasetError = WorkloadError;
-pub type ClickbenchWorkloadResult<T> = WorkloadResult<T>;
-pub type TpcdsWorkloadResult<T> = WorkloadResult<T>;
-pub type TpchWorkloadResult<T> = WorkloadResult<T>;
-pub type GraphDatasetResult<T> = WorkloadResult<T>;
 
 impl StdError for WorkloadError {
     fn source(&self) -> Option<&(dyn StdError + 'static)> {

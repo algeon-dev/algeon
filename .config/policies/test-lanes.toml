@@ -129,9 +129,8 @@ reason = "Flight SQL server integration tests initialize the native GPU backend 
 
 [[binary]]
 id = "nexus-query-engine"
-lane = "gpu"
-resource_class = "shared"
-reason = "Native engine library tests include crate-private cuDF runtime and kernel execution on small fixtures."
+lane = "cpu"
+reason = "Native engine library tests cover pure logic and runtime contracts without submitting native GPU work."
 
 [[binary]]
 id = "nexus-query-engine::native_contract_tests"
@@ -154,6 +153,12 @@ id = "nexus-query-engine::gpu_allocator_exclusive_tests"
 lane = "gpu"
 resource_class = "exclusive"
 reason = "Merged allocator event correlation and query-service allocator lifecycle tests require process-global device isolation."
+
+[[binary]]
+id = "nexus-query-engine::native_execution_tests"
+lane = "gpu"
+resource_class = "shared"
+reason = "Registered native execution tests create CUDA runtimes and validate bounded GPU execution."
 
 [[binary]]
 id = "nexus-query-engine::native_pipeline_execution_tests"

@@ -10,7 +10,7 @@ use datafusion_nexus::{
     session::NexusSessionStateBuilderExt,
 };
 
-use super::{TpchWorkloadResult, register_tpch_tables, tpch_native_optimizer_config};
+use super::{WorkloadResult, register_tpch_tables, tpch_native_optimizer_config};
 
 /// Number of curated analytical OLAP TPC-H-shaped queries.
 pub const ANALYTICAL_OLAP_QUERY_COUNT: usize = ANALYTICAL_OLAP_QUERIES.len();
@@ -276,7 +276,7 @@ pub fn analytical_olap_query_ids() -> impl Iterator<Item = &'static str> {
 pub async fn analytical_olap_fallback_pressure_workload_items(
     root: &Path,
     config: SessionConfig,
-) -> TpchWorkloadResult<Vec<NativeFallbackPressureWorkloadItem>> {
+) -> WorkloadResult<Vec<NativeFallbackPressureWorkloadItem>> {
     let ctx = SessionContext::new_with_config(config);
     register_tpch_tables(&ctx, root).await?;
     let mut items = Vec::with_capacity(ANALYTICAL_OLAP_QUERIES.len());
@@ -306,7 +306,7 @@ pub async fn analytical_olap_fallback_pressure_workload_items(
 pub async fn analytical_olap_datafusion_planning_workload_items(
     root: &Path,
     session_config: SessionConfig,
-) -> TpchWorkloadResult<Vec<NativeDataFusionPlanningWorkloadItem>> {
+) -> WorkloadResult<Vec<NativeDataFusionPlanningWorkloadItem>> {
     analytical_olap_datafusion_planning_workload_items_with_optimizer_config(
         root,
         session_config,
@@ -319,7 +319,7 @@ pub async fn analytical_olap_datafusion_planning_workload_items_with_optimizer_c
     root: &Path,
     session_config: SessionConfig,
     optimizer_config: NexusNativeOptimizerConfig,
-) -> TpchWorkloadResult<Vec<NativeDataFusionPlanningWorkloadItem>> {
+) -> WorkloadResult<Vec<NativeDataFusionPlanningWorkloadItem>> {
     let native_rule = Arc::new(NexusNativePhysicalOptimizerRule::new(optimizer_config));
     let state = SessionStateBuilder::new_with_default_features()
         .with_config(session_config)

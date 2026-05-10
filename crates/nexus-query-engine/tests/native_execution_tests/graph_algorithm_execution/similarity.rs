@@ -464,3 +464,8 @@ fn pairwise_similarity_rejects_null_pairs_absent_endpoints_and_pair_graph_dtype_
     assert_eq!(mismatch_error.code(), QueryErrorCode::UnsupportedType);
     assert_eq!(mismatch_error.fact_value("reason"), Some("vertex_pair_graph_vertex_dtype_mismatch"));
 }
+
+#[test]
+fn bounded_similarity_credits_live_literal_pair_input_once() {
+    assert_bounded_similarity_pair_input_overlap_is_credited();
+}

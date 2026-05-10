@@ -1,3 +1,6 @@
+#[path = "root_gpu_fixture.rs"]
+mod root_gpu_fixture;
+
 #[path = "cuvs_sql_gpu_tests.rs"]
 #[cfg(feature = "cuvs")]
 mod cuvs_sql_gpu_tests;

@@ -10,7 +10,7 @@ use parquet::{
     file::reader::{FileReader, SerializedFileReader},
 };
 
-use super::{TpchWorkloadError, TpchWorkloadResult, fixture::write_tiny_tpch_parquet_dataset};
+use super::{WorkloadError, WorkloadResult, fixture::write_tiny_tpch_parquet_dataset};
 use crate::NEXUS_PARQUET_DIR_ENV;
 
 /// Canonical TPC-H table names in fixture discovery order.
@@ -170,7 +170,7 @@ impl TpchDatasetMetadata {
     }
 }
 
-pub fn tiny_tpch_dataset_metadata(root: &Path) -> TpchWorkloadResult<TpchDatasetMetadata> {
+pub fn tiny_tpch_dataset_metadata(root: &Path) -> WorkloadResult<TpchDatasetMetadata> {
     describe_tpch_dataset(root, "tiny", "generated_tiny", "datafusion-nexus::write_tiny_tpch_parquet_dataset")
 }
 
@@ -178,7 +178,7 @@ pub fn external_tpch_dataset_metadata(
     root: &Path,
     scale_factor: impl Into<String>,
     generation_command: impl Into<String>,
-) -> TpchWorkloadResult<TpchDatasetMetadata> {
+) -> WorkloadResult<TpchDatasetMetadata> {
     describe_tpch_dataset(root, scale_factor, "external_parquet_root", generation_command)
 }
 
@@ -188,7 +188,7 @@ pub fn external_tpch_dataset_metadata(
 /// When unset, the helper tries the implicit SF1 default and falls back to
 /// generating tiny data under `tiny_root`. A truthy
 /// `NEXUS_TPCH_CONTENT_FINGERPRINT` requests the expensive content hash.
-pub fn prepare_tpch_report_dataset(tiny_root: &Path) -> TpchWorkloadResult<(PathBuf, TpchDatasetMetadata)> {
+pub fn prepare_tpch_report_dataset(tiny_root: &Path) -> WorkloadResult<(PathBuf, TpchDatasetMetadata)> {
     if let Ok(root) = std::env::var(NEXUS_PARQUET_DIR_ENV) {
         let root = PathBuf::from(root);
         let scale_factor = std::env::var(NEXUS_TPCH_SCALE_FACTOR_ENV).unwrap_or_else(|_| "unknown".to_string());
@@ -271,7 +271,7 @@ pub fn describe_tpch_dataset(
     scale_factor: impl Into<String>,
     provenance: impl Into<String>,
     generation_command: impl Into<String>,
-) -> TpchWorkloadResult<TpchDatasetMetadata> {
+) -> WorkloadResult<TpchDatasetMetadata> {
     describe_tpch_dataset_with_content_fingerprint(root, scale_factor, provenance, generation_command, false)
 }
 
@@ -286,7 +286,7 @@ pub fn describe_tpch_dataset_with_content_fingerprint(
     provenance: impl Into<String>,
     generation_command: impl Into<String>,
     include_content_fingerprint: bool,
-) -> TpchWorkloadResult<TpchDatasetMetadata> {
+) -> WorkloadResult<TpchDatasetMetadata> {
     let scale_factor = scale_factor.into();
     let provenance = provenance.into();
     let generation_command = generation_command.into();
@@ -335,7 +335,7 @@ impl TpchTableLayout {
 ///
 /// Accepted layouts are `<table>.parquet`, `<table>/` containing Parquet
 /// files recursively, or sibling shards named `<table>_NNNN.parquet`.
-pub fn discover_tpch_table_layout(root: &Path, table: &str) -> TpchWorkloadResult<TpchTableLayout> {
+pub fn discover_tpch_table_layout(root: &Path, table: &str) -> WorkloadResult<TpchTableLayout> {
     let file_path = root.join(format!("{table}.parquet"));
     if file_path.is_file() {
         return Ok(TpchTableLayout { anchor: file_path.clone(), files: vec![file_path] });
@@ -347,7 +347,7 @@ pub fn discover_tpch_table_layout(root: &Path, table: &str) -> TpchWorkloadResul
         collect_parquet_files(&directory_path, &mut files)?;
         files.sort();
         if files.is_empty() {
-            return Err(TpchWorkloadError::InvalidDataset(format!(
+            return Err(WorkloadError::InvalidDataset(format!(
                 "expected at least one Parquet file under {}",
                 directory_path.display()
             )));
@@ -361,7 +361,7 @@ pub fn discover_tpch_table_layout(root: &Path, table: &str) -> TpchWorkloadResul
         return Ok(TpchTableLayout { anchor, files: sibling_shards });
     }
 
-    Err(TpchWorkloadError::InvalidDataset(format!(
+    Err(WorkloadError::InvalidDataset(format!(
         "expected TPC-H table {table} at {}, {}/, or {}_NNNN.parquet siblings under {}",
         file_path.display(),
         directory_path.display(),
@@ -370,7 +370,7 @@ pub fn discover_tpch_table_layout(root: &Path, table: &str) -> TpchWorkloadResul
     )))
 }
 
-fn discover_sibling_split_shards(root: &Path, table: &str) -> TpchWorkloadResult<Vec<PathBuf>> {
+fn discover_sibling_split_shards(root: &Path, table: &str) -> WorkloadResult<Vec<PathBuf>> {
     if !root.is_dir() {
         return Ok(Vec::new());
     }
@@ -398,7 +398,7 @@ fn discover_sibling_split_shards(root: &Path, table: &str) -> TpchWorkloadResult
     Ok(shards)
 }
 
-fn read_tpch_table_metadata(root: &Path, table: &str) -> TpchWorkloadResult<TpchTableMetadata> {
+fn read_tpch_table_metadata(root: &Path, table: &str) -> WorkloadResult<TpchTableMetadata> {
     let layout = discover_tpch_table_layout(root, table)?;
     let mut files = Vec::with_capacity(layout.files.len());
     for file_path in &layout.files {
@@ -408,9 +408,9 @@ fn read_tpch_table_metadata(root: &Path, table: &str) -> TpchWorkloadResult<Tpch
     let schema = files
         .first()
         .map(|file| file.schema.clone())
-        .ok_or_else(|| TpchWorkloadError::InvalidDataset(format!("expected at least one Parquet file for {table}")))?;
+        .ok_or_else(|| WorkloadError::InvalidDataset(format!("expected at least one Parquet file for {table}")))?;
     if let Some(mismatched) = files.iter().find(|file| file.schema != schema) {
-        return Err(TpchWorkloadError::InvalidDataset(format!(
+        return Err(WorkloadError::InvalidDataset(format!(
             "schema mismatch in TPC-H table {table}: {} differs from first file",
             mismatched.path.display()
         )));
@@ -436,7 +436,7 @@ fn read_tpch_table_metadata(root: &Path, table: &str) -> TpchWorkloadResult<Tpch
     })
 }
 
-fn collect_parquet_files(path: &Path, files: &mut Vec<PathBuf>) -> TpchWorkloadResult<()> {
+fn collect_parquet_files(path: &Path, files: &mut Vec<PathBuf>) -> WorkloadResult<()> {
     for entry in fs::read_dir(path)? {
         let entry = entry?;
         let entry_path = entry.path();
@@ -450,10 +450,10 @@ fn collect_parquet_files(path: &Path, files: &mut Vec<PathBuf>) -> TpchWorkloadR
     Ok(())
 }
 
-fn read_tpch_table_file_metadata(root: &Path, path: &Path) -> TpchWorkloadResult<TpchTableFileMetadata> {
+fn read_tpch_table_file_metadata(root: &Path, path: &Path) -> WorkloadResult<TpchTableFileMetadata> {
     let metadata = fs::metadata(path)?;
     if !metadata.is_file() {
-        return Err(TpchWorkloadError::InvalidDataset(format!("expected {} to be a Parquet file", path.display())));
+        return Err(WorkloadError::InvalidDataset(format!("expected {} to be a Parquet file", path.display())));
     }
 
     let byte_size = metadata.len();
@@ -467,10 +467,10 @@ fn read_tpch_table_file_metadata(root: &Path, path: &Path) -> TpchWorkloadResult
     let mut row_group_bytes = Vec::with_capacity(row_group_count);
     for row_group in parquet_metadata.row_groups() {
         let rows = u64::try_from(row_group.num_rows()).map_err(|_| {
-            TpchWorkloadError::InvalidDataset(format!("negative row count in Parquet metadata for {}", path.display()))
+            WorkloadError::InvalidDataset(format!("negative row count in Parquet metadata for {}", path.display()))
         })?;
         let bytes = u64::try_from(row_group.compressed_size()).map_err(|_| {
-            TpchWorkloadError::InvalidDataset(format!(
+            WorkloadError::InvalidDataset(format!(
                 "negative compressed byte size in Parquet metadata for {}",
                 path.display()
             ))
@@ -532,7 +532,7 @@ fn tpch_dataset_metadata_fingerprint(
     format!("metadata-fnv1a64:{:016x}", hasher.finish())
 }
 
-fn tpch_dataset_content_fingerprint(tables: &[TpchTableMetadata]) -> TpchWorkloadResult<String> {
+fn tpch_dataset_content_fingerprint(tables: &[TpchTableMetadata]) -> WorkloadResult<String> {
     let mut hasher = StableFnv1a64::new();
     hasher.update_field("datafusion-nexus-tpch-dataset-content-v1");
     let mut buffer = vec![0_u8; 1024 * 1024];

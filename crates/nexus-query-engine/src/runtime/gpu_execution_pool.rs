@@ -2466,7 +2466,6 @@ mod job_class_tests {
     use super::*;
 
     #[test]
-    #[ignore = "requires GPU: DeviceId::count() guard would silently pass on GPU-less hosts"]
     fn auxiliary_spawn_is_rejected_when_its_class_is_saturated() {
         let pool = GpuExecutionPool::new_with_tracker_and_classes(
             cudf::DeviceId::DEFAULT.ordinal(),
@@ -2497,7 +2496,6 @@ mod job_class_tests {
     }
 
     #[test]
-    #[ignore = "requires GPU: DeviceId::count() guard would silently pass on GPU-less hosts"]
     fn class_capacities_are_reported_and_release_on_completion() {
         let pool = GpuExecutionPool::new_with_tracker_and_classes(
             cudf::DeviceId::DEFAULT.ordinal(),

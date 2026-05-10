@@ -570,7 +570,7 @@ impl AttemptReservationShape {
         }
 
         let minimum_source_read_bytes =
-            self.has_local_parquet_source.then(|| minimum_parquet_source_read_budget_bytes()).unwrap_or_default();
+            self.has_local_parquet_source.then(minimum_parquet_source_read_budget_bytes).unwrap_or_default();
         let Some(shape) = &self.complete_zero_column_global_aggregate else {
             return Ok(ResolvedReservationShape {
                 required_phase_floor_bytes: minimum_source_read_bytes,

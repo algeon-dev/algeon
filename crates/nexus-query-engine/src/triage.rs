@@ -5,7 +5,7 @@ use serde_json::{Value, json};
 use crate::{
     capability::EdgeConsumer,
     contract_report::{CapabilityContractOwner, CapabilityContractReport},
-    error::{QueryError, QueryErrorCode},
+    error::{QueryError, QueryErrorCode, triage_code_for_query_error},
     metrics::{CompiledTaskId, PlanNodeId, QueryId, QueryMetrics},
 };
 
@@ -66,30 +66,7 @@ impl std::fmt::Display for TriageCode {
 
 impl From<QueryErrorCode> for TriageCode {
     fn from(code: QueryErrorCode) -> Self {
-        match code {
-            QueryErrorCode::UnsupportedPlanShape => Self::UnsupportedPlanShape,
-            QueryErrorCode::UnsupportedOperator => Self::UnsupportedOperator,
-            QueryErrorCode::UnsupportedExpression => Self::UnsupportedExpression,
-            QueryErrorCode::UnsupportedType => Self::UnsupportedType,
-            QueryErrorCode::CudfUnsupported => Self::UnsupportedPlanShape,
-            QueryErrorCode::InvalidPlan => Self::InvalidPlan,
-            QueryErrorCode::MemoryReservationFailed => Self::MemoryReservationDenied,
-            QueryErrorCode::ServiceOverloaded => Self::ServiceOverloaded,
-            QueryErrorCode::SourceAccessDenied
-            | QueryErrorCode::SourceUnauthenticated
-            | QueryErrorCode::SourceObjectNotFound
-            | QueryErrorCode::SourceTemporaryFailure => Self::SourceFailure,
-            _ => match code.kind() {
-                crate::error::QueryErrorKind::Cancelled => Self::Cancelled,
-                crate::error::QueryErrorKind::Planning => Self::InvalidPlan,
-                crate::error::QueryErrorKind::InvalidInput => Self::InvalidInput,
-                crate::error::QueryErrorKind::Unsupported => Self::UnsupportedPlanShape,
-                crate::error::QueryErrorKind::ResourceExhausted => Self::ResourceExhausted,
-                crate::error::QueryErrorKind::DependencyFailure => Self::DependencyFailure,
-                crate::error::QueryErrorKind::InvariantViolation => Self::InvariantViolation,
-                crate::error::QueryErrorKind::Internal => Self::Internal,
-            },
-        }
+        triage_code_for_query_error(code)
     }
 }
 

@@ -1,13 +1,11 @@
 use super::*;
 
 mod common;
-mod compiled;
+pub(in crate::exec) mod compiled;
 mod hash;
 mod leaf;
 pub(in crate::exec::bounded) mod sizing;
 
-#[cfg(test)]
-pub(in crate::exec) use compiled::transaction::JoinMaterializationTxn;
 pub(in crate::exec::bounded) use compiled::{
     BoundedCompiledJoinBuildState, BoundedCompiledJoinMaterializeOutput, BoundedCompiledJoinProbeState,
     execute_bounded_compiled_join_build_from_frame, execute_bounded_compiled_join_build_from_resident_frame,

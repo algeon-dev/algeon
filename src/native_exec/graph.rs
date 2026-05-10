@@ -534,24 +534,24 @@ pub(crate) enum GraphBfsPublicationKind {
 /// result to a follower's requested sink.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum GraphBfsFollowerRoute {
-    ReuseHostResult,
-    UploadHostResult,
-    HandoffGpuResult,
-    MaterializeGpuResult,
+    ReuseHost,
+    UploadHost,
+    HandoffGpu,
+    MaterializeGpu,
 }
 
 impl GraphBfsFollowerRoute {
     pub(crate) const fn for_gpu_follower(publication: GraphBfsPublicationKind) -> Self {
         match publication {
-            GraphBfsPublicationKind::Host => Self::UploadHostResult,
-            GraphBfsPublicationKind::Gpu => Self::HandoffGpuResult,
+            GraphBfsPublicationKind::Host => Self::UploadHost,
+            GraphBfsPublicationKind::Gpu => Self::HandoffGpu,
         }
     }
 
     pub(crate) const fn for_host_follower(publication: GraphBfsPublicationKind) -> Self {
         match publication {
-            GraphBfsPublicationKind::Host => Self::ReuseHostResult,
-            GraphBfsPublicationKind::Gpu => Self::MaterializeGpuResult,
+            GraphBfsPublicationKind::Host => Self::ReuseHost,
+            GraphBfsPublicationKind::Gpu => Self::MaterializeGpu,
         }
     }
 }
@@ -946,19 +946,19 @@ mod tests {
     fn published_result_routing_matches_follower_sink() {
         assert_eq!(
             GraphBfsFollowerRoute::for_gpu_follower(GraphBfsPublicationKind::Host),
-            GraphBfsFollowerRoute::UploadHostResult,
+            GraphBfsFollowerRoute::UploadHost,
         );
         assert_eq!(
             GraphBfsFollowerRoute::for_gpu_follower(GraphBfsPublicationKind::Gpu),
-            GraphBfsFollowerRoute::HandoffGpuResult,
+            GraphBfsFollowerRoute::HandoffGpu,
         );
         assert_eq!(
             GraphBfsFollowerRoute::for_host_follower(GraphBfsPublicationKind::Host),
-            GraphBfsFollowerRoute::ReuseHostResult,
+            GraphBfsFollowerRoute::ReuseHost,
         );
         assert_eq!(
             GraphBfsFollowerRoute::for_host_follower(GraphBfsPublicationKind::Gpu),
-            GraphBfsFollowerRoute::MaterializeGpuResult,
+            GraphBfsFollowerRoute::MaterializeGpu,
         );
     }
 

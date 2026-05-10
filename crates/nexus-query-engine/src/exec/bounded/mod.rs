@@ -11,7 +11,7 @@ mod compiled;
 mod facts;
 mod final_sort;
 mod generic;
-mod join;
+pub(in crate::exec) mod join;
 mod partition_row_policy;
 mod partition_target_policy;
 pub(in crate::exec) mod pipeline;
@@ -38,8 +38,6 @@ pub(in crate::exec::bounded) use generic::{
     execute_bounded_generic_projection, execute_bounded_generic_projection_from_frame, execute_bounded_generic_unary,
     execute_bounded_generic_unary_from_frame, execute_bounded_generic_unary_from_frame_with_reservation_kind,
 };
-#[cfg(test)]
-pub(in crate::exec) use join::JoinMaterializationTxn;
 pub(in crate::exec::bounded) use join::{
     BoundedCompiledJoinBuildState, BoundedCompiledJoinMaterializeOutput, BoundedCompiledJoinProbeState,
     BoundedJoinLeafLocalParquetSourcePrefetch, BoundedJoinLeafLocalParquetSourceStream,

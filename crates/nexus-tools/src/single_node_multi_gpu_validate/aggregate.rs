@@ -709,7 +709,7 @@ impl CacheQuarantineEvidence {
             pre_ack,
             post_ack,
             final_observation,
-            status: valid.then_some(ClauseStatus::Evidenced).unwrap_or(ClauseStatus::Failed),
+            status: if valid { ClauseStatus::Evidenced } else { ClauseStatus::Failed },
         })
     }
 }

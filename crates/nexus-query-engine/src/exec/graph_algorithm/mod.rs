@@ -13,8 +13,8 @@ mod implementation;
 #[path = "disabled.rs"]
 mod implementation;
 
-#[cfg(all(test, feature = "cugraph"))]
-pub(crate) use implementation::force_next_graph_statistics_optional_resource_exhausted_for_test;
+#[cfg(all(any(test, feature = "test-hooks"), feature = "cugraph"))]
+pub use implementation::force_next_graph_statistics_optional_resource_exhausted_for_test;
 #[cfg(not(feature = "cugraph"))]
 pub(in crate::exec) use implementation::graph_algorithm_feature_disabled;
 #[cfg(feature = "cugraph")]
@@ -22,8 +22,8 @@ pub(in crate::exec) use implementation::{
     bounded_betweenness, diagnostics, execute_graph_algorithm, execute_graph_algorithm_sanitized,
     graph_empty_input_prevalidated, memory, statistics,
 };
-#[cfg(all(test, feature = "cugraph"))]
-pub(crate) use implementation::{
+#[cfg(all(any(test, feature = "test-hooks"), feature = "cugraph"))]
+pub use implementation::{
     force_next_graph_seed_chunk_retry_chunk_attempt_resource_exhausted_for_test,
     force_next_graph_seed_chunk_retry_full_attempt_resource_exhausted_for_test,
 };

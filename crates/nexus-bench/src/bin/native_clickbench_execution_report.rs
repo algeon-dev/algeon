@@ -16,7 +16,7 @@ use nexus_bench::{
     },
 };
 use nexus_workloads::clickbench::{
-    ClickbenchDatasetMetadata, ClickbenchWorkloadError, ClickbenchWorkloadResult, prepare_clickbench_report_dataset,
+    ClickbenchDatasetMetadata, WorkloadError, WorkloadResult, prepare_clickbench_report_dataset,
 };
 
 const NEXUS_CLICKBENCH_EXECUTION_QUERY_IDS_ENV: &str = "NEXUS_CLICKBENCH_EXECUTION_QUERY_IDS";
@@ -37,7 +37,7 @@ async fn main() -> ExitCode {
     }
 }
 
-async fn clickbench_report() -> ClickbenchWorkloadResult<ClickbenchExecutionReport> {
+async fn clickbench_report() -> WorkloadResult<ClickbenchExecutionReport> {
     let relational_execution = RelationalExecutionSelection::native();
     let native_profile = clickbench_native_profile_settings_from_env();
     eprintln!(
@@ -50,7 +50,7 @@ async fn clickbench_report() -> ClickbenchWorkloadResult<ClickbenchExecutionRepo
         native_profile.source_chunk_planning_mode.as_str(),
     );
     let (root, metadata) = prepare_clickbench_report_dataset()?.ok_or_else(|| {
-        ClickbenchWorkloadError::InvalidDataset(
+        WorkloadError::InvalidDataset(
             "no ClickBench fixture found; set NEXUS_PARQUET_DIR or stage \
              fixture/clickbench/data/{hits.parquet, partitioned/} before running this report"
                 .to_string(),

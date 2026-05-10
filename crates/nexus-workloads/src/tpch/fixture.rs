@@ -11,9 +11,9 @@ use arrow::{
 };
 use datafusion::parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
 
-use super::TpchWorkloadResult;
+use super::WorkloadResult;
 
-pub fn write_tiny_tpch_parquet_dataset(root: &Path) -> TpchWorkloadResult<()> {
+pub fn write_tiny_tpch_parquet_dataset(root: &Path) -> WorkloadResult<()> {
     fs::create_dir_all(root)?;
     write_customer(root)?;
     write_lineitem(root)?;
@@ -26,7 +26,7 @@ pub fn write_tiny_tpch_parquet_dataset(root: &Path) -> TpchWorkloadResult<()> {
     Ok(())
 }
 
-fn write_customer(root: &Path) -> TpchWorkloadResult<()> {
+fn write_customer(root: &Path) -> WorkloadResult<()> {
     write_table(
         root,
         "customer",
@@ -53,7 +53,7 @@ fn write_customer(root: &Path) -> TpchWorkloadResult<()> {
     )
 }
 
-fn write_lineitem(root: &Path) -> TpchWorkloadResult<()> {
+fn write_lineitem(root: &Path) -> WorkloadResult<()> {
     write_table(
         root,
         "lineitem",
@@ -96,7 +96,7 @@ fn write_lineitem(root: &Path) -> TpchWorkloadResult<()> {
     )
 }
 
-fn write_nation(root: &Path) -> TpchWorkloadResult<()> {
+fn write_nation(root: &Path) -> WorkloadResult<()> {
     write_table(
         root,
         "nation",
@@ -115,7 +115,7 @@ fn write_nation(root: &Path) -> TpchWorkloadResult<()> {
     )
 }
 
-fn write_orders(root: &Path) -> TpchWorkloadResult<()> {
+fn write_orders(root: &Path) -> WorkloadResult<()> {
     write_table(
         root,
         "orders",
@@ -144,7 +144,7 @@ fn write_orders(root: &Path) -> TpchWorkloadResult<()> {
     )
 }
 
-fn write_part(root: &Path) -> TpchWorkloadResult<()> {
+fn write_part(root: &Path) -> WorkloadResult<()> {
     write_table(
         root,
         "part",
@@ -173,7 +173,7 @@ fn write_part(root: &Path) -> TpchWorkloadResult<()> {
     )
 }
 
-fn write_partsupp(root: &Path) -> TpchWorkloadResult<()> {
+fn write_partsupp(root: &Path) -> WorkloadResult<()> {
     write_table(
         root,
         "partsupp",
@@ -194,7 +194,7 @@ fn write_partsupp(root: &Path) -> TpchWorkloadResult<()> {
     )
 }
 
-fn write_region(root: &Path) -> TpchWorkloadResult<()> {
+fn write_region(root: &Path) -> WorkloadResult<()> {
     write_table(
         root,
         "region",
@@ -207,7 +207,7 @@ fn write_region(root: &Path) -> TpchWorkloadResult<()> {
     )
 }
 
-fn write_supplier(root: &Path) -> TpchWorkloadResult<()> {
+fn write_supplier(root: &Path) -> WorkloadResult<()> {
     write_table(
         root,
         "supplier",
@@ -232,7 +232,7 @@ fn write_supplier(root: &Path) -> TpchWorkloadResult<()> {
     )
 }
 
-fn write_table(root: &Path, table: &str, schema: Arc<Schema>, columns: Vec<ArrayRef>) -> TpchWorkloadResult<()> {
+fn write_table(root: &Path, table: &str, schema: Arc<Schema>, columns: Vec<ArrayRef>) -> WorkloadResult<()> {
     let batch = RecordBatch::try_new(Arc::clone(&schema), columns)?;
     let file = File::create(root.join(format!("{table}.parquet")))?;
     let props = WriterProperties::builder().build();

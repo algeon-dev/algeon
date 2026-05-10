@@ -37,7 +37,7 @@ fn test_server_config(mut env: BTreeMap<&'static str, String>) -> ServerConfig {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cugraph_dsl_metadata_and_dry_run_work_over_flight_sql_view() {
-    let _guard = server_test_lock().lock().await;
+    let _guard = crate::root_gpu_fixture::lock_async().await;
     let (listener, addr) = free_local_addr();
     let env = BTreeMap::from([(NEXUS_SERVER_CUGRAPH_ENABLED_ENV, "true".to_string())]);
     let mut config = test_server_config(env);
@@ -113,7 +113,7 @@ async fn cugraph_dsl_metadata_and_dry_run_work_over_flight_sql_view() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cugraph_dsl_nullable_parquet_edge_schema_validates_over_flight_sql() {
-    let _guard = server_test_lock().lock().await;
+    let _guard = crate::root_gpu_fixture::lock_async().await;
     let (listener, addr) = free_local_addr();
     let env = BTreeMap::from([(NEXUS_SERVER_CUGRAPH_ENABLED_ENV, "true".to_string())]);
     let mut config = test_server_config(env);
@@ -161,7 +161,7 @@ async fn cugraph_dsl_nullable_parquet_edge_schema_validates_over_flight_sql() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cugraph_bfs_path_uses_gpu_resident_join_side_inputs_over_flight_sql() {
-    let _guard = server_test_lock().lock().await;
+    let _guard = crate::root_gpu_fixture::lock_async().await;
     let (listener, addr) = free_local_addr();
     let env = BTreeMap::from([(NEXUS_SERVER_CUGRAPH_ENABLED_ENV, "true".to_string())]);
     let mut config = test_server_config(env);
@@ -381,11 +381,6 @@ fn warm_cuda_once() {
         // Best-effort: serve_with_listener re-runs (and surfaces) any error.
         let _ = datafusion_nexus::server::init_cuda_device(0);
     });
-}
-
-fn server_test_lock() -> &'static tokio::sync::Mutex<()> {
-    static SERVER_TEST_LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
-    SERVER_TEST_LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
 }
 
 /// Reserve a loopback port and hand back the live listener so the caller can

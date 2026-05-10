@@ -268,7 +268,7 @@ fn stress_clauses(
 ) -> Vec<CacheCalibrationClause> {
     let mut clauses = vec![cache_sampling_clause(
         "s7_required_per_device_cap",
-        sampling.expected_enabled_ordinals.len() != 0
+        !sampling.expected_enabled_ordinals.is_empty()
             && sampling.cap_mismatch_samples == 0
             && cache_opt_in
                 .aggregate
@@ -1110,7 +1110,7 @@ mod tests {
                 uuid: None,
                 physical_total_bytes: None,
                 capacity_bytes: SIX_GIB.saturating_mul(2),
-                cache_cap_bytes: enabled.then_some(SIX_GIB).unwrap_or_default(),
+                cache_cap_bytes: if enabled { SIX_GIB } else { Default::default() },
                 install_telemetry: true,
                 max_active_attempts: 1,
                 stream_pool_size: 1,

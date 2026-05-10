@@ -38,11 +38,9 @@ use nexus_bench::{
     },
 };
 use nexus_workloads::{
-    clickbench::{
-        ClickbenchDatasetMetadata, ClickbenchWorkloadError, ClickbenchWorkloadResult, prepare_clickbench_report_dataset,
-    },
-    tpcds::{TpcdsDatasetMetadata, TpcdsWorkloadResult, prepare_tpcds_report_dataset},
-    tpch::{TpchDatasetMetadata, TpchWorkloadResult, prepare_tpch_report_dataset},
+    clickbench::{ClickbenchDatasetMetadata, WorkloadError, WorkloadResult, prepare_clickbench_report_dataset},
+    tpcds::{TpcdsDatasetMetadata, prepare_tpcds_report_dataset},
+    tpch::{TpchDatasetMetadata, prepare_tpch_report_dataset},
 };
 
 const NEXUS_NATIVE_DATAFUSION_PLANNING_WORKLOAD_ENV: &str = "NEXUS_NATIVE_DATAFUSION_PLANNING_WORKLOAD";
@@ -107,7 +105,7 @@ async fn synthetic_report(dir: &std::path::Path) -> NativeDataFusionPlanningRepo
     NativeDataFusionPlanningReport { rows, workload_dataset: None }
 }
 
-async fn tpch_report(dir: &std::path::Path) -> TpchWorkloadResult<TpchPlanningReport> {
+async fn tpch_report(dir: &std::path::Path) -> WorkloadResult<TpchPlanningReport> {
     let (root, metadata) = prepare_tpch_report_dataset(dir)?;
     let optimizer_config = tpch_native_optimizer_config();
     let mut session_config = tpch_report_session_config();
@@ -125,7 +123,7 @@ struct TpchPlanningReport {
     metadata: TpchDatasetMetadata,
 }
 
-async fn tpcds_report(dir: &std::path::Path) -> TpcdsWorkloadResult<TpcdsPlanningReport> {
+async fn tpcds_report(dir: &std::path::Path) -> WorkloadResult<TpcdsPlanningReport> {
     let (root, metadata) = prepare_tpcds_report_dataset(dir)?;
     let optimizer_config = tpcds_native_optimizer_config();
     let mut session_config = tpcds_report_session_config();
@@ -143,9 +141,9 @@ struct TpcdsPlanningReport {
     metadata: TpcdsDatasetMetadata,
 }
 
-async fn clickbench_report() -> ClickbenchWorkloadResult<ClickbenchPlanningReport> {
+async fn clickbench_report() -> WorkloadResult<ClickbenchPlanningReport> {
     let (root, metadata) = prepare_clickbench_report_dataset()?.ok_or_else(|| {
-        ClickbenchWorkloadError::InvalidDataset(
+        WorkloadError::InvalidDataset(
             "no ClickBench fixture found; set NEXUS_PARQUET_DIR or stage \
              fixture/clickbench/data/{hits.parquet, partitioned/} before running this report"
                 .to_string(),

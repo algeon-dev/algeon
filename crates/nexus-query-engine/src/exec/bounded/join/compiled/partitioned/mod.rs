@@ -97,11 +97,6 @@ fn partitioned_mixed_join_target_rows(context: &ExecutionContext) -> u64 {
     BoundedPartitionRowPolicy::default().mixed_join_target_rows(context.memory_control_policy())
 }
 
-#[cfg(test)]
-fn partitioned_mixed_join_target_rows_for_budget(device_budget_bytes: u64) -> u64 {
-    BoundedPartitionRowPolicy::default().mixed_join_target_rows_for_budget(device_budget_bytes)
-}
-
 pub(super) fn partitioned_join_target_bytes_for_context(context: &ExecutionContext) -> u64 {
     match context.memory_control_policy() {
         MemoryControlPolicy::Bounded { device_budget_bytes, .. } => {

@@ -64,8 +64,9 @@ pub use diagnostics::{
     FlightSqlNativeNotSupportedClass, log_native_planning_report, log_native_planning_report_for_tables,
 };
 pub use error::{
-    ERROR_CODE_METADATA_KEY, ERROR_KIND_METADATA_KEY, ERROR_OPERATION_METADATA_KEY, ERROR_STATUS_METADATA_KEY, Result,
-    ServerError, UNSUPPORTED_COLUMN_METADATA_KEY, UNSUPPORTED_COLUMN_ROLE_METADATA_KEY,
+    ERROR_CODE_METADATA_KEY, ERROR_KIND_METADATA_KEY, ERROR_OPERATION_METADATA_KEY, ERROR_STATUS_METADATA_KEY,
+    NATIVE_MESSAGE_METADATA_KEY, PREDICATE_ROLE_METADATA_KEY, REASON_METADATA_KEY, REQUIRED_OPTION_METADATA_KEY,
+    Result, ServerError, UNSUPPORTED_COLUMN_METADATA_KEY, UNSUPPORTED_COLUMN_ROLE_METADATA_KEY,
     UNSUPPORTED_COLUMN_TYPE_METADATA_KEY, datafusion_error_to_status, datafusion_error_to_status_for_operation,
 };
 pub use session::{build_session_config, build_session_context, build_session_context_with_backend};

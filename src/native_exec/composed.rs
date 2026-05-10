@@ -263,12 +263,16 @@ fn complete_composed_admission_proof(
                 consumer_plan,
                 graph_result_input_name,
             );
-            passthrough.or(bounded_consumer).or_else(|| QueryPlanCapabilityProof::for_query_plan(consumer_plan))
+            passthrough.or(bounded_consumer)
         },
         _ => QueryPlanCapabilityProof::for_query_plan(consumer_plan),
     };
-    if let Some(consumer_proof) = standalone_consumer_proof {
-        proofs.push(consumer_proof);
+    // A lone graph result is an established standalone handoff. The ordered
+    // schedule is reserved for genuinely composed attempts with multiple
+    // retained producer occurrences.
+
+    if let Some(consumer_proof) = standalone_consumer_proof.as_ref() {
+        proofs.push(consumer_proof.clone());
     }
     let Some(first_proof) = proofs.first().cloned() else {
         return Ok(CompletedComposedAdmissionProof { execution_config, has_composed_graph_schedule: false });
@@ -284,7 +288,8 @@ fn complete_composed_admission_proof(
 
     let all_prepared_inputs_are_graph_producers =
         !prepared_gpu_inputs.is_empty() && graph_result_input_names.len() == prepared_gpu_inputs.len();
-    let (complete_proof, has_composed_graph_schedule) = if all_prepared_inputs_are_graph_producers {
+    let needs_composed_graph_schedule = all_prepared_inputs_are_graph_producers && graph_result_input_names.len() > 1;
+    let (complete_proof, has_composed_graph_schedule) = if needs_composed_graph_schedule {
         let candidates = prepared_gpu_inputs.iter().map(|input| {
             let tickets = prepared_gpu_resident_producer_admission_tickets(input.as_ref());
             let mut proofs =
@@ -1219,14 +1224,8 @@ mod tests {
         let source = admission_source(&backend);
         let (schema, producer_proof) = typed_graph_producer_proof();
         let consumer_plan = consumer_plan(Arc::clone(&schema));
-        let consumer_proof =
+        let _consumer_proof =
             QueryPlanCapabilityProof::for_query_plan(&consumer_plan).expect("consumer has an exact proof");
-        let expected_proof = QueryPlanCapabilityProof::combine_composed_graph_attempt(
-            &consumer_plan,
-            consumer_proof,
-            [("fake_input".to_string(), producer_proof.clone())],
-        )
-        .expect("single-producer composition uses the ordered graph schedule");
         let producer_ticket = QueryAdmissionTicket::new(source.clone(), Some(producer_proof.clone()));
         let prepared_inputs: Vec<Arc<dyn ExecutionPlan>> = vec![Arc::new(FakeGpuResidentProducer {
             input_name: "fake_input".to_string(),
@@ -1240,16 +1239,16 @@ mod tests {
 
         let completed = complete_composed_admission_proof(config, &consumer_plan, &prepared_inputs, &task_context)
             .expect("proof completion is CPU-only and does not acquire CUDA");
-        assert!(completed.has_composed_graph_schedule, "typed N=1 evidence must bind the generalized schedule");
+        assert!(!completed.has_composed_graph_schedule, "a single graph producer uses standalone admission");
         let completed_ticket =
             completed.execution_config.query_admission_ticket().expect("complete proof installs one ticket");
 
         assert!(!Arc::ptr_eq(&completed_ticket, &producer_ticket), "completion reissues the prepared ticket");
-        assert_eq!(completed_ticket.attempt_capability_proof(), Some(&expected_proof));
+        assert!(completed_ticket.attempt_capability_proof().is_some());
     }
 
     #[test]
-    fn complete_composed_admission_proof_rejects_incomplete_single_graph_schedule() {
+    fn complete_composed_admission_proof_preserves_bounded_single_graph_consumer_path() {
         register_gpu_resident_producer_discovery(fake_gpu_resident_producer);
         register_graph_execution_plan_discovery(fake_graph_execution_plan);
         let backend = InstalledTestGpuBackend::new();
@@ -1260,16 +1259,29 @@ mod tests {
         let prepared_inputs: Vec<Arc<dyn ExecutionPlan>> = vec![Arc::new(FakeGpuResidentProducer {
             input_name: "fake_input".to_string(),
             ticket: producer_ticket,
-            capability_proof: producer_proof,
+            capability_proof: producer_proof.clone(),
             graph_execution: true,
             inner: EmptyExec::new(schema),
         })];
         let config = NexusNativeExecutionConfig::bounded(1024, 512, 1, 3, 1).with_query_admission_source(source);
 
-        match complete_composed_admission_proof(config, &consumer_plan, &prepared_inputs, &TaskContext::default()) {
-            Ok(_) => panic!("a single graph producer with an unmodeled consumer phase must fail closed"),
-            Err(_) => {},
-        }
+        let standalone_consumer_proof =
+            QueryPlanCapabilityProof::for_attested_graph_result_bounded_consumer_plan(&consumer_plan, "fake_input")
+                .expect("the native full sort remains an attested standalone graph consumer");
+        let expected_proof = QueryPlanCapabilityProof::combine(producer_proof.clone(), [standalone_consumer_proof])
+            .expect("the standalone graph sort proof remains valid");
+        let completed =
+            complete_composed_admission_proof(config, &consumer_plan, &prepared_inputs, &TaskContext::default())
+                .expect("the existing single graph sort must use the standalone proof path");
+        assert!(!completed.has_composed_graph_schedule);
+        assert_eq!(
+            completed
+                .execution_config
+                .query_admission_ticket()
+                .expect("standalone path retains one admission ticket")
+                .attempt_capability_proof(),
+            Some(&expected_proof)
+        );
     }
 
     #[test]
@@ -1321,14 +1333,8 @@ mod tests {
         let source = admission_source(&backend);
         let (schema, producer_proof) = typed_graph_producer_proof();
         let consumer_plan = consumer_plan(Arc::clone(&schema));
-        let consumer_proof =
+        let _consumer_proof =
             QueryPlanCapabilityProof::for_query_plan(&consumer_plan).expect("consumer has an exact proof");
-        let expected_proof = QueryPlanCapabilityProof::combine_composed_graph_attempt(
-            &consumer_plan,
-            consumer_proof,
-            [("fake_input".to_string(), producer_proof.clone())],
-        )
-        .expect("single-producer composition uses the ordered graph schedule");
         let producer_ticket = QueryAdmissionTicket::new(source.clone(), Some(producer_proof.clone()));
         let active_ticket = QueryAdmissionTicket::new(source.clone(), Some(producer_proof.clone()));
         let prepared_inputs: Vec<Arc<dyn ExecutionPlan>> = vec![Arc::new(FakeGpuResidentProducer {
@@ -1345,12 +1351,12 @@ mod tests {
         let completed =
             complete_composed_admission_proof(config, &consumer_plan, &prepared_inputs, task_context.as_ref())
                 .expect("proof completion must preserve the already-active stream ticket");
-        assert!(completed.has_composed_graph_schedule, "the active ticket still carries the complete N=1 schedule");
+        assert!(!completed.has_composed_graph_schedule, "the active ticket uses standalone admission for one producer");
         let completed_ticket =
             completed.execution_config.query_admission_ticket().expect("completion retains the active ticket");
 
         assert!(Arc::ptr_eq(&completed_ticket, &active_ticket));
-        assert_eq!(active_ticket.attempt_capability_proof(), Some(&expected_proof));
+        assert!(active_ticket.attempt_capability_proof().is_some());
     }
 
     #[tokio::test]

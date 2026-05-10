@@ -15,5 +15,5 @@ pub use registration::register_clickbench_table;
 
 pub use crate::{
     NEXUS_PARQUET_DIR_ENV,
-    error::{ClickbenchWorkloadError, ClickbenchWorkloadResult},
+    error::{WorkloadError, WorkloadResult},
 };

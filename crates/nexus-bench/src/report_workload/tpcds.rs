@@ -18,7 +18,7 @@ use datafusion_nexus::{
     source_cardinality::register_source_unique_keys_for_path,
 };
 use nexus_workloads::tpcds::{
-    TPCDS_QUERIES, TPCDS_TABLES, TpcdsQuery, TpcdsWorkloadResult, discover_tpcds_table_layout,
+    TPCDS_QUERIES, TPCDS_TABLES, TpcdsQuery, WorkloadResult, discover_tpcds_table_layout,
     register_tpcds_tables as register_neutral_tpcds_tables,
 };
 
@@ -500,7 +500,7 @@ fn optional_env_statistical_aggregate_execution_mode_for(
 pub async fn tpcds_fallback_pressure_workload_items(
     root: &Path,
     config: SessionConfig,
-) -> TpcdsWorkloadResult<Vec<NativeFallbackPressureWorkloadItem>> {
+) -> WorkloadResult<Vec<NativeFallbackPressureWorkloadItem>> {
     let ctx = SessionContext::new_with_config(config);
     register_tpcds_tables_with_native_metadata(&ctx, root).await?;
 
@@ -532,7 +532,7 @@ pub async fn tpcds_fallback_pressure_workload_items(
 pub async fn tpcds_datafusion_planning_workload_items(
     root: &Path,
     session_config: SessionConfig,
-) -> TpcdsWorkloadResult<Vec<NativeDataFusionPlanningWorkloadItem>> {
+) -> WorkloadResult<Vec<NativeDataFusionPlanningWorkloadItem>> {
     tpcds_datafusion_planning_workload_items_with_optimizer_config(
         root,
         session_config,
@@ -549,7 +549,7 @@ pub async fn tpcds_datafusion_planning_workload_items_with_optimizer_config(
     root: &Path,
     session_config: SessionConfig,
     optimizer_config: NexusNativeOptimizerConfig,
-) -> TpcdsWorkloadResult<Vec<NativeDataFusionPlanningWorkloadItem>> {
+) -> WorkloadResult<Vec<NativeDataFusionPlanningWorkloadItem>> {
     let native_rule = Arc::new(NexusNativePhysicalOptimizerRule::new(optimizer_config.clone()));
     let state = SessionStateBuilder::new_with_default_features()
         .with_config(native_tpcds_session_config(session_config))
@@ -597,7 +597,7 @@ pub async fn tpcds_datafusion_planning_workload_items_with_optimizer_config(
 pub async fn tpcds_datafusion_execution_workload_items(
     root: &Path,
     session_config: SessionConfig,
-) -> TpcdsWorkloadResult<Vec<NativeDataFusionExecutionWorkloadItem>> {
+) -> WorkloadResult<Vec<NativeDataFusionExecutionWorkloadItem>> {
     tpcds_datafusion_execution_workload_items_with_optimizer_config(
         root,
         session_config,
@@ -613,7 +613,7 @@ pub async fn tpcds_datafusion_execution_workload_items_with_optimizer_config(
     root: &Path,
     session_config: SessionConfig,
     optimizer_config: NexusNativeOptimizerConfig,
-) -> TpcdsWorkloadResult<Vec<NativeDataFusionExecutionWorkloadItem>> {
+) -> WorkloadResult<Vec<NativeDataFusionExecutionWorkloadItem>> {
     tpcds_datafusion_execution_workload_items_filtered(root, session_config, optimizer_config, None, None).await
 }
 
@@ -655,7 +655,7 @@ pub async fn tpcds_datafusion_execution_workload_items_filtered(
     optimizer_config: NexusNativeOptimizerConfig,
     query_ids: Option<&[&str]>,
     mut progress: Option<&mut dyn FnMut(TpcdsExecutionProgressEvent<'_>)>,
-) -> TpcdsWorkloadResult<Vec<NativeDataFusionExecutionWorkloadItem>> {
+) -> WorkloadResult<Vec<NativeDataFusionExecutionWorkloadItem>> {
     let native_rule = Arc::new(NexusNativePhysicalOptimizerRule::new(optimizer_config.clone()));
     let state = SessionStateBuilder::new_with_default_features()
         .with_config(native_tpcds_session_config(session_config))
@@ -744,7 +744,7 @@ async fn execute_tpcds_native_plan(plan: Arc<dyn ExecutionPlan>) -> NativeDataFu
     }
 }
 
-pub async fn register_tpcds_tables_with_native_metadata(ctx: &SessionContext, root: &Path) -> TpcdsWorkloadResult<()> {
+pub async fn register_tpcds_tables_with_native_metadata(ctx: &SessionContext, root: &Path) -> WorkloadResult<()> {
     for &table in TPCDS_TABLES {
         let layout = discover_tpcds_table_layout(root, table)?;
         if let Some(key) = tpcds_source_unique_key(table) {

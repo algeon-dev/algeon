@@ -1,14 +1,14 @@
 //! Bounded betweenness seed-chunk retry support.
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-hooks"))]
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use super::*;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-hooks"))]
 pub(super) static FORCE_NEXT_GRAPH_SEED_CHUNK_RETRY_FULL_ATTEMPT_RESOURCE_EXHAUSTED: AtomicBool =
     AtomicBool::new(false);
-#[cfg(test)]
+#[cfg(any(test, feature = "test-hooks"))]
 static FORCE_NEXT_GRAPH_SEED_CHUNK_RETRY_CHUNK_ATTEMPT_RESOURCE_EXHAUSTED: AtomicBool = AtomicBool::new(false);
 
 #[cfg(feature = "cugraph")]
@@ -38,13 +38,13 @@ impl RuntimeGraphSpecResolution {
     }
 }
 
-#[cfg(test)]
-pub(crate) fn force_next_graph_seed_chunk_retry_full_attempt_resource_exhausted_for_test() {
+#[cfg(any(test, feature = "test-hooks"))]
+pub fn force_next_graph_seed_chunk_retry_full_attempt_resource_exhausted_for_test() {
     FORCE_NEXT_GRAPH_SEED_CHUNK_RETRY_FULL_ATTEMPT_RESOURCE_EXHAUSTED.store(true, Ordering::SeqCst);
 }
 
-#[cfg(test)]
-pub(crate) fn force_next_graph_seed_chunk_retry_chunk_attempt_resource_exhausted_for_test() {
+#[cfg(any(test, feature = "test-hooks"))]
+pub fn force_next_graph_seed_chunk_retry_chunk_attempt_resource_exhausted_for_test() {
     FORCE_NEXT_GRAPH_SEED_CHUNK_RETRY_CHUNK_ATTEMPT_RESOURCE_EXHAUSTED.store(true, Ordering::SeqCst);
 }
 
@@ -372,7 +372,7 @@ pub(super) fn execute_bounded_betweenness_seed_chunk_retry(
             side_inputs: inputs.side_inputs.clone(),
             graph_memory_limit_bytes: inputs.graph_memory_limit_bytes,
         };
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-hooks"))]
         if FORCE_NEXT_GRAPH_SEED_CHUNK_RETRY_CHUNK_ATTEMPT_RESOURCE_EXHAUSTED.swap(false, Ordering::SeqCst) {
             let mut error = QueryError::new(
                 QueryErrorCode::CudfResourceExhausted,
