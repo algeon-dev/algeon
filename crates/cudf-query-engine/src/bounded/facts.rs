@@ -45,6 +45,13 @@ const HASH_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_POST_JOIN_AGGREGATE_TOPK_FAMILY
 const HASH_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_POST_JOIN_AGGREGATE_TOPK_BLOCKER: &str =
     "bounded_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_executor_missing";
 const HASH_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_POST_JOIN_AGGREGATE_TOPK_SHAPE_CONTRACT: &str = "final_topk_over_projection_over_grouped_aggregate_over_hash_join_with_grouped_aggregate_input_and_multi_join_input";
+const HASH_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_POST_JOIN_AGGREGATE_TOPK_CONTRACT_MODES: &str = "source_contract:hard_budgeted_report,aggregate_contract:hard_budgeted_report,final_sort_contract:hard_budgeted_report";
+const HASH_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_POST_JOIN_AGGREGATE_TOPK_UNRESOLVED_PREFLIGHT_CONTRACTS: &str = "source_contract:libcudf_parquet_decoded_output_preflight_unavailable,aggregate_contract:libcudf_groupby_aggregate_temporary_workspace_preflight_unavailable,final_sort_contract:libcudf_final_sort_order_preflight_unavailable";
+const HASH_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_POST_JOIN_AGGREGATE_TOPK_CONTRACT_REPORT_FIELDS: &str = "source_contract:allocator_high_water_bytes+retained_bytes+output_bytes+output_rows+context_facts,aggregate_contract:allocator_high_water_bytes+retained_bytes+output_bytes+output_rows,final_sort_contract:allocator_high_water_bytes+retained_sort_order_bytes+materialized_output_bytes+output_rows";
+const HASH_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_POST_JOIN_AGGREGATE_TOPK_RESERVATION_KINDS: &str = "source_read,operator_output,build_side,hash_table,probe_side,filtered_probe_state,mixed_size_data,gather_map,join_output,final_sort,materialization";
+const HASH_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_POST_JOIN_AGGREGATE_TOPK_RESERVATION_STATUSES: &str = "source_read:modeled,operator_output:modeled,build_side:modeled,hash_table:modeled,probe_side:modeled,filtered_probe_state:modeled,mixed_size_data:modeled,gather_map:modeled,join_output:modeled,final_sort:modeled,materialization:modeled";
+const HASH_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_POST_JOIN_AGGREGATE_TOPK_RESERVATION_REQUIREMENTS: &str = "source_read:source_contract:modeled_by_cudf_rs_hard_budgeted_report_with_unresolved_preflight,operator_output:aggregate_contract:modeled_by_cudf_rs_hard_budgeted_report_with_unresolved_preflight,build_side:query_engine_build_side_source_reservation:modeled_before_execution,hash_table:hash_join_pre_build_reservation_size_bytes:modeled_by_cudf_rs_pre_build_sizing,probe_side:query_engine_probe_side_source_reservation:modeled_by_ordered_bounded_join_execution_path,filtered_probe_state:filtered_join_retained_probe_state:modeled_by_cudf_rs_filtered_probe_state_observability,mixed_size_data:mixed_keyed_residual_or_conditional_full_retained_size_data:modeled_by_cudf_rs_retained_join_size_data_observability,gather_map:join_gather_map_reservation_size_bytes:modeled_by_cudf_rs_join_gather_map_sizing,join_output:dataframe_gather_output_reservation_size_bytes+projected_cross_join_reservation_size_bytes:modeled_by_cudf_rs_dataframe_gather_or_projected_cross_output_sizing,final_sort:final_sort_contract:modeled_by_cudf_rs_hard_budgeted_report_with_unresolved_preflight,materialization:query_engine_explicit_sink_materialization_reservation:modeled_by_explicit_sink_boundary";
+const HASH_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_POST_JOIN_AGGREGATE_TOPK_MODELED_RESERVATIONS: &str = "source_read,operator_output,build_side,hash_table,probe_side,filtered_probe_state,mixed_size_data,gather_map,join_output,final_sort,materialization";
 const MULTI_JOIN_RESIDENT_GROUPED_AGGREGATE_SUBQUERY_FILTER_FAMILY: &str =
     "multi_join_with_resident_grouped_aggregate_subquery_filter";
 const MULTI_JOIN_RESIDENT_GROUPED_AGGREGATE_SUBQUERY_FILTER_BLOCKER: &str =
@@ -235,6 +242,48 @@ pub(crate) fn bounded_join_modeled_facts(
         facts.insert("missing_reservations", String::new());
         facts
             .insert("modeled_reservations", KEYED_HASH_JOIN_RESIDENT_SUBPLAN_PIPELINE_MODELED_RESERVATIONS.to_string());
+        facts.insert("bounded_join_lower_level_blockers", String::new());
+    } else if analyze_bounded_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_pipeline(plan).is_ok()
+    {
+        facts.insert(
+            "bounded_join_execution_family",
+            HASH_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_POST_JOIN_AGGREGATE_TOPK_FAMILY.to_string(),
+        );
+        facts.insert(
+            "bounded_join_required_shape_contract",
+            HASH_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_POST_JOIN_AGGREGATE_TOPK_SHAPE_CONTRACT.to_string(),
+        );
+        facts.insert(
+            "bounded_join_contract_modes",
+            HASH_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_POST_JOIN_AGGREGATE_TOPK_CONTRACT_MODES.to_string(),
+        );
+        facts.insert(
+            "bounded_join_unresolved_preflight_contracts",
+            HASH_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_POST_JOIN_AGGREGATE_TOPK_UNRESOLVED_PREFLIGHT_CONTRACTS
+                .to_string(),
+        );
+        facts.insert(
+            "bounded_join_contract_report_fields",
+            HASH_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_POST_JOIN_AGGREGATE_TOPK_CONTRACT_REPORT_FIELDS.to_string(),
+        );
+        facts.insert(
+            "bounded_join_reservation_kinds",
+            HASH_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_POST_JOIN_AGGREGATE_TOPK_RESERVATION_KINDS.to_string(),
+        );
+        facts.insert(
+            "bounded_join_reservation_statuses",
+            HASH_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_POST_JOIN_AGGREGATE_TOPK_RESERVATION_STATUSES.to_string(),
+        );
+        facts.insert(
+            "bounded_join_reservation_requirements",
+            HASH_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_POST_JOIN_AGGREGATE_TOPK_RESERVATION_REQUIREMENTS.to_string(),
+        );
+        facts.insert("blocked_reservations", String::new());
+        facts.insert("missing_reservations", String::new());
+        facts.insert(
+            "modeled_reservations",
+            HASH_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_POST_JOIN_AGGREGATE_TOPK_MODELED_RESERVATIONS.to_string(),
+        );
         facts.insert("bounded_join_lower_level_blockers", String::new());
     }
     facts

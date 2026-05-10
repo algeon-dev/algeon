@@ -11,7 +11,6 @@ async fn tpch_remaining_rejected_queries_expose_bounded_topology_facts() {
 
     for (query_id, expected_family) in [
         ("q02", "multi_join_with_aggregate_over_join_subplan_topk"),
-        ("q18", "hash_join_with_resident_grouped_aggregate_input_post_join_aggregate_topk"),
         ("q20", "multi_join_with_resident_grouped_aggregate_subquery_filter"),
     ] {
         let item = items.iter().find(|item| item.query_id == query_id).expect("TPC-H workload should include query");
@@ -48,6 +47,26 @@ async fn tpch_remaining_rejected_queries_expose_bounded_topology_facts() {
     assert_eq!(
         facts.get("bounded_join_execution_family").map(String::as_str),
         Some("keyed_hash_join_resident_subplan_pipeline")
+    );
+
+    let q18 = items.iter().find(|item| item.query_id == "q18").expect("TPC-H workload should include q18");
+    let NativeFallbackPressureWorkloadInput::PhysicalPlan(plan) = &q18.input else {
+        panic!("q18 should produce a physical plan");
+    };
+    let result = lower_physical_plan_to_native(Arc::clone(plan));
+    assert_eq!(result.rewritten_count(), 1, "q18 outcomes={:?}", result.report.outcomes());
+    let native_plan = &result.plans[0];
+    assert!(
+        native_plan
+            .has_bounded_executable_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_pipeline(),
+        "q18 should lower to the executable resident grouped aggregate TopK pipeline:\n{native_plan}"
+    );
+    let facts = native_plan
+        .bounded_join_modeled_facts(cudf_query_engine::ExecutionBoundaryPolicy::default())
+        .expect("q18 should expose modeled bounded join facts");
+    assert_eq!(
+        facts.get("bounded_join_execution_family").map(String::as_str),
+        Some("hash_join_with_resident_grouped_aggregate_input_post_join_aggregate_topk")
     );
 
     fs::remove_dir_all(dir).unwrap();

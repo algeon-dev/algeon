@@ -4,7 +4,9 @@ use arrow::datatypes::{Field, Schema, SchemaRef};
 
 use crate::{
     bounded::{
-        BoundedJoinPlanSupport, analyze_bounded_join_pipeline, analyze_bounded_join_plan_support,
+        BoundedJoinPlanSupport,
+        analyze_bounded_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_pipeline,
+        analyze_bounded_join_pipeline, analyze_bounded_join_plan_support,
         analyze_bounded_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline,
         analyze_bounded_keyless_conditional_join_input_subplan_pipeline,
         analyze_bounded_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline,

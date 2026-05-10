@@ -94,6 +94,17 @@ pub(crate) fn bounded_mixed_keyed_residual_join_resident_grouped_aggregate_input
         && !join.spec.output_projection.is_empty()
 }
 
+pub(crate) fn bounded_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_root_compatible(
+    join: &JoinNode,
+) -> bool {
+    join.spec.join_type == JoinType::LeftSemi
+        && join.spec.build_side == JoinSide::Right
+        && !join.spec.keys.is_empty()
+        && join.spec.residual_predicate.is_none()
+        && !join.spec.output_projection.is_empty()
+        && join.spec.output_projection.iter().all(|column| column.side == JoinSide::Left)
+}
+
 pub(crate) fn bounded_root_join_compatible(join: &JoinNode) -> bool {
     bounded_root_hash_join_compatible(join)
         || bounded_root_filtered_join_compatible(join)

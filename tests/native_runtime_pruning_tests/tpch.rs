@@ -172,6 +172,62 @@ async fn native_runtime_tpch_q15_tiny_root_join_matches_cpu() {
 }
 
 #[tokio::test]
+async fn native_runtime_tpch_q18_tiny_bounded_resident_aggregate_topk_matches_cpu() {
+    let dir = unique_temp_dir("datafusion-cudf-native-runtime-tpch-q18-tiny");
+    write_tiny_tpch_parquet_dataset(&dir).unwrap();
+    let q18 = TPCH_QUERIES.iter().find(|query| query.id == "q18").expect("TPC-H Q18 query must exist");
+    let cpu_batches = cpu_tpch_sql_output(&dir, q18.sql).await;
+
+    let physical_plan = tpch_sql_plan(&dir, tpch_report_session_config(), q18.sql).await;
+    let lowering = lower_physical_plan_to_native(Arc::clone(&physical_plan));
+    assert_eq!(lowering.rewritten_count(), 1, "outcomes={:?}", lowering.report.outcomes());
+    assert_eq!(lowering.rejected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
+    assert!(
+        lowering.plans[0]
+            .has_bounded_executable_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_pipeline(),
+        "Q18 should use the resident grouped aggregate TopK bounded path:\n{}",
+        lowering.plans[0]
+    );
+    let direct_result = execute_query_plan(&bounded_execution_context(), &lowering.plans[0]).unwrap();
+    let direct_metrics = direct_result.metrics();
+    assert!(direct_metrics.reservation_events.iter().any(|event| {
+        event.outcome.as_str() == "granted"
+            && event.reservation_kind == cudf_query_engine::ReservationKind::OperatorOutput
+            && event.memory_boundary == "join_pipeline_aggregate"
+    }));
+    assert!(direct_metrics.reservation_events.iter().any(|event| {
+        event.outcome.as_str() == "granted"
+            && event.reservation_kind == cudf_query_engine::ReservationKind::FinalSort
+            && event.memory_boundary == "final_sort"
+    }));
+    assert!(
+        direct_metrics.reservation_events.iter().all(|event| event.memory_boundary != "join_pipeline_sort"),
+        "Q18 should route final TopK through the fetch-aware final-sort executor"
+    );
+    let QueryOutput::HostArrow(direct_batches) = direct_result.output() else {
+        panic!("Q18 direct native query should materialize a host batch");
+    };
+    assert_batches_equal_allow_empty(&cpu_batches, std::slice::from_ref(direct_batches));
+
+    let native_plan = native_datafusion_tpch_sql_plan(&dir, q18.sql, native_datafusion_config()).await;
+    assert_native_cudf_exec(&native_plan, "bounded TPC-H Q18 should be replaced by NativeCudfExec");
+
+    let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
+    cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
+    let native_batches = collect(Arc::clone(&native_plan), Arc::new(TaskContext::default())).await.unwrap();
+    assert_batches_equal_allow_empty(&cpu_batches, &native_batches);
+    assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
+    assert_eq!(cudf::testing::arrow::arrow_host_export_call_count_for_test(), 1);
+
+    let metrics = native_plan.metrics().expect("NativeCudfExec should expose DataFusion metrics");
+    assert_eq!(metrics.sum_by_name("host_to_device_uploads").unwrap().as_usize(), 0);
+    assert_eq!(metrics.sum_by_name("device_to_host_materializations").unwrap().as_usize(), 1);
+    assert_eq!(metrics.sum_by_name("reservation_denied_count").unwrap().as_usize(), 0);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
 async fn native_runtime_tpch_q16_tiny_distinct_anti_join_matches_cpu() {
     let dir = unique_temp_dir("datafusion-cudf-native-runtime-tpch-q16-tiny");
     write_tiny_tpch_parquet_dataset(&dir).unwrap();

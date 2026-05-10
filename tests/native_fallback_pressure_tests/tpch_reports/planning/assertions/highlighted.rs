@@ -166,18 +166,13 @@ pub(super) fn assert_highlighted_planning_rows_and_tsv(
         .filter(|row| row.outcome == NativeDataFusionPlanningOutcome::RejectedBeforeExecution)
         .map(|row| row.query_id.as_str())
         .collect::<Vec<_>>();
-    assert_eq!(rejected_query_ids, vec!["q02", "q18", "q20"]);
+    assert_eq!(rejected_query_ids, vec!["q02", "q20"]);
 
     for (query_id, expected_family, expected_blocker) in [
         (
             "q02",
             "multi_join_with_aggregate_over_join_subplan_topk",
             "bounded_multi_join_aggregate_over_join_subplan_topk_executor_missing",
-        ),
-        (
-            "q18",
-            "hash_join_with_resident_grouped_aggregate_input_post_join_aggregate_topk",
-            "bounded_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_executor_missing",
         ),
         (
             "q20",
@@ -204,6 +199,29 @@ pub(super) fn assert_highlighted_planning_rows_and_tsv(
         );
         assert!(row.rejected_before_execution, "{query_id} should remain rejected before native execution");
     }
+
+    let q18 = planning_row(report, "q18");
+    assert_eq!(q18.outcome, NativeDataFusionPlanningOutcome::AcceptedReplaced);
+    assert_eq!(q18.reason_code, None);
+    assert_eq!(q18.unsupported_category, None);
+    assert_eq!(q18.post_native_plan_root, "NativeCudfExec");
+    assert_eq!(q18.post_native_execution_path, NativeDataFusionPostNativeExecutionPath::Native);
+    assert_eq!(
+        q18.bounded_join_reservation_facts.get("bounded_join_execution_family").map(String::as_str),
+        Some("hash_join_with_resident_grouped_aggregate_input_post_join_aggregate_topk")
+    );
+    assert_eq!(
+        q18.bounded_join_reservation_facts.get("bounded_join_lower_level_blockers").map(String::as_str),
+        Some("")
+    );
+    assert_eq!(q18.bounded_join_reservation_facts.get("blocked_reservations").map(String::as_str), Some(""));
+    assert_eq!(q18.bounded_join_reservation_facts.get("missing_reservations").map(String::as_str), Some(""));
+    assert_eq!(
+        q18.bounded_join_reservation_facts.get("bounded_join_contract_modes").map(String::as_str),
+        Some(
+            "source_contract:hard_budgeted_report,aggregate_contract:hard_budgeted_report,final_sort_contract:hard_budgeted_report"
+        )
+    );
 
     let q15 = planning_row(report, "q15");
     assert_eq!(q15.outcome, NativeDataFusionPlanningOutcome::AcceptedReplaced);

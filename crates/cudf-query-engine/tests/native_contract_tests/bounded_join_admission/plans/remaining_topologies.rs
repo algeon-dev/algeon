@@ -34,9 +34,17 @@ pub(in crate::bounded_join_admission) fn resident_grouped_aggregate_input_post_j
     let lineitem = source(&mut builder, "resident-aggregate-post-aggregate-topk-lineitem");
 
     let grouped_input = grouped_aggregate(&mut builder, lineitem);
+    let grouped_input = builder.add_projection(
+        grouped_input,
+        projection_outputs(
+            vec![Expr::column("k")],
+            Arc::new(Schema::new(vec![Field::new("k", DataType::Int32, false)])),
+        ),
+    );
     let ab = join(&mut builder, a, b, "ab");
     let right_tree = join(&mut builder, ab, c, "right_tree");
-    let root = join(&mut builder, grouped_input, right_tree, "root");
+    let root = semi_join(&mut builder, right_tree, grouped_input);
+    let root = project_key_value(&mut builder, root);
     let post_join_aggregate = grouped_aggregate(&mut builder, root);
     let projection = project_key_value(&mut builder, post_join_aggregate);
     let sort = builder.add_sort(
@@ -44,7 +52,8 @@ pub(in crate::bounded_join_admission) fn resident_grouped_aggregate_input_post_j
         SortSpec::new(vec![SortExpr::new(Expr::column("v"), true, false)]),
         key_value_schema(),
     );
-    builder.finish_with_host_sink(sort)
+    let limit = builder.add_limit(sort, LimitSpec::fetch(100), key_value_schema());
+    builder.finish_with_host_sink(limit)
 }
 
 pub(in crate::bounded_join_admission) fn resident_grouped_aggregate_subquery_filter_plan()
@@ -95,6 +104,27 @@ fn join(
         ])
         .with_build_side(JoinSide::Right),
         output_schema,
+    )
+}
+
+fn semi_join(
+    builder: &mut QueryPlanBuilder,
+    left: cudf_query_engine::NodeId,
+    right: cudf_query_engine::NodeId,
+) -> cudf_query_engine::NodeId {
+    builder.add_join(
+        left,
+        right,
+        JoinSpec::new(
+            JoinType::LeftSemi,
+            vec![JoinKey::new(ColumnRef::input(0, "k", "k"), ColumnRef::input(1, "k", "k"))],
+        )
+        .with_output_projection(vec![
+            JoinOutputColumn::left(ColumnRef::input(0, "k", "k"), "k"),
+            JoinOutputColumn::left(ColumnRef::input(0, "v", "v"), "v"),
+        ])
+        .with_build_side(JoinSide::Right),
+        key_value_schema(),
     )
 }
 

@@ -305,7 +305,7 @@ impl<'a> FinalSortExecutor<'a> {
                 group,
                 TopKMergeAttempt { keep_rows: merge.keep_rows, merge_fan_in: group.len(), attempt: merge.attempt },
             ) {
-                Ok(candidate) => output.push(TopKLevelItem::Merged(candidate)),
+                Ok(candidate) => output.push(TopKLevelItem::Merged(Box::new(candidate))),
                 Err(error) => {
                     release_topk_level_items(output, self.reservations);
                     return Err(error);
