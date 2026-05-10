@@ -55,16 +55,16 @@ lane = "cpu"
 reason = "Server binary unit tests exercise error/log formatting and configuration without starting CUDA or the service."
 
 [[binary]]
+id = "datafusion-nexus::root_gpu_tests"
+lane = "gpu"
+resource_class = "shared"
+reason = "Merged root GPU SQL, server, session, metrics, and lifecycle tests execute bounded CUDA fixtures."
+
+[[binary]]
 id = "datafusion-nexus::cugraph_tests"
 lane = "gpu"
 resource_class = "shared"
 reason = "cuGraph SQL parity and algorithm tests construct and execute GPU graphs on small fixtures."
-
-[[binary]]
-id = "datafusion-nexus::cuvs_sql_gpu_tests"
-lane = "gpu"
-resource_class = "shared"
-reason = "cuVS SQL ingress, Parquet, multi-partition relational-output, and combined cuGraph pipelines execute small GPU fixtures."
 
 [[binary]]
 id = "datafusion-nexus::p6_device_identity_tests"
@@ -89,12 +89,6 @@ resource_class = "shared"
 reason = "Iceberg native execution tests reach cuDF on bounded test fixtures."
 
 [[binary]]
-id = "datafusion-nexus::attempt_lifecycle_tests"
-lane = "gpu"
-resource_class = "shared"
-reason = "Execution-attempt lifecycle integration tests create bounded cuDF runtimes and require serialized shared GPU access."
-
-[[binary]]
 id = "datafusion-nexus::native_exec_tests"
 lane = "gpu"
 resource_class = "shared"
@@ -104,12 +98,6 @@ reason = "Native execution integration tests create cuDF runtimes; their explici
 id = "datafusion-nexus::native_planning_tests"
 lane = "cpu"
 reason = "Merged CPU native planning harness covering lowering shape/admission contracts and fallback-pressure synthetic metrics/plans without submitting native GPU work."
-
-[[binary]]
-id = "datafusion-nexus::native_metrics_tests"
-lane = "gpu"
-resource_class = "shared"
-reason = "Metrics tests include bounded source-cache reservation accounting through a real cuDF execution context."
 
 [[binary]]
 id = "datafusion-nexus::native_runtime_pruning_tests"
@@ -122,18 +110,6 @@ id = "datafusion-nexus::native_tpcds_parity_tests"
 lane = "gpu"
 resource_class = "shared"
 reason = "Remaining TPC-DS harness coverage executes GPU-capable parity infrastructure and remains serialized with shared CUDA users."
-
-[[binary]]
-id = "datafusion-nexus::server_cugraph_tests"
-lane = "gpu"
-resource_class = "shared"
-reason = "Server cuGraph integration tests execute graph functions through the GPU backend on small fixtures."
-
-[[binary]]
-id = "datafusion-nexus::server_cuvs_tests"
-lane = "gpu"
-resource_class = "shared"
-reason = "Flight SQL cuVS integration tests execute exact kNN, KMeans, and PCA through the injected bounded GPU backend."
 
 [[binary]]
 id = "datafusion-nexus::server_config_tests"
@@ -152,21 +128,10 @@ resource_class = "shared"
 reason = "Flight SQL server integration tests initialize the native GPU backend and execute bounded queries."
 
 [[binary]]
-id = "datafusion-nexus::session_config_tests"
-lane = "gpu"
-resource_class = "shared"
-reason = "Session configuration tests include SQL paths that initialize the native cuDF execution context."
-
-[[binary]]
 id = "nexus-query-engine"
 lane = "gpu"
 resource_class = "shared"
-reason = "Native engine library tests include cuDF runtime and kernel execution on small fixtures."
-
-[[binary]]
-id = "nexus-query-engine::backend_metric_descriptor_tests"
-lane = "cpu"
-reason = "Backend metric descriptor golden and cardinality contracts are pure catalog checks and do not initialize CUDA."
+reason = "Native engine library tests include crate-private cuDF runtime and kernel execution on small fixtures."
 
 [[binary]]
 id = "nexus-query-engine::native_contract_tests"
@@ -179,31 +144,19 @@ lane = "cpu"
 reason = "Proves the two supported GPU-resource construction paths still compile and compose; forbidden-item coverage moved to scripts/ci/check_public_api_surface.sh. Neither remaining case constructs a CUDA runtime."
 
 [[binary]]
-id = "nexus-query-engine::gpu_backend_heterogeneous_active_limits"
+id = "nexus-query-engine::gpu_backend_shared_tests"
 lane = "gpu"
 resource_class = "shared"
-reason = "Heterogeneous active-limit coverage constructs a real two-device backend and validates per-device GPU ownership."
+reason = "Merged heterogeneous active-limit and fault-injection coverage constructs bounded multi-device GPU backends."
 
 [[binary]]
-id = "nexus-query-engine::gpu_backend_fault_injection"
-lane = "gpu"
-resource_class = "shared"
-reason = "Controlled quarantine coverage constructs a real two-device backend and verifies fallback through the public engine capability."
-
-[[binary]]
-id = "nexus-query-engine::gpu_allocator_event_correlation"
+id = "nexus-query-engine::gpu_allocator_exclusive_tests"
 lane = "gpu"
 resource_class = "exclusive"
-reason = "Real framebuffer pressure holds the process-global device allocator near exhaustion while two overlapping query domains prove exact physical callback attribution and post-release reuse."
+reason = "Merged allocator event correlation and query-service allocator lifecycle tests require process-global device isolation."
 
 [[binary]]
 id = "nexus-query-engine::native_pipeline_execution_tests"
 lane = "gpu"
 resource_class = "shared"
 reason = "Compiled pipeline execution creates CUDA runtimes and validates native GPU task scheduling on bounded fixtures."
-
-[[binary]]
-id = "nexus-query-engine::query_service_allocator_lifecycle"
-lane = "gpu"
-resource_class = "exclusive"
-reason = "Tests assert an initially unset process-global DeviceMemoryManager, install it, and verify conflicting installs; no other GPU binary may overlap."

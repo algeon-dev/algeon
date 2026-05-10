@@ -1,8 +1,5 @@
 pub mod nexus_query_engine
 pub mod nexus_query_engine::admission
-pub enum nexus_query_engine::admission::ComposedGraphAttemptResolution
-pub nexus_query_engine::admission::ComposedGraphAttemptResolution::PreserveSingleProducer
-pub nexus_query_engine::admission::ComposedGraphAttemptResolution::Scheduled(nexus_query_engine::admission::QueryPlanCapabilityProof)
 pub struct nexus_query_engine::admission::BoundedPipelineAdmission
 impl nexus_query_engine::admission::BoundedPipelineAdmission
 pub fn nexus_query_engine::admission::BoundedPipelineAdmission::analysis(&self) -> &nexus_query_engine::capability::CapabilityAnalysis
@@ -22,7 +19,7 @@ pub fn nexus_query_engine::admission::QueryPlanCapabilityProof::for_cugraph_grap
 pub fn nexus_query_engine::admission::QueryPlanCapabilityProof::for_query_plan(&nexus_query_engine::plan::QueryPlan) -> core::option::Option<Self>
 pub fn nexus_query_engine::admission::QueryPlanCapabilityProof::required_capabilities(&self) -> &[nexus_query_engine::capability::ReservationRequirement]
 pub fn nexus_query_engine::admission::QueryPlanCapabilityProof::required_floor_bytes_for(&self, u64) -> nexus_query_engine::error::Result<u64>
-pub fn nexus_query_engine::admission::QueryPlanCapabilityProof::resolve_composed_graph_attempt(&nexus_query_engine::plan::QueryPlan, Self, impl core::iter::traits::collect::IntoIterator<Item = nexus_query_engine::admission::ComposedGraphProducerCandidate>) -> nexus_query_engine::error::Result<nexus_query_engine::admission::ComposedGraphAttemptResolution>
+pub fn nexus_query_engine::admission::QueryPlanCapabilityProof::resolve_composed_graph_attempt(&nexus_query_engine::plan::QueryPlan, Self, impl core::iter::traits::collect::IntoIterator<Item = nexus_query_engine::admission::ComposedGraphProducerCandidate>) -> nexus_query_engine::error::Result<Self>
 pub fn nexus_query_engine::admission::QueryPlanCapabilityProof::soft_working_set_hint_bytes(&self) -> core::option::Option<u64>
 pub fn nexus_query_engine::admission::QueryPlanCapabilityProof::with_graph_memory_admission_evidence(self, &nexus_query_engine::graph_memory::GraphMemoryAdmissionEvidence) -> Self
 pub fn nexus_query_engine::admission::QueryPlanCapabilityProof::with_local_parquet_source_stage(self, &nexus_query_engine::source::LocalParquetSource) -> Self
@@ -953,6 +950,8 @@ pub const nexus_query_engine::error::QueryErrorCode::ALL: &'static [Self]
 pub const fn nexus_query_engine::error::QueryErrorCode::as_str(self) -> &'static str
 pub const fn nexus_query_engine::error::QueryErrorCode::kind(self) -> nexus_query_engine::error::QueryErrorKind
 pub const fn nexus_query_engine::error::QueryErrorCode::status(self) -> nexus_query_engine::error::QueryErrorStatus
+impl core::convert::From<nexus_query_engine::error::QueryErrorCode> for nexus_query_engine::observability::AttemptFailureCode
+pub fn nexus_query_engine::observability::AttemptFailureCode::from(nexus_query_engine::error::QueryErrorCode) -> Self
 impl core::convert::From<nexus_query_engine::error::QueryErrorCode> for nexus_query_engine::triage::TriageCode
 pub fn nexus_query_engine::triage::TriageCode::from(nexus_query_engine::error::QueryErrorCode) -> Self
 impl core::fmt::Display for nexus_query_engine::error::QueryErrorCode
@@ -2436,6 +2435,8 @@ pub nexus_query_engine::observability::AttemptFailureCode::UnsupportedPlanShape
 pub nexus_query_engine::observability::AttemptFailureCode::UnsupportedType
 impl nexus_query_engine::observability::AttemptFailureCode
 pub const fn nexus_query_engine::observability::AttemptFailureCode::from_query_error_code(nexus_query_engine::error::QueryErrorCode) -> Self
+impl core::convert::From<nexus_query_engine::error::QueryErrorCode> for nexus_query_engine::observability::AttemptFailureCode
+pub fn nexus_query_engine::observability::AttemptFailureCode::from(nexus_query_engine::error::QueryErrorCode) -> Self
 pub enum nexus_query_engine::observability::AttemptFailureFactKey
 pub nexus_query_engine::observability::AttemptFailureFactKey::AllocationSource
 pub nexus_query_engine::observability::AttemptFailureFactKey::Reason

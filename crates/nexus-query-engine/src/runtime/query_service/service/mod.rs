@@ -58,6 +58,10 @@ pub(in crate::runtime::query_service) struct QueryServiceInner {
     /// caller that happens to drive the next queue sweep, owns that failure.
     #[cfg(test)]
     protection_retarget_failure_after_release: AtomicBool,
+    #[cfg(test)]
+    direct_placement_resolution_failure: AtomicBool,
+    #[cfg(test)]
+    direct_provisional_cleanup_pause: Mutex<Option<Arc<DirectProvisionalCleanupPause>>>,
     pub(in crate::runtime::query_service) next_admission_request_id: AtomicU64,
     /// Monotonic FIFO submission identity, independent of eventual admission order.
     pub(in crate::runtime::query_service) next_submission_seq: AtomicU64,
@@ -236,6 +240,25 @@ mod test_pause_handle_tests {
 /// the exact interleaving that must not admit work on a later device.
 #[cfg(test)]
 #[derive(Debug)]
+struct DirectProvisionalCleanupPause {
+    entered: std::sync::mpsc::SyncSender<()>,
+    release: Mutex<std::sync::mpsc::Receiver<()>>,
+}
+
+#[cfg(test)]
+impl DirectProvisionalCleanupPause {
+    fn wait(&self) {
+        self.entered.send(()).expect("direct provisional cleanup pause receiver remains live");
+        self.release
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .recv()
+            .expect("direct provisional cleanup pause is released");
+    }
+}
+
+#[cfg(test)]
+#[derive(Debug)]
 struct UnknownIsolationClosurePause {
     entered: std::sync::mpsc::SyncSender<()>,
     release: Mutex<std::sync::mpsc::Receiver<()>>,
@@ -360,5 +383,22 @@ impl QueryService {
     ) {
         *self.inner.admission_transaction_probe.lock().unwrap_or_else(std::sync::PoisonError::into_inner) =
             Some(Arc::new(probe));
+    }
+
+    #[cfg(test)]
+    pub(in crate::runtime::query_service) fn fail_next_direct_placement_resolution_for_test(&self) {
+        self.inner.direct_placement_resolution_failure.store(true, Ordering::Release);
+    }
+
+    #[cfg(test)]
+    pub(in crate::runtime::query_service) fn pause_next_direct_provisional_cleanup_for_test(&self) -> TestPauseHandle {
+        let (entered_sender, entered_receiver) = std::sync::mpsc::sync_channel(1);
+        let (release_sender, release_receiver) = std::sync::mpsc::sync_channel(1);
+        *self.inner.direct_provisional_cleanup_pause.lock().unwrap_or_else(std::sync::PoisonError::into_inner) =
+            Some(Arc::new(DirectProvisionalCleanupPause {
+                entered: entered_sender,
+                release: Mutex::new(release_receiver),
+            }));
+        TestPauseHandle::new("direct provisional cleanup", entered_receiver, release_sender)
     }
 }

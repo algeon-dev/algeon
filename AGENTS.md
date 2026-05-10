@@ -6,8 +6,33 @@
   workaround. Extend `cudf-nexus` or `cugraph-nexus` when the gap belongs there.
 - Keep changes scoped. Preserve unrelated worktree edits and avoid opportunistic
   cleanup.
-- Preserve public behavior and contract tests unless the task changes them. Add
-  tests for behavior or regressions; comment only on non-obvious constraints.
+- Preserve public behavior and contract tests unless the task changes them.
+
+## Subtractive development
+
+- Prefer extending existing code over adding parallel paths. About to add a
+  second way to do something? Stop and propose removing or consolidating the
+  first.
+- Before writing new code for a non-trivial task, list the related existing
+  files and functions; for each, state whether it should be extended, replaced,
+  or left alone. Report before implementing.
+- Prefer the smallest change that fully solves the current requirement; net
+  line count should trend down or stay flat.
+- Never add speculative abstractions, configuration, or "just in case"
+  fallbacks. Every defensive branch must name a concrete scenario that actually
+  happens in this codebase; delete any that cannot.
+- Do not keep backward-compatibility layers or obsolete paths unless a contract
+  in this file requires them; remove them instead of stacking new code on top.
+- Before committing, re-read your own diff for anything now duplicated,
+  superseded, unused, or overly defensive. Propose deletions as a separate
+  cleanup commit, or fold them in when the scope is small and safe.
+
+## Comments
+
+- Default to no comments. Never explain what the code does; if code needs a
+  comment to be understandable, rename things instead.
+- Comment only the non-obvious *why*: hidden constraints, workarounds, and
+  business rules the code cannot express.
 - An explicit `drop()` in production code needs a one-line comment explaining
   why the value cannot wait until end of scope (such as a lock window,
   re-entrancy, or `RefCell` re-borrow); otherwise delete it rather than add it.
@@ -79,6 +104,15 @@ bash scripts/check_all.sh
 Run focused checks first, then broaden validation with the change's blast
 radius. `bash scripts/check_all.sh --fast` and every explicit `--lane` are
 partial and must not be reported as full validation.
+
+## Writing tests
+
+- Extend existing tests before creating new ones.
+- Add tests for behavior or regressions that could fail silently and cause
+  real damage; never test what the type system already guarantees.
+- Test observable behavior, not implementation details.
+- A new test must fail when the code under test is reverted; if it does not,
+  delete it.
 
 ## Testing and repository policy
 

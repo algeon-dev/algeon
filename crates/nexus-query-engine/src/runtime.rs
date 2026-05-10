@@ -26,8 +26,6 @@ mod io_lifecycle;
 mod memory_domain;
 #[cfg(test)]
 mod native_contract_runtime_observability_tests;
-#[cfg(test)]
-mod native_execution_tests;
 mod object_store;
 mod observation_completion;
 mod policy;
