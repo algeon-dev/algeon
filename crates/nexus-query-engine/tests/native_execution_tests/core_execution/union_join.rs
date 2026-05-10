@@ -1,7 +1,6 @@
 #[test]
 fn native_query_executes_union_over_gpu_resident_inputs() {
     let context = backend_context();
-    let runtime = Arc::new(context.runtime().unwrap());
     let schema = Arc::new(Schema::new(vec![
         Field::new("key", DataType::Int32, false),
         Field::new("payload", DataType::Int64, false),
@@ -22,12 +21,14 @@ fn native_query_executes_union_over_gpu_resident_inputs() {
     let right = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("right", Arc::clone(&schema))));
     let union = builder.add_union(vec![left, right], Arc::clone(&schema));
     let plan = builder.finish_with_host_sink(union);
+    let admitted = context.admit_plan(&plan).unwrap();
+    let runtime = Arc::new(admitted.runtime().unwrap());
 
     let mut gpu_inputs = GpuResidentInputMap::new();
     gpu_inputs.insert(
         "left".to_string(),
         GpuResultHandle::new(
-            &context,
+            &admitted,
             GpuDataFrame::new(DataFrame::from_record_batch(&runtime, &left_batch).unwrap()),
             Arc::clone(&schema),
         )
@@ -36,26 +37,26 @@ fn native_query_executes_union_over_gpu_resident_inputs() {
     gpu_inputs.insert(
         "right".to_string(),
         GpuResultHandle::new(
-            &context,
+            &admitted,
             GpuDataFrame::new(DataFrame::from_record_batch(&runtime, &right_batch).unwrap()),
             Arc::clone(&schema),
         )
         .unwrap(),
     );
 
-    let result = execute_query_plan_with_gpu_inputs(&context, &plan, &gpu_inputs).unwrap();
+    let result = execute_query_plan_with_gpu_inputs(&admitted, &plan, &gpu_inputs).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");
     };
     assert_eq!(batch.num_rows(), 3);
     assert_eq!(int32_array(batch, 0).values().as_ref(), &[1, 2, 3]);
     assert_eq!(int64_array(batch, 1).values().as_ref(), &[10, 20, 30]);
+    admitted.finish();
 }
 
 #[test]
 fn bounded_native_query_executes_union_over_gpu_resident_inputs() {
     let context = backend_context();
-    let runtime = Arc::new(context.runtime().unwrap());
     let schema = Arc::new(Schema::new(vec![
         Field::new("key", DataType::Int32, false),
         Field::new("payload", DataType::Int64, false),
@@ -76,11 +77,13 @@ fn bounded_native_query_executes_union_over_gpu_resident_inputs() {
     let right = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("right", Arc::clone(&schema))));
     let union = builder.add_union(vec![left, right], Arc::clone(&schema));
     let plan = builder.finish_with_host_sink(union);
+    let admitted = context.admit_plan(&plan).unwrap();
+    let runtime = Arc::new(admitted.runtime().unwrap());
     let mut gpu_inputs = GpuResidentInputMap::new();
     gpu_inputs.insert(
         "left".to_string(),
         GpuResultHandle::new(
-            &context,
+            &admitted,
             GpuDataFrame::new(DataFrame::from_record_batch(&runtime, &left_batch).unwrap()),
             Arc::clone(&schema),
         )
@@ -89,26 +92,26 @@ fn bounded_native_query_executes_union_over_gpu_resident_inputs() {
     gpu_inputs.insert(
         "right".to_string(),
         GpuResultHandle::new(
-            &context,
+            &admitted,
             GpuDataFrame::new(DataFrame::from_record_batch(&runtime, &right_batch).unwrap()),
             Arc::clone(&schema),
         )
         .unwrap(),
     );
 
-    let result = execute_query_plan_with_gpu_inputs(&context, &plan, &gpu_inputs).unwrap();
+    let result = execute_query_plan_with_gpu_inputs(&admitted, &plan, &gpu_inputs).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");
     };
     assert_eq!(batch.num_rows(), 3);
     assert_eq!(int32_array(batch, 0).values().as_ref(), &[1, 2, 3]);
     assert_eq!(int64_array(batch, 1).values().as_ref(), &[10, 20, 30]);
+    admitted.finish();
 }
 
 #[test]
 fn bounded_native_query_executes_join_over_gpu_resident_inputs() {
     let context = backend_context();
-    let runtime = Arc::new(context.runtime().unwrap());
     let left_schema = Arc::new(Schema::new(vec![
         Field::new("id", DataType::Int32, false),
         Field::new("lval", DataType::Int64, false),
@@ -161,11 +164,13 @@ fn bounded_native_query_executes_join_over_gpu_resident_inputs() {
         Arc::clone(&output_schema),
     );
     let plan = builder.finish_with_host_sink(sort);
+    let admitted = context.admit_plan(&plan).unwrap();
+    let runtime = Arc::new(admitted.runtime().unwrap());
     let mut gpu_inputs = GpuResidentInputMap::new();
     gpu_inputs.insert(
         "left".to_string(),
         GpuResultHandle::new(
-            &context,
+            &admitted,
             GpuDataFrame::new(DataFrame::from_record_batch(&runtime, &left_batch).unwrap()),
             Arc::clone(&left_schema),
         )
@@ -174,14 +179,14 @@ fn bounded_native_query_executes_join_over_gpu_resident_inputs() {
     gpu_inputs.insert(
         "right".to_string(),
         GpuResultHandle::new(
-            &context,
+            &admitted,
             GpuDataFrame::new(DataFrame::from_record_batch(&runtime, &right_batch).unwrap()),
             Arc::clone(&right_schema),
         )
         .unwrap(),
     );
 
-    let result = execute_query_plan_with_gpu_inputs(&context, &plan, &gpu_inputs).unwrap();
+    let result = execute_query_plan_with_gpu_inputs(&admitted, &plan, &gpu_inputs).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize joined rows");
     };
@@ -189,4 +194,5 @@ fn bounded_native_query_executes_join_over_gpu_resident_inputs() {
     assert_eq!(int32_array(batch, 0).values().as_ref(), &[2, 3]);
     assert_eq!(int64_array(batch, 1).values().as_ref(), &[20, 30]);
     assert_eq!(int64_array(batch, 2).values().as_ref(), &[200, 300]);
+    admitted.finish();
 }

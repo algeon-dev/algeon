@@ -23,17 +23,17 @@ fn bounded_native_multi_join_rejects_unsupported_mixed_residual_before_source_re
     ]));
 
     let mut builder = QueryPlanBuilder::new();
-    let lineitem = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+    let lineitem = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_path(
         "/tmp/bounded-multi-join-invalid-residual-left-does-not-need-to-exist.parquet",
         Arc::clone(&left_schema),
         vec!["order_id".into(), "qty".into()],
     )));
-    let orders = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+    let orders = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_path(
         "/tmp/bounded-multi-join-invalid-residual-orders-does-not-need-to-exist.parquet",
         Arc::clone(&orders_schema),
         vec!["order_id".into(), "category".into()],
     )));
-    let regions = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+    let regions = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_path(
         "/tmp/bounded-multi-join-invalid-residual-regions-does-not-need-to-exist.parquet",
         Arc::clone(&region_schema),
         vec!["order_id".into()],

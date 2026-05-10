@@ -1,4 +1,55 @@
+use parquet::file::reader::{FileReader, SerializedFileReader};
+
 use super::*;
+
+pub(super) fn fixture_local_parquet_file(path: &Path) -> LocalParquetFile {
+    let mut file = LocalParquetFile::new(path);
+    let reader = SerializedFileReader::try_from(path).unwrap_or_else(|error| {
+        panic!("written pipeline fixture must be readable as Parquet: {}: {error}", path.display())
+    });
+    let metadata = reader.metadata();
+    let file_size = fs::metadata(path)
+        .unwrap_or_else(|error| panic!("written pipeline fixture must be stat-able: {}: {error}", path.display()))
+        .len();
+    let row_group_rows = metadata
+        .row_groups()
+        .iter()
+        .map(|row_group| u64::try_from(row_group.num_rows()).expect("fixture row count fits u64"))
+        .collect::<Vec<_>>();
+    let row_group_bytes = metadata
+        .row_groups()
+        .iter()
+        .map(|row_group| u64::try_from(row_group.compressed_size()).expect("fixture compressed bytes fit u64"))
+        .collect::<Vec<_>>();
+    let projected_uncompressed_bytes = metadata
+        .row_groups()
+        .iter()
+        .map(|row_group| u64::try_from(row_group.total_byte_size()).expect("fixture uncompressed bytes fit u64"))
+        .collect::<Vec<_>>();
+    file = file
+        .with_file_size_bytes(file_size)
+        .with_row_groups((0..metadata.num_row_groups()).collect())
+        .with_row_group_rows(row_group_rows)
+        .with_row_group_bytes(row_group_bytes.clone())
+        .with_projected_row_group_bytes(row_group_bytes, projected_uncompressed_bytes);
+    file
+}
+
+pub(super) fn enrich_fixture_local_parquet_file(mut file: LocalParquetFile) -> LocalParquetFile {
+    if !file.path.is_file() {
+        return file;
+    }
+    let exact = fixture_local_parquet_file(&file.path);
+    file.file_size_bytes = exact.file_size_bytes;
+    file.row_group_bytes = exact.row_group_bytes;
+    file.projected_row_group_compressed_bytes = exact.projected_row_group_compressed_bytes;
+    file.projected_row_group_uncompressed_bytes = exact.projected_row_group_uncompressed_bytes;
+    file.row_group_rows = exact.row_group_rows;
+    if file.row_groups.is_none() {
+        file.row_groups = exact.row_groups;
+    }
+    file
+}
 
 pub(super) fn write_source_unary_parquet(path: &Path) -> Arc<Schema> {
     let schema =

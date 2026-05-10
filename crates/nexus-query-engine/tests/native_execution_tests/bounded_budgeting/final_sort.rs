@@ -176,8 +176,6 @@ fn bounded_native_query_accounts_full_final_sort_reservation_during_limited_outp
     assert!(constrained_budget > sequential_peak);
     assert!(constrained_budget < overlapping_peak);
 
-    drop(baseline_context);
-
     let constrained_context = backend_context_with_memory_control_policy(MemoryControlPolicy::Bounded {
         device_budget_bytes: constrained_budget,
         max_source_chunk_bytes: 1024 * 1024,
@@ -272,8 +270,6 @@ fn bounded_native_query_reports_retry_facts_when_final_sort_without_limit_fails(
     assert_eq!(final_sort_bytes.len(), 2, "full final sort should reserve sort order and materialized output");
     let sequential_peak = input_bytes.saturating_add(final_sort_bytes[0]).saturating_add(final_sort_bytes[1]);
     let constrained_budget = sequential_peak - 1;
-
-    drop(baseline_context);
 
     let constrained_context = backend_context_with_memory_control_policy(MemoryControlPolicy::Bounded {
         device_budget_bytes: constrained_budget,

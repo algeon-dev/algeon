@@ -231,6 +231,18 @@ impl CugraphAlgoExec {
             max_output_staging_bytes,
         )
         .await?;
+        let prelogical_row_bounds = collected_inputs.row_bounds()?;
+        check_host_staging_cancellation(&cancellation)?;
+        validate_cugraph_graph_owner_preflight(
+            &prepared.spec,
+            prepared.edge_source.as_ref(),
+            &prepared.predicate_sources,
+            &prelogical_row_bounds,
+            prepared.projection.as_ref(),
+            prepared.limit,
+            prepared.edge_normalize_inserted(),
+            &prepared.native_execution_config,
+        )?;
         check_host_staging_cancellation(&cancellation)?;
         let mut staged_inputs = collected_inputs.prepare_logical_inputs(&prepared.spec)?;
         check_host_staging_cancellation(&cancellation)?;

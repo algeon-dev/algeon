@@ -71,6 +71,7 @@ use iceberg::{
     table::Table,
 };
 use nexus_query_engine::{
+    admission::QueryPlanCapabilityProof,
     exec::{execute_query_plan, output::QueryOutput},
     expr::LiteralValue as NativeLiteralValue,
     plan::PlanNode,

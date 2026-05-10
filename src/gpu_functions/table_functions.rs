@@ -17,7 +17,10 @@ use datafusion::{
 use serde_json::{Map, Value};
 
 use super::{GpuCallRequest, GpuCallValidation, GpuFunctionCatalog, GpuFunctionDescriptor};
-use crate::error::{Error, ErrorCode};
+use crate::{
+    error::{Error, ErrorCode},
+    gpu_coverage_sql::cpu_physical_boundary,
+};
 
 /// Unified GPU function discovery table-function name.
 pub const GPU_LIST_FUNCTIONS_FUNCTION: &str = "gpu_list_functions";
@@ -137,7 +140,9 @@ impl TableProvider for GpuMetadataProvider {
                 validate_batch(&self.catalog, state, function_name, call_json).await?
             },
         };
-        MemTable::try_new(self.schema(), vec![vec![batch]])?.scan(state, projection, filters, limit).await
+        let input =
+            MemTable::try_new(self.schema(), vec![vec![batch]])?.scan(state, projection, filters, limit).await?;
+        Ok(cpu_physical_boundary(input))
     }
 }
 

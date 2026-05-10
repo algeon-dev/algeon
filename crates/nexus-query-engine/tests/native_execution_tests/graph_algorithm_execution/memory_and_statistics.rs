@@ -1,7 +1,6 @@
 #[test]
 fn bounded_bfs_counts_gpu_tables_without_graph_memory_reservation() {
     let context = backend_context_with_grant(16 * 1024 * 1024);
-    let runtime = Arc::new(context.runtime().unwrap());
 
     let edge_schema = Arc::new(Schema::new(vec![
         Field::new("src", DataType::Int32, false),
@@ -14,7 +13,7 @@ fn bounded_bfs_counts_gpu_tables_without_graph_memory_reservation() {
     .unwrap();
 
     let mut builder = QueryPlanBuilder::new();
-    let edges = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("edges", Arc::clone(&edge_schema))));
+    let edges = builder.add_source(SourceNode::GpuResident(gpu_resident_source("edges", Arc::clone(&edge_schema), &edge_batch)));
     let spec = GraphAlgorithmSpec::with_stable_schema(
         GraphAlgorithm::Bfs,
         GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
@@ -23,19 +22,21 @@ fn bounded_bfs_counts_gpu_tables_without_graph_memory_reservation() {
     );
     let graph = builder.add_graph_algorithm(edges, spec);
     let plan = builder.finish_with_host_sink_schema(graph, stable_graph_result_schema(GraphAlgorithm::Bfs));
+    let admitted = context.admit_plan(&plan).unwrap();
+    let runtime = Arc::new(admitted.runtime().unwrap());
 
     let mut gpu_inputs = GpuResidentInputMap::new();
     gpu_inputs.insert(
         "edges".to_string(),
         GpuResultHandle::new(
-            &context,
+            &admitted,
             GpuDataFrame::new(DataFrame::from_record_batch(&runtime, &edge_batch).unwrap()),
             Arc::clone(&edge_schema),
         )
         .unwrap(),
     );
 
-    let result = execute_query_plan_with_gpu_inputs(&context, &plan, &gpu_inputs).unwrap();
+    let result = execute_query_plan_with_gpu_inputs(&admitted, &plan, &gpu_inputs).unwrap();
     assert!(result.metrics().graph_reservation_rows.is_empty(), "BFS should not add graph-memory reservation rows");
     assert!(!result.metrics().reservation_events.iter().any(|event| {
         event.memory_boundary == "graph_memory" && event.reservation_kind == ReservationKind::GraphAlgorithm
@@ -94,12 +95,12 @@ fn bounded_bfs_counts_gpu_tables_without_graph_memory_reservation() {
             && event.action == MemoryReservationEventAction::Transfer
     }));
     assert!(result.metrics().reservation_live_peak_bytes >= output_reserve.current_reserved_bytes);
+    admitted.finish();
 }
 
 #[test]
 fn bounded_bfs_counts_side_input_tables_without_graph_memory_reservation() {
     let context = backend_context_with_grant(16 * 1024 * 1024);
-    let runtime = Arc::new(context.runtime().unwrap());
 
     let edge_schema = Arc::new(Schema::new(vec![
         Field::new("src", DataType::Int32, false),
@@ -115,9 +116,8 @@ fn bounded_bfs_counts_side_input_tables_without_graph_memory_reservation() {
         RecordBatch::try_new(Arc::clone(&source_schema), vec![Arc::new(Int32Array::from(vec![0, 10]))]).unwrap();
 
     let mut builder = QueryPlanBuilder::new();
-    let edges = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("edges", Arc::clone(&edge_schema))));
-    let sources =
-        builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("sources", Arc::clone(&source_schema))));
+    let edges = builder.add_source(SourceNode::GpuResident(gpu_resident_source("edges", Arc::clone(&edge_schema), &edge_batch)));
+    let sources = builder.add_source(SourceNode::GpuResident(gpu_resident_source("sources", Arc::clone(&source_schema), &source_batch)));
     let mut params = GraphBfsParams::new(0, None);
     params.source_vertices = Some(GraphPredicateInput::new(sources, "source_vertex"));
     let spec = GraphAlgorithmSpec::with_stable_schema(
@@ -128,12 +128,14 @@ fn bounded_bfs_counts_side_input_tables_without_graph_memory_reservation() {
     );
     let graph = builder.add_graph_algorithm(edges, spec);
     let plan = builder.finish_with_host_sink_schema(graph, stable_graph_result_schema(GraphAlgorithm::Bfs));
+    let admitted = context.admit_plan(&plan).unwrap();
+    let runtime = Arc::new(admitted.runtime().unwrap());
 
     let mut gpu_inputs = GpuResidentInputMap::new();
     gpu_inputs.insert(
         "edges".to_string(),
         GpuResultHandle::new(
-            &context,
+            &admitted,
             GpuDataFrame::new(DataFrame::from_record_batch(&runtime, &edge_batch).unwrap()),
             Arc::clone(&edge_schema),
         )
@@ -142,14 +144,14 @@ fn bounded_bfs_counts_side_input_tables_without_graph_memory_reservation() {
     gpu_inputs.insert(
         "sources".to_string(),
         GpuResultHandle::new(
-            &context,
+            &admitted,
             GpuDataFrame::new(DataFrame::from_record_batch(&runtime, &source_batch).unwrap()),
             Arc::clone(&source_schema),
         )
         .unwrap(),
     );
 
-    let result = execute_query_plan_with_gpu_inputs(&context, &plan, &gpu_inputs).unwrap();
+    let result = execute_query_plan_with_gpu_inputs(&admitted, &plan, &gpu_inputs).unwrap();
     assert!(result.metrics().graph_reservation_rows.is_empty(), "BFS should not add graph-memory reservation rows");
     assert!(!result.metrics().reservation_events.iter().any(|event| {
         event.memory_boundary == "graph_memory" && event.reservation_kind == ReservationKind::GraphAlgorithm
@@ -200,12 +202,12 @@ fn bounded_bfs_counts_side_input_tables_without_graph_memory_reservation() {
         "BFS output reservation should be charged without double-charging borrowed edge and side-input tables"
     );
     assert!(result.metrics().graph_algorithm_runtime_rows[0].algorithm_metadata.contains("source_vertices_rows=2"));
+    admitted.finish();
 }
 
 #[test]
 fn bounded_betweenness_success_keeps_graph_memory_reservation() {
     let context = backend_context_with_grant(16 * 1024 * 1024);
-    let runtime = Arc::new(context.runtime().unwrap());
 
     let edge_schema = Arc::new(Schema::new(vec![
         Field::new("src", DataType::Int32, false),
@@ -218,7 +220,7 @@ fn bounded_betweenness_success_keeps_graph_memory_reservation() {
     .unwrap();
 
     let mut builder = QueryPlanBuilder::new();
-    let edges = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("edges", Arc::clone(&edge_schema))));
+    let edges = builder.add_source(SourceNode::GpuResident(gpu_resident_source("edges", Arc::clone(&edge_schema), &edge_batch)));
     let spec = GraphAlgorithmSpec::with_stable_schema(
         GraphAlgorithm::BetweennessCentrality,
         GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
@@ -231,19 +233,21 @@ fn bounded_betweenness_success_keeps_graph_memory_reservation() {
     let graph = builder.add_graph_algorithm(edges, spec);
     let plan =
         builder.finish_with_host_sink_schema(graph, stable_graph_result_schema(GraphAlgorithm::BetweennessCentrality));
+    let admitted = context.admit_plan(&plan).unwrap();
+    let runtime = Arc::new(admitted.runtime().unwrap());
 
     let mut gpu_inputs = GpuResidentInputMap::new();
     gpu_inputs.insert(
         "edges".to_string(),
         GpuResultHandle::new(
-            &context,
+            &admitted,
             GpuDataFrame::new(DataFrame::from_record_batch(&runtime, &edge_batch).unwrap()),
             Arc::clone(&edge_schema),
         )
         .unwrap(),
     );
 
-    let result = execute_query_plan_with_gpu_inputs(&context, &plan, &gpu_inputs).unwrap();
+    let result = execute_query_plan_with_gpu_inputs(&admitted, &plan, &gpu_inputs).unwrap();
     let graph_reservations = &result.metrics().graph_reservation_rows;
     assert_eq!(graph_reservations.len(), 1);
     assert_eq!(graph_reservations[0].algorithm, GraphAlgorithm::BetweennessCentrality);
@@ -295,6 +299,7 @@ fn bounded_betweenness_success_keeps_graph_memory_reservation() {
             && event.reservation_kind == ReservationKind::OperatorOutput
             && event.action == MemoryReservationEventAction::Transfer
     }));
+    admitted.finish();
 }
 
 #[test]
@@ -349,19 +354,20 @@ fn bounded_sparse_pagerank_uses_runtime_vertex_estimate_to_admit_graph_memory() 
     drop(fixture_edge_frame);
     drop(fixture_runtime);
     let context = backend_context_with_grant(input_bytes + graph_budget_remaining);
-    let runtime = Arc::new(context.runtime().unwrap());
-    let edge_frame = GpuDataFrame::new(DataFrame::from_record_batch(&runtime, &edge_batch).unwrap());
 
     let mut builder = QueryPlanBuilder::new();
-    let edges = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("edges", Arc::clone(&edge_schema))));
+    let edges = builder.add_source(SourceNode::GpuResident(gpu_resident_source("edges", Arc::clone(&edge_schema), &edge_batch)));
     let graph = builder.add_graph_algorithm(edges, spec);
     let plan = builder.finish_with_host_sink_schema(graph, stable_graph_result_schema(GraphAlgorithm::PageRank));
+    let admitted = context.admit_plan(&plan).unwrap();
+    let runtime = Arc::new(admitted.runtime().unwrap());
+    let edge_frame = GpuDataFrame::new(DataFrame::from_record_batch(&runtime, &edge_batch).unwrap());
 
     let mut gpu_inputs = GpuResidentInputMap::new();
     gpu_inputs
-        .insert("edges".to_string(), GpuResultHandle::new(&context, edge_frame, Arc::clone(&edge_schema)).unwrap());
+        .insert("edges".to_string(), GpuResultHandle::new(&admitted, edge_frame, Arc::clone(&edge_schema)).unwrap());
 
-    let result = execute_query_plan_with_gpu_inputs(&context, &plan, &gpu_inputs).unwrap();
+    let result = execute_query_plan_with_gpu_inputs(&admitted, &plan, &gpu_inputs).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize PageRank output");
     };
@@ -423,12 +429,12 @@ fn bounded_sparse_pagerank_uses_runtime_vertex_estimate_to_admit_graph_memory() 
             && event.status == "reservation_enforced"
             && event.unresolved_contract.as_deref() == Some("graph_vertex_estimate_probe")
     }));
+    admitted.finish();
 }
 
 #[test]
 fn bounded_triangle_count_reports_runtime_graph_statistics() {
     let context = backend_context_with_grant(512 * 1024 * 1024);
-    let runtime = Arc::new(context.runtime().unwrap());
 
     let edge_schema = Arc::new(Schema::new(vec![
         Field::new("src", DataType::Int32, false),
@@ -441,7 +447,7 @@ fn bounded_triangle_count_reports_runtime_graph_statistics() {
     .unwrap();
 
     let mut builder = QueryPlanBuilder::new();
-    let edges = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("edges", Arc::clone(&edge_schema))));
+    let edges = builder.add_source(SourceNode::GpuResident(gpu_resident_source("edges", Arc::clone(&edge_schema), &edge_batch)));
     let spec = GraphAlgorithmSpec::with_stable_schema(
         GraphAlgorithm::TriangleCountAll,
         GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
@@ -452,19 +458,21 @@ fn bounded_triangle_count_reports_runtime_graph_statistics() {
     let graph = builder.add_graph_algorithm(edges, spec);
     let plan =
         builder.finish_with_host_sink_schema(graph, stable_graph_result_schema(GraphAlgorithm::TriangleCountAll));
+    let admitted = context.admit_plan(&plan).unwrap();
+    let runtime = Arc::new(admitted.runtime().unwrap());
 
     let mut gpu_inputs = GpuResidentInputMap::new();
     gpu_inputs.insert(
         "edges".to_string(),
         GpuResultHandle::new(
-            &context,
+            &admitted,
             GpuDataFrame::new(DataFrame::from_record_batch(&runtime, &edge_batch).unwrap()),
             Arc::clone(&edge_schema),
         )
         .unwrap(),
     );
 
-    let result = execute_query_plan_with_gpu_inputs(&context, &plan, &gpu_inputs).unwrap();
+    let result = execute_query_plan_with_gpu_inputs(&admitted, &plan, &gpu_inputs).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize triangle-count output");
     };
@@ -528,12 +536,12 @@ fn bounded_triangle_count_reports_runtime_graph_statistics() {
         graph_report.model_requested_bytes < exact_vertex_no_statistics.requested_bytes,
         "runtime triangle statistics must feed the mechanistic model instead of falling back to exact-vertex no-stats pricing"
     );
+    admitted.finish();
 }
 
 #[test]
 fn bounded_graph_statistics_optional_resource_exhaustion_keeps_exact_vertices() {
     let context = backend_context_with_grant(512 * 1024 * 1024);
-    let runtime = Arc::new(context.runtime().unwrap());
 
     let edge_schema = Arc::new(Schema::new(vec![
         Field::new("src", DataType::Int32, false),
@@ -546,7 +554,7 @@ fn bounded_graph_statistics_optional_resource_exhaustion_keeps_exact_vertices() 
     .unwrap();
 
     let mut builder = QueryPlanBuilder::new();
-    let edges = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("edges", Arc::clone(&edge_schema))));
+    let edges = builder.add_source(SourceNode::GpuResident(gpu_resident_source("edges", Arc::clone(&edge_schema), &edge_batch)));
     let spec = GraphAlgorithmSpec::with_stable_schema(
         GraphAlgorithm::TriangleCountAll,
         GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
@@ -556,12 +564,14 @@ fn bounded_graph_statistics_optional_resource_exhaustion_keeps_exact_vertices() 
     let graph = builder.add_graph_algorithm(edges, spec);
     let plan =
         builder.finish_with_host_sink_schema(graph, stable_graph_result_schema(GraphAlgorithm::TriangleCountAll));
+    let admitted = context.admit_plan(&plan).unwrap();
+    let runtime = Arc::new(admitted.runtime().unwrap());
 
     let mut gpu_inputs = GpuResidentInputMap::new();
     gpu_inputs.insert(
         "edges".to_string(),
         GpuResultHandle::new(
-            &context,
+            &admitted,
             GpuDataFrame::new(DataFrame::from_record_batch(&runtime, &edge_batch).unwrap()),
             Arc::clone(&edge_schema),
         )
@@ -569,7 +579,7 @@ fn bounded_graph_statistics_optional_resource_exhaustion_keeps_exact_vertices() 
     );
 
     force_next_graph_statistics_optional_resource_exhausted_for_test();
-    let result = execute_query_plan_with_gpu_inputs(&context, &plan, &gpu_inputs).unwrap();
+    let result = execute_query_plan_with_gpu_inputs(&admitted, &plan, &gpu_inputs).unwrap();
 
     let graph_reservations = &result.metrics().graph_reservation_rows;
     assert_eq!(graph_reservations.len(), 1);
@@ -584,16 +594,13 @@ fn bounded_graph_statistics_optional_resource_exhaustion_keeps_exact_vertices() 
     assert_eq!(graph_statistics.degree_p99, None);
     assert_eq!(graph_statistics.sum_min_degree_oriented, None);
     assert_eq!(graph_statistics.peak_chunk_min_degree_sum, None);
+    admitted.finish();
 }
 
 #[test]
 fn pagerank_python_cugraph_reports_edge_normalize_in_graph_reservation() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
-    let context = ExecutionContext::builder()
-        .with_shared_runtime(Arc::clone(&runtime))
-        .with_graph_memory_calibration_override(GraphMemoryCalibrationOverride::default().with_raw_input_edges(45))
-        .build()
-        .unwrap();
+    let context = backend_context();
+    let calibration_override = GraphMemoryCalibrationOverride::default().with_raw_input_edges(45);
 
     let edge_schema = Arc::new(Schema::new(vec![
         Field::new("src", DataType::Int32, false),
@@ -606,7 +613,7 @@ fn pagerank_python_cugraph_reports_edge_normalize_in_graph_reservation() {
     .unwrap();
 
     let mut builder = QueryPlanBuilder::new();
-    let edges = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("edges", Arc::clone(&edge_schema))));
+    let edges = builder.add_source(SourceNode::GpuResident(gpu_resident_source("edges", Arc::clone(&edge_schema), &edge_batch)));
     let spec = GraphAlgorithmSpec::with_stable_schema(
         GraphAlgorithm::PageRank,
         GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
@@ -616,23 +623,27 @@ fn pagerank_python_cugraph_reports_edge_normalize_in_graph_reservation() {
     let graph = builder.add_graph_algorithm(edges, spec);
     let plan = builder.finish_with_host_sink_schema(graph, stable_graph_result_schema(GraphAlgorithm::PageRank));
     assert!(plan.contains_edge_normalize());
+    let admitted = context.admit_plan_with_graph_memory_calibration_override(&plan, calibration_override).unwrap();
+    let runtime = Arc::new(admitted.runtime().unwrap());
 
     let mut gpu_inputs = GpuResidentInputMap::new();
     gpu_inputs.insert(
         "edges".to_string(),
         GpuResultHandle::new(
-            &context,
+            &admitted,
             GpuDataFrame::new(DataFrame::from_record_batch(&runtime, &edge_batch).unwrap()),
             Arc::clone(&edge_schema),
         )
         .unwrap(),
     );
 
-    let result = execute_query_plan_with_gpu_inputs(&context, &plan, &gpu_inputs).unwrap();
+    let result =
+        admitted.execute_with_graph_memory_calibration_override(&plan, &gpu_inputs, calibration_override).unwrap();
     let reservations = &result.metrics().graph_reservation_rows;
     assert_eq!(reservations.len(), 1);
     assert!(reservations[0].edge_normalize_inserted);
     assert_eq!(reservations[0].construction_policy, GraphConstructionPolicy::RawLibcugraph);
     assert_eq!(reservations[0].raw_input_edges, Some(45));
     assert!(reservations[0].graph_model_error_ratio.is_some());
+    admitted.finish();
 }

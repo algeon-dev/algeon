@@ -910,7 +910,7 @@ impl QueryHandleReportCommit {
                     }
                     let ledger = device.ledger();
                     let Ok(required_floor) =
-                        required_floor_bytes_for_candidate(&self.admitted_device_requirements, ordinal, &ledger)
+                        required_floor_bytes_for_candidate(&self.admitted_device_requirements, ordinal, ledger)
                     else {
                         return AttemptAlternateDeviceEligibility::Unavailable;
                     };
@@ -929,7 +929,7 @@ impl QueryHandleReportCommit {
                         return AttemptAlternateDeviceEligibility::NoEligibleAlternate;
                     }
                     let Ok(required_floor) =
-                        required_floor_bytes_for_candidate(&self.admitted_device_requirements, ordinal, &ledger)
+                        required_floor_bytes_for_candidate(&self.admitted_device_requirements, ordinal, ledger)
                     else {
                         return AttemptAlternateDeviceEligibility::Unavailable;
                     };

@@ -163,7 +163,7 @@ fn join_source_with_projected_row_group_estimates(
     columns: &[&str],
     row_group_count: usize,
     bytes_per_row_group: u64,
-) -> LocalParquetSource {
+) -> NativeLocalParquetSource {
     let row_group_bytes = vec![bytes_per_row_group; row_group_count];
     LocalParquetSource::from_files(
         vec![

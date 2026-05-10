@@ -5,7 +5,7 @@ mod mixed_aggregate;
 
 pub(super) use mixed_aggregate::*;
 
-pub(super) fn join_left_source(path: &Path, schema: &Arc<Schema>, columns: &[&str]) -> LocalParquetSource {
+pub(super) fn join_left_source(path: &Path, schema: &Arc<Schema>, columns: &[&str]) -> NativeLocalParquetSource {
     LocalParquetSource::from_files(
         vec![LocalParquetFile::new(path).with_file_size_bytes(fs::metadata(path).unwrap().len())],
         Arc::clone(schema),
@@ -13,7 +13,7 @@ pub(super) fn join_left_source(path: &Path, schema: &Arc<Schema>, columns: &[&st
     )
 }
 
-pub(super) fn join_right_source(path: &Path, schema: &Arc<Schema>, columns: &[&str]) -> LocalParquetSource {
+pub(super) fn join_right_source(path: &Path, schema: &Arc<Schema>, columns: &[&str]) -> NativeLocalParquetSource {
     LocalParquetSource::from_files(
         vec![LocalParquetFile::new(path).with_file_size_bytes(fs::metadata(path).unwrap().len())],
         Arc::clone(schema),
@@ -318,7 +318,7 @@ pub(super) fn keyless_conditional_aggregate_over_join_subplan_inputs_plan(
     builder.finish_with_host_sink(sort)
 }
 
-pub(super) fn supplier_cost_partsupp_source(path: &Path, schema: &Arc<Schema>) -> LocalParquetSource {
+pub(super) fn supplier_cost_partsupp_source(path: &Path, schema: &Arc<Schema>) -> NativeLocalParquetSource {
     LocalParquetSource::from_files(
         vec![LocalParquetFile::new(path).with_file_size_bytes(fs::metadata(path).unwrap().len())],
         Arc::clone(schema),
@@ -326,7 +326,7 @@ pub(super) fn supplier_cost_partsupp_source(path: &Path, schema: &Arc<Schema>) -
     )
 }
 
-pub(super) fn supplier_cost_supplier_source(path: &Path, schema: &Arc<Schema>) -> LocalParquetSource {
+pub(super) fn supplier_cost_supplier_source(path: &Path, schema: &Arc<Schema>) -> NativeLocalParquetSource {
     LocalParquetSource::from_files(
         vec![LocalParquetFile::new(path).with_file_size_bytes(fs::metadata(path).unwrap().len())],
         Arc::clone(schema),
@@ -458,12 +458,12 @@ pub(super) fn residual_validation_error_with_schema(
         Field::new("right_id", DataType::Int32, true),
     ]));
     let read_columns = read_columns.into_iter().map(str::to_string).collect::<Vec<_>>();
-    let left_source = LocalParquetSource::new(
+    let left_source = LocalParquetSource::from_path(
         "/tmp/does-not-need-to-exist-for-residual-validation-left.parquet",
         Arc::clone(&schema),
         read_columns.clone(),
     );
-    let right_source = LocalParquetSource::new(
+    let right_source = LocalParquetSource::from_path(
         "/tmp/does-not-need-to-exist-for-residual-validation-right.parquet",
         Arc::clone(&schema),
         read_columns,

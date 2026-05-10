@@ -124,8 +124,6 @@ fn bounded_native_query_executes_keyless_conditional_join_with_resident_input_su
     assert_eq!(gpu_result.metrics().compiled_pipeline_attempts, 1);
     assert_eq!(gpu_result.metrics().compiled_pipeline_host_arrow_sinks, 0);
     drop(gpu_result);
-    drop(context);
-
     let constrained_context = backend_context_with_grant(1);
     let error = match execute_query_plan(&constrained_context, &plan) {
         Ok(_) => panic!("constrained keyless input-subplan pipeline should fail reservation"),

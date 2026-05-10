@@ -17,12 +17,12 @@ fn bounded_native_query_rejects_unsupported_join_under_aggregate_before_source_r
     ]));
 
     let mut builder = QueryPlanBuilder::new();
-    let left = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+    let left = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_path(
         "/tmp/bounded-aggregate-join-left-does-not-need-to-exist.parquet",
         Arc::clone(&left_schema),
         vec!["id".into(), "amount".into()],
     )));
-    let right = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+    let right = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_path(
         "/tmp/bounded-aggregate-join-right-does-not-need-to-exist.parquet",
         Arc::clone(&right_schema),
         vec!["id".into()],

@@ -76,13 +76,13 @@ fn dimension_pruning_plan(
     fact_schema: &Arc<Schema>,
 ) -> nexus_query_engine::plan::QueryPlan {
     let mut dim_source =
-        LocalParquetSource::new(dim_path, Arc::clone(dim_schema), vec!["dim_key".to_string(), "day".to_string()]);
+        LocalParquetSource::from_path(dim_path, Arc::clone(dim_schema), vec!["dim_key".to_string(), "day".to_string()]);
     dim_source = dim_source.with_reader_predicate(Expr::binary(
         Expr::binary(Expr::column("day"), BinaryOp::GtEq, Expr::literal(LiteralValue::Date32(15))),
         BinaryOp::And,
         Expr::binary(Expr::column("day"), BinaryOp::LtEq, Expr::literal(LiteralValue::Date32(35))),
     ));
-    let fact_source = LocalParquetSource::new(
+    let fact_source = LocalParquetSource::from_path(
         fact_path,
         Arc::clone(fact_schema),
         vec!["fact_key".to_string(), "payload".to_string()],

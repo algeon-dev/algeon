@@ -66,7 +66,18 @@ pub(in crate::capability) fn root_full_sort_join_aggregate_shape_decision(
     );
     let shared_aggregate_consumer_join_ids =
         root_full_sort_shared_aggregate_consumer_join_ids(plan, &whole_query_consumers, &shared_aggregate_producer_ids);
-    let subcontract = if !keyless_or_cross_join_ids.is_empty() {
+    let subcontract = if root_full_sort_keyless_shared_aggregate_fanout_shape(
+        plan,
+        root_join_id,
+        &join_ids,
+        &keyless_or_cross_join_ids,
+        &shared_producer_ids,
+        &shared_projection_producer_ids,
+        &shared_aggregate_producer_ids,
+        &unsupported_shared_producer_ids,
+    ) {
+        RootFullSortJoinAggregateSubcontract::SharedAggregateFanout
+    } else if !keyless_or_cross_join_ids.is_empty() {
         RootFullSortJoinAggregateSubcontract::KeylessOrCrossJoin
     } else if shared_producer_ids.is_empty() {
         RootFullSortJoinAggregateSubcontract::KeyedHashGroupedAggregate
@@ -98,6 +109,57 @@ pub(in crate::capability) fn root_full_sort_join_aggregate_shape_decision(
         post_root_projection_ids,
         final_sort_id,
         subcontract,
+    })
+}
+
+fn root_full_sort_keyless_shared_aggregate_fanout_shape(
+    plan: &QueryPlan,
+    root_join_id: NodeId,
+    join_ids: &[NodeId],
+    keyless_or_cross_join_ids: &[NodeId],
+    shared_producer_ids: &[NodeId],
+    shared_projection_producer_ids: &[NodeId],
+    shared_aggregate_producer_ids: &[NodeId],
+    unsupported_shared_producer_ids: &[NodeId],
+) -> bool {
+    if keyless_or_cross_join_ids != [root_join_id]
+        || shared_producer_ids.is_empty()
+        || shared_producer_ids != shared_aggregate_producer_ids
+        || !shared_projection_producer_ids.is_empty()
+        || !unsupported_shared_producer_ids.is_empty()
+    {
+        return false;
+    }
+    if !shared_aggregate_producer_ids.iter().all(|producer_id| {
+        matches!(
+            plan.node(*producer_id).map(|node| &node.kind),
+            Some(PlanNode::Aggregate(aggregate)) if !aggregate.spec.group_exprs.is_empty()
+        )
+    }) {
+        return false;
+    }
+
+    let Some(PlanNode::Join(root_join)) = plan.node(root_join_id).map(|node| &node.kind) else {
+        return false;
+    };
+    if !matches!(
+        join_node_execution_capability(root_join),
+        Some(JoinExecutionCapability::KeylessConditional(KeylessConditionalJoinKind::Inner))
+    ) || !root_join.spec.output_projection.iter().all(|column| column.side == JoinSide::Left)
+    {
+        return false;
+    }
+    join_ids.iter().all(|join_id| {
+        if *join_id == root_join_id {
+            return true;
+        }
+        matches!(
+            plan.node(*join_id).and_then(|node| match &node.kind {
+                PlanNode::Join(join) => join_node_execution_capability(join),
+                _ => None,
+            }),
+            Some(JoinExecutionCapability::KeyedHash | JoinExecutionCapability::KeyedResidualMixed)
+        )
     })
 }
 

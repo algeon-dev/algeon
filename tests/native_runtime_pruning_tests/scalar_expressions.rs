@@ -15,7 +15,7 @@ async fn native_runtime_scalar_expressions_match_cpu_and_collect_required_column
     assert_eq!(lowering.source_diagnostics[0].projected_output_column_count, 3);
     assert_eq!(lowering.source_diagnostics[0].pure_filter_column_count, 0);
 
-    let context = bounded_execution_context();
+    let context = bounded_execution_context(&lowering.plans[0]);
     let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
     cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
     let result = execute_query_plan(&context, &lowering.plans[0]).unwrap();
@@ -49,7 +49,7 @@ async fn native_runtime_nullable_scalar_expressions_match_cpu() {
     assert_eq!(lowering.source_diagnostics[0].projected_output_column_count, 3);
     assert_eq!(lowering.source_diagnostics[0].pure_filter_column_count, 0);
 
-    let context = bounded_execution_context();
+    let context = bounded_execution_context(&lowering.plans[0]);
     let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
     cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
     let result = execute_query_plan(&context, &lowering.plans[0]).unwrap();
@@ -112,7 +112,7 @@ async fn native_runtime_null_semantics_match_cpu_by_expression_family() {
             lowering.report.outcomes()
         );
 
-        let context = bounded_execution_context();
+        let context = bounded_execution_context(&lowering.plans[0]);
         let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
         cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
         let result = execute_query_plan(&context, &lowering.plans[0]).unwrap();

@@ -281,7 +281,7 @@ fn native_query_rejects_grouped_avg_with_unsupported_output_schema_before_source
         Field::new("avg_m00", DataType::Int64, true),
     ]));
 
-    let source = LocalParquetSource::new(
+    let source = LocalParquetSource::from_path(
         "/tmp/does-not-need-to-exist-for-avg-output-validation.parquet",
         Arc::clone(&input_schema),
         vec!["key".to_string(), "m00".to_string()],
@@ -347,7 +347,7 @@ fn native_query_rejects_global_avg_reserved_state_alias_collision_before_source_
 /// Asserted across the unbounded executor path (single-stage groupby) and
 /// the bounded executor path (partial -> final -> finalize). The unbounded
 /// path exercises libcudf groupby `MEAN` replacement for fixed-point columns.
-fn assert_grouped_decimal_avg_keeps_output_scale(context: &ExecutionContext) {
+fn assert_grouped_decimal_avg_keeps_output_scale(context: &BackendQueryContext) {
     let dir = unique_temp_dir("nexus-query-engine-native-grouped-decimal-avg-pattern");
     let path = dir.join("input.parquet");
     let input_schema = write_grouped_fractional_decimal_avg_parquet(&path);
@@ -405,7 +405,7 @@ fn bounded_native_query_executes_grouped_decimal_avg_at_output_scale() {
 /// `Decimal128(7, 2)` must produce correct integer and decimal averages for
 /// every group. The integer AVG output is declared `Float64`; the decimal AVGs
 /// declare `Decimal128(11, 6)` so the divisions happen at the output scale.
-fn assert_grouped_mixed_integer_and_decimal_avg(context: &ExecutionContext) {
+fn assert_grouped_mixed_integer_and_decimal_avg(context: &BackendQueryContext) {
     let dir = unique_temp_dir("nexus-query-engine-native-grouped-mixed-avg");
     let path = dir.join("input.parquet");
     let input_schema = write_grouped_mixed_avg_parquet(&path);
@@ -478,7 +478,7 @@ fn assert_grouped_mixed_integer_and_decimal_avg(context: &ExecutionContext) {
 /// should match `((base_price + (base_price + 100)) / 2)` at the declared
 /// `Decimal128(11, 6)` output scale. This guards against any per-group row
 /// alignment bug that does not show up with a tiny three-group fixture.
-fn assert_grouped_many_group_decimal_avg(context: &ExecutionContext) {
+fn assert_grouped_many_group_decimal_avg(context: &BackendQueryContext) {
     let dir = unique_temp_dir("nexus-query-engine-native-grouped-many-groups-avg");
     let path = dir.join("input.parquet");
     let input_schema = write_grouped_decimal_avg_many_groups_parquet(&path);
@@ -536,7 +536,7 @@ fn assert_grouped_many_group_decimal_avg(context: &ExecutionContext) {
 /// BIGINT and three `Decimal128(7, 2)` columns, sorted by group key, with every
 /// row spot-checked. This exercises the per-group partial-state path from the
 /// compiled bounded pipeline.
-fn assert_grouped_high_cardinality_mixed_avg(context: &ExecutionContext, groups: usize) {
+fn assert_grouped_high_cardinality_mixed_avg(context: &BackendQueryContext, groups: usize) {
     let dir = unique_temp_dir("nexus-query-engine-native-grouped-high-cardinality-avg");
     let path = dir.join("input.parquet");
     let input_schema = write_grouped_decimal_avg_high_cardinality_parquet(&path, groups);
@@ -655,28 +655,24 @@ fn bounded_native_query_executes_grouped_mixed_integer_and_decimal_avg() {
 
 #[test]
 fn unbounded_native_query_executes_grouped_decimal_avg_at_output_scale() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
+    let context = backend_context();
     assert_grouped_decimal_avg_keeps_output_scale(&context);
 }
 
 #[test]
 fn unbounded_native_query_executes_grouped_mixed_integer_and_decimal_avg() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
+    let context = backend_context();
     assert_grouped_mixed_integer_and_decimal_avg(&context);
 }
 
 #[test]
 fn unbounded_native_query_executes_grouped_high_cardinality_mixed_avg() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
+    let context = backend_context();
     assert_grouped_high_cardinality_mixed_avg(&context, 1500);
 }
 
 #[test]
 fn unbounded_native_query_executes_grouped_many_group_decimal_avg() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
+    let context = backend_context();
     assert_grouped_many_group_decimal_avg(&context);
 }

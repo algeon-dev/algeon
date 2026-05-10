@@ -1,9 +1,169 @@
+use std::collections::BTreeSet;
+
+use nexus_query_engine::parquet_stats::{ColumnByteKind, row_group_column_bytes};
+use parquet::file::reader::{FileReader, SerializedFileReader};
+
 use super::*;
 
 #[path = "parquet_fixtures/aggregate_inputs.rs"]
 mod aggregate_inputs;
 
 pub(super) use aggregate_inputs::*;
+
+pub(super) mod fixture_local_parquet_source {
+    use super::*;
+
+    pub(crate) fn from_path(
+        path: impl Into<std::path::PathBuf>,
+        schema: Arc<Schema>,
+        read_columns: Vec<String>,
+    ) -> NativeLocalParquetSource {
+        let path = path.into();
+        if path.is_file() {
+            from_files(vec![LocalParquetFile::new(&path)], schema, read_columns)
+        } else {
+            NativeLocalParquetSource::new(path, schema, read_columns)
+        }
+    }
+
+    pub(crate) fn from_files(
+        files: Vec<LocalParquetFile>,
+        schema: Arc<Schema>,
+        read_columns: Vec<String>,
+    ) -> NativeLocalParquetSource {
+        let (read_column_indexes, projected_column_indexes) = fixture_column_indexes(&schema, &read_columns);
+        NativeLocalParquetSource::from_files(
+            files
+                .into_iter()
+                .map(|file| enrich_fixture_local_parquet_file(file, &read_column_indexes, &projected_column_indexes))
+                .collect(),
+            schema,
+            read_columns,
+        )
+    }
+
+    pub(crate) fn zero_column_count(files: Vec<LocalParquetFile>) -> NativeLocalParquetSource {
+        let read_column_indexes = BTreeSet::new();
+        NativeLocalParquetSource::zero_column_count(
+            files
+                .into_iter()
+                .map(|file| enrich_fixture_local_parquet_file(file, &read_column_indexes, &read_column_indexes))
+                .collect(),
+        )
+    }
+
+    pub(crate) fn count_star_probe(
+        files: Vec<LocalParquetFile>,
+        read_schema: Arc<Schema>,
+        read_columns: Vec<String>,
+    ) -> NativeLocalParquetSource {
+        let (read_column_indexes, projected_column_indexes) = fixture_column_indexes(&read_schema, &read_columns);
+        let files = files
+            .into_iter()
+            .map(|file| enrich_fixture_local_parquet_file(file, &read_column_indexes, &projected_column_indexes))
+            .collect();
+        NativeLocalParquetSource::count_star_probe(files, read_schema, read_columns)
+    }
+}
+
+fn fixture_local_parquet_file(
+    path: &Path,
+    read_column_indexes: &BTreeSet<usize>,
+    projected_column_indexes: &BTreeSet<usize>,
+) -> LocalParquetFile {
+    let reader = SerializedFileReader::try_from(path).unwrap_or_else(|error| {
+        panic!("written native execution fixture must be readable as Parquet: {}: {error}", path.display())
+    });
+    let metadata = reader.metadata();
+    let file_size = fs::metadata(path)
+        .unwrap_or_else(|error| {
+            panic!("written native execution fixture must be stat-able: {}: {error}", path.display())
+        })
+        .len();
+    let row_group_rows = metadata
+        .row_groups()
+        .iter()
+        .map(|row_group| u64::try_from(row_group.num_rows()).expect("fixture row count fits u64"))
+        .collect::<Vec<_>>();
+    let row_group_bytes = metadata
+        .row_groups()
+        .iter()
+        .map(|row_group| {
+            row_group_column_bytes(row_group, read_column_indexes, ColumnByteKind::Compressed).unwrap_or_else(|| {
+                panic!("fixture Parquet row group is missing a read-column byte count: {}", path.display())
+            })
+        })
+        .collect::<Vec<_>>();
+    let projected_compressed_bytes = metadata
+        .row_groups()
+        .iter()
+        .map(|row_group| {
+            row_group_column_bytes(row_group, projected_column_indexes, ColumnByteKind::Compressed).unwrap_or_else(
+                || panic!("fixture Parquet row group is missing a projected-column byte count: {}", path.display()),
+            )
+        })
+        .collect::<Vec<_>>();
+    let projected_uncompressed_bytes = metadata
+        .row_groups()
+        .iter()
+        .map(|row_group| {
+            row_group_column_bytes(row_group, projected_column_indexes, ColumnByteKind::Uncompressed).unwrap_or_else(
+                || panic!("fixture Parquet row group is missing a projected-column byte count: {}", path.display()),
+            )
+        })
+        .collect::<Vec<_>>();
+    LocalParquetFile::new(path)
+        .with_file_size_bytes(file_size)
+        .with_row_groups((0..metadata.num_row_groups()).collect())
+        .with_row_group_rows(row_group_rows)
+        .with_row_group_bytes(row_group_bytes)
+        .with_projected_row_group_bytes(projected_compressed_bytes, projected_uncompressed_bytes)
+}
+
+fn enrich_fixture_local_parquet_file(
+    mut file: LocalParquetFile,
+    read_column_indexes: &BTreeSet<usize>,
+    projected_column_indexes: &BTreeSet<usize>,
+) -> LocalParquetFile {
+    if !file.path.is_file() {
+        return file;
+    }
+    let exact = fixture_local_parquet_file(&file.path, read_column_indexes, projected_column_indexes);
+    if file.file_size_bytes.is_none() {
+        file.file_size_bytes = exact.file_size_bytes;
+    }
+    if file.row_groups.is_none() {
+        file.row_groups = exact.row_groups;
+    }
+    if file.row_group_bytes.is_none() {
+        file.row_group_bytes = exact.row_group_bytes;
+    }
+    if file.projected_row_group_compressed_bytes.is_none() {
+        file.projected_row_group_compressed_bytes = exact.projected_row_group_compressed_bytes;
+    }
+    if file.projected_row_group_uncompressed_bytes.is_none() {
+        file.projected_row_group_uncompressed_bytes = exact.projected_row_group_uncompressed_bytes;
+    }
+    if file.row_group_rows.is_none() {
+        file.row_group_rows = exact.row_group_rows;
+    }
+    file
+}
+
+fn fixture_column_indexes(schema: &Arc<Schema>, read_columns: &[String]) -> (BTreeSet<usize>, BTreeSet<usize>) {
+    let source = NativeLocalParquetSource::from_files(Vec::new(), Arc::clone(schema), read_columns.to_vec());
+    let read_column_indexes = source.read_column_file_indices.iter().copied().collect::<BTreeSet<_>>();
+    let projected_column_indexes = source
+        .projected_output_column_source_refs
+        .iter()
+        .filter_map(|source_ref| match source_ref {
+            nexus_query_engine::source::SourceColumnRef::File(index) => Some(*index),
+            nexus_query_engine::source::SourceColumnRef::Partition(_)
+            | nexus_query_engine::source::SourceColumnRef::MissingNull(_) => None,
+        })
+        .collect::<BTreeSet<_>>();
+    (read_column_indexes, projected_column_indexes)
+}
 
 pub(super) fn write_input_parquet(runtime: &cudf::Runtime, path: &std::path::Path) -> Arc<Schema> {
     let schema = Arc::new(Schema::new(vec![

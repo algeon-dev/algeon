@@ -98,30 +98,33 @@ fn assert_large_string_list_value(array: &LargeListArray, index: usize, expected
 }
 
 fn execute_gpu_resident_filter_ids(
-    context: &ExecutionContext,
+    context: &BackendQueryContext,
     schema: Arc<Schema>,
     batch: &RecordBatch,
     predicate: Expr,
 ) -> Vec<i32> {
-    let runtime = Arc::new(context.runtime().unwrap());
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", Arc::clone(&schema))));
     let filter = builder.add_filter(source, predicate, Arc::clone(&schema));
     let plan = builder.finish_with_host_sink(filter);
+    let admitted = context.admit_plan(&plan).unwrap();
+    let runtime = Arc::new(admitted.runtime().unwrap());
     let mut gpu_inputs = GpuResidentInputMap::new();
     gpu_inputs.insert(
         "input".to_string(),
         GpuResultHandle::new(
-            context,
+            &admitted,
             GpuDataFrame::new(DataFrame::from_record_batch(&runtime, batch).unwrap()),
             Arc::clone(&schema),
         )
         .unwrap(),
     );
 
-    let result = execute_query_plan_with_gpu_inputs(context, &plan, &gpu_inputs).unwrap();
+    let result = execute_query_plan_with_gpu_inputs(&admitted, &plan, &gpu_inputs).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");
     };
-    int32_array(batch, 0).values().to_vec()
+    let ids = int32_array(batch, 0).values().to_vec();
+    admitted.finish();
+    ids
 }

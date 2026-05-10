@@ -41,11 +41,16 @@ fn similarity_plan(
     algorithm: GraphAlgorithm,
     edge_schema: Arc<Schema>,
     pair_schema: Arc<Schema>,
+    edge_row_count_upper_bound: usize,
     pair_row_count_upper_bound: usize,
     with_weight: bool,
 ) -> nexus_query_engine::plan::QueryPlan {
     let mut builder = QueryPlanBuilder::new();
-    let edges = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("edges", edge_schema)));
+    let edges = builder.add_source(SourceNode::GpuResident(
+        GpuResidentSource::new("edges", edge_schema).with_row_count_upper_bound(
+            u64::try_from(edge_row_count_upper_bound).expect("test edge cardinality must fit u64"),
+        ),
+    ));
     let pairs = builder.add_source(SourceNode::GpuResident(
         GpuResidentSource::new("pairs", pair_schema).with_row_count_upper_bound(
             u64::try_from(pair_row_count_upper_bound).expect("test pair cardinality must fit u64"),
@@ -56,7 +61,7 @@ fn similarity_plan(
 }
 
 fn execute_similarity_plan(
-    context: &ExecutionContext,
+    context: &AdmittedPlanContext,
     runtime: &Arc<cudf::Runtime>,
     plan: &nexus_query_engine::plan::QueryPlan,
     edge_schema: Arc<Schema>,
@@ -106,7 +111,7 @@ fn similarity_score(batch: &RecordBatch, first: i64, second: i64) -> f64 {
         .unwrap_or_else(|| panic!("missing similarity output pair ({first}, {second})"))
 }
 
-fn assert_bounded_similarity_pair_input_overlap_is_credited() {
+fn assert_bounded_similarity_pair_input_is_admitted() {
     let (edge_schema, edge_batch) = symmetric_similarity_edges_i32(false);
     let pair_schema = similarity_pair_schema(DataType::Int32, false);
     let pair_rows = 100_000_usize;
@@ -117,44 +122,33 @@ fn assert_bounded_similarity_pair_input_overlap_is_credited() {
     .unwrap();
 
     let mut builder = QueryPlanBuilder::new();
-    let edges = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("edges", Arc::clone(&edge_schema))));
-    let pairs = builder
-        .add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(Arc::clone(&pair_schema), vec![pair_batch])));
+    let edges = builder.add_source(SourceNode::GpuResident(gpu_resident_source("edges", Arc::clone(&edge_schema), &edge_batch)));
+    let pairs = builder.add_source(SourceNode::GpuResident(
+        GpuResidentSource::new("pairs", Arc::clone(&pair_schema))
+            .with_row_count_upper_bound(u64::try_from(pair_rows).expect("test pair cardinality must fit u64")),
+    ));
     let graph = builder.add_graph_algorithm(edges, similarity_spec(GraphAlgorithm::Jaccard, pairs, false));
     let plan = builder.finish_with_host_sink_schema(graph, stable_graph_result_schema(GraphAlgorithm::Jaccard));
 
     let context_with_budget = |device_budget_bytes| backend_context_with_grant(device_budget_bytes);
-    let gpu_inputs_for = |context: &ExecutionContext| {
-        let runtime = Arc::new(context.runtime().unwrap());
+    let gpu_inputs_for = |context: &AdmittedPlanContext, runtime: &Arc<cudf::Runtime>| {
         let mut inputs = GpuResidentInputMap::new();
         inputs
-            .insert("edges".to_string(), graph_input_handle(context, &runtime, Arc::clone(&edge_schema), &edge_batch));
+            .insert("edges".to_string(), graph_input_handle(context, runtime, Arc::clone(&edge_schema), &edge_batch));
+        inputs.insert("pairs".to_string(), graph_input_handle(context, runtime, Arc::clone(&pair_schema), &pair_batch));
         inputs
     };
 
-    // First establish the isolated model price and actual literal-source
-    // reservation. The calibrated similarity model includes the pair columns;
-    // the second execution narrows the budget to the interval that only the
-    // incremental graph request may admit.
+    // First establish the isolated graph price. The second execution supplies
+    // the same bounded pair frame as a GPU-resident input under a fresh grant.
     let baseline_context = context_with_budget(64 * 1024 * 1024);
-    let baseline_inputs = gpu_inputs_for(&baseline_context);
-    let baseline = execute_query_plan_with_gpu_inputs(&baseline_context, &plan, &baseline_inputs).unwrap();
+    let baseline_admitted = baseline_context.admit_plan(&plan).unwrap();
+    let baseline_runtime = Arc::new(baseline_admitted.runtime().unwrap());
+    let baseline_inputs = gpu_inputs_for(&baseline_admitted, &baseline_runtime);
+    let baseline = execute_query_plan_with_gpu_inputs(&baseline_admitted, &plan, &baseline_inputs).unwrap();
     assert_eq!(baseline.metrics().graph_reservation_rows.len(), 1);
     let baseline_report = baseline.metrics().graph_reservation_rows[0].clone();
-    let pair_source_bytes = baseline
-        .metrics()
-        .reservation_events
-        .iter()
-        .find(|event| {
-            event.memory_boundary == "bounded_generic_literal_batch_source"
-                && event.reservation_kind == ReservationKind::SourceRead
-                && event.action == MemoryReservationEventAction::Reserve
-        })
-        .expect("literal pair relation must retain a live source reservation")
-        .requested_bytes;
     let pair_input_overlap_bytes = u64::try_from(pair_rows).unwrap() * 2 * 4;
-    let credited_bytes = pair_input_overlap_bytes.min(pair_source_bytes);
-    assert!(credited_bytes > 0);
     let normalized_edge_credit = baseline
         .metrics()
         .reservation_events
@@ -170,40 +164,41 @@ fn assert_bounded_similarity_pair_input_overlap_is_credited() {
         baseline_report
             .model_requested_bytes
             .saturating_sub(normalized_edge_credit)
-            .saturating_sub(credited_bytes)
             .max(GRAPH_MEMORY_BUDGET_TRACKING_MIN_LIMIT_BYTES),
-        "the graph reservation must price the graph-input and literal-pair frames exactly once"
-    );
-    let graph_capacity = baseline_report.requested_bytes.saturating_add(credited_bytes / 2);
-    assert!(
-        baseline_report.model_requested_bytes > graph_capacity,
-        "the regression budget must lie between the discounted and isolated graph prices"
+        "the graph reservation must price the graph-input frame exactly once"
     );
     drop(baseline);
     drop(baseline_inputs);
-    drop(baseline_context);
-
-    let context = context_with_budget(pair_source_bytes.saturating_add(graph_capacity));
-    let gpu_inputs = gpu_inputs_for(&context);
-    let result = execute_query_plan_with_gpu_inputs(&context, &plan, &gpu_inputs).unwrap_or_else(|error| {
+    drop(baseline_runtime);
+    baseline_admitted.finish();
+    drop(baseline_admitted);
+    let context = context_with_budget(baseline_report.requested_bytes.saturating_add(pair_input_overlap_bytes));
+    let admitted = context.admit_plan(&plan).unwrap();
+    let runtime = Arc::new(admitted.runtime().unwrap());
+    let gpu_inputs = gpu_inputs_for(&admitted, &runtime);
+    let result = execute_query_plan_with_gpu_inputs(&admitted, &plan, &gpu_inputs).unwrap_or_else(|error| {
         panic!("strict bounded similarity must admit its live pair input exactly once: {error:#?}")
     });
     assert_eq!(result.metrics().graph_reservation_rows.len(), 1);
     let report = &result.metrics().graph_reservation_rows[0];
     assert_eq!(report.outcome, GraphReservationOutcome::Admitted);
     assert_eq!(report.requested_bytes, baseline_report.requested_bytes);
-    assert!(report.requested_bytes <= graph_capacity);
+    assert_eq!(result.metrics().boundary.gpu_resident_input_handoffs, 2);
+    drop(result);
+    drop(gpu_inputs);
+    drop(runtime);
+    admitted.finish();
+    drop(admitted);
 }
 
 #[test]
-fn strict_bounded_similarity_credits_live_literal_pair_input_once() {
-    assert_bounded_similarity_pair_input_overlap_is_credited();
+fn strict_bounded_similarity_accepts_gpu_pair_input_exactly_once() {
+    assert_bounded_similarity_pair_input_is_admitted();
 }
 
 #[test]
 fn pairwise_similarity_executes_all_metrics_with_stable_schema_and_multiset_pairs() {
     let context = backend_context();
-    let runtime = Arc::new(context.runtime().unwrap());
     let (edge_schema, edge_batch) = symmetric_similarity_edges_i32(false);
     let pair_schema = similarity_pair_schema(DataType::Int32, false);
     let expected_pairs = vec![(0, 1), (0, 1), (1, 0), (0, 0), (0, 3)];
@@ -220,34 +215,41 @@ fn pairwise_similarity_executes_all_metrics_with_stable_schema_and_multiset_pair
             algorithm,
             Arc::clone(&edge_schema),
             Arc::clone(&pair_schema),
+            edge_batch.num_rows(),
             pair_batch.num_rows(),
             false,
         );
-        let result = execute_similarity_plan(
-            &context,
-            &runtime,
-            &plan,
-            Arc::clone(&edge_schema),
-            &edge_batch,
-            Arc::clone(&pair_schema),
-            &pair_batch,
-        )
-        .unwrap_or_else(|error| panic!("{} should execute: {error:#?}", algorithm.as_str()));
-        let QueryOutput::HostArrow(batch) = result.output() else {
-            panic!("similarity plan must materialize a host Arrow result")
-        };
-        assert_similarity_stable_output(batch, &expected_pairs);
-        assert!((similarity_score(batch, 0, 1) - similarity_score(batch, 1, 0)).abs() <= 1.0e-12);
-        assert!(similarity_score(batch, 0, 0) >= 0.0);
-        assert_eq!(result.metrics().graph_algorithm_runtime_rows.len(), 1);
-        assert!(result.metrics().graph_algorithm_runtime_rows[0].algorithm_metadata.contains("vertex_pair_rows=5"));
+        let admitted = context.admit_plan(&plan).unwrap();
+        let runtime = Arc::new(admitted.runtime().unwrap());
+        {
+            let result = execute_similarity_plan(
+                &admitted,
+                &runtime,
+                &plan,
+                Arc::clone(&edge_schema),
+                &edge_batch,
+                Arc::clone(&pair_schema),
+                &pair_batch,
+            )
+            .unwrap_or_else(|error| panic!("{} should execute: {error:#?}", algorithm.as_str()));
+            let QueryOutput::HostArrow(batch) = result.output() else {
+                panic!("similarity plan must materialize a host Arrow result")
+            };
+            assert_similarity_stable_output(batch, &expected_pairs);
+            assert!((similarity_score(batch, 0, 1) - similarity_score(batch, 1, 0)).abs() <= 1.0e-12);
+            assert!(similarity_score(batch, 0, 0) >= 0.0);
+            assert_eq!(result.metrics().graph_algorithm_runtime_rows.len(), 1);
+            assert!(result.metrics().graph_algorithm_runtime_rows[0].algorithm_metadata.contains("vertex_pair_rows=5"));
+        }
+        drop(runtime);
+        admitted.finish();
+        drop(admitted);
     }
 }
 
 #[test]
 fn pairwise_similarity_weighted_jaccard_uses_the_graph_weight_binding() {
     let context = backend_context();
-    let runtime = Arc::new(context.runtime().unwrap());
     let (edge_schema, edge_batch) = symmetric_similarity_edges_i32(true);
     let pair_schema = similarity_pair_schema(DataType::Int32, false);
     let pair_batch = RecordBatch::try_new(
@@ -259,39 +261,46 @@ fn pairwise_similarity_weighted_jaccard_uses_the_graph_weight_binding() {
         GraphAlgorithm::Jaccard,
         Arc::clone(&edge_schema),
         Arc::clone(&pair_schema),
+        edge_batch.num_rows(),
         pair_batch.num_rows(),
         true,
     );
-    let result = execute_similarity_plan(
-        &context,
-        &runtime,
-        &plan,
-        Arc::clone(&edge_schema),
-        &edge_batch,
-        Arc::clone(&pair_schema),
-        &pair_batch,
-    )
-    .unwrap();
-    let QueryOutput::HostArrow(batch) = result.output() else { panic!("host result expected") };
-    assert_similarity_stable_output(batch, &[(0, 1)]);
-    assert!(
-        (similarity_score(batch, 0, 1) - 0.4).abs() <= 1.0e-6,
-        "weighted Jaccard must not fall back to unit weights"
-    );
-    assert!(result.metrics().graph_algorithm_runtime_rows[0].algorithm_metadata.contains("use_weight=true"));
+    let admitted = context.admit_plan(&plan).unwrap();
+    let runtime = Arc::new(admitted.runtime().unwrap());
+    {
+        let result = execute_similarity_plan(
+            &admitted,
+            &runtime,
+            &plan,
+            Arc::clone(&edge_schema),
+            &edge_batch,
+            Arc::clone(&pair_schema),
+            &pair_batch,
+        )
+        .unwrap();
+        let QueryOutput::HostArrow(batch) = result.output() else { panic!("host result expected") };
+        assert_similarity_stable_output(batch, &[(0, 1)]);
+        assert!(
+            (similarity_score(batch, 0, 1) - 0.4).abs() <= 1.0e-6,
+            "weighted Jaccard must not fall back to unit weights"
+        );
+        assert!(result.metrics().graph_algorithm_runtime_rows[0].algorithm_metadata.contains("use_weight=true"));
+    }
+    drop(runtime);
+    admitted.finish();
+    drop(admitted);
 }
 
 #[test]
 fn pairwise_similarity_allows_one_pair_column_to_supply_both_self_pair_endpoints() {
     let context = backend_context();
-    let runtime = Arc::new(context.runtime().unwrap());
     let (edge_schema, edge_batch) = symmetric_similarity_edges_i32(false);
     let pair_schema = Arc::new(Schema::new(vec![Field::new("vertex", DataType::Int32, false)]));
     let pair_batch =
         RecordBatch::try_new(Arc::clone(&pair_schema), vec![Arc::new(Int32Array::from(vec![0, 1, 0]))]).unwrap();
 
     let mut builder = QueryPlanBuilder::new();
-    let edges = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("edges", Arc::clone(&edge_schema))));
+    let edges = builder.add_source(SourceNode::GpuResident(gpu_resident_source("edges", Arc::clone(&edge_schema), &edge_batch)));
     let pairs = builder.add_source(SourceNode::GpuResident(
         GpuResidentSource::new("pairs", Arc::clone(&pair_schema)).with_row_count_upper_bound(
             u64::try_from(pair_batch.num_rows()).expect("test pair cardinality must fit u64"),
@@ -302,25 +311,31 @@ fn pairwise_similarity_allows_one_pair_column_to_supply_both_self_pair_endpoints
         similarity_spec_for_pair_columns(GraphAlgorithm::Jaccard, pairs, false, "vertex", "vertex"),
     );
     let plan = builder.finish_with_host_sink_schema(graph, stable_graph_result_schema(GraphAlgorithm::Jaccard));
+    let admitted = context.admit_plan(&plan).unwrap();
+    let runtime = Arc::new(admitted.runtime().unwrap());
 
-    let result = execute_similarity_plan(
-        &context,
-        &runtime,
-        &plan,
-        Arc::clone(&edge_schema),
-        &edge_batch,
-        Arc::clone(&pair_schema),
-        &pair_batch,
-    )
-    .unwrap_or_else(|error| panic!("same-column self-pair relation should execute: {error:#?}"));
-    let QueryOutput::HostArrow(batch) = result.output() else { panic!("host result expected") };
-    assert_similarity_stable_output(batch, &[(0, 0), (1, 1), (0, 0)]);
+    {
+        let result = execute_similarity_plan(
+            &admitted,
+            &runtime,
+            &plan,
+            Arc::clone(&edge_schema),
+            &edge_batch,
+            Arc::clone(&pair_schema),
+            &pair_batch,
+        )
+        .unwrap_or_else(|error| panic!("same-column self-pair relation should execute: {error:#?}"));
+        let QueryOutput::HostArrow(batch) = result.output() else { panic!("host result expected") };
+        assert_similarity_stable_output(batch, &[(0, 0), (1, 1), (0, 0)]);
+    }
+    drop(runtime);
+    admitted.finish();
+    drop(admitted);
 }
 
 #[test]
 fn pairwise_similarity_accepts_int64_pairs_and_short_circuits_empty_pairs() {
     let context = backend_context();
-    let runtime = Arc::new(context.runtime().unwrap());
     let edge_schema = similarity_edge_schema(DataType::Int64, false);
     let edge_batch = RecordBatch::try_new(
         Arc::clone(&edge_schema),
@@ -337,47 +352,56 @@ fn pairwise_similarity_accepts_int64_pairs_and_short_circuits_empty_pairs() {
         GraphAlgorithm::Jaccard,
         Arc::clone(&edge_schema),
         Arc::clone(&pair_schema),
+        edge_batch.num_rows(),
         nonempty_pairs.num_rows(),
         false,
     );
-    let nonempty = execute_similarity_plan(
-        &context,
-        &runtime,
-        &plan,
-        Arc::clone(&edge_schema),
-        &edge_batch,
-        Arc::clone(&pair_schema),
-        &nonempty_pairs,
-    )
-    .unwrap();
-    let QueryOutput::HostArrow(batch) = nonempty.output() else { panic!("host result expected") };
-    assert_similarity_stable_output(batch, &[(0, 1)]);
+    let admitted = context.admit_plan(&plan).unwrap();
+    let runtime = Arc::new(admitted.runtime().unwrap());
+    {
+        let nonempty = execute_similarity_plan(
+            &admitted,
+            &runtime,
+            &plan,
+            Arc::clone(&edge_schema),
+            &edge_batch,
+            Arc::clone(&pair_schema),
+            &nonempty_pairs,
+        )
+        .unwrap();
+        let QueryOutput::HostArrow(batch) = nonempty.output() else { panic!("host result expected") };
+        assert_similarity_stable_output(batch, &[(0, 1)]);
+    }
 
     let empty_pairs = RecordBatch::try_new(
         Arc::clone(&pair_schema),
         vec![Arc::new(Int64Array::from(Vec::<i64>::new())), Arc::new(Int64Array::from(Vec::<i64>::new()))],
     )
     .unwrap();
-    let empty = execute_similarity_plan(
-        &context,
-        &runtime,
-        &plan,
-        Arc::clone(&edge_schema),
-        &edge_batch,
-        Arc::clone(&pair_schema),
-        &empty_pairs,
-    )
-    .unwrap();
-    let QueryOutput::HostArrow(batch) = empty.output() else { panic!("host result expected") };
-    assert_eq!(batch.schema().as_ref(), stable_graph_result_schema(GraphAlgorithm::Jaccard).as_ref());
-    assert_eq!(batch.num_rows(), 0);
-    assert!(empty.metrics().graph_algorithm_runtime_rows[0].algorithm_metadata.contains("vertex_pairs_empty"));
+    {
+        let empty = execute_similarity_plan(
+            &admitted,
+            &runtime,
+            &plan,
+            Arc::clone(&edge_schema),
+            &edge_batch,
+            Arc::clone(&pair_schema),
+            &empty_pairs,
+        )
+        .unwrap();
+        let QueryOutput::HostArrow(batch) = empty.output() else { panic!("host result expected") };
+        assert_eq!(batch.schema().as_ref(), stable_graph_result_schema(GraphAlgorithm::Jaccard).as_ref());
+        assert_eq!(batch.num_rows(), 0);
+        assert!(empty.metrics().graph_algorithm_runtime_rows[0].algorithm_metadata.contains("vertex_pairs_empty"));
+    }
+    drop(runtime);
+    admitted.finish();
+    drop(admitted);
 }
 
 #[test]
 fn pairwise_similarity_rejects_null_pairs_absent_endpoints_and_pair_graph_dtype_mismatch() {
     let context = backend_context();
-    let runtime = Arc::new(context.runtime().unwrap());
     let (edge_schema, edge_batch) = symmetric_similarity_edges_i32(false);
 
     let nullable_pair_schema = similarity_pair_schema(DataType::Int32, true);
@@ -390,12 +414,15 @@ fn pairwise_similarity_rejects_null_pairs_absent_endpoints_and_pair_graph_dtype_
         GraphAlgorithm::Jaccard,
         Arc::clone(&edge_schema),
         Arc::clone(&nullable_pair_schema),
+        edge_batch.num_rows(),
         nullable_pairs.num_rows(),
         false,
     );
+    let nullable_admitted = context.admit_plan(&nullable_plan).unwrap();
+    let nullable_runtime = Arc::new(nullable_admitted.runtime().unwrap());
     let null_error = match execute_similarity_plan(
-        &context,
-        &runtime,
+        &nullable_admitted,
+        &nullable_runtime,
         &nullable_plan,
         Arc::clone(&edge_schema),
         &edge_batch,
@@ -408,6 +435,9 @@ fn pairwise_similarity_rejects_null_pairs_absent_endpoints_and_pair_graph_dtype_
     assert_eq!(null_error.code(), QueryErrorCode::GraphInputInvalid, "{null_error:#?}");
     assert_eq!(null_error.fact_value("algorithm"), Some("jaccard"));
     assert_eq!(null_error.fact_value("input_role"), Some("vertex_pairs"));
+    drop(nullable_runtime);
+    nullable_admitted.finish();
+    drop(nullable_admitted);
 
     let pair_schema = similarity_pair_schema(DataType::Int32, false);
     let absent_pairs = RecordBatch::try_new(
@@ -419,12 +449,15 @@ fn pairwise_similarity_rejects_null_pairs_absent_endpoints_and_pair_graph_dtype_
         GraphAlgorithm::Jaccard,
         Arc::clone(&edge_schema),
         Arc::clone(&pair_schema),
+        edge_batch.num_rows(),
         absent_pairs.num_rows(),
         false,
     );
+    let absent_admitted = context.admit_plan(&plan).unwrap();
+    let absent_runtime = Arc::new(absent_admitted.runtime().unwrap());
     let absent_error = match execute_similarity_plan(
-        &context,
-        &runtime,
+        &absent_admitted,
+        &absent_runtime,
         &plan,
         Arc::clone(&edge_schema),
         &edge_batch,
@@ -435,6 +468,9 @@ fn pairwise_similarity_rejects_null_pairs_absent_endpoints_and_pair_graph_dtype_
         Ok(_) => panic!("vertex-pair endpoint absent from the graph must reject execution"),
     };
     assert_eq!(absent_error.code(), QueryErrorCode::CudfInvalidInput);
+    drop(absent_runtime);
+    absent_admitted.finish();
+    drop(absent_admitted);
 
     let mismatched_schema = similarity_pair_schema(DataType::Int64, false);
     let mismatched_pairs = RecordBatch::try_new(
@@ -446,12 +482,15 @@ fn pairwise_similarity_rejects_null_pairs_absent_endpoints_and_pair_graph_dtype_
         GraphAlgorithm::Jaccard,
         Arc::clone(&edge_schema),
         Arc::clone(&mismatched_schema),
+        edge_batch.num_rows(),
         mismatched_pairs.num_rows(),
         false,
     );
+    let mismatched_admitted = context.admit_plan(&mismatched_plan).unwrap();
+    let mismatched_runtime = Arc::new(mismatched_admitted.runtime().unwrap());
     let mismatch_error = match execute_similarity_plan(
-        &context,
-        &runtime,
+        &mismatched_admitted,
+        &mismatched_runtime,
         &mismatched_plan,
         edge_schema,
         &edge_batch,
@@ -463,9 +502,7 @@ fn pairwise_similarity_rejects_null_pairs_absent_endpoints_and_pair_graph_dtype_
     };
     assert_eq!(mismatch_error.code(), QueryErrorCode::UnsupportedType);
     assert_eq!(mismatch_error.fact_value("reason"), Some("vertex_pair_graph_vertex_dtype_mismatch"));
-}
-
-#[test]
-fn bounded_similarity_credits_live_literal_pair_input_once() {
-    assert_bounded_similarity_pair_input_overlap_is_credited();
+    drop(mismatched_runtime);
+    mismatched_admitted.finish();
+    drop(mismatched_admitted);
 }

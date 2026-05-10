@@ -8,12 +8,12 @@ fn native_query_rejects_invalid_cross_join_before_source_read() {
         Field::new("left_id", DataType::Int32, false),
         Field::new("right_id", DataType::Int32, true),
     ]));
-    let left_source = LocalParquetSource::new(
+    let left_source = LocalParquetSource::from_path(
         "/tmp/does-not-need-to-exist-for-cross-join-left.parquet",
         Arc::clone(&left_schema),
         vec!["id".into()],
     );
-    let right_source = LocalParquetSource::new(
+    let right_source = LocalParquetSource::from_path(
         "/tmp/does-not-need-to-exist-for-cross-join-right.parquet",
         Arc::clone(&right_schema),
         vec!["id".into()],

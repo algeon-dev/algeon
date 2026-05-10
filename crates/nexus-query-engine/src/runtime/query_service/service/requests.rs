@@ -26,7 +26,9 @@ impl QueryService {
             Some(proof) => (|| {
                 let resolved_proof = proof.requirement_for_device(ordinal)?;
                 let envelope = resolved_proof.resolve_reservation_envelope(policy)?;
-                let requirement = resolved_proof.as_requirement().clone().with_reservation_envelope(&envelope);
+                let requirement = request.apply_test_placement_overlay(
+                    resolved_proof.as_requirement().clone().with_reservation_envelope(&envelope),
+                );
                 Ok(DeviceAdmissionEntry { requirement, admitted_reservation_envelope: Some(envelope) })
             })(),
             None => {

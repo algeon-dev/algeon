@@ -207,6 +207,7 @@ fn bounded_native_query_applies_post_decode_filter_to_shared_local_source_frame(
             )
     }));
     let context = backend_context_with_grant(1024 * 1024);
+    let admitted = context.admit_plan(&optimized.plan).unwrap();
 
     let analysis = optimized.plan.capability_analysis();
     let pipeline = nexus_query_engine::pipeline::compile_pipeline(&optimized.plan, &analysis).unwrap();
@@ -215,7 +216,7 @@ fn bounded_native_query_applies_post_decode_filter_to_shared_local_source_frame(
     let gpu_inputs = GpuResidentInputMap::new();
     let output = {
         let mut executor = nexus_query_engine::exec::CompiledGpuTaskExecutor::new(
-            &context,
+            &admitted,
             &optimized.plan,
             &pipeline,
             &gpu_inputs,
@@ -260,6 +261,8 @@ fn bounded_native_query_applies_post_decode_filter_to_shared_local_source_frame(
     }));
     assert_eq!(metrics.dynamic_filter_source_post_decode_rows_filtered, 2);
 
+    admitted.finish();
+
     fs::remove_dir_all(dir).unwrap();
 }
 
@@ -291,8 +294,10 @@ fn bounded_native_query_batches_dynamic_reader_predicate_probe_source_chunks() {
         Arc::clone(&left_schema),
         vec!["order_id".to_string(), "qty".to_string()],
     )));
-    let right = builder
-        .add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(Arc::clone(&right_schema), vec![right_batch])));
+    let right = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new(
+        "right_keys",
+        Arc::clone(&right_schema),
+    )));
     let join = builder.add_join(
         left,
         right,
@@ -316,39 +321,56 @@ fn bounded_native_query_batches_dynamic_reader_predicate_probe_source_chunks() {
     assert_eq!(optimized.diagnostics.dynamic_filter_route_discovery.route_count, 1);
     let context = backend_context_with_grant(8 * 1024 * 1024);
 
-    let result = execute_query_plan(&context, &optimized.plan).unwrap();
-    let output = result.output().as_host_arrow().unwrap();
-    let metrics = result.metrics();
-    assert_eq!(output.num_rows(), 3);
-    assert_eq!(int32_array(output, 0).values().as_ref(), &[2, 2, 2]);
-    assert_eq!(int32_array(output, 1).values().as_ref(), &[20, 21, 22]);
-    assert_eq!(metrics.source_chunks_planned, 3);
-    assert_eq!(metrics.source_chunks_attempted, 3);
-    assert_eq!(metrics.source_chunks_committed, 3);
-    assert_eq!(metrics.row_groups_committed, 3);
-    assert_eq!(metrics.dynamic_filter_reader_predicate_rows_before, 6);
-    assert_eq!(metrics.dynamic_filter_reader_predicate_rows_after, 3);
-    assert_eq!(metrics.source_read_runtime_rows.len(), 1);
-    let source_read_row = &metrics.source_read_runtime_rows[0];
-    assert_eq!(source_read_row.read_kind, "chunk_batch");
-    assert_eq!(source_read_row.read_strategy, "local_kvikio");
-    assert_eq!(source_read_row.batch_index, 0);
-    assert_eq!(source_read_row.chunk_count, 3);
-    assert_eq!(source_read_row.file_count, 3);
-    assert_eq!(source_read_row.row_group_count, 3);
-    assert_eq!(source_read_row.read_columns_per_file, 2);
-    assert_eq!(source_read_row.read_columns_total, 6);
-    assert_eq!(source_read_row.output_rows, 3);
-    assert!(source_read_row.reader_predicate);
-    assert_eq!(source_read_row.reader_dynamic_filter_count, 1);
-    assert!(source_read_row.elapsed > std::time::Duration::ZERO);
-    assert!(metrics.dynamic_filter_runtime_rows.iter().any(|row| {
-        row.event == "reader_predicate_rows"
-            && row.source_file_index.is_none()
-            && row.source_chunk_index.is_none()
-            && row.reader_predicate_rows_before == Some(6)
-            && row.reader_predicate_rows_after == Some(3)
-    }));
+    let admitted = context.admit_plan(&optimized.plan).unwrap();
+    let runtime = Arc::new(admitted.runtime().unwrap());
+    let mut gpu_inputs = GpuResidentInputMap::new();
+    gpu_inputs.insert(
+        "right_keys".to_string(),
+        GpuResultHandle::new(
+            &admitted,
+            GpuDataFrame::new(DataFrame::from_record_batch(&runtime, &right_batch).unwrap()),
+            Arc::clone(&right_schema),
+        )
+        .unwrap(),
+    );
+    {
+        let result = execute_query_plan_with_gpu_inputs(&admitted, &optimized.plan, &gpu_inputs).unwrap();
+        let output = result.output().as_host_arrow().unwrap();
+        let metrics = result.metrics();
+        assert_eq!(output.num_rows(), 3);
+        assert_eq!(int32_array(output, 0).values().as_ref(), &[2, 2, 2]);
+        assert_eq!(int32_array(output, 1).values().as_ref(), &[20, 21, 22]);
+        assert_eq!(metrics.source_chunks_planned, 3);
+        assert_eq!(metrics.source_chunks_attempted, 3);
+        assert_eq!(metrics.source_chunks_committed, 3);
+        assert_eq!(metrics.row_groups_committed, 3);
+        assert_eq!(metrics.dynamic_filter_reader_predicate_rows_before, 6);
+        assert_eq!(metrics.dynamic_filter_reader_predicate_rows_after, 3);
+        assert_eq!(metrics.source_read_runtime_rows.len(), 1);
+        let source_read_row = &metrics.source_read_runtime_rows[0];
+        assert_eq!(source_read_row.read_kind, "chunk_batch");
+        assert_eq!(source_read_row.read_strategy, "local_kvikio");
+        assert_eq!(source_read_row.batch_index, 0);
+        assert_eq!(source_read_row.chunk_count, 3);
+        assert_eq!(source_read_row.file_count, 3);
+        assert_eq!(source_read_row.row_group_count, 3);
+        assert_eq!(source_read_row.read_columns_per_file, 2);
+        assert_eq!(source_read_row.read_columns_total, 6);
+        assert_eq!(source_read_row.output_rows, 3);
+        assert!(source_read_row.reader_predicate);
+        assert_eq!(source_read_row.reader_dynamic_filter_count, 1);
+        assert!(source_read_row.elapsed > std::time::Duration::ZERO);
+        assert!(metrics.dynamic_filter_runtime_rows.iter().any(|row| {
+            row.event == "reader_predicate_rows"
+                && row.source_file_index.is_none()
+                && row.source_chunk_index.is_none()
+                && row.reader_predicate_rows_before == Some(6)
+                && row.reader_predicate_rows_after == Some(3)
+        }));
+    }
+    drop(gpu_inputs);
+    drop(runtime);
+    admitted.finish();
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -569,8 +591,10 @@ fn bounded_native_query_prunes_hash_set_dynamic_filter_gap_row_group_off_probe_s
         Arc::clone(&left_schema),
         vec!["order_id".to_string(), "qty".to_string()],
     )));
-    let right = builder
-        .add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(Arc::clone(&right_schema), vec![right_batch])));
+    let right = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new(
+        "right_keys",
+        Arc::clone(&right_schema),
+    )));
     let join = builder.add_join(
         left,
         right,
@@ -594,40 +618,57 @@ fn bounded_native_query_prunes_hash_set_dynamic_filter_gap_row_group_off_probe_s
     assert_eq!(optimized.diagnostics.dynamic_filter_route_discovery.route_count, 1);
     let context = backend_context_with_grant(1024 * 1024);
 
-    let result = execute_query_plan(&context, &optimized.plan).unwrap();
-    let output = result.output().as_host_arrow().unwrap();
-    let metrics = result.metrics();
-    assert_eq!(output.num_rows(), 4);
-    assert_eq!(int32_array(output, 0).values().as_ref(), &[1, 1, 3, 3]);
-    assert_eq!(int32_array(output, 1).values().as_ref(), &[10, 11, 30, 31]);
-    assert_eq!(metrics.dynamic_filter_produced_count, 1);
-    assert_eq!(metrics.dynamic_filter_applied_count, 1);
-    // The build keyset is {1, 3, 4..=1026} — value 2 is absent. The probe's three
-    // row groups carry order_id stats [1,1], [2,2], [3,3]. Set-aware pruning
-    // coalesces the keyset into runs [1,1] and [3,1026] and drops the [2,2] row
-    // group, whose only value sits in the gap and matches no build key. A
-    // single-range filter ([1,1026]) would have retained all three. The output is
-    // unchanged because the pruned row group joins to nothing.
-    assert_eq!(metrics.dynamic_filter_row_groups_pruned, 1);
-    assert!(metrics.dynamic_filter_runtime_rows.iter().any(|row| {
-        row.event == "produced" && row.filter_kind == "hash_set_contains" && row.payload_value_count == Some(1025)
-    }));
-    assert!(metrics.dynamic_filter_runtime_rows.iter().any(|row| {
-        row.event == "applied"
-            && row.consumer_kind == "local_parquet_source"
-            && row.filter_kind == "hash_set_contains"
-            && row.selected_row_groups_before == Some(3)
-            && row.selected_row_groups_after == Some(2)
-    }));
-    assert!(!metrics.dynamic_filter_runtime_rows.iter().any(|row| {
-        row.event == "applied_post_decode"
-            && row.consumer_kind == "local_parquet_source"
-            && row.filter_kind == "hash_set_contains"
-            && row.selected_row_groups_before.is_none()
-    }));
-    assert_eq!(metrics.dynamic_filter_source_post_decode_rows_filtered, 0);
-    assert_eq!(metrics.dynamic_filter_filter_post_decode_rows_filtered, 0);
-    assert_eq!(metrics.dynamic_filter_join_probe_post_decode_rows_filtered, 0);
+    let admitted = context.admit_plan(&optimized.plan).unwrap();
+    let runtime = Arc::new(admitted.runtime().unwrap());
+    let mut gpu_inputs = GpuResidentInputMap::new();
+    gpu_inputs.insert(
+        "right_keys".to_string(),
+        GpuResultHandle::new(
+            &admitted,
+            GpuDataFrame::new(DataFrame::from_record_batch(&runtime, &right_batch).unwrap()),
+            Arc::clone(&right_schema),
+        )
+        .unwrap(),
+    );
+    {
+        let result = execute_query_plan_with_gpu_inputs(&admitted, &optimized.plan, &gpu_inputs).unwrap();
+        let output = result.output().as_host_arrow().unwrap();
+        let metrics = result.metrics();
+        assert_eq!(output.num_rows(), 4);
+        assert_eq!(int32_array(output, 0).values().as_ref(), &[1, 1, 3, 3]);
+        assert_eq!(int32_array(output, 1).values().as_ref(), &[10, 11, 30, 31]);
+        assert_eq!(metrics.dynamic_filter_produced_count, 1);
+        assert_eq!(metrics.dynamic_filter_applied_count, 1);
+        // The build keyset is {1, 3, 4..=1026} — value 2 is absent. The probe's three
+        // row groups carry order_id stats [1,1], [2,2], [3,3]. Set-aware pruning
+        // coalesces the keyset into runs [1,1] and [3,1026] and drops the [2,2] row
+        // group, whose only value sits in the gap and matches no build key. A
+        // single-range filter ([1,1026]) would have retained all three. The output is
+        // unchanged because the pruned row group joins to nothing.
+        assert_eq!(metrics.dynamic_filter_row_groups_pruned, 1);
+        assert!(metrics.dynamic_filter_runtime_rows.iter().any(|row| {
+            row.event == "produced" && row.filter_kind == "hash_set_contains" && row.payload_value_count == Some(1025)
+        }));
+        assert!(metrics.dynamic_filter_runtime_rows.iter().any(|row| {
+            row.event == "applied"
+                && row.consumer_kind == "local_parquet_source"
+                && row.filter_kind == "hash_set_contains"
+                && row.selected_row_groups_before == Some(3)
+                && row.selected_row_groups_after == Some(2)
+        }));
+        assert!(!metrics.dynamic_filter_runtime_rows.iter().any(|row| {
+            row.event == "applied_post_decode"
+                && row.consumer_kind == "local_parquet_source"
+                && row.filter_kind == "hash_set_contains"
+                && row.selected_row_groups_before.is_none()
+        }));
+        assert_eq!(metrics.dynamic_filter_source_post_decode_rows_filtered, 0);
+        assert_eq!(metrics.dynamic_filter_filter_post_decode_rows_filtered, 0);
+        assert_eq!(metrics.dynamic_filter_join_probe_post_decode_rows_filtered, 0);
+    }
+    drop(gpu_inputs);
+    drop(runtime);
+    admitted.finish();
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -660,8 +701,10 @@ fn bounded_native_query_defers_large_small_in_list_reader_filter_when_sibling_re
         Arc::clone(&fact_schema),
         vec!["order_id".to_string(), "qty".to_string()],
     )));
-    let order_keys = builder
-        .add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(Arc::clone(&order_schema), vec![order_batch])));
+    let order_keys = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new(
+        "order_keys",
+        Arc::clone(&order_schema),
+    )));
     let order_join = builder.add_join(
         fact,
         order_keys,
@@ -676,8 +719,10 @@ fn bounded_native_query_defers_large_small_in_list_reader_filter_when_sibling_re
             .with_build_side(JoinSide::Right),
         Arc::clone(&output_schema),
     );
-    let qty_keys =
-        builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(Arc::clone(&qty_schema), vec![qty_batch])));
+    let qty_keys = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new(
+        "qty_keys",
+        Arc::clone(&qty_schema),
+    )));
     let qty_join = builder.add_join(
         order_join,
         qty_keys,
@@ -704,38 +749,64 @@ fn bounded_native_query_defers_large_small_in_list_reader_filter_when_sibling_re
     assert_eq!(optimized.diagnostics.dynamic_filter_route_discovery.route_count, 2);
     let context = backend_context_with_grant(1024 * 1024);
 
-    let result = execute_query_plan(&context, &optimized.plan).unwrap();
-    let output = result.output().as_host_arrow().unwrap();
-    let metrics = result.metrics();
-    assert_eq!(output.num_rows(), 2);
-    assert_eq!(int32_array(output, 0).values().as_ref(), &[1, 1]);
-    assert_eq!(int32_array(output, 1).values().as_ref(), &[10, 11]);
-    assert_eq!(metrics.dynamic_filter_produced_count, 2);
-    assert_eq!(metrics.dynamic_filter_applied_count, 2);
-    assert!(metrics.dynamic_filter_runtime_rows.iter().any(|row| {
-        row.event == "reader_predicate_rows" && row.filter_kind == "small_in_list" && row.payload_value_count == Some(4)
-    }));
-    let deferred_rows = metrics
-        .dynamic_filter_runtime_rows
-        .iter()
-        .filter(|row| {
-            row.event == "applied_post_decode"
-                && row.consumer_kind == "local_parquet_source"
-                && row.filter_kind == "small_in_list"
-                && row.payload_value_count == Some(129)
-        })
-        .collect::<Vec<_>>();
-    assert!(!deferred_rows.is_empty());
-    // The deferred order keyset {1, 100..=227} coalesces to runs [1,1] and
-    // [100,227]; the probe's [2,2] and [3,3] row groups are both in the gap and
-    // are pruned set-aware, leaving only the [1,1] row group. The deferred
-    // post-decode filter therefore sees 2 rows that already match and filters
-    // none — the deferral still fires (asserted above), but row-group pruning now
-    // removes the non-matching rows upstream instead of post-decode.
-    assert_eq!(deferred_rows.iter().filter_map(|row| row.post_decode_rows_before).sum::<u64>(), 2);
-    assert_eq!(deferred_rows.iter().filter_map(|row| row.post_decode_rows_after).sum::<u64>(), 2);
-    assert_eq!(deferred_rows.iter().map(|row| row.post_decode_rows_filtered).sum::<u64>(), 0);
-    assert_eq!(metrics.dynamic_filter_source_post_decode_rows_filtered, 0);
+    let admitted = context.admit_plan(&optimized.plan).unwrap();
+    let runtime = Arc::new(admitted.runtime().unwrap());
+    let mut gpu_inputs = GpuResidentInputMap::new();
+    gpu_inputs.insert(
+        "order_keys".to_string(),
+        GpuResultHandle::new(
+            &admitted,
+            GpuDataFrame::new(DataFrame::from_record_batch(&runtime, &order_batch).unwrap()),
+            Arc::clone(&order_schema),
+        )
+        .unwrap(),
+    );
+    gpu_inputs.insert(
+        "qty_keys".to_string(),
+        GpuResultHandle::new(
+            &admitted,
+            GpuDataFrame::new(DataFrame::from_record_batch(&runtime, &qty_batch).unwrap()),
+            Arc::clone(&qty_schema),
+        )
+        .unwrap(),
+    );
+    {
+        let result = execute_query_plan_with_gpu_inputs(&admitted, &optimized.plan, &gpu_inputs).unwrap();
+        let output = result.output().as_host_arrow().unwrap();
+        let metrics = result.metrics();
+        assert_eq!(output.num_rows(), 2);
+        assert_eq!(int32_array(output, 0).values().as_ref(), &[1, 1]);
+        assert_eq!(int32_array(output, 1).values().as_ref(), &[10, 11]);
+        assert_eq!(metrics.dynamic_filter_produced_count, 2);
+        assert_eq!(metrics.dynamic_filter_applied_count, 2);
+        assert!(metrics.dynamic_filter_runtime_rows.iter().any(|row| {
+            row.event == "reader_predicate_rows" && row.filter_kind == "small_in_list" && row.payload_value_count == Some(4)
+        }));
+        let deferred_rows = metrics
+            .dynamic_filter_runtime_rows
+            .iter()
+            .filter(|row| {
+                row.event == "applied_post_decode"
+                    && row.consumer_kind == "local_parquet_source"
+                    && row.filter_kind == "small_in_list"
+                    && row.payload_value_count == Some(129)
+            })
+            .collect::<Vec<_>>();
+        assert!(!deferred_rows.is_empty());
+        // The deferred order keyset {1, 100..=227} coalesces to runs [1,1] and
+        // [100,227]; the probe's [2,2] and [3,3] row groups are both in the gap and
+        // are pruned set-aware, leaving only the [1,1] row group. The deferred
+        // post-decode filter therefore sees 2 rows that already match and filters
+        // none — the deferral still fires (asserted above), but row-group pruning now
+        // removes the non-matching rows upstream instead of post-decode.
+        assert_eq!(deferred_rows.iter().filter_map(|row| row.post_decode_rows_before).sum::<u64>(), 2);
+        assert_eq!(deferred_rows.iter().filter_map(|row| row.post_decode_rows_after).sum::<u64>(), 2);
+        assert_eq!(deferred_rows.iter().map(|row| row.post_decode_rows_filtered).sum::<u64>(), 0);
+        assert_eq!(metrics.dynamic_filter_source_post_decode_rows_filtered, 0);
+    }
+    drop(gpu_inputs);
+    drop(runtime);
+    admitted.finish();
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -768,8 +839,10 @@ fn bounded_native_query_produces_range_only_dynamic_filter_for_large_local_parqu
         Arc::clone(&left_schema),
         vec!["order_id".to_string(), "qty".to_string()],
     )));
-    let right = builder
-        .add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(Arc::clone(&right_schema), vec![right_batch])));
+    let right = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new(
+        "right_keys",
+        Arc::clone(&right_schema),
+    )));
     let join = builder.add_join(
         left,
         right,
@@ -793,35 +866,52 @@ fn bounded_native_query_produces_range_only_dynamic_filter_for_large_local_parqu
     assert_eq!(optimized.diagnostics.dynamic_filter_route_discovery.route_count, 1);
     let context = backend_context_with_grant(8 * 1024 * 1024);
 
-    let result = execute_query_plan(&context, &optimized.plan).unwrap();
-    let output = result.output().as_host_arrow().unwrap();
-    let metrics = result.metrics();
-    assert_eq!(output.num_rows(), 6);
-    assert_eq!(metrics.dynamic_filter_produced_count, 1);
-    assert_eq!(metrics.dynamic_filter_applied_count, 1);
-    assert_eq!(metrics.dynamic_filter_skipped_count, 0);
-    assert_eq!(metrics.dynamic_filter_source_bytes_pruned, 0);
-    assert!(metrics.dynamic_filter_runtime_rows.iter().any(|row| {
-        row.event == "produced"
-            && row.filter_kind == "range"
-            && row.payload_value_count.is_none()
-            && row.payload_min_i64 == Some(0)
-            && row.payload_max_i64 == Some(65_536)
-            && row.producer_rows == Some(65_537)
-    }));
-    assert!(metrics.dynamic_filter_runtime_rows.iter().any(|row| {
-        row.event == "applied"
-            && row.consumer_kind == "local_parquet_source"
-            && row.filter_kind == "range"
-            && row.selected_row_groups_before == Some(3)
-            && row.selected_row_groups_after == Some(3)
-    }));
-    assert!(!metrics.dynamic_filter_runtime_rows.iter().any(|row| {
-        row.event == "reader_predicate_rows"
-            && row.consumer_kind == "local_parquet_source"
-            && row.filter_kind == "range"
-    }));
-    assert_eq!(metrics.dynamic_filter_reader_predicate_rows_filtered, 0);
+    let admitted = context.admit_plan(&optimized.plan).unwrap();
+    let runtime = Arc::new(admitted.runtime().unwrap());
+    let mut gpu_inputs = GpuResidentInputMap::new();
+    gpu_inputs.insert(
+        "right_keys".to_string(),
+        GpuResultHandle::new(
+            &admitted,
+            GpuDataFrame::new(DataFrame::from_record_batch(&runtime, &right_batch).unwrap()),
+            Arc::clone(&right_schema),
+        )
+        .unwrap(),
+    );
+    {
+        let result = execute_query_plan_with_gpu_inputs(&admitted, &optimized.plan, &gpu_inputs).unwrap();
+        let output = result.output().as_host_arrow().unwrap();
+        let metrics = result.metrics();
+        assert_eq!(output.num_rows(), 6);
+        assert_eq!(metrics.dynamic_filter_produced_count, 1);
+        assert_eq!(metrics.dynamic_filter_applied_count, 1);
+        assert_eq!(metrics.dynamic_filter_skipped_count, 0);
+        assert_eq!(metrics.dynamic_filter_source_bytes_pruned, 0);
+        assert!(metrics.dynamic_filter_runtime_rows.iter().any(|row| {
+            row.event == "produced"
+                && row.filter_kind == "range"
+                && row.payload_value_count.is_none()
+                && row.payload_min_i64 == Some(0)
+                && row.payload_max_i64 == Some(65_536)
+                && row.producer_rows == Some(65_537)
+        }));
+        assert!(metrics.dynamic_filter_runtime_rows.iter().any(|row| {
+            row.event == "applied"
+                && row.consumer_kind == "local_parquet_source"
+                && row.filter_kind == "range"
+                && row.selected_row_groups_before == Some(3)
+                && row.selected_row_groups_after == Some(3)
+        }));
+        assert!(!metrics.dynamic_filter_runtime_rows.iter().any(|row| {
+            row.event == "reader_predicate_rows"
+                && row.consumer_kind == "local_parquet_source"
+                && row.filter_kind == "range"
+        }));
+        assert_eq!(metrics.dynamic_filter_reader_predicate_rows_filtered, 0);
+    }
+    drop(gpu_inputs);
+    drop(runtime);
+    admitted.finish();
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -850,8 +940,10 @@ fn bounded_native_query_skips_large_dynamic_filter_for_dimension_sized_probe_sou
         Arc::clone(&left_schema),
         vec!["order_id".to_string(), "qty".to_string()],
     )));
-    let right = builder
-        .add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(Arc::clone(&right_schema), vec![right_batch])));
+    let right = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new(
+        "right_keys",
+        Arc::clone(&right_schema),
+    )));
     let join = builder.add_join(
         left,
         right,
@@ -875,17 +967,34 @@ fn bounded_native_query_skips_large_dynamic_filter_for_dimension_sized_probe_sou
     assert_eq!(optimized.diagnostics.dynamic_filter_route_discovery.route_count, 1);
     let context = backend_context_with_grant(8 * 1024 * 1024);
 
-    let result = execute_query_plan(&context, &optimized.plan).unwrap();
-    let output = result.output().as_host_arrow().unwrap();
-    let metrics = result.metrics();
-    assert_eq!(output.num_rows(), 6);
-    assert_eq!(metrics.dynamic_filter_produced_count, 0);
-    assert_eq!(metrics.dynamic_filter_applied_count, 0);
-    assert_eq!(metrics.dynamic_filter_skipped_count, 1);
-    assert!(metrics.dynamic_filter_runtime_rows.iter().any(|row| {
-        row.event == "skipped"
-            && row.skipped_reason.as_deref() == Some("large_keyset_dimension_sized_local_parquet_consumer")
-    }));
+    let admitted = context.admit_plan(&optimized.plan).unwrap();
+    let runtime = Arc::new(admitted.runtime().unwrap());
+    let mut gpu_inputs = GpuResidentInputMap::new();
+    gpu_inputs.insert(
+        "right_keys".to_string(),
+        GpuResultHandle::new(
+            &admitted,
+            GpuDataFrame::new(DataFrame::from_record_batch(&runtime, &right_batch).unwrap()),
+            Arc::clone(&right_schema),
+        )
+        .unwrap(),
+    );
+    {
+        let result = execute_query_plan_with_gpu_inputs(&admitted, &optimized.plan, &gpu_inputs).unwrap();
+        let output = result.output().as_host_arrow().unwrap();
+        let metrics = result.metrics();
+        assert_eq!(output.num_rows(), 6);
+        assert_eq!(metrics.dynamic_filter_produced_count, 0);
+        assert_eq!(metrics.dynamic_filter_applied_count, 0);
+        assert_eq!(metrics.dynamic_filter_skipped_count, 1);
+        assert!(metrics.dynamic_filter_runtime_rows.iter().any(|row| {
+            row.event == "skipped"
+                && row.skipped_reason.as_deref() == Some("large_keyset_dimension_sized_local_parquet_consumer")
+        }));
+    }
+    drop(gpu_inputs);
+    drop(runtime);
+    admitted.finish();
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -930,8 +1039,10 @@ fn bounded_native_query_splits_large_dynamic_filter_between_dimension_and_fact_s
         vec!["order_id".to_string(), "qty".to_string()],
     )));
     let union = builder.add_union(vec![small, large], Arc::clone(&output_schema));
-    let right = builder
-        .add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(Arc::clone(&right_schema), vec![right_batch])));
+    let right = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new(
+        "right_keys",
+        Arc::clone(&right_schema),
+    )));
     let join = builder.add_join(
         union,
         right,
@@ -955,26 +1066,43 @@ fn bounded_native_query_splits_large_dynamic_filter_between_dimension_and_fact_s
     assert_eq!(optimized.diagnostics.dynamic_filter_route_discovery.route_count, 2);
     let context = backend_context_with_grant(8 * 1024 * 1024);
 
-    let result = execute_query_plan(&context, &optimized.plan).unwrap();
-    let output = result.output().as_host_arrow().unwrap();
-    let metrics = result.metrics();
-    assert_eq!(output.num_rows(), 12);
-    assert_eq!(metrics.dynamic_filter_produced_count, 1);
-    assert_eq!(metrics.dynamic_filter_applied_count, 1);
-    assert_eq!(metrics.dynamic_filter_skipped_count, 1);
-    assert!(metrics.dynamic_filter_runtime_rows.iter().any(|row| {
-        row.event == "skipped"
-            && row.skipped_reason.as_deref()
-                == Some(nexus_query_engine::dynamic_filter::LARGE_KEYSET_DIMENSION_SOURCE_SKIP_REASON)
-    }));
-    assert!(metrics.dynamic_filter_runtime_rows.iter().any(|row| {
-        row.event == "produced"
-            && row.consumer_kind == "local_parquet_source"
-            && row.filter_kind == "range"
-            && row.payload_value_count.is_none()
-            && row.payload_min_i64 == Some(0)
-            && row.payload_max_i64 == Some(65_536)
-    }));
+    let admitted = context.admit_plan(&optimized.plan).unwrap();
+    let runtime = Arc::new(admitted.runtime().unwrap());
+    let mut gpu_inputs = GpuResidentInputMap::new();
+    gpu_inputs.insert(
+        "right_keys".to_string(),
+        GpuResultHandle::new(
+            &admitted,
+            GpuDataFrame::new(DataFrame::from_record_batch(&runtime, &right_batch).unwrap()),
+            Arc::clone(&right_schema),
+        )
+        .unwrap(),
+    );
+    {
+        let result = execute_query_plan_with_gpu_inputs(&admitted, &optimized.plan, &gpu_inputs).unwrap();
+        let output = result.output().as_host_arrow().unwrap();
+        let metrics = result.metrics();
+        assert_eq!(output.num_rows(), 12);
+        assert_eq!(metrics.dynamic_filter_produced_count, 1);
+        assert_eq!(metrics.dynamic_filter_applied_count, 1);
+        assert_eq!(metrics.dynamic_filter_skipped_count, 1);
+        assert!(metrics.dynamic_filter_runtime_rows.iter().any(|row| {
+            row.event == "skipped"
+                && row.skipped_reason.as_deref()
+                    == Some(nexus_query_engine::dynamic_filter::LARGE_KEYSET_DIMENSION_SOURCE_SKIP_REASON)
+        }));
+        assert!(metrics.dynamic_filter_runtime_rows.iter().any(|row| {
+            row.event == "produced"
+                && row.consumer_kind == "local_parquet_source"
+                && row.filter_kind == "range"
+                && row.payload_value_count.is_none()
+                && row.payload_min_i64 == Some(0)
+                && row.payload_max_i64 == Some(65_536)
+        }));
+    }
+    drop(gpu_inputs);
+    drop(runtime);
+    admitted.finish();
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -1002,8 +1130,10 @@ fn bounded_native_query_does_not_duplicate_small_in_list_reader_predicate_after_
         Arc::clone(&left_schema),
         vec!["order_id".to_string(), "qty".to_string()],
     )));
-    let right = builder
-        .add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(Arc::clone(&right_schema), vec![right_batch])));
+    let right = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new(
+        "right_keys",
+        Arc::clone(&right_schema),
+    )));
     let join = builder.add_join(
         left,
         right,
@@ -1027,52 +1157,69 @@ fn bounded_native_query_does_not_duplicate_small_in_list_reader_predicate_after_
     assert_eq!(optimized.diagnostics.dynamic_filter_route_discovery.route_count, 1);
     let context = backend_context_with_grant(1024 * 1024);
 
-    let result = execute_query_plan(&context, &optimized.plan).unwrap();
-    let output = result.output().as_host_arrow().unwrap();
-    let metrics = result.metrics();
-    assert_eq!(output.num_rows(), 4);
-    assert_eq!(int32_array(output, 0).values().as_ref(), &[1, 1, 3, 3]);
-    assert_eq!(int32_array(output, 1).values().as_ref(), &[10, 11, 30, 31]);
-    assert_eq!(metrics.dynamic_filter_produced_count, 1);
-    assert_eq!(metrics.dynamic_filter_applied_count, 1);
-    // The build keyset {1, 3} coalesces to runs [1,1] and [3,3]; the probe's
-    // [2,2] row group sits in the gap and is pruned set-aware (a single [1,3]
-    // range would have kept it). Only the [1,1] and [3,3] row groups reach the
-    // reader predicate, so it evaluates 4 rows that all match and filters none —
-    // the row-group prune subsumes the per-row filtering the range path deferred.
-    assert_eq!(metrics.dynamic_filter_row_groups_pruned, 1);
-    assert_eq!(metrics.dynamic_filter_reader_predicate_rows_before, 4);
-    assert_eq!(metrics.dynamic_filter_reader_predicate_rows_after, 4);
-    assert_eq!(metrics.dynamic_filter_reader_predicate_rows_filtered, 0);
-    assert!(metrics.dynamic_filter_runtime_rows.iter().any(|row| {
-        row.event == "produced" && row.filter_kind == "small_in_list" && row.payload_value_count == Some(2)
-    }));
-    assert!(metrics.dynamic_filter_runtime_rows.iter().any(|row| {
-        row.event == "applied"
-            && row.consumer_kind == "local_parquet_source"
-            && row.filter_kind == "small_in_list"
-            && row.selected_row_groups_before == Some(3)
-            && row.selected_row_groups_after == Some(2)
-    }));
-    assert!(!metrics.dynamic_filter_runtime_rows.iter().any(|row| {
-        row.event == "applied_post_decode"
-            && row.consumer_kind == "local_parquet_source"
-            && row.filter_kind == "small_in_list"
-    }));
-    let reader_rows = metrics
-        .dynamic_filter_runtime_rows
-        .iter()
-        .filter(|row| {
-            row.event == "reader_predicate_rows"
+    let admitted = context.admit_plan(&optimized.plan).unwrap();
+    let runtime = Arc::new(admitted.runtime().unwrap());
+    let mut gpu_inputs = GpuResidentInputMap::new();
+    gpu_inputs.insert(
+        "right_keys".to_string(),
+        GpuResultHandle::new(
+            &admitted,
+            GpuDataFrame::new(DataFrame::from_record_batch(&runtime, &right_batch).unwrap()),
+            Arc::clone(&right_schema),
+        )
+        .unwrap(),
+    );
+    {
+        let result = execute_query_plan_with_gpu_inputs(&admitted, &optimized.plan, &gpu_inputs).unwrap();
+        let output = result.output().as_host_arrow().unwrap();
+        let metrics = result.metrics();
+        assert_eq!(output.num_rows(), 4);
+        assert_eq!(int32_array(output, 0).values().as_ref(), &[1, 1, 3, 3]);
+        assert_eq!(int32_array(output, 1).values().as_ref(), &[10, 11, 30, 31]);
+        assert_eq!(metrics.dynamic_filter_produced_count, 1);
+        assert_eq!(metrics.dynamic_filter_applied_count, 1);
+        // The build keyset {1, 3} coalesces to runs [1,1] and [3,3]; the probe's
+        // [2,2] row group sits in the gap and is pruned set-aware (a single [1,3]
+        // range would have kept it). Only the [1,1] and [3,3] row groups reach the
+        // reader predicate, so it evaluates 4 rows that all match and filters none —
+        // the row-group prune subsumes the per-row filtering the range path deferred.
+        assert_eq!(metrics.dynamic_filter_row_groups_pruned, 1);
+        assert_eq!(metrics.dynamic_filter_reader_predicate_rows_before, 4);
+        assert_eq!(metrics.dynamic_filter_reader_predicate_rows_after, 4);
+        assert_eq!(metrics.dynamic_filter_reader_predicate_rows_filtered, 0);
+        assert!(metrics.dynamic_filter_runtime_rows.iter().any(|row| {
+            row.event == "produced" && row.filter_kind == "small_in_list" && row.payload_value_count == Some(2)
+        }));
+        assert!(metrics.dynamic_filter_runtime_rows.iter().any(|row| {
+            row.event == "applied"
                 && row.consumer_kind == "local_parquet_source"
                 && row.filter_kind == "small_in_list"
-                && row.payload_value_count == Some(2)
-        })
-        .collect::<Vec<_>>();
-    assert!(!reader_rows.is_empty());
-    assert_eq!(reader_rows.iter().filter_map(|row| row.reader_predicate_rows_before).sum::<u64>(), 4);
-    assert_eq!(reader_rows.iter().filter_map(|row| row.reader_predicate_rows_after).sum::<u64>(), 4);
-    assert_eq!(reader_rows.iter().map(|row| row.reader_predicate_rows_filtered).sum::<u64>(), 0);
+                && row.selected_row_groups_before == Some(3)
+                && row.selected_row_groups_after == Some(2)
+        }));
+        assert!(!metrics.dynamic_filter_runtime_rows.iter().any(|row| {
+            row.event == "applied_post_decode"
+                && row.consumer_kind == "local_parquet_source"
+                && row.filter_kind == "small_in_list"
+        }));
+        let reader_rows = metrics
+            .dynamic_filter_runtime_rows
+            .iter()
+            .filter(|row| {
+                row.event == "reader_predicate_rows"
+                    && row.consumer_kind == "local_parquet_source"
+                    && row.filter_kind == "small_in_list"
+                    && row.payload_value_count == Some(2)
+            })
+            .collect::<Vec<_>>();
+        assert!(!reader_rows.is_empty());
+        assert_eq!(reader_rows.iter().filter_map(|row| row.reader_predicate_rows_before).sum::<u64>(), 4);
+        assert_eq!(reader_rows.iter().filter_map(|row| row.reader_predicate_rows_after).sum::<u64>(), 4);
+        assert_eq!(reader_rows.iter().map(|row| row.reader_predicate_rows_filtered).sum::<u64>(), 0);
+    }
+    drop(gpu_inputs);
+    drop(runtime);
+    admitted.finish();
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -1103,8 +1250,10 @@ fn bounded_native_query_does_not_duplicate_tpcds_sized_small_in_list_reader_pred
         Arc::clone(&left_schema),
         vec!["order_id".to_string(), "qty".to_string()],
     )));
-    let right = builder
-        .add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(Arc::clone(&right_schema), vec![right_batch])));
+    let right = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new(
+        "right_keys",
+        Arc::clone(&right_schema),
+    )));
     let join = builder.add_join(
         left,
         right,
@@ -1128,56 +1277,73 @@ fn bounded_native_query_does_not_duplicate_tpcds_sized_small_in_list_reader_pred
     assert_eq!(optimized.diagnostics.dynamic_filter_route_discovery.route_count, 1);
     let context = backend_context_with_grant(1024 * 1024);
 
-    let result = execute_query_plan(&context, &optimized.plan).unwrap();
-    let output = result.output().as_host_arrow().unwrap();
-    let metrics = result.metrics();
-    assert_eq!(output.num_rows(), 4);
-    assert_eq!(int32_array(output, 0).values().as_ref(), &[1, 1, 3, 3]);
-    assert_eq!(int32_array(output, 1).values().as_ref(), &[10, 11, 30, 31]);
-    assert_eq!(metrics.dynamic_filter_produced_count, 1);
-    assert_eq!(metrics.dynamic_filter_applied_count, 1);
-    // Build keyset {1, 3, 4..=401} coalesces to runs [1,1] and [3,401]; the probe's
-    // [2,2] row group is in the gap and is pruned set-aware. The reader predicate
-    // then sees only the 4 surviving rows (all matching) and filters none — pruning
-    // subsumes the per-row reader filtering the single-range path performed.
-    assert_eq!(metrics.dynamic_filter_row_groups_pruned, 1);
-    assert_eq!(metrics.dynamic_filter_reader_predicate_rows_before, 4);
-    assert_eq!(metrics.dynamic_filter_reader_predicate_rows_after, 4);
-    assert_eq!(metrics.dynamic_filter_reader_predicate_rows_filtered, 0);
-    assert!(metrics.dynamic_filter_runtime_rows.iter().any(|row| {
-        row.event == "produced"
-            && row.filter_kind == "small_in_list"
-            && row.payload_value_count == Some(400)
-            && row.producer_rows == Some(400)
-    }));
-    assert!(metrics.dynamic_filter_runtime_rows.iter().any(|row| {
-        row.event == "applied"
-            && row.consumer_kind == "local_parquet_source"
-            && row.filter_kind == "small_in_list"
-            && row.payload_value_count == Some(400)
-            && row.selected_row_groups_before == Some(3)
-            && row.selected_row_groups_after == Some(2)
-    }));
-    assert!(!metrics.dynamic_filter_runtime_rows.iter().any(|row| {
-        row.event == "applied_post_decode"
-            && row.consumer_kind == "local_parquet_source"
-            && row.filter_kind == "small_in_list"
-            && row.payload_value_count == Some(400)
-    }));
-    let reader_rows = metrics
-        .dynamic_filter_runtime_rows
-        .iter()
-        .filter(|row| {
-            row.event == "reader_predicate_rows"
+    let admitted = context.admit_plan(&optimized.plan).unwrap();
+    let runtime = Arc::new(admitted.runtime().unwrap());
+    let mut gpu_inputs = GpuResidentInputMap::new();
+    gpu_inputs.insert(
+        "right_keys".to_string(),
+        GpuResultHandle::new(
+            &admitted,
+            GpuDataFrame::new(DataFrame::from_record_batch(&runtime, &right_batch).unwrap()),
+            Arc::clone(&right_schema),
+        )
+        .unwrap(),
+    );
+    {
+        let result = execute_query_plan_with_gpu_inputs(&admitted, &optimized.plan, &gpu_inputs).unwrap();
+        let output = result.output().as_host_arrow().unwrap();
+        let metrics = result.metrics();
+        assert_eq!(output.num_rows(), 4);
+        assert_eq!(int32_array(output, 0).values().as_ref(), &[1, 1, 3, 3]);
+        assert_eq!(int32_array(output, 1).values().as_ref(), &[10, 11, 30, 31]);
+        assert_eq!(metrics.dynamic_filter_produced_count, 1);
+        assert_eq!(metrics.dynamic_filter_applied_count, 1);
+        // Build keyset {1, 3, 4..=401} coalesces to runs [1,1] and [3,401]; the probe's
+        // [2,2] row group is in the gap and is pruned set-aware. The reader predicate
+        // then sees only the 4 surviving rows (all matching) and filters none — pruning
+        // subsumes the per-row reader filtering the single-range path performed.
+        assert_eq!(metrics.dynamic_filter_row_groups_pruned, 1);
+        assert_eq!(metrics.dynamic_filter_reader_predicate_rows_before, 4);
+        assert_eq!(metrics.dynamic_filter_reader_predicate_rows_after, 4);
+        assert_eq!(metrics.dynamic_filter_reader_predicate_rows_filtered, 0);
+        assert!(metrics.dynamic_filter_runtime_rows.iter().any(|row| {
+            row.event == "produced"
+                && row.filter_kind == "small_in_list"
+                && row.payload_value_count == Some(400)
+                && row.producer_rows == Some(400)
+        }));
+        assert!(metrics.dynamic_filter_runtime_rows.iter().any(|row| {
+            row.event == "applied"
                 && row.consumer_kind == "local_parquet_source"
                 && row.filter_kind == "small_in_list"
                 && row.payload_value_count == Some(400)
-        })
-        .collect::<Vec<_>>();
-    assert!(!reader_rows.is_empty());
-    assert_eq!(reader_rows.iter().filter_map(|row| row.reader_predicate_rows_before).sum::<u64>(), 4);
-    assert_eq!(reader_rows.iter().filter_map(|row| row.reader_predicate_rows_after).sum::<u64>(), 4);
-    assert_eq!(reader_rows.iter().map(|row| row.reader_predicate_rows_filtered).sum::<u64>(), 0);
+                && row.selected_row_groups_before == Some(3)
+                && row.selected_row_groups_after == Some(2)
+        }));
+        assert!(!metrics.dynamic_filter_runtime_rows.iter().any(|row| {
+            row.event == "applied_post_decode"
+                && row.consumer_kind == "local_parquet_source"
+                && row.filter_kind == "small_in_list"
+                && row.payload_value_count == Some(400)
+        }));
+        let reader_rows = metrics
+            .dynamic_filter_runtime_rows
+            .iter()
+            .filter(|row| {
+                row.event == "reader_predicate_rows"
+                    && row.consumer_kind == "local_parquet_source"
+                    && row.filter_kind == "small_in_list"
+                    && row.payload_value_count == Some(400)
+            })
+            .collect::<Vec<_>>();
+        assert!(!reader_rows.is_empty());
+        assert_eq!(reader_rows.iter().filter_map(|row| row.reader_predicate_rows_before).sum::<u64>(), 4);
+        assert_eq!(reader_rows.iter().filter_map(|row| row.reader_predicate_rows_after).sum::<u64>(), 4);
+        assert_eq!(reader_rows.iter().map(|row| row.reader_predicate_rows_filtered).sum::<u64>(), 0);
+    }
+    drop(gpu_inputs);
+    drop(runtime);
+    admitted.finish();
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -1300,19 +1466,20 @@ fn bounded_native_query_applies_hash_join_build_dynamic_filter_to_resident_probe
 
     drop(fixture_runtime);
     let context = backend_context_with_grant(1024 * 1024);
-    let runtime = Arc::new(context.runtime().unwrap());
+    let admitted = context.admit_plan(&optimized.plan).unwrap();
+    let runtime = Arc::new(admitted.runtime().unwrap());
     let mut gpu_inputs = GpuResidentInputMap::new();
     gpu_inputs.insert(
         "left".to_string(),
         GpuResultHandle::new(
-            &context,
+            &admitted,
             GpuDataFrame::new(DataFrame::from_record_batch(&runtime, &left_batch).unwrap()),
             Arc::clone(&left_schema),
         )
         .unwrap(),
     );
 
-    let result = execute_query_plan_with_gpu_inputs(&context, &optimized.plan, &gpu_inputs).unwrap();
+    let result = execute_query_plan_with_gpu_inputs(&admitted, &optimized.plan, &gpu_inputs).unwrap();
     let output = result.output().as_host_arrow().unwrap();
     let metrics = result.metrics();
     assert_eq!(output.num_rows(), 1);
@@ -1326,6 +1493,7 @@ fn bounded_native_query_applies_hash_join_build_dynamic_filter_to_resident_probe
             && row.consumer_kind == "hash_join_probe"
             && row.consumer_lowering == "post_decode_only"
     }));
+    admitted.finish();
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -1390,19 +1558,20 @@ fn bounded_native_query_applies_hash_join_build_dynamic_filter_at_resident_probe
 
     drop(fixture_runtime);
     let context = backend_context_with_grant(1024 * 1024);
-    let runtime = Arc::new(context.runtime().unwrap());
+    let admitted = context.admit_plan(&optimized.plan).unwrap();
+    let runtime = Arc::new(admitted.runtime().unwrap());
     let mut gpu_inputs = GpuResidentInputMap::new();
     gpu_inputs.insert(
         "left".to_string(),
         GpuResultHandle::new(
-            &context,
+            &admitted,
             GpuDataFrame::new(DataFrame::from_record_batch(&runtime, &left_batch).unwrap()),
             Arc::clone(&left_schema),
         )
         .unwrap(),
     );
 
-    let result = execute_query_plan_with_gpu_inputs(&context, &optimized.plan, &gpu_inputs).unwrap();
+    let result = execute_query_plan_with_gpu_inputs(&admitted, &optimized.plan, &gpu_inputs).unwrap();
     let output = result.output().as_host_arrow().unwrap();
     let metrics = result.metrics();
     assert_eq!(output.num_rows(), 1);
@@ -1418,6 +1587,7 @@ fn bounded_native_query_applies_hash_join_build_dynamic_filter_at_resident_probe
             && row.post_decode_rows_before == Some(4)
             && row.post_decode_rows_after == Some(1)
     }));
+    admitted.finish();
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -1491,19 +1661,20 @@ fn bounded_native_query_applies_filter_dynamic_filter_through_projection_alias()
 
     drop(fixture_runtime);
     let context = backend_context_with_grant(1024 * 1024);
-    let runtime = Arc::new(context.runtime().unwrap());
+    let admitted = context.admit_plan(&optimized.plan).unwrap();
+    let runtime = Arc::new(admitted.runtime().unwrap());
     let mut gpu_inputs = GpuResidentInputMap::new();
     gpu_inputs.insert(
         "left".to_string(),
         GpuResultHandle::new(
-            &context,
+            &admitted,
             GpuDataFrame::new(DataFrame::from_record_batch(&runtime, &left_batch).unwrap()),
             Arc::clone(&left_schema),
         )
         .unwrap(),
     );
 
-    let result = execute_query_plan_with_gpu_inputs(&context, &optimized.plan, &gpu_inputs).unwrap();
+    let result = execute_query_plan_with_gpu_inputs(&admitted, &optimized.plan, &gpu_inputs).unwrap();
     let output = result.output().as_host_arrow().unwrap();
     let metrics = result.metrics();
     assert_eq!(output.num_rows(), 1);
@@ -1519,6 +1690,7 @@ fn bounded_native_query_applies_filter_dynamic_filter_through_projection_alias()
             && row.post_decode_rows_before == Some(4)
             && row.post_decode_rows_after == Some(1)
     }));
+    admitted.finish();
 
     fs::remove_dir_all(dir).unwrap();
 }

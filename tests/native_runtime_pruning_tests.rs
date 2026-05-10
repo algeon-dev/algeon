@@ -45,8 +45,9 @@ use datafusion_nexus::{
     native_exec::{NexusNativeExec, NexusNativeExecutionConfig},
 };
 use nexus_query_engine::{
+    admission::QueryPlanCapabilityProof,
     exec::{execute_query_plan, output::QueryOutput},
-    plan::PlanNode,
+    plan::{PlanNode, QueryPlan},
     runtime::{AdmittedQueryContext, ExecutionContext, QueryHandle},
     source::SourceNode,
 };
@@ -157,7 +158,7 @@ async fn native_runtime_median_aggregate_matches_cpu_single_stage_bounded_withou
     assert_eq!(lowering.selected_count(), 1, "outcomes={:?}", lowering.report.outcomes());
     assert_eq!(lowering.not_selected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
 
-    let context = bounded_execution_context();
+    let context = bounded_execution_context(&lowering.plans[0]);
     let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
     cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
     let result = execute_query_plan(&context, &lowering.plans[0]).unwrap();
@@ -293,7 +294,7 @@ async fn native_runtime_pushed_predicate_source_limit_matches_cpu() {
     assert_eq!(source.scan_limit, None, "scan limit must be applied after the pushed predicate");
     assert!(source.reader_predicate.is_some());
 
-    let context = bounded_execution_context();
+    let context = bounded_execution_context(&lowering.plans[0]);
     let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
     cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
     let result = execute_query_plan(&context, &lowering.plans[0]).unwrap();
@@ -396,7 +397,7 @@ async fn native_runtime_bare_boolean_filter_stays_post_decode() {
     );
     assert_eq!(lowering.source_diagnostics[0].predicate_disposition.as_str(), "native_post_scan_only");
 
-    let context = bounded_execution_context();
+    let context = bounded_execution_context(&lowering.plans[0]);
     let result = execute_query_plan(&context, &lowering.plans[0]).unwrap();
     let (output, metrics) = result.into_parts();
     let QueryOutput::HostArrow(batch) = output else {
@@ -423,7 +424,7 @@ async fn execute_sql_native_query(path: &std::path::Path, config: SessionConfig,
     assert_eq!(lowering.plans.len(), 1);
     assert_eq!(lowering.source_diagnostics.len(), 1);
 
-    let context = bounded_execution_context();
+    let context = bounded_execution_context(&lowering.plans[0]);
     let result = execute_query_plan(&context, &lowering.plans[0]).unwrap();
     let (output, metrics) = result.into_parts();
     let QueryOutput::HostArrow(batch) = output else {
@@ -516,7 +517,7 @@ async fn native_runtime_discounted_revenue_global_decimal_sum_matches_cpu() {
     assert_eq!(lowering.plans.len(), 1);
     assert_eq!(lowering.source_diagnostics[0].read_column_count, 4);
 
-    let context = bounded_execution_context();
+    let context = bounded_execution_context(&lowering.plans[0]);
     let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
     cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
     let result = execute_query_plan(&context, &lowering.plans[0]).unwrap();
@@ -564,7 +565,7 @@ async fn native_runtime_order_sensitive_source_scan_limit_matches_cpu() {
         lowering.source_diagnostics[0].rejected_features.iter().all(|feature| feature.as_str() != "preserve_order")
     );
 
-    let context = bounded_execution_context();
+    let context = bounded_execution_context(&lowering.plans[0]);
     let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
     cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
     let result = execute_query_plan(&context, &lowering.plans[0]).unwrap();
@@ -621,7 +622,7 @@ async fn native_runtime_global_decimal_avg_matches_cpu() {
     assert_eq!(lowering.not_selected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
     assert_eq!(lowering.plans.len(), 1);
 
-    let context = bounded_execution_context();
+    let context = bounded_execution_context(&lowering.plans[0]);
     let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
     cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
     let result = execute_query_plan(&context, &lowering.plans[0]).unwrap();
@@ -653,7 +654,7 @@ async fn native_runtime_zero_column_count_matches_cpu_without_parquet_data_colum
     assert_eq!(lowering.source_diagnostics[0].read_column_count, 0);
     assert_eq!(lowering.source_diagnostics[0].zero_column_count_disposition.as_str(), "represented");
 
-    let context = bounded_execution_context();
+    let context = bounded_execution_context(&lowering.plans[0]);
     let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
     cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
     let result = execute_query_plan(&context, &lowering.plans[0]).unwrap();
@@ -787,7 +788,7 @@ async fn assert_sql_native_parity(
         assert!(selected_row_groups < total_row_groups);
     }
 
-    let context = bounded_execution_context();
+    let context = bounded_execution_context(&lowering.plans[0]);
     let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
     cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
     let result = execute_query_plan(&context, &lowering.plans[0]).unwrap();
@@ -833,7 +834,7 @@ async fn assert_empty_local_parquet_aggregate_parity(plan: Arc<dyn ExecutionPlan
         )
     }));
 
-    let context = bounded_execution_context();
+    let context = bounded_execution_context(&lowering.plans[0]);
     let result = execute_query_plan(&context, &lowering.plans[0]).unwrap();
     let QueryOutput::HostArrow(native_batch) = result.output() else {
         panic!("native host sink should return a RecordBatch");
@@ -856,7 +857,7 @@ async fn assert_native_physical_plan_parity(
         assert!(selected_row_groups < total_row_groups);
     }
 
-    let context = bounded_execution_context();
+    let context = bounded_execution_context(&lowering.plans[0]);
     let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
     cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
     let result = execute_query_plan(&context, &lowering.plans[0]).unwrap();

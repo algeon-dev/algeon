@@ -65,6 +65,7 @@ impl datafusion_nexus::backend::NexusGpuBackend
 pub fn datafusion_nexus::backend::NexusGpuBackend::admission_snapshot(&self) -> nexus_query_engine::error::Result<nexus_query_engine::runtime::query_service::service::api::QueryServiceAdmissionSnapshot>
 pub async fn datafusion_nexus::backend::NexusGpuBackend::admit_async(&self) -> nexus_query_engine::error::Result<nexus_query_engine::runtime::query_service::handle::QueryHandle>
 pub fn datafusion_nexus::backend::NexusGpuBackend::admit_query(&self) -> nexus_query_engine::error::Result<nexus_query_engine::runtime::query_service::handle::QueryHandle>
+pub fn datafusion_nexus::backend::NexusGpuBackend::admit_query_with_plan_capability_proof(&self, nexus_query_engine::admission::requirement::QueryPlanCapabilityProof) -> nexus_query_engine::error::Result<nexus_query_engine::runtime::query_service::handle::QueryHandle>
 pub fn datafusion_nexus::backend::NexusGpuBackend::backend_metrics_snapshot(&self) -> nexus_query_engine::runtime::backend_metrics::BackendMetricsSnapshot
 pub fn datafusion_nexus::backend::NexusGpuBackend::builder() -> datafusion_nexus::backend::NexusGpuBackendBuilder
 pub fn datafusion_nexus::backend::NexusGpuBackend::close(&self) -> bool

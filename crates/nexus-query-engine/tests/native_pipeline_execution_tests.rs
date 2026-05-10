@@ -21,8 +21,8 @@ use arrow::{
 };
 use nexus_query_engine::{
     admission::{
-        CompiledBoundedPipelineSupport, bounded_pipeline_admission, compiled_bounded_pipeline_support,
-        compiled_bounded_query_plan_support,
+        CompiledBoundedPipelineSupport, ComposedGraphProducerCandidate, QueryPlanCapabilityProof,
+        bounded_pipeline_admission, compiled_bounded_pipeline_support, compiled_bounded_query_plan_support,
     },
     capability::{ContractQuality, ContractStatus, ReservationRequirementScope},
     dynamic_filter::DynamicFilterProducer,
@@ -51,10 +51,13 @@ use nexus_query_engine::{
     runtime::{
         AdmittedQueryContext, DeploymentIoCapability, ExecutionContext, GdsDriverProbeStatus,
         GpuBackendControllerDraft, GpuBackendCore, GpuBackendCoreDraft, GpuBackendDeviceConfig, GpuMemoryOwnership,
-        KvikioCompatModeStatus, NvidiaFsProbeStatus, QueryExecutionConfig, QueryHandle, QueueBounds, ReservationKind,
-        resident::GpuResidentInputMap,
+        KvikioCompatModeStatus, NvidiaFsProbeStatus, QueryAdmissionRequest, QueryExecutionConfig, QueryHandle,
+        QueueBounds, ReservationKind, resident::GpuResidentInputMap,
     },
-    source::{GpuResidentSource, LocalParquetFile, LocalParquetSource, PartitionColumn, SourceNode},
+    source::{
+        GpuResidentSource, LocalParquetFile, LocalParquetSource as NativeLocalParquetSource, PartitionColumn,
+        SourceNode,
+    },
 };
 use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
 
@@ -108,9 +111,7 @@ fn build_suite_backend() -> Result<GpuBackendCore> {
         ..QueryExecutionConfig::default()
     };
     let controller = GpuBackendControllerDraft::new(policy, QueueBounds::default());
-    // One admitted query owns the suite, while two service streams allow the
-    // adaptive-history regression to compare two live contexts from that same
-    // admitted handle.
+    // One backend owns the suite; each exact-plan context acquires its own handle.
     let device =
         GpuBackendDeviceConfig::new(0, GpuMemoryOwnership::WholeDeviceExclusive).with_installation_bounds(3, 1, 1);
     GpuBackendCore::builder(GpuBackendCoreDraft::new(vec![device], controller, deployment)).build()
@@ -133,43 +134,50 @@ mod cudf {
 
     pub(super) struct Runtime {
         backend: RefCell<MutexGuard<'static, Option<SuiteBackend>>>,
-        handle: RefCell<Option<Arc<QueryHandle>>>,
     }
 
     impl Runtime {
         pub(super) fn new() -> std::result::Result<Self, String> {
             let backend = PIPELINE_BACKEND.lock().map_err(|_| "pipeline backend lock poisoned".to_string())?;
-            Ok(Self { backend: RefCell::new(backend), handle: RefCell::new(None) })
+            Ok(Self { backend: RefCell::new(backend) })
         }
 
-        pub(super) fn acquire_context(self: &Arc<Self>) -> Result<PipelineTestContext> {
-            let handle = if let Some(handle) = self.handle.borrow().as_ref() {
-                Arc::clone(handle)
-            } else {
-                let mut backend = self.backend.borrow_mut();
-                ensure_suite_backend(&mut backend)?;
-                let handle = Arc::new(
-                    backend.as_ref().expect("suite backend is installed").core.session_capability().admit_query()?,
-                );
-                *self.handle.borrow_mut() = Some(Arc::clone(&handle));
-                handle
-            };
+        pub(super) fn acquire_context_for_plan(self: &Arc<Self>, plan: &QueryPlan) -> Result<PipelineTestContext> {
+            let proof = QueryPlanCapabilityProof::for_query_plan(plan)
+                .expect("every pipeline execution fixture must issue an exact capability proof");
+            self.acquire_context_with_proofs([proof])
+        }
+
+        pub(super) fn acquire_context_with_proofs(
+            self: &Arc<Self>,
+            proofs: impl IntoIterator<Item = QueryPlanCapabilityProof>,
+        ) -> Result<PipelineTestContext> {
+            let mut proofs = proofs.into_iter();
+            let first = proofs.next().ok_or_else(|| {
+                nexus_query_engine::error::QueryError::new(
+                    nexus_query_engine::error::QueryErrorCode::InvalidPlan,
+                    "nexus_query_engine.tests.pipeline_execution",
+                    "a pipeline execution context requires at least one exact query plan proof",
+                )
+            })?;
+            let proof = QueryPlanCapabilityProof::combine(first, proofs)?;
+            let mut backend = self.backend.borrow_mut();
+            ensure_suite_backend(&mut backend)?;
+            let handle = backend
+                .as_ref()
+                .expect("suite backend is installed")
+                .core
+                .session_capability()
+                .admit_query_with_request(QueryAdmissionRequest::new().with_query_plan_capability_proof(proof))?;
             let context = handle.acquire_context()?;
-            Ok(PipelineTestContext { context, _request: Arc::clone(self) })
-        }
-    }
-
-    impl Drop for Runtime {
-        fn drop(&mut self) {
-            if let Some(handle) = self.handle.get_mut().take() {
-                handle.finish();
-            }
+            Ok(PipelineTestContext { context, _handle: handle, _request: Arc::clone(self) })
         }
     }
 }
 
 struct PipelineTestContext {
     context: AdmittedQueryContext,
+    _handle: QueryHandle,
     _request: Arc<cudf::Runtime>,
 }
 
@@ -295,8 +303,15 @@ fn assert_task_kind_count(pipeline: &CompiledPipeline, kind: PipelineTaskKind, e
     );
 }
 
-fn bounded_context(runtime: Arc<cudf::Runtime>) -> PipelineTestContext {
-    runtime.acquire_context().unwrap()
+fn bounded_context(runtime: Arc<cudf::Runtime>, plan: &QueryPlan) -> PipelineTestContext {
+    runtime.acquire_context_for_plan(plan).unwrap()
+}
+
+fn bounded_context_for_proofs(
+    runtime: Arc<cudf::Runtime>,
+    proofs: impl IntoIterator<Item = QueryPlanCapabilityProof>,
+) -> PipelineTestContext {
+    runtime.acquire_context_with_proofs(proofs).unwrap()
 }
 
 fn unique_temp_dir(prefix: &str) -> PathBuf {

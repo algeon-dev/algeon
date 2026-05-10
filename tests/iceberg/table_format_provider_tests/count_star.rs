@@ -165,7 +165,8 @@ async fn iceberg_provider_count_star_fallback_executes_with_mixed_row_count_meta
         .device_memory_ownership([(0, datafusion_nexus::backend::GpuMemoryOwnership::WholeDeviceExclusive)])
         .build()
         .unwrap();
-    let handle = backend.admit_query().unwrap();
+    let proof = QueryPlanCapabilityProof::for_query_plan(&result.plans[0]).expect("COUNT(*) plan must issue a proof");
+    let handle = backend.admit_query_with_plan_capability_proof(proof).unwrap();
     let admitted_context = handle.acquire_context().unwrap();
     let execution_context: &ExecutionContext = admitted_context.context();
     let result = execute_query_plan(execution_context, &result.plans[0]).unwrap();

@@ -214,7 +214,7 @@ fn aggregate_join_pushdown_left_count_plan(
     builder.finish_with_host_sink(sort)
 }
 
-fn local_source(path: &Path, schema: &Arc<Schema>, columns: &[&str]) -> LocalParquetSource {
+fn local_source(path: &Path, schema: &Arc<Schema>, columns: &[&str]) -> NativeLocalParquetSource {
     LocalParquetSource::from_files(
         vec![LocalParquetFile::new(path).with_file_size_bytes(fs::metadata(path).unwrap().len())],
         Arc::clone(schema),

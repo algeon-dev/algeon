@@ -1,4 +1,45 @@
 #[test]
+fn proof_device_entries_reapply_request_local_placement_floor() {
+    let service = test_service(1, 8);
+    let schema = std::sync::Arc::new(arrow::datatypes::Schema::new(vec![arrow::datatypes::Field::new(
+        "value",
+        arrow::datatypes::DataType::Int64,
+        false,
+    )]));
+    let mut builder = crate::plan::QueryPlanBuilder::new();
+    let source = builder.add_source(crate::source::SourceNode::GpuResident(crate::source::GpuResidentSource::new(
+        "input",
+        schema,
+    )));
+    let plan = builder.finish_with_host_sink(source);
+    let proof = crate::admission::QueryPlanCapabilityProof::for_query_plan(&plan)
+        .expect("fixture plan must issue a capability proof");
+    let request = QueryAdmissionRequest::new()
+        .with_query_plan_capability_proof(proof.clone())
+        .with_test_placement_requirement(crate::admission::AttemptCapabilityEvidence::from_parts(
+            0,
+            0,
+            Some(4096),
+            crate::admission::EstimateQuality::Measured,
+            Vec::new(),
+        ));
+
+    let handle = service.admit_query_with_request(request).expect("proof-backed fixture admission succeeds");
+    let requirement = handle
+        .handle
+        .lifetime
+        .admitted_device_requirement_for_test(0)
+        .expect("selected device keeps its immutable admission entry");
+    assert_eq!(requirement.required_floor_bytes_for(0).expect("fixture floor is finite"), 4096);
+
+    handle.finish();
+    drop(handle);
+    service
+        .close_and_wait_for_quiescence(Duration::from_secs(2))
+        .expect("proof-backed fixture cleanup completes");
+}
+
+#[test]
 fn queued_placement_folds_a_native_fault_into_the_ledger_before_retargeting() {
     let service = QueryService::new_with_device_ordinals_and_deployment(
         QueryExecutionConfig::default(),
@@ -431,7 +472,7 @@ fn candidate_local_entry_resolution_prunes_only_the_rejected_ordinal() {
         .expect("one healthy candidate remains");
 
     assert_eq!(compatible, vec![1]);
-    assert!(entries.get(&0).is_none(), "the rejected candidate must not enter placement");
+    assert!(!entries.contains_key(&0), "the rejected candidate must not enter placement");
     assert_eq!(entries.get(&1).expect("ordinal one entry").requirement.configured_floor_bytes, 256);
 }
 

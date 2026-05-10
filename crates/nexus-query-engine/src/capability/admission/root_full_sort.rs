@@ -316,8 +316,7 @@ pub(in crate::capability::admission) fn root_full_sort_shared_aggregate_fanout_h
     plan: &QueryPlan,
     shape: &RootFullSortJoinAggregateShape,
 ) -> bool {
-    if !shape.keyless_or_cross_join_ids.is_empty()
-        || !shape.unsupported_shared_producer_ids.is_empty()
+    if !shape.unsupported_shared_producer_ids.is_empty()
         || !shape.shared_projection_producer_ids.is_empty()
         || shape.shared_aggregate_producer_ids.is_empty()
         || shape.shared_producer_ids != shape.shared_aggregate_producer_ids
@@ -328,10 +327,59 @@ pub(in crate::capability::admission) fn root_full_sort_shared_aggregate_fanout_h
         return false;
     }
 
+    if !shape.keyless_or_cross_join_ids.is_empty()
+        && !root_full_sort_keyless_shared_aggregate_fanout_has_cardinality_proof(plan, shape)
+    {
+        return false;
+    }
+
     shape.shared_aggregate_producer_ids.iter().all(|node_id| {
         matches!(
             plan.node(*node_id).map(|node| &node.kind),
             Some(PlanNode::Aggregate(aggregate)) if !aggregate.spec.group_exprs.is_empty()
+        )
+    })
+}
+
+pub(in crate::capability::admission) fn root_full_sort_keyless_shared_aggregate_fanout_has_cardinality_proof(
+    plan: &QueryPlan,
+    shape: &RootFullSortJoinAggregateShape,
+) -> bool {
+    if shape.keyless_or_cross_join_ids.as_slice() != [shape.root_join_id] {
+        return false;
+    }
+    let Some(PlanNode::Join(join)) = plan.node(shape.root_join_id).map(|node| &node.kind) else {
+        return false;
+    };
+    if !matches!(
+        join_node_execution_capability(join),
+        Some(JoinExecutionCapability::KeylessConditional(KeylessConditionalJoinKind::Inner))
+    ) || join.spec.output_projection.iter().any(|column| column.side != JoinSide::Left)
+    {
+        return false;
+    }
+    let Some(scalar_side) = root_full_sort_keyless_join_scalar_side(plan, join) else {
+        return false;
+    };
+    if scalar_side != JoinSide::Right {
+        return false;
+    }
+    let Some((scalar_aggregate_id, _)) =
+        peel_resident_unary_chain_for_capability(plan, join.inputs[join_side_index(scalar_side)])
+    else {
+        return false;
+    };
+    if !matches!(
+        plan.node(scalar_aggregate_id).map(|node| &node.kind),
+        Some(PlanNode::Aggregate(aggregate)) if aggregate.spec.group_exprs.is_empty()
+    ) {
+        return false;
+    }
+    root_full_sort_shared_scalar_aggregate_derivation_invariants(plan, shape).into_iter().any(|selector| {
+        matches!(
+            selector,
+            InvariantSelector::AggregateDerivesFromSharedProducer { aggregate_id, .. }
+                if aggregate_id == scalar_aggregate_id
         )
     })
 }
@@ -507,7 +555,11 @@ pub(in crate::capability::admission) fn root_full_sort_join_capability_satisfies
             matches!(capability, JoinExecutionCapability::KeyedHash | JoinExecutionCapability::KeyedResidualMixed)
         },
         RootFullSortJoinAggregateSubcontract::SharedAggregateFanout => {
-            matches!(capability, JoinExecutionCapability::KeyedHash | JoinExecutionCapability::KeyedResidualMixed)
+            if shape.keyless_or_cross_join_ids.contains(&join_id) {
+                matches!(capability, JoinExecutionCapability::KeylessConditional(KeylessConditionalJoinKind::Inner))
+            } else {
+                matches!(capability, JoinExecutionCapability::KeyedHash | JoinExecutionCapability::KeyedResidualMixed)
+            }
         },
         RootFullSortJoinAggregateSubcontract::UnsupportedSharedOrFanout => false,
     }

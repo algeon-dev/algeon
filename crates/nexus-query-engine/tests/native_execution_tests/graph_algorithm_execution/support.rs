@@ -1,5 +1,11 @@
 static GRAPH_SEED_CHUNK_RETRY_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+fn gpu_resident_source(input_name: &str, schema: Arc<Schema>, batch: &RecordBatch) -> GpuResidentSource {
+    GpuResidentSource::new(input_name, schema).with_row_count_upper_bound(
+        u64::try_from(batch.num_rows()).expect("native graph fixture row count must fit u64"),
+    )
+}
+
 fn assert_vertex_betweenness_batches_close(expected: &RecordBatch, actual: &RecordBatch) {
     let expected = vertex_betweenness_scores(expected);
     let actual = vertex_betweenness_scores(actual);

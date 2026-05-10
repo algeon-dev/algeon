@@ -364,12 +364,16 @@ pub(super) fn host_staging_limit_error(
 }
 
 impl CollectedCugraphInputs {
+    pub(super) fn row_bounds(&self) -> Result<CugraphInputRowBounds> {
+        cugraph_input_row_bounds(&self.edge, &self.predicates)
+    }
+
     pub(super) fn prepare_logical_inputs(self, spec: &CugraphAlgorithmSpec) -> Result<StagedCugraphInputs> {
         let Self { edge, logical_literal_source, predicates, mut staged_bytes, mut host_evidence, mut reservation } =
             self;
         let max_input_staging_bytes = host_evidence.input_limit_bytes;
         host_evidence.record_input_peak(&reservation)?;
-        let (edge, logical_literal_source, predicates, logical_codebook, execution_spec) =
+        let PreparedBfsLogicalHostInputs { edge, logical_literal_source, predicates, logical_codebook, execution_spec } =
             prepare_bfs_logical_host_inputs(
                 spec,
                 edge,

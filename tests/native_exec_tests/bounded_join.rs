@@ -257,8 +257,14 @@ fn native_optimizer_rule_rewrites_and_executes_bounded_root_hash_join() {
 
 #[test]
 fn native_exec_preserves_bounded_join_rejection_facts_from_native_runtime() {
-    let native_plan = bounded_left_build_left_semi_join_host_sink_plan();
-    let exec = Arc::new(NexusNativeExec::try_new(native_plan, bounded_config()).unwrap()) as Arc<dyn ExecutionPlan>;
+    let dir = unique_temp_dir("datafusion-nexus-native-bounded-join-runtime-rejection");
+    let left = dir.join("left.parquet");
+    let right = dir.join("right.parquet");
+    write_join_left_parquet_file(&left);
+    write_join_right_parquet_file(&right);
+    let native_plan = bounded_left_build_left_semi_join_host_sink_plan_with_paths(&left, &right);
+    let config = admitted_native_config(&native_plan, bounded_config());
+    let exec = Arc::new(NexusNativeExec::try_new(native_plan, config).unwrap()) as Arc<dyn ExecutionPlan>;
 
     let error = futures::executor::block_on(collect(exec, Arc::new(TaskContext::default()))).unwrap_err();
     let adapter_error = adapter_error(&error);
@@ -335,6 +341,8 @@ fn native_exec_preserves_bounded_join_rejection_facts_from_native_runtime() {
     assert_eq!(adapter_error.fact_value("row_group_indexes"), None);
     assert_eq!(adapter_error.fact_value("row_group_count"), None);
     assert_eq!(adapter_error.fact_value("chunk_index"), None);
+
+    fs::remove_dir_all(dir).unwrap();
 }
 
 #[test]
@@ -423,11 +431,10 @@ fn strict_bounded_planner_rows_cover_supported_join_path_while_runtime_rejection
         BoundedJoinReservationContract.supported_shape_requirement()
     };
 
-    fs::remove_dir_all(dir).unwrap();
-
     // --- Runtime path ---
-    let native_plan = bounded_left_build_left_semi_join_host_sink_plan();
-    let exec = Arc::new(NexusNativeExec::try_new(native_plan, bounded_config()).unwrap()) as Arc<dyn ExecutionPlan>;
+    let native_plan = bounded_left_build_left_semi_join_host_sink_plan_with_paths(&left, &right);
+    let config = admitted_native_config(&native_plan, bounded_config());
+    let exec = Arc::new(NexusNativeExec::try_new(native_plan, config).unwrap()) as Arc<dyn ExecutionPlan>;
     let error = futures::executor::block_on(collect(exec, Arc::new(TaskContext::default()))).unwrap_err();
     let runtime_error = adapter_error(&error);
 
@@ -452,4 +459,6 @@ fn strict_bounded_planner_rows_cover_supported_join_path_while_runtime_rejection
         runtime_error.fact_value("bounded_join_mixed_keyed_residual_capability_detail"),
         Some("mixed_keyed_residual_root_join_types=inner,left,full,left_semi,left_anti")
     );
+
+    fs::remove_dir_all(dir).unwrap();
 }
