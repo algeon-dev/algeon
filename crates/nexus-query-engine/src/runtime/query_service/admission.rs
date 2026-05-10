@@ -12,7 +12,7 @@ pub(crate) struct QueryAdmissionWaiter {
     pub(super) observation: RuntimeObservationHandle,
     pub(super) requested_at: Instant,
     pub(super) deadline: Instant,
-    pub(super) requirement: AttemptRequirement,
+    pub(super) device_entries: DeviceAdmissionEntries,
     pub(super) execution_cancellation: ExecutionCancellation,
     pub(super) terminal: QueuedAdmissionTerminal,
     pub(super) queued: bool,
@@ -312,10 +312,9 @@ pub(super) struct AdmissionRequest {
     /// coverage validation remains unavailable, rather than asserting an
     /// empty proof.
     pub(super) submitted_plan_capability_evidence: Option<AttemptRequirement>,
-    /// Policy-resolved plan envelope retained from submission through the
-    /// execution context that consumes this admitted grant.
-    pub(super) admitted_reservation_envelope: Option<AttemptReservationEnvelope>,
-    pub(super) requirement: AttemptRequirement,
+    /// Policy-resolved, device-specific entries retained from submission
+    /// through the execution context that consumes the selected grant.
+    pub(super) device_entries: DeviceAdmissionEntries,
     /// Monotonic FIFO identity retained independently from admission order.
     pub(super) submission_seq: u64,
     /// Device ordinals established at submission; capability filtering belongs
@@ -333,10 +332,30 @@ pub(super) struct AdmissionRequest {
     pub(super) terminal: QueuedAdmissionTerminal,
 }
 
+/// One immutable requirement/envelope pair resolved for one installed device.
+/// Placement must never derive a second pair after submission.
+#[derive(Debug, Clone)]
+pub(super) struct DeviceAdmissionEntry {
+    pub(super) requirement: AttemptRequirement,
+    pub(super) admitted_reservation_envelope: Option<AttemptReservationEnvelope>,
+}
+
+pub(super) type DeviceAdmissionEntries = BTreeMap<usize, DeviceAdmissionEntry>;
+
 impl AdmissionRequest {
-    #[cfg(test)]
-    pub(super) fn requirement_for_device(&self, _device_ordinal: usize) -> Option<&AttemptRequirement> {
-        Some(&self.requirement)
+    pub(super) fn entry_for_device(&self, device_ordinal: usize) -> Result<&DeviceAdmissionEntry> {
+        self.device_entries.get(&device_ordinal).ok_or_else(|| missing_device_admission_entry_error(device_ordinal))
+    }
+
+    pub(super) fn requirement_for_device(&self, device_ordinal: usize) -> Result<&AttemptRequirement> {
+        Ok(&self.entry_for_device(device_ordinal)?.requirement)
+    }
+
+    pub(super) fn admitted_reservation_envelope_for_device(
+        &self,
+        device_ordinal: usize,
+    ) -> Result<&Option<AttemptReservationEnvelope>> {
+        Ok(&self.entry_for_device(device_ordinal)?.admitted_reservation_envelope)
     }
 
     /// Captures the controller's immutable finite-overtake state at the
@@ -352,6 +371,16 @@ impl AdmissionRequest {
             protection_device_ordinal: self.protected_device,
         }
     }
+}
+
+pub(super) fn missing_device_admission_entry_error(device_ordinal: usize) -> QueryError {
+    QueryError::new(
+        QueryErrorCode::Internal,
+        "nexus_query_engine.query_service.admission",
+        "admission request is missing the selected device-specific requirement",
+    )
+    .with_fact("reason", "missing_device_specific_admission_resolution")
+    .with_fact("device_ordinal", device_ordinal)
 }
 
 /// The one ownership boundary for terminal admission completion.
@@ -873,10 +902,31 @@ impl QueryAdmissionWaiter {
             },
         };
         if let Some((position, device_ordinal)) = selected {
+            let selected_entry = match self.device_entries.get(&device_ordinal) {
+                Some(entry) => entry,
+                None => {
+                    let error = missing_device_admission_entry_error(device_ordinal);
+                    let removed = self.service.abandon_queued_request_locked(&mut state, self.admission_request_id);
+                    self.queued = false;
+                    if removed.is_some() {
+                        record_admission_lifecycle(
+                            &self.observation,
+                            self.admission_request_id,
+                            admission_rejection(&error),
+                            state.queued.len(),
+                            None,
+                            None,
+                        );
+                    }
+                    drop(state);
+                    finish_removed_request_error(removed, &error);
+                    return Err(error);
+                },
+            };
             let placed_query = match self.service.try_place_on_device(
                 device_ordinal,
                 self.admission_request_id,
-                &state.queued[position].requirement,
+                state.queued[position].requirement_for_device(device_ordinal)?,
                 &mut slot_notifications,
             ) {
                 Ok(placed_query) => placed_query,
@@ -912,7 +962,8 @@ impl QueryAdmissionWaiter {
                             None,
                         );
                     }
-                    let error = self.service.memory_grant_wait_timeout_error(&self.requirement, state.queued.len());
+                    let error =
+                        self.service.memory_grant_wait_timeout_error(&selected_entry.requirement, state.queued.len());
                     drop(state);
                     finish_removed_request_error(removed, &error);
                     return Err(error);
@@ -947,9 +998,15 @@ impl QueryAdmissionWaiter {
                 .service
                 .commit_placed_admission(super::service::PlacedAdmissionCommit {
                     placed_query,
-                    admitted_requirement: admitted.requirement.clone(),
+                    admitted_device_requirements: admitted
+                        .device_entries
+                        .iter()
+                        .map(|(&ordinal, entry)| (ordinal, entry.requirement.clone()))
+                        .collect(),
                     submitted_plan_capability_evidence: admitted.submitted_plan_capability_evidence.clone(),
-                    admitted_reservation_envelope: admitted.admitted_reservation_envelope.clone(),
+                    admitted_reservation_envelope: admitted
+                        .admitted_reservation_envelope_for_device(device_ordinal)?
+                        .clone(),
                     admitted_compatible_devices: admitted.compatible_devices.clone(),
                     observation: admitted.observation,
                     attempt_id: admitted.attempt_id,

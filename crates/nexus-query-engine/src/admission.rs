@@ -19,7 +19,9 @@ pub use diagnostics::{bounded_join_modeled_facts, bounded_join_unsupported_shape
 pub(crate) use diagnostics::{
     bounded_join_unsupported_shape_facts_with_projection, insert_bounded_join_rejection_projection_error_facts,
 };
-pub(crate) use envelope::{AttemptReservationEnvelope, AttemptReservationPolicy};
+pub(crate) use envelope::{
+    AttemptReservationEnvelope, AttemptReservationPolicy, canonical_execution_scope_fingerprint,
+};
 pub(crate) use join_strategy::{CompiledJoinExecutionStrategy, CompiledJoinStrategySelection};
 pub(crate) use requirement::AttemptCapabilityEvidence as AttemptRequirement;
 #[cfg(any(test, feature = "test-hooks"))]

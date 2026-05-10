@@ -3,15 +3,13 @@ use datafusion_nexus::planner::{
     FinalPlanDisposition, NexusFinalPlanRequirementRule, NexusNativeOptimizerConfig, classify_final_plan,
 };
 use futures::StreamExt;
+use nexus_query_engine::{expr::Expr, plan::PlanNode, source::SourceNode};
 
 use super::{support::*, *};
 
 const CPU_INPUT_BFS_SQL: &str = "SELECT vertex, distance, predecessor \
      FROM cugraph_bfs('raw_edges', 0, 'src', 'dst', NULL, \
-          '{\"construction_policy\":\"raw_libcugraph\",\
-             \"include_edges_table\":\"allowed_edges\",\
-             \"include_edge_src_col\":\"allowed_src\",\
-             \"include_edge_dst_col\":\"allowed_dst\"}') \
+          '{\"construction_policy\":\"raw_libcugraph\"}') \
      ORDER BY vertex";
 
 const PAGERANK_FORCEATLAS2_JOIN_SQL: &str = "WITH pagerank AS (\n\
@@ -38,6 +36,25 @@ fn cugraph_input_is_runtime_native(plan: &dyn datafusion::physical_plan::Executi
 
 fn plan_contains_named_node(plan: &dyn datafusion::physical_plan::ExecutionPlan, name: &str) -> bool {
     plan.name() == name || plan.children().into_iter().any(|child| plan_contains_named_node(child.as_ref(), name))
+}
+
+fn assert_include_edges_owner_rejection(
+    backend: &NexusGpuBackend,
+    plan: &dyn datafusion::physical_plan::ExecutionPlan,
+    error: &datafusion::common::DataFusionError,
+) {
+    let nexus = typed_nexus_error(error);
+    assert_eq!(nexus.fact_value("reason"), Some("side_input_workspace_preflight_unavailable"));
+    assert_eq!(nexus.fact_value("side_input_reason"), Some("include_edges_owner_contract_missing"));
+    assert_eq!(nexus.fact_value("side_input_role"), Some("include_edges"));
+    assert_eq!(nexus.fact_value("native_code"), Some("unsupported_plan_shape"));
+
+    let metrics = NativeDataFusionExecutionMetrics::from_metrics(&plan_metrics_recursive(plan));
+    assert!(metrics.graph_runtime_rows.is_empty(), "include_edges must reject before graph GPU execution");
+    assert!(metrics.graph_reservation_rows.is_empty(), "include_edges must reject before graph reservation execution");
+    assert_eq!(metrics.host_to_device_uploads, 0, "include_edges rejection must not upload a graph input");
+    assert_eq!(metrics.gpu_resident_input_handoffs, 0, "include_edges rejection must not hand off a GPU input");
+    assert_eq!(backend.admission_snapshot().unwrap().active_queries, 0, "include_edges must reject before admission");
 }
 
 fn register_edges_with_upstream_only_list(ctx: &SessionContext, table_name: &str) {
@@ -138,15 +155,34 @@ async fn cugraph_sql_cpu_to_gpu_to_cpu_projects_away_unsupported_upstream_type()
 async fn cugraph_sql_keeps_native_inputs_device_resident_for_native_downstream() {
     let (_backend, ctx) = default_backend_cugraph_sql_context();
     register_directed_bfs_edges(&ctx, "raw_edges");
-    register_allowed_bfs_edges(&ctx, "allowed_edges");
 
     let df = ctx.sql(CPU_INPUT_BFS_SQL).await.unwrap();
     let plan = df.create_physical_plan().await.unwrap();
-    assert!(find_composed_exec(plan.as_ref()).is_some(), "backend SQL should compose the downstream native plan");
+    let composed = find_composed_exec(plan.as_ref()).expect("backend SQL should compose the downstream native plan");
+    let native_plan = composed.native_plan();
+    assert!(native_plan.unreachable_node_ids().is_empty(), "the composed native plan must have no detached nodes");
+    assert_eq!(native_plan.nodes().len(), 2, "BFS ORDER BY should lower to one source and one sort");
+    let [source_node, sort_node] = native_plan.nodes() else {
+        panic!("BFS ORDER BY should lower to exactly GpuResidentSource -> Sort");
+    };
+    let PlanNode::Source(source) = &source_node.kind else {
+        panic!("BFS ORDER BY native input must be a source node");
+    };
+    let SourceNode::GpuResident(source) = source.as_ref() else {
+        panic!("BFS ORDER BY native input must remain GPU-resident");
+    };
+    assert!(!source.input_name.is_empty(), "the graph result source must retain its runtime identity");
+    let PlanNode::Sort(sort) = &sort_node.kind else {
+        panic!("BFS ORDER BY native consumer must be a Sort node");
+    };
+    assert_eq!(sort.input, source_node.id, "the Sort must consume the graph-result source directly");
+    assert_eq!(sort.spec.expressions.len(), 1, "BFS ORDER BY must use one supported sort key");
+    assert_eq!(sort.spec.expressions[0].expr, Expr::column("vertex"));
+    assert_eq!(native_plan.root_id(), sort_node.id, "the native sort must be the composed consumer root");
     let cugraph = find_cugraph_algo_exec(plan.as_ref()).expect("physical plan should contain CugraphAlgoExec");
     let cugraph_display = displayable(cugraph).indent(false).to_string();
     let cugraph_children = cugraph.children();
-    assert_eq!(cugraph_children.len(), 2, "BFS should retain its edge and side-input children");
+    assert_eq!(cugraph_children.len(), 1, "BFS should retain its edge child");
     assert!(
         cugraph_children.iter().all(|child| cugraph_input_is_runtime_native(child.as_ref())),
         "backend-managed edge and side inputs should remain native or transparently cooperative:\n{cugraph_display}"
@@ -156,8 +192,8 @@ async fn cugraph_sql_keeps_native_inputs_device_resident_for_native_downstream()
     let batches = datafusion::physical_plan::collect(plan, ctx.task_ctx()).await.unwrap();
     assert_eq!(
         cudf::testing::arrow::arrow_host_import_call_count_for_test(),
-        2,
-        "the two native literal sources should import once each without an extra cuGraph boundary"
+        1,
+        "the native edge source should import once without an extra cuGraph boundary"
     );
     assert_eq!(
         cudf::testing::arrow::arrow_host_export_call_count_for_test(),
@@ -165,9 +201,9 @@ async fn cugraph_sql_keeps_native_inputs_device_resident_for_native_downstream()
         "cuGraph output must stay device-resident until the composed root materializes"
     );
     let batch = single_batch(&batches);
-    assert_eq!(batch.num_rows(), 3);
+    assert_eq!(batch.num_rows(), 4);
     assert_eq!(bfs_distance_for(batch, 0), Some(0));
-    assert_eq!(bfs_distance_for(batch, 1), None);
+    assert_eq!(bfs_distance_for(batch, 1), Some(1));
     assert_eq!(bfs_distance_for(batch, 2), Some(1));
     assert_eq!(bfs_distance_for(batch, 3), Some(2));
 }
@@ -870,11 +906,11 @@ async fn cugraph_sql_gpu_similarity_short_circuits_empty_pairs_and_rejects_absen
 
 #[tokio::test]
 async fn cugraph_sql_gpu_bfs_include_edges_predicate_executes_end_to_end() {
-    let (_backend, ctx) = default_backend_cugraph_sql_context();
+    let (backend, ctx) = default_backend_cugraph_sql_context();
     register_directed_bfs_edges(&ctx, "raw_edges");
     register_allowed_bfs_edges(&ctx, "allowed_edges");
 
-    let batches = ctx
+    let df = ctx
         .sql(
             "SELECT vertex, distance, predecessor \
              FROM cugraph_bfs('raw_edges', 0, 'src', 'dst', NULL, \
@@ -884,15 +920,10 @@ async fn cugraph_sql_gpu_bfs_include_edges_predicate_executes_end_to_end() {
                      \"include_edge_dst_col\":\"allowed_dst\"}')",
         )
         .await
-        .unwrap()
-        .collect()
-        .await
         .unwrap();
-    let batch = single_batch(&batches);
-    assert_eq!(bfs_distance_for(batch, 0), Some(0));
-    assert_eq!(bfs_distance_for(batch, 1), None);
-    assert_eq!(bfs_distance_for(batch, 2), Some(1));
-    assert_eq!(bfs_distance_for(batch, 3), Some(2));
+    let plan = df.create_physical_plan().await.unwrap();
+    let error = datafusion::physical_plan::collect(Arc::clone(&plan), ctx.task_ctx()).await.unwrap_err();
+    assert_include_edges_owner_rejection(&backend, plan.as_ref(), &error);
 }
 
 #[tokio::test]
@@ -1254,11 +1285,11 @@ async fn cugraph_sql_gpu_bfs_utf8_source_table_maps_logical_ids_end_to_end() {
 
 #[tokio::test]
 async fn cugraph_sql_gpu_bfs_utf8_include_edges_maps_logical_ids_end_to_end() {
-    let (_backend, ctx) = default_backend_cugraph_sql_context();
+    let (backend, ctx) = default_backend_cugraph_sql_context();
     register_string_bfs_edges(&ctx, "raw_edges");
     register_string_allowed_bfs_edges(&ctx, "allowed_edges");
 
-    let batches = ctx
+    let df = ctx
         .sql(
             "SELECT vertex, distance, predecessor, reachable \
              FROM cugraph_bfs('raw_edges', 'a', 'src', 'dst', NULL, \
@@ -1269,16 +1300,11 @@ async fn cugraph_sql_gpu_bfs_utf8_include_edges_maps_logical_ids_end_to_end() {
                      \"output_mode\":\"normalized\"}')",
         )
         .await
-        .unwrap()
-        .collect()
-        .await
         .unwrap();
-    let batch = single_batch(&batches);
-    assert_eq!(string_bfs_distance_for(batch, "a"), Some(0));
-    assert_eq!(string_bfs_distance_for(batch, "b"), None);
-    assert_eq!(string_bfs_distance_for(batch, "c"), Some(1));
-    assert_eq!(string_bfs_distance_for(batch, "d"), Some(2));
-    assert_eq!(string_bfs_predecessor_for(batch, "d"), Some("c".to_string()));
+    let plan = df.create_physical_plan().await.unwrap();
+    let error = datafusion::physical_plan::collect(Arc::clone(&plan), ctx.task_ctx()).await.unwrap_err();
+    drop_session_context_on_blocking_thread(ctx).await;
+    assert_include_edges_owner_rejection(&backend, plan.as_ref(), &error);
 }
 
 #[tokio::test]
@@ -1309,12 +1335,12 @@ async fn cugraph_sql_gpu_bfs_utf8_nullable_edges_drop_actual_null_rows() {
 
 #[tokio::test]
 async fn cugraph_sql_gpu_bfs_path_reconstructs_utf8_target_path_end_to_end() {
-    let (_backend, ctx) = default_backend_cugraph_sql_context();
+    let (backend, ctx) = default_backend_cugraph_sql_context();
     register_string_bfs_edges(&ctx, "raw_edges");
     register_string_allowed_bfs_edges(&ctx, "allowed_edges");
     register_string_vertex_memtable(&ctx, "targets", "vertex_id", &["d"]);
 
-    let batches = ctx
+    let df = ctx
         .sql(
             "SELECT path_index, source, target, vertex, distance \
              FROM cugraph_bfs('raw_edges', 'a', 'src', 'dst', NULL, \
@@ -1328,29 +1354,22 @@ async fn cugraph_sql_gpu_bfs_path_reconstructs_utf8_target_path_end_to_end() {
              ORDER BY path_index",
         )
         .await
-        .unwrap()
-        .collect()
-        .await
         .unwrap();
+    let plan = df.create_physical_plan().await.unwrap();
+    let error = datafusion::physical_plan::collect(Arc::clone(&plan), ctx.task_ctx()).await.unwrap_err();
     drop_session_context_on_blocking_thread(ctx).await;
-    let batch = single_batch(&batches);
-    assert_eq!(string_path_column(batch, 1), vec!["a", "a", "a"]);
-    assert_eq!(string_path_column(batch, 2), vec!["d", "d", "d"]);
-    assert_eq!(string_path_column(batch, 3), vec!["a", "c", "d"]);
-    assert_eq!(int64_column(batch, 0), vec![0, 1, 2]);
-    assert_eq!(int64_column(batch, 4), vec![0, 1, 2]);
+    assert_include_edges_owner_rejection(&backend, plan.as_ref(), &error);
 }
 
 #[tokio::test]
 async fn cugraph_sql_gpu_bfs_include_edges_drops_actual_null_predicate_rows() {
-    let (_backend, ctx) = default_backend_cugraph_sql_context();
+    let (backend, ctx) = default_backend_cugraph_sql_context();
     register_directed_bfs_edges(&ctx, "raw_edges");
     register_nullable_allowed_bfs_edges_with_nulls(&ctx, "allowed_edges");
 
-    // The whitelist enumerates 0->2 and 2->3 plus a null row that cannot name
-    // any edge. The null row is dropped (not rejected), leaving the same
-    // policy as the clean include_edges test: reachable {0,2,3}, 1 unreachable.
-    let batches = ctx
+    // Keep the nullable whitelist fixture: the owner contract rejects the
+    // graph before null-row filtering or GPU execution can begin.
+    let df = ctx
         .sql(
             "SELECT vertex, distance, predecessor \
              FROM cugraph_bfs('raw_edges', 0, 'src', 'dst', NULL, \
@@ -1360,15 +1379,10 @@ async fn cugraph_sql_gpu_bfs_include_edges_drops_actual_null_predicate_rows() {
                      \"include_edge_dst_col\":\"allowed_dst\"}')",
         )
         .await
-        .unwrap()
-        .collect()
-        .await
         .unwrap();
-    let batch = single_batch(&batches);
-    assert_eq!(bfs_distance_for(batch, 0), Some(0));
-    assert_eq!(bfs_distance_for(batch, 1), None);
-    assert_eq!(bfs_distance_for(batch, 2), Some(1));
-    assert_eq!(bfs_distance_for(batch, 3), Some(2));
+    let plan = df.create_physical_plan().await.unwrap();
+    let error = datafusion::physical_plan::collect(Arc::clone(&plan), ctx.task_ctx()).await.unwrap_err();
+    assert_include_edges_owner_rejection(&backend, plan.as_ref(), &error);
 }
 
 #[tokio::test]
@@ -1400,11 +1414,11 @@ async fn cugraph_sql_gpu_bfs_target_vertices_with_null_values_is_rejected() {
 
 #[tokio::test]
 async fn cugraph_sql_gpu_bfs_include_edges_empty_after_drop_is_explicit_error() {
-    let (_backend, ctx) = default_backend_cugraph_sql_context();
+    let (backend, ctx) = default_backend_cugraph_sql_context();
     register_directed_bfs_edges(&ctx, "raw_edges");
     register_all_null_allowed_bfs_edges(&ctx, "allowed_edges");
 
-    let error = ctx
+    let df = ctx
         .sql(
             "SELECT vertex, distance, predecessor \
              FROM cugraph_bfs('raw_edges', 0, 'src', 'dst', NULL, \
@@ -1414,16 +1428,8 @@ async fn cugraph_sql_gpu_bfs_include_edges_empty_after_drop_is_explicit_error() 
                      \"include_edge_dst_col\":\"allowed_dst\"}')",
         )
         .await
-        .unwrap()
-        .collect()
-        .await
-        .unwrap_err();
-    // A whitelist that collapses to empty after dropping null rows is a
-    // deliberate error, never a silent empty BFS.
-    let nexus = typed_nexus_error(&error);
-    assert_eq!(nexus.fact_value("predicate_role"), Some("include_edges"));
-    assert!(
-        nexus.fact_value("native_message").is_some_and(|message| message.contains("include_edges whitelist is empty")),
-        "unexpected typed Nexus error: {nexus:?}"
-    );
+        .unwrap();
+    let plan = df.create_physical_plan().await.unwrap();
+    let error = datafusion::physical_plan::collect(Arc::clone(&plan), ctx.task_ctx()).await.unwrap_err();
+    assert_include_edges_owner_rejection(&backend, plan.as_ref(), &error);
 }

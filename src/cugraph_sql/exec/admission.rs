@@ -93,17 +93,10 @@ pub(super) fn cugraph_execution_config_with_graph_aware_ticket(
     edge_normalize_inserted: bool,
     execution_config: NexusNativeExecutionConfig,
 ) -> Result<NexusNativeExecutionConfig> {
-    let graph_model_ask = if execution_config.query_admission_source().is_none() {
-        None
-    } else {
-        cugraph_graph_model_ask_bytes(spec, edge_source, edge_normalize_inserted, &execution_config)?
-    };
-    // A cuGraph attempt executes its graph operation and may also execute
-    // lowered native edge/predicate fragments under the same ticket. Keep one
-    // aggregate proof for that whole invocation so the engine can verify each
-    // fragment at execution time without treating the graph proof as blanket
-    // authorization for a different native plan.
-    let graph_execution_proof = cugraph_execution_capability_proof(
+    let edge_row_upper_bound =
+        if execution_config.query_admission_source().is_none() { None } else { edge_source_output_rows(edge_source)? };
+    let edge_vertex_upper_bound = edge_source_graph_vertex_estimate(edge_source).map(|estimate| estimate.count);
+    let (graph_execution_plan, graph_execution_proof) = cugraph_execution_capability_proof_with_edge_row_upper_bound(
         spec,
         edge_source.schema(),
         predicate_sources.iter().map(|source| source.schema()).collect(),
@@ -111,11 +104,23 @@ pub(super) fn cugraph_execution_config_with_graph_aware_ticket(
         projection,
         limit,
         edge_normalize_inserted,
+        edge_row_upper_bound,
+        edge_vertex_upper_bound,
     )?;
+    let graph_model_ask = if execution_config.query_admission_source().is_none() {
+        None
+    } else {
+        cugraph_graph_model_ask_bytes(&graph_execution_plan, edge_source, &execution_config)?
+    };
+    // A cuGraph attempt executes its graph operation and may also execute
+    // lowered native edge/predicate fragments under the same ticket. Keep one
+    // aggregate proof for that whole invocation so the engine can verify each
+    // fragment at execution time without treating the graph proof as blanket
+    // authorization for a different native plan.
     let mut fragment_proofs = vec![graph_execution_proof];
-    collect_native_fragment_capability_proofs(edge_source, &mut fragment_proofs, true);
+    collect_native_fragment_capability_proofs(edge_source, &mut fragment_proofs, true, false)?;
     for predicate_source in predicate_sources {
-        collect_native_fragment_capability_proofs(predicate_source.as_ref(), &mut fragment_proofs, false);
+        collect_native_fragment_capability_proofs(predicate_source.as_ref(), &mut fragment_proofs, false, true)?;
     }
     execution_config.with_graph_aware_plan_query_admission_ticket(graph_model_ask, fragment_proofs).map_err(|error| {
         DataFusionError::from(Error::from_native(
@@ -130,7 +135,8 @@ fn collect_native_fragment_capability_proofs(
     plan: &dyn ExecutionPlan,
     proofs: &mut Vec<QueryPlanCapabilityProof>,
     is_graph_input_fragment: bool,
-) {
+    is_cugraph_side_input_fragment: bool,
+) -> Result<()> {
     let native_plan = lowered_native_edge_plan(plan);
 
     // DataFusion's scheduling-only CooperativeExec is transparently unwrapped
@@ -141,7 +147,7 @@ fn collect_native_fragment_capability_proofs(
     // distinct fragments themselves.
     if !(plan.name() == "CooperativeExec" && native_plan.is_some()) {
         for child in plan.children() {
-            collect_native_fragment_capability_proofs(child.as_ref(), proofs, false);
+            collect_native_fragment_capability_proofs(child.as_ref(), proofs, false, false)?;
         }
     }
 
@@ -153,6 +159,14 @@ fn collect_native_fragment_capability_proofs(
         let native_plan = native_plan.clone_with_gpu_resident_sink();
         let proof = if is_graph_input_fragment {
             QueryPlanCapabilityProof::for_cugraph_graph_input_plan(&native_plan)
+        } else if is_cugraph_side_input_fragment {
+            Some(QueryPlanCapabilityProof::try_for_cugraph_side_input_plan(&native_plan).map_err(|error| {
+                DataFusionError::from(Error::from_native(
+                    "datafusion_nexus.cugraph_sql.graph_ticket_ask",
+                    "failed to derive native cuGraph side-input admission evidence",
+                    error,
+                ))
+            })?)
         } else {
             QueryPlanCapabilityProof::for_query_plan(&native_plan)
         };
@@ -160,6 +174,7 @@ fn collect_native_fragment_capability_proofs(
             proofs.push(proof);
         }
     }
+    Ok(())
 }
 
 /// Returns the lowered plan carried by every native edge-wrapper shape.  Keep
@@ -180,38 +195,17 @@ pub(super) fn lowered_native_edge_plan(plan: &dyn ExecutionPlan) -> Option<&nexu
 }
 
 pub(super) fn cugraph_graph_model_ask_bytes(
-    spec: &CugraphAlgorithmSpec,
+    graph_plan: &nexus_query_engine::plan::QueryPlan,
     edge_source: &dyn ExecutionPlan,
-    edge_normalize_inserted: bool,
     execution_config: &NexusNativeExecutionConfig,
 ) -> Result<Option<GraphAdmissionModelAsk>> {
-    let Some(native_spec) = native_graph_spec_for_memory_estimate(spec, edge_normalize_inserted) else {
-        return Ok(None);
-    };
     if !native_edge_source_allows_graph_aware_ticket(edge_source) {
         return Ok(None);
     }
-    // The graph ticket is an immutable pre-admission contract. Only evidence
-    // carried by this exact edge source may establish its cardinality; a
-    // service-wide calibration value is not bound to the rowset and cannot
-    // supply a grant input here.
-    let raw_input_edges = edge_source_output_rows(edge_source)?;
-    let Some(raw_input_edges) = raw_input_edges else {
-        return Ok(None);
-    };
-    let vertex_estimate = edge_source_graph_vertex_estimate(edge_source);
-    let input_edges = cugraph_effective_input_edges(raw_input_edges, spec, edge_normalize_inserted);
-    let construction_sort_workspace_bound_bytes =
-        raw_bfs_construction_sort_workspace_bound(&native_spec, spec, &edge_source.schema(), input_edges);
     let device_total_memory_bytes =
         execution_config.query_admission_source().map(|source| source.max_device_total_memory_bytes());
-    let evidence = graph_memory_bounded_admission_evidence_for_edge_list_with_vertex_estimate(
-        &native_spec,
-        &edge_source.schema(),
-        input_edges,
-        Some(raw_input_edges),
-        vertex_estimate,
-        construction_sort_workspace_bound_bytes,
+    let evidence = nexus_query_engine::graph_memory::graph_memory_bounded_admission_evidence_for_plan(
+        graph_plan,
         GraphMemoryCalibrationOverride::none(),
         device_total_memory_bytes,
     )
@@ -223,64 +217,6 @@ pub(super) fn cugraph_graph_model_ask_bytes(
         ))
     })?;
     Ok(Some(GraphAdmissionModelAsk::from_graph_memory_admission_evidence(evidence)))
-}
-
-/// Queries the owner-provided sort-workspace bound for the exact raw BFS
-/// graph-construction shape. This direct edge-list admission path turns the
-/// owner contract into the typed engine model input.
-///
-/// An unsupported schema, an invalid owner input, or an owner-query error
-/// deliberately leaves the bound absent. Bounded admission then retains its
-/// typed fail-closed rejection instead of inventing a local allowance.
-fn raw_bfs_construction_sort_workspace_bound(
-    native_spec: &GraphAlgorithmSpec,
-    spec: &CugraphAlgorithmSpec,
-    edge_schema: &SchemaRef,
-    input_edges: u64,
-) -> Option<u64> {
-    if native_spec.algorithm != GraphAlgorithm::Bfs || native_spec.edge_normalize_inserted {
-        return None;
-    }
-
-    let vertex_type = cugraph_index_dtype(edge_schema, &spec.src_col)?;
-    if cugraph_index_dtype(edge_schema, &spec.dst_col)? != vertex_type {
-        return None;
-    }
-    let weight_type = if native_spec.algorithm.consumes_weight() {
-        spec.weight_col.as_deref().and_then(|column| cugraph_weight_dtype(edge_schema, column))
-    } else {
-        None
-    };
-    let input = cugraph::cudf_interop::EdgelistSortPreflightInput::new(
-        vertex_type,
-        // Raw single-GPU graph creation dispatches its edge index type from
-        // the endpoint type; it is not the optional stable edge-id dtype.
-        vertex_type,
-        weight_type,
-        spec.edge_id_col.is_some(),
-        // BFS executes on `Graph<Forward>`, so the construction is not
-        // transposed. This has to match the owner query's dispatch input.
-        false,
-        usize::try_from(input_edges).ok()?,
-    )
-    .ok()?;
-    cugraph::cudf_interop::edgelist_sort_workspace_preflight(&input).ok()
-}
-
-fn cugraph_index_dtype(edge_schema: &SchemaRef, column: &str) -> Option<cugraph::types::DataType> {
-    match edge_schema.field_with_name(column).ok()?.data_type() {
-        DataType::Int32 => Some(cugraph::types::DataType::Int32),
-        DataType::Int64 => Some(cugraph::types::DataType::Int64),
-        _ => None,
-    }
-}
-
-fn cugraph_weight_dtype(edge_schema: &SchemaRef, column: &str) -> Option<cugraph::types::DataType> {
-    match edge_schema.field_with_name(column).ok()?.data_type() {
-        DataType::Float32 => Some(cugraph::types::DataType::Float32),
-        DataType::Float64 => Some(cugraph::types::DataType::Float64),
-        _ => None,
-    }
 }
 
 pub(super) fn edge_source_output_rows(edge_source: &dyn ExecutionPlan) -> Result<Option<u64>> {
@@ -357,14 +293,6 @@ pub(super) fn native_plan_is_graph_ticket_light_edge_source(native_plan: &nexus_
     native_plan.nodes().iter().all(|node| {
         matches!(node.kind, PlanNode::Source(_) | PlanNode::Filter(_) | PlanNode::Projection(_) | PlanNode::Limit(_))
     })
-}
-
-pub(super) fn cugraph_effective_input_edges(
-    raw_input_edges: u64,
-    spec: &CugraphAlgorithmSpec,
-    edge_normalize_inserted: bool,
-) -> u64 {
-    raw_input_edges.saturating_mul(if edge_normalize_inserted && !spec.graph_options.directed { 2 } else { 1 })
 }
 
 pub(super) fn task_context_with_cugraph_execution_ticket(

@@ -40,7 +40,7 @@ impl DeviceQuarantineInjection {
     }
 }
 use crate::{
-    admission::{AttemptRequirement, AttemptReservationEnvelope, AttemptReservationPolicy, QueryPlanCapabilityProof},
+    admission::{AttemptRequirement, QueryPlanCapabilityProof},
     attempt::{AttemptAdmissionBinding, AttemptFinalizerSlot},
 };
 
@@ -424,16 +424,6 @@ impl QueryAdmissionRequest {
         self.planned_capability_proof.as_ref().map(|proof| proof.as_requirement().clone())
     }
 
-    /// Resolves the opaque proof against the query service's installed source
-    /// scheduler and chunk policy.  Synthetic test placement requirements do
-    /// not carry a plan shape and therefore produce no execution envelope.
-    pub(in crate::runtime::query_service) fn resolved_reservation_envelope(
-        &self,
-        policy: AttemptReservationPolicy,
-    ) -> Result<Option<AttemptReservationEnvelope>> {
-        self.planned_capability_proof.as_ref().map(|proof| proof.resolve_reservation_envelope(policy)).transpose()
-    }
-
     /// Sets an attempt-bound queue deadline.
     pub fn with_queue_deadline(mut self, queue_deadline: Instant) -> Self {
         self.queue_deadline = Some(queue_deadline);
@@ -484,13 +474,19 @@ impl QueryAdmissionRequest {
         self
     }
 
+    #[cfg(test)]
     pub(in crate::runtime::query_service::service) fn into_runtime_observation(self) -> AdmissionObservation {
-        let (activity, activity_error) = match self.runtime_observation_activity {
+        let mut request = self;
+        request.take_runtime_observation()
+    }
+
+    pub(in crate::runtime::query_service::service) fn take_runtime_observation(&mut self) -> AdmissionObservation {
+        let (activity, activity_error) = match self.runtime_observation_activity.take() {
             Some(Ok(activity)) => (Some(activity), None),
             Some(Err(error)) => (None, Some(error)),
             None => (None, None),
         };
-        let (handle, owner, attempt_finalizer_slot, attempt_id) = match self.runtime_observation {
+        let (handle, owner, attempt_finalizer_slot, attempt_id) = match std::mem::take(&mut self.runtime_observation) {
             RuntimeObservationAttachment::Disabled => (RuntimeObservationHandle::disabled(), None, None, None),
             RuntimeObservationAttachment::StandaloneOwner(owner) => (owner.handle(), Some(owner), None, None),
             RuntimeObservationAttachment::Handle(handle) => (handle, None, None, None),

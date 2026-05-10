@@ -91,7 +91,7 @@ pub(super) struct QueryHandleLifetime {
     /// Immutable admission inputs retained only until the post-cleanup report
     /// commit can determine whether a quarantined device has a truthful
     /// alternate retry target. They never drive a second placement.
-    admitted_requirement: AttemptRequirement,
+    admitted_device_requirements: BTreeMap<usize, AttemptRequirement>,
     compatible_devices: Vec<usize>,
     release_requested: AtomicBool,
     released: AtomicBool,
@@ -108,6 +108,11 @@ pub(super) struct QueryHandleLifetime {
 }
 
 impl QueryHandleLifetime {
+    #[cfg(test)]
+    pub(crate) fn admitted_device_requirement_for_test(&self, ordinal: usize) -> Option<&AttemptRequirement> {
+        self.admitted_device_requirements.get(&ordinal)
+    }
+
     pub(super) fn new(
         service: Arc<QueryServiceInner>,
         admission_request_id: AdmissionRequestId,
@@ -115,7 +120,7 @@ impl QueryHandleLifetime {
         attempt_id: Option<crate::observability::AttemptId>,
         completion: QueryCompletion,
         envelope: super::service::transaction::AdmissionEnvelope,
-        admitted_requirement: AttemptRequirement,
+        admitted_device_requirements: BTreeMap<usize, AttemptRequirement>,
         compatible_devices: Vec<usize>,
     ) -> Arc<Self> {
         let device_ordinal = envelope.device_ordinal();
@@ -147,7 +152,7 @@ impl QueryHandleLifetime {
                 completion: Mutex::new(Some(completion)),
                 service_epoch_user: Mutex::new(Some(service_epoch_user)),
                 device_ordinal,
-                admitted_requirement,
+                admitted_device_requirements,
                 compatible_devices,
                 release_requested: AtomicBool::new(false),
                 released: AtomicBool::new(false),
@@ -452,7 +457,7 @@ impl QueryHandleLifetime {
             service_epoch_user,
             cache_scope_allocator_correlation,
             device_ordinal: self.device_ordinal,
-            admitted_requirement: self.admitted_requirement.clone(),
+            admitted_device_requirements: self.admitted_device_requirements.clone(),
             compatible_devices: self.compatible_devices.clone(),
             root_context,
             envelope,
@@ -602,7 +607,7 @@ struct QueryHandleRelease {
     service_epoch_user: Option<QueryServiceEpochUser>,
     cache_scope_allocator_correlation: AttemptCacheScopeAllocatorCorrelation,
     device_ordinal: usize,
-    admitted_requirement: AttemptRequirement,
+    admitted_device_requirements: BTreeMap<usize, AttemptRequirement>,
     compatible_devices: Vec<usize>,
     root_context: Option<ExecutionContext>,
     envelope: Option<super::service::transaction::AdmissionEnvelope>,
@@ -624,7 +629,7 @@ struct QueryHandleReportCommit {
     admission_request_id: AdmissionRequestId,
     observation: RuntimeObservationHandle,
     device_ordinal: usize,
-    admitted_requirement: AttemptRequirement,
+    admitted_device_requirements: BTreeMap<usize, AttemptRequirement>,
     compatible_devices: Vec<usize>,
     domain: Option<super::super::attempt_domain::AttemptAllocationDomain>,
     memory_grant: Option<MemoryGrant>,
@@ -896,7 +901,9 @@ impl QueryHandleReportCommit {
                         return AttemptAlternateDeviceEligibility::Unavailable;
                     }
                     let ledger = device.ledger();
-                    let Ok(required_floor) = ledger.required_floor_bytes_for(&self.admitted_requirement) else {
+                    let Ok(required_floor) =
+                        required_floor_bytes_for_candidate(&self.admitted_device_requirements, ordinal, &ledger)
+                    else {
                         return AttemptAlternateDeviceEligibility::Unavailable;
                     };
                     let Ok(can_ever_fit) = ledger.can_ever_fit_required_floor_bytes(required_floor) else {
@@ -913,7 +920,9 @@ impl QueryHandleReportCommit {
                     if ledger.device_ordinal() != ordinal {
                         return AttemptAlternateDeviceEligibility::NoEligibleAlternate;
                     }
-                    let Ok(required_floor) = ledger.required_floor_bytes_for(&self.admitted_requirement) else {
+                    let Ok(required_floor) =
+                        required_floor_bytes_for_candidate(&self.admitted_device_requirements, ordinal, &ledger)
+                    else {
                         return AttemptAlternateDeviceEligibility::Unavailable;
                     };
                     let Ok(can_ever_fit) = ledger.can_ever_fit_required_floor_bytes(required_floor) else {
@@ -1067,6 +1076,16 @@ impl QueryHandleReportCommit {
             None
         }
     }
+}
+
+pub(super) fn required_floor_bytes_for_candidate(
+    requirements: &BTreeMap<usize, AttemptRequirement>,
+    ordinal: usize,
+    ledger: &DeviceLedger,
+) -> Result<u64> {
+    let requirement =
+        requirements.get(&ordinal).ok_or_else(|| super::admission::missing_device_admission_entry_error(ordinal))?;
+    ledger.required_floor_bytes_for(requirement)
 }
 
 /// Owns a release until either CUDA cleanup starts or a submission/cancellation
@@ -1244,7 +1263,7 @@ impl QueryHandleRelease {
             service_epoch_user: None,
             cache_scope_allocator_correlation: AttemptCacheScopeAllocatorCorrelation::default(),
             device_ordinal: 0,
-            admitted_requirement: AttemptRequirement::empty(),
+            admitted_device_requirements: BTreeMap::new(),
             compatible_devices: Vec::new(),
             root_context: None,
             envelope: None,
@@ -1278,7 +1297,7 @@ impl QueryHandleRelease {
             admission_request_id: self.admission_request_id,
             observation: self.observation.clone(),
             device_ordinal: self.device_ordinal,
-            admitted_requirement: self.admitted_requirement.clone(),
+            admitted_device_requirements: self.admitted_device_requirements.clone(),
             compatible_devices: self.compatible_devices.clone(),
             domain,
             memory_grant,

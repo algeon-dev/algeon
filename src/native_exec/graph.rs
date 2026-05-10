@@ -27,7 +27,9 @@ use std::{
 
 use arrow::record_batch::RecordBatch;
 use datafusion::{
-    common::Result as DataFusionResult, execution::memory_pool::MemoryReservation, physical_plan::ExecutionPlan,
+    common::{DataFusionError, Result as DataFusionResult},
+    execution::memory_pool::MemoryReservation,
+    physical_plan::ExecutionPlan,
 };
 use nexus_query_engine::{
     admission::QueryPlanCapabilityProof,
@@ -108,6 +110,12 @@ pub(crate) trait GraphExecutionPlan: Send + Sync {
     /// graph execution root. The adapter discovers it through this neutral
     /// SPI, so core execution does not depend on a graph frontend.
     fn sealed_attempt_metrics_target(&self) -> SealedAttemptMetricsTarget;
+
+    /// Returns a typed rejection when this graph root intentionally owns its
+    /// result at the host boundary and cannot participate as a GPU producer.
+    fn gpu_resident_output_rejection(&self) -> Option<DataFusionError> {
+        None
+    }
 }
 
 /// A graph frontend hook that recognizes one of its DataFusion execution nodes.

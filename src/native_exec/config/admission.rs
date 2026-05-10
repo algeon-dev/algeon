@@ -75,7 +75,7 @@ impl NexusNativeExecutionConfig {
         let mut attempt_capability_proof = QueryPlanCapabilityProof::combine(first_proof, fragment_proofs)?;
         if let Some(graph_model_ask) = graph_model_ask {
             attempt_capability_proof =
-                attempt_capability_proof.with_graph_memory_admission_evidence(graph_model_ask.cold_model_evidence());
+                attempt_capability_proof.with_graph_memory_admission_evidence(graph_model_ask.cold_model_evidence())?;
         }
         let observation_capture = self.metrics_capture.as_ref().map(NativeMetricsCapture::new_execution);
         let observation = self.new_runtime_observation(observation_capture.as_ref());

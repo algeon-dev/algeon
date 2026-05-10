@@ -20,6 +20,67 @@ fn attempt_requirement_hint_selects_grant_for_one_admission() {
 }
 
 #[test]
+fn eager_device_entries_share_requirement_envelope_bytes_for_fit_grant_and_execution() {
+    let service = AdmissionTestController::new(
+        QueryExecutionConfig::default(),
+        QueueBounds::default(),
+        non_gds_deployment(),
+    )
+    .expect("synthetic admission service");
+    let proof = explicit_sink_capability_proof();
+    let policy = service.service.inner.config.attempt_reservation_policy();
+    let resolved_proof = proof.requirement_for_device(0).expect("non-sort proof resolves on a synthetic ordinal");
+    let envelope = resolved_proof
+        .resolve_reservation_envelope(policy)
+        .expect("the selected proof resolves its immutable envelope");
+    let expected_requirement = resolved_proof.as_requirement().clone().with_reservation_envelope(&envelope);
+    let admitted = service
+        .try_admit_query_with_request(QueryAdmissionRequest::new().with_query_plan_capability_proof(proof))
+        .expect("submission succeeds")
+        .expect("the exact entry fits the synthetic ledger");
+
+    let expected_floor = service
+        .service
+        .inner
+        .fallback_device_ledger
+        .as_ref()
+        .expect("synthetic ledger")
+        .required_floor_bytes_for(&expected_requirement)
+        .expect("selected requirement has a finite fit floor");
+    assert!(admitted.handle.device_budget_bytes() >= expected_floor);
+    assert_eq!(
+        admitted.handle.lifetime.admitted_device_requirement_for_test(admitted.handle.device_ordinal()),
+        Some(&expected_requirement),
+    );
+    assert_eq!(admitted.handle.admitted_reservation_envelope.as_ref(), Some(&envelope));
+    drop(admitted);
+}
+
+#[test]
+fn retry_floor_uses_the_candidate_requirement_projection() {
+    let requirements = BTreeMap::from([
+        (0, requirement(10, Some(10))),
+        (1, requirement(200, Some(200))),
+    ]);
+    let ledger = test_ledger_with_explicit_profile(1, 100, 8, 1, Default::default());
+
+    let selected_floor = ledger
+        .required_floor_bytes_for(requirements.get(&0).expect("selected requirement"))
+        .expect("selected floor resolves");
+    let alternate_floor = super::handle::required_floor_bytes_for_candidate(&requirements, 1, &ledger)
+        .expect("alternate floor resolves from the ordinal projection");
+
+    assert!(ledger.can_ever_fit_required_floor_bytes(selected_floor).expect("selected floor fit check"));
+    assert_eq!(alternate_floor, 200);
+    assert!(!ledger.can_ever_fit_required_floor_bytes(alternate_floor).expect("alternate floor fit check"));
+
+    let missing = super::handle::required_floor_bytes_for_candidate(&requirements, 2, &ledger)
+        .expect_err("missing candidate requirement must fail closed");
+    assert_eq!(missing.code(), QueryErrorCode::Internal);
+    assert_eq!(missing.fact_value("reason"), Some("missing_device_specific_admission_resolution"));
+}
+
+#[test]
 fn impossible_requirement_is_rejected_before_enqueue() {
     let service = AdmissionTestController::new_with_ledger(
         QueryExecutionConfig {

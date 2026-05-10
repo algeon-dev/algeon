@@ -22,7 +22,13 @@ pub(crate) fn estimated_output_rows(plan: &QueryPlan, node_id: NodeId) -> Option
                     .files
                     .iter()
                     .map(|file| {
-                        file.row_group_rows.as_ref()?.iter().try_fold(0_u64, |sum, rows| sum.checked_add(*rows))
+                        let row_group_rows = file.row_group_rows.as_ref()?;
+                        match file.row_groups.as_ref() {
+                            Some(selected_row_groups) => selected_row_groups
+                                .iter()
+                                .try_fold(0_u64, |sum, row_group| sum.checked_add(*row_group_rows.get(*row_group)?)),
+                            None => row_group_rows.iter().try_fold(0_u64, |sum, rows| sum.checked_add(*rows)),
+                        }
                     })
                     .try_fold(0_u64, |sum, rows| sum.checked_add(rows?))?;
                 let rows = source.scan_limit.map_or(rows, |limit| rows.min(limit as u64));
@@ -186,6 +192,38 @@ mod tests {
         let plan = builder.finish_with_host_sink(input);
 
         assert_eq!(estimated_output_rows(&plan, input), None);
+    }
+
+    #[test]
+    fn local_parquet_output_rows_use_selected_physical_row_groups() {
+        let schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Int64, false)]));
+        let selected_source = LocalParquetSource::from_files(
+            vec![
+                LocalParquetFile::new("/tmp/selected-row-estimate.parquet")
+                    .with_row_groups(vec![1, 3])
+                    .with_row_group_rows(vec![10, 20, 30, 40]),
+            ],
+            Arc::clone(&schema),
+            vec!["value".to_owned()],
+        );
+        let mut selected_builder = QueryPlanBuilder::new();
+        let selected = selected_builder.add_source(SourceNode::LocalParquet(selected_source));
+        let selected_plan = selected_builder.finish_with_host_sink(selected);
+        assert_eq!(estimated_output_rows(&selected_plan, selected), Some(60));
+
+        let invalid_source = LocalParquetSource::from_files(
+            vec![
+                LocalParquetFile::new("/tmp/invalid-row-estimate.parquet")
+                    .with_row_groups(vec![4])
+                    .with_row_group_rows(vec![10, 20, 30, 40]),
+            ],
+            schema,
+            vec!["value".to_owned()],
+        );
+        let mut invalid_builder = QueryPlanBuilder::new();
+        let invalid = invalid_builder.add_source(SourceNode::LocalParquet(invalid_source));
+        let invalid_plan = invalid_builder.finish_with_host_sink(invalid);
+        assert_eq!(estimated_output_rows(&invalid_plan, invalid), None);
     }
 
     #[test]

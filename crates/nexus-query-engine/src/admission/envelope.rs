@@ -430,12 +430,16 @@ pub(crate) struct AttemptReservationShape {
     source_stage_bytes: Option<u64>,
     complete_zero_column_global_aggregate: Option<ZeroColumnGlobalAggregateShape>,
     complete_graph_memory_phase: Option<GraphMemoryAdmissionEvidence>,
-    post_graph_bfs_logical_output_peak_bytes: Option<u64>,
+    complete_cugraph_side_input_phase_bytes: Option<u64>,
     accounted_by_graph_phase: bool,
     is_cugraph_graph_input_scope: bool,
+    is_cugraph_side_input_scope: bool,
     is_attested_graph_result_passthrough_scope: bool,
     is_attested_graph_result_bounded_consumer_scope: bool,
-    is_bfs_logical_output_scope: bool,
+    sort_phase_peak_bytes: Option<u64>,
+    sort_metadata: Option<crate::admission::requirement::SortMetadataDescriptor>,
+    sort_rejection_reason: Option<String>,
+    owner_term_rejection_reason: Option<String>,
     ordered_schedule: Option<AttemptReservationSchedule>,
 }
 
@@ -447,12 +451,16 @@ impl AttemptReservationShape {
             source_stage_bytes: estimated_reachable_local_parquet_source_bytes(plan),
             complete_zero_column_global_aggregate: zero_column_global_aggregate_shape(plan),
             complete_graph_memory_phase: None,
-            post_graph_bfs_logical_output_peak_bytes: None,
+            complete_cugraph_side_input_phase_bytes: None,
             accounted_by_graph_phase: false,
             is_cugraph_graph_input_scope: false,
+            is_cugraph_side_input_scope: false,
             is_attested_graph_result_passthrough_scope: false,
             is_attested_graph_result_bounded_consumer_scope: false,
-            is_bfs_logical_output_scope: is_bfs_logical_output_projection_plan(plan),
+            sort_phase_peak_bytes: None,
+            sort_metadata: None,
+            sort_rejection_reason: None,
+            owner_term_rejection_reason: None,
             ordered_schedule: None,
         }
     }
@@ -496,20 +504,25 @@ impl AttemptReservationShape {
         }
     }
 
-    pub(crate) fn add_source_stage_bytes(&mut self, source_stage_bytes: u64) {
-        self.source_stage_bytes = Some(self.source_stage_bytes.unwrap_or_default().saturating_add(source_stage_bytes));
-    }
-
-    pub(crate) fn set_post_graph_bfs_logical_output_peak_bytes(&mut self, peak_bytes: u64) {
-        self.post_graph_bfs_logical_output_peak_bytes = Some(peak_bytes);
-    }
-
     pub(crate) fn account_for_by_graph_phase(&mut self) {
         self.accounted_by_graph_phase = true;
     }
 
+    #[cfg(test)]
+    pub(crate) fn is_accounted_by_graph_phase(&self) -> bool {
+        self.accounted_by_graph_phase
+    }
+
     pub(crate) fn mark_cugraph_graph_input_scope(&mut self) {
         self.is_cugraph_graph_input_scope = true;
+    }
+
+    pub(crate) fn set_cugraph_side_input_phase_bytes(&mut self, frame_bytes: u64) -> Result<()> {
+        if self.complete_cugraph_side_input_phase_bytes.replace(frame_bytes).is_some() {
+            return Err(graph_schedule_error("duplicate_side_input_frame_evidence", None, Some("side_input_frame")));
+        }
+        self.is_cugraph_side_input_scope = true;
+        Ok(())
     }
 
     pub(crate) fn mark_attested_graph_result_passthrough_scope(&mut self) {
@@ -520,24 +533,60 @@ impl AttemptReservationShape {
         self.is_attested_graph_result_bounded_consumer_scope = true;
     }
 
+    pub(crate) fn set_sort_phase_peak_bytes(&mut self, peak_bytes: u64) -> Result<()> {
+        if self.sort_phase_peak_bytes.replace(peak_bytes).is_some() {
+            return Err(graph_schedule_error("duplicate_sort_phase_evidence", None, Some("sort")));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn set_sort_metadata(
+        &mut self,
+        metadata: crate::admission::requirement::SortMetadataDescriptor,
+    ) -> Result<()> {
+        if self.sort_metadata.replace(metadata).is_some() {
+            return Err(graph_schedule_error("duplicate_sort_metadata", None, Some("sort")));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn set_sort_rejection_reason(&mut self, reason: impl Into<String>) {
+        self.sort_rejection_reason = Some(reason.into());
+    }
+
+    pub(crate) fn set_owner_term_rejection_reason(&mut self, reason: impl Into<String>) {
+        self.owner_term_rejection_reason = Some(reason.into());
+    }
+
+    pub(crate) fn sort_metadata(&self) -> Option<&crate::admission::requirement::SortMetadataDescriptor> {
+        self.sort_metadata.as_ref()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_sort_stable_for_test(&mut self, stable: bool) {
+        if let Some(metadata) = self.sort_metadata.as_mut() {
+            metadata.stable = stable;
+        }
+    }
+
     pub(crate) fn has_modeled_source_stage(&self) -> bool {
         self.source_stage_bytes.is_some()
     }
 
-    pub(crate) fn is_bfs_logical_output_scope(&self) -> bool {
-        self.is_bfs_logical_output_scope
+    pub(crate) fn has_local_parquet_source(&self) -> bool {
+        self.has_local_parquet_source
     }
 
     pub(crate) fn is_cugraph_graph_input_scope(&self) -> bool {
         self.is_cugraph_graph_input_scope
     }
 
-    pub(crate) fn is_attested_graph_result_passthrough_scope(&self) -> bool {
-        self.is_attested_graph_result_passthrough_scope
+    pub(crate) fn is_cugraph_side_input_scope(&self) -> bool {
+        self.is_cugraph_side_input_scope
     }
 
-    pub(crate) fn is_attested_graph_result_bounded_consumer_scope(&self) -> bool {
-        self.is_attested_graph_result_bounded_consumer_scope
+    pub(crate) fn is_attested_graph_result_passthrough_scope(&self) -> bool {
+        self.is_attested_graph_result_passthrough_scope
     }
 
     pub(crate) fn has_graph_memory_phase(&self) -> bool {
@@ -549,20 +598,43 @@ impl AttemptReservationShape {
     }
 
     fn resolve(&self, policy: AttemptReservationPolicy) -> Result<ResolvedReservationShape> {
+        if let Some(reason) = &self.owner_term_rejection_reason {
+            return Err(QueryError::new(
+                QueryErrorCode::UnsupportedPlanShape,
+                "nexus_query_engine.admission.reservation_envelope",
+                "attempt owner-term inventory is unavailable",
+            )
+            .with_fact("reason", reason.as_str()));
+        }
         if self.accounted_by_graph_phase {
             return Ok(ResolvedReservationShape { required_phase_floor_bytes: 0, complete_phase_peak_bytes: Some(0) });
         }
         if let Some(graph_phase) = &self.complete_graph_memory_phase {
-            let graph_peak =
-                self.source_stage_bytes.map_or(graph_phase.cold_model_requested_bytes(), |source_stage_bytes| {
-                    graph_phase.cold_model_with_source_stage_bytes(source_stage_bytes)
-                });
-            // Construction, native graph execution, and logical BFS
-            // decode/projection are sequential phases. Their full attempt
-            // target is therefore their maximum, never their sum.
+            let graph_peak = match self.source_stage_bytes {
+                Some(source_stage_bytes) => graph_phase.cold_model_with_source_stage_bytes(source_stage_bytes)?,
+                None => graph_phase.cold_model_requested_bytes(),
+            };
+            return Ok(ResolvedReservationShape {
+                required_phase_floor_bytes: graph_peak,
+                complete_phase_peak_bytes: Some(graph_peak),
+            });
+        }
+
+        if let Some(frame_bytes) = self.complete_cugraph_side_input_phase_bytes {
+            return Ok(ResolvedReservationShape {
+                required_phase_floor_bytes: frame_bytes,
+                complete_phase_peak_bytes: Some(frame_bytes),
+            });
+        }
+
+        if self.is_attested_graph_result_bounded_consumer_scope {
+            if let Some(reason) = &self.sort_rejection_reason {
+                return Err(graph_schedule_error("sort_metadata_rejected", None, Some("sort"))
+                    .with_fact("sort_rejection_reason", reason.as_str()));
+            }
             let peak = self
-                .post_graph_bfs_logical_output_peak_bytes
-                .map_or(graph_peak, |logical_output_peak| graph_peak.max(logical_output_peak));
+                .sort_phase_peak_bytes
+                .ok_or_else(|| graph_schedule_error("sort_preflight_unresolved", None, Some("sort")))?;
             return Ok(ResolvedReservationShape {
                 required_phase_floor_bytes: peak,
                 complete_phase_peak_bytes: Some(peak),
@@ -908,35 +980,6 @@ fn plan_has_reachable_local_parquet_source(plan: &QueryPlan) -> bool {
     })
 }
 
-/// The adapter executes this exact GPU-resident fragment after decoding a
-/// logical BFS result. The stable input name is private runtime plumbing, not
-/// a user-provided identifier; requiring the otherwise narrow source /
-/// projection / limit shape prevents a generic GPU-resident query from being
-/// silently treated as a modeled post-graph phase.
-fn is_bfs_logical_output_projection_plan(plan: &QueryPlan) -> bool {
-    const LOGICAL_OUTPUT_INPUT: &str = "__datafusion_nexus_cugraph_logical_output";
-
-    let unreachable = plan.unreachable_node_ids().into_iter().collect::<HashSet<_>>();
-    let mut has_logical_output_source = false;
-    let mut has_projection_or_limit = false;
-    for node in plan.nodes() {
-        if unreachable.contains(&node.id) {
-            continue;
-        }
-        match &node.kind {
-            PlanNode::Source(source) => match source.as_ref() {
-                SourceNode::GpuResident(source) if source.input_name == LOGICAL_OUTPUT_INPUT => {
-                    has_logical_output_source = true;
-                },
-                _ => return false,
-            },
-            PlanNode::Projection(_) | PlanNode::Limit(_) => has_projection_or_limit = true,
-            _ => return false,
-        }
-    }
-    has_logical_output_source && has_projection_or_limit
-}
-
 fn minimum_parquet_source_read_budget_bytes() -> u64 {
     u64::try_from(cudf::DataFrame::minimum_parquet_source_read_budget_bytes()).unwrap_or(u64::MAX)
 }
@@ -987,17 +1030,24 @@ fn graph_schedule_error(reason: &'static str, occurrence_id: Option<&str>, phase
 mod tests {
     use std::sync::Arc;
 
-    use arrow::datatypes::{DataType, Field, Schema};
+    use arrow::{
+        array::Int64Array,
+        datatypes::{DataType, Field, Schema},
+        record_batch::RecordBatch,
+    };
 
     use super::*;
     use crate::{
         admission::QueryPlanCapabilityProof,
         chunk::SourceChunkPlanningOptions,
         expr::{AggregateExpr, AggregateFunction, AggregateSpec, Expr, SortExpr, SortSpec},
-        graph_memory::{GraphMemoryCalibrationOverride, graph_memory_admission_evidence_for_edge_list},
+        graph_memory::{
+            GraphMemoryAdmissionEvidence, GraphMemoryCalibrationOverride,
+            graph_memory_bounded_admission_evidence_for_plan,
+        },
         plan::{
             GraphAlgorithm, GraphAlgorithmParams, GraphAlgorithmSpec, GraphBfsParams, GraphConstructionOptions,
-            GraphEdgeColumnBindings, ProjectionOutput, QueryPlanBuilder,
+            GraphEdgeColumnBindings, QueryPlanBuilder,
         },
         source::{
             GpuResidentSource, LiteralBatchSource, LocalParquetFile, LocalParquetSource, SourceNode,
@@ -1068,6 +1118,7 @@ mod tests {
             vec![
                 LocalParquetFile::new("/tmp/admission-envelope-graph.parquet")
                     .with_row_groups(vec![0])
+                    .with_row_group_rows(vec![10])
                     .with_row_group_bytes(vec![64])
                     .with_projected_row_group_bytes(vec![32], vec![96]),
             ],
@@ -1085,9 +1136,16 @@ mod tests {
 
     fn graph_bfs_plan_with_gpu_resident_source(schema: Arc<Schema>) -> QueryPlan {
         let mut builder = QueryPlanBuilder::new();
-        let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("prepared-edges", schema)));
+        let source = builder.add_source(SourceNode::GpuResident(
+            GpuResidentSource::new("prepared-edges", schema).with_row_count_upper_bound(10),
+        ));
         let graph = builder.add_graph_algorithm(source, bfs_spec());
         builder.finish_with_host_sink(graph)
+    }
+
+    fn graph_memory_evidence(plan: &QueryPlan) -> GraphMemoryAdmissionEvidence {
+        graph_memory_bounded_admission_evidence_for_plan(plan, GraphMemoryCalibrationOverride::none(), None)
+            .expect("graph plan must produce bounded memory evidence")
     }
 
     fn source_stage_plan(schema: Arc<Schema>) -> QueryPlan {
@@ -1096,28 +1154,60 @@ mod tests {
         builder.finish_gpu_resident(source)
     }
 
-    fn bfs_logical_output_projection_plan() -> QueryPlan {
-        let schema = Arc::new(Schema::new(vec![
-            Field::new("vertex", DataType::Int64, false),
-            Field::new("distance", DataType::Int64, false),
-            Field::new("reachable", DataType::Boolean, false),
-        ]));
+    fn unknown_source_stage_plan(schema: Arc<Schema>) -> QueryPlan {
         let mut builder = QueryPlanBuilder::new();
-        let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new(
-            "__datafusion_nexus_cugraph_logical_output",
-            Arc::clone(&schema),
+        let source = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+            "/tmp/admission-envelope-graph-unknown.parquet",
+            schema,
+            vec!["src".to_owned(), "dst".to_owned()],
         )));
-        let projection = builder.add_projection(
-            source,
-            vec![ProjectionOutput::new(Expr::column("distance"), schema.field(1).as_ref().clone())],
-        );
-        builder.finish_gpu_resident(projection)
+        builder.finish_gpu_resident(source)
     }
 
     fn capability_free_literal_plan(data_type: DataType) -> QueryPlan {
         let schema = Arc::new(Schema::new(vec![Field::new("value", data_type, false)]));
         let mut builder = QueryPlanBuilder::new();
         let source = builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::empty(schema)));
+        builder.finish_gpu_resident(source)
+    }
+
+    fn one_row_literal_plan() -> QueryPlan {
+        let schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Int64, false)]));
+        let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int64Array::from(vec![1]))])
+            .expect("one-row literal must be typed");
+        let mut builder = QueryPlanBuilder::new();
+        let source = builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(schema, vec![batch])));
+        builder.finish_gpu_resident(source)
+    }
+
+    fn placeholder_literal_plan() -> QueryPlan {
+        let mut builder = QueryPlanBuilder::new();
+        let source = builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::placeholder_row()));
+        builder.finish_gpu_resident(source)
+    }
+
+    fn nullable_literal_side_input_plan() -> QueryPlan {
+        let schema = Arc::new(Schema::new(vec![Field::new("vertex_id", DataType::Int64, true)]));
+        let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int64Array::from(vec![Some(1), None]))])
+            .expect("nullable literal side input must be typed");
+        let mut builder = QueryPlanBuilder::new();
+        let source = builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(schema, vec![batch])));
+        builder.finish_gpu_resident(source)
+    }
+
+    fn unknown_row_bound_side_input_plan() -> QueryPlan {
+        let schema = Arc::new(Schema::new(vec![Field::new("vertex_id", DataType::Int64, true)]));
+        let mut builder = QueryPlanBuilder::new();
+        let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("predicate", schema)));
+        builder.finish_gpu_resident(source)
+    }
+
+    fn overflow_row_bound_side_input_plan() -> QueryPlan {
+        let schema = Arc::new(Schema::new(vec![Field::new("vertex_id", DataType::Int64, true)]));
+        let mut builder = QueryPlanBuilder::new();
+        let source = builder.add_source(SourceNode::GpuResident(
+            GpuResidentSource::new("predicate-overflow", schema).with_row_count_upper_bound(u64::MAX),
+        ));
         builder.finish_gpu_resident(source)
     }
 
@@ -1131,8 +1221,9 @@ mod tests {
     fn graph_result_sort_consumer_plan(input_name: &str) -> QueryPlan {
         let schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Int64, false)]));
         let mut builder = QueryPlanBuilder::new();
-        let source =
-            builder.add_source(SourceNode::GpuResident(GpuResidentSource::new(input_name, Arc::clone(&schema))));
+        let source = builder.add_source(SourceNode::GpuResident(
+            GpuResidentSource::new(input_name, Arc::clone(&schema)).with_row_count_upper_bound(20),
+        ));
         let sort =
             builder.add_sort(source, SortSpec::new(vec![SortExpr::new(Expr::column("value"), false, false)]), schema);
         builder.finish_with_host_sink(sort)
@@ -1156,6 +1247,127 @@ mod tests {
             !envelope.scopes.iter().any(|scope| scope.matches(&different_plan)),
             "a scope-only proof must not authorize a different capability-free native fragment",
         );
+    }
+
+    #[test]
+    fn one_row_zero_column_literal_keeps_zero_floor() {
+        let plan = placeholder_literal_plan();
+        let proof = QueryPlanCapabilityProof::for_query_plan(&plan).unwrap();
+        let envelope = proof
+            .resolve_reservation_envelope(reservation_policy())
+            .expect("one-row zero-column placeholders do not require a literal byte owner");
+        assert_eq!(envelope.required_phase_floor_bytes(), 0);
+        assert_eq!(envelope.complete_phase_peak_bytes(), None);
+    }
+
+    #[test]
+    fn generic_nonempty_literal_rejects_without_a_source_owner_bound() {
+        let proof = QueryPlanCapabilityProof::for_query_plan(&one_row_literal_plan()).unwrap();
+        let error = proof
+            .resolve_reservation_envelope(reservation_policy())
+            .expect_err("generic nonempty literals must fail before placement");
+        assert_eq!(error.code(), QueryErrorCode::UnsupportedPlanShape);
+        assert_eq!(error.fact_value("reason"), Some("attempt_owner_term_literal_source_bytes_unavailable"));
+    }
+
+    #[test]
+    fn unreachable_nonempty_literal_does_not_reject_a_reachable_empty_plan() {
+        let mut builder = QueryPlanBuilder::new();
+        let reachable =
+            builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::empty(Arc::new(Schema::new(vec![
+                Field::new("value", DataType::Int64, false),
+            ])))));
+        let unreachable_schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Int64, false)]));
+        let unreachable_batch =
+            RecordBatch::try_new(Arc::clone(&unreachable_schema), vec![Arc::new(Int64Array::from(vec![1]))])
+                .expect("unreachable literal must be typed");
+        let _unreachable = builder
+            .add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(unreachable_schema, vec![unreachable_batch])));
+        let plan = builder.finish_gpu_resident(reachable);
+        let proof = QueryPlanCapabilityProof::for_query_plan(&plan).unwrap();
+        proof
+            .resolve_reservation_envelope(reservation_policy())
+            .expect("unreachable literal sources are not executed and must not reject admission");
+    }
+
+    #[test]
+    fn cugraph_side_input_frame_is_additive_and_retains_both_exact_scopes() {
+        let schema = graph_edge_schema();
+        let graph_plan = graph_bfs_plan_with_gpu_resident_source(Arc::clone(&schema));
+        let evidence = graph_memory_evidence(&graph_plan);
+        let graph_peak = evidence.cold_model_requested_bytes();
+        let graph_proof = QueryPlanCapabilityProof::for_cugraph_graph_execution_plan(&graph_plan)
+            .expect("graph plan must issue its cuGraph capability proof")
+            .with_graph_memory_admission_evidence(&evidence)
+            .expect("finite graph evidence");
+        let side_input = nullable_literal_side_input_plan();
+        let side_proof = QueryPlanCapabilityProof::try_for_cugraph_side_input_plan(&side_input)
+            .expect("the exact nullable predicate fragment must issue a bounded side-input proof");
+        let side_frame_bytes = crate::exec::join_output_upper_bound_bytes(
+            2,
+            &[JoinOutputColumnUpperBoundInput {
+                data_type: DataType::Int64,
+                input_max_string_length_bytes: None,
+                input_total_string_bytes: None,
+            }],
+        )
+        .expect("fixed-width side-input frame is finite");
+        assert_eq!(side_proof.as_requirement().side_input_frame_owner_term_bytes(), vec![side_frame_bytes]);
+        let proof = QueryPlanCapabilityProof::combine(graph_proof, [side_proof]).expect("proofs compose");
+        let envelope = proof.resolve_reservation_envelope(reservation_policy()).expect("envelope resolves");
+
+        assert_eq!(envelope.required_phase_floor_bytes(), graph_peak + side_frame_bytes);
+        assert_eq!(envelope.complete_phase_peak_bytes(), Some(graph_peak + side_frame_bytes));
+        assert!(envelope.scopes.iter().any(|scope| scope.matches(&graph_plan)));
+        assert!(envelope.scopes.iter().any(|scope| scope.matches(&side_input)));
+
+        let generic_side_proof = QueryPlanCapabilityProof::for_query_plan(&nullable_literal_side_input_plan())
+            .expect("generic side-input proof issues an exact scope");
+        let rejected = QueryPlanCapabilityProof::combine(
+            QueryPlanCapabilityProof::for_cugraph_graph_execution_plan(&graph_plan)
+                .expect("graph plan must issue its cuGraph capability proof")
+                .with_graph_memory_admission_evidence(&evidence)
+                .expect("finite graph evidence"),
+            [generic_side_proof],
+        )
+        .expect("generic proof composition remains structurally valid")
+        .resolve_reservation_envelope(reservation_policy())
+        .expect_err("the generic predicate proof must reject its unpriced literal source");
+        assert_eq!(rejected.fact_value("reason"), Some("attempt_owner_term_literal_source_bytes_unavailable"));
+    }
+
+    #[test]
+    fn cugraph_side_input_proof_fails_closed_without_a_finite_fixed_width_frame() {
+        let unknown = QueryPlanCapabilityProof::try_for_cugraph_side_input_plan(&unknown_row_bound_side_input_plan())
+            .expect_err("an unknown resident row bound cannot price a side-input frame");
+        assert_eq!(unknown.fact_value("reason"), Some("graph_attempt_complete_phase_unmodeled"));
+        assert_eq!(unknown.fact_value("schedule_reason"), Some("side_input_row_bound_unavailable"));
+        assert_eq!(unknown.fact_value("phase"), Some("side_input_frame"));
+
+        let variable_schema = Arc::new(Schema::new(vec![Field::new("vertex_id", DataType::Utf8, false)]));
+        let mut variable_builder = QueryPlanBuilder::new();
+        let variable_source =
+            variable_builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::empty(variable_schema)));
+        let variable = variable_builder.finish_gpu_resident(variable_source);
+        let variable_error = QueryPlanCapabilityProof::try_for_cugraph_side_input_plan(&variable)
+            .expect_err("variable-width predicate output lacks a finite engine bound");
+        assert_eq!(variable_error.fact_value("schedule_reason"), Some("side_input_schema_unmodeled"));
+
+        let overflow = QueryPlanCapabilityProof::try_for_cugraph_side_input_plan(&overflow_row_bound_side_input_plan())
+            .expect_err("saturated side-input frame bytes must fail closed");
+        assert_eq!(overflow.fact_value("schedule_reason"), Some("side_input_frame_bytes_overflow"));
+    }
+
+    #[test]
+    fn duplicate_cugraph_side_input_identity_is_rejected() {
+        let side_input = nullable_literal_side_input_plan();
+        let first = QueryPlanCapabilityProof::try_for_cugraph_side_input_plan(&side_input).unwrap();
+        let second = QueryPlanCapabilityProof::try_for_cugraph_side_input_plan(&side_input).unwrap();
+        let error = QueryPlanCapabilityProof::combine(first, [second])
+            .expect_err("one exact predicate identity cannot authorize two ambiguous side-input occurrences");
+        assert_eq!(error.fact_value("reason"), Some("graph_attempt_complete_phase_unmodeled"));
+        assert_eq!(error.fact_value("schedule_reason"), Some("duplicate_predicate_identity"));
+        assert_eq!(error.fact_value("phase"), Some("side_input_frame"));
     }
 
     #[test]
@@ -1192,19 +1404,12 @@ mod tests {
     fn graph_phase_envelope_is_complete_and_bound_to_its_exact_scope() {
         let schema = graph_edge_schema();
         let plan = graph_bfs_plan_with_local_source(Arc::clone(&schema));
-        let evidence = graph_memory_admission_evidence_for_edge_list(
-            &bfs_spec(),
-            &schema,
-            10,
-            None,
-            GraphMemoryCalibrationOverride::none(),
-            None,
-        )
-        .expect("BFS edge-list model must produce admission evidence");
-        let expected_peak = evidence.cold_model_with_source_stage_bytes(96);
+        let evidence = graph_memory_evidence(&plan);
+        let expected_peak = evidence.cold_model_with_source_stage_bytes(96).unwrap();
         let proof = QueryPlanCapabilityProof::for_cugraph_graph_execution_plan(&plan)
             .expect("graph plan must issue its cuGraph capability proof")
-            .with_graph_memory_admission_evidence(&evidence);
+            .with_graph_memory_admission_evidence(&evidence)
+            .expect("finite graph evidence");
 
         let envelope = proof.resolve_reservation_envelope(reservation_policy()).unwrap();
         assert_eq!(envelope.required_phase_floor_bytes(), expected_peak);
@@ -1221,25 +1426,18 @@ mod tests {
     #[test]
     fn graph_phase_accounts_for_one_composed_native_source_stage_without_losing_its_exact_scope() {
         let schema = graph_edge_schema();
-        let evidence = graph_memory_admission_evidence_for_edge_list(
-            &bfs_spec(),
-            &schema,
-            10,
-            None,
-            GraphMemoryCalibrationOverride::none(),
-            None,
-        )
-        .expect("BFS edge-list model must produce admission evidence");
-        let expected_graph_peak = evidence.cold_model_with_source_stage_bytes(96);
-        let graph_proof = QueryPlanCapabilityProof::for_cugraph_graph_execution_plan(
-            &graph_bfs_plan_with_gpu_resident_source(Arc::clone(&schema)),
-        )
-        .expect("graph plan must issue its cuGraph capability proof");
-        let source_proof = QueryPlanCapabilityProof::for_query_plan(&source_stage_plan(schema))
-            .expect("native source plan must issue a source-read capability proof");
+        let graph_plan = graph_bfs_plan_with_gpu_resident_source(Arc::clone(&schema));
+        let evidence = graph_memory_evidence(&graph_plan);
+        let expected_graph_peak = evidence.cold_model_with_source_stage_bytes(96).unwrap();
+        let graph_proof = QueryPlanCapabilityProof::for_cugraph_graph_execution_plan(&graph_plan)
+            .expect("graph plan must issue its cuGraph capability proof");
+        let source_plan = source_stage_plan(schema);
+        let source_proof = QueryPlanCapabilityProof::for_cugraph_graph_input_plan(&source_plan)
+            .expect("graph-input source plan must issue its graph-input capability proof");
         let proof = QueryPlanCapabilityProof::combine(graph_proof, [source_proof])
             .expect("graph and exact source proofs compose")
-            .with_graph_memory_admission_evidence(&evidence);
+            .with_graph_memory_admission_evidence(&evidence)
+            .expect("finite graph evidence");
 
         let envelope = proof.resolve_reservation_envelope(reservation_policy()).unwrap();
         assert_eq!(envelope.complete_phase_peak_bytes(), Some(expected_graph_peak));
@@ -1247,27 +1445,53 @@ mod tests {
     }
 
     #[test]
+    fn graph_phase_rejects_an_unmodeled_marked_local_graph_input() {
+        let schema = graph_edge_schema();
+        let graph_plan = graph_bfs_plan_with_gpu_resident_source(Arc::clone(&schema));
+        let evidence = graph_memory_evidence(&graph_plan);
+        let graph_proof = QueryPlanCapabilityProof::for_cugraph_graph_execution_plan(&graph_plan)
+            .expect("graph plan must issue its cuGraph capability proof");
+        let known_input = source_stage_plan(Arc::clone(&schema));
+        let known_input_proof = QueryPlanCapabilityProof::for_cugraph_graph_input_plan(&known_input)
+            .expect("known graph-input source must issue its graph-input capability proof");
+        let unknown_input = unknown_source_stage_plan(schema);
+        let unknown_input_proof = QueryPlanCapabilityProof::for_cugraph_graph_input_plan(&unknown_input)
+            .expect("unknown graph-input source must issue its graph-input capability proof");
+        let proof = QueryPlanCapabilityProof::combine(graph_proof, [known_input_proof, unknown_input_proof])
+            .expect("graph and graph-input proofs compose")
+            .with_graph_memory_admission_evidence(&evidence)
+            .expect("finite graph evidence");
+
+        let requirement = proof.as_requirement();
+        assert_eq!(requirement.source_stage_bytes, None);
+        let unknown_shape = requirement
+            .reservation_shapes
+            .iter()
+            .find(|shape| shape.has_local_parquet_source() && !shape.has_modeled_source_stage())
+            .expect("the unknown graph-input source remains an exact reservation scope");
+        assert!(!unknown_shape.is_accounted_by_graph_phase());
+
+        let error = proof
+            .resolve_reservation_envelope(reservation_policy())
+            .expect_err("an unmodeled local graph input must keep the graph envelope incomplete");
+        assert_eq!(error.code(), QueryErrorCode::UnsupportedPlanShape);
+        assert_eq!(error.fact_value("reason"), Some("attempt_owner_term_local_source_bytes_unavailable"));
+    }
+
+    #[test]
     fn graph_phase_accounts_for_one_attested_literal_graph_input_without_widening_other_scopes() {
         let schema = graph_edge_schema();
-        let evidence = graph_memory_admission_evidence_for_edge_list(
-            &bfs_spec(),
-            &schema,
-            10,
-            None,
-            GraphMemoryCalibrationOverride::none(),
-            None,
-        )
-        .expect("BFS edge-list model must produce admission evidence");
-        let graph_proof = QueryPlanCapabilityProof::for_cugraph_graph_execution_plan(
-            &graph_bfs_plan_with_gpu_resident_source(Arc::clone(&schema)),
-        )
-        .expect("graph plan must issue its cuGraph capability proof");
-        let graph_input = capability_free_literal_plan(DataType::Int64);
+        let graph_plan = graph_bfs_plan_with_gpu_resident_source(Arc::clone(&schema));
+        let evidence = graph_memory_evidence(&graph_plan);
+        let graph_proof = QueryPlanCapabilityProof::for_cugraph_graph_execution_plan(&graph_plan)
+            .expect("graph plan must issue its cuGraph capability proof");
+        let graph_input = one_row_literal_plan();
         let graph_input_proof = QueryPlanCapabilityProof::for_cugraph_graph_input_plan(&graph_input)
             .expect("the exact graph-input fragment must issue a proof");
         let proof = QueryPlanCapabilityProof::combine(graph_proof, [graph_input_proof])
             .expect("graph and exact graph-input proofs compose")
-            .with_graph_memory_admission_evidence(&evidence);
+            .with_graph_memory_admission_evidence(&evidence)
+            .expect("finite graph evidence");
 
         let envelope = proof.resolve_reservation_envelope(reservation_policy()).unwrap();
         assert_eq!(envelope.complete_phase_peak_bytes(), Some(evidence.cold_model_requested_bytes()));
@@ -1283,25 +1507,16 @@ mod tests {
     #[test]
     fn graph_phase_accounts_for_one_attested_result_passthrough_without_widening_other_scopes() {
         let schema = graph_edge_schema();
-        let evidence = graph_memory_admission_evidence_for_edge_list(
-            &bfs_spec(),
-            &schema,
-            10,
-            None,
-            GraphMemoryCalibrationOverride::none(),
-            None,
-        )
-        .expect("BFS edge-list model must produce admission evidence");
-        let graph_proof = QueryPlanCapabilityProof::for_cugraph_graph_execution_plan(
-            &graph_bfs_plan_with_gpu_resident_source(Arc::clone(&schema)),
-        )
-        .expect("graph plan must issue its cuGraph capability proof");
+        let graph_plan = graph_bfs_plan_with_gpu_resident_source(Arc::clone(&schema));
+        let evidence = graph_memory_evidence(&graph_plan);
+        let graph_proof = QueryPlanCapabilityProof::for_cugraph_graph_execution_plan(&graph_plan)
+            .expect("graph plan must issue its cuGraph capability proof");
         let passthrough = graph_result_passthrough_plan("graph_result");
         let passthrough_proof =
             QueryPlanCapabilityProof::for_attested_graph_result_passthrough_plan(&passthrough, "graph_result")
                 .expect("the exact graph-result source handoff must issue its retained-scope proof");
         let proof = QueryPlanCapabilityProof::combine(
-            graph_proof.with_graph_memory_admission_evidence(&evidence),
+            graph_proof.with_graph_memory_admission_evidence(&evidence).expect("finite graph evidence"),
             [passthrough_proof],
         )
         .expect("a refined graph proof and its graph-result passthrough proof compose");
@@ -1326,20 +1541,12 @@ mod tests {
     #[test]
     fn graph_phase_accounts_for_one_attested_bounded_sort_consumer_without_widening_other_scopes() {
         let schema = graph_edge_schema();
-        let evidence = graph_memory_admission_evidence_for_edge_list(
-            &bfs_spec(),
-            &schema,
-            10,
-            None,
-            GraphMemoryCalibrationOverride::none(),
-            None,
-        )
-        .expect("BFS edge-list model must produce admission evidence");
-        let graph_proof = QueryPlanCapabilityProof::for_cugraph_graph_execution_plan(
-            &graph_bfs_plan_with_gpu_resident_source(Arc::clone(&schema)),
-        )
-        .expect("graph plan must issue its cuGraph capability proof")
-        .with_graph_memory_admission_evidence(&evidence);
+        let graph_plan = graph_bfs_plan_with_gpu_resident_source(Arc::clone(&schema));
+        let evidence = graph_memory_evidence(&graph_plan);
+        let graph_proof = QueryPlanCapabilityProof::for_cugraph_graph_execution_plan(&graph_plan)
+            .expect("graph plan must issue its cuGraph capability proof")
+            .with_graph_memory_admission_evidence(&evidence)
+            .expect("finite graph evidence");
         let sort_consumer = graph_result_sort_consumer_plan("graph_result");
         let sort_consumer_proof =
             QueryPlanCapabilityProof::for_attested_graph_result_bounded_consumer_plan(&sort_consumer, "graph_result")
@@ -1347,8 +1554,13 @@ mod tests {
         let proof = QueryPlanCapabilityProof::combine(graph_proof, [sort_consumer_proof])
             .expect("a refined graph proof and its bounded sort proof compose");
 
+        let proof = proof
+            .requirement_for_device_with_preflight(0, |_, _| {
+                Ok(crate::admission::requirement::SortRadixPreflight::new_for_test(128, 80, 256, 80))
+            })
+            .expect("the deterministic test preflight resolves the sort owner terms");
         let envelope = proof.resolve_reservation_envelope(reservation_policy()).unwrap();
-        assert_eq!(envelope.complete_phase_peak_bytes(), Some(evidence.cold_model_requested_bytes()));
+        assert!(envelope.complete_phase_peak_bytes().unwrap() >= evidence.cold_model_requested_bytes());
         assert!(envelope.scopes.iter().any(|scope| scope.matches(&sort_consumer)));
 
         let unrelated = graph_result_passthrough_plan("different_graph_result");
@@ -1362,43 +1574,6 @@ mod tests {
             .expect("unmodeled fragment has exact scope");
         let combined = QueryPlanCapabilityProof::combine(proof, [unmodeled]).expect("proofs compose");
         let error = combined.resolve_reservation_envelope(reservation_policy()).unwrap_err();
-        assert_eq!(error.fact_value("reason"), Some("graph_attempt_complete_phase_unmodeled"));
-    }
-
-    #[test]
-    fn graph_phase_uses_the_maximum_of_native_and_typed_logical_bfs_output_phases() {
-        let schema = graph_edge_schema();
-        let evidence = graph_memory_admission_evidence_for_edge_list(
-            &bfs_spec(),
-            &schema,
-            10,
-            None,
-            GraphMemoryCalibrationOverride::none(),
-            None,
-        )
-        .expect("BFS edge-list model must produce admission evidence");
-        let graph_proof = QueryPlanCapabilityProof::for_cugraph_graph_execution_plan(
-            &graph_bfs_plan_with_gpu_resident_source(Arc::clone(&schema)),
-        )
-        .expect("graph plan must issue its cuGraph capability proof");
-        let logical_output_proof = QueryPlanCapabilityProof::for_query_plan(&bfs_logical_output_projection_plan())
-            .expect("logical BFS output plan must retain its exact scope");
-        let proof = QueryPlanCapabilityProof::combine(graph_proof, [logical_output_proof])
-            .expect("graph and logical BFS output proofs compose")
-            .with_graph_memory_admission_evidence(&evidence);
-
-        let envelope = proof.resolve_reservation_envelope(reservation_policy()).unwrap();
-        let expected_peak = evidence
-            .cold_model_requested_bytes()
-            .max(evidence.post_graph_bfs_logical_output_peak_bytes().expect("BFS has a typed logical-output phase"));
-        assert_eq!(envelope.complete_phase_peak_bytes(), Some(expected_peak));
-        assert_eq!(envelope.required_phase_floor_bytes(), expected_peak);
-
-        let unmodeled = QueryPlanCapabilityProof::for_query_plan(&unmodeled_native_plan())
-            .expect("unmodeled fragment has exact scope");
-        let combined = QueryPlanCapabilityProof::combine(proof, [unmodeled]).expect("proofs compose");
-        let error = combined.resolve_reservation_envelope(reservation_policy()).unwrap_err();
-        assert_eq!(error.code(), QueryErrorCode::UnsupportedPlanShape);
         assert_eq!(error.fact_value("reason"), Some("graph_attempt_complete_phase_unmodeled"));
     }
 
@@ -1427,12 +1602,16 @@ mod tests {
             source_stage_bytes: None,
             complete_zero_column_global_aggregate: None,
             complete_graph_memory_phase: None,
-            post_graph_bfs_logical_output_peak_bytes: None,
+            complete_cugraph_side_input_phase_bytes: None,
             accounted_by_graph_phase: false,
             is_cugraph_graph_input_scope: false,
+            is_cugraph_side_input_scope: false,
             is_attested_graph_result_passthrough_scope: false,
             is_attested_graph_result_bounded_consumer_scope: false,
-            is_bfs_logical_output_scope: false,
+            sort_phase_peak_bytes: None,
+            sort_metadata: None,
+            sort_rejection_reason: None,
+            owner_term_rejection_reason: None,
             ordered_schedule: None,
         }
     }

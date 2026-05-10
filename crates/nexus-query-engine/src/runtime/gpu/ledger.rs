@@ -405,6 +405,7 @@ impl DeviceLedger {
                 soft_working_set_hint_bytes: Some(soft_working_set_hint_bytes),
                 estimate_quality: crate::admission::EstimateQuality::Modeled,
                 required_capabilities: Vec::new(),
+                owner_terms: Vec::new(),
                 attested_cugraph_graph_execution_scopes: Vec::new(),
                 reservation_shapes: Vec::new(),
             },
