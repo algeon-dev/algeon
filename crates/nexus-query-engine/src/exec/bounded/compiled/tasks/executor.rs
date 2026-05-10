@@ -25,7 +25,7 @@ pub struct CompiledGpuTaskExecutor<'a> {
     pub(super) context: &'a ExecutionContext,
     pub(super) plan: &'a QueryPlan,
     pub(super) pipeline: &'a CompiledPipeline,
-    pub(super) gpu_inputs: &'a GpuResidentInputMap,
+    pub(super) gpu_inputs: GpuResidentInputMap,
     pub(super) metrics: &'a mut QueryMetrics,
     pub(super) reservations: ReservationTracker,
     pub(super) dynamic_filters: DynamicFilterSet,
@@ -56,6 +56,7 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
             metrics,
             observation_scope,
         )?;
+        let gpu_inputs = reservations.augment_gpu_inputs(gpu_inputs)?;
         Ok(Self {
             context,
             plan,
@@ -77,6 +78,13 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
 
     pub fn remaining_bytes(&self) -> u64 {
         self.reservations.remaining_bytes()
+    }
+
+    pub(in crate::exec::bounded) fn into_reservations(self) -> ReservationTracker {
+        let Self { gpu_inputs, reservations, .. } = self;
+        // The post-execution invariant must observe the tracker after all augmented input guards release.
+        drop(gpu_inputs);
+        reservations
     }
 
     pub fn take_host_output(&mut self) -> Result<RecordBatch> {

@@ -43,7 +43,10 @@ use super::prune_native_query_plan;
 use crate::{
     backend::InstalledTestGpuBackend,
     error::DataFusionErrorExt,
-    native_exec::{NexusNativeComposedExec, NexusNativeExec, NexusNativeExecutionConfig, NexusNativeGpuProducerExec},
+    native_exec::{
+        NexusNativeComposedExec, NexusNativeExec, NexusNativeExecutionConfig, NexusNativeGpuProducerExec,
+        admission::QueryAdmissionTicket,
+    },
 };
 
 #[derive(Debug)]
@@ -240,6 +243,19 @@ fn admission_execution_config(backend: &InstalledTestGpuBackend) -> NexusNativeE
         .with_lakehouse_footer_pruning(true)
 }
 
+fn composed_admission_execution_config(backend: &InstalledTestGpuBackend) -> NexusNativeExecutionConfig {
+    let source = backend
+        .optimizer_config()
+        .native_execution_config()
+        .query_admission_source()
+        .expect("installed backend must provide admission authority");
+    let ticket = QueryAdmissionTicket::new(source.clone(), None);
+    NexusNativeExecutionConfig::bounded(1024 * 1024, 512, 1, 3, 1)
+        .with_query_admission_source(source)
+        .with_existing_query_admission_ticket(ticket)
+        .with_lakehouse_footer_pruning(true)
+}
+
 fn task_context_with_runtime(runtime_env: Arc<RuntimeEnv>) -> Arc<datafusion::execution::TaskContext> {
     SessionContext::new_with_config_rt(SessionConfig::new(), runtime_env).task_ctx()
 }
@@ -398,9 +414,12 @@ async fn native_composed_resolves_consumer_and_producer_metadata_before_admissio
         builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("producer", Arc::clone(&schema))));
     let union = builder.add_union(vec![consumer_source, producer_source], Arc::clone(&schema));
     let consumer_plan = builder.finish_with_host_sink(union);
-    let exec =
-        NexusNativeComposedExec::try_new(consumer_plan, vec![Arc::new(producer)], admission_execution_config(&backend))
-            .expect("test native composed execution should build");
+    let exec = NexusNativeComposedExec::try_new(
+        consumer_plan,
+        vec![Arc::new(producer)],
+        composed_admission_execution_config(&backend),
+    )
+    .expect("test native composed execution should build");
 
     let mut stream = exec
         .execute(0, task_context_with_runtime(runtime_env))

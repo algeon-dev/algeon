@@ -11,6 +11,9 @@ use std::collections::HashSet;
 use arrow::datatypes::DataType;
 
 use crate::{
+    admission::requirement::{
+        AllocationOwnerTerm, AttemptBoundDerivation, OwnerTermId, checked_owner_sum, owner_inventory_covers_scopes,
+    },
     chunk::SourceChunkPlanningOptions,
     error::{QueryError, QueryErrorCode, Result},
     exec::{JoinOutputColumnUpperBoundInput, PartialAggregateShape, partial_aggregate_upper_bound_bytes},
@@ -34,14 +37,50 @@ const GRAPH_ATTEMPT_COMPLETE_PHASE_UNMODELED_REASON: &str = "graph_attempt_compl
 pub(crate) struct AttemptReservationProducerOccurrence {
     occurrence_id: String,
     execution_scope_fingerprint: String,
+    isolated_peak_term_groups: Vec<Vec<OwnerTermId>>,
+    retained_output_term_id: Option<OwnerTermId>,
+    #[cfg(test)]
     isolated_peak_bytes: Option<u64>,
+    #[cfg(test)]
     retained_output_bytes: Option<u64>,
 }
 
 impl AttemptReservationProducerOccurrence {
-    /// Builds one occurrence from engine-owned evidence.  The byte fields are
-    /// optional only while a proof is being assembled; resolution rejects any
-    /// missing phase evidence before placement.
+    /// Builds one occurrence from engine-issued owner-term identities.
+    #[cfg(test)]
+    pub(crate) fn from_term_ids(
+        occurrence_id: impl Into<String>,
+        execution_scope_fingerprint: impl Into<String>,
+        isolated_peak_term_ids: Vec<OwnerTermId>,
+        retained_output_term_id: Option<OwnerTermId>,
+    ) -> Self {
+        Self::from_term_groups(
+            occurrence_id,
+            execution_scope_fingerprint,
+            vec![isolated_peak_term_ids],
+            retained_output_term_id,
+        )
+    }
+
+    pub(crate) fn from_term_groups(
+        occurrence_id: impl Into<String>,
+        execution_scope_fingerprint: impl Into<String>,
+        isolated_peak_term_groups: Vec<Vec<OwnerTermId>>,
+        retained_output_term_id: Option<OwnerTermId>,
+    ) -> Self {
+        Self {
+            occurrence_id: occurrence_id.into(),
+            execution_scope_fingerprint: execution_scope_fingerprint.into(),
+            isolated_peak_term_groups,
+            retained_output_term_id,
+            #[cfg(test)]
+            isolated_peak_bytes: None,
+            #[cfg(test)]
+            retained_output_bytes: None,
+        }
+    }
+
+    #[cfg(test)]
     pub(crate) fn new(
         occurrence_id: impl Into<String>,
         execution_scope_fingerprint: impl Into<String>,
@@ -51,6 +90,8 @@ impl AttemptReservationProducerOccurrence {
         Self {
             occurrence_id: occurrence_id.into(),
             execution_scope_fingerprint: execution_scope_fingerprint.into(),
+            isolated_peak_term_groups: Vec::new(),
+            retained_output_term_id: None,
             isolated_peak_bytes,
             retained_output_bytes,
         }
@@ -67,12 +108,34 @@ impl AttemptReservationProducerOccurrence {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct AttemptReservationSchedule {
     attempt_wide_fixed_bytes: Option<u64>,
+    attempt_wide_fixed_term_id: Option<OwnerTermId>,
     producer_occurrences: Vec<AttemptReservationProducerOccurrence>,
     consumer_scope_fingerprint: Option<String>,
+    consumer_peak_term_ids: Vec<OwnerTermId>,
+    #[cfg(test)]
     consumer_additional_peak_bytes: Option<u64>,
 }
 
 impl AttemptReservationSchedule {
+    pub(crate) fn from_term_ids(
+        attempt_wide_fixed_bytes: Option<u64>,
+        attempt_wide_fixed_term_id: Option<OwnerTermId>,
+        producer_occurrences: Vec<AttemptReservationProducerOccurrence>,
+        consumer_scope_fingerprint: Option<String>,
+        consumer_peak_term_ids: Vec<OwnerTermId>,
+    ) -> Self {
+        Self {
+            attempt_wide_fixed_bytes,
+            attempt_wide_fixed_term_id,
+            producer_occurrences,
+            consumer_scope_fingerprint,
+            consumer_peak_term_ids,
+            #[cfg(test)]
+            consumer_additional_peak_bytes: Some(0),
+        }
+    }
+
+    #[cfg(test)]
     pub(crate) fn new(
         attempt_wide_fixed_bytes: Option<u64>,
         producer_occurrences: Vec<AttemptReservationProducerOccurrence>,
@@ -81,8 +144,10 @@ impl AttemptReservationSchedule {
     ) -> Self {
         Self {
             attempt_wide_fixed_bytes,
+            attempt_wide_fixed_term_id: None,
             producer_occurrences,
             consumer_scope_fingerprint,
+            consumer_peak_term_ids: Vec::new(),
             consumer_additional_peak_bytes,
         }
     }
@@ -111,29 +176,29 @@ impl AttemptReservationSchedule {
     }
 
     fn checked_fold_with_scopes(&self, scopes: &[AttemptReservationShape]) -> Result<u64> {
-        let fixed = self
-            .attempt_wide_fixed_bytes
-            .ok_or_else(|| graph_schedule_error("missing_attempt_wide_fixed_bytes", None, None))?;
+        self.checked_fold_with_inventory(scopes, &[])
+    }
+
+    pub(crate) fn checked_fold_with_inventory(
+        &self,
+        scopes: &[AttemptReservationShape],
+        owner_terms: &[AllocationOwnerTerm],
+    ) -> Result<u64> {
+        let fixed = self.fixed_bytes(owner_terms)?;
         if self.producer_occurrences.is_empty() {
             return Err(graph_schedule_error("missing_producer_evidence", None, None));
         }
         if self.consumer_scope_fingerprint.is_none() {
             return Err(graph_schedule_error("missing_consumer_scope", None, None));
         }
-        let consumer_peak = self
-            .consumer_additional_peak_bytes
-            .ok_or_else(|| graph_schedule_error("missing_consumer_additional_peak", None, None))?;
+        let consumer_peak = self.consumer_peak_bytes(owner_terms)?;
         self.validate_occurrence_ids_and_scopes(scopes)?;
 
         let mut retained_prior = 0_u64;
         let mut complete_peak = 0_u64;
         for occurrence in &self.producer_occurrences {
-            let isolated_peak = occurrence.isolated_peak_bytes.ok_or_else(|| {
-                graph_schedule_error("missing_producer_isolated_peak", Some(&occurrence.occurrence_id), None)
-            })?;
-            let retained_output = occurrence.retained_output_bytes.ok_or_else(|| {
-                graph_schedule_error("missing_producer_retained_output", Some(&occurrence.occurrence_id), None)
-            })?;
+            let isolated_peak = self.producer_isolated_peak_bytes(occurrence, owner_terms)?;
+            let retained_output = self.producer_retained_output_bytes(occurrence, owner_terms)?;
             let producer_stage = fixed
                 .checked_add(retained_prior)
                 .ok_or_else(|| {
@@ -181,9 +246,200 @@ impl AttemptReservationSchedule {
         Ok(complete_peak.max(consumer_stage))
     }
 
+    fn fixed_bytes(&self, owner_terms: &[AllocationOwnerTerm]) -> Result<u64> {
+        if let Some(term_id) = &self.attempt_wide_fixed_term_id {
+            return self.resolve_term_bytes(term_id, owner_terms, None, "attempt_wide_fixed");
+        }
+        let fixed = self
+            .attempt_wide_fixed_bytes
+            .ok_or_else(|| graph_schedule_error("missing_attempt_wide_fixed_bytes", None, None))?;
+        #[cfg(not(test))]
+        if fixed != 0 {
+            return Err(graph_schedule_error("attempt_wide_fixed_term_missing", None, Some("attempt_wide_fixed")));
+        }
+        Ok(fixed)
+    }
+
+    fn producer_isolated_peak_bytes(
+        &self,
+        occurrence: &AttemptReservationProducerOccurrence,
+        owner_terms: &[AllocationOwnerTerm],
+    ) -> Result<u64> {
+        if !occurrence.isolated_peak_term_groups.is_empty() {
+            let mut isolated_peak = 0_u64;
+            for group in &occurrence.isolated_peak_term_groups {
+                let mut seen = HashSet::with_capacity(group.len());
+                if group.iter().any(|id| !seen.insert(id)) {
+                    return Err(graph_schedule_error(
+                        "duplicate_owner_term_reference",
+                        Some(&occurrence.occurrence_id),
+                        Some("producer_isolated_peak"),
+                    ));
+                }
+                let phase_peak = self.sum_term_ids(
+                    group,
+                    owner_terms,
+                    Some(&occurrence.occurrence_id),
+                    "producer_stage_isolated_peak_overflow",
+                )?;
+                isolated_peak = isolated_peak.max(phase_peak);
+            }
+            return Ok(isolated_peak);
+        }
+        #[cfg(test)]
+        {
+            occurrence.isolated_peak_bytes.ok_or_else(|| {
+                graph_schedule_error("missing_producer_isolated_peak", Some(&occurrence.occurrence_id), None)
+            })
+        }
+        #[cfg(not(test))]
+        {
+            Err(graph_schedule_error("missing_producer_isolated_peak", Some(&occurrence.occurrence_id), None))
+        }
+    }
+
+    fn producer_retained_output_bytes(
+        &self,
+        occurrence: &AttemptReservationProducerOccurrence,
+        owner_terms: &[AllocationOwnerTerm],
+    ) -> Result<u64> {
+        if let Some(term_id) = &occurrence.retained_output_term_id {
+            let term = owner_terms.iter().find(|term| term.id() == term_id).ok_or_else(|| {
+                graph_schedule_error(
+                    "missing_owner_term_reference",
+                    Some(&occurrence.occurrence_id),
+                    Some("retained_output"),
+                )
+            })?;
+            if !term.is_retained_output() {
+                return Err(graph_schedule_error(
+                    "retained_output_term_role_invalid",
+                    Some(&occurrence.occurrence_id),
+                    Some("retained_output"),
+                ));
+            }
+            return Ok(term.bytes());
+        }
+        #[cfg(test)]
+        {
+            occurrence.retained_output_bytes.ok_or_else(|| {
+                graph_schedule_error("missing_producer_retained_output", Some(&occurrence.occurrence_id), None)
+            })
+        }
+        #[cfg(not(test))]
+        {
+            Err(graph_schedule_error("missing_producer_retained_output", Some(&occurrence.occurrence_id), None))
+        }
+    }
+
+    fn consumer_peak_bytes(&self, owner_terms: &[AllocationOwnerTerm]) -> Result<u64> {
+        if !self.consumer_peak_term_ids.is_empty() {
+            let mut seen = HashSet::with_capacity(self.consumer_peak_term_ids.len());
+            if self.consumer_peak_term_ids.iter().any(|id| !seen.insert(id)) {
+                return Err(graph_schedule_error("duplicate_owner_term_reference", None, Some("consumer_peak")));
+            }
+            return self.sum_term_ids(
+                &self.consumer_peak_term_ids,
+                owner_terms,
+                None,
+                "consumer_stage_additional_peak_overflow",
+            );
+        }
+        #[cfg(test)]
+        {
+            self.consumer_additional_peak_bytes
+                .ok_or_else(|| graph_schedule_error("missing_consumer_additional_peak", None, None))
+        }
+        #[cfg(not(test))]
+        {
+            if self
+                .consumer_scope_fingerprint
+                .as_deref()
+                .is_some_and(|scope| owner_terms.iter().any(|term| term.is_consumer_scope(scope)))
+            {
+                return Err(graph_schedule_error("missing_consumer_peak_terms", None, Some("consumer_peak")));
+            }
+            Ok(0)
+        }
+    }
+
+    fn sum_term_ids(
+        &self,
+        term_ids: &[OwnerTermId],
+        owner_terms: &[AllocationOwnerTerm],
+        occurrence_id: Option<&str>,
+        overflow_reason: &'static str,
+    ) -> Result<u64> {
+        term_ids.iter().try_fold(0_u64, |total, term_id| {
+            let bytes = self.resolve_term_bytes(term_id, owner_terms, occurrence_id, "owner_term")?;
+            total
+                .checked_add(bytes)
+                .ok_or_else(|| graph_schedule_error(overflow_reason, occurrence_id, Some("owner_term_sum")))
+        })
+    }
+
+    fn resolve_term_bytes(
+        &self,
+        term_id: &OwnerTermId,
+        owner_terms: &[AllocationOwnerTerm],
+        occurrence_id: Option<&str>,
+        phase: &'static str,
+    ) -> Result<u64> {
+        owner_terms.iter().find(|term| term.id() == term_id).map(AllocationOwnerTerm::bytes).ok_or_else(|| {
+            graph_schedule_error("missing_owner_term_reference", occurrence_id, Some(phase))
+                .with_fact("owner_term_role", term_id.role_label())
+                .with_fact("owner_term_occurrence", term_id.occurrence_label())
+        })
+    }
+
+    pub(crate) fn validate_term_references(&self, owner_terms: &[AllocationOwnerTerm]) -> Result<()> {
+        if let Some(term_id) = &self.attempt_wide_fixed_term_id {
+            self.resolve_term_bytes(term_id, owner_terms, None, "attempt_wide_fixed")?;
+        }
+        for occurrence in &self.producer_occurrences {
+            for group in &occurrence.isolated_peak_term_groups {
+                for term_id in group {
+                    self.resolve_term_bytes(
+                        term_id,
+                        owner_terms,
+                        Some(&occurrence.occurrence_id),
+                        "producer_isolated_peak",
+                    )?;
+                }
+            }
+            if let Some(term_id) = &occurrence.retained_output_term_id {
+                let term = owner_terms.iter().find(|term| term.id() == term_id).ok_or_else(|| {
+                    graph_schedule_error(
+                        "missing_owner_term_reference",
+                        Some(&occurrence.occurrence_id),
+                        Some("retained_output"),
+                    )
+                })?;
+                if !term.is_retained_output() {
+                    return Err(graph_schedule_error(
+                        "retained_output_term_role_invalid",
+                        Some(&occurrence.occurrence_id),
+                        Some("retained_output"),
+                    ));
+                }
+            } else {
+                return Err(graph_schedule_error(
+                    "missing_producer_retained_output",
+                    Some(&occurrence.occurrence_id),
+                    None,
+                ));
+            }
+        }
+        for term_id in &self.consumer_peak_term_ids {
+            self.resolve_term_bytes(term_id, owner_terms, None, "consumer_peak")?;
+        }
+        Ok(())
+    }
+
     fn projection(
         &self,
         scopes: &[AttemptReservationShape],
+        owner_terms: &[AllocationOwnerTerm],
         attempt_id: crate::observability::AttemptId,
         device_ordinal: usize,
         grant_id: u64,
@@ -192,27 +448,19 @@ impl AttemptReservationSchedule {
         // Run the canonical fold first. This validates every required owner
         // contribution and exact scope coverage before any public projection
         // is published.
-        let complete_peak = self.checked_fold_with_scopes(scopes)?;
-        let fixed = self
-            .attempt_wide_fixed_bytes
-            .ok_or_else(|| graph_schedule_error("missing_attempt_wide_fixed_bytes", None, None))?;
+        let complete_peak = self.checked_fold_with_inventory(scopes, owner_terms)?;
+        let fixed = self.fixed_bytes(owner_terms)?;
         let consumer_scope = self
             .consumer_scope_fingerprint
             .clone()
             .ok_or_else(|| graph_schedule_error("missing_consumer_scope", None, None))?;
-        let consumer_additional_peak_bytes = self
-            .consumer_additional_peak_bytes
-            .ok_or_else(|| graph_schedule_error("missing_consumer_additional_peak", None, None))?;
+        let consumer_additional_peak_bytes = self.consumer_peak_bytes(owner_terms)?;
 
         let mut retained_prior = 0_u64;
         let mut producer_occurrences = Vec::with_capacity(self.producer_occurrences.len());
         for occurrence in &self.producer_occurrences {
-            let isolated_peak_bytes = occurrence.isolated_peak_bytes.ok_or_else(|| {
-                graph_schedule_error("missing_producer_isolated_peak", Some(&occurrence.occurrence_id), None)
-            })?;
-            let retained_output_bytes = occurrence.retained_output_bytes.ok_or_else(|| {
-                graph_schedule_error("missing_producer_retained_output", Some(&occurrence.occurrence_id), None)
-            })?;
+            let isolated_peak_bytes = self.producer_isolated_peak_bytes(occurrence, owner_terms)?;
+            let retained_output_bytes = self.producer_retained_output_bytes(occurrence, owner_terms)?;
             let stage_peak_bytes = fixed
                 .checked_add(retained_prior)
                 .and_then(|value| value.checked_add(isolated_peak_bytes))
@@ -440,6 +688,7 @@ pub(crate) struct AttemptReservationShape {
     sort_metadata: Option<crate::admission::requirement::SortMetadataDescriptor>,
     sort_rejection_reason: Option<String>,
     owner_term_rejection_reason: Option<String>,
+    retained_input_bindings: Vec<(String, OwnerTermId)>,
     ordered_schedule: Option<AttemptReservationSchedule>,
 }
 
@@ -461,6 +710,7 @@ impl AttemptReservationShape {
             sort_metadata: None,
             sort_rejection_reason: None,
             owner_term_rejection_reason: None,
+            retained_input_bindings: Vec::new(),
             ordered_schedule: None,
         }
     }
@@ -477,8 +727,38 @@ impl AttemptReservationShape {
         Ok(())
     }
 
-    fn ordered_schedule(&self) -> Option<&AttemptReservationSchedule> {
+    pub(crate) fn detach_ordered_schedule(&mut self) {
+        self.ordered_schedule = None;
+    }
+
+    pub(crate) fn ordered_schedule(&self) -> Option<&AttemptReservationSchedule> {
         self.ordered_schedule.as_ref()
+    }
+
+    pub(crate) fn owner_term_rejection_reason(&self) -> Option<&str> {
+        self.owner_term_rejection_reason.as_deref()
+    }
+
+    pub(crate) fn set_retained_input_bindings(
+        &mut self,
+        bindings: impl IntoIterator<Item = (String, OwnerTermId)>,
+    ) -> Result<()> {
+        if !self.retained_input_bindings.is_empty() {
+            return Err(graph_schedule_error("duplicate_retained_input_bindings", None, Some("retained_output")));
+        }
+        let mut seen = HashSet::new();
+        let bindings = bindings.into_iter().collect::<Vec<_>>();
+        if bindings.iter().any(|(occurrence_id, term_id)| {
+            occurrence_id.is_empty() || !seen.insert((occurrence_id.clone(), term_id.clone()))
+        }) {
+            return Err(graph_schedule_error("duplicate_retained_input_binding", None, Some("retained_output")));
+        }
+        self.retained_input_bindings = bindings;
+        Ok(())
+    }
+
+    pub(crate) fn retained_input_bindings(&self) -> &[(String, OwnerTermId)] {
+        &self.retained_input_bindings
     }
 
     pub(crate) fn matches(&self, plan: &QueryPlan) -> bool {
@@ -508,7 +788,6 @@ impl AttemptReservationShape {
         self.accounted_by_graph_phase = true;
     }
 
-    #[cfg(test)]
     pub(crate) fn is_accounted_by_graph_phase(&self) -> bool {
         self.accounted_by_graph_phase
     }
@@ -679,18 +958,37 @@ pub(crate) struct AttemptReservationEnvelope {
     required_phase_floor_bytes: u64,
     complete_phase_peak_bytes: Option<u64>,
     ordered_schedule: Option<AttemptReservationSchedule>,
+    bound_derivation: Option<AttemptBoundDerivation>,
+    owner_terms: Vec<AllocationOwnerTerm>,
 }
 
 impl AttemptReservationEnvelope {
+    #[cfg(test)]
     pub(crate) fn resolve(
         reservation_shapes: &[AttemptReservationShape],
+        policy: AttemptReservationPolicy,
+    ) -> Result<Self> {
+        Self::resolve_internal(reservation_shapes, None, policy)
+    }
+
+    pub(crate) fn resolve_with_owner_terms(
+        reservation_shapes: &[AttemptReservationShape],
+        owner_terms: &[AllocationOwnerTerm],
+        policy: AttemptReservationPolicy,
+    ) -> Result<Self> {
+        Self::resolve_internal(reservation_shapes, Some(owner_terms), policy)
+    }
+
+    fn resolve_internal(
+        reservation_shapes: &[AttemptReservationShape],
+        owner_terms: Option<&[AllocationOwnerTerm]>,
         policy: AttemptReservationPolicy,
     ) -> Result<Self> {
         // Reservation shapes are allocation occurrences, not structural set
         // members.  Equal graph plans may retain two distinct result handles
         // and must remain two entries in the resolved envelope.
         let scopes = reservation_shapes.to_vec();
-        let ordered_schedule =
+        let mut ordered_schedule =
             match scopes.iter().filter_map(AttemptReservationShape::ordered_schedule).collect::<Vec<_>>().as_slice() {
                 [] => None,
                 [schedule] => Some((*schedule).clone()),
@@ -744,14 +1042,69 @@ impl AttemptReservationEnvelope {
             };
         }
 
+        let mut selected_derivation = None;
         if let Some(schedule) = &ordered_schedule {
-            if complete_phase_peak_bytes.is_none() {
-                return Err(graph_schedule_error("auxiliary_scope_unmodeled", None, Some("auxiliary_scope")));
+            let ordered_result = match owner_terms {
+                Some(owner_terms) => schedule.checked_fold_with_inventory(&scopes, owner_terms),
+                None => schedule.checked_fold_with_scopes(&scopes),
+            };
+            match ordered_result {
+                Ok(complete_peak) => {
+                    let Some(auxiliary_peak) = complete_phase_peak_bytes else {
+                        return Err(graph_schedule_error("auxiliary_scope_unmodeled", None, Some("auxiliary_scope")));
+                    };
+                    required_phase_floor_bytes = required_phase_floor_bytes.max(complete_peak);
+                    complete_phase_peak_bytes = Some(auxiliary_peak.max(complete_peak));
+                    selected_derivation = Some(AttemptBoundDerivation::OrderedTimeline);
+                },
+                Err(ordered_error) if owner_terms.is_some() => {
+                    let conservative = checked_owner_sum(owner_terms.expect("owner terms present"), &scopes);
+                    match conservative {
+                        Ok(owner_sum)
+                            if owner_inventory_covers_scopes(
+                                owner_terms.expect("owner terms present"),
+                                &scopes,
+                                owner_sum,
+                                required_phase_floor_bytes,
+                                false,
+                            ) =>
+                        {
+                            ordered_schedule = None;
+                            required_phase_floor_bytes = owner_sum.max(required_phase_floor_bytes);
+                            complete_phase_peak_bytes = Some(owner_sum);
+                            selected_derivation = Some(AttemptBoundDerivation::ConservativeOwnerSum);
+                        },
+                        Ok(_) => {
+                            return Err(derivation_unavailable_error(
+                                ordered_error,
+                                owner_derivation_incomplete_error(),
+                            ));
+                        },
+                        Err(conservative_error) => {
+                            return Err(derivation_unavailable_error(ordered_error, conservative_error));
+                        },
+                    }
+                },
+                Err(error) => return Err(error),
             }
-            let complete_peak = schedule.checked_fold_with_scopes(&scopes)?;
-            required_phase_floor_bytes = required_phase_floor_bytes.max(complete_peak);
-            complete_phase_peak_bytes =
-                complete_phase_peak_bytes.map(|auxiliary_peak| auxiliary_peak.max(complete_peak));
+        } else if let Some(owner_terms) = owner_terms {
+            match checked_owner_sum(owner_terms, &scopes) {
+                Ok(owner_sum)
+                    if owner_inventory_covers_scopes(
+                        owner_terms,
+                        &scopes,
+                        owner_sum,
+                        required_phase_floor_bytes,
+                        false,
+                    ) =>
+                {
+                    required_phase_floor_bytes = required_phase_floor_bytes.max(owner_sum);
+                    complete_phase_peak_bytes = Some(owner_sum);
+                    selected_derivation = Some(AttemptBoundDerivation::ConservativeOwnerSum);
+                },
+                Ok(_) => {},
+                Err(error) => return Err(error),
+            }
         }
 
         if ordered_schedule.is_none() && has_graph_memory_phase && complete_phase_peak_bytes.is_none() {
@@ -763,7 +1116,15 @@ impl AttemptReservationEnvelope {
             .with_fact("reason", GRAPH_ATTEMPT_COMPLETE_PHASE_UNMODELED_REASON));
         }
 
-        Ok(Self { policy, scopes, required_phase_floor_bytes, complete_phase_peak_bytes, ordered_schedule })
+        Ok(Self {
+            policy,
+            scopes,
+            required_phase_floor_bytes,
+            complete_phase_peak_bytes,
+            ordered_schedule,
+            bound_derivation: selected_derivation,
+            owner_terms: owner_terms.map_or_else(Vec::new, ToOwned::to_owned),
+        })
     }
 
     pub(crate) fn required_phase_floor_bytes(&self) -> u64 {
@@ -772,6 +1133,10 @@ impl AttemptReservationEnvelope {
 
     pub(crate) fn complete_phase_peak_bytes(&self) -> Option<u64> {
         self.complete_phase_peak_bytes
+    }
+
+    pub(crate) fn bound_derivation(&self) -> Option<AttemptBoundDerivation> {
+        self.bound_derivation
     }
 
     #[cfg(test)]
@@ -789,13 +1154,30 @@ impl AttemptReservationEnvelope {
             return Err(graph_schedule_error("missing_admitted_schedule", None, Some("runtime")));
         };
         schedule.validate_runtime(consumer_plan, occurrence_ids)?;
-        let required_peak = schedule.checked_fold_with_scopes(&self.scopes)?;
+        let required_peak = schedule.checked_fold_with_inventory(&self.scopes, &self.owner_terms)?;
         if immutable_grant_bytes < required_peak {
             return Err(graph_schedule_error("immutable_grant_below_schedule_peak", None, Some("runtime"))
                 .with_fact("immutable_grant_bytes", immutable_grant_bytes)
                 .with_fact("complete_phase_peak_bytes", required_peak));
         }
         Ok(())
+    }
+
+    /// Validates the admitted ordered schedule before optionally publishing
+    /// its identity-bound projection. Ordinary contexts have no attempt
+    /// identity and therefore validate without publishing an artifact.
+    pub(crate) fn validate_and_project_composed_execution(
+        &self,
+        consumer_plan: &QueryPlan,
+        occurrence_ids: &[String],
+        immutable_grant_bytes: u64,
+        projection_identity: Option<(crate::observability::AttemptId, usize, u64)>,
+    ) -> Result<Option<AttemptComposedScheduleProjection>> {
+        self.validate_composed_execution(consumer_plan, occurrence_ids, immutable_grant_bytes)?;
+        let Some((attempt_id, device_ordinal, grant_id)) = projection_identity else {
+            return Ok(None);
+        };
+        self.composed_schedule_projection(attempt_id, device_ordinal, grant_id, immutable_grant_bytes).map(Some)
     }
 
     /// Publishes the immutable schedule priced by this envelope, bound to the
@@ -810,7 +1192,7 @@ impl AttemptReservationEnvelope {
         let Some(schedule) = &self.ordered_schedule else {
             return Err(graph_schedule_error("missing_admitted_schedule", None, Some("projection")));
         };
-        schedule.projection(&self.scopes, attempt_id, device_ordinal, grant_id, grant_bytes)
+        schedule.projection(&self.scopes, &self.owner_terms, attempt_id, device_ordinal, grant_id, grant_bytes)
     }
 
     pub(crate) fn validate_execution(
@@ -1024,6 +1406,27 @@ fn graph_schedule_error(reason: &'static str, occurrence_id: Option<&str>, phase
         error = error.with_fact("phase", phase);
     }
     error
+}
+
+fn derivation_unavailable_error(ordered: QueryError, conservative: QueryError) -> QueryError {
+    QueryError::new(
+        QueryErrorCode::UnsupportedPlanShape,
+        "nexus_query_engine.admission.reservation_envelope",
+        "no complete bounded attempt derivation is available",
+    )
+    .with_fact("reason", "attempt_bound_derivation_unavailable")
+    .with_fact("ordered_reason", ordered.fact_value("schedule_reason").unwrap_or("ordered_timeline_unavailable"))
+    .with_fact("conservative_reason", conservative.fact_value("reason").unwrap_or("conservative_owner_sum_unavailable"))
+}
+
+fn owner_derivation_incomplete_error() -> QueryError {
+    QueryError::new(
+        QueryErrorCode::UnsupportedPlanShape,
+        "nexus_query_engine.admission.reservation_envelope",
+        "attempt owner-term inventory does not cover every incomplete scope",
+    )
+    .with_fact("reason", "attempt_owner_term_coverage_incomplete")
+    .with_fact("derivation", "conservative_owner_sum")
 }
 
 #[cfg(test)]
@@ -1295,7 +1698,6 @@ mod tests {
         let schema = graph_edge_schema();
         let graph_plan = graph_bfs_plan_with_gpu_resident_source(Arc::clone(&schema));
         let evidence = graph_memory_evidence(&graph_plan);
-        let graph_peak = evidence.cold_model_requested_bytes();
         let graph_proof = QueryPlanCapabilityProof::for_cugraph_graph_execution_plan(&graph_plan)
             .expect("graph plan must issue its cuGraph capability proof")
             .with_graph_memory_admission_evidence(&evidence)
@@ -1314,10 +1716,12 @@ mod tests {
         .expect("fixed-width side-input frame is finite");
         assert_eq!(side_proof.as_requirement().side_input_frame_owner_term_bytes(), vec![side_frame_bytes]);
         let proof = QueryPlanCapabilityProof::combine(graph_proof, [side_proof]).expect("proofs compose");
+        let owner_sum = proof.as_requirement().conservative_owner_sum().expect("owner inventory is finite");
         let envelope = proof.resolve_reservation_envelope(reservation_policy()).expect("envelope resolves");
 
-        assert_eq!(envelope.required_phase_floor_bytes(), graph_peak + side_frame_bytes);
-        assert_eq!(envelope.complete_phase_peak_bytes(), Some(graph_peak + side_frame_bytes));
+        assert_eq!(envelope.required_phase_floor_bytes(), owner_sum);
+        assert_eq!(envelope.complete_phase_peak_bytes(), Some(owner_sum));
+        assert_eq!(envelope.bound_derivation(), Some(AttemptBoundDerivation::ConservativeOwnerSum));
         assert!(envelope.scopes.iter().any(|scope| scope.matches(&graph_plan)));
         assert!(envelope.scopes.iter().any(|scope| scope.matches(&side_input)));
 
@@ -1405,15 +1809,16 @@ mod tests {
         let schema = graph_edge_schema();
         let plan = graph_bfs_plan_with_local_source(Arc::clone(&schema));
         let evidence = graph_memory_evidence(&plan);
-        let expected_peak = evidence.cold_model_with_source_stage_bytes(96).unwrap();
         let proof = QueryPlanCapabilityProof::for_cugraph_graph_execution_plan(&plan)
             .expect("graph plan must issue its cuGraph capability proof")
             .with_graph_memory_admission_evidence(&evidence)
             .expect("finite graph evidence");
+        let owner_sum = proof.as_requirement().conservative_owner_sum().expect("owner inventory is finite");
 
         let envelope = proof.resolve_reservation_envelope(reservation_policy()).unwrap();
-        assert_eq!(envelope.required_phase_floor_bytes(), expected_peak);
-        assert_eq!(envelope.complete_phase_peak_bytes(), Some(expected_peak));
+        assert_eq!(envelope.required_phase_floor_bytes(), owner_sum);
+        assert_eq!(envelope.complete_phase_peak_bytes(), Some(owner_sum));
+        assert_eq!(envelope.bound_derivation(), Some(AttemptBoundDerivation::ConservativeOwnerSum));
 
         let unmodeled =
             QueryPlanCapabilityProof::for_query_plan(&unmodeled_native_plan()).expect("host-sink plan issues a proof");
@@ -1428,7 +1833,6 @@ mod tests {
         let schema = graph_edge_schema();
         let graph_plan = graph_bfs_plan_with_gpu_resident_source(Arc::clone(&schema));
         let evidence = graph_memory_evidence(&graph_plan);
-        let expected_graph_peak = evidence.cold_model_with_source_stage_bytes(96).unwrap();
         let graph_proof = QueryPlanCapabilityProof::for_cugraph_graph_execution_plan(&graph_plan)
             .expect("graph plan must issue its cuGraph capability proof");
         let source_plan = source_stage_plan(schema);
@@ -1438,10 +1842,12 @@ mod tests {
             .expect("graph and exact source proofs compose")
             .with_graph_memory_admission_evidence(&evidence)
             .expect("finite graph evidence");
+        let owner_sum = proof.as_requirement().conservative_owner_sum().expect("owner inventory is finite");
 
         let envelope = proof.resolve_reservation_envelope(reservation_policy()).unwrap();
-        assert_eq!(envelope.complete_phase_peak_bytes(), Some(expected_graph_peak));
-        assert_eq!(envelope.required_phase_floor_bytes(), expected_graph_peak);
+        assert_eq!(envelope.complete_phase_peak_bytes(), Some(owner_sum));
+        assert_eq!(envelope.required_phase_floor_bytes(), owner_sum);
+        assert_eq!(envelope.bound_derivation(), Some(AttemptBoundDerivation::ConservativeOwnerSum));
     }
 
     #[test]
@@ -1492,9 +1898,11 @@ mod tests {
             .expect("graph and exact graph-input proofs compose")
             .with_graph_memory_admission_evidence(&evidence)
             .expect("finite graph evidence");
+        let owner_sum = proof.as_requirement().conservative_owner_sum().expect("owner inventory is finite");
 
         let envelope = proof.resolve_reservation_envelope(reservation_policy()).unwrap();
-        assert_eq!(envelope.complete_phase_peak_bytes(), Some(evidence.cold_model_requested_bytes()));
+        assert_eq!(envelope.complete_phase_peak_bytes(), Some(owner_sum));
+        assert_eq!(envelope.bound_derivation(), Some(AttemptBoundDerivation::ConservativeOwnerSum));
         assert!(envelope.scopes.iter().any(|scope| scope.matches(&graph_input)));
 
         let unmodeled = QueryPlanCapabilityProof::for_query_plan(&unmodeled_native_plan())
@@ -1520,9 +1928,11 @@ mod tests {
             [passthrough_proof],
         )
         .expect("a refined graph proof and its graph-result passthrough proof compose");
+        let owner_sum = proof.as_requirement().conservative_owner_sum().expect("owner inventory is finite");
 
         let envelope = proof.resolve_reservation_envelope(reservation_policy()).unwrap();
-        assert_eq!(envelope.complete_phase_peak_bytes(), Some(evidence.cold_model_requested_bytes()));
+        assert_eq!(envelope.complete_phase_peak_bytes(), Some(owner_sum));
+        assert_eq!(envelope.bound_derivation(), Some(AttemptBoundDerivation::ConservativeOwnerSum));
         assert!(envelope.scopes.iter().any(|scope| scope.matches(&passthrough)));
 
         let different_input = QueryPlanCapabilityProof::for_attested_graph_result_passthrough_plan(
@@ -1612,6 +2022,7 @@ mod tests {
             sort_metadata: None,
             sort_rejection_reason: None,
             owner_term_rejection_reason: None,
+            retained_input_bindings: Vec::new(),
             ordered_schedule: None,
         }
     }
@@ -1797,6 +2208,103 @@ mod tests {
         assert_ne!(envelope.complete_phase_peak_bytes(), Some(80));
     }
 
+    #[test]
+    fn ordered_schedule_resolves_the_shared_owner_term_identity() {
+        let plan = source_stage_plan(graph_edge_schema());
+        let proof = QueryPlanCapabilityProof::for_query_plan(&plan).expect("source plan must issue a proof");
+        let owner_terms = proof.as_requirement().owner_terms.clone();
+        let source_term = owner_terms.first().expect("source plan must carry one owner term");
+        let producer_scope = canonical_execution_scope_fingerprint(&plan);
+        let schedule = AttemptReservationSchedule::from_term_ids(
+            Some(0),
+            None,
+            vec![AttemptReservationProducerOccurrence::from_term_ids(
+                "source-occurrence",
+                producer_scope.clone(),
+                vec![source_term.id().clone()],
+                Some(source_term.id().clone()),
+            )],
+            Some(producer_scope.clone()),
+            Vec::new(),
+        );
+        let mut producer = AttemptReservationShape::for_query_plan(&plan);
+        producer.attach_ordered_schedule(schedule).unwrap();
+        let envelope = AttemptReservationEnvelope::resolve_with_owner_terms(
+            &[producer, AttemptReservationShape::for_query_plan(&plan)],
+            &owner_terms,
+            reservation_policy(),
+        )
+        .expect("shared term identity must resolve before placement");
+        assert_eq!(envelope.bound_derivation(), Some(AttemptBoundDerivation::OrderedTimeline));
+        assert_eq!(envelope.complete_phase_peak_bytes(), Some(source_term.bytes()));
+    }
+
+    #[test]
+    fn incomplete_ordered_terms_fall_back_to_the_conservative_owner_sum() {
+        let plan = source_stage_plan(graph_edge_schema());
+        let proof = QueryPlanCapabilityProof::for_query_plan(&plan).expect("source plan must issue a proof");
+        let owner_terms = proof.as_requirement().owner_terms.clone();
+        let scope = canonical_execution_scope_fingerprint(&plan);
+        let schedule = AttemptReservationSchedule::from_term_ids(
+            Some(0),
+            None,
+            vec![AttemptReservationProducerOccurrence::from_term_groups(
+                "missing-owner-terms",
+                scope.clone(),
+                Vec::new(),
+                Some(owner_terms.first().expect("source plan must carry one owner term").id().clone()),
+            )],
+            Some(scope.clone()),
+            Vec::new(),
+        );
+        let mut producer = AttemptReservationShape::for_query_plan(&plan);
+        producer.attach_ordered_schedule(schedule).unwrap();
+        let envelope = AttemptReservationEnvelope::resolve_with_owner_terms(
+            &[producer, AttemptReservationShape::for_query_plan(&plan)],
+            &owner_terms,
+            reservation_policy(),
+        )
+        .expect("a complete owner sum remains available when ordered terms are missing");
+        assert_eq!(envelope.bound_derivation(), Some(AttemptBoundDerivation::ConservativeOwnerSum));
+        assert_eq!(
+            envelope.complete_phase_peak_bytes(),
+            Some(owner_terms.iter().map(AllocationOwnerTerm::bytes).sum())
+        );
+    }
+
+    #[test]
+    fn missing_retained_output_term_rejects_conservative_fallback() {
+        let plan = source_stage_plan(graph_edge_schema());
+        let proof = QueryPlanCapabilityProof::for_query_plan(&plan).expect("source plan must issue a proof");
+        let owner_terms = proof.as_requirement().owner_terms.clone();
+        let scope = canonical_execution_scope_fingerprint(&plan);
+        let schedule = AttemptReservationSchedule::from_term_ids(
+            Some(0),
+            None,
+            vec![AttemptReservationProducerOccurrence::from_term_ids(
+                "missing-retained-output",
+                scope.clone(),
+                vec![owner_terms.first().expect("source plan must carry one owner term").id().clone()],
+                None,
+            )],
+            Some(scope.clone()),
+            Vec::new(),
+        );
+        let mut producer = AttemptReservationShape::for_query_plan(&plan);
+        producer.attach_ordered_schedule(schedule).unwrap();
+        let error = AttemptReservationEnvelope::resolve_with_owner_terms(
+            &[producer, AttemptReservationShape::for_query_plan(&plan)],
+            &owner_terms,
+            reservation_policy(),
+        )
+        .expect_err("a producer occurrence without retained output must fail closed");
+
+        assert_eq!(error.code(), QueryErrorCode::UnsupportedPlanShape);
+        assert_eq!(error.fact_value("reason"), Some("attempt_bound_derivation_unavailable"));
+        assert_eq!(error.fact_value("ordered_reason"), Some("missing_producer_retained_output"));
+        assert_eq!(error.fact_value("conservative_reason"), Some("attempt_owner_term_missing"));
+    }
+
     fn resolved_runtime_schedule_envelope(consumer_plan: &QueryPlan) -> AttemptReservationEnvelope {
         let mut producer_scope = schedule_scope("producer-scope");
         producer_scope
@@ -1886,6 +2394,62 @@ mod tests {
         assert_eq!(error.fact_value("schedule_reason"), Some("immutable_grant_below_schedule_peak"));
         assert_eq!(error.fact_value("immutable_grant_bytes"), Some("34"));
         assert_eq!(error.fact_value("complete_phase_peak_bytes"), Some("35"));
+    }
+
+    #[test]
+    fn composed_runtime_validation_without_attempt_identity_returns_no_projection() {
+        let consumer_plan = graph_result_passthrough_plan("graph-result");
+        let envelope = resolved_runtime_schedule_envelope(&consumer_plan);
+
+        let projection = envelope
+            .validate_and_project_composed_execution(
+                &consumer_plan,
+                &["first".to_owned(), "second".to_owned()],
+                envelope.required_phase_floor_bytes(),
+                None,
+            )
+            .expect("ordinary ordered execution must validate without publishing a projection");
+
+        assert!(projection.is_none());
+    }
+
+    #[test]
+    fn composed_runtime_validation_with_attempt_identity_returns_projection() {
+        let consumer_plan = graph_result_passthrough_plan("graph-result");
+        let envelope = resolved_runtime_schedule_envelope(&consumer_plan);
+        let attempt_id = crate::observability::AttemptId::mint();
+
+        let projection = envelope
+            .validate_and_project_composed_execution(
+                &consumer_plan,
+                &["first".to_owned(), "second".to_owned()],
+                envelope.required_phase_floor_bytes(),
+                Some((attempt_id, 2, 41)),
+            )
+            .expect("attempt-bound ordered execution must publish a projection")
+            .expect("attempt identity requests a projection");
+
+        assert_eq!(projection.attempt_id, attempt_id);
+        assert_eq!(projection.device_ordinal, 2);
+        assert_eq!(projection.grant_id, 41);
+    }
+
+    #[test]
+    fn composed_runtime_validation_rejects_malformed_schedule_before_no_projection_shortcut() {
+        let consumer_plan = graph_result_passthrough_plan("graph-result");
+        let envelope = resolved_runtime_schedule_envelope(&consumer_plan);
+
+        let error = envelope
+            .validate_and_project_composed_execution(
+                &consumer_plan,
+                &["second".to_owned(), "first".to_owned()],
+                envelope.required_phase_floor_bytes(),
+                None,
+            )
+            .expect_err("malformed ordered execution must reject before the no-projection result");
+
+        assert_eq!(error.fact_value("reason"), Some(GRAPH_ATTEMPT_COMPLETE_PHASE_UNMODELED_REASON));
+        assert_eq!(error.fact_value("schedule_reason"), Some("runtime_occurrence_order_mismatch"));
     }
 
     #[test]

@@ -43,8 +43,10 @@ use super::{
 use super::{CugraphBfsSource, CugraphBfsSourceVertex};
 #[cfg(feature = "cugraph")]
 use crate::{
-    cugraph_sql::CugraphAlgoExec, native_exec::NexusNativeExecutionConfig,
-    session::session_state_with_native_execution_config, session_config::DataFusionNexusSessionConfig,
+    cugraph_sql::CugraphAlgoExec,
+    native_exec::NexusNativeExecutionConfig,
+    session::{session_state_for_cugraph_host_subplan, session_state_with_native_execution_config},
+    session_config::DataFusionNexusSessionConfig,
 };
 
 #[cfg(feature = "cugraph")]
@@ -113,8 +115,12 @@ impl TableProvider for CugraphAlgoTableProvider {
         // source-only claim on the parent attempt and shadow that graph ticket
         // at execution time.
         let nested_planning_config = native_execution_config.clone().without_query_admission_for_cugraph_subplan();
-        let planning_state = session_state_with_native_execution_config(session_state, nested_planning_config)
-            .unwrap_or_else(|| session_state.clone());
+        let planning_state = if vertex_domain.is_string_logical() {
+            session_state_for_cugraph_host_subplan(session_state)
+        } else {
+            session_state_with_native_execution_config(session_state, nested_planning_config)
+                .unwrap_or_else(|| session_state.clone())
+        };
         let scan = LogicalPlanBuilder::scan(table_ref, provider_as_source(provider), None)?.build()?;
         let edge_source_plan = LogicalPlanBuilder::from(scan).project(edge_source_projection(&spec))?.build()?;
         let edge_source = planning_state.create_physical_plan(&edge_source_plan).await?;

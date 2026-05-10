@@ -29,7 +29,7 @@ use super::{
     },
 };
 use crate::{
-    admission::{AttemptRequirement, AttemptReservationEnvelope},
+    admission::{AttemptBoundDerivation, AttemptRequirement, AttemptReservationEnvelope},
     capability::AggregateStrategyExecutionOptions,
     chunk::SourceChunkPlanningOptions,
     error::{QueryError, QueryErrorCode, Result},
@@ -1596,24 +1596,22 @@ impl ExecutionContext {
         })
     }
 
-    /// Validates the pre-admission composed graph schedule immediately before
-    /// the adapter dispatches its first retained-output producer.
-    ///
-    /// Ordinary per-plan validation runs when each fragment executes. This
-    /// earlier check additionally binds the aggregate consumer scope, producer
-    /// occurrence order, immutable grant, and runtime device to the one
-    /// schedule that was priced by the query service.
-    pub fn validate_admitted_composed_graph_attempt(
+    /// Validates one composed attempt against its final engine-selected bound.
+    /// Ordered envelopes validate their immutable schedule before publishing a
+    /// projection only for attempt-bound contexts; conservative envelopes have
+    /// no ordered projection but still require the same plan, grant, and device
+    /// checks.
+    pub fn validate_admitted_composed_attempt(
         &self,
         consumer_plan: &QueryPlan,
         occurrence_ids: &[String],
-    ) -> Result<()> {
+    ) -> Result<Option<AttemptComposedScheduleProjection>> {
         self.validate_admitted_plan_capabilities(consumer_plan)?;
         let immutable_grant = self.memory_grant()?.ok_or_else(|| {
             QueryError::new(
                 QueryErrorCode::UnsupportedPlanShape,
                 "nexus_query_engine.runtime.context",
-                "a composed graph attempt requires the immutable grant issued with its schedule",
+                "an admitted attempt requires the immutable grant issued with its envelope",
             )
             .with_fact("reason", "graph_attempt_complete_phase_unmodeled")
             .with_fact("schedule_reason", "missing_immutable_grant")
@@ -1623,7 +1621,7 @@ impl ExecutionContext {
             return Err(QueryError::new(
                 QueryErrorCode::UnsupportedPlanShape,
                 "nexus_query_engine.runtime.context",
-                "the composed graph runtime device differs from the admitted immutable grant device",
+                "the runtime device differs from the admitted immutable grant device",
             )
             .with_fact("reason", "graph_attempt_complete_phase_unmodeled")
             .with_fact("schedule_reason", "runtime_device_grant_mismatch")
@@ -1634,12 +1632,26 @@ impl ExecutionContext {
             QueryError::new(
                 QueryErrorCode::UnsupportedPlanShape,
                 "nexus_query_engine.runtime.context",
-                "a composed graph attempt requires an admitted ordered reservation schedule",
+                "an admitted attempt requires an admitted reservation envelope",
             )
             .with_fact("reason", "graph_attempt_complete_phase_unmodeled")
             .with_fact("schedule_reason", "missing_admitted_schedule")
         })?;
-        envelope.validate_composed_execution(consumer_plan, occurrence_ids, immutable_grant.budget_bytes())
+        match envelope.bound_derivation() {
+            Some(AttemptBoundDerivation::OrderedTimeline) => envelope.validate_and_project_composed_execution(
+                consumer_plan,
+                occurrence_ids,
+                immutable_grant.budget_bytes(),
+                self.attempt_id.map(|attempt_id| (attempt_id, runtime_device_ordinal, immutable_grant.grant_id())),
+            ),
+            Some(AttemptBoundDerivation::ConservativeOwnerSum) => Ok(None),
+            None => Err(QueryError::new(
+                QueryErrorCode::UnsupportedPlanShape,
+                "nexus_query_engine.runtime.context",
+                "an admitted attempt has no selected bound derivation",
+            )
+            .with_fact("reason", "attempt_bound_derivation_unavailable")),
+        }
     }
 
     /// Returns the immutable composed schedule priced by this admitted

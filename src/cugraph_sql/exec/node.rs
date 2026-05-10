@@ -7,7 +7,7 @@ pub struct CugraphAlgoExec {
     pub(super) spec: CugraphAlgorithmSpec,
     pub(super) edge_source: Arc<dyn ExecutionPlan>,
     pub(super) predicate_sources: Vec<Arc<dyn ExecutionPlan>>,
-    pub(super) predicate_row_upper_bounds: Vec<Option<u64>>,
+    pub(super) input_row_bounds: CugraphInputRowBounds,
     pub(super) projection: Option<Vec<usize>>,
     pub(super) limit: Option<usize>,
     pub(super) native_execution_config: NexusNativeExecutionConfig,
@@ -79,11 +79,7 @@ impl CugraphAlgoExec {
         let schema = projected_schema(&spec.output_schema, projection.as_ref())?;
         let edge_source_canonical_facts = cugraph_edge_canonical_facts(edge_source.as_ref(), &spec);
         let edge_normalize_inserted = cugraph_edge_normalize_inserted(&spec, &edge_source_canonical_facts);
-        let predicate_row_upper_bounds = predicate_sources
-            .iter()
-            .map(|source| exact_execution_plan_output_rows(source.as_ref()))
-            .collect::<Result<Vec<_>>>()?;
-        let edge_row_upper_bound = edge_source_output_rows(edge_source.as_ref())?;
+        let input_row_bounds = CugraphInputRowBounds::from_execution_plans(edge_source.as_ref(), &predicate_sources)?;
         let edge_vertex_upper_bound =
             edge_source_graph_vertex_estimate(edge_source.as_ref()).map(|estimate| estimate.count);
         preflight_cugraph_query_plan(
@@ -93,7 +89,7 @@ impl CugraphAlgoExec {
             projection.as_ref(),
             limit,
             edge_normalize_inserted,
-            edge_row_upper_bound,
+            input_row_bounds.edge_row_upper_bound(),
             edge_vertex_upper_bound,
         )?;
         let graph_residency =
@@ -107,7 +103,7 @@ impl CugraphAlgoExec {
             spec,
             edge_source,
             predicate_sources,
-            predicate_row_upper_bounds,
+            input_row_bounds,
             projection,
             limit,
             native_execution_config,
@@ -134,18 +130,17 @@ impl CugraphAlgoExec {
 
     #[cfg(test)]
     pub(crate) fn graph_model_ask_bytes_for_admission_ticket(&self) -> Result<Option<GraphAdmissionModelAsk>> {
-        let edge_row_upper_bound = edge_source_output_rows(self.edge_source.as_ref())?;
         let edge_vertex_upper_bound =
             edge_source_graph_vertex_estimate(self.edge_source.as_ref()).map(|estimate| estimate.count);
         let (graph_plan, _) = cugraph_execution_capability_proof_with_edge_row_upper_bound(
             &self.spec,
             self.edge_source.schema(),
             self.predicate_sources.iter().map(|source| source.schema()).collect(),
-            &self.predicate_row_upper_bounds,
+            self.input_row_bounds.predicate_row_upper_bounds(),
             self.projection.as_ref(),
             self.limit,
             self.edge_normalize_inserted(),
-            edge_row_upper_bound,
+            self.input_row_bounds.edge_row_upper_bound(),
             edge_vertex_upper_bound,
         )?;
         cugraph_graph_model_ask_bytes(&graph_plan, self.edge_source.as_ref(), &self.native_execution_config)
@@ -183,9 +178,7 @@ impl CugraphAlgoExec {
         }
         self.predicate_sources = predicate_sources;
         // Hydration may replace the edge source with its footer-resolved
-        // physical shape. Re-derive all rowset-bound graph provenance so the
-        // runtime reservation consumes the same source facts as the ticket
-        // minted immediately afterward.
+        // physical shape, so rowset-bound graph provenance must follow it.
         self.graph_residency = cugraph_graph_residency_descriptor(
             &self.spec,
             Arc::clone(&self.edge_source),
@@ -194,25 +187,51 @@ impl CugraphAlgoExec {
         Ok(self)
     }
 
-    pub(crate) fn issue_graph_aware_ticket_after_metadata(mut self, task_context: &TaskContext) -> Result<Self> {
-        self.predicate_row_upper_bounds = self
-            .predicate_sources
-            .iter()
-            .map(|source| exact_execution_plan_output_rows(source.as_ref()))
-            .collect::<Result<Vec<_>>>()?;
-        self.native_execution_config = cugraph_execution_config_after_metadata(
+    pub(super) fn issue_graph_aware_ticket_after_staging(
+        mut self,
+        input_row_bounds: CugraphInputRowBounds,
+        task_context: &TaskContext,
+    ) -> Result<Self> {
+        self.native_execution_config = cugraph_execution_config_after_staging(
             &self.spec,
             self.edge_source.as_ref(),
             &self.predicate_sources,
-            &self.predicate_row_upper_bounds,
+            &input_row_bounds,
             self.projection.as_ref(),
             self.limit,
             self.edge_normalize_inserted(),
             &self.native_execution_config,
             task_context,
         )?;
+        self.input_row_bounds = input_row_bounds;
         self.metrics_capture = self.native_execution_config.new_metrics_capture();
         Ok(self)
+    }
+
+    pub(super) async fn prepare_staged_attempt(
+        self,
+        task_context: Arc<TaskContext>,
+    ) -> Result<(Self, StagedCugraphInputs)> {
+        let prepared = self.prepare_lakehouse_source_metadata(Arc::clone(&task_context)).await?;
+        let cancellation = edge_execution_config(prepared.edge_source.as_ref(), &prepared.native_execution_config)
+            .cancellation()
+            .clone();
+        let max_staging_bytes = prepared.host_boundary_config.max_input_staging_bytes();
+        let collected_inputs = collect_cugraph_inputs(
+            &prepared.spec,
+            Arc::clone(&prepared.edge_source),
+            prepared.predicate_sources.clone(),
+            Arc::clone(&task_context),
+            &cancellation,
+            max_staging_bytes,
+        )
+        .await?;
+        let input_row_bounds = collected_inputs.row_bounds()?;
+        check_host_staging_cancellation(&cancellation)?;
+        let prepared = prepared.issue_graph_aware_ticket_after_staging(input_row_bounds, task_context.as_ref())?;
+        let staged_inputs = collected_inputs.prepare_logical_inputs(&prepared.spec, max_staging_bytes)?;
+        check_host_staging_cancellation(&cancellation)?;
+        Ok((prepared, staged_inputs))
     }
 
     pub(super) fn take_prepared_staged_inputs(&self) -> Result<StagedCugraphInputs> {
@@ -646,11 +665,11 @@ impl CugraphAlgoExec {
                 edge_schema,
                 edge_frame,
                 predicate_frames,
-                &self.predicate_row_upper_bounds,
+                self.input_row_bounds.predicate_row_upper_bounds(),
                 if logical_mapping || path_target.is_some() { None } else { self.projection.as_ref() },
                 if logical_mapping || path_target.is_some() { None } else { self.limit },
                 self.edge_normalize_inserted(),
-                edge_source_output_rows(self.edge_source.as_ref())?,
+                self.input_row_bounds.edge_row_upper_bound(),
                 edge_source_graph_vertex_estimate(self.edge_source.as_ref()).map(|estimate| estimate.count),
                 singleflight_leader,
             )?;
@@ -789,11 +808,11 @@ impl CugraphAlgoExec {
                 edge_schema,
                 edge_frame,
                 predicate_frames,
-                &self.predicate_row_upper_bounds,
+                self.input_row_bounds.predicate_row_upper_bounds(),
                 self.projection.as_ref(),
                 self.limit,
                 self.edge_normalize_inserted(),
-                edge_source_output_rows(self.edge_source.as_ref())?,
+                self.input_row_bounds.edge_row_upper_bound(),
                 edge_source_graph_vertex_estimate(self.edge_source.as_ref()).map(|estimate| estimate.count),
                 singleflight_leader,
             )?;
@@ -819,20 +838,7 @@ impl GpuResidentProducer for CugraphAlgoExec {
         task_context: Arc<TaskContext>,
     ) -> BoxFuture<'a, Result<Arc<dyn ExecutionPlan>>> {
         Box::pin(async move {
-            let mut prepared = self
-                .clone()
-                .prepare_lakehouse_source_metadata(Arc::clone(&task_context))
-                .await?
-                .issue_graph_aware_ticket_after_metadata(task_context.as_ref())?;
-            let staged_inputs = stage_cugraph_inputs(
-                &prepared.spec,
-                Arc::clone(&prepared.edge_source),
-                prepared.predicate_sources.clone(),
-                Arc::clone(&task_context),
-                prepared.native_execution_config.cancellation(),
-                prepared.host_boundary_config.max_input_staging_bytes(),
-            )
-            .await?;
+            let (mut prepared, staged_inputs) = self.clone().prepare_staged_attempt(Arc::clone(&task_context)).await?;
             prepared.prepared_staged_inputs = Some(Arc::new(std::sync::Mutex::new(Some(staged_inputs))));
             Ok(Arc::new(prepared) as Arc<dyn ExecutionPlan>)
         })
@@ -881,18 +887,17 @@ pub(super) fn register_cugraph_execution_spis() {
 
 impl GraphExecutionPlan for CugraphAlgoExec {
     fn graph_execution_capability_proof(&self) -> Result<QueryPlanCapabilityProof> {
-        let edge_row_upper_bound = edge_source_output_rows(self.edge_source.as_ref())?;
         let edge_vertex_upper_bound =
             edge_source_graph_vertex_estimate(self.edge_source.as_ref()).map(|estimate| estimate.count);
         cugraph_execution_capability_proof_with_edge_row_upper_bound(
             &self.spec,
             self.edge_source.schema(),
             self.predicate_sources.iter().map(|source| source.schema()).collect(),
-            &self.predicate_row_upper_bounds,
+            self.input_row_bounds.predicate_row_upper_bounds(),
             self.projection.as_ref(),
             self.limit,
             cugraph_edge_normalize_inserted(&self.spec, &self.edge_source_canonical_facts),
-            edge_row_upper_bound,
+            self.input_row_bounds.edge_row_upper_bound(),
             edge_vertex_upper_bound,
         )
         .map(|(_, proof)| proof)
@@ -1027,19 +1032,7 @@ impl ExecutionPlan for CugraphAlgoExec {
             .with_graph_claim_calibration_capture(self.graph_claim_calibration_capture.clone());
         self.validate_standalone_bounded_sources()?;
         let output = futures::stream::once(async move {
-            let exec = exec
-                .prepare_lakehouse_source_metadata(Arc::clone(&task_context))
-                .await?
-                .issue_graph_aware_ticket_after_metadata(task_context.as_ref())?;
-            let staged_inputs = stage_cugraph_inputs(
-                &exec.spec,
-                Arc::clone(&exec.edge_source),
-                exec.predicate_sources.clone(),
-                Arc::clone(&task_context),
-                exec.native_execution_config.cancellation(),
-                exec.host_boundary_config.max_input_staging_bytes(),
-            )
-            .await?;
+            let (exec, staged_inputs) = exec.prepare_staged_attempt(Arc::clone(&task_context)).await?;
             let execution_config = exec.native_execution_config.clone();
             let task_context = task_context_with_cugraph_execution_ticket(&execution_config, task_context);
             let context_lease =

@@ -537,6 +537,37 @@ async fn cugraph_bfs_relation_source_string_domain_exposes_utf8_logical_schema()
 }
 
 #[tokio::test]
+async fn cugraph_bfs_string_subplans_remain_host_physical_plans() {
+    let state = SessionStateBuilder::new_with_default_features()
+        .with_nexus_native(NexusNativeOptimizerConfig::default())
+        .with_cugraph_sql(CugraphSqlConfig::default())
+        .build();
+    let ctx = SessionContext::new_with_state(state);
+    register_string_bfs_edges(&ctx, "raw_edges");
+    register_string_vertex_memtable(&ctx, "bfs_sources", "vertex_id", &["a"]);
+    register_string_vertex_memtable(&ctx, "included", "vertex_id", &["a", "b"]);
+
+    let df = ctx
+        .sql(
+            "SELECT * FROM cugraph_bfs('raw_edges', NULL, 'src', 'dst', NULL, \
+             '{\"source_vertices_table\":\"bfs_sources\",\
+                \"source_vertex_col\":\"vertex_id\",\
+                \"include_vertices_table\":\"included\",\
+                \"include_vertex_col\":\"vertex_id\",\
+                \"output_mode\":\"normalized\"}')",
+        )
+        .await
+        .unwrap();
+    let plan = df.create_physical_plan().await.unwrap();
+    let cugraph = find_cugraph_algo_exec(plan.as_ref()).expect("logical BFS must retain its host graph boundary");
+    assert_eq!(cugraph.children().len(), 3, "edge, source, and include relations must remain side-input children");
+    assert!(
+        cugraph.children().iter().all(|child| !plan_contains_native_exec(child.as_ref())),
+        "logical BFS child plans must not contain native execution descendants"
+    );
+}
+
+#[tokio::test]
 async fn cugraph_bfs_predicate_options_plan_as_exec_side_inputs() {
     let state = SessionStateBuilder::new_with_default_features()
         .with_nexus_native(NexusNativeOptimizerConfig::default())
@@ -561,6 +592,11 @@ async fn cugraph_bfs_predicate_options_plan_as_exec_side_inputs() {
     assert!(
         plan_display.contains("predicate_source_count=2"),
         "BFS predicate tables should be planned as cuGraph execution side inputs:\n{plan_display}"
+    );
+    let cugraph = find_cugraph_algo_exec(plan.as_ref()).expect("numeric BFS must retain its graph boundary");
+    assert!(
+        cugraph.children().iter().all(|child| plan_contains_native_exec(child.as_ref())),
+        "numeric BFS child relations must retain native execution planning"
     );
 }
 

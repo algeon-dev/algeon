@@ -22,8 +22,17 @@ pub(in crate::exec::bounded) fn execute_bounded_generic_query_plan(
     };
     let mut reservations =
         ReservationTracker::new_for_context(context, device_budget_bytes, metrics, observation_scope)?;
-    let mut committed =
-        execute_bounded_generic_node(context, plan, plan.sink().input(), gpu_inputs, &mut reservations, metrics)?;
+    let mut committed = {
+        let augmented_gpu_inputs = reservations.augment_gpu_inputs(gpu_inputs)?;
+        execute_bounded_generic_node(
+            context,
+            plan,
+            plan.sink().input(),
+            &augmented_gpu_inputs,
+            &mut reservations,
+            metrics,
+        )?
+    };
 
     match plan.sink() {
         ResultSink::GpuResident { .. } => {

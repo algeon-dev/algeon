@@ -5,7 +5,10 @@
 
 use std::{
     collections::{BTreeMap, HashSet},
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
 use arrow::{datatypes::SchemaRef, record_batch::RecordBatch};
@@ -17,15 +20,14 @@ use cudf::{
     },
 };
 
-#[cfg(any(feature = "cugraph", test))]
-use crate::runtime::gpu::ledger::MemoryGrant;
 use crate::{
     error::{QueryError, Result},
     naming::is_datafusion_order_column_name,
     plan::{GraphResidencyDescriptor, JoinNullEquality},
     runtime::{
-        DevicePlacement, ExecutionCancellation, ExecutionContext, cache::local_parquet::GpuLocalParquetSourceCachePin,
-        gpu::ledger::MemoryGrantLiveReservation,
+        DevicePlacement, ExecutionCancellation, ExecutionContext,
+        cache::local_parquet::GpuLocalParquetSourceCachePin,
+        gpu::ledger::{MemoryGrant, MemoryGrantLiveReservation},
     },
 };
 
@@ -34,6 +36,59 @@ use crate::{
 /// Keys are plan-local input names, not global handles. All handles must be
 /// reusable by the same [`ExecutionContext`] that executes the consuming plan.
 pub type GpuResidentInputMap = BTreeMap<String, GpuResultHandle>;
+
+/// Accounting-only retained output debit owned by a bounded execution
+/// tracker. The debit is acquired once and remains charged until the final
+/// clone of the guard is dropped.
+pub(crate) struct RetainedReservationGuard {
+    inner: Arc<RetainedReservationGuardInner>,
+}
+
+struct RetainedReservationGuardInner {
+    debit: Arc<AtomicU64>,
+    bytes: u64,
+}
+
+impl RetainedReservationGuard {
+    pub(crate) fn try_acquire(debit: Arc<AtomicU64>, capacity: u64, bytes: u64) -> Option<Self> {
+        if bytes == 0 {
+            return None;
+        }
+        loop {
+            let current = debit.load(Ordering::Acquire);
+            let next = current.checked_add(bytes)?;
+            if next > capacity {
+                return None;
+            }
+            if debit.compare_exchange_weak(current, next, Ordering::AcqRel, Ordering::Acquire).is_ok() {
+                return Some(Self { inner: Arc::new(RetainedReservationGuardInner { debit, bytes }) });
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn bytes(&self) -> u64 {
+        self.inner.bytes
+    }
+
+    fn belongs_to(&self, debit: &Arc<AtomicU64>) -> bool {
+        Arc::ptr_eq(&self.inner.debit, debit)
+    }
+}
+
+impl Clone for RetainedReservationGuard {
+    fn clone(&self) -> Self {
+        Self { inner: Arc::clone(&self.inner) }
+    }
+}
+
+impl Drop for RetainedReservationGuardInner {
+    fn drop(&mut self) {
+        let previous = self.debit.fetch_sub(self.bytes, Ordering::AcqRel);
+        debug_assert!(previous >= self.bytes, "retained reservation debit underflow");
+    }
+}
+
 /// Owned cuDF DataFrame plus the placement observed when it entered the engine.
 ///
 /// The wrapper preserves the device placement contract while allowing callers
@@ -178,7 +233,6 @@ impl GpuDataFrame {
     ///
     /// This is intentionally distinct from the frame's physical allocation:
     /// callers use it only to avoid reserving an overlapping live input twice.
-    #[cfg(any(feature = "cugraph", test))]
     pub(crate) fn live_reservation_bytes_for(&self, grant: Option<&MemoryGrant>) -> u64 {
         match (self.live_reservation.as_ref(), grant) {
             (Some(reservation), Some(grant)) if reservation.belongs_to(grant) => reservation.bytes(),
@@ -198,6 +252,7 @@ pub struct GpuResultHandle {
     runtime: Arc<cudf::Runtime>,
     device_placement: DevicePlacement,
     live_reservation: Option<MemoryGrantLiveReservation>,
+    retained_reservation_guards: Vec<RetainedReservationGuard>,
     source_cache_pin: Option<GpuLocalParquetSourceCachePin>,
     graph_residency: Option<Arc<GraphResidencyDescriptor>>,
 }
@@ -353,9 +408,30 @@ impl GpuResultHandle {
             runtime: context.shared_runtime()?,
             device_placement: context.device_placement(),
             live_reservation,
+            retained_reservation_guards: Vec::new(),
             source_cache_pin,
             graph_residency,
         })
+    }
+
+    pub(crate) fn with_retained_reservation_guard(mut self, guard: RetainedReservationGuard) -> Self {
+        self.retained_reservation_guards.push(guard);
+        self
+    }
+
+    pub(crate) fn has_retained_reservation_guard(&self, debit: &Arc<AtomicU64>) -> bool {
+        self.retained_reservation_guards.iter().any(|guard| guard.belongs_to(debit))
+    }
+
+    pub(crate) fn retained_reservation_guard_for(&self, debit: &Arc<AtomicU64>) -> Option<RetainedReservationGuard> {
+        self.retained_reservation_guards.iter().find(|guard| guard.belongs_to(debit)).cloned()
+    }
+
+    pub(crate) fn retained_reservation_identity_for(&self, grant: &MemoryGrant) -> Option<(usize, u64)> {
+        self.live_reservation
+            .as_ref()
+            .filter(|reservation| reservation.belongs_to(grant))
+            .map(|reservation| (reservation.identity_key(), reservation.bytes()))
     }
 
     /// Borrow the underlying GPU cuDF frame.
@@ -365,7 +441,15 @@ impl GpuResultHandle {
 
     /// Consume the handle and return its GPU frame wrapper.
     pub fn into_gpu_frame(self) -> GpuDataFrame {
-        let Self { batch, runtime: _, device_placement: _, live_reservation, source_cache_pin, graph_residency } = self;
+        let Self {
+            batch,
+            runtime: _,
+            device_placement: _,
+            live_reservation,
+            retained_reservation_guards: _,
+            source_cache_pin,
+            graph_residency,
+        } = self;
         let mut frame = GpuDataFrame::new_with_residency(batch.into_frame(), live_reservation, source_cache_pin);
         frame.graph_residency = graph_residency;
         frame
@@ -492,7 +576,15 @@ impl GpuResultHandle {
         cancellation: ExecutionCancellation,
         config: HostBatchCursorConfig,
     ) -> Result<GpuHostBatchCursor> {
-        let Self { batch, runtime, device_placement, live_reservation, source_cache_pin, graph_residency } = self;
+        let Self {
+            batch,
+            runtime,
+            device_placement,
+            live_reservation,
+            retained_reservation_guards: _,
+            source_cache_pin,
+            graph_residency,
+        } = self;
         let cursor = batch.into_host_batch_cursor(config).map_err(|error| {
             QueryError::from_cudf(
                 "nexus_query_engine.host_batch_cursor.create",
@@ -577,6 +669,7 @@ impl GpuLocalParquetCachedResult {
             runtime: query_runtime,
             device_placement: context.device_placement(),
             live_reservation: None,
+            retained_reservation_guards: Vec::new(),
             source_cache_pin: Some(pin),
             graph_residency: None,
         })
@@ -840,6 +933,44 @@ mod tests {
         assert_eq!(frame.live_reservation_bytes_for(Some(&owner)), bytes);
         assert_eq!(frame.live_reservation_bytes_for(Some(&foreign)), 0);
         assert_eq!(frame.live_reservation_bytes_for(None), 0);
+    }
+
+    #[test]
+    fn retained_guard_keeps_gpu_result_handle_send_safe() {
+        fn assert_send_sync<T: Send + Sync>() {}
+
+        assert_send_sync::<RetainedReservationGuard>();
+        assert_send_sync::<GpuResultHandle>();
+    }
+
+    #[test]
+    fn gpu_result_handle_retained_bytes_require_the_current_grant() {
+        let runtime = Arc::new(cudf::Runtime::new().unwrap());
+        let governor = DeviceLedger::for_test(runtime.device().ordinal(), 2048, 4);
+        let owner = governor
+            .admit_with_configured_floor_and_soft_working_set_hint_for_test(AdmissionRequestId::new(11), 1, 1024)
+            .unwrap()
+            .expect("owner grant must fit");
+        let foreign = governor
+            .admit_with_configured_floor_and_soft_working_set_hint_for_test(AdmissionRequestId::new(12), 1, 1024)
+            .unwrap()
+            .expect("foreign grant must fit");
+        let (frame, bytes) = frame_with_live_reservation(&runtime, &owner, "id", vec![1, 2, 3]);
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        let context = ExecutionContext::builder().with_shared_runtime(Arc::clone(&runtime)).build().unwrap();
+        let handle = GpuResultHandle::new(&context, frame, Arc::clone(&schema)).unwrap();
+
+        assert_eq!(handle.retained_reservation_identity_for(&owner).map(|(_, value)| value), Some(bytes));
+        assert_eq!(handle.retained_reservation_identity_for(&foreign), None);
+
+        let fresh =
+            GpuResultHandle::new(&context, GpuDataFrame::new(single_i32_frame(&runtime, "id", vec![4, 5, 6])), schema)
+                .unwrap();
+        assert_eq!(fresh.retained_reservation_identity_for(&owner), None);
+        drop(fresh);
+        assert_eq!(owner.live_reserved_bytes(), bytes);
+        drop(handle);
+        assert_eq!(owner.live_reserved_bytes(), 0);
     }
 
     #[test]

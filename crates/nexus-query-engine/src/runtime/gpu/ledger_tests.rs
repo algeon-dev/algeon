@@ -18,6 +18,8 @@ fn requirement(floor: u64, hint: Option<u64>) -> AttemptRequirement {
         estimate_quality: crate::admission::EstimateQuality::Modeled,
         required_capabilities: Vec::new(),
         owner_terms: Vec::new(),
+        bound_derivation: None,
+        requires_composed_producer_binding: false,
         attested_cugraph_graph_execution_scopes: Vec::new(),
         reservation_shapes: Vec::new(),
     }
@@ -503,6 +505,8 @@ fn zero_request_floor_resolves_against_each_candidate_profile() {
         estimate_quality: crate::admission::EstimateQuality::Unknown,
         required_capabilities: Vec::new(),
         owner_terms: Vec::new(),
+        bound_derivation: None,
+        requires_composed_producer_binding: false,
         attested_cugraph_graph_execution_scopes: Vec::new(),
         reservation_shapes: Vec::new(),
     };
@@ -526,6 +530,8 @@ fn request_floor_cannot_lower_the_candidate_profile_floor() {
         estimate_quality: crate::admission::EstimateQuality::Unknown,
         required_capabilities: Vec::new(),
         owner_terms: Vec::new(),
+        bound_derivation: None,
+        requires_composed_producer_binding: false,
         attested_cugraph_graph_execution_scopes: Vec::new(),
         reservation_shapes: Vec::new(),
     };
@@ -546,6 +552,8 @@ fn requirement_floor_above_the_candidate_profile_floor_is_preserved() {
         estimate_quality: crate::admission::EstimateQuality::Unknown,
         required_capabilities: Vec::new(),
         owner_terms: Vec::new(),
+        bound_derivation: None,
+        requires_composed_producer_binding: false,
         attested_cugraph_graph_execution_scopes: Vec::new(),
         reservation_shapes: Vec::new(),
     };
@@ -579,6 +587,8 @@ fn overflowing_floor_is_rejected_structurally() {
         estimate_quality: crate::admission::EstimateQuality::Unknown,
         required_capabilities: Vec::new(),
         owner_terms: Vec::new(),
+        bound_derivation: None,
+        requires_composed_producer_binding: false,
         attested_cugraph_graph_execution_scopes: Vec::new(),
         reservation_shapes: Vec::new(),
     };

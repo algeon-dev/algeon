@@ -255,8 +255,11 @@ fn graph_ticket_proof(exec: &CugraphAlgoExec) -> nexus_query_engine::admission::
 }
 
 fn graph_ticket_after_metadata(exec: CugraphAlgoExec) -> CugraphAlgoExec {
-    exec.issue_graph_aware_ticket_after_metadata(&TaskContext::default())
-        .expect("prepared cuGraph metadata should mint one graph-aware admission ticket")
+    let input_row_bounds =
+        CugraphInputRowBounds::from_execution_plans(exec.edge_source.as_ref(), &exec.predicate_sources)
+            .expect("prepared cuGraph plans should expose row-bound evidence");
+    exec.issue_graph_aware_ticket_after_staging(input_row_bounds, &TaskContext::default())
+        .expect("prepared cuGraph staging should mint one graph-aware admission ticket")
 }
 
 fn graph_ticket_proof_for_native_source(
@@ -788,6 +791,152 @@ async fn cugraph_producer_preparation_stages_host_inputs_before_gpu_execution() 
     assert!(runtime.memory_pool.reserved() > 0, "staged host batches must retain their reservation");
     drop(prepared);
     assert_eq!(runtime.memory_pool.reserved(), 0, "dropping staged inputs must release their reservation");
+}
+
+#[tokio::test]
+async fn cugraph_staged_attempt_uses_exact_filtered_host_rows_once() {
+    let backend = test_gpu_backend();
+    let config = NexusNativeExecutionConfig::bounded(64 * 1024 * 1024, 512, 1, 3, 1)
+        .with_query_admission_source(admission_source(&backend));
+    let runtime = Arc::new(RuntimeEnvBuilder::new().with_memory_limit(16 * 1024 * 1024, 1.0).build().unwrap());
+    let task_context = Arc::new(TaskContext::default().with_runtime(Arc::clone(&runtime)));
+    let edge_source = memory_edge_source(1_000);
+    let schema = edge_source.schema();
+    let predicate =
+        binary(col("src", &schema).unwrap(), Operator::Gt, lit(ScalarValue::Int64(Some(500))), &schema).unwrap();
+    let filtered = FilterExec::try_new(predicate, edge_source).unwrap();
+    let execute_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let edge_source =
+        Arc::new(CountingExec::new(Arc::new(filtered), Arc::clone(&execute_count))) as Arc<dyn ExecutionPlan>;
+    let exec = CugraphAlgoExec::try_new(triangle_spec(), edge_source, vec![], None, None, config)
+        .expect("filtered MemTable edge source should remain a valid graph plan");
+
+    let (prepared, staged) = exec
+        .prepare_staged_attempt(Arc::clone(&task_context))
+        .await
+        .expect("host staging should derive the exact filtered row count before admission");
+
+    assert_eq!(execute_count.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert_eq!(staged.row_bounds().unwrap().edge_row_upper_bound(), Some(499));
+    assert_eq!(prepared.input_row_bounds.edge_row_upper_bound(), Some(499));
+    assert!(
+        prepared.native_execution_config.query_admission_ticket().is_some(),
+        "the graph ticket must be minted only after staged exact rows are available"
+    );
+    assert_eq!(backend.backend().admission_snapshot().unwrap().active_queries, 0);
+    drop(staged);
+    assert_eq!(runtime.memory_pool.reserved(), 0, "dropping staged host ownership must release its reservation");
+}
+
+#[tokio::test]
+async fn cugraph_staged_attempt_preserves_host_edge_and_predicate_row_order() {
+    let backend = test_gpu_backend();
+    let config = NexusNativeExecutionConfig::bounded(64 * 1024 * 1024, 512, 1, 3, 1)
+        .with_query_admission_source(admission_source(&backend));
+    let runtime = Arc::new(RuntimeEnvBuilder::new().with_memory_limit(16 * 1024 * 1024, 1.0).build().unwrap());
+    let task_context = Arc::new(TaskContext::default().with_runtime(Arc::clone(&runtime)));
+    let mut spec = bfs_utf8_spec();
+    let CugraphAlgorithmParams::Bfs(params) = &mut spec.params else { unreachable!("fixture is BFS") };
+    params.source = CugraphBfsSource::Relation(CugraphGraphPredicateTable::new(
+        CugraphTableReference::parse("source_vertices").unwrap(),
+        "vertex_id",
+    ));
+    let source_schema = Arc::new(Schema::new(vec![Field::new("vertex_id", DataType::Utf8, false)]));
+    let source_batch = RecordBatch::try_new(
+        Arc::clone(&source_schema),
+        vec![Arc::new(StringArray::from(vec!["alice", "bob", "carol"])) as ArrayRef],
+    )
+    .unwrap();
+    let source_plan = MemorySourceConfig::try_new_exec(&[vec![source_batch]], source_schema, None).unwrap();
+    let edge_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let predicate_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let edge_source =
+        Arc::new(CountingExec::new(memory_string_edge_source(), Arc::clone(&edge_count))) as Arc<dyn ExecutionPlan>;
+    let predicate_source =
+        Arc::new(CountingExec::new(source_plan, Arc::clone(&predicate_count))) as Arc<dyn ExecutionPlan>;
+    let exec = CugraphAlgoExec::try_new(spec, edge_source, vec![predicate_source], None, None, config)
+        .expect("logical BFS with a host source relation should build");
+
+    let (prepared, staged) = exec
+        .prepare_staged_attempt(Arc::clone(&task_context))
+        .await
+        .expect("host edge and source relation should stage before the graph ticket");
+    let bounds = staged.row_bounds().unwrap();
+
+    assert_eq!(bounds.edge_row_upper_bound(), Some(3));
+    assert_eq!(bounds.predicate_row_upper_bounds(), &[Some(3)]);
+    assert_eq!(prepared.input_row_bounds.edge_row_upper_bound(), Some(3));
+    assert_eq!(prepared.input_row_bounds.predicate_row_upper_bounds(), &[Some(3)]);
+    assert_eq!(edge_count.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert_eq!(predicate_count.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert!(staged.logical_codebook.is_some(), "logical host staging must retain its deterministic codebook");
+    assert_eq!(backend.backend().admission_snapshot().unwrap().active_queries, 0);
+    drop(staged);
+    assert_eq!(runtime.memory_pool.reserved(), 0, "staged edge and predicate ownership must be released together");
+}
+
+#[tokio::test]
+async fn cugraph_native_staging_retains_hard_rows_and_never_executes_a_wrapped_child() {
+    let config = NexusNativeExecutionConfig::bounded_default();
+    let native = native_edge_source(vec![100, 200], &config);
+    let staged = stage_cugraph_inputs(
+        &triangle_spec(),
+        Arc::clone(&native),
+        vec![],
+        Arc::new(TaskContext::default()),
+        &ExecutionCancellation::new(),
+        1024 * 1024,
+    )
+    .await
+    .expect("a native edge source remains a native staging owner");
+    assert!(matches!(&staged.edge, StagedCugraphSource::Native { .. }));
+    assert_eq!(staged.row_bounds().unwrap().edge_row_upper_bound(), Some(300));
+    drop(staged);
+
+    let execute_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let wrapped = Arc::new(CountingExec::new(native, Arc::clone(&execute_count))) as Arc<dyn ExecutionPlan>;
+    let error = stage_cugraph_inputs(
+        &triangle_spec(),
+        wrapped,
+        vec![],
+        Arc::new(TaskContext::default()),
+        &ExecutionCancellation::new(),
+        1024 * 1024,
+    )
+    .await
+    .expect_err("a CPU wrapper must not hide a native child from the host staging boundary");
+    let nexus = error.find_nexus_error().expect("wrapped native rejection remains structured");
+    assert_eq!(nexus.code(), ErrorCode::InvalidExecutionPlan);
+    assert_eq!(execute_count.load(std::sync::atomic::Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn cugraph_staged_attempt_failure_cleans_host_reservation_before_admission() {
+    let backend = test_gpu_backend();
+    let config = NexusNativeExecutionConfig::bounded(64 * 1024 * 1024, 512, 1, 3, 1)
+        .with_query_admission_source(admission_source(&backend));
+    let runtime = Arc::new(RuntimeEnvBuilder::new().with_memory_limit(16 * 1024 * 1024, 1.0).build().unwrap());
+    let task_context = Arc::new(TaskContext::default().with_runtime(Arc::clone(&runtime)));
+    let boundary = GpuIslandHostBoundaryConfig::try_new(1, 1024 * 1024).unwrap();
+    let exec = CugraphAlgoExec::try_new_with_host_boundary_config(
+        triangle_spec(),
+        memory_edge_source(16),
+        vec![],
+        None,
+        None,
+        config,
+        boundary,
+    )
+    .expect("the graph should build before its deliberately tiny host cap is applied");
+
+    let error = exec
+        .prepare_staged_attempt(task_context)
+        .await
+        .expect_err("host staging must fail before an admission ticket or query is acquired");
+    let nexus = error.find_nexus_error().expect("host staging cap failure remains structured");
+    assert_eq!(nexus.code(), ErrorCode::HostStagingLimitExceeded);
+    assert_eq!(backend.backend().admission_snapshot().unwrap().active_queries, 0);
+    assert_eq!(runtime.memory_pool.reserved(), 0, "failed staging must release all host ownership");
 }
 
 #[tokio::test]
@@ -1663,13 +1812,7 @@ async fn installed_backend_datafusion_parquet_graph_ticket_keeps_post_hydration_
         "footer-dependent graph tickets must not survive planning"
     );
 
-    let prepared = exec
-        .clone()
-        .prepare_lakehouse_source_metadata(invocation.task_ctx())
-        .await
-        .unwrap()
-        .issue_graph_aware_ticket_after_metadata(invocation.task_ctx().as_ref())
-        .unwrap();
+    let (prepared, _staged) = exec.clone().prepare_staged_attempt(invocation.task_ctx()).await.unwrap();
     assert_eq!(
         prepared.graph_residency.as_ref().and_then(GraphResidencyDescriptor::graph_vertex_upper_bound),
         Some(3),
@@ -1819,14 +1962,12 @@ async fn qualification_dblp_force_atlas2_ticket_uses_full_footer_metadata() {
             .is_none(),
         "the qualification graph plan must defer admission until its footer evidence is hydrated"
     );
-    let prepared = exec
+    let (prepared, _staged) = exec
         .downcast_ref::<CugraphAlgoExec>()
         .unwrap()
         .clone()
-        .prepare_lakehouse_source_metadata(invocation.task_ctx())
+        .prepare_staged_attempt(invocation.task_ctx())
         .await
-        .unwrap()
-        .issue_graph_aware_ticket_after_metadata(invocation.task_ctx().as_ref())
         .unwrap();
     assert_eq!(
         prepared.graph_residency.as_ref().and_then(GraphResidencyDescriptor::graph_vertex_upper_bound),

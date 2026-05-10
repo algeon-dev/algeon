@@ -18,6 +18,13 @@ pub(super) fn resolve_empty_graph_input(
             return empty_graph_execution_result(context, &node.spec, policy, "vertex_pairs_empty").map(Some);
         }
     }
+    if sanitized_input_rows != 0
+        && policy.edge_input == crate::plan::EmptyGraphEdgeInputAction::BfsEndpointPolicy
+        && let Some(result) =
+            traversal::resolve_empty_bfs_source_input(context, &node.spec, sanitized_edges, side_inputs)?
+    {
+        return Ok(Some(result));
+    }
     if sanitized_input_rows != 0 {
         return Ok(None);
     }

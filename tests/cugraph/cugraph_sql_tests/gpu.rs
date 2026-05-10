@@ -844,7 +844,7 @@ async fn cugraph_sql_gpu_similarity_executes_weighted_jaccard_for_nullable_int64
                FROM cugraph_jaccard(\
                  'similarity_edges', 'src', 'dst', 'weight', \
                  '{\"vertex_pairs_table\":\"candidate_pairs\",\"first_vertex_col\":\"first\",\"second_vertex_col\":\"second\"}'\
-               ) ORDER BY first, second";
+               )";
     let df = ctx.sql(sql).await.unwrap();
     let plan = df.create_physical_plan().await.unwrap();
     let batches = datafusion::physical_plan::collect(Arc::clone(&plan), ctx.task_ctx()).await.unwrap();
