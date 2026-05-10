@@ -98,6 +98,12 @@ impl QueryPlan {
         crate::bounded::analyze_bounded_multi_join_pipeline(self).is_ok()
     }
 
+    /// Returns true when the plan matches the supported multi-join plus
+    /// aggregate-over-join subplan TopK pipeline.
+    pub fn has_bounded_executable_multi_join_aggregate_over_join_subplan_topk_pipeline(&self) -> bool {
+        analyze_bounded_multi_join_aggregate_over_join_subplan_topk_pipeline(self).is_ok()
+    }
+
     /// Returns true when the plan matches the supported keyed-residual join
     /// with a resident grouped local-Parquet aggregate input.
     pub fn has_bounded_executable_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline(&self) -> bool {
@@ -138,6 +144,7 @@ impl QueryPlan {
             && !self.has_bounded_executable_keyless_conditional_join_input_subplan_pipeline()
             && !self.has_bounded_executable_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline()
             && !self.has_bounded_executable_multi_join_pipeline()
+            && !self.has_bounded_executable_multi_join_aggregate_over_join_subplan_topk_pipeline()
             && !self.has_bounded_executable_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline()
             && !self
                 .has_bounded_executable_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_pipeline()

@@ -1,7 +1,7 @@
 //! Error taxonomy for the DataFusion adapter boundary.
 //!
 //! Adapter errors classify failures from DataFusion planning/execution,
-//! GPU-island execution, cuDF calls made directly by the adapter, and native
+//! native execution, cuDF calls made directly by the adapter, and native
 //! `cudf-query-engine` errors wrapped by [`Error::from_native`]. Native errors
 //! keep their original classification in `native_*` facts while this layer maps
 //! them into adapter-level [`ErrorCode`] values suitable for DataFusion.

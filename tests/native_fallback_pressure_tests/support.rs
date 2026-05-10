@@ -256,10 +256,9 @@ pub(super) async fn native_datafusion_planning_report_with_session(
     let optimizer_config = CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred)
         .with_native_execution_config(NativeCudfExecutionConfig::bounded(256 * 1024 * 1024, 64 * 1024 * 1024, 1, 3, 1));
     let native_rule = Arc::new(CudfNativePhysicalOptimizerRule::new(optimizer_config.clone()));
-    let gpu_island_rule = Arc::new(CudfPhysicalOptimizerRule::new(optimizer_config));
     let state = SessionStateBuilder::new_with_default_features()
         .with_config(session_config)
-        .with_cudf_native_and_gpu_island_rules(Arc::clone(&native_rule), gpu_island_rule)
+        .with_cudf_native_rule(Arc::clone(&native_rule))
         .build();
     let ctx = SessionContext::new_with_state(state);
     ctx.register_parquet("bench", path.to_str().unwrap(), ParquetReadOptions::default()).await.unwrap();

@@ -15,9 +15,6 @@ pub(super) fn post_native_execution_path(plan: &dyn ExecutionPlan) -> NativeData
     if contains_native_exec(plan) {
         return NativeDataFusionPostNativeExecutionPath::PartialNative;
     }
-    if contains_gpu_island(plan) {
-        return NativeDataFusionPostNativeExecutionPath::GpuIsland;
-    }
     NativeDataFusionPostNativeExecutionPath::Cpu
 }
 
@@ -26,11 +23,6 @@ fn contains_native_exec(plan: &dyn ExecutionPlan) -> bool {
         || plan.as_any().downcast_ref::<NativeCudfComposedExec>().is_some()
         || plan.as_any().downcast_ref::<NativeCudfGpuProducerExec>().is_some()
         || plan.children().iter().any(|child| contains_native_exec(child.as_ref()))
-}
-
-fn contains_gpu_island(plan: &dyn ExecutionPlan) -> bool {
-    plan.as_any().downcast_ref::<CudfGpuIslandExec>().is_some()
-        || plan.children().iter().any(|child| contains_gpu_island(child.as_ref()))
 }
 
 pub(super) fn join_diagnostics(plan: &dyn ExecutionPlan) -> Vec<NativeJoinDiagnosticSummary> {
@@ -144,9 +136,7 @@ pub(super) fn unsupported_category(
         FallbackReason::NativeBoundedJoinUnsupported => {
             first_join_operator_category(plan).or_else(|| Some("operator_join".to_string()))
         },
-        FallbackReason::InsufficientIslandSize
-        | FallbackReason::PlanPropertyMismatch
-        | FallbackReason::ExplicitCpuPolicy => None,
+        FallbackReason::ExplicitCpuPolicy => None,
     }
 }
 

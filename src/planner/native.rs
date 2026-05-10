@@ -112,17 +112,7 @@ impl PhysicalOptimizerRule for CudfNativePhysicalOptimizerRule {
         *self.state.last_input_plan_shape.lock().expect("native input plan shape mutex poisoned") =
             Some(physical_plan_shape(plan.as_ref()));
 
-        let Some(native_execution_config) = self.config.native_execution_config() else {
-            *self.state.last_report.lock().expect("native planning report mutex poisoned") =
-                Some(PlanningReport::new());
-            *self.state.last_source_diagnostics.lock().expect("native source diagnostics mutex poisoned") = Vec::new();
-            *self
-                .state
-                .last_bounded_join_reservation_facts
-                .lock()
-                .expect("native bounded join reservation facts mutex poisoned") = BTreeMap::new();
-            return Ok(plan);
-        };
+        let native_execution_config = self.config.native_execution_config();
 
         let optimized = match self.phase {
             NativeOptimizerPhase::CountOnlyProbe => {

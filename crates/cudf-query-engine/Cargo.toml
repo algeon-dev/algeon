@@ -3,7 +3,7 @@ name = "cudf-query-engine"
 description = "Native cudf-rs query engine contracts for DataFusion-free GPU plans."
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.91.1"
+rust-version = "1.92"
 
 [dependencies]
 arrow = { workspace = true }

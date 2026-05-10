@@ -37,28 +37,27 @@ use datafusion::{
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
 use datafusion_cudf::{
-    CudfNativePhysicalOptimizerRule, CudfOptimizerConfig, CudfPhysicalOptimizerRule, CudfSessionStateBuilderExt,
-    GpuCandidate, GpuFallbackPolicy, NATIVE_DATAFUSION_EXECUTION_TSV_HEADER,
-    NATIVE_DATAFUSION_EXECUTION_TSV_SCHEMA_VERSION, NATIVE_DATAFUSION_PLANNING_TSV_HEADER,
-    NATIVE_DATAFUSION_PLANNING_TSV_SCHEMA_VERSION, NATIVE_FALLBACK_PRESSURE_TSV_HEADER,
-    NATIVE_FALLBACK_PRESSURE_TSV_SCHEMA_VERSION, NativeCudfComposedExec, NativeCudfExec, NativeCudfExecutionConfig,
-    NativeCudfGpuProducerExec, NativeDataFusionExecutionReport, NativeDataFusionExecutionWorkloadItem,
-    NativeDataFusionPlanningOutcome, NativeDataFusionPlanningReport, NativeDataFusionPlanningWorkloadItem,
-    NativeDataFusionPostNativeExecutionPath, NativeDataFusionRuntime, NativeDataFusionRuntimeOutcome,
-    NativeFallbackPressureOutcome, NativeFallbackPressureReport, NativeFallbackPressureWorkloadItem,
-    NativePlanningDiagnostics, PlanningReport, TPCH_QUERY_COUNT, TPCH_TABLES,
+    CudfNativePhysicalOptimizerRule, CudfOptimizerConfig, CudfSessionStateBuilderExt, GpuCandidate, GpuFallbackPolicy,
+    NATIVE_DATAFUSION_EXECUTION_TSV_HEADER, NATIVE_DATAFUSION_EXECUTION_TSV_SCHEMA_VERSION,
+    NATIVE_DATAFUSION_PLANNING_TSV_HEADER, NATIVE_DATAFUSION_PLANNING_TSV_SCHEMA_VERSION,
+    NATIVE_FALLBACK_PRESSURE_TSV_HEADER, NATIVE_FALLBACK_PRESSURE_TSV_SCHEMA_VERSION, NativeCudfComposedExec,
+    NativeCudfExec, NativeCudfExecutionConfig, NativeCudfGpuProducerExec, NativeDataFusionExecutionReport,
+    NativeDataFusionExecutionWorkloadItem, NativeDataFusionPlanningOutcome, NativeDataFusionPlanningReport,
+    NativeDataFusionPlanningWorkloadItem, NativeDataFusionPostNativeExecutionPath, NativeDataFusionRuntime,
+    NativeDataFusionRuntimeOutcome, NativeFallbackPressureOutcome, NativeFallbackPressureReport,
+    NativeFallbackPressureWorkloadItem, NativePlanningDiagnostics, PlanningReport, TPCH_QUERY_COUNT, TPCH_TABLES,
     describe_tpch_dataset_with_content_fingerprint, tiny_tpch_dataset_metadata,
     tpch_datafusion_planning_workload_items, tpch_fallback_pressure_workload_items, tpch_query_ids,
     tpch_report_session_config, tpch_scalar_fallback_pressure_workload_items, write_tiny_tpch_parquet_dataset,
 };
 
 const EXPECTED_BOUNDED_TPCH_ACCEPTED: &[&str] = &[
-    "q01", "q03", "q04", "q05", "q06", "q07", "q08", "q09", "q10", "q11", "q12", "q13", "q14", "q15", "q16", "q19",
-    "q21", "q17", "q18", "q20", "q22",
+    "q01", "q02", "q03", "q04", "q05", "q06", "q07", "q08", "q09", "q10", "q11", "q12", "q13", "q14", "q15", "q16",
+    "q19", "q21", "q17", "q18", "q20", "q22",
 ];
 const EXPECTED_BOUNDED_TPCH_JOIN_ACCEPTED: &[&str] = &[
-    "q03", "q04", "q05", "q07", "q08", "q09", "q10", "q11", "q12", "q13", "q14", "q15", "q16", "q17", "q19", "q21",
-    "q18", "q20", "q22",
+    "q02", "q03", "q04", "q05", "q07", "q08", "q09", "q10", "q11", "q12", "q13", "q14", "q15", "q16", "q17", "q19",
+    "q21", "q18", "q20", "q22",
 ];
 
 #[path = "native_fallback_pressure_tests/execution_reports.rs"]

@@ -1,6 +1,26 @@
 use super::*;
 
 pub(in crate::bounded_join_admission) fn aggregate_over_join_subplan_topk_plan() -> cudf_query_engine::QueryPlan {
+    aggregate_over_join_subplan_topk_plan_inner(AggregateOverJoinSubplanTopKVariant::Admitted)
+}
+
+pub(in crate::bounded_join_admission) fn aggregate_over_join_subplan_topk_variant_plan(
+    variant: AggregateOverJoinSubplanTopKVariant,
+) -> cudf_query_engine::QueryPlan {
+    aggregate_over_join_subplan_topk_plan_inner(variant)
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(in crate::bounded_join_admission) enum AggregateOverJoinSubplanTopKVariant {
+    Admitted,
+    MissingFetchLimit,
+    ScalarAggregateSubplan,
+    ShallowMultiJoinSide,
+}
+
+fn aggregate_over_join_subplan_topk_plan_inner(
+    variant: AggregateOverJoinSubplanTopKVariant,
+) -> cudf_query_engine::QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let a = source(&mut builder, "aggregate-over-join-topk-a");
     let b = source(&mut builder, "aggregate-over-join-topk-b");
@@ -10,10 +30,26 @@ pub(in crate::bounded_join_admission) fn aggregate_over_join_subplan_topk_plan()
     let f = source(&mut builder, "aggregate-over-join-topk-f");
 
     let ab = join(&mut builder, a, b, "ab");
-    let abc = join(&mut builder, ab, c, "abc");
-    let left_tree = join(&mut builder, abc, d, "left_tree");
+    let left_tree = match variant {
+        AggregateOverJoinSubplanTopKVariant::ShallowMultiJoinSide => ab,
+        AggregateOverJoinSubplanTopKVariant::Admitted
+        | AggregateOverJoinSubplanTopKVariant::MissingFetchLimit
+        | AggregateOverJoinSubplanTopKVariant::ScalarAggregateSubplan => {
+            let abc = join(&mut builder, ab, c, "abc");
+            join(&mut builder, abc, d, "left_tree")
+        },
+    };
     let aggregate_join_input = join(&mut builder, e, f, "aggregate_join_input");
-    let aggregate = grouped_aggregate(&mut builder, aggregate_join_input);
+    let aggregate = match variant {
+        AggregateOverJoinSubplanTopKVariant::ScalarAggregateSubplan => {
+            scalar_aggregate(&mut builder, aggregate_join_input)
+        },
+        AggregateOverJoinSubplanTopKVariant::Admitted
+        | AggregateOverJoinSubplanTopKVariant::MissingFetchLimit
+        | AggregateOverJoinSubplanTopKVariant::ShallowMultiJoinSide => {
+            grouped_aggregate(&mut builder, aggregate_join_input)
+        },
+    };
     let aggregate_projection = project_key_value(&mut builder, aggregate);
     let root = join(&mut builder, left_tree, aggregate_projection, "root");
     let projection = project_key_value(&mut builder, root);
@@ -22,7 +58,15 @@ pub(in crate::bounded_join_admission) fn aggregate_over_join_subplan_topk_plan()
         SortSpec::new(vec![SortExpr::new(Expr::column("k"), false, false)]),
         key_value_schema(),
     );
-    builder.finish_with_host_sink(sort)
+    match variant {
+        AggregateOverJoinSubplanTopKVariant::MissingFetchLimit => builder.finish_with_host_sink(sort),
+        AggregateOverJoinSubplanTopKVariant::Admitted
+        | AggregateOverJoinSubplanTopKVariant::ScalarAggregateSubplan
+        | AggregateOverJoinSubplanTopKVariant::ShallowMultiJoinSide => {
+            let limit = builder.add_limit(sort, LimitSpec::fetch(100), key_value_schema());
+            builder.finish_with_host_sink(limit)
+        },
+    }
 }
 
 pub(in crate::bounded_join_admission) fn resident_grouped_aggregate_input_post_join_aggregate_topk_plan()
@@ -162,6 +206,14 @@ fn grouped_aggregate(builder: &mut QueryPlanBuilder, input: cudf_query_engine::N
             vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("v"), "v")],
         ),
         key_value_schema(),
+    )
+}
+
+fn scalar_aggregate(builder: &mut QueryPlanBuilder, input: cudf_query_engine::NodeId) -> cudf_query_engine::NodeId {
+    builder.add_aggregate(
+        input,
+        AggregateSpec::new(vec![], vec![AggregateExpr::new(AggregateFunction::Min, Expr::column("v"), "v")]),
+        Arc::new(Schema::new(vec![Field::new("v", DataType::Int64, true)])),
     )
 }
 

@@ -17,7 +17,7 @@ use datafusion::{
 use datafusion_cudf::{
     CandidateOutcome, CudfNativePhysicalOptimizerRule, CudfOptimizerConfig, ErrorCode, FallbackReason,
     GpuFallbackPolicy, NativeCudfComposedExec, NativeCudfExec, NativeCudfExecutionConfig, NativeCudfGpuProducerExec,
-    TPCH_QUERIES, cudf_physical_optimizer_rules, lower_physical_plan_to_native, write_tiny_tpch_parquet_dataset,
+    TPCH_QUERIES, cudf_native_physical_optimizer_rules, lower_physical_plan_to_native, write_tiny_tpch_parquet_dataset,
 };
 
 #[path = "native_exec_tests/bounded_join.rs"]
@@ -192,7 +192,7 @@ fn native_optimizer_rule_obeys_gpu_only_policy_for_rejected_plan() {
     };
     let adapter_error = source.downcast_ref::<datafusion_cudf::Error>().expect("expected datafusion-cudf Error");
 
-    assert_eq!(adapter_error.code(), ErrorCode::GpuCandidateRejected);
+    assert_eq!(adapter_error.code(), ErrorCode::NativeCandidateRejected);
     assert_eq!(adapter_error.fact_value("fallback_reason"), Some("unsupported_expression"));
     assert!(error.to_string().contains("unsupported_expression"));
 
@@ -236,22 +236,20 @@ fn native_optimizer_rule_rewrites_supported_child_under_host_arrow_cpu_parent() 
 }
 
 #[test]
-fn native_optimizer_rule_is_inserted_before_gpu_island_rule_when_enabled() {
-    let rules = cudf_physical_optimizer_rules(native_optimizer_config());
+fn native_optimizer_rule_is_inserted_before_final_validation() {
+    let rules = cudf_native_physical_optimizer_rules(native_optimizer_config());
     let names = rules.iter().map(|rule| rule.name()).collect::<Vec<_>>();
 
     let count_only_position = names.iter().position(|name| *name == "datafusion_cudf_native_count_only").unwrap();
     let aggregate_statistics_position = names.iter().position(|name| *name == "aggregate_statistics").unwrap();
     let native_position = names.iter().position(|name| *name == "datafusion_cudf_native").unwrap();
-    let gpu_position = names.iter().position(|name| *name == "datafusion_cudf_gpu_island").unwrap();
     let sanity_position = names.iter().position(|name| *name == "SanityCheckPlan").unwrap();
     assert!(count_only_position < aggregate_statistics_position);
     assert!(aggregate_statistics_position < native_position);
-    assert!(native_position < gpu_position);
-    assert!(gpu_position < sanity_position);
+    assert!(native_position < sanity_position);
 
-    let default_rules = cudf_physical_optimizer_rules(CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred));
+    let default_rules = cudf_native_physical_optimizer_rules(CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred));
     let default_names = default_rules.iter().map(|rule| rule.name()).collect::<Vec<_>>();
-    assert!(!default_names.contains(&"datafusion_cudf_native"));
-    assert!(!default_names.contains(&"datafusion_cudf_native_count_only"));
+    assert!(default_names.contains(&"datafusion_cudf_native"));
+    assert!(default_names.contains(&"datafusion_cudf_native_count_only"));
 }

@@ -139,35 +139,58 @@ fn bounded_keyed_hash_join_resident_subplan_pipeline_recognizer_stays_narrow() {
 }
 
 #[test]
-fn bounded_remaining_tpch_topologies_report_structural_blockers_without_admission() {
-    for (plan, expected_family, expected_blocker) in [(
-        aggregate_over_join_subplan_topk_plan(),
-        "multi_join_with_aggregate_over_join_subplan_topk",
-        "bounded_multi_join_aggregate_over_join_subplan_topk_executor_missing",
-    )] {
-        assert!(!plan.has_bounded_executable_root_join(), "{expected_family}");
-        assert!(!plan.has_bounded_executable_join_pipeline(), "{expected_family}");
-        assert!(!plan.has_bounded_executable_keyless_conditional_join_input_subplan_pipeline(), "{expected_family}");
+fn bounded_multi_join_aggregate_over_join_subplan_topk_pipeline_is_executable() {
+    let plan = aggregate_over_join_subplan_topk_plan();
+
+    assert!(!plan.has_bounded_executable_root_join());
+    assert!(!plan.has_bounded_executable_join_pipeline());
+    assert!(!plan.has_bounded_executable_keyless_conditional_join_input_subplan_pipeline());
+    assert!(!plan.has_bounded_executable_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline());
+    assert!(!plan.has_bounded_executable_multi_join_pipeline());
+    assert!(plan.has_bounded_executable_multi_join_aggregate_over_join_subplan_topk_pipeline());
+    assert!(!plan.has_bounded_executable_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline());
+    assert!(plan.bounded_join_unsupported_shape_facts(ExecutionBoundaryPolicy::default()).is_none());
+
+    let facts = plan
+        .bounded_join_modeled_facts(ExecutionBoundaryPolicy::default())
+        .expect("aggregate-over-join subplan TopK pipeline should produce modeled bounded facts");
+    assert_eq!(facts.get("bounded_join_execution_status").map(String::as_str), Some("enabled"));
+    assert_eq!(
+        facts.get("bounded_join_execution_family").map(String::as_str),
+        Some("multi_join_with_aggregate_over_join_subplan_topk")
+    );
+    assert_eq!(facts.get("bounded_join_lower_level_blockers").map(String::as_str), Some(""));
+    assert_eq!(facts.get("blocked_reservations").map(String::as_str), Some(""));
+    assert_eq!(facts.get("missing_reservations").map(String::as_str), Some(""));
+    assert!(facts.get("bounded_join_reservation_statuses").is_some_and(|value| {
+        value.contains("source_read:modeled")
+            && value.contains("operator_output:modeled")
+            && value.contains("final_sort:modeled")
+    }));
+    assert!(
+        facts
+            .get("bounded_join_contract_modes")
+            .is_some_and(|value| value.contains("final_sort_contract:hard_budgeted_report"))
+    );
+}
+
+#[test]
+fn bounded_multi_join_aggregate_over_join_subplan_topk_pipeline_recognizer_stays_narrow() {
+    for variant in [
+        AggregateOverJoinSubplanTopKVariant::MissingFetchLimit,
+        AggregateOverJoinSubplanTopKVariant::ScalarAggregateSubplan,
+        AggregateOverJoinSubplanTopKVariant::ShallowMultiJoinSide,
+    ] {
+        let plan = aggregate_over_join_subplan_topk_variant_plan(variant);
+
         assert!(
-            !plan.has_bounded_executable_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline(),
-            "{expected_family}"
+            !plan.has_bounded_executable_multi_join_aggregate_over_join_subplan_topk_pipeline(),
+            "{variant:?} must not be admitted by the aggregate-over-join TopK family"
         );
-        assert!(!plan.has_bounded_executable_multi_join_pipeline(), "{expected_family}");
         assert!(
-            !plan.has_bounded_executable_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline(),
-            "{expected_family}"
+            plan.bounded_join_unsupported_shape_facts(ExecutionBoundaryPolicy::default()).is_some(),
+            "{variant:?} should remain rejected with bounded unsupported-shape facts"
         );
-        let facts = plan
-            .bounded_join_unsupported_shape_facts(ExecutionBoundaryPolicy::default())
-            .expect("remaining TPC-H topology should produce unsupported-shape facts");
-        assert_eq!(facts.get("bounded_join_execution_status").map(String::as_str), Some("unsupported_plan_shape"));
-        assert_eq!(facts.get("bounded_join_blocked_join_family").map(String::as_str), Some(expected_family));
-        assert_eq!(facts.get("bounded_join_shape_blocker").map(String::as_str), Some(expected_blocker));
-        assert_eq!(facts.get("bounded_join_specific_blocker").map(String::as_str), Some(expected_blocker));
-        assert_eq!(facts.get("bounded_join_lower_level_blockers").map(String::as_str), Some(""));
-        assert_eq!(facts.get("blocked_reservations").map(String::as_str), Some(""));
-        assert_eq!(facts.get("missing_reservations").map(String::as_str), Some(""));
-        assert_eq!(facts.get("bounded_join_required_lower_level_contract").map(String::as_str), None);
     }
 }
 

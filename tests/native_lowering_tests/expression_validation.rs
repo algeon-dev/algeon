@@ -252,7 +252,6 @@ fn every_rejected_native_candidate_has_stable_rejection_code() {
                 panic!("expected only rejected native candidates");
             };
             assert!(!reason.code().is_empty());
-            assert_ne!(reason.code(), "plan_property_mismatch");
         }
     }
 

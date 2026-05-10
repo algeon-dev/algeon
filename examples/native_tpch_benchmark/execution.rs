@@ -96,10 +96,9 @@ async fn plan_native_query_with_resources(
     let optimizer_config = CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred)
         .with_native_execution_config(config.native_execution_config_with_resources(resources));
     let native_rule = Arc::new(CudfNativePhysicalOptimizerRule::new(optimizer_config.clone()));
-    let gpu_island_rule = Arc::new(CudfPhysicalOptimizerRule::new(optimizer_config));
     let state = SessionStateBuilder::new_with_default_features()
         .with_config(tpch_report_session_config())
-        .with_cudf_native_and_gpu_island_rules(Arc::clone(&native_rule), gpu_island_rule)
+        .with_cudf_native_rule(Arc::clone(&native_rule))
         .build();
     let ctx = SessionContext::new_with_state(state);
     dataset::register_tpch_tables(&ctx, metadata).await?;

@@ -17,7 +17,8 @@ mod remaining_topologies;
 mod resident_subplan;
 
 pub(super) use remaining_topologies::{
-    aggregate_over_join_subplan_topk_plan, resident_grouped_aggregate_input_post_join_aggregate_topk_plan,
+    AggregateOverJoinSubplanTopKVariant, aggregate_over_join_subplan_topk_plan,
+    aggregate_over_join_subplan_topk_variant_plan, resident_grouped_aggregate_input_post_join_aggregate_topk_plan,
     resident_grouped_aggregate_subquery_filter_plan,
 };
 pub(super) use resident_subplan::{

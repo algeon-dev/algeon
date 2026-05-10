@@ -80,7 +80,6 @@ impl NativeDataFusionRuntimeOutcome {
 pub enum NativeDataFusionPostNativeExecutionPath {
     Native,
     PartialNative,
-    GpuIsland,
     Cpu,
 }
 
@@ -89,7 +88,6 @@ impl NativeDataFusionPostNativeExecutionPath {
         match self {
             Self::Native => "native",
             Self::PartialNative => "partial_native",
-            Self::GpuIsland => "gpu_island",
             Self::Cpu => "cpu",
         }
     }

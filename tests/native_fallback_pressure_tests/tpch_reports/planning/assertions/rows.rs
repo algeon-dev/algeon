@@ -94,11 +94,12 @@ pub(super) fn assert_planning_rows(report: &NativeDataFusionPlanningReport, expe
                         ),
                         "q15 should preserve unresolved preflight markers for hard-budgeted contracts"
                     );
-                } else if row.query_id == "q18" || row.query_id == "q20" {
-                    let expected_family = if row.query_id == "q18" {
-                        "hash_join_with_resident_grouped_aggregate_input_post_join_aggregate_topk"
-                    } else {
-                        "multi_join_with_resident_grouped_aggregate_subquery_filter"
+                } else if row.query_id == "q02" || row.query_id == "q18" || row.query_id == "q20" {
+                    let expected_family = match row.query_id.as_str() {
+                        "q02" => "multi_join_with_aggregate_over_join_subplan_topk",
+                        "q18" => "hash_join_with_resident_grouped_aggregate_input_post_join_aggregate_topk",
+                        "q20" => "multi_join_with_resident_grouped_aggregate_subquery_filter",
+                        _ => unreachable!("guarded by query id"),
                     };
                     assert_eq!(
                         row.bounded_join_reservation_facts.get("bounded_join_execution_family").map(String::as_str),

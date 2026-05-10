@@ -18,7 +18,7 @@ pub(super) async fn native_datafusion_sql_plan(
     native_config: NativeCudfExecutionConfig,
 ) -> Arc<dyn ExecutionPlan> {
     let config = CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred).with_native_execution_config(native_config);
-    let state = SessionStateBuilder::new_with_default_features().with_cudf_gpu_islands(config).build();
+    let state = SessionStateBuilder::new_with_default_features().with_cudf_native(config).build();
     let ctx = SessionContext::new_with_state(state);
     ctx.register_parquet("bench", path.to_str().unwrap(), ParquetReadOptions::default()).await.unwrap();
     let df = ctx.sql(sql).await.unwrap();
@@ -33,7 +33,7 @@ pub(super) async fn native_datafusion_lineitem_sql_plan(
     let config = CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred).with_native_execution_config(native_config);
     let state = SessionStateBuilder::new_with_default_features()
         .with_config(tpch_report_session_config())
-        .with_cudf_gpu_islands(config)
+        .with_cudf_native(config)
         .build();
     let ctx = SessionContext::new_with_state(state);
     ctx.register_parquet("lineitem", path.to_str().unwrap(), ParquetReadOptions::default()).await.unwrap();
@@ -49,7 +49,7 @@ pub(super) async fn native_datafusion_tpch_sql_plan(
     let config = CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred).with_native_execution_config(native_config);
     let state = SessionStateBuilder::new_with_default_features()
         .with_config(tpch_report_session_config())
-        .with_cudf_gpu_islands(config)
+        .with_cudf_native(config)
         .build();
     let ctx = SessionContext::new_with_state(state);
     register_tiny_tpch_tables(&ctx, root).await;

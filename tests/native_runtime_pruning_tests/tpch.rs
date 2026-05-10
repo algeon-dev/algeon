@@ -103,17 +103,24 @@ async fn native_runtime_tpch_q7_tiny_bounded_duplicate_nation_identity_matches_c
 }
 
 #[tokio::test]
-async fn native_runtime_tpch_q2_tiny_root_topk_join_matches_cpu() {
+async fn native_runtime_tpch_q2_tiny_bounded_aggregate_over_join_subplan_topk_matches_cpu() {
     let dir = unique_temp_dir("datafusion-cudf-native-runtime-tpch-q2-tiny");
     write_tiny_tpch_parquet_dataset(&dir).unwrap();
     let q2 = TPCH_QUERIES.iter().find(|query| query.id == "q02").expect("TPC-H Q2 query must exist");
     let cpu_batches = cpu_tpch_sql_output(&dir, q2.sql).await;
 
-    let native_plan = native_datafusion_tpch_sql_plan(&dir, q2.sql, unbounded_native_datafusion_config()).await;
+    let physical_plan = tpch_sql_plan(&dir, tpch_report_session_config(), q2.sql).await;
+    let lowering = lower_physical_plan_to_native(Arc::clone(&physical_plan));
+    assert_eq!(lowering.rewritten_count(), 1, "outcomes={:?}", lowering.report.outcomes());
+    assert_eq!(lowering.rejected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
     assert!(
-        displayable(native_plan.as_ref()).indent(false).to_string().contains("NativeCudfExec"),
-        "TPC-H Q2 should be replaced by NativeCudfExec"
+        lowering.plans[0].has_bounded_executable_multi_join_aggregate_over_join_subplan_topk_pipeline(),
+        "Q2 should use the bounded aggregate-over-join subplan TopK path:\n{}",
+        lowering.plans[0]
     );
+
+    let native_plan = native_datafusion_tpch_sql_plan(&dir, q2.sql, native_datafusion_config()).await;
+    assert_native_cudf_exec(&native_plan, "bounded TPC-H Q2 should be replaced by NativeCudfExec");
 
     let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
     cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();

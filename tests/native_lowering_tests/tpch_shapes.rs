@@ -4,28 +4,29 @@ use super::*;
 mod q22;
 
 #[tokio::test]
-async fn tpch_remaining_rejected_queries_expose_bounded_topology_facts() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-tpch-remaining-topologies");
+async fn tpch_recent_bounded_topologies_expose_modeled_facts() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-tpch-recent-topologies");
     write_tiny_tpch_parquet_dataset(&dir).unwrap();
     let items = tpch_fallback_pressure_workload_items(&dir, tpch_report_session_config()).await.unwrap();
 
-    for (query_id, expected_family) in [("q02", "multi_join_with_aggregate_over_join_subplan_topk")] {
-        let item = items.iter().find(|item| item.query_id == query_id).expect("TPC-H workload should include query");
-        let NativeFallbackPressureWorkloadInput::PhysicalPlan(plan) = &item.input else {
-            panic!("{query_id} should produce a physical plan");
-        };
-        let result = lower_physical_plan_to_native(Arc::clone(plan));
-        assert_eq!(result.rewritten_count(), 1, "{query_id} outcomes={:?}", result.report.outcomes());
-        let native_plan = &result.plans[0];
-        let facts = native_plan
-            .bounded_join_unsupported_shape_facts(cudf_query_engine::ExecutionBoundaryPolicy::default())
-            .unwrap_or_else(|| panic!("{query_id} should expose bounded rejection facts:\n{native_plan}"));
-        assert_eq!(
-            facts.get("bounded_join_blocked_join_family").map(String::as_str),
-            Some(expected_family),
-            "{query_id} native plan:\n{native_plan}"
-        );
-    }
+    let q2 = items.iter().find(|item| item.query_id == "q02").expect("TPC-H workload should include q02");
+    let NativeFallbackPressureWorkloadInput::PhysicalPlan(plan) = &q2.input else {
+        panic!("q02 should produce a physical plan");
+    };
+    let result = lower_physical_plan_to_native(Arc::clone(plan));
+    assert_eq!(result.rewritten_count(), 1, "q02 outcomes={:?}", result.report.outcomes());
+    let native_plan = &result.plans[0];
+    assert!(
+        native_plan.has_bounded_executable_multi_join_aggregate_over_join_subplan_topk_pipeline(),
+        "q02 should lower to the executable aggregate-over-join subplan TopK pipeline:\n{native_plan}"
+    );
+    let facts = native_plan
+        .bounded_join_modeled_facts(cudf_query_engine::ExecutionBoundaryPolicy::default())
+        .expect("q02 should expose modeled bounded join facts");
+    assert_eq!(
+        facts.get("bounded_join_execution_family").map(String::as_str),
+        Some("multi_join_with_aggregate_over_join_subplan_topk")
+    );
 
     let q15 = items.iter().find(|item| item.query_id == "q15").expect("TPC-H workload should include q15");
     let NativeFallbackPressureWorkloadInput::PhysicalPlan(plan) = &q15.input else {

@@ -66,10 +66,10 @@ fn benchmark_planning_row_selection_rejects_ambiguous_reports() {
 fn accepted_planning_row_must_use_native_execution_path() {
     execution::validate_decision_grade_native_planning_row("q01", &accepted_planning_row("q01")).unwrap();
 
-    let mut gpu_island = accepted_planning_row("q01");
-    gpu_island.post_native_execution_path = NativeDataFusionPostNativeExecutionPath::GpuIsland;
-    let error = execution::validate_decision_grade_native_planning_row("q01", &gpu_island)
-        .expect_err("TPC-H native readiness benchmark must not accept GPU-island execution");
+    let mut partial_native = accepted_planning_row("q01");
+    partial_native.post_native_execution_path = NativeDataFusionPostNativeExecutionPath::PartialNative;
+    let error = execution::validate_decision_grade_native_planning_row("q01", &partial_native)
+        .expect_err("TPC-H native readiness benchmark must not accept partial native execution");
     assert!(error.to_string().contains("requires post_native_execution_path=native"));
 }
 

@@ -22,9 +22,9 @@ use datafusion::{
 };
 
 use crate::{
-    CandidateOutcome, CudfGpuIslandExec, FallbackReason, NativeCudfComposedExec, NativeCudfExec,
-    NativeCudfGpuProducerExec, lower_physical_plan_to_native, planner::CudfNativePhysicalOptimizerRule,
-    report::GpuCandidate, tpch::TpchDatasetMetadata,
+    CandidateOutcome, FallbackReason, NativeCudfComposedExec, NativeCudfExec, NativeCudfGpuProducerExec,
+    lower_physical_plan_to_native, planner::CudfNativePhysicalOptimizerRule, report::GpuCandidate,
+    tpch::TpchDatasetMetadata,
 };
 
 mod diagnostics;
