@@ -120,7 +120,7 @@ pub(super) fn local_parquet_files(
         {
             native_file = native_file.with_row_groups(row_groups.clone());
         }
-        native_file = attach_row_group_byte_metadata(native_file, &column_requirements);
+        native_file = attach_row_group_byte_metadata(native_file, column_requirements);
         native_files.push(native_file);
     }
     Ok(native_files)

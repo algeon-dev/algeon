@@ -142,6 +142,7 @@ fn execute_global_aggregate_impl(
     Ok(GpuDataFrame::new(output))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn reduce_global_aggregate_column_impl(
     context: &ExecutionContext,
     frame: &DataFrame,

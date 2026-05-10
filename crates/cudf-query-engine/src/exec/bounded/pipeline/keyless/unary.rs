@@ -1,5 +1,6 @@
 use super::*;
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn execute_bounded_keyless_conditional_join_input_subplan_unary(
     context: &ExecutionContext,
     node_id: NodeId,

@@ -640,6 +640,7 @@ fn append_row_group_chunks(
     push_pending_chunk(source_node_id, source, file, file_index, row_groups.len(), metadata, &mut current, chunks);
 }
 
+#[allow(clippy::too_many_arguments)]
 fn push_pending_chunk(
     source_node_id: NodeId,
     source: &LocalParquetSource,

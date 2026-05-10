@@ -181,6 +181,7 @@ fn join_source_retry_policy(context: &ExecutionContext) -> (usize, usize) {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn read_join_leaf_source_chunks_serial(
     context: &ExecutionContext,
     source: &LocalParquetSource,
@@ -690,6 +691,7 @@ fn join_source_read_reservation_request_for_boundary(
     request
 }
 
+#[allow(clippy::too_many_arguments)]
 fn grow_join_source_reservation_to_observed_frame(
     frame: &GpuDataFrame,
     reservation: &mut ActiveReservation,
@@ -880,6 +882,7 @@ fn execute_bounded_join_leaf_projection(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn execute_bounded_join_leaf_unary(
     context: &ExecutionContext,
     node_id: NodeId,

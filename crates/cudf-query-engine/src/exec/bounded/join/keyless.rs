@@ -341,6 +341,7 @@ fn keyless_conditional_join_gather_map_reservation_size_bytes(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn keyless_conditional_join_indices_with_output_size(
     join_type: BoundedKeylessConditionalJoinType,
     left: &DataFrame,

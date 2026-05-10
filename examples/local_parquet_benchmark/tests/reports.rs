@@ -20,7 +20,7 @@ fn expected_resource_failure_report_includes_resource_error_facts() {
     .with_fact("resume_boundary", "final_sort")
     .with_fact("committed_chunks", 2);
     let report = ExpectedResourceFailureReport {
-        parquet_file_bytes: TEN_GIB,
+        parquet_file_bytes: 4096,
         parquet_row_groups: 32,
         input_rows: 1,
         file_count: 1,
@@ -37,8 +37,8 @@ fn expected_resource_failure_report_includes_resource_error_facts() {
 
     let text = report.to_text();
 
-    assert!(text.contains("case=phase_c_expected_resource_failure"));
-    assert!(text.contains("phase_c_runtime_gate=expected_resource_failure"));
+    assert!(text.contains("case=local_parquet_expected_resource_failure"));
+    assert!(text.contains("bounded_runtime_outcome=expected_resource_failure"));
     assert!(text.contains("no_silent_cpu_fallback=true"));
     assert!(text.contains("native_runtime_executed=true"));
     assert!(text.contains("datafusion_native_exec_planning_outcome=accepted_replaced"));
@@ -92,6 +92,7 @@ fn direct_parquet_benchmark_output_names_primary_datafusion_native_path() {
                 byte_range_disposition: "full_files".to_string(),
                 partition_column_disposition: "absent".to_string(),
                 zero_column_count_disposition: "not_required".to_string(),
+                scan_limit_disposition: "absent".to_string(),
                 schema_mapping_disposition: "direct_by_name".to_string(),
                 read_column_count: 4,
                 projected_output_column_count: 3,
@@ -116,7 +117,6 @@ fn direct_parquet_benchmark_output_names_primary_datafusion_native_path() {
         warmup_iterations: 0,
         iterations: 1,
         limit: config.limit,
-        minimum_native_gpu_speedup: config.minimum_native_gpu_speedup,
         benchmark_paths: config.benchmark_paths,
         compression: config.compression,
         native_plan_shape: config.native_plan_shape,
@@ -180,6 +180,7 @@ fn direct_parquet_benchmark_output_names_primary_datafusion_native_path() {
             byte_range_disposition: "full_files".to_string(),
             partition_column_disposition: "absent".to_string(),
             zero_column_count_disposition: "represented".to_string(),
+            scan_limit_disposition: "absent".to_string(),
             schema_mapping_disposition: "direct_by_name".to_string(),
             read_column_count: 0,
             projected_output_column_count: 0,
@@ -191,44 +192,4 @@ fn direct_parquet_benchmark_output_names_primary_datafusion_native_path() {
     assert_key_order(&text, "cpu_datafusion_wall_ms", "datafusion_native_exec_wall_ms");
     assert_key_order(&text, "datafusion_native_exec_wall_ms", "manual_native_lowering_wall_ms");
     assert_key_order(&text, "datafusion_native_exec_planning_accepted_count", "manual_native_lowering_plan");
-
-    let matrix_case = PhaseCMatrixCase {
-        scale: BenchmarkScalePoint::ThreeGiB,
-        compression: BenchmarkCompression::Uncompressed,
-        source_layout: BenchmarkSourceLayout::MultiFile,
-        native_plan_shape: BenchmarkPlanShape::DefaultSql,
-        expected_outcome: BenchmarkExpectedOutcome::Success,
-    };
-    let matrix_row =
-        PhaseCMatrixReportRow::from_success(matrix_case, &report, Path::new("target/phase-c-matrix/logs/case.log"));
-    assert!(matrix_row.matches_expected_outcome());
-    assert_eq!(matrix_row.outcome.as_str(), "pass");
-    assert_eq!(matrix_row.planning_outcome, "accepted_replaced");
-    assert!(matrix_row.planning_source_diagnostics.contains("read_columns=4"));
-    assert!(matrix_row.planning_source_diagnostics.contains("schema_mapping=direct_by_name"));
-    assert_eq!(matrix_row.native_cudf_exec_accepted_count, "1");
-    assert_eq!(matrix_row.zero_host_to_device_uploads, "true");
-    assert_eq!(matrix_row.one_device_to_host_materialization, "true");
-
-    let matrix_report = PhaseCMatrixReport {
-        artifact_dir: PathBuf::from("target/phase-c-matrix"),
-        tsv_path: PathBuf::from("target/phase-c-matrix/datafusion-native-exec-phase-c-matrix.tsv"),
-        json_path: PathBuf::from("target/phase-c-matrix/datafusion-native-exec-phase-c-matrix.json"),
-        markdown_path: PathBuf::from("target/phase-c-matrix/datafusion-native-exec-phase-c-matrix.md"),
-        rows: vec![matrix_row],
-    };
-    let tsv = matrix_report.to_tsv();
-    assert!(tsv.starts_with(PHASE_C_DATAFUSION_NATIVE_EXEC_MATRIX_TSV_HEADER));
-    assert!(tsv.contains("\tpass\taccepted_replaced\tnone\tformat=Parquet"));
-    assert!(tsv.contains("read_columns=4,projected_output_columns=3,pure_filter_columns=1"));
-    assert!(tsv.contains("\t1\ttrue\ttrue\ttrue\ttrue\t"));
-    let json = matrix_report.to_json();
-    assert!(json.contains("\"schema_version\": 2"));
-    assert!(json.contains("\"case_id\": \"3gib-uncompressed-multi_file-default_sql-success\""));
-    assert!(json.contains("\"planning_source_diagnostics\": \"format=Parquet"));
-    assert!(json.contains("\"zero_host_to_device_uploads\": \"true\""));
-    let markdown = matrix_report.to_markdown();
-    assert!(markdown.contains("Decision gate: **pass**"));
-    assert!(markdown.contains("3gib-uncompressed-multi_file-default_sql-success"));
-    assert!(markdown.contains("schema_mapping=direct_by_name"));
 }

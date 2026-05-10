@@ -37,6 +37,8 @@ use shape::{
     validate_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_sides,
     validate_mixed_keyed_residual_join_resident_grouped_aggregate_input_post_root_pipeline,
     validate_mixed_keyed_residual_join_resident_grouped_aggregate_input_sides,
+    validate_multi_join_resident_grouped_aggregate_subquery_filter_pipeline,
+    validate_multi_join_resident_grouped_aggregate_subquery_filter_sides,
     validate_projection_wrapped_aggregate_over_join_subplan_input, validate_source_filter_projection_leaf_pipeline,
 };
 
@@ -64,6 +66,10 @@ pub(crate) enum BoundedJoinPlanSupport {
     /// subtree and whose right input is a projection-wrapped grouped local
     /// Parquet aggregate, followed by grouped aggregate/projection/TopK.
     HashJoinResidentGroupedAggregateInputPostJoinAggregateTopKPipeline,
+    /// A final sort over a semi-filtered multi-join tree whose filter side
+    /// contains one resident grouped local-Parquet aggregate subquery branch and
+    /// a keyed residual comparison against that branch.
+    MultiJoinResidentGroupedAggregateSubqueryFilterPipeline,
     /// A final sort over a keyed root hash join whose inputs are a
     /// supplier/revenue keyed hash join and a scalar aggregate over a resident
     /// grouped revenue subplan.
@@ -102,6 +108,18 @@ pub(crate) struct BoundedHashJoinResidentGroupedAggregateInputPostJoinAggregateT
     pub(crate) stages: Vec<BoundedJoinPipelineStage<'a>>,
     pub(crate) join_subtree_side: JoinSide,
     pub(crate) grouped_aggregate_side: JoinSide,
+}
+
+/// Normalized shape for a multi-join tree filtered by a resident grouped
+/// aggregate subquery. Admission is structural: one root semi-filter joins an
+/// output-producing multi-join side with a multi-join filter side that owns one
+/// grouped local aggregate and one keyed residual comparison against it.
+pub(crate) struct BoundedMultiJoinResidentGroupedAggregateSubqueryFilterPipelineShape<'a> {
+    pub(crate) join_id: NodeId,
+    pub(crate) join: &'a JoinNode,
+    pub(crate) stages: Vec<BoundedJoinPipelineStage<'a>>,
+    pub(crate) output_side: JoinSide,
+    pub(crate) subquery_filter_side: JoinSide,
 }
 
 /// Normalized shape for the resident-revenue family. The name describes the topology:
@@ -193,9 +211,12 @@ pub(crate) fn analyze_bounded_join_plan_support(plan: &QueryPlan) -> BoundedJoin
                             Ok(_) => BoundedJoinPlanSupport::MixedKeyedResidualJoinResidentGroupedAggregateInputPipeline,
                             Err(_) => match analyze_bounded_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_pipeline(plan) {
                                 Ok(_) => BoundedJoinPlanSupport::HashJoinResidentGroupedAggregateInputPostJoinAggregateTopKPipeline,
-                                Err(_) => match analyze_keyed_hash_join_resident_subplan_pipeline(plan) {
-                                    Ok(_) => BoundedJoinPlanSupport::KeyedHashJoinResidentSubplanPipeline,
-                                    Err(_) => BoundedJoinPlanSupport::Unsupported,
+                                Err(_) => match analyze_bounded_multi_join_resident_grouped_aggregate_subquery_filter_pipeline(plan) {
+                                    Ok(_) => BoundedJoinPlanSupport::MultiJoinResidentGroupedAggregateSubqueryFilterPipeline,
+                                    Err(_) => match analyze_keyed_hash_join_resident_subplan_pipeline(plan) {
+                                        Ok(_) => BoundedJoinPlanSupport::KeyedHashJoinResidentSubplanPipeline,
+                                        Err(_) => BoundedJoinPlanSupport::Unsupported,
+                                    },
                                 },
                             },
                         },
@@ -326,5 +347,44 @@ pub(crate) fn analyze_bounded_mixed_keyed_residual_join_resident_grouped_aggrega
         stages: shape.stages,
         join_subtree_side: JoinSide::Right,
         grouped_aggregate_side: JoinSide::Left,
+    })
+}
+
+pub(crate) fn analyze_bounded_multi_join_resident_grouped_aggregate_subquery_filter_pipeline(
+    plan: &QueryPlan,
+) -> std::result::Result<
+    BoundedMultiJoinResidentGroupedAggregateSubqueryFilterPipelineShape<'_>,
+    BoundedJoinPipelineRejection<'_>,
+> {
+    let shape = analyze_bounded_join_pipeline_shape(plan, false)?;
+    validate_multi_join_resident_grouped_aggregate_subquery_filter_pipeline(&shape)?;
+    if validate_multi_join_resident_grouped_aggregate_subquery_filter_sides(
+        plan,
+        shape.join,
+        JoinSide::Left,
+        JoinSide::Right,
+    )
+    .is_ok()
+    {
+        return Ok(BoundedMultiJoinResidentGroupedAggregateSubqueryFilterPipelineShape {
+            join_id: shape.join_id,
+            join: shape.join,
+            stages: shape.stages,
+            output_side: JoinSide::Left,
+            subquery_filter_side: JoinSide::Right,
+        });
+    }
+    validate_multi_join_resident_grouped_aggregate_subquery_filter_sides(
+        plan,
+        shape.join,
+        JoinSide::Right,
+        JoinSide::Left,
+    )?;
+    Ok(BoundedMultiJoinResidentGroupedAggregateSubqueryFilterPipelineShape {
+        join_id: shape.join_id,
+        join: shape.join,
+        stages: shape.stages,
+        output_side: JoinSide::Right,
+        subquery_filter_side: JoinSide::Left,
     })
 }

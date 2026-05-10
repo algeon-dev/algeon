@@ -12,7 +12,6 @@ pub(super) fn test_config() -> LocalParquetBenchmarkConfig {
         warmup_iterations: 0,
         iterations: 1,
         minimum_file_bytes: 1,
-        minimum_native_gpu_speedup: 1.0,
         native_memory_control_policy: NativeMemoryControlPolicy::Bounded {
             device_budget_bytes: DEFAULT_NATIVE_DEVICE_BUDGET_BYTES,
             max_source_chunk_bytes: DEFAULT_NATIVE_MAX_SOURCE_CHUNK_BYTES,
@@ -86,6 +85,7 @@ pub(super) fn test_native_datafusion_planning_report() -> NativeDataFusionPlanni
                 byte_range_disposition: "full_files".to_string(),
                 partition_column_disposition: "absent".to_string(),
                 zero_column_count_disposition: "not_required".to_string(),
+                scan_limit_disposition: "absent".to_string(),
                 schema_mapping_disposition: "direct_by_name".to_string(),
                 read_column_count: 4,
                 projected_output_column_count: 3,

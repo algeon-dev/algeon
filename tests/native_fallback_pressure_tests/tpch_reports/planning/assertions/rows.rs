@@ -94,23 +94,31 @@ pub(super) fn assert_planning_rows(report: &NativeDataFusionPlanningReport, expe
                         ),
                         "q15 should preserve unresolved preflight markers for hard-budgeted contracts"
                     );
-                } else if row.query_id == "q18" {
+                } else if row.query_id == "q18" || row.query_id == "q20" {
+                    let expected_family = if row.query_id == "q18" {
+                        "hash_join_with_resident_grouped_aggregate_input_post_join_aggregate_topk"
+                    } else {
+                        "multi_join_with_resident_grouped_aggregate_subquery_filter"
+                    };
                     assert_eq!(
                         row.bounded_join_reservation_facts.get("bounded_join_execution_family").map(String::as_str),
-                        Some("hash_join_with_resident_grouped_aggregate_input_post_join_aggregate_topk"),
-                        "q18 should report its admitted bounded family"
+                        Some(expected_family),
+                        "{} should report its admitted bounded family",
+                        row.query_id
                     );
                     assert_eq!(
                         row.bounded_join_reservation_facts.get("modeled_reservations").map(String::as_str),
                         Some(expected.modeled_reservations.as_str()),
-                        "q18 should model source, aggregate, hash join, final sort, and materialization reservations"
+                        "{} should model source, aggregate, hash join, final sort, and materialization reservations",
+                        row.query_id
                     );
                     assert_eq!(
                         row.bounded_join_reservation_facts.get("bounded_join_contract_modes").map(String::as_str),
                         Some(
                             "source_contract:hard_budgeted_report,aggregate_contract:hard_budgeted_report,final_sort_contract:hard_budgeted_report"
                         ),
-                        "q18 should claim the shared hard-budgeted source/aggregate/final-sort contracts"
+                        "{} should claim the shared hard-budgeted source/aggregate/final-sort contracts",
+                        row.query_id
                     );
                     assert_eq!(
                         row.bounded_join_reservation_facts
@@ -119,7 +127,8 @@ pub(super) fn assert_planning_rows(report: &NativeDataFusionPlanningReport, expe
                         Some(
                             "source_contract:libcudf_parquet_decoded_output_preflight_unavailable,aggregate_contract:libcudf_groupby_aggregate_temporary_workspace_preflight_unavailable,final_sort_contract:libcudf_final_sort_order_preflight_unavailable"
                         ),
-                        "q18 should preserve unresolved preflight markers for hard-budgeted contracts"
+                        "{} should preserve unresolved preflight markers for hard-budgeted contracts",
+                        row.query_id
                     );
                 } else {
                     assert_eq!(

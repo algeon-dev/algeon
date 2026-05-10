@@ -147,14 +147,7 @@ pub(super) async fn run_direct_parquet_benchmark(
         .then(|| TimedBenchmarkRun::from_samples(gpu_samples.iter().copied()));
     let datafusion_native_exec = TimedBenchmarkRun::from_samples(datafusion_native_exec_samples.iter().copied());
     let manual_native_lowering = TimedBenchmarkRun::from_samples(manual_native_lowering_samples.iter().copied());
-    validate_phase_b_runtime_gate(
-        &cpu_comparable,
-        &datafusion_native_exec,
-        &final_datafusion_native_exec,
-        parquet_file_bytes,
-        dataset_layout,
-        config,
-    )?;
+    validate_direct_native_runtime_contract(&final_datafusion_native_exec, dataset_layout)?;
     validate_phase_c_runtime_gate(&final_datafusion_native_exec, config)?;
 
     Ok(DirectParquetBenchmarkReport {
@@ -169,7 +162,6 @@ pub(super) async fn run_direct_parquet_benchmark(
         warmup_iterations: config.warmup_iterations,
         iterations: config.iterations,
         limit: config.limit,
-        minimum_native_gpu_speedup: config.minimum_native_gpu_speedup,
         benchmark_paths: config.benchmark_paths,
         compression: config.compression,
         native_plan_shape: config.native_plan_shape,

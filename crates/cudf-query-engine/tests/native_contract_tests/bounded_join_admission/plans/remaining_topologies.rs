@@ -69,8 +69,8 @@ pub(in crate::bounded_join_admission) fn resident_grouped_aggregate_subquery_fil
     let grouped_input = grouped_aggregate(&mut builder, lineitem);
     let grouped_projection = project_key_value(&mut builder, grouped_input);
     let cd = join(&mut builder, c, d, "cd");
-    let right_tree = join(&mut builder, grouped_projection, cd, "right_tree");
-    let root = join(&mut builder, left_tree, right_tree, "root");
+    let right_tree = residual_join_against_grouped_aggregate(&mut builder, grouped_projection, cd);
+    let root = semi_join(&mut builder, left_tree, right_tree);
     let sort =
         builder.add_sort(root, SortSpec::new(vec![SortExpr::new(Expr::column("k"), false, false)]), key_value_schema());
     builder.finish_with_host_sink(sort)
@@ -124,6 +124,32 @@ fn semi_join(
             JoinOutputColumn::left(ColumnRef::input(0, "v", "v"), "v"),
         ])
         .with_build_side(JoinSide::Right),
+        key_value_schema(),
+    )
+}
+
+fn residual_join_against_grouped_aggregate(
+    builder: &mut QueryPlanBuilder,
+    grouped: cudf_query_engine::NodeId,
+    subtree: cudf_query_engine::NodeId,
+) -> cudf_query_engine::NodeId {
+    builder.add_join(
+        grouped,
+        subtree,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(ColumnRef::input(0, "k", "k"), ColumnRef::input(1, "k", "k"))],
+        )
+        .with_residual_predicate(Expr::binary(
+            Expr::input_column(1, "v", "v"),
+            BinaryOp::Gt,
+            Expr::input_column(0, "v", "v"),
+        ))
+        .with_output_projection(vec![
+            JoinOutputColumn::right(ColumnRef::input(1, "k", "k"), "k"),
+            JoinOutputColumn::right(ColumnRef::input(1, "v", "v"), "v"),
+        ])
+        .with_build_side(JoinSide::Left),
         key_value_schema(),
     )
 }

@@ -13,7 +13,6 @@ pub(crate) struct DirectParquetBenchmarkReport {
     pub(crate) warmup_iterations: usize,
     pub(crate) iterations: usize,
     pub(crate) limit: usize,
-    pub(crate) minimum_native_gpu_speedup: f64,
     pub(crate) benchmark_paths: BenchmarkPathSet,
     pub(crate) compression: BenchmarkCompression,
     pub(crate) native_plan_shape: BenchmarkPlanShape,
@@ -63,12 +62,10 @@ impl DirectParquetBenchmarkReport {
         push_line(&mut text, format_args!("compression={}", self.compression.name()));
         push_line(&mut text, format_args!("warmups={}", self.warmup_iterations));
         push_line(&mut text, format_args!("iterations={}", self.iterations));
-        push_line(&mut text, format_args!("minimum_native_gpu_speedup={:.3}", self.minimum_native_gpu_speedup));
         push_line(&mut text, format_args!("benchmark_paths={}", self.benchmark_paths.name()));
         push_line(&mut text, format_args!("native_plan_shape={}", self.native_plan_shape.name()));
         push_line(&mut text, format_args!("expected_outcome={}", self.expected_outcome.name()));
-        push_line(&mut text, format_args!("phase_c_decision_matrix_cases={}", phase_c_decision_matrix().len()));
-        push_line(&mut text, format_args!("phase_b_runtime_gate=pass"));
+        push_line(&mut text, format_args!("direct_native_runtime_contract=pass"));
         push_line(
             &mut text,
             format_args!("phase_c_memory_control_policy={}", native_metrics.phase_c_memory_control_policy),
