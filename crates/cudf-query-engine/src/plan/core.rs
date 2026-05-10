@@ -104,6 +104,12 @@ impl QueryPlan {
         analyze_bounded_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline(self).is_ok()
     }
 
+    /// Returns true when the plan matches the supported keyed hash join
+    /// resident subplan pipeline.
+    pub fn has_bounded_executable_keyed_hash_join_resident_subplan_pipeline(&self) -> bool {
+        analyze_keyed_hash_join_resident_subplan_pipeline(self).is_ok()
+    }
+
     /// Returns diagnostic facts for join plans rejected by every bounded join path.
     ///
     /// These facts are explanatory planning/execution diagnostics. They do not
@@ -119,6 +125,7 @@ impl QueryPlan {
             && !self.has_bounded_executable_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline()
             && !self.has_bounded_executable_multi_join_pipeline()
             && !self.has_bounded_executable_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline()
+            && !self.has_bounded_executable_keyed_hash_join_resident_subplan_pipeline()
         {
             Some(bounded_join_unsupported_shape_facts(self, boundary_policy))
         } else {

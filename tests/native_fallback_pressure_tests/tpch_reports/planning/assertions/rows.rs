@@ -67,6 +67,33 @@ pub(super) fn assert_planning_rows(report: &NativeDataFusionPlanningReport, expe
                             .is_some_and(|value| value.contains("final_sort_contract")),
                         "q17 should not claim final_sort contract modes"
                     );
+                } else if row.query_id == "q15" {
+                    assert_eq!(
+                        row.bounded_join_reservation_facts.get("bounded_join_execution_family").map(String::as_str),
+                        Some("keyed_hash_join_resident_subplan_pipeline"),
+                        "q15 should report its admitted bounded family"
+                    );
+                    assert_eq!(
+                        row.bounded_join_reservation_facts.get("modeled_reservations").map(String::as_str),
+                        Some(expected.modeled_reservations.as_str()),
+                        "q15 should model source, aggregate, hash join, final sort, and materialization reservations"
+                    );
+                    assert_eq!(
+                        row.bounded_join_reservation_facts.get("bounded_join_contract_modes").map(String::as_str),
+                        Some(
+                            "source_contract:hard_budgeted_report,aggregate_contract:hard_budgeted_report,final_sort_contract:hard_budgeted_report"
+                        ),
+                        "q15 should claim the shared hard-budgeted source/aggregate/final-sort contracts"
+                    );
+                    assert_eq!(
+                        row.bounded_join_reservation_facts
+                            .get("bounded_join_unresolved_preflight_contracts")
+                            .map(String::as_str),
+                        Some(
+                            "source_contract:libcudf_parquet_decoded_output_preflight_unavailable,aggregate_contract:libcudf_groupby_aggregate_temporary_workspace_preflight_unavailable,final_sort_contract:libcudf_final_sort_order_preflight_unavailable"
+                        ),
+                        "q15 should preserve unresolved preflight markers for hard-budgeted contracts"
+                    );
                 } else {
                     assert_eq!(
                         row.bounded_join_reservation_facts.get("modeled_reservations").map(String::as_str),

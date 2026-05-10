@@ -23,7 +23,7 @@ struct TopKMergeAttempt {
     attempt: usize,
 }
 
-impl<'a, 'plan> FinalSortExecutor<'a, 'plan> {
+impl<'a> FinalSortExecutor<'a> {
     pub(super) fn hierarchical_topk(&mut self, limit: &LimitNode, input: CommittedPartial) -> Result<CommittedPartial> {
         let keep_rows = topk_candidate_rows(limit.spec)?;
         if keep_rows == 0 {
@@ -158,7 +158,7 @@ impl<'a, 'plan> FinalSortExecutor<'a, 'plan> {
                 return Err(RuntimeResourceFacts {
                     memory_boundary: "final_sort_limit",
                     stage: "final_sort",
-                    node_id: self.bounded.aggregate_id,
+                    node_id: self.node_id,
                     attempt: self.max_attempts,
                     max_attempts: self.max_attempts,
                     resume_boundary: "final_sort",
@@ -207,7 +207,7 @@ impl<'a, 'plan> FinalSortExecutor<'a, 'plan> {
         let request =
             MemoryReservationRequest::new(ReservationKind::FinalSort, requested_bytes, self.reservations.budget())
                 .with_memory_boundary("final_sort_topk_chunk")
-                .with_node_id(self.bounded.aggregate_id)
+                .with_node_id(self.node_id)
                 .with_stage("final_sort")
                 .with_attempt(slice.attempt, self.max_attempts);
         let work_reservation = self.reservations.try_reserve(request, self.metrics)?;
@@ -276,7 +276,7 @@ impl<'a, 'plan> FinalSortExecutor<'a, 'plan> {
                 return Err(RuntimeResourceFacts {
                     memory_boundary: "final_sort_topk_chunk",
                     stage: "final_sort",
-                    node_id: self.bounded.aggregate_id,
+                    node_id: self.node_id,
                     attempt: slice.attempt,
                     max_attempts: self.max_attempts,
                     resume_boundary: "final_sort",
@@ -328,7 +328,7 @@ impl<'a, 'plan> FinalSortExecutor<'a, 'plan> {
         let request =
             MemoryReservationRequest::new(ReservationKind::FinalSort, requested_bytes, self.reservations.budget())
                 .with_memory_boundary("final_sort_topk_merge")
-                .with_node_id(self.bounded.aggregate_id)
+                .with_node_id(self.node_id)
                 .with_stage("final_sort")
                 .with_attempt(merge.attempt, self.max_attempts);
         let merge_reservation = self.reservations.try_reserve(request, self.metrics)?;
@@ -371,7 +371,7 @@ impl<'a, 'plan> FinalSortExecutor<'a, 'plan> {
                 return Err(RuntimeResourceFacts {
                     memory_boundary: "final_sort_topk_merge",
                     stage: "final_sort",
-                    node_id: self.bounded.aggregate_id,
+                    node_id: self.node_id,
                     attempt: merge.attempt,
                     max_attempts: self.max_attempts,
                     resume_boundary: "final_sort",

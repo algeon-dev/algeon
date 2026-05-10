@@ -87,14 +87,14 @@ fn bounded_join_reservation_kinds_are_modeled_without_estimates() {
     assert_eq!(requirements.len(), expected.len());
     assert_eq!(contract.model_status(), "modeled");
     assert_eq!(contract.execution_status(), "enabled");
-    assert_eq!(contract.execution_families().len(), 10);
+    assert_eq!(contract.execution_families().len(), 11);
     assert_eq!(
         contract.execution_families_csv(),
-        "root_reusable_hash_join,root_filtered_semi_anti_join,keyless_conditional_join,keyless_conditional_join_input_subplan_pipeline,keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline,root_projected_cross_join,root_mixed_keyed_residual_join,multi_join_reusable_hash_pipeline,multi_join_mixed_keyed_residual_inner_left_semi_left_anti_pipeline,mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline"
+        "root_reusable_hash_join,root_filtered_semi_anti_join,keyless_conditional_join,keyless_conditional_join_input_subplan_pipeline,keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline,root_projected_cross_join,root_mixed_keyed_residual_join,multi_join_reusable_hash_pipeline,multi_join_mixed_keyed_residual_inner_left_semi_left_anti_pipeline,mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline,keyed_hash_join_resident_subplan_pipeline"
     );
     assert_eq!(
         contract.supported_shape_requirement(),
-        "requires_one_of(root_reusable_hash_join,root_filtered_semi_anti_join,keyless_conditional_join,keyless_conditional_join_input_subplan_pipeline,keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline,root_projected_cross_join,root_mixed_keyed_residual_join,multi_join_reusable_hash_pipeline,multi_join_mixed_keyed_residual_inner_left_semi_left_anti_pipeline,mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline)"
+        "requires_one_of(root_reusable_hash_join,root_filtered_semi_anti_join,keyless_conditional_join,keyless_conditional_join_input_subplan_pipeline,keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline,root_projected_cross_join,root_mixed_keyed_residual_join,multi_join_reusable_hash_pipeline,multi_join_mixed_keyed_residual_inner_left_semi_left_anti_pipeline,mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline,keyed_hash_join_resident_subplan_pipeline)"
     );
     assert!(contract.enabled());
 
@@ -151,7 +151,7 @@ fn bounded_join_rejection_facts_are_shared_and_estimate_free() {
     assert_eq!(
         unsupported_shape_facts.get("bounded_join_unsupported_shape").map(String::as_str),
         Some(
-            "requires_one_of(root_reusable_hash_join,root_filtered_semi_anti_join,keyless_conditional_join,keyless_conditional_join_input_subplan_pipeline,keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline,root_projected_cross_join,root_mixed_keyed_residual_join,multi_join_reusable_hash_pipeline,multi_join_mixed_keyed_residual_inner_left_semi_left_anti_pipeline,mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline)"
+            "requires_one_of(root_reusable_hash_join,root_filtered_semi_anti_join,keyless_conditional_join,keyless_conditional_join_input_subplan_pipeline,keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline,root_projected_cross_join,root_mixed_keyed_residual_join,multi_join_reusable_hash_pipeline,multi_join_mixed_keyed_residual_inner_left_semi_left_anti_pipeline,mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline,keyed_hash_join_resident_subplan_pipeline)"
         )
     );
     assert_eq!(

@@ -94,14 +94,13 @@ pub(super) fn expected_tpch_native_candidate_shape_family(query_id: &str) -> &'s
 
 pub(super) fn expected_tpch_datafusion_planning_rejection(query_id: &str) -> (&'static str, &'static str) {
     match query_id {
-        "q02" | "q15" | "q18" | "q20" => ("native_bounded_join_unsupported", "operator_hashjoin"),
+        "q02" | "q18" | "q20" => ("native_bounded_join_unsupported", "operator_hashjoin"),
         _ => ("unsupported_operator", expected_tpch_operator_unsupported_category(query_id)),
     }
 }
 
 pub(super) fn expected_tpch_bounded_join_lower_level_blockers(query_id: &str) -> &'static str {
     match query_id {
-        "q15" => "source_contract,aggregate_contract,final_sort_contract",
         "q17" => "source_contract,aggregate_contract",
         _ => "",
     }
@@ -109,7 +108,6 @@ pub(super) fn expected_tpch_bounded_join_lower_level_blockers(query_id: &str) ->
 
 pub(super) fn expected_tpch_bounded_join_blocked_reservations(query_id: &str) -> &'static str {
     match query_id {
-        "q15" => "source_read,operator_output,final_sort",
         "q17" => "source_read,operator_output",
         _ => "",
     }
@@ -118,7 +116,6 @@ pub(super) fn expected_tpch_bounded_join_blocked_reservations(query_id: &str) ->
 pub(super) fn expected_tpch_bounded_join_blocked_family(query_id: &str) -> Option<&'static str> {
     match query_id {
         "q02" => Some("multi_join_with_aggregate_over_join_subplan_topk"),
-        "q15" => Some("keyed_hash_join_resident_subplan_pipeline"),
         "q17" => Some("mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline"),
         "q18" => Some("hash_join_with_resident_grouped_aggregate_input_post_join_aggregate_topk"),
         "q20" => Some("multi_join_with_resident_grouped_aggregate_subquery_filter"),
@@ -129,7 +126,6 @@ pub(super) fn expected_tpch_bounded_join_blocked_family(query_id: &str) -> Optio
 pub(super) fn expected_tpch_bounded_join_shape_blocker(query_id: &str) -> Option<&'static str> {
     match query_id {
         "q02" => Some("bounded_multi_join_aggregate_over_join_subplan_topk_executor_missing"),
-        "q15" => Some("bounded_keyed_hash_join_resident_subplan_lower_level_contracts"),
         "q18" => Some("bounded_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_executor_missing"),
         "q20" => Some("bounded_multi_join_resident_grouped_aggregate_subquery_filter_executor_missing"),
         _ => None,

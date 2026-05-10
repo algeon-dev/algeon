@@ -166,7 +166,7 @@ pub(super) fn assert_highlighted_planning_rows_and_tsv(
         .filter(|row| row.outcome == NativeDataFusionPlanningOutcome::RejectedBeforeExecution)
         .map(|row| row.query_id.as_str())
         .collect::<Vec<_>>();
-    assert_eq!(rejected_query_ids, vec!["q02", "q15", "q18", "q20"]);
+    assert_eq!(rejected_query_ids, vec!["q02", "q18", "q20"]);
 
     for (query_id, expected_family, expected_blocker) in [
         (
@@ -206,31 +206,42 @@ pub(super) fn assert_highlighted_planning_rows_and_tsv(
     }
 
     let q15 = planning_row(report, "q15");
-    assert_eq!(q15.outcome, NativeDataFusionPlanningOutcome::RejectedBeforeExecution);
-    assert_eq!(q15.reason_code.as_deref(), Some("native_bounded_join_unsupported"));
-    assert_eq!(q15.unsupported_category.as_deref(), Some("operator_hashjoin"));
+    assert_eq!(q15.outcome, NativeDataFusionPlanningOutcome::AcceptedReplaced);
+    assert_eq!(q15.reason_code, None);
+    assert_eq!(q15.unsupported_category, None);
+    assert_eq!(q15.post_native_plan_root, "NativeCudfExec");
+    assert_eq!(q15.post_native_execution_path, NativeDataFusionPostNativeExecutionPath::Native);
     assert_eq!(
-        q15.bounded_join_reservation_facts.get("bounded_join_blocked_join_family").map(String::as_str),
+        q15.bounded_join_reservation_facts.get("bounded_join_execution_family").map(String::as_str),
         Some("keyed_hash_join_resident_subplan_pipeline")
     );
     assert_eq!(
         q15.bounded_join_reservation_facts.get("bounded_join_lower_level_blockers").map(String::as_str),
-        Some("source_contract,aggregate_contract,final_sort_contract")
+        Some("")
     );
-    assert_eq!(
-        q15.bounded_join_reservation_facts.get("blocked_reservations").map(String::as_str),
-        Some("source_read,operator_output,final_sort")
-    );
-    assert_eq!(
-        q15.bounded_join_reservation_facts.get("missing_reservations").map(String::as_str),
-        Some("source_read,operator_output,final_sort")
-    );
+    assert_eq!(q15.bounded_join_reservation_facts.get("blocked_reservations").map(String::as_str), Some(""));
+    assert_eq!(q15.bounded_join_reservation_facts.get("missing_reservations").map(String::as_str), Some(""));
     assert_eq!(
         q15.bounded_join_reservation_facts.get("bounded_join_required_lower_level_contract").map(String::as_str),
-        Some("source_contract,aggregate_contract,final_sort_contract")
+        None
     );
-    assert_eq!(q15.bounded_join_reservation_facts.get("bounded_join_contract_modes").map(String::as_str), None);
-    assert!(q15.rejected_before_execution, "q15 should remain rejected before native execution");
+    assert_eq!(
+        q15.bounded_join_reservation_facts.get("modeled_reservations").map(String::as_str),
+        Some(expected.modeled_reservations.as_str())
+    );
+    assert_eq!(
+        q15.bounded_join_reservation_facts.get("bounded_join_contract_modes").map(String::as_str),
+        Some(
+            "source_contract:hard_budgeted_report,aggregate_contract:hard_budgeted_report,final_sort_contract:hard_budgeted_report"
+        )
+    );
+    assert_eq!(
+        q15.bounded_join_reservation_facts.get("bounded_join_unresolved_preflight_contracts").map(String::as_str),
+        Some(
+            "source_contract:libcudf_parquet_decoded_output_preflight_unavailable,aggregate_contract:libcudf_groupby_aggregate_temporary_workspace_preflight_unavailable,final_sort_contract:libcudf_final_sort_order_preflight_unavailable"
+        )
+    );
+    assert!(!q15.rejected_before_execution, "q15 should be replaced by native execution");
 
     let q17 = planning_row(report, "q17");
     assert_eq!(q17.outcome, NativeDataFusionPlanningOutcome::AcceptedReplaced);

@@ -32,13 +32,25 @@ pub(super) fn execute_final_sort_limit_with_retry(
     let Some(sort) = bounded.sort else {
         return Ok(input);
     };
+    execute_final_sort_node_with_retry(context, bounded.aggregate_id, sort, bounded.limit, input, reservations, metrics)
+}
+
+pub(super) fn execute_final_sort_node_with_retry(
+    context: &ExecutionContext,
+    node_id: NodeId,
+    sort: &SortNode,
+    limit: Option<&LimitNode>,
+    input: CommittedPartial,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+) -> Result<CommittedPartial> {
     let MemoryControlPolicy::Bounded { max_retry_attempts, .. } = context.memory_control_policy() else {
         unreachable!("execute_final_sort_limit_with_retry is called only for bounded policies");
     };
     let max_attempts = max_retry_attempts.max(1);
     let timer = Instant::now();
-    let mut final_sort = FinalSortExecutor { context, bounded, sort, max_attempts, reservations, metrics };
-    let result = final_sort.full_sort_limit_attempt(bounded.limit, &input, 1);
+    let mut final_sort = FinalSortExecutor { context, node_id, sort, max_attempts, reservations, metrics };
+    let result = final_sort.full_sort_limit_attempt(limit, &input, 1);
 
     match result {
         Ok(output) => {
@@ -49,7 +61,7 @@ pub(super) fn execute_final_sort_limit_with_retry(
         Err(error) if is_retryable_final_sort_error(&error) => {
             record_final_sort_retry_error(&error, final_sort.metrics);
             if max_attempts > 1
-                && let Some(limit) = bounded.limit
+                && let Some(limit) = limit
             {
                 match final_sort.hierarchical_topk(limit, input) {
                     Ok(output) => {
@@ -75,16 +87,16 @@ pub(super) fn execute_final_sort_limit_with_retry(
     }
 }
 
-struct FinalSortExecutor<'a, 'plan> {
+struct FinalSortExecutor<'a> {
     context: &'a ExecutionContext,
-    bounded: &'a BoundedPlan<'plan>,
+    node_id: NodeId,
     sort: &'a SortNode,
     max_attempts: usize,
     reservations: &'a mut ReservationTracker,
     metrics: &'a mut QueryMetrics,
 }
 
-impl<'a, 'plan> FinalSortExecutor<'a, 'plan> {
+impl<'a> FinalSortExecutor<'a> {
     fn final_sort_budget_token(&self, boundary: &'static str, attempt: usize) -> Result<cudf::ExecutionBudgetToken> {
         self.final_sort_budget_token_for_bytes(boundary, attempt, self.reservations.remaining_bytes())
     }
@@ -124,7 +136,7 @@ impl<'a, 'plan> FinalSortExecutor<'a, 'plan> {
 
     fn reserve_estimated_final_sort_output(&mut self, output_bytes: u64, attempt: usize) -> Result<ActiveReservation> {
         reserve_final_sort_output_bytes(
-            self.bounded,
+            self.node_id,
             output_bytes,
             attempt,
             self.max_attempts,
@@ -140,7 +152,7 @@ impl<'a, 'plan> FinalSortExecutor<'a, 'plan> {
         attempt: usize,
     ) -> Result<CommittedPartial> {
         finalize_final_sort_output_reservation(
-            self.bounded,
+            self.node_id,
             frame,
             reservation,
             attempt,
@@ -158,7 +170,7 @@ impl<'a, 'plan> FinalSortExecutor<'a, 'plan> {
         error
             .with_fact("memory_boundary", "final_sort")
             .with_fact("stage", "final_sort")
-            .with_fact("node_id", self.bounded.aggregate_id)
+            .with_fact("node_id", self.node_id)
             .with_fact("attempt", attempt)
             .with_fact("max_attempts", self.max_attempts)
     }

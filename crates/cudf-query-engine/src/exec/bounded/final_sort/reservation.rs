@@ -1,7 +1,7 @@
 use super::*;
 
 pub(super) fn reserve_final_sort_output_bytes(
-    bounded: &BoundedPlan<'_>,
+    node_id: NodeId,
     output_bytes: u64,
     attempt: usize,
     max_attempts: usize,
@@ -10,14 +10,14 @@ pub(super) fn reserve_final_sort_output_bytes(
 ) -> Result<ActiveReservation> {
     let output_request = MemoryReservationRequest::new(ReservationKind::FinalSort, output_bytes, reservations.budget())
         .with_memory_boundary("final_sort_output")
-        .with_node_id(bounded.aggregate_id)
+        .with_node_id(node_id)
         .with_stage("final_sort")
         .with_attempt(attempt, max_attempts);
     reservations.try_reserve(output_request, metrics)
 }
 
 pub(super) fn finalize_final_sort_output_reservation(
-    bounded: &BoundedPlan<'_>,
+    node_id: NodeId,
     frame: GpuDataFrame,
     mut reservation: ActiveReservation,
     attempt: usize,
@@ -29,7 +29,7 @@ pub(super) fn finalize_final_sort_output_reservation(
         RuntimeResourceFacts {
             memory_boundary: "final_sort_output",
             stage: "final_sort",
-            node_id: bounded.aggregate_id,
+            node_id,
             attempt,
             max_attempts,
             resume_boundary: "final_sort",
@@ -45,7 +45,7 @@ pub(super) fn finalize_final_sort_output_reservation(
             reservations.budget(),
         )
         .with_memory_boundary("final_sort_output")
-        .with_node_id(bounded.aggregate_id)
+        .with_node_id(node_id)
         .with_stage("final_sort")
         .with_attempt(attempt, max_attempts);
         reservations.try_grow(&mut reservation, grow_request, metrics)?;

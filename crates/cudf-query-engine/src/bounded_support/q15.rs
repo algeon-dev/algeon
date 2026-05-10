@@ -1,29 +1,97 @@
 use super::*;
 
-pub(super) fn matches_keyed_hash_join_resident_subplan_pipeline(plan: &QueryPlan) -> bool {
-    let Some((final_sort, root_join_id)) = final_sort_root_join_input(plan) else {
-        return false;
-    };
+pub(crate) fn analyze_keyed_hash_join_resident_subplan_pipeline(
+    plan: &QueryPlan,
+) -> std::result::Result<BoundedKeyedHashJoinResidentSubplanPipelineShape<'_>, BoundedJoinPipelineRejection<'_>> {
+    let (final_sort_id, final_sort, root_join_id) = final_sort_root_join_input(plan)?;
     let counts = reachable_node_kind_counts(plan);
     if counts.joins != 2 || counts.aggregates != 3 || counts.sorts != 1 || counts.limits != 0 {
-        return false;
+        return Err(BoundedJoinPipelineRejection::UnsupportedShapeNode {
+            node_id: plan.sink().input(),
+            node_kind: "keyed_hash_join_resident_subplan_pipeline_reachable_counts",
+        });
     }
 
-    let Some(root_join) = join_node(plan, root_join_id) else {
-        return false;
-    };
-    keyed_inner_hash_join_without_residual(root_join)
-        && final_sort_is_ascending_supplier_key(final_sort)
-        && (root_join_matches_q15_revenue_max_join(plan, root_join, JoinSide::Left, JoinSide::Right)
-            || root_join_matches_q15_revenue_max_join(plan, root_join, JoinSide::Right, JoinSide::Left))
+    let root_join = join_node(plan, root_join_id).ok_or(BoundedJoinPipelineRejection::MissingRootJoin)?;
+    if !keyed_inner_hash_join_without_residual(root_join) {
+        return Err(BoundedJoinPipelineRejection::UnsupportedJoin { join: root_join });
+    }
+    if !final_sort_is_ascending_supplier_key(final_sort) {
+        return Err(BoundedJoinPipelineRejection::UnsupportedShapeNode { node_id: final_sort_id, node_kind: "sort" });
+    }
+
+    analyze_keyed_hash_join_resident_subplan_pipeline_sides(
+        plan,
+        final_sort_id,
+        final_sort,
+        root_join_id,
+        root_join,
+        JoinSide::Left,
+        JoinSide::Right,
+    )
+    .or_else(|_| {
+        analyze_keyed_hash_join_resident_subplan_pipeline_sides(
+            plan,
+            final_sort_id,
+            final_sort,
+            root_join_id,
+            root_join,
+            JoinSide::Right,
+            JoinSide::Left,
+        )
+    })
 }
 
-fn final_sort_root_join_input(plan: &QueryPlan) -> Option<(&SortNode, NodeId)> {
-    let node = plan.node(plan.sink().input())?;
+fn analyze_keyed_hash_join_resident_subplan_pipeline_sides<'a>(
+    plan: &'a QueryPlan,
+    final_sort_id: NodeId,
+    final_sort: &'a SortNode,
+    root_join_id: NodeId,
+    root_join: &'a JoinNode,
+    supplier_revenue_side: JoinSide,
+    scalar_max_side: JoinSide,
+) -> std::result::Result<BoundedKeyedHashJoinResidentSubplanPipelineShape<'a>, BoundedJoinPipelineRejection<'a>> {
+    if !join_has_one_key_with_roles_by_side(
+        root_join,
+        supplier_revenue_side,
+        Q15Role::TotalRevenue,
+        Q15Role::MaxRevenue,
+    ) {
+        return Err(BoundedJoinPipelineRejection::UnsupportedJoin { join: root_join });
+    }
+    if !root_join_outputs_expected_q15_supplier_roles(plan, root_join, supplier_revenue_side) {
+        return Err(BoundedJoinPipelineRejection::UnsupportedJoin { join: root_join });
+    }
+
+    let supplier_revenue =
+        analyze_q15_supplier_revenue_branch(plan, root_join.inputs[join_side_index(supplier_revenue_side)])?;
+    let scalar_max = analyze_q15_scalar_max_revenue_branch(plan, root_join.inputs[join_side_index(scalar_max_side)])?;
+    Ok(BoundedKeyedHashJoinResidentSubplanPipelineShape {
+        final_sort_id,
+        final_sort,
+        root_join_id,
+        root_join,
+        supplier_revenue_side,
+        supplier_revenue,
+        scalar_max,
+    })
+}
+
+fn final_sort_root_join_input(
+    plan: &QueryPlan,
+) -> std::result::Result<(NodeId, &SortNode, NodeId), BoundedJoinPipelineRejection<'_>> {
+    let final_sort_id = plan.sink().input();
+    let node = plan.node(final_sort_id).ok_or(BoundedJoinPipelineRejection::MissingNode {
+        node_id: final_sort_id,
+        message: "keyed hash join resident subplan pipeline references a missing final sort node",
+    })?;
     let PlanNode::Sort(sort) = &node.kind else {
-        return None;
+        return Err(BoundedJoinPipelineRejection::UnsupportedShapeNode {
+            node_id: final_sort_id,
+            node_kind: bounded_q15_node_kind(&node.kind),
+        });
     };
-    Some((sort, sort.input))
+    Ok((final_sort_id, sort, sort.input))
 }
 
 fn final_sort_is_ascending_supplier_key(sort: &SortNode) -> bool {
@@ -31,20 +99,6 @@ fn final_sort_is_ascending_supplier_key(sort: &SortNode) -> bool {
         return false;
     };
     !sort_expr.descending && expr_has_role(&sort_expr.expr, Q15Role::SupplierKey)
-}
-
-fn root_join_matches_q15_revenue_max_join(
-    plan: &QueryPlan,
-    join: &JoinNode,
-    supplier_revenue_side: JoinSide,
-    scalar_max_side: JoinSide,
-) -> bool {
-    if !join_has_one_key_with_roles_by_side(join, supplier_revenue_side, Q15Role::TotalRevenue, Q15Role::MaxRevenue) {
-        return false;
-    }
-    root_join_outputs_expected_q15_supplier_roles(plan, join, supplier_revenue_side)
-        && validate_q15_supplier_revenue_branch(plan, join.inputs[join_side_index(supplier_revenue_side)])
-        && validate_q15_scalar_max_revenue_branch(plan, join.inputs[join_side_index(scalar_max_side)])
 }
 
 fn root_join_outputs_expected_q15_supplier_roles(
@@ -77,36 +131,147 @@ fn root_join_outputs_expected_q15_supplier_roles(
         .all(|role| !schema_has_role(supplier_input_schema, *role) || projected_roles.contains(role))
 }
 
-fn validate_q15_supplier_revenue_branch(plan: &QueryPlan, node_id: NodeId) -> bool {
-    let Some((join_id, _projection_count)) = peel_projection_chain(plan, node_id, 2) else {
-        return false;
-    };
+fn analyze_q15_supplier_revenue_branch(
+    plan: &QueryPlan,
+    node_id: NodeId,
+) -> std::result::Result<BoundedKeyedHashJoinResidentSupplierRevenueBranchShape<'_>, BoundedJoinPipelineRejection<'_>> {
+    let (join_id, projection_stages) = peel_q15_projection_stages(plan, node_id, 2)?;
     let Some(join) = join_node(plan, join_id) else {
-        return false;
+        let node_kind = plan.node(join_id).map(|node| bounded_q15_node_kind(&node.kind)).unwrap_or("missing");
+        return Err(BoundedJoinPipelineRejection::UnsupportedShapeNode { node_id: join_id, node_kind });
     };
 
-    keyed_inner_hash_join_without_residual(join)
-        && ((join_has_one_key_with_roles(join, Q15Role::SupplierKey, Q15Role::RevenueSupplierNo)
-            && validate_source_filter_projection_leaf_pipeline(plan, join.inputs[0])
-            && validate_q15_projection_wrapped_grouped_revenue_aggregate(plan, join.inputs[1]))
-            || (join_has_one_key_with_roles(join, Q15Role::RevenueSupplierNo, Q15Role::SupplierKey)
-                && validate_q15_projection_wrapped_grouped_revenue_aggregate(plan, join.inputs[0])
-                && validate_source_filter_projection_leaf_pipeline(plan, join.inputs[1])))
+    if !keyed_inner_hash_join_without_residual(join) {
+        return Err(BoundedJoinPipelineRejection::UnsupportedJoin { join });
+    }
+
+    if join_has_one_key_with_roles(join, Q15Role::SupplierKey, Q15Role::RevenueSupplierNo)
+        && validate_source_filter_projection_leaf_pipeline(plan, join.inputs[0])
+        && validate_q15_projection_wrapped_grouped_revenue_aggregate(plan, join.inputs[1])
+    {
+        return Ok(BoundedKeyedHashJoinResidentSupplierRevenueBranchShape {
+            join_id,
+            join,
+            supplier_source_side: JoinSide::Left,
+            grouped_revenue_side: JoinSide::Right,
+            projection_stages,
+        });
+    }
+    if join_has_one_key_with_roles(join, Q15Role::RevenueSupplierNo, Q15Role::SupplierKey)
+        && validate_q15_projection_wrapped_grouped_revenue_aggregate(plan, join.inputs[0])
+        && validate_source_filter_projection_leaf_pipeline(plan, join.inputs[1])
+    {
+        return Ok(BoundedKeyedHashJoinResidentSupplierRevenueBranchShape {
+            join_id,
+            join,
+            supplier_source_side: JoinSide::Right,
+            grouped_revenue_side: JoinSide::Left,
+            projection_stages,
+        });
+    }
+
+    Err(BoundedJoinPipelineRejection::UnsupportedJoin { join })
 }
 
-fn validate_q15_scalar_max_revenue_branch(plan: &QueryPlan, node_id: NodeId) -> bool {
+fn analyze_q15_scalar_max_revenue_branch(
+    plan: &QueryPlan,
+    node_id: NodeId,
+) -> std::result::Result<BoundedKeyedHashJoinResidentScalarMaxBranchShape<'_>, BoundedJoinPipelineRejection<'_>> {
     let Some(scalar_aggregate) = aggregate_node(plan, node_id) else {
-        return false;
+        let node_kind = plan.node(node_id).map(|node| bounded_q15_node_kind(&node.kind)).unwrap_or("missing");
+        return Err(BoundedJoinPipelineRejection::UnsupportedShapeNode { node_id, node_kind });
     };
     if !scalar_aggregate.spec.group_exprs.is_empty() {
-        return false;
+        return Err(BoundedJoinPipelineRejection::UnsupportedShapeNode { node_id, node_kind: "grouped_aggregate" });
     }
     let [aggregate_expr] = scalar_aggregate.spec.aggr_exprs.as_slice() else {
-        return false;
+        return Err(BoundedJoinPipelineRejection::UnsupportedShapeNode { node_id, node_kind: "aggregate" });
     };
-    aggregate_expr.function == AggregateFunction::Max
-        && expr_has_any_role(&aggregate_expr.expr, &[Q15Role::TotalRevenue, Q15Role::RevenueMeasure])
-        && validate_q15_projected_grouped_revenue_aggregate(plan, scalar_aggregate.input, 1, 2)
+    let (grouped_aggregate_id, projection_stages) = peel_q15_projection_stages(plan, scalar_aggregate.input, 2)?;
+    if projection_stages.is_empty() {
+        return Err(BoundedJoinPipelineRejection::UnsupportedShapeNode {
+            node_id: scalar_aggregate.input,
+            node_kind: "aggregate",
+        });
+    }
+    if aggregate_expr.function != AggregateFunction::Max
+        || !expr_has_any_role(&aggregate_expr.expr, &[Q15Role::TotalRevenue, Q15Role::RevenueMeasure])
+        || aggregate_node(plan, grouped_aggregate_id)
+            .is_none_or(|aggregate| !validate_q15_grouped_revenue_aggregate(plan, aggregate))
+        || !aggregate_node(plan, grouped_aggregate_id)
+            .is_some_and(|aggregate| validate_source_filter_projection_leaf_pipeline(plan, aggregate.input))
+    {
+        return Err(BoundedJoinPipelineRejection::UnsupportedShapeNode { node_id, node_kind: "aggregate" });
+    }
+    let grouped_revenue_root_id = projection_stage_node_id(&projection_stages[0]);
+    let projection_stages_after_grouped_revenue = projection_stages.into_iter().skip(1).collect::<Vec<_>>();
+    let output_schema = plan
+        .node(node_id)
+        .ok_or(BoundedJoinPipelineRejection::MissingNode {
+            node_id,
+            message: "keyed hash join resident subplan pipeline references a missing scalar aggregate node",
+        })?
+        .output_schema();
+    Ok(BoundedKeyedHashJoinResidentScalarMaxBranchShape {
+        grouped_revenue_root_id,
+        projection_stages_after_grouped_revenue,
+        aggregate_id: node_id,
+        aggregate: scalar_aggregate,
+        output_schema,
+    })
+}
+
+fn peel_q15_projection_stages(
+    plan: &QueryPlan,
+    node_id: NodeId,
+    max_projection_count: usize,
+) -> std::result::Result<(NodeId, Vec<BoundedJoinPipelineStage<'_>>), BoundedJoinPipelineRejection<'_>> {
+    let mut current = node_id;
+    let mut stages = Vec::new();
+    while let Some(node) = plan.node(current) {
+        let PlanNode::Projection(projection) = &node.kind else {
+            break;
+        };
+        if stages.len() == max_projection_count {
+            return Err(BoundedJoinPipelineRejection::UnsupportedShapeNode {
+                node_id: current,
+                node_kind: "projection",
+            });
+        }
+        stages.push(BoundedJoinPipelineStage::Projection {
+            node_id: current,
+            node: projection,
+            output_schema: &node.facts.output_schema,
+        });
+        current = projection.input;
+    }
+    if plan.node(current).is_none() {
+        return Err(BoundedJoinPipelineRejection::MissingNode {
+            node_id: current,
+            message: "keyed hash join resident subplan pipeline references a missing projected branch input",
+        });
+    }
+    stages.reverse();
+    Ok((current, stages))
+}
+
+fn bounded_q15_node_kind(node: &PlanNode) -> &'static str {
+    match node {
+        PlanNode::Source(_) => "source",
+        PlanNode::Filter(_) => "filter",
+        PlanNode::Projection(_) => "projection",
+        PlanNode::Aggregate(_) => "aggregate",
+        PlanNode::Sort(_) => "sort",
+        PlanNode::Limit(_) => "limit",
+        PlanNode::Join(_) => "join",
+    }
+}
+
+fn projection_stage_node_id(stage: &BoundedJoinPipelineStage<'_>) -> NodeId {
+    let BoundedJoinPipelineStage::Projection { node_id, .. } = stage else {
+        unreachable!("q15 projection chain contains only projection stages")
+    };
+    *node_id
 }
 
 fn validate_q15_projection_wrapped_grouped_revenue_aggregate(plan: &QueryPlan, node_id: NodeId) -> bool {
