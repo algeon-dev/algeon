@@ -1,14 +1,14 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{
     bounded::{
         BoundedJoinNodeCapability, BoundedJoinPlanSupport, BoundedKeylessConditionalJoinType,
-        analyze_bounded_join_plan_support, bounded_join_node_capability, bounded_root_filtered_join_compatible,
-        bounded_root_hash_join_compatible,
+        analyze_bounded_join_plan_support, bounded_join_node_capability, bounded_multi_join_node_capability,
+        bounded_root_filtered_join_compatible, bounded_root_hash_join_compatible,
     },
     error::QueryError,
     exec::validate_local_parquet_source,
-    expr::{AggregateExpr, AggregateFunction, BinaryOp, Expr, LiteralValue},
+    expr::{AggregateExpr, AggregateFunction, BinaryOp, ColumnQualifier, Expr, LiteralValue},
     plan::{JoinNode, JoinSide, JoinType, LimitNode, NodeId, PlanNode, QueryNode, QueryPlan},
     runtime::ReservationKind,
     source::SourceNode,
@@ -252,10 +252,6 @@ pub enum CapabilityDecision {
 }
 
 impl CapabilityDecision {
-    fn conditional(scope: ConstraintScope, name: &'static str) -> Self {
-        Self::Conditional { waiting_on: vec![ConstraintRef { scope, name }] }
-    }
-
     fn rejected(reason: &'static str, facts: impl IntoIterator<Item = (&'static str, String)>) -> Self {
         Self::Rejected { reason, facts: facts.into_iter().collect() }
     }
@@ -325,10 +321,28 @@ pub enum ProducedProperty {
 pub struct EdgeContract {
     pub producer: NodeId,
     pub consumer: EdgeConsumer,
+    pub contract_kinds: Vec<EdgeContractKind>,
     pub input_role: InputRole,
     pub required_properties: Vec<RequiredProperty>,
     pub reservation_requirements: Vec<ReservationRequirement>,
     pub decision: CapabilityDecision,
+}
+
+/// Producer-consumer contract classes attached to one edge.
+///
+/// A single graph edge can carry more than one contract. For example, a
+/// local-Parquet source feeding a join build side owns both the source-read
+/// resident input contract and the build-side residency contract.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum EdgeContractKind {
+    ResidentSourceInput { format: SourceFormatCapability },
+    ResidentAggregateInput,
+    JoinBuildInput { side: JoinSide },
+    JoinProbeInput { side: JoinSide },
+    ResidentFrameFlow,
+    JoinMaterialization,
+    SortInput,
+    ExplicitSinkMaterialization,
 }
 
 /// Consumer endpoint for an edge.
@@ -388,6 +402,7 @@ pub struct SubgraphInvariant {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SubgraphInvariantKind {
     BuildBeforeProbe { join_id: NodeId },
+    ClosedJoinSubtree { root_join_id: NodeId },
     TopologicalBuildProbeSchedule,
     SharedResidentSubplan,
     AggregateDerivesFromSharedProducer,
@@ -440,6 +455,7 @@ pub struct CapabilityAnalysis {
     pub edges: Vec<EdgeContract>,
     pub invariants: Vec<SubgraphInvariant>,
     pub requirements: Vec<ReservationRequirement>,
+    pub closed_multi_join_subgraph_admission: CapabilityDecision,
     pub compatibility_family_projection: Option<CompatibilityFamilyProjection>,
 }
 
@@ -448,6 +464,10 @@ impl CapabilityAnalysis {
         self.nodes.iter().any(|node| matches!(node.executable, CapabilityDecision::Rejected { .. }))
             || self.edges.iter().any(|edge| matches!(edge.decision, CapabilityDecision::Rejected { .. }))
             || self.invariants.iter().any(|invariant| matches!(invariant.decision, CapabilityDecision::Rejected { .. }))
+    }
+
+    pub fn admits_closed_multi_join_subgraph(&self) -> bool {
+        self.closed_multi_join_subgraph_admission == CapabilityDecision::Satisfied
     }
 
     pub fn compatibility_reservation_requirements(&self) -> Vec<ReservationRequirement> {
@@ -531,13 +551,16 @@ pub fn analyze_query_capabilities(plan: &QueryPlan) -> CapabilityAnalysis {
         plan.nodes().iter().flat_map(|node| analyze_input_edges(plan, node.id, &node.kind)).collect::<Vec<_>>();
     edges.push(analyze_sink_edge(plan));
 
-    let invariants = analyze_invariants(plan);
+    let invariants = analyze_invariants(plan, &edges);
     let requirements = collect_requirements(&nodes, &edges);
+    let closed_multi_join_subgraph_admission =
+        analyze_closed_multi_join_subgraph_admission(plan, &nodes, &edges, &invariants);
     CapabilityAnalysis {
         nodes,
         edges,
         invariants,
         requirements,
+        closed_multi_join_subgraph_admission,
         compatibility_family_projection: compatibility_family_projection(plan),
     }
 }
@@ -547,7 +570,7 @@ fn analyze_node(plan: &QueryPlan, node: &QueryNode) -> NodeCapability {
     let kind = &node.kind;
     let operator = node_operator(kind);
     let executable = node_executable_decision(plan, node);
-    let produced_properties = produced_properties(kind);
+    let produced_properties = produced_properties(node);
     let local_requirements = node_local_requirements(kind);
     NodeCapability { node_id, operator, executable, produced_properties, local_requirements }
 }
@@ -1035,9 +1058,12 @@ fn expr_family(expr: &Expr) -> &'static str {
     }
 }
 
-fn produced_properties(kind: &PlanNode) -> Vec<ProducedProperty> {
-    let mut properties = vec![ProducedProperty::ResidentFrame];
-    match kind {
+fn produced_properties(node: &QueryNode) -> Vec<ProducedProperty> {
+    let mut properties = Vec::new();
+    if node.facts.placement == crate::plan::DataPlacement::Device {
+        properties.push(ProducedProperty::ResidentFrame);
+    }
+    match &node.kind {
         PlanNode::Aggregate(aggregate) if aggregate.spec.group_exprs.is_empty() => {
             properties.push(ProducedProperty::ScalarFrame);
         },
@@ -1106,25 +1132,116 @@ fn analyze_input_edges(plan: &QueryPlan, consumer_id: NodeId, kind: &PlanNode) -
         .map(|(input_index, producer)| {
             let consumer = EdgeConsumer::Node(consumer_id);
             let input_role = input_role(kind, input_index);
+            let contract_kinds = edge_contract_kinds(plan, *producer, consumer, kind, input_role);
+            let required_properties = vec![RequiredProperty::ResidentFrame];
             let reservation_requirements = edge_requirements(plan, *producer, kind, input_role);
-            let decision = if plan.node(*producer).is_some() {
-                CapabilityDecision::Satisfied
-            } else {
-                CapabilityDecision::rejected(
-                    "missing_edge_producer",
-                    [("producer", producer.to_string()), ("consumer", consumer_id.to_string())],
-                )
-            };
+            let decision = edge_decision(plan, *producer, consumer, &required_properties);
             EdgeContract {
                 producer: *producer,
                 consumer,
+                contract_kinds,
                 input_role,
-                required_properties: vec![RequiredProperty::ResidentFrame],
+                required_properties,
                 reservation_requirements,
                 decision,
             }
         })
         .collect()
+}
+
+fn edge_contract_kinds(
+    plan: &QueryPlan,
+    producer: NodeId,
+    consumer: EdgeConsumer,
+    consumer_kind: &PlanNode,
+    input_role: InputRole,
+) -> Vec<EdgeContractKind> {
+    let mut kinds = Vec::new();
+    if let Some(node) = plan.node(producer) {
+        if let PlanNode::Source(source) = &node.kind {
+            kinds.push(EdgeContractKind::ResidentSourceInput { format: source_format_capability(source) });
+        }
+        if matches!(node.kind, PlanNode::Join(_)) {
+            kinds.push(EdgeContractKind::JoinMaterialization);
+        }
+    }
+    if matches!(consumer, EdgeConsumer::Node(_)) {
+        kinds.push(EdgeContractKind::ResidentFrameFlow);
+    }
+    if matches!(consumer_kind, PlanNode::Aggregate(_)) {
+        kinds.push(EdgeContractKind::ResidentAggregateInput);
+    }
+    match input_role {
+        InputRole::JoinBuildInput { side } => kinds.push(EdgeContractKind::JoinBuildInput { side }),
+        InputRole::JoinProbeInput { side } => kinds.push(EdgeContractKind::JoinProbeInput { side }),
+        _ => {},
+    }
+    if matches!(consumer_kind, PlanNode::Sort(_)) {
+        kinds.push(EdgeContractKind::SortInput);
+    }
+    kinds
+}
+
+fn edge_decision(
+    plan: &QueryPlan,
+    producer: NodeId,
+    consumer: EdgeConsumer,
+    required_properties: &[RequiredProperty],
+) -> CapabilityDecision {
+    let Some(producer_node) = plan.node(producer) else {
+        return CapabilityDecision::rejected(
+            "missing_edge_producer",
+            [("producer", producer.to_string()), ("consumer", edge_consumer_fact(consumer))],
+        );
+    };
+    let produced = produced_properties(producer_node);
+    if let Some(required) =
+        required_properties.iter().find(|required| !edge_property_is_satisfied(&produced, **required))
+    {
+        return CapabilityDecision::rejected(
+            "missing_edge_required_property",
+            [
+                ("producer", producer.to_string()),
+                ("consumer", edge_consumer_fact(consumer)),
+                ("required_property", required_property_fact(*required).to_string()),
+                ("producer_placement", producer_node.facts.placement.to_string()),
+                ("producer_operator", node_operator_fact(&producer_node.kind).to_string()),
+            ],
+        );
+    }
+    CapabilityDecision::Satisfied
+}
+
+fn edge_property_is_satisfied(produced: &[ProducedProperty], required: RequiredProperty) -> bool {
+    match required {
+        RequiredProperty::ResidentFrame => produced.contains(&ProducedProperty::ResidentFrame),
+    }
+}
+
+fn edge_consumer_fact(consumer: EdgeConsumer) -> String {
+    match consumer {
+        EdgeConsumer::Node(node) => node.to_string(),
+        EdgeConsumer::Sink(ResultSinkKind::HostArrow) => "sink:host_arrow".to_string(),
+        EdgeConsumer::Sink(ResultSinkKind::GpuResident) => "sink:gpu_resident".to_string(),
+    }
+}
+
+fn required_property_fact(property: RequiredProperty) -> &'static str {
+    match property {
+        RequiredProperty::ResidentFrame => "resident_frame",
+    }
+}
+
+fn node_operator_fact(kind: &PlanNode) -> &'static str {
+    match kind {
+        PlanNode::Source(_) => "source",
+        PlanNode::Filter(_) => "filter",
+        PlanNode::Projection(_) => "projection",
+        PlanNode::Aggregate(_) => "aggregate",
+        PlanNode::Sort(_) => "sort",
+        PlanNode::Limit(_) => "limit",
+        PlanNode::Join(_) => "join",
+    }
 }
 
 fn input_role(kind: &PlanNode, input_index: usize) -> InputRole {
@@ -1223,6 +1340,17 @@ fn analyze_sink_edge(plan: &QueryPlan) -> EdgeContract {
         crate::plan::ResultSink::HostArrow { .. } => EdgeConsumer::Sink(ResultSinkKind::HostArrow),
         crate::plan::ResultSink::GpuResident { .. } => EdgeConsumer::Sink(ResultSinkKind::GpuResident),
     };
+    let mut contract_kinds = Vec::new();
+    if let Some(node) = plan.node(producer) {
+        if let PlanNode::Source(source) = &node.kind {
+            contract_kinds.push(EdgeContractKind::ResidentSourceInput { format: source_format_capability(source) });
+        }
+        if matches!(node.kind, PlanNode::Join(_)) {
+            contract_kinds.push(EdgeContractKind::JoinMaterialization);
+        }
+    }
+    contract_kinds.push(EdgeContractKind::ExplicitSinkMaterialization);
+    let required_properties = vec![RequiredProperty::ResidentFrame];
     let mut reservation_requirements = Vec::new();
     append_source_read_edge_requirement(plan, producer, &mut reservation_requirements);
     append_producer_output_edge_requirements(plan, producer, &mut reservation_requirements);
@@ -1232,13 +1360,15 @@ fn analyze_sink_edge(plan: &QueryPlan) -> EdgeContract {
         "query_engine_explicit_sink_materialization_reservation",
         ContractQuality::QueryEngineOwnedBoundary,
     ));
+    let decision = edge_decision(plan, producer, consumer, &required_properties);
     EdgeContract {
         producer,
         consumer,
+        contract_kinds,
         input_role: InputRole::SinkInput,
-        required_properties: vec![RequiredProperty::ResidentFrame],
+        required_properties,
         reservation_requirements,
-        decision: CapabilityDecision::Satisfied,
+        decision,
     }
 }
 
@@ -1257,7 +1387,7 @@ where
     output
 }
 
-fn analyze_invariants(plan: &QueryPlan) -> Vec<SubgraphInvariant> {
+fn analyze_invariants(plan: &QueryPlan, edges: &[EdgeContract]) -> Vec<SubgraphInvariant> {
     let mut invariants = Vec::new();
     for node in plan.nodes() {
         let PlanNode::Join(join) = &node.kind else {
@@ -1266,6 +1396,7 @@ fn analyze_invariants(plan: &QueryPlan) -> Vec<SubgraphInvariant> {
         let build_input = join.inputs[if join.spec.build_side == JoinSide::Left { 0 } else { 1 }];
         let probe_input = join.inputs[if join.spec.build_side == JoinSide::Left { 1 } else { 0 }];
         let invariant_id = InvariantId(invariants.len());
+        let decision = solve_build_before_probe_invariant(plan, node.id, build_input, probe_input);
         invariants.push(SubgraphInvariant {
             invariant_id,
             kind: SubgraphInvariantKind::BuildBeforeProbe { join_id: node.id },
@@ -1275,27 +1406,27 @@ fn analyze_invariants(plan: &QueryPlan) -> Vec<SubgraphInvariant> {
                 ResidentResource::JoinBuildInput { join_id: node.id, input: build_input },
                 ResidentResource::JoinProbeInput { join_id: node.id, input: probe_input },
             ],
-            decision: CapabilityDecision::conditional(
-                ConstraintScope::Invariant(invariant_id),
-                "bounded_join_scheduler_build_before_probe_proof",
-            ),
+            decision,
         });
         if join.spec.residual_predicate.is_some() {
             let invariant_id = InvariantId(invariants.len());
+            let decision = solve_residual_uses_both_inputs_invariant(node.id, join);
             invariants.push(SubgraphInvariant {
                 invariant_id,
                 kind: SubgraphInvariantKind::ResidualUsesBothInputs { join_id: node.id },
                 nodes: vec![join.inputs[0], join.inputs[1], node.id],
                 required_schedule: ScheduleConstraint::None,
                 required_resources: Vec::new(),
-                decision: CapabilityDecision::conditional(
-                    ConstraintScope::Invariant(invariant_id),
-                    "residual_input_coverage_proof",
-                ),
+                decision,
             });
         }
     }
-    if plan.nodes().iter().filter(|node| matches!(node.kind, PlanNode::Join(_))).count() > 1 {
+    append_shared_resident_subplan_invariants(plan, edges, &mut invariants);
+    append_aggregate_derivation_invariants(plan, &mut invariants);
+    append_projection_transparent_residency_invariants(plan, &mut invariants);
+    append_final_barrier_order_invariants(plan, &mut invariants);
+
+    if reachable_join_count_from_sink(plan).unwrap_or(0) > 1 {
         let invariant_id = InvariantId(invariants.len());
         invariants.push(SubgraphInvariant {
             invariant_id,
@@ -1307,13 +1438,727 @@ fn analyze_invariants(plan: &QueryPlan) -> Vec<SubgraphInvariant> {
                 .collect(),
             required_schedule: ScheduleConstraint::Topological,
             required_resources: Vec::new(),
-            decision: CapabilityDecision::conditional(
-                ConstraintScope::Invariant(invariant_id),
-                "multi_join_topological_scheduler_proof",
-            ),
+            decision: solve_topological_build_probe_schedule_invariant(plan),
+        });
+        let invariant_id = InvariantId(invariants.len());
+        invariants.push(SubgraphInvariant {
+            invariant_id,
+            kind: SubgraphInvariantKind::ResidentLifetimeDominatesConsumers,
+            nodes: collect_reachable_node_ids(plan).map(|nodes| nodes.into_iter().collect()).unwrap_or_default(),
+            required_schedule: ScheduleConstraint::Topological,
+            required_resources: Vec::new(),
+            decision: solve_resident_lifetime_invariant(plan, edges),
+        });
+    }
+
+    if matches!(closed_multi_join_subgraph_structure_decision(plan), CapabilityDecision::Satisfied)
+        && let Ok(root_join_id) = post_root_join_id(plan)
+    {
+        let invariant_id = InvariantId(invariants.len());
+        invariants.push(SubgraphInvariant {
+            invariant_id,
+            kind: SubgraphInvariantKind::ClosedJoinSubtree { root_join_id },
+            nodes: collect_reachable_node_ids_from(plan, root_join_id)
+                .map(|nodes| nodes.into_iter().collect())
+                .unwrap_or_else(|_| vec![root_join_id]),
+            required_schedule: ScheduleConstraint::Topological,
+            required_resources: Vec::new(),
+            decision: CapabilityDecision::Satisfied,
         });
     }
     invariants
+}
+
+fn append_shared_resident_subplan_invariants(
+    plan: &QueryPlan,
+    edges: &[EdgeContract],
+    invariants: &mut Vec<SubgraphInvariant>,
+) {
+    let Ok(reachable) = collect_reachable_node_ids(plan) else {
+        return;
+    };
+    for (producer, consumers) in consumer_nodes_for_reachable(plan, &reachable) {
+        if consumers.len() <= 1 {
+            continue;
+        }
+        let invariant_id = InvariantId(invariants.len());
+        let mut nodes = Vec::with_capacity(consumers.len() + 1);
+        nodes.push(producer);
+        nodes.extend(consumers.iter().copied());
+        invariants.push(SubgraphInvariant {
+            invariant_id,
+            kind: SubgraphInvariantKind::SharedResidentSubplan,
+            nodes,
+            required_schedule: ScheduleConstraint::None,
+            required_resources: vec![ResidentResource::NodeOutput(producer)],
+            decision: solve_shared_resident_subplan_invariant(plan, edges, producer, &consumers),
+        });
+    }
+}
+
+fn append_aggregate_derivation_invariants(plan: &QueryPlan, invariants: &mut Vec<SubgraphInvariant>) {
+    let Ok(reachable) = collect_reachable_node_ids(plan) else {
+        return;
+    };
+    let consumers = consumer_nodes_for_reachable(plan, &reachable);
+    for node in plan.nodes() {
+        let PlanNode::Aggregate(aggregate) = &node.kind else {
+            continue;
+        };
+        if !aggregate.spec.group_exprs.is_empty() {
+            continue;
+        }
+        let Some((shared_producer, projection_count)) = peel_projection_chain_for_capability(plan, aggregate.input)
+        else {
+            continue;
+        };
+        if projection_count == 0 || consumers.get(&shared_producer).map_or(0, Vec::len) <= 1 {
+            continue;
+        }
+        let invariant_id = InvariantId(invariants.len());
+        invariants.push(SubgraphInvariant {
+            invariant_id,
+            kind: SubgraphInvariantKind::AggregateDerivesFromSharedProducer,
+            nodes: vec![shared_producer, aggregate.input, node.id],
+            required_schedule: ScheduleConstraint::None,
+            required_resources: vec![ResidentResource::NodeOutput(shared_producer)],
+            decision: solve_aggregate_derives_from_shared_producer_invariant(plan, shared_producer, node.id),
+        });
+    }
+}
+
+fn append_projection_transparent_residency_invariants(plan: &QueryPlan, invariants: &mut Vec<SubgraphInvariant>) {
+    for node in plan.nodes() {
+        if !matches!(node.kind, PlanNode::Projection(_)) {
+            continue;
+        }
+        let Some((peeled_producer, projection_count)) = peel_projection_chain_for_capability(plan, node.id) else {
+            continue;
+        };
+        if projection_count == 0 || peeled_producer == node.id {
+            continue;
+        }
+        let invariant_id = InvariantId(invariants.len());
+        invariants.push(SubgraphInvariant {
+            invariant_id,
+            kind: SubgraphInvariantKind::ProjectionTransparentResidency,
+            nodes: vec![peeled_producer, node.id],
+            required_schedule: ScheduleConstraint::None,
+            required_resources: vec![ResidentResource::NodeOutput(peeled_producer)],
+            decision: solve_projection_transparent_residency_invariant(plan, peeled_producer, node.id),
+        });
+    }
+}
+
+fn append_final_barrier_order_invariants(plan: &QueryPlan, invariants: &mut Vec<SubgraphInvariant>) {
+    for node in plan.nodes() {
+        let PlanNode::Sort(sort) = &node.kind else {
+            continue;
+        };
+        let invariant_id = InvariantId(invariants.len());
+        invariants.push(SubgraphInvariant {
+            invariant_id,
+            kind: SubgraphInvariantKind::FinalBarrierOrder,
+            nodes: vec![sort.input, node.id],
+            required_schedule: ScheduleConstraint::Barrier,
+            required_resources: vec![ResidentResource::NodeOutput(sort.input)],
+            decision: solve_final_barrier_order_invariant(plan, node.id, sort.input),
+        });
+    }
+}
+
+fn analyze_closed_multi_join_subgraph_admission(
+    plan: &QueryPlan,
+    nodes: &[NodeCapability],
+    edges: &[EdgeContract],
+    invariants: &[SubgraphInvariant],
+) -> CapabilityDecision {
+    let reachable = match collect_reachable_node_ids(plan) {
+        Ok(reachable) => reachable,
+        Err(decision) => return decision,
+    };
+    if let Some(rejection) = first_reachable_node_rejection(nodes, &reachable) {
+        return rejection;
+    }
+    if let Some(rejection) = first_reachable_edge_rejection(edges, &reachable) {
+        return rejection;
+    }
+    let structure_decision = closed_multi_join_subgraph_structure_decision(plan);
+    if matches!(structure_decision, CapabilityDecision::Rejected { .. }) {
+        return structure_decision;
+    }
+    for kind in [
+        InvariantSelector::TopologicalBuildProbeSchedule,
+        InvariantSelector::ResidentLifetimeDominatesConsumers,
+        InvariantSelector::ClosedJoinSubtree,
+    ] {
+        match solved_invariant_decision(invariants, kind) {
+            Some(CapabilityDecision::Satisfied) => {},
+            Some(CapabilityDecision::Rejected { reason, facts }) => {
+                return CapabilityDecision::Rejected { reason: *reason, facts: facts.clone() };
+            },
+            Some(CapabilityDecision::Conditional { waiting_on }) => {
+                return CapabilityDecision::Conditional { waiting_on: waiting_on.clone() };
+            },
+            None => {
+                return CapabilityDecision::rejected(
+                    "missing_closed_multi_join_subgraph_invariant",
+                    [("invariant", kind.as_str().to_string())],
+                );
+            },
+        }
+    }
+    CapabilityDecision::Satisfied
+}
+
+#[derive(Debug, Clone, Copy)]
+enum InvariantSelector {
+    TopologicalBuildProbeSchedule,
+    ResidentLifetimeDominatesConsumers,
+    ClosedJoinSubtree,
+}
+
+impl InvariantSelector {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::TopologicalBuildProbeSchedule => "topological_build_probe_schedule",
+            Self::ResidentLifetimeDominatesConsumers => "resident_lifetime_dominates_consumers",
+            Self::ClosedJoinSubtree => "closed_join_subtree",
+        }
+    }
+}
+
+fn solved_invariant_decision(
+    invariants: &[SubgraphInvariant],
+    selector: InvariantSelector,
+) -> Option<&CapabilityDecision> {
+    invariants
+        .iter()
+        .find(|invariant| match (&invariant.kind, selector) {
+            (
+                SubgraphInvariantKind::TopologicalBuildProbeSchedule,
+                InvariantSelector::TopologicalBuildProbeSchedule,
+            ) => true,
+            (
+                SubgraphInvariantKind::ResidentLifetimeDominatesConsumers,
+                InvariantSelector::ResidentLifetimeDominatesConsumers,
+            ) => true,
+            (SubgraphInvariantKind::ClosedJoinSubtree { .. }, InvariantSelector::ClosedJoinSubtree) => true,
+            _ => false,
+        })
+        .map(|invariant| &invariant.decision)
+}
+
+fn first_reachable_node_rejection(
+    nodes: &[NodeCapability],
+    reachable: &BTreeSet<NodeId>,
+) -> Option<CapabilityDecision> {
+    nodes.iter().find_map(|node| {
+        if !reachable.contains(&node.node_id) {
+            return None;
+        }
+        match &node.executable {
+            CapabilityDecision::Rejected { reason, facts } => {
+                Some(CapabilityDecision::Rejected { reason: *reason, facts: facts.clone() })
+            },
+            _ => None,
+        }
+    })
+}
+
+fn first_reachable_edge_rejection(edges: &[EdgeContract], reachable: &BTreeSet<NodeId>) -> Option<CapabilityDecision> {
+    edges.iter().find_map(|edge| {
+        if !reachable.contains(&edge.producer) {
+            return None;
+        }
+        if let EdgeConsumer::Node(consumer) = edge.consumer
+            && !reachable.contains(&consumer)
+        {
+            return None;
+        }
+        match &edge.decision {
+            CapabilityDecision::Rejected { reason, facts } => {
+                Some(CapabilityDecision::Rejected { reason: *reason, facts: facts.clone() })
+            },
+            _ => None,
+        }
+    })
+}
+
+fn closed_multi_join_subgraph_structure_decision(plan: &QueryPlan) -> CapabilityDecision {
+    let root_join_id = match post_root_join_id(plan) {
+        Ok(root_join_id) => root_join_id,
+        Err(decision) => return decision,
+    };
+    let mut join_count = 0;
+    if let Err(decision) = validate_closed_multi_join_subtree(plan, root_join_id, &mut join_count) {
+        return decision;
+    }
+    if join_count <= 1 {
+        return CapabilityDecision::rejected(
+            "closed_multi_join_subgraph_requires_multiple_joins",
+            [("root_join_id", root_join_id.to_string()), ("join_count", join_count.to_string())],
+        );
+    }
+    CapabilityDecision::Satisfied
+}
+
+fn validate_closed_multi_join_subtree(
+    plan: &QueryPlan,
+    node_id: NodeId,
+    join_count: &mut usize,
+) -> Result<(), CapabilityDecision> {
+    let Some(node) = plan.node(node_id) else {
+        return Err(CapabilityDecision::rejected(
+            "closed_multi_join_subgraph_missing_node",
+            [("node_id", node_id.to_string())],
+        ));
+    };
+    match &node.kind {
+        PlanNode::Join(join) => {
+            if bounded_multi_join_node_capability(join).is_none() {
+                return Err(CapabilityDecision::rejected(
+                    "closed_multi_join_subgraph_unsupported_join",
+                    [
+                        ("node_id", node_id.to_string()),
+                        ("join_type", join.spec.join_type.to_string()),
+                        ("key_count", join.spec.keys.len().to_string()),
+                        ("has_residual", join.spec.residual_predicate.is_some().to_string()),
+                        ("build_side", join.spec.build_side.to_string()),
+                    ],
+                ));
+            }
+            *join_count += 1;
+            validate_closed_multi_join_subtree(plan, join.inputs[0], join_count)?;
+            validate_closed_multi_join_subtree(plan, join.inputs[1], join_count)?;
+            Ok(())
+        },
+        PlanNode::Source(_) => Ok(()),
+        PlanNode::Filter(filter) => validate_closed_multi_join_subtree(plan, filter.input, join_count),
+        PlanNode::Projection(projection) => validate_closed_multi_join_subtree(plan, projection.input, join_count),
+        PlanNode::Aggregate(_) | PlanNode::Sort(_) | PlanNode::Limit(_) => Err(CapabilityDecision::rejected(
+            "closed_multi_join_subgraph_unsupported_node",
+            [("node_id", node_id.to_string()), ("operator", node_operator_fact(&node.kind).to_string())],
+        )),
+    }
+}
+
+fn post_root_join_id(plan: &QueryPlan) -> Result<NodeId, CapabilityDecision> {
+    let mut current = plan.sink().input();
+    let mut visited = BTreeSet::new();
+    loop {
+        if !visited.insert(current) {
+            return Err(CapabilityDecision::rejected(
+                "closed_multi_join_subgraph_cycle",
+                [("node_id", current.to_string())],
+            ));
+        }
+        let Some(node) = plan.node(current) else {
+            return Err(CapabilityDecision::rejected(
+                "closed_multi_join_subgraph_missing_node",
+                [("node_id", current.to_string())],
+            ));
+        };
+        match &node.kind {
+            PlanNode::Join(_) => return Ok(current),
+            PlanNode::Filter(filter) => current = filter.input,
+            PlanNode::Projection(projection) => current = projection.input,
+            PlanNode::Aggregate(aggregate) => current = aggregate.input,
+            PlanNode::Sort(sort) => current = sort.input,
+            PlanNode::Limit(limit) => current = limit.input,
+            PlanNode::Source(_) => {
+                return Err(CapabilityDecision::rejected(
+                    "closed_multi_join_subgraph_missing_root_join",
+                    [("sink_input", plan.sink().input().to_string())],
+                ));
+            },
+        }
+    }
+}
+
+fn solve_build_before_probe_invariant(
+    plan: &QueryPlan,
+    join_id: NodeId,
+    build_input: NodeId,
+    probe_input: NodeId,
+) -> CapabilityDecision {
+    let build_nodes = match collect_reachable_node_ids_from(plan, build_input) {
+        Ok(nodes) => nodes,
+        Err(decision) => return decision,
+    };
+    let probe_nodes = match collect_reachable_node_ids_from(plan, probe_input) {
+        Ok(nodes) => nodes,
+        Err(decision) => return decision,
+    };
+    if build_nodes.contains(&join_id) || probe_nodes.contains(&join_id) {
+        return CapabilityDecision::rejected(
+            "build_before_probe_cycle",
+            [
+                ("join_id", join_id.to_string()),
+                ("build_input", build_input.to_string()),
+                ("probe_input", probe_input.to_string()),
+            ],
+        );
+    }
+    CapabilityDecision::Satisfied
+}
+
+fn solve_topological_build_probe_schedule_invariant(plan: &QueryPlan) -> CapabilityDecision {
+    let mut scheduler = GraphScheduleProof::new(plan);
+    scheduler.schedule_from(plan.sink().input()).map_or_else(|decision| decision, |()| CapabilityDecision::Satisfied)
+}
+
+fn solve_resident_lifetime_invariant(plan: &QueryPlan, edges: &[EdgeContract]) -> CapabilityDecision {
+    let reachable = match collect_reachable_node_ids(plan) {
+        Ok(reachable) => reachable,
+        Err(decision) => return decision,
+    };
+    let mut consumers = consumer_nodes_for_reachable(plan, &reachable);
+    consumers.entry(plan.sink().input()).or_default();
+
+    for producer in reachable {
+        let Some(node) = plan.node(producer) else {
+            return CapabilityDecision::rejected("resident_lifetime_missing_node", [("node_id", producer.to_string())]);
+        };
+        if !produced_properties(node).contains(&ProducedProperty::ResidentFrame) {
+            return CapabilityDecision::rejected(
+                "resident_lifetime_requires_resident_frame",
+                [("node_id", producer.to_string()), ("operator", node_operator_fact(&node.kind).to_string())],
+            );
+        }
+        for edge in edges.iter().filter(|edge| edge.producer == producer) {
+            if let EdgeConsumer::Node(consumer) = edge.consumer
+                && !consumers.get(&producer).is_some_and(|values| values.contains(&consumer))
+            {
+                continue;
+            }
+            if matches!(edge.decision, CapabilityDecision::Rejected { .. }) {
+                return CapabilityDecision::rejected(
+                    "resident_lifetime_edge_rejected",
+                    [("producer", producer.to_string()), ("consumer", edge_consumer_fact(edge.consumer))],
+                );
+            }
+        }
+    }
+    CapabilityDecision::Satisfied
+}
+
+fn solve_shared_resident_subplan_invariant(
+    plan: &QueryPlan,
+    edges: &[EdgeContract],
+    producer: NodeId,
+    consumers: &[NodeId],
+) -> CapabilityDecision {
+    let Some(node) = plan.node(producer) else {
+        return CapabilityDecision::rejected(
+            "shared_resident_subplan_missing_node",
+            [("node_id", producer.to_string())],
+        );
+    };
+    if !produced_properties(node).contains(&ProducedProperty::ResidentFrame) {
+        return CapabilityDecision::rejected(
+            "shared_resident_subplan_requires_resident_frame",
+            [("node_id", producer.to_string()), ("operator", node_operator_fact(&node.kind).to_string())],
+        );
+    }
+    for consumer in consumers {
+        let Some(edge) =
+            edges.iter().find(|edge| edge.producer == producer && edge.consumer == EdgeConsumer::Node(*consumer))
+        else {
+            return CapabilityDecision::rejected(
+                "shared_resident_subplan_missing_edge",
+                [("producer", producer.to_string()), ("consumer", consumer.to_string())],
+            );
+        };
+        if matches!(edge.decision, CapabilityDecision::Rejected { .. }) {
+            return CapabilityDecision::rejected(
+                "shared_resident_subplan_edge_rejected",
+                [("producer", producer.to_string()), ("consumer", consumer.to_string())],
+            );
+        }
+    }
+    CapabilityDecision::Satisfied
+}
+
+fn solve_aggregate_derives_from_shared_producer_invariant(
+    plan: &QueryPlan,
+    shared_producer: NodeId,
+    aggregate_id: NodeId,
+) -> CapabilityDecision {
+    let Some(producer) = plan.node(shared_producer) else {
+        return CapabilityDecision::rejected(
+            "aggregate_shared_producer_missing_node",
+            [("shared_producer", shared_producer.to_string()), ("aggregate_id", aggregate_id.to_string())],
+        );
+    };
+    let Some(aggregate) = plan.node(aggregate_id) else {
+        return CapabilityDecision::rejected(
+            "aggregate_shared_producer_missing_aggregate",
+            [("shared_producer", shared_producer.to_string()), ("aggregate_id", aggregate_id.to_string())],
+        );
+    };
+    if !matches!(aggregate.kind, PlanNode::Aggregate(_)) {
+        return CapabilityDecision::rejected(
+            "aggregate_shared_producer_consumer_not_aggregate",
+            [("shared_producer", shared_producer.to_string()), ("aggregate_id", aggregate_id.to_string())],
+        );
+    }
+    if !produced_properties(producer).contains(&ProducedProperty::ResidentFrame) {
+        return CapabilityDecision::rejected(
+            "aggregate_shared_producer_requires_resident_frame",
+            [("shared_producer", shared_producer.to_string())],
+        );
+    }
+    CapabilityDecision::Satisfied
+}
+
+fn solve_projection_transparent_residency_invariant(
+    plan: &QueryPlan,
+    peeled_producer: NodeId,
+    projection_id: NodeId,
+) -> CapabilityDecision {
+    let Some(producer) = plan.node(peeled_producer) else {
+        return CapabilityDecision::rejected(
+            "projection_transparent_residency_missing_producer",
+            [("peeled_producer", peeled_producer.to_string()), ("projection_id", projection_id.to_string())],
+        );
+    };
+    let Some(projection) = plan.node(projection_id) else {
+        return CapabilityDecision::rejected(
+            "projection_transparent_residency_missing_projection",
+            [("peeled_producer", peeled_producer.to_string()), ("projection_id", projection_id.to_string())],
+        );
+    };
+    if !matches!(projection.kind, PlanNode::Projection(_)) {
+        return CapabilityDecision::rejected(
+            "projection_transparent_residency_consumer_not_projection",
+            [("peeled_producer", peeled_producer.to_string()), ("projection_id", projection_id.to_string())],
+        );
+    }
+    if !produced_properties(producer).contains(&ProducedProperty::ResidentFrame)
+        || !produced_properties(projection).contains(&ProducedProperty::ResidentFrame)
+    {
+        return CapabilityDecision::rejected(
+            "projection_transparent_residency_requires_resident_frames",
+            [("peeled_producer", peeled_producer.to_string()), ("projection_id", projection_id.to_string())],
+        );
+    }
+    CapabilityDecision::Satisfied
+}
+
+fn solve_final_barrier_order_invariant(plan: &QueryPlan, sort_id: NodeId, sort_input: NodeId) -> CapabilityDecision {
+    let input_nodes = match collect_reachable_node_ids_from(plan, sort_input) {
+        Ok(nodes) => nodes,
+        Err(decision) => return decision,
+    };
+    if input_nodes.contains(&sort_id) {
+        return CapabilityDecision::rejected(
+            "final_barrier_order_cycle",
+            [("sort_id", sort_id.to_string()), ("sort_input", sort_input.to_string())],
+        );
+    }
+    CapabilityDecision::Satisfied
+}
+
+fn solve_residual_uses_both_inputs_invariant(join_id: NodeId, join: &JoinNode) -> CapabilityDecision {
+    let Some(predicate) = &join.spec.residual_predicate else {
+        return CapabilityDecision::Satisfied;
+    };
+    let references_left = expr_references_input(predicate, 0);
+    let references_right = expr_references_input(predicate, 1);
+    if references_left && references_right {
+        return CapabilityDecision::Satisfied;
+    }
+    CapabilityDecision::rejected(
+        "residual_does_not_reference_both_inputs",
+        [
+            ("join_id", join_id.to_string()),
+            ("references_left", references_left.to_string()),
+            ("references_right", references_right.to_string()),
+            ("expression", predicate.to_string()),
+        ],
+    )
+}
+
+fn expr_references_input(expr: &Expr, input_index: usize) -> bool {
+    match expr {
+        Expr::Column(column) => {
+            matches!(column.qualifier(), Some(ColumnQualifier::Input { index }) if *index == input_index)
+        },
+        Expr::Literal(_) => false,
+        Expr::Not(expr)
+        | Expr::IsNull(expr)
+        | Expr::IsNotNull(expr)
+        | Expr::Cast { expr, .. }
+        | Expr::Alias { expr, .. } => expr_references_input(expr, input_index),
+        Expr::Binary { left, right, .. } => {
+            expr_references_input(left, input_index) || expr_references_input(right, input_index)
+        },
+        Expr::Like { expr, .. } | Expr::Substring { expr, .. } | Expr::Extract { expr, .. } => {
+            expr_references_input(expr, input_index)
+        },
+        Expr::InList { expr, list, .. } => {
+            expr_references_input(expr, input_index) || list.iter().any(|item| expr_references_input(item, input_index))
+        },
+        Expr::Case { branches, else_expr } => {
+            branches.iter().any(|branch| {
+                expr_references_input(&branch.when, input_index) || expr_references_input(&branch.then, input_index)
+            }) || expr_references_input(else_expr, input_index)
+        },
+    }
+}
+
+struct GraphScheduleProof<'a> {
+    plan: &'a QueryPlan,
+    state: Vec<VisitState>,
+}
+
+impl<'a> GraphScheduleProof<'a> {
+    fn new(plan: &'a QueryPlan) -> Self {
+        Self { plan, state: vec![VisitState::Unvisited; plan.nodes().len()] }
+    }
+
+    fn schedule_from(&mut self, node_id: NodeId) -> Result<(), CapabilityDecision> {
+        let Some(node) = self.plan.node(node_id) else {
+            return Err(CapabilityDecision::rejected(
+                "topological_schedule_missing_node",
+                [("node_id", node_id.to_string())],
+            ));
+        };
+        match self.state.get(node_id.index()).copied() {
+            Some(VisitState::Done) => return Ok(()),
+            Some(VisitState::Visiting) => {
+                return Err(CapabilityDecision::rejected(
+                    "topological_schedule_cycle",
+                    [("node_id", node_id.to_string())],
+                ));
+            },
+            Some(VisitState::Unvisited) => {},
+            None => {
+                return Err(CapabilityDecision::rejected(
+                    "topological_schedule_missing_node",
+                    [("node_id", node_id.to_string())],
+                ));
+            },
+        }
+        self.state[node_id.index()] = VisitState::Visiting;
+        match &node.kind {
+            PlanNode::Join(join) => {
+                let build_input = join.inputs[if join.spec.build_side == JoinSide::Left { 0 } else { 1 }];
+                let probe_input = join.inputs[if join.spec.build_side == JoinSide::Left { 1 } else { 0 }];
+                self.schedule_from(build_input)?;
+                self.schedule_from(probe_input)?;
+            },
+            _ => {
+                for input in node.input_ids() {
+                    self.schedule_from(*input)?;
+                }
+            },
+        }
+        self.state[node_id.index()] = VisitState::Done;
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VisitState {
+    Unvisited,
+    Visiting,
+    Done,
+}
+
+fn collect_reachable_node_ids(plan: &QueryPlan) -> Result<BTreeSet<NodeId>, CapabilityDecision> {
+    collect_reachable_node_ids_from(plan, plan.sink().input())
+}
+
+fn collect_reachable_node_ids_from(plan: &QueryPlan, root: NodeId) -> Result<BTreeSet<NodeId>, CapabilityDecision> {
+    let mut collector = ReachableCollector::new(plan);
+    collector.collect(root)?;
+    Ok(collector.reachable)
+}
+
+struct ReachableCollector<'a> {
+    plan: &'a QueryPlan,
+    state: Vec<VisitState>,
+    reachable: BTreeSet<NodeId>,
+}
+
+impl<'a> ReachableCollector<'a> {
+    fn new(plan: &'a QueryPlan) -> Self {
+        Self { plan, state: vec![VisitState::Unvisited; plan.nodes().len()], reachable: BTreeSet::new() }
+    }
+
+    fn collect(&mut self, node_id: NodeId) -> Result<(), CapabilityDecision> {
+        let Some(node) = self.plan.node(node_id) else {
+            return Err(CapabilityDecision::rejected(
+                "reachable_subgraph_missing_node",
+                [("node_id", node_id.to_string())],
+            ));
+        };
+        match self.state.get(node_id.index()).copied() {
+            Some(VisitState::Done) => return Ok(()),
+            Some(VisitState::Visiting) => {
+                return Err(CapabilityDecision::rejected(
+                    "reachable_subgraph_cycle",
+                    [("node_id", node_id.to_string())],
+                ));
+            },
+            Some(VisitState::Unvisited) => {},
+            None => {
+                return Err(CapabilityDecision::rejected(
+                    "reachable_subgraph_missing_node",
+                    [("node_id", node_id.to_string())],
+                ));
+            },
+        }
+        self.state[node_id.index()] = VisitState::Visiting;
+        self.reachable.insert(node_id);
+        for input in node.input_ids() {
+            self.collect(*input)?;
+        }
+        self.state[node_id.index()] = VisitState::Done;
+        Ok(())
+    }
+}
+
+fn reachable_join_count_from_sink(plan: &QueryPlan) -> Result<usize, CapabilityDecision> {
+    let reachable = collect_reachable_node_ids(plan)?;
+    Ok(reachable
+        .into_iter()
+        .filter(|node_id| matches!(plan.node(*node_id).map(|node| &node.kind), Some(PlanNode::Join(_))))
+        .count())
+}
+
+fn consumer_nodes_for_reachable(plan: &QueryPlan, reachable: &BTreeSet<NodeId>) -> BTreeMap<NodeId, Vec<NodeId>> {
+    let mut consumers = BTreeMap::<NodeId, Vec<NodeId>>::new();
+    for node_id in reachable {
+        let Some(node) = plan.node(*node_id) else {
+            continue;
+        };
+        for input in node.input_ids() {
+            if reachable.contains(input) {
+                consumers.entry(*input).or_default().push(*node_id);
+            }
+        }
+    }
+    consumers
+}
+
+fn peel_projection_chain_for_capability(plan: &QueryPlan, node_id: NodeId) -> Option<(NodeId, usize)> {
+    let mut current = node_id;
+    let mut projection_count = 0;
+    let mut visited = BTreeSet::new();
+    loop {
+        if !visited.insert(current) {
+            return None;
+        }
+        let node = plan.node(current)?;
+        let PlanNode::Projection(projection) = &node.kind else {
+            return Some((current, projection_count));
+        };
+        projection_count += 1;
+        current = projection.input;
+    }
 }
 
 fn collect_requirements(nodes: &[NodeCapability], edges: &[EdgeContract]) -> Vec<ReservationRequirement> {

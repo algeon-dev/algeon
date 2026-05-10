@@ -102,6 +102,76 @@ fn bounded_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline_r
     }
 }
 
+#[test]
+fn bounded_capability_analysis_extracts_phase4_mixed_residual_resident_aggregate_edge_contracts() {
+    let plan =
+        residual_resident_grouped_aggregate_input_plan(ResidualResidentGroupedAggregateInputVariant::BlockedFamily);
+    let analysis = plan.capability_analysis();
+
+    assert_eq!(
+        analysis.compatibility_family_projection,
+        Some(CompatibilityFamilyProjection::MixedKeyedResidualJoinResidentGroupedAggregateInputPipeline)
+    );
+    let residual_join = analysis
+        .nodes
+        .iter()
+        .find(|node| {
+            matches!(
+                node.operator,
+                NodeOperator::Join {
+                    key_count: 1,
+                    residual: ResidualRequirement::Required,
+                    build_side: JoinSide::Right,
+                    ..
+                }
+            )
+        })
+        .expect("mixed residual family should contain the keyed residual root join");
+    assert!(residual_join.local_requirements.iter().any(|requirement| {
+        requirement.kind == ReservationKind::MixedSizeData
+            && requirement.scope == ReservationRequirementScope::Node
+            && requirement.quality == ContractQuality::ObservedRetainedState
+    }));
+    assert!(analysis.edges.iter().any(|edge| {
+        edge.contract_kinds
+            .contains(&EdgeContractKind::ResidentSourceInput { format: SourceFormatCapability::LocalParquet })
+            && edge.contract_kinds.contains(&EdgeContractKind::ResidentAggregateInput)
+            && edge.input_role == InputRole::AggregateInput
+            && edge.reservation_requirements.iter().any(|requirement| {
+                requirement.kind == ReservationKind::SourceRead
+                    && requirement.scope == ReservationRequirementScope::Edge
+                    && requirement.quality == ContractQuality::HardBudgetedReportWithUnresolvedPreflight
+            })
+    }));
+    assert!(analysis.edges.iter().any(|edge| {
+        edge.consumer == EdgeConsumer::Node(residual_join.node_id)
+            && matches!(edge.input_role, InputRole::JoinBuildInput { side: JoinSide::Right })
+            && edge.contract_kinds.contains(&EdgeContractKind::JoinBuildInput { side: JoinSide::Right })
+            && edge.contract_kinds.contains(&EdgeContractKind::ResidentFrameFlow)
+            && edge.reservation_requirements.iter().any(|requirement| requirement.kind == ReservationKind::BuildSide)
+    }));
+    assert!(analysis.edges.iter().any(|edge| {
+        edge.consumer == EdgeConsumer::Node(residual_join.node_id)
+            && matches!(edge.input_role, InputRole::JoinProbeInput { side: JoinSide::Left })
+            && edge.contract_kinds.contains(&EdgeContractKind::JoinProbeInput { side: JoinSide::Left })
+            && edge.reservation_requirements.iter().any(|requirement| {
+                requirement.kind == ReservationKind::ProbeSide
+                    && requirement.scope == ReservationRequirementScope::Edge
+                    && requirement.quality == ContractQuality::QueryEngineOwnedOrdering
+            })
+    }));
+    assert!(analysis.edges.iter().any(|edge| {
+        edge.producer == residual_join.node_id
+            && edge.contract_kinds.contains(&EdgeContractKind::JoinMaterialization)
+            && edge.reservation_requirements.iter().any(|requirement| requirement.kind == ReservationKind::GatherMap)
+            && edge.reservation_requirements.iter().any(|requirement| requirement.kind == ReservationKind::JoinOutput)
+    }));
+    assert!(
+        analysis.requirements.iter().all(|requirement| requirement.kind != ReservationKind::FinalSort),
+        "mixed residual resident aggregate family has no final-sort edge contract"
+    );
+}
+
 #[derive(Debug, Clone, Copy)]
 enum ResidualResidentGroupedAggregateInputVariant {
     BlockedFamily,
