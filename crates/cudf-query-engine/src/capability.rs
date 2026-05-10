@@ -2,12 +2,14 @@ use std::collections::BTreeMap;
 
 use crate::{
     bounded::{
-        BoundedJoinPlanSupport, analyze_bounded_join_plan_support, bounded_multi_join_compatible,
-        bounded_multi_join_mixed_keyed_residual_compatible, bounded_root_hash_join_compatible,
-        bounded_root_join_compatible,
+        BoundedJoinNodeCapability, BoundedJoinPlanSupport, BoundedKeylessConditionalJoinType,
+        analyze_bounded_join_plan_support, bounded_join_node_capability, bounded_root_filtered_join_compatible,
+        bounded_root_hash_join_compatible,
     },
-    expr::AggregateFunction,
-    plan::{JoinNode, JoinSide, JoinType, NodeId, PlanNode, QueryPlan},
+    error::QueryError,
+    exec::validate_local_parquet_source,
+    expr::{AggregateExpr, AggregateFunction, BinaryOp, Expr, LiteralValue},
+    plan::{JoinNode, JoinSide, JoinType, LimitNode, NodeId, PlanNode, QueryNode, QueryPlan},
     runtime::ReservationKind,
     source::SourceNode,
 };
@@ -31,11 +33,30 @@ pub enum ContractQuality {
     QueryEngineOwnedBoundary,
 }
 
+/// The most local graph scope that owns a reservation requirement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ReservationRequirementScope {
+    Node,
+    Edge,
+    Subgraph,
+}
+
+impl ReservationRequirementScope {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Node => "node",
+            Self::Edge => "edge",
+            Self::Subgraph => "subgraph",
+        }
+    }
+}
+
 /// One memory or execution-boundary requirement attached to the most local
 /// capability owner that can state it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReservationRequirement {
     pub kind: ReservationKind,
+    pub scope: ReservationRequirementScope,
     pub memory_boundary: &'static str,
     pub required_contract: &'static str,
     pub status: ContractStatus,
@@ -49,7 +70,147 @@ impl ReservationRequirement {
         required_contract: &'static str,
         quality: ContractQuality,
     ) -> Self {
-        Self { kind, memory_boundary, required_contract, status: ContractStatus::Modeled, quality }
+        Self {
+            kind,
+            scope: reservation_requirement_scope(kind),
+            memory_boundary,
+            required_contract,
+            status: ContractStatus::Modeled,
+            quality,
+        }
+    }
+
+    pub fn compatibility_modeled(kind: ReservationKind) -> Self {
+        let contract = compatibility_reservation_contract(kind);
+        Self::modeled(kind, contract.memory_boundary, contract.required_contract, contract.quality)
+    }
+
+    pub fn compatibility_fact_row(&self) -> String {
+        format!("{}:{}:{}", self.kind.as_str(), self.required_contract, self.compatibility_detail())
+    }
+
+    fn compatibility_detail(&self) -> &'static str {
+        match self.kind {
+            ReservationKind::SourceRead
+                if self.quality == ContractQuality::HardBudgetedReportWithUnresolvedPreflight =>
+            {
+                "modeled_by_cudf_rs_hard_budgeted_report_with_unresolved_preflight"
+            },
+            ReservationKind::OperatorOutput
+                if self.quality == ContractQuality::HardBudgetedReportWithUnresolvedPreflight =>
+            {
+                "modeled_by_cudf_rs_hard_budgeted_report_with_unresolved_preflight"
+            },
+            ReservationKind::BuildSide => "modeled_before_execution",
+            ReservationKind::ProbeSide => "modeled_by_ordered_bounded_join_execution_path",
+            ReservationKind::HashTable => "modeled_by_cudf_rs_pre_build_sizing",
+            ReservationKind::FilteredProbeState => "modeled_by_cudf_rs_filtered_probe_state_observability",
+            ReservationKind::MixedSizeData => "modeled_by_cudf_rs_retained_join_size_data_observability",
+            ReservationKind::GatherMap => "modeled_by_cudf_rs_join_gather_map_sizing",
+            ReservationKind::JoinOutput => "modeled_by_cudf_rs_dataframe_gather_or_projected_cross_output_sizing",
+            ReservationKind::FinalSort
+                if self.quality == ContractQuality::HardBudgetedReportWithUnresolvedPreflight =>
+            {
+                "modeled_by_cudf_rs_hard_budgeted_report_with_unresolved_preflight"
+            },
+            ReservationKind::Materialization => "modeled_by_explicit_sink_boundary",
+            _ => "modeled_by_capability_analysis",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CompatibilityReservationContract {
+    memory_boundary: &'static str,
+    required_contract: &'static str,
+    quality: ContractQuality,
+}
+
+const fn compatibility_reservation_contract(kind: ReservationKind) -> CompatibilityReservationContract {
+    match kind {
+        ReservationKind::SourceRead => CompatibilityReservationContract {
+            memory_boundary: "source_read",
+            required_contract: "source_contract",
+            quality: ContractQuality::HardBudgetedReportWithUnresolvedPreflight,
+        },
+        ReservationKind::OperatorOutput => CompatibilityReservationContract {
+            memory_boundary: "operator_output",
+            required_contract: "aggregate_contract",
+            quality: ContractQuality::HardBudgetedReportWithUnresolvedPreflight,
+        },
+        ReservationKind::BuildSide => CompatibilityReservationContract {
+            memory_boundary: "join_build_side",
+            required_contract: "query_engine_build_side_source_reservation",
+            quality: ContractQuality::ExactPreflight,
+        },
+        ReservationKind::ProbeSide => CompatibilityReservationContract {
+            memory_boundary: "join_probe_side",
+            required_contract: "query_engine_probe_side_source_reservation",
+            quality: ContractQuality::QueryEngineOwnedOrdering,
+        },
+        ReservationKind::HashTable => CompatibilityReservationContract {
+            memory_boundary: "join_hash_table",
+            required_contract: "hash_join_pre_build_reservation_size_bytes",
+            quality: ContractQuality::ExactPreflight,
+        },
+        ReservationKind::FilteredProbeState => CompatibilityReservationContract {
+            memory_boundary: "join_filtered_probe_state",
+            required_contract: "filtered_join_retained_probe_state",
+            quality: ContractQuality::ObservedRetainedState,
+        },
+        ReservationKind::MixedSizeData => CompatibilityReservationContract {
+            memory_boundary: "join_mixed_size_data",
+            required_contract: "mixed_keyed_residual_or_conditional_full_retained_size_data",
+            quality: ContractQuality::ObservedRetainedState,
+        },
+        ReservationKind::GatherMap => CompatibilityReservationContract {
+            memory_boundary: "join_gather_map",
+            required_contract: "join_gather_map_reservation_size_bytes",
+            quality: ContractQuality::ExactPreflight,
+        },
+        ReservationKind::JoinOutput => CompatibilityReservationContract {
+            memory_boundary: "join_output",
+            required_contract: "dataframe_gather_output_reservation_size_bytes+projected_cross_join_reservation_size_bytes",
+            quality: ContractQuality::ExactPreflight,
+        },
+        ReservationKind::FinalSort => CompatibilityReservationContract {
+            memory_boundary: "join_pipeline_final_sort",
+            required_contract: "final_sort_contract",
+            quality: ContractQuality::HardBudgetedReportWithUnresolvedPreflight,
+        },
+        ReservationKind::Materialization => CompatibilityReservationContract {
+            memory_boundary: "host_materialization",
+            required_contract: "query_engine_explicit_sink_materialization_reservation",
+            quality: ContractQuality::QueryEngineOwnedBoundary,
+        },
+        ReservationKind::SourceCacheRetained
+        | ReservationKind::ChunkOperator
+        | ReservationKind::PartialState
+        | ReservationKind::FinalMerge => CompatibilityReservationContract {
+            memory_boundary: "non_bounded_join_compatibility_boundary",
+            required_contract: "non_bounded_join_compatibility_contract",
+            quality: ContractQuality::ExactPreflight,
+        },
+    }
+}
+
+pub const fn reservation_requirement_scope(kind: ReservationKind) -> ReservationRequirementScope {
+    match kind {
+        ReservationKind::OperatorOutput
+        | ReservationKind::HashTable
+        | ReservationKind::FilteredProbeState
+        | ReservationKind::MixedSizeData
+        | ReservationKind::SourceCacheRetained
+        | ReservationKind::ChunkOperator
+        | ReservationKind::PartialState
+        | ReservationKind::FinalMerge => ReservationRequirementScope::Node,
+        ReservationKind::SourceRead
+        | ReservationKind::BuildSide
+        | ReservationKind::ProbeSide
+        | ReservationKind::GatherMap
+        | ReservationKind::JoinOutput
+        | ReservationKind::FinalSort
+        | ReservationKind::Materialization => ReservationRequirementScope::Edge,
     }
 }
 
@@ -288,6 +449,72 @@ impl CapabilityAnalysis {
             || self.edges.iter().any(|edge| matches!(edge.decision, CapabilityDecision::Rejected { .. }))
             || self.invariants.iter().any(|invariant| matches!(invariant.decision, CapabilityDecision::Rejected { .. }))
     }
+
+    pub fn compatibility_reservation_requirements(&self) -> Vec<ReservationRequirement> {
+        let mut kinds = Vec::new();
+        if self.has_requirement_kind(ReservationKind::SourceRead) {
+            kinds.push(ReservationKind::SourceRead);
+        }
+        if self.has_requirement_kind(ReservationKind::OperatorOutput) {
+            kinds.push(ReservationKind::OperatorOutput);
+        }
+        if self.nodes.iter().any(|node| matches!(node.operator, NodeOperator::Join { .. })) {
+            kinds.extend([
+                ReservationKind::BuildSide,
+                ReservationKind::HashTable,
+                ReservationKind::ProbeSide,
+                ReservationKind::FilteredProbeState,
+                ReservationKind::MixedSizeData,
+                ReservationKind::GatherMap,
+                ReservationKind::JoinOutput,
+            ]);
+        }
+        if self.has_requirement_kind(ReservationKind::FinalSort) {
+            kinds.push(ReservationKind::FinalSort);
+        }
+        if self.has_requirement_kind(ReservationKind::Materialization) {
+            kinds.push(ReservationKind::Materialization);
+        }
+        kinds.into_iter().map(ReservationRequirement::compatibility_modeled).collect()
+    }
+
+    pub fn compatibility_reservation_kinds_csv(&self) -> String {
+        csv_join(self.compatibility_reservation_requirements().iter().map(|requirement| requirement.kind.as_str()))
+    }
+
+    pub fn compatibility_reservation_statuses_csv(&self) -> String {
+        csv_join(
+            self.compatibility_reservation_requirements()
+                .iter()
+                .map(|requirement| format!("{}:{}", requirement.kind.as_str(), requirement.status.as_str())),
+        )
+    }
+
+    pub fn compatibility_reservation_requirements_csv(&self) -> String {
+        csv_join(
+            self.compatibility_reservation_requirements().iter().map(ReservationRequirement::compatibility_fact_row),
+        )
+    }
+
+    pub fn compatibility_modeled_reservations_csv(&self) -> String {
+        csv_join(self.compatibility_reservation_requirements().iter().filter_map(|requirement| {
+            (requirement.status == ContractStatus::Modeled).then_some(requirement.kind.as_str())
+        }))
+    }
+
+    fn has_requirement_kind(&self, kind: ReservationKind) -> bool {
+        self.requirements.iter().any(|requirement| requirement.kind == kind)
+    }
+}
+
+impl ContractStatus {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Modeled => "modeled",
+            Self::BlockedByLowerLevel => "blocked_by_lower_level",
+            Self::DeferredUntilPrerequisite => "deferred_until_prerequisite",
+        }
+    }
 }
 
 impl QueryPlan {
@@ -299,7 +526,7 @@ impl QueryPlan {
 
 /// Runs capability analysis without changing bounded admission or execution.
 pub fn analyze_query_capabilities(plan: &QueryPlan) -> CapabilityAnalysis {
-    let nodes = plan.nodes().iter().map(|node| analyze_node(plan, node.id, &node.kind)).collect::<Vec<_>>();
+    let nodes = plan.nodes().iter().map(|node| analyze_node(plan, node)).collect::<Vec<_>>();
     let mut edges =
         plan.nodes().iter().flat_map(|node| analyze_input_edges(plan, node.id, &node.kind)).collect::<Vec<_>>();
     edges.push(analyze_sink_edge(plan));
@@ -315,9 +542,11 @@ pub fn analyze_query_capabilities(plan: &QueryPlan) -> CapabilityAnalysis {
     }
 }
 
-fn analyze_node(_plan: &QueryPlan, node_id: NodeId, kind: &PlanNode) -> NodeCapability {
+fn analyze_node(plan: &QueryPlan, node: &QueryNode) -> NodeCapability {
+    let node_id = node.id;
+    let kind = &node.kind;
     let operator = node_operator(kind);
-    let executable = node_executable_decision(node_id, kind);
+    let executable = node_executable_decision(plan, node);
     let produced_properties = produced_properties(kind);
     let local_requirements = node_local_requirements(kind);
     NodeCapability { node_id, operator, executable, produced_properties, local_requirements }
@@ -364,29 +593,446 @@ fn source_format_capability(source: &SourceNode) -> SourceFormatCapability {
     }
 }
 
-fn node_executable_decision(node_id: NodeId, kind: &PlanNode) -> CapabilityDecision {
-    match kind {
-        PlanNode::Join(join) if join_node_admitted_subset(join) => CapabilityDecision::Satisfied,
-        PlanNode::Join(join) => CapabilityDecision::rejected(
+fn node_executable_decision(plan: &QueryPlan, node: &QueryNode) -> CapabilityDecision {
+    match &node.kind {
+        PlanNode::Source(source) => source_node_executable_decision(source),
+        PlanNode::Filter(filter) => expression_node_decision(
+            node.id,
+            "unsupported_filter_expression_capability",
+            std::iter::once(&filter.predicate),
+        ),
+        PlanNode::Projection(projection) => {
+            let mut decision = expression_node_decision(
+                node.id,
+                "unsupported_projection_expression_capability",
+                projection.expressions(),
+            );
+            if matches!(decision, CapabilityDecision::Satisfied)
+                && projection.outputs.len() != node.output_schema().fields().len()
+            {
+                decision = CapabilityDecision::rejected(
+                    "unsupported_projection_node_capability",
+                    [
+                        ("node_id", node.id.to_string()),
+                        ("projection_output_count", projection.outputs.len().to_string()),
+                        ("schema_field_count", node.output_schema().fields().len().to_string()),
+                    ],
+                );
+            }
+            decision
+        },
+        PlanNode::Aggregate(aggregate) => aggregate_node_executable_decision(node.id, aggregate),
+        PlanNode::Sort(sort) => sort_node_executable_decision(node.id, sort),
+        PlanNode::Limit(limit) => limit_node_executable_decision(plan, node.id, limit),
+        PlanNode::Join(join) => join_node_executable_decision(node.id, join),
+    }
+}
+
+fn source_node_executable_decision(source: &SourceNode) -> CapabilityDecision {
+    match source {
+        SourceNode::LocalParquet(source) => validation_result_decision(
+            validate_local_parquet_source(source),
+            "unsupported_local_parquet_source_capability",
+            [("source_format", "local_parquet".to_string())],
+        ),
+        SourceNode::GpuResident(source) if source.input_name.is_empty() => CapabilityDecision::rejected(
+            "unsupported_gpu_resident_source_capability",
+            [("reason", "empty_input_name".to_string()), ("source_format", "gpu_resident".to_string())],
+        ),
+        SourceNode::GpuResident(_) => CapabilityDecision::Satisfied,
+    }
+}
+
+fn expression_node_decision<'a>(
+    node_id: NodeId,
+    reason: &'static str,
+    expressions: impl IntoIterator<Item = &'a Expr>,
+) -> CapabilityDecision {
+    for expression in expressions {
+        if let Err(rejection) = validate_general_expr_capability(expression) {
+            return expression_rejection_decision(node_id, reason, expression, rejection);
+        }
+    }
+    CapabilityDecision::Satisfied
+}
+
+fn aggregate_node_executable_decision(node_id: NodeId, aggregate: &crate::plan::AggregateNode) -> CapabilityDecision {
+    for expr in &aggregate.spec.group_exprs {
+        if let Err(rejection) = validate_named_column_expr_capability(expr) {
+            return expression_rejection_decision(
+                node_id,
+                "unsupported_aggregate_group_expression_capability",
+                expr,
+                rejection,
+            );
+        }
+    }
+    for aggregate_expr in &aggregate.spec.aggr_exprs {
+        if let Err(rejection) =
+            validate_aggregate_expr_capability(aggregate_expr, aggregate.spec.group_exprs.is_empty())
+        {
+            return expression_rejection_decision(
+                node_id,
+                "unsupported_aggregate_expression_capability",
+                &aggregate_expr.expr,
+                rejection,
+            );
+        }
+    }
+    CapabilityDecision::Satisfied
+}
+
+fn sort_node_executable_decision(node_id: NodeId, sort: &crate::plan::SortNode) -> CapabilityDecision {
+    if sort.spec.expressions.is_empty() {
+        return CapabilityDecision::rejected(
+            "unsupported_sort_node_capability",
+            [("node_id", node_id.to_string()), ("reason", "empty_sort_expressions".to_string())],
+        );
+    }
+    for sort_expr in &sort.spec.expressions {
+        if let Err(rejection) = validate_column_expr_capability(&sort_expr.expr) {
+            return expression_rejection_decision(
+                node_id,
+                "unsupported_sort_expression_capability",
+                &sort_expr.expr,
+                rejection,
+            );
+        }
+    }
+    CapabilityDecision::Satisfied
+}
+
+fn limit_node_executable_decision(plan: &QueryPlan, node_id: NodeId, limit: &LimitNode) -> CapabilityDecision {
+    if limit.spec.skip.checked_add(limit.spec.fetch).is_none() {
+        return CapabilityDecision::rejected(
+            "unsupported_limit_node_capability",
+            [
+                ("node_id", node_id.to_string()),
+                ("reason", "skip_fetch_overflow".to_string()),
+                ("skip", limit.spec.skip.to_string()),
+                ("fetch", limit.spec.fetch.to_string()),
+            ],
+        );
+    }
+    if !matches!(plan.node(limit.input).map(|node| &node.kind), Some(PlanNode::Sort(_))) {
+        return CapabilityDecision::rejected(
+            "unsupported_limit_node_capability",
+            [
+                ("node_id", node_id.to_string()),
+                ("reason", "limit_not_directly_above_sort".to_string()),
+                ("input", limit.input.to_string()),
+            ],
+        );
+    }
+    CapabilityDecision::Satisfied
+}
+
+fn join_node_executable_decision(node_id: NodeId, join: &JoinNode) -> CapabilityDecision {
+    let Some(capability) = bounded_join_node_capability(join) else {
+        return CapabilityDecision::rejected(
             "unsupported_join_node_capability",
             [
+                ("node_id", node_id.to_string()),
                 ("join_type", join.spec.join_type.to_string()),
                 ("key_count", join.spec.keys.len().to_string()),
                 ("has_residual", join.spec.residual_predicate.is_some().to_string()),
                 ("build_side", join.spec.build_side.to_string()),
             ],
-        ),
-        PlanNode::Filter(_) | PlanNode::Projection(_) => {
-            CapabilityDecision::conditional(ConstraintScope::Node(node_id), "expression_capability_extraction")
-        },
-        _ => CapabilityDecision::Satisfied,
+        );
+    };
+    if let Some(predicate) = &join.spec.residual_predicate
+        && let Err(rejection) = validate_join_residual_expr_capability(predicate)
+    {
+        return expression_rejection_decision(
+            node_id,
+            "unsupported_join_residual_expression_capability",
+            predicate,
+            rejection,
+        );
+    }
+    if matches!(capability, BoundedJoinNodeCapability::KeyedFilteredSemiAnti)
+        && join.spec.output_projection.iter().any(|column| column.side != JoinSide::Left)
+    {
+        return CapabilityDecision::rejected(
+            "unsupported_join_node_capability",
+            [
+                ("node_id", node_id.to_string()),
+                ("join_type", join.spec.join_type.to_string()),
+                ("reason", "semi_anti_projects_non_left_column".to_string()),
+            ],
+        );
+    }
+    CapabilityDecision::Satisfied
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ExpressionCapabilityRejection {
+    reason: &'static str,
+    expression_family: &'static str,
+}
+
+fn expression_rejection_decision(
+    node_id: NodeId,
+    reason: &'static str,
+    expression: &Expr,
+    rejection: ExpressionCapabilityRejection,
+) -> CapabilityDecision {
+    CapabilityDecision::rejected(
+        reason,
+        [
+            ("node_id", node_id.to_string()),
+            ("reason", rejection.reason.to_string()),
+            ("expression_family", rejection.expression_family.to_string()),
+            ("expression", expression.to_string()),
+        ],
+    )
+}
+
+fn validation_result_decision(
+    result: crate::Result<()>,
+    reason: &'static str,
+    facts: impl IntoIterator<Item = (&'static str, String)>,
+) -> CapabilityDecision {
+    match result {
+        Ok(()) => CapabilityDecision::Satisfied,
+        Err(error) => validation_error_decision(reason, error, facts),
     }
 }
 
-fn join_node_admitted_subset(join: &JoinNode) -> bool {
-    bounded_root_join_compatible(join)
-        || bounded_multi_join_compatible(join)
-        || bounded_multi_join_mixed_keyed_residual_compatible(join)
+fn validation_error_decision(
+    reason: &'static str,
+    error: QueryError,
+    facts: impl IntoIterator<Item = (&'static str, String)>,
+) -> CapabilityDecision {
+    let mut facts = facts.into_iter().collect::<BTreeMap<_, _>>();
+    facts.insert("error_code", error.code().as_str().to_string());
+    facts.insert("error_operation", error.operation().to_string());
+    facts.insert("error_message", error.message().to_string());
+    if let Some(error_reason) = error.fact_value("reason") {
+        facts.insert("error_reason", error_reason.to_string());
+    }
+    CapabilityDecision::Rejected { reason, facts }
+}
+
+fn validate_aggregate_expr_capability(
+    aggregate_expr: &AggregateExpr,
+    is_scalar_aggregate: bool,
+) -> Result<(), ExpressionCapabilityRejection> {
+    if is_scalar_aggregate
+        && aggregate_expr.function == AggregateFunction::Count
+        && is_count_star_expr(&aggregate_expr.expr)
+    {
+        return Ok(());
+    }
+    validate_column_expr_capability(&aggregate_expr.expr)
+}
+
+fn is_count_star_expr(expr: &Expr) -> bool {
+    matches!(expr, Expr::Literal(value) if !matches!(value, LiteralValue::Null(_)))
+        || matches!(expr, Expr::Alias { expr, .. } if is_count_star_expr(expr))
+}
+
+fn validate_named_column_expr_capability(expr: &Expr) -> Result<(), ExpressionCapabilityRejection> {
+    match expr {
+        Expr::Column(_) => Ok(()),
+        Expr::Alias { expr, .. } => validate_column_expr_capability(expr),
+        _ => Err(ExpressionCapabilityRejection {
+            reason: "requires_named_column_expression",
+            expression_family: expr_family(expr),
+        }),
+    }
+}
+
+fn validate_column_expr_capability(expr: &Expr) -> Result<(), ExpressionCapabilityRejection> {
+    match expr {
+        Expr::Column(_) => Ok(()),
+        Expr::Alias { expr, .. } => validate_column_expr_capability(expr),
+        _ => Err(ExpressionCapabilityRejection {
+            reason: "requires_column_expression",
+            expression_family: expr_family(expr),
+        }),
+    }
+}
+
+fn validate_general_expr_capability(expr: &Expr) -> Result<(), ExpressionCapabilityRejection> {
+    match expr {
+        Expr::Column(_) => Ok(()),
+        Expr::Literal(value) => validate_literal_capability(value, "literal"),
+        Expr::Not(expr) | Expr::IsNull(expr) | Expr::IsNotNull(expr) | Expr::Alias { expr, .. } => {
+            validate_general_expr_capability(expr)
+        },
+        Expr::Cast { expr, .. } | Expr::Extract { expr, .. } => validate_general_expr_capability(expr),
+        Expr::Binary { left, op, right } if expr_is_interval_literal(left) || expr_is_interval_literal(right) => {
+            validate_interval_binary_expr_capability(left, *op, right)
+        },
+        Expr::Binary { left, right, .. } => {
+            validate_general_expr_capability(left)?;
+            validate_general_expr_capability(right)
+        },
+        Expr::Like { expr, escape, .. } => {
+            validate_general_expr_capability(expr)?;
+            if matches!(escape, Some(escape) if escape.len() > 1 || !escape.is_ascii()) {
+                return Err(ExpressionCapabilityRejection {
+                    reason: "like_escape_must_be_empty_or_one_ascii_byte",
+                    expression_family: "like",
+                });
+            }
+            Ok(())
+        },
+        Expr::Substring { expr, start, length } => {
+            validate_general_expr_capability(expr)?;
+            if *start < 1 {
+                return Err(ExpressionCapabilityRejection {
+                    reason: "substring_start_must_be_positive",
+                    expression_family: "substring",
+                });
+            }
+            if let Some(length) = length
+                && (*length < 0 || start.checked_sub(1).and_then(|start| start.checked_add(*length)).is_none())
+            {
+                return Err(ExpressionCapabilityRejection {
+                    reason: "substring_length_must_be_non_negative_and_in_range",
+                    expression_family: "substring",
+                });
+            }
+            Ok(())
+        },
+        Expr::InList { expr, list, .. } => {
+            validate_general_expr_capability(expr)?;
+            validate_in_list_capability(list, "in_list")
+        },
+        Expr::Case { branches, else_expr } => {
+            if branches.is_empty() {
+                return Err(ExpressionCapabilityRejection {
+                    reason: "case_requires_when_branch",
+                    expression_family: "case",
+                });
+            }
+            for branch in branches {
+                validate_general_expr_capability(&branch.when)?;
+                validate_general_expr_capability(&branch.then)?;
+            }
+            validate_general_expr_capability(else_expr)
+        },
+    }
+}
+
+fn validate_join_residual_expr_capability(expr: &Expr) -> Result<(), ExpressionCapabilityRejection> {
+    match expr {
+        Expr::Column(column)
+            if matches!(column.qualifier(), Some(crate::expr::ColumnQualifier::Input { index: 0 | 1 })) =>
+        {
+            Ok(())
+        },
+        Expr::Column(_) => Err(ExpressionCapabilityRejection {
+            reason: "join_residual_column_must_be_input_qualified",
+            expression_family: "column",
+        }),
+        Expr::Literal(value) => validate_literal_capability(value, "literal"),
+        Expr::Not(expr) | Expr::IsNull(expr) | Expr::IsNotNull(expr) | Expr::Alias { expr, .. } => {
+            validate_join_residual_expr_capability(expr)
+        },
+        Expr::Cast { expr, .. } => validate_join_residual_expr_capability(expr),
+        Expr::Binary { left, right, .. } => {
+            validate_join_residual_expr_capability(left)?;
+            validate_join_residual_expr_capability(right)
+        },
+        Expr::InList { expr, list, .. } => {
+            validate_join_residual_expr_capability(expr)?;
+            validate_in_list_capability(list, "in_list")
+        },
+        Expr::Like { .. } | Expr::Substring { .. } | Expr::Case { .. } | Expr::Extract { .. } => {
+            Err(ExpressionCapabilityRejection {
+                reason: "join_residual_expression_family_not_supported",
+                expression_family: expr_family(expr),
+            })
+        },
+    }
+}
+
+fn validate_in_list_capability(
+    list: &[Expr],
+    expression_family: &'static str,
+) -> Result<(), ExpressionCapabilityRejection> {
+    if list.is_empty() {
+        return Err(ExpressionCapabilityRejection { reason: "in_list_must_not_be_empty", expression_family });
+    }
+    for item in list {
+        let Expr::Literal(value) = item else {
+            return Err(ExpressionCapabilityRejection { reason: "in_list_values_must_be_literals", expression_family });
+        };
+        validate_literal_capability(value, expression_family)?;
+        if matches!(value, LiteralValue::Null(_)) {
+            return Err(ExpressionCapabilityRejection {
+                reason: "in_list_null_semantics_not_modeled",
+                expression_family,
+            });
+        }
+    }
+    Ok(())
+}
+
+fn validate_literal_capability(
+    value: &LiteralValue,
+    expression_family: &'static str,
+) -> Result<(), ExpressionCapabilityRejection> {
+    if matches!(value, LiteralValue::IntervalMonthDayNano { .. }) {
+        return Err(ExpressionCapabilityRejection {
+            reason: "interval_literal_requires_datetime_interval_arithmetic",
+            expression_family,
+        });
+    }
+    Ok(())
+}
+
+fn validate_interval_binary_expr_capability(
+    left: &Expr,
+    op: BinaryOp,
+    right: &Expr,
+) -> Result<(), ExpressionCapabilityRejection> {
+    let left_interval = expr_is_interval_literal(left);
+    let right_interval = expr_is_interval_literal(right);
+    if left_interval == right_interval {
+        return Err(ExpressionCapabilityRejection {
+            reason: "interval_arithmetic_requires_exactly_one_interval_literal",
+            expression_family: "binary",
+        });
+    }
+    if left_interval && op != BinaryOp::Add {
+        return Err(ExpressionCapabilityRejection {
+            reason: "interval_left_operand_requires_add",
+            expression_family: "binary",
+        });
+    }
+    if right_interval && !matches!(op, BinaryOp::Add | BinaryOp::Subtract) {
+        return Err(ExpressionCapabilityRejection {
+            reason: "interval_right_operand_requires_add_or_subtract",
+            expression_family: "binary",
+        });
+    }
+    validate_general_expr_capability(if left_interval { right } else { left })
+}
+
+fn expr_is_interval_literal(expr: &Expr) -> bool {
+    matches!(expr, Expr::Literal(LiteralValue::IntervalMonthDayNano { .. }))
+}
+
+fn expr_family(expr: &Expr) -> &'static str {
+    match expr {
+        Expr::Column(_) => "column",
+        Expr::Literal(_) => "literal",
+        Expr::Not(_) => "not",
+        Expr::IsNull(_) => "is_null",
+        Expr::IsNotNull(_) => "is_not_null",
+        Expr::Cast { .. } => "cast",
+        Expr::Binary { .. } => "binary",
+        Expr::Like { .. } => "like",
+        Expr::Substring { .. } => "substring",
+        Expr::InList { .. } => "in_list",
+        Expr::Case { .. } => "case",
+        Expr::Extract { .. } => "extract",
+        Expr::Alias { .. } => "alias",
+    }
 }
 
 fn produced_properties(kind: &PlanNode) -> Vec<ProducedProperty> {
@@ -406,20 +1052,47 @@ fn node_local_requirements(kind: &PlanNode) -> Vec<ReservationRequirement> {
     match kind {
         PlanNode::Aggregate(_) => vec![ReservationRequirement::modeled(
             ReservationKind::OperatorOutput,
+            "operator_output",
             "aggregate_contract",
-            "cudf_rs_hard_budgeted_report_with_unresolved_preflight",
             ContractQuality::HardBudgetedReportWithUnresolvedPreflight,
         )],
         PlanNode::Join(join) if bounded_root_hash_join_compatible(join) => vec![ReservationRequirement::modeled(
             ReservationKind::HashTable,
+            "join_hash_table",
             "hash_join_pre_build_reservation_size_bytes",
-            "cudf_rs_pre_build_sizing",
             ContractQuality::ExactPreflight,
         )],
+        PlanNode::Join(join) if bounded_root_filtered_join_compatible(join) => vec![
+            ReservationRequirement::modeled(
+                ReservationKind::HashTable,
+                "join_hash_table",
+                "hash_join_pre_build_reservation_size_bytes",
+                ContractQuality::ExactPreflight,
+            ),
+            ReservationRequirement::modeled(
+                ReservationKind::FilteredProbeState,
+                "join_filtered_probe_state",
+                "filtered_join_retained_probe_state",
+                ContractQuality::ObservedRetainedState,
+            ),
+        ],
+        PlanNode::Join(join)
+            if matches!(
+                BoundedKeylessConditionalJoinType::try_from_join(join),
+                Some(BoundedKeylessConditionalJoinType::Full)
+            ) =>
+        {
+            vec![ReservationRequirement::modeled(
+                ReservationKind::MixedSizeData,
+                "join_mixed_size_data",
+                "mixed_keyed_residual_or_conditional_full_retained_size_data",
+                ContractQuality::ObservedRetainedState,
+            )]
+        },
         PlanNode::Join(join) if join.spec.residual_predicate.is_some() => vec![ReservationRequirement::modeled(
             ReservationKind::MixedSizeData,
+            "join_mixed_size_data",
             "mixed_keyed_residual_or_conditional_full_retained_size_data",
-            "cudf_rs_retained_join_size_data_observability",
             ContractQuality::ObservedRetainedState,
         )],
         _ => Vec::new(),
@@ -482,17 +1155,25 @@ fn edge_requirements(
     if matches!(input_role, InputRole::JoinBuildInput { .. }) {
         requirements.push(ReservationRequirement::modeled(
             ReservationKind::BuildSide,
+            "join_build_side",
             "query_engine_build_side_source_reservation",
-            "query_engine_resident_build_input_before_execution",
             ContractQuality::ExactPreflight,
+        ));
+    }
+    if matches!(input_role, InputRole::JoinProbeInput { .. }) {
+        requirements.push(ReservationRequirement::modeled(
+            ReservationKind::ProbeSide,
+            "join_probe_side",
+            "query_engine_probe_side_source_reservation",
+            ContractQuality::QueryEngineOwnedOrdering,
         ));
     }
     append_producer_output_edge_requirements(plan, producer, &mut requirements);
     if matches!(consumer_kind, PlanNode::Sort(_)) {
         requirements.push(ReservationRequirement::modeled(
             ReservationKind::FinalSort,
+            "join_pipeline_final_sort",
             "final_sort_contract",
-            "cudf_rs_hard_budgeted_report_with_unresolved_preflight",
             ContractQuality::HardBudgetedReportWithUnresolvedPreflight,
         ));
     }
@@ -508,8 +1189,8 @@ fn append_source_read_edge_requirement(
     {
         requirements.push(ReservationRequirement::modeled(
             ReservationKind::SourceRead,
+            "source_read",
             "source_contract",
-            "cudf_rs_hard_budgeted_report_with_unresolved_preflight",
             ContractQuality::HardBudgetedReportWithUnresolvedPreflight,
         ));
     }
@@ -523,14 +1204,14 @@ fn append_producer_output_edge_requirements(
     if matches!(plan.node(producer).map(|node| &node.kind), Some(PlanNode::Join(_))) {
         requirements.push(ReservationRequirement::modeled(
             ReservationKind::GatherMap,
+            "join_gather_map",
             "join_gather_map_reservation_size_bytes",
-            "cudf_rs_join_gather_map_sizing",
             ContractQuality::ExactPreflight,
         ));
         requirements.push(ReservationRequirement::modeled(
             ReservationKind::JoinOutput,
-            "dataframe_gather_output_reservation_size_bytes",
-            "cudf_rs_dataframe_gather_output_sizing",
+            "join_output",
+            "dataframe_gather_output_reservation_size_bytes+projected_cross_join_reservation_size_bytes",
             ContractQuality::ExactPreflight,
         ));
     }
@@ -547,8 +1228,8 @@ fn analyze_sink_edge(plan: &QueryPlan) -> EdgeContract {
     append_producer_output_edge_requirements(plan, producer, &mut reservation_requirements);
     reservation_requirements.push(ReservationRequirement::modeled(
         ReservationKind::Materialization,
+        "host_materialization",
         "query_engine_explicit_sink_materialization_reservation",
-        "explicit_sink_boundary",
         ContractQuality::QueryEngineOwnedBoundary,
     ));
     EdgeContract {
@@ -559,6 +1240,21 @@ fn analyze_sink_edge(plan: &QueryPlan) -> EdgeContract {
         reservation_requirements,
         decision: CapabilityDecision::Satisfied,
     }
+}
+
+fn csv_join<I, T>(values: I) -> String
+where
+    I: IntoIterator<Item = T>,
+    T: ToString,
+{
+    let mut output = String::new();
+    for value in values {
+        if !output.is_empty() {
+            output.push(',');
+        }
+        output.push_str(&value.to_string());
+    }
+    output
 }
 
 fn analyze_invariants(plan: &QueryPlan) -> Vec<SubgraphInvariant> {

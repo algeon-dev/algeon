@@ -24,7 +24,8 @@ use cudf_query_engine::{
     SourceNode, SourceReadBoundary, SourceSchedulerPolicy, ZERO_COLUMN_COUNT_COLUMN, ZeroColumnCountDisposition,
     capability::{
         CapabilityDecision, CompatibilityFamilyProjection, ContractQuality, ContractStatus, EdgeConsumer, InputRole,
-        NodeOperator, ResultSinkKind, SubgraphInvariantKind,
+        NodeOperator, OrderingRequirement, ReservationRequirementScope, ResidualRequirement, ResultSinkKind,
+        ScheduleConstraint, SourceFormatCapability, SubgraphInvariantKind,
     },
     cudf_dtype_from_arrow_type,
     expr::{CaseWhen, DatePart},
