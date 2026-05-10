@@ -1,5 +1,6 @@
 use std::{
     collections::{BTreeMap, HashMap},
+    fmt::Write,
     sync::{Arc, Mutex},
 };
 
@@ -14,6 +15,7 @@ use crate::{
     metrics::QueryMetrics,
     plan::{HashJoinBuildArtifactId, JoinNullEquality, ResultSink},
     runtime::{DevicePlacement, ExecutionContext},
+    source::{LocalParquetSource, SourceColumnRef},
 };
 
 pub type GpuResidentInputMap = BTreeMap<String, GpuResultHandle>;
@@ -64,6 +66,27 @@ impl GpuDataFrame {
 
     pub fn num_columns(&self) -> usize {
         self.frame.num_columns()
+    }
+
+    pub fn device_allocated_size_bytes(&self) -> Result<u64> {
+        let info = self.frame.info_with(InfoDetail::DEVICE_ALLOCATED).map_err(|error| {
+            QueryError::from_cudf(
+                "cudf_query_engine.gpu_dataframe.device_memory",
+                "failed to observe native GPU dataframe memory",
+                error,
+            )
+        })?;
+        let bytes =
+            info.memory_accounting.and_then(|accounting| accounting.device_allocated_bytes).ok_or_else(|| {
+                QueryError::new(
+                    crate::error::QueryErrorCode::Internal,
+                    "cudf_query_engine.gpu_dataframe.device_memory",
+                    "cudf dataframe memory accounting did not include device-allocated bytes",
+                )
+                .with_fact("rows", self.num_rows())
+                .with_fact("columns", self.num_columns())
+            })?;
+        Ok(bytes as u64)
     }
 }
 
@@ -441,6 +464,289 @@ impl GpuHashJoinBuildCache {
             )
         })
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct GpuLocalParquetSourceCacheKey {
+    fingerprint: String,
+}
+
+impl GpuLocalParquetSourceCacheKey {
+    pub fn from_source(source: &LocalParquetSource) -> Self {
+        let mut fingerprint = String::new();
+        push_token(&mut fingerprint, "mode", "unbounded_local_parquet_source");
+        push_schema(&mut fingerprint, &source.schema);
+        push_string_vec(&mut fingerprint, "read_columns", &source.read_columns);
+        push_usize_vec(&mut fingerprint, "read_column_file_indices", &source.read_column_file_indices);
+        push_string_vec(&mut fingerprint, "projected_output_columns", &source.projected_output_columns);
+        push_source_refs(
+            &mut fingerprint,
+            "projected_output_column_source_refs",
+            &source.projected_output_column_source_refs,
+        );
+        push_string_vec(&mut fingerprint, "pure_filter_columns", &source.pure_filter_columns);
+        push_source_refs(&mut fingerprint, "pure_filter_column_source_refs", &source.pure_filter_column_source_refs);
+        push_token(
+            &mut fingerprint,
+            "scan_limit",
+            source.scan_limit.map_or_else(|| "none".to_string(), |limit| limit.to_string()),
+        );
+        push_token(&mut fingerprint, "file_count", source.files.len().to_string());
+        for (index, file) in source.files.iter().enumerate() {
+            push_token(&mut fingerprint, format!("file.{index}.path"), file.path.display().to_string());
+            push_token(&mut fingerprint, format!("file.{index}.stable_id"), &file.stable_id);
+            push_token(
+                &mut fingerprint,
+                format!("file.{index}.size"),
+                file.file_size_bytes.map_or_else(|| "unknown".to_string(), |bytes| bytes.to_string()),
+            );
+            push_optional_usize_vec(&mut fingerprint, format!("file.{index}.row_groups"), file.row_groups.as_deref());
+            push_optional_u64_vec(
+                &mut fingerprint,
+                format!("file.{index}.row_group_bytes"),
+                file.row_group_bytes.as_deref(),
+            );
+            push_optional_u64_vec(
+                &mut fingerprint,
+                format!("file.{index}.projected_compressed"),
+                file.projected_row_group_compressed_bytes.as_deref(),
+            );
+            push_optional_u64_vec(
+                &mut fingerprint,
+                format!("file.{index}.projected_uncompressed"),
+                file.projected_row_group_uncompressed_bytes.as_deref(),
+            );
+            push_optional_u64_vec(
+                &mut fingerprint,
+                format!("file.{index}.pure_filter_compressed"),
+                file.pure_filter_row_group_compressed_bytes.as_deref(),
+            );
+            push_optional_u64_vec(
+                &mut fingerprint,
+                format!("file.{index}.pure_filter_uncompressed"),
+                file.pure_filter_row_group_uncompressed_bytes.as_deref(),
+            );
+            push_optional_u64_vec(
+                &mut fingerprint,
+                format!("file.{index}.row_group_rows"),
+                file.row_group_rows.as_deref(),
+            );
+            let partition_values = file.partition_values.iter().map(ToString::to_string).collect::<Vec<_>>();
+            push_string_vec(&mut fingerprint, format!("file.{index}.partition_values"), &partition_values);
+        }
+        Self { fingerprint }
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.fingerprint
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GpuLocalParquetSourceCacheInsert {
+    Inserted,
+    AlreadyPresent,
+    CapacitySkipped,
+}
+
+#[derive(Clone)]
+struct GpuLocalParquetSourceCacheEntry {
+    handle: GpuResultHandle,
+    retained_device_bytes: u64,
+}
+
+#[derive(Default)]
+struct GpuLocalParquetSourceCacheState {
+    cache: HashMap<GpuLocalParquetSourceCacheKey, GpuLocalParquetSourceCacheEntry>,
+    retained_device_bytes: u64,
+}
+
+pub struct GpuLocalParquetSourceCache {
+    max_retained_device_bytes: u64,
+    state: Mutex<GpuLocalParquetSourceCacheState>,
+}
+
+impl std::fmt::Debug for GpuLocalParquetSourceCache {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let state = self.state.lock().ok();
+        f.debug_struct("GpuLocalParquetSourceCache")
+            .field("max_retained_device_bytes", &self.max_retained_device_bytes)
+            .field("entry_count", &state.as_ref().map(|state| state.cache.len()))
+            .field("retained_device_bytes", &state.as_ref().map(|state| state.retained_device_bytes))
+            .finish()
+    }
+}
+
+impl GpuLocalParquetSourceCache {
+    pub fn new(max_retained_device_bytes: u64) -> Self {
+        Self { max_retained_device_bytes, state: Mutex::new(GpuLocalParquetSourceCacheState::default()) }
+    }
+
+    pub fn max_retained_device_bytes(&self) -> u64 {
+        self.max_retained_device_bytes
+    }
+
+    pub fn len(&self) -> Result<usize> {
+        Ok(self.lock()?.cache.len())
+    }
+
+    pub fn is_empty(&self) -> Result<bool> {
+        Ok(self.len()? == 0)
+    }
+
+    pub fn retained_device_bytes(&self) -> Result<u64> {
+        Ok(self.lock()?.retained_device_bytes)
+    }
+
+    pub(crate) fn get(
+        &self,
+        key: &GpuLocalParquetSourceCacheKey,
+        context: &ExecutionContext,
+        schema: &SchemaRef,
+    ) -> Result<Option<GpuResultHandle>> {
+        let Some(entry) = self.lock()?.cache.get(key).cloned() else {
+            return Ok(None);
+        };
+        if !entry.handle.can_reuse_for_source_cache(context, schema)? {
+            let mut state = self.lock()?;
+            if let Some(removed) = state.cache.remove(key) {
+                state.retained_device_bytes = state.retained_device_bytes.saturating_sub(removed.retained_device_bytes);
+            }
+            return Ok(None);
+        }
+        Ok(Some(entry.handle))
+    }
+
+    pub(crate) fn insert_if_absent(
+        &self,
+        key: GpuLocalParquetSourceCacheKey,
+        handle: GpuResultHandle,
+        retained_device_bytes: u64,
+    ) -> Result<GpuLocalParquetSourceCacheInsert> {
+        let mut state = self.lock()?;
+        if state.cache.contains_key(&key) {
+            return Ok(GpuLocalParquetSourceCacheInsert::AlreadyPresent);
+        }
+        let Some(next_retained_bytes) = state.retained_device_bytes.checked_add(retained_device_bytes) else {
+            return Ok(GpuLocalParquetSourceCacheInsert::CapacitySkipped);
+        };
+        if next_retained_bytes > self.max_retained_device_bytes {
+            return Ok(GpuLocalParquetSourceCacheInsert::CapacitySkipped);
+        }
+        state.cache.insert(key, GpuLocalParquetSourceCacheEntry { handle, retained_device_bytes });
+        state.retained_device_bytes = next_retained_bytes;
+        Ok(GpuLocalParquetSourceCacheInsert::Inserted)
+    }
+
+    fn lock(&self) -> Result<std::sync::MutexGuard<'_, GpuLocalParquetSourceCacheState>> {
+        self.state.lock().map_err(|_| {
+            QueryError::new(
+                crate::error::QueryErrorCode::InvalidPlan,
+                "cudf_query_engine.gpu_local_parquet_source_cache",
+                "native GPU local Parquet source cache lock was poisoned",
+            )
+        })
+    }
+}
+
+impl GpuResultHandle {
+    fn can_reuse_for_source_cache(&self, context: &ExecutionContext, schema: &SchemaRef) -> Result<bool> {
+        if self.schema().as_ref() != schema.as_ref() {
+            return Err(QueryError::new(
+                crate::error::QueryErrorCode::InvalidPlan,
+                "cudf_query_engine.gpu_local_parquet_source_cache.reuse",
+                "cached local Parquet source schema does not match the requested source schema",
+            )
+            .with_fact("reason", "schema_mismatch")
+            .with_fact("cached_fields", self.schema().fields().len())
+            .with_fact("requested_fields", schema.fields().len()));
+        }
+        let context_runtime = context.shared_runtime();
+        if !Arc::ptr_eq(self.runtime(), &context_runtime) {
+            return Ok(false);
+        }
+        if self.device_placement() != context.device_placement()
+            || self.placement().device != context.runtime().device()
+        {
+            return Ok(false);
+        }
+        Ok(true)
+    }
+}
+
+fn push_schema(output: &mut String, schema: &SchemaRef) {
+    push_token(output, "schema_field_count", schema.fields().len().to_string());
+    for (index, field) in schema.fields().iter().enumerate() {
+        push_token(output, format!("schema.{index}.name"), field.name());
+        push_token(output, format!("schema.{index}.data_type"), format!("{:?}", field.data_type()));
+        push_token(output, format!("schema.{index}.nullable"), field.is_nullable().to_string());
+        for (key, value) in field.metadata() {
+            push_token(output, format!("schema.{index}.metadata.{}", escape_token(key)), value);
+        }
+    }
+}
+
+fn push_source_refs(output: &mut String, label: impl AsRef<str>, refs: &[SourceColumnRef]) {
+    let values = refs.iter().map(format_source_ref).collect::<Vec<_>>();
+    push_string_vec(output, label, &values);
+}
+
+fn format_source_ref(source_ref: &SourceColumnRef) -> String {
+    match source_ref {
+        SourceColumnRef::File(index) => format!("file:{index}"),
+        SourceColumnRef::Partition(index) => format!("partition:{index}"),
+        SourceColumnRef::MissingNull(index) => format!("missing_null:{index}"),
+    }
+}
+
+fn push_string_vec(output: &mut String, label: impl AsRef<str>, values: &[String]) {
+    push_token(output, format!("{}.len", label.as_ref()), values.len().to_string());
+    for (index, value) in values.iter().enumerate() {
+        push_token(output, format!("{}.{}", label.as_ref(), index), value);
+    }
+}
+
+fn push_usize_vec(output: &mut String, label: impl AsRef<str>, values: &[usize]) {
+    push_token(output, format!("{}.len", label.as_ref()), values.len().to_string());
+    for (index, value) in values.iter().enumerate() {
+        push_token(output, format!("{}.{}", label.as_ref(), index), value.to_string());
+    }
+}
+
+fn push_optional_usize_vec(output: &mut String, label: impl AsRef<str>, values: Option<&[usize]>) {
+    match values {
+        Some(values) => push_usize_vec(output, label, values),
+        None => push_token(output, label, "none"),
+    }
+}
+
+fn push_optional_u64_vec(output: &mut String, label: impl AsRef<str>, values: Option<&[u64]>) {
+    match values {
+        Some(values) => {
+            push_token(output, format!("{}.len", label.as_ref()), values.len().to_string());
+            for (index, value) in values.iter().enumerate() {
+                push_token(output, format!("{}.{}", label.as_ref(), index), value.to_string());
+            }
+        },
+        None => push_token(output, label, "none"),
+    }
+}
+
+fn push_token(output: &mut String, key: impl AsRef<str>, value: impl ToString) {
+    let _ = write!(output, "{}={};", escape_token(key.as_ref()), escape_token(&value.to_string()));
+}
+
+fn escape_token(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for ch in value.chars() {
+        match ch {
+            '\\' => escaped.push_str("\\\\"),
+            '=' => escaped.push_str("\\="),
+            ';' => escaped.push_str("\\;"),
+            other => escaped.push(other),
+        }
+    }
+    escaped
 }
 
 pub enum QueryOutput {

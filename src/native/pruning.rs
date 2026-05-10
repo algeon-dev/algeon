@@ -37,6 +37,13 @@ pub(super) use row_groups::*;
 #[derive(Debug, Clone, Copy)]
 pub(super) struct CoalescedLocalParquetFile<'a> {
     pub(super) file: &'a PartitionedFile,
+    pub(super) byte_range_representation: LocalParquetByteRangeRepresentation,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum LocalParquetByteRangeRepresentation {
+    WholeFile,
+    RowGroupSelection,
 }
 
 #[derive(Debug)]
@@ -48,6 +55,7 @@ struct FileCoverage<'a> {
     entry_count: usize,
     saw_unranged: bool,
     ranges: Vec<(i64, i64)>,
+    byte_range_representation: LocalParquetByteRangeRepresentation,
 }
 
 pub(super) fn coalesced_local_parquet_scan_files<'a>(
@@ -59,11 +67,11 @@ pub(super) fn coalesced_local_parquet_scan_files<'a>(
             return Err(FallbackReason::NativeSourceFileOrdering);
         }
         if let Some(range) = &file.range
-            && (file.extensions.is_some()
-                || range.start < 0
-                || range.end < range.start
+            && (range.start < 0
+                || range.end <= range.start
                 || u64::try_from(range.end).map_err(|_error| FallbackReason::NativeSourceByteRange)?
-                    > file.object_meta.size)
+                    > file.object_meta.size
+                || !range_extensions_are_supported(file)?)
         {
             return Err(FallbackReason::NativeSourceByteRange);
         }
@@ -80,6 +88,7 @@ pub(super) fn coalesced_local_parquet_scan_files<'a>(
                 entry_count: 0,
                 saw_unranged: false,
                 ranges: Vec::new(),
+                byte_range_representation: LocalParquetByteRangeRepresentation::WholeFile,
             });
             coverages.len() - 1
         };
@@ -106,21 +115,51 @@ pub(super) fn coalesced_local_parquet_scan_files<'a>(
             continue;
         }
 
-        let size = i64::try_from(coverage.size).map_err(|_error| FallbackReason::NativeSourceByteRange)?;
-        coverage.ranges.sort_unstable();
-        let mut next_start = 0i64;
-        for (start, end) in &coverage.ranges {
-            if *start != next_start || *end <= *start {
-                return Err(FallbackReason::NativeSourceByteRange);
-            }
-            next_start = *end;
+        if ranges_cover_full_file(coverage)? {
+            continue;
         }
-        if next_start != size {
-            return Err(FallbackReason::NativeSourceByteRange);
+
+        if coverage.entry_count == 1
+            && coverage.ranges.len() == 1
+            && explicit_row_group_selection(coverage.representative)?.is_some()
+        {
+            coverage.byte_range_representation = LocalParquetByteRangeRepresentation::RowGroupSelection;
+            continue;
         }
+
+        return Err(FallbackReason::NativeSourceByteRange);
     }
 
-    Ok(coverages.into_iter().map(|coverage| CoalescedLocalParquetFile { file: coverage.representative }).collect())
+    Ok(coverages
+        .into_iter()
+        .map(|coverage| CoalescedLocalParquetFile {
+            file: coverage.representative,
+            byte_range_representation: coverage.byte_range_representation,
+        })
+        .collect())
+}
+
+fn ranges_cover_full_file(coverage: &mut FileCoverage<'_>) -> Result<bool, FallbackReason> {
+    let size = i64::try_from(coverage.size).map_err(|_error| FallbackReason::NativeSourceByteRange)?;
+    coverage.ranges.sort_unstable();
+    let mut next_start = 0i64;
+    for (start, end) in &coverage.ranges {
+        if *start != next_start || *end <= *start {
+            return Ok(false);
+        }
+        next_start = *end;
+    }
+    Ok(next_start == size)
+}
+
+fn range_extensions_are_supported(file: &PartitionedFile) -> Result<bool, FallbackReason> {
+    let Some(extension) = &file.extensions else {
+        return Ok(true);
+    };
+    if extension.downcast_ref::<ParquetAccessPlan>().is_none() {
+        return Ok(false);
+    }
+    explicit_row_group_selection(file).map(|row_groups| row_groups.is_some())
 }
 
 pub(super) fn parquet_predicate_disposition(

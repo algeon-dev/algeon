@@ -20,6 +20,7 @@ pub use benchmark::{
     LargerIslandBenchmarkReport, PhaseCRuntimeGateStatus, TimedBenchmarkRun, build_larger_island_benchmark_plan,
     run_larger_island_benchmark, run_larger_island_benchmark_with_optimizer,
 };
+pub use cudf_query_engine::{GpuLocalParquetSourceCache, GpuLocalParquetSourceCacheKey};
 pub use error::{Error, ErrorCode, ErrorKind, ErrorStatus, Facts, Result};
 pub use exec::{CudfExecutionConfig, CudfGpuIslandExec};
 pub use native::{NativeLoweringResult, lower_physical_plan_to_native};

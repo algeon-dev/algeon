@@ -24,6 +24,37 @@ pub(super) fn parquet_scan_with_projection_indices(
     DataSourceExec::from_data_source(file_scan)
 }
 
+pub(super) fn parquet_scan_with_order_sensitive_limit(path: &std::path::Path, limit: usize) -> Arc<dyn ExecutionPlan> {
+    let scan = parquet_scan(path);
+    let data_source = scan.as_any().downcast_ref::<DataSourceExec>().expect("parquet scan should be DataSourceExec");
+    let (file_scan, _parquet_source) =
+        data_source.downcast_to_file_source::<ParquetSource>().expect("parquet scan should use ParquetSource");
+    let file_scan =
+        FileScanConfigBuilder::from(file_scan.clone()).with_limit(Some(limit)).with_preserve_order(true).build();
+    DataSourceExec::from_data_source(file_scan)
+}
+
+pub(super) fn parquet_scan_with_order_sensitive_limit_one_file_per_group(
+    path: &std::path::Path,
+    limit: usize,
+) -> Arc<dyn ExecutionPlan> {
+    let scan = parquet_scan(path);
+    let data_source = scan.as_any().downcast_ref::<DataSourceExec>().expect("parquet scan should be DataSourceExec");
+    let (file_scan, _parquet_source) =
+        data_source.downcast_to_file_source::<ParquetSource>().expect("parquet scan should use ParquetSource");
+    let file_groups = file_scan
+        .file_groups
+        .iter()
+        .flat_map(|group| group.files().iter().cloned().map(|file| FileGroup::new(vec![file])))
+        .collect();
+    let file_scan = FileScanConfigBuilder::from(file_scan.clone())
+        .with_file_groups(file_groups)
+        .with_limit(Some(limit))
+        .with_preserve_order(true)
+        .build();
+    DataSourceExec::from_data_source(file_scan)
+}
+
 pub(super) fn parquet_scan_with_missing_nullable_column(path: &std::path::Path) -> Arc<dyn ExecutionPlan> {
     let scan = parquet_scan(path);
     let data_source = scan.as_any().downcast_ref::<DataSourceExec>().expect("parquet scan should be DataSourceExec");
@@ -132,6 +163,36 @@ pub(super) fn parquet_source_exec_without_predicate(source: &DataSourceExec) -> 
         builder = builder.with_projection_indices(Some(projection_indices)).unwrap();
     }
     DataSourceExec::from_data_source(builder.build())
+}
+
+#[derive(Debug)]
+struct RejectingParquetFileReaderFactory;
+
+impl datafusion::datasource::physical_plan::ParquetFileReaderFactory for RejectingParquetFileReaderFactory {
+    fn create_reader(
+        &self,
+        _partition_index: usize,
+        _partitioned_file: datafusion::datasource::listing::PartitionedFile,
+        _metadata_size_hint: Option<usize>,
+        _metrics: &datafusion::physical_plan::metrics::ExecutionPlanMetricsSet,
+    ) -> datafusion::common::Result<Box<dyn datafusion::parquet::arrow::async_reader::AsyncFileReader + Send>> {
+        Err(datafusion::common::DataFusionError::Execution(
+            "test reader factory should not be invoked during native lowering".to_string(),
+        ))
+    }
+}
+
+pub(super) fn parquet_scan_with_custom_reader_factory(path: &std::path::Path) -> Arc<dyn ExecutionPlan> {
+    let scan = parquet_scan(path);
+    let data_source = scan.as_any().downcast_ref::<DataSourceExec>().expect("parquet scan should be DataSourceExec");
+    let (file_scan, _parquet_source) =
+        data_source.downcast_to_file_source::<ParquetSource>().expect("parquet scan should use ParquetSource");
+    let parquet_source = ParquetSource::new(file_scan.file_source().table_schema().clone())
+        .with_parquet_file_reader_factory(Arc::new(RejectingParquetFileReaderFactory));
+    let file_scan = FileScanConfigBuilder::from(file_scan.clone())
+        .with_source(Arc::new(parquet_source) as Arc<dyn FileSource>)
+        .build();
+    DataSourceExec::from_data_source(file_scan)
 }
 
 pub(super) struct DefaultDistributedSqlPlanParts {
@@ -337,6 +398,35 @@ pub(super) fn parquet_scan_with_byte_range(path: &std::path::Path) -> Arc<dyn Ex
 
 pub(super) fn parquet_scan_with_partial_byte_range(path: &std::path::Path) -> Arc<dyn ExecutionPlan> {
     parquet_scan_with_byte_ranges(path, |size| vec![(0, size / 2)])
+}
+
+pub(super) fn parquet_scan_with_partial_byte_range_and_access_plan(
+    path: &std::path::Path,
+    access_plan: ParquetAccessPlan,
+) -> Arc<dyn ExecutionPlan> {
+    let scan = parquet_scan(path);
+    let data_source = scan.as_any().downcast_ref::<DataSourceExec>().expect("parquet scan should be DataSourceExec");
+    let (file_scan, _parquet_source) =
+        data_source.downcast_to_file_source::<ParquetSource>().expect("parquet scan should use ParquetSource");
+    let file_groups = file_scan
+        .file_groups
+        .iter()
+        .map(|group| {
+            FileGroup::new(
+                group
+                    .files()
+                    .iter()
+                    .cloned()
+                    .map(|file| {
+                        let size = file.object_meta.size as i64;
+                        file.with_range(0, size / 2).with_extensions(Arc::new(access_plan.clone()))
+                    })
+                    .collect(),
+            )
+        })
+        .collect();
+    let file_scan = FileScanConfigBuilder::from(file_scan.clone()).with_file_groups(file_groups).build();
+    DataSourceExec::from_data_source(file_scan)
 }
 
 pub(super) fn parquet_scan_with_split_full_byte_ranges(path: &std::path::Path) -> Arc<dyn ExecutionPlan> {

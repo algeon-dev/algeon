@@ -6,6 +6,7 @@ pub(super) const DEFAULT_NATIVE_MAX_ROW_GROUPS_PER_CHUNK: usize = 1;
 pub(super) const DEFAULT_NATIVE_MAX_RETRY_ATTEMPTS: usize = 4;
 pub(super) const DEFAULT_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS: usize = 1;
 pub(super) const DEFAULT_NATIVE_MAX_SOURCE_READS_IN_FLIGHT: usize = 2;
+pub(super) const DEFAULT_NATIVE_SOURCE_CACHE_MAX_RETAINED_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct NativeTpchBenchmarkConfig {
@@ -15,6 +16,7 @@ pub(super) struct NativeTpchBenchmarkConfig {
     pub(super) dataset_mode: NativeTpchDatasetMode,
     pub(super) native_memory_policy: NativeTpchMemoryPolicy,
     pub(super) max_source_reads_in_flight: usize,
+    pub(super) native_source_cache_policy: NativeTpchSourceCachePolicy,
 }
 
 impl NativeTpchBenchmarkConfig {
@@ -29,6 +31,9 @@ impl NativeTpchBenchmarkConfig {
                 "CUDF_TPCH_BENCH_NATIVE_MAX_SOURCE_READS_IN_FLIGHT",
                 DEFAULT_NATIVE_MAX_SOURCE_READS_IN_FLIGHT,
             )?,
+            native_source_cache_policy: NativeTpchSourceCachePolicy::from_env(
+                "CUDF_TPCH_BENCH_NATIVE_SOURCE_CACHE_POLICY",
+            )?,
         };
         config.validate()?;
         Ok(config)
@@ -38,6 +43,14 @@ impl NativeTpchBenchmarkConfig {
         validate_nonzero("CUDF_TPCH_BENCH_ITERATIONS", self.iterations)?;
         validate_query_ids(&self.query_ids)?;
         validate_nonzero("CUDF_TPCH_BENCH_NATIVE_MAX_SOURCE_READS_IN_FLIGHT", self.max_source_reads_in_flight)?;
+        if self.native_source_cache_policy.is_enabled() && self.native_memory_policy.is_bounded() {
+            return Err(plan_error(
+                "CUDF_TPCH_BENCH_NATIVE_SOURCE_CACHE_POLICY requires CUDF_TPCH_BENCH_NATIVE_MEMORY_POLICY=unbounded until source-cache reservations are modeled",
+            ));
+        }
+        if let Some(max_retained_bytes) = self.native_source_cache_policy.max_retained_bytes() {
+            validate_nonzero("CUDF_TPCH_BENCH_NATIVE_SOURCE_CACHE_MAX_RETAINED_BYTES", max_retained_bytes)?;
+        }
         self.native_memory_policy.validate()
     }
 
@@ -54,6 +67,13 @@ impl NativeTpchBenchmarkConfig {
     }
 
     pub(super) fn native_execution_config(&self) -> NativeCudfExecutionConfig {
+        self.native_execution_config_with_source_cache(None)
+    }
+
+    pub(super) fn native_execution_config_with_source_cache(
+        &self,
+        source_cache: Option<Arc<cudf_query_engine::GpuLocalParquetSourceCache>>,
+    ) -> NativeCudfExecutionConfig {
         match self.native_memory_policy {
             NativeTpchMemoryPolicy::Unbounded => NativeCudfExecutionConfig::unbounded(),
             NativeTpchMemoryPolicy::Bounded {
@@ -73,6 +93,16 @@ impl NativeTpchBenchmarkConfig {
                 self.max_source_reads_in_flight,
             )),
         }
+        .with_optional_local_parquet_source_cache(source_cache)
+    }
+
+    pub(super) fn new_source_cache(&self) -> Option<Arc<cudf_query_engine::GpuLocalParquetSourceCache>> {
+        match self.native_source_cache_policy {
+            NativeTpchSourceCachePolicy::Disabled => None,
+            NativeTpchSourceCachePolicy::GpuResident { max_retained_bytes } => {
+                Some(Arc::new(cudf_query_engine::GpuLocalParquetSourceCache::new(max_retained_bytes)))
+            },
+        }
     }
 }
 
@@ -85,6 +115,26 @@ impl Default for NativeTpchBenchmarkConfig {
             dataset_mode: NativeTpchDatasetMode::External(NativeTpchScaleFactor::Sf1),
             native_memory_policy: NativeTpchMemoryPolicy::default(),
             max_source_reads_in_flight: DEFAULT_NATIVE_MAX_SOURCE_READS_IN_FLIGHT,
+            native_source_cache_policy: NativeTpchSourceCachePolicy::Disabled,
+        }
+    }
+}
+
+trait NativeExecutionConfigSourceCacheExt {
+    fn with_optional_local_parquet_source_cache(
+        self,
+        cache: Option<Arc<cudf_query_engine::GpuLocalParquetSourceCache>>,
+    ) -> Self;
+}
+
+impl NativeExecutionConfigSourceCacheExt for NativeCudfExecutionConfig {
+    fn with_optional_local_parquet_source_cache(
+        self,
+        cache: Option<Arc<cudf_query_engine::GpuLocalParquetSourceCache>>,
+    ) -> Self {
+        match cache {
+            Some(cache) => self.with_local_parquet_source_cache(cache),
+            None => self,
         }
     }
 }
@@ -219,6 +269,10 @@ impl NativeTpchMemoryPolicy {
         validate_nonzero("CUDF_TPCH_BENCH_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS", min_retry_chunk_row_groups)?;
         Ok(())
     }
+
+    const fn is_bounded(self) -> bool {
+        matches!(self, Self::Bounded { .. })
+    }
 }
 
 impl Default for NativeTpchMemoryPolicy {
@@ -230,6 +284,49 @@ impl Default for NativeTpchMemoryPolicy {
             max_retry_attempts: DEFAULT_NATIVE_MAX_RETRY_ATTEMPTS,
             min_retry_chunk_row_groups: DEFAULT_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS,
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum NativeTpchSourceCachePolicy {
+    Disabled,
+    GpuResident { max_retained_bytes: u64 },
+}
+
+impl NativeTpchSourceCachePolicy {
+    fn from_env(name: &'static str) -> DataFusionResult<Self> {
+        let policy = match std::env::var_os(name) {
+            None => "disabled".to_string(),
+            Some(value) => value.to_string_lossy().to_ascii_lowercase(),
+        };
+        match policy.as_str() {
+            "disabled" | "off" | "none" => Ok(Self::Disabled),
+            "gpu_resident" | "gpu-resident" | "enabled" => Ok(Self::GpuResident {
+                max_retained_bytes: env_u64(
+                    "CUDF_TPCH_BENCH_NATIVE_SOURCE_CACHE_MAX_RETAINED_BYTES",
+                    DEFAULT_NATIVE_SOURCE_CACHE_MAX_RETAINED_BYTES,
+                )?,
+            }),
+            other => Err(plan_error(format!("invalid {name}: {other}; expected disabled or gpu_resident"))),
+        }
+    }
+
+    pub(super) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Disabled => "disabled",
+            Self::GpuResident { .. } => "gpu_resident",
+        }
+    }
+
+    pub(super) const fn max_retained_bytes(self) -> Option<u64> {
+        match self {
+            Self::Disabled => None,
+            Self::GpuResident { max_retained_bytes } => Some(max_retained_bytes),
+        }
+    }
+
+    const fn is_enabled(self) -> bool {
+        matches!(self, Self::GpuResident { .. })
     }
 }
 

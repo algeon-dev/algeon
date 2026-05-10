@@ -4,6 +4,7 @@ pub(super) fn write_native_memory_policy_metadata(
     output: &mut String,
     memory_policy: NativeTpchMemoryPolicy,
     max_source_reads_in_flight: usize,
+    source_cache_policy: NativeTpchSourceCachePolicy,
 ) {
     match memory_policy {
         NativeTpchMemoryPolicy::Unbounded => {
@@ -34,6 +35,14 @@ pub(super) fn write_native_memory_policy_metadata(
         },
     }
     push_line(output, format_args!("# tpch_benchmark_native_max_source_reads_in_flight={max_source_reads_in_flight}"));
+    push_line(output, format_args!("# tpch_benchmark_native_source_cache_policy={}", source_cache_policy.as_str()));
+    push_line(
+        output,
+        format_args!(
+            "# tpch_benchmark_native_source_cache_max_retained_bytes={}",
+            source_cache_policy.max_retained_bytes().map_or_else(|| "none".to_string(), |bytes| bytes.to_string())
+        ),
+    );
 }
 
 pub(super) fn write_tpch_dataset_metadata(output: &mut String, metadata: &TpchDatasetMetadata) {

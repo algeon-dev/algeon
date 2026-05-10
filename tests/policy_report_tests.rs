@@ -21,6 +21,7 @@ fn fallback_reason_codes_are_stable_manifest_values() {
         (FallbackReason::NativeSourceNonLocalObjectStore, "native_source_non_local_object_store"),
         (FallbackReason::NativeSourcePartitionColumns, "native_source_partition_columns"),
         (FallbackReason::NativeSourceExprAdapter, "native_source_expr_adapter"),
+        (FallbackReason::NativeSourceParquetFileReaderFactory, "native_source_parquet_file_reader_factory"),
         (FallbackReason::NativeSourceScanLimit, "native_source_scan_limit"),
         (FallbackReason::NativeSourcePreserveOrder, "native_source_preserve_order"),
         (FallbackReason::NativeSourceOutputOrdering, "native_source_output_ordering"),

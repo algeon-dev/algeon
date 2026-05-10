@@ -1,4 +1,10 @@
-use cudf_query_engine::{MemoryReservationRequest, MemorySpaceId, QueryMetrics, ReservationKind};
+use std::sync::Arc;
+
+use arrow::datatypes::{DataType, Field, Schema};
+use cudf_query_engine::{
+    ExecutionContext, GpuLocalParquetSourceCache, GpuLocalParquetSourceCacheKey, LocalParquetFile, LocalParquetSource,
+    MemoryControlPolicy, MemoryReservationRequest, MemorySpaceId, QueryMetrics, ReservationKind,
+};
 use datafusion_cudf::NATIVE_CUDF_DATAFUSION_METRIC_NAMES;
 
 #[test]
@@ -26,6 +32,9 @@ fn query_metrics_phase_c_memory_control_defaults_are_zero() {
     assert_eq!(metrics.source_chunks_attempted, 0);
     assert_eq!(metrics.source_chunks_committed, 0);
     assert_eq!(metrics.source_chunks_retried, 0);
+    assert_eq!(metrics.source_cache_hits, 0);
+    assert_eq!(metrics.source_cache_misses, 0);
+    assert_eq!(metrics.source_cache_retained_bytes, 0);
     assert_eq!(metrics.source_metadata_load_time, std::time::Duration::ZERO);
     assert_eq!(metrics.retry_count, 0);
     assert_eq!(metrics.final_merge_attempts, 0);
@@ -77,6 +86,42 @@ fn query_metrics_reservation_events_record_memory_space() {
 }
 
 #[test]
+fn local_parquet_source_cache_key_tracks_scan_contract() {
+    let schema = Arc::new(Schema::new(vec![Field::new("payload", DataType::Int32, true)]));
+    let file = LocalParquetFile::new("/tmp/source-cache-key.parquet")
+        .with_stable_id("file-id")
+        .with_file_size_bytes(128)
+        .with_row_groups(vec![0, 1])
+        .with_row_group_rows(vec![10, 20]);
+    let source = LocalParquetSource::from_files(vec![file], Arc::clone(&schema), vec!["payload".to_string()]);
+    let limited = source.clone().with_scan_limit(Some(10));
+
+    assert_ne!(
+        GpuLocalParquetSourceCacheKey::from_source(&source),
+        GpuLocalParquetSourceCacheKey::from_source(&limited),
+        "source cache key must distinguish source-level scan limits"
+    );
+}
+
+#[test]
+fn bounded_context_rejects_source_cache_until_reservations_are_modeled() {
+    let cache = Arc::new(GpuLocalParquetSourceCache::new(1024));
+    let error = ExecutionContext::builder()
+        .with_memory_control_policy(MemoryControlPolicy::Bounded {
+            device_budget_bytes: 1024,
+            max_source_chunk_bytes: 512,
+            max_row_groups_per_chunk: 1,
+            max_retry_attempts: 1,
+            min_retry_chunk_row_groups: 1,
+        })
+        .with_local_parquet_source_cache(cache)
+        .build()
+        .expect_err("bounded source cache must stay rejected until retained bytes are reservation-accounted");
+
+    assert_eq!(error.fact_value("reason"), Some("source_cache_requires_reservation_accounting"));
+}
+
+#[test]
 fn native_datafusion_metric_names_cover_bounded_runtime_contract() {
     let names = NATIVE_CUDF_DATAFUSION_METRIC_NAMES;
     let mut sorted = names.to_vec();
@@ -103,6 +148,11 @@ fn native_datafusion_metric_names_cover_bounded_runtime_contract() {
         "source_read_prefetches_completed",
         "source_read_prefetches_skipped",
         "source_read_prefetches_abandoned",
+        "source_cache_hits",
+        "source_cache_misses",
+        "source_cache_inserts",
+        "source_cache_insert_skipped",
+        "source_cache_retained_bytes",
         "row_groups_planned",
         "row_groups_committed",
         "resident_dataframe_peak_bytes_observed",
@@ -126,6 +176,7 @@ fn native_datafusion_metric_names_cover_bounded_runtime_contract() {
         "join_gather_map_bytes",
         "source_metadata_load_time",
         "source_read_queue_wait_time",
+        "source_cache_lookup_time",
         "parquet_read_time",
         "operator_time",
         "final_merge_time",

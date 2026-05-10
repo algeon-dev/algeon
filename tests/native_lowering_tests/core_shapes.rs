@@ -257,6 +257,52 @@ fn order_insensitive_pushed_down_scan_limit_lowers_to_native_source() {
 }
 
 #[test]
+fn order_sensitive_single_file_group_scan_limit_lowers_to_native_source() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-order-sensitive-scan-limit");
+    let path = dir.join("input.parquet");
+    write_numeric_parquet_file(&path);
+    let scan = parquet_scan_with_order_sensitive_limit(&path, 1);
+    let plan = aggregate_sort_limit_plan(scan, Operator::Plus);
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    let source = native_local_parquet_source(&result.plans[0]);
+    assert_eq!(source.scan_limit, Some(1));
+    assert_eq!(source.diagnostics.scan_limit_disposition.as_str(), "represented");
+    assert!(source.diagnostics.rejected_features.is_empty());
+    assert_eq!(result.source_diagnostics.len(), 1);
+    assert_eq!(result.source_diagnostics[0].scan_limit_disposition.as_str(), "represented");
+    assert!(result.source_diagnostics[0].rejected_features.iter().all(|feature| feature.as_str() != "preserve_order"));
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn order_sensitive_multi_file_group_scan_limit_remains_rejected() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-order-sensitive-multi-group");
+    write_numeric_parquet_file(&dir.join("part-000.parquet"));
+    write_numeric_parquet_file(&dir.join("part-001.parquet"));
+    let scan = parquet_scan_with_order_sensitive_limit_one_file_per_group(&dir, 1);
+    let plan = aggregate_sort_limit_plan(scan, Operator::Plus);
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert!(result.plans.is_empty());
+    assert_eq!(result.rejected_count(), 1);
+    assert!(matches!(
+        result.report.outcomes()[0],
+        CandidateOutcome::Rejected { reason: FallbackReason::NativeSourcePreserveOrder, .. }
+    ));
+    assert_eq!(result.source_diagnostics.len(), 1);
+    assert_eq!(result.source_diagnostics[0].scan_limit_disposition.as_str(), "rejected");
+    assert!(result.source_diagnostics[0].rejected_features.iter().any(|feature| feature.as_str() == "preserve_order"));
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn topk_sort_fetch_lowers_to_native_sort_plus_limit() {
     let dir = unique_temp_dir("datafusion-cudf-native-lowering-topk");
     let path = dir.join("input.parquet");

@@ -14,6 +14,10 @@ use arrow::{
 use cudf_query_engine::{ExecutionContext, MemoryControlPolicy, QueryOutput, execute_query_plan};
 use datafusion::{
     common::DataFusionError,
+    datasource::{
+        physical_plan::{FileScanConfigBuilder, ParquetSource},
+        source::DataSourceExec,
+    },
     execution::{SessionStateBuilder, context::TaskContext},
     functions_aggregate::{count::count_udaf, sum::sum_udaf},
     logical_expr::Operator,
@@ -198,6 +202,51 @@ async fn native_runtime_q6_shaped_global_decimal_sum_matches_cpu() {
     let revenue = decimal128_array(native_batch, 0);
     assert_eq!(revenue.value(0), 260_000);
     assert_eq!(revenue.scale(), 4);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn native_runtime_order_sensitive_source_scan_limit_matches_cpu() {
+    let dir = unique_temp_dir("datafusion-cudf-native-runtime-order-sensitive-scan-limit");
+    let path = dir.join("input.parquet");
+    write_row_group_pruning_parquet_file(&path);
+
+    let scan = parquet_scan_with_order_sensitive_limit(parquet_scan(&path).await, 3);
+    let scan_schema = scan.schema();
+    let predicate = binary(
+        col("payload", &scan_schema).unwrap(),
+        Operator::GtEq,
+        lit(datafusion::common::ScalarValue::Int32(Some(0))),
+        &scan_schema,
+    )
+    .unwrap();
+    let plan = aggregate_sort_limit_plan_with_filter(scan, predicate, Operator::Plus);
+    let cpu_batches =
+        collect(Arc::clone(&plan), Arc::new(datafusion::execution::context::TaskContext::default())).await.unwrap();
+    let lowering = lower_physical_plan_to_native(plan);
+    assert_eq!(lowering.rewritten_count(), 1, "outcomes={:?}", lowering.report.outcomes());
+    assert_eq!(lowering.rejected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
+    assert_eq!(lowering.plans.len(), 1);
+    assert_eq!(lowering.source_diagnostics[0].scan_limit_disposition.as_str(), "represented");
+    assert!(
+        lowering.source_diagnostics[0].rejected_features.iter().all(|feature| feature.as_str() != "preserve_order")
+    );
+
+    let context = bounded_execution_context();
+    let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
+    cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
+    let result = execute_query_plan(&context, &lowering.plans[0]).unwrap();
+    let metrics = result.metrics();
+    assert_eq!(metrics.boundary.host_to_device_uploads, 0);
+    assert_eq!(metrics.boundary.device_to_host_materializations, 1);
+    assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
+    assert_eq!(cudf::testing::arrow::arrow_host_export_call_count_for_test(), 1);
+
+    let QueryOutput::HostArrow(native_batch) = result.output() else {
+        panic!("native host sink should return a RecordBatch");
+    };
+    assert_batches_equal(&cpu_batches, std::slice::from_ref(native_batch));
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -422,6 +471,15 @@ async fn parquet_scan(path: &std::path::Path) -> Arc<dyn ExecutionPlan> {
     );
     let df = ctx.read_parquet(path.to_str().unwrap(), ParquetReadOptions::default()).await.unwrap();
     df.create_physical_plan().await.unwrap()
+}
+
+fn parquet_scan_with_order_sensitive_limit(scan: Arc<dyn ExecutionPlan>, limit: usize) -> Arc<dyn ExecutionPlan> {
+    let data_source = scan.as_any().downcast_ref::<DataSourceExec>().expect("parquet scan should be DataSourceExec");
+    let (file_scan, _parquet_source) =
+        data_source.downcast_to_file_source::<ParquetSource>().expect("parquet scan should use ParquetSource");
+    let file_scan =
+        FileScanConfigBuilder::from(file_scan.clone()).with_limit(Some(limit)).with_preserve_order(true).build();
+    DataSourceExec::from_data_source(file_scan)
 }
 
 async fn sql_plan(path: &std::path::Path, config: SessionConfig, sql: &str) -> Arc<dyn ExecutionPlan> {

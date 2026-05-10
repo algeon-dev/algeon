@@ -9,6 +9,7 @@ fn default_config_selects_all_tpch_queries() {
     assert_eq!(config.dataset_mode.as_str(), "sf1_external");
     assert_eq!(NativeTpchDatasetMode::External(NativeTpchScaleFactor::Sf10).as_str(), "sf10_external");
     assert_eq!(config.native_memory_policy.as_str(), "bounded");
+    assert_eq!(config.native_source_cache_policy.as_str(), "disabled");
     config.validate().unwrap();
 }
 

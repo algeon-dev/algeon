@@ -25,7 +25,8 @@ pub use datatypes::{
 };
 pub use error::{Facts, QueryError, QueryErrorCode, QueryErrorKind, QueryErrorStatus, Result};
 pub use exec::{
-    ExecutionMode, GpuDataFrame, GpuHashJoinBuildCache, GpuHashJoinBuildHandle, GpuResidentInputMap, GpuResultHandle,
+    ExecutionMode, GpuDataFrame, GpuHashJoinBuildCache, GpuHashJoinBuildHandle, GpuLocalParquetSourceCache,
+    GpuLocalParquetSourceCacheInsert, GpuLocalParquetSourceCacheKey, GpuResidentInputMap, GpuResultHandle,
     QueryExecutionResult, QueryOutput, execute_query_plan, execute_query_plan_with_gpu_inputs,
     materialize_gpu_result_to_host, read_gpu_resident_source, read_local_parquet_source, validate_local_parquet_source,
 };
