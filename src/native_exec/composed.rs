@@ -1075,7 +1075,10 @@ fn register_composed_gpu_producer() {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
 
     use arrow::datatypes::{DataType, Field, Schema};
     use datafusion::{
@@ -1089,7 +1092,7 @@ mod tests {
     use futures::future::BoxFuture;
     use nexus_query_engine::{
         admission::QueryPlanCapabilityProof,
-        expr::{Expr, SortExpr, SortSpec},
+        expr::{Expr, LimitSpec, SortExpr, SortSpec},
         graph_memory::{GraphMemoryCalibrationOverride, graph_memory_bounded_admission_evidence_for_plan},
         plan::{
             GraphAlgorithm, GraphAlgorithmParams, GraphAlgorithmSpec, GraphBfsParams, GraphConstructionOptions,
@@ -1116,6 +1119,7 @@ mod tests {
         ticket: Arc<QueryAdmissionTicket>,
         capability_proof: QueryPlanCapabilityProof,
         graph_execution: bool,
+        execute_count: Arc<AtomicUsize>,
         inner: EmptyExec,
     }
 
@@ -1244,6 +1248,7 @@ mod tests {
             _partition: usize,
             _task_context: Arc<TaskContext>,
         ) -> BoxFuture<'a, DataFusionResult<(String, GpuResultHandle)>> {
+            self.execute_count.fetch_add(1, Ordering::SeqCst);
             Box::pin(async {
                 Err(DataFusionError::Execution(
                     "fake GPU-resident producer is only used to test composed admission proof completion".to_string(),
@@ -1394,6 +1399,32 @@ mod tests {
         builder.finish_with_host_sink(projected)
     }
 
+    fn filter_consumer_plan(schema: Arc<Schema>) -> QueryPlan {
+        let mut builder = QueryPlanBuilder::new();
+        let source =
+            builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("fake_input", Arc::clone(&schema))));
+        let filtered =
+            builder.add_filter(source, Expr::is_not_null(Expr::column(schema.field(0).name())), Arc::clone(&schema));
+        builder.finish_with_host_sink(filtered)
+    }
+
+    fn zero_copy_projection_consumer_plan(schema: Arc<Schema>) -> QueryPlan {
+        let mut builder = QueryPlanBuilder::new();
+        let source =
+            builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("fake_input", Arc::clone(&schema))));
+        let field = schema.field(0).clone();
+        let projected = builder.add_projection(source, vec![ProjectionOutput::new(Expr::column(field.name()), field)]);
+        builder.finish_with_host_sink(projected)
+    }
+
+    fn limit_consumer_plan(schema: Arc<Schema>) -> QueryPlan {
+        let mut builder = QueryPlanBuilder::new();
+        let source =
+            builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("fake_input", Arc::clone(&schema))));
+        let limited = builder.add_limit(source, LimitSpec::fetch(1), schema);
+        builder.finish_with_host_sink(limited)
+    }
+
     fn sorted_consumer_plan(schema: Arc<Schema>) -> QueryPlan {
         consumer_plan(schema).with_appended_sort(SortSpec::new(vec![SortExpr::new(
             Expr::column("vertex"),
@@ -1438,6 +1469,7 @@ mod tests {
             ticket: Arc::clone(&producer_ticket),
             capability_proof: producer_proof.clone(),
             graph_execution: true,
+            execute_count: Arc::new(AtomicUsize::new(0)),
             inner: EmptyExec::new(schema),
         })];
         let config = NexusNativeExecutionConfig::bounded(1024, 512, 1, 3, 1).with_query_admission_source(source);
@@ -1478,6 +1510,7 @@ mod tests {
             ticket: producer_ticket,
             capability_proof: producer_proof.clone(),
             graph_execution: true,
+            execute_count: Arc::new(AtomicUsize::new(0)),
             inner: EmptyExec::new(schema),
         })];
         let config = NexusNativeExecutionConfig::bounded(1024, 512, 1, 3, 1).with_query_admission_source(source);
@@ -1504,6 +1537,88 @@ mod tests {
     }
 
     #[test]
+    fn complete_composed_admission_proof_bounds_filter_and_projection_but_rejects_limit_before_grant() {
+        register_gpu_resident_producer_discovery(fake_gpu_resident_producer);
+        register_graph_execution_plan_discovery(fake_graph_execution_plan);
+
+        for (label, build) in [
+            ("filter", filter_consumer_plan as fn(Arc<Schema>) -> QueryPlan),
+            ("projection", zero_copy_projection_consumer_plan as fn(Arc<Schema>) -> QueryPlan),
+        ] {
+            let backend = InstalledTestGpuBackend::new();
+            let source = admission_source(&backend);
+            let (schema, producer_proof) = typed_graph_producer_proof();
+            let consumer_plan = build(Arc::clone(&schema));
+            let execute_count = Arc::new(AtomicUsize::new(0));
+            let producer_ticket = QueryAdmissionTicket::new(source.clone(), Some(producer_proof.clone()));
+            let prepared_inputs: Vec<Arc<dyn ExecutionPlan>> = vec![Arc::new(FakeGpuResidentProducer {
+                input_name: "fake_input".to_string(),
+                ticket: producer_ticket,
+                capability_proof: producer_proof,
+                graph_execution: true,
+                execute_count: Arc::clone(&execute_count),
+                inner: EmptyExec::new(schema),
+            })];
+            let config = NexusNativeExecutionConfig::bounded(1024, 512, 1, 3, 1).with_query_admission_source(source);
+            let completed =
+                complete_composed_admission_proof(config, &consumer_plan, &prepared_inputs, &TaskContext::default())
+                    .unwrap_or_else(|error| panic!("{label} consumer must complete a bounded proof: {error}"));
+            assert_eq!(execute_count.load(Ordering::SeqCst), 0, "{label} admission proof does not execute producers");
+            let completed_ticket = completed
+                .execution_config
+                .query_admission_ticket()
+                .expect("bounded consumer completion installs an admission ticket");
+            let proof = completed_ticket
+                .attempt_capability_proof()
+                .expect("bounded consumer completion retains the composed proof")
+                .clone();
+            let handle = backend
+                .backend()
+                .session_capability()
+                .admit_query_with_request(QueryAdmissionRequest::new().with_query_plan_capability_proof(proof))
+                .unwrap_or_else(|error| panic!("{label} consumer must admit on the CPU-only test backend: {error}"));
+            assert_eq!(execute_count.load(Ordering::SeqCst), 0, "{label} admission does not execute producers");
+            handle.finish();
+            drop(handle);
+            drop(completed_ticket);
+            drop(prepared_inputs);
+        }
+
+        let backend = InstalledTestGpuBackend::new();
+        let source = admission_source(&backend);
+        let (schema, producer_proof) = typed_graph_producer_proof();
+        let consumer_plan = limit_consumer_plan(Arc::clone(&schema));
+        let execute_count = Arc::new(AtomicUsize::new(0));
+        let producer_ticket = QueryAdmissionTicket::new(source.clone(), Some(producer_proof.clone()));
+        let prepared_inputs: Vec<Arc<dyn ExecutionPlan>> = vec![Arc::new(FakeGpuResidentProducer {
+            input_name: "fake_input".to_string(),
+            ticket: producer_ticket,
+            capability_proof: producer_proof,
+            graph_execution: true,
+            execute_count: Arc::clone(&execute_count),
+            inner: EmptyExec::new(schema),
+        })];
+        let config = NexusNativeExecutionConfig::bounded(1024, 512, 1, 3, 1).with_query_admission_source(source);
+        let error = match complete_composed_admission_proof(
+            config,
+            &consumer_plan,
+            &prepared_inputs,
+            &TaskContext::default(),
+        ) {
+            Ok(_) => panic!("an unmodeled limit must reject before admission or producer work"),
+            Err(error) => error,
+        };
+        let native = error.find_nexus_error().expect("limit rejection remains structured");
+        assert_eq!(native.fact_value("reason"), Some("graph_attempt_complete_phase_unmodeled"));
+        assert_eq!(native.fact_value("schedule_reason"), Some("consumer_topology_unmodeled"));
+        assert_eq!(execute_count.load(Ordering::SeqCst), 0, "a rejected limit must not execute producers");
+        let snapshot = backend.backend().admission_snapshot().expect("test backend exposes admission state");
+        assert_eq!(snapshot.active_queries, 0, "a rejected limit must not mutate the grant ledger");
+        assert_eq!(snapshot.queued_queries, 0, "a rejected limit must not become a generic admission waiter");
+        drop(prepared_inputs);
+    }
+
+    #[test]
     fn complete_composed_admission_proof_preserves_bounded_single_graph_consumer_path() {
         register_gpu_resident_producer_discovery(fake_gpu_resident_producer);
         register_graph_execution_plan_discovery(fake_graph_execution_plan);
@@ -1517,6 +1632,7 @@ mod tests {
             ticket: producer_ticket,
             capability_proof: producer_proof.clone(),
             graph_execution: true,
+            execute_count: Arc::new(AtomicUsize::new(0)),
             inner: EmptyExec::new(schema),
         })];
         let config = NexusNativeExecutionConfig::bounded(1024, 512, 1, 3, 1).with_query_admission_source(source);
@@ -1587,6 +1703,7 @@ mod tests {
                 ticket: producer_ticket,
                 capability_proof: producer_proof.clone(),
                 graph_execution: true,
+                execute_count: Arc::new(AtomicUsize::new(0)),
                 inner: EmptyExec::new(Arc::clone(&schema)),
             })];
             let config =
@@ -1639,6 +1756,7 @@ mod tests {
             ticket: producer_ticket,
             capability_proof: producer_proof,
             graph_execution: false,
+            execute_count: Arc::new(AtomicUsize::new(0)),
             inner: EmptyExec::new(schema),
         })];
         let config = NexusNativeExecutionConfig::bounded(1024, 512, 1, 3, 1).with_query_admission_source(source);
@@ -1672,6 +1790,7 @@ mod tests {
             ticket: graph_only_ticket,
             capability_proof: graph_proof.clone(),
             graph_execution: true,
+            execute_count: Arc::new(AtomicUsize::new(0)),
             inner: EmptyExec::new(Arc::clone(&schema)),
         })];
         let graph_only = complete_composed_admission_proof(
@@ -1704,6 +1823,7 @@ mod tests {
                 ticket: mixed_graph_ticket,
                 capability_proof: graph_proof.clone(),
                 graph_execution: true,
+                execute_count: Arc::new(AtomicUsize::new(0)),
                 inner: EmptyExec::new(Arc::clone(&schema)),
             }),
             Arc::new(FakeGpuResidentProducer {
@@ -1711,6 +1831,7 @@ mod tests {
                 ticket: mixed_relational_ticket,
                 capability_proof: relational_proof.clone(),
                 graph_execution: false,
+                execute_count: Arc::new(AtomicUsize::new(0)),
                 inner: EmptyExec::new(Arc::clone(&schema)),
             }),
         ];
@@ -1779,6 +1900,7 @@ mod tests {
                 ticket: first_ticket,
                 capability_proof: graph_proof.clone(),
                 graph_execution: true,
+                execute_count: Arc::new(AtomicUsize::new(0)),
                 inner: EmptyExec::new(Arc::clone(&schema)),
             }),
             Arc::new(FakeGpuResidentProducer {
@@ -1786,6 +1908,7 @@ mod tests {
                 ticket: second_ticket,
                 capability_proof: graph_proof.clone(),
                 graph_execution: true,
+                execute_count: Arc::new(AtomicUsize::new(0)),
                 inner: EmptyExec::new(Arc::clone(&schema)),
             }),
             Arc::new(FakeGpuResidentProducer {
@@ -1793,6 +1916,7 @@ mod tests {
                 ticket: relational_ticket,
                 capability_proof: relational_proof.clone(),
                 graph_execution: false,
+                execute_count: Arc::new(AtomicUsize::new(0)),
                 inner: EmptyExec::new(Arc::clone(&schema)),
             }),
         ];
@@ -1826,6 +1950,7 @@ mod tests {
             ticket: producer_ticket,
             capability_proof: producer_proof,
             graph_execution: true,
+            execute_count: Arc::new(AtomicUsize::new(0)),
             inner: EmptyExec::new(schema),
         })];
         let config = NexusNativeExecutionConfig::bounded(1024, 512, 1, 3, 1).with_query_admission_source(source);
@@ -1897,6 +2022,7 @@ mod tests {
             ticket: producer_ticket,
             capability_proof: producer_proof,
             graph_execution: true,
+            execute_count: Arc::new(AtomicUsize::new(0)),
             inner: EmptyExec::new(schema),
         })];
         drop(backend);
@@ -1930,6 +2056,7 @@ mod tests {
                 ticket: first_ticket,
                 capability_proof: producer_proof.clone(),
                 graph_execution: true,
+                execute_count: Arc::new(AtomicUsize::new(0)),
                 inner: EmptyExec::new(Arc::clone(&schema)),
             }) as Arc<dyn ExecutionPlan>,
             Arc::new(FakeGpuResidentProducer {
@@ -1937,6 +2064,7 @@ mod tests {
                 ticket: second_ticket,
                 capability_proof: producer_proof.clone(),
                 graph_execution: true,
+                execute_count: Arc::new(AtomicUsize::new(0)),
                 inner: EmptyExec::new(Arc::clone(&schema)),
             }) as Arc<dyn ExecutionPlan>,
         ];

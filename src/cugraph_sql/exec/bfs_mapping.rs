@@ -1,4 +1,4 @@
-use std::{collections::BTreeSet, mem::size_of, sync::Arc};
+use std::{mem::size_of, sync::Arc};
 
 use super::*;
 
@@ -23,40 +23,11 @@ impl HostBfsCodebook {
         sources: &[(&StagedCugraphSource, Vec<String>)],
         max_distinct: usize,
     ) -> Result<Self> {
-        let mut values = BTreeSet::new();
-        for (source, columns) in sources {
-            let StagedCugraphSource::Host { schema, batches } = source else {
-                return Err(logical_bfs_native_source_error("codebook", "native"));
-            };
-            for column in columns {
-                let field = schema.field_with_name(column).map_err(|error| {
-                    DataFusionError::from(
-                        Error::new(
-                            ErrorCode::InvalidExecutionPlan,
-                            "datafusion_nexus.cugraph_sql.logical_bfs_host_mapping",
-                            "logical BFS host mapping could not find a required vertex column",
-                        )
-                        .with_fact("column", column)
-                        .with_source(error),
-                    )
-                })?;
-                if !is_bfs_logical_vertex_type(field.data_type()) {
-                    return Err(Error::new(
-                        ErrorCode::UnsupportedType,
-                        "datafusion_nexus.cugraph_sql.logical_bfs_host_mapping",
-                        "logical BFS host mapping requires UTF8 vertex columns",
-                    )
-                    .with_fact("column", column)
-                    .with_fact("data_type", format!("{:?}", field.data_type()))
-                    .with_fact("reason", "logical_bfs_vertex_dtype_unsupported")
-                    .into());
-                }
-                for batch in batches {
-                    let index = batch.schema().index_of(column).map_err(DataFusionError::from)?;
-                    collect_string_values(batch.column(index).as_ref(), &mut values, column)?;
-                }
-            }
-        }
+        let bound = Self::allocation_upper_bound(sources)?;
+        let mut values = Vec::with_capacity(bound.value_count);
+        for_each_codebook_array(sources, |array, column| collect_string_values(array, &mut values, column))?;
+        values.sort_unstable();
+        values.dedup();
         if values.len() > max_distinct {
             return Err(Error::new(
                 ErrorCode::SizeOverflow,
@@ -68,7 +39,8 @@ impl HostBfsCodebook {
             .with_fact("max_distinct_values", max_distinct)
             .into());
         }
-        let values = Arc::new(values.into_iter().collect::<Vec<_>>());
+        values.shrink_to_fit();
+        let values = Arc::new(values);
         for (index, _) in values.iter().enumerate() {
             i32::try_from(index).map_err(|_| {
                 Error::new(
@@ -83,6 +55,58 @@ impl HostBfsCodebook {
         Ok(Self { values })
     }
 
+    pub(super) fn allocation_upper_bound(
+        sources: &[(&StagedCugraphSource, Vec<String>)],
+    ) -> Result<HostBfsCodebookAllocationBound> {
+        let mut value_count = 0usize;
+        let mut string_bytes = 0usize;
+        for_each_codebook_array(sources, |array, column| {
+            let (batch_values, batch_bytes) = string_array_bound(array, column)?;
+            value_count = value_count.checked_add(batch_values).ok_or_else(|| {
+                Error::new(
+                    ErrorCode::SizeOverflow,
+                    "datafusion_nexus.cugraph_sql.logical_bfs_host_mapping",
+                    "logical BFS host codebook value count overflowed usize",
+                )
+                .with_fact("reason", "logical_bfs_codebook_size_overflow")
+            })?;
+            string_bytes = string_bytes.checked_add(batch_bytes).ok_or_else(|| {
+                Error::new(
+                    ErrorCode::SizeOverflow,
+                    "datafusion_nexus.cugraph_sql.logical_bfs_host_mapping",
+                    "logical BFS host codebook string bytes overflowed usize",
+                )
+                .with_fact("reason", "logical_bfs_codebook_size_overflow")
+            })?;
+            Ok(())
+        })?;
+        let vector_bytes = value_count.checked_mul(size_of::<String>()).ok_or_else(|| {
+            Error::new(
+                ErrorCode::SizeOverflow,
+                "datafusion_nexus.cugraph_sql.logical_bfs_host_mapping",
+                "logical BFS host codebook vector bytes overflowed usize",
+            )
+            .with_fact("reason", "logical_bfs_codebook_size_overflow")
+        })?;
+        let vector_overlap = vector_bytes.checked_mul(2).ok_or_else(|| {
+            Error::new(
+                ErrorCode::SizeOverflow,
+                "datafusion_nexus.cugraph_sql.logical_bfs_host_mapping",
+                "logical BFS host codebook vector overlap overflowed usize",
+            )
+            .with_fact("reason", "logical_bfs_codebook_size_overflow")
+        })?;
+        let bytes = vector_overlap.checked_add(string_bytes).ok_or_else(|| {
+            Error::new(
+                ErrorCode::SizeOverflow,
+                "datafusion_nexus.cugraph_sql.logical_bfs_host_mapping",
+                "logical BFS host codebook allocation bound overflowed usize",
+            )
+            .with_fact("reason", "logical_bfs_codebook_size_overflow")
+        })?;
+        Ok(HostBfsCodebookAllocationBound { bytes, value_count })
+    }
+
     pub(super) fn code(&self, value: &str) -> Option<i32> {
         self.values
             .binary_search_by(|candidate| candidate.as_str().cmp(value))
@@ -91,8 +115,12 @@ impl HostBfsCodebook {
     }
 
     pub(super) fn decode_code(&self, code: i64) -> Result<String> {
+        Ok(self.value_for_code(code)?.to_owned())
+    }
+
+    fn value_for_code(&self, code: i64) -> Result<&str> {
         let index = usize::try_from(code).map_err(|_| logical_bfs_unknown_code_error(code))?;
-        self.values.get(index).cloned().ok_or_else(|| logical_bfs_unknown_code_error(code))
+        self.values.get(index).map(String::as_str).ok_or_else(|| logical_bfs_unknown_code_error(code))
     }
 
     pub(super) fn memory_size(&self) -> Result<usize> {
@@ -110,6 +138,12 @@ impl HostBfsCodebook {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+pub(super) struct HostBfsCodebookAllocationBound {
+    pub(super) bytes: usize,
+    value_count: usize,
+}
+
 pub(super) fn prepare_bfs_logical_host_inputs(
     spec: &CugraphAlgorithmSpec,
     edge: StagedCugraphSource,
@@ -118,6 +152,7 @@ pub(super) fn prepare_bfs_logical_host_inputs(
     staged_bytes: &mut usize,
     max_staging_bytes: usize,
     reservation: &mut MemoryReservation,
+    host_evidence: &mut HostReservationEvidence,
 ) -> Result<(
     StagedCugraphSource,
     Option<StagedCugraphSource>,
@@ -163,8 +198,39 @@ pub(super) fn prepare_bfs_logical_host_inputs(
     for (source, columns) in predicates.iter().zip(predicate_columns.iter()) {
         domain_sources.push((source, columns.clone()));
     }
-    let codebook = HostBfsCodebook::from_sources(&domain_sources)?;
-    reserve_logical_mapping_bytes("codebook", codebook.memory_size()?, staged_bytes, max_staging_bytes, reservation)?;
+    let codebook_bound = HostBfsCodebook::allocation_upper_bound(&domain_sources)?;
+    reserve_logical_mapping_bytes("codebook", codebook_bound.bytes, staged_bytes, max_staging_bytes, reservation)?;
+    if let Err(error) = host_evidence.record_input_peak(reservation) {
+        release_logical_mapping_bytes(codebook_bound.bytes, staged_bytes, reservation)?;
+        return Err(error);
+    }
+    let codebook_result = (|| {
+        let codebook = HostBfsCodebook::from_sources(&domain_sources)?;
+        let codebook_bytes = codebook.memory_size()?;
+        if codebook_bytes > codebook_bound.bytes {
+            return Err(Error::new(
+                ErrorCode::CudfInvariantViolation,
+                "datafusion_nexus.cugraph_sql.logical_bfs_host_mapping",
+                "logical BFS codebook exceeded its checked pre-reserved allocation bound",
+            )
+            .with_fact("reserved_bytes", codebook_bound.bytes)
+            .with_fact("actual_bytes", codebook_bytes)
+            .with_fact("reason", "logical_bfs_codebook_bound_mismatch")
+            .into());
+        }
+        Ok((codebook, codebook_bytes))
+    })();
+    let (codebook, codebook_bytes) = match codebook_result {
+        Ok(result) => result,
+        Err(error) => {
+            release_logical_mapping_bytes(codebook_bound.bytes, staged_bytes, reservation)?;
+            return Err(error);
+        },
+    };
+    let codebook_excess = codebook_bound.bytes - codebook_bytes;
+    release_logical_mapping_bytes(codebook_excess, staged_bytes, reservation)?;
+    host_evidence.record_codebook(codebook_bytes);
+    host_evidence.record_input_peak(reservation)?;
 
     let edge = encode_staged_source(
         edge,
@@ -173,6 +239,7 @@ pub(super) fn prepare_bfs_logical_host_inputs(
         staged_bytes,
         max_staging_bytes,
         reservation,
+        host_evidence,
     )?;
     let logical_literal_source = logical_literal_source
         .map(|source| {
@@ -183,6 +250,7 @@ pub(super) fn prepare_bfs_logical_host_inputs(
                 staged_bytes,
                 max_staging_bytes,
                 reservation,
+                host_evidence,
             )
         })
         .transpose()?;
@@ -191,7 +259,15 @@ pub(super) fn prepare_bfs_logical_host_inputs(
         .enumerate()
         .map(|(index, source)| {
             let columns = bfs_logical_predicate_columns(params, index);
-            encode_staged_source(source, &columns, &codebook, staged_bytes, max_staging_bytes, reservation)
+            encode_staged_source(
+                source,
+                &columns,
+                &codebook,
+                staged_bytes,
+                max_staging_bytes,
+                reservation,
+                host_evidence,
+            )
         })
         .collect::<Result<Vec<_>>>()?;
 
@@ -207,6 +283,7 @@ fn encode_staged_source(
     staged_bytes: &mut usize,
     max_staging_bytes: usize,
     reservation: &mut MemoryReservation,
+    host_evidence: &mut HostReservationEvidence,
 ) -> Result<StagedCugraphSource> {
     let StagedCugraphSource::Host { schema, batches } = source else {
         return Err(logical_bfs_native_source_error("logical_input", "native"));
@@ -249,6 +326,7 @@ fn encode_staged_source(
                 .with_source(source),
             )
         })?;
+        host_evidence.record_input_peak(reservation)?;
         let mut arrays = batch.columns().to_vec();
         for column in columns {
             let index = batch.schema().index_of(column).map_err(DataFusionError::from)?;
@@ -286,6 +364,7 @@ fn encode_staged_source(
         reservation.shrink(original_bytes);
         reservation.shrink(encoded_upper_bound - mapped_bytes);
         *staged_bytes = next_bytes;
+        host_evidence.record_input_peak(reservation)?;
         mapped_batches.push(mapped);
     }
     Ok(StagedCugraphSource::Host { schema: mapped_schema, batches: mapped_batches })
@@ -327,11 +406,120 @@ fn reserve_logical_mapping_bytes(
     Ok(())
 }
 
-fn collect_string_values(array: &dyn Array, values: &mut BTreeSet<String>, column: &str) -> Result<()> {
+fn release_logical_mapping_bytes(
+    released_bytes: usize,
+    staged_bytes: &mut usize,
+    reservation: &mut MemoryReservation,
+) -> Result<()> {
+    let next = staged_bytes
+        .checked_sub(released_bytes)
+        .ok_or_else(|| plan_error("logical BFS host mapping reservation accounting underflowed"))?;
+    reservation.shrink(released_bytes);
+    *staged_bytes = next;
+    Ok(())
+}
+
+fn for_each_codebook_array<F>(sources: &[(&StagedCugraphSource, Vec<String>)], mut visit: F) -> Result<()>
+where F: FnMut(&dyn Array, &str) -> Result<()> {
+    for (source, columns) in sources {
+        let StagedCugraphSource::Host { schema, batches } = source else {
+            return Err(logical_bfs_native_source_error("codebook", "native"));
+        };
+        for column in columns {
+            let field = schema.field_with_name(column).map_err(|error| {
+                DataFusionError::from(
+                    Error::new(
+                        ErrorCode::InvalidExecutionPlan,
+                        "datafusion_nexus.cugraph_sql.logical_bfs_host_mapping",
+                        "logical BFS host mapping could not find a required vertex column",
+                    )
+                    .with_fact("column", column)
+                    .with_source(error),
+                )
+            })?;
+            if !is_bfs_logical_vertex_type(field.data_type()) {
+                return Err(Error::new(
+                    ErrorCode::UnsupportedType,
+                    "datafusion_nexus.cugraph_sql.logical_bfs_host_mapping",
+                    "logical BFS host mapping requires UTF8 vertex columns",
+                )
+                .with_fact("column", column)
+                .with_fact("data_type", format!("{:?}", field.data_type()))
+                .with_fact("reason", "logical_bfs_vertex_dtype_unsupported")
+                .into());
+            }
+            for batch in batches {
+                let index = batch.schema().index_of(column).map_err(DataFusionError::from)?;
+                visit(batch.column(index).as_ref(), column)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn string_array_bound(array: &dyn Array, column: &str) -> Result<(usize, usize)> {
+    let mut value_count = Some(0usize);
+    let mut string_bytes = Some(0usize);
+    let mut record = |value: &str| {
+        value_count = value_count.and_then(|count| count.checked_add(1));
+        string_bytes = string_bytes.and_then(|bytes| bytes.checked_add(value.len()));
+    };
     if let Some(array) = array.as_any().downcast_ref::<StringArray>() {
         for row in 0..array.len() {
             if !array.is_null(row) {
-                values.insert(array.value(row).to_owned());
+                record(array.value(row));
+            }
+        }
+    } else if let Some(array) = array.as_any().downcast_ref::<LargeStringArray>() {
+        for row in 0..array.len() {
+            if !array.is_null(row) {
+                record(array.value(row));
+            }
+        }
+    } else if let Some(array) = array.as_any().downcast_ref::<StringViewArray>() {
+        for row in 0..array.len() {
+            if !array.is_null(row) {
+                record(array.value(row));
+            }
+        }
+    } else {
+        return Err(Error::new(
+            ErrorCode::UnsupportedType,
+            "datafusion_nexus.cugraph_sql.logical_bfs_host_mapping",
+            "logical BFS host mapping received a non-string vertex array",
+        )
+        .with_fact("column", column)
+        .with_fact("data_type", format!("{:?}", array.data_type()))
+        .with_fact("reason", "logical_bfs_vertex_dtype_unsupported")
+        .into());
+    }
+    let value_count = value_count.ok_or_else(|| {
+        Error::new(
+            ErrorCode::SizeOverflow,
+            "datafusion_nexus.cugraph_sql.logical_bfs_host_mapping",
+            "logical BFS host codebook value count overflowed usize",
+        )
+        .with_fact("reason", "logical_bfs_codebook_size_overflow")
+    })?;
+    let string_bytes = string_bytes.ok_or_else(|| {
+        Error::new(
+            ErrorCode::SizeOverflow,
+            "datafusion_nexus.cugraph_sql.logical_bfs_host_mapping",
+            "logical BFS host codebook string bytes overflowed usize",
+        )
+        .with_fact("reason", "logical_bfs_codebook_size_overflow")
+    })?;
+    Ok((value_count, string_bytes))
+}
+
+fn collect_string_values(array: &dyn Array, values: &mut Vec<String>, column: &str) -> Result<()> {
+    if let Some(array) = array.as_any().downcast_ref::<StringArray>() {
+        for row in 0..array.len() {
+            if !array.is_null(row) {
+                let value = array.value(row);
+                let mut owned = String::with_capacity(value.len());
+                owned.push_str(value);
+                values.push(owned);
             }
         }
         return Ok(());
@@ -339,7 +527,10 @@ fn collect_string_values(array: &dyn Array, values: &mut BTreeSet<String>, colum
     if let Some(array) = array.as_any().downcast_ref::<LargeStringArray>() {
         for row in 0..array.len() {
             if !array.is_null(row) {
-                values.insert(array.value(row).to_owned());
+                let value = array.value(row);
+                let mut owned = String::with_capacity(value.len());
+                owned.push_str(value);
+                values.push(owned);
             }
         }
         return Ok(());
@@ -347,7 +538,10 @@ fn collect_string_values(array: &dyn Array, values: &mut BTreeSet<String>, colum
     if let Some(array) = array.as_any().downcast_ref::<StringViewArray>() {
         for row in 0..array.len() {
             if !array.is_null(row) {
-                values.insert(array.value(row).to_owned());
+                let value = array.value(row);
+                let mut owned = String::with_capacity(value.len());
+                owned.push_str(value);
+                values.push(owned);
             }
         }
         return Ok(());
@@ -658,18 +852,28 @@ pub(super) fn decode_bfs_logical_host_output(
     codebook: &HostBfsCodebook,
     output_schema: SchemaRef,
 ) -> Result<EagerCugraphHostOutput> {
-    let (batches, reservation) = output.into_parts();
+    let (batches, reservation, host_evidence) = output.into_parts_with_evidence();
     let old_bytes =
         batches.iter().map(get_record_batch_memory_size).try_fold(0usize, |sum, bytes| sum.checked_add(bytes));
     let old_bytes = old_bytes.ok_or_else(|| plan_error("logical BFS host output size overflowed usize"))?;
-    let mut decoded = Vec::with_capacity(batches.len());
-    for batch in batches.iter() {
-        decoded.push(decode_bfs_logical_host_batch(batch, codebook, Arc::clone(&output_schema))?);
+    let decoded_upper_bound = batches.iter().try_fold(0usize, |sum, batch| {
+        decoded_bfs_logical_host_batch_upper_bound(batch, codebook).and_then(|bytes| {
+            sum.checked_add(bytes).ok_or_else(|| {
+                Error::new(
+                    ErrorCode::SizeOverflow,
+                    "datafusion_nexus.cugraph_sql.logical_bfs_host_output",
+                    "decoded logical BFS host output bound overflowed usize",
+                )
+                .with_fact("boundary", "decoded_output")
+                .with_fact("reason", "logical_bfs_decoded_output_bound_overflow")
+                .into()
+            })
+        })
+    })?;
+    if let Some(evidence) = host_evidence.as_ref() {
+        evidence.check_output_growth("decoded_output", reservation.size(), decoded_upper_bound)?;
     }
-    let new_bytes =
-        decoded.iter().map(get_record_batch_memory_size).try_fold(0usize, |sum, bytes| sum.checked_add(bytes));
-    let new_bytes = new_bytes.ok_or_else(|| plan_error("decoded logical BFS host output size overflowed usize"))?;
-    reservation.try_grow(new_bytes).map_err(|source| {
+    reservation.try_grow(decoded_upper_bound).map_err(|source| {
         DataFusionError::from(
             Error::new(
                 ErrorCode::MemoryReservationFailed,
@@ -677,14 +881,49 @@ pub(super) fn decode_bfs_logical_host_output(
                 "DataFusion host memory pool denied decoded logical BFS output staging",
             )
             .with_fact("boundary", "decoded_output")
-            .with_fact("requested_bytes", new_bytes)
+            .with_fact("requested_bytes", decoded_upper_bound)
             .with_source(source),
         )
     })?;
+    let decoded_result = (|| {
+        let mut decoded = Vec::with_capacity(batches.len());
+        for batch in batches.iter() {
+            decoded.push(decode_bfs_logical_host_batch(batch, codebook, Arc::clone(&output_schema))?);
+        }
+        let new_bytes =
+            decoded.iter().map(get_record_batch_memory_size).try_fold(0usize, |sum, bytes| sum.checked_add(bytes));
+        let new_bytes = new_bytes.ok_or_else(|| plan_error("decoded logical BFS host output size overflowed usize"))?;
+        if new_bytes > decoded_upper_bound {
+            return Err(Error::new(
+                ErrorCode::CudfInvariantViolation,
+                "datafusion_nexus.cugraph_sql.logical_bfs_host_output",
+                "decoded logical BFS host output exceeded its checked pre-reserved bound",
+            )
+            .with_fact("boundary", "decoded_output")
+            .with_fact("reserved_bytes", decoded_upper_bound)
+            .with_fact("actual_bytes", new_bytes)
+            .with_fact("reason", "logical_bfs_decoded_output_bound_mismatch")
+            .into());
+        }
+        Ok((decoded, new_bytes))
+    })();
+    let (decoded, new_bytes) = match decoded_result {
+        Ok(result) => result,
+        Err(error) => {
+            reservation.shrink(decoded_upper_bound);
+            return Err(error);
+        },
+    };
+    reservation.shrink(decoded_upper_bound - new_bytes);
     // End encoded batch ownership before lowering its charged output bytes.
     drop(batches);
     reservation.shrink(old_bytes);
-    Ok(EagerCugraphHostOutput::from_shared_parts(output_schema, Arc::new(decoded), reservation))
+    Ok(EagerCugraphHostOutput::from_shared_parts_with_evidence(
+        output_schema,
+        Arc::new(decoded),
+        reservation,
+        host_evidence,
+    ))
 }
 
 pub(super) fn decode_bfs_logical_host_batch(
@@ -702,29 +941,166 @@ pub(super) fn decode_bfs_logical_host_batch(
     RecordBatch::try_new(output_schema, columns).map_err(DataFusionError::from)
 }
 
+pub(super) fn decoded_bfs_logical_host_batch_upper_bound(
+    batch: &RecordBatch,
+    codebook: &HostBfsCodebook,
+) -> Result<usize> {
+    batch.columns().iter().enumerate().try_fold(0usize, |total, (index, array)| {
+        let schema = batch.schema();
+        let column = schema.field(index).name();
+        let bytes = match column.as_str() {
+            "vertex" => decoded_string_array_upper_bound(array.as_ref(), codebook, "vertex", false)?,
+            "predecessor" => decoded_string_array_upper_bound(array.as_ref(), codebook, "predecessor", true)?,
+            _ => array.get_array_memory_size(),
+        };
+        total.checked_add(bytes).ok_or_else(|| {
+            DataFusionError::from(
+                Error::new(
+                    ErrorCode::SizeOverflow,
+                    "datafusion_nexus.cugraph_sql.logical_bfs_host_output",
+                    "decoded logical BFS host output batch bound overflowed usize",
+                )
+                .with_fact("boundary", "decoded_output")
+                .with_fact("reason", "logical_bfs_decoded_output_bound_overflow"),
+            )
+        })
+    })
+}
+
 fn decode_vertex_array(array: &dyn Array, codebook: &HostBfsCodebook, column: &'static str) -> Result<ArrayRef> {
-    let mut values = Vec::with_capacity(array.len());
+    let data_bytes = decoded_string_array_data_bytes(array, codebook, column, false)?;
+    let mut builder = arrow::array::StringBuilder::with_capacity(array.len(), data_bytes);
     for row in 0..array.len() {
         if array.is_null(row) {
-            values.push(None);
+            builder.append_null();
         } else {
-            values.push(Some(codebook.decode_code(numeric_array_value(array, row, column)?)?));
+            let value = codebook.value_for_code(numeric_array_value(array, row, column)?)?;
+            builder.append_value(value);
         }
     }
-    Ok(Arc::new(StringArray::from(values)) as ArrayRef)
+    Ok(Arc::new(builder.finish()) as ArrayRef)
 }
 
 fn decode_predecessor_array(array: &dyn Array, codebook: &HostBfsCodebook) -> Result<ArrayRef> {
-    let mut values = Vec::with_capacity(array.len());
+    let data_bytes = decoded_string_array_data_bytes(array, codebook, "predecessor", true)?;
+    let mut builder = arrow::array::StringBuilder::with_capacity(array.len(), data_bytes);
     for row in 0..array.len() {
         if array.is_null(row) {
-            values.push(None);
+            builder.append_null();
             continue;
         }
         let code = numeric_array_value(array, row, "predecessor")?;
-        values.push((code >= 0).then(|| codebook.decode_code(code)).transpose()?);
+        if code < 0 {
+            builder.append_null();
+        } else {
+            builder.append_value(codebook.value_for_code(code)?);
+        }
     }
-    Ok(Arc::new(StringArray::from(values)) as ArrayRef)
+    Ok(Arc::new(builder.finish()) as ArrayRef)
+}
+
+fn decoded_string_array_upper_bound(
+    array: &dyn Array,
+    codebook: &HostBfsCodebook,
+    column: &'static str,
+    negative_is_null: bool,
+) -> Result<usize> {
+    let data_bytes = decoded_string_array_data_bytes(array, codebook, column, negative_is_null)?;
+    let offset_bytes =
+        array.len().checked_add(1).and_then(|offsets| offsets.checked_mul(size_of::<i32>())).ok_or_else(|| {
+            Error::new(
+                ErrorCode::SizeOverflow,
+                "datafusion_nexus.cugraph_sql.logical_bfs_host_output",
+                "decoded logical BFS Arrow offsets overflowed usize",
+            )
+            .with_fact("column", column)
+            .with_fact("reason", "logical_bfs_decoded_output_bound_overflow")
+        })?;
+    let validity_bytes = decoded_string_array_validity_bytes(array, column, negative_is_null)?;
+    arrow_buffer_capacity(offset_bytes)
+        .and_then(|offsets| {
+            arrow_buffer_capacity(data_bytes).and_then(|data| {
+                arrow_buffer_capacity(validity_bytes).and_then(|validity| {
+                    size_of::<StringArray>()
+                        .checked_add(offsets)
+                        .and_then(|bytes| bytes.checked_add(data))
+                        .and_then(|bytes| bytes.checked_add(validity))
+                })
+            })
+        })
+        .ok_or_else(|| {
+            Error::new(
+                ErrorCode::SizeOverflow,
+                "datafusion_nexus.cugraph_sql.logical_bfs_host_output",
+                "decoded logical BFS Arrow buffer bound overflowed usize",
+            )
+            .with_fact("column", column)
+            .with_fact("reason", "logical_bfs_decoded_output_bound_overflow")
+            .into()
+        })
+}
+
+fn decoded_string_array_data_bytes(
+    array: &dyn Array,
+    codebook: &HostBfsCodebook,
+    column: &'static str,
+    negative_is_null: bool,
+) -> Result<usize> {
+    let mut bytes = 0usize;
+    for row in 0..array.len() {
+        if array.is_null(row) {
+            continue;
+        }
+        let code = numeric_array_value(array, row, column)?;
+        if negative_is_null && code < 0 {
+            continue;
+        }
+        bytes = bytes.checked_add(codebook.value_for_code(code)?.len()).ok_or_else(|| {
+            Error::new(
+                ErrorCode::SizeOverflow,
+                "datafusion_nexus.cugraph_sql.logical_bfs_host_output",
+                "decoded logical BFS string bytes overflowed usize",
+            )
+            .with_fact("column", column)
+            .with_fact("reason", "logical_bfs_decoded_output_bound_overflow")
+        })?;
+    }
+    Ok(bytes)
+}
+
+fn decoded_string_array_validity_bytes(
+    array: &dyn Array,
+    column: &'static str,
+    negative_is_null: bool,
+) -> Result<usize> {
+    if array.null_count() > 0 {
+        return decoded_validity_bitmap_bytes(array.len(), column);
+    }
+    if negative_is_null {
+        for row in 0..array.len() {
+            if !array.is_null(row) && numeric_array_value(array, row, column)? < 0 {
+                return decoded_validity_bitmap_bytes(array.len(), column);
+            }
+        }
+    }
+    Ok(0)
+}
+
+fn decoded_validity_bitmap_bytes(len: usize, column: &'static str) -> Result<usize> {
+    len.checked_add(7).map(|bits| bits / 8).ok_or_else(|| {
+        Error::new(
+            ErrorCode::SizeOverflow,
+            "datafusion_nexus.cugraph_sql.logical_bfs_host_output",
+            "decoded logical BFS null bitmap bound overflowed usize",
+        )
+        .with_fact("column", column)
+        .with_fact("reason", "logical_bfs_decoded_output_bound_overflow")
+        .into()
+    })
+}
+
+fn arrow_buffer_capacity(bytes: usize) -> Option<usize> {
+    bytes.checked_add(63).map(|rounded| rounded / 64 * 64)
 }
 
 fn numeric_array_value(array: &dyn Array, row: usize, column: &'static str) -> Result<i64> {

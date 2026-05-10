@@ -198,77 +198,142 @@ fn query_service_released_handle_rejects_context_acquisition() {
 
 #[test]
 fn admitted_context_gate_rejects_missing_identity_device_and_scope_proofs() {
-    let service = runtime_test_service(2, 8);
-    let plan = explicit_sink_plan("input");
-    let proof = crate::admission::QueryPlanCapabilityProof::for_query_plan(&plan)
-        .expect("the test plan must issue an execution capability proof");
-    let handle = service
-        .admit_query_with_request(QueryAdmissionRequest::new().with_query_plan_capability_proof(proof))
-        .expect("proof-backed admission");
-    let admitted = handle.acquire_context().expect("service context");
-    admitted
-        .context()
-        .validate_admitted_plan_capabilities(&plan)
-        .expect("the immutable post-grant proof matches its context");
+    let assert_quiescent = |service: &QueryService| {
+        service
+            .wait_for_stream_pools_idle(Duration::from_secs(10))
+            .expect("context and handle cleanup reaches the release commit boundary");
+        let snapshot = service.admission_snapshot().expect("admission snapshot after context cleanup");
+        assert_eq!(snapshot.active_queries, 0);
+        assert_eq!(snapshot.queued_queries, 0);
+        let ledger_reports = service.device_ledger_reports().expect("device ledger report after context cleanup");
+        assert_eq!(ledger_reports.len(), 1);
+        let ledger = &ledger_reports[0];
+        assert_eq!(ledger.active_attempts, 0);
+        assert_eq!(ledger.live_grants_bytes, 0);
+        let admission = service.inner.admission.lock().expect("admission lifecycle state");
+        assert!(admission.lifecycle.is_quiescent(), "context cleanup leaves the admission lifecycle tracker quiescent");
+    };
+    let admitted_fixture = |max_active_attempts_per_device| {
+        let service = runtime_test_service(max_active_attempts_per_device, 8);
+        let plan = explicit_sink_plan("input");
+        let proof = crate::admission::QueryPlanCapabilityProof::for_query_plan(&plan)
+            .expect("the test plan must issue an execution capability proof");
+        let handle = service
+            .admit_query_with_request(QueryAdmissionRequest::new().with_query_plan_capability_proof(proof))
+            .expect("proof-backed admission");
+        let admitted = handle.acquire_context().expect("service context");
+        (service, plan, handle, admitted)
+    };
 
-    let changed_plan = explicit_sink_plan("different-input");
-    let error = admitted
-        .context()
-        .validate_admitted_plan_capabilities(&changed_plan)
-        .expect_err("a changed plan must not reuse an admitted proof");
-    assert_eq!(error.code(), QueryErrorCode::UnsupportedPlanShape);
-    let proof = admitted
-        .context()
-        .admitted_attempt_proof_for_test()
-        .expect("the acquired context carries the proof")
-        .clone();
-    let grant_identity = proof.grant_identity();
-    let mut wrong_generation = admitted.context().clone();
-    wrong_generation.replace_admitted_attempt_proof_for_test(Some(Arc::new(proof.with_identity_for_test(
-        proof.selected_device(),
-        crate::runtime::gpu::GrantIdentity { generation: grant_identity.generation + 1, ..grant_identity },
-    ))));
-    let error = wrong_generation
-        .validate_admitted_plan_capabilities(&plan)
-        .expect_err("a recycled grant generation must not pass the context gate");
-    assert_eq!(error.fact_value("reason"), Some("admitted_attempt_proof_grant_identity_mismatch"));
+    {
+        let (service, plan, handle, admitted) = admitted_fixture(1);
+        admitted
+            .context()
+            .validate_admitted_plan_capabilities(&plan)
+            .expect("the immutable post-grant proof matches its context");
+        let changed_plan = explicit_sink_plan("different-input");
+        let error = admitted
+            .context()
+            .validate_admitted_plan_capabilities(&changed_plan)
+            .expect_err("a changed plan must not reuse an admitted proof");
+        assert_eq!(error.code(), QueryErrorCode::UnsupportedPlanShape);
+        assert_eq!(error.fact_value("reason"), Some("admitted_reservation_envelope_mismatch"));
 
-    let mut wrong_attempt = admitted.context().clone();
-    wrong_attempt.replace_admitted_attempt_proof_for_test(Some(Arc::new(proof.with_identity_for_test(
-        proof.selected_device(),
-        crate::runtime::gpu::GrantIdentity {
-            attempt_id: crate::observability::AttemptId::mint(),
-            ..grant_identity
-        },
-    ))));
-    let error = wrong_attempt
-        .validate_admitted_plan_capabilities(&plan)
-        .expect_err("a different attempt identity must not pass the context gate");
-    assert_eq!(error.fact_value("reason"), Some("admitted_attempt_proof_grant_identity_mismatch"));
+        drop(admitted);
+        handle.finish();
+        drop(handle);
+        assert_quiescent(&service);
+    }
 
-    let mut wrong_selected_device = admitted.context().clone();
-    wrong_selected_device.replace_admitted_attempt_proof_for_test(Some(Arc::new(proof.with_identity_for_test(
-        proof.selected_device() + 1,
-        grant_identity,
-    ))));
-    let error = wrong_selected_device
-        .validate_admitted_plan_capabilities(&plan)
-        .expect_err("a proof selected for another device must not pass the context gate");
-    assert_eq!(error.fact_value("reason"), Some("admitted_attempt_proof_device_mismatch"));
+    {
+        let (service, plan, handle, admitted) = admitted_fixture(1);
+        let proof = admitted
+            .context()
+            .admitted_attempt_proof_for_test()
+            .expect("the acquired context carries the proof")
+            .clone();
+        let grant_identity = proof.grant_identity();
+        let mut wrong_generation = admitted.context().clone();
+        wrong_generation.replace_admitted_attempt_proof_for_test(Some(Arc::new(proof.with_identity_for_test(
+            proof.selected_device(),
+            crate::runtime::gpu::GrantIdentity { generation: grant_identity.generation + 1, ..grant_identity },
+        ))));
+        let error = wrong_generation
+            .validate_admitted_plan_capabilities(&plan)
+            .expect_err("a recycled grant generation must not pass the context gate");
+        assert_eq!(error.fact_value("reason"), Some("admitted_attempt_proof_grant_identity_mismatch"));
+        drop(wrong_generation);
 
-    let second_handle = service.admit_query().expect("second admission");
-    let second_context = second_handle.acquire_context().expect("second context");
-    let mut wrong_domain = admitted.context().clone();
-    wrong_domain.replace_attempt_allocation_domain_for_test(second_context.context().attempt_allocation_domain_for_test());
-    let error = wrong_domain
-        .validate_admitted_plan_capabilities(&plan)
-        .expect_err("a domain from another grant must not pass the context gate");
-    assert_eq!(error.fact_value("reason"), Some("admitted_attempt_proof_domain_identity_mismatch"));
+        let mut wrong_attempt = admitted.context().clone();
+        wrong_attempt.replace_admitted_attempt_proof_for_test(Some(Arc::new(proof.with_identity_for_test(
+            proof.selected_device(),
+            crate::runtime::gpu::GrantIdentity {
+                attempt_id: crate::observability::AttemptId::mint(),
+                ..grant_identity
+            },
+        ))));
+        let error = wrong_attempt
+            .validate_admitted_plan_capabilities(&plan)
+            .expect_err("a different attempt identity must not pass the context gate");
+        assert_eq!(error.fact_value("reason"), Some("admitted_attempt_proof_grant_identity_mismatch"));
+        drop(wrong_attempt);
+
+        drop(admitted);
+        handle.finish();
+        drop(handle);
+        assert_quiescent(&service);
+    }
+
+    {
+        let (service, plan, handle, admitted) = admitted_fixture(1);
+        let proof = admitted
+            .context()
+            .admitted_attempt_proof_for_test()
+            .expect("the acquired context carries the proof")
+            .clone();
+        let mut wrong_selected_device = admitted.context().clone();
+        wrong_selected_device.replace_admitted_attempt_proof_for_test(Some(Arc::new(proof.with_identity_for_test(
+            proof.selected_device() + 1,
+            proof.grant_identity(),
+        ))));
+        let error = wrong_selected_device
+            .validate_admitted_plan_capabilities(&plan)
+            .expect_err("a proof selected for another device must not pass the context gate");
+        assert_eq!(error.fact_value("reason"), Some("admitted_attempt_proof_device_mismatch"));
+        drop(wrong_selected_device);
+
+        drop(admitted);
+        handle.finish();
+        drop(handle);
+        assert_quiescent(&service);
+    }
+
+    {
+        let (service, plan, handle, admitted) = admitted_fixture(2);
+        let second_handle = service.admit_query().expect("second admission");
+        let second_context = second_handle.acquire_context().expect("second context");
+        let mut wrong_domain = admitted.context().clone();
+        wrong_domain.replace_attempt_allocation_domain_for_test(second_context.context().attempt_allocation_domain_for_test());
+        let error = wrong_domain
+            .validate_admitted_plan_capabilities(&plan)
+            .expect_err("a domain from another grant must not pass the context gate");
+        assert_eq!(error.fact_value("reason"), Some("admitted_attempt_proof_domain_identity_mismatch"));
+
+        drop(wrong_domain);
+        drop(second_context);
+        second_handle.finish();
+        drop(second_handle);
+        drop(admitted);
+        handle.finish();
+        drop(handle);
+        assert_quiescent(&service);
+    }
 
     let direct = ExecutionContext::builder().build().expect("direct context");
     direct
-        .validate_admitted_plan_capabilities(&plan)
+        .validate_admitted_plan_capabilities(&explicit_sink_plan("input"))
         .expect("direct contexts remain unrestricted by service proofs");
+    drop(direct);
 }
 
 #[test]

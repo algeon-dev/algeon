@@ -12,8 +12,8 @@ use crate::{
     admission::{
         AttemptReservationEnvelope, AttemptReservationPolicy,
         envelope::{
-            AttemptReservationProducerOccurrence, AttemptReservationSchedule, AttemptReservationShape,
-            canonical_execution_scope_fingerprint,
+            AttemptReservationConsumerState, AttemptReservationProducerOccurrence, AttemptReservationSchedule,
+            AttemptReservationShape, canonical_execution_scope_fingerprint,
         },
     },
     capability::ReservationRequirement,
@@ -21,7 +21,7 @@ use crate::{
     error::{QueryError, QueryErrorCode, Result},
     expr::alias_wrapped_column,
     graph_memory::{
-        GraphMemoryAdmissionEvidence, GraphMemoryOwnerTermFact, GraphMemoryOwnerTermRole,
+        GraphMemoryAdmissionEvidence, GraphMemoryOwnerTermFact, GraphMemoryOwnerTermRole, GraphSourceStageLifetime,
         query_plan_hard_row_upper_bound,
     },
     plan::{
@@ -428,8 +428,22 @@ impl AllocationOwnerTerm {
         self.bytes.get()
     }
 
+    pub(crate) fn owner_label(&self) -> &'static str {
+        self.id.owner.as_str()
+    }
+
     pub(crate) const fn is_retained_output(&self) -> bool {
         matches!(self.id.role, OwnerTermRole::RetainedOutput)
+    }
+
+    pub(crate) const fn is_side_input_frame(&self) -> bool {
+        matches!(self.id.role, OwnerTermRole::SideInputFrame)
+    }
+
+    pub(crate) fn is_attempt_wide_fixed(&self) -> bool {
+        matches!(self.id.owner, OwnerId::Attempt)
+            && self.id.role == OwnerTermRole::AttemptWideFixed
+            && self.class == AllocationClass::AttemptWideFixed
     }
 
     pub(crate) const fn retained_row_count_upper_bound(&self) -> Option<u64> {
@@ -445,6 +459,54 @@ impl AllocationOwnerTerm {
                     | OwnerTermRole::ExecutionWorkspace
                     | OwnerTermRole::SideInputWorkspace
             )
+    }
+
+    pub(crate) const fn is_graph_persistent(&self) -> bool {
+        matches!(self.id.role, OwnerTermRole::GraphPersistent)
+    }
+
+    pub(crate) const fn is_source_stage(&self) -> bool {
+        matches!(self.id.role, OwnerTermRole::SourceStage)
+    }
+
+    pub(crate) const fn is_consumer_schedule_owner(&self) -> bool {
+        matches!(self.id.owner, OwnerId::Source(_) | OwnerId::Consumer(_) | OwnerId::SideInput(_) | OwnerId::Sort(_))
+    }
+
+    pub(crate) fn has_consumer_schedule_identity(&self) -> bool {
+        match (&self.id.owner, self.id.role, &self.id.occurrence) {
+            (OwnerId::Source(node_id), OwnerTermRole::SourceStage, OccurrenceId::PlanLocal(occurrence)) => {
+                node_id == occurrence
+            },
+            (OwnerId::Consumer(node_id), role, OccurrenceId::PlanLocal(occurrence)) => {
+                node_id == occurrence
+                    && matches!(
+                        role,
+                        OwnerTermRole::ConsumerOutput
+                            | OwnerTermRole::ConsumerPredicateMask
+                            | OwnerTermRole::ConsumerBuildInput
+                            | OwnerTermRole::ConsumerProbeInput
+                            | OwnerTermRole::ConsumerHashTable
+                            | OwnerTermRole::ConsumerPairIndices
+                    )
+            },
+            (OwnerId::SideInput(node_id), OwnerTermRole::SideInputFrame, OccurrenceId::PlanLocal(occurrence)) => {
+                node_id == occurrence
+            },
+            (OwnerId::Sort(node_id), role, OccurrenceId::PlanLocal(occurrence)) => {
+                node_id == occurrence
+                    && matches!(
+                        role,
+                        OwnerTermRole::SortKeyOutput
+                            | OwnerTermRole::SortSequence
+                            | OwnerTermRole::SortTemporaryWorkspace
+                            | OwnerTermRole::SortRetainedOrder
+                            | OwnerTermRole::SortOutputFrame
+                            | OwnerTermRole::SortOutputNullMask
+                    )
+            },
+            _ => false,
+        }
     }
 
     pub(crate) const fn is_construction_phase_term(&self) -> bool {
@@ -464,11 +526,6 @@ impl AllocationOwnerTerm {
 
     pub(crate) fn provides_complete_phase_coverage(&self) -> bool {
         !matches!(self.id.role, OwnerTermRole::SourceStage)
-    }
-
-    #[cfg(not(test))]
-    pub(crate) fn is_consumer_scope(&self, scope: &str) -> bool {
-        matches!(self.id.owner, OwnerId::Consumer(_)) && self.id.execution_scope_fingerprint == scope
     }
 }
 
@@ -1181,12 +1238,17 @@ impl QueryPlanCapabilityProof {
         let row_count_upper_bound = retained_output_term
             .retained_row_count_upper_bound()
             .ok_or_else(|| composed_schedule_error("producer_retained_output_rows_missing", Some(&occurrence_id)))?;
+        let (phase_term_groups, alternative_phase_term_ids) =
+            producer.requirement.isolated_phase_term_groups_with_alternatives(Some(&execution_scope_fingerprint));
+        let concurrent_side_input_term_ids = producer.requirement.concurrent_side_input_term_ids();
         Ok(NormalizedComposedProducer {
             occurrence_id,
             execution_scope_fingerprint,
             retained_output_term_id,
             row_count_upper_bound,
-            phase_term_groups: producer.requirement.isolated_phase_term_groups(),
+            phase_term_groups,
+            alternative_phase_term_ids,
+            concurrent_side_input_term_ids,
             proof: producer,
         })
     }
@@ -1233,15 +1295,21 @@ impl QueryPlanCapabilityProof {
                 normalized.execution_scope_fingerprint,
                 normalized.retained_output_term_id,
             ));
-            producer_phases.push(crate::admission::envelope::AttemptReservationProducerPhase::from_term_groups(
-                normalized.phase_term_groups,
-            ));
+            producer_phases.push(
+                crate::admission::envelope::AttemptReservationProducerPhase::from_term_groups_with_alternatives_and_side_inputs(
+                    normalized.phase_term_groups,
+                    normalized.alternative_phase_term_ids,
+                    normalized.concurrent_side_input_term_ids,
+                ),
+            );
             producer_proofs.push(normalized.proof);
         }
 
         let ComposedConsumerBranchBound {
             owner_terms: consumer_owner_terms,
             peak_owner_term_ids: consumer_peak_term_ids,
+            dominated_owner_term_ids: consumer_dominated_term_ids,
+            allocation_state: consumer_state,
             consumed_occurrences,
             ..
         } = composed_consumer_bound_with_peak_terms(
@@ -1253,15 +1321,19 @@ impl QueryPlanCapabilityProof {
         consumer.requirement.requires_composed_producer_binding = false;
         consumer.requirement.remove_generic_gpu_resident_retained_output_terms();
         consumer.requirement.owner_terms = merge_owner_terms(&consumer.requirement.owner_terms, consumer_owner_terms)?;
-        let schedule = AttemptReservationSchedule::from_phase_term_ids(
-            // Current bounded composed attempts have no independent
-            // attempt-wide device allocation.  Keep this explicit so a future
-            // attempt-wide owner must be represented in the schedule rather
-            // than silently folded into a producer or consumer phase.
-            Some(0),
-            None,
+        let attempt_wide_fixed_term_ids = producer_proofs
+            .iter()
+            .flat_map(|proof| proof.requirement.owner_terms.iter())
+            .chain(consumer.requirement.owner_terms.iter())
+            .filter(|term| term.is_attempt_wide_fixed())
+            .map(|term| term.id().clone())
+            .collect::<Vec<_>>();
+        let schedule = AttemptReservationSchedule::from_phase_term_ids_with_dominated(
+            attempt_wide_fixed_term_ids,
             producer_phases,
+            consumer_state,
             consumer_peak_term_ids,
+            consumer_dominated_term_ids,
         );
         let [consumer_shape] = consumer.requirement.reservation_shapes.as_mut_slice() else {
             return Err(composed_schedule_error("missing_consumer_scope", None));
@@ -1649,13 +1721,16 @@ impl AttemptCapabilityEvidence {
     fn extend_with_graph_memory_admission_evidence(&mut self, evidence: &GraphMemoryAdmissionEvidence) -> Result<()> {
         let graph_shape_index = self.graph_memory_evidence_scope_index(evidence)?;
         let graph_owner_terms = graph_owner_terms_from_evidence(evidence)?;
-        let owner_terms = merge_owner_terms(&self.owner_terms, graph_owner_terms)?;
         let graph_native_peak_bytes = evidence.cold_model_requested_bytes();
         let whole_attempt_peak_bytes = match self.source_stage_bytes {
             Some(source_stage_bytes) => evidence.cold_model_with_source_stage_bytes(source_stage_bytes)?,
             None => graph_native_peak_bytes,
         };
         let source_stage_bytes = self.source_stage_bytes;
+
+        let mut owner_terms = self.owner_terms.clone();
+        self.remove_shared_graph_input_source_stage_owners(graph_shape_index, evidence, &mut owner_terms)?;
+        owner_terms = merge_owner_terms(&owner_terms, graph_owner_terms)?;
 
         // Validate every graph-owned scope before changing the hint or any
         // reservation shape so a rejected evidence token leaves the proof
@@ -1667,6 +1742,38 @@ impl AttemptCapabilityEvidence {
         self.owner_terms = owner_terms;
         self.soft_working_set_hint_bytes = Some(whole_attempt_peak_bytes);
         self.estimate_quality = EstimateQuality::Modeled;
+        Ok(())
+    }
+
+    fn remove_shared_graph_input_source_stage_owners(
+        &self,
+        graph_shape_index: usize,
+        evidence: &GraphMemoryAdmissionEvidence,
+        owner_terms: &mut Vec<AllocationOwnerTerm>,
+    ) -> Result<()> {
+        if evidence.source_stage_lifetime() != GraphSourceStageLifetime::SharedPreparedEdgeFrame {
+            return Ok(());
+        }
+        let graph_shape = &self.reservation_shapes[graph_shape_index];
+        if !graph_shape.is_cugraph_graph_input_scope() || !graph_shape.has_modeled_source_stage() {
+            return Ok(());
+        }
+        let matching = owner_terms
+            .iter()
+            .filter(|term| {
+                term.id().role == OwnerTermRole::SourceStage
+                    && term.execution_scope_fingerprint() == evidence.execution_scope_fingerprint()
+            })
+            .map(|term| term.id().clone())
+            .collect::<Vec<_>>();
+        if matching.len() > 1 {
+            return Err(owner_term_error("graph_input_source_stage_ambiguous", Some(OwnerTermRole::SourceStage), None)
+                .with_fact("execution_scope_fingerprint", evidence.execution_scope_fingerprint())
+                .with_fact("matching_owner_count", matching.len()));
+        }
+        if let Some(owner_id) = matching.first() {
+            owner_terms.retain(|term| term.id() != owner_id);
+        }
         Ok(())
     }
 
@@ -1760,11 +1867,37 @@ impl AttemptCapabilityEvidence {
         Ok(term)
     }
 
+    #[cfg(test)]
     fn isolated_phase_term_groups(&self) -> Vec<Vec<OwnerTermId>> {
+        self.isolated_phase_term_groups_with_alternatives(None).0
+    }
+
+    fn concurrent_side_input_term_ids(&self) -> Vec<OwnerTermId> {
+        self.owner_terms.iter().filter(|term| term.is_side_input_frame()).map(|term| term.id().clone()).collect()
+    }
+
+    fn isolated_phase_term_groups_with_alternatives(
+        &self,
+        execution_scope_fingerprint: Option<&str>,
+    ) -> (Vec<Vec<OwnerTermId>>, Vec<OwnerTermId>) {
         let mut construction = Vec::new();
         let mut execution = Vec::new();
         let mut other_active = Vec::new();
+        let mut alternative_term_ids = Vec::new();
+        let separate_graph_source_scopes = self
+            .reservation_shapes
+            .iter()
+            .filter_map(AttemptReservationShape::graph_memory_admission_evidence)
+            .filter(|evidence| evidence.source_stage_lifetime() == GraphSourceStageLifetime::SeparateNormalizedInput)
+            .map(|evidence| evidence.execution_scope_fingerprint())
+            .collect::<HashSet<_>>();
         for term in &self.owner_terms {
+            if execution_scope_fingerprint.is_some_and(|scope| term.execution_scope_fingerprint() != scope) {
+                continue;
+            }
+            if term.is_attempt_wide_fixed() {
+                continue;
+            }
             if term.is_retained_output() {
                 execution.push(term.id().clone());
                 continue;
@@ -1775,7 +1908,12 @@ impl AttemptCapabilityEvidence {
             if term.is_execution_phase_term() {
                 execution.push(term.id().clone());
             }
-            if !term.is_graph_phase_term() {
+            let separate_graph_source = term.id().role == OwnerTermRole::SourceStage
+                && separate_graph_source_scopes.contains(term.execution_scope_fingerprint());
+            if separate_graph_source {
+                construction.push(term.id().clone());
+                execution.push(term.id().clone());
+            } else if !term.is_graph_phase_term() {
                 other_active.push(term.id().clone());
             }
         }
@@ -1789,7 +1927,19 @@ impl AttemptCapabilityEvidence {
         if !other_active.is_empty() {
             groups.push(other_active);
         }
-        groups
+        for term_id in groups.first().into_iter().flat_map(|group| group.iter()) {
+            if groups.get(1).is_some_and(|group| group.contains(term_id)) {
+                let Some(term) = self.owner_terms.iter().find(|term| term.id() == term_id) else {
+                    continue;
+                };
+                let separate_source =
+                    term.is_source_stage() && separate_graph_source_scopes.contains(term.execution_scope_fingerprint());
+                if term.is_graph_persistent() || separate_source {
+                    alternative_term_ids.push(term_id.clone());
+                }
+            }
+        }
+        (groups, alternative_term_ids)
     }
 
     /// Retains exact scopes for graph-owned frames while treating each one as
@@ -2125,7 +2275,7 @@ pub(crate) fn checked_owner_sum(
         }
         if let Some(schedule) = scope.ordered_schedule() {
             schedule
-                .validate_term_references(scope, owner_terms)
+                .validate_term_references_for_conservative_sum(scope, owner_terms, scopes)
                 .map_err(|_| owner_derivation_error("attempt_owner_term_missing"))?;
         }
         scope.validate_manifest_core().map_err(|_| owner_derivation_error("attempt_manifest_core_invalid"))?;
@@ -2206,6 +2356,8 @@ struct NormalizedComposedProducer {
     retained_output_term_id: OwnerTermId,
     row_count_upper_bound: u64,
     phase_term_groups: Vec<Vec<OwnerTermId>>,
+    alternative_phase_term_ids: Vec<OwnerTermId>,
+    concurrent_side_input_term_ids: Vec<OwnerTermId>,
     proof: QueryPlanCapabilityProof,
 }
 
@@ -2221,7 +2373,9 @@ struct ComposedConsumerBranchBound {
     additional_peak_bytes: u64,
     owner_terms: Vec<AllocationOwnerTerm>,
     peak_owner_term_ids: Vec<OwnerTermId>,
+    dominated_owner_term_ids: Vec<OwnerTermId>,
     final_owned_term_ids: Vec<OwnerTermId>,
+    allocation_state: AttemptReservationConsumerState,
     consumed_occurrences: Vec<String>,
 }
 
@@ -2259,6 +2413,7 @@ fn composed_consumer_bound_with_peak_terms(
             let mut branch_peak_bytes = 0_u64;
             let mut branch_terms = Vec::new();
             let mut peak_owner_term_ids = Vec::new();
+            let mut dominated_owner_term_ids = Vec::new();
             for input in &union.inputs {
                 let branch = composed_consumer_branch_bound(
                     consumer_plan,
@@ -2274,6 +2429,7 @@ fn composed_consumer_bound_with_peak_terms(
                     "consumer_union_branch_peak_overflow",
                 )?;
                 peak_owner_term_ids.extend(branch.peak_owner_term_ids);
+                dominated_owner_term_ids.extend(branch.dominated_owner_term_ids);
                 branch_terms.extend(branch.owner_terms);
             }
             let union_output = bounded_consumer_frame_bytes(total_rows, consumer_plan.root_node().output_schema())?;
@@ -2304,7 +2460,9 @@ fn composed_consumer_bound_with_peak_terms(
                 )?,
                 owner_terms: branch_terms,
                 peak_owner_term_ids,
+                dominated_owner_term_ids,
                 final_owned_term_ids,
+                allocation_state: AttemptReservationConsumerState::Bounded,
                 consumed_occurrences: Vec::new(),
             }
         },
@@ -2316,13 +2474,22 @@ fn composed_consumer_bound_with_peak_terms(
         },
         _ => return Err(composed_schedule_error("consumer_topology_unmodeled", None)),
     };
-    if root_bound.owner_terms.is_empty() {
-        let output_term =
-            consumer_owner_term(root, OwnerTermRole::ConsumerOutput, AllocationClass::ActivePhase, 0, consumer_plan)?;
-        let output_term_id = output_term.id.clone();
-        root_bound.owner_terms.push(output_term);
-        root_bound.peak_owner_term_ids.push(output_term_id.clone());
-        root_bound.final_owned_term_ids.push(output_term_id);
+    match root_bound.allocation_state {
+        AttemptReservationConsumerState::Passthrough => {
+            if root_bound.additional_peak_bytes != 0
+                || !root_bound.peak_owner_term_ids.is_empty()
+                || !root_bound.dominated_owner_term_ids.is_empty()
+                || !root_bound.final_owned_term_ids.is_empty()
+                || !root_bound.owner_terms.is_empty()
+            {
+                return Err(composed_schedule_error("consumer_passthrough_owner_terms_present", None));
+            }
+        },
+        AttemptReservationConsumerState::Bounded => {
+            if root_bound.peak_owner_term_ids.is_empty() {
+                return Err(composed_schedule_error("consumer_bounded_owner_terms_missing", None));
+            }
+        },
     }
     if let Some(unconsumed) = producer_outputs.iter().find(|output| !used_occurrences.contains(&output.occurrence_id)) {
         return Err(composed_schedule_error(
@@ -2379,7 +2546,9 @@ fn composed_consumer_branch_bound(
                         additional_peak_bytes: 0,
                         owner_terms: Vec::new(),
                         peak_owner_term_ids: Vec::new(),
+                        dominated_owner_term_ids: Vec::new(),
                         final_owned_term_ids: Vec::new(),
+                        allocation_state: AttemptReservationConsumerState::Passthrough,
                         consumed_occurrences: Vec::new(),
                     })
                 },
@@ -2415,7 +2584,9 @@ fn composed_consumer_branch_bound(
                         additional_peak_bytes: source_term.bytes(),
                         owner_terms: Vec::new(),
                         peak_owner_term_ids: vec![source_term.id().clone()],
+                        dominated_owner_term_ids: Vec::new(),
                         final_owned_term_ids: vec![source_term.id().clone()],
+                        allocation_state: AttemptReservationConsumerState::Bounded,
                         consumed_occurrences: Vec::new(),
                     })
                 },
@@ -2452,6 +2623,7 @@ fn composed_consumer_branch_bound(
             let output_term_id = output_term.id.clone();
             let predicate_term_id = predicate_term.id.clone();
             let mut peak_owner_term_ids = input.peak_owner_term_ids.clone();
+            let mut dominated_owner_term_ids = input.dominated_owner_term_ids.clone();
             let stage_peak = checked_consumer_add(
                 checked_consumer_add(input.final_owned_bytes, output_bytes, "consumer_filter_output_overflow")?,
                 predicate_mask_bytes,
@@ -2460,7 +2632,16 @@ fn composed_consumer_branch_bound(
             if stage_peak >= input.additional_peak_bytes {
                 peak_owner_term_ids = input.final_owned_term_ids.clone();
                 peak_owner_term_ids.push(output_term_id.clone());
-                peak_owner_term_ids.push(predicate_term_id);
+                peak_owner_term_ids.push(predicate_term_id.clone());
+                dominated_owner_term_ids.extend(
+                    input
+                        .peak_owner_term_ids
+                        .iter()
+                        .filter(|term_id| !input.final_owned_term_ids.contains(term_id))
+                        .cloned(),
+                );
+            } else {
+                dominated_owner_term_ids.extend([output_term_id.clone(), predicate_term_id.clone()]);
             }
             owner_terms.push(output_term);
             owner_terms.push(predicate_term);
@@ -2471,7 +2652,9 @@ fn composed_consumer_branch_bound(
                 additional_peak_bytes: input.additional_peak_bytes.max(stage_bytes),
                 owner_terms,
                 peak_owner_term_ids,
+                dominated_owner_term_ids,
                 final_owned_term_ids: vec![output_term_id],
+                allocation_state: AttemptReservationConsumerState::Bounded,
                 consumed_occurrences: Vec::new(),
             })
         },
@@ -2507,7 +2690,9 @@ fn composed_consumer_branch_bound(
                 additional_peak_bytes: input.additional_peak_bytes,
                 owner_terms: input.owner_terms,
                 peak_owner_term_ids: input.peak_owner_term_ids,
+                dominated_owner_term_ids: input.dominated_owner_term_ids,
                 final_owned_term_ids: input.final_owned_term_ids,
+                allocation_state: input.allocation_state,
                 consumed_occurrences: Vec::new(),
             })
         },
@@ -2574,7 +2759,11 @@ fn composed_consumer_sort_peak_bytes(
         .ok_or_else(|| composed_schedule_error("consumer_missing_plan_node", None))?
         .output_schema()
         .clone();
-    let mut peak_owner_term_ids = input.peak_owner_term_ids;
+    let mut dominated_owner_term_ids = input.dominated_owner_term_ids;
+    dominated_owner_term_ids.extend(
+        input.peak_owner_term_ids.iter().filter(|term_id| !input.final_owned_term_ids.contains(term_id)).cloned(),
+    );
+    let mut peak_owner_term_ids = input.final_owned_term_ids.clone();
     peak_owner_term_ids.extend(sort_terms);
     Ok(ComposedConsumerBranchBound {
         rows: input.rows,
@@ -2583,7 +2772,9 @@ fn composed_consumer_sort_peak_bytes(
         additional_peak_bytes: 0,
         owner_terms: input.owner_terms,
         peak_owner_term_ids,
+        dominated_owner_term_ids,
         final_owned_term_ids,
+        allocation_state: AttemptReservationConsumerState::Bounded,
         consumed_occurrences: Vec::new(),
     })
 }
@@ -2688,6 +2879,8 @@ fn composed_consumer_join_peak_bytes(
     )?;
     let output_term =
         consumer_owner_term(node_id, OwnerTermRole::ConsumerOutput, AllocationClass::ActivePhase, output_bytes, plan)?;
+    let mut dominated_owner_term_ids = left.dominated_owner_term_ids;
+    dominated_owner_term_ids.extend(right.dominated_owner_term_ids);
     let mut peak_owner_term_ids = left.peak_owner_term_ids;
     peak_owner_term_ids.extend(right.peak_owner_term_ids);
     peak_owner_term_ids.extend([
@@ -2708,7 +2901,9 @@ fn composed_consumer_join_peak_bytes(
         additional_peak_bytes: peak,
         owner_terms,
         peak_owner_term_ids,
+        dominated_owner_term_ids,
         final_owned_term_ids: vec![final_owned_term_id],
+        allocation_state: AttemptReservationConsumerState::Bounded,
         consumed_occurrences: Vec::new(),
     })
 }
@@ -3191,12 +3386,13 @@ mod tests {
         admission::envelope::AttemptReservationProducerPhase,
         capability::{ContractQuality, ReservationRequirement},
         chunk::SourceChunkPlanningOptions,
-        expr::{Expr, SortExpr, SortSpec},
+        expr::{BinaryOp, Expr, SortExpr, SortSpec},
         graph_memory::{GraphMemoryCalibrationOverride, graph_memory_bounded_admission_evidence_for_plan},
         plan::{
             GraphAlgorithm, GraphAlgorithmParams, GraphAlgorithmSpec, GraphBfsParams, GraphConstructionOptions,
-            GraphConstructionPolicy, GraphEdgeColumnBindings, JoinKey, JoinOutputColumn, JoinSide, JoinSpec, JoinType,
-            ProjectionOutput, QueryPlan, QueryPlanBuilder,
+            GraphConstructionPolicy, GraphEdgeColumnBindings, GraphForceAtlas2Params, GraphPageRankParams, JoinKey,
+            JoinOutputColumn, JoinSide, JoinSpec, JoinType, ProjectionOutput, QueryPlan, QueryPlanBuilder,
+            graph_result_schema_for_params,
         },
         runtime::{ReservationKind, SourceChunkPlanningMode, SourceSchedulerPolicy},
         source::{GpuResidentSource, LocalParquetFile, LocalParquetSource, SourceNode},
@@ -3265,6 +3461,98 @@ mod tests {
             .expect("test graph plan must issue a capability proof")
             .with_graph_memory_admission_evidence(&evidence)
             .expect("finite graph evidence")
+    }
+
+    fn production_graph_proof(algorithm: GraphAlgorithm) -> QueryPlanCapabilityProof {
+        let edge_schema = Arc::new(Schema::new(vec![
+            Field::new("src", DataType::Int64, false),
+            Field::new("dst", DataType::Int64, false),
+            Field::new("weight", DataType::Float64, false),
+        ]));
+        let params = match algorithm {
+            GraphAlgorithm::PageRank => GraphAlgorithmParams::PageRank(GraphPageRankParams::default()),
+            GraphAlgorithm::ForceAtlas2 => GraphAlgorithmParams::ForceAtlas2(GraphForceAtlas2Params::default()),
+            _ => panic!("the production proof fixture only covers PageRank and ForceAtlas2"),
+        };
+        let mut builder = QueryPlanBuilder::new();
+        let edge = builder.add_source(SourceNode::GpuResident(
+            GpuResidentSource::new("graph_edges", Arc::clone(&edge_schema))
+                .with_row_count_upper_bound(8)
+                .with_graph_vertex_upper_bound(2),
+        ));
+        let graph = builder.add_graph_algorithm(
+            edge,
+            GraphAlgorithmSpec::with_stable_schema(
+                algorithm,
+                GraphEdgeColumnBindings::new("src", "dst", Some("weight")),
+                GraphConstructionOptions::default(),
+                params,
+            ),
+        );
+        let plan = builder.finish_gpu_resident(graph);
+        let evidence =
+            graph_memory_bounded_admission_evidence_for_plan(&plan, GraphMemoryCalibrationOverride::none(), None)
+                .expect("the production graph IR must produce finite memory evidence");
+        QueryPlanCapabilityProof::for_cugraph_graph_execution_plan(&plan)
+            .expect("the production graph IR must issue a capability proof")
+            .with_graph_memory_admission_evidence(&evidence)
+            .expect("the production graph proof must retain finite graph evidence")
+    }
+
+    fn pagerank_forceatlas2_join_consumer() -> QueryPlan {
+        let pagerank_params = GraphAlgorithmParams::PageRank(GraphPageRankParams::default());
+        let forceatlas2_params = GraphAlgorithmParams::ForceAtlas2(GraphForceAtlas2Params::default());
+        let pagerank_schema = graph_result_schema_for_params(GraphAlgorithm::PageRank, &pagerank_params);
+        let forceatlas2_schema = graph_result_schema_for_params(GraphAlgorithm::ForceAtlas2, &forceatlas2_params);
+        let output_schema = Arc::new(Schema::new(vec![
+            Field::new("vertex", DataType::Int64, false),
+            Field::new("pagerank_value", DataType::Float64, false),
+            Field::new("x", DataType::Float32, false),
+            Field::new("y", DataType::Float32, false),
+        ]));
+
+        let mut builder = QueryPlanBuilder::new();
+        let pagerank = builder
+            .add_source(SourceNode::GpuResident(GpuResidentSource::new("pagerank", Arc::clone(&pagerank_schema))));
+        let pagerank_filter = builder.add_filter(
+            pagerank,
+            Expr::binary(Expr::column("value"), BinaryOp::Gt, Expr::literal(crate::expr::LiteralValue::Float64(0.0))),
+            Arc::clone(&pagerank_schema),
+        );
+        let pagerank_projected = builder.add_projection(
+            pagerank_filter,
+            vec![
+                ProjectionOutput::new(Expr::column("vertex"), Field::new("vertex", DataType::Int64, false)),
+                ProjectionOutput::new(Expr::column("value"), Field::new("pagerank_value", DataType::Float64, false)),
+            ],
+        );
+        let forceatlas2 = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new(
+            "forceatlas2",
+            Arc::clone(&forceatlas2_schema),
+        )));
+        let join = builder.add_join(
+            pagerank_projected,
+            forceatlas2,
+            JoinSpec::new(
+                JoinType::Inner,
+                vec![JoinKey::new(
+                    crate::expr::ColumnRef::input(0, "vertex", "vertex"),
+                    crate::expr::ColumnRef::input(1, "vertex", "vertex"),
+                )],
+            )
+            .with_build_side(JoinSide::Right)
+            .with_output_projection(vec![
+                JoinOutputColumn::left(crate::expr::ColumnRef::input(0, "vertex", "vertex"), "vertex"),
+                JoinOutputColumn::left(
+                    crate::expr::ColumnRef::input(0, "pagerank_value", "pagerank_value"),
+                    "pagerank_value",
+                ),
+                JoinOutputColumn::right(crate::expr::ColumnRef::input(1, "x", "x"), "x"),
+                JoinOutputColumn::right(crate::expr::ColumnRef::input(1, "y", "y"), "y"),
+            ]),
+            output_schema,
+        );
+        builder.finish_with_host_sink(join)
     }
 
     fn relational_gpu_producer_proof() -> QueryPlanCapabilityProof {
@@ -3504,6 +3792,49 @@ mod tests {
     }
 
     #[test]
+    fn composed_filter_retains_real_but_dominated_output_and_mask_owners() {
+        let consumer_plan = graph_result_filter_sort_plan(None);
+        let producer = graph_bfs_proof_with_typed_output(0);
+        let consumer = QueryPlanCapabilityProof::for_attested_graph_result_bounded_consumer_plan_with_producer(
+            &consumer_plan,
+            "graph_result",
+            &producer,
+        )
+        .unwrap();
+        let combined = QueryPlanCapabilityProof::combine_composed_graph_attempt(
+            &consumer_plan,
+            consumer,
+            [("graph_result".to_owned(), producer)],
+        )
+        .unwrap();
+        let resolved = combined
+            .requirement_for_device_with_preflight(0, |_, _| Ok(SortRadixPreflight::new_for_test(64, 128, 256, 128)))
+            .unwrap();
+        let schedule = resolved
+            .as_requirement()
+            .reservation_shapes
+            .iter()
+            .find(|shape| shape.matches(&consumer_plan))
+            .and_then(AttemptReservationShape::ordered_schedule)
+            .expect("ordered schedule is attached");
+        assert!(
+            schedule
+                .consumer_dominated_term_ids()
+                .iter()
+                .any(|term_id| term_id.role_label() == OwnerTermRole::ConsumerPredicateMask.as_str())
+        );
+        assert!(
+            !schedule
+                .consumer_dominated_term_ids()
+                .iter()
+                .any(|term_id| term_id.role_label() == OwnerTermRole::ConsumerOutput.as_str())
+        );
+        resolved
+            .resolve_reservation_envelope(reservation_policy())
+            .expect("dominated consumer owners remain part of a complete ordered inventory");
+    }
+
+    #[test]
     fn composed_gpu_sink_defers_generic_output_owner_until_producer_binding() {
         let consumer_plan = mixed_local_graph_union_consumer(mixed_local_graph_union_source(Some(3), Some(64)))
             .clone_with_gpu_resident_sink();
@@ -3680,11 +4011,39 @@ mod tests {
 
         assert_eq!(proof.soft_working_set_hint_bytes(), None);
         assert_eq!(proof.as_requirement().source_stage_bytes, Some(96));
+        let mut ambiguous = proof.clone();
+        let source_term = ambiguous
+            .requirement
+            .owner_terms
+            .iter()
+            .find(|term| term.id().role == OwnerTermRole::SourceStage)
+            .expect("shared graph proof has one source-stage candidate")
+            .rebind_composed_for_test("duplicate-source")
+            .expect("test occurrence rebind keeps the source owner identity");
+        ambiguous.requirement.owner_terms.push(source_term);
+        let error = ambiguous
+            .with_graph_memory_admission_evidence(&evidence)
+            .expect_err("shared graph attachment cannot choose between two source owners");
+        assert_eq!(error.fact_value("reason"), Some("attempt_owner_term_graph_input_source_stage_ambiguous"));
+        let proof = proof.with_graph_memory_admission_evidence(&evidence).unwrap();
+        let requirement = proof.as_requirement();
         assert_eq!(
-            proof.with_graph_memory_admission_evidence(&evidence).unwrap().soft_working_set_hint_bytes(),
-            Some(96_u64.max(evidence.cold_model_requested_bytes())),
-            "the graph cold peak already owns the prepared edge frame"
+            requirement.owner_terms.iter().filter(|term| term.id().role == OwnerTermRole::SourceStage).count(),
+            0,
+            "shared prepared edge frame has one graph owner, not a second source-stage owner",
         );
+        let expected_peak = 96_u64.max(evidence.cold_model_requested_bytes());
+        assert_eq!(requirement.soft_working_set_hint_bytes(), Some(expected_peak));
+        let owner_sum = requirement.conservative_owner_sum().expect("shared graph owner inventory is finite");
+        let envelope =
+            proof.resolve_reservation_envelope(reservation_policy()).expect("shared graph envelope resolves");
+        assert_eq!(owner_sum, envelope.complete_phase_peak_bytes().expect("shared graph peak is complete"));
+        let expected_owner_sum = requirement
+            .owner_terms
+            .iter()
+            .try_fold(0_u64, |total, term| total.checked_add(term.bytes()))
+            .expect("shared graph owner terms fit");
+        assert_eq!(owner_sum, expected_owner_sum, "shared source frame is charged by the graph owner exactly once");
     }
 
     #[test]
@@ -3722,11 +4081,80 @@ mod tests {
 
         assert_eq!(proof.soft_working_set_hint_bytes(), None);
         assert_eq!(proof.as_requirement().source_stage_bytes, Some(96));
-        assert_eq!(
-            proof.with_graph_memory_admission_evidence(&evidence).unwrap().soft_working_set_hint_bytes(),
-            Some(96_u64.saturating_add(evidence.cold_model_requested_bytes())),
-            "the explicit normalize source and derived graph input are separate live owners"
+        let proof = proof.with_graph_memory_admission_evidence(&evidence).unwrap();
+        let requirement = proof.as_requirement();
+        let source_term = requirement
+            .owner_terms
+            .iter()
+            .find(|term| term.id().role == OwnerTermRole::SourceStage)
+            .expect("normalized graph keeps its source-stage owner");
+        let source_term_id = source_term.id().clone();
+        let groups = requirement.isolated_phase_term_groups();
+        let source_groups = groups.iter().filter(|group| group.contains(&source_term_id)).collect::<Vec<_>>();
+        assert_eq!(source_groups.len(), 2, "normalized source survives in both graph phase alternatives");
+        assert!(
+            source_groups
+                .iter()
+                .all(|group| { group.iter().any(|term_id| term_id.role == OwnerTermRole::GraphPersistent) })
         );
+        let expected_peak =
+            96_u64.checked_add(evidence.cold_model_requested_bytes()).expect("normalized source and graph peak fit");
+        assert_eq!(requirement.soft_working_set_hint_bytes(), Some(expected_peak));
+        let owner_sum = requirement.conservative_owner_sum().expect("normalized graph owner inventory is finite");
+        let envelope =
+            proof.resolve_reservation_envelope(reservation_policy()).expect("normalized graph envelope resolves");
+        assert_eq!(owner_sum, envelope.complete_phase_peak_bytes().expect("normalized graph peak is complete"));
+        let expected_owner_sum = requirement
+            .owner_terms
+            .iter()
+            .try_fold(0_u64, |total, term| total.checked_add(term.bytes()))
+            .expect("normalized graph owner terms fit");
+        assert_eq!(owner_sum, expected_owner_sum, "conservative owner sum charges the normalized source once");
+    }
+
+    #[test]
+    fn normalized_source_schedule_allows_the_same_stage_in_both_alternatives() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("src", DataType::Int64, false),
+            Field::new("dst", DataType::Int64, false),
+        ]));
+        let spec = GraphAlgorithmSpec::with_stable_schema(
+            GraphAlgorithm::Bfs,
+            GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
+            GraphConstructionOptions::default(),
+            GraphAlgorithmParams::Bfs(Box::new(GraphBfsParams::new(0, None))),
+        )
+        .with_edge_normalize_inserted(true);
+        let mut builder = QueryPlanBuilder::new();
+        let source = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
+            vec![
+                LocalParquetFile::new("/tmp/normalized-schedule-source.parquet")
+                    .with_row_group_rows(vec![10])
+                    .with_projected_row_group_bytes(vec![32], vec![96]),
+            ],
+            Arc::clone(&schema),
+            vec!["src".to_owned(), "dst".to_owned()],
+        )));
+        let graph = builder.add_graph_algorithm(source, spec);
+        let plan = builder.finish_with_host_sink(graph);
+        let evidence =
+            graph_memory_bounded_admission_evidence_for_plan(&plan, GraphMemoryCalibrationOverride::none(), None)
+                .unwrap();
+        let producer = QueryPlanCapabilityProof::for_cugraph_graph_execution_plan(&plan)
+            .unwrap()
+            .with_graph_memory_admission_evidence(&evidence)
+            .unwrap();
+        let consumer_plan = graph_output_union_consumer(&["graph"]);
+        let composed = QueryPlanCapabilityProof::combine_composed_graph_attempt(
+            &consumer_plan,
+            QueryPlanCapabilityProof::for_composed_consumer_plan(&consumer_plan).unwrap(),
+            [("graph".to_owned(), producer)],
+        )
+        .expect("normalized source phase alternatives are complete");
+        let envelope = composed
+            .resolve_reservation_envelope(reservation_policy())
+            .expect("normalized source schedule resolves with one shared owner");
+        assert_eq!(envelope.bound_derivation(), Some(AttemptBoundDerivation::OrderedTimeline));
     }
 
     #[test]
@@ -3887,6 +4315,74 @@ mod tests {
     }
 
     #[test]
+    fn composed_graph_schedule_charges_concurrent_side_input_with_graph_peak() {
+        let side_schema = Arc::new(Schema::new(vec![Field::new("vertex_id", DataType::Int64, true)]));
+        let mut side_builder = QueryPlanBuilder::new();
+        let side_source = side_builder.add_source(SourceNode::GpuResident(
+            GpuResidentSource::new("predicate", Arc::clone(&side_schema)).with_row_count_upper_bound(2),
+        ));
+        let side_plan = side_builder.finish_gpu_resident(side_source);
+        let side_proof = QueryPlanCapabilityProof::try_for_cugraph_side_input_plan(&side_plan)
+            .expect("bounded side input must issue a finite owner proof");
+        let auxiliary_peak = side_proof.as_requirement().side_input_frame_owner_term_bytes().into_iter().sum::<u64>();
+        let consumer_plan = graph_output_union_consumer(&["graph"]);
+
+        let graph_only = QueryPlanCapabilityProof::combine_composed_graph_attempt(
+            &consumer_plan,
+            QueryPlanCapabilityProof::for_query_plan(&consumer_plan).expect("consumer proof must issue"),
+            [("graph".to_owned(), graph_bfs_proof_with_typed_output(0))],
+        )
+        .expect("the graph-only ordered schedule must resolve");
+        let graph_only_requirement = graph_only.as_requirement();
+        let graph_only_shape = graph_only_requirement
+            .reservation_shapes
+            .iter()
+            .find(|shape| shape.matches(&consumer_plan))
+            .expect("graph-only consumer scope must be retained");
+        let graph_only_peak = graph_only_shape
+            .ordered_schedule()
+            .expect("graph-only schedule must be retained")
+            .checked_fold_with_inventory(
+                &graph_only_requirement.reservation_shapes,
+                &graph_only_requirement.owner_terms,
+            )
+            .expect("graph-only schedule must remain complete");
+
+        let graph_proof_with_auxiliary =
+            QueryPlanCapabilityProof::combine(graph_bfs_proof_with_typed_output(0), [side_proof])
+                .expect("graph and side-input proofs compose before producer normalization");
+        let composed = QueryPlanCapabilityProof::combine_composed_graph_attempt(
+            &consumer_plan,
+            QueryPlanCapabilityProof::for_query_plan(&consumer_plan).expect("consumer proof must issue"),
+            [("graph".to_owned(), graph_proof_with_auxiliary)],
+        )
+        .expect("auxiliary side-input scopes must not invalidate the graph producer schedule");
+        let requirement = composed.as_requirement();
+        let consumer_shape = requirement
+            .reservation_shapes
+            .iter()
+            .find(|shape| shape.matches(&consumer_plan))
+            .expect("composed consumer scope must be retained");
+        let schedule = consumer_shape.ordered_schedule().expect("ordered schedule must be retained");
+        assert!(
+            schedule
+                .producer_phase_term_ids()
+                .iter()
+                .any(|term_id| term_id.role_label() == OwnerTermRole::SideInputFrame.as_str())
+        );
+        let ordered_peak = schedule
+            .checked_fold_with_inventory(&requirement.reservation_shapes, &requirement.owner_terms)
+            .expect("scheduled graph terms must remain complete");
+        let envelope = composed
+            .resolve_reservation_envelope(reservation_policy())
+            .expect("ordered graph plus concurrent side-input scopes must resolve");
+        assert_eq!(envelope.bound_derivation(), Some(AttemptBoundDerivation::OrderedTimeline));
+        let expected_peak = graph_only_peak.checked_add(auxiliary_peak).expect("test peak must fit");
+        assert_eq!(ordered_peak, expected_peak);
+        assert_eq!(envelope.complete_phase_peak_bytes(), Some(expected_peak));
+    }
+
+    #[test]
     fn aggregate_rejects_raise_overflow() {
         let result = AttemptCapabilityEvidence::aggregate_with_configured_floor(
             0,
@@ -4013,6 +4509,45 @@ mod tests {
             overflowing.conservative_owner_sum().unwrap_err().fact_value("reason"),
             Some("attempt_owner_term_sum_overflow")
         );
+    }
+
+    #[test]
+    fn composed_owner_saturation_rejects_first_and_later_producer_occurrences_without_fallback() {
+        let consumer_plan = graph_output_union_consumer(&["first", "later"]);
+        let composed = QueryPlanCapabilityProof::combine_composed_graph_attempt(
+            &consumer_plan,
+            QueryPlanCapabilityProof::for_query_plan(&consumer_plan).unwrap(),
+            [
+                ("first".to_owned(), graph_bfs_proof_with_typed_output(0)),
+                ("later".to_owned(), graph_bfs_proof_with_typed_output(1)),
+            ],
+        )
+        .expect("two producer occurrences provide a complete owner inventory");
+
+        for (occurrence_id, canonical_occurrence_label) in [("first", "composed:first"), ("later", "composed:later")] {
+            let mut saturated = composed.clone().into_requirement();
+            let term = saturated
+                .owner_terms
+                .iter_mut()
+                .find(|term| term.is_retained_output() && term.id().occurrence_label() == canonical_occurrence_label)
+                .expect("each producer occurrence owns one retained output term");
+            term.bytes = FiniteBytes(u64::MAX);
+            assert_eq!(
+                term.id().occurrence_label(),
+                canonical_occurrence_label,
+                "{occurrence_id} producer must retain its canonical owner-term occurrence label",
+            );
+            assert_eq!(
+                saturated.conservative_owner_sum().unwrap_err().fact_value("reason"),
+                Some("attempt_owner_term_saturated")
+            );
+
+            let error = QueryPlanCapabilityProof { requirement: saturated }
+                .resolve_reservation_envelope(reservation_policy())
+                .expect_err("saturation must make both derivations unavailable");
+            assert_eq!(error.fact_value("reason"), Some("attempt_bound_derivation_unavailable"));
+            assert_eq!(error.fact_value("conservative_reason"), Some("attempt_owner_term_saturated"));
+        }
     }
 
     #[test]
@@ -4158,18 +4693,84 @@ mod tests {
     }
 
     #[test]
-    fn composed_schedule_keeps_zero_fixed_projection_without_a_fake_owner_term() {
-        let consumer_plan = graph_output_union_consumer(&["fixed-left", "fixed-right"]);
+    fn composed_schedule_keeps_zero_fixed_projection_with_explicit_passthrough() {
+        let consumer_plan = graph_output_projection_consumer(Expr::column("value").alias("projected"), DataType::Int64);
         let combined = QueryPlanCapabilityProof::combine_composed_graph_attempt(
             &consumer_plan,
             QueryPlanCapabilityProof::for_query_plan(&consumer_plan).unwrap(),
-            [
-                ("fixed-left".to_owned(), graph_bfs_proof_with_typed_output(0)),
-                ("fixed-right".to_owned(), graph_bfs_proof_with_typed_output(1)),
-            ],
+            [("only".to_owned(), graph_bfs_proof_with_typed_output(0))],
         )
         .unwrap();
         assert!(combined.as_requirement().owner_terms.iter().all(|term| term.bytes.get() != 0));
+        let consumer_shape = combined
+            .as_requirement()
+            .reservation_shapes
+            .iter()
+            .find(|shape| shape.matches(&consumer_plan))
+            .expect("composed consumer scope is retained");
+        let schedule = consumer_shape.ordered_schedule().expect("ordered schedule is attached");
+        assert!(schedule.attempt_wide_fixed_term_ids().is_empty());
+        assert_eq!(schedule.consumer_state(), AttemptReservationConsumerState::Passthrough);
+        let envelope = combined
+            .resolve_reservation_envelope(reservation_policy())
+            .expect("explicit passthrough has a finite ordered envelope");
+        assert!(envelope.complete_phase_peak_bytes().is_some());
+    }
+
+    #[test]
+    fn composed_schedule_folds_a_real_attempt_fixed_owner_term() {
+        let consumer_plan = graph_output_projection_consumer(Expr::column("value").alias("projected"), DataType::Int64);
+        let baseline = QueryPlanCapabilityProof::combine_composed_graph_attempt(
+            &consumer_plan,
+            QueryPlanCapabilityProof::for_query_plan(&consumer_plan).unwrap(),
+            [("only".to_owned(), graph_bfs_proof_with_typed_output(0))],
+        )
+        .unwrap()
+        .resolve_reservation_envelope(reservation_policy())
+        .unwrap();
+        let baseline_peak = baseline.complete_phase_peak_bytes().expect("baseline schedule is finite");
+
+        let producer_plan = graph_bfs_plan_with_source_vertex(0);
+        let mut producer = graph_bfs_proof_with_typed_output(0);
+        let fixed_bytes = baseline_peak.checked_add(1).expect("test fixed owner fits");
+        producer.requirement.owner_terms.push(
+            AllocationOwnerTerm::new(
+                OwnerId::Attempt,
+                OwnerTermRole::AttemptWideFixed,
+                OccurrenceId::PlanLocal(producer_plan.root_id()),
+                canonical_execution_scope_fingerprint(&producer_plan),
+                AllocationClass::AttemptWideFixed,
+                fixed_bytes,
+                None,
+            )
+            .unwrap(),
+        );
+
+        let combined = QueryPlanCapabilityProof::combine_composed_graph_attempt(
+            &consumer_plan,
+            QueryPlanCapabilityProof::for_query_plan(&consumer_plan).unwrap(),
+            [("only".to_owned(), producer)],
+        )
+        .unwrap();
+        let consumer_shape = combined
+            .as_requirement()
+            .reservation_shapes
+            .iter()
+            .find(|shape| shape.matches(&consumer_plan))
+            .expect("composed consumer scope is retained");
+        let schedule = consumer_shape.ordered_schedule().expect("ordered schedule is attached");
+        assert_eq!(schedule.attempt_wide_fixed_term_ids().len(), 1);
+        let envelope = combined.resolve_reservation_envelope(reservation_policy()).unwrap();
+        let projection = envelope
+            .composed_schedule_projection(
+                crate::observability::AttemptId::mint(),
+                0,
+                1,
+                envelope.required_phase_floor_bytes(),
+            )
+            .unwrap();
+        assert_eq!(projection.attempt_wide_fixed_bytes, fixed_bytes);
+        assert!(projection.complete_peak_bytes >= fixed_bytes);
     }
 
     #[test]
@@ -4196,6 +4797,181 @@ mod tests {
         )
         .expect_err("attempt owner terms must use the dedicated fixed role and class");
         assert_eq!(error.fact_value("reason"), Some("attempt_owner_term_owner_role_class_mismatch"));
+    }
+
+    #[test]
+    fn ordered_schedule_validates_fixed_term_identity_and_checked_sum() {
+        let plan = graph_bfs_plan_with_source_vertex(0);
+        let scope = canonical_execution_scope_fingerprint(&plan);
+        let mut owner_terms = graph_bfs_proof_with_typed_output(0)
+            .as_requirement()
+            .owner_terms
+            .iter()
+            .map(|term| term.rebind_composed_for_test("expected"))
+            .collect::<Result<Vec<_>>>()
+            .unwrap();
+        let fixed = AllocationOwnerTerm::new(
+            OwnerId::Attempt,
+            OwnerTermRole::AttemptWideFixed,
+            OccurrenceId::Composed("fixed".to_owned()),
+            scope.clone(),
+            AllocationClass::AttemptWideFixed,
+            3,
+            None,
+        )
+        .unwrap();
+        owner_terms.push(fixed.clone());
+        let retained_output_term_id = owner_terms.iter().find(|term| term.is_retained_output()).unwrap().id().clone();
+        let isolated_term_ids = owner_terms
+            .iter()
+            .find(|term| !term.is_retained_output() && !term.is_attempt_wide_fixed())
+            .map(|term| term.id().clone())
+            .unwrap();
+        let all_isolated_term_ids = owner_terms
+            .iter()
+            .filter(|term| !term.is_retained_output() && !term.is_attempt_wide_fixed())
+            .map(|term| term.id().clone())
+            .collect::<Vec<_>>();
+
+        let fold = |fixed_term_ids: Vec<OwnerTermId>, terms: &[AllocationOwnerTerm]| {
+            let mut shape = AttemptReservationShape::for_query_plan(&plan);
+            shape
+                .set_producer_occurrences([AttemptReservationProducerOccurrence::from_term_id(
+                    "expected",
+                    scope.clone(),
+                    retained_output_term_id.clone(),
+                )])
+                .unwrap();
+            let schedule = AttemptReservationSchedule::from_phase_term_ids(
+                fixed_term_ids,
+                vec![AttemptReservationProducerPhase::from_term_groups(vec![all_isolated_term_ids.clone()])],
+                AttemptReservationConsumerState::Passthrough,
+                Vec::new(),
+            );
+            shape.attach_ordered_schedule(schedule.clone()).unwrap();
+            schedule.checked_fold_with_inventory(&[shape, AttemptReservationShape::for_query_plan(&plan)], terms)
+        };
+
+        fold(vec![fixed.id().clone()], &owner_terms).expect("a real fixed owner term folds once");
+        let duplicate = fold(vec![fixed.id().clone(), fixed.id().clone()], &owner_terms).unwrap_err();
+        assert_eq!(duplicate.fact_value("schedule_reason"), Some("duplicate_owner_term_reference"));
+
+        let wrong_role = fold(vec![isolated_term_ids.clone()], &owner_terms).unwrap_err();
+        assert_eq!(wrong_role.fact_value("schedule_reason"), Some("owner_term_role_class_mismatch"));
+
+        let missing = fold(vec![OwnerTermId::synthetic_for_test("missing", &scope)], &owner_terms).unwrap_err();
+        assert_eq!(missing.fact_value("schedule_reason"), Some("missing_owner_term_reference"));
+
+        let overflowing_first = AllocationOwnerTerm::new(
+            OwnerId::Attempt,
+            OwnerTermRole::AttemptWideFixed,
+            OccurrenceId::Composed("overflow-first".to_owned()),
+            scope.clone(),
+            AllocationClass::AttemptWideFixed,
+            u64::MAX - 1,
+            None,
+        )
+        .unwrap();
+        let overflowing_second = AllocationOwnerTerm::new(
+            OwnerId::Attempt,
+            OwnerTermRole::AttemptWideFixed,
+            OccurrenceId::Composed("overflow-second".to_owned()),
+            scope.clone(),
+            AllocationClass::AttemptWideFixed,
+            2,
+            None,
+        )
+        .unwrap();
+        let mut overflowing_terms = owner_terms;
+        overflowing_terms.extend([overflowing_first.clone(), overflowing_second.clone()]);
+        let overflow = fold(vec![overflowing_first.id().clone(), overflowing_second.id().clone()], &overflowing_terms)
+            .unwrap_err();
+        assert_eq!(overflow.fact_value("schedule_reason"), Some("attempt_wide_fixed_sum_overflow"));
+    }
+
+    #[test]
+    fn ordered_envelope_charges_fixed_retained_and_consumer_terms_exactly_once() {
+        const FIXED_BYTES: u64 = 11;
+        const RETAINED_BYTES: u64 = 17;
+        const CONSUMER_BYTES: u64 = 23;
+        let consumer_plan = graph_output_union_consumer(&["producer"]);
+        let producer_plan = graph_bfs_plan_with_source_vertex(0);
+        let consumer_scope = canonical_execution_scope_fingerprint(&consumer_plan);
+        let producer_scope = canonical_execution_scope_fingerprint(&producer_plan);
+
+        let fixed = AllocationOwnerTerm::new(
+            OwnerId::Attempt,
+            OwnerTermRole::AttemptWideFixed,
+            OccurrenceId::Composed("fixed".to_owned()),
+            consumer_scope.clone(),
+            AllocationClass::AttemptWideFixed,
+            FIXED_BYTES,
+            None,
+        )
+        .unwrap();
+        let retained = AllocationOwnerTerm::new(
+            OwnerId::Producer(producer_plan.root_id()),
+            OwnerTermRole::RetainedOutput,
+            OccurrenceId::Composed("producer".to_owned()),
+            producer_scope.clone(),
+            AllocationClass::AttemptRetained,
+            RETAINED_BYTES,
+            Some(20),
+        )
+        .unwrap();
+        let consumer = AllocationOwnerTerm::new(
+            OwnerId::Consumer(consumer_plan.root_id()),
+            OwnerTermRole::ConsumerOutput,
+            OccurrenceId::PlanLocal(consumer_plan.root_id()),
+            consumer_scope.clone(),
+            AllocationClass::ActivePhase,
+            CONSUMER_BYTES,
+            None,
+        )
+        .unwrap();
+
+        let retained_term_id = retained.id().clone();
+        let mut manifest = AttemptReservationShape::for_query_plan(&consumer_plan);
+        manifest
+            .set_producer_occurrences([AttemptReservationProducerOccurrence::from_term_id(
+                "producer",
+                producer_scope.clone(),
+                retained_term_id.clone(),
+            )])
+            .unwrap();
+        let schedule = AttemptReservationSchedule::from_phase_term_ids(
+            vec![fixed.id().clone()],
+            vec![AttemptReservationProducerPhase::from_term_groups(vec![Vec::new()])],
+            AttemptReservationConsumerState::Bounded,
+            vec![consumer.id().clone()],
+        );
+        manifest.attach_ordered_schedule(schedule).unwrap();
+        let producer_scope_shape = AttemptReservationShape::for_query_plan(&producer_plan);
+        let scopes = vec![manifest, producer_scope_shape];
+        let owner_terms = vec![fixed, retained.clone(), consumer];
+
+        let envelope =
+            AttemptReservationEnvelope::resolve_with_owner_terms(&scopes, &owner_terms, reservation_policy())
+                .expect("the production ordered fold must resolve the complete owner inventory");
+        let expected = FIXED_BYTES + RETAINED_BYTES + CONSUMER_BYTES;
+        let resolved_floor = envelope.required_phase_floor_bytes();
+        assert_eq!(resolved_floor, expected);
+        assert_eq!(envelope.complete_phase_peak_bytes(), Some(expected));
+        assert_eq!(envelope.bound_derivation(), Some(AttemptBoundDerivation::OrderedTimeline));
+        assert_ne!(resolved_floor, FIXED_BYTES + CONSUMER_BYTES, "retained output must not disappear from the floor");
+        assert_ne!(
+            resolved_floor,
+            FIXED_BYTES + RETAINED_BYTES * 2 + CONSUMER_BYTES,
+            "retained output must not be charged twice",
+        );
+
+        let occurrence = scopes[0].producer_occurrences().first().expect("manifest retains producer occurrence");
+        assert_eq!(occurrence.retained_output_term_id(), &retained_term_id);
+        assert_eq!(
+            owner_terms.iter().filter(|term| term.id().role == OwnerTermRole::SourceStage).count(),
+            0,
+            "the graph-result source references the producer retained owner instead of minting a second source term",
+        );
     }
 
     #[test]
@@ -4236,6 +5012,15 @@ mod tests {
             .expect("combined proof retains graph scope");
         let requirement = combined.as_requirement();
         assert_eq!(requirement.source_stage_bytes, None, "an unrelated relational source must not become graph input");
+        let relational_source = requirement
+            .owner_terms
+            .iter()
+            .find(|term| term.id().role == OwnerTermRole::SourceStage)
+            .expect("unrelated relational source retains its own owner");
+        assert!(
+            requirement.isolated_phase_term_groups().iter().any(|group| group == &vec![relational_source.id().clone()]),
+            "unrelated relational source remains in its standalone active phase",
+        );
         assert!(requirement.reservation_shapes.iter().any(|shape| {
             shape.has_local_parquet_source()
                 && shape.has_modeled_source_stage()
@@ -4311,9 +5096,9 @@ mod tests {
             )])
             .unwrap();
         let schedule = AttemptReservationSchedule::from_phase_term_ids(
-            Some(0),
-            None,
+            Vec::new(),
             vec![AttemptReservationProducerPhase::from_term_groups(vec![vec![isolated_term_id]])],
+            AttemptReservationConsumerState::Passthrough,
             Vec::new(),
         );
         shape.attach_ordered_schedule(schedule.clone()).unwrap();
@@ -4362,9 +5147,9 @@ mod tests {
             )])
             .unwrap();
         let schedule = AttemptReservationSchedule::from_phase_term_ids(
-            Some(0),
-            None,
+            Vec::new(),
             vec![AttemptReservationProducerPhase::from_term_groups(vec![vec![isolated_term_id]])],
+            AttemptReservationConsumerState::Passthrough,
             Vec::new(),
         );
         shape.attach_ordered_schedule(schedule.clone()).unwrap();
@@ -4529,7 +5314,11 @@ mod tests {
             )],
         )
         .unwrap();
-        assert!(n1.resolve_reservation_envelope(reservation_policy()).unwrap().complete_phase_peak_bytes().is_some());
+        let n1_envelope = n1
+            .resolve_reservation_envelope(reservation_policy())
+            .expect("one plain graph producer must resolve a finite envelope");
+        assert!(n1_envelope.complete_phase_peak_bytes().is_some());
+        assert_eq!(n1_envelope.bound_derivation(), Some(AttemptBoundDerivation::OrderedTimeline));
 
         let n3_consumer = graph_output_union_consumer(&["same-0", "same-1", "same-2"]);
         let equal = graph_bfs_proof_with_typed_output(0);
@@ -4542,6 +5331,42 @@ mod tests {
         let envelope = n3.resolve_reservation_envelope(reservation_policy()).unwrap();
         assert!(envelope.complete_phase_peak_bytes().is_some());
         assert_eq!(n3.as_requirement().reservation_shapes.len(), 4, "equal producer scopes remain three occurrences");
+    }
+
+    #[test]
+    fn production_pagerank_forceatlas2_proof_selects_ordered_timeline() {
+        let consumer_plan = pagerank_forceatlas2_join_consumer();
+        let combined = QueryPlanCapabilityProof::combine_composed_graph_attempt(
+            &consumer_plan,
+            QueryPlanCapabilityProof::for_composed_consumer_plan(&consumer_plan)
+                .expect("the production consumer IR must issue a composed proof"),
+            [
+                ("pagerank".to_owned(), production_graph_proof(GraphAlgorithm::PageRank)),
+                ("forceatlas2".to_owned(), production_graph_proof(GraphAlgorithm::ForceAtlas2)),
+            ],
+        )
+        .expect("the production PageRank + ForceAtlas2 topology must compose");
+        let envelope = combined
+            .resolve_reservation_envelope(reservation_policy())
+            .expect("the production graph proof must resolve a finite envelope");
+        assert_eq!(envelope.bound_derivation(), Some(AttemptBoundDerivation::OrderedTimeline));
+
+        let mut incomplete = combined.into_requirement();
+        let consumer_shape_index = incomplete
+            .reservation_shapes
+            .iter()
+            .position(|shape| shape.matches(&consumer_plan))
+            .expect("the composed consumer scope must remain in the proof");
+        let occurrences = incomplete.reservation_shapes[consumer_shape_index].producer_occurrences().to_vec();
+        let mut consumer_shape = AttemptReservationShape::for_query_plan(&consumer_plan);
+        consumer_shape
+            .set_producer_occurrences(occurrences)
+            .expect("the existing producer manifest remains valid without ordered rows");
+        incomplete.reservation_shapes[consumer_shape_index] = consumer_shape;
+        let fallback = QueryPlanCapabilityProof { requirement: incomplete }
+            .resolve_reservation_envelope(reservation_policy())
+            .expect("the complete owner inventory must provide the conservative fallback");
+        assert_eq!(fallback.bound_derivation(), Some(AttemptBoundDerivation::ConservativeOwnerSum));
     }
 
     #[test]
@@ -4660,7 +5485,7 @@ mod tests {
         let (bytes, owner_terms) = composed_consumer_additional_peak_bytes_for_plan(&consumer_plan, &[output])
             .expect("an alias-only projection must have a bounded zero-copy contract");
         assert_eq!(bytes, 0, "an alias-only projection is a zero-copy select/rename");
-        assert_eq!(owner_terms.iter().map(AllocationOwnerTerm::bytes).collect::<Vec<_>>(), vec![0]);
+        assert!(owner_terms.is_empty(), "an alias-only projection must not mint a zero-byte owner term");
 
         let combined = QueryPlanCapabilityProof::combine_composed_graph_attempt(
             &consumer_plan,

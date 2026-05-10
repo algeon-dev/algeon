@@ -6,7 +6,7 @@
 //! source-size estimate out of immutable-grant sizing while still making
 //! policy-created concurrent phases explicit.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use arrow::datatypes::DataType;
 
@@ -115,6 +115,8 @@ impl AttemptReservationProducerOccurrence {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct AttemptReservationProducerPhase {
     isolated_peak_term_groups: Vec<Vec<OwnerTermId>>,
+    alternative_term_ids: Vec<OwnerTermId>,
+    concurrent_side_input_term_ids: Vec<OwnerTermId>,
     #[cfg(test)]
     isolated_peak_bytes: Option<u64>,
     #[cfg(test)]
@@ -122,9 +124,20 @@ pub(crate) struct AttemptReservationProducerPhase {
 }
 
 impl AttemptReservationProducerPhase {
+    #[cfg(test)]
     pub(crate) fn from_term_groups(isolated_peak_term_groups: Vec<Vec<OwnerTermId>>) -> Self {
+        Self::from_term_groups_with_alternatives_and_side_inputs(isolated_peak_term_groups, Vec::new(), Vec::new())
+    }
+
+    pub(crate) fn from_term_groups_with_alternatives_and_side_inputs(
+        isolated_peak_term_groups: Vec<Vec<OwnerTermId>>,
+        alternative_term_ids: Vec<OwnerTermId>,
+        concurrent_side_input_term_ids: Vec<OwnerTermId>,
+    ) -> Self {
         Self {
             isolated_peak_term_groups,
+            alternative_term_ids,
+            concurrent_side_input_term_ids,
             #[cfg(test)]
             isolated_peak_bytes: None,
             #[cfg(test)]
@@ -134,7 +147,13 @@ impl AttemptReservationProducerPhase {
 
     #[cfg(test)]
     fn new(isolated_peak_bytes: Option<u64>, retained_output_bytes: Option<u64>) -> Self {
-        Self { isolated_peak_term_groups: Vec::new(), isolated_peak_bytes, retained_output_bytes }
+        Self {
+            isolated_peak_term_groups: Vec::new(),
+            alternative_term_ids: Vec::new(),
+            concurrent_side_input_term_ids: Vec::new(),
+            isolated_peak_bytes,
+            retained_output_bytes,
+        }
     }
 }
 
@@ -145,30 +164,59 @@ impl AttemptReservationProducerPhase {
 /// order exactly: fixed bytes plus retained prior outputs and one producer's
 /// isolated peak, followed by retained-output accumulation, then the consumer
 /// additional peak.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AttemptReservationConsumerState {
+    Passthrough,
+    Bounded,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct AttemptReservationSchedule {
-    attempt_wide_fixed_bytes: Option<u64>,
-    attempt_wide_fixed_term_id: Option<OwnerTermId>,
+    attempt_wide_fixed_term_ids: Vec<OwnerTermId>,
     producer_phases: Vec<AttemptReservationProducerPhase>,
+    consumer_state: AttemptReservationConsumerState,
     consumer_peak_term_ids: Vec<OwnerTermId>,
+    consumer_dominated_term_ids: Vec<OwnerTermId>,
     #[cfg(test)]
-    consumer_additional_peak_bytes: Option<u64>,
+    test_attempt_wide_fixed_bytes: Option<u64>,
+    #[cfg(test)]
+    test_consumer_additional_peak_bytes: Option<u64>,
 }
 
 impl AttemptReservationSchedule {
+    #[cfg(test)]
     pub(crate) fn from_phase_term_ids(
-        attempt_wide_fixed_bytes: Option<u64>,
-        attempt_wide_fixed_term_id: Option<OwnerTermId>,
+        attempt_wide_fixed_term_ids: Vec<OwnerTermId>,
         producer_phases: Vec<AttemptReservationProducerPhase>,
+        consumer_state: AttemptReservationConsumerState,
         consumer_peak_term_ids: Vec<OwnerTermId>,
     ) -> Self {
-        Self {
-            attempt_wide_fixed_bytes,
-            attempt_wide_fixed_term_id,
+        Self::from_phase_term_ids_with_dominated(
+            attempt_wide_fixed_term_ids,
             producer_phases,
+            consumer_state,
             consumer_peak_term_ids,
+            Vec::new(),
+        )
+    }
+
+    pub(crate) fn from_phase_term_ids_with_dominated(
+        attempt_wide_fixed_term_ids: Vec<OwnerTermId>,
+        producer_phases: Vec<AttemptReservationProducerPhase>,
+        consumer_state: AttemptReservationConsumerState,
+        consumer_peak_term_ids: Vec<OwnerTermId>,
+        consumer_dominated_term_ids: Vec<OwnerTermId>,
+    ) -> Self {
+        Self {
+            attempt_wide_fixed_term_ids,
+            producer_phases,
+            consumer_state,
+            consumer_peak_term_ids,
+            consumer_dominated_term_ids,
             #[cfg(test)]
-            consumer_additional_peak_bytes: Some(0),
+            test_attempt_wide_fixed_bytes: Some(0),
+            #[cfg(test)]
+            test_consumer_additional_peak_bytes: None,
         }
     }
 
@@ -179,16 +227,60 @@ impl AttemptReservationSchedule {
         consumer_additional_peak_bytes: Option<u64>,
     ) -> Self {
         Self {
-            attempt_wide_fixed_bytes,
-            attempt_wide_fixed_term_id: None,
+            attempt_wide_fixed_term_ids: Vec::new(),
+            consumer_state: if consumer_additional_peak_bytes == Some(0) {
+                AttemptReservationConsumerState::Passthrough
+            } else {
+                AttemptReservationConsumerState::Bounded
+            },
             producer_phases,
             consumer_peak_term_ids: Vec::new(),
-            consumer_additional_peak_bytes,
+            consumer_dominated_term_ids: Vec::new(),
+            test_attempt_wide_fixed_bytes: attempt_wide_fixed_bytes,
+            #[cfg(test)]
+            test_consumer_additional_peak_bytes: consumer_additional_peak_bytes,
         }
     }
 
     fn producer_phase_count_internal(&self) -> usize {
         self.producer_phases.len()
+    }
+
+    fn concurrent_side_input_scope_fingerprints(&self) -> impl Iterator<Item = &str> {
+        self.producer_phases
+            .iter()
+            .flat_map(|phase| phase.concurrent_side_input_term_ids.iter().map(OwnerTermId::execution_scope_fingerprint))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn attempt_wide_fixed_term_ids(&self) -> &[OwnerTermId] {
+        &self.attempt_wide_fixed_term_ids
+    }
+
+    #[cfg(test)]
+    pub(crate) fn consumer_state(&self) -> AttemptReservationConsumerState {
+        self.consumer_state
+    }
+
+    #[cfg(test)]
+    pub(crate) fn consumer_dominated_term_ids(&self) -> &[OwnerTermId] {
+        &self.consumer_dominated_term_ids
+    }
+
+    #[cfg(test)]
+    pub(crate) fn producer_phase_term_ids(&self) -> Vec<OwnerTermId> {
+        self.producer_phases
+            .iter()
+            .flat_map(|phase| {
+                phase
+                    .isolated_peak_term_groups
+                    .iter()
+                    .flatten()
+                    .chain(&phase.alternative_term_ids)
+                    .chain(&phase.concurrent_side_input_term_ids)
+            })
+            .cloned()
+            .collect()
     }
 
     fn checked_fold_with_scopes(&self, scopes: &[AttemptReservationShape]) -> Result<u64> {
@@ -211,8 +303,11 @@ impl AttemptReservationSchedule {
                 *counts.entry(scope.execution_scope_fingerprint()).or_default() += 1;
                 counts
             });
-        if manifest
-            .manifest_scope_counts()
+        let mut expected_scope_counts = manifest.manifest_scope_counts();
+        for scope in self.concurrent_side_input_scope_fingerprints() {
+            *expected_scope_counts.entry(scope).or_default() += 1;
+        }
+        if expected_scope_counts
             .iter()
             .any(|(scope, expected)| actual_scope_counts.get(scope).copied().unwrap_or_default() < *expected)
         {
@@ -223,12 +318,36 @@ impl AttemptReservationSchedule {
                 .with_fact("producer_phase_row_count", self.producer_phases.len())
                 .with_fact("producer_occurrence_count", manifest.producer_occurrences.len()));
         }
-        let consumer_peak = self.consumer_peak_bytes(owner_terms, manifest.execution_scope_fingerprint())?;
+        if !owner_terms.is_empty() {
+            self.validate_term_references(manifest, owner_terms, scopes)?;
+        }
+        let consumer_peak = match self.consumer_peak_bytes(owner_terms, manifest.execution_scope_fingerprint()) {
+            Ok(bytes) => bytes,
+            Err(error)
+                if !owner_terms.is_empty()
+                    && matches!(
+                        error.fact_value("schedule_reason"),
+                        Some("missing_consumer_peak_terms" | "missing_consumer_additional_peak")
+                    ) =>
+            {
+                return Err(error.with_fact("ordered_inventory_incomplete", "true"));
+            },
+            Err(error) => return Err(error),
+        };
 
         let mut retained_prior = 0_u64;
         let mut complete_peak = 0_u64;
         for (occurrence, phase) in manifest.producer_occurrences.iter().zip(&self.producer_phases) {
-            let isolated_peak = self.producer_isolated_peak_bytes(occurrence, phase, owner_terms)?;
+            let isolated_peak = match self.producer_isolated_peak_bytes(occurrence, phase, owner_terms) {
+                Ok(bytes) => bytes,
+                Err(error)
+                    if !owner_terms.is_empty()
+                        && error.fact_value("schedule_reason") == Some("missing_producer_isolated_peak") =>
+                {
+                    return Err(error.with_fact("ordered_inventory_incomplete", "true"));
+                },
+                Err(error) => return Err(error),
+            };
             let retained_output = self.producer_retained_output_bytes(occurrence, phase, owner_terms)?;
             let producer_stage = fixed
                 .checked_add(retained_prior)
@@ -278,17 +397,37 @@ impl AttemptReservationSchedule {
     }
 
     fn fixed_bytes(&self, owner_terms: &[AllocationOwnerTerm]) -> Result<u64> {
-        if let Some(term_id) = &self.attempt_wide_fixed_term_id {
-            return self.resolve_term_bytes(term_id, owner_terms, None, "attempt_wide_fixed");
+        if !self.attempt_wide_fixed_term_ids.is_empty() {
+            let mut seen = HashSet::with_capacity(self.attempt_wide_fixed_term_ids.len());
+            if self.attempt_wide_fixed_term_ids.iter().any(|id| !seen.insert(id)) {
+                return Err(graph_schedule_error("duplicate_owner_term_reference", None, Some("attempt_wide_fixed")));
+            }
+            return self.attempt_wide_fixed_term_ids.iter().try_fold(0_u64, |total, term_id| {
+                let term = self.resolve_term(term_id, owner_terms, None, "attempt_wide_fixed")?;
+                if !term.is_attempt_wide_fixed() {
+                    return Err(graph_schedule_error(
+                        "owner_term_role_class_mismatch",
+                        None,
+                        Some("attempt_wide_fixed"),
+                    )
+                    .with_fact("owner_term_role", term_id.role_label())
+                    .with_fact("owner_term_occurrence", term_id.occurrence_label()));
+                }
+                let bytes = term.bytes();
+                total.checked_add(bytes).ok_or_else(|| {
+                    graph_schedule_error("attempt_wide_fixed_sum_overflow", None, Some("owner_term_sum"))
+                })
+            });
         }
-        let fixed = self
-            .attempt_wide_fixed_bytes
-            .ok_or_else(|| graph_schedule_error("missing_attempt_wide_fixed_bytes", None, None))?;
+
+        #[cfg(test)]
+        if let Some(fixed) = self.test_attempt_wide_fixed_bytes {
+            return Ok(fixed);
+        }
+        #[cfg(test)]
+        return Err(graph_schedule_error("missing_attempt_wide_fixed_bytes", None, None));
         #[cfg(not(test))]
-        if fixed != 0 {
-            return Err(graph_schedule_error("attempt_wide_fixed_term_missing", None, Some("attempt_wide_fixed")));
-        }
-        Ok(fixed)
+        Ok(0)
     }
 
     fn producer_isolated_peak_bytes(
@@ -316,18 +455,44 @@ impl AttemptReservationSchedule {
                 )?;
                 isolated_peak = isolated_peak.max(phase_peak);
             }
-            return Ok(isolated_peak);
+            return self.add_concurrent_side_input_peak(occurrence, phase, owner_terms, isolated_peak);
         }
         #[cfg(test)]
         {
-            phase.isolated_peak_bytes.ok_or_else(|| {
+            let isolated_peak = phase.isolated_peak_bytes.ok_or_else(|| {
                 graph_schedule_error("missing_producer_isolated_peak", Some(&occurrence.occurrence_id), None)
-            })
+            })?;
+            self.add_concurrent_side_input_peak(occurrence, phase, owner_terms, isolated_peak)
         }
         #[cfg(not(test))]
         {
             Err(graph_schedule_error("missing_producer_isolated_peak", Some(&occurrence.occurrence_id), None))
         }
+    }
+
+    fn add_concurrent_side_input_peak(
+        &self,
+        occurrence: &AttemptReservationProducerOccurrence,
+        phase: &AttemptReservationProducerPhase,
+        owner_terms: &[AllocationOwnerTerm],
+        isolated_peak: u64,
+    ) -> Result<u64> {
+        if phase.concurrent_side_input_term_ids.is_empty() {
+            return Ok(isolated_peak);
+        }
+        let side_input_peak = self.sum_term_ids(
+            &phase.concurrent_side_input_term_ids,
+            owner_terms,
+            Some(&occurrence.occurrence_id),
+            "producer_stage_side_input_overflow",
+        )?;
+        isolated_peak.checked_add(side_input_peak).ok_or_else(|| {
+            graph_schedule_error(
+                "producer_stage_side_input_overflow",
+                Some(&occurrence.occurrence_id),
+                Some("producer_stage_side_input"),
+            )
+        })
     }
 
     fn producer_retained_output_bytes(
@@ -355,29 +520,58 @@ impl AttemptReservationSchedule {
     }
 
     fn consumer_peak_bytes(&self, owner_terms: &[AllocationOwnerTerm], _consumer_scope: &str) -> Result<u64> {
-        if !self.consumer_peak_term_ids.is_empty() {
-            let mut seen = HashSet::with_capacity(self.consumer_peak_term_ids.len());
-            if self.consumer_peak_term_ids.iter().any(|id| !seen.insert(id)) {
-                return Err(graph_schedule_error("duplicate_owner_term_reference", None, Some("consumer_peak")));
-            }
-            return self.sum_term_ids(
-                &self.consumer_peak_term_ids,
-                owner_terms,
-                None,
-                "consumer_stage_additional_peak_overflow",
-            );
-        }
-        #[cfg(test)]
-        {
-            self.consumer_additional_peak_bytes
-                .ok_or_else(|| graph_schedule_error("missing_consumer_additional_peak", None, None))
-        }
-        #[cfg(not(test))]
-        {
-            if owner_terms.iter().any(|term| term.is_consumer_scope(_consumer_scope)) {
-                return Err(graph_schedule_error("missing_consumer_peak_terms", None, Some("consumer_peak")));
-            }
-            Ok(0)
+        match self.consumer_state {
+            AttemptReservationConsumerState::Passthrough => {
+                if !self.consumer_peak_term_ids.is_empty() {
+                    return Err(graph_schedule_error(
+                        "passthrough_consumer_has_peak_terms",
+                        None,
+                        Some("consumer_peak"),
+                    ));
+                }
+                if !self.consumer_dominated_term_ids.is_empty() {
+                    return Err(graph_schedule_error(
+                        "passthrough_consumer_has_dominated_terms",
+                        None,
+                        Some("consumer_dominated"),
+                    ));
+                }
+                #[cfg(test)]
+                if self.test_consumer_additional_peak_bytes.is_some_and(|bytes| bytes != 0) {
+                    return Err(graph_schedule_error(
+                        "passthrough_consumer_has_nonzero_peak",
+                        None,
+                        Some("consumer_peak"),
+                    ));
+                }
+                Ok(0)
+            },
+            AttemptReservationConsumerState::Bounded => {
+                if !self.consumer_peak_term_ids.is_empty() {
+                    let mut seen = HashSet::with_capacity(self.consumer_peak_term_ids.len());
+                    if self.consumer_peak_term_ids.iter().any(|id| !seen.insert(id)) {
+                        return Err(graph_schedule_error(
+                            "duplicate_owner_term_reference",
+                            None,
+                            Some("consumer_peak"),
+                        ));
+                    }
+                    return self.sum_term_ids(
+                        &self.consumer_peak_term_ids,
+                        owner_terms,
+                        None,
+                        "consumer_stage_additional_peak_overflow",
+                    );
+                }
+                #[cfg(test)]
+                if let Some(bytes) = self.test_consumer_additional_peak_bytes {
+                    return Ok(bytes);
+                }
+                #[cfg(test)]
+                return Err(graph_schedule_error("missing_consumer_additional_peak", None, None));
+                #[cfg(not(test))]
+                Err(graph_schedule_error("missing_consumer_peak_terms", None, Some("consumer_peak")))
+            },
         }
     }
 
@@ -403,7 +597,17 @@ impl AttemptReservationSchedule {
         occurrence_id: Option<&str>,
         phase: &'static str,
     ) -> Result<u64> {
-        owner_terms.iter().find(|term| term.id() == term_id).map(AllocationOwnerTerm::bytes).ok_or_else(|| {
+        self.resolve_term(term_id, owner_terms, occurrence_id, phase).map(AllocationOwnerTerm::bytes)
+    }
+
+    fn resolve_term<'a>(
+        &self,
+        term_id: &OwnerTermId,
+        owner_terms: &'a [AllocationOwnerTerm],
+        occurrence_id: Option<&str>,
+        phase: &'static str,
+    ) -> Result<&'a AllocationOwnerTerm> {
+        owner_terms.iter().find(|term| term.id() == term_id).ok_or_else(|| {
             graph_schedule_error("missing_owner_term_reference", occurrence_id, Some(phase))
                 .with_fact("owner_term_role", term_id.role_label())
                 .with_fact("owner_term_occurrence", term_id.occurrence_label())
@@ -414,37 +618,385 @@ impl AttemptReservationSchedule {
         &self,
         manifest: &AttemptReservationShape,
         owner_terms: &[AllocationOwnerTerm],
+        scopes: &[AttemptReservationShape],
     ) -> Result<()> {
-        if let Some(term_id) = &self.attempt_wide_fixed_term_id {
-            self.resolve_term_bytes(term_id, owner_terms, None, "attempt_wide_fixed")?;
-        }
+        self.validate_term_references_with_totality(manifest, owner_terms, scopes, true)
+    }
+
+    pub(crate) fn validate_term_references_for_conservative_sum(
+        &self,
+        manifest: &AttemptReservationShape,
+        owner_terms: &[AllocationOwnerTerm],
+        scopes: &[AttemptReservationShape],
+    ) -> Result<()> {
+        self.validate_term_references_with_totality(manifest, owner_terms, scopes, false)
+    }
+
+    fn validate_term_references_with_totality(
+        &self,
+        manifest: &AttemptReservationShape,
+        owner_terms: &[AllocationOwnerTerm],
+        scopes: &[AttemptReservationShape],
+        require_totality: bool,
+    ) -> Result<()> {
+        self.fixed_bytes(owner_terms)?;
         manifest.validate_manifest_core()?;
         if self.producer_phases.len() != manifest.producer_occurrences.len() {
             return Err(graph_schedule_error("producer_phase_row_count_mismatch", None, Some("schedule")));
         }
-        for (occurrence, phase) in manifest.producer_occurrences.iter().zip(&self.producer_phases) {
-            for group in &phase.isolated_peak_term_groups {
+        self.validate_inventory_coverage(manifest, owner_terms, scopes, require_totality)?;
+        Ok(())
+    }
+
+    fn validate_inventory_coverage(
+        &self,
+        manifest: &AttemptReservationShape,
+        owner_terms: &[AllocationOwnerTerm],
+        scopes: &[AttemptReservationShape],
+        require_totality: bool,
+    ) -> Result<()> {
+        #[derive(Clone, Copy, PartialEq, Eq)]
+        enum Category {
+            Fixed,
+            ProducerPhase { producer_index: usize, group_index: usize },
+            ConcurrentSideInput { producer_index: usize },
+            RetainedOccurrence(usize),
+            ConsumerPeak,
+            ConsumerDominated,
+        }
+
+        let mut references = HashMap::<OwnerTermId, Vec<Category>>::with_capacity(owner_terms.len());
+        let mut inventory_ids = HashSet::with_capacity(owner_terms.len());
+        for term in owner_terms {
+            if !inventory_ids.insert(term.id()) {
+                return Err(graph_schedule_error("duplicate_owner_term_inventory", None, Some("inventory"))
+                    .with_fact("owner_term_role", term.id().role_label())
+                    .with_fact("owner_term_occurrence", term.id().occurrence_label()));
+            }
+        }
+        let mut record = |term_id: &OwnerTermId, category: Category| {
+            references.entry(term_id.clone()).or_default().push(category);
+        };
+
+        let mut fixed_seen = HashSet::with_capacity(self.attempt_wide_fixed_term_ids.len());
+        for term_id in &self.attempt_wide_fixed_term_ids {
+            if !fixed_seen.insert(term_id) {
+                return Err(graph_schedule_error("duplicate_owner_term_reference", None, Some("attempt_wide_fixed")));
+            }
+            let term = self.resolve_term(term_id, owner_terms, None, "attempt_wide_fixed")?;
+            if !term.is_attempt_wide_fixed() {
+                return Err(graph_schedule_error("owner_term_role_class_mismatch", None, Some("attempt_wide_fixed"))
+                    .with_fact("owner_term_role", term_id.role_label())
+                    .with_fact("owner_term_occurrence", term_id.occurrence_label()));
+            }
+            record(term_id, Category::Fixed);
+        }
+
+        for (phase_index, occurrence) in manifest.producer_occurrences.iter().enumerate() {
+            let term = self.resolve_term(
+                &occurrence.retained_output_term_id,
+                owner_terms,
+                Some(&occurrence.occurrence_id),
+                "retained_output",
+            )?;
+            occurrence.validate_retained_output_term(term)?;
+            record(&occurrence.retained_output_term_id, Category::RetainedOccurrence(phase_index));
+        }
+
+        for (phase_index, (occurrence, phase)) in
+            manifest.producer_occurrences.iter().zip(&self.producer_phases).enumerate()
+        {
+            let mut side_input_seen = HashSet::with_capacity(phase.concurrent_side_input_term_ids.len());
+            for term_id in &phase.concurrent_side_input_term_ids {
+                if !side_input_seen.insert(term_id) {
+                    return Err(graph_schedule_error(
+                        "duplicate_owner_term_reference",
+                        Some(&occurrence.occurrence_id),
+                        Some("producer_side_input"),
+                    ));
+                }
+                let term =
+                    self.resolve_term(term_id, owner_terms, Some(&occurrence.occurrence_id), "producer_side_input")?;
+                self.validate_concurrent_side_input_term(term, occurrence, scopes)?;
+                record(term_id, Category::ConcurrentSideInput { producer_index: phase_index });
+            }
+            let mut alternatives_seen = HashSet::with_capacity(phase.alternative_term_ids.len());
+            for term_id in &phase.alternative_term_ids {
+                if !alternatives_seen.insert(term_id) {
+                    return Err(graph_schedule_error(
+                        "duplicate_owner_term_reference",
+                        Some(&occurrence.occurrence_id),
+                        Some("producer_alternative_phase"),
+                    ));
+                }
+                let term = self.resolve_term(
+                    term_id,
+                    owner_terms,
+                    Some(&occurrence.occurrence_id),
+                    "producer_alternative_phase",
+                )?;
+                self.validate_producer_phase_term(term, occurrence)?;
+                if !(term.is_graph_persistent() || term.is_source_stage())
+                    || !phase.isolated_peak_term_groups.first().is_some_and(|group| group.contains(term_id))
+                    || !phase.isolated_peak_term_groups.get(1).is_some_and(|group| group.contains(term_id))
+                {
+                    return Err(graph_schedule_error(
+                        "producer_alternative_phase_group_invalid",
+                        Some(&occurrence.occurrence_id),
+                        Some("producer_alternative_phase"),
+                    ));
+                }
+            }
+            let mut group_term_ids = HashSet::new();
+            for (group_index, group) in phase.isolated_peak_term_groups.iter().enumerate() {
+                group_term_ids.clear();
                 for term_id in group {
-                    self.resolve_term_bytes(
+                    if !group_term_ids.insert(term_id) {
+                        return Err(graph_schedule_error(
+                            "duplicate_owner_term_reference",
+                            Some(&occurrence.occurrence_id),
+                            Some("producer_isolated_peak"),
+                        ));
+                    }
+                    let term = self.resolve_term(
                         term_id,
                         owner_terms,
                         Some(&occurrence.occurrence_id),
                         "producer_isolated_peak",
                     )?;
+                    self.validate_producer_phase_term(term, occurrence)?;
+                    if group_index >= 2 && phase.alternative_term_ids.iter().any(|id| id == term_id) {
+                        return Err(graph_schedule_error(
+                            "producer_alternative_phase_group_invalid",
+                            Some(&occurrence.occurrence_id),
+                            Some("producer_isolated_peak"),
+                        ));
+                    }
+                    record(term_id, Category::ProducerPhase { producer_index: phase_index, group_index });
                 }
             }
-            let term =
-                owner_terms.iter().find(|term| term.id() == &occurrence.retained_output_term_id).ok_or_else(|| {
-                    graph_schedule_error(
-                        "missing_owner_term_reference",
-                        Some(&occurrence.occurrence_id),
-                        Some("retained_output"),
-                    )
-                })?;
-            occurrence.validate_retained_output_term(term)?;
         }
+
+        let mut consumer_peak_seen = HashSet::with_capacity(self.consumer_peak_term_ids.len());
         for term_id in &self.consumer_peak_term_ids {
-            self.resolve_term_bytes(term_id, owner_terms, None, "consumer_peak")?;
+            if !consumer_peak_seen.insert(term_id) {
+                return Err(graph_schedule_error("duplicate_owner_term_reference", None, Some("consumer_peak")));
+            }
+            let term = self.resolve_term(term_id, owner_terms, None, "consumer_peak")?;
+            self.validate_consumer_term(term, manifest.execution_scope_fingerprint(), "consumer_peak")?;
+            record(term_id, Category::ConsumerPeak);
+        }
+        let mut consumer_dominated_seen = HashSet::with_capacity(self.consumer_dominated_term_ids.len());
+        for term_id in &self.consumer_dominated_term_ids {
+            if !consumer_dominated_seen.insert(term_id) {
+                return Err(graph_schedule_error("duplicate_owner_term_reference", None, Some("consumer_dominated")));
+            }
+            let term = self.resolve_term(term_id, owner_terms, None, "consumer_dominated")?;
+            self.validate_consumer_term(term, manifest.execution_scope_fingerprint(), "consumer_dominated")?;
+            record(term_id, Category::ConsumerDominated);
+        }
+
+        for (term_id, categories) in &references {
+            let phase_categories = categories
+                .iter()
+                .filter_map(|category| match category {
+                    Category::ProducerPhase { producer_index, group_index } => Some((*producer_index, *group_index)),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            let side_input_categories = categories
+                .iter()
+                .filter_map(|category| match category {
+                    Category::ConcurrentSideInput { producer_index } => Some(*producer_index),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            let retained_categories = categories
+                .iter()
+                .filter_map(|category| match category {
+                    Category::RetainedOccurrence(index) => Some(*index),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            let has_fixed = categories.iter().any(|category| matches!(category, Category::Fixed));
+            let has_peak = categories.iter().any(|category| matches!(category, Category::ConsumerPeak));
+            let has_dominated = categories.iter().any(|category| matches!(category, Category::ConsumerDominated));
+            let has_consumer = has_peak || has_dominated;
+            if (has_fixed && categories.len() > 1)
+                || (has_consumer
+                    && (!phase_categories.is_empty()
+                        || !retained_categories.is_empty()
+                        || !side_input_categories.is_empty()))
+                || (!side_input_categories.is_empty() && (categories.len() != 1 || side_input_categories.len() != 1))
+            {
+                return Err(graph_schedule_error("owner_term_reference_category_conflict", None, Some("inventory"))
+                    .with_fact("owner_term_role", term_id.role_label())
+                    .with_fact("owner_term_occurrence", term_id.occurrence_label()));
+            }
+            if has_peak && has_dominated {
+                return Err(graph_schedule_error("consumer_peak_dominated_overlap", None, Some("consumer_inventory"))
+                    .with_fact("owner_term_role", term_id.role_label())
+                    .with_fact("owner_term_occurrence", term_id.occurrence_label()));
+            }
+            if retained_categories.len() > 1 {
+                return Err(graph_schedule_error(
+                    "duplicate_retained_occurrence_reference",
+                    None,
+                    Some("retained_output"),
+                ));
+            }
+            if !phase_categories.is_empty() && phase_categories.len() > 1 {
+                let producer_indices =
+                    phase_categories.iter().map(|(producer_index, _)| *producer_index).collect::<HashSet<_>>();
+                let group_indices =
+                    phase_categories.iter().map(|(_, group_index)| *group_index).collect::<HashSet<_>>();
+                let term = self.resolve_term(term_id, owner_terms, None, "producer_isolated_peak")?;
+                let allowed = producer_indices.len() == 1
+                    && group_indices == HashSet::from([0, 1])
+                    && phase_categories.iter().all(|(producer_index, group_index)| {
+                        *group_index < 2
+                            && self.producer_phases[*producer_index]
+                                .alternative_term_ids
+                                .iter()
+                                .any(|allowed_id| allowed_id == term_id)
+                    })
+                    && (term.is_graph_persistent() || term.is_source_stage());
+                if !allowed {
+                    return Err(graph_schedule_error(
+                        "producer_phase_group_duplicate",
+                        None,
+                        Some("producer_isolated_peak"),
+                    )
+                    .with_fact("owner_term_role", term_id.role_label())
+                    .with_fact("owner_term_occurrence", term_id.occurrence_label()));
+                }
+            }
+            if !phase_categories.is_empty() && !retained_categories.is_empty() {
+                let term = self.resolve_term(term_id, owner_terms, None, "producer_isolated_peak")?;
+                if !term.is_retained_output() || phase_categories.len() != 1 {
+                    return Err(graph_schedule_error(
+                        "producer_phase_retained_category_conflict",
+                        None,
+                        Some("producer_isolated_peak"),
+                    ));
+                }
+            }
+        }
+
+        if require_totality {
+            let mut scheduled_scopes = manifest.manifest_scope_counts().into_keys().collect::<HashSet<_>>();
+            scheduled_scopes.extend(
+                scopes
+                    .iter()
+                    .filter(|scope| scope.is_cugraph_side_input_scope())
+                    .map(AttemptReservationShape::execution_scope_fingerprint),
+            );
+            scheduled_scopes.extend(
+                self.producer_phases
+                    .iter()
+                    .flat_map(|phase| phase.concurrent_side_input_term_ids.iter())
+                    .map(OwnerTermId::execution_scope_fingerprint),
+            );
+            if let Some(missing) = owner_terms.iter().find(|term| {
+                scheduled_scopes.contains(term.execution_scope_fingerprint()) && !references.contains_key(term.id())
+            }) {
+                return Err(graph_schedule_error("ordered_inventory_incomplete", None, Some("inventory"))
+                    .with_fact("ordered_inventory_incomplete", "true")
+                    .with_fact("owner_term_role", missing.id().role_label())
+                    .with_fact("owner_term_occurrence", missing.id().occurrence_label()));
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_concurrent_side_input_term(
+        &self,
+        term: &AllocationOwnerTerm,
+        occurrence: &AttemptReservationProducerOccurrence,
+        scopes: &[AttemptReservationShape],
+    ) -> Result<()> {
+        if !term.is_side_input_frame() {
+            return Err(graph_schedule_error(
+                "owner_term_role_class_mismatch",
+                Some(&occurrence.occurrence_id),
+                Some("producer_side_input"),
+            )
+            .with_fact("owner_term_role", term.id().role_label()));
+        }
+        let expected_occurrence = format!("composed:{}", occurrence.occurrence_id);
+        if term.id().occurrence_label() != expected_occurrence {
+            return Err(graph_schedule_error(
+                "owner_term_occurrence_mismatch",
+                Some(&occurrence.occurrence_id),
+                Some("producer_side_input"),
+            )
+            .with_fact("expected_occurrence", expected_occurrence)
+            .with_fact("actual_occurrence", term.id().occurrence_label()));
+        }
+        if !scopes.iter().any(|scope| {
+            scope.is_cugraph_side_input_scope()
+                && scope.execution_scope_fingerprint() == term.execution_scope_fingerprint()
+        }) {
+            return Err(graph_schedule_error(
+                "side_input_scope_coverage_mismatch",
+                Some(&occurrence.occurrence_id),
+                Some("producer_side_input"),
+            )
+            .with_fact("side_input_scope", term.execution_scope_fingerprint()));
+        }
+        Ok(())
+    }
+
+    fn validate_producer_phase_term(
+        &self,
+        term: &AllocationOwnerTerm,
+        occurrence: &AttemptReservationProducerOccurrence,
+    ) -> Result<()> {
+        if term.execution_scope_fingerprint() != occurrence.execution_scope_fingerprint {
+            return Err(graph_schedule_error(
+                "owner_term_scope_mismatch",
+                Some(&occurrence.occurrence_id),
+                Some("producer_isolated_peak"),
+            )
+            .with_fact("expected_scope", occurrence.execution_scope_fingerprint.as_str())
+            .with_fact("actual_scope", term.execution_scope_fingerprint()));
+        }
+        let expected_occurrence = format!("composed:{}", occurrence.occurrence_id);
+        if term.id().occurrence_label() != expected_occurrence {
+            return Err(graph_schedule_error(
+                "owner_term_occurrence_mismatch",
+                Some(&occurrence.occurrence_id),
+                Some("producer_isolated_peak"),
+            )
+            .with_fact("expected_occurrence", expected_occurrence)
+            .with_fact("actual_occurrence", term.id().occurrence_label()));
+        }
+        if !(term.is_graph_phase_term() || term.is_source_stage() || term.is_retained_output()) {
+            return Err(graph_schedule_error(
+                "owner_term_role_class_mismatch",
+                Some(&occurrence.occurrence_id),
+                Some("producer_isolated_peak"),
+            )
+            .with_fact("owner_term_role", term.id().role_label()));
+        }
+        Ok(())
+    }
+
+    fn validate_consumer_term(&self, term: &AllocationOwnerTerm, scope: &str, phase: &'static str) -> Result<()> {
+        if term.execution_scope_fingerprint() != scope {
+            return Err(graph_schedule_error("owner_term_scope_mismatch", None, Some(phase))
+                .with_fact("expected_scope", scope)
+                .with_fact("actual_scope", term.execution_scope_fingerprint()));
+        }
+        if !term.is_consumer_schedule_owner() {
+            return Err(graph_schedule_error("owner_term_role_class_mismatch", None, Some(phase))
+                .with_fact("owner", term.owner_label())
+                .with_fact("owner_term_role", term.id().role_label()));
+        }
+        if !term.has_consumer_schedule_identity() {
+            return Err(graph_schedule_error("owner_term_occurrence_mismatch", None, Some(phase))
+                .with_fact("owner_term_role", term.id().role_label())
+                .with_fact("owner_term_occurrence", term.id().occurrence_label()));
         }
         Ok(())
     }
@@ -996,7 +1548,12 @@ impl AttemptReservationEnvelope {
         let mut scheduled_scope_counts = ordered_schedule
             .as_ref()
             .map(|schedule| {
-                admitted_manifest_shape(&scopes, Some(schedule)).map(AttemptReservationShape::manifest_scope_counts)
+                let manifest = admitted_manifest_shape(&scopes, Some(schedule))?;
+                let mut counts = manifest.manifest_scope_counts();
+                for scope in schedule.concurrent_side_input_scope_fingerprints() {
+                    *counts.entry(scope).or_default() += 1;
+                }
+                Ok(counts)
             })
             .transpose()?;
         for scope in &scopes {
@@ -1057,7 +1614,10 @@ impl AttemptReservationEnvelope {
                     complete_phase_peak_bytes = Some(auxiliary_peak.max(complete_peak));
                     selected_derivation = Some(AttemptBoundDerivation::OrderedTimeline);
                 },
-                Err(ordered_error) if owner_terms.is_some() => {
+                Err(ordered_error)
+                    if owner_terms.is_some()
+                        && ordered_error.fact_value("ordered_inventory_incomplete") == Some("true") =>
+                {
                     let conservative = checked_owner_sum(owner_terms.expect("owner terms present"), &scopes);
                     match conservative {
                         Ok(owner_sum)
@@ -1084,6 +1644,12 @@ impl AttemptReservationEnvelope {
                             return Err(derivation_unavailable_error(ordered_error, conservative_error));
                         },
                     }
+                },
+                Err(ordered_error) if owner_terms.is_some() => {
+                    let conservative_error = checked_owner_sum(owner_terms.expect("owner terms present"), &scopes)
+                        .err()
+                        .unwrap_or_else(owner_derivation_incomplete_error);
+                    return Err(derivation_unavailable_error(ordered_error, conservative_error));
                 },
                 Err(error) => return Err(error),
             }
@@ -2385,9 +2951,9 @@ mod tests {
         let source_term = owner_terms.first().expect("source plan must carry one owner term");
         let producer_scope = canonical_execution_scope_fingerprint(&plan);
         let schedule = AttemptReservationSchedule::from_phase_term_ids(
-            Some(0),
-            None,
+            Vec::new(),
             vec![AttemptReservationProducerPhase::from_term_groups(vec![vec![source_term.id().clone()]])],
+            AttemptReservationConsumerState::Passthrough,
             Vec::new(),
         );
         let mut producer = AttemptReservationShape::for_query_plan(&plan);
@@ -2410,21 +2976,30 @@ mod tests {
     }
 
     #[test]
-    fn incomplete_ordered_terms_fall_back_to_the_conservative_owner_sum() {
+    fn incomplete_ordered_inventory_falls_back_to_the_conservative_owner_sum() {
         let plan = source_stage_plan(graph_edge_schema());
         let proof = QueryPlanCapabilityProof::for_query_plan(&plan).expect("source plan must issue a proof");
-        let owner_terms = proof
+        let source_stage_proof = QueryPlanCapabilityProof::for_cugraph_graph_input_plan(&plan)
+            .expect("source-stage proof must issue a capability proof");
+        let retained_source_term =
+            proof.as_requirement().owner_terms.first().expect("source plan must carry one owner term");
+        let source_stage_term = source_stage_proof
             .as_requirement()
             .owner_terms
-            .iter()
-            .map(|term| term.rebind_composed_for_test("missing-owner-terms"))
-            .collect::<Result<Vec<_>>>()
-            .expect("test owner terms can bind to one composed occurrence");
+            .first()
+            .expect("graph-input proof must carry one source-stage owner term");
+        let retained_output = retained_source_term
+            .rebind_composed_for_test("missing-owner-terms")
+            .expect("test owner term can bind to one composed occurrence");
+        let unclassified = source_stage_term
+            .rebind_composed_for_test("missing-owner-terms")
+            .expect("test source-stage owner can bind to the manifest occurrence");
+        let owner_terms = vec![retained_output.clone(), unclassified];
         let scope = canonical_execution_scope_fingerprint(&plan);
         let schedule = AttemptReservationSchedule::from_phase_term_ids(
-            Some(0),
-            None,
-            vec![AttemptReservationProducerPhase::from_term_groups(Vec::new())],
+            Vec::new(),
+            vec![AttemptReservationProducerPhase::from_term_groups(vec![vec![retained_output.id().clone()]])],
+            AttemptReservationConsumerState::Passthrough,
             Vec::new(),
         );
         let mut producer = AttemptReservationShape::for_query_plan(&plan);
@@ -2432,7 +3007,7 @@ mod tests {
             .set_producer_occurrences([AttemptReservationProducerOccurrence::from_term_id(
                 "missing-owner-terms",
                 scope.clone(),
-                owner_terms.first().expect("source plan must carry one owner term").id().clone(),
+                retained_output.id().clone(),
             )])
             .unwrap();
         producer.attach_ordered_schedule(schedule).unwrap();
@@ -2450,17 +3025,85 @@ mod tests {
     }
 
     #[test]
+    fn ordered_inventory_totality_distinguishes_scheduled_and_auxiliary_scopes() {
+        let plan = source_stage_plan(graph_edge_schema());
+        let proof = QueryPlanCapabilityProof::for_query_plan(&plan).expect("source plan must issue a proof");
+        let retained_output = proof
+            .as_requirement()
+            .owner_terms
+            .first()
+            .expect("source plan must carry one retained output owner")
+            .rebind_composed_for_test("scheduled")
+            .expect("retained output can bind to one composed occurrence");
+        let source_stage = QueryPlanCapabilityProof::for_cugraph_graph_input_plan(&plan)
+            .expect("graph-input proof must issue a source-stage owner")
+            .as_requirement()
+            .owner_terms
+            .first()
+            .expect("graph-input proof must carry one source-stage owner")
+            .rebind_composed_for_test("scheduled")
+            .expect("source-stage owner can bind to one composed occurrence");
+        let scheduled_scope = canonical_execution_scope_fingerprint(&plan);
+        let schedule = AttemptReservationSchedule::from_phase_term_ids(
+            Vec::new(),
+            vec![AttemptReservationProducerPhase::from_term_groups(vec![vec![retained_output.id().clone()]])],
+            AttemptReservationConsumerState::Passthrough,
+            Vec::new(),
+        );
+        let mut producer_scope = AttemptReservationShape::for_query_plan(&plan);
+        producer_scope
+            .set_producer_occurrences([AttemptReservationProducerOccurrence::from_term_id(
+                "scheduled",
+                scheduled_scope.clone(),
+                retained_output.id().clone(),
+            )])
+            .expect("producer occurrence must bind to the scheduled scope");
+        producer_scope.attach_ordered_schedule(schedule).expect("ordered schedule must attach");
+
+        let side_plan = nullable_literal_side_input_plan();
+        let side_proof = QueryPlanCapabilityProof::try_for_cugraph_side_input_plan(&side_plan)
+            .expect("side-input proof must carry a finite auxiliary frame");
+        let side_term = side_proof
+            .as_requirement()
+            .owner_terms
+            .first()
+            .expect("side-input proof must carry one frame owner")
+            .clone();
+        let mut side_scope = AttemptReservationShape::for_query_plan(&side_plan);
+        side_scope
+            .set_cugraph_side_input_phase_bytes(side_term.bytes())
+            .expect("side-input scope must retain its frame reservation");
+        let consumer_scope = AttemptReservationShape::for_query_plan(&plan);
+
+        let incomplete = AttemptReservationEnvelope::resolve_with_owner_terms(
+            &[producer_scope.clone(), consumer_scope.clone(), side_scope.clone()],
+            &[retained_output.clone(), source_stage, side_term.clone()],
+            reservation_policy(),
+        )
+        .expect("an unreferenced scheduled term must select the complete conservative fallback");
+        assert_eq!(incomplete.bound_derivation(), Some(AttemptBoundDerivation::ConservativeOwnerSum));
+
+        let incomplete_side_input = AttemptReservationEnvelope::resolve_with_owner_terms(
+            &[producer_scope, consumer_scope, side_scope],
+            &[retained_output, side_term],
+            reservation_policy(),
+        )
+        .expect("an unreferenced concurrent side-input term must use the conservative derivation");
+        assert_eq!(incomplete_side_input.bound_derivation(), Some(AttemptBoundDerivation::ConservativeOwnerSum));
+    }
+
+    #[test]
     fn invalid_retained_output_term_rejects_conservative_fallback() {
         let plan = source_stage_plan(graph_edge_schema());
         let proof = QueryPlanCapabilityProof::for_query_plan(&plan).expect("source plan must issue a proof");
         let owner_terms = proof.as_requirement().owner_terms.clone();
         let scope = canonical_execution_scope_fingerprint(&plan);
         let schedule = AttemptReservationSchedule::from_phase_term_ids(
-            Some(0),
-            None,
+            Vec::new(),
             vec![AttemptReservationProducerPhase::from_term_groups(vec![vec![
                 owner_terms.first().expect("source plan must carry one owner term").id().clone(),
             ]])],
+            AttemptReservationConsumerState::Passthrough,
             Vec::new(),
         );
         let mut producer = AttemptReservationShape::for_query_plan(&plan);
@@ -2815,5 +3458,31 @@ mod tests {
             &schedule(Some(u64::MAX), vec![schedule_occurrence("p", "p", Some(0), Some(0))], Some("c"), Some(1)),
             "consumer_stage_additional_peak_overflow",
         );
+    }
+
+    #[test]
+    fn ordered_schedule_reports_first_and_later_isolated_peak_overflow_occurrences() {
+        let first = schedule(
+            Some(u64::MAX),
+            vec![schedule_occurrence("first", "first", Some(1), Some(0))],
+            Some("consumer"),
+            Some(0),
+        );
+        let error = first.checked_fold().expect_err("the first producer isolated term must reject on overflow");
+        assert_eq!(error.fact_value("schedule_reason"), Some("producer_stage_isolated_peak_overflow"));
+        assert_eq!(error.fact_value("occurrence_id"), Some("first"));
+
+        let later = schedule(
+            Some(0),
+            vec![
+                schedule_occurrence("first", "first", Some(0), Some(u64::MAX)),
+                schedule_occurrence("later", "later", Some(1), Some(0)),
+            ],
+            Some("consumer"),
+            Some(0),
+        );
+        let error = later.checked_fold().expect_err("a later producer isolated term must reject on overflow");
+        assert_eq!(error.fact_value("schedule_reason"), Some("producer_stage_isolated_peak_overflow"));
+        assert_eq!(error.fact_value("occurrence_id"), Some("later"));
     }
 }

@@ -712,7 +712,7 @@ pub struct GraphMemoryEstimate {
 /// ledger's floor, capability, or fit proof. An engine-issued capability proof
 /// may retain its cold estimate as a soft immutable-grant target.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum GraphSourceStageLifetime {
+pub(crate) enum GraphSourceStageLifetime {
     /// The cold graph peak already owns the prepared edge frame emitted by the
     /// native source. The source diagnostic is not a second GPU allocation.
     SharedPreparedEdgeFrame,
@@ -810,6 +810,10 @@ impl GraphMemoryAdmissionEvidence {
     /// Returns the model-owned retained output row bound.
     pub fn retained_output_rows_upper_bound(&self) -> u64 {
         self.retained_output_bytes.row_count_upper_bound()
+    }
+
+    pub(crate) const fn source_stage_lifetime(&self) -> GraphSourceStageLifetime {
+        self.source_stage_lifetime
     }
 
     /// Composes the model's cold graph peak with the exact source-stage hint
@@ -4104,7 +4108,7 @@ mod tests {
         );
         assert_eq!(
             normalized.cold_model_with_source_stage_bytes(source_bytes).unwrap(),
-            source_bytes.saturating_add(normalized.cold_model_requested_bytes()),
+            source_bytes.checked_add(normalized.cold_model_requested_bytes()).unwrap(),
             "explicit normalization retains source and normalized graph input together"
         );
     }
