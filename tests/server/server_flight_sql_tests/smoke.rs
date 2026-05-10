@@ -195,6 +195,7 @@ async fn flight_sql_builder_shares_injected_backend_with_session_context() {
     declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
     config.gpu_device_profiles[0] = config.gpu_device_profiles[0].clone().with_max_active_attempts(1);
+    config.queue_policy = config.queue_policy.clone().with_max_queue_wait(Duration::from_secs(60));
     let backend = build_injected_test_backend(&mut config);
     let dir = tempfile::Builder::new().prefix("datafusion-nexus-flight-sql-shared-backend-").tempdir().unwrap();
     let parquet_path = dir.path().join("edges.parquet");
@@ -269,7 +270,11 @@ async fn backend_clone_installed_sessions_share_identity_queue_and_worker_pool_r
     let mut config = test_server_config();
     declare_test_gpu_ownership(&mut config);
     config.gpu_device_profiles[0] = config.gpu_device_profiles[0].clone().with_max_active_attempts(1);
-    config.queue_policy = config.queue_policy.clone().with_max_queued_attempts(2);
+    config.queue_policy = config
+        .queue_policy
+        .clone()
+        .with_max_queued_attempts(2)
+        .with_max_queue_wait(Duration::from_secs(60));
     let backend = NexusGpuBackend::from_server_config(&config).unwrap().expect("default server config is bounded");
     let first_backend = backend.clone();
     let second_backend = backend.clone();

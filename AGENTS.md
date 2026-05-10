@@ -4,25 +4,26 @@
 
 - Fix the owning abstraction or contract, not a failing query with an adapter
   workaround. Extend `cudf-nexus` or `cugraph-nexus` when the gap belongs there.
-- Keep changes scoped. Preserve unrelated worktree edits and avoid opportunistic
-  cleanup.
-- Preserve public behavior and contract tests unless the task changes them.
+- Keep changes scoped: preserve unrelated worktree edits, public behavior, and
+  contract tests unless the task changes them; avoid opportunistic cleanup.
+- Grow the system in layers: start from the smallest version that works end to
+  end, and add each capability on top of a product that already works; never
+  trade a working product for unfinished complexity.
 
 ## Subtractive development
 
-- Prefer extending existing code over adding parallel paths. About to add a
-  second way to do something? Stop and propose removing or consolidating the
-  first.
+- Prefer extending existing code over adding parallel paths and the smallest
+  change that fully solves the current requirement; net line count should
+  trend down or stay flat. About to add a second way to do something? Stop and
+  propose removing or consolidating the first.
 - Before writing new code for a non-trivial task, list the related existing
   files and functions; for each, state whether it should be extended, replaced,
   or left alone. Report before implementing.
-- Prefer the smallest change that fully solves the current requirement; net
-  line count should trend down or stay flat.
 - Never add speculative abstractions, configuration, or "just in case"
-  fallbacks. Every defensive branch must name a concrete scenario that actually
-  happens in this codebase; delete any that cannot.
-- Do not keep backward-compatibility layers or obsolete paths unless a contract
-  in this file requires them; remove them instead of stacking new code on top.
+  fallbacks; every defensive branch must name a concrete scenario that actually
+  happens in this codebase, and delete any that cannot. Remove obsolete or
+  backward-compatibility paths not required by a contract in this file instead
+  of stacking new code on top.
 - Before committing, re-read your own diff for anything now duplicated,
   superseded, unused, or overly defensive. Propose deletions as a separate
   cleanup commit, or fold them in when the scope is small and safe.
@@ -33,23 +34,21 @@
   comment to be understandable, rename things instead.
 - Comment only the non-obvious *why*: hidden constraints, workarounds, and
   business rules the code cannot express.
-- An explicit `drop()` in production code needs a one-line comment explaining
-  why the value cannot wait until end of scope (such as a lock window,
-  re-entrancy, or `RefCell` re-borrow); otherwise delete it rather than add it.
-  Test code is exempt.
+- An explicit `drop()` in production code needs a one-line comment on why the
+  value cannot wait until end of scope (lock window, re-entrancy, `RefCell`
+  re-borrow); otherwise delete the `drop()`. Test code is exempt.
 
 ## Project boundaries
 
-`datafusion-nexus` lowers supported DataFusion physical plans to
-`nexus-query-engine` IR and executes them with `cudf-nexus` and `cugraph-nexus`.
+`datafusion-nexus` lowers DataFusion physical plans to `nexus-query-engine` IR
+and executes them via `cudf-nexus` and `cugraph-nexus`. DataFusion-dependent
+code belongs in the root adapter; DataFusion-independent IR and execution
+belong in `crates/nexus-query-engine`.
 
-- DataFusion-dependent code belongs in the root adapter; DataFusion-independent
-  IR and execution belong in `crates/nexus-query-engine`.
-- `cudf-nexus` and `cugraph-nexus` are sibling path dependencies; DataFusion is pinned in
-  `Cargo.toml`.
-- Default members are the adapter, `nexus-workloads`, and
-  `nexus-query-engine`. Bench, tools, and examples are explicit non-default
-  members.
+- `cudf-nexus` and `cugraph-nexus` are sibling path dependencies; DataFusion is
+  pinned in `Cargo.toml`.
+- Default members are the adapter, `nexus-workloads`, and `nexus-query-engine`.
+  Bench, tools, and examples are explicit non-default members.
 - Linux only. MSRV is Rust 1.94; formatting requires nightly.
 
 ## Architecture contracts
@@ -60,9 +59,9 @@
 - Admission is capability-first: reject locally with structured reasons.
 - There is one bounded admission contract: the per-device ledger, immutable
   grants, and transactional envelopes. There is no strict/adaptive product
-  mode, tenant policy, grant band, or slot guarantee; preserved strict-named
-  and adaptive-named wire fields are canonical projections of the one
-  contract, not separate producers.
+  mode, tenant policy, grant band, or slot guarantee; strict- and adaptive-named
+  wire fields are canonical projections of the one contract, not separate
+  producers.
 - The reservation ledger is integer accounting, not a residency oracle; dropping
   a frame earlier does not change what it reports.
 - Model aggregate partial/final state explicitly. AVG is SUM + COUNT followed by
@@ -70,17 +69,10 @@
 
 ## Build and test
 
-Use `--all-features` everywhere, in every inner-loop command. Cargo keys build
-artifacts by feature unification, so alternating between
-`--no-default-features` and `--all-features` across commands in the same edit
-loop does not reuse the other set's artifacts and pays a fresh build of the
-~400-unit dependency graph each way. Staying in one feature set keeps every
-command below on the same artifacts.
-
-Package selection is not part of this: `-p <crate> --all-features` and
-`--workspace --all-features` were measured to leave each other's artifacts
-valid (0 units rebuilt in both directions), so the targeted `-p` loops below
-cost nothing extra against the workspace-wide gate.
+Use `--all-features` in every command: cargo keys build artifacts by feature
+unification, so mixing feature sets rebuilds the ~400-unit dependency graph
+each way. `-p <crate>` and `--workspace` share artifacts, so the targeted `-p`
+loops below cost nothing extra against the workspace gate.
 
 ```bash
 # Build and lint, any package
@@ -116,7 +108,9 @@ partial and must not be reported as full validation.
 
 ## Testing and repository policy
 
-- Serialize GPU work with `flock /tmp/cudf-gpu.lock`.
+- Serialize direct GPU commands with `flock /tmp/cudf-gpu.lock`. Never wrap
+  `scripts/check_all.sh` in that flock: it acquires the same lock per GPU
+  phase internally, so an outer hold self-deadlocks the gate. Run the gate bare.
 - After a full gate begins, a late repair may re-run only phases whose
   source-state hash changed, plus every GPU-locked phase unconditionally;
   rerunning only the changed subset never establishes full validation.
@@ -135,9 +129,8 @@ partial and must not be reported as full validation.
 
 ## Public contracts
 
-- Preserve report row schemas, TSV ordering, and `NATIVE_*_TSV_HEADER` constants.
-- Preserve `NATIVE_NEXUS_DATAFUSION_METRIC_NAMES` and native execution-plan
-  wrappers.
+- Preserve report row schemas, TSV ordering, `NATIVE_*_TSV_HEADER` constants,
+  `NATIVE_NEXUS_DATAFUSION_METRIC_NAMES`, and native execution-plan wrappers.
 - TSV, DataFusion metrics, and `QueryMetrics` are projections of the runtime
   observation snapshot, not a second event store.
 - Preserve workload environment variables and item shapes.

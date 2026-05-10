@@ -617,7 +617,7 @@ fn write_single_batch_parquet(path: &Path, schema: Arc<Schema>, batch: RecordBat
 
 #[test]
 fn bounded_stddev_join_aggregate_keeps_exact_and_tolerant_statistical_contracts_separate() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let runtime = backend_runtime();
     let dir = unique_temp_dir("nexus-query-engine-bounded-exact-stddev-join-aggregate");
     let left_path = dir.join("lineitem.parquet");
     let right_path = dir.join("orders.parquet");
