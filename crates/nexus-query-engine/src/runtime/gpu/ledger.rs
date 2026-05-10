@@ -36,7 +36,7 @@ use super::DeviceResourceProfile;
 use crate::{
     admission::AttemptRequirement,
     error::{QueryError, QueryErrorCode, Result},
-    observability::AdmissionRequestId,
+    observability::{AdmissionRequestId, AttemptId},
     runtime::context::QueryServiceResourceEpoch,
 };
 
@@ -191,6 +191,13 @@ pub struct DeviceLedgerGrantRow {
     pub live_reserved_bytes: u64,
 }
 
+/// Immutable identity assigned when a device ledger commits one attempt grant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct GrantIdentity {
+    pub attempt_id: AttemptId,
+    pub generation: u64,
+}
+
 /// The ledger mutation that advanced an observation sequence.
 ///
 /// A transition observer receives the matching [`LedgerSnapshot`] while the
@@ -319,7 +326,7 @@ impl fmt::Debug for DeviceLedgerInner {
 #[derive(Debug)]
 struct DeviceLedgerState {
     sequence: u64,
-    next_grant_id: u64,
+    next_grant_generation: u64,
     grants: BTreeMap<u64, ActiveGrant>,
     protection: Option<SlotProtection>,
     health: DeviceAdmissionHealth,
@@ -352,7 +359,7 @@ impl DeviceLedger {
                 profile,
                 state: Mutex::new(DeviceLedgerState {
                     sequence: 0,
-                    next_grant_id: 1,
+                    next_grant_generation: 1,
                     grants: BTreeMap::new(),
                     protection: None,
                     health: DeviceAdmissionHealth::Open,
@@ -395,8 +402,9 @@ impl DeviceLedger {
         configured_floor_bytes: u64,
         soft_working_set_hint_bytes: u64,
     ) -> Result<Option<MemoryGrant>> {
-        self.try_admit(
+        self.try_admit_for_attempt(
             waiter_id,
+            AttemptId::mint(),
             &AttemptRequirement {
                 configured_floor_bytes,
                 capability_floor_raise_bytes: 0,
@@ -721,7 +729,7 @@ impl DeviceLedger {
     }
 
     /// Returns whether the candidate with `required_floor_bytes` could be
-    /// admitted right now (same equation as [`Self::try_admit`]).
+    /// admitted right now (same equation as [`Self::try_admit_for_attempt`]).
     #[cfg(test)]
     pub(crate) fn candidate_max_new_grant_bytes(
         &self,
@@ -742,9 +750,10 @@ impl DeviceLedger {
     /// protected reserve and is never subtracted twice. Cache-internal
     /// evictable bytes reduce the immediately grantable headroom whenever a
     /// resident cache is configured.
-    pub(crate) fn try_admit(
+    pub(crate) fn try_admit_for_attempt(
         &self,
         waiter_id: AdmissionRequestId,
+        attempt_id: AttemptId,
         requirement: &AttemptRequirement,
     ) -> Result<Option<MemoryGrant>> {
         let required_floor = self.required_floor_bytes_for(requirement)?;
@@ -769,48 +778,67 @@ impl DeviceLedger {
         if max_new_grant < required_floor {
             return Ok(None);
         }
-        Ok(Some(self.commit_grant_locked(
+        self.commit_grant_locked(
             &mut state,
             waiter_id,
+            attempt_id,
             requirement,
             required_floor,
             max_new_grant,
             is_protected,
-        )))
+        )
+        .map(Some)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn try_admit(
+        &self,
+        waiter_id: AdmissionRequestId,
+        requirement: &AttemptRequirement,
+    ) -> Result<Option<MemoryGrant>> {
+        self.try_admit_for_attempt(waiter_id, AttemptId::mint(), requirement)
     }
 
     fn commit_grant_locked(
         &self,
         state: &mut DeviceLedgerState,
         waiter_id: AdmissionRequestId,
+        attempt_id: AttemptId,
         requirement: &AttemptRequirement,
         required_floor: u64,
         grant_ceiling: u64,
         is_protected: bool,
-    ) -> MemoryGrant {
+    ) -> Result<MemoryGrant> {
         // A request with no soft estimate has no estimate-derived bound: the
         // grant is the full candidate maximum, clamped below by its floor.
         let grant_bytes =
             requirement.soft_working_set_hint_bytes.unwrap_or(grant_ceiling).clamp(required_floor, grant_ceiling);
+        let generation = state.next_grant_generation;
+        let next_grant_generation = generation.checked_add(1).ok_or_else(|| {
+            QueryError::new(QueryErrorCode::Internal, OPERATION, "device ledger grant generation exhausted")
+                .with_fact("reason", "grant_generation_exhausted")
+                .with_fact("device_ordinal", self.inner.profile.device_ordinal)
+                .with_fact("attempt_id", attempt_id)
+        })?;
+        let identity = GrantIdentity { attempt_id, generation };
         if is_protected {
             state.protection = None;
         }
-        let grant_id = state.next_grant_id;
-        state.next_grant_id = state.next_grant_id.saturating_add(1);
+        state.next_grant_generation = next_grant_generation;
         state
             .grants
-            .insert(grant_id, ActiveGrant { admission_request_id: waiter_id, grant_bytes, live_reserved_bytes: 0 });
+            .insert(generation, ActiveGrant { admission_request_id: waiter_id, grant_bytes, live_reserved_bytes: 0 });
         self.bump_sequence_and_notify_locked(state, LedgerTransitionKind::GrantAdmitted);
-        MemoryGrant {
+        Ok(MemoryGrant {
             inner: Arc::new(MemoryGrantInner {
                 ledger: Arc::clone(&self.inner),
-                grant_id,
+                identity,
                 admission_request_id: waiter_id,
                 grant_bytes,
                 live_reserved_bytes: Default::default(),
             }),
             resource_epoch: None,
-        }
+        })
     }
 
     /// Installs or refreshes the single slot protection for `waiter_id`.
@@ -1064,7 +1092,7 @@ struct MemoryGrantLiveReservationInner {
 
 struct MemoryGrantInner {
     ledger: Arc<DeviceLedgerInner>,
-    grant_id: u64,
+    identity: GrantIdentity,
     admission_request_id: AdmissionRequestId,
     grant_bytes: u64,
     live_reserved_bytes: std::sync::atomic::AtomicU64,
@@ -1072,7 +1100,7 @@ struct MemoryGrantInner {
 
 impl Drop for MemoryGrantInner {
     fn drop(&mut self) {
-        DeviceLedger { inner: Arc::clone(&self.ledger) }.release_grant(self.grant_id);
+        DeviceLedger { inner: Arc::clone(&self.ledger) }.release_grant(self.identity.generation);
     }
 }
 
@@ -1087,7 +1115,12 @@ impl MemoryGrant {
 
     /// Unique ledger-local grant id.
     pub fn grant_id(&self) -> u64 {
-        self.inner.grant_id
+        self.inner.identity.generation
+    }
+
+    /// Immutable physical-attempt identity committed by the selected ledger.
+    pub fn identity(&self) -> GrantIdentity {
+        self.inner.identity
     }
 
     /// Service-local admission request that owns this grant.
@@ -1123,7 +1156,7 @@ impl MemoryGrant {
         self.check_resource_epoch("nexus_query_engine.runtime.gpu.memory_grant.remaining_live_reservation_bytes")?;
         let ledger = DeviceLedger { inner: Arc::clone(&self.inner.ledger) };
         let state = ledger.lock_state("remaining_live_reservation_bytes")?;
-        let Some(active) = state.grants.get(&self.inner.grant_id) else {
+        let Some(active) = state.grants.get(&self.inner.identity.generation) else {
             return Ok(0);
         };
         Ok(active.grant_bytes.saturating_sub(active.live_reserved_bytes))
@@ -1137,7 +1170,7 @@ impl MemoryGrant {
         }
         let ledger = DeviceLedger { inner: Arc::clone(&self.inner.ledger) };
         let mut state = ledger.lock_state("try_reserve_live_bytes")?;
-        let Some(active) = state.grants.get_mut(&self.inner.grant_id) else {
+        let Some(active) = state.grants.get_mut(&self.inner.identity.generation) else {
             return Ok(false);
         };
         let Some(next_live_reserved_bytes) = active.live_reserved_bytes.checked_add(bytes) else {
@@ -1174,7 +1207,7 @@ impl MemoryGrant {
 
     /// Applies one exact release while the ledger state lock is held.
     fn release_locked(&self, ledger: &DeviceLedger, state: &mut DeviceLedgerState, bytes: u64) {
-        let Some(active) = state.grants.get_mut(&self.inner.grant_id) else {
+        let Some(active) = state.grants.get_mut(&self.inner.identity.generation) else {
             return;
         };
         let Some(next_live_reserved_bytes) = active.live_reserved_bytes.checked_sub(bytes) else {
@@ -1273,7 +1306,7 @@ impl Drop for MemoryGrantLiveReservationInner {
 impl fmt::Debug for MemoryGrant {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("MemoryGrant")
-            .field("grant_id", &self.inner.grant_id)
+            .field("identity", &self.inner.identity)
             .field("admission_request_id", &self.inner.admission_request_id)
             .field("grant_bytes", &self.inner.grant_bytes)
             .field("live_reserved_bytes", &self.live_reserved_bytes())

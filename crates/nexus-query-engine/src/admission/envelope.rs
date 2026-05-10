@@ -28,51 +28,103 @@ use crate::{
 
 const GRAPH_ATTEMPT_COMPLETE_PHASE_UNMODELED_REASON: &str = "graph_attempt_complete_phase_unmodeled";
 
-/// One ordered graph-producer occurrence in a composed attempt.
+fn admitted_manifest_shape<'a>(
+    scopes: &'a [AttemptReservationShape],
+    schedule: Option<&AttemptReservationSchedule>,
+) -> Result<&'a AttemptReservationShape> {
+    let manifests = scopes.iter().filter(|scope| !scope.producer_occurrences.is_empty()).collect::<Vec<_>>();
+    let [manifest] = manifests.as_slice() else {
+        let reason = if manifests.is_empty() { "missing_admitted_manifest" } else { "duplicate_admitted_manifest" };
+        return Err(graph_schedule_error(reason, None, Some("manifest")));
+    };
+    if let Some(schedule) = schedule
+        && !manifest.ordered_schedule.as_ref().is_some_and(|attached| attached == schedule)
+    {
+        return Err(graph_schedule_error("missing_admitted_manifest", None, Some("manifest")));
+    }
+    Ok(manifest)
+}
+
+/// One ordered graph-producer occurrence in the mandatory composed-attempt
+/// identity core.
 ///
-/// Structural plan scopes are deliberately carried alongside an explicit
-/// occurrence identifier.  Equal plans therefore remain distinct allocation
-/// owners when their result handles are retained through the consumer.
+/// Equal plans remain distinct allocation owners because occurrence identity
+/// is carried separately from the structural execution scope.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct AttemptReservationProducerOccurrence {
     occurrence_id: String,
     execution_scope_fingerprint: String,
+    retained_output_term_id: OwnerTermId,
+}
+
+impl AttemptReservationProducerOccurrence {
+    pub(crate) fn occurrence_id(&self) -> &str {
+        &self.occurrence_id
+    }
+
+    pub(crate) fn retained_output_term_id(&self) -> &OwnerTermId {
+        &self.retained_output_term_id
+    }
+
+    pub(crate) fn from_term_id(
+        occurrence_id: impl Into<String>,
+        execution_scope_fingerprint: impl Into<String>,
+        retained_output_term_id: OwnerTermId,
+    ) -> Self {
+        Self {
+            occurrence_id: occurrence_id.into(),
+            execution_scope_fingerprint: execution_scope_fingerprint.into(),
+            retained_output_term_id,
+        }
+    }
+
+    pub(crate) fn validate_retained_output_term(&self, term: &AllocationOwnerTerm) -> Result<()> {
+        if !term.is_retained_output() {
+            return Err(graph_schedule_error(
+                "retained_output_term_role_invalid",
+                Some(&self.occurrence_id),
+                Some("retained_output"),
+            ));
+        }
+        let expected_occurrence = format!("composed:{}", self.occurrence_id);
+        let actual_occurrence = term.id().occurrence_label();
+        if actual_occurrence != expected_occurrence {
+            return Err(graph_schedule_error(
+                "retained_output_term_occurrence_mismatch",
+                Some(&self.occurrence_id),
+                Some("retained_output"),
+            )
+            .with_fact("expected_occurrence", expected_occurrence)
+            .with_fact("actual_occurrence", actual_occurrence));
+        }
+        if term.id().execution_scope_fingerprint() != self.execution_scope_fingerprint {
+            return Err(graph_schedule_error(
+                "retained_output_term_scope_mismatch",
+                Some(&self.occurrence_id),
+                Some("retained_output"),
+            )
+            .with_fact("expected_scope", &self.execution_scope_fingerprint)
+            .with_fact("actual_scope", term.id().execution_scope_fingerprint()));
+        }
+        Ok(())
+    }
+}
+
+/// Optional ordered phase evidence attached to the mandatory occurrence core.
+/// A conservative owner-sum derivation intentionally has no phase rows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AttemptReservationProducerPhase {
     isolated_peak_term_groups: Vec<Vec<OwnerTermId>>,
-    retained_output_term_id: Option<OwnerTermId>,
     #[cfg(test)]
     isolated_peak_bytes: Option<u64>,
     #[cfg(test)]
     retained_output_bytes: Option<u64>,
 }
 
-impl AttemptReservationProducerOccurrence {
-    /// Builds one occurrence from engine-issued owner-term identities.
-    #[cfg(test)]
-    pub(crate) fn from_term_ids(
-        occurrence_id: impl Into<String>,
-        execution_scope_fingerprint: impl Into<String>,
-        isolated_peak_term_ids: Vec<OwnerTermId>,
-        retained_output_term_id: Option<OwnerTermId>,
-    ) -> Self {
-        Self::from_term_groups(
-            occurrence_id,
-            execution_scope_fingerprint,
-            vec![isolated_peak_term_ids],
-            retained_output_term_id,
-        )
-    }
-
-    pub(crate) fn from_term_groups(
-        occurrence_id: impl Into<String>,
-        execution_scope_fingerprint: impl Into<String>,
-        isolated_peak_term_groups: Vec<Vec<OwnerTermId>>,
-        retained_output_term_id: Option<OwnerTermId>,
-    ) -> Self {
+impl AttemptReservationProducerPhase {
+    pub(crate) fn from_term_groups(isolated_peak_term_groups: Vec<Vec<OwnerTermId>>) -> Self {
         Self {
-            occurrence_id: occurrence_id.into(),
-            execution_scope_fingerprint: execution_scope_fingerprint.into(),
             isolated_peak_term_groups,
-            retained_output_term_id,
             #[cfg(test)]
             isolated_peak_bytes: None,
             #[cfg(test)]
@@ -81,20 +133,8 @@ impl AttemptReservationProducerOccurrence {
     }
 
     #[cfg(test)]
-    pub(crate) fn new(
-        occurrence_id: impl Into<String>,
-        execution_scope_fingerprint: impl Into<String>,
-        isolated_peak_bytes: Option<u64>,
-        retained_output_bytes: Option<u64>,
-    ) -> Self {
-        Self {
-            occurrence_id: occurrence_id.into(),
-            execution_scope_fingerprint: execution_scope_fingerprint.into(),
-            isolated_peak_term_groups: Vec::new(),
-            retained_output_term_id: None,
-            isolated_peak_bytes,
-            retained_output_bytes,
-        }
+    fn new(isolated_peak_bytes: Option<u64>, retained_output_bytes: Option<u64>) -> Self {
+        Self { isolated_peak_term_groups: Vec::new(), isolated_peak_bytes, retained_output_bytes }
     }
 }
 
@@ -109,26 +149,23 @@ impl AttemptReservationProducerOccurrence {
 pub(crate) struct AttemptReservationSchedule {
     attempt_wide_fixed_bytes: Option<u64>,
     attempt_wide_fixed_term_id: Option<OwnerTermId>,
-    producer_occurrences: Vec<AttemptReservationProducerOccurrence>,
-    consumer_scope_fingerprint: Option<String>,
+    producer_phases: Vec<AttemptReservationProducerPhase>,
     consumer_peak_term_ids: Vec<OwnerTermId>,
     #[cfg(test)]
     consumer_additional_peak_bytes: Option<u64>,
 }
 
 impl AttemptReservationSchedule {
-    pub(crate) fn from_term_ids(
+    pub(crate) fn from_phase_term_ids(
         attempt_wide_fixed_bytes: Option<u64>,
         attempt_wide_fixed_term_id: Option<OwnerTermId>,
-        producer_occurrences: Vec<AttemptReservationProducerOccurrence>,
-        consumer_scope_fingerprint: Option<String>,
+        producer_phases: Vec<AttemptReservationProducerPhase>,
         consumer_peak_term_ids: Vec<OwnerTermId>,
     ) -> Self {
         Self {
             attempt_wide_fixed_bytes,
             attempt_wide_fixed_term_id,
-            producer_occurrences,
-            consumer_scope_fingerprint,
+            producer_phases,
             consumer_peak_term_ids,
             #[cfg(test)]
             consumer_additional_peak_bytes: Some(0),
@@ -138,41 +175,20 @@ impl AttemptReservationSchedule {
     #[cfg(test)]
     pub(crate) fn new(
         attempt_wide_fixed_bytes: Option<u64>,
-        producer_occurrences: Vec<AttemptReservationProducerOccurrence>,
-        consumer_scope_fingerprint: Option<String>,
+        producer_phases: Vec<AttemptReservationProducerPhase>,
         consumer_additional_peak_bytes: Option<u64>,
     ) -> Self {
         Self {
             attempt_wide_fixed_bytes,
             attempt_wide_fixed_term_id: None,
-            producer_occurrences,
-            consumer_scope_fingerprint,
+            producer_phases,
             consumer_peak_term_ids: Vec::new(),
             consumer_additional_peak_bytes,
         }
     }
 
-    #[cfg(test)]
-    pub(crate) fn producer_occurrences(&self) -> &[AttemptReservationProducerOccurrence] {
-        &self.producer_occurrences
-    }
-
-    fn scope_counts(&self) -> std::collections::HashMap<&str, usize> {
-        let mut counts = std::collections::HashMap::with_capacity(self.producer_occurrences.len() + 1);
-        for scope in self
-            .producer_occurrences
-            .iter()
-            .map(|occurrence| occurrence.execution_scope_fingerprint.as_str())
-            .chain(self.consumer_scope_fingerprint.as_deref())
-        {
-            *counts.entry(scope).or_default() += 1;
-        }
-        counts
-    }
-
-    #[cfg(test)]
-    pub(crate) fn checked_fold(&self) -> Result<u64> {
-        self.checked_fold_with_scopes(&[])
+    fn producer_phase_count_internal(&self) -> usize {
+        self.producer_phases.len()
     }
 
     fn checked_fold_with_scopes(&self, scopes: &[AttemptReservationShape]) -> Result<u64> {
@@ -185,20 +201,35 @@ impl AttemptReservationSchedule {
         owner_terms: &[AllocationOwnerTerm],
     ) -> Result<u64> {
         let fixed = self.fixed_bytes(owner_terms)?;
-        if self.producer_occurrences.is_empty() {
+        if self.producer_phases.is_empty() {
             return Err(graph_schedule_error("missing_producer_evidence", None, None));
         }
-        if self.consumer_scope_fingerprint.is_none() {
-            return Err(graph_schedule_error("missing_consumer_scope", None, None));
+        let manifest = self.manifest_shape(scopes)?;
+        manifest.validate_manifest_core()?;
+        let actual_scope_counts =
+            scopes.iter().fold(std::collections::HashMap::<&str, usize>::new(), |mut counts, scope| {
+                *counts.entry(scope.execution_scope_fingerprint()).or_default() += 1;
+                counts
+            });
+        if manifest
+            .manifest_scope_counts()
+            .iter()
+            .any(|(scope, expected)| actual_scope_counts.get(scope).copied().unwrap_or_default() < *expected)
+        {
+            return Err(graph_schedule_error("schedule_scope_coverage_mismatch", None, Some("scope_coverage")));
         }
-        let consumer_peak = self.consumer_peak_bytes(owner_terms)?;
-        self.validate_occurrence_ids_and_scopes(scopes)?;
+        if self.producer_phases.len() != manifest.producer_occurrences.len() {
+            return Err(graph_schedule_error("producer_phase_row_count_mismatch", None, Some("schedule"))
+                .with_fact("producer_phase_row_count", self.producer_phases.len())
+                .with_fact("producer_occurrence_count", manifest.producer_occurrences.len()));
+        }
+        let consumer_peak = self.consumer_peak_bytes(owner_terms, manifest.execution_scope_fingerprint())?;
 
         let mut retained_prior = 0_u64;
         let mut complete_peak = 0_u64;
-        for occurrence in &self.producer_occurrences {
-            let isolated_peak = self.producer_isolated_peak_bytes(occurrence, owner_terms)?;
-            let retained_output = self.producer_retained_output_bytes(occurrence, owner_terms)?;
+        for (occurrence, phase) in manifest.producer_occurrences.iter().zip(&self.producer_phases) {
+            let isolated_peak = self.producer_isolated_peak_bytes(occurrence, phase, owner_terms)?;
+            let retained_output = self.producer_retained_output_bytes(occurrence, phase, owner_terms)?;
             let producer_stage = fixed
                 .checked_add(retained_prior)
                 .ok_or_else(|| {
@@ -263,11 +294,12 @@ impl AttemptReservationSchedule {
     fn producer_isolated_peak_bytes(
         &self,
         occurrence: &AttemptReservationProducerOccurrence,
+        phase: &AttemptReservationProducerPhase,
         owner_terms: &[AllocationOwnerTerm],
     ) -> Result<u64> {
-        if !occurrence.isolated_peak_term_groups.is_empty() {
+        if !phase.isolated_peak_term_groups.is_empty() {
             let mut isolated_peak = 0_u64;
-            for group in &occurrence.isolated_peak_term_groups {
+            for group in &phase.isolated_peak_term_groups {
                 let mut seen = HashSet::with_capacity(group.len());
                 if group.iter().any(|id| !seen.insert(id)) {
                     return Err(graph_schedule_error(
@@ -288,7 +320,7 @@ impl AttemptReservationSchedule {
         }
         #[cfg(test)]
         {
-            occurrence.isolated_peak_bytes.ok_or_else(|| {
+            phase.isolated_peak_bytes.ok_or_else(|| {
                 graph_schedule_error("missing_producer_isolated_peak", Some(&occurrence.occurrence_id), None)
             })
         }
@@ -301,38 +333,28 @@ impl AttemptReservationSchedule {
     fn producer_retained_output_bytes(
         &self,
         occurrence: &AttemptReservationProducerOccurrence,
+        _phase: &AttemptReservationProducerPhase,
         owner_terms: &[AllocationOwnerTerm],
     ) -> Result<u64> {
-        if let Some(term_id) = &occurrence.retained_output_term_id {
-            let term = owner_terms.iter().find(|term| term.id() == term_id).ok_or_else(|| {
+        #[cfg(test)]
+        if owner_terms.is_empty() {
+            return _phase.retained_output_bytes.ok_or_else(|| {
+                graph_schedule_error("missing_producer_retained_output", Some(&occurrence.occurrence_id), None)
+            });
+        }
+        let term =
+            owner_terms.iter().find(|term| term.id() == &occurrence.retained_output_term_id).ok_or_else(|| {
                 graph_schedule_error(
                     "missing_owner_term_reference",
                     Some(&occurrence.occurrence_id),
                     Some("retained_output"),
                 )
             })?;
-            if !term.is_retained_output() {
-                return Err(graph_schedule_error(
-                    "retained_output_term_role_invalid",
-                    Some(&occurrence.occurrence_id),
-                    Some("retained_output"),
-                ));
-            }
-            return Ok(term.bytes());
-        }
-        #[cfg(test)]
-        {
-            occurrence.retained_output_bytes.ok_or_else(|| {
-                graph_schedule_error("missing_producer_retained_output", Some(&occurrence.occurrence_id), None)
-            })
-        }
-        #[cfg(not(test))]
-        {
-            Err(graph_schedule_error("missing_producer_retained_output", Some(&occurrence.occurrence_id), None))
-        }
+        occurrence.validate_retained_output_term(term)?;
+        Ok(term.bytes())
     }
 
-    fn consumer_peak_bytes(&self, owner_terms: &[AllocationOwnerTerm]) -> Result<u64> {
+    fn consumer_peak_bytes(&self, owner_terms: &[AllocationOwnerTerm], _consumer_scope: &str) -> Result<u64> {
         if !self.consumer_peak_term_ids.is_empty() {
             let mut seen = HashSet::with_capacity(self.consumer_peak_term_ids.len());
             if self.consumer_peak_term_ids.iter().any(|id| !seen.insert(id)) {
@@ -352,11 +374,7 @@ impl AttemptReservationSchedule {
         }
         #[cfg(not(test))]
         {
-            if self
-                .consumer_scope_fingerprint
-                .as_deref()
-                .is_some_and(|scope| owner_terms.iter().any(|term| term.is_consumer_scope(scope)))
-            {
+            if owner_terms.iter().any(|term| term.is_consumer_scope(_consumer_scope)) {
                 return Err(graph_schedule_error("missing_consumer_peak_terms", None, Some("consumer_peak")));
             }
             Ok(0)
@@ -392,12 +410,20 @@ impl AttemptReservationSchedule {
         })
     }
 
-    pub(crate) fn validate_term_references(&self, owner_terms: &[AllocationOwnerTerm]) -> Result<()> {
+    pub(crate) fn validate_term_references(
+        &self,
+        manifest: &AttemptReservationShape,
+        owner_terms: &[AllocationOwnerTerm],
+    ) -> Result<()> {
         if let Some(term_id) = &self.attempt_wide_fixed_term_id {
             self.resolve_term_bytes(term_id, owner_terms, None, "attempt_wide_fixed")?;
         }
-        for occurrence in &self.producer_occurrences {
-            for group in &occurrence.isolated_peak_term_groups {
+        manifest.validate_manifest_core()?;
+        if self.producer_phases.len() != manifest.producer_occurrences.len() {
+            return Err(graph_schedule_error("producer_phase_row_count_mismatch", None, Some("schedule")));
+        }
+        for (occurrence, phase) in manifest.producer_occurrences.iter().zip(&self.producer_phases) {
+            for group in &phase.isolated_peak_term_groups {
                 for term_id in group {
                     self.resolve_term_bytes(
                         term_id,
@@ -407,28 +433,15 @@ impl AttemptReservationSchedule {
                     )?;
                 }
             }
-            if let Some(term_id) = &occurrence.retained_output_term_id {
-                let term = owner_terms.iter().find(|term| term.id() == term_id).ok_or_else(|| {
+            let term =
+                owner_terms.iter().find(|term| term.id() == &occurrence.retained_output_term_id).ok_or_else(|| {
                     graph_schedule_error(
                         "missing_owner_term_reference",
                         Some(&occurrence.occurrence_id),
                         Some("retained_output"),
                     )
                 })?;
-                if !term.is_retained_output() {
-                    return Err(graph_schedule_error(
-                        "retained_output_term_role_invalid",
-                        Some(&occurrence.occurrence_id),
-                        Some("retained_output"),
-                    ));
-                }
-            } else {
-                return Err(graph_schedule_error(
-                    "missing_producer_retained_output",
-                    Some(&occurrence.occurrence_id),
-                    None,
-                ));
-            }
+            occurrence.validate_retained_output_term(term)?;
         }
         for term_id in &self.consumer_peak_term_ids {
             self.resolve_term_bytes(term_id, owner_terms, None, "consumer_peak")?;
@@ -450,17 +463,15 @@ impl AttemptReservationSchedule {
         // is published.
         let complete_peak = self.checked_fold_with_inventory(scopes, owner_terms)?;
         let fixed = self.fixed_bytes(owner_terms)?;
-        let consumer_scope = self
-            .consumer_scope_fingerprint
-            .clone()
-            .ok_or_else(|| graph_schedule_error("missing_consumer_scope", None, None))?;
-        let consumer_additional_peak_bytes = self.consumer_peak_bytes(owner_terms)?;
+        let manifest = self.manifest_shape(scopes)?;
+        let consumer_scope = manifest.execution_scope_fingerprint().to_owned();
+        let consumer_additional_peak_bytes = self.consumer_peak_bytes(owner_terms, &consumer_scope)?;
 
         let mut retained_prior = 0_u64;
-        let mut producer_occurrences = Vec::with_capacity(self.producer_occurrences.len());
-        for occurrence in &self.producer_occurrences {
-            let isolated_peak_bytes = self.producer_isolated_peak_bytes(occurrence, owner_terms)?;
-            let retained_output_bytes = self.producer_retained_output_bytes(occurrence, owner_terms)?;
+        let mut producer_occurrences = Vec::with_capacity(manifest.producer_occurrences.len());
+        for (occurrence, phase) in manifest.producer_occurrences.iter().zip(&self.producer_phases) {
+            let isolated_peak_bytes = self.producer_isolated_peak_bytes(occurrence, phase, owner_terms)?;
+            let retained_output_bytes = self.producer_retained_output_bytes(occurrence, phase, owner_terms)?;
             let stage_peak_bytes = fixed
                 .checked_add(retained_prior)
                 .and_then(|value| value.checked_add(isolated_peak_bytes))
@@ -522,80 +533,32 @@ impl AttemptReservationSchedule {
         })
     }
 
-    fn validate_occurrence_ids_and_scopes(&self, scopes: &[AttemptReservationShape]) -> Result<()> {
-        let mut occurrence_ids = HashSet::with_capacity(self.producer_occurrences.len());
-        for occurrence in &self.producer_occurrences {
-            if occurrence.occurrence_id.is_empty() {
-                return Err(graph_schedule_error("missing_producer_occurrence_id", None, None));
-            }
-            if !occurrence_ids.insert(&occurrence.occurrence_id) {
-                return Err(graph_schedule_error(
-                    "duplicate_producer_occurrence_id",
-                    Some(&occurrence.occurrence_id),
-                    None,
-                ));
-            }
-            if occurrence.execution_scope_fingerprint.is_empty() {
-                return Err(graph_schedule_error(
-                    "missing_producer_occurrence_scope",
-                    Some(&occurrence.occurrence_id),
-                    None,
-                ));
-            }
-        }
-
-        let Some(consumer_scope) = self.consumer_scope_fingerprint.as_deref() else {
-            return Err(graph_schedule_error("missing_consumer_scope", None, None));
-        };
-        if consumer_scope.is_empty() {
-            return Err(graph_schedule_error("missing_consumer_scope", None, None));
-        }
-        if scopes.is_empty() {
-            return Ok(());
-        }
-
-        let mut expected_scope_counts = std::collections::HashMap::<&str, usize>::new();
-        for scope in self
-            .producer_occurrences
-            .iter()
-            .map(|occurrence| occurrence.execution_scope_fingerprint.as_str())
-            .chain(std::iter::once(consumer_scope))
-        {
-            *expected_scope_counts.entry(scope).or_default() += 1;
-        }
-        let mut actual_scope_counts = std::collections::HashMap::<&str, usize>::new();
-        for scope in scopes.iter().map(|scope| scope.execution_scope_fingerprint.as_str()) {
-            *actual_scope_counts.entry(scope).or_default() += 1;
-        }
-        if expected_scope_counts
-            .iter()
-            .any(|(scope, expected)| actual_scope_counts.get(scope).copied().unwrap_or_default() < *expected)
-        {
-            return Err(graph_schedule_error("schedule_scope_coverage_mismatch", None, Some("scope_coverage")));
-        }
-        Ok(())
+    fn manifest_shape<'a>(&self, scopes: &'a [AttemptReservationShape]) -> Result<&'a AttemptReservationShape> {
+        admitted_manifest_shape(scopes, Some(self))
     }
 
-    fn validate_runtime(&self, consumer_plan: &QueryPlan, occurrence_ids: &[String]) -> Result<()> {
-        let expected_consumer_scope = self
-            .consumer_scope_fingerprint
-            .as_deref()
-            .ok_or_else(|| graph_schedule_error("missing_consumer_scope", None, Some("runtime")))?;
+    fn validate_runtime(
+        &self,
+        manifest: &AttemptReservationShape,
+        consumer_plan: &QueryPlan,
+        occurrence_ids: &[String],
+    ) -> Result<()> {
+        let expected_consumer_scope = manifest.execution_scope_fingerprint();
         if expected_consumer_scope != canonical_execution_scope_fingerprint(consumer_plan) {
             return Err(graph_schedule_error("runtime_consumer_scope_mismatch", None, Some("runtime")));
         }
-        if self.producer_occurrences.len() != occurrence_ids.len() {
+        if manifest.producer_occurrences.len() != occurrence_ids.len() {
             return Err(graph_schedule_error("runtime_occurrence_count_mismatch", None, Some("runtime"))
-                .with_fact("scheduled_occurrence_count", self.producer_occurrences.len())
+                .with_fact("scheduled_occurrence_count", manifest.producer_occurrences.len())
                 .with_fact("runtime_occurrence_count", occurrence_ids.len()));
         }
-        for (scheduled, runtime) in self.producer_occurrences.iter().zip(occurrence_ids) {
+        for (scheduled, runtime) in manifest.producer_occurrences.iter().zip(occurrence_ids) {
             if scheduled.occurrence_id != *runtime {
                 return Err(graph_schedule_error("runtime_occurrence_order_mismatch", Some(runtime), Some("runtime"))
                     .with_fact("scheduled_occurrence_id", scheduled.occurrence_id.as_str()));
             }
         }
-        self.validate_occurrence_ids_and_scopes(&[])
+        manifest.validate_manifest_core()
     }
 }
 
@@ -688,7 +651,7 @@ pub(crate) struct AttemptReservationShape {
     sort_metadata: Option<crate::admission::requirement::SortMetadataDescriptor>,
     sort_rejection_reason: Option<String>,
     owner_term_rejection_reason: Option<String>,
-    retained_input_bindings: Vec<(String, OwnerTermId)>,
+    producer_occurrences: Vec<AttemptReservationProducerOccurrence>,
     ordered_schedule: Option<AttemptReservationSchedule>,
 }
 
@@ -710,7 +673,7 @@ impl AttemptReservationShape {
             sort_metadata: None,
             sort_rejection_reason: None,
             owner_term_rejection_reason: None,
-            retained_input_bindings: Vec::new(),
+            producer_occurrences: Vec::new(),
             ordered_schedule: None,
         }
     }
@@ -723,12 +686,14 @@ impl AttemptReservationShape {
         if self.ordered_schedule.is_some() {
             return Err(graph_schedule_error("duplicate_schedule_evidence", None, Some("schedule")));
         }
+        self.validate_manifest_core()?;
+        if schedule.producer_phase_count_internal() != self.producer_occurrences.len() {
+            return Err(graph_schedule_error("producer_phase_row_count_mismatch", None, Some("schedule"))
+                .with_fact("producer_phase_row_count", schedule.producer_phase_count_internal())
+                .with_fact("producer_occurrence_count", self.producer_occurrences.len()));
+        }
         self.ordered_schedule = Some(schedule);
         Ok(())
-    }
-
-    pub(crate) fn detach_ordered_schedule(&mut self) {
-        self.ordered_schedule = None;
     }
 
     pub(crate) fn ordered_schedule(&self) -> Option<&AttemptReservationSchedule> {
@@ -739,26 +704,56 @@ impl AttemptReservationShape {
         self.owner_term_rejection_reason.as_deref()
     }
 
-    pub(crate) fn set_retained_input_bindings(
+    pub(crate) fn set_producer_occurrences(
         &mut self,
-        bindings: impl IntoIterator<Item = (String, OwnerTermId)>,
+        occurrences: impl IntoIterator<Item = AttemptReservationProducerOccurrence>,
     ) -> Result<()> {
-        if !self.retained_input_bindings.is_empty() {
-            return Err(graph_schedule_error("duplicate_retained_input_bindings", None, Some("retained_output")));
+        if !self.producer_occurrences.is_empty() {
+            return Err(graph_schedule_error("duplicate_producer_occurrence_rows", None, Some("manifest")));
         }
-        let mut seen = HashSet::new();
-        let bindings = bindings.into_iter().collect::<Vec<_>>();
-        if bindings.iter().any(|(occurrence_id, term_id)| {
-            occurrence_id.is_empty() || !seen.insert((occurrence_id.clone(), term_id.clone()))
-        }) {
-            return Err(graph_schedule_error("duplicate_retained_input_binding", None, Some("retained_output")));
-        }
-        self.retained_input_bindings = bindings;
+        self.producer_occurrences = occurrences.into_iter().collect();
+        self.validate_manifest_core()?;
         Ok(())
     }
 
-    pub(crate) fn retained_input_bindings(&self) -> &[(String, OwnerTermId)] {
-        &self.retained_input_bindings
+    pub(crate) fn producer_occurrences(&self) -> &[AttemptReservationProducerOccurrence] {
+        &self.producer_occurrences
+    }
+
+    pub(crate) fn validate_manifest_core(&self) -> Result<()> {
+        let mut occurrence_ids = HashSet::with_capacity(self.producer_occurrences.len());
+        for occurrence in &self.producer_occurrences {
+            if occurrence.occurrence_id.is_empty() {
+                return Err(graph_schedule_error("missing_producer_occurrence_id", None, Some("manifest")));
+            }
+            if !occurrence_ids.insert(&occurrence.occurrence_id) {
+                return Err(graph_schedule_error(
+                    "duplicate_producer_occurrence_id",
+                    Some(&occurrence.occurrence_id),
+                    Some("manifest"),
+                ));
+            }
+            if occurrence.execution_scope_fingerprint.is_empty() {
+                return Err(graph_schedule_error(
+                    "missing_producer_occurrence_scope",
+                    Some(&occurrence.occurrence_id),
+                    Some("manifest"),
+                ));
+            }
+        }
+        if self.execution_scope_fingerprint.is_empty() {
+            return Err(graph_schedule_error("missing_consumer_scope", None, Some("manifest")));
+        }
+        Ok(())
+    }
+
+    fn manifest_scope_counts(&self) -> std::collections::HashMap<&str, usize> {
+        let mut counts = std::collections::HashMap::with_capacity(self.producer_occurrences.len() + 1);
+        *counts.entry(self.execution_scope_fingerprint.as_str()).or_default() += 1;
+        for occurrence in &self.producer_occurrences {
+            *counts.entry(occurrence.execution_scope_fingerprint.as_str()).or_default() += 1;
+        }
+        counts
     }
 
     pub(crate) fn matches(&self, plan: &QueryPlan) -> bool {
@@ -998,7 +993,12 @@ impl AttemptReservationEnvelope {
         let mut required_phase_floor_bytes = 0_u64;
         let mut complete_phase_peak_bytes = Some(0_u64);
         let has_graph_memory_phase = scopes.iter().any(AttemptReservationShape::has_graph_memory_phase);
-        let mut scheduled_scope_counts = ordered_schedule.as_ref().map(AttemptReservationSchedule::scope_counts);
+        let mut scheduled_scope_counts = ordered_schedule
+            .as_ref()
+            .map(|schedule| {
+                admitted_manifest_shape(&scopes, Some(schedule)).map(AttemptReservationShape::manifest_scope_counts)
+            })
+            .transpose()?;
         for scope in &scopes {
             let resolved = scope.resolve(policy)?;
             let is_scheduled_scope = scheduled_scope_counts.as_mut().is_some_and(|counts| {
@@ -1139,6 +1139,20 @@ impl AttemptReservationEnvelope {
         self.bound_derivation
     }
 
+    fn required_grant_bound_bytes(&self) -> Result<u64> {
+        match self.bound_derivation {
+            Some(AttemptBoundDerivation::OrderedTimeline) => self
+                .ordered_schedule
+                .as_ref()
+                .ok_or_else(|| graph_schedule_error("ordered_schedule_missing", None, Some("bound")))?
+                .checked_fold_with_inventory(&self.scopes, &self.owner_terms),
+            Some(AttemptBoundDerivation::ConservativeOwnerSum) => self
+                .complete_phase_peak_bytes
+                .ok_or_else(|| graph_schedule_error("conservative_complete_phase_peak_missing", None, Some("bound"))),
+            None => Ok(self.complete_phase_peak_bytes.unwrap_or(self.required_phase_floor_bytes)),
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn ordered_schedule(&self) -> Option<&AttemptReservationSchedule> {
         self.ordered_schedule.as_ref()
@@ -1150,11 +1164,31 @@ impl AttemptReservationEnvelope {
         occurrence_ids: &[String],
         immutable_grant_bytes: u64,
     ) -> Result<()> {
-        let Some(schedule) = &self.ordered_schedule else {
-            return Err(graph_schedule_error("missing_admitted_schedule", None, Some("runtime")));
-        };
-        schedule.validate_runtime(consumer_plan, occurrence_ids)?;
-        let required_peak = schedule.checked_fold_with_inventory(&self.scopes, &self.owner_terms)?;
+        let manifest = admitted_manifest_shape(&self.scopes, self.ordered_schedule.as_ref())?;
+        manifest.validate_manifest_core()?;
+        if let Some(schedule) = &self.ordered_schedule {
+            schedule.validate_runtime(manifest, consumer_plan, occurrence_ids)?;
+        } else {
+            if manifest.execution_scope_fingerprint() != canonical_execution_scope_fingerprint(consumer_plan) {
+                return Err(graph_schedule_error("runtime_consumer_scope_mismatch", None, Some("runtime")));
+            }
+            if manifest.producer_occurrences().len() != occurrence_ids.len() {
+                return Err(graph_schedule_error("runtime_occurrence_count_mismatch", None, Some("runtime"))
+                    .with_fact("scheduled_occurrence_count", manifest.producer_occurrences().len())
+                    .with_fact("runtime_occurrence_count", occurrence_ids.len()));
+            }
+            for (scheduled, runtime) in manifest.producer_occurrences().iter().zip(occurrence_ids) {
+                if scheduled.occurrence_id() != runtime {
+                    return Err(graph_schedule_error(
+                        "runtime_occurrence_order_mismatch",
+                        Some(runtime),
+                        Some("runtime"),
+                    )
+                    .with_fact("scheduled_occurrence_id", scheduled.occurrence_id()));
+                }
+            }
+        }
+        let required_peak = self.required_grant_bound_bytes()?;
         if immutable_grant_bytes < required_peak {
             return Err(graph_schedule_error("immutable_grant_below_schedule_peak", None, Some("runtime"))
                 .with_fact("immutable_grant_bytes", immutable_grant_bytes)
@@ -1225,6 +1259,31 @@ impl AttemptReservationEnvelope {
             "admitted reservation envelope does not cover the native plan about to execute",
         )
         .with_fact("reason", "admitted_reservation_envelope_mismatch"))
+    }
+
+    pub(crate) fn validate_execution_with_grant(
+        &self,
+        plan: &QueryPlan,
+        memory_policy: MemoryControlPolicy,
+        source_scheduler_policy: SourceSchedulerPolicy,
+        source_chunk_planning_mode: SourceChunkPlanningMode,
+        source_chunk_planning_options: SourceChunkPlanningOptions,
+        immutable_grant_bytes: u64,
+    ) -> Result<()> {
+        self.validate_execution(
+            plan,
+            memory_policy,
+            source_scheduler_policy,
+            source_chunk_planning_mode,
+            source_chunk_planning_options,
+        )?;
+        let required_bound = self.required_grant_bound_bytes()?;
+        if immutable_grant_bytes < required_bound {
+            return Err(graph_schedule_error("immutable_grant_below_schedule_peak", None, Some("runtime"))
+                .with_fact("immutable_grant_bytes", immutable_grant_bytes)
+                .with_fact("complete_phase_peak_bytes", required_bound));
+        }
+        Ok(())
     }
 }
 
@@ -1992,17 +2051,55 @@ mod tests {
         scope: &str,
         isolated_peak_bytes: Option<u64>,
         retained_output_bytes: Option<u64>,
-    ) -> AttemptReservationProducerOccurrence {
-        AttemptReservationProducerOccurrence::new(occurrence_id, scope, isolated_peak_bytes, retained_output_bytes)
+    ) -> (AttemptReservationProducerOccurrence, AttemptReservationProducerPhase) {
+        (
+            AttemptReservationProducerOccurrence::from_term_id(
+                occurrence_id,
+                scope,
+                OwnerTermId::synthetic_for_test(occurrence_id, scope),
+            ),
+            AttemptReservationProducerPhase::new(isolated_peak_bytes, retained_output_bytes),
+        )
+    }
+
+    struct ScheduleFixture {
+        shape: AttemptReservationShape,
+        schedule: AttemptReservationSchedule,
     }
 
     fn schedule(
         fixed_bytes: Option<u64>,
-        producers: Vec<AttemptReservationProducerOccurrence>,
+        producers: Vec<(AttemptReservationProducerOccurrence, AttemptReservationProducerPhase)>,
         consumer_scope: Option<&str>,
         consumer_peak_bytes: Option<u64>,
-    ) -> AttemptReservationSchedule {
-        AttemptReservationSchedule::new(fixed_bytes, producers, consumer_scope.map(str::to_owned), consumer_peak_bytes)
+    ) -> ScheduleFixture {
+        let (producer_occurrences, phases): (Vec<_>, Vec<_>) = producers.into_iter().unzip();
+        let mut shape = schedule_scope(consumer_scope.unwrap_or_default());
+        shape.producer_occurrences = producer_occurrences;
+        let schedule = AttemptReservationSchedule::new(fixed_bytes, phases, consumer_peak_bytes);
+        shape.ordered_schedule = Some(schedule.clone());
+        ScheduleFixture { shape, schedule }
+    }
+
+    impl ScheduleFixture {
+        fn producer_occurrences(&self) -> &[AttemptReservationProducerOccurrence] {
+            self.shape.producer_occurrences()
+        }
+
+        fn checked_fold(&self) -> Result<u64> {
+            let mut scopes = vec![self.shape.clone()];
+            scopes.extend(
+                self.shape
+                    .producer_occurrences()
+                    .iter()
+                    .map(|occurrence| schedule_scope(&occurrence.execution_scope_fingerprint)),
+            );
+            self.schedule.checked_fold_with_scopes(&scopes)
+        }
+
+        fn checked_fold_with_scopes(&self, scopes: &[AttemptReservationShape]) -> Result<u64> {
+            self.schedule.checked_fold_with_scopes(scopes)
+        }
     }
 
     fn schedule_scope(scope: &str) -> AttemptReservationShape {
@@ -2022,12 +2119,12 @@ mod tests {
             sort_metadata: None,
             sort_rejection_reason: None,
             owner_term_rejection_reason: None,
-            retained_input_bindings: Vec::new(),
+            producer_occurrences: Vec::new(),
             ordered_schedule: None,
         }
     }
 
-    fn assert_schedule_rejected(schedule: &AttemptReservationSchedule, expected_reason: &str) {
+    fn assert_schedule_rejected(schedule: &ScheduleFixture, expected_reason: &str) {
         let error = schedule.checked_fold().expect_err("incomplete schedule must reject closed");
         assert_eq!(error.code(), QueryErrorCode::UnsupportedPlanShape);
         assert_eq!(error.fact_value("reason"), Some(GRAPH_ATTEMPT_COMPLETE_PHASE_UNMODELED_REASON));
@@ -2156,31 +2253,98 @@ mod tests {
     }
 
     #[test]
-    fn ordered_schedule_rejects_scope_mismatch_but_allows_auxiliary_scopes() {
-        let schedule =
-            schedule(Some(0), vec![schedule_occurrence("p", "producer", Some(1), Some(1))], Some("consumer"), Some(1));
-        let scopes = vec![schedule_scope("producer"), schedule_scope("consumer"), schedule_scope("auxiliary")];
-        assert_eq!(schedule.checked_fold_with_scopes(&scopes).unwrap(), 2);
+    fn manifest_rejects_duplicate_occurrence_ids_even_when_retained_terms_differ() {
+        let mut shape = schedule_scope("consumer");
+        let error = shape
+            .set_producer_occurrences([
+                AttemptReservationProducerOccurrence::from_term_id(
+                    "duplicate",
+                    "producer",
+                    OwnerTermId::synthetic_for_test("retained-a", "producer"),
+                ),
+                AttemptReservationProducerOccurrence::from_term_id(
+                    "duplicate",
+                    "producer",
+                    OwnerTermId::synthetic_for_test("retained-b", "producer"),
+                ),
+            ])
+            .expect_err("occurrence identity is mandatory even when retained terms differ");
+        assert_eq!(error.fact_value("schedule_reason"), Some("duplicate_producer_occurrence_id"));
+    }
 
-        let mismatched = vec![schedule_scope("different"), schedule_scope("consumer")];
-        let error = schedule.checked_fold_with_scopes(&mismatched).unwrap_err();
+    #[test]
+    fn manifest_rejects_a_phase_row_count_mismatch_before_schedule_attachment() {
+        let mut shape = schedule_scope("consumer");
+        let (occurrence, _) = schedule_occurrence("producer", "producer", Some(1), Some(1));
+        shape.set_producer_occurrences([occurrence]).unwrap();
+        let error = shape
+            .attach_ordered_schedule(AttemptReservationSchedule::new(Some(0), Vec::new(), Some(0)))
+            .expect_err("ordered phase rows must match mandatory producer occurrences");
+        assert_eq!(error.fact_value("schedule_reason"), Some("producer_phase_row_count_mismatch"));
+    }
+
+    #[test]
+    fn ordered_schedule_preserves_equal_producer_scope_multiplicity() {
+        let fixture = schedule(
+            Some(0),
+            vec![
+                schedule_occurrence("same-0", "equal", Some(1), Some(1)),
+                schedule_occurrence("same-1", "equal", Some(1), Some(1)),
+            ],
+            Some("consumer"),
+            Some(1),
+        );
+        let complete_scopes = vec![fixture.shape.clone(), schedule_scope("equal"), schedule_scope("equal")];
+        AttemptReservationEnvelope::resolve(&complete_scopes, reservation_policy())
+            .expect("equal producer scopes are separate runtime occurrences");
+
+        let incomplete_scopes = vec![fixture.shape, schedule_scope("equal")];
+        let error = AttemptReservationEnvelope::resolve(&incomplete_scopes, reservation_policy())
+            .expect_err("scope multiplicity must not be collapsed during admission");
+        assert_eq!(error.fact_value("schedule_reason"), Some("schedule_scope_coverage_mismatch"));
+    }
+
+    #[test]
+    fn ordered_schedule_rejects_duplicate_manifest_core() {
+        let fixture = schedule(
+            Some(0),
+            vec![schedule_occurrence("producer", "producer", Some(1), Some(1))],
+            Some("consumer"),
+            Some(1),
+        );
+        let mut duplicate_manifest = schedule_scope("consumer");
+        duplicate_manifest.producer_occurrences = fixture.shape.producer_occurrences.clone();
+        let scopes = vec![fixture.shape, duplicate_manifest, schedule_scope("producer")];
+        let error = AttemptReservationEnvelope::resolve(&scopes, reservation_policy())
+            .expect_err("one composed attempt cannot carry two manifest cores");
+        assert_eq!(error.fact_value("schedule_reason"), Some("duplicate_admitted_manifest"));
+    }
+
+    #[test]
+    fn ordered_schedule_rejects_scope_mismatch_but_allows_auxiliary_scopes() {
+        let fixture =
+            schedule(Some(0), vec![schedule_occurrence("p", "producer", Some(1), Some(1))], Some("consumer"), Some(1));
+        let scopes = vec![fixture.shape.clone(), schedule_scope("producer"), schedule_scope("auxiliary")];
+        assert_eq!(fixture.checked_fold_with_scopes(&scopes).unwrap(), 2);
+
+        let mismatched = vec![fixture.shape.clone(), schedule_scope("different"), schedule_scope("consumer")];
+        let error = fixture.checked_fold_with_scopes(&mismatched).unwrap_err();
         assert_eq!(error.fact_value("reason"), Some(GRAPH_ATTEMPT_COMPLETE_PHASE_UNMODELED_REASON));
         assert_eq!(error.fact_value("schedule_reason"), Some("schedule_scope_coverage_mismatch"));
     }
 
     #[test]
     fn envelope_uses_schedule_peak_as_the_composed_floor_without_deduplicating_scopes() {
-        let schedule = schedule(
+        let fixture = schedule(
             Some(10),
             vec![schedule_occurrence("p", "producer", Some(20), Some(5))],
             Some("consumer"),
             Some(7),
         );
-        let mut producer = schedule_scope("producer");
-        producer.attach_ordered_schedule(schedule).unwrap();
+        let producer = fixture.shape;
         let mut auxiliary = schedule_scope("auxiliary");
         auxiliary.account_for_by_graph_phase();
-        let scopes = vec![producer, schedule_scope("consumer"), auxiliary];
+        let scopes = vec![producer, schedule_scope("producer"), auxiliary];
         let envelope = AttemptReservationEnvelope::resolve(&scopes, reservation_policy())
             .expect("auxiliary exact scopes remain valid with a complete schedule");
         assert_eq!(envelope.complete_phase_peak_bytes(), Some(30));
@@ -2191,7 +2355,7 @@ mod tests {
 
     #[test]
     fn envelope_does_not_sum_heterogeneous_isolated_peaks_when_schedule_is_present() {
-        let schedule = schedule(
+        let fixture = schedule(
             Some(10),
             vec![
                 schedule_occurrence("p", "producer-p", Some(20), Some(5)),
@@ -2200,9 +2364,8 @@ mod tests {
             Some("consumer"),
             Some(7),
         );
-        let mut producer = schedule_scope("producer-p");
-        producer.attach_ordered_schedule(schedule).unwrap();
-        let scopes = vec![producer, schedule_scope("producer-f"), schedule_scope("consumer")];
+        let producer = fixture.shape;
+        let scopes = vec![producer, schedule_scope("producer-p"), schedule_scope("producer-f")];
         let envelope = AttemptReservationEnvelope::resolve(&scopes, reservation_policy()).unwrap();
         assert_eq!(envelope.complete_phase_peak_bytes(), Some(55));
         assert_ne!(envelope.complete_phase_peak_bytes(), Some(80));
@@ -2212,22 +2375,29 @@ mod tests {
     fn ordered_schedule_resolves_the_shared_owner_term_identity() {
         let plan = source_stage_plan(graph_edge_schema());
         let proof = QueryPlanCapabilityProof::for_query_plan(&plan).expect("source plan must issue a proof");
-        let owner_terms = proof.as_requirement().owner_terms.clone();
+        let owner_terms = proof
+            .as_requirement()
+            .owner_terms
+            .iter()
+            .map(|term| term.rebind_composed_for_test("source-occurrence"))
+            .collect::<Result<Vec<_>>>()
+            .expect("source terms can bind to the composed occurrence");
         let source_term = owner_terms.first().expect("source plan must carry one owner term");
         let producer_scope = canonical_execution_scope_fingerprint(&plan);
-        let schedule = AttemptReservationSchedule::from_term_ids(
+        let schedule = AttemptReservationSchedule::from_phase_term_ids(
             Some(0),
             None,
-            vec![AttemptReservationProducerOccurrence::from_term_ids(
-                "source-occurrence",
-                producer_scope.clone(),
-                vec![source_term.id().clone()],
-                Some(source_term.id().clone()),
-            )],
-            Some(producer_scope.clone()),
+            vec![AttemptReservationProducerPhase::from_term_groups(vec![vec![source_term.id().clone()]])],
             Vec::new(),
         );
         let mut producer = AttemptReservationShape::for_query_plan(&plan);
+        producer
+            .set_producer_occurrences([AttemptReservationProducerOccurrence::from_term_id(
+                "source-occurrence",
+                producer_scope.clone(),
+                source_term.id().clone(),
+            )])
+            .unwrap();
         producer.attach_ordered_schedule(schedule).unwrap();
         let envelope = AttemptReservationEnvelope::resolve_with_owner_terms(
             &[producer, AttemptReservationShape::for_query_plan(&plan)],
@@ -2243,21 +2413,28 @@ mod tests {
     fn incomplete_ordered_terms_fall_back_to_the_conservative_owner_sum() {
         let plan = source_stage_plan(graph_edge_schema());
         let proof = QueryPlanCapabilityProof::for_query_plan(&plan).expect("source plan must issue a proof");
-        let owner_terms = proof.as_requirement().owner_terms.clone();
+        let owner_terms = proof
+            .as_requirement()
+            .owner_terms
+            .iter()
+            .map(|term| term.rebind_composed_for_test("missing-owner-terms"))
+            .collect::<Result<Vec<_>>>()
+            .expect("test owner terms can bind to one composed occurrence");
         let scope = canonical_execution_scope_fingerprint(&plan);
-        let schedule = AttemptReservationSchedule::from_term_ids(
+        let schedule = AttemptReservationSchedule::from_phase_term_ids(
             Some(0),
             None,
-            vec![AttemptReservationProducerOccurrence::from_term_groups(
-                "missing-owner-terms",
-                scope.clone(),
-                Vec::new(),
-                Some(owner_terms.first().expect("source plan must carry one owner term").id().clone()),
-            )],
-            Some(scope.clone()),
+            vec![AttemptReservationProducerPhase::from_term_groups(Vec::new())],
             Vec::new(),
         );
         let mut producer = AttemptReservationShape::for_query_plan(&plan);
+        producer
+            .set_producer_occurrences([AttemptReservationProducerOccurrence::from_term_id(
+                "missing-owner-terms",
+                scope.clone(),
+                owner_terms.first().expect("source plan must carry one owner term").id().clone(),
+            )])
+            .unwrap();
         producer.attach_ordered_schedule(schedule).unwrap();
         let envelope = AttemptReservationEnvelope::resolve_with_owner_terms(
             &[producer, AttemptReservationShape::for_query_plan(&plan)],
@@ -2273,24 +2450,27 @@ mod tests {
     }
 
     #[test]
-    fn missing_retained_output_term_rejects_conservative_fallback() {
+    fn invalid_retained_output_term_rejects_conservative_fallback() {
         let plan = source_stage_plan(graph_edge_schema());
         let proof = QueryPlanCapabilityProof::for_query_plan(&plan).expect("source plan must issue a proof");
         let owner_terms = proof.as_requirement().owner_terms.clone();
         let scope = canonical_execution_scope_fingerprint(&plan);
-        let schedule = AttemptReservationSchedule::from_term_ids(
+        let schedule = AttemptReservationSchedule::from_phase_term_ids(
             Some(0),
             None,
-            vec![AttemptReservationProducerOccurrence::from_term_ids(
-                "missing-retained-output",
-                scope.clone(),
-                vec![owner_terms.first().expect("source plan must carry one owner term").id().clone()],
-                None,
-            )],
-            Some(scope.clone()),
+            vec![AttemptReservationProducerPhase::from_term_groups(vec![vec![
+                owner_terms.first().expect("source plan must carry one owner term").id().clone(),
+            ]])],
             Vec::new(),
         );
         let mut producer = AttemptReservationShape::for_query_plan(&plan);
+        producer
+            .set_producer_occurrences([AttemptReservationProducerOccurrence::from_term_id(
+                "missing-retained-output",
+                scope.clone(),
+                OwnerTermId::synthetic_for_test("missing-retained-output", &scope),
+            )])
+            .unwrap();
         producer.attach_ordered_schedule(schedule).unwrap();
         let error = AttemptReservationEnvelope::resolve_with_owner_terms(
             &[producer, AttemptReservationShape::for_query_plan(&plan)],
@@ -2301,32 +2481,121 @@ mod tests {
 
         assert_eq!(error.code(), QueryErrorCode::UnsupportedPlanShape);
         assert_eq!(error.fact_value("reason"), Some("attempt_bound_derivation_unavailable"));
-        assert_eq!(error.fact_value("ordered_reason"), Some("missing_producer_retained_output"));
+        assert_eq!(error.fact_value("ordered_reason"), Some("missing_owner_term_reference"));
         assert_eq!(error.fact_value("conservative_reason"), Some("attempt_owner_term_missing"));
     }
 
     fn resolved_runtime_schedule_envelope(consumer_plan: &QueryPlan) -> AttemptReservationEnvelope {
-        let mut producer_scope = schedule_scope("producer-scope");
-        producer_scope
-            .attach_ordered_schedule(schedule(
-                Some(0),
-                vec![
-                    schedule_occurrence("first", "producer-scope", Some(20), Some(5)),
-                    schedule_occurrence("second", "producer-scope", Some(30), Some(6)),
-                ],
-                Some(&canonical_execution_scope_fingerprint(consumer_plan)),
-                Some(7),
-            ))
-            .unwrap();
-        AttemptReservationEnvelope::resolve(
-            &[
-                producer_scope,
-                schedule_scope("producer-scope"),
-                schedule_scope(&canonical_execution_scope_fingerprint(consumer_plan)),
+        let fixture = schedule(
+            Some(0),
+            vec![
+                schedule_occurrence("first", "producer-scope", Some(20), Some(5)),
+                schedule_occurrence("second", "producer-scope", Some(30), Some(6)),
             ],
+            Some(&canonical_execution_scope_fingerprint(consumer_plan)),
+            Some(7),
+        );
+        let producer_scope = fixture.shape;
+        AttemptReservationEnvelope::resolve(
+            &[producer_scope, schedule_scope("producer-scope"), schedule_scope("producer-scope")],
             reservation_policy(),
         )
         .expect("complete runtime schedule must resolve")
+    }
+
+    fn resolved_runtime_conservative_envelope(consumer_plan: &QueryPlan) -> AttemptReservationEnvelope {
+        let mut envelope = resolved_runtime_schedule_envelope(consumer_plan);
+        envelope.ordered_schedule = None;
+        envelope.bound_derivation = Some(AttemptBoundDerivation::ConservativeOwnerSum);
+        envelope
+    }
+
+    #[test]
+    fn conservative_manifest_accepts_the_admitted_occurrence_order() {
+        let consumer_plan = graph_result_passthrough_plan("graph-result");
+        let envelope = resolved_runtime_conservative_envelope(&consumer_plan);
+        envelope
+            .validate_composed_execution(
+                &consumer_plan,
+                &["first".to_owned(), "second".to_owned()],
+                envelope.required_phase_floor_bytes(),
+            )
+            .expect("conservative derivation still validates the mandatory manifest order");
+    }
+
+    #[test]
+    fn conservative_manifest_rejects_occurrence_order_mismatch() {
+        let consumer_plan = graph_result_passthrough_plan("graph-result");
+        let envelope = resolved_runtime_conservative_envelope(&consumer_plan);
+        let error = envelope
+            .validate_composed_execution(
+                &consumer_plan,
+                &["second".to_owned(), "first".to_owned()],
+                envelope.required_phase_floor_bytes(),
+            )
+            .expect_err("conservative fallback must preserve producer order");
+        assert_eq!(error.fact_value("schedule_reason"), Some("runtime_occurrence_order_mismatch"));
+    }
+
+    #[test]
+    fn conservative_manifest_rejects_occurrence_count_mismatch() {
+        let consumer_plan = graph_result_passthrough_plan("graph-result");
+        let envelope = resolved_runtime_conservative_envelope(&consumer_plan);
+        let error = envelope
+            .validate_composed_execution(&consumer_plan, &["first".to_owned()], envelope.required_phase_floor_bytes())
+            .expect_err("conservative fallback must preserve producer multiplicity");
+        assert_eq!(error.fact_value("schedule_reason"), Some("runtime_occurrence_count_mismatch"));
+    }
+
+    #[test]
+    fn conservative_manifest_rejects_consumer_scope_mismatch() {
+        let admitted_consumer_plan = graph_result_passthrough_plan("graph-result");
+        let changed_consumer_plan = graph_result_sort_consumer_plan("graph-result");
+        let envelope = resolved_runtime_conservative_envelope(&admitted_consumer_plan);
+        let error = envelope
+            .validate_composed_execution(
+                &changed_consumer_plan,
+                &["first".to_owned(), "second".to_owned()],
+                envelope.required_phase_floor_bytes(),
+            )
+            .expect_err("conservative fallback must preserve the attested consumer scope");
+        assert_eq!(error.fact_value("schedule_reason"), Some("runtime_consumer_scope_mismatch"));
+    }
+
+    #[test]
+    fn conservative_runtime_rejects_a_missing_complete_peak_instead_of_using_the_floor() {
+        let consumer_plan = graph_result_passthrough_plan("graph-result");
+        let mut envelope = resolved_runtime_conservative_envelope(&consumer_plan);
+        envelope.complete_phase_peak_bytes = None;
+        let error = envelope
+            .validate_composed_execution(
+                &consumer_plan,
+                &["first".to_owned(), "second".to_owned()],
+                envelope.required_phase_floor_bytes(),
+            )
+            .expect_err("conservative runtime must not silently downgrade to the floor");
+        assert_eq!(error.fact_value("schedule_reason"), Some("conservative_complete_phase_peak_missing"));
+    }
+
+    #[test]
+    fn conservative_runtime_rejects_duplicate_manifest_cores() {
+        let consumer_plan = graph_result_passthrough_plan("graph-result");
+        let mut envelope = resolved_runtime_conservative_envelope(&consumer_plan);
+        let duplicate = envelope
+            .scopes
+            .iter()
+            .find(|scope| !scope.producer_occurrences.is_empty())
+            .expect("conservative envelope has a manifest")
+            .clone();
+        envelope.scopes.push(duplicate);
+        let error = envelope
+            .validate_composed_execution(
+                &consumer_plan,
+                &["first".to_owned(), "second".to_owned()],
+                envelope.required_phase_floor_bytes(),
+            )
+            .expect_err("runtime must reject duplicate mandatory manifest cores");
+        assert_eq!(error.fact_value("schedule_reason"), Some("duplicate_admitted_manifest"));
     }
 
     #[test]

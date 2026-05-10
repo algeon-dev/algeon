@@ -52,6 +52,52 @@ fn request(id: u64) -> AdmissionRequestId {
 }
 
 #[test]
+fn grant_identity_preserves_attempt_id_and_allocates_unique_generations() {
+    let ledger = DeviceLedger::new(profile(1_000, 100, 2));
+    let first_attempt = AttemptId::mint();
+    let second_attempt = AttemptId::mint();
+
+    let first = ledger
+        .try_admit_for_attempt(request(1), first_attempt, &requirement(100, Some(100)))
+        .unwrap()
+        .expect("first admits");
+    let second = ledger
+        .try_admit_for_attempt(request(2), second_attempt, &requirement(100, Some(100)))
+        .unwrap()
+        .expect("second admits");
+
+    assert_eq!(first.identity().attempt_id, first_attempt);
+    assert_eq!(second.identity().attempt_id, second_attempt);
+    assert_ne!(first.identity().generation, second.identity().generation);
+    assert_eq!(first.grant_id(), first.identity().generation);
+    assert_eq!(second.grant_id(), second.identity().generation);
+}
+
+#[test]
+fn exhausted_grant_generation_leaves_grants_slots_and_protection_unchanged() {
+    let ledger = DeviceLedger::new(profile(1_000, 100, 2));
+    let protected = request(9);
+    assert!(ledger.protect_slot(protected, 100).unwrap());
+    {
+        let mut state = ledger.lock_state("generation_exhaustion_test").unwrap();
+        state.next_grant_generation = u64::MAX;
+    }
+    let before = ledger.snapshot().unwrap();
+
+    let error = ledger
+        .try_admit_for_attempt(protected, AttemptId::mint(), &requirement(100, Some(100)))
+        .expect_err("an exhausted generation cannot commit a grant");
+
+    assert_eq!(error.code(), QueryErrorCode::Internal);
+    assert_eq!(error.fact_value("reason"), Some("grant_generation_exhausted"));
+    assert_eq!(ledger.snapshot().unwrap(), before);
+    let state = ledger.lock_state("generation_exhaustion_test_verify").unwrap();
+    assert_eq!(state.next_grant_generation, u64::MAX);
+    assert!(state.grants.is_empty());
+    assert_eq!(state.protection.map(|protection| protection.waiter_id), Some(protected));
+}
+
+#[test]
 fn admission_equation_preserves_empty_slot_floors() {
     // managed 1000, floor 100, A_d = 3: first grant can reach
     // 1000 - 0 - 100*(3-1) = 800; second 1000 - 800 - 100 = 100;

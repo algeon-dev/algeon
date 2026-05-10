@@ -177,6 +177,20 @@ impl OwnerTermId {
     pub(crate) fn occurrence_label(&self) -> String {
         self.occurrence.as_str()
     }
+
+    pub(crate) fn execution_scope_fingerprint(&self) -> &str {
+        &self.execution_scope_fingerprint
+    }
+
+    #[cfg(test)]
+    pub(crate) fn synthetic_for_test(occurrence_id: &str, execution_scope_fingerprint: &str) -> Self {
+        Self {
+            owner: OwnerId::Attempt,
+            role: OwnerTermRole::AttemptWideFixed,
+            occurrence: OccurrenceId::Composed(occurrence_id.to_owned()),
+            execution_scope_fingerprint: execution_scope_fingerprint.to_owned(),
+        }
+    }
 }
 
 /// Internal provenance for the finite bound selected for one admitted
@@ -399,6 +413,11 @@ impl AllocationOwnerTerm {
             self.bytes.get(),
             self.retained_row_count_upper_bound,
         )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn rebind_composed_for_test(&self, occurrence_id: &str) -> Result<Self> {
+        self.rebind_composed_occurrence(occurrence_id)
     }
 
     pub(crate) fn id(&self) -> &OwnerTermId {
@@ -910,7 +929,7 @@ impl QueryPlanCapabilityProof {
     /// canonical source-stage terms. Literal and other non-GPU source kinds
     /// remain rejected.
     pub fn for_composed_consumer_plan(plan: &QueryPlan) -> Option<Self> {
-        let mut requirement = AttemptCapabilityEvidence::for_query_plan_with_policy(
+        let mut requirement = AttemptCapabilityEvidence::for_query_plan_without_gpu_output_owner(
             plan,
             OwnerTermConstructionPolicy::AllowMixedSourceComposition,
         );
@@ -1112,6 +1131,66 @@ impl QueryPlanCapabilityProof {
         AttemptCapabilityEvidence::aggregate(requirements).map(|requirement| Self { requirement })
     }
 
+    fn normalize_composed_candidate(candidate: ComposedGraphProducerCandidate) -> Result<(String, Self)> {
+        let occurrence_id = candidate
+            .runtime_occurrence_id
+            .ok_or_else(|| composed_schedule_error("runtime_producer_occurrence_missing", None))?;
+        if candidate
+            .graph_result_input_name
+            .as_deref()
+            .is_some_and(|graph_result_input_name| occurrence_id != graph_result_input_name)
+        {
+            return Err(composed_schedule_error("producer_occurrence_identity_mismatch", Some(&occurrence_id))
+                .with_fact("graph_result_input_name", candidate.graph_result_input_name.unwrap_or_default()));
+        }
+        let proof = candidate.capability_proof.ok_or_else(|| {
+            composed_schedule_error("producer_admission_proof_missing_or_ambiguous", Some(&occurrence_id))
+        })?;
+        Ok((occurrence_id, proof))
+    }
+
+    fn normalize_composed_producer(
+        occurrence_id: String,
+        mut producer: Self,
+        occurrence_ids: &mut HashSet<String>,
+    ) -> Result<NormalizedComposedProducer> {
+        if occurrence_id.is_empty() || !occurrence_ids.insert(occurrence_id.clone()) {
+            return Err(composed_schedule_error("duplicate_producer_occurrence_id", Some(&occurrence_id)));
+        }
+        let matching_shapes =
+            if let [attested_scope] = producer.requirement.attested_cugraph_graph_execution_scopes.as_slice() {
+                producer
+                    .requirement
+                    .reservation_shapes
+                    .iter()
+                    .filter(|shape| attested_scope.matches_reservation_shape(shape))
+                    .collect::<Vec<_>>()
+            } else {
+                producer.requirement.reservation_shapes.iter().collect::<Vec<_>>()
+            };
+        let [producer_shape] = matching_shapes.as_slice() else {
+            return Err(composed_schedule_error("producer_scope_coverage_mismatch", Some(&occurrence_id)));
+        };
+        let execution_scope_fingerprint = producer_shape.execution_scope_fingerprint().to_owned();
+        producer.requirement.rebind_owner_terms_to_composed_occurrence(&occurrence_id)?;
+        let retained_output_term = producer
+            .requirement
+            .retained_output_term_for_composition()
+            .map_err(|error| error.with_fact("occurrence_id", occurrence_id.as_str()))?;
+        let retained_output_term_id = retained_output_term.id().clone();
+        let row_count_upper_bound = retained_output_term
+            .retained_row_count_upper_bound()
+            .ok_or_else(|| composed_schedule_error("producer_retained_output_rows_missing", Some(&occurrence_id)))?;
+        Ok(NormalizedComposedProducer {
+            occurrence_id,
+            execution_scope_fingerprint,
+            retained_output_term_id,
+            row_count_upper_bound,
+            phase_term_groups: producer.requirement.isolated_phase_term_groups(),
+            proof: producer,
+        })
+    }
+
     /// Combines one consumer proof with graph-producer proofs in the exact
     /// order used by the composed executor.
     ///
@@ -1135,57 +1214,29 @@ impl QueryPlanCapabilityProof {
         if !consumer_shape.matches(consumer_plan) {
             return Err(composed_schedule_error("consumer_scope_coverage_mismatch", None));
         }
-        let consumer_scope = consumer_shape.execution_scope_fingerprint().to_owned();
-
         let mut occurrence_ids = std::collections::HashSet::with_capacity(ordered_producers.len());
         let mut occurrences = Vec::with_capacity(ordered_producers.len());
+        let mut producer_phases = Vec::with_capacity(ordered_producers.len());
         let mut producer_outputs = Vec::with_capacity(ordered_producers.len());
         let mut producer_proofs = Vec::with_capacity(ordered_producers.len());
         let mut retained_terms_by_occurrence = HashMap::with_capacity(ordered_producers.len());
-        for (occurrence_id, mut producer) in ordered_producers {
-            if occurrence_id.is_empty() {
-                return Err(composed_schedule_error("missing_producer_occurrence_id", None));
-            }
-            if !occurrence_ids.insert(occurrence_id.clone()) {
-                return Err(composed_schedule_error("duplicate_producer_occurrence_id", Some(&occurrence_id)));
-            }
-            let matching_shapes =
-                if let [attested_scope] = producer.requirement.attested_cugraph_graph_execution_scopes.as_slice() {
-                    producer
-                        .requirement
-                        .reservation_shapes
-                        .iter()
-                        .filter(|shape| attested_scope.matches_reservation_shape(shape))
-                        .collect::<Vec<_>>()
-                } else {
-                    producer.requirement.reservation_shapes.iter().collect::<Vec<_>>()
-                };
-            let [producer_shape] = matching_shapes.as_slice() else {
-                return Err(composed_schedule_error("producer_scope_coverage_mismatch", Some(&occurrence_id)));
-            };
-            let producer_scope = producer_shape.execution_scope_fingerprint().to_owned();
-            producer.requirement.rebind_owner_terms_to_composed_occurrence(&occurrence_id)?;
-            let retained_output_term = producer
-                .requirement
-                .retained_output_term_for_composition()
-                .map_err(|error| error.with_fact("occurrence_id", occurrence_id.as_str()))?;
-            let retained_output_term_id = retained_output_term.id().clone();
-            let row_count_upper_bound = retained_output_term.retained_row_count_upper_bound().ok_or_else(|| {
-                composed_schedule_error("producer_retained_output_rows_missing", Some(&occurrence_id))
-            })?;
-            let producer_term_groups = producer.requirement.isolated_phase_term_groups();
-            retained_terms_by_occurrence.insert(occurrence_id.clone(), retained_output_term_id.clone());
+        for (occurrence_id, producer) in ordered_producers {
+            let normalized = Self::normalize_composed_producer(occurrence_id, producer, &mut occurrence_ids)?;
+            retained_terms_by_occurrence
+                .insert(normalized.occurrence_id.clone(), normalized.retained_output_term_id.clone());
             producer_outputs.push(ComposedGraphProducerOutputEvidence {
-                occurrence_id: occurrence_id.clone(),
-                row_count_upper_bound,
+                occurrence_id: normalized.occurrence_id.clone(),
+                row_count_upper_bound: normalized.row_count_upper_bound,
             });
-            occurrences.push(AttemptReservationProducerOccurrence::from_term_groups(
-                occurrence_id,
-                producer_scope,
-                producer_term_groups,
-                Some(retained_output_term_id),
+            occurrences.push(AttemptReservationProducerOccurrence::from_term_id(
+                normalized.occurrence_id.clone(),
+                normalized.execution_scope_fingerprint,
+                normalized.retained_output_term_id,
             ));
-            producer_proofs.push(producer);
+            producer_phases.push(crate::admission::envelope::AttemptReservationProducerPhase::from_term_groups(
+                normalized.phase_term_groups,
+            ));
+            producer_proofs.push(normalized.proof);
         }
 
         let ComposedConsumerBranchBound {
@@ -1202,33 +1253,25 @@ impl QueryPlanCapabilityProof {
         consumer.requirement.requires_composed_producer_binding = false;
         consumer.requirement.remove_generic_gpu_resident_retained_output_terms();
         consumer.requirement.owner_terms = merge_owner_terms(&consumer.requirement.owner_terms, consumer_owner_terms)?;
-        let schedule = AttemptReservationSchedule::from_term_ids(
+        let schedule = AttemptReservationSchedule::from_phase_term_ids(
             // Current bounded composed attempts have no independent
             // attempt-wide device allocation.  Keep this explicit so a future
             // attempt-wide owner must be represented in the schedule rather
             // than silently folded into a producer or consumer phase.
             Some(0),
             None,
-            occurrences,
-            Some(consumer_scope),
+            producer_phases,
             consumer_peak_term_ids,
         );
         let [consumer_shape] = consumer.requirement.reservation_shapes.as_mut_slice() else {
             return Err(composed_schedule_error("missing_consumer_scope", None));
         };
-        let bindings = consumed_occurrences
-            .iter()
-            .map(|occurrence_id| {
-                retained_terms_by_occurrence
-                    .get(occurrence_id)
-                    .cloned()
-                    .map(|term_id| (occurrence_id.clone(), term_id))
-                    .ok_or_else(|| {
-                        composed_schedule_error("consumer_retained_input_binding_missing", Some(occurrence_id))
-                    })
-            })
-            .collect::<Result<Vec<_>>>()?;
-        consumer_shape.set_retained_input_bindings(bindings)?;
+        for occurrence_id in &consumed_occurrences {
+            if !retained_terms_by_occurrence.contains_key(occurrence_id) {
+                return Err(composed_schedule_error("consumer_retained_input_binding_missing", Some(occurrence_id)));
+            }
+        }
+        consumer_shape.set_producer_occurrences(occurrences)?;
         consumer_shape.attach_ordered_schedule(schedule)?;
 
         let first = producer_proofs.remove(0);
@@ -1251,60 +1294,16 @@ impl QueryPlanCapabilityProof {
         consumer: Self,
         ordered_producers: impl IntoIterator<Item = ComposedGraphProducerCandidate>,
     ) -> Result<Self> {
-        let ordered_producers = ordered_producers.into_iter().collect::<Vec<_>>();
+        let normalized_candidates =
+            ordered_producers.into_iter().map(Self::normalize_composed_candidate).collect::<Result<Vec<_>>>()?;
 
-        let ordered_result = ordered_producers
-            .iter()
-            .map(|producer| {
-                let occurrence_id = producer
-                    .runtime_occurrence_id
-                    .clone()
-                    .ok_or_else(|| composed_schedule_error("runtime_producer_occurrence_missing", None))?;
-                if producer
-                    .graph_result_input_name
-                    .as_deref()
-                    .is_some_and(|graph_result_input_name| occurrence_id != graph_result_input_name)
-                {
-                    return Err(composed_schedule_error("producer_occurrence_identity_mismatch", Some(&occurrence_id))
-                        .with_fact(
-                            "graph_result_input_name",
-                            producer.graph_result_input_name.clone().unwrap_or_default(),
-                        ));
-                }
-                let proof = producer.capability_proof.clone().ok_or_else(|| {
-                    composed_schedule_error("producer_admission_proof_missing_or_ambiguous", Some(&occurrence_id))
-                })?;
-                Ok((occurrence_id, proof))
-            })
-            .collect::<Result<Vec<_>>>()
-            .and_then(|proofs| Self::combine_composed_graph_attempt(consumer_plan, consumer.clone(), proofs));
+        let ordered_result =
+            Self::combine_composed_graph_attempt(consumer_plan, consumer.clone(), normalized_candidates.clone());
         match ordered_result {
             Ok(proof) => Ok(proof),
             Err(ordered_error) => {
-                let conservative_result = ordered_producers
-                    .into_iter()
-                    .map(|producer| {
-                        let occurrence_id = producer
-                            .runtime_occurrence_id
-                            .ok_or_else(|| composed_schedule_error("runtime_producer_occurrence_missing", None))?;
-                        let proof = producer.capability_proof.ok_or_else(|| {
-                            composed_schedule_error(
-                                "producer_admission_proof_missing_or_ambiguous",
-                                Some(&occurrence_id),
-                            )
-                        })?;
-                        Ok((occurrence_id, proof))
-                    })
-                    .collect::<Result<Vec<_>>>()
-                    .and_then(|proofs| {
-                        Self::combine_conservative_composed_graph_attempt(consumer_plan, consumer, proofs)
-                    })
-                    .map(|mut proof| {
-                        for shape in &mut proof.requirement.reservation_shapes {
-                            shape.detach_ordered_schedule();
-                        }
-                        proof
-                    });
+                let conservative_result =
+                    Self::combine_conservative_composed_graph_attempt(consumer_plan, consumer, normalized_candidates);
                 match conservative_result {
                     Ok(proof) => Ok(proof),
                     Err(conservative_error) => {
@@ -1342,28 +1341,21 @@ impl QueryPlanCapabilityProof {
         }
 
         let mut occurrence_ids = HashSet::with_capacity(ordered_producers.len());
+        let mut producer_occurrences = Vec::with_capacity(ordered_producers.len());
         let mut producer_outputs = Vec::with_capacity(ordered_producers.len());
         let mut producer_requirements = Vec::with_capacity(ordered_producers.len());
-        let mut retained_terms_by_occurrence = HashMap::with_capacity(ordered_producers.len());
-        for (occurrence_id, mut producer) in ordered_producers {
-            if occurrence_id.is_empty() || !occurrence_ids.insert(occurrence_id.clone()) {
-                return Err(composed_schedule_error("duplicate_producer_occurrence_id", Some(&occurrence_id)));
-            }
-            producer.requirement.rebind_owner_terms_to_composed_occurrence(&occurrence_id)?;
-            let retained_output_term = producer
-                .requirement
-                .retained_output_term_for_composition()
-                .map_err(|error| error.with_fact("occurrence_id", occurrence_id.as_str()))?;
-            let row_count_upper_bound = retained_output_term.retained_row_count_upper_bound().ok_or_else(|| {
-                composed_schedule_error("producer_retained_output_rows_missing", Some(&occurrence_id))
-            })?;
-            let retained_output_term_id = retained_output_term.id().clone();
-            retained_terms_by_occurrence.insert(occurrence_id.clone(), retained_output_term_id);
+        for (occurrence_id, producer) in ordered_producers {
+            let normalized = Self::normalize_composed_producer(occurrence_id, producer, &mut occurrence_ids)?;
+            producer_occurrences.push(AttemptReservationProducerOccurrence::from_term_id(
+                normalized.occurrence_id.clone(),
+                normalized.execution_scope_fingerprint,
+                normalized.retained_output_term_id,
+            ));
             producer_outputs.push(ComposedGraphProducerOutputEvidence {
-                occurrence_id: occurrence_id.clone(),
-                row_count_upper_bound,
+                occurrence_id: normalized.occurrence_id,
+                row_count_upper_bound: normalized.row_count_upper_bound,
             });
-            producer_requirements.push(producer.requirement);
+            producer_requirements.push(normalized.proof.requirement);
         }
 
         let mut consumer = consumer;
@@ -1379,19 +1371,12 @@ impl QueryPlanCapabilityProof {
         let [consumer_shape] = consumer.requirement.reservation_shapes.as_mut_slice() else {
             return Err(composed_schedule_error("missing_consumer_scope", None));
         };
-        let bindings = consumed_occurrences
-            .iter()
-            .map(|occurrence_id| {
-                retained_terms_by_occurrence
-                    .get(occurrence_id)
-                    .cloned()
-                    .map(|term_id| (occurrence_id.clone(), term_id))
-                    .ok_or_else(|| {
-                        composed_schedule_error("consumer_retained_input_binding_missing", Some(occurrence_id))
-                    })
-            })
-            .collect::<Result<Vec<_>>>()?;
-        consumer_shape.set_retained_input_bindings(bindings)?;
+        for occurrence_id in &consumed_occurrences {
+            if !producer_occurrences.iter().any(|occurrence| occurrence.occurrence_id() == occurrence_id) {
+                return Err(composed_schedule_error("consumer_retained_input_binding_missing", Some(occurrence_id)));
+            }
+        }
+        consumer_shape.set_producer_occurrences(producer_occurrences)?;
         producer_requirements.push(consumer.requirement);
         AttemptCapabilityEvidence::aggregate(producer_requirements).map(|requirement| Self { requirement })
     }
@@ -2140,17 +2125,19 @@ pub(crate) fn checked_owner_sum(
         }
         if let Some(schedule) = scope.ordered_schedule() {
             schedule
-                .validate_term_references(owner_terms)
+                .validate_term_references(scope, owner_terms)
                 .map_err(|_| owner_derivation_error("attempt_owner_term_missing"))?;
         }
-        for (occurrence_id, term_id) in scope.retained_input_bindings() {
+        scope.validate_manifest_core().map_err(|_| owner_derivation_error("attempt_manifest_core_invalid"))?;
+        for occurrence in scope.producer_occurrences() {
+            let term_id = occurrence.retained_output_term_id();
             let term = owner_terms.iter().find(|term| term.id() == term_id).ok_or_else(|| {
                 owner_derivation_error("attempt_retained_input_term_missing")
-                    .with_fact("occurrence_id", occurrence_id.as_str())
+                    .with_fact("occurrence_id", occurrence.occurrence_id())
             })?;
-            if !term.is_retained_output() || term.id().occurrence_label() != format!("composed:{occurrence_id}") {
+            if occurrence.validate_retained_output_term(term).is_err() {
                 return Err(owner_derivation_error("attempt_retained_input_binding_invalid")
-                    .with_fact("occurrence_id", occurrence_id.as_str()));
+                    .with_fact("occurrence_id", occurrence.occurrence_id()));
             }
         }
     }
@@ -2210,6 +2197,16 @@ fn source_stage_overflow_error(term: &'static str) -> QueryError {
 struct ComposedGraphProducerOutputEvidence {
     occurrence_id: String,
     row_count_upper_bound: u64,
+}
+
+#[derive(Debug, Clone)]
+struct NormalizedComposedProducer {
+    occurrence_id: String,
+    execution_scope_fingerprint: String,
+    retained_output_term_id: OwnerTermId,
+    row_count_upper_bound: u64,
+    phase_term_groups: Vec<Vec<OwnerTermId>>,
+    proof: QueryPlanCapabilityProof,
 }
 
 #[derive(Debug, Clone)]
@@ -3191,6 +3188,7 @@ mod tests {
 
     use super::*;
     use crate::{
+        admission::envelope::AttemptReservationProducerPhase,
         capability::{ContractQuality, ReservationRequirement},
         chunk::SourceChunkPlanningOptions,
         expr::{Expr, SortExpr, SortSpec},
@@ -3497,11 +3495,42 @@ mod tests {
             .iter()
             .find(|shape| shape.matches(&consumer_plan))
             .expect("consumer scope is retained");
-        assert_eq!(consumer_shape.retained_input_bindings().len(), 1);
-        assert_eq!(consumer_shape.retained_input_bindings()[0].0, "graph");
+        assert_eq!(consumer_shape.producer_occurrences().len(), 1);
+        assert_eq!(consumer_shape.producer_occurrences()[0].occurrence_id(), "graph");
         let envelope = combined
             .resolve_reservation_envelope(reservation_policy())
             .expect("mixed local/GPU composition has one finite owner inventory");
+        assert!(envelope.complete_phase_peak_bytes().is_some());
+    }
+
+    #[test]
+    fn composed_gpu_sink_defers_generic_output_owner_until_producer_binding() {
+        let consumer_plan = mixed_local_graph_union_consumer(mixed_local_graph_union_source(Some(3), Some(64)))
+            .clone_with_gpu_resident_sink();
+        let consumer = QueryPlanCapabilityProof::for_composed_consumer_plan(&consumer_plan)
+            .expect("the exact GPU-sink consumer must issue a composition proof");
+        let [shape] = consumer.as_requirement().reservation_shapes.as_slice() else {
+            panic!("the composed consumer must retain one exact reservation scope");
+        };
+        assert_eq!(
+            shape.owner_term_rejection_reason(),
+            None,
+            "the resolver owns the GPU-sink output alias after producer binding"
+        );
+        assert!(
+            consumer.as_requirement().owner_terms.iter().any(|term| term.id.role == OwnerTermRole::SourceStage),
+            "the mixed consumer must retain its local source-stage owner"
+        );
+
+        let combined = QueryPlanCapabilityProof::combine_composed_graph_attempt(
+            &consumer_plan,
+            consumer,
+            [("graph".to_owned(), graph_bfs_proof_with_typed_output(0))],
+        )
+        .expect("exact GPU-sink composed consumer must resolve after producer binding");
+        let envelope = combined
+            .resolve_reservation_envelope(reservation_policy())
+            .expect("the rebound GPU-sink composition must resolve a finite envelope");
         assert!(envelope.complete_phase_peak_bytes().is_some());
     }
 
@@ -3924,10 +3953,10 @@ mod tests {
     }
 
     #[test]
-    fn proof_envelope_pins_one_producer_peak_to_fixed_plus_output_plus_consumer() {
+    fn composed_resolver_rejects_graph_result_input_identity_mismatch_before_fallback() {
         let consumer_plan = graph_output_filter_consumer("producer");
         let producer = graph_bfs_proof_with_typed_output(0);
-        let combined = QueryPlanCapabilityProof::resolve_composed_graph_attempt(
+        let error = QueryPlanCapabilityProof::resolve_composed_graph_attempt(
             &consumer_plan,
             QueryPlanCapabilityProof::for_query_plan(&consumer_plan).unwrap(),
             [ComposedGraphProducerCandidate::new(
@@ -3936,42 +3965,26 @@ mod tests {
                 Some(producer),
             )],
         )
-        .expect("the conservative production seam must retain a complete owner inventory");
+        .expect_err("candidate normalization must reject before ordered or conservative derivation");
+        assert_eq!(error.fact_value("schedule_reason"), Some("producer_occurrence_identity_mismatch"));
+    }
 
-        assert_eq!(combined.as_requirement().bound_derivation(), None);
-        let retained_terms =
-            combined.as_requirement().owner_terms.iter().filter(|term| term.is_retained_output()).collect::<Vec<_>>();
-        assert_eq!(retained_terms.len(), 1, "one producer occurrence owns one retained output");
-        let consumer_shapes = combined
-            .as_requirement()
-            .reservation_shapes
-            .iter()
-            .filter(|shape| shape.matches(&consumer_plan))
-            .collect::<Vec<_>>();
-        let [consumer_shape] = consumer_shapes.as_slice() else {
-            panic!("consumer scope must be unique in the production composition");
-        };
-        assert_eq!(consumer_shape.retained_input_bindings().len(), 1);
-        assert_eq!(consumer_shape.retained_input_bindings()[0].1, retained_terms[0].id().clone());
-        assert!(
-            combined
-                .as_requirement()
-                .owner_terms
-                .iter()
-                .all(|term| term.id().role != OwnerTermRole::ConsumerBuildInput),
-            "the consumer source handle is retained by the producer, not allocated as a second input frame"
-        );
+    #[test]
+    fn conservative_fallback_cannot_bypass_an_attested_producer_scope_mismatch() {
+        let consumer_plan = graph_output_union_consumer(&["producer"]);
+        let producer_plan = graph_bfs_plan_with_source_vertex(0);
+        let different_scope_plan = graph_bfs_plan_with_source_vertex(1);
+        let mut producer = QueryPlanCapabilityProof::for_cugraph_graph_execution_plan(&producer_plan)
+            .expect("producer graph plan must issue an attested proof");
+        producer.requirement.reservation_shapes = vec![AttemptReservationShape::for_query_plan(&different_scope_plan)];
 
-        let expected_owner_sum = combined
-            .as_requirement()
-            .owner_terms
-            .iter()
-            .map(AllocationOwnerTerm::bytes)
-            .try_fold(0_u64, u64::checked_add)
-            .expect("test owner inventory fits");
-        let envelope = combined.resolve_reservation_envelope(reservation_policy()).unwrap();
-        assert_eq!(envelope.bound_derivation(), Some(AttemptBoundDerivation::ConservativeOwnerSum));
-        assert_eq!(envelope.complete_phase_peak_bytes(), Some(expected_owner_sum));
+        let error = QueryPlanCapabilityProof::resolve_composed_graph_attempt(
+            &consumer_plan,
+            QueryPlanCapabilityProof::for_query_plan(&consumer_plan).unwrap(),
+            [ComposedGraphProducerCandidate::new(Some("producer".to_owned()), None, Some(producer))],
+        )
+        .expect_err("conservative fallback must retain the attested producer scope check");
+        assert_eq!(error.fact_value("schedule_reason"), Some("producer_scope_coverage_mismatch"));
     }
 
     #[test]
@@ -4266,6 +4279,106 @@ mod tests {
     }
 
     #[test]
+    fn ordered_schedule_rejects_a_retained_term_bound_to_the_wrong_composed_occurrence() {
+        let plan = graph_bfs_plan_with_source_vertex(0);
+        let proof = graph_bfs_proof_with_typed_output(0);
+        let scope = canonical_execution_scope_fingerprint(&plan);
+        let owner_terms = proof
+            .as_requirement()
+            .owner_terms
+            .iter()
+            .map(|term| term.rebind_composed_for_test(if term.is_retained_output() { "wrong" } else { "expected" }))
+            .collect::<Result<Vec<_>>>()
+            .expect("test terms can be rebound to composed occurrences");
+        let retained_output_term_id = owner_terms
+            .iter()
+            .find(|term| term.is_retained_output())
+            .expect("graph proof carries one retained output term")
+            .id()
+            .clone();
+        let isolated_term_id = owner_terms
+            .iter()
+            .find(|term| !term.is_retained_output())
+            .expect("graph proof carries an isolated phase term")
+            .id()
+            .clone();
+        let mut shape = AttemptReservationShape::for_query_plan(&plan);
+        shape
+            .set_producer_occurrences([AttemptReservationProducerOccurrence::from_term_id(
+                "expected",
+                scope.clone(),
+                retained_output_term_id,
+            )])
+            .unwrap();
+        let schedule = AttemptReservationSchedule::from_phase_term_ids(
+            Some(0),
+            None,
+            vec![AttemptReservationProducerPhase::from_term_groups(vec![vec![isolated_term_id]])],
+            Vec::new(),
+        );
+        shape.attach_ordered_schedule(schedule.clone()).unwrap();
+        let scopes = vec![shape, AttemptReservationShape::for_query_plan(&plan)];
+
+        let error = schedule
+            .checked_fold_with_inventory(&scopes, &owner_terms)
+            .expect_err("ordered admission must bind retained output to its runtime occurrence");
+        assert_eq!(error.fact_value("schedule_reason"), Some("retained_output_term_occurrence_mismatch"));
+        assert_eq!(error.fact_value("expected_occurrence"), Some("composed:expected"));
+        assert_eq!(error.fact_value("actual_occurrence"), Some("composed:wrong"));
+    }
+
+    #[test]
+    fn ordered_schedule_rejects_a_retained_term_bound_to_the_wrong_producer_scope() {
+        let plan = graph_bfs_plan_with_source_vertex(0);
+        let different_scope_plan = graph_bfs_plan_with_source_vertex(1);
+        let proof = graph_bfs_proof_with_typed_output(0);
+        let scope = canonical_execution_scope_fingerprint(&plan);
+        let different_scope = canonical_execution_scope_fingerprint(&different_scope_plan);
+        let owner_terms = proof
+            .as_requirement()
+            .owner_terms
+            .iter()
+            .map(|term| term.rebind_composed_for_test("expected"))
+            .collect::<Result<Vec<_>>>()
+            .expect("test terms can bind to one composed occurrence");
+        let retained_output_term_id = owner_terms
+            .iter()
+            .find(|term| term.is_retained_output())
+            .expect("graph proof carries one retained output term")
+            .id()
+            .clone();
+        let isolated_term_id = owner_terms
+            .iter()
+            .find(|term| !term.is_retained_output())
+            .expect("graph proof carries an isolated phase term")
+            .id()
+            .clone();
+        let mut shape = AttemptReservationShape::for_query_plan(&plan);
+        shape
+            .set_producer_occurrences([AttemptReservationProducerOccurrence::from_term_id(
+                "expected",
+                different_scope.clone(),
+                retained_output_term_id,
+            )])
+            .unwrap();
+        let schedule = AttemptReservationSchedule::from_phase_term_ids(
+            Some(0),
+            None,
+            vec![AttemptReservationProducerPhase::from_term_groups(vec![vec![isolated_term_id]])],
+            Vec::new(),
+        );
+        shape.attach_ordered_schedule(schedule.clone()).unwrap();
+        let scopes = vec![shape, AttemptReservationShape::for_query_plan(&different_scope_plan)];
+
+        let error = schedule
+            .checked_fold_with_inventory(&scopes, &owner_terms)
+            .expect_err("ordered admission must bind retained output to its producer scope");
+        assert_eq!(error.fact_value("schedule_reason"), Some("retained_output_term_scope_mismatch"));
+        assert_eq!(error.fact_value("expected_scope"), Some(different_scope.as_str()));
+        assert_eq!(error.fact_value("actual_scope"), Some(scope.as_str()));
+    }
+
+    #[test]
     fn composed_consumer_rejects_an_extra_unconsumed_producer_occurrence() {
         let consumer_plan = graph_output_union_consumer(&["only"]);
         let error = QueryPlanCapabilityProof::combine_composed_graph_attempt(
@@ -4311,9 +4424,9 @@ mod tests {
             .find(|shape| shape.matches(&consumer_plan))
             .expect("the composed consumer scope must be present");
         let binding_occurrences = consumer_shape
-            .retained_input_bindings()
+            .producer_occurrences()
             .iter()
-            .map(|(occurrence_id, _)| occurrence_id.as_str())
+            .map(|occurrence| occurrence.occurrence_id())
             .collect::<Vec<_>>();
         assert_eq!(
             binding_occurrences,

@@ -317,25 +317,16 @@ fn composed_consumer_capability_proof(
     attested.or_else(|| QueryPlanCapabilityProof::for_composed_consumer_plan(consumer_plan))
 }
 
-/// Replaces provisional producer tickets with the one proof for the complete
-/// composed GPU island. Child preparation is the only phase that can resolve
-/// footer-bound graph evidence, while the outer consumer is the only owner of
-/// its aggregate/filter capability requirements.
-fn complete_composed_admission_proof(
-    execution_config: NexusNativeExecutionConfig,
+/// Issues the one engine-owned proof for a prepared composed GPU island.
+///
+/// The caller supplies the exact consumer plan that will run and the
+/// top-level producer occurrences in execution order. Nested producer
+/// fragments stay behind each top-level proof; they are not flattened into a
+/// second occurrence manifest.
+pub(crate) fn composed_admission_capability_proof(
     consumer_plan: &QueryPlan,
     prepared_gpu_inputs: &[Arc<dyn ExecutionPlan>],
-    task_context: &TaskContext,
-) -> DataFusionResult<CompletedComposedAdmissionProof> {
-    let mut producer_tickets = Vec::new();
-    for input in prepared_gpu_inputs {
-        for ticket in prepared_gpu_resident_producer_admission_tickets(input.as_ref()) {
-            if !producer_tickets.iter().any(|existing| Arc::ptr_eq(existing, &ticket)) {
-                producer_tickets.push(ticket);
-            }
-        }
-    }
-
+) -> DataFusionResult<QueryPlanCapabilityProof> {
     let mut candidates = Vec::with_capacity(prepared_gpu_inputs.len());
     let mut producer_proofs = Vec::with_capacity(prepared_gpu_inputs.len());
     for input in prepared_gpu_inputs {
@@ -364,16 +355,37 @@ fn complete_composed_admission_proof(
                 .with_fact("reason", "consumer_admission_proof_missing"),
             )
         })?;
-    let complete_proof =
-        QueryPlanCapabilityProof::resolve_composed_graph_attempt(consumer_plan, consumer_proof, candidates).map_err(
-            |error| {
-                DataFusionError::from(Error::from_native(
-                    "datafusion_nexus.native_composed.admission_proof",
-                    "failed to derive the complete engine-owned composed admission bound",
-                    error,
-                ))
-            },
-        )?;
+    QueryPlanCapabilityProof::resolve_composed_graph_attempt(consumer_plan, consumer_proof, candidates).map_err(
+        |error| {
+            DataFusionError::from(Error::from_native(
+                "datafusion_nexus.native_composed.admission_proof",
+                "failed to derive the complete engine-owned composed admission bound",
+                error,
+            ))
+        },
+    )
+}
+
+/// Replaces provisional producer tickets with the one proof for the complete
+/// composed GPU island. Child preparation is the only phase that can resolve
+/// footer-bound graph evidence, while the outer consumer is the only owner of
+/// its aggregate/filter capability requirements.
+fn complete_composed_admission_proof(
+    execution_config: NexusNativeExecutionConfig,
+    consumer_plan: &QueryPlan,
+    prepared_gpu_inputs: &[Arc<dyn ExecutionPlan>],
+    task_context: &TaskContext,
+) -> DataFusionResult<CompletedComposedAdmissionProof> {
+    let mut producer_tickets = Vec::new();
+    for input in prepared_gpu_inputs {
+        for ticket in prepared_gpu_resident_producer_admission_tickets(input.as_ref()) {
+            if !producer_tickets.iter().any(|existing| Arc::ptr_eq(existing, &ticket)) {
+                producer_tickets.push(ticket);
+            }
+        }
+    }
+
+    let complete_proof = composed_admission_capability_proof(consumer_plan, prepared_gpu_inputs)?;
     let canonical_ticket =
         query_admission_ticket_from_task_context(task_context).or_else(|| execution_config.query_admission_ticket());
     let source = execution_config

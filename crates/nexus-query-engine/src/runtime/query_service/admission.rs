@@ -60,13 +60,13 @@ pub(super) struct AdmissionLifecycleTracker {
 }
 
 impl AdmissionLifecycleTracker {
-    pub(super) fn begin_provisional(&self) -> AdmissionTicket {
+    pub(super) fn begin_provisional(&self, service: Weak<QueryServiceInner>) -> AdmissionTicket {
         let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let id = state.next_ticket_id;
         state.next_ticket_id = state.next_ticket_id.checked_add(1).expect("admission lifecycle ticket id overflow");
         let previous = state.tickets.insert(id, AdmissionTicketPhase::Provisional);
         debug_assert!(previous.is_none(), "admission lifecycle ticket ids must be unique");
-        AdmissionTicket { tracker: self.clone(), id, phase: AdmissionTicketPhase::Provisional }
+        AdmissionTicket { tracker: self.clone(), service, id, phase: AdmissionTicketPhase::Provisional }
     }
 
     fn transition(&self, id: u64, expected: AdmissionTicketPhase, next: AdmissionTicketPhase) -> Result<()> {
@@ -162,6 +162,7 @@ impl AdmissionLifecycleTracker {
 #[derive(Debug)]
 pub(super) struct AdmissionTicket {
     tracker: AdmissionLifecycleTracker,
+    service: Weak<QueryServiceInner>,
     id: u64,
     phase: AdmissionTicketPhase,
 }
@@ -197,8 +198,15 @@ impl AdmissionTicketPhase {
 
 impl Drop for AdmissionTicket {
     fn drop(&mut self) {
-        if let Err(error) = self.tracker.finish_cleanup(self.id) {
-            eprintln!("[nexus-query-engine] warning: admission lifecycle ticket drop invariant failed: {error}");
+        match self.transition_to_cleanup().and_then(|()| self.tracker.finish_cleanup(self.id)) {
+            Ok(()) => {
+                if let Some(service) = self.service.upgrade() {
+                    service.notify_admission_available();
+                }
+            },
+            Err(error) => {
+                eprintln!("[nexus-query-engine] warning: admission lifecycle ticket drop invariant failed: {error}");
+            },
         }
     }
 }
@@ -303,9 +311,9 @@ impl QueuedAdmissionTerminal {
 pub(super) struct AdmissionRequest {
     pub(super) admission_request_id: AdmissionRequestId,
     pub(super) observation: RuntimeObservationHandle,
-    /// Engine-minted attempt identity, retained only for allocator-event
-    /// correlation once this request owns a physical allocation domain.
-    pub(super) attempt_id: Option<crate::observability::AttemptId>,
+    /// Engine-minted identity retained from request submission through the
+    /// selected ledger grant and allocator-event correlation.
+    pub(super) attempt_id: crate::observability::AttemptId,
     pub(super) completion: QueryCompletion,
     /// Optional plan proof submitted by planning.  This is distinct from the
     /// always-resolved placement requirement below: no proof means execution
@@ -926,6 +934,7 @@ impl QueryAdmissionWaiter {
             let placed_query = match self.service.try_place_on_device(
                 device_ordinal,
                 self.admission_request_id,
+                state.queued[position].attempt_id,
                 state.queued[position].requirement_for_device(device_ordinal)?,
                 &mut slot_notifications,
             ) {
@@ -990,7 +999,7 @@ impl QueryAdmissionWaiter {
                 finish_removed_request_error(Some(admitted), &error);
                 return Err(error);
             }
-            let lifecycle_ticket = state.lifecycle.begin_provisional();
+            let lifecycle_ticket = state.lifecycle.begin_provisional(Arc::downgrade(&self.service.inner));
             self.queued = false;
             self.service.inner.notify_admission_available();
             drop(state);
@@ -1198,6 +1207,29 @@ mod tests {
         },
         runtime::BackendLifecycle,
     };
+
+    #[test]
+    fn dropping_provisional_admission_ticket_restores_quiescence() {
+        let tracker = AdmissionLifecycleTracker::default();
+        let ticket = tracker.begin_provisional(Weak::new());
+
+        assert_eq!(tracker.snapshot().provisional, 1);
+        drop(ticket);
+
+        assert!(tracker.is_quiescent());
+    }
+
+    #[test]
+    fn dropping_active_admission_ticket_restores_quiescence() {
+        let tracker = AdmissionLifecycleTracker::default();
+        let mut ticket = tracker.begin_provisional(Weak::new());
+        ticket.transition_to_active().expect("provisional ticket activates");
+
+        assert_eq!(tracker.snapshot().active, 1);
+        drop(ticket);
+
+        assert!(tracker.is_quiescent());
+    }
 
     #[test]
     fn queued_admission_terminal_preserves_borrowed_primary_failure_after_waiter_consumes_error() {

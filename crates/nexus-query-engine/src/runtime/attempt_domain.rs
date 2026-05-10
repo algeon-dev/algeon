@@ -5,14 +5,14 @@ use std::sync::{
     atomic::{AtomicU64, Ordering},
 };
 
-use super::{MemoryGrant, memory_domain::create_grant_memory_domain};
+use super::{MemoryGrant, gpu::GrantIdentity, memory_domain::create_grant_memory_domain};
 use crate::error::{QueryError, QueryErrorCode, Result};
 
 /// The authoritative query-memory domain of one immutable ledger grant.
 #[derive(Debug, Clone)]
 pub struct AttemptAllocationDomain {
     domain: Arc<cudf::QueryMemoryDomain>,
-    domain_id: u64,
+    grant_identity: GrantIdentity,
     next_member_id: Arc<AtomicU64>,
     member_limit_bytes: u64,
 }
@@ -44,7 +44,7 @@ impl AttemptAllocationDomain {
             )
             .with_fact("grant_id", grant.grant_id())
         })?;
-        if usage.domain_id != grant.grant_id()
+        if usage.domain_id != grant.identity().generation
             || usage.allocation_limit_bytes != grant.budget_bytes()
             || usage.ceiling_bytes != grant.budget_bytes()
         {
@@ -61,7 +61,7 @@ impl AttemptAllocationDomain {
         }
         Ok(Self {
             domain,
-            domain_id: grant.grant_id(),
+            grant_identity: grant.identity(),
             next_member_id: Arc::new(AtomicU64::new(1)),
             member_limit_bytes: grant.budget_bytes(),
         })
@@ -80,7 +80,7 @@ impl AttemptAllocationDomain {
                 "nexus_query_engine.runtime.attempt_allocation_domain.member",
                 "attempt domain member stream must live on the attempt device",
             )
-            .with_fact("domain_id", self.domain_id)
+            .with_fact("domain_id", self.domain_id())
             .with_fact("domain_device_ordinal", self.device_ordinal())
             .with_fact("stream_device_ordinal", stream.device().ordinal()));
         }
@@ -91,7 +91,7 @@ impl AttemptAllocationDomain {
                 "nexus_query_engine.runtime.attempt_allocation_domain.member",
                 "attempt member limit exceeds platform usize range",
             )
-            .with_fact("domain_id", self.domain_id)
+            .with_fact("domain_id", self.domain_id())
             .with_fact("member_limit_bytes", self.member_limit_bytes)
         })?;
         self.domain.reserve_stream(stream, member_id, limit).map_err(|error| {
@@ -100,7 +100,7 @@ impl AttemptAllocationDomain {
                 "failed to bind stream as an attempt domain member",
                 error,
             )
-            .with_fact("domain_id", self.domain_id)
+            .with_fact("domain_id", self.domain_id())
             .with_fact("member_id", member_id)
         })
     }
@@ -110,7 +110,11 @@ impl AttemptAllocationDomain {
     }
 
     pub const fn domain_id(&self) -> u64 {
-        self.domain_id
+        self.grant_identity.generation
+    }
+
+    pub const fn grant_identity(&self) -> GrantIdentity {
+        self.grant_identity
     }
 
     /// Immutable allocation cap copied from the admitted memory grant.
@@ -129,7 +133,7 @@ impl AttemptAllocationDomain {
                 "failed to sample attempt allocation domain usage",
                 error,
             )
-            .with_fact("domain_id", self.domain_id)
+            .with_fact("domain_id", self.domain_id())
         })
     }
 }

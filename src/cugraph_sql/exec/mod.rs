@@ -86,7 +86,7 @@ use crate::{
         },
         producer::{
             GpuResidentProducer, gpu_resident_producer as native_gpu_resident_producer,
-            register_gpu_resident_producer_discovery,
+            gpu_resident_producer_input_name, register_gpu_resident_producer_discovery,
         },
         run_gpu_execution_task,
     },

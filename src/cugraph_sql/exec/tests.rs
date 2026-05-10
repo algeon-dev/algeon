@@ -1,4 +1,10 @@
-use std::{fs::File, sync::Arc};
+use std::{
+    fs::File,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+};
 
 use arrow::{
     array::{ArrayRef, Float64Array, Int32Array, Int64Array, LargeStringArray, StringArray, StringViewArray},
@@ -6,18 +12,21 @@ use arrow::{
     record_batch::RecordBatch,
 };
 use datafusion::{
-    common::ScalarValue,
+    common::{DataFusionError, Result as DataFusionResult, ScalarValue},
     execution::{context::TaskContext, runtime_env::RuntimeEnvBuilder},
     logical_expr::Operator,
     physical_expr::expressions::{binary, col, lit},
     physical_plan::{collect, empty::EmptyExec, filter::FilterExec},
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
+use futures::future::BoxFuture;
 #[cfg(feature = "server")]
 use nexus_query_engine::observability::RuntimeObservationConfig;
 use nexus_query_engine::{
+    admission::QueryPlanCapabilityProof,
     expr::{Expr, SortExpr, SortSpec},
-    plan::ProjectionOutput,
+    graph_memory::graph_memory_bounded_admission_evidence_for_plan,
+    plan::{ProjectionOutput, QueryPlan},
     runtime::ExecutionCancellation,
     source::{
         GRAPH_SIMPLE_DIRECTED_EDGE_TOPOLOGY_PARQUET_METADATA_KEY, GRAPH_VERTEX_UPPER_BOUND_PARQUET_METADATA_KEY,
@@ -39,7 +48,10 @@ use crate::{
         CugraphTriangleCountAllParams, result_schema_for_params,
     },
     error::{DataFusionErrorExt, ErrorCode},
-    native_exec::query_admission_ticket_from_task_context,
+    native_exec::{
+        GraphClaimCalibrationCapture, SealedAttemptMetricsTarget, admission::QueryAdmissionTicket,
+        query_admission_ticket_from_task_context,
+    },
     native_report::NativeDataFusionExecutionMetrics,
     session::NexusSessionStateBuilderExt,
 };
@@ -98,6 +110,104 @@ fn memory_edge_source(rows: usize) -> Arc<dyn ExecutionPlan> {
 struct CountingExec {
     input: Arc<dyn ExecutionPlan>,
     execute_count: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+#[derive(Debug)]
+struct CountingGpuResidentProducer {
+    input_name: String,
+    ticket: Arc<crate::native_exec::admission::QueryAdmissionTicket>,
+    capability_proof: QueryPlanCapabilityProof,
+    execute_count: Arc<AtomicUsize>,
+    inner: EmptyExec,
+}
+
+impl DisplayAs for CountingGpuResidentProducer {
+    fn fmt_as(&self, t: DisplayFormatType, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.inner.fmt_as(t, f)
+    }
+}
+
+impl ExecutionPlan for CountingGpuResidentProducer {
+    fn name(&self) -> &str {
+        "CountingGpuResidentProducer"
+    }
+
+    fn properties(&self) -> &Arc<PlanProperties> {
+        self.inner.properties()
+    }
+
+    fn partition_statistics(&self, partition: Option<usize>) -> Result<Arc<datafusion::common::Statistics>> {
+        self.inner.partition_statistics(partition)
+    }
+
+    fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
+        Vec::new()
+    }
+
+    fn with_new_children(
+        self: Arc<Self>,
+        children: Vec<Arc<dyn ExecutionPlan>>,
+    ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
+        if children.is_empty() {
+            Ok(self)
+        } else {
+            Err(DataFusionError::Plan(format!(
+                "CountingGpuResidentProducer expected no children, received {}",
+                children.len()
+            )))
+        }
+    }
+
+    fn execute(&self, partition: usize, task_context: Arc<TaskContext>) -> DataFusionResult<SendableRecordBatchStream> {
+        self.inner.execute(partition, task_context)
+    }
+}
+
+impl GpuResidentProducer for CountingGpuResidentProducer {
+    fn gpu_result_input_name(&self) -> &str {
+        &self.input_name
+    }
+
+    fn prepared_admission_tickets(&self) -> Vec<Arc<crate::native_exec::admission::QueryAdmissionTicket>> {
+        vec![Arc::clone(&self.ticket)]
+    }
+
+    fn execute_gpu_result_with_context<'a>(
+        &'a self,
+        _native_context: &'a ExecutionContext,
+        _partition: usize,
+        _task_context: Arc<TaskContext>,
+    ) -> BoxFuture<'a, DataFusionResult<(String, GpuResultHandle)>> {
+        let execute_count = Arc::clone(&self.execute_count);
+        Box::pin(async move {
+            execute_count.fetch_add(1, Ordering::SeqCst);
+            Err(DataFusionError::Execution(
+                "counting producer must not run after composed admission rejection".to_string(),
+            ))
+        })
+    }
+}
+
+impl GraphExecutionPlan for CountingGpuResidentProducer {
+    fn graph_execution_capability_proof(&self) -> DataFusionResult<QueryPlanCapabilityProof> {
+        Ok(self.capability_proof.clone())
+    }
+
+    fn graph_result_input_name(&self) -> &str {
+        &self.input_name
+    }
+
+    fn sealed_attempt_metrics_target(&self) -> SealedAttemptMetricsTarget {
+        SealedAttemptMetricsTarget::new(&ExecutionPlanMetricsSet::new(), GraphClaimCalibrationCapture::default())
+    }
+}
+
+fn counting_gpu_resident_producer(plan: &dyn ExecutionPlan) -> Option<&dyn GpuResidentProducer> {
+    plan.downcast_ref::<CountingGpuResidentProducer>().map(|producer| producer as &dyn GpuResidentProducer)
+}
+
+fn counting_graph_execution_plan(plan: &dyn ExecutionPlan) -> Option<&dyn GraphExecutionPlan> {
+    plan.downcast_ref::<CountingGpuResidentProducer>().map(|producer| producer as &dyn GraphExecutionPlan)
 }
 
 impl CountingExec {
@@ -258,8 +368,9 @@ fn graph_ticket_after_metadata(exec: CugraphAlgoExec) -> CugraphAlgoExec {
     let input_row_bounds =
         CugraphInputRowBounds::from_execution_plans(exec.edge_source.as_ref(), &exec.predicate_sources)
             .expect("prepared cuGraph plans should expose row-bound evidence");
-    exec.issue_graph_aware_ticket_after_staging(input_row_bounds, &TaskContext::default())
+    exec.issue_graph_aware_ticket_after_staging(input_row_bounds, &TaskContext::default(), None)
         .expect("prepared cuGraph staging should mint one graph-aware admission ticket")
+        .0
 }
 
 fn graph_ticket_proof_for_native_source(
@@ -1034,12 +1145,46 @@ async fn cugraph_producer_prepared_inputs_transfer_once_across_plan_clones() {
 async fn cugraph_input_upload_releases_the_host_reservation_before_graph_compute() {
     let runtime = Arc::new(RuntimeEnvBuilder::new().with_memory_limit(1024 * 1024, 1.0).build().unwrap());
     let task_context = Arc::new(TaskContext::default().with_runtime(Arc::clone(&runtime)));
+    let native_context =
+        ExecutionContext::from_shared_runtime(Arc::new(cudf::Runtime::new().expect("test CUDA runtime"))).unwrap();
+    let metrics_set = ExecutionPlanMetricsSet::new();
+    let native_metrics = NexusNativeMetrics::new(&metrics_set, 0);
+    let mut graph_metrics = GraphExecutionMetrics::new(&native_metrics, RuntimeObservationConfig::native_execution());
+    let staged_inputs = stage_cugraph_inputs(
+        &triangle_spec(),
+        memory_edge_source(16),
+        vec![],
+        Arc::clone(&task_context),
+        &ExecutionCancellation::new(),
+        1024 * 1024,
+    )
+    .await
+    .expect("host graph inputs should stage");
+    assert!(runtime.memory_pool.reserved() > 0, "staged host batches must be reserved before upload");
+
+    let uploaded = staged_inputs
+        .upload(&native_context, &mut graph_metrics, task_context)
+        .await
+        .expect("staged host graph inputs should upload");
+
+    assert_eq!(
+        runtime.memory_pool.reserved(),
+        0,
+        "host-input reservation must be released before graph compute receives uploaded inputs",
+    );
+    drop(uploaded);
+}
+
+#[tokio::test]
+async fn cugraph_staged_upload_rejects_missing_admission_plan_before_source_upload() {
     let backend = test_gpu_backend();
+    let runtime = Arc::new(RuntimeEnvBuilder::new().with_memory_limit(1024 * 1024, 1.0).build().unwrap());
+    let task_context = Arc::new(TaskContext::default().with_runtime(Arc::clone(&runtime)));
     let config = backend_execution_config(&backend).with_query_service_handle(Arc::new(
         backend.admit_query().expect("test query must be admitted by the backend"),
     ));
     let context_lease =
-        config.execution_context_async(Arc::clone(&task_context)).await.expect("backend-admitted graph context builds");
+        config.execution_context_async(Arc::clone(&task_context)).await.expect("backend context builds");
     let metrics_set = ExecutionPlanMetricsSet::new();
     let native_metrics = NexusNativeMetrics::new(&metrics_set, 0);
     let mut graph_metrics = GraphExecutionMetrics::new(&native_metrics, RuntimeObservationConfig::native_execution());
@@ -1053,19 +1198,179 @@ async fn cugraph_input_upload_releases_the_host_reservation_before_graph_compute
     )
     .await
     .expect("host graph inputs should stage");
-    assert!(runtime.memory_pool.reserved() > 0, "staged host batches must be reserved before upload");
 
-    let uploaded = staged_inputs
-        .upload(context_lease.context(), &mut graph_metrics, task_context)
-        .await
-        .expect("staged host graph inputs should upload");
+    let error = match staged_inputs.upload(context_lease.context(), &mut graph_metrics, task_context).await {
+        Err(error) => error,
+        Ok(_) => panic!("an admitted upload without its exact graph plan must fail closed"),
+    };
+    let nexus = error.find_nexus_error().expect("missing admission plan remains structured");
+    assert_eq!(nexus.fact_value("reason"), Some("admission_graph_plan_missing"));
+}
 
-    assert_eq!(
-        runtime.memory_pool.reserved(),
-        0,
-        "host-input reservation must be released before graph compute receives uploaded inputs",
+fn direct_composed_consumer_plan(input_names: &[&str], schema: Arc<Schema>) -> QueryPlan {
+    let mut builder = QueryPlanBuilder::new();
+    let inputs = input_names
+        .iter()
+        .map(|input_name| {
+            builder.add_source(SourceNode::GpuResident(GpuResidentSource::new(*input_name, Arc::clone(&schema))))
+        })
+        .collect::<Vec<_>>();
+    let root = match inputs.as_slice() {
+        [input] => *input,
+        _ => builder.add_union(inputs, Arc::clone(&schema)),
+    };
+    builder.finish_with_host_sink(root)
+}
+
+fn direct_composed_graph_proof() -> (Arc<Schema>, QueryPlanCapabilityProof) {
+    let edge_schema = Arc::new(Schema::new(vec![
+        Field::new("src", DataType::Int64, false),
+        Field::new("dst", DataType::Int64, false),
+    ]));
+    let source = LocalParquetSource::from_files(
+        vec![
+            LocalParquetFile::new("/tmp/direct-composed-graph.parquet")
+                .with_row_groups(vec![0])
+                .with_row_group_rows(vec![10])
+                .with_row_group_bytes(vec![64])
+                .with_projected_row_group_bytes(vec![32], vec![96]),
+        ],
+        Arc::clone(&edge_schema),
+        vec!["src".to_string(), "dst".to_string()],
     );
-    drop(uploaded);
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LocalParquet(source));
+    let spec = GraphAlgorithmSpec::with_stable_schema(
+        GraphAlgorithm::Bfs,
+        GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
+        GraphConstructionOptions::default(),
+        GraphAlgorithmParams::Bfs(Box::new(GraphBfsParams::new(0, None))),
+    );
+    let graph = builder.try_add_graph_algorithm(source, spec.clone()).expect("direct graph fixture must lower");
+    let graph_plan = builder.finish_gpu_resident(graph);
+    let evidence =
+        graph_memory_bounded_admission_evidence_for_plan(&graph_plan, GraphMemoryCalibrationOverride::none(), None)
+            .expect("direct graph fixture must have finite graph evidence");
+    let proof = QueryPlanCapabilityProof::for_cugraph_graph_execution_plan(&graph_plan)
+        .expect("direct graph fixture must issue a capability proof")
+        .with_graph_memory_admission_evidence(&evidence)
+        .expect("direct graph fixture must retain finite graph evidence");
+    (spec.output_schema, proof)
+}
+
+fn direct_composed_admission_context_config(
+    backend: &InstalledTestGpuBackend,
+    consumer_plan: &QueryPlan,
+    children: &[Arc<dyn ExecutionPlan>],
+) -> NexusNativeExecutionConfig {
+    let proof = crate::native_exec::composed_admission_capability_proof(consumer_plan, children)
+        .expect("direct composed fixture must issue one complete admission proof");
+    let required_floor = proof.required_floor_bytes_for(0).expect("direct composed proof floor must be finite");
+    let admitted = backend
+        .backend()
+        .session_capability()
+        .admit_query_with_request(
+            nexus_query_engine::runtime::QueryAdmissionRequest::new().with_query_plan_capability_proof(proof.clone()),
+        )
+        .expect("direct composed proof must be admitted by the installed backend profile");
+    assert!(
+        admitted.device_budget_bytes() >= required_floor,
+        "direct composed admission grant must cover its proof floor"
+    );
+    drop(admitted);
+    backend_execution_config(backend)
+        .with_graph_aware_plan_query_admission_ticket(None, vec![proof])
+        .expect("direct composed fixture must mint one admission ticket")
+}
+
+#[tokio::test]
+async fn composed_edge_source_rejects_admission_mismatch_before_running_producers() {
+    register_gpu_resident_producer_discovery(counting_gpu_resident_producer);
+    register_graph_execution_plan_discovery(counting_graph_execution_plan);
+    let backend = test_gpu_backend();
+    let admission_source = admission_source(&backend);
+    let (schema, producer_proof) = direct_composed_graph_proof();
+    let consumer_host_plan = direct_composed_consumer_plan(&["producer_a", "producer_b"], Arc::clone(&schema));
+    let consumer_gpu_plan = consumer_host_plan.clone_with_gpu_resident_sink();
+    let execute_counts = [Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0))];
+    let producer_names = ["producer_a", "producer_b"];
+    let children = producer_names
+        .iter()
+        .zip(&execute_counts)
+        .map(|(input_name, execute_count)| {
+            let ticket = QueryAdmissionTicket::new(admission_source.clone(), Some(producer_proof.clone()));
+            Arc::new(CountingGpuResidentProducer {
+                input_name: (*input_name).to_string(),
+                ticket,
+                capability_proof: producer_proof.clone(),
+                execute_count: Arc::clone(execute_count),
+                inner: EmptyExec::new(Arc::clone(&schema)),
+            }) as Arc<dyn ExecutionPlan>
+        })
+        .collect::<Vec<_>>();
+    let composed_exec = Arc::new(
+        NexusNativeComposedExec::try_new(
+            consumer_host_plan.clone(),
+            children.clone(),
+            backend_execution_config(&backend),
+        )
+        .expect("direct composed fixture must build"),
+    ) as Arc<dyn ExecutionPlan>;
+
+    let wrong_order_children = vec![Arc::clone(&children[1]), Arc::clone(&children[0])];
+    let wrong_order_config =
+        direct_composed_admission_context_config(&backend, &consumer_gpu_plan, &wrong_order_children);
+    let wrong_order_task_context = Arc::new(TaskContext::default());
+    let wrong_order_context = wrong_order_config
+        .execution_context_async(Arc::clone(&wrong_order_task_context))
+        .await
+        .expect("wrong-order fixture must acquire an admitted context");
+    let metrics_set = ExecutionPlanMetricsSet::new();
+    let native_metrics = NexusNativeMetrics::new(&metrics_set, 0);
+    let mut graph_metrics = GraphExecutionMetrics::new(&native_metrics, RuntimeObservationConfig::native_execution());
+    let wrong_order_error = match execute_edge_source_to_gpu(
+        wrong_order_context.context(),
+        &mut graph_metrics,
+        Arc::clone(&composed_exec),
+        Arc::clone(&wrong_order_task_context),
+        Some(consumer_gpu_plan.clone()),
+    )
+    .await
+    {
+        Err(error) => error,
+        Ok(_) => panic!("runtime producer order must not execute under a differently ordered admission proof"),
+    };
+    let wrong_order_nexus = wrong_order_error.find_nexus_error().expect("order rejection must remain structured");
+    assert_eq!(wrong_order_nexus.fact_value("schedule_reason"), Some("runtime_occurrence_order_mismatch"));
+    assert_eq!(execute_counts[0].load(Ordering::SeqCst), 0);
+    assert_eq!(execute_counts[1].load(Ordering::SeqCst), 0);
+    drop(wrong_order_context);
+
+    let original_config = direct_composed_admission_context_config(&backend, &consumer_gpu_plan, &children);
+    let original_task_context = Arc::new(TaskContext::default());
+    let original_context = original_config
+        .execution_context_async(Arc::clone(&original_task_context))
+        .await
+        .expect("original fixture must acquire an admitted context");
+    let changed_consumer_gpu_plan = consumer_host_plan
+        .with_appended_sort(SortSpec::new(vec![SortExpr::new(Expr::column("vertex"), false, false)]))
+        .clone_with_gpu_resident_sink();
+    let changed_scope_error = match execute_edge_source_to_gpu(
+        original_context.context(),
+        &mut graph_metrics,
+        composed_exec,
+        original_task_context,
+        Some(changed_consumer_gpu_plan),
+    )
+    .await
+    {
+        Err(error) => error,
+        Ok(_) => panic!("a changed consumer scope must not execute admitted producers"),
+    };
+    let changed_scope_nexus = changed_scope_error.find_nexus_error().expect("scope rejection must remain structured");
+    assert_eq!(changed_scope_nexus.fact_value("reason"), Some("admitted_capability_evidence_mismatch"));
+    assert_eq!(execute_counts[0].load(Ordering::SeqCst), 0);
+    assert_eq!(execute_counts[1].load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test]

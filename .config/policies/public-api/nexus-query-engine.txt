@@ -22,6 +22,7 @@ pub fn nexus_query_engine::admission::QueryPlanCapabilityProof::combine_composed
 pub fn nexus_query_engine::admission::QueryPlanCapabilityProof::for_attested_graph_result_bounded_consumer_plan(&nexus_query_engine::plan::QueryPlan, &str) -> core::option::Option<Self>
 pub fn nexus_query_engine::admission::QueryPlanCapabilityProof::for_attested_graph_result_bounded_consumer_plan_with_producer(&nexus_query_engine::plan::QueryPlan, &str, &Self) -> core::option::Option<Self>
 pub fn nexus_query_engine::admission::QueryPlanCapabilityProof::for_attested_graph_result_passthrough_plan(&nexus_query_engine::plan::QueryPlan, &str) -> core::option::Option<Self>
+pub fn nexus_query_engine::admission::QueryPlanCapabilityProof::for_composed_consumer_plan(&nexus_query_engine::plan::QueryPlan) -> core::option::Option<Self>
 pub fn nexus_query_engine::admission::QueryPlanCapabilityProof::for_cugraph_graph_execution_plan(&nexus_query_engine::plan::QueryPlan) -> core::option::Option<Self>
 pub fn nexus_query_engine::admission::QueryPlanCapabilityProof::for_cugraph_graph_input_plan(&nexus_query_engine::plan::QueryPlan) -> core::option::Option<Self>
 pub fn nexus_query_engine::admission::QueryPlanCapabilityProof::for_query_plan(&nexus_query_engine::plan::QueryPlan) -> core::option::Option<Self>
@@ -3964,6 +3965,7 @@ pub struct nexus_query_engine::optimizer::LakehouseFooterPruningResult
 pub nexus_query_engine::optimizer::LakehouseFooterPruningResult::events: alloc::vec::Vec<nexus_query_engine::optimizer::LakehouseFooterPruningEvent>
 pub nexus_query_engine::optimizer::LakehouseFooterPruningResult::plan: nexus_query_engine::plan::QueryPlan
 pub struct nexus_query_engine::optimizer::LocalParquetRowGroupSelection
+pub nexus_query_engine::optimizer::LocalParquetRowGroupSelection::row_group_rows: alloc::vec::Vec<u64>
 pub nexus_query_engine::optimizer::LocalParquetRowGroupSelection::row_groups: alloc::vec::Vec<usize>
 pub nexus_query_engine::optimizer::LocalParquetRowGroupSelection::total_row_groups: usize
 pub struct nexus_query_engine::optimizer::LocalParquetRowGroupSelectionApplyResult
@@ -5643,6 +5645,7 @@ pub const fn nexus_query_engine::runtime::AttemptAllocationDomain::cap_bytes(&se
 pub fn nexus_query_engine::runtime::AttemptAllocationDomain::create_member(&self, &cudf::runtime::stream::CudaStream) -> nexus_query_engine::error::Result<cudf::core::memory::StreamReservationLease>
 pub fn nexus_query_engine::runtime::AttemptAllocationDomain::device_ordinal(&self) -> usize
 pub const fn nexus_query_engine::runtime::AttemptAllocationDomain::domain_id(&self) -> u64
+pub const fn nexus_query_engine::runtime::AttemptAllocationDomain::grant_identity(&self) -> nexus_query_engine::runtime::gpu::ledger::GrantIdentity
 pub fn nexus_query_engine::runtime::AttemptAllocationDomain::usage(&self) -> nexus_query_engine::error::Result<cudf::core::memory::QueryMemoryDomainUsage>
 pub struct nexus_query_engine::runtime::BackendAdmissionMetricsSnapshot
 pub nexus_query_engine::runtime::BackendAdmissionMetricsSnapshot::active_attempts: u64
@@ -5948,6 +5951,7 @@ pub fn nexus_query_engine::runtime::ExecutionContext::acquire_io_lease(&self, &'
 pub fn nexus_query_engine::runtime::ExecutionContext::aggregate_strategy_execution_options(&self) -> nexus_query_engine::capability::AggregateStrategyExecutionOptions
 pub fn nexus_query_engine::runtime::ExecutionContext::attempt_allocation_domain_id(&self) -> core::option::Option<u64>
 pub fn nexus_query_engine::runtime::ExecutionContext::attempt_allocation_domain_usage(&self) -> nexus_query_engine::error::Result<core::option::Option<cudf::core::memory::QueryMemoryDomainUsage>>
+pub fn nexus_query_engine::runtime::ExecutionContext::attempt_allocation_grant_identity(&self) -> core::option::Option<nexus_query_engine::runtime::gpu::ledger::GrantIdentity>
 pub fn nexus_query_engine::runtime::ExecutionContext::boundary_policy(&self) -> nexus_query_engine::runtime::ExecutionBoundaryPolicy
 pub fn nexus_query_engine::runtime::ExecutionContext::bounded_device_budget_bytes(&self) -> core::option::Option<u64>
 pub fn nexus_query_engine::runtime::ExecutionContext::builder() -> nexus_query_engine::runtime::context::builder::ExecutionContextBuilder
@@ -5983,7 +5987,8 @@ pub fn nexus_query_engine::runtime::ExecutionContext::source_chunk_planning_opti
 pub fn nexus_query_engine::runtime::ExecutionContext::source_scheduler_policy(&self) -> nexus_query_engine::runtime::SourceSchedulerPolicy
 pub fn nexus_query_engine::runtime::ExecutionContext::statistical_aggregate_execution_mode(&self) -> nexus_query_engine::mode::StatisticalAggregateExecutionMode
 pub fn nexus_query_engine::runtime::ExecutionContext::trace_id(&self) -> core::option::Option<&nexus_query_engine::metrics::TraceId>
-pub fn nexus_query_engine::runtime::ExecutionContext::validate_admitted_composed_graph_attempt(&self, &nexus_query_engine::plan::QueryPlan, &[alloc::string::String]) -> nexus_query_engine::error::Result<()>
+pub fn nexus_query_engine::runtime::ExecutionContext::validate_admitted_composed_attempt(&self, &nexus_query_engine::plan::QueryPlan, &[alloc::string::String]) -> nexus_query_engine::error::Result<core::option::Option<nexus_query_engine::observability::AttemptComposedScheduleProjection>>
+pub fn nexus_query_engine::runtime::ExecutionContext::validate_admitted_plan_capabilities(&self, &nexus_query_engine::plan::QueryPlan) -> nexus_query_engine::error::Result<()>
 pub fn nexus_query_engine::runtime::ExecutionContext::with_graph_memory_calibration_override(&self, nexus_query_engine::graph_memory::GraphMemoryCalibrationOverride) -> Self
 pub fn nexus_query_engine::runtime::ExecutionContext::with_io_lifecycle(self, nexus_query_engine::runtime::IoLifecycle) -> Self
 pub fn nexus_query_engine::runtime::ExecutionContext::with_owned_stream_lease(&self, nexus_query_engine::runtime::StreamLease) -> nexus_query_engine::error::Result<nexus_query_engine::runtime::LeasedExecutionContext>
@@ -6213,6 +6218,7 @@ pub fn nexus_query_engine::runtime::MemoryGrant::admission_request_id(&self) -> 
 pub fn nexus_query_engine::runtime::MemoryGrant::budget_bytes(&self) -> u64
 pub fn nexus_query_engine::runtime::MemoryGrant::device_ordinal(&self) -> usize
 pub fn nexus_query_engine::runtime::MemoryGrant::grant_id(&self) -> u64
+pub fn nexus_query_engine::runtime::MemoryGrant::identity(&self) -> nexus_query_engine::runtime::gpu::ledger::GrantIdentity
 impl core::fmt::Debug for nexus_query_engine::runtime::MemoryGrant
 pub fn nexus_query_engine::runtime::MemoryGrant::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct nexus_query_engine::runtime::MemoryReservationRequest
@@ -6318,6 +6324,7 @@ pub fn nexus_query_engine::runtime::QueryHandle::device_ordinal(&self) -> usize
 pub fn nexus_query_engine::runtime::QueryHandle::dynamic_filter_execution_options(&self) -> nexus_query_engine::dynamic_filter::DynamicFilterExecutionOptions
 pub fn nexus_query_engine::runtime::QueryHandle::finish(&self)
 pub fn nexus_query_engine::runtime::QueryHandle::gpu_executor(&self) -> nexus_query_engine::error::Result<nexus_query_engine::runtime::GpuExecutorLease>
+pub fn nexus_query_engine::runtime::QueryHandle::grant_identity(&self) -> nexus_query_engine::error::Result<nexus_query_engine::runtime::gpu::ledger::GrantIdentity>
 pub fn nexus_query_engine::runtime::QueryHandle::keyed_hash_join_strategy_options(&self) -> nexus_query_engine::capability::KeyedHashJoinStrategyOptions
 pub fn nexus_query_engine::runtime::QueryHandle::lakehouse_cache_fill_config(&self) -> nexus_query_engine::runtime::LakehouseCacheFillConfig
 pub fn nexus_query_engine::runtime::QueryHandle::memory_control_policy(&self) -> nexus_query_engine::runtime::MemoryControlPolicy

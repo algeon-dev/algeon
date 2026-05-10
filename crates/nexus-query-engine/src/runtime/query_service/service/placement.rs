@@ -40,6 +40,7 @@ impl QueryService {
         &self,
         device_ordinal: usize,
         admission_request_id: AdmissionRequestId,
+        attempt_id: crate::observability::AttemptId,
         requirement: &AttemptRequirement,
         slot_notifications: &mut PendingDeviceSlotNotifications,
     ) -> Result<Option<PlacedQuery>> {
@@ -64,7 +65,7 @@ impl QueryService {
                 )
                 .with_fact("reason", "synthetic_ledger_missing"));
             };
-            return ledger.try_admit(admission_request_id, requirement).map(|grant| {
+            return ledger.try_admit_for_attempt(admission_request_id, attempt_id, requirement).map(|grant| {
                 grant.map(|memory_grant| PlacedQuery { device_ordinal: ledger.device_ordinal(), memory_grant })
             });
         };
@@ -73,7 +74,7 @@ impl QueryService {
             slot_notifications.record_device_health_transition(device_ordinal);
             return Ok(None);
         }
-        match context.try_admit_attempt(admission_request_id, requirement) {
+        match context.try_admit_attempt(admission_request_id, attempt_id, requirement) {
             Ok(Some(memory_grant)) => Ok(Some(PlacedQuery { device_ordinal, memory_grant })),
             Ok(None) => {
                 if !matches!(context.ledger().health()?, crate::runtime::gpu::DeviceAdmissionHealth::Open) {
@@ -125,6 +126,7 @@ impl QueryService {
     pub(in crate::runtime::query_service) fn try_place_query(
         &self,
         admission_request_id: AdmissionRequestId,
+        attempt_id: crate::observability::AttemptId,
         device_entries: &DeviceAdmissionEntries,
         compatible_devices: &[usize],
         slot_notifications: &mut PendingDeviceSlotNotifications,
@@ -171,7 +173,7 @@ impl QueryService {
                 )
                 .with_fact("reason", "synthetic_ledger_missing"));
             };
-            return ledger.try_admit(admission_request_id, &requirement).map(|grant| {
+            return ledger.try_admit_for_attempt(admission_request_id, attempt_id, &requirement).map(|grant| {
                 grant.map(|memory_grant| PlacedQuery { device_ordinal: ledger.device_ordinal(), memory_grant })
             });
         };
@@ -222,7 +224,7 @@ impl QueryService {
                 .get(&candidate.ordinal)
                 .ok_or_else(|| super::super::admission::missing_device_admission_entry_error(candidate.ordinal))?
                 .requirement;
-            match context.try_admit_attempt(admission_request_id, requirement) {
+            match context.try_admit_attempt(admission_request_id, attempt_id, requirement) {
                 Ok(Some(memory_grant)) => {
                     return Ok(Some(PlacedQuery { device_ordinal: candidate.ordinal, memory_grant }));
                 },

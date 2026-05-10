@@ -136,6 +136,35 @@ fn direct_placement_missing_resolution_cleans_up_before_waking_a_close_waiter() 
 }
 
 #[test]
+fn dropping_admission_ticket_wakes_a_close_waiter_after_cleanup() {
+    let service = test_service(1, 8);
+    let ticket = {
+        let state = service.service.inner.admission.lock().expect("admission state");
+        state.lifecycle.begin_provisional(std::sync::Arc::downgrade(&service.service.inner))
+    };
+
+    let close_service = service.service.clone();
+    let (close_sender, close_receiver) = std::sync::mpsc::sync_channel(1);
+    let close = std::thread::spawn(move || {
+        close_sender
+            .send(close_service.close_and_wait_for_quiescence(Duration::from_secs(2)))
+            .expect("test receives close result");
+    });
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while service.shutdown_waiter_count() == 0 {
+        assert!(Instant::now() < deadline, "close must wait for the live lifecycle ticket");
+        std::thread::yield_now();
+    }
+
+    drop(ticket);
+    close_receiver
+        .recv_timeout(Duration::from_secs(2))
+        .expect("close wakes after the ticket is removed")
+        .expect("ticket cleanup leaves the service quiescent");
+    close.join().expect("close thread does not panic");
+}
+
+#[test]
 fn direct_placement_reports_a_post_snapshot_fleet_closure_as_a_health_failure() {
     let service = QueryService::new_with_device_ordinals_and_deployment(
         QueryExecutionConfig::default(),
@@ -432,6 +461,7 @@ fn missing_selected_entry_is_a_typed_invariant_error() {
     let error = service
         .try_place_query(
             AdmissionRequestId::new(91),
+            crate::observability::AttemptId::mint(),
             &DeviceAdmissionEntries::new(),
             &[0],
             &mut notifications,

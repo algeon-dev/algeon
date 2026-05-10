@@ -80,7 +80,7 @@ pub(super) struct QueryHandleLifetime {
     service: Mutex<Option<Arc<QueryServiceInner>>>,
     pub(super) admission_request_id: AdmissionRequestId,
     observation: RuntimeObservationHandle,
-    attempt_id: Option<crate::observability::AttemptId>,
+    attempt_id: crate::observability::AttemptId,
     /// The admitted attempt owns the collector until every outward execution
     /// context has drained. Report commit then consumes its one unambiguous
     /// cache-scope event after CUDA cleanup is fenced.
@@ -100,6 +100,7 @@ pub(super) struct QueryHandleLifetime {
     root_context_setup: RootContextSetupCoordinator,
     attempt_auxiliary_slots: Arc<AttemptAuxiliarySlots>,
     envelope: Mutex<Option<super::service::transaction::AdmissionEnvelope>>,
+    admitted_attempt_proof: Option<Arc<crate::admission::AdmittedAttemptProof>>,
     #[cfg(test)]
     release_commit_gate: Mutex<Option<Arc<ReleaseCommitGate>>>,
     #[cfg(test)]
@@ -113,13 +114,19 @@ impl QueryHandleLifetime {
         self.admitted_device_requirements.get(&ordinal)
     }
 
+    #[cfg(test)]
+    pub(crate) fn admitted_attempt_proof_for_test(&self) -> Option<&crate::admission::AdmittedAttemptProof> {
+        self.admitted_attempt_proof.as_deref()
+    }
+
     pub(super) fn new(
         service: Arc<QueryServiceInner>,
         admission_request_id: AdmissionRequestId,
         observation: RuntimeObservationHandle,
-        attempt_id: Option<crate::observability::AttemptId>,
+        attempt_id: crate::observability::AttemptId,
         completion: QueryCompletion,
         envelope: super::service::transaction::AdmissionEnvelope,
+        admitted_attempt_proof: Option<Arc<crate::admission::AdmittedAttemptProof>>,
         admitted_device_requirements: BTreeMap<usize, AttemptRequirement>,
         compatible_devices: Vec<usize>,
     ) -> Arc<Self> {
@@ -147,7 +154,7 @@ impl QueryHandleLifetime {
                 observation,
                 attempt_id,
                 cache_scope_allocator_correlation: Mutex::new(
-                    AttemptCacheScopeAllocatorCorrelation::for_admitted_attempt(attempt_id),
+                    AttemptCacheScopeAllocatorCorrelation::for_admitted_attempt(Some(attempt_id)),
                 ),
                 completion: Mutex::new(Some(completion)),
                 service_epoch_user: Mutex::new(Some(service_epoch_user)),
@@ -161,6 +168,7 @@ impl QueryHandleLifetime {
                 root_context_setup: RootContextSetupCoordinator::new(),
                 attempt_auxiliary_slots,
                 envelope: Mutex::new(Some(envelope)),
+                admitted_attempt_proof,
                 #[cfg(test)]
                 release_commit_gate: Mutex::new(None),
                 #[cfg(test)]
@@ -1386,13 +1394,6 @@ fn drop_recovering<T>(value: Option<T>, resource: &'static str) {
 pub struct QueryHandle {
     pub(super) config: QueryExecutionConfig,
     pub(super) queue_bounds: QueueBounds,
-    /// The proof supplied by planning, retained for execution-time coverage
-    /// validation.  It remains absent when admission resolved a requirement
-    /// solely for placement/accounting.
-    pub(super) submitted_plan_capability_evidence: Option<crate::admission::AttemptRequirement>,
-    /// Exact policy-resolved physical envelope used to size this immutable
-    /// grant. It is revalidated before execution can reuse the handle.
-    pub(super) admitted_reservation_envelope: Option<crate::admission::AttemptReservationEnvelope>,
     pub(super) admission_request_id: AdmissionRequestId,
     pub(super) admission_sequence: u64,
     pub(super) admission_wait: Duration,
@@ -1433,6 +1434,15 @@ impl QueryHandle {
     /// CUDA device ordinal selected for this query.
     pub fn device_ordinal(&self) -> usize {
         self.device_ordinal
+    }
+
+    /// Immutable attempt and ledger generation committed for this admission.
+    pub fn grant_identity(&self) -> Result<crate::runtime::gpu::GrantIdentity> {
+        self.lifetime
+            .lock_envelope()?
+            .as_ref()
+            .map(|envelope| envelope.memory_grant().identity())
+            .ok_or_else(|| self.lifetime.released_error())
     }
 
     /// Bounded memory policy this handle will use for native execution.
@@ -1720,7 +1730,7 @@ impl QueryHandle {
             io_lifecycle: None,
             query_id,
             trace_id,
-            attempt_id: self.lifetime.attempt_id,
+            attempt_id: Some(self.lifetime.attempt_id),
             cache_scope_allocator_correlation: self.lifetime.cache_scope_allocator_correlation(),
             runtime_observation,
             runtime_observation_owner: observation_owner,
@@ -1734,8 +1744,7 @@ impl QueryHandle {
             grant_memory_domain: Some(Arc::clone(attempt_allocation_domain.as_cudf())),
             attempt_allocation_domain: Some(attempt_allocation_domain),
             attempt_auxiliary_slots: Some(Arc::clone(&self.lifetime.attempt_auxiliary_slots)),
-            admitted_capability_evidence: self.submitted_plan_capability_evidence.clone(),
-            admitted_reservation_envelope: self.admitted_reservation_envelope.clone(),
+            admitted_attempt_proof: self.lifetime.admitted_attempt_proof.clone(),
             attempt_member_lease: Some(attempt_member_lease),
             boundary_policy: service.config.boundary_policy,
             source_scheduler_policy: service.config.source_scheduler_policy,
