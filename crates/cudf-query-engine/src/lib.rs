@@ -12,6 +12,7 @@ pub mod error;
 pub mod exec;
 pub mod expr;
 pub mod metrics;
+pub mod pipeline;
 pub mod plan;
 pub mod runtime;
 pub mod source;
@@ -36,6 +37,11 @@ pub use expr::{
     LimitSpec, LiteralValue, SortExpr, SortSpec,
 };
 pub use metrics::{BoundaryMetrics, BudgetedExecutionEvent, JoinOperatorMetrics, OperatorMetrics, QueryMetrics};
+pub use pipeline::{
+    CompiledPipeline, PipelineBarrier, PipelineBarrierId, PipelineBarrierKind, PipelineEdge, PipelineEdgeId,
+    PipelineEdgeKind, PipelineTask, PipelineTaskId, PipelineTaskKind, ReservationGate, ReservationGateId,
+    ReservationGateOwner, ResidentLifetime, ResidentResource, ResidentResourceId, SinkBoundary, SinkBoundaryKind,
+};
 pub use plan::{
     AggregateNode, DataPlacement, FilterNode, HashJoinBuildArtifactId, JoinKey, JoinNode, JoinNullEquality,
     JoinOutputColumn, JoinSide, JoinSpec, JoinType, LimitNode, NodeId, PlanFacts, PlanNode, ProjectionNode,

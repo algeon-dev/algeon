@@ -49,6 +49,8 @@ fn projection_outputs(expressions: Vec<Expr>, schema: Arc<Schema>) -> Vec<Projec
 mod bounded_join_admission;
 #[path = "native_contract_tests/expr_contracts.rs"]
 mod expr_contracts;
+#[path = "native_contract_tests/pipeline_compiler.rs"]
+mod pipeline_compiler;
 #[path = "native_contract_tests/plan_contracts.rs"]
 mod plan_contracts;
 #[path = "native_contract_tests/source_contracts.rs"]
