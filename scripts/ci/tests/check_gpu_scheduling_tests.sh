@@ -581,6 +581,7 @@ assert_contains "${tmp_dir}/cache_miss.log" "cargo <nextest> <run> <--workspace>
 echo "PASS: phase cache hits unchanged phases, keeps GPU-locked phases live, and invalidates workspace phases after source changes"
 
 # test_all.sh must not inject different defaults or otherwise change semantics.
+rm -f -- "${cache_fixture}"
 run_check alias /usr/bin/bash scripts/ci/test_all.sh
 assert_status alias 0
 diff -u "${tmp_dir}/default.output" "${tmp_dir}/alias.output"
