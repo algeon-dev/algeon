@@ -45,6 +45,9 @@ fn bounded_native_query_executes_keyless_conditional_join_with_resident_input_su
     assert_eq!(metrics.boundary.host_to_device_uploads, 0);
     assert_eq!(metrics.boundary.device_to_host_materializations, 1);
     assert_eq!(metrics.reservation_denied_count, 0);
+    assert_eq!(metrics.compiled_pipeline_attempts, 1);
+    assert!(metrics.compiled_pipeline_tasks_executed > 0);
+    assert_eq!(metrics.compiled_pipeline_host_arrow_sinks, 1);
     assert_eq!(metrics.filtered_join_build_count, 1);
     assert_eq!(metrics.operators.iter().filter(|operator| operator.join.is_some()).count(), 2);
     let join_metrics = metrics.operators.iter().filter_map(|operator| operator.join.as_ref()).collect::<Vec<_>>();
@@ -70,19 +73,19 @@ fn bounded_native_query_executes_keyless_conditional_join_with_resident_input_su
             (ReservationKind::FilteredProbeState, "join_filtered_probe_state"),
             (ReservationKind::GatherMap, "join_gather_map"),
             (ReservationKind::JoinOutput, "join_output"),
-            (ReservationKind::OperatorOutput, "join_input_subplan_projection"),
-            (ReservationKind::OperatorOutput, "join_input_subplan_projection_output"),
+            (ReservationKind::OperatorOutput, "compiled_projection"),
+            (ReservationKind::OperatorOutput, "compiled_projection_output"),
             (ReservationKind::SourceRead, "join_source_read"),
-            (ReservationKind::OperatorOutput, "join_input_subplan_global_aggregate"),
-            (ReservationKind::OperatorOutput, "join_input_subplan_global_aggregate_output"),
+            (ReservationKind::OperatorOutput, "compiled_aggregate"),
+            (ReservationKind::OperatorOutput, "compiled_aggregate_output"),
             (ReservationKind::OperatorOutput, "join_input_projection"),
             (ReservationKind::BuildSide, "join_build_side"),
             (ReservationKind::OperatorOutput, "join_input_projection"),
             (ReservationKind::ProbeSide, "join_probe_side"),
             (ReservationKind::GatherMap, "join_gather_map"),
             (ReservationKind::JoinOutput, "join_output"),
-            (ReservationKind::FinalSort, "join_pipeline_sort"),
-            (ReservationKind::FinalSort, "join_pipeline_sort_output"),
+            (ReservationKind::FinalSort, "final_sort"),
+            (ReservationKind::FinalSort, "final_sort"),
             (ReservationKind::Materialization, "host_materialization"),
         ],
     );
@@ -131,10 +134,11 @@ fn bounded_native_query_executes_keyless_conditional_join_with_resident_input_su
         Ok(_) => panic!("constrained keyless input-subplan pipeline should fail reservation"),
         Err(error) => error,
     };
-    assert_eq!(
-        error.fact_value("bounded_join_execution_family"),
-        Some("keyless_conditional_join_input_subplan_pipeline")
-    );
+    assert_eq!(error.fact_value("bounded_join_execution_family"), None);
+    assert_eq!(error.fact_value("memory_boundary"), Some("join_source_read"));
+    assert_eq!(error.fact_value("reservation_kind"), Some("source_read"));
+    assert!(error.fact_value("compiled_task_id").is_some());
+    assert!(error.fact_value("plan_node_id").is_some());
 
     fs::remove_dir_all(dir).unwrap();
 }

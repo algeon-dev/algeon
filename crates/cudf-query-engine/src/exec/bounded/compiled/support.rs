@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use super::join_strategy::CompiledJoinExecutionStrategy;
 use crate::{
     bounded::BoundedKeylessConditionalJoinType,
-    capability::{ContractQuality, ContractStatus},
+    capability::{CapabilityDecision, ContractQuality, ContractStatus, SubgraphInvariantKind},
     error::Result,
     pipeline::{
         CompiledPipeline, PipelineBarrierKind, PipelineEdgeKind, PipelineTask, PipelineTaskId, PipelineTaskKind,
@@ -59,17 +59,16 @@ pub fn compiled_bounded_pipeline_support(pipeline: &CompiledPipeline) -> Result<
     if !edge_kinds_are_in_d3_2_envelope(pipeline) || !barrier_kinds_are_in_d2_envelope(pipeline) {
         return Ok(CompiledBoundedPipelineSupport::Unsupported);
     }
-    if !shared_resident_producer_edges_are_leaf_outputs(pipeline) {
+    if !shared_resident_producer_edges_are_in_d3_5_envelope(pipeline) {
         return Ok(CompiledBoundedPipelineSupport::Unsupported);
     }
     if !join_edges_are_in_d2_envelope(pipeline, &join_groups) {
         return Ok(CompiledBoundedPipelineSupport::Unsupported);
     }
-    let Some(post_root_chain) = root_join_post_root_chain_in_d2_envelope(pipeline, &join_groups, sink_materialize)
-    else {
+    let Some(sink_path) = explicit_host_sink_path_in_d3_6_envelope(pipeline, sink_materialize) else {
         return Ok(CompiledBoundedPipelineSupport::Unsupported);
     };
-    if !stage_tasks_are_in_d3_3_envelope(pipeline, &post_root_chain) {
+    if !stage_tasks_are_in_d3_6_envelope(pipeline, &sink_path) {
         return Ok(CompiledBoundedPipelineSupport::Unsupported);
     }
     if !join_barriers_are_in_d2_envelope(pipeline, &join_groups) {
@@ -96,6 +95,11 @@ pub fn compiled_bounded_query_plan_support(
         return Ok(CompiledBoundedPipelineSupport::Unsupported);
     }
     if !task_plan_nodes_match_kinds(plan, pipeline) {
+        return Ok(CompiledBoundedPipelineSupport::Unsupported);
+    }
+    if pipeline_has_computed_shared_resident_producer(pipeline)
+        && !plan_has_satisfied_shared_resident_subplan_lineage(plan)
+    {
         return Ok(CompiledBoundedPipelineSupport::Unsupported);
     }
 
@@ -337,13 +341,43 @@ fn edge_kinds_are_in_d3_2_envelope(pipeline: &CompiledPipeline) -> bool {
     })
 }
 
-fn shared_resident_producer_edges_are_leaf_outputs(pipeline: &CompiledPipeline) -> bool {
+fn shared_resident_producer_edges_are_in_d3_5_envelope(pipeline: &CompiledPipeline) -> bool {
     let tasks = task_index(pipeline);
     pipeline.edges().iter().filter(|edge| edge.kind() == PipelineEdgeKind::SharedResidentProducer).all(|edge| {
-        tasks.get(&edge.from()).is_some_and(|task| {
-            matches!(task.kind(), PipelineTaskKind::SourceRead | PipelineTaskKind::GpuResidentSource)
-        })
+        let Some(task) = tasks.get(&edge.from()) else {
+            return false;
+        };
+        matches!(
+            task.kind(),
+            PipelineTaskKind::SourceRead
+                | PipelineTaskKind::GpuResidentSource
+                | PipelineTaskKind::Unary
+                | PipelineTaskKind::Aggregate
+        ) && edge.resources().len() == 1
+            && task.output_resources().contains(&edge.resources()[0])
     })
+}
+
+fn pipeline_has_computed_shared_resident_producer(pipeline: &CompiledPipeline) -> bool {
+    let tasks = task_index(pipeline);
+    pipeline.edges().iter().filter(|edge| edge.kind() == PipelineEdgeKind::SharedResidentProducer).any(|edge| {
+        tasks
+            .get(&edge.from())
+            .is_some_and(|task| matches!(task.kind(), PipelineTaskKind::Unary | PipelineTaskKind::Aggregate))
+    })
+}
+
+fn plan_has_satisfied_shared_resident_subplan_lineage(plan: &QueryPlan) -> bool {
+    let analysis = plan.capability_analysis();
+    let has_shared_subplan = analysis.invariants.iter().any(|invariant| {
+        matches!(invariant.kind, SubgraphInvariantKind::SharedResidentSubplan)
+            && invariant.decision == CapabilityDecision::Satisfied
+    });
+    let has_aggregate_derivation = analysis.invariants.iter().any(|invariant| {
+        matches!(invariant.kind, SubgraphInvariantKind::AggregateDerivesFromSharedProducer)
+            && invariant.decision == CapabilityDecision::Satisfied
+    });
+    has_shared_subplan && has_aggregate_derivation
 }
 
 fn barrier_kinds_are_in_d2_envelope(pipeline: &CompiledPipeline) -> bool {
@@ -376,76 +410,119 @@ fn join_barriers_are_in_d2_envelope(pipeline: &CompiledPipeline, join_groups: &[
     })
 }
 
-fn root_join_post_root_chain_in_d2_envelope(
+fn explicit_host_sink_path_in_d3_6_envelope(
     pipeline: &CompiledPipeline,
-    join_groups: &[JoinTaskGroup<'_>],
-    sink_materialize: &PipelineTask,
-) -> Option<BTreeSet<PipelineTaskId>> {
-    let mut candidates = join_groups
-        .iter()
-        .filter_map(|group| linear_post_root_chain_in_d2_envelope(pipeline, group.materialize, sink_materialize))
-        .collect::<Vec<_>>();
-    if candidates.len() == 1 { candidates.pop() } else { None }
-}
-
-fn linear_post_root_chain_in_d2_envelope(
-    pipeline: &CompiledPipeline,
-    join_materialize: &PipelineTask,
     sink_materialize: &PipelineTask,
 ) -> Option<BTreeSet<PipelineTaskId>> {
     let tasks = task_index(pipeline);
-    let mut current = join_materialize.id();
-    let mut visited = BTreeSet::new();
-    let mut seen_aggregate = false;
-    let mut seen_sort = false;
-    let mut seen_limit = false;
+    let sink_edge = single_sink_input_edge_to_task(pipeline, sink_materialize.id())?;
+    let [sink_resource] = sink_edge.resources() else {
+        return None;
+    };
+    if !sink_materialize.input_resources().contains(sink_resource) {
+        return None;
+    }
+
+    let mut current = sink_edge.from();
+    let mut reverse_path = vec![sink_materialize.id()];
+    let mut visited = BTreeSet::from([sink_materialize.id()]);
 
     loop {
-        if current == sink_materialize.id() {
-            visited.insert(current);
-            return Some(visited);
-        }
         if !visited.insert(current) {
             return None;
         }
+        reverse_path.push(current);
 
-        let outgoing = pipeline
+        let current_task = tasks.get(&current).copied()?;
+        if !post_root_task_has_single_data_output_on_sink_path(pipeline, current_task) {
+            return None;
+        }
+
+        if current_task.kind() == PipelineTaskKind::JoinMaterialize {
+            break;
+        }
+
+        if !matches!(
+            current_task.kind(),
+            PipelineTaskKind::Unary
+                | PipelineTaskKind::Aggregate
+                | PipelineTaskKind::FinalSort
+                | PipelineTaskKind::Limit
+        ) {
+            return None;
+        }
+
+        let incoming = pipeline
             .edges()
             .iter()
-            .filter(|edge| {
-                edge.from() == current
-                    && matches!(edge.kind(), PipelineEdgeKind::ResidentFrame | PipelineEdgeKind::SinkInput)
-            })
+            .filter(|edge| edge.to() == current && edge.kind() == PipelineEdgeKind::ResidentFrame)
             .collect::<Vec<_>>();
-        let [edge] = outgoing.as_slice() else {
+        let [incoming] = incoming.as_slice() else {
             return None;
         };
-        let [resource] = edge.resources() else {
+        let [resource] = incoming.resources() else {
             return None;
         };
-        let current_task = tasks.get(&current).copied()?;
-        if !current_task.output_resources().contains(resource) {
+        if current_task.input_resources() != [*resource] {
             return None;
         }
-        let next_task = tasks.get(&edge.to()).copied()?;
-        if next_task.id() == sink_materialize.id() {
-            if edge.kind() == PipelineEdgeKind::SinkInput
-                && next_task.kind() == PipelineTaskKind::SinkMaterialize
-                && next_task.input_resources() == [*resource]
-            {
-                visited.insert(next_task.id());
-                return Some(visited);
-            }
+        let producer = tasks.get(&incoming.from()).copied()?;
+        if !producer.output_resources().contains(resource) {
             return None;
         }
-        if edge.kind() != PipelineEdgeKind::ResidentFrame || next_task.input_resources() != [*resource] {
-            return None;
-        }
-        match next_task.kind() {
-            PipelineTaskKind::Unary if !seen_sort && !seen_limit => {},
-            PipelineTaskKind::Aggregate if !seen_aggregate && !seen_sort && !seen_limit => {
-                seen_aggregate = true;
-            },
+        current = producer.id();
+    }
+
+    reverse_path.reverse();
+    if !sink_path_stage_order_is_in_d3_6_envelope(pipeline, &reverse_path) {
+        return None;
+    }
+
+    Some(reverse_path.into_iter().collect())
+}
+
+fn single_sink_input_edge_to_task(
+    pipeline: &CompiledPipeline,
+    sink_task: PipelineTaskId,
+) -> Option<&crate::pipeline::PipelineEdge> {
+    let mut sink_edges = pipeline.edges().iter().filter(|edge| edge.kind() == PipelineEdgeKind::SinkInput);
+    let first = sink_edges.next()?;
+    if sink_edges.next().is_some() || first.to() != sink_task {
+        return None;
+    }
+    Some(first)
+}
+
+fn post_root_task_has_single_data_output_on_sink_path(pipeline: &CompiledPipeline, task: &PipelineTask) -> bool {
+    let outgoing_data_edges = pipeline
+        .edges()
+        .iter()
+        .filter(|edge| {
+            edge.from() == task.id()
+                && matches!(edge.kind(), PipelineEdgeKind::ResidentFrame | PipelineEdgeKind::SinkInput)
+        })
+        .collect::<Vec<_>>();
+    let [edge] = outgoing_data_edges.as_slice() else {
+        return false;
+    };
+    let [resource] = edge.resources() else {
+        return false;
+    };
+    task.output_resources().contains(resource)
+}
+
+fn sink_path_stage_order_is_in_d3_6_envelope(pipeline: &CompiledPipeline, sink_path: &[PipelineTaskId]) -> bool {
+    let tasks = task_index(pipeline);
+    let mut seen_sort = false;
+    let mut seen_limit = false;
+
+    for task_id in sink_path {
+        let Some(task) = tasks.get(task_id) else {
+            return false;
+        };
+        match task.kind() {
+            PipelineTaskKind::JoinMaterialize | PipelineTaskKind::SinkMaterialize => {},
+            PipelineTaskKind::Unary | PipelineTaskKind::Aggregate if !seen_sort && !seen_limit => {},
             PipelineTaskKind::FinalSort if !seen_sort && !seen_limit => {
                 seen_sort = true;
             },
@@ -456,33 +533,36 @@ fn linear_post_root_chain_in_d2_envelope(
             | PipelineTaskKind::GpuResidentSource
             | PipelineTaskKind::JoinBuild
             | PipelineTaskKind::JoinProbe
-            | PipelineTaskKind::JoinMaterialize
-            | PipelineTaskKind::SinkMaterialize
             | PipelineTaskKind::Unary
             | PipelineTaskKind::Aggregate
             | PipelineTaskKind::FinalSort
-            | PipelineTaskKind::Limit => return None,
+            | PipelineTaskKind::Limit => return false,
         }
-        current = next_task.id();
     }
+
+    true
 }
 
-fn stage_tasks_are_in_d3_3_envelope(pipeline: &CompiledPipeline, post_root_chain: &BTreeSet<PipelineTaskId>) -> bool {
-    let post_root_chain_has_stage = pipeline.tasks().iter().any(|task| {
-        post_root_chain.contains(&task.id())
+fn stage_tasks_are_in_d3_6_envelope(pipeline: &CompiledPipeline, sink_path: &BTreeSet<PipelineTaskId>) -> bool {
+    let sink_path_has_stage = pipeline.tasks().iter().any(|task| {
+        sink_path.contains(&task.id())
             && matches!(
                 task.kind(),
                 PipelineTaskKind::Aggregate | PipelineTaskKind::FinalSort | PipelineTaskKind::Limit
             )
     });
-    let has_non_post_root_stage = pipeline.tasks().iter().any(|task| {
-        !post_root_chain.contains(&task.id())
+    let has_non_sink_path_stage = pipeline.tasks().iter().any(|task| {
+        !sink_path.contains(&task.id())
             && matches!(
                 task.kind(),
                 PipelineTaskKind::Aggregate | PipelineTaskKind::FinalSort | PipelineTaskKind::Limit
             )
     });
-    if post_root_chain_has_stage && has_non_post_root_stage {
+    let sink_path_has_final_sort = pipeline
+        .tasks()
+        .iter()
+        .any(|task| sink_path.contains(&task.id()) && task.kind() == PipelineTaskKind::FinalSort);
+    if sink_path_has_stage && has_non_sink_path_stage && !sink_path_has_final_sort {
         return false;
     }
 
@@ -491,7 +571,7 @@ fn stage_tasks_are_in_d3_3_envelope(pipeline: &CompiledPipeline, post_root_chain
             return true;
         }
 
-        post_root_chain.contains(&task.id()) || task_feeds_modeled_join_input_or_shared_branch(pipeline, task.id())
+        sink_path.contains(&task.id()) || task_feeds_modeled_join_input_or_shared_branch(pipeline, task.id())
     })
 }
 

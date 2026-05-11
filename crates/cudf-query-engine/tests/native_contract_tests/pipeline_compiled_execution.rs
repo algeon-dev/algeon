@@ -17,7 +17,9 @@ use cudf_query_engine::{
     PipelineEdgeKind, PipelineTask, PipelineTaskId, PipelineTaskKind, ProjectionOutput, QueryMetrics, QueryPlan,
     QueryPlanBuilder, ReservationGate, ReservationGateId, ReservationGateOwner, ReservationKind, ResidentLifetime,
     ResidentResource, ResidentResourceId, SinkBoundary, SinkBoundaryKind, SortExpr, SortSpec, SourceNode,
-    capability::{ContractQuality, ContractStatus, ReservationRequirementScope},
+    capability::{
+        CapabilityDecision, ContractQuality, ContractStatus, ReservationRequirementScope, SubgraphInvariantKind,
+    },
     compile_pipeline,
     exec::{
         CompiledBoundedPipelineSupport, CompiledGpuTaskExecutor, CompiledPipelineScheduler, CompiledPipelineState,
@@ -558,6 +560,180 @@ fn execute_query_plan_routes_grouped_aggregate_join_build_input_through_compiled
 }
 
 #[test]
+fn compiled_bounded_support_accepts_keyed_hash_resident_subplan_shared_producer_without_role_routing_terms() {
+    let plan =
+        keyed_hash_join_resident_subplan_pipeline_plan(KeyedHashJoinResidentSubplanPipelineVariant::BlockedFamily);
+    let analysis = plan.capability_analysis();
+    assert!(analysis.admits_keyed_hash_join_resident_subplan_pipeline());
+    assert!(analysis.invariants.iter().any(|invariant| {
+        matches!(invariant.kind, SubgraphInvariantKind::SharedResidentSubplan)
+            && invariant.decision == CapabilityDecision::Satisfied
+    }));
+    assert!(analysis.invariants.iter().any(|invariant| {
+        matches!(invariant.kind, SubgraphInvariantKind::AggregateDerivesFromSharedProducer)
+            && invariant.decision == CapabilityDecision::Satisfied
+    }));
+    let pipeline = compile_pipeline(&plan, &analysis).expect("keyed hash resident subplan should compile");
+
+    assert_eq!(
+        compiled_bounded_pipeline_support(&pipeline).expect("graph support check should not fail"),
+        CompiledBoundedPipelineSupport::Supported
+    );
+    assert_eq!(
+        compiled_bounded_query_plan_support(&plan, &pipeline).expect("plan-aware support check should not fail"),
+        CompiledBoundedPipelineSupport::Supported
+    );
+
+    let shared_edges = pipeline
+        .edges()
+        .iter()
+        .filter(|edge| edge.kind() == PipelineEdgeKind::SharedResidentProducer)
+        .collect::<Vec<_>>();
+    assert_eq!(shared_edges.len(), 2, "shared producer should fan out to both downstream branches");
+    let shared_resource = shared_edges[0].resources()[0];
+    assert!(shared_edges.iter().all(|edge| edge.resources() == [shared_resource]));
+    let shared_producer = pipeline
+        .tasks()
+        .iter()
+        .find(|task| task.id() == shared_edges[0].from())
+        .expect("shared producer task should be present");
+    assert_eq!(shared_producer.kind(), PipelineTaskKind::Aggregate);
+    assert_no_legacy_execution_selection_terms("keyed hash resident subplan", &pipeline.debug_render());
+}
+
+#[test]
+fn compiled_bounded_support_accepts_d3_6_nonlinear_topk_and_subquery_filter_paths() {
+    for (label, plan, admits, expected_aggregate_barriers) in [
+        (
+            "aggregate-over-join-subplan TopK",
+            aggregate_over_join_subplan_topk_plan(),
+            cudf_query_engine::capability::CapabilityAnalysis::admits_multi_join_aggregate_over_join_subplan_topk_pipeline
+                as fn(&cudf_query_engine::capability::CapabilityAnalysis) -> bool,
+            1,
+        ),
+        (
+            "resident grouped-aggregate TopK",
+            resident_grouped_aggregate_input_post_join_aggregate_topk_plan(),
+            cudf_query_engine::capability::CapabilityAnalysis::admits_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_pipeline
+                as fn(&cudf_query_engine::capability::CapabilityAnalysis) -> bool,
+            2,
+        ),
+        (
+            "resident grouped-aggregate subquery filter",
+            resident_grouped_aggregate_subquery_filter_plan(),
+            cudf_query_engine::capability::CapabilityAnalysis::admits_multi_join_resident_grouped_aggregate_subquery_filter_pipeline
+                as fn(&cudf_query_engine::capability::CapabilityAnalysis) -> bool,
+            1,
+        ),
+    ] {
+        let analysis = plan.capability_analysis();
+        assert!(!analysis.has_rejections(), "{label}: expected satisfied local capability facts");
+        assert!(admits(&analysis), "{label}: expected bounded admission to be satisfied");
+        let pipeline = compile_pipeline(&plan, &analysis).unwrap_or_else(|error| panic!("{label}: compile failed: {error}"));
+
+        assert_eq!(
+            compiled_bounded_pipeline_support(&pipeline).expect("graph support check should not fail"),
+            CompiledBoundedPipelineSupport::Supported,
+            "{label}: graph-only compiled support should admit the D.3.6 path"
+        );
+        assert_eq!(
+            compiled_bounded_query_plan_support(&plan, &pipeline).expect("plan-aware support check should not fail"),
+            CompiledBoundedPipelineSupport::Supported,
+            "{label}: plan-aware compiled support should admit the D.3.6 path"
+        );
+        assert_eq!(sink_input_edge_count(&pipeline), 1, "{label}: expected one explicit host sink path");
+        assert!(
+            task_kind_count(&pipeline, PipelineTaskKind::JoinBuild) > 1
+                || task_kind_count(&pipeline, PipelineTaskKind::Aggregate) > 1,
+            "{label}: expected a non-linear join or aggregate DAG"
+        );
+        assert!(
+            barrier_kind_count(&pipeline, PipelineBarrierKind::AggregateBoundary) >= expected_aggregate_barriers,
+            "{label}: expected aggregate barriers to stay explicit"
+        );
+        let final_sort_gate =
+            runtime_visible_gate_for_task_kind(&pipeline, PipelineTaskKind::FinalSort, ReservationKind::FinalSort)
+                .expect("D.3.6 path should retain its final-sort reservation gate");
+        assert_eq!(final_sort_gate.status(), ContractStatus::Modeled);
+        assert_eq!(final_sort_gate.quality(), ContractQuality::HardBudgetedReportWithUnresolvedPreflight);
+        assert_no_legacy_execution_selection_terms(label, &pipeline.debug_render());
+    }
+}
+
+#[test]
+fn compiled_bounded_support_rejects_multiple_explicit_sink_candidates() {
+    let plan = root_join_sort_limit_data_plan(
+        Path::new("/tmp/compiled-d36-multiple-sink-left.parquet"),
+        Path::new("/tmp/compiled-d36-multiple-sink-right.parquet"),
+    );
+    let analysis = plan.capability_analysis();
+    let pipeline = compile_pipeline(&plan, &analysis).expect("root join TopK plan should compile");
+    let malformed = pipeline_with_extra_sink_candidate(&pipeline);
+
+    assert_eq!(
+        compiled_bounded_pipeline_support(&malformed).expect("support check should not fail"),
+        CompiledBoundedPipelineSupport::Unsupported
+    );
+}
+
+#[test]
+fn compiled_bounded_support_rejects_post_root_data_fanout() {
+    let plan = root_join_sort_limit_data_plan(
+        Path::new("/tmp/compiled-d36-post-root-fanout-left.parquet"),
+        Path::new("/tmp/compiled-d36-post-root-fanout-right.parquet"),
+    );
+    let analysis = plan.capability_analysis();
+    let pipeline = compile_pipeline(&plan, &analysis).expect("root join TopK plan should compile");
+    let malformed = pipeline_with_post_root_fanout(&pipeline);
+
+    assert_eq!(
+        compiled_bounded_pipeline_support(&malformed).expect("support check should not fail"),
+        CompiledBoundedPipelineSupport::Unsupported
+    );
+}
+
+#[test]
+fn execute_query_plan_routes_d3_6_nonlinear_topk_and_subquery_filter_paths_through_compiled_pipeline() {
+    let Ok(runtime) = cudf::Runtime::new() else {
+        return;
+    };
+    let runtime = Arc::new(runtime);
+    write_d3_6_contract_parquets();
+
+    for (label, plan) in [
+        ("aggregate-over-join-subplan TopK", aggregate_over_join_subplan_topk_plan()),
+        ("resident grouped-aggregate TopK", resident_grouped_aggregate_input_post_join_aggregate_topk_plan()),
+        ("resident grouped-aggregate subquery filter", resident_grouped_aggregate_subquery_filter_plan()),
+    ] {
+        let analysis = plan.capability_analysis();
+        let pipeline =
+            compile_pipeline(&plan, &analysis).unwrap_or_else(|error| panic!("{label}: compile failed: {error}"));
+        assert_eq!(
+            compiled_bounded_query_plan_support(&plan, &pipeline).expect("plan-aware support check should not fail"),
+            CompiledBoundedPipelineSupport::Supported,
+            "{label}: D.3.6 plan should be admitted by compiled support"
+        );
+        let context = bounded_context(Arc::clone(&runtime));
+
+        let result = execute_query_plan(&context, &plan)
+            .unwrap_or_else(|error| panic!("{label}: D.3.6 compiled execution failed: {error}"));
+        let batch = result.output().as_host_arrow().expect("D.3.6 output should be host Arrow");
+        let metrics = result.metrics();
+
+        assert!(batch.num_rows() > 0, "{label}: compiled execution should produce rows");
+        assert_eq!(metrics.compiled_pipeline_attempts, 1, "{label}: expected one compiled attempt");
+        assert_eq!(
+            metrics.compiled_pipeline_tasks_executed,
+            pipeline.tasks().len() as u64,
+            "{label}: expected all compiled tasks to execute"
+        );
+        assert_eq!(metrics.compiled_pipeline_host_arrow_sinks, 1, "{label}: expected one host Arrow sink");
+    }
+
+    remove_d3_6_contract_parquets();
+}
+
+#[test]
 fn execute_query_plan_routes_root_hash_join_through_compiled_pipeline() {
     let Ok(runtime) = cudf::Runtime::new() else {
         return;
@@ -856,8 +1032,8 @@ fn d3_1_inventory_cases() -> Vec<D31InventoryCase> {
                 KeyedHashJoinResidentSubplanPipelineVariant::BlockedFamily,
             ),
             admits: cudf_query_engine::capability::CapabilityAnalysis::admits_keyed_hash_join_resident_subplan_pipeline,
-            graph_support: CompiledBoundedPipelineSupport::Unsupported,
-            plan_support: CompiledBoundedPipelineSupport::Unsupported,
+            graph_support: CompiledBoundedPipelineSupport::Supported,
+            plan_support: CompiledBoundedPipelineSupport::Supported,
             render_fragments: &[
                 "kind=shared_resident_producer",
                 "kind=aggregate_boundary",
@@ -887,8 +1063,8 @@ fn d3_1_inventory_cases() -> Vec<D31InventoryCase> {
                 AggregateOverJoinSubplanInputsVariant::Admitted,
             ),
             admits: cudf_query_engine::capability::CapabilityAnalysis::admits_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline,
-            graph_support: CompiledBoundedPipelineSupport::Unsupported,
-            plan_support: CompiledBoundedPipelineSupport::Unsupported,
+            graph_support: CompiledBoundedPipelineSupport::Supported,
+            plan_support: CompiledBoundedPipelineSupport::Supported,
             render_fragments: &[
                 "kind=aggregate",
                 "kind=join_materialization",
@@ -900,8 +1076,8 @@ fn d3_1_inventory_cases() -> Vec<D31InventoryCase> {
             label: "resident grouped aggregate input",
             plan: resident_grouped_aggregate_input_post_join_aggregate_topk_plan(),
             admits: cudf_query_engine::capability::CapabilityAnalysis::admits_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_pipeline,
-            graph_support: CompiledBoundedPipelineSupport::Unsupported,
-            plan_support: CompiledBoundedPipelineSupport::Unsupported,
+            graph_support: CompiledBoundedPipelineSupport::Supported,
+            plan_support: CompiledBoundedPipelineSupport::Supported,
             render_fragments: &[
                 "kind=aggregate",
                 "kind=final_sort",
@@ -972,8 +1148,8 @@ fn d3_1_inventory_cases() -> Vec<D31InventoryCase> {
             label: "broad multi-join TopK with aggregate-over-join input",
             plan: aggregate_over_join_subplan_topk_plan(),
             admits: cudf_query_engine::capability::CapabilityAnalysis::admits_multi_join_aggregate_over_join_subplan_topk_pipeline,
-            graph_support: CompiledBoundedPipelineSupport::Unsupported,
-            plan_support: CompiledBoundedPipelineSupport::Unsupported,
+            graph_support: CompiledBoundedPipelineSupport::Supported,
+            plan_support: CompiledBoundedPipelineSupport::Supported,
             render_fragments: &[
                 "kind=aggregate",
                 "kind=final_sort",
@@ -986,8 +1162,8 @@ fn d3_1_inventory_cases() -> Vec<D31InventoryCase> {
             label: "resident grouped aggregate subquery-filter TopK path",
             plan: resident_grouped_aggregate_subquery_filter_plan(),
             admits: cudf_query_engine::capability::CapabilityAnalysis::admits_multi_join_resident_grouped_aggregate_subquery_filter_pipeline,
-            graph_support: CompiledBoundedPipelineSupport::Unsupported,
-            plan_support: CompiledBoundedPipelineSupport::Unsupported,
+            graph_support: CompiledBoundedPipelineSupport::Supported,
+            plan_support: CompiledBoundedPipelineSupport::Supported,
             render_fragments: &[
                 "kind=aggregate",
                 "kind=final_sort",
@@ -1573,6 +1749,103 @@ fn pipeline_without_reservation_gates(pipeline: &CompiledPipeline) -> CompiledPi
         .collect::<Vec<_>>();
     let sink = SinkBoundary::new(pipeline.sink().kind(), pipeline.sink().input()).with_gates(vec![]);
     CompiledPipeline::new(tasks, edges, barriers, resources, vec![], sink)
+}
+
+fn pipeline_with_extra_sink_candidate(pipeline: &CompiledPipeline) -> CompiledPipeline {
+    let mut tasks = pipeline.tasks().to_vec();
+    let mut edges = pipeline.edges().to_vec();
+    let sink_edge = pipeline
+        .edges()
+        .iter()
+        .find(|edge| edge.kind() == PipelineEdgeKind::SinkInput)
+        .expect("fixture should have a sink input edge");
+    let [sink_resource] = sink_edge.resources() else {
+        panic!("sink input edge should carry one resource");
+    };
+    let extra_sink = PipelineTaskId::new(tasks.len());
+    tasks.push(
+        PipelineTask::new(extra_sink, PipelineTaskKind::SinkMaterialize).with_input_resources(vec![*sink_resource]),
+    );
+    edges.push(
+        PipelineEdge::new(PipelineEdgeId::new(edges.len()), sink_edge.from(), extra_sink, PipelineEdgeKind::SinkInput)
+            .with_resources(vec![*sink_resource]),
+    );
+
+    let resources = pipeline
+        .resources()
+        .iter()
+        .map(|resource| {
+            let mut consumers = resource.consumers().to_vec();
+            if resource.id() == *sink_resource {
+                consumers.push(extra_sink);
+                consumers.sort_unstable();
+                consumers.dedup();
+            }
+            ResidentResource::new(resource.id(), resource.producer(), consumers, resource.lifetime())
+        })
+        .collect::<Vec<_>>();
+    let sink =
+        SinkBoundary::new(pipeline.sink().kind(), pipeline.sink().input()).with_gates(pipeline.sink().gates().to_vec());
+    CompiledPipeline::new(tasks, edges, pipeline.barriers().to_vec(), resources, pipeline.gates().to_vec(), sink)
+}
+
+fn pipeline_with_post_root_fanout(pipeline: &CompiledPipeline) -> CompiledPipeline {
+    let mut tasks = pipeline.tasks().to_vec();
+    let mut edges = pipeline.edges().to_vec();
+    let fanout_edge = pipeline
+        .edges()
+        .iter()
+        .find(|edge| {
+            edge.kind() == PipelineEdgeKind::ResidentFrame
+                && pipeline
+                    .tasks()
+                    .iter()
+                    .find(|task| task.id() == edge.from())
+                    .is_some_and(|task| task.kind() == PipelineTaskKind::JoinMaterialize)
+        })
+        .expect("fixture should have a post-root resident-frame edge");
+    let [fanout_resource] = fanout_edge.resources() else {
+        panic!("post-root resident-frame edge should carry one resource");
+    };
+    let extra_task = PipelineTaskId::new(tasks.len());
+    let extra_resource = ResidentResourceId::new(pipeline.resources().len());
+    tasks.push(
+        PipelineTask::new(extra_task, PipelineTaskKind::Unary)
+            .with_input_resources(vec![*fanout_resource])
+            .with_output_resources(vec![extra_resource]),
+    );
+    edges.push(
+        PipelineEdge::new(
+            PipelineEdgeId::new(edges.len()),
+            fanout_edge.from(),
+            extra_task,
+            PipelineEdgeKind::ResidentFrame,
+        )
+        .with_resources(vec![*fanout_resource]),
+    );
+
+    let mut resources = pipeline
+        .resources()
+        .iter()
+        .map(|resource| {
+            let mut consumers = resource.consumers().to_vec();
+            if resource.id() == *fanout_resource {
+                consumers.push(extra_task);
+                consumers.sort_unstable();
+                consumers.dedup();
+            }
+            ResidentResource::new(resource.id(), resource.producer(), consumers, resource.lifetime())
+        })
+        .collect::<Vec<_>>();
+    resources.push(ResidentResource::new(
+        extra_resource,
+        extra_task,
+        vec![],
+        ResidentLifetime::TaskLocal { task: extra_task },
+    ));
+    let sink =
+        SinkBoundary::new(pipeline.sink().kind(), pipeline.sink().input()).with_gates(pipeline.sink().gates().to_vec());
+    CompiledPipeline::new(tasks, edges, pipeline.barriers().to_vec(), resources, pipeline.gates().to_vec(), sink)
 }
 
 fn runtime_visible_gate_for_task_kind(
@@ -2200,6 +2473,64 @@ fn write_single_join_post_root_parquets(customers_path: &Path, orders_path: &Pat
     write_parquet(orders_path, Arc::clone(&orders_schema), &orders_batch);
 }
 
+fn write_d3_6_contract_parquets() {
+    remove_d3_6_contract_parquets();
+    for label in [
+        "aggregate-over-join-topk-a",
+        "aggregate-over-join-topk-b",
+        "aggregate-over-join-topk-c",
+        "aggregate-over-join-topk-d",
+        "aggregate-over-join-topk-e",
+        "aggregate-over-join-topk-f",
+        "resident-aggregate-post-aggregate-topk-a",
+        "resident-aggregate-post-aggregate-topk-b",
+        "resident-aggregate-post-aggregate-topk-c",
+        "resident-aggregate-subquery-filter-a",
+        "resident-aggregate-subquery-filter-b",
+        "resident-aggregate-subquery-filter-c",
+        "resident-aggregate-subquery-filter-d",
+    ] {
+        write_key_value_parquet(Path::new(&format!("/tmp/{label}.parquet")), &[1, 2, 3], &[10, 20, 30]);
+    }
+    for label in ["resident-aggregate-post-aggregate-topk-lineitem", "resident-aggregate-subquery-filter-lineitem"] {
+        write_key_value_parquet(Path::new(&format!("/tmp/{label}.parquet")), &[1, 2, 2, 3], &[1, 2, 3, 4]);
+    }
+}
+
+fn remove_d3_6_contract_parquets() {
+    for label in [
+        "aggregate-over-join-topk-a",
+        "aggregate-over-join-topk-b",
+        "aggregate-over-join-topk-c",
+        "aggregate-over-join-topk-d",
+        "aggregate-over-join-topk-e",
+        "aggregate-over-join-topk-f",
+        "resident-aggregate-post-aggregate-topk-a",
+        "resident-aggregate-post-aggregate-topk-b",
+        "resident-aggregate-post-aggregate-topk-c",
+        "resident-aggregate-post-aggregate-topk-lineitem",
+        "resident-aggregate-subquery-filter-a",
+        "resident-aggregate-subquery-filter-b",
+        "resident-aggregate-subquery-filter-c",
+        "resident-aggregate-subquery-filter-d",
+        "resident-aggregate-subquery-filter-lineitem",
+    ] {
+        let _ = fs::remove_file(format!("/tmp/{label}.parquet"));
+    }
+}
+
+fn write_key_value_parquet(path: &Path, keys: &[i32], values: &[i64]) {
+    assert_eq!(keys.len(), values.len());
+    let schema =
+        Arc::new(Schema::new(vec![Field::new("k", DataType::Int32, false), Field::new("v", DataType::Int64, true)]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![Arc::new(Int32Array::from(keys.to_vec())), Arc::new(Int64Array::from(values.to_vec()))],
+    )
+    .unwrap();
+    write_parquet(path, schema, &batch);
+}
+
 fn write_parquet(path: &Path, schema: Arc<Schema>, batch: &RecordBatch) {
     let file = File::create(path).unwrap();
     let props = WriterProperties::builder().set_max_row_group_row_count(Some(2)).build();
@@ -2255,11 +2586,19 @@ fn int32_quads_sorted(
 }
 
 fn assert_task_kind_count(pipeline: &CompiledPipeline, kind: PipelineTaskKind, expected: usize) {
-    assert_eq!(
-        pipeline.tasks().iter().filter(|task| task.kind() == kind).count(),
-        expected,
-        "unexpected count for {kind:?} tasks"
-    );
+    assert_eq!(task_kind_count(pipeline, kind), expected, "unexpected count for {kind:?} tasks");
+}
+
+fn task_kind_count(pipeline: &CompiledPipeline, kind: PipelineTaskKind) -> usize {
+    pipeline.tasks().iter().filter(|task| task.kind() == kind).count()
+}
+
+fn barrier_kind_count(pipeline: &CompiledPipeline, kind: PipelineBarrierKind) -> usize {
+    pipeline.barriers().iter().filter(|barrier| barrier.kind() == kind).count()
+}
+
+fn sink_input_edge_count(pipeline: &CompiledPipeline) -> usize {
+    pipeline.edges().iter().filter(|edge| edge.kind() == PipelineEdgeKind::SinkInput).count()
 }
 
 fn bounded_context(runtime: Arc<cudf::Runtime>) -> ExecutionContext {
