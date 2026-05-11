@@ -171,6 +171,125 @@ fn native_datafusion_reports_scope_strict_contract_rows_to_join_candidates() {
 }
 
 #[test]
+fn native_datafusion_reports_keep_multiple_accepted_join_candidates_separated() {
+    let first_candidate = GpuCandidate::new("HashJoinExec(LocalParquetScan,LocalParquetScan)", 1);
+    let second_candidate = GpuCandidate::new("NestedLoopJoinExec(LocalParquetScan,LocalParquetScan)", 1);
+    let mut report = PlanningReport::new();
+    report.push_rewritten(first_candidate.clone());
+    report.push_rewritten(second_candidate.clone());
+
+    let diagnostics = NativePlanningDiagnostics {
+        input_plan_root: "UnionExec".to_string(),
+        input_plan_shape: "UnionExec(HashJoinExec(...),NestedLoopJoinExec(...))".to_string(),
+        report,
+        source_diagnostics: Vec::new(),
+        strict_bounded_contract: NativeStrictBoundedContractDiagnostics {
+            accepted_candidates: vec![
+                accepted_candidate_contract_entry(
+                    first_candidate.clone(),
+                    ReservationGateId::new(11),
+                    ReservationKind::BuildSide,
+                    "join_build_input",
+                    "query_engine_build_side_source_reservation",
+                    11,
+                ),
+                accepted_candidate_contract_entry(
+                    second_candidate.clone(),
+                    ReservationGateId::new(22),
+                    ReservationKind::Materialization,
+                    "host_arrow_materialization",
+                    "query_engine_explicit_sink_materialization_reservation",
+                    22,
+                ),
+            ],
+            rejected_candidates: Vec::new(),
+            non_join_bounded_plan_count: 0,
+            non_join_bounded_plan_reason: None,
+        },
+    };
+
+    let planning = NativeDataFusionPlanningReport::collect([NativeDataFusionPlanningWorkloadItem::new(
+        "two-joins",
+        native_exec_leaf_for_report(),
+        diagnostics,
+    )]);
+
+    let first_row = planning
+        .rows
+        .iter()
+        .find(|row| row.native_candidate_shape.as_deref() == Some(first_candidate.shape.as_str()))
+        .expect("first join row should exist");
+    let second_row = planning
+        .rows
+        .iter()
+        .find(|row| row.native_candidate_shape.as_deref() == Some(second_candidate.shape.as_str()))
+        .expect("second join row should exist");
+
+    assert_eq!(first_row.strict_bounded_contract_rows.len(), 1);
+    assert_eq!(
+        first_row.strict_bounded_contract_rows[0].gate_id,
+        StrictBoundedContractGateId::Compiled(ReservationGateId::new(11))
+    );
+    assert_eq!(first_row.strict_bounded_compiled_graphs[0].task_count, 11);
+    assert_eq!(second_row.strict_bounded_contract_rows.len(), 1);
+    assert_eq!(
+        second_row.strict_bounded_contract_rows[0].gate_id,
+        StrictBoundedContractGateId::Compiled(ReservationGateId::new(22))
+    );
+    assert_eq!(second_row.strict_bounded_compiled_graphs[0].task_count, 22);
+}
+
+fn accepted_candidate_contract_entry(
+    candidate: GpuCandidate,
+    gate_id: ReservationGateId,
+    reservation_kind: ReservationKind,
+    memory_boundary: &'static str,
+    required_contract: &'static str,
+    task_count: usize,
+) -> NativeStrictBoundedAcceptedCandidateDiagnostics {
+    let contract_scope = ReservationRequirementScope::Edge;
+    let owner = if reservation_kind == ReservationKind::Materialization {
+        StrictBoundedContractOwner::Compiled(ReservationGateOwner::SinkBoundary)
+    } else {
+        StrictBoundedContractOwner::Compiled(ReservationGateOwner::Edge(
+            cudf_query_engine::pipeline::PipelineEdgeId::new(gate_id.index()),
+        ))
+    };
+    NativeStrictBoundedAcceptedCandidateDiagnostics {
+        candidate,
+        report: StrictBoundedContractReport::from_gate_rows(
+            StrictBoundedExecutionMode::StrictBounded,
+            vec![StrictBoundedContractGateRow {
+                execution_mode: StrictBoundedExecutionMode::StrictBounded,
+                contract_scope,
+                gate_id: StrictBoundedContractGateId::Compiled(gate_id),
+                owner,
+                reservation_kind,
+                memory_boundary,
+                required_contract,
+                contract_status: ContractStatus::Modeled,
+                contract_quality: if reservation_kind == ReservationKind::Materialization {
+                    ContractQuality::QueryEngineOwnedBoundary
+                } else {
+                    ContractQuality::ExactPreflight
+                },
+                unresolved_preflight_gap: None,
+            }],
+        )
+        .unwrap(),
+        compiled_graph: NativeStrictBoundedCompiledGraphDiagnostics {
+            task_count,
+            edge_count: 1,
+            barrier_count: 0,
+            resource_count: 1,
+            gate_count: 1,
+            sink_kind: "host_arrow_materialization".to_string(),
+            sink_gate_count: usize::from(reservation_kind == ReservationKind::Materialization),
+        },
+    }
+}
+
+#[test]
 fn native_datafusion_execution_report_keeps_rejected_queries_out_of_runtime() {
     let report = NativeDataFusionExecutionReport::collect([NativeDataFusionExecutionWorkloadItem::new(
         "q03",

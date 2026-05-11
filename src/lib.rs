@@ -32,7 +32,8 @@ pub use native_report::{
 };
 pub use planner::{
     CudfNativePhysicalOptimizerRule, CudfOptimizerConfig, NativePlanningDiagnostics,
-    NativeStrictBoundedCompiledGraphDiagnostics, NativeStrictBoundedContractDiagnostics,
+    NativeStrictBoundedAcceptedCandidateDiagnostics, NativeStrictBoundedCompiledGraphDiagnostics,
+    NativeStrictBoundedContractDiagnostics, NativeStrictBoundedRejectedCandidateDiagnostics,
     STRICT_BOUNDED_NON_JOIN_OUTSIDE_REPORT_SCOPE_REASON,
 };
 pub use policy::{FallbackReason, GpuFallbackPolicy};

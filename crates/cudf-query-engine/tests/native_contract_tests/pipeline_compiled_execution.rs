@@ -17,6 +17,7 @@ use cudf_query_engine::{
     PipelineEdgeKind, PipelineTask, PipelineTaskId, PipelineTaskKind, ProjectionOutput, QueryMetrics, QueryPlan,
     QueryPlanBuilder, ReservationGate, ReservationGateId, ReservationGateOwner, ReservationKind, ResidentLifetime,
     ResidentResource, ResidentResourceId, SinkBoundary, SinkBoundaryKind, SortExpr, SortSpec, SourceNode,
+    StrictBoundedContractGateId, StrictBoundedContractGateRow, StrictBoundedContractOwner,
     capability::{
         CapabilityDecision, ContractQuality, ContractStatus, ReservationRequirementScope, SubgraphInvariantKind,
     },
@@ -322,6 +323,11 @@ fn compiled_bounded_support_records_d3_inventory_migration_boundaries_before_sch
 #[test]
 fn d5_contract_gate_rows_are_inventory_backed_and_family_path_free() {
     let mut hard_budgeted_unresolved_rows = 0;
+    let mut source_unresolved_rows = 0;
+    let mut aggregate_unresolved_rows = 0;
+    let mut final_sort_unresolved_rows = 0;
+    let mut filtered_retained_state_rows = 0;
+    let mut mixed_retained_state_rows = 0;
     let mut observed_retained_state_rows = 0;
 
     for case in d3_1_inventory_cases() {
@@ -349,6 +355,7 @@ fn d5_contract_gate_rows_are_inventory_backed_and_family_path_free() {
         for row in report.gate_rows() {
             let rendered = row.to_stable_kv_row();
             assert_d5_contract_gate_row_is_family_path_free(case.label, &rendered);
+            assert_d5_contract_gate_row_excludes_adaptive_terms(case.label, &rendered);
             assert!(rendered.contains("contract_status="), "{}: row must serialize contract status", case.label);
             assert!(rendered.contains("contract_quality="), "{}: row must serialize contract quality", case.label);
             assert!(
@@ -359,6 +366,12 @@ fn d5_contract_gate_rows_are_inventory_backed_and_family_path_free() {
 
             if row.contract_quality == ContractQuality::HardBudgetedReportWithUnresolvedPreflight {
                 hard_budgeted_unresolved_rows += 1;
+                match row.reservation_kind {
+                    ReservationKind::SourceRead => source_unresolved_rows += 1,
+                    ReservationKind::OperatorOutput => aggregate_unresolved_rows += 1,
+                    ReservationKind::FinalSort => final_sort_unresolved_rows += 1,
+                    _ => {},
+                }
                 assert_eq!(
                     row.contract_status,
                     ContractStatus::Modeled,
@@ -374,6 +387,12 @@ fn d5_contract_gate_rows_are_inventory_backed_and_family_path_free() {
 
             if matches!(row.reservation_kind, ReservationKind::FilteredProbeState | ReservationKind::MixedSizeData) {
                 observed_retained_state_rows += 1;
+                if row.reservation_kind == ReservationKind::FilteredProbeState {
+                    filtered_retained_state_rows += 1;
+                }
+                if row.reservation_kind == ReservationKind::MixedSizeData {
+                    mixed_retained_state_rows += 1;
+                }
                 assert_eq!(
                     row.contract_quality,
                     ContractQuality::ObservedRetainedState,
@@ -381,10 +400,45 @@ fn d5_contract_gate_rows_are_inventory_backed_and_family_path_free() {
                     case.label
                 );
             }
+
+            match row.reservation_kind {
+                ReservationKind::HashTable if row.contract_quality == ContractQuality::ExactPreflight => {
+                    assert_eq!(
+                        row.required_contract, "hash_join_pre_build_reservation_size_bytes",
+                        "{}: hash-table exact preflight must name its cudf-rs pre-build sizing owner",
+                        case.label
+                    );
+                },
+                ReservationKind::GatherMap if row.contract_quality == ContractQuality::ExactPreflight => {
+                    assert_eq!(
+                        row.required_contract, "join_gather_map_reservation_size_bytes",
+                        "{}: gather-map exact preflight must name its cudf-rs gather-map sizing owner",
+                        case.label
+                    );
+                },
+                ReservationKind::JoinOutput if row.contract_quality == ContractQuality::ExactPreflight => {
+                    assert!(
+                        matches!(
+                            row.required_contract,
+                            "dataframe_gather_output_reservation_size_bytes"
+                                | "projected_cross_join_reservation_size_bytes"
+                                | "dataframe_gather_output_reservation_size_bytes+projected_cross_join_reservation_size_bytes"
+                        ),
+                        "{}: join-output exact preflight must name an owned lower-level output sizing contract",
+                        case.label
+                    );
+                },
+                _ => {},
+            }
         }
     }
 
     assert!(hard_budgeted_unresolved_rows > 0, "D.5 inventory should cover unresolved hard-budgeted gates");
+    assert!(source_unresolved_rows > 0, "D.5 inventory should cover source unresolved preflight gates");
+    assert!(aggregate_unresolved_rows > 0, "D.5 inventory should cover aggregate unresolved preflight gates");
+    assert!(final_sort_unresolved_rows > 0, "D.5 inventory should cover final-sort unresolved preflight gates");
+    assert!(filtered_retained_state_rows > 0, "D.5 inventory should cover filtered semi/anti retained state");
+    assert!(mixed_retained_state_rows > 0, "D.5 inventory should cover mixed residual retained state");
     assert!(observed_retained_state_rows > 0, "D.5 inventory should cover observed retained-state gates");
 }
 
@@ -424,6 +478,201 @@ fn d5_contract_report_rejects_unresolved_preflight_gate_labeled_exact() {
     assert_eq!(error.code(), cudf_query_engine::QueryErrorCode::InvalidPlan);
     assert_eq!(error.fact_value("reservation_kind"), Some("source_read"));
     assert_eq!(error.fact_value("contract_quality"), Some("exact_preflight"));
+}
+
+#[test]
+fn d5_contract_report_rejects_public_gate_rows_with_invalid_quality_accounting() {
+    for invalid in [
+        d5_test_gate_row(
+            ReservationKind::SourceRead,
+            "source_read",
+            "source_contract",
+            ContractQuality::HardBudgetedReportWithUnresolvedPreflight,
+            None,
+        ),
+        d5_test_gate_row(
+            ReservationKind::FilteredProbeState,
+            "join_filtered_probe_state",
+            "filtered_join_retained_probe_state",
+            ContractQuality::ExactPreflight,
+            None,
+        ),
+        d5_test_gate_row(
+            ReservationKind::MixedSizeData,
+            "join_mixed_size_data",
+            "mixed_keyed_residual_or_conditional_full_retained_size_data",
+            ContractQuality::ExactPreflight,
+            None,
+        ),
+        d5_test_gate_row(
+            ReservationKind::HashTable,
+            "join_hash_table",
+            "adapter_guessed_hash_table_bytes",
+            ContractQuality::ExactPreflight,
+            None,
+        ),
+        d5_test_gate_row(
+            ReservationKind::GatherMap,
+            "join_gather_map",
+            "adapter_guessed_gather_map_bytes",
+            ContractQuality::ExactPreflight,
+            None,
+        ),
+        d5_test_gate_row(
+            ReservationKind::JoinOutput,
+            "join_output",
+            "adapter_guessed_join_output_bytes",
+            ContractQuality::ExactPreflight,
+            None,
+        ),
+    ] {
+        let kind = invalid.reservation_kind;
+        let error =
+            StrictBoundedContractReport::from_gate_rows(StrictBoundedExecutionMode::StrictBounded, vec![invalid])
+                .unwrap_err();
+        assert_eq!(error.code(), cudf_query_engine::QueryErrorCode::InvalidPlan);
+        assert_eq!(error.fact_value("reservation_kind"), Some(kind.as_str()));
+    }
+}
+
+#[test]
+fn d5_contract_report_rejects_public_unresolved_preflight_rows_with_non_hard_budgeted_quality() {
+    let unresolved_contracts = [
+        (ReservationKind::SourceRead, "source_read", "source_contract"),
+        (ReservationKind::OperatorOutput, "aggregate_output", "aggregate_contract"),
+        (ReservationKind::FinalSort, "final_sort", "final_sort_contract"),
+    ];
+    let non_hard_budgeted_qualities = [
+        ContractQuality::ExactPreflight,
+        ContractQuality::MetadataBound,
+        ContractQuality::ObservedRetainedState,
+        ContractQuality::QueryEngineOwnedOrdering,
+        ContractQuality::QueryEngineOwnedBoundary,
+        ContractQuality::CapabilityProof,
+    ];
+
+    for (reservation_kind, memory_boundary, required_contract) in unresolved_contracts {
+        for contract_quality in non_hard_budgeted_qualities {
+            let invalid =
+                d5_test_gate_row(reservation_kind, memory_boundary, required_contract, contract_quality, None);
+            let error =
+                StrictBoundedContractReport::from_gate_rows(StrictBoundedExecutionMode::StrictBounded, vec![invalid])
+                    .unwrap_err();
+            assert_eq!(error.code(), cudf_query_engine::QueryErrorCode::InvalidPlan);
+            assert_eq!(error.fact_value("reservation_kind"), Some(reservation_kind.as_str()));
+            assert_eq!(error.fact_value("required_contract"), Some(required_contract));
+            assert_eq!(error.fact_value("contract_quality"), Some(contract_quality.as_str()));
+        }
+    }
+}
+
+#[test]
+fn d5_contract_report_rejects_public_rows_with_inconsistent_execution_modes_and_scope_owners() {
+    let strict_with_blocked = StrictBoundedContractGateRow {
+        contract_status: ContractStatus::BlockedByLowerLevel,
+        ..d5_test_gate_row(
+            ReservationKind::HashTable,
+            "join_hash_table",
+            "hash_join_pre_build_reservation_size_bytes",
+            ContractQuality::ExactPreflight,
+            None,
+        )
+    };
+    let error = StrictBoundedContractReport::from_gate_rows(
+        StrictBoundedExecutionMode::StrictBounded,
+        vec![strict_with_blocked],
+    )
+    .unwrap_err();
+    assert_eq!(error.fact_value("report_execution_mode"), Some("strict_bounded"));
+
+    let unsupported_with_modeled = d5_test_gate_row(
+        ReservationKind::HashTable,
+        "join_hash_table",
+        "hash_join_pre_build_reservation_size_bytes",
+        ContractQuality::ExactPreflight,
+        None,
+    );
+    let error = StrictBoundedContractReport::from_gate_rows(
+        StrictBoundedExecutionMode::UnsupportedStrictBounded,
+        vec![unsupported_with_modeled],
+    )
+    .unwrap_err();
+    assert_eq!(error.fact_value("report_execution_mode"), Some("unsupported_strict_bounded"));
+
+    let edge_owned_node_scope = StrictBoundedContractGateRow {
+        owner: StrictBoundedContractOwner::Compiled(ReservationGateOwner::Edge(PipelineEdgeId::new(0))),
+        ..d5_test_gate_row(
+            ReservationKind::HashTable,
+            "join_hash_table",
+            "hash_join_pre_build_reservation_size_bytes",
+            ContractQuality::ExactPreflight,
+            None,
+        )
+    };
+    let error = StrictBoundedContractReport::from_gate_rows(
+        StrictBoundedExecutionMode::StrictBounded,
+        vec![edge_owned_node_scope],
+    )
+    .unwrap_err();
+    assert_eq!(error.fact_value("contract_scope"), Some("node"));
+    assert_eq!(error.fact_value("owner"), Some("edge:e0"));
+}
+
+fn d5_test_gate_row(
+    reservation_kind: ReservationKind,
+    memory_boundary: &'static str,
+    required_contract: &'static str,
+    contract_quality: ContractQuality,
+    unresolved_preflight_gap: Option<&'static str>,
+) -> StrictBoundedContractGateRow {
+    let contract_scope = d5_test_scope_for_reservation_kind(reservation_kind);
+    StrictBoundedContractGateRow {
+        execution_mode: StrictBoundedExecutionMode::StrictBounded,
+        contract_scope,
+        gate_id: StrictBoundedContractGateId::Compiled(ReservationGateId::new(reservation_kind as usize)),
+        owner: d5_test_owner_for_scope(contract_scope),
+        reservation_kind,
+        memory_boundary,
+        required_contract,
+        contract_status: ContractStatus::Modeled,
+        contract_quality,
+        unresolved_preflight_gap,
+    }
+}
+
+fn d5_test_scope_for_reservation_kind(reservation_kind: ReservationKind) -> ReservationRequirementScope {
+    match reservation_kind {
+        ReservationKind::OperatorOutput
+        | ReservationKind::HashTable
+        | ReservationKind::FilteredProbeState
+        | ReservationKind::MixedSizeData
+        | ReservationKind::SourceCacheRetained
+        | ReservationKind::ChunkOperator
+        | ReservationKind::PartialState
+        | ReservationKind::FinalMerge => ReservationRequirementScope::Node,
+        ReservationKind::SourceRead
+        | ReservationKind::BuildSide
+        | ReservationKind::ProbeSide
+        | ReservationKind::GatherMap
+        | ReservationKind::JoinOutput
+        | ReservationKind::FinalSort
+        | ReservationKind::Materialization => ReservationRequirementScope::Edge,
+        ReservationKind::CapabilityContract => ReservationRequirementScope::Subgraph,
+    }
+}
+
+fn d5_test_owner_for_scope(scope: ReservationRequirementScope) -> StrictBoundedContractOwner {
+    match scope {
+        ReservationRequirementScope::Node => {
+            StrictBoundedContractOwner::Compiled(ReservationGateOwner::Task(PipelineTaskId::new(0)))
+        },
+        ReservationRequirementScope::Edge => {
+            StrictBoundedContractOwner::Compiled(ReservationGateOwner::Edge(PipelineEdgeId::new(0)))
+        },
+        ReservationRequirementScope::Subgraph => {
+            StrictBoundedContractOwner::Compiled(ReservationGateOwner::Barrier(PipelineBarrierId::new(0)))
+        },
+    }
 }
 
 #[test]
@@ -1343,6 +1592,15 @@ fn assert_d5_contract_gate_row_is_family_path_free(label: &str, row: &str) {
     }
 }
 
+fn assert_d5_contract_gate_row_excludes_adaptive_terms(label: &str, row: &str) {
+    for forbidden in D5_FORBIDDEN_ADAPTIVE_REPORT_TERMS {
+        assert!(
+            !row.contains(forbidden),
+            "{label}: D.5 strict bounded contract gate rows must not contain adaptive-only term {forbidden}"
+        );
+    }
+}
+
 const D5_FORBIDDEN_FAMILY_PATH_REPORT_TERMS: &[&str] = &[
     "BoundedJoinExecutionFamily",
     "BoundedJoinExecutionPath",
@@ -1369,6 +1627,9 @@ const D5_FORBIDDEN_FAMILY_PATH_REPORT_TERMS: &[&str] = &[
     "multi_join_with_resident_grouped_aggregate_subquery_filter",
     "keyed_hash_join_resident_subplan_pipeline",
 ];
+
+const D5_FORBIDDEN_ADAPTIVE_REPORT_TERMS: &[&str] =
+    &["retry", "spill", "downgrade", "memory_history", "memory-history", "memory history"];
 
 struct MockExecutor {
     executed: Vec<PipelineTaskId>,

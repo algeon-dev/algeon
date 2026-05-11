@@ -25,72 +25,6 @@ use keyless::{
 };
 pub(super) use stages::{execute_bounded_join_pipeline_stage, validate_bounded_join_pipeline_stages};
 
-const KEYLESS_CONDITIONAL_INPUT_SUBPLAN_EXECUTION_FAMILY_FACT: &str = "bounded_join_execution_family";
-
-fn attach_bounded_join_execution_family(
-    error: QueryError,
-    family: crate::runtime::BoundedJoinExecutionFamily,
-) -> QueryError {
-    if error.fact_value(KEYLESS_CONDITIONAL_INPUT_SUBPLAN_EXECUTION_FAMILY_FACT).is_some() {
-        return error;
-    }
-
-    error.with_fact(KEYLESS_CONDITIONAL_INPUT_SUBPLAN_EXECUTION_FAMILY_FACT, family.as_str())
-}
-
-fn attach_keyless_conditional_join_input_subplan_execution_family(error: QueryError) -> QueryError {
-    attach_bounded_join_execution_family(
-        error,
-        crate::runtime::BoundedJoinExecutionFamily::KeylessConditionalJoinInputSubplanPipeline,
-    )
-}
-
-fn attach_keyless_conditional_join_aggregate_over_join_subplan_inputs_execution_family(
-    error: QueryError,
-) -> QueryError {
-    attach_bounded_join_execution_family(
-        error,
-        crate::runtime::BoundedJoinExecutionFamily::KeylessConditionalJoinAggregateOverJoinSubplanInputsPipeline,
-    )
-}
-
-fn attach_mixed_keyed_residual_join_resident_grouped_aggregate_input_execution_family(error: QueryError) -> QueryError {
-    attach_bounded_join_execution_family(
-        error,
-        crate::runtime::BoundedJoinExecutionFamily::MixedKeyedResidualJoinResidentGroupedAggregateInputPipeline,
-    )
-}
-
-fn attach_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_execution_family(
-    error: QueryError,
-) -> QueryError {
-    attach_bounded_join_execution_family(
-        error,
-        crate::runtime::BoundedJoinExecutionFamily::HashJoinResidentGroupedAggregateInputPostJoinAggregateTopKPipeline,
-    )
-}
-
-fn attach_multi_join_resident_grouped_aggregate_subquery_filter_execution_family(error: QueryError) -> QueryError {
-    attach_bounded_join_execution_family(
-        error,
-        crate::runtime::BoundedJoinExecutionFamily::MultiJoinResidentGroupedAggregateSubqueryFilterPipeline,
-    )
-}
-
-fn attach_multi_join_aggregate_over_join_subplan_topk_execution_family(error: QueryError) -> QueryError {
-    attach_bounded_join_execution_family(
-        error,
-        crate::runtime::BoundedJoinExecutionFamily::MultiJoinAggregateOverJoinSubplanTopKPipeline,
-    )
-}
-
-fn attach_keyed_hash_join_resident_subplan_execution_family(error: QueryError) -> QueryError {
-    attach_bounded_join_execution_family(
-        error,
-        crate::runtime::BoundedJoinExecutionFamily::KeyedHashJoinResidentSubplanPipeline,
-    )
-}
-
 pub(super) fn execute_bounded_join_pipeline_query_plan(
     context: &ExecutionContext,
     plan: &QueryPlan,
@@ -165,7 +99,6 @@ pub(super) fn execute_bounded_keyless_conditional_join_input_subplan_pipeline_qu
     metrics: &mut QueryMetrics,
 ) -> Result<QueryOutput> {
     execute_bounded_keyless_conditional_join_input_subplan_pipeline_query_plan_inner(context, plan, gpu_inputs, metrics)
-        .map_err(attach_keyless_conditional_join_input_subplan_execution_family)
 }
 
 pub(super) fn execute_bounded_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline_query_plan(
@@ -177,7 +110,6 @@ pub(super) fn execute_bounded_keyless_conditional_join_aggregate_over_join_subpl
     execute_bounded_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline_query_plan_inner(
         context, plan, gpu_inputs, metrics,
     )
-    .map_err(attach_keyless_conditional_join_aggregate_over_join_subplan_inputs_execution_family)
 }
 
 pub(super) fn execute_bounded_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline_query_plan(
@@ -189,7 +121,6 @@ pub(super) fn execute_bounded_mixed_keyed_residual_join_resident_grouped_aggrega
     execute_bounded_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline_query_plan_inner(
         context, plan, gpu_inputs, metrics,
     )
-    .map_err(attach_mixed_keyed_residual_join_resident_grouped_aggregate_input_execution_family)
 }
 
 pub(super) fn execute_bounded_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_pipeline_query_plan(
@@ -201,7 +132,6 @@ pub(super) fn execute_bounded_hash_join_resident_grouped_aggregate_input_post_jo
     execute_bounded_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_pipeline_query_plan_inner(
         context, plan, gpu_inputs, metrics,
     )
-    .map_err(attach_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_execution_family)
 }
 
 pub(super) fn execute_bounded_multi_join_aggregate_over_join_subplan_topk_pipeline_query_plan(
@@ -213,7 +143,6 @@ pub(super) fn execute_bounded_multi_join_aggregate_over_join_subplan_topk_pipeli
     execute_bounded_multi_join_aggregate_over_join_subplan_topk_pipeline_query_plan_inner(
         context, plan, gpu_inputs, metrics,
     )
-    .map_err(attach_multi_join_aggregate_over_join_subplan_topk_execution_family)
 }
 
 pub(super) fn execute_bounded_keyed_hash_join_resident_subplan_pipeline_query_plan(
@@ -223,7 +152,6 @@ pub(super) fn execute_bounded_keyed_hash_join_resident_subplan_pipeline_query_pl
     metrics: &mut QueryMetrics,
 ) -> Result<QueryOutput> {
     execute_bounded_keyed_hash_join_resident_subplan_pipeline_query_plan_inner(context, plan, gpu_inputs, metrics)
-        .map_err(attach_keyed_hash_join_resident_subplan_execution_family)
 }
 
 pub(super) fn execute_bounded_multi_join_resident_grouped_aggregate_subquery_filter_pipeline_query_plan(
@@ -235,7 +163,6 @@ pub(super) fn execute_bounded_multi_join_resident_grouped_aggregate_subquery_fil
     execute_bounded_multi_join_resident_grouped_aggregate_subquery_filter_pipeline_query_plan_inner(
         context, plan, gpu_inputs, metrics,
     )
-    .map_err(attach_multi_join_resident_grouped_aggregate_subquery_filter_execution_family)
 }
 
 fn execute_bounded_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_pipeline_query_plan_inner(
@@ -1055,8 +982,6 @@ pub(super) fn bounded_join_pipeline_rejection_error(rejection: BoundedJoinPipeli
 }
 
 fn bounded_join_pipeline_supported_families_message() -> String {
-    format!(
-        "bounded join pipeline execution requires one of these ordered-reservation families below supported unary operators: {}",
-        BoundedJoinReservationContract.execution_families_csv()
-    )
+    "bounded join pipeline execution requires strict bounded capability admission below supported unary operators"
+        .to_string()
 }

@@ -134,8 +134,8 @@ fn reject_bounded_join_plan(context: &ExecutionContext, plan: &QueryPlan) -> Res
 
 fn bounded_join_unsupported_message(contract: BoundedJoinReservationContract) -> String {
     format!(
-        "bounded native join execution currently supports these ordered-reservation families: {}",
-        contract.execution_families_csv()
+        "bounded native join execution requires strict bounded capability admission: {}",
+        contract.supported_shape_requirement()
     )
 }
 

@@ -41,10 +41,7 @@ fn bounded_mixed_residual_semi_anti_root_support_requires_left_only_right_build_
         facts.get("bounded_join_specific_blocker").map(String::as_str),
         Some("root_mixed_keyed_residual_semi_anti_requires_left_only_projection")
     );
-    assert_eq!(
-        facts.get("bounded_join_required_shape_contract").map(String::as_str),
-        Some("root_mixed_keyed_residual_left_only_join_requires_right_build_left_projection")
-    );
+    assert_eq!(facts.get("bounded_join_required_shape_contract"), None);
     assert_eq!(facts.get("bounded_join_required_lower_level_contract").map(String::as_str), None);
 
     let plan = mixed_residual_join_plan(

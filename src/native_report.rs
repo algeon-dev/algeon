@@ -368,10 +368,20 @@ fn strict_bounded_contract_rows_for_candidate(
         return Vec::new();
     }
     if reason == Some(FallbackReason::NativeBoundedJoinUnsupported) {
-        return diagnostics.rejected_blocking_contracts.clone();
+        return diagnostics
+            .rejected_candidates
+            .iter()
+            .filter(|entry| entry.candidate == *candidate)
+            .map(|entry| entry.blocking_contract.clone())
+            .collect();
     }
 
-    diagnostics.accepted_reports.iter().flat_map(|report| report.gate_rows().iter().cloned()).collect()
+    diagnostics
+        .accepted_candidates
+        .iter()
+        .filter(|entry| entry.candidate == *candidate)
+        .flat_map(|entry| entry.report.gate_rows().iter().cloned())
+        .collect()
 }
 
 fn strict_bounded_compiled_graphs_for_candidate(
@@ -382,7 +392,12 @@ fn strict_bounded_compiled_graphs_for_candidate(
     if reason.is_some() || !strict_bounded_contract_is_candidate_scoped(candidate, reason) {
         return Vec::new();
     }
-    diagnostics.compiled_graphs.clone()
+    diagnostics
+        .accepted_candidates
+        .iter()
+        .filter(|entry| entry.candidate == *candidate)
+        .map(|entry| entry.compiled_graph.clone())
+        .collect()
 }
 
 fn strict_bounded_contract_is_candidate_scoped(candidate: &GpuCandidate, reason: Option<FallbackReason>) -> bool {

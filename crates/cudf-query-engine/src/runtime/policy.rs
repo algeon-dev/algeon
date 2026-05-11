@@ -186,6 +186,9 @@ pub enum ReservationKind {
     FinalSort,
     /// Final device-to-host materialization boundary.
     Materialization,
+    /// Report-only capability proof that blocked strict bounded execution before
+    /// a concrete reservation gate could be compiled.
+    CapabilityContract,
 }
 
 impl ReservationKind {
@@ -207,6 +210,7 @@ impl ReservationKind {
             Self::FinalMerge => "final_merge",
             Self::FinalSort => "final_sort",
             Self::Materialization => "materialization",
+            Self::CapabilityContract => "capability_contract",
         }
     }
 }

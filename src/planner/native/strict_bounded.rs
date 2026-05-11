@@ -5,25 +5,23 @@ use cudf_query_engine::{
 };
 use datafusion::common::{DataFusionError, Result as DataFusionResult};
 
-use crate::{error::Error, native_exec::NativeCudfExecutionConfig};
+use crate::{error::Error, native_exec::NativeCudfExecutionConfig, report::GpuCandidate};
 
 pub const STRICT_BOUNDED_NON_JOIN_OUTSIDE_REPORT_SCOPE_REASON: &str =
     "strict_bounded_contract_report_scope_is_compiled_join_pipeline";
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct NativeStrictBoundedContractDiagnostics {
-    pub accepted_reports: Vec<StrictBoundedContractReport>,
-    pub rejected_blocking_contracts: Vec<StrictBoundedContractGateRow>,
-    pub compiled_graphs: Vec<NativeStrictBoundedCompiledGraphDiagnostics>,
+    pub accepted_candidates: Vec<NativeStrictBoundedAcceptedCandidateDiagnostics>,
+    pub rejected_candidates: Vec<NativeStrictBoundedRejectedCandidateDiagnostics>,
     pub non_join_bounded_plan_count: usize,
     pub non_join_bounded_plan_reason: Option<String>,
 }
 
 impl NativeStrictBoundedContractDiagnostics {
     pub fn merge(&mut self, other: Self) {
-        self.accepted_reports.extend(other.accepted_reports);
-        self.rejected_blocking_contracts.extend(other.rejected_blocking_contracts);
-        self.compiled_graphs.extend(other.compiled_graphs);
+        self.accepted_candidates.extend(other.accepted_candidates);
+        self.rejected_candidates.extend(other.rejected_candidates);
         self.non_join_bounded_plan_count += other.non_join_bounded_plan_count;
         if self.non_join_bounded_plan_reason.is_none() {
             self.non_join_bounded_plan_reason = other.non_join_bounded_plan_reason;
@@ -31,11 +29,23 @@ impl NativeStrictBoundedContractDiagnostics {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.accepted_reports.is_empty()
-            && self.rejected_blocking_contracts.is_empty()
-            && self.compiled_graphs.is_empty()
+        self.accepted_candidates.is_empty()
+            && self.rejected_candidates.is_empty()
             && self.non_join_bounded_plan_count == 0
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeStrictBoundedAcceptedCandidateDiagnostics {
+    pub candidate: GpuCandidate,
+    pub report: StrictBoundedContractReport,
+    pub compiled_graph: NativeStrictBoundedCompiledGraphDiagnostics,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeStrictBoundedRejectedCandidateDiagnostics {
+    pub candidate: GpuCandidate,
+    pub blocking_contract: StrictBoundedContractGateRow,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -65,6 +75,7 @@ impl NativeStrictBoundedCompiledGraphDiagnostics {
 
 pub(super) fn accepted_plan_contract_diagnostics(
     plan: &QueryPlan,
+    candidate: GpuCandidate,
     execution_config: &NativeCudfExecutionConfig,
 ) -> DataFusionResult<NativeStrictBoundedContractDiagnostics> {
     if !execution_config.memory_control_policy().is_bounded() {
@@ -79,9 +90,12 @@ pub(super) fn accepted_plan_contract_diagnostics(
     let report = StrictBoundedContractReport::from_compiled_pipeline(&analysis, &pipeline)
         .map_err(strict_bounded_report_error)?;
     Ok(NativeStrictBoundedContractDiagnostics {
-        accepted_reports: vec![report],
-        rejected_blocking_contracts: Vec::new(),
-        compiled_graphs: vec![NativeStrictBoundedCompiledGraphDiagnostics::from_pipeline(&pipeline)],
+        accepted_candidates: vec![NativeStrictBoundedAcceptedCandidateDiagnostics {
+            candidate,
+            report,
+            compiled_graph: NativeStrictBoundedCompiledGraphDiagnostics::from_pipeline(&pipeline),
+        }],
+        rejected_candidates: Vec::new(),
         non_join_bounded_plan_count: 0,
         non_join_bounded_plan_reason: None,
     })
@@ -89,6 +103,7 @@ pub(super) fn accepted_plan_contract_diagnostics(
 
 pub(super) fn rejected_plan_contract_diagnostics(
     plan: &QueryPlan,
+    candidate: GpuCandidate,
     execution_config: &NativeCudfExecutionConfig,
 ) -> DataFusionResult<NativeStrictBoundedContractDiagnostics> {
     if !execution_config.memory_control_policy().is_bounded() || !plan.contains_join() {
@@ -100,9 +115,11 @@ pub(super) fn rejected_plan_contract_diagnostics(
         return Ok(NativeStrictBoundedContractDiagnostics::default());
     };
     Ok(NativeStrictBoundedContractDiagnostics {
-        accepted_reports: Vec::new(),
-        rejected_blocking_contracts: vec![blocking_row],
-        compiled_graphs: Vec::new(),
+        accepted_candidates: Vec::new(),
+        rejected_candidates: vec![NativeStrictBoundedRejectedCandidateDiagnostics {
+            candidate,
+            blocking_contract: blocking_row,
+        }],
         non_join_bounded_plan_count: 0,
         non_join_bounded_plan_reason: None,
     })

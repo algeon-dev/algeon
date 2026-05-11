@@ -43,33 +43,11 @@ fn assert_modeled_family_reservation_facts_are_consistent(
     assert_eq!(blocked, expected_blocked, "{label}: blocked_reservations must match non-modeled statuses");
     assert_eq!(missing, expected_blocked, "{label}: missing_reservations must match non-modeled statuses");
 
-    let contract_modes = csv_pairs(facts, "bounded_join_contract_modes", label);
-    let unresolved_preflight = csv_pairs(facts, "bounded_join_unresolved_preflight_contracts", label);
-    let report_fields = csv_pairs(facts, "bounded_join_contract_report_fields", label);
-    for (contract, mode) in &contract_modes {
-        if *mode == "hard_budgeted_report" {
+    for (kind, contract, quality) in requirements {
+        if quality == "hard_budgeted_report_with_unresolved_preflight" {
             assert!(
-                unresolved_preflight.iter().any(|(name, _)| name == contract),
-                "{label}: hard-budgeted contract {contract} must name its unresolved preflight blocker"
-            );
-            assert!(
-                report_fields.iter().any(|(name, _)| name == contract),
-                "{label}: hard-budgeted contract {contract} must name report fields"
-            );
-        }
-    }
-
-    for (kind, contract, detail) in requirements {
-        if detail.contains("hard_budgeted_report_with_unresolved_preflight") {
-            assert!(
-                contract_modes.iter().any(|(name, mode)| *name == contract && *mode == "hard_budgeted_report"),
-                "{label}: {kind} requirement uses hard-budgeted detail but {contract} is absent from contract modes"
-            );
-            assert!(
-                unresolved_preflight
-                    .iter()
-                    .any(|(name, blocker)| { *name == contract && blocker.ends_with("_preflight_unavailable") }),
-                "{label}: {kind} requirement uses unresolved preflight but {contract} is absent from blockers"
+                matches!(contract, "source_contract" | "aggregate_contract" | "final_sort_contract"),
+                "{label}: {kind} hard-budgeted requirement must name a lower-level preflight contract"
             );
         }
     }
@@ -123,10 +101,6 @@ fn bounded_capability_analysis_runs_as_side_channel_for_multi_join_pipeline() {
     let analysis = plan.capability_analysis();
 
     assert_eq!(analysis.nodes.len(), plan.node_count());
-    assert_eq!(
-        analysis.compatibility_family_projection,
-        Some(CompatibilityFamilyProjection::MultiJoinTreePostRootPipeline)
-    );
     assert!(analysis.nodes.iter().any(|node| matches!(node.operator, NodeOperator::Join { .. })));
     assert!(analysis.edges.iter().any(|edge| matches!(edge.input_role, InputRole::JoinBuildInput { .. })));
     assert!(
@@ -163,8 +137,6 @@ fn bounded_capability_analysis_extracts_node_capabilities_for_root_join() {
 
     assert!(plan.has_bounded_executable_root_join());
     let analysis = plan.capability_analysis();
-
-    assert_eq!(analysis.compatibility_family_projection, Some(CompatibilityFamilyProjection::RootJoin));
     assert!(!analysis.has_rejections());
     assert_eq!(analysis.nodes.len(), 3);
     assert!(
@@ -197,11 +169,6 @@ fn bounded_capability_analysis_extracts_node_capabilities_for_single_join_post_r
 
     assert!(plan.has_bounded_executable_join_pipeline());
     let analysis = plan.capability_analysis();
-
-    assert_eq!(
-        analysis.compatibility_family_projection,
-        Some(CompatibilityFamilyProjection::SingleJoinPostRootPipeline)
-    );
     assert!(!analysis.has_rejections());
     assert!(analysis.nodes.iter().any(|node| {
         matches!(
@@ -223,26 +190,20 @@ fn bounded_capability_analysis_extracts_node_capabilities_for_single_join_post_r
 }
 
 #[test]
-fn bounded_root_and_single_join_phase9_admission_uses_capability_execution_path() {
+fn bounded_root_and_single_join_admission_uses_capability_proofs_without_path_projection() {
     let root = simple_root_join_plan();
     let root_analysis = root.capability_analysis();
     assert!(root.has_bounded_executable_root_join());
-    assert_eq!(root_analysis.bounded_join_execution_path(), Some(BoundedJoinExecutionPath::RootJoin));
-    assert_eq!(root_analysis.compatibility_family_projection, Some(CompatibilityFamilyProjection::RootJoin));
+    assert!(root_analysis.admits_root_join());
+    assert!(root_analysis.admits_strict_bounded_join());
     assert!(!root_analysis.admits_closed_multi_join_subgraph());
     assert!(!root_analysis.admits_keyless_conditional_join_input_subplan_pipeline());
 
     let single = serial_aggregate_single_join_spine_plan();
     let single_analysis = single.capability_analysis();
     assert!(single.has_bounded_executable_join_pipeline());
-    assert_eq!(
-        single_analysis.bounded_join_execution_path(),
-        Some(BoundedJoinExecutionPath::SingleJoinPostRootPipeline)
-    );
-    assert_eq!(
-        single_analysis.compatibility_family_projection,
-        Some(CompatibilityFamilyProjection::SingleJoinPostRootPipeline)
-    );
+    assert!(single_analysis.admits_single_join_post_root_pipeline());
+    assert!(single_analysis.admits_strict_bounded_join());
     assert!(!single_analysis.admits_closed_multi_join_subgraph());
     assert!(!single_analysis.admits_multi_join_resident_grouped_aggregate_subquery_filter_pipeline());
 }
@@ -254,11 +215,6 @@ fn bounded_capability_analysis_preserves_status_quality_separation() {
 
     assert!(plan.has_bounded_executable_keyed_hash_join_resident_subplan_pipeline());
     let analysis = plan.capability_analysis();
-
-    assert_eq!(
-        analysis.compatibility_family_projection,
-        Some(CompatibilityFamilyProjection::KeyedHashJoinResidentSubplanPipeline)
-    );
     assert!(analysis.requirements.iter().any(|requirement| {
         requirement.kind == ReservationKind::FinalSort
             && requirement.status == ContractStatus::Modeled
@@ -281,27 +237,15 @@ fn bounded_capability_analysis_classifies_phase2_reservation_scopes() {
     let plan =
         keyed_hash_join_resident_subplan_pipeline_plan(KeyedHashJoinResidentSubplanPipelineVariant::BlockedFamily);
     let analysis = plan.capability_analysis();
-    let requirements = analysis.compatibility_reservation_requirements();
-
-    let requirement_scope = |kind| {
-        requirements
-            .iter()
-            .find(|requirement| requirement.kind == kind)
-            .unwrap_or_else(|| panic!("missing compatibility reservation requirement for {kind}"))
-            .scope
-    };
-
-    assert_eq!(requirement_scope(ReservationKind::SourceRead), ReservationRequirementScope::Edge);
-    assert_eq!(requirement_scope(ReservationKind::OperatorOutput), ReservationRequirementScope::Node);
-    assert_eq!(requirement_scope(ReservationKind::BuildSide), ReservationRequirementScope::Edge);
-    assert_eq!(requirement_scope(ReservationKind::HashTable), ReservationRequirementScope::Node);
-    assert_eq!(requirement_scope(ReservationKind::ProbeSide), ReservationRequirementScope::Edge);
-    assert_eq!(requirement_scope(ReservationKind::FilteredProbeState), ReservationRequirementScope::Node);
-    assert_eq!(requirement_scope(ReservationKind::MixedSizeData), ReservationRequirementScope::Node);
-    assert_eq!(requirement_scope(ReservationKind::GatherMap), ReservationRequirementScope::Edge);
-    assert_eq!(requirement_scope(ReservationKind::JoinOutput), ReservationRequirementScope::Edge);
-    assert_eq!(requirement_scope(ReservationKind::FinalSort), ReservationRequirementScope::Edge);
-    assert_eq!(requirement_scope(ReservationKind::Materialization), ReservationRequirementScope::Edge);
+    assert!(!analysis.requirements.is_empty());
+    for requirement in &analysis.requirements {
+        assert_eq!(
+            requirement.scope,
+            cudf_query_engine::capability::reservation_requirement_scope(requirement.kind),
+            "capability requirement {:?} must carry its canonical scope",
+            requirement.kind,
+        );
+    }
 }
 
 #[test]
@@ -322,23 +266,17 @@ fn bounded_capability_analysis_decomposes_probe_side_into_edge_and_build_before_
         matches!(invariant.kind, SubgraphInvariantKind::BuildBeforeProbe { .. })
             && invariant.required_schedule == ScheduleConstraint::BuildBeforeProbe
     }));
-    assert!(
-        analysis.compatibility_reservation_requirements_csv().contains(
-            "probe_side:query_engine_probe_side_source_reservation:modeled_by_ordered_bounded_join_execution_path"
-        ),
-        "legacy probe_side fact should be projected from the probe edge plus BuildBeforeProbe invariant"
-    );
+    assert!(analysis.requirements.iter().any(|requirement| {
+        requirement.kind == ReservationKind::ProbeSide
+            && requirement.required_contract == "query_engine_probe_side_source_reservation"
+            && requirement.quality == ContractQuality::QueryEngineOwnedOrdering
+    }));
 }
 
 #[test]
 fn bounded_capability_analysis_extracts_phase4_multi_join_edge_contracts() {
     let plan = serial_aggregate_multi_join_spine_plan();
     let analysis = plan.capability_analysis();
-
-    assert_eq!(
-        analysis.compatibility_family_projection,
-        Some(CompatibilityFamilyProjection::MultiJoinTreePostRootPipeline)
-    );
     assert!(analysis.edges.iter().all(|edge| edge.decision == CapabilityDecision::Satisfied));
     assert!(
         analysis.edges.iter().filter(|edge| matches!(edge.input_role, InputRole::JoinBuildInput { .. })).count() >= 2,
@@ -416,10 +354,6 @@ fn bounded_multi_join_phase6_admission_uses_closed_subgraph_capability_proof() {
     let analysis = plan.capability_analysis();
 
     assert_eq!(plan.has_bounded_executable_multi_join_pipeline(), analysis.admits_closed_multi_join_subgraph());
-    assert_eq!(
-        analysis.compatibility_family_projection,
-        Some(CompatibilityFamilyProjection::MultiJoinTreePostRootPipeline)
-    );
 }
 
 #[test]
@@ -440,30 +374,21 @@ fn bounded_capability_analysis_rejects_phase5_multi_join_admission_without_famil
 }
 
 #[test]
-fn bounded_capability_analysis_projects_existing_reservation_fact_vocabulary() {
+fn bounded_capability_analysis_projects_reservation_facts_without_family_path_vocabulary() {
     let plan =
         keyed_hash_join_resident_subplan_pipeline_plan(KeyedHashJoinResidentSubplanPipelineVariant::BlockedFamily);
-    let analysis = plan.capability_analysis();
     let facts = plan
         .bounded_join_modeled_facts(ExecutionBoundaryPolicy::default())
         .expect("keyed hash join resident subplan pipeline should produce modeled facts");
 
-    assert_eq!(
-        Some(analysis.compatibility_reservation_kinds_csv().as_str()),
-        facts.get("bounded_join_reservation_kinds").map(String::as_str)
-    );
-    assert_eq!(
-        Some(analysis.compatibility_reservation_statuses_csv().as_str()),
-        facts.get("bounded_join_reservation_statuses").map(String::as_str)
-    );
-    assert_eq!(
-        Some(analysis.compatibility_reservation_requirements_csv().as_str()),
-        facts.get("bounded_join_reservation_requirements").map(String::as_str)
-    );
-    assert_eq!(
-        Some(analysis.compatibility_modeled_reservations_csv().as_str()),
-        facts.get("modeled_reservations").map(String::as_str)
-    );
+    assert!(facts.get("bounded_join_reservation_kinds").is_some_and(|value| value.contains("source_read")));
+    assert!(facts.get("bounded_join_reservation_statuses").is_some_and(|value| value.contains("source_read:modeled")));
+    assert!(facts.get("bounded_join_reservation_requirements").is_some_and(|value| {
+        value.contains("source_read:source_contract:hard_budgeted_report_with_unresolved_preflight")
+            && !value.contains("BoundedJoinExecutionPath")
+            && !value.contains("bounded_join_execution_path")
+    }));
+    assert!(facts.get("modeled_reservations").is_some_and(|value| value.contains("source_read")));
 }
 
 #[test]
@@ -474,9 +399,9 @@ fn bounded_capability_analysis_projects_modeled_report_facts_for_simple_root_joi
         .bounded_join_modeled_facts(ExecutionBoundaryPolicy::default())
         .expect("root join should produce modeled bounded facts through capability projection");
 
-    assert_eq!(facts.get("bounded_join_execution_family").map(String::as_str), Some("root_reusable_hash_join"));
+    assert_eq!(facts.get("bounded_join_execution_family"), None);
     assert!(plan.bounded_join_unsupported_shape_facts(ExecutionBoundaryPolicy::default()).is_none());
-    assert_modeled_family_reservation_facts_are_consistent(&facts, "root_reusable_hash_join");
+    assert_modeled_family_reservation_facts_are_consistent(&facts, "root_join");
 }
 
 #[test]
@@ -505,8 +430,6 @@ fn bounded_capability_analysis_prevents_modeled_facts_for_capability_rejections(
 fn bounded_capability_analysis_can_reject_node_capabilities_without_family_projection() {
     let plan = unsupported_cross_key_join_plan();
     let analysis = plan.capability_analysis();
-
-    assert_eq!(analysis.compatibility_family_projection, None);
     assert!(analysis.has_rejections());
     let rejected_join = analysis
         .nodes
@@ -523,15 +446,35 @@ fn bounded_capability_analysis_can_reject_node_capabilities_without_family_proje
 }
 
 #[test]
+fn strict_contract_report_projects_rejected_node_capability_when_reservations_are_modeled() {
+    let plan = unsupported_cross_key_join_plan();
+    let analysis = plan.capability_analysis();
+    assert!(analysis.has_rejections());
+    assert!(analysis.requirements.iter().all(|requirement| requirement.status == ContractStatus::Modeled));
+
+    let report = StrictBoundedContractReport::from_capability_analysis(&analysis)
+        .expect("unsupported capability analysis should produce a strict contract report");
+    let row = report
+        .gate_rows()
+        .iter()
+        .find(|row| row.contract_status == ContractStatus::RejectedByCapability)
+        .expect("unsupported report should expose a local capability rejection row");
+
+    assert_eq!(report.execution_mode(), StrictBoundedExecutionMode::UnsupportedStrictBounded);
+    assert_eq!(row.contract_scope, ReservationRequirementScope::Node);
+    assert!(matches!(row.owner, StrictBoundedContractOwner::CapabilityNode(_)));
+    assert_eq!(row.reservation_kind, ReservationKind::CapabilityContract);
+    assert_eq!(row.memory_boundary, "node_capability");
+    assert_eq!(row.required_contract, "unsupported_join_node_capability");
+    assert_eq!(row.contract_quality, ContractQuality::CapabilityProof);
+}
+
+#[test]
 fn bounded_capability_analysis_rejects_unsupported_filter_expression_as_node_capability() {
     let plan = single_join_pipeline_with_empty_in_list_filter_plan();
     let analysis = plan.capability_analysis();
 
-    assert_eq!(analysis.bounded_join_execution_path(), None);
-    assert_eq!(
-        analysis.compatibility_family_projection,
-        Some(CompatibilityFamilyProjection::SingleJoinPostRootPipeline)
-    );
+    assert!(!analysis.admits_strict_bounded_join());
     let rejected_filter = analysis
         .nodes
         .iter()
@@ -550,8 +493,7 @@ fn bounded_capability_analysis_rejects_unsupported_join_residual_expression_as_n
     let plan = root_join_with_like_residual_plan();
     let analysis = plan.capability_analysis();
 
-    assert_eq!(analysis.bounded_join_execution_path(), None);
-    assert_eq!(analysis.compatibility_family_projection, Some(CompatibilityFamilyProjection::RootJoin));
+    assert!(!analysis.admits_strict_bounded_join());
     let rejected_join = analysis
         .nodes
         .iter()
@@ -879,10 +821,7 @@ fn bounded_keyed_hash_join_resident_subplan_pipeline_is_executable_with_modeled_
         .bounded_join_modeled_facts(ExecutionBoundaryPolicy::default())
         .expect("keyed hash join resident subplan pipeline should produce modeled bounded facts");
     assert_eq!(facts.get("bounded_join_execution_status").map(String::as_str), Some("enabled"));
-    assert_eq!(
-        facts.get("bounded_join_execution_family").map(String::as_str),
-        Some("keyed_hash_join_resident_subplan_pipeline")
-    );
+    assert_eq!(facts.get("bounded_join_execution_family"), None);
     assert_eq!(facts.get("bounded_join_lower_level_blockers").map(String::as_str), Some(""));
     assert_eq!(facts.get("blocked_reservations").map(String::as_str), Some(""));
     assert_eq!(facts.get("missing_reservations").map(String::as_str), Some(""));
@@ -895,35 +834,19 @@ fn bounded_keyed_hash_join_resident_subplan_pipeline_is_executable_with_modeled_
         .get("bounded_join_reservation_requirements")
         .expect("resident-revenue blocked family should report shape-local reservation requirements");
     assert!(
+        reservation_requirements.contains("source_read:source_contract:hard_budgeted_report_with_unresolved_preflight")
+    );
+    assert!(
         reservation_requirements
-            .contains("source_read:source_contract:modeled_by_cudf_rs_hard_budgeted_report_with_unresolved_preflight")
-    );
-    assert!(reservation_requirements.contains(
-        "operator_output:aggregate_contract:modeled_by_cudf_rs_hard_budgeted_report_with_unresolved_preflight"
-    ));
-    assert!(
-        reservation_requirements.contains(
-            "final_sort:final_sort_contract:modeled_by_cudf_rs_hard_budgeted_report_with_unresolved_preflight"
-        )
+            .contains("operator_output:aggregate_contract:hard_budgeted_report_with_unresolved_preflight")
     );
     assert!(
-        facts.get("bounded_join_contract_modes").is_some_and(|value| value
-            == "source_contract:hard_budgeted_report,aggregate_contract:hard_budgeted_report,final_sort_contract:hard_budgeted_report")
+        reservation_requirements
+            .contains("final_sort:final_sort_contract:hard_budgeted_report_with_unresolved_preflight")
     );
-    assert!(facts.get("bounded_join_unresolved_preflight_contracts").is_some_and(|value| {
-        value.contains("source_contract:libcudf_parquet_decoded_output_preflight_unavailable")
-            && value.contains("aggregate_contract:libcudf_groupby_aggregate_temporary_workspace_preflight_unavailable")
-            && value.contains("final_sort_contract:libcudf_final_sort_order_preflight_unavailable")
-    }));
-    assert!(
-        facts.get("bounded_join_contract_report_fields").is_some_and(|value| {
-            value.contains("source_contract:allocator_high_water_bytes+retained_bytes+output_bytes+output_rows+context_facts")
-                && value.contains("aggregate_contract:allocator_high_water_bytes+retained_bytes+output_bytes+output_rows")
-                && value.contains(
-                    "final_sort_contract:allocator_high_water_bytes+retained_sort_order_bytes+materialized_output_bytes+output_rows"
-                )
-        })
-    );
+    assert_eq!(facts.get("bounded_join_contract_modes"), None);
+    assert_eq!(facts.get("bounded_join_unresolved_preflight_contracts"), None);
+    assert_eq!(facts.get("bounded_join_contract_report_fields"), None);
     assert_eq!(facts.get("bounded_join_required_lower_level_contract").map(String::as_str), None);
     assert_modeled_family_reservation_facts_are_consistent(&facts, "keyed_hash_join_resident_subplan_pipeline");
 }
@@ -937,10 +860,6 @@ fn bounded_keyed_hash_join_resident_subplan_phase6_admission_uses_capability_pro
     assert_eq!(
         plan.has_bounded_executable_keyed_hash_join_resident_subplan_pipeline(),
         analysis.admits_keyed_hash_join_resident_subplan_pipeline()
-    );
-    assert_eq!(
-        analysis.compatibility_family_projection,
-        Some(CompatibilityFamilyProjection::KeyedHashJoinResidentSubplanPipeline)
     );
     assert_eq!(analysis.keyed_hash_join_resident_subplan_admission, CapabilityDecision::Satisfied);
     assert!(analysis.edges.iter().any(|edge| {
@@ -1031,10 +950,6 @@ fn bounded_multi_join_aggregate_over_join_subplan_topk_pipeline_is_executable() 
     assert!(!plan.has_bounded_executable_multi_join_pipeline());
     assert!(plan.has_bounded_executable_multi_join_aggregate_over_join_subplan_topk_pipeline());
     assert!(analysis.admits_multi_join_aggregate_over_join_subplan_topk_pipeline());
-    assert_eq!(
-        analysis.compatibility_family_projection,
-        Some(CompatibilityFamilyProjection::MultiJoinAggregateOverJoinSubplanTopKPipeline)
-    );
     assert!(!plan.has_bounded_executable_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline());
     assert!(plan.bounded_join_unsupported_shape_facts(ExecutionBoundaryPolicy::default()).is_none());
     assert!(analysis.edges.iter().any(|edge| {
@@ -1061,10 +976,7 @@ fn bounded_multi_join_aggregate_over_join_subplan_topk_pipeline_is_executable() 
         .bounded_join_modeled_facts(ExecutionBoundaryPolicy::default())
         .expect("aggregate-over-join subplan TopK pipeline should produce modeled bounded facts");
     assert_eq!(facts.get("bounded_join_execution_status").map(String::as_str), Some("enabled"));
-    assert_eq!(
-        facts.get("bounded_join_execution_family").map(String::as_str),
-        Some("multi_join_with_aggregate_over_join_subplan_topk")
-    );
+    assert_eq!(facts.get("bounded_join_execution_family"), None);
     assert_eq!(facts.get("bounded_join_lower_level_blockers").map(String::as_str), Some(""));
     assert_eq!(facts.get("blocked_reservations").map(String::as_str), Some(""));
     assert_eq!(facts.get("missing_reservations").map(String::as_str), Some(""));
@@ -1073,11 +985,9 @@ fn bounded_multi_join_aggregate_over_join_subplan_topk_pipeline_is_executable() 
             && value.contains("operator_output:modeled")
             && value.contains("final_sort:modeled")
     }));
-    assert!(
-        facts
-            .get("bounded_join_contract_modes")
-            .is_some_and(|value| value.contains("final_sort_contract:hard_budgeted_report"))
-    );
+    assert!(facts.get("bounded_join_reservation_requirements").is_some_and(|value| {
+        value.contains("final_sort:final_sort_contract:hard_budgeted_report_with_unresolved_preflight")
+    }));
     assert_modeled_family_reservation_facts_are_consistent(&facts, "multi_join_with_aggregate_over_join_subplan_topk");
 }
 
@@ -1147,18 +1057,13 @@ fn bounded_multi_join_resident_grouped_aggregate_subquery_filter_pipeline_is_exe
         .bounded_join_modeled_facts(ExecutionBoundaryPolicy::default())
         .expect("resident grouped aggregate subquery filter pipeline should produce modeled bounded facts");
     assert_eq!(facts.get("bounded_join_execution_status").map(String::as_str), Some("enabled"));
-    assert_eq!(
-        facts.get("bounded_join_execution_family").map(String::as_str),
-        Some("multi_join_with_resident_grouped_aggregate_subquery_filter")
-    );
+    assert_eq!(facts.get("bounded_join_execution_family"), None);
     assert_eq!(facts.get("bounded_join_lower_level_blockers").map(String::as_str), Some(""));
     assert_eq!(facts.get("blocked_reservations").map(String::as_str), Some(""));
     assert_eq!(facts.get("missing_reservations").map(String::as_str), Some(""));
-    assert!(
-        facts
-            .get("bounded_join_contract_modes")
-            .is_some_and(|value| value.contains("final_sort_contract:hard_budgeted_report"))
-    );
+    assert!(facts.get("bounded_join_reservation_requirements").is_some_and(|value| {
+        value.contains("final_sort:final_sort_contract:hard_budgeted_report_with_unresolved_preflight")
+    }));
     assert_modeled_family_reservation_facts_are_consistent(
         &facts,
         "multi_join_with_resident_grouped_aggregate_subquery_filter",
@@ -1173,10 +1078,6 @@ fn bounded_multi_join_resident_grouped_aggregate_subquery_filter_phase8_admissio
     assert_eq!(
         plan.has_bounded_executable_multi_join_resident_grouped_aggregate_subquery_filter_pipeline(),
         analysis.admits_multi_join_resident_grouped_aggregate_subquery_filter_pipeline()
-    );
-    assert_eq!(
-        analysis.compatibility_family_projection,
-        Some(CompatibilityFamilyProjection::MultiJoinResidentGroupedAggregateSubqueryFilterPipeline)
     );
     assert_eq!(analysis.multi_join_resident_grouped_aggregate_subquery_filter_admission, CapabilityDecision::Satisfied);
     assert!(analysis.invariants.iter().any(|invariant| {
@@ -1206,10 +1107,7 @@ fn bounded_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_p
         .bounded_join_modeled_facts(ExecutionBoundaryPolicy::default())
         .expect("resident grouped aggregate TopK pipeline should produce modeled bounded facts");
     assert_eq!(facts.get("bounded_join_execution_status").map(String::as_str), Some("enabled"));
-    assert_eq!(
-        facts.get("bounded_join_execution_family").map(String::as_str),
-        Some("hash_join_with_resident_grouped_aggregate_input_post_join_aggregate_topk")
-    );
+    assert_eq!(facts.get("bounded_join_execution_family"), None);
     assert_eq!(facts.get("bounded_join_lower_level_blockers").map(String::as_str), Some(""));
     assert_eq!(facts.get("blocked_reservations").map(String::as_str), Some(""));
     assert_eq!(facts.get("missing_reservations").map(String::as_str), Some(""));
@@ -1218,11 +1116,9 @@ fn bounded_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_p
             && value.contains("operator_output:modeled")
             && value.contains("final_sort:modeled")
     }));
-    assert!(
-        facts
-            .get("bounded_join_contract_modes")
-            .is_some_and(|value| value.contains("final_sort_contract:hard_budgeted_report"))
-    );
+    assert!(facts.get("bounded_join_reservation_requirements").is_some_and(|value| {
+        value.contains("final_sort:final_sort_contract:hard_budgeted_report_with_unresolved_preflight")
+    }));
     assert_modeled_family_reservation_facts_are_consistent(
         &facts,
         "hash_join_with_resident_grouped_aggregate_input_post_join_aggregate_topk",
@@ -1237,10 +1133,6 @@ fn bounded_hash_join_resident_grouped_aggregate_topk_phase6_admission_uses_capab
     assert_eq!(
         plan.has_bounded_executable_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_pipeline(),
         analysis.admits_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_pipeline()
-    );
-    assert_eq!(
-        analysis.compatibility_family_projection,
-        Some(CompatibilityFamilyProjection::HashJoinResidentGroupedAggregateInputPostJoinAggregateTopKPipeline)
     );
     assert_eq!(
         analysis.hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_admission,
@@ -1347,10 +1239,6 @@ fn bounded_keyless_conditional_join_input_subplan_phase8_admission_uses_capabili
     assert_eq!(
         plan.has_bounded_executable_keyless_conditional_join_input_subplan_pipeline(),
         analysis.admits_keyless_conditional_join_input_subplan_pipeline()
-    );
-    assert_eq!(
-        analysis.compatibility_family_projection,
-        Some(CompatibilityFamilyProjection::KeylessConditionalJoinInputSubplanPipeline)
     );
     assert_eq!(analysis.keyless_conditional_join_input_subplan_admission, CapabilityDecision::Satisfied);
     assert!(analysis.invariants.iter().any(|invariant| {

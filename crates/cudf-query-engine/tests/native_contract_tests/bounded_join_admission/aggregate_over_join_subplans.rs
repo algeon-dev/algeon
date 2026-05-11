@@ -19,12 +19,7 @@ fn bounded_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline_
             .map(String::as_str),
         Some("keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline")
     );
-    assert_eq!(
-        facts.get("bounded_join_execution_families").map(String::as_str),
-        Some(
-            "root_reusable_hash_join,root_filtered_semi_anti_join,keyless_conditional_join,keyless_conditional_join_input_subplan_pipeline,keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline,root_projected_cross_join,root_mixed_keyed_residual_join,multi_join_reusable_hash_pipeline,multi_join_mixed_keyed_residual_inner_left_semi_left_anti_pipeline,multi_join_with_aggregate_over_join_subplan_topk,mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline,hash_join_with_resident_grouped_aggregate_input_post_join_aggregate_topk,multi_join_with_resident_grouped_aggregate_subquery_filter,keyed_hash_join_resident_subplan_pipeline"
-        )
-    );
+    assert_eq!(facts.get("bounded_join_execution_families"), None);
 
     for variant in [
         AggregateOverJoinSubplanInputsVariant::GroupedAggregateOverUnsupportedInput,
@@ -73,10 +68,6 @@ fn bounded_keyless_conditional_join_aggregate_over_join_subplan_inputs_phase8_ad
     assert_eq!(
         plan.has_bounded_executable_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline(),
         analysis.admits_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline()
-    );
-    assert_eq!(
-        analysis.compatibility_family_projection,
-        Some(CompatibilityFamilyProjection::KeylessConditionalJoinAggregateOverJoinSubplanInputsPipeline)
     );
     assert_eq!(
         analysis.keyless_conditional_join_aggregate_over_join_subplan_inputs_admission,

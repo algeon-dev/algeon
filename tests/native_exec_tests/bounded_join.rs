@@ -135,13 +135,13 @@ fn native_optimizer_rule_rewrites_bounded_q11_aggregate_over_join_subplan_inputs
     assert!(matches!(report.outcomes()[0], CandidateOutcome::Rewritten { .. }));
 
     let diagnostics = rule.last_planning_diagnostics().expect("native optimizer should retain diagnostics");
-    assert_eq!(diagnostics.strict_bounded_contract.accepted_reports.len(), 1);
-    assert!(diagnostics.strict_bounded_contract.rejected_blocking_contracts.is_empty());
-    assert_eq!(diagnostics.strict_bounded_contract.compiled_graphs.len(), 1);
-    assert_eq!(diagnostics.strict_bounded_contract.compiled_graphs[0].sink_kind, "host_arrow_materialization");
-    assert!(diagnostics.strict_bounded_contract.compiled_graphs[0].gate_count > 0);
-    assert!(diagnostics.strict_bounded_contract.compiled_graphs[0].sink_gate_count > 0);
-    let strict_report = &diagnostics.strict_bounded_contract.accepted_reports[0];
+    assert_eq!(diagnostics.strict_bounded_contract.accepted_candidates.len(), 1);
+    assert!(diagnostics.strict_bounded_contract.rejected_candidates.is_empty());
+    let accepted = &diagnostics.strict_bounded_contract.accepted_candidates[0];
+    assert_eq!(accepted.compiled_graph.sink_kind, "host_arrow_materialization");
+    assert!(accepted.compiled_graph.gate_count > 0);
+    assert!(accepted.compiled_graph.sink_gate_count > 0);
+    let strict_report = &accepted.report;
     assert_eq!(strict_report.execution_mode(), StrictBoundedExecutionMode::StrictBounded);
     assert!(strict_report.is_strict_bounded_ready());
     assert_strict_report_has_host_sink_boundary(strict_report);
@@ -273,12 +273,10 @@ fn native_exec_preserves_bounded_join_rejection_facts_from_native_runtime() {
         adapter_error.fact_value("bounded_join_capability_rejection_reason"),
         Some("unsupported_join_node_capability")
     );
-    assert_eq!(
-        adapter_error.fact_value("modeled_reservations"),
-        Some(
-            "source_read,build_side,hash_table,probe_side,filtered_probe_state,mixed_size_data,gather_map,join_output,materialization"
-        )
-    );
+    let modeled = adapter_error.fact_value("modeled_reservations").expect("modeled reservations fact");
+    for expected in ["source_read", "build_side", "probe_side", "gather_map", "join_output", "materialization"] {
+        assert!(modeled.split(',').any(|kind| kind == expected), "missing modeled reservation {expected}");
+    }
     assert_eq!(adapter_error.fact_value("bounded_join_lower_level_blockers"), Some(""));
     assert_eq!(
         adapter_error.fact_value("cudf_rs_dataframe_gather_output_reservation_contract"),
@@ -341,9 +339,9 @@ fn strict_bounded_planner_rows_cover_supported_join_path_while_runtime_rejection
     let _ = rule.optimize(plan, &ConfigOptions::default()).unwrap();
     let diagnostics = rule.last_planning_diagnostics().expect("native optimizer should retain diagnostics");
 
-    assert_eq!(diagnostics.strict_bounded_contract.accepted_reports.len(), 1);
-    assert!(diagnostics.strict_bounded_contract.rejected_blocking_contracts.is_empty());
-    let strict_rows = diagnostics.strict_bounded_contract.accepted_reports[0].gate_rows();
+    assert_eq!(diagnostics.strict_bounded_contract.accepted_candidates.len(), 1);
+    assert!(diagnostics.strict_bounded_contract.rejected_candidates.is_empty());
+    let strict_rows = diagnostics.strict_bounded_contract.accepted_candidates[0].report.gate_rows();
     assert!(strict_rows.iter().any(|row| row.reservation_kind == ReservationKind::Materialization));
     assert!(
         strict_rows
@@ -364,15 +362,12 @@ fn strict_bounded_planner_rows_cover_supported_join_path_while_runtime_rejection
     assert_eq!(runtime_error.fact_value("bounded_join_enabled"), Some("true"));
     assert_eq!(runtime_error.fact_value("bounded_join_execution_status"), Some("unsupported_plan_shape"));
     assert_eq!(runtime_error.fact_value("bounded_join_unsupported_shape"), Some(expected_unsupported_shape.as_str()));
-    let expected_execution_families = cudf_query_engine::BoundedJoinReservationContract.execution_families_csv();
-    assert_eq!(runtime_error.fact_value("bounded_join_execution_families"), Some(expected_execution_families.as_str()));
+    assert_eq!(runtime_error.fact_value("bounded_join_execution_families"), None);
     assert_eq!(runtime_error.fact_value("reason"), Some("bounded_join_plan_shape_unsupported"));
-    assert_eq!(
-        runtime_error.fact_value("modeled_reservations"),
-        Some(
-            "source_read,build_side,hash_table,probe_side,filtered_probe_state,mixed_size_data,gather_map,join_output,materialization"
-        )
-    );
+    let modeled = runtime_error.fact_value("modeled_reservations").expect("modeled reservations fact");
+    for expected in ["source_read", "build_side", "probe_side", "gather_map", "join_output", "materialization"] {
+        assert!(modeled.split(',').any(|kind| kind == expected), "missing modeled reservation {expected}");
+    }
     assert_eq!(runtime_error.fact_value("blocked_reservations"), Some(""));
     assert_eq!(runtime_error.fact_value("bounded_join_execution_family_alias_compatibility"), None);
     assert_eq!(

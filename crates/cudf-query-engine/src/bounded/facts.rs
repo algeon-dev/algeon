@@ -2,33 +2,16 @@ use std::collections::BTreeMap;
 
 use super::*;
 use crate::runtime::{BoundedJoinReservationContract, ExecutionBoundaryPolicy};
-const MIXED_KEYED_RESIDUAL_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_PIPELINE_FAMILY: &str =
-    "mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline";
 const MIXED_KEYED_RESIDUAL_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_PIPELINE_BLOCKER: &str =
     "bounded_mixed_keyed_residual_join_resident_grouped_aggregate_input_lower_level_contracts";
-const MIXED_KEYED_RESIDUAL_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_PIPELINE_SHAPE_CONTRACT: &str = "projected_global_aggregate_over_keyed_residual_inner_hash_join_with_projection_wrapped_join_subtree_and_projection_wrapped_grouped_local_parquet_aggregate_input";
 const MIXED_KEYED_RESIDUAL_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_PIPELINE_LOWER_LEVEL_CONTRACT: &str =
     "source_contract,aggregate_contract";
-const MIXED_KEYED_RESIDUAL_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_PIPELINE_BLOCKED_RESERVATIONS: &str = "";
-const MIXED_KEYED_RESIDUAL_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_PIPELINE_RESERVATION_KINDS: &str = "source_read,operator_output,build_side,hash_table,probe_side,filtered_probe_state,mixed_size_data,gather_map,join_output,materialization";
-const MIXED_KEYED_RESIDUAL_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_PIPELINE_RESERVATION_STATUSES: &str = "source_read:modeled,operator_output:modeled,build_side:modeled,hash_table:modeled,probe_side:modeled,filtered_probe_state:modeled,mixed_size_data:modeled,gather_map:modeled,join_output:modeled,materialization:modeled";
-const MIXED_KEYED_RESIDUAL_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_PIPELINE_RESERVATION_REQUIREMENTS: &str = "source_read:source_contract:modeled_by_cudf_rs_hard_budgeted_report_with_unresolved_preflight,operator_output:aggregate_contract:modeled_by_cudf_rs_hard_budgeted_report_with_unresolved_preflight,build_side:query_engine_build_side_source_reservation:modeled_before_execution,hash_table:hash_join_pre_build_reservation_size_bytes:modeled_by_cudf_rs_pre_build_sizing,probe_side:query_engine_probe_side_source_reservation:modeled_by_ordered_bounded_join_execution_path,filtered_probe_state:filtered_join_retained_probe_state:modeled_by_cudf_rs_filtered_probe_state_observability,mixed_size_data:mixed_keyed_residual_or_conditional_full_retained_size_data:modeled_by_cudf_rs_retained_join_size_data_observability,gather_map:join_gather_map_reservation_size_bytes:modeled_by_cudf_rs_join_gather_map_sizing,join_output:dataframe_gather_output_reservation_size_bytes+projected_cross_join_reservation_size_bytes:modeled_by_cudf_rs_dataframe_gather_or_projected_cross_output_sizing,materialization:query_engine_explicit_sink_materialization_reservation:modeled_by_explicit_sink_boundary";
-const MIXED_KEYED_RESIDUAL_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_PIPELINE_MODELED_RESERVATIONS: &str = "source_read,operator_output,build_side,hash_table,probe_side,filtered_probe_state,mixed_size_data,gather_map,join_output,materialization";
-const MULTI_JOIN_AGGREGATE_OVER_JOIN_SUBPLAN_TOPK_FAMILY: &str = "multi_join_with_aggregate_over_join_subplan_topk";
 const MULTI_JOIN_AGGREGATE_OVER_JOIN_SUBPLAN_TOPK_BLOCKER: &str =
     "bounded_multi_join_aggregate_over_join_subplan_topk_executor_missing";
-const MULTI_JOIN_AGGREGATE_OVER_JOIN_SUBPLAN_TOPK_SHAPE_CONTRACT: &str = "final_topk_over_projection_over_root_hash_join_with_multi_join_input_and_projection_wrapped_aggregate_over_join_subplan_input";
-const HASH_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_POST_JOIN_AGGREGATE_TOPK_FAMILY: &str =
-    "hash_join_with_resident_grouped_aggregate_input_post_join_aggregate_topk";
 const HASH_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_POST_JOIN_AGGREGATE_TOPK_BLOCKER: &str =
     "bounded_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_executor_missing";
-const HASH_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_POST_JOIN_AGGREGATE_TOPK_SHAPE_CONTRACT: &str = "final_topk_over_projection_over_grouped_aggregate_over_hash_join_with_grouped_aggregate_input_and_multi_join_input";
-const MULTI_JOIN_RESIDENT_GROUPED_AGGREGATE_SUBQUERY_FILTER_FAMILY: &str =
-    "multi_join_with_resident_grouped_aggregate_subquery_filter";
 const MULTI_JOIN_RESIDENT_GROUPED_AGGREGATE_SUBQUERY_FILTER_BLOCKER: &str =
     "bounded_multi_join_resident_grouped_aggregate_subquery_filter_executor_missing";
-const MULTI_JOIN_RESIDENT_GROUPED_AGGREGATE_SUBQUERY_FILTER_SHAPE_CONTRACT: &str =
-    "final_sort_over_multi_join_tree_with_projection_wrapped_grouped_aggregate_subquery_input_and_residual_filter";
 
 pub(crate) fn bounded_join_unsupported_shape_facts(
     plan: &QueryPlan,
@@ -38,44 +21,12 @@ pub(crate) fn bounded_join_unsupported_shape_facts(
     let analysis = plan.capability_analysis();
     if matches_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline(plan) {
         facts.insert(
-            "bounded_join_blocked_join_family",
-            MIXED_KEYED_RESIDUAL_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_PIPELINE_FAMILY.to_string(),
-        );
-        facts.insert(
             "bounded_join_specific_blocker",
             MIXED_KEYED_RESIDUAL_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_PIPELINE_BLOCKER.to_string(),
         );
         facts.insert(
             "bounded_join_shape_blocker",
             MIXED_KEYED_RESIDUAL_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_PIPELINE_BLOCKER.to_string(),
-        );
-        facts.insert(
-            "blocked_reservations",
-            MIXED_KEYED_RESIDUAL_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_PIPELINE_BLOCKED_RESERVATIONS.to_string(),
-        );
-        facts.insert(
-            "missing_reservations",
-            MIXED_KEYED_RESIDUAL_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_PIPELINE_BLOCKED_RESERVATIONS.to_string(),
-        );
-        facts.insert(
-            "modeled_reservations",
-            MIXED_KEYED_RESIDUAL_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_PIPELINE_MODELED_RESERVATIONS.to_string(),
-        );
-        facts.insert(
-            "bounded_join_reservation_kinds",
-            MIXED_KEYED_RESIDUAL_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_PIPELINE_RESERVATION_KINDS.to_string(),
-        );
-        facts.insert(
-            "bounded_join_reservation_statuses",
-            MIXED_KEYED_RESIDUAL_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_PIPELINE_RESERVATION_STATUSES.to_string(),
-        );
-        facts.insert(
-            "bounded_join_reservation_requirements",
-            MIXED_KEYED_RESIDUAL_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_PIPELINE_RESERVATION_REQUIREMENTS.to_string(),
-        );
-        facts.insert(
-            "bounded_join_required_shape_contract",
-            MIXED_KEYED_RESIDUAL_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_PIPELINE_SHAPE_CONTRACT.to_string(),
         );
         facts.insert(
             "bounded_join_required_lower_level_contract",
@@ -88,44 +39,26 @@ pub(crate) fn bounded_join_unsupported_shape_facts(
     } else if matches_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk(plan) {
         insert_structural_topology_blocker(
             &mut facts,
-            HASH_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_POST_JOIN_AGGREGATE_TOPK_FAMILY,
             HASH_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_POST_JOIN_AGGREGATE_TOPK_BLOCKER,
-            HASH_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_POST_JOIN_AGGREGATE_TOPK_SHAPE_CONTRACT,
         );
     } else if matches_multi_join_aggregate_over_join_subplan_topk(plan) {
-        insert_structural_topology_blocker(
-            &mut facts,
-            MULTI_JOIN_AGGREGATE_OVER_JOIN_SUBPLAN_TOPK_FAMILY,
-            MULTI_JOIN_AGGREGATE_OVER_JOIN_SUBPLAN_TOPK_BLOCKER,
-            MULTI_JOIN_AGGREGATE_OVER_JOIN_SUBPLAN_TOPK_SHAPE_CONTRACT,
-        );
+        insert_structural_topology_blocker(&mut facts, MULTI_JOIN_AGGREGATE_OVER_JOIN_SUBPLAN_TOPK_BLOCKER);
     } else if matches_multi_join_resident_grouped_aggregate_subquery_filter(plan) {
-        insert_structural_topology_blocker(
-            &mut facts,
-            MULTI_JOIN_RESIDENT_GROUPED_AGGREGATE_SUBQUERY_FILTER_FAMILY,
-            MULTI_JOIN_RESIDENT_GROUPED_AGGREGATE_SUBQUERY_FILTER_BLOCKER,
-            MULTI_JOIN_RESIDENT_GROUPED_AGGREGATE_SUBQUERY_FILTER_SHAPE_CONTRACT,
-        );
+        insert_structural_topology_blocker(&mut facts, MULTI_JOIN_RESIDENT_GROUPED_AGGREGATE_SUBQUERY_FILTER_BLOCKER);
     } else if let Some(join) = first_unsupported_keyed_residual_semi_anti_join(plan) {
         facts.insert("bounded_join_specific_blocker", mixed_keyed_residual_left_only_blocker(plan, join).to_string());
-        facts.insert("bounded_join_blocked_join_family", "mixed_keyed_residual_left_semi_left_anti".to_string());
         facts.insert("bounded_join_blocked_join_type", join.spec.join_type.to_string());
-        facts.insert("bounded_join_required_shape_contract", mixed_keyed_residual_left_only_shape_contract(plan, join));
         facts.insert(
             "bounded_join_shape_blocker",
             "bounded_mixed_keyed_residual_left_only_join_shape_or_orientation".to_string(),
         );
     } else if let Some(join) = first_keyed_residual_full_join(plan) {
         facts.insert("bounded_join_specific_blocker", mixed_keyed_residual_full_blocker(plan, join).to_string());
-        facts.insert("bounded_join_blocked_join_family", "mixed_keyed_residual_full".to_string());
         facts.insert("bounded_join_blocked_join_type", join.spec.join_type.to_string());
-        facts.insert("bounded_join_required_shape_contract", mixed_keyed_residual_full_shape_contract(plan, join));
         facts.insert("bounded_join_shape_blocker", "bounded_mixed_keyed_residual_full_join_shape".to_string());
     } else if let Some(join) = first_keyed_residual_left_join(plan) {
         facts.insert("bounded_join_specific_blocker", mixed_keyed_residual_left_blocker(plan, join).to_string());
-        facts.insert("bounded_join_blocked_join_family", "mixed_keyed_residual_left".to_string());
         facts.insert("bounded_join_blocked_join_type", join.spec.join_type.to_string());
-        facts.insert("bounded_join_required_shape_contract", mixed_keyed_residual_left_shape_contract(plan, join));
         facts.insert(
             "bounded_join_shape_blocker",
             "bounded_mixed_keyed_residual_left_join_shape_or_orientation".to_string(),
@@ -142,9 +75,7 @@ pub(crate) fn bounded_join_modeled_facts(
 ) -> BTreeMap<&'static str, String> {
     let mut facts = BoundedJoinReservationContract.facts(boundary_policy);
     let analysis = plan.capability_analysis();
-    if let Some(projection) = crate::capability::CompatibilityReportProjection::from_analysis(&analysis) {
-        projection.insert_modeled_facts(&mut facts);
-    }
+    insert_capability_reservation_facts(&mut facts, &analysis);
     facts
 }
 
@@ -152,26 +83,20 @@ fn matches_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline(p
     crate::capability::admits_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline(plan)
 }
 
-fn insert_structural_topology_blocker(
-    facts: &mut BTreeMap<&'static str, String>,
-    family: &'static str,
-    blocker: &'static str,
-    shape_contract: &'static str,
-) {
-    facts.insert("bounded_join_blocked_join_family", family.to_string());
+fn insert_structural_topology_blocker(facts: &mut BTreeMap<&'static str, String>, blocker: &'static str) {
     facts.insert("bounded_join_specific_blocker", blocker.to_string());
     facts.insert("bounded_join_shape_blocker", blocker.to_string());
-    facts.insert("bounded_join_required_shape_contract", shape_contract.to_string());
 }
 
 fn insert_capability_rejection_facts(
     facts: &mut BTreeMap<&'static str, String>,
     analysis: &crate::capability::CapabilityAnalysis,
 ) {
-    let Some(rejection) = analysis.compatibility_first_rejection_projection() else {
+    let Some(rejection) = analysis.first_rejection_projection() else {
         return;
     };
-    facts.insert("bounded_join_capability_rejection_scope", rejection.scope.to_string());
+    facts.insert("bounded_join_capability_rejection_scope", rejection.contract_scope.as_str().to_string());
+    facts.insert("bounded_join_capability_rejection_boundary", rejection.memory_boundary.to_string());
     facts.insert("bounded_join_capability_rejection_reason", rejection.reason.to_string());
     facts.insert("bounded_join_capability_rejection_facts", capability_rejection_facts_csv(&rejection.facts));
 }
@@ -180,17 +105,39 @@ fn insert_capability_reservation_facts(
     facts: &mut BTreeMap<&'static str, String>,
     analysis: &crate::capability::CapabilityAnalysis,
 ) {
-    let requirements = analysis.compatibility_reservation_requirements();
+    let requirements = &analysis.requirements;
     if requirements.is_empty() {
         return;
     }
-    facts.insert("bounded_join_reservation_kinds", analysis.compatibility_reservation_kinds_csv());
-    facts.insert("bounded_join_reservation_statuses", analysis.compatibility_reservation_statuses_csv());
-    facts.insert("bounded_join_reservation_requirements", analysis.compatibility_reservation_requirements_csv());
-    facts.insert("modeled_reservations", analysis.compatibility_modeled_reservations_csv());
-    facts.insert("blocked_reservations", capability_blocked_reservations_csv(&requirements));
-    facts.insert("missing_reservations", capability_blocked_reservations_csv(&requirements));
-    facts.insert("bounded_join_lower_level_blockers", capability_lower_level_blockers_csv(&requirements));
+    facts.insert("bounded_join_reservation_kinds", capability_reservation_kinds_csv(requirements));
+    facts.insert("bounded_join_reservation_statuses", capability_reservation_statuses_csv(requirements));
+    facts.insert("bounded_join_reservation_requirements", capability_reservation_requirements_csv(requirements));
+    facts.insert("modeled_reservations", capability_modeled_reservations_csv(requirements));
+    facts.insert("blocked_reservations", capability_blocked_reservations_csv(requirements));
+    facts.insert("missing_reservations", capability_blocked_reservations_csv(requirements));
+    facts.insert("bounded_join_lower_level_blockers", capability_lower_level_blockers_csv(requirements));
+}
+
+fn capability_reservation_kinds_csv(requirements: &[crate::capability::ReservationRequirement]) -> String {
+    csv_join(requirements.iter().map(|requirement| requirement.kind.as_str()))
+}
+
+fn capability_reservation_statuses_csv(requirements: &[crate::capability::ReservationRequirement]) -> String {
+    csv_join(
+        requirements.iter().map(|requirement| format!("{}:{}", requirement.kind.as_str(), requirement.status.as_str())),
+    )
+}
+
+fn capability_reservation_requirements_csv(requirements: &[crate::capability::ReservationRequirement]) -> String {
+    csv_join(requirements.iter().map(|requirement| {
+        format!("{}:{}:{}", requirement.kind.as_str(), requirement.required_contract, requirement.quality.as_str())
+    }))
+}
+
+fn capability_modeled_reservations_csv(requirements: &[crate::capability::ReservationRequirement]) -> String {
+    csv_join(requirements.iter().filter_map(|requirement| {
+        (requirement.status == crate::capability::ContractStatus::Modeled).then_some(requirement.kind.as_str())
+    }))
 }
 
 fn capability_blocked_reservations_csv(requirements: &[crate::capability::ReservationRequirement]) -> String {

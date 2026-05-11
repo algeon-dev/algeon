@@ -446,7 +446,8 @@ fn join_node_requirement_task(
         | ReservationKind::GatherMap
         | ReservationKind::JoinOutput
         | ReservationKind::FinalSort
-        | ReservationKind::Materialization => materialize,
+        | ReservationKind::Materialization
+        | ReservationKind::CapabilityContract => materialize,
     }
 }
 

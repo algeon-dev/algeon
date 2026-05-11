@@ -8,8 +8,9 @@ use std::fmt;
 
 use crate::{
     capability::{
-        CapabilityAnalysis, ContractQuality, ContractStatus, EdgeConsumer, InvariantId, ReservationRequirement,
-        ReservationRequirementScope, ResultSinkKind, lower_level_unresolved_preflight_gap,
+        CapabilityAnalysis, CapabilityRejectionOwner, CapabilityRejectionProjection, ContractQuality, ContractStatus,
+        EdgeConsumer, InvariantId, ReservationRequirement, ReservationRequirementScope, ResultSinkKind,
+        lower_level_unresolved_preflight_gap,
     },
     error::{QueryError, QueryErrorCode, Result},
     pipeline::{CompiledPipeline, ReservationGate, ReservationGateId, ReservationGateOwner},
@@ -129,6 +130,17 @@ impl StrictBoundedContractReport {
             }
         }
 
+        if execution_mode == StrictBoundedExecutionMode::UnsupportedStrictBounded
+            && gate_rows.iter().all(|row| row.contract_status == ContractStatus::Modeled)
+            && let Some(projection) = analysis.first_rejection_projection()
+        {
+            gate_rows.push(StrictBoundedContractGateRow::from_capability_rejection_projection(
+                execution_mode,
+                gate_rows.len(),
+                &projection,
+            )?);
+        }
+
         Self::new(execution_mode, gate_rows)
     }
 
@@ -154,6 +166,7 @@ impl StrictBoundedContractReport {
             return Err(contract_report_error("strict bounded contract report has no gate rows"));
         }
         for row in &gate_rows {
+            validate_report_row(row)?;
             if row.execution_mode != execution_mode {
                 return Err(contract_report_error(
                     "strict bounded contract report row has inconsistent execution mode",
@@ -163,6 +176,7 @@ impl StrictBoundedContractReport {
                 .with_fact("gate_id", row.gate_id.to_string()));
             }
         }
+        validate_report_execution_mode(execution_mode, &gate_rows)?;
         Ok(Self { execution_mode, gate_rows })
     }
 }
@@ -216,6 +230,27 @@ impl StrictBoundedContractGateRow {
         })
     }
 
+    pub fn from_capability_rejection_projection(
+        execution_mode: StrictBoundedExecutionMode,
+        index: usize,
+        projection: &CapabilityRejectionProjection,
+    ) -> Result<Self> {
+        let row = Self {
+            execution_mode,
+            contract_scope: projection.contract_scope,
+            gate_id: StrictBoundedContractGateId::CapabilityRequirement { scope: projection.contract_scope, index },
+            owner: StrictBoundedContractOwner::from_capability_rejection_owner(&projection.owner),
+            reservation_kind: ReservationKind::CapabilityContract,
+            memory_boundary: projection.memory_boundary,
+            required_contract: projection.reason,
+            contract_status: ContractStatus::RejectedByCapability,
+            contract_quality: ContractQuality::CapabilityProof,
+            unresolved_preflight_gap: None,
+        };
+        validate_report_row(&row)?;
+        Ok(row)
+    }
+
     pub fn to_stable_kv_row(&self) -> String {
         format!(
             "execution_mode={},contract_scope={},gate_id={},owner={},reservation_kind={},memory_boundary={},required_contract={},contract_status={},contract_quality={},unresolved_preflight_gap={}",
@@ -262,6 +297,20 @@ pub enum StrictBoundedContractOwner {
     CapabilityNode(NodeId),
     CapabilityEdge { producer: NodeId, consumer: EdgeConsumer },
     CapabilitySubgraph(InvariantId),
+    CapabilityAdmission(&'static str),
+}
+
+impl StrictBoundedContractOwner {
+    fn from_capability_rejection_owner(owner: &CapabilityRejectionOwner) -> Self {
+        match owner {
+            CapabilityRejectionOwner::Node(node) => Self::CapabilityNode(*node),
+            CapabilityRejectionOwner::Edge { producer, consumer } => {
+                Self::CapabilityEdge { producer: *producer, consumer: *consumer }
+            },
+            CapabilityRejectionOwner::Invariant(invariant) => Self::CapabilitySubgraph(*invariant),
+            CapabilityRejectionOwner::Admission(admission) => Self::CapabilityAdmission(admission),
+        }
+    }
 }
 
 impl fmt::Display for StrictBoundedContractOwner {
@@ -273,6 +322,7 @@ impl fmt::Display for StrictBoundedContractOwner {
                 write!(f, "edge:{producer}->{}", DisplayEdgeConsumer(*consumer))
             },
             Self::CapabilitySubgraph(invariant) => write!(f, "subgraph:i{}", invariant.index()),
+            Self::CapabilityAdmission(admission) => write!(f, "admission:{admission}"),
         }
     }
 }
@@ -347,15 +397,195 @@ fn validate_report_requirement(
     }
     if unresolved_gap.is_some()
         && requirement.status == ContractStatus::Modeled
-        && requirement.quality == ContractQuality::ExactPreflight
+        && requirement.quality != ContractQuality::HardBudgetedReportWithUnresolvedPreflight
     {
-        return Err(contract_report_error("unresolved-preflight gate cannot be reported as exact preflight")
+        return Err(contract_report_error("modeled unresolved-preflight gate must use unresolved-preflight quality")
             .with_fact("gate_id", gate_id)
             .with_fact("reservation_kind", requirement.kind.as_str())
             .with_fact("required_contract", requirement.required_contract)
             .with_fact("contract_quality", requirement.quality.as_str()));
     }
     Ok(())
+}
+
+fn validate_report_row(row: &StrictBoundedContractGateRow) -> Result<()> {
+    if row.memory_boundary.is_empty() {
+        return Err(contract_report_error("strict bounded contract gate has empty memory boundary")
+            .with_fact("gate_id", row.gate_id.to_string())
+            .with_fact("reservation_kind", row.reservation_kind.as_str()));
+    }
+    if row.required_contract.is_empty() {
+        return Err(contract_report_error("strict bounded contract gate has empty required contract")
+            .with_fact("gate_id", row.gate_id.to_string())
+            .with_fact("reservation_kind", row.reservation_kind.as_str()));
+    }
+    validate_report_row_owner_scope(row)?;
+    validate_quality_gap_consistency(
+        &row.gate_id,
+        row.reservation_kind,
+        row.required_contract,
+        row.contract_status,
+        row.contract_quality,
+        row.unresolved_preflight_gap,
+    )?;
+    validate_quality_ownership(
+        &row.gate_id,
+        row.reservation_kind,
+        row.required_contract,
+        row.contract_status,
+        row.contract_quality,
+    )
+}
+
+fn validate_report_execution_mode(
+    execution_mode: StrictBoundedExecutionMode,
+    gate_rows: &[StrictBoundedContractGateRow],
+) -> Result<()> {
+    let has_non_modeled_row = gate_rows.iter().any(|row| row.contract_status != ContractStatus::Modeled);
+    match execution_mode {
+        StrictBoundedExecutionMode::StrictBounded if has_non_modeled_row => {
+            Err(contract_report_error("strict bounded report cannot contain non-modeled contract rows")
+                .with_fact("report_execution_mode", execution_mode.as_str()))
+        },
+        StrictBoundedExecutionMode::UnsupportedStrictBounded if !has_non_modeled_row => {
+            Err(contract_report_error("unsupported strict bounded report must contain a non-modeled contract row")
+                .with_fact("report_execution_mode", execution_mode.as_str()))
+        },
+        StrictBoundedExecutionMode::StrictBounded | StrictBoundedExecutionMode::UnsupportedStrictBounded => Ok(()),
+    }
+}
+
+fn validate_report_row_owner_scope(row: &StrictBoundedContractGateRow) -> Result<()> {
+    let valid = match (&row.owner, row.contract_scope) {
+        (StrictBoundedContractOwner::Compiled(ReservationGateOwner::Task(_)), ReservationRequirementScope::Node) => {
+            true
+        },
+        (StrictBoundedContractOwner::Compiled(ReservationGateOwner::Edge(_)), ReservationRequirementScope::Edge) => {
+            true
+        },
+        (
+            StrictBoundedContractOwner::Compiled(ReservationGateOwner::SinkBoundary),
+            ReservationRequirementScope::Edge,
+        ) if row.reservation_kind == ReservationKind::Materialization => true,
+        (
+            StrictBoundedContractOwner::Compiled(ReservationGateOwner::Barrier(_)),
+            ReservationRequirementScope::Subgraph,
+        ) => true,
+        (StrictBoundedContractOwner::CapabilityNode(_), ReservationRequirementScope::Node) => true,
+        (StrictBoundedContractOwner::CapabilityEdge { .. }, ReservationRequirementScope::Edge) => true,
+        (StrictBoundedContractOwner::CapabilitySubgraph(_), ReservationRequirementScope::Subgraph) => true,
+        (StrictBoundedContractOwner::CapabilityAdmission(_), ReservationRequirementScope::Subgraph) => true,
+        _ => false,
+    };
+    if valid {
+        return Ok(());
+    }
+    Err(contract_report_error("strict bounded contract owner does not match contract scope")
+        .with_fact("gate_id", row.gate_id.to_string())
+        .with_fact("owner", row.owner.to_string())
+        .with_fact("contract_scope", row.contract_scope.as_str())
+        .with_fact("reservation_kind", row.reservation_kind.as_str()))
+}
+
+fn validate_quality_gap_consistency(
+    gate_id: &StrictBoundedContractGateId,
+    kind: ReservationKind,
+    required_contract: &str,
+    status: ContractStatus,
+    quality: ContractQuality,
+    unresolved_preflight_gap: Option<&'static str>,
+) -> Result<()> {
+    let expected_gap = lower_level_unresolved_preflight_gap(kind, required_contract);
+    if quality == ContractQuality::HardBudgetedReportWithUnresolvedPreflight {
+        if status != ContractStatus::Modeled {
+            return Err(contract_report_error("hard-budgeted unresolved-preflight gate must remain modeled")
+                .with_fact("gate_id", gate_id.to_string())
+                .with_fact("reservation_kind", kind.as_str())
+                .with_fact("contract_status", status.as_str())
+                .with_fact("contract_quality", quality.as_str()));
+        }
+        let Some(expected_gap) = expected_gap else {
+            return Err(contract_report_error("hard-budgeted gate is missing lower-level unresolved preflight gap")
+                .with_fact("gate_id", gate_id.to_string())
+                .with_fact("reservation_kind", kind.as_str())
+                .with_fact("required_contract", required_contract));
+        };
+        if unresolved_preflight_gap != Some(expected_gap) {
+            return Err(contract_report_error(
+                "hard-budgeted gate has mismatched lower-level unresolved preflight gap",
+            )
+            .with_fact("gate_id", gate_id.to_string())
+            .with_fact("reservation_kind", kind.as_str())
+            .with_fact("required_contract", required_contract)
+            .with_fact("expected_unresolved_preflight_gap", expected_gap)
+            .with_fact("unresolved_preflight_gap", unresolved_preflight_gap.unwrap_or("none")));
+        }
+    } else if unresolved_preflight_gap.is_some() {
+        return Err(contract_report_error("non-hard-budgeted gate must not carry unresolved preflight gap")
+            .with_fact("gate_id", gate_id.to_string())
+            .with_fact("reservation_kind", kind.as_str())
+            .with_fact("required_contract", required_contract)
+            .with_fact("contract_quality", quality.as_str())
+            .with_fact("unresolved_preflight_gap", unresolved_preflight_gap.unwrap_or("none")));
+    }
+    if expected_gap.is_some()
+        && status == ContractStatus::Modeled
+        && quality != ContractQuality::HardBudgetedReportWithUnresolvedPreflight
+    {
+        return Err(contract_report_error("modeled unresolved-preflight gate must use unresolved-preflight quality")
+            .with_fact("gate_id", gate_id.to_string())
+            .with_fact("reservation_kind", kind.as_str())
+            .with_fact("required_contract", required_contract)
+            .with_fact("contract_quality", quality.as_str()));
+    }
+    Ok(())
+}
+
+fn validate_quality_ownership(
+    gate_id: &StrictBoundedContractGateId,
+    kind: ReservationKind,
+    required_contract: &str,
+    status: ContractStatus,
+    quality: ContractQuality,
+) -> Result<()> {
+    if status != ContractStatus::Modeled {
+        return Ok(());
+    }
+    if matches!(kind, ReservationKind::FilteredProbeState | ReservationKind::MixedSizeData)
+        && quality != ContractQuality::ObservedRetainedState
+    {
+        return Err(contract_report_error("retained join-state gate must report observed retained-state quality")
+            .with_fact("gate_id", gate_id.to_string())
+            .with_fact("reservation_kind", kind.as_str())
+            .with_fact("required_contract", required_contract)
+            .with_fact("contract_quality", quality.as_str()));
+    }
+    if quality == ContractQuality::ExactPreflight
+        && !exact_preflight_contract_is_owned_by_lower_layer(kind, required_contract)
+    {
+        return Err(contract_report_error("exact-preflight gate is not backed by an owning lower-level contract")
+            .with_fact("gate_id", gate_id.to_string())
+            .with_fact("reservation_kind", kind.as_str())
+            .with_fact("required_contract", required_contract)
+            .with_fact("contract_quality", quality.as_str()));
+    }
+    Ok(())
+}
+
+fn exact_preflight_contract_is_owned_by_lower_layer(kind: ReservationKind, required_contract: &str) -> bool {
+    match kind {
+        ReservationKind::HashTable => required_contract == "hash_join_pre_build_reservation_size_bytes",
+        ReservationKind::GatherMap => required_contract == "join_gather_map_reservation_size_bytes",
+        ReservationKind::JoinOutput => {
+            matches!(
+                required_contract,
+                "dataframe_gather_output_reservation_size_bytes"
+                    | "projected_cross_join_reservation_size_bytes"
+                    | "dataframe_gather_output_reservation_size_bytes+projected_cross_join_reservation_size_bytes"
+            )
+        },
+        _ => true,
+    }
 }
 
 fn contract_report_error(message: &'static str) -> QueryError {

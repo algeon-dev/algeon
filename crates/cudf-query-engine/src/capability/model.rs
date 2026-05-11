@@ -6,6 +6,7 @@ pub enum ContractStatus {
     Modeled,
     BlockedByLowerLevel,
     DeferredUntilPrerequisite,
+    RejectedByCapability,
 }
 
 /// How precise a modeled bounded contract is.
@@ -17,6 +18,7 @@ pub enum ContractQuality {
     ObservedRetainedState,
     QueryEngineOwnedOrdering,
     QueryEngineOwnedBoundary,
+    CapabilityProof,
 }
 
 impl ContractQuality {
@@ -28,6 +30,7 @@ impl ContractQuality {
             Self::ObservedRetainedState => "observed_retained_state",
             Self::QueryEngineOwnedOrdering => "query_engine_owned_ordering",
             Self::QueryEngineOwnedBoundary => "query_engine_owned_boundary",
+            Self::CapabilityProof => "capability_proof",
         }
     }
 }
@@ -78,44 +81,6 @@ impl ReservationRequirement {
             quality,
         }
     }
-
-    pub fn compatibility_modeled(kind: ReservationKind) -> Self {
-        let contract = compatibility_reservation_contract(kind);
-        Self::modeled(kind, contract.memory_boundary, contract.required_contract, contract.quality)
-    }
-
-    pub fn compatibility_fact_row(&self) -> String {
-        format!("{}:{}:{}", self.kind.as_str(), self.required_contract, self.compatibility_detail())
-    }
-
-    fn compatibility_detail(&self) -> &'static str {
-        match self.kind {
-            ReservationKind::SourceRead
-                if self.quality == ContractQuality::HardBudgetedReportWithUnresolvedPreflight =>
-            {
-                "modeled_by_cudf_rs_hard_budgeted_report_with_unresolved_preflight"
-            },
-            ReservationKind::OperatorOutput
-                if self.quality == ContractQuality::HardBudgetedReportWithUnresolvedPreflight =>
-            {
-                "modeled_by_cudf_rs_hard_budgeted_report_with_unresolved_preflight"
-            },
-            ReservationKind::BuildSide => "modeled_before_execution",
-            ReservationKind::ProbeSide => "modeled_by_ordered_bounded_join_execution_path",
-            ReservationKind::HashTable => "modeled_by_cudf_rs_pre_build_sizing",
-            ReservationKind::FilteredProbeState => "modeled_by_cudf_rs_filtered_probe_state_observability",
-            ReservationKind::MixedSizeData => "modeled_by_cudf_rs_retained_join_size_data_observability",
-            ReservationKind::GatherMap => "modeled_by_cudf_rs_join_gather_map_sizing",
-            ReservationKind::JoinOutput => "modeled_by_cudf_rs_dataframe_gather_or_projected_cross_output_sizing",
-            ReservationKind::FinalSort
-                if self.quality == ContractQuality::HardBudgetedReportWithUnresolvedPreflight =>
-            {
-                "modeled_by_cudf_rs_hard_budgeted_report_with_unresolved_preflight"
-            },
-            ReservationKind::Materialization => "modeled_by_explicit_sink_boundary",
-            _ => "modeled_by_capability_analysis",
-        }
-    }
 }
 
 pub fn lower_level_unresolved_preflight_gap(kind: ReservationKind, required_contract: &str) -> Option<&'static str> {
@@ -132,81 +97,6 @@ pub fn lower_level_unresolved_preflight_gap_for_contract(required_contract: &str
         "aggregate_contract" => Some("libcudf_groupby_aggregate_temporary_workspace_preflight_unavailable"),
         "final_sort_contract" => Some("libcudf_final_sort_order_preflight_unavailable"),
         _ => None,
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct CompatibilityReservationContract {
-    memory_boundary: &'static str,
-    required_contract: &'static str,
-    quality: ContractQuality,
-}
-
-const fn compatibility_reservation_contract(kind: ReservationKind) -> CompatibilityReservationContract {
-    match kind {
-        ReservationKind::SourceRead => CompatibilityReservationContract {
-            memory_boundary: "source_read",
-            required_contract: "source_contract",
-            quality: ContractQuality::HardBudgetedReportWithUnresolvedPreflight,
-        },
-        ReservationKind::OperatorOutput => CompatibilityReservationContract {
-            memory_boundary: "operator_output",
-            required_contract: "aggregate_contract",
-            quality: ContractQuality::HardBudgetedReportWithUnresolvedPreflight,
-        },
-        ReservationKind::BuildSide => CompatibilityReservationContract {
-            memory_boundary: "join_build_side",
-            required_contract: "query_engine_build_side_source_reservation",
-            quality: ContractQuality::ExactPreflight,
-        },
-        ReservationKind::ProbeSide => CompatibilityReservationContract {
-            memory_boundary: "join_probe_side",
-            required_contract: "query_engine_probe_side_source_reservation",
-            quality: ContractQuality::QueryEngineOwnedOrdering,
-        },
-        ReservationKind::HashTable => CompatibilityReservationContract {
-            memory_boundary: "join_hash_table",
-            required_contract: "hash_join_pre_build_reservation_size_bytes",
-            quality: ContractQuality::ExactPreflight,
-        },
-        ReservationKind::FilteredProbeState => CompatibilityReservationContract {
-            memory_boundary: "join_filtered_probe_state",
-            required_contract: "filtered_join_retained_probe_state",
-            quality: ContractQuality::ObservedRetainedState,
-        },
-        ReservationKind::MixedSizeData => CompatibilityReservationContract {
-            memory_boundary: "join_mixed_size_data",
-            required_contract: "mixed_keyed_residual_or_conditional_full_retained_size_data",
-            quality: ContractQuality::ObservedRetainedState,
-        },
-        ReservationKind::GatherMap => CompatibilityReservationContract {
-            memory_boundary: "join_gather_map",
-            required_contract: "join_gather_map_reservation_size_bytes",
-            quality: ContractQuality::ExactPreflight,
-        },
-        ReservationKind::JoinOutput => CompatibilityReservationContract {
-            memory_boundary: "join_output",
-            required_contract: "dataframe_gather_output_reservation_size_bytes+projected_cross_join_reservation_size_bytes",
-            quality: ContractQuality::ExactPreflight,
-        },
-        ReservationKind::FinalSort => CompatibilityReservationContract {
-            memory_boundary: "join_pipeline_final_sort",
-            required_contract: "final_sort_contract",
-            quality: ContractQuality::HardBudgetedReportWithUnresolvedPreflight,
-        },
-        ReservationKind::Materialization => CompatibilityReservationContract {
-            memory_boundary: "host_materialization",
-            required_contract: "query_engine_explicit_sink_materialization_reservation",
-            quality: ContractQuality::QueryEngineOwnedBoundary,
-        },
-        ReservationKind::SourceCacheRetained
-        | ReservationKind::ChunkOperator
-        | ReservationKind::PartialState
-        | ReservationKind::FinalMerge => CompatibilityReservationContract {
-            memory_boundary: "non_bounded_join_compatibility_boundary",
-            required_contract: "non_bounded_join_compatibility_contract",
-            quality: ContractQuality::ExactPreflight,
-        },
     }
 }
 
@@ -227,6 +117,7 @@ pub const fn reservation_requirement_scope(kind: ReservationKind) -> Reservation
         | ReservationKind::JoinOutput
         | ReservationKind::FinalSort
         | ReservationKind::Materialization => ReservationRequirementScope::Edge,
+        ReservationKind::CapabilityContract => ReservationRequirementScope::Subgraph,
     }
 }
 
@@ -469,54 +360,23 @@ pub enum ResidentResource {
     JoinProbeInput { join_id: NodeId, input: NodeId },
 }
 
-/// Transitional family projection for report compatibility.
-///
-/// This is deliberately separate from the node, edge, and invariant primitives:
-/// admission is capability-owned, while legacy reports can continue projecting
-/// a family name during the transition.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum CompatibilityFamilyProjection {
-    RootJoin,
-    SingleJoinPostRootPipeline,
-    KeylessConditionalJoinInputSubplanPipeline,
-    KeylessConditionalJoinAggregateOverJoinSubplanInputsPipeline,
-    MultiJoinTreePostRootPipeline,
-    MultiJoinAggregateOverJoinSubplanTopKPipeline,
-    MixedKeyedResidualJoinResidentGroupedAggregateInputPipeline,
-    HashJoinResidentGroupedAggregateInputPostJoinAggregateTopKPipeline,
-    MultiJoinResidentGroupedAggregateSubqueryFilterPipeline,
-    KeyedHashJoinResidentSubplanPipeline,
-}
-
-/// Capability-selected bounded join executor path.
-///
-/// This is the execution-facing result of capability admission. It intentionally
-/// lives outside the node/edge/invariant primitives: the primitives prove what
-/// the plan can do, then this path selects the current executor implementation
-/// that can realize that proof.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum BoundedJoinExecutionPath {
-    RootJoin,
-    SingleJoinPostRootPipeline,
-    KeylessConditionalJoinInputSubplanPipeline,
-    KeylessConditionalJoinAggregateOverJoinSubplanInputsPipeline,
-    MultiJoinTreePostRootPipeline,
-    MultiJoinAggregateOverJoinSubplanTopKPipeline,
-    MixedKeyedResidualJoinResidentGroupedAggregateInputPipeline,
-    HashJoinResidentGroupedAggregateInputPostJoinAggregateTopKPipeline,
-    MultiJoinResidentGroupedAggregateSubqueryFilterPipeline,
-    KeyedHashJoinResidentSubplanPipeline,
-}
-
 /// Report-facing projection of the first capability rejection.
-///
-/// This is separate from family projection on purpose: rejected capability
-/// analysis should be meaningful even when no legacy family name applies.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CompatibilityRejectionProjection {
-    pub scope: &'static str,
+pub struct CapabilityRejectionProjection {
+    pub owner: CapabilityRejectionOwner,
+    pub contract_scope: ReservationRequirementScope,
+    pub memory_boundary: &'static str,
     pub reason: &'static str,
     pub facts: BTreeMap<&'static str, String>,
+}
+
+/// Local capability owner projected into strict bounded contract diagnostics.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CapabilityRejectionOwner {
+    Node(NodeId),
+    Edge { producer: NodeId, consumer: EdgeConsumer },
+    Invariant(InvariantId),
+    Admission(&'static str),
 }
 
 /// Capability analysis for one lowered native query plan.
@@ -536,7 +396,6 @@ pub struct CapabilityAnalysis {
     pub keyless_conditional_join_input_subplan_admission: CapabilityDecision,
     pub keyless_conditional_join_aggregate_over_join_subplan_inputs_admission: CapabilityDecision,
     pub multi_join_resident_grouped_aggregate_subquery_filter_admission: CapabilityDecision,
-    pub compatibility_family_projection: Option<CompatibilityFamilyProjection>,
 }
 
 impl CapabilityAnalysis {
@@ -587,90 +446,28 @@ impl CapabilityAnalysis {
         self.multi_join_resident_grouped_aggregate_subquery_filter_admission == CapabilityDecision::Satisfied
     }
 
-    pub fn bounded_join_execution_path(&self) -> Option<BoundedJoinExecutionPath> {
-        if self.admits_root_join() {
-            Some(BoundedJoinExecutionPath::RootJoin)
-        } else if self.admits_single_join_post_root_pipeline() {
-            Some(BoundedJoinExecutionPath::SingleJoinPostRootPipeline)
-        } else if self.admits_keyless_conditional_join_input_subplan_pipeline() {
-            Some(BoundedJoinExecutionPath::KeylessConditionalJoinInputSubplanPipeline)
-        } else if self.admits_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline() {
-            Some(BoundedJoinExecutionPath::KeylessConditionalJoinAggregateOverJoinSubplanInputsPipeline)
-        } else if self.admits_closed_multi_join_subgraph() {
-            Some(BoundedJoinExecutionPath::MultiJoinTreePostRootPipeline)
-        } else if self.admits_multi_join_aggregate_over_join_subplan_topk_pipeline() {
-            Some(BoundedJoinExecutionPath::MultiJoinAggregateOverJoinSubplanTopKPipeline)
-        } else if self.admits_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline() {
-            Some(BoundedJoinExecutionPath::MixedKeyedResidualJoinResidentGroupedAggregateInputPipeline)
-        } else if self.admits_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_pipeline() {
-            Some(BoundedJoinExecutionPath::HashJoinResidentGroupedAggregateInputPostJoinAggregateTopKPipeline)
-        } else if self.admits_multi_join_resident_grouped_aggregate_subquery_filter_pipeline() {
-            Some(BoundedJoinExecutionPath::MultiJoinResidentGroupedAggregateSubqueryFilterPipeline)
-        } else if self.admits_keyed_hash_join_resident_subplan_pipeline() {
-            Some(BoundedJoinExecutionPath::KeyedHashJoinResidentSubplanPipeline)
-        } else {
-            None
-        }
+    pub fn admits_strict_bounded_join(&self) -> bool {
+        !self.has_rejections()
+            && (self.admits_root_join()
+                || self.admits_single_join_post_root_pipeline()
+                || self.admits_keyless_conditional_join_input_subplan_pipeline()
+                || self.admits_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline()
+                || self.admits_closed_multi_join_subgraph()
+                || self.admits_multi_join_aggregate_over_join_subplan_topk_pipeline()
+                || self.admits_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline()
+                || self.admits_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_pipeline()
+                || self.admits_multi_join_resident_grouped_aggregate_subquery_filter_pipeline()
+                || self.admits_keyed_hash_join_resident_subplan_pipeline())
     }
 
-    pub fn compatibility_reservation_requirements(&self) -> Vec<ReservationRequirement> {
-        let mut kinds = Vec::new();
-        if self.has_requirement_kind(ReservationKind::SourceRead) {
-            kinds.push(ReservationKind::SourceRead);
-        }
-        if self.has_requirement_kind(ReservationKind::OperatorOutput) {
-            kinds.push(ReservationKind::OperatorOutput);
-        }
-        if self.nodes.iter().any(|node| matches!(node.operator, NodeOperator::Join { .. })) {
-            kinds.extend([
-                ReservationKind::BuildSide,
-                ReservationKind::HashTable,
-                ReservationKind::ProbeSide,
-                ReservationKind::FilteredProbeState,
-                ReservationKind::MixedSizeData,
-                ReservationKind::GatherMap,
-                ReservationKind::JoinOutput,
-            ]);
-        }
-        if self.has_requirement_kind(ReservationKind::FinalSort) {
-            kinds.push(ReservationKind::FinalSort);
-        }
-        if self.has_requirement_kind(ReservationKind::Materialization) {
-            kinds.push(ReservationKind::Materialization);
-        }
-        kinds.into_iter().map(ReservationRequirement::compatibility_modeled).collect()
-    }
-
-    pub fn compatibility_reservation_kinds_csv(&self) -> String {
-        csv_join(self.compatibility_reservation_requirements().iter().map(|requirement| requirement.kind.as_str()))
-    }
-
-    pub fn compatibility_reservation_statuses_csv(&self) -> String {
-        csv_join(
-            self.compatibility_reservation_requirements()
-                .iter()
-                .map(|requirement| format!("{}:{}", requirement.kind.as_str(), requirement.status.as_str())),
-        )
-    }
-
-    pub fn compatibility_reservation_requirements_csv(&self) -> String {
-        csv_join(
-            self.compatibility_reservation_requirements().iter().map(ReservationRequirement::compatibility_fact_row),
-        )
-    }
-
-    pub fn compatibility_modeled_reservations_csv(&self) -> String {
-        csv_join(self.compatibility_reservation_requirements().iter().filter_map(|requirement| {
-            (requirement.status == ContractStatus::Modeled).then_some(requirement.kind.as_str())
-        }))
-    }
-
-    pub fn compatibility_first_rejection_projection(&self) -> Option<CompatibilityRejectionProjection> {
+    pub fn first_rejection_projection(&self) -> Option<CapabilityRejectionProjection> {
         self.nodes
             .iter()
             .find_map(|node| {
                 Some(capability_rejection_projection(
-                    "node",
+                    CapabilityRejectionOwner::Node(node.node_id),
+                    ReservationRequirementScope::Node,
+                    "node_capability",
                     node.executable.rejection_reason()?,
                     node.executable.rejection_facts()?,
                 ))
@@ -678,7 +475,9 @@ impl CapabilityAnalysis {
             .or_else(|| {
                 self.edges.iter().find_map(|edge| {
                     Some(capability_rejection_projection(
-                        "edge",
+                        CapabilityRejectionOwner::Edge { producer: edge.producer, consumer: edge.consumer },
+                        ReservationRequirementScope::Edge,
+                        "edge_capability",
                         edge.decision.rejection_reason()?,
                         edge.decision.rejection_facts()?,
                     ))
@@ -687,7 +486,9 @@ impl CapabilityAnalysis {
             .or_else(|| {
                 self.invariants.iter().find_map(|invariant| {
                     Some(capability_rejection_projection(
-                        "invariant",
+                        CapabilityRejectionOwner::Invariant(invariant.invariant_id),
+                        ReservationRequirementScope::Subgraph,
+                        "subgraph_capability",
                         invariant.decision.rejection_reason()?,
                         invariant.decision.rejection_facts()?,
                     ))
@@ -695,21 +496,41 @@ impl CapabilityAnalysis {
             })
             .or_else(|| {
                 [
-                    &self.root_join_admission,
-                    &self.single_join_post_root_pipeline_admission,
-                    &self.closed_multi_join_subgraph_admission,
-                    &self.multi_join_aggregate_over_join_subplan_topk_admission,
-                    &self.mixed_keyed_residual_join_resident_grouped_aggregate_input_admission,
-                    &self.hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_admission,
-                    &self.keyed_hash_join_resident_subplan_admission,
-                    &self.keyless_conditional_join_input_subplan_admission,
-                    &self.keyless_conditional_join_aggregate_over_join_subplan_inputs_admission,
-                    &self.multi_join_resident_grouped_aggregate_subquery_filter_admission,
+                    ("root_join_admission", &self.root_join_admission),
+                    ("single_join_post_root_pipeline_admission", &self.single_join_post_root_pipeline_admission),
+                    ("closed_multi_join_subgraph_admission", &self.closed_multi_join_subgraph_admission),
+                    (
+                        "multi_join_aggregate_over_join_subplan_topk_admission",
+                        &self.multi_join_aggregate_over_join_subplan_topk_admission,
+                    ),
+                    (
+                        "mixed_keyed_residual_join_resident_grouped_aggregate_input_admission",
+                        &self.mixed_keyed_residual_join_resident_grouped_aggregate_input_admission,
+                    ),
+                    (
+                        "hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_admission",
+                        &self.hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_admission,
+                    ),
+                    ("keyed_hash_join_resident_subplan_admission", &self.keyed_hash_join_resident_subplan_admission),
+                    (
+                        "keyless_conditional_join_input_subplan_admission",
+                        &self.keyless_conditional_join_input_subplan_admission,
+                    ),
+                    (
+                        "keyless_conditional_join_aggregate_over_join_subplan_inputs_admission",
+                        &self.keyless_conditional_join_aggregate_over_join_subplan_inputs_admission,
+                    ),
+                    (
+                        "multi_join_resident_grouped_aggregate_subquery_filter_admission",
+                        &self.multi_join_resident_grouped_aggregate_subquery_filter_admission,
+                    ),
                 ]
                 .into_iter()
-                .find_map(|decision| {
+                .find_map(|(admission, decision)| {
                     Some(capability_rejection_projection(
-                        "admission",
+                        CapabilityRejectionOwner::Admission(admission),
+                        ReservationRequirementScope::Subgraph,
+                        "admission_capability",
                         decision.rejection_reason()?,
                         decision.rejection_facts()?,
                     ))
@@ -717,32 +538,30 @@ impl CapabilityAnalysis {
             })
             .or_else(|| {
                 self.requirements.iter().find_map(|requirement| {
-                    (requirement.status == ContractStatus::BlockedByLowerLevel).then(|| {
-                        CompatibilityRejectionProjection {
-                            scope: "lower_level_contract",
-                            reason: "blocked_lower_level_contract",
-                            facts: BTreeMap::from([
-                                ("reservation_kind", requirement.kind.as_str().to_string()),
-                                ("required_contract", requirement.required_contract.to_string()),
-                                ("contract_status", requirement.status.as_str().to_string()),
-                            ]),
-                        }
+                    (requirement.status == ContractStatus::BlockedByLowerLevel).then(|| CapabilityRejectionProjection {
+                        owner: CapabilityRejectionOwner::Admission("lower_level_contract"),
+                        contract_scope: ReservationRequirementScope::Subgraph,
+                        memory_boundary: "lower_level_contract",
+                        reason: "blocked_lower_level_contract",
+                        facts: BTreeMap::from([
+                            ("reservation_kind", requirement.kind.as_str().to_string()),
+                            ("required_contract", requirement.required_contract.to_string()),
+                            ("contract_status", requirement.status.as_str().to_string()),
+                        ]),
                     })
                 })
             })
     }
-
-    fn has_requirement_kind(&self, kind: ReservationKind) -> bool {
-        self.requirements.iter().any(|requirement| requirement.kind == kind)
-    }
 }
 
 fn capability_rejection_projection(
-    scope: &'static str,
+    owner: CapabilityRejectionOwner,
+    contract_scope: ReservationRequirementScope,
+    memory_boundary: &'static str,
     reason: &'static str,
     facts: &BTreeMap<&'static str, String>,
-) -> CompatibilityRejectionProjection {
-    CompatibilityRejectionProjection { scope, reason, facts: facts.clone() }
+) -> CapabilityRejectionProjection {
+    CapabilityRejectionProjection { owner, contract_scope, memory_boundary, reason, facts: facts.clone() }
 }
 
 impl ContractStatus {
@@ -751,21 +570,7 @@ impl ContractStatus {
             Self::Modeled => "modeled",
             Self::BlockedByLowerLevel => "blocked_by_lower_level",
             Self::DeferredUntilPrerequisite => "deferred_until_prerequisite",
+            Self::RejectedByCapability => "rejected_by_capability",
         }
     }
-}
-
-fn csv_join<I, T>(values: I) -> String
-where
-    I: IntoIterator<Item = T>,
-    T: ToString,
-{
-    let mut output = String::new();
-    for value in values {
-        if !output.is_empty() {
-            output.push(',');
-        }
-        output.push_str(&value.to_string());
-    }
-    output
 }
