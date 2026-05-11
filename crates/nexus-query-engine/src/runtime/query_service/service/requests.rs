@@ -1351,9 +1351,6 @@ impl QueryService {
         let mut slot_notifications = PendingDeviceSlotNotifications::default();
         let required_capabilities = super::placement::required_capabilities_for_placement(&requirement);
         let candidate_ordinals = self.compatible_devices_for_capabilities(&required_capabilities)?;
-        let requested_at = Instant::now();
-        let configured_deadline = requested_at.checked_add(self.inner.queue_bounds.max_wait).unwrap_or(requested_at);
-        let deadline = queue_deadline.map_or(configured_deadline, |deadline| deadline.min(configured_deadline));
         let mut state = self.lock_admission()?;
         let sweep = self.sweep_expired_queued_requests_locked(&mut state);
         if !sweep.is_empty() {
@@ -1397,22 +1394,6 @@ impl QueryService {
             // Completion may reenter service shutdown, so release the admission lock first.
             drop(state);
             completion.finish_error(&error);
-            return Err(error);
-        }
-        if Instant::now() >= deadline {
-            let error =
-                service_overloaded_error("queue_wait_elapsed", state.queued.len(), self.inner.queue_bounds.max_waiters);
-            record_admission_lifecycle(
-                observation_owner.as_ref(),
-                admission_request_id,
-                AdmissionLifecycleState::TimedOut,
-                state.queued.len(),
-                None,
-                None,
-            );
-            // Completion may reenter service shutdown, so release the admission lock first.
-            drop(state);
-            completion.finish_timeout(&error);
             return Err(error);
         }
         if !state.queued.is_empty() || !state.pending_preflight.is_empty() {
@@ -1502,22 +1483,6 @@ impl QueryService {
             completion.finish_error(&error);
             return Err(error);
         }
-        if Instant::now() >= deadline {
-            let error =
-                service_overloaded_error("queue_wait_elapsed", state.queued.len(), self.inner.queue_bounds.max_waiters);
-            record_admission_lifecycle(
-                observation_owner.as_ref(),
-                admission_request_id,
-                AdmissionLifecycleState::TimedOut,
-                state.queued.len(),
-                None,
-                None,
-            );
-            // Completion may reenter service shutdown, so release the admission lock first.
-            drop(state);
-            completion.finish_timeout(&error);
-            return Err(error);
-        }
         let placed_query = match self.try_place_query(
             admission_request_id,
             attempt_id,
@@ -1567,6 +1532,9 @@ impl QueryService {
         self.inner.notify_admission_available();
         // Admission commit may wait for resource handoff, so release the controller lock first.
         drop(state);
+        let configured_deadline =
+            Instant::now().checked_add(self.inner.queue_bounds.max_wait).unwrap_or_else(Instant::now);
+        let deadline = queue_deadline.map_or(configured_deadline, |deadline| deadline.min(configured_deadline));
         self.commit_placed_admission(PlacedAdmissionCommit {
             placed_query,
             admitted_device_requirements: device_entries

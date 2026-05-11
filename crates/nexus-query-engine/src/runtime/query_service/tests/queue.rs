@@ -807,3 +807,32 @@ fn phase_d_direct_try_rechecks_queue_after_owner_preflight() {
 
     drop(queued);
 }
+
+#[test]
+fn phase_d_direct_owner_preflight_does_not_consume_commit_wait() {
+    let max_wait = Duration::from_millis(20);
+    let service = admission_test_service_with_profile(
+        QueryExecutionConfig::default(),
+        QueueBounds { max_waiters: 2, max_wait, max_overtakes_per_waiter: 4 },
+        64 * 1024 * 1024,
+        8 * 1024 * 1024,
+        1,
+    );
+    let pause = service.pause_pending_preflight();
+    let direct_service = service.clone();
+    let direct = std::thread::spawn(move || direct_service.try_admit_query());
+    pause.wait_until_entered(Duration::from_secs(1));
+
+    let preflight_deadline = Instant::now() + max_wait;
+    while Instant::now() < preflight_deadline {
+        std::thread::yield_now();
+    }
+    pause.release();
+    let admitted = direct
+        .join()
+        .expect("direct admission thread joins")
+        .expect("owner preflight does not spend the commit wait")
+        .expect("idle direct admission succeeds");
+
+    drop(admitted);
+}
