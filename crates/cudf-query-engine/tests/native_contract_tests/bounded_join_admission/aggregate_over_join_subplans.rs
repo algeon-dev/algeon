@@ -110,7 +110,7 @@ fn bounded_keyless_conditional_join_aggregate_over_join_subplan_inputs_phase8_re
 }
 
 #[derive(Debug, Clone, Copy)]
-enum AggregateOverJoinSubplanInputsVariant {
+pub(crate) enum AggregateOverJoinSubplanInputsVariant {
     Admitted,
     GroupedAggregateOverUnsupportedInput,
     ScalarAggregateOverUnsupportedInput,
@@ -127,7 +127,7 @@ enum AggregateOverJoinSubplanInputsVariant {
     LimitAfterRoot,
 }
 
-fn keyless_conditional_aggregate_over_join_subplan_inputs_plan(
+pub(crate) fn keyless_conditional_aggregate_over_join_subplan_inputs_plan(
     variant: AggregateOverJoinSubplanInputsVariant,
 ) -> cudf_query_engine::QueryPlan {
     let left_join_schema = aggregate_over_join_subplan_join_subtree_schema();

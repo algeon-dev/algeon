@@ -1,17 +1,17 @@
 use super::*;
 
-pub(in crate::bounded_join_admission) fn aggregate_over_join_subplan_topk_plan() -> cudf_query_engine::QueryPlan {
+pub(crate) fn aggregate_over_join_subplan_topk_plan() -> cudf_query_engine::QueryPlan {
     aggregate_over_join_subplan_topk_plan_inner(AggregateOverJoinSubplanTopKVariant::Admitted)
 }
 
-pub(in crate::bounded_join_admission) fn aggregate_over_join_subplan_topk_variant_plan(
+pub(crate) fn aggregate_over_join_subplan_topk_variant_plan(
     variant: AggregateOverJoinSubplanTopKVariant,
 ) -> cudf_query_engine::QueryPlan {
     aggregate_over_join_subplan_topk_plan_inner(variant)
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(in crate::bounded_join_admission) enum AggregateOverJoinSubplanTopKVariant {
+pub(crate) enum AggregateOverJoinSubplanTopKVariant {
     Admitted,
     MissingFetchLimit,
     ScalarAggregateSubplan,
@@ -81,14 +81,13 @@ fn aggregate_over_join_subplan_topk_plan_inner(
     }
 }
 
-pub(in crate::bounded_join_admission) fn resident_grouped_aggregate_input_post_join_aggregate_topk_plan()
--> cudf_query_engine::QueryPlan {
+pub(crate) fn resident_grouped_aggregate_input_post_join_aggregate_topk_plan() -> cudf_query_engine::QueryPlan {
     resident_grouped_aggregate_input_post_join_aggregate_topk_variant_plan(
         ResidentGroupedAggregateInputPostJoinAggregateTopKVariant::Admitted,
     )
 }
 
-pub(in crate::bounded_join_admission) fn resident_grouped_aggregate_input_post_join_aggregate_topk_variant_plan(
+pub(crate) fn resident_grouped_aggregate_input_post_join_aggregate_topk_variant_plan(
     variant: ResidentGroupedAggregateInputPostJoinAggregateTopKVariant,
 ) -> cudf_query_engine::QueryPlan {
     let mut builder = QueryPlanBuilder::new();
@@ -146,15 +145,14 @@ pub(in crate::bounded_join_admission) fn resident_grouped_aggregate_input_post_j
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(in crate::bounded_join_admission) enum ResidentGroupedAggregateInputPostJoinAggregateTopKVariant {
+pub(crate) enum ResidentGroupedAggregateInputPostJoinAggregateTopKVariant {
     Admitted,
     MissingFetchLimit,
     ScalarPostJoinAggregate,
     UnsupportedGroupedInputFilter,
 }
 
-pub(in crate::bounded_join_admission) fn resident_grouped_aggregate_subquery_filter_plan()
--> cudf_query_engine::QueryPlan {
+pub(crate) fn resident_grouped_aggregate_subquery_filter_plan() -> cudf_query_engine::QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let a = source(&mut builder, "resident-aggregate-subquery-filter-a");
     let b = source(&mut builder, "resident-aggregate-subquery-filter-b");

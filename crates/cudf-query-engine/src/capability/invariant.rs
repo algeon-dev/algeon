@@ -19,6 +19,7 @@ pub(super) fn analyze_invariants(plan: &QueryPlan, edges: &[EdgeContract]) -> Ve
                 ResidentResource::JoinBuildInput { join_id: node.id, input: build_input },
                 ResidentResource::JoinProbeInput { join_id: node.id, input: probe_input },
             ],
+            reservation_requirements: Vec::new(),
             decision,
         });
         if join.spec.residual_predicate.is_some() {
@@ -30,6 +31,7 @@ pub(super) fn analyze_invariants(plan: &QueryPlan, edges: &[EdgeContract]) -> Ve
                 nodes: vec![join.inputs[0], join.inputs[1], node.id],
                 required_schedule: ScheduleConstraint::None,
                 required_resources: Vec::new(),
+                reservation_requirements: Vec::new(),
                 decision,
             });
         }
@@ -56,6 +58,7 @@ pub(super) fn analyze_invariants(plan: &QueryPlan, edges: &[EdgeContract]) -> Ve
                 .collect(),
             required_schedule: ScheduleConstraint::Topological,
             required_resources: Vec::new(),
+            reservation_requirements: Vec::new(),
             decision: solve_topological_build_probe_schedule_invariant(plan),
         });
         let invariant_id = InvariantId(invariants.len());
@@ -65,6 +68,7 @@ pub(super) fn analyze_invariants(plan: &QueryPlan, edges: &[EdgeContract]) -> Ve
             nodes: collect_reachable_node_ids(plan).map(|nodes| nodes.into_iter().collect()).unwrap_or_default(),
             required_schedule: ScheduleConstraint::Topological,
             required_resources: Vec::new(),
+            reservation_requirements: Vec::new(),
             decision: solve_resident_lifetime_invariant(plan, edges),
         });
     }
@@ -81,6 +85,7 @@ pub(super) fn analyze_invariants(plan: &QueryPlan, edges: &[EdgeContract]) -> Ve
                 .unwrap_or_else(|_| vec![root_join_id]),
             required_schedule: ScheduleConstraint::Topological,
             required_resources: Vec::new(),
+            reservation_requirements: Vec::new(),
             decision: CapabilityDecision::Satisfied,
         });
     }
@@ -109,6 +114,7 @@ pub(super) fn append_shared_resident_subplan_invariants(
             nodes,
             required_schedule: ScheduleConstraint::None,
             required_resources: vec![ResidentResource::NodeOutput(producer)],
+            reservation_requirements: Vec::new(),
             decision: solve_shared_resident_subplan_invariant(plan, edges, producer, &consumers),
         });
     }
@@ -140,6 +146,7 @@ pub(super) fn append_aggregate_derivation_invariants(plan: &QueryPlan, invariant
             nodes: vec![shared_producer, aggregate.input, node.id],
             required_schedule: ScheduleConstraint::None,
             required_resources: vec![ResidentResource::NodeOutput(shared_producer)],
+            reservation_requirements: Vec::new(),
             decision: solve_aggregate_derives_from_shared_producer_invariant(plan, shared_producer, node.id),
         });
     }
@@ -166,6 +173,7 @@ pub(super) fn append_projection_transparent_residency_invariants(
             nodes: vec![peeled_producer, node.id],
             required_schedule: ScheduleConstraint::None,
             required_resources: vec![ResidentResource::NodeOutput(peeled_producer)],
+            reservation_requirements: Vec::new(),
             decision: solve_projection_transparent_residency_invariant(plan, peeled_producer, node.id),
         });
     }
@@ -195,6 +203,7 @@ pub(super) fn append_resident_unary_chain_preserves_residency_invariants(
             nodes: invariant_nodes,
             required_schedule: ScheduleConstraint::None,
             required_resources: vec![ResidentResource::NodeOutput(peeled_producer)],
+            reservation_requirements: Vec::new(),
             decision: solve_resident_unary_chain_preserves_residency_invariant(plan, peeled_producer, &chain_ids),
         });
     }
@@ -212,6 +221,7 @@ pub(super) fn append_final_barrier_order_invariants(plan: &QueryPlan, invariants
             nodes: vec![sort.input, node.id],
             required_schedule: ScheduleConstraint::Barrier,
             required_resources: vec![ResidentResource::NodeOutput(sort.input)],
+            reservation_requirements: Vec::new(),
             decision: solve_final_barrier_order_invariant(plan, node.id, sort.input),
         });
     }
@@ -236,6 +246,7 @@ pub(super) fn append_mixed_residual_post_root_stage_order_invariant(
         ],
         required_schedule: ScheduleConstraint::Barrier,
         required_resources: vec![ResidentResource::NodeOutput(shape.root_join_id)],
+        reservation_requirements: Vec::new(),
         decision: CapabilityDecision::Satisfied,
     });
 }
@@ -261,6 +272,7 @@ pub(super) fn append_hash_join_resident_grouped_aggregate_topk_post_root_stage_o
         ],
         required_schedule: ScheduleConstraint::Barrier,
         required_resources: vec![ResidentResource::NodeOutput(shape.root_join_id)],
+        reservation_requirements: Vec::new(),
         decision: CapabilityDecision::Satisfied,
     });
 }
@@ -279,6 +291,7 @@ pub(super) fn append_multi_join_aggregate_over_join_subplan_topk_post_root_stage
         nodes: vec![shape.root_join_id, shape.post_root_projection_id, shape.final_sort_id, shape.final_limit_id],
         required_schedule: ScheduleConstraint::Barrier,
         required_resources: vec![ResidentResource::NodeOutput(shape.root_join_id)],
+        reservation_requirements: Vec::new(),
         decision: CapabilityDecision::Satisfied,
     });
 }
@@ -305,6 +318,7 @@ pub(super) fn append_keyless_aggregate_over_join_subplan_inputs_post_root_stage_
         nodes,
         required_schedule: ScheduleConstraint::Barrier,
         required_resources: vec![ResidentResource::NodeOutput(shape.root_join_id)],
+        reservation_requirements: Vec::new(),
         decision: CapabilityDecision::Satisfied,
     });
 }

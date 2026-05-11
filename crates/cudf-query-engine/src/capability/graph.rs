@@ -159,11 +159,16 @@ pub(super) fn peel_projection_chain_for_capability(plan: &QueryPlan, node_id: No
     }
 }
 
-pub(super) fn collect_requirements(nodes: &[NodeCapability], edges: &[EdgeContract]) -> Vec<ReservationRequirement> {
+pub(super) fn collect_requirements(
+    nodes: &[NodeCapability],
+    edges: &[EdgeContract],
+    invariants: &[SubgraphInvariant],
+) -> Vec<ReservationRequirement> {
     nodes
         .iter()
         .flat_map(|node| node.local_requirements.iter())
         .chain(edges.iter().flat_map(|edge| edge.reservation_requirements.iter()))
+        .chain(invariants.iter().flat_map(|invariant| invariant.reservation_requirements.iter()))
         .cloned()
         .collect()
 }

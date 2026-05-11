@@ -415,6 +415,7 @@ pub struct SubgraphInvariant {
     pub nodes: Vec<NodeId>,
     pub required_schedule: ScheduleConstraint,
     pub required_resources: Vec<ResidentResource>,
+    pub reservation_requirements: Vec<ReservationRequirement>,
     pub decision: CapabilityDecision,
 }
 

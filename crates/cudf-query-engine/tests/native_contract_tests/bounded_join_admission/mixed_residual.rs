@@ -7,6 +7,17 @@ mod root;
 
 use builders::*;
 
+pub(crate) fn admitted_mixed_residual_multi_join_plan() -> cudf_query_engine::QueryPlan {
+    mixed_residual_multi_join_plan(
+        JoinType::Inner,
+        JoinSide::Right,
+        vec![
+            JoinOutputColumn::left(ColumnRef::input(0, "left_payload", "left_payload"), "left_payload"),
+            JoinOutputColumn::right(ColumnRef::input(1, "right_payload", "right_payload"), "right_payload"),
+        ],
+    )
+}
+
 #[test]
 fn bounded_multi_join_admits_mixed_keyed_residual_inner_left_semi_and_left_anti() {
     for (join_type, projection) in [

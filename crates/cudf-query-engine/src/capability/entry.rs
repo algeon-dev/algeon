@@ -18,7 +18,7 @@ pub fn analyze_query_capabilities(plan: &QueryPlan) -> CapabilityAnalysis {
     mark_shared_producer_edge_contracts(plan, &mut edges);
 
     let invariants = analyze_invariants(plan, &edges);
-    let requirements = collect_requirements(&nodes, &edges);
+    let requirements = collect_requirements(&nodes, &edges, &invariants);
     let root_join_admission = analyze_root_join_admission(plan, &nodes, &edges);
     let single_join_post_root_pipeline_admission =
         analyze_single_join_post_root_pipeline_admission(plan, &nodes, &edges);

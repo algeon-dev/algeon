@@ -1,7 +1,7 @@
 use super::*;
 
 #[derive(Debug, Clone, Copy)]
-pub(super) enum KeylessInputSubplanVariant {
+pub(crate) enum KeylessInputSubplanVariant {
     Admitted,
     GroupedAggregate,
     SortInput,
@@ -16,18 +16,18 @@ mod remaining_topologies;
 #[path = "plans/resident_subplan.rs"]
 mod resident_subplan;
 
-pub(super) use remaining_topologies::{
+pub(crate) use remaining_topologies::{
     AggregateOverJoinSubplanTopKVariant, ResidentGroupedAggregateInputPostJoinAggregateTopKVariant,
     aggregate_over_join_subplan_topk_plan, aggregate_over_join_subplan_topk_variant_plan,
     resident_grouped_aggregate_input_post_join_aggregate_topk_plan,
     resident_grouped_aggregate_input_post_join_aggregate_topk_variant_plan,
     resident_grouped_aggregate_subquery_filter_plan,
 };
-pub(super) use resident_subplan::{
+pub(crate) use resident_subplan::{
     KeyedHashJoinResidentSubplanPipelineVariant, keyed_hash_join_resident_subplan_pipeline_plan,
 };
 
-pub(super) fn keyless_conditional_join_input_subplan_plan(
+pub(crate) fn keyless_conditional_join_input_subplan_plan(
     variant: KeylessInputSubplanVariant,
 ) -> cudf_query_engine::QueryPlan {
     let lineitem_schema = Arc::new(Schema::new(vec![
@@ -176,7 +176,7 @@ pub(super) fn keyless_conditional_join_input_subplan_plan(
     builder.finish_with_host_sink(root)
 }
 
-pub(super) fn serial_aggregate_single_join_spine_plan() -> cudf_query_engine::QueryPlan {
+pub(crate) fn serial_aggregate_single_join_spine_plan() -> cudf_query_engine::QueryPlan {
     let customer_schema = Arc::new(Schema::new(vec![Field::new("c_custkey", DataType::Int32, false)]));
     let orders_schema = Arc::new(Schema::new(vec![
         Field::new("o_orderkey", DataType::Int32, false),
@@ -259,7 +259,7 @@ pub(super) fn serial_aggregate_single_join_spine_plan() -> cudf_query_engine::Qu
     builder.finish_with_host_sink(sort)
 }
 
-pub(super) fn serial_aggregate_multi_join_spine_plan() -> cudf_query_engine::QueryPlan {
+pub(crate) fn serial_aggregate_multi_join_spine_plan() -> cudf_query_engine::QueryPlan {
     let part_schema = Arc::new(Schema::new(vec![
         Field::new("p_partkey", DataType::Int32, false),
         Field::new("p_brand", DataType::Utf8, false),
