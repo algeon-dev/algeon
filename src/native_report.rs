@@ -1,6 +1,8 @@
-use std::{collections::BTreeMap, fmt::Write, sync::Arc};
+use std::{fmt::Write, sync::Arc};
 
-use cudf_query_engine::{SourceDiagnostics as NativeSourceDiagnostics, is_supported_arrow_type};
+use cudf_query_engine::{
+    SourceDiagnostics as NativeSourceDiagnostics, StrictBoundedContractGateRow, is_supported_arrow_type,
+};
 use datafusion::{
     common::ScalarValue,
     logical_expr::Operator,
@@ -66,8 +68,8 @@ pub use schema::{
     NATIVE_FALLBACK_PRESSURE_TSV_SCHEMA_VERSION,
 };
 use tsv::{
-    format_bounded_join_reservation_facts, format_join_diagnostics, format_source_diagnostics, stable_tsv_field,
-    write_tpch_dataset_metadata,
+    format_join_diagnostics, format_source_diagnostics, format_strict_bounded_compiled_graphs,
+    format_strict_bounded_contract_rows, stable_tsv_field, write_tpch_dataset_metadata,
 };
 pub use workload::{
     NativeDataFusionExecutionWorkloadInput, NativeDataFusionExecutionWorkloadItem,
@@ -172,8 +174,13 @@ fn datafusion_planning_rows_for_item(item: NativeDataFusionPlanningWorkloadItem)
                 outcome: NativeDataFusionPlanningOutcome::AcceptedReplaced,
                 reason_code: None,
                 unsupported_category: None,
-                bounded_join_reservation_facts: bounded_join_facts_for_candidate(
-                    &native_diagnostics.bounded_join_reservation_facts,
+                strict_bounded_contract_rows: strict_bounded_contract_rows_for_candidate(
+                    &native_diagnostics.strict_bounded_contract,
+                    candidate,
+                    None,
+                ),
+                strict_bounded_compiled_graphs: strict_bounded_compiled_graphs_for_candidate(
+                    &native_diagnostics.strict_bounded_contract,
                     candidate,
                     None,
                 ),
@@ -192,8 +199,13 @@ fn datafusion_planning_rows_for_item(item: NativeDataFusionPlanningWorkloadItem)
                 outcome: NativeDataFusionPlanningOutcome::RejectedBeforeExecution,
                 reason_code: Some(reason.code().to_string()),
                 unsupported_category: unsupported_category(planned_plan.as_ref(), candidate, *reason),
-                bounded_join_reservation_facts: bounded_join_facts_for_candidate(
-                    &native_diagnostics.bounded_join_reservation_facts,
+                strict_bounded_contract_rows: strict_bounded_contract_rows_for_candidate(
+                    &native_diagnostics.strict_bounded_contract,
+                    candidate,
+                    Some(*reason),
+                ),
+                strict_bounded_compiled_graphs: strict_bounded_compiled_graphs_for_candidate(
+                    &native_diagnostics.strict_bounded_contract,
                     candidate,
                     Some(*reason),
                 ),
@@ -238,8 +250,13 @@ fn datafusion_execution_rows_for_item(
                 planning_outcome: NativeDataFusionPlanningOutcome::AcceptedReplaced,
                 reason_code: None,
                 unsupported_category: None,
-                bounded_join_reservation_facts: bounded_join_facts_for_candidate(
-                    &native_diagnostics.bounded_join_reservation_facts,
+                strict_bounded_contract_rows: strict_bounded_contract_rows_for_candidate(
+                    &native_diagnostics.strict_bounded_contract,
+                    candidate,
+                    None,
+                ),
+                strict_bounded_compiled_graphs: strict_bounded_compiled_graphs_for_candidate(
+                    &native_diagnostics.strict_bounded_contract,
                     candidate,
                     None,
                 ),
@@ -264,8 +281,13 @@ fn datafusion_execution_rows_for_item(
                 planning_outcome: NativeDataFusionPlanningOutcome::RejectedBeforeExecution,
                 reason_code: Some(reason.code().to_string()),
                 unsupported_category: unsupported_category(planned_plan.as_ref(), candidate, *reason),
-                bounded_join_reservation_facts: bounded_join_facts_for_candidate(
-                    &native_diagnostics.bounded_join_reservation_facts,
+                strict_bounded_contract_rows: strict_bounded_contract_rows_for_candidate(
+                    &native_diagnostics.strict_bounded_contract,
+                    candidate,
+                    Some(*reason),
+                ),
+                strict_bounded_compiled_graphs: strict_bounded_compiled_graphs_for_candidate(
+                    &native_diagnostics.strict_bounded_contract,
                     candidate,
                     Some(*reason),
                 ),
@@ -298,7 +320,8 @@ fn datafusion_planning_row_for_planning_failure(
         outcome: NativeDataFusionPlanningOutcome::RejectedBeforeExecution,
         reason_code: Some(failure.reason_code),
         unsupported_category: Some("planning".to_string()),
-        bounded_join_reservation_facts: BTreeMap::new(),
+        strict_bounded_contract_rows: Vec::new(),
+        strict_bounded_compiled_graphs: Vec::new(),
         join_diagnostics: Vec::new(),
         source_diagnostics: Vec::new(),
         post_native_plan_root: "PlanningFailure".to_string(),
@@ -320,7 +343,8 @@ fn datafusion_execution_row_for_planning_failure(
         planning_outcome: NativeDataFusionPlanningOutcome::RejectedBeforeExecution,
         reason_code: Some(failure.reason_code),
         unsupported_category: Some("planning".to_string()),
-        bounded_join_reservation_facts: BTreeMap::new(),
+        strict_bounded_contract_rows: Vec::new(),
+        strict_bounded_compiled_graphs: Vec::new(),
         source_diagnostics: Vec::new(),
         post_native_plan_root: "PlanningFailure".to_string(),
         post_native_execution_path: NativeDataFusionPostNativeExecutionPath::Cpu,
@@ -335,17 +359,32 @@ fn datafusion_execution_row_for_planning_failure(
     }
 }
 
-fn bounded_join_facts_for_candidate(
-    facts: &BTreeMap<String, String>,
+fn strict_bounded_contract_rows_for_candidate(
+    diagnostics: &crate::planner::NativeStrictBoundedContractDiagnostics,
     candidate: &GpuCandidate,
     reason: Option<FallbackReason>,
-) -> BTreeMap<String, String> {
-    if facts.is_empty() {
-        return BTreeMap::new();
+) -> Vec<StrictBoundedContractGateRow> {
+    if !strict_bounded_contract_is_candidate_scoped(candidate, reason) {
+        return Vec::new();
     }
-    if reason == Some(FallbackReason::NativeBoundedJoinUnsupported) || candidate.shape.contains("JoinExec") {
-        facts.clone()
-    } else {
-        BTreeMap::new()
+    if reason == Some(FallbackReason::NativeBoundedJoinUnsupported) {
+        return diagnostics.rejected_blocking_contracts.clone();
     }
+
+    diagnostics.accepted_reports.iter().flat_map(|report| report.gate_rows().iter().cloned()).collect()
+}
+
+fn strict_bounded_compiled_graphs_for_candidate(
+    diagnostics: &crate::planner::NativeStrictBoundedContractDiagnostics,
+    candidate: &GpuCandidate,
+    reason: Option<FallbackReason>,
+) -> Vec<crate::planner::NativeStrictBoundedCompiledGraphDiagnostics> {
+    if reason.is_some() || !strict_bounded_contract_is_candidate_scoped(candidate, reason) {
+        return Vec::new();
+    }
+    diagnostics.compiled_graphs.clone()
+}
+
+fn strict_bounded_contract_is_candidate_scoped(candidate: &GpuCandidate, reason: Option<FallbackReason>) -> bool {
+    reason == Some(FallbackReason::NativeBoundedJoinUnsupported) || candidate.shape.contains("JoinExec")
 }

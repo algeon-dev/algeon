@@ -323,7 +323,8 @@ fn accepted_planning_row(query_id: &str) -> NativeDataFusionPlanningRow {
         outcome: NativeDataFusionPlanningOutcome::AcceptedReplaced,
         reason_code: None,
         unsupported_category: None,
-        bounded_join_reservation_facts: BTreeMap::new(),
+        strict_bounded_contract_rows: Vec::new(),
+        strict_bounded_compiled_graphs: Vec::new(),
         join_diagnostics: Vec::new(),
         source_diagnostics: Vec::new(),
         post_native_plan_root: "NativeCudfExec".to_string(),
@@ -342,13 +343,76 @@ fn rejected_planning_row(query_id: &str) -> NativeDataFusionPlanningRow {
         outcome: NativeDataFusionPlanningOutcome::RejectedBeforeExecution,
         reason_code: Some("native_bounded_join_unsupported".to_string()),
         unsupported_category: Some("operator_hashjoin".to_string()),
-        bounded_join_reservation_facts: BTreeMap::new(),
+        strict_bounded_contract_rows: Vec::new(),
+        strict_bounded_compiled_graphs: Vec::new(),
         join_diagnostics: Vec::new(),
         source_diagnostics: Vec::new(),
         post_native_plan_root: "SortExec".to_string(),
         post_native_execution_path: NativeDataFusionPostNativeExecutionPath::Cpu,
         rejected_before_execution: true,
     }
+}
+
+fn strict_bounded_gate_row(
+    kind: cudf_query_engine::ReservationKind,
+    quality: cudf_query_engine::capability::ContractQuality,
+    unresolved_preflight_gap: Option<&'static str>,
+) -> cudf_query_engine::StrictBoundedContractGateRow {
+    cudf_query_engine::StrictBoundedContractGateRow {
+        execution_mode: cudf_query_engine::StrictBoundedExecutionMode::StrictBounded,
+        contract_scope: cudf_query_engine::capability::ReservationRequirementScope::Edge,
+        gate_id: cudf_query_engine::StrictBoundedContractGateId::Compiled(cudf_query_engine::ReservationGateId::new(
+            kind as usize,
+        )),
+        owner: cudf_query_engine::StrictBoundedContractOwner::Compiled(
+            cudf_query_engine::ReservationGateOwner::SinkBoundary,
+        ),
+        reservation_kind: kind,
+        memory_boundary: kind.as_str(),
+        required_contract: match kind {
+            cudf_query_engine::ReservationKind::FinalSort => "final_sort_contract",
+            cudf_query_engine::ReservationKind::Materialization => {
+                "query_engine_explicit_sink_materialization_reservation"
+            },
+            cudf_query_engine::ReservationKind::SourceRead => "source_contract",
+            _ => "query_engine_test_contract",
+        },
+        contract_status: cudf_query_engine::capability::ContractStatus::Modeled,
+        contract_quality: quality,
+        unresolved_preflight_gap,
+    }
+}
+
+fn accepted_strict_bounded_contract_rows() -> Vec<cudf_query_engine::StrictBoundedContractGateRow> {
+    vec![
+        strict_bounded_gate_row(
+            cudf_query_engine::ReservationKind::SourceRead,
+            cudf_query_engine::capability::ContractQuality::HardBudgetedReportWithUnresolvedPreflight,
+            Some("libcudf_parquet_decoded_output_preflight_unavailable"),
+        ),
+        strict_bounded_gate_row(
+            cudf_query_engine::ReservationKind::FinalSort,
+            cudf_query_engine::capability::ContractQuality::HardBudgetedReportWithUnresolvedPreflight,
+            Some("libcudf_final_sort_order_preflight_unavailable"),
+        ),
+        strict_bounded_gate_row(
+            cudf_query_engine::ReservationKind::Materialization,
+            cudf_query_engine::capability::ContractQuality::QueryEngineOwnedBoundary,
+            None,
+        ),
+    ]
+}
+
+fn accepted_strict_bounded_compiled_graphs() -> Vec<datafusion_cudf::NativeStrictBoundedCompiledGraphDiagnostics> {
+    vec![datafusion_cudf::NativeStrictBoundedCompiledGraphDiagnostics {
+        task_count: 3,
+        edge_count: 2,
+        barrier_count: 0,
+        resource_count: 3,
+        gate_count: 3,
+        sink_kind: "host_arrow_materialization".to_string(),
+        sink_gate_count: 1,
+    }]
 }
 
 fn timed_cpu_run(fingerprint: &str) -> execution::TimedQueryRun {

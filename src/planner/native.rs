@@ -14,7 +14,6 @@ pub struct NativePlanningDiagnostics {
     pub input_plan_shape: String,
     pub report: PlanningReport,
     pub source_diagnostics: Vec<cudf_query_engine::SourceDiagnostics>,
-    pub bounded_join_reservation_facts: BTreeMap<String, String>,
     pub strict_bounded_contract: NativeStrictBoundedContractDiagnostics,
 }
 
@@ -31,7 +30,6 @@ struct CudfNativePhysicalOptimizerRuleState {
     last_input_plan_shape: Mutex<Option<String>>,
     last_report: Mutex<Option<PlanningReport>>,
     last_source_diagnostics: Mutex<Vec<cudf_query_engine::SourceDiagnostics>>,
-    last_bounded_join_reservation_facts: Mutex<BTreeMap<String, String>>,
     last_strict_bounded_contract: Mutex<NativeStrictBoundedContractDiagnostics>,
 }
 
@@ -51,7 +49,6 @@ impl CudfNativePhysicalOptimizerRule {
                 last_input_plan_shape: Mutex::new(None),
                 last_report: Mutex::new(None),
                 last_source_diagnostics: Mutex::new(Vec::new()),
-                last_bounded_join_reservation_facts: Mutex::new(BTreeMap::new()),
                 last_strict_bounded_contract: Mutex::new(NativeStrictBoundedContractDiagnostics::default()),
             }),
         }
@@ -95,12 +92,6 @@ impl CudfNativePhysicalOptimizerRule {
                 .unwrap_or_default(),
             report,
             source_diagnostics: self.last_source_diagnostics(),
-            bounded_join_reservation_facts: self
-                .state
-                .last_bounded_join_reservation_facts
-                .lock()
-                .expect("native bounded join reservation facts mutex poisoned")
-                .clone(),
             strict_bounded_contract: self
                 .state
                 .last_strict_bounded_contract
@@ -143,12 +134,6 @@ impl PhysicalOptimizerRule for CudfNativePhysicalOptimizerRule {
             optimized.source_diagnostics.clone();
         *self
             .state
-            .last_bounded_join_reservation_facts
-            .lock()
-            .expect("native bounded join reservation facts mutex poisoned") =
-            optimized.bounded_join_reservation_facts.clone();
-        *self
-            .state
             .last_strict_bounded_contract
             .lock()
             .expect("native strict bounded contract diagnostics mutex poisoned") =
@@ -179,7 +164,6 @@ fn apply_native_fallback_policy(
             plan: original_plan,
             report: native_cpu_only_report(&attempt.report),
             source_diagnostics: attempt.source_diagnostics,
-            bounded_join_reservation_facts: BTreeMap::new(),
             strict_bounded_contract: NativeStrictBoundedContractDiagnostics::default(),
             rewritten: false,
         }),
@@ -212,7 +196,6 @@ struct NativeOptimizationAttempt {
     plan: Arc<dyn ExecutionPlan>,
     report: PlanningReport,
     source_diagnostics: Vec<cudf_query_engine::SourceDiagnostics>,
-    bounded_join_reservation_facts: BTreeMap<String, String>,
     strict_bounded_contract: NativeStrictBoundedContractDiagnostics,
     rewritten: bool,
 }
@@ -237,14 +220,12 @@ fn optimize_final_native_plan(
 
     let mut report = lowering.report.clone();
     let mut source_diagnostics = lowering.source_diagnostics.clone();
-    let mut bounded_join_reservation_facts = BTreeMap::new();
     let mut strict_bounded_contract = NativeStrictBoundedContractDiagnostics::default();
     let Some(rewritten_plan) = optimize_native_children_for_host_arrow_boundary(
         Arc::clone(&plan),
         native_execution_config,
         &mut report,
         &mut source_diagnostics,
-        &mut bounded_join_reservation_facts,
         &mut strict_bounded_contract,
     )?
     else {
@@ -252,7 +233,6 @@ fn optimize_final_native_plan(
             plan,
             report,
             source_diagnostics,
-            bounded_join_reservation_facts,
             strict_bounded_contract,
             rewritten: false,
         });
@@ -262,7 +242,6 @@ fn optimize_final_native_plan(
         plan: rewritten_plan,
         report,
         source_diagnostics,
-        bounded_join_reservation_facts,
         strict_bounded_contract,
         rewritten: true,
     })
@@ -278,19 +257,15 @@ fn replace_lowered_root_or_keep_plan(
             plan,
             report: lowering.report,
             source_diagnostics: lowering.source_diagnostics,
-            bounded_join_reservation_facts: BTreeMap::new(),
             strict_bounded_contract: NativeStrictBoundedContractDiagnostics::default(),
             rewritten: false,
         });
     }
-    if let Some(bounded_join_reservation_facts) =
-        native_execution_boundary_rejection_facts(&lowering.plans[0], native_execution_config)
-    {
+    if native_execution_boundary_is_rejected(&lowering.plans[0], native_execution_config) {
         return Ok(NativeOptimizationAttempt {
             plan,
             report: native_execution_boundary_report(&lowering.report),
             source_diagnostics: lowering.source_diagnostics,
-            bounded_join_reservation_facts,
             strict_bounded_contract: rejected_plan_contract_diagnostics(&lowering.plans[0], native_execution_config)?,
             rewritten: false,
         });
@@ -299,14 +274,11 @@ fn replace_lowered_root_or_keep_plan(
     let plan = NativeCudfExec::try_new(lowering.plans[0].clone(), native_execution_config.clone())
         .map(|plan| Arc::new(plan) as Arc<dyn ExecutionPlan>)
         .map_err(DataFusionError::from)?;
-    let bounded_join_reservation_facts =
-        native_execution_boundary_modeled_facts(&lowering.plans[0], native_execution_config).unwrap_or_default();
     let strict_bounded_contract = accepted_plan_contract_diagnostics(&lowering.plans[0], native_execution_config)?;
     Ok(NativeOptimizationAttempt {
         plan,
         report: lowering.report,
         source_diagnostics: lowering.source_diagnostics,
-        bounded_join_reservation_facts,
         strict_bounded_contract,
         rewritten: true,
     })
@@ -317,7 +289,6 @@ fn optimize_native_children_for_host_arrow_boundary(
     native_execution_config: &NativeCudfExecutionConfig,
     report: &mut PlanningReport,
     source_diagnostics: &mut Vec<cudf_query_engine::SourceDiagnostics>,
-    bounded_join_reservation_facts: &mut BTreeMap<String, String>,
     strict_bounded_contract: &mut NativeStrictBoundedContractDiagnostics,
 ) -> DataFusionResult<Option<Arc<dyn ExecutionPlan>>> {
     if !host_arrow_boundary_allows_child_replacement(plan.as_ref()) {
@@ -338,7 +309,6 @@ fn optimize_native_children_for_host_arrow_boundary(
         rewritten |= attempt.rewritten;
         child_reports.push(attempt.report);
         child_source_diagnostics.extend(attempt.source_diagnostics);
-        bounded_join_reservation_facts.extend(attempt.bounded_join_reservation_facts);
         strict_bounded_contract.merge(attempt.strict_bounded_contract);
         new_children.push(attempt.plan);
     }
@@ -366,28 +336,16 @@ fn host_arrow_boundary_allows_child_replacement(plan: &dyn ExecutionPlan) -> boo
         || plan.as_any().downcast_ref::<AggregateExec>().is_some()
 }
 
-fn native_execution_boundary_rejection_facts(
+fn native_execution_boundary_is_rejected(
     plan: &cudf_query_engine::QueryPlan,
     execution_config: &NativeCudfExecutionConfig,
-) -> Option<BTreeMap<String, String>> {
+) -> bool {
     execution_config
         .memory_control_policy()
         .is_bounded()
         .then(|| plan.bounded_join_unsupported_shape_facts(execution_config.boundary_policy()))
         .flatten()
-        .map(|facts| facts.into_iter().map(|(key, value)| (key.to_string(), value)).collect())
-}
-
-fn native_execution_boundary_modeled_facts(
-    plan: &cudf_query_engine::QueryPlan,
-    execution_config: &NativeCudfExecutionConfig,
-) -> Option<BTreeMap<String, String>> {
-    if execution_config.memory_control_policy().is_bounded() && plan.contains_join() {
-        plan.bounded_join_modeled_facts(execution_config.boundary_policy())
-            .map(|facts| facts.into_iter().map(|(key, value)| (key.to_string(), value)).collect())
-    } else {
-        None
-    }
+        .is_some()
 }
 
 fn native_execution_boundary_report(report: &PlanningReport) -> PlanningReport {
