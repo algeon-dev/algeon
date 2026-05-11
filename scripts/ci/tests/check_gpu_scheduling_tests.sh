@@ -349,6 +349,10 @@ echo "PASS: canonical runner requires exact cargo-nextest 0.9.140"
 run_check default /usr/bin/bash scripts/check_all.sh
 assert_status default 0
 assert_contains "${tmp_dir}/default.output" "gpu_profile=default gpu_threads=16(nproc)"
+assert_contains "${tmp_dir}/default.output" "CHECK SOURCE START: root="
+assert_contains "${tmp_dir}/default.output" "cudf_nexus="
+assert_contains "${tmp_dir}/default.output" "cugraph_nexus="
+assert_contains "${tmp_dir}/default.output" "CHECK SOURCE END: root="
 assert_contains "${tmp_dir}/default.output" "GPU scheduling preflight: shared: profile=default group=gpu configured_cap=num-cpus explicit_test_threads=16"
 assert_contains "${tmp_dir}/default.output" "exclusive: group=gpu-exclusive configured_cap=1 explicit_test_threads=1"
 assert_contains "${tmp_dir}/default.output" "GPU scheduling final: shared: profile=default group=gpu configured_cap=num-cpus explicit_test_threads=16"

@@ -29,8 +29,9 @@ use super::{
         GraphClaimCalibrationProfile, InstallationBounds, RateOverrunPolicy, SchedulingProfile, VramCalibrationProfile,
     },
     provenance::{
-        CmakePackageVersion, CuvsBuildInputs, DirtyManifest, FileIdentity, RapidsVersions, RepositoryProvenance,
-        RepositoryProvenanceSet, RunnerIdentity, SourcePackageVersion, ToolchainVersions,
+        CmakePackageVersion, CuvsBuildInputs, DirtyManifest, FileIdentity, NativeLibraryIdentities, ProcessIdentity,
+        RapidsVersions, RepositoryProvenance, RepositoryProvenanceSet, RunnerIdentity, SourcePackageVersion,
+        ToolchainVersions,
     },
     redact::ensure_redacted_json,
     schedule::{ArrivalPlan, SchedulePhase},
@@ -58,7 +59,7 @@ fn parser_accepts_exact_dry_run_contract() {
         "--dry-run".to_string(),
     ])
     .unwrap();
-    assert_eq!(options.config, PathBuf::from("run-profile.json"));
+    assert_eq!(options.config, Some(PathBuf::from("run-profile.json")));
     assert_eq!(options.out_dir, PathBuf::from("run-artifacts"));
     assert_eq!(options.mode, ValidationMode::DryRun);
 
@@ -71,6 +72,51 @@ fn parser_accepts_exact_dry_run_contract() {
     ])
     .unwrap();
     assert_eq!(preflight.mode, ValidationMode::FixturePreflight);
+}
+
+#[test]
+fn parser_accepts_bundle_verification_without_a_run_profile() {
+    let options = CliOptions::parse(
+        [
+            "--manifest",
+            "qualification.json",
+            "--bundle-dir",
+            "bundle",
+            "--gate-log",
+            "check-all.log",
+            "--out-dir",
+            "report",
+            "--verify-bundle",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect(),
+    )
+    .unwrap();
+    assert_eq!(options.mode, ValidationMode::VerifyBundle);
+    assert_eq!(options.config, None);
+    assert_eq!(options.manifest, Some(PathBuf::from("qualification.json")));
+}
+
+#[test]
+fn qualification_profiles_parse_and_manifest_hashes_are_committed() {
+    for source in [
+        include_str!("../../fixtures/qualification/pagerank-topk.json"),
+        include_str!("../../fixtures/qualification/bfs-topk.json"),
+        include_str!("../../fixtures/qualification/four-gpu-mixed.json"),
+    ] {
+        let profile = RunProfile::parse_bytes(source.as_bytes()).unwrap();
+        profile.validate().unwrap();
+        select_queries(&profile.workloads).unwrap();
+        assert_eq!(profile.cache.mode, CacheMode::Disabled);
+    }
+    let manifest: Value =
+        serde_json::from_str(include_str!("../../fixtures/qualification/cache-off-production.json")).unwrap();
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/qualification");
+    for cell in manifest["cells"].as_array().unwrap() {
+        let path = manifest_dir.join(cell["profile_path"].as_str().unwrap());
+        assert_eq!(super::util::sha256_file(&path).unwrap(), cell["profile_sha256"].as_str().unwrap());
+    }
 }
 
 #[test]
@@ -692,10 +738,15 @@ fn sample_provenance() -> Provenance {
         },
     };
     Provenance {
+        process: ProcessIdentity { boot_id: "fixture-boot".to_string(), pid: 7, process_start_ticks: 11 },
         repositories: RepositoryProvenanceSet {
             root: repository("datafusion-nexus"),
             cudf_nexus: repository("cudf-nexus"),
             cugraph_nexus: repository("cugraph-nexus"),
+        },
+        native_libraries: NativeLibraryIdentities {
+            libcudf_resolved: Some(identity()),
+            libcugraph_resolved: Some(identity()),
         },
         cuvs_build_inputs: CuvsBuildInputs {
             install_dir: "/fixture/cuvs".to_string(),
@@ -2351,6 +2402,32 @@ fn measured_run_artifact_records_scenarios_throughput_placement_and_declared_gap
     let occupancy = BTreeMap::from([(0, measured_occupancy(2)), (1, measured_occupancy(2))]);
     let aggregate = MeasuredAggregate::reduce(&observations, &devices, &occupancy, plan.warmup_ns, plan.measurement_ns);
     assert!(scenario_clauses_pass(&aggregate.scenarios));
+    let mut time_series = super::artifact::TimeSeriesEvidence::empty();
+    for device in &devices {
+        time_series.device_rows.push(DeviceSeriesRow {
+            offset_ns: 1,
+            device_ordinal: device.ordinal,
+            health_open: true,
+            gpu_utilization_pct: Some(1),
+            memory_utilization_pct: Some(1),
+            cuda_free_bytes: Some(device.capacity_bytes),
+            nvml_used_bytes: Some(1),
+            active_attempts: 1,
+            managed_capacity_bytes: device.capacity_bytes,
+            live_grants_bytes: device.capacity_bytes,
+            live_reserved_bytes: 0,
+            cache_evictable_resident_bytes: 0,
+            cache_pinned_in_use_bytes: 0,
+            cache_physical_current_bytes: None,
+            cache_physical_peak_bytes: None,
+            allocation_failure_count: 0,
+            ledger_sequence: 1,
+            claim_snapshot_end_sequence: Some(1),
+            claim_snapshot_stable: true,
+            active_query_jobs: 1,
+            queued_jobs: 0,
+        });
+    }
 
     let measurement = super::artifact::MeasuredRunArtifact {
         qualifying: true,
@@ -2387,7 +2464,7 @@ fn measured_run_artifact_records_scenarios_throughput_placement_and_declared_gap
             attribution: super::operability::AttributionCompleteness::from_observations(&observations),
             otlp_export: super::operability::OtlpExportEvidence::not_requested(),
         },
-        time_series: super::artifact::TimeSeriesEvidence::empty(),
+        time_series,
         snapshots: Vec::new(),
         trace: super::artifact::TraceEvidence {
             captured_by_runner: false,
@@ -2543,7 +2620,16 @@ fn composed_qualification_evidence_is_fail_closed_and_overload_is_profile_declar
             false,
             &["missing_physical_memory_sample"][..],
         ),
-        ("missing_device_witness", None, true, true, false, None, false, &["missing_device_witness"][..]),
+        (
+            "missing_device_witness",
+            None,
+            true,
+            true,
+            false,
+            None,
+            false,
+            &["missing_device_witness", "missing_physical_memory_sample"][..],
+        ),
         ("missing_schedule", None, true, true, true, None, false, &["missing_composed_schedule"][..]),
         (
             "undeclared_failed_overload_is_not_a_requirement",
@@ -2676,6 +2762,7 @@ fn composed_qualification_measurement(
             cuda_free_bytes: Some(1),
             nvml_used_bytes: Some(1),
             active_attempts: 1,
+            managed_capacity_bytes: schedule.grant_bytes,
             live_grants_bytes: schedule.grant_bytes,
             live_reserved_bytes: schedule.grant_bytes,
             cache_evictable_resident_bytes: 0,

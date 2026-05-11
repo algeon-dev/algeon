@@ -11,12 +11,12 @@
 //! values from tests alone.
 #![cfg_attr(not(feature = "single-node-multi-gpu-validate-run"), allow(dead_code))]
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use super::profile::VramCalibrationProfile;
 
 /// One sampler tick's compact per-device projection.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 pub(super) struct DeviceSeriesRow {
     pub(super) offset_ns: u64,
     pub(super) device_ordinal: usize,
@@ -32,6 +32,7 @@ pub(super) struct DeviceSeriesRow {
     /// APIs measure the same allocator state.
     pub(super) nvml_used_bytes: Option<u64>,
     pub(super) active_attempts: usize,
+    pub(super) managed_capacity_bytes: u64,
     pub(super) live_grants_bytes: u64,
     pub(super) live_reserved_bytes: u64,
     pub(super) cache_evictable_resident_bytes: u64,
@@ -59,7 +60,7 @@ pub(super) struct DeviceSeriesRow {
 }
 
 /// One sampler tick's process-wide projection.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 pub(super) struct ProcessSeriesRow {
     pub(super) offset_ns: u64,
     pub(super) active_queries: usize,
@@ -73,6 +74,173 @@ pub(super) struct ProcessSeriesRow {
     /// failure, and telemetry snapshots, so S1/S3 can report monitoring cost
     /// without timing unrelated runner work.
     pub(super) observation_pull_ns: u64,
+    pub(super) completed_attempts: u64,
+    pub(super) successful_native_attempts: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub(super) struct SampleGap {
+    pub(super) nanoseconds: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct FleetUtilizationPolicy {
+    pub(super) device_ordinals: Vec<usize>,
+    pub(super) minimum_utilization_percent: u32,
+    pub(super) minimum_duration_ns: u64,
+    pub(super) maximum_sample_gap_ns: u64,
+    pub(super) minimum_active_attempts: usize,
+    pub(super) minimum_completed_attempts: u64,
+    pub(super) minimum_successful_native_attempts: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub(super) struct FleetUtilizationInterval {
+    pub(super) start_offset_ns: u64,
+    pub(super) end_offset_ns: u64,
+    pub(super) duration_ns: u64,
+    pub(super) minimum_utilization_milli: u64,
+    pub(super) minimum_active_attempts: usize,
+    pub(super) completed_attempts: u64,
+    pub(super) successful_native_attempts: u64,
+    pub(super) maximum_sample_gap: SampleGap,
+}
+
+pub(super) fn maximum_physical_sample_gap(rows: &[DeviceSeriesRow]) -> Option<SampleGap> {
+    per_ordinal(rows)
+        .filter_map(|(_, rows)| {
+            let start = rows.iter().map(|row| row.offset_ns).min()?;
+            let end = rows.iter().map(|row| row.offset_ns).max()?;
+            let mut physical = rows
+                .iter()
+                .filter(|row| row.cuda_free_bytes.is_some() && row.nvml_used_bytes.is_some())
+                .map(|row| row.offset_ns)
+                .collect::<Vec<_>>();
+            physical.sort_unstable();
+            let first = *physical.first()?;
+            let last = *physical.last()?;
+            Some(
+                physical
+                    .windows(2)
+                    .map(|pair| pair[1].saturating_sub(pair[0]))
+                    .max()
+                    .unwrap_or_default()
+                    .max(first.saturating_sub(start))
+                    .max(end.saturating_sub(last)),
+            )
+        })
+        .max()
+        .map(|nanoseconds| SampleGap { nanoseconds })
+}
+
+pub(super) fn fleet_utilization_interval(
+    device_rows: &[DeviceSeriesRow],
+    process_rows: &[ProcessSeriesRow],
+    policy: &FleetUtilizationPolicy,
+) -> Result<Option<FleetUtilizationInterval>, &'static str> {
+    if policy.device_ordinals.is_empty()
+        || policy.minimum_utilization_percent > 100
+        || policy.device_ordinals.iter().copied().collect::<std::collections::BTreeSet<_>>().len()
+            != policy.device_ordinals.len()
+    {
+        return Err("invalid fleet utilization policy");
+    }
+    let mut by_offset = std::collections::BTreeMap::<u64, Vec<&DeviceSeriesRow>>::new();
+    for row in device_rows {
+        by_offset.entry(row.offset_ns).or_default().push(row);
+    }
+    let mut current: Option<(u64, u64, u64, usize, u64, u64, u64)> = None;
+    let mut best = None;
+    for process in process_rows {
+        let Some(rows) = by_offset.get(&process.offset_ns) else {
+            current = None;
+            continue;
+        };
+        let selected = policy.device_ordinals.iter().map(|ordinal| {
+            let mut matches = rows.iter().filter(|row| row.device_ordinal == *ordinal);
+            let row = matches.next().copied()?;
+            (matches.next().is_none() && row.cuda_free_bytes.is_some() && row.nvml_used_bytes.is_some()).then_some(row)
+        });
+        let selected = selected.collect::<Option<Vec<_>>>();
+        let Some(selected) = selected else {
+            current = None;
+            continue;
+        };
+        let grants = selected.iter().try_fold(0_u128, |sum, row| sum.checked_add(u128::from(row.live_grants_bytes)));
+        let capacity =
+            selected.iter().try_fold(0_u128, |sum, row| sum.checked_add(u128::from(row.managed_capacity_bytes)));
+        let (Some(grants), Some(capacity)) = (grants, capacity) else {
+            return Err("fleet utilization sum overflow");
+        };
+        let active = selected.iter().try_fold(0_usize, |sum, row| sum.checked_add(row.active_attempts));
+        let Some(active) = active else {
+            return Err("fleet active-attempt sum overflow");
+        };
+        let weighted_grants = grants.checked_mul(100).ok_or("fleet utilization product overflow")?;
+        let weighted_capacity = capacity
+            .checked_mul(u128::from(policy.minimum_utilization_percent))
+            .ok_or("fleet utilization product overflow")?;
+        let utilization_ok = capacity > 0 && weighted_grants >= weighted_capacity;
+        if !utilization_ok || active < policy.minimum_active_attempts {
+            current = None;
+            continue;
+        }
+        let utilization_milli =
+            u64::try_from(grants.checked_mul(1000).ok_or("fleet utilization product overflow")? / capacity)
+                .map_err(|_| "fleet utilization ratio overflow")?;
+        let next = match current {
+            Some((start, previous, minimum, minimum_active, completed, successful, maximum_gap))
+                if process.offset_ns.saturating_sub(previous) <= policy.maximum_sample_gap_ns =>
+            {
+                (
+                    start,
+                    process.offset_ns,
+                    minimum.min(utilization_milli),
+                    minimum_active.min(active),
+                    completed,
+                    successful,
+                    maximum_gap.max(process.offset_ns.saturating_sub(previous)),
+                )
+            },
+            _ => (
+                process.offset_ns,
+                process.offset_ns,
+                utilization_milli,
+                active,
+                process.completed_attempts,
+                process.successful_native_attempts,
+                0,
+            ),
+        };
+        current = Some(next);
+        let (start, end, minimum, minimum_active, completed_start, successful_start, maximum_gap) = next;
+        let duration_ns = end.saturating_sub(start);
+        let completed_attempts =
+            process.completed_attempts.checked_sub(completed_start).ok_or("completed-attempt counter regressed")?;
+        let successful_native_attempts = process
+            .successful_native_attempts
+            .checked_sub(successful_start)
+            .ok_or("successful-native-attempt counter regressed")?;
+        if duration_ns >= policy.minimum_duration_ns
+            && completed_attempts >= policy.minimum_completed_attempts
+            && successful_native_attempts >= policy.minimum_successful_native_attempts
+        {
+            let interval = FleetUtilizationInterval {
+                start_offset_ns: start,
+                end_offset_ns: end,
+                duration_ns,
+                minimum_utilization_milli: minimum,
+                minimum_active_attempts: minimum_active,
+                completed_attempts,
+                successful_native_attempts,
+                maximum_sample_gap: SampleGap { nanoseconds: maximum_gap },
+            };
+            if best.as_ref().is_none_or(|best: &FleetUtilizationInterval| interval.duration_ns > best.duration_ns) {
+                best = Some(interval);
+            }
+        }
+    }
+    Ok(best)
 }
 
 /// W8/I13's bounded summary of the public monitoring pull cost.
@@ -535,6 +703,7 @@ mod tests {
             cuda_free_bytes: None,
             nvml_used_bytes: None,
             active_attempts: 0,
+            managed_capacity_bytes: 1,
             live_grants_bytes: 0,
             live_reserved_bytes: 0,
             cache_evictable_resident_bytes: 0,
@@ -621,6 +790,8 @@ mod tests {
                 backend_generation: 1,
                 metric_generation: 3,
                 observation_pull_ns: 10,
+                completed_attempts: 0,
+                successful_native_attempts: 0,
             },
             ProcessSeriesRow {
                 offset_ns: 1,
@@ -629,6 +800,8 @@ mod tests {
                 backend_generation: 1,
                 metric_generation: 4,
                 observation_pull_ns: 20,
+                completed_attempts: 0,
+                successful_native_attempts: 0,
             },
         ];
         let summary = drift_summary(&rows, &process);
@@ -644,6 +817,8 @@ mod tests {
                 backend_generation: 0,
                 metric_generation: 4,
                 observation_pull_ns: 30,
+                completed_attempts: 0,
+                successful_native_attempts: 0,
             },
         ];
         let summary = drift_summary(&rows, &regressed);
@@ -825,6 +1000,8 @@ mod tests {
                 backend_generation: 1,
                 metric_generation: 1,
                 observation_pull_ns: 10,
+                completed_attempts: 0,
+                successful_native_attempts: 0,
             },
             ProcessSeriesRow {
                 offset_ns: 1,
@@ -833,6 +1010,8 @@ mod tests {
                 backend_generation: 1,
                 metric_generation: 2,
                 observation_pull_ns: 30,
+                completed_attempts: 0,
+                successful_native_attempts: 0,
             },
             ProcessSeriesRow {
                 offset_ns: 2,
@@ -841,6 +1020,8 @@ mod tests {
                 backend_generation: 1,
                 metric_generation: 3,
                 observation_pull_ns: 20,
+                completed_attempts: 0,
+                successful_native_attempts: 0,
             },
         ];
         let summary = observation_pull_summary(&rows);
@@ -850,5 +1031,74 @@ mod tests {
         assert_eq!(summary.p95_ns, 30);
         assert_eq!(summary.max_ns, 30);
         assert_eq!(summary.mean_ns, 20);
+    }
+
+    #[test]
+    fn fleet_interval_requires_continuous_utilization_cadence_and_useful_work() {
+        let mut devices = Vec::new();
+        let mut process = Vec::new();
+        for second in 0..=60_u64 {
+            let offset_ns = second * 1_000_000_000;
+            for ordinal in 0..4 {
+                let mut sample = row(ordinal, offset_ns);
+                sample.active_attempts = 1;
+                sample.managed_capacity_bytes = 100;
+                sample.live_grants_bytes = 80;
+                sample.cuda_free_bytes = Some(1);
+                sample.nvml_used_bytes = Some(1);
+                devices.push(sample);
+            }
+            process.push(ProcessSeriesRow {
+                offset_ns,
+                active_queries: 4,
+                queued_queries: 0,
+                backend_generation: 1,
+                metric_generation: second,
+                observation_pull_ns: 1,
+                completed_attempts: second,
+                successful_native_attempts: second,
+            });
+        }
+        let policy = FleetUtilizationPolicy {
+            device_ordinals: vec![0, 1, 2, 3],
+            minimum_utilization_percent: 80,
+            minimum_duration_ns: 60_000_000_000,
+            maximum_sample_gap_ns: 1_000_000_000,
+            minimum_active_attempts: 4,
+            minimum_completed_attempts: 4,
+            minimum_successful_native_attempts: 4,
+        };
+        let interval = fleet_utilization_interval(&devices, &process, &policy).unwrap().unwrap();
+        assert_eq!(interval.duration_ns, 60_000_000_000);
+        assert_eq!(interval.minimum_utilization_milli, 800);
+        assert_eq!(interval.maximum_sample_gap.nanoseconds, 1_000_000_000);
+
+        devices.iter_mut().filter(|row| row.offset_ns == 30_000_000_000).for_each(|row| {
+            row.live_grants_bytes = 79;
+        });
+        assert!(fleet_utilization_interval(&devices, &process, &policy).unwrap().is_none());
+
+        devices.iter_mut().filter(|row| row.offset_ns == 30_000_000_000).for_each(|row| {
+            row.live_grants_bytes = 80;
+            row.nvml_used_bytes = None;
+        });
+        assert!(fleet_utilization_interval(&devices, &process, &policy).unwrap().is_none());
+
+        let mut duplicate_policy = policy.clone();
+        duplicate_policy.device_ordinals = vec![0, 0, 1, 2];
+        assert_eq!(
+            fleet_utilization_interval(&devices, &process, &duplicate_policy),
+            Err("invalid fleet utilization policy")
+        );
+    }
+
+    #[test]
+    fn maximum_physical_gap_includes_leading_and_trailing_outages() {
+        let mut rows = (0..=4).map(|offset| row(0, offset)).collect::<Vec<_>>();
+        for sample in &mut rows[1..=2] {
+            sample.cuda_free_bytes = Some(1);
+            sample.nvml_used_bytes = Some(1);
+        }
+        assert_eq!(maximum_physical_sample_gap(&rows), Some(SampleGap { nanoseconds: 2 }));
     }
 }

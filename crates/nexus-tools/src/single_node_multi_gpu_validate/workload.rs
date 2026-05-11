@@ -167,10 +167,26 @@ fn dblp_queries() -> Vec<(&'static str, String, bool)> {
             true,
         ),
         (
+            "pagerank_topk",
+            format!(
+                "SELECT vertex, value FROM {CUGRAPH_PAGERANK_FUNCTION}('{DBLP_EDGE_TABLE}', 'src', 'dst', 'weight') \
+                 ORDER BY value DESC LIMIT 100"
+            ),
+            true,
+        ),
+        (
             "bfs",
             format!(
                 "SELECT COUNT(*) AS reached FROM {CUGRAPH_BFS_FUNCTION}('{DBLP_EDGE_TABLE}', {DBLP_TRAVERSAL_SOURCE}, 'src', 'dst', NULL, \
                  '{{\"output_mode\": \"normalized\"}}')"
+            ),
+            true,
+        ),
+        (
+            "bfs_topk",
+            format!(
+                "SELECT vertex, distance, predecessor FROM {CUGRAPH_BFS_FUNCTION}('{DBLP_EDGE_TABLE}', {DBLP_TRAVERSAL_SOURCE}, 'src', 'dst', NULL, \
+                 '{{\"construction_policy\": \"raw_libcugraph\"}}') ORDER BY distance LIMIT 100"
             ),
             true,
         ),

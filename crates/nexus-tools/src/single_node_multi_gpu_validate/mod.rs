@@ -18,6 +18,7 @@ mod redact;
 mod schedule;
 mod timeseries;
 mod util;
+mod verify;
 mod workload;
 
 use std::{
@@ -34,8 +35,8 @@ use crate::ToolResult;
 
 const RUN_PROFILE_SCHEMA: &str = "datafusion_nexus.single_node_multi_gpu.run_profile.v1";
 const RUN_PROFILE_VERSION: u32 = 1;
-const RUN_ARTIFACT_SCHEMA: &str = "datafusion_nexus.single_node_multi_gpu.run_artifact.v3";
-const RUN_ARTIFACT_VERSION: u32 = 3;
+const RUN_ARTIFACT_SCHEMA: &str = "datafusion_nexus.single_node_multi_gpu.run_artifact.v4";
+const RUN_ARTIFACT_VERSION: u32 = 4;
 const COMPOSED_SCHEDULE_SCHEMA: &str = "datafusion_nexus.single_node_multi_gpu.composed_schedule.v1";
 const COMPOSED_SCHEDULE_VERSION: u32 = 1;
 const REDACTION_POLICY: &str = "datafusion_nexus.single_node_multi_gpu.redaction.v1";
@@ -49,13 +50,25 @@ pub(crate) fn run(args: Vec<String>) -> ToolResult<()> {
     }
 
     let options = CliOptions::parse(args)?;
-    let (profile, config_sha256) = RunProfile::read(&options.config)?;
     let artifact_path = match options.mode {
-        ValidationMode::DryRun => run_dry_run(profile, config_sha256, &options.out_dir)?,
-        ValidationMode::FixturePreflight => {
-            run_fixture_preflight(profile, config_sha256, &options.out_dir, Provenance::collect)?
+        ValidationMode::VerifyBundle => verify::verify_bundle(
+            options.manifest.as_deref().expect("verified by CliOptions::parse"),
+            options.bundle_dir.as_deref().expect("verified by CliOptions::parse"),
+            options.gate_log.as_deref().expect("verified by CliOptions::parse"),
+            &options.out_dir,
+        )?,
+        mode => {
+            let (profile, config_sha256) =
+                RunProfile::read(options.config.as_deref().expect("verified by CliOptions::parse"))?;
+            match mode {
+                ValidationMode::DryRun => run_dry_run(profile, config_sha256, &options.out_dir)?,
+                ValidationMode::FixturePreflight => {
+                    run_fixture_preflight(profile, config_sha256, &options.out_dir, Provenance::collect)?
+                },
+                ValidationMode::MeasuredRun => run_measured_run(profile, config_sha256, &options)?,
+                ValidationMode::VerifyBundle => unreachable!(),
+            }
         },
-        ValidationMode::MeasuredRun => run_measured_run(profile, config_sha256, &options)?,
     };
 
     println!("single-node-multi-gpu validation artifact: {}", artifact_path.display());
@@ -70,6 +83,7 @@ USAGE:
   single-node-multi-gpu-validate --config run-profile.json --out-dir run-artifacts --dry-run
   single-node-multi-gpu-validate --config run-profile.json --out-dir run-artifacts --fixture-preflight
   single-node-multi-gpu-validate --config run-profile.json --out-dir run-artifacts --measured-run [OPTIONS]
+  single-node-multi-gpu-validate --manifest qualification.json --bundle-dir bundle --gate-log check-all.log --out-dir report --verify-bundle
 
 `--measured-run` executes the selected public-API workload mix. It never
 persists or compares query result rows; it records lifecycle, admission,
@@ -79,9 +93,12 @@ telemetry, allocator-attribution, cache, and operability evidence only."
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct CliOptions {
-    config: PathBuf,
+    config: Option<PathBuf>,
     out_dir: PathBuf,
     mode: ValidationMode,
+    manifest: Option<PathBuf>,
+    bundle_dir: Option<PathBuf>,
+    gate_log: Option<PathBuf>,
     /// An externally captured Nsight trace whose identity the artifact records.
     nsight_trace: Option<PathBuf>,
     /// W8's explicit live reference-exporter cell. The full URL is runtime
@@ -137,6 +154,7 @@ enum ValidationMode {
     DryRun,
     FixturePreflight,
     MeasuredRun,
+    VerifyBundle,
 }
 
 impl CliOptions {
@@ -144,6 +162,9 @@ impl CliOptions {
         let mut config = None;
         let mut out_dir = None;
         let mut mode = None;
+        let mut manifest = None;
+        let mut bundle_dir = None;
+        let mut gate_log = None;
         let mut nsight_trace = None;
         let mut otlp_metrics_endpoint = None;
         let mut otlp_export_interval_ms = None;
@@ -173,6 +194,18 @@ impl CliOptions {
                 "--out-dir" => {
                     let value = required_option_value(&args, &mut index, flag)?;
                     out_dir = Some(PathBuf::from(value));
+                },
+                "--manifest" => {
+                    let value = required_option_value(&args, &mut index, flag)?;
+                    manifest = Some(PathBuf::from(value));
+                },
+                "--bundle-dir" => {
+                    let value = required_option_value(&args, &mut index, flag)?;
+                    bundle_dir = Some(PathBuf::from(value));
+                },
+                "--gate-log" => {
+                    let value = required_option_value(&args, &mut index, flag)?;
+                    gate_log = Some(PathBuf::from(value));
                 },
                 "--nsight-trace" => {
                     let value = required_option_value(&args, &mut index, flag)?;
@@ -240,16 +273,33 @@ impl CliOptions {
                 "--dry-run" => set_mode(&mut mode, ValidationMode::DryRun)?,
                 "--fixture-preflight" => set_mode(&mut mode, ValidationMode::FixturePreflight)?,
                 "--measured-run" => set_mode(&mut mode, ValidationMode::MeasuredRun)?,
+                "--verify-bundle" => set_mode(&mut mode, ValidationMode::VerifyBundle)?,
                 _ => return Err(format!("unknown option {flag}").into()),
             }
             index += 1;
         }
 
-        let mode = mode.ok_or("missing required validation mode --dry-run, --fixture-preflight, or --measured-run")?;
-        let config = config.ok_or("missing required option --config")?;
+        let mode = mode.ok_or(
+            "missing required validation mode --dry-run, --fixture-preflight, --measured-run, or --verify-bundle",
+        )?;
         let out_dir = out_dir.ok_or("missing required option --out-dir")?;
         if out_dir.as_os_str().is_empty() {
             return Err("--out-dir must not be empty".into());
+        }
+        if mode == ValidationMode::VerifyBundle {
+            if config.is_some() {
+                return Err("--config is not valid with --verify-bundle".into());
+            }
+            if manifest.is_none() || bundle_dir.is_none() || gate_log.is_none() {
+                return Err("--verify-bundle requires --manifest, --bundle-dir, and --gate-log".into());
+            }
+        } else {
+            if config.is_none() {
+                return Err("missing required option --config".into());
+            }
+            if manifest.is_some() || bundle_dir.is_some() || gate_log.is_some() {
+                return Err("--manifest, --bundle-dir, and --gate-log are only valid with --verify-bundle".into());
+            }
         }
         if nsight_trace.is_some() && mode != ValidationMode::MeasuredRun {
             return Err("--nsight-trace is only valid with --measured-run".into());
@@ -294,6 +344,9 @@ impl CliOptions {
             config,
             out_dir,
             mode,
+            manifest,
+            bundle_dir,
+            gate_log,
             nsight_trace,
             otlp_metrics_endpoint,
             otlp_export_interval_ms,
@@ -313,7 +366,7 @@ impl CliOptions {
 
 fn set_mode(mode: &mut Option<ValidationMode>, selected: ValidationMode) -> ToolResult<()> {
     if mode.replace(selected).is_some() {
-        return Err("--dry-run, --fixture-preflight, and --measured-run are mutually exclusive".into());
+        return Err("validation modes are mutually exclusive".into());
     }
     Ok(())
 }
