@@ -5,9 +5,9 @@ use cudf_query_engine::{
     AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, ColumnRef, CompiledPipeline, Expr, GpuResidentSource,
     JoinKey, JoinOutputColumn, JoinSide, JoinSpec, JoinType, LimitSpec, LocalParquetSource, NodeId, PipelineBarrier,
     PipelineBarrierId, PipelineBarrierKind, PipelineEdge, PipelineEdgeId, PipelineEdgeKind, PipelineTask,
-    PipelineTaskId, PipelineTaskKind, PlanNode, QueryPlan, QueryPlanBuilder, ReservationGate, ReservationGateId,
-    ReservationGateOwner, ReservationKind, ResidentLifetime, ResidentResource, ResidentResourceId, SinkBoundary,
-    SinkBoundaryKind, SortExpr, SortSpec, SourceNode,
+    PipelineTaskId, PipelineTaskKind, PlanNode, QueryError, QueryPlan, QueryPlanBuilder, ReservationGate,
+    ReservationGateId, ReservationGateOwner, ReservationKind, ResidentLifetime, ResidentResource, ResidentResourceId,
+    SinkBoundary, SinkBoundaryKind, SortExpr, SortSpec, SourceNode,
     capability::{
         CapabilityAnalysis, CapabilityDecision, ContractQuality, ContractStatus, ReservationRequirement,
         ReservationRequirementScope, SubgraphInvariantKind,
@@ -664,6 +664,115 @@ fn compile_pipeline_rejects_local_capability_rejection_before_building_graph() {
     assert_eq!(error.fact_value("node_id"), Some("n0"));
 }
 
+#[test]
+fn compiled_pipeline_validate_rejects_resource_consumer_without_carrying_edge() {
+    let pipeline = strict_validation_fixture_with(|parts| {
+        parts.edges[4] = PipelineEdge::new(
+            PipelineEdgeId::new(4),
+            PipelineTaskId::new(4),
+            PipelineTaskId::new(5),
+            PipelineEdgeKind::SinkInput,
+        );
+    });
+
+    let error = pipeline.validate().expect_err("resource consumer without a carrying edge should be invalid");
+
+    assert_pipeline_validation_error(&error, "pipeline resident resource consumer has no carrying dependency edge");
+    assert_eq!(error.fact_value("resource_id"), Some("r2"));
+    assert_eq!(error.fact_value("producer_task"), Some("t4"));
+    assert_eq!(error.fact_value("consumer_task"), Some("t5"));
+}
+
+#[test]
+fn compiled_pipeline_validate_rejects_join_probe_without_matching_build_dependency() {
+    let pipeline = strict_validation_fixture_with(|parts| {
+        parts.edges[2] = PipelineEdge::new(
+            PipelineEdgeId::new(2),
+            PipelineTaskId::new(0),
+            PipelineTaskId::new(3),
+            PipelineEdgeKind::Control,
+        );
+    });
+
+    let error = pipeline.validate().expect_err("join probe must depend on its build task");
+
+    assert_pipeline_validation_error(&error, "pipeline join probe task does not depend on its build task");
+    assert_eq!(error.fact_value("task_id"), Some("t3"));
+}
+
+#[test]
+fn compiled_pipeline_validate_rejects_barrier_without_upstream_dominance() {
+    let pipeline = strict_validation_fixture_with(|parts| {
+        parts.barriers.push(
+            PipelineBarrier::new(PipelineBarrierId::new(3), PipelineBarrierKind::SourceChunkBoundary)
+                .with_upstream_tasks(vec![PipelineTaskId::new(0)])
+                .with_downstream_tasks(vec![PipelineTaskId::new(2)]),
+        );
+    });
+
+    let error = pipeline.validate().expect_err("barrier upstream should dominate downstream tasks");
+
+    assert_pipeline_validation_error(&error, "pipeline barrier upstream tasks do not dominate downstream task");
+    assert_eq!(error.fact_value("barrier_id"), Some("b3"));
+    assert_eq!(error.fact_value("downstream_task"), Some("t2"));
+}
+
+#[test]
+fn compiled_pipeline_validate_rejects_unresolved_preflight_gate_mislabeled_as_exact() {
+    let pipeline = strict_validation_fixture_with(|parts| {
+        parts.gates[0] = ReservationGate::new(
+            ReservationGateId::new(0),
+            ReservationGateOwner::Edge(PipelineEdgeId::new(0)),
+            ReservationKind::SourceRead,
+            ReservationRequirementScope::Edge,
+            "source_read",
+            "source_contract",
+            ContractStatus::Modeled,
+            ContractQuality::ExactPreflight,
+        );
+    });
+
+    let error = pipeline.validate().expect_err("hard-budgeted source read gate should keep unresolved quality");
+
+    assert_pipeline_validation_error(&error, "pipeline hard-budgeted gate is not labeled as unresolved preflight");
+    assert_eq!(error.fact_value("gate_id"), Some("g0"));
+    assert_eq!(error.fact_value("reservation_kind"), Some("source_read"));
+    assert_eq!(error.fact_value("contract_quality"), Some("exact_preflight"));
+}
+
+#[test]
+fn compiled_pipeline_validate_rejects_gate_owner_scope_mismatch() {
+    let pipeline = strict_validation_fixture_with(|parts| {
+        parts.tasks[1] = PipelineTask::new(PipelineTaskId::new(1), PipelineTaskKind::SourceRead)
+            .with_output_resources(vec![ResidentResourceId::new(1)])
+            .with_gates(vec![ReservationGateId::new(0)]);
+        parts.edges[0] = PipelineEdge::new(
+            PipelineEdgeId::new(0),
+            PipelineTaskId::new(1),
+            PipelineTaskId::new(2),
+            PipelineEdgeKind::JoinBuildInput,
+        )
+        .with_resources(vec![ResidentResourceId::new(1)]);
+        parts.gates[0] = ReservationGate::new(
+            ReservationGateId::new(0),
+            ReservationGateOwner::Task(PipelineTaskId::new(1)),
+            ReservationKind::SourceRead,
+            ReservationRequirementScope::Edge,
+            "source_read",
+            "source_contract",
+            ContractStatus::Modeled,
+            ContractQuality::HardBudgetedReportWithUnresolvedPreflight,
+        );
+    });
+
+    let error = pipeline.validate().expect_err("edge-scoped gate should not be owned by a task");
+
+    assert_pipeline_validation_error(&error, "pipeline reservation gate owner does not match requirement scope");
+    assert_eq!(error.fact_value("gate_id"), Some("g0"));
+    assert_eq!(error.fact_value("gate_owner"), Some("task:t1"));
+    assert_eq!(error.fact_value("requirement_scope"), Some("edge"));
+}
+
 fn assert_gate(
     pipeline: &CompiledPipeline,
     gate_ids: &[ReservationGateId],
@@ -682,6 +791,124 @@ fn assert_gate(
     assert_eq!(gate.quality(), quality);
     assert_eq!(gate.requirement().status, status);
     assert_eq!(gate.requirement().quality, quality);
+}
+
+fn assert_pipeline_validation_error(error: &QueryError, expected_message: &str) {
+    assert_eq!(error.code().as_str(), "invalid_plan");
+    assert_eq!(error.operation(), "cudf_query_engine.pipeline.validate");
+    assert_eq!(error.message(), expected_message);
+    assert!(!error.to_string().contains("BoundedJoinExecutionFamily"));
+    assert!(!error.to_string().contains("BoundedJoinExecutionPath"));
+}
+
+#[derive(Debug, Clone)]
+struct StrictValidationFixtureParts {
+    tasks: Vec<PipelineTask>,
+    edges: Vec<PipelineEdge>,
+    barriers: Vec<PipelineBarrier>,
+    resources: Vec<ResidentResource>,
+    gates: Vec<ReservationGate>,
+    sink: SinkBoundary,
+}
+
+fn strict_validation_fixture_with(update: impl FnOnce(&mut StrictValidationFixtureParts)) -> CompiledPipeline {
+    let mut parts = strict_validation_fixture_parts();
+    update(&mut parts);
+    CompiledPipeline::new(parts.tasks, parts.edges, parts.barriers, parts.resources, parts.gates, parts.sink)
+}
+
+fn strict_validation_fixture_parts() -> StrictValidationFixtureParts {
+    let left_source = PipelineTaskId::new(0);
+    let right_source = PipelineTaskId::new(1);
+    let build = PipelineTaskId::new(2);
+    let probe = PipelineTaskId::new(3);
+    let materialize = PipelineTaskId::new(4);
+    let sink_task = PipelineTaskId::new(5);
+
+    let left_frame = ResidentResourceId::new(0);
+    let right_frame = ResidentResourceId::new(1);
+    let join_output = ResidentResourceId::new(2);
+    let source_gate = ReservationGateId::new(0);
+    let sink_gate = ReservationGateId::new(1);
+
+    let tasks = vec![
+        PipelineTask::new(left_source, PipelineTaskKind::SourceRead).with_output_resources(vec![left_frame]),
+        PipelineTask::new(right_source, PipelineTaskKind::SourceRead).with_output_resources(vec![right_frame]),
+        PipelineTask::new(build, PipelineTaskKind::JoinBuild).with_input_resources(vec![right_frame]),
+        PipelineTask::new(probe, PipelineTaskKind::JoinProbe).with_input_resources(vec![left_frame]),
+        PipelineTask::new(materialize, PipelineTaskKind::JoinMaterialize).with_output_resources(vec![join_output]),
+        PipelineTask::new(sink_task, PipelineTaskKind::SinkMaterialize).with_input_resources(vec![join_output]),
+    ];
+
+    let edges = vec![
+        PipelineEdge::new(PipelineEdgeId::new(0), right_source, build, PipelineEdgeKind::JoinBuildInput)
+            .with_resources(vec![right_frame])
+            .with_gates(vec![source_gate]),
+        PipelineEdge::new(PipelineEdgeId::new(1), left_source, probe, PipelineEdgeKind::JoinProbeInput)
+            .with_resources(vec![left_frame]),
+        PipelineEdge::new(PipelineEdgeId::new(2), build, probe, PipelineEdgeKind::Control),
+        PipelineEdge::new(PipelineEdgeId::new(3), probe, materialize, PipelineEdgeKind::Control),
+        PipelineEdge::new(PipelineEdgeId::new(4), materialize, sink_task, PipelineEdgeKind::SinkInput)
+            .with_resources(vec![join_output]),
+    ];
+
+    let barriers = vec![
+        PipelineBarrier::new(PipelineBarrierId::new(0), PipelineBarrierKind::JoinBuildBeforeProbe)
+            .with_upstream_tasks(vec![build])
+            .with_downstream_tasks(vec![probe]),
+        PipelineBarrier::new(PipelineBarrierId::new(1), PipelineBarrierKind::JoinMaterialization)
+            .with_upstream_tasks(vec![probe])
+            .with_downstream_tasks(vec![materialize]),
+        PipelineBarrier::new(PipelineBarrierId::new(2), PipelineBarrierKind::SinkBoundary)
+            .with_upstream_tasks(vec![sink_task]),
+    ];
+
+    let resources = vec![
+        ResidentResource::new(
+            left_frame,
+            left_source,
+            vec![probe],
+            ResidentLifetime::BetweenTasks { producer: left_source, last_consumer: probe },
+        ),
+        ResidentResource::new(
+            right_frame,
+            right_source,
+            vec![build],
+            ResidentLifetime::BetweenTasks { producer: right_source, last_consumer: build },
+        ),
+        ResidentResource::new(
+            join_output,
+            materialize,
+            vec![sink_task],
+            ResidentLifetime::BetweenTasks { producer: materialize, last_consumer: sink_task },
+        ),
+    ];
+
+    let gates = vec![
+        ReservationGate::new(
+            source_gate,
+            ReservationGateOwner::Edge(PipelineEdgeId::new(0)),
+            ReservationKind::SourceRead,
+            ReservationRequirementScope::Edge,
+            "source_read",
+            "source_contract",
+            ContractStatus::Modeled,
+            ContractQuality::HardBudgetedReportWithUnresolvedPreflight,
+        ),
+        ReservationGate::new(
+            sink_gate,
+            ReservationGateOwner::SinkBoundary,
+            ReservationKind::Materialization,
+            ReservationRequirementScope::Edge,
+            "host_materialization",
+            "query_engine_explicit_sink_materialization_reservation",
+            ContractStatus::Modeled,
+            ContractQuality::QueryEngineOwnedBoundary,
+        ),
+    ];
+
+    let sink = SinkBoundary::new(SinkBoundaryKind::HostArrowMaterialization, sink_task).with_gates(vec![sink_gate]);
+    StrictValidationFixtureParts { tasks, edges, barriers, resources, gates, sink }
 }
 
 fn compile_admitted_join_case(

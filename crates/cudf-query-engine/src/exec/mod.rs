@@ -27,6 +27,12 @@ mod types;
 mod util;
 mod validate;
 
+#[doc(hidden)]
+pub use bounded::compiled::{
+    CompiledBoundedPipelineSupport, CompiledGpuResource, CompiledGpuTaskExecutor, CompiledPipelineScheduler,
+    CompiledPipelineState, CompiledTaskExecutor, CompiledTaskOutput, ReleasedCompiledResource,
+    compiled_bounded_pipeline_support,
+};
 pub use source::{read_gpu_resident_source, read_local_parquet_source, validate_local_parquet_source};
 pub use types::{
     ExecutionMode, GpuDataFrame, GpuFilteredJoinBuildHandle, GpuHashJoinBuildCache, GpuHashJoinBuildHandle,
