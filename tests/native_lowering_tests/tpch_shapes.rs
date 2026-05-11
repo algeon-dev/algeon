@@ -16,9 +16,15 @@ async fn tpch_recent_bounded_topologies_expose_modeled_facts() {
     let result = lower_physical_plan_to_native(Arc::clone(plan));
     assert_eq!(result.rewritten_count(), 1, "q02 outcomes={:?}", result.report.outcomes());
     let native_plan = &result.plans[0];
+    let analysis = native_plan.capability_analysis();
     assert!(
         native_plan.has_bounded_executable_multi_join_aggregate_over_join_subplan_topk_pipeline(),
-        "q02 should lower to the executable aggregate-over-join subplan TopK pipeline:\n{native_plan}"
+        "q02 should lower to the executable aggregate-over-join subplan TopK pipeline: {:?}\n{native_plan}",
+        analysis.multi_join_aggregate_over_join_subplan_topk_admission,
+    );
+    assert!(
+        analysis.admits_multi_join_aggregate_over_join_subplan_topk_pipeline(),
+        "q02 should be admitted by the capability proof:\n{native_plan}"
     );
     let facts = native_plan
         .bounded_join_modeled_facts(cudf_query_engine::ExecutionBoundaryPolicy::default())

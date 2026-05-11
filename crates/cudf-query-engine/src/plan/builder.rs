@@ -1,11 +1,12 @@
 use super::*;
 
-/// Append-only builder for native query plans.
+/// Builder for native query plans.
 ///
-/// The builder assigns [`NodeId`]s by appending to `nodes`. Methods validate that
-/// referenced inputs already exist, which keeps ids stable and prevents forward
-/// references. Frontends should use this builder instead of constructing
-/// [`QueryPlan`] directly.
+/// The builder assigns stable [`NodeId`]s while interning equivalent nodes as a
+/// local common-subexpression-elimination step. Methods validate that referenced
+/// inputs already exist, which keeps ids stable and prevents forward references.
+/// Frontends should use this builder instead of constructing [`QueryPlan`]
+/// directly.
 #[derive(Debug, Clone, Default)]
 pub struct QueryPlanBuilder {
     nodes: Vec<QueryNode>,
@@ -118,6 +119,9 @@ impl QueryPlanBuilder {
     }
 
     fn push(&mut self, kind: PlanNode, facts: PlanFacts) -> NodeId {
+        if let Some(existing) = self.nodes.iter().find(|node| node.kind == kind && node.facts == facts) {
+            return existing.id;
+        }
         let id = NodeId(self.nodes.len());
         self.nodes.push(QueryNode { id, kind, facts });
         id

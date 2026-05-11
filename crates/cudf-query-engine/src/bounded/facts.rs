@@ -257,7 +257,7 @@ pub(crate) fn bounded_join_modeled_facts(
         facts
             .insert("modeled_reservations", KEYED_HASH_JOIN_RESIDENT_SUBPLAN_PIPELINE_MODELED_RESERVATIONS.to_string());
         facts.insert("bounded_join_lower_level_blockers", String::new());
-    } else if analyze_bounded_multi_join_aggregate_over_join_subplan_topk_pipeline(plan).is_ok() {
+    } else if crate::capability::admits_multi_join_aggregate_over_join_subplan_topk_pipeline(plan) {
         facts.insert("bounded_join_execution_family", MULTI_JOIN_AGGREGATE_OVER_JOIN_SUBPLAN_TOPK_FAMILY.to_string());
         facts.insert(
             "bounded_join_required_shape_contract",
@@ -398,18 +398,7 @@ fn insert_structural_topology_blocker(
 }
 
 fn matches_multi_join_aggregate_over_join_subplan_topk(plan: &QueryPlan) -> bool {
-    let Some(root_join_id) = final_sort_projection_root_join(plan) else {
-        return false;
-    };
-    if bounded_join_subtree_join_count(plan, root_join_id).unwrap_or_default() < 4 {
-        return false;
-    }
-    let Some(root_join) = join_node(plan, root_join_id) else {
-        return false;
-    };
-    keyed_hash_join(root_join)
-        && root_join.inputs.iter().any(|input| contains_projection_wrapped_aggregate_over_join_subplan(plan, *input))
-        && root_join.inputs.iter().any(|input| bounded_join_subtree_join_count(plan, *input).unwrap_or_default() >= 3)
+    crate::capability::admits_multi_join_aggregate_over_join_subplan_topk_pipeline(plan)
 }
 
 fn matches_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk(plan: &QueryPlan) -> bool {
@@ -430,12 +419,6 @@ fn matches_multi_join_resident_grouped_aggregate_subquery_filter(plan: &QueryPla
         && !contains_aggregate_over_join_subplan(plan, root_join_id)
 }
 
-fn final_sort_projection_root_join(plan: &QueryPlan) -> Option<NodeId> {
-    let (node_id, _) = peel_projection_chain(plan, final_sort_input(plan)?, 1)?;
-    join_node(plan, node_id)?;
-    Some(node_id)
-}
-
 fn final_sort_root_join(plan: &QueryPlan) -> Option<NodeId> {
     let (join_id, _) = peel_projection_chain(plan, final_sort_input(plan)?, 1)?;
     join_node(plan, join_id)?;
@@ -453,14 +436,6 @@ fn final_sort_input(plan: &QueryPlan) -> Option<NodeId> {
 
 fn keyed_hash_join(join: &JoinNode) -> bool {
     !join.spec.keys.is_empty() && !join.spec.output_projection.is_empty()
-}
-
-fn contains_projection_wrapped_aggregate_over_join_subplan(plan: &QueryPlan, node_id: NodeId) -> bool {
-    let Some((aggregate_id, projection_count)) = peel_projection_chain(plan, node_id, 2) else {
-        return false;
-    };
-    projection_count > 0
-        && aggregate_node(plan, aggregate_id).is_some_and(|aggregate| contains_join(plan, aggregate.input))
 }
 
 fn contains_aggregate_over_join_subplan(plan: &QueryPlan, node_id: NodeId) -> bool {
@@ -647,14 +622,6 @@ fn root_join_input_leaf_blocker(plan: &QueryPlan, node_id: NodeId) -> Option<&'s
         PlanNode::Aggregate(_) => Some("bounded_root_join_aggregate_leaf_unsupported"),
         PlanNode::Sort(_) => Some("bounded_root_join_sort_leaf_unsupported"),
         PlanNode::Limit(_) => Some("bounded_root_join_limit_leaf_unsupported"),
-    }
-}
-
-fn aggregate_node(plan: &QueryPlan, node_id: NodeId) -> Option<&AggregateNode> {
-    let node = plan.node(node_id)?;
-    match &node.kind {
-        PlanNode::Aggregate(aggregate) => Some(aggregate),
-        _ => None,
     }
 }
 

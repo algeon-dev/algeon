@@ -6,6 +6,7 @@ use crate::{
         hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_admission_decision,
         keyed_hash_join_resident_subplan_admission_decision,
         mixed_keyed_residual_join_resident_grouped_aggregate_input_admission_decision,
+        multi_join_aggregate_over_join_subplan_topk_admission_decision,
     },
     expr::{AggregateFunction, ColumnQualifier, ColumnRef, Expr},
     plan::{
@@ -241,7 +242,11 @@ pub(crate) fn analyze_bounded_join_plan_support(plan: &QueryPlan) -> BoundedJoin
         );
         return BoundedJoinPlanSupport::MultiJoinTreePostRootPipeline;
     }
-    if analyze_bounded_multi_join_aggregate_over_join_subplan_topk_pipeline(plan).is_ok() {
+    if multi_join_aggregate_over_join_subplan_topk_admission_decision(plan) == CapabilityDecision::Satisfied {
+        debug_assert!(
+            analyze_bounded_multi_join_aggregate_over_join_subplan_topk_pipeline(plan).is_ok(),
+            "capability-admitted multi-join aggregate-over-join subplan TopK plans must remain extractable by the transitional executor shape recognizer",
+        );
         return BoundedJoinPlanSupport::MultiJoinAggregateOverJoinSubplanTopKPipeline;
     }
     if mixed_keyed_residual_join_resident_grouped_aggregate_input_admission_decision(plan)
