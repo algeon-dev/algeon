@@ -70,7 +70,7 @@ pub(super) fn analyze_closed_multi_join_subgraph_admission(
         match solved_invariant_decision(invariants, kind) {
             Some(CapabilityDecision::Satisfied) => {},
             Some(CapabilityDecision::Rejected { reason, facts }) => {
-                return CapabilityDecision::Rejected { reason: *reason, facts: facts.clone() };
+                return CapabilityDecision::Rejected { reason, facts: facts.clone() };
             },
             Some(CapabilityDecision::Conditional { waiting_on }) => {
                 return CapabilityDecision::Conditional { waiting_on: waiting_on.clone() };
@@ -120,7 +120,7 @@ pub(super) fn analyze_multi_join_aggregate_over_join_subplan_topk_admission(
         match solved_invariant_decision(invariants, kind) {
             Some(CapabilityDecision::Satisfied) => {},
             Some(CapabilityDecision::Rejected { reason, facts }) => {
-                return CapabilityDecision::Rejected { reason: *reason, facts: facts.clone() };
+                return CapabilityDecision::Rejected { reason, facts: facts.clone() };
             },
             Some(CapabilityDecision::Conditional { waiting_on }) => {
                 return CapabilityDecision::Conditional { waiting_on: waiting_on.clone() };
@@ -172,7 +172,7 @@ pub(super) fn analyze_mixed_keyed_residual_join_resident_grouped_aggregate_input
         match solved_invariant_decision(invariants, kind) {
             Some(CapabilityDecision::Satisfied) => {},
             Some(CapabilityDecision::Rejected { reason, facts }) => {
-                return CapabilityDecision::Rejected { reason: *reason, facts: facts.clone() };
+                return CapabilityDecision::Rejected { reason, facts: facts.clone() };
             },
             Some(CapabilityDecision::Conditional { waiting_on }) => {
                 return CapabilityDecision::Conditional { waiting_on: waiting_on.clone() };
@@ -222,7 +222,7 @@ pub(super) fn analyze_hash_join_resident_grouped_aggregate_input_post_join_aggre
         match solved_invariant_decision(invariants, kind) {
             Some(CapabilityDecision::Satisfied) => {},
             Some(CapabilityDecision::Rejected { reason, facts }) => {
-                return CapabilityDecision::Rejected { reason: *reason, facts: facts.clone() };
+                return CapabilityDecision::Rejected { reason, facts: facts.clone() };
             },
             Some(CapabilityDecision::Conditional { waiting_on }) => {
                 return CapabilityDecision::Conditional { waiting_on: waiting_on.clone() };
@@ -272,7 +272,7 @@ pub(super) fn analyze_keyed_hash_join_resident_subplan_admission(
         match solved_invariant_decision(invariants, kind) {
             Some(CapabilityDecision::Satisfied) => {},
             Some(CapabilityDecision::Rejected { reason, facts }) => {
-                return CapabilityDecision::Rejected { reason: *reason, facts: facts.clone() };
+                return CapabilityDecision::Rejected { reason, facts: facts.clone() };
             },
             Some(CapabilityDecision::Conditional { waiting_on }) => {
                 return CapabilityDecision::Conditional { waiting_on: waiting_on.clone() };
@@ -317,7 +317,7 @@ pub(super) fn analyze_keyless_conditional_join_input_subplan_admission(
         match solved_invariant_decision(invariants, kind) {
             Some(CapabilityDecision::Satisfied) => {},
             Some(CapabilityDecision::Rejected { reason, facts }) => {
-                return CapabilityDecision::Rejected { reason: *reason, facts: facts.clone() };
+                return CapabilityDecision::Rejected { reason, facts: facts.clone() };
             },
             Some(CapabilityDecision::Conditional { waiting_on }) => {
                 return CapabilityDecision::Conditional { waiting_on: waiting_on.clone() };
@@ -381,7 +381,7 @@ pub(super) fn analyze_keyless_conditional_join_aggregate_over_join_subplan_input
         match solved_invariant_decision(invariants, kind) {
             Some(CapabilityDecision::Satisfied) => {},
             Some(CapabilityDecision::Rejected { reason, facts }) => {
-                return CapabilityDecision::Rejected { reason: *reason, facts: facts.clone() };
+                return CapabilityDecision::Rejected { reason, facts: facts.clone() };
             },
             Some(CapabilityDecision::Conditional { waiting_on }) => {
                 return CapabilityDecision::Conditional { waiting_on: waiting_on.clone() };
@@ -432,7 +432,7 @@ pub(super) fn analyze_multi_join_resident_grouped_aggregate_subquery_filter_admi
         match solved_invariant_decision(invariants, kind) {
             Some(CapabilityDecision::Satisfied) => {},
             Some(CapabilityDecision::Rejected { reason, facts }) => {
-                return CapabilityDecision::Rejected { reason: *reason, facts: facts.clone() };
+                return CapabilityDecision::Rejected { reason, facts: facts.clone() };
             },
             Some(CapabilityDecision::Conditional { waiting_on }) => {
                 return CapabilityDecision::Conditional { waiting_on: waiting_on.clone() };
@@ -548,7 +548,7 @@ pub(super) fn first_reachable_node_rejection(
         }
         match &node.executable {
             CapabilityDecision::Rejected { reason, facts } => {
-                Some(CapabilityDecision::Rejected { reason: *reason, facts: facts.clone() })
+                Some(CapabilityDecision::Rejected { reason, facts: facts.clone() })
             },
             _ => None,
         }
@@ -570,7 +570,7 @@ pub(super) fn first_reachable_edge_rejection(
         }
         match &edge.decision {
             CapabilityDecision::Rejected { reason, facts } => {
-                Some(CapabilityDecision::Rejected { reason: *reason, facts: facts.clone() })
+                Some(CapabilityDecision::Rejected { reason, facts: facts.clone() })
             },
             _ => None,
         }

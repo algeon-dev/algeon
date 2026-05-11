@@ -7,7 +7,8 @@ use crate::{
     error::{QueryError, QueryErrorCode},
     pipeline::model::{
         CompiledPipeline, PipelineBarrierId, PipelineBarrierKind, PipelineEdgeId, PipelineEdgeKind, PipelineTaskId,
-        PipelineTaskKind, ReservationGateId, ReservationGateOwner, ResidentLifetime, ResidentResourceId,
+        PipelineTaskKind, ReservationGateId, ReservationGateOwner, ResidentLifetime, ResidentResource,
+        ResidentResourceId,
     },
     runtime::ReservationKind,
 };
@@ -149,16 +150,11 @@ fn validate_lifetime(
                     .with_fact("task_id", task));
             }
         },
-        ResidentLifetime::BetweenTasks { producer, last_consumer } => {
+        ResidentLifetime::BetweenTasks { producer } => {
             if !task_ids.contains(&producer) {
                 return Err(invalid("pipeline resident lifetime producer task does not exist")
                     .with_fact("resource_id", resource)
                     .with_fact("task_id", producer));
-            }
-            if !task_ids.contains(&last_consumer) {
-                return Err(invalid("pipeline resident lifetime last consumer task does not exist")
-                    .with_fact("resource_id", resource)
-                    .with_fact("task_id", last_consumer));
             }
         },
         ResidentLifetime::SinkOutput { producer } => {
@@ -361,7 +357,7 @@ fn validate_resource_flow(pipeline: &CompiledPipeline) -> crate::Result<()> {
                         .with_fact("consumer_count", resource.consumers().len()));
                 }
             },
-            ResidentLifetime::BetweenTasks { producer, last_consumer } => {
+            ResidentLifetime::BetweenTasks { producer } => {
                 if producer != resource.producer() {
                     return Err(invalid("pipeline between-tasks lifetime producer does not match resource producer")
                         .with_fact("resource_id", resource.id())
@@ -371,11 +367,6 @@ fn validate_resource_flow(pipeline: &CompiledPipeline) -> crate::Result<()> {
                 if resource.consumers().is_empty() {
                     return Err(invalid("pipeline between-tasks lifetime has no consumers")
                         .with_fact("resource_id", resource.id()));
-                }
-                if !resource.consumers().contains(&last_consumer) {
-                    return Err(invalid("pipeline between-tasks lifetime last consumer is not a resource consumer")
-                        .with_fact("resource_id", resource.id())
-                        .with_fact("last_consumer", last_consumer));
                 }
             },
             ResidentLifetime::SinkOutput { producer } => {
@@ -392,6 +383,7 @@ fn validate_resource_flow(pipeline: &CompiledPipeline) -> crate::Result<()> {
                 }
             },
         }
+        validate_shared_resident_resource_edges(pipeline, resource)?;
     }
 
     for edge in pipeline.edges() {
@@ -419,6 +411,79 @@ fn validate_resource_flow(pipeline: &CompiledPipeline) -> crate::Result<()> {
         }
     }
 
+    validate_task_input_resource_consumers(pipeline)?;
+
+    Ok(())
+}
+
+fn validate_shared_resident_resource_edges(
+    pipeline: &CompiledPipeline,
+    resource: &ResidentResource,
+) -> crate::Result<()> {
+    let shared_edges = pipeline
+        .edges()
+        .iter()
+        .filter(|edge| {
+            edge.kind() == PipelineEdgeKind::SharedResidentProducer && edge.resources().contains(&resource.id())
+        })
+        .collect::<Vec<_>>();
+    if shared_edges.is_empty() {
+        return Ok(());
+    }
+
+    if resource.consumers().len() < 2 {
+        return Err(invalid("pipeline shared resident resource does not fan out to multiple consumers")
+            .with_fact("resource_id", resource.id())
+            .with_fact("consumer_count", resource.consumers().len()));
+    }
+
+    for edge in &shared_edges {
+        if edge.resources() != [resource.id()] {
+            return Err(invalid("pipeline shared resident producer edge must carry exactly one resource identity")
+                .with_fact("edge_id", edge.id())
+                .with_fact("resource_id", resource.id())
+                .with_fact("edge_resource_count", edge.resources().len()));
+        }
+    }
+
+    let shared_consumers = shared_edges.iter().map(|edge| edge.to()).collect::<BTreeSet<_>>();
+    let recorded_consumers = resource.consumers().iter().copied().collect::<BTreeSet<_>>();
+    if shared_consumers != recorded_consumers {
+        let missing = recorded_consumers.difference(&shared_consumers).next().copied();
+        let extra = shared_consumers.difference(&recorded_consumers).next().copied();
+        let mut error = invalid("pipeline shared resident producer edges do not cover recorded consumers")
+            .with_fact("resource_id", resource.id())
+            .with_fact("producer_task", resource.producer());
+        if let Some(missing) = missing {
+            error = error.with_fact("missing_consumer_task", missing);
+        }
+        if let Some(extra) = extra {
+            error = error.with_fact("extra_consumer_task", extra);
+        }
+        return Err(error);
+    }
+
+    Ok(())
+}
+
+fn validate_task_input_resource_consumers(pipeline: &CompiledPipeline) -> crate::Result<()> {
+    for task in pipeline.tasks() {
+        for resource_id in task.input_resources() {
+            let resource = resource_by_id(pipeline, *resource_id)?;
+            if !resource.consumers().contains(&task.id()) {
+                return Err(invalid("pipeline task input resource consumer is not recorded on resource")
+                    .with_fact("resource_id", resource.id())
+                    .with_fact("producer_task", resource.producer())
+                    .with_fact("consumer_task", task.id()));
+            }
+            if !edge_carries_resource(pipeline, resource.producer(), task.id(), resource.id()) {
+                return Err(invalid("pipeline task input resource has no carrying dependency edge")
+                    .with_fact("resource_id", resource.id())
+                    .with_fact("producer_task", resource.producer())
+                    .with_fact("consumer_task", task.id()));
+            }
+        }
+    }
     Ok(())
 }
 

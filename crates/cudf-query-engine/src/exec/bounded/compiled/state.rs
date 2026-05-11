@@ -150,7 +150,7 @@ impl<T> CompiledPipelineState<T> {
             }
         }
         for resource in task.input_resources() {
-            if self.should_release_after_consumer(*resource, task.id())? {
+            if self.should_release_after_consumer_completion(*resource, task.id())? {
                 released.push(self.release_resource(*resource, task.id())?);
             }
         }
@@ -224,7 +224,7 @@ impl<T> CompiledPipelineState<T> {
             produced_ids.push(resource);
         }
 
-        for resource in expected.difference(&seen) {
+        if let Some(resource) = expected.difference(&seen).next() {
             return Err(invalid("compiled task did not produce a declared resident resource")
                 .with_fact("compiled_task_id", task.id())
                 .with_fact("resident_resource_id", *resource)
@@ -234,10 +234,21 @@ impl<T> CompiledPipelineState<T> {
         Ok(produced_ids)
     }
 
-    fn should_release_after_consumer(&self, resource: ResidentResourceId, consumer: PipelineTaskId) -> Result<bool> {
+    fn should_release_after_consumer_completion(
+        &self,
+        resource: ResidentResourceId,
+        consumer: PipelineTaskId,
+    ) -> Result<bool> {
         let slot = self.resource_slot(resource)?;
         match slot.definition.lifetime() {
-            ResidentLifetime::BetweenTasks { last_consumer, .. } => Ok(last_consumer == consumer),
+            ResidentLifetime::BetweenTasks { .. } => {
+                if !slot.definition.consumers().contains(&consumer) {
+                    return Err(invalid("compiled task completed as an unrecorded resident resource consumer")
+                        .with_fact("resident_resource_id", resource)
+                        .with_fact("compiled_task_id", consumer));
+                }
+                Ok(slot.definition.consumers().iter().all(|consumer| self.completed_tasks.contains(consumer)))
+            },
             ResidentLifetime::TaskLocal { .. } => Err(invalid("compiled task consumed a task-local resident resource")
                 .with_fact("resident_resource_id", resource)
                 .with_fact("compiled_task_id", consumer)),
@@ -259,7 +270,7 @@ impl<T> CompiledPipelineState<T> {
             slot.definition.consumers().iter().copied().find(|consumer| !self.completed_tasks.contains(consumer))
         };
         if let Some(incomplete_consumer) = incomplete_consumer {
-            return Err(invalid("compiled resident resource reached last consumer before all consumers completed")
+            return Err(invalid("compiled resident resource release requested before all consumers completed")
                 .with_fact("resident_resource_id", resource)
                 .with_fact("compiled_task_id", consumer)
                 .with_fact("incomplete_consumer_task", incomplete_consumer));

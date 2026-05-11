@@ -6,6 +6,40 @@ mod plan;
 pub(super) use final_merge::{execute_final_aggregate_merge, reduce_merge_fan_in};
 pub(super) use plan::BoundedPlan;
 
+#[allow(clippy::too_many_arguments)]
+pub(in crate::exec::bounded) fn execute_compiled_bounded_aggregate_from_frame(
+    context: &ExecutionContext,
+    node_id: NodeId,
+    aggregate: &AggregateNode,
+    output_schema: &arrow::datatypes::SchemaRef,
+    input: GpuDataFrame,
+    input_reserved_bytes: u64,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+) -> Result<ResidentGpuFrame> {
+    execute_bounded_generic_unary_from_frame(
+        context,
+        node_id,
+        "compiled_aggregate",
+        "compiled_aggregate_output",
+        input,
+        input_reserved_bytes,
+        reservations,
+        metrics,
+        true,
+        |context, input, token, metrics| {
+            execute_aggregate_with_budget(
+                context,
+                aggregate,
+                input,
+                output_schema,
+                token.expect("budget token is created for compiled bounded aggregate stages"),
+                metrics,
+            )
+        },
+    )
+}
+
 pub(super) fn execute_post_aggregate_projection(
     context: &ExecutionContext,
     bounded: &BoundedPlan<'_>,

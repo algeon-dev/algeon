@@ -83,6 +83,9 @@ fn bounded_native_query_executes_pure_hash_multi_join_pipeline_with_ordered_rese
     assert_eq!(metrics.phase_c_memory_control_policy.as_str(), "bounded");
     assert_eq!(metrics.parquet_files, 3);
     assert_eq!(metrics.reservation_denied_count, 0);
+    assert_eq!(metrics.compiled_pipeline_attempts, 1);
+    assert!(metrics.compiled_pipeline_tasks_executed > 0);
+    assert_eq!(metrics.compiled_pipeline_host_arrow_sinks, 1);
     assert_eq!(metrics.hash_join_build_count, 2);
     assert_eq!(metrics.operators.iter().filter(|operator| operator.join.is_some()).count(), 2);
     assert!(metrics.operators.iter().filter_map(|operator| operator.join.as_ref()).all(|join| {
@@ -111,10 +114,10 @@ fn bounded_native_query_executes_pure_hash_multi_join_pipeline_with_ordered_rese
             (ReservationKind::ProbeSide, "join_probe_side"),
             (ReservationKind::GatherMap, "join_gather_map"),
             (ReservationKind::JoinOutput, "join_output"),
-            (ReservationKind::OperatorOutput, "join_pipeline_aggregate"),
-            (ReservationKind::OperatorOutput, "join_pipeline_aggregate_output"),
-            (ReservationKind::FinalSort, "join_pipeline_sort"),
-            (ReservationKind::FinalSort, "join_pipeline_sort_output"),
+            (ReservationKind::OperatorOutput, "compiled_aggregate"),
+            (ReservationKind::OperatorOutput, "compiled_aggregate_output"),
+            (ReservationKind::FinalSort, "final_sort"),
+            (ReservationKind::FinalSort, "final_sort"),
             (ReservationKind::Materialization, "host_materialization"),
         ],
     );

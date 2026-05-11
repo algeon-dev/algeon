@@ -414,7 +414,7 @@ impl ResidentResource {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ResidentLifetime {
     TaskLocal { task: PipelineTaskId },
-    BetweenTasks { producer: PipelineTaskId, last_consumer: PipelineTaskId },
+    BetweenTasks { producer: PipelineTaskId },
     SinkOutput { producer: PipelineTaskId },
 }
 
