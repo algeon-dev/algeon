@@ -7,6 +7,7 @@ use crate::{
         CompiledPipeline, PipelineBarrierKind, PipelineEdgeKind, PipelineTask, PipelineTaskId, PipelineTaskKind,
         SinkBoundaryKind,
     },
+    plan::{PlanNode, QueryPlan},
 };
 
 #[doc(hidden)]
@@ -69,6 +70,37 @@ pub fn compiled_bounded_pipeline_support(pipeline: &CompiledPipeline) -> Result<
             barrier.kind() == PipelineBarrierKind::SinkBoundary && barrier.upstream_tasks() == [sink_materialize.id()]
         })
     {
+        return Ok(CompiledBoundedPipelineSupport::Unsupported);
+    }
+
+    Ok(CompiledBoundedPipelineSupport::Supported)
+}
+
+#[doc(hidden)]
+pub fn compiled_bounded_query_plan_support(
+    plan: &QueryPlan,
+    pipeline: &CompiledPipeline,
+) -> Result<CompiledBoundedPipelineSupport> {
+    if compiled_bounded_pipeline_support(pipeline)? == CompiledBoundedPipelineSupport::Unsupported {
+        return Ok(CompiledBoundedPipelineSupport::Unsupported);
+    }
+
+    let Some(join_build) = single_task_of_kind(pipeline, PipelineTaskKind::JoinBuild) else {
+        return Ok(CompiledBoundedPipelineSupport::Unsupported);
+    };
+    let Some(join_node_id) = join_build.plan_node() else {
+        return Ok(CompiledBoundedPipelineSupport::Unsupported);
+    };
+    if plan.sink().input() != join_node_id {
+        return Ok(CompiledBoundedPipelineSupport::Unsupported);
+    }
+    let Some(node) = plan.node(join_node_id) else {
+        return Ok(CompiledBoundedPipelineSupport::Unsupported);
+    };
+    let PlanNode::Join(join) = &node.kind else {
+        return Ok(CompiledBoundedPipelineSupport::Unsupported);
+    };
+    if !join.is_bounded_root_hash_join_compatible() {
         return Ok(CompiledBoundedPipelineSupport::Unsupported);
     }
 

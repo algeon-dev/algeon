@@ -24,8 +24,10 @@ pub(super) fn validate_task_runtime_gates(pipeline: &CompiledPipeline, task: &Pi
             validate_gate(pipeline, *gate, ReservationGateOwner::Barrier(barrier.id()), task.id())?;
         }
     }
-    for gate in pipeline.sink().gates() {
-        validate_gate(pipeline, *gate, ReservationGateOwner::SinkBoundary, task.id())?;
+    if pipeline.sink().input() == task.id() {
+        for gate in pipeline.sink().gates() {
+            validate_gate(pipeline, *gate, ReservationGateOwner::SinkBoundary, task.id())?;
+        }
     }
     Ok(())
 }

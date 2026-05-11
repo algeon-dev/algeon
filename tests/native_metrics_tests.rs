@@ -40,6 +40,9 @@ fn query_metrics_phase_c_memory_control_defaults_are_zero() {
     assert_eq!(metrics.retry_count, 0);
     assert_eq!(metrics.final_merge_attempts, 0);
     assert_eq!(metrics.final_merge_levels, 0);
+    assert_eq!(metrics.compiled_pipeline_attempts, 0);
+    assert_eq!(metrics.compiled_pipeline_tasks_executed, 0);
+    assert_eq!(metrics.compiled_pipeline_host_arrow_sinks, 0);
 }
 
 #[test]
@@ -267,6 +270,9 @@ fn native_datafusion_metric_names_cover_bounded_runtime_contract() {
         "reservation_requested_bytes",
         "reservation_granted_bytes",
         "reservation_denied_count",
+        "compiled_pipeline_attempts",
+        "compiled_pipeline_tasks_executed",
+        "compiled_pipeline_host_arrow_sinks",
         "retry_resource_exhausted_count",
         "retry_reservation_failure_count",
         "hash_join_build_count",

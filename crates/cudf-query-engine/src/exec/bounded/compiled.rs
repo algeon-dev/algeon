@@ -13,7 +13,9 @@ mod tasks;
 
 pub use scheduler::{CompiledPipelineScheduler, CompiledTaskExecutor, CompiledTaskOutput};
 pub use state::{CompiledPipelineState, ReleasedCompiledResource};
-pub use support::{CompiledBoundedPipelineSupport, compiled_bounded_pipeline_support};
+pub use support::{
+    CompiledBoundedPipelineSupport, compiled_bounded_pipeline_support, compiled_bounded_query_plan_support,
+};
 pub use tasks::{CompiledGpuResource, CompiledGpuTaskExecutor};
 
 use crate::{
@@ -21,17 +23,20 @@ use crate::{
     exec::types::{GpuResidentInputMap, QueryOutput},
     metrics::QueryMetrics,
     pipeline::compile_pipeline,
-    plan::QueryPlan,
+    plan::{QueryPlan, ResultSink},
     runtime::ExecutionContext,
 };
 
 pub(in crate::exec) fn try_execute_compiled_bounded_pipeline(
-    _context: &ExecutionContext,
+    context: &ExecutionContext,
     plan: &QueryPlan,
-    _gpu_inputs: &GpuResidentInputMap,
-    _metrics: &mut QueryMetrics,
+    gpu_inputs: &GpuResidentInputMap,
+    metrics: &mut QueryMetrics,
 ) -> Result<Option<QueryOutput>> {
     if !plan.contains_join() {
+        return Ok(None);
+    }
+    if !matches!(plan.sink(), ResultSink::HostArrow { .. }) {
         return Ok(None);
     }
 
@@ -41,13 +46,21 @@ pub(in crate::exec) fn try_execute_compiled_bounded_pipeline(
     }
 
     let pipeline = compile_pipeline(plan, &analysis)?;
-    match compiled_bounded_pipeline_support(&pipeline)? {
+    match compiled_bounded_query_plan_support(plan, &pipeline)? {
         CompiledBoundedPipelineSupport::Unsupported => Ok(None),
         CompiledBoundedPipelineSupport::Supported => {
-            // D.1.2 installs graph scheduling and resource-lifetime state.
-            // D.1.3 starts executing source/unary tasks, so the production
-            // facade still declines the graph before any runtime side effect.
-            Ok(None)
+            let scheduler = CompiledPipelineScheduler::new(&pipeline)?;
+            metrics.record_compiled_pipeline_attempt();
+            let (state, output) = {
+                let mut executor = CompiledGpuTaskExecutor::new(context, plan, &pipeline, gpu_inputs, metrics)?;
+                let state = scheduler.run(&mut executor)?;
+                let output = executor.take_host_output()?;
+                debug_assert_eq!(executor.reserved_bytes(), 0);
+                (state, output)
+            };
+            metrics.record_compiled_pipeline_tasks_executed(state.completed_task_count() as u64);
+            metrics.record_compiled_pipeline_host_arrow_sink();
+            Ok(Some(QueryOutput::HostArrow(output)))
         },
     }
 }
