@@ -23,7 +23,7 @@ use crate::bounded_join_admission::{
         keyed_hash_join_resident_subplan_pipeline_plan, keyless_conditional_join_input_subplan_plan,
         resident_grouped_aggregate_input_post_join_aggregate_topk_plan,
         resident_grouped_aggregate_subquery_filter_plan, serial_aggregate_multi_join_spine_plan,
-        serial_aggregate_single_join_spine_plan,
+        serial_aggregate_single_join_spine_plan, single_join_post_root_aggregate_sort_limit_plan,
     },
     residual_resident_grouped_aggregate_input_plan,
 };
@@ -491,6 +491,42 @@ fn compile_pipeline_single_join_post_root_pipeline_has_post_join_aggregate_and_s
     assert_barrier_kind_count_at_least(&pipeline, PipelineBarrierKind::AggregateBoundary, 2);
     assert_barrier_kind_count(&pipeline, PipelineBarrierKind::SortBoundary, 1);
     assert_barrier_appears_before(&pipeline, PipelineBarrierKind::AggregateBoundary, PipelineBarrierKind::SortBoundary);
+}
+
+#[test]
+fn compile_pipeline_single_join_post_root_aggregate_sort_limit_graph_is_visible_before_d2_execution() {
+    let (_plan, _analysis, pipeline) = compile_admitted_join_case(
+        "single-join post-root aggregate sort limit",
+        single_join_post_root_aggregate_sort_limit_plan(),
+        CapabilityAnalysis::admits_single_join_post_root_pipeline,
+    );
+
+    assert_task_kind_count(&pipeline, PipelineTaskKind::JoinBuild, 1);
+    assert_task_kind_count(&pipeline, PipelineTaskKind::JoinProbe, 1);
+    assert_task_kind_count(&pipeline, PipelineTaskKind::JoinMaterialize, 1);
+    assert_task_kind_count(&pipeline, PipelineTaskKind::Aggregate, 1);
+    assert_task_kind_count(&pipeline, PipelineTaskKind::FinalSort, 1);
+    assert_task_kind_count(&pipeline, PipelineTaskKind::Limit, 1);
+    assert_barrier_kind_count(&pipeline, PipelineBarrierKind::AggregateBoundary, 1);
+    assert_barrier_kind_count(&pipeline, PipelineBarrierKind::SortBoundary, 1);
+    assert_barrier_appears_before(
+        &pipeline,
+        PipelineBarrierKind::JoinMaterialization,
+        PipelineBarrierKind::AggregateBoundary,
+    );
+    assert_barrier_appears_before(&pipeline, PipelineBarrierKind::AggregateBoundary, PipelineBarrierKind::SortBoundary);
+
+    let rendered = pipeline.debug_render();
+    for expected in [
+        "kind=aggregate",
+        "kind=final_sort",
+        "kind=limit",
+        "kind=aggregate_boundary",
+        "kind=sort_boundary",
+        "kind=sink_boundary",
+    ] {
+        assert!(rendered.contains(expected), "compiled graph rendering should contain {expected}");
+    }
 }
 
 #[test]
