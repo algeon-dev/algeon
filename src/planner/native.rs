@@ -1,5 +1,13 @@
 use super::*;
 
+mod strict_bounded;
+
+pub use strict_bounded::{
+    NativeStrictBoundedCompiledGraphDiagnostics, NativeStrictBoundedContractDiagnostics,
+    STRICT_BOUNDED_NON_JOIN_OUTSIDE_REPORT_SCOPE_REASON,
+};
+use strict_bounded::{accepted_plan_contract_diagnostics, rejected_plan_contract_diagnostics};
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativePlanningDiagnostics {
     pub input_plan_root: String,
@@ -7,6 +15,7 @@ pub struct NativePlanningDiagnostics {
     pub report: PlanningReport,
     pub source_diagnostics: Vec<cudf_query_engine::SourceDiagnostics>,
     pub bounded_join_reservation_facts: BTreeMap<String, String>,
+    pub strict_bounded_contract: NativeStrictBoundedContractDiagnostics,
 }
 
 #[derive(Debug)]
@@ -23,6 +32,7 @@ struct CudfNativePhysicalOptimizerRuleState {
     last_report: Mutex<Option<PlanningReport>>,
     last_source_diagnostics: Mutex<Vec<cudf_query_engine::SourceDiagnostics>>,
     last_bounded_join_reservation_facts: Mutex<BTreeMap<String, String>>,
+    last_strict_bounded_contract: Mutex<NativeStrictBoundedContractDiagnostics>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -42,6 +52,7 @@ impl CudfNativePhysicalOptimizerRule {
                 last_report: Mutex::new(None),
                 last_source_diagnostics: Mutex::new(Vec::new()),
                 last_bounded_join_reservation_facts: Mutex::new(BTreeMap::new()),
+                last_strict_bounded_contract: Mutex::new(NativeStrictBoundedContractDiagnostics::default()),
             }),
         }
     }
@@ -90,6 +101,12 @@ impl CudfNativePhysicalOptimizerRule {
                 .lock()
                 .expect("native bounded join reservation facts mutex poisoned")
                 .clone(),
+            strict_bounded_contract: self
+                .state
+                .last_strict_bounded_contract
+                .lock()
+                .expect("native strict bounded contract diagnostics mutex poisoned")
+                .clone(),
         })
     }
 }
@@ -130,6 +147,12 @@ impl PhysicalOptimizerRule for CudfNativePhysicalOptimizerRule {
             .lock()
             .expect("native bounded join reservation facts mutex poisoned") =
             optimized.bounded_join_reservation_facts.clone();
+        *self
+            .state
+            .last_strict_bounded_contract
+            .lock()
+            .expect("native strict bounded contract diagnostics mutex poisoned") =
+            optimized.strict_bounded_contract.clone();
         Ok(optimized.plan)
     }
 
@@ -157,6 +180,7 @@ fn apply_native_fallback_policy(
             report: native_cpu_only_report(&attempt.report),
             source_diagnostics: attempt.source_diagnostics,
             bounded_join_reservation_facts: BTreeMap::new(),
+            strict_bounded_contract: NativeStrictBoundedContractDiagnostics::default(),
             rewritten: false,
         }),
         GpuFallbackPolicy::GpuOnly => {
@@ -189,6 +213,7 @@ struct NativeOptimizationAttempt {
     report: PlanningReport,
     source_diagnostics: Vec<cudf_query_engine::SourceDiagnostics>,
     bounded_join_reservation_facts: BTreeMap<String, String>,
+    strict_bounded_contract: NativeStrictBoundedContractDiagnostics,
     rewritten: bool,
 }
 
@@ -213,12 +238,14 @@ fn optimize_final_native_plan(
     let mut report = lowering.report.clone();
     let mut source_diagnostics = lowering.source_diagnostics.clone();
     let mut bounded_join_reservation_facts = BTreeMap::new();
+    let mut strict_bounded_contract = NativeStrictBoundedContractDiagnostics::default();
     let Some(rewritten_plan) = optimize_native_children_for_host_arrow_boundary(
         Arc::clone(&plan),
         native_execution_config,
         &mut report,
         &mut source_diagnostics,
         &mut bounded_join_reservation_facts,
+        &mut strict_bounded_contract,
     )?
     else {
         return Ok(NativeOptimizationAttempt {
@@ -226,6 +253,7 @@ fn optimize_final_native_plan(
             report,
             source_diagnostics,
             bounded_join_reservation_facts,
+            strict_bounded_contract,
             rewritten: false,
         });
     };
@@ -235,6 +263,7 @@ fn optimize_final_native_plan(
         report,
         source_diagnostics,
         bounded_join_reservation_facts,
+        strict_bounded_contract,
         rewritten: true,
     })
 }
@@ -250,6 +279,7 @@ fn replace_lowered_root_or_keep_plan(
             report: lowering.report,
             source_diagnostics: lowering.source_diagnostics,
             bounded_join_reservation_facts: BTreeMap::new(),
+            strict_bounded_contract: NativeStrictBoundedContractDiagnostics::default(),
             rewritten: false,
         });
     }
@@ -261,6 +291,7 @@ fn replace_lowered_root_or_keep_plan(
             report: native_execution_boundary_report(&lowering.report),
             source_diagnostics: lowering.source_diagnostics,
             bounded_join_reservation_facts,
+            strict_bounded_contract: rejected_plan_contract_diagnostics(&lowering.plans[0], native_execution_config)?,
             rewritten: false,
         });
     }
@@ -270,11 +301,13 @@ fn replace_lowered_root_or_keep_plan(
         .map_err(DataFusionError::from)?;
     let bounded_join_reservation_facts =
         native_execution_boundary_modeled_facts(&lowering.plans[0], native_execution_config).unwrap_or_default();
+    let strict_bounded_contract = accepted_plan_contract_diagnostics(&lowering.plans[0], native_execution_config)?;
     Ok(NativeOptimizationAttempt {
         plan,
         report: lowering.report,
         source_diagnostics: lowering.source_diagnostics,
         bounded_join_reservation_facts,
+        strict_bounded_contract,
         rewritten: true,
     })
 }
@@ -285,6 +318,7 @@ fn optimize_native_children_for_host_arrow_boundary(
     report: &mut PlanningReport,
     source_diagnostics: &mut Vec<cudf_query_engine::SourceDiagnostics>,
     bounded_join_reservation_facts: &mut BTreeMap<String, String>,
+    strict_bounded_contract: &mut NativeStrictBoundedContractDiagnostics,
 ) -> DataFusionResult<Option<Arc<dyn ExecutionPlan>>> {
     if !host_arrow_boundary_allows_child_replacement(plan.as_ref()) {
         return Ok(None);
@@ -305,6 +339,7 @@ fn optimize_native_children_for_host_arrow_boundary(
         child_reports.push(attempt.report);
         child_source_diagnostics.extend(attempt.source_diagnostics);
         bounded_join_reservation_facts.extend(attempt.bounded_join_reservation_facts);
+        strict_bounded_contract.merge(attempt.strict_bounded_contract);
         new_children.push(attempt.plan);
     }
 

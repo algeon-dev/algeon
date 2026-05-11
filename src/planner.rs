@@ -23,7 +23,10 @@ use crate::{
 
 mod native;
 
-pub use native::{CudfNativePhysicalOptimizerRule, NativePlanningDiagnostics};
+pub use native::{
+    CudfNativePhysicalOptimizerRule, NativePlanningDiagnostics, NativeStrictBoundedCompiledGraphDiagnostics,
+    NativeStrictBoundedContractDiagnostics, STRICT_BOUNDED_NON_JOIN_OUTSIDE_REPORT_SCOPE_REASON,
+};
 
 #[derive(Debug, Clone)]
 pub struct CudfOptimizerConfig {

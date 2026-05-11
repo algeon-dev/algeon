@@ -135,6 +135,17 @@ fn native_optimizer_rule_rewrites_bounded_q11_aggregate_over_join_subplan_inputs
     assert!(matches!(report.outcomes()[0], CandidateOutcome::Rewritten { .. }));
 
     let diagnostics = rule.last_planning_diagnostics().expect("native optimizer should retain diagnostics");
+    assert_eq!(diagnostics.strict_bounded_contract.accepted_reports.len(), 1);
+    assert!(diagnostics.strict_bounded_contract.rejected_blocking_contracts.is_empty());
+    assert_eq!(diagnostics.strict_bounded_contract.compiled_graphs.len(), 1);
+    assert_eq!(diagnostics.strict_bounded_contract.compiled_graphs[0].sink_kind, "host_arrow_materialization");
+    assert!(diagnostics.strict_bounded_contract.compiled_graphs[0].gate_count > 0);
+    assert!(diagnostics.strict_bounded_contract.compiled_graphs[0].sink_gate_count > 0);
+    let strict_report = &diagnostics.strict_bounded_contract.accepted_reports[0];
+    assert_eq!(strict_report.execution_mode(), StrictBoundedExecutionMode::StrictBounded);
+    assert!(strict_report.is_strict_bounded_ready());
+    assert_strict_report_has_host_sink_boundary(strict_report);
+    assert_strict_report_has_join_path_gates(strict_report);
     assert_eq!(
         diagnostics.bounded_join_reservation_facts.get("bounded_join_enabled").map(String::as_str),
         Some("true")
@@ -171,6 +182,52 @@ fn native_optimizer_rule_rewrites_bounded_q11_aggregate_over_join_subplan_inputs
     );
 
     fs::remove_dir_all(dir).unwrap();
+}
+
+fn assert_strict_report_has_host_sink_boundary(report: &cudf_query_engine::StrictBoundedContractReport) {
+    assert!(
+        report.gate_rows().iter().any(|row| {
+            row.owner.to_string() == "sink_boundary"
+                && row.reservation_kind == ReservationKind::Materialization
+                && row.memory_boundary == "host_materialization"
+                && row.required_contract == "query_engine_explicit_sink_materialization_reservation"
+                && row.contract_quality == ContractQuality::QueryEngineOwnedBoundary
+        }),
+        "accepted strict bounded diagnostics must identify the host materialization sink boundary"
+    );
+}
+
+fn assert_strict_report_has_join_path_gates(report: &cudf_query_engine::StrictBoundedContractReport) {
+    for kind in [
+        ReservationKind::SourceRead,
+        ReservationKind::BuildSide,
+        ReservationKind::ProbeSide,
+        ReservationKind::HashTable,
+        ReservationKind::GatherMap,
+        ReservationKind::JoinOutput,
+        ReservationKind::Materialization,
+    ] {
+        assert!(
+            report.gate_rows().iter().any(|row| row.reservation_kind == kind),
+            "accepted strict bounded diagnostics should include reservation gate {kind:?}"
+        );
+    }
+
+    let stable_rows = report.stable_kv_rows().join("|");
+    for legacy_term in [
+        "BoundedJoinExecutionFamily",
+        "BoundedJoinExecutionPath",
+        "bounded_join_execution_family",
+        "bounded_join_execution_families",
+        "bounded_join_required_shape_contract",
+        "bounded_join_contract_modes",
+        "bounded_join_unresolved_preflight_contracts",
+    ] {
+        assert!(
+            !stable_rows.contains(legacy_term),
+            "strict bounded diagnostics must not contain legacy family/path term {legacy_term}"
+        );
+    }
 }
 
 fn task_kind_count(pipeline: &cudf_query_engine::CompiledPipeline, kind: PipelineTaskKind) -> usize {

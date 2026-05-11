@@ -20,7 +20,7 @@ pub use support::{
 pub use tasks::{CompiledGpuResource, CompiledGpuTaskExecutor};
 
 use crate::{
-    error::Result,
+    error::{QueryError, QueryErrorCode, Result},
     exec::types::{GpuResidentInputMap, QueryOutput},
     metrics::QueryMetrics,
     pipeline::compile_pipeline,
@@ -37,18 +37,22 @@ pub(in crate::exec) fn try_execute_compiled_bounded_pipeline(
     if !plan.contains_join() {
         return Ok(None);
     }
-    if !matches!(plan.sink(), ResultSink::HostArrow { .. }) {
-        return Ok(None);
-    }
 
     let analysis = plan.capability_analysis();
     if analysis.has_rejections() {
         return Ok(None);
     }
+    if !matches!(plan.sink(), ResultSink::HostArrow { .. }) {
+        return Err(compiled_bounded_pipeline_required_error(plan, None, "unsupported_sink_boundary"));
+    }
 
     let pipeline = compile_pipeline(plan, &analysis)?;
     match compiled_bounded_query_plan_support(plan, &pipeline)? {
-        CompiledBoundedPipelineSupport::Unsupported => Ok(None),
+        CompiledBoundedPipelineSupport::Unsupported => Err(compiled_bounded_pipeline_required_error(
+            plan,
+            Some(&pipeline),
+            "unsupported_compiled_pipeline_envelope",
+        )),
         CompiledBoundedPipelineSupport::Supported => {
             let scheduler = CompiledPipelineScheduler::new(&pipeline)?;
             metrics.record_compiled_pipeline_attempt();
@@ -64,4 +68,36 @@ pub(in crate::exec) fn try_execute_compiled_bounded_pipeline(
             Ok(Some(QueryOutput::HostArrow(output)))
         },
     }
+}
+
+fn compiled_bounded_pipeline_required_error(
+    plan: &QueryPlan,
+    pipeline: Option<&crate::pipeline::CompiledPipeline>,
+    reason: &'static str,
+) -> QueryError {
+    let sink_kind = match plan.sink() {
+        ResultSink::GpuResident { .. } => "gpu_resident",
+        ResultSink::HostArrow { .. } => "host_arrow",
+    };
+    let mut error = QueryError::new(
+        QueryErrorCode::UnsupportedPlanShape,
+        "cudf_query_engine.bounded.compiled_pipeline_required",
+        "capability-admitted bounded join execution requires the compiled bounded pipeline runtime",
+    )
+    .with_fact("compiled_pipeline_required", "true")
+    .with_fact("compiled_pipeline_rejection_reason", reason)
+    .with_fact("legacy_bounded_join_path_bridge", "disabled")
+    .with_fact("result_sink_kind", sink_kind);
+
+    if let Some(pipeline) = pipeline {
+        error = error
+            .with_fact("compiled_task_count", pipeline.tasks().len())
+            .with_fact("compiled_edge_count", pipeline.edges().len())
+            .with_fact("compiled_barrier_count", pipeline.barriers().len())
+            .with_fact("compiled_resource_count", pipeline.resources().len())
+            .with_fact("compiled_gate_count", pipeline.gates().len())
+            .with_fact("compiled_sink_kind", pipeline.sink().kind().as_str());
+    }
+
+    error
 }

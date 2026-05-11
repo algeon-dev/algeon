@@ -21,6 +21,7 @@ use cudf_query_engine::{
         CapabilityDecision, ContractQuality, ContractStatus, ReservationRequirementScope, SubgraphInvariantKind,
     },
     compile_pipeline,
+    contract_report::{StrictBoundedContractReport, StrictBoundedExecutionMode},
     exec::{
         CompiledBoundedPipelineSupport, CompiledGpuTaskExecutor, CompiledPipelineScheduler, CompiledPipelineState,
         CompiledTaskExecutor, CompiledTaskOutput, compiled_bounded_pipeline_support,
@@ -316,6 +317,113 @@ fn compiled_bounded_support_records_d3_inventory_migration_boundaries_before_sch
             );
         }
     }
+}
+
+#[test]
+fn d5_contract_gate_rows_are_inventory_backed_and_family_path_free() {
+    let mut hard_budgeted_unresolved_rows = 0;
+    let mut observed_retained_state_rows = 0;
+
+    for case in d3_1_inventory_cases() {
+        let analysis = case.plan.capability_analysis();
+        assert!((case.admits)(&analysis), "{}: expected D.5 inventory case to remain admitted", case.label);
+        let pipeline = compile_pipeline(&case.plan, &analysis)
+            .unwrap_or_else(|error| panic!("{}: compile failed: {error}", case.label));
+
+        let report = StrictBoundedContractReport::from_compiled_pipeline(&analysis, &pipeline)
+            .unwrap_or_else(|error| panic!("{}: strict bounded contract report failed: {error}", case.label));
+        assert_eq!(report.execution_mode(), StrictBoundedExecutionMode::StrictBounded);
+        assert!(report.is_strict_bounded_ready(), "{}: compiled gate report should be strict-ready", case.label);
+        assert_eq!(
+            report.gate_rows().len(),
+            pipeline.gates().len(),
+            "{}: report should preserve every compiled reservation gate",
+            case.label
+        );
+
+        let capability_report = StrictBoundedContractReport::from_capability_analysis(&analysis)
+            .unwrap_or_else(|error| panic!("{}: capability contract report failed: {error}", case.label));
+        assert_eq!(capability_report.execution_mode(), StrictBoundedExecutionMode::StrictBounded);
+        assert!(capability_report.is_strict_bounded_ready());
+
+        for row in report.gate_rows() {
+            let rendered = row.to_stable_kv_row();
+            assert_d5_contract_gate_row_is_family_path_free(case.label, &rendered);
+            assert!(rendered.contains("contract_status="), "{}: row must serialize contract status", case.label);
+            assert!(rendered.contains("contract_quality="), "{}: row must serialize contract quality", case.label);
+            assert!(
+                !rendered.contains("contract_modes"),
+                "{}: row must not serialize legacy contract modes",
+                case.label
+            );
+
+            if row.contract_quality == ContractQuality::HardBudgetedReportWithUnresolvedPreflight {
+                hard_budgeted_unresolved_rows += 1;
+                assert_eq!(
+                    row.contract_status,
+                    ContractStatus::Modeled,
+                    "{}: hard-budgeted unresolved preflight rows stay modeled",
+                    case.label
+                );
+                assert!(
+                    row.unresolved_preflight_gap.is_some_and(|gap| gap.starts_with("libcudf_")),
+                    "{}: hard-budgeted row should name its lower-level preflight gap",
+                    case.label
+                );
+            }
+
+            if matches!(row.reservation_kind, ReservationKind::FilteredProbeState | ReservationKind::MixedSizeData) {
+                observed_retained_state_rows += 1;
+                assert_eq!(
+                    row.contract_quality,
+                    ContractQuality::ObservedRetainedState,
+                    "{}: retained join state must not collapse into exact preflight",
+                    case.label
+                );
+            }
+        }
+    }
+
+    assert!(hard_budgeted_unresolved_rows > 0, "D.5 inventory should cover unresolved hard-budgeted gates");
+    assert!(observed_retained_state_rows > 0, "D.5 inventory should cover observed retained-state gates");
+}
+
+#[test]
+fn d5_contract_report_rejects_unresolved_preflight_gate_labeled_exact() {
+    let plan = root_join_plan();
+    let analysis = plan.capability_analysis();
+    let pipeline = compile_pipeline(&plan, &analysis).expect("root join should compile");
+    let mut gates = pipeline.gates().to_vec();
+    let source_gate_index = gates
+        .iter()
+        .position(|gate| gate.reservation_kind() == ReservationKind::SourceRead)
+        .expect("root join should have source-read gates");
+    let source_gate = &gates[source_gate_index];
+    gates[source_gate_index] = ReservationGate::new(
+        source_gate.id(),
+        source_gate.owner(),
+        ReservationKind::SourceRead,
+        ReservationRequirementScope::Edge,
+        "source_read",
+        "source_contract",
+        ContractStatus::Modeled,
+        ContractQuality::ExactPreflight,
+    );
+    let malformed = CompiledPipeline::new(
+        pipeline.tasks().to_vec(),
+        pipeline.edges().to_vec(),
+        pipeline.barriers().to_vec(),
+        pipeline.resources().to_vec(),
+        gates,
+        pipeline.sink().clone(),
+    );
+
+    let error = StrictBoundedContractReport::from_compiled_pipeline(&analysis, &malformed)
+        .expect_err("D.5 report construction should reject mislabeled unresolved preflight");
+
+    assert_eq!(error.code(), cudf_query_engine::QueryErrorCode::InvalidPlan);
+    assert_eq!(error.fact_value("reservation_kind"), Some("source_read"));
+    assert_eq!(error.fact_value("contract_quality"), Some("exact_preflight"));
 }
 
 #[test]
@@ -851,6 +959,34 @@ fn execute_query_plan_leaves_unsupported_compiled_graphs_on_legacy_fallback() {
 }
 
 #[test]
+fn execute_query_plan_rejects_admitted_join_when_compiled_runtime_cannot_own_sink() {
+    let Ok(runtime) = cudf::Runtime::new() else {
+        return;
+    };
+    let dir = unique_temp_dir("cudf-query-engine-compiled-d37-required");
+    let left_path = dir.join("left.parquet");
+    let right_path = dir.join("right.parquet");
+    write_join_parquets(&left_path, &right_path);
+    let plan = root_join_gpu_sink_data_plan(&left_path, &right_path);
+    let analysis = plan.capability_analysis();
+    assert!(analysis.admits_root_join());
+    let context = bounded_context(Arc::new(runtime));
+
+    let error = match execute_query_plan(&context, &plan) {
+        Ok(_) => panic!("capability-admitted bounded joins must not fall back to legacy path dispatch"),
+        Err(error) => error,
+    };
+    let rendered = error.to_string();
+
+    assert_eq!(error.code(), cudf_query_engine::QueryErrorCode::UnsupportedPlanShape);
+    assert_eq!(error.fact_value("compiled_pipeline_required"), Some("true"));
+    assert_eq!(error.fact_value("compiled_pipeline_rejection_reason"), Some("unsupported_sink_boundary"));
+    assert_eq!(error.fact_value("legacy_bounded_join_path_bridge"), Some("disabled"));
+    assert_eq!(error.fact_value("result_sink_kind"), Some("gpu_resident"));
+    assert_no_legacy_execution_selection_terms("D.3.7 compiled-required rejection", &rendered);
+}
+
+#[test]
 fn execute_query_plan_routes_root_hash_join_aggregate_through_compiled_pipeline() {
     let Ok(runtime) = cudf::Runtime::new() else {
         return;
@@ -1092,8 +1228,8 @@ fn d3_1_inventory_cases() -> Vec<D31InventoryCase> {
                 ResidualResidentGroupedAggregateInputVariant::BlockedFamily,
             ),
             admits: cudf_query_engine::capability::CapabilityAnalysis::admits_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline,
-            graph_support: CompiledBoundedPipelineSupport::Unsupported,
-            plan_support: CompiledBoundedPipelineSupport::Unsupported,
+            graph_support: CompiledBoundedPipelineSupport::Supported,
+            plan_support: CompiledBoundedPipelineSupport::Supported,
             render_fragments: &[
                 "kind=aggregate",
                 "kind=unary",
@@ -1190,18 +1326,49 @@ fn assert_compiled_graph_inventory(label: &str, pipeline: &CompiledPipeline) {
 }
 
 fn assert_no_legacy_execution_selection_terms(label: &str, rendered: &str) {
-    for forbidden in [
-        "BoundedJoinExecutionFamily",
-        "BoundedJoinExecutionPath",
-        "bounded_join_execution_family",
-        "bounded_join_execution_path",
-    ] {
+    for forbidden in D5_FORBIDDEN_FAMILY_PATH_REPORT_TERMS {
         assert!(
             !rendered.contains(forbidden),
             "{label}: compiled graph diagnostics must not contain legacy execution selection term {forbidden}"
         );
     }
 }
+
+fn assert_d5_contract_gate_row_is_family_path_free(label: &str, row: &str) {
+    for forbidden in D5_FORBIDDEN_FAMILY_PATH_REPORT_TERMS {
+        assert!(
+            !row.contains(forbidden),
+            "{label}: D.5 strict bounded contract gate rows must not contain legacy family/path report term {forbidden}"
+        );
+    }
+}
+
+const D5_FORBIDDEN_FAMILY_PATH_REPORT_TERMS: &[&str] = &[
+    "BoundedJoinExecutionFamily",
+    "BoundedJoinExecutionPath",
+    "bounded_join_execution_family",
+    "bounded_join_execution_families",
+    "bounded_join_execution_family_contracts",
+    "bounded_join_execution_path",
+    "bounded_join_blocked_join_family",
+    "bounded_join_required_shape_contract",
+    "bounded_join_contract_modes",
+    "bounded_join_unresolved_preflight_contracts",
+    "root_reusable_hash_join",
+    "root_filtered_semi_anti_join",
+    "keyless_conditional_join",
+    "keyless_conditional_join_input_subplan_pipeline",
+    "keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline",
+    "root_projected_cross_join",
+    "root_mixed_keyed_residual_join",
+    "multi_join_reusable_hash_pipeline",
+    "multi_join_mixed_keyed_residual_inner_left_semi_left_anti_pipeline",
+    "multi_join_with_aggregate_over_join_subplan_topk",
+    "mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline",
+    "hash_join_with_resident_grouped_aggregate_input_post_join_aggregate_topk",
+    "multi_join_with_resident_grouped_aggregate_subquery_filter",
+    "keyed_hash_join_resident_subplan_pipeline",
+];
 
 struct MockExecutor {
     executed: Vec<PipelineTaskId>,
@@ -1505,6 +1672,14 @@ fn root_filtered_left_only_join_plan(join_type: JoinType) -> QueryPlan {
 }
 
 fn root_join_data_plan(left_path: &Path, right_path: &Path) -> QueryPlan {
+    root_join_data_plan_with_sink(left_path, right_path, false)
+}
+
+fn root_join_gpu_sink_data_plan(left_path: &Path, right_path: &Path) -> QueryPlan {
+    root_join_data_plan_with_sink(left_path, right_path, true)
+}
+
+fn root_join_data_plan_with_sink(left_path: &Path, right_path: &Path, gpu_resident_sink: bool) -> QueryPlan {
     let left_schema = Arc::new(Schema::new(vec![
         Field::new("left_id", DataType::Int32, false),
         Field::new("left_value", DataType::Int32, false),
@@ -1543,7 +1718,7 @@ fn root_join_data_plan(left_path: &Path, right_path: &Path) -> QueryPlan {
         .with_build_side(JoinSide::Right),
         output_schema,
     );
-    builder.finish_with_host_sink(join)
+    if gpu_resident_sink { builder.finish_gpu_resident(join) } else { builder.finish_with_host_sink(join) }
 }
 
 fn shared_source_self_join_data_plan(path: &Path) -> QueryPlan {

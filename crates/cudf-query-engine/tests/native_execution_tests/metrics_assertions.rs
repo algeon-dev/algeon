@@ -290,33 +290,53 @@ pub(super) fn granted_reservation_requested_bytes(
 }
 
 pub(super) fn retained_bytes_before_grouped_aggregate_source_read(metrics: &QueryMetrics) -> u64 {
-    let source_index = metrics
-        .reservation_events
-        .iter()
-        .position(|event| event.outcome.as_str() == "granted" && event.memory_boundary == "source_chunk_read")
-        .expect("mixed aggregate input metrics should include grouped source read");
+    let (source_index, retained_boundary) = grouped_aggregate_source_read_index(metrics);
     metrics.reservation_events[..source_index]
         .iter()
         .rev()
-        .find(|event| event.outcome.as_str() == "granted" && event.memory_boundary == "join_pipeline_projection_output")
+        .find(|event| event.outcome.as_str() == "granted" && event.memory_boundary == retained_boundary)
         .expect("join subtree output should be retained before grouped source read")
         .requested_bytes
 }
 
 pub(super) fn grouped_aggregate_chunk_budget_window(metrics: &QueryMetrics) -> (u64, u64, u64) {
-    let source_index = metrics
+    let (source_index, _) = grouped_aggregate_source_read_index(metrics);
+    let retained_join_subtree_bytes = retained_bytes_before_grouped_aggregate_source_read(metrics);
+    let source_read_bytes = metrics.reservation_events[source_index].requested_bytes;
+    let operator_bytes = metrics.reservation_events[source_index + 1..]
+        .iter()
+        .find(|event| {
+            event.outcome.as_str() == "granted"
+                && matches!(event.memory_boundary.as_str(), "chunk_operator" | "compiled_aggregate")
+        })
+        .expect("mixed aggregate input metrics should include grouped aggregate operator")
+        .requested_bytes;
+    (retained_join_subtree_bytes, source_read_bytes, operator_bytes)
+}
+
+fn grouped_aggregate_source_read_index(metrics: &QueryMetrics) -> (usize, &'static str) {
+    if let Some(source_index) = metrics
         .reservation_events
         .iter()
         .position(|event| event.outcome.as_str() == "granted" && event.memory_boundary == "source_chunk_read")
-        .expect("mixed aggregate input metrics should include grouped source read");
-    let retained_join_subtree_bytes = retained_bytes_before_grouped_aggregate_source_read(metrics);
-    let source_read_bytes = metrics.reservation_events[source_index].requested_bytes;
-    let chunk_operator_bytes = metrics.reservation_events[source_index + 1..]
+    {
+        return (source_index, "join_pipeline_projection_output");
+    }
+
+    let aggregate_index = metrics
+        .reservation_events
         .iter()
-        .find(|event| event.outcome.as_str() == "granted" && event.memory_boundary == "chunk_operator")
-        .expect("mixed aggregate input metrics should include grouped chunk operator")
-        .requested_bytes;
-    (retained_join_subtree_bytes, source_read_bytes, chunk_operator_bytes)
+        .position(|event| event.outcome.as_str() == "granted" && event.memory_boundary == "compiled_aggregate")
+        .expect("compiled mixed aggregate input metrics should include grouped aggregate operator");
+    let source_index = metrics.reservation_events[..aggregate_index]
+        .iter()
+        .rposition(|event| event.outcome.as_str() == "granted" && event.memory_boundary == "join_source_read")
+        .expect("compiled mixed aggregate input metrics should include grouped source read");
+    metrics.reservation_events[..source_index]
+        .iter()
+        .rposition(|event| event.outcome.as_str() == "granted" && event.memory_boundary == "compiled_projection_output")
+        .expect("compiled mixed aggregate input metrics should retain a join-subtree projection output");
+    (source_index, "compiled_projection_output")
 }
 
 pub(super) fn granted_reservation_requested_bytes_for_boundary(

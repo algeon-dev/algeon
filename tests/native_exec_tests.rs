@@ -1,6 +1,9 @@
 use std::{fs, sync::Arc};
 
-use cudf_query_engine::{BoundedJoinReservationContract, PipelineTaskKind, compile_pipeline};
+use cudf_query_engine::{
+    BoundedJoinReservationContract, PipelineTaskKind, ReservationKind, StrictBoundedExecutionMode,
+    capability::ContractQuality, compile_pipeline,
+};
 use datafusion::{
     common::{DataFusionError, config::ConfigOptions},
     execution::context::TaskContext,
@@ -17,7 +20,8 @@ use datafusion::{
 use datafusion_cudf::{
     CandidateOutcome, CudfNativePhysicalOptimizerRule, CudfOptimizerConfig, ErrorCode, FallbackReason,
     GpuFallbackPolicy, NativeCudfComposedExec, NativeCudfExec, NativeCudfExecutionConfig, NativeCudfGpuProducerExec,
-    TPCH_QUERIES, cudf_native_physical_optimizer_rules, lower_physical_plan_to_native, write_tiny_tpch_parquet_dataset,
+    STRICT_BOUNDED_NON_JOIN_OUTSIDE_REPORT_SCOPE_REASON, TPCH_QUERIES, cudf_native_physical_optimizer_rules,
+    lower_physical_plan_to_native, write_tiny_tpch_parquet_dataset,
 };
 
 #[path = "native_exec_tests/bounded_join.rs"]
@@ -126,6 +130,15 @@ fn native_optimizer_rule_rewrites_supported_physical_plan() {
     assert_eq!(report.rewritten_count(), 1);
     assert!(matches!(report.outcomes()[0], CandidateOutcome::Rewritten { .. }));
     assert_eq!(rule.last_source_diagnostics().len(), 1);
+    let diagnostics = rule.last_planning_diagnostics().expect("native optimizer should retain diagnostics");
+    assert!(diagnostics.strict_bounded_contract.accepted_reports.is_empty());
+    assert!(diagnostics.strict_bounded_contract.rejected_blocking_contracts.is_empty());
+    assert_eq!(diagnostics.strict_bounded_contract.compiled_graphs.len(), 0);
+    assert_eq!(diagnostics.strict_bounded_contract.non_join_bounded_plan_count, 1);
+    assert_eq!(
+        diagnostics.strict_bounded_contract.non_join_bounded_plan_reason.as_deref(),
+        Some(STRICT_BOUNDED_NON_JOIN_OUTSIDE_REPORT_SCOPE_REASON)
+    );
 
     fs::remove_dir_all(dir).unwrap();
 }

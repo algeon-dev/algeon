@@ -1,3 +1,8 @@
+#![allow(dead_code)]
+// D.3.7 disconnected this topology-specific executor bridge from normal strict
+// bounded join dispatch. It remains only as a retirement target for diagnostics
+// and comparison while compiled pipeline execution owns admitted join plans.
+
 use super::*;
 use crate::bounded::{
     BoundedJoinPipelineRejection, BoundedJoinPipelineStage,

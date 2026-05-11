@@ -544,28 +544,6 @@ fn sink_path_stage_order_is_in_d3_6_envelope(pipeline: &CompiledPipeline, sink_p
 }
 
 fn stage_tasks_are_in_d3_6_envelope(pipeline: &CompiledPipeline, sink_path: &BTreeSet<PipelineTaskId>) -> bool {
-    let sink_path_has_stage = pipeline.tasks().iter().any(|task| {
-        sink_path.contains(&task.id())
-            && matches!(
-                task.kind(),
-                PipelineTaskKind::Aggregate | PipelineTaskKind::FinalSort | PipelineTaskKind::Limit
-            )
-    });
-    let has_non_sink_path_stage = pipeline.tasks().iter().any(|task| {
-        !sink_path.contains(&task.id())
-            && matches!(
-                task.kind(),
-                PipelineTaskKind::Aggregate | PipelineTaskKind::FinalSort | PipelineTaskKind::Limit
-            )
-    });
-    let sink_path_has_final_sort = pipeline
-        .tasks()
-        .iter()
-        .any(|task| sink_path.contains(&task.id()) && task.kind() == PipelineTaskKind::FinalSort);
-    if sink_path_has_stage && has_non_sink_path_stage && !sink_path_has_final_sort {
-        return false;
-    }
-
     pipeline.tasks().iter().all(|task| {
         if !matches!(task.kind(), PipelineTaskKind::Aggregate | PipelineTaskKind::FinalSort | PipelineTaskKind::Limit) {
             return true;
