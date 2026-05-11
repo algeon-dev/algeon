@@ -210,6 +210,80 @@ fn root_join_with_post_root_stages(
     }
 }
 
+pub(super) fn root_join_shape_decision(plan: &QueryPlan) -> Result<(), CapabilityDecision> {
+    let root_join_id = plan.sink().input();
+    let root_join = generic_join_node(plan, root_join_id, "root_join_admission_requires_sink_root_join")?;
+    if !bounded_root_join_compatible(root_join) {
+        return Err(CapabilityDecision::rejected(
+            "root_join_admission_requires_supported_join_capability",
+            [
+                ("node_id", root_join_id.to_string()),
+                ("join_type", root_join.spec.join_type.to_string()),
+                ("key_count", root_join.spec.keys.len().to_string()),
+                ("has_residual", root_join.spec.residual_predicate.is_some().to_string()),
+                ("build_side", root_join.spec.build_side.to_string()),
+            ],
+        ));
+    }
+    let reachable_join_count = reachable_join_count_from_sink(plan)?;
+    if reachable_join_count != 1 {
+        return Err(CapabilityDecision::rejected(
+            "root_join_admission_requires_single_reachable_join",
+            [("reachable_join_count", reachable_join_count.to_string())],
+        ));
+    }
+    validate_resident_source_filter_projection_leaf_pipeline_for_capability(
+        plan,
+        root_join.inputs[join_side_index(JoinSide::Left)],
+    )?;
+    validate_resident_source_filter_projection_leaf_pipeline_for_capability(
+        plan,
+        root_join.inputs[join_side_index(JoinSide::Right)],
+    )?;
+    Ok(())
+}
+
+pub(super) fn single_join_post_root_pipeline_shape_decision(plan: &QueryPlan) -> Result<(), CapabilityDecision> {
+    let (root_join_id, post_root_stages) = root_join_with_post_root_stages(plan, "single_join_post_root_pipeline")?;
+    if post_root_stages.is_empty() {
+        return Err(CapabilityDecision::rejected(
+            "single_join_post_root_pipeline_requires_post_root_stage",
+            [("root_join_id", root_join_id.to_string())],
+        ));
+    }
+    let root_join =
+        generic_join_node(plan, root_join_id, "single_join_post_root_pipeline_requires_supported_root_join")?;
+    if !bounded_root_join_compatible(root_join) {
+        return Err(CapabilityDecision::rejected(
+            "single_join_post_root_pipeline_requires_supported_join_capability",
+            [
+                ("node_id", root_join_id.to_string()),
+                ("join_type", root_join.spec.join_type.to_string()),
+                ("key_count", root_join.spec.keys.len().to_string()),
+                ("has_residual", root_join.spec.residual_predicate.is_some().to_string()),
+                ("build_side", root_join.spec.build_side.to_string()),
+            ],
+        ));
+    }
+    let reachable_join_count = reachable_join_count_from_sink(plan)?;
+    if reachable_join_count != 1 {
+        return Err(CapabilityDecision::rejected(
+            "single_join_post_root_pipeline_requires_single_reachable_join",
+            [("root_join_id", root_join_id.to_string()), ("reachable_join_count", reachable_join_count.to_string())],
+        ));
+    }
+    validate_general_post_root_stages(plan, &post_root_stages, "single_join_post_root_pipeline")?;
+    validate_resident_source_filter_projection_leaf_pipeline_for_capability(
+        plan,
+        root_join.inputs[join_side_index(JoinSide::Left)],
+    )?;
+    validate_resident_source_filter_projection_leaf_pipeline_for_capability(
+        plan,
+        root_join.inputs[join_side_index(JoinSide::Right)],
+    )?;
+    Ok(())
+}
+
 fn validate_general_post_root_stages(
     plan: &QueryPlan,
     stages: &[PostRootStage],
@@ -232,6 +306,33 @@ fn validate_general_post_root_stages(
         }
     }
     Ok(())
+}
+
+fn validate_resident_source_filter_projection_leaf_pipeline_for_capability(
+    plan: &QueryPlan,
+    node_id: NodeId,
+) -> Result<(), CapabilityDecision> {
+    let Some(node) = plan.node(node_id) else {
+        return Err(CapabilityDecision::rejected(
+            "source_leaf_pipeline_missing_node",
+            [("node_id", node_id.to_string())],
+        ));
+    };
+    match &node.kind {
+        PlanNode::Source(_) => Ok(()),
+        PlanNode::Filter(filter) => {
+            validate_resident_source_filter_projection_leaf_pipeline_for_capability(plan, filter.input)
+        },
+        PlanNode::Projection(projection) => {
+            validate_resident_source_filter_projection_leaf_pipeline_for_capability(plan, projection.input)
+        },
+        PlanNode::Join(_) | PlanNode::Aggregate(_) | PlanNode::Sort(_) | PlanNode::Limit(_) => {
+            Err(CapabilityDecision::rejected(
+                "source_leaf_pipeline_requires_source_filter_projection",
+                [("node_id", node_id.to_string()), ("operator", node_operator_fact(&node.kind).to_string())],
+            ))
+        },
+    }
 }
 
 fn validate_optional_projection_then_sort_post_root_stages(

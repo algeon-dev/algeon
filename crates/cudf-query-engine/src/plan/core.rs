@@ -73,13 +73,12 @@ impl QueryPlan {
 
     /// Returns true when the plan matches the bounded single-root join executor.
     pub fn has_bounded_executable_root_join(&self) -> bool {
-        matches!(analyze_bounded_join_plan_support(self), BoundedJoinPlanSupport::RootJoin)
-            && self.has_capability_report_projection()
+        crate::capability::admits_root_join(self)
     }
 
     /// Returns true when the plan matches a supported bounded join pipeline.
     pub fn has_bounded_executable_join_pipeline(&self) -> bool {
-        analyze_bounded_join_pipeline(self).is_ok() && self.has_capability_report_projection()
+        crate::capability::admits_single_join_post_root_pipeline(self)
     }
 
     /// Returns true when the plan matches the supported keyless conditional join

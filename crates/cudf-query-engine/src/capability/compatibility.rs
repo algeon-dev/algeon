@@ -1,4 +1,4 @@
-use super::{model::*, *};
+use super::{model::*, shape::*, *};
 use crate::runtime::{BOUNDED_JOIN_EXECUTION_FAMILY_CONTRACTS, BoundedJoinExecutionFamily};
 
 pub(crate) struct CompatibilityReportProjection {
@@ -9,7 +9,7 @@ pub(crate) struct CompatibilityReportProjection {
 
 impl CompatibilityReportProjection {
     pub(crate) fn from_analysis(analysis: &CapabilityAnalysis) -> Option<Self> {
-        if analysis.has_rejections() {
+        if analysis.has_rejections() || analysis.bounded_join_execution_path().is_none() {
             return None;
         }
         let execution_family = compatibility_execution_family(analysis)?;
@@ -101,36 +101,28 @@ impl CompatibilityReportProjection {
 }
 
 pub(super) fn compatibility_family_projection(plan: &QueryPlan) -> Option<CompatibilityFamilyProjection> {
-    match analyze_bounded_join_plan_support(plan) {
-        BoundedJoinPlanSupport::RootJoin => Some(CompatibilityFamilyProjection::RootJoin),
-        BoundedJoinPlanSupport::SingleJoinPostRootPipeline => {
-            Some(CompatibilityFamilyProjection::SingleJoinPostRootPipeline)
-        },
-        BoundedJoinPlanSupport::KeylessConditionalJoinInputSubplanPipeline => {
-            Some(CompatibilityFamilyProjection::KeylessConditionalJoinInputSubplanPipeline)
-        },
-        BoundedJoinPlanSupport::KeylessConditionalJoinAggregateOverJoinSubplanInputsPipeline => {
-            Some(CompatibilityFamilyProjection::KeylessConditionalJoinAggregateOverJoinSubplanInputsPipeline)
-        },
-        BoundedJoinPlanSupport::MultiJoinTreePostRootPipeline => {
-            Some(CompatibilityFamilyProjection::MultiJoinTreePostRootPipeline)
-        },
-        BoundedJoinPlanSupport::MultiJoinAggregateOverJoinSubplanTopKPipeline => {
-            Some(CompatibilityFamilyProjection::MultiJoinAggregateOverJoinSubplanTopKPipeline)
-        },
-        BoundedJoinPlanSupport::MixedKeyedResidualJoinResidentGroupedAggregateInputPipeline => {
-            Some(CompatibilityFamilyProjection::MixedKeyedResidualJoinResidentGroupedAggregateInputPipeline)
-        },
-        BoundedJoinPlanSupport::HashJoinResidentGroupedAggregateInputPostJoinAggregateTopKPipeline => {
-            Some(CompatibilityFamilyProjection::HashJoinResidentGroupedAggregateInputPostJoinAggregateTopKPipeline)
-        },
-        BoundedJoinPlanSupport::MultiJoinResidentGroupedAggregateSubqueryFilterPipeline => {
-            Some(CompatibilityFamilyProjection::MultiJoinResidentGroupedAggregateSubqueryFilterPipeline)
-        },
-        BoundedJoinPlanSupport::KeyedHashJoinResidentSubplanPipeline => {
-            Some(CompatibilityFamilyProjection::KeyedHashJoinResidentSubplanPipeline)
-        },
-        BoundedJoinPlanSupport::Unsupported => None,
+    if root_join_shape_decision(plan).is_ok() {
+        Some(CompatibilityFamilyProjection::RootJoin)
+    } else if single_join_post_root_pipeline_shape_decision(plan).is_ok() {
+        Some(CompatibilityFamilyProjection::SingleJoinPostRootPipeline)
+    } else if keyless_conditional_join_input_subplan_shape_decision(plan).is_ok() {
+        Some(CompatibilityFamilyProjection::KeylessConditionalJoinInputSubplanPipeline)
+    } else if keyless_conditional_join_aggregate_over_join_subplan_inputs_shape_decision(plan).is_ok() {
+        Some(CompatibilityFamilyProjection::KeylessConditionalJoinAggregateOverJoinSubplanInputsPipeline)
+    } else if matches!(closed_multi_join_subgraph_structure_decision(plan), CapabilityDecision::Satisfied) {
+        Some(CompatibilityFamilyProjection::MultiJoinTreePostRootPipeline)
+    } else if multi_join_aggregate_over_join_subplan_topk_shape_decision(plan).is_ok() {
+        Some(CompatibilityFamilyProjection::MultiJoinAggregateOverJoinSubplanTopKPipeline)
+    } else if mixed_keyed_residual_join_resident_grouped_aggregate_input_shape_decision(plan).is_ok() {
+        Some(CompatibilityFamilyProjection::MixedKeyedResidualJoinResidentGroupedAggregateInputPipeline)
+    } else if hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_shape_decision(plan).is_ok() {
+        Some(CompatibilityFamilyProjection::HashJoinResidentGroupedAggregateInputPostJoinAggregateTopKPipeline)
+    } else if multi_join_resident_grouped_aggregate_subquery_filter_shape_decision(plan).is_ok() {
+        Some(CompatibilityFamilyProjection::MultiJoinResidentGroupedAggregateSubqueryFilterPipeline)
+    } else if keyed_hash_join_resident_subplan_shape_decision(plan).is_ok() {
+        Some(CompatibilityFamilyProjection::KeyedHashJoinResidentSubplanPipeline)
+    } else {
+        None
     }
 }
 

@@ -1,13 +1,15 @@
 use super::{admission::*, compatibility::*, edge::*, graph::*, invariant::*, model::*, node::*, *};
 
 impl QueryPlan {
-    /// Runs capability analysis without changing bounded admission or execution.
+    /// Runs bounded capability analysis for diagnostics, report projection, and
+    /// native bounded-join admission.
     pub fn capability_analysis(&self) -> CapabilityAnalysis {
         analyze_query_capabilities(self)
     }
 }
 
-/// Runs capability analysis without changing bounded admission or execution.
+/// Runs bounded capability analysis for diagnostics, report projection, and
+/// native bounded-join admission.
 pub fn analyze_query_capabilities(plan: &QueryPlan) -> CapabilityAnalysis {
     let nodes = plan.nodes().iter().map(|node| analyze_node(plan, node)).collect::<Vec<_>>();
     let mut edges =
@@ -17,6 +19,9 @@ pub fn analyze_query_capabilities(plan: &QueryPlan) -> CapabilityAnalysis {
 
     let invariants = analyze_invariants(plan, &edges);
     let requirements = collect_requirements(&nodes, &edges);
+    let root_join_admission = analyze_root_join_admission(plan, &nodes, &edges);
+    let single_join_post_root_pipeline_admission =
+        analyze_single_join_post_root_pipeline_admission(plan, &nodes, &edges);
     let closed_multi_join_subgraph_admission =
         analyze_closed_multi_join_subgraph_admission(plan, &nodes, &edges, &invariants);
     let multi_join_aggregate_over_join_subplan_topk_admission =
@@ -43,11 +48,13 @@ pub fn analyze_query_capabilities(plan: &QueryPlan) -> CapabilityAnalysis {
         );
     let multi_join_resident_grouped_aggregate_subquery_filter_admission =
         analyze_multi_join_resident_grouped_aggregate_subquery_filter_admission(plan, &nodes, &edges, &invariants);
-    CapabilityAnalysis {
+    let mut analysis = CapabilityAnalysis {
         nodes,
         edges,
         invariants,
         requirements,
+        root_join_admission,
+        single_join_post_root_pipeline_admission,
         closed_multi_join_subgraph_admission,
         multi_join_aggregate_over_join_subplan_topk_admission,
         mixed_keyed_residual_join_resident_grouped_aggregate_input_admission,
@@ -56,8 +63,41 @@ pub fn analyze_query_capabilities(plan: &QueryPlan) -> CapabilityAnalysis {
         keyless_conditional_join_input_subplan_admission,
         keyless_conditional_join_aggregate_over_join_subplan_inputs_admission,
         multi_join_resident_grouped_aggregate_subquery_filter_admission,
-        compatibility_family_projection: compatibility_family_projection(plan),
-    }
+        compatibility_family_projection: None,
+    };
+    analysis.compatibility_family_projection = compatibility_family_projection(plan);
+    analysis
+}
+
+/// Runs the root-join proof without compatibility-family projection.
+pub(crate) fn root_join_admission_decision(plan: &QueryPlan) -> CapabilityDecision {
+    let nodes = plan.nodes().iter().map(|node| analyze_node(plan, node)).collect::<Vec<_>>();
+    let mut edges =
+        plan.nodes().iter().flat_map(|node| analyze_input_edges(plan, node.id, &node.kind)).collect::<Vec<_>>();
+    edges.push(analyze_sink_edge(plan));
+    mark_shared_producer_edge_contracts(plan, &mut edges);
+
+    analyze_root_join_admission(plan, &nodes, &edges)
+}
+
+pub(crate) fn admits_root_join(plan: &QueryPlan) -> bool {
+    root_join_admission_decision(plan) == CapabilityDecision::Satisfied
+}
+
+/// Runs the single-join post-root pipeline proof without compatibility-family
+/// projection.
+pub(crate) fn single_join_post_root_pipeline_admission_decision(plan: &QueryPlan) -> CapabilityDecision {
+    let nodes = plan.nodes().iter().map(|node| analyze_node(plan, node)).collect::<Vec<_>>();
+    let mut edges =
+        plan.nodes().iter().flat_map(|node| analyze_input_edges(plan, node.id, &node.kind)).collect::<Vec<_>>();
+    edges.push(analyze_sink_edge(plan));
+    mark_shared_producer_edge_contracts(plan, &mut edges);
+
+    analyze_single_join_post_root_pipeline_admission(plan, &nodes, &edges)
+}
+
+pub(crate) fn admits_single_join_post_root_pipeline(plan: &QueryPlan) -> bool {
+    single_join_post_root_pipeline_admission_decision(plan) == CapabilityDecision::Satisfied
 }
 
 /// Runs the closed multi-join proof without compatibility-family projection.
