@@ -38,7 +38,7 @@ use datafusion::{
 };
 use datafusion_nexus::{native_exec::NexusNativeExecutionConfig, planner::NexusNativeOptimizerConfig};
 use nexus_query_engine::{
-    admission::QueryPlanCapabilityProof,
+    admission::{ComposedGraphProducerCandidate, QueryPlanCapabilityProof},
     expr::ColumnRef,
     plan::{JoinKey, JoinOutputColumn, JoinSide, JoinSpec, JoinType, QueryPlan, QueryPlanBuilder},
     source::{GpuResidentSource, LocalParquetFile, LocalParquetSource, SourceNode},
@@ -102,9 +102,31 @@ pub(super) fn admitted_native_config(
     config.with_query_service_handle(Arc::new(handle))
 }
 
+pub(super) fn admitted_composed_config(
+    consumer_plan: &QueryPlan,
+    producer_input_name: &str,
+    producer_plan: &QueryPlan,
+    config: NexusNativeExecutionConfig,
+) -> NexusNativeExecutionConfig {
+    let producer = QueryPlanCapabilityProof::for_query_plan(producer_plan)
+        .expect("exact composed producer fixture must issue a proof");
+    let consumer = QueryPlanCapabilityProof::for_composed_consumer_plan(consumer_plan)
+        .expect("exact composed consumer fixture must issue a proof");
+    let proof = QueryPlanCapabilityProof::resolve_composed_graph_attempt(
+        consumer_plan,
+        consumer,
+        [ComposedGraphProducerCandidate::new(Some(producer_input_name.to_string()), None, Some(producer))],
+    )
+    .expect("exact composed fixture must issue a complete proof");
+    let handle = super::test_gpu_backend()
+        .admit_query_with_plan_capability_proof(proof)
+        .expect("exact composed fixture proof must admit");
+    config.with_query_service_handle(Arc::new(handle))
+}
+
 pub(super) fn local_parquet_gpu_resident_plan(path: &std::path::Path, schema: Arc<Schema>) -> QueryPlan {
-    let source = LocalParquetSource::from_files(
-        vec![LocalParquetFile::new(path).with_file_size_bytes(fs::metadata(path).unwrap().len())],
+    let source = local_parquet_source_with_exact_metadata(
+        path,
         schema,
         vec!["key".to_string(), "payload".to_string(), "m00".to_string(), "m01".to_string()],
     );
@@ -221,8 +243,15 @@ pub(super) fn parquet_file_schema() -> Arc<Schema> {
 }
 
 pub(super) fn parquet_scan(path: &std::path::Path) -> Arc<dyn ExecutionPlan> {
+    parquet_scan_with_target_partitions(path, 1)
+}
+
+pub(super) fn parquet_scan_with_target_partitions(
+    path: &std::path::Path,
+    target_partitions: usize,
+) -> Arc<dyn ExecutionPlan> {
     let ctx = SessionContext::new_with_config(
-        SessionConfig::new().with_repartition_file_scans(false).with_target_partitions(1),
+        SessionConfig::new().with_repartition_file_scans(false).with_target_partitions(target_partitions),
     );
     let df =
         futures::executor::block_on(ctx.read_parquet(path.to_str().unwrap(), ParquetReadOptions::default())).unwrap();

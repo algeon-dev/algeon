@@ -12,6 +12,22 @@ const CPU_INPUT_BFS_SQL: &str = "SELECT vertex, distance, predecessor \
           '{\"construction_policy\":\"raw_libcugraph\"}') \
      ORDER BY vertex";
 
+const RAW_BFS_TOP_K_SQL: &str = "SELECT vertex, distance, predecessor \
+     FROM cugraph_bfs('phase_c_top_k_edges', 0, 'src', 'dst', NULL, \
+          '{\"construction_policy\":\"raw_libcugraph\"}') \
+     ORDER BY distance \
+     LIMIT 100";
+
+const PAGERANK_TOP_K_SQL: &str = "SELECT vertex, value \
+     FROM cugraph_pagerank('phase_c_top_k_edges', 'src', 'dst', 'weight') \
+     ORDER BY value DESC \
+     LIMIT 100";
+
+const PAGERANK_FLOAT32_TOP_K_SQL: &str = "SELECT vertex, value \
+     FROM cugraph_pagerank('phase_c_top_k_edges_float32', 'src', 'dst', 'weight') \
+     ORDER BY value DESC \
+     LIMIT 100";
+
 const PAGERANK_FORCEATLAS2_JOIN_SQL: &str = "WITH pagerank AS (\n\
         SELECT vertex, value AS pagerank_value\n\
         FROM cugraph_pagerank('graph_edges', 'src', 'dst', 'weight')\n\
@@ -76,6 +92,32 @@ fn register_edges_with_upstream_only_list(ctx: &SessionContext, table_name: &str
             Arc::new(Int64Array::from(vec![0_i64, 1, 2])) as ArrayRef,
             Arc::new(Int64Array::from(vec![1_i64, 2, 3])) as ArrayRef,
             Arc::new(tags) as ArrayRef,
+        ],
+    )
+    .unwrap();
+    ctx.register_table(table_name, Arc::new(MemTable::try_new(schema, vec![vec![batch]]).unwrap())).unwrap();
+}
+
+fn register_phase_c_top_k_edges(ctx: &SessionContext, table_name: &str, weight_type: DataType) {
+    let sources = (0_i64..=256).collect::<Vec<_>>();
+    let mut destinations = (1_i64..=256).collect::<Vec<_>>();
+    destinations.push(0);
+    let weights = match &weight_type {
+        DataType::Float32 => Arc::new(Float32Array::from(vec![1.0_f32; sources.len()])) as ArrayRef,
+        DataType::Float64 => Arc::new(Float64Array::from(vec![1.0_f64; sources.len()])) as ArrayRef,
+        other => panic!("phase C PageRank fixture does not support {other:?}"),
+    };
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("src", DataType::Int64, false),
+        Field::new("dst", DataType::Int64, false),
+        Field::new("weight", weight_type, false),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int64Array::from(sources)) as ArrayRef,
+            Arc::new(Int64Array::from(destinations)) as ArrayRef,
+            weights,
         ],
     )
     .unwrap();
@@ -153,8 +195,9 @@ async fn cugraph_sql_cpu_to_gpu_to_cpu_projects_away_unsupported_upstream_type()
 
 #[tokio::test]
 async fn cugraph_sql_keeps_native_inputs_device_resident_for_native_downstream() {
-    let (_backend, ctx) = default_backend_cugraph_sql_context();
+    let (backend, ctx) = default_backend_cugraph_sql_context();
     register_directed_bfs_edges(&ctx, "raw_edges");
+    register_phase_c_top_k_edges(&ctx, "phase_c_top_k_edges", DataType::Float64);
 
     let df = ctx.sql(CPU_INPUT_BFS_SQL).await.unwrap();
     let plan = df.create_physical_plan().await.unwrap();
@@ -206,12 +249,45 @@ async fn cugraph_sql_keeps_native_inputs_device_resident_for_native_downstream()
     assert_eq!(bfs_distance_for(batch, 1), Some(1));
     assert_eq!(bfs_distance_for(batch, 2), Some(1));
     assert_eq!(bfs_distance_for(batch, 3), Some(2));
+
+    let top_k_attempt = backend.begin_attempt(datafusion_nexus::attempt::AttemptOptions::default()).unwrap();
+    let top_k_completion = top_k_attempt.completion();
+    let top_k_plan = top_k_attempt.plan_sql(&ctx, RAW_BFS_TOP_K_SQL).await.unwrap();
+    assert_eq!(schema_field_names(top_k_plan.schema().as_ref()), vec!["vertex", "distance", "predecessor"]);
+    assert!(top_k_plan.schema().field_with_name("predecessor").unwrap().is_nullable());
+    let top_k_composed =
+        find_composed_exec(top_k_plan.as_ref()).expect("raw BFS top-k must lower to one composed native consumer");
+    let top_k_native_plan = top_k_composed.native_plan().to_string();
+    for expected in ["GpuResidentSource", "Sort", "Limit"] {
+        assert!(
+            top_k_native_plan.contains(expected),
+            "raw BFS top-k consumer must include {expected}:\n{top_k_native_plan}"
+        );
+    }
+    let mut top_k_stream = top_k_attempt.execute_physical_plan(Arc::clone(&top_k_plan), &ctx).unwrap();
+    let mut top_k_batches = Vec::new();
+    while let Some(batch) = top_k_stream.next().await {
+        top_k_batches.push(batch.expect("raw BFS top-k must execute through the admitted composed schedule"));
+    }
+    let report = top_k_completion.await;
+    assert!(matches!(report.outcome, nexus_query_engine::observability::RuntimeTerminalOutcome::Succeeded));
+    assert!(report.composed_schedule.is_some(), "raw BFS top-k must select OrderedTimeline admission provenance");
+    assert_eq!(top_k_batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 100);
+    let distances = top_k_batches
+        .iter()
+        .flat_map(|batch| {
+            batch.column(1).as_any().downcast_ref::<Int64Array>().unwrap().values().iter().copied().collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(distances, (0_i64..100).collect::<Vec<_>>());
 }
 
 #[tokio::test]
 async fn cugraph_sql_gpu_pagerank_forceatlas2_join_executes_as_one_scheduled_composed_attempt() {
-    let (_backend, ctx) = default_backend_cugraph_sql_context();
+    let (backend, ctx) = default_backend_cugraph_sql_context();
     register_edge_memtable(&ctx, "graph_edges", DataType::Int64, DataType::Int64, DataType::Float64);
+    register_phase_c_top_k_edges(&ctx, "phase_c_top_k_edges", DataType::Float64);
+    register_phase_c_top_k_edges(&ctx, "phase_c_top_k_edges_float32", DataType::Float32);
     let plan = ctx.sql(PAGERANK_FORCEATLAS2_JOIN_SQL).await.unwrap().create_physical_plan().await.unwrap();
     let composed =
         find_composed_exec(plan.as_ref()).expect("the canonical two-producer topology lowers to one composed root");
@@ -234,6 +310,35 @@ async fn cugraph_sql_gpu_pagerank_forceatlas2_join_executes_as_one_scheduled_com
         assert!(pagerank.value(row).is_finite() && pagerank.value(row) > 0.0);
         assert!(x.value(row).is_finite());
         assert!(y.value(row).is_finite());
+    }
+
+    for (weight_type, sql) in [(DataType::Float32, PAGERANK_FLOAT32_TOP_K_SQL), (DataType::Float64, PAGERANK_TOP_K_SQL)]
+    {
+        let top_k_attempt = backend.begin_attempt(datafusion_nexus::attempt::AttemptOptions::default()).unwrap();
+        let top_k_completion = top_k_attempt.completion();
+        let top_k_plan = top_k_attempt.plan_sql(&ctx, sql).await.unwrap();
+        assert_eq!(schema_field_names(top_k_plan.schema().as_ref()), vec!["vertex", "value"]);
+        assert_eq!(top_k_plan.schema().field_with_name("value").unwrap().data_type(), &DataType::Float64);
+        let top_k_composed =
+            find_composed_exec(top_k_plan.as_ref()).expect("PageRank top-k must lower to one composed native consumer");
+        let top_k_native_plan = top_k_composed.native_plan().to_string();
+        for expected in ["GpuResidentSource", "Sort", "Limit"] {
+            assert!(
+                top_k_native_plan.contains(expected),
+                "{weight_type:?} PageRank top-k consumer must include {expected}:\n{top_k_native_plan}"
+            );
+        }
+        let mut top_k_stream = top_k_attempt.execute_physical_plan(Arc::clone(&top_k_plan), &ctx).unwrap();
+        let mut top_k_batches = Vec::new();
+        while let Some(batch) = top_k_stream.next().await {
+            top_k_batches.push(batch.expect("PageRank top-k must execute through the admitted composed schedule"));
+        }
+        let report = top_k_completion.await;
+        assert!(matches!(report.outcome, nexus_query_engine::observability::RuntimeTerminalOutcome::Succeeded));
+        assert!(report.composed_schedule.is_some(), "PageRank top-k must select OrderedTimeline admission provenance");
+        let rows = pagerank_rows(&top_k_batches);
+        assert_eq!(rows.len(), 100);
+        assert!(rows.windows(2).all(|pair| pair[0].value >= pair[1].value));
     }
 }
 

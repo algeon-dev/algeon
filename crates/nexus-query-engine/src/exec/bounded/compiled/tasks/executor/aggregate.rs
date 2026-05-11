@@ -325,6 +325,71 @@ impl CompiledGpuTaskExecutor<'_> {
         if Some(limit.input) != task.plan_node() {
             return Ok(None);
         }
+        let sort_node_id = plan_node(task)?;
+        let sort = sort_node(self.plan, task, sort_node_id)?;
+        if !final_sort_limit_fusion_allowed(self.plan, sort) {
+            return Ok(None);
+        }
         Ok(Some((limit_node_id, limit.clone())))
+    }
+}
+
+fn final_sort_limit_fusion_allowed(plan: &QueryPlan, sort: &SortNode) -> bool {
+    !matches!(
+        plan.node(sort.input).map(|node| &node.kind),
+        Some(PlanNode::Source(source)) if matches!(source.as_ref(), SourceNode::GpuResident(_))
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use arrow::datatypes::{DataType, Field, Schema};
+
+    use super::*;
+    use crate::{
+        expr::{Expr, LimitSpec, SortExpr, SortSpec},
+        plan::QueryPlanBuilder,
+        source::{GpuResidentSource, LocalParquetSource},
+    };
+
+    #[test]
+    fn final_sort_limit_fusion_excludes_only_direct_gpu_resident_sources() {
+        let schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Int64, false)]));
+
+        let mut resident_builder = QueryPlanBuilder::new();
+        let resident = resident_builder
+            .add_source(SourceNode::GpuResident(GpuResidentSource::new("resident", Arc::clone(&schema))));
+        let resident_sort = resident_builder.add_sort(
+            resident,
+            SortSpec::new(vec![SortExpr::new(Expr::column("value"), false, false)]),
+            Arc::clone(&schema),
+        );
+        let resident_limit =
+            resident_builder.add_limit(resident_sort, LimitSpec::new(0, Some(100)), Arc::clone(&schema));
+        let resident_plan = resident_builder.finish_with_host_sink(resident_limit);
+        let PlanNode::Sort(resident_sort_node) = &resident_plan.node(resident_sort).unwrap().kind else {
+            panic!("resident sort node must remain a sort")
+        };
+        assert!(!final_sort_limit_fusion_allowed(&resident_plan, resident_sort_node));
+
+        let mut parquet_builder = QueryPlanBuilder::new();
+        let parquet = parquet_builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+            "/tmp/final-sort-limit-fusion.parquet",
+            Arc::clone(&schema),
+            vec!["value".to_owned()],
+        )));
+        let parquet_sort = parquet_builder.add_sort(
+            parquet,
+            SortSpec::new(vec![SortExpr::new(Expr::column("value"), false, false)]),
+            Arc::clone(&schema),
+        );
+        let parquet_limit = parquet_builder.add_limit(parquet_sort, LimitSpec::new(0, Some(100)), schema);
+        let parquet_plan = parquet_builder.finish_with_host_sink(parquet_limit);
+        let PlanNode::Sort(parquet_sort_node) = &parquet_plan.node(parquet_sort).unwrap().kind else {
+            panic!("Parquet sort node must remain a sort")
+        };
+        assert!(final_sort_limit_fusion_allowed(&parquet_plan, parquet_sort_node));
     }
 }
