@@ -570,3 +570,240 @@ fn attempt_bound_queued_close_seals_one_terminal_report_without_admission() {
         .close_and_wait_for_quiescence(Duration::from_secs(2))
         .expect("active admission release lets the closed service quiesce");
 }
+
+#[test]
+fn phase_d_full_queue_rejects_before_owner_preflight_or_lifecycle_ticket() {
+    let service = test_service(1, 1);
+    let active = service.admit_query().expect("first admission occupies the only slot");
+    let queued = service.enqueue_admission().expect("one real waiter fills the queue");
+    service.reset_pending_preflight_resolver_calls();
+    let lifecycle_before = service.service.inner.admission.lock().expect("admission state").lifecycle.snapshot();
+
+    let error = service.admit_query().expect_err("queue-full admission must reject locally");
+    assert_eq!(error.fact_value("reason"), Some("admission_queue_full"));
+    assert_eq!(error.fact_value("queued_queries"), Some("1"));
+    assert_eq!(error.fact_value("pending_preflight"), Some("0"));
+    assert_eq!(service.pending_preflight_resolver_calls(), 0, "queue-full work does not enter owner preflight");
+    let lifecycle_after = service.service.inner.admission.lock().expect("admission state").lifecycle.snapshot();
+    assert_eq!(lifecycle_after, lifecycle_before, "queue-full rejection creates no provisional lifecycle ticket");
+
+    drop(queued);
+    drop(active);
+}
+
+#[test]
+fn phase_d_counts_queued_and_pending_reservations_against_one_bound() {
+    let service = test_service(1, 2);
+    let active = service.admit_query().expect("first admission occupies the only slot");
+    let queued = service.enqueue_admission().expect("first waiter enters the queue");
+    let pause = service.pause_pending_preflight();
+    let pending_service = service.clone();
+    let pending = std::thread::spawn(move || pending_service.admit_query());
+    pause.wait_until_entered(Duration::from_secs(1));
+
+    assert_eq!(service.queued_len(), 1);
+    assert_eq!(service.pending_preflight_len(), 1);
+    let error = service.admit_query().expect_err("queued plus pending reservations fill the bound");
+    assert_eq!(error.fact_value("reason"), Some("admission_queue_full"));
+    assert_eq!(error.fact_value("queued_queries"), Some("1"));
+    assert_eq!(error.fact_value("pending_preflight"), Some("1"));
+
+    pause.release();
+    drop(queued);
+    drop(active);
+    pending.join().expect("pending submission thread joins").expect("pending request eventually admits");
+    assert_eq!(service.pending_preflight_len(), 0);
+}
+
+#[test]
+fn phase_d_pending_reservation_is_a_fifo_barrier_for_younger_queue_work() {
+    let service = test_service(1, 2);
+    let active = service.admit_query().expect("first admission occupies the only slot");
+    let pause = service.pause_pending_preflight();
+    let older_service = service.clone();
+    let older = std::thread::spawn(move || older_service.admit_query());
+    pause.wait_until_entered(Duration::from_secs(1));
+
+    let mut younger = service.enqueue_admission().expect("younger request enters the queue");
+    let younger_id = younger.admission_request_id();
+    {
+        let mut state = service.service.inner.admission.lock().expect("admission state");
+        state
+            .queued
+            .iter_mut()
+            .find(|request| request.admission_request_id == younger_id)
+            .expect("younger request is queued")
+            .overtakes_remaining = 0;
+    }
+    assert!(younger.try_admit().expect("younger waiter remains queued").is_none());
+    assert_eq!(service.pending_preflight_len(), 1);
+    assert_eq!(service.queued_len(), 1);
+    let state = service.service.inner.admission.lock().expect("admission state");
+    assert!(state.queued[0].protected_device.is_none(), "pending preflight blocks younger protection restore");
+    drop(state);
+
+    pause.release();
+    wait_for_pending_preflight_len(&service, 0);
+    wait_for_exact_queued_len(&service, 2);
+    let state = service.service.inner.admission.lock().expect("admission state");
+    assert_eq!(state.queued[1].admission_request_id, younger_id);
+    assert!(state.queued[0].submission_seq < state.queued[1].submission_seq);
+    drop(state);
+
+    drop(younger);
+    drop(active);
+    older.join().expect("older submission thread joins").expect("older pending request eventually admits");
+}
+
+#[test]
+fn phase_d_owner_preflight_failure_releases_pending_reservation() {
+    let service = test_service(1, 1);
+    service.fail_next_pending_preflight();
+
+    let error = service.admit_query().expect_err("injected owner preflight failure is returned");
+    assert_eq!(error.fact_value("reason"), Some("injected_pending_preflight_failure"));
+    assert_eq!(service.pending_preflight_len(), 0, "owner preflight failure releases its reservation exactly once");
+    assert_eq!(service.queued_len(), 0);
+}
+
+#[test]
+fn phase_d_cancellation_and_deadline_release_pending_reservations() {
+    let service = test_service(1, 2);
+    let cancellation = ExecutionCancellation::new();
+    let pause = service.pause_pending_preflight();
+    let cancellation_service = service.clone();
+    let cancellation_token = cancellation.clone();
+    let cancelled = std::thread::spawn(move || {
+        cancellation_service.admit_query_with_request(
+            QueryAdmissionRequest::new().with_execution_cancellation(cancellation_token),
+        )
+    });
+    pause.wait_until_entered(Duration::from_secs(1));
+    cancellation.cancel();
+    pause.release();
+    let error = cancelled.join().expect("cancelled submission thread joins").expect_err("cancellation wins conversion");
+    assert_eq!(error.code(), QueryErrorCode::Cancelled);
+    assert_eq!(service.pending_preflight_len(), 0);
+
+    let deadline = Instant::now() + Duration::from_millis(20);
+    let deadline_pause = service.pause_pending_preflight();
+    let deadline_service = service.clone();
+    let deadline_thread = std::thread::spawn(move || {
+        deadline_service.admit_query_with_request(QueryAdmissionRequest::new().with_queue_deadline(deadline))
+    });
+    deadline_pause.wait_until_entered(Duration::from_secs(1));
+    while Instant::now() < deadline {
+        std::thread::yield_now();
+    }
+    deadline_pause.release();
+    let error = deadline_thread
+        .join()
+        .expect("deadline submission thread joins")
+        .expect_err("queue deadline wins conversion");
+    assert_eq!(error.fact_value("reason"), Some("queue_wait_elapsed"));
+    assert_eq!(service.pending_preflight_len(), 0);
+
+    service.reset_pending_preflight_resolver_calls();
+    let error = service
+        .admit_query_with_request(
+            QueryAdmissionRequest::new().with_queue_deadline(Instant::now() - Duration::from_millis(1)),
+        )
+        .expect_err("an already-expired queue deadline rejects before owner preflight");
+    assert_eq!(error.fact_value("reason"), Some("queue_wait_elapsed"));
+    assert_eq!(service.pending_preflight_resolver_calls(), 0);
+    assert_eq!(service.pending_preflight_len(), 0);
+}
+
+#[test]
+fn phase_d_pending_guard_releases_during_panic_unwind() {
+    let service = test_service(1, 1);
+    let panic_service = service.clone();
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+        let mut state = panic_service.service.lock_admission().expect("admission state");
+        let pending = panic_service.service.reserve_pending_preflight_locked(&mut state).expect("slot available");
+        drop(state);
+        assert_eq!(panic_service.pending_preflight_len(), 1);
+        let _ = &pending;
+        panic!("injected pending preflight unwind");
+    }));
+    assert!(result.is_err());
+    assert_eq!(service.pending_preflight_len(), 0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn phase_d_pending_guard_releases_when_task_is_dropped() {
+    let service = test_service(1, 1);
+    let task_service = service.clone();
+    let task = tokio::spawn(async move {
+        let pending = {
+            let mut state = task_service.service.lock_admission().expect("admission state");
+            task_service.service.reserve_pending_preflight_locked(&mut state).expect("slot available")
+        };
+        std::future::pending::<()>().await;
+        drop(pending);
+    });
+    wait_for_pending_preflight_len(&service, 1);
+    task.abort();
+    let _ = task.await;
+    assert_eq!(service.pending_preflight_len(), 0);
+}
+
+#[test]
+fn phase_d_close_waits_for_pending_preflight_release() {
+    let service = test_service(1, 1);
+    let pause = service.pause_pending_preflight();
+    let pending_service = service.clone();
+    let pending = std::thread::spawn(move || pending_service.admit_query());
+    pause.wait_until_entered(Duration::from_secs(1));
+
+    let close_service = service.clone();
+    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+    let close = std::thread::spawn(move || {
+        sender
+            .send(close_service.close_and_wait_for_quiescence(Duration::from_secs(2)))
+            .expect("close result receiver remains live");
+    });
+    while service.shutdown_waiter_count() == 0 {
+        std::thread::yield_now();
+    }
+    assert!(matches!(receiver.try_recv(), Err(std::sync::mpsc::TryRecvError::Empty)));
+    pause.release();
+    assert!(receiver.recv_timeout(Duration::from_secs(2)).expect("close result arrives").is_ok());
+    close.join().expect("close thread joins");
+    assert_eq!(service.pending_preflight_len(), 0);
+    let error = pending.join().expect("pending submission joins").expect_err("closed service rejects pending conversion");
+    assert_eq!(error.fact_value("reason"), Some("admission_closed"));
+}
+
+#[test]
+fn phase_d_direct_try_observes_pending_without_reserving_or_resolving() {
+    let service = test_service(1, 2);
+    let active = service.admit_query().expect("first admission occupies the only slot");
+    let pause = service.pause_pending_preflight();
+    let pending_service = service.clone();
+    let pending = std::thread::spawn(move || pending_service.admit_query());
+    pause.wait_until_entered(Duration::from_secs(1));
+    let resolver_calls = service.pending_preflight_resolver_calls();
+
+    assert!(service.try_admit_query().expect("direct path observes the older pending reservation").is_none());
+    assert_eq!(service.pending_preflight_resolver_calls(), resolver_calls);
+    pause.release();
+    drop(active);
+    pending.join().expect("pending submission joins").expect("pending request admits");
+}
+
+#[test]
+fn phase_d_direct_try_rechecks_queue_after_owner_preflight() {
+    let service = test_service(1, 2);
+    let pause = service.pause_pending_preflight();
+    let direct_service = service.clone();
+    let direct = std::thread::spawn(move || direct_service.try_admit_query());
+    pause.wait_until_entered(Duration::from_secs(1));
+
+    let queued = service.enqueue_admission().expect("waiter arrives while direct owner preflight is resolving");
+    pause.release();
+    assert!(direct.join().expect("direct admission thread joins").expect("direct recheck succeeds").is_none());
+    assert_eq!(service.queued_len(), 1, "the older waiter remains authoritative at the direct recheck");
+
+    drop(queued);
+}

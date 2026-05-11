@@ -37,6 +37,23 @@ enum ExhaustedWaiterProtection {
 }
 
 impl QueryService {
+    pub(in crate::runtime::query_service) fn reserve_pending_preflight_locked(
+        &self,
+        state: &mut AdmissionState,
+    ) -> Option<PendingPreflightReservation> {
+        if state.queued.len() + state.pending_preflight.len() >= self.inner.queue_bounds.max_waiters {
+            return None;
+        }
+        let submission_seq = self.inner.next_submission_seq.fetch_add(1, Ordering::Relaxed);
+        let inserted = state.pending_preflight.insert(submission_seq);
+        debug_assert!(inserted, "pending preflight submission sequences must be unique");
+        Some(PendingPreflightReservation::new(Arc::downgrade(&self.inner), submission_seq))
+    }
+
+    pub(in crate::runtime::query_service) fn pending_preflight_min(&self, state: &AdmissionState) -> Option<u64> {
+        state.pending_preflight.first().copied()
+    }
+
     pub(in crate::runtime::query_service) fn remove_queued_request_without_admission_locked(
         &self,
         state: &mut AdmissionState,
@@ -484,16 +501,17 @@ impl QueryService {
         &self,
         state: &mut AdmissionState,
     ) -> Result<Option<(usize, usize)>> {
-        // A protected waiter can leave the queue (for example, through
-        // cancellation) while a younger waiter that already exhausted its
-        // allowance remains. Reinstall that protection before looking for a
-        // runnable placement, not after a younger request has consumed the
-        // next slot. This keeps the finite-overtake bound exact.
+        let pending_barrier = self.pending_preflight_min(state);
+        // Pending submissions own FIFO order but no protection state, so a
+        // younger waiter must not reserve capacity across their barrier.
         let previous_protections = state.queued.iter().map(|request| request.protected_device).collect::<Vec<_>>();
-        if let Err(error) = self.restore_exhausted_overtake_protections_locked(state) {
+        if let Err(error) = self.restore_exhausted_overtake_protections_locked(state, pending_barrier) {
             return Err(self.rollback_new_exhausted_overtake_protections(state, &previous_protections, error));
         }
         for (position, request) in state.queued.iter().enumerate() {
+            if pending_barrier.is_some_and(|pending| request.submission_seq >= pending) {
+                break;
+            }
             let Some(best) = self.best_eligible_device_for(request)? else {
                 continue;
             };
@@ -577,6 +595,9 @@ impl QueryService {
         let Some(first) = state.queued.front() else {
             return Ok(None);
         };
+        if self.pending_preflight_min(state).is_some_and(|pending| first.submission_seq >= pending) {
+            return Ok(None);
+        }
         if first.admission_request_id != admission_request_id {
             return Ok(None);
         }
@@ -758,10 +779,17 @@ impl QueryService {
     /// its previous target. Callers hold the admission mutex, so no placement
     /// can consume the newly available slot between this reconciliation and
     /// candidate selection.
-    fn restore_exhausted_overtake_protections_locked(&self, state: &mut AdmissionState) -> Result<()> {
+    fn restore_exhausted_overtake_protections_locked(
+        &self,
+        state: &mut AdmissionState,
+        pending_barrier: Option<u64>,
+    ) -> Result<()> {
         for position in 0..state.queued.len() {
             let (request_id, device_entries, compatible_devices) = {
                 let request = &state.queued[position];
+                if pending_barrier.is_some_and(|pending| request.submission_seq >= pending) {
+                    break;
+                }
                 if request.overtakes_remaining != 0 || request.protected_device.is_some() {
                     continue;
                 }
@@ -834,7 +862,8 @@ impl QueryService {
                 request.overtakes_remaining -= 1;
             }
         }
-        let commit_result = self.restore_exhausted_overtake_protections_locked(state).and_then(|()| {
+        let pending_barrier = self.pending_preflight_min(state);
+        let commit_result = self.restore_exhausted_overtake_protections_locked(state, pending_barrier).and_then(|()| {
             super::transaction::publication_deadline_error(publication_deadline, None).map_or(Ok(()), Err)
         });
         if let Err(error) = commit_result {
@@ -913,6 +942,7 @@ pub(in crate::runtime::query_service::service) fn query_service_shutdown_timeout
                 .with_fact("admitting_queries", lifecycle.provisional)
                 .with_fact("cleanup_in_progress", lifecycle.cleanup)
                 .with_fact("queued_queries", state.queued.len())
+                .with_fact("pending_preflight", state.pending_preflight.len())
         },
         None => error,
     }

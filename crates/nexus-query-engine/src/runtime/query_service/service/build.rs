@@ -323,6 +323,12 @@ impl QueryService {
             direct_placement_resolution_failure: AtomicBool::new(false),
             #[cfg(test)]
             direct_provisional_cleanup_pause: Mutex::new(None),
+            #[cfg(test)]
+            pending_preflight_resolver_calls: AtomicUsize::new(0),
+            #[cfg(test)]
+            pending_preflight_pause: Mutex::new(None),
+            #[cfg(test)]
+            pending_preflight_failure: AtomicBool::new(false),
             next_admission_request_id: AtomicU64::new(1),
             next_submission_seq: AtomicU64::new(1),
             next_admission_sequence: AtomicU64::new(1),
