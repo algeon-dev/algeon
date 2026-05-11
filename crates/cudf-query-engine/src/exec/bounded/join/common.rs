@@ -1,10 +1,10 @@
 use super::*;
 
-pub(super) struct BoundedJoinSideFrame {
-    pub(super) frame: DataFrame,
-    pub(super) _reservation: ActiveReservation,
-    pub(super) rows: u64,
-    pub(super) bytes: u64,
+pub(in crate::exec::bounded) struct BoundedJoinSideFrame {
+    pub(in crate::exec::bounded) frame: DataFrame,
+    pub(in crate::exec::bounded) _reservation: ActiveReservation,
+    pub(in crate::exec::bounded) rows: u64,
+    pub(in crate::exec::bounded) bytes: u64,
 }
 
 pub(super) fn prepare_bounded_join_side_input(
@@ -41,7 +41,7 @@ pub(super) fn prepare_bounded_join_side_input(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) fn prepare_bounded_join_side_input_from_frame(
+pub(in crate::exec::bounded) fn prepare_bounded_join_side_input_from_frame(
     input: GpuDataFrame,
     input_reserved_bytes: u64,
     columns: &[String],

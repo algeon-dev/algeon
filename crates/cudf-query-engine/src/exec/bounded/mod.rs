@@ -20,9 +20,9 @@ pub(in crate::exec) use final_sort::topk_candidate_rows;
 use final_sort::*;
 use join::*;
 pub(in crate::exec::bounded) use join::{
-    BoundedRootHashJoinBuildState, BoundedRootHashJoinProbeState, execute_bounded_join_leaf_source,
-    execute_bounded_root_hash_join_build_from_frame, execute_bounded_root_hash_join_materialize,
-    execute_bounded_root_hash_join_probe_from_frame,
+    BoundedCompiledJoinBuildState, BoundedCompiledJoinProbeState, execute_bounded_compiled_join_build_from_frame,
+    execute_bounded_compiled_join_materialize, execute_bounded_compiled_join_probe_from_frame,
+    execute_bounded_join_leaf_source,
 };
 use multi_join::*;
 use pipeline::*;

@@ -3,6 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use arrow::record_batch::RecordBatch;
 
 use super::{
+    join_strategy::CompiledJoinExecutionStrategy,
     reservations::validate_task_runtime_gates,
     scheduler::{CompiledTaskExecutor, CompiledTaskOutput},
     state::CompiledPipelineState,
@@ -11,11 +12,11 @@ use crate::{
     error::{QueryError, QueryErrorCode, Result},
     exec::{
         bounded::{
-            BoundedRootHashJoinBuildState, BoundedRootHashJoinProbeState, ReservationTracker, ResidentGpuFrame,
-            execute_bounded_generic_gpu_resident_source, execute_bounded_generic_local_parquet_source,
-            execute_bounded_generic_unary_from_frame, execute_bounded_generic_unary_from_frame_with_reservation_kind,
-            execute_bounded_join_leaf_source, execute_bounded_root_hash_join_build_from_frame,
-            execute_bounded_root_hash_join_materialize, execute_bounded_root_hash_join_probe_from_frame,
+            BoundedCompiledJoinBuildState, BoundedCompiledJoinProbeState, ReservationTracker, ResidentGpuFrame,
+            execute_bounded_compiled_join_build_from_frame, execute_bounded_compiled_join_materialize,
+            execute_bounded_compiled_join_probe_from_frame, execute_bounded_generic_gpu_resident_source,
+            execute_bounded_generic_local_parquet_source, execute_bounded_generic_unary_from_frame,
+            execute_bounded_generic_unary_from_frame_with_reservation_kind, execute_bounded_join_leaf_source,
             execute_compiled_bounded_aggregate_from_frame, execute_final_sort_node_from_frame_with_retry,
         },
         materialize_bounded_frame_to_host,
@@ -74,8 +75,8 @@ pub struct CompiledGpuTaskExecutor<'a> {
     gpu_inputs: &'a GpuResidentInputMap,
     metrics: &'a mut QueryMetrics,
     reservations: ReservationTracker,
-    join_builds: BTreeMap<NodeId, BoundedRootHashJoinBuildState>,
-    join_probes: BTreeMap<NodeId, BoundedRootHashJoinProbeState>,
+    join_builds: BTreeMap<NodeId, BoundedCompiledJoinBuildState>,
+    join_probes: BTreeMap<NodeId, BoundedCompiledJoinProbeState>,
     host_output: Option<RecordBatch>,
 }
 
@@ -245,10 +246,12 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
         let input = single_input_resource(task)?;
         let input_payload = state.resource_payload(input)?;
         let node = join_node(self.plan, task, node_id)?;
-        let build = execute_bounded_root_hash_join_build_from_frame(
+        let strategy = join_strategy(node, task, node_id)?;
+        let build = execute_bounded_compiled_join_build_from_frame(
             self.context,
             node_id,
             node,
+            strategy,
             input_payload.clone_frame(),
             input_payload.reservation_bytes(),
             &mut self.reservations,
@@ -280,7 +283,7 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
                 .with_fact("plan_node_id", node_id)
                 .with_fact("pipeline_task_kind", task.kind().as_str()));
         }
-        let probe = execute_bounded_root_hash_join_probe_from_frame(
+        let probe = execute_bounded_compiled_join_probe_from_frame(
             self.context,
             node_id,
             node,
@@ -308,7 +311,7 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
                 .with_fact("plan_node_id", node_id)
                 .with_fact("pipeline_task_kind", task.kind().as_str())
         })?;
-        let frame = execute_bounded_root_hash_join_materialize(
+        let frame = execute_bounded_compiled_join_materialize(
             self.context,
             node_id,
             node,
@@ -555,6 +558,20 @@ fn join_node<'a>(plan: &'a QueryPlan, task: &PipelineTask, node_id: NodeId) -> R
             .with_fact("pipeline_task_kind", task.kind().as_str()));
     };
     Ok(join)
+}
+
+fn join_strategy(node: &JoinNode, task: &PipelineTask, node_id: NodeId) -> Result<CompiledJoinExecutionStrategy> {
+    CompiledJoinExecutionStrategy::from_join_node(node).ok_or_else(|| {
+        invalid("compiled join task references an unsupported join execution strategy")
+            .with_fact("compiled_task_id", task.id())
+            .with_fact("plan_node_id", node_id)
+            .with_fact("pipeline_task_kind", task.kind().as_str())
+            .with_fact("join_type", node.spec.join_type)
+            .with_fact("build_side", node.spec.build_side)
+            .with_fact("key_count", node.spec.keys.len())
+            .with_fact("residual_predicate", node.spec.residual_predicate.is_some())
+            .with_fact("output_projection_len", node.spec.output_projection.len())
+    })
 }
 
 fn sort_node<'a>(plan: &'a QueryPlan, task: &PipelineTask, node_id: NodeId) -> Result<&'a SortNode> {
