@@ -134,9 +134,8 @@ fn execute_query_plan_rejects_grouped_aggregate_join_build_input_without_strict_
         compiled_bounded_query_plan_support(&plan, &pipeline).expect("plan-aware support check should not fail"),
         CompiledBoundedPipelineSupport::Supported
     );
-    let context = bounded_context(shared_runtime(runtime), &plan);
-
-    let error = match execute_query_plan(&context, &plan) {
+    let runtime = shared_runtime(runtime);
+    let error = match runtime.acquire_context_for_plan(&plan) {
         Ok(_) => panic!("grouped aggregate join-build input needs explicit bounded admission"),
         Err(error) => error,
     };
@@ -170,7 +169,7 @@ fn compiled_gpu_executor_streams_grouped_aggregate_join_build_input_source() {
         CompiledBoundedPipelineSupport::Supported
     );
     let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("pipeline should be schedulable");
-    let context = bounded_context(shared_runtime(runtime), &plan);
+    let context = compiled_executor_context(shared_runtime(runtime), &plan);
     let mut metrics = QueryMetrics::default();
     let gpu_inputs = GpuResidentInputMap::new();
 
@@ -220,7 +219,7 @@ fn compiled_gpu_executor_streams_shared_source_for_join_build_and_grouped_aggreg
         CompiledBoundedPipelineSupport::Supported
     );
     let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("pipeline should be schedulable");
-    let context = bounded_context(shared_runtime(runtime), &plan);
+    let context = compiled_executor_context(shared_runtime(runtime), &plan);
     let mut metrics = QueryMetrics::default();
     let gpu_inputs = GpuResidentInputMap::new();
 
@@ -251,9 +250,9 @@ fn execute_query_plan_routes_nonlinear_topk_and_subquery_filter_paths_through_co
     write_nonlinear_topk_contract_parquets();
 
     for (label, plan) in [
-        ("aggregate-over-join-subplan TopK", aggregate_over_join_subplan_topk_plan()),
-        ("resident grouped-aggregate TopK", resident_grouped_aggregate_input_post_join_aggregate_topk_plan()),
-        ("resident grouped-aggregate subquery filter", resident_grouped_aggregate_subquery_filter_plan()),
+        ("aggregate-over-join-subplan TopK", aggregate_over_join_subplan_topk_plan(true)),
+        ("resident grouped-aggregate TopK", resident_grouped_aggregate_input_post_join_aggregate_topk_plan(true)),
+        ("resident grouped-aggregate subquery filter", resident_grouped_aggregate_subquery_filter_plan(true)),
     ] {
         let analysis = plan.capability_analysis();
         let pipeline =

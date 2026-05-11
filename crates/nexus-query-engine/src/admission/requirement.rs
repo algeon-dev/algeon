@@ -19,10 +19,10 @@ use crate::{
     capability::ReservationRequirement,
     datatypes::cudf_dtype_from_arrow_type,
     error::{QueryError, QueryErrorCode, Result},
-    expr::alias_wrapped_column,
+    expr::{AggregateFunction, alias_wrapped_column},
     graph_memory::{
         GraphMemoryAdmissionEvidence, GraphMemoryOwnerTermFact, GraphMemoryOwnerTermRole, GraphSourceStageLifetime,
-        query_plan_hard_row_upper_bound,
+        query_plan_hard_row_upper_bound, query_plan_node_hard_row_upper_bound,
     },
     plan::{
         JoinNode, JoinSide, JoinType, NodeId, PlanNode, QueryPlan, ResultSink, estimated_local_parquet_source_bytes,
@@ -49,6 +49,7 @@ enum OwnerId {
     Attempt,
     Graph(NodeId),
     Producer(NodeId),
+    Aggregate(NodeId),
     Source(NodeId),
     Consumer(NodeId),
     SideInput(NodeId),
@@ -62,6 +63,7 @@ impl OwnerId {
             Self::Attempt => "attempt",
             Self::Graph(_) => "graph",
             Self::Producer(_) => "producer",
+            Self::Aggregate(_) => "aggregate",
             Self::Source(_) => "source",
             Self::Consumer(_) => "consumer",
             Self::SideInput(_) => "side_input",
@@ -79,6 +81,8 @@ enum OwnerTermRole {
     ExecutionWorkspace,
     GraphLiveReservationFloorTopUp,
     SideInputWorkspace,
+    AggregatePartialState,
+    AggregateOutput,
     RetainedOutput,
     SourceStage,
     ConsumerOutput,
@@ -87,6 +91,7 @@ enum OwnerTermRole {
     ConsumerProbeInput,
     ConsumerHashTable,
     ConsumerPairIndices,
+    ConsumerProjectionCastWorkspace,
     SideInputFrame,
     SortKeyOutput,
     SortSequence,
@@ -105,6 +110,8 @@ impl OwnerTermRole {
             Self::ExecutionWorkspace => "execution_workspace",
             Self::GraphLiveReservationFloorTopUp => "graph_live_reservation_floor_top_up",
             Self::SideInputWorkspace => "side_input_workspace",
+            Self::AggregatePartialState => "aggregate_partial_state",
+            Self::AggregateOutput => "aggregate_output",
             Self::RetainedOutput => "retained_output",
             Self::SourceStage => "source_stage",
             Self::ConsumerOutput => "consumer_output",
@@ -113,6 +120,7 @@ impl OwnerTermRole {
             Self::ConsumerProbeInput => "consumer_probe_input",
             Self::ConsumerHashTable => "consumer_hash_table",
             Self::ConsumerPairIndices => "consumer_pair_indices",
+            Self::ConsumerProjectionCastWorkspace => "consumer_projection_cast_workspace",
             Self::SideInputFrame => "side_input_frame",
             Self::SortKeyOutput => "sort_key_output",
             Self::SortSequence => "sort_sequence",
@@ -315,6 +323,10 @@ fn owner_term_shape_is_valid(owner: &OwnerId, role: OwnerTermRole, class: Alloca
             _ => false,
         },
         OwnerId::Producer(_) => role == OwnerTermRole::RetainedOutput && class == AllocationClass::AttemptRetained,
+        OwnerId::Aggregate(_) => {
+            matches!(role, OwnerTermRole::AggregatePartialState | OwnerTermRole::AggregateOutput)
+                && class == AllocationClass::ActivePhase
+        },
         OwnerId::Source(_) => role == OwnerTermRole::SourceStage && class == AllocationClass::ActivePhase,
         OwnerId::Consumer(_) => {
             matches!(
@@ -325,6 +337,7 @@ fn owner_term_shape_is_valid(owner: &OwnerId, role: OwnerTermRole, class: Alloca
                     | OwnerTermRole::ConsumerProbeInput
                     | OwnerTermRole::ConsumerHashTable
                     | OwnerTermRole::ConsumerPairIndices
+                    | OwnerTermRole::ConsumerProjectionCastWorkspace
             ) && class == AllocationClass::ActivePhase
         },
         OwnerId::SideInput(_) => role == OwnerTermRole::SideInputFrame && class == AllocationClass::ActivePhase,
@@ -496,6 +509,7 @@ impl AllocationOwnerTerm {
                             | OwnerTermRole::ConsumerProbeInput
                             | OwnerTermRole::ConsumerHashTable
                             | OwnerTermRole::ConsumerPairIndices
+                            | OwnerTermRole::ConsumerProjectionCastWorkspace
                     )
             },
             (OwnerId::SideInput(node_id), OwnerTermRole::SideInputFrame, OccurrenceId::PlanLocal(occurrence)) => {
@@ -715,10 +729,7 @@ fn graph_owner_terms_from_evidence(evidence: &GraphMemoryAdmissionEvidence) -> R
     Ok(terms)
 }
 
-fn local_parquet_source_owner_terms(
-    plan: &QueryPlan,
-    allow_mixed_source_composition: bool,
-) -> Result<Vec<AllocationOwnerTerm>> {
+fn local_parquet_source_owner_terms(plan: &QueryPlan) -> Result<Vec<AllocationOwnerTerm>> {
     let scope = canonical_execution_scope_fingerprint(plan);
     let unreachable = plan.unreachable_node_ids().into_iter().collect::<HashSet<_>>();
     let mut terms = Vec::new();
@@ -732,27 +743,35 @@ fn local_parquet_source_owner_terms(
         let PlanNode::Source(source) = &node.kind else {
             continue;
         };
-        let SourceNode::LocalParquet(source) = source.as_ref() else {
-            has_non_local_source = true;
-            has_disallowed_non_local_source |= !matches!(source.as_ref(), SourceNode::GpuResident(_));
-            continue;
-        };
-        has_local_source = true;
-        let Some(bytes) = estimated_local_parquet_source_bytes(source) else {
-            return Err(owner_term_error("local_source_bytes_unavailable", Some(OwnerTermRole::SourceStage), None));
-        };
-        terms.push(AllocationOwnerTerm::new(
-            OwnerId::Source(node.id),
-            OwnerTermRole::SourceStage,
-            OccurrenceId::PlanLocal(node.id),
-            scope.clone(),
-            AllocationClass::ActivePhase,
-            bytes,
-            None,
-        )?);
+        match source.as_ref() {
+            SourceNode::LocalParquet(source) => {
+                has_local_source = true;
+                let Some(bytes) = estimated_local_parquet_source_bytes(source) else {
+                    return Err(owner_term_error(
+                        "local_source_bytes_unavailable",
+                        Some(OwnerTermRole::SourceStage),
+                        None,
+                    ));
+                };
+                terms.push(AllocationOwnerTerm::new(
+                    OwnerId::Source(node.id),
+                    OwnerTermRole::SourceStage,
+                    OccurrenceId::PlanLocal(node.id),
+                    scope.clone(),
+                    AllocationClass::ActivePhase,
+                    bytes,
+                    None,
+                )?);
+            },
+            SourceNode::GpuResident(_) => has_non_local_source = true,
+            SourceNode::LiteralBatch(source) if source.row_count() > 0 && !source.schema.fields().is_empty() => {
+                has_non_local_source = true;
+                has_disallowed_non_local_source = true;
+            },
+            SourceNode::LiteralBatch(_) => {},
+        }
     }
-    if has_local_source && has_non_local_source && (!allow_mixed_source_composition || has_disallowed_non_local_source)
-    {
+    if has_local_source && has_non_local_source && has_disallowed_non_local_source {
         return Err(owner_term_error("mixed_source_kinds", Some(OwnerTermRole::SourceStage), None));
     }
     Ok(terms)
@@ -782,7 +801,6 @@ fn has_mixed_local_gpu_sources(plan: &QueryPlan) -> bool {
 fn generic_gpu_resident_owner_terms(
     plan: &QueryPlan,
     include_gpu_output_owner: bool,
-    allow_mixed_source_composition: bool,
 ) -> Result<Vec<AllocationOwnerTerm>> {
     let scope = canonical_execution_scope_fingerprint(plan);
     if !matches!(plan.sink(), ResultSink::GpuResident { .. })
@@ -796,34 +814,23 @@ fn generic_gpu_resident_owner_terms(
     let ResultSink::GpuResident { input } = plan.sink() else {
         unreachable!();
     };
-    let local_source_terms = local_parquet_source_owner_terms(plan, allow_mixed_source_composition)?;
-    if !local_source_terms.is_empty() {
-        let reachable_sources = plan
-            .nodes()
-            .iter()
-            .filter(|node| {
-                !plan.unreachable_node_ids().contains(&node.id)
-                    && matches!(&node.kind, PlanNode::Source(source) if matches!(source.as_ref(), SourceNode::LocalParquet(_)))
-            })
-            .collect::<Vec<_>>();
-        let [source_node] = reachable_sources.as_slice() else {
-            return Err(owner_term_error(
-                "gpu_resident_output_owner_alias_unmodeled",
-                Some(OwnerTermRole::RetainedOutput),
-                None,
-            ));
-        };
-        if source_node.id != *input {
-            return Err(owner_term_error(
-                "gpu_resident_output_owner_alias_unmodeled",
-                Some(OwnerTermRole::RetainedOutput),
-                None,
-            ));
-        }
+    let local_source_terms = local_parquet_source_owner_terms(plan)?;
+    let reachable_local_sources = plan
+        .nodes()
+        .iter()
+        .filter(|node| {
+            !plan.unreachable_node_ids().contains(&node.id)
+                && matches!(&node.kind, PlanNode::Source(source) if matches!(source.as_ref(), SourceNode::LocalParquet(_)))
+        })
+        .collect::<Vec<_>>();
+    if !local_source_terms.is_empty()
+        && let [source_node] = reachable_local_sources.as_slice()
+        && source_node.id == *input
+    {
         let rows = query_plan_hard_row_upper_bound(plan).ok_or_else(|| {
             owner_term_error("gpu_resident_row_bound_unavailable", Some(OwnerTermRole::RetainedOutput), None)
         })?;
-        let output_bytes = bounded_consumer_frame_bytes(rows, source_node.output_schema()).map_err(|error| {
+        let output_bytes = bounded_consumer_frame_bytes(rows, plan.output_schema()).map_err(|error| {
             owner_term_error("gpu_resident_output_bytes_unavailable", Some(OwnerTermRole::RetainedOutput), None)
                 .with_fact("sizing_reason", error.fact_value("schedule_reason").unwrap_or("unknown"))
         })?;
@@ -840,20 +847,253 @@ fn generic_gpu_resident_owner_terms(
             Some(rows),
         )?]);
     }
-    if !plan.nodes().iter().any(|node| {
+    let reachable_gpu_sources = plan.nodes().iter().filter(|node| {
         !plan.unreachable_node_ids().contains(&node.id)
             && matches!(&node.kind, PlanNode::Source(source) if matches!(source.as_ref(), SourceNode::GpuResident(_)))
+    }).collect::<Vec<_>>();
+    if local_source_terms.is_empty()
+        && let [source_node] = reachable_gpu_sources.as_slice()
+        && source_node.id == *input
+    {
+        // A direct GPU-resident sink forwards the upstream handle; its frame
+        // remains owned by the producer or input tracker that supplied it.
+        return Ok(Vec::new());
+    }
+    if local_source_terms.is_empty() && reachable_gpu_sources.is_empty() {
+        return Ok(Vec::new());
+    }
+    let rows = query_plan_hard_row_upper_bound(plan).ok_or_else(|| {
+        owner_term_error("gpu_resident_row_bound_unavailable", Some(OwnerTermRole::RetainedOutput), None)
+    })?;
+    let output_bytes = bounded_consumer_frame_bytes(rows, plan.output_schema()).map_err(|error| {
+        owner_term_error("gpu_resident_output_bytes_unavailable", Some(OwnerTermRole::RetainedOutput), None)
+            .with_fact("sizing_reason", error.fact_value("schedule_reason").unwrap_or("unknown"))
+    })?;
+    let mut terms = reachable_gpu_sources
+        .iter()
+        .map(|node| {
+            let PlanNode::Source(source) = &node.kind else {
+                unreachable!();
+            };
+            let SourceNode::GpuResident(source) = source.as_ref() else {
+                unreachable!();
+            };
+            let input_rows = source.row_count_upper_bound.ok_or_else(|| {
+                owner_term_error("gpu_resident_input_row_bound_unavailable", Some(OwnerTermRole::SourceStage), None)
+            })?;
+            let input_bytes = bounded_consumer_frame_bytes(input_rows, &source.schema).map_err(|error| {
+                owner_term_error("gpu_resident_input_bytes_unavailable", Some(OwnerTermRole::SourceStage), None)
+                    .with_fact("sizing_reason", error.fact_value("schedule_reason").unwrap_or("unknown"))
+            })?;
+            AllocationOwnerTerm::new(
+                OwnerId::Source(node.id),
+                OwnerTermRole::SourceStage,
+                OccurrenceId::PlanLocal(node.id),
+                scope.clone(),
+                AllocationClass::ActivePhase,
+                input_bytes,
+                None,
+            )
+        })
+        .collect::<Result<Vec<_>>>()?;
+    terms.extend(projection_cast_workspace_owner_terms(plan, &scope)?);
+    terms.push(AllocationOwnerTerm::new(
+        OwnerId::Producer(*input),
+        OwnerTermRole::RetainedOutput,
+        OccurrenceId::PlanLocal(*input),
+        scope,
+        AllocationClass::AttemptRetained,
+        output_bytes,
+        Some(rows),
+    )?);
+    Ok(terms)
+}
+
+fn projection_cast_workspace_owner_terms(plan: &QueryPlan, scope: &str) -> Result<Vec<AllocationOwnerTerm>> {
+    let unreachable = plan.unreachable_node_ids();
+    let mut terms = Vec::new();
+    for node in plan.nodes().iter().filter(|node| !unreachable.contains(&node.id)) {
+        let PlanNode::Projection(projection) = &node.kind else {
+            continue;
+        };
+        let input_schema = plan.node(projection.input).ok_or_else(|| {
+            owner_term_error(
+                "projection_cast_input_missing",
+                Some(OwnerTermRole::ConsumerProjectionCastWorkspace),
+                Some(AllocationClass::ActivePhase),
+            )
+        })?;
+        let workspace_bytes = projection
+            .outputs
+            .iter()
+            .map(|output| {
+                let actual_type =
+                    crate::exec::validate::projection_output_type_for_admission(output, input_schema.output_schema())?;
+                let expected_type = output.field.data_type();
+                if actual_type == *expected_type {
+                    return Ok(0_u64);
+                }
+                let Some(actual_type) = cudf_dtype_from_arrow_type(&actual_type) else {
+                    return Ok(0);
+                };
+                let Some(expected_type) = cudf_dtype_from_arrow_type(expected_type) else {
+                    return Ok(0);
+                };
+                let bytes = cudf::ops::unary::decimal_rescale_temporary_workspace_reservation_bytes(
+                    &actual_type,
+                    &expected_type,
+                )
+                .unwrap_or(0);
+                u64::try_from(bytes).map_err(|_| {
+                    owner_term_error(
+                        "projection_cast_workspace_bytes_exceed_u64",
+                        Some(OwnerTermRole::ConsumerProjectionCastWorkspace),
+                        Some(AllocationClass::ActivePhase),
+                    )
+                })
+            })
+            .collect::<Result<Vec<_>>>()?
+            .into_iter()
+            .max()
+            .unwrap_or(0);
+        if workspace_bytes == 0 {
+            continue;
+        }
+        terms.push(AllocationOwnerTerm::new(
+            OwnerId::Consumer(node.id),
+            OwnerTermRole::ConsumerProjectionCastWorkspace,
+            OccurrenceId::PlanLocal(node.id),
+            scope.to_owned(),
+            AllocationClass::ActivePhase,
+            workspace_bytes,
+            None,
+        )?);
+    }
+    Ok(terms)
+}
+
+fn generic_aggregate_owner_terms(plan: &QueryPlan) -> Result<Vec<AllocationOwnerTerm>> {
+    let unreachable = plan.unreachable_node_ids().into_iter().collect::<HashSet<_>>();
+    let reachable = plan.nodes().iter().filter(|node| !unreachable.contains(&node.id)).collect::<Vec<_>>();
+    if reachable.iter().any(|node| {
+        !matches!(
+            node.kind,
+            PlanNode::Source(_)
+                | PlanNode::Filter(_)
+                | PlanNode::Projection(_)
+                | PlanNode::Aggregate(_)
+                | PlanNode::Sort(_)
+                | PlanNode::Limit(_)
+        )
     }) {
         return Ok(Vec::new());
     }
-    // A GPU-resident source already names an upstream retained handle.  The
-    // generic plan proof cannot establish whether this sink materializes a
-    // distinct output or merely forwards that handle, so minting another
-    // producer owner would either double-charge a passthrough or leave a
-    // materialized output unbound to its source.  Composed admission supplies
-    // the retained-input binding when it owns that contract; reject this
-    // standalone shape until then.
-    Err(owner_term_error("gpu_resident_output_owner_alias_unmodeled", Some(OwnerTermRole::RetainedOutput), None))
+    let local_sources = reachable
+        .iter()
+        .filter_map(|node| match &node.kind {
+            PlanNode::Source(source) => match source.as_ref() {
+                SourceNode::LocalParquet(source) => Some(source.clone()),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let aggregates = reachable
+        .iter()
+        .filter_map(|node| match &node.kind {
+            PlanNode::Aggregate(aggregate) => Some((node.id, aggregate, node.output_schema())),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let ([source], [(aggregate_id, aggregate, output_schema)]) = (local_sources.as_slice(), aggregates.as_slice())
+    else {
+        return Ok(Vec::new());
+    };
+    if reachable.iter().any(|node| {
+        matches!(&node.kind, PlanNode::Source(source) if !matches!(source.as_ref(), SourceNode::LocalParquet(_)))
+    }) || aggregate.spec.grouping_sets.is_some()
+        || aggregate.spec.aggr_exprs.iter().any(|expr| {
+            expr.distinct
+                || expr.filter.is_some()
+                || !matches!(
+                    expr.function,
+                    AggregateFunction::Sum
+                        | AggregateFunction::Min
+                        | AggregateFunction::Max
+                        | AggregateFunction::Count
+                )
+        })
+    {
+        return Ok(Vec::new());
+    }
+    let selected_row_group_rows = source.exact_selected_row_group_rows();
+    let input_rows = query_plan_node_hard_row_upper_bound(plan, aggregate.input);
+    let (Some(selected_row_group_rows), Some(input_rows)) = (selected_row_group_rows, input_rows) else {
+        return Ok(Vec::new());
+    };
+    let Some(source_rows) = selected_row_group_rows.iter().try_fold(0_u64, |total, rows| total.checked_add(*rows))
+    else {
+        return Ok(Vec::new());
+    };
+    if selected_row_group_rows.is_empty() || input_rows > source_rows {
+        return Ok(Vec::new());
+    }
+
+    let Some(mut partial_columns) = output_schema
+        .fields()
+        .iter()
+        .map(|field| fixed_width_consumer_output_column(field.data_type()))
+        .collect::<Option<Vec<_>>>()
+    else {
+        return Ok(Vec::new());
+    };
+    partial_columns.extend(
+        aggregate
+            .spec
+            .aggr_exprs
+            .iter()
+            .map(|_| fixed_width_consumer_output_column(&DataType::UInt64).expect("UInt64 has a fixed-width bound")),
+    );
+    let partial_bytes = selected_row_group_rows.into_iter().try_fold(0_u64, |total, row_group_rows| {
+        let partial_shape = if aggregate.spec.group_exprs.is_empty() {
+            crate::exec::PartialAggregateShape::Global
+        } else {
+            crate::exec::PartialAggregateShape::Grouped { input_rows: row_group_rows }
+        };
+        let row_group_partial = crate::exec::partial_aggregate_upper_bound_bytes(partial_shape, &partial_columns)
+            .map_err(|_| owner_term_error("aggregate_partial_state_unavailable", None, None))?;
+        total
+            .checked_add(row_group_partial)
+            .ok_or_else(|| owner_term_error("aggregate_partial_state_overflow", None, None))
+    })?;
+    let output_rows = if aggregate.spec.group_exprs.is_empty() { 1 } else { input_rows };
+    let output_bytes = bounded_consumer_frame_bytes(output_rows, output_schema)?;
+    let output_copies =
+        if matches!(plan.sink(), ResultSink::GpuResident { input } if *input == *aggregate_id) { 1 } else { 2 };
+    let output_bytes = output_bytes
+        .checked_mul(output_copies)
+        .ok_or_else(|| owner_term_error("aggregate_output_overflow", None, None))?;
+    let scope = canonical_execution_scope_fingerprint(plan);
+    Ok(vec![
+        AllocationOwnerTerm::new(
+            OwnerId::Aggregate(*aggregate_id),
+            OwnerTermRole::AggregatePartialState,
+            OccurrenceId::PlanLocal(*aggregate_id),
+            scope.clone(),
+            AllocationClass::ActivePhase,
+            partial_bytes,
+            None,
+        )?,
+        AllocationOwnerTerm::new(
+            OwnerId::Aggregate(*aggregate_id),
+            OwnerTermRole::AggregateOutput,
+            OccurrenceId::PlanLocal(*aggregate_id),
+            scope,
+            AllocationClass::ActivePhase,
+            output_bytes,
+            None,
+        )?,
+    ])
 }
 
 fn literal_batch_owner_term_rejection_reason(
@@ -998,6 +1238,18 @@ impl QueryPlanCapabilityProof {
         let requirement =
             AttemptCapabilityEvidence::for_query_plan_with_policy(plan, OwnerTermConstructionPolicy::Generic);
         Some(Self { requirement })
+    }
+
+    /// Validates one lowered native query plan before issuing its capability proof.
+    pub fn for_query_plan_preflighted(plan: &QueryPlan) -> Result<Self> {
+        crate::exec::preflight_query_plan(plan)?;
+        Self::for_query_plan(plan).ok_or_else(|| {
+            QueryError::new(
+                QueryErrorCode::UnsupportedPlanShape,
+                "nexus_query_engine.admission.query_plan_capability_proof",
+                "native query plan did not issue an exact capability proof",
+            )
+        })
     }
 
     /// Derives the consumer proof used only while composing an exact GPU
@@ -1572,21 +1824,27 @@ impl AttemptCapabilityEvidence {
         include_gpu_output_owner: bool,
     ) -> Self {
         let source_stage_bytes = estimated_reachable_local_parquet_source_bytes(plan);
-        let allow_mixed_source_composition = policy == OwnerTermConstructionPolicy::AllowMixedSourceComposition;
-        let source_owner_result = local_parquet_source_owner_terms(plan, allow_mixed_source_composition);
-        let gpu_owner_result =
-            generic_gpu_resident_owner_terms(plan, include_gpu_output_owner, allow_mixed_source_composition);
+        let source_owner_result = local_parquet_source_owner_terms(plan);
+        let gpu_owner_result = generic_gpu_resident_owner_terms(plan, include_gpu_output_owner);
+        let aggregate_owner_result = generic_aggregate_owner_terms(plan);
         let mut source_owner_terms = Vec::new();
         if let Ok(terms) = &source_owner_result {
             source_owner_terms.extend(terms.iter().cloned());
         }
         if let Ok(gpu_owner_terms) = &gpu_owner_result {
-            if !gpu_owner_terms.is_empty() && !source_owner_terms.is_empty() {
+            if gpu_owner_terms.iter().any(|term| {
+                matches!(term.id.owner, OwnerId::Producer(producer_id) if source_owner_terms.iter().any(|source| {
+                    matches!(source.id.owner, OwnerId::Source(source_id) if source_id == producer_id)
+                }))
+            }) {
                 // A source-only GPU sink transfers the source frame into the
                 // producer handle; retain one owner, never both lifetimes.
                 source_owner_terms.clear();
             }
             source_owner_terms.extend(gpu_owner_terms.iter().cloned());
+        }
+        if let Ok(aggregate_owner_terms) = &aggregate_owner_result {
+            source_owner_terms.extend(aggregate_owner_terms.iter().cloned());
         }
         let literal_rejection_reason = literal_batch_owner_term_rejection_reason(plan, policy);
         let mut evidence = Self::from_parts(
@@ -1606,6 +1864,10 @@ impl AttemptCapabilityEvidence {
                 error.fact_value("reason").unwrap_or("attempt_owner_term_unavailable"),
             );
         } else if let Err(error) = gpu_owner_result {
+            shape.set_owner_term_rejection_reason(
+                error.fact_value("reason").unwrap_or("attempt_owner_term_unavailable"),
+            );
+        } else if let Err(error) = aggregate_owner_result {
             shape.set_owner_term_rejection_reason(
                 error.fact_value("reason").unwrap_or("attempt_owner_term_unavailable"),
             );
@@ -3437,7 +3699,7 @@ mod tests {
         admission::envelope::AttemptReservationProducerPhase,
         capability::{ContractQuality, ReservationRequirement},
         chunk::SourceChunkPlanningOptions,
-        expr::{BinaryOp, Expr, SortExpr, SortSpec},
+        expr::{AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, Expr, SortExpr, SortSpec},
         graph_memory::{GraphMemoryCalibrationOverride, graph_memory_bounded_admission_evidence_for_plan},
         plan::{
             GraphAlgorithm, GraphAlgorithmParams, GraphAlgorithmSpec, GraphBfsParams, GraphConstructionOptions,
@@ -3446,7 +3708,7 @@ mod tests {
             graph_result_schema_for_params,
         },
         runtime::{ReservationKind, SourceChunkPlanningMode, SourceSchedulerPolicy},
-        source::{GpuResidentSource, LocalParquetFile, LocalParquetSource, SourceNode},
+        source::{GpuResidentSource, LiteralBatchSource, LocalParquetFile, LocalParquetSource, SourceNode},
     };
 
     fn capability() -> ReservationRequirement {
@@ -3489,6 +3751,69 @@ mod tests {
         let mut builder = QueryPlanBuilder::new();
         let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", schema)));
         builder.finish_with_host_sink(source)
+    }
+
+    #[test]
+    fn grouped_aggregate_owner_sums_each_selected_row_group_bound() {
+        let source_schema = Arc::new(Schema::new(vec![
+            Field::new("key", DataType::Int32, false),
+            Field::new("value", DataType::Int64, false),
+        ]));
+        let output_schema = Arc::new(Schema::new(vec![
+            Field::new("key", DataType::Int32, false),
+            Field::new("value_count", DataType::Int64, false),
+        ]));
+        let mut builder = QueryPlanBuilder::new();
+        let source = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
+            vec![
+                LocalParquetFile::new("/tmp/aggregate-owner-row-groups.parquet")
+                    .with_row_groups(vec![0, 2])
+                    .with_row_group_rows(vec![1, 100, 3]),
+            ],
+            source_schema,
+            vec!["key".to_owned(), "value".to_owned()],
+        )));
+        let aggregate = builder.add_aggregate(
+            source,
+            AggregateSpec::new(
+                vec![Expr::column("key")],
+                vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("value"), "value_count")],
+            ),
+            Arc::clone(&output_schema),
+        );
+        let plan = builder.finish_with_host_sink(aggregate);
+
+        let owner_terms = generic_aggregate_owner_terms(&plan).expect("aggregate owners must be derivable");
+        let partial_bytes = owner_terms
+            .iter()
+            .find(|term| term.id().role == OwnerTermRole::AggregatePartialState)
+            .expect("aggregate partial owner must be present")
+            .bytes();
+        let mut partial_columns = output_schema
+            .fields()
+            .iter()
+            .map(|field| fixed_width_consumer_output_column(field.data_type()).unwrap())
+            .collect::<Vec<_>>();
+        partial_columns.push(fixed_width_consumer_output_column(&DataType::UInt64).unwrap());
+        let expected = [1, 3]
+            .into_iter()
+            .map(|input_rows| {
+                crate::exec::partial_aggregate_upper_bound_bytes(
+                    crate::exec::PartialAggregateShape::Grouped { input_rows },
+                    &partial_columns,
+                )
+                .unwrap()
+            })
+            .sum::<u64>();
+        let whole_input_per_group = crate::exec::partial_aggregate_upper_bound_bytes(
+            crate::exec::PartialAggregateShape::Grouped { input_rows: 4 },
+            &partial_columns,
+        )
+        .unwrap()
+            * 2;
+
+        assert_eq!(partial_bytes, expected);
+        assert!(partial_bytes < whole_input_per_group);
     }
 
     #[test]
@@ -3779,7 +4104,7 @@ mod tests {
     }
 
     #[test]
-    fn mixed_local_and_non_local_sources_reject_before_envelope_resolution() {
+    fn mixed_local_and_gpu_sources_retain_local_owner_terms() {
         let schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Int64, false)]));
         let mut builder = QueryPlanBuilder::new();
         let local = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
@@ -3792,10 +4117,68 @@ mod tests {
         let plan = builder.finish_with_host_sink(root);
 
         let requirement = AttemptCapabilityEvidence::for_query_plan(&plan);
-        let error = QueryPlanCapabilityProof { requirement }
+        assert_eq!(requirement.owner_terms.len(), 1);
+        assert!(requirement.owner_terms[0].is_source_stage());
+        assert_eq!(requirement.owner_terms[0].bytes(), 96);
+        QueryPlanCapabilityProof { requirement }
             .resolve_reservation_envelope(reservation_policy())
-            .expect_err("mixed sources must fail before placement");
-        assert_eq!(error.fact_value("reason"), Some("attempt_owner_term_mixed_source_kinds"));
+            .expect("external GPU inputs do not need an engine-owned byte term");
+    }
+
+    #[test]
+    fn empty_literal_batch_does_not_invalidate_local_source_owner_terms() {
+        let schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Int64, false)]));
+        let mut builder = QueryPlanBuilder::new();
+        let local = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
+            vec![LocalParquetFile::new("/tmp/requirement-empty-literal.parquet").with_file_size_bytes(96)],
+            Arc::clone(&schema),
+            vec!["value".to_owned()],
+        )));
+        let literal = builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::empty(Arc::clone(&schema))));
+        let root = builder.add_union(vec![local, literal], schema);
+        let plan = builder.finish_with_host_sink(root);
+
+        let requirement = AttemptCapabilityEvidence::for_query_plan(&plan);
+        assert_eq!(requirement.owner_terms.len(), 1);
+        assert!(requirement.owner_terms[0].is_source_stage());
+        assert_eq!(requirement.owner_terms[0].bytes(), 96);
+        QueryPlanCapabilityProof { requirement }
+            .resolve_reservation_envelope(reservation_policy())
+            .expect("an empty literal batch does not add an unowned source allocation");
+    }
+
+    #[test]
+    fn computed_gpu_sink_keeps_source_and_retained_output_owners_distinct() {
+        let schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Int64, false)]));
+        let mut builder = QueryPlanBuilder::new();
+        let local = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
+            vec![
+                LocalParquetFile::new("/tmp/requirement-computed-gpu-sink.parquet")
+                    .with_row_groups(vec![0])
+                    .with_row_group_rows(vec![3])
+                    .with_row_group_bytes(vec![64])
+                    .with_projected_row_group_bytes(vec![32], vec![64]),
+            ],
+            Arc::clone(&schema),
+            vec!["value".to_owned()],
+        )));
+        let gpu = builder.add_source(SourceNode::GpuResident(
+            GpuResidentSource::new("gpu", Arc::clone(&schema)).with_row_count_upper_bound(2),
+        ));
+        let root = builder.add_union(vec![local, gpu], Arc::clone(&schema));
+        let plan = builder.finish_gpu_resident(root);
+
+        let requirement = AttemptCapabilityEvidence::for_query_plan(&plan);
+        let source_terms = requirement.owner_terms.iter().filter(|term| term.is_source_stage()).collect::<Vec<_>>();
+        let retained_terms =
+            requirement.owner_terms.iter().filter(|term| term.is_retained_output()).collect::<Vec<_>>();
+        assert_eq!(source_terms.len(), 1);
+        assert_eq!(retained_terms.len(), 1);
+        assert_eq!(retained_terms[0].retained_row_count_upper_bound(), Some(5));
+        assert!(retained_terms[0].bytes() > source_terms[0].bytes());
+        QueryPlanCapabilityProof { requirement }
+            .resolve_reservation_envelope(reservation_policy())
+            .expect("computed GPU sink must have a complete owner inventory");
     }
 
     #[test]
@@ -4404,16 +4787,64 @@ mod tests {
     }
 
     #[test]
-    fn generic_gpu_sink_with_a_gpu_source_rejects_an_unbound_output_owner() {
+    fn generic_gpu_sink_with_a_gpu_source_forwards_without_a_second_owner() {
         let schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Int64, false)]));
         let mut builder = QueryPlanBuilder::new();
         let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", schema)));
         let plan = builder.finish_gpu_resident(source);
         let proof = QueryPlanCapabilityProof::for_query_plan(&plan).unwrap();
-        let error = proof
+        assert!(proof.as_requirement().owner_terms.is_empty());
+        proof
             .resolve_reservation_envelope(reservation_policy())
-            .expect_err("a GPU-source sink cannot mint an unbound generic retained output");
-        assert_eq!(error.fact_value("reason"), Some("attempt_owner_term_gpu_resident_output_owner_alias_unmodeled"));
+            .expect("a direct GPU-source sink forwards its upstream-owned handle");
+    }
+
+    #[test]
+    fn computed_gpu_sink_prices_concurrent_input_and_transformed_output() {
+        let schema = Arc::new(Schema::new(vec![Field::new("keep", DataType::Boolean, false)]));
+        let mut builder = QueryPlanBuilder::new();
+        let source = builder.add_source(SourceNode::GpuResident(
+            GpuResidentSource::new("input", Arc::clone(&schema)).with_row_count_upper_bound(3),
+        ));
+        let filter = builder.add_filter(source, Expr::column("keep"), Arc::clone(&schema));
+        let plan = builder.finish_gpu_resident(filter);
+        let proof = QueryPlanCapabilityProof::for_query_plan(&plan).unwrap();
+        let retained_terms =
+            proof.as_requirement().owner_terms.iter().filter(|term| term.is_retained_output()).collect::<Vec<_>>();
+        assert_eq!(retained_terms.len(), 1);
+        assert_eq!(retained_terms[0].retained_row_count_upper_bound(), Some(3));
+        let source_terms =
+            proof.as_requirement().owner_terms.iter().filter(|term| term.is_source_stage()).collect::<Vec<_>>();
+        assert_eq!(source_terms.len(), 1);
+        assert_eq!(source_terms[0].bytes(), retained_terms[0].bytes());
+        assert_eq!(proof.as_requirement().conservative_owner_sum().unwrap(), source_terms[0].bytes() * 2);
+        proof
+            .resolve_reservation_envelope(reservation_policy())
+            .expect("computed GPU-source sink must price its concurrent input and output");
+    }
+
+    #[test]
+    fn decimal_projection_prices_native_rescale_workspace() {
+        let input_schema = Arc::new(Schema::new(vec![Field::new("amount", DataType::Decimal128(20, 0), false)]));
+        let output_schema = Arc::new(Schema::new(vec![Field::new("amount", DataType::Decimal128(20, -1), false)]));
+        let mut builder = QueryPlanBuilder::new();
+        let source = builder.add_source(SourceNode::GpuResident(
+            GpuResidentSource::new("input", input_schema).with_row_count_upper_bound(2),
+        ));
+        let projection = builder.add_projection(
+            source,
+            vec![ProjectionOutput::new(Expr::column("amount"), output_schema.field(0).as_ref().clone())],
+        );
+        let proof = QueryPlanCapabilityProof::for_query_plan(&builder.finish_gpu_resident(projection)).unwrap();
+        let workspace = proof
+            .as_requirement()
+            .owner_terms
+            .iter()
+            .find(|term| term.id().role == OwnerTermRole::ConsumerProjectionCastWorkspace)
+            .expect("decimal rescale must own its libcudf scalar workspace");
+
+        assert_eq!(workspace.bytes(), 256);
+        assert_eq!(workspace.id().owner, OwnerId::Consumer(projection));
     }
 
     #[test]

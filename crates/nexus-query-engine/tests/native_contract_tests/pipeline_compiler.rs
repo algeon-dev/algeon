@@ -587,14 +587,14 @@ fn compile_pipeline_topk_bounded_paths_compile_aggregate_sort_limit_structure() 
     for (label, plan, admits, expected_aggregates) in [
         (
             "aggregate-over-join TopK",
-            aggregate_over_join_subplan_topk_plan(),
+            aggregate_over_join_subplan_topk_plan(false),
             CapabilityAnalysis::admits_multi_join_aggregate_over_join_subplan_topk_pipeline
                 as fn(&CapabilityAnalysis) -> bool,
             1,
         ),
         (
             "resident grouped-aggregate TopK",
-            resident_grouped_aggregate_input_post_join_aggregate_topk_plan(),
+            resident_grouped_aggregate_input_post_join_aggregate_topk_plan(false),
             CapabilityAnalysis::admits_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_pipeline
                 as fn(&CapabilityAnalysis) -> bool,
             2,
@@ -646,7 +646,7 @@ fn compile_pipeline_topk_bounded_paths_compile_aggregate_sort_limit_structure() 
 fn compile_pipeline_resident_grouped_aggregate_subquery_filter_keeps_join_and_aggregate_boundaries() {
     let (_plan, _analysis, pipeline) = compile_admitted_join_case(
         "resident grouped-aggregate subquery filter",
-        resident_grouped_aggregate_subquery_filter_plan(),
+        resident_grouped_aggregate_subquery_filter_plan(false),
         CapabilityAnalysis::admits_multi_join_resident_grouped_aggregate_subquery_filter_pipeline,
     );
 

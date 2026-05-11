@@ -98,11 +98,7 @@ fn native_context_executes_direct_parquet_pipeline_to_host_sink() {
     ]));
 
     let source = LocalParquetSource::from_files(
-        vec![
-            LocalParquetFile::new(&path)
-                .with_file_size_bytes(fs::metadata(&path).unwrap().len())
-                .with_row_group_bytes(vec![4096, 4096, 4096]),
-        ],
+        vec![LocalParquetFile::new(&path).with_file_size_bytes(fs::metadata(&path).unwrap().len())],
         Arc::clone(&input_schema),
         vec!["key".to_string(), "m00".to_string(), "m01".to_string(), "payload".to_string()],
     );
@@ -137,7 +133,7 @@ fn native_context_executes_direct_parquet_pipeline_to_host_sink() {
     assert_eq!(metrics.source_read_runtime_rows.len(), 1);
     let source_read_row = &metrics.source_read_runtime_rows[0];
     assert_eq!(source_read_row.source_node_id, source.to_string());
-    assert_eq!(source_read_row.read_kind, "file");
+    assert_eq!(source_read_row.read_kind, "chunk");
     assert_eq!(source_read_row.read_strategy, "local_kvikio");
     assert_eq!(source_read_row.parquet_read_evidence.input_kind, "local_path");
     assert_eq!(source_read_row.parquet_read_evidence.remote_read_mode, "none");
@@ -213,7 +209,7 @@ fn native_context_executes_multi_file_direct_parquet_source() {
     let metrics = result.metrics();
     assert_eq!(metrics.parquet_files, 2);
     assert_eq!(metrics.read_columns, 8);
-    assert_eq!(metrics.input_batches, 2);
+    assert_eq!(metrics.input_batches, 1);
     assert_eq!(metrics.input_rows, 8);
     assert_eq!(metrics.boundary.host_to_device_uploads, 0);
     assert_eq!(metrics.boundary.device_to_host_materializations, 1);

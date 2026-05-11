@@ -486,23 +486,10 @@ fn pairwise_similarity_rejects_null_pairs_absent_endpoints_and_pair_graph_dtype_
         mismatched_pairs.num_rows(),
         false,
     );
-    let mismatched_admitted = context.admit_plan(&mismatched_plan).unwrap();
-    let mismatched_runtime = Arc::new(mismatched_admitted.runtime().unwrap());
-    let mismatch_error = match execute_similarity_plan(
-        &mismatched_admitted,
-        &mismatched_runtime,
-        &mismatched_plan,
-        edge_schema,
-        &edge_batch,
-        mismatched_schema,
-        &mismatched_pairs,
-    ) {
+    let mismatch_error = match context.admit_plan(&mismatched_plan) {
         Err(error) => error,
-        Ok(_) => panic!("pair and graph vertex domains must match"),
+        Ok(_) => panic!("pair and graph vertex domains must reject before GPU execution"),
     };
     assert_eq!(mismatch_error.code(), QueryErrorCode::UnsupportedType);
     assert_eq!(mismatch_error.fact_value("reason"), Some("vertex_pair_graph_vertex_dtype_mismatch"));
-    drop(mismatched_runtime);
-    mismatched_admitted.finish();
-    drop(mismatched_admitted);
 }

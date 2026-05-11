@@ -1301,12 +1301,6 @@ fn bounded_native_query_executes_min_max_count_and_final_merge() {
     assert!(metrics.partial_aggregate_retained_bytes > 0);
     assert_eq!(metrics.final_merge_attempts, 1);
     assert!(metrics.final_merge_max_fan_in >= 1);
-    assert!(
-        metrics
-            .reservation_events
-            .iter()
-            .any(|event| { event.memory_boundary == "source_adjacent_partitioned_partial_aggregate_output" })
-    );
     assert_eq!(metrics.boundary.host_to_device_uploads, 0);
     assert_eq!(metrics.boundary.device_to_host_materializations, 1);
 

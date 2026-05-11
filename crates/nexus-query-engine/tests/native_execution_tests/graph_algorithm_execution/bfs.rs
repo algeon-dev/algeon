@@ -420,52 +420,19 @@ fn bfs_include_edges_relation_filters_by_source_destination() {
     );
     let graph = builder.add_graph_algorithm(edges, spec);
     let plan = builder.finish_with_host_sink_schema(graph, stable_graph_result_schema(GraphAlgorithm::Bfs));
-    let admitted = context.admit_plan(&plan).unwrap();
-    let runtime = Arc::new(admitted.runtime().unwrap());
-
-    let mut gpu_inputs = GpuResidentInputMap::new();
-    gpu_inputs.insert(
-        "edges".to_string(),
-        GpuResultHandle::new(
-            &admitted,
-            GpuDataFrame::new(DataFrame::from_record_batch(&runtime, &edge_batch).unwrap()),
-            Arc::clone(&edge_schema),
-        )
-        .unwrap(),
-    );
-    gpu_inputs.insert(
-        "allowed".to_string(),
-        GpuResultHandle::new(
-            &admitted,
-            GpuDataFrame::new(DataFrame::from_record_batch(&runtime, &allowed_batch).unwrap()),
-            Arc::clone(&allowed_schema),
-        )
-        .unwrap(),
-    );
-
-    let result = execute_query_plan_with_gpu_inputs(&admitted, &plan, &gpu_inputs).unwrap();
-    let QueryOutput::HostArrow(batch) = result.output() else {
-        panic!("host sink should materialize BFS output");
+    let error = match context.admit_plan(&plan) {
+        Ok(admitted) => {
+            admitted.finish();
+            panic!("BFS include-edges must fail closed before GPU execution")
+        },
+        Err(error) => error,
     };
-    let vertices = int64_array(batch, 0);
-    let distances = int64_array(batch, 1);
-    let distance_for = |vertex: i64| {
-        (0..batch.num_rows())
-            .find_map(|row| (vertices.value(row) == vertex).then(|| distances.value(row)))
-            .unwrap_or_else(|| panic!("missing vertex {vertex} in BFS output"))
-    };
-    let contains_vertex = |vertex: i64| (0..batch.num_rows()).any(|row| vertices.value(row) == vertex);
-
-    assert_eq!(distance_for(0), 0);
-    assert!(!contains_vertex(1));
-    assert_eq!(distance_for(2), 1);
-    assert_eq!(distance_for(3), 2);
-
-    let graph_metrics = &result.metrics().graph_algorithm_runtime_rows;
-    assert_eq!(graph_metrics.len(), 1);
-    assert!(graph_metrics[0].algorithm_metadata.contains("predicate_include_edges_rows=2"));
-    assert!(graph_metrics[0].algorithm_metadata.contains("predicate_include_edges_aligned_rows=2"));
-    admitted.finish();
+    assert_eq!(error.code(), QueryErrorCode::UnsupportedPlanShape);
+    assert_eq!(error.operation(), "nexus_query_engine.graph_memory.side_input_workspace_preflight");
+    assert_eq!(error.fact_value("reason"), Some("side_input_workspace_preflight_unavailable"));
+    assert_eq!(error.fact_value("side_input_reason"), Some("include_edges_owner_contract_missing"));
+    assert_eq!(error.fact_value("side_input_role"), Some("include_edges"));
+    assert_eq!(error.fact_value("algorithm"), Some("bfs"));
 }
 
 #[test]
@@ -649,40 +616,19 @@ fn bfs_empty_path_endpoint_policy_returns_empty_after_edge_filter() {
     );
     let graph = builder.add_graph_algorithm(edges, spec);
     let plan = builder.finish_with_host_sink_schema(graph, stable_graph_result_schema(GraphAlgorithm::Bfs));
-    let admitted = context.admit_plan(&plan).unwrap();
-    let runtime = Arc::new(admitted.runtime().unwrap());
-
-    let mut gpu_inputs = GpuResidentInputMap::new();
-    for (name, schema, batch) in [
-        ("edges", Arc::clone(&edge_schema), edge_batch),
-        ("sources", Arc::clone(&source_schema), source_batch),
-        ("targets", Arc::clone(&target_schema), target_batch),
-        ("allowed", Arc::clone(&allowed_schema), allowed_batch),
-    ] {
-        gpu_inputs.insert(
-            name.to_string(),
-            GpuResultHandle::new(
-                &admitted,
-                GpuDataFrame::new(DataFrame::from_record_batch(&runtime, &batch).unwrap()),
-                schema,
-            )
-            .unwrap(),
-        );
-    }
-
-    let result = execute_query_plan_with_gpu_inputs(&admitted, &plan, &gpu_inputs).unwrap();
-    let QueryOutput::HostArrow(batch) = result.output() else {
-        panic!("host sink should materialize BFS output");
+    let error = match context.admit_plan(&plan) {
+        Ok(admitted) => {
+            admitted.finish();
+            panic!("BFS include-edges must fail closed before GPU execution")
+        },
+        Err(error) => error,
     };
-    assert_eq!(batch.num_rows(), 0);
-    let metadata = &result.metrics().graph_algorithm_runtime_rows[0].algorithm_metadata;
-    assert!(metadata.contains("endpoint_policy=empty_on_missing_path_endpoint"), "{metadata}");
-    assert!(metadata.contains("empty_result_reason=source_vertices_absent"), "{metadata}");
-    assert!(metadata.contains("source_rows=1"), "{metadata}");
-    assert!(metadata.contains("valid_source_rows=0"), "{metadata}");
-    assert!(metadata.contains("target_rows=1"), "{metadata}");
-    assert!(metadata.contains("valid_target_rows=1"), "{metadata}");
-    admitted.finish();
+    assert_eq!(error.code(), QueryErrorCode::UnsupportedPlanShape);
+    assert_eq!(error.operation(), "nexus_query_engine.graph_memory.side_input_workspace_preflight");
+    assert_eq!(error.fact_value("reason"), Some("side_input_workspace_preflight_unavailable"));
+    assert_eq!(error.fact_value("side_input_reason"), Some("include_edges_owner_contract_missing"));
+    assert_eq!(error.fact_value("side_input_role"), Some("include_edges"));
+    assert_eq!(error.fact_value("algorithm"), Some("bfs"));
 }
 
 #[test]

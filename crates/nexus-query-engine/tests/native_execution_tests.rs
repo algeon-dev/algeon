@@ -82,10 +82,10 @@ use nexus_query_engine::{
 use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
 
 // Keep this integration fixture independent of the host inventory.  The
-// native-execution cases derive both success and failure envelopes from their
-// requested grants (up to 8 GiB), so a host-sized automatic profile would
-// silently raise small grants through its derived attempt floor.
-const NATIVE_EXECUTION_TEST_DEVICE_LIMIT_BYTES: u64 = 8 * 1024 * 1024 * 1024;
+// native-execution cases derive both success and failure envelopes from exact
+// plan proofs and requested grants (up to 16 GiB), so a host-sized automatic
+// profile would silently raise small grants through its derived attempt floor.
+const NATIVE_EXECUTION_TEST_DEVICE_LIMIT_BYTES: u64 = 16 * 1024 * 1024 * 1024;
 const NATIVE_EXECUTION_TEST_ATTEMPT_FLOOR_BYTES: u64 = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -328,11 +328,27 @@ impl BackendQueryContext {
         self.admit_plan_with_graph_memory_calibration_override(plan, GraphMemoryCalibrationOverride::none())
     }
 
+    fn admit_plan_for_compiled_executor_test(
+        &self,
+        plan: &QueryPlan,
+    ) -> nexus_query_engine::error::Result<AdmittedPlanContext> {
+        let proof = capability_proof_for_fixture_plan_with_graph_memory_calibration_override(
+            plan,
+            GraphMemoryCalibrationOverride::none(),
+        )?;
+        self.admit_proof(proof)
+    }
+
     fn admit_plan_with_graph_memory_calibration_override(
         &self,
         plan: &QueryPlan,
         calibration_override: GraphMemoryCalibrationOverride,
     ) -> nexus_query_engine::error::Result<AdmittedPlanContext> {
+        nexus_query_engine::exec::preflight_bounded_query_plan(
+            plan,
+            ExecutionBoundaryPolicy::default(),
+            self.policy.statistical_aggregate_execution_mode,
+        )?;
         let proof =
             capability_proof_for_fixture_plan_with_graph_memory_calibration_override(plan, calibration_override)?;
         self.admit_proof(proof)
@@ -387,6 +403,7 @@ fn capability_proof_for_fixture_plan_with_graph_memory_calibration_override(
 ) -> nexus_query_engine::error::Result<QueryPlanCapabilityProof> {
     #[cfg(feature = "cugraph")]
     if plan.nodes().iter().any(|node| matches!(node.kind, PlanNode::GraphAlgorithm(_))) {
+        nexus_query_engine::exec::preflight_query_plan(plan)?;
         let evidence = graph_memory_bounded_admission_evidence_for_plan(plan, calibration_override, None)?;
         return QueryPlanCapabilityProof::for_cugraph_graph_execution_plan(plan)
             .ok_or_else(|| {
@@ -399,13 +416,7 @@ fn capability_proof_for_fixture_plan_with_graph_memory_calibration_override(
             .with_graph_memory_admission_evidence(&evidence);
     }
 
-    QueryPlanCapabilityProof::for_query_plan(plan).ok_or_else(|| {
-        nexus_query_engine::error::QueryError::new(
-            QueryErrorCode::UnsupportedPlanShape,
-            "nexus_query_engine.native_execution_tests.proof",
-            "native fixture did not issue a capability proof",
-        )
-    })
+    QueryPlanCapabilityProof::for_query_plan_preflighted(plan)
 }
 
 trait TestExecutionContext {

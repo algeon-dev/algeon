@@ -489,17 +489,34 @@ pub(crate) fn write_nullable_global_aggregate_input_parquet(path: &Path) -> Arc<
 }
 
 pub(crate) fn write_final_merge_retry_input_parquet(path: &Path, keys_per_row_group: i32) -> Arc<Schema> {
-    let schema = Arc::new(Schema::new(vec![
-        Field::new("key", DataType::Int32, false),
-        Field::new("m00", DataType::Int64, false),
-    ]));
+    write_final_merge_retry_input_parquet_impl(path, keys_per_row_group, None)
+}
+
+pub(crate) fn write_final_merge_retry_input_parquet_with_payload(
+    path: &Path,
+    keys_per_row_group: i32,
+    payload_bytes: usize,
+) -> Arc<Schema> {
+    write_final_merge_retry_input_parquet_impl(path, keys_per_row_group, Some(payload_bytes))
+}
+
+fn write_final_merge_retry_input_parquet_impl(
+    path: &Path,
+    keys_per_row_group: i32,
+    payload_bytes: Option<usize>,
+) -> Arc<Schema> {
+    let mut fields = vec![Field::new("key", DataType::Int32, false), Field::new("m00", DataType::Int64, false)];
     let keys = (0..3).flat_map(|_| 0..keys_per_row_group).collect::<Vec<_>>();
-    let values = vec![1_i64; keys.len()];
-    let batch = RecordBatch::try_new(
-        Arc::clone(&schema),
-        vec![Arc::new(Int32Array::from(keys)), Arc::new(Int64Array::from(values))],
-    )
-    .unwrap();
+    let row_count = keys.len();
+    let values = vec![1_i64; row_count];
+    let mut columns: Vec<Arc<dyn Array>> = vec![Arc::new(Int32Array::from(keys)), Arc::new(Int64Array::from(values))];
+    if let Some(payload_bytes) = payload_bytes {
+        fields.push(Field::new("payload", DataType::Utf8, false));
+        let payload = "x".repeat(payload_bytes);
+        columns.push(Arc::new(StringArray::from_iter_values(std::iter::repeat_n(payload.as_str(), row_count))));
+    }
+    let schema = Arc::new(Schema::new(fields));
+    let batch = RecordBatch::try_new(Arc::clone(&schema), columns).unwrap();
     let props = WriterProperties::builder().set_max_row_group_row_count(Some(keys_per_row_group as usize)).build();
     let file = File::create(path).unwrap();
     let mut writer = ArrowWriter::try_new(file, Arc::clone(&schema), Some(props)).unwrap();

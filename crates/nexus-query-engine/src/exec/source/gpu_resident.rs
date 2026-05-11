@@ -61,6 +61,8 @@ pub fn read_gpu_resident_source(
         .with_fact("context_device", context.runtime()?.device().ordinal()));
     }
 
+    metrics.record_input_batch(handle.num_rows() as u64);
+
     // Affinity only establishes that a device-to-device transfer is possible;
     // it does not establish ownership of the producing allocation. The handle
     // retains the stable exact binding of the context that created it; unlike

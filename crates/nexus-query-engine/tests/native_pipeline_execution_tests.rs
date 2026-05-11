@@ -37,6 +37,7 @@ use nexus_query_engine::{
         LimitSpec, LiteralValue, SortExpr, SortSpec,
     },
     metrics::{MemoryReservationEventAction, QueryMetrics},
+    mode::StatisticalAggregateExecutionMode,
     optimizer::{JoinBuildSideSelectionOptions, NativeOptimizerOptions, optimize_query_plan},
     pipeline::{
         CompiledPipeline, PipelineBarrier, PipelineBarrierId, PipelineBarrierKind, PipelineEdge, PipelineEdgeId,
@@ -49,7 +50,7 @@ use nexus_query_engine::{
         QueryPlanBuilder, WindowFunction, WindowSpec,
     },
     runtime::{
-        AdmittedQueryContext, DeploymentIoCapability, ExecutionContext, GdsDriverProbeStatus,
+        AdmittedQueryContext, DeploymentIoCapability, ExecutionBoundaryPolicy, ExecutionContext, GdsDriverProbeStatus,
         GpuBackendControllerDraft, GpuBackendCore, GpuBackendCoreDraft, GpuBackendDeviceConfig, GpuMemoryOwnership,
         KvikioCompatModeStatus, NvidiaFsProbeStatus, QueryAdmissionRequest, QueryExecutionConfig, QueryHandle,
         QueueBounds, ReservationKind, resident::GpuResidentInputMap,
@@ -143,8 +144,20 @@ mod cudf {
         }
 
         pub(super) fn acquire_context_for_plan(self: &Arc<Self>, plan: &QueryPlan) -> Result<PipelineTestContext> {
-            let proof = QueryPlanCapabilityProof::for_query_plan(plan)
-                .expect("every pipeline execution fixture must issue an exact capability proof");
+            nexus_query_engine::exec::preflight_bounded_query_plan(
+                plan,
+                ExecutionBoundaryPolicy::default(),
+                StatisticalAggregateExecutionMode::default(),
+            )?;
+            let proof = QueryPlanCapabilityProof::for_query_plan_preflighted(plan)?;
+            self.acquire_context_with_proofs([proof])
+        }
+
+        pub(super) fn acquire_context_for_compiled_executor_test(
+            self: &Arc<Self>,
+            plan: &QueryPlan,
+        ) -> Result<PipelineTestContext> {
+            let proof = QueryPlanCapabilityProof::for_query_plan_preflighted(plan)?;
             self.acquire_context_with_proofs([proof])
         }
 
@@ -305,6 +318,10 @@ fn assert_task_kind_count(pipeline: &CompiledPipeline, kind: PipelineTaskKind, e
 
 fn bounded_context(runtime: Arc<cudf::Runtime>, plan: &QueryPlan) -> PipelineTestContext {
     runtime.acquire_context_for_plan(plan).unwrap()
+}
+
+fn compiled_executor_context(runtime: Arc<cudf::Runtime>, plan: &QueryPlan) -> PipelineTestContext {
+    runtime.acquire_context_for_compiled_executor_test(plan).unwrap()
 }
 
 fn bounded_context_for_proofs(

@@ -1,4 +1,5 @@
 use super::{source::record_bounded_parquet_source_metrics, *};
+use crate::{mode::StatisticalAggregateExecutionMode, runtime::ExecutionBoundaryPolicy};
 
 // Bounded execution ownership boundary:
 // - pipeline: the bounded execution facade.
@@ -166,7 +167,11 @@ fn first_vector_algorithm(plan: &QueryPlan) -> (NodeId, &'static str) {
         .expect("contains_vector_algorithm guarantees a vector node")
 }
 
-fn reject_bounded_join_plan(context: &ExecutionContext, plan: &QueryPlan) -> Result<()> {
+pub(super) fn preflight_bounded_join_plan(
+    plan: &QueryPlan,
+    boundary_policy: ExecutionBoundaryPolicy,
+    statistical_aggregate_execution_mode: StatisticalAggregateExecutionMode,
+) -> Result<()> {
     if plan.nodes().iter().any(|node| matches!(node.kind, PlanNode::Join(_))) {
         // A frontend-owned incremental D2H cursor executes through a physical
         // GPU-resident sink, but runtime rejection facts remain a contract with
@@ -180,27 +185,26 @@ fn reject_bounded_join_plan(context: &ExecutionContext, plan: &QueryPlan) -> Res
             "bounded_join_plan_shape_unsupported",
         );
         let mut projection_error_source = None;
-        let facts = match crate::admission::bounded_pipeline_rejection_projection_with_statistical_aggregate_mode(
-            plan,
-            context.statistical_aggregate_execution_mode(),
-        ) {
-            Ok(Some(projection)) => crate::admission::bounded_join_unsupported_shape_facts_with_projection(
+        let rejection_projection =
+            match crate::admission::bounded_pipeline_rejection_projection_with_statistical_aggregate_mode(
                 plan,
-                context.boundary_policy(),
-                Some(&projection),
-            ),
-            Ok(None) => contract.unsupported_shape_facts(context.boundary_policy()),
-            Err(projection_error) => {
-                let mut facts = crate::admission::bounded_join_unsupported_shape_facts_with_projection(
-                    plan,
-                    context.boundary_policy(),
-                    None,
-                );
-                crate::admission::insert_bounded_join_rejection_projection_error_facts(&mut facts, &projection_error);
-                projection_error_source = Some(projection_error);
-                facts
-            },
-        };
+                statistical_aggregate_execution_mode,
+            ) {
+                Ok(Some(projection)) => Some(projection),
+                Ok(None) => return Ok(()),
+                Err(projection_error) => {
+                    projection_error_source = Some(projection_error);
+                    None
+                },
+            };
+        let mut facts = crate::admission::bounded_join_unsupported_shape_facts_with_projection(
+            plan,
+            boundary_policy,
+            rejection_projection.as_ref(),
+        );
+        if let Some(projection_error) = projection_error_source.as_ref() {
+            crate::admission::insert_bounded_join_rejection_projection_error_facts(&mut facts, projection_error);
+        }
         for (key, value) in facts {
             error = error.with_fact(key, value);
         }
@@ -211,6 +215,10 @@ fn reject_bounded_join_plan(context: &ExecutionContext, plan: &QueryPlan) -> Res
     }
 
     Ok(())
+}
+
+fn reject_bounded_join_plan(context: &ExecutionContext, plan: &QueryPlan) -> Result<()> {
+    preflight_bounded_join_plan(plan, context.boundary_policy(), context.statistical_aggregate_execution_mode())
 }
 
 fn bounded_join_unsupported_message(contract: BoundedJoinReservationContract) -> String {

@@ -142,7 +142,8 @@ fn bounded_native_query_reports_join_leaf_source_read_hard_budget_failure() {
         Ok(_) => panic!("bounded join source read budget should fail"),
         Err(error) => error,
     };
-    let admitted_budget = admitted_budget.to_string();
+    let admitted_budget =
+        u64::try_from(cudf::DataFrame::minimum_parquet_source_read_budget_bytes()).unwrap().to_string();
     assert_eq!(error.code(), QueryErrorCode::MemoryReservationFailed);
     assert_eq!(error.fact_value("budget_bytes"), Some(admitted_budget.as_str()));
     assert_eq!(error.fact_value("memory_boundary"), Some("join_source_read"));

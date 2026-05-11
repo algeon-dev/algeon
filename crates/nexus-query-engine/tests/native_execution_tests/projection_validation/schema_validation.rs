@@ -119,28 +119,17 @@ fn native_projection_schema_coercion_rejects_unsupported_output_type_mismatch() 
     let context = backend_context();
     let input_schema = Arc::new(Schema::new(vec![Field::new("key", DataType::Int32, false)]));
     let output_schema = Arc::new(Schema::new(vec![Field::new("bad_key", DataType::Utf8, false)]));
-    let batch =
-        RecordBatch::try_new(Arc::clone(&input_schema), vec![Arc::new(Int32Array::from(vec![1, 2, 3]))]).unwrap();
     let mut builder = QueryPlanBuilder::new();
-    let source =
-        builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("int_input", Arc::clone(&input_schema))));
+    let source = builder.add_source(SourceNode::GpuResident(
+        GpuResidentSource::new("int_input", Arc::clone(&input_schema)).with_row_count_upper_bound(3),
+    ));
     let projection = builder.add_projection(
         source,
         projection_outputs(vec![Expr::column("key").alias("bad_key")], Arc::clone(&output_schema)),
     );
     let plan = builder.finish_gpu_resident(projection);
-    let admitted = context.admit_plan(&plan).unwrap();
-    let runtime = Arc::new(admitted.runtime().unwrap());
-    let frame = DataFrame::from_record_batch(&runtime, &batch).unwrap();
-
-    let mut gpu_inputs = GpuResidentInputMap::new();
-    gpu_inputs.insert(
-        "int_input".to_string(),
-        GpuResultHandle::new(&admitted, GpuDataFrame::new(frame), Arc::clone(&input_schema)).unwrap(),
-    );
-
-    let error = match execute_query_plan_with_gpu_inputs(&admitted, &plan, &gpu_inputs) {
-        Ok(_) => panic!("projection schema coercion should reject unsupported Int32 to Utf8 mismatch"),
+    let error = match context.admit_plan(&plan) {
+        Ok(_) => panic!("projection schema coercion should reject unsupported Int32 to Utf8 mismatch before grant"),
         Err(error) => error,
     };
     assert_eq!(error.code(), QueryErrorCode::UnsupportedType);
@@ -151,11 +140,10 @@ fn native_projection_schema_coercion_rejects_unsupported_output_type_mismatch() 
     assert_eq!(error.fact_value("field_index"), Some("0"));
     assert_eq!(error.fact_value("actual_type"), Some("Int32"));
     assert_eq!(error.fact_value("expected_type"), Some("Utf8"));
-    admitted.finish();
 }
 
 #[test]
-fn bounded_projection_schema_coercion_rejects_unsupported_output_type_mismatch_with_budget_facts() {
+fn bounded_projection_schema_coercion_rejects_unsupported_output_type_mismatch_before_grant() {
     let dir = unique_temp_dir("nexus-query-engine-bounded-projection-schema-coerce-reject");
     let path = dir.join("input.parquet");
     let context = backend_context();
@@ -196,9 +184,9 @@ fn bounded_projection_schema_coercion_rejects_unsupported_output_type_mismatch_w
     assert_eq!(error.fact_value("field_index"), Some("0"));
     assert_eq!(error.fact_value("actual_type"), Some("Int32"));
     assert_eq!(error.fact_value("expected_type"), Some("Utf8"));
-    assert_eq!(error.fact_value("budget_boundary"), Some("post_aggregate_projection"));
-    assert!(error.fact_value("budget_bytes").is_some());
-    assert_eq!(error.fact_value("budget_enforcement"), Some("query_domain_member"));
+    assert_eq!(error.fact_value("budget_boundary"), None);
+    assert_eq!(error.fact_value("budget_bytes"), None);
+    assert_eq!(error.fact_value("budget_enforcement"), None);
 
     fs::remove_dir_all(dir).unwrap();
 }

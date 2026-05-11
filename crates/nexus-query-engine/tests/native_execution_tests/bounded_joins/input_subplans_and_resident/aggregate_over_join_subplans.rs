@@ -129,9 +129,11 @@ fn bounded_native_query_executes_keyless_conditional_join_with_aggregate_over_jo
     assert_eq!(error.fact_value("bounded_join_execution_family"), None);
     assert_eq!(error.fact_value("memory_boundary"), Some("join_source_read"));
     assert_eq!(error.fact_value("reservation_kind"), Some("source_read"));
-    assert!(error.fact_value("requested_bytes").is_some());
-    assert_eq!(error.fact_value("granted_bytes"), Some("1"));
-    assert_eq!(error.fact_value("budget_bytes"), Some("1"));
+    let requested_bytes = error.fact_value("requested_bytes").unwrap().parse::<u64>().unwrap();
+    let granted_bytes = error.fact_value("granted_bytes").unwrap().parse::<u64>().unwrap();
+    let budget_bytes = error.fact_value("budget_bytes").unwrap().parse::<u64>().unwrap();
+    assert!(requested_bytes > granted_bytes);
+    assert!(granted_bytes < budget_bytes);
     assert!(error.fact_value("node_id").is_some());
     assert_eq!(error.fact_value("stage"), Some("join_source_read"));
     assert_eq!(error.fact_value("attempt"), Some("1"));

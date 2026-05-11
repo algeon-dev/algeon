@@ -1650,8 +1650,7 @@ impl GraphReservationReport {
             return self;
         }
 
-        self.requested_bytes =
-            self.requested_bytes.saturating_sub(credit_bytes).max(GRAPH_MEMORY_BUDGET_TRACKING_MIN_LIMIT_BYTES);
+        self.requested_bytes = self.requested_bytes.saturating_sub(credit_bytes);
         let denied = self.requested_bytes > budget_bytes;
         self.outcome = if denied { GraphReservationOutcome::Denied } else { GraphReservationOutcome::Admitted };
         self.reason = denied.then_some(GRAPH_MEMORY_ESTIMATE_EXCEEDS_BUDGET_REASON);
@@ -1690,8 +1689,7 @@ impl GraphReservationReport {
             return self;
         }
 
-        self.requested_bytes =
-            self.requested_bytes.saturating_sub(credit_bytes).max(GRAPH_MEMORY_BUDGET_TRACKING_MIN_LIMIT_BYTES);
+        self.requested_bytes = self.requested_bytes.saturating_sub(credit_bytes);
         let denied = self.requested_bytes > budget_bytes;
         self.outcome = if denied { GraphReservationOutcome::Denied } else { GraphReservationOutcome::Admitted };
         self.reason = denied.then_some(GRAPH_MEMORY_ESTIMATE_EXCEEDS_BUDGET_REASON);
@@ -3147,7 +3145,11 @@ pub fn graph_edge_list_output_rows_for_plan(plan: &QueryPlan) -> Option<u64> {
 /// strict admission may use it for resident side inputs, while descriptive
 /// planning estimates remain unsuitable as an admission proof.
 pub fn query_plan_hard_row_upper_bound(plan: &QueryPlan) -> Option<u64> {
-    hard_row_upper_bound_for_plan_node(plan, plan.root_id()).map(|(rows, _)| rows)
+    query_plan_node_hard_row_upper_bound(plan, plan.root_id())
+}
+
+pub(crate) fn query_plan_node_hard_row_upper_bound(plan: &QueryPlan, node_id: NodeId) -> Option<u64> {
+    hard_row_upper_bound_for_plan_node(plan, node_id).map(|(rows, _)| rows)
 }
 
 /// Returns a source-owned graph vertex upper bound when the entire native plan
@@ -3357,20 +3359,26 @@ fn hard_row_upper_bound_for_plan_node(plan: &QueryPlan, node_id: NodeId) -> Opti
         PlanNode::Aggregate(aggregate) if aggregate.spec.group_exprs.is_empty() => {
             Some((1, GraphPairCardinalitySource::PlanExact))
         },
-        PlanNode::Join(join)
-            if join.spec.join_type == JoinType::Inner
-                && !join.spec.keys.is_empty()
-                && join.spec.residual_predicate.is_none() =>
-        {
+        PlanNode::Aggregate(aggregate) => hard_row_upper_bound_for_plan_node(plan, aggregate.input)
+            .map(|(rows, _)| (rows, GraphPairCardinalitySource::PlanHardUpperBound)),
+        PlanNode::Join(join) => {
             let left_rows = hard_row_upper_bound_for_plan_node(plan, join.inputs[0])?.0;
-            let right_rows = hard_row_upper_bound_for_plan_node(plan, join.inputs[1])?.0;
-            left_rows.checked_mul(right_rows).map(|rows| (rows, GraphPairCardinalitySource::PlanHardUpperBound))
+            let rows = match join.spec.join_type {
+                JoinType::LeftSemi | JoinType::LeftAnti | JoinType::LeftMark => Some(left_rows),
+                JoinType::Inner | JoinType::Cross => {
+                    left_rows.checked_mul(hard_row_upper_bound_for_plan_node(plan, join.inputs[1])?.0)
+                },
+                JoinType::Left => {
+                    left_rows.checked_mul(hard_row_upper_bound_for_plan_node(plan, join.inputs[1])?.0.max(1))
+                },
+                JoinType::Full => {
+                    let right_rows = hard_row_upper_bound_for_plan_node(plan, join.inputs[1])?.0;
+                    left_rows.checked_mul(right_rows)?.checked_add(left_rows)?.checked_add(right_rows)
+                },
+            }?;
+            Some((rows, GraphPairCardinalitySource::PlanHardUpperBound))
         },
-        PlanNode::Aggregate(_)
-        | PlanNode::Join(_)
-        | PlanNode::EdgeNormalize(_)
-        | PlanNode::GraphAlgorithm(_)
-        | PlanNode::VectorAlgorithm(_) => None,
+        PlanNode::EdgeNormalize(_) | PlanNode::GraphAlgorithm(_) | PlanNode::VectorAlgorithm(_) => None,
     }
 }
 
@@ -3672,7 +3680,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        expr::{ColumnRef, Expr, LiteralValue},
+        expr::{AggregateSpec, ColumnRef, Expr, LiteralValue},
         plan::{
             GraphBfsParams, GraphConstructionOptions, GraphEdgePredicateInput, GraphForceAtlas2Params,
             GraphPageRankParams, GraphPageRankPersonalizationInput, GraphPersonalizedPageRankParams,
@@ -3794,7 +3802,7 @@ mod tests {
     }
 
     #[test]
-    fn keyed_inner_join_hard_row_bound_is_checked_product_and_fail_closed() {
+    fn join_hard_row_bounds_are_checked_and_fail_closed() {
         let bounded = bounded_join_plan(Some(3), Some(4), JoinType::Inner, true, false);
         assert_eq!(query_plan_hard_row_upper_bound(&bounded), Some(12));
 
@@ -3808,20 +3816,48 @@ mod tests {
         assert_eq!(query_plan_hard_row_upper_bound(&overflow), None);
 
         let residual = bounded_join_plan(Some(3), Some(4), JoinType::Inner, true, true);
-        assert_eq!(query_plan_hard_row_upper_bound(&residual), None);
+        assert_eq!(query_plan_hard_row_upper_bound(&residual), Some(12));
 
-        for (join_type, keyed) in [
-            (JoinType::Left, true),
-            (JoinType::Full, true),
-            (JoinType::LeftSemi, true),
-            (JoinType::LeftAnti, true),
-            (JoinType::Cross, false),
-            (JoinType::LeftMark, true),
-            (JoinType::Inner, false),
+        let keyless = bounded_join_plan(Some(3), Some(4), JoinType::Inner, false, false);
+        assert_eq!(query_plan_hard_row_upper_bound(&keyless), Some(12));
+
+        for (join_type, keyed, expected) in [
+            (JoinType::Left, true, 12),
+            (JoinType::Full, true, 19),
+            (JoinType::LeftSemi, true, 3),
+            (JoinType::LeftAnti, true, 3),
+            (JoinType::Cross, false, 12),
+            (JoinType::LeftMark, true, 3),
         ] {
-            let unsupported = bounded_join_plan(Some(3), Some(4), join_type, keyed, false);
-            assert_eq!(query_plan_hard_row_upper_bound(&unsupported), None, "join type {join_type}");
+            let plan = bounded_join_plan(Some(3), Some(4), join_type, keyed, false);
+            assert_eq!(query_plan_hard_row_upper_bound(&plan), Some(expected), "join type {join_type}");
         }
+
+        let empty_right_left = bounded_join_plan(Some(3), Some(0), JoinType::Left, true, false);
+        assert_eq!(query_plan_hard_row_upper_bound(&empty_right_left), Some(3));
+
+        let empty_left_full = bounded_join_plan(Some(0), Some(4), JoinType::Full, true, false);
+        assert_eq!(query_plan_hard_row_upper_bound(&empty_left_full), Some(4));
+
+        let unknown_right_semi = bounded_join_plan(Some(3), None, JoinType::LeftSemi, true, false);
+        assert_eq!(query_plan_hard_row_upper_bound(&unknown_right_semi), Some(3));
+
+        let full_overflow = bounded_join_plan(Some(u64::MAX), Some(1), JoinType::Full, true, false);
+        assert_eq!(query_plan_hard_row_upper_bound(&full_overflow), None);
+    }
+
+    #[test]
+    fn grouped_aggregate_hard_row_bound_cannot_exceed_its_input() {
+        let schema = Arc::new(Schema::new(vec![Field::new("key", DataType::Int64, false)]));
+        let mut builder = QueryPlanBuilder::new();
+        let source = builder.add_source(SourceNode::GpuResident(
+            GpuResidentSource::new("bounded-grouped-aggregate", Arc::clone(&schema)).with_row_count_upper_bound(3),
+        ));
+        let aggregate =
+            builder.add_aggregate(source, AggregateSpec::new(vec![Expr::column("key")], Vec::new()), schema);
+        let plan = builder.finish_gpu_resident(aggregate);
+
+        assert_eq!(query_plan_hard_row_upper_bound(&plan), Some(3));
     }
 
     #[test]
@@ -4926,5 +4962,48 @@ mod tests {
             assert_eq!(estimate.pair_cardinality_source, Some(source));
             assert_eq!(estimate.pair_cardinality_admission_mode, Some(GraphPairCardinalityAdmissionMode::Bounded));
         }
+    }
+
+    #[test]
+    fn bounded_graph_floor_is_applied_before_live_input_credits() {
+        let spec = GraphAlgorithmSpec::with_stable_schema(
+            GraphAlgorithm::Jaccard,
+            GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
+            GraphConstructionOptions {
+                directed: false,
+                renumber: true,
+                policy: GraphConstructionPolicy::RawLibcugraph,
+            },
+            GraphAlgorithmParams::Similarity(GraphSimilarityParams::default()),
+        );
+        let input = GraphMemoryModelInput {
+            raw_input_edges: None,
+            input_edges: 6,
+            vertex_width_bytes: 8,
+            weight_width_bytes: None,
+            has_edge_id: false,
+            device_total_memory_bytes: None,
+            vertex_estimate: None,
+            statistics: None,
+            edge_normalize_inserted: true,
+            construction_sort_workspace_bound_bytes: None,
+            pair_rows: None,
+            pair_vertex_width_bytes: None,
+            pair_cardinality_source: None,
+        }
+        .with_similarity_pair_input(1, 8, GraphPairCardinalitySource::PlanHardUpperBound);
+        let estimate = GraphMemoryModel.estimate_for_bounded(&spec, input).expect("small similarity model");
+        assert!(estimate.requested_bytes < GRAPH_MEMORY_BUDGET_TRACKING_MIN_LIMIT_BYTES);
+
+        let report =
+            GraphReservationReport::from_estimate("n3", estimate, Some(GRAPH_MEMORY_BUDGET_TRACKING_MIN_LIMIT_BYTES))
+                .credit_live_graph_input(6 * 8, None)
+                .credit_live_similarity_pair_input(16);
+        assert_eq!(
+            report.requested_bytes,
+            GRAPH_MEMORY_BUDGET_TRACKING_MIN_LIMIT_BYTES - 6 * 8 - 16,
+            "the floor applies to the complete live graph peak, so accounted input bytes reduce the incremental ask"
+        );
+        assert_eq!(report.outcome, GraphReservationOutcome::Admitted);
     }
 }
