@@ -246,6 +246,166 @@ pub(super) fn analyze_keyed_hash_join_resident_subplan_admission(
     CapabilityDecision::Satisfied
 }
 
+pub(super) fn analyze_keyless_conditional_join_input_subplan_admission(
+    plan: &QueryPlan,
+    nodes: &[NodeCapability],
+    edges: &[EdgeContract],
+    invariants: &[SubgraphInvariant],
+) -> CapabilityDecision {
+    let reachable = match collect_reachable_node_ids(plan) {
+        Ok(reachable) => reachable,
+        Err(decision) => return decision,
+    };
+    if let Some(rejection) = first_reachable_node_rejection(nodes, &reachable) {
+        return rejection;
+    }
+    if let Some(rejection) = first_reachable_edge_rejection(edges, &reachable) {
+        return rejection;
+    }
+    let shape = match keyless_conditional_join_input_subplan_shape_decision(plan) {
+        Ok(shape) => shape,
+        Err(decision) => return decision,
+    };
+    for kind in [
+        InvariantSelector::BuildBeforeProbe { join_id: shape.root_join_id },
+        InvariantSelector::ResidualUsesBothInputs { join_id: shape.root_join_id },
+        InvariantSelector::TopologicalBuildProbeSchedule,
+        InvariantSelector::ResidentLifetimeDominatesConsumers,
+    ] {
+        match solved_invariant_decision(invariants, kind) {
+            Some(CapabilityDecision::Satisfied) => {},
+            Some(CapabilityDecision::Rejected { reason, facts }) => {
+                return CapabilityDecision::Rejected { reason: *reason, facts: facts.clone() };
+            },
+            Some(CapabilityDecision::Conditional { waiting_on }) => {
+                return CapabilityDecision::Conditional { waiting_on: waiting_on.clone() };
+            },
+            None if matches!(
+                kind,
+                InvariantSelector::TopologicalBuildProbeSchedule
+                    | InvariantSelector::ResidentLifetimeDominatesConsumers
+            ) && shape.reachable_join_count <= 1 => {},
+            None => {
+                return CapabilityDecision::rejected(
+                    "missing_keyless_conditional_input_subplan_invariant",
+                    [("invariant", kind.as_str().to_string())],
+                );
+            },
+        }
+    }
+    CapabilityDecision::Satisfied
+}
+
+pub(super) fn analyze_keyless_conditional_join_aggregate_over_join_subplan_inputs_admission(
+    plan: &QueryPlan,
+    nodes: &[NodeCapability],
+    edges: &[EdgeContract],
+    invariants: &[SubgraphInvariant],
+) -> CapabilityDecision {
+    let reachable = match collect_reachable_node_ids(plan) {
+        Ok(reachable) => reachable,
+        Err(decision) => return decision,
+    };
+    if let Some(rejection) = first_reachable_node_rejection(nodes, &reachable) {
+        return rejection;
+    }
+    if let Some(rejection) = first_reachable_edge_rejection(edges, &reachable) {
+        return rejection;
+    }
+    let shape = match keyless_conditional_join_aggregate_over_join_subplan_inputs_shape_decision(plan) {
+        Ok(shape) => shape,
+        Err(decision) => return decision,
+    };
+    let mut required = vec![
+        InvariantSelector::BuildBeforeProbe { join_id: shape.root_join_id },
+        InvariantSelector::ResidualUsesBothInputs { join_id: shape.root_join_id },
+        InvariantSelector::ResidentUnaryChainPreservesResidency {
+            peeled_producer: shape.grouped_aggregate_id,
+            consumer_id: shape.grouped_aggregate_projection_id,
+        },
+        InvariantSelector::ResidentUnaryChainPreservesResidency {
+            peeled_producer: shape.scalar_aggregate_id,
+            consumer_id: shape.scalar_aggregate_projection_id,
+        },
+        InvariantSelector::PostRootStageOrder { root_join_id: shape.root_join_id },
+        InvariantSelector::TopologicalBuildProbeSchedule,
+        InvariantSelector::ResidentLifetimeDominatesConsumers,
+    ];
+    if let Some(final_sort_id) = shape.final_sort_id {
+        required.push(InvariantSelector::FinalBarrierOrder { sort_id: final_sort_id });
+    }
+
+    for kind in required {
+        match solved_invariant_decision(invariants, kind) {
+            Some(CapabilityDecision::Satisfied) => {},
+            Some(CapabilityDecision::Rejected { reason, facts }) => {
+                return CapabilityDecision::Rejected { reason: *reason, facts: facts.clone() };
+            },
+            Some(CapabilityDecision::Conditional { waiting_on }) => {
+                return CapabilityDecision::Conditional { waiting_on: waiting_on.clone() };
+            },
+            None => {
+                return CapabilityDecision::rejected(
+                    "missing_keyless_conditional_aggregate_over_join_subplan_inputs_invariant",
+                    [("invariant", kind.as_str().to_string())],
+                );
+            },
+        }
+    }
+    CapabilityDecision::Satisfied
+}
+
+pub(super) fn analyze_multi_join_resident_grouped_aggregate_subquery_filter_admission(
+    plan: &QueryPlan,
+    nodes: &[NodeCapability],
+    edges: &[EdgeContract],
+    invariants: &[SubgraphInvariant],
+) -> CapabilityDecision {
+    let reachable = match collect_reachable_node_ids(plan) {
+        Ok(reachable) => reachable,
+        Err(decision) => return decision,
+    };
+    if let Some(rejection) = first_reachable_node_rejection(nodes, &reachable) {
+        return rejection;
+    }
+    if let Some(rejection) = first_reachable_edge_rejection(edges, &reachable) {
+        return rejection;
+    }
+    let shape = match multi_join_resident_grouped_aggregate_subquery_filter_shape_decision(plan) {
+        Ok(shape) => shape,
+        Err(decision) => return decision,
+    };
+    for kind in [
+        InvariantSelector::BuildBeforeProbe { join_id: shape.root_join_id },
+        InvariantSelector::BuildBeforeProbe { join_id: shape.residual_join_id },
+        InvariantSelector::ResidualUsesBothInputs { join_id: shape.residual_join_id },
+        InvariantSelector::ResidentUnaryChainPreservesResidency {
+            peeled_producer: shape.grouped_aggregate_id,
+            consumer_id: shape.grouped_aggregate_projection_id,
+        },
+        InvariantSelector::FinalBarrierOrder { sort_id: shape.final_sort_id },
+        InvariantSelector::TopologicalBuildProbeSchedule,
+        InvariantSelector::ResidentLifetimeDominatesConsumers,
+    ] {
+        match solved_invariant_decision(invariants, kind) {
+            Some(CapabilityDecision::Satisfied) => {},
+            Some(CapabilityDecision::Rejected { reason, facts }) => {
+                return CapabilityDecision::Rejected { reason: *reason, facts: facts.clone() };
+            },
+            Some(CapabilityDecision::Conditional { waiting_on }) => {
+                return CapabilityDecision::Conditional { waiting_on: waiting_on.clone() };
+            },
+            None => {
+                return CapabilityDecision::rejected(
+                    "missing_multi_join_resident_grouped_aggregate_subquery_filter_invariant",
+                    [("invariant", kind.as_str().to_string())],
+                );
+            },
+        }
+    }
+    CapabilityDecision::Satisfied
+}
+
 #[derive(Debug, Clone, Copy)]
 enum InvariantSelector {
     BuildBeforeProbe { join_id: NodeId },

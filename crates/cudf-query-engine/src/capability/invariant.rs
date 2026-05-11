@@ -42,6 +42,7 @@ pub(super) fn analyze_invariants(plan: &QueryPlan, edges: &[EdgeContract]) -> Ve
     append_mixed_residual_post_root_stage_order_invariant(plan, &mut invariants);
     append_hash_join_resident_grouped_aggregate_topk_post_root_stage_order_invariant(plan, &mut invariants);
     append_multi_join_aggregate_over_join_subplan_topk_post_root_stage_order_invariant(plan, &mut invariants);
+    append_keyless_aggregate_over_join_subplan_inputs_post_root_stage_order_invariant(plan, &mut invariants);
 
     if reachable_join_count_from_sink(plan).unwrap_or(0) > 1 {
         let invariant_id = InvariantId(invariants.len());
@@ -276,6 +277,32 @@ pub(super) fn append_multi_join_aggregate_over_join_subplan_topk_post_root_stage
         invariant_id,
         kind: SubgraphInvariantKind::PostRootStageOrder { root_join_id: shape.root_join_id },
         nodes: vec![shape.root_join_id, shape.post_root_projection_id, shape.final_sort_id, shape.final_limit_id],
+        required_schedule: ScheduleConstraint::Barrier,
+        required_resources: vec![ResidentResource::NodeOutput(shape.root_join_id)],
+        decision: CapabilityDecision::Satisfied,
+    });
+}
+
+pub(super) fn append_keyless_aggregate_over_join_subplan_inputs_post_root_stage_order_invariant(
+    plan: &QueryPlan,
+    invariants: &mut Vec<SubgraphInvariant>,
+) {
+    let Ok(shape) = keyless_conditional_join_aggregate_over_join_subplan_inputs_shape_decision(plan) else {
+        return;
+    };
+    let mut nodes = Vec::new();
+    nodes.push(shape.root_join_id);
+    if let Some(projection_id) = shape.post_root_projection_id {
+        nodes.push(projection_id);
+    }
+    if let Some(sort_id) = shape.final_sort_id {
+        nodes.push(sort_id);
+    }
+    let invariant_id = InvariantId(invariants.len());
+    invariants.push(SubgraphInvariant {
+        invariant_id,
+        kind: SubgraphInvariantKind::PostRootStageOrder { root_join_id: shape.root_join_id },
+        nodes,
         required_schedule: ScheduleConstraint::Barrier,
         required_resources: vec![ResidentResource::NodeOutput(shape.root_join_id)],
         decision: CapabilityDecision::Satisfied,

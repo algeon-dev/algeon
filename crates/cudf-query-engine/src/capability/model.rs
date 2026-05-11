@@ -241,6 +241,20 @@ impl CapabilityDecision {
     pub(super) fn rejected(reason: &'static str, facts: impl IntoIterator<Item = (&'static str, String)>) -> Self {
         Self::Rejected { reason, facts: facts.into_iter().collect() }
     }
+
+    pub const fn rejection_reason(&self) -> Option<&'static str> {
+        match self {
+            Self::Rejected { reason, .. } => Some(reason),
+            Self::Satisfied | Self::Conditional { .. } => None,
+        }
+    }
+
+    pub fn rejection_facts(&self) -> Option<&BTreeMap<&'static str, String>> {
+        match self {
+            Self::Rejected { facts, .. } => Some(facts),
+            Self::Satisfied | Self::Conditional { .. } => None,
+        }
+    }
 }
 
 /// Node-local executable capability.
@@ -443,6 +457,17 @@ pub enum CompatibilityFamilyProjection {
     KeyedHashJoinResidentSubplanPipeline,
 }
 
+/// Report-facing projection of the first capability rejection.
+///
+/// This is separate from family projection on purpose: rejected capability
+/// analysis should be meaningful even when no legacy family name applies.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompatibilityRejectionProjection {
+    pub scope: &'static str,
+    pub reason: &'static str,
+    pub facts: BTreeMap<&'static str, String>,
+}
+
 /// Side-channel capability analysis for one lowered native query plan.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CapabilityAnalysis {
@@ -455,6 +480,9 @@ pub struct CapabilityAnalysis {
     pub mixed_keyed_residual_join_resident_grouped_aggregate_input_admission: CapabilityDecision,
     pub hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_admission: CapabilityDecision,
     pub keyed_hash_join_resident_subplan_admission: CapabilityDecision,
+    pub keyless_conditional_join_input_subplan_admission: CapabilityDecision,
+    pub keyless_conditional_join_aggregate_over_join_subplan_inputs_admission: CapabilityDecision,
+    pub multi_join_resident_grouped_aggregate_subquery_filter_admission: CapabilityDecision,
     pub compatibility_family_projection: Option<CompatibilityFamilyProjection>,
 }
 
@@ -484,6 +512,18 @@ impl CapabilityAnalysis {
 
     pub fn admits_keyed_hash_join_resident_subplan_pipeline(&self) -> bool {
         self.keyed_hash_join_resident_subplan_admission == CapabilityDecision::Satisfied
+    }
+
+    pub fn admits_keyless_conditional_join_input_subplan_pipeline(&self) -> bool {
+        self.keyless_conditional_join_input_subplan_admission == CapabilityDecision::Satisfied
+    }
+
+    pub fn admits_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline(&self) -> bool {
+        self.keyless_conditional_join_aggregate_over_join_subplan_inputs_admission == CapabilityDecision::Satisfied
+    }
+
+    pub fn admits_multi_join_resident_grouped_aggregate_subquery_filter_pipeline(&self) -> bool {
+        self.multi_join_resident_grouped_aggregate_subquery_filter_admission == CapabilityDecision::Satisfied
     }
 
     pub fn compatibility_reservation_requirements(&self) -> Vec<ReservationRequirement> {
@@ -538,9 +578,82 @@ impl CapabilityAnalysis {
         }))
     }
 
+    pub fn compatibility_first_rejection_projection(&self) -> Option<CompatibilityRejectionProjection> {
+        self.nodes
+            .iter()
+            .find_map(|node| {
+                Some(capability_rejection_projection(
+                    "node",
+                    node.executable.rejection_reason()?,
+                    node.executable.rejection_facts()?,
+                ))
+            })
+            .or_else(|| {
+                self.edges.iter().find_map(|edge| {
+                    Some(capability_rejection_projection(
+                        "edge",
+                        edge.decision.rejection_reason()?,
+                        edge.decision.rejection_facts()?,
+                    ))
+                })
+            })
+            .or_else(|| {
+                self.invariants.iter().find_map(|invariant| {
+                    Some(capability_rejection_projection(
+                        "invariant",
+                        invariant.decision.rejection_reason()?,
+                        invariant.decision.rejection_facts()?,
+                    ))
+                })
+            })
+            .or_else(|| {
+                [
+                    &self.closed_multi_join_subgraph_admission,
+                    &self.multi_join_aggregate_over_join_subplan_topk_admission,
+                    &self.mixed_keyed_residual_join_resident_grouped_aggregate_input_admission,
+                    &self.hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_admission,
+                    &self.keyed_hash_join_resident_subplan_admission,
+                    &self.keyless_conditional_join_input_subplan_admission,
+                    &self.keyless_conditional_join_aggregate_over_join_subplan_inputs_admission,
+                    &self.multi_join_resident_grouped_aggregate_subquery_filter_admission,
+                ]
+                .into_iter()
+                .find_map(|decision| {
+                    Some(capability_rejection_projection(
+                        "admission",
+                        decision.rejection_reason()?,
+                        decision.rejection_facts()?,
+                    ))
+                })
+            })
+            .or_else(|| {
+                self.requirements.iter().find_map(|requirement| {
+                    (requirement.status == ContractStatus::BlockedByLowerLevel).then(|| {
+                        CompatibilityRejectionProjection {
+                            scope: "lower_level_contract",
+                            reason: "blocked_lower_level_contract",
+                            facts: BTreeMap::from([
+                                ("reservation_kind", requirement.kind.as_str().to_string()),
+                                ("required_contract", requirement.required_contract.to_string()),
+                                ("contract_status", requirement.status.as_str().to_string()),
+                            ]),
+                        }
+                    })
+                })
+            })
+    }
+
     fn has_requirement_kind(&self, kind: ReservationKind) -> bool {
         self.requirements.iter().any(|requirement| requirement.kind == kind)
     }
+}
+
+fn capability_rejection_projection(
+    scope: &'static str,
+    reason: &'static str,
+    facts: &BTreeMap<&'static str, String>,
+) -> CompatibilityRejectionProjection {
+    CompatibilityRejectionProjection { scope, reason, facts: facts.clone() }
 }
 
 impl ContractStatus {

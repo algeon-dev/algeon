@@ -26,23 +26,32 @@ mod node;
 mod requirements;
 mod shape;
 
+pub(crate) use compatibility::CompatibilityReportProjection;
 pub use entry::analyze_query_capabilities;
 pub(crate) use entry::{
     admits_closed_multi_join_subgraph,
     admits_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_pipeline,
     admits_keyed_hash_join_resident_subplan_pipeline,
+    admits_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline,
+    admits_keyless_conditional_join_input_subplan_pipeline,
     admits_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline,
-    admits_multi_join_aggregate_over_join_subplan_topk_pipeline, closed_multi_join_subgraph_admission_decision,
+    admits_multi_join_aggregate_over_join_subplan_topk_pipeline,
+    admits_multi_join_resident_grouped_aggregate_subquery_filter_pipeline,
+    closed_multi_join_subgraph_admission_decision,
     hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_admission_decision,
     keyed_hash_join_resident_subplan_admission_decision,
+    keyless_conditional_join_aggregate_over_join_subplan_inputs_admission_decision,
+    keyless_conditional_join_input_subplan_admission_decision,
     mixed_keyed_residual_join_resident_grouped_aggregate_input_admission_decision,
     multi_join_aggregate_over_join_subplan_topk_admission_decision,
+    multi_join_resident_grouped_aggregate_subquery_filter_admission_decision,
 };
 pub use model::{
-    AggregateGrouping, CapabilityAnalysis, CapabilityDecision, CompatibilityFamilyProjection, ConstraintRef,
-    ConstraintScope, ContractQuality, ContractStatus, EdgeConsumer, EdgeContract, EdgeContractKind, InputRole,
-    InvariantId, NodeCapability, NodeOperator, OrderingRequirement, ProducedProperty, RequiredProperty,
-    ReservationRequirement, ReservationRequirementScope, ResidentResource, ResidualRequirement, ResultSinkKind,
-    ScheduleConstraint, SharedProducerIdentity, SourceFormatCapability, SubgraphInvariant, SubgraphInvariantKind,
+    AggregateGrouping, CapabilityAnalysis, CapabilityDecision, CompatibilityFamilyProjection,
+    CompatibilityRejectionProjection, ConstraintRef, ConstraintScope, ContractQuality, ContractStatus, EdgeConsumer,
+    EdgeContract, EdgeContractKind, InputRole, InvariantId, NodeCapability, NodeOperator, OrderingRequirement,
+    ProducedProperty, RequiredProperty, ReservationRequirement, ReservationRequirementScope, ResidentResource,
+    ResidualRequirement, ResultSinkKind, ScheduleConstraint, SharedProducerIdentity, SourceFormatCapability,
+    SubgraphInvariant, SubgraphInvariantKind,
 };
 pub use requirements::reservation_requirement_scope;

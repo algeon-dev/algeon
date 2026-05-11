@@ -32,6 +32,17 @@ pub fn analyze_query_capabilities(plan: &QueryPlan) -> CapabilityAnalysis {
         );
     let keyed_hash_join_resident_subplan_admission =
         analyze_keyed_hash_join_resident_subplan_admission(plan, &nodes, &edges, &invariants);
+    let keyless_conditional_join_input_subplan_admission =
+        analyze_keyless_conditional_join_input_subplan_admission(plan, &nodes, &edges, &invariants);
+    let keyless_conditional_join_aggregate_over_join_subplan_inputs_admission =
+        analyze_keyless_conditional_join_aggregate_over_join_subplan_inputs_admission(
+            plan,
+            &nodes,
+            &edges,
+            &invariants,
+        );
+    let multi_join_resident_grouped_aggregate_subquery_filter_admission =
+        analyze_multi_join_resident_grouped_aggregate_subquery_filter_admission(plan, &nodes, &edges, &invariants);
     CapabilityAnalysis {
         nodes,
         edges,
@@ -42,6 +53,9 @@ pub fn analyze_query_capabilities(plan: &QueryPlan) -> CapabilityAnalysis {
         mixed_keyed_residual_join_resident_grouped_aggregate_input_admission,
         hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_admission,
         keyed_hash_join_resident_subplan_admission,
+        keyless_conditional_join_input_subplan_admission,
+        keyless_conditional_join_aggregate_over_join_subplan_inputs_admission,
+        multi_join_resident_grouped_aggregate_subquery_filter_admission,
         compatibility_family_projection: compatibility_family_projection(plan),
     }
 }
@@ -143,4 +157,60 @@ pub(crate) fn keyed_hash_join_resident_subplan_admission_decision(plan: &QueryPl
 
 pub(crate) fn admits_keyed_hash_join_resident_subplan_pipeline(plan: &QueryPlan) -> bool {
     keyed_hash_join_resident_subplan_admission_decision(plan) == CapabilityDecision::Satisfied
+}
+
+/// Runs the keyless conditional join input-subplan proof without
+/// compatibility-family projection.
+pub(crate) fn keyless_conditional_join_input_subplan_admission_decision(plan: &QueryPlan) -> CapabilityDecision {
+    let nodes = plan.nodes().iter().map(|node| analyze_node(plan, node)).collect::<Vec<_>>();
+    let mut edges =
+        plan.nodes().iter().flat_map(|node| analyze_input_edges(plan, node.id, &node.kind)).collect::<Vec<_>>();
+    edges.push(analyze_sink_edge(plan));
+    mark_shared_producer_edge_contracts(plan, &mut edges);
+
+    let invariants = analyze_invariants(plan, &edges);
+    analyze_keyless_conditional_join_input_subplan_admission(plan, &nodes, &edges, &invariants)
+}
+
+pub(crate) fn admits_keyless_conditional_join_input_subplan_pipeline(plan: &QueryPlan) -> bool {
+    keyless_conditional_join_input_subplan_admission_decision(plan) == CapabilityDecision::Satisfied
+}
+
+/// Runs the keyless conditional join aggregate-over-join-subplan-inputs proof
+/// without compatibility-family projection.
+pub(crate) fn keyless_conditional_join_aggregate_over_join_subplan_inputs_admission_decision(
+    plan: &QueryPlan,
+) -> CapabilityDecision {
+    let nodes = plan.nodes().iter().map(|node| analyze_node(plan, node)).collect::<Vec<_>>();
+    let mut edges =
+        plan.nodes().iter().flat_map(|node| analyze_input_edges(plan, node.id, &node.kind)).collect::<Vec<_>>();
+    edges.push(analyze_sink_edge(plan));
+    mark_shared_producer_edge_contracts(plan, &mut edges);
+
+    let invariants = analyze_invariants(plan, &edges);
+    analyze_keyless_conditional_join_aggregate_over_join_subplan_inputs_admission(plan, &nodes, &edges, &invariants)
+}
+
+pub(crate) fn admits_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline(plan: &QueryPlan) -> bool {
+    keyless_conditional_join_aggregate_over_join_subplan_inputs_admission_decision(plan)
+        == CapabilityDecision::Satisfied
+}
+
+/// Runs the multi-join resident grouped-aggregate subquery-filter proof without
+/// compatibility-family projection.
+pub(crate) fn multi_join_resident_grouped_aggregate_subquery_filter_admission_decision(
+    plan: &QueryPlan,
+) -> CapabilityDecision {
+    let nodes = plan.nodes().iter().map(|node| analyze_node(plan, node)).collect::<Vec<_>>();
+    let mut edges =
+        plan.nodes().iter().flat_map(|node| analyze_input_edges(plan, node.id, &node.kind)).collect::<Vec<_>>();
+    edges.push(analyze_sink_edge(plan));
+    mark_shared_producer_edge_contracts(plan, &mut edges);
+
+    let invariants = analyze_invariants(plan, &edges);
+    analyze_multi_join_resident_grouped_aggregate_subquery_filter_admission(plan, &nodes, &edges, &invariants)
+}
+
+pub(crate) fn admits_multi_join_resident_grouped_aggregate_subquery_filter_pipeline(plan: &QueryPlan) -> bool {
+    multi_join_resident_grouped_aggregate_subquery_filter_admission_decision(plan) == CapabilityDecision::Satisfied
 }

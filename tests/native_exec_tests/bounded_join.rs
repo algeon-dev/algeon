@@ -220,10 +220,15 @@ fn native_exec_preserves_bounded_join_rejection_facts_from_native_runtime() {
     assert_eq!(adapter_error.fact_value("probe_execution_boundary"), Some("reusable_gpu_hash_join"));
     assert_eq!(adapter_error.fact_value("result_materialization_boundary"), Some("explicit_sink"));
     assert_eq!(adapter_error.fact_value("blocked_reservations"), Some(""));
+    assert_eq!(adapter_error.fact_value("bounded_join_capability_rejection_scope"), Some("node"));
+    assert_eq!(
+        adapter_error.fact_value("bounded_join_capability_rejection_reason"),
+        Some("unsupported_join_node_capability")
+    );
     assert_eq!(
         adapter_error.fact_value("modeled_reservations"),
         Some(
-            "source_read,operator_output,build_side,hash_table,probe_side,filtered_probe_state,mixed_size_data,gather_map,join_output,final_sort,materialization"
+            "source_read,build_side,hash_table,probe_side,filtered_probe_state,mixed_size_data,gather_map,join_output,materialization"
         )
     );
     assert_eq!(adapter_error.fact_value("bounded_join_lower_level_blockers"), Some(""));
@@ -296,7 +301,7 @@ fn bounded_join_facts_cover_planner_supported_and_runtime_rejected_paths() {
     assert_eq!(
         planner_facts.get("modeled_reservations").map(String::as_str),
         Some(
-            "source_read,operator_output,build_side,hash_table,probe_side,filtered_probe_state,mixed_size_data,gather_map,join_output,final_sort,materialization"
+            "source_read,build_side,hash_table,probe_side,filtered_probe_state,mixed_size_data,gather_map,join_output,materialization"
         )
     );
     assert_eq!(planner_facts.get("blocked_reservations").map(String::as_str), Some(""));
@@ -329,7 +334,7 @@ fn bounded_join_facts_cover_planner_supported_and_runtime_rejected_paths() {
     assert_eq!(
         runtime_error.fact_value("modeled_reservations"),
         Some(
-            "source_read,operator_output,build_side,hash_table,probe_side,filtered_probe_state,mixed_size_data,gather_map,join_output,final_sort,materialization"
+            "source_read,build_side,hash_table,probe_side,filtered_probe_state,mixed_size_data,gather_map,join_output,materialization"
         )
     );
     assert_eq!(runtime_error.fact_value("blocked_reservations"), Some(""));
