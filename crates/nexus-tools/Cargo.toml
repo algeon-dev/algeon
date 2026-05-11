@@ -38,7 +38,7 @@ iceberg-e2e = [
   "dep:iceberg-catalog-glue",
   "datafusion-nexus/iceberg",
 ]
-server-iceberg-e2e = ["iceberg-e2e", "datafusion-nexus/server"]
+server-iceberg-e2e = ["iceberg-e2e", "dep:nexus-server", "nexus-server/iceberg"]
 server-runtime-observability-e2e = ["server-iceberg-e2e", "dep:nexus-query-engine"]
 embedded-backend-e2e = ["server-iceberg-e2e", "dep:reqwest"]
 # The production-validation runner is intentionally opt-in. The base feature
@@ -88,6 +88,7 @@ cugraph-sys = { workspace = true, optional = true }
 cuvs-sys = { workspace = true, optional = true }
 datafusion = { workspace = true, optional = true }
 datafusion-nexus = { workspace = true, optional = true }
+nexus-server = { workspace = true, optional = true }
 nexus-bench = { path = "../nexus-bench", optional = true }
 nexus-examples = { path = "../nexus-examples", optional = true, features = ["otlp-metrics"] }
 nexus-workloads = { workspace = true, optional = true }

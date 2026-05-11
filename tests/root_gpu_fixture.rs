@@ -14,7 +14,3 @@ pub(crate) fn lock() -> tokio::sync::OwnedSemaphorePermit {
         }
     }
 }
-
-pub(crate) async fn lock_async() -> tokio::sync::OwnedSemaphorePermit {
-    semaphore().acquire_owned().await.expect("GPU fixture semaphore remains open")
-}

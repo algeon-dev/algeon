@@ -277,7 +277,7 @@ assert_status duplicate 2
 assert_contains "${tmp_dir}/duplicate.output" "duplicate option: --fast"
 assert_empty "${tmp_dir}/duplicate.log"
 
-run_check feature_conflict /usr/bin/bash scripts/check_all.sh --all-features --features server
+run_check feature_conflict /usr/bin/bash scripts/check_all.sh --all-features --features iceberg
 assert_status feature_conflict 2
 assert_contains "${tmp_dir}/feature_conflict.output" "--all-features conflicts"
 assert_empty "${tmp_dir}/feature_conflict.log"
@@ -288,7 +288,7 @@ assert_contains "${tmp_dir}/cargo_cli_spelling.output" "same-process Cargo runne
 assert_empty "${tmp_dir}/cargo_cli_spelling.log"
 echo "PASS: unknown, duplicate, and conflicting CLI options fail before work"
 
-run_check invalid_features_env env FEATURES='server,,iceberg' /usr/bin/bash scripts/check_all.sh
+run_check invalid_features_env env FEATURES='iceberg,,iceberg' /usr/bin/bash scripts/check_all.sh
 assert_status invalid_features_env 2
 assert_contains "${tmp_dir}/invalid_features_env.output" "FEATURES must be empty or a comma-separated feature list"
 assert_empty "${tmp_dir}/invalid_features_env.log"
@@ -374,7 +374,7 @@ assert_phase_contains "${tmp_dir}/default.output" gpu-exclusive-tests "gpu-exclu
 assert_phase_contains "${tmp_dir}/default.output" gpu-exclusive-tests "0.100s | PASS | run=1 passed=1 failed=0 skipped=7 | 1 | /tmp/cudf-gpu.lock | all | ${tmp_dir}/phase-logs/gpu-exclusive-tests.log | n/a"
 assert_phase_contains "${tmp_dir}/default.output" doctests "0.100s | PASS | harnesses=1 executed=0 passed=0 failed=0 ignored=0 measured=0 filtered=0 | - | /tmp/cudf-gpu.lock | all | ${tmp_dir}/phase-logs/doctests.log | n/a"
 assert_phase_contains "${tmp_dir}/default.output" public-api-surface "public-api-surface | bash scripts/ci/check_public_api_surface.sh check --all-features | 0.100s"
-assert_phase_contains "${tmp_dir}/default.output" public-api-surface "0.100s | PASS | crates=3 | - | - | all | ${tmp_dir}/phase-logs/public-api-surface.log | MISS"
+assert_phase_contains "${tmp_dir}/default.output" public-api-surface "0.100s | PASS | crates=4 | - | - | all | ${tmp_dir}/phase-logs/public-api-surface.log | MISS"
 for phase_log in policy-selftests cpu-tests gpu-shared-tests gpu-exclusive-tests doctests rustdoc public-api-surface clippy; do
   [[ -f "${tmp_dir}/phase-logs/${phase_log}.log" ]] || {
     echo "FAIL: expected persistent phase log ${phase_log}.log" >&2
@@ -394,10 +394,10 @@ fi
 echo "PASS: CPU exclusion and sequential default GPU resource classes"
 echo "PASS: full surface includes pinned fmt, one workspace-wide test/doc/clippy unification, and isolated policies"
 
-run_check feature_env env FEATURES=server /usr/bin/bash scripts/check_all.sh --lane cpu
+run_check feature_env env FEATURES=iceberg /usr/bin/bash scripts/check_all.sh --lane cpu
 assert_status feature_env 0
-assert_contains "${tmp_dir}/feature_env.output" "features=features:server(env)"
-assert_contains "${tmp_dir}/feature_env.log" "cargo <nextest> <run> <--workspace> <--features> <server>"
+assert_contains "${tmp_dir}/feature_env.output" "features=features:iceberg(env)"
+assert_contains "${tmp_dir}/feature_env.log" "cargo <nextest> <run> <--workspace> <--features> <iceberg>"
 
 run_check lock_env env GPU_LOCK=/tmp/custom-cudf.lock /usr/bin/bash scripts/check_all.sh --lane gpu-shared
 assert_status lock_env 0
@@ -417,41 +417,41 @@ assert_contains "${tmp_dir}/twelve_cores.log" "cargo <nextest> <run> <-P> <defau
 assert_phase_contains "${tmp_dir}/twelve_cores.output" gpu-shared-tests "0.100s | PASS | run=2 passed=2 failed=0 skipped=6 | 12 | /tmp/cudf-gpu.lock | all | ${tmp_dir}/phase-logs/gpu-shared-tests.log | n/a"
 echo "PASS: shared-GPU concurrency follows the available CPU count"
 
-run_check cli_precedence env FEATURES=server TEST_RUNNER=cargo STRICT=1 \
+run_check cli_precedence env FEATURES=iceberg TEST_RUNNER=cargo STRICT=1 \
   /usr/bin/bash scripts/check_all.sh --all-features --runner nextest --strict
 assert_status cli_precedence 0
 assert_contains "${tmp_dir}/cli_precedence.output" "runner=nextest(cli) features=all(cli) gpu_profile=default gpu_threads=16(nproc) strict=always(cli)"
 assert_contains "${tmp_dir}/cli_precedence.log" "cargo <nextest> <run> <-P> <default> <--workspace> <--all-features> <-E> <group(gpu)> <--no-fail-fast> <--test-threads> <16>"
 echo "PASS: explicit nextest CLI selection takes precedence over a retired runner environment value"
 
-run_check fast /usr/bin/bash scripts/check_all.sh --fast --features server
+run_check fast /usr/bin/bash scripts/check_all.sh --fast --features iceberg
 assert_status fast 0
 assert_contains "${tmp_dir}/fast.output" "PARTIAL SURFACE: mode=fast lane=cpu"
 assert_contains "${tmp_dir}/fast.output" "fast edit-loop surface passed"
 assert_contains "${tmp_dir}/fast.log" "cargo <+nightly> <fmt> <--all> <--check>"
-assert_contains "${tmp_dir}/fast.log" "cargo <nextest> <run> <--workspace> <--features> <server> <-E> <not group(gpu) & not group(gpu-exclusive)> <--no-fail-fast>"
+assert_contains "${tmp_dir}/fast.log" "cargo <nextest> <run> <--workspace> <--features> <iceberg> <-E> <not group(gpu) & not group(gpu-exclusive)> <--no-fail-fast>"
 assert_not_contains "${tmp_dir}/fast.log" "flock"
 assert_not_contains "${tmp_dir}/fast.log" "<doc>"
 assert_not_contains "${tmp_dir}/fast.log" "<clippy>"
 assert_not_contains "${tmp_dir}/fast.log" "nexus-tools"
 assert_not_contains "${tmp_dir}/fast.log" "nexus-bench"
 assert_not_contains "${tmp_dir}/fast.log" "bash <scripts/ci/check_gpu_test_lane.sh>"
-assert_phase_contains "${tmp_dir}/fast.output" cpu-tests "0.100s | PASS | run=3 passed=3 failed=0 skipped=5 | - | - | features:server | ${tmp_dir}/phase-logs/cpu-tests.log | MISS"
-assert_phase_contains "${tmp_dir}/fast.output" live-inventory "- | SKIPPED | - | - | - | features:server | - | n/a"
-assert_phase_contains "${tmp_dir}/fast.output" gpu-shared-tests "- | SKIPPED | - | - | - | features:server | - | n/a"
-assert_phase_contains "${tmp_dir}/fast.output" doctests "- | SKIPPED | - | - | - | features:server | - | n/a"
+assert_phase_contains "${tmp_dir}/fast.output" cpu-tests "0.100s | PASS | run=3 passed=3 failed=0 skipped=5 | - | - | features:iceberg | ${tmp_dir}/phase-logs/cpu-tests.log | MISS"
+assert_phase_contains "${tmp_dir}/fast.output" live-inventory "- | SKIPPED | - | - | - | features:iceberg | - | n/a"
+assert_phase_contains "${tmp_dir}/fast.output" gpu-shared-tests "- | SKIPPED | - | - | - | features:iceberg | - | n/a"
+assert_phase_contains "${tmp_dir}/fast.output" doctests "- | SKIPPED | - | - | - | features:iceberg | - | n/a"
 echo "PASS: fast surface runs policies/fmt/structure/CPU without live inventory or GPU/doc/lint/tools/bench"
 
-run_check no_default_features /usr/bin/bash scripts/check_all.sh --lane cpu --no-default-features --features server
+run_check no_default_features /usr/bin/bash scripts/check_all.sh --lane cpu --no-default-features --features iceberg
 assert_status no_default_features 0
-assert_contains "${tmp_dir}/no_default_features.log" "cargo <nextest> <run> <--workspace> <--no-default-features> <--features> <server>"
+assert_contains "${tmp_dir}/no_default_features.log" "cargo <nextest> <run> <--workspace> <--no-default-features> <--features> <iceberg>"
 
-run_check full_narrow_features /usr/bin/bash scripts/check_all.sh --no-default-features --features server
+run_check full_narrow_features /usr/bin/bash scripts/check_all.sh --no-default-features --features iceberg
 assert_status full_narrow_features 0
-assert_contains "${tmp_dir}/full_narrow_features.log" "cargo <test> <--workspace> <--no-default-features> <--features> <server> <--doc> <--no-fail-fast>"
-assert_contains "${tmp_dir}/full_narrow_features.log" "cargo <doc> <--workspace> <--no-default-features> <--features> <server> <--no-deps> <--keep-going>"
-assert_contains "${tmp_dir}/full_narrow_features.log" "cargo <clippy> <--workspace> <--all-targets> <--no-default-features> <--features> <server>"
-assert_phase_contains "${tmp_dir}/full_narrow_features.output" clippy "no-default+features:server | ${tmp_dir}/phase-logs/clippy.log | MISS"
+assert_contains "${tmp_dir}/full_narrow_features.log" "cargo <test> <--workspace> <--no-default-features> <--features> <iceberg> <--doc> <--no-fail-fast>"
+assert_contains "${tmp_dir}/full_narrow_features.log" "cargo <doc> <--workspace> <--no-default-features> <--features> <iceberg> <--no-deps> <--keep-going>"
+assert_contains "${tmp_dir}/full_narrow_features.log" "cargo <clippy> <--workspace> <--all-targets> <--no-default-features> <--features> <iceberg>"
+assert_phase_contains "${tmp_dir}/full_narrow_features.output" clippy "no-default+features:iceberg | ${tmp_dir}/phase-logs/clippy.log | MISS"
 echo "PASS: feature selectors propagate consistently"
 
 run_check lane_cpu /usr/bin/bash scripts/check_all.sh --lane cpu

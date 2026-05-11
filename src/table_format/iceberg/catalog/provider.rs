@@ -1,6 +1,5 @@
 use super::*;
 
-#[cfg(feature = "server")]
 fn log_iceberg_metadata_lookup(
     operation: &'static str,
     catalog_type: &str,
@@ -300,15 +299,13 @@ impl NexusIcebergSchemaProvider {
     /// Returns whether `name` is either startup-discovered or already seeded in
     /// the synchronous cache. This exists for catalog-overlay collision checks
     /// that cannot await [`SchemaProvider::table`].
-    #[cfg(feature = "server")]
-    pub(crate) fn known_or_seeded_table_exists(&self, name: &str) -> bool {
+    pub fn known_or_seeded_table_exists(&self, name: &str) -> bool {
         self.table_exist(name) || self.seeded_table_names.read().is_ok_and(|seeded| seeded.contains(name))
     }
 
     /// Returns startup-discovered table names plus any synchronously visible
     /// seeded aliases.
-    #[cfg(feature = "server")]
-    pub(crate) fn known_or_seeded_table_names(&self) -> Vec<String> {
+    pub fn known_or_seeded_table_names(&self) -> Vec<String> {
         let mut names = self.known_table_names.iter().cloned().collect::<BTreeSet<_>>();
         if let Ok(seeded) = self.seeded_table_names.read() {
             names.extend(seeded.iter().cloned());
@@ -324,14 +321,12 @@ impl SchemaProvider for NexusIcebergSchemaProvider {
     }
 
     async fn table(&self, name: &str) -> datafusion::common::Result<Option<Arc<dyn TableProvider>>> {
-        #[cfg(feature = "server")]
         let lookup_started_at = std::time::Instant::now();
 
         // Fast path: check the cache (covers pre-seeded aliases and already-loaded tables).
         {
             let cache = self.table_cache.read().await;
             if let Some(provider) = cache.get(name) {
-                #[cfg(feature = "server")]
                 log_iceberg_metadata_lookup(
                     "load_table",
                     &self.catalog_type,
@@ -347,7 +342,6 @@ impl SchemaProvider for NexusIcebergSchemaProvider {
 
         // Only load tables that were discovered during startup.
         if !self.table_exist(name) {
-            #[cfg(feature = "server")]
             log_iceberg_metadata_lookup(
                 "load_table",
                 &self.catalog_type,
@@ -361,11 +355,9 @@ impl SchemaProvider for NexusIcebergSchemaProvider {
         }
 
         let ident = TableIdent::new(self.namespace.clone(), name.to_string());
-        #[cfg(feature = "server")]
         let load_started_at = std::time::Instant::now();
         let table = match self.backend.load_table(&ident).await {
             Ok(table) => {
-                #[cfg(feature = "server")]
                 log_iceberg_metadata_lookup(
                     "load_table",
                     &self.catalog_type,
@@ -378,7 +370,6 @@ impl SchemaProvider for NexusIcebergSchemaProvider {
                 table
             },
             Err(error) => {
-                #[cfg(feature = "server")]
                 log_iceberg_metadata_lookup(
                     "load_table",
                     &self.catalog_type,
@@ -503,11 +494,9 @@ async fn build_catalog_provider_for_namespaces(
         let ns_parts: &Vec<String> = namespace.as_ref();
         let schema_name = if ns_parts.len() == 1 { ns_parts[0].clone() } else { ns_parts.join(".") };
 
-        #[cfg(feature = "server")]
         let list_tables_started_at = std::time::Instant::now();
         let table_idents = match backend.list_tables(&namespace).await {
             Ok(table_idents) => {
-                #[cfg(feature = "server")]
                 log_iceberg_metadata_lookup(
                     "list_tables",
                     &catalog_type,
@@ -520,7 +509,6 @@ async fn build_catalog_provider_for_namespaces(
                 table_idents
             },
             Err(error) => {
-                #[cfg(feature = "server")]
                 log_iceberg_metadata_lookup(
                     "list_tables",
                     &catalog_type,

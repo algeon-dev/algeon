@@ -103,3 +103,10 @@ fn config_validation_errors_carry_configured_correlation_ids() {
     assert_eq!(native.query_id().map(QueryId::as_str), Some("query-config-error"));
     assert_eq!(native.trace_id().map(TraceId::as_str), Some("trace-config-error"));
 }
+
+#[test]
+fn standalone_metrics_capture_keeps_query_id_unset() {
+    let config = NexusNativeExecutionConfig::bounded_default().with_metrics_capture(NativeMetricsCapture::standalone());
+
+    assert!(config.query_id().is_none());
+}

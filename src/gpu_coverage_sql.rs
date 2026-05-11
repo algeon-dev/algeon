@@ -142,7 +142,7 @@ impl ExecutionPlan for DataFusionCpuBoundaryExec {
 /// The summary row carries complete machine-readable evidence in
 /// `coverage_json`; every candidate row promotes its reason and remedy into
 /// first-class columns for tabular clients.
-pub(crate) fn coverage_schema() -> SchemaRef {
+pub fn coverage_schema() -> SchemaRef {
     Arc::new(Schema::new_with_metadata(
         vec![
             Field::new("query_id", DataType::Utf8, true),
@@ -171,7 +171,7 @@ pub(crate) fn coverage_schema() -> SchemaRef {
 }
 
 /// Project shared coverage evidence into the public multi-row Arrow shape.
-pub(crate) fn coverage_batch(
+pub fn coverage_batch(
     coverage: &QueryGpuCoverage,
     output_mode: ExplainGpuOutputMode,
     query_id: Option<&str>,

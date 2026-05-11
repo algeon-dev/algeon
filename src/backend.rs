@@ -1,10 +1,8 @@
 //! Process-scoped GPU backend facade for embedded DataFusion sessions.
 
-#[cfg(test)]
-use std::sync::{Mutex, MutexGuard};
 use std::{
     collections::{BTreeMap, BTreeSet},
-    sync::Arc,
+    sync::{Arc, Mutex, MutexGuard},
     time::Duration,
 };
 
@@ -70,6 +68,13 @@ pub struct NexusGpuDeviceInstallationBounds {
     pub lane_count: usize,
 }
 
+impl NexusGpuDeviceInstallationBounds {
+    /// Creates explicit stream, worker, and execution-lane bounds.
+    pub const fn new(stream_pool_size: usize, worker_count: usize, lane_count: usize) -> Self {
+        Self { stream_pool_size, worker_count, lane_count }
+    }
+}
+
 impl NexusGpuDeviceProfile {
     /// Starts a profile with automatic capacity discovery and one active
     /// attempt.  Callers may override any device-local bound below.
@@ -130,7 +135,7 @@ impl NexusGpuDeviceProfile {
 
     pub fn with_installation_bounds(mut self, stream_pool_size: usize, worker_count: usize, lane_count: usize) -> Self {
         self.installation_bounds =
-            Some(NexusGpuDeviceInstallationBounds { stream_pool_size, worker_count, lane_count });
+            Some(NexusGpuDeviceInstallationBounds::new(stream_pool_size, worker_count, lane_count));
         self
     }
 
@@ -189,7 +194,7 @@ impl NexusGpuDeviceProfile {
         self.install_diagnostics
     }
 
-    pub(crate) fn engine_config(&self, memory_ownership: GpuMemoryOwnership) -> GpuBackendDeviceConfig {
+    pub fn engine_config(&self, memory_ownership: GpuMemoryOwnership) -> GpuBackendDeviceConfig {
         let mut device = GpuBackendDeviceConfig::new(self.device_ordinal, memory_ownership)
             .with_memory_limit(self.memory_limit)
             .with_device_capabilities(self.device_capabilities.clone())
@@ -472,7 +477,7 @@ impl NexusGpuBackend {
         self.identity() == other.identity()
     }
 
-    pub(crate) fn session_capability(&self) -> &GpuBackendSession {
+    pub fn session_capability(&self) -> &GpuBackendSession {
         &self.session
     }
 
@@ -508,8 +513,7 @@ impl NexusGpuBackend {
         &self.device_memory_ownership
     }
 
-    #[cfg(feature = "server")]
-    pub(crate) fn from_optimizer_config_for_admission(
+    pub fn from_optimizer_config_for_admission(
         optimizer_config: NexusNativeOptimizerConfig,
         device_profiles: Vec<NexusGpuDeviceProfile>,
         device_memory_ownership: Vec<(usize, GpuMemoryOwnership)>,
@@ -518,7 +522,6 @@ impl NexusGpuBackend {
         Self::from_optimizer_config_inner(optimizer_config, device_profiles, device_memory_ownership, queue_policy)
     }
 
-    #[cfg(feature = "server")]
     fn from_optimizer_config_inner(
         optimizer_config: NexusNativeOptimizerConfig,
         device_profiles: Vec<NexusGpuDeviceProfile>,
@@ -617,15 +620,15 @@ fn install_backend_optimizer_config(
     })
 }
 
-/// Pure CUDA-free backend-builder validation projection used only by root unit tests.
+/// Pure CUDA-free backend-builder validation projection used by adapter and
+/// extracted-server validation tests.
 ///
 /// This is intentionally not a `NexusGpuBackend`: it owns no engine resources
 /// and cannot admit or execute a query. It exercises the same profile,
 /// ownership, queue, and core-draft validation as backend construction without
 /// creating CUDA resources.
-#[cfg(test)]
 #[derive(Debug, Clone)]
-pub(crate) struct TestBackendValidationProjection {
+pub struct TestBackendValidationProjection {
     query_execution_config: QueryExecutionConfig,
     queue_bounds: QueueBounds,
     optimizer_config: NexusNativeOptimizerConfig,
@@ -634,50 +637,46 @@ pub(crate) struct TestBackendValidationProjection {
     device_memory_ownership: Vec<(usize, GpuMemoryOwnership)>,
 }
 
-#[cfg(test)]
 impl TestBackendValidationProjection {
-    pub(crate) fn query_execution_config(&self) -> nexus_query_engine::error::Result<QueryExecutionConfig> {
+    pub fn query_execution_config(&self) -> nexus_query_engine::error::Result<QueryExecutionConfig> {
         Ok(self.query_execution_config.clone())
     }
 
-    pub(crate) fn queue_bounds(&self) -> nexus_query_engine::error::Result<QueueBounds> {
+    pub fn queue_bounds(&self) -> nexus_query_engine::error::Result<QueueBounds> {
         Ok(self.queue_bounds.clone())
     }
 
-    pub(crate) fn optimizer_config(&self) -> &NexusNativeOptimizerConfig {
+    pub fn optimizer_config(&self) -> &NexusNativeOptimizerConfig {
         &self.optimizer_config
     }
 
-    pub(crate) fn device_ordinals(&self) -> &[usize] {
+    pub fn device_ordinals(&self) -> &[usize] {
         &self.device_ordinals
     }
 
-    pub(crate) fn device_profiles(&self) -> &[NexusGpuDeviceProfile] {
+    pub fn device_profiles(&self) -> &[NexusGpuDeviceProfile] {
         &self.device_profiles
     }
 
-    pub(crate) fn device_memory_ownership(&self) -> &[(usize, GpuMemoryOwnership)] {
+    pub fn device_memory_ownership(&self) -> &[(usize, GpuMemoryOwnership)] {
         &self.device_memory_ownership
     }
 
-    pub(crate) fn install_on(&self, builder: SessionStateBuilder) -> Result<SessionStateBuilder> {
+    pub fn install_on(&self, builder: SessionStateBuilder) -> Result<SessionStateBuilder> {
         install_backend_optimizer_config(builder, &self.optimizer_config)
     }
 }
 
-/// Root-unit-test fixture for paths that genuinely execute an installed GPU
-/// backend. The process lease remains production-exclusive; tests serialize
-/// construction and deterministically close the backend before releasing the
-/// fixture lock.
-#[cfg(test)]
-pub(crate) struct InstalledTestGpuBackend {
+/// Test fixture for paths that genuinely execute an installed GPU backend. The
+/// process lease remains production-exclusive; tests serialize construction
+/// and deterministically close the backend before releasing the fixture lock.
+pub struct InstalledTestGpuBackend {
     backend: Option<NexusGpuBackend>,
     _serial: MutexGuard<'static, ()>,
 }
 
-#[cfg(test)]
 impl InstalledTestGpuBackend {
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self::with_config(
             NexusNativeExecutionConfig::bounded(256 * 1024 * 1024, 64 * 1024 * 1024, 2, 3, 1),
             NexusGpuDeviceProfile::new(0)
@@ -689,7 +688,7 @@ impl InstalledTestGpuBackend {
     /// Builds a serialized real backend with test-selected immutable resource
     /// and queue envelopes. Tests retain this fixture for the full lifetime of
     /// every config or ticket cloned from its backend.
-    pub(crate) fn with_config(
+    pub fn with_config(
         native_execution_config: NexusNativeExecutionConfig,
         device_profile: NexusGpuDeviceProfile,
         queue_policy: NexusGpuQueuePolicy,
@@ -700,7 +699,7 @@ impl InstalledTestGpuBackend {
     /// Builds a serialized real backend with explicit final-plan requirements.
     /// This keeps integration tests on the same frozen backend-installation
     /// path as production cells that add a final-plan gate.
-    pub(crate) fn with_config_and_final_plan_requirements(
+    pub fn with_config_and_final_plan_requirements(
         native_execution_config: NexusNativeExecutionConfig,
         device_profile: NexusGpuDeviceProfile,
         queue_policy: NexusGpuQueuePolicy,
@@ -722,24 +721,29 @@ impl InstalledTestGpuBackend {
         Self { backend: Some(backend), _serial: serial }
     }
 
-    pub(crate) fn backend(&self) -> &NexusGpuBackend {
+    pub fn backend(&self) -> &NexusGpuBackend {
         self.backend.as_ref().expect("test backend remains live until fixture drop")
     }
 
-    pub(crate) fn optimizer_config(&self) -> &NexusNativeOptimizerConfig {
+    pub fn optimizer_config(&self) -> &NexusNativeOptimizerConfig {
         self.backend().optimizer_config()
     }
 
-    pub(crate) fn admit_query(&self) -> nexus_query_engine::error::Result<nexus_query_engine::runtime::QueryHandle> {
+    pub fn admit_query(&self) -> nexus_query_engine::error::Result<nexus_query_engine::runtime::QueryHandle> {
         self.backend().admit_query()
     }
 
-    pub(crate) fn install_on(&self, builder: SessionStateBuilder) -> Result<SessionStateBuilder> {
+    pub fn install_on(&self, builder: SessionStateBuilder) -> Result<SessionStateBuilder> {
         self.backend().install_on(builder)
     }
 }
 
-#[cfg(test)]
+impl Default for InstalledTestGpuBackend {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Drop for InstalledTestGpuBackend {
     fn drop(&mut self) {
         let Some(backend) = self.backend.take() else {
@@ -816,8 +820,7 @@ impl NexusGpuBackendBuilder {
         self.build_inner()
     }
 
-    #[cfg(test)]
-    pub(crate) fn build_test_validation_projection(self) -> Result<TestBackendValidationProjection> {
+    pub fn build_test_validation_projection(self) -> Result<TestBackendValidationProjection> {
         let optimizer_config = self.final_plan_requirements.into_iter().fold(
             NexusNativeOptimizerConfig::default().with_native_execution_config(self.native_execution_config),
             |optimizer_config, requirement| optimizer_config.with_final_plan_requirement(requirement),
@@ -900,7 +903,6 @@ fn validate_device_profile(profile: &NexusGpuDeviceProfile) -> Result<()> {
     Ok(())
 }
 
-#[cfg(test)]
 fn build_test_validation_projection(
     optimizer_config: NexusNativeOptimizerConfig,
     configured_profiles: Vec<NexusGpuDeviceProfile>,
@@ -939,8 +941,7 @@ fn build_test_validation_projection(
     })
 }
 
-#[cfg(all(test, feature = "server"))]
-pub(crate) fn test_validation_projection_from_optimizer_config(
+pub fn test_validation_projection_from_optimizer_config(
     optimizer_config: NexusNativeOptimizerConfig,
     device_profiles: Vec<NexusGpuDeviceProfile>,
     device_memory_ownership: Vec<(usize, GpuMemoryOwnership)>,

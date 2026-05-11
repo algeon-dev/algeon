@@ -237,7 +237,6 @@ impl NexusNativePhysicalOptimizerRule {
         match self.state.last_report.lock() {
             Ok(report) => report.clone(),
             Err(poisoned) => {
-                #[cfg(feature = "server")]
                 tracing::warn!("native planning report mutex was poisoned; returning the last captured report");
                 poisoned.into_inner().clone()
             },

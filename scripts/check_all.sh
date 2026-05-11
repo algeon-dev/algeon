@@ -59,7 +59,7 @@ Environment compatibility:
 
 Examples:
   bash scripts/check_all.sh
-  bash scripts/check_all.sh --fast --features server
+  bash scripts/check_all.sh --fast --features iceberg
   bash scripts/check_all.sh --lane gpu-shared
 USAGE
 }
@@ -983,7 +983,7 @@ if [[ "${mode}" == full ]]; then
   run_or_cache_phase doctests doctest - "${GPU_LOCK}" doctest_command || true
   run_or_cache_phase rustdoc none - - rustdoc_command || true
   rustdoc_summary="command_status=${PHASE_EXIT[rustdoc]} warnings=denied"
-  run_or_cache_phase public-api-surface literal:crates=3 - - public_api_surface_command || true
+  run_or_cache_phase public-api-surface literal:crates=4 - - public_api_surface_command || true
   run_or_cache_phase clippy none - - cargo clippy --workspace --all-targets "${FEATURE_ARGS[@]}" -- -D warnings || true
 fi
 

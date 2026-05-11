@@ -79,9 +79,10 @@ pub use metrics::{
     NativeJoinStrategyMetricRow, NativeLakehouseCacheFillEventMetricRow, NativePlanTaskMappingMetricRow,
     NativeSourceReadRuntimeMetricRow, NativeTaskOperatorMetricRow, NativeTaskRuntimeMetricRow,
 };
-#[cfg(feature = "server")]
-pub(crate) use reports::NativeDataFusionExecutionTsvTemplate;
-pub use reports::{NativeDataFusionExecutionReport, NativeDataFusionPlanningReport, NativeFallbackPressureReport};
+pub use reports::{
+    NativeDataFusionExecutionReport, NativeDataFusionExecutionTsvTemplate, NativeDataFusionPlanningReport,
+    NativeFallbackPressureReport,
+};
 pub use rows::{
     NativeDataFusionExecutionRow, NativeDataFusionPlanCoverage, NativeDataFusionPlanningOutcome,
     NativeDataFusionPlanningRow, NativeDataFusionRuntimeOutcome, NativeFallbackPressureOutcome,

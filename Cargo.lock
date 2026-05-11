@@ -2253,11 +2253,8 @@ dependencies = [
 name = "datafusion-nexus"
 version = "0.1.0"
 dependencies = [
- "argon2",
  "arrow",
- "arrow-flight",
  "async-trait",
- "base64",
  "bytes",
  "cudf-nexus",
  "cudf-nexus-sys",
@@ -2265,7 +2262,6 @@ dependencies = [
  "cugraph-nexus-sys",
  "cuvs-nexus",
  "cuvs-nexus-sys",
- "dashmap",
  "datafusion",
  "futures",
  "hex",
@@ -2278,19 +2274,11 @@ dependencies = [
  "opendal",
  "parquet",
  "proptest",
- "prost",
- "rand 0.10.1",
- "serde",
  "serde_json",
  "sha2 0.11.0",
  "tempfile",
  "tokio",
- "tokio-util",
- "toml",
- "tonic",
  "tracing",
- "tracing-subscriber",
- "uuid",
 ]
 
 [[package]]
@@ -3927,6 +3915,7 @@ dependencies = [
  "datafusion-nexus",
  "futures",
  "nexus-query-engine",
+ "nexus-server",
  "opentelemetry",
  "opentelemetry-proto",
  "parquet",
@@ -3982,6 +3971,42 @@ dependencies = [
 ]
 
 [[package]]
+name = "nexus-server"
+version = "0.1.0"
+dependencies = [
+ "argon2",
+ "arrow",
+ "arrow-flight",
+ "async-trait",
+ "base64",
+ "bytes",
+ "cudf-nexus",
+ "cudf-nexus-sys",
+ "cugraph-nexus-sys",
+ "cuvs-nexus-sys",
+ "dashmap",
+ "datafusion",
+ "datafusion-nexus",
+ "futures",
+ "nexus-iceberg",
+ "nexus-query-engine",
+ "parquet",
+ "proptest",
+ "prost",
+ "rand 0.10.1",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "toml",
+ "tonic",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
 name = "nexus-tools"
 version = "0.1.0"
 dependencies = [
@@ -3999,6 +4024,7 @@ dependencies = [
  "nexus-bench",
  "nexus-examples",
  "nexus-query-engine",
+ "nexus-server",
  "nexus-workloads",
  "opentelemetry",
  "opentelemetry-proto",

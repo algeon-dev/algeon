@@ -38,7 +38,7 @@ want to package. The default full image expects these sibling artifacts:
 └── datafusion-nexus/
 ```
 
-The lean `FEATURES=server,iceberg,nvml` image omits cuVS and cuGraph, so it
+The lean `FEATURES=iceberg,nvml` image omits cuVS and cuGraph, so it
 needs neither sibling artifact. Production examples keep `nvml` enabled so live
 device telemetry is available without affecting admission decisions.
 
@@ -73,7 +73,7 @@ For a smaller cuDF-only server image, omit both `cugraph` and `cuvs` when
 staging the payload:
 
 ```bash
-FEATURES=server,iceberg,nvml bash docker/build.sh
+FEATURES=iceberg,nvml bash docker/build.sh
 # Run the exact printed docker build command.
 ```
 

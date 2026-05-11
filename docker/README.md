@@ -28,9 +28,9 @@ The split:
 ```bash
 # 1. Stage the binary + forked libs (compiles; strips/re-homes RUNPATHs when
 #    host tools are available).
-bash docker/build.sh                               # full: server,iceberg,cugraph,cuvs,nvml
-FEATURES=server,iceberg,nvml bash docker/build.sh  # lean: cuDF only, ~3x smaller image
-FEATURES=server,cuvs bash docker/build.sh           # cuVS without cuGraph
+bash docker/build.sh                        # full: iceberg,cugraph,cuvs,nvml
+FEATURES=iceberg,nvml bash docker/build.sh  # lean: cuDF only, ~3x smaller image
+FEATURES=cuvs bash docker/build.sh          # cuVS without cuGraph
 SKIP_CARGO_BUILD=1 bash docker/build.sh            # reuse only hash-verified canonical artifact
 
 # 2. Copy and run the exact docker build command printed by build.sh. It
@@ -66,7 +66,7 @@ identity. `librapids_logger.so` is bundled only when a staged ELF has a
 
 ## Serving cuVS SQL
 
-Use a `server,cuvs` image for `cuvs_brute_force_knn`, `cuvs_kmeans`, and
+Use a `cuvs` image for `cuvs_brute_force_knn`, `cuvs_kmeans`, and
 `cuvs_pca`. Their relation arguments are parenthesized SQL subqueries, so the
 same call shape works over normal tables, Parquet, Iceberg, or cuGraph-derived
 relations. Until the lower-level vector peak-memory preflight contract exists,
@@ -80,7 +80,7 @@ mostly via the CUDA math libraries it pulls (`libcublasLt` alone is ~517 MB):
 
 | Build | Forked libs | Harvested CUDA | ≈ Final image |
 |---|---|---|---|
-| **lean** (`server,iceberg,nvml`) | ~180 MB | ~110 MB (cudart + nvrtc) | **~0.6 GB** |
+| **lean** (`iceberg,nvml`) | ~180 MB | ~110 MB (cudart + nvrtc) | **~0.6 GB** |
 | **full** (`+cugraph,+cuvs`) | ~480 MB | ~1.2 GB (+ cublasLt/cusparse/cusolver/curand/nvJitLink) | **~2 GB** |
 
 When `strip` is available, staged artifacts are stripped

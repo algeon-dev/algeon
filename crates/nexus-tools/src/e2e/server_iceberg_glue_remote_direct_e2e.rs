@@ -43,18 +43,16 @@ use arrow_flight::{
     Action, FlightInfo,
     sql::{Any, TicketStatementQuery, client::FlightSqlServiceClient},
 };
-use datafusion_nexus::{
-    server::{
-        NEXUS_ICEBERG_CATALOG_KIND_ENV, NEXUS_ICEBERG_GLUE_URI_ENV, NEXUS_ICEBERG_NAMESPACE_ENV,
-        NEXUS_ICEBERG_S3_CREDENTIAL_SOURCE_ENV, NEXUS_ICEBERG_S3_ENDPOINT_ENV, NEXUS_ICEBERG_S3_PATH_STYLE_ENV,
-        NEXUS_ICEBERG_S3_REGION_ENV, NEXUS_ICEBERG_WAREHOUSE_ENV, ServerConfig, serve_with_listener,
-    },
-    table_format::{
-        NEXUS_LAKEHOUSE_CACHE_MAX_BYTES_ENV, NEXUS_LAKEHOUSE_CACHE_POLICY_ENV, NEXUS_LAKEHOUSE_CACHE_READ_ENV,
-        NEXUS_LAKEHOUSE_CACHE_ROOT_ENV,
-    },
+use datafusion_nexus::table_format::{
+    NEXUS_LAKEHOUSE_CACHE_MAX_BYTES_ENV, NEXUS_LAKEHOUSE_CACHE_POLICY_ENV, NEXUS_LAKEHOUSE_CACHE_READ_ENV,
+    NEXUS_LAKEHOUSE_CACHE_ROOT_ENV,
 };
 use futures::TryStreamExt;
+use nexus_server::{
+    NEXUS_ICEBERG_CATALOG_KIND_ENV, NEXUS_ICEBERG_GLUE_URI_ENV, NEXUS_ICEBERG_NAMESPACE_ENV,
+    NEXUS_ICEBERG_S3_CREDENTIAL_SOURCE_ENV, NEXUS_ICEBERG_S3_ENDPOINT_ENV, NEXUS_ICEBERG_S3_PATH_STYLE_ENV,
+    NEXUS_ICEBERG_S3_REGION_ENV, NEXUS_ICEBERG_WAREHOUSE_ENV, ServerConfig, serve_with_listener,
+};
 use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
 use prost::Message as _;
 use url::Url;
@@ -667,7 +665,7 @@ fn warm_cuda_once() {
     static CUDA_WARM: std::sync::OnceLock<()> = std::sync::OnceLock::new();
     CUDA_WARM.get_or_init(|| {
         // Best-effort: serve_with_listener re-runs (and surfaces) any error.
-        let _ = datafusion_nexus::server::init_cuda_device(0);
+        let _ = nexus_server::init_cuda_device(0);
     });
 }
 

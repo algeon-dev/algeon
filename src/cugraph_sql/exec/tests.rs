@@ -22,12 +22,11 @@ use datafusion::{
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
 use futures::future::BoxFuture;
-#[cfg(feature = "server")]
-use nexus_query_engine::observability::RuntimeObservationConfig;
 use nexus_query_engine::{
     admission::QueryPlanCapabilityProof,
     expr::{Expr, SortExpr, SortSpec},
     graph_memory::graph_memory_bounded_admission_evidence_for_plan,
+    observability::RuntimeObservationConfig,
     plan::{ProjectionOutput, QueryPlan},
     runtime::ExecutionCancellation,
     source::{

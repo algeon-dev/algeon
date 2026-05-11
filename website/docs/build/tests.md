@@ -77,7 +77,7 @@ lanes.
 ```bash
 bash scripts/check_all.sh --fast
 bash scripts/check_all.sh --fast --no-default-features
-bash scripts/check_all.sh --fast --features server
+bash scripts/check_all.sh --fast --features iceberg
 ```
 
 It runs isolated policy self-tests, nightly rustfmt, build support, the
@@ -110,8 +110,8 @@ it does not claim full validation. GPU selections preserve the global lock.
 Feature selection follows Cargo semantics:
 
 ```bash
-bash scripts/check_all.sh --features cugraph,server
-bash scripts/check_all.sh --no-default-features --features server
+bash scripts/check_all.sh --features cugraph,iceberg
+bash scripts/check_all.sh --no-default-features --features iceberg
 bash scripts/check_all.sh --all-features
 ```
 
@@ -262,7 +262,7 @@ bash scripts/check_all.sh --fast --no-default-features
 ```
 
 Feature work should select only its required set until the all-feature pass, for
-example `--features server` or `--features iceberg`. Targeted GPU work must
+example `--features cugraph` or `--features iceberg`. Targeted GPU work must
 still take `/tmp/cudf-gpu.lock`, preferably through
 `bash scripts/check_all.sh --lane gpu-shared` or `--lane gpu-exclusive`.
 
@@ -358,10 +358,13 @@ other provisioned cases.
 | Feature | Enables |
 | --- | --- |
 | `cugraph` | cuGraph graph algorithms callable from SQL |
-| `server` | Arrow Flight SQL server |
+
+The Arrow Flight SQL server is the separate `nexus-server` package; its
+`cugraph`, `cuvs`, `iceberg`, and `nvml` features forward the corresponding
+adapter and engine capabilities.
 
 ```bash
-cargo run --features server --bin datafusion_nexus_server
+cargo run -p nexus-server --bin datafusion_nexus_server
 ```
 
 ## Formatting and lints

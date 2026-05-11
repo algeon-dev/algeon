@@ -54,7 +54,7 @@ DataFusion session.
 | Surface | Use it when | Primary owner |
 | --- | --- | --- |
 | Embedded DataFusion backend | You already own the service API, auth, tenancy, and domain model. Install Nexus on a caller-owned `SessionStateBuilder`. | `src/session.rs` |
-| Flight SQL service | You want a ready remote endpoint for notebooks, BI tools, agents, and non-Rust clients. | `src/server/` |
+| Flight SQL service | You want a ready remote endpoint for notebooks, BI tools, agents, and non-Rust clients. | `crates/nexus-server/` |
 | cuGraph SQL | You want graph algorithms as relations that can be joined, filtered, validated, and described from SQL. | `src/cugraph_sql/` |
 | Iceberg/lakehouse sources | You need Iceberg catalog tables to lower into native table-format scan facts while workspace views stay mutable. | `src/table_format/` |
 | Reports and errors | You need stable evidence for candidate selection, final plans, runtime, graph validation, source access, and failures. | `src/report.rs`, `src/native_report/`, `src/error.rs` |
@@ -97,9 +97,11 @@ plan after native selection. The full boundary is described in
 | Feature | Adds |
 | --- | --- |
 | `cugraph` | cuGraph SQL algorithms and engine graph execution support. |
-| `server-cugraph` | Flight SQL server plus cuGraph SQL. |
+| `nexus-server/cugraph` | cuGraph SQL in the Flight SQL server. |
 | `iceberg` | Unified CPU-executable and native-accelerated Iceberg / Glue / REST / S3 source integration. |
-| `server` | Arrow Flight SQL service, protocol handshake, cancellation, admission, workspace, and diagnostics. |
+
+The `nexus-server` package owns the Arrow Flight SQL service, protocol
+handshake, cancellation, admission, workspace, and diagnostics.
 
 ## Native Lowering and Admission
 

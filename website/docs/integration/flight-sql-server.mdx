@@ -16,7 +16,7 @@ SQL, `cuvs` for vector SQL, and `iceberg` for Iceberg/Glue/REST/S3 sources. Work
 require the mold linker and clang on the host ([Build prerequisites](../build/prerequisites.md#rust-linker-mold)):
 
 ```bash
-cargo build --release --features server,cugraph,cuvs,iceberg --bin datafusion_nexus_server
+cargo build --release -p nexus-server --features cugraph,cuvs,iceberg --bin datafusion_nexus_server
 ```
 
 ## Start the citation demo server

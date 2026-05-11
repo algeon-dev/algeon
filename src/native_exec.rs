@@ -26,16 +26,10 @@ pub(crate) use common::run_gpu_execution_task;
 pub(crate) use self::admission::query_admission_ticket_from_task_context;
 #[cfg(feature = "cugraph")]
 pub(crate) use self::metrics::GraphClaimCalibrationCapture;
-#[cfg(feature = "server")]
-pub(crate) use self::metrics::{
-    NativeMetricsCapture, NativeObservationActivityFactory, SERVER_CAPTURE_LOSS_METRIC_NAME,
-};
 pub(crate) use self::{
     admission::{QueryAdmissionSource, plan_is_query_admission_wrapped, wrap_plan_with_query_admission_ticket},
     composed::composed_admission_capability_proof,
-    metrics::{
-        NativeExecutionMetricsCapture, NativeRuntimeObservation, NexusNativeMetrics, SealedAttemptMetricsTarget,
-    },
+    metrics::{NexusNativeMetrics, SealedAttemptMetricsTarget},
 };
 pub use self::{
     composed::{NexusNativeComposedExec, NexusNativeComposedGpuProducerExec},
@@ -44,7 +38,8 @@ pub use self::{
     host::NexusNativeExec,
     metrics::{
         GraphClaimCalibrationExecution, GraphClaimCalibrationNonPhysicalReason, NATIVE_NEXUS_DATAFUSION_METRIC_NAMES,
-        SealedAttemptGraphClaimCalibrationSnapshot,
+        NativeExecutionMetricsCapture, NativeMetricsCapture, NativeObservationActivityFactory,
+        NativeRuntimeObservation, SERVER_CAPTURE_LOSS_METRIC_NAME, SealedAttemptGraphClaimCalibrationSnapshot,
     },
     producer::NexusNativeGpuProducerExec,
 };

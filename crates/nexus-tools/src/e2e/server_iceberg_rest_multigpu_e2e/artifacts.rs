@@ -18,7 +18,7 @@ pub(super) fn write_run_metadata(params: &Params) -> E2eResult<()> {
     let driver_sha256 =
         std::env::current_exe().ok().as_deref().and_then(sha256_file).unwrap_or_else(|| "unknown".to_string());
     let metadata = format!(
-        "git_sha={git_sha}\ngit_dirty={git_dirty}\nserver_binary={}\nserver_features=server,iceberg,nvml\n\
+        "git_sha={git_sha}\ngit_dirty={git_dirty}\nserver_binary={}\nserver_features=iceberg,nvml\n\
          server_binary_sha256={server_sha256}\ndriver_binary_sha256={driver_sha256}\n\
          tokio_worker_threads=1\ndevice_ordinals={}\nconcurrent_clients={CONCURRENT_CLIENTS}\n\
          max_active_attempts_per_device={MAX_ACTIVE_ATTEMPTS_PER_DEVICE}\nrest_uri={}\nwarehouse={}\nnamespace={}\n",

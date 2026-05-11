@@ -170,10 +170,9 @@ impl NexusNativeExecutionConfig {
 
     /// Set bounded execution controls such as chunk sizing, reservations, and retry limits.
     ///
-    /// This is crate-private because deployment resource profiles own capacity;
-    /// public callers construct a bounded template and backend admission
-    /// replaces its budget with the selected immutable grant.
-    pub(crate) fn with_memory_control_policy(mut self, memory_control_policy: MemoryControlPolicy) -> Self {
+    /// Deployment resource profiles own capacity; backend admission replaces
+    /// this template's budget with the selected immutable grant.
+    pub fn with_memory_control_policy(mut self, memory_control_policy: MemoryControlPolicy) -> Self {
         self.memory_control_policy = memory_control_policy;
         self
     }
@@ -231,9 +230,8 @@ impl NexusNativeExecutionConfig {
     }
 
     /// Attach a server-side query metrics capture sink.
-    #[cfg(feature = "server")]
-    pub(crate) fn with_metrics_capture(mut self, capture: NativeMetricsCapture) -> Self {
-        self.query_id = Some(QueryId::new(capture.query_id()));
+    pub fn with_metrics_capture(mut self, capture: NativeMetricsCapture) -> Self {
+        self.query_id = capture.query_id().map(QueryId::new);
         self.metrics_capture = Some(capture);
         self
     }
@@ -267,11 +265,11 @@ impl NexusNativeExecutionConfig {
         self
     }
 
-    pub(crate) fn query_id(&self) -> Option<&QueryId> {
+    pub fn query_id(&self) -> Option<&QueryId> {
         self.query_id.as_ref()
     }
 
-    pub(crate) fn trace_id(&self) -> Option<&TraceId> {
+    pub fn trace_id(&self) -> Option<&TraceId> {
         self.trace_id.as_ref()
     }
 
@@ -279,14 +277,14 @@ impl NexusNativeExecutionConfig {
         self.plan_task_mapping_datafusion_shape.as_deref()
     }
 
-    pub(crate) fn new_metrics_capture(&self) -> Option<NativeExecutionMetricsCapture> {
+    pub fn new_metrics_capture(&self) -> Option<NativeExecutionMetricsCapture> {
         self.query_admission_ticket
             .as_ref()
             .and_then(|ticket| ticket.metrics_capture())
             .or_else(|| self.metrics_capture.as_ref().map(NativeMetricsCapture::new_execution))
     }
 
-    pub(crate) fn runtime_observation_config(&self) -> RuntimeObservationConfig {
+    pub fn runtime_observation_config(&self) -> RuntimeObservationConfig {
         self.metrics_capture
             .as_ref()
             .map_or_else(RuntimeObservationConfig::native_execution, NativeMetricsCapture::runtime_observation_config)
@@ -398,7 +396,7 @@ impl NexusNativeExecutionConfig {
     }
 
     /// Memory-control policy copied into the lazily built native context.
-    pub(crate) fn memory_control_policy(&self) -> MemoryControlPolicy {
+    pub fn memory_control_policy(&self) -> MemoryControlPolicy {
         self.memory_control_policy
     }
 

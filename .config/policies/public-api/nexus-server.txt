@@ -1,0 +1,238 @@
+pub mod nexus_server
+pub enum nexus_server::AuthMode
+pub nexus_server::AuthMode::BasicBearer
+pub nexus_server::AuthMode::BasicBearer::token_ttl_secs: u64
+pub nexus_server::AuthMode::BasicBearer::users: alloc::vec::Vec<nexus_server::StaticUserConfig>
+pub nexus_server::AuthMode::Disabled
+impl nexus_server::AuthMode
+pub fn nexus_server::AuthMode::token_ttl(&self) -> core::option::Option<core::time::Duration>
+pub fn nexus_server::AuthMode::validate(&self) -> nexus_server::Result<()>
+pub enum nexus_server::FlightSqlNativeNotSupportedClass
+pub nexus_server::FlightSqlNativeNotSupportedClass::IcebergDeleteFiles
+pub nexus_server::FlightSqlNativeNotSupportedClass::IcebergObjectStoreRead
+pub nexus_server::FlightSqlNativeNotSupportedClass::NativeSortPreservingMerge
+pub nexus_server::FlightSqlNativeNotSupportedClass::Other
+impl nexus_server::FlightSqlNativeNotSupportedClass
+pub const fn nexus_server::FlightSqlNativeNotSupportedClass::as_str(self) -> &'static str
+pub const fn nexus_server::FlightSqlNativeNotSupportedClass::from_capability_reason(datafusion_nexus::capability::CapabilityReason) -> Self
+pub enum nexus_server::IcebergCatalogBackendConfig
+pub nexus_server::IcebergCatalogBackendConfig::Glue(nexus_server::GlueServerBackendConfig)
+pub nexus_server::IcebergCatalogBackendConfig::Rest(nexus_iceberg::source_access::RestIcebergCatalogConfig)
+pub enum nexus_server::PasswordHashError
+pub nexus_server::PasswordHashError::HashFailure(alloc::string::String)
+pub nexus_server::PasswordHashError::InvalidHash(alloc::string::String)
+impl core::error::Error for nexus_server::PasswordHashError
+impl core::fmt::Display for nexus_server::PasswordHashError
+pub fn nexus_server::PasswordHashError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+#[non_exhaustive] pub enum nexus_server::ServerNativeConfigScope
+pub nexus_server::ServerNativeConfigScope::BoundedExecution
+pub nexus_server::ServerNativeConfigScope::NativeExecution
+pub nexus_server::ServerNativeConfigScope::SourceIoResource
+impl nexus_server::ServerNativeConfigScope
+pub const fn nexus_server::ServerNativeConfigScope::is_bounded_only(self) -> bool
+pub enum nexus_server::ServerShutdown
+pub nexus_server::ServerShutdown::OsSignals
+pub nexus_server::ServerShutdown::Token(tokio_util::sync::cancellation_token::CancellationToken)
+pub struct nexus_server::AuthConfig
+pub nexus_server::AuthConfig::mode: nexus_server::AuthMode
+pub struct nexus_server::AuthInterceptor
+impl nexus_server::AuthInterceptor
+pub fn nexus_server::AuthInterceptor::check(&self, &tonic::metadata::map::MetadataMap) -> core::result::Result<core::option::Option<nexus_server::Principal>, tonic::status::Status>
+pub fn nexus_server::AuthInterceptor::mode(&self) -> &nexus_server::AuthMode
+pub fn nexus_server::AuthInterceptor::new(nexus_server::AuthMode, nexus_server::TokenStore) -> Self
+pub fn nexus_server::AuthInterceptor::tokens(&self) -> &nexus_server::TokenStore
+pub struct nexus_server::CugraphServerConfig
+pub nexus_server::CugraphServerConfig::default_graph_options: datafusion_nexus::cugraph_sql::types::CugraphGraphOptions
+pub struct nexus_server::FlightSqlServer
+impl nexus_server::FlightSqlServer
+pub fn nexus_server::FlightSqlServer::backend(&self) -> core::option::Option<&datafusion_nexus::backend::NexusGpuBackend>
+pub fn nexus_server::FlightSqlServer::builder() -> nexus_server::FlightSqlServerBuilder
+pub fn nexus_server::FlightSqlServer::local_addr(&self) -> core::option::Option<core::net::socket_addr::SocketAddr>
+pub async fn nexus_server::FlightSqlServer::serve(self) -> nexus_server::Result<()>
+pub fn nexus_server::FlightSqlServer::session_context(&self) -> &alloc::sync::Arc<datafusion::execution::context::SessionContext>
+pub struct nexus_server::FlightSqlServerBuilder
+impl nexus_server::FlightSqlServerBuilder
+pub fn nexus_server::FlightSqlServerBuilder::backend(self, datafusion_nexus::backend::NexusGpuBackend) -> Self
+pub async fn nexus_server::FlightSqlServerBuilder::build(self) -> nexus_server::Result<nexus_server::FlightSqlServer>
+pub fn nexus_server::FlightSqlServerBuilder::config(self, nexus_server::ServerConfig) -> Self
+pub fn nexus_server::FlightSqlServerBuilder::listener(self, std::net::tcp::TcpListener) -> Self
+pub fn nexus_server::FlightSqlServerBuilder::session_context(self, alloc::sync::Arc<datafusion::execution::context::SessionContext>) -> Self
+pub fn nexus_server::FlightSqlServerBuilder::shutdown(self, nexus_server::ServerShutdown) -> Self
+pub struct nexus_server::GlueServerBackendConfig
+pub nexus_server::GlueServerBackendConfig::catalog_handle: alloc::string::String
+pub nexus_server::GlueServerBackendConfig::catalog_id: core::option::Option<alloc::string::String>
+pub nexus_server::GlueServerBackendConfig::profile: core::option::Option<alloc::string::String>
+pub nexus_server::GlueServerBackendConfig::region: alloc::string::String
+pub nexus_server::GlueServerBackendConfig::s3_endpoint: core::option::Option<alloc::string::String>
+pub nexus_server::GlueServerBackendConfig::s3_path_style_access: core::option::Option<bool>
+pub nexus_server::GlueServerBackendConfig::s3_region: core::option::Option<alloc::string::String>
+pub nexus_server::GlueServerBackendConfig::uri: core::option::Option<alloc::string::String>
+pub nexus_server::GlueServerBackendConfig::warehouse: alloc::string::String
+impl core::fmt::Debug for nexus_server::GlueServerBackendConfig
+pub fn nexus_server::GlueServerBackendConfig::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct nexus_server::IcebergServerConfig
+pub nexus_server::IcebergServerConfig::backend: nexus_server::IcebergCatalogBackendConfig
+pub nexus_server::IcebergServerConfig::catalog_name: alloc::string::String
+pub nexus_server::IcebergServerConfig::namespace: alloc::string::String
+pub nexus_server::IcebergServerConfig::parquet_read_strategy_config: datafusion_nexus::table_format::scan::config::TableFormatParquetReadStrategyConfig
+pub nexus_server::IcebergServerConfig::scan_planning_timeout: core::time::Duration
+pub nexus_server::IcebergServerConfig::tables: alloc::vec::Vec<nexus_server::IcebergTableRegistrationConfig>
+impl nexus_server::IcebergServerConfig
+pub const fn nexus_server::IcebergServerConfig::source_access_policy(&self) -> &nexus_iceberg::source_access::SourceAccessPolicy
+impl core::fmt::Debug for nexus_server::IcebergServerConfig
+pub fn nexus_server::IcebergServerConfig::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct nexus_server::IcebergTableRegistrationConfig
+pub nexus_server::IcebergTableRegistrationConfig::alias: alloc::string::String
+pub nexus_server::IcebergTableRegistrationConfig::table: alloc::string::String
+#[non_exhaustive] pub struct nexus_server::NexusServerNativeConfigOption
+pub nexus_server::NexusServerNativeConfigOption::description: &'static str
+pub nexus_server::NexusServerNativeConfigOption::env_var: &'static str
+pub nexus_server::NexusServerNativeConfigOption::scope: nexus_server::ServerNativeConfigScope
+pub nexus_server::NexusServerNativeConfigOption::session_key: core::option::Option<&'static str>
+pub nexus_server::NexusServerNativeConfigOption::toml_field: &'static str
+pub nexus_server::NexusServerNativeConfigOption::value_type: &'static str
+pub struct nexus_server::Principal
+pub nexus_server::Principal::roles: alloc::vec::Vec<alloc::string::String>
+pub nexus_server::Principal::username: alloc::string::String
+pub struct nexus_server::ServerConfig
+pub nexus_server::ServerConfig::auth: nexus_server::AuthConfig
+pub nexus_server::ServerConfig::bind_addr: core::net::socket_addr::SocketAddr
+pub nexus_server::ServerConfig::cugraph: core::option::Option<nexus_server::CugraphServerConfig>
+pub nexus_server::ServerConfig::gpu_device_profiles: alloc::vec::Vec<datafusion_nexus::backend::NexusGpuDeviceProfile>
+pub nexus_server::ServerConfig::gpu_devices: alloc::vec::Vec<usize>
+pub nexus_server::ServerConfig::gpu_memory_ownership: alloc::vec::Vec<(usize, nexus_query_engine::runtime::backend_core::GpuMemoryOwnership)>
+pub nexus_server::ServerConfig::iceberg: core::option::Option<nexus_server::IcebergServerConfig>
+pub nexus_server::ServerConfig::log_filter: alloc::string::String
+pub nexus_server::ServerConfig::native_optimizer_config: datafusion_nexus::planner::NexusNativeOptimizerConfig
+pub nexus_server::ServerConfig::observability: nexus_server::ServerObservabilityConfig
+pub nexus_server::ServerConfig::queue_policy: datafusion_nexus::backend::NexusGpuQueuePolicy
+pub nexus_server::ServerConfig::statement_ticket_ttl: core::time::Duration
+pub nexus_server::ServerConfig::workspace: core::option::Option<nexus_server::WorkspaceOverlayConfig>
+impl nexus_server::ServerConfig
+pub fn nexus_server::ServerConfig::from_env() -> nexus_server::Result<Self>
+pub fn nexus_server::ServerConfig::from_env_get(impl core::ops::function::FnMut(&str) -> core::option::Option<alloc::string::String>) -> nexus_server::Result<Self>
+pub fn nexus_server::ServerConfig::with_gpu_memory_ownership(self, impl core::iter::traits::collect::IntoIterator<Item = (usize, nexus_query_engine::runtime::backend_core::GpuMemoryOwnership)>) -> Self
+pub struct nexus_server::ServerError
+impl nexus_server::ServerError
+pub fn nexus_server::ServerError::as_adapter_error(&self) -> &datafusion_nexus::error::Error
+pub fn nexus_server::ServerError::code(&self) -> datafusion_nexus::error::code::ErrorCode
+pub fn nexus_server::ServerError::configuration(impl core::convert::Into<alloc::string::String>) -> Self
+pub fn nexus_server::ServerError::configuration_with_source(impl core::convert::Into<alloc::string::String>, impl core::error::Error + core::marker::Send + core::marker::Sync + 'static) -> Self
+pub fn nexus_server::ServerError::fact_value(&self, &str) -> core::option::Option<&str>
+pub fn nexus_server::ServerError::facts(&self) -> &datafusion_nexus::error::Facts
+pub fn nexus_server::ServerError::invalid_config(&'static str, impl core::convert::Into<alloc::string::String>) -> Self
+pub fn nexus_server::ServerError::invalid_config_with_source(&'static str, impl core::convert::Into<alloc::string::String>, impl core::error::Error + core::marker::Send + core::marker::Sync + 'static) -> Self
+pub fn nexus_server::ServerError::kind(&self) -> datafusion_nexus::error::code::ErrorKind
+pub fn nexus_server::ServerError::message(&self) -> &str
+pub fn nexus_server::ServerError::operation(&self) -> &'static str
+pub fn nexus_server::ServerError::session(impl core::convert::Into<alloc::string::String>, impl core::error::Error + core::marker::Send + core::marker::Sync + 'static) -> Self
+pub fn nexus_server::ServerError::startup(impl core::convert::Into<alloc::string::String>) -> Self
+pub fn nexus_server::ServerError::status(&self) -> datafusion_nexus::error::code::ErrorStatus
+pub fn nexus_server::ServerError::transport(tonic::transport::error::Error) -> Self
+impl core::error::Error for nexus_server::ServerError
+pub fn nexus_server::ServerError::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
+impl core::fmt::Display for nexus_server::ServerError
+pub fn nexus_server::ServerError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct nexus_server::ServerObservabilityConfig
+pub nexus_server::ServerObservabilityConfig::active_logical_capture_max_bytes: u64
+pub nexus_server::ServerObservabilityConfig::global_sealed_max_bytes: u64
+pub nexus_server::ServerObservabilityConfig::global_sealed_max_count: usize
+pub nexus_server::ServerObservabilityConfig::per_query_max_bytes: u64
+pub nexus_server::ServerObservabilityConfig::per_query_max_records: u64
+pub nexus_server::ServerObservabilityConfig::sealed_ttl: core::time::Duration
+pub nexus_server::ServerObservabilityConfig::shutdown_grace: core::time::Duration
+impl core::default::Default for nexus_server::ServerObservabilityConfig
+pub fn nexus_server::ServerObservabilityConfig::default() -> Self
+pub struct nexus_server::StaticUserConfig
+pub nexus_server::StaticUserConfig::password_hash: alloc::string::String
+pub nexus_server::StaticUserConfig::roles: alloc::vec::Vec<alloc::string::String>
+pub nexus_server::StaticUserConfig::username: alloc::string::String
+pub struct nexus_server::TokenStore
+impl nexus_server::TokenStore
+pub fn nexus_server::TokenStore::issue(&self, nexus_server::Principal, core::option::Option<core::time::Duration>) -> alloc::string::String
+pub fn nexus_server::TokenStore::new() -> Self
+pub fn nexus_server::TokenStore::sweep_expired(&self)
+pub fn nexus_server::TokenStore::validate(&self, &str) -> core::option::Option<nexus_server::Principal>
+pub struct nexus_server::WorkspaceOverlayConfig
+pub nexus_server::WorkspaceOverlayConfig::backing_aliases: core::option::Option<alloc::vec::Vec<alloc::string::String>>
+pub nexus_server::WorkspaceOverlayConfig::backing_catalog: alloc::string::String
+pub nexus_server::WorkspaceOverlayConfig::backing_schema: alloc::string::String
+pub nexus_server::WorkspaceOverlayConfig::catalog: alloc::string::String
+pub nexus_server::WorkspaceOverlayConfig::schema: alloc::string::String
+pub const nexus_server::ERROR_CODE_METADATA_KEY: &str
+pub const nexus_server::ERROR_KIND_METADATA_KEY: &str
+pub const nexus_server::ERROR_OPERATION_METADATA_KEY: &str
+pub const nexus_server::ERROR_STATUS_METADATA_KEY: &str
+pub const nexus_server::NATIVE_MESSAGE_METADATA_KEY: &str
+pub const nexus_server::NEXUS_ICEBERG_CATALOG_KIND_ENV: &str
+pub const nexus_server::NEXUS_ICEBERG_CATALOG_NAME_ENV: &str
+pub const nexus_server::NEXUS_ICEBERG_GLUE_CATALOG_ID_ENV: &str
+pub const nexus_server::NEXUS_ICEBERG_GLUE_CATALOG_NAME_ENV: &str
+pub const nexus_server::NEXUS_ICEBERG_GLUE_URI_ENV: &str
+pub const nexus_server::NEXUS_ICEBERG_NAMESPACE_ENV: &str
+pub const nexus_server::NEXUS_ICEBERG_REST_CATALOG_HANDLE_ENV: &str
+pub const nexus_server::NEXUS_ICEBERG_REST_PREFIX_ENV: &str
+pub const nexus_server::NEXUS_ICEBERG_REST_TOKEN_ENV: &str
+pub const nexus_server::NEXUS_ICEBERG_REST_URI_ENV: &str
+pub const nexus_server::NEXUS_ICEBERG_S3_CREDENTIAL_SOURCE_ENV: &str
+pub const nexus_server::NEXUS_ICEBERG_S3_ENDPOINT_ENV: &str
+pub const nexus_server::NEXUS_ICEBERG_S3_PATH_STYLE_ENV: &str
+pub const nexus_server::NEXUS_ICEBERG_S3_REGION_ENV: &str
+pub const nexus_server::NEXUS_ICEBERG_SCAN_PLANNING_TIMEOUT_SECS_ENV: &str
+pub const nexus_server::NEXUS_ICEBERG_TABLES_ENV: &str
+pub const nexus_server::NEXUS_ICEBERG_WAREHOUSE_ENV: &str
+pub const nexus_server::NEXUS_SERVER_ADMISSION_MAX_OVERTAKES_PER_WAITER_ENV: &str
+pub const nexus_server::NEXUS_SERVER_ADMISSION_MAX_QUEUED_ATTEMPTS_ENV: &str
+pub const nexus_server::NEXUS_SERVER_ADMISSION_MAX_QUEUE_WAIT_MS_ENV: &str
+pub const nexus_server::NEXUS_SERVER_BIND_ENV: &str
+pub const nexus_server::NEXUS_SERVER_CONFIG_FILE_ENV: &str
+pub const nexus_server::NEXUS_SERVER_CUGRAPH_CONSTRUCTION_POLICY_ENV: &str
+pub const nexus_server::NEXUS_SERVER_CUGRAPH_DIRECTED_ENV: &str
+pub const nexus_server::NEXUS_SERVER_CUGRAPH_ENABLED_ENV: &str
+pub const nexus_server::NEXUS_SERVER_CUGRAPH_RENUMBER_ENV: &str
+pub const nexus_server::NEXUS_SERVER_FINAL_PLAN_REQUIREMENT_ENV: &str
+pub const nexus_server::NEXUS_SERVER_GPU_DEVICES_ENV: &str
+pub const nexus_server::NEXUS_SERVER_LOG_ENV: &str
+pub const nexus_server::NEXUS_SERVER_NATIVE_CONFIG_OPTIONS: &[nexus_server::NexusServerNativeConfigOption]
+pub const nexus_server::NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES_ENV: &str
+pub const nexus_server::NEXUS_SERVER_NATIVE_MAX_RETRY_ATTEMPTS_ENV: &str
+pub const nexus_server::NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV: &str
+pub const nexus_server::NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV: &str
+pub const nexus_server::NEXUS_SERVER_NATIVE_MAX_SOURCE_READS_IN_FLIGHT_ENV: &str
+pub const nexus_server::NEXUS_SERVER_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV: &str
+pub const nexus_server::NEXUS_SERVER_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV: &str
+pub const nexus_server::NEXUS_SERVER_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV: &str
+pub const nexus_server::NEXUS_SERVER_OBSERVABILITY_ACTIVE_LOGICAL_CAPTURE_MAX_BYTES_ENV: &str
+pub const nexus_server::NEXUS_SERVER_OBSERVABILITY_GLOBAL_SEALED_MAX_BYTES_ENV: &str
+pub const nexus_server::NEXUS_SERVER_OBSERVABILITY_GLOBAL_SEALED_MAX_COUNT_ENV: &str
+pub const nexus_server::NEXUS_SERVER_OBSERVABILITY_PER_QUERY_MAX_BYTES_ENV: &str
+pub const nexus_server::NEXUS_SERVER_OBSERVABILITY_PER_QUERY_MAX_RECORDS_ENV: &str
+pub const nexus_server::NEXUS_SERVER_OBSERVABILITY_SEALED_TTL_SECS_ENV: &str
+pub const nexus_server::NEXUS_SERVER_OBSERVABILITY_SHUTDOWN_GRACE_SECS_ENV: &str
+pub const nexus_server::NEXUS_SERVER_STATEMENT_TICKET_TTL_SECS_ENV: &str
+pub const nexus_server::NEXUS_SERVER_WORKSPACE_BACKING_ALIASES_ENV: &str
+pub const nexus_server::NEXUS_SERVER_WORKSPACE_BACKING_CATALOG_ENV: &str
+pub const nexus_server::NEXUS_SERVER_WORKSPACE_BACKING_SCHEMA_ENV: &str
+pub const nexus_server::NEXUS_SERVER_WORKSPACE_CATALOG_ENV: &str
+pub const nexus_server::NEXUS_SERVER_WORKSPACE_SCHEMA_ENV: &str
+pub const nexus_server::PREDICATE_ROLE_METADATA_KEY: &str
+pub const nexus_server::REASON_METADATA_KEY: &str
+pub const nexus_server::REQUIRED_OPTION_METADATA_KEY: &str
+pub const nexus_server::UNSUPPORTED_COLUMN_METADATA_KEY: &str
+pub const nexus_server::UNSUPPORTED_COLUMN_ROLE_METADATA_KEY: &str
+pub const nexus_server::UNSUPPORTED_COLUMN_TYPE_METADATA_KEY: &str
+pub fn nexus_server::backend_from_server_config(&nexus_server::ServerConfig) -> nexus_server::Result<core::option::Option<datafusion_nexus::backend::NexusGpuBackend>>
+pub fn nexus_server::build_session_config(&nexus_server::ServerConfig) -> nexus_server::Result<datafusion_execution::config::SessionConfig>
+pub async fn nexus_server::build_session_context(&nexus_server::ServerConfig) -> nexus_server::Result<datafusion::execution::context::SessionContext>
+pub async fn nexus_server::build_session_context_with_backend(&nexus_server::ServerConfig, &datafusion_nexus::backend::NexusGpuBackend) -> nexus_server::Result<datafusion::execution::context::SessionContext>
+pub fn nexus_server::datafusion_error_to_status(datafusion_common::error::DataFusionError) -> tonic::status::Status
+pub fn nexus_server::datafusion_error_to_status_for_operation(datafusion_common::error::DataFusionError, &'static str) -> tonic::status::Status
+pub async fn nexus_server::handle_handshake(&nexus_server::AuthMode, &nexus_server::TokenStore, tonic::request::Request<tonic::codec::decode::Streaming<arrow_flight::gen::HandshakeRequest>>) -> core::result::Result<tonic::response::Response<core::pin::Pin<alloc::boxed::Box<(dyn futures_core::stream::Stream<Item = core::result::Result<arrow_flight::gen::HandshakeResponse, tonic::status::Status>> + core::marker::Send)>>>, tonic::status::Status>
+pub fn nexus_server::hash_password(&str) -> core::result::Result<alloc::string::String, nexus_server::PasswordHashError>
+pub fn nexus_server::init_cuda_device(usize) -> nexus_server::Result<()>
+pub fn nexus_server::log_native_planning_report(&str, core::option::Option<&datafusion_nexus::report::PlanningReport>)
+pub fn nexus_server::log_native_planning_report_for_tables(&str, core::option::Option<&datafusion_nexus::report::PlanningReport>, &str)
+pub async fn nexus_server::serve(nexus_server::ServerConfig) -> nexus_server::Result<()>
+pub async fn nexus_server::serve_with_listener(nexus_server::ServerConfig, std::net::tcp::TcpListener) -> nexus_server::Result<()>
+pub fn nexus_server::verify_password(&str, &str) -> core::result::Result<bool, nexus_server::PasswordHashError>
+pub type nexus_server::Result<T> = core::result::Result<T, nexus_server::ServerError>

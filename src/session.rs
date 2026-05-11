@@ -128,7 +128,7 @@ impl NexusSessionStateBuilderExt for SessionStateBuilder {
     }
 }
 
-pub(crate) fn install_nexus_native_rule_with_session_config(
+pub fn install_nexus_native_rule_with_session_config(
     mut builder: SessionStateBuilder,
     rule: Arc<NexusNativePhysicalOptimizerRule>,
     session_extension: DataFusionNexusSessionConfig,
@@ -188,7 +188,7 @@ fn build_cugraph_subplan_state(state: &SessionState, rules: PhysicalOptimizerRul
         .build()
 }
 
-pub(crate) fn installed_nexus_native_optimizer_config(state: &SessionState) -> Option<NexusNativeOptimizerConfig> {
+pub fn installed_nexus_native_optimizer_config(state: &SessionState) -> Option<NexusNativeOptimizerConfig> {
     installed_nexus_native_optimizer_config_from_rules(state.physical_optimizers())
 }
 

@@ -214,7 +214,7 @@ ENV LD_LIBRARY_PATH=/app/lib \
 
 # ===========================================================================
 # Runtime configuration — environment variables read by the server
-# (verified against src/server/config.rs; names are load-bearing)
+# (verified against crates/nexus-server/src/config/; names are load-bearing)
 # ===========================================================================
 #
 # ── Server core ─────────────────────────────────────────────────────────────

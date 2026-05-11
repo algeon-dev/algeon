@@ -13,7 +13,7 @@ workspace = true
 
 [features]
 default = []
-cuvs = ["dep:cuvs-sys", "datafusion-nexus/server-cuvs"]
+cuvs = ["dep:cuvs-sys", "nexus-server/cuvs"]
 # The reference OTLP exporter is deliberately opt-in: it adds a tonic transport
 # stack that ordinary embedding examples do not need.
 otlp-metrics = [
@@ -31,7 +31,8 @@ cugraph-sys = { workspace = true }
 cuvs-sys = { workspace = true, optional = true }
 datafusion = { workspace = true }
 futures = { workspace = true }
-datafusion-nexus = { workspace = true, features = ["server-cugraph", "iceberg"] }
+datafusion-nexus = { workspace = true }
+nexus-server = { workspace = true, features = ["cugraph", "iceberg"] }
 nexus-query-engine = { workspace = true }
 opentelemetry = { workspace = true, optional = true }
 opentelemetry-proto = { workspace = true, optional = true }

@@ -36,15 +36,6 @@ fn bounded_backend_builder(device_ordinals: &[usize]) -> NexusGpuBackendBuilder 
         .device_profiles(explicit_profiles(device_ordinals, 4096))
 }
 
-#[cfg(feature = "server")]
-#[test]
-fn server_default_requires_an_explicit_device_profile() {
-    let error = crate::server::ServerConfig::from_env_get(|_| None).unwrap_err();
-
-    assert_eq!(error.fact_value("reason"), Some("missing_device_profiles"));
-    assert_eq!(error.fact_value("device_ordinals"), Some("0"));
-}
-
 #[test]
 fn backend_requires_an_exact_device_ownership_declaration_before_engine_build() {
     let missing = NexusGpuBackend::builder().device_profiles(explicit_profiles(&[0], 4096)).build().unwrap_err();

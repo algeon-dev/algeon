@@ -51,6 +51,7 @@ CRATES=(
   "datafusion-nexus"
   "nexus-query-engine"
   "nexus-bench"
+  "nexus-server"
 )
 
 current_toolchain_identity() {

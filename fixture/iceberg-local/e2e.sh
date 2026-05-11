@@ -535,7 +535,7 @@ if [[ "${RUN_SERVER_REST_MULTIGPU}" == "1" ]]; then
   step "running production Flight SQL + REST/RustFS four-GPU acceptance (flock /tmp/cudf-gpu.lock)"
   (
     flock 9
-    cargo build --release --bin datafusion_nexus_server --features server,iceberg,nvml
+    cargo build --release -p nexus-server --bin datafusion_nexus_server --features iceberg,nvml
     env \
       NEXUS_ICEBERG_SERVER_REST_MULTIGPU_E2E=1 \
       NEXUS_SERVER_BINARY="${REPO_ROOT}/target/release/datafusion_nexus_server" \

@@ -144,8 +144,8 @@ grep -Fq "visible-successful-inventory-progress" "${tmp_dir}/complete.output"
 cli_feature_output="${tmp_dir}/cli-feature-args.output"
 PATH="${tmp_dir}/bin:${PATH}" \
   FAKE_NEXTEST_INVENTORY="${tmp_dir}/complete.json" \
-  FAKE_REQUIRED_FEATURE_ARGS='--no-default-features --features server' \
-  /usr/bin/bash scripts/ci/check_gpu_test_lane.sh --no-default-features --features server \
+  FAKE_REQUIRED_FEATURE_ARGS='--no-default-features --features iceberg' \
+  /usr/bin/bash scripts/ci/check_gpu_test_lane.sh --no-default-features --features iceberg \
   >"${cli_feature_output}" 2>&1
 grep -Fq "${catalog_success}" "${cli_feature_output}"
 echo "PASS: explicit feature arguments reach live inventory"
@@ -177,7 +177,7 @@ run_shell_case unclassified_binary 1 "unclassified test binary" "${tmp_dir}/uncl
 grep -vFx 'datafusion-nexus::cugraph_tests' "${tmp_dir}/expected" >"${tmp_dir}/feature-gated"
 make_inventory "${tmp_dir}/feature-gated" "${tmp_dir}/feature-gated.json"
 run_shell_case stale_all_features 1 "stale all-feature catalog entry" "${tmp_dir}/feature-gated.json"
-run_shell_case stale_explicit_features 0 "absent from explicit narrower feature inventory" "${tmp_dir}/feature-gated.json" 0 server
+run_shell_case stale_explicit_features 0 "absent from explicit narrower feature inventory" "${tmp_dir}/feature-gated.json" 0 iceberg
 
 # Cross-inventory ID conflict with different binary-names fails closed.
 python3 - "${tmp_dir}/bench-conflict.json" <<'PY'
@@ -226,7 +226,7 @@ from pathlib import Path
 
 source = Path(".config/policies/test-lanes.toml").read_text()
 Path(sys.argv[1]).write_text(source.replace(
-    'reason = "Adapter library tests include coverage SQL, native execution context, and Flight SQL cases that create cuDF runtimes on bounded fixtures."',
+    'reason = "Adapter library tests include coverage SQL and native execution context cases that create cuDF runtimes on bounded fixtures."',
     'reason = ""',
     1,
 ))

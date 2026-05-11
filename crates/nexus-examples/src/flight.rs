@@ -4,10 +4,8 @@
 //! shared GPU backend used by the example HTTP API.
 
 use anyhow::Context;
-use datafusion_nexus::{
-    backend::NexusGpuBackend,
-    server::{FlightSqlServer, ServerConfig, ServerShutdown},
-};
+use datafusion_nexus::backend::NexusGpuBackend;
+use nexus_server::{FlightSqlServer, ServerConfig, ServerShutdown};
 use tokio_util::sync::CancellationToken;
 
 pub async fn build_flight_server(

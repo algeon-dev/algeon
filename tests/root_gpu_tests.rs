@@ -5,14 +5,6 @@ mod root_gpu_fixture;
 #[cfg(feature = "cuvs")]
 mod cuvs_sql_gpu_tests;
 
-#[path = "server_cugraph_tests.rs"]
-#[cfg(all(feature = "server", feature = "cugraph"))]
-mod server_cugraph_tests;
-
-#[path = "server_cuvs_tests.rs"]
-#[cfg(all(feature = "server", feature = "cuvs"))]
-mod server_cuvs_tests;
-
 #[path = "session_config_tests.rs"]
 mod session_config_tests;
 

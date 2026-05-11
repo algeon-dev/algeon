@@ -428,7 +428,7 @@ not use the same-key probe: its point is eviction and rebuild across distinct
 ## S8 Flight server profiles
 
 S8 needs the same host, a release `datafusion_nexus_server` built with
-`server,cugraph`, and the named TPC-H fixture. The Flight profile records the
+`cugraph`, and the named TPC-H fixture. The Flight profile records the
 driver, SQL label, warmup/measurement window, connection mode, server TOML
 companion, and the exact in-process artifact/cell. `flight-sql-stress` refuses
 to start unless that artifact is schema v2, measured, selects the same query,
@@ -452,7 +452,7 @@ flock /tmp/cudf-gpu.lock target/release/nexus_tools single-node-multi-gpu-valida
   --config crates/nexus-tools/fixtures/stress/stress-s2-sweep-scan-sf1.json \
   --out-dir target/stress/s2-sweep-scan-sf1 --measured-run
 
-cargo build --release -p datafusion-nexus --features server,cugraph --bin datafusion_nexus_server
+cargo build --release -p nexus-server --features cugraph --bin datafusion_nexus_server
 cargo build --release -p nexus-tools
 
 NEXUS_SERVER_GPU_DEVICES=0,1,2,3 \

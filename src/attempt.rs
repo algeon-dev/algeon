@@ -305,7 +305,7 @@ impl NexusAttempt {
     /// Flight's coordinator uses this only to route native metrics while it
     /// retains ticket and activity accounting. The attempt owner remains the
     /// only capability that can seal the corresponding observation.
-    pub(crate) fn observation_handle(&self) -> nexus_query_engine::observability::RuntimeObservationHandle {
+    pub fn observation_handle(&self) -> nexus_query_engine::observability::RuntimeObservationHandle {
         self.state.observation_handle.clone()
     }
 
@@ -316,7 +316,7 @@ impl NexusAttempt {
     /// publishes the report before it delivers its sealed observation, so the
     /// callback can retain the exact completed report together with the
     /// snapshot that embeds it without a detached completion task.
-    pub(crate) fn register_sealed_report_observer<F>(&self, observer: F)
+    pub fn register_sealed_report_observer<F>(&self, observer: F)
     where F: Fn(Option<Arc<QueryAttemptReport>>, nexus_query_engine::observability::SealedRuntimeObservationSnapshot)
             + Send
             + Sync
@@ -329,10 +329,9 @@ impl NexusAttempt {
                 // before the owner exposes this sealed snapshot. Keep the
                 // coordinator fail-closed if that engine invariant is ever
                 // violated rather than retaining a fabricated projection.
-                // Tracing is a server-only dependency. The invariant is
-                // preserved in every build; emit its operational diagnostic
-                // only in the Flight-enabled surface.
-                #[cfg(feature = "server")]
+                // The invariant is preserved in every build; emit its
+                // operational diagnostic before retaining a fail-closed
+                // projection.
                 tracing::error!("attempt observation sealed before its immutable report was published");
             }
             observer(report, snapshot);
@@ -383,7 +382,7 @@ impl NexusAttempt {
     /// Begin attempt-owned planning in an invocation-local DataFusion state.
     /// Flight uses this before it issues a ticket so logical-planning failures
     /// terminalize the same attempt that later owns physical execution.
-    pub(crate) fn planning_context(&self, ctx: &SessionContext) -> DataFusionResult<SessionContext> {
+    pub fn planning_context(&self, ctx: &SessionContext) -> DataFusionResult<SessionContext> {
         if self.cancellation().check("datafusion_nexus.attempt.flight_planning").is_err() {
             return Err(self.cancelled_error("datafusion_nexus.attempt.flight_planning"));
         }
@@ -401,13 +400,13 @@ impl NexusAttempt {
         DataFusionError::from(Error::from_native(operation, "execution attempt was cancelled", error))
     }
 
-    pub(crate) fn planning_failed(&self, error: &DataFusionError) {
+    pub fn planning_failed(&self, error: &DataFusionError) {
         self.commit_datafusion_error(error);
     }
 
     /// Commits an adapter-side planning rejection through the same owner as
     /// DataFusion failures, without exposing that owner to callers.
-    pub(crate) fn planning_failed_adapter(&self, error: &Error) {
+    pub fn planning_failed_adapter(&self, error: &Error) {
         let owner = self.owner.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(owner) = owner.as_ref() {
             if let Some(native) =
@@ -426,13 +425,13 @@ impl NexusAttempt {
     /// GetFlightInfo/DoGet invocation. This remains separate from execution:
     /// the owner does not move into an [`AttemptStream`] until DoGet starts
     /// the finalized plan.
-    pub(crate) fn physical_planning_finished(&self, plan: &dyn ExecutionPlan) {
+    pub fn physical_planning_finished(&self, plan: &dyn ExecutionPlan) {
         let _ = self.state.handle.set_disposition(disposition_for(classify_final_plan(plan)));
         let _ = self.state.handle.record_planning_finished();
     }
 
     /// Propagate a Flight cancellation before a result stream exists.
-    pub(crate) fn cancel_before_stream(&self) {
+    pub fn cancel_before_stream(&self) {
         self.state.cancellation.cancel();
         self.commit(RuntimeTerminalOutcome::Cancelled);
     }
@@ -442,7 +441,7 @@ impl NexusAttempt {
     /// Flight uses this for a deduplicated prepared DDL execution: there is
     /// no DataFusion result stream to transfer the owner into, but the same
     /// pre-created attempt still needs one immutable terminal report.
-    pub(crate) fn complete_without_result_stream(&self) {
+    pub fn complete_without_result_stream(&self) {
         self.commit(RuntimeTerminalOutcome::Succeeded);
     }
 
