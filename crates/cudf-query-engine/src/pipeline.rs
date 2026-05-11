@@ -10,6 +10,7 @@ mod display;
 mod model;
 mod validate;
 
+pub use compile::compile_pipeline;
 pub use model::{
     CompiledPipeline, PipelineBarrier, PipelineBarrierId, PipelineBarrierKind, PipelineEdge, PipelineEdgeId,
     PipelineEdgeKind, PipelineTask, PipelineTaskId, PipelineTaskKind, ReservationGate, ReservationGateId,
