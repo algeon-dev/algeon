@@ -232,6 +232,12 @@ pub(super) fn native_execution_metrics_set() -> datafusion::physical_plan::metri
         ("retry_count", 3),
         ("retry_resource_exhausted_count", 1),
         ("retry_reservation_failure_count", 2),
+        ("adaptive_retry_count", 10),
+        ("adaptive_spill_count", 11),
+        ("adaptive_downgrade_count", 12),
+        ("adaptive_memory_history_lookup_count", 13),
+        ("adaptive_memory_history_hit_count", 8),
+        ("adaptive_memory_history_miss_count", 5),
         ("hash_join_build_count", 1),
         ("filtered_join_build_count", 6),
         ("hash_join_cache_hits", 2),
@@ -274,6 +280,36 @@ pub(super) async fn sql_plan(path: &std::path::Path, config: SessionConfig, sql:
 pub(super) async fn parquet_scan(path: &std::path::Path) -> Arc<dyn ExecutionPlan> {
     let ctx = SessionContext::new_with_config(direct_friendly_sql_session_config());
     let df = ctx.read_parquet(path.to_str().unwrap(), ParquetReadOptions::default()).await.unwrap();
+    df.create_physical_plan().await.unwrap()
+}
+
+pub(super) async fn join_aggregate_sort_limit_sql_plan(
+    left: &std::path::Path,
+    right: &std::path::Path,
+) -> Arc<dyn ExecutionPlan> {
+    let ctx = SessionContext::new_with_config(
+        SessionConfig::new()
+            .with_repartition_file_scans(false)
+            .with_repartition_joins(false)
+            .with_repartition_sorts(false)
+            .with_target_partitions(1),
+    );
+    ctx.register_parquet("left_input", left.to_str().unwrap(), ParquetReadOptions::default()).await.unwrap();
+    ctx.register_parquet("right_input", right.to_str().unwrap(), ParquetReadOptions::default()).await.unwrap();
+    let df = ctx
+        .sql(
+            "
+SELECT l.key, SUM(l.m00 + r.m01) AS sum_x00
+FROM left_input l
+JOIN right_input r ON l.key = r.key
+WHERE l.payload >= 10 AND r.payload >= 10
+GROUP BY l.key
+ORDER BY sum_x00 DESC, l.key ASC
+LIMIT 2
+",
+        )
+        .await
+        .unwrap();
     df.create_physical_plan().await.unwrap()
 }
 

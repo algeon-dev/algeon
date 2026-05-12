@@ -11,15 +11,16 @@ use arrow::{
     record_batch::RecordBatch,
 };
 use cudf_query_engine::{
-    AdaptiveCandidateStatus, AdaptiveExecutionMode, AdaptiveStrategy, AggregateExpr, AggregateFunction, AggregateSpec,
-    BinaryOp, ColumnRef, CompiledPipeline, ExecutionContext, Expr, JoinKey, JoinOutputColumn, JoinSide, JoinSpec,
-    JoinType, LimitSpec, LiteralValue, LocalParquetSource, MemoryControlPolicy, NativePipelineExecutionMode,
+    AdaptiveCandidateStatus, AdaptiveExecutionMode, AdaptiveMemoryHistory, AdaptiveMemoryHistoryEvidence,
+    AdaptiveMemoryHistoryKey, AdaptiveMemoryObservation, AdaptiveStrategy, AggregateExpr, AggregateFunction,
+    AggregateSpec, BinaryOp, ColumnRef, CompiledPipeline, ExecutionContext, Expr, JoinKey, JoinOutputColumn, JoinSide,
+    JoinSpec, JoinType, LimitSpec, LiteralValue, LocalParquetSource, MemoryControlPolicy, NativePipelineExecutionMode,
     PipelineBarrier, PipelineBarrierId, PipelineBarrierKind, PipelineEdge, PipelineEdgeId, PipelineEdgeKind,
     PipelineTask, PipelineTaskId, PipelineTaskKind, ProjectionOutput, QueryMetrics, QueryOutputMode, QueryPlan,
     QueryPlanBuilder, ReservationGate, ReservationGateId, ReservationGateOwner, ReservationKind, ResidentLifetime,
     ResidentResource, ResidentResourceId, SinkBoundary, SinkBoundaryKind, SortExpr, SortSpec, SourceNode,
     StrictBoundedContractGateId, StrictBoundedContractGateRow, StrictBoundedContractOwner,
-    adaptive_bounded_pipeline_admission,
+    adaptive_bounded_pipeline_admission, adaptive_bounded_pipeline_admission_with_memory_history,
     capability::{
         CapabilityDecision, ContractQuality, ContractStatus, ReservationRequirementScope, SubgraphInvariantKind,
     },
@@ -176,6 +177,77 @@ fn phase_e3_unsupported_adaptive_rows_reference_strict_gaps_without_strict_evide
     assert!(rendered.contains("required_contract=unsupported_join_node_capability"));
     assert!(!rendered.contains("execution_mode=strict_bounded"));
     assert!(!rendered.contains("execution_mode=unsupported_strict_bounded"));
+}
+
+#[test]
+fn phase_e6_adaptive_memory_history_lookup_miss_is_adaptive_evidence_only() {
+    let plan = root_join_plan();
+    let memory_history = AdaptiveMemoryHistory::new();
+    let admission = adaptive_bounded_pipeline_admission_with_memory_history(&plan, Some(&memory_history))
+        .expect("adaptive admission should not fail")
+        .expect("root join should produce adaptive admission evidence");
+    let row = admission.report().row();
+
+    assert_eq!(row.runtime_actions_allowed.to_stable_value(), "memory_history_lookup");
+    assert_eq!(row.memory_history_evidence, AdaptiveMemoryHistoryEvidence::LookupMiss);
+    assert_eq!(row.candidate_status, AdaptiveCandidateStatus::Admitted);
+    let strict_admission = strict_bounded_pipeline_admission(&plan)
+        .expect("strict admission should not fail")
+        .expect("strict admission should ignore adaptive memory history");
+    assert_eq!(strict_admission.native_mode(), NativePipelineExecutionMode::StrictBounded);
+
+    let strict_report =
+        StrictBoundedContractReport::from_compiled_pipeline(strict_admission.analysis(), strict_admission.pipeline())
+            .expect("strict report should not read adaptive history");
+    assert!(strict_report.gate_rows().iter().all(|row| {
+        let rendered = row.to_stable_kv_row();
+        !rendered.contains("memory_history") && !rendered.contains("lookup_miss")
+    }));
+}
+
+#[test]
+fn phase_e6_adaptive_memory_history_hit_reports_observed_summary_without_changing_strict_admission() {
+    let plan = root_join_plan();
+    let memory_history = AdaptiveMemoryHistory::new();
+    let key = AdaptiveMemoryHistoryKey::for_query_plan(&plan);
+    assert!(!key.as_str().contains("compiled-d1-left"));
+    assert!(!key.as_str().contains("left_id"));
+    memory_history.record_observation(
+        key,
+        AdaptiveMemoryObservation {
+            resident_dataframe_peak_bytes: Some(4096),
+            reservation_granted_bytes: 8192,
+            source_chunks_committed: 3,
+        },
+    );
+
+    let adaptive_admission = adaptive_bounded_pipeline_admission_with_memory_history(&plan, Some(&memory_history))
+        .expect("adaptive admission should not fail")
+        .expect("root join should produce adaptive admission evidence");
+    let row = adaptive_admission.report().row();
+
+    assert_eq!(row.runtime_actions_allowed.to_stable_value(), "memory_history_lookup");
+    let AdaptiveMemoryHistoryEvidence::Observed(summary) = &row.memory_history_evidence else {
+        panic!("memory history should be reported as observed adaptive evidence");
+    };
+    assert_eq!(summary.observation_count, 1);
+    assert_eq!(summary.max_resident_dataframe_peak_bytes, Some(4096));
+    assert_eq!(summary.max_reservation_granted_bytes, 8192);
+    assert_eq!(summary.max_source_chunks_committed, 3);
+    assert_eq!(row.runtime_action_counts.retry_count, 0);
+    assert_eq!(row.runtime_action_counts.spill_count, 0);
+    assert_eq!(row.runtime_action_counts.downgrade_count, 0);
+
+    let rendered = adaptive_admission.report().stable_kv_row();
+    assert!(rendered.contains("memory_history_evidence=observed:observation_count=1"));
+    assert!(rendered.contains("resident_dataframe_peak_bytes=4096"));
+    assert!(!rendered.contains("execution_mode=strict_bounded"));
+
+    let strict_admission = strict_bounded_pipeline_admission(&plan)
+        .expect("strict admission should not fail")
+        .expect("strict admission must ignore adaptive memory history");
+    assert_eq!(strict_admission.native_mode(), NativePipelineExecutionMode::StrictBounded);
+    assert!(strict_admission.analysis().admits_strict_bounded_join());
 }
 
 #[test]
@@ -1236,7 +1308,20 @@ fn execute_query_plan_routes_selected_adaptive_root_hash_join_through_adaptive_s
     let right_path = dir.join("right.parquet");
     write_join_parquets(&left_path, &right_path);
     let plan = root_join_data_plan(&left_path, &right_path);
-    let context = bounded_context_with_mode(Arc::new(runtime), NativePipelineExecutionMode::Adaptive);
+    let memory_history = Arc::new(AdaptiveMemoryHistory::new());
+    memory_history.record_observation(
+        AdaptiveMemoryHistoryKey::for_query_plan(&plan),
+        AdaptiveMemoryObservation {
+            resident_dataframe_peak_bytes: Some(2048),
+            reservation_granted_bytes: 4096,
+            source_chunks_committed: 2,
+        },
+    );
+    let context = bounded_context_with_mode_and_memory_history(
+        Arc::new(runtime),
+        NativePipelineExecutionMode::Adaptive,
+        Arc::clone(&memory_history),
+    );
 
     assert_eq!(context.native_pipeline_execution_mode(), NativePipelineExecutionMode::Adaptive);
     let result = execute_query_plan(&context, &plan).expect("adaptive selected root join should execute");
@@ -1252,6 +1337,9 @@ fn execute_query_plan_routes_selected_adaptive_root_hash_join_through_adaptive_s
     assert_eq!(metrics.adaptive_retry_count, 0);
     assert_eq!(metrics.adaptive_spill_count, 0);
     assert_eq!(metrics.adaptive_downgrade_count, 0);
+    assert_eq!(metrics.adaptive_memory_history_lookup_count, 1);
+    assert_eq!(metrics.adaptive_memory_history_hit_count, 1);
+    assert_eq!(metrics.adaptive_memory_history_miss_count, 0);
 }
 
 #[test]
@@ -3212,6 +3300,21 @@ fn bounded_context(runtime: Arc<cudf::Runtime>) -> ExecutionContext {
 }
 
 fn bounded_context_with_mode(runtime: Arc<cudf::Runtime>, mode: NativePipelineExecutionMode) -> ExecutionContext {
+    bounded_context_builder(runtime, mode).build().unwrap()
+}
+
+fn bounded_context_with_mode_and_memory_history(
+    runtime: Arc<cudf::Runtime>,
+    mode: NativePipelineExecutionMode,
+    memory_history: Arc<AdaptiveMemoryHistory>,
+) -> ExecutionContext {
+    bounded_context_builder(runtime, mode).with_adaptive_memory_history(memory_history).build().unwrap()
+}
+
+fn bounded_context_builder(
+    runtime: Arc<cudf::Runtime>,
+    mode: NativePipelineExecutionMode,
+) -> cudf_query_engine::ExecutionContextBuilder {
     ExecutionContext::builder()
         .with_shared_runtime(runtime)
         .with_memory_control_policy(MemoryControlPolicy::Bounded {
@@ -3222,8 +3325,6 @@ fn bounded_context_with_mode(runtime: Arc<cudf::Runtime>, mode: NativePipelineEx
             min_retry_chunk_row_groups: 1,
         })
         .with_native_pipeline_execution_mode(mode)
-        .build()
-        .unwrap()
 }
 
 fn unique_temp_dir(prefix: &str) -> PathBuf {

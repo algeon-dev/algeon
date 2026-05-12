@@ -6,7 +6,11 @@
 
 use super::{compiled::execute_compiled_pipeline_to_host, *};
 use crate::{
-    adaptive_report::{AdaptiveCandidateStatus, AdaptivePipelineReport, AdaptivePipelineReportRow, AdaptiveStrategy},
+    adaptive_report::{
+        AdaptiveAdmissionRuntimeEvidence, AdaptiveCandidateStatus, AdaptiveMemoryHistoryEvidence,
+        AdaptivePipelineReport, AdaptivePipelineReportRow, AdaptiveRuntimeActionsAllowed, AdaptiveStrategy,
+    },
+    adaptive_runtime::AdaptiveMemoryHistory,
     mode::{AdaptiveExecutionMode, NativePipelineExecutionMode},
     pipeline::{CompiledPipeline, compile_pipeline},
 };
@@ -45,18 +49,28 @@ pub(super) fn try_execute_adaptive_bounded_pipeline(
     gpu_inputs: &GpuResidentInputMap,
     metrics: &mut QueryMetrics,
 ) -> Result<Option<QueryOutput>> {
-    let Some(admission) = adaptive_bounded_pipeline_admission(plan)? else {
+    let memory_history = context.adaptive_memory_history();
+    let Some(admission) = adaptive_bounded_pipeline_admission_with_memory_history(plan, memory_history.as_deref())?
+    else {
         return Ok(None);
     };
     execute_adaptive_bounded_pipeline(context, plan, gpu_inputs, metrics, admission).map(Some)
 }
 
 pub fn adaptive_bounded_pipeline_admission(plan: &QueryPlan) -> Result<Option<AdaptivePipelineAdmission>> {
+    adaptive_bounded_pipeline_admission_with_memory_history(plan, None)
+}
+
+pub fn adaptive_bounded_pipeline_admission_with_memory_history(
+    plan: &QueryPlan,
+    memory_history: Option<&AdaptiveMemoryHistory>,
+) -> Result<Option<AdaptivePipelineAdmission>> {
     if !plan.contains_join() {
         return Ok(None);
     }
 
     let analysis = plan.capability_analysis();
+    let runtime_evidence = runtime_evidence_for_plan(plan, memory_history);
     let (candidate_status, adaptive_strategy, rejection_reason, pipeline) =
         if analysis.has_rejections() || !analysis.admits_strict_bounded_join() {
             (AdaptiveCandidateStatus::Rejected, AdaptiveStrategy::Unsupported, Some("missing_strict_contracts"), None)
@@ -84,6 +98,7 @@ pub fn adaptive_bounded_pipeline_admission(plan: &QueryPlan) -> Result<Option<Ad
         plan,
         candidate_status,
         adaptive_strategy,
+        runtime_evidence,
         rejection_reason,
     )?;
     Ok(Some(AdaptivePipelineAdmission { report, pipeline }))
@@ -126,6 +141,10 @@ impl<'a, 'm> AdaptiveCompiledPipelineExecutor<'a, 'm> {
             counts.spill_count,
             counts.downgrade_count,
         );
+        let memory_history_evidence = &self.admission.report().row().memory_history_evidence;
+        if memory_history_evidence.lookup_attempted() {
+            self.metrics.record_adaptive_memory_history_lookup(memory_history_evidence.lookup_hit());
+        }
 
         match self.admission.report().row().candidate_status {
             AdaptiveCandidateStatus::Rejected => Err(unsupported_adaptive_candidate_error(self.admission.report())),
@@ -165,7 +184,7 @@ fn adaptive_candidate_error(message: &'static str, row: &AdaptivePipelineReportR
         .with_fact("candidate_status", row.candidate_status.as_str())
         .with_fact("adaptive_strategy", row.adaptive_strategy.as_str())
         .with_fact("runtime_actions_allowed", row.runtime_actions_allowed.to_stable_value())
-        .with_fact("memory_history_evidence", row.memory_history_evidence.as_str())
+        .with_fact("memory_history_evidence", row.memory_history_evidence.to_stable_value())
         .with_fact("retry_count", row.runtime_action_counts.retry_count)
         .with_fact("spill_count", row.runtime_action_counts.spill_count)
         .with_fact("downgrade_count", row.runtime_action_counts.downgrade_count)
@@ -173,4 +192,24 @@ fn adaptive_candidate_error(message: &'static str, row: &AdaptivePipelineReportR
         .with_fact("rejection_reason", row.rejection_reason.unwrap_or("none"))
         .with_fact("strict_bounded_contract_report", "not_emitted")
         .with_fact("adaptive_report_row", row.to_stable_kv_row())
+}
+
+fn runtime_evidence_for_plan(
+    plan: &QueryPlan,
+    memory_history: Option<&AdaptiveMemoryHistory>,
+) -> AdaptiveAdmissionRuntimeEvidence {
+    let Some(memory_history) = memory_history else {
+        return AdaptiveAdmissionRuntimeEvidence::default();
+    };
+
+    let memory_history_evidence = memory_history
+        .lookup_query_plan(plan)
+        .map_or(AdaptiveMemoryHistoryEvidence::LookupMiss, AdaptiveMemoryHistoryEvidence::Observed);
+    AdaptiveAdmissionRuntimeEvidence {
+        runtime_actions_allowed: AdaptiveRuntimeActionsAllowed {
+            memory_history_lookup: true,
+            ..AdaptiveRuntimeActionsAllowed::default()
+        },
+        memory_history_evidence,
+    }
 }

@@ -64,6 +64,12 @@ pub const NATIVE_CUDF_DATAFUSION_METRIC_NAMES: &[&str] = &[
     "retry_count",
     "retry_resource_exhausted_count",
     "retry_reservation_failure_count",
+    "adaptive_retry_count",
+    "adaptive_spill_count",
+    "adaptive_downgrade_count",
+    "adaptive_memory_history_lookup_count",
+    "adaptive_memory_history_hit_count",
+    "adaptive_memory_history_miss_count",
     "hash_join_build_count",
     "filtered_join_build_count",
     "hash_join_cache_hits",
@@ -146,6 +152,12 @@ pub(super) struct NativeCudfMetrics {
     retry_count: Count,
     retry_resource_exhausted_count: Count,
     retry_reservation_failure_count: Count,
+    adaptive_retry_count: Count,
+    adaptive_spill_count: Count,
+    adaptive_downgrade_count: Count,
+    adaptive_memory_history_lookup_count: Count,
+    adaptive_memory_history_hit_count: Count,
+    adaptive_memory_history_miss_count: Count,
     hash_join_build_count: Count,
     filtered_join_build_count: Count,
     hash_join_cache_hits: Count,
@@ -255,6 +267,20 @@ impl NativeCudfMetrics {
             retry_count: summary_counter(metrics, "retry_count", partition),
             retry_resource_exhausted_count: summary_counter(metrics, "retry_resource_exhausted_count", partition),
             retry_reservation_failure_count: summary_counter(metrics, "retry_reservation_failure_count", partition),
+            adaptive_retry_count: summary_counter(metrics, "adaptive_retry_count", partition),
+            adaptive_spill_count: summary_counter(metrics, "adaptive_spill_count", partition),
+            adaptive_downgrade_count: summary_counter(metrics, "adaptive_downgrade_count", partition),
+            adaptive_memory_history_lookup_count: summary_counter(
+                metrics,
+                "adaptive_memory_history_lookup_count",
+                partition,
+            ),
+            adaptive_memory_history_hit_count: summary_counter(metrics, "adaptive_memory_history_hit_count", partition),
+            adaptive_memory_history_miss_count: summary_counter(
+                metrics,
+                "adaptive_memory_history_miss_count",
+                partition,
+            ),
             hash_join_build_count: summary_counter(metrics, "hash_join_build_count", partition),
             filtered_join_build_count: summary_counter(metrics, "filtered_join_build_count", partition),
             hash_join_cache_hits: summary_counter(metrics, "hash_join_cache_hits", partition),
@@ -336,6 +362,12 @@ impl NativeCudfMetrics {
         self.retry_count.add(count(metrics.retry_count));
         self.retry_resource_exhausted_count.add(count(metrics.retry_resource_exhausted_count));
         self.retry_reservation_failure_count.add(count(metrics.retry_reservation_failure_count));
+        self.adaptive_retry_count.add(count(metrics.adaptive_retry_count));
+        self.adaptive_spill_count.add(count(metrics.adaptive_spill_count));
+        self.adaptive_downgrade_count.add(count(metrics.adaptive_downgrade_count));
+        self.adaptive_memory_history_lookup_count.add(count(metrics.adaptive_memory_history_lookup_count));
+        self.adaptive_memory_history_hit_count.add(count(metrics.adaptive_memory_history_hit_count));
+        self.adaptive_memory_history_miss_count.add(count(metrics.adaptive_memory_history_miss_count));
         self.hash_join_build_count.add(count(metrics.hash_join_build_count));
         self.filtered_join_build_count.add(count(metrics.filtered_join_build_count));
         self.hash_join_cache_hits.add(count(metrics.hash_join_cache_hits));

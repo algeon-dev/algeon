@@ -34,7 +34,10 @@ pub use bounded::strict::{
     StrictBoundedPipelineAdmission, compiled_bounded_pipeline_support, compiled_bounded_query_plan_support,
     strict_bounded_pipeline_admission,
 };
-pub use bounded::{AdaptivePipelineAdmission, adaptive_bounded_pipeline_admission};
+pub use bounded::{
+    AdaptivePipelineAdmission, adaptive_bounded_pipeline_admission,
+    adaptive_bounded_pipeline_admission_with_memory_history,
+};
 pub use source::{read_gpu_resident_source, read_local_parquet_source, validate_local_parquet_source};
 pub use types::{
     GpuDataFrame, GpuFilteredJoinBuildHandle, GpuHashJoinBuildCache, GpuHashJoinBuildHandle,

@@ -20,8 +20,8 @@ use datafusion::{
 use datafusion_cudf::{
     CandidateOutcome, CudfNativePhysicalOptimizerRule, CudfOptimizerConfig, ErrorCode, FallbackReason,
     GpuFallbackPolicy, NativeCudfComposedExec, NativeCudfExec, NativeCudfExecutionConfig, NativeCudfGpuProducerExec,
-    STRICT_BOUNDED_NON_JOIN_OUTSIDE_REPORT_SCOPE_REASON, TPCH_QUERIES, cudf_native_physical_optimizer_rules,
-    lower_physical_plan_to_native, write_tiny_tpch_parquet_dataset,
+    NativePipelineExecutionMode, STRICT_BOUNDED_NON_JOIN_OUTSIDE_REPORT_SCOPE_REASON, TPCH_QUERIES,
+    cudf_native_physical_optimizer_rules, lower_physical_plan_to_native, write_tiny_tpch_parquet_dataset,
 };
 
 #[path = "native_exec_tests/bounded_join.rs"]
@@ -54,6 +54,16 @@ fn native_exec_constructs_host_arrow_leaf_with_conservative_properties() {
     assert!(tree.contains("native_nodes=1"));
     assert!(tree.contains("boundary_policy=source_read=direct_device_local_parquet"));
     assert!(tree.contains("output_boundary=device_to_host"));
+}
+
+#[test]
+fn native_exec_display_records_selected_adaptive_pipeline_mode() {
+    let native_plan = host_sink_plan();
+    let config = bounded_config().with_native_pipeline_execution_mode(NativePipelineExecutionMode::Adaptive);
+    let exec = NativeCudfExec::try_new(native_plan, config).unwrap();
+
+    let display = displayable(&exec).one_line().to_string();
+    assert!(display.contains("native_pipeline_execution_mode=adaptive"));
 }
 
 #[test]

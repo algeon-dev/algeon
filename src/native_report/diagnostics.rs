@@ -133,7 +133,7 @@ pub(super) fn unsupported_category(
         | FallbackReason::NativeSourceSchemaMapping => Some("source".to_string()),
         FallbackReason::NativeSortPreservingMergeUnsupported
         | FallbackReason::NativePartitionPreservingSortUnsupported => Some("operator_sort".to_string()),
-        FallbackReason::NativeBoundedJoinUnsupported => {
+        FallbackReason::NativeBoundedJoinUnsupported | FallbackReason::NativeAdaptivePipelineUnsupported => {
             first_join_operator_category(plan).or_else(|| Some("operator_join".to_string()))
         },
         FallbackReason::ExplicitCpuPolicy => None,

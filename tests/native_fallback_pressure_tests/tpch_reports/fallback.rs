@@ -51,7 +51,7 @@ async fn tpch_fallback_pressure_report_emits_one_pre_execution_reject_per_query(
     assert_eq!(q06.native_candidate_shape_family.as_deref(), Some("projected_global_local_parquet_aggregate"));
 
     let text = report.to_tsv();
-    assert!(text.starts_with("# native_fallback_pressure_tsv_schema_version=5\n"));
+    assert!(text.starts_with("# native_fallback_pressure_tsv_schema_version=6\n"));
     assert!(text.contains("# tpch_dataset_scale_factor=tiny\n"));
     assert!(text.contains("# tpch_dataset_provenance=generated_tiny\n"));
     assert!(text.contains("# tpch_dataset_generation_command=datafusion-cudf::write_tiny_tpch_parquet_dataset\n"));

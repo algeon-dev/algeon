@@ -25,8 +25,10 @@ use datafusion::{
 };
 
 use crate::{
-    CandidateOutcome, FallbackReason, NativeCudfComposedExec, NativeCudfExec, NativeCudfGpuProducerExec,
-    lower_physical_plan_to_native, planner::CudfNativePhysicalOptimizerRule, report::GpuCandidate,
+    CandidateOutcome, FallbackReason, NativeCudfComposedExec, NativeCudfExec, NativeCudfExecutionConfig,
+    NativeCudfGpuProducerExec, lower_physical_plan_to_native,
+    planner::CudfNativePhysicalOptimizerRule,
+    report::{GpuCandidate, PlanningReport},
     tpch::TpchDatasetMetadata,
 };
 
@@ -79,40 +81,70 @@ pub use workload::{
     NativeFallbackPressureWorkloadInput, NativeFallbackPressureWorkloadItem, NativePlanningFailure,
 };
 
-fn report_rows_for_item(item: NativeFallbackPressureWorkloadItem) -> Vec<NativeFallbackPressureRow> {
+fn report_rows_for_item(
+    item: NativeFallbackPressureWorkloadItem,
+    execution_config: &NativeCudfExecutionConfig,
+) -> Vec<NativeFallbackPressureRow> {
     match item.input {
-        NativeFallbackPressureWorkloadInput::PhysicalPlan(plan) => report_rows_for_plan(item.query_id, plan),
+        NativeFallbackPressureWorkloadInput::PhysicalPlan(plan) => {
+            report_rows_for_plan(item.query_id, plan, execution_config)
+        },
         NativeFallbackPressureWorkloadInput::PlanningFailure(failure) => {
             vec![report_row_for_planning_failure(item.query_id, failure)]
         },
     }
 }
 
-fn report_rows_for_plan(query_id: String, plan: Arc<dyn ExecutionPlan>) -> Vec<NativeFallbackPressureRow> {
+fn report_rows_for_plan(
+    query_id: String,
+    plan: Arc<dyn ExecutionPlan>,
+    execution_config: &NativeCudfExecutionConfig,
+) -> Vec<NativeFallbackPressureRow> {
     let physical_root = plan.name().to_string();
     let physical_shape = physical_plan_shape(plan.as_ref());
     let join_diagnostics = join_diagnostics(plan.as_ref());
     let source_diagnostics_plan = Arc::clone(&plan);
     let result = lower_physical_plan_to_native(plan);
     let source_diagnostics = result.source_diagnostics.iter().map(summarize_source_diagnostics).collect::<Vec<_>>();
+    let adaptive_pipeline = fallback_pressure_adaptive_pipeline_rows(&result, execution_config);
 
     result
         .report
         .outcomes()
         .iter()
         .map(|outcome| match outcome {
-            CandidateOutcome::Rewritten { candidate } => NativeFallbackPressureRow {
-                query_id: query_id.clone(),
-                physical_root: physical_root.clone(),
-                physical_shape: physical_shape.clone(),
-                native_candidate_shape: Some(candidate.shape.to_string()),
-                native_candidate_shape_family: Some(candidate_shape_family(candidate)),
-                outcome: NativeFallbackPressureOutcome::Rewritten,
-                reason_code: None,
-                unsupported_category: None,
-                join_diagnostics: join_diagnostics.clone(),
-                source_diagnostics: source_diagnostics.clone(),
-                rejected_before_execution: false,
+            CandidateOutcome::Rewritten { candidate } => {
+                let adaptive_pipeline_rows = adaptive_pipeline_rows_for_candidate(&adaptive_pipeline, candidate);
+                let adaptive_rejected = adaptive_pipeline_rows
+                    .iter()
+                    .any(|row| row.candidate_status == cudf_query_engine::AdaptiveCandidateStatus::Rejected);
+                NativeFallbackPressureRow {
+                    query_id: query_id.clone(),
+                    physical_root: physical_root.clone(),
+                    physical_shape: physical_shape.clone(),
+                    native_candidate_shape: Some(candidate.shape.to_string()),
+                    native_candidate_shape_family: Some(candidate_shape_family(candidate)),
+                    outcome: if adaptive_rejected {
+                        NativeFallbackPressureOutcome::Rejected
+                    } else {
+                        NativeFallbackPressureOutcome::Rewritten
+                    },
+                    reason_code: adaptive_rejected
+                        .then(|| FallbackReason::NativeAdaptivePipelineUnsupported.code().to_string()),
+                    unsupported_category: adaptive_rejected
+                        .then(|| {
+                            unsupported_category(
+                                source_diagnostics_plan.as_ref(),
+                                candidate,
+                                FallbackReason::NativeAdaptivePipelineUnsupported,
+                            )
+                        })
+                        .flatten(),
+                    adaptive_pipeline_rows,
+                    join_diagnostics: join_diagnostics.clone(),
+                    source_diagnostics: source_diagnostics.clone(),
+                    rejected_before_execution: adaptive_rejected,
+                }
             },
             CandidateOutcome::Rejected { candidate, reason } => NativeFallbackPressureRow {
                 query_id: query_id.clone(),
@@ -123,6 +155,7 @@ fn report_rows_for_plan(query_id: String, plan: Arc<dyn ExecutionPlan>) -> Vec<N
                 outcome: NativeFallbackPressureOutcome::Rejected,
                 reason_code: Some(reason.code().to_string()),
                 unsupported_category: unsupported_category(source_diagnostics_plan.as_ref(), candidate, *reason),
+                adaptive_pipeline_rows: Vec::new(),
                 join_diagnostics: join_diagnostics.clone(),
                 source_diagnostics: source_diagnostics.clone(),
                 rejected_before_execution: true,
@@ -141,10 +174,43 @@ fn report_row_for_planning_failure(query_id: String, failure: NativePlanningFail
         outcome: NativeFallbackPressureOutcome::Rejected,
         reason_code: Some(failure.reason_code),
         unsupported_category: Some("planning".to_string()),
+        adaptive_pipeline_rows: Vec::new(),
         join_diagnostics: Vec::new(),
         source_diagnostics: Vec::new(),
         rejected_before_execution: true,
     }
+}
+
+fn fallback_pressure_adaptive_pipeline_rows(
+    lowering: &crate::native::NativeLoweringResult,
+    execution_config: &NativeCudfExecutionConfig,
+) -> crate::planner::NativeAdaptivePipelineDiagnostics {
+    if execution_config.native_pipeline_execution_mode() != cudf_query_engine::NativePipelineExecutionMode::Adaptive {
+        return crate::planner::NativeAdaptivePipelineDiagnostics::default();
+    }
+    let Some(plan) = lowering.plans.first() else {
+        return crate::planner::NativeAdaptivePipelineDiagnostics::default();
+    };
+    let Some(candidate) = single_rewritten_candidate(&lowering.report).cloned() else {
+        return crate::planner::NativeAdaptivePipelineDiagnostics::default();
+    };
+    let memory_history = execution_config.adaptive_memory_history();
+    cudf_query_engine::adaptive_bounded_pipeline_admission_with_memory_history(plan, memory_history.as_deref())
+        .ok()
+        .flatten()
+        .map(|admission| {
+            crate::planner::NativeAdaptivePipelineDiagnostics::single(candidate, admission.report().clone())
+        })
+        .unwrap_or_default()
+}
+
+fn single_rewritten_candidate(report: &PlanningReport) -> Option<&GpuCandidate> {
+    let mut rewritten = report.outcomes().iter().filter_map(|outcome| match outcome {
+        CandidateOutcome::Rewritten { candidate } => Some(candidate),
+        CandidateOutcome::Rejected { .. } => None,
+    });
+    let candidate = rewritten.next()?;
+    rewritten.next().is_none().then_some(candidate)
 }
 
 fn datafusion_planning_rows_for_item(item: NativeDataFusionPlanningWorkloadItem) -> Vec<NativeDataFusionPlanningRow> {

@@ -70,6 +70,12 @@ fn native_datafusion_execution_report_records_runtime_boundaries() {
     assert_eq!(row.metrics.retry_count, 3);
     assert_eq!(row.metrics.retry_resource_exhausted_count, 1);
     assert_eq!(row.metrics.retry_reservation_failure_count, 2);
+    assert_eq!(row.metrics.adaptive_retry_count, 10);
+    assert_eq!(row.metrics.adaptive_spill_count, 11);
+    assert_eq!(row.metrics.adaptive_downgrade_count, 12);
+    assert_eq!(row.metrics.adaptive_memory_history_lookup_count, 13);
+    assert_eq!(row.metrics.adaptive_memory_history_hit_count, 8);
+    assert_eq!(row.metrics.adaptive_memory_history_miss_count, 5);
     assert_eq!(row.metrics.hash_join_build_count, 1);
     assert_eq!(row.metrics.filtered_join_build_count, 6);
     assert_eq!(row.metrics.hash_join_cache_hits, 2);
@@ -84,10 +90,10 @@ fn native_datafusion_execution_report_records_runtime_boundaries() {
     assert_eq!(row.metrics.join_gather_map_bytes, 2048);
 
     let text = report.to_tsv();
-    assert_eq!(NATIVE_DATAFUSION_EXECUTION_TSV_SCHEMA_VERSION, 12);
-    assert_eq!(NATIVE_DATAFUSION_EXECUTION_TSV_HEADER.split('\t').count(), 73);
+    assert_eq!(NATIVE_DATAFUSION_EXECUTION_TSV_SCHEMA_VERSION, 13);
+    assert_eq!(NATIVE_DATAFUSION_EXECUTION_TSV_HEADER.split('\t').count(), 79);
     assert!(NATIVE_DATAFUSION_EXECUTION_TSV_HEADER.contains("\tsource_cache_hits\tsource_cache_misses\tsource_cache_inserts\tsource_cache_insert_skipped\tsource_cache_retained_bytes\t"));
-    assert!(text.starts_with("# native_datafusion_execution_tsv_schema_version=12\n"));
+    assert!(text.starts_with("# native_datafusion_execution_tsv_schema_version=13\n"));
     assert!(text.contains(&format!("{NATIVE_DATAFUSION_EXECUTION_TSV_HEADER}\n")));
     assert!(text.contains("execution_mode=strict_bounded"));
     assert!(text.contains("contract_status=modeled"));
@@ -295,6 +301,7 @@ fn adaptive_report_for_projection_test() -> AdaptivePipelineReport {
         &plan,
         AdaptiveCandidateStatus::Admitted,
         AdaptiveStrategy::ConservativeCompiledPipeline,
+        cudf_query_engine::AdaptiveAdmissionRuntimeEvidence::default(),
         None,
     )
     .expect("adaptive projection report should be valid")

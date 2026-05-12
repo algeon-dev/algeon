@@ -9,6 +9,7 @@
 use std::sync::Arc;
 
 use crate::{
+    adaptive_runtime::AdaptiveMemoryHistory,
     error::{QueryError, Result},
     mode::NativePipelineExecutionMode,
 };
@@ -115,6 +116,8 @@ pub struct ExecutionContext {
     source_scheduler_policy: SourceSchedulerPolicy,
     /// Selected native bounded-pipeline execution mode.
     native_pipeline_execution_mode: NativePipelineExecutionMode,
+    /// Optional adaptive-only memory history store.
+    adaptive_memory_history: Option<Arc<AdaptiveMemoryHistory>>,
     /// Optional durable GPU hash-join build cache.
     ///
     /// Required when the boundary policy asks for durable build
@@ -155,6 +158,7 @@ impl ExecutionContext {
             boundary_policy: ExecutionBoundaryPolicy::default(),
             source_scheduler_policy: SourceSchedulerPolicy::default(),
             native_pipeline_execution_mode: NativePipelineExecutionMode::default(),
+            adaptive_memory_history: None,
             hash_join_build_cache: None,
             local_parquet_source_cache: None,
         }
@@ -218,6 +222,11 @@ impl ExecutionContext {
         self.native_pipeline_execution_mode
     }
 
+    /// Returns the adaptive-only memory history store, when configured.
+    pub fn adaptive_memory_history(&self) -> Option<Arc<AdaptiveMemoryHistory>> {
+        self.adaptive_memory_history.as_ref().map(Arc::clone)
+    }
+
     /// Returns the durable GPU hash-join build cache, when configured.
     ///
     /// A clone of the `Arc` is returned so callers can retain the cache without
@@ -255,6 +264,8 @@ pub struct ExecutionContextBuilder {
     source_scheduler_policy: SourceSchedulerPolicy,
     /// Native bounded-pipeline execution mode.
     native_pipeline_execution_mode: NativePipelineExecutionMode,
+    /// Optional adaptive-only memory history store.
+    adaptive_memory_history: Option<Arc<AdaptiveMemoryHistory>>,
     /// Optional durable hash-join build cache.
     hash_join_build_cache: Option<Arc<crate::exec::GpuHashJoinBuildCache>>,
     /// Optional durable local-Parquet source cache.
@@ -330,6 +341,12 @@ impl ExecutionContextBuilder {
         self
     }
 
+    /// Provides the adaptive-only memory history store.
+    pub fn with_adaptive_memory_history(mut self, memory_history: Arc<AdaptiveMemoryHistory>) -> Self {
+        self.adaptive_memory_history = Some(memory_history);
+        self
+    }
+
     /// Provides the cache required by durable GPU hash-join materialization.
     pub fn with_hash_join_build_cache(mut self, cache: Arc<crate::exec::GpuHashJoinBuildCache>) -> Self {
         self.hash_join_build_cache = Some(cache);
@@ -361,6 +378,7 @@ impl ExecutionContextBuilder {
                 boundary_policy: self.boundary_policy,
                 source_scheduler_policy: self.source_scheduler_policy,
                 native_pipeline_execution_mode: self.native_pipeline_execution_mode,
+                adaptive_memory_history: self.adaptive_memory_history,
                 hash_join_build_cache: self.hash_join_build_cache,
                 local_parquet_source_cache: self.local_parquet_source_cache,
             });
@@ -396,6 +414,7 @@ impl ExecutionContextBuilder {
             boundary_policy: self.boundary_policy,
             source_scheduler_policy: self.source_scheduler_policy,
             native_pipeline_execution_mode: self.native_pipeline_execution_mode,
+            adaptive_memory_history: self.adaptive_memory_history,
             hash_join_build_cache: self.hash_join_build_cache,
             local_parquet_source_cache: self.local_parquet_source_cache,
         })

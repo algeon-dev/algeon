@@ -16,11 +16,13 @@ use datafusion::{
 };
 use datafusion_cudf::{
     CudfNativePhysicalOptimizerRule, CudfOptimizerConfig, CudfSessionStateBuilderExt, GpuFallbackPolicy,
-    NativeCudfExecutionConfig, NativeDataFusionPlanningReport, TpchDatasetMetadata, prepare_tpch_report_dataset,
-    tpch_datafusion_planning_workload_items, tpch_report_session_config,
+    NativeCudfExecutionConfig, NativeDataFusionPlanningReport, NativePipelineExecutionMode, TpchDatasetMetadata,
+    prepare_tpch_report_dataset, tpch_datafusion_planning_workload_items_with_optimizer_config,
+    tpch_native_optimizer_config, tpch_report_session_config,
 };
 
 const CUDF_NATIVE_DATAFUSION_PLANNING_WORKLOAD_ENV: &str = "CUDF_NATIVE_DATAFUSION_PLANNING_WORKLOAD";
+const CUDF_NATIVE_PIPELINE_EXECUTION_MODE_ENV: &str = "CUDF_NATIVE_PIPELINE_EXECUTION_MODE";
 
 #[tokio::main]
 async fn main() {
@@ -72,7 +74,14 @@ async fn synthetic_report(dir: &std::path::Path) -> NativeDataFusionPlanningRepo
 
 async fn tpch_report(dir: &std::path::Path) -> datafusion_cudf::TpchWorkloadResult<TpchPlanningReport> {
     let (root, metadata) = prepare_tpch_report_dataset(dir)?;
-    let items = tpch_datafusion_planning_workload_items(&root, tpch_report_session_config()).await?;
+    let optimizer_config =
+        tpch_native_optimizer_config().with_native_pipeline_execution_mode(native_pipeline_execution_mode_from_env());
+    let items = tpch_datafusion_planning_workload_items_with_optimizer_config(
+        &root,
+        tpch_report_session_config(),
+        optimizer_config,
+    )
+    .await?;
     let report = NativeDataFusionPlanningReport::collect(items);
     Ok(TpchPlanningReport { report, metadata })
 }
@@ -96,8 +105,10 @@ async fn native_datafusion_planning_report_with_session(
     sql: &str,
     session_config: SessionConfig,
 ) -> NativeDataFusionPlanningReport {
-    let optimizer_config = CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred)
-        .with_native_execution_config(NativeCudfExecutionConfig::bounded(256 * 1024 * 1024, 64 * 1024 * 1024, 1, 3, 1));
+    let optimizer_config = CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred).with_native_execution_config(
+        NativeCudfExecutionConfig::bounded(256 * 1024 * 1024, 64 * 1024 * 1024, 1, 3, 1)
+            .with_native_pipeline_execution_mode(native_pipeline_execution_mode_from_env()),
+    );
     let native_rule = Arc::new(CudfNativePhysicalOptimizerRule::new(optimizer_config.clone()));
     let state = SessionStateBuilder::new_with_default_features()
         .with_config(session_config)
@@ -108,6 +119,17 @@ async fn native_datafusion_planning_report_with_session(
     let df = ctx.sql(sql).await.unwrap();
     let plan = df.create_physical_plan().await.unwrap();
     NativeDataFusionPlanningReport::from_retained_rule(query_id, plan, native_rule.as_ref())
+}
+
+fn native_pipeline_execution_mode_from_env() -> NativePipelineExecutionMode {
+    let mode = std::env::var(CUDF_NATIVE_PIPELINE_EXECUTION_MODE_ENV)
+        .unwrap_or_else(|_| NativePipelineExecutionMode::StrictBounded.as_str().to_string());
+    mode.parse::<NativePipelineExecutionMode>().unwrap_or_else(|error| {
+        panic!(
+            "unsupported {CUDF_NATIVE_PIPELINE_EXECUTION_MODE_ENV}={}; expected strict_bounded or adaptive",
+            error.value()
+        )
+    })
 }
 
 fn direct_friendly_sql_session_config() -> SessionConfig {

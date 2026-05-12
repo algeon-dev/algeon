@@ -15,6 +15,7 @@ pub(super) struct NativeTpchBenchmarkConfig {
     pub(super) iterations: usize,
     pub(super) dataset_mode: NativeTpchDatasetMode,
     pub(super) native_memory_policy: NativeTpchMemoryPolicy,
+    pub(super) native_pipeline_execution_mode: NativePipelineExecutionMode,
     pub(super) max_source_reads_in_flight: usize,
     pub(super) native_source_cache_policy: NativeTpchSourceCachePolicy,
 }
@@ -33,6 +34,9 @@ impl NativeTpchBenchmarkConfig {
             iterations: env_usize("CUDF_TPCH_BENCH_ITERATIONS", 1)?,
             dataset_mode: NativeTpchDatasetMode::from_env("CUDF_TPCH_BENCH_DATASET_MODE")?,
             native_memory_policy: NativeTpchMemoryPolicy::from_env("CUDF_TPCH_BENCH_NATIVE_MEMORY_POLICY")?,
+            native_pipeline_execution_mode: native_pipeline_execution_mode_from_env(
+                "CUDF_TPCH_BENCH_NATIVE_PIPELINE_EXECUTION_MODE",
+            )?,
             max_source_reads_in_flight: env_usize(
                 "CUDF_TPCH_BENCH_NATIVE_MAX_SOURCE_READS_IN_FLIGHT",
                 DEFAULT_NATIVE_MAX_SOURCE_READS_IN_FLIGHT,
@@ -93,6 +97,7 @@ impl NativeTpchBenchmarkConfig {
         config
             .with_optional_shared_runtime(resources.runtime.clone())
             .with_optional_local_parquet_source_cache(resources.source_cache.clone())
+            .with_native_pipeline_execution_mode(self.native_pipeline_execution_mode)
     }
 
     pub(super) fn new_runtime_resources(&self) -> DataFusionResult<NativeTpchRuntimeResources> {
@@ -118,6 +123,7 @@ impl Default for NativeTpchBenchmarkConfig {
             iterations: 1,
             dataset_mode: NativeTpchDatasetMode::External(NativeTpchScaleFactor::Sf1),
             native_memory_policy: NativeTpchMemoryPolicy::default(),
+            native_pipeline_execution_mode: NativePipelineExecutionMode::default(),
             max_source_reads_in_flight: DEFAULT_NATIVE_MAX_SOURCE_READS_IN_FLIGHT,
             native_source_cache_policy: NativeTpchSourceCachePolicy::Disabled,
         }
@@ -382,6 +388,15 @@ fn env_u64(name: &'static str, default: u64) -> DataFusionResult<u64> {
         return Ok(default);
     };
     value.to_string_lossy().parse::<u64>().map_err(|error| plan_error(format!("invalid {name}: {error}")))
+}
+
+fn native_pipeline_execution_mode_from_env(name: &'static str) -> DataFusionResult<NativePipelineExecutionMode> {
+    let mode = match std::env::var_os(name) {
+        None => "strict_bounded".to_string(),
+        Some(value) => value.to_string_lossy().to_ascii_lowercase(),
+    };
+    mode.parse::<NativePipelineExecutionMode>()
+        .map_err(|error| plan_error(format!("invalid {name}: {}; expected strict_bounded or adaptive", error.value())))
 }
 
 fn validate_nonzero<T>(name: &'static str, value: T) -> DataFusionResult<()>

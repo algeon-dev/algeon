@@ -4,7 +4,7 @@
 //! final result placement. Result placement is represented by `QueryOutputMode`
 //! in the execution layer.
 
-use std::fmt;
+use std::{fmt, str::FromStr};
 
 /// Coarse native pipeline mode selected before admission or execution.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -35,6 +35,37 @@ impl fmt::Display for NativePipelineExecutionMode {
         f.write_str(self.as_str())
     }
 }
+
+impl FromStr for NativePipelineExecutionMode {
+    type Err = NativePipelineExecutionModeParseError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.to_ascii_lowercase().as_str() {
+            "strict_bounded" | "strict" => Ok(Self::StrictBounded),
+            "adaptive" => Ok(Self::Adaptive),
+            other => Err(NativePipelineExecutionModeParseError { value: other.to_string() }),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativePipelineExecutionModeParseError {
+    value: String,
+}
+
+impl NativePipelineExecutionModeParseError {
+    pub fn value(&self) -> &str {
+        &self.value
+    }
+}
+
+impl fmt::Display for NativePipelineExecutionModeParseError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "invalid native pipeline execution mode: {}", self.value)
+    }
+}
+
+impl std::error::Error for NativePipelineExecutionModeParseError {}
 
 /// Strict bounded execution labels used by gate-first contract reports.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

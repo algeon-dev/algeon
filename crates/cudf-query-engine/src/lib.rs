@@ -5,6 +5,7 @@
 //! `datafusion-cudf`.
 
 pub mod adaptive_report;
+pub mod adaptive_runtime;
 pub(crate) mod bounded;
 pub mod capability;
 pub mod chunk;
@@ -21,9 +22,12 @@ pub mod runtime;
 pub mod source;
 
 pub use adaptive_report::{
-    AdaptiveCandidateStatus, AdaptiveFinalSinkBoundary, AdaptiveMemoryHistoryEvidence, AdaptiveMissingStrictContract,
-    AdaptivePipelineReport, AdaptivePipelineReportRow, AdaptiveRuntimeActionCounts, AdaptiveRuntimeActionsAllowed,
-    AdaptiveSinkKind, AdaptiveStrategy,
+    AdaptiveAdmissionRuntimeEvidence, AdaptiveCandidateStatus, AdaptiveFinalSinkBoundary,
+    AdaptiveMemoryHistoryEvidence, AdaptiveMissingStrictContract, AdaptivePipelineReport, AdaptivePipelineReportRow,
+    AdaptiveRuntimeActionCounts, AdaptiveRuntimeActionsAllowed, AdaptiveSinkKind, AdaptiveStrategy,
+};
+pub use adaptive_runtime::{
+    AdaptiveMemoryHistory, AdaptiveMemoryHistoryKey, AdaptiveMemoryHistorySummary, AdaptiveMemoryObservation,
 };
 pub use chunk::{
     SourceChunk, SourceChunkPlan, SourceChunkPlanningPolicy, SourceMetadataCache, plan_local_parquet_source_chunks,
@@ -41,9 +45,9 @@ pub use exec::{
     AdaptivePipelineAdmission, GpuDataFrame, GpuHashJoinBuildCache, GpuHashJoinBuildHandle, GpuLocalParquetSourceCache,
     GpuLocalParquetSourceCacheInsert, GpuLocalParquetSourceCacheKey, GpuResidentInputMap, GpuResultHandle,
     QueryExecutionResult, QueryOutput, QueryOutputMode, StrictBoundedPipelineAdmission,
-    adaptive_bounded_pipeline_admission, execute_query_plan, execute_query_plan_with_gpu_inputs,
-    materialize_gpu_result_to_host, read_gpu_resident_source, read_local_parquet_source,
-    strict_bounded_pipeline_admission, validate_local_parquet_source,
+    adaptive_bounded_pipeline_admission, adaptive_bounded_pipeline_admission_with_memory_history, execute_query_plan,
+    execute_query_plan_with_gpu_inputs, materialize_gpu_result_to_host, read_gpu_resident_source,
+    read_local_parquet_source, strict_bounded_pipeline_admission, validate_local_parquet_source,
 };
 pub use expr::{
     AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, CaseWhen, ColumnQualifier, ColumnRef, DatePart, Expr,

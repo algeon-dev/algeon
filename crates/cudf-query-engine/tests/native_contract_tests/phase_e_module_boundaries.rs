@@ -21,11 +21,15 @@ const SHARED_MODE_AGNOSTIC_ROOTS: &[&str] =
 
 const ADAPTIVE_IMPORT_NEEDLES: &[&str] = &[
     "adaptive_report",
+    "adaptive_runtime",
     "AdaptiveExecutionMode",
+    "AdaptiveMemoryHistory",
     "AdaptivePipeline",
     "NativeAdaptivePipeline",
     "adaptive_bounded_pipeline_admission",
+    "adaptive_bounded_pipeline_admission_with_memory_history",
     "try_execute_adaptive_bounded_pipeline",
+    "with_adaptive_memory_history",
     "bounded::adaptive",
     "super::adaptive",
     "crate::exec::bounded::adaptive",

@@ -1,8 +1,9 @@
 use std::sync::Arc;
 
 use cudf_query_engine::{
-    ExecutionBoundaryPolicy, ExecutionContext, GpuHashJoinBuildCache, GpuLocalParquetSourceCache, MemoryControlPolicy,
-    MemoryResourcePolicy, SourceSchedulerPolicy,
+    AdaptiveMemoryHistory, ExecutionBoundaryPolicy, ExecutionContext, GpuHashJoinBuildCache,
+    GpuLocalParquetSourceCache, MemoryControlPolicy, MemoryResourcePolicy, NativePipelineExecutionMode,
+    SourceSchedulerPolicy,
 };
 
 use crate::error::Error;
@@ -21,6 +22,8 @@ pub struct NativeCudfExecutionConfig {
     memory_control_policy: MemoryControlPolicy,
     boundary_policy: ExecutionBoundaryPolicy,
     source_scheduler_policy: SourceSchedulerPolicy,
+    native_pipeline_execution_mode: NativePipelineExecutionMode,
+    adaptive_memory_history: Option<Arc<AdaptiveMemoryHistory>>,
     hash_join_build_cache: Option<Arc<GpuHashJoinBuildCache>>,
     local_parquet_source_cache: Option<Arc<GpuLocalParquetSourceCache>>,
 }
@@ -35,6 +38,8 @@ impl NativeCudfExecutionConfig {
             memory_control_policy: MemoryControlPolicy::Unbounded,
             boundary_policy: ExecutionBoundaryPolicy::default(),
             source_scheduler_policy: SourceSchedulerPolicy::default(),
+            native_pipeline_execution_mode: NativePipelineExecutionMode::default(),
+            adaptive_memory_history: None,
             hash_join_build_cache: None,
             local_parquet_source_cache: None,
         }
@@ -65,6 +70,8 @@ impl NativeCudfExecutionConfig {
             },
             boundary_policy: ExecutionBoundaryPolicy::default(),
             source_scheduler_policy: SourceSchedulerPolicy::default(),
+            native_pipeline_execution_mode: NativePipelineExecutionMode::default(),
+            adaptive_memory_history: None,
             hash_join_build_cache: None,
             local_parquet_source_cache: None,
         }
@@ -119,6 +126,22 @@ impl NativeCudfExecutionConfig {
         self
     }
 
+    /// Select strict bounded or adaptive native bounded-pipeline execution.
+    pub fn with_native_pipeline_execution_mode(mut self, mode: NativePipelineExecutionMode) -> Self {
+        self.native_pipeline_execution_mode = mode;
+        self
+    }
+
+    /// Attach an adaptive-only memory-history store for adaptive admission/execution.
+    ///
+    /// Strict bounded admission does not read this store. Supplying it while strict mode is selected
+    /// leaves strict reports deterministic and only makes the store available if the mode is later
+    /// changed to adaptive.
+    pub fn with_adaptive_memory_history(mut self, memory_history: Arc<AdaptiveMemoryHistory>) -> Self {
+        self.adaptive_memory_history = Some(memory_history);
+        self
+    }
+
     /// Attach the durable GPU hash-join build cache required by durable build-boundary policy.
     pub fn with_hash_join_build_cache(mut self, cache: Arc<GpuHashJoinBuildCache>) -> Self {
         self.hash_join_build_cache = Some(cache);
@@ -146,6 +169,14 @@ impl NativeCudfExecutionConfig {
         self.source_scheduler_policy
     }
 
+    pub fn native_pipeline_execution_mode(&self) -> NativePipelineExecutionMode {
+        self.native_pipeline_execution_mode
+    }
+
+    pub fn adaptive_memory_history(&self) -> Option<Arc<AdaptiveMemoryHistory>> {
+        self.adaptive_memory_history.as_ref().map(Arc::clone)
+    }
+
     // DataFusion-to-native config boundary. Native context construction and validation errors are
     // converted here into adapter errors before any query execution starts.
     pub(super) fn execution_context(&self) -> crate::error::Result<ExecutionContext> {
@@ -153,7 +184,8 @@ impl NativeCudfExecutionConfig {
             .with_memory_policy(self.memory_resource_policy)
             .with_memory_control_policy(self.memory_control_policy)
             .with_boundary_policy(self.boundary_policy)
-            .with_source_scheduler_policy(self.source_scheduler_policy);
+            .with_source_scheduler_policy(self.source_scheduler_policy)
+            .with_native_pipeline_execution_mode(self.native_pipeline_execution_mode);
         if let Some(runtime) = &self.runtime {
             builder = builder.with_shared_runtime(Arc::clone(runtime));
         }
@@ -165,6 +197,9 @@ impl NativeCudfExecutionConfig {
         }
         if let Some(cache) = &self.local_parquet_source_cache {
             builder = builder.with_local_parquet_source_cache(Arc::clone(cache));
+        }
+        if let Some(memory_history) = &self.adaptive_memory_history {
+            builder = builder.with_adaptive_memory_history(Arc::clone(memory_history));
         }
         builder.build().map_err(|error| {
             Error::from_native(
