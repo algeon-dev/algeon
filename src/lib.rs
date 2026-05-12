@@ -31,10 +31,10 @@ pub use native_report::{
     NativePlanningFailure, NativeSourceDiagnosticSummary,
 };
 pub use planner::{
-    CudfNativePhysicalOptimizerRule, CudfOptimizerConfig, NativePlanningDiagnostics,
-    NativeStrictBoundedAcceptedCandidateDiagnostics, NativeStrictBoundedCompiledGraphDiagnostics,
-    NativeStrictBoundedContractDiagnostics, NativeStrictBoundedRejectedCandidateDiagnostics,
-    STRICT_BOUNDED_NON_JOIN_OUTSIDE_REPORT_SCOPE_REASON,
+    CudfNativePhysicalOptimizerRule, CudfOptimizerConfig, NativeAdaptivePipelineCandidateDiagnostics,
+    NativeAdaptivePipelineDiagnostics, NativePlanningDiagnostics, NativeStrictBoundedAcceptedCandidateDiagnostics,
+    NativeStrictBoundedCompiledGraphDiagnostics, NativeStrictBoundedContractDiagnostics,
+    NativeStrictBoundedRejectedCandidateDiagnostics, STRICT_BOUNDED_NON_JOIN_OUTSIDE_REPORT_SCOPE_REASON,
 };
 pub use policy::{FallbackReason, GpuFallbackPolicy};
 pub use report::{CandidateOutcome, GpuCandidate, PlanningReport};

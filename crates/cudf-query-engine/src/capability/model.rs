@@ -3,21 +3,34 @@ use super::*;
 /// Whether the engine currently proves a bounded contract.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ContractStatus {
+    /// The boundary has an admissible contract for strict bounded execution.
     Modeled,
+    /// The boundary is understood, but a required cudf-rs/libcudf contract is
+    /// not available yet.
     BlockedByLowerLevel,
+    /// The boundary can be decided only after another capability proof lands.
     DeferredUntilPrerequisite,
+    /// The owning node, edge, or invariant failed capability analysis.
     RejectedByCapability,
 }
 
 /// How precise a modeled bounded contract is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ContractQuality {
+    /// A lower layer provides the bytes or bound before the operation runs.
     ExactPreflight,
+    /// Authoritative metadata provides the bound before the operation runs.
     MetadataBound,
+    /// A bounded budget is granted before execution, but exact preflight is
+    /// waiting on a named lower-level API.
     HardBudgetedReportWithUnresolvedPreflight,
+    /// The engine accounts for retained state after a bounded operation runs.
     ObservedRetainedState,
+    /// The query engine owns the ordering guarantee rather than a memory size.
     QueryEngineOwnedOrdering,
+    /// The query engine owns the boundary semantics rather than a lower layer.
     QueryEngineOwnedBoundary,
+    /// The row represents a capability proof failure, not a memory contract.
     CapabilityProof,
 }
 
@@ -57,11 +70,17 @@ impl ReservationRequirementScope {
 /// capability owner that can state it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReservationRequirement {
+    /// The reservation class enforced by runtime accounting.
     pub kind: ReservationKind,
+    /// The most local graph scope that owns this requirement.
     pub scope: ReservationRequirementScope,
+    /// Stable report label for the resource or execution boundary.
     pub memory_boundary: &'static str,
+    /// Stable report label for the lower-level or query-engine contract.
     pub required_contract: &'static str,
+    /// Whether the contract is currently admitted for strict bounded mode.
     pub status: ContractStatus,
+    /// How strong the admitted contract evidence is.
     pub quality: ContractQuality,
 }
 
@@ -153,8 +172,11 @@ pub enum ConstraintScope {
 /// Capability proof result for a node, edge, or invariant.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CapabilityDecision {
+    /// The capability is fully proven at its owning scope.
     Satisfied,
+    /// The capability failed at this scope; facts should name the local cause.
     Rejected { reason: &'static str, facts: BTreeMap<&'static str, String> },
+    /// The capability depends on other graph-scope proofs.
     Conditional { waiting_on: Vec<ConstraintRef> },
 }
 
@@ -181,10 +203,15 @@ impl CapabilityDecision {
 /// Node-local executable capability.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NodeCapability {
+    /// The native plan node this capability describes.
     pub node_id: NodeId,
+    /// The node's operator-level shape, independent of whole-query families.
     pub operator: NodeOperator,
+    /// Whether this node is executable before considering downstream edges.
     pub executable: CapabilityDecision,
+    /// Properties this node makes available to consumers.
     pub produced_properties: Vec<ProducedProperty>,
+    /// Reservations owned by this node itself.
     pub local_requirements: Vec<ReservationRequirement>,
 }
 
@@ -240,12 +267,19 @@ pub enum ProducedProperty {
 /// Producer-consumer capability for one dependency edge.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EdgeContract {
+    /// Producer node for this dependency.
     pub producer: NodeId,
+    /// Consumer node or final sink for this dependency.
     pub consumer: EdgeConsumer,
+    /// Contract classes carried by this producer-consumer relationship.
     pub contract_kinds: Vec<EdgeContractKind>,
+    /// Semantic input slot on the consumer.
     pub input_role: InputRole,
+    /// Producer properties required by the consumer.
     pub required_properties: Vec<RequiredProperty>,
+    /// Reservations owned by this edge boundary.
     pub reservation_requirements: Vec<ReservationRequirement>,
+    /// Whether this edge satisfies its consumer contract.
     pub decision: CapabilityDecision,
 }
 
@@ -318,12 +352,19 @@ impl InvariantId {
 /// A non-local statement that cannot be proven from one node or edge alone.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SubgraphInvariant {
+    /// Stable identifier within this capability analysis result.
     pub invariant_id: InvariantId,
+    /// The kind of non-local graph property being proven.
     pub kind: SubgraphInvariantKind,
+    /// Nodes covered by the invariant.
     pub nodes: Vec<NodeId>,
+    /// Scheduling property required from the compiled pipeline.
     pub required_schedule: ScheduleConstraint,
+    /// Resident resources whose lifetime participates in the proof.
     pub required_resources: Vec<ResidentResource>,
+    /// Reservations owned by this subgraph boundary.
     pub reservation_requirements: Vec<ReservationRequirement>,
+    /// Whether the invariant is satisfied for this graph.
     pub decision: CapabilityDecision,
 }
 
@@ -380,21 +421,39 @@ pub enum CapabilityRejectionOwner {
 }
 
 /// Capability analysis for one lowered native query plan.
+///
+/// The node, edge, and invariant vectors are the primary proof surface.
+/// The `*_admission` decisions are compiled-executor envelope gates derived
+/// from those proofs; they must not become report compatibility families.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CapabilityAnalysis {
+    /// Node-local executable proofs.
     pub nodes: Vec<NodeCapability>,
+    /// Producer-consumer edge proofs.
     pub edges: Vec<EdgeContract>,
+    /// Non-local scheduling, lifetime, and shared-resource proofs.
     pub invariants: Vec<SubgraphInvariant>,
+    /// Flattened reservation requirements used by reports and compiled gates.
     pub requirements: Vec<ReservationRequirement>,
+    /// Strict root-join compiled-envelope admission.
     pub root_join_admission: CapabilityDecision,
+    /// Strict single-join post-root compiled-envelope admission.
     pub single_join_post_root_pipeline_admission: CapabilityDecision,
+    /// Strict closed multi-join compiled-envelope admission.
     pub closed_multi_join_subgraph_admission: CapabilityDecision,
+    /// Strict multi-join aggregate/top-k compiled-envelope admission.
     pub multi_join_aggregate_over_join_subplan_topk_admission: CapabilityDecision,
+    /// Strict mixed keyed/residual resident-aggregate compiled-envelope admission.
     pub mixed_keyed_residual_join_resident_grouped_aggregate_input_admission: CapabilityDecision,
+    /// Strict hash-join resident-aggregate post-join/top-k envelope admission.
     pub hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_admission: CapabilityDecision,
+    /// Strict shared resident-subplan compiled-envelope admission.
     pub keyed_hash_join_resident_subplan_admission: CapabilityDecision,
+    /// Strict keyless conditional input-subplan envelope admission.
     pub keyless_conditional_join_input_subplan_admission: CapabilityDecision,
+    /// Strict keyless aggregate-over-join-inputs envelope admission.
     pub keyless_conditional_join_aggregate_over_join_subplan_inputs_admission: CapabilityDecision,
+    /// Strict multi-join resident aggregate subquery-filter envelope admission.
     pub multi_join_resident_grouped_aggregate_subquery_filter_admission: CapabilityDecision,
 }
 

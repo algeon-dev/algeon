@@ -1,6 +1,6 @@
 use std::fmt::Write;
 
-use cudf_query_engine::StrictBoundedContractGateRow;
+use cudf_query_engine::{AdaptivePipelineReportRow, StrictBoundedContractGateRow};
 use datafusion::physical_plan::metrics::MetricsSet;
 
 use super::*;
@@ -132,6 +132,16 @@ pub(super) fn format_strict_bounded_compiled_graphs(graphs: &[NativeStrictBounde
         );
     }
     output
+}
+
+pub(super) fn format_adaptive_pipeline_rows(rows: &[AdaptivePipelineReportRow]) -> String {
+    if rows.is_empty() {
+        return "none".to_string();
+    }
+
+    let mut rows = rows.iter().collect::<Vec<_>>();
+    rows.sort_by_key(|row| row.to_stable_kv_row());
+    rows.iter().map(|row| stable_tsv_field(&row.to_stable_kv_row())).collect::<Vec<_>>().join("|")
 }
 
 pub(super) fn write_tpch_dataset_metadata(output: &mut String, metadata: Option<&TpchDatasetMetadata>) {

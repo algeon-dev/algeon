@@ -16,11 +16,15 @@ use crate::{
 #[doc(hidden)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CompiledBoundedPipelineSupport {
+    /// The graph is capability-admitted but outside the strict compiled
+    /// executor envelope.
     Unsupported,
+    /// The graph is inside the strict compiled executor envelope.
     Supported,
 }
 
 #[doc(hidden)]
+/// Checks compiled graph shape only; it does not perform capability admission.
 pub fn compiled_bounded_pipeline_support(pipeline: &CompiledPipeline) -> Result<CompiledBoundedPipelineSupport> {
     pipeline.validate()?;
 
@@ -87,6 +91,7 @@ pub fn compiled_bounded_pipeline_support(pipeline: &CompiledPipeline) -> Result<
 }
 
 #[doc(hidden)]
+/// Checks graph shape plus plan-node compatibility for strict compiled execution.
 pub fn compiled_bounded_query_plan_support(
     plan: &QueryPlan,
     pipeline: &CompiledPipeline,

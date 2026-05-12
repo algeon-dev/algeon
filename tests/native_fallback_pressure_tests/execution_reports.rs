@@ -84,10 +84,10 @@ fn native_datafusion_execution_report_records_runtime_boundaries() {
     assert_eq!(row.metrics.join_gather_map_bytes, 2048);
 
     let text = report.to_tsv();
-    assert_eq!(NATIVE_DATAFUSION_EXECUTION_TSV_SCHEMA_VERSION, 11);
-    assert_eq!(NATIVE_DATAFUSION_EXECUTION_TSV_HEADER.split('\t').count(), 72);
+    assert_eq!(NATIVE_DATAFUSION_EXECUTION_TSV_SCHEMA_VERSION, 12);
+    assert_eq!(NATIVE_DATAFUSION_EXECUTION_TSV_HEADER.split('\t').count(), 73);
     assert!(NATIVE_DATAFUSION_EXECUTION_TSV_HEADER.contains("\tsource_cache_hits\tsource_cache_misses\tsource_cache_inserts\tsource_cache_insert_skipped\tsource_cache_retained_bytes\t"));
-    assert!(text.starts_with("# native_datafusion_execution_tsv_schema_version=11\n"));
+    assert!(text.starts_with("# native_datafusion_execution_tsv_schema_version=12\n"));
     assert!(text.contains(&format!("{NATIVE_DATAFUSION_EXECUTION_TSV_HEADER}\n")));
     assert!(text.contains("execution_mode=strict_bounded"));
     assert!(text.contains("contract_status=modeled"));
@@ -136,6 +136,7 @@ fn native_datafusion_reports_scope_strict_contract_rows_to_join_candidates() {
         report,
         source_diagnostics: Vec::new(),
         strict_bounded_contract: accepted_strict_bounded_contract_diagnostics(),
+        adaptive_pipeline: Default::default(),
     };
     let planning = NativeDataFusionPlanningReport::collect([NativeDataFusionPlanningWorkloadItem::new(
         "mixed",
@@ -206,6 +207,7 @@ fn native_datafusion_reports_keep_multiple_accepted_join_candidates_separated() 
             non_join_bounded_plan_count: 0,
             non_join_bounded_plan_reason: None,
         },
+        adaptive_pipeline: Default::default(),
     };
 
     let planning = NativeDataFusionPlanningReport::collect([NativeDataFusionPlanningWorkloadItem::new(
@@ -237,6 +239,65 @@ fn native_datafusion_reports_keep_multiple_accepted_join_candidates_separated() 
         StrictBoundedContractGateId::Compiled(ReservationGateId::new(22))
     );
     assert_eq!(second_row.strict_bounded_compiled_graphs[0].task_count, 22);
+}
+
+#[test]
+fn native_datafusion_reports_project_adaptive_rows_without_strict_contract_rows() {
+    let candidate = GpuCandidate::new("HashJoinExec(LocalParquetScan,LocalParquetScan)", 1);
+    let mut report = PlanningReport::new();
+    report.push_rewritten(candidate.clone());
+    let diagnostics = NativePlanningDiagnostics {
+        input_plan_root: "HashJoinExec".to_string(),
+        input_plan_shape: "HashJoinExec(LocalParquetScan,LocalParquetScan)".to_string(),
+        report,
+        source_diagnostics: Vec::new(),
+        strict_bounded_contract: NativeStrictBoundedContractDiagnostics::default(),
+        adaptive_pipeline: NativeAdaptivePipelineDiagnostics {
+            candidates: vec![NativeAdaptivePipelineCandidateDiagnostics {
+                candidate,
+                report: adaptive_report_for_projection_test(),
+            }],
+        },
+    };
+
+    let planning = NativeDataFusionPlanningReport::collect([NativeDataFusionPlanningWorkloadItem::new(
+        "adaptive",
+        native_exec_leaf_for_report(),
+        diagnostics,
+    )]);
+    let row = &planning.rows[0];
+    assert!(row.strict_bounded_contract_rows.is_empty());
+    assert!(row.strict_bounded_compiled_graphs.is_empty());
+    assert_eq!(row.adaptive_pipeline_rows.len(), 1);
+
+    let rendered = row.adaptive_pipeline_rows[0].to_stable_kv_row();
+    assert!(rendered.contains("execution_mode=adaptive"));
+    assert!(!rendered.contains("execution_mode=strict_bounded"));
+
+    let text = planning.to_tsv();
+    assert!(text.contains("adaptive_pipeline_rows"));
+    assert!(text.contains("execution_mode=adaptive"));
+    assert!(!text.contains("execution_mode=strict_bounded"));
+}
+
+fn adaptive_report_for_projection_test() -> AdaptivePipelineReport {
+    let schema = Arc::new(Schema::new(vec![Field::new("key", DataType::Int32, false)]));
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+        "/tmp/native-adaptive-report-source-not-read.parquet",
+        schema,
+        vec!["key".to_string()],
+    )));
+    let plan = builder.finish_with_host_sink(source);
+    let analysis = plan.capability_analysis();
+    AdaptivePipelineReport::from_admission_parts(
+        &analysis,
+        &plan,
+        AdaptiveCandidateStatus::Admitted,
+        AdaptiveStrategy::ConservativeCompiledPipeline,
+        None,
+    )
+    .expect("adaptive projection report should be valid")
 }
 
 fn accepted_candidate_contract_entry(

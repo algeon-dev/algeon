@@ -1,7 +1,7 @@
 use cudf_query_engine::{
     CompiledPipeline, QueryPlan, StrictBoundedContractGateRow, StrictBoundedContractReport,
     capability::{CapabilityAnalysis, ContractStatus},
-    compile_pipeline,
+    strict_bounded_pipeline_admission,
 };
 use datafusion::common::{DataFusionError, Result as DataFusionResult};
 
@@ -10,11 +10,19 @@ use crate::{error::Error, native_exec::NativeCudfExecutionConfig, report::GpuCan
 pub const STRICT_BOUNDED_NON_JOIN_OUTSIDE_REPORT_SCOPE_REASON: &str =
     "strict_bounded_contract_report_scope_is_compiled_join_pipeline";
 
+/// Adapter-side strict bounded contract diagnostics collected during planning.
+///
+/// This is a projection of native-engine contract reports for DataFusion report
+/// rows. It does not perform admission or pipeline scheduling itself.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct NativeStrictBoundedContractDiagnostics {
+    /// Candidates accepted by the optimizer with strict gate rows attached.
     pub accepted_candidates: Vec<NativeStrictBoundedAcceptedCandidateDiagnostics>,
+    /// Candidates rejected before execution with their first blocking gate.
     pub rejected_candidates: Vec<NativeStrictBoundedRejectedCandidateDiagnostics>,
+    /// Bounded non-join plans seen while strict reports cover compiled joins.
     pub non_join_bounded_plan_count: usize,
+    /// Stable reason explaining why non-join bounded plans lack gate rows.
     pub non_join_bounded_plan_reason: Option<String>,
 }
 
@@ -35,27 +43,42 @@ impl NativeStrictBoundedContractDiagnostics {
     }
 }
 
+/// Strict bounded report and compiled graph facts for an accepted candidate.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativeStrictBoundedAcceptedCandidateDiagnostics {
+    /// Optimizer candidate that produced these diagnostics.
     pub candidate: GpuCandidate,
+    /// Gate-first strict bounded contract report.
     pub report: StrictBoundedContractReport,
+    /// Graph-size diagnostics for the compiled pipeline.
     pub compiled_graph: NativeStrictBoundedCompiledGraphDiagnostics,
 }
 
+/// First strict bounded gate that blocked a rejected candidate.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativeStrictBoundedRejectedCandidateDiagnostics {
+    /// Optimizer candidate that was rejected.
     pub candidate: GpuCandidate,
+    /// First non-modeled contract row from capability analysis.
     pub blocking_contract: StrictBoundedContractGateRow,
 }
 
+/// Report-facing graph summary for a compiled strict bounded pipeline.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativeStrictBoundedCompiledGraphDiagnostics {
+    /// Number of compiled tasks.
     pub task_count: usize,
+    /// Number of compiled dependency edges.
     pub edge_count: usize,
+    /// Number of compiled barriers.
     pub barrier_count: usize,
+    /// Number of resident resources tracked by the graph.
     pub resource_count: usize,
+    /// Number of reservation gates attached to the graph.
     pub gate_count: usize,
+    /// Final sink boundary kind.
     pub sink_kind: String,
+    /// Reservation gates owned by the sink boundary.
     pub sink_gate_count: usize,
 }
 
@@ -85,15 +108,16 @@ pub(super) fn accepted_plan_contract_diagnostics(
         return Ok(non_join_bounded_diagnostics());
     }
 
-    let analysis = plan.capability_analysis();
-    let pipeline = compile_pipeline(plan, &analysis).map_err(strict_bounded_report_error)?;
-    let report = StrictBoundedContractReport::from_compiled_pipeline(&analysis, &pipeline)
+    let admission = strict_bounded_pipeline_admission(plan)
+        .map_err(strict_bounded_report_error)?
+        .ok_or_else(|| strict_bounded_candidate_error("strict bounded rewrite has no strict admission evidence"))?;
+    let report = StrictBoundedContractReport::from_compiled_pipeline(admission.analysis(), admission.pipeline())
         .map_err(strict_bounded_report_error)?;
     Ok(NativeStrictBoundedContractDiagnostics {
         accepted_candidates: vec![NativeStrictBoundedAcceptedCandidateDiagnostics {
             candidate,
             report,
-            compiled_graph: NativeStrictBoundedCompiledGraphDiagnostics::from_pipeline(&pipeline),
+            compiled_graph: NativeStrictBoundedCompiledGraphDiagnostics::from_pipeline(admission.pipeline()),
         }],
         rejected_candidates: Vec::new(),
         non_join_bounded_plan_count: 0,
@@ -146,6 +170,15 @@ fn strict_bounded_report_error(error: cudf_query_engine::QueryError) -> DataFusi
         "datafusion_cudf.native.strict_bounded_contract_diagnostics",
         "strict bounded contract diagnostics could not be built",
         error,
+    )
+    .into()
+}
+
+fn strict_bounded_candidate_error(message: &'static str) -> DataFusionError {
+    Error::new(
+        crate::error::ErrorCode::InvalidExecutionPlan,
+        "datafusion_cudf.native.strict_bounded_contract_diagnostics",
+        message,
     )
     .into()
 }

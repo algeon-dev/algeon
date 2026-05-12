@@ -22,16 +22,23 @@ use crate::{
 pub type GpuResidentInputMap = BTreeMap<String, GpuResultHandle>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum ExecutionMode {
+pub enum QueryOutputMode {
     GpuResident,
     MaterializeToHost,
 }
 
-impl ExecutionMode {
+impl QueryOutputMode {
     pub fn for_sink(sink: &ResultSink) -> Self {
         match sink {
             ResultSink::GpuResident { .. } => Self::GpuResident,
             ResultSink::HostArrow { .. } => Self::MaterializeToHost,
+        }
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::GpuResident => "gpu_resident",
+            Self::MaterializeToHost => "materialize_to_host",
         }
     }
 }
@@ -955,10 +962,10 @@ pub enum QueryOutput {
 }
 
 impl QueryOutput {
-    pub fn mode(&self) -> ExecutionMode {
+    pub fn mode(&self) -> QueryOutputMode {
         match self {
-            Self::GpuResident(_) => ExecutionMode::GpuResident,
-            Self::HostArrow(_) => ExecutionMode::MaterializeToHost,
+            Self::GpuResident(_) => QueryOutputMode::GpuResident,
+            Self::HostArrow(_) => QueryOutputMode::MaterializeToHost,
         }
     }
 

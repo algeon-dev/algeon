@@ -50,6 +50,7 @@ pub(super) fn accepted_native_diagnostics() -> NativePlanningDiagnostics {
         report,
         source_diagnostics: Vec::new(),
         strict_bounded_contract: Default::default(),
+        adaptive_pipeline: Default::default(),
     }
 }
 
@@ -65,6 +66,7 @@ pub(super) fn accepted_bounded_join_native_diagnostics() -> NativePlanningDiagno
         report,
         source_diagnostics: Vec::new(),
         strict_bounded_contract: accepted_strict_bounded_contract_diagnostics(),
+        adaptive_pipeline: Default::default(),
     };
     diagnostics
 }
@@ -81,6 +83,7 @@ pub(super) fn rejected_native_diagnostics() -> NativePlanningDiagnostics {
         report,
         source_diagnostics: Vec::new(),
         strict_bounded_contract: rejected_strict_bounded_contract_diagnostics(),
+        adaptive_pipeline: Default::default(),
     }
 }
 

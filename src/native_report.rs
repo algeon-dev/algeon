@@ -1,7 +1,8 @@
 use std::{fmt::Write, sync::Arc};
 
 use cudf_query_engine::{
-    SourceDiagnostics as NativeSourceDiagnostics, StrictBoundedContractGateRow, is_supported_arrow_type,
+    AdaptivePipelineReportRow, SourceDiagnostics as NativeSourceDiagnostics, StrictBoundedContractGateRow,
+    is_supported_arrow_type,
 };
 use datafusion::{
     common::ScalarValue,
@@ -68,8 +69,9 @@ pub use schema::{
     NATIVE_FALLBACK_PRESSURE_TSV_SCHEMA_VERSION,
 };
 use tsv::{
-    format_join_diagnostics, format_source_diagnostics, format_strict_bounded_compiled_graphs,
-    format_strict_bounded_contract_rows, stable_tsv_field, write_tpch_dataset_metadata,
+    format_adaptive_pipeline_rows, format_join_diagnostics, format_source_diagnostics,
+    format_strict_bounded_compiled_graphs, format_strict_bounded_contract_rows, stable_tsv_field,
+    write_tpch_dataset_metadata,
 };
 pub use workload::{
     NativeDataFusionExecutionWorkloadInput, NativeDataFusionExecutionWorkloadItem,
@@ -184,6 +186,10 @@ fn datafusion_planning_rows_for_item(item: NativeDataFusionPlanningWorkloadItem)
                     candidate,
                     None,
                 ),
+                adaptive_pipeline_rows: adaptive_pipeline_rows_for_candidate(
+                    &native_diagnostics.adaptive_pipeline,
+                    candidate,
+                ),
                 join_diagnostics: join_diagnostics.clone(),
                 source_diagnostics: source_diagnostics.clone(),
                 post_native_plan_root: post_native_plan_root.clone(),
@@ -208,6 +214,10 @@ fn datafusion_planning_rows_for_item(item: NativeDataFusionPlanningWorkloadItem)
                     &native_diagnostics.strict_bounded_contract,
                     candidate,
                     Some(*reason),
+                ),
+                adaptive_pipeline_rows: adaptive_pipeline_rows_for_candidate(
+                    &native_diagnostics.adaptive_pipeline,
+                    candidate,
                 ),
                 join_diagnostics: join_diagnostics.clone(),
                 source_diagnostics: source_diagnostics.clone(),
@@ -260,6 +270,10 @@ fn datafusion_execution_rows_for_item(
                     candidate,
                     None,
                 ),
+                adaptive_pipeline_rows: adaptive_pipeline_rows_for_candidate(
+                    &native_diagnostics.adaptive_pipeline,
+                    candidate,
+                ),
                 source_diagnostics: source_diagnostics.clone(),
                 post_native_plan_root: post_native_plan_root.clone(),
                 post_native_execution_path,
@@ -290,6 +304,10 @@ fn datafusion_execution_rows_for_item(
                     &native_diagnostics.strict_bounded_contract,
                     candidate,
                     Some(*reason),
+                ),
+                adaptive_pipeline_rows: adaptive_pipeline_rows_for_candidate(
+                    &native_diagnostics.adaptive_pipeline,
+                    candidate,
                 ),
                 source_diagnostics: source_diagnostics.clone(),
                 post_native_plan_root: post_native_plan_root.clone(),
@@ -322,6 +340,7 @@ fn datafusion_planning_row_for_planning_failure(
         unsupported_category: Some("planning".to_string()),
         strict_bounded_contract_rows: Vec::new(),
         strict_bounded_compiled_graphs: Vec::new(),
+        adaptive_pipeline_rows: Vec::new(),
         join_diagnostics: Vec::new(),
         source_diagnostics: Vec::new(),
         post_native_plan_root: "PlanningFailure".to_string(),
@@ -345,6 +364,7 @@ fn datafusion_execution_row_for_planning_failure(
         unsupported_category: Some("planning".to_string()),
         strict_bounded_contract_rows: Vec::new(),
         strict_bounded_compiled_graphs: Vec::new(),
+        adaptive_pipeline_rows: Vec::new(),
         source_diagnostics: Vec::new(),
         post_native_plan_root: "PlanningFailure".to_string(),
         post_native_execution_path: NativeDataFusionPostNativeExecutionPath::Cpu,
@@ -398,6 +418,13 @@ fn strict_bounded_compiled_graphs_for_candidate(
         .filter(|entry| entry.candidate == *candidate)
         .map(|entry| entry.compiled_graph.clone())
         .collect()
+}
+
+fn adaptive_pipeline_rows_for_candidate(
+    diagnostics: &crate::planner::NativeAdaptivePipelineDiagnostics,
+    candidate: &GpuCandidate,
+) -> Vec<AdaptivePipelineReportRow> {
+    diagnostics.rows_for_candidate(candidate)
 }
 
 fn strict_bounded_contract_is_candidate_scoped(candidate: &GpuCandidate, reason: Option<FallbackReason>) -> bool {

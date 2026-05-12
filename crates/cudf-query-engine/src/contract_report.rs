@@ -6,6 +6,7 @@
 
 use std::fmt;
 
+pub use crate::mode::StrictBoundedExecutionMode;
 use crate::{
     capability::{
         CapabilityAnalysis, CapabilityRejectionOwner, CapabilityRejectionProjection, ContractQuality, ContractStatus,
@@ -18,27 +19,10 @@ use crate::{
     runtime::ReservationKind,
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum StrictBoundedExecutionMode {
-    StrictBounded,
-    UnsupportedStrictBounded,
-}
-
-impl StrictBoundedExecutionMode {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::StrictBounded => "strict_bounded",
-            Self::UnsupportedStrictBounded => "unsupported_strict_bounded",
-        }
-    }
-}
-
-impl fmt::Display for StrictBoundedExecutionMode {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
-
+/// Gate-first report for strict bounded contract readiness.
+///
+/// A report is strict-only: adaptive retry, spill, downgrade, or memory-history
+/// evidence must use a different report surface and execution mode.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StrictBoundedContractReport {
     execution_mode: StrictBoundedExecutionMode,
@@ -181,17 +165,28 @@ impl StrictBoundedContractReport {
     }
 }
 
+/// One stable row describing a strict bounded reservation or capability gate.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StrictBoundedContractGateRow {
+    /// Strict bounded readiness label for this row.
     pub execution_mode: StrictBoundedExecutionMode,
+    /// Most local graph scope that owns the gate.
     pub contract_scope: ReservationRequirementScope,
+    /// Stable row id from either a compiled gate or capability requirement.
     pub gate_id: StrictBoundedContractGateId,
+    /// Graph object that owns the gate.
     pub owner: StrictBoundedContractOwner,
+    /// Runtime reservation class.
     pub reservation_kind: ReservationKind,
+    /// Stable report label for the resource or execution boundary.
     pub memory_boundary: &'static str,
+    /// Stable report label for the required lower-level or query-engine contract.
     pub required_contract: &'static str,
+    /// Whether the gate is modeled, blocked, deferred, or rejected.
     pub contract_status: ContractStatus,
+    /// Quality of the evidence backing a modeled gate.
     pub contract_quality: ContractQuality,
+    /// Named cudf-rs/libcudf gap when quality is unresolved preflight.
     pub unresolved_preflight_gap: Option<&'static str>,
 }
 
@@ -274,9 +269,12 @@ impl fmt::Display for StrictBoundedContractGateRow {
     }
 }
 
+/// Stable identifier for a strict bounded contract report row.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum StrictBoundedContractGateId {
+    /// Row comes from a reservation gate in a compiled pipeline graph.
     Compiled(ReservationGateId),
+    /// Row comes from a capability requirement before graph compilation.
     CapabilityRequirement { scope: ReservationRequirementScope, index: usize },
 }
 
@@ -291,12 +289,18 @@ impl fmt::Display for StrictBoundedContractGateId {
     }
 }
 
+/// Report-facing owner for a strict bounded contract gate.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum StrictBoundedContractOwner {
+    /// Gate owner from a compiled pipeline graph.
     Compiled(ReservationGateOwner),
+    /// Node-local capability owner.
     CapabilityNode(NodeId),
+    /// Producer-consumer capability owner.
     CapabilityEdge { producer: NodeId, consumer: EdgeConsumer },
+    /// Subgraph invariant capability owner.
     CapabilitySubgraph(InvariantId),
+    /// Whole-analysis admission owner used only for fallback projection.
     CapabilityAdmission(&'static str),
 }
 

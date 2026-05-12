@@ -1,7 +1,9 @@
 use super::*;
 
+mod adaptive;
 mod strict_bounded;
 
+pub use adaptive::{NativeAdaptivePipelineCandidateDiagnostics, NativeAdaptivePipelineDiagnostics};
 pub use strict_bounded::{
     NativeStrictBoundedAcceptedCandidateDiagnostics, NativeStrictBoundedCompiledGraphDiagnostics,
     NativeStrictBoundedContractDiagnostics, NativeStrictBoundedRejectedCandidateDiagnostics,
@@ -16,6 +18,7 @@ pub struct NativePlanningDiagnostics {
     pub report: PlanningReport,
     pub source_diagnostics: Vec<cudf_query_engine::SourceDiagnostics>,
     pub strict_bounded_contract: NativeStrictBoundedContractDiagnostics,
+    pub adaptive_pipeline: NativeAdaptivePipelineDiagnostics,
 }
 
 #[derive(Debug)]
@@ -32,6 +35,7 @@ struct CudfNativePhysicalOptimizerRuleState {
     last_report: Mutex<Option<PlanningReport>>,
     last_source_diagnostics: Mutex<Vec<cudf_query_engine::SourceDiagnostics>>,
     last_strict_bounded_contract: Mutex<NativeStrictBoundedContractDiagnostics>,
+    last_adaptive_pipeline: Mutex<NativeAdaptivePipelineDiagnostics>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,6 +55,7 @@ impl CudfNativePhysicalOptimizerRule {
                 last_report: Mutex::new(None),
                 last_source_diagnostics: Mutex::new(Vec::new()),
                 last_strict_bounded_contract: Mutex::new(NativeStrictBoundedContractDiagnostics::default()),
+                last_adaptive_pipeline: Mutex::new(NativeAdaptivePipelineDiagnostics::default()),
             }),
         }
     }
@@ -99,6 +104,12 @@ impl CudfNativePhysicalOptimizerRule {
                 .lock()
                 .expect("native strict bounded contract diagnostics mutex poisoned")
                 .clone(),
+            adaptive_pipeline: self
+                .state
+                .last_adaptive_pipeline
+                .lock()
+                .expect("native adaptive pipeline diagnostics mutex poisoned")
+                .clone(),
         })
     }
 }
@@ -139,6 +150,8 @@ impl PhysicalOptimizerRule for CudfNativePhysicalOptimizerRule {
             .lock()
             .expect("native strict bounded contract diagnostics mutex poisoned") =
             optimized.strict_bounded_contract.clone();
+        *self.state.last_adaptive_pipeline.lock().expect("native adaptive pipeline diagnostics mutex poisoned") =
+            optimized.adaptive_pipeline.clone();
         Ok(optimized.plan)
     }
 
@@ -166,6 +179,7 @@ fn apply_native_fallback_policy(
             report: native_cpu_only_report(&attempt.report),
             source_diagnostics: attempt.source_diagnostics,
             strict_bounded_contract: NativeStrictBoundedContractDiagnostics::default(),
+            adaptive_pipeline: NativeAdaptivePipelineDiagnostics::default(),
             rewritten: false,
         }),
         GpuFallbackPolicy::GpuOnly => {
@@ -198,6 +212,7 @@ struct NativeOptimizationAttempt {
     report: PlanningReport,
     source_diagnostics: Vec<cudf_query_engine::SourceDiagnostics>,
     strict_bounded_contract: NativeStrictBoundedContractDiagnostics,
+    adaptive_pipeline: NativeAdaptivePipelineDiagnostics,
     rewritten: bool,
 }
 
@@ -222,12 +237,14 @@ fn optimize_final_native_plan(
     let mut report = lowering.report.clone();
     let mut source_diagnostics = lowering.source_diagnostics.clone();
     let mut strict_bounded_contract = NativeStrictBoundedContractDiagnostics::default();
+    let mut adaptive_pipeline = NativeAdaptivePipelineDiagnostics::default();
     let Some(rewritten_plan) = optimize_native_children_for_host_arrow_boundary(
         Arc::clone(&plan),
         native_execution_config,
         &mut report,
         &mut source_diagnostics,
         &mut strict_bounded_contract,
+        &mut adaptive_pipeline,
     )?
     else {
         return Ok(NativeOptimizationAttempt {
@@ -235,6 +252,7 @@ fn optimize_final_native_plan(
             report,
             source_diagnostics,
             strict_bounded_contract,
+            adaptive_pipeline,
             rewritten: false,
         });
     };
@@ -244,6 +262,7 @@ fn optimize_final_native_plan(
         report,
         source_diagnostics,
         strict_bounded_contract,
+        adaptive_pipeline,
         rewritten: true,
     })
 }
@@ -259,6 +278,7 @@ fn replace_lowered_root_or_keep_plan(
             report: lowering.report,
             source_diagnostics: lowering.source_diagnostics,
             strict_bounded_contract: NativeStrictBoundedContractDiagnostics::default(),
+            adaptive_pipeline: NativeAdaptivePipelineDiagnostics::default(),
             rewritten: false,
         });
     }
@@ -276,6 +296,7 @@ fn replace_lowered_root_or_keep_plan(
                 candidate,
                 native_execution_config,
             )?,
+            adaptive_pipeline: NativeAdaptivePipelineDiagnostics::default(),
             rewritten: false,
         });
     }
@@ -293,6 +314,7 @@ fn replace_lowered_root_or_keep_plan(
         report: lowering.report,
         source_diagnostics: lowering.source_diagnostics,
         strict_bounded_contract,
+        adaptive_pipeline: NativeAdaptivePipelineDiagnostics::default(),
         rewritten: true,
     })
 }
@@ -303,6 +325,7 @@ fn optimize_native_children_for_host_arrow_boundary(
     report: &mut PlanningReport,
     source_diagnostics: &mut Vec<cudf_query_engine::SourceDiagnostics>,
     strict_bounded_contract: &mut NativeStrictBoundedContractDiagnostics,
+    adaptive_pipeline: &mut NativeAdaptivePipelineDiagnostics,
 ) -> DataFusionResult<Option<Arc<dyn ExecutionPlan>>> {
     if !host_arrow_boundary_allows_child_replacement(plan.as_ref()) {
         return Ok(None);
@@ -323,6 +346,7 @@ fn optimize_native_children_for_host_arrow_boundary(
         child_reports.push(attempt.report);
         child_source_diagnostics.extend(attempt.source_diagnostics);
         strict_bounded_contract.merge(attempt.strict_bounded_contract);
+        adaptive_pipeline.merge(attempt.adaptive_pipeline);
         new_children.push(attempt.plan);
     }
 

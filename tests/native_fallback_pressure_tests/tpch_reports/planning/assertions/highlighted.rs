@@ -75,12 +75,12 @@ pub(super) fn assert_highlighted_planning_rows_and_tsv(
     assert!(rejected_query_ids.is_empty(), "all TPC-H planning rows should now be native-admitted");
 
     let text = report.to_tsv();
-    assert!(text.starts_with("# native_datafusion_planning_tsv_schema_version=7\n"));
+    assert!(text.starts_with("# native_datafusion_planning_tsv_schema_version=8\n"));
     assert!(text.contains("# tpch_dataset_scale_factor=tiny\n"));
     assert!(text.contains(&format!("# tpch_dataset_metadata_fingerprint={metadata_fingerprint}\n")));
     assert!(text.contains("# tpch_dataset_content_fingerprint=not_computed\n"));
     assert!(text.contains(&format!("{NATIVE_DATAFUSION_PLANNING_TSV_HEADER}\n")));
-    assert!(text.contains("strict_bounded_contract_rows\tstrict_bounded_compiled_graphs"));
+    assert!(text.contains("strict_bounded_contract_rows\tstrict_bounded_compiled_graphs\tadaptive_pipeline_rows"));
     assert!(text.contains("execution_mode=strict_bounded"));
     assert!(text.contains("contract_status=modeled"));
     assert!(text.contains("contract_quality="));

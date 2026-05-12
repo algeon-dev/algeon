@@ -23,7 +23,8 @@ use crate::{
 mod native;
 
 pub use native::{
-    CudfNativePhysicalOptimizerRule, NativePlanningDiagnostics, NativeStrictBoundedAcceptedCandidateDiagnostics,
+    CudfNativePhysicalOptimizerRule, NativeAdaptivePipelineCandidateDiagnostics, NativeAdaptivePipelineDiagnostics,
+    NativePlanningDiagnostics, NativeStrictBoundedAcceptedCandidateDiagnostics,
     NativeStrictBoundedCompiledGraphDiagnostics, NativeStrictBoundedContractDiagnostics,
     NativeStrictBoundedRejectedCandidateDiagnostics, STRICT_BOUNDED_NON_JOIN_OUTSIDE_REPORT_SCOPE_REASON,
 };
