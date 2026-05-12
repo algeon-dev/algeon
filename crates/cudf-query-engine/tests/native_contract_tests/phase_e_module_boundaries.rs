@@ -7,7 +7,30 @@ use std::{
 const STRICT_BOUNDED_MODULES: &[&str] = &["strict"];
 const ADAPTIVE_BOUNDED_MODULES: &[&str] = &["adaptive"];
 const SHARED_BOUNDED_RUNTIME_MODULES: &[&str] =
-    &["aggregate", "chunks", "compiled", "facts", "final_sort", "join", "multi_join", "pipeline", "reservation"];
+    &["aggregate", "chunks", "compiled", "facts", "final_sort", "join", "reservation"];
+
+const RETIRED_TOPOLOGY_EXECUTOR_BRIDGES: &[&str] = &[
+    "crates/cudf-query-engine/src/exec/bounded/pipeline.rs",
+    "crates/cudf-query-engine/src/exec/bounded/pipeline",
+    "crates/cudf-query-engine/src/exec/bounded/multi_join.rs",
+    "crates/cudf-query-engine/src/exec/bounded/join/filtered.rs",
+    "crates/cudf-query-engine/src/exec/bounded/join/keyless.rs",
+    "crates/cudf-query-engine/src/exec/bounded/join/mixed.rs",
+    "crates/cudf-query-engine/src/exec/bounded/join/projected_cross.rs",
+];
+
+const RETIRED_DISPATCH_ENTRYPOINTS: &[&str] = &[
+    "execute_bounded_root_join_query_plan",
+    "execute_bounded_join_pipeline_query_plan",
+    "execute_bounded_multi_join_pipeline_query_plan",
+    "execute_bounded_keyless_conditional_join_input_subplan_pipeline_query_plan",
+    "execute_bounded_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline_query_plan",
+    "execute_bounded_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline_query_plan",
+    "execute_bounded_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_pipeline_query_plan",
+    "execute_bounded_multi_join_aggregate_over_join_subplan_topk_pipeline_query_plan",
+    "execute_bounded_keyed_hash_join_resident_subplan_pipeline_query_plan",
+    "execute_bounded_multi_join_resident_grouped_aggregate_subquery_filter_pipeline_query_plan",
+];
 
 const STRICT_SOURCE_ROOTS: &[&str] = &[
     "crates/cudf-query-engine/src/contract_report.rs",
@@ -54,6 +77,37 @@ fn phase_e_bounded_direct_modules_have_explicit_ownership() {
         discovered, owned,
         "every direct bounded execution module must be explicitly classified as strict, adaptive, or shared runtime"
     );
+}
+
+#[test]
+fn phase_e8_topology_executor_bridges_are_retired_from_the_runtime_tree() {
+    let root = repo_root();
+    for relative in RETIRED_TOPOLOGY_EXECUTOR_BRIDGES {
+        let path = root.join(relative);
+        assert!(
+            !path.exists(),
+            "{} must remain retired; bounded join dispatch belongs to strict/adaptive facades over compiled pipelines",
+            relative
+        );
+    }
+}
+
+#[test]
+fn phase_e8_retired_whole_query_dispatch_entrypoints_do_not_reappear() {
+    let bounded_dir = repo_root().join("crates/cudf-query-engine/src/exec/bounded");
+    let mut source = String::new();
+    for file in source_files(&["crates/cudf-query-engine/src/exec/bounded"]) {
+        source.push_str(&read_file(&file));
+        source.push('\n');
+    }
+
+    assert!(bounded_dir.exists(), "{} must exist for Phase E.8 dispatch retirement checks", bounded_dir.display());
+    for entrypoint in RETIRED_DISPATCH_ENTRYPOINTS {
+        assert!(
+            !source.contains(entrypoint),
+            "{entrypoint} must not reappear; whole-query topology dispatch is retired in favor of strict/adaptive admission over compiled pipelines"
+        );
+    }
 }
 
 #[test]

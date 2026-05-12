@@ -33,7 +33,6 @@ pub(crate) use compatibility::{
     bounded_root_projected_cross_join_compatible,
 };
 pub(crate) use facts::{bounded_join_modeled_facts, bounded_join_unsupported_shape_facts};
-pub(crate) use resident_revenue::analyze_keyed_hash_join_resident_subplan_pipeline;
 use shape::{
     AggregateOverJoinSubplanInputKind, analyze_bounded_join_pipeline_shape,
     bounded_join_inputs_include_resident_subplan, bounded_join_subtree_join_count, peel_projection_chain,
