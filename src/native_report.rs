@@ -1,8 +1,8 @@
 use std::{fmt::Write, sync::Arc};
 
 use cudf_query_engine::{
-    AdaptivePipelineReportRow, SourceDiagnostics as NativeSourceDiagnostics, StrictBoundedContractGateRow,
-    is_supported_arrow_type,
+    ADAPTIVE_DIAGNOSTIC_CONSTRUCTION_FAILED_REASON, AdaptivePipelineReport, AdaptivePipelineReportRow,
+    SourceDiagnostics as NativeSourceDiagnostics, StrictBoundedContractGateRow, is_supported_arrow_type,
 };
 use datafusion::{
     common::ScalarValue,
@@ -195,13 +195,16 @@ fn fallback_pressure_adaptive_pipeline_rows(
         return crate::planner::NativeAdaptivePipelineDiagnostics::default();
     };
     let memory_history = execution_config.adaptive_memory_history();
-    cudf_query_engine::adaptive_bounded_pipeline_admission_with_memory_history(plan, memory_history.as_deref())
-        .ok()
-        .flatten()
-        .map(|admission| {
+    match cudf_query_engine::adaptive_bounded_pipeline_admission_with_memory_history(plan, memory_history.as_deref()) {
+        Ok(Some(admission)) => {
             crate::planner::NativeAdaptivePipelineDiagnostics::single(candidate, admission.report().clone())
-        })
-        .unwrap_or_default()
+        },
+        Ok(None) => crate::planner::NativeAdaptivePipelineDiagnostics::default(),
+        Err(_) => crate::planner::NativeAdaptivePipelineDiagnostics::single(
+            candidate,
+            AdaptivePipelineReport::diagnostic_failure(plan, ADAPTIVE_DIAGNOSTIC_CONSTRUCTION_FAILED_REASON),
+        ),
+    }
 }
 
 fn single_rewritten_candidate(report: &PlanningReport) -> Option<&GpuCandidate> {

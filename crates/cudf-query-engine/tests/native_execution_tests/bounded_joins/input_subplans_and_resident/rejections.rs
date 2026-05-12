@@ -54,8 +54,8 @@ fn bounded_native_query_rejects_unsupported_join_under_aggregate_before_source_r
         aggregate_schema,
     );
     let plan = builder.finish_with_host_sink(aggregate);
-    assert!(!plan.has_bounded_executable_root_join());
-    assert!(!plan.has_bounded_executable_join_pipeline());
+    assert!(!plan.capability_analysis().admits_root_join());
+    assert!(!plan.capability_analysis().admits_single_join_post_root_pipeline());
 
     let context = ExecutionContext::builder()
         .with_shared_runtime(runtime)

@@ -27,7 +27,7 @@ fn bounded_native_query_preserves_right_then_left_projected_cross_output_order()
         Arc::clone(&output_schema),
     );
     let plan = builder.finish_with_host_sink(join);
-    assert!(plan.has_bounded_executable_root_join());
+    assert!(plan.capability_analysis().admits_root_join());
 
     let context = bounded_join_execution_context(&runtime);
     let result = execute_query_plan(&context, &plan).unwrap();
@@ -134,7 +134,7 @@ fn bounded_native_query_preserves_mixed_projected_cross_output_order() {
         Arc::clone(&output_schema),
     );
     let plan = builder.finish_with_host_sink(join);
-    assert!(plan.has_bounded_executable_root_join());
+    assert!(plan.capability_analysis().admits_root_join());
 
     let context = bounded_join_execution_context(&runtime);
     let result = execute_query_plan(&context, &plan).unwrap();

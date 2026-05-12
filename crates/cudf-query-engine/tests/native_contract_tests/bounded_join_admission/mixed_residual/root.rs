@@ -20,7 +20,7 @@ fn bounded_mixed_residual_semi_anti_root_support_requires_left_only_right_build_
         vec![JoinOutputColumn::left(ColumnRef::input(0, "left_payload", "left_payload"), "left_payload")],
     );
 
-    assert!(plan.has_bounded_executable_root_join());
+    assert!(plan.capability_analysis().admits_root_join());
     assert!(plan.bounded_join_unsupported_shape_facts(ExecutionBoundaryPolicy::default()).is_none());
 
     let right_projection_schema = Arc::new(Schema::new(vec![Field::new("right_payload", DataType::Int32, false)]));
@@ -32,7 +32,7 @@ fn bounded_mixed_residual_semi_anti_root_support_requires_left_only_right_build_
         JoinSide::Right,
         vec![JoinOutputColumn::right(ColumnRef::input(1, "right_payload", "right_payload"), "right_payload")],
     );
-    assert!(!plan.has_bounded_executable_root_join());
+    assert!(!plan.capability_analysis().admits_root_join());
     let facts = plan
         .bounded_join_unsupported_shape_facts(ExecutionBoundaryPolicy::default())
         .expect("unsupported mixed semi root shape should produce facts");
@@ -52,7 +52,7 @@ fn bounded_mixed_residual_semi_anti_root_support_requires_left_only_right_build_
         JoinSide::Left,
         vec![JoinOutputColumn::left(ColumnRef::input(0, "left_payload", "left_payload"), "left_payload")],
     );
-    assert!(!plan.has_bounded_executable_root_join());
+    assert!(!plan.capability_analysis().admits_root_join());
     let facts = plan
         .bounded_join_unsupported_shape_facts(ExecutionBoundaryPolicy::default())
         .expect("unsupported mixed anti root shape should produce facts");
@@ -77,13 +77,13 @@ fn bounded_keyless_conditional_left_only_joins_require_left_reservation_orientat
         JoinSide::Right,
     );
     assert!(
-        !plan.has_bounded_executable_root_join(),
+        !plan.capability_analysis().admits_root_join(),
         "default right build-side orientation must not be accepted for keyless conditional left semi joins"
     );
 
     let plan = keyless_conditional_left_semi_plan(left_schema, right_schema, output_schema, JoinSide::Left);
     assert!(
-        plan.has_bounded_executable_root_join(),
+        plan.capability_analysis().admits_root_join(),
         "keyless conditional left semi joins use the left side as the explicit reservation orientation"
     );
 }
@@ -114,6 +114,6 @@ fn bounded_mixed_residual_full_root_supports_pair_projection() {
         ],
     );
 
-    assert!(plan.has_bounded_executable_root_join());
+    assert!(plan.capability_analysis().admits_root_join());
     assert!(plan.bounded_join_unsupported_shape_facts(ExecutionBoundaryPolicy::default()).is_none());
 }

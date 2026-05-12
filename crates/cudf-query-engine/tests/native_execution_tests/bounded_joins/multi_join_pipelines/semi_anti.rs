@@ -47,9 +47,9 @@ fn bounded_native_query_executes_mixed_left_semi_left_anti_multi_join_pipeline_w
         Arc::clone(&left_only_join_schema),
     );
     let plan = builder.finish_with_host_sink(anti_join);
-    assert!(!plan.has_bounded_executable_root_join());
-    assert!(!plan.has_bounded_executable_join_pipeline());
-    assert!(plan.has_bounded_executable_multi_join_pipeline());
+    assert!(!plan.capability_analysis().admits_root_join());
+    assert!(!plan.capability_analysis().admits_single_join_post_root_pipeline());
+    assert!(plan.capability_analysis().admits_closed_multi_join_subgraph());
     assert!(plan.bounded_join_unsupported_shape_facts(ExecutionBoundaryPolicy::default()).is_none());
 
     let context = bounded_join_execution_context(&runtime);

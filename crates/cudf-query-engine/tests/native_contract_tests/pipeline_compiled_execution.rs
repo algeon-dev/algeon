@@ -11,16 +11,17 @@ use arrow::{
     record_batch::RecordBatch,
 };
 use cudf_query_engine::{
-    AdaptiveCandidateStatus, AdaptiveExecutionMode, AdaptiveMemoryHistory, AdaptiveMemoryHistoryEvidence,
-    AdaptiveMemoryHistoryKey, AdaptiveMemoryObservation, AdaptiveStrategy, AggregateExpr, AggregateFunction,
-    AggregateSpec, BinaryOp, ColumnRef, CompiledPipeline, ExecutionContext, Expr, JoinKey, JoinOutputColumn, JoinSide,
-    JoinSpec, JoinType, LimitSpec, LiteralValue, LocalParquetSource, MemoryControlPolicy, NativePipelineExecutionMode,
-    PipelineBarrier, PipelineBarrierId, PipelineBarrierKind, PipelineEdge, PipelineEdgeId, PipelineEdgeKind,
-    PipelineTask, PipelineTaskId, PipelineTaskKind, ProjectionOutput, QueryMetrics, QueryOutputMode, QueryPlan,
-    QueryPlanBuilder, ReservationGate, ReservationGateId, ReservationGateOwner, ReservationKind, ResidentLifetime,
-    ResidentResource, ResidentResourceId, SinkBoundary, SinkBoundaryKind, SortExpr, SortSpec, SourceNode,
-    StrictBoundedContractGateId, StrictBoundedContractGateRow, StrictBoundedContractOwner,
-    adaptive_bounded_pipeline_admission, adaptive_bounded_pipeline_admission_with_memory_history,
+    ADAPTIVE_DIAGNOSTIC_CONSTRUCTION_FAILED_REASON, AdaptiveCandidateStatus, AdaptiveExecutionMode,
+    AdaptiveMemoryHistory, AdaptiveMemoryHistoryEvidence, AdaptiveMemoryHistoryKey, AdaptiveMemoryObservation,
+    AdaptivePipelineReport, AdaptiveStrategy, AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, ColumnRef,
+    CompiledPipeline, ExecutionContext, Expr, JoinKey, JoinOutputColumn, JoinSide, JoinSpec, JoinType, LimitSpec,
+    LiteralValue, LocalParquetSource, MemoryControlPolicy, NativePipelineExecutionMode, PipelineBarrier,
+    PipelineBarrierId, PipelineBarrierKind, PipelineEdge, PipelineEdgeId, PipelineEdgeKind, PipelineTask,
+    PipelineTaskId, PipelineTaskKind, ProjectionOutput, QueryMetrics, QueryOutputMode, QueryPlan, QueryPlanBuilder,
+    ReservationGate, ReservationGateId, ReservationGateOwner, ReservationKind, ResidentLifetime, ResidentResource,
+    ResidentResourceId, SinkBoundary, SinkBoundaryKind, SortExpr, SortSpec, SourceNode, StrictBoundedContractGateId,
+    StrictBoundedContractGateRow, StrictBoundedContractOwner, adaptive_bounded_pipeline_admission,
+    adaptive_bounded_pipeline_admission_with_memory_history,
     capability::{
         CapabilityDecision, ContractQuality, ContractStatus, ReservationRequirementScope, SubgraphInvariantKind,
     },
@@ -248,6 +249,42 @@ fn phase_e6_adaptive_memory_history_hit_reports_observed_summary_without_changin
         .expect("strict admission must ignore adaptive memory history");
     assert_eq!(strict_admission.native_mode(), NativePipelineExecutionMode::StrictBounded);
     assert!(strict_admission.analysis().admits_strict_bounded_join());
+}
+
+#[test]
+fn phase_e8_adaptive_diagnostic_failure_rows_are_visible_without_strict_labels() {
+    let plan = root_join_plan();
+    let report = AdaptivePipelineReport::diagnostic_failure(&plan, ADAPTIVE_DIAGNOSTIC_CONSTRUCTION_FAILED_REASON);
+    let row = report.row();
+
+    assert_eq!(row.execution_mode, AdaptiveExecutionMode::UnsupportedAdaptive);
+    assert_eq!(row.candidate_status, AdaptiveCandidateStatus::Rejected);
+    assert_eq!(row.adaptive_strategy, AdaptiveStrategy::Unsupported);
+    assert_eq!(row.rejection_reason, Some(ADAPTIVE_DIAGNOSTIC_CONSTRUCTION_FAILED_REASON));
+
+    let rendered = report.stable_kv_row();
+    assert!(rendered.contains("execution_mode=unsupported_adaptive"));
+    assert!(rendered.contains("rejection_reason=adaptive_diagnostic_construction_failed"));
+    assert!(!rendered.contains("execution_mode=strict_bounded"));
+    assert!(!rendered.contains("unsupported_strict_bounded"));
+}
+
+#[test]
+fn phase_e8_adaptive_memory_history_key_distinguishes_memory_shape_factors() {
+    let int_sum_gt = adaptive_memory_history_key_probe_plan(DataType::Int32, AggregateFunction::Sum, BinaryOp::Gt);
+    let decimal_sum_gt =
+        adaptive_memory_history_key_probe_plan(DataType::Decimal128(20, 2), AggregateFunction::Sum, BinaryOp::Gt);
+    let int_count_gt = adaptive_memory_history_key_probe_plan(DataType::Int32, AggregateFunction::Count, BinaryOp::Gt);
+    let int_sum_lt = adaptive_memory_history_key_probe_plan(DataType::Int32, AggregateFunction::Sum, BinaryOp::Lt);
+
+    let int_sum_gt_key = AdaptiveMemoryHistoryKey::for_query_plan(&int_sum_gt);
+    assert_ne!(int_sum_gt_key, AdaptiveMemoryHistoryKey::for_query_plan(&decimal_sum_gt));
+    assert_ne!(int_sum_gt_key, AdaptiveMemoryHistoryKey::for_query_plan(&int_count_gt));
+    assert_ne!(int_sum_gt_key, AdaptiveMemoryHistoryKey::for_query_plan(&int_sum_lt));
+
+    assert!(!int_sum_gt_key.as_str().contains("/tmp/"));
+    assert!(!int_sum_gt_key.as_str().contains("adaptive_key"));
+    assert!(!int_sum_gt_key.as_str().contains("secret_literal"));
 }
 
 #[test]
@@ -2918,6 +2955,61 @@ fn aggregate_sort_limit_plan() -> QueryPlan {
     );
     let limit = builder.add_limit(sort, LimitSpec::fetch(10), aggregate_schema);
     builder.finish_with_host_sink(limit)
+}
+
+fn adaptive_memory_history_key_probe_plan(
+    value_type: DataType,
+    aggregate_function: AggregateFunction,
+    predicate_op: BinaryOp,
+) -> QueryPlan {
+    let source_schema = Arc::new(Schema::new(vec![
+        Field::new("adaptive_key", DataType::Int32, false),
+        Field::new("adaptive_value", value_type.clone(), true),
+    ]));
+    let aggregate_value_type = match aggregate_function {
+        AggregateFunction::Count => DataType::Int64,
+        AggregateFunction::Sum | AggregateFunction::Min | AggregateFunction::Max | AggregateFunction::Avg => {
+            value_type.clone()
+        },
+    };
+    let aggregate_schema = Arc::new(Schema::new(vec![
+        Field::new("adaptive_key", DataType::Int32, false),
+        Field::new("adaptive_metric", aggregate_value_type, true),
+    ]));
+
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+        "/tmp/adaptive-key-secret-literal.parquet",
+        source_schema,
+        vec!["adaptive_key".into(), "adaptive_value".into()],
+    )));
+    let filter = builder.add_filter(
+        source,
+        Expr::binary(Expr::column("adaptive_value"), predicate_op, literal_expr_for_type(&value_type)),
+        Arc::new(Schema::new(vec![
+            Field::new("adaptive_key", DataType::Int32, false),
+            Field::new("adaptive_value", value_type.clone(), true),
+        ])),
+    );
+    let aggregate = builder.add_aggregate(
+        filter,
+        AggregateSpec::new(
+            vec![Expr::column("adaptive_key")],
+            vec![AggregateExpr::new(aggregate_function, Expr::column("adaptive_value"), "adaptive_metric")],
+        ),
+        Arc::clone(&aggregate_schema),
+    );
+    builder.finish_with_host_sink(aggregate)
+}
+
+fn literal_expr_for_type(data_type: &DataType) -> Expr {
+    let literal = match data_type {
+        DataType::Decimal128(precision, scale) => {
+            LiteralValue::Decimal128 { raw: 12_345, precision: *precision, scale: *scale }
+        },
+        _ => LiteralValue::Int32(12_345),
+    };
+    Expr::literal(literal).alias("secret_literal")
 }
 
 fn aggregate_sort_limit_data_plan(path: &Path, source_schema: Arc<Schema>) -> QueryPlan {

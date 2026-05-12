@@ -63,9 +63,9 @@ fn bounded_native_multi_join_rejects_unsupported_mixed_residual_before_source_re
         second_join_schema,
     );
     let plan = builder.finish_with_host_sink(second_join);
-    assert!(!plan.has_bounded_executable_root_join());
-    assert!(!plan.has_bounded_executable_join_pipeline());
-    assert!(!plan.has_bounded_executable_multi_join_pipeline());
+    assert!(!plan.capability_analysis().admits_root_join());
+    assert!(!plan.capability_analysis().admits_single_join_post_root_pipeline());
+    assert!(!plan.capability_analysis().admits_closed_multi_join_subgraph());
     let analysis = plan.capability_analysis();
     let cudf_query_engine::capability::CapabilityDecision::Rejected { reason, facts } =
         &analysis.closed_multi_join_subgraph_admission

@@ -33,10 +33,10 @@ fn bounded_native_query_executes_keyless_conditional_join_with_resident_input_su
         Arc::clone(&output_schema),
         false,
     );
-    assert!(!plan.has_bounded_executable_root_join());
-    assert!(!plan.has_bounded_executable_join_pipeline());
-    assert!(plan.has_bounded_executable_keyless_conditional_join_input_subplan_pipeline());
-    assert!(!plan.has_bounded_executable_multi_join_pipeline());
+    assert!(!plan.capability_analysis().admits_root_join());
+    assert!(!plan.capability_analysis().admits_single_join_post_root_pipeline());
+    assert!(plan.capability_analysis().admits_keyless_conditional_join_input_subplan_pipeline());
+    assert!(!plan.capability_analysis().admits_closed_multi_join_subgraph());
 
     let context = bounded_join_execution_context(&runtime);
     let result = execute_query_plan(&context, &plan).unwrap();
@@ -111,7 +111,7 @@ fn bounded_native_query_executes_keyless_conditional_join_with_resident_input_su
         output_schema,
         true,
     );
-    assert!(gpu_plan.has_bounded_executable_keyless_conditional_join_input_subplan_pipeline());
+    assert!(gpu_plan.capability_analysis().admits_keyless_conditional_join_input_subplan_pipeline());
     let gpu_error = match execute_query_plan(&context, &gpu_plan) {
         Ok(_) => panic!("D.3.7 strict bounded joins require compiled host-Arrow execution"),
         Err(error) => error,

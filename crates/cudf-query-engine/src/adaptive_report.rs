@@ -19,6 +19,8 @@ use crate::{
     runtime::ReservationKind,
 };
 
+pub const ADAPTIVE_DIAGNOSTIC_CONSTRUCTION_FAILED_REASON: &str = "adaptive_diagnostic_construction_failed";
+
 /// Report for one adaptive bounded-pipeline admission decision.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AdaptivePipelineReport {
@@ -66,6 +68,22 @@ impl AdaptivePipelineReport {
 
     pub fn stable_kv_row(&self) -> String {
         self.row.to_stable_kv_row()
+    }
+
+    pub fn diagnostic_failure(plan: &QueryPlan, rejection_reason: &'static str) -> Self {
+        let execution_mode = AdaptiveExecutionMode::UnsupportedAdaptive;
+        let row = AdaptivePipelineReportRow {
+            execution_mode,
+            candidate_status: AdaptiveCandidateStatus::Rejected,
+            missing_strict_contracts: Vec::new(),
+            adaptive_strategy: AdaptiveStrategy::Unsupported,
+            runtime_actions_allowed: AdaptiveRuntimeActionsAllowed::default(),
+            memory_history_evidence: AdaptiveMemoryHistoryEvidence::NotUsed,
+            runtime_action_counts: AdaptiveRuntimeActionCounts::default(),
+            final_sink_boundary: AdaptiveFinalSinkBoundary::for_sink(plan.sink()),
+            rejection_reason: Some(rejection_reason),
+        };
+        Self { execution_mode, row }
     }
 
     fn new(execution_mode: AdaptiveExecutionMode, row: AdaptivePipelineReportRow) -> Result<Self> {
