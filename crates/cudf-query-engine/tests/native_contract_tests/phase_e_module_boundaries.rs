@@ -292,6 +292,33 @@ fn phase_f4_normal_execution_sources_do_not_reintroduce_family_path_types() {
     }
 }
 
+#[test]
+fn phase_f5_rejection_facts_do_not_reintroduce_family_blocker_projection() {
+    let mut source = String::new();
+    for file in source_files(&["crates/cudf-query-engine/src/bounded", "crates/cudf-query-engine/src/exec/bounded"]) {
+        source.push_str(&read_file(&file));
+        source.push('\n');
+    }
+
+    for retired in [
+        "bounded_join_capability_rejection_",
+        "bounded_join_blocked_join_family",
+        "bounded_join_specific_blocker",
+        "bounded_join_shape_blocker",
+        "topology_unsupported",
+    ] {
+        assert!(!source.contains(retired), "retired family-shaped rejection diagnostic {retired:?} must not reappear");
+    }
+    for required in [
+        "bounded_join_rejection_scope",
+        "bounded_join_rejection_category",
+        "bounded_join_rejection_reason",
+        "bounded_join_rejection_facts",
+    ] {
+        assert!(source.contains(required), "F.5 canonical rejection fact {required:?} must stay emitted");
+    }
+}
+
 fn bounded_module_ownership() -> BTreeMap<String, &'static str> {
     let mut ownership = BTreeMap::new();
     for name in STRICT_BOUNDED_MODULES {

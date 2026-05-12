@@ -2,6 +2,7 @@ use super::*;
 
 pub(super) fn assert_planning_rows(report: &NativeDataFusionPlanningReport) {
     for row in &report.rows {
+        assert_row_rejection_diagnostics_are_family_free(row);
         if EXPECTED_BOUNDED_TPCH_ACCEPTED.contains(&row.query_id.as_str()) {
             assert_eq!(row.outcome, NativeDataFusionPlanningOutcome::AcceptedReplaced);
             assert_eq!(row.reason_code.as_deref(), None);
@@ -103,6 +104,34 @@ pub(super) fn assert_planning_rows(report: &NativeDataFusionPlanningReport) {
         } else {
             assert_tpch_join_diagnostics(row.query_id.as_str(), &row.join_diagnostics);
         }
+    }
+}
+
+fn assert_row_rejection_diagnostics_are_family_free(row: &datafusion_cudf::NativeDataFusionPlanningRow) {
+    for gate in &row.strict_bounded_contract_rows {
+        assert_no_legacy_rejection_terms(row.query_id.as_str(), &gate.to_stable_kv_row());
+    }
+    for graph in &row.strict_bounded_compiled_graphs {
+        assert_no_legacy_rejection_terms(row.query_id.as_str(), &format!("{graph:?}"));
+    }
+    for adaptive in &row.adaptive_pipeline_rows {
+        assert_no_legacy_rejection_terms(row.query_id.as_str(), &adaptive.to_stable_kv_row());
+    }
+    assert_no_legacy_rejection_terms(row.query_id.as_str(), &format!("{:?}", row.join_diagnostics));
+    assert_no_legacy_rejection_terms(row.query_id.as_str(), &format!("{:?}", row.source_diagnostics));
+}
+
+fn assert_no_legacy_rejection_terms(label: &str, rendered: &str) {
+    for retired in [
+        "bounded_join_capability_rejection_",
+        "bounded_join_blocked_join_family",
+        "bounded_join_specific_blocker",
+        "bounded_join_shape_blocker",
+        "topology_unsupported",
+        "BoundedJoinExecutionFamily",
+        "BoundedJoinExecutionPath",
+    ] {
+        assert!(!rendered.contains(retired), "{label} must not expose retired rejection term {retired}");
     }
 }
 
