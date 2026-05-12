@@ -125,6 +125,15 @@ pub(super) fn accepted_plan_contract_diagnostics(
     })
 }
 
+pub(super) fn strict_bounded_admission_is_rejected(plan: &QueryPlan) -> DataFusionResult<bool> {
+    match strict_bounded_pipeline_admission(plan) {
+        Ok(Some(_)) => Ok(false),
+        Ok(None) => Ok(true),
+        Err(error) if error.code() == cudf_query_engine::QueryErrorCode::UnsupportedPlanShape => Ok(true),
+        Err(error) => Err(strict_bounded_report_error(error)),
+    }
+}
+
 pub(super) fn rejected_plan_contract_diagnostics(
     plan: &QueryPlan,
     candidate: GpuCandidate,

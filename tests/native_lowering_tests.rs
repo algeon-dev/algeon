@@ -54,11 +54,14 @@ use datafusion::{
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
 use datafusion_cudf::{
+    AD_HOC_OLAP_QUERIES, AD_HOC_OLAP_QUERY_COUNT, AdHocOlapCapabilityFirstAdmission, AdHocOlapLoweringExpectation,
     CandidateOutcome, FallbackReason, NativeFallbackPressureWorkloadInput, NativeLoweringResult,
-    lower_physical_plan_to_native, tpch_fallback_pressure_workload_items, tpch_report_session_config,
-    write_tiny_tpch_parquet_dataset,
+    ad_hoc_olap_fallback_pressure_workload_items, ad_hoc_olap_query_ids, lower_physical_plan_to_native,
+    tpch_fallback_pressure_workload_items, tpch_report_session_config, write_tiny_tpch_parquet_dataset,
 };
 
+#[path = "native_lowering_tests/ad_hoc_olap.rs"]
+mod ad_hoc_olap;
 #[path = "native_lowering_tests/fixtures.rs"]
 mod fixtures;
 #[path = "native_lowering_tests/join_plan_builders.rs"]

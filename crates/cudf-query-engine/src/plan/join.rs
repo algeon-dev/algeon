@@ -14,43 +14,6 @@ pub struct JoinNode {
     pub spec: JoinSpec,
 }
 
-impl JoinNode {
-    /// The single source of truth for whether this join can be executed by the
-    /// bounded root reusable hash-join path. The `Left → build_side == Right`
-    /// constraint is load-bearing: `cudf-rs::DataFrameHashJoin::left_probe`
-    /// treats the probe input as the left side of the outer join, so a
-    /// `JoinType::Left` with `build_side == Left` would keep right-side rows
-    /// for unmatched build rows and produce the wrong DataFusion semantics.
-    pub fn is_bounded_root_hash_join_compatible(&self) -> bool {
-        bounded_root_hash_join_compatible(self)
-    }
-
-    /// Returns true when this join can use the bounded keyless conditional root path.
-    pub fn is_bounded_root_keyless_conditional_join_compatible(&self) -> bool {
-        bounded_root_keyless_conditional_join_compatible(self)
-    }
-
-    /// Returns true when this join can use the bounded filtered-join root path.
-    pub fn is_bounded_root_filtered_join_compatible(&self) -> bool {
-        bounded_root_filtered_join_compatible(self)
-    }
-
-    /// Returns true when this join can use the bounded projected cross-join root path.
-    pub fn is_bounded_root_projected_cross_join_compatible(&self) -> bool {
-        bounded_root_projected_cross_join_compatible(self)
-    }
-
-    /// Returns true when this join can use the bounded mixed-predicate root path.
-    pub fn is_bounded_root_mixed_join_compatible(&self) -> bool {
-        bounded_root_mixed_join_compatible(self)
-    }
-
-    /// Returns true when this join is accepted by any bounded root join path.
-    pub fn is_bounded_root_join_compatible(&self) -> bool {
-        bounded_root_join_compatible(self)
-    }
-}
-
 /// Complete semantic and physical contract for a native join node.
 ///
 /// Joins intentionally keep four concerns separate: equality keys in

@@ -3,12 +3,7 @@ use std::{collections::BTreeMap, fmt, sync::Arc};
 use arrow::datatypes::{Field, Schema, SchemaRef};
 
 use crate::{
-    bounded::{
-        bounded_join_modeled_facts, bounded_join_unsupported_shape_facts, bounded_root_filtered_join_compatible,
-        bounded_root_hash_join_compatible, bounded_root_join_compatible,
-        bounded_root_keyless_conditional_join_compatible, bounded_root_mixed_join_compatible,
-        bounded_root_projected_cross_join_compatible,
-    },
+    bounded::{bounded_join_modeled_facts, bounded_join_unsupported_shape_facts},
     expr::{AggregateSpec, ColumnRef, Expr, LimitSpec, SortExpr, SortSpec},
     runtime::ExecutionBoundaryPolicy,
     source::SourceNode,

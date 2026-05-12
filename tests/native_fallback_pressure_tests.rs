@@ -41,8 +41,9 @@ use datafusion::{
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
 use datafusion_cudf::{
-    CudfNativePhysicalOptimizerRule, CudfOptimizerConfig, CudfSessionStateBuilderExt, GpuCandidate, GpuFallbackPolicy,
-    NATIVE_DATAFUSION_EXECUTION_TSV_HEADER, NATIVE_DATAFUSION_EXECUTION_TSV_SCHEMA_VERSION,
+    AD_HOC_OLAP_QUERIES, AD_HOC_OLAP_QUERY_COUNT, AdHocOlapCapabilityFirstAdmission, AdHocOlapCurrentStrictAdmission,
+    CudfNativePhysicalOptimizerRule, CudfOptimizerConfig, CudfSessionStateBuilderExt, FallbackReason, GpuCandidate,
+    GpuFallbackPolicy, NATIVE_DATAFUSION_EXECUTION_TSV_HEADER, NATIVE_DATAFUSION_EXECUTION_TSV_SCHEMA_VERSION,
     NATIVE_DATAFUSION_PLANNING_TSV_HEADER, NATIVE_DATAFUSION_PLANNING_TSV_SCHEMA_VERSION,
     NATIVE_FALLBACK_PRESSURE_TSV_HEADER, NATIVE_FALLBACK_PRESSURE_TSV_SCHEMA_VERSION,
     NativeAdaptivePipelineCandidateDiagnostics, NativeAdaptivePipelineDiagnostics, NativeCudfComposedExec,
@@ -53,9 +54,12 @@ use datafusion_cudf::{
     NativeFallbackPressureWorkloadItem, NativePipelineExecutionMode, NativePlanningDiagnostics,
     NativeStrictBoundedAcceptedCandidateDiagnostics, NativeStrictBoundedCompiledGraphDiagnostics,
     NativeStrictBoundedContractDiagnostics, NativeStrictBoundedRejectedCandidateDiagnostics, PlanningReport,
-    TPCH_QUERY_COUNT, TPCH_TABLES, describe_tpch_dataset_with_content_fingerprint, tiny_tpch_dataset_metadata,
-    tpch_datafusion_planning_workload_items, tpch_fallback_pressure_workload_items, tpch_query_ids,
-    tpch_report_session_config, tpch_scalar_fallback_pressure_workload_items, write_tiny_tpch_parquet_dataset,
+    TPCH_QUERY_COUNT, TPCH_TABLES, ad_hoc_olap_datafusion_planning_workload_items,
+    ad_hoc_olap_datafusion_planning_workload_items_with_optimizer_config, ad_hoc_olap_fallback_pressure_workload_items,
+    describe_tpch_dataset_with_content_fingerprint, tiny_tpch_dataset_metadata,
+    tpch_datafusion_planning_workload_items, tpch_fallback_pressure_workload_items, tpch_native_optimizer_config,
+    tpch_query_ids, tpch_report_session_config, tpch_scalar_fallback_pressure_workload_items,
+    write_tiny_tpch_parquet_dataset,
 };
 
 const EXPECTED_BOUNDED_TPCH_ACCEPTED: &[&str] = &[
@@ -67,6 +71,8 @@ const EXPECTED_BOUNDED_TPCH_JOIN_ACCEPTED: &[&str] = &[
     "q21", "q18", "q20", "q22",
 ];
 
+#[path = "native_fallback_pressure_tests/ad_hoc_olap.rs"]
+mod ad_hoc_olap;
 #[path = "native_fallback_pressure_tests/execution_reports.rs"]
 mod execution_reports;
 #[path = "native_fallback_pressure_tests/sql.rs"]

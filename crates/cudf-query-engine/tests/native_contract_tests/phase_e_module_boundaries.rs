@@ -7,7 +7,7 @@ use std::{
 const STRICT_BOUNDED_MODULES: &[&str] = &["strict"];
 const ADAPTIVE_BOUNDED_MODULES: &[&str] = &["adaptive"];
 const SHARED_BOUNDED_RUNTIME_MODULES: &[&str] =
-    &["aggregate", "chunks", "compiled", "facts", "final_sort", "join", "reservation"];
+    &["admission", "aggregate", "chunks", "compiled", "facts", "final_sort", "join", "reservation"];
 
 const RETIRED_TOPOLOGY_EXECUTOR_BRIDGES: &[&str] = &[
     "crates/cudf-query-engine/src/exec/bounded/pipeline.rs",
@@ -17,6 +17,13 @@ const RETIRED_TOPOLOGY_EXECUTOR_BRIDGES: &[&str] = &[
     "crates/cudf-query-engine/src/exec/bounded/join/keyless.rs",
     "crates/cudf-query-engine/src/exec/bounded/join/mixed.rs",
     "crates/cudf-query-engine/src/exec/bounded/join/projected_cross.rs",
+];
+
+const RETIRED_BOUNDED_RECOGNIZER_SOURCES: &[&str] = &[
+    "crates/cudf-query-engine/src/bounded/compatibility.rs",
+    "crates/cudf-query-engine/src/bounded/resident_revenue.rs",
+    "crates/cudf-query-engine/src/bounded/shape.rs",
+    "crates/cudf-query-engine/src/bounded/shape",
 ];
 
 const RETIRED_DISPATCH_ENTRYPOINTS: &[&str] = &[
@@ -39,8 +46,11 @@ const STRICT_SOURCE_ROOTS: &[&str] = &[
     "src/planner/native/strict_bounded.rs",
 ];
 
-const SHARED_MODE_AGNOSTIC_ROOTS: &[&str] =
-    &["crates/cudf-query-engine/src/capability", "crates/cudf-query-engine/src/pipeline"];
+const SHARED_MODE_AGNOSTIC_ROOTS: &[&str] = &[
+    "crates/cudf-query-engine/src/capability",
+    "crates/cudf-query-engine/src/exec/bounded/admission.rs",
+    "crates/cudf-query-engine/src/pipeline",
+];
 
 const ADAPTIVE_IMPORT_NEEDLES: &[&str] = &[
     "adaptive_report",
@@ -173,6 +183,112 @@ fn phase_e_strict_and_shared_graph_modules_do_not_use_adaptive_runtime_contract_
                 );
             }
         }
+    }
+}
+
+#[test]
+fn phase_f3_strict_and_adaptive_facades_enter_through_capability_first_admission() {
+    let strict = read_repo_file("crates/cudf-query-engine/src/exec/bounded/strict.rs");
+    let adaptive = read_repo_file("crates/cudf-query-engine/src/exec/bounded/adaptive.rs");
+    let admission = read_repo_file("crates/cudf-query-engine/src/exec/bounded/admission.rs");
+
+    assert!(
+        admission.contains("CapabilityFirstPipelineAdmission"),
+        "Phase F.3 shared admission result must stay explicit"
+    );
+    assert!(
+        strict.contains("capability_first_bounded_pipeline_admission"),
+        "strict bounded admission must enter through the capability-first facade"
+    );
+    assert!(
+        adaptive.contains("capability_first_bounded_pipeline_admission"),
+        "adaptive bounded admission must enter through the capability-first facade"
+    );
+    assert!(
+        !adaptive.contains("admits_strict_bounded_join"),
+        "adaptive admission must not consume the retired strict-family admission predicate"
+    );
+}
+
+#[test]
+fn phase_f3_live_capability_first_paths_do_not_import_bounded_join_capability_bridges() {
+    for relative in [
+        "crates/cudf-query-engine/src/capability.rs",
+        "crates/cudf-query-engine/src/capability/node.rs",
+        "crates/cudf-query-engine/src/capability/shape.rs",
+        "crates/cudf-query-engine/src/exec/bounded/compiled/join_strategy.rs",
+        "crates/cudf-query-engine/src/exec/bounded/compiled/support.rs",
+        "crates/cudf-query-engine/src/exec/bounded/join/compiled.rs",
+    ] {
+        let source = read_repo_file(relative);
+        for retired in [
+            "BoundedJoinNodeCapability",
+            "BoundedKeylessConditionalJoinType",
+            "bounded_join_node_capability",
+            "bounded_multi_join_node_capability",
+            "bounded_root_join_compatible",
+        ] {
+            assert!(
+                !source.contains(retired),
+                "{relative} must use capability-first join predicates instead of {retired}"
+            );
+        }
+    }
+}
+
+#[test]
+fn phase_f4_family_recognizer_sources_are_deleted_or_demoted() {
+    let root = repo_root();
+    for relative in RETIRED_BOUNDED_RECOGNIZER_SOURCES {
+        let path = root.join(relative);
+        assert!(
+            !path.exists(),
+            "{} must remain retired; bounded admission is capability-first and must not keep family recognizer sources",
+            relative
+        );
+    }
+
+    let mut source = String::new();
+    for file in source_files(&["crates/cudf-query-engine/src"]) {
+        source.push_str(&read_file(&file));
+        source.push('\n');
+    }
+    for retired in [
+        "BoundedJoinNodeCapability",
+        "BoundedKeylessConditionalJoinType",
+        "bounded_join_node_capability",
+        "bounded_multi_join_node_capability",
+        "bounded_root_join_compatible",
+        "analyze_bounded_",
+        "analyze_keyed_hash_join_resident_subplan_pipeline",
+        "is_bounded_root_",
+    ] {
+        assert!(
+            !source.contains(retired),
+            "retired family recognizer surface {retired:?} must not reappear in cudf-query-engine source"
+        );
+    }
+
+    let bounded_mod = read_repo_file("crates/cudf-query-engine/src/bounded.rs");
+    assert!(
+        !bounded_mod.contains("#![allow(dead_code)]"),
+        "bounded.rs must not keep a dead-code retirement shield after Phase F.4 recognizer deletion"
+    );
+}
+
+#[test]
+fn phase_f4_normal_execution_sources_do_not_reintroduce_family_path_types() {
+    let mut source = String::new();
+    for file in source_files(&["crates/cudf-query-engine/src", "src/planner/native"]) {
+        source.push_str(&read_file(&file));
+        source.push('\n');
+    }
+
+    for retired in ["BoundedJoinPlanSupport", "BoundedJoinExecutionFamily", "BoundedJoinExecutionPath"] {
+        assert!(
+            !source.contains(retired),
+            "retired family/path type {retired:?} must not reappear in normal execution or planning source"
+        );
     }
 }
 

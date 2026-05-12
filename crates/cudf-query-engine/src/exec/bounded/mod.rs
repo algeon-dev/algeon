@@ -7,6 +7,7 @@ use super::{source::record_bounded_parquet_source_metrics, *};
 // - remaining modules: bounded runtime/operator support shared by the current
 //   bounded executors, but not owners of mode-specific admission/report policy.
 mod adaptive;
+mod admission;
 mod aggregate;
 mod chunks;
 mod compiled;

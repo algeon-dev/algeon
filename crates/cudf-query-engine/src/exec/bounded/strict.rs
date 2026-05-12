@@ -4,7 +4,6 @@
 //! and crate-local strict exports should pass through this boundary instead of
 //! importing non-strict admission or report surfaces.
 
-use super::compiled::execute_compiled_pipeline_to_host;
 pub(in crate::exec::bounded) use super::compiled::join_strategy::CompiledJoinExecutionStrategy;
 #[doc(hidden)]
 pub use super::compiled::{
@@ -12,13 +11,19 @@ pub use super::compiled::{
     CompiledPipelineState, CompiledTaskExecutor, CompiledTaskOutput, ReleasedCompiledResource,
     compiled_bounded_pipeline_support, compiled_bounded_query_plan_support,
 };
+use super::{
+    admission::{
+        CapabilityFirstCandidateStatus, CapabilityFirstPipelineAdmission, capability_first_bounded_pipeline_admission,
+    },
+    compiled::execute_compiled_pipeline_to_host,
+};
 use crate::{
     capability::CapabilityAnalysis,
     error::{QueryError, QueryErrorCode, Result},
     exec::types::{GpuResidentInputMap, QueryOutput},
     metrics::QueryMetrics,
     mode::NativePipelineExecutionMode,
-    pipeline::{CompiledPipeline, compile_pipeline},
+    pipeline::CompiledPipeline,
     plan::{QueryPlan, ResultSink},
     runtime::ExecutionContext,
 };
@@ -44,27 +49,38 @@ impl StrictBoundedPipelineAdmission {
 }
 
 pub fn strict_bounded_pipeline_admission(plan: &QueryPlan) -> Result<Option<StrictBoundedPipelineAdmission>> {
-    if !plan.contains_join() {
+    let Some(admission) = capability_first_bounded_pipeline_admission(plan)? else {
         return Ok(None);
+    };
+    match admission.candidate_status() {
+        CapabilityFirstCandidateStatus::Admitted => strict_admission_from_capability_first(admission).map(Some),
+        CapabilityFirstCandidateStatus::Rejected => match admission.rejection_reason() {
+            Some("unsupported_sink_boundary") | Some("unsupported_compiled_pipeline_envelope") => {
+                Err(compiled_bounded_pipeline_required_error(
+                    plan,
+                    admission.pipeline(),
+                    admission.rejection_reason().unwrap_or("unknown"),
+                ))
+            },
+            _ => Ok(None),
+        },
     }
+}
 
-    let analysis = plan.capability_analysis();
-    if analysis.has_rejections() {
-        return Ok(None);
-    }
-    if !matches!(plan.sink(), ResultSink::HostArrow { .. }) {
-        return Err(compiled_bounded_pipeline_required_error(plan, None, "unsupported_sink_boundary"));
-    }
-
-    let pipeline = compile_pipeline(plan, &analysis)?;
-    match compiled_bounded_query_plan_support(plan, &pipeline)? {
-        CompiledBoundedPipelineSupport::Unsupported => Err(compiled_bounded_pipeline_required_error(
-            plan,
-            Some(&pipeline),
-            "unsupported_compiled_pipeline_envelope",
-        )),
-        CompiledBoundedPipelineSupport::Supported => Ok(Some(StrictBoundedPipelineAdmission { analysis, pipeline })),
-    }
+fn strict_admission_from_capability_first(
+    admission: CapabilityFirstPipelineAdmission,
+) -> Result<StrictBoundedPipelineAdmission> {
+    let (analysis, pipeline) = admission.into_parts();
+    let pipeline = pipeline.ok_or_else(|| {
+        QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "cudf_query_engine.bounded.strict_admission",
+            "admitted strict bounded candidate must include a compiled pipeline",
+        )
+        .with_fact("execution_mode", NativePipelineExecutionMode::StrictBounded.as_str())
+        .with_fact("candidate_status", "admitted")
+    })?;
+    Ok(StrictBoundedPipelineAdmission { analysis, pipeline })
 }
 
 pub(in crate::exec) fn try_execute_strict_bounded_pipeline(

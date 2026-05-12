@@ -213,18 +213,6 @@ fn root_join_with_post_root_stages(
 pub(super) fn root_join_shape_decision(plan: &QueryPlan) -> Result<(), CapabilityDecision> {
     let root_join_id = plan.sink().input();
     let root_join = generic_join_node(plan, root_join_id, "root_join_admission_requires_sink_root_join")?;
-    if !bounded_root_join_compatible(root_join) {
-        return Err(CapabilityDecision::rejected(
-            "root_join_admission_requires_supported_join_capability",
-            [
-                ("node_id", root_join_id.to_string()),
-                ("join_type", root_join.spec.join_type.to_string()),
-                ("key_count", root_join.spec.keys.len().to_string()),
-                ("has_residual", root_join.spec.residual_predicate.is_some().to_string()),
-                ("build_side", root_join.spec.build_side.to_string()),
-            ],
-        ));
-    }
     let reachable_join_count = reachable_join_count_from_sink(plan)?;
     if reachable_join_count != 1 {
         return Err(CapabilityDecision::rejected(
@@ -253,18 +241,6 @@ pub(super) fn single_join_post_root_pipeline_shape_decision(plan: &QueryPlan) ->
     }
     let root_join =
         generic_join_node(plan, root_join_id, "single_join_post_root_pipeline_requires_supported_root_join")?;
-    if !bounded_root_join_compatible(root_join) {
-        return Err(CapabilityDecision::rejected(
-            "single_join_post_root_pipeline_requires_supported_join_capability",
-            [
-                ("node_id", root_join_id.to_string()),
-                ("join_type", root_join.spec.join_type.to_string()),
-                ("key_count", root_join.spec.keys.len().to_string()),
-                ("has_residual", root_join.spec.residual_predicate.is_some().to_string()),
-                ("build_side", root_join.spec.build_side.to_string()),
-            ],
-        ));
-    }
     let reachable_join_count = reachable_join_count_from_sink(plan)?;
     if reachable_join_count != 1 {
         return Err(CapabilityDecision::rejected(
@@ -772,7 +748,7 @@ fn resident_grouped_aggregate_subquery_filter_stats(
     };
     match &node.kind {
         PlanNode::Join(join) => {
-            if bounded_multi_join_node_capability(join).is_none() {
+            if multi_join_subtree_join_execution_capability(join).is_none() {
                 return Err(CapabilityDecision::rejected(
                     "resident_grouped_subquery_filter_unsupported_join",
                     [
@@ -1691,7 +1667,7 @@ pub(super) fn validate_bounded_join_subtree_for_capability(
     };
     match &node.kind {
         PlanNode::Join(join) => {
-            if bounded_multi_join_node_capability(join).is_none() {
+            if multi_join_subtree_join_execution_capability(join).is_none() {
                 return Err(CapabilityDecision::rejected(
                     "join_subtree_input_unsupported_join",
                     [
@@ -2133,7 +2109,7 @@ pub(super) fn validate_closed_multi_join_subtree(
     };
     match &node.kind {
         PlanNode::Join(join) => {
-            if bounded_multi_join_node_capability(join).is_none() {
+            if multi_join_subtree_join_execution_capability(join).is_none() {
                 return Err(CapabilityDecision::rejected(
                     "closed_multi_join_subgraph_unsupported_join",
                     [
