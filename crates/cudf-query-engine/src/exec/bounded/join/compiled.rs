@@ -5,9 +5,7 @@ use super::{
     },
     *,
 };
-use crate::{
-    bounded::BoundedKeylessConditionalJoinType, exec::bounded::compiled::join_strategy::CompiledJoinExecutionStrategy,
-};
+use crate::{bounded::BoundedKeylessConditionalJoinType, exec::bounded::strict::CompiledJoinExecutionStrategy};
 
 pub(in crate::exec::bounded) enum BoundedCompiledJoinBuildState {
     Hash(BoundedRootHashJoinBuildState),

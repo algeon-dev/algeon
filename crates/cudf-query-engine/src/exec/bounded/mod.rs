@@ -1,21 +1,27 @@
 use super::{source::record_bounded_parquet_source_metrics, *};
 
+// Phase E ownership boundary:
+// - adaptive: adaptive-only admission/report/execution facade.
+// - strict: strict bounded admission/report/execution facade.
+// - compiled: shared compiled pipeline runtime and graph-support checks.
+// - remaining modules: bounded runtime/operator support shared by the current
+//   bounded executors, but not owners of mode-specific admission/report policy.
 mod adaptive;
 mod aggregate;
 mod chunks;
-pub(super) mod compiled;
+mod compiled;
 mod facts;
 mod final_sort;
 mod join;
 mod multi_join;
 mod pipeline;
 mod reservation;
+pub(in crate::exec) mod strict;
 
 use adaptive::try_execute_adaptive_bounded_pipeline;
 pub use adaptive::{AdaptivePipelineAdmission, adaptive_bounded_pipeline_admission};
 use aggregate::*;
 use chunks::*;
-use compiled::try_execute_strict_bounded_pipeline;
 pub(in crate::exec) use facts::RuntimeResourceFacts;
 use facts::*;
 pub(in crate::exec) use final_sort::topk_candidate_rows;
@@ -29,6 +35,7 @@ pub(in crate::exec::bounded) use join::{
 use multi_join::*;
 use pipeline::*;
 pub(in crate::exec) use reservation::{ActiveReservation, CommittedPartial, ReservationTracker, ResidentGpuFrame};
+use strict::try_execute_strict_bounded_pipeline;
 
 use crate::mode::NativePipelineExecutionMode;
 
@@ -127,8 +134,8 @@ pub(super) fn execute_bounded_query_plan(
     }
 }
 
-fn bounded_pipeline_execution_mode(_context: &ExecutionContext) -> NativePipelineExecutionMode {
-    NativePipelineExecutionMode::StrictBounded
+fn bounded_pipeline_execution_mode(context: &ExecutionContext) -> NativePipelineExecutionMode {
+    context.native_pipeline_execution_mode()
 }
 
 fn reject_bounded_join_plan(context: &ExecutionContext, plan: &QueryPlan) -> Result<()> {

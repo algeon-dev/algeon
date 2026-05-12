@@ -127,6 +127,10 @@ fn phase_e3_adaptive_admission_reports_use_adaptive_rows_not_strict_contract_row
     assert_eq!(row.execution_mode, AdaptiveExecutionMode::Adaptive);
     assert_eq!(row.candidate_status, AdaptiveCandidateStatus::Admitted);
     assert_eq!(row.adaptive_strategy, AdaptiveStrategy::ConservativeCompiledPipeline);
+    assert_eq!(row.runtime_actions_allowed.to_stable_value(), "none");
+    assert_eq!(row.runtime_action_counts.retry_count, 0);
+    assert_eq!(row.runtime_action_counts.spill_count, 0);
+    assert_eq!(row.runtime_action_counts.downgrade_count, 0);
     assert_eq!(row.final_sink_boundary.materialization_mode, QueryOutputMode::MaterializeToHost);
     assert!(
         row.missing_strict_contracts
@@ -137,6 +141,9 @@ fn phase_e3_adaptive_admission_reports_use_adaptive_rows_not_strict_contract_row
     let rendered = report.stable_kv_row();
     assert!(rendered.contains("execution_mode=adaptive"));
     assert!(rendered.contains("adaptive_strategy=conservative_compiled_pipeline"));
+    assert!(rendered.contains("retry_count=0"));
+    assert!(rendered.contains("spill_count=0"));
+    assert!(rendered.contains("downgrade_count=0"));
     assert!(!rendered.contains("execution_mode=strict_bounded"));
     assert!(!rendered.contains("unsupported_strict_bounded"));
 }
@@ -154,6 +161,10 @@ fn phase_e3_unsupported_adaptive_rows_reference_strict_gaps_without_strict_evide
     assert_eq!(row.execution_mode, AdaptiveExecutionMode::UnsupportedAdaptive);
     assert_eq!(row.candidate_status, AdaptiveCandidateStatus::Rejected);
     assert_eq!(row.adaptive_strategy, AdaptiveStrategy::Unsupported);
+    assert_eq!(row.runtime_actions_allowed.to_stable_value(), "none");
+    assert_eq!(row.runtime_action_counts.retry_count, 0);
+    assert_eq!(row.runtime_action_counts.spill_count, 0);
+    assert_eq!(row.runtime_action_counts.downgrade_count, 0);
     assert_eq!(row.rejection_reason, Some("missing_strict_contracts"));
     assert!(row.missing_strict_contracts.iter().any(|missing| {
         missing.required_contract == "unsupported_join_node_capability"
@@ -1213,6 +1224,67 @@ fn execute_query_plan_routes_root_hash_join_through_compiled_pipeline() {
     assert_eq!(metrics.compiled_pipeline_tasks_executed, pipeline.tasks().len() as u64);
     assert_eq!(metrics.compiled_pipeline_host_arrow_sinks, 1);
     assert_eq!(metrics.hash_join_build_count, 1);
+}
+
+#[test]
+fn execute_query_plan_routes_selected_adaptive_root_hash_join_through_adaptive_shell() {
+    let Ok(runtime) = cudf::Runtime::new() else {
+        return;
+    };
+    let dir = unique_temp_dir("cudf-query-engine-adaptive-e5-root-join");
+    let left_path = dir.join("left.parquet");
+    let right_path = dir.join("right.parquet");
+    write_join_parquets(&left_path, &right_path);
+    let plan = root_join_data_plan(&left_path, &right_path);
+    let context = bounded_context_with_mode(Arc::new(runtime), NativePipelineExecutionMode::Adaptive);
+
+    assert_eq!(context.native_pipeline_execution_mode(), NativePipelineExecutionMode::Adaptive);
+    let result = execute_query_plan(&context, &plan).expect("adaptive selected root join should execute");
+    let batch = result.output().as_host_arrow().expect("adaptive output should be host Arrow");
+    let metrics = result.metrics();
+
+    assert_eq!(batch.num_rows(), 2);
+    assert_eq!(int32_values(batch, 0), vec![Some(2), Some(4)]);
+    assert_eq!(int32_values(batch, 1), vec![Some(200), Some(400)]);
+    assert_eq!(metrics.compiled_pipeline_attempts, 1);
+    assert!(metrics.compiled_pipeline_tasks_executed > 0);
+    assert_eq!(metrics.compiled_pipeline_host_arrow_sinks, 1);
+    assert_eq!(metrics.adaptive_retry_count, 0);
+    assert_eq!(metrics.adaptive_spill_count, 0);
+    assert_eq!(metrics.adaptive_downgrade_count, 0);
+}
+
+#[test]
+fn execute_query_plan_rejects_selected_adaptive_unsupported_join_with_adaptive_labels() {
+    let Ok(runtime) = cudf::Runtime::new() else {
+        return;
+    };
+    let dir = unique_temp_dir("cudf-query-engine-adaptive-e5-unsupported");
+    let left_path = dir.join("left.parquet");
+    let right_path = dir.join("right.parquet");
+    write_join_parquets(&left_path, &right_path);
+    let plan = root_join_gpu_sink_data_plan(&left_path, &right_path);
+    let context = bounded_context_with_mode(Arc::new(runtime), NativePipelineExecutionMode::Adaptive);
+
+    let error = match execute_query_plan(&context, &plan) {
+        Ok(_) => panic!("unsupported adaptive graph should be rejected"),
+        Err(error) => error,
+    };
+    let rendered = error.to_string();
+
+    assert_eq!(error.code(), cudf_query_engine::QueryErrorCode::UnsupportedPlanShape);
+    assert_eq!(error.fact_value("execution_mode"), Some("unsupported_adaptive"));
+    assert_eq!(error.fact_value("candidate_status"), Some("rejected"));
+    assert_eq!(error.fact_value("adaptive_strategy"), Some("unsupported"));
+    assert_eq!(error.fact_value("runtime_actions_allowed"), Some("none"));
+    assert_eq!(error.fact_value("retry_count"), Some("0"));
+    assert_eq!(error.fact_value("spill_count"), Some("0"));
+    assert_eq!(error.fact_value("downgrade_count"), Some("0"));
+    assert_eq!(error.fact_value("rejection_reason"), Some("unsupported_sink_boundary"));
+    assert_eq!(error.fact_value("strict_bounded_contract_report"), Some("not_emitted"));
+    assert!(rendered.contains("execution_mode=unsupported_adaptive"));
+    assert!(!rendered.contains("execution_mode=strict_bounded"));
+    assert!(!rendered.contains("execution_mode=unsupported_strict_bounded"));
 }
 
 #[test]
@@ -3136,6 +3208,10 @@ fn sink_input_edge_count(pipeline: &CompiledPipeline) -> usize {
 }
 
 fn bounded_context(runtime: Arc<cudf::Runtime>) -> ExecutionContext {
+    bounded_context_with_mode(runtime, NativePipelineExecutionMode::StrictBounded)
+}
+
+fn bounded_context_with_mode(runtime: Arc<cudf::Runtime>, mode: NativePipelineExecutionMode) -> ExecutionContext {
     ExecutionContext::builder()
         .with_shared_runtime(runtime)
         .with_memory_control_policy(MemoryControlPolicy::Bounded {
@@ -3145,6 +3221,7 @@ fn bounded_context(runtime: Arc<cudf::Runtime>) -> ExecutionContext {
             max_retry_attempts: 1,
             min_retry_chunk_row_groups: 1,
         })
+        .with_native_pipeline_execution_mode(mode)
         .build()
         .unwrap()
 }
