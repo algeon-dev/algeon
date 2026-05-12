@@ -18,5 +18,5 @@
   "session": {"shared_session_count": 4},
   "scheduling": {"arrival_mode": "concurrency", "concurrency": 8, "seed": 20260810, "warmup_seconds": 5, "measurement_seconds": 75},
   "cache": {"mode": "disabled"},
-  "workloads": [{"kind": "dblp", "path": "/opt/dlami/nvme/fixture/data/demo/citation_network/v1/parquet", "scale": "v12", "preparation_command": "fixture/fixture.sh graph dblp-ingest --source-json /path/to/dblp.v12.json --out-root /opt/dlami/nvme/fixture/data/demo", "queries": ["pagerank_topk", "bfs_topk", "pagerank"]}]
+  "workloads": [{"kind": "dblp", "path": "/opt/dlami/nvme/fixture/data/demo-v12-topology-r1/citation_network/v1/parquet", "scale": "v12", "preparation_command": "fixture/fixture.sh graph dblp-ingest --source-json /path/to/dblp.v12.json --out-root /opt/dlami/nvme/fixture/data/demo-v12-topology-r1", "queries": ["pagerank_topk", "bfs_topk", "pagerank"]}]
 }
