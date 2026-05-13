@@ -861,7 +861,7 @@ fn p6_isolated_cache_off_profiles_pin_one_graph_shape_and_declared_model_bands()
         assert!(selected[0].graph);
         assert_eq!(
             profile.workloads[0].path,
-            PathBuf::from("/opt/dlami/nvme/fixture/data/demo/citation_network/v1/parquet")
+            PathBuf::from("/opt/dlami/nvme/fixture/data/demo-v12-topology-r1/citation_network/v1/parquet")
         );
         let plan = ArrivalPlan::plan(&profile.scheduling, selected.len(), profile.session.shared_session_count)
             .expect("isolated P6 profile must plan its one measured attempt");
