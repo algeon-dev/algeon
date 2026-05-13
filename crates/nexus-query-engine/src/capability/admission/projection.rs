@@ -91,8 +91,10 @@ pub(in crate::capability) fn analyze_projection_scalar_setop_admission(
 ) -> CapabilityDecision {
     let shape = match projection_scalar_setop_shape_decision(plan) {
         Ok(shape) => shape,
-        Err(decision) if decision.rejection_reason() == Some("projection_scalar_setop_rejects_distinct_aggregate") => {
-            let mut facts = decision.rejection_facts().cloned().unwrap_or_default();
+        Err(CapabilityDecision::Rejected {
+            reason: "projection_scalar_setop_rejects_distinct_aggregate",
+            mut facts,
+        }) => {
             facts.insert("blocked_reason", "projection_scalar_setop_rejects_distinct_aggregate".to_string());
             facts.insert("required_remediation", "projection_scalar_setop_cardinality_contract".to_string());
             return CapabilityDecision::Rejected { reason: "projection_scalar_setop_contract_not_implemented", facts };

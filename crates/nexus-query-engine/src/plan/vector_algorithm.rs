@@ -1072,13 +1072,13 @@ impl VectorPcaParams {
         Self {
             input,
             n_components,
-            whiten: descriptor.option("whiten").and_then(|option| option.kind.default_bool()).unwrap_or(false),
+            whiten: descriptor.option("whiten").and_then(|option| option.kind.default_bool()).expect("PCA whiten"),
             solver: match descriptor.option("solver").and_then(|option| option.kind.default_str()) {
                 Some("cov_eig_jacobi") => VectorPcaSolver::CovEigJacobi,
                 Some("cov_eig_dq") => VectorPcaSolver::CovEigDq,
                 _ => panic!("canonical PCA solver default"),
             },
-            tolerance: descriptor.option("tol").and_then(|option| option.kind.default_f64()).unwrap_or(0.0),
+            tolerance: descriptor.option("tol").and_then(|option| option.kind.default_f64()).expect("PCA tolerance"),
             n_iterations: descriptor
                 .option("n_iterations")
                 .and_then(|option| option.kind.default_u64())
@@ -1086,7 +1086,7 @@ impl VectorPcaParams {
             flip_signs_based_on_u: descriptor
                 .option("flip_signs_based_on_u")
                 .and_then(|option| option.kind.default_bool())
-                .unwrap_or(false),
+                .expect("PCA sign flip"),
         }
     }
 }

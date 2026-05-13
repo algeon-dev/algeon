@@ -121,25 +121,25 @@ fn source_unique_keys_from_schema(schema: &Schema) -> Vec<Vec<String>> {
 }
 
 fn source_unique_keys_from_paths(source_paths: &[&Path]) -> Vec<Vec<String>> {
-    if source_paths.is_empty() {
+    let Some((first_path, remaining_paths)) = source_paths.split_first() else {
         return Vec::new();
-    }
+    };
     let Some(registry) = SOURCE_UNIQUE_KEYS_BY_PATH.get() else {
         return Vec::new();
     };
     let registry = registry.read().expect("source unique-key path registry poisoned");
-    let mut common_keys = None::<BTreeSet<Vec<String>>>;
-    for source_path in source_paths {
+    let Some(keys) = registered_source_unique_keys_for_path(&registry, first_path) else {
+        return Vec::new();
+    };
+    let mut common_keys = keys.iter().cloned().collect::<BTreeSet<_>>();
+    for source_path in remaining_paths {
         let Some(keys) = registered_source_unique_keys_for_path(&registry, source_path) else {
             return Vec::new();
         };
         let keys = keys.iter().cloned().collect::<BTreeSet<_>>();
-        common_keys = Some(match common_keys {
-            Some(common) => common.intersection(&keys).cloned().collect(),
-            None => keys,
-        });
+        common_keys = common_keys.intersection(&keys).cloned().collect();
     }
-    common_keys.unwrap_or_default().into_iter().collect()
+    common_keys.into_iter().collect()
 }
 
 fn registered_source_unique_keys_for_path<'a>(

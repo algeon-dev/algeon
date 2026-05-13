@@ -835,9 +835,10 @@ fn build_barriers(
             | PlanNode::VectorAlgorithm(_) => {},
         }
     }
-    let sink_input = sink_task.unwrap_or_else(|| {
-        tasks_for(task_ids, plan.sink().input()).expect("sink input task must be assigned").output_task()
-    });
+    let sink_input = match sink_task {
+        Some(task) => task,
+        None => tasks_for(task_ids, plan.sink().input())?.output_task(),
+    };
     let sink_barrier = PipelineBarrierId::new(barriers.len());
     let sink_gates = gate_builder.attach_requirements(
         ReservationGateOwner::Barrier(sink_barrier),
@@ -912,9 +913,10 @@ fn build_sink_boundary(
         ResultSink::HostArrow { .. } => SinkBoundaryKind::HostArrowMaterialization,
         ResultSink::GpuResident { .. } => SinkBoundaryKind::GpuResidentOutput,
     };
-    let input = sink_compilation.task.unwrap_or_else(|| {
-        tasks_for(task_ids, plan.sink().input()).expect("sink input task must be assigned").output_task()
-    });
+    let input = match sink_compilation.task {
+        Some(task) => task,
+        None => tasks_for(task_ids, plan.sink().input())?.output_task(),
+    };
     let sink_contract = sink_edge_contract(plan, analysis)?;
     let sink_gates = gate_builder.attach_requirements(
         ReservationGateOwner::SinkBoundary,
