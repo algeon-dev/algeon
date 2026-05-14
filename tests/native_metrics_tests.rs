@@ -99,6 +99,8 @@ fn query_metrics_reservation_events_record_memory_space() {
 #[test]
 fn query_metrics_reservation_timeline_records_live_ledger_deltas() {
     let mut metrics = QueryMetrics::default();
+    metrics.record_compiled_pipeline_task_execution("t2", "source_read");
+    metrics.record_compiled_pipeline_task_execution("t3", "join_probe");
     let request = MemoryReservationRequest::new(ReservationKind::SourceRead, 60, 100)
         .with_memory_boundary("source_read")
         .with_compiled_task_id("t2")
@@ -137,6 +139,11 @@ fn query_metrics_reservation_timeline_records_live_ledger_deltas() {
     assert_eq!(metrics.reservation_events[0].compiled_task_id.as_deref(), Some("t2"));
     assert_eq!(metrics.reservation_events[0].resident_resource_id.as_deref(), Some("r7"));
     assert_eq!(metrics.reservation_events[3].compiled_task_id.as_deref(), Some("t3"));
+    assert_eq!(metrics.max_task_reservation_bytes, 60);
+    assert_eq!(metrics.task_operator_metrics["source_read"].task_count, 1);
+    assert_eq!(metrics.task_operator_metrics["source_read"].reservation_live_peak_bytes, 80);
+    assert_eq!(metrics.task_operator_metrics["join_probe"].task_count, 1);
+    assert_eq!(metrics.task_operator_metrics["join_probe"].reservation_live_peak_bytes, 0);
 }
 
 #[test]
@@ -321,6 +328,12 @@ fn native_datafusion_metric_names_cover_bounded_runtime_contract() {
         "reservation_granted_bytes",
         "reservation_live_peak_bytes",
         "reservation_denied_count",
+        "max_task_reservation_bytes",
+        "max_task_observed_peak_bytes",
+        "max_task_observed_peak_bytes_observed",
+        "max_task_retained_bytes",
+        "max_task_retained_bytes_observed",
+        "native_task_operator_rows",
         "compiled_pipeline_attempts",
         "compiled_pipeline_tasks_executed",
         "compiled_pipeline_host_arrow_sinks",

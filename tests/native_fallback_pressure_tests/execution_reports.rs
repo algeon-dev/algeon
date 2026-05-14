@@ -49,6 +49,13 @@ fn native_datafusion_execution_report_records_runtime_boundaries() {
     assert_eq!(row.metrics.resident_dataframe_peak_bytes, Some(4096));
     assert_eq!(row.metrics.allocator_high_water_bytes, Some(8192));
     assert_eq!(row.metrics.reservation_live_peak_bytes, 96);
+    assert_eq!(row.metrics.max_task_reservation_bytes, 64);
+    assert_eq!(row.metrics.max_task_observed_peak_bytes, Some(72));
+    assert_eq!(row.metrics.max_task_retained_bytes, Some(48));
+    assert_eq!(row.metrics.task_operator_rows.len(), 1);
+    assert_eq!(row.metrics.task_operator_rows[0].operator_kind, "source_read");
+    assert_eq!(row.metrics.task_operator_rows[0].task_count, 3);
+    assert_eq!(row.metrics.task_operator_rows[0].reservation_live_peak_bytes, 64);
     assert_eq!(row.metrics.source_chunks_planned, 6);
     assert_eq!(row.metrics.source_chunks_attempted, 7);
     assert_eq!(row.metrics.source_chunks_committed, 5);
@@ -102,14 +109,15 @@ fn native_datafusion_execution_report_records_runtime_boundaries() {
     );
 
     let text = report.to_tsv();
-    assert_eq!(NATIVE_DATAFUSION_EXECUTION_TSV_SCHEMA_VERSION, 16);
-    assert_eq!(NATIVE_DATAFUSION_EXECUTION_TSV_HEADER.split('\t').count(), 85);
+    assert_eq!(NATIVE_DATAFUSION_EXECUTION_TSV_SCHEMA_VERSION, 17);
+    assert_eq!(NATIVE_DATAFUSION_EXECUTION_TSV_HEADER.split('\t').count(), 89);
     assert!(NATIVE_DATAFUSION_EXECUTION_TSV_HEADER.contains(
         "\treservation_requested_bytes\treservation_granted_bytes\treservation_live_peak_bytes\treservation_denied_count\t"
     ));
     assert!(NATIVE_DATAFUSION_EXECUTION_TSV_HEADER.contains("\tsource_cache_hits\tsource_cache_misses\tsource_cache_inserts\tsource_cache_insert_skipped\tsource_cache_retained_bytes\t"));
-    assert!(text.starts_with("# native_datafusion_execution_tsv_schema_version=16\n"));
+    assert!(text.starts_with("# native_datafusion_execution_tsv_schema_version=17\n"));
     assert!(text.contains(&format!("{NATIVE_DATAFUSION_EXECUTION_TSV_HEADER}\n")));
+    assert!(text.contains("\t64\t72\t48\toperator_kind=source_read,task_count=3,reservation_live_peak_bytes=64\t"));
     assert!(text.contains("execution_mode=strict_bounded"));
     assert!(text.contains("contract_status=modeled"));
     assert!(text.contains("contract_quality=query_engine_owned_boundary"));

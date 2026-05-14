@@ -211,6 +211,11 @@ pub(super) fn native_execution_metrics_set() -> datafusion::physical_plan::metri
         ("reservation_granted_bytes", 128),
         ("reservation_live_peak_bytes", 96),
         ("reservation_denied_count", 0),
+        ("max_task_reservation_bytes", 64),
+        ("max_task_observed_peak_bytes", 72),
+        ("max_task_observed_peak_bytes_observed", 1),
+        ("max_task_retained_bytes", 48),
+        ("max_task_retained_bytes_observed", 1),
         ("source_chunks_planned", 6),
         ("source_chunks_attempted", 7),
         ("source_chunks_committed", 5),
@@ -258,6 +263,13 @@ pub(super) fn native_execution_metrics_set() -> datafusion::physical_plan::metri
     ] {
         MetricBuilder::new(&metrics).with_type(MetricType::SUMMARY).counter(name, 0).add(value);
     }
+    MetricBuilder::new(&metrics)
+        .with_type(MetricType::SUMMARY)
+        .with_new_label("operator_kind", "source_read")
+        .with_new_label("task_count", "3")
+        .with_new_label("reservation_live_peak_bytes", "64")
+        .global_counter("native_task_operator_rows")
+        .add(1);
     MetricBuilder::new(&metrics)
         .with_type(MetricType::SUMMARY)
         .with_new_label("node_id", "n2")

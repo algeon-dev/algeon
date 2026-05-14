@@ -5,6 +5,7 @@ use datafusion::physical_plan::metrics::MetricsSet;
 use super::tsv::{metric_count, optional_observed_metric_count};
 
 const NATIVE_JOIN_STRATEGY_ROWS_METRIC_NAME: &str = "native_join_strategy_rows";
+const NATIVE_TASK_OPERATOR_ROWS_METRIC_NAME: &str = "native_task_operator_rows";
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct NativeDataFusionExecutionMetrics {
@@ -27,6 +28,10 @@ pub struct NativeDataFusionExecutionMetrics {
     pub reservation_granted_bytes: usize,
     pub reservation_live_peak_bytes: usize,
     pub reservation_denied_count: usize,
+    pub max_task_reservation_bytes: usize,
+    pub max_task_observed_peak_bytes: Option<usize>,
+    pub max_task_retained_bytes: Option<usize>,
+    pub task_operator_rows: Vec<NativeTaskOperatorMetricRow>,
     pub source_chunks_planned: usize,
     pub source_chunks_attempted: usize,
     pub source_chunks_committed: usize,
@@ -96,6 +101,10 @@ impl NativeDataFusionExecutionMetrics {
             reservation_granted_bytes: metric_count(metrics, "reservation_granted_bytes"),
             reservation_live_peak_bytes: metric_count(metrics, "reservation_live_peak_bytes"),
             reservation_denied_count: metric_count(metrics, "reservation_denied_count"),
+            max_task_reservation_bytes: metric_count(metrics, "max_task_reservation_bytes"),
+            max_task_observed_peak_bytes: optional_observed_metric_count(metrics, "max_task_observed_peak_bytes"),
+            max_task_retained_bytes: optional_observed_metric_count(metrics, "max_task_retained_bytes"),
+            task_operator_rows: task_operator_rows(metrics),
             source_chunks_planned: metric_count(metrics, "source_chunks_planned"),
             source_chunks_attempted: metric_count(metrics, "source_chunks_attempted"),
             source_chunks_committed: metric_count(metrics, "source_chunks_committed"),
@@ -153,6 +162,37 @@ impl NativeDataFusionExecutionMetrics {
             }
         }
         self.join_strategy_rows.sort_by(|left, right| left.sort_key().cmp(&right.sort_key()));
+    }
+
+    pub fn merge_task_operator_rows(&mut self, rows: Vec<NativeTaskOperatorMetricRow>) {
+        for row in rows {
+            if let Some(existing) =
+                self.task_operator_rows.iter_mut().find(|existing| existing.operator_kind == row.operator_kind)
+            {
+                existing.task_count = existing.task_count.saturating_add(row.task_count);
+                existing.reservation_live_peak_bytes =
+                    existing.reservation_live_peak_bytes.max(row.reservation_live_peak_bytes);
+            } else {
+                self.task_operator_rows.push(row);
+            }
+        }
+        self.task_operator_rows.sort_by(|left, right| left.operator_kind.cmp(&right.operator_kind));
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct NativeTaskOperatorMetricRow {
+    pub operator_kind: String,
+    pub task_count: usize,
+    pub reservation_live_peak_bytes: usize,
+}
+
+impl NativeTaskOperatorMetricRow {
+    pub fn to_stable_kv_row(&self) -> String {
+        format!(
+            "operator_kind={},task_count={},reservation_live_peak_bytes={}",
+            self.operator_kind, self.task_count, self.reservation_live_peak_bytes
+        )
     }
 }
 
@@ -271,6 +311,17 @@ fn join_strategy_rows(metrics: &MetricsSet) -> Vec<NativeJoinStrategyMetricRow> 
     rows
 }
 
+fn task_operator_rows(metrics: &MetricsSet) -> Vec<NativeTaskOperatorMetricRow> {
+    let mut rows = metrics
+        .iter()
+        .filter(|metric| metric.value().name() == NATIVE_TASK_OPERATOR_ROWS_METRIC_NAME)
+        .filter(|metric| metric.labels().iter().any(|label| label.name() == "operator_kind"))
+        .map(|metric| labels_to_task_operator_row(labels_by_name(metric.labels())))
+        .collect::<Vec<_>>();
+    rows.sort_by(|left, right| left.operator_kind.cmp(&right.operator_kind));
+    rows
+}
+
 fn labels_by_name(labels: &[datafusion::physical_plan::metrics::Label]) -> BTreeMap<&str, &str> {
     labels.iter().map(|label| (label.name(), label.value())).collect()
 }
@@ -300,6 +351,14 @@ fn labels_to_join_strategy_row(labels: BTreeMap<&str, &str>) -> NativeJoinStrate
         one_shot_join_materialization_bytes: usize_label(&labels, "one_shot_join_materialization_bytes"),
         one_shot_join_output_bytes: usize_label(&labels, "one_shot_join_output_bytes"),
         join_gather_map_bytes: usize_label(&labels, "join_gather_map_bytes"),
+    }
+}
+
+fn labels_to_task_operator_row(labels: BTreeMap<&str, &str>) -> NativeTaskOperatorMetricRow {
+    NativeTaskOperatorMetricRow {
+        operator_kind: string_label(&labels, "operator_kind"),
+        task_count: usize_label(&labels, "task_count"),
+        reservation_live_peak_bytes: usize_label(&labels, "reservation_live_peak_bytes"),
     }
 }
 

@@ -56,7 +56,7 @@ pub use expr::{
 };
 pub use metrics::{
     BoundaryMetrics, BudgetedExecutionEvent, JoinOperatorMetrics, JoinStrategyDecisionMetrics, MemoryReservationEvent,
-    MemoryReservationEventAction, MemoryReservationEventOutcome, OperatorMetrics, QueryMetrics,
+    MemoryReservationEventAction, MemoryReservationEventOutcome, OperatorMetrics, QueryMetrics, TaskOperatorMetrics,
 };
 pub use mode::{AdaptiveExecutionMode, NativePipelineExecutionMode, StrictBoundedExecutionMode};
 pub use pipeline::{

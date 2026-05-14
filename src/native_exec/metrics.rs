@@ -33,6 +33,12 @@ pub const NATIVE_CUDF_DATAFUSION_METRIC_NAMES: &[&str] = &[
     "reservation_granted_bytes",
     "reservation_live_peak_bytes",
     "reservation_denied_count",
+    "max_task_reservation_bytes",
+    "max_task_observed_peak_bytes",
+    "max_task_observed_peak_bytes_observed",
+    "max_task_retained_bytes",
+    "max_task_retained_bytes_observed",
+    "native_task_operator_rows",
     "peak_device_memory_bytes",
     "resident_dataframe_peak_bytes",
     "resident_dataframe_peak_bytes_observed",
@@ -128,6 +134,11 @@ pub(super) struct NativeCudfMetrics {
     reservation_granted_bytes: Count,
     reservation_live_peak_bytes: Count,
     reservation_denied_count: Count,
+    max_task_reservation_bytes: Count,
+    max_task_observed_peak_bytes: Count,
+    max_task_observed_peak_bytes_observed: Count,
+    max_task_retained_bytes: Count,
+    max_task_retained_bytes_observed: Count,
     peak_device_memory_bytes: Count,
     resident_dataframe_peak_bytes: Count,
     resident_dataframe_peak_bytes_observed: Count,
@@ -199,6 +210,7 @@ pub(super) struct NativeCudfMetrics {
 impl NativeCudfMetrics {
     pub(super) fn new(metrics: &ExecutionPlanMetricsSet, partition: usize) -> Self {
         let _ = summary_counter(metrics, "native_join_strategy_rows", partition);
+        let _ = summary_counter(metrics, "native_task_operator_rows", partition);
         Self {
             metrics_set: metrics.clone(),
             baseline: BaselineMetrics::new(metrics, partition),
@@ -238,6 +250,15 @@ impl NativeCudfMetrics {
             reservation_granted_bytes: summary_counter(metrics, "reservation_granted_bytes", partition),
             reservation_live_peak_bytes: summary_counter(metrics, "reservation_live_peak_bytes", partition),
             reservation_denied_count: summary_counter(metrics, "reservation_denied_count", partition),
+            max_task_reservation_bytes: summary_counter(metrics, "max_task_reservation_bytes", partition),
+            max_task_observed_peak_bytes: summary_counter(metrics, "max_task_observed_peak_bytes", partition),
+            max_task_observed_peak_bytes_observed: summary_counter(
+                metrics,
+                "max_task_observed_peak_bytes_observed",
+                partition,
+            ),
+            max_task_retained_bytes: summary_counter(metrics, "max_task_retained_bytes", partition),
+            max_task_retained_bytes_observed: summary_counter(metrics, "max_task_retained_bytes_observed", partition),
             peak_device_memory_bytes: summary_counter(metrics, "peak_device_memory_bytes", partition),
             resident_dataframe_peak_bytes: summary_counter(metrics, "resident_dataframe_peak_bytes", partition),
             resident_dataframe_peak_bytes_observed: summary_counter(
@@ -348,6 +369,17 @@ impl NativeCudfMetrics {
         self.reservation_granted_bytes.add(count(metrics.reservation_granted_bytes));
         self.reservation_live_peak_bytes.add(count(metrics.reservation_live_peak_bytes));
         self.reservation_denied_count.add(count(metrics.reservation_denied_count));
+        self.max_task_reservation_bytes.add(count(metrics.max_task_reservation_bytes));
+        add_optional_count(
+            &self.max_task_observed_peak_bytes,
+            Some(&self.max_task_observed_peak_bytes_observed),
+            metrics.max_task_observed_peak_bytes,
+        );
+        add_optional_count(
+            &self.max_task_retained_bytes,
+            Some(&self.max_task_retained_bytes_observed),
+            metrics.max_task_retained_bytes,
+        );
         add_optional_count(&self.peak_device_memory_bytes, None, metrics.peak_device_memory_bytes);
         add_optional_count(
             &self.resident_dataframe_peak_bytes,
@@ -410,6 +442,7 @@ impl NativeCudfMetrics {
         self.one_shot_join_materialization_bytes.add(count(metrics.one_shot_join_materialization_bytes));
         self.one_shot_join_output_bytes.add(count(metrics.one_shot_join_output_bytes));
         self.join_gather_map_bytes.add(count(join_gather_map_bytes(metrics)));
+        self.record_task_operator_rows(metrics);
         self.record_join_strategy_rows(metrics);
         self.source_metadata_load_time.add_duration(metrics.source_metadata_load_time);
         self.source_read_queue_wait_time.add_duration(metrics.source_read_queue_wait_time);
@@ -421,6 +454,18 @@ impl NativeCudfMetrics {
         self.final_merge_time.add_duration(metrics.final_merge_time);
         self.final_sort_time.add_duration(metrics.final_sort_time);
         self.materialization_time.add_duration(metrics.materialization_time);
+    }
+
+    fn record_task_operator_rows(&self, metrics: &QueryMetrics) {
+        for row in metrics.task_operator_metrics.values() {
+            MetricBuilder::new(&self.metrics_set)
+                .with_type(MetricType::SUMMARY)
+                .with_new_label("operator_kind", row.operator_kind.clone())
+                .with_new_label("task_count", row.task_count.to_string())
+                .with_new_label("reservation_live_peak_bytes", row.reservation_live_peak_bytes.to_string())
+                .global_counter("native_task_operator_rows")
+                .add(1);
+        }
     }
 
     fn record_join_strategy_rows(&self, metrics: &QueryMetrics) {

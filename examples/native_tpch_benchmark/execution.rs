@@ -327,6 +327,13 @@ fn aggregate_native_execution_metrics(metrics: &[MetricsSet]) -> NativeDataFusio
             aggregate.reservation_live_peak_bytes.max(current.reservation_live_peak_bytes);
         aggregate.reservation_denied_count =
             aggregate.reservation_denied_count.saturating_add(current.reservation_denied_count);
+        aggregate.max_task_reservation_bytes =
+            aggregate.max_task_reservation_bytes.max(current.max_task_reservation_bytes);
+        aggregate.max_task_observed_peak_bytes =
+            max_optional_metric(aggregate.max_task_observed_peak_bytes, current.max_task_observed_peak_bytes);
+        aggregate.max_task_retained_bytes =
+            max_optional_metric(aggregate.max_task_retained_bytes, current.max_task_retained_bytes);
+        aggregate.merge_task_operator_rows(current.task_operator_rows);
         aggregate.source_chunks_planned = aggregate.source_chunks_planned.saturating_add(current.source_chunks_planned);
         aggregate.source_chunks_attempted =
             aggregate.source_chunks_attempted.saturating_add(current.source_chunks_attempted);
