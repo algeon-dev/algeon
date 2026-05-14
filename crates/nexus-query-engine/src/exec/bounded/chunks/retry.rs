@@ -38,16 +38,14 @@ fn apply_parent_scan_limit_to_retry_children(parent: &SourceChunk, left: &mut So
     let Some(parent_limit) = parent.scan_limit_rows else {
         return;
     };
-    let Ok(mut remaining) = u64::try_from(parent_limit) else {
-        return;
-    };
+    let mut remaining = parent_limit as u64;
     apply_retry_child_scan_limit(left, &mut remaining);
     apply_retry_child_scan_limit(right, &mut remaining);
 }
 
 fn apply_retry_child_scan_limit(child: &mut SourceChunk, remaining: &mut u64) {
     let Some(row_count) = child.known_row_count else {
-        child.scan_limit_rows = usize::try_from(*remaining).ok();
+        child.scan_limit_rows = Some(*remaining as usize);
         return;
     };
     if *remaining == 0 {
@@ -59,10 +57,8 @@ fn apply_retry_child_scan_limit(child: &mut SourceChunk, remaining: &mut u64) {
         *remaining = remaining.saturating_sub(row_count);
         return;
     }
-    if let Ok(keep_rows) = usize::try_from(*remaining) {
-        child.scan_limit_rows = Some(keep_rows);
-        child.known_row_count = Some(*remaining);
-    }
+    child.scan_limit_rows = Some(*remaining as usize);
+    child.known_row_count = Some(*remaining);
     *remaining = 0;
 }
 

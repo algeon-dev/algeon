@@ -79,7 +79,7 @@ pub(in crate::exec::bounded) fn join_leaf_prefetch_requested_bytes(
 }
 
 pub(in crate::exec::bounded::chunks) fn minimum_parquet_source_read_budget_bytes() -> u64 {
-    u64::try_from(cudf::DataFrame::minimum_parquet_source_read_budget_bytes()).unwrap_or(u64::MAX)
+    cudf::DataFrame::minimum_parquet_source_read_budget_bytes() as u64
 }
 
 /// Precision of the byte contract used when reserving memory for one bounded

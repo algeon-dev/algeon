@@ -42,7 +42,7 @@ impl LakehouseCachePolicy {
         let rows = row_count
             .div_ceil(self.optimized_batch_target_row_groups)
             .clamp(self.optimized_batch_min_rows_per_group, self.optimized_batch_max_rows_per_group);
-        i32::try_from(rows).unwrap_or(i32::MAX)
+        rows as i32
     }
 
     pub(in crate::exec::source) fn cache_lock_wait(self) -> Duration {

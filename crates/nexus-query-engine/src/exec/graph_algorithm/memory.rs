@@ -269,7 +269,7 @@ pub(in crate::exec) fn graph_device_total_memory_bytes(context: &ExecutionContex
 #[cfg(feature = "cugraph")]
 pub(super) struct GraphExecutionBudget {
     pub(super) runtime: std::sync::Arc<cudf::Runtime>,
-    pub(super) token: Option<cudf::ExecutionBudgetToken>,
+    pub(super) token: cudf::ExecutionBudgetToken,
 }
 
 #[cfg(feature = "cugraph")]
@@ -396,7 +396,7 @@ pub(super) fn graph_execution_budget(
             .with_fact("operation", operation)
             .with_fact("budget_boundary", budget_boundary)
         })?;
-    Ok(GraphExecutionBudget { runtime: std::sync::Arc::new(runtime), token: Some(token) })
+    Ok(GraphExecutionBudget { runtime: std::sync::Arc::new(runtime), token })
 }
 
 #[cfg(feature = "cugraph")]
@@ -431,7 +431,7 @@ fn graph_execution_budget_token(
 #[cfg(feature = "cugraph")]
 pub(super) fn attach_graph_budget_observation(
     result: Result<GraphAlgorithmExecutionResult>,
-    token: Option<&cudf::ExecutionBudgetToken>,
+    token: &cudf::ExecutionBudgetToken,
     operation: &'static str,
 ) -> Result<GraphAlgorithmExecutionResult> {
     match result {
@@ -447,11 +447,10 @@ pub(super) fn attach_graph_budget_observation(
 
 #[cfg(feature = "cugraph")]
 pub(super) fn graph_budget_observation(
-    token: Option<&cudf::ExecutionBudgetToken>,
+    token: &cudf::ExecutionBudgetToken,
     operation: &'static str,
     status: &'static str,
 ) -> Option<GraphBudgetObservation> {
-    let token = token?;
     let usage = token.reservation_usage().ok()?;
     let arena_usage = token.reservation_arena_usage().ok().flatten();
     Some(GraphBudgetObservation::from_reservation_usage(operation, token, usage, arena_usage, status))
@@ -490,7 +489,7 @@ fn graph_budget_error_fact_key(context_key: &str) -> Option<&'static str> {
 #[cfg(feature = "cugraph")]
 pub(super) fn attach_graph_budget_error_facts(
     mut error: QueryError,
-    token: Option<&cudf::ExecutionBudgetToken>,
+    token: &cudf::ExecutionBudgetToken,
     operation: &'static str,
 ) -> QueryError {
     let status = if error.code() == QueryErrorCode::CudfResourceExhausted {

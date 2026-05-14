@@ -38,9 +38,7 @@ pub(in crate::exec) fn runtime_graph_statistics_probe_with_budget(
     let probe = runtime_graph_statistics_probe_in_runtime(budget.runtime.as_ref(), frame, spec);
     match probe {
         Ok(probe) => {
-            if let Some(observation) =
-                graph_budget_observation(budget.token.as_ref(), operation, "reservation_enforced")
-            {
+            if let Some(observation) = graph_budget_observation(&budget.token, operation, "reservation_enforced") {
                 observation.record_with_boundary(
                     metrics,
                     crate::graph_memory::GRAPH_VERTEX_ESTIMATE_BOUNDARY,
@@ -50,7 +48,7 @@ pub(in crate::exec) fn runtime_graph_statistics_probe_with_budget(
             Ok(probe)
         },
         Err(error) => {
-            let error = attach_graph_budget_error_facts(error, budget.token.as_ref(), operation);
+            let error = attach_graph_budget_error_facts(error, &budget.token, operation);
             record_graph_budget_observation_from_error_with_boundary(
                 metrics,
                 &error,

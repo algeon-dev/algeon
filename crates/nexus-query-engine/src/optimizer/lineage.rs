@@ -53,7 +53,7 @@ pub(super) fn lineages_for_column(
     let Some(node) = plan.node(node_id) else {
         return Vec::new();
     };
-    let has_shared_path = parent_counts.get(node_id.index()).copied().unwrap_or_default() > 1;
+    let has_shared_path = parent_counts[node_id.index()] > 1;
     let mark_shared = |mut lineage: SourceColumnLineage| {
         lineage.has_shared_path |= has_shared_path;
         lineage
@@ -302,7 +302,7 @@ fn consumer_pre_aggregate_lineages_for_column(
     let Some(node) = plan.node(node_id) else {
         return Vec::new();
     };
-    let has_shared_path = parent_counts.get(node_id.index()).copied().unwrap_or_default() > 1;
+    let has_shared_path = parent_counts[node_id.index()] > 1;
     let mark_shared = |mut lineage: SourceColumnLineage| {
         lineage.has_shared_path |= has_shared_path;
         lineage
@@ -383,7 +383,7 @@ pub(super) fn simple_lineages_for_column(
     let Some(node) = plan.node(node_id) else {
         return Vec::new();
     };
-    let has_shared_path = parent_counts.get(node_id.index()).copied().unwrap_or_default() > 1;
+    let has_shared_path = parent_counts[node_id.index()] > 1;
     let mark_shared = |mut lineage: SourceColumnLineage| {
         lineage.has_shared_path |= has_shared_path;
         lineage

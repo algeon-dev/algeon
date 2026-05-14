@@ -121,7 +121,7 @@ pub(crate) fn optimize_stream_fanout_replay(
         diagnostics.candidates.push(StreamFanoutReplayCandidateDiagnostics {
             rule_name: STREAM_FANOUT_REPLAY_RULE_NAME,
             fanout_node_id,
-            consumer_count: direct_consumers.get(&fanout_node_id).map_or(0, Vec::len),
+            consumer_count: direct_consumers[&fanout_node_id].len(),
             join_probe_consumer_node_ids,
             applied,
             rejected_reason: (!applied).then_some(StreamFanoutReplayRejectedReason::NotReachableFromSink),

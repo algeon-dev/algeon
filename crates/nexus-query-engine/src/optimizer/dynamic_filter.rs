@@ -293,7 +293,7 @@ fn earliest_filter_consumer_for_column(
     column: &str,
     stop_at_shared_path: bool,
 ) -> Option<(DynamicFilterConsumer, String)> {
-    if stop_at_shared_path && parent_counts.get(node_id.index()).copied().unwrap_or_default() > 1 {
+    if stop_at_shared_path && parent_counts[node_id.index()] > 1 {
         return None;
     }
     let node = plan.node(node_id)?;
@@ -437,7 +437,7 @@ fn post_decode_consumer_feeds_scalar_decimal_sum(
 }
 
 fn single_parent(plan: &QueryPlan, parent_counts: &[usize], node_id: NodeId) -> Option<NodeId> {
-    if parent_counts.get(node_id.index()).copied().unwrap_or_default() != 1 {
+    if parent_counts[node_id.index()] != 1 {
         return None;
     }
     plan.nodes().iter().find(|candidate| candidate.input_ids().contains(&node_id)).map(|candidate| candidate.id)

@@ -27,19 +27,10 @@ pub(in crate::exec::bounded::chunks) use execution::*;
 pub(in crate::exec::bounded) use execution::{
     RawSourceInput, execute_bounded_raw_source_chunk, execute_bounded_raw_source_chunk_batch,
 };
-// Keep attempt/retry_attempt names in the chunks public surface for symmetry with the interrupt call
-// sites, even though only the root retry entry is referenced from outside the tree today.
-#[allow(unused_imports)]
-pub(super) use execution::{
-    execute_bounded_chunk_attempt, execute_bounded_chunk_retry_attempt, execute_bounded_chunk_with_retry,
-};
 #[allow(unused_imports)] // sibling resolution via use super::*
 pub(in crate::exec::bounded::chunks) use reservation_contract::*;
-#[allow(unused_imports)]
 pub(in crate::exec) use reservation_contract::{
-    SourceReadBudgetCorrection, SourceReadReservationContract, SourceReadReservationContractQuality,
-    observed_source_read_batch_reservation_request, source_chunk_batch_reservation_request,
-    source_read_batch_reservation_contract, source_read_batch_reservation_request,
+    SourceReadReservationContractQuality, source_read_batch_reservation_contract,
     source_read_budget_correction_from_error, try_grow_source_read_reservation_for_budget_correction,
 };
 pub(super) use reservation_contract::{

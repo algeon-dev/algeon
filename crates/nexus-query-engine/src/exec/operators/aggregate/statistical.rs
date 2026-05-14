@@ -565,7 +565,6 @@ fn lower_gpu_native_statistical_partial_aggregate_plan(
     let mut pre_group_exprs = Vec::new();
     let mut aggregations = Vec::with_capacity(spec.aggr_exprs.len().saturating_mul(3));
     let mut output_names = aggregate.output_key_names.clone();
-    let statistical_inputs = statistical_input_first_indices(spec)?;
     let mut statistical_states = BTreeMap::<String, StatisticalStateAliases>::new();
 
     for (index, expr) in spec.aggr_exprs.iter().enumerate() {
@@ -578,7 +577,7 @@ fn lower_gpu_native_statistical_partial_aggregate_plan(
                     spec,
                     input_names,
                     &input_column,
-                    statistical_inputs.get(input_column.as_str()).copied().unwrap_or(index),
+                    index,
                     &mut statistical_states,
                     &mut pre_group_exprs,
                     &mut aggregations,
@@ -621,7 +620,6 @@ fn lower_gpu_native_statistical_final_merge_plan(
     let mut output_names = keys.output_key_names.clone();
     let expected_output_names =
         keys.output_key_names.iter().chain(spec.aggr_exprs.iter().map(|expr| &expr.alias)).cloned().collect::<Vec<_>>();
-    let statistical_inputs = statistical_input_first_indices(spec)?;
     let mut statistical_states = BTreeMap::<String, StatisticalStateAliases>::new();
     let mut final_exprs = Vec::with_capacity(spec.aggr_exprs.len());
 
@@ -634,7 +632,7 @@ fn lower_gpu_native_statistical_final_merge_plan(
                     spec,
                     input_names,
                     &input_column,
-                    statistical_inputs.get(input_column.as_str()).copied().unwrap_or(index),
+                    index,
                     &mut statistical_states,
                     &mut aggregations,
                     &mut output_names,
@@ -716,18 +714,6 @@ fn ensure_final_merge_statistical_state(
     output_names.extend([state.sum.clone(), state.count.clone(), state.sum_squares.clone()]);
     states.insert(input_column.to_string(), state.clone());
     state
-}
-
-fn statistical_input_first_indices(spec: &AggregateSpec) -> Result<BTreeMap<String, usize>> {
-    let mut inputs = BTreeMap::new();
-    for (index, expr) in spec.aggr_exprs.iter().enumerate() {
-        if expr.function.is_floating_statistical() {
-            let input_column =
-                lower_column_expr(&expr.expr, "nexus_query_engine.aggregate.statistical_moments.statistical_inputs")?;
-            inputs.entry(input_column).or_insert(index);
-        }
-    }
-    Ok(inputs)
 }
 
 fn statistical_state_aliases(frame: &DataFrame, spec: &AggregateSpec, index: usize) -> StatisticalStateAliases {

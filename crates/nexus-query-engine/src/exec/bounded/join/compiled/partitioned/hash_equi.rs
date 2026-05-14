@@ -261,7 +261,6 @@ pub(in crate::exec::bounded::join::compiled) fn execute_compiled_partitioned_has
     let overrides_lease = execution_overrides(context)?;
     let overrides = overrides_lease.overrides();
     let build_partitioned = hash_partition_join_side(
-        context,
         node_id,
         build_side,
         build.input,
@@ -296,7 +295,7 @@ pub(in crate::exec::bounded::join::compiled) fn execute_compiled_partitioned_has
     );
 
     let probe_columns =
-        compiled_join_input_columns(context, node, CompiledJoinExecutionStrategy::PartitionedHashEqui, probe_side)?;
+        compiled_join_input_columns(node, CompiledJoinExecutionStrategy::PartitionedHashEqui, probe_side)?;
     let stream_result = stream_bounded_join_leaf_local_parquet_source_serial(
         context,
         stream,
@@ -315,7 +314,6 @@ pub(in crate::exec::bounded::join::compiled) fn execute_compiled_partitioned_has
             let probe_rows = probe.rows;
             let probe_bytes = probe.bytes;
             let probe_partitioned = hash_partition_join_side(
-                context,
                 node_id,
                 probe_side,
                 probe,
@@ -417,7 +415,6 @@ pub(in crate::exec::bounded::join::compiled) fn execute_compiled_partitioned_has
     let overrides_lease = execution_overrides(context)?;
     let overrides = overrides_lease.overrides();
     let build_partitioned = hash_partition_join_side(
-        context,
         node_id,
         build_side,
         build.input,
@@ -439,19 +436,15 @@ pub(in crate::exec::bounded::join::compiled) fn execute_compiled_partitioned_has
         ]),
     );
 
-    let probe_columns = match compiled_join_input_columns(
-        context,
-        node,
-        CompiledJoinExecutionStrategy::PartitionedHashEqui,
-        probe_side,
-    ) {
-        Ok(columns) => columns,
-        Err(error) => {
-            inputs.release_all(reservations, metrics);
-            release_partitioned_join_side(build_partitioned, reservations, metrics);
-            return Err(error);
-        },
-    };
+    let probe_columns =
+        match compiled_join_input_columns(node, CompiledJoinExecutionStrategy::PartitionedHashEqui, probe_side) {
+            Ok(columns) => columns,
+            Err(error) => {
+                inputs.release_all(reservations, metrics);
+                release_partitioned_join_side(build_partitioned, reservations, metrics);
+                return Err(error);
+            },
+        };
     Ok(BoundedCompiledJoinProbeState::PartitionedLazyStream(PartitionedHashEquiJoinFrameStreamProbeState {
         build_side,
         build_rows,
@@ -583,7 +576,6 @@ impl PartitionedHashEquiJoinProbeStreamSource {
         };
         let overrides = overrides_lease.overrides();
         let probe_partitioned = match hash_partition_join_side(
-            &self.context,
             self.node_id,
             probe_side,
             probe,

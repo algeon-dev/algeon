@@ -46,15 +46,6 @@ pub(super) fn start_cache_maintenance_fetch(
     resolved_source: &crate::source::ResolvedParquetSource,
     estimated_fetch_bytes: Option<u64>,
 ) -> Result<PendingCacheMaintenanceFetch> {
-    start_cache_maintenance_fetch_with_budget(context, location, resolved_source, estimated_fetch_bytes)
-}
-
-fn start_cache_maintenance_fetch_with_budget(
-    context: &ExecutionContext,
-    location: &crate::source::ParquetSourceLocation,
-    resolved_source: &crate::source::ResolvedParquetSource,
-    estimated_fetch_bytes: Option<u64>,
-) -> Result<PendingCacheMaintenanceFetch> {
     context.check_cancellation("nexus_query_engine.lakehouse_cache.maintenance")?;
     let maintenance_location = cache_maintenance_location(location, resolved_source)?;
     let cache_fill_budget = context.lakehouse_cache_fill_budget();

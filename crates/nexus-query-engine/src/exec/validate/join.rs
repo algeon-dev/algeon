@@ -87,23 +87,27 @@ pub(super) fn validate_join_capability(
         .with_fact("join_type", join.spec.join_type)
         .with_fact("build_side", join.spec.build_side));
     }
-    if join.spec.join_type == JoinType::LeftMark && join.spec.mark_column_name.is_none() {
-        return Err(QueryError::new(
-            QueryErrorCode::InvalidPlan,
-            "nexus_query_engine.join.validate",
-            "native left mark join requires a mark_column_name in the join spec",
-        )
-        .with_fact("join_type", join.spec.join_type));
-    }
-    if join.spec.join_type != JoinType::LeftMark && join.spec.mark_column_name.is_some() {
-        return Err(QueryError::new(
-            QueryErrorCode::InvalidPlan,
-            "nexus_query_engine.join.validate",
-            "mark_column_name is only valid for left mark joins",
-        )
-        .with_fact("join_type", join.spec.join_type)
-        .with_fact("mark_column_name", join.spec.mark_column_name.as_deref().unwrap_or("")));
-    }
+    let mark_column_name = match (join.spec.join_type, join.spec.mark_column_name.as_deref()) {
+        (JoinType::LeftMark, Some(mark_column_name)) => Some(mark_column_name),
+        (JoinType::LeftMark, None) => {
+            return Err(QueryError::new(
+                QueryErrorCode::InvalidPlan,
+                "nexus_query_engine.join.validate",
+                "native left mark join requires a mark_column_name in the join spec",
+            )
+            .with_fact("join_type", join.spec.join_type));
+        },
+        (_, Some(mark_column_name)) => {
+            return Err(QueryError::new(
+                QueryErrorCode::InvalidPlan,
+                "nexus_query_engine.join.validate",
+                "mark_column_name is only valid for left mark joins",
+            )
+            .with_fact("join_type", join.spec.join_type)
+            .with_fact("mark_column_name", mark_column_name));
+        },
+        (_, None) => None,
+    };
     if let Some(build_artifact_id) = &join.spec.build_artifact_id {
         if build_artifact_id.is_empty() {
             return Err(QueryError::new(
@@ -160,8 +164,8 @@ pub(super) fn validate_join_capability(
     }
 
     validate_join_type_projection(join)?;
-    if join.spec.join_type == JoinType::LeftMark {
-        validate_mark_join_output_projection(join, left_schema, left_available, output_schema)?;
+    if let Some(mark_column_name) = mark_column_name {
+        validate_mark_join_output_projection(join, mark_column_name, left_schema, left_available, output_schema)?;
     } else {
         validate_join_output_projection(
             &join.spec.output_projection,
@@ -281,11 +285,11 @@ fn validate_join_output_projection(
 
 fn validate_mark_join_output_projection(
     join: &JoinNode,
+    mark_column_name: &str,
     left_schema: &SchemaRef,
     left_available: &BTreeSet<String>,
     output_schema: &SchemaRef,
 ) -> Result<()> {
-    let mark_column_name = join.spec.mark_column_name.as_deref().unwrap_or("mark");
     let expected_output_count = join.spec.output_projection.len() + 1;
     if output_schema.fields().len() != expected_output_count {
         return Err(QueryError::new(

@@ -232,10 +232,9 @@ pub(in crate::exec) fn projection_regexp_replace_work_reservation_bytes(
     );
     let result = (|| {
         let mut required_bytes = 0u64;
-        let mut retained_state_bytes = 0u64;
         let mut saw_supported_regexp = false;
         for output in &node.outputs {
-            match classify_regexp_replace_preflight_expr(&output.expr)? {
+            match classify_regexp_replace_preflight_expr(&output.expr) {
                 RegexpReplacePreflightClass::Absent => {},
                 RegexpReplacePreflightClass::Unsupported => {
                     return Err(QueryError::new(
@@ -278,27 +277,11 @@ pub(in crate::exec) fn projection_regexp_replace_work_reservation_bytes(
                         .with_fact("column", column_name)
                         .with_fact("required_budget_bytes", facts.required_budget_bytes())
                     })?;
-                    let component_retained = u64::try_from(facts.retained_state_bytes()).map_err(|_| {
-                        QueryError::new(
-                            QueryErrorCode::Internal,
-                            "nexus_query_engine.projection.regexp_replace_preflight",
-                            "REGEXP_REPLACE retained state bytes do not fit u64",
-                        )
-                        .with_fact("column", column_name)
-                    })?;
                     required_bytes = required_bytes.checked_add(component_bytes).ok_or_else(|| {
                         QueryError::new(
                             QueryErrorCode::Internal,
                             "nexus_query_engine.projection.regexp_replace_preflight",
                             "REGEXP_REPLACE preflight budget overflowed u64",
-                        )
-                        .with_fact("column", column_name)
-                    })?;
-                    retained_state_bytes = retained_state_bytes.checked_add(component_retained).ok_or_else(|| {
-                        QueryError::new(
-                            QueryErrorCode::Internal,
-                            "nexus_query_engine.projection.regexp_replace_preflight",
-                            "REGEXP_REPLACE retained state budget overflowed u64",
                         )
                         .with_fact("column", column_name)
                     })?;
@@ -319,7 +302,6 @@ pub(in crate::exec) fn projection_regexp_replace_work_reservation_bytes(
         // Prepaid bytes cover only direct regexp_replace components. Pass-through and
         // non-regexp projection work remains covered by the input reservation held
         // across execute when columns are shared, or by the operator budget token.
-        let _ = retained_state_bytes;
         Ok(Some(required_bytes))
     })();
     match result {
@@ -356,7 +338,7 @@ fn prepare_projection_regexp_replace(
         let mut retained_state_bytes = 0u64;
         let mut saw_supported_regexp = false;
         for output in &node.outputs {
-            match classify_regexp_replace_preflight_expr(&output.expr)? {
+            match classify_regexp_replace_preflight_expr(&output.expr) {
                 RegexpReplacePreflightClass::Absent => {},
                 RegexpReplacePreflightClass::Unsupported => {
                     return Err(QueryError::new(
@@ -473,8 +455,7 @@ fn materialize_prepared_regexp_replace_projection(
     // then evaluate remaining projection exprs against the augmented frame.
     let mut remaining = prepared_by_field;
     for output in &node.outputs {
-        if remaining.contains_key(output.field.name().as_str()) {
-            let handle = remaining.remove(output.field.name().as_str()).expect("prepared regexp component present");
+        if let Some(handle) = remaining.remove(output.field.name().as_str()) {
             let series = budgeted_value(
                 handle.execute_with_budget(token).map_err(|error| {
                     QueryError::from_cudf_with_budget_details(
@@ -503,8 +484,8 @@ fn materialize_prepared_regexp_replace_projection(
         .iter()
         .filter(|output| {
             !matches!(
-                classify_regexp_replace_preflight_expr(&output.expr).ok(),
-                Some(RegexpReplacePreflightClass::DirectColumn { .. })
+                classify_regexp_replace_preflight_expr(&output.expr),
+                RegexpReplacePreflightClass::DirectColumn { .. }
             )
         })
         .map(|output| lower_projection_output_expr(output).map(|expr| (output.field.name().as_str(), expr)))
@@ -542,19 +523,19 @@ enum RegexpReplacePreflightClass<'a> {
     Unsupported,
 }
 
-fn classify_regexp_replace_preflight_expr(expr: &Expr) -> Result<RegexpReplacePreflightClass<'_>> {
+fn classify_regexp_replace_preflight_expr(expr: &Expr) -> RegexpReplacePreflightClass<'_> {
     match expr {
         Expr::Alias { expr, .. } => classify_regexp_replace_preflight_expr(expr),
         Expr::RegexpReplace { expr, pattern, replacement, .. } => match strip_expr_aliases(expr.as_ref()) {
-            Expr::Column(column) => Ok(RegexpReplacePreflightClass::DirectColumn {
+            Expr::Column(column) => RegexpReplacePreflightClass::DirectColumn {
                 column_name: column.name(),
                 pattern: pattern.as_str(),
                 replacement: replacement.as_str(),
-            }),
-            _ => Ok(RegexpReplacePreflightClass::Unsupported),
+            },
+            _ => RegexpReplacePreflightClass::Unsupported,
         },
-        other if other.contains_regexp_replace() => Ok(RegexpReplacePreflightClass::Unsupported),
-        _ => Ok(RegexpReplacePreflightClass::Absent),
+        other if other.contains_regexp_replace() => RegexpReplacePreflightClass::Unsupported,
+        _ => RegexpReplacePreflightClass::Absent,
     }
 }
 

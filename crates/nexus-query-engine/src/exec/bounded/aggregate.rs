@@ -441,7 +441,7 @@ fn execute_compiled_bounded_exact_host_aggregate_from_frame(
         metrics,
         None,
     )?;
-    let output_upload_bytes = u64::try_from(record_batch_memory_size(&output_batch)).unwrap_or(u64::MAX);
+    let output_upload_bytes = record_batch_memory_size(&output_batch) as u64;
     let output_upload_request =
         MemoryReservationRequest::new(ReservationKind::OperatorOutput, output_upload_bytes, reservations.budget())
             .with_memory_boundary("host_welford_output_upload_reservation")

@@ -117,7 +117,7 @@ pub(super) fn execute_compiled_mixed_join_probe_from_stream(
     }
 
     let probe_side = probe_side(build.side);
-    let probe_columns = compiled_join_input_columns(context, node, build.strategy, probe_side)?;
+    let probe_columns = compiled_join_input_columns(node, build.strategy, probe_side)?;
     let mut outputs = Vec::new();
     let stream_result = stream_bounded_join_leaf_local_parquet_source_serial(
         context,

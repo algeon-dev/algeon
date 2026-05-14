@@ -74,8 +74,7 @@ pub fn read_gpu_resident_source(
         return Ok(handle.clone().into_gpu_frame());
     }
 
-    let source_binding_differs = handle.runtime().binding_id() != context_runtime.binding_id();
-    let target_runtime = if source_binding_differs && context.attempt_allocation_domain_id().is_some() {
+    let target_runtime = if context.attempt_allocation_domain_id().is_some() {
         std::sync::Arc::new(attempt_domain_handoff_runtime(context, &context_runtime, source.input_name.as_str())?)
     } else {
         std::sync::Arc::clone(&context_runtime)
