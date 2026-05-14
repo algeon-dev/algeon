@@ -484,6 +484,22 @@ fn bounded_native_query_executes_root_hash_join_with_chunked_tokenized_leaf_read
     assert_eq!(metrics.source_read_prefetches_skipped, 0);
     assert_eq!(metrics.source_read_prefetches_abandoned, 0);
     assert_eq!(metrics.reservation_denied_count, 0);
+    let left_node_id = left.to_string();
+    let left_source_read_reserves = metrics
+        .reservation_events
+        .iter()
+        .filter(|event| {
+            event.outcome.as_str() == "granted"
+                && event.action == MemoryReservationEventAction::Reserve
+                && event.reservation_kind == ReservationKind::SourceRead
+                && matches!(event.memory_boundary.as_str(), "join_source_read" | "join_source_read_prefetch")
+                && event.node_id.as_deref() == Some(left_node_id.as_str())
+        })
+        .count();
+    assert_eq!(
+        left_source_read_reserves, 4,
+        "multi-chunk join probe source should stream chunk reads without an extra full-source concat reservation"
+    );
     let join_source_reads = metrics
         .reservation_events
         .iter()
@@ -682,15 +698,14 @@ fn bounded_native_query_reports_join_leaf_source_read_hard_budget_failure() {
         .unwrap();
 
     let error = match execute_query_plan(&context, &plan) {
-        Ok(_) => panic!("hard cudf join source read budget should fail"),
+        Ok(_) => panic!("bounded join source read budget should fail"),
         Err(error) => error,
     };
     let admitted_budget = admitted_budget.to_string();
-    assert_eq!(error.code(), QueryErrorCode::CudfResourceExhausted);
-    assert_eq!(error.fact_value("budget_boundary"), Some("join_source_read"));
+    assert_eq!(error.code(), QueryErrorCode::MemoryReservationFailed);
     assert_eq!(error.fact_value("budget_bytes"), Some(admitted_budget.as_str()));
-    assert_eq!(error.fact_value("budget_enforcement"), Some("hard_memory_resource_limit"));
     assert_eq!(error.fact_value("memory_boundary"), Some("join_source_read"));
+    assert_eq!(error.fact_value("reservation_kind"), Some("source_read"));
     assert_eq!(error.fact_value("stage"), Some("join_source_read"));
     assert_eq!(error.fact_value("chunk_index"), Some("0"));
     assert_eq!(error.fact_value("file_index"), Some("0"));

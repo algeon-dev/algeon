@@ -367,6 +367,9 @@ fn is_granted_admission_event(event: &MemoryReservationEvent) -> bool {
 fn is_ordered_reservation_trace_event(event: &MemoryReservationEvent) -> bool {
     is_granted_admission_event(event)
         || (event.outcome.as_str() == "applied" && event.action == MemoryReservationEventAction::Transfer)
+        || (event.outcome.as_str() == "applied"
+            && event.action == MemoryReservationEventAction::AliasAcquire
+            && matches!(event.reservation_kind, ReservationKind::BuildSide | ReservationKind::ProbeSide))
 }
 
 pub(super) fn assert_bounded_mixed_left_only_join_metrics(metrics: &QueryMetrics, join_type: &str, output_rows: u64) {

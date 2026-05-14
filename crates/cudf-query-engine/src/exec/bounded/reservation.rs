@@ -66,6 +66,18 @@ pub(in crate::exec) enum ActiveReservationSemantics {
     Alias,
 }
 
+#[derive(Debug)]
+struct ActiveReservationLineage {
+    alias_count: Cell<usize>,
+    deferred_charged_release_bytes: Cell<u64>,
+}
+
+impl ActiveReservationLineage {
+    fn new() -> Self {
+        Self { alias_count: Cell::new(0), deferred_charged_release_bytes: Cell::new(0) }
+    }
+}
+
 pub(in crate::exec) struct ActiveReservation {
     memory_space: MemorySpaceId,
     reserved_bytes: Rc<Cell<u64>>,
@@ -73,7 +85,7 @@ pub(in crate::exec) struct ActiveReservation {
     source_cache_key: Option<GpuLocalParquetSourceCacheKey>,
     event_context: ActiveReservationEventContext,
     semantics: ActiveReservationSemantics,
-    alias_count: Option<Rc<Cell<usize>>>,
+    lineage: Option<Rc<ActiveReservationLineage>>,
     release_action: MemoryReservationEventAction,
     bytes: u64,
     charged_bytes: u64,
@@ -130,7 +142,7 @@ impl ActiveReservation {
             source_cache_key: None,
             event_context: ActiveReservationEventContext::from_request(request),
             semantics,
-            alias_count: Some(Rc::new(Cell::new(0))),
+            lineage: Some(Rc::new(ActiveReservationLineage::new())),
             release_action: MemoryReservationEventAction::Release,
             bytes,
             charged_bytes: bytes,
@@ -158,7 +170,7 @@ impl ActiveReservation {
             source_cache_key: Some(source_cache_key),
             event_context: ActiveReservationEventContext::from_request(request),
             semantics: ActiveReservationSemantics::Alias,
-            alias_count: None,
+            lineage: None,
             release_action: MemoryReservationEventAction::AliasRelease,
             bytes,
             charged_bytes: 0,
@@ -166,15 +178,15 @@ impl ActiveReservation {
         }
     }
 
-    pub(in crate::exec) fn alias(
+    fn alias(
         memory_space: MemorySpaceId,
         reserved_bytes: Rc<Cell<u64>>,
         protected_source_cache_keys: Rc<RefCell<HashMap<GpuLocalParquetSourceCacheKey, usize>>>,
-        alias_count: Rc<Cell<usize>>,
+        lineage: Rc<ActiveReservationLineage>,
         bytes: u64,
         request: &MemoryReservationRequest,
     ) -> Self {
-        alias_count.set(alias_count.get().saturating_add(1));
+        lineage.alias_count.set(lineage.alias_count.get().saturating_add(1));
         Self {
             memory_space,
             reserved_bytes,
@@ -182,7 +194,7 @@ impl ActiveReservation {
             source_cache_key: None,
             event_context: ActiveReservationEventContext::from_request(request),
             semantics: ActiveReservationSemantics::Alias,
-            alias_count: Some(alias_count),
+            lineage: Some(lineage),
             release_action: MemoryReservationEventAction::AliasRelease,
             bytes,
             charged_bytes: 0,
@@ -220,7 +232,7 @@ impl ActiveReservation {
             source_cache_key: None,
             event_context: ActiveReservationEventContext::from_request(request),
             semantics,
-            alias_count: self.alias_count.clone(),
+            lineage: self.lineage.clone(),
             release_action: MemoryReservationEventAction::Release,
             bytes: request.requested_bytes,
             charged_bytes,
@@ -242,16 +254,34 @@ impl ActiveReservation {
             }
         }
         if self.source_cache_key.is_none() {
-            match (self.semantics, self.alias_count.as_ref()) {
-                (ActiveReservationSemantics::Alias, Some(alias_count)) => {
-                    alias_count.set(alias_count.get().saturating_sub(1));
+            match (self.semantics, self.lineage.as_ref()) {
+                (ActiveReservationSemantics::Alias, Some(lineage)) => {
+                    lineage.alias_count.set(lineage.alias_count.get().saturating_sub(1));
+                    let deferred_release = if lineage.alias_count.get() == 0 {
+                        let bytes = lineage.deferred_charged_release_bytes.get();
+                        lineage.deferred_charged_release_bytes.set(0);
+                        bytes
+                    } else {
+                        0
+                    };
+                    if deferred_release > 0 {
+                        self.reserved_bytes.set(self.reserved_bytes.get().saturating_sub(deferred_release));
+                        self.released = true;
+                        return Some(self.event_context.event(
+                            self.release_action,
+                            self.bytes,
+                            -i128::from(deferred_release),
+                            self.reserved_bytes.get(),
+                        ));
+                    }
                 },
-                (_, Some(alias_count)) => {
-                    assert_eq!(
-                        alias_count.get(),
-                        0,
-                        "cannot release a charged reservation while alias reservations are live"
-                    );
+                (_, Some(lineage)) => {
+                    if lineage.alias_count.get() > 0 {
+                        lineage
+                            .deferred_charged_release_bytes
+                            .set(lineage.deferred_charged_release_bytes.get().saturating_add(self.charged_bytes));
+                        self.charged_bytes = 0;
+                    }
                 },
                 (_, None) => {},
             }
@@ -473,7 +503,7 @@ impl ReservationTracker {
             self.memory_space,
             Rc::clone(&self.reserved_bytes),
             Rc::clone(&self.protected_source_cache_keys),
-            Rc::clone(source.alias_count.as_ref().expect("generic alias requires a reservation lineage")),
+            Rc::clone(source.lineage.as_ref().expect("generic alias requires a reservation lineage")),
             request.requested_bytes,
             &request,
         )

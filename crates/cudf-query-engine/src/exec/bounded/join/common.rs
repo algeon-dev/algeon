@@ -7,32 +7,9 @@ pub(in crate::exec::bounded) struct BoundedJoinSideFrame {
     pub(in crate::exec::bounded) bytes: u64,
 }
 
-enum JoinInputReservation {
-    Borrowed { reserved_bytes: u64 },
+enum JoinInputReservation<'a> {
+    Shared { reservation: &'a ActiveReservation },
     Owned { reservation: ActiveReservation },
-}
-
-#[allow(clippy::too_many_arguments)]
-pub(in crate::exec::bounded) fn prepare_bounded_join_side_input_from_frame(
-    input: GpuDataFrame,
-    input_reserved_bytes: u64,
-    columns: &[String],
-    input_side: JoinSide,
-    node_id: NodeId,
-    build_side: JoinSide,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
-) -> Result<BoundedJoinSideFrame> {
-    prepare_bounded_join_side_input(
-        input,
-        JoinInputReservation::Borrowed { reserved_bytes: input_reserved_bytes },
-        columns,
-        input_side,
-        node_id,
-        build_side,
-        reservations,
-        metrics,
-    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -58,9 +35,32 @@ pub(in crate::exec::bounded) fn prepare_bounded_join_side_input_from_resident_fr
 }
 
 #[allow(clippy::too_many_arguments)]
+pub(in crate::exec::bounded) fn prepare_bounded_join_side_input_from_shared_frame(
+    input: GpuDataFrame,
+    source_reservation: &ActiveReservation,
+    columns: &[String],
+    input_side: JoinSide,
+    node_id: NodeId,
+    build_side: JoinSide,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+) -> Result<BoundedJoinSideFrame> {
+    prepare_bounded_join_side_input(
+        input,
+        JoinInputReservation::Shared { reservation: source_reservation },
+        columns,
+        input_side,
+        node_id,
+        build_side,
+        reservations,
+        metrics,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
 fn prepare_bounded_join_side_input(
     input: GpuDataFrame,
-    input_reservation: JoinInputReservation,
+    input_reservation: JoinInputReservation<'_>,
     columns: &[String],
     input_side: JoinSide,
     node_id: NodeId,
@@ -71,9 +71,9 @@ fn prepare_bounded_join_side_input(
     let reservation_kind =
         if input_side == build_side { ReservationKind::BuildSide } else { ReservationKind::ProbeSide };
     let memory_boundary = if input_side == build_side { "join_build_side" } else { "join_probe_side" };
-    let (input_reserved_bytes, mut owned_input_reservation) = match input_reservation {
-        JoinInputReservation::Borrowed { reserved_bytes } => (reserved_bytes, None),
-        JoinInputReservation::Owned { reservation } => (reservation.bytes(), Some(reservation)),
+    let (input_reserved_bytes, source_reservation, mut owned_input_reservation) = match input_reservation {
+        JoinInputReservation::Shared { reservation } => (reservation.bytes(), Some(reservation), None),
+        JoinInputReservation::Owned { reservation } => (reservation.bytes(), None, Some(reservation)),
     };
     let input_frame = input.into_frame();
     let select_memory_effect = match input_frame.select_memory_effect(columns) {
@@ -139,6 +139,12 @@ fn prepare_bounded_join_side_input(
                     reservations.budget(),
                     node_id,
                 ),
+                metrics,
+            )
+        } else if let Some(source_reservation) = source_reservation {
+            reservations.alias_reservation(
+                source_reservation,
+                bounded_join_request(reservation_kind, memory_boundary, bytes, reservations.budget(), node_id),
                 metrics,
             )
         } else {
