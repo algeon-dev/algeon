@@ -31,6 +31,7 @@ fn reservation_tracker_alias_token_does_not_inflate_live_ledger() {
     assert_eq!(current, [60, 60, 60, 0]);
     assert_eq!(probe.metrics.reservation_requested_bytes, 60);
     assert_eq!(probe.metrics.reservation_granted_bytes, 60);
+    assert_eq!(probe.metrics.reservation_live_peak_bytes, 60);
     assert_eq!(probe.metrics.reservation_denied_count, 0);
 }
 
@@ -61,6 +62,7 @@ fn reservation_tracker_transfer_relabels_without_changing_live_ledger() {
     assert_eq!(current, [60, 60, 0]);
     assert_eq!(probe.metrics.reservation_requested_bytes, 60);
     assert_eq!(probe.metrics.reservation_granted_bytes, 60);
+    assert_eq!(probe.metrics.reservation_live_peak_bytes, 60);
 }
 
 #[test]
@@ -88,6 +90,7 @@ fn reservation_tracker_alias_keeps_charge_live_after_source_release() {
     assert_eq!(current, [60, 60, 60, 0]);
     assert_eq!(probe.metrics.reservation_requested_bytes, 60);
     assert_eq!(probe.metrics.reservation_granted_bytes, 60);
+    assert_eq!(probe.metrics.reservation_live_peak_bytes, 60);
 }
 
 #[test]
@@ -101,6 +104,7 @@ fn reservation_tracker_denial_capacity_ignores_alias_tokens() {
     assert_eq!(probe.metrics.reservation_denied_count, 1);
     assert_eq!(probe.metrics.reservation_requested_bytes, 110);
     assert_eq!(probe.metrics.reservation_granted_bytes, 70);
+    assert_eq!(probe.metrics.reservation_live_peak_bytes, 70);
 
     let denied = probe
         .metrics

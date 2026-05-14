@@ -31,6 +31,7 @@ pub const NATIVE_CUDF_DATAFUSION_METRIC_NAMES: &[&str] = &[
     "result_materialization_boundary_explicit",
     "reservation_requested_bytes",
     "reservation_granted_bytes",
+    "reservation_live_peak_bytes",
     "reservation_denied_count",
     "peak_device_memory_bytes",
     "resident_dataframe_peak_bytes",
@@ -125,6 +126,7 @@ pub(super) struct NativeCudfMetrics {
     result_materialization_boundary_explicit: Count,
     reservation_requested_bytes: Count,
     reservation_granted_bytes: Count,
+    reservation_live_peak_bytes: Count,
     reservation_denied_count: Count,
     peak_device_memory_bytes: Count,
     resident_dataframe_peak_bytes: Count,
@@ -234,6 +236,7 @@ impl NativeCudfMetrics {
             ),
             reservation_requested_bytes: summary_counter(metrics, "reservation_requested_bytes", partition),
             reservation_granted_bytes: summary_counter(metrics, "reservation_granted_bytes", partition),
+            reservation_live_peak_bytes: summary_counter(metrics, "reservation_live_peak_bytes", partition),
             reservation_denied_count: summary_counter(metrics, "reservation_denied_count", partition),
             peak_device_memory_bytes: summary_counter(metrics, "peak_device_memory_bytes", partition),
             resident_dataframe_peak_bytes: summary_counter(metrics, "resident_dataframe_peak_bytes", partition),
@@ -343,6 +346,7 @@ impl NativeCudfMetrics {
         self.record_boundary_policy(metrics.execution_boundary_policy);
         self.reservation_requested_bytes.add(count(metrics.reservation_requested_bytes));
         self.reservation_granted_bytes.add(count(metrics.reservation_granted_bytes));
+        self.reservation_live_peak_bytes.add(count(metrics.reservation_live_peak_bytes));
         self.reservation_denied_count.add(count(metrics.reservation_denied_count));
         add_optional_count(&self.peak_device_memory_bytes, None, metrics.peak_device_memory_bytes);
         add_optional_count(

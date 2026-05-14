@@ -28,6 +28,7 @@ fn query_metrics_phase_c_memory_control_defaults_are_zero() {
     assert_eq!(metrics.phase_c_memory_control_policy.as_str(), "unbounded");
     assert_eq!(metrics.reservation_requested_bytes, 0);
     assert_eq!(metrics.reservation_granted_bytes, 0);
+    assert_eq!(metrics.reservation_live_peak_bytes, 0);
     assert_eq!(metrics.reservation_denied_count, 0);
     assert_eq!(metrics.source_chunks_planned, 0);
     assert_eq!(metrics.source_chunks_attempted, 0);
@@ -131,6 +132,7 @@ fn query_metrics_reservation_timeline_records_live_ledger_deltas() {
     assert_eq!(deltas, [60, 20, -30, 0]);
     assert_eq!(metrics.reservation_requested_bytes, 120);
     assert_eq!(metrics.reservation_granted_bytes, 80);
+    assert_eq!(metrics.reservation_live_peak_bytes, 80);
     assert_eq!(metrics.reservation_denied_count, 1);
     assert_eq!(metrics.reservation_events[0].compiled_task_id.as_deref(), Some("t2"));
     assert_eq!(metrics.reservation_events[0].resident_resource_id.as_deref(), Some("r7"));
@@ -317,6 +319,7 @@ fn native_datafusion_metric_names_cover_bounded_runtime_contract() {
         "allocator_high_water_bytes_observed",
         "reservation_requested_bytes",
         "reservation_granted_bytes",
+        "reservation_live_peak_bytes",
         "reservation_denied_count",
         "compiled_pipeline_attempts",
         "compiled_pipeline_tasks_executed",

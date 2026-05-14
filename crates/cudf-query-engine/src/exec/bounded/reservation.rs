@@ -17,6 +17,9 @@ struct ActiveReservationEventContext {
     stage: Option<String>,
     compiled_task_id: Option<String>,
     resident_resource_id: Option<String>,
+    source_read_contract_quality: Option<String>,
+    source_read_planning_bytes: Option<u64>,
+    source_read_estimated_bytes: Option<u64>,
 }
 
 impl ActiveReservationEventContext {
@@ -30,6 +33,9 @@ impl ActiveReservationEventContext {
             stage: request.stage.clone(),
             compiled_task_id: request.compiled_task_id.clone(),
             resident_resource_id: request.resident_resource_id.clone(),
+            source_read_contract_quality: request.source_read_contract_quality.clone(),
+            source_read_planning_bytes: request.source_read_planning_bytes,
+            source_read_estimated_bytes: request.source_read_estimated_bytes,
         }
     }
 
@@ -55,6 +61,9 @@ impl ActiveReservationEventContext {
             stage: self.stage.clone(),
             compiled_task_id: self.compiled_task_id.clone(),
             resident_resource_id: self.resident_resource_id.clone(),
+            source_read_contract_quality: self.source_read_contract_quality.clone(),
+            source_read_planning_bytes: self.source_read_planning_bytes,
+            source_read_estimated_bytes: self.source_read_estimated_bytes,
         }
     }
 }
@@ -624,6 +633,28 @@ impl ReservationTracker {
             metrics.record_reservation_timeline_event(reservation.event_context.event(
                 MemoryReservationEventAction::Shrink,
                 observed_bytes,
+                -i128::from(refunded),
+                self.raw_reserved_bytes(),
+            ));
+        }
+    }
+
+    pub(in crate::exec) fn shrink_to_observed_with_request(
+        &mut self,
+        reservation: &mut ActiveReservation,
+        observed_bytes: u64,
+        request: MemoryReservationRequest,
+        metrics: &mut QueryMetrics,
+    ) {
+        self.assert_reservation_belongs_to_tracker(reservation, "shrink_to_observed_with_request");
+        let refunded = reservation.shrink_to(observed_bytes);
+        if refunded > 0 {
+            let request = self.stamp_request(request);
+            metrics.record_reservation_timeline_event(MemoryReservationEvent::from_request(
+                &request,
+                MemoryReservationEventOutcome::Applied,
+                MemoryReservationEventAction::Shrink,
+                0,
                 -i128::from(refunded),
                 self.raw_reserved_bytes(),
             ));

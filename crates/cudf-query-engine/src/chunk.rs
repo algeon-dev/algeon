@@ -664,11 +664,13 @@ fn push_pending_chunk(
     let estimated_chunk_bytes = known_projected_uncompressed_bytes
         .or(known_row_group_bytes)
         .or_else(|| proportional_bytes(file.file_size_bytes, pending.row_groups.len(), planned_row_group_count));
-    let estimated_source_read_bytes = known_projected_uncompressed_bytes
-        .zip(known_pure_filter_uncompressed_bytes)
-        .and_then(|(projected, filter)| projected.checked_add(filter))
-        .or(known_row_group_bytes)
-        .or(estimated_chunk_bytes);
+    let estimated_source_read_bytes = source_read_uncompressed_bytes(
+        source,
+        known_projected_uncompressed_bytes,
+        known_pure_filter_uncompressed_bytes,
+    )
+    .or(known_row_group_bytes)
+    .or(estimated_chunk_bytes);
     chunks.push(SourceChunk {
         source_node_id,
         chunk_index: chunks.len(),
@@ -701,6 +703,37 @@ fn push_pending_chunk(
         size_estimate_based: known_row_group_bytes.is_none(),
     });
     pending.clear();
+}
+
+fn source_read_uncompressed_bytes(
+    source: &LocalParquetSource,
+    projected_uncompressed_bytes: Option<u64>,
+    pure_filter_uncompressed_bytes: Option<u64>,
+) -> Option<u64> {
+    match (projected_uncompressed_bytes, pure_filter_uncompressed_bytes) {
+        (Some(projected), Some(filter)) if projected_and_pure_filter_file_columns_overlap(source) => {
+            Some(projected.max(filter))
+        },
+        (Some(projected), Some(filter)) => projected.checked_add(filter),
+        (Some(projected), None) => Some(projected),
+        (None, Some(filter)) => Some(filter),
+        (None, None) => None,
+    }
+}
+
+fn projected_and_pure_filter_file_columns_overlap(source: &LocalParquetSource) -> bool {
+    let projected = source
+        .projected_output_column_source_refs
+        .iter()
+        .filter_map(|source_ref| match source_ref {
+            crate::source::SourceColumnRef::File(index) => Some(*index),
+            crate::source::SourceColumnRef::Partition(_) | crate::source::SourceColumnRef::MissingNull(_) => None,
+        })
+        .collect::<BTreeSet<_>>();
+    source.pure_filter_column_source_refs.iter().any(|source_ref| match source_ref {
+        crate::source::SourceColumnRef::File(index) => projected.contains(index),
+        crate::source::SourceColumnRef::Partition(_) | crate::source::SourceColumnRef::MissingNull(_) => false,
+    })
 }
 
 fn single_all_row_groups_chunk(

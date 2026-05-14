@@ -55,6 +55,12 @@ pub struct MemoryReservationRequest {
     pub compiled_task_id: Option<String>,
     /// Optional compiled pipeline resident resource id associated with this reservation.
     pub resident_resource_id: Option<String>,
+    /// Optional quality label for source-read sizing diagnostics.
+    pub source_read_contract_quality: Option<String>,
+    /// Optional chunk-planning byte signal used before source-read admission.
+    pub source_read_planning_bytes: Option<u64>,
+    /// Optional coarse source-read byte estimate retained for diagnostics.
+    pub source_read_estimated_bytes: Option<u64>,
 }
 
 impl MemoryReservationRequest {
@@ -76,6 +82,9 @@ impl MemoryReservationRequest {
             max_attempts: None,
             compiled_task_id: None,
             resident_resource_id: None,
+            source_read_contract_quality: None,
+            source_read_planning_bytes: None,
+            source_read_estimated_bytes: None,
         }
     }
 
@@ -90,6 +99,13 @@ impl MemoryReservationRequest {
     #[must_use]
     pub fn with_memory_boundary(mut self, memory_boundary: impl Into<String>) -> Self {
         self.memory_boundary = memory_boundary.into();
+        self
+    }
+
+    /// Overrides the requested byte count while preserving request diagnostics.
+    #[must_use]
+    pub fn with_requested_bytes(mut self, requested_bytes: u64) -> Self {
+        self.requested_bytes = requested_bytes;
         self
     }
 
@@ -157,6 +173,20 @@ impl MemoryReservationRequest {
         self
     }
 
+    /// Attaches source-read sizing contract diagnostics to the request.
+    #[must_use]
+    pub fn with_source_read_contract(
+        mut self,
+        quality: impl Into<String>,
+        planning_bytes: Option<u64>,
+        estimated_bytes: Option<u64>,
+    ) -> Self {
+        self.source_read_contract_quality = Some(quality.into());
+        self.source_read_planning_bytes = planning_bytes;
+        self.source_read_estimated_bytes = estimated_bytes;
+        self
+    }
+
     /// Builds the stable reservation-denial error for this request.
     ///
     /// `granted_bytes` is the capacity that remained when admission failed, not
@@ -203,6 +233,15 @@ impl MemoryReservationRequest {
         }
         if let Some(resident_resource_id) = &self.resident_resource_id {
             error = error.with_fact("resident_resource_id", resident_resource_id);
+        }
+        if let Some(quality) = &self.source_read_contract_quality {
+            error = error.with_fact("source_read_contract_quality", quality);
+        }
+        if let Some(planning_bytes) = self.source_read_planning_bytes {
+            error = error.with_fact("source_read_planning_bytes", planning_bytes);
+        }
+        if let Some(estimated_bytes) = self.source_read_estimated_bytes {
+            error = error.with_fact("source_read_estimated_bytes", estimated_bytes);
         }
 
         error

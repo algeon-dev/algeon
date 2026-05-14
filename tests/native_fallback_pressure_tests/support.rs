@@ -209,6 +209,7 @@ pub(super) fn native_execution_metrics_set() -> datafusion::physical_plan::metri
         ("allocator_high_water_bytes_observed", 1),
         ("reservation_requested_bytes", 128),
         ("reservation_granted_bytes", 128),
+        ("reservation_live_peak_bytes", 96),
         ("reservation_denied_count", 0),
         ("source_chunks_planned", 6),
         ("source_chunks_attempted", 7),

@@ -2,7 +2,10 @@ use std::collections::VecDeque;
 
 use super::*;
 use crate::exec::{
-    bounded::chunks::{insert_bounded_local_parquet_source_cache, try_read_cached_local_parquet_chunk},
+    bounded::chunks::{
+        SourceReadReservationContractQuality, insert_bounded_local_parquet_source_cache,
+        source_read_reservation_contract, try_read_cached_local_parquet_chunk,
+    },
     source::{ScheduledLocalParquetRead, format_row_groups, read_local_parquet_chunk},
 };
 
@@ -315,6 +318,7 @@ fn read_join_leaf_source_chunk_attempt(
     let requested_bytes = chunk_requested_bytes(context.memory_control_policy(), chunk);
     let mut reservation = reservations.try_reserve(
         join_source_read_reservation_request(
+            context.memory_control_policy(),
             requested_bytes,
             reservations.budget(),
             node_id,
@@ -728,6 +732,7 @@ fn start_join_leaf_scheduled_source_read(
         return Ok(ScheduledLocalParquetRead::ready(output, memory_boundary, prefetch));
     }
     let request = join_source_read_reservation_request_for_boundary(
+        context.memory_control_policy(),
         requested_bytes,
         reservations.budget(),
         node_id,
@@ -780,6 +785,7 @@ fn attach_join_source_read_resource_facts(
 }
 
 fn join_source_read_reservation_request(
+    policy: MemoryControlPolicy,
     requested_bytes: u64,
     budget_bytes: u64,
     node_id: NodeId,
@@ -788,6 +794,7 @@ fn join_source_read_reservation_request(
     max_attempts: usize,
 ) -> MemoryReservationRequest {
     join_source_read_reservation_request_for_boundary(
+        policy,
         requested_bytes,
         budget_bytes,
         node_id,
@@ -799,6 +806,7 @@ fn join_source_read_reservation_request(
 }
 
 fn join_source_read_reservation_request_for_boundary(
+    policy: MemoryControlPolicy,
     requested_bytes: u64,
     budget_bytes: u64,
     node_id: NodeId,
@@ -818,7 +826,33 @@ fn join_source_read_reservation_request_for_boundary(
     if !chunk.reads_all_row_groups {
         request = request.with_row_groups(chunk.row_group_indexes.clone());
     }
-    request
+    let contract = source_read_reservation_contract(policy, chunk);
+    request.with_source_read_contract(contract.quality.as_str(), contract.planning_bytes, contract.estimated_bytes)
+}
+
+fn observed_join_source_read_reservation_request(
+    budget_bytes: u64,
+    node_id: NodeId,
+    chunk: &SourceChunk,
+    attempt: usize,
+    max_attempts: usize,
+) -> MemoryReservationRequest {
+    let mut request = MemoryReservationRequest::new(ReservationKind::SourceRead, 0, budget_bytes)
+        .with_memory_boundary("join_source_read")
+        .with_node_id(node_id)
+        .with_stage("join_source_read")
+        .with_chunk_index(chunk.chunk_index)
+        .with_file_index(chunk.file_index)
+        .with_path(chunk.path.display())
+        .with_attempt(attempt, max_attempts);
+    if !chunk.reads_all_row_groups {
+        request = request.with_row_groups(chunk.row_group_indexes.clone());
+    }
+    request.with_source_read_contract(
+        SourceReadReservationContractQuality::ObservedGrowShrink.as_str(),
+        chunk.estimated_chunk_bytes,
+        chunk.estimated_source_read_bytes,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -834,13 +868,19 @@ fn grow_join_source_reservation_to_observed_frame(
 ) -> Result<()> {
     let observed_bytes = observe_device_memory_bytes(frame, metrics)?;
     if observed_bytes <= reservation.bytes() {
-        reservations.shrink_to_observed(reservation, observed_bytes, metrics);
+        reservations.shrink_to_observed_with_request(
+            reservation,
+            observed_bytes,
+            observed_join_source_read_reservation_request(reservations.budget(), node_id, chunk, attempt, max_attempts),
+            metrics,
+        );
         return Ok(());
     }
     let delta = observed_bytes.saturating_sub(reservation.bytes());
     reservations.try_grow(
         reservation,
-        join_source_read_reservation_request(delta, reservations.budget(), node_id, chunk, attempt, max_attempts),
+        observed_join_source_read_reservation_request(reservations.budget(), node_id, chunk, attempt, max_attempts)
+            .with_requested_bytes(delta),
         metrics,
     )
 }
