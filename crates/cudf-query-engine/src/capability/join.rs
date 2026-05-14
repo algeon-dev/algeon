@@ -138,9 +138,23 @@ pub(crate) fn keyed_hash_join_strategy_decision_for_plan(
     node_id: NodeId,
     join: &JoinNode,
 ) -> Option<KeyedHashJoinStrategyDecision> {
-    keyed_hash_join_capable(join).then(|| {
-        keyed_hash_join_strategy_decision(join, keyed_hash_join_strategy_input_facts_for_plan(plan, node_id, join))
-    })
+    if keyed_hash_join_capable(join) {
+        return Some(keyed_hash_join_strategy_decision(
+            join,
+            keyed_hash_join_strategy_input_facts_for_plan(plan, node_id, join),
+        ));
+    }
+    if one_shot_equi_join_supported(join) {
+        let decision =
+            keyed_hash_join_strategy_decision(join, keyed_hash_join_strategy_input_facts_for_plan(plan, node_id, join));
+        if matches!(
+            decision,
+            KeyedHashJoinStrategyDecision::Selected { strategy: KeyedHashJoinStrategy::OneShotEqui, .. }
+        ) {
+            return Some(decision);
+        }
+    }
+    None
 }
 
 pub(crate) fn keyed_hash_join_strategy_input_facts_for_plan(
@@ -176,7 +190,7 @@ pub(crate) fn keyed_hash_join_strategy_decision(
         };
     }
 
-    if join.spec.join_type == JoinType::Inner {
+    if one_shot_equi_join_supported(join) {
         return KeyedHashJoinStrategyDecision::Selected {
             strategy: KeyedHashJoinStrategy::OneShotEqui,
             facts: strategy_facts(join, input, KeyedHashJoinStrategy::OneShotEqui, Some("build_side_too_large"), None),
@@ -190,9 +204,17 @@ pub(crate) fn keyed_hash_join_strategy_decision(
             input,
             KeyedHashJoinStrategy::OneShotEqui,
             Some("build_side_too_large"),
-            Some("one_shot_equi_requires_inner_join"),
+            Some("one_shot_equi_requires_keyed_inner_left_or_full_join"),
         ),
     }
+}
+
+pub(crate) fn one_shot_equi_join_supported(join: &JoinNode) -> bool {
+    !join.spec.keys.is_empty()
+        && !join.spec.output_projection.is_empty()
+        && matches!(join.spec.join_type, JoinType::Inner | JoinType::Left | JoinType::Full)
+        && (join.spec.residual_predicate.is_none() || join.spec.join_type == JoinType::Inner)
+        && (join.spec.join_type != JoinType::Left || join.spec.build_side == JoinSide::Right)
 }
 
 fn strategy_facts(

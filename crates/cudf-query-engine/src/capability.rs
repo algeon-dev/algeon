@@ -27,6 +27,7 @@ pub(crate) use join::{
     KeylessConditionalJoinKind, join_node_execution_capability, keyed_filtered_semi_anti_join_capable,
     keyed_hash_join_capable, keyed_hash_join_strategy_decision, keyed_hash_join_strategy_decision_for_plan,
     keyed_hash_join_strategy_input_facts_for_plan, multi_join_subtree_join_execution_capability,
+    one_shot_equi_join_supported,
 };
 pub use model::{
     AggregateGrouping, CapabilityAnalysis, CapabilityDecision, CapabilityRejectionOwner, CapabilityRejectionProjection,

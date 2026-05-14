@@ -267,6 +267,14 @@ fn node_local_requirements(plan: &QueryPlan, node: &QueryNode) -> Vec<Reservatio
                 ContractQuality::ExactPreflight,
             )]
         },
+        PlanNode::Join(join)
+            if matches!(
+                keyed_hash_join_strategy_decision_for_plan(plan, node.id, join),
+                Some(KeyedHashJoinStrategyDecision::Selected { strategy: KeyedHashJoinStrategy::OneShotEqui, .. })
+            ) =>
+        {
+            Vec::new()
+        },
         PlanNode::Join(join) if keyed_filtered_semi_anti_join_capable(join) => vec![
             ReservationRequirement::modeled(
                 ReservationKind::HashTable,
