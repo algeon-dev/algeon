@@ -11,7 +11,6 @@ fn overtakes_count_exact_bypasses_and_install_protection_at_limit() {
     let service = AdmissionTestController::new_with_ledger(
         QueryExecutionConfig::default(),
         QueueBounds { max_waiters: 8, max_wait: Duration::from_secs(5), max_overtakes_per_waiter: 2 },
-        non_gds_deployment(),
         test_ledger_with_explicit_profile(0, 100, 10, 3, Default::default()),
     )
     .unwrap();
@@ -65,7 +64,6 @@ fn exhausted_waiter_retries_protection_after_the_previous_waiter_leaves() {
     let service = AdmissionTestController::new_with_ledger(
         QueryExecutionConfig::default(),
         QueueBounds { max_waiters: 8, max_wait: Duration::from_secs(5), max_overtakes_per_waiter: 1 },
-        non_gds_deployment(),
         test_ledger_with_explicit_profile(0, 100, 10, 2, Default::default()),
     )
     .unwrap();
@@ -252,7 +250,6 @@ fn cancelled_and_expired_waiters_end_their_protection() {
     let service = AdmissionTestController::new_with_ledger(
         QueryExecutionConfig::default(),
         queue_bounds(Duration::from_secs(30)),
-        non_gds_deployment(),
         test_ledger_with_explicit_profile(0, 100, 10, 2, Default::default()),
     )
     .unwrap();
@@ -272,7 +269,6 @@ fn cancelled_and_expired_waiters_end_their_protection() {
     let service = AdmissionTestController::new_with_ledger(
         QueryExecutionConfig::default(),
         queue_bounds(Duration::from_millis(20)),
-        non_gds_deployment(),
         test_ledger_with_explicit_profile(0, 100, 10, 2, Default::default()),
     )
     .unwrap();
@@ -375,7 +371,6 @@ fn protection_does_not_block_capacity_beyond_the_reserve() {
     let service = AdmissionTestController::new_with_ledger(
         QueryExecutionConfig::default(),
         QueueBounds { max_waiters: 8, max_wait: Duration::from_secs(5), max_overtakes_per_waiter: 1 },
-        non_gds_deployment(),
         test_ledger_with_explicit_profile(0, 130, 10, 4, Default::default()),
     )
     .unwrap();
@@ -401,7 +396,6 @@ fn service_close_ends_every_protection_without_reusable_capacity() {
     let service = AdmissionTestController::new_with_ledger(
         QueryExecutionConfig::default(),
         QueueBounds { max_waiters: 8, max_wait: Duration::from_secs(5), max_overtakes_per_waiter: 1 },
-        non_gds_deployment(),
         test_ledger_with_explicit_profile(0, 100, 10, 2, Default::default()),
     )
     .unwrap();

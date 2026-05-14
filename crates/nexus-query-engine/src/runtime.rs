@@ -88,7 +88,6 @@ pub use gpu::{
     GpuTelemetry, LedgerSnapshot, MemoryGrant, NexusGpuInventory, NexusNvmlTelemetry, Placement,
     device_budget_bytes_from_facts,
 };
-#[allow(unused_imports)]
 pub(crate) use gpu::{DeviceContext, DeviceRegistry, DeviceRegistryConfig, PlacementRequest};
 pub use gpu_execution_pool::{
     GpuExecutionJobKind, GpuExecutionPoolSnapshot, GpuExecutionQuerySnapshot, GpuExecutorLease,

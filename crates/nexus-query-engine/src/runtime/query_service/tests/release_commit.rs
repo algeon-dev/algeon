@@ -25,7 +25,6 @@ async fn cleanup_complete_without_report_ready_cannot_admit_replacement() {
     let service = QueryService::new_for_admission_tests(
         QueryExecutionConfig::default(),
         QueueBounds { max_waiters: 8, max_wait: Duration::from_secs(10), max_overtakes_per_waiter: 4 },
-        non_gds_deployment(),
         test_ledger(64 * 1024 * 1024, 1, Default::default()),
     )
     .expect("admission-only service for release commit ordering");
@@ -135,7 +134,6 @@ fn unterminalized_admitted_release_commits_fallback_before_report() {
     let service = QueryService::new_for_admission_tests(
         QueryExecutionConfig::default(),
         QueueBounds { max_waiters: 8, max_wait: Duration::from_secs(10), max_overtakes_per_waiter: 4 },
-        non_gds_deployment(),
         test_ledger(64 * 1024 * 1024, 1, Default::default()),
     )
     .expect("admission-only service for fallback release ordering");
@@ -442,7 +440,6 @@ fn admitted_finalizer_transfers_once_and_publishes_no_pending_capacity() {
     let service = QueryService::new_for_admission_tests(
         QueryExecutionConfig::default(),
         QueueBounds { max_waiters: 8, max_wait: Duration::from_secs(10), max_overtakes_per_waiter: 4 },
-        non_gds_deployment(),
         test_ledger(64 * 1024 * 1024, 1, Default::default()),
     )
     .expect("admission-only service");

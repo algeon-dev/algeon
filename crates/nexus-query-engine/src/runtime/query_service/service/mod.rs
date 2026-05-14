@@ -347,14 +347,24 @@ impl QueryService {
     }
 
     pub(super) fn max_active_attempt_limit(&self) -> usize {
-        self.inner
-            .resources
-            .as_ref()
-            .and_then(|resources| {
-                resources.devices.contexts().map(|context| context.ledger().profile().max_active_attempts).max()
-            })
-            .or_else(|| self.inner.fallback_device_ledger.as_ref().map(|ledger| ledger.profile().max_active_attempts))
-            .unwrap_or(0)
+        self.inner.resources.as_ref().map_or_else(
+            || {
+                self.inner
+                    .fallback_device_ledger
+                    .as_ref()
+                    .expect("admission-only service has a fallback device ledger")
+                    .profile()
+                    .max_active_attempts
+            },
+            |resources| {
+                resources
+                    .devices
+                    .contexts()
+                    .map(|context| context.ledger().profile().max_active_attempts)
+                    .max()
+                    .expect("runtime service has an installed device")
+            },
+        )
     }
 
     /// Performs an explicit, controlled device-local quarantine transition.

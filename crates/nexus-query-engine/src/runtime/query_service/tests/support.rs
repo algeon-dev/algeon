@@ -8,12 +8,10 @@ impl AdmissionTestController {
     fn new(
         config: QueryExecutionConfig,
         queue_bounds: QueueBounds,
-        deployment_io_capability: DeploymentIoCapability,
     ) -> Result<Self> {
         Self::new_with_ledger(
             config,
             queue_bounds,
-            deployment_io_capability,
             test_ledger(64 * 1024 * 1024, 1, Default::default()),
         )
     }
@@ -21,10 +19,9 @@ impl AdmissionTestController {
     fn new_with_ledger(
         config: QueryExecutionConfig,
         queue_bounds: QueueBounds,
-        deployment_io_capability: DeploymentIoCapability,
         ledger: DeviceLedger,
     ) -> Result<Self> {
-        QueryService::new_for_admission_tests(config, queue_bounds, deployment_io_capability, ledger).map(|service| Self {
+        QueryService::new_for_admission_tests(config, queue_bounds, ledger).map(|service| Self {
             service,
             synthetic_ticket: Arc::new(std::sync::Mutex::new(None)),
         })
@@ -33,15 +30,12 @@ impl AdmissionTestController {
     fn new_with_device_capabilities(
         config: QueryExecutionConfig,
         queue_bounds: QueueBounds,
-        deployment_io_capability: DeploymentIoCapability,
         device_capabilities: crate::runtime::DeviceCapabilities,
     ) -> Result<Self> {
-        QueryService::new_for_admission_tests_with_device_capabilities(
+        QueryService::new_for_admission_tests(
             config,
             queue_bounds,
-            deployment_io_capability,
-            device_capabilities.clone(),
-            test_ledger(64 * 1024 * 1024, 1, device_capabilities.clone()),
+            test_ledger(64 * 1024 * 1024, 1, device_capabilities),
         )
         .map(|service| Self {
             service,
@@ -410,7 +404,6 @@ fn admission_test_service_with_profile(
     AdmissionTestController::new_with_ledger(
         config,
         queue_bounds,
-        non_gds_deployment(),
         test_ledger_with_explicit_profile(0, managed_capacity_bytes, attempt_floor_bytes, max_active_attempts, Default::default()),
     )
     .expect("explicit admission test profile must resolve")

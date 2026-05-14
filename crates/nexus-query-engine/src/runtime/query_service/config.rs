@@ -73,8 +73,7 @@ pub struct QueryExecutionConfig {
 }
 
 impl QueryExecutionConfig {
-    pub(super) fn validate(&self, deployment: &DeploymentIoCapability) -> Result<()> {
-        let _ = deployment;
+    pub(super) fn validate(&self) -> Result<()> {
         self.lakehouse_cache_fill.validate()?;
         self.source_scheduler_policy.validate()?;
         self.dynamic_filter_execution_options.validate()?;

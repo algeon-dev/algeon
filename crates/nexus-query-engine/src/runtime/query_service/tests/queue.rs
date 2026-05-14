@@ -226,7 +226,6 @@ fn query_service_concurrent_budget_sum_never_exceeds_capacity() {
     let service = AdmissionTestController::new_with_ledger(
         QueryExecutionConfig::default(),
         QueueBounds { max_waiters: 8, max_wait: Duration::from_secs(30), max_overtakes_per_waiter: 4 },
-        non_gds_deployment(),
         test_ledger(capacity_bytes, max_active_attempts_per_device, Default::default()),
     )
     .unwrap();

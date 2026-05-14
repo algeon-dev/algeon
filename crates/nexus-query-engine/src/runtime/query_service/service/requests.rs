@@ -1848,8 +1848,21 @@ impl QueryService {
     /// Largest device managed capacity represented by this query service.
     pub fn max_device_capacity_bytes(&self) -> u64 {
         self.inner.resources.as_ref().map_or_else(
-            || self.inner.fallback_device_ledger.as_ref().map_or(0, |ledger| ledger.managed_capacity_bytes()),
-            |resources| resources.devices.contexts().map(|context| context.capacity_bytes()).max().unwrap_or(0),
+            || {
+                self.inner
+                    .fallback_device_ledger
+                    .as_ref()
+                    .expect("admission-only service has a fallback device ledger")
+                    .managed_capacity_bytes()
+            },
+            |resources| {
+                resources
+                    .devices
+                    .contexts()
+                    .map(|context| context.capacity_bytes())
+                    .max()
+                    .expect("runtime service has an installed device")
+            },
         )
     }
 
@@ -1860,7 +1873,14 @@ impl QueryService {
     pub fn max_device_total_memory_bytes(&self) -> u64 {
         self.inner.resources.as_ref().map_or_else(
             || self.max_device_capacity_bytes(),
-            |resources| resources.devices.contexts().map(|context| context.facts().total_bytes).max().unwrap_or(0),
+            |resources| {
+                resources
+                    .devices
+                    .contexts()
+                    .map(|context| context.facts().total_bytes)
+                    .max()
+                    .expect("runtime service has an installed device")
+            },
         )
     }
 

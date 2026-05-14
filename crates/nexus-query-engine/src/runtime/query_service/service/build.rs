@@ -8,9 +8,8 @@ impl QueryService {
         config: &QueryExecutionConfig,
         queue_bounds: &QueueBounds,
         device_ordinals: &[usize],
-        deployment_io_capability: &DeploymentIoCapability,
     ) -> Result<()> {
-        validate_controller_policy_preflight(config, queue_bounds, device_ordinals, deployment_io_capability)
+        validate_controller_policy_preflight(config, queue_bounds, device_ordinals)
     }
 
     /// Creates a service entry point with caller-supplied deployment diagnostics.
@@ -92,7 +91,7 @@ impl QueryService {
     ) -> Result<Self> {
         let device_ordinals = normalize_device_ordinals(&device_ordinals)?;
         let (config, queue_bounds) = controller.into_parts();
-        validate_controller_policy_preflight(&config, &queue_bounds, &device_ordinals, &deployment_io_capability)?;
+        validate_controller_policy_preflight(&config, &queue_bounds, &device_ordinals)?;
         let registry_config = device_registry_config(device_ordinals.clone(), device_profiles)?;
         let resolved_plans = DeviceRegistry::resolve_install_plans(&NexusGpuInventory, &registry_config, Some(probe))?;
         let resources = Self::install_runtime_resources(
@@ -193,45 +192,9 @@ impl QueryService {
     pub(in crate::runtime::query_service) fn new_for_admission_tests(
         config: QueryExecutionConfig,
         queue_bounds: QueueBounds,
-        deployment_io_capability: DeploymentIoCapability,
         ledger: DeviceLedger,
     ) -> Result<Self> {
-        Self::new_for_admission_tests_with_ledger(config, queue_bounds, deployment_io_capability, ledger)
-    }
-
-    /// Builds a CUDA-free admission service with an immutable synthetic device
-    /// profile. This is test-only so capability placement can be validated
-    /// without constructing a CUDA runtime.
-    #[cfg(test)]
-    pub(in crate::runtime::query_service) fn new_for_admission_tests_with_device_capabilities(
-        config: QueryExecutionConfig,
-        queue_bounds: QueueBounds,
-        deployment_io_capability: DeploymentIoCapability,
-        device_capabilities: crate::runtime::DeviceCapabilities,
-        ledger: DeviceLedger,
-    ) -> Result<Self> {
-        let _ = device_capabilities;
-        Self::new_for_admission_tests_with_ledger(config, queue_bounds, deployment_io_capability, ledger)
-    }
-
-    /// Builds a CUDA-free admission service over an explicit immutable ledger
-    /// fixture. The fixture carries capacity, floor, concurrency, source-work,
-    /// and capability facts. Execution and queue policy stay independent.
-    #[cfg(test)]
-    pub(in crate::runtime::query_service) fn new_for_admission_tests_with_ledger(
-        config: QueryExecutionConfig,
-        queue_bounds: QueueBounds,
-        deployment_io_capability: DeploymentIoCapability,
-        ledger: DeviceLedger,
-    ) -> Result<Self> {
-        Self::build_with_deployment_and_fallback_device_capabilities(
-            config,
-            queue_bounds,
-            None,
-            deployment_io_capability,
-            None,
-            Some(ledger),
-        )
+        Self::build_with_fallback_device_ledger(config, queue_bounds, None, Some(ledger))
     }
 
     pub(in crate::runtime::query_service::service) fn build(
@@ -239,47 +202,19 @@ impl QueryService {
         queue_bounds: QueueBounds,
         resources: Option<QueryServiceResources>,
     ) -> Result<Self> {
-        let deployment =
-            resources.as_ref().map(|resources| &resources.deployment_io_capability).cloned().unwrap_or_else(|| {
-                DeploymentIoCapability::from_probe_inputs(
-                    NvidiaFsProbeStatus::DriverMissing,
-                    KvikioCompatModeStatus::Unset,
-                    GdsDriverProbeStatus::ProbeUnimplemented,
-                )
-            });
-        Self::build_with_deployment(config, queue_bounds, resources, deployment)
+        Self::build_with_fallback_device_ledger(config, queue_bounds, resources, None)
     }
 
-    pub(in crate::runtime::query_service::service) fn build_with_deployment(
+    fn build_with_fallback_device_ledger(
         config: QueryExecutionConfig,
         queue_bounds: QueueBounds,
         resources: Option<QueryServiceResources>,
-        deployment: DeploymentIoCapability,
-    ) -> Result<Self> {
-        Self::build_with_deployment_and_fallback_device_capabilities(
-            config,
-            queue_bounds,
-            resources,
-            deployment,
-            None,
-            None,
-        )
-    }
-
-    fn build_with_deployment_and_fallback_device_capabilities(
-        config: QueryExecutionConfig,
-        queue_bounds: QueueBounds,
-        resources: Option<QueryServiceResources>,
-        deployment: DeploymentIoCapability,
-        fallback_device_capabilities: Option<crate::runtime::DeviceCapabilities>,
         fallback_device_ledger: Option<DeviceLedger>,
     ) -> Result<Self> {
-        let resources = resources;
-        config.validate(&deployment)?;
+        config.validate()?;
         queue_bounds.validate()?;
         SourceObjectStoreRegistry::validate_profiles(&config.source_storage_profiles)?;
 
-        let _ = fallback_device_capabilities;
         let fallback_device_ledger = if resources.is_none() {
             Some(fallback_device_ledger.ok_or_else(|| {
                 QueryError::new(
@@ -347,12 +282,14 @@ impl QueryService {
                 resources.devices.contexts().map(|context| Arc::clone(context.ledger())).collect::<Vec<_>>()
             })
             .unwrap_or_else(|| {
-                service
-                    .inner
-                    .fallback_device_ledger
-                    .as_ref()
-                    .map(|ledger| vec![Arc::new(ledger.clone())])
-                    .unwrap_or_default()
+                vec![Arc::new(
+                    service
+                        .inner
+                        .fallback_device_ledger
+                        .as_ref()
+                        .expect("admission-only service has a fallback device ledger")
+                        .clone(),
+                )]
             });
         for ledger in ledgers {
             let weak = Arc::downgrade(&service.inner);
@@ -436,9 +373,8 @@ fn validate_controller_policy_preflight(
     config: &QueryExecutionConfig,
     queue_bounds: &QueueBounds,
     device_ordinals: &[usize],
-    deployment_io_capability: &DeploymentIoCapability,
 ) -> Result<()> {
-    config.validate(deployment_io_capability)?;
+    config.validate()?;
     queue_bounds.validate()?;
     SourceObjectStoreRegistry::validate_profiles(&config.source_storage_profiles)?;
     normalize_device_ordinals(device_ordinals)?;
