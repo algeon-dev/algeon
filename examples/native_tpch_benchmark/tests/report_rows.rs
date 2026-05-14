@@ -98,6 +98,31 @@ fn benchmark_report_accepted_rows_include_bounded_status_contract_rows_and_resou
             one_shot_join_materialization_bytes: 60,
             one_shot_join_output_bytes: 61,
             join_gather_map_bytes: 62,
+            join_strategy_rows: vec![NativeJoinStrategyMetricRow {
+                node_id: "n7".to_string(),
+                join_strategy: "one_shot_equi".to_string(),
+                execution_strategy: "bounded_one_shot_equi_join".to_string(),
+                join_type: "inner".to_string(),
+                build_side: "right".to_string(),
+                key_count: 1,
+                estimated_build_rows: Some(100),
+                observed_build_rows: Some(101),
+                build_side_bytes: Some(1024),
+                probe_reuse_count: Some(1),
+                reusable_hash_join_rejected_reason: Some("build_side_too_large".to_string()),
+                one_shot_equi_rejected_reason: None,
+                hash_join_build_count: 0,
+                hash_join_hash_table_bytes: 0,
+                filtered_join_build_count: 0,
+                filtered_join_hash_table_bytes: 0,
+                filtered_join_probe_state_bytes: 0,
+                mixed_join_size_data_bytes: 0,
+                one_shot_join_count: 1,
+                one_shot_join_index_bytes: 2048,
+                one_shot_join_materialization_bytes: 4096,
+                one_shot_join_output_bytes: 8192,
+                join_gather_map_bytes: 2048,
+            }],
         },
         timing_metrics: NativeTpchTimingMetrics {
             parquet_read_time_ms: Some(1.0),
@@ -123,6 +148,7 @@ fn benchmark_report_accepted_rows_include_bounded_status_contract_rows_and_resou
     assert!(text.contains(
         "\t27\t28\t29\t30\t31\t32\t33\t34\t35\t36\t37\t38\t39\t40\t41\t42\t43\t44\t45\t46\t47\t48\t49\t50\t51\t"
     ));
+    assert!(text.contains("\tnode_id=n7,join_strategy=one_shot_equi,execution_strategy=bounded_one_shot_equi_join"));
     assert!(text.contains("\t1.000\t2.000\t3.000\t4.000\t5.000\t6.000\t7.000\t8.000\t9.000\n"));
 }
 

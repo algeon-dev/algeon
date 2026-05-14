@@ -1,4 +1,6 @@
-use cudf_query_engine::{ExecutionBoundaryPolicy, QueryMetrics};
+use std::collections::BTreeMap;
+
+use cudf_query_engine::{ExecutionBoundaryPolicy, JoinOperatorMetrics, QueryMetrics};
 use datafusion::physical_plan::metrics::{
     BaselineMetrics, Count, ExecutionPlanMetricsSet, MetricBuilder, MetricType, Time,
 };
@@ -86,6 +88,7 @@ pub const NATIVE_CUDF_DATAFUSION_METRIC_NAMES: &[&str] = &[
     "one_shot_join_materialization_bytes",
     "one_shot_join_output_bytes",
     "join_gather_map_bytes",
+    "native_join_strategy_rows",
     "source_metadata_load_time",
     "source_read_queue_wait_time",
     "source_cache_lookup_time",
@@ -102,6 +105,7 @@ pub const NATIVE_CUDF_DATAFUSION_METRIC_NAMES: &[&str] = &[
 // match `NATIVE_CUDF_DATAFUSION_METRIC_NAMES` and the registration names in `new`.
 #[derive(Debug, Clone)]
 pub(super) struct NativeCudfMetrics {
+    metrics_set: ExecutionPlanMetricsSet,
     pub(super) baseline: BaselineMetrics,
     input_batches: Count,
     input_rows: Count,
@@ -192,7 +196,9 @@ pub(super) struct NativeCudfMetrics {
 
 impl NativeCudfMetrics {
     pub(super) fn new(metrics: &ExecutionPlanMetricsSet, partition: usize) -> Self {
+        let _ = summary_counter(metrics, "native_join_strategy_rows", partition);
         Self {
+            metrics_set: metrics.clone(),
             baseline: BaselineMetrics::new(metrics, partition),
             input_batches: summary_counter(metrics, "input_batches", partition),
             input_rows: summary_counter(metrics, "input_rows", partition),
@@ -400,6 +406,7 @@ impl NativeCudfMetrics {
         self.one_shot_join_materialization_bytes.add(count(metrics.one_shot_join_materialization_bytes));
         self.one_shot_join_output_bytes.add(count(metrics.one_shot_join_output_bytes));
         self.join_gather_map_bytes.add(count(join_gather_map_bytes(metrics)));
+        self.record_join_strategy_rows(metrics);
         self.source_metadata_load_time.add_duration(metrics.source_metadata_load_time);
         self.source_read_queue_wait_time.add_duration(metrics.source_read_queue_wait_time);
         self.source_cache_lookup_time.add_duration(metrics.source_cache_lookup_time);
@@ -410,6 +417,70 @@ impl NativeCudfMetrics {
         self.final_merge_time.add_duration(metrics.final_merge_time);
         self.final_sort_time.add_duration(metrics.final_sort_time);
         self.materialization_time.add_duration(metrics.materialization_time);
+    }
+
+    fn record_join_strategy_rows(&self, metrics: &QueryMetrics) {
+        let decision_facts_by_node = metrics
+            .join_strategy_decisions
+            .iter()
+            .map(|decision| (decision.node_id.as_str(), &decision.facts))
+            .collect::<BTreeMap<_, _>>();
+        for operator in metrics.operators.iter().filter(|operator| operator.operator_kind == "join") {
+            let Some(join) = operator.join.as_ref() else {
+                continue;
+            };
+            let facts = decision_facts_by_node.get(operator.node_id.as_str()).copied();
+            let join_strategy = facts
+                .and_then(|facts| facts.get("join_strategy").map(String::as_str))
+                .unwrap_or_else(|| join_strategy_label(join));
+            let runtime = join_runtime_counters(join_strategy, join);
+            let mut builder = MetricBuilder::new(&self.metrics_set)
+                .with_type(MetricType::SUMMARY)
+                .with_new_label("node_id", operator.node_id.clone())
+                .with_new_label("join_strategy", join_strategy.to_string())
+                .with_new_label("execution_strategy", join.execution_strategy.clone())
+                .with_new_label("join_type", join.join_type.clone())
+                .with_new_label("build_side", join.build_side.clone())
+                .with_new_label("key_count", join.key_count.to_string())
+                .with_new_label("estimated_build_rows", optional_fact(facts, "estimated_build_rows"))
+                .with_new_label(
+                    "observed_build_rows",
+                    facts
+                        .and_then(|facts| facts.get("observed_build_rows").cloned())
+                        .unwrap_or_else(|| join.build_rows.to_string()),
+                )
+                .with_new_label(
+                    "build_side_bytes",
+                    facts
+                        .and_then(|facts| facts.get("build_side_bytes").cloned())
+                        .unwrap_or_else(|| join.build_bytes.to_string()),
+                )
+                .with_new_label("probe_reuse_count", optional_fact(facts, "probe_reuse_count"))
+                .with_new_label(
+                    "reusable_hash_join_rejected_reason",
+                    optional_fact(facts, "reusable_hash_join_rejected_reason"),
+                )
+                .with_new_label("one_shot_equi_rejected_reason", optional_fact(facts, "one_shot_equi_rejected_reason"))
+                .with_new_label("hash_join_build_count", runtime.hash_join_build_count.to_string())
+                .with_new_label("hash_join_hash_table_bytes", runtime.hash_join_hash_table_bytes.to_string())
+                .with_new_label("filtered_join_build_count", runtime.filtered_join_build_count.to_string())
+                .with_new_label("filtered_join_hash_table_bytes", runtime.filtered_join_hash_table_bytes.to_string())
+                .with_new_label("filtered_join_probe_state_bytes", runtime.filtered_join_probe_state_bytes.to_string())
+                .with_new_label("mixed_join_size_data_bytes", runtime.mixed_join_size_data_bytes.to_string())
+                .with_new_label("one_shot_join_count", runtime.one_shot_join_count.to_string())
+                .with_new_label("one_shot_join_index_bytes", runtime.one_shot_join_index_bytes.to_string())
+                .with_new_label(
+                    "one_shot_join_materialization_bytes",
+                    runtime.one_shot_join_materialization_bytes.to_string(),
+                )
+                .with_new_label("one_shot_join_output_bytes", runtime.one_shot_join_output_bytes.to_string())
+                .with_new_label("join_gather_map_bytes", join.gather_map_bytes.to_string());
+            if join.output_reservation_bytes > 0 {
+                builder =
+                    builder.with_new_label("join_output_reservation_bytes", join.output_reservation_bytes.to_string());
+            }
+            builder.global_counter("native_join_strategy_rows").add(1);
+        }
     }
 
     fn record_boundary_policy(&self, policy: ExecutionBoundaryPolicy) {
@@ -434,6 +505,63 @@ impl NativeCudfMetrics {
         if matches!(policy.result_materialization(), cudf_query_engine::ResultMaterializationBoundary::ExplicitSink) {
             self.result_materialization_boundary_explicit.add(1);
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct JoinRuntimeCounters {
+    hash_join_build_count: u64,
+    hash_join_hash_table_bytes: u64,
+    filtered_join_build_count: u64,
+    filtered_join_hash_table_bytes: u64,
+    filtered_join_probe_state_bytes: u64,
+    mixed_join_size_data_bytes: u64,
+    one_shot_join_count: u64,
+    one_shot_join_index_bytes: u64,
+    one_shot_join_materialization_bytes: u64,
+    one_shot_join_output_bytes: u64,
+}
+
+fn optional_fact(facts: Option<&BTreeMap<String, String>>, key: &str) -> String {
+    facts.and_then(|facts| facts.get(key).cloned()).unwrap_or_else(|| "none".to_string())
+}
+
+fn join_strategy_label(join: &JoinOperatorMetrics) -> &'static str {
+    match join.execution_strategy.as_str() {
+        "bounded_one_shot_equi_join" => "one_shot_equi",
+        "bounded_reusable_hash_join" | "hash_join" => "reusable_hash_equi",
+        "bounded_reusable_filtered_join" => "filtered_join",
+        "bounded_mixed_keyed_residual_join" | "mixed_join" => "mixed_keyed_residual",
+        "bounded_keyless_conditional_join" | "conditional_join" => "keyless_conditional",
+        "bounded_projected_cross_join" | "cross_join" => "projected_cross",
+        _ => "unknown",
+    }
+}
+
+fn join_runtime_counters(join_strategy: &str, join: &JoinOperatorMetrics) -> JoinRuntimeCounters {
+    match join_strategy {
+        "reusable_hash_equi" => JoinRuntimeCounters {
+            hash_join_build_count: u64::from(join.hash_table_bytes > 0),
+            hash_join_hash_table_bytes: join.hash_table_bytes,
+            ..Default::default()
+        },
+        "filtered_join" => JoinRuntimeCounters {
+            filtered_join_build_count: u64::from(join.hash_table_bytes > 0),
+            filtered_join_hash_table_bytes: join.hash_table_bytes,
+            filtered_join_probe_state_bytes: join.filtered_probe_state_bytes,
+            ..Default::default()
+        },
+        "one_shot_equi" => JoinRuntimeCounters {
+            one_shot_join_count: 1,
+            one_shot_join_index_bytes: join.gather_map_bytes,
+            one_shot_join_materialization_bytes: join.output_reservation_bytes,
+            one_shot_join_output_bytes: join.output_bytes,
+            ..Default::default()
+        },
+        "mixed_keyed_residual" => {
+            JoinRuntimeCounters { mixed_join_size_data_bytes: join.mixed_size_data_bytes, ..Default::default() }
+        },
+        _ => JoinRuntimeCounters::default(),
     }
 }
 

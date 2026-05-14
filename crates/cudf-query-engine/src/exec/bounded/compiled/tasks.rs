@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use arrow::record_batch::RecordBatch;
 
 use super::{
-    join_strategy::CompiledJoinExecutionStrategy,
+    join_strategy::{CompiledJoinExecutionStrategy, CompiledJoinStrategySelection},
     reservations::validate_task_runtime_gates,
     scheduler::{CompiledTaskExecutor, CompiledTaskOutput},
     state::CompiledPipelineState,
@@ -255,11 +255,14 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
             input_payload.num_rows() as u64,
             input_payload.reservation_bytes(),
         )?;
+        if let Some(facts) = strategy.facts.as_ref() {
+            self.metrics.record_join_strategy_decision(node_id, facts);
+        }
         let build = execute_bounded_compiled_join_build_from_frame(
             self.context,
             node_id,
             node,
-            strategy,
+            strategy.strategy,
             input_payload.clone_frame(),
             input_payload.reservation_bytes(),
             &mut self.reservations,
@@ -575,7 +578,7 @@ fn join_strategy(
     node_id: NodeId,
     observed_build_rows: u64,
     build_side_bytes: u64,
-) -> Result<CompiledJoinExecutionStrategy> {
+) -> Result<CompiledJoinStrategySelection> {
     let plan_facts = keyed_hash_join_strategy_input_facts_for_plan(plan, node_id, node);
     let strategy_facts = KeyedHashJoinStrategyInputFacts {
         estimated_build_rows: plan_facts.estimated_build_rows,
@@ -583,7 +586,7 @@ fn join_strategy(
         build_side_bytes: Some(build_side_bytes),
         probe_reuse_count: plan_facts.probe_reuse_count,
     };
-    CompiledJoinExecutionStrategy::from_join_node_with_strategy_facts(node, strategy_facts)
+    CompiledJoinExecutionStrategy::select_from_join_node_with_strategy_facts(node, strategy_facts)
         .map_err(|decision| {
             let (reason, facts) = match decision {
                 crate::capability::KeyedHashJoinStrategyDecision::Rejected { reason, facts } => (reason, facts),

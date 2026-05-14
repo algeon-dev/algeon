@@ -1,6 +1,10 @@
+use std::collections::BTreeMap;
+
 use datafusion::physical_plan::metrics::MetricsSet;
 
 use super::tsv::{metric_count, optional_observed_metric_count};
+
+const NATIVE_JOIN_STRATEGY_ROWS_METRIC_NAME: &str = "native_join_strategy_rows";
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct NativeDataFusionExecutionMetrics {
@@ -66,6 +70,7 @@ pub struct NativeDataFusionExecutionMetrics {
     pub one_shot_join_materialization_bytes: usize,
     pub one_shot_join_output_bytes: usize,
     pub join_gather_map_bytes: usize,
+    pub join_strategy_rows: Vec<NativeJoinStrategyMetricRow>,
 }
 
 impl NativeDataFusionExecutionMetrics {
@@ -133,6 +138,199 @@ impl NativeDataFusionExecutionMetrics {
             one_shot_join_materialization_bytes: metric_count(metrics, "one_shot_join_materialization_bytes"),
             one_shot_join_output_bytes: metric_count(metrics, "one_shot_join_output_bytes"),
             join_gather_map_bytes: metric_count(metrics, "join_gather_map_bytes"),
+            join_strategy_rows: join_strategy_rows(metrics),
         }
+    }
+
+    pub fn merge_join_strategy_rows(&mut self, rows: Vec<NativeJoinStrategyMetricRow>) {
+        for row in rows {
+            if let Some(existing) = self.join_strategy_rows.iter_mut().find(|existing| existing.same_site(&row)) {
+                existing.merge_runtime_from(row);
+            } else {
+                self.join_strategy_rows.push(row);
+            }
+        }
+        self.join_strategy_rows.sort_by(|left, right| left.sort_key().cmp(&right.sort_key()));
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct NativeJoinStrategyMetricRow {
+    pub node_id: String,
+    pub join_strategy: String,
+    pub execution_strategy: String,
+    pub join_type: String,
+    pub build_side: String,
+    pub key_count: usize,
+    pub estimated_build_rows: Option<usize>,
+    pub observed_build_rows: Option<usize>,
+    pub build_side_bytes: Option<usize>,
+    pub probe_reuse_count: Option<usize>,
+    pub reusable_hash_join_rejected_reason: Option<String>,
+    pub one_shot_equi_rejected_reason: Option<String>,
+    pub hash_join_build_count: usize,
+    pub hash_join_hash_table_bytes: usize,
+    pub filtered_join_build_count: usize,
+    pub filtered_join_hash_table_bytes: usize,
+    pub filtered_join_probe_state_bytes: usize,
+    pub mixed_join_size_data_bytes: usize,
+    pub one_shot_join_count: usize,
+    pub one_shot_join_index_bytes: usize,
+    pub one_shot_join_materialization_bytes: usize,
+    pub one_shot_join_output_bytes: usize,
+    pub join_gather_map_bytes: usize,
+}
+
+impl NativeJoinStrategyMetricRow {
+    pub fn to_stable_kv_row(&self) -> String {
+        format!(
+            "node_id={},join_strategy={},execution_strategy={},join_type={},build_side={},key_count={},estimated_build_rows={},observed_build_rows={},build_side_bytes={},probe_reuse_count={},reusable_hash_join_rejected_reason={},one_shot_equi_rejected_reason={},hash_join_build_count={},hash_join_hash_table_bytes={},filtered_join_build_count={},filtered_join_hash_table_bytes={},filtered_join_probe_state_bytes={},mixed_join_size_data_bytes={},one_shot_join_count={},one_shot_join_index_bytes={},one_shot_join_materialization_bytes={},one_shot_join_output_bytes={},join_gather_map_bytes={}",
+            self.node_id,
+            self.join_strategy,
+            self.execution_strategy,
+            self.join_type,
+            self.build_side,
+            self.key_count,
+            optional_usize(self.estimated_build_rows),
+            optional_usize(self.observed_build_rows),
+            optional_usize(self.build_side_bytes),
+            optional_usize(self.probe_reuse_count),
+            optional_str(self.reusable_hash_join_rejected_reason.as_deref()),
+            optional_str(self.one_shot_equi_rejected_reason.as_deref()),
+            self.hash_join_build_count,
+            self.hash_join_hash_table_bytes,
+            self.filtered_join_build_count,
+            self.filtered_join_hash_table_bytes,
+            self.filtered_join_probe_state_bytes,
+            self.mixed_join_size_data_bytes,
+            self.one_shot_join_count,
+            self.one_shot_join_index_bytes,
+            self.one_shot_join_materialization_bytes,
+            self.one_shot_join_output_bytes,
+            self.join_gather_map_bytes,
+        )
+    }
+
+    fn same_site(&self, other: &Self) -> bool {
+        self.node_id == other.node_id
+            && self.join_strategy == other.join_strategy
+            && self.execution_strategy == other.execution_strategy
+            && self.join_type == other.join_type
+            && self.build_side == other.build_side
+            && self.key_count == other.key_count
+            && self.estimated_build_rows == other.estimated_build_rows
+            && self.probe_reuse_count == other.probe_reuse_count
+            && self.reusable_hash_join_rejected_reason == other.reusable_hash_join_rejected_reason
+            && self.one_shot_equi_rejected_reason == other.one_shot_equi_rejected_reason
+    }
+
+    fn merge_runtime_from(&mut self, other: Self) {
+        self.observed_build_rows = max_optional_usize(self.observed_build_rows, other.observed_build_rows);
+        self.build_side_bytes = max_optional_usize(self.build_side_bytes, other.build_side_bytes);
+        self.hash_join_build_count = self.hash_join_build_count.saturating_add(other.hash_join_build_count);
+        self.hash_join_hash_table_bytes =
+            self.hash_join_hash_table_bytes.saturating_add(other.hash_join_hash_table_bytes);
+        self.filtered_join_build_count = self.filtered_join_build_count.saturating_add(other.filtered_join_build_count);
+        self.filtered_join_hash_table_bytes =
+            self.filtered_join_hash_table_bytes.saturating_add(other.filtered_join_hash_table_bytes);
+        self.filtered_join_probe_state_bytes =
+            self.filtered_join_probe_state_bytes.saturating_add(other.filtered_join_probe_state_bytes);
+        self.mixed_join_size_data_bytes =
+            self.mixed_join_size_data_bytes.saturating_add(other.mixed_join_size_data_bytes);
+        self.one_shot_join_count = self.one_shot_join_count.saturating_add(other.one_shot_join_count);
+        self.one_shot_join_index_bytes = self.one_shot_join_index_bytes.saturating_add(other.one_shot_join_index_bytes);
+        self.one_shot_join_materialization_bytes =
+            self.one_shot_join_materialization_bytes.saturating_add(other.one_shot_join_materialization_bytes);
+        self.one_shot_join_output_bytes =
+            self.one_shot_join_output_bytes.saturating_add(other.one_shot_join_output_bytes);
+        self.join_gather_map_bytes = self.join_gather_map_bytes.saturating_add(other.join_gather_map_bytes);
+    }
+
+    fn sort_key(&self) -> (&str, &str, &str, &str, &str, usize) {
+        (
+            self.node_id.as_str(),
+            self.join_strategy.as_str(),
+            self.execution_strategy.as_str(),
+            self.join_type.as_str(),
+            self.build_side.as_str(),
+            self.key_count,
+        )
+    }
+}
+
+fn join_strategy_rows(metrics: &MetricsSet) -> Vec<NativeJoinStrategyMetricRow> {
+    let mut rows = metrics
+        .iter()
+        .filter(|metric| metric.value().name() == NATIVE_JOIN_STRATEGY_ROWS_METRIC_NAME)
+        .filter(|metric| metric.labels().iter().any(|label| label.name() == "node_id"))
+        .map(|metric| labels_to_join_strategy_row(labels_by_name(metric.labels())))
+        .collect::<Vec<_>>();
+    rows.sort_by(|left, right| left.sort_key().cmp(&right.sort_key()));
+    rows
+}
+
+fn labels_by_name(labels: &[datafusion::physical_plan::metrics::Label]) -> BTreeMap<&str, &str> {
+    labels.iter().map(|label| (label.name(), label.value())).collect()
+}
+
+fn labels_to_join_strategy_row(labels: BTreeMap<&str, &str>) -> NativeJoinStrategyMetricRow {
+    NativeJoinStrategyMetricRow {
+        node_id: string_label(&labels, "node_id"),
+        join_strategy: string_label(&labels, "join_strategy"),
+        execution_strategy: string_label(&labels, "execution_strategy"),
+        join_type: string_label(&labels, "join_type"),
+        build_side: string_label(&labels, "build_side"),
+        key_count: usize_label(&labels, "key_count"),
+        estimated_build_rows: optional_usize_label(&labels, "estimated_build_rows"),
+        observed_build_rows: optional_usize_label(&labels, "observed_build_rows"),
+        build_side_bytes: optional_usize_label(&labels, "build_side_bytes"),
+        probe_reuse_count: optional_usize_label(&labels, "probe_reuse_count"),
+        reusable_hash_join_rejected_reason: optional_string_label(&labels, "reusable_hash_join_rejected_reason"),
+        one_shot_equi_rejected_reason: optional_string_label(&labels, "one_shot_equi_rejected_reason"),
+        hash_join_build_count: usize_label(&labels, "hash_join_build_count"),
+        hash_join_hash_table_bytes: usize_label(&labels, "hash_join_hash_table_bytes"),
+        filtered_join_build_count: usize_label(&labels, "filtered_join_build_count"),
+        filtered_join_hash_table_bytes: usize_label(&labels, "filtered_join_hash_table_bytes"),
+        filtered_join_probe_state_bytes: usize_label(&labels, "filtered_join_probe_state_bytes"),
+        mixed_join_size_data_bytes: usize_label(&labels, "mixed_join_size_data_bytes"),
+        one_shot_join_count: usize_label(&labels, "one_shot_join_count"),
+        one_shot_join_index_bytes: usize_label(&labels, "one_shot_join_index_bytes"),
+        one_shot_join_materialization_bytes: usize_label(&labels, "one_shot_join_materialization_bytes"),
+        one_shot_join_output_bytes: usize_label(&labels, "one_shot_join_output_bytes"),
+        join_gather_map_bytes: usize_label(&labels, "join_gather_map_bytes"),
+    }
+}
+
+fn string_label(labels: &BTreeMap<&str, &str>, name: &str) -> String {
+    labels.get(name).copied().unwrap_or("unknown").to_string()
+}
+
+fn optional_string_label(labels: &BTreeMap<&str, &str>, name: &str) -> Option<String> {
+    let value = labels.get(name).copied()?;
+    (value != "none").then(|| value.to_string())
+}
+
+fn usize_label(labels: &BTreeMap<&str, &str>, name: &str) -> usize {
+    labels.get(name).and_then(|value| value.parse().ok()).unwrap_or(0)
+}
+
+fn optional_usize_label(labels: &BTreeMap<&str, &str>, name: &str) -> Option<usize> {
+    let value = labels.get(name).copied()?;
+    (value != "none").then(|| value.parse().ok()).flatten()
+}
+
+fn optional_usize(value: Option<usize>) -> String {
+    value.map_or_else(|| "none".to_string(), |value| value.to_string())
+}
+
+fn optional_str(value: Option<&str>) -> String {
+    value.unwrap_or("none").to_string()
+}
+
+fn max_optional_usize(left: Option<usize>, right: Option<usize>) -> Option<usize> {
+    match (left, right) {
+        (Some(left), Some(right)) => Some(left.max(right)),
+        (Some(value), None) | (None, Some(value)) => Some(value),
+        (None, None) => None,
     }
 }

@@ -297,6 +297,7 @@ fn native_datafusion_metric_names_cover_bounded_runtime_contract() {
         "one_shot_join_materialization_bytes",
         "one_shot_join_output_bytes",
         "join_gather_map_bytes",
+        "native_join_strategy_rows",
         "source_metadata_load_time",
         "source_read_queue_wait_time",
         "source_cache_lookup_time",

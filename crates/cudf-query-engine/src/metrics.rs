@@ -66,6 +66,7 @@ impl MemoryReservationEvent {
 pub struct QueryMetrics {
     pub boundary: BoundaryMetrics,
     pub operators: Vec<OperatorMetrics>,
+    pub join_strategy_decisions: Vec<JoinStrategyDecisionMetrics>,
     pub phase_c_memory_control_policy: MemoryControlPolicy,
     pub execution_boundary_policy: ExecutionBoundaryPolicy,
     pub input_batches: u64,
@@ -179,6 +180,13 @@ pub struct QueryMetrics {
 impl QueryMetrics {
     pub fn record_operator_metrics(&mut self, metrics: OperatorMetrics) {
         self.operators.push(metrics);
+    }
+
+    pub fn record_join_strategy_decision(&mut self, node_id: impl ToString, facts: &BTreeMap<&'static str, String>) {
+        self.join_strategy_decisions.push(JoinStrategyDecisionMetrics {
+            node_id: node_id.to_string(),
+            facts: facts.iter().map(|(key, value)| ((*key).to_string(), value.clone())).collect(),
+        });
     }
 
     pub fn record_input_batch(&mut self, rows: u64) {
@@ -402,6 +410,7 @@ impl QueryMetrics {
     pub fn merge_from(&mut self, other: QueryMetrics) {
         self.boundary.merge_from(other.boundary);
         self.operators.extend(other.operators);
+        self.join_strategy_decisions.extend(other.join_strategy_decisions);
         self.input_batches = self.input_batches.saturating_add(other.input_batches);
         self.input_rows = self.input_rows.saturating_add(other.input_rows);
         self.peak_device_memory_bytes = max_optional(self.peak_device_memory_bytes, other.peak_device_memory_bytes);
@@ -508,6 +517,12 @@ fn max_optional(left: Option<u64>, right: Option<u64>) -> Option<u64> {
     }
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct JoinStrategyDecisionMetrics {
+    pub node_id: String,
+    pub facts: BTreeMap<String, String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BudgetedExecutionEvent {
     pub operation: String,
@@ -593,6 +608,7 @@ pub struct JoinOperatorMetrics {
     /// This is a direct cudf-rs observation over the returned device index
     /// columns, not a row-count estimate.
     pub gather_map_bytes: u64,
+    pub output_reservation_bytes: u64,
     pub output_rows: u64,
     pub output_bytes: u64,
 }
