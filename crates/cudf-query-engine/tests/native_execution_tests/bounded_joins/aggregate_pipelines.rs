@@ -79,10 +79,8 @@ fn bounded_native_query_executes_root_hash_join_under_aggregate_with_ordered_res
         &[
             (ReservationKind::SourceRead, "join_source_read"),
             (ReservationKind::SourceRead, "join_source_read"),
-            (ReservationKind::OperatorOutput, "join_input_projection"),
             (ReservationKind::BuildSide, "join_build_side"),
             (ReservationKind::HashTable, "join_hash_table"),
-            (ReservationKind::OperatorOutput, "join_input_projection"),
             (ReservationKind::ProbeSide, "join_probe_side"),
             (ReservationKind::GatherMap, "join_gather_map"),
             (ReservationKind::JoinOutput, "join_output"),
@@ -229,10 +227,8 @@ fn bounded_native_query_executes_serial_aggregate_join_spine() {
         &[
             (ReservationKind::SourceRead, "join_source_read"),
             (ReservationKind::SourceRead, "join_source_read"),
-            (ReservationKind::OperatorOutput, "join_input_projection"),
             (ReservationKind::BuildSide, "join_build_side"),
             (ReservationKind::HashTable, "join_hash_table"),
-            (ReservationKind::OperatorOutput, "join_input_projection"),
             (ReservationKind::ProbeSide, "join_probe_side"),
             (ReservationKind::GatherMap, "join_gather_map"),
             (ReservationKind::JoinOutput, "join_output"),

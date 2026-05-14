@@ -23,6 +23,7 @@ struct ResidentResourceSlot<T> {
     definition: ResidentResource,
     payload: Option<T>,
     released: bool,
+    consumed_by: Option<PipelineTaskId>,
 }
 
 /// A resident resource payload released after its last compiled consumer.
@@ -43,13 +44,36 @@ impl<T> ReleasedCompiledResource<T> {
     }
 }
 
+/// A single-consumer resident resource moved into a compiled task executor.
+#[doc(hidden)]
+#[derive(Debug)]
+pub struct ConsumedCompiledResource<T> {
+    id: ResidentResourceId,
+    payload: T,
+}
+
+impl<T> ConsumedCompiledResource<T> {
+    pub fn id(&self) -> ResidentResourceId {
+        self.id
+    }
+
+    pub fn into_payload(self) -> T {
+        self.payload
+    }
+}
+
 impl<T> CompiledPipelineState<T> {
     pub fn new(pipeline: &CompiledPipeline) -> Result<Self> {
         let mut resources = BTreeMap::new();
         for resource in pipeline.resources() {
             let previous = resources.insert(
                 resource.id(),
-                ResidentResourceSlot { definition: resource.clone(), payload: None, released: false },
+                ResidentResourceSlot {
+                    definition: resource.clone(),
+                    payload: None,
+                    released: false,
+                    consumed_by: None,
+                },
             );
             if previous.is_some() {
                 return Err(invalid("compiled resource table contains a duplicate resource")
@@ -128,12 +152,78 @@ impl<T> CompiledPipelineState<T> {
         Ok(())
     }
 
+    pub fn can_consume_task_input_resource(&self, task: &PipelineTask, resource: ResidentResourceId) -> bool {
+        self.resource_slot(resource).is_ok_and(|slot| {
+            task.input_resources().contains(&resource)
+                && !slot.released
+                && slot.payload.is_some()
+                && matches!(slot.definition.lifetime(), ResidentLifetime::BetweenTasks { .. })
+                && slot.definition.consumers() == [task.id()]
+        })
+    }
+
+    pub fn consume_task_input_resource(
+        &mut self,
+        task: &PipelineTask,
+        resource: ResidentResourceId,
+    ) -> Result<ConsumedCompiledResource<T>> {
+        if self.completed_tasks.contains(&task.id()) {
+            return Err(invalid("compiled task consumed an input after completion")
+                .with_fact("compiled_task_id", task.id())
+                .with_fact("resident_resource_id", resource)
+                .with_fact("pipeline_task_kind", task.kind().as_str()));
+        }
+        if !task.input_resources().contains(&resource) {
+            return Err(invalid("compiled task tried to consume an undeclared input resource")
+                .with_fact("compiled_task_id", task.id())
+                .with_fact("resident_resource_id", resource)
+                .with_fact("pipeline_task_kind", task.kind().as_str()));
+        }
+
+        let slot = self.resource_slot_mut(resource)?;
+        if !slot.definition.consumers().contains(&task.id()) {
+            return Err(invalid("compiled task input is not a recorded resource consumer")
+                .with_fact("compiled_task_id", task.id())
+                .with_fact("resident_resource_id", resource)
+                .with_fact("pipeline_task_kind", task.kind().as_str()));
+        }
+        if slot.definition.consumers() != [task.id()] {
+            return Err(invalid("compiled task cannot consume a multi-consumer resident resource")
+                .with_fact("compiled_task_id", task.id())
+                .with_fact("resident_resource_id", resource)
+                .with_fact("pipeline_task_kind", task.kind().as_str())
+                .with_fact("consumer_count", slot.definition.consumers().len()));
+        }
+        if !matches!(slot.definition.lifetime(), ResidentLifetime::BetweenTasks { .. }) {
+            return Err(invalid("compiled task can only consume a between-tasks resident resource")
+                .with_fact("compiled_task_id", task.id())
+                .with_fact("resident_resource_id", resource)
+                .with_fact("pipeline_task_kind", task.kind().as_str()));
+        }
+        if slot.released {
+            return Err(invalid("compiled task input resource was already released")
+                .with_fact("compiled_task_id", task.id())
+                .with_fact("resident_resource_id", resource)
+                .with_fact("pipeline_task_kind", task.kind().as_str()));
+        }
+        let payload = slot.payload.take().ok_or_else(|| {
+            invalid("compiled task input resource is not produced")
+                .with_fact("compiled_task_id", task.id())
+                .with_fact("resident_resource_id", resource)
+                .with_fact("pipeline_task_kind", task.kind().as_str())
+        })?;
+        slot.released = true;
+        slot.consumed_by = Some(task.id());
+
+        Ok(ConsumedCompiledResource { id: resource, payload })
+    }
+
     pub fn complete_task(
         &mut self,
         task: &PipelineTask,
         produced_resources: Vec<(ResidentResourceId, T)>,
     ) -> Result<Vec<ReleasedCompiledResource<T>>> {
-        self.prepare_task(task)?;
+        self.prepare_task_completion(task)?;
         let produced = self.install_task_outputs(task, produced_resources)?;
 
         if !self.completed_tasks.insert(task.id()) {
@@ -240,6 +330,9 @@ impl<T> CompiledPipelineState<T> {
         consumer: PipelineTaskId,
     ) -> Result<bool> {
         let slot = self.resource_slot(resource)?;
+        if slot.released {
+            return Ok(false);
+        }
         match slot.definition.lifetime() {
             ResidentLifetime::BetweenTasks { .. } => {
                 if !slot.definition.consumers().contains(&consumer) {
@@ -258,6 +351,41 @@ impl<T> CompiledPipelineState<T> {
                     .with_fact("compiled_task_id", consumer))
             },
         }
+    }
+
+    fn prepare_task_completion(&self, task: &PipelineTask) -> Result<()> {
+        if self.completed_tasks.contains(&task.id()) {
+            return Err(invalid("compiled task completed more than once")
+                .with_fact("compiled_task_id", task.id())
+                .with_fact("pipeline_task_kind", task.kind().as_str()));
+        }
+
+        for resource in task.input_resources() {
+            let slot = self.resource_slot(*resource)?;
+            if slot.consumed_by == Some(task.id()) {
+                continue;
+            }
+            if !slot.definition.consumers().contains(&task.id()) {
+                return Err(invalid("compiled task input is not a recorded resource consumer")
+                    .with_fact("compiled_task_id", task.id())
+                    .with_fact("resident_resource_id", resource)
+                    .with_fact("pipeline_task_kind", task.kind().as_str()));
+            }
+            if slot.released {
+                return Err(invalid("compiled task input resource was already released")
+                    .with_fact("compiled_task_id", task.id())
+                    .with_fact("resident_resource_id", resource)
+                    .with_fact("pipeline_task_kind", task.kind().as_str()));
+            }
+            if slot.payload.is_none() {
+                return Err(invalid("compiled task input resource is not produced")
+                    .with_fact("compiled_task_id", task.id())
+                    .with_fact("resident_resource_id", resource)
+                    .with_fact("pipeline_task_kind", task.kind().as_str()));
+            }
+        }
+
+        Ok(())
     }
 
     fn release_resource(

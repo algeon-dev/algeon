@@ -30,7 +30,8 @@ pub(in crate::exec) use final_sort::topk_candidate_rows;
 use final_sort::*;
 pub(in crate::exec::bounded) use join::{
     BoundedCompiledJoinBuildState, BoundedCompiledJoinProbeState, execute_bounded_compiled_join_build_from_frame,
-    execute_bounded_compiled_join_materialize, execute_bounded_compiled_join_probe_from_frame,
+    execute_bounded_compiled_join_build_from_resident_frame, execute_bounded_compiled_join_materialize,
+    execute_bounded_compiled_join_probe_from_frame, execute_bounded_compiled_join_probe_from_resident_frame,
     execute_bounded_join_leaf_source,
 };
 pub(in crate::exec) use reservation::{ActiveReservation, CommittedPartial, ReservationTracker, ResidentGpuFrame};
@@ -382,7 +383,7 @@ pub(in crate::exec::bounded) fn execute_bounded_generic_gpu_resident_source(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn execute_bounded_generic_unary(
+pub(in crate::exec::bounded) fn execute_bounded_generic_unary(
     context: &ExecutionContext,
     node_id: NodeId,
     stage: &'static str,

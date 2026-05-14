@@ -1024,6 +1024,63 @@ fn compiled_state_keeps_shared_resource_live_until_every_consumer_completes() {
 }
 
 #[test]
+fn compiled_state_consumes_single_consumer_resource_before_task_completion() {
+    let pipeline = simple_unary_pipeline();
+    let mut state = CompiledPipelineState::<String>::new(&pipeline).expect("state should initialize");
+
+    state
+        .complete_task(&pipeline.tasks()[0], vec![(ResidentResourceId::new(0), "frame".to_string())])
+        .expect("source should produce single-consumer resource");
+    assert!(state.is_resource_live(ResidentResourceId::new(0)));
+
+    let consumed = state
+        .consume_task_input_resource(&pipeline.tasks()[1], ResidentResourceId::new(0))
+        .expect("single-consumer input can be consumed");
+    assert_eq!(consumed.id(), ResidentResourceId::new(0));
+    assert_eq!(consumed.into_payload(), "frame");
+    assert!(state.is_resource_released(ResidentResourceId::new(0)));
+    assert_eq!(state.live_resource_count(), 0);
+
+    let released =
+        state.complete_task(&pipeline.tasks()[1], vec![]).expect("completion should not release consumed input twice");
+    assert!(released.is_empty());
+}
+
+#[test]
+fn compiled_state_rejects_consuming_multi_consumer_resource() {
+    let pipeline = shared_resident_fanout_pipeline();
+    let mut state = CompiledPipelineState::<String>::new(&pipeline).expect("state should initialize");
+
+    state
+        .complete_task(&pipeline.tasks()[0], vec![(ResidentResourceId::new(0), "frame".to_string())])
+        .expect("source should produce shared resource");
+
+    let error = state
+        .consume_task_input_resource(&pipeline.tasks()[1], ResidentResourceId::new(0))
+        .expect_err("multi-consumer input must not be consumed early");
+
+    assert_eq!(error.code(), cudf_query_engine::QueryErrorCode::InvalidPlan);
+    assert_eq!(error.facts().get("compiled_task_id"), Some("t1"));
+    assert_eq!(error.facts().get("resident_resource_id"), Some("r0"));
+    assert_eq!(error.facts().get("consumer_count"), Some("2"));
+    assert!(state.is_resource_live(ResidentResourceId::new(0)));
+}
+
+#[test]
+fn compiled_scheduler_allows_executor_to_consume_single_consumer_input() {
+    let pipeline = simple_unary_pipeline();
+    let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("pipeline should be schedulable");
+    let mut executor = MockExecutor::new().consume_inputs_for(PipelineTaskId::new(1));
+
+    let state = scheduler.run(&mut executor).expect("mock pipeline should execute with consumed input");
+
+    assert_eq!(executor.consumed, vec![ResidentResourceId::new(0)]);
+    assert!(executor.released.is_empty());
+    assert!(state.is_resource_released(ResidentResourceId::new(0)));
+    assert_eq!(state.live_resource_count(), 0);
+}
+
+#[test]
 fn compiled_scheduler_errors_when_task_omits_declared_output_resource() {
     let pipeline = simple_unary_pipeline();
     let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("pipeline should be schedulable");
@@ -2010,13 +2067,22 @@ const D5_FORBIDDEN_ADAPTIVE_REPORT_TERMS: &[&str] =
 struct MockExecutor {
     executed: Vec<PipelineTaskId>,
     released: Vec<ResidentResourceId>,
+    consumed: Vec<ResidentResourceId>,
     omit_outputs: Vec<PipelineTaskId>,
     duplicate_outputs: Vec<PipelineTaskId>,
+    consume_inputs: Vec<PipelineTaskId>,
 }
 
 impl MockExecutor {
     fn new() -> Self {
-        Self { executed: Vec::new(), released: Vec::new(), omit_outputs: Vec::new(), duplicate_outputs: Vec::new() }
+        Self {
+            executed: Vec::new(),
+            released: Vec::new(),
+            consumed: Vec::new(),
+            omit_outputs: Vec::new(),
+            duplicate_outputs: Vec::new(),
+            consume_inputs: Vec::new(),
+        }
     }
 
     fn omit_output_for(mut self, task: PipelineTaskId) -> Self {
@@ -2028,6 +2094,11 @@ impl MockExecutor {
         self.duplicate_outputs.push(task);
         self
     }
+
+    fn consume_inputs_for(mut self, task: PipelineTaskId) -> Self {
+        self.consume_inputs.push(task);
+        self
+    }
 }
 
 impl CompiledTaskExecutor for MockExecutor {
@@ -2036,9 +2107,16 @@ impl CompiledTaskExecutor for MockExecutor {
     fn execute_task(
         &mut self,
         task: &PipelineTask,
-        _state: &CompiledPipelineState<Self::Resource>,
+        state: &mut CompiledPipelineState<Self::Resource>,
     ) -> cudf_query_engine::Result<CompiledTaskOutput<Self::Resource>> {
         self.executed.push(task.id());
+        if self.consume_inputs.contains(&task.id()) {
+            for resource in task.input_resources() {
+                let consumed = state.consume_task_input_resource(task, *resource)?;
+                self.consumed.push(consumed.id());
+                drop(consumed.into_payload());
+            }
+        }
         if self.omit_outputs.contains(&task.id()) {
             return Ok(CompiledTaskOutput::empty());
         }

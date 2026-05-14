@@ -7,6 +7,11 @@ pub(in crate::exec::bounded) struct BoundedJoinSideFrame {
     pub(in crate::exec::bounded) bytes: u64,
 }
 
+enum JoinInputReservation {
+    Borrowed { reserved_bytes: u64 },
+    Owned { reservation: ActiveReservation },
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(in crate::exec::bounded) fn prepare_bounded_join_side_input_from_frame(
     input: GpuDataFrame,
@@ -18,21 +23,97 @@ pub(in crate::exec::bounded) fn prepare_bounded_join_side_input_from_frame(
     reservations: &mut ReservationTracker,
     metrics: &mut QueryMetrics,
 ) -> Result<BoundedJoinSideFrame> {
+    prepare_bounded_join_side_input(
+        input,
+        JoinInputReservation::Borrowed { reserved_bytes: input_reserved_bytes },
+        columns,
+        input_side,
+        node_id,
+        build_side,
+        reservations,
+        metrics,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(in crate::exec::bounded) fn prepare_bounded_join_side_input_from_resident_frame(
+    input: ResidentGpuFrame,
+    columns: &[String],
+    input_side: JoinSide,
+    node_id: NodeId,
+    build_side: JoinSide,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+) -> Result<BoundedJoinSideFrame> {
+    prepare_bounded_join_side_input(
+        input.frame,
+        JoinInputReservation::Owned { reservation: input.reservation },
+        columns,
+        input_side,
+        node_id,
+        build_side,
+        reservations,
+        metrics,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn prepare_bounded_join_side_input(
+    input: GpuDataFrame,
+    input_reservation: JoinInputReservation,
+    columns: &[String],
+    input_side: JoinSide,
+    node_id: NodeId,
+    build_side: JoinSide,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+) -> Result<BoundedJoinSideFrame> {
     let reservation_kind =
         if input_side == build_side { ReservationKind::BuildSide } else { ReservationKind::ProbeSide };
     let memory_boundary = if input_side == build_side { "join_build_side" } else { "join_probe_side" };
-    let work_reservation = reservations.try_reserve(
-        MemoryReservationRequest::new(ReservationKind::OperatorOutput, input_reserved_bytes, reservations.budget())
-            .with_memory_boundary("join_input_projection")
-            .with_node_id(node_id)
-            .with_stage("bounded_join")
-            .with_attempt(1, 1),
-        metrics,
-    )?;
-    let selected = match select_join_input(input.into_frame(), columns, join_side_label(input_side)) {
+    let (input_reserved_bytes, mut owned_input_reservation) = match input_reservation {
+        JoinInputReservation::Borrowed { reserved_bytes } => (reserved_bytes, None),
+        JoinInputReservation::Owned { reservation } => (reservation.bytes(), Some(reservation)),
+    };
+    let input_frame = input.into_frame();
+    let select_memory_effect = match input_frame.select_memory_effect(columns) {
+        Ok(effect) => effect,
+        Err(error) => {
+            release_owned_join_input_reservation(&mut owned_input_reservation, reservations, metrics);
+            return Err(QueryError::from_cudf(
+                "cudf_query_engine.bounded.join.select_memory_effect",
+                "failed to determine native join input selection memory effect",
+                error,
+            )
+            .with_fact("side", join_side_label(input_side))
+            .with_fact("columns", columns.join(",")));
+        },
+    };
+    let work_reservation = if select_memory_effect.is_alias_of_input() {
+        None
+    } else {
+        Some(
+            reservations.try_reserve_work(
+                MemoryReservationRequest::new(
+                    ReservationKind::OperatorOutput,
+                    input_reserved_bytes,
+                    reservations.budget(),
+                )
+                .with_memory_boundary("join_input_projection")
+                .with_node_id(node_id)
+                .with_stage("bounded_join")
+                .with_attempt(1, 1),
+                metrics,
+            )?,
+        )
+    };
+    let selected = match select_join_input(input_frame, columns, join_side_label(input_side)) {
         Ok(frame) => frame,
         Err(error) => {
-            reservations.release(work_reservation, metrics);
+            if let Some(work_reservation) = work_reservation {
+                reservations.release(work_reservation, metrics);
+            }
+            release_owned_join_input_reservation(&mut owned_input_reservation, reservations, metrics);
             return Err(error);
         },
     };
@@ -40,22 +121,70 @@ pub(in crate::exec::bounded) fn prepare_bounded_join_side_input_from_frame(
     let bytes = match observe_device_memory_bytes(&GpuDataFrame::new(selected.clone()), metrics) {
         Ok(bytes) => bytes,
         Err(error) => {
-            reservations.release(work_reservation, metrics);
+            if let Some(work_reservation) = work_reservation {
+                reservations.release(work_reservation, metrics);
+            }
+            release_owned_join_input_reservation(&mut owned_input_reservation, reservations, metrics);
             return Err(error);
         },
     };
-    let reservation = match reservations.try_reserve(
-        bounded_join_request(reservation_kind, memory_boundary, bytes, reservations.budget(), node_id),
-        metrics,
-    ) {
-        Ok(reservation) => reservation,
-        Err(error) => {
-            reservations.release(work_reservation, metrics);
-            return Err(error);
-        },
+    let reservation = if select_memory_effect.is_alias_of_input() {
+        if let Some(input_reservation) = owned_input_reservation.take() {
+            reservations.transfer(
+                input_reservation,
+                bounded_join_request(
+                    reservation_kind,
+                    memory_boundary,
+                    input_reserved_bytes,
+                    reservations.budget(),
+                    node_id,
+                ),
+                metrics,
+            )
+        } else {
+            match reservations.try_reserve(
+                bounded_join_request(reservation_kind, memory_boundary, bytes, reservations.budget(), node_id),
+                metrics,
+            ) {
+                Ok(reservation) => reservation,
+                Err(error) => {
+                    if let Some(work_reservation) = work_reservation {
+                        reservations.release(work_reservation, metrics);
+                    }
+                    return Err(error);
+                },
+            }
+        }
+    } else {
+        match reservations.try_reserve(
+            bounded_join_request(reservation_kind, memory_boundary, bytes, reservations.budget(), node_id),
+            metrics,
+        ) {
+            Ok(reservation) => reservation,
+            Err(error) => {
+                if let Some(work_reservation) = work_reservation {
+                    reservations.release(work_reservation, metrics);
+                }
+                release_owned_join_input_reservation(&mut owned_input_reservation, reservations, metrics);
+                return Err(error);
+            },
+        }
     };
-    reservations.release(work_reservation, metrics);
+    if let Some(work_reservation) = work_reservation {
+        reservations.release(work_reservation, metrics);
+    }
+    release_owned_join_input_reservation(&mut owned_input_reservation, reservations, metrics);
     Ok(BoundedJoinSideFrame { frame: selected, _reservation: reservation, rows, bytes })
+}
+
+fn release_owned_join_input_reservation(
+    reservation: &mut Option<ActiveReservation>,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+) {
+    if let Some(reservation) = reservation.take() {
+        reservations.release(reservation, metrics);
+    }
 }
 
 fn join_side_label(side: JoinSide) -> &'static str {
