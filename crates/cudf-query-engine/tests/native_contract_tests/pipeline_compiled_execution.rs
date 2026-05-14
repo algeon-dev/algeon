@@ -41,6 +41,7 @@ use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
 use crate::bounded_join_admission::{
     AggregateOverJoinSubplanInputsVariant, ResidualResidentGroupedAggregateInputVariant,
     admitted_mixed_residual_multi_join_plan, keyless_conditional_aggregate_over_join_subplan_inputs_plan,
+    large_keyed_join_strategy_plan,
     plans::{
         KeyedHashJoinResidentSubplanPipelineVariant, KeylessInputSubplanVariant, aggregate_over_join_subplan_topk_plan,
         keyed_hash_join_resident_subplan_pipeline_plan, keyless_conditional_join_input_subplan_plan,
@@ -546,6 +547,7 @@ fn d5_contract_gate_rows_are_inventory_backed_and_family_path_free() {
     let mut source_unresolved_rows = 0;
     let mut aggregate_unresolved_rows = 0;
     let mut final_sort_unresolved_rows = 0;
+    let mut one_shot_output_unresolved_rows = 0;
     let mut filtered_retained_state_rows = 0;
     let mut mixed_retained_state_rows = 0;
     let mut observed_retained_state_rows = 0;
@@ -590,6 +592,7 @@ fn d5_contract_gate_rows_are_inventory_backed_and_family_path_free() {
                     ReservationKind::SourceRead => source_unresolved_rows += 1,
                     ReservationKind::OperatorOutput => aggregate_unresolved_rows += 1,
                     ReservationKind::FinalSort => final_sort_unresolved_rows += 1,
+                    ReservationKind::JoinOutput => one_shot_output_unresolved_rows += 1,
                     _ => {},
                 }
                 assert_eq!(
@@ -657,6 +660,10 @@ fn d5_contract_gate_rows_are_inventory_backed_and_family_path_free() {
     assert!(source_unresolved_rows > 0, "D.5 inventory should cover source unresolved preflight gates");
     assert!(aggregate_unresolved_rows > 0, "D.5 inventory should cover aggregate unresolved preflight gates");
     assert!(final_sort_unresolved_rows > 0, "D.5 inventory should cover final-sort unresolved preflight gates");
+    assert!(
+        one_shot_output_unresolved_rows > 0,
+        "D.5 inventory should cover one-shot equality join output-size preflight gates"
+    );
     assert!(filtered_retained_state_rows > 0, "D.5 inventory should cover filtered semi/anti retained state");
     assert!(mixed_retained_state_rows > 0, "D.5 inventory should cover mixed residual retained state");
     assert!(observed_retained_state_rows > 0, "D.5 inventory should cover observed retained-state gates");
@@ -666,8 +673,8 @@ fn d5_contract_gate_rows_are_inventory_backed_and_family_path_free() {
 fn phase_f6_strict_preflight_gap_registry_tracks_current_retirement_protocol() {
     assert_eq!(
         STRICT_UNRESOLVED_PREFLIGHT_GAPS.len(),
-        3,
-        "F.6 starts with the three lower-level strict preflight gaps; retirement must remove one from this registry"
+        4,
+        "F.6 starts with the four lower-level strict preflight gaps; retirement must remove one from this registry"
     );
 
     let mut markers = BTreeSet::new();
@@ -695,6 +702,7 @@ fn phase_f6_strict_preflight_gap_registry_tracks_current_retirement_protocol() {
     assert!(markers.contains("libcudf_parquet_decoded_output_preflight_unavailable"));
     assert!(markers.contains("libcudf_groupby_aggregate_temporary_workspace_preflight_unavailable"));
     assert!(markers.contains("libcudf_final_sort_order_preflight_unavailable"));
+    assert!(markers.contains("libcudf_equality_join_output_size_preflight_unavailable"));
 }
 
 #[test]
@@ -817,6 +825,7 @@ fn d5_contract_report_rejects_public_unresolved_preflight_rows_with_non_hard_bud
         (ReservationKind::SourceRead, "source_read", "source_contract"),
         (ReservationKind::OperatorOutput, "aggregate_output", "aggregate_contract"),
         (ReservationKind::FinalSort, "final_sort", "final_sort_contract"),
+        (ReservationKind::JoinOutput, "join_output", "one_shot_equality_join_output_size_preflight"),
     ];
     let non_hard_budgeted_qualities = [
         ContractQuality::ExactPreflight,
@@ -1880,6 +1889,20 @@ fn d3_1_inventory_cases() -> Vec<D31InventoryCase> {
                 "kind=join_materialize",
                 "kind=join_build_before_probe",
                 "kind=join_materialization",
+            ],
+        },
+        D31InventoryCase {
+            label: "large keyed one-shot equality join strategy",
+            plan: large_keyed_join_strategy_plan(JoinType::Inner),
+            admits: cudf_query_engine::capability::CapabilityAnalysis::admits_root_join,
+            graph_support: CompiledBoundedPipelineSupport::Supported,
+            plan_support: CompiledBoundedPipelineSupport::Supported,
+            render_fragments: &[
+                "kind=join_build",
+                "kind=join_probe",
+                "kind=join_materialize",
+                "contract=one_shot_equality_join_output_size_preflight",
+                "quality=hard_budgeted_report_with_unresolved_preflight",
             ],
         },
         D31InventoryCase {

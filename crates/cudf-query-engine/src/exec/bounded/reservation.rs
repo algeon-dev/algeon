@@ -3,14 +3,69 @@ use std::{cell::RefCell, collections::HashSet};
 use super::*;
 use crate::{
     exec::types::{GpuLocalParquetSourceCache, GpuLocalParquetSourceCacheKey},
+    metrics::{MemoryReservationEvent, MemoryReservationEventAction, MemoryReservationEventOutcome},
     runtime::{ExecutionContext, MemorySpaceId},
 };
+
+#[derive(Debug, Clone)]
+struct ActiveReservationEventContext {
+    reservation_kind: ReservationKind,
+    memory_space: MemorySpaceId,
+    memory_boundary: String,
+    budget_bytes: u64,
+    node_id: Option<String>,
+    stage: Option<String>,
+    compiled_task_id: Option<String>,
+    resident_resource_id: Option<String>,
+}
+
+impl ActiveReservationEventContext {
+    fn from_request(request: &MemoryReservationRequest) -> Self {
+        Self {
+            reservation_kind: request.reservation_kind,
+            memory_space: request.memory_space,
+            memory_boundary: request.memory_boundary.clone(),
+            budget_bytes: request.budget_bytes,
+            node_id: request.node_id.clone(),
+            stage: request.stage.clone(),
+            compiled_task_id: request.compiled_task_id.clone(),
+            resident_resource_id: request.resident_resource_id.clone(),
+        }
+    }
+
+    fn event(
+        &self,
+        action: MemoryReservationEventAction,
+        requested_bytes: u64,
+        charged_delta_bytes: i128,
+        current_reserved_bytes: u64,
+    ) -> MemoryReservationEvent {
+        MemoryReservationEvent {
+            reservation_kind: self.reservation_kind,
+            memory_space: self.memory_space,
+            memory_boundary: self.memory_boundary.clone(),
+            action,
+            requested_bytes,
+            granted_bytes: 0,
+            charged_delta_bytes,
+            current_reserved_bytes,
+            budget_bytes: self.budget_bytes,
+            outcome: MemoryReservationEventOutcome::Applied,
+            node_id: self.node_id.clone(),
+            stage: self.stage.clone(),
+            compiled_task_id: self.compiled_task_id.clone(),
+            resident_resource_id: self.resident_resource_id.clone(),
+        }
+    }
+}
 
 pub(in crate::exec) struct ActiveReservation {
     memory_space: MemorySpaceId,
     reserved_bytes: Rc<Cell<u64>>,
     protected_source_cache_keys: Rc<RefCell<HashMap<GpuLocalParquetSourceCacheKey, usize>>>,
     source_cache_key: Option<GpuLocalParquetSourceCacheKey>,
+    event_context: ActiveReservationEventContext,
+    release_action: MemoryReservationEventAction,
     bytes: u64,
     charged_bytes: u64,
     released: bool,
@@ -22,12 +77,15 @@ impl ActiveReservation {
         reserved_bytes: Rc<Cell<u64>>,
         protected_source_cache_keys: Rc<RefCell<HashMap<GpuLocalParquetSourceCacheKey, usize>>>,
         bytes: u64,
+        request: &MemoryReservationRequest,
     ) -> Self {
         Self {
             memory_space,
             reserved_bytes,
             protected_source_cache_keys,
             source_cache_key: None,
+            event_context: ActiveReservationEventContext::from_request(request),
+            release_action: MemoryReservationEventAction::Release,
             bytes,
             charged_bytes: bytes,
             released: false,
@@ -40,6 +98,7 @@ impl ActiveReservation {
         protected_source_cache_keys: Rc<RefCell<HashMap<GpuLocalParquetSourceCacheKey, usize>>>,
         source_cache_key: GpuLocalParquetSourceCacheKey,
         bytes: u64,
+        request: &MemoryReservationRequest,
     ) -> Self {
         {
             let mut protected = protected_source_cache_keys.borrow_mut();
@@ -51,6 +110,8 @@ impl ActiveReservation {
             reserved_bytes,
             protected_source_cache_keys,
             source_cache_key: Some(source_cache_key),
+            event_context: ActiveReservationEventContext::from_request(request),
+            release_action: MemoryReservationEventAction::AliasRelease,
             bytes,
             charged_bytes: 0,
             released: false,
@@ -69,9 +130,9 @@ impl ActiveReservation {
         self.charged_bytes
     }
 
-    pub(in crate::exec) fn release(&mut self) {
+    fn release(&mut self) -> Option<MemoryReservationEvent> {
         if self.released {
-            return;
+            return None;
         }
         if let Some(source_cache_key) = self.source_cache_key.take() {
             let mut protected = self.protected_source_cache_keys.borrow_mut();
@@ -82,29 +143,33 @@ impl ActiveReservation {
                 }
             }
         }
+        let charged_delta_bytes = -i128::from(self.charged_bytes);
         self.reserved_bytes.set(self.reserved_bytes.get().saturating_sub(self.charged_bytes));
         self.released = true;
+        Some(self.event_context.event(self.release_action, self.bytes, charged_delta_bytes, self.reserved_bytes.get()))
     }
 
-    fn grow(&mut self, bytes: u64) {
+    fn grow(&mut self, bytes: u64) -> u64 {
         if bytes == 0 {
-            return;
+            return 0;
         }
         assert!(!self.released, "cannot grow a released reservation");
         self.reserved_bytes.set(self.reserved_bytes.get().saturating_add(bytes));
         self.bytes = self.bytes.saturating_add(bytes);
         self.charged_bytes = self.charged_bytes.saturating_add(bytes);
+        bytes
     }
 
-    fn shrink_to(&mut self, bytes: u64) {
+    fn shrink_to(&mut self, bytes: u64) -> u64 {
         if bytes >= self.bytes {
-            return;
+            return 0;
         }
         assert!(!self.released, "cannot shrink a released reservation");
         let refunded = (self.bytes - bytes).min(self.charged_bytes);
         self.reserved_bytes.set(self.reserved_bytes.get().saturating_sub(refunded));
         self.bytes = bytes;
         self.charged_bytes = self.charged_bytes.saturating_sub(refunded);
+        refunded
     }
 
     fn promote_charged_bytes_to_baseline(&mut self, promoted_bytes: u64) {
@@ -119,7 +184,7 @@ impl ActiveReservation {
 
 impl Drop for ActiveReservation {
     fn drop(&mut self) {
-        self.release();
+        let _ = self.release();
     }
 }
 
@@ -131,6 +196,8 @@ pub(in crate::exec) struct ReservationTracker {
     local_parquet_source_cache: Option<Arc<GpuLocalParquetSourceCache>>,
     protected_source_cache_keys: Rc<RefCell<HashMap<GpuLocalParquetSourceCacheKey, usize>>>,
     source_cache_baseline_bytes: u64,
+    compiled_task_id: Option<String>,
+    resident_resource_id: Option<String>,
 }
 
 impl ReservationTracker {
@@ -142,6 +209,8 @@ impl ReservationTracker {
             local_parquet_source_cache: None,
             protected_source_cache_keys: Rc::new(RefCell::new(HashMap::new())),
             source_cache_baseline_bytes: 0,
+            compiled_task_id: None,
+            resident_resource_id: None,
         }
     }
 
@@ -178,6 +247,20 @@ impl ReservationTracker {
         requested_bytes <= self.remaining_bytes()
     }
 
+    pub(in crate::exec) fn set_diagnostic_context(
+        &mut self,
+        compiled_task_id: Option<impl ToString>,
+        resident_resource_id: Option<impl ToString>,
+    ) {
+        self.compiled_task_id = compiled_task_id.map(|value| value.to_string());
+        self.resident_resource_id = resident_resource_id.map(|value| value.to_string());
+    }
+
+    pub(in crate::exec) fn clear_diagnostic_context(&mut self) {
+        self.compiled_task_id = None;
+        self.resident_resource_id = None;
+    }
+
     pub(in crate::exec) fn available_bytes_including(&self, reservation: &ActiveReservation) -> u64 {
         self.assert_reservation_belongs_to_tracker(reservation, "available_bytes_including");
         reservation.charged_bytes().saturating_add(self.remaining_bytes())
@@ -195,17 +278,29 @@ impl ReservationTracker {
         }
         let remaining = self.remaining_bytes();
         if request.requested_bytes > remaining {
-            metrics.record_reservation_denied_event(&request, remaining);
+            metrics.record_reservation_denied_timeline_event(
+                &request,
+                MemoryReservationEventAction::Reserve,
+                remaining,
+                self.raw_reserved_bytes(),
+            );
             return Err(request.denied_error(remaining));
         }
 
         self.reserved_bytes.set(self.raw_reserved_bytes().saturating_add(request.requested_bytes));
-        metrics.record_reservation_granted_event(&request, request.requested_bytes);
+        metrics.record_reservation_granted_timeline_event(
+            &request,
+            MemoryReservationEventAction::Reserve,
+            request.requested_bytes,
+            i128::from(request.requested_bytes),
+            self.raw_reserved_bytes(),
+        );
         Ok(ActiveReservation::new(
             self.memory_space,
             Rc::clone(&self.reserved_bytes),
             Rc::clone(&self.protected_source_cache_keys),
             request.requested_bytes,
+            &request,
         ))
     }
 
@@ -213,19 +308,45 @@ impl ReservationTracker {
         &self,
         key: GpuLocalParquetSourceCacheKey,
         bytes: u64,
+        metrics: &mut QueryMetrics,
     ) -> ActiveReservation {
+        let request = self.stamp_request(
+            MemoryReservationRequest::new(ReservationKind::SourceCacheRetained, bytes, self.budget_bytes)
+                .with_memory_boundary("source_cache_borrowed")
+                .with_stage("source_cache_hit"),
+        );
+        metrics.record_reservation_timeline_event(MemoryReservationEvent::from_request(
+            &request,
+            MemoryReservationEventOutcome::Applied,
+            MemoryReservationEventAction::AliasAcquire,
+            0,
+            0,
+            self.raw_reserved_bytes(),
+        ));
         ActiveReservation::borrowed_source_cache(
             self.memory_space,
             Rc::clone(&self.reserved_bytes),
             Rc::clone(&self.protected_source_cache_keys),
             key,
             bytes,
+            &request,
         )
     }
 
-    pub(in crate::exec) fn release(&mut self, mut reservation: ActiveReservation) {
+    pub(in crate::exec) fn release(&mut self, mut reservation: ActiveReservation, metrics: &mut QueryMetrics) {
         self.assert_reservation_belongs_to_tracker(&reservation, "release");
-        reservation.release();
+        if let Some(event) = reservation.release() {
+            // Release and alias-release events describe live ledger movement only; aggregate
+            // requested/granted counters intentionally remain historical admission counters.
+            let mut event = event;
+            if event.compiled_task_id.is_none() {
+                event.compiled_task_id = self.compiled_task_id.clone();
+            }
+            if event.resident_resource_id.is_none() {
+                event.resident_resource_id = self.resident_resource_id.clone();
+            }
+            metrics.record_reservation_timeline_event(event);
+        }
     }
 
     pub(in crate::exec) fn try_grow(
@@ -242,18 +363,42 @@ impl ReservationTracker {
         }
         let remaining = self.remaining_bytes();
         if request.requested_bytes > remaining {
-            metrics.record_reservation_denied_event(&request, remaining);
+            metrics.record_reservation_denied_timeline_event(
+                &request,
+                MemoryReservationEventAction::Grow,
+                remaining,
+                self.raw_reserved_bytes(),
+            );
             return Err(request.denied_error(remaining));
         }
 
-        reservation.grow(request.requested_bytes);
-        metrics.record_reservation_granted_event(&request, request.requested_bytes);
+        let charged_delta = reservation.grow(request.requested_bytes);
+        metrics.record_reservation_granted_timeline_event(
+            &request,
+            MemoryReservationEventAction::Grow,
+            request.requested_bytes,
+            i128::from(charged_delta),
+            self.raw_reserved_bytes(),
+        );
         Ok(())
     }
 
-    pub(in crate::exec) fn shrink_to_observed(&mut self, reservation: &mut ActiveReservation, observed_bytes: u64) {
+    pub(in crate::exec) fn shrink_to_observed(
+        &mut self,
+        reservation: &mut ActiveReservation,
+        observed_bytes: u64,
+        metrics: &mut QueryMetrics,
+    ) {
         self.assert_reservation_belongs_to_tracker(reservation, "shrink_to_observed");
-        reservation.shrink_to(observed_bytes);
+        let refunded = reservation.shrink_to(observed_bytes);
+        if refunded > 0 {
+            metrics.record_reservation_timeline_event(reservation.event_context.event(
+                MemoryReservationEventAction::Shrink,
+                observed_bytes,
+                -i128::from(refunded),
+                self.raw_reserved_bytes(),
+            ));
+        }
     }
 
     pub(in crate::exec) fn promote_source_cache_insert(
@@ -277,7 +422,12 @@ impl ReservationTracker {
         }
         let remaining = self.remaining_bytes();
         if additional_bytes > remaining {
-            metrics.record_reservation_denied_event(&request, remaining);
+            metrics.record_reservation_denied_timeline_event(
+                &request,
+                MemoryReservationEventAction::Reserve,
+                remaining,
+                self.raw_reserved_bytes(),
+            );
             return Err(request.denied_error(remaining));
         }
 
@@ -286,17 +436,36 @@ impl ReservationTracker {
         }
         reservation.promote_charged_bytes_to_baseline(retained_bytes);
         self.source_cache_baseline_bytes = self.source_cache_baseline_bytes.saturating_add(retained_bytes);
-        metrics.record_reservation_granted_event(&request, retained_bytes);
+        metrics.record_reservation_granted_timeline_event(
+            &request,
+            MemoryReservationEventAction::Reserve,
+            retained_bytes,
+            i128::from(additional_bytes),
+            self.raw_reserved_bytes(),
+        );
         Ok(())
     }
 
-    pub(in crate::exec) fn release_source_cache_baseline_bytes(&mut self, bytes: u64) {
+    pub(in crate::exec) fn release_source_cache_baseline_bytes(&mut self, bytes: u64, metrics: &mut QueryMetrics) {
         let released = bytes.min(self.source_cache_baseline_bytes);
         if released == 0 {
             return;
         }
         self.source_cache_baseline_bytes = self.source_cache_baseline_bytes.saturating_sub(released);
         self.reserved_bytes.set(self.raw_reserved_bytes().saturating_sub(released));
+        let request = self.stamp_request(
+            MemoryReservationRequest::new(ReservationKind::SourceCacheRetained, released, self.budget_bytes)
+                .with_memory_boundary("source_cache_retained")
+                .with_stage("source_cache_eviction"),
+        );
+        metrics.record_reservation_timeline_event(MemoryReservationEvent::from_request(
+            &request,
+            MemoryReservationEventOutcome::Applied,
+            MemoryReservationEventAction::Release,
+            0,
+            -i128::from(released),
+            self.raw_reserved_bytes(),
+        ));
     }
 
     pub(in crate::exec) fn source_cache_protected_keys_with(
@@ -316,12 +485,23 @@ impl ReservationTracker {
         let request = self.stamp_request(request);
         let remaining = self.remaining_bytes();
         if request.requested_bytes > remaining {
-            metrics.record_reservation_denied_event(&request, remaining);
+            metrics.record_reservation_denied_timeline_event(
+                &request,
+                MemoryReservationEventAction::Reserve,
+                remaining,
+                self.raw_reserved_bytes(),
+            );
             return Err(request.denied_error(remaining));
         }
         self.reserved_bytes.set(self.raw_reserved_bytes().saturating_add(request.requested_bytes));
         self.source_cache_baseline_bytes = self.source_cache_baseline_bytes.saturating_add(request.requested_bytes);
-        metrics.record_reservation_granted_event(&request, request.requested_bytes);
+        metrics.record_reservation_granted_timeline_event(
+            &request,
+            MemoryReservationEventAction::Reserve,
+            request.requested_bytes,
+            i128::from(request.requested_bytes),
+            self.raw_reserved_bytes(),
+        );
         Ok(())
     }
 
@@ -348,7 +528,7 @@ impl ReservationTracker {
             protected.insert(additional_protected_key.clone());
         }
         let evicted_bytes = cache.evict_at_least_protecting(required_bytes, &protected)?;
-        self.release_source_cache_baseline_bytes(evicted_bytes);
+        self.release_source_cache_baseline_bytes(evicted_bytes, metrics);
         metrics.record_source_cache_retained_bytes(cache.retained_device_bytes()?);
         Ok(())
     }
@@ -360,6 +540,12 @@ impl ReservationTracker {
     fn stamp_request(&self, mut request: MemoryReservationRequest) -> MemoryReservationRequest {
         request.memory_space = self.memory_space;
         request.budget_bytes = self.budget_bytes;
+        if request.compiled_task_id.is_none() {
+            request.compiled_task_id = self.compiled_task_id.clone();
+        }
+        if request.resident_resource_id.is_none() {
+            request.resident_resource_id = self.resident_resource_id.clone();
+        }
         request
     }
 

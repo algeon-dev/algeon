@@ -3,8 +3,8 @@ use std::sync::Arc;
 use arrow::datatypes::{DataType, Field, Schema};
 use cudf_query_engine::{
     ExecutionContext, GpuLocalParquetSourceCache, GpuLocalParquetSourceCacheKey, LocalParquetFile, LocalParquetSource,
-    MemoryControlPolicy, MemoryReservationRequest, MemorySpaceId, QueryMetrics, QueryPlanBuilder, ReservationKind,
-    SourceChunk, SourceNode,
+    MemoryControlPolicy, MemoryReservationEventAction, MemoryReservationRequest, MemorySpaceId, QueryMetrics,
+    QueryPlanBuilder, ReservationKind, SourceChunk, SourceNode,
 };
 use datafusion_cudf::NATIVE_CUDF_DATAFUSION_METRIC_NAMES;
 
@@ -85,8 +85,56 @@ fn query_metrics_reservation_events_record_memory_space() {
     assert_eq!(metrics.reservation_events.len(), 2);
     assert_eq!(metrics.reservation_events[0].memory_space, memory_space);
     assert_eq!(metrics.reservation_events[0].memory_space.to_string(), "GPU:1");
+    assert_eq!(metrics.reservation_events[0].action, MemoryReservationEventAction::Reserve);
+    assert_eq!(metrics.reservation_events[0].charged_delta_bytes, 1024);
+    assert_eq!(metrics.reservation_events[0].current_reserved_bytes, 1024);
+    assert_eq!(metrics.reservation_events[0].budget_bytes, 4096);
     assert_eq!(metrics.reservation_events[1].memory_space, memory_space);
+    assert_eq!(metrics.reservation_events[1].charged_delta_bytes, 0);
+    assert_eq!(metrics.reservation_events[1].current_reserved_bytes, 0);
     assert_eq!(metrics.reservation_denied_count, 1);
+}
+
+#[test]
+fn query_metrics_reservation_timeline_records_live_ledger_deltas() {
+    let mut metrics = QueryMetrics::default();
+    let request = MemoryReservationRequest::new(ReservationKind::SourceRead, 60, 100)
+        .with_memory_boundary("source_read")
+        .with_compiled_task_id("t2")
+        .with_resident_resource_id("r7");
+    let grow = MemoryReservationRequest::new(ReservationKind::SourceRead, 20, 100)
+        .with_memory_boundary("source_read")
+        .with_compiled_task_id("t2")
+        .with_resident_resource_id("r7");
+    let denied = MemoryReservationRequest::new(ReservationKind::ProbeSide, 40, 100)
+        .with_memory_boundary("join_probe_side")
+        .with_compiled_task_id("t3")
+        .with_resident_resource_id("r7");
+
+    metrics.record_reservation_granted_timeline_event(&request, MemoryReservationEventAction::Reserve, 60, 60, 60);
+    metrics.record_reservation_granted_timeline_event(&grow, MemoryReservationEventAction::Grow, 20, 20, 80);
+    metrics.record_reservation_timeline_event(cudf_query_engine::MemoryReservationEvent::from_request(
+        &grow,
+        cudf_query_engine::MemoryReservationEventOutcome::Applied,
+        MemoryReservationEventAction::Shrink,
+        0,
+        -30,
+        50,
+    ));
+    metrics.record_reservation_denied_timeline_event(&denied, MemoryReservationEventAction::Reserve, 50, 50);
+
+    let actions = metrics.reservation_events.iter().map(|event| event.action.as_str()).collect::<Vec<_>>();
+    assert_eq!(actions, ["reserve", "grow", "shrink", "reserve"]);
+    let current = metrics.reservation_events.iter().map(|event| event.current_reserved_bytes).collect::<Vec<_>>();
+    assert_eq!(current, [60, 80, 50, 50]);
+    let deltas = metrics.reservation_events.iter().map(|event| event.charged_delta_bytes).collect::<Vec<_>>();
+    assert_eq!(deltas, [60, 20, -30, 0]);
+    assert_eq!(metrics.reservation_requested_bytes, 120);
+    assert_eq!(metrics.reservation_granted_bytes, 80);
+    assert_eq!(metrics.reservation_denied_count, 1);
+    assert_eq!(metrics.reservation_events[0].compiled_task_id.as_deref(), Some("t2"));
+    assert_eq!(metrics.reservation_events[0].resident_resource_id.as_deref(), Some("r7"));
+    assert_eq!(metrics.reservation_events[3].compiled_task_id.as_deref(), Some("t3"));
 }
 
 #[test]

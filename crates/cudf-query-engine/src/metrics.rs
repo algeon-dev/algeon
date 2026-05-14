@@ -10,6 +10,7 @@ use crate::runtime::{
 pub enum MemoryReservationEventOutcome {
     Granted,
     Denied,
+    Applied,
 }
 
 impl MemoryReservationEventOutcome {
@@ -17,6 +18,7 @@ impl MemoryReservationEventOutcome {
         match self {
             Self::Granted => "granted",
             Self::Denied => "denied",
+            Self::Applied => "applied",
         }
     }
 }
@@ -27,37 +29,101 @@ impl std::fmt::Display for MemoryReservationEventOutcome {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MemoryReservationEventAction {
+    Reserve,
+    Grow,
+    Shrink,
+    Release,
+    Transfer,
+    AliasAcquire,
+    AliasRelease,
+}
+
+impl MemoryReservationEventAction {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Reserve => "reserve",
+            Self::Grow => "grow",
+            Self::Shrink => "shrink",
+            Self::Release => "release",
+            Self::Transfer => "transfer",
+            Self::AliasAcquire => "alias_acquire",
+            Self::AliasRelease => "alias_release",
+        }
+    }
+}
+
+impl std::fmt::Display for MemoryReservationEventAction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MemoryReservationEvent {
     pub reservation_kind: ReservationKind,
     pub memory_space: MemorySpaceId,
     pub memory_boundary: String,
+    pub action: MemoryReservationEventAction,
     pub requested_bytes: u64,
     pub granted_bytes: u64,
+    pub charged_delta_bytes: i128,
+    pub current_reserved_bytes: u64,
+    pub budget_bytes: u64,
     pub outcome: MemoryReservationEventOutcome,
     pub node_id: Option<String>,
     pub stage: Option<String>,
+    pub compiled_task_id: Option<String>,
+    pub resident_resource_id: Option<String>,
 }
 
 impl MemoryReservationEvent {
     pub fn granted(request: &MemoryReservationRequest, granted_bytes: u64) -> Self {
-        Self::new(request, granted_bytes, MemoryReservationEventOutcome::Granted)
+        Self::from_request(
+            request,
+            MemoryReservationEventOutcome::Granted,
+            MemoryReservationEventAction::Reserve,
+            granted_bytes,
+            i128::from(granted_bytes),
+            granted_bytes,
+        )
     }
 
     pub fn denied(request: &MemoryReservationRequest, granted_bytes: u64) -> Self {
-        Self::new(request, granted_bytes, MemoryReservationEventOutcome::Denied)
+        Self::from_request(
+            request,
+            MemoryReservationEventOutcome::Denied,
+            MemoryReservationEventAction::Reserve,
+            granted_bytes,
+            0,
+            request.budget_bytes.saturating_sub(granted_bytes),
+        )
     }
 
-    fn new(request: &MemoryReservationRequest, granted_bytes: u64, outcome: MemoryReservationEventOutcome) -> Self {
+    pub fn from_request(
+        request: &MemoryReservationRequest,
+        outcome: MemoryReservationEventOutcome,
+        action: MemoryReservationEventAction,
+        granted_bytes: u64,
+        charged_delta_bytes: i128,
+        current_reserved_bytes: u64,
+    ) -> Self {
         Self {
             reservation_kind: request.reservation_kind,
             memory_space: request.memory_space,
             memory_boundary: request.memory_boundary.clone(),
+            action,
             requested_bytes: request.requested_bytes,
             granted_bytes,
+            charged_delta_bytes,
+            current_reserved_bytes,
+            budget_bytes: request.budget_bytes,
             outcome,
             node_id: request.node_id.clone(),
             stage: request.stage.clone(),
+            compiled_task_id: request.compiled_task_id.clone(),
+            resident_resource_id: request.resident_resource_id.clone(),
         }
     }
 }
@@ -225,6 +291,47 @@ impl QueryMetrics {
     pub fn record_reservation_denied_event(&mut self, request: &MemoryReservationRequest, granted_bytes: u64) {
         self.record_reservation_denied(request.requested_bytes);
         self.reservation_events.push(MemoryReservationEvent::denied(request, granted_bytes));
+    }
+
+    pub fn record_reservation_granted_timeline_event(
+        &mut self,
+        request: &MemoryReservationRequest,
+        action: MemoryReservationEventAction,
+        granted_bytes: u64,
+        charged_delta_bytes: i128,
+        current_reserved_bytes: u64,
+    ) {
+        self.record_reservation_granted(request.requested_bytes, granted_bytes);
+        self.reservation_events.push(MemoryReservationEvent::from_request(
+            request,
+            MemoryReservationEventOutcome::Granted,
+            action,
+            granted_bytes,
+            charged_delta_bytes,
+            current_reserved_bytes,
+        ));
+    }
+
+    pub fn record_reservation_denied_timeline_event(
+        &mut self,
+        request: &MemoryReservationRequest,
+        action: MemoryReservationEventAction,
+        granted_bytes: u64,
+        current_reserved_bytes: u64,
+    ) {
+        self.record_reservation_denied(request.requested_bytes);
+        self.reservation_events.push(MemoryReservationEvent::from_request(
+            request,
+            MemoryReservationEventOutcome::Denied,
+            action,
+            granted_bytes,
+            0,
+            current_reserved_bytes,
+        ));
+    }
+
+    pub fn record_reservation_timeline_event(&mut self, event: MemoryReservationEvent) {
+        self.reservation_events.push(event);
     }
 
     pub fn record_budgeted_execution(&mut self, operation: impl Into<String>, report: &ExecutionBudgetReport) {

@@ -285,10 +285,10 @@ pub(in crate::exec::bounded) fn execute_bounded_root_hash_join_materialize(
     drop(right_indices);
     let BoundedRootHashJoinProbeState { build, probe, indices, gather_map_reservation, .. } = state;
     drop(indices);
-    reservations.release(gather_map_reservation);
+    reservations.release(gather_map_reservation, metrics);
     let BoundedRootHashJoinBuildState { build: build_frame, hash_join, hash_table_reservation, .. } = build;
     drop(hash_join);
-    reservations.release(hash_table_reservation);
+    reservations.release(hash_table_reservation, metrics);
     drop(build_frame);
     drop(probe);
 

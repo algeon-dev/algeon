@@ -66,8 +66,8 @@ pub(super) fn execute_post_aggregate_projection(
     let mut output_reservation = match reservations.try_reserve(output_request, metrics) {
         Ok(reservation) => reservation,
         Err(error) => {
-            reservations.release(work_reservation);
-            reservations.release(input.reservation);
+            reservations.release(work_reservation, metrics);
+            reservations.release(input.reservation, metrics);
             return Err(error);
         },
     };
@@ -84,9 +84,9 @@ pub(super) fn execute_post_aggregate_projection(
     ) {
         Ok(token) => token,
         Err(error) => {
-            reservations.release(output_reservation);
-            reservations.release(work_reservation);
-            reservations.release(input.reservation);
+            reservations.release(output_reservation, metrics);
+            reservations.release(work_reservation, metrics);
+            reservations.release(input.reservation, metrics);
             return Err(RuntimeResourceFacts {
                 memory_boundary: "post_aggregate_projection",
                 stage: "post_aggregate_projection",
@@ -100,12 +100,12 @@ pub(super) fn execute_post_aggregate_projection(
         },
     };
     let result = execute_projection_with_budget(context, projection, input.frame, &token, metrics);
-    reservations.release(work_reservation);
+    reservations.release(work_reservation, metrics);
     let frame = match result {
         Ok(frame) => frame,
         Err(error) => {
-            reservations.release(output_reservation);
-            reservations.release(input.reservation);
+            reservations.release(output_reservation, metrics);
+            reservations.release(input.reservation, metrics);
             return Err(RuntimeResourceFacts {
                 memory_boundary: "post_aggregate_projection",
                 stage: "post_aggregate_projection",
@@ -119,7 +119,7 @@ pub(super) fn execute_post_aggregate_projection(
         },
     };
 
-    reservations.release(input.reservation);
+    reservations.release(input.reservation, metrics);
     let output_bytes = observe_device_memory_bytes(&frame, metrics).map_err(|error| {
         RuntimeResourceFacts {
             memory_boundary: "post_aggregate_projection_output",
@@ -143,11 +143,11 @@ pub(super) fn execute_post_aggregate_projection(
         .with_stage("post_aggregate_projection");
         if let Err(error) = reservations.try_grow(&mut output_reservation, grow_request, metrics) {
             drop(frame);
-            reservations.release(output_reservation);
+            reservations.release(output_reservation, metrics);
             return Err(error);
         }
     } else {
-        reservations.shrink_to_observed(&mut output_reservation, output_bytes);
+        reservations.shrink_to_observed(&mut output_reservation, output_bytes, metrics);
     }
     Ok(CommittedPartial { frame, reservation: output_reservation })
 }
@@ -182,8 +182,8 @@ pub(super) fn execute_final_aggregate_projection(
         ) {
             Ok(token) => token,
             Err(error) => {
-                reservations.release(work_reservation);
-                reservations.release(input.reservation);
+                reservations.release(work_reservation, metrics);
+                reservations.release(input.reservation, metrics);
                 return Err(RuntimeResourceFacts {
                     memory_boundary: "final_aggregate_projection",
                     stage: "final_projection",
@@ -217,11 +217,11 @@ pub(super) fn execute_final_aggregate_projection(
         })
     })
     .map(GpuDataFrame::new);
-    reservations.release(work_reservation);
+    reservations.release(work_reservation, metrics);
     let frame = match result {
         Ok(frame) => frame,
         Err(error) => {
-            reservations.release(input.reservation);
+            reservations.release(input.reservation, metrics);
             return Err(RuntimeResourceFacts {
                 memory_boundary: "final_aggregate_projection",
                 stage: "final_projection",
@@ -235,7 +235,7 @@ pub(super) fn execute_final_aggregate_projection(
         },
     };
 
-    reservations.release(input.reservation);
+    reservations.release(input.reservation, metrics);
     let output_bytes = observe_device_memory_bytes(&frame, metrics).map_err(|error| {
         RuntimeResourceFacts {
             memory_boundary: "final_aggregate_projection_output",

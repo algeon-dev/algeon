@@ -51,6 +51,10 @@ pub struct MemoryReservationRequest {
     pub attempt: Option<usize>,
     /// Optional maximum retry attempts for the current retry path.
     pub max_attempts: Option<usize>,
+    /// Optional compiled pipeline task id associated with this reservation.
+    pub compiled_task_id: Option<String>,
+    /// Optional compiled pipeline resident resource id associated with this reservation.
+    pub resident_resource_id: Option<String>,
 }
 
 impl MemoryReservationRequest {
@@ -70,6 +74,8 @@ impl MemoryReservationRequest {
             row_groups: None,
             attempt: None,
             max_attempts: None,
+            compiled_task_id: None,
+            resident_resource_id: None,
         }
     }
 
@@ -137,6 +143,20 @@ impl MemoryReservationRequest {
         self
     }
 
+    /// Attaches a compiled pipeline task id to the request.
+    #[must_use]
+    pub fn with_compiled_task_id(mut self, compiled_task_id: impl ToString) -> Self {
+        self.compiled_task_id = Some(compiled_task_id.to_string());
+        self
+    }
+
+    /// Attaches a compiled pipeline resident resource id to the request.
+    #[must_use]
+    pub fn with_resident_resource_id(mut self, resident_resource_id: impl ToString) -> Self {
+        self.resident_resource_id = Some(resident_resource_id.to_string());
+        self
+    }
+
     /// Builds the stable reservation-denial error for this request.
     ///
     /// `granted_bytes` is the capacity that remained when admission failed, not
@@ -177,6 +197,12 @@ impl MemoryReservationRequest {
         }
         if let Some(max_attempts) = self.max_attempts {
             error = error.with_fact("max_attempts", max_attempts);
+        }
+        if let Some(compiled_task_id) = &self.compiled_task_id {
+            error = error.with_fact("compiled_task_id", compiled_task_id);
+        }
+        if let Some(resident_resource_id) = &self.resident_resource_id {
+            error = error.with_fact("resident_resource_id", resident_resource_id);
         }
 
         error

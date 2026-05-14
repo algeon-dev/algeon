@@ -46,7 +46,13 @@ fn assert_modeled_reservation_facts_are_consistent(
     for (kind, contract, quality) in requirements {
         if quality == "hard_budgeted_report_with_unresolved_preflight" {
             assert!(
-                matches!(contract, "source_contract" | "aggregate_contract" | "final_sort_contract"),
+                matches!(
+                    contract,
+                    "source_contract"
+                        | "aggregate_contract"
+                        | "final_sort_contract"
+                        | "one_shot_equality_join_output_size_preflight"
+                ),
                 "{label}: {kind} hard-budgeted requirement must name a lower-level preflight contract"
             );
         }
@@ -110,6 +116,7 @@ fn large_keyed_inner_build_selects_one_shot_strategy_without_hash_table_gate() {
         }),
         "compiled one-shot join pipeline should report observed retained index bytes honestly"
     );
+    assert_one_shot_output_preflight_gap(&pipeline, "large keyed inner join");
 }
 
 #[test]
@@ -144,6 +151,7 @@ fn large_keyed_left_and_full_builds_select_one_shot_strategy_without_hash_table_
             pipeline.gates().iter().all(|gate| gate.reservation_kind() != ReservationKind::HashTable),
             "{join_type} compiled one-shot join pipeline must not carry a reusable hash-table gate"
         );
+        assert_one_shot_output_preflight_gap(&pipeline, &format!("large keyed {join_type} join"));
     }
 }
 
@@ -190,9 +198,27 @@ fn large_keyed_inner_residual_build_selects_one_shot_strategy_without_hash_or_mi
         }),
         "compiled one-shot residual join pipeline should report observed retained index bytes honestly"
     );
+    assert_one_shot_output_preflight_gap(&pipeline, "large keyed inner residual join");
 }
 
-fn large_keyed_join_strategy_plan(join_type: JoinType) -> cudf_query_engine::QueryPlan {
+fn assert_one_shot_output_preflight_gap(pipeline: &cudf_query_engine::CompiledPipeline, label: &str) {
+    let gate = pipeline
+        .gates()
+        .iter()
+        .find(|gate| {
+            gate.reservation_kind() == ReservationKind::JoinOutput
+                && gate.memory_boundary() == "join_output"
+                && gate.required_contract() == "one_shot_equality_join_output_size_preflight"
+        })
+        .unwrap_or_else(|| panic!("{label}: compiled one-shot join should name the output-size preflight gap"));
+    assert_eq!(
+        gate.quality(),
+        ContractQuality::HardBudgetedReportWithUnresolvedPreflight,
+        "{label}: one-shot output-size gap must not be reported as exact preflight"
+    );
+}
+
+pub(crate) fn large_keyed_join_strategy_plan(join_type: JoinType) -> cudf_query_engine::QueryPlan {
     let left_schema = Arc::new(Schema::new(vec![
         Field::new("order_id", DataType::Int32, false),
         Field::new("qty", DataType::Int32, false),

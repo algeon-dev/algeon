@@ -1,7 +1,10 @@
 use std::sync::Arc;
 
 use arrow::datatypes::{DataType, Field, Schema};
-use cudf_query_engine::{BudgetedExecutionEvent, Expr, MemorySpaceId, QueryMetrics, ReservationKind};
+use cudf_query_engine::{
+    BudgetedExecutionEvent, Expr, MemoryReservationEvent, MemoryReservationEventAction, MemorySpaceId, QueryMetrics,
+    ReservationKind,
+};
 
 pub(super) fn budgeted_events<'a>(metrics: &'a QueryMetrics, operation: &str) -> Vec<&'a BudgetedExecutionEvent> {
     metrics.budgeted_execution_events.iter().filter(|event| event.operation == operation).collect()
@@ -259,7 +262,7 @@ pub(super) fn assert_granted_reservation_trace(metrics: &QueryMetrics, expected:
     let actual = metrics
         .reservation_events
         .iter()
-        .filter(|event| event.outcome.as_str() == "granted")
+        .filter(|event| is_granted_admission_event(event))
         .map(|event| (event.reservation_kind, event.memory_boundary.as_str()))
         .collect::<Vec<_>>();
     assert_eq!(actual, expected);
@@ -281,7 +284,7 @@ pub(super) fn granted_reservation_requested_bytes(
         .reservation_events
         .iter()
         .find(|event| {
-            event.outcome.as_str() == "granted"
+            is_granted_admission_event(event)
                 && event.reservation_kind == kind
                 && event.memory_boundary == memory_boundary
         })
@@ -294,7 +297,7 @@ pub(super) fn retained_bytes_before_grouped_aggregate_source_read(metrics: &Quer
     metrics.reservation_events[..source_index]
         .iter()
         .rev()
-        .find(|event| event.outcome.as_str() == "granted" && event.memory_boundary == retained_boundary)
+        .find(|event| is_granted_admission_event(event) && event.memory_boundary == retained_boundary)
         .expect("join subtree output should be retained before grouped source read")
         .requested_bytes
 }
@@ -306,7 +309,7 @@ pub(super) fn grouped_aggregate_chunk_budget_window(metrics: &QueryMetrics) -> (
     let operator_bytes = metrics.reservation_events[source_index + 1..]
         .iter()
         .find(|event| {
-            event.outcome.as_str() == "granted"
+            is_granted_admission_event(event)
                 && matches!(event.memory_boundary.as_str(), "chunk_operator" | "compiled_aggregate")
         })
         .expect("mixed aggregate input metrics should include grouped aggregate operator")
@@ -318,7 +321,7 @@ fn grouped_aggregate_source_read_index(metrics: &QueryMetrics) -> (usize, &'stat
     if let Some(source_index) = metrics
         .reservation_events
         .iter()
-        .position(|event| event.outcome.as_str() == "granted" && event.memory_boundary == "source_chunk_read")
+        .position(|event| is_granted_admission_event(event) && event.memory_boundary == "source_chunk_read")
     {
         return (source_index, "join_pipeline_projection_output");
     }
@@ -326,15 +329,15 @@ fn grouped_aggregate_source_read_index(metrics: &QueryMetrics) -> (usize, &'stat
     let aggregate_index = metrics
         .reservation_events
         .iter()
-        .position(|event| event.outcome.as_str() == "granted" && event.memory_boundary == "compiled_aggregate")
+        .position(|event| is_granted_admission_event(event) && event.memory_boundary == "compiled_aggregate")
         .expect("compiled mixed aggregate input metrics should include grouped aggregate operator");
     let source_index = metrics.reservation_events[..aggregate_index]
         .iter()
-        .rposition(|event| event.outcome.as_str() == "granted" && event.memory_boundary == "join_source_read")
+        .rposition(|event| is_granted_admission_event(event) && event.memory_boundary == "join_source_read")
         .expect("compiled mixed aggregate input metrics should include grouped source read");
     metrics.reservation_events[..source_index]
         .iter()
-        .rposition(|event| event.outcome.as_str() == "granted" && event.memory_boundary == "compiled_projection_output")
+        .rposition(|event| is_granted_admission_event(event) && event.memory_boundary == "compiled_projection_output")
         .expect("compiled mixed aggregate input metrics should retain a join-subtree projection output");
     (source_index, "compiled_projection_output")
 }
@@ -348,12 +351,17 @@ pub(super) fn granted_reservation_requested_bytes_for_boundary(
         .reservation_events
         .iter()
         .filter(|event| {
-            event.outcome.as_str() == "granted"
+            is_granted_admission_event(event)
                 && event.reservation_kind == kind
                 && event.memory_boundary == memory_boundary
         })
         .map(|event| event.requested_bytes)
         .collect()
+}
+
+fn is_granted_admission_event(event: &MemoryReservationEvent) -> bool {
+    event.outcome.as_str() == "granted"
+        && matches!(event.action, MemoryReservationEventAction::Reserve | MemoryReservationEventAction::Grow)
 }
 
 pub(super) fn assert_bounded_mixed_left_only_join_metrics(metrics: &QueryMetrics, join_type: &str, output_rows: u64) {

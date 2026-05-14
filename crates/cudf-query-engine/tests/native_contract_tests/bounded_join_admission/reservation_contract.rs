@@ -208,6 +208,10 @@ fn bounded_join_rejection_facts_are_shared_and_estimate_free() {
         Some("available_exact_flat_hash_join_builds")
     );
     assert_eq!(
+        facts.get("cudf_rs_one_shot_equality_join_output_size_preflight_gap").map(String::as_str),
+        Some("libcudf_equality_join_output_size_preflight_unavailable")
+    );
+    assert_eq!(
         facts.get("cudf_rs_filtered_join_hash_table_observability").map(String::as_str),
         Some("filtered_join_device_allocated_size_bytes")
     );

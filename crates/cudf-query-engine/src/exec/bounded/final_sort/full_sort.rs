@@ -65,7 +65,7 @@ impl<'a> FinalSortExecutor<'a> {
             match self.final_sort_budget_token_including("final_sort", attempt, &materialized_reservation) {
                 Ok(token) => token,
                 Err(error) => {
-                    self.reservations.release(materialized_reservation);
+                    self.reservations.release(materialized_reservation, self.metrics);
                     return Err(error);
                 },
             };
@@ -86,7 +86,7 @@ impl<'a> FinalSortExecutor<'a> {
         {
             Ok(frame) => frame,
             Err(error) => {
-                self.reservations.release(materialized_reservation);
+                self.reservations.release(materialized_reservation, self.metrics);
                 return Err(error);
             },
         };
@@ -94,7 +94,7 @@ impl<'a> FinalSortExecutor<'a> {
         self.metrics.record_device_memory_observation(materialized_output_bytes);
 
         drop(prepared_sort);
-        self.reservations.release(sorted_order_reservation);
+        self.reservations.release(sorted_order_reservation, self.metrics);
 
         if let Some(limit) = limit {
             if limit_keeps_all_rows(materialized_frame.num_rows(), limit.spec)? {
@@ -112,7 +112,7 @@ impl<'a> FinalSortExecutor<'a> {
                 Ok(reservation) => reservation,
                 Err(error) => {
                     drop(materialized_frame);
-                    self.reservations.release(materialized_reservation);
+                    self.reservations.release(materialized_reservation, self.metrics);
                     return Err(error);
                 },
             };
@@ -121,8 +121,8 @@ impl<'a> FinalSortExecutor<'a> {
                     Ok(token) => token,
                     Err(error) => {
                         drop(materialized_frame);
-                        self.reservations.release(materialized_reservation);
-                        self.reservations.release(output_reservation);
+                        self.reservations.release(materialized_reservation, self.metrics);
+                        self.reservations.release(output_reservation, self.metrics);
                         return Err(error);
                     },
                 };
@@ -137,12 +137,12 @@ impl<'a> FinalSortExecutor<'a> {
             {
                 Ok(frame) => frame,
                 Err(error) => {
-                    self.reservations.release(materialized_reservation);
-                    self.reservations.release(output_reservation);
+                    self.reservations.release(materialized_reservation, self.metrics);
+                    self.reservations.release(output_reservation, self.metrics);
                     return Err(error);
                 },
             };
-            self.reservations.release(materialized_reservation);
+            self.reservations.release(materialized_reservation, self.metrics);
             self.finalize_final_sort_output_reservation(frame, output_reservation, attempt)
         } else {
             Ok(CommittedPartial { frame: materialized_frame, reservation: materialized_reservation })

@@ -135,7 +135,7 @@ fn read_join_leaf_source_chunks_serial(
         ) {
             Ok(mut outputs) => chunks.append(&mut outputs),
             Err(error) => {
-                release_join_source_chunks_reverse(reservations, chunks);
+                release_join_source_chunks_reverse(reservations, chunks, metrics);
                 return Err(error);
             },
         }
@@ -262,7 +262,7 @@ fn read_join_leaf_source_chunk_attempt(
     {
         Ok(frame) => frame,
         Err(error) => {
-            reservations.release(reservation);
+            reservations.release(reservation, metrics);
             return Err(attach_join_source_read_resource_facts(error, node_id, chunk, attempt, max_attempts));
         },
     };
@@ -277,7 +277,7 @@ fn read_join_leaf_source_chunk_attempt(
         max_attempts,
     ) {
         drop(frame);
-        reservations.release(reservation);
+        reservations.release(reservation, metrics);
         return Err(error);
     }
     let retained_device_bytes = reservation.bytes();
@@ -295,7 +295,7 @@ fn read_join_leaf_source_chunk_attempt(
         retained_device_bytes,
     ) {
         drop(frame);
-        reservations.release(reservation);
+        reservations.release(reservation, metrics);
         return Err(error);
     }
     metrics.record_source_chunk_commit(chunk.row_group_count() as u64);
@@ -334,7 +334,7 @@ fn read_join_leaf_source_chunks_with_scheduler(
             Ok(output) => output,
             Err(error) => {
                 abandon_join_leaf_reads(pending, reservations, metrics);
-                release_join_source_chunks_reverse(reservations, chunks);
+                release_join_source_chunks_reverse(reservations, chunks, metrics);
                 return Err(attach_join_source_read_resource_facts(error, node_id, chunk, 1, max_attempts));
             },
         };
@@ -352,9 +352,9 @@ fn read_join_leaf_source_chunks_with_scheduler(
             max_attempts,
         ) {
             drop(output.frame);
-            reservations.release(output.reservation);
+            reservations.release(output.reservation, metrics);
             abandon_join_leaf_reads(pending, reservations, metrics);
-            release_join_source_chunks_reverse(reservations, chunks);
+            release_join_source_chunks_reverse(reservations, chunks, metrics);
             return Err(error);
         }
         let retained_device_bytes = output.reservation.bytes();
@@ -372,9 +372,9 @@ fn read_join_leaf_source_chunks_with_scheduler(
             retained_device_bytes,
         ) {
             drop(output.frame);
-            reservations.release(output.reservation);
+            reservations.release(output.reservation, metrics);
             abandon_join_leaf_reads(pending, reservations, metrics);
-            release_join_source_chunks_reverse(reservations, chunks);
+            release_join_source_chunks_reverse(reservations, chunks, metrics);
             return Err(error);
         }
         metrics.record_source_chunk_commit(chunk.row_group_count() as u64);
@@ -392,7 +392,7 @@ fn read_join_leaf_source_chunks_with_scheduler(
             max_attempts,
         ) {
             abandon_join_leaf_reads(pending, reservations, metrics);
-            release_join_source_chunks_reverse(reservations, chunks);
+            release_join_source_chunks_reverse(reservations, chunks, metrics);
             return Err(error);
         }
         if pending.is_empty()
@@ -409,7 +409,7 @@ fn read_join_leaf_source_chunks_with_scheduler(
                 max_attempts,
             )
         {
-            release_join_source_chunks_reverse(reservations, chunks);
+            release_join_source_chunks_reverse(reservations, chunks, metrics);
             return Err(error);
         }
     }
@@ -622,7 +622,7 @@ fn grow_join_source_reservation_to_observed_frame(
 ) -> Result<()> {
     let observed_bytes = observe_device_memory_bytes(frame, metrics)?;
     if observed_bytes <= reservation.bytes() {
-        reservations.shrink_to_observed(reservation, observed_bytes);
+        reservations.shrink_to_observed(reservation, observed_bytes, metrics);
         return Ok(());
     }
     let delta = observed_bytes.saturating_sub(reservation.bytes());
@@ -657,7 +657,7 @@ fn concatenate_join_source_chunks(
     ) {
         Ok(reservation) => reservation,
         Err(error) => {
-            release_join_source_chunks_reverse(reservations, chunks);
+            release_join_source_chunks_reverse(reservations, chunks, metrics);
             return Err(error);
         },
     };
@@ -679,8 +679,8 @@ fn concatenate_join_source_chunks(
             drop(rest_frame_refs);
             drop(frames);
             drop(first_frame);
-            release_join_source_reservations_reverse(reservations, input_reservations);
-            reservations.release(output_reservation);
+            release_join_source_reservations_reverse(reservations, input_reservations, metrics);
+            reservations.release(output_reservation, metrics);
             return Err(QueryError::from_cudf(
                 "cudf_query_engine.bounded.join.source_concat",
                 "failed to concatenate bounded join leaf local parquet source chunks",
@@ -700,8 +700,8 @@ fn concatenate_join_source_chunks(
             drop(rest_frame_refs);
             drop(frames);
             drop(first_frame);
-            release_join_source_reservations_reverse(reservations, input_reservations);
-            reservations.release(output_reservation);
+            release_join_source_reservations_reverse(reservations, input_reservations, metrics);
+            reservations.release(output_reservation, metrics);
             return Err(error);
         },
     };
@@ -720,30 +720,35 @@ fn concatenate_join_source_chunks(
             drop(rest_frame_refs);
             drop(frames);
             drop(first_frame);
-            release_join_source_reservations_reverse(reservations, input_reservations);
-            reservations.release(output_reservation);
+            release_join_source_reservations_reverse(reservations, input_reservations, metrics);
+            reservations.release(output_reservation, metrics);
             return Err(error);
         }
     }
     drop(rest_frame_refs);
     drop(frames);
     drop(first_frame);
-    release_join_source_reservations_reverse(reservations, input_reservations);
+    release_join_source_reservations_reverse(reservations, input_reservations, metrics);
     Ok(ResidentGpuFrame { frame: output_frame, reservation: output_reservation })
 }
 
 fn release_join_source_chunks_reverse(
     reservations: &mut ReservationTracker,
     mut chunks: Vec<(GpuDataFrame, ActiveReservation)>,
+    metrics: &mut QueryMetrics,
 ) {
     while let Some((frame, reservation)) = chunks.pop() {
         drop(frame);
-        reservations.release(reservation);
+        reservations.release(reservation, metrics);
     }
 }
 
-fn release_join_source_reservations_reverse(reservations: &mut ReservationTracker, mut active: Vec<ActiveReservation>) {
+fn release_join_source_reservations_reverse(
+    reservations: &mut ReservationTracker,
+    mut active: Vec<ActiveReservation>,
+    metrics: &mut QueryMetrics,
+) {
     while let Some(reservation) = active.pop() {
-        reservations.release(reservation);
+        reservations.release(reservation, metrics);
     }
 }

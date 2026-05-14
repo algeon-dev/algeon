@@ -104,7 +104,7 @@ impl ScheduledLocalParquetRead {
         match result.frame {
             Ok(frame) => Ok(ScheduledLocalParquetReadOutput { chunk, frame, reservation, observed_bytes: 0 }),
             Err(error) => {
-                reservations.release(reservation);
+                reservations.release(reservation, metrics);
                 Err(error)
             },
         }
@@ -115,13 +115,13 @@ impl ScheduledLocalParquetRead {
         let result = match state {
             ScheduledLocalParquetReadState::Ready(output) => {
                 let output = *output;
-                reservations.release(output.reservation);
+                reservations.release(output.reservation, metrics);
                 metrics.record_source_read_prefetch_abandoned();
                 return;
             },
             ScheduledLocalParquetReadState::Running { reservation, handle } => {
                 let result = handle.join();
-                reservations.release(reservation);
+                reservations.release(reservation, metrics);
                 result
             },
         };
