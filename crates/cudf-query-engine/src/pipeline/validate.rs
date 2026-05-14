@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{
-    capability::{ContractQuality, ContractStatus, ReservationRequirementScope, lower_level_unresolved_preflight_gap},
+    capability::{ContractQuality, ContractStatus, ReservationRequirementScope, strict_unresolved_preflight_gap},
     error::{QueryError, QueryErrorCode},
     pipeline::model::{
         CompiledPipeline, PipelineBarrierId, PipelineBarrierKind, PipelineEdgeId, PipelineEdgeKind, PipelineTaskId,
@@ -745,21 +745,30 @@ fn validate_unresolved_preflight_label(
     status: ContractStatus,
     quality: ContractQuality,
 ) -> crate::Result<()> {
-    if status == ContractStatus::Modeled
-        && is_unresolved_preflight_contract(kind, required_contract)
-        && quality != ContractQuality::HardBudgetedReportWithUnresolvedPreflight
-    {
-        return Err(invalid("pipeline hard-budgeted gate is not labeled as unresolved preflight")
+    let unresolved_gap = strict_unresolved_preflight_gap(kind, required_contract);
+    if quality == ContractQuality::HardBudgetedReportWithUnresolvedPreflight {
+        if status != ContractStatus::Modeled {
+            return Err(invalid("pipeline hard-budgeted unresolved-preflight gate must remain modeled")
+                .with_fact("gate_id", gate)
+                .with_fact("reservation_kind", kind.as_str())
+                .with_fact("contract_status", status.as_str())
+                .with_fact("contract_quality", quality.as_str()));
+        }
+        if unresolved_gap.is_none() {
+            return Err(invalid("pipeline hard-budgeted gate is missing lower-level unresolved preflight gap")
+                .with_fact("gate_id", gate)
+                .with_fact("reservation_kind", kind.as_str())
+                .with_fact("required_contract", required_contract));
+        }
+    }
+    if unresolved_gap.is_some() && quality != ContractQuality::HardBudgetedReportWithUnresolvedPreflight {
+        return Err(invalid("pipeline unresolved-preflight gate is not labeled with unresolved-preflight quality")
             .with_fact("gate_id", gate)
             .with_fact("reservation_kind", kind.as_str())
             .with_fact("contract_status", status.as_str())
             .with_fact("contract_quality", quality.as_str()));
     }
     Ok(())
-}
-
-fn is_unresolved_preflight_contract(kind: ReservationKind, required_contract: &'static str) -> bool {
-    lower_level_unresolved_preflight_gap(kind, required_contract).is_some()
 }
 
 fn task_by_id(

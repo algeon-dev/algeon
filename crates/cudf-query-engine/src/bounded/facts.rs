@@ -16,6 +16,7 @@ pub(crate) fn bounded_join_unsupported_shape_facts(
     let mut facts = BoundedJoinReservationContract.unsupported_shape_facts(boundary_policy);
     let analysis = plan.capability_analysis();
     insert_capability_reservation_facts(&mut facts, &analysis);
+    insert_join_strategy_facts(&mut facts, plan);
     insert_local_rejection_facts(&mut facts, &analysis);
     facts
 }
@@ -27,7 +28,59 @@ pub(crate) fn bounded_join_modeled_facts(
     let mut facts = BoundedJoinReservationContract.facts(boundary_policy);
     let analysis = plan.capability_analysis();
     insert_capability_reservation_facts(&mut facts, &analysis);
+    insert_join_strategy_facts(&mut facts, plan);
     facts
+}
+
+fn insert_join_strategy_facts(facts: &mut BTreeMap<&'static str, String>, plan: &QueryPlan) {
+    let mut join_strategy = Vec::new();
+    let mut reusable_rejections = Vec::new();
+    let mut estimated_build_rows = Vec::new();
+    let mut observed_build_rows = Vec::new();
+    let mut build_side_bytes = Vec::new();
+    let mut probe_reuse_count = Vec::new();
+
+    for node in plan.nodes() {
+        let crate::plan::PlanNode::Join(join) = &node.kind else {
+            continue;
+        };
+        let Some(decision) = crate::capability::keyed_hash_join_strategy_decision_for_plan(plan, node.id, join) else {
+            continue;
+        };
+        let node_label = node.id.to_string();
+        let decision_facts = decision.facts();
+        if let Some(value) = decision_facts.get("join_strategy") {
+            join_strategy.push(format!("{node_label}:{value}"));
+        }
+        if let Some(value) = decision_facts.get("reusable_hash_join_rejected_reason") {
+            reusable_rejections.push(format!("{node_label}:{value}"));
+        }
+        if let Some(value) = decision_facts.get("estimated_build_rows") {
+            estimated_build_rows.push(format!("{node_label}:{value}"));
+        }
+        if let Some(value) = decision_facts.get("observed_build_rows") {
+            observed_build_rows.push(format!("{node_label}:{value}"));
+        }
+        if let Some(value) = decision_facts.get("build_side_bytes") {
+            build_side_bytes.push(format!("{node_label}:{value}"));
+        }
+        if let Some(value) = decision_facts.get("probe_reuse_count") {
+            probe_reuse_count.push(format!("{node_label}:{value}"));
+        }
+    }
+
+    insert_csv_fact(facts, "join_strategy", join_strategy);
+    insert_csv_fact(facts, "reusable_hash_join_rejected_reason", reusable_rejections);
+    insert_csv_fact(facts, "estimated_build_rows", estimated_build_rows);
+    insert_csv_fact(facts, "observed_build_rows", observed_build_rows);
+    insert_csv_fact(facts, "build_side_bytes", build_side_bytes);
+    insert_csv_fact(facts, "probe_reuse_count", probe_reuse_count);
+}
+
+fn insert_csv_fact(facts: &mut BTreeMap<&'static str, String>, key: &'static str, values: Vec<String>) {
+    if !values.is_empty() {
+        facts.insert(key, csv_join(values));
+    }
 }
 
 fn insert_local_rejection_facts(facts: &mut BTreeMap<&'static str, String>, analysis: &CapabilityAnalysis) {

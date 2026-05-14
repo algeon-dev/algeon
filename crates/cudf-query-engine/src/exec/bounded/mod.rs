@@ -339,13 +339,13 @@ pub(in crate::exec::bounded) fn execute_bounded_generic_local_parquet_source(
     }
     record_bounded_parquet_source_metrics(source, &chunk_plan, metrics);
 
-    let chunks = read_local_parquet_chunks_ordered(
+    let chunks = read_local_parquet_chunks_required_only(
         context,
         source,
         &chunk_plan.chunks,
         reservations,
         metrics,
-        SourceReadSchedulerBoundaries::new("bounded_generic_source_read", "bounded_generic_source_read_prefetch"),
+        "bounded_generic_source_read",
     )?;
 
     concatenate_source_read_outputs(

@@ -111,6 +111,8 @@ pub struct QueryMetrics {
     pub hash_join_build_count: u64,
     /// Number of reusable cuDF filtered-join artifacts built during this query.
     pub filtered_join_build_count: u64,
+    /// Number of one-shot keyed equality joins executed during this query.
+    pub one_shot_join_count: u64,
     /// Query-scoped reusable hash-join cache hits.
     pub hash_join_cache_hits: u64,
     /// Query-scoped reusable hash-join cache misses.
@@ -133,6 +135,12 @@ pub struct QueryMetrics {
     pub filtered_join_probe_state_bytes: u64,
     /// Unique device bytes retained by mixed inner/left join size-data states.
     pub mixed_join_size_data_bytes: u64,
+    /// Device bytes retained by one-shot join index maps while materializing output.
+    pub one_shot_join_index_bytes: u64,
+    /// Reservation bytes requested for one-shot join output materialization.
+    pub one_shot_join_materialization_bytes: u64,
+    /// Observed device bytes of one-shot join output frames.
+    pub one_shot_join_output_bytes: u64,
     pub parquet_files: u64,
     pub parquet_bytes_known: u64,
     pub row_groups_selected: u64,
@@ -319,6 +327,10 @@ impl QueryMetrics {
         self.filtered_join_build_count = self.filtered_join_build_count.saturating_add(1);
     }
 
+    pub fn record_one_shot_join(&mut self) {
+        self.one_shot_join_count = self.one_shot_join_count.saturating_add(1);
+    }
+
     pub fn record_hash_join_hash_table_bytes(&mut self, bytes: u64) {
         self.hash_join_hash_table_bytes = self.hash_join_hash_table_bytes.saturating_add(bytes);
     }
@@ -333,6 +345,18 @@ impl QueryMetrics {
 
     pub fn record_mixed_join_size_data_bytes(&mut self, bytes: u64) {
         self.mixed_join_size_data_bytes = self.mixed_join_size_data_bytes.saturating_add(bytes);
+    }
+
+    pub fn record_one_shot_join_index_bytes(&mut self, bytes: u64) {
+        self.one_shot_join_index_bytes = self.one_shot_join_index_bytes.saturating_add(bytes);
+    }
+
+    pub fn record_one_shot_join_materialization_bytes(&mut self, bytes: u64) {
+        self.one_shot_join_materialization_bytes = self.one_shot_join_materialization_bytes.saturating_add(bytes);
+    }
+
+    pub fn record_one_shot_join_output_bytes(&mut self, bytes: u64) {
+        self.one_shot_join_output_bytes = self.one_shot_join_output_bytes.saturating_add(bytes);
     }
 
     pub fn record_compiled_pipeline_attempt(&mut self) {
@@ -422,6 +446,7 @@ impl QueryMetrics {
             self.retry_reservation_failure_count.saturating_add(other.retry_reservation_failure_count);
         self.hash_join_build_count = self.hash_join_build_count.saturating_add(other.hash_join_build_count);
         self.filtered_join_build_count = self.filtered_join_build_count.saturating_add(other.filtered_join_build_count);
+        self.one_shot_join_count = self.one_shot_join_count.saturating_add(other.one_shot_join_count);
         self.hash_join_cache_hits = self.hash_join_cache_hits.saturating_add(other.hash_join_cache_hits);
         self.hash_join_cache_misses = self.hash_join_cache_misses.saturating_add(other.hash_join_cache_misses);
         self.hash_join_durable_cache_hits =
@@ -438,6 +463,11 @@ impl QueryMetrics {
             self.filtered_join_probe_state_bytes.saturating_add(other.filtered_join_probe_state_bytes);
         self.mixed_join_size_data_bytes =
             self.mixed_join_size_data_bytes.saturating_add(other.mixed_join_size_data_bytes);
+        self.one_shot_join_index_bytes = self.one_shot_join_index_bytes.saturating_add(other.one_shot_join_index_bytes);
+        self.one_shot_join_materialization_bytes =
+            self.one_shot_join_materialization_bytes.saturating_add(other.one_shot_join_materialization_bytes);
+        self.one_shot_join_output_bytes =
+            self.one_shot_join_output_bytes.saturating_add(other.one_shot_join_output_bytes);
         self.parquet_files = self.parquet_files.saturating_add(other.parquet_files);
         self.parquet_bytes_known = self.parquet_bytes_known.saturating_add(other.parquet_bytes_known);
         self.row_groups_selected = self.row_groups_selected.saturating_add(other.row_groups_selected);

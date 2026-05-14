@@ -72,6 +72,123 @@ fn assert_rejection_facts_are_family_free(facts: &std::collections::BTreeMap<&'s
     }
 }
 
+#[test]
+fn large_keyed_inner_build_selects_one_shot_strategy_without_hash_table_gate() {
+    let plan = large_keyed_join_strategy_plan(JoinType::Inner);
+    let analysis = plan.capability_analysis();
+
+    assert!(!analysis.has_rejections());
+    let join = analysis
+        .nodes
+        .iter()
+        .find(|node| matches!(node.operator, NodeOperator::Join { .. }))
+        .expect("plan should contain a join capability row");
+    assert!(
+        join.local_requirements.iter().all(|requirement| requirement.kind != ReservationKind::HashTable),
+        "large one-shot keyed joins must not require a reusable hash-table gate"
+    );
+
+    let facts = plan
+        .bounded_join_modeled_facts(ExecutionBoundaryPolicy::default())
+        .expect("large one-shot join should still be admitted");
+    assert_eq!(facts.get("join_strategy").map(String::as_str), Some("n2:one_shot_equi"));
+    assert_eq!(facts.get("reusable_hash_join_rejected_reason").map(String::as_str), Some("n2:build_side_too_large"));
+    assert_eq!(facts.get("estimated_build_rows").map(String::as_str), Some("n2:100000000"));
+    assert_eq!(facts.get("probe_reuse_count").map(String::as_str), Some("n2:1"));
+
+    let pipeline = cudf_query_engine::compile_pipeline(&plan, &analysis).expect("one-shot join should compile");
+    assert!(
+        pipeline.gates().iter().all(|gate| gate.reservation_kind() != ReservationKind::HashTable),
+        "compiled one-shot join pipeline must not carry a reusable hash-table gate"
+    );
+    assert!(
+        pipeline.gates().iter().any(|gate| {
+            gate.reservation_kind() == ReservationKind::GatherMap
+                && gate.memory_boundary() == "join_one_shot_indices"
+                && gate.required_contract() == "one_shot_join_indices_observed_retained_bytes"
+                && gate.quality() == ContractQuality::ObservedRetainedState
+        }),
+        "compiled one-shot join pipeline should report observed retained index bytes honestly"
+    );
+}
+
+#[test]
+fn large_keyed_outer_build_rejects_before_reusable_hash_strategy() {
+    let plan = large_keyed_join_strategy_plan(JoinType::Left);
+    let analysis = plan.capability_analysis();
+
+    assert!(analysis.has_rejections());
+    let projection = analysis.first_rejection_projection().expect("large left join should have local rejection facts");
+    assert_eq!(projection.reason, "large_keyed_hash_join_strategy_unsupported");
+    assert_eq!(projection.facts.get("join_strategy").map(String::as_str), Some("one_shot_equi"));
+    assert_eq!(
+        projection.facts.get("reusable_hash_join_rejected_reason").map(String::as_str),
+        Some("build_side_too_large")
+    );
+    assert_eq!(
+        projection.facts.get("one_shot_equi_rejected_reason").map(String::as_str),
+        Some("one_shot_equi_requires_inner_join")
+    );
+
+    let facts = plan
+        .bounded_join_unsupported_shape_facts(ExecutionBoundaryPolicy::default())
+        .expect("unsupported large left join should report bounded facts");
+    assert_eq!(
+        facts.get("bounded_join_rejection_reason").map(String::as_str),
+        Some("large_keyed_hash_join_strategy_unsupported")
+    );
+    assert_eq!(facts.get("join_strategy").map(String::as_str), Some("n2:one_shot_equi"));
+    assert_eq!(facts.get("reusable_hash_join_rejected_reason").map(String::as_str), Some("n2:build_side_too_large"));
+    assert_rejection_facts_are_family_free(&facts, "large_keyed_outer_build_rejects_before_reusable_hash_strategy");
+}
+
+fn large_keyed_join_strategy_plan(join_type: JoinType) -> cudf_query_engine::QueryPlan {
+    let left_schema = Arc::new(Schema::new(vec![
+        Field::new("order_id", DataType::Int32, false),
+        Field::new("qty", DataType::Int32, false),
+    ]));
+    let right_schema = Arc::new(Schema::new(vec![
+        Field::new("order_id", DataType::Int32, false),
+        Field::new("category", DataType::Utf8, false),
+    ]));
+    let output_schema = Arc::new(Schema::new(vec![
+        Field::new("order_id", DataType::Int32, false),
+        Field::new("qty", DataType::Int32, false),
+        Field::new("category", DataType::Utf8, true),
+    ]));
+
+    let mut builder = QueryPlanBuilder::new();
+    let left = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
+        vec![LocalParquetFile::new("/tmp/large-join-left.parquet").with_row_group_rows(vec![10])],
+        Arc::clone(&left_schema),
+        vec!["order_id".to_string(), "qty".to_string()],
+    )));
+    let right = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
+        vec![LocalParquetFile::new("/tmp/large-join-right.parquet").with_row_group_rows(vec![100_000_000])],
+        Arc::clone(&right_schema),
+        vec!["order_id".to_string(), "category".to_string()],
+    )));
+    let join = builder.add_join(
+        left,
+        right,
+        JoinSpec::new(
+            join_type,
+            vec![JoinKey::new(
+                ColumnRef::input(0, "order_id", "left_order_id"),
+                ColumnRef::input(1, "order_id", "right_order_id"),
+            )],
+        )
+        .with_output_projection(vec![
+            JoinOutputColumn::left(ColumnRef::input(0, "order_id", "order_id"), "order_id"),
+            JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
+            JoinOutputColumn::right(ColumnRef::input(1, "category", "category"), "category"),
+        ])
+        .with_build_side(JoinSide::Right),
+        output_schema,
+    );
+    builder.finish_with_host_sink(join)
+}
+
 fn csv_values<'a>(facts: &'a std::collections::BTreeMap<&'static str, String>, key: &str, label: &str) -> Vec<&'a str> {
     facts
         .get(key)

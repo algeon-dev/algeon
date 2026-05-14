@@ -11,9 +11,9 @@ default-members = [".", "crates/cudf-query-engine"]
 resolver = "3"
 
 [workspace.dependencies]
-arrow = { version = "58", default-features = false, features = ["ipc"] }
-cudf = { path = "../dtggraph/submodules/cudf-rs/cudf-rs" }
-parquet = "58.1"
+arrow = { version = "58.3.0", default-features = false, features = ["ipc"] }
+cudf = { path = "../cudf-rs/cudf-rs" }
+parquet = "58.3.0"
 
 [dependencies]
 arrow = { workspace = true }

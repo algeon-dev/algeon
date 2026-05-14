@@ -273,6 +273,74 @@ fn bounded_native_query_reports_chunk_operator_hard_budget_failure_after_reserva
 }
 
 #[test]
+fn bounded_native_query_does_not_prefetch_before_first_required_source_read_is_observed() {
+    let dir = unique_temp_dir("cudf-query-engine-bounded-initial-prefetch-calibration");
+    let path = dir.join("input.parquet");
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let input_schema = write_row_grouped_input_parquet(&path);
+    let aggregated_schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int32, false),
+        Field::new("sum_m00", DataType::Int64, true),
+    ]));
+    let source = LocalParquetSource::from_files(
+        vec![
+            LocalParquetFile::new(&path)
+                .with_file_size_bytes(fs::metadata(&path).unwrap().len())
+                .with_row_group_bytes(vec![1, 1, 1])
+                .with_projected_row_group_bytes(vec![1, 1, 1], vec![1, 1, 1])
+                .with_row_group_rows(vec![2, 2, 2]),
+        ],
+        Arc::clone(&input_schema),
+        vec!["key".to_string(), "m00".to_string()],
+    );
+    let aggregate = AggregateSpec::new(
+        vec![Expr::column("key")],
+        vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("m00"), "sum_m00")],
+    );
+
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LocalParquet(source));
+    let aggregate = builder.add_aggregate(source, aggregate, Arc::clone(&aggregated_schema));
+    let plan = builder.finish_with_host_sink(aggregate);
+    let max_source_chunk_bytes = 1024 * 1024;
+    let context = ExecutionContext::builder()
+        .with_shared_runtime(Arc::clone(&runtime))
+        .with_memory_control_policy(MemoryControlPolicy::Bounded {
+            device_budget_bytes: max_source_chunk_bytes + 1,
+            max_source_chunk_bytes,
+            max_row_groups_per_chunk: 1,
+            max_retry_attempts: 1,
+            min_retry_chunk_row_groups: 1,
+        })
+        .with_source_scheduler_policy(SourceSchedulerPolicy::new(2))
+        .build()
+        .unwrap();
+
+    let result = execute_query_plan(&context, &plan).unwrap();
+    let metrics = result.metrics();
+    assert_eq!(metrics.source_chunks_planned, 3);
+    assert_eq!(metrics.source_chunks_committed, 3);
+    assert_eq!(metrics.source_read_prefetches_started, 0);
+    assert!(metrics.source_read_prefetches_skipped >= 1);
+    assert_eq!(metrics.reservation_denied_count, 0);
+
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    assert_eq!(batch.num_rows(), 3);
+    let mut rows = int32_array(batch, 0)
+        .values()
+        .iter()
+        .copied()
+        .zip(int64_array(batch, 1).values().iter().copied())
+        .collect::<Vec<_>>();
+    rows.sort_by_key(|(key, _sum)| *key);
+    assert_eq!(rows, vec![(1, 400), (2, 700), (3, 1000)]);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn bounded_native_query_reports_global_count_scalar_output_hard_budget_failure() {
     let runtime = Arc::new(cudf::Runtime::new().unwrap());
     let output_schema = Arc::new(Schema::new(vec![

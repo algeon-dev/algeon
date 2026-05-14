@@ -240,6 +240,7 @@ pub(super) fn native_execution_metrics_set() -> datafusion::physical_plan::metri
         ("adaptive_memory_history_miss_count", 5),
         ("hash_join_build_count", 1),
         ("filtered_join_build_count", 6),
+        ("one_shot_join_count", 7),
         ("hash_join_cache_hits", 2),
         ("hash_join_cache_misses", 1),
         ("hash_join_durable_cache_hits", 3),
@@ -249,6 +250,9 @@ pub(super) fn native_execution_metrics_set() -> datafusion::physical_plan::metri
         ("filtered_join_hash_table_bytes", 8192),
         ("filtered_join_probe_state_bytes", 1024),
         ("mixed_join_size_data_bytes", 512),
+        ("one_shot_join_index_bytes", 4096),
+        ("one_shot_join_materialization_bytes", 8192),
+        ("one_shot_join_output_bytes", 16384),
         ("join_gather_map_bytes", 2048),
     ] {
         MetricBuilder::new(&metrics).with_type(MetricType::SUMMARY).counter(name, 0).add(value);
@@ -450,6 +454,27 @@ pub(super) fn copy_tiny_tpch_as_directory_layout(
         let source_file = source.join(format!("{table}.parquet"));
         for file_name in file_names {
             fs::copy(&source_file, table_dir.join(file_name)).unwrap();
+        }
+    }
+}
+
+pub(super) fn copy_tiny_tpch_as_sibling_split_layout(
+    source: &std::path::Path,
+    destination: &std::path::Path,
+    split_tables: &[&str],
+    split_count: usize,
+) {
+    assert!(split_count >= 1, "split_count must be >= 1");
+    fs::create_dir_all(destination).unwrap();
+    for table in TPCH_TABLES {
+        let source_file = source.join(format!("{table}.parquet"));
+        if split_tables.contains(table) {
+            for shard in 0..split_count {
+                let shard_name = format!("{table}_{shard:04}.parquet");
+                fs::copy(&source_file, destination.join(shard_name)).unwrap();
+            }
+        } else {
+            fs::copy(&source_file, destination.join(format!("{table}.parquet"))).unwrap();
         }
     }
 }

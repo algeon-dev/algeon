@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeSet,
     fs::{self, File},
     path::{Path, PathBuf},
     sync::Arc,
@@ -23,7 +24,8 @@ use cudf_query_engine::{
     StrictBoundedContractGateRow, StrictBoundedContractOwner, adaptive_bounded_pipeline_admission,
     adaptive_bounded_pipeline_admission_with_memory_history,
     capability::{
-        CapabilityDecision, ContractQuality, ContractStatus, ReservationRequirementScope, SubgraphInvariantKind,
+        CapabilityDecision, ContractQuality, ContractStatus, ReservationRequirementScope,
+        STRICT_UNRESOLVED_PREFLIGHT_GAPS, SubgraphInvariantKind, lower_level_unresolved_preflight_gap,
     },
     compile_pipeline,
     contract_report::{StrictBoundedContractReport, StrictBoundedExecutionMode},
@@ -661,6 +663,41 @@ fn d5_contract_gate_rows_are_inventory_backed_and_family_path_free() {
 }
 
 #[test]
+fn phase_f6_strict_preflight_gap_registry_tracks_current_retirement_protocol() {
+    assert_eq!(
+        STRICT_UNRESOLVED_PREFLIGHT_GAPS.len(),
+        3,
+        "F.6 starts with the three lower-level strict preflight gaps; retirement must remove one from this registry"
+    );
+
+    let mut markers = BTreeSet::new();
+    let mut requirements = BTreeSet::new();
+    for gap in STRICT_UNRESOLVED_PREFLIGHT_GAPS {
+        assert!(
+            markers.insert(gap.unresolved_gap),
+            "unresolved preflight markers should be unique: {}",
+            gap.unresolved_gap
+        );
+        assert!(
+            requirements.insert(format!("{}:{}", gap.kind.as_str(), gap.required_contract)),
+            "reservation-kind/contract pairs should be unique: {}:{}",
+            gap.kind.as_str(),
+            gap.required_contract
+        );
+        assert!(
+            gap.retirement_requirement.contains("cudf-rs/libcudf"),
+            "retirement must wait on an owning lower-level API: {}",
+            gap.retirement_requirement
+        );
+        assert_eq!(lower_level_unresolved_preflight_gap(gap.kind, gap.required_contract), Some(gap.unresolved_gap));
+    }
+
+    assert!(markers.contains("libcudf_parquet_decoded_output_preflight_unavailable"));
+    assert!(markers.contains("libcudf_groupby_aggregate_temporary_workspace_preflight_unavailable"));
+    assert!(markers.contains("libcudf_final_sort_order_preflight_unavailable"));
+}
+
+#[test]
 fn d5_contract_report_rejects_unresolved_preflight_gate_labeled_exact() {
     let plan = root_join_plan();
     let analysis = plan.capability_analysis();
@@ -696,6 +733,27 @@ fn d5_contract_report_rejects_unresolved_preflight_gate_labeled_exact() {
     assert_eq!(error.code(), cudf_query_engine::QueryErrorCode::InvalidPlan);
     assert_eq!(error.fact_value("reservation_kind"), Some("source_read"));
     assert_eq!(error.fact_value("contract_quality"), Some("exact_preflight"));
+}
+
+#[test]
+fn phase_f6_contract_report_rejects_hard_budgeted_quality_without_tracked_gap() {
+    let invalid = d5_test_gate_row(
+        ReservationKind::SourceRead,
+        "source_read",
+        "libcudf_decoded_output_preflight_contract_after_api_lands",
+        ContractQuality::HardBudgetedReportWithUnresolvedPreflight,
+        None,
+    );
+
+    let error = StrictBoundedContractReport::from_gate_rows(StrictBoundedExecutionMode::StrictBounded, vec![invalid])
+        .expect_err("F.6 should reject unresolved quality after the placeholder contract is replaced");
+
+    assert_eq!(error.code(), cudf_query_engine::QueryErrorCode::InvalidPlan);
+    assert_eq!(error.fact_value("reservation_kind"), Some("source_read"));
+    assert_eq!(
+        error.fact_value("required_contract"),
+        Some("libcudf_decoded_output_preflight_contract_after_api_lands")
+    );
 }
 
 #[test]

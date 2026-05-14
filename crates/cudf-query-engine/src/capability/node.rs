@@ -6,7 +6,7 @@ pub(super) fn analyze_node(plan: &QueryPlan, node: &QueryNode) -> NodeCapability
     let operator = node_operator(kind);
     let executable = node_executable_decision(plan, node);
     let produced_properties = produced_properties(node);
-    let local_requirements = node_local_requirements(kind);
+    let local_requirements = node_local_requirements(plan, node);
     NodeCapability { node_id, operator, executable, produced_properties, local_requirements }
 }
 
@@ -82,7 +82,7 @@ fn node_executable_decision(plan: &QueryPlan, node: &QueryNode) -> CapabilityDec
         PlanNode::Aggregate(aggregate) => aggregate_node_executable_decision(node.id, aggregate),
         PlanNode::Sort(sort) => sort_node_executable_decision(node.id, sort),
         PlanNode::Limit(limit) => limit_node_executable_decision(plan, node.id, limit),
-        PlanNode::Join(join) => join_node_executable_decision(node.id, join),
+        PlanNode::Join(join) => join_node_executable_decision(plan, node.id, join),
     }
 }
 
@@ -185,7 +185,7 @@ fn limit_node_executable_decision(plan: &QueryPlan, node_id: NodeId, limit: &Lim
     CapabilityDecision::Satisfied
 }
 
-fn join_node_executable_decision(node_id: NodeId, join: &JoinNode) -> CapabilityDecision {
+fn join_node_executable_decision(plan: &QueryPlan, node_id: NodeId, join: &JoinNode) -> CapabilityDecision {
     let Some(capability) = join_node_execution_capability(join) else {
         return CapabilityDecision::rejected(
             "unsupported_join_node_capability",
@@ -220,6 +220,13 @@ fn join_node_executable_decision(node_id: NodeId, join: &JoinNode) -> Capability
             ],
         );
     }
+    if let Some(KeyedHashJoinStrategyDecision::Rejected { reason, facts }) =
+        keyed_hash_join_strategy_decision_for_plan(plan, node_id, join)
+    {
+        let mut facts = facts;
+        facts.insert("node_id", node_id.to_string());
+        return CapabilityDecision::Rejected { reason, facts };
+    }
     CapabilityDecision::Satisfied
 }
 
@@ -239,20 +246,27 @@ pub(super) fn produced_properties(node: &QueryNode) -> Vec<ProducedProperty> {
     properties
 }
 
-fn node_local_requirements(kind: &PlanNode) -> Vec<ReservationRequirement> {
-    match kind {
+fn node_local_requirements(plan: &QueryPlan, node: &QueryNode) -> Vec<ReservationRequirement> {
+    match &node.kind {
         PlanNode::Aggregate(_) => vec![ReservationRequirement::modeled(
             ReservationKind::OperatorOutput,
             "operator_output",
             "aggregate_contract",
             ContractQuality::HardBudgetedReportWithUnresolvedPreflight,
         )],
-        PlanNode::Join(join) if keyed_hash_join_capable(join) => vec![ReservationRequirement::modeled(
-            ReservationKind::HashTable,
-            "join_hash_table",
-            "hash_join_pre_build_reservation_size_bytes",
-            ContractQuality::ExactPreflight,
-        )],
+        PlanNode::Join(join)
+            if matches!(
+                keyed_hash_join_strategy_decision_for_plan(plan, node.id, join),
+                Some(KeyedHashJoinStrategyDecision::Selected { strategy: KeyedHashJoinStrategy::ReusableHashEqui, .. })
+            ) =>
+        {
+            vec![ReservationRequirement::modeled(
+                ReservationKind::HashTable,
+                "join_hash_table",
+                "hash_join_pre_build_reservation_size_bytes",
+                ContractQuality::ExactPreflight,
+            )]
+        },
         PlanNode::Join(join) if keyed_filtered_semi_anti_join_capable(join) => vec![
             ReservationRequirement::modeled(
                 ReservationKind::HashTable,

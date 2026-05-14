@@ -84,6 +84,37 @@ pub struct ReservationRequirement {
     pub quality: ContractQuality,
 }
 
+/// A current strict preflight gap that can only be retired by replacing the
+/// placeholder contract with a stronger cudf-rs/libcudf contract.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct StrictUnresolvedPreflightGap {
+    pub kind: ReservationKind,
+    pub required_contract: &'static str,
+    pub unresolved_gap: &'static str,
+    pub retirement_requirement: &'static str,
+}
+
+pub const STRICT_UNRESOLVED_PREFLIGHT_GAPS: &[StrictUnresolvedPreflightGap] = &[
+    StrictUnresolvedPreflightGap {
+        kind: ReservationKind::SourceRead,
+        required_contract: "source_contract",
+        unresolved_gap: "libcudf_parquet_decoded_output_preflight_unavailable",
+        retirement_requirement: "cudf-rs/libcudf decoded-output preflight for planned row groups and projected columns",
+    },
+    StrictUnresolvedPreflightGap {
+        kind: ReservationKind::OperatorOutput,
+        required_contract: "aggregate_contract",
+        unresolved_gap: "libcudf_groupby_aggregate_temporary_workspace_preflight_unavailable",
+        retirement_requirement: "cudf-rs/libcudf groupby aggregate output and temporary-workspace preflight",
+    },
+    StrictUnresolvedPreflightGap {
+        kind: ReservationKind::FinalSort,
+        required_contract: "final_sort_contract",
+        unresolved_gap: "libcudf_final_sort_order_preflight_unavailable",
+        retirement_requirement: "cudf-rs/libcudf final sort or top-k output and temporary-workspace preflight",
+    },
+];
+
 impl ReservationRequirement {
     pub fn modeled(
         kind: ReservationKind,
@@ -103,20 +134,21 @@ impl ReservationRequirement {
 }
 
 pub fn lower_level_unresolved_preflight_gap(kind: ReservationKind, required_contract: &str) -> Option<&'static str> {
-    if matches!(kind, ReservationKind::SourceRead | ReservationKind::OperatorOutput | ReservationKind::FinalSort) {
-        lower_level_unresolved_preflight_gap_for_contract(required_contract)
-    } else {
-        None
-    }
+    strict_unresolved_preflight_gap(kind, required_contract).map(|gap| gap.unresolved_gap)
 }
 
 pub fn lower_level_unresolved_preflight_gap_for_contract(required_contract: &str) -> Option<&'static str> {
-    match required_contract {
-        "source_contract" => Some("libcudf_parquet_decoded_output_preflight_unavailable"),
-        "aggregate_contract" => Some("libcudf_groupby_aggregate_temporary_workspace_preflight_unavailable"),
-        "final_sort_contract" => Some("libcudf_final_sort_order_preflight_unavailable"),
-        _ => None,
-    }
+    STRICT_UNRESOLVED_PREFLIGHT_GAPS
+        .iter()
+        .find(|gap| gap.required_contract == required_contract)
+        .map(|gap| gap.unresolved_gap)
+}
+
+pub fn strict_unresolved_preflight_gap(
+    kind: ReservationKind,
+    required_contract: &str,
+) -> Option<&'static StrictUnresolvedPreflightGap> {
+    STRICT_UNRESOLVED_PREFLIGHT_GAPS.iter().find(|gap| gap.kind == kind && gap.required_contract == required_contract)
 }
 
 pub const fn reservation_requirement_scope(kind: ReservationKind) -> ReservationRequirementScope {

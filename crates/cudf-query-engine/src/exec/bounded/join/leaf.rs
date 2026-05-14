@@ -324,20 +324,6 @@ fn read_join_leaf_source_chunks_with_scheduler(
         &mut next_chunk_index,
         max_attempts,
     )?;
-    if let Err(error) = fill_optional_join_leaf_reads(
-        context,
-        source,
-        source_chunks,
-        node_id,
-        reservations,
-        metrics,
-        &mut pending,
-        &mut next_chunk_index,
-        max_attempts,
-    ) {
-        abandon_join_leaf_reads(pending, reservations, metrics);
-        return Err(error);
-    }
 
     let mut chunks = Vec::with_capacity(source_chunks.len());
     for (index, chunk) in source_chunks.iter().enumerate() {
@@ -476,8 +462,12 @@ fn fill_optional_join_leaf_reads(
     next_chunk_index: &mut usize,
     max_attempts: usize,
 ) -> Result<()> {
-    let max_in_flight = context.source_scheduler_policy().max_source_reads_in_flight().max(1);
-    while pending.len() < max_in_flight {
+    // Keep only one unobserved optional source read ahead. The source decoded
+    // output preflight is still an unresolved lower-level contract, so deeper
+    // speculative reads can starve the next front-of-queue read when it grows
+    // to observed bytes.
+    let prefetch_target = usize::from(context.source_scheduler_policy().max_source_reads_in_flight() > 1);
+    while pending.len() < prefetch_target {
         let Some(chunk) = chunks.get(*next_chunk_index) else {
             break;
         };

@@ -193,13 +193,24 @@ pub(super) fn append_producer_output_edge_requirements(
     producer: NodeId,
     requirements: &mut Vec<ReservationRequirement>,
 ) {
-    if matches!(plan.node(producer).map(|node| &node.kind), Some(PlanNode::Join(_))) {
-        requirements.push(ReservationRequirement::modeled(
-            ReservationKind::GatherMap,
-            "join_gather_map",
-            "join_gather_map_reservation_size_bytes",
-            ContractQuality::ExactPreflight,
-        ));
+    if let Some(PlanNode::Join(join)) = plan.node(producer).map(|node| &node.kind) {
+        let gather_map_requirement = match keyed_hash_join_strategy_decision_for_plan(plan, producer, join) {
+            Some(KeyedHashJoinStrategyDecision::Selected { strategy: KeyedHashJoinStrategy::OneShotEqui, .. }) => {
+                ReservationRequirement::modeled(
+                    ReservationKind::GatherMap,
+                    "join_one_shot_indices",
+                    "one_shot_join_indices_observed_retained_bytes",
+                    ContractQuality::ObservedRetainedState,
+                )
+            },
+            _ => ReservationRequirement::modeled(
+                ReservationKind::GatherMap,
+                "join_gather_map",
+                "join_gather_map_reservation_size_bytes",
+                ContractQuality::ExactPreflight,
+            ),
+        };
+        requirements.push(gather_map_requirement);
         requirements.push(ReservationRequirement::modeled(
             ReservationKind::JoinOutput,
             "join_output",

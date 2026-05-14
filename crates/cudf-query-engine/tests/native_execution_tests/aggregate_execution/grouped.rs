@@ -73,7 +73,7 @@ fn bounded_native_query_executes_chunked_grouped_sum_and_final_merge() {
         .iter()
         .filter(|event| event.outcome.as_str() == "granted" && event.memory_boundary == "source_chunk_prefetch")
         .count();
-    assert_eq!(prefetches_before_first_operator, 2);
+    assert_eq!(prefetches_before_first_operator, 0);
     assert_eq!(metrics.row_groups_planned, 3);
     assert_eq!(metrics.row_groups_committed, 3);
     assert_eq!(metrics.partial_aggregate_count, 3);

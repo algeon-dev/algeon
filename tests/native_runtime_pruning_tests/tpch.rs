@@ -457,7 +457,7 @@ async fn native_runtime_tpch_q22_tiny_bounded_scalar_subquery_matches_cpu() {
 async fn native_runtime_tpch_q6_sf1_matches_cpu() {
     let root = std::env::var("CUDF_TPCH_PARQUET_DIR")
         .map(std::path::PathBuf::from)
-        .unwrap_or_else(|_| std::path::PathBuf::from("tests/data/tpch/sf1/parquet"));
+        .unwrap_or_else(|_| std::path::PathBuf::from("/opt/dlami/nvme/tpch/sf1/parquet"));
     assert_tpch_q6_native_parity(&root.join("lineitem.parquet")).await;
 }
 

@@ -173,10 +173,11 @@ impl NativeTpchDatasetMode {
         match mode.as_str() {
             "sf1_external" | "external" | "sf1" => Ok(Self::External(NativeTpchScaleFactor::Sf1)),
             "sf10_external" | "sf10" => Ok(Self::External(NativeTpchScaleFactor::Sf10)),
+            "sf100_external" | "sf100" => Ok(Self::External(NativeTpchScaleFactor::Sf100)),
             "allow_tiny" | "dev_tiny" | "tiny" => Ok(Self::AllowTiny),
-            other => {
-                Err(plan_error(format!("invalid {name}: {other}; expected sf1_external, sf10_external, or allow_tiny")))
-            },
+            other => Err(plan_error(format!(
+                "invalid {name}: {other}; expected sf1_external, sf10_external, sf100_external, or allow_tiny"
+            ))),
         }
     }
 
@@ -192,6 +193,7 @@ impl NativeTpchDatasetMode {
 pub(super) enum NativeTpchScaleFactor {
     Sf1,
     Sf10,
+    Sf100,
 }
 
 impl NativeTpchScaleFactor {
@@ -199,6 +201,7 @@ impl NativeTpchScaleFactor {
         match self {
             Self::Sf1 => "sf1",
             Self::Sf10 => "sf10",
+            Self::Sf100 => "sf100",
         }
     }
 
@@ -206,6 +209,7 @@ impl NativeTpchScaleFactor {
         match self {
             Self::Sf1 => "SF1",
             Self::Sf10 => "SF10",
+            Self::Sf100 => "SF100",
         }
     }
 
@@ -213,6 +217,7 @@ impl NativeTpchScaleFactor {
         match self {
             Self::Sf1 => "sf1_external",
             Self::Sf10 => "sf10_external",
+            Self::Sf100 => "sf100_external",
         }
     }
 }

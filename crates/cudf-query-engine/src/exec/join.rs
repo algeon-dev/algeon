@@ -343,7 +343,7 @@ fn execute_join_indices(
     }
 }
 
-fn dataframe_join_options(
+pub(super) fn dataframe_join_options(
     left_keys: &[String],
     right_keys: &[String],
     null_equality: JoinNullEquality,

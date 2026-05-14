@@ -11,7 +11,7 @@ use crate::{
     capability::{
         CapabilityAnalysis, CapabilityRejectionOwner, CapabilityRejectionProjection, ContractQuality, ContractStatus,
         EdgeConsumer, InvariantId, ReservationRequirement, ReservationRequirementScope, ResultSinkKind,
-        lower_level_unresolved_preflight_gap,
+        lower_level_unresolved_preflight_gap, strict_unresolved_preflight_gap,
     },
     error::{QueryError, QueryErrorCode, Result},
     pipeline::{CompiledPipeline, ReservationGate, ReservationGateId, ReservationGateOwner},
@@ -383,7 +383,7 @@ fn validate_report_requirement(
             .with_fact("reservation_kind", requirement.kind.as_str()));
     }
 
-    let unresolved_gap = lower_level_unresolved_preflight_gap(requirement.kind, requirement.required_contract);
+    let unresolved_gap = strict_unresolved_preflight_gap(requirement.kind, requirement.required_contract);
     if requirement.quality == ContractQuality::HardBudgetedReportWithUnresolvedPreflight {
         if requirement.status != ContractStatus::Modeled {
             return Err(contract_report_error("hard-budgeted unresolved-preflight gate must remain modeled")
@@ -399,14 +399,12 @@ fn validate_report_requirement(
                 .with_fact("required_contract", requirement.required_contract));
         }
     }
-    if unresolved_gap.is_some()
-        && requirement.status == ContractStatus::Modeled
-        && requirement.quality != ContractQuality::HardBudgetedReportWithUnresolvedPreflight
-    {
-        return Err(contract_report_error("modeled unresolved-preflight gate must use unresolved-preflight quality")
+    if unresolved_gap.is_some() && requirement.quality != ContractQuality::HardBudgetedReportWithUnresolvedPreflight {
+        return Err(contract_report_error("unresolved-preflight gate must use unresolved-preflight quality")
             .with_fact("gate_id", gate_id)
             .with_fact("reservation_kind", requirement.kind.as_str())
             .with_fact("required_contract", requirement.required_contract)
+            .with_fact("contract_status", requirement.status.as_str())
             .with_fact("contract_quality", requirement.quality.as_str()));
     }
     Ok(())
@@ -499,7 +497,7 @@ fn validate_quality_gap_consistency(
     quality: ContractQuality,
     unresolved_preflight_gap: Option<&'static str>,
 ) -> Result<()> {
-    let expected_gap = lower_level_unresolved_preflight_gap(kind, required_contract);
+    let expected_gap = strict_unresolved_preflight_gap(kind, required_contract).map(|gap| gap.unresolved_gap);
     if quality == ContractQuality::HardBudgetedReportWithUnresolvedPreflight {
         if status != ContractStatus::Modeled {
             return Err(contract_report_error("hard-budgeted unresolved-preflight gate must remain modeled")
@@ -532,14 +530,12 @@ fn validate_quality_gap_consistency(
             .with_fact("contract_quality", quality.as_str())
             .with_fact("unresolved_preflight_gap", unresolved_preflight_gap.unwrap_or("none")));
     }
-    if expected_gap.is_some()
-        && status == ContractStatus::Modeled
-        && quality != ContractQuality::HardBudgetedReportWithUnresolvedPreflight
-    {
-        return Err(contract_report_error("modeled unresolved-preflight gate must use unresolved-preflight quality")
+    if expected_gap.is_some() && quality != ContractQuality::HardBudgetedReportWithUnresolvedPreflight {
+        return Err(contract_report_error("unresolved-preflight gate must use unresolved-preflight quality")
             .with_fact("gate_id", gate_id.to_string())
             .with_fact("reservation_kind", kind.as_str())
             .with_fact("required_contract", required_contract)
+            .with_fact("contract_status", status.as_str())
             .with_fact("contract_quality", quality.as_str()));
     }
     Ok(())
