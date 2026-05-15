@@ -124,6 +124,22 @@ cudf_status_t cudf_strings_slice_ex(cudf_column_view_handle input,
                                     const cudf_exec_options_t* options);
 
 // ---------------------------------------------------------------------------
+// Concatenate
+// ---------------------------------------------------------------------------
+
+/// Row-wise concatenate string columns with an empty separator. Null inputs are
+/// replaced with empty strings.
+cudf_status_t cudf_strings_concatenate(const cudf_column_view_handle* columns,
+                                       int32_t num_columns,
+                                       cudf_column_handle* out);
+
+/// Row-wise concatenate string columns with explicit execution context.
+cudf_status_t cudf_strings_concatenate_ex(const cudf_column_view_handle* columns,
+                                          int32_t num_columns,
+                                          cudf_column_handle* out,
+                                          const cudf_exec_options_t* options);
+
+// ---------------------------------------------------------------------------
 // Strip / trim
 // ---------------------------------------------------------------------------
 

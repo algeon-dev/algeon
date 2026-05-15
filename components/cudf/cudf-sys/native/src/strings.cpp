@@ -9,15 +9,18 @@
 #include <cudf/scalar/scalar.hpp>
 #include <cudf/strings/attributes.hpp>
 #include <cudf/strings/case.hpp>
+#include <cudf/strings/combine.hpp>
 #include <cudf/strings/contains.hpp>
 #include <cudf/strings/find.hpp>
 #include <cudf/strings/slice.hpp>
 #include <cudf/strings/strings_column_view.hpp>
 #include <cudf/strings/strip.hpp>
+#include <cudf/table/table_view.hpp>
 #include <cudf/utilities/default_stream.hpp>
 #include <cudf/utilities/memory_resource.hpp>
 
 #include <string_view>
+#include <vector>
 
 // Helper: cast a column_view handle to strings_column_view.
 // Caller must guarantee the column is of type STRING.
@@ -338,6 +341,62 @@ cudf_status_t cudf_strings_slice_ex(cudf_column_view_handle input,
       auto result = cudf::strings::slice_strings(
         to_strings_view(input), start_scalar, stop_scalar, step_scalar, exec.stream, exec.mr);
       *out = cudf_release_column_handle(std::move(result));
+    }
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
+// ---------------------------------------------------------------------------
+// Concatenate
+// ---------------------------------------------------------------------------
+
+cudf_status_t cudf_strings_concatenate(cudf_column_view_handle const* columns,
+                                       int32_t num_columns,
+                                       cudf_column_handle* out)
+{
+  return cudf_strings_concatenate_ex(columns, num_columns, out, nullptr);
+}
+
+cudf_status_t cudf_strings_concatenate_ex(cudf_column_view_handle const* columns,
+                                          int32_t num_columns,
+                                          cudf_column_handle* out,
+                                          cudf_exec_options_t const* options)
+{
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = nullptr;
+  if (num_columns <= 1) {
+    set_error("at least two string columns are required");
+    return CUDF_ERROR_INVALID_OPERATION;
+  }
+  CUDF_RUST_NULL_CHECK(columns, "columns is null");
+  for (int32_t index = 0; index < num_columns; ++index) {
+    CUDF_RUST_NULL_CHECK(columns[index], "column is null");
+  }
+  CUDF_RUST_TRY
+  {
+    cudf_exec_context exec          = cudf_make_exec_context();
+    cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
+    if (exec_status != CUDF_SUCCESS) { return exec_status; }
+
+    std::vector<cudf::column_view> views;
+    views.reserve(static_cast<std::size_t>(num_columns));
+    for (int32_t index = 0; index < num_columns; ++index) {
+      views.push_back(*static_cast<cudf::column_view*>(columns[index]));
+    }
+
+    {
+      cudf_current_device_resource_guard current_mr{exec.mr_raw};
+      cudf::table_view strings_columns{views};
+      cudf::string_scalar separator{"", true, exec.stream, exec.mr};
+      cudf::string_scalar null_replacement{"", true, exec.stream, exec.mr};
+      auto result = cudf::strings::concatenate(strings_columns,
+                                               separator,
+                                               null_replacement,
+                                               cudf::strings::separator_on_nulls::NO,
+                                               exec.stream,
+                                               exec.mr);
+      *out        = cudf_release_column_handle(std::move(result));
     }
     return CUDF_SUCCESS;
   }

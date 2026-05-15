@@ -35,6 +35,7 @@ use crate::{
 
 const PARQUET_SOURCE_DECODED_OUTPUT_PREFLIGHT_CONTRACT_GAP: &str =
     "libcudf_parquet_decoded_output_preflight_unavailable";
+const PARQUET_SOURCE_MINIMUM_HARD_BUDGET_BYTES: usize = 64 * 1024;
 
 fn comma_separated_strings(values: &[String]) -> String {
     values.join(",")
@@ -817,6 +818,18 @@ fn dataframe_device_allocated_size_bytes(frame: &DataFrame, operation: &'static 
 }
 
 impl DataFrame {
+    /// Minimum hard execution budget worth attempting for a local Parquet
+    /// source chunk read.
+    ///
+    /// This is not an exact decoded-output preflight contract. It is a lower
+    /// bound for the scoped limiting allocator used by
+    /// [`read_parquet_source_chunk_with_budget`](Self::read_parquet_source_chunk_with_budget),
+    /// covering small lower-level allocations that happen before retained
+    /// output bytes can be observed.
+    pub fn minimum_parquet_source_read_budget_bytes() -> usize {
+        PARQUET_SOURCE_MINIMUM_HARD_BUDGET_BYTES
+    }
+
     /// Read a CSV file into a `DataFrame`.
     ///
     /// If the caller does not provide explicit names through

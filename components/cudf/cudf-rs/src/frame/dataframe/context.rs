@@ -3,7 +3,7 @@ use super::{
     DataFrameFilteredJoinOptions, DataFrameHashJoin, DataFrameHashJoinOptions, DataFrameJoinIndices,
     DataFrameJoinOptions, DataFrameJoinPairIndices, DataFrameJoinSides, DataFrameMixedJoinOptions,
     DataFrameMixedJoinSizeData, DataFrameMixedSingleSideJoinSizeData, DataFramePredicateJoinOptions,
-    DataFramePreparedSort, DropDuplicatesOptions, DropNaOptions, WithColumnExpr,
+    DataFramePreparedSort, DropDuplicatesOptions, DropNaOptions, HashPartitionedDataFrame, WithColumnExpr,
 };
 use crate::{
     Expr, JoinType, Result,
@@ -81,6 +81,15 @@ impl<'df, 'ctx, 'handles> DataFrameExecutionScope<'df, 'ctx, 'handles> {
         S: AsRef<str>,
     {
         self.df.prepare_sort_values_in_context(by, options, self.ctx)
+    }
+
+    /// Hash-partition rows using the borrowed execution override.
+    pub fn hash_partition_by<I, S>(&self, by: I, num_partitions: usize) -> Result<HashPartitionedDataFrame>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        self.df.hash_partition_by_in_context(by, num_partitions, self.ctx)
     }
 
     /// Filter rows with a fused expression using the borrowed execution override.

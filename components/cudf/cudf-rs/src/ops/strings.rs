@@ -324,6 +324,43 @@ pub(crate) fn slice_impl(
 }
 
 // ---------------------------------------------------------------------------
+// Concatenate
+// ---------------------------------------------------------------------------
+
+/// Row-wise concatenate string columns with an empty separator.
+///
+/// Null input values are treated as empty strings, matching DataFusion SQL
+/// `concat` semantics. At least two input columns are required.
+pub fn concatenate(inputs: &[&ColumnView<'_>]) -> Result<Column> {
+    concatenate_impl(inputs, "strings::concatenate")
+}
+
+pub(crate) fn concatenate_impl(inputs: &[&ColumnView<'_>], operation: &'static str) -> Result<Column> {
+    if inputs.len() < 2 {
+        return Err(error::Error::new_with(
+            error::ErrorCode::EmptyInput,
+            operation,
+            "row-wise string concatenation requires at least two input columns",
+        ));
+    }
+    let num_columns = error::usize_to_i32(inputs.len(), operation, "num_columns")?;
+    let ctx = ExecutionOverrides::new();
+    let execution = ResolvedExecution::many(
+        inputs[0].execution_domain(),
+        inputs.iter().skip(1).map(|input| input.execution_domain()),
+        &ctx,
+        operation,
+    )?;
+    let handles = inputs.iter().map(|input| input.raw_handle()).collect::<Vec<_>>();
+    let mut out = ptr::null_mut();
+    let status = unsafe {
+        cudf_sys::cudf_strings_concatenate_ex(handles.as_ptr(), num_columns, &mut out, execution.exec_options())
+    };
+    error::check_status_in(status, operation)?;
+    unsafe { Column::from_raw_with_domain(out, Arc::clone(execution.output_domain())) }
+}
+
+// ---------------------------------------------------------------------------
 // Strip / trim
 // ---------------------------------------------------------------------------
 

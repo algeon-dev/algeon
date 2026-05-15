@@ -4,6 +4,7 @@ use crate::{
     core::{
         column::Column,
         error::{Error, ErrorCode, FACT_KEYS_COUNT, FACT_LEFT_TYPE_ID, FACT_RIGHT_TYPE_ID, Result},
+        types::TypeId,
     },
     frame::{
         dataframe::{
@@ -32,6 +33,22 @@ use crate::{
 
 const MATERIALIZE_JOIN_INDICES_RESERVATION_CONTRACT: &str = "materialize_join_indices_reservation_size_bytes";
 const PROJECTED_CROSS_JOIN_RESERVATION_CONTRACT: &str = "projected_cross_join_reservation_size_bytes";
+
+fn hash_join_retained_preprocessing_reservation_gap(error: &Error) -> bool {
+    error.code() == ErrorCode::ForeignInvalidArgument
+        && error.detail_value("reservation_contract") == Some("hash_join_pre_build_reservation_size_bytes")
+        && error.message().contains("preprocessing buffers")
+}
+
+fn hash_join_retained_preprocessing_fallback_supported(build: &TempTableView<'_>) -> Result<bool> {
+    for index in 0..build.table().num_columns()? {
+        match build.table().column(index)?.data_type()?.id() {
+            TypeId::List | TypeId::Struct => return Ok(false),
+            _ => {},
+        }
+    }
+    Ok(true)
+}
 
 struct JoinSplitKeys<'a, 'key> {
     left_on: &'a [&'key str],
@@ -85,12 +102,28 @@ impl DataFrame {
         let build_key_refs = build_keys.iter().map(|key| key.as_str()).collect::<Vec<_>>();
         let build_key_indices = resolve_column_names(self.columns_map(), &build_key_refs, operation)?;
         let build_key_table = build_borrowed_table_view_from_columns(self.columns_map(), &build_key_indices)?;
-        join::HashJoin::pre_build_reservation_size_bytes_for_view(
+        match join::HashJoin::pre_build_reservation_size_bytes_for_view(
             build_key_table.table(),
             options.to_hash_join_options(),
             ctx,
             operation,
-        )
+        ) {
+            Ok(bytes) => Ok(bytes),
+            Err(error)
+                if hash_join_retained_preprocessing_reservation_gap(&error)
+                    && hash_join_retained_preprocessing_fallback_supported(&build_key_table)? =>
+            {
+                let build_key_frame = self.select(build_keys.clone()).map_err(|error| error.reanchor(operation))?;
+                let build_key_table = build_key_frame.to_table_copy().map_err(|error| error.reanchor(operation))?;
+                join::HashJoin::pre_build_reservation_size_bytes_in(
+                    &build_key_table,
+                    options.to_hash_join_options(),
+                    ctx,
+                )
+                .map_err(|error| error.reanchor_if_needed(operation))
+            },
+            Err(error) => Err(error),
+        }
     }
 
     /// Build a reusable hash-join artifact from this DataFrame's named key columns.

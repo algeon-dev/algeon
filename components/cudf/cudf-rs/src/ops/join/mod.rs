@@ -3335,7 +3335,18 @@ impl HashJoin {
         operation: &'static str,
     ) -> Result<usize> {
         let build_view = build.view().map_err(|e| e.reanchor_if_needed(operation))?;
-        Self::pre_build_reservation_size_bytes_for_view(&build_view, options, ctx, operation)
+        match Self::pre_build_reservation_size_bytes_for_view(&build_view, options, ctx, operation) {
+            Ok(bytes) => Ok(bytes),
+            Err(error)
+                if is_hash_join_retained_preprocessing_reservation_gap(&error)
+                    && hash_join_retained_preprocessing_fallback_supported(&build_view)? =>
+            {
+                let build_copy = build.deep_copy().map_err(|e| e.reanchor_if_needed(operation))?;
+                let join = Self::new_in(build_copy, options, ctx).map_err(|e| e.reanchor_if_needed(operation))?;
+                join.device_allocated_size_bytes().map_err(|e| e.reanchor_if_needed(operation))
+            },
+            Err(error) => Err(error),
+        }
     }
 
     pub(crate) fn pre_build_reservation_size_bytes_for_view(
@@ -3883,6 +3894,22 @@ impl HashJoin {
             right: unsafe { Column::from_raw_with_domain(out_right, Arc::clone(output_domain)) }?,
         })
     }
+}
+
+fn is_hash_join_retained_preprocessing_reservation_gap(error: &Error) -> bool {
+    error.code() == ErrorCode::ForeignInvalidArgument
+        && error.detail_value("reservation_contract") == Some("hash_join_pre_build_reservation_size_bytes")
+        && error.message().contains("preprocessing buffers")
+}
+
+fn hash_join_retained_preprocessing_fallback_supported(build: &TableView<'_>) -> Result<bool> {
+    for index in 0..build.num_columns()? {
+        match build.column(index)?.data_type()?.id() {
+            TypeId::List | TypeId::Struct => return Ok(false),
+            _ => {},
+        }
+    }
+    Ok(true)
 }
 
 impl FilteredJoin {

@@ -149,6 +149,7 @@ add_library(
   src/io_json.cpp
   src/io_test_hooks.cpp
   src/sorting.cpp
+  src/partitioning.cpp
   src/filter.cpp
   src/groupby.cpp
   src/join.cpp
