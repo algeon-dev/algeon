@@ -50,6 +50,15 @@ pub(super) fn execute_final_sort_node_with_retry(
     let max_attempts = max_retry_attempts.max(1);
     let timer = Instant::now();
     let mut final_sort = FinalSortExecutor { context, node_id, sort, max_attempts, reservations, metrics };
+
+    if let Some(limit) = limit
+        && final_sort.should_use_hierarchical_topk(limit, &input)?
+    {
+        let result = final_sort.hierarchical_topk(limit, input, 1);
+        final_sort.metrics.final_sort_time += timer.elapsed();
+        return result;
+    }
+
     let result = final_sort.full_sort_limit_attempt(limit, &input, 1);
 
     match result {
@@ -63,7 +72,7 @@ pub(super) fn execute_final_sort_node_with_retry(
             if max_attempts > 1
                 && let Some(limit) = limit
             {
-                match final_sort.hierarchical_topk(limit, input) {
+                match final_sort.hierarchical_topk(limit, input, 2) {
                     Ok(output) => {
                         final_sort.metrics.final_sort_time += timer.elapsed();
                         Ok(output)
@@ -85,6 +94,18 @@ pub(super) fn execute_final_sort_node_with_retry(
             Err(error)
         },
     }
+}
+
+pub(in crate::exec::bounded) fn execute_final_sort_node_from_committed_with_retry(
+    context: &ExecutionContext,
+    node_id: NodeId,
+    sort: &SortNode,
+    limit: Option<&LimitNode>,
+    input: ResidentGpuFrame,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+) -> Result<ResidentGpuFrame> {
+    execute_final_sort_node_with_retry(context, node_id, sort, limit, input, reservations, metrics)
 }
 
 pub(in crate::exec::bounded) fn execute_final_sort_node_from_frame_with_retry(
@@ -206,5 +227,29 @@ impl<'a> FinalSortExecutor<'a> {
             .with_fact("node_id", self.node_id)
             .with_fact("attempt", attempt)
             .with_fact("max_attempts", self.max_attempts)
+    }
+
+    fn should_use_hierarchical_topk(&self, limit: &LimitNode, input: &CommittedPartial) -> Result<bool> {
+        let keep_rows = topk_candidate_rows(limit.spec)?;
+        if keep_rows == 0 {
+            return Ok(true);
+        }
+
+        let input_rows = input.frame.num_rows();
+        if input_rows == 0 || keep_rows >= input_rows {
+            return Ok(false);
+        }
+
+        let input_bytes = input.reservation.bytes();
+        let limited_output_bytes = estimate_rows_bytes(estimated_bytes_per_row(input_bytes, input_rows), keep_rows);
+        let selective_topk_threshold = input_bytes.div_ceil(2).max(1);
+        if limited_output_bytes <= selective_topk_threshold {
+            return Ok(true);
+        }
+
+        let MemoryControlPolicy::Bounded { max_source_chunk_bytes, .. } = self.context.memory_control_policy() else {
+            unreachable!("final sort execution is called only for bounded policies");
+        };
+        Ok(input_bytes > max_source_chunk_bytes && limited_output_bytes <= max_source_chunk_bytes)
     }
 }

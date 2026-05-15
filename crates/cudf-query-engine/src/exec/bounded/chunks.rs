@@ -1011,6 +1011,7 @@ fn execute_bounded_chunk_operator_from_source(
         return Err(error);
     }
 
+    let partial_input_rows = frame.num_rows() as u64;
     let chunk_operator_timer = Instant::now();
     let chunk_output = execute_partial_aggregate_with_budget(
         context,
@@ -1047,7 +1048,7 @@ fn execute_bounded_chunk_operator_from_source(
     );
     let partial_reservation = reservations.try_reserve(partial_request, metrics)?;
     metrics.record_source_chunk_commit(chunk.row_group_count() as u64);
-    metrics.record_partial_aggregate(frame.num_rows() as u64);
+    metrics.record_partial_aggregate(partial_input_rows, frame.num_rows() as u64, partial_reservation.bytes());
 
     Ok(CommittedPartial { frame, reservation: partial_reservation })
 }

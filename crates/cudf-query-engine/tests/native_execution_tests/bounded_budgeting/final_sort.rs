@@ -1,8 +1,8 @@
 use super::*;
 
 #[test]
-fn bounded_native_query_retries_final_sort_with_hierarchical_topk() {
-    let dir = unique_temp_dir("cudf-query-engine-bounded-final-sort-retry");
+fn bounded_native_query_uses_hierarchical_topk_without_full_sort_first() {
+    let dir = unique_temp_dir("cudf-query-engine-bounded-final-sort-proactive-topk");
     let path = dir.join("input.parquet");
     let runtime = Arc::new(cudf::Runtime::new().unwrap());
     let input_schema = write_single_row_group_final_sort_input_parquet(&path, 4096);
@@ -36,10 +36,10 @@ fn bounded_native_query_retries_final_sort_with_hierarchical_topk() {
     let limit = builder.add_limit(sort, limit, Arc::clone(&final_sort_schema));
     let plan = builder.finish_with_host_sink(limit);
 
-    let baseline_context = ExecutionContext::builder()
+    let context = ExecutionContext::builder()
         .with_shared_runtime(Arc::clone(&runtime))
         .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: 8 * 1024 * 1024 * 1024,
+            device_budget_bytes: 1_200_000,
             max_source_chunk_bytes: 1024 * 1024,
             max_row_groups_per_chunk: 1,
             max_retry_attempts: 1,
@@ -47,69 +47,15 @@ fn bounded_native_query_retries_final_sort_with_hierarchical_topk() {
         })
         .build()
         .unwrap();
-    let baseline = execute_query_plan(&baseline_context, &plan).unwrap();
-    let QueryOutput::HostArrow(expected) = baseline.output() else {
-        panic!("host sink should materialize one RecordBatch");
-    };
-    let baseline_metrics = baseline.metrics();
-    let first_final_sort_event = baseline_metrics
-        .reservation_events
-        .iter()
-        .position(|event| {
-            event.outcome.as_str() == "granted"
-                && event.reservation_kind == ReservationKind::FinalSort
-                && event.memory_boundary == "final_sort"
-        })
-        .expect("baseline should reserve final sort work");
-    let input_bytes = baseline_metrics.reservation_events[..first_final_sort_event]
-        .iter()
-        .rfind(|event| event.outcome.as_str() == "granted")
-        .expect("baseline should have a resident aggregate input before final sort")
-        .requested_bytes;
-    let final_sort_bytes = baseline_metrics
-        .reservation_events
-        .iter()
-        .filter(|event| {
-            event.outcome.as_str() == "granted"
-                && event.reservation_kind == ReservationKind::FinalSort
-                && event.memory_boundary == "final_sort"
-        })
-        .map(|event| event.requested_bytes)
-        .collect::<Vec<_>>();
-    assert_eq!(final_sort_bytes.len(), 2, "full final sort should reserve sort order and materialized output");
-    let sequential_peak = input_bytes.saturating_add(final_sort_bytes[0]).saturating_add(final_sort_bytes[1]);
-    let constrained_budget = sequential_peak - 1;
-    assert!(
-        constrained_budget > input_bytes,
-        "test data must leave a budget window where source read fits but full final sort reservation fails"
-    );
-
-    let constrained_context = ExecutionContext::builder()
-        .with_shared_runtime(Arc::clone(&runtime))
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: constrained_budget,
-            max_source_chunk_bytes: 1024 * 1024,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 3,
-            min_retry_chunk_row_groups: 1,
-        })
-        .build()
-        .unwrap();
-
-    let result = execute_query_plan(&constrained_context, &plan).unwrap();
+    let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
     assert_eq!(metrics.source_chunks_planned, 1);
     assert_eq!(metrics.source_chunks_committed, 1);
-    assert!(metrics.retry_count >= 1);
+    assert_eq!(metrics.retry_count, 0);
     assert!(
-        metrics.retry_reservation_failure_count >= 1 || metrics.retry_resource_exhausted_count >= 1,
-        "full final sort must fail through a retryable bounded-memory path"
-    );
-    assert_final_sort_prepare_budget_event(
-        metrics,
-        "cudf_query_engine.final_sort.prepare",
-        "final_sort",
-        Some(final_sort_bytes[0]),
+        metrics.budgeted_execution_events.iter().all(|event| event.operation != "cudf_query_engine.final_sort.prepare"
+            && event.operation != "cudf_query_engine.final_sort.materialize"),
+        "selective ORDER BY LIMIT should not run full final sort before top-k"
     );
     assert_final_sort_prepare_budget_event(
         metrics,
@@ -140,15 +86,14 @@ fn bounded_native_query_retries_final_sort_with_hierarchical_topk() {
             && event.reservation_kind == ReservationKind::FinalSort
             && event.memory_boundary == "final_sort_output"
             && event.requested_bytes > 0
-            && event.requested_bytes < final_sort_bytes[1]
     }));
 
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");
     };
-    assert_eq!(batch.num_rows(), expected.num_rows());
-    assert_eq!(int32_array(batch, 0).values().as_ref(), int32_array(expected, 0).values().as_ref());
-    assert_eq!(int64_array(batch, 1).values().as_ref(), int64_array(expected, 1).values().as_ref());
+    assert_eq!(batch.num_rows(), 7);
+    assert_eq!(int32_array(batch, 0).values().as_ref(), &[4092, 4091, 4090, 4089, 4088, 4087, 4086]);
+    assert_eq!(int64_array(batch, 1).values().as_ref(), &[1, 1, 1, 1, 1, 1, 1]);
 
     fs::remove_dir_all(dir).unwrap();
 }

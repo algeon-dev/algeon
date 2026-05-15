@@ -39,8 +39,11 @@ fn query_metrics_phase_c_memory_control_defaults_are_zero() {
     assert_eq!(metrics.source_cache_retained_bytes, 0);
     assert_eq!(metrics.source_metadata_load_time, std::time::Duration::ZERO);
     assert_eq!(metrics.retry_count, 0);
+    assert_eq!(metrics.partial_aggregate_input_rows, 0);
+    assert_eq!(metrics.partial_aggregate_retained_bytes, 0);
     assert_eq!(metrics.final_merge_attempts, 0);
     assert_eq!(metrics.final_merge_levels, 0);
+    assert_eq!(metrics.final_merge_max_fan_in, 0);
     assert_eq!(metrics.compiled_pipeline_attempts, 0);
     assert_eq!(metrics.compiled_pipeline_tasks_executed, 0);
     assert_eq!(metrics.compiled_pipeline_host_arrow_sinks, 0);
@@ -322,6 +325,9 @@ fn native_datafusion_metric_names_cover_bounded_runtime_contract() {
         "source_cache_retained_bytes",
         "row_groups_planned",
         "row_groups_committed",
+        "partial_aggregate_input_rows",
+        "partial_aggregate_retained_bytes",
+        "final_merge_max_fan_in",
         "resident_dataframe_peak_bytes_observed",
         "allocator_high_water_bytes_observed",
         "reservation_requested_bytes",

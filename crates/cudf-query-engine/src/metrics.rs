@@ -183,9 +183,12 @@ pub struct QueryMetrics {
     pub row_groups_planned: u64,
     pub row_groups_committed: u64,
     pub partial_aggregate_count: u64,
+    pub partial_aggregate_input_rows: u64,
     pub partial_aggregate_rows: u64,
+    pub partial_aggregate_retained_bytes: u64,
     pub final_merge_attempts: u64,
     pub final_merge_levels: u64,
+    pub final_merge_max_fan_in: u64,
     pub retry_count: u64,
     pub retry_resource_exhausted_count: u64,
     pub retry_reservation_failure_count: u64,
@@ -591,13 +594,16 @@ impl QueryMetrics {
         }
     }
 
-    pub fn record_partial_aggregate(&mut self, rows: u64) {
+    pub fn record_partial_aggregate(&mut self, input_rows: u64, output_rows: u64, retained_bytes: u64) {
         self.partial_aggregate_count = self.partial_aggregate_count.saturating_add(1);
-        self.partial_aggregate_rows = self.partial_aggregate_rows.saturating_add(rows);
+        self.partial_aggregate_input_rows = self.partial_aggregate_input_rows.saturating_add(input_rows);
+        self.partial_aggregate_rows = self.partial_aggregate_rows.saturating_add(output_rows);
+        self.partial_aggregate_retained_bytes = self.partial_aggregate_retained_bytes.max(retained_bytes);
     }
 
-    pub fn record_final_merge_attempt(&mut self) {
+    pub fn record_final_merge_attempt(&mut self, merge_fan_in: usize) {
         self.final_merge_attempts = self.final_merge_attempts.saturating_add(1);
+        self.final_merge_max_fan_in = self.final_merge_max_fan_in.max(merge_fan_in as u64);
     }
 
     pub fn record_final_merge_level(&mut self) {
@@ -654,9 +660,14 @@ impl QueryMetrics {
         self.row_groups_planned = self.row_groups_planned.saturating_add(other.row_groups_planned);
         self.row_groups_committed = self.row_groups_committed.saturating_add(other.row_groups_committed);
         self.partial_aggregate_count = self.partial_aggregate_count.saturating_add(other.partial_aggregate_count);
+        self.partial_aggregate_input_rows =
+            self.partial_aggregate_input_rows.saturating_add(other.partial_aggregate_input_rows);
         self.partial_aggregate_rows = self.partial_aggregate_rows.saturating_add(other.partial_aggregate_rows);
+        self.partial_aggregate_retained_bytes =
+            self.partial_aggregate_retained_bytes.max(other.partial_aggregate_retained_bytes);
         self.final_merge_attempts = self.final_merge_attempts.saturating_add(other.final_merge_attempts);
         self.final_merge_levels = self.final_merge_levels.saturating_add(other.final_merge_levels);
+        self.final_merge_max_fan_in = self.final_merge_max_fan_in.max(other.final_merge_max_fan_in);
         self.retry_count = self.retry_count.saturating_add(other.retry_count);
         self.retry_resource_exhausted_count =
             self.retry_resource_exhausted_count.saturating_add(other.retry_resource_exhausted_count);

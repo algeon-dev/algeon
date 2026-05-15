@@ -60,9 +60,12 @@ pub const NATIVE_CUDF_DATAFUSION_METRIC_NAMES: &[&str] = &[
     "row_groups_planned",
     "row_groups_committed",
     "partial_aggregate_count",
+    "partial_aggregate_input_rows",
     "partial_aggregate_rows",
+    "partial_aggregate_retained_bytes",
     "final_merge_attempts",
     "final_merge_levels",
+    "final_merge_max_fan_in",
     "compiled_pipeline_attempts",
     "compiled_pipeline_tasks_executed",
     "compiled_pipeline_host_arrow_sinks",
@@ -160,9 +163,12 @@ pub(super) struct NativeCudfMetrics {
     row_groups_planned: Count,
     row_groups_committed: Count,
     partial_aggregate_count: Count,
+    partial_aggregate_input_rows: Count,
     partial_aggregate_rows: Count,
+    partial_aggregate_retained_bytes: Count,
     final_merge_attempts: Count,
     final_merge_levels: Count,
+    final_merge_max_fan_in: Count,
     compiled_pipeline_attempts: Count,
     compiled_pipeline_tasks_executed: Count,
     compiled_pipeline_host_arrow_sinks: Count,
@@ -288,9 +294,12 @@ impl NativeCudfMetrics {
             row_groups_planned: summary_counter(metrics, "row_groups_planned", partition),
             row_groups_committed: summary_counter(metrics, "row_groups_committed", partition),
             partial_aggregate_count: summary_counter(metrics, "partial_aggregate_count", partition),
+            partial_aggregate_input_rows: summary_counter(metrics, "partial_aggregate_input_rows", partition),
             partial_aggregate_rows: summary_counter(metrics, "partial_aggregate_rows", partition),
+            partial_aggregate_retained_bytes: summary_counter(metrics, "partial_aggregate_retained_bytes", partition),
             final_merge_attempts: summary_counter(metrics, "final_merge_attempts", partition),
             final_merge_levels: summary_counter(metrics, "final_merge_levels", partition),
+            final_merge_max_fan_in: summary_counter(metrics, "final_merge_max_fan_in", partition),
             compiled_pipeline_attempts: summary_counter(metrics, "compiled_pipeline_attempts", partition),
             compiled_pipeline_tasks_executed: summary_counter(metrics, "compiled_pipeline_tasks_executed", partition),
             compiled_pipeline_host_arrow_sinks: summary_counter(
@@ -407,9 +416,12 @@ impl NativeCudfMetrics {
         self.row_groups_planned.add(count(metrics.row_groups_planned));
         self.row_groups_committed.add(count(metrics.row_groups_committed));
         self.partial_aggregate_count.add(count(metrics.partial_aggregate_count));
+        self.partial_aggregate_input_rows.add(count(metrics.partial_aggregate_input_rows));
         self.partial_aggregate_rows.add(count(metrics.partial_aggregate_rows));
+        self.partial_aggregate_retained_bytes.add(count(metrics.partial_aggregate_retained_bytes));
         self.final_merge_attempts.add(count(metrics.final_merge_attempts));
         self.final_merge_levels.add(count(metrics.final_merge_levels));
+        self.final_merge_max_fan_in.add(count(metrics.final_merge_max_fan_in));
         self.compiled_pipeline_attempts.add(count(metrics.compiled_pipeline_attempts));
         self.compiled_pipeline_tasks_executed.add(count(metrics.compiled_pipeline_tasks_executed));
         self.compiled_pipeline_host_arrow_sinks.add(count(metrics.compiled_pipeline_host_arrow_sinks));

@@ -67,7 +67,7 @@ fn execute_final_merge_level_attempt(
     reservations: &mut ReservationTracker,
     metrics: &mut QueryMetrics,
 ) -> Result<Vec<MergeLevelItem>> {
-    metrics.record_final_merge_attempt();
+    metrics.record_final_merge_attempt(merge_fan_in);
     let mut output = Vec::with_capacity(partials.len().div_ceil(merge_fan_in));
 
     for (group_index, group) in partials.chunks(merge_fan_in).enumerate() {
