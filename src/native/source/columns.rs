@@ -6,7 +6,7 @@ use cudf_query_engine::{
     SourceColumnRef as NativeSourceColumnRef,
 };
 use datafusion::{
-    datasource::physical_plan::FileScanConfig,
+    datasource::physical_plan::{FileScanConfig, FileSource, ParquetSource},
     physical_expr::{PhysicalExpr, expressions::Column, projection::ProjectionExprs},
     physical_plan::{aggregates::AggregateExec, filter::FilterExec, projection::ProjectionExec},
 };
@@ -17,7 +17,10 @@ use parquet::{
 
 use crate::{
     native::{
-        pruning::local_object_path_to_filesystem,
+        pruning::{
+            local_object_path_to_filesystem, scan_predicate_is_dynamic_filter_hint,
+            scan_predicate_without_dynamic_filter_hints,
+        },
         validate::{collect_required_columns, is_supported_native_type, native_zero_column_count_source_is_safe},
     },
     policy::FallbackReason,
@@ -83,13 +86,16 @@ pub(in crate::native) struct NativeParquetColumnRequirements {
 /// file or partition columns are required.
 pub(in crate::native) fn required_parquet_column_requirements(
     file_scan: &FileScanConfig,
+    parquet_source: &ParquetSource,
     filter: Option<&FilterExec>,
     pre_aggregate_projection: Option<&ProjectionExec>,
     aggregate: &AggregateExec,
 ) -> Result<NativeParquetColumnRequirements, FallbackReason> {
     let file_schema = native_physical_file_schema(file_scan)?;
     let table_schema = Arc::clone(file_scan.file_source().table_schema().table_schema());
-    if native_zero_column_count_source_is_safe(filter, pre_aggregate_projection, aggregate) {
+    if native_zero_column_count_source_is_safe(filter, pre_aggregate_projection, aggregate)
+        && !parquet_source_has_row_level_predicate(parquet_source)
+    {
         return Ok(NativeParquetColumnRequirements {
             read_columns: Vec::new(),
             read_column_file_indices: Vec::new(),
@@ -111,6 +117,9 @@ pub(in crate::native) fn required_parquet_column_requirements(
     let scan_projection = file_scan.file_source().projection();
     let scan_output_schema = file_scan.projected_schema().map_err(|_error| FallbackReason::UnsupportedExpression)?;
 
+    if filter.is_none() {
+        collect_scan_predicate_source_columns(parquet_source, scan_projection, &table_schema, &mut filter_columns)?;
+    }
     if let Some(filter) = filter {
         collect_source_required_columns(filter.predicate(), scan_projection, &table_schema, &mut filter_columns)?;
         collect_required_columns(filter.predicate(), &scan_output_schema, &mut scan_output_columns)?;
@@ -192,6 +201,7 @@ pub(in crate::native) fn required_parquet_column_requirements(
 /// projection can remove them.
 pub(in crate::native) fn required_parquet_column_requirements_for_scan_columns(
     file_scan: &FileScanConfig,
+    parquet_source: &ParquetSource,
     filter: Option<&FilterExec>,
     required_scan_output_indices: &[usize],
 ) -> Result<NativeParquetColumnRequirements, FallbackReason> {
@@ -204,6 +214,9 @@ pub(in crate::native) fn required_parquet_column_requirements_for_scan_columns(
     let mut output_columns: BTreeSet<String> = BTreeSet::new();
     let mut scan_output_columns: BTreeSet<String> = BTreeSet::new();
 
+    if filter.is_none() {
+        collect_scan_predicate_source_columns(parquet_source, scan_projection, &table_schema, &mut filter_columns)?;
+    }
     if let Some(filter) = filter {
         collect_source_required_columns(filter.predicate(), scan_projection, &table_schema, &mut filter_columns)?;
         collect_required_columns(filter.predicate(), &scan_output_schema, &mut scan_output_columns)?;
@@ -261,6 +274,25 @@ fn collect_scan_projection_indices(
         required.insert(field.name().clone());
     }
     Ok(())
+}
+
+pub(in crate::native) fn parquet_source_has_row_level_predicate(parquet_source: &ParquetSource) -> bool {
+    parquet_source.filter().is_some_and(|predicate| !scan_predicate_is_dynamic_filter_hint(predicate.as_ref()))
+}
+
+fn collect_scan_predicate_source_columns(
+    parquet_source: &ParquetSource,
+    scan_projection: Option<&ProjectionExprs>,
+    table_schema: &SchemaRef,
+    required: &mut BTreeSet<String>,
+) -> Result<(), FallbackReason> {
+    let Some(predicate) = parquet_source.filter() else {
+        return Ok(());
+    };
+    let Some(predicate) = scan_predicate_without_dynamic_filter_hints(&predicate) else {
+        return Ok(());
+    };
+    collect_source_required_columns(&predicate, scan_projection, table_schema, required)
 }
 
 fn collect_source_projection_indices(

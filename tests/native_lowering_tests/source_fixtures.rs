@@ -346,7 +346,7 @@ pub(super) fn parquet_scan_with_pushed_down_predicate_value(
         &scan_schema,
     )
     .unwrap();
-    let parquet_source = parquet_source.with_predicate(predicate);
+    let parquet_source = parquet_source.with_predicate(predicate).with_pushdown_filters(true);
     let file_scan = FileScanConfigBuilder::from(file_scan.clone()).with_source(Arc::new(parquet_source)).build();
     DataSourceExec::from_data_source(file_scan)
 }
@@ -366,7 +366,7 @@ pub(super) fn parquet_scan_with_projection_and_pushed_label_predicate(
         &scan_schema,
     )
     .unwrap();
-    let parquet_source = parquet_source.with_predicate(predicate);
+    let parquet_source = parquet_source.with_predicate(predicate).with_pushdown_filters(true);
     let file_scan = FileScanConfigBuilder::from(file_scan.clone()).with_source(Arc::new(parquet_source)).build();
     DataSourceExec::from_data_source(file_scan)
 }

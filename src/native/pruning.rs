@@ -166,9 +166,17 @@ pub(super) fn parquet_predicate_disposition(
     parquet_source: &ParquetSource,
     filter: Option<&FilterExec>,
     source_schema: &SchemaRef,
+    reader_pushdown: bool,
 ) -> NativePredicateDisposition {
+    if reader_pushdown {
+        return NativePredicateDisposition::ReaderPushdown;
+    }
     if parquet_source.filter().is_none() {
-        return NativePredicateDisposition::Absent;
+        return if filter.is_some() {
+            NativePredicateDisposition::NativePostScanOnly
+        } else {
+            NativePredicateDisposition::Absent
+        };
     }
     if validate_pruning_only_parquet_predicate(parquet_source, filter, source_schema).is_ok() {
         NativePredicateDisposition::PruningOnly
@@ -203,7 +211,17 @@ pub(super) fn validate_pruning_only_parquet_predicate(
     }
 }
 
-fn scan_predicate_is_dynamic_filter_hint(expr: &dyn PhysicalExpr) -> bool {
+pub(super) fn scan_predicate_exactly_matches_filter(
+    parquet_source: &ParquetSource,
+    filter: Option<&FilterExec>,
+) -> bool {
+    let (Some(scan_predicate), Some(filter)) = (parquet_source.filter(), filter) else {
+        return false;
+    };
+    physical_expr_eq(scan_predicate.as_ref(), filter.predicate().as_ref())
+}
+
+pub(in crate::native) fn scan_predicate_is_dynamic_filter_hint(expr: &dyn PhysicalExpr) -> bool {
     if expr.as_any().downcast_ref::<DynamicFilterPhysicalExpr>().is_some() {
         return true;
     }
@@ -213,6 +231,28 @@ fn scan_predicate_is_dynamic_filter_hint(expr: &dyn PhysicalExpr) -> bool {
             && scan_predicate_is_dynamic_filter_hint(binary.right().as_ref());
     }
     false
+}
+
+pub(in crate::native) fn scan_predicate_without_dynamic_filter_hints(
+    expr: &Arc<dyn PhysicalExpr>,
+) -> Option<Arc<dyn PhysicalExpr>> {
+    if scan_predicate_is_dynamic_filter_hint(expr.as_ref()) {
+        return None;
+    }
+    let Some(binary) = expr.as_any().downcast_ref::<BinaryExpr>() else {
+        return Some(Arc::clone(expr));
+    };
+    if !matches!(binary.op(), Operator::And) {
+        return Some(Arc::clone(expr));
+    }
+    match (
+        scan_predicate_without_dynamic_filter_hints(binary.left()),
+        scan_predicate_without_dynamic_filter_hints(binary.right()),
+    ) {
+        (Some(left), Some(right)) => Some(Arc::new(BinaryExpr::new(left, Operator::And, right))),
+        (Some(expr), None) | (None, Some(expr)) => Some(expr),
+        (None, None) => None,
+    }
 }
 
 fn scan_predicate_matches_filter(scan_predicate: &dyn PhysicalExpr, filter_predicate: &dyn PhysicalExpr) -> bool {

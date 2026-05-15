@@ -110,6 +110,71 @@ async fn native_runtime_default_sql_distributed_avg_matches_cpu() {
 }
 
 #[tokio::test]
+async fn native_runtime_reader_pushdown_reduces_source_rows_and_retained_bytes() {
+    let dir = unique_temp_dir("datafusion-cudf-native-runtime-reader-pushdown-selective");
+    let path = dir.join("input.parquet");
+    write_reader_pushdown_selective_parquet_file(&path);
+
+    let mut post_scan_config = SessionConfig::new();
+    post_scan_config.options_mut().execution.parquet.pushdown_filters = false;
+    let post_scan = execute_sql_native_query(&path, post_scan_config, SQL_SELECTIVE_READER_PUSHDOWN_QUERY).await;
+    let mut reader_pushdown_config = SessionConfig::new();
+    reader_pushdown_config.options_mut().execution.parquet.pushdown_filters = true;
+    let reader_pushdown =
+        execute_sql_native_query(&path, reader_pushdown_config, SQL_SELECTIVE_READER_PUSHDOWN_QUERY).await;
+
+    assert_batches_equal(&post_scan.output, &reader_pushdown.output);
+    assert_eq!(post_scan.predicate_disposition, "pruning_only");
+    assert_eq!(reader_pushdown.predicate_disposition, "reader_pushdown");
+    assert!(
+        reader_pushdown.input_rows < post_scan.input_rows,
+        "reader pushdown should reduce source rows: reader={} post_scan={}",
+        reader_pushdown.input_rows,
+        post_scan.input_rows
+    );
+    assert!(
+        reader_pushdown.max_task_retained_bytes < post_scan.max_task_retained_bytes,
+        "reader pushdown should reduce retained source bytes: reader={} post_scan={}",
+        reader_pushdown.max_task_retained_bytes,
+        post_scan.max_task_retained_bytes
+    );
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+struct NativeQueryObservation {
+    output: Vec<RecordBatch>,
+    predicate_disposition: String,
+    input_rows: u64,
+    max_task_retained_bytes: u64,
+}
+
+async fn execute_sql_native_query(path: &std::path::Path, config: SessionConfig, sql: &str) -> NativeQueryObservation {
+    let native_physical_plan = sql_plan(path, config, sql).await;
+    let lowering = lower_physical_plan_to_native(native_physical_plan);
+    assert_eq!(lowering.rewritten_count(), 1, "outcomes={:?}", lowering.report.outcomes());
+    assert_eq!(lowering.rejected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
+    assert_eq!(lowering.plans.len(), 1);
+    assert_eq!(lowering.source_diagnostics.len(), 1);
+
+    let context = bounded_execution_context();
+    let result = execute_query_plan(&context, &lowering.plans[0]).unwrap();
+    let (output, metrics) = result.into_parts();
+    let QueryOutput::HostArrow(batch) = output else {
+        panic!("native host sink should return a RecordBatch");
+    };
+
+    NativeQueryObservation {
+        output: vec![batch],
+        predicate_disposition: lowering.source_diagnostics[0].predicate_disposition.as_str().to_string(),
+        input_rows: metrics.input_rows,
+        max_task_retained_bytes: metrics
+            .max_task_retained_bytes
+            .expect("bounded source read should report retained bytes"),
+    }
+}
+
+#[tokio::test]
 async fn native_runtime_nullable_distributed_avg_matches_cpu() {
     let dir = unique_temp_dir("datafusion-cudf-native-runtime-nullable-avg");
     let path = dir.join("input.parquet");

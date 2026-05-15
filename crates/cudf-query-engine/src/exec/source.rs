@@ -6,6 +6,7 @@ mod cudf_contract;
 mod gpu_resident;
 mod metrics;
 mod partition;
+mod predicate;
 mod read;
 mod scheduler;
 mod schema;
@@ -15,6 +16,7 @@ use cudf_contract::cudf_local_parquet_source_chunk;
 pub use gpu_resident::read_gpu_resident_source;
 pub(super) use metrics::{format_row_groups, record_bounded_parquet_source_metrics};
 use partition::inject_partition_columns;
+use predicate::lower_source_reader_predicate;
 use read::read_local_parquet_file;
 pub(in crate::exec) use scheduler::{ScheduledLocalParquetRead, ScheduledLocalParquetReadOutput};
 pub(in crate::exec) use schema::local_parquet_execution_frame_schema;
@@ -78,6 +80,7 @@ fn read_local_parquet_source_uncached(
     }
 
     let columns = source.read_columns.iter().map(String::as_str).collect::<Vec<_>>();
+    let reader_predicate = lower_source_reader_predicate(context, source)?;
     let mut frames = Vec::with_capacity(source.files.len());
     let mut remaining_rows = source.scan_limit;
     for file in &source.files {
@@ -85,7 +88,7 @@ fn read_local_parquet_source_uncached(
         let frame = if columns.is_empty() {
             context.runtime().empty_dataframe()
         } else {
-            read_local_parquet_file(context, file, &columns, metrics)?
+            read_local_parquet_file(context, file, &columns, reader_predicate.clone(), metrics)?
         };
         let frame = inject_partition_columns(context, source, &file.partition_values, frame, metrics)?.into_frame();
         let frame = materialize_missing_columns(context, source, frame, row_count_override, metrics)?;
@@ -191,7 +194,7 @@ pub(super) fn read_local_parquet_chunk(
             });
     }
 
-    let (cudf_source, cudf_chunk) = cudf_local_parquet_source_chunk(source, chunk)?;
+    let (cudf_source, cudf_chunk) = cudf_local_parquet_source_chunk(context, source, chunk)?;
     let budget_bytes = usize::try_from(budget_bytes).map_err(|_error| {
         QueryError::new(
             QueryErrorCode::InvalidPlan,

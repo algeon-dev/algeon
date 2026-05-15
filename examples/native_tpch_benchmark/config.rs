@@ -14,6 +14,7 @@ pub(super) struct NativeTpchBenchmarkConfig {
     pub(super) warmup_iterations: usize,
     pub(super) iterations: usize,
     pub(super) dataset_mode: NativeTpchDatasetMode,
+    pub(super) parquet_pushdown_filters: Option<bool>,
     pub(super) native_memory_policy: NativeTpchMemoryPolicy,
     pub(super) native_pipeline_execution_mode: NativePipelineExecutionMode,
     pub(super) max_source_reads_in_flight: usize,
@@ -33,6 +34,7 @@ impl NativeTpchBenchmarkConfig {
             warmup_iterations: env_usize("CUDF_TPCH_BENCH_WARMUPS", 0)?,
             iterations: env_usize("CUDF_TPCH_BENCH_ITERATIONS", 1)?,
             dataset_mode: NativeTpchDatasetMode::from_env("CUDF_TPCH_BENCH_DATASET_MODE")?,
+            parquet_pushdown_filters: optional_env_bool("CUDF_TPCH_BENCH_PARQUET_PUSHDOWN_FILTERS")?,
             native_memory_policy: NativeTpchMemoryPolicy::from_env("CUDF_TPCH_BENCH_NATIVE_MEMORY_POLICY")?,
             native_pipeline_execution_mode: native_pipeline_execution_mode_from_env(
                 "CUDF_TPCH_BENCH_NATIVE_PIPELINE_EXECUTION_MODE",
@@ -122,6 +124,7 @@ impl Default for NativeTpchBenchmarkConfig {
             warmup_iterations: 0,
             iterations: 1,
             dataset_mode: NativeTpchDatasetMode::External(NativeTpchScaleFactor::Sf1),
+            parquet_pushdown_filters: None,
             native_memory_policy: NativeTpchMemoryPolicy::default(),
             native_pipeline_execution_mode: NativePipelineExecutionMode::default(),
             max_source_reads_in_flight: DEFAULT_NATIVE_MAX_SOURCE_READS_IN_FLIGHT,
@@ -393,6 +396,17 @@ fn env_u64(name: &'static str, default: u64) -> DataFusionResult<u64> {
         return Ok(default);
     };
     value.to_string_lossy().parse::<u64>().map_err(|error| plan_error(format!("invalid {name}: {error}")))
+}
+
+fn optional_env_bool(name: &'static str) -> DataFusionResult<Option<bool>> {
+    let Some(value) = std::env::var_os(name) else {
+        return Ok(None);
+    };
+    match value.to_string_lossy().to_ascii_lowercase().as_str() {
+        "true" | "1" | "yes" | "on" => Ok(Some(true)),
+        "false" | "0" | "no" | "off" => Ok(Some(false)),
+        other => Err(plan_error(format!("invalid {name}: {other}; expected true or false"))),
+    }
 }
 
 fn native_pipeline_execution_mode_from_env(name: &'static str) -> DataFusionResult<NativePipelineExecutionMode> {

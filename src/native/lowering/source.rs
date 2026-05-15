@@ -6,7 +6,7 @@ use cudf_query_engine::{
     SourceNode as NativeSourceNode,
 };
 use datafusion::{
-    datasource::physical_plan::ParquetSource,
+    datasource::physical_plan::{FileSource, ParquetSource},
     physical_expr::{PhysicalExpr, expressions::Column, projection::ProjectionExprs},
     physical_plan::ExecutionPlan,
 };
@@ -19,6 +19,10 @@ use super::{
 use crate::{
     native::{
         normalize::NormalizedNativeSource,
+        pruning::{
+            scan_predicate_exactly_matches_filter, scan_predicate_is_dynamic_filter_hint,
+            scan_predicate_without_dynamic_filter_hints, validate_pruning_only_parquet_predicate,
+        },
         source::{
             local_parquet_files, local_parquet_source_diagnostics, native_source_output_schema,
             required_parquet_column_requirements_for_scan_columns, validate_slice1_parquet_scan,
@@ -39,8 +43,12 @@ pub(super) fn lower_source_input(
         source_exec.downcast_to_file_source::<ParquetSource>().ok_or(FallbackReason::UnsupportedOperator)?;
     let required_scan_output_indices =
         required_source_scan_output_indices(source_exec.schema(), filter, required_output_fields)?;
-    let column_requirements =
-        required_parquet_column_requirements_for_scan_columns(file_scan, filter, &required_scan_output_indices)?;
+    let column_requirements = required_parquet_column_requirements_for_scan_columns(
+        file_scan,
+        parquet_source,
+        filter,
+        &required_scan_output_indices,
+    )?;
     let table_schema = Arc::clone(file_scan.file_source().table_schema().table_schema());
     let scan_projection = file_scan.file_source().projection();
     let source_output_schema = native_source_output_schema(file_scan, &column_requirements)?;
@@ -60,6 +68,11 @@ pub(super) fn lower_source_input(
 
     let native_files =
         local_parquet_files(file_scan, parquet_source, filter, Arc::clone(&table_schema), &column_requirements)?;
+    let scan_projection_requires_native = scan_projection.is_some_and(|scan_projection| {
+        let required_scan_projection =
+            required_scan_projection(scan_projection, source_exec.schema(), &column_requirements.scan_output_columns);
+        required_scan_projection_requires_native_projection(&required_scan_projection, &table_schema)
+    });
     let mut native_source = NativeLocalParquetSource::from_files(
         native_files,
         Arc::clone(&source_output_schema),
@@ -77,12 +90,27 @@ pub(super) fn lower_source_input(
     .with_partition_columns(column_requirements.partition_columns.clone())
     .with_missing_columns(column_requirements.missing_columns.clone())
     .with_scan_limit(file_scan.limit);
+    let mut reader_pushdown_covers_filter = false;
+    if let Some(predicate) = source_reader_pushdown_predicate(
+        parquet_source,
+        filter,
+        file_scan.limit,
+        scan_projection_requires_native,
+        &source_output_schema,
+        source_exec.schema(),
+        &native_source,
+    )? {
+        reader_pushdown_covers_filter = predicate.covers_filter;
+        native_source = native_source.with_reader_predicate(predicate.expr);
+    }
+    let reader_pushdown = native_source.reader_predicate.is_some();
     native_source.diagnostics = local_parquet_source_diagnostics(
         file_scan,
         parquet_source,
         filter,
         Arc::clone(&table_schema),
         Some(&column_requirements),
+        reader_pushdown,
         false,
     );
 
@@ -103,6 +131,20 @@ pub(super) fn lower_source_input(
     let scan_output_bindings = source_bindings_for_schema(&scan_output_schema, source_exec.schema());
     let scan_output = LoweredNativeInput::with_bindings(scan_output_node, scan_output_schema, scan_output_bindings);
     if let Some(filter) = filter {
+        if reader_pushdown_covers_filter {
+            if let Some(projection) = filter.projection() {
+                let projected = add_source_filter_projection(
+                    builder,
+                    scan_output.node,
+                    &scan_output,
+                    filter.schema(),
+                    projection,
+                    required_output_fields,
+                )?;
+                return Ok(projected);
+            }
+            return Ok(scan_output);
+        }
         let filtered_node = builder.add_filter(
             scan_output.node,
             lower_physical_expr_with_bindings(
@@ -127,6 +169,66 @@ pub(super) fn lower_source_input(
         }
     } else {
         Ok(scan_output)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct SourceReaderPushdownPredicate {
+    pub(super) expr: NativeExpr,
+    pub(super) covers_filter: bool,
+}
+
+pub(super) fn source_reader_pushdown_predicate(
+    parquet_source: &ParquetSource,
+    filter: Option<&datafusion::physical_plan::filter::FilterExec>,
+    scan_limit: Option<usize>,
+    scan_projection_requires_native: bool,
+    source_output_schema: &SchemaRef,
+    frontend_schema: SchemaRef,
+    native_source: &NativeLocalParquetSource,
+) -> Result<Option<SourceReaderPushdownPredicate>, FallbackReason> {
+    if parquet_source.filter().is_none() {
+        return Ok(None);
+    }
+    let scan_predicate = parquet_source.filter().expect("filter presence checked above");
+    if filter.is_none() && scan_predicate_is_dynamic_filter_hint(scan_predicate.as_ref()) {
+        return Ok(None);
+    }
+    if filter.is_some() && !parquet_source.table_parquet_options().global.pushdown_filters {
+        return Ok(None);
+    }
+    let reader_scan_predicate = scan_predicate_without_dynamic_filter_hints(&scan_predicate);
+    if scan_limit.is_some() || scan_projection_requires_native {
+        return if filter.is_some() { Ok(None) } else { Err(FallbackReason::NativeSourcePushedDownParquetPredicate) };
+    }
+    if let Some(filter) = filter
+        && validate_pruning_only_parquet_predicate(parquet_source, Some(filter), source_output_schema).is_err()
+    {
+        return Ok(None);
+    }
+    let covers_filter = scan_predicate_exactly_matches_filter(parquet_source, filter);
+    let predicate = if let Some(filter) = filter
+        && covers_filter
+    {
+        let bindings = source_bindings_for_schema(source_output_schema, frontend_schema);
+        lower_physical_expr_with_bindings(filter.predicate(), &filter.input().schema(), Some(&bindings))
+    } else {
+        let Some(reader_scan_predicate) = reader_scan_predicate else {
+            return Ok(None);
+        };
+        lower_physical_expr(&reader_scan_predicate, source_output_schema)
+    };
+    let predicate = match predicate {
+        Ok(predicate) => predicate,
+        Err(_error) if filter.is_some() => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    if native_source.reader_predicate_is_supported(&predicate) {
+        Ok(Some(SourceReaderPushdownPredicate { expr: predicate, covers_filter }))
+    } else if filter.is_some() {
+        Ok(None)
+    } else {
+        Err(FallbackReason::NativeSourcePushedDownParquetPredicate)
     }
 }
 

@@ -138,7 +138,7 @@ fn explicit_parquet_row_group_access_plan_lowers_to_native_row_groups() {
     assert_eq!(source.diagnostics.file_count, 1);
     assert_eq!(source.diagnostics.ranged_file_count, 0);
     assert_eq!(source.diagnostics.selected_row_groups, Some(2));
-    assert_eq!(source.diagnostics.predicate_disposition.as_str(), "absent");
+    assert_eq!(source.diagnostics.predicate_disposition.as_str(), "native_post_scan_only");
     assert_eq!(source.diagnostics.read_column_count, 4);
     assert_eq!(source.diagnostics.projected_output_column_count, 3);
     assert_eq!(source.diagnostics.pure_filter_column_count, 1);

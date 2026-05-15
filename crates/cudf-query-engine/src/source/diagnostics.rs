@@ -159,6 +159,10 @@ pub enum PredicateDisposition {
     Absent,
     /// Predicate is represented only for file or row-group pruning.
     PruningOnly,
+    /// Predicate is represented as a reader-level Parquet predicate.
+    ReaderPushdown,
+    /// Predicate remains represented by native post-scan filtering.
+    NativePostScanOnly,
     /// Predicate exists but cannot be represented by the native source.
     Rejected,
 }
@@ -169,6 +173,8 @@ impl PredicateDisposition {
         match self {
             Self::Absent => "absent",
             Self::PruningOnly => "pruning_only",
+            Self::ReaderPushdown => "reader_pushdown",
+            Self::NativePostScanOnly => "native_post_scan_only",
             Self::Rejected => "rejected",
         }
     }

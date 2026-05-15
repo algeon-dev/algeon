@@ -18,7 +18,7 @@ use super::{
     literal::{NativeLiteralContext, native_literal_value},
     pruning::{
         coalesced_local_parquet_scan_files, explicit_row_group_selection, local_object_path_to_filesystem,
-        metadata_row_group_selections, validate_pruning_only_parquet_predicate,
+        metadata_row_group_selections, scan_predicate_is_dynamic_filter_hint, validate_pruning_only_parquet_predicate,
     },
 };
 use crate::policy::FallbackReason;
@@ -55,7 +55,10 @@ pub(super) fn validate_slice1_parquet_scan(
     if !file_scan.output_ordering.is_empty() {
         return Err(FallbackReason::NativeSourceOutputOrdering);
     }
-    if parquet_source.filter().is_some() {
+    if parquet_source
+        .filter()
+        .is_some_and(|predicate| filter.is_some() || scan_predicate_is_dynamic_filter_hint(predicate.as_ref()))
+    {
         validate_pruning_only_parquet_predicate(parquet_source, filter, &source_schema)?;
     }
     local_parquet_files(file_scan, parquet_source, filter, source_schema, column_requirements)?;

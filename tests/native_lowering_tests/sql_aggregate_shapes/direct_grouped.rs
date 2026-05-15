@@ -23,6 +23,8 @@ async fn direct_friendly_sql_physical_plan_has_stable_native_lowering_outcome() 
     assert!(result.source_diagnostics[0].direct_device_read);
     assert_eq!(result.source_diagnostics[0].predicate_disposition.as_str(), "pruning_only");
     assert!(result.source_diagnostics[0].rejected_features.is_empty());
+    let source = native_local_parquet_source(&result.plans[0]);
+    assert!(source.reader_predicate.is_none());
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -46,6 +48,7 @@ async fn direct_friendly_sql_native_aggregate_parity_functions_lower() {
     assert_eq!(result.source_diagnostics[0].predicate_disposition.as_str(), "pruning_only");
     assert!(result.source_diagnostics[0].rejected_features.is_empty());
     let source = native_local_parquet_source(&result.plans[0]);
+    assert!(source.reader_predicate.is_none());
     assert_eq!(
         source.read_columns,
         vec!["key".to_string(), "m00".to_string(), "m01".to_string(), "payload".to_string()]
@@ -180,7 +183,7 @@ async fn direct_friendly_sql_filter_plan_lowers_when_scan_predicate_is_absent() 
     assert_eq!(result.plans[0].node_count(), 8);
     assert_eq!(result.source_diagnostics.len(), 1);
     assert!(result.source_diagnostics[0].direct_device_read);
-    assert_eq!(result.source_diagnostics[0].predicate_disposition.as_str(), "absent");
+    assert_eq!(result.source_diagnostics[0].predicate_disposition.as_str(), "native_post_scan_only");
     let source = native_local_parquet_source(&result.plans[0]);
     assert_eq!(
         source.read_columns,

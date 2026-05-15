@@ -1,10 +1,11 @@
 use super::*;
 
 pub(super) fn cudf_local_parquet_source_chunk(
+    context: &ExecutionContext,
     source: &LocalParquetSource,
     chunk: &SourceChunk,
 ) -> Result<(cudf::io::source::LocalParquetSource, cudf::io::source::SourceChunk)> {
-    let source = cudf_local_parquet_source_for_chunk(source, chunk)?;
+    let source = cudf_local_parquet_source_for_chunk(context, source, chunk)?;
     let row_groups = if chunk.reads_all_row_groups { None } else { Some(chunk.row_group_indexes.clone()) };
     let cudf_chunk =
         cudf::io::source::SourceChunk::from_source_file_selection(&source, 0, chunk.chunk_index, row_groups).map_err(
@@ -25,6 +26,7 @@ pub(super) fn cudf_local_parquet_source_chunk(
 }
 
 fn cudf_local_parquet_source_for_chunk(
+    context: &ExecutionContext,
     source: &LocalParquetSource,
     chunk: &SourceChunk,
 ) -> Result<cudf::io::source::LocalParquetSource> {
@@ -44,7 +46,7 @@ fn cudf_local_parquet_source_for_chunk(
     let output_columns = cudf_source_output_columns(source)?;
     let required_columns = cudf_source_required_columns(source)?;
     let partition_columns = cudf_partition_columns(source)?;
-    cudf::io::source::LocalParquetSource::data(
+    let mut cudf_source = cudf::io::source::LocalParquetSource::data(
         [cudf_file],
         cudf_schema,
         chunk.read_columns.iter().map(String::as_str),
@@ -63,7 +65,22 @@ fn cudf_local_parquet_source_for_chunk(
         .with_fact("file_index", chunk.file_index)
         .with_fact("read_columns", chunk.read_columns.len())
         .with_fact("row_groups", format_row_groups(chunk))
-    })
+    })?;
+    if let Some(predicate) = lower_source_reader_predicate(context, source)? {
+        cudf_source = cudf_source.with_reader_predicate(predicate).map_err(|error| {
+            QueryError::from_cudf(
+                "cudf_query_engine.local_parquet_chunk.source_cudf",
+                "failed to attach native reader predicate to cudf source contract",
+                error,
+            )
+            .with_fact("path", chunk.path.display())
+            .with_fact("chunk_index", chunk.chunk_index)
+            .with_fact("file_index", chunk.file_index)
+            .with_fact("read_columns", chunk.read_columns.len())
+            .with_fact("row_groups", format_row_groups(chunk))
+        })?;
+    }
+    Ok(cudf_source)
 }
 
 fn cudf_local_parquet_file_for_chunk(chunk: &SourceChunk) -> Result<cudf::io::source::LocalParquetFile> {

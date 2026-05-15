@@ -884,6 +884,11 @@ fn push_source_scan_contract(output: &mut String, source: &LocalParquetSource) {
     push_source_refs(output, "projected_output_column_source_refs", &source.projected_output_column_source_refs);
     push_string_vec(output, "pure_filter_columns", &source.pure_filter_columns);
     push_source_refs(output, "pure_filter_column_source_refs", &source.pure_filter_column_source_refs);
+    push_token(
+        output,
+        "reader_predicate",
+        source.reader_predicate.as_ref().map_or_else(|| "none".to_string(), ToString::to_string),
+    );
 }
 
 fn push_source_refs(output: &mut String, label: impl AsRef<str>, refs: &[SourceColumnRef]) {

@@ -37,6 +37,15 @@ ORDER BY avg_m00 DESC, key ASC
 LIMIT 3
 ";
 
+pub(super) const SQL_SELECTIVE_READER_PUSHDOWN_QUERY: &str = "
+SELECT key, SUM(m00 + m01) AS sum_x00
+FROM bench
+WHERE payload >= 900
+GROUP BY key
+ORDER BY key ASC
+LIMIT 8
+";
+
 pub(super) const SQL_AVG_BY_KEY_NO_FILTER_QUERY: &str = "
 SELECT key, AVG(m00) AS avg_m00
 FROM bench

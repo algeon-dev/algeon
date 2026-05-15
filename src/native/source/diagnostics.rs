@@ -78,6 +78,7 @@ fn source_diagnostics_for_source(
     let column_requirements = aggregate_root.and_then(|root| {
         required_parquet_column_requirements(
             file_scan,
+            parquet_source,
             source.filter,
             normalized.single_source_input().and(root.pre_aggregate_projection),
             root.aggregate,
@@ -90,12 +91,13 @@ fn source_diagnostics_for_source(
         source.filter,
         table_schema,
         column_requirements.as_ref(),
+        false,
         aggregate_root.is_some_and(|root| {
             native_zero_column_count_source_is_safe(
                 source.filter,
                 normalized.single_source_input().and(root.pre_aggregate_projection),
                 root.aggregate,
-            )
+            ) && column_requirements.as_ref().is_some_and(|requirements| requirements.read_columns.is_empty())
         }),
     ))
 }
@@ -110,6 +112,7 @@ pub(in crate::native) fn local_parquet_source_diagnostics(
     filter: Option<&FilterExec>,
     source_schema: SchemaRef,
     column_requirements: Option<&NativeParquetColumnRequirements>,
+    reader_pushdown: bool,
     zero_column_count_safe: bool,
 ) -> NativeSourceDiagnostics {
     let files = file_scan.file_groups.iter().flat_map(|group| group.files()).collect::<Vec<_>>();
@@ -192,7 +195,7 @@ pub(in crate::native) fn local_parquet_source_diagnostics(
     if !file_scan.output_ordering.is_empty() {
         rejected_features.push(NativeRejectedSourceFeature::OutputOrdering);
     }
-    let predicate_disposition = parquet_predicate_disposition(parquet_source, filter, &source_schema);
+    let predicate_disposition = parquet_predicate_disposition(parquet_source, filter, &source_schema, reader_pushdown);
     if predicate_disposition == NativePredicateDisposition::Rejected {
         rejected_features.push(NativeRejectedSourceFeature::PushedDownParquetPredicate);
     }
