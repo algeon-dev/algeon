@@ -7,7 +7,8 @@ async fn tpch_fallback_pressure_report_emits_one_pre_execution_reject_per_query(
 
     let metadata = tiny_tpch_dataset_metadata(&dir).unwrap();
     let items = tpch_fallback_pressure_workload_items(&dir, tpch_report_session_config()).await.unwrap();
-    let report = NativeFallbackPressureReport::collect(items).with_tpch_dataset_metadata(metadata.clone());
+    let report = NativeFallbackPressureReport::collect(items)
+        .with_workload_dataset_metadata(metadata.to_workload_dataset_metadata());
 
     assert_eq!(report.rows.len(), TPCH_QUERY_COUNT);
     assert_eq!(report.rewritten_count(), TPCH_QUERY_COUNT);
@@ -52,18 +53,23 @@ async fn tpch_fallback_pressure_report_emits_one_pre_execution_reject_per_query(
 
     let text = report.to_tsv();
     assert!(text.starts_with("# native_fallback_pressure_tsv_schema_version=6\n"));
-    assert!(text.contains("# tpch_dataset_scale_factor=tiny\n"));
-    assert!(text.contains("# tpch_dataset_provenance=generated_tiny\n"));
-    assert!(text.contains("# tpch_dataset_generation_command=datafusion-cudf::write_tiny_tpch_parquet_dataset\n"));
-    assert!(text.contains("# tpch_dataset_table_count=8\n"));
-    assert!(text.contains("# tpch_dataset_file_count=8\n"));
-    assert!(text.contains("# tpch_dataset_total_rows=26\n"));
-    assert!(text.contains(&format!("# tpch_dataset_total_bytes={}\n", metadata.total_bytes)));
-    assert!(text.contains(&format!("# tpch_dataset_metadata_fingerprint={}\n", metadata.metadata_fingerprint)));
-    assert!(text.contains("# tpch_dataset_content_fingerprint=not_computed\n"));
-    assert!(text.contains("# tpch_dataset_table_file_counts=customer=1,lineitem=1,nation=1,orders=1,part=1,partsupp=1,region=1,supplier=1\n"));
-    assert!(text.contains("# tpch_dataset_table_row_counts=customer=3,lineitem=3,nation=5,orders=3,part=3,partsupp=3,region=3,supplier=3\n"));
-    assert!(text.contains(&format!("# tpch_dataset_table_byte_sizes={}\n", metadata.table_byte_sizes())));
+    assert!(text.contains("# workload=tpch\n"));
+    assert!(text.contains("# dataset_scale_factor=tiny\n"));
+    assert!(text.contains("# dataset_provenance=generated_tiny\n"));
+    assert!(text.contains("# dataset_generation_command=datafusion-cudf::write_tiny_tpch_parquet_dataset\n"));
+    assert!(text.contains("# dataset_table_count=8\n"));
+    assert!(text.contains("# dataset_file_count=8\n"));
+    assert!(text.contains("# dataset_total_rows=26\n"));
+    assert!(text.contains(&format!("# dataset_total_bytes={}\n", metadata.total_bytes)));
+    assert!(text.contains(&format!("# dataset_metadata_fingerprint={}\n", metadata.metadata_fingerprint)));
+    assert!(text.contains("# dataset_content_fingerprint=not_computed\n"));
+    assert!(text.contains(
+        "# dataset_table_file_counts=customer=1,lineitem=1,nation=1,orders=1,part=1,partsupp=1,region=1,supplier=1\n"
+    ));
+    assert!(text.contains(
+        "# dataset_table_row_counts=customer=3,lineitem=3,nation=5,orders=3,part=3,partsupp=3,region=3,supplier=3\n"
+    ));
+    assert!(text.contains(&format!("# dataset_table_byte_sizes={}\n", metadata.table_byte_sizes())));
     assert!(text.contains(&format!("{NATIVE_FALLBACK_PRESSURE_TSV_HEADER}\n")));
     assert!(text.contains("q01\t"));
     assert!(text.contains("q06\t"));
@@ -80,7 +86,8 @@ async fn tpch_scalar_fallback_pressure_report_pins_expression_categories() {
 
     let metadata = tiny_tpch_dataset_metadata(&dir).unwrap();
     let items = tpch_scalar_fallback_pressure_workload_items(&dir, tpch_report_session_config()).await.unwrap();
-    let report = NativeFallbackPressureReport::collect(items).with_tpch_dataset_metadata(metadata);
+    let report = NativeFallbackPressureReport::collect(items)
+        .with_workload_dataset_metadata(metadata.to_workload_dataset_metadata());
 
     let expected = [
         ("q12_scalar_in_list_null", "expression_in_list"),

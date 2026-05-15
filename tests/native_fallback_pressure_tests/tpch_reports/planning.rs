@@ -12,7 +12,8 @@ async fn tpch_datafusion_planning_report_emits_one_stable_row_per_query() {
 
     let metadata = tiny_tpch_dataset_metadata(&dir).unwrap();
     let items = tpch_datafusion_planning_workload_items(&dir, tpch_report_session_config()).await.unwrap();
-    let report = NativeDataFusionPlanningReport::collect(items).with_tpch_dataset_metadata(metadata.clone());
+    let report = NativeDataFusionPlanningReport::collect(items)
+        .with_workload_dataset_metadata(metadata.to_workload_dataset_metadata());
 
     assert_tpch_datafusion_planning_report_contract(&report, metadata.metadata_fingerprint.as_str());
 

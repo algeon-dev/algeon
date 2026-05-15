@@ -8,6 +8,8 @@ pub mod planner;
 pub mod policy;
 pub mod report;
 pub mod session;
+pub mod tpcds;
+mod tpcds_queries;
 pub mod tpch;
 mod tpch_queries;
 
@@ -31,6 +33,7 @@ pub use native_report::{
     NativeFallbackPressureOutcome, NativeFallbackPressureReport, NativeFallbackPressureRow,
     NativeFallbackPressureWorkloadInput, NativeFallbackPressureWorkloadItem, NativeJoinDiagnosticSummary,
     NativeJoinStrategyMetricRow, NativePlanningFailure, NativeSourceDiagnosticSummary, NativeTaskOperatorMetricRow,
+    WorkloadDatasetMetadata,
 };
 pub use planner::{
     CudfNativePhysicalOptimizerRule, CudfOptimizerConfig, NativeAdaptivePipelineCandidateDiagnostics,
@@ -43,6 +46,17 @@ pub use report::{CandidateOutcome, GpuCandidate, PlanningReport};
 pub use session::{
     CUDF_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME, CudfSessionStateBuilderExt, PhysicalOptimizerRules,
     cudf_native_physical_optimizer_rules, cudf_native_physical_optimizer_rules_with_rule,
+};
+pub use tpcds::{
+    CUDF_TPCDS_CONTENT_FINGERPRINT_ENV, CUDF_TPCDS_GENERATION_COMMAND_ENV, CUDF_TPCDS_PARQUET_DIR_ENV,
+    CUDF_TPCDS_SCALE_FACTOR_ENV, TPCDS_QUERIES, TPCDS_QUERY_COUNT, TPCDS_TABLES, TpcdsDatasetMetadata, TpcdsQuery,
+    TpcdsTableFileMetadata, TpcdsTableLayout, TpcdsTableMetadata, TpcdsWorkloadError, TpcdsWorkloadResult,
+    describe_tpcds_dataset, describe_tpcds_dataset_with_content_fingerprint, discover_tpcds_table_layout,
+    external_tpcds_dataset_metadata, prepare_tpcds_report_dataset, tiny_tpcds_dataset_metadata,
+    tpcds_datafusion_execution_workload_items, tpcds_datafusion_execution_workload_items_with_optimizer_config,
+    tpcds_datafusion_planning_workload_items, tpcds_datafusion_planning_workload_items_with_optimizer_config,
+    tpcds_fallback_pressure_workload_items, tpcds_native_optimizer_config, tpcds_query_ids,
+    tpcds_report_session_config, write_tiny_tpcds_parquet_dataset,
 };
 pub use tpch::{
     AD_HOC_OLAP_QUERIES, AD_HOC_OLAP_QUERY_COUNT, AdHocOlapCapabilityFirstAdmission, AdHocOlapCurrentStrictAdmission,

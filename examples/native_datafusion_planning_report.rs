@@ -33,7 +33,7 @@ async fn main() {
         "synthetic" => synthetic_report(&dir).await,
         "tpch" => {
             let TpchPlanningReport { report, metadata } = tpch_report(&dir).await.unwrap();
-            report.with_tpch_dataset_metadata(metadata)
+            report.with_workload_dataset_metadata(metadata.to_workload_dataset_metadata())
         },
         value => {
             panic!("unsupported {CUDF_NATIVE_DATAFUSION_PLANNING_WORKLOAD_ENV}={value}; expected synthetic or tpch")
@@ -69,7 +69,7 @@ async fn synthetic_report(dir: &std::path::Path) -> NativeDataFusionPlanningRepo
     }
 
     let rows = reports.into_iter().flat_map(|report| report.rows).collect();
-    NativeDataFusionPlanningReport { rows, tpch_dataset: None }
+    NativeDataFusionPlanningReport { rows, workload_dataset: None }
 }
 
 async fn tpch_report(dir: &std::path::Path) -> datafusion_cudf::TpchWorkloadResult<TpchPlanningReport> {

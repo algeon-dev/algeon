@@ -76,9 +76,10 @@ pub(super) fn assert_highlighted_planning_rows_and_tsv(
 
     let text = report.to_tsv();
     assert!(text.starts_with("# native_datafusion_planning_tsv_schema_version=8\n"));
-    assert!(text.contains("# tpch_dataset_scale_factor=tiny\n"));
-    assert!(text.contains(&format!("# tpch_dataset_metadata_fingerprint={metadata_fingerprint}\n")));
-    assert!(text.contains("# tpch_dataset_content_fingerprint=not_computed\n"));
+    assert!(text.contains("# workload=tpch\n"));
+    assert!(text.contains("# dataset_scale_factor=tiny\n"));
+    assert!(text.contains(&format!("# dataset_metadata_fingerprint={metadata_fingerprint}\n")));
+    assert!(text.contains("# dataset_content_fingerprint=not_computed\n"));
     assert!(text.contains(&format!("{NATIVE_DATAFUSION_PLANNING_TSV_HEADER}\n")));
     assert!(text.contains("strict_bounded_contract_rows\tstrict_bounded_compiled_graphs\tadaptive_pipeline_rows"));
     assert!(text.contains("execution_mode=strict_bounded"));
