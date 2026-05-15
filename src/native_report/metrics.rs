@@ -6,6 +6,7 @@ use super::tsv::{metric_count, optional_observed_metric_count};
 
 const NATIVE_JOIN_STRATEGY_ROWS_METRIC_NAME: &str = "native_join_strategy_rows";
 const NATIVE_TASK_OPERATOR_ROWS_METRIC_NAME: &str = "native_task_operator_rows";
+const NATIVE_TASK_RUNTIME_ROWS_METRIC_NAME: &str = "native_task_runtime_rows";
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct NativeDataFusionExecutionMetrics {
@@ -32,6 +33,7 @@ pub struct NativeDataFusionExecutionMetrics {
     pub max_task_observed_peak_bytes: Option<usize>,
     pub max_task_retained_bytes: Option<usize>,
     pub task_operator_rows: Vec<NativeTaskOperatorMetricRow>,
+    pub task_runtime_rows: Vec<NativeTaskRuntimeMetricRow>,
     pub source_chunks_planned: usize,
     pub source_chunks_attempted: usize,
     pub source_chunks_committed: usize,
@@ -108,6 +110,7 @@ impl NativeDataFusionExecutionMetrics {
             max_task_observed_peak_bytes: optional_observed_metric_count(metrics, "max_task_observed_peak_bytes"),
             max_task_retained_bytes: optional_observed_metric_count(metrics, "max_task_retained_bytes"),
             task_operator_rows: task_operator_rows(metrics),
+            task_runtime_rows: task_runtime_rows(metrics),
             source_chunks_planned: metric_count(metrics, "source_chunks_planned"),
             source_chunks_attempted: metric_count(metrics, "source_chunks_attempted"),
             source_chunks_committed: metric_count(metrics, "source_chunks_committed"),
@@ -193,6 +196,30 @@ impl NativeDataFusionExecutionMetrics {
         }
         self.task_operator_rows.sort_by(|left, right| left.operator_kind.cmp(&right.operator_kind));
     }
+
+    pub fn merge_task_runtime_rows(&mut self, rows: Vec<NativeTaskRuntimeMetricRow>) {
+        for row in rows {
+            if let Some(existing) =
+                self.task_runtime_rows.iter_mut().find(|existing| existing.compiled_task_id == row.compiled_task_id)
+            {
+                existing.operator_kind = row.operator_kind;
+                existing.reservation_requested_bytes =
+                    existing.reservation_requested_bytes.saturating_add(row.reservation_requested_bytes);
+                existing.reservation_granted_bytes =
+                    existing.reservation_granted_bytes.saturating_add(row.reservation_granted_bytes);
+                existing.reservation_released_bytes =
+                    existing.reservation_released_bytes.saturating_add(row.reservation_released_bytes);
+                existing.reservation_live_peak_bytes =
+                    existing.reservation_live_peak_bytes.max(row.reservation_live_peak_bytes);
+                existing.max_observed_peak_bytes =
+                    max_optional_usize(existing.max_observed_peak_bytes, row.max_observed_peak_bytes);
+                existing.max_retained_bytes = max_optional_usize(existing.max_retained_bytes, row.max_retained_bytes);
+            } else {
+                self.task_runtime_rows.push(row);
+            }
+        }
+        self.task_runtime_rows.sort_by(|left, right| left.compiled_task_id.cmp(&right.compiled_task_id));
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -213,6 +240,34 @@ impl NativeTaskOperatorMetricRow {
             "operator_kind={},task_count={},reservation_requested_bytes={},reservation_granted_bytes={},reservation_released_bytes={},reservation_live_peak_bytes={},max_observed_peak_bytes={},max_retained_bytes={}",
             self.operator_kind,
             self.task_count,
+            self.reservation_requested_bytes,
+            self.reservation_granted_bytes,
+            self.reservation_released_bytes,
+            self.reservation_live_peak_bytes,
+            optional_usize(self.max_observed_peak_bytes),
+            optional_usize(self.max_retained_bytes)
+        )
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct NativeTaskRuntimeMetricRow {
+    pub compiled_task_id: String,
+    pub operator_kind: String,
+    pub reservation_requested_bytes: usize,
+    pub reservation_granted_bytes: usize,
+    pub reservation_released_bytes: usize,
+    pub reservation_live_peak_bytes: usize,
+    pub max_observed_peak_bytes: Option<usize>,
+    pub max_retained_bytes: Option<usize>,
+}
+
+impl NativeTaskRuntimeMetricRow {
+    pub fn to_stable_kv_row(&self) -> String {
+        format!(
+            "compiled_task_id={},operator_kind={},reservation_requested_bytes={},reservation_granted_bytes={},reservation_released_bytes={},reservation_live_peak_bytes={},max_observed_peak_bytes={},max_retained_bytes={}",
+            self.compiled_task_id,
+            self.operator_kind,
             self.reservation_requested_bytes,
             self.reservation_granted_bytes,
             self.reservation_released_bytes,
@@ -389,6 +444,17 @@ fn task_operator_rows(metrics: &MetricsSet) -> Vec<NativeTaskOperatorMetricRow> 
     rows
 }
 
+fn task_runtime_rows(metrics: &MetricsSet) -> Vec<NativeTaskRuntimeMetricRow> {
+    let mut rows = metrics
+        .iter()
+        .filter(|metric| metric.value().name() == NATIVE_TASK_RUNTIME_ROWS_METRIC_NAME)
+        .filter(|metric| metric.labels().iter().any(|label| label.name() == "compiled_task_id"))
+        .map(|metric| labels_to_task_runtime_row(labels_by_name(metric.labels())))
+        .collect::<Vec<_>>();
+    rows.sort_by(|left, right| left.compiled_task_id.cmp(&right.compiled_task_id));
+    rows
+}
+
 fn labels_by_name(labels: &[datafusion::physical_plan::metrics::Label]) -> BTreeMap<&str, &str> {
     labels.iter().map(|label| (label.name(), label.value())).collect()
 }
@@ -437,6 +503,19 @@ fn labels_to_task_operator_row(labels: BTreeMap<&str, &str>) -> NativeTaskOperat
     NativeTaskOperatorMetricRow {
         operator_kind: string_label(&labels, "operator_kind"),
         task_count: usize_label(&labels, "task_count"),
+        reservation_requested_bytes: usize_label(&labels, "reservation_requested_bytes"),
+        reservation_granted_bytes: usize_label(&labels, "reservation_granted_bytes"),
+        reservation_released_bytes: usize_label(&labels, "reservation_released_bytes"),
+        reservation_live_peak_bytes: usize_label(&labels, "reservation_live_peak_bytes"),
+        max_observed_peak_bytes: optional_usize_label(&labels, "max_observed_peak_bytes"),
+        max_retained_bytes: optional_usize_label(&labels, "max_retained_bytes"),
+    }
+}
+
+fn labels_to_task_runtime_row(labels: BTreeMap<&str, &str>) -> NativeTaskRuntimeMetricRow {
+    NativeTaskRuntimeMetricRow {
+        compiled_task_id: string_label(&labels, "compiled_task_id"),
+        operator_kind: string_label(&labels, "operator_kind"),
         reservation_requested_bytes: usize_label(&labels, "reservation_requested_bytes"),
         reservation_granted_bytes: usize_label(&labels, "reservation_granted_bytes"),
         reservation_released_bytes: usize_label(&labels, "reservation_released_bytes"),

@@ -105,6 +105,23 @@ fn compiled_scheduler_prefers_currently_admitted_ready_task() {
 }
 
 #[test]
+fn compiled_scheduler_uses_operator_class_rank_under_reservation_pressure() {
+    let pipeline = independent_operator_class_pressure_pipeline();
+    let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("pipeline should be schedulable");
+    let mut executor = MockExecutor::new().with_scheduler_memory_pressure();
+
+    let state = scheduler.run(&mut executor).expect("mock pipeline should execute under memory pressure");
+
+    assert_eq!(
+        state.execution_order(),
+        &[PipelineTaskId::new(0), PipelineTaskId::new(3), PipelineTaskId::new(2), PipelineTaskId::new(1),],
+        "scheduler should prefer join work, then aggregate work, before starting another independent source while reservations are live"
+    );
+    assert!(state.is_resource_live(ResidentResourceId::new(0)));
+    assert_eq!(executor.simulated_live_reserved_bytes, 1);
+}
+
+#[test]
 fn compiled_scheduler_errors_when_no_ready_task_can_be_admitted() {
     let pipeline = independent_two_source_pipeline();
     let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("pipeline should be schedulable");
@@ -304,4 +321,38 @@ fn compiled_scheduler_errors_when_task_reports_duplicate_produced_resource() {
     assert_eq!(error.facts().get("compiled_task_id"), Some("t0"));
     assert_eq!(error.facts().get("resident_resource_id"), Some("r0"));
     assert_eq!(executor.released, vec![ResidentResourceId::new(0)]);
+}
+
+fn independent_operator_class_pressure_pipeline() -> CompiledPipeline {
+    let pressure_source = PipelineTaskId::new(0);
+    let independent_source = PipelineTaskId::new(1);
+    let aggregate = PipelineTaskId::new(2);
+    let join_build = PipelineTaskId::new(3);
+    let retained_sink_output = ResidentResourceId::new(0);
+
+    CompiledPipeline::new(
+        vec![
+            PipelineTask::new(pressure_source, PipelineTaskKind::SourceRead)
+                .with_output_resources(vec![retained_sink_output]),
+            PipelineTask::new(independent_source, PipelineTaskKind::SourceRead),
+            PipelineTask::new(aggregate, PipelineTaskKind::Aggregate),
+            PipelineTask::new(join_build, PipelineTaskKind::JoinBuild),
+        ],
+        vec![
+            PipelineEdge::new(PipelineEdgeId::new(0), pressure_source, aggregate, PipelineEdgeKind::Control),
+            PipelineEdge::new(PipelineEdgeId::new(1), pressure_source, join_build, PipelineEdgeKind::Control),
+        ],
+        vec![
+            PipelineBarrier::new(PipelineBarrierId::new(0), PipelineBarrierKind::SinkBoundary)
+                .with_upstream_tasks(vec![pressure_source, independent_source, aggregate, join_build]),
+        ],
+        vec![ResidentResource::new(
+            retained_sink_output,
+            pressure_source,
+            vec![],
+            ResidentLifetime::SinkOutput { producer: pressure_source },
+        )],
+        vec![],
+        SinkBoundary::new(SinkBoundaryKind::HostArrowMaterialization, pressure_source),
+    )
 }

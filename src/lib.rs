@@ -33,7 +33,7 @@ pub use native_report::{
     NativeFallbackPressureOutcome, NativeFallbackPressureReport, NativeFallbackPressureRow,
     NativeFallbackPressureWorkloadInput, NativeFallbackPressureWorkloadItem, NativeJoinDiagnosticSummary,
     NativeJoinStrategyMetricRow, NativePlanningFailure, NativeSourceDiagnosticSummary, NativeTaskOperatorMetricRow,
-    WorkloadDatasetMetadata,
+    NativeTaskRuntimeMetricRow, WorkloadDatasetMetadata,
 };
 pub use planner::{
     CudfNativePhysicalOptimizerRule, CudfOptimizerConfig, NativeAdaptivePipelineCandidateDiagnostics,

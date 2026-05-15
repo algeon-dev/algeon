@@ -219,6 +219,7 @@ impl NativeDataFusionExecutionReport {
                 row.metrics.max_task_observed_peak_bytes.map_or_else(|| "none".to_string(), |value| value.to_string()),
                 row.metrics.max_task_retained_bytes.map_or_else(|| "none".to_string(), |value| value.to_string()),
                 format_task_operator_rows(&row.metrics.task_operator_rows),
+                format_task_runtime_rows(&row.metrics.task_runtime_rows),
                 row.metrics.source_chunks_planned.to_string(),
                 row.metrics.source_chunks_attempted.to_string(),
                 row.metrics.source_chunks_committed.to_string(),

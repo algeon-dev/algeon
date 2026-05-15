@@ -19,9 +19,9 @@ use datafusion_cudf::{
     GpuFallbackPolicy, NativeCudfExecutionConfig, NativeDataFusionExecutionMetrics, NativeDataFusionPlanningOutcome,
     NativeDataFusionPlanningReport, NativeDataFusionPlanningRow, NativeDataFusionPostNativeExecutionPath,
     NativeDataFusionRuntimeOutcome, NativeJoinStrategyMetricRow, NativePipelineExecutionMode,
-    NativeTaskOperatorMetricRow, TPCH_QUERIES, TPCH_TABLES, TpchDatasetMetadata, TpchQuery, TpchTableLayout,
-    TpchWorkloadError, describe_tpch_dataset_with_content_fingerprint, prepare_tpch_report_dataset,
-    register_tpch_table_layout, tpch_report_session_config,
+    NativeSourceDiagnosticSummary, NativeTaskOperatorMetricRow, NativeTaskRuntimeMetricRow, TPCH_QUERIES, TPCH_TABLES,
+    TpchDatasetMetadata, TpchQuery, TpchTableLayout, TpchWorkloadError, describe_tpch_dataset_with_content_fingerprint,
+    prepare_tpch_report_dataset, register_tpch_table_layout, tpch_report_session_config,
 };
 
 #[path = "native_tpch_benchmark/case_runner.rs"]

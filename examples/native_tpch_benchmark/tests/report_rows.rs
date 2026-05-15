@@ -35,6 +35,7 @@ fn benchmark_report_accepted_rows_include_bounded_status_contract_rows_and_resou
         cpu_output_fingerprint: Some("output-fnv1a64:1111111111111111".to_string()),
         native_output_fingerprint: Some("output-fnv1a64:1111111111111111".to_string()),
         output_fingerprint: Some("output-fnv1a64:1111111111111111".to_string()),
+        source_predicate_pushdown_status: "reader_pushdown".to_string(),
         metrics: NativeDataFusionExecutionMetrics {
             gpu_resident_input_handoffs: 1,
             host_to_device_uploads: 2,
@@ -67,6 +68,16 @@ fn benchmark_report_accepted_rows_include_bounded_status_contract_rows_and_resou
                 reservation_live_peak_bytes: 64,
                 max_observed_peak_bytes: None,
                 max_retained_bytes: None,
+            }],
+            task_runtime_rows: vec![NativeTaskRuntimeMetricRow {
+                compiled_task_id: "t0".to_string(),
+                operator_kind: "source_read".to_string(),
+                reservation_requested_bytes: 64,
+                reservation_granted_bytes: 64,
+                reservation_released_bytes: 64,
+                reservation_live_peak_bytes: 64,
+                max_observed_peak_bytes: Some(65),
+                max_retained_bytes: Some(66),
             }],
             source_chunks_planned: 20,
             source_chunks_attempted: 21,
@@ -177,7 +188,29 @@ fn benchmark_report_accepted_rows_include_bounded_status_contract_rows_and_resou
     assert!(text.contains(
         "\t28\t29\t30\t31\t32\t33\t34\t35\t36\t37\t38\t39\t40\t41\t42\t43\t44\t45\t46\t47\t48\t49\t50\t51\t52\t53\t54\t55\t"
     ));
-    assert!(text.contains("\t64\t65\t66\toperator_kind=source_read,task_count=3,reservation_requested_bytes=0,reservation_granted_bytes=0,reservation_released_bytes=0,reservation_live_peak_bytes=64,max_observed_peak_bytes=none,max_retained_bytes=none\t"));
+    assert!(text.contains("\t64\t65\t66\toperator_kind=source_read,task_count=3,reservation_requested_bytes=0,reservation_granted_bytes=0,reservation_released_bytes=0,reservation_live_peak_bytes=64,max_observed_peak_bytes=none,max_retained_bytes=none\tcompiled_task_id=t0,operator_kind=source_read,reservation_requested_bytes=64,reservation_granted_bytes=64,reservation_released_bytes=64,reservation_live_peak_bytes=64,max_observed_peak_bytes=65,max_retained_bytes=66\t"));
+    let mut lines = text.lines().filter(|line| !line.starts_with('#'));
+    let header = lines.next().expect("benchmark report should contain a TSV header");
+    let fields = lines.next().expect("benchmark report should contain a q01 row").split('\t').collect::<Vec<_>>();
+    let header_fields = header.split('\t').collect::<Vec<_>>();
+    assert_eq!(fields[header_index(&header_fields, "peak_memory_operator_class")], "source");
+    assert_eq!(fields[header_index(&header_fields, "peak_memory_operator_class_bytes")], "64");
+    assert_eq!(fields[header_index(&header_fields, "task_reservation_operator_class")], "source");
+    assert_eq!(fields[header_index(&header_fields, "task_reservation_operator_class_bytes")], "64");
+    assert_eq!(fields[header_index(&header_fields, "runtime_operator_class")], "materialization");
+    assert_eq!(fields[header_index(&header_fields, "runtime_operator_class_ms")], "9.000");
+    assert_eq!(fields[header_index(&header_fields, "source_predicate_pushdown_status")], "reader_pushdown");
+    assert_eq!(fields[header_index(&header_fields, "partitioned_join_count")], "0");
+    assert_eq!(fields[header_index(&header_fields, "join_partitioning_status")], "not_partitioned");
+    assert_eq!(fields[header_index(&header_fields, "aggregate_merge_status")], "thresholded");
+    assert!(
+        fields[header_index(&header_fields, "task_high_water_rows")]
+            .contains("operator_class=source,task_count=3,max_task_reservation_bytes=64")
+    );
+    assert!(
+        fields[header_index(&header_fields, "task_high_water_rows")]
+            .contains("operator_class=final_merge,task_count=39")
+    );
     assert!(text.contains("\tnode_id=n7,join_strategy=one_shot_equi,execution_strategy=bounded_one_shot_equi_join"));
     assert!(text.contains("\t1.000\t2.000\t3.000\t4.000\t5.000\t6.000\t7.000\t8.000\t9.000\n"));
 }

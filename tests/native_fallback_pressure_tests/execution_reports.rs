@@ -61,6 +61,15 @@ fn native_datafusion_execution_report_records_runtime_boundaries() {
     assert_eq!(row.metrics.task_operator_rows[0].reservation_live_peak_bytes, 64);
     assert_eq!(row.metrics.task_operator_rows[0].max_observed_peak_bytes, Some(72));
     assert_eq!(row.metrics.task_operator_rows[0].max_retained_bytes, Some(48));
+    assert_eq!(row.metrics.task_runtime_rows.len(), 1);
+    assert_eq!(row.metrics.task_runtime_rows[0].compiled_task_id, "t7");
+    assert_eq!(row.metrics.task_runtime_rows[0].operator_kind, "source_read");
+    assert_eq!(row.metrics.task_runtime_rows[0].reservation_requested_bytes, 80);
+    assert_eq!(row.metrics.task_runtime_rows[0].reservation_granted_bytes, 64);
+    assert_eq!(row.metrics.task_runtime_rows[0].reservation_released_bytes, 48);
+    assert_eq!(row.metrics.task_runtime_rows[0].reservation_live_peak_bytes, 64);
+    assert_eq!(row.metrics.task_runtime_rows[0].max_observed_peak_bytes, Some(72));
+    assert_eq!(row.metrics.task_runtime_rows[0].max_retained_bytes, Some(48));
     assert_eq!(row.metrics.source_chunks_planned, 6);
     assert_eq!(row.metrics.source_chunks_attempted, 7);
     assert_eq!(row.metrics.source_chunks_committed, 5);
@@ -117,15 +126,16 @@ fn native_datafusion_execution_report_records_runtime_boundaries() {
     );
 
     let text = report.to_tsv();
-    assert_eq!(NATIVE_DATAFUSION_EXECUTION_TSV_SCHEMA_VERSION, 19);
-    assert_eq!(NATIVE_DATAFUSION_EXECUTION_TSV_HEADER.split('\t').count(), 92);
+    assert_eq!(NATIVE_DATAFUSION_EXECUTION_TSV_SCHEMA_VERSION, 20);
+    assert_eq!(NATIVE_DATAFUSION_EXECUTION_TSV_HEADER.split('\t').count(), 93);
     assert!(NATIVE_DATAFUSION_EXECUTION_TSV_HEADER.contains(
         "\treservation_requested_bytes\treservation_granted_bytes\treservation_live_peak_bytes\treservation_denied_count\t"
     ));
     assert!(NATIVE_DATAFUSION_EXECUTION_TSV_HEADER.contains("\tsource_cache_hits\tsource_cache_misses\tsource_cache_inserts\tsource_cache_insert_skipped\tsource_cache_retained_bytes\t"));
-    assert!(text.starts_with("# native_datafusion_execution_tsv_schema_version=19\n"));
+    assert!(text.starts_with("# native_datafusion_execution_tsv_schema_version=20\n"));
     assert!(text.contains(&format!("{NATIVE_DATAFUSION_EXECUTION_TSV_HEADER}\n")));
     assert!(text.contains("\t64\t72\t48\toperator_kind=source_read,task_count=3,reservation_requested_bytes=120,reservation_granted_bytes=96,reservation_released_bytes=32,reservation_live_peak_bytes=64,max_observed_peak_bytes=72,max_retained_bytes=48\t"));
+    assert!(text.contains("\tcompiled_task_id=t7,operator_kind=source_read,reservation_requested_bytes=80,reservation_granted_bytes=64,reservation_released_bytes=48,reservation_live_peak_bytes=64,max_observed_peak_bytes=72,max_retained_bytes=48\t"));
     assert!(text.contains("execution_mode=strict_bounded"));
     assert!(text.contains("contract_status=modeled"));
     assert!(text.contains("contract_quality=query_engine_owned_boundary"));
