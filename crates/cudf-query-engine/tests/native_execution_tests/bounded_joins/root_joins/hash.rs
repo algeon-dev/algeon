@@ -1064,6 +1064,137 @@ fn bounded_native_query_streams_source_adjacent_filter_projection_into_partition
 }
 
 #[test]
+fn bounded_native_query_consumes_partitioned_join_stream_directly_in_grouped_aggregate() {
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let dir = unique_temp_dir("cudf-query-engine-bounded-direct-aggregate-stream");
+    let left_path = dir.join("lineitem.parquet");
+    let right_path = dir.join("orders.parquet");
+    let left_schema = write_row_grouped_join_left_parquet(&left_path);
+    let right_schema = write_join_right_parquet(&runtime, &right_path);
+    let joined_schema = Arc::new(Schema::new(vec![
+        Field::new("order_id", DataType::Int32, false),
+        Field::new("category", DataType::Utf8, false),
+    ]));
+    let aggregate_schema = Arc::new(Schema::new(vec![
+        Field::new("category", DataType::Utf8, false),
+        Field::new("order_count", DataType::Int64, false),
+    ]));
+
+    let mut right_source = join_right_source(&right_path, &right_schema, &["order_id", "category"]);
+    right_source.files[0].row_group_rows = Some(vec![100_000_000]);
+
+    let mut builder = QueryPlanBuilder::new();
+    let left = builder.add_source(SourceNode::LocalParquet(
+        join_left_source(&left_path, &left_schema, &["order_id", "qty"])
+            .with_column_roles(vec!["order_id".to_string()], vec!["qty".to_string()]),
+    ));
+    let filtered_left = builder.add_filter(
+        left,
+        Expr::binary(Expr::column("qty"), BinaryOp::Gt, Expr::literal(LiteralValue::Int32(15))),
+        Arc::clone(&left_schema),
+    );
+    let projected_left = builder.add_projection(
+        filtered_left,
+        vec![ProjectionOutput::new(Expr::column("order_id"), Field::new("order_id", DataType::Int32, false))],
+    );
+    let right = builder.add_source(SourceNode::LocalParquet(right_source));
+    let joined = builder.add_join(
+        projected_left,
+        right,
+        JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
+            .with_output_projection(vec![
+                JoinOutputColumn::left(cudf_query_engine::ColumnRef::input(0, "order_id", "order_id"), "order_id"),
+                JoinOutputColumn::right(cudf_query_engine::ColumnRef::input(1, "category", "category"), "category"),
+            ])
+            .with_build_side(JoinSide::Right),
+        Arc::clone(&joined_schema),
+    );
+    let aggregate = builder.add_aggregate(
+        joined,
+        AggregateSpec::new(
+            vec![Expr::column("category")],
+            vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("order_id"), "order_count")],
+        ),
+        Arc::clone(&aggregate_schema),
+    );
+    let plan = builder.finish_with_host_sink(aggregate);
+    let context = ExecutionContext::builder()
+        .with_shared_runtime(Arc::clone(&runtime))
+        .with_memory_control_policy(MemoryControlPolicy::Bounded {
+            device_budget_bytes: 8 * 1024 * 1024 * 1024,
+            max_source_chunk_bytes: 1,
+            max_row_groups_per_chunk: 1,
+            max_retry_attempts: 1,
+            min_retry_chunk_row_groups: 1,
+        })
+        .with_source_scheduler_policy(SourceSchedulerPolicy::new(3))
+        .build()
+        .unwrap();
+
+    let result = execute_query_plan(&context, &plan).unwrap();
+    let metrics = result.metrics();
+    assert!(
+        metrics
+            .operators
+            .iter()
+            .filter_map(|operator| operator.join.as_ref())
+            .any(|join| join.execution_strategy == "bounded_partitioned_hash_equi_join")
+    );
+    assert!(
+        metrics.partial_aggregate_count > 2,
+        "direct join-output stream should produce one partial aggregate per streamed join batch"
+    );
+    assert!(
+        metrics.partial_aggregate_input_rows >= metrics.partial_aggregate_rows,
+        "partial aggregate metrics should distinguish input rows from retained state rows"
+    );
+    assert!(
+        metrics.final_merge_attempts > 1,
+        "direct join-output aggregate should use thresholded final-merge fan-in, attempts={}, partials={}",
+        metrics.final_merge_attempts,
+        metrics.partial_aggregate_count
+    );
+    assert!(
+        metrics.final_merge_levels > 1,
+        "direct join-output aggregate should merge partial states level by level, levels={}, partials={}",
+        metrics.final_merge_levels,
+        metrics.partial_aggregate_count
+    );
+    assert!(
+        metrics.final_merge_max_fan_in < metrics.partial_aggregate_count,
+        "direct join-output aggregate should not use a single all-partials final merge"
+    );
+    assert!(
+        metrics.reservation_events.iter().all(|event| event.memory_boundary != "compiled_aggregate"),
+        "direct join-output stream should not fall back to one full-frame compiled aggregate"
+    );
+    assert!(
+        metrics.reservation_events.iter().all(|event| event.memory_boundary != "join_output_stream_concat"),
+        "direct join-output stream should feed grouped aggregate without a full join-output concat"
+    );
+    assert!(
+        metrics.reservation_events.iter().any(|event| {
+            event.outcome.as_str() == "granted" && event.memory_boundary == "compiled_aggregate_partial_state"
+        }),
+        "direct stream aggregate should retain per-batch partial aggregate states"
+    );
+
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    assert_eq!(batch.num_rows(), 2);
+    let rows = string_array(batch, 0)
+        .iter()
+        .zip(int64_array(batch, 1).values())
+        .map(|(category, count)| (category.expect("category should be non-null").to_string(), *count))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    assert_eq!(rows.get("two"), Some(&2));
+    assert_eq!(rows.get("three"), Some(&1));
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn bounded_native_query_preserves_partitioned_join_stream_through_filtered_join_into_aggregate() {
     let runtime = Arc::new(cudf::Runtime::new().unwrap());
     let dir = unique_temp_dir("cudf-query-engine-bounded-one-shot-filtered-aggregate-stream");

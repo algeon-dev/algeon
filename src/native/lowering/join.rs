@@ -71,11 +71,12 @@ impl CanonicalJoin {
     }
 
     const fn build_side(self) -> NativeJoinSide {
-        // Left, semi, and anti joins preserve the native left side, so their
-        // default build side is right. Inner/full/cross keep the native default.
+        // Use right-build orientation whenever join semantics allow it so
+        // left-deep joined streams can remain on the probe side.
         match self.join_type {
             NativeJoinType::Left | NativeJoinType::LeftSemi | NativeJoinType::LeftAnti => NativeJoinSide::Right,
-            NativeJoinType::Inner | NativeJoinType::Full => NativeJoinSide::Left,
+            NativeJoinType::Inner => NativeJoinSide::Right,
+            NativeJoinType::Full => NativeJoinSide::Left,
             NativeJoinType::Cross => NativeJoinSide::Left,
         }
     }
