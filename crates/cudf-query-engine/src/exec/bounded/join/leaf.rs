@@ -14,13 +14,30 @@ pub(in crate::exec::bounded) struct BoundedJoinLeafLocalParquetSourceStream {
     source: LocalParquetSource,
     node_id: NodeId,
     chunks: Vec<SourceChunk>,
+    stages: Vec<BoundedJoinLeafSourceStreamStage>,
     max_attempts: usize,
     min_retry_chunk_row_groups: usize,
+}
+
+#[derive(Clone)]
+enum BoundedJoinLeafSourceStreamStage {
+    Filter { node_id: NodeId, node: FilterNode },
+    Projection { node_id: NodeId, node: ProjectionNode },
 }
 
 impl BoundedJoinLeafLocalParquetSourceStream {
     pub(in crate::exec::bounded) fn chunk_count(&self) -> usize {
         self.chunks.len()
+    }
+
+    pub(in crate::exec::bounded) fn with_filter_stage(mut self, node_id: NodeId, node: FilterNode) -> Self {
+        self.stages.push(BoundedJoinLeafSourceStreamStage::Filter { node_id, node });
+        self
+    }
+
+    pub(in crate::exec::bounded) fn with_projection_stage(mut self, node_id: NodeId, node: ProjectionNode) -> Self {
+        self.stages.push(BoundedJoinLeafSourceStreamStage::Projection { node_id, node });
+        self
     }
 }
 
@@ -82,6 +99,7 @@ pub(in crate::exec::bounded) fn plan_bounded_join_leaf_local_parquet_source_stre
         source: source.clone(),
         node_id,
         chunks: chunk_plan.chunks,
+        stages: Vec::new(),
         max_attempts,
         min_retry_chunk_row_groups,
     })
@@ -132,7 +150,8 @@ fn read_join_leaf_source_stream_chunks(
     reservations: &mut ReservationTracker,
     metrics: &mut QueryMetrics,
 ) -> Result<Vec<(GpuDataFrame, ActiveReservation)>> {
-    let chunks = if context.source_scheduler_policy().enables_prefetch() && stream.chunks.len() > 1 {
+    let grow_source_to_observed = stream.stages.is_empty();
+    let mut chunks = if context.source_scheduler_policy().enables_prefetch() && stream.chunks.len() > 1 {
         match read_join_leaf_source_chunks_with_scheduler(
             context,
             &stream.source,
@@ -141,6 +160,7 @@ fn read_join_leaf_source_stream_chunks(
             reservations,
             metrics,
             stream.max_attempts,
+            grow_source_to_observed,
         ) {
             Ok(chunks) => chunks,
             Err(error) if is_retryable_chunk_error(&error) => read_join_leaf_source_chunks_serial(
@@ -152,6 +172,7 @@ fn read_join_leaf_source_stream_chunks(
                 metrics,
                 stream.max_attempts,
                 stream.min_retry_chunk_row_groups,
+                grow_source_to_observed,
             )?,
             Err(error) => return Err(error),
         }
@@ -165,8 +186,33 @@ fn read_join_leaf_source_stream_chunks(
             metrics,
             stream.max_attempts,
             stream.min_retry_chunk_row_groups,
+            grow_source_to_observed,
         )?
     };
+    if !stream.stages.is_empty() {
+        let chunk_count = chunks.len();
+        let mut pending = chunks;
+        let mut transformed = Vec::with_capacity(chunk_count);
+        while !pending.is_empty() {
+            let (frame, reservation) = pending.remove(0);
+            let output = apply_join_leaf_source_stream_stages(
+                context,
+                stream,
+                ResidentGpuFrame { frame, reservation },
+                reservations,
+                metrics,
+            );
+            match output {
+                Ok(output) => transformed.push((output.frame, output.reservation)),
+                Err(error) => {
+                    release_join_source_chunks_reverse(reservations, pending, metrics);
+                    release_join_source_chunks_reverse(reservations, transformed, metrics);
+                    return Err(error);
+                },
+            }
+        }
+        chunks = transformed;
+    }
     Ok(chunks)
 }
 
@@ -189,6 +235,7 @@ fn read_join_leaf_source_chunks_serial(
     metrics: &mut QueryMetrics,
     max_attempts: usize,
     min_retry_chunk_row_groups: usize,
+    grow_source_to_observed: bool,
 ) -> Result<Vec<(GpuDataFrame, ActiveReservation)>> {
     let mut chunks = Vec::with_capacity(source_chunks.len());
     for chunk in source_chunks {
@@ -202,6 +249,7 @@ fn read_join_leaf_source_chunks_serial(
             1,
             max_attempts,
             min_retry_chunk_row_groups,
+            grow_source_to_observed,
         ) {
             Ok(mut outputs) => chunks.append(&mut outputs),
             Err(error) => {
@@ -225,6 +273,7 @@ fn read_join_leaf_source_chunk_with_retry(
     attempt: usize,
     max_attempts: usize,
     min_retry_chunk_row_groups: usize,
+    grow_source_to_observed: bool,
 ) -> Result<Vec<(GpuDataFrame, ActiveReservation)>> {
     match read_join_leaf_source_chunk_attempt(
         context,
@@ -235,6 +284,7 @@ fn read_join_leaf_source_chunk_with_retry(
         &chunk,
         attempt,
         max_attempts,
+        grow_source_to_observed,
     ) {
         Ok(output) => Ok(vec![output]),
         Err(error) if is_retryable_chunk_error(&error) => retry_join_leaf_source_chunk_after_error(
@@ -248,6 +298,7 @@ fn read_join_leaf_source_chunk_with_retry(
             attempt,
             max_attempts,
             min_retry_chunk_row_groups,
+            grow_source_to_observed,
         ),
         Err(error) => Err(error),
     }
@@ -265,6 +316,7 @@ fn retry_join_leaf_source_chunk_after_error(
     attempt: usize,
     max_attempts: usize,
     min_retry_chunk_row_groups: usize,
+    grow_source_to_observed: bool,
 ) -> Result<Vec<(GpuDataFrame, ActiveReservation)>> {
     record_chunk_retry_error(&error, metrics);
     if attempt < max_attempts
@@ -281,6 +333,7 @@ fn retry_join_leaf_source_chunk_after_error(
             attempt + 1,
             max_attempts,
             min_retry_chunk_row_groups,
+            grow_source_to_observed,
         )?;
         outputs.extend(read_join_leaf_source_chunk_with_retry(
             context,
@@ -292,6 +345,7 @@ fn retry_join_leaf_source_chunk_after_error(
             attempt + 1,
             max_attempts,
             min_retry_chunk_row_groups,
+            grow_source_to_observed,
         )?);
         return Ok(outputs);
     }
@@ -309,6 +363,7 @@ fn read_join_leaf_source_chunk_attempt(
     chunk: &SourceChunk,
     attempt: usize,
     max_attempts: usize,
+    grow_source_to_observed: bool,
 ) -> Result<(GpuDataFrame, ActiveReservation)> {
     metrics.record_source_chunk_attempt();
     if let Some(output) = try_read_cached_local_parquet_chunk(context, source, chunk, reservations, metrics)? {
@@ -337,34 +392,40 @@ fn read_join_leaf_source_chunk_attempt(
             return Err(attach_join_source_read_resource_facts(error, node_id, chunk, attempt, max_attempts));
         },
     };
-    if let Err(error) = grow_join_source_reservation_to_observed_frame(
-        &frame,
-        &mut reservation,
-        reservations,
-        node_id,
-        chunk,
-        metrics,
-        attempt,
-        max_attempts,
-    ) {
-        drop(frame);
-        reservations.release(reservation, metrics);
-        return Err(error);
-    }
-    let retained_device_bytes = reservation.bytes();
-    if let Err(error) = insert_bounded_local_parquet_source_cache(
-        context,
-        source,
-        chunk,
-        &frame,
-        &mut reservation,
-        reservations,
-        metrics,
-        "join_source_read",
-        attempt,
-        max_attempts,
-        retained_device_bytes,
-    ) {
+    if grow_source_to_observed {
+        if let Err(error) = grow_join_source_reservation_to_observed_frame(
+            &frame,
+            &mut reservation,
+            reservations,
+            node_id,
+            chunk,
+            metrics,
+            attempt,
+            max_attempts,
+        ) {
+            drop(frame);
+            reservations.release(reservation, metrics);
+            return Err(error);
+        }
+        let retained_device_bytes = reservation.bytes();
+        if let Err(error) = insert_bounded_local_parquet_source_cache(
+            context,
+            source,
+            chunk,
+            &frame,
+            &mut reservation,
+            reservations,
+            metrics,
+            "join_source_read",
+            attempt,
+            max_attempts,
+            retained_device_bytes,
+        ) {
+            drop(frame);
+            reservations.release(reservation, metrics);
+            return Err(error);
+        }
+    } else if let Err(error) = observe_device_memory_bytes(&frame, metrics) {
         drop(frame);
         reservations.release(reservation, metrics);
         return Err(error);
@@ -381,6 +442,7 @@ fn read_join_leaf_source_chunks_with_scheduler(
     reservations: &mut ReservationTracker,
     metrics: &mut QueryMetrics,
     max_attempts: usize,
+    grow_source_to_observed: bool,
 ) -> Result<Vec<(GpuDataFrame, ActiveReservation)>> {
     let mut pending = VecDeque::new();
     let mut next_chunk_index = 0usize;
@@ -412,36 +474,44 @@ fn read_join_leaf_source_chunks_with_scheduler(
         if is_prefetch {
             metrics.record_source_read_prefetch_completed();
         }
-        if let Err(error) = grow_join_source_reservation_to_observed_frame(
-            &output.frame,
-            &mut output.reservation,
-            reservations,
-            node_id,
-            chunk,
-            metrics,
-            1,
-            max_attempts,
-        ) {
-            drop(output.frame);
-            reservations.release(output.reservation, metrics);
-            abandon_join_leaf_reads(pending, reservations, metrics);
-            release_join_source_chunks_reverse(reservations, chunks, metrics);
-            return Err(error);
-        }
-        let retained_device_bytes = output.reservation.bytes();
-        if let Err(error) = insert_bounded_local_parquet_source_cache(
-            context,
-            source,
-            chunk,
-            &output.frame,
-            &mut output.reservation,
-            reservations,
-            metrics,
-            "join_source_read",
-            1,
-            max_attempts,
-            retained_device_bytes,
-        ) {
+        if grow_source_to_observed {
+            if let Err(error) = grow_join_source_reservation_to_observed_frame(
+                &output.frame,
+                &mut output.reservation,
+                reservations,
+                node_id,
+                chunk,
+                metrics,
+                1,
+                max_attempts,
+            ) {
+                drop(output.frame);
+                reservations.release(output.reservation, metrics);
+                abandon_join_leaf_reads(pending, reservations, metrics);
+                release_join_source_chunks_reverse(reservations, chunks, metrics);
+                return Err(error);
+            }
+            let retained_device_bytes = output.reservation.bytes();
+            if let Err(error) = insert_bounded_local_parquet_source_cache(
+                context,
+                source,
+                chunk,
+                &output.frame,
+                &mut output.reservation,
+                reservations,
+                metrics,
+                "join_source_read",
+                1,
+                max_attempts,
+                retained_device_bytes,
+            ) {
+                drop(output.frame);
+                reservations.release(output.reservation, metrics);
+                abandon_join_leaf_reads(pending, reservations, metrics);
+                release_join_source_chunks_reverse(reservations, chunks, metrics);
+                return Err(error);
+            }
+        } else if let Err(error) = observe_device_memory_bytes(&output.frame, metrics) {
             drop(output.frame);
             reservations.release(output.reservation, metrics);
             abandon_join_leaf_reads(pending, reservations, metrics);
@@ -498,6 +568,7 @@ fn stream_join_leaf_source_chunks_serial<F>(
 where
     F: FnMut(ResidentGpuFrame, &mut ReservationTracker, &mut QueryMetrics) -> Result<()>,
 {
+    let grow_source_to_observed = stream.stages.is_empty();
     for chunk in &stream.chunks {
         let outputs = read_join_leaf_source_chunk_with_retry(
             context,
@@ -509,9 +580,12 @@ where
             1,
             stream.max_attempts,
             stream.min_retry_chunk_row_groups,
+            grow_source_to_observed,
         )?;
         for (frame, reservation) in outputs {
-            consume(ResidentGpuFrame { frame, reservation }, reservations, metrics)?;
+            let input = ResidentGpuFrame { frame, reservation };
+            let output = apply_join_leaf_source_stream_stages(context, stream, input, reservations, metrics)?;
+            consume(output, reservations, metrics)?;
         }
     }
     Ok(())
@@ -527,6 +601,7 @@ fn stream_join_leaf_source_chunks_with_scheduler<F>(
 where
     F: FnMut(ResidentGpuFrame, &mut ReservationTracker, &mut QueryMetrics) -> Result<()>,
 {
+    let grow_source_to_observed = stream.stages.is_empty();
     let mut pending = VecDeque::new();
     let mut next_chunk_index = 0usize;
     start_next_required_join_leaf_read(
@@ -561,42 +636,60 @@ where
         if is_prefetch {
             metrics.record_source_read_prefetch_completed();
         }
-        if let Err(error) = grow_join_source_reservation_to_observed_frame(
-            &output.frame,
-            &mut output.reservation,
-            reservations,
-            stream.node_id,
-            chunk,
-            metrics,
-            1,
-            stream.max_attempts,
-        ) {
-            drop(output.frame);
-            reservations.release(output.reservation, metrics);
-            abandon_join_leaf_reads(pending, reservations, metrics);
-            return Err(error);
-        }
-        let retained_device_bytes = output.reservation.bytes();
-        if let Err(error) = insert_bounded_local_parquet_source_cache(
-            context,
-            &stream.source,
-            chunk,
-            &output.frame,
-            &mut output.reservation,
-            reservations,
-            metrics,
-            "join_source_read",
-            1,
-            stream.max_attempts,
-            retained_device_bytes,
-        ) {
+        if grow_source_to_observed {
+            if let Err(error) = grow_join_source_reservation_to_observed_frame(
+                &output.frame,
+                &mut output.reservation,
+                reservations,
+                stream.node_id,
+                chunk,
+                metrics,
+                1,
+                stream.max_attempts,
+            ) {
+                drop(output.frame);
+                reservations.release(output.reservation, metrics);
+                abandon_join_leaf_reads(pending, reservations, metrics);
+                return Err(error);
+            }
+            let retained_device_bytes = output.reservation.bytes();
+            if let Err(error) = insert_bounded_local_parquet_source_cache(
+                context,
+                &stream.source,
+                chunk,
+                &output.frame,
+                &mut output.reservation,
+                reservations,
+                metrics,
+                "join_source_read",
+                1,
+                stream.max_attempts,
+                retained_device_bytes,
+            ) {
+                drop(output.frame);
+                reservations.release(output.reservation, metrics);
+                abandon_join_leaf_reads(pending, reservations, metrics);
+                return Err(error);
+            }
+        } else if let Err(error) = observe_device_memory_bytes(&output.frame, metrics) {
             drop(output.frame);
             reservations.release(output.reservation, metrics);
             abandon_join_leaf_reads(pending, reservations, metrics);
             return Err(error);
         }
         metrics.record_source_chunk_commit(chunk.row_group_count() as u64);
-        consume(ResidentGpuFrame { frame: output.frame, reservation: output.reservation }, reservations, metrics)?;
+        let input = ResidentGpuFrame { frame: output.frame, reservation: output.reservation };
+        let output = match apply_join_leaf_source_stream_stages(context, stream, input, reservations, metrics) {
+            Ok(output) => output,
+            Err(error) => {
+                abandon_join_leaf_reads(pending, reservations, metrics);
+                return Err(error);
+            },
+        };
+        if let Err(error) = consume(output, reservations, metrics) {
+            abandon_join_leaf_reads(pending, reservations, metrics);
+            return Err(error);
+        }
 
         if let Err(error) = fill_optional_join_leaf_reads(
             context,
@@ -883,6 +976,149 @@ fn grow_join_source_reservation_to_observed_frame(
             .with_requested_bytes(delta),
         metrics,
     )
+}
+
+fn apply_join_leaf_source_stream_stages(
+    context: &ExecutionContext,
+    stream: &BoundedJoinLeafLocalParquetSourceStream,
+    mut input: ResidentGpuFrame,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+) -> Result<ResidentGpuFrame> {
+    for stage in &stream.stages {
+        input = match stage {
+            BoundedJoinLeafSourceStreamStage::Filter { node_id, node } => execute_join_leaf_source_stream_unary(
+                context,
+                *node_id,
+                "join_source_filter",
+                "join_source_filter_output",
+                input,
+                reservations,
+                metrics,
+                |context, input, token, metrics| {
+                    execute_filter_with_budget(
+                        context,
+                        node,
+                        input,
+                        token.expect("budget token is created for join source stream filter stages"),
+                        metrics,
+                    )
+                },
+            ),
+            BoundedJoinLeafSourceStreamStage::Projection { node_id, node } => execute_join_leaf_source_stream_unary(
+                context,
+                *node_id,
+                "join_source_projection",
+                "join_source_projection_output",
+                input,
+                reservations,
+                metrics,
+                |context, input, token, metrics| {
+                    execute_projection_with_budget(
+                        context,
+                        node,
+                        input,
+                        token.expect("budget token is created for join source stream projection stages"),
+                        metrics,
+                    )
+                },
+            ),
+        }?;
+    }
+    Ok(input)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn execute_join_leaf_source_stream_unary(
+    context: &ExecutionContext,
+    node_id: NodeId,
+    stage: &'static str,
+    output_boundary: &'static str,
+    input: ResidentGpuFrame,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+    execute: impl FnOnce(
+        &ExecutionContext,
+        GpuDataFrame,
+        Option<&ExecutionBudgetToken>,
+        &mut QueryMetrics,
+    ) -> Result<GpuDataFrame>,
+) -> Result<ResidentGpuFrame> {
+    let input_reserved_bytes = input.reservation.bytes();
+    let mut work_reservation = match reservations.try_reserve_work(
+        MemoryReservationRequest::new(ReservationKind::OperatorOutput, input_reserved_bytes, reservations.budget())
+            .with_memory_boundary(stage)
+            .with_node_id(node_id)
+            .with_stage(stage)
+            .with_attempt(1, 1),
+        metrics,
+    ) {
+        Ok(reservation) => reservation,
+        Err(error) => {
+            drop(input.frame);
+            reservations.release(input.reservation, metrics);
+            return Err(error);
+        },
+    };
+    let token = match execution_budget_token_for_boundary(
+        context,
+        reservations.available_bytes_including(&work_reservation),
+        stage,
+        "cudf_query_engine.bounded.join.source_stream_unary.budget_token",
+        "failed to create bounded native join source stream operator budget token",
+    ) {
+        Ok(token) => token,
+        Err(error) => {
+            reservations.release(work_reservation, metrics);
+            reservations.release(input.reservation, metrics);
+            return Err(error.with_fact_if_absent("node_id", node_id));
+        },
+    };
+    let result = execute(context, input.frame, Some(&token), metrics);
+    let frame = match result {
+        Ok(frame) => {
+            reservations.release(input.reservation, metrics);
+            frame
+        },
+        Err(error) => {
+            reservations.release(work_reservation, metrics);
+            reservations.release(input.reservation, metrics);
+            return Err(error.with_fact_if_absent("node_id", node_id));
+        },
+    };
+    let output_bytes = match observe_device_memory_bytes(&frame, metrics) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            drop(frame);
+            reservations.release(work_reservation, metrics);
+            return Err(error.with_fact_if_absent("node_id", node_id));
+        },
+    };
+    let output_request =
+        MemoryReservationRequest::new(ReservationKind::OperatorOutput, output_bytes, reservations.budget())
+            .with_memory_boundary(output_boundary)
+            .with_node_id(node_id)
+            .with_stage(stage)
+            .with_attempt(1, 1);
+    if output_bytes > work_reservation.bytes() {
+        let delta = output_bytes.saturating_sub(work_reservation.bytes());
+        if let Err(error) =
+            reservations.try_grow(&mut work_reservation, output_request.clone().with_requested_bytes(delta), metrics)
+        {
+            drop(frame);
+            reservations.release(work_reservation, metrics);
+            return Err(error);
+        }
+    } else {
+        reservations.shrink_to_observed_with_request(
+            &mut work_reservation,
+            output_bytes,
+            output_request.clone(),
+            metrics,
+        );
+    }
+    let output_reservation = reservations.transfer(work_reservation, output_request, metrics);
+    Ok(ResidentGpuFrame { frame, reservation: output_reservation })
 }
 
 fn concatenate_join_source_chunks(
