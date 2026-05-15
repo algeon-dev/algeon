@@ -194,15 +194,18 @@ pub(super) fn append_producer_output_edge_requirements(
     requirements: &mut Vec<ReservationRequirement>,
 ) {
     if let Some(PlanNode::Join(join)) = plan.node(producer).map(|node| &node.kind) {
-        let one_shot_equi = matches!(
+        let observed_index_strategy = matches!(
             keyed_hash_join_strategy_decision_for_plan(plan, producer, join),
-            Some(KeyedHashJoinStrategyDecision::Selected { strategy: KeyedHashJoinStrategy::OneShotEqui, .. })
+            Some(KeyedHashJoinStrategyDecision::Selected {
+                strategy: KeyedHashJoinStrategy::OneShotEqui | KeyedHashJoinStrategy::PartitionedHashEqui,
+                ..
+            })
         );
-        let gather_map_requirement = if one_shot_equi {
+        let gather_map_requirement = if observed_index_strategy {
             ReservationRequirement::modeled(
                 ReservationKind::GatherMap,
                 "join_one_shot_indices",
-                "one_shot_join_indices_observed_retained_bytes",
+                "keyed_join_indices_observed_retained_bytes",
                 ContractQuality::ObservedRetainedState,
             )
         } else {
@@ -214,11 +217,11 @@ pub(super) fn append_producer_output_edge_requirements(
             )
         };
         requirements.push(gather_map_requirement);
-        if one_shot_equi {
+        if observed_index_strategy {
             requirements.push(ReservationRequirement::modeled(
                 ReservationKind::JoinOutput,
                 "join_output",
-                "one_shot_equality_join_output_size_preflight",
+                "keyed_equality_join_output_size_preflight",
                 ContractQuality::HardBudgetedReportWithUnresolvedPreflight,
             ));
         } else {

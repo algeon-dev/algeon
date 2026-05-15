@@ -270,7 +270,10 @@ fn node_local_requirements(plan: &QueryPlan, node: &QueryNode) -> Vec<Reservatio
         PlanNode::Join(join)
             if matches!(
                 keyed_hash_join_strategy_decision_for_plan(plan, node.id, join),
-                Some(KeyedHashJoinStrategyDecision::Selected { strategy: KeyedHashJoinStrategy::OneShotEqui, .. })
+                Some(KeyedHashJoinStrategyDecision::Selected {
+                    strategy: KeyedHashJoinStrategy::OneShotEqui | KeyedHashJoinStrategy::PartitionedHashEqui,
+                    ..
+                })
             ) =>
         {
             Vec::new()

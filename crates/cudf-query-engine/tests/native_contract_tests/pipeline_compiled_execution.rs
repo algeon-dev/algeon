@@ -825,7 +825,7 @@ fn d5_contract_report_rejects_public_unresolved_preflight_rows_with_non_hard_bud
         (ReservationKind::SourceRead, "source_read", "source_contract"),
         (ReservationKind::OperatorOutput, "aggregate_output", "aggregate_contract"),
         (ReservationKind::FinalSort, "final_sort", "final_sort_contract"),
-        (ReservationKind::JoinOutput, "join_output", "one_shot_equality_join_output_size_preflight"),
+        (ReservationKind::JoinOutput, "join_output", "keyed_equality_join_output_size_preflight"),
     ];
     let non_hard_budgeted_qualities = [
         ContractQuality::ExactPreflight,
@@ -2005,7 +2005,7 @@ fn d3_1_inventory_cases() -> Vec<D31InventoryCase> {
             ],
         },
         D31InventoryCase {
-            label: "large keyed one-shot equality join strategy",
+            label: "large keyed partitioned equality join strategy",
             plan: large_keyed_join_strategy_plan(JoinType::Inner),
             admits: cudf_query_engine::capability::CapabilityAnalysis::admits_root_join,
             graph_support: CompiledBoundedPipelineSupport::Supported,
@@ -2014,7 +2014,7 @@ fn d3_1_inventory_cases() -> Vec<D31InventoryCase> {
                 "kind=join_build",
                 "kind=join_probe",
                 "kind=join_materialize",
-                "contract=one_shot_equality_join_output_size_preflight",
+                "contract=keyed_equality_join_output_size_preflight",
                 "quality=hard_budgeted_report_with_unresolved_preflight",
             ],
         },

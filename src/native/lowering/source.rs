@@ -130,6 +130,11 @@ pub(super) fn lower_source_input(
     };
     let scan_output_bindings = source_bindings_for_schema(&scan_output_schema, source_exec.schema());
     let scan_output = LoweredNativeInput::with_bindings(scan_output_node, scan_output_schema, scan_output_bindings);
+    let scan_only_post_scan_predicate = if filter.is_none() && !reader_pushdown {
+        parquet_source.filter().and_then(|predicate| scan_predicate_without_dynamic_filter_hints(&predicate))
+    } else {
+        None
+    };
     if let Some(filter) = filter {
         if reader_pushdown_covers_filter {
             if let Some(projection) = filter.projection() {
@@ -167,6 +172,13 @@ pub(super) fn lower_source_input(
         } else {
             Ok(LoweredNativeInput::with_bindings(filtered_node, scan_output.schema, scan_output.bindings))
         }
+    } else if let Some(predicate) = scan_only_post_scan_predicate {
+        let filtered_node = builder.add_filter(
+            scan_output.node,
+            lower_physical_expr(&predicate, &scan_output.schema)?,
+            Arc::clone(&scan_output.schema),
+        );
+        Ok(LoweredNativeInput::with_bindings(filtered_node, scan_output.schema, scan_output.bindings))
     } else {
         Ok(scan_output)
     }
@@ -213,22 +225,21 @@ pub(super) fn source_reader_pushdown_predicate(
         let bindings = source_bindings_for_schema(source_output_schema, frontend_schema);
         lower_physical_expr_with_bindings(filter.predicate(), &filter.input().schema(), Some(&bindings))
     } else {
-        let Some(reader_scan_predicate) = reader_scan_predicate else {
+        let Some(reader_scan_predicate) = reader_scan_predicate.as_ref() else {
             return Ok(None);
         };
-        lower_physical_expr(&reader_scan_predicate, source_output_schema)
+        lower_physical_expr(reader_scan_predicate, source_output_schema)
     };
     let predicate = match predicate {
         Ok(predicate) => predicate,
         Err(_error) if filter.is_some() => return Ok(None),
+        Err(_error) if filter.is_none() => return Ok(None),
         Err(error) => return Err(error),
     };
     if native_source.reader_predicate_is_supported(&predicate) {
         Ok(Some(SourceReaderPushdownPredicate { expr: predicate, covers_filter }))
-    } else if filter.is_some() {
-        Ok(None)
     } else {
-        Err(FallbackReason::NativeSourcePushedDownParquetPredicate)
+        Ok(None)
     }
 }
 

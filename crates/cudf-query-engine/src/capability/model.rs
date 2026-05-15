@@ -115,9 +115,9 @@ pub const STRICT_UNRESOLVED_PREFLIGHT_GAPS: &[StrictUnresolvedPreflightGap] = &[
     },
     StrictUnresolvedPreflightGap {
         kind: ReservationKind::JoinOutput,
-        required_contract: "one_shot_equality_join_output_size_preflight",
+        required_contract: "keyed_equality_join_output_size_preflight",
         unresolved_gap: "libcudf_equality_join_output_size_preflight_unavailable",
-        retirement_requirement: "cudf-rs/libcudf exact output row-count preflight for one-shot inner/left/full equality join indices",
+        retirement_requirement: "cudf-rs/libcudf exact output row-count preflight for keyed inner/left/full equality join indices",
     },
 ];
 

@@ -26,6 +26,7 @@ pub(crate) enum JoinExecutionCapability {
 pub(crate) enum KeyedHashJoinStrategy {
     ReusableHashEqui,
     OneShotEqui,
+    PartitionedHashEqui,
 }
 
 impl KeyedHashJoinStrategy {
@@ -33,6 +34,7 @@ impl KeyedHashJoinStrategy {
         match self {
             Self::ReusableHashEqui => "reusable_hash_equi",
             Self::OneShotEqui => "one_shot_equi",
+            Self::PartitionedHashEqui => "partitioned_hash_equi",
         }
     }
 }
@@ -42,6 +44,7 @@ pub(crate) struct KeyedHashJoinStrategyInputFacts {
     pub(crate) estimated_build_rows: Option<u64>,
     pub(crate) observed_build_rows: Option<u64>,
     pub(crate) build_side_bytes: Option<u64>,
+    pub(crate) probe_side_bytes: Option<u64>,
     pub(crate) probe_reuse_count: u64,
 }
 
@@ -170,6 +173,7 @@ pub(crate) fn keyed_hash_join_strategy_input_facts_for_plan(
         estimated_build_rows: estimated_output_rows(plan, build_input),
         observed_build_rows: None,
         build_side_bytes: estimated_output_bytes(plan, build_input),
+        probe_side_bytes: estimated_output_bytes(plan, probe_input_for_join(join)),
         probe_reuse_count: 1,
     }
 }
@@ -186,14 +190,35 @@ pub(crate) fn keyed_hash_join_strategy_decision(
     if prefer_reusable {
         return KeyedHashJoinStrategyDecision::Selected {
             strategy: KeyedHashJoinStrategy::ReusableHashEqui,
-            facts: strategy_facts(join, input, KeyedHashJoinStrategy::ReusableHashEqui, None, None),
+            facts: strategy_facts(join, input, KeyedHashJoinStrategy::ReusableHashEqui, None, None, None),
+        };
+    }
+
+    if partitioned_equi_join_supported(join) {
+        return KeyedHashJoinStrategyDecision::Selected {
+            strategy: KeyedHashJoinStrategy::PartitionedHashEqui,
+            facts: strategy_facts(
+                join,
+                input,
+                KeyedHashJoinStrategy::PartitionedHashEqui,
+                Some("build_side_too_large"),
+                None,
+                None,
+            ),
         };
     }
 
     if one_shot_equi_join_supported(join) {
         return KeyedHashJoinStrategyDecision::Selected {
             strategy: KeyedHashJoinStrategy::OneShotEqui,
-            facts: strategy_facts(join, input, KeyedHashJoinStrategy::OneShotEqui, Some("build_side_too_large"), None),
+            facts: strategy_facts(
+                join,
+                input,
+                KeyedHashJoinStrategy::OneShotEqui,
+                Some("build_side_too_large"),
+                Some("partitioned_hash_equi_unsupported"),
+                None,
+            ),
         };
     }
 
@@ -204,9 +229,18 @@ pub(crate) fn keyed_hash_join_strategy_decision(
             input,
             KeyedHashJoinStrategy::OneShotEqui,
             Some("build_side_too_large"),
+            Some("partitioned_hash_equi_unsupported"),
             Some("one_shot_equi_requires_keyed_inner_left_or_full_join"),
         ),
     }
+}
+
+pub(crate) fn partitioned_equi_join_supported(join: &JoinNode) -> bool {
+    !join.spec.keys.is_empty()
+        && join.spec.residual_predicate.is_none()
+        && !join.spec.output_projection.is_empty()
+        && matches!(join.spec.join_type, JoinType::Inner | JoinType::Left | JoinType::Full)
+        && (join.spec.join_type != JoinType::Left || join.spec.build_side == JoinSide::Right)
 }
 
 pub(crate) fn one_shot_equi_join_supported(join: &JoinNode) -> bool {
@@ -222,6 +256,7 @@ fn strategy_facts(
     input: KeyedHashJoinStrategyInputFacts,
     strategy: KeyedHashJoinStrategy,
     reusable_rejected_reason: Option<&'static str>,
+    partitioned_rejected_reason: Option<&'static str>,
     one_shot_rejected_reason: Option<&'static str>,
 ) -> BTreeMap<&'static str, String> {
     let mut facts = BTreeMap::from([
@@ -243,13 +278,26 @@ fn strategy_facts(
     if let Some(bytes) = input.build_side_bytes {
         facts.insert("build_side_bytes", bytes.to_string());
     }
+    if let Some(bytes) = input.probe_side_bytes {
+        facts.insert("probe_side_bytes", bytes.to_string());
+    }
     if let Some(reason) = reusable_rejected_reason {
         facts.insert("reusable_hash_join_rejected_reason", reason.to_string());
+    }
+    if let Some(reason) = partitioned_rejected_reason {
+        facts.insert("partitioned_hash_join_rejected_reason", reason.to_string());
     }
     if let Some(reason) = one_shot_rejected_reason {
         facts.insert("one_shot_equi_rejected_reason", reason.to_string());
     }
     facts
+}
+
+fn probe_input_for_join(join: &JoinNode) -> NodeId {
+    match join.spec.build_side {
+        JoinSide::Left => join.inputs[1],
+        JoinSide::Right => join.inputs[0],
+    }
 }
 
 fn estimated_output_rows(plan: &QueryPlan, node_id: NodeId) -> Option<u64> {
