@@ -515,5 +515,17 @@ pub(super) fn release_compiled_filtered_join_build_state(
     let BoundedCompiledFilteredJoinBuildState { build, filtered_join, hash_table_reservation, .. } = build;
     drop(filtered_join);
     reservations.release(hash_table_reservation, metrics);
-    drop(build);
+    release_bounded_join_side_frame(build, reservations, metrics);
+}
+
+pub(super) fn release_compiled_filtered_join_probe_state(
+    probe: BoundedCompiledFilteredJoinProbeState,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+) {
+    let BoundedCompiledFilteredJoinProbeState { build, probe, probe_state, probe_state_reservation, .. } = probe;
+    drop(probe_state);
+    reservations.release(probe_state_reservation, metrics);
+    release_compiled_filtered_join_build_state(build, reservations, metrics);
+    release_bounded_join_side_frame(probe, reservations, metrics);
 }

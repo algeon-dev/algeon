@@ -7,6 +7,16 @@ pub(in crate::exec::bounded) struct BoundedJoinSideFrame {
     pub(in crate::exec::bounded) bytes: u64,
 }
 
+pub(in crate::exec::bounded) fn release_bounded_join_side_frame(
+    side: BoundedJoinSideFrame,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+) {
+    let BoundedJoinSideFrame { frame, _reservation: reservation, .. } = side;
+    drop(frame);
+    reservations.release(reservation, metrics);
+}
+
 enum JoinInputReservation<'a> {
     Shared { reservation: &'a ActiveReservation },
     Owned { reservation: Box<ActiveReservation> },

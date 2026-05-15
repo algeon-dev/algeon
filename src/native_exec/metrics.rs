@@ -474,7 +474,18 @@ impl NativeCudfMetrics {
                 .with_type(MetricType::SUMMARY)
                 .with_new_label("operator_kind", row.operator_kind.clone())
                 .with_new_label("task_count", row.task_count.to_string())
+                .with_new_label("reservation_requested_bytes", row.reservation_requested_bytes.to_string())
+                .with_new_label("reservation_granted_bytes", row.reservation_granted_bytes.to_string())
+                .with_new_label("reservation_released_bytes", row.reservation_released_bytes.to_string())
                 .with_new_label("reservation_live_peak_bytes", row.reservation_live_peak_bytes.to_string())
+                .with_new_label(
+                    "max_observed_peak_bytes",
+                    row.max_observed_peak_bytes.map_or_else(|| "none".to_string(), |value| value.to_string()),
+                )
+                .with_new_label(
+                    "max_retained_bytes",
+                    row.max_retained_bytes.map_or_else(|| "none".to_string(), |value| value.to_string()),
+                )
                 .global_counter("native_task_operator_rows")
                 .add(1);
         }

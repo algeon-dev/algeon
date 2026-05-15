@@ -29,6 +29,8 @@ pub use adaptive_report::{
 };
 pub use adaptive_runtime::{
     AdaptiveMemoryHistory, AdaptiveMemoryHistoryKey, AdaptiveMemoryHistorySummary, AdaptiveMemoryObservation,
+    AdaptiveTaskMemoryHistoryKey, AdaptiveTaskMemoryHistoryShape, AdaptiveTaskMemoryHistorySummary,
+    AdaptiveTaskMemoryObservation,
 };
 pub use chunk::{
     SourceChunk, SourceChunkPlan, SourceChunkPlanningPolicy, SourceMetadataCache, SourceTaskMemoryModel,
@@ -57,6 +59,7 @@ pub use expr::{
 pub use metrics::{
     BoundaryMetrics, BudgetedExecutionEvent, JoinOperatorMetrics, JoinStrategyDecisionMetrics, MemoryReservationEvent,
     MemoryReservationEventAction, MemoryReservationEventOutcome, OperatorMetrics, QueryMetrics, TaskOperatorMetrics,
+    TaskRuntimeMetrics,
 };
 pub use mode::{AdaptiveExecutionMode, NativePipelineExecutionMode, StrictBoundedExecutionMode};
 pub use pipeline::{

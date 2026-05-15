@@ -161,6 +161,8 @@ pub struct QueryMetrics {
     pub max_task_retained_bytes: Option<u64>,
     pub(crate) task_kind_by_compiled_task_id: BTreeMap<String, String>,
     pub task_operator_metrics: BTreeMap<String, TaskOperatorMetrics>,
+    pub task_runtime_metrics: BTreeMap<String, TaskRuntimeMetrics>,
+    pub(crate) current_compiled_task_id: Option<String>,
     pub reservation_events: Vec<MemoryReservationEvent>,
     /// Successful lower-level cuDF calls that returned an execution-budget report.
     ///
@@ -371,12 +373,13 @@ impl QueryMetrics {
     }
 
     pub fn record_budgeted_execution(&mut self, operation: impl Into<String>, report: &ExecutionBudgetReport) {
-        self.max_task_observed_peak_bytes = max_optional(
-            self.max_task_observed_peak_bytes,
-            report.allocator_high_water_bytes().map(|bytes| bytes as u64),
-        );
-        self.max_task_retained_bytes =
-            max_optional(self.max_task_retained_bytes, report.retained_bytes().map(|bytes| bytes as u64));
+        let observed_peak_bytes = report.allocator_high_water_bytes().map(|bytes| bytes as u64);
+        let retained_bytes = report.retained_bytes().map(|bytes| bytes as u64);
+        self.max_task_observed_peak_bytes = max_optional(self.max_task_observed_peak_bytes, observed_peak_bytes);
+        self.max_task_retained_bytes = max_optional(self.max_task_retained_bytes, retained_bytes);
+        if let Some(compiled_task_id) = self.current_compiled_task_id.clone() {
+            self.record_task_budget_observation(&compiled_task_id, observed_peak_bytes, retained_bytes);
+        }
         self.budgeted_execution_events.push(BudgetedExecutionEvent::new(operation, report));
     }
 
@@ -387,7 +390,12 @@ impl QueryMetrics {
     ) {
         let compiled_task_id = compiled_task_id.to_string();
         let operator_kind = operator_kind.into();
-        self.task_kind_by_compiled_task_id.insert(compiled_task_id, operator_kind.clone());
+        self.task_kind_by_compiled_task_id.insert(compiled_task_id.clone(), operator_kind.clone());
+        self.task_runtime_metrics.entry(compiled_task_id.clone()).or_insert_with(|| TaskRuntimeMetrics {
+            compiled_task_id,
+            operator_kind: operator_kind.clone(),
+            ..Default::default()
+        });
         let row = self
             .task_operator_metrics
             .entry(operator_kind.clone())
@@ -395,10 +403,19 @@ impl QueryMetrics {
         row.task_count = row.task_count.saturating_add(1);
     }
 
+    pub fn set_current_compiled_task(&mut self, compiled_task_id: impl ToString) {
+        self.current_compiled_task_id = Some(compiled_task_id.to_string());
+    }
+
+    pub fn clear_current_compiled_task(&mut self) {
+        self.current_compiled_task_id = None;
+    }
+
     fn record_task_reservation_event(&mut self, event: &MemoryReservationEvent) {
         let Some(compiled_task_id) = event.compiled_task_id.as_deref() else {
             return;
         };
+        self.record_task_runtime_reservation_event(compiled_task_id, event);
         if matches!(
             event.action,
             MemoryReservationEventAction::Reserve
@@ -429,6 +446,49 @@ impl QueryMetrics {
                 row.live_reserved_bytes.saturating_sub(u64::try_from(-event.charged_delta_bytes).unwrap_or(u64::MAX));
         }
         row.reservation_live_peak_bytes = row.reservation_live_peak_bytes.max(row.live_reserved_bytes);
+    }
+
+    fn record_task_runtime_reservation_event(&mut self, compiled_task_id: &str, event: &MemoryReservationEvent) {
+        let operator_kind =
+            self.task_kind_by_compiled_task_id.get(compiled_task_id).cloned().unwrap_or_else(|| "unknown".to_string());
+        let row = self.task_runtime_metrics.entry(compiled_task_id.to_string()).or_insert_with(|| TaskRuntimeMetrics {
+            compiled_task_id: compiled_task_id.to_string(),
+            operator_kind: operator_kind.clone(),
+            ..Default::default()
+        });
+        row.operator_kind = operator_kind.clone();
+        row.record_reservation_event(event);
+
+        let operator = self
+            .task_operator_metrics
+            .entry(operator_kind.clone())
+            .or_insert_with(|| TaskOperatorMetrics { operator_kind, ..Default::default() });
+        operator.record_reservation_event(event);
+    }
+
+    fn record_task_budget_observation(
+        &mut self,
+        compiled_task_id: &str,
+        observed_peak_bytes: Option<u64>,
+        retained_bytes: Option<u64>,
+    ) {
+        let operator_kind =
+            self.task_kind_by_compiled_task_id.get(compiled_task_id).cloned().unwrap_or_else(|| "unknown".to_string());
+        let row = self.task_runtime_metrics.entry(compiled_task_id.to_string()).or_insert_with(|| TaskRuntimeMetrics {
+            compiled_task_id: compiled_task_id.to_string(),
+            operator_kind: operator_kind.clone(),
+            ..Default::default()
+        });
+        row.operator_kind = operator_kind.clone();
+        row.max_observed_peak_bytes = max_optional(row.max_observed_peak_bytes, observed_peak_bytes);
+        row.max_retained_bytes = max_optional(row.max_retained_bytes, retained_bytes);
+
+        let operator = self
+            .task_operator_metrics
+            .entry(operator_kind.clone())
+            .or_insert_with(|| TaskOperatorMetrics { operator_kind, ..Default::default() });
+        operator.max_observed_peak_bytes = max_optional(operator.max_observed_peak_bytes, observed_peak_bytes);
+        operator.max_retained_bytes = max_optional(operator.max_retained_bytes, retained_bytes);
     }
 
     pub fn record_source_chunk_planned(&mut self, row_groups: u64) {
@@ -637,6 +697,12 @@ impl QueryMetrics {
                 .or_insert_with(|| TaskOperatorMetrics { operator_kind, ..Default::default() })
                 .merge_from(metrics);
         }
+        for (compiled_task_id, metrics) in other.task_runtime_metrics {
+            self.task_runtime_metrics
+                .entry(compiled_task_id.clone())
+                .or_insert_with(|| TaskRuntimeMetrics { compiled_task_id, ..Default::default() })
+                .merge_from(metrics);
+        }
         self.reservation_events.extend(other.reservation_events);
         self.budgeted_execution_events.extend(other.budgeted_execution_events);
         self.source_chunks_planned = self.source_chunks_planned.saturating_add(other.source_chunks_planned);
@@ -747,14 +813,92 @@ pub struct JoinStrategyDecisionMetrics {
 pub struct TaskOperatorMetrics {
     pub operator_kind: String,
     pub task_count: u64,
+    pub reservation_requested_bytes: u64,
+    pub reservation_granted_bytes: u64,
+    pub reservation_released_bytes: u64,
     pub reservation_live_peak_bytes: u64,
+    pub max_observed_peak_bytes: Option<u64>,
+    pub max_retained_bytes: Option<u64>,
     pub(crate) live_reserved_bytes: u64,
 }
 
 impl TaskOperatorMetrics {
+    fn record_reservation_event(&mut self, event: &MemoryReservationEvent) {
+        if matches!(event.action, MemoryReservationEventAction::Reserve | MemoryReservationEventAction::Grow) {
+            self.reservation_requested_bytes = self.reservation_requested_bytes.saturating_add(event.requested_bytes);
+        }
+        if event.outcome != MemoryReservationEventOutcome::Denied && event.charged_delta_bytes > 0 {
+            let granted = u64::try_from(event.charged_delta_bytes).unwrap_or(u64::MAX);
+            self.reservation_granted_bytes = self.reservation_granted_bytes.saturating_add(granted);
+        }
+        if event.charged_delta_bytes < 0 {
+            let released = u64::try_from(-event.charged_delta_bytes).unwrap_or(u64::MAX);
+            self.reservation_released_bytes = self.reservation_released_bytes.saturating_add(released);
+        }
+    }
+
     fn merge_from(&mut self, other: Self) {
         self.task_count = self.task_count.saturating_add(other.task_count);
+        self.reservation_requested_bytes =
+            self.reservation_requested_bytes.saturating_add(other.reservation_requested_bytes);
+        self.reservation_granted_bytes = self.reservation_granted_bytes.saturating_add(other.reservation_granted_bytes);
+        self.reservation_released_bytes =
+            self.reservation_released_bytes.saturating_add(other.reservation_released_bytes);
         self.reservation_live_peak_bytes = self.reservation_live_peak_bytes.max(other.reservation_live_peak_bytes);
+        self.max_observed_peak_bytes = max_optional(self.max_observed_peak_bytes, other.max_observed_peak_bytes);
+        self.max_retained_bytes = max_optional(self.max_retained_bytes, other.max_retained_bytes);
+        self.live_reserved_bytes = self.live_reserved_bytes.saturating_add(other.live_reserved_bytes);
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TaskRuntimeMetrics {
+    pub compiled_task_id: String,
+    pub operator_kind: String,
+    pub reservation_requested_bytes: u64,
+    pub reservation_granted_bytes: u64,
+    pub reservation_released_bytes: u64,
+    pub reservation_live_peak_bytes: u64,
+    pub max_observed_peak_bytes: Option<u64>,
+    pub max_retained_bytes: Option<u64>,
+    pub(crate) live_reserved_bytes: u64,
+}
+
+impl TaskRuntimeMetrics {
+    fn record_reservation_event(&mut self, event: &MemoryReservationEvent) {
+        if matches!(event.action, MemoryReservationEventAction::Reserve | MemoryReservationEventAction::Grow) {
+            self.reservation_requested_bytes = self.reservation_requested_bytes.saturating_add(event.requested_bytes);
+        }
+        if event.outcome != MemoryReservationEventOutcome::Denied && event.charged_delta_bytes > 0 {
+            let granted = u64::try_from(event.charged_delta_bytes).unwrap_or(u64::MAX);
+            self.reservation_granted_bytes = self.reservation_granted_bytes.saturating_add(granted);
+        }
+        if event.charged_delta_bytes < 0 {
+            let released = u64::try_from(-event.charged_delta_bytes).unwrap_or(u64::MAX);
+            self.reservation_released_bytes = self.reservation_released_bytes.saturating_add(released);
+        }
+        if event.charged_delta_bytes >= 0 {
+            self.live_reserved_bytes =
+                self.live_reserved_bytes.saturating_add(u64::try_from(event.charged_delta_bytes).unwrap_or(u64::MAX));
+        } else {
+            self.live_reserved_bytes =
+                self.live_reserved_bytes.saturating_sub(u64::try_from(-event.charged_delta_bytes).unwrap_or(u64::MAX));
+        }
+        self.reservation_live_peak_bytes = self.reservation_live_peak_bytes.max(self.live_reserved_bytes);
+    }
+
+    fn merge_from(&mut self, other: Self) {
+        if self.operator_kind.is_empty() || self.operator_kind == "unknown" {
+            self.operator_kind = other.operator_kind;
+        }
+        self.reservation_requested_bytes =
+            self.reservation_requested_bytes.saturating_add(other.reservation_requested_bytes);
+        self.reservation_granted_bytes = self.reservation_granted_bytes.saturating_add(other.reservation_granted_bytes);
+        self.reservation_released_bytes =
+            self.reservation_released_bytes.saturating_add(other.reservation_released_bytes);
+        self.reservation_live_peak_bytes = self.reservation_live_peak_bytes.max(other.reservation_live_peak_bytes);
+        self.max_observed_peak_bytes = max_optional(self.max_observed_peak_bytes, other.max_observed_peak_bytes);
+        self.max_retained_bytes = max_optional(self.max_retained_bytes, other.max_retained_bytes);
         self.live_reserved_bytes = self.live_reserved_bytes.saturating_add(other.live_reserved_bytes);
     }
 }

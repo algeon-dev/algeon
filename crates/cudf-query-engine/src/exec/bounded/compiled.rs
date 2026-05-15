@@ -15,7 +15,7 @@ mod state;
 mod support;
 mod tasks;
 
-pub use scheduler::{CompiledPipelineScheduler, CompiledTaskExecutor, CompiledTaskOutput};
+pub use scheduler::{CompiledPipelineScheduler, CompiledTaskAdmission, CompiledTaskExecutor, CompiledTaskOutput};
 pub use state::{CompiledPipelineState, ReleasedCompiledResource};
 pub use support::{
     CompiledBoundedPipelineSupport, compiled_bounded_pipeline_support, compiled_bounded_query_plan_support,

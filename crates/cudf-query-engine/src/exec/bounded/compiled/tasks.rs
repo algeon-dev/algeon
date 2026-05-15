@@ -5,7 +5,7 @@ use arrow::record_batch::RecordBatch;
 use super::{
     join_strategy::{CompiledJoinExecutionStrategy, CompiledJoinStrategySelection},
     reservations::validate_task_runtime_gates,
-    scheduler::{CompiledTaskExecutor, CompiledTaskOutput},
+    scheduler::{CompiledTaskAdmission, CompiledTaskExecutor, CompiledTaskOutput},
     state::CompiledPipelineState,
 };
 use crate::{
@@ -26,7 +26,8 @@ use crate::{
             execute_compiled_bounded_aggregate_from_frame, execute_compiled_bounded_aggregate_from_stream,
             execute_final_sort_node_from_committed_with_retry, execute_final_sort_node_from_frame_with_retry,
             materialize_bounded_join_leaf_local_parquet_source_stream,
-            plan_bounded_join_leaf_local_parquet_source_stream,
+            plan_bounded_join_leaf_local_parquet_source_stream, release_bounded_compiled_join_build_state,
+            release_bounded_compiled_join_probe_state,
         },
         materialize_bounded_frame_to_host,
         types::{GpuDataFrame, GpuResidentInputMap},
@@ -172,7 +173,8 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
             return Err(invalid("compiled bounded task execution requires bounded memory control")
                 .with_fact("memory_control_policy", context.memory_control_policy().as_str()));
         };
-        let reservations = ReservationTracker::new_for_context(context, device_budget_bytes, metrics)?;
+        let reservations =
+            ReservationTracker::new_for_compiled_context(context, plan, pipeline, device_budget_bytes, metrics)?;
         Ok(Self {
             context,
             plan,
@@ -190,11 +192,100 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
         self.reservations.reserved_bytes()
     }
 
+    pub fn remaining_bytes(&self) -> u64 {
+        self.reservations.remaining_bytes()
+    }
+
     pub fn take_host_output(&mut self) -> Result<RecordBatch> {
         self.host_output.take().ok_or_else(|| {
             invalid("compiled host sink did not produce a host Arrow output")
                 .with_fact("compiled_task_id", self.pipeline.sink().input())
                 .with_fact("sink_boundary_kind", self.pipeline.sink().kind().as_str())
+        })
+    }
+
+    fn can_admit_with_current_reservations(
+        &self,
+        task: &PipelineTask,
+        state: &CompiledPipelineState<CompiledGpuResource>,
+    ) -> Result<CompiledTaskAdmission> {
+        let remaining_bytes = self.remaining_bytes();
+        let estimated_required_bytes = self.estimated_task_admission_bytes(task, state)?;
+        let reclaimable_input_bytes = self.reclaimable_input_bytes(task, state)?;
+        let available_bytes = remaining_bytes.saturating_add(reclaimable_input_bytes);
+        if estimated_required_bytes <= available_bytes || self.task_has_source_retry_path(task, state)? {
+            return Ok(CompiledTaskAdmission::admitted_with_bytes(estimated_required_bytes, remaining_bytes));
+        }
+        Ok(CompiledTaskAdmission::not_ready(
+            estimated_required_bytes,
+            remaining_bytes,
+            "estimated_task_reservation_exceeds_remaining_bytes",
+        ))
+    }
+
+    fn estimated_task_admission_bytes(
+        &self,
+        task: &PipelineTask,
+        state: &CompiledPipelineState<CompiledGpuResource>,
+    ) -> Result<u64> {
+        let input_estimate = task.input_resources().iter().try_fold(0_u64, |total, resource| {
+            let payload = state.resource_payload(*resource)?;
+            Ok(total.saturating_add(self.resource_admission_estimate_bytes(payload)))
+        })?;
+        if input_estimate > 0 {
+            return Ok(input_estimate);
+        }
+        Ok(0)
+    }
+
+    fn reclaimable_input_bytes(
+        &self,
+        task: &PipelineTask,
+        state: &CompiledPipelineState<CompiledGpuResource>,
+    ) -> Result<u64> {
+        task.input_resources().iter().try_fold(0_u64, |total, resource| {
+            if state.can_consume_task_input_resource(task, *resource) {
+                let payload = state.resource_payload(*resource)?;
+                Ok(total.saturating_add(payload.reservation_bytes()))
+            } else {
+                Ok(total)
+            }
+        })
+    }
+
+    fn resource_admission_estimate_bytes(&self, resource: &CompiledGpuResource) -> u64 {
+        match &resource.payload {
+            CompiledGpuResourcePayload::ResidentFrame { frame, .. } => frame.reservation.bytes(),
+            CompiledGpuResourcePayload::ResidentFrameStream(frames) => {
+                frames.iter().fold(0_u64, |total, frame| total.saturating_add(frame.reservation.bytes()))
+            },
+            CompiledGpuResourcePayload::JoinLeafLocalParquetSource(stream) => stream
+                .estimated_source_read_bytes()
+                .unwrap_or_else(|| self.coarse_reservation_slot_bytes())
+                .min(self.coarse_reservation_slot_bytes()),
+        }
+    }
+
+    fn coarse_reservation_slot_bytes(&self) -> u64 {
+        match self.context.memory_control_policy() {
+            MemoryControlPolicy::Bounded { device_budget_bytes, max_source_chunk_bytes, .. } => {
+                max_source_chunk_bytes.min(device_budget_bytes).max(1)
+            },
+            MemoryControlPolicy::Unbounded => 0,
+        }
+    }
+
+    fn task_has_source_retry_path(
+        &self,
+        task: &PipelineTask,
+        state: &CompiledPipelineState<CompiledGpuResource>,
+    ) -> Result<bool> {
+        if task.kind() == PipelineTaskKind::SourceRead {
+            return Ok(true);
+        }
+        task.input_resources().iter().try_fold(false, |has_stream, resource| {
+            let payload = state.resource_payload(*resource)?;
+            Ok(has_stream || matches!(&payload.payload, CompiledGpuResourcePayload::JoinLeafLocalParquetSource(_)))
         })
     }
 
@@ -1135,6 +1226,7 @@ impl CompiledTaskExecutor for CompiledGpuTaskExecutor<'_> {
     ) -> Result<CompiledTaskOutput<Self::Resource>> {
         validate_task_runtime_gates(self.pipeline, task)?;
         self.metrics.record_compiled_pipeline_task_execution(task.id(), task.kind().as_str());
+        self.metrics.set_current_compiled_task(task.id());
         self.reservations.set_diagnostic_context(Some(task.id()), task_diagnostic_resident_resource(task));
         let result = match task.kind() {
             PipelineTaskKind::SourceRead | PipelineTaskKind::GpuResidentSource => self.execute_source_task(task),
@@ -1148,6 +1240,7 @@ impl CompiledTaskExecutor for CompiledGpuTaskExecutor<'_> {
             PipelineTaskKind::SinkMaterialize => self.execute_sink_materialize_task(task, state),
         };
         self.reservations.clear_diagnostic_context();
+        self.metrics.clear_current_compiled_task();
         result
     }
 
@@ -1168,6 +1261,32 @@ impl CompiledTaskExecutor for CompiledGpuTaskExecutor<'_> {
             CompiledGpuResourcePayload::JoinLeafLocalParquetSource(_) => {},
         }
         Ok(())
+    }
+
+    fn cleanup_after_error(&mut self) -> Result<()> {
+        while let Some((_, probe)) = self.join_probes.pop_first() {
+            release_bounded_compiled_join_probe_state(probe, &mut self.reservations, self.metrics);
+        }
+        while let Some((_, build)) = self.join_builds.pop_first() {
+            release_bounded_compiled_join_build_state(build, &mut self.reservations, self.metrics);
+        }
+        Ok(())
+    }
+
+    fn live_reserved_bytes(&self) -> Option<u64> {
+        Some(self.reserved_bytes())
+    }
+
+    fn remaining_reserved_bytes(&self) -> Option<u64> {
+        Some(self.remaining_bytes())
+    }
+
+    fn can_admit_task(
+        &self,
+        task: &PipelineTask,
+        state: &CompiledPipelineState<Self::Resource>,
+    ) -> Result<CompiledTaskAdmission> {
+        self.can_admit_with_current_reservations(task, state)
     }
 }
 

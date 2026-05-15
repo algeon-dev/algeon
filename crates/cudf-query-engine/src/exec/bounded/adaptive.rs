@@ -153,13 +153,27 @@ impl<'a, 'm> AdaptiveCompiledPipelineExecutor<'a, 'm> {
                     .with_fact("candidate_status", AdaptiveCandidateStatus::Admitted.as_str())
                 })?;
                 match self.admission.report().row().adaptive_strategy {
-                    AdaptiveStrategy::ConservativeCompiledPipeline => execute_compiled_pipeline_to_host(
-                        self.context,
-                        self.plan,
-                        pipeline,
-                        self.gpu_inputs,
-                        self.metrics,
-                    ),
+                    AdaptiveStrategy::ConservativeCompiledPipeline => {
+                        let output = execute_compiled_pipeline_to_host(
+                            self.context,
+                            self.plan,
+                            pipeline,
+                            self.gpu_inputs,
+                            self.metrics,
+                        )?;
+                        if let Some(memory_history) = self.context.adaptive_memory_history() {
+                            memory_history.record_observation(
+                                crate::adaptive_runtime::AdaptiveMemoryHistoryKey::for_query_plan(self.plan),
+                                crate::adaptive_runtime::AdaptiveMemoryObservation::from_query_metrics(self.metrics),
+                            );
+                            memory_history.record_task_observations_from_query_metrics(
+                                self.plan,
+                                pipeline,
+                                self.metrics,
+                            );
+                        }
+                        Ok(output)
+                    },
                     AdaptiveStrategy::Unsupported => Err(unsupported_adaptive_candidate_error(self.admission.report())),
                 }
             },
