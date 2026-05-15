@@ -127,7 +127,7 @@ pub(super) fn local_parquet_files(
 }
 
 fn attach_row_group_byte_metadata(
-    native_file: NativeLocalParquetFile,
+    mut native_file: NativeLocalParquetFile,
     column_requirements: &NativeParquetColumnRequirements,
 ) -> NativeLocalParquetFile {
     let Ok(reader) = SerializedFileReader::try_from(native_file.path.as_path()) else {
@@ -147,60 +147,50 @@ fn attach_row_group_byte_metadata(
         .filter(|index| !projected_column_indexes.contains(index))
         .collect::<BTreeSet<_>>();
 
-    let Some(row_group_bytes) = metadata
+    if let Some(row_group_bytes) = metadata
         .row_groups()
         .iter()
         .map(|row_group| row_group_column_bytes(row_group, &read_column_indexes, ColumnByteKind::Compressed))
         .collect::<Option<Vec<_>>>()
-    else {
-        return native_file;
-    };
-    let Some(projected_compressed_bytes) = metadata
+    {
+        native_file = native_file.with_row_group_bytes(row_group_bytes);
+    }
+    let projected_compressed_bytes = metadata
         .row_groups()
         .iter()
         .map(|row_group| row_group_column_bytes(row_group, &projected_column_indexes, ColumnByteKind::Compressed))
-        .collect::<Option<Vec<_>>>()
-    else {
-        return native_file;
-    };
-    let Some(projected_uncompressed_bytes) = metadata
+        .collect::<Option<Vec<_>>>();
+    let projected_uncompressed_bytes = metadata
         .row_groups()
         .iter()
         .map(|row_group| row_group_column_bytes(row_group, &projected_column_indexes, ColumnByteKind::Uncompressed))
-        .collect::<Option<Vec<_>>>()
-    else {
-        return native_file;
-    };
-    let Some(pure_filter_compressed_bytes) = metadata
+        .collect::<Option<Vec<_>>>();
+    if let (Some(compressed), Some(uncompressed)) = (projected_compressed_bytes, projected_uncompressed_bytes) {
+        native_file = native_file.with_projected_row_group_bytes(compressed, uncompressed);
+    }
+    let pure_filter_compressed_bytes = metadata
         .row_groups()
         .iter()
         .map(|row_group| row_group_column_bytes(row_group, &pure_filter_column_indexes, ColumnByteKind::Compressed))
-        .collect::<Option<Vec<_>>>()
-    else {
-        return native_file;
-    };
-    let Some(pure_filter_uncompressed_bytes) = metadata
+        .collect::<Option<Vec<_>>>();
+    let pure_filter_uncompressed_bytes = metadata
         .row_groups()
         .iter()
         .map(|row_group| row_group_column_bytes(row_group, &pure_filter_column_indexes, ColumnByteKind::Uncompressed))
-        .collect::<Option<Vec<_>>>()
-    else {
-        return native_file;
-    };
-    let Some(row_group_rows) = metadata
+        .collect::<Option<Vec<_>>>();
+    if let (Some(compressed), Some(uncompressed)) = (pure_filter_compressed_bytes, pure_filter_uncompressed_bytes) {
+        native_file = native_file.with_pure_filter_row_group_bytes(compressed, uncompressed);
+    }
+    if let Some(row_group_rows) = metadata
         .row_groups()
         .iter()
         .map(|row_group| u64::try_from(row_group.num_rows()).ok())
         .collect::<Option<Vec<_>>>()
-    else {
-        return native_file;
-    };
+    {
+        native_file = native_file.with_row_group_rows(row_group_rows);
+    }
 
     native_file
-        .with_row_group_bytes(row_group_bytes)
-        .with_projected_row_group_bytes(projected_compressed_bytes, projected_uncompressed_bytes)
-        .with_pure_filter_row_group_bytes(pure_filter_compressed_bytes, pure_filter_uncompressed_bytes)
-        .with_row_group_rows(row_group_rows)
 }
 
 fn file_source_ref_index(source_ref: &NativeSourceColumnRef) -> Option<usize> {

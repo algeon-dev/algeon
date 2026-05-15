@@ -60,8 +60,8 @@ fn bounded_native_query_executes_chunked_grouped_sum_and_final_merge() {
     assert_eq!(metrics.source_chunks_planned, 3);
     assert_eq!(metrics.source_chunks_attempted, 3);
     assert_eq!(metrics.source_chunks_committed, 3);
-    assert_eq!(metrics.source_read_prefetches_started, 2);
-    assert_eq!(metrics.source_read_prefetches_completed, 2);
+    assert_eq!(metrics.source_read_prefetches_started, 0);
+    assert_eq!(metrics.source_read_prefetches_completed, 0);
     assert_eq!(metrics.source_read_prefetches_skipped, 0);
     assert_eq!(metrics.source_read_prefetches_abandoned, 0);
     assert!(
@@ -94,6 +94,10 @@ fn bounded_native_query_executes_chunked_grouped_sum_and_final_merge() {
         .filter(|event| event.outcome.as_str() == "granted" && event.memory_boundary == "source_chunk_prefetch")
         .count();
     assert_eq!(prefetches_before_first_operator, 0);
+    assert!(
+        metrics.reservation_events.iter().all(|event| event.memory_boundary != "source_chunk_prefetch"),
+        "source-adjacent aggregate chunks should not prefetch while the transformed source output and chunk operator reservation overlap"
+    );
     assert_eq!(metrics.row_groups_planned, 3);
     assert_eq!(metrics.row_groups_committed, 3);
     assert_eq!(metrics.partial_aggregate_count, 3);
@@ -123,6 +127,71 @@ fn bounded_native_query_executes_chunked_grouped_sum_and_final_merge() {
         assert_eq!(event.context_facts.get("reads_all_row_groups").map(String::as_str), Some("false"));
         assert_eq!(event.context_facts.get("selected_row_group_count").map(String::as_str), Some("1"));
     }
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn bounded_native_query_uses_configured_source_cap_when_budget_model_allows_it() {
+    let dir = unique_temp_dir("cudf-query-engine-bounded-aggregate-source-refinement");
+    let path = dir.join("input.parquet");
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let input_schema = write_row_grouped_input_parquet(&path);
+
+    let aggregated_schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int32, false),
+        Field::new("sum_m00", DataType::Int64, true),
+    ]));
+
+    let source = LocalParquetSource::from_files(
+        vec![
+            LocalParquetFile::new(&path)
+                .with_file_size_bytes(fs::metadata(&path).unwrap().len())
+                .with_row_group_bytes(vec![350, 350, 350])
+                .with_projected_row_group_bytes(vec![350, 350, 350], vec![350, 350, 350])
+                .with_row_group_rows(vec![2, 2, 2]),
+        ],
+        Arc::clone(&input_schema),
+        vec!["key".to_string(), "m00".to_string()],
+    );
+    let aggregate = AggregateSpec::new(
+        vec![Expr::column("key")],
+        vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("m00"), "sum_m00")],
+    );
+
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LocalParquet(source));
+    let aggregate = builder.add_aggregate(source, aggregate, Arc::clone(&aggregated_schema));
+    let plan = builder.finish_with_host_sink(aggregate);
+
+    let context = ExecutionContext::builder()
+        .with_shared_runtime(Arc::clone(&runtime))
+        .with_memory_control_policy(MemoryControlPolicy::Bounded {
+            device_budget_bytes: 8 * 1024 * 1024 * 1024,
+            max_source_chunk_bytes: 1600,
+            max_row_groups_per_chunk: 8,
+            max_retry_attempts: 1,
+            min_retry_chunk_row_groups: 1,
+        })
+        .build()
+        .unwrap();
+    let result = execute_query_plan(&context, &plan).unwrap();
+    let metrics = result.metrics();
+    assert_eq!(metrics.source_chunks_planned, 1);
+    assert_eq!(metrics.source_chunks_retried, 0);
+    assert_eq!(metrics.reservation_denied_count, 0);
+    assert_eq!(metrics.partial_aggregate_count, 1);
+    assert!(
+        metrics
+            .reservation_events
+            .iter()
+            .all(|event| { !(event.memory_boundary == "source_chunk_read" && event.requested_bytes > 1600) })
+    );
+
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    assert_eq!(batch.num_rows(), 3);
 
     fs::remove_dir_all(dir).unwrap();
 }

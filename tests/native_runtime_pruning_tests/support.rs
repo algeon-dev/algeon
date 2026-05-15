@@ -74,7 +74,8 @@ pub(super) fn unbounded_native_datafusion_config() -> NativeCudfExecutionConfig 
 }
 
 pub(super) fn constrained_native_datafusion_config() -> NativeCudfExecutionConfig {
-    NativeCudfExecutionConfig::bounded(1, 1024 * 1024, 1, 1, 1).with_shared_runtime(Arc::new(cudf::Runtime::new().unwrap()))
+    NativeCudfExecutionConfig::bounded(1, 1024 * 1024, 1, 1, 1)
+        .with_shared_runtime(Arc::new(cudf::Runtime::new().unwrap()))
 }
 
 pub(super) fn bounded_execution_context() -> ExecutionContext {

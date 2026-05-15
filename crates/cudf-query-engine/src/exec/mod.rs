@@ -201,7 +201,10 @@ use self::{
     validate::*,
 };
 use crate::{
-    chunk::{SourceChunk, SourceChunkPlan, SourceChunkPlanningPolicy, plan_local_parquet_source_chunks},
+    chunk::{
+        SourceChunk, SourceChunkPlan, SourceChunkPlanningPolicy, SourceTaskMemoryModel,
+        plan_local_parquet_source_chunks,
+    },
     datatypes::{cudf_dtype_from_arrow_type, is_supported_arrow_implicit_cast, timestamp_unit_to_cudf_resolution},
     error::{QueryError, QueryErrorCode, Result},
     expr::{AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, Expr, LimitSpec, LiteralValue, SortSpec},

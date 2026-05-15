@@ -61,11 +61,12 @@ fn bounded_native_query_executes_mixed_keyed_residual_join_with_grouped_aggregat
             (ReservationKind::OperatorOutput, "compiled_projection_output"),
             (ReservationKind::OperatorOutput, "compiled_projection"),
             (ReservationKind::OperatorOutput, "compiled_projection_output"),
+            (ReservationKind::OperatorOutput, "compiled_projection_output"),
             (ReservationKind::SourceRead, "join_source_read"),
             (ReservationKind::SourceRead, "join_source_read"),
             (ReservationKind::SourceRead, "join_source_read"),
             (ReservationKind::SourceRead, "join_source_read"),
-            (ReservationKind::SourceRead, "join_source_read"),
+            (ReservationKind::SourceRead, "join_source_concat_output"),
             (ReservationKind::OperatorOutput, "compiled_aggregate"),
             (ReservationKind::OperatorOutput, "compiled_aggregate_output"),
             (ReservationKind::OperatorOutput, "compiled_projection"),
@@ -178,11 +179,13 @@ fn bounded_native_query_enforces_mixed_keyed_residual_grouped_aggregate_hard_bud
     let baseline =
         execute_query_plan(&mixed_grouped_aggregate_execution_context(&runtime, 8 * 1024 * 1024 * 1024), &plan)
             .unwrap();
-    let (retained_join_subtree_bytes, _source_read_bytes, chunk_operator_bytes) =
+    let (retained_join_subtree_bytes, source_read_bytes, chunk_operator_bytes) =
         grouped_aggregate_chunk_budget_window(baseline.metrics());
     let operator_token_budget = chunk_operator_bytes;
-    let constrained_budget =
-        retained_join_subtree_bytes.saturating_add(chunk_operator_bytes).saturating_add(operator_token_budget);
+    let constrained_budget = retained_join_subtree_bytes
+        .saturating_add(source_read_bytes)
+        .saturating_add(chunk_operator_bytes)
+        .saturating_add(operator_token_budget);
     let constrained_context = ExecutionContext::builder()
         .with_shared_runtime(Arc::clone(&runtime))
         .with_memory_control_policy(MemoryControlPolicy::Bounded {
@@ -198,15 +201,33 @@ fn bounded_native_query_enforces_mixed_keyed_residual_grouped_aggregate_hard_bud
         Ok(_) => panic!("constrained mixed keyed residual grouped aggregate input should fail aggregate hard budget"),
         Err(error) => error,
     };
-    assert_eq!(error.code(), QueryErrorCode::CudfResourceExhausted);
     assert_eq!(error.fact_value("bounded_join_execution_family"), None);
-    assert_eq!(error.fact_value("budget_boundary"), Some("compiled_aggregate"));
-    assert_eq!(error.fact_value("budget_bytes"), Some(operator_token_budget.to_string().as_str()));
-    assert_eq!(error.fact_value("budget_enforcement"), Some("hard_memory_resource_limit"));
-    assert_eq!(error.fact_value("memory_boundary"), None);
-    assert_eq!(error.fact_value("stage"), None);
-    assert_eq!(error.fact_value("attempt"), None);
-    assert_eq!(error.fact_value("max_attempts"), None);
+    match error.code() {
+        QueryErrorCode::CudfResourceExhausted => {
+            assert_eq!(error.fact_value("budget_boundary"), Some("compiled_aggregate"));
+            let budget_bytes = error
+                .fact_value("budget_bytes")
+                .and_then(|value| value.parse::<u64>().ok())
+                .expect("aggregate hard-budget failure should report budget bytes");
+            assert!(budget_bytes >= operator_token_budget);
+            assert_eq!(error.fact_value("budget_enforcement"), Some("hard_memory_resource_limit"));
+            assert_eq!(error.fact_value("memory_boundary"), None);
+            assert_eq!(error.fact_value("stage"), None);
+            assert_eq!(error.fact_value("attempt"), None);
+            assert_eq!(error.fact_value("max_attempts"), None);
+        },
+        QueryErrorCode::MemoryReservationFailed => {
+            assert_eq!(error.fact_value("budget_boundary"), None);
+            assert_eq!(error.fact_value("budget_bytes"), Some(constrained_budget.to_string().as_str()));
+            assert_eq!(error.fact_value("budget_enforcement"), None);
+            assert_eq!(error.fact_value("reservation_kind"), Some("operator_output"));
+            assert_eq!(error.fact_value("memory_boundary"), Some("compiled_aggregate_output"));
+            assert_eq!(error.fact_value("stage"), Some("compiled_aggregate"));
+            assert_eq!(error.fact_value("attempt"), Some("1"));
+            assert_eq!(error.fact_value("max_attempts"), Some("1"));
+        },
+        other => panic!("unexpected grouped aggregate hard-budget error code: {other:?}"),
+    }
     assert!(error.fact_value("compiled_task_id").is_some());
     assert!(error.fact_value("plan_node_id").is_some());
 

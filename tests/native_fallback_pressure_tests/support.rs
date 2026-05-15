@@ -60,15 +60,14 @@ pub(super) fn accepted_bounded_join_native_diagnostics() -> NativePlanningDiagno
         "SortExec(fetch)(AggregateExec(HashJoinExec(LocalParquetScan,LocalParquetScan)))",
         1,
     ));
-    let diagnostics = NativePlanningDiagnostics {
+    NativePlanningDiagnostics {
         input_plan_root: "SortExec".to_string(),
         input_plan_shape: "SortExec(fetch)(AggregateExec(HashJoinExec(LocalParquetScan,LocalParquetScan)))".to_string(),
         report,
         source_diagnostics: Vec::new(),
         strict_bounded_contract: accepted_strict_bounded_contract_diagnostics(),
         adaptive_pipeline: Default::default(),
-    };
-    diagnostics
+    }
 }
 
 pub(super) fn rejected_native_diagnostics() -> NativePlanningDiagnostics {

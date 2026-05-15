@@ -1202,7 +1202,7 @@ fn bounded_keyed_hash_join_resident_subplan_pipeline_admission_stays_narrow() {
             .bounded_join_unsupported_shape_facts(ExecutionBoundaryPolicy::default())
             .expect("unsupported keyed hash join resident subplan variant should produce facts");
         assert_rejection_facts_are_family_free(&facts, "unsupported_keyed_hash_resident_subplan");
-        assert!(facts.get("bounded_join_rejection_reason").is_some(), "{variant:?}");
+        assert!(facts.contains_key("bounded_join_rejection_reason"), "{variant:?}");
         assert_eq!(facts.get("bounded_join_lower_level_blockers").map(String::as_str), Some(""));
     }
 }
@@ -1299,7 +1299,7 @@ fn bounded_multi_join_aggregate_over_join_subplan_topk_capability_proof_stays_na
             .bounded_join_unsupported_shape_facts(ExecutionBoundaryPolicy::default())
             .expect("rejected aggregate-over-join TopK variant should produce facts");
         assert_rejection_facts_are_family_free(&facts, "unsupported_aggregate_over_join_topk");
-        assert!(facts.get("bounded_join_rejection_reason").is_some(), "{variant:?}");
+        assert!(facts.contains_key("bounded_join_rejection_reason"), "{variant:?}");
     }
 }
 

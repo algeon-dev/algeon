@@ -31,8 +31,8 @@ pub use adaptive_runtime::{
     AdaptiveMemoryHistory, AdaptiveMemoryHistoryKey, AdaptiveMemoryHistorySummary, AdaptiveMemoryObservation,
 };
 pub use chunk::{
-    SourceChunk, SourceChunkPlan, SourceChunkPlanningPolicy, SourceMetadataCache, plan_local_parquet_source_chunks,
-    plan_local_parquet_source_chunks_with_metadata_cache,
+    SourceChunk, SourceChunkPlan, SourceChunkPlanningPolicy, SourceMetadataCache, SourceTaskMemoryModel,
+    plan_local_parquet_source_chunks, plan_local_parquet_source_chunks_with_metadata_cache,
 };
 pub use contract_report::{
     StrictBoundedContractGateId, StrictBoundedContractGateRow, StrictBoundedContractOwner, StrictBoundedContractReport,

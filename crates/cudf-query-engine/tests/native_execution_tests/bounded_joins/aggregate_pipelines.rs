@@ -217,7 +217,9 @@ fn bounded_native_query_executes_serial_aggregate_join_spine() {
             .reservation_events
             .iter()
             .filter(|event| {
-                event.outcome.as_str() == "granted" && event.memory_boundary == "compiled_aggregate_output"
+                event.outcome.as_str() == "applied"
+                    && event.action == MemoryReservationEventAction::Transfer
+                    && event.memory_boundary == "compiled_aggregate_output"
             })
             .count(),
         2
@@ -239,6 +241,7 @@ fn bounded_native_query_executes_serial_aggregate_join_spine() {
             (ReservationKind::OperatorOutput, "compiled_projection"),
             (ReservationKind::OperatorOutput, "compiled_projection_output"),
             (ReservationKind::OperatorOutput, "compiled_aggregate"),
+            (ReservationKind::OperatorOutput, "compiled_aggregate_output"),
             (ReservationKind::OperatorOutput, "compiled_aggregate_output"),
             (ReservationKind::FinalSort, "final_sort"),
             (ReservationKind::FinalSort, "final_sort"),

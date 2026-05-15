@@ -30,6 +30,10 @@ impl BoundedJoinLeafLocalParquetSourceStream {
         self.chunks.len()
     }
 
+    fn has_stages(&self) -> bool {
+        !self.stages.is_empty()
+    }
+
     pub(in crate::exec::bounded) fn with_filter_stage(mut self, node_id: NodeId, node: FilterNode) -> Self {
         self.stages.push(BoundedJoinLeafSourceStreamStage::Filter { node_id, node });
         self
@@ -74,13 +78,14 @@ pub(in crate::exec::bounded) fn plan_bounded_join_leaf_local_parquet_source_stre
     context: &ExecutionContext,
     source: &LocalParquetSource,
     node_id: NodeId,
+    has_source_adjacent_stages: bool,
     metrics: &mut QueryMetrics,
 ) -> Result<BoundedJoinLeafLocalParquetSourceStream> {
     validate_local_parquet_source(source)?;
     let chunk_plan = plan_local_parquet_source_chunks(
         node_id,
         source,
-        SourceChunkPlanningPolicy::from(context.memory_control_policy()),
+        join_source_chunk_planning_policy(context, has_source_adjacent_stages),
     )?;
     for chunk in &chunk_plan.chunks {
         metrics.record_source_chunk_planned(chunk.row_group_count() as u64);
@@ -105,14 +110,39 @@ pub(in crate::exec::bounded) fn plan_bounded_join_leaf_local_parquet_source_stre
     })
 }
 
+fn join_source_chunk_planning_policy(
+    context: &ExecutionContext,
+    has_source_adjacent_stages: bool,
+) -> SourceChunkPlanningPolicy {
+    SourceChunkPlanningPolicy::for_source_task(
+        context.memory_control_policy(),
+        SourceTaskMemoryModel::join_leaf_stream(has_source_adjacent_stages),
+    )
+}
+
 pub(in crate::exec::bounded) fn materialize_bounded_join_leaf_local_parquet_source_stream(
     context: &ExecutionContext,
     stream: BoundedJoinLeafLocalParquetSourceStream,
     reservations: &mut ReservationTracker,
     metrics: &mut QueryMetrics,
 ) -> Result<ResidentGpuFrame> {
+    let node_id = stream.node_id;
+    if stream.has_stages() {
+        let mut chunks = Vec::with_capacity(stream.chunk_count());
+        let stream_result =
+            stream_join_leaf_source_chunks_serial(context, &stream, reservations, metrics, &mut |input, _, _| {
+                chunks.push((input.frame, input.reservation));
+                Ok(())
+            });
+        if let Err(error) = stream_result {
+            release_join_source_chunks_reverse(reservations, chunks, metrics);
+            return Err(error);
+        }
+        return concatenate_join_source_chunks(context, node_id, chunks, reservations, metrics);
+    }
+
     let chunks = read_join_leaf_source_stream_chunks(context, &stream, reservations, metrics)?;
-    concatenate_join_source_chunks(context, stream.node_id, chunks, reservations, metrics)
+    concatenate_join_source_chunks(context, node_id, chunks, reservations, metrics)
 }
 
 pub(in crate::exec::bounded) fn stream_bounded_join_leaf_local_parquet_source<F>(
@@ -132,6 +162,19 @@ where
     }
 }
 
+pub(in crate::exec::bounded) fn stream_bounded_join_leaf_local_parquet_source_serial<F>(
+    context: &ExecutionContext,
+    stream: BoundedJoinLeafLocalParquetSourceStream,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+    mut consume: F,
+) -> Result<()>
+where
+    F: FnMut(ResidentGpuFrame, &mut ReservationTracker, &mut QueryMetrics) -> Result<()>,
+{
+    stream_join_leaf_source_chunks_serial(context, &stream, reservations, metrics, &mut consume)
+}
+
 fn execute_bounded_join_leaf_local_parquet_source(
     context: &ExecutionContext,
     source: &LocalParquetSource,
@@ -139,7 +182,7 @@ fn execute_bounded_join_leaf_local_parquet_source(
     reservations: &mut ReservationTracker,
     metrics: &mut QueryMetrics,
 ) -> Result<ResidentGpuFrame> {
-    let stream = plan_bounded_join_leaf_local_parquet_source_stream(context, source, node_id, metrics)?;
+    let stream = plan_bounded_join_leaf_local_parquet_source_stream(context, source, node_id, false, metrics)?;
     let chunks = read_join_leaf_source_stream_chunks(context, &stream, reservations, metrics)?;
     concatenate_join_source_chunks(context, node_id, chunks, reservations, metrics)
 }
@@ -1137,9 +1180,9 @@ fn concatenate_join_source_chunks(
         chunks.iter().fold(0u64, |total, (_frame, reservation)| total.saturating_add(reservation.bytes()));
     let mut output_reservation = match reservations.try_reserve(
         MemoryReservationRequest::new(ReservationKind::SourceRead, output_reservation_bytes, reservations.budget())
-            .with_memory_boundary("join_source_read")
+            .with_memory_boundary("join_source_concat_output")
             .with_node_id(node_id)
-            .with_stage("join_source_read")
+            .with_stage("join_source_concat_output")
             .with_attempt(1, 1),
         metrics,
     ) {
@@ -1198,9 +1241,9 @@ fn concatenate_join_source_chunks(
         if let Err(error) = reservations.try_grow(
             &mut output_reservation,
             MemoryReservationRequest::new(ReservationKind::SourceRead, delta, reservations.budget())
-                .with_memory_boundary("join_source_read")
+                .with_memory_boundary("join_source_concat_output")
                 .with_node_id(node_id)
-                .with_stage("join_source_read")
+                .with_stage("join_source_concat_output")
                 .with_attempt(1, 1),
             metrics,
         ) {

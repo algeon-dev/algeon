@@ -32,12 +32,13 @@ use facts::*;
 pub(in crate::exec) use final_sort::topk_candidate_rows;
 use final_sort::*;
 pub(in crate::exec::bounded) use join::{
-    BoundedCompiledJoinBuildState, BoundedCompiledJoinProbeState, BoundedJoinLeafLocalParquetSourceStream,
-    execute_bounded_compiled_join_build_from_frame, execute_bounded_compiled_join_build_from_resident_frame,
-    execute_bounded_compiled_join_materialize, execute_bounded_compiled_join_probe_from_frame,
-    execute_bounded_compiled_join_probe_from_resident_frame, execute_bounded_compiled_join_probe_from_stream,
-    execute_bounded_join_leaf_source, materialize_bounded_join_leaf_local_parquet_source_stream,
-    plan_bounded_join_leaf_local_parquet_source_stream,
+    BoundedCompiledJoinBuildState, BoundedCompiledJoinMaterializeOutput, BoundedCompiledJoinProbeState,
+    BoundedJoinLeafLocalParquetSourceStream, execute_bounded_compiled_join_build_from_frame,
+    execute_bounded_compiled_join_build_from_resident_frame, execute_bounded_compiled_join_materialize,
+    execute_bounded_compiled_join_materialize_preserving_stream, execute_bounded_compiled_join_probe_from_frame,
+    execute_bounded_compiled_join_probe_from_frame_stream, execute_bounded_compiled_join_probe_from_resident_frame,
+    execute_bounded_compiled_join_probe_from_stream, execute_bounded_join_leaf_source,
+    materialize_bounded_join_leaf_local_parquet_source_stream, plan_bounded_join_leaf_local_parquet_source_stream,
 };
 pub(in crate::exec) use reservation::{ActiveReservation, CommittedPartial, ReservationTracker, ResidentGpuFrame};
 use strict::try_execute_strict_bounded_pipeline;
@@ -81,7 +82,7 @@ pub(super) fn execute_bounded_query_plan(
     let chunk_plan = plan_local_parquet_source_chunks(
         bounded.source_id,
         bounded.source,
-        SourceChunkPlanningPolicy::from(context.memory_control_policy()),
+        aggregate_source_chunk_planning_policy(context, &bounded),
     )?;
     for chunk in &chunk_plan.chunks {
         metrics.record_source_chunk_planned(chunk.row_group_count() as u64);
@@ -141,6 +142,16 @@ pub(super) fn execute_bounded_query_plan(
 
 fn bounded_pipeline_execution_mode(context: &ExecutionContext) -> NativePipelineExecutionMode {
     context.native_pipeline_execution_mode()
+}
+
+fn aggregate_source_chunk_planning_policy(
+    context: &ExecutionContext,
+    bounded: &BoundedPlan<'_>,
+) -> SourceChunkPlanningPolicy {
+    SourceChunkPlanningPolicy::for_source_task(
+        context.memory_control_policy(),
+        SourceTaskMemoryModel::aggregate_pipeline(bounded.has_source_adjacent_stages()),
+    )
 }
 
 fn reject_bounded_join_plan(context: &ExecutionContext, plan: &QueryPlan) -> Result<()> {
@@ -342,9 +353,6 @@ fn try_execute_bounded_generic_source_adjacent_stream(
     reservations: &mut ReservationTracker,
     metrics: &mut QueryMetrics,
 ) -> Result<Option<ResidentGpuFrame>> {
-    if context.local_parquet_source_cache().is_some() {
-        return Ok(None);
-    }
     let Some((source_id, source, stages)) = collect_bounded_generic_source_adjacent_stages(plan, root_id)? else {
         return Ok(None);
     };
@@ -424,7 +432,7 @@ pub(in crate::exec::bounded) fn execute_bounded_generic_local_parquet_source(
         chunks,
         reservations,
         metrics,
-        "bounded_generic_source_read",
+        "bounded_generic_source_concat_output",
         "cudf_query_engine.bounded.generic.source_concat",
         "failed to concatenate bounded generic local parquet source chunks",
     )
@@ -462,6 +470,7 @@ fn execute_bounded_generic_local_parquet_source_with_stages(
         source,
         &chunk_plan.chunks,
         stages,
+        context.local_parquet_source_cache().is_some(),
         reservations,
         metrics,
     )?;
@@ -472,7 +481,7 @@ fn execute_bounded_generic_local_parquet_source_with_stages(
         chunks,
         reservations,
         metrics,
-        "bounded_generic_source_read",
+        "bounded_generic_source_concat_output",
         "cudf_query_engine.bounded.generic.source_concat",
         "failed to concatenate bounded generic local parquet source chunks",
     )
@@ -483,6 +492,7 @@ fn read_bounded_generic_source_adjacent_chunks(
     source: &LocalParquetSource,
     chunks: &[SourceChunk],
     stages: &[BoundedGenericSourceAdjacentStage<'_>],
+    grow_source_to_observed: bool,
     reservations: &mut ReservationTracker,
     metrics: &mut QueryMetrics,
 ) -> Result<Vec<ScheduledLocalParquetReadOutput>> {
@@ -495,7 +505,7 @@ fn read_bounded_generic_source_adjacent_chunks(
             reservations,
             metrics,
             "bounded_generic_source_read",
-            false,
+            grow_source_to_observed,
         ) {
             Ok(source_chunk) => source_chunk,
             Err(error) => {
@@ -687,7 +697,7 @@ pub(in crate::exec::bounded) fn execute_bounded_generic_unary_from_frame_with_re
         &mut QueryMetrics,
     ) -> Result<GpuDataFrame>,
 ) -> Result<ResidentGpuFrame> {
-    let work_reservation = reservations.try_reserve(
+    let mut work_reservation = reservations.try_reserve(
         MemoryReservationRequest::new(reservation_kind, input_reserved_bytes, reservations.budget())
             .with_memory_boundary(stage)
             .with_node_id(node_id)
@@ -727,21 +737,29 @@ pub(in crate::exec::bounded) fn execute_bounded_generic_unary_from_frame_with_re
             return Err(error.with_fact_if_absent("node_id", node_id));
         },
     };
-    let output_reservation = match reservations.try_reserve(
-        MemoryReservationRequest::new(reservation_kind, output_bytes, reservations.budget())
-            .with_memory_boundary(output_boundary)
-            .with_node_id(node_id)
-            .with_stage(stage)
-            .with_attempt(1, 1),
-        metrics,
-    ) {
-        Ok(reservation) => reservation,
-        Err(error) => {
+    let output_request = MemoryReservationRequest::new(reservation_kind, output_bytes, reservations.budget())
+        .with_memory_boundary(output_boundary)
+        .with_node_id(node_id)
+        .with_stage(stage)
+        .with_attempt(1, 1);
+    if output_bytes > work_reservation.bytes() {
+        let delta = output_bytes.saturating_sub(work_reservation.bytes());
+        if let Err(error) =
+            reservations.try_grow(&mut work_reservation, output_request.clone().with_requested_bytes(delta), metrics)
+        {
+            drop(frame);
             reservations.release(work_reservation, metrics);
             return Err(error);
-        },
-    };
-    reservations.release(work_reservation, metrics);
+        }
+    } else {
+        reservations.shrink_to_observed_with_request(
+            &mut work_reservation,
+            output_bytes,
+            output_request.clone(),
+            metrics,
+        );
+    }
+    let output_reservation = reservations.transfer(work_reservation, output_request, metrics);
     Ok(ResidentGpuFrame { frame, reservation: output_reservation })
 }
 

@@ -7,9 +7,10 @@
 use std::{fmt, str::FromStr};
 
 /// Coarse native pipeline mode selected before admission or execution.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum NativePipelineExecutionMode {
     /// Deterministic strict bounded execution with gate-first contract checks.
+    #[default]
     StrictBounded,
     /// Adaptive execution with its own admission, actions, and report surface.
     Adaptive,
@@ -21,12 +22,6 @@ impl NativePipelineExecutionMode {
             Self::StrictBounded => "strict_bounded",
             Self::Adaptive => "adaptive",
         }
-    }
-}
-
-impl Default for NativePipelineExecutionMode {
-    fn default() -> Self {
-        Self::StrictBounded
     }
 }
 

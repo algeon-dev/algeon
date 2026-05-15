@@ -9,7 +9,7 @@ pub(in crate::exec::bounded) struct BoundedJoinSideFrame {
 
 enum JoinInputReservation<'a> {
     Shared { reservation: &'a ActiveReservation },
-    Owned { reservation: ActiveReservation },
+    Owned { reservation: Box<ActiveReservation> },
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -24,7 +24,7 @@ pub(in crate::exec::bounded) fn prepare_bounded_join_side_input_from_resident_fr
 ) -> Result<BoundedJoinSideFrame> {
     prepare_bounded_join_side_input(
         input.frame,
-        JoinInputReservation::Owned { reservation: input.reservation },
+        JoinInputReservation::Owned { reservation: Box::new(input.reservation) },
         columns,
         input_side,
         node_id,
@@ -73,7 +73,7 @@ fn prepare_bounded_join_side_input(
     let memory_boundary = if input_side == build_side { "join_build_side" } else { "join_probe_side" };
     let (input_reserved_bytes, source_reservation, mut owned_input_reservation) = match input_reservation {
         JoinInputReservation::Shared { reservation } => (reservation.bytes(), Some(reservation), None),
-        JoinInputReservation::Owned { reservation } => (reservation.bytes(), None, Some(reservation)),
+        JoinInputReservation::Owned { reservation } => (reservation.bytes(), None, Some(*reservation)),
     };
     let input_frame = input.into_frame();
     let select_memory_effect = match input_frame.select_memory_effect(columns) {
@@ -89,7 +89,7 @@ fn prepare_bounded_join_side_input(
             .with_fact("columns", columns.join(",")));
         },
     };
-    let work_reservation = if select_memory_effect.is_alias_of_input() {
+    let mut work_reservation = if select_memory_effect.is_alias_of_input() {
         None
     } else {
         Some(
@@ -162,19 +162,25 @@ fn prepare_bounded_join_side_input(
             }
         }
     } else {
-        match reservations.try_reserve(
-            bounded_join_request(reservation_kind, memory_boundary, bytes, reservations.budget(), node_id),
-            metrics,
-        ) {
-            Ok(reservation) => reservation,
-            Err(error) => {
-                if let Some(work_reservation) = work_reservation {
-                    reservations.release(work_reservation, metrics);
-                }
-                release_owned_join_input_reservation(&mut owned_input_reservation, reservations, metrics);
+        release_owned_join_input_reservation(&mut owned_input_reservation, reservations, metrics);
+        let mut work_reservation =
+            work_reservation.take().expect("non-alias join input selection should reserve projection work");
+        let output_request =
+            bounded_join_request(reservation_kind, memory_boundary, bytes, reservations.budget(), node_id);
+        if bytes > work_reservation.bytes() {
+            let delta = bytes.saturating_sub(work_reservation.bytes());
+            if let Err(error) = reservations.try_grow(
+                &mut work_reservation,
+                output_request.clone().with_requested_bytes(delta),
+                metrics,
+            ) {
+                reservations.release(work_reservation, metrics);
                 return Err(error);
-            },
+            }
+        } else {
+            reservations.shrink_to_observed_with_request(&mut work_reservation, bytes, output_request.clone(), metrics);
         }
+        reservations.transfer(work_reservation, output_request, metrics)
     };
     if let Some(work_reservation) = work_reservation {
         reservations.release(work_reservation, metrics);

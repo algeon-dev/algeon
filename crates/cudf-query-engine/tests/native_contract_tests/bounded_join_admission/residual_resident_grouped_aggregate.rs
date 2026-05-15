@@ -87,7 +87,7 @@ fn bounded_mixed_keyed_residual_join_resident_grouped_aggregate_input_capability
             .bounded_join_unsupported_shape_facts(ExecutionBoundaryPolicy::default())
             .expect("unsupported resident grouped aggregate input variant should produce facts");
         assert_rejection_facts_are_family_free(&facts, "unsupported_residual_resident_grouped_aggregate_input");
-        assert!(facts.get("bounded_join_rejection_reason").is_some(), "{variant:?}");
+        assert!(facts.contains_key("bounded_join_rejection_reason"), "{variant:?}");
         assert_eq!(facts.get("bounded_join_lower_level_blockers").map(String::as_str), Some(""));
     }
 }

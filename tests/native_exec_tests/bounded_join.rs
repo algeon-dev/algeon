@@ -127,7 +127,7 @@ fn native_optimizer_rule_adaptive_mode_rewrites_join_with_adaptive_diagnostics()
         .as_any()
         .downcast_ref::<NativeCudfExec>()
         .expect("adaptive mode should still present a NativeCudfExec DataFusion boundary");
-    assert_eq!(displayable(native).one_line().to_string().contains("native_pipeline_execution_mode=adaptive"), true);
+    assert!(displayable(native).one_line().to_string().contains("native_pipeline_execution_mode=adaptive"));
     let diagnostics = rule.last_planning_diagnostics().expect("native optimizer should retain diagnostics");
     assert!(diagnostics.strict_bounded_contract.is_empty());
     assert_eq!(diagnostics.adaptive_pipeline.candidates.len(), 1);

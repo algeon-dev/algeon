@@ -291,14 +291,20 @@ fn bounded_generic_local_parquet_pipeline_uses_required_only_source_scheduler() 
     assert_eq!(metrics.source_read_prefetches_completed, 0);
     assert_eq!(metrics.source_read_prefetches_skipped, 0);
     assert_eq!(metrics.source_read_prefetches_abandoned, 0);
-    let source_read_prefetches = metrics
+    let production_prefetches = metrics
         .reservation_events
         .iter()
         .filter(|event| {
-            event.outcome.as_str() == "granted" && event.memory_boundary == "bounded_generic_source_read_prefetch"
+            event.outcome.as_str() == "granted"
+                && matches!(event.memory_boundary.as_str(), "source_chunk_prefetch" | "join_source_read_prefetch")
         })
         .count();
-    assert_eq!(source_read_prefetches, 0);
+    assert_eq!(production_prefetches, 0);
+    assert!(metrics.reservation_events.iter().any(|event| {
+        event.outcome.as_str() == "granted"
+            && event.memory_boundary == "bounded_generic_source_read"
+            && event.action == MemoryReservationEventAction::Reserve
+    }));
     assert!(
         metrics.reservation_events.iter().all(|event| {
             !(event.memory_boundary == "bounded_generic_source_read"
@@ -339,6 +345,13 @@ fn bounded_generic_local_parquet_pipeline_uses_required_only_source_scheduler() 
                 && event.action == MemoryReservationEventAction::Transfer
         }),
         "source-adjacent generic projection should transfer ownership to the projected output boundary"
+    );
+    assert!(
+        metrics.reservation_events.iter().any(|event| {
+            event.memory_boundary == "bounded_generic_source_concat_output"
+                && event.action == MemoryReservationEventAction::Reserve
+        }),
+        "multi-chunk generic source concat output should be traced separately from raw source reads"
     );
 
     let QueryOutput::HostArrow(batch) = result.output() else {
@@ -532,8 +545,34 @@ fn bounded_local_parquet_source_cache_binds_execution_frame_schema_with_pure_fil
     assert_eq!(first.metrics().source_cache_inserts, 3);
 
     let second = execute_query_plan(&build_context(), &build_plan()).unwrap();
-    assert_eq!(second.metrics().source_cache_hits, 3);
-    assert_eq!(second.metrics().source_cache_misses, 0);
+    let second_metrics = second.metrics();
+    assert_eq!(second_metrics.source_cache_hits, 3);
+    assert_eq!(second_metrics.source_cache_misses, 0);
+    assert!(
+        second_metrics.reservation_events.iter().any(|event| {
+            event.memory_boundary == "source_cache_borrowed"
+                && event.action == MemoryReservationEventAction::AliasAcquire
+        }),
+        "cache-aware source-adjacent streaming should borrow retained raw chunks before filtering"
+    );
+    assert!(
+        second_metrics.reservation_events.iter().any(|event| {
+            event.memory_boundary == "bounded_generic_source_filter_output"
+                && event.action == MemoryReservationEventAction::Transfer
+        }),
+        "cache-aware source-adjacent filtering should transfer ownership to the filtered chunk boundary"
+    );
+    assert!(
+        second_metrics.reservation_events.iter().any(|event| {
+            event.memory_boundary == "bounded_generic_source_projection_output"
+                && event.action == MemoryReservationEventAction::Transfer
+        }),
+        "cache-aware source-adjacent projection should transfer ownership to the projected chunk boundary"
+    );
+    assert!(
+        second_metrics.reservation_events.iter().all(|event| event.memory_boundary != "bounded_generic_filter"),
+        "cache-aware source-adjacent streaming should not materialize the cached raw source before filtering"
+    );
 
     let QueryOutput::HostArrow(batch) = second.output() else {
         panic!("host sink should materialize one RecordBatch");
