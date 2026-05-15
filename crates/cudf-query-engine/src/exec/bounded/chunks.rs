@@ -156,7 +156,35 @@ pub(in crate::exec::bounded) fn read_local_parquet_chunks_required_only(
     metrics: &mut QueryMetrics,
     memory_boundary: &'static str,
 ) -> Result<Vec<ScheduledLocalParquetReadOutput>> {
-    read_local_parquet_chunks_serial(context, source, chunks, reservations, metrics, memory_boundary)
+    read_local_parquet_chunks_required_only_with_observation(
+        context,
+        source,
+        chunks,
+        reservations,
+        metrics,
+        memory_boundary,
+        true,
+    )
+}
+
+pub(in crate::exec::bounded) fn read_local_parquet_chunks_required_only_with_observation(
+    context: &ExecutionContext,
+    source: &LocalParquetSource,
+    chunks: &[SourceChunk],
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+    memory_boundary: &'static str,
+    grow_source_to_observed: bool,
+) -> Result<Vec<ScheduledLocalParquetReadOutput>> {
+    read_local_parquet_chunks_serial(
+        context,
+        source,
+        chunks,
+        reservations,
+        metrics,
+        memory_boundary,
+        grow_source_to_observed,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -266,6 +294,7 @@ fn read_local_parquet_chunks_serial(
     reservations: &mut ReservationTracker,
     metrics: &mut QueryMetrics,
     memory_boundary: &'static str,
+    grow_source_to_observed: bool,
 ) -> Result<Vec<ScheduledLocalParquetReadOutput>> {
     let mut outputs = Vec::with_capacity(chunks.len());
     for chunk in chunks {
@@ -303,16 +332,29 @@ fn read_local_parquet_chunks_serial(
             };
         let mut output =
             ScheduledLocalParquetReadOutput { chunk: chunk.clone(), frame, reservation, observed_bytes: 0 };
-        output.observed_bytes = match grow_source_reservation_to_observed(
-            &output.frame,
-            &mut output.reservation,
-            reservations,
-            &output.chunk,
-            metrics,
-            memory_boundary,
-            1,
-            1,
-        ) {
+        output.observed_bytes = match if grow_source_to_observed {
+            grow_source_reservation_to_observed(
+                &output.frame,
+                &mut output.reservation,
+                reservations,
+                &output.chunk,
+                metrics,
+                memory_boundary,
+                1,
+                1,
+            )
+        } else {
+            shrink_source_reservation_to_observed_without_grow(
+                &output.frame,
+                &mut output.reservation,
+                reservations,
+                &output.chunk,
+                metrics,
+                memory_boundary,
+                1,
+                1,
+            )
+        } {
             Ok(bytes) => bytes,
             Err(error) => {
                 drop(output.frame);
@@ -321,26 +363,28 @@ fn read_local_parquet_chunks_serial(
                 return Err(error);
             },
         };
-        insert_bounded_local_parquet_source_cache(
-            context,
-            source,
-            &output.chunk,
-            &output.frame,
-            &mut output.reservation,
-            reservations,
-            metrics,
-            memory_boundary,
-            1,
-            1,
-            output.observed_bytes,
-        )?;
+        if grow_source_to_observed {
+            insert_bounded_local_parquet_source_cache(
+                context,
+                source,
+                &output.chunk,
+                &output.frame,
+                &mut output.reservation,
+                reservations,
+                metrics,
+                memory_boundary,
+                1,
+                1,
+                output.observed_bytes,
+            )?;
+        }
         metrics.record_source_chunk_commit(chunk.row_group_count() as u64);
         outputs.push(output);
     }
     Ok(outputs)
 }
 
-fn release_source_read_outputs_reverse(
+pub(in crate::exec::bounded) fn release_source_read_outputs_reverse(
     reservations: &mut ReservationTracker,
     mut chunks: Vec<ScheduledLocalParquetReadOutput>,
     metrics: &mut QueryMetrics,
@@ -1067,7 +1111,7 @@ fn execute_source_adjacent_chunk_stages(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn execute_source_adjacent_chunk_unary(
+pub(in crate::exec::bounded) fn execute_source_adjacent_chunk_unary(
     context: &ExecutionContext,
     node_id: NodeId,
     stage: &'static str,

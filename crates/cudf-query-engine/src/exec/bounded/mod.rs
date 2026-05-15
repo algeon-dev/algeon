@@ -1,4 +1,7 @@
-use super::{source::record_bounded_parquet_source_metrics, *};
+use super::{
+    source::{ScheduledLocalParquetReadOutput, record_bounded_parquet_source_metrics},
+    *,
+};
 
 // Phase E ownership boundary:
 // - adaptive: adaptive-only admission/report/execution facade.
@@ -233,6 +236,11 @@ fn execute_bounded_generic_node(
             },
         },
         PlanNode::Filter(filter) => {
+            if let Some(frame) =
+                try_execute_bounded_generic_source_adjacent_stream(context, plan, id, reservations, metrics)?
+            {
+                return Ok(frame);
+            }
             let input = execute_bounded_generic_node(context, plan, filter.input, gpu_inputs, reservations, metrics)?;
             execute_bounded_generic_unary(
                 context,
@@ -255,6 +263,11 @@ fn execute_bounded_generic_node(
             )
         },
         PlanNode::Projection(projection) => {
+            if let Some(frame) =
+                try_execute_bounded_generic_source_adjacent_stream(context, plan, id, reservations, metrics)?
+            {
+                return Ok(frame);
+            }
             let input =
                 execute_bounded_generic_node(context, plan, projection.input, gpu_inputs, reservations, metrics)?;
             execute_bounded_generic_unary(
@@ -316,6 +329,60 @@ fn execute_bounded_generic_node(
     Ok(frame)
 }
 
+#[derive(Clone, Copy)]
+enum BoundedGenericSourceAdjacentStage<'a> {
+    Filter { node_id: NodeId, node: &'a FilterNode },
+    Projection { node_id: NodeId, node: &'a ProjectionNode },
+}
+
+fn try_execute_bounded_generic_source_adjacent_stream(
+    context: &ExecutionContext,
+    plan: &QueryPlan,
+    root_id: NodeId,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+) -> Result<Option<ResidentGpuFrame>> {
+    if context.local_parquet_source_cache().is_some() {
+        return Ok(None);
+    }
+    let Some((source_id, source, stages)) = collect_bounded_generic_source_adjacent_stages(plan, root_id)? else {
+        return Ok(None);
+    };
+    execute_bounded_generic_local_parquet_source_with_stages(context, source, source_id, &stages, reservations, metrics)
+        .map(Some)
+}
+
+fn collect_bounded_generic_source_adjacent_stages(
+    plan: &QueryPlan,
+    root_id: NodeId,
+) -> Result<Option<(NodeId, &LocalParquetSource, Vec<BoundedGenericSourceAdjacentStage<'_>>)>> {
+    let mut stages = Vec::new();
+    let mut current_id = root_id;
+    loop {
+        let node = plan.node(current_id).ok_or_else(|| {
+            invalid_node_reference(current_id, "bounded generic source-adjacent stream references a missing node")
+        })?;
+        match &node.kind {
+            PlanNode::Filter(filter) => {
+                stages.push(BoundedGenericSourceAdjacentStage::Filter { node_id: current_id, node: filter });
+                current_id = filter.input;
+            },
+            PlanNode::Projection(projection) => {
+                stages.push(BoundedGenericSourceAdjacentStage::Projection { node_id: current_id, node: projection });
+                current_id = projection.input;
+            },
+            PlanNode::Source(source) => match source.as_ref() {
+                crate::source::SourceNode::LocalParquet(source) if !stages.is_empty() => {
+                    stages.reverse();
+                    return Ok(Some((current_id, source, stages)));
+                },
+                _ => return Ok(None),
+            },
+            _ => return Ok(None),
+        }
+    }
+}
+
 pub(in crate::exec::bounded) fn execute_bounded_generic_local_parquet_source(
     context: &ExecutionContext,
     source: &LocalParquetSource,
@@ -361,6 +428,156 @@ pub(in crate::exec::bounded) fn execute_bounded_generic_local_parquet_source(
         "cudf_query_engine.bounded.generic.source_concat",
         "failed to concatenate bounded generic local parquet source chunks",
     )
+}
+
+fn execute_bounded_generic_local_parquet_source_with_stages(
+    context: &ExecutionContext,
+    source: &LocalParquetSource,
+    node_id: NodeId,
+    stages: &[BoundedGenericSourceAdjacentStage<'_>],
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+) -> Result<ResidentGpuFrame> {
+    validate_local_parquet_source(source)?;
+    let chunk_plan = plan_local_parquet_source_chunks(
+        node_id,
+        source,
+        SourceChunkPlanningPolicy::from(context.memory_control_policy()),
+    )?;
+    for chunk in &chunk_plan.chunks {
+        metrics.record_source_chunk_planned(chunk.row_group_count() as u64);
+    }
+    if chunk_plan.chunks.is_empty() {
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "cudf_query_engine.bounded.generic.source",
+            "bounded generic local parquet source requires at least one planned source chunk",
+        )
+        .with_fact("source_node_id", node_id));
+    }
+    record_bounded_parquet_source_metrics(source, &chunk_plan, metrics);
+
+    let chunks = read_bounded_generic_source_adjacent_chunks(
+        context,
+        source,
+        &chunk_plan.chunks,
+        stages,
+        reservations,
+        metrics,
+    )?;
+
+    concatenate_source_read_outputs(
+        context,
+        node_id,
+        chunks,
+        reservations,
+        metrics,
+        "bounded_generic_source_read",
+        "cudf_query_engine.bounded.generic.source_concat",
+        "failed to concatenate bounded generic local parquet source chunks",
+    )
+}
+
+fn read_bounded_generic_source_adjacent_chunks(
+    context: &ExecutionContext,
+    source: &LocalParquetSource,
+    chunks: &[SourceChunk],
+    stages: &[BoundedGenericSourceAdjacentStage<'_>],
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+) -> Result<Vec<ScheduledLocalParquetReadOutput>> {
+    let mut transformed = Vec::with_capacity(chunks.len());
+    for chunk in chunks {
+        let source_chunk = match read_local_parquet_chunks_required_only_with_observation(
+            context,
+            source,
+            std::slice::from_ref(chunk),
+            reservations,
+            metrics,
+            "bounded_generic_source_read",
+            false,
+        ) {
+            Ok(source_chunk) => source_chunk,
+            Err(error) => {
+                release_source_read_outputs_reverse(reservations, transformed, metrics);
+                return Err(error);
+            },
+        };
+        let mut staged =
+            match apply_bounded_generic_source_adjacent_stages(context, source_chunk, stages, reservations, metrics) {
+                Ok(staged) => staged,
+                Err(error) => {
+                    release_source_read_outputs_reverse(reservations, transformed, metrics);
+                    return Err(error);
+                },
+            };
+        transformed.append(&mut staged);
+    }
+    Ok(transformed)
+}
+
+fn apply_bounded_generic_source_adjacent_stages(
+    context: &ExecutionContext,
+    chunks: Vec<ScheduledLocalParquetReadOutput>,
+    stages: &[BoundedGenericSourceAdjacentStage<'_>],
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+) -> Result<Vec<ScheduledLocalParquetReadOutput>> {
+    let mut pending = chunks;
+    let mut transformed = Vec::with_capacity(pending.len());
+    while !pending.is_empty() {
+        let source = pending.remove(0);
+        let chunk = source.chunk.clone();
+        let mut current = CommittedPartial { frame: source.frame, reservation: source.reservation };
+        for stage in stages {
+            let result = match stage {
+                BoundedGenericSourceAdjacentStage::Filter { node_id, node } => execute_source_adjacent_chunk_unary(
+                    context,
+                    *node_id,
+                    "bounded_generic_source_filter",
+                    "bounded_generic_source_filter_output",
+                    &chunk,
+                    current,
+                    reservations,
+                    metrics,
+                    1,
+                    1,
+                    |context, input, token, metrics| execute_filter_with_budget(context, node, input, token, metrics),
+                ),
+                BoundedGenericSourceAdjacentStage::Projection { node_id, node } => execute_source_adjacent_chunk_unary(
+                    context,
+                    *node_id,
+                    "bounded_generic_source_projection",
+                    "bounded_generic_source_projection_output",
+                    &chunk,
+                    current,
+                    reservations,
+                    metrics,
+                    1,
+                    1,
+                    |context, input, token, metrics| {
+                        execute_projection_with_budget(context, node, input, token, metrics)
+                    },
+                ),
+            };
+            current = match result {
+                Ok(current) => current,
+                Err(error) => {
+                    release_source_read_outputs_reverse(reservations, pending, metrics);
+                    release_source_read_outputs_reverse(reservations, transformed, metrics);
+                    return Err(error);
+                },
+            };
+        }
+        let observed_bytes = current.reservation.bytes();
+        transformed.push(ScheduledLocalParquetReadOutput {
+            chunk,
+            frame: current.frame,
+            reservation: current.reservation,
+            observed_bytes,
+        });
+    }
+    Ok(transformed)
 }
 
 pub(in crate::exec::bounded) fn execute_bounded_generic_gpu_resident_source(
