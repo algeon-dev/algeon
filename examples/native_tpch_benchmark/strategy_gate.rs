@@ -9,7 +9,8 @@ const SF100_BOUNDED_RESERVATION_GATE_QUERY_IDS: &[&str] = &["q09", "q18", "q19"]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct LargeKeyedJoinStrategyGateSummary {
     pub(super) query_ids: Vec<String>,
-    pub(super) large_one_shot_sites: usize,
+    pub(super) large_partitioned_sites: usize,
+    pub(super) large_fallback_one_shot_sites: usize,
     pub(super) large_reusable_sites: usize,
     pub(super) reservation_denied_count: u64,
 }
@@ -17,9 +18,10 @@ pub(super) struct LargeKeyedJoinStrategyGateSummary {
 impl LargeKeyedJoinStrategyGateSummary {
     pub(super) fn progress_line(&self) -> String {
         format!(
-            "[native_tpch_benchmark] phase=large_keyed_join_strategy_gate outcome=passed query_ids={} large_one_shot_sites={} large_reusable_sites={} reservation_denied_count={}",
+            "[native_tpch_benchmark] phase=large_keyed_join_strategy_gate outcome=passed query_ids={} large_partitioned_sites={} large_fallback_one_shot_sites={} large_reusable_sites={} reservation_denied_count={}",
             self.query_ids.join(","),
-            self.large_one_shot_sites,
+            self.large_partitioned_sites,
+            self.large_fallback_one_shot_sites,
             self.large_reusable_sites,
             self.reservation_denied_count,
         )
@@ -87,8 +89,10 @@ pub(super) fn validate_large_keyed_join_strategy_gate_tsv(
 ) -> DataFusionResult<LargeKeyedJoinStrategyGateSummary> {
     let report = ParsedBenchmarkTsv::parse(tsv)?;
     let rows = report.selected_rows(config)?;
-    let mut large_one_shot_sites = Vec::new();
+    let mut large_partitioned_sites = Vec::new();
+    let mut large_fallback_one_shot_sites = Vec::new();
     let mut large_reusable_sites = Vec::new();
+    let mut unsupported_large_one_shot_sites = Vec::new();
     let mut reservation_denied_count = 0_u64;
     let mut runtime_failures = Vec::new();
 
@@ -102,7 +106,13 @@ pub(super) fn validate_large_keyed_join_strategy_gate_tsv(
                 continue;
             }
             match join.strategy() {
-                "one_shot_equi" => large_one_shot_sites.push(join.site_label(&row.query_id)),
+                "partitioned_hash_equi" | "partitioned_mixed_keyed_residual" => {
+                    large_partitioned_sites.push(join.site_label(&row.query_id));
+                },
+                "one_shot_equi" if join.has_partitioned_fallback_reason() => {
+                    large_fallback_one_shot_sites.push(join.site_label(&row.query_id));
+                },
+                "one_shot_equi" => unsupported_large_one_shot_sites.push(join.site_label(&row.query_id)),
                 "reusable_hash_equi" => large_reusable_sites.push(join.site_label(&row.query_id)),
                 _ => {},
             }
@@ -126,13 +136,22 @@ pub(super) fn validate_large_keyed_join_strategy_gate_tsv(
             large_reusable_sites.join("|")
         )));
     }
-    if large_one_shot_sites.is_empty() {
-        return Err(gate_error("large keyed join strategy gate found no large one_shot_equi sites in selected rows"));
+    if !unsupported_large_one_shot_sites.is_empty() {
+        return Err(gate_error(format!(
+            "large keyed join strategy gate found large one_shot_equi sites without a local partitioned fallback reason: {}",
+            unsupported_large_one_shot_sites.join("|")
+        )));
+    }
+    if large_partitioned_sites.is_empty() {
+        return Err(gate_error(
+            "large keyed join strategy gate found no large partitioned_hash_equi sites in selected rows",
+        ));
     }
 
     Ok(LargeKeyedJoinStrategyGateSummary {
         query_ids: rows.iter().map(|row| row.query_id.clone()).collect(),
-        large_one_shot_sites: large_one_shot_sites.len(),
+        large_partitioned_sites: large_partitioned_sites.len(),
+        large_fallback_one_shot_sites: large_fallback_one_shot_sites.len(),
         large_reusable_sites: large_reusable_sites.len(),
         reservation_denied_count,
     })
@@ -328,14 +347,21 @@ impl ParsedJoinStrategyRow {
 
     fn site_label(&self, query_id: &str) -> String {
         format!(
-            "{}:{}:{}:estimated_build_rows={}:observed_build_rows={}:build_side_bytes={}",
+            "{}:{}:{}:estimated_build_rows={}:observed_build_rows={}:build_side_bytes={}:partitioned_hash_join_rejected_reason={}",
             query_id,
             self.fields.get("node_id").map_or("unknown", String::as_str),
             self.strategy(),
             self.fields.get("estimated_build_rows").map_or("none", String::as_str),
             self.fields.get("observed_build_rows").map_or("none", String::as_str),
             self.fields.get("build_side_bytes").map_or("none", String::as_str),
+            self.fields.get("partitioned_hash_join_rejected_reason").map_or("none", String::as_str),
         )
+    }
+
+    fn has_partitioned_fallback_reason(&self) -> bool {
+        self.fields
+            .get("partitioned_hash_join_rejected_reason")
+            .is_some_and(|reason| reason != "none" && !reason.is_empty())
     }
 
     fn u64_field(&self, field: &str) -> Option<u64> {

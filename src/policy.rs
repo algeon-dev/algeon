@@ -6,24 +6,40 @@ pub enum GpuFallbackPolicy {
     CpuOnly,
 }
 
+/// Stable reason codes explaining why a candidate physical plan stayed on CPU
+/// or was rejected by the native GPU path.
+///
+/// Operator/expression/type reasons describe unsupported DataFusion plan
+/// semantics, while `NativeSource*` reasons describe source-adapter
+/// requirements that could not be mapped to a native local-Parquet source.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FallbackReason {
     UnsupportedOperator,
     UnsupportedExpression,
     UnsupportedType,
     ExplicitCpuPolicy,
+    /// DataFusion produced a sort-preserving merge shape that the native
+    /// planner does not lower as an execution boundary yet.
     NativeSortPreservingMergeUnsupported,
+    /// DataFusion produced distributed partial/final aggregate stages whose
+    /// native aggregate state contract is not modeled for this shape.
     NativeDistributedAggregateUnsupported,
+    /// DataFusion produced a partition-preserving sort shape that the native
+    /// planner does not currently lower.
     NativePartitionPreservingSortUnsupported,
     NativeBoundedJoinUnsupported,
     NativeAdaptivePipelineUnsupported,
     NativeSourceNonLocalObjectStore,
     NativeSourcePartitionColumns,
     NativeSourceExprAdapter,
+    /// The DataFusion source uses a Parquet file reader factory that the native
+    /// local-Parquet adapter cannot reproduce.
     NativeSourceParquetFileReaderFactory,
     NativeSourceScanLimit,
     NativeSourcePreserveOrder,
     NativeSourceOutputOrdering,
+    /// The source has pushed-down Parquet predicates that native row-group
+    /// pruning cannot translate without changing scan semantics.
     NativeSourcePushedDownParquetPredicate,
     NativeSourceEmpty,
     NativeSourcePartitionValues,

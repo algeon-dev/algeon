@@ -87,10 +87,16 @@ impl NativeDataFusionRuntimeOutcome {
     }
 }
 
+/// Report vocabulary for how much of the optimized DataFusion plan runs through
+/// native GPU execution after native planning.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NativeDataFusionPostNativeExecutionPath {
+    /// The optimized plan is fully native after the native optimizer rule.
     Native,
+    /// The optimized plan keeps at least one native fragment but still contains
+    /// CPU DataFusion execution outside the native fragment.
     PartialNative,
+    /// The optimized plan contains no native execution after planning fallback.
     Cpu,
 }
 

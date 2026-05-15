@@ -1302,11 +1302,19 @@ pub(super) fn prefetch_requested_bytes(policy: MemoryControlPolicy, chunk: &Sour
     }
 }
 
+/// Precision of the byte contract used when reserving memory for one bounded
+/// source-read chunk.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum SourceReadReservationContractQuality {
+    /// A lower layer supplied an exact preflight byte contract, so bounded
+    /// source reads can reserve the required bytes before decoding starts.
     #[allow(dead_code)]
     ExactLowerLevelContract,
+    /// The read is admitted with an initial reservation and then reconciled to
+    /// observed device bytes by growing or shrinking after decoding.
     ObservedGrowShrink,
+    /// The reservation is based on file statistics or configured chunk caps;
+    /// it may be retried with smaller row-group chunks if execution exceeds it.
     ConservativeEstimate,
 }
 

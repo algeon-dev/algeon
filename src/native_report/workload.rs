@@ -32,6 +32,12 @@ impl NativeFallbackPressureWorkloadItem {
     }
 }
 
+/// Input captured by the fallback-pressure harness before native execution.
+///
+/// `PhysicalPlan` carries a DataFusion plan to probe for native candidates.
+/// `PlanningFailure` is used when SQL/DataFusion planning failed before a
+/// physical plan existed, but the report still needs a row for the workload
+/// item.
 #[derive(Debug, Clone)]
 pub enum NativeFallbackPressureWorkloadInput {
     PhysicalPlan(Arc<dyn ExecutionPlan>),
@@ -80,6 +86,12 @@ impl NativeDataFusionPlanningWorkloadItem {
     }
 }
 
+/// Input captured after DataFusion planning and the native optimizer rule have
+/// run for a planning-report workload item.
+///
+/// `Planned` stores the post-optimizer plan plus native diagnostics.
+/// `PlanningFailure` records SQL/DataFusion planning failures that prevented
+/// those diagnostics from being produced.
 #[derive(Debug, Clone)]
 pub enum NativeDataFusionPlanningWorkloadInput {
     Planned { planned_plan: Arc<dyn ExecutionPlan>, native_diagnostics: NativePlanningDiagnostics },
@@ -122,6 +134,12 @@ impl NativeDataFusionExecutionWorkloadItem {
     }
 }
 
+/// Input captured by the execution-report harness after planning and optional
+/// native execution.
+///
+/// `Planned` includes the plan, native planning diagnostics, and runtime outcome
+/// metrics. `PlanningFailure` is used when the workload could not reach physical
+/// planning, so execution was never attempted.
 #[derive(Debug, Clone)]
 pub enum NativeDataFusionExecutionWorkloadInput {
     Planned {

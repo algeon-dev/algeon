@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn large_keyed_join_strategy_gate_accepts_skip_cpu_sf100_matrix_report() {
-    let report = sf100_matrix_report(vec![q07_large_one_shot_join_row()]);
+    let report = sf100_matrix_report(vec![q07_large_partitioned_join_row()]);
     let text = report.to_tsv();
     let config = strategy_gate::LargeKeyedJoinStrategyGateConfig {
         enabled: true,
@@ -10,9 +10,10 @@ fn large_keyed_join_strategy_gate_accepts_skip_cpu_sf100_matrix_report() {
     };
 
     let summary = strategy_gate::validate_large_keyed_join_strategy_gate_tsv(&text, &config)
-        .expect("large Q7 one-shot report should pass the regression gate without CPU parity");
+        .expect("large Q7 partitioned report should pass the regression gate without CPU parity");
 
-    assert_eq!(summary.large_one_shot_sites, 1);
+    assert_eq!(summary.large_partitioned_sites, 1);
+    assert_eq!(summary.large_fallback_one_shot_sites, 0);
     assert_eq!(summary.large_reusable_sites, 0);
     assert_eq!(summary.reservation_denied_count, 0);
     assert_eq!(summary.query_ids, vec!["q03", "q04", "q07"]);
@@ -22,13 +23,14 @@ fn large_keyed_join_strategy_gate_accepts_skip_cpu_sf100_matrix_report() {
 
 #[test]
 fn large_keyed_join_strategy_gate_rejects_large_reusable_hash_site() {
-    let mut join = q07_large_one_shot_join_row();
+    let mut join = q07_large_partitioned_join_row();
     join.join_strategy = "reusable_hash_equi".to_string();
     join.execution_strategy = "bounded_reusable_hash_join".to_string();
     join.hash_join_build_count = 1;
     join.hash_join_hash_table_bytes = 9 * 1024 * 1024 * 1024;
-    join.one_shot_join_count = 0;
-    join.one_shot_join_index_bytes = 0;
+    join.partitioned_hash_join_count = 0;
+    join.partition_count = None;
+    join.partition_target_bytes = None;
     let report = sf100_matrix_report(vec![join]);
     let config = strategy_gate::LargeKeyedJoinStrategyGateConfig { enabled: true, query_ids: None };
 
@@ -40,8 +42,48 @@ fn large_keyed_join_strategy_gate_rejects_large_reusable_hash_site() {
 }
 
 #[test]
+fn large_keyed_join_strategy_gate_accepts_local_partitioned_fallback_reason() {
+    let report = sf100_matrix_report(vec![q07_large_partitioned_join_row(), q07_large_residual_one_shot_join_row()]);
+    let config = strategy_gate::LargeKeyedJoinStrategyGateConfig { enabled: true, query_ids: None };
+
+    let summary = strategy_gate::validate_large_keyed_join_strategy_gate_tsv(&report.to_tsv(), &config)
+        .expect("large one-shot fallbacks with local partitioned rejection facts should pass");
+
+    assert_eq!(summary.large_partitioned_sites, 1);
+    assert_eq!(summary.large_fallback_one_shot_sites, 1);
+    assert_eq!(summary.large_reusable_sites, 0);
+}
+
+#[test]
+fn large_keyed_join_strategy_gate_accepts_partitioned_mixed_residual_site() {
+    let report = sf100_matrix_report(vec![q07_large_partitioned_join_row(), q07_large_partitioned_residual_join_row()]);
+    let config = strategy_gate::LargeKeyedJoinStrategyGateConfig { enabled: true, query_ids: None };
+
+    let summary = strategy_gate::validate_large_keyed_join_strategy_gate_tsv(&report.to_tsv(), &config)
+        .expect("large partitioned residual sites should count as partitioned join coverage");
+
+    assert_eq!(summary.large_partitioned_sites, 2);
+    assert_eq!(summary.large_fallback_one_shot_sites, 0);
+    assert_eq!(summary.large_reusable_sites, 0);
+}
+
+#[test]
+fn large_keyed_join_strategy_gate_rejects_large_one_shot_without_partitioned_fallback_reason() {
+    let mut join = q07_large_residual_one_shot_join_row();
+    join.partitioned_hash_join_rejected_reason = None;
+    let report = sf100_matrix_report(vec![join]);
+    let config = strategy_gate::LargeKeyedJoinStrategyGateConfig { enabled: true, query_ids: None };
+
+    let error = strategy_gate::validate_large_keyed_join_strategy_gate_tsv(&report.to_tsv(), &config)
+        .expect_err("large one-shot joins need a local partitioned fallback reason");
+
+    assert!(error.to_string().contains("without a local partitioned fallback reason"));
+    assert!(error.to_string().contains("q07:n8:one_shot_equi"));
+}
+
+#[test]
 fn large_keyed_join_strategy_gate_rejects_reservation_denials() {
-    let mut report = sf100_matrix_report(vec![q07_large_one_shot_join_row()]);
+    let mut report = sf100_matrix_report(vec![q07_large_partitioned_join_row()]);
     let q07 = report.rows.iter_mut().find(|row| row.query_id == "q07").unwrap();
     q07.metrics.reservation_denied_count = 1;
     let config = strategy_gate::LargeKeyedJoinStrategyGateConfig { enabled: true, query_ids: None };
@@ -55,7 +97,7 @@ fn large_keyed_join_strategy_gate_rejects_reservation_denials() {
 
 #[test]
 fn large_keyed_join_strategy_gate_can_select_q7_from_larger_report() {
-    let report = sf100_matrix_report(vec![q07_large_one_shot_join_row()]);
+    let report = sf100_matrix_report(vec![q07_large_partitioned_join_row()]);
     let config = strategy_gate::LargeKeyedJoinStrategyGateConfig {
         enabled: true,
         query_ids: Some(["q07".to_string()].into_iter().collect()),
@@ -64,7 +106,7 @@ fn large_keyed_join_strategy_gate_can_select_q7_from_larger_report() {
     let summary = strategy_gate::validate_large_keyed_join_strategy_gate_tsv(&report.to_tsv(), &config).unwrap();
 
     assert_eq!(summary.query_ids, vec!["q07"]);
-    assert_eq!(summary.large_one_shot_sites, 1);
+    assert_eq!(summary.large_partitioned_sites, 1);
 }
 
 #[test]
@@ -263,9 +305,37 @@ fn q04_filtered_join_metrics() -> NativeDataFusionExecutionMetrics {
     }
 }
 
-fn q07_large_one_shot_join_row() -> NativeJoinStrategyMetricRow {
+fn q07_large_partitioned_join_row() -> NativeJoinStrategyMetricRow {
     NativeJoinStrategyMetricRow {
         node_id: "n7".to_string(),
+        join_strategy: "partitioned_hash_equi".to_string(),
+        execution_strategy: "bounded_partitioned_hash_equi_join".to_string(),
+        join_type: "inner".to_string(),
+        build_side: "right".to_string(),
+        key_count: 1,
+        estimated_build_rows: Some(600_037_902),
+        observed_build_rows: Some(600_037_902),
+        build_side_bytes: Some(27_145_989_519),
+        probe_reuse_count: Some(1),
+        partition_count: Some(14),
+        partition_target_bytes: Some(2 * 1024 * 1024 * 1024),
+        build_partition_batch_count: Some(14),
+        probe_partition_batch_count: Some(14),
+        build_partitioned_bytes: Some(27_145_989_519),
+        probe_partitioned_bytes: Some(2_010_410_256),
+        reusable_hash_join_rejected_reason: Some("build_side_too_large".to_string()),
+        partitioned_hash_join_count: 1,
+        join_gather_map_bytes: 4_496_849_296,
+        join_output_reservation_bytes: 17_017_774_876,
+        join_output_rows: 562_106_162,
+        join_output_bytes: 17_017_774_876,
+        ..Default::default()
+    }
+}
+
+fn q07_large_residual_one_shot_join_row() -> NativeJoinStrategyMetricRow {
+    NativeJoinStrategyMetricRow {
+        node_id: "n8".to_string(),
         join_strategy: "one_shot_equi".to_string(),
         execution_strategy: "bounded_one_shot_equi_join".to_string(),
         join_type: "inner".to_string(),
@@ -276,11 +346,44 @@ fn q07_large_one_shot_join_row() -> NativeJoinStrategyMetricRow {
         build_side_bytes: Some(27_145_989_519),
         probe_reuse_count: Some(1),
         reusable_hash_join_rejected_reason: Some("build_side_too_large".to_string()),
+        partitioned_hash_join_rejected_reason: Some("partitioned_hash_equi_unsupported".to_string()),
         one_shot_join_count: 1,
         one_shot_join_index_bytes: 3_033_771_680,
         one_shot_join_materialization_bytes: 17_017_774_876,
         one_shot_join_output_bytes: 17_017_774_876,
         join_gather_map_bytes: 4_496_849_296,
+        join_output_reservation_bytes: 17_017_774_876,
+        join_output_rows: 562_106_162,
+        join_output_bytes: 17_017_774_876,
+        ..Default::default()
+    }
+}
+
+fn q07_large_partitioned_residual_join_row() -> NativeJoinStrategyMetricRow {
+    NativeJoinStrategyMetricRow {
+        node_id: "n8".to_string(),
+        join_strategy: "partitioned_mixed_keyed_residual".to_string(),
+        execution_strategy: "bounded_partitioned_mixed_keyed_residual_join".to_string(),
+        join_type: "inner".to_string(),
+        build_side: "right".to_string(),
+        key_count: 1,
+        estimated_build_rows: Some(600_037_902),
+        observed_build_rows: Some(600_037_902),
+        build_side_bytes: Some(27_145_989_519),
+        probe_reuse_count: Some(1),
+        partition_count: Some(14),
+        partition_target_bytes: Some(2 * 1024 * 1024 * 1024),
+        build_partition_batch_count: Some(14),
+        probe_partition_batch_count: Some(14),
+        build_partitioned_bytes: Some(27_145_989_519),
+        probe_partitioned_bytes: Some(2_010_410_256),
+        reusable_hash_join_rejected_reason: Some("build_side_too_large".to_string()),
+        partitioned_hash_join_count: 1,
+        mixed_join_size_data_bytes: 3_033_771_680,
+        join_gather_map_bytes: 4_496_849_296,
+        join_output_reservation_bytes: 17_017_774_876,
+        join_output_rows: 562_106_162,
+        join_output_bytes: 17_017_774_876,
         ..Default::default()
     }
 }

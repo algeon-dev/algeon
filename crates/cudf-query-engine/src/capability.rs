@@ -24,7 +24,8 @@ mod shape;
 pub use entry::analyze_query_capabilities;
 pub(crate) use join::{
     JoinExecutionCapability, KeyedHashJoinStrategy, KeyedHashJoinStrategyDecision, KeyedHashJoinStrategyInputFacts,
-    KeylessConditionalJoinKind, join_node_execution_capability, keyed_filtered_semi_anti_join_capable,
+    KeylessConditionalJoinKind, LARGE_KEYED_HASH_BUILD_BYTES_THRESHOLD, LARGE_KEYED_HASH_BUILD_ROW_THRESHOLD,
+    LARGE_KEYED_HASH_PROBE_BYTES_THRESHOLD, join_node_execution_capability, keyed_filtered_semi_anti_join_capable,
     keyed_hash_join_capable, keyed_hash_join_strategy_decision, keyed_hash_join_strategy_decision_for_plan,
     keyed_hash_join_strategy_input_facts_for_plan, multi_join_subtree_join_execution_capability,
     one_shot_equi_join_supported,

@@ -21,6 +21,7 @@ pub(crate) enum CompiledJoinExecutionStrategy {
     HashEqui,
     OneShotEqui,
     PartitionedHashEqui,
+    PartitionedMixedKeyedResidual,
     FilteredSemiAnti,
     KeylessConditional { join_type: KeylessConditionalJoinKind },
     ProjectedCross,
@@ -64,6 +65,10 @@ impl CompiledJoinExecutionStrategy {
                         strategy: KeyedHashJoinStrategy::PartitionedHashEqui,
                         ..
                     } => {},
+                    decision @ KeyedHashJoinStrategyDecision::Selected {
+                        strategy: KeyedHashJoinStrategy::PartitionedMixedKeyedResidual,
+                        ..
+                    } => return Self::select_from_keyed_hash_strategy_decision(decision).map(Some),
                     rejected @ KeyedHashJoinStrategyDecision::Rejected { .. } => return Err(rejected),
                 }
             }
@@ -93,6 +98,10 @@ impl CompiledJoinExecutionStrategy {
                 KeyedHashJoinStrategy::PartitionedHashEqui => {
                     Ok(CompiledJoinStrategySelection { strategy: Self::PartitionedHashEqui, facts: Some(facts) })
                 },
+                KeyedHashJoinStrategy::PartitionedMixedKeyedResidual => Ok(CompiledJoinStrategySelection {
+                    strategy: Self::PartitionedMixedKeyedResidual,
+                    facts: Some(facts),
+                }),
             },
             rejected @ KeyedHashJoinStrategyDecision::Rejected { .. } => Err(rejected),
         }

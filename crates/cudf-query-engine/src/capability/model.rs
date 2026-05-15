@@ -409,16 +409,41 @@ pub struct SubgraphInvariant {
 /// Subgraph invariant vocabulary.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SubgraphInvariantKind {
+    /// The join's build input can be made resident before the probe side needs
+    /// it, without a graph cycle through the join itself.
     BuildBeforeProbe { join_id: NodeId },
+    /// The reachable join region below the root is closed over supported join,
+    /// projection, filter, and source nodes.
     ClosedJoinSubtree { root_join_id: NodeId },
+    /// The compiled graph can schedule all reachable joins in dependency order
+    /// so build/probe residency requirements are not violated by join nesting.
     TopologicalBuildProbeSchedule,
+    /// One resident producer is shared by multiple consumers and each consumer
+    /// edge preserves that producer identity.
     SharedResidentSubplan,
+    /// A scalar aggregate can consume a shared resident producer only when every
+    /// aggregate expression derives from columns produced by that same shared
+    /// node after transparent projections are peeled.
     AggregateDerivesFromSharedProducer,
+    /// A final ordering barrier consumes the resident input after all upstream
+    /// producers are complete and does not feed back into its input.
     FinalBarrierOrder,
+    /// Post-root stages above a root join remain in the specific order required
+    /// by the admitted envelope.
     PostRootStageOrder { root_join_id: NodeId },
+    /// A projection wrapper can be ignored for residency only when both the
+    /// peeled producer and the projection output are resident frames.
     ProjectionTransparentResidency,
+    /// A filter/projection chain preserves residency only when every node in
+    /// the connected unary chain consumes the previous resident output and also
+    /// produces a resident frame.
     ResidentUnaryChainPreservesResidency,
+    /// The residual predicate on the join references both join inputs, so the
+    /// residual is a true join condition rather than a single-side filter.
     ResidualUsesBothInputs { join_id: NodeId },
+    /// Every reachable resident producer remains valid for all of its admitted
+    /// consumers, and no rejected producer-consumer edge is hidden by the
+    /// broader compiled subgraph admission.
     ResidentLifetimeDominatesConsumers,
 }
 

@@ -450,17 +450,44 @@ pub(super) fn analyze_multi_join_resident_grouped_aggregate_subquery_filter_admi
 
 #[derive(Debug, Clone, Copy)]
 enum InvariantSelector {
-    BuildBeforeProbe { join_id: NodeId },
+    BuildBeforeProbe {
+        join_id: NodeId,
+    },
     TopologicalBuildProbeSchedule,
+    /// Mirrors `SubgraphInvariantKind::ResidentLifetimeDominatesConsumers`: all
+    /// reachable resident producers must outlive every admitted consumer edge.
     ResidentLifetimeDominatesConsumers,
     ClosedJoinSubtree,
-    SharedResidentSubplan { producer: NodeId },
-    AggregateDerivesFromSharedProducer { shared_producer: NodeId, aggregate_id: NodeId },
-    FinalBarrierOrder { sort_id: NodeId },
-    PostRootStageOrder { root_join_id: NodeId },
-    ProjectionTransparentResidency { peeled_producer: NodeId, projection_id: NodeId },
-    ResidentUnaryChainPreservesResidency { peeled_producer: NodeId, consumer_id: NodeId },
-    ResidualUsesBothInputs { join_id: NodeId },
+    SharedResidentSubplan {
+        producer: NodeId,
+    },
+    /// Mirrors `SubgraphInvariantKind::AggregateDerivesFromSharedProducer` for
+    /// a scalar aggregate whose inputs must trace back to one shared producer.
+    AggregateDerivesFromSharedProducer {
+        shared_producer: NodeId,
+        aggregate_id: NodeId,
+    },
+    FinalBarrierOrder {
+        sort_id: NodeId,
+    },
+    PostRootStageOrder {
+        root_join_id: NodeId,
+    },
+    /// Mirrors `SubgraphInvariantKind::ProjectionTransparentResidency`: the
+    /// named projection may be peeled only if it preserves resident output.
+    ProjectionTransparentResidency {
+        peeled_producer: NodeId,
+        projection_id: NodeId,
+    },
+    /// Mirrors `SubgraphInvariantKind::ResidentUnaryChainPreservesResidency`:
+    /// the selected unary chain must stay connected and resident end to end.
+    ResidentUnaryChainPreservesResidency {
+        peeled_producer: NodeId,
+        consumer_id: NodeId,
+    },
+    ResidualUsesBothInputs {
+        join_id: NodeId,
+    },
 }
 
 impl InvariantSelector {
