@@ -31,7 +31,7 @@ pub(crate) struct ReservationProjectionLedger {
 
 impl ReservationProjectionLedger {
     fn records(&self) -> MutexGuard<'_, Vec<ReservationProjectionRecord>> {
-        self.records.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.records.lock().expect("reservation projection ledger lock is not poisoned")
     }
 
     fn append(&self, record: ReservationProjectionRecord) {
@@ -80,11 +80,10 @@ pub(crate) struct ReservationProjectionLedgerHandle {
 
 impl ReservationProjectionLedgerHandle {
     pub(crate) fn record_implicit_release(&self, event: MemoryReservationEvent, task_kind: Option<String>) {
-        self.records.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(ReservationProjectionRecord {
-            event,
-            task_kind,
-            admission: ReservationAdmissionProjection::None,
-        });
+        self.records
+            .lock()
+            .expect("reservation projection ledger lock is not poisoned")
+            .push(ReservationProjectionRecord { event, task_kind, admission: ReservationAdmissionProjection::None });
     }
 }
 

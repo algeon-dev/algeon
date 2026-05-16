@@ -2632,11 +2632,9 @@ fn force_atlas2_phase_peaks(
 fn triangle_count_workspace_model(input: GraphMemoryModelInput, vertex_estimate: u64) -> Result<ModelBytes> {
     let width = input.vertex_width_bytes.max(1);
     if let Some(statistics) = input.statistics
-        && statistics.oriented_edge_count.is_some()
-        && statistics.peak_chunk_min_degree_sum.is_some()
+        && let (Some(oriented_edges), Some(peak_min_degree)) =
+            (statistics.oriented_edge_count, statistics.peak_chunk_min_degree_sum)
     {
-        let oriented_edges = statistics.oriented_edge_count.unwrap_or(0);
-        let peak_min_degree = statistics.peak_chunk_min_degree_sum.unwrap_or(0);
         return checked_add_all([
             (
                 model_product(oriented_edges, width, "triangle_dfg_edges")?

@@ -675,7 +675,7 @@ impl QpsEnvelopeEvidence {
         arrival_plan_truncated_by_attempt_cap: bool,
         queue_high_watermarks: &[(usize, u64)],
     ) -> Self {
-        let queue_limit = u64::try_from(configured_queue_limit).unwrap_or(u64::MAX);
+        let queue_limit = configured_queue_limit as u64;
         let minimum = profile.min_gpu_reaching_completions_per_step;
         let steps = aggregate_steps
             .iter()
@@ -705,7 +705,7 @@ impl QpsEnvelopeEvidence {
         };
         Self {
             status,
-            configured_active_attempt_capacity: u64::try_from(configured_active_attempt_capacity).unwrap_or(u64::MAX),
+            configured_active_attempt_capacity: configured_active_attempt_capacity as u64,
             configured_queue_limit: queue_limit,
             arrival_plan_truncated_by_attempt_cap,
             global_queue_high_watermark,

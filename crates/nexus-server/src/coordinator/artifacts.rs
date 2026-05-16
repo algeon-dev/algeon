@@ -185,7 +185,7 @@ pub(crate) fn unavailable_stats_payload(
     reason: RetainedUnavailableReason,
     max_bytes: usize,
 ) -> QueryStatsPayload {
-    let max_bytes = max_bytes.min(usize::try_from(TOMBSTONE_STATS_MAX_BYTES).unwrap_or(usize::MAX));
+    let max_bytes = max_bytes.min(TOMBSTONE_STATS_MAX_BYTES as usize);
     let mut bytes = Vec::with_capacity(max_bytes.min(1024));
     let mut lines = vec![
         QUERY_STATS_HEADER_LINE.to_string(),
@@ -223,9 +223,8 @@ pub(crate) fn compose_terminal_artifact<F>(
 where
     F: FnOnce(usize) -> QueryStatsPayload,
 {
-    let fixed_bytes = u64::try_from(control.len())
-        .unwrap_or(u64::MAX)
-        .checked_add(runtime_jsonl.as_ref().map_or(0, |jsonl| u64::try_from(jsonl.len()).unwrap_or(u64::MAX)))?;
+    let fixed_bytes =
+        (control.len() as u64).checked_add(runtime_jsonl.as_ref().map_or(0, |jsonl| jsonl.len() as u64))?;
     let remaining = artifact_max_bytes.checked_sub(fixed_bytes)?;
     let payload = render_stats(usize::try_from(remaining).unwrap_or(usize::MAX));
     let payload_len = payload.bytes.len();
@@ -242,7 +241,7 @@ where
         return None;
     }
     let stats_incomplete = payload.incomplete || keep != payload_len;
-    let charge_bytes = fixed_bytes.checked_add(u64::try_from(stats.len()).unwrap_or(u64::MAX))?;
+    let charge_bytes = fixed_bytes.checked_add(stats.len() as u64)?;
     debug_assert!(charge_bytes <= artifact_max_bytes);
     Some(ComposedTerminalArtifact {
         bundle: Arc::new(RetainedQueryBundle { stats, runtime_control: control, runtime_jsonl, charge_bytes }),
@@ -797,7 +796,7 @@ impl QueryCoordinator {
                     }
                 },
                 QueryPhase::Tombstone => ArtifactFrameSnapshot::Incomplete {
-                    reason: record.unavailable.unwrap_or(RetainedUnavailableReason::Evicted),
+                    reason: record.unavailable.expect("tombstone phase owns an unavailable reason"),
                 },
             }
         };
@@ -828,7 +827,7 @@ impl QueryCoordinator {
         let Some(stats) = self.query_stats_result(query_id)? else {
             return Ok(None);
         };
-        let actual_bytes = u64::try_from(stats.len()).unwrap_or(u64::MAX);
+        let actual_bytes = stats.len() as u64;
         lease.reconcile(actual_bytes)?;
         let frames = std::iter::once(stats).map(Bytes::from_owner).collect();
         Ok(Some(LeasedArtifactResponse { frames, _lease: lease }))
@@ -857,9 +856,7 @@ impl QueryCoordinator {
         if payloads.is_empty() {
             return Ok(None);
         }
-        let bytes = payloads
-            .iter()
-            .try_fold(0u64, |total, payload| total.checked_add(u64::try_from(payload.len()).unwrap_or(u64::MAX)));
+        let bytes = payloads.iter().try_fold(0u64, |total, payload| total.checked_add(payload.len() as u64));
         let bytes = bytes.ok_or_else(|| {
             QueryCoordinatorError::new(
                 QueryCoordinatorErrorKind::ArtifactEgressCapacity,

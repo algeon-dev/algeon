@@ -10,16 +10,13 @@ use arrow_json::{WriterBuilder, writer::JsonArray};
 use axum::{
     Json, Router,
     extract::{Path, State, rejection::JsonRejection},
-    http::{HeaderMap, HeaderValue, StatusCode, header},
+    http::StatusCode,
     response::{IntoResponse, Response},
     routing::{get, post},
 };
-use datafusion::{
-    common::{DataFusionError, Result as DataFusionResult},
-    execution::SessionStateBuilder,
-};
+use datafusion::{common::DataFusionError, execution::SessionStateBuilder};
 use datafusion_nexus::{
-    error::{DataFusionErrorExt, Error, ErrorCode, ErrorKind, ErrorStatus},
+    error::{DataFusionErrorExt, Error, ErrorKind, ErrorStatus},
     planner::NexusNativePhysicalOptimizerRule,
     report::PlanningReport,
     session::NexusSessionStateBuilderExt,
@@ -46,11 +43,12 @@ pub fn router(state: AppState) -> Router {
 async fn healthz(State(state): State<AppState>) -> Result<Json<Value>, AppError> {
     let required = ["papers", "paper_fos", "citation_edges", "citation_edges_by_dst"];
     let mut tables = Vec::with_capacity(required.len());
+    let mut ready = true;
     for table in required {
         let visible = state.ctx.table_exist(table).map_err(AppError::from_datafusion)?;
+        ready &= visible;
         tables.push(json!({ "name": table, "visible": visible }));
     }
-    let ready = tables.iter().all(|table| table["visible"].as_bool().unwrap_or(false));
     let status = if ready { "ok" } else { "degraded" };
     Ok(Json(json!({
         "status": status,
@@ -181,13 +179,12 @@ pub struct AppError {
     status: StatusCode,
     code: String,
     message: String,
-    retry_after_secs: Option<u64>,
     facts: Vec<(String, String)>,
 }
 
 impl AppError {
     fn new(status: StatusCode, code: impl Into<String>, message: impl Into<String>) -> Self {
-        Self { status, code: code.into(), message: message.into(), retry_after_secs: None, facts: Vec::new() }
+        Self { status, code: code.into(), message: message.into(), facts: Vec::new() }
     }
 
     fn from_validation(error: PipelineValidationError) -> Self {
@@ -199,7 +196,6 @@ impl AppError {
             status: StatusCode::BAD_REQUEST,
             code: error.code().to_string(),
             message: error.message().to_string(),
-            retry_after_secs: None,
             facts,
         }
     }
@@ -220,10 +216,6 @@ impl AppError {
                 status: StatusCode::TOO_MANY_REQUESTS,
                 code: "resource_exhausted".to_string(),
                 message: error.to_string(),
-                // A returned error is pre-seal and has no immutable retry
-                // advice. Never manufacture Retry-After from a coarse
-                // resource status.
-                retry_after_secs: None,
                 facts: Vec::new(),
             };
         }
@@ -247,9 +239,6 @@ impl AppError {
             status,
             code: error.code().as_str().to_string(),
             message: error.message().to_string(),
-            // A pre-seal error has no retry advice. Do not emit Retry-After
-            // until an immutable attempt report can prove it.
-            retry_after_secs: None,
             // Native facts are raw in-process diagnostics, not an HTTP
             // disclosure contract. Select client fields explicitly instead.
             facts: Vec::new(),
@@ -268,7 +257,6 @@ impl AppError {
             status,
             code: error.code().as_str().to_string(),
             message: error.message().to_string(),
-            retry_after_secs: None,
             // Error facts remain available to trusted typed policy through
             // `error.facts()`. This example does not forward them wholesale.
             facts: Vec::new(),
@@ -286,15 +274,10 @@ impl AppError {
 
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
-        let mut headers = HeaderMap::new();
-        if let Some(seconds) = self.retry_after_secs {
-            let value = HeaderValue::from_str(&seconds.to_string()).unwrap_or_else(|_| HeaderValue::from_static("1"));
-            headers.insert(header::RETRY_AFTER, value);
-        }
         let body = Json(ErrorBody {
             error: ErrorPayload { code: self.code, message: self.message, facts: self.facts.into_iter().collect() },
         });
-        (self.status, headers, body).into_response()
+        (self.status, body).into_response()
     }
 }
 
@@ -325,9 +308,3 @@ fn find_datafusion_resources_exhausted(error: &DataFusionError) -> bool {
         _ => false,
     }
 }
-
-fn _pin_error_code_use(code: ErrorCode) -> &'static str {
-    code.as_str()
-}
-
-const _: fn(DataFusionResult<()>) -> DataFusionResult<()> = |result| result;

@@ -307,7 +307,7 @@ async fn assert_ad_hoc_graph(
     println!("checking Flight SQL ad-hoc graph query");
     let suffix = unique_suffix();
     let view = format!("embedded_e2e_edges_{suffix}");
-    execute_batches(
+    query_batches(
         client,
         &format!(
             "CREATE VIEW {view} AS \
@@ -590,13 +590,6 @@ async fn query_batches(
 ) -> E2eResult<Vec<RecordBatch>> {
     let flight_info = client.execute(sql.to_string(), None).await?;
     consume_flight_info(client, flight_info).await
-}
-
-async fn execute_batches(
-    client: &mut FlightSqlServiceClient<tonic::transport::Channel>,
-    sql: &str,
-) -> E2eResult<Vec<RecordBatch>> {
-    query_batches(client, sql).await
 }
 
 async fn consume_flight_info(

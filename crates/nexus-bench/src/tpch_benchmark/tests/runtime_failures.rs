@@ -21,7 +21,7 @@ fn accepted_row_preserves_native_not_started_failure_status() {
     assert_eq!(row.cpu_output_rows, Some(4));
     assert_eq!(row.native_output_rows, None);
     assert_eq!(row.output_fingerprint, None);
-    assert_eq!(bounded_status(NativeTpchMemoryPolicy::default(), &row), "bounded_accepted_native_failed");
+    assert_eq!(bounded_status(&row), "bounded_accepted_native_failed");
 }
 
 #[test]
@@ -46,7 +46,7 @@ fn accepted_row_distinguishes_cpu_planning_failure_from_started_runtime() {
     assert_eq!(row.cpu_output_rows, None);
     assert_eq!(row.native_output_rows, Some(4));
     assert_eq!(row.output_fingerprint, None);
-    assert_eq!(bounded_status(NativeTpchMemoryPolicy::default(), &row), "bounded_accepted_cpu_failed");
+    assert_eq!(bounded_status(&row), "bounded_accepted_cpu_failed");
 }
 
 #[test]
@@ -65,7 +65,7 @@ fn accepted_row_reports_fingerprint_mismatch_without_canonical_output_fingerprin
     assert_eq!(row.cpu_output_fingerprint.as_deref(), Some("output-fnv1a64:0000000000000001"));
     assert_eq!(row.native_output_fingerprint.as_deref(), Some("output-fnv1a64:0000000000000002"));
     assert_eq!(row.output_fingerprint, None);
-    assert_eq!(bounded_status(NativeTpchMemoryPolicy::default(), &row), "bounded_accepted_parity_mismatched");
+    assert_eq!(bounded_status(&row), "bounded_accepted_parity_mismatched");
 }
 
 #[test]
@@ -148,7 +148,7 @@ fn planning_failure_preserves_adapter_error_facts() {
     assert_eq!(row.runtime_failure_details.status.as_deref(), Some("permanent"));
     assert_eq!(row.runtime_failure_details.operation.as_deref(), Some("datafusion_nexus.native_planner"));
     assert_eq!(row.runtime_failure_details.facts.get("planner_stage").map(String::as_str), Some("native_lowering"));
-    assert_eq!(bounded_status(NativeTpchMemoryPolicy::default(), &row), "bounded_planning_failed");
+    assert_eq!(bounded_status(&row), "bounded_planning_failed");
 }
 
 #[test]

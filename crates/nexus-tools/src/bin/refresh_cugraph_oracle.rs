@@ -314,7 +314,7 @@ fn json_canonical(value: &serde_json::Value) -> String {
             other => other.clone(),
         }
     }
-    serde_json::to_string(&sort(value)).unwrap_or_else(|_| value.to_string())
+    serde_json::to_string(&sort(value)).expect("canonical oracle JSON must be serializable")
 }
 
 fn report_outcome(spec: &ParitySpec, outcome: &RefreshOutcome) -> &'static str {

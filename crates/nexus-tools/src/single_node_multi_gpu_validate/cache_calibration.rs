@@ -897,10 +897,8 @@ fn cache_sampling_evidence(run: &MeasuredRunArtifact) -> CacheSamplingEvidence {
             }
             activity_by_ordinal.insert(ordinal, activity_from_report(report));
         }
-        missing_report_samples = missing_report_samples.saturating_add(
-            u64::try_from(expected_caps.keys().filter(|ordinal| !sample_ordinals.contains(ordinal)).count())
-                .unwrap_or(u64::MAX),
-        );
+        missing_report_samples = missing_report_samples
+            .saturating_add(expected_caps.keys().filter(|ordinal| !sample_ordinals.contains(ordinal)).count() as u64);
     }
 
     let activity = activity_by_ordinal.values().copied().fold(CacheActivityCounters::default(), |mut total, value| {

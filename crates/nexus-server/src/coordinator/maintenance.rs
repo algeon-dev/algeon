@@ -426,8 +426,7 @@ impl QueryCoordinator {
                     continue;
                 }
                 let charge_bytes = output.bundle.as_ref().map_or(0, |bundle| bundle.charge_bytes);
-                let tombstone_bytes =
-                    output.tombstone_stats.as_ref().map_or(0, |stats| u64::try_from(stats.len()).unwrap_or(u64::MAX));
+                let tombstone_bytes = output.tombstone_stats.as_ref().map_or(0, |stats| stats.len() as u64);
                 let terminal_stats = output
                     .bundle
                     .as_ref()

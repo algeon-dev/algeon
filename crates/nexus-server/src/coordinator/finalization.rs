@@ -245,8 +245,7 @@ impl QueryCoordinator {
             });
         let control =
             sealed_runtime_control(inputs.key.query_id(), inputs.attempt_report.as_deref(), incomplete_reason);
-        let Some(jsonl_limit) = inputs.artifact_max_bytes.checked_sub(u64::try_from(control.len()).unwrap_or(u64::MAX))
-        else {
+        let Some(jsonl_limit) = inputs.artifact_max_bytes.checked_sub(control.len() as u64) else {
             return FinalizationOutput::unavailable(
                 inputs.key,
                 inputs.claim,
@@ -370,7 +369,7 @@ impl QueryCoordinator {
         }
         let terminal_stats = match output.bundle.take() {
             None => {
-                let reason = output.unavailable.unwrap_or(RetainedUnavailableReason::TooLarge);
+                let reason = output.unavailable.expect("missing bundle carries an unavailable reason");
                 let (tombstone_bytes, terminal_stats) = {
                     let record =
                         state.records.get_mut(&output.key).expect("validated finalization record remains present");
@@ -390,8 +389,7 @@ impl QueryCoordinator {
                         )
                     });
                     let terminal_stats = record.tombstone_stats.as_ref().map(Arc::clone);
-                    let tombstone_bytes =
-                        terminal_stats.as_ref().map_or(0, |stats| u64::try_from(stats.len()).unwrap_or(u64::MAX));
+                    let tombstone_bytes = terminal_stats.as_ref().map_or(0, |stats| stats.len() as u64);
                     (tombstone_bytes, terminal_stats)
                 };
                 state.tombstone_count = state.tombstone_count.checked_add(1).expect("tombstone count overflow");

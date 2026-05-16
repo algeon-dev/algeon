@@ -573,7 +573,7 @@ fn canonical_schema(schema: &Schema) -> String {
 }
 
 fn relative_dataset_path(root: &Path, path: &Path) -> String {
-    let relative = path.strip_prefix(root).unwrap_or(path);
+    let relative = path.strip_prefix(root).expect("discovered dataset path must be under root");
     relative.iter().map(|part| part.to_string_lossy()).collect::<Vec<_>>().join("/")
 }
 

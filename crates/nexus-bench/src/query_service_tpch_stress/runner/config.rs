@@ -77,9 +77,7 @@ impl StressConfig {
         if self.attempt_floor_bytes > self.device_capacity_bytes {
             return Err(plan_error(format!("{ATTEMPT_FLOOR_BYTES_ENV} must not exceed {DEVICE_CAPACITY_BYTES_ENV}")));
         }
-        let floor_total = self
-            .attempt_floor_bytes
-            .saturating_mul(u64::try_from(self.max_active_attempts_per_device).unwrap_or(u64::MAX));
+        let floor_total = self.attempt_floor_bytes.saturating_mul(self.max_active_attempts_per_device as u64);
         if floor_total > self.device_capacity_bytes {
             return Err(plan_error(format!(
                 "{ATTEMPT_FLOOR_BYTES_ENV} times {MAX_ACTIVE_ATTEMPTS_PER_DEVICE_ENV} must not exceed {DEVICE_CAPACITY_BYTES_ENV}"

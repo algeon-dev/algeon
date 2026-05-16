@@ -186,7 +186,7 @@ impl DeviceRegistry {
     ) -> Result<ResolvedDeviceInstallPlans> {
         validate_registry_config(config)?;
         let ordinals = configured_ordinals(inventory, config)?;
-        let max_ordinal = ordinals.iter().copied().max().unwrap_or(0);
+        let max_ordinal = ordinals[ordinals.len() - 1];
         let mut discovered = Vec::with_capacity(ordinals.len());
         for ordinal in &ordinals {
             checkpoint(probe, GpuBackendConstructionCheckpoint::BeforeDeviceDiscovery { device_ordinal: *ordinal })?;
@@ -540,14 +540,14 @@ fn managed_capacity_bytes(
 ) -> Result<u64> {
     let allocation_limit =
         profile.memory_partition.allocation_limit_bytes().and_then(|limit| u64::try_from(limit).ok());
-    if allocation_limit.is_some_and(|limit| limit > facts.total_bytes) {
+    if let Some(allocation_limit) = allocation_limit.filter(|limit| *limit > facts.total_bytes) {
         return Err(QueryError::new(
             QueryErrorCode::InvalidPlan,
             "nexus_query_engine.gpu.device_registry.capacity",
             "static partition cannot exceed discovered physical device memory",
         )
         .with_fact("device_ordinal", device_ordinal)
-        .with_fact("allocation_limit_bytes", allocation_limit.unwrap_or_default())
+        .with_fact("allocation_limit_bytes", allocation_limit)
         .with_fact("physical_total_bytes", facts.total_bytes)
         .with_fact("reason", "static_partition_exceeds_physical_capacity"));
     }
