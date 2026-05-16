@@ -325,7 +325,7 @@ fn validate_join_residual_expr(
             }
             Ok(target_type.clone())
         },
-        Expr::Binary { left, op, right } => {
+        Expr::Binary { left, op, right, .. } => {
             let left_type =
                 validate_join_residual_expr(left, left_schema, left_available, right_schema, right_available)?;
             let right_type =

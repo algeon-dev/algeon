@@ -154,6 +154,58 @@ fn semijoin_reduction_strict_admission_gate_keeps_original_when_rewrite_is_not_a
     assert_eq!(candidate.rewritten_admitted, Some(false));
 }
 
+#[test]
+fn semijoin_reduction_rejects_outer_crossed_joins() {
+    for join_type in [JoinType::Left, JoinType::Full] {
+        assert_semijoin_rejection(
+            root_semijoin_over_crossed_join_type_plan(join_type),
+            SemijoinReductionRejectedReason::UnsupportedCrossedJoinType,
+        );
+    }
+}
+
+#[test]
+fn semijoin_reduction_rejects_ambiguous_lineage_candidate() {
+    assert_semijoin_rejection(
+        root_semijoin_over_duplicate_output_name_plan(),
+        SemijoinReductionRejectedReason::AmbiguousKeyLineage,
+    );
+}
+
+#[test]
+fn semijoin_reduction_rejects_expression_derived_key_candidate() {
+    assert_semijoin_rejection(
+        root_semijoin_over_expression_key_projection_plan(),
+        SemijoinReductionRejectedReason::ExpressionDerivedKey,
+    );
+}
+
+#[test]
+fn semijoin_reduction_rejects_dropped_key_lineage_candidate() {
+    assert_semijoin_rejection(
+        root_semijoin_over_dropped_key_projection_plan(),
+        SemijoinReductionRejectedReason::DroppedKeyLineage,
+    );
+}
+
+#[test]
+fn semijoin_reduction_rejects_unsupported_null_semantics() {
+    assert_semijoin_rejection(
+        root_semijoin_over_inner_join_plan_with_null_equality(
+            JoinNullEquality::NullsMatch,
+            JoinNullEquality::NullsDoNotMatch,
+        ),
+        SemijoinReductionRejectedReason::UnsupportedNullEquality,
+    );
+    assert_semijoin_rejection(
+        root_semijoin_over_inner_join_plan_with_null_equality(
+            JoinNullEquality::NullsDoNotMatch,
+            JoinNullEquality::NullsMatch,
+        ),
+        SemijoinReductionRejectedReason::UnsupportedNullEquality,
+    );
+}
+
 fn single_source_plan() -> cudf_query_engine::QueryPlan {
     let schema = Arc::new(Schema::new(vec![Field::new("key", DataType::Int32, false)]));
     let mut builder = QueryPlanBuilder::new();
@@ -179,6 +231,45 @@ fn root_semijoin_over_inner_join_plan_impl(
     target: SemijoinTarget,
     aggregate_keyset: bool,
 ) -> cudf_query_engine::QueryPlan {
+    root_semijoin_over_inner_join_plan_with_options(
+        target,
+        aggregate_keyset,
+        JoinType::Inner,
+        JoinNullEquality::NullsDoNotMatch,
+        JoinNullEquality::NullsDoNotMatch,
+    )
+}
+
+fn root_semijoin_over_inner_join_plan_with_null_equality(
+    semijoin_null_equality: JoinNullEquality,
+    crossed_join_null_equality: JoinNullEquality,
+) -> cudf_query_engine::QueryPlan {
+    root_semijoin_over_inner_join_plan_with_options(
+        SemijoinTarget::Right,
+        true,
+        JoinType::Inner,
+        semijoin_null_equality,
+        crossed_join_null_equality,
+    )
+}
+
+fn root_semijoin_over_crossed_join_type_plan(join_type: JoinType) -> cudf_query_engine::QueryPlan {
+    root_semijoin_over_inner_join_plan_with_options(
+        SemijoinTarget::Right,
+        true,
+        join_type,
+        JoinNullEquality::NullsDoNotMatch,
+        JoinNullEquality::NullsDoNotMatch,
+    )
+}
+
+fn root_semijoin_over_inner_join_plan_with_options(
+    target: SemijoinTarget,
+    aggregate_keyset: bool,
+    crossed_join_type: JoinType,
+    semijoin_null_equality: JoinNullEquality,
+    crossed_join_null_equality: JoinNullEquality,
+) -> cudf_query_engine::QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let x = builder.add_source(gpu_source("x", &["x_key", "x_payload"]));
     let y = builder.add_source(gpu_source("y", &["y_key", "y_payload"]));
@@ -196,7 +287,7 @@ fn root_semijoin_over_inner_join_plan_impl(
         x,
         y,
         JoinSpec::new(
-            JoinType::Inner,
+            crossed_join_type,
             vec![JoinKey::new(ColumnRef::input(0, "x_key", "x_key"), ColumnRef::input(1, "y_key", "y_key"))],
         )
         .with_output_projection(vec![
@@ -204,7 +295,8 @@ fn root_semijoin_over_inner_join_plan_impl(
             JoinOutputColumn::left(ColumnRef::input(0, "x_payload", "x_payload"), "x_payload"),
             JoinOutputColumn::right(ColumnRef::input(1, "y_key", "y_key"), "y_key"),
             JoinOutputColumn::right(ColumnRef::input(1, "y_payload", "y_payload"), "y_payload"),
-        ]),
+        ])
+        .with_null_equality(crossed_join_null_equality),
         Arc::clone(&xy_schema),
     );
     let semi = builder.add_join(
@@ -214,7 +306,104 @@ fn root_semijoin_over_inner_join_plan_impl(
             JoinType::LeftSemi,
             vec![JoinKey::new(ColumnRef::input(0, key_name, key_name), ColumnRef::input(1, key_name, key_name))],
         )
-        .with_output_projection(left_projection(&["x_key", "x_payload", "y_key", "y_payload"])),
+        .with_output_projection(left_projection(&["x_key", "x_payload", "y_key", "y_payload"]))
+        .with_null_equality(semijoin_null_equality),
+        xy_schema,
+    );
+    builder.finish_gpu_resident(semi)
+}
+
+fn root_semijoin_over_duplicate_output_name_plan() -> cudf_query_engine::QueryPlan {
+    let mut builder = QueryPlanBuilder::new();
+    let x = builder.add_source(gpu_source("x", &["x_key"]));
+    let y = builder.add_source(gpu_source("y", &["y_key"]));
+    let keyset = aggregate_keyset_source(&mut builder, "keyset", "dup");
+    let duplicate_schema = schema(&["dup", "dup"]);
+    let xy = builder.add_join(
+        x,
+        y,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(ColumnRef::input(0, "x_key", "x_key"), ColumnRef::input(1, "y_key", "y_key"))],
+        )
+        .with_output_projection(vec![
+            JoinOutputColumn::left(ColumnRef::input(0, "x_key", "x_key"), "dup"),
+            JoinOutputColumn::right(ColumnRef::input(1, "y_key", "y_key"), "dup"),
+        ]),
+        Arc::clone(&duplicate_schema),
+    );
+    let semi = builder.add_join(
+        xy,
+        keyset,
+        JoinSpec::new(
+            JoinType::LeftSemi,
+            vec![JoinKey::new(ColumnRef::input(0, "dup", "dup"), ColumnRef::input(1, "dup", "dup"))],
+        )
+        .with_output_projection(left_projection(&["dup", "dup"])),
+        duplicate_schema,
+    );
+    builder.finish_gpu_resident(semi)
+}
+
+fn root_semijoin_over_expression_key_projection_plan() -> cudf_query_engine::QueryPlan {
+    let mut builder = QueryPlanBuilder::new();
+    let x = builder.add_source(gpu_source("x", &["x_key"]));
+    let y = builder.add_source(gpu_source("y", &["y_key"]));
+    let keyset = aggregate_keyset_source(&mut builder, "keyset", "y_key");
+    let xy = builder.add_join(
+        x,
+        y,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(ColumnRef::input(0, "x_key", "x_key"), ColumnRef::input(1, "y_key", "y_key"))],
+        )
+        .with_output_projection(vec![JoinOutputColumn::right(ColumnRef::input(1, "y_key", "y_key"), "y_key")]),
+        schema(&["y_key"]),
+    );
+    let projected = builder.add_projection(
+        xy,
+        vec![ProjectionOutput::new(
+            Expr::binary(Expr::column("y_key"), BinaryOp::Add, Expr::literal(LiteralValue::Int32(0))),
+            Field::new("y_key", DataType::Int32, false),
+        )],
+    );
+    let semi = builder.add_join(
+        projected,
+        keyset,
+        JoinSpec::new(
+            JoinType::LeftSemi,
+            vec![JoinKey::new(ColumnRef::input(0, "y_key", "y_key"), ColumnRef::input(1, "y_key", "y_key"))],
+        )
+        .with_output_projection(left_projection(&["y_key"])),
+        schema(&["y_key"]),
+    );
+    builder.finish_gpu_resident(semi)
+}
+
+fn root_semijoin_over_dropped_key_projection_plan() -> cudf_query_engine::QueryPlan {
+    let mut builder = QueryPlanBuilder::new();
+    let x = builder.add_source(gpu_source("x", &["x_key"]));
+    let y = builder.add_source(gpu_source("y", &["y_key"]));
+    let keyset = aggregate_keyset_source(&mut builder, "keyset", "y_key");
+    let xy_schema = schema(&["x_key", "y_key"]);
+    let xy = builder.add_join(
+        x,
+        y,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(ColumnRef::input(0, "x_key", "x_key"), ColumnRef::input(1, "y_key", "y_key"))],
+        )
+        .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "x_key", "x_key"), "x_key")]),
+        Arc::clone(&xy_schema),
+    );
+    let semi = builder.add_join(
+        xy,
+        keyset,
+        JoinSpec::new(
+            JoinType::LeftSemi,
+            vec![JoinKey::new(ColumnRef::input(0, "y_key", "y_key"), ColumnRef::input(1, "y_key", "y_key"))],
+        )
+        .with_output_projection(left_projection(&["x_key", "y_key"])),
         xy_schema,
     );
     builder.finish_gpu_resident(semi)
@@ -323,4 +512,12 @@ fn assert_left_semi_input(plan: &cudf_query_engine::QueryPlan, node_id: cudf_que
         join.spec.output_projection.iter().all(|column| column.side == JoinSide::Left),
         "pushed left-semi must expose only target-side columns"
     );
+}
+
+fn assert_semijoin_rejection(plan: cudf_query_engine::QueryPlan, reason: SemijoinReductionRejectedReason) {
+    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default());
+    assert_eq!(result.change, NativeOptimizerChange::Unchanged);
+    assert_eq!(result.diagnostics.semijoin_reduction.considered_count, 1);
+    assert_eq!(result.diagnostics.semijoin_reduction.applied_count, 0);
+    assert_eq!(result.diagnostics.semijoin_reduction.candidates[0].rejected_reason, Some(reason));
 }

@@ -25,7 +25,7 @@ pub(super) fn lower_expr(expr: &Expr) -> Result<cudf::Expr> {
         Expr::IsNull(expr) => Ok(lower_expr(expr)?.is_null()),
         Expr::IsNotNull(expr) => Ok(lower_expr(expr)?.is_not_null()),
         Expr::Cast { expr, target_type } => {
-            let target_type = cudf_dtype_from_arrow_type(target_type).ok_or_else(|| {
+            let target_dtype = cudf_dtype_from_arrow_type(target_type).ok_or_else(|| {
                 QueryError::new(
                     QueryErrorCode::UnsupportedType,
                     "cudf_query_engine.expr.lower_cast",
@@ -33,9 +33,9 @@ pub(super) fn lower_expr(expr: &Expr) -> Result<cudf::Expr> {
                 )
                 .with_fact("target_type", format!("{target_type:?}"))
             })?;
-            Ok(lower_expr(expr)?.cast(target_type))
+            Ok(lower_expr_with_expected_type(expr, Some(target_type))?.cast(target_dtype))
         },
-        Expr::Binary { left, op, right } => lower_binary_expr(left, *op, right),
+        Expr::Binary { left, op, right, output_type } => lower_binary_expr(left, *op, right, output_type.as_ref()),
         Expr::Like { expr, pattern, escape, negated } => {
             let expr = match escape {
                 Some(escape) => {
@@ -71,7 +71,9 @@ fn lower_expr_with_expected_type(expr: &Expr, expected_type: Option<&ArrowDataTy
             })?;
             Ok(lower_expr_with_expected_type(expr, Some(target_type))?.cast(target_dtype))
         },
-        Expr::Binary { left, op, right } => lower_binary_expr_with_expected_type(left, *op, right, expected_type),
+        Expr::Binary { left, op, right, output_type } => {
+            lower_binary_expr_with_expected_type(left, *op, right, output_type.as_ref(), expected_type)
+        },
         Expr::Alias { expr, alias } => Ok(lower_expr_with_expected_type(expr, expected_type)?.alias(alias)),
         _ => lower_expr(expr),
     }
@@ -118,16 +120,23 @@ pub(super) fn lower_literal(value: &LiteralValue) -> Result<cudf::Expr> {
     }
 }
 
-fn lower_binary_expr(left: &Expr, op: BinaryOp, right: &Expr) -> Result<cudf::Expr> {
-    lower_binary_expr_with_expected_type(left, op, right, None)
+fn lower_binary_expr(
+    left: &Expr,
+    op: BinaryOp,
+    right: &Expr,
+    output_type: Option<&ArrowDataType>,
+) -> Result<cudf::Expr> {
+    lower_binary_expr_with_expected_type(left, op, right, output_type, None)
 }
 
 fn lower_binary_expr_with_expected_type(
     left: &Expr,
     op: BinaryOp,
     right: &Expr,
+    output_type: Option<&ArrowDataType>,
     expected_type: Option<&ArrowDataType>,
 ) -> Result<cudf::Expr> {
+    let declared_type = output_type.or(expected_type);
     if let Some((months, days, nanoseconds)) = interval_month_day_nano(right) {
         return match op {
             BinaryOp::Add => lower_datetime_interval_offset(left, months, days, nanoseconds),
@@ -135,7 +144,7 @@ fn lower_binary_expr_with_expected_type(
                 let (months, days, nanoseconds) = negate_interval(months, days, nanoseconds)?;
                 lower_datetime_interval_offset(left, months, days, nanoseconds)
             },
-            _ => lower_binary_with_expected_type(lower_expr(left)?, op, lower_expr(right)?, expected_type),
+            _ => lower_binary_with_expected_type(lower_expr(left)?, op, lower_expr(right)?, declared_type),
         };
     }
     if let Some((months, days, nanoseconds)) = interval_month_day_nano(left)
@@ -143,7 +152,7 @@ fn lower_binary_expr_with_expected_type(
     {
         return lower_datetime_interval_offset(right, months, days, nanoseconds);
     }
-    lower_binary_with_expected_type(lower_expr(left)?, op, lower_expr(right)?, expected_type)
+    lower_binary_with_expected_type(lower_expr(left)?, op, lower_expr(right)?, declared_type)
 }
 
 fn lower_datetime_interval_offset(expr: &Expr, months: i32, days: i32, nanoseconds: i64) -> Result<cudf::Expr> {

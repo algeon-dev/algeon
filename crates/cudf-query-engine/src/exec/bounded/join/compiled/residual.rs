@@ -272,11 +272,14 @@ pub(super) fn rewrite_join_residual_for_candidate(
         Expr::Cast { expr, target_type } => {
             Ok(Expr::cast(rewrite_join_residual_for_candidate(expr, residual_output_names)?, target_type.clone()))
         },
-        Expr::Binary { left, op, right } => Ok(Expr::binary(
-            rewrite_join_residual_for_candidate(left, residual_output_names)?,
-            *op,
-            rewrite_join_residual_for_candidate(right, residual_output_names)?,
-        )),
+        Expr::Binary { left, op, right, output_type } => {
+            let left = rewrite_join_residual_for_candidate(left, residual_output_names)?;
+            let right = rewrite_join_residual_for_candidate(right, residual_output_names)?;
+            Ok(match output_type {
+                Some(output_type) => Expr::binary_with_output_type(left, *op, right, output_type.clone()),
+                None => Expr::binary(left, *op, right),
+            })
+        },
         Expr::Like { expr, pattern, escape, negated } => Ok(Expr::Like {
             expr: Box::new(rewrite_join_residual_for_candidate(expr, residual_output_names)?),
             pattern: pattern.clone(),

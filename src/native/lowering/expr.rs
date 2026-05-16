@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use arrow::datatypes::{Field, SchemaRef};
+use arrow::datatypes::{DataType as ArrowDataType, Field, SchemaRef};
 use cudf_query_engine::{
     BinaryOp as NativeBinaryOp, CaseWhen as NativeCaseWhen, DatePart as NativeDatePart, Expr as NativeExpr,
 };
@@ -65,6 +65,11 @@ pub(super) fn lower_physical_expr_with_bindings(
         let left = lower_physical_expr_with_bindings(binary.left(), input_schema, bindings)?;
         let right = lower_physical_expr_with_bindings(binary.right(), input_schema, bindings)?;
         let op = lower_binary_operator(binary.op())?;
+        if matches!(binary.op(), Operator::Divide)
+            && let Some(declared_type) = declared_decimal_divide_output_type(binary, input_schema)?
+        {
+            return Ok(NativeExpr::binary_with_output_type(left, op, right, declared_type));
+        }
         return Ok(NativeExpr::binary(left, op, right));
     }
     if let Some(not) = expr.as_any().downcast_ref::<NotExpr>() {
@@ -394,6 +399,28 @@ pub(super) fn collect_required_field_indices(
 
 pub(super) fn lower_literal(value: &ScalarValue) -> Result<NativeExpr, FallbackReason> {
     Ok(NativeExpr::literal(native_literal_value(value, NativeLiteralContext::Expression)?))
+}
+
+fn declared_decimal_divide_output_type(
+    binary: &BinaryExpr,
+    input_schema: &SchemaRef,
+) -> Result<Option<ArrowDataType>, FallbackReason> {
+    let left_type =
+        binary.left().data_type(input_schema.as_ref()).map_err(|_error| FallbackReason::UnsupportedExpression)?;
+    let right_type =
+        binary.right().data_type(input_schema.as_ref()).map_err(|_error| FallbackReason::UnsupportedExpression)?;
+    if !matches!(left_type, ArrowDataType::Decimal128(_, _)) && !matches!(right_type, ArrowDataType::Decimal128(_, _)) {
+        return Ok(None);
+    }
+    let declared_type =
+        binary.data_type(input_schema.as_ref()).map_err(|_error| FallbackReason::UnsupportedExpression)?;
+    if !matches!(declared_type, ArrowDataType::Decimal128(_, _)) {
+        return Ok(None);
+    }
+    if !is_supported_native_type(&declared_type) {
+        return Err(FallbackReason::UnsupportedType);
+    }
+    Ok(Some(declared_type))
 }
 
 pub(super) fn lower_binary_operator(op: &Operator) -> Result<NativeBinaryOp, FallbackReason> {

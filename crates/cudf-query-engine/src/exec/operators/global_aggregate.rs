@@ -10,8 +10,8 @@ pub(in crate::exec) use avg::{
     validate_avg_output_fields, validate_avg_state_alias_collisions,
 };
 pub(in crate::exec) use casts::{
-    cast_avg_output_columns, cast_avg_output_columns_with_budget, cast_count_output_columns,
-    cast_count_output_columns_with_budget, cast_reduction_output_columns, cast_reduction_output_columns_with_budget,
+    cast_count_output_columns, cast_count_output_columns_with_budget, cast_reduction_output_columns,
+    cast_reduction_output_columns_with_budget,
 };
 pub(in crate::exec) use count::{global_count_series, global_count_series_with_budget, global_count_star_expr};
 pub(in crate::exec) use state::{

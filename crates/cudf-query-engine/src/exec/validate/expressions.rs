@@ -34,7 +34,8 @@ pub(super) fn validate_expr(
             Ok(ArrowDataType::Boolean)
         },
         Expr::Cast { expr, target_type } => {
-            let source_type = validate_expr(expr, input_schema, available_columns)?;
+            let source_type =
+                validate_expr_with_expected_type(expr, Some(target_type), input_schema, available_columns)?;
             if !is_supported_arrow_cast(&source_type, target_type) {
                 return Err(QueryError::new(
                     QueryErrorCode::UnsupportedType,
@@ -46,7 +47,9 @@ pub(super) fn validate_expr(
             }
             Ok(target_type.clone())
         },
-        Expr::Binary { left, op, right } => validate_binary_expr(left, *op, right, input_schema, available_columns),
+        Expr::Binary { left, op, right, output_type } => {
+            validate_binary_expr(left, *op, right, output_type.as_ref(), input_schema, available_columns)
+        },
         Expr::Like { expr, escape, .. } => {
             let data_type = validate_expr(expr, input_schema, available_columns)?;
             require_string(&data_type, "LIKE input")?;
@@ -101,9 +104,15 @@ fn validate_expr_with_expected_type(
             }
             Ok(target_type.clone())
         },
-        Expr::Binary { left, op, right } => {
-            validate_binary_expr_with_expected_type(left, *op, right, expected_type, input_schema, available_columns)
-        },
+        Expr::Binary { left, op, right, output_type } => validate_binary_expr_with_expected_type(
+            left,
+            *op,
+            right,
+            output_type.as_ref(),
+            expected_type,
+            input_schema,
+            available_columns,
+        ),
         Expr::Alias { expr, .. } => {
             validate_expr_with_expected_type(expr, expected_type, input_schema, available_columns)
         },
@@ -172,20 +181,23 @@ fn validate_binary_expr(
     left: &Expr,
     op: BinaryOp,
     right: &Expr,
+    output_type: Option<&ArrowDataType>,
     input_schema: &SchemaRef,
     available_columns: &BTreeSet<String>,
 ) -> Result<ArrowDataType> {
-    validate_binary_expr_with_expected_type(left, op, right, None, input_schema, available_columns)
+    validate_binary_expr_with_expected_type(left, op, right, output_type, None, input_schema, available_columns)
 }
 
 fn validate_binary_expr_with_expected_type(
     left: &Expr,
     op: BinaryOp,
     right: &Expr,
+    output_type: Option<&ArrowDataType>,
     expected_type: Option<&ArrowDataType>,
     input_schema: &SchemaRef,
     available_columns: &BTreeSet<String>,
 ) -> Result<ArrowDataType> {
+    let declared_type = output_type.or(expected_type);
     let left_interval = interval_literal(left);
     let right_interval = interval_literal(right);
     if left_interval.is_some() || right_interval.is_some() {
@@ -205,13 +217,25 @@ fn validate_binary_expr_with_expected_type(
     if let Some(output_type) = temporal_duration_binary_output_type(op, &left_type, &right_type)? {
         return Ok(output_type);
     }
+    if output_type.is_some()
+        && !(op == BinaryOp::Divide && (is_decimal_type(&left_type) || is_decimal_type(&right_type)))
+    {
+        return Err(QueryError::new(
+            QueryErrorCode::UnsupportedType,
+            "cudf_query_engine.plan.validate_expr",
+            "declared binary output types are currently supported only for decimal division",
+        )
+        .with_fact("left_type", format!("{left_type:?}"))
+        .with_fact("right_type", format!("{right_type:?}"))
+        .with_fact("operator", op.to_string()));
+    }
     match op {
         BinaryOp::Add | BinaryOp::Subtract | BinaryOp::Multiply | BinaryOp::Divide => {
             require_arithmetic_type(&left_type, "binary arithmetic left operand")?;
             require_arithmetic_type(&right_type, "binary arithmetic right operand")?;
             require_compatible_types(&left_type, &right_type, "binary arithmetic operands")?;
             if is_decimal_type(&left_type) || is_decimal_type(&right_type) {
-                decimal_arithmetic_output_type(op, &left_type, &right_type, expected_type)
+                decimal_arithmetic_output_type(op, &left_type, &right_type, declared_type)
             } else {
                 Ok(left_type)
             }

@@ -289,7 +289,7 @@ fn lower_join_ast_expr(
                 .with_fact("target_type", format!("{target_type:?}"))
             })
         },
-        Expr::Binary { left, op, right } => {
+        Expr::Binary { left, op, right, .. } => {
             let left = lower_join_ast_expr(context, left, residual_columns)?;
             let right = lower_join_ast_expr(context, right, residual_columns)?;
             let op = lower_join_ast_operator(*op)?;

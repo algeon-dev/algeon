@@ -230,7 +230,7 @@ fn bounded_native_projection_coerces_decimal_output_to_declared_scale() {
 }
 
 #[test]
-fn native_projection_decimal_division_uses_declared_output_scale() {
+fn native_projection_decimal_division_uses_declared_binary_output_type() {
     let runtime = Arc::new(cudf::Runtime::new().unwrap());
     let input_schema = Arc::new(Schema::new(vec![
         Field::new("numerator", DataType::Decimal128(38, 8), false),
@@ -251,8 +251,13 @@ fn native_projection_decimal_division_uses_declared_output_scale() {
     .unwrap();
     let frame = DataFrame::from_record_batch(&runtime, &batch).unwrap();
 
-    let projection_expr =
-        Expr::binary(Expr::column("numerator"), BinaryOp::Divide, Expr::column("denominator")).alias("ratio");
+    let projection_expr = Expr::binary_with_output_type(
+        Expr::column("numerator"),
+        BinaryOp::Divide,
+        Expr::column("denominator"),
+        DataType::Decimal128(38, 8),
+    )
+    .alias("ratio");
     let mut builder = QueryPlanBuilder::new();
     let source =
         builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("decimal_input", Arc::clone(&input_schema))));
@@ -277,7 +282,7 @@ fn native_projection_decimal_division_uses_declared_output_scale() {
 }
 
 #[test]
-fn bounded_native_projection_decimal_division_uses_declared_output_scale() {
+fn bounded_native_projection_decimal_division_uses_declared_binary_output_type() {
     let dir = unique_temp_dir("cudf-query-engine-bounded-projection-decimal-division");
     let path = dir.join("input.parquet");
     let runtime = Arc::new(cudf::Runtime::new().unwrap());
@@ -289,8 +294,13 @@ fn bounded_native_projection_decimal_division_uses_declared_output_scale() {
         vec!["numerator".to_string(), "denominator".to_string()],
     );
 
-    let projection_expr =
-        Expr::binary(Expr::column("numerator"), BinaryOp::Divide, Expr::column("denominator")).alias("ratio");
+    let projection_expr = Expr::binary_with_output_type(
+        Expr::column("numerator"),
+        BinaryOp::Divide,
+        Expr::column("denominator"),
+        DataType::Decimal128(38, 8),
+    )
+    .alias("ratio");
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
     let projection =

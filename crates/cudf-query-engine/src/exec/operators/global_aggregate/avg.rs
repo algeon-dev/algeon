@@ -54,7 +54,8 @@ fn finalize_avg_output_columns_impl(
             let count = Expr::cast(state.count_expr(), avg_count_output_data_type(&division_type));
             let alias = expr.alias.clone();
             let count_is_zero = Expr::binary(state.count_expr(), BinaryOp::Eq, Expr::literal(LiteralValue::Int64(0)));
-            let avg = Expr::cast(Expr::binary(sum, BinaryOp::Divide, count), field.data_type().clone());
+            let avg_divide = Expr::binary_with_output_type(sum, BinaryOp::Divide, count, division_type);
+            let avg = Expr::cast(avg_divide, field.data_type().clone());
             let nullable_value = Expr::case(
                 vec![crate::expr::CaseWhen::new(
                     count_is_zero,

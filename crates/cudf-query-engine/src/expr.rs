@@ -46,6 +46,10 @@ pub enum Expr {
         op: BinaryOp,
         /// Right operand.
         right: Box<Expr>,
+        /// Optional declared output type for operators whose result type is a
+        /// frontend contract rather than something the native backend can infer
+        /// from operands alone.
+        output_type: Option<DataType>,
     },
     /// SQL `LIKE` or `NOT LIKE` string predicate.
     Like {
@@ -137,7 +141,12 @@ impl Expr {
 
     /// Build a binary operation expression.
     pub fn binary(left: Self, op: BinaryOp, right: Self) -> Self {
-        Self::Binary { left: Box::new(left), op, right: Box::new(right) }
+        Self::Binary { left: Box::new(left), op, right: Box::new(right), output_type: None }
+    }
+
+    /// Build a binary operation expression with a declared result type.
+    pub fn binary_with_output_type(left: Self, op: BinaryOp, right: Self, output_type: DataType) -> Self {
+        Self::Binary { left: Box::new(left), op, right: Box::new(right), output_type: Some(output_type) }
     }
 
     /// Build a SQL logical negation expression.
@@ -237,7 +246,13 @@ impl fmt::Display for Expr {
             Self::IsNull(expr) => write!(f, "{expr} IS NULL"),
             Self::IsNotNull(expr) => write!(f, "{expr} IS NOT NULL"),
             Self::Cast { expr, target_type } => write!(f, "CAST({expr} AS {target_type})"),
-            Self::Binary { left, op, right } => write!(f, "({left} {op} {right})"),
+            Self::Binary { left, op, right, output_type } => {
+                write!(f, "({left} {op} {right})")?;
+                if let Some(output_type) = output_type {
+                    write!(f, "::{output_type}")?;
+                }
+                Ok(())
+            },
             Self::Like { expr, pattern, escape, negated } => {
                 let operator = if *negated { "NOT LIKE" } else { "LIKE" };
                 write!(f, "{expr} {operator} {pattern:?}")?;

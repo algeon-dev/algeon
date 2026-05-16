@@ -97,7 +97,7 @@ pub(super) fn validate_general_expr_capability(expr: &Expr) -> Result<(), Expres
             validate_general_expr_capability(expr)
         },
         Expr::Cast { expr, .. } | Expr::Extract { expr, .. } => validate_general_expr_capability(expr),
-        Expr::Binary { left, op, right } if expr_is_interval_literal(left) || expr_is_interval_literal(right) => {
+        Expr::Binary { left, op, right, .. } if expr_is_interval_literal(left) || expr_is_interval_literal(right) => {
             validate_interval_binary_expr_capability(left, *op, right)
         },
         Expr::Binary { left, right, .. } => {
