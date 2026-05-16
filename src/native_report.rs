@@ -77,15 +77,17 @@ pub use schema::{
 };
 pub use tpcds_parity::{
     NATIVE_TPCDS_PARITY_TSV_HEADER, NATIVE_TPCDS_PARITY_TSV_SCHEMA_VERSION, NativeTpcdsParityCpuOutcome,
+    NativeTpcdsParityExternalOutput, NativeTpcdsParityExternalOutputStatus, NativeTpcdsParityExternalOutputSummary,
     NativeTpcdsParityNativePlanningOutcome, NativeTpcdsParityNativeRuntimeOutcome, NativeTpcdsParityPlanningOutcome,
     NativeTpcdsParityReport, NativeTpcdsParityRow, NativeTpcdsParityWorkloadItem, ParityComparisonMode,
     ParityComparisonResult, ParityFloatTolerance, ParityStageStatus, ParityStatus, compare_record_batches,
     sql_has_top_level_order_by,
 };
 use tsv::{
-    format_adaptive_pipeline_rows, format_join_diagnostics, format_join_strategy_rows, format_source_diagnostics,
-    format_strict_bounded_compiled_graphs, format_strict_bounded_contract_rows, format_task_operator_rows,
-    format_task_runtime_rows, stable_tsv_field, write_workload_dataset_metadata,
+    format_adaptive_pipeline_rows, format_join_diagnostics, format_join_strategy_rows,
+    format_native_optimizer_diagnostics, format_source_diagnostics, format_strict_bounded_compiled_graphs,
+    format_strict_bounded_contract_rows, format_task_operator_rows, format_task_runtime_rows, stable_tsv_field,
+    write_workload_dataset_metadata,
 };
 pub use workload::{
     NativeDataFusionExecutionWorkloadInput, NativeDataFusionExecutionWorkloadItem,
@@ -271,6 +273,7 @@ fn datafusion_planning_rows_for_item(item: NativeDataFusionPlanningWorkloadItem)
                     &native_diagnostics.adaptive_pipeline,
                     candidate,
                 ),
+                native_optimizer: native_diagnostics.native_optimizer.clone(),
                 join_diagnostics: join_diagnostics.clone(),
                 source_diagnostics: source_diagnostics.clone(),
                 post_native_plan_root: post_native_plan_root.clone(),
@@ -300,6 +303,7 @@ fn datafusion_planning_rows_for_item(item: NativeDataFusionPlanningWorkloadItem)
                     &native_diagnostics.adaptive_pipeline,
                     candidate,
                 ),
+                native_optimizer: native_diagnostics.native_optimizer.clone(),
                 join_diagnostics: join_diagnostics.clone(),
                 source_diagnostics: source_diagnostics.clone(),
                 post_native_plan_root: post_native_plan_root.clone(),
@@ -422,6 +426,7 @@ fn datafusion_planning_row_for_planning_failure(
         strict_bounded_contract_rows: Vec::new(),
         strict_bounded_compiled_graphs: Vec::new(),
         adaptive_pipeline_rows: Vec::new(),
+        native_optimizer: cudf_query_engine::NativeOptimizerDiagnostics::default(),
         join_diagnostics: Vec::new(),
         source_diagnostics: Vec::new(),
         post_native_plan_root: "PlanningFailure".to_string(),

@@ -19,6 +19,7 @@ pub struct NativeDataFusionPlanningRow {
     pub strict_bounded_compiled_graphs: Vec<NativeStrictBoundedCompiledGraphDiagnostics>,
     /// Adaptive-only rows; strict evidence must not be projected here.
     pub adaptive_pipeline_rows: Vec<AdaptivePipelineReportRow>,
+    pub native_optimizer: cudf_query_engine::NativeOptimizerDiagnostics,
     pub join_diagnostics: Vec<NativeJoinDiagnosticSummary>,
     pub source_diagnostics: Vec<NativeSourceDiagnosticSummary>,
     pub post_native_plan_root: String,

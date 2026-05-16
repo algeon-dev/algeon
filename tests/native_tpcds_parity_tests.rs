@@ -7,14 +7,14 @@ use arrow::{
 };
 use datafusion_cudf::{
     NATIVE_TPCDS_PARITY_TSV_HEADER, NATIVE_TPCDS_PARITY_TSV_SCHEMA_VERSION, NativeTpcdsParityCpuOutcome,
-    NativeTpcdsParityNativeRuntimeOutcome, NativeTpcdsParityReport, NativeTpcdsParityRow,
-    NativeTpcdsParityWorkloadItem, ParityComparisonMode, ParityFloatTolerance, ParityStatus, compare_record_batches,
-    sql_has_top_level_order_by,
+    NativeTpcdsParityExternalOutput, NativeTpcdsParityExternalOutputSummary, NativeTpcdsParityNativeRuntimeOutcome,
+    NativeTpcdsParityReport, NativeTpcdsParityRow, NativeTpcdsParityWorkloadItem, ParityComparisonMode,
+    ParityFloatTolerance, ParityStatus, compare_record_batches, sql_has_top_level_order_by,
 };
 
 #[test]
 fn parity_tsv_header_pins_schema_version_and_columns() {
-    assert_eq!(NATIVE_TPCDS_PARITY_TSV_SCHEMA_VERSION, 1);
+    assert_eq!(NATIVE_TPCDS_PARITY_TSV_SCHEMA_VERSION, 2);
     let columns: Vec<&str> = NATIVE_TPCDS_PARITY_TSV_HEADER.split('\t').collect();
     assert_eq!(
         columns,
@@ -36,6 +36,18 @@ fn parity_tsv_header_pins_schema_version_and_columns() {
             "cpu_output_fingerprint",
             "native_output_fingerprint",
             "comparison_mode",
+            "duckdb_output_status",
+            "duckdb_cpu_parity_status",
+            "duckdb_cpu_parity_detail",
+            "duckdb_output_rows",
+            "duckdb_output_batches",
+            "duckdb_output_fingerprint",
+            "external-engine_output_status",
+            "external-engine_cpu_parity_status",
+            "external-engine_cpu_parity_detail",
+            "external-engine_output_rows",
+            "external-engine_output_batches",
+            "external-engine_output_fingerprint",
             "native_reservation_live_peak_bytes",
             "native_reservation_denied_count",
             "native_retry_count",
@@ -64,6 +76,8 @@ fn parity_report_to_tsv_emits_schema_version_and_header() {
         cpu_output_fingerprint: None,
         native_output_fingerprint: None,
         comparison_mode: ParityComparisonMode::NotApplicable,
+        duckdb_output: NativeTpcdsParityExternalOutputSummary::not_configured(),
+        external-engine_output: NativeTpcdsParityExternalOutputSummary::not_configured(),
         native_reservation_live_peak_bytes: None,
         native_reservation_denied_count: None,
         native_retry_count: None,
@@ -77,9 +91,9 @@ fn parity_report_to_tsv_emits_schema_version_and_header() {
         format!("# native_tpcds_parity_tsv_schema_version={NATIVE_TPCDS_PARITY_TSV_SCHEMA_VERSION}")
     );
     assert!(tsv.contains(NATIVE_TPCDS_PARITY_TSV_HEADER));
-    // 21 columns separated by tabs in the data row.
+    // 33 columns separated by tabs in the data row.
     let data_line = tsv.lines().find(|line| line.starts_with("q01\t")).expect("data row should exist");
-    assert_eq!(data_line.split('\t').count(), 21);
+    assert_eq!(data_line.split('\t').count(), 33);
 }
 
 #[test]
@@ -164,6 +178,44 @@ fn compare_record_batches_decimal_scale_difference_is_mismatch() {
 }
 
 #[test]
+fn external_oracle_decimal_precision_widening_matches_cpu_value() {
+    let cpu_schema = Arc::new(Schema::new(vec![Field::new("amount", DataType::Decimal128(17, 2), false)]));
+    let duckdb_schema = Arc::new(Schema::new(vec![Field::new("amount", DataType::Decimal128(38, 2), false)]));
+    let cpu_batch = RecordBatch::try_new(
+        Arc::clone(&cpu_schema),
+        vec![Arc::new(Decimal128Array::from(vec![12345_i128]).with_precision_and_scale(17, 2).unwrap())],
+    )
+    .unwrap();
+    let duckdb_batch = RecordBatch::try_new(
+        Arc::clone(&duckdb_schema),
+        vec![Arc::new(Decimal128Array::from(vec![12345_i128]).with_precision_and_scale(38, 2).unwrap())],
+    )
+    .unwrap();
+    let item = NativeTpcdsParityWorkloadItem {
+        query_id: "qxx".to_string(),
+        sql: "SELECT amount FROM t ORDER BY amount".to_string(),
+        cpu_outcome: NativeTpcdsParityCpuOutcome::Succeeded { schema: cpu_schema, batches: vec![cpu_batch] },
+        native_planning: datafusion_cudf::NativeTpcdsParityNativePlanningOutcome::PlanningFailed(
+            datafusion_cudf::NativePlanningFailure {
+                stage: "physical_planning".to_string(),
+                reason_code: "physical_planning_failed".to_string(),
+                message: "not relevant".to_string(),
+            },
+        ),
+        native_runtime: NativeTpcdsParityNativeRuntimeOutcome::NotStarted,
+        duckdb_output: NativeTpcdsParityExternalOutput::Succeeded {
+            schema: duckdb_schema,
+            batches: vec![duckdb_batch],
+        },
+        external-engine_output: NativeTpcdsParityExternalOutput::NotConfigured,
+    };
+
+    let report = NativeTpcdsParityReport::collect([item], ParityFloatTolerance::exact());
+
+    assert_eq!(report.rows[0].duckdb_output.cpu_parity_status, ParityStatus::Matched);
+}
+
+#[test]
 fn compare_record_batches_float_tolerance_matches_close_values() {
     let schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Float64, false)]));
     let cpu =
@@ -230,6 +282,8 @@ fn parity_status_for_cpu_failure_flags_cpu_failed_and_skips_comparison() {
             },
         ),
         native_runtime: NativeTpcdsParityNativeRuntimeOutcome::NotStarted,
+        duckdb_output: NativeTpcdsParityExternalOutput::NotConfigured,
+        external-engine_output: NativeTpcdsParityExternalOutput::NotConfigured,
     };
     let report = NativeTpcdsParityReport::collect([item], ParityFloatTolerance::exact());
     assert_eq!(report.rows.len(), 1);

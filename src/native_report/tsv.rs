@@ -144,6 +144,100 @@ pub(super) fn format_adaptive_pipeline_rows(rows: &[AdaptivePipelineReportRow]) 
     rows.iter().map(|row| stable_tsv_field(&row.to_stable_kv_row())).collect::<Vec<_>>().join("|")
 }
 
+pub(super) fn format_native_optimizer_diagnostics(
+    diagnostics: &cudf_query_engine::NativeOptimizerDiagnostics,
+) -> String {
+    if diagnostics.is_empty() {
+        return "none".to_string();
+    }
+
+    let semijoin = &diagnostics.semijoin_reduction;
+    let candidates = if semijoin.candidates.is_empty() {
+        "none".to_string()
+    } else {
+        semijoin.candidates.iter().map(format_semijoin_reduction_candidate).collect::<Vec<_>>().join("|")
+    };
+    stable_tsv_field(&format!(
+        "rule={},considered_count={},applied_count={},candidates={}",
+        cudf_query_engine::SEMIJOIN_REDUCTION_RULE_NAME,
+        semijoin.considered_count,
+        semijoin.applied_count,
+        candidates
+    ))
+}
+
+fn format_semijoin_reduction_candidate(candidate: &cudf_query_engine::SemijoinReductionCandidateDiagnostics) -> String {
+    let after_root_node_id = candidate.after_root_node_id.map_or_else(|| "none".to_string(), |id| id.to_string());
+    let crossed_join_node_ids = if candidate.crossed_join_node_ids.is_empty() {
+        "none".to_string()
+    } else {
+        candidate.crossed_join_node_ids.iter().map(ToString::to_string).collect::<Vec<_>>().join("+")
+    };
+    let target_subtree_id = candidate.target_subtree_id.map_or_else(|| "none".to_string(), |id| id.to_string());
+    let key_mappings = if candidate.key_mappings.is_empty() {
+        "none".to_string()
+    } else {
+        candidate.key_mappings.iter().map(format_semijoin_key_mapping).collect::<Vec<_>>().join(";")
+    };
+    let cost_gate = candidate.cost_gate.as_ref().map(format_semijoin_cost_gate).unwrap_or_else(|| "none".to_string());
+    let admission_decision = candidate
+        .admission_decision
+        .as_ref()
+        .map(|decision| format!("{decision:?}"))
+        .unwrap_or_else(|| "none".to_string());
+    let original_admitted =
+        candidate.original_admitted.map_or_else(|| "not_evaluated".to_string(), |value| value.to_string());
+    let rewritten_admitted =
+        candidate.rewritten_admitted.map_or_else(|| "not_evaluated".to_string(), |value| value.to_string());
+    let rejected_reason =
+        candidate.rejected_reason.as_ref().map(|reason| format!("{reason:?}")).unwrap_or_else(|| "none".to_string());
+
+    format!(
+        "rule={},candidate_node_id={},before_root_node_id={},after_root_node_id={},crossed_join_node_ids={},target_subtree_id={},key_mappings={},cost_gate={},admission_decision={},original_admitted={},rewritten_admitted={},applied={},rejected_reason={}",
+        candidate.rule_name,
+        candidate.candidate_node_id,
+        candidate.before_root_node_id,
+        after_root_node_id,
+        crossed_join_node_ids,
+        target_subtree_id,
+        key_mappings,
+        cost_gate,
+        admission_decision,
+        original_admitted,
+        rewritten_admitted,
+        candidate.applied,
+        rejected_reason,
+    )
+}
+
+fn format_semijoin_key_mapping(mapping: &cudf_query_engine::SemijoinReductionKeyMappingDiagnostics) -> String {
+    let after_column = mapping.after_column.as_deref().unwrap_or("none");
+    let target_subtree_id = mapping.target_subtree_id.map_or_else(|| "none".to_string(), |id| id.to_string());
+    format!("{}->{}@{}", stable_tsv_field(&mapping.before_column), stable_tsv_field(after_column), target_subtree_id)
+}
+
+fn format_semijoin_cost_gate(gate: &cudf_query_engine::SemijoinReductionCostGateDiagnostics) -> String {
+    format!(
+        "signal={},threshold_multiplier={},accepted={}",
+        format_semijoin_cost_signal(&gate.signal),
+        gate.threshold_multiplier,
+        gate.accepted,
+    )
+}
+
+fn format_semijoin_cost_signal(signal: &cudf_query_engine::SemijoinReductionCostSignal) -> String {
+    match signal {
+        cudf_query_engine::SemijoinReductionCostSignal::RowEstimate { semi_right_rows, target_rows } => {
+            format!("row_estimate:semi_right_rows={semi_right_rows}:target_rows={target_rows}")
+        },
+        cudf_query_engine::SemijoinReductionCostSignal::ByteEstimate { semi_right_bytes, target_bytes } => {
+            format!("byte_estimate:semi_right_bytes={semi_right_bytes}:target_bytes={target_bytes}")
+        },
+        cudf_query_engine::SemijoinReductionCostSignal::AggregateKeysetShape => "aggregate_keyset_shape".to_string(),
+        cudf_query_engine::SemijoinReductionCostSignal::Unavailable => "unavailable".to_string(),
+    }
+}
+
 pub(super) fn format_join_strategy_rows(rows: &[NativeJoinStrategyMetricRow]) -> String {
     if rows.is_empty() {
         return "none".to_string();

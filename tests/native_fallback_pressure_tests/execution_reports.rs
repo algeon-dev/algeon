@@ -182,6 +182,7 @@ fn native_datafusion_reports_scope_strict_contract_rows_to_join_candidates() {
         input_plan_root: "SortExec".to_string(),
         input_plan_shape: "SortExec(fetch)(AggregateExec(HashJoinExec(LocalParquetScan,LocalParquetScan)))".to_string(),
         report,
+        native_optimizer: Default::default(),
         source_diagnostics: Vec::new(),
         strict_bounded_contract: accepted_strict_bounded_contract_diagnostics(),
         adaptive_pipeline: Default::default(),
@@ -231,6 +232,7 @@ fn native_datafusion_reports_keep_multiple_accepted_join_candidates_separated() 
         input_plan_root: "UnionExec".to_string(),
         input_plan_shape: "UnionExec(HashJoinExec(...),NestedLoopJoinExec(...))".to_string(),
         report,
+        native_optimizer: Default::default(),
         source_diagnostics: Vec::new(),
         strict_bounded_contract: NativeStrictBoundedContractDiagnostics {
             accepted_candidates: vec![
@@ -298,6 +300,7 @@ fn native_datafusion_reports_project_adaptive_rows_without_strict_contract_rows(
         input_plan_root: "HashJoinExec".to_string(),
         input_plan_shape: "HashJoinExec(LocalParquetScan,LocalParquetScan)".to_string(),
         report,
+        native_optimizer: Default::default(),
         source_diagnostics: Vec::new(),
         strict_bounded_contract: NativeStrictBoundedContractDiagnostics::default(),
         adaptive_pipeline: NativeAdaptivePipelineDiagnostics {
@@ -326,6 +329,122 @@ fn native_datafusion_reports_project_adaptive_rows_without_strict_contract_rows(
     assert!(text.contains("adaptive_pipeline_rows"));
     assert!(text.contains("execution_mode=adaptive"));
     assert!(!text.contains("execution_mode=strict_bounded"));
+}
+
+#[test]
+fn native_datafusion_planning_report_projects_native_optimizer_diagnostics() {
+    let optimizer_result =
+        cudf_query_engine::optimize_query_plan(semijoin_reduction_projection_plan(), &Default::default());
+    assert_eq!(optimizer_result.diagnostics.semijoin_reduction.applied_count, 1);
+
+    let mut report = PlanningReport::new();
+    report.push_rewritten(GpuCandidate::new("HashJoinExec(HashJoinExec,GpuKeyset)", 1));
+    let diagnostics = NativePlanningDiagnostics {
+        input_plan_root: "HashJoinExec".to_string(),
+        input_plan_shape: "HashJoinExec(HashJoinExec,GpuKeyset)".to_string(),
+        report,
+        native_optimizer: optimizer_result.diagnostics,
+        source_diagnostics: Vec::new(),
+        strict_bounded_contract: NativeStrictBoundedContractDiagnostics::default(),
+        adaptive_pipeline: NativeAdaptivePipelineDiagnostics::default(),
+    };
+
+    let planning = NativeDataFusionPlanningReport::collect([NativeDataFusionPlanningWorkloadItem::new(
+        "generic_semijoin",
+        native_exec_leaf_for_report(),
+        diagnostics,
+    )]);
+    let row = &planning.rows[0];
+    assert_eq!(row.native_optimizer.semijoin_reduction.considered_count, 1);
+    assert_eq!(row.native_optimizer.semijoin_reduction.applied_count, 1);
+
+    let text = planning.to_tsv();
+    assert!(text.contains("\tnative_optimizer\t"));
+    assert!(text.contains("rule=semijoin_reduction,considered_count=1,applied_count=1"));
+    assert!(text.contains("crossed_join_node_ids="));
+    assert!(text.contains("cost_gate="));
+    assert!(!text.contains("q18"));
+}
+
+fn semijoin_reduction_projection_plan() -> cudf_query_engine::QueryPlan {
+    let mut builder = QueryPlanBuilder::new();
+    let x = builder.add_source(semijoin_gpu_source("x", &["x_key", "x_payload"]));
+    let y = builder.add_source(semijoin_gpu_source("y", &["y_key", "y_payload"]));
+    let keyset = semijoin_aggregate_keyset_source(&mut builder, "keyset", "y_key");
+
+    let xy_schema = semijoin_schema(&["x_key", "x_payload", "y_key", "y_payload"]);
+    let xy = builder.add_join(
+        x,
+        y,
+        cudf_query_engine::JoinSpec::new(
+            cudf_query_engine::JoinType::Inner,
+            vec![cudf_query_engine::JoinKey::new(
+                cudf_query_engine::ColumnRef::input(0, "x_key", "x_key"),
+                cudf_query_engine::ColumnRef::input(1, "y_key", "y_key"),
+            )],
+        )
+        .with_output_projection(vec![
+            cudf_query_engine::JoinOutputColumn::left(
+                cudf_query_engine::ColumnRef::input(0, "x_key", "x_key"),
+                "x_key",
+            ),
+            cudf_query_engine::JoinOutputColumn::left(
+                cudf_query_engine::ColumnRef::input(0, "x_payload", "x_payload"),
+                "x_payload",
+            ),
+            cudf_query_engine::JoinOutputColumn::right(
+                cudf_query_engine::ColumnRef::input(1, "y_key", "y_key"),
+                "y_key",
+            ),
+            cudf_query_engine::JoinOutputColumn::right(
+                cudf_query_engine::ColumnRef::input(1, "y_payload", "y_payload"),
+                "y_payload",
+            ),
+        ]),
+        Arc::clone(&xy_schema),
+    );
+    let semi = builder.add_join(
+        xy,
+        keyset,
+        cudf_query_engine::JoinSpec::new(
+            cudf_query_engine::JoinType::LeftSemi,
+            vec![cudf_query_engine::JoinKey::new(
+                cudf_query_engine::ColumnRef::input(0, "y_key", "y_key"),
+                cudf_query_engine::ColumnRef::input(1, "y_key", "y_key"),
+            )],
+        )
+        .with_output_projection(
+            ["x_key", "x_payload", "y_key", "y_payload"]
+                .into_iter()
+                .map(|name| {
+                    cudf_query_engine::JoinOutputColumn::left(cudf_query_engine::ColumnRef::input(0, name, name), name)
+                })
+                .collect(),
+        ),
+        xy_schema,
+    );
+    builder.finish_gpu_resident(semi)
+}
+
+fn semijoin_gpu_source(name: &str, fields: &[&str]) -> SourceNode {
+    SourceNode::GpuResident(GpuResidentSource::new(name, semijoin_schema(fields)))
+}
+
+fn semijoin_aggregate_keyset_source(
+    builder: &mut QueryPlanBuilder,
+    name: &str,
+    key_name: &str,
+) -> cudf_query_engine::NodeId {
+    let source = builder.add_source(semijoin_gpu_source(name, &[key_name]));
+    builder.add_aggregate(
+        source,
+        cudf_query_engine::AggregateSpec::new(vec![cudf_query_engine::Expr::column(key_name)], Vec::new()),
+        semijoin_schema(&[key_name]),
+    )
+}
+
+fn semijoin_schema(fields: &[&str]) -> Arc<Schema> {
+    Arc::new(Schema::new(fields.iter().map(|name| Field::new(*name, DataType::Int32, false)).collect::<Vec<_>>()))
 }
 
 fn adaptive_report_for_projection_test() -> AdaptivePipelineReport {
