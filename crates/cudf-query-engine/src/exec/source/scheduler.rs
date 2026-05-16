@@ -31,7 +31,6 @@ struct ScheduledLocalParquetReadResult {
 }
 
 impl ScheduledLocalParquetRead {
-    #[allow(clippy::too_many_arguments)]
     pub(in crate::exec) fn spawn(
         context: ExecutionContext,
         source: LocalParquetSource,

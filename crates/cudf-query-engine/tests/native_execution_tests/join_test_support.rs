@@ -125,8 +125,6 @@ pub(super) fn execute_bounded_equality_left_only_filtered_join(
     let context = bounded_join_execution_context(runtime);
     execute_query_plan(&context, &plan).unwrap()
 }
-
-#[allow(clippy::too_many_arguments)]
 pub(super) fn keyless_conditional_join_input_subplan_plan(
     lineitem_path: &Path,
     anti_path: &Path,

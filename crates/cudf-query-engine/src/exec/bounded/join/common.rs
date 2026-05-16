@@ -21,8 +21,6 @@ enum JoinInputReservation<'a> {
     Shared { reservation: &'a ActiveReservation },
     Owned { reservation: Box<ActiveReservation> },
 }
-
-#[allow(clippy::too_many_arguments)]
 pub(in crate::exec::bounded) fn prepare_bounded_join_side_input_from_resident_frame(
     input: ResidentGpuFrame,
     columns: &[String],
@@ -43,8 +41,6 @@ pub(in crate::exec::bounded) fn prepare_bounded_join_side_input_from_resident_fr
         metrics,
     )
 }
-
-#[allow(clippy::too_many_arguments)]
 pub(in crate::exec::bounded) fn prepare_bounded_join_side_input_from_shared_frame(
     input: GpuDataFrame,
     source_reservation: &ActiveReservation,
@@ -66,8 +62,6 @@ pub(in crate::exec::bounded) fn prepare_bounded_join_side_input_from_shared_fram
         metrics,
     )
 }
-
-#[allow(clippy::too_many_arguments)]
 fn prepare_bounded_join_side_input(
     input: GpuDataFrame,
     input_reservation: JoinInputReservation<'_>,

@@ -279,8 +279,6 @@ fn join_source_retry_policy(context: &ExecutionContext) -> (usize, usize) {
         MemoryControlPolicy::Unbounded => (1, 1),
     }
 }
-
-#[allow(clippy::too_many_arguments)]
 fn read_join_leaf_source_chunks_serial(
     context: &ExecutionContext,
     source: &LocalParquetSource,
@@ -316,8 +314,6 @@ fn read_join_leaf_source_chunks_serial(
 
     Ok(chunks)
 }
-
-#[allow(clippy::too_many_arguments)]
 fn read_join_leaf_source_chunk_with_retry(
     context: &ExecutionContext,
     source: &LocalParquetSource,
@@ -358,8 +354,6 @@ fn read_join_leaf_source_chunk_with_retry(
         Err(error) => Err(error),
     }
 }
-
-#[allow(clippy::too_many_arguments)]
 fn retry_join_leaf_source_chunk_after_error(
     context: &ExecutionContext,
     source: &LocalParquetSource,
@@ -407,8 +401,6 @@ fn retry_join_leaf_source_chunk_after_error(
 
     Err(chunk_retry_facts(&chunk, metrics).attach_to_error(error))
 }
-
-#[allow(clippy::too_many_arguments)]
 fn read_join_leaf_source_chunk_attempt(
     context: &ExecutionContext,
     source: &LocalParquetSource,
@@ -780,8 +772,6 @@ where
 
     Ok(())
 }
-
-#[allow(clippy::too_many_arguments)]
 fn start_next_required_join_leaf_read(
     context: &ExecutionContext,
     source: &LocalParquetSource,
@@ -813,8 +803,6 @@ fn start_next_required_join_leaf_read(
     }
     Ok(())
 }
-
-#[allow(clippy::too_many_arguments)]
 fn fill_optional_join_leaf_reads(
     context: &ExecutionContext,
     source: &LocalParquetSource,
@@ -862,8 +850,6 @@ fn fill_optional_join_leaf_reads(
     }
     Ok(())
 }
-
-#[allow(clippy::too_many_arguments)]
 fn start_join_leaf_scheduled_source_read(
     context: &ExecutionContext,
     source: &LocalParquetSource,
@@ -1005,8 +991,6 @@ fn observed_join_source_read_reservation_request(
         chunk.estimated_source_read_bytes,
     )
 }
-
-#[allow(clippy::too_many_arguments)]
 fn grow_join_source_reservation_to_observed_frame(
     frame: &GpuDataFrame,
     reservation: &mut ActiveReservation,
@@ -1085,8 +1069,6 @@ fn apply_join_leaf_source_stream_stages(
     }
     Ok(input)
 }
-
-#[allow(clippy::too_many_arguments)]
 fn execute_join_leaf_source_stream_unary(
     context: &ExecutionContext,
     node_id: NodeId,

@@ -501,8 +501,6 @@ pub(in crate::exec::bounded) fn release_bounded_root_hash_join_probe_state(
     release_bounded_root_hash_join_build_state(build, reservations, metrics);
     release_bounded_join_side_frame(probe, reservations, metrics);
 }
-
-#[allow(clippy::too_many_arguments)]
 fn materialize_bounded_root_hash_join_probe_chunk(
     context: &ExecutionContext,
     node_id: NodeId,
@@ -622,8 +620,6 @@ fn validate_root_hash_join(node: &JoinNode) -> Result<()> {
     }
     Ok(())
 }
-
-#[allow(clippy::too_many_arguments)]
 fn reserve_and_build_bounded_hash_join(
     context: &ExecutionContext,
     node_id: NodeId,

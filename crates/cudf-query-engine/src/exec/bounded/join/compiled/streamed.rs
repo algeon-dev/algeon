@@ -29,8 +29,6 @@ pub(super) fn execute_compiled_streamed_one_shot_join_materialize(
     );
     Ok(output)
 }
-
-#[allow(clippy::too_many_arguments)]
 pub(super) fn execute_compiled_streamed_partitioned_hash_join_materialize(
     context: &ExecutionContext,
     node_id: NodeId,

@@ -22,6 +22,7 @@ use crate::{
 };
 
 mod dataset;
+mod parity;
 mod tiny;
 
 pub use dataset::{
@@ -31,9 +32,16 @@ pub use dataset::{
     discover_tpcds_table_layout, external_tpcds_dataset_metadata, prepare_tpcds_report_dataset,
     tiny_tpcds_dataset_metadata,
 };
+pub use parity::tpcds_parity_workload_items;
 pub use tiny::write_tiny_tpcds_parquet_dataset;
 
 pub use super::tpcds_queries::{TPCDS_QUERIES, TPCDS_QUERY_COUNT, TpcdsQuery, tpcds_query_ids};
+
+pub const CUDF_TPCDS_NATIVE_DEVICE_BUDGET_BYTES_ENV: &str = "CUDF_TPCDS_NATIVE_DEVICE_BUDGET_BYTES";
+pub const CUDF_TPCDS_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV: &str = "CUDF_TPCDS_NATIVE_MAX_SOURCE_CHUNK_BYTES";
+pub const CUDF_TPCDS_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV: &str = "CUDF_TPCDS_NATIVE_MAX_ROW_GROUPS_PER_CHUNK";
+pub const CUDF_TPCDS_NATIVE_MAX_RETRY_ATTEMPTS_ENV: &str = "CUDF_TPCDS_NATIVE_MAX_RETRY_ATTEMPTS";
+pub const CUDF_TPCDS_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV: &str = "CUDF_TPCDS_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS";
 
 pub type TpcdsWorkloadResult<T> = std::result::Result<T, TpcdsWorkloadError>;
 
@@ -111,8 +119,37 @@ pub fn tpcds_report_session_config() -> SessionConfig {
 }
 
 pub fn tpcds_native_optimizer_config() -> CudfOptimizerConfig {
-    CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred)
-        .with_native_execution_config(NativeCudfExecutionConfig::bounded(256 * 1024 * 1024, 64 * 1024 * 1024, 1, 3, 1))
+    let device_budget_bytes = optional_env_u64(CUDF_TPCDS_NATIVE_DEVICE_BUDGET_BYTES_ENV).unwrap_or(256 * 1024 * 1024);
+    let max_source_chunk_bytes =
+        optional_env_u64(CUDF_TPCDS_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV).unwrap_or(64 * 1024 * 1024);
+    let max_row_groups_per_chunk = optional_env_usize(CUDF_TPCDS_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV).unwrap_or(1);
+    let max_retry_attempts = optional_env_usize(CUDF_TPCDS_NATIVE_MAX_RETRY_ATTEMPTS_ENV).unwrap_or(3);
+    let min_retry_chunk_row_groups = optional_env_usize(CUDF_TPCDS_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV).unwrap_or(1);
+    CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred).with_native_execution_config(
+        NativeCudfExecutionConfig::bounded(
+            device_budget_bytes,
+            max_source_chunk_bytes,
+            max_row_groups_per_chunk,
+            max_retry_attempts,
+            min_retry_chunk_row_groups,
+        ),
+    )
+}
+
+fn optional_env_u64(name: &'static str) -> Option<u64> {
+    std::env::var(name).ok().map(|value| {
+        value
+            .parse::<u64>()
+            .unwrap_or_else(|error| panic!("unsupported {name}={value}; expected unsigned integer: {error}"))
+    })
+}
+
+fn optional_env_usize(name: &'static str) -> Option<usize> {
+    std::env::var(name).ok().map(|value| {
+        value
+            .parse::<usize>()
+            .unwrap_or_else(|error| panic!("unsupported {name}={value}; expected unsigned integer: {error}"))
+    })
 }
 
 pub async fn tpcds_fallback_pressure_workload_items(
@@ -280,7 +317,7 @@ async fn execute_tpcds_native_plan(plan: Arc<dyn ExecutionPlan>) -> NativeDataFu
     }
 }
 
-async fn register_tpcds_tables(ctx: &SessionContext, root: &Path) -> TpcdsWorkloadResult<()> {
+pub(super) async fn register_tpcds_tables(ctx: &SessionContext, root: &Path) -> TpcdsWorkloadResult<()> {
     for &table in TPCDS_TABLES {
         let layout = discover_tpcds_table_layout(root, table)?;
         let path = layout.anchor.to_str().ok_or_else(|| TpcdsWorkloadError::NonUtf8Path(layout.anchor.clone()))?;
