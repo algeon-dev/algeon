@@ -76,7 +76,16 @@ fn execute_final_merge_level_attempt(
             continue;
         }
 
-        match execute_final_merge_group_attempt(context, bounded, group, attempt, max_attempts, reservations, metrics) {
+        match execute_final_merge_group_attempt(
+            context,
+            bounded,
+            group,
+            group_index,
+            attempt,
+            max_attempts,
+            reservations,
+            metrics,
+        ) {
             Ok(partial) => output.push(MergeLevelItem::Merged(Box::new(partial))),
             Err(error) => {
                 release_merge_level_items(output, reservations, metrics);
@@ -92,6 +101,7 @@ fn execute_final_merge_group_attempt(
     context: &ExecutionContext,
     bounded: &BoundedPlan<'_>,
     partials: &[CommittedPartial],
+    group_index: usize,
     attempt: usize,
     max_attempts: usize,
     reservations: &mut ReservationTracker,
@@ -104,7 +114,8 @@ fn execute_final_merge_group_attempt(
             .with_memory_boundary("final_aggregate_merge")
             .with_node_id(bounded.aggregate_id)
             .with_stage("final_merge")
-            .with_attempt(attempt, max_attempts);
+            .with_attempt(attempt, max_attempts)
+            .with_compiled_task_id(legacy_bounded_final_merge_task_id(bounded.aggregate_id, group_index, attempt));
     let mut merge_reservation = reservations.try_reserve(merge_request, metrics)?;
     let merge_token_budget = reservations.available_bytes_including(&merge_reservation);
     let merge_token = match execution_budget_token_for_boundary(
@@ -135,6 +146,7 @@ fn execute_final_merge_group_attempt(
         context,
         bounded,
         partials,
+        group_index,
         &merge_token,
         &mut merge_reservation,
         reservations,
@@ -179,7 +191,8 @@ fn execute_final_merge_group_attempt(
             .with_memory_boundary("final_aggregate_merge_output")
             .with_node_id(bounded.aggregate_id)
             .with_stage("final_merge")
-            .with_attempt(attempt, max_attempts);
+            .with_attempt(attempt, max_attempts)
+            .with_compiled_task_id(legacy_bounded_final_merge_task_id(bounded.aggregate_id, group_index, attempt));
     let output_reservation = reservations.try_reserve(output_request, metrics)?;
     Ok(CommittedPartial { frame, reservation: output_reservation })
 }
@@ -189,6 +202,7 @@ fn merge_final_aggregate_partials(
     context: &ExecutionContext,
     bounded: &BoundedPlan<'_>,
     partials: &[CommittedPartial],
+    group_index: usize,
     token: &ExecutionBudgetToken,
     merge_reservation: &mut ActiveReservation,
     reservations: &mut ReservationTracker,
@@ -223,11 +237,16 @@ fn merge_final_aggregate_partials(
         .with_memory_boundary("final_aggregate_merge")
         .with_node_id(bounded.aggregate_id)
         .with_stage("final_merge")
-        .with_attempt(attempt, max_attempts);
+        .with_attempt(attempt, max_attempts)
+        .with_compiled_task_id(legacy_bounded_final_merge_task_id(bounded.aggregate_id, group_index, attempt));
         reservations.try_grow(merge_reservation, grow_request, metrics)?;
     }
 
     execute_final_aggregate(context, bounded, concatenated, token, metrics)
+}
+
+fn legacy_bounded_final_merge_task_id(node_id: NodeId, group_index: usize, attempt: usize) -> String {
+    format!("legacy_bounded.final_merge.node{node_id}.group{group_index}.attempt{attempt}")
 }
 
 enum MergeLevelItem {

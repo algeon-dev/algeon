@@ -38,7 +38,10 @@ impl SourceTaskMemoryModel {
     pub const fn aggregate_pipeline(has_source_adjacent_stages: bool) -> Self {
         Self {
             source_read_slots: 1,
-            source_adjacent_operator_slots: if has_source_adjacent_stages { 1 } else { 0 },
+            // Source-adjacent filter/projection chains can retain a large input,
+            // an operator work region, and the transformed output before the
+            // downstream aggregate takes ownership.
+            source_adjacent_operator_slots: if has_source_adjacent_stages { 3 } else { 0 },
             downstream_operator_slots: 1,
             retained_output_slots: 1,
             source_read_preflight_slack_slots: 1,
@@ -692,8 +695,11 @@ fn append_row_group_chunks(
         let pure_filter_uncompressed_bytes =
             metadata.and_then(|metadata| metadata.pure_filter_uncompressed_bytes(*row_group));
         let row_group_rows = metadata.and_then(|metadata| metadata.row_group_rows(*row_group));
-        let planning_bytes = projected_uncompressed_bytes.or(estimated_row_group_bytes);
-        if current.should_flush_before(planning_bytes, max_row_groups, policy.max_source_chunk_bytes) {
+        let retained_output_bytes = projected_uncompressed_bytes.or(estimated_row_group_bytes);
+        let source_read_planning_bytes =
+            source_read_uncompressed_bytes(source, projected_uncompressed_bytes, pure_filter_uncompressed_bytes)
+                .or(retained_output_bytes);
+        if current.should_flush_before(source_read_planning_bytes, max_row_groups, policy.max_source_chunk_bytes) {
             push_pending_chunk(
                 source_node_id,
                 source,
@@ -708,7 +714,7 @@ fn append_row_group_chunks(
         current.push(
             *row_group,
             row_group_bytes,
-            planning_bytes,
+            source_read_planning_bytes,
             projected_compressed_bytes,
             projected_uncompressed_bytes,
             pure_filter_compressed_bytes,

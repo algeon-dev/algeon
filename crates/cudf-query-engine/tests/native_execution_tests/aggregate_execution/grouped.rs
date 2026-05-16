@@ -42,10 +42,11 @@ fn bounded_native_query_executes_chunked_grouped_sum_and_final_merge() {
     let limit = builder.add_limit(sort, LimitSpec::fetch(3), aggregated_schema);
     let plan = builder.finish_with_host_sink(limit);
 
+    let device_budget_bytes = 8 * 1024 * 1024 * 1024;
     let context = ExecutionContext::builder()
         .with_shared_runtime(Arc::clone(&runtime))
         .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: 8 * 1024 * 1024 * 1024,
+            device_budget_bytes,
             max_source_chunk_bytes: 1024 * 1024,
             max_row_groups_per_chunk: 1,
             max_retry_attempts: 1,
@@ -106,6 +107,21 @@ fn bounded_native_query_executes_chunked_grouped_sum_and_final_merge() {
     assert_eq!(metrics.final_merge_attempts, 1);
     assert_eq!(metrics.final_merge_levels, 1);
     assert_eq!(metrics.final_merge_max_fan_in, 3);
+    assert!(metrics.task_operator_metrics.contains_key("source_read"));
+    assert!(metrics.task_operator_metrics.contains_key("unary"));
+    assert!(metrics.task_operator_metrics.contains_key("aggregate"));
+    assert!(metrics.task_operator_metrics.contains_key("final_merge"));
+    assert!(metrics.task_operator_metrics["source_read"].reservation_requested_bytes > 0);
+    assert!(metrics.task_operator_metrics["aggregate"].reservation_requested_bytes > 0);
+    assert!(metrics.max_task_reservation_bytes > 0);
+    assert!(
+        metrics.reservation_live_peak_bytes < device_budget_bytes,
+        "source-adjacent aggregate work reservations should not saturate the configured device budget"
+    );
+    assert!(metrics.reservation_events.iter().filter(|event| event.outcome.as_str() == "denied").all(|event| {
+        event.stage.is_some()
+            && event.compiled_task_id.as_deref().is_some_and(|task_id| task_id.starts_with("legacy_bounded."))
+    }));
     assert_eq!(metrics.parquet_files, 1);
     assert_eq!(metrics.row_groups_selected, 3);
     assert_eq!(metrics.read_columns, 4);

@@ -912,13 +912,21 @@ pub(super) fn execute_post_aggregate_projection(
         MemoryReservationRequest::new(ReservationKind::FinalMerge, input.reservation.bytes(), reservations.budget())
             .with_memory_boundary("post_aggregate_projection")
             .with_node_id(bounded.aggregate_id)
-            .with_stage("post_aggregate_projection");
+            .with_stage("post_aggregate_projection")
+            .with_compiled_task_id(legacy_bounded_final_merge_task_id(
+                bounded.aggregate_id,
+                "post_aggregate_projection",
+            ));
     let work_reservation = reservations.try_reserve(request, metrics)?;
     let output_request =
         MemoryReservationRequest::new(ReservationKind::FinalMerge, input.reservation.bytes(), reservations.budget())
             .with_memory_boundary("post_aggregate_projection_output")
             .with_node_id(bounded.aggregate_id)
-            .with_stage("post_aggregate_projection");
+            .with_stage("post_aggregate_projection")
+            .with_compiled_task_id(legacy_bounded_final_merge_task_id(
+                bounded.aggregate_id,
+                "post_aggregate_projection",
+            ));
     let mut output_reservation = match reservations.try_reserve(output_request, metrics) {
         Ok(reservation) => reservation,
         Err(error) => {
@@ -996,7 +1004,8 @@ pub(super) fn execute_post_aggregate_projection(
         )
         .with_memory_boundary("post_aggregate_projection_output")
         .with_node_id(bounded.aggregate_id)
-        .with_stage("post_aggregate_projection");
+        .with_stage("post_aggregate_projection")
+        .with_compiled_task_id(legacy_bounded_final_merge_task_id(bounded.aggregate_id, "post_aggregate_projection"));
         if let Err(error) = reservations.try_grow(&mut output_reservation, grow_request, metrics) {
             drop(frame);
             reservations.release(output_reservation, metrics);
@@ -1023,7 +1032,8 @@ pub(super) fn execute_final_aggregate_projection(
         MemoryReservationRequest::new(ReservationKind::FinalMerge, input.reservation.bytes(), reservations.budget())
             .with_memory_boundary("final_aggregate_projection")
             .with_node_id(bounded.aggregate_id)
-            .with_stage("final_projection");
+            .with_stage("final_projection")
+            .with_compiled_task_id(legacy_bounded_final_merge_task_id(bounded.aggregate_id, "final_projection"));
     let work_reservation = reservations.try_reserve(request, metrics)?;
     let expected_output_names =
         bounded.aggregate.1.fields().iter().map(|field| field.name().clone()).collect::<Vec<_>>();
@@ -1108,9 +1118,14 @@ pub(super) fn execute_final_aggregate_projection(
         MemoryReservationRequest::new(ReservationKind::FinalMerge, output_bytes, reservations.budget())
             .with_memory_boundary("final_aggregate_projection_output")
             .with_node_id(bounded.aggregate_id)
-            .with_stage("final_projection");
+            .with_stage("final_projection")
+            .with_compiled_task_id(legacy_bounded_final_merge_task_id(bounded.aggregate_id, "final_projection"));
     let output_reservation = reservations.try_reserve(output_request, metrics)?;
     Ok(CommittedPartial { frame, reservation: output_reservation })
+}
+
+fn legacy_bounded_final_merge_task_id(node_id: NodeId, stage: &str) -> String {
+    format!("legacy_bounded.final_merge.node{node_id}.{stage}")
 }
 
 pub(super) fn execute_final_aggregate(

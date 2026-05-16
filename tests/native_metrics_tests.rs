@@ -160,6 +160,41 @@ fn query_metrics_reservation_timeline_records_live_ledger_deltas() {
 }
 
 #[test]
+fn query_metrics_reservation_events_retain_legacy_bounded_task_context() {
+    let mut metrics = QueryMetrics::default();
+    let request = MemoryReservationRequest::new(ReservationKind::SourceRead, 80, 100)
+        .with_memory_boundary("source_chunk_read")
+        .with_node_id("7")
+        .with_stage("source_chunk_read")
+        .with_chunk_index(3)
+        .with_file_index(2)
+        .with_path("/tmp/lineitem.parquet")
+        .with_row_groups(vec![10, 11])
+        .with_attempt(2, 4)
+        .with_compiled_task_id("legacy_bounded.source_read.node7.file2.chunk3.attempt2")
+        .with_source_read_contract("conservative_estimate", Some(64), Some(80));
+
+    metrics.record_reservation_denied_timeline_event(&request, MemoryReservationEventAction::Reserve, 20, 60);
+
+    let event = &metrics.reservation_events[0];
+    assert_eq!(event.node_id.as_deref(), Some("7"));
+    assert_eq!(event.stage.as_deref(), Some("source_chunk_read"));
+    assert_eq!(event.chunk_index, Some(3));
+    assert_eq!(event.file_index, Some(2));
+    assert_eq!(event.path.as_deref(), Some("/tmp/lineitem.parquet"));
+    assert_eq!(event.row_groups.as_deref(), Some([10, 11].as_slice()));
+    assert_eq!(event.attempt, Some(2));
+    assert_eq!(event.max_attempts, Some(4));
+    assert_eq!(event.source_read_contract_quality.as_deref(), Some("conservative_estimate"));
+    assert_eq!(event.source_read_planning_bytes, Some(64));
+    assert_eq!(event.source_read_estimated_bytes, Some(80));
+    assert_eq!(metrics.task_operator_metrics["source_read"].task_count, 1);
+    assert_eq!(metrics.task_operator_metrics["source_read"].reservation_requested_bytes, 80);
+    assert!(event.to_stable_debug_row().contains("row_groups=10,11"));
+    assert!(event.to_stable_debug_row().contains("remaining_bytes=40"));
+}
+
+#[test]
 fn local_parquet_source_cache_key_tracks_scan_contract() {
     let schema = Arc::new(Schema::new(vec![Field::new("payload", DataType::Int32, true)]));
     let file = LocalParquetFile::new("/tmp/source-cache-key.parquet")

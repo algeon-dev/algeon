@@ -425,10 +425,19 @@ impl TaskHighWaterSummary {
         self.max_retained_bytes = max_optional_usize(self.max_retained_bytes, row.max_retained_bytes);
     }
 
-    fn merge_runtime_row(&mut self, row: &NativeTaskRuntimeMetricRow) {
-        self.max_task_reservation_bytes =
-            self.max_task_reservation_bytes.max(row.reservation_requested_bytes).max(row.reservation_granted_bytes);
-        self.reservation_live_peak_bytes = self.reservation_live_peak_bytes.max(row.reservation_live_peak_bytes);
+    fn merge_runtime_row(&mut self, row: &NativeTaskRuntimeMetricRow, query_reservation_live_peak_bytes: usize) {
+        let task_reservation_bytes = if row.compiled_task_id.starts_with("legacy_bounded.") {
+            row.reservation_live_peak_bytes.min(query_reservation_live_peak_bytes)
+        } else {
+            row.reservation_requested_bytes.max(row.reservation_granted_bytes)
+        };
+        self.max_task_reservation_bytes = self.max_task_reservation_bytes.max(task_reservation_bytes);
+        let reservation_live_peak_bytes = if row.compiled_task_id.starts_with("legacy_bounded.") {
+            row.reservation_live_peak_bytes.min(query_reservation_live_peak_bytes)
+        } else {
+            row.reservation_live_peak_bytes
+        };
+        self.reservation_live_peak_bytes = self.reservation_live_peak_bytes.max(reservation_live_peak_bytes);
         self.max_observed_peak_bytes = max_optional_usize(self.max_observed_peak_bytes, row.max_observed_peak_bytes);
         self.max_retained_bytes = max_optional_usize(self.max_retained_bytes, row.max_retained_bytes);
     }
@@ -474,7 +483,7 @@ fn task_high_water_summaries(
     }
     for row in &metrics.task_runtime_rows {
         if let Some(class) = task_operator_class(&row.operator_kind) {
-            summaries.entry(class).or_default().merge_runtime_row(row);
+            summaries.entry(class).or_default().merge_runtime_row(row, metrics.reservation_live_peak_bytes);
         }
     }
 

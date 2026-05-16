@@ -55,7 +55,7 @@ fn bounded_native_query_reports_reservation_failure_before_chunk_read() {
 }
 
 #[test]
-fn bounded_native_query_caps_conservative_source_read_admission_and_shrinks_to_observed() {
+fn bounded_native_query_caps_projected_source_read_admission_and_shrinks_to_observed() {
     let dir = unique_temp_dir("cudf-query-engine-bounded-source-read-sizing-contract");
     let path = dir.join("input.parquet");
     let runtime = Arc::new(cudf::Runtime::new().unwrap());
@@ -110,8 +110,8 @@ fn bounded_native_query_caps_conservative_source_read_admission_and_shrinks_to_o
             && event.reservation_kind == ReservationKind::SourceRead
             && event.memory_boundary == "source_chunk_read"
             && event.requested_bytes == max_source_chunk_bytes
-            && event.source_read_contract_quality.as_deref() == Some("conservative_estimate")
-            && event.source_read_planning_bytes == Some(1)
+            && event.source_read_contract_quality.as_deref() == Some("projected_uncompressed_estimate")
+            && event.source_read_planning_bytes == Some(2_000_001)
             && event.source_read_estimated_bytes == Some(2_000_001)
     }));
     assert!(metrics.reservation_events.iter().any(|event| {
@@ -343,7 +343,7 @@ fn bounded_native_query_reports_chunk_operator_hard_budget_failure_after_reserva
 }
 
 #[test]
-fn bounded_native_query_does_not_prefetch_before_first_required_source_read_is_observed() {
+fn bounded_native_query_prefetches_projected_metadata_only_after_first_required_source_read_is_observed() {
     let dir = unique_temp_dir("cudf-query-engine-bounded-initial-prefetch-calibration");
     let path = dir.join("input.parquet");
     let runtime = Arc::new(cudf::Runtime::new().unwrap());
@@ -390,8 +390,26 @@ fn bounded_native_query_does_not_prefetch_before_first_required_source_read_is_o
     let metrics = result.metrics();
     assert_eq!(metrics.source_chunks_planned, 3);
     assert_eq!(metrics.source_chunks_committed, 3);
-    assert_eq!(metrics.source_read_prefetches_started, 0);
-    assert!(metrics.source_read_prefetches_skipped >= 1);
+    assert_eq!(metrics.source_read_prefetches_started, 1);
+    let first_required_observation = metrics
+        .reservation_events
+        .iter()
+        .position(|event| {
+            matches!(event.action, MemoryReservationEventAction::Grow | MemoryReservationEventAction::Shrink)
+                && event.reservation_kind == ReservationKind::SourceRead
+                && event.memory_boundary == "source_chunk_read"
+        })
+        .expect("required source read should shrink to observed bytes before optional prefetch");
+    let first_prefetch = metrics
+        .reservation_events
+        .iter()
+        .position(|event| {
+            event.action == MemoryReservationEventAction::Reserve
+                && event.reservation_kind == ReservationKind::SourceRead
+                && event.memory_boundary == "source_chunk_prefetch"
+        })
+        .expect("projected source-read metadata should allow one bounded optional prefetch");
+    assert!(first_prefetch > first_required_observation);
     assert_eq!(metrics.reservation_denied_count, 0);
 
     let QueryOutput::HostArrow(batch) = result.output() else {
