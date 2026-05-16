@@ -85,6 +85,78 @@ async fn tpch_recent_bounded_topologies_expose_modeled_facts() {
 }
 
 #[tokio::test]
+async fn tpch_q18_direct_lowering_preserves_pre_semijoin_reduction_late_left_semi_shape() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-tpch-q18-pre-semijoin-reduction");
+    write_tiny_tpch_parquet_dataset(&dir).unwrap();
+    let items = tpch_fallback_pressure_workload_items(&dir, tpch_report_session_config()).await.unwrap();
+    let q18 = items.into_iter().find(|item| item.query_id == "q18").expect("TPC-H workload should include q18");
+    let NativeFallbackPressureWorkloadInput::PhysicalPlan(plan) = q18.input else {
+        panic!("q18 should produce a physical plan");
+    };
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    let plan = &result.plans[0];
+    let left_semi_joins = native_join_ids(plan, NativeJoinType::LeftSemi);
+    assert_eq!(left_semi_joins.len(), 1, "Q18 before semijoin reduction should have one late left-semi join");
+    let (_semi_id, semi_join) = left_semi_joins[0];
+    assert_eq!(semi_join.spec.build_side, NativeJoinSide::Right);
+    assert_eq!(semi_join.spec.null_equality, NativeJoinNullEquality::NullsDoNotMatch);
+    assert_eq!(semi_join.spec.keys.len(), 1);
+    assert!(
+        semi_join.spec.output_projection.iter().all(|column| column.side == NativeJoinSide::Left),
+        "left-semi output must expose only preserved-side columns"
+    );
+    assert_eq!(
+        source_tables_below(plan, semi_join.inputs[0]),
+        BTreeSet::from(["customer".to_string(), "lineitem".to_string(), "orders".to_string()]),
+        "current direct lowering applies Q18's semi filter after the customer/orders/lineitem join tree"
+    );
+    assert_eq!(
+        source_tables_below(plan, semi_join.inputs[1]),
+        BTreeSet::from(["lineitem".to_string()]),
+        "Q18's semi-filter build side should remain the grouped lineitem keyset branch"
+    );
+    assert_eq!(
+        join_type_count_below(plan, semi_join.inputs[0], NativeJoinType::Inner),
+        2,
+        "pre-rewrite Q18 should still materialize the two inner joins before the left-semi filter"
+    );
+    assert_eq!(
+        join_type_count_below(plan, semi_join.inputs[1], NativeJoinType::Inner),
+        0,
+        "the semi-filter keyset branch should not hide an inner join tree"
+    );
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn native_semijoin_reduction_guardrail_has_no_q18_specific_native_path() {
+    let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let native_path_roots = [
+        manifest_dir.join("src/native"),
+        manifest_dir.join("src/native_exec"),
+        manifest_dir.join("src/planner"),
+        manifest_dir.join("crates/cudf-query-engine/src"),
+    ];
+
+    let offenders = native_path_roots
+        .iter()
+        .flat_map(|root| source_files_under(root))
+        .filter_map(|path| {
+            let text = std::fs::read_to_string(&path).expect("native source file should be readable");
+            text.to_ascii_lowercase()
+                .contains("q18")
+                .then(|| path.strip_prefix(manifest_dir).unwrap_or(&path).display().to_string())
+        })
+        .collect::<Vec<_>>();
+    assert!(offenders.is_empty(), "native lowering/admission/execution must not special-case TPC-H Q18: {offenders:?}");
+}
+
+#[tokio::test]
 async fn tpch_q21_decorrelates_to_native_left_only_mixed_residual_joins() {
     let dir = unique_temp_dir("datafusion-cudf-native-lowering-tpch-q21");
     write_tiny_tpch_parquet_dataset(&dir).unwrap();
@@ -121,6 +193,49 @@ fn q21_left_only_mixed_residual_join_matches(
         && join.spec.residual_predicate.is_some()
         && !join.spec.output_projection.is_empty()
         && join.spec.output_projection.iter().all(|column| column.side == NativeJoinSide::Left)
+}
+
+fn native_join_ids(plan: &QueryPlan, join_type: NativeJoinType) -> Vec<(NodeId, &cudf_query_engine::JoinNode)> {
+    plan.nodes()
+        .iter()
+        .filter_map(|node| match &node.kind {
+            PlanNode::Join(join) if join.spec.join_type == join_type => Some((node.id, join)),
+            _ => None,
+        })
+        .collect()
+}
+
+fn join_type_count_below(plan: &QueryPlan, root: NodeId, join_type: NativeJoinType) -> usize {
+    let mut count = 0;
+    let mut stack = vec![root];
+    while let Some(node_id) = stack.pop() {
+        let node = plan.node(node_id).expect("native subtree node should exist");
+        if let PlanNode::Join(join) = &node.kind
+            && join.spec.join_type == join_type
+        {
+            count += 1;
+        }
+        stack.extend(node.input_ids().iter().copied());
+    }
+    count
+}
+
+fn source_files_under(root: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut files = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(path) = stack.pop() {
+        let entries = std::fs::read_dir(&path)
+            .unwrap_or_else(|error| panic!("native source path should be readable: {}: {error}", path.display()));
+        for entry in entries {
+            let path = entry.expect("native source dir entry should be readable").path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.extension().is_some_and(|extension| extension == "rs") {
+                files.push(path);
+            }
+        }
+    }
+    files
 }
 
 #[tokio::test]

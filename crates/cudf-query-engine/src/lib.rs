@@ -16,6 +16,7 @@ pub mod exec;
 pub mod expr;
 pub mod metrics;
 pub mod mode;
+pub mod optimizer;
 pub mod pipeline;
 pub mod plan;
 pub mod runtime;
@@ -62,6 +63,13 @@ pub use metrics::{
     TaskRuntimeMetrics,
 };
 pub use mode::{AdaptiveExecutionMode, NativePipelineExecutionMode, StrictBoundedExecutionMode};
+pub use optimizer::{
+    NativeOptimizerChange, NativeOptimizerDiagnostics, NativeOptimizerOptions, NativeOptimizerResult,
+    SEMIJOIN_REDUCTION_RULE_NAME, SemijoinReductionAdmissionDecision, SemijoinReductionCandidateDiagnostics,
+    SemijoinReductionCostGateDiagnostics, SemijoinReductionCostSignal, SemijoinReductionDiagnostics,
+    SemijoinReductionKeyMappingDiagnostics, SemijoinReductionOptions, SemijoinReductionRejectedReason,
+    SemijoinReductionResult, optimize_query_plan, optimize_semijoin_reduction,
+};
 pub use pipeline::{
     CompiledPipeline, PipelineBarrier, PipelineBarrierId, PipelineBarrierKind, PipelineEdge, PipelineEdgeId,
     PipelineEdgeKind, PipelineTask, PipelineTaskId, PipelineTaskKind, ReservationGate, ReservationGateId,

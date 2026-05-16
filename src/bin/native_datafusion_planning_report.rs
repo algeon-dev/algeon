@@ -16,14 +16,17 @@ use datafusion::{
 };
 use datafusion_cudf::{
     CudfNativePhysicalOptimizerRule, CudfOptimizerConfig, CudfSessionStateBuilderExt, GpuFallbackPolicy,
-    NativeCudfExecutionConfig, NativeDataFusionPlanningReport, NativePipelineExecutionMode, TpchDatasetMetadata,
-    prepare_tpch_report_dataset, tpch_datafusion_planning_workload_items_with_optimizer_config,
+    NativeCudfExecutionConfig, NativeDataFusionPlanningReport, NativePipelineExecutionMode, TpcdsDatasetMetadata,
+    TpchDatasetMetadata, prepare_tpcds_report_dataset, prepare_tpch_report_dataset,
+    tpcds_datafusion_planning_workload_items_with_optimizer_config, tpcds_native_optimizer_config,
+    tpcds_report_session_config, tpch_datafusion_planning_workload_items_with_optimizer_config,
     tpch_native_optimizer_config, tpch_report_session_config,
 };
 
 const CUDF_NATIVE_DATAFUSION_PLANNING_WORKLOAD_ENV: &str = "CUDF_NATIVE_DATAFUSION_PLANNING_WORKLOAD";
 const CUDF_NATIVE_PIPELINE_EXECUTION_MODE_ENV: &str = "CUDF_NATIVE_PIPELINE_EXECUTION_MODE";
 const CUDF_TPCH_PLANNING_PARQUET_PUSHDOWN_FILTERS_ENV: &str = "CUDF_TPCH_PLANNING_PARQUET_PUSHDOWN_FILTERS";
+const CUDF_TPCDS_PLANNING_PARQUET_PUSHDOWN_FILTERS_ENV: &str = "CUDF_TPCDS_PLANNING_PARQUET_PUSHDOWN_FILTERS";
 
 #[tokio::main]
 async fn main() {
@@ -36,8 +39,14 @@ async fn main() {
             let TpchPlanningReport { report, metadata } = tpch_report(&dir).await.unwrap();
             report.with_workload_dataset_metadata(metadata.to_workload_dataset_metadata())
         },
+        "tpcds" => {
+            let TpcdsPlanningReport { report, metadata } = tpcds_report(&dir).await.unwrap();
+            report.with_workload_dataset_metadata(metadata.to_workload_dataset_metadata())
+        },
         value => {
-            panic!("unsupported {CUDF_NATIVE_DATAFUSION_PLANNING_WORKLOAD_ENV}={value}; expected synthetic or tpch")
+            panic!(
+                "unsupported {CUDF_NATIVE_DATAFUSION_PLANNING_WORKLOAD_ENV}={value}; expected synthetic, tpch, or tpcds"
+            )
         },
     };
     print!("{}", report.to_tsv());
@@ -90,6 +99,25 @@ async fn tpch_report(dir: &std::path::Path) -> datafusion_cudf::TpchWorkloadResu
 struct TpchPlanningReport {
     report: NativeDataFusionPlanningReport,
     metadata: TpchDatasetMetadata,
+}
+
+async fn tpcds_report(dir: &std::path::Path) -> datafusion_cudf::TpcdsWorkloadResult<TpcdsPlanningReport> {
+    let (root, metadata) = prepare_tpcds_report_dataset(dir)?;
+    let optimizer_config =
+        tpcds_native_optimizer_config().with_native_pipeline_execution_mode(native_pipeline_execution_mode_from_env());
+    let mut session_config = tpcds_report_session_config();
+    if let Some(pushdown_filters) = optional_env_bool(CUDF_TPCDS_PLANNING_PARQUET_PUSHDOWN_FILTERS_ENV) {
+        session_config.options_mut().execution.parquet.pushdown_filters = pushdown_filters;
+    }
+    let items =
+        tpcds_datafusion_planning_workload_items_with_optimizer_config(&root, session_config, optimizer_config).await?;
+    let report = NativeDataFusionPlanningReport::collect(items);
+    Ok(TpcdsPlanningReport { report, metadata })
+}
+
+struct TpcdsPlanningReport {
+    report: NativeDataFusionPlanningReport,
+    metadata: TpcdsDatasetMetadata,
 }
 
 async fn native_datafusion_planning_report(
