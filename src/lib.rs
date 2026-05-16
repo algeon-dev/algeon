@@ -8,10 +8,7 @@ pub mod planner;
 pub mod policy;
 pub mod report;
 pub mod session;
-pub mod tpcds;
-mod tpcds_queries;
-pub mod tpch;
-mod tpch_queries;
+mod workload;
 
 pub use cudf_query_engine::{
     AdaptiveMemoryHistory, GpuLocalParquetSourceCache, GpuLocalParquetSourceCacheKey, NativePipelineExecutionMode,
@@ -73,3 +70,4 @@ pub use tpch::{
     tpch_native_optimizer_config, tpch_query_ids, tpch_report_session_config,
     tpch_scalar_fallback_pressure_workload_items, tpch_tuned_cpu_session_config, write_tiny_tpch_parquet_dataset,
 };
+pub use workload::{tpcds, tpch};

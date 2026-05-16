@@ -1306,6 +1306,25 @@ pub(super) fn prefetch_requested_bytes(policy: MemoryControlPolicy, chunk: &Sour
     }
 }
 
+pub(super) fn join_leaf_prefetch_requested_bytes(policy: MemoryControlPolicy, chunk: &SourceChunk) -> Option<u64> {
+    let requested_bytes = prefetch_requested_bytes(policy, chunk);
+    let MemoryControlPolicy::Bounded { device_budget_bytes, max_source_chunk_bytes, .. } = policy else {
+        return Some(requested_bytes);
+    };
+    if chunk.zero_column_count {
+        return Some(requested_bytes);
+    }
+    let minimum_read_budget = minimum_parquet_source_read_budget_bytes();
+    if minimum_read_budget > max_source_chunk_bytes || minimum_read_budget > device_budget_bytes {
+        return None;
+    }
+    Some(requested_bytes.max(minimum_read_budget))
+}
+
+fn minimum_parquet_source_read_budget_bytes() -> u64 {
+    u64::try_from(cudf::DataFrame::minimum_parquet_source_read_budget_bytes()).unwrap_or(u64::MAX)
+}
+
 /// Precision of the byte contract used when reserving memory for one bounded
 /// source-read chunk.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

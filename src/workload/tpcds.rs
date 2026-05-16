@@ -15,7 +15,6 @@ use datafusion::{
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
 
-pub use crate::tpcds_queries::{TPCDS_QUERIES, TPCDS_QUERY_COUNT, TpcdsQuery, tpcds_query_ids};
 use crate::{
     CudfNativePhysicalOptimizerRule, CudfOptimizerConfig, CudfSessionStateBuilderExt, GpuFallbackPolicy,
     NativeCudfExecutionConfig, NativeDataFusionExecutionWorkloadItem, NativeDataFusionPlanningWorkloadItem,
@@ -33,6 +32,8 @@ pub use dataset::{
     tiny_tpcds_dataset_metadata,
 };
 pub use tiny::write_tiny_tpcds_parquet_dataset;
+
+pub use super::tpcds_queries::{TPCDS_QUERIES, TPCDS_QUERY_COUNT, TpcdsQuery, tpcds_query_ids};
 
 pub type TpcdsWorkloadResult<T> = std::result::Result<T, TpcdsWorkloadError>;
 

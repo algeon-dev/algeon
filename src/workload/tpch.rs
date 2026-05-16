@@ -32,7 +32,6 @@ use datafusion::{
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
 
-pub use crate::tpch_queries::{TPCH_QUERIES, TPCH_QUERY_COUNT, TpchQuery, tpch_query_ids};
 use crate::{
     CudfNativePhysicalOptimizerRule, CudfOptimizerConfig, CudfSessionStateBuilderExt, GpuFallbackPolicy,
     NativeCudfExecutionConfig, NativeDataFusionExecutionWorkloadItem, NativeDataFusionPlanningWorkloadItem,
@@ -58,6 +57,8 @@ pub use dataset::{
     tiny_tpch_dataset_metadata,
 };
 pub use tiny::write_tiny_tpch_parquet_dataset;
+
+pub use super::tpch_queries::{TPCH_QUERIES, TPCH_QUERY_COUNT, TpchQuery, tpch_query_ids};
 
 pub type TpchWorkloadResult<T> = std::result::Result<T, TpchWorkloadError>;
 

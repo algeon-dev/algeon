@@ -12,7 +12,7 @@
 //   working_tree        : dirty
 //   rewrite_applied     : trailing semicolon and trailing whitespace stripped per query; otherwise vendored verbatim
 //
-// Surface mirrors `src/tpch_queries.rs`:
+// Surface mirrors `src/workload/tpch_queries.rs`:
 //   - TPCDS_QUERY_COUNT
 //   - TPCDS_QUERIES: &[TpcdsQuery]
 //   - tpcds_query_ids()

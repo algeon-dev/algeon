@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Re-generate src/tpcds_queries.rs from the DuckDB tpcds extension.
+# Re-generate src/workload/tpcds_queries.rs from the DuckDB tpcds extension.
 #
 # Usage:
 #   scripts/extract_tpcds_queries.sh [DUCKDB_BINARY]
@@ -13,11 +13,11 @@
 #   1. Resolves DuckDB binary + version.
 #   2. Captures datafusion-cudf git rev + working-tree state.
 #   3. Runs DuckDB's tpcds extension to dump query_nr 1..99 to per-query files.
-#   4. Assembles src/tpcds_queries.rs with a provenance header.
+#   4. Assembles src/workload/tpcds_queries.rs with a provenance header.
 #
 # Any deterministic compatibility rewrite (e.g. for DataFusion) must be applied
 # in this script and recorded in REWRITE_APPLIED below. Do NOT hand-edit
-# src/tpcds_queries.rs — re-run this script instead.
+# src/workload/tpcds_queries.rs — re-run this script instead.
 
 set -euo pipefail
 
@@ -44,7 +44,7 @@ DUCKDB_VERSION="$("${DUCKDB_BIN}" --version | head -1)"
 
 # --- Resolve repo paths ------------------------------------------------------
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-OUT_FILE="${REPO_ROOT}/src/tpcds_queries.rs"
+OUT_FILE="${REPO_ROOT}/src/workload/tpcds_queries.rs"
 
 GIT_REV="$(git -C "${REPO_ROOT}" rev-parse HEAD)"
 if [[ -n "$(git -C "${REPO_ROOT}" status --porcelain)" ]]; then
@@ -74,7 +74,7 @@ TMPDB="${WORK_DIR}/extract.duckdb"
 echo "[extract_tpcds_queries] running DuckDB extraction (${DUCKDB_VERSION})" >&2
 echo "${EXTRACT_SQL}" | "${DUCKDB_BIN}" "${TMPDB}" > /dev/null
 
-# --- Assemble src/tpcds_queries.rs ------------------------------------------
+# --- Assemble src/workload/tpcds_queries.rs ---------------------------------
 EXTRACT_CMD_DESC="duckdb <tmpdb> -c \"INSTALL tpcds; LOAD tpcds; COPY (SELECT query FROM tpcds_queries() WHERE query_nr = N) TO 'qNN.sql' (HEADER false, QUOTE '', DELIMITER '');\" for N in 1..99"
 
 DUCKDB_BIN_ABS="${DUCKDB_BIN_ABS}" \
@@ -129,7 +129,7 @@ header = f"""\
 //   working_tree        : {GIT_TREE}
 //   rewrite_applied     : {REWRITE}
 //
-// Surface mirrors `src/tpch_queries.rs`:
+// Surface mirrors `src/workload/tpch_queries.rs`:
 //   - TPCDS_QUERY_COUNT
 //   - TPCDS_QUERIES: &[TpcdsQuery]
 //   - tpcds_query_ids()
