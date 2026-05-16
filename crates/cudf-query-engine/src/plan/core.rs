@@ -18,6 +18,16 @@ pub struct QueryPlan {
 }
 
 impl QueryPlan {
+    /// Rebuilds a plan from already-validated nodes after an internal IR rewrite.
+    ///
+    /// Optimizers use this instead of [`QueryPlanBuilder`] when they need to
+    /// clone an existing DAG while preserving node facts from lowered IR.
+    pub(crate) fn from_rewritten_parts(nodes: Vec<QueryNode>, root: NodeId, sink: ResultSink) -> Self {
+        assert!(nodes.get(root.index()).is_some(), "query plan root node must exist");
+        assert_eq!(sink.input(), root, "query plan sink must consume the root node");
+        Self { nodes, root, sink }
+    }
+
     /// Returns the node consumed by the plan sink.
     pub fn root_id(&self) -> NodeId {
         self.root

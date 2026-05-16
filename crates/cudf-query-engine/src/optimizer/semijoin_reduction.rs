@@ -1,31 +1,64 @@
 #![allow(dead_code)]
 
+use std::collections::BTreeMap;
+
+use arrow::datatypes::{Field, Schema};
+
 use crate::{
+    adaptive_report::AdaptiveCandidateStatus,
     expr::{ColumnQualifier, ColumnRef, Expr},
-    plan::{JoinKey, JoinSide, JoinType, NodeId, PlanNode, QueryPlan},
+    plan::{
+        JoinKey, JoinNode, JoinNullEquality, JoinOutputColumn, JoinSide, JoinType, NodeId, PlanFacts, PlanNode,
+        ProjectionOutput, QueryNode, QueryPlan, ResultSink, SchemaBehavior, estimated_output_bytes,
+        estimated_output_rows,
+    },
 };
 
 pub const SEMIJOIN_REDUCTION_RULE_NAME: &str = "semijoin_reduction";
+pub const DEFAULT_SEMIJOIN_REDUCTION_COST_THRESHOLD_MULTIPLIER: u64 = 8;
 
 /// Configuration for the semijoin-reduction optimizer pass.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SemijoinReductionOptions {
     pub enabled: bool,
+    pub cost_threshold_multiplier: u64,
+    pub admission_mode: SemijoinReductionAdmissionMode,
 }
 
 impl SemijoinReductionOptions {
     pub fn disabled() -> Self {
-        Self { enabled: false }
+        Self {
+            enabled: false,
+            cost_threshold_multiplier: DEFAULT_SEMIJOIN_REDUCTION_COST_THRESHOLD_MULTIPLIER,
+            admission_mode: SemijoinReductionAdmissionMode::NotEvaluated,
+        }
+    }
+
+    pub fn with_admission_mode(mut self, admission_mode: SemijoinReductionAdmissionMode) -> Self {
+        self.admission_mode = admission_mode;
+        self
     }
 }
 
 impl Default for SemijoinReductionOptions {
     fn default() -> Self {
-        Self { enabled: true }
+        Self {
+            enabled: true,
+            cost_threshold_multiplier: DEFAULT_SEMIJOIN_REDUCTION_COST_THRESHOLD_MULTIPLIER,
+            admission_mode: SemijoinReductionAdmissionMode::NotEvaluated,
+        }
     }
 }
 
-/// No-op Phase 1 result for the semijoin-reduction pass.
+/// Mode-specific admission gate to use after a tentative semijoin rewrite.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SemijoinReductionAdmissionMode {
+    NotEvaluated,
+    StrictBounded,
+    Adaptive,
+}
+
+/// Result for one semijoin-reduction optimizer pass invocation.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SemijoinReductionResult {
     pub plan: QueryPlan,
@@ -59,6 +92,8 @@ pub struct SemijoinReductionCandidateDiagnostics {
     pub key_mappings: Vec<SemijoinReductionKeyMappingDiagnostics>,
     pub cost_gate: Option<SemijoinReductionCostGateDiagnostics>,
     pub admission_decision: Option<SemijoinReductionAdmissionDecision>,
+    pub original_admitted: Option<bool>,
+    pub rewritten_admitted: Option<bool>,
     pub applied: bool,
     pub rejected_reason: Option<SemijoinReductionRejectedReason>,
 }
@@ -110,26 +145,60 @@ pub enum SemijoinReductionRejectedReason {
     AmbiguousKeyLineage,
     ExpressionDerivedKey,
     DroppedKeyLineage,
+    NonLeftOnlySemiProjection,
     CostGateRejected,
+    RootSchemaMismatch,
+    RootOutputProjectionMismatch,
     AdmissionRejectedRewrite,
 }
 
 /// Runs the semijoin-reduction pass.
-///
-/// Phase 1 deliberately exposes the pass surface and diagnostics while leaving
-/// the plan unchanged. Later phases will populate candidate diagnostics and
-/// apply rewrites behind this stable entry point.
-pub fn optimize_semijoin_reduction(plan: QueryPlan, _options: &SemijoinReductionOptions) -> SemijoinReductionResult {
-    SemijoinReductionResult {
-        plan,
-        change: super::NativeOptimizerChange::Unchanged,
-        diagnostics: SemijoinReductionDiagnostics::default(),
+pub fn optimize_semijoin_reduction(plan: QueryPlan, options: &SemijoinReductionOptions) -> SemijoinReductionResult {
+    if !options.enabled {
+        return SemijoinReductionResult {
+            plan,
+            change: super::NativeOptimizerChange::Unchanged,
+            diagnostics: SemijoinReductionDiagnostics::default(),
+        };
+    }
+
+    let mut rewriter = SemijoinReductionRewriter::new(&plan, options);
+    let new_root = rewriter.rewrite_subtree(plan.root_id());
+    let mut diagnostics = rewriter.diagnostics;
+
+    if !rewriter.changed {
+        return SemijoinReductionResult { plan, change: super::NativeOptimizerChange::Unchanged, diagnostics };
+    }
+
+    let sink = sink_with_input(plan.sink(), new_root);
+    let rewritten_plan = QueryPlan::from_rewritten_parts(rewriter.nodes, new_root, sink);
+    if let Err(reason) = validate_rewritten_root_semantics(&plan, &rewritten_plan) {
+        reject_applied_candidates(&mut diagnostics, reason, None, None, None);
+        return SemijoinReductionResult { plan, change: super::NativeOptimizerChange::Unchanged, diagnostics };
+    }
+
+    match evaluate_admission_gate(&plan, &rewritten_plan, options.admission_mode) {
+        AdmissionGateDecision::Keep { decision, original_admitted, rewritten_admitted } => {
+            record_admission_for_applied_candidates(&mut diagnostics, decision, original_admitted, rewritten_admitted);
+            SemijoinReductionResult { plan: rewritten_plan, change: super::NativeOptimizerChange::Changed, diagnostics }
+        },
+        AdmissionGateDecision::Reject { decision, original_admitted, rewritten_admitted } => {
+            reject_applied_candidates(
+                &mut diagnostics,
+                SemijoinReductionRejectedReason::AdmissionRejectedRewrite,
+                Some(decision),
+                original_admitted,
+                rewritten_admitted,
+            );
+            SemijoinReductionResult { plan, change: super::NativeOptimizerChange::Unchanged, diagnostics }
+        },
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SemijoinLineageAnalysis {
     pub target_subtree_id: NodeId,
+    pub target_key_columns: Vec<ColumnRef>,
     pub key_mappings: Vec<SemijoinReductionKeyMappingDiagnostics>,
     pub steps: Vec<SemijoinLineageStep>,
 }
@@ -140,6 +209,41 @@ pub(crate) struct SemijoinLineageStep {
     pub target_side: JoinSide,
     pub target_child_id: NodeId,
     pub key_mappings: Vec<SemijoinReductionKeyMappingDiagnostics>,
+}
+
+struct SemijoinRewritePlan {
+    new_id: NodeId,
+    analysis: SemijoinLineageAnalysis,
+    cost_gate: SemijoinReductionCostGateDiagnostics,
+}
+
+struct SemijoinRewriteRejection {
+    reason: SemijoinReductionRejectedReason,
+    analysis: Option<SemijoinLineageAnalysis>,
+    cost_gate: Option<SemijoinReductionCostGateDiagnostics>,
+}
+
+impl SemijoinRewriteRejection {
+    fn new(reason: SemijoinReductionRejectedReason) -> Self {
+        Self { reason, analysis: None, cost_gate: None }
+    }
+
+    fn with_analysis(reason: SemijoinReductionRejectedReason, analysis: SemijoinLineageAnalysis) -> Self {
+        Self { reason, analysis: Some(analysis), cost_gate: None }
+    }
+}
+
+enum AdmissionGateDecision {
+    Keep {
+        decision: SemijoinReductionAdmissionDecision,
+        original_admitted: Option<bool>,
+        rewritten_admitted: Option<bool>,
+    },
+    Reject {
+        decision: SemijoinReductionAdmissionDecision,
+        original_admitted: Option<bool>,
+        rewritten_admitted: Option<bool>,
+    },
 }
 
 struct SemijoinLineageAnalyzer<'a> {
@@ -265,7 +369,289 @@ impl<'a> SemijoinLineageAnalyzer<'a> {
                 target_subtree_id: Some(node_id),
             });
         }
-        Ok(SemijoinLineageAnalysis { target_subtree_id: node_id, key_mappings, steps: Vec::new() })
+        Ok(SemijoinLineageAnalysis {
+            target_subtree_id: node_id,
+            target_key_columns: required_columns.to_vec(),
+            key_mappings,
+            steps: Vec::new(),
+        })
+    }
+}
+
+struct SemijoinReductionRewriter<'a> {
+    original: &'a QueryPlan,
+    options: &'a SemijoinReductionOptions,
+    nodes: Vec<QueryNode>,
+    memo: BTreeMap<NodeId, NodeId>,
+    diagnostics: SemijoinReductionDiagnostics,
+    changed: bool,
+}
+
+impl<'a> SemijoinReductionRewriter<'a> {
+    fn new(original: &'a QueryPlan, options: &'a SemijoinReductionOptions) -> Self {
+        Self {
+            original,
+            options,
+            nodes: Vec::new(),
+            memo: BTreeMap::new(),
+            diagnostics: SemijoinReductionDiagnostics::default(),
+            changed: false,
+        }
+    }
+
+    fn rewrite_subtree(&mut self, old_id: NodeId) -> NodeId {
+        if let Some(new_id) = self.memo.get(&old_id) {
+            return *new_id;
+        }
+
+        let old_node = self.original.node(old_id).expect("optimizer input node must exist");
+        if let PlanNode::Join(join) = &old_node.kind {
+            if join.spec.join_type == JoinType::LeftSemi {
+                if let Some(new_id) = self.try_rewrite_left_semi_candidate(old_id, join) {
+                    self.memo.insert(old_id, new_id);
+                    return new_id;
+                }
+            }
+        }
+
+        let new_kind = self.clone_kind_with_rewritten_inputs(&old_node.kind);
+        let new_id = self.push_node(new_kind, old_node.facts.clone());
+        self.memo.insert(old_id, new_id);
+        new_id
+    }
+
+    fn clone_kind_with_rewritten_inputs(&mut self, kind: &PlanNode) -> PlanNode {
+        match kind {
+            PlanNode::Source(source) => PlanNode::Source(source.clone()),
+            PlanNode::Filter(filter) => {
+                let mut filter = filter.clone();
+                filter.input = self.rewrite_subtree(filter.input);
+                PlanNode::Filter(filter)
+            },
+            PlanNode::Projection(projection) => {
+                let mut projection = projection.clone();
+                projection.input = self.rewrite_subtree(projection.input);
+                PlanNode::Projection(projection)
+            },
+            PlanNode::Aggregate(aggregate) => {
+                let mut aggregate = aggregate.clone();
+                aggregate.input = self.rewrite_subtree(aggregate.input);
+                PlanNode::Aggregate(aggregate)
+            },
+            PlanNode::Sort(sort) => {
+                let mut sort = sort.clone();
+                sort.input = self.rewrite_subtree(sort.input);
+                PlanNode::Sort(sort)
+            },
+            PlanNode::Limit(limit) => {
+                let mut limit = limit.clone();
+                limit.input = self.rewrite_subtree(limit.input);
+                PlanNode::Limit(limit)
+            },
+            PlanNode::Join(join) => {
+                let mut join = join.clone();
+                join.inputs = [self.rewrite_subtree(join.inputs[0]), self.rewrite_subtree(join.inputs[1])];
+                PlanNode::Join(join)
+            },
+        }
+    }
+
+    fn try_rewrite_left_semi_candidate(&mut self, candidate_node_id: NodeId, join: &JoinNode) -> Option<NodeId> {
+        let mut candidate = SemijoinReductionCandidateDiagnostics {
+            rule_name: SEMIJOIN_REDUCTION_RULE_NAME,
+            candidate_node_id,
+            before_root_node_id: candidate_node_id,
+            after_root_node_id: None,
+            crossed_join_node_ids: Vec::new(),
+            target_subtree_id: None,
+            key_mappings: Vec::new(),
+            cost_gate: None,
+            admission_decision: Some(SemijoinReductionAdmissionDecision::NotEvaluated),
+            original_admitted: None,
+            rewritten_admitted: None,
+            applied: false,
+            rejected_reason: None,
+        };
+        self.diagnostics.considered_count += 1;
+
+        match self.plan_rewrite_for_candidate(join) {
+            Ok(planned) => {
+                candidate.after_root_node_id = Some(planned.new_id);
+                candidate.crossed_join_node_ids =
+                    planned.analysis.steps.iter().map(|step| step.crossed_join_node_id).collect();
+                candidate.target_subtree_id = Some(planned.analysis.target_subtree_id);
+                candidate.key_mappings = planned.analysis.key_mappings;
+                candidate.cost_gate = Some(planned.cost_gate);
+                candidate.applied = true;
+                self.diagnostics.applied_count += 1;
+                self.diagnostics.candidates.push(candidate);
+                self.changed = true;
+                Some(planned.new_id)
+            },
+            Err(rejection) => {
+                if let Some(analysis) = rejection.analysis {
+                    candidate.crossed_join_node_ids =
+                        analysis.steps.iter().map(|step| step.crossed_join_node_id).collect();
+                    candidate.target_subtree_id = Some(analysis.target_subtree_id);
+                    candidate.key_mappings = analysis.key_mappings;
+                }
+                candidate.cost_gate = rejection.cost_gate;
+                candidate.rejected_reason = Some(rejection.reason);
+                self.diagnostics.candidates.push(candidate);
+                None
+            },
+        }
+    }
+
+    fn plan_rewrite_for_candidate(&mut self, join: &JoinNode) -> Result<SemijoinRewritePlan, SemijoinRewriteRejection> {
+        if join.spec.output_projection.iter().any(|column| column.side != JoinSide::Left) {
+            return Err(SemijoinRewriteRejection::new(SemijoinReductionRejectedReason::NonLeftOnlySemiProjection));
+        }
+        if join.spec.null_equality != JoinNullEquality::NullsDoNotMatch {
+            return Err(SemijoinRewriteRejection::new(SemijoinReductionRejectedReason::UnsupportedNullEquality));
+        }
+
+        let analysis = match SemijoinLineageAnalyzer::new(self.original)
+            .analyze_left_semi_key_lineage(join.inputs[0], &join.spec.keys)
+        {
+            Ok(analysis) => analysis,
+            Err(reason) => return Err(SemijoinRewriteRejection::new(reason)),
+        };
+
+        if analysis.steps.is_empty() {
+            return Err(SemijoinRewriteRejection::with_analysis(
+                SemijoinReductionRejectedReason::UnsupportedLeftShape,
+                analysis,
+            ));
+        }
+        if analysis.steps.iter().any(|step| {
+            crossed_join_null_equality(self.original, step.crossed_join_node_id)
+                != Some(JoinNullEquality::NullsDoNotMatch)
+        }) {
+            return Err(SemijoinRewriteRejection::with_analysis(
+                SemijoinReductionRejectedReason::UnsupportedNullEquality,
+                analysis,
+            ));
+        }
+
+        let cost_gate = evaluate_semijoin_cost_gate(
+            self.original,
+            join.inputs[1],
+            analysis.target_subtree_id,
+            self.options.cost_threshold_multiplier,
+        );
+        if !cost_gate.accepted {
+            return Err(SemijoinRewriteRejection {
+                reason: SemijoinReductionRejectedReason::CostGateRejected,
+                analysis: Some(analysis),
+                cost_gate: Some(cost_gate),
+            });
+        }
+
+        let pushed_left = self.build_pushed_subtree(join.inputs[0], join, &analysis, 0);
+        let new_id = self.apply_original_semijoin_projection_if_needed(join, pushed_left);
+        Ok(SemijoinRewritePlan { new_id, analysis, cost_gate })
+    }
+
+    fn build_pushed_subtree(
+        &mut self,
+        current_old_id: NodeId,
+        original_semijoin: &JoinNode,
+        analysis: &SemijoinLineageAnalysis,
+        step_index: usize,
+    ) -> NodeId {
+        if step_index == analysis.steps.len() {
+            return self.build_pushed_semijoin(current_old_id, original_semijoin, analysis);
+        }
+
+        let step = &analysis.steps[step_index];
+        debug_assert_eq!(step.crossed_join_node_id, current_old_id);
+        let node = self.original.node(current_old_id).expect("crossed join node must exist");
+        let PlanNode::Join(join) = &node.kind else {
+            panic!("lineage step must point at a join node");
+        };
+
+        let left = if step.target_side == JoinSide::Left {
+            self.build_pushed_subtree(step.target_child_id, original_semijoin, analysis, step_index + 1)
+        } else {
+            self.rewrite_subtree(join.inputs[0])
+        };
+        let right = if step.target_side == JoinSide::Right {
+            self.build_pushed_subtree(step.target_child_id, original_semijoin, analysis, step_index + 1)
+        } else {
+            self.rewrite_subtree(join.inputs[1])
+        };
+
+        let rebuilt = JoinNode { inputs: [left, right], spec: join.spec.clone() };
+        self.push_node(PlanNode::Join(rebuilt), node.facts.clone())
+    }
+
+    fn build_pushed_semijoin(
+        &mut self,
+        target_old_id: NodeId,
+        original_semijoin: &JoinNode,
+        analysis: &SemijoinLineageAnalysis,
+    ) -> NodeId {
+        let target_new_id = self.rewrite_subtree(target_old_id);
+        let right_new_id = self.rewrite_subtree(original_semijoin.inputs[1]);
+        let keys = original_semijoin
+            .spec
+            .keys
+            .iter()
+            .zip(&analysis.target_key_columns)
+            .map(|(key, target_column)| {
+                JoinKey::new(input_column(JoinSide::Left, target_column), input_column(JoinSide::Right, &key.right))
+            })
+            .collect::<Vec<_>>();
+
+        let target_schema =
+            self.nodes.get(target_new_id.index()).expect("rewritten target node must exist").output_schema().clone();
+        let mut spec = original_semijoin.spec.clone();
+        spec.keys = keys;
+        spec.output_projection = left_output_projection_for_schema(&target_schema);
+        spec.build_artifact_id = None;
+
+        self.push_node(
+            PlanNode::Join(JoinNode { inputs: [target_new_id, right_new_id], spec }),
+            PlanFacts::device(target_schema, SchemaBehavior::Join),
+        )
+    }
+
+    fn apply_original_semijoin_projection_if_needed(
+        &mut self,
+        original_semijoin: &JoinNode,
+        pushed_left: NodeId,
+    ) -> NodeId {
+        let pushed_schema = self.nodes[pushed_left.index()].output_schema().clone();
+        let projected_schema = semijoin_projection_schema(self.original, original_semijoin);
+        if schemas_equal(&pushed_schema, &projected_schema)
+            && semijoin_projection_is_identity(self.original, original_semijoin)
+        {
+            return pushed_left;
+        }
+
+        let outputs = original_semijoin
+            .spec
+            .output_projection
+            .iter()
+            .zip(projected_schema.fields().iter())
+            .map(|(column, field)| {
+                ProjectionOutput::new(
+                    Expr::column(column.column.name()).alias(column.output_name.clone()),
+                    field.as_ref().clone(),
+                )
+            })
+            .collect::<Vec<_>>();
+        self.push_node(
+            PlanNode::Projection(crate::plan::ProjectionNode::new(pushed_left, outputs)),
+            PlanFacts::device(projected_schema, SchemaBehavior::Projection),
+        )
+    }
+
+    fn push_node(&mut self, kind: PlanNode, facts: PlanFacts) -> NodeId {
+        let id = NodeId::from_index_for_internal_use(self.nodes.len());
+        self.nodes.push(QueryNode { id, kind, facts });
+        id
     }
 }
 
@@ -329,6 +715,236 @@ fn column_label(column: &ColumnRef) -> String {
     column.name().to_string()
 }
 
+fn crossed_join_null_equality(plan: &QueryPlan, node_id: NodeId) -> Option<JoinNullEquality> {
+    let node = plan.node(node_id)?;
+    match &node.kind {
+        PlanNode::Join(join) => Some(join.spec.null_equality),
+        _ => None,
+    }
+}
+
+fn input_column(side: JoinSide, column: &ColumnRef) -> ColumnRef {
+    ColumnRef::input(join_side_index(side), column.name(), column.display_name())
+}
+
+fn evaluate_semijoin_cost_gate(
+    plan: &QueryPlan,
+    semi_right: NodeId,
+    target_subtree: NodeId,
+    threshold_multiplier: u64,
+) -> SemijoinReductionCostGateDiagnostics {
+    let threshold_multiplier = threshold_multiplier.max(1);
+    if let (Some(semi_right_rows), Some(target_rows)) =
+        (estimated_output_rows(plan, semi_right), estimated_output_rows(plan, target_subtree))
+    {
+        return SemijoinReductionCostGateDiagnostics {
+            signal: SemijoinReductionCostSignal::RowEstimate { semi_right_rows, target_rows },
+            threshold_multiplier,
+            accepted: semi_right_rows.saturating_mul(threshold_multiplier) <= target_rows,
+        };
+    }
+
+    if let (Some(semi_right_bytes), Some(target_bytes)) =
+        (estimated_output_bytes(plan, semi_right), estimated_output_bytes(plan, target_subtree))
+    {
+        return SemijoinReductionCostGateDiagnostics {
+            signal: SemijoinReductionCostSignal::ByteEstimate { semi_right_bytes, target_bytes },
+            threshold_multiplier,
+            accepted: semi_right_bytes.saturating_mul(threshold_multiplier) <= target_bytes,
+        };
+    }
+
+    let accepted = is_aggregate_keyset_shape(plan, semi_right);
+    SemijoinReductionCostGateDiagnostics {
+        signal: if accepted {
+            SemijoinReductionCostSignal::AggregateKeysetShape
+        } else {
+            SemijoinReductionCostSignal::Unavailable
+        },
+        threshold_multiplier,
+        accepted,
+    }
+}
+
+fn is_aggregate_keyset_shape(plan: &QueryPlan, node_id: NodeId) -> bool {
+    let Some(node) = plan.node(node_id) else {
+        return false;
+    };
+    match &node.kind {
+        PlanNode::Filter(filter) => is_aggregate_keyset_shape(plan, filter.input),
+        PlanNode::Projection(projection) => is_aggregate_keyset_shape(plan, projection.input),
+        PlanNode::Aggregate(aggregate) => {
+            !aggregate.spec.group_exprs.is_empty() && is_source_derived_keyset_input(plan, aggregate.input)
+        },
+        PlanNode::Source(_) | PlanNode::Join(_) | PlanNode::Sort(_) | PlanNode::Limit(_) => false,
+    }
+}
+
+fn is_source_derived_keyset_input(plan: &QueryPlan, node_id: NodeId) -> bool {
+    let Some(node) = plan.node(node_id) else {
+        return false;
+    };
+    match &node.kind {
+        PlanNode::Source(_) => true,
+        PlanNode::Filter(filter) => is_source_derived_keyset_input(plan, filter.input),
+        PlanNode::Projection(projection) => is_source_derived_keyset_input(plan, projection.input),
+        PlanNode::Aggregate(_) | PlanNode::Join(_) | PlanNode::Sort(_) | PlanNode::Limit(_) => false,
+    }
+}
+
+fn left_output_projection_for_schema(schema: &arrow::datatypes::SchemaRef) -> Vec<JoinOutputColumn> {
+    schema
+        .fields()
+        .iter()
+        .map(|field| {
+            JoinOutputColumn::left(
+                ColumnRef::input(0, field.name().as_str(), field.name().as_str()),
+                field.name().clone(),
+            )
+        })
+        .collect()
+}
+
+fn semijoin_projection_schema(plan: &QueryPlan, join: &JoinNode) -> arrow::datatypes::SchemaRef {
+    let left_schema = plan.node(join.inputs[0]).expect("left-semi left input must exist").output_schema().clone();
+    let fields = join
+        .spec
+        .output_projection
+        .iter()
+        .map(|output| {
+            let slot = resolve_output_slot(&left_schema, &output.column)
+                .expect("left-semi projection should resolve before rewrite");
+            let input_field = left_schema.field(slot);
+            Field::new(output.output_name.clone(), input_field.data_type().clone(), input_field.is_nullable())
+        })
+        .collect::<Vec<_>>();
+    std::sync::Arc::new(Schema::new(fields))
+}
+
+fn semijoin_projection_is_identity(plan: &QueryPlan, join: &JoinNode) -> bool {
+    let left_schema = plan.node(join.inputs[0]).expect("left-semi left input must exist").output_schema();
+    if join.spec.output_projection.len() != left_schema.fields().len() {
+        return false;
+    }
+
+    join.spec.output_projection.iter().zip(left_schema.fields().iter()).all(|(output, field)| {
+        output.side == JoinSide::Left && output.column.name() == field.name() && output.output_name == *field.name()
+    })
+}
+
+fn schemas_equal(left: &arrow::datatypes::SchemaRef, right: &arrow::datatypes::SchemaRef) -> bool {
+    left.as_ref() == right.as_ref()
+}
+
+fn validate_rewritten_root_semantics(
+    original: &QueryPlan,
+    rewritten: &QueryPlan,
+) -> Result<(), SemijoinReductionRejectedReason> {
+    if !schemas_equal(original.output_schema(), rewritten.output_schema()) {
+        return Err(SemijoinReductionRejectedReason::RootSchemaMismatch);
+    }
+    if !schemas_equal(original.root_node().output_schema(), rewritten.root_node().output_schema()) {
+        return Err(SemijoinReductionRejectedReason::RootOutputProjectionMismatch);
+    }
+    Ok(())
+}
+
+fn evaluate_admission_gate(
+    original: &QueryPlan,
+    rewritten: &QueryPlan,
+    mode: SemijoinReductionAdmissionMode,
+) -> AdmissionGateDecision {
+    match mode {
+        SemijoinReductionAdmissionMode::NotEvaluated => AdmissionGateDecision::Keep {
+            decision: SemijoinReductionAdmissionDecision::NotEvaluated,
+            original_admitted: None,
+            rewritten_admitted: None,
+        },
+        SemijoinReductionAdmissionMode::StrictBounded => mode_admission_gate_decision(
+            strict_bounded_admitted(original),
+            strict_bounded_admitted(rewritten),
+            SemijoinReductionAdmissionDecision::StrictBoundedKept,
+            SemijoinReductionAdmissionDecision::StrictBoundedRejectedRewrite,
+        ),
+        SemijoinReductionAdmissionMode::Adaptive => mode_admission_gate_decision(
+            adaptive_admitted(original),
+            adaptive_admitted(rewritten),
+            SemijoinReductionAdmissionDecision::AdaptiveKept,
+            SemijoinReductionAdmissionDecision::AdaptiveRejectedRewrite,
+        ),
+    }
+}
+
+fn mode_admission_gate_decision(
+    original_admitted: Option<bool>,
+    rewritten_admitted: Option<bool>,
+    kept: SemijoinReductionAdmissionDecision,
+    rejected: SemijoinReductionAdmissionDecision,
+) -> AdmissionGateDecision {
+    let keep = matches!((original_admitted, rewritten_admitted), (Some(true), Some(true)) | (Some(false), Some(true)));
+    if keep {
+        AdmissionGateDecision::Keep { decision: kept, original_admitted, rewritten_admitted }
+    } else {
+        AdmissionGateDecision::Reject { decision: rejected, original_admitted, rewritten_admitted }
+    }
+}
+
+fn strict_bounded_admitted(plan: &QueryPlan) -> Option<bool> {
+    match crate::exec::strict_bounded_pipeline_admission(plan) {
+        Ok(Some(_)) => Some(true),
+        Ok(None) => Some(false),
+        Err(error) if error.code() == crate::error::QueryErrorCode::UnsupportedPlanShape => Some(false),
+        Err(_) => None,
+    }
+}
+
+fn adaptive_admitted(plan: &QueryPlan) -> Option<bool> {
+    match crate::exec::adaptive_bounded_pipeline_admission(plan) {
+        Ok(Some(admission)) => Some(admission.report().row().candidate_status == AdaptiveCandidateStatus::Admitted),
+        Ok(None) => Some(false),
+        Err(_) => None,
+    }
+}
+
+fn record_admission_for_applied_candidates(
+    diagnostics: &mut SemijoinReductionDiagnostics,
+    decision: SemijoinReductionAdmissionDecision,
+    original_admitted: Option<bool>,
+    rewritten_admitted: Option<bool>,
+) {
+    for candidate in diagnostics.candidates.iter_mut().filter(|candidate| candidate.applied) {
+        candidate.admission_decision = Some(decision.clone());
+        candidate.original_admitted = original_admitted;
+        candidate.rewritten_admitted = rewritten_admitted;
+    }
+}
+
+fn reject_applied_candidates(
+    diagnostics: &mut SemijoinReductionDiagnostics,
+    reason: SemijoinReductionRejectedReason,
+    decision: Option<SemijoinReductionAdmissionDecision>,
+    original_admitted: Option<bool>,
+    rewritten_admitted: Option<bool>,
+) {
+    for candidate in diagnostics.candidates.iter_mut().filter(|candidate| candidate.applied) {
+        candidate.applied = false;
+        candidate.rejected_reason = Some(reason);
+        if let Some(decision) = decision.clone() {
+            candidate.admission_decision = Some(decision);
+        }
+        candidate.original_admitted = original_admitted;
+        candidate.rewritten_admitted = rewritten_admitted;
+    }
+    diagnostics.applied_count = diagnostics.candidates.iter().filter(|candidate| candidate.applied).count();
+}
+
+fn sink_with_input(sink: &ResultSink, input: NodeId) -> ResultSink {
+    match sink {
+        ResultSink::GpuResident { .. } => ResultSink::GpuResident { input },
+        ResultSink::HostArrow { schema, .. } => ResultSink::HostArrow { input, schema: schema.clone() },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -339,7 +955,7 @@ mod tests {
     use crate::{
         expr::{AggregateSpec, BinaryOp, LimitSpec, SortExpr, SortSpec},
         plan::{JoinOutputColumn, JoinSpec, ProjectionOutput, QueryPlanBuilder},
-        source::{GpuResidentSource, SourceNode},
+        source::{GpuResidentSource, LocalParquetFile, LocalParquetSource, SourceNode},
     };
 
     #[test]
@@ -532,6 +1148,49 @@ mod tests {
         }
     }
 
+    #[test]
+    fn cost_gate_accepts_selective_row_estimate() {
+        let mut builder = QueryPlanBuilder::new();
+        let target = builder.add_source(local_source("target", 1_000, Some(8_000)));
+        let semi_right = builder.add_source(local_source("semi_right", 100, Some(800)));
+        let plan = builder.finish_gpu_resident(target);
+
+        let gate = evaluate_semijoin_cost_gate(&plan, semi_right, target, 8);
+
+        assert!(gate.accepted);
+        assert_eq!(gate.threshold_multiplier, 8);
+        assert_eq!(gate.signal, SemijoinReductionCostSignal::RowEstimate { semi_right_rows: 100, target_rows: 1_000 });
+    }
+
+    #[test]
+    fn cost_gate_rejects_unselective_row_estimate() {
+        let mut builder = QueryPlanBuilder::new();
+        let target = builder.add_source(local_source("target", 700, Some(7_000)));
+        let semi_right = builder.add_source(local_source("semi_right", 100, Some(800)));
+        let plan = builder.finish_gpu_resident(target);
+
+        let gate = evaluate_semijoin_cost_gate(&plan, semi_right, target, 8);
+
+        assert!(!gate.accepted);
+        assert_eq!(gate.signal, SemijoinReductionCostSignal::RowEstimate { semi_right_rows: 100, target_rows: 700 });
+    }
+
+    #[test]
+    fn cost_gate_falls_back_to_byte_estimate_when_rows_are_unavailable() {
+        let mut builder = QueryPlanBuilder::new();
+        let target = builder.add_source(local_source_with_bytes_only("target", 8_000));
+        let semi_right = builder.add_source(local_source_with_bytes_only("semi_right", 1_100));
+        let plan = builder.finish_gpu_resident(target);
+
+        let gate = evaluate_semijoin_cost_gate(&plan, semi_right, target, 8);
+
+        assert!(!gate.accepted);
+        assert_eq!(
+            gate.signal,
+            SemijoinReductionCostSignal::ByteEstimate { semi_right_bytes: 1_100, target_bytes: 8_000 }
+        );
+    }
+
     fn analyze_keys(
         plan: &QueryPlan,
         left_input: NodeId,
@@ -608,6 +1267,28 @@ mod tests {
 
     fn source(name: &str, fields: Vec<Field>) -> SourceNode {
         SourceNode::GpuResident(GpuResidentSource::new(name, schema(fields)))
+    }
+
+    fn local_source(name: &str, rows: u64, bytes: Option<u64>) -> SourceNode {
+        let file = LocalParquetFile::new(format!("/tmp/{name}.parquet")).with_row_group_rows(vec![rows]);
+        let file =
+            if let Some(bytes) = bytes { file.with_projected_row_group_bytes(vec![bytes], vec![bytes]) } else { file };
+        SourceNode::LocalParquet(LocalParquetSource::from_files(
+            vec![file],
+            schema(vec![field("k")]),
+            vec!["k".to_string()],
+        ))
+    }
+
+    fn local_source_with_bytes_only(name: &str, bytes: u64) -> SourceNode {
+        SourceNode::LocalParquet(LocalParquetSource::from_files(
+            vec![
+                LocalParquetFile::new(format!("/tmp/{name}.parquet"))
+                    .with_projected_row_group_bytes(vec![bytes], vec![bytes]),
+            ],
+            schema(vec![field("k")]),
+            vec!["k".to_string()],
+        ))
     }
 
     fn schema(fields: Vec<Field>) -> Arc<Schema> {
