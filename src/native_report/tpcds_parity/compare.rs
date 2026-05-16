@@ -265,7 +265,8 @@ fn normalized_order_by_column(term: &str) -> Option<String> {
     if let Ok(ordinal) = first.parse::<usize>() {
         return Some(format!("#{ordinal}"));
     }
-    let column = first.rsplit('.').next().unwrap_or(first).trim_matches(|c: char| c == '"' || c == '`');
+    let column =
+        first.rsplit_once('.').map_or(first, |(_, column)| column).trim_matches(|c: char| c == '"' || c == '`');
     (!column.is_empty()).then(|| column.to_ascii_lowercase())
 }
 

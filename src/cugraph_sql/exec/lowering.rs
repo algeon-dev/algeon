@@ -227,9 +227,7 @@ fn prepared_predicate_row_upper_bounds(
     if let CugraphAlgorithmParams::Bfs(params) = &spec.params
         && params.source.is_utf8()
     {
-        let source_rows = params.source.literal_count().and_then(|rows| u64::try_from(rows).ok()).ok_or_else(|| {
-            plan_error("cuGraph logical BFS source row bound does not fit the native cardinality contract")
-        })?;
+        let source_rows = params.source.literal_count().expect("UTF8 BFS sources are always literal") as u64;
         match predicate_schemas.len().cmp(&bounds.len()) {
             std::cmp::Ordering::Greater if predicate_schemas.len() == bounds.len() + 1 => {
                 bounds.insert(0, Some(source_rows));

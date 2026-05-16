@@ -369,7 +369,7 @@ fn unavailable_validation(
     request: &GpuCallRequest,
     availability: &GpuFunctionAvailability,
 ) -> GpuCallValidation {
-    let reason = availability.unavailable_reason().unwrap_or("required_feature_disabled");
+    let reason = availability.unavailable_reason().expect("unavailable cuVS functions must have a reason");
     GpuCallValidation {
         valid: false,
         error_code: Some(reason.to_string()),

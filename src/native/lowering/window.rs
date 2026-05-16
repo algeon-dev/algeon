@@ -534,26 +534,19 @@ fn lower_window_spec(
         return Err(CapabilityReason::UnsupportedExpression);
     }
 
-    let mut expected_partition_by = None;
-    let mut expected_order_by = None;
+    let first_keys = &prepared_keys[0];
+    let expected_partition_by = first_keys.partition_by.clone();
+    let expected_order_by = first_keys.order_by.clone();
     let mut functions = Vec::with_capacity(window_exprs.len());
     for (function_index, window_expr) in window_exprs.iter().enumerate() {
         let keys = prepared_keys.get(function_index).ok_or(CapabilityReason::UnsupportedExpression)?;
         let partition_by = keys.partition_by.clone();
         let order_by = keys.order_by.clone();
-        if let Some(expected) = &expected_partition_by {
-            if expected != &partition_by {
-                return Err(CapabilityReason::UnsupportedOperator);
-            }
-        } else {
-            expected_partition_by = Some(partition_by.clone());
+        if expected_partition_by != partition_by {
+            return Err(CapabilityReason::UnsupportedOperator);
         }
-        if let Some(expected) = &expected_order_by {
-            if expected != &order_by {
-                return Err(CapabilityReason::UnsupportedOperator);
-            }
-        } else {
-            expected_order_by = Some(order_by.clone());
+        if expected_order_by != order_by {
+            return Err(CapabilityReason::UnsupportedOperator);
         }
 
         let alias = output_bindings
@@ -608,11 +601,7 @@ fn lower_window_spec(
         }
     }
 
-    Ok(NativeWindowSpec::new(
-        expected_partition_by.unwrap_or_default(),
-        expected_order_by.unwrap_or_default(),
-        functions,
-    ))
+    Ok(NativeWindowSpec::new(expected_partition_by, expected_order_by, functions))
 }
 
 fn rename_field(field: &Field, name: &str) -> Field {

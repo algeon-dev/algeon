@@ -146,13 +146,12 @@ pub(super) fn executable_schema_and_bindings(
     for frontend_index in indices {
         let field = frontend_schema.fields().get(frontend_index).ok_or(CapabilityReason::UnsupportedExpression)?;
         let frontend_name = field.name().clone();
-        let native_name = if name_counts.get(frontend_name.as_str()).copied().unwrap_or_default() == 1
-            && !used_native_names.contains(frontend_name.as_str())
-        {
-            frontend_name.clone()
-        } else {
-            unique_synthetic_field_name(frontend_index, frontend_name.as_str(), &frontend_names, &used_native_names)
-        };
+        let native_name =
+            if name_counts[frontend_name.as_str()] == 1 && !used_native_names.contains(frontend_name.as_str()) {
+                frontend_name.clone()
+            } else {
+                unique_synthetic_field_name(frontend_index, frontend_name.as_str(), &frontend_names, &used_native_names)
+            };
         used_native_names.insert(native_name.clone());
         fields.push(rename_field(field.as_ref(), native_name.as_str()));
         bindings.push(FieldBinding { frontend_index, frontend_name, native_name });

@@ -131,7 +131,7 @@ pub(crate) fn register_graph_execution_plan_discovery(discovery: GraphExecutionP
     let mut discoveries = GRAPH_EXECUTION_PLAN_DISCOVERIES
         .get_or_init(|| Mutex::new(Vec::new()))
         .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+        .expect("graph execution-plan discovery registry mutex cannot be poisoned");
     if !discoveries.iter().any(|candidate| std::ptr::fn_addr_eq(*candidate, discovery)) {
         discoveries.push(discovery);
     }
@@ -142,7 +142,7 @@ pub(crate) fn graph_execution_plan(plan: &dyn ExecutionPlan) -> Option<&dyn Grap
         GRAPH_EXECUTION_PLAN_DISCOVERIES
             .get_or_init(|| Mutex::new(Vec::new()))
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .expect("graph execution-plan discovery registry mutex cannot be poisoned")
             .clone()
     };
     discoveries.iter().find_map(|discovery| discovery(plan))

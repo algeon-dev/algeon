@@ -257,13 +257,8 @@ impl NativeDataFusionExecutionTsvTemplate {
             .collect::<Vec<_>>()
             .into_boxed_slice();
         let retained_capacity_bytes = rows.iter().fold(0u64, |total, row| {
-            let strings = row
-                .prefix
-                .iter()
-                .fold(0u64, |bytes, field| bytes.saturating_add(u64::try_from(field.len()).unwrap_or(u64::MAX)));
-            total.saturating_add(strings).saturating_add(
-                u64::try_from(row.prefix.len().saturating_mul(std::mem::size_of::<Box<str>>())).unwrap_or(u64::MAX),
-            )
+            let strings = row.prefix.iter().fold(0u64, |bytes, field| bytes.saturating_add(field.len() as u64));
+            total.saturating_add(strings).saturating_add((row.prefix.len() * std::mem::size_of::<Box<str>>()) as u64)
         });
         Self { rows, retained_capacity_bytes }
     }
@@ -289,7 +284,7 @@ impl NativeDataFusionExecutionTsvTemplate {
             } else {
                 runtime_summary.clone()
             };
-            let runtime_fields = runtime_fields(row.prefix.first().map_or("", |value| value.as_ref()), summary);
+            let runtime_fields = runtime_fields(row.prefix[0].as_ref(), summary);
             for field in runtime_fields {
                 output.push('\t');
                 output.push_str(&field);

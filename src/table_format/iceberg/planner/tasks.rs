@@ -130,7 +130,7 @@ pub(super) fn trim_predicate_free_scan_limit_data_files(plan: &mut TableFormatSc
     let Some(limit) = plan.scan_limit else {
         return;
     };
-    let limit = u64::try_from(limit).unwrap_or(u64::MAX);
+    let limit = limit as u64;
     if limit == 0 {
         plan.data_files.clear();
         return;
@@ -146,16 +146,15 @@ pub(super) fn trim_predicate_free_scan_limit_data_files(plan: &mut TableFormatSc
         return;
     }
 
-    plan.data_files.sort_by(|left, right| {
-        let left_rows = data_file_live_row_lower_bound(left).unwrap_or(0);
-        let right_rows = data_file_live_row_lower_bound(right).unwrap_or(0);
-        right_rows.cmp(&left_rows)
-    });
+    fn live_row_lower_bound(file: &TableFormatDataFile) -> u64 {
+        data_file_live_row_lower_bound(file).expect("all file lower bounds were established above")
+    }
+    plan.data_files.sort_by_key(|file| std::cmp::Reverse(live_row_lower_bound(file)));
 
     let mut retained = 0usize;
     let mut rows = 0u64;
     for file in &plan.data_files {
-        let live_lower_bound = data_file_live_row_lower_bound(file).unwrap_or(0);
+        let live_lower_bound = live_row_lower_bound(file);
         retained += 1;
         rows = rows.saturating_add(live_lower_bound);
         if rows >= limit {
@@ -197,13 +196,13 @@ pub(super) async fn attach_remote_delete_file_row_counts_for_scan_limit(
     request_has_predicate: bool,
     timeout_context: Option<&IcebergScanPlanningTimeoutContext>,
 ) -> Result<()> {
-    if request_has_predicate || plan.scan_limit.is_none() {
-        return Ok(());
-    }
+    let limit = match plan.scan_limit {
+        Some(limit) if !request_has_predicate => limit as u64,
+        _ => return Ok(()),
+    };
     if let Some(context) = timeout_context {
         context.check("before_remote_delete_footer_row_count")?;
     }
-    let limit = plan.scan_limit.and_then(|limit| u64::try_from(limit).ok()).unwrap_or(u64::MAX);
     let mut candidate_indices = plan
         .data_files
         .iter()
