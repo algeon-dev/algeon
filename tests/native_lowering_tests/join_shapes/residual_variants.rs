@@ -163,6 +163,139 @@ fn hash_join_filter_decimal_cast_materializes_inputs_before_residual_predicate()
 }
 
 #[test]
+fn hash_join_filter_case_decimal_divide_lowers_to_native_residual_predicate() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-hash-join-filter-case-decimal-divide");
+    let left_path = dir.join("left.parquet");
+    let right_path = dir.join("right.parquet");
+    write_join_left_decimal_payload_parquet_file(&left_path);
+    write_join_right_decimal_payload_parquet_file(&right_path);
+    let plan = hash_join_filter_case_decimal_divide_aggregate_sort_limit_plan(
+        parquet_scan(&left_path),
+        parquet_scan(&right_path),
+    );
+
+    let result = lower_physical_plan_to_native(plan);
+
+    let join = rewritten_native_join(&result);
+    let residual = join.spec.residual_predicate.as_ref().expect("join filter should lower as residual predicate");
+    assert!(matches!(
+        residual,
+        Expr::Binary { left, right, .. }
+            if matches!(
+                left.as_ref(),
+                Expr::Case { branches, .. }
+                    if branches.len() == 1
+                        && matches!(
+                            &branches[0].then,
+                            Expr::Binary {
+                                op: cudf_query_engine::BinaryOp::Divide,
+                                output_type: Some(DataType::Decimal128(_, _)),
+                                ..
+                            }
+                        )
+            )
+                && matches!(
+                    right.as_ref(),
+                    Expr::Case { branches, .. }
+                        if branches.len() == 1
+                            && matches!(
+                                &branches[0].then,
+                                Expr::Binary {
+                                    op: cudf_query_engine::BinaryOp::Divide,
+                                    output_type: Some(DataType::Decimal128(_, _)),
+                                    ..
+                                }
+                            )
+                )
+    ));
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn hash_join_filter_substring_materializes_inputs_before_residual_predicate() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-hash-join-filter-substring-materialized");
+    let left_path = dir.join("left.parquet");
+    let right_path = dir.join("right.parquet");
+    write_join_left_string_payload_parquet_file(&left_path);
+    write_join_right_string_payload_parquet_file(&right_path);
+    let plan = hash_join_filter_substring_materialization_aggregate_sort_limit_plan(
+        parquet_scan(&left_path),
+        parquet_scan(&right_path),
+    );
+
+    let result = lower_physical_plan_to_native(plan);
+
+    let join = rewritten_native_join(&result);
+    let residual = join.spec.residual_predicate.as_ref().expect("join filter should lower as residual predicate");
+    assert!(matches!(
+        residual,
+        Expr::Binary { left, right, op: cudf_query_engine::BinaryOp::Or, .. }
+            if matches!(
+                left.as_ref(),
+                Expr::InList { expr, list, negated: false }
+                    if matches!(
+                        expr.as_ref(),
+                        Expr::Column(column) if column.to_string() == "input0.__cudf_join_residual_left_0"
+                    )
+                        && list.len() == 1
+            )
+                && matches!(
+                    right.as_ref(),
+                    Expr::Binary { left, right, op: cudf_query_engine::BinaryOp::NotEq, .. }
+                        if matches!(
+                            left.as_ref(),
+                            Expr::Column(column) if column.to_string() == "input0.__cudf_join_residual_left_1"
+                        )
+                            && matches!(
+                                right.as_ref(),
+                                Expr::Column(column) if column.to_string() == "input1.__cudf_join_residual_right_0"
+                            )
+                )
+    ));
+    assert_join_input_materializes_substring(&result.plans[0], join.inputs[0], "__cudf_join_residual_left_0", "l_zip");
+    assert_join_input_materializes_substring(&result.plans[0], join.inputs[0], "__cudf_join_residual_left_1", "l_zip");
+    assert_join_input_materializes_substring(&result.plans[0], join.inputs[1], "__cudf_join_residual_right_0", "r_zip");
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn hash_join_filter_upper_string_cast_materializes_input_before_residual_predicate() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-hash-join-filter-upper-cast-materialized");
+    let left_path = dir.join("left.parquet");
+    let right_path = dir.join("right.parquet");
+    write_join_left_string_payload_parquet_file(&left_path);
+    write_join_right_string_payload_parquet_file(&right_path);
+    let plan = hash_join_filter_upper_cast_materialization_aggregate_sort_limit_plan(
+        parquet_scan(&left_path),
+        parquet_scan(&right_path),
+    );
+
+    let result = lower_physical_plan_to_native(plan);
+
+    let join = rewritten_native_join(&result);
+    let residual = join.spec.residual_predicate.as_ref().expect("join filter should lower as residual predicate");
+    assert!(matches!(
+        residual,
+        Expr::Binary { left, right, op: cudf_query_engine::BinaryOp::NotEq, .. }
+            if matches!(left.as_ref(), Expr::Column(column) if column.to_string() == "input0.l_country")
+                && matches!(
+                    right.as_ref(),
+                    Expr::Column(column) if column.to_string() == "input1.__cudf_join_residual_right_0"
+                )
+    ));
+    assert_join_input_materializes_upper_utf8view_cast(
+        &result.plans[0],
+        join.inputs[1],
+        "__cudf_join_residual_right_0",
+        "r_country",
+    );
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn right_hash_join_filter_decimal_cast_materialization_uses_swapped_native_inputs() {
     let dir = unique_temp_dir("datafusion-cudf-native-lowering-right-hash-join-filter-decimal-materialized-cast");
     let left_path = dir.join("left.parquet");

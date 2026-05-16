@@ -272,7 +272,12 @@ fn collect_join_residual_sides(expr: &Expr, left: &mut bool, right: &mut bool) -
             }
             Ok(())
         },
-        Expr::Like { .. } | Expr::Substring { .. } | Expr::Case { .. } | Expr::Extract { .. } => Err(QueryError::new(
+        Expr::Like { .. }
+        | Expr::Substring { .. }
+        | Expr::Lower(_)
+        | Expr::Upper(_)
+        | Expr::Case { .. }
+        | Expr::Extract { .. } => Err(QueryError::new(
             QueryErrorCode::UnsupportedExpression,
             "cudf_query_engine.join.validate_residual",
             "native join residual predicates do not yet support this expression family",
@@ -387,7 +392,12 @@ fn validate_join_residual_expr(
         Expr::Alias { expr, .. } => {
             validate_join_residual_expr(expr, left_schema, left_available, right_schema, right_available)
         },
-        Expr::Like { .. } | Expr::Substring { .. } | Expr::Case { .. } | Expr::Extract { .. } => Err(QueryError::new(
+        Expr::Like { .. }
+        | Expr::Substring { .. }
+        | Expr::Lower(_)
+        | Expr::Upper(_)
+        | Expr::Case { .. }
+        | Expr::Extract { .. } => Err(QueryError::new(
             QueryErrorCode::UnsupportedExpression,
             "cudf_query_engine.join.validate_residual",
             "native join residual predicates do not yet support this expression family",

@@ -152,7 +152,12 @@ fn lower_source_reader_ast_expr(
             })
         },
         Expr::Alias { expr, .. } => lower_source_reader_ast_expr(context, source, expr),
-        Expr::Like { .. } | Expr::Substring { .. } | Expr::Case { .. } | Expr::Extract { .. } => Err(QueryError::new(
+        Expr::Like { .. }
+        | Expr::Substring { .. }
+        | Expr::Lower(_)
+        | Expr::Upper(_)
+        | Expr::Case { .. }
+        | Expr::Extract { .. } => Err(QueryError::new(
             QueryErrorCode::UnsupportedExpression,
             "cudf_query_engine.local_parquet_source.reader_predicate",
             "reader predicate does not support this expression family",

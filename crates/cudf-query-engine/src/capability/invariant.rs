@@ -653,9 +653,11 @@ pub(super) fn expr_references_input(expr: &Expr, input_index: usize) -> bool {
         Expr::Binary { left, right, .. } => {
             expr_references_input(left, input_index) || expr_references_input(right, input_index)
         },
-        Expr::Like { expr, .. } | Expr::Substring { expr, .. } | Expr::Extract { expr, .. } => {
-            expr_references_input(expr, input_index)
-        },
+        Expr::Like { expr, .. }
+        | Expr::Substring { expr, .. }
+        | Expr::Lower(expr)
+        | Expr::Upper(expr)
+        | Expr::Extract { expr, .. } => expr_references_input(expr, input_index),
         Expr::InList { expr, list, .. } => {
             expr_references_input(expr, input_index) || list.iter().any(|item| expr_references_input(item, input_index))
         },

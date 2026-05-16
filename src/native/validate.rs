@@ -6,8 +6,8 @@ use datafusion::{
     physical_expr::{
         PhysicalExpr, ScalarFunctionExpr,
         expressions::{
-            BinaryExpr, CaseExpr, CastExpr, Column, InListExpr, IsNotNullExpr, IsNullExpr, LikeExpr, Literal, NotExpr,
-            TryCastExpr,
+            BinaryExpr, CaseExpr, CastExpr, Column, DynamicFilterPhysicalExpr, InListExpr, IsNotNullExpr, IsNullExpr,
+            LikeExpr, Literal, NotExpr, TryCastExpr,
         },
     },
     physical_plan::{
@@ -191,6 +191,10 @@ pub(super) fn collect_required_columns(
             collect_required_columns(else_expr, input_schema, required)?;
         }
         return Ok(());
+    }
+    if let Some(dynamic_filter) = expr.as_any().downcast_ref::<DynamicFilterPhysicalExpr>() {
+        let current = dynamic_filter.current().map_err(|_error| FallbackReason::UnsupportedExpression)?;
+        return collect_required_columns(&current, input_schema, required);
     }
     if let Some(function) = expr.as_any().downcast_ref::<ScalarFunctionExpr>() {
         collect_required_columns_for_scalar_function(function, input_schema, required)?;

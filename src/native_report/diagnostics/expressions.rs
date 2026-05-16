@@ -1,4 +1,60 @@
+use arrow::datatypes::SchemaRef;
+use datafusion::physical_expr::expressions::DynamicFilterPhysicalExpr;
+
 use super::*;
+
+pub(super) fn join_residual_expression_category(
+    expr: &Arc<dyn PhysicalExpr>,
+    input_schema: &SchemaRef,
+) -> Option<String> {
+    if let Some(binary) = expr.as_any().downcast_ref::<BinaryExpr>() {
+        if matches!(binary.op(), Operator::Or)
+            && binary.nullable(input_schema.as_ref()).unwrap_or(true)
+            && expression_contains_scalar_function(expr)
+        {
+            return Some("expression_join_residual_nullable_or".to_string());
+        }
+        return join_residual_expression_category(binary.left(), input_schema)
+            .or_else(|| join_residual_expression_category(binary.right(), input_schema));
+    }
+    if let Some(not) = expr.as_any().downcast_ref::<NotExpr>() {
+        return join_residual_expression_category(not.arg(), input_schema);
+    }
+    if let Some(is_null) = expr.as_any().downcast_ref::<IsNullExpr>() {
+        return join_residual_expression_category(is_null.arg(), input_schema);
+    }
+    if let Some(is_not_null) = expr.as_any().downcast_ref::<IsNotNullExpr>() {
+        return join_residual_expression_category(is_not_null.arg(), input_schema);
+    }
+    if let Some(cast) = expr.as_any().downcast_ref::<CastExpr>() {
+        return join_residual_expression_category(cast.expr(), input_schema);
+    }
+    if let Some(in_list) = expr.as_any().downcast_ref::<InListExpr>() {
+        return join_residual_expression_category(in_list.expr(), input_schema)
+            .or_else(|| in_list.list().iter().find_map(|expr| join_residual_expression_category(expr, input_schema)));
+    }
+    if let Some(case) = expr.as_any().downcast_ref::<CaseExpr>() {
+        if let Some(expr) = case.expr()
+            && let Some(category) = join_residual_expression_category(expr, input_schema)
+        {
+            return Some(category);
+        }
+        for (when, then) in case.when_then_expr() {
+            if let Some(category) = join_residual_expression_category(when, input_schema)
+                .or_else(|| join_residual_expression_category(then, input_schema))
+            {
+                return Some(category);
+            }
+        }
+        return case.else_expr().and_then(|expr| join_residual_expression_category(expr, input_schema));
+    }
+    expression_category(expr)
+}
+
+fn expression_contains_scalar_function(expr: &Arc<dyn PhysicalExpr>) -> bool {
+    expr.as_any().downcast_ref::<ScalarFunctionExpr>().is_some()
+        || expr.children().into_iter().any(expression_contains_scalar_function)
+}
 
 pub(super) fn expression_category(expr: &Arc<dyn PhysicalExpr>) -> Option<String> {
     if expr.as_any().downcast_ref::<Column>().is_some() {
@@ -18,6 +74,9 @@ pub(super) fn expression_category(expr: &Arc<dyn PhysicalExpr>) -> Option<String
     }
     if let Some(not) = expr.as_any().downcast_ref::<NotExpr>() {
         return expression_category(not.arg());
+    }
+    if let Some(negative) = expr.as_any().downcast_ref::<NegativeExpr>() {
+        return expression_category(negative.arg()).or_else(|| Some("expression_unary_negative".to_string()));
     }
     if let Some(is_null) = expr.as_any().downcast_ref::<IsNullExpr>() {
         return expression_category(is_null.arg());
@@ -66,6 +125,12 @@ pub(super) fn expression_category(expr: &Arc<dyn PhysicalExpr>) -> Option<String
         }
         return case.else_expr().and_then(expression_category);
     }
+    if let Some(dynamic_filter) = expr.as_any().downcast_ref::<DynamicFilterPhysicalExpr>() {
+        return match dynamic_filter.current() {
+            Ok(current) => expression_category(&current),
+            Err(_error) => Some("expression_dynamic_filter".to_string()),
+        };
+    }
     if let Some(function) = expr.as_any().downcast_ref::<ScalarFunctionExpr>() {
         let function_name = stable_identifier(function.name());
         match function_name.as_str() {
@@ -79,7 +144,17 @@ pub(super) fn expression_category(expr: &Arc<dyn PhysicalExpr>) -> Option<String
                     (!extract_field_is_supported(function)).then(|| "expression_extract_field".to_string())
                 });
             },
+            "lower" | "upper" => {
+                return function.args().iter().find_map(expression_category).or_else(|| {
+                    (function.args().len() != 1).then(|| format!("expression_scalar_function_{function_name}"))
+                });
+            },
             _ => return Some(format!("expression_scalar_function_{function_name}")),
+        }
+    }
+    for child in expr.children() {
+        if let Some(category) = expression_category(child) {
+            return Some(category);
         }
     }
     Some("expression".to_string())

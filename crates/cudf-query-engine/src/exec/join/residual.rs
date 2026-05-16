@@ -119,7 +119,12 @@ fn collect_join_expr_columns(expr: &Expr, left: &mut BTreeSet<String>, right: &m
             }
             Ok(())
         },
-        Expr::Like { .. } | Expr::Substring { .. } | Expr::Case { .. } | Expr::Extract { .. } => Err(QueryError::new(
+        Expr::Like { .. }
+        | Expr::Substring { .. }
+        | Expr::Lower(_)
+        | Expr::Upper(_)
+        | Expr::Case { .. }
+        | Expr::Extract { .. } => Err(QueryError::new(
             QueryErrorCode::UnsupportedExpression,
             "cudf_query_engine.join.residual_columns",
             "native join residual predicates do not yet support this expression family",
@@ -340,7 +345,12 @@ fn lower_join_ast_expr(
             })
         },
         Expr::Alias { expr, .. } => lower_join_ast_expr(context, expr, residual_columns),
-        Expr::Like { .. } | Expr::Substring { .. } | Expr::Case { .. } | Expr::Extract { .. } => Err(QueryError::new(
+        Expr::Like { .. }
+        | Expr::Substring { .. }
+        | Expr::Lower(_)
+        | Expr::Upper(_)
+        | Expr::Case { .. }
+        | Expr::Extract { .. } => Err(QueryError::new(
             QueryErrorCode::UnsupportedExpression,
             "cudf_query_engine.join.lower_residual",
             "native join residual predicates do not yet support this expression family",

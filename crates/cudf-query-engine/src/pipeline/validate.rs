@@ -446,11 +446,25 @@ fn validate_shared_resident_resource_edges(
         }
     }
 
-    let shared_consumers = shared_edges.iter().map(|edge| edge.to()).collect::<BTreeSet<_>>();
+    let shared_resource_edge_consumers = pipeline
+        .edges()
+        .iter()
+        .filter(|edge| {
+            edge.resources().contains(&resource.id())
+                && matches!(
+                    edge.kind(),
+                    PipelineEdgeKind::SharedResidentProducer
+                        | PipelineEdgeKind::JoinBuildInput
+                        | PipelineEdgeKind::JoinProbeInput
+                        | PipelineEdgeKind::SinkInput
+                )
+        })
+        .map(|edge| edge.to())
+        .collect::<BTreeSet<_>>();
     let recorded_consumers = resource.consumers().iter().copied().collect::<BTreeSet<_>>();
-    if shared_consumers != recorded_consumers {
-        let missing = recorded_consumers.difference(&shared_consumers).next().copied();
-        let extra = shared_consumers.difference(&recorded_consumers).next().copied();
+    if shared_resource_edge_consumers != recorded_consumers {
+        let missing = recorded_consumers.difference(&shared_resource_edge_consumers).next().copied();
+        let extra = shared_resource_edge_consumers.difference(&recorded_consumers).next().copied();
         let mut error = invalid("pipeline shared resident producer edges do not cover recorded consumers")
             .with_fact("resource_id", resource.id())
             .with_fact("producer_task", resource.producer());

@@ -7,8 +7,8 @@ use datafusion::{
     physical_expr::{
         PhysicalExpr, ScalarFunctionExpr,
         expressions::{
-            BinaryExpr, CaseExpr, CastExpr, Column, InListExpr, IsNotNullExpr, IsNullExpr, LikeExpr, Literal, NotExpr,
-            TryCastExpr,
+            BinaryExpr, CaseExpr, CastExpr, Column, DynamicFilterPhysicalExpr, InListExpr, IsNotNullExpr, IsNullExpr,
+            LikeExpr, Literal, NotExpr, TryCastExpr,
         },
     },
 };
@@ -57,6 +57,10 @@ pub(in crate::native) fn validate_physical_expr(
     }
     if let Some(case) = expr.as_any().downcast_ref::<CaseExpr>() {
         return validate_case_expr(case, input_schema);
+    }
+    if let Some(dynamic_filter) = expr.as_any().downcast_ref::<DynamicFilterPhysicalExpr>() {
+        let current = dynamic_filter.current().map_err(|_error| FallbackReason::UnsupportedExpression)?;
+        return validate_physical_expr(&current, input_schema);
     }
     if let Some(function) = expr.as_any().downcast_ref::<ScalarFunctionExpr>() {
         return validate_scalar_function_expr(function, input_schema);
@@ -138,6 +142,7 @@ fn validate_scalar_function_expr(
     match function.name().to_ascii_lowercase().as_str() {
         "substring" | "substr" => validate_substring_function(function, input_schema),
         "date_part" | "extract" => validate_extract_function(function, input_schema),
+        "lower" | "upper" => validate_string_case_function(function, input_schema),
         _ => Err(FallbackReason::UnsupportedExpression),
     }
 }
@@ -159,6 +164,17 @@ fn validate_extract_function(function: &ScalarFunctionExpr, input_schema: &Schem
     }
     validate_physical_expr(expr, input_schema)?;
     validate_date_or_timestamp_expr(expr, input_schema)
+}
+
+fn validate_string_case_function(
+    function: &ScalarFunctionExpr,
+    input_schema: &SchemaRef,
+) -> Result<(), FallbackReason> {
+    let [expr] = function.args() else {
+        return Err(FallbackReason::UnsupportedExpression);
+    };
+    validate_physical_expr(expr, input_schema)?;
+    validate_string_expr(expr, input_schema)
 }
 
 fn validate_column_type(column: &Column, input_schema: &SchemaRef) -> Result<(), FallbackReason> {

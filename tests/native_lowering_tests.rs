@@ -26,7 +26,7 @@ use datafusion::{
         table_schema::TableSchema,
     },
     execution::object_store::ObjectStoreUrl,
-    functions::unicode,
+    functions::{string, unicode},
     functions_aggregate::{count::count_udaf, first_last::first_value_udaf, min_max::max_udaf, sum::sum_udaf},
     logical_expr::Operator,
     parquet::{
@@ -36,7 +36,9 @@ use datafusion::{
     physical_expr::{
         LexOrdering, PhysicalExpr, PhysicalSortExpr, ScalarFunctionExpr,
         aggregate::{AggregateExprBuilder, AggregateFunctionExpr},
-        expressions::{CastExpr, LikeExpr, NotExpr, TryCastExpr, binary, col, in_list, lit},
+        expressions::{
+            CaseExpr, CastExpr, DynamicFilterPhysicalExpr, LikeExpr, NotExpr, TryCastExpr, binary, col, in_list, lit,
+        },
     },
     physical_plan::{
         ExecutionPlan,
@@ -356,6 +358,67 @@ fn assert_join_input_materializes_decimal_cast(
             )
         }),
         "join input projection should materialize {source_column} decimal cast as {alias}: {:?}",
+        projection.expressions().collect::<Vec<_>>()
+    );
+}
+
+fn assert_join_input_materializes_substring(
+    plan: &cudf_query_engine::QueryPlan,
+    input: cudf_query_engine::NodeId,
+    alias: &str,
+    source_column: &str,
+) {
+    let input_node = plan.node(input).expect("join input should exist");
+    let PlanNode::Projection(projection) = &input_node.kind else {
+        panic!("join input should be a residual materialization projection");
+    };
+    assert!(input_node.output_schema().field_with_name(alias).is_ok());
+    assert!(
+        projection.expressions().any(|expr| {
+            matches!(
+                expr,
+                Expr::Alias { expr, alias: actual_alias }
+                    if actual_alias == alias
+                        && matches!(
+                            expr.as_ref(),
+                            Expr::Substring { expr, start: 1, length: Some(5) }
+                                if matches!(expr.as_ref(), Expr::Column(column) if column.name() == source_column)
+                        )
+            )
+        }),
+        "join input projection should materialize substr({source_column}, 1, 5) as {alias}: {:?}",
+        projection.expressions().collect::<Vec<_>>()
+    );
+}
+
+fn assert_join_input_materializes_upper_utf8view_cast(
+    plan: &cudf_query_engine::QueryPlan,
+    input: cudf_query_engine::NodeId,
+    alias: &str,
+    source_column: &str,
+) {
+    let input_node = plan.node(input).expect("join input should exist");
+    let PlanNode::Projection(projection) = &input_node.kind else {
+        panic!("join input should be a residual materialization projection");
+    };
+    assert!(input_node.output_schema().field_with_name(alias).is_ok());
+    assert!(
+        projection.expressions().any(|expr| {
+            matches!(
+                expr,
+                Expr::Alias { expr, alias: actual_alias }
+                    if actual_alias == alias
+                        && matches!(
+                            expr.as_ref(),
+                            Expr::Upper(expr)
+                                if matches!(
+                                    expr.as_ref(),
+                                    Expr::Column(column) if column.name() == source_column
+                                )
+                        )
+            )
+        }),
+        "join input projection should materialize upper({source_column}) as {alias}: {:?}",
         projection.expressions().collect::<Vec<_>>()
     );
 }

@@ -10,8 +10,8 @@ use datafusion::{
     physical_expr::{
         PhysicalExpr, ScalarFunctionExpr,
         expressions::{
-            BinaryExpr, CaseExpr, CastExpr, Column, InListExpr, IsNotNullExpr, IsNullExpr, LikeExpr, Literal, NotExpr,
-            TryCastExpr,
+            BinaryExpr, CaseExpr, CastExpr, Column, DynamicFilterPhysicalExpr, InListExpr, IsNotNullExpr, IsNullExpr,
+            LikeExpr, Literal, NotExpr, TryCastExpr,
         },
     },
 };
@@ -104,6 +104,10 @@ pub(super) fn lower_physical_expr_with_bindings(
     }
     if let Some(case) = expr.as_any().downcast_ref::<CaseExpr>() {
         return lower_case_expr(case, input_schema, bindings);
+    }
+    if let Some(dynamic_filter) = expr.as_any().downcast_ref::<DynamicFilterPhysicalExpr>() {
+        let current = dynamic_filter.current().map_err(|_error| FallbackReason::UnsupportedExpression)?;
+        return lower_physical_expr_with_bindings(&current, input_schema, bindings);
     }
     if let Some(function) = expr.as_any().downcast_ref::<ScalarFunctionExpr>() {
         return lower_scalar_function_expr(function, input_schema, bindings);
@@ -200,6 +204,8 @@ fn lower_scalar_function_expr(
     match function.name().to_ascii_lowercase().as_str() {
         "substring" | "substr" => lower_substring_function(function, input_schema, bindings),
         "date_part" | "extract" => lower_extract_function(function, input_schema, bindings),
+        "lower" => lower_string_case_function(function, input_schema, bindings, NativeExpr::lower),
+        "upper" => lower_string_case_function(function, input_schema, bindings, NativeExpr::upper),
         _ => Err(FallbackReason::UnsupportedExpression),
     }
 }
@@ -246,6 +252,18 @@ fn lower_extract_function(
         _ => return Err(FallbackReason::UnsupportedExpression),
     };
     Ok(NativeExpr::extract(field, lower_physical_expr_with_bindings(expr, input_schema, bindings)?))
+}
+
+fn lower_string_case_function(
+    function: &ScalarFunctionExpr,
+    input_schema: &SchemaRef,
+    bindings: Option<&[FieldBinding]>,
+    constructor: fn(NativeExpr) -> NativeExpr,
+) -> Result<NativeExpr, FallbackReason> {
+    let [expr] = function.args() else {
+        return Err(FallbackReason::UnsupportedExpression);
+    };
+    Ok(constructor(lower_physical_expr_with_bindings(expr, input_schema, bindings)?))
 }
 
 fn validate_column_type(column: &Column, input_schema: &SchemaRef) -> Result<(), FallbackReason> {
@@ -368,6 +386,10 @@ pub(super) fn collect_required_field_indices(
         }
         return Ok(());
     }
+    if let Some(dynamic_filter) = expr.as_any().downcast_ref::<DynamicFilterPhysicalExpr>() {
+        let current = dynamic_filter.current().map_err(|_error| FallbackReason::UnsupportedExpression)?;
+        return collect_required_field_indices(&current, input_schema, required);
+    }
     if let Some(function) = expr.as_any().downcast_ref::<ScalarFunctionExpr>() {
         match function.name().to_ascii_lowercase().as_str() {
             "substring" | "substr" => {
@@ -385,6 +407,12 @@ pub(super) fn collect_required_field_indices(
                     "year" | "month" | "day" => {},
                     _ => return Err(FallbackReason::UnsupportedExpression),
                 }
+                collect_required_field_indices(expr, input_schema, required)
+            },
+            "lower" | "upper" => {
+                let [expr] = function.args() else {
+                    return Err(FallbackReason::UnsupportedExpression);
+                };
                 collect_required_field_indices(expr, input_schema, required)
             },
             _ => Err(FallbackReason::UnsupportedExpression),

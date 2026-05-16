@@ -178,6 +178,17 @@ ORDER BY row_id ASC
 LIMIT 20
 ";
 
+pub(super) const SQL_PHASE2_NULL_SEMANTICS_STRING_CASE_QUERY: &str = "
+SELECT row_id, status_lower, status_upper, COUNT(*) AS row_count
+FROM (
+    SELECT row_id, LOWER(status) AS status_lower, UPPER(status) AS status_upper
+    FROM bench
+) null_semantics
+GROUP BY row_id, status_lower, status_upper
+ORDER BY row_id ASC
+LIMIT 20
+";
+
 pub(super) const SQL_PHASE2_NULL_SEMANTICS_IN_LIST_QUERY: &str = "
 SELECT row_id, status_in_list, status_not_in_list, COUNT(*) AS row_count
 FROM (

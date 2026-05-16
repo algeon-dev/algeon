@@ -96,7 +96,9 @@ pub(super) fn validate_general_expr_capability(expr: &Expr) -> Result<(), Expres
         Expr::Not(expr) | Expr::IsNull(expr) | Expr::IsNotNull(expr) | Expr::Alias { expr, .. } => {
             validate_general_expr_capability(expr)
         },
-        Expr::Cast { expr, .. } | Expr::Extract { expr, .. } => validate_general_expr_capability(expr),
+        Expr::Cast { expr, .. } | Expr::Extract { expr, .. } | Expr::Lower(expr) | Expr::Upper(expr) => {
+            validate_general_expr_capability(expr)
+        },
         Expr::Binary { left, op, right, .. } if expr_is_interval_literal(left) || expr_is_interval_literal(right) => {
             validate_interval_binary_expr_capability(left, *op, right)
         },
@@ -176,12 +178,15 @@ pub(super) fn validate_join_residual_expr_capability(expr: &Expr) -> Result<(), 
             validate_join_residual_expr_capability(expr)?;
             validate_in_list_capability(list, "in_list")
         },
-        Expr::Like { .. } | Expr::Substring { .. } | Expr::Case { .. } | Expr::Extract { .. } => {
-            Err(ExpressionCapabilityRejection {
-                reason: "join_residual_expression_family_not_supported",
-                expression_family: expr_family(expr),
-            })
-        },
+        Expr::Like { .. }
+        | Expr::Substring { .. }
+        | Expr::Lower(_)
+        | Expr::Upper(_)
+        | Expr::Case { .. }
+        | Expr::Extract { .. } => Err(ExpressionCapabilityRejection {
+            reason: "join_residual_expression_family_not_supported",
+            expression_family: expr_family(expr),
+        }),
     }
 }
 
@@ -263,6 +268,8 @@ pub(super) fn expr_family(expr: &Expr) -> &'static str {
         Expr::Binary { .. } => "binary",
         Expr::Like { .. } => "like",
         Expr::Substring { .. } => "substring",
+        Expr::Lower(_) => "lower",
+        Expr::Upper(_) => "upper",
         Expr::InList { .. } => "in_list",
         Expr::Case { .. } => "case",
         Expr::Extract { .. } => "extract",

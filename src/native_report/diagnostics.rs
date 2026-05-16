@@ -3,7 +3,7 @@ use super::*;
 mod expressions;
 mod shape_family;
 
-use expressions::expression_category;
+use expressions::{expression_category, join_residual_expression_category};
 pub(super) use shape_family::{candidate_shape_family, physical_plan_shape};
 
 pub(super) fn post_native_execution_path(plan: &dyn ExecutionPlan) -> NativeDataFusionPostNativeExecutionPath {
@@ -169,16 +169,21 @@ fn first_join_operator_category(plan: &dyn ExecutionPlan) -> Option<String> {
 }
 
 fn native_report_operator_is_supported(name: &str, candidate_shape: &str) -> bool {
+    if name == "SortExec" || name.starts_with("SortExec(") {
+        return true;
+    }
     matches!(
         name,
         "DataSourceExec"
             | "FilterExec"
             | "ProjectionExec"
             | "AggregateExec"
-            | "SortExec"
             | "LocalLimitExec"
             | "GlobalLimitExec"
             | "CoalescePartitionsExec"
+            | "NativeCudfExec"
+            | "NativeCudfComposedExec"
+            | "NativeCudfGpuProducerExec"
     ) || (name == "RepartitionExec" && candidate_shape.contains("RepartitionExec"))
 }
 
@@ -206,6 +211,11 @@ fn first_aggregate_category(plan: &dyn ExecutionPlan) -> Option<String> {
     }
 
     if let Some(aggregate) = plan.as_any().downcast_ref::<AggregateExec>() {
+        for (expr, _alias) in aggregate.group_expr().expr() {
+            if let Some(category) = expression_category(expr) {
+                return Some(category);
+            }
+        }
         for expr in aggregate.aggr_expr() {
             let function = stable_identifier(expr.fun().name());
             if !matches!(function.as_str(), "sum" | "min" | "max" | "count" | "avg") {
@@ -292,6 +302,34 @@ fn first_unsupported_expression_category(plan: &dyn ExecutionPlan) -> Option<Str
     }
 
     if let Some(category) = first_aggregate_category(plan) {
+        return Some(category);
+    }
+
+    if let Some(source) = plan.as_any().downcast_ref::<DataSourceExec>()
+        && let Some((_file_scan, parquet_source)) = source.downcast_to_file_source::<ParquetSource>()
+        && let Some(predicate) = parquet_source.filter()
+        && let Some(category) = expression_category(&predicate)
+    {
+        return Some(category);
+    }
+
+    if let Some(hash_join) = plan.as_any().downcast_ref::<HashJoinExec>() {
+        for (left, right) in hash_join.on() {
+            if let Some(category) = expression_category(left).or_else(|| expression_category(right)) {
+                return Some(category);
+            }
+        }
+        if let Some(filter) = hash_join.filter()
+            && let Some(category) = join_residual_expression_category(filter.expression(), filter.schema())
+        {
+            return Some(category);
+        }
+    }
+
+    if let Some(nested_loop_join) = plan.as_any().downcast_ref::<NestedLoopJoinExec>()
+        && let Some(filter) = nested_loop_join.filter()
+        && let Some(category) = join_residual_expression_category(filter.expression(), filter.schema())
+    {
         return Some(category);
     }
 

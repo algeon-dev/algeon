@@ -487,7 +487,12 @@ fn reader_predicate_expr_is_supported(source: &LocalParquetSource, expr: &Expr) 
                     .iter()
                     .all(|value| matches!(value, Expr::Literal(_)) && reader_predicate_expr_is_supported(source, value))
         },
-        Expr::Like { .. } | Expr::Substring { .. } | Expr::Case { .. } | Expr::Extract { .. } => false,
+        Expr::Like { .. }
+        | Expr::Substring { .. }
+        | Expr::Lower(_)
+        | Expr::Upper(_)
+        | Expr::Case { .. }
+        | Expr::Extract { .. } => false,
     }
 }
 

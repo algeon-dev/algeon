@@ -136,6 +136,33 @@ fn in_list_with_null_literal_is_rejected_during_native_planning() {
 }
 
 #[test]
+fn dynamic_filter_expression_lowers_as_current_inner_expression() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-dynamic-filter");
+    let path = dir.join("input.parquet");
+    write_numeric_parquet_file(&path);
+    let scan = parquet_scan(&path);
+    let scan_schema = scan.schema();
+    let payload = col("payload", &scan_schema).unwrap();
+    let dynamic_filter: Arc<dyn PhysicalExpr> =
+        Arc::new(DynamicFilterPhysicalExpr::new(vec![Arc::clone(&payload)], lit(ScalarValue::Boolean(Some(true)))));
+    let payload_filter = binary(payload, Operator::GtEq, lit(ScalarValue::Int32(Some(10))), &scan_schema).unwrap();
+    let predicate = binary(dynamic_filter, Operator::And, payload_filter, &scan_schema).unwrap();
+    let plan = aggregate_sort_limit_plan_with_filter(scan, predicate, Operator::Plus);
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    let source = native_local_parquet_source(&result.plans[0]);
+    assert_eq!(
+        source.read_columns,
+        vec!["key".to_string(), "m00".to_string(), "m01".to_string(), "payload".to_string()]
+    );
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn substring_unsupported_arity_is_rejected_during_native_planning() {
     let dir = unique_temp_dir("datafusion-cudf-native-lowering-substring-arity");
     let path = dir.join("input.parquet");
