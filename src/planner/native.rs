@@ -1,3 +1,18 @@
+use arrow::datatypes::Schema;
+use datafusion::{
+    datasource::source::DataSourceExec,
+    logical_expr::JoinType,
+    physical_expr::{PhysicalExpr, ScalarFunctionExpr, expressions::BinaryExpr},
+    physical_plan::{
+        coalesce_partitions::CoalescePartitionsExec,
+        joins::{CrossJoinExec, HashJoinExec, NestedLoopJoinExec},
+        limit::GlobalLimitExec,
+        repartition::RepartitionExec,
+        union::UnionExec,
+        windows::{BoundedWindowAggExec, WindowAggExec},
+    },
+};
+
 use super::*;
 
 mod adaptive;
@@ -235,6 +250,12 @@ struct NativeOptimizationAttempt {
     rewritten: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HostArrowChildReplacementMode {
+    Normal,
+    OuterJoinBoundary,
+}
+
 fn optimize_count_only_native_plan(
     plan: Arc<dyn ExecutionPlan>,
     native_execution_config: &NativeCudfExecutionConfig,
@@ -252,7 +273,50 @@ fn optimize_final_native_plan(
 ) -> DataFusionResult<NativeOptimizationAttempt> {
     let lowering = crate::native::lower_physical_plan_to_native(Arc::clone(&plan));
     if lowering.plans.len() == 1 && lowering.rewritten_count() == 1 {
-        return replace_lowered_root_or_keep_plan(plan, lowering, native_execution_config, native_optimizer_options);
+        let attempt = replace_lowered_root_or_keep_plan(
+            Arc::clone(&plan),
+            lowering,
+            native_execution_config,
+            native_optimizer_options,
+        )?;
+        if attempt.rewritten {
+            return Ok(attempt);
+        }
+
+        let mut report = attempt.report.clone();
+        let mut native_optimizer = attempt.native_optimizer.clone();
+        let mut source_diagnostics = attempt.source_diagnostics.clone();
+        let mut strict_bounded_contract = attempt.strict_bounded_contract.clone();
+        let mut adaptive_pipeline = attempt.adaptive_pipeline.clone();
+        let mode = if subtree_contains_outer_join(plan.as_ref()) {
+            HostArrowChildReplacementMode::OuterJoinBoundary
+        } else {
+            HostArrowChildReplacementMode::Normal
+        };
+        let Some(rewritten_plan) = optimize_native_children_for_host_arrow_boundary(
+            Arc::clone(&plan),
+            native_execution_config,
+            native_optimizer_options,
+            mode,
+            &mut report,
+            &mut native_optimizer,
+            &mut source_diagnostics,
+            &mut strict_bounded_contract,
+            &mut adaptive_pipeline,
+        )?
+        else {
+            return Ok(attempt);
+        };
+
+        return Ok(NativeOptimizationAttempt {
+            plan: rewritten_plan,
+            report,
+            native_optimizer,
+            source_diagnostics,
+            strict_bounded_contract,
+            adaptive_pipeline,
+            rewritten: true,
+        });
     }
 
     let mut report = lowering.report.clone();
@@ -264,6 +328,7 @@ fn optimize_final_native_plan(
         Arc::clone(&plan),
         native_execution_config,
         native_optimizer_options,
+        HostArrowChildReplacementMode::Normal,
         &mut report,
         &mut native_optimizer,
         &mut source_diagnostics,
@@ -411,6 +476,7 @@ fn optimize_native_children_for_host_arrow_boundary(
     plan: Arc<dyn ExecutionPlan>,
     native_execution_config: &NativeCudfExecutionConfig,
     native_optimizer_options: &cudf_query_engine::NativeOptimizerOptions,
+    mode: HostArrowChildReplacementMode,
     report: &mut PlanningReport,
     native_optimizer: &mut cudf_query_engine::NativeOptimizerDiagnostics,
     source_diagnostics: &mut Vec<cudf_query_engine::SourceDiagnostics>,
@@ -418,6 +484,11 @@ fn optimize_native_children_for_host_arrow_boundary(
     adaptive_pipeline: &mut NativeAdaptivePipelineDiagnostics,
 ) -> DataFusionResult<Option<Arc<dyn ExecutionPlan>>> {
     if !host_arrow_boundary_allows_child_replacement(plan.as_ref()) {
+        return Ok(None);
+    }
+    if precision_sensitive_aggregate_requires_whole_subtree_rejection(plan.as_ref())
+        || subtree_contains_unsafe_join_residual(plan.as_ref())
+    {
         return Ok(None);
     }
 
@@ -432,7 +503,57 @@ fn optimize_native_children_for_host_arrow_boundary(
     let mut child_source_diagnostics = Vec::new();
     let mut new_children = Vec::with_capacity(children.len());
     for child in children {
+        if window_boundary_should_preserve_sort_child(plan.as_ref(), child.as_ref()) {
+            if let Some(rewritten_child) = optimize_native_children_for_host_arrow_boundary(
+                Arc::clone(child),
+                native_execution_config,
+                native_optimizer_options,
+                mode,
+                report,
+                native_optimizer,
+                source_diagnostics,
+                strict_bounded_contract,
+                adaptive_pipeline,
+            )? {
+                rewritten = true;
+                new_children.push(rewritten_child);
+            } else {
+                new_children.push(Arc::clone(child));
+            }
+            continue;
+        }
+        if mode == HostArrowChildReplacementMode::Normal
+            && join_boundary_should_keep_datafusion_child(plan.as_ref(), child.as_ref())
+        {
+            new_children.push(Arc::clone(child));
+            continue;
+        }
+        if subtree_contains_outer_join(child.as_ref())
+            || (mode == HostArrowChildReplacementMode::OuterJoinBoundary && subtree_contains_join(child.as_ref()))
+        {
+            if let Some(rewritten_child) = optimize_native_children_for_host_arrow_boundary(
+                Arc::clone(child),
+                native_execution_config,
+                native_optimizer_options,
+                HostArrowChildReplacementMode::OuterJoinBoundary,
+                report,
+                native_optimizer,
+                source_diagnostics,
+                strict_bounded_contract,
+                adaptive_pipeline,
+            )? {
+                rewritten = true;
+                new_children.push(rewritten_child);
+            } else {
+                new_children.push(Arc::clone(child));
+            }
+            continue;
+        }
         let attempt = optimize_final_native_plan(Arc::clone(child), native_execution_config, native_optimizer_options)?;
+        if attempt.rewritten && !host_arrow_child_replacement_preserves_schema(child.as_ref(), attempt.plan.as_ref()) {
+            new_children.push(Arc::clone(child));
+            continue;
+        }
         rewritten |= attempt.rewritten;
         child_reports.push(attempt.report);
         child_native_optimizer.merge(attempt.native_optimizer);
@@ -454,6 +575,13 @@ fn optimize_native_children_for_host_arrow_boundary(
     plan.with_new_children(new_children).map(Some)
 }
 
+fn host_arrow_child_replacement_preserves_schema(
+    original: &dyn ExecutionPlan,
+    replacement: &dyn ExecutionPlan,
+) -> bool {
+    original.schema().as_ref() == replacement.schema().as_ref()
+}
+
 fn append_planning_report(report: &mut PlanningReport, extra: &PlanningReport) {
     *report = PlanningReport::from_outcomes(report.outcomes().iter().cloned().chain(extra.outcomes().iter().cloned()));
 }
@@ -462,8 +590,106 @@ fn host_arrow_boundary_allows_child_replacement(plan: &dyn ExecutionPlan) -> boo
     plan.as_any().downcast_ref::<FilterExec>().is_some()
         || plan.as_any().downcast_ref::<ProjectionExec>().is_some()
         || plan.as_any().downcast_ref::<SortExec>().is_some()
+        || plan.as_any().downcast_ref::<GlobalLimitExec>().is_some()
         || plan.as_any().downcast_ref::<LocalLimitExec>().is_some()
         || plan.as_any().downcast_ref::<AggregateExec>().is_some()
+        || plan.as_any().downcast_ref::<CoalescePartitionsExec>().is_some()
+        || plan.as_any().downcast_ref::<RepartitionExec>().is_some()
+        || plan.as_any().downcast_ref::<HashJoinExec>().is_some()
+        || plan.as_any().downcast_ref::<CrossJoinExec>().is_some()
+        || plan.as_any().downcast_ref::<NestedLoopJoinExec>().is_some()
+        || plan.as_any().downcast_ref::<UnionExec>().is_some()
+        || plan.as_any().downcast_ref::<WindowAggExec>().is_some()
+        || plan.as_any().downcast_ref::<BoundedWindowAggExec>().is_some()
+}
+
+fn join_boundary_should_keep_datafusion_child(parent: &dyn ExecutionPlan, child: &dyn ExecutionPlan) -> bool {
+    if parent.as_any().downcast_ref::<HashJoinExec>().is_none()
+        && parent.as_any().downcast_ref::<NestedLoopJoinExec>().is_none()
+    {
+        return false;
+    }
+    child.as_any().downcast_ref::<DataSourceExec>().is_some() || child.as_any().downcast_ref::<FilterExec>().is_some()
+}
+
+fn window_boundary_should_preserve_sort_child(parent: &dyn ExecutionPlan, child: &dyn ExecutionPlan) -> bool {
+    (parent.as_any().downcast_ref::<WindowAggExec>().is_some()
+        || parent.as_any().downcast_ref::<BoundedWindowAggExec>().is_some())
+        && child.as_any().downcast_ref::<SortExec>().is_some()
+}
+
+fn precision_sensitive_aggregate_requires_whole_subtree_rejection(plan: &dyn ExecutionPlan) -> bool {
+    let Some(sort) = plan.as_any().downcast_ref::<SortExec>() else {
+        return false;
+    };
+    sort.fetch().is_none() && subtree_contains_precision_sensitive_unsupported_aggregate(plan)
+}
+
+fn subtree_contains_precision_sensitive_unsupported_aggregate(plan: &dyn ExecutionPlan) -> bool {
+    if let Some(aggregate) = plan.as_any().downcast_ref::<AggregateExec>()
+        && aggregate.aggr_expr().iter().any(|expr| {
+            let function_name = expr.fun().name();
+            function_name.eq_ignore_ascii_case("stddev") || function_name.eq_ignore_ascii_case("stddev_samp")
+        })
+    {
+        return true;
+    }
+    plan.children().iter().any(|child| subtree_contains_precision_sensitive_unsupported_aggregate(child.as_ref()))
+}
+
+fn subtree_contains_unsafe_join_residual(plan: &dyn ExecutionPlan) -> bool {
+    if let Some(join) = plan.as_any().downcast_ref::<HashJoinExec>()
+        && join
+            .filter()
+            .is_some_and(|filter| join_residual_contains_nullable_scalar_or(filter.expression(), filter.schema()))
+    {
+        return true;
+    }
+    if let Some(join) = plan.as_any().downcast_ref::<NestedLoopJoinExec>()
+        && join
+            .filter()
+            .is_some_and(|filter| join_residual_contains_nullable_scalar_or(filter.expression(), filter.schema()))
+    {
+        return true;
+    }
+    plan.children().iter().any(|child| subtree_contains_unsafe_join_residual(child.as_ref()))
+}
+
+fn subtree_contains_outer_join(plan: &dyn ExecutionPlan) -> bool {
+    if let Some(join) = plan.as_any().downcast_ref::<HashJoinExec>()
+        && matches!(join.join_type(), JoinType::Left | JoinType::Right | JoinType::Full)
+    {
+        return true;
+    }
+    if let Some(join) = plan.as_any().downcast_ref::<NestedLoopJoinExec>()
+        && matches!(join.join_type(), JoinType::Left | JoinType::Right | JoinType::Full)
+    {
+        return true;
+    }
+    plan.children().iter().any(|child| subtree_contains_outer_join(child.as_ref()))
+}
+
+fn subtree_contains_join(plan: &dyn ExecutionPlan) -> bool {
+    plan.as_any().downcast_ref::<HashJoinExec>().is_some()
+        || plan.as_any().downcast_ref::<CrossJoinExec>().is_some()
+        || plan.as_any().downcast_ref::<NestedLoopJoinExec>().is_some()
+        || plan.children().iter().any(|child| subtree_contains_join(child.as_ref()))
+}
+
+fn join_residual_contains_nullable_scalar_or(expr: &Arc<dyn PhysicalExpr>, schema: &Schema) -> bool {
+    if let Some(binary) = expr.as_any().downcast_ref::<BinaryExpr>()
+        && matches!(binary.op(), datafusion::logical_expr::Operator::Or)
+        && expr.nullable(schema).unwrap_or(true)
+        && expr_contains_scalar_function(expr)
+    {
+        return true;
+    }
+    expr.children().into_iter().any(|child| join_residual_contains_nullable_scalar_or(child, schema))
+}
+
+fn expr_contains_scalar_function(expr: &Arc<dyn PhysicalExpr>) -> bool {
+    expr.as_any().downcast_ref::<ScalarFunctionExpr>().is_some()
+        || expr.children().into_iter().any(expr_contains_scalar_function)
 }
 
 fn native_execution_boundary_is_rejected(

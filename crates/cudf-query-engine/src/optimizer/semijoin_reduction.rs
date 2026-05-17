@@ -223,6 +223,8 @@ struct SemijoinRewritePlan {
     cost_gate: SemijoinReductionCostGateDiagnostics,
 }
 
+type SemijoinRewriteResult = Result<SemijoinRewritePlan, Box<SemijoinRewriteRejection>>;
+
 struct SemijoinRewriteRejection {
     reason: SemijoinReductionRejectedReason,
     analysis: Option<SemijoinLineageAnalysis>,
@@ -230,12 +232,20 @@ struct SemijoinRewriteRejection {
 }
 
 impl SemijoinRewriteRejection {
-    fn new(reason: SemijoinReductionRejectedReason) -> Self {
-        Self { reason, analysis: None, cost_gate: None }
+    fn new(reason: SemijoinReductionRejectedReason) -> Box<Self> {
+        Box::new(Self { reason, analysis: None, cost_gate: None })
     }
 
-    fn with_analysis(reason: SemijoinReductionRejectedReason, analysis: SemijoinLineageAnalysis) -> Self {
-        Self { reason, analysis: Some(analysis), cost_gate: None }
+    fn with_analysis(reason: SemijoinReductionRejectedReason, analysis: SemijoinLineageAnalysis) -> Box<Self> {
+        Box::new(Self { reason, analysis: Some(analysis), cost_gate: None })
+    }
+
+    fn with_analysis_and_cost_gate(
+        reason: SemijoinReductionRejectedReason,
+        analysis: SemijoinLineageAnalysis,
+        cost_gate: SemijoinReductionCostGateDiagnostics,
+    ) -> Box<Self> {
+        Box::new(Self { reason, analysis: Some(analysis), cost_gate: Some(cost_gate) })
     }
 }
 
@@ -411,13 +421,12 @@ impl<'a> SemijoinReductionRewriter<'a> {
         }
 
         let old_node = self.original.node(old_id).expect("optimizer input node must exist");
-        if let PlanNode::Join(join) = &old_node.kind {
-            if join.spec.join_type == JoinType::LeftSemi {
-                if let Some(new_id) = self.try_rewrite_left_semi_candidate(old_id, join) {
-                    self.memo.insert(old_id, new_id);
-                    return new_id;
-                }
-            }
+        if let PlanNode::Join(join) = &old_node.kind
+            && join.spec.join_type == JoinType::LeftSemi
+            && let Some(new_id) = self.try_rewrite_left_semi_candidate(old_id, join)
+        {
+            self.memo.insert(old_id, new_id);
+            return new_id;
         }
 
         let new_kind = self.clone_kind_with_rewritten_inputs(&old_node.kind);
@@ -495,21 +504,22 @@ impl<'a> SemijoinReductionRewriter<'a> {
                 Some(planned.new_id)
             },
             Err(rejection) => {
-                if let Some(analysis) = rejection.analysis {
+                let SemijoinRewriteRejection { reason, analysis, cost_gate } = *rejection;
+                if let Some(analysis) = analysis {
                     candidate.crossed_join_node_ids =
                         analysis.steps.iter().map(|step| step.crossed_join_node_id).collect();
                     candidate.target_subtree_id = Some(analysis.target_subtree_id);
                     candidate.key_mappings = analysis.key_mappings;
                 }
-                candidate.cost_gate = rejection.cost_gate;
-                candidate.rejected_reason = Some(rejection.reason);
+                candidate.cost_gate = cost_gate;
+                candidate.rejected_reason = Some(reason);
                 self.diagnostics.candidates.push(candidate);
                 None
             },
         }
     }
 
-    fn plan_rewrite_for_candidate(&mut self, join: &JoinNode) -> Result<SemijoinRewritePlan, SemijoinRewriteRejection> {
+    fn plan_rewrite_for_candidate(&mut self, join: &JoinNode) -> SemijoinRewriteResult {
         if join.spec.output_projection.iter().any(|column| column.side != JoinSide::Left) {
             return Err(SemijoinRewriteRejection::new(SemijoinReductionRejectedReason::NonLeftOnlySemiProjection));
         }
@@ -547,11 +557,11 @@ impl<'a> SemijoinReductionRewriter<'a> {
             self.options.cost_threshold_multiplier,
         );
         if !cost_gate.accepted {
-            return Err(SemijoinRewriteRejection {
-                reason: SemijoinReductionRejectedReason::CostGateRejected,
-                analysis: Some(analysis),
-                cost_gate: Some(cost_gate),
-            });
+            return Err(SemijoinRewriteRejection::with_analysis_and_cost_gate(
+                SemijoinReductionRejectedReason::CostGateRejected,
+                analysis,
+                cost_gate,
+            ));
         }
 
         let pushed_left = self.build_pushed_subtree(join.inputs[0], join, &analysis, 0);
