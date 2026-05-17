@@ -496,6 +496,7 @@ fn aggregate_function_signature(function: AggregateFunction) -> &'static str {
         AggregateFunction::Max => "max",
         AggregateFunction::Count => "count",
         AggregateFunction::Avg => "avg",
+        AggregateFunction::StddevSamp => "stddev_samp",
     }
 }
 

@@ -15,6 +15,7 @@ use datafusion::{
         execution_plan::Boundedness,
         limit::LocalLimitExec,
         projection::{ProjectionExec, ProjectionExpr},
+        sorts::sort::SortExec,
     },
 };
 use datafusion_cudf::{
@@ -253,6 +254,33 @@ fn native_optimizer_rule_rewrites_supported_child_under_host_arrow_cpu_parent() 
     ));
     assert!(matches!(report.outcomes()[1], CandidateOutcome::Rewritten { .. }));
     assert_eq!(rule.last_source_diagnostics().len(), 1);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn native_optimizer_rule_keeps_precision_sensitive_stddev_sort_subtree_on_cpu() {
+    let dir = unique_temp_dir("datafusion-cudf-native-exec-stddev-sort-cpu-boundary");
+    let path = dir.join("input.parquet");
+    write_parquet_file(&path);
+    let plan = stddev_sort_sql_plan(&path);
+    let rule = CudfNativePhysicalOptimizerRule::new(native_optimizer_config());
+
+    let optimized = rule.optimize(plan, &ConfigOptions::default()).unwrap();
+
+    assert!(optimized.as_any().downcast_ref::<SortExec>().is_some());
+    let optimized_tree = displayable(optimized.as_ref()).indent(false).to_string();
+    assert!(
+        !optimized_tree.contains("NativeCudfExec"),
+        "precision-sensitive CPU stddev subtree must not receive native child replacement:\n{optimized_tree}"
+    );
+    let report = rule.last_report().expect("native optimizer should record a planning report");
+    assert_eq!(report.rewritten_count(), 0);
+    assert_eq!(report.rejected_count(), 1);
+    assert!(matches!(
+        report.outcomes()[0],
+        CandidateOutcome::Rejected { reason: FallbackReason::UnsupportedOperator, .. }
+    ));
 
     fs::remove_dir_all(dir).unwrap();
 }

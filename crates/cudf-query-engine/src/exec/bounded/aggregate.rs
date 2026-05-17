@@ -44,6 +44,7 @@ pub(in crate::exec::bounded) fn execute_compiled_bounded_aggregate_from_frame(
             execute_aggregate_with_budget(
                 context,
                 aggregate,
+                input_schema,
                 input,
                 output_schema,
                 token.expect("budget token is created for compiled bounded aggregate stages"),
@@ -1207,6 +1208,7 @@ pub(super) fn final_global_aggregate_spec(spec: &AggregateSpec) -> AggregateSpec
                         ),
                     ]
                 },
+                AggregateFunction::StddevSamp => vec![expr.clone()],
             })
             .collect(),
     )

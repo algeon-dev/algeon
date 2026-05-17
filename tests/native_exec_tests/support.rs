@@ -165,6 +165,26 @@ LIMIT 2
     futures::executor::block_on(df.create_physical_plan()).unwrap()
 }
 
+pub(super) fn stddev_sort_sql_plan(path: &std::path::Path) -> Arc<dyn ExecutionPlan> {
+    let ctx = SessionContext::new_with_config(
+        SessionConfig::new()
+            .with_repartition_file_scans(false)
+            .with_repartition_aggregations(false)
+            .with_repartition_sorts(false)
+            .with_target_partitions(1),
+    );
+    futures::executor::block_on(ctx.register_parquet("bench", path.to_str().unwrap(), ParquetReadOptions::default()))
+        .unwrap();
+    let sql = "
+SELECT key, stddev_samp(m00) AS stdev
+FROM bench
+GROUP BY key
+ORDER BY key
+";
+    let df = futures::executor::block_on(ctx.sql(sql)).unwrap();
+    futures::executor::block_on(df.create_physical_plan()).unwrap()
+}
+
 pub(super) fn tpch_sql_plan(root: &std::path::Path, sql: &str) -> Arc<dyn ExecutionPlan> {
     let ctx = SessionContext::new_with_config(tpch_report_session_config());
     for table in TPCH_TABLES {

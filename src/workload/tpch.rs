@@ -51,10 +51,11 @@ pub use ad_hoc_olap::{
 };
 pub use dataset::{
     CUDF_TPCH_CONTENT_FINGERPRINT_ENV, CUDF_TPCH_GENERATION_COMMAND_ENV, CUDF_TPCH_PARQUET_DIR_ENV,
-    CUDF_TPCH_SCALE_FACTOR_ENV, TPCH_TABLES, TpchDatasetMetadata, TpchTableFileMetadata, TpchTableLayout,
-    TpchTableMetadata, describe_tpch_dataset, describe_tpch_dataset_with_content_fingerprint,
-    discover_tpch_table_layout, external_tpch_dataset_metadata, prepare_tpch_report_dataset,
-    tiny_tpch_dataset_metadata,
+    CUDF_TPCH_SCALE_FACTOR_ENV, DEFAULT_NVME_TPCH_SF1_PARQUET_DIR, DEFAULT_NVME_TPCH_SF10_PARQUET_DIR,
+    DEFAULT_NVME_TPCH_SF100_OPTIMIZED_PARQUET_DIR, TPCH_TABLES, TpchDatasetMetadata, TpchTableFileMetadata,
+    TpchTableLayout, TpchTableMetadata, default_nvme_tpch_dataset, default_nvme_tpch_dataset_with_fingerprint,
+    describe_tpch_dataset, describe_tpch_dataset_with_content_fingerprint, discover_tpch_table_layout,
+    external_tpch_dataset_metadata, prepare_tpch_report_dataset, tiny_tpch_dataset_metadata,
 };
 pub use tiny::write_tiny_tpch_parquet_dataset;
 

@@ -404,6 +404,11 @@ impl fmt::Display for BinaryOp {
 /// Execution code must expand it into explicit `SUM` plus non-null `COUNT`
 /// state whenever partial/final aggregation is involved, and finalize with
 /// `SUM / COUNT`. It must never merge AVG states by averaging partial averages.
+///
+/// Logical `StddevSamp` carries DataFusion sample standard-deviation semantics:
+/// null inputs are ignored, inputs are accumulated as Float64 Welford state
+/// (`count`, `mean`, `m2`), counts 0 and 1 produce null, and finalization is
+/// `sqrt(m2 / (count - 1))`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AggregateSpec {
     pub group_exprs: Vec<Expr>,
@@ -446,6 +451,7 @@ pub enum AggregateFunction {
     Max,
     Count,
     Avg,
+    StddevSamp,
 }
 
 /// Ordered list of sort keys for a native sort node.

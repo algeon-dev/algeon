@@ -19,6 +19,20 @@ pub const CUDF_TPCH_SCALE_FACTOR_ENV: &str = "CUDF_TPCH_SCALE_FACTOR";
 pub const CUDF_TPCH_GENERATION_COMMAND_ENV: &str = "CUDF_TPCH_GENERATION_COMMAND";
 pub const CUDF_TPCH_CONTENT_FINGERPRINT_ENV: &str = "CUDF_TPCH_CONTENT_FINGERPRINT";
 
+/// Default on-host NVMe Parquet root for the TPC-H SF1 fixture, staged at
+/// boot by `rsync-tpch.service`. Used as an implicit fallback by
+/// `prepare_tpch_report_dataset` when `CUDF_TPCH_PARQUET_DIR` is unset and
+/// the host actually has the fixture present; absence is silent (the
+/// preparation falls back to the tiny dataset).
+pub const DEFAULT_NVME_TPCH_SF1_PARQUET_DIR: &str = "/opt/dlami/nvme/tpch/sf1/parquet";
+
+/// Default on-host NVMe Parquet root for the TPC-H SF10 fixture.
+pub const DEFAULT_NVME_TPCH_SF10_PARQUET_DIR: &str = "/opt/dlami/nvme/tpch/sf10/parquet";
+
+/// Default on-host NVMe Parquet root for the TPC-H SF100 `_optimized`
+/// fixture (sibling-split `lineitem`, single-file other tables).
+pub const DEFAULT_NVME_TPCH_SF100_OPTIMIZED_PARQUET_DIR: &str = "/opt/dlami/nvme/tpch/sf100_optimized/parquet";
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TpchDatasetMetadata {
     pub root: PathBuf,
@@ -128,9 +142,68 @@ pub fn prepare_tpch_report_dataset(tiny_root: &Path) -> TpchWorkloadResult<(Path
         return Ok((root, metadata));
     }
 
+    if let Some((root, metadata)) = try_default_nvme_tpch_sf1_dataset() {
+        return Ok((root, metadata));
+    }
+
     write_tiny_tpch_parquet_dataset(tiny_root)?;
     let metadata = tiny_tpch_dataset_metadata(tiny_root)?;
     Ok((tiny_root.to_path_buf(), metadata))
+}
+
+/// Returns the default NVMe SF1 fixture if `DEFAULT_NVME_TPCH_SF1_PARQUET_DIR`
+/// exists and every required TPC-H table is discoverable there. A `None`
+/// return covers both "the NVMe drive isn't staged here" and "the fixture is
+/// incomplete" — both are equivalent to "no implicit external fixture
+/// available, fall back to the tiny dataset".
+fn try_default_nvme_tpch_sf1_dataset() -> Option<(PathBuf, TpchDatasetMetadata)> {
+    default_nvme_tpch_dataset(DEFAULT_NVME_TPCH_SF1_PARQUET_DIR, "sf1")
+}
+
+/// Lower-level helper: probe an arbitrary on-host NVMe Parquet root for the
+/// fixed TPC-H table set and, if all tables are discoverable, describe it as
+/// an external fixture with a synthetic `generation_command`. Returns `None`
+/// when the directory is missing or the fixture is incomplete.
+pub fn default_nvme_tpch_dataset(root: &str, scale_factor: &str) -> Option<(PathBuf, TpchDatasetMetadata)> {
+    let root_path = PathBuf::from(root);
+    if !root_path.is_dir() {
+        return None;
+    }
+    for table in TPCH_TABLES {
+        if discover_tpch_table_layout(&root_path, table).is_err() {
+            return None;
+        }
+    }
+    let generation_command = format!("local {root} parquet fixture (default)");
+    let metadata = describe_tpch_dataset(&root_path, scale_factor, "external_parquet_root", generation_command).ok()?;
+    Some((root_path, metadata))
+}
+
+/// Same as `default_nvme_tpch_dataset` but includes a content fingerprint —
+/// needed by the benchmark binary's strict-validation gate.
+pub fn default_nvme_tpch_dataset_with_fingerprint(
+    root: &str,
+    scale_factor: &str,
+) -> Option<(PathBuf, TpchDatasetMetadata)> {
+    let root_path = PathBuf::from(root);
+    if !root_path.is_dir() {
+        return None;
+    }
+    for table in TPCH_TABLES {
+        if discover_tpch_table_layout(&root_path, table).is_err() {
+            return None;
+        }
+    }
+    let generation_command = format!("local {root} parquet fixture (default)");
+    let metadata = describe_tpch_dataset_with_content_fingerprint(
+        &root_path,
+        scale_factor,
+        "external_parquet_root",
+        generation_command,
+        true,
+    )
+    .ok()?;
+    Some((root_path, metadata))
 }
 
 pub fn describe_tpch_dataset(

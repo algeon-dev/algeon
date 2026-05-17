@@ -94,6 +94,7 @@ pub(in crate::exec) fn lower_aggregate_function(function: AggregateFunction) -> 
         AggregateFunction::Max => GroupByAgg::Max,
         AggregateFunction::Count => GroupByAgg::Count { include_nulls: false },
         AggregateFunction::Avg => GroupByAgg::Mean,
+        AggregateFunction::StddevSamp => unreachable!("stddev_samp uses the DataFusion-exact Welford aggregate path"),
     }
 }
 
@@ -104,6 +105,9 @@ pub(in crate::exec) fn lower_final_aggregate_function(function: AggregateFunctio
         AggregateFunction::Max => GroupByAgg::Max,
         AggregateFunction::Count => GroupByAgg::Sum,
         AggregateFunction::Avg => unreachable!("avg final aggregate is lowered as explicit sum/count state"),
+        AggregateFunction::StddevSamp => {
+            unreachable!("stddev_samp final aggregate uses the DataFusion-exact Welford aggregate path")
+        },
     }
 }
 
@@ -128,6 +132,10 @@ pub(in crate::exec) fn lower_aggregate_spec_keys(spec: &AggregateSpec) -> Result
 
 pub(in crate::exec) fn aggregate_spec_has_avg(spec: &AggregateSpec) -> bool {
     spec.aggr_exprs.iter().any(|expr| expr.function == AggregateFunction::Avg)
+}
+
+pub(in crate::exec) fn aggregate_spec_has_stddev_samp(spec: &AggregateSpec) -> bool {
+    spec.aggr_exprs.iter().any(|expr| expr.function == AggregateFunction::StddevSamp)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
