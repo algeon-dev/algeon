@@ -528,6 +528,23 @@ fn ceil_floor_builder() {
     assert_eq!(eval_f64(col("v").floor().alias("f"), &df), vec![1.0, 2.0, -1.0]);
 }
 
+#[test]
+fn round_builder_uses_half_up_semantics() {
+    let df = f64_df("v", &[1.235, 2.225, -1.235, -2.225]);
+
+    assert_eq!(eval_f64(col("v").round(2).alias("r"), &df), vec![1.24, 2.23, -1.24, -2.23]);
+}
+
+#[test]
+fn round_builder_supports_decimal128() {
+    let df = decimal128_df_from_arrow("amount", vec![Some(12345), Some(12344), Some(-12345)], 20, 3);
+
+    let result = eval(col("amount").round(2).alias("rounded_amount"), &df);
+
+    assert_eq!(result.dtype().unwrap(), DataType::fixed_point(TypeId::Decimal128, -2));
+    assert_eq!(host_export_i128_values(&result), vec![1235, 1234, -1235]);
+}
+
 // ===========================================================================
 // Comparisons
 // ===========================================================================
