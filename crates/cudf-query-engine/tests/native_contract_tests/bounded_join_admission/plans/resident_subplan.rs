@@ -146,16 +146,18 @@ pub(crate) fn keyed_hash_join_resident_subplan_pipeline_plan(
             Expr::literal(LiteralValue::Int32(0)),
         ));
     } else if matches!(variant, KeyedHashJoinResidentSubplanPipelineVariant::UnsupportedRootResidualExpression) {
-        root_spec = root_spec.with_residual_predicate(Expr::case(
-            vec![CaseWhen::new(
+        root_spec = root_spec.with_residual_predicate(Expr::binary(
+            Expr::like(Expr::input_column(0, "s_name", "s_name"), "Supplier%"),
+            BinaryOp::And,
+            Expr::binary(
                 Expr::binary(
                     Expr::input_column(0, "s_suppkey", "s_suppkey"),
                     BinaryOp::Gt,
                     Expr::literal(LiteralValue::Int32(0)),
                 ),
+                BinaryOp::Eq,
                 Expr::literal(LiteralValue::Boolean(true)),
-            )],
-            Expr::literal(LiteralValue::Boolean(false)),
+            ),
         ));
     }
     let root = builder.add_join(supplier_revenue, max_revenue, root_spec, Arc::clone(&supplier_revenue_schema));

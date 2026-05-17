@@ -160,7 +160,7 @@ fn sort_node_executable_decision(node_id: NodeId, sort: &crate::plan::SortNode) 
     CapabilityDecision::Satisfied
 }
 
-fn limit_node_executable_decision(plan: &QueryPlan, node_id: NodeId, limit: &LimitNode) -> CapabilityDecision {
+fn limit_node_executable_decision(_plan: &QueryPlan, node_id: NodeId, limit: &LimitNode) -> CapabilityDecision {
     if limit.spec.skip.checked_add(limit.spec.fetch).is_none() {
         return CapabilityDecision::rejected(
             "unsupported_limit_node_capability",
@@ -169,16 +169,6 @@ fn limit_node_executable_decision(plan: &QueryPlan, node_id: NodeId, limit: &Lim
                 ("reason", "skip_fetch_overflow".to_string()),
                 ("skip", limit.spec.skip.to_string()),
                 ("fetch", limit.spec.fetch.to_string()),
-            ],
-        );
-    }
-    if !matches!(plan.node(limit.input).map(|node| &node.kind), Some(PlanNode::Sort(_))) {
-        return CapabilityDecision::rejected(
-            "unsupported_limit_node_capability",
-            [
-                ("node_id", node_id.to_string()),
-                ("reason", "limit_not_directly_above_sort".to_string()),
-                ("input", limit.input.to_string()),
             ],
         );
     }
@@ -198,15 +188,22 @@ fn join_node_executable_decision(plan: &QueryPlan, node_id: NodeId, join: &JoinN
             ],
         );
     };
-    if let Some(predicate) = &join.spec.residual_predicate
-        && let Err(rejection) = validate_join_residual_expr_capability(predicate)
-    {
-        return expression_rejection_decision(
-            node_id,
-            "unsupported_join_residual_expression_capability",
-            predicate,
-            rejection,
-        );
+    if let Some(predicate) = &join.spec.residual_predicate {
+        let residual_capability = validate_join_residual_expr_capability(predicate).or_else(|rejection| {
+            if one_shot_equi_join_supported(join) && join_residual_requires_post_join_filter(join) {
+                validate_post_join_residual_expr_capability(predicate)
+            } else {
+                Err(rejection)
+            }
+        });
+        if let Err(rejection) = residual_capability {
+            return expression_rejection_decision(
+                node_id,
+                "unsupported_join_residual_expression_capability",
+                predicate,
+                rejection,
+            );
+        }
     }
     if matches!(capability, JoinExecutionCapability::KeyedFilteredSemiAnti)
         && join.spec.output_projection.iter().any(|column| column.side != JoinSide::Left)

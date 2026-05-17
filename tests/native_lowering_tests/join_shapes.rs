@@ -5,6 +5,38 @@ mod duplicate_aggregates;
 #[path = "join_shapes/residual_variants.rs"]
 mod residual_variants;
 
+#[tokio::test]
+async fn physical_cross_join_exec_lowers_to_native_cross_join() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-cross-join-exec");
+    let path = dir.join("input.parquet");
+    write_numeric_parquet_file(&path);
+    let plan = sql_plan(
+        &path,
+        direct_friendly_sql_session_config(),
+        "SELECT a.key, b.payload FROM bench AS a CROSS JOIN bench AS b ORDER BY a.key LIMIT 2",
+    )
+    .await;
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    let join = result.plans[0]
+        .nodes()
+        .iter()
+        .find_map(|node| match &node.kind {
+            PlanNode::Join(join) => Some(join),
+            _ => None,
+        })
+        .expect("native plan should contain a cross join node");
+    assert_eq!(join.spec.join_type, NativeJoinType::Cross);
+    assert!(join.spec.keys.is_empty());
+    assert!(join.spec.residual_predicate.is_none());
+    assert_eq!(join.spec.output_projection.len(), 2);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
 #[test]
 fn hash_join_filter_lowers_to_native_residual_predicate() {
     let dir = unique_temp_dir("datafusion-cudf-native-lowering-hash-join-filter");
@@ -49,6 +81,126 @@ fn hash_join_filter_lowers_to_native_residual_predicate() {
     assert_eq!(sources.len(), 2);
     assert_eq!(sources[0].read_columns, vec!["key".to_string(), "l_m00".to_string(), "l_payload".to_string()]);
     assert_eq!(sources[1].read_columns, vec!["key".to_string(), "r_m01".to_string(), "r_payload".to_string()]);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn expression_hash_join_keys_materialize_as_synthetic_projection_columns() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-expression-join-key");
+    let left_path = dir.join("left.parquet");
+    let right_path = dir.join("right.parquet");
+    write_join_left_parquet_file(&left_path);
+    write_join_right_parquet_file(&right_path);
+    let left = parquet_scan(&left_path);
+    let right = parquet_scan(&right_path);
+    let left_schema = left.schema();
+    let right_schema = right.schema();
+    let left_key =
+        binary(col("key", &left_schema).unwrap(), Operator::Plus, lit(ScalarValue::Int32(Some(1))), &left_schema)
+            .unwrap();
+    let join: Arc<dyn ExecutionPlan> = Arc::new(
+        HashJoinExec::try_new(
+            left,
+            right,
+            vec![(left_key, col("key", &right_schema).unwrap())],
+            None,
+            &JoinType::Inner,
+            None,
+            PartitionMode::CollectLeft,
+            NullEquality::NullEqualsNothing,
+            false,
+        )
+        .unwrap(),
+    );
+
+    let result = lower_physical_plan_to_native(join);
+
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    let native_plan = &result.plans[0];
+    let join = native_plan
+        .nodes()
+        .iter()
+        .find_map(|node| match &node.kind {
+            PlanNode::Join(join) => Some(join),
+            _ => None,
+        })
+        .expect("native plan should contain a join node");
+    assert_eq!(join.spec.keys.len(), 1);
+    assert_eq!(join.spec.keys[0].left.name(), "__cudf_join_key_left_0_0");
+    assert_eq!(join.spec.keys[0].right.name(), "key");
+    assert!(
+        native_plan.nodes().iter().any(|node| match &node.kind {
+            PlanNode::Projection(projection) =>
+                projection.outputs.iter().any(|output| output.field.name() == "__cudf_join_key_left_0_0"),
+            _ => false,
+        }),
+        "expression join key should be materialized by a pre-join projection"
+    );
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn predicate_free_left_nested_loop_join_with_scalar_right_lowers_to_native_cross_join() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-left-nlj-scalar-right");
+    let left_path = dir.join("left.parquet");
+    let right_path = dir.join("right.parquet");
+    write_join_left_parquet_file(&left_path);
+    write_join_right_parquet_file(&right_path);
+    let left = parquet_scan(&left_path);
+    let right_scan = parquet_scan(&right_path);
+    let right_scan_schema = right_scan.schema();
+    let count = AggregateExprBuilder::new(count_udaf(), vec![lit(ScalarValue::Int64(Some(1)))])
+        .schema(Arc::clone(&right_scan_schema))
+        .alias("right_count")
+        .build()
+        .unwrap();
+    let right: Arc<dyn ExecutionPlan> = Arc::new(
+        AggregateExec::try_new(
+            AggregateMode::Single,
+            PhysicalGroupBy::new_single(Vec::new()),
+            vec![Arc::new(count)],
+            vec![None],
+            right_scan,
+            right_scan_schema,
+        )
+        .unwrap(),
+    );
+    let left_schema = left.schema();
+    let right_schema = right.schema();
+    let join: Arc<dyn ExecutionPlan> = Arc::new(
+        NestedLoopJoinExec::try_new(
+            left,
+            right,
+            None,
+            &JoinType::Left,
+            Some(vec![
+                left_schema.index_of("key").unwrap(),
+                left_schema.index_of("l_m00").unwrap(),
+                left_schema.fields().len() + right_schema.index_of("right_count").unwrap(),
+            ]),
+        )
+        .unwrap(),
+    );
+
+    let result = lower_physical_plan_to_native(join);
+
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    let join = rewritten_native_join(&result);
+    assert_eq!(join.spec.join_type, NativeJoinType::Cross);
+    assert!(join.spec.keys.is_empty());
+    assert!(join.spec.residual_predicate.is_none());
+    assert_join_output_projection(
+        &join.spec.output_projection,
+        &[
+            (NativeJoinSide::Left, "input0.key", "key"),
+            (NativeJoinSide::Left, "input0.l_m00", "l_m00"),
+            (NativeJoinSide::Right, "input1.right_count", "right_count"),
+        ],
+    );
 
     fs::remove_dir_all(dir).unwrap();
 }

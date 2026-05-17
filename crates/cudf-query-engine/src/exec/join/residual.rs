@@ -119,17 +119,21 @@ fn collect_join_expr_columns(expr: &Expr, left: &mut BTreeSet<String>, right: &m
             }
             Ok(())
         },
-        Expr::Like { .. }
-        | Expr::Substring { .. }
-        | Expr::Lower(_)
-        | Expr::Upper(_)
-        | Expr::Case { .. }
-        | Expr::Extract { .. } => Err(QueryError::new(
-            QueryErrorCode::UnsupportedExpression,
-            "cudf_query_engine.join.residual_columns",
-            "native join residual predicates do not yet support this expression family",
-        )
-        .with_fact("expression", expr)),
+        Expr::Case { branches, else_expr } => {
+            for branch in branches {
+                collect_join_expr_columns(&branch.when, left, right)?;
+                collect_join_expr_columns(&branch.then, left, right)?;
+            }
+            collect_join_expr_columns(else_expr, left, right)
+        },
+        Expr::Like { .. } | Expr::Substring { .. } | Expr::Lower(_) | Expr::Upper(_) | Expr::Extract { .. } => {
+            Err(QueryError::new(
+                QueryErrorCode::UnsupportedExpression,
+                "cudf_query_engine.join.residual_columns",
+                "native join residual predicates do not yet support this expression family",
+            )
+            .with_fact("expression", expr))
+        },
     }
 }
 

@@ -163,7 +163,7 @@ fn hash_join_filter_decimal_cast_materializes_inputs_before_residual_predicate()
 }
 
 #[test]
-fn hash_join_filter_case_decimal_divide_lowers_to_native_residual_predicate() {
+fn hash_join_filter_case_decimal_divide_materializes_inputs_before_residual_predicate() {
     let dir = unique_temp_dir("datafusion-cudf-native-lowering-hash-join-filter-case-decimal-divide");
     let left_path = dir.join("left.parquet");
     let right_path = dir.join("right.parquet");
@@ -183,31 +183,25 @@ fn hash_join_filter_case_decimal_divide_lowers_to_native_residual_predicate() {
         Expr::Binary { left, right, .. }
             if matches!(
                 left.as_ref(),
-                Expr::Case { branches, .. }
-                    if branches.len() == 1
-                        && matches!(
-                            &branches[0].then,
-                            Expr::Binary {
-                                op: cudf_query_engine::BinaryOp::Divide,
-                                output_type: Some(DataType::Decimal128(_, _)),
-                                ..
-                            }
-                        )
+                Expr::Column(column) if column.to_string() == "input0.__cudf_join_residual_left_0"
             )
                 && matches!(
                     right.as_ref(),
-                    Expr::Case { branches, .. }
-                        if branches.len() == 1
-                            && matches!(
-                                &branches[0].then,
-                                Expr::Binary {
-                                    op: cudf_query_engine::BinaryOp::Divide,
-                                    output_type: Some(DataType::Decimal128(_, _)),
-                                    ..
-                                }
-                            )
+                    Expr::Column(column) if column.to_string() == "input1.__cudf_join_residual_right_0"
                 )
     ));
+    assert_join_input_materializes_case_decimal_divide(
+        &result.plans[0],
+        join.inputs[0],
+        "__cudf_join_residual_left_0",
+        "l_payload",
+    );
+    assert_join_input_materializes_case_decimal_divide(
+        &result.plans[0],
+        join.inputs[1],
+        "__cudf_join_residual_right_0",
+        "r_payload",
+    );
 
     fs::remove_dir_all(dir).unwrap();
 }

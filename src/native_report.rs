@@ -22,7 +22,7 @@ use datafusion::{
         ExecutionPlan,
         aggregates::AggregateExec,
         filter::FilterExec,
-        joins::{HashJoinExec, NestedLoopJoinExec},
+        joins::{CrossJoinExec, HashJoinExec, NestedLoopJoinExec},
         projection::ProjectionExec,
         sorts::{sort::SortExec, sort_preserving_merge::SortPreservingMergeExec},
     },

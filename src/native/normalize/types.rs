@@ -32,6 +32,7 @@ impl<'a> NormalizedNativePlan<'a> {
             | NormalizedNativeInput::Projection(_)
             | NormalizedNativeInput::Aggregate(_)
             | NormalizedNativeInput::HashJoin(_)
+            | NormalizedNativeInput::CrossJoin(_)
             | NormalizedNativeInput::NestedLoopJoin(_) => None,
         }
     }
@@ -95,6 +96,7 @@ pub(in crate::native) enum NormalizedNativeInput<'a> {
     Projection(NormalizedNativeProjection<'a>),
     Aggregate(NormalizedNativeAggregate<'a>),
     HashJoin(NormalizedNativeHashJoin<'a>),
+    CrossJoin(NormalizedNativeCrossJoin<'a>),
     NestedLoopJoin(NormalizedNativeNestedLoopJoin<'a>),
 }
 
@@ -109,6 +111,7 @@ impl NormalizedNativeInput<'_> {
             Self::Projection(projection) => projection.shape(),
             Self::Aggregate(aggregate) => aggregate.shape(),
             Self::HashJoin(join) => join.shape(),
+            Self::CrossJoin(join) => join.shape(),
             Self::NestedLoopJoin(join) => join.shape(),
         }
     }
@@ -123,6 +126,7 @@ impl NormalizedNativeInput<'_> {
             Self::Projection(projection) => projection.operator_count(),
             Self::Aggregate(aggregate) => aggregate.operator_count(),
             Self::HashJoin(join) => join.operator_count(),
+            Self::CrossJoin(join) => join.operator_count(),
             Self::NestedLoopJoin(join) => join.operator_count(),
         }
     }
@@ -220,6 +224,24 @@ pub(in crate::native) struct NormalizedNativeHashJoin<'a> {
 impl NormalizedNativeHashJoin<'_> {
     fn shape(&self) -> String {
         wrap_shape("HashJoinExec", format!("{},{}", self.left.shape(), self.right.shape()))
+    }
+
+    fn operator_count(&self) -> usize {
+        1 + self.left.operator_count() + self.right.operator_count()
+    }
+}
+
+/// DataFusion physical cross join with normalized children.
+#[derive(Debug, Clone)]
+pub(in crate::native) struct NormalizedNativeCrossJoin<'a> {
+    pub(in crate::native) join: &'a CrossJoinExec,
+    pub(in crate::native) left: Box<NormalizedNativeInput<'a>>,
+    pub(in crate::native) right: Box<NormalizedNativeInput<'a>>,
+}
+
+impl NormalizedNativeCrossJoin<'_> {
+    fn shape(&self) -> String {
+        wrap_shape("CrossJoinExec", format!("{},{}", self.left.shape(), self.right.shape()))
     }
 
     fn operator_count(&self) -> usize {

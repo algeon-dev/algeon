@@ -1274,7 +1274,7 @@ fn bounded_keyed_hash_join_resident_subplan_preserves_node_failure_locality() {
         panic!("unsupported residual expression should reject keyed hash resident-subplan admission");
     };
     assert_eq!(*reason, "unsupported_join_residual_expression_capability");
-    assert_eq!(facts.get("expression_family").map(String::as_str), Some("case"));
+    assert_eq!(facts.get("expression_family").map(String::as_str), Some("like"));
 }
 
 #[test]

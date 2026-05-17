@@ -85,20 +85,6 @@ fn native_query_rejects_unsupported_residual_expression_families_before_source_r
     let cases = vec![
         ("LIKE", Expr::like(Expr::input_column(0, "id", "left_id"), "1%")),
         ("SUBSTRING", Expr::substring(Expr::input_column(0, "id", "left_id"), 1, Some(1))),
-        (
-            "CASE",
-            Expr::case(
-                vec![cudf_query_engine::CaseWhen::new(
-                    Expr::binary(
-                        Expr::input_column(0, "id", "left_id"),
-                        BinaryOp::Eq,
-                        Expr::input_column(1, "id", "right_id"),
-                    ),
-                    Expr::literal(LiteralValue::Boolean(true)),
-                )],
-                Expr::literal(LiteralValue::Boolean(false)),
-            ),
-        ),
         ("EXTRACT", Expr::extract(cudf_query_engine::DatePart::Year, Expr::input_column(0, "id", "left_id"))),
     ];
 

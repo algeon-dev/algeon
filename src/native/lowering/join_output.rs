@@ -1,4 +1,6 @@
-use arrow::datatypes::SchemaRef;
+use std::sync::Arc;
+
+use arrow::datatypes::{Schema, SchemaRef};
 use cudf_query_engine::{
     ColumnRef as NativeColumnRef, JoinOutputColumn as NativeJoinOutputColumn, JoinSide as NativeJoinSide,
 };
@@ -6,7 +8,7 @@ use datafusion::{common::JoinSide as DataFusionJoinSide, logical_expr::JoinType,
 
 use super::{FieldBinding, LoweredNativeInput, RequiredFields, executable_schema_and_bindings, join::CanonicalJoin};
 use crate::{
-    native::normalize::{NormalizedNativeHashJoin, NormalizedNativeNestedLoopJoin},
+    native::normalize::{NormalizedNativeCrossJoin, NormalizedNativeHashJoin, NormalizedNativeNestedLoopJoin},
     policy::FallbackReason,
 };
 
@@ -31,6 +33,10 @@ impl JoinOutputRequests {
         right: &LoweredNativeInput,
         canonical: CanonicalJoin,
     ) -> Result<JoinOutputColumns, FallbackReason> {
+        if self.outputs.is_empty() {
+            return hidden_row_count_preserving_output(left, right, canonical);
+        }
+
         let projection = self
             .outputs
             .iter()
@@ -53,6 +59,42 @@ impl JoinOutputRequests {
             .collect::<Result<Vec<_>, FallbackReason>>()?;
         Ok(JoinOutputColumns { projection, schema: self.schema, bindings: self.bindings })
     }
+}
+
+fn hidden_row_count_preserving_output(
+    left: &LoweredNativeInput,
+    right: &LoweredNativeInput,
+    canonical: CanonicalJoin,
+) -> Result<JoinOutputColumns, FallbackReason> {
+    const HIDDEN_JOIN_ROW_PRESENCE_COLUMN: &str = "__cudf_join_row_presence";
+    let (datafusion_side, input, input_binding) = left
+        .bindings
+        .first()
+        .map(|binding| (DataFusionJoinSide::Left, left, binding))
+        .or_else(|| right.bindings.first().map(|binding| (DataFusionJoinSide::Right, right, binding)))
+        .ok_or(FallbackReason::UnsupportedExpression)?;
+    let native_side = canonical.native_side_for_datafusion_side(datafusion_side)?;
+    let input_ordinal = match native_side {
+        NativeJoinSide::Left => 0,
+        NativeJoinSide::Right => 1,
+    };
+    let input_field = input
+        .schema
+        .field_with_name(input_binding.native_name.as_str())
+        .map_err(|_error| FallbackReason::UnsupportedExpression)?;
+    let field = input_field.clone().with_name(HIDDEN_JOIN_ROW_PRESENCE_COLUMN);
+    let projection = vec![NativeJoinOutputColumn::new(
+        native_side,
+        NativeColumnRef::input(input_ordinal, input_binding.native_name.as_str(), input_binding.frontend_name.as_str()),
+        HIDDEN_JOIN_ROW_PRESENCE_COLUMN.to_string(),
+    )];
+    let schema = Arc::new(Schema::new(vec![field]));
+    let bindings = vec![FieldBinding {
+        frontend_index: usize::MAX,
+        frontend_name: HIDDEN_JOIN_ROW_PRESENCE_COLUMN.to_string(),
+        native_name: HIDDEN_JOIN_ROW_PRESENCE_COLUMN.to_string(),
+    }];
+    Ok(JoinOutputColumns { projection, schema, bindings })
 }
 
 pub(super) struct JoinOutputRequest {
@@ -85,6 +127,20 @@ pub(super) fn nested_loop_join_output_requests(
         &join.join.schema(),
         join.join.projection().as_deref(),
         join.join.join_type(),
+    )
+}
+
+pub(super) fn cross_join_output_requests(
+    join: &NormalizedNativeCrossJoin<'_>,
+    required_output_fields: &RequiredFields,
+) -> Result<JoinOutputRequests, FallbackReason> {
+    join_output_requests(
+        required_output_fields,
+        &join.join.left().schema(),
+        &join.join.right().schema(),
+        &join.join.schema(),
+        None,
+        &JoinType::Inner,
     )
 }
 
