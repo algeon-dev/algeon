@@ -45,7 +45,9 @@ pub(in crate::exec) fn execute_projection(
         .iter()
         .map(|output| lower_projection_output_expr(output).map(|expr| (output.field.name().as_str(), expr)))
         .collect::<Result<Vec<_>>>()?;
-    let output_columns = output_names.iter().map(String::as_str).collect::<Vec<_>>();
+    let mut output_columns = output_names;
+    output_columns.extend(datafusion_order_columns(&frame));
+    let output_columns = output_columns.iter().map(String::as_str).collect::<Vec<_>>();
     let overrides = execution_overrides(context);
     let timer = Instant::now();
     let mut output =
@@ -77,7 +79,9 @@ pub(in crate::exec) fn execute_projection_with_budget(
         .iter()
         .map(|output| lower_projection_output_expr(output).map(|expr| (output.field.name().as_str(), expr)))
         .collect::<Result<Vec<_>>>()?;
-    let output_columns = output_names.iter().map(String::as_str).collect::<Vec<_>>();
+    let mut output_columns = output_names;
+    output_columns.extend(datafusion_order_columns(&frame));
+    let output_columns = output_columns.iter().map(String::as_str).collect::<Vec<_>>();
     let timer = Instant::now();
     let mut output = budgeted_value(
         frame.with_columns_with_budget(exprs, token).map_err(|error| {

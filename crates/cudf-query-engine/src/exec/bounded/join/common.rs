@@ -80,7 +80,8 @@ fn prepare_bounded_join_side_input(
         JoinInputReservation::Owned { reservation } => (reservation.bytes(), None, Some(*reservation)),
     };
     let input_frame = input.into_frame();
-    let select_memory_effect = match input_frame.select_memory_effect(columns) {
+    let columns = join_input_columns_with_order(&input_frame, columns);
+    let select_memory_effect = match input_frame.select_memory_effect(&columns) {
         Ok(effect) => effect,
         Err(error) => {
             release_owned_join_input_reservation(&mut owned_input_reservation, reservations, metrics);
@@ -111,7 +112,7 @@ fn prepare_bounded_join_side_input(
             )?,
         )
     };
-    let selected = match select_join_input(input_frame, columns, join_side_label(input_side)) {
+    let selected = match select_join_input(input_frame, &columns, join_side_label(input_side)) {
         Ok(frame) => frame,
         Err(error) => {
             if let Some(work_reservation) = work_reservation {
@@ -231,12 +232,14 @@ pub(super) fn join_side_output_reservation_bytes(
     overrides: &ExecutionOverrides<'_>,
     side: JoinSide,
 ) -> Result<u64> {
+    let mut columns = columns.to_vec();
+    join_side_projection_with_order(frame, &mut columns);
     if columns.is_empty() {
         return Ok(0);
     }
     frame
         .with_execution(overrides)
-        .materialize_join_indices_reservation_size_bytes(indices, columns)
+        .materialize_join_indices_reservation_size_bytes(indices, &columns)
         .map(|bytes| bytes as u64)
         .map_err(|error| {
             QueryError::from_cudf(

@@ -32,8 +32,13 @@ pub(super) fn materialize_compiled_one_shot_residual_output(
         ),
         metrics,
     )?;
-    let candidate =
-        indices.materialize_output(&left.frame, &right.frame, &overrides, &residual_candidate.projection)?;
+    let candidate = indices.materialize_output(
+        &left.frame,
+        &right.frame,
+        &overrides,
+        &residual_candidate.projection,
+        node.spec.join_type,
+    )?;
     let candidate_output_rows = candidate.num_rows() as u64;
     debug_assert_eq!(candidate_output_rows, candidate_rows);
     drop(indices);

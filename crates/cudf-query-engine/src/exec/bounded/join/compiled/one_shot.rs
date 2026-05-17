@@ -256,7 +256,13 @@ pub(super) fn materialize_compiled_one_shot_equi_join_probe_chunk(
             return Err(error);
         },
     };
-    let output = match indices.materialize_output(&left.frame, &right.frame, &overrides, &node.spec.output_projection) {
+    let output = match indices.materialize_output(
+        &left.frame,
+        &right.frame,
+        &overrides,
+        &node.spec.output_projection,
+        node.spec.join_type,
+    ) {
         Ok(output) => output,
         Err(error) => {
             drop(indices);

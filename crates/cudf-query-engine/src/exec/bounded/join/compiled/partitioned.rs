@@ -663,7 +663,13 @@ pub(super) fn materialize_partitioned_hash_equi_join_partition(
             return Err(error);
         },
     };
-    let output = match indices.materialize_output(&left.frame, &right.frame, &overrides, &node.spec.output_projection) {
+    let output = match indices.materialize_output(
+        &left.frame,
+        &right.frame,
+        &overrides,
+        &node.spec.output_projection,
+        node.spec.join_type,
+    ) {
         Ok(output) => output,
         Err(error) => {
             drop(indices);
@@ -849,7 +855,13 @@ pub(super) fn materialize_partitioned_mixed_keyed_residual_join_partition(
             return Err(error);
         },
     };
-    let output = match indices.materialize_output(&left.frame, &right.frame, &overrides, &node.spec.output_projection) {
+    let output = match indices.materialize_output(
+        &left.frame,
+        &right.frame,
+        &overrides,
+        &node.spec.output_projection,
+        node.spec.join_type,
+    ) {
         Ok(output) => output,
         Err(error) => {
             drop(indices);

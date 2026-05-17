@@ -22,6 +22,7 @@ mod join;
 mod lowering;
 mod materialize;
 mod operators;
+mod order;
 mod source;
 mod types;
 mod util;
@@ -196,6 +197,7 @@ use self::{
     lowering::*,
     materialize::*,
     operators::*,
+    order::*,
     types::{QueryExecutionResult as ExecutionResult, QueryOutput as Output},
     util::*,
     validate::*,
@@ -306,6 +308,7 @@ pub fn execute_query_plan_with_gpu_inputs(
     gpu_inputs: &GpuResidentInputMap,
 ) -> Result<ExecutionResult> {
     validate_query_plan(plan)?;
+    let _order_tracking = DataFusionOrderTrackingGuard::new(plan_requires_datafusion_exact_stddev_order(plan));
     let mut metrics = QueryMetrics {
         phase_c_memory_control_policy: context.memory_control_policy(),
         execution_boundary_policy: context.boundary_policy(),

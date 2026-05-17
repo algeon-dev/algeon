@@ -680,6 +680,9 @@ pub(in crate::exec::bounded) fn try_read_cached_local_parquet_chunk(
     reservations: &mut ReservationTracker,
     metrics: &mut QueryMetrics,
 ) -> Result<Option<ScheduledLocalParquetReadOutput>> {
+    if datafusion_order_tracking_enabled() {
+        return Ok(None);
+    }
     let Some(cache) = context.local_parquet_source_cache() else {
         return Ok(None);
     };
@@ -713,6 +716,9 @@ pub(in crate::exec::bounded) fn insert_bounded_local_parquet_source_cache(
     max_attempts: usize,
     retained_device_bytes: u64,
 ) -> Result<()> {
+    if datafusion_order_tracking_enabled() {
+        return Ok(());
+    }
     let Some(cache) = context.local_parquet_source_cache() else {
         return Ok(());
     };
