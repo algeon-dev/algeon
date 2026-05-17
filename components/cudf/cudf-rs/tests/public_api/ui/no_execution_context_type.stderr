@@ -8,9 +8,3 @@ help: a similar name exists in the module
   |
 1 | use cudf::QueryExecutionContext;
   |           +++++
-help: consider importing one of these items instead
-  |
-1 | use cudf::ErrorKind::ExecutionContext;
-  |            +++++++++++
-1 | use cudf_sys::ExecutionContext;
-  |         ++++

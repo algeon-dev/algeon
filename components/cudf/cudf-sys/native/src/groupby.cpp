@@ -126,6 +126,40 @@ void cudf_aggregation_destroy(cudf_aggregation_handle handle)
   delete static_cast<cudf::groupby_aggregation*>(handle);
 }
 
+cudf_status_t cudf_groupby_scan_aggregation_create(cudf_reduce_aggregation_kind_t kind,
+                                                   cudf_groupby_scan_aggregation_handle* out)
+{
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = nullptr;
+  CUDF_RUST_TRY
+  {
+    std::unique_ptr<cudf::groupby_scan_aggregation> agg;
+    switch (kind) {
+      case CUDF_REDUCE_AGG_SUM:
+        agg = cudf::make_sum_aggregation<cudf::groupby_scan_aggregation>();
+        break;
+      case CUDF_REDUCE_AGG_MIN:
+        agg = cudf::make_min_aggregation<cudf::groupby_scan_aggregation>();
+        break;
+      case CUDF_REDUCE_AGG_MAX:
+        agg = cudf::make_max_aggregation<cudf::groupby_scan_aggregation>();
+        break;
+      case CUDF_REDUCE_AGG_PRODUCT:
+        agg = cudf::make_product_aggregation<cudf::groupby_scan_aggregation>();
+        break;
+      default: set_error("unknown grouped scan aggregation kind"); return CUDF_ERROR_INVALID_OPERATION;
+    }
+    *out = static_cast<cudf_groupby_scan_aggregation_handle>(agg.release());
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
+void cudf_groupby_scan_aggregation_destroy(cudf_groupby_scan_aggregation_handle handle)
+{
+  delete static_cast<cudf::groupby_scan_aggregation*>(handle);
+}
+
 cudf_status_t cudf_groupby_aggregate(cudf_table_view_handle keys,
                                      const cudf_column_view_handle* values,
                                      const cudf_aggregation_handle* aggregations,
@@ -263,6 +297,146 @@ cudf_status_t cudf_groupby_aggregate_ex(cudf_table_view_handle keys,
       }
 
       // Publish outputs only after all work succeeds.
+      *out_keys          = cudf_release_table_handle(std::move(result_keys));
+      *out_total_columns = total;
+      *out_values        = col_array;
+    }
+
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
+cudf_status_t cudf_groupby_scan(cudf_table_view_handle keys,
+                                const cudf_column_view_handle* values,
+                                const cudf_groupby_scan_aggregation_handle* aggregations,
+                                const int32_t* agg_counts,
+                                int32_t num_requests,
+                                int32_t num_aggregations,
+                                cudf_null_policy_t keys_null_policy,
+                                int32_t keys_are_sorted,
+                                cudf_table_handle* out_keys,
+                                cudf_column_handle** out_values,
+                                int32_t* out_total_columns)
+{
+  return cudf_groupby_scan_ex(keys,
+                             values,
+                             aggregations,
+                             agg_counts,
+                             num_requests,
+                             num_aggregations,
+                             keys_null_policy,
+                             keys_are_sorted,
+                             out_keys,
+                             out_values,
+                             out_total_columns,
+                             nullptr);
+}
+
+cudf_status_t cudf_groupby_scan_ex(cudf_table_view_handle keys,
+                                   const cudf_column_view_handle* values,
+                                   const cudf_groupby_scan_aggregation_handle* aggregations,
+                                   const int32_t* agg_counts,
+                                   int32_t num_requests,
+                                   int32_t num_aggregations,
+                                   cudf_null_policy_t keys_null_policy,
+                                   int32_t keys_are_sorted,
+                                   cudf_table_handle* out_keys,
+                                   cudf_column_handle** out_values,
+                                   int32_t* out_total_columns,
+                                   cudf_exec_options_t const* options)
+{
+  CUDF_RUST_NULL_CHECK(out_keys, "out_keys is null");
+  *out_keys = nullptr;
+  CUDF_RUST_NULL_CHECK(out_values, "out_values is null");
+  *out_values = nullptr;
+  CUDF_RUST_NULL_CHECK(out_total_columns, "out_total_columns is null");
+  *out_total_columns = 0;
+  CUDF_RUST_NULL_CHECK(keys, "keys is null");
+  if (num_requests < 0) {
+    set_error("num_requests must be >= 0");
+    return CUDF_ERROR_INVALID_OPERATION;
+  }
+  if (num_aggregations < 0) {
+    set_error("num_aggregations must be >= 0");
+    return CUDF_ERROR_INVALID_OPERATION;
+  }
+  if (num_requests > 0) {
+    CUDF_RUST_NULL_CHECK(values, "values is null");
+    CUDF_RUST_NULL_CHECK(agg_counts, "agg_counts is null");
+  }
+  if (num_aggregations > 0) { CUDF_RUST_NULL_CHECK(aggregations, "aggregations is null"); }
+  cudf::null_policy null_policy;
+  cudf_status_t status = to_cudf_null_policy(keys_null_policy, &null_policy, "keys_null_policy");
+  if (status != CUDF_SUCCESS) { return status; }
+  CUDF_RUST_TRY
+  {
+    cudf_exec_context exec          = cudf_make_exec_context();
+    cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
+    if (exec_status != CUDF_SUCCESS) { return exec_status; }
+
+    auto* keys_view = static_cast<cudf::table_view*>(keys);
+
+    {
+      cudf_current_device_resource_guard current_mr{exec.mr_raw};
+      cudf::groupby::groupby gb(*keys_view,
+                                null_policy,
+                                keys_are_sorted != 0 ? cudf::sorted::YES : cudf::sorted::NO);
+
+      std::vector<cudf::groupby::scan_request> requests;
+      requests.reserve(num_requests);
+
+      int64_t required_aggregations = 0;
+      for (int32_t i = 0; i < num_requests; ++i) {
+        if (agg_counts[i] < 0) {
+          set_error("agg_counts entries must be >= 0");
+          return CUDF_ERROR_INVALID_OPERATION;
+        }
+        required_aggregations += agg_counts[i];
+      }
+      if (required_aggregations != num_aggregations) {
+        set_error("num_aggregations must equal sum(agg_counts)");
+        return CUDF_ERROR_INVALID_OPERATION;
+      }
+
+      int32_t agg_offset = 0;
+      for (int32_t i = 0; i < num_requests; ++i) {
+        CUDF_RUST_NULL_CHECK(values[i], "value column view handle is null");
+        cudf::groupby::scan_request req;
+        req.values = *static_cast<cudf::column_view*>(values[i]);
+        for (int32_t j = 0; j < agg_counts[i]; ++j) {
+          CUDF_RUST_NULL_CHECK(aggregations[agg_offset + j], "aggregation handle is null");
+          auto* agg   = static_cast<cudf::groupby_scan_aggregation*>(aggregations[agg_offset + j]);
+          auto cloned = agg->clone();
+          req.aggregations.push_back(std::unique_ptr<cudf::groupby_scan_aggregation>(
+            dynamic_cast<cudf::groupby_scan_aggregation*>(cloned.release())));
+        }
+        agg_offset += agg_counts[i];
+        requests.push_back(std::move(req));
+      }
+
+      auto [result_keys, result_values] = gb.scan(requests, exec.stream, exec.mr);
+
+      int32_t total = 0;
+      for (auto& [results] : result_values) {
+        total += static_cast<int32_t>(results.size());
+      }
+
+      cudf_column_handle* col_array = nullptr;
+      if (total > 0) {
+        col_array = new (std::nothrow) cudf_column_handle[total];
+        if (col_array == nullptr) {
+          set_error("failed to allocate groupby scan result column handle array");
+          return CUDF_ERROR_OUT_OF_MEMORY;
+        }
+      }
+      int32_t idx = 0;
+      for (auto& [results] : result_values) {
+        for (auto& col : results) {
+          col_array[idx++] = cudf_release_column_handle(std::move(col));
+        }
+      }
+
       *out_keys          = cudf_release_table_handle(std::move(result_keys));
       *out_total_columns = total;
       *out_values        = col_array;

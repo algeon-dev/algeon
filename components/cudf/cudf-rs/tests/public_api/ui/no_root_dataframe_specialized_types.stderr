@@ -9,16 +9,6 @@ error[E0432]: unresolved imports `cudf::DropNaOptions`, `cudf::InfoDetail`, `cud
   |            |              no `InfoDetail` in the root
   |            no `DropNaOptions` in the root
   |
-  = help: consider importing this struct instead:
-          cudf::frame::dataframe::DropNaOptions
-  = help: consider importing this struct instead:
-          cudf::frame::dataframe::InfoDetail
-  = help: consider importing this struct instead:
-          cudf::frame::dataframe::JsonReadOptions
-  = help: consider importing this struct instead:
-          cudf::frame::dataframe::MeltOptions
-  = help: consider importing this struct instead:
-          cudf::frame::dataframe::MultiParquetReadOptions
 help: a similar name exists in the module
   |
 1 - use cudf::{DropNaOptions, InfoDetail, JsonReadOptions, MeltOptions, MultiParquetReadOptions};

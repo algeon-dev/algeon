@@ -3,11 +3,6 @@ error[E0432]: unresolved imports `cudf::interop::CompletionAuthority`, `cudf::in
   |
 2 |     BorrowedColumnView, CompletionAuthority, OwnedColumnTransfer, PreparedColumnExport, ReadStartAuthority,
   |                         ^^^^^^^^^^^^^^^^^^^ no `CompletionAuthority` in `interop`       ^^^^^^^^^^^^^^^^^^ no `ReadStartAuthority` in `interop`
-  |
-  = help: consider importing this enum instead:
-          rapids_interop::CompletionAuthority
-  = help: consider importing this enum instead:
-          rapids_interop::ReadStartAuthority
 
 error[E0603]: struct `BorrowedColumnView` is private
  --> tests/public_api/ui/no_interop_shared_contract_nouns.rs:2:5

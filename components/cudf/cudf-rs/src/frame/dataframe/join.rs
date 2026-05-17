@@ -555,6 +555,18 @@ impl DataFrameJoinIndices {
         Self { indices }
     }
 
+    /// Wrap a device-side `INT32` row-index gather map as join indices.
+    ///
+    /// This is intended for native query engines that synthesize a join
+    /// gather map directly, for example to represent null-supplying rows in a
+    /// keyless outer join. The series must obey the same contract as libcudf
+    /// join outputs: one non-null `INT32` row-index value per output row, with
+    /// libcudf no-match sentinels used only where the downstream gather path
+    /// should produce null payload rows.
+    pub fn from_series(indices: Series) -> Self {
+        Self::new(indices)
+    }
+
     /// Borrow the row-index gather map.
     pub fn indices(&self) -> &Series {
         &self.indices
@@ -637,6 +649,15 @@ impl DataFrameJoinPairIndices {
 
     pub(crate) fn new(left: Series, right: Series) -> Self {
         Self { left: DataFrameJoinIndices::new(left), right: DataFrameJoinIndices::new(right) }
+    }
+
+    /// Wrap left and right device-side `INT32` row-index gather maps as join
+    /// index pairs.
+    ///
+    /// This is the pair form of [`DataFrameJoinIndices::from_series`] for
+    /// engines that synthesize both sides of a join result directly.
+    pub fn from_series(left: Series, right: Series) -> Self {
+        Self::new(left, right)
     }
 
     /// Borrow the gather map for rows in the left DataFrame.

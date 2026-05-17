@@ -4,6 +4,7 @@
 #include "column.h"
 #include "error.h"
 #include "execution_context.h"
+#include "reduction.h"
 #include "table.h"
 
 #include <stdint.h>
@@ -14,6 +15,9 @@ extern "C" {
 
 /// Opaque handle to a cudf::groupby_aggregation.
 typedef void* cudf_aggregation_handle;
+
+/// Opaque handle to a cudf::groupby_scan_aggregation.
+typedef void* cudf_groupby_scan_aggregation_handle;
 
 /// Aggregation kinds.
 typedef enum {
@@ -50,6 +54,13 @@ cudf_status_t cudf_aggregation_create_variance(int32_t ddof, cudf_aggregation_ha
 
 /// Destroy an aggregation handle.
 void cudf_aggregation_destroy(cudf_aggregation_handle handle);
+
+/// Create a grouped scan aggregation (SUM, MIN, MAX, PRODUCT).
+cudf_status_t cudf_groupby_scan_aggregation_create(cudf_reduce_aggregation_kind_t kind,
+                                                   cudf_groupby_scan_aggregation_handle* out);
+
+/// Destroy a grouped scan aggregation handle.
+void cudf_groupby_scan_aggregation_destroy(cudf_groupby_scan_aggregation_handle handle);
 
 /// Arm a one-shot malformed metadata response for the next groupby aggregate
 /// call on the current thread. Intended only for integration tests that
@@ -102,6 +113,37 @@ cudf_status_t cudf_groupby_aggregate_ex(cudf_table_view_handle keys,
                                         cudf_column_handle** out_values,
                                         int32_t* out_total_columns,
                                         const cudf_exec_options_t* options);
+
+/// Perform a grouped prefix scan.
+///
+/// The output has one result column per requested aggregation. If
+/// `keys_are_sorted` is non-zero, the grouped scan is constructed with cuDF's
+/// sorted-key contract and assumes ascending key columns with nulls after.
+cudf_status_t cudf_groupby_scan(cudf_table_view_handle keys,
+                                const cudf_column_view_handle* values,
+                                const cudf_groupby_scan_aggregation_handle* aggregations,
+                                const int32_t* agg_counts,
+                                int32_t num_requests,
+                                int32_t num_aggregations,
+                                cudf_null_policy_t keys_null_policy,
+                                int32_t keys_are_sorted,
+                                cudf_table_handle* out_keys,
+                                cudf_column_handle** out_values,
+                                int32_t* out_total_columns);
+
+/// Grouped prefix scan with explicit execution context.
+cudf_status_t cudf_groupby_scan_ex(cudf_table_view_handle keys,
+                                   const cudf_column_view_handle* values,
+                                   const cudf_groupby_scan_aggregation_handle* aggregations,
+                                   const int32_t* agg_counts,
+                                   int32_t num_requests,
+                                   int32_t num_aggregations,
+                                   cudf_null_policy_t keys_null_policy,
+                                   int32_t keys_are_sorted,
+                                   cudf_table_handle* out_keys,
+                                   cudf_column_handle** out_values,
+                                   int32_t* out_total_columns,
+                                   const cudf_exec_options_t* options);
 
 #ifdef __cplusplus
 }

@@ -22,22 +22,3 @@ error[E0432]: unresolved imports `cudf::plan_local_parquet_source_chunks`, `cudf
   |     ^^^^^^^^^^^^  ^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^
 6 |     SourceReadMode, SourceRequiredColumn, SourceSchema, ZeroColumnCountDisposition, ZERO_COLUMN_COUNT_COLUMN,
   |     ^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^^^^^
-  |
-  = help: consider importing this enum instead:
-          cudf::io::source::ByteRangeDisposition
-  = help: consider importing this struct instead:
-          cudf::io::source::LocalParquetFile
-  = help: consider importing this struct instead:
-          cudf::io::source::LocalParquetSource
-  = help: consider importing this enum instead:
-          cudf::io::source::LocalParquetSourceKind
-  = help: consider importing this struct instead:
-          cudf::io::source::PartitionColumn
-  = help: consider importing this enum instead:
-          cudf::io::source::PartitionColumnDisposition
-  = help: consider importing this enum instead:
-          cudf::io::source::PartitionValue
-  = help: consider importing this enum instead:
-          cudf::io::source::PredicateDisposition
-  = help: consider importing this enum instead:
-          cudf::io::source::RejectedSourceFeature

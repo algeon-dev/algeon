@@ -5,11 +5,6 @@ error[E0432]: unresolved imports `cudf::interop::prepared::CompletionAuthority`,
   |                               ^^^^^^^^^^^^^^^^^^^                        ^^^^^^^^^^^^^^^^^^ no `ReadStartAuthority` in `interop::prepared`
   |                               |
   |                               no `CompletionAuthority` in `interop::prepared`
-  |
-  = help: consider importing this enum instead:
-          rapids_interop::CompletionAuthority
-  = help: consider importing this enum instead:
-          rapids_interop::ReadStartAuthority
 
 error[E0603]: module `prepared` is private
  --> tests/public_api/ui/no_interop_prepared_namespace.rs:1:20
