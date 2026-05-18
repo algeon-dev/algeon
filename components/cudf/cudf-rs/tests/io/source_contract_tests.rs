@@ -446,6 +446,14 @@ fn local_files_are_local_and_sources_must_have_files() {
     assert_eq!(path_err.code(), ErrorCode::UnsupportedOperation);
     assert_eq!(path_err.detail_value("rejected_features"), Some(RejectedSourceFeature::NonLocalSource.as_str()));
 
+    let s3_file = LocalParquetFile::object_store_uri("s3://bucket/part-0.parquet", "part-0", []).unwrap();
+    assert_eq!(s3_file.location().read_capability(), "object_store:s3");
+    assert_eq!(s3_file.reader_path(), "s3://bucket/part-0.parquet");
+
+    let unsupported_uri = LocalParquetFile::object_store_uri("gs://bucket/part-0.parquet", "part-0", []).unwrap_err();
+    assert_eq!(unsupported_uri.code(), ErrorCode::UnsupportedOperation);
+    assert_eq!(unsupported_uri.detail_value("reason"), Some("unsupported_object_store_scheme"));
+
     let empty_err = LocalParquetSource::data(
         [],
         SourceSchema::new([SourceColumn::new("id", dtype(TypeId::Int64), false).unwrap()]).unwrap(),

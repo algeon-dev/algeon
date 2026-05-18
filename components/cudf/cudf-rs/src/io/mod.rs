@@ -79,6 +79,10 @@ fn map_path_io_error(
 }
 
 fn validate_input_path(path: &Path, operation: &'static str) -> Result<()> {
+    if path.to_string_lossy().contains("://") {
+        return Ok(());
+    }
+
     let metadata = fs::metadata(path)
         .map_err(|source| map_path_io_error(source, path, operation, "failed to access input path"))?;
 
