@@ -64,8 +64,10 @@ pub use metrics::{
 };
 pub use mode::{AdaptiveExecutionMode, NativePipelineExecutionMode, StrictBoundedExecutionMode};
 pub use optimizer::{
-    DEFAULT_SEMIJOIN_REDUCTION_COST_THRESHOLD_MULTIPLIER, NativeOptimizerChange, NativeOptimizerDiagnostics,
-    NativeOptimizerOptions, NativeOptimizerResult, SEMIJOIN_REDUCTION_RULE_NAME, SemijoinReductionAdmissionDecision,
+    DEFAULT_SEMIJOIN_REDUCTION_COST_THRESHOLD_MULTIPLIER, JOIN_BUILD_SIDE_SELECTION_RULE_NAME,
+    JoinBuildSideSelectionCandidateDiagnostics, JoinBuildSideSelectionDiagnostics, JoinBuildSideSelectionOptions,
+    JoinBuildSideSelectionRejectedReason, NativeOptimizerChange, NativeOptimizerDiagnostics, NativeOptimizerOptions,
+    NativeOptimizerResult, SEMIJOIN_REDUCTION_RULE_NAME, SemijoinReductionAdmissionDecision,
     SemijoinReductionAdmissionMode, SemijoinReductionCandidateDiagnostics, SemijoinReductionCostGateDiagnostics,
     SemijoinReductionCostSignal, SemijoinReductionDiagnostics, SemijoinReductionKeyMappingDiagnostics,
     SemijoinReductionOptions, SemijoinReductionRejectedReason, SemijoinReductionResult, optimize_query_plan,

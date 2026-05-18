@@ -84,7 +84,6 @@ fn read_local_parquet_source_uncached(
     }
 
     let columns = source.read_columns.iter().map(String::as_str).collect::<Vec<_>>();
-    let reader_predicate = lower_source_reader_predicate(context, source)?;
     let mut frames = Vec::with_capacity(source.files.len());
     let mut remaining_rows = source.scan_limit;
     for (file_index, file) in source.files.iter().enumerate() {
@@ -92,6 +91,7 @@ fn read_local_parquet_source_uncached(
         let frame = if columns.is_empty() {
             context.runtime().empty_dataframe()
         } else {
+            let reader_predicate = lower_source_reader_predicate(context, source, file.path.as_path())?;
             read_local_parquet_file(context, file, &columns, reader_predicate.clone(), metrics)?
         };
         let frame = inject_partition_columns(context, source, &file.partition_values, frame, metrics)?.into_frame();

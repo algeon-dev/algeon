@@ -2,7 +2,10 @@ use std::{path::PathBuf, sync::Arc};
 
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 
-use crate::expr::{Expr, LiteralValue};
+use crate::{
+    datatypes::is_supported_arrow_type,
+    expr::{Expr, LiteralValue},
+};
 
 mod diagnostics;
 
@@ -497,14 +500,11 @@ fn reader_predicate_expr_is_supported(source: &LocalParquetSource, expr: &Expr) 
 }
 
 fn reader_predicate_column_type_is_supported(data_type: &DataType) -> bool {
-    !matches!(data_type, DataType::Decimal128(_, _))
+    is_supported_arrow_type(data_type)
 }
 
 fn reader_predicate_literal_is_supported(value: &LiteralValue) -> bool {
-    !matches!(
-        value,
-        LiteralValue::Null(_) | LiteralValue::IntervalMonthDayNano { .. } | LiteralValue::Decimal128 { .. }
-    )
+    !matches!(value, LiteralValue::Null(_) | LiteralValue::IntervalMonthDayNano { .. })
 }
 
 #[derive(Debug, Clone, PartialEq)]

@@ -66,7 +66,7 @@ fn cudf_local_parquet_source_for_chunk(
         .with_fact("read_columns", chunk.read_columns.len())
         .with_fact("row_groups", format_row_groups(chunk))
     })?;
-    if let Some(predicate) = lower_source_reader_predicate(context, source)? {
+    if let Some(predicate) = lower_source_reader_predicate(context, source, chunk.path.as_path())? {
         cudf_source = cudf_source.with_reader_predicate(predicate).map_err(|error| {
             QueryError::from_cudf(
                 "cudf_query_engine.local_parquet_chunk.source_cudf",

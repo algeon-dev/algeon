@@ -118,6 +118,7 @@ pub fn tpcds_report_session_config() -> SessionConfig {
     config.options_mut().optimizer.enable_topk_dynamic_filter_pushdown = false;
     config.options_mut().optimizer.enable_aggregate_dynamic_filter_pushdown = false;
     config.options_mut().optimizer.enable_dynamic_filter_pushdown = false;
+    config.options_mut().execution.parquet.pushdown_filters = true;
     config
 }
 
