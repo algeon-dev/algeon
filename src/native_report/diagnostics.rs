@@ -6,23 +6,45 @@ mod shape_family;
 use expressions::{expression_category, join_residual_expression_category};
 pub(super) use shape_family::{candidate_shape_family, physical_plan_shape};
 
-pub(super) fn post_native_execution_path(plan: &dyn ExecutionPlan) -> NativeDataFusionPostNativeExecutionPath {
-    if plan.as_any().downcast_ref::<NativeCudfExec>().is_some()
-        || plan.as_any().downcast_ref::<NativeCudfComposedExec>().is_some()
-    {
-        return NativeDataFusionPostNativeExecutionPath::Native;
-    }
-    if contains_native_exec(plan) {
-        return NativeDataFusionPostNativeExecutionPath::PartialNative;
-    }
-    NativeDataFusionPostNativeExecutionPath::Cpu
+pub(super) fn post_native_plan_coverage(plan: &dyn ExecutionPlan) -> NativeDataFusionPlanCoverage {
+    let native_fragment_count = count_native_fragments(plan);
+    let host_datafusion_boundary_count = count_host_datafusion_boundaries(plan);
+    let execution_path = if native_plan_root_is_whole_native(plan) {
+        NativeDataFusionPostNativeExecutionPath::Native
+    } else if native_fragment_count > 0 {
+        NativeDataFusionPostNativeExecutionPath::PartialNative
+    } else {
+        NativeDataFusionPostNativeExecutionPath::Cpu
+    };
+    NativeDataFusionPlanCoverage { execution_path, native_fragment_count, host_datafusion_boundary_count }
 }
 
 fn contains_native_exec(plan: &dyn ExecutionPlan) -> bool {
+    count_native_fragments(plan) > 0
+}
+
+fn native_plan_root_is_whole_native(plan: &dyn ExecutionPlan) -> bool {
+    plan.as_any().downcast_ref::<NativeCudfExec>().is_some()
+        || plan.as_any().downcast_ref::<NativeCudfComposedExec>().is_some()
+}
+
+fn is_native_fragment(plan: &dyn ExecutionPlan) -> bool {
     plan.as_any().downcast_ref::<NativeCudfExec>().is_some()
         || plan.as_any().downcast_ref::<NativeCudfComposedExec>().is_some()
         || plan.as_any().downcast_ref::<NativeCudfGpuProducerExec>().is_some()
-        || plan.children().iter().any(|child| contains_native_exec(child.as_ref()))
+}
+
+fn count_native_fragments(plan: &dyn ExecutionPlan) -> usize {
+    usize::from(is_native_fragment(plan))
+        + plan.children().iter().map(|child| count_native_fragments(child.as_ref())).sum::<usize>()
+}
+
+fn count_host_datafusion_boundaries(plan: &dyn ExecutionPlan) -> usize {
+    let children = plan.children();
+    let direct_native_child_boundary =
+        !is_native_fragment(plan) && children.iter().any(|child| contains_native_exec(child.as_ref()));
+    usize::from(direct_native_child_boundary)
+        + children.iter().map(|child| count_host_datafusion_boundaries(child.as_ref())).sum::<usize>()
 }
 
 pub(super) fn join_diagnostics(plan: &dyn ExecutionPlan) -> Vec<NativeJoinDiagnosticSummary> {
@@ -142,6 +164,18 @@ pub(super) fn unsupported_category(
         | FallbackReason::NativeSourceFileOrdering
         | FallbackReason::NativeSourceRowSelection
         | FallbackReason::NativeSourceSchemaMapping => Some("source".to_string()),
+        FallbackReason::TableFormatUnsupported
+        | FallbackReason::TableFormatPlanningFailed
+        | FallbackReason::IcebergNonParquetDataFile
+        | FallbackReason::IcebergDeleteFilesUnsupported
+        | FallbackReason::IcebergFieldIdMappingUnsupported
+        | FallbackReason::IcebergNameMappingUnsupported
+        | FallbackReason::IcebergNestedProjectionUnsupported
+        | FallbackReason::IcebergPartitionTransformUnsupported
+        | FallbackReason::IcebergResidualPredicateUnsupported
+        | FallbackReason::IcebergRowSelectionUnsupported
+        | FallbackReason::IcebergObjectStoreReadUnsupported
+        | FallbackReason::IcebergSnapshotUnsupported => Some("table_format".to_string()),
         FallbackReason::NativeSortPreservingMergeUnsupported
         | FallbackReason::NativePartitionPreservingSortUnsupported => Some("operator_sort".to_string()),
         FallbackReason::NativeBoundedJoinUnsupported | FallbackReason::NativeAdaptivePipelineUnsupported => {

@@ -41,7 +41,9 @@ pub(super) fn execute_compiled_one_shot_equi_join_materialize(
         JoinType::Inner => left.frame.with_execution(&overrides).inner_join_indices(&right.frame, options),
         JoinType::Left => left.frame.with_execution(&overrides).left_join_indices(&right.frame, options),
         JoinType::Full => left.frame.with_execution(&overrides).full_join_indices(&right.frame, options),
-        JoinType::LeftSemi | JoinType::LeftAnti | JoinType::Cross => unreachable!("validated above"),
+        JoinType::LeftSemi | JoinType::LeftAnti | JoinType::LeftMark | JoinType::Cross => {
+            unreachable!("validated above")
+        },
     }
     .map_err(|error| join_index_error(error, node))?;
     let index_bytes = pair_indices.device_allocated_size_bytes().map(|bytes| bytes as u64).map_err(|error| {
@@ -193,7 +195,9 @@ pub(super) fn materialize_compiled_one_shot_equi_join_probe_chunk(
         JoinType::Inner => left.frame.with_execution(&overrides).inner_join_indices(&right.frame, options),
         JoinType::Left => left.frame.with_execution(&overrides).left_join_indices(&right.frame, options),
         JoinType::Full => left.frame.with_execution(&overrides).full_join_indices(&right.frame, options),
-        JoinType::LeftSemi | JoinType::LeftAnti | JoinType::Cross => unreachable!("validated above"),
+        JoinType::LeftSemi | JoinType::LeftAnti | JoinType::LeftMark | JoinType::Cross => {
+            unreachable!("validated above")
+        },
     }
     .map_err(|error| join_index_error(error, node))?;
     let index_bytes = pair_indices.device_allocated_size_bytes().map(|bytes| bytes as u64).map_err(|error| {

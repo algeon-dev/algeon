@@ -233,6 +233,73 @@ fn compiled_bounded_query_plan_support_accepts_keyless_root_join_strategy_withou
 }
 
 #[test]
+fn compiled_bounded_query_plan_support_accepts_keyless_outer_cross_root_join_strategy() {
+    let plan = keyless_outer_cross_root_join_plan();
+    let analysis = plan.capability_analysis();
+    assert!(
+        analysis.admits_root_join(),
+        "keyless outer-cross root join should be admitted; first_rejection={:?}",
+        analysis.first_rejection_projection()
+    );
+    let pipeline = compile_pipeline(&plan, &analysis).expect("keyless outer-cross root join should compile");
+
+    assert_eq!(
+        compiled_bounded_pipeline_support(&pipeline).expect("graph shape should still match the structural envelope"),
+        CompiledBoundedPipelineSupport::Supported
+    );
+    assert_eq!(
+        compiled_bounded_query_plan_support(&plan, &pipeline).expect("plan-aware support check should not fail"),
+        CompiledBoundedPipelineSupport::Supported
+    );
+    assert!(
+        pipeline.gates().iter().any(|gate| {
+            gate.reservation_kind() == ReservationKind::GatherMap
+                && gate.status() == ContractStatus::Modeled
+                && gate.quality() == ContractQuality::ExactPreflight
+        }),
+        "keyless outer-cross support must retain a modeled gather-map gate for empty-side null extension"
+    );
+    assert!(
+        pipeline.gates().iter().any(|gate| {
+            gate.reservation_kind() == ReservationKind::JoinOutput
+                && gate.status() == ContractStatus::Modeled
+                && gate.quality() == ContractQuality::ExactPreflight
+        }),
+        "keyless outer-cross support must retain a modeled join-output gate"
+    );
+    assert_no_legacy_execution_selection_terms("keyless outer-cross root join strategy", &pipeline.debug_render());
+}
+
+#[test]
+fn strict_admission_accepts_rank_window_branches_feeding_native_union() {
+    let plan = union_of_ranked_join_branches_plan();
+    let analysis = plan.capability_analysis();
+    assert!(
+        analysis.union_pipeline_admission == CapabilityDecision::Satisfied,
+        "union pipeline admission should accept branch-local windows; first_rejection={:?}",
+        analysis.first_rejection_projection()
+    );
+    assert!(analysis.admits_strict_bounded_join());
+
+    let pipeline = compile_pipeline(&plan, &analysis).expect("rank-window union plan should compile");
+    assert_task_kind_count(&pipeline, PipelineTaskKind::Window, 2);
+    assert_task_kind_count(&pipeline, PipelineTaskKind::Union, 1);
+    assert_task_kind_count(&pipeline, PipelineTaskKind::Aggregate, 3);
+    assert_eq!(
+        compiled_bounded_query_plan_support(&plan, &pipeline).expect("plan-aware support check should not fail"),
+        CompiledBoundedPipelineSupport::Supported
+    );
+
+    let admission = strict_bounded_pipeline_admission(&plan)
+        .expect("strict admission should not fail")
+        .expect("rank-window union plan should be strictly admitted");
+    let rendered = admission.pipeline().debug_render();
+    assert!(rendered.contains("kind=window"), "compiled graph must keep window tasks:\n{rendered}");
+    assert!(rendered.contains("kind=union"), "compiled graph must keep native union:\n{rendered}");
+    assert_no_legacy_execution_selection_terms("rank-window union plan", &rendered);
+}
+
+#[test]
 fn compiled_bounded_support_records_d3_inventory_migration_boundaries_before_scheduler_execution() {
     for case in d3_1_inventory_cases() {
         let analysis = case.plan.capability_analysis();
@@ -408,8 +475,8 @@ fn d5_contract_gate_rows_are_inventory_backed_and_family_path_free() {
 fn phase_f6_strict_preflight_gap_registry_tracks_current_retirement_protocol() {
     assert_eq!(
         STRICT_UNRESOLVED_PREFLIGHT_GAPS.len(),
-        4,
-        "F.6 starts with the four lower-level strict preflight gaps; retirement must remove one from this registry"
+        5,
+        "strict unresolved preflight gap retirement must remove entries from this registry"
     );
 
     let mut markers = BTreeSet::new();
@@ -436,6 +503,7 @@ fn phase_f6_strict_preflight_gap_registry_tracks_current_retirement_protocol() {
 
     assert!(markers.contains("libcudf_parquet_decoded_output_preflight_unavailable"));
     assert!(markers.contains("libcudf_groupby_aggregate_temporary_workspace_preflight_unavailable"));
+    assert!(markers.contains("libcudf_window_output_temporary_workspace_preflight_unavailable"));
     assert!(markers.contains("libcudf_final_sort_order_preflight_unavailable"));
     assert!(markers.contains("libcudf_equality_join_output_size_preflight_unavailable"));
 }
@@ -678,6 +746,45 @@ fn compiled_bounded_support_accepts_keyed_hash_resident_subplan_shared_producer_
         .expect("shared producer task should be present");
     assert_eq!(shared_producer.kind(), PipelineTaskKind::Aggregate);
     assert_no_legacy_execution_selection_terms("keyed hash resident subplan", &pipeline.debug_render());
+}
+
+#[test]
+fn compiled_bounded_support_accepts_shared_grouped_aggregate_fanout_without_scalar_derivation() {
+    let plan = shared_grouped_aggregate_fanout_to_join_and_grouped_aggregate_plan();
+    let analysis = plan.capability_analysis();
+    assert!(!analysis.has_rejections(), "expected satisfied local capability facts");
+    assert!(analysis.invariants.iter().any(|invariant| {
+        matches!(invariant.kind, SubgraphInvariantKind::SharedResidentSubplan)
+            && invariant.decision == CapabilityDecision::Satisfied
+    }));
+    assert!(!analysis.invariants.iter().any(|invariant| {
+        matches!(invariant.kind, SubgraphInvariantKind::AggregateDerivesFromSharedProducer)
+            && invariant.decision == CapabilityDecision::Satisfied
+    }));
+    let pipeline = compile_pipeline(&plan, &analysis).expect("shared grouped aggregate fanout should compile");
+
+    assert_eq!(
+        compiled_bounded_pipeline_support(&pipeline).expect("graph support check should not fail"),
+        CompiledBoundedPipelineSupport::Supported
+    );
+    assert_eq!(
+        compiled_bounded_query_plan_support(&plan, &pipeline).expect("plan-aware support check should not fail"),
+        CompiledBoundedPipelineSupport::Supported
+    );
+
+    let shared_edges = pipeline
+        .edges()
+        .iter()
+        .filter(|edge| edge.kind() == PipelineEdgeKind::SharedResidentProducer)
+        .collect::<Vec<_>>();
+    assert!(!shared_edges.is_empty(), "shared producer should feed a downstream compiled branch");
+    let shared_producer = pipeline
+        .tasks()
+        .iter()
+        .find(|task| task.id() == shared_edges[0].from())
+        .expect("shared producer task should be present");
+    assert!(matches!(shared_producer.kind(), PipelineTaskKind::Unary | PipelineTaskKind::Aggregate));
+    assert_no_legacy_execution_selection_terms("shared grouped aggregate fanout", &pipeline.debug_render());
 }
 
 #[test]

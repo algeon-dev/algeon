@@ -85,19 +85,28 @@ fn cudf_local_parquet_source_for_chunk(
 
 fn cudf_local_parquet_file_for_chunk(chunk: &SourceChunk) -> Result<cudf::io::source::LocalParquetFile> {
     let partition_values = chunk.partition_values.iter().map(cudf_partition_value).collect::<Result<Vec<_>>>()?;
-    let mut cudf_file =
-        cudf::io::source::LocalParquetFile::new(&chunk.path, chunk.stable_id.as_str(), partition_values).map_err(
-            |error| {
-                QueryError::from_cudf(
-                    "cudf_query_engine.local_parquet_chunk.file_cudf",
-                    "failed to convert native local parquet file into cudf source contract",
-                    error,
-                )
-                .with_fact("path", chunk.path.display())
-                .with_fact("chunk_index", chunk.chunk_index)
-                .with_fact("file_index", chunk.file_index)
-            },
-        )?;
+    let mut cudf_file = match &chunk.location {
+        crate::source::ParquetSourceLocation::LocalPath(_) => {
+            cudf::io::source::LocalParquetFile::new(&chunk.path, chunk.stable_id.as_str(), partition_values)
+        },
+        crate::source::ParquetSourceLocation::ObjectStoreUri { uri, .. } => {
+            cudf::io::source::LocalParquetFile::object_store_uri(
+                uri.clone(),
+                chunk.stable_id.as_str(),
+                partition_values,
+            )
+        },
+    }
+    .map_err(|error| {
+        QueryError::from_cudf(
+            "cudf_query_engine.local_parquet_chunk.file_cudf",
+            "failed to convert native local parquet file into cudf source contract",
+            error,
+        )
+        .with_fact("path", chunk.path.display())
+        .with_fact("chunk_index", chunk.chunk_index)
+        .with_fact("file_index", chunk.file_index)
+    })?;
     if let Some(file_size_bytes) = chunk.known_file_bytes {
         cudf_file = cudf_file.with_file_size_bytes(file_size_bytes);
     }

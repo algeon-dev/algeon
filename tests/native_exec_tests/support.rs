@@ -16,7 +16,7 @@ use cudf_query_engine::{
 };
 use datafusion::{
     common::{DataFusionError, NullEquality, ScalarValue},
-    functions_aggregate::sum::sum_udaf,
+    functions_aggregate::{count::count_udaf, sum::sum_udaf},
     logical_expr::Operator,
     parquet::arrow::ArrowWriter,
     physical_expr::{
@@ -324,6 +324,63 @@ pub(super) fn aggregate_sort_limit_plan(
     let aggregate_schema = aggregate.schema();
     let sort_exprs = LexOrdering::new([
         PhysicalSortExpr::new(col("sum_x00", &aggregate_schema).unwrap(), ArrowSortOptions::new(true, false)),
+        PhysicalSortExpr::new(col("key", &aggregate_schema).unwrap(), ArrowSortOptions::new(false, false)),
+    ])
+    .unwrap();
+    let sort: Arc<dyn ExecutionPlan> = Arc::new(SortExec::new(sort_exprs, aggregate));
+    Arc::new(LocalLimitExec::new(sort, 2))
+}
+
+pub(super) fn unsupported_distinct_projection_aggregate_sort_limit_plan(
+    scan: Arc<dyn ExecutionPlan>,
+) -> Arc<dyn ExecutionPlan> {
+    let scan_schema = scan.schema();
+    let predicate =
+        binary(col("payload", &scan_schema).unwrap(), Operator::GtEq, lit(ScalarValue::Int32(Some(10))), &scan_schema)
+            .unwrap();
+    let filter: Arc<dyn ExecutionPlan> = Arc::new(FilterExec::try_new(predicate, scan).unwrap());
+
+    let filter_schema = filter.schema();
+    let unsupported_x00 = binary(
+        col("m00", &filter_schema).unwrap(),
+        Operator::IsDistinctFrom,
+        col("m01", &filter_schema).unwrap(),
+        &filter_schema,
+    )
+    .unwrap();
+    let projection: Arc<dyn ExecutionPlan> = Arc::new(
+        ProjectionExec::try_new(
+            [
+                ProjectionExpr { expr: col("key", &filter_schema).unwrap(), alias: "key".to_string() },
+                ProjectionExpr { expr: unsupported_x00, alias: "x00".to_string() },
+            ],
+            filter,
+        )
+        .unwrap(),
+    );
+
+    let projection_schema = projection.schema();
+    let group_by = PhysicalGroupBy::new_single(vec![(col("key", &projection_schema).unwrap(), "key".to_string())]);
+    let count = AggregateExprBuilder::new(count_udaf(), vec![lit(ScalarValue::Int64(Some(1)))])
+        .schema(Arc::clone(&projection_schema))
+        .alias("count_rows")
+        .build()
+        .unwrap();
+    let aggregate: Arc<dyn ExecutionPlan> = Arc::new(
+        AggregateExec::try_new(
+            AggregateMode::Single,
+            group_by,
+            vec![Arc::new(count)],
+            vec![None],
+            projection,
+            projection_schema,
+        )
+        .unwrap(),
+    );
+
+    let aggregate_schema = aggregate.schema();
+    let sort_exprs = LexOrdering::new([
+        PhysicalSortExpr::new(col("count_rows", &aggregate_schema).unwrap(), ArrowSortOptions::new(true, false)),
         PhysicalSortExpr::new(col("key", &aggregate_schema).unwrap(), ArrowSortOptions::new(false, false)),
     ])
     .unwrap();

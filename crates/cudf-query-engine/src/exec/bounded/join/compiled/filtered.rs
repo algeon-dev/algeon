@@ -12,7 +12,7 @@ pub(super) fn execute_compiled_filtered_join_build_from_frame(
     validate_executable_join_subset(node)?;
     if !keyed_filtered_semi_anti_join_capable(node) {
         return Err(unsupported_bounded_shape(
-            "compiled filtered join build requires a filtered semi/anti join node",
+            "compiled filtered join build requires a filtered semi/anti/mark join node",
             "compiled_join_strategy_unsupported",
         ));
     }
@@ -101,7 +101,7 @@ pub(super) fn execute_compiled_filtered_join_build_from_resident_frame(
     validate_executable_join_subset(node)?;
     if !keyed_filtered_semi_anti_join_capable(node) {
         return Err(unsupported_bounded_shape(
-            "compiled filtered join build requires a filtered semi/anti join node",
+            "compiled filtered join build requires a filtered semi/anti/mark join node",
             "compiled_join_strategy_unsupported",
         ));
     }
@@ -200,7 +200,7 @@ pub(super) fn execute_compiled_filtered_join_probe_from_frame(
     )?;
     let overrides = execution_overrides(context);
     let probe_state = match node.spec.join_type {
-        JoinType::LeftSemi => {
+        JoinType::LeftSemi | JoinType::LeftMark => {
             build.filtered_join.filtered_join().begin_left_semi_probe_in(&probe.frame, &build.left_keys, &overrides)
         },
         JoinType::LeftAnti => {
@@ -252,7 +252,7 @@ pub(super) fn execute_compiled_filtered_join_probe_from_resident_frame(
     )?;
     let overrides = execution_overrides(context);
     let probe_state = match node.spec.join_type {
-        JoinType::LeftSemi => {
+        JoinType::LeftSemi | JoinType::LeftMark => {
             build.filtered_join.filtered_join().begin_left_semi_probe_in(&probe.frame, &build.left_keys, &overrides)
         },
         JoinType::LeftAnti => {
@@ -304,7 +304,7 @@ pub(super) fn execute_compiled_filtered_join_probe_chunk_from_resident_frame(
     )?;
     let overrides = execution_overrides(context);
     let probe_state = match node.spec.join_type {
-        JoinType::LeftSemi => {
+        JoinType::LeftSemi | JoinType::LeftMark => {
             build.filtered_join.filtered_join().begin_left_semi_probe_in(&probe.frame, &build.left_keys, &overrides)
         },
         JoinType::LeftAnti => {
@@ -371,55 +371,108 @@ pub(super) fn execute_compiled_filtered_join_probe_chunk_from_resident_frame(
             error,
         )
     })?;
-    let left_projection = projected_output_columns(&node.spec.output_projection, JoinSide::Left);
-    let output_reservation_bytes =
-        join_side_output_reservation_bytes(&probe.frame, &indices, &left_projection, &overrides, JoinSide::Left)?;
-    let output_reservation = reservations.try_reserve(
-        bounded_join_request(
-            ReservationKind::JoinOutput,
-            "join_output",
-            output_reservation_bytes,
-            reservations.budget(),
+    let output = if node.spec.join_type == JoinType::LeftMark {
+        let mark_column_name = node.spec.mark_column_name.as_deref().unwrap_or("mark");
+        // Mark join: estimate reservation as probe size (all rows kept) + mark column overhead.
+        let output_reservation_bytes = probe.bytes.saturating_add(probe.rows.saturating_mul(1));
+        let output_reservation = reservations.try_reserve(
+            bounded_join_request(
+                ReservationKind::JoinOutput,
+                "join_output",
+                output_reservation_bytes,
+                reservations.budget(),
+                node_id,
+            ),
+            metrics,
+        )?;
+        let output = materialize_mark_join_output_projection(
+            context,
+            &probe.frame,
+            &indices,
+            &node.spec.output_projection,
+            mark_column_name,
+        )?;
+        let output_rows = output.num_rows() as u64;
+        let output_bytes = observe_device_memory_bytes(&GpuDataFrame::new(output.clone()), metrics)?;
+        metrics.record_operator_metrics(crate::metrics::OperatorMetrics::join(
             node_id,
-        ),
-        metrics,
-    )?;
-    let output = materialize_left_only_join_output_projection(
-        &probe.frame,
-        &indices,
-        &overrides,
-        &node.spec.output_projection,
-        node.spec.join_type,
-    )?;
-    let output_rows = output.num_rows() as u64;
-    let output_bytes = observe_device_memory_bytes(&GpuDataFrame::new(output.clone()), metrics)?;
-    metrics.record_operator_metrics(crate::metrics::OperatorMetrics::join(
-        node_id,
-        crate::metrics::JoinOperatorMetrics {
-            join_type: node.spec.join_type.to_string(),
-            execution_strategy: "bounded_reusable_filtered_join".to_string(),
-            key_count: node.spec.keys.len(),
-            residual_predicate: false,
-            null_equality: node.spec.null_equality.to_string(),
-            build_side: JoinSide::Right.to_string(),
-            probe_side: JoinSide::Left.to_string(),
-            build_rows: build.build.rows,
-            build_bytes: build.build.bytes,
-            probe_rows: probe.rows,
-            probe_bytes: probe.bytes,
-            hash_table_bytes: build.hash_table_bytes,
-            filtered_probe_state_bytes: probe_state_bytes,
-            mixed_size_data_bytes: 0,
-            gather_map_bytes,
-            output_reservation_bytes,
-            output_rows,
-            output_bytes,
-        },
-    ));
-    drop(indices);
-    reservations.release(gather_map_reservation, metrics);
-    drop(probe);
-    Ok(ResidentGpuFrame { frame: GpuDataFrame::new(output), reservation: output_reservation })
+            crate::metrics::JoinOperatorMetrics {
+                join_type: node.spec.join_type.to_string(),
+                execution_strategy: "bounded_reusable_filtered_join".to_string(),
+                key_count: node.spec.keys.len(),
+                residual_predicate: false,
+                null_equality: node.spec.null_equality.to_string(),
+                build_side: JoinSide::Right.to_string(),
+                probe_side: JoinSide::Left.to_string(),
+                build_rows: build.build.rows,
+                build_bytes: build.build.bytes,
+                probe_rows: probe.rows,
+                probe_bytes: probe.bytes,
+                hash_table_bytes: build.hash_table_bytes,
+                filtered_probe_state_bytes: probe_state_bytes,
+                mixed_size_data_bytes: 0,
+                gather_map_bytes,
+                output_reservation_bytes,
+                output_rows,
+                output_bytes,
+            },
+        ));
+        drop(indices);
+        reservations.release(gather_map_reservation, metrics);
+        drop(probe);
+        ResidentGpuFrame { frame: GpuDataFrame::new(output), reservation: output_reservation }
+    } else {
+        let left_projection = projected_output_columns(&node.spec.output_projection, JoinSide::Left);
+        let output_reservation_bytes =
+            join_side_output_reservation_bytes(&probe.frame, &indices, &left_projection, &overrides, JoinSide::Left)?;
+        let output_reservation = reservations.try_reserve(
+            bounded_join_request(
+                ReservationKind::JoinOutput,
+                "join_output",
+                output_reservation_bytes,
+                reservations.budget(),
+                node_id,
+            ),
+            metrics,
+        )?;
+        let output = materialize_left_only_join_output_projection(
+            &probe.frame,
+            &indices,
+            &overrides,
+            &node.spec.output_projection,
+            node.spec.join_type,
+        )?;
+        let output_rows = output.num_rows() as u64;
+        let output_bytes = observe_device_memory_bytes(&GpuDataFrame::new(output.clone()), metrics)?;
+        metrics.record_operator_metrics(crate::metrics::OperatorMetrics::join(
+            node_id,
+            crate::metrics::JoinOperatorMetrics {
+                join_type: node.spec.join_type.to_string(),
+                execution_strategy: "bounded_reusable_filtered_join".to_string(),
+                key_count: node.spec.keys.len(),
+                residual_predicate: false,
+                null_equality: node.spec.null_equality.to_string(),
+                build_side: JoinSide::Right.to_string(),
+                probe_side: JoinSide::Left.to_string(),
+                build_rows: build.build.rows,
+                build_bytes: build.build.bytes,
+                probe_rows: probe.rows,
+                probe_bytes: probe.bytes,
+                hash_table_bytes: build.hash_table_bytes,
+                filtered_probe_state_bytes: probe_state_bytes,
+                mixed_size_data_bytes: 0,
+                gather_map_bytes,
+                output_reservation_bytes,
+                output_rows,
+                output_bytes,
+            },
+        ));
+        drop(indices);
+        reservations.release(gather_map_reservation, metrics);
+        drop(probe);
+        ResidentGpuFrame { frame: GpuDataFrame::new(output), reservation: output_reservation }
+    };
+    Ok(output)
 }
 
 pub(super) fn execute_compiled_filtered_join_materialize(
@@ -462,59 +515,115 @@ pub(super) fn execute_compiled_filtered_join_materialize(
             error,
         )
     })?;
-    let left_projection = projected_output_columns(&node.spec.output_projection, JoinSide::Left);
-    let output_reservation_bytes =
-        join_side_output_reservation_bytes(&probe.frame, &indices, &left_projection, &overrides, JoinSide::Left)?;
-    let output_reservation = reservations.try_reserve(
-        bounded_join_request(
-            ReservationKind::JoinOutput,
-            "join_output",
-            output_reservation_bytes,
-            reservations.budget(),
+    let output = if node.spec.join_type == JoinType::LeftMark {
+        let mark_column_name = node.spec.mark_column_name.as_deref().unwrap_or("mark");
+        let output_reservation_bytes = probe.bytes.saturating_add(probe.rows.saturating_mul(1));
+        let output_reservation = reservations.try_reserve(
+            bounded_join_request(
+                ReservationKind::JoinOutput,
+                "join_output",
+                output_reservation_bytes,
+                reservations.budget(),
+                node_id,
+            ),
+            metrics,
+        )?;
+        let output = materialize_mark_join_output_projection(
+            context,
+            &probe.frame,
+            &indices,
+            &node.spec.output_projection,
+            mark_column_name,
+        )?;
+        metrics.operator_time += build.timer.elapsed();
+        let output_rows = output.num_rows() as u64;
+        let output_bytes = observe_device_memory_bytes(&GpuDataFrame::new(output.clone()), metrics)?;
+        metrics.record_operator_metrics(crate::metrics::OperatorMetrics::join(
             node_id,
-        ),
-        metrics,
-    )?;
-    let output = materialize_left_only_join_output_projection(
-        &probe.frame,
-        &indices,
-        &overrides,
-        &node.spec.output_projection,
-        node.spec.join_type,
-    )?;
-    metrics.operator_time += build.timer.elapsed();
-    let output_rows = output.num_rows() as u64;
-    let output_bytes = observe_device_memory_bytes(&GpuDataFrame::new(output.clone()), metrics)?;
-    metrics.record_operator_metrics(crate::metrics::OperatorMetrics::join(
-        node_id,
-        crate::metrics::JoinOperatorMetrics {
-            join_type: node.spec.join_type.to_string(),
-            execution_strategy: "bounded_reusable_filtered_join".to_string(),
-            key_count: node.spec.keys.len(),
-            residual_predicate: false,
-            null_equality: node.spec.null_equality.to_string(),
-            build_side: JoinSide::Right.to_string(),
-            probe_side: JoinSide::Left.to_string(),
-            build_rows: build.build.rows,
-            build_bytes: build.build.bytes,
-            probe_rows: probe.rows,
-            probe_bytes: probe.bytes,
-            hash_table_bytes: build.hash_table_bytes,
-            filtered_probe_state_bytes: probe_state_bytes,
-            mixed_size_data_bytes: 0,
-            gather_map_bytes,
-            output_reservation_bytes,
-            output_rows,
-            output_bytes,
-        },
-    ));
-    drop(indices);
-    reservations.release(gather_map_reservation, metrics);
-    drop(build.filtered_join);
-    reservations.release(build.hash_table_reservation, metrics);
-    drop(probe);
-    drop(build.build);
-    Ok(ResidentGpuFrame { frame: GpuDataFrame::new(output), reservation: output_reservation })
+            crate::metrics::JoinOperatorMetrics {
+                join_type: node.spec.join_type.to_string(),
+                execution_strategy: "bounded_reusable_filtered_join".to_string(),
+                key_count: node.spec.keys.len(),
+                residual_predicate: false,
+                null_equality: node.spec.null_equality.to_string(),
+                build_side: JoinSide::Right.to_string(),
+                probe_side: JoinSide::Left.to_string(),
+                build_rows: build.build.rows,
+                build_bytes: build.build.bytes,
+                probe_rows: probe.rows,
+                probe_bytes: probe.bytes,
+                hash_table_bytes: build.hash_table_bytes,
+                filtered_probe_state_bytes: probe_state_bytes,
+                mixed_size_data_bytes: 0,
+                gather_map_bytes,
+                output_reservation_bytes,
+                output_rows,
+                output_bytes,
+            },
+        ));
+        drop(indices);
+        reservations.release(gather_map_reservation, metrics);
+        drop(build.filtered_join);
+        reservations.release(build.hash_table_reservation, metrics);
+        drop(probe);
+        drop(build.build);
+        ResidentGpuFrame { frame: GpuDataFrame::new(output), reservation: output_reservation }
+    } else {
+        let left_projection = projected_output_columns(&node.spec.output_projection, JoinSide::Left);
+        let output_reservation_bytes =
+            join_side_output_reservation_bytes(&probe.frame, &indices, &left_projection, &overrides, JoinSide::Left)?;
+        let output_reservation = reservations.try_reserve(
+            bounded_join_request(
+                ReservationKind::JoinOutput,
+                "join_output",
+                output_reservation_bytes,
+                reservations.budget(),
+                node_id,
+            ),
+            metrics,
+        )?;
+        let output = materialize_left_only_join_output_projection(
+            &probe.frame,
+            &indices,
+            &overrides,
+            &node.spec.output_projection,
+            node.spec.join_type,
+        )?;
+        metrics.operator_time += build.timer.elapsed();
+        let output_rows = output.num_rows() as u64;
+        let output_bytes = observe_device_memory_bytes(&GpuDataFrame::new(output.clone()), metrics)?;
+        metrics.record_operator_metrics(crate::metrics::OperatorMetrics::join(
+            node_id,
+            crate::metrics::JoinOperatorMetrics {
+                join_type: node.spec.join_type.to_string(),
+                execution_strategy: "bounded_reusable_filtered_join".to_string(),
+                key_count: node.spec.keys.len(),
+                residual_predicate: false,
+                null_equality: node.spec.null_equality.to_string(),
+                build_side: JoinSide::Right.to_string(),
+                probe_side: JoinSide::Left.to_string(),
+                build_rows: build.build.rows,
+                build_bytes: build.build.bytes,
+                probe_rows: probe.rows,
+                probe_bytes: probe.bytes,
+                hash_table_bytes: build.hash_table_bytes,
+                filtered_probe_state_bytes: probe_state_bytes,
+                mixed_size_data_bytes: 0,
+                gather_map_bytes,
+                output_reservation_bytes,
+                output_rows,
+                output_bytes,
+            },
+        ));
+        drop(indices);
+        reservations.release(gather_map_reservation, metrics);
+        drop(build.filtered_join);
+        reservations.release(build.hash_table_reservation, metrics);
+        drop(probe);
+        drop(build.build);
+        ResidentGpuFrame { frame: GpuDataFrame::new(output), reservation: output_reservation }
+    };
+    Ok(output)
 }
 
 pub(super) fn release_compiled_filtered_join_build_state(

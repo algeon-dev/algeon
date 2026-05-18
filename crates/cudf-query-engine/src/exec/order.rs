@@ -158,7 +158,12 @@ pub(in crate::exec) fn append_datafusion_join_order_columns(
             append_side_order_columns(columns, right, &mut next_index, "right")?;
             append_side_order_columns(columns, left, &mut next_index, "left")?;
         },
-        JoinType::Left | JoinType::LeftSemi | JoinType::LeftAnti | JoinType::Full | JoinType::Cross => {
+        JoinType::Left
+        | JoinType::LeftSemi
+        | JoinType::LeftAnti
+        | JoinType::LeftMark
+        | JoinType::Full
+        | JoinType::Cross => {
             append_side_order_columns(columns, left, &mut next_index, "left")?;
             append_side_order_columns(columns, right, &mut next_index, "right")?;
         },

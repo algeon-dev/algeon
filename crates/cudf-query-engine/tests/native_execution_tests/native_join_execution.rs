@@ -480,3 +480,157 @@ fn native_query_executes_left_anti_join_with_left_only_projection() {
 
     fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn native_query_executes_left_mark_join_with_boolean_mark_column() {
+    let dir = unique_temp_dir("cudf-query-engine-native-left-mark-join");
+    let left_path = dir.join("lineitem.parquet");
+    let right_path = dir.join("orders.parquet");
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let left_schema = write_join_left_parquet(&runtime, &left_path);
+    let right_schema = write_join_right_parquet(&runtime, &right_path);
+    let output_schema = Arc::new(Schema::new(vec![
+        Field::new("qty", DataType::Int32, false),
+        Field::new("mark", DataType::Boolean, false),
+    ]));
+
+    let left_source = LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(&left_path).with_file_size_bytes(fs::metadata(&left_path).unwrap().len())],
+        Arc::clone(&left_schema),
+        vec!["order_id".to_string(), "qty".to_string()],
+    );
+    let right_source = LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(&right_path).with_file_size_bytes(fs::metadata(&right_path).unwrap().len())],
+        Arc::clone(&right_schema),
+        vec!["order_id".to_string()],
+    );
+
+    let mut builder = QueryPlanBuilder::new();
+    let left = builder.add_source(SourceNode::LocalParquet(left_source));
+    let right = builder.add_source(SourceNode::LocalParquet(right_source));
+    let join = builder.add_join(
+        left,
+        right,
+        JoinSpec::new(
+            JoinType::LeftMark,
+            vec![JoinKey::new(
+                cudf_query_engine::ColumnRef::input(0, "order_id", "left_order_id"),
+                cudf_query_engine::ColumnRef::input(1, "order_id", "right_order_id"),
+            )],
+        )
+        .with_output_projection(vec![JoinOutputColumn::left(
+            cudf_query_engine::ColumnRef::input(0, "qty", "qty"),
+            "qty",
+        )])
+        .with_null_equality(JoinNullEquality::NullsDoNotMatch)
+        .with_build_side(JoinSide::Right)
+        .with_mark_column_name("mark"),
+        Arc::clone(&output_schema),
+    );
+    let sort = builder.add_sort(
+        join,
+        SortSpec::new(vec![SortExpr::new(Expr::column("qty"), false, false)]),
+        Arc::clone(&output_schema),
+    );
+    let plan = builder.finish_with_host_sink(sort);
+
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+    let result = execute_query_plan(&context, &plan).unwrap();
+    let metrics = result.metrics();
+    let join_metrics =
+        metrics.operators.iter().find_map(|operator| operator.join.as_ref()).expect("join metrics should be recorded");
+    assert_eq!(join_metrics.join_type, "left_mark");
+    assert_eq!(join_metrics.output_rows, 4);
+
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    // Left data: order_id=[1,2,2,3] qty=[10,20,25,30]
+    // Right data: order_id=[2,3,4]
+    // Mark: order_id 1->false, 2->true, 2->true, 3->true
+    // Sorted by qty asc: qty=[10,20,25,30], mark=[false,true,true,true]
+    assert_eq!(batch.num_rows(), 4);
+    assert_eq!(batch.num_columns(), 2);
+    assert_eq!(int32_array(batch, 0).values().as_ref(), &[10, 20, 25, 30]);
+    let mark = boolean_array(batch, 1);
+    assert!(!mark.value(0));
+    assert!(mark.value(1));
+    assert!(mark.value(2));
+    assert!(mark.value(3));
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn native_query_executes_left_mark_join_with_no_matches() {
+    let dir = unique_temp_dir("cudf-query-engine-native-left-mark-join-no-matches");
+    let left_path = dir.join("lineitem.parquet");
+    let right_path = dir.join("orders.parquet");
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let left_schema = write_join_left_parquet(&runtime, &left_path);
+    // Write right side with no overlapping keys.
+    let right_schema = write_join_right_keys_parquet(&runtime, &right_path, &[99, 100]);
+
+    let output_schema = Arc::new(Schema::new(vec![
+        Field::new("qty", DataType::Int32, false),
+        Field::new("exists", DataType::Boolean, false),
+    ]));
+
+    let left_source = LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(&left_path).with_file_size_bytes(fs::metadata(&left_path).unwrap().len())],
+        Arc::clone(&left_schema),
+        vec!["order_id".to_string(), "qty".to_string()],
+    );
+    let right_source = LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(&right_path).with_file_size_bytes(fs::metadata(&right_path).unwrap().len())],
+        Arc::clone(&right_schema),
+        vec!["order_id".to_string()],
+    );
+
+    let mut builder = QueryPlanBuilder::new();
+    let left = builder.add_source(SourceNode::LocalParquet(left_source));
+    let right = builder.add_source(SourceNode::LocalParquet(right_source));
+    let join = builder.add_join(
+        left,
+        right,
+        JoinSpec::new(
+            JoinType::LeftMark,
+            vec![JoinKey::new(
+                cudf_query_engine::ColumnRef::input(0, "order_id", "left_order_id"),
+                cudf_query_engine::ColumnRef::input(1, "order_id", "right_order_id"),
+            )],
+        )
+        .with_output_projection(vec![JoinOutputColumn::left(
+            cudf_query_engine::ColumnRef::input(0, "qty", "qty"),
+            "qty",
+        )])
+        .with_null_equality(JoinNullEquality::NullsDoNotMatch)
+        .with_build_side(JoinSide::Right)
+        .with_mark_column_name("exists"),
+        Arc::clone(&output_schema),
+    );
+    let sort = builder.add_sort(
+        join,
+        SortSpec::new(vec![SortExpr::new(Expr::column("qty"), false, false)]),
+        Arc::clone(&output_schema),
+    );
+    let plan = builder.finish_with_host_sink(sort);
+
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+    let result = execute_query_plan(&context, &plan).unwrap();
+
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    // No matches: all marks false
+    assert_eq!(batch.num_rows(), 4);
+    assert_eq!(batch.num_columns(), 2);
+    assert_eq!(int32_array(batch, 0).values().as_ref(), &[10, 20, 25, 30]);
+    let mark = boolean_array(batch, 1);
+    assert!(!mark.value(0));
+    assert!(!mark.value(1));
+    assert!(!mark.value(2));
+    assert!(!mark.value(3));
+
+    fs::remove_dir_all(dir).unwrap();
+}

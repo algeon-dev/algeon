@@ -37,6 +37,33 @@ fn native_optimizer_options_can_disable_semijoin_reduction_pass() {
 }
 
 #[test]
+fn native_optimizer_flips_inner_equi_join_to_build_smaller_estimated_left_side() {
+    let plan = estimated_inner_equi_join_plan(16 * 1024 * 1024, 256 * 1024 * 1024);
+
+    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default());
+
+    assert_eq!(result.change, NativeOptimizerChange::Changed);
+    let PlanNode::Join(join) = &result.plan.root_node().kind else {
+        panic!("optimized root should be the inner join");
+    };
+    assert_eq!(join.spec.join_type, JoinType::Inner);
+    assert_eq!(join.spec.build_side, JoinSide::Left);
+}
+
+#[test]
+fn native_optimizer_disabled_keeps_default_inner_equi_join_build_side() {
+    let plan = estimated_inner_equi_join_plan(16 * 1024 * 1024, 256 * 1024 * 1024);
+
+    let result = optimize_query_plan(plan, &NativeOptimizerOptions::disabled());
+
+    assert_eq!(result.change, NativeOptimizerChange::Unchanged);
+    let PlanNode::Join(join) = &result.plan.root_node().kind else {
+        panic!("optimized root should be the inner join");
+    };
+    assert_eq!(join.spec.build_side, JoinSide::Right);
+}
+
+#[test]
 fn semijoin_reduction_phase1_options_and_rule_name_are_stable() {
     assert_eq!(SEMIJOIN_REDUCTION_RULE_NAME, "semijoin_reduction");
     assert!(SemijoinReductionOptions::default().enabled);
@@ -367,6 +394,10 @@ fn single_source_plan() -> cudf_query_engine::QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", schema)));
     builder.finish_gpu_resident(source)
+}
+
+fn estimated_inner_equi_join_plan(left_bytes: u64, right_bytes: u64) -> cudf_query_engine::QueryPlan {
+    estimated_inner_join_plan(JoinSide::Right, left_bytes, 1, right_bytes, 1)
 }
 
 fn estimated_inner_join_plan(

@@ -21,7 +21,8 @@ use mixed::execute_mixed_join_indices;
 use output::materialize_join_output;
 pub(super) use output::{
     dataframe_cross_join_options, materialize_join_output_projection, materialize_left_only_join_output_projection,
-    projected_input_columns, projected_output_columns, reorder_projected_cross_join_output, select_join_input,
+    materialize_mark_join_output_projection, projected_input_columns, projected_output_columns,
+    reorder_projected_cross_join_output, select_join_input,
 };
 pub(super) use residual::{
     JoinResidualColumns, lower_join_match_predicate, lower_join_residual_predicate, residual_input_columns,
@@ -164,12 +165,14 @@ pub(super) fn execute_join(
     };
     let indices = execute_join_indices(input, node, scratch, metrics)?.with_observed_gather_maps()?;
     let output = materialize_join_output(
+        context,
         &left,
         &right,
         &indices.indices,
         &overrides,
         &node.spec.output_projection,
         node.spec.join_type,
+        node.spec.mark_column_name.as_deref(),
     )?;
     metrics.operator_time += timer.elapsed();
 
@@ -205,12 +208,18 @@ pub(super) fn execute_join(
 pub(super) fn validate_executable_join_subset(node: &JoinNode) -> Result<()> {
     if !matches!(
         node.spec.join_type,
-        JoinType::Inner | JoinType::Left | JoinType::Full | JoinType::LeftSemi | JoinType::LeftAnti | JoinType::Cross
+        JoinType::Inner
+            | JoinType::Left
+            | JoinType::Full
+            | JoinType::LeftSemi
+            | JoinType::LeftAnti
+            | JoinType::Cross
+            | JoinType::LeftMark
     ) {
         return Err(QueryError::new(
             QueryErrorCode::UnsupportedPlanShape,
             "cudf_query_engine.join.execute",
-            "native join execution currently supports inner, left, full, left semi, left anti, and cross joins",
+            "native join execution currently supports inner, left, full, left semi, left anti, left mark, and cross joins",
         )
         .with_fact("join_type", node.spec.join_type));
     }
@@ -323,7 +332,7 @@ fn execute_join_indices(
         JoinType::Inner | JoinType::Left | JoinType::Full => {
             execute_reusable_hash_join_indices(&input, node, scratch, metrics)
         },
-        JoinType::LeftSemi => {
+        JoinType::LeftSemi | JoinType::LeftMark => {
             let options = dataframe_join_options(input.left_keys, input.right_keys, node.spec.null_equality);
             input
                 .left

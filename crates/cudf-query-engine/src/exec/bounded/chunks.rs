@@ -793,6 +793,9 @@ fn retry_after_chunk_error(
     min_retry_chunk_row_groups: usize,
 ) -> Result<Vec<CommittedPartial>> {
     record_chunk_retry_error(&error, metrics);
+    if aggregate_spec_has_distinct(&bounded.aggregate.0.spec) {
+        return Err(chunk_retry_facts(&chunk, metrics).attach_to_error(error));
+    }
     if attempt < max_attempts
         && let Some((left, right)) = split_retryable_chunk(&chunk, min_retry_chunk_row_groups)
     {
@@ -1621,6 +1624,7 @@ pub(super) fn retry_child_chunk(parent: &SourceChunk, row_group_indexes: Vec<usi
         source_node_id: parent.source_node_id,
         chunk_index: parent.chunk_index,
         file_index: parent.file_index,
+        location: parent.location.clone(),
         path: parent.path.clone(),
         stable_id: parent.stable_id.clone(),
         row_group_indexes,

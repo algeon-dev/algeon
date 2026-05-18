@@ -21,7 +21,10 @@ use super::{
 use crate::{
     native::{
         normalize::{NormalizedNativeAggregate, NormalizedNativeAggregateRoot},
-        validate::{aggregate_is_count_star_only, validate_aggregate, validate_physical_expr, validate_schema},
+        validate::{
+            aggregate_is_count_star_only, validate_aggregate_for_native_lowering, validate_physical_expr,
+            validate_schema,
+        },
     },
     policy::FallbackReason,
 };
@@ -85,7 +88,7 @@ pub(super) fn lower_aggregate_input(
     required_output_fields: &RequiredFields,
 ) -> Result<LoweredNativeInput, FallbackReason> {
     validate_schema(Arc::clone(&aggregate.aggregate_output_schema))?;
-    validate_aggregate(aggregate.aggregate, aggregate.aggregate_allows_partial)?;
+    validate_aggregate_for_native_lowering(aggregate.aggregate, aggregate.aggregate_allows_partial)?;
     validate_aggregate_scalar_expressions(aggregate.aggregate)?;
     let child_required = required_aggregate_input_fields(aggregate.aggregate, None)?;
     let input = lower_native_input(&aggregate.input, builder, &child_required)?;
@@ -102,7 +105,7 @@ pub(super) fn lower_aggregate_input(
     )
 }
 
-fn add_native_aggregate_node(
+pub(super) fn add_native_aggregate_node(
     builder: &mut NativeQueryPlanBuilder,
     input: LoweredNativeInput,
     aggregate: &AggregateExec,
@@ -126,7 +129,7 @@ fn validate_aggregate_scalar_expressions(aggregate: &AggregateExec) -> Result<()
     Ok(())
 }
 
-fn project_required_output_columns(
+pub(super) fn project_required_output_columns(
     builder: &mut NativeQueryPlanBuilder,
     input_node: NativeNodeId,
     input_schema: SchemaRef,
@@ -255,7 +258,8 @@ pub(super) fn lower_aggregate_spec(
                     || lower_physical_expr_with_bindings(arg, &frontend_schema, Some(&prepared.input.bindings)),
                     |alias| Ok(NativeExpr::column(alias)),
                 )?;
-            Ok(NativeAggregateExpr::new(lower_native_aggregate_function(expr.fun().name())?, lowered_arg, expr.name()))
+            Ok(NativeAggregateExpr::new(lower_native_aggregate_function(expr.fun().name())?, lowered_arg, expr.name())
+                .with_distinct(expr.is_distinct()))
         })
         .collect::<Result<Vec<_>, _>>()?;
 

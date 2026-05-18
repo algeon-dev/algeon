@@ -24,6 +24,7 @@ pub(crate) enum CompiledJoinExecutionStrategy {
     PartitionedMixedKeyedResidual,
     FilteredSemiAnti,
     KeylessConditional { join_type: KeylessConditionalJoinKind },
+    KeylessOuterCross,
     ProjectedCross,
     MixedKeyedResidual,
 }
@@ -112,6 +113,7 @@ impl CompiledJoinExecutionStrategy {
             JoinExecutionCapability::KeyedHash => None,
             JoinExecutionCapability::KeyedFilteredSemiAnti => Some(Self::FilteredSemiAnti),
             JoinExecutionCapability::KeylessConditional(join_type) => Some(Self::KeylessConditional { join_type }),
+            JoinExecutionCapability::KeylessOuterCross => Some(Self::KeylessOuterCross),
             JoinExecutionCapability::ProjectedCross => Some(Self::ProjectedCross),
             JoinExecutionCapability::KeyedResidualMixed => Some(Self::MixedKeyedResidual),
         }

@@ -53,8 +53,15 @@ pub(super) fn validate_aggregate_expr_capability(
     aggregate_expr: &AggregateExpr,
     is_scalar_aggregate: bool,
 ) -> Result<(), ExpressionCapabilityRejection> {
+    if aggregate_expr.distinct && aggregate_expr.function != AggregateFunction::Count {
+        return Err(ExpressionCapabilityRejection {
+            reason: "distinct_aggregate_requires_count",
+            expression_family: "aggregate",
+        });
+    }
     if is_scalar_aggregate
         && aggregate_expr.function == AggregateFunction::Count
+        && !aggregate_expr.distinct
         && is_count_star_expr(&aggregate_expr.expr)
     {
         return Ok(());
@@ -99,6 +106,20 @@ pub(super) fn validate_general_expr_capability(expr: &Expr) -> Result<(), Expres
         Expr::Cast { expr, .. } | Expr::Extract { expr, .. } | Expr::Lower(expr) | Expr::Upper(expr) => {
             validate_general_expr_capability(expr)
         },
+        Expr::Abs(expr) => validate_general_expr_capability(expr),
+        Expr::Concat(exprs) => {
+            if exprs.is_empty() {
+                return Err(ExpressionCapabilityRejection {
+                    reason: "concat_requires_argument",
+                    expression_family: "concat",
+                });
+            }
+            for expr in exprs {
+                validate_general_expr_capability(expr)?;
+            }
+            Ok(())
+        },
+        Expr::Round { expr, .. } => validate_general_expr_capability(expr),
         Expr::Binary { left, op, right, .. } if expr_is_interval_literal(left) || expr_is_interval_literal(right) => {
             validate_interval_binary_expr_capability(left, *op, right)
         },
@@ -170,6 +191,13 @@ pub(super) fn validate_join_residual_expr_capability(expr: &Expr) -> Result<(), 
             validate_join_residual_expr_capability(expr)
         },
         Expr::Cast { expr, .. } => validate_join_residual_expr_capability(expr),
+        Expr::Abs(_) | Expr::Round { .. } => Err(ExpressionCapabilityRejection {
+            reason: "join_residual_expression_family_not_supported",
+            expression_family: expr_family(expr),
+        }),
+        Expr::Binary { left, op, right, .. } if expr_is_interval_literal(left) || expr_is_interval_literal(right) => {
+            validate_join_interval_binary_expr_capability(left, *op, right)
+        },
         Expr::Binary { left, right, .. } => {
             validate_join_residual_expr_capability(left)?;
             validate_join_residual_expr_capability(right)
@@ -182,6 +210,7 @@ pub(super) fn validate_join_residual_expr_capability(expr: &Expr) -> Result<(), 
         | Expr::Substring { .. }
         | Expr::Lower(_)
         | Expr::Upper(_)
+        | Expr::Concat(_)
         | Expr::Case { .. }
         | Expr::Extract { .. } => Err(ExpressionCapabilityRejection {
             reason: "join_residual_expression_family_not_supported",
@@ -205,8 +234,26 @@ pub(super) fn validate_post_join_residual_expr_capability(expr: &Expr) -> Result
         Expr::Not(expr) | Expr::IsNull(expr) | Expr::IsNotNull(expr) | Expr::Alias { expr, .. } => {
             validate_post_join_residual_expr_capability(expr)
         },
-        Expr::Cast { expr, .. } | Expr::Lower(expr) | Expr::Upper(expr) | Expr::Extract { expr, .. } => {
-            validate_post_join_residual_expr_capability(expr)
+        Expr::Cast { expr, .. }
+        | Expr::Lower(expr)
+        | Expr::Upper(expr)
+        | Expr::Extract { expr, .. }
+        | Expr::Abs(expr) => validate_post_join_residual_expr_capability(expr),
+        Expr::Round { expr, .. } => validate_post_join_residual_expr_capability(expr),
+        Expr::Concat(exprs) => {
+            if exprs.is_empty() {
+                return Err(ExpressionCapabilityRejection {
+                    reason: "concat_requires_argument",
+                    expression_family: "concat",
+                });
+            }
+            for expr in exprs {
+                validate_post_join_residual_expr_capability(expr)?;
+            }
+            Ok(())
+        },
+        Expr::Binary { left, op, right, .. } if expr_is_interval_literal(left) || expr_is_interval_literal(right) => {
+            validate_post_join_interval_binary_expr_capability(left, *op, right)
         },
         Expr::Binary { left, right, .. } => {
             validate_post_join_residual_expr_capability(left)?;
@@ -299,6 +346,81 @@ fn validate_interval_binary_expr_capability(
     validate_general_expr_capability(if left_interval { right } else { left })
 }
 
+fn validate_join_interval_binary_expr_capability(
+    left: &Expr,
+    op: BinaryOp,
+    right: &Expr,
+) -> Result<(), ExpressionCapabilityRejection> {
+    let left_interval = expr_is_interval_literal(left);
+    let right_interval = expr_is_interval_literal(right);
+    if left_interval == right_interval {
+        return Err(ExpressionCapabilityRejection {
+            reason: "interval_arithmetic_requires_exactly_one_interval_literal",
+            expression_family: "binary",
+        });
+    }
+    if left_interval && op != BinaryOp::Add {
+        return Err(ExpressionCapabilityRejection {
+            reason: "interval_left_operand_requires_add",
+            expression_family: "binary",
+        });
+    }
+    if right_interval && !matches!(op, BinaryOp::Add | BinaryOp::Subtract) {
+        return Err(ExpressionCapabilityRejection {
+            reason: "interval_right_operand_requires_add_or_subtract",
+            expression_family: "binary",
+        });
+    }
+    let interval = if left_interval { left } else { right };
+    validate_fixed_day_interval_literal(interval)?;
+    validate_join_residual_expr_capability(if left_interval { right } else { left })
+}
+
+fn validate_fixed_day_interval_literal(expr: &Expr) -> Result<(), ExpressionCapabilityRejection> {
+    let Expr::Literal(LiteralValue::IntervalMonthDayNano { months, nanoseconds, .. }) = expr else {
+        return Err(ExpressionCapabilityRejection {
+            reason: "interval_arithmetic_requires_interval_literal",
+            expression_family: "binary",
+        });
+    };
+    const NANOS_PER_DAY: i64 = 86_400_000_000_000;
+    if *months != 0 || *nanoseconds % NANOS_PER_DAY != 0 {
+        return Err(ExpressionCapabilityRejection {
+            reason: "join_residual_interval_requires_fixed_day_resolution",
+            expression_family: "binary",
+        });
+    }
+    Ok(())
+}
+
+fn validate_post_join_interval_binary_expr_capability(
+    left: &Expr,
+    op: BinaryOp,
+    right: &Expr,
+) -> Result<(), ExpressionCapabilityRejection> {
+    let left_interval = expr_is_interval_literal(left);
+    let right_interval = expr_is_interval_literal(right);
+    if left_interval == right_interval {
+        return Err(ExpressionCapabilityRejection {
+            reason: "interval_arithmetic_requires_exactly_one_interval_literal",
+            expression_family: "binary",
+        });
+    }
+    if left_interval && op != BinaryOp::Add {
+        return Err(ExpressionCapabilityRejection {
+            reason: "interval_left_operand_requires_add",
+            expression_family: "binary",
+        });
+    }
+    if right_interval && !matches!(op, BinaryOp::Add | BinaryOp::Subtract) {
+        return Err(ExpressionCapabilityRejection {
+            reason: "interval_right_operand_requires_add_or_subtract",
+            expression_family: "binary",
+        });
+    }
+    validate_post_join_residual_expr_capability(if left_interval { right } else { left })
+}
+
 fn expr_is_interval_literal(expr: &Expr) -> bool {
     matches!(expr, Expr::Literal(LiteralValue::IntervalMonthDayNano { .. }))
 }
@@ -316,6 +438,9 @@ pub(super) fn expr_family(expr: &Expr) -> &'static str {
         Expr::Substring { .. } => "substring",
         Expr::Lower(_) => "lower",
         Expr::Upper(_) => "upper",
+        Expr::Concat(_) => "concat",
+        Expr::Abs(_) => "abs",
+        Expr::Round { .. } => "round",
         Expr::InList { .. } => "in_list",
         Expr::Case { .. } => "case",
         Expr::Extract { .. } => "extract",

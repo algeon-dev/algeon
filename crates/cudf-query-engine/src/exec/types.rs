@@ -519,7 +519,7 @@ impl GpuLocalParquetSourceCacheKey {
         );
         push_token(&mut fingerprint, "file_count", source.files.len().to_string());
         for (index, file) in source.files.iter().enumerate() {
-            push_token(&mut fingerprint, format!("file.{index}.path"), file.path.display().to_string());
+            push_token(&mut fingerprint, format!("file.{index}.location"), file.location.reader_path());
             push_token(&mut fingerprint, format!("file.{index}.stable_id"), &file.stable_id);
             push_token(
                 &mut fingerprint,
@@ -578,7 +578,7 @@ impl GpuLocalParquetSourceCacheKey {
             chunk.scan_limit_rows.map_or_else(|| "none".to_string(), |limit| limit.to_string()),
         );
         push_token(&mut fingerprint, "chunk.file_index", chunk.file_index.to_string());
-        push_token(&mut fingerprint, "chunk.path", chunk.path.display().to_string());
+        push_token(&mut fingerprint, "chunk.location", chunk.location.reader_path());
         push_token(&mut fingerprint, "chunk.stable_id", &chunk.stable_id);
         push_token(&mut fingerprint, "chunk.reads_all_row_groups", chunk.reads_all_row_groups.to_string());
         push_usize_vec(&mut fingerprint, "chunk.row_groups", &chunk.row_group_indexes);

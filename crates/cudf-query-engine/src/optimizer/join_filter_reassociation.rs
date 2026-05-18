@@ -155,6 +155,11 @@ impl<'a> JoinFilterReassociationRewriter<'a> {
                 aggregate.input = self.rewrite_subtree(aggregate.input);
                 PlanNode::Aggregate(aggregate)
             },
+            PlanNode::Window(window) => {
+                let mut window = window.clone();
+                window.input = self.rewrite_subtree(window.input);
+                PlanNode::Window(window)
+            },
             PlanNode::Sort(sort) => {
                 let mut sort = sort.clone();
                 sort.input = self.rewrite_subtree(sort.input);
@@ -169,6 +174,11 @@ impl<'a> JoinFilterReassociationRewriter<'a> {
                 let mut join = join.clone();
                 join.inputs = [self.rewrite_subtree(join.inputs[0]), self.rewrite_subtree(join.inputs[1])];
                 PlanNode::Join(join)
+            },
+            PlanNode::Union(union) => {
+                let mut union = union.clone();
+                union.inputs = union.inputs.iter().map(|input| self.rewrite_subtree(*input)).collect();
+                PlanNode::Union(union)
             },
         }
     }

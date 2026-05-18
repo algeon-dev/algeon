@@ -270,6 +270,23 @@ ORDER BY row_id ASC
 LIMIT 20
 ";
 
+pub(super) const SQL_PHASE7_BITWISE_SCALAR_QUERY: &str = "
+SELECT row_id, flags_and, flags_or, flags_shift_left, flags_shift_right, flags_grouping, COUNT(*) AS row_count
+FROM (
+    SELECT
+        row_id,
+        orderkey & 3 AS flags_and,
+        orderkey | 8 AS flags_or,
+        orderkey << 1 AS flags_shift_left,
+        orderkey >> 1 AS flags_shift_right,
+        CAST((orderkey & 2) >> 1 AS INT) AS flags_grouping
+    FROM bench
+) bitwise_scalars
+GROUP BY row_id, flags_and, flags_or, flags_shift_left, flags_shift_right, flags_grouping
+ORDER BY row_id ASC
+LIMIT 20
+";
+
 pub(super) const SQL_PHASE2_NULL_SEMANTICS_IS_NULL_QUERY: &str = "
 SELECT row_id, status_is_null, status_is_not_null, shipdate_is_null, COUNT(*) AS row_count
 FROM (
@@ -281,6 +298,28 @@ FROM (
     FROM bench
 ) null_semantics
 GROUP BY row_id, status_is_null, status_is_not_null, shipdate_is_null
+ORDER BY row_id ASC
+LIMIT 20
+";
+
+pub(super) const SQL_PHASE5_ROUND_SCALAR_QUERY: &str = "
+SELECT row_id, rounded_orderkey, COUNT(*) AS row_count
+FROM (
+    SELECT row_id, ROUND(CAST(orderkey AS DOUBLE) + 0.5, 0) AS rounded_orderkey
+    FROM bench
+) round_scalars
+GROUP BY row_id, rounded_orderkey
+ORDER BY row_id ASC
+LIMIT 20
+";
+
+pub(super) const SQL_PHASE7_ABS_SCALAR_QUERY: &str = "
+SELECT row_id, abs_order_delta, COUNT(*) AS row_count
+FROM (
+    SELECT row_id, ABS(CAST(orderkey AS DOUBLE) - 4.5) AS abs_order_delta
+    FROM bench
+) abs_scalars
+GROUP BY row_id, abs_order_delta
 ORDER BY row_id ASC
 LIMIT 20
 ";

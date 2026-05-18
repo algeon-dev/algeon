@@ -15,6 +15,13 @@ pub(in crate::exec) fn validate_aggregate_capability(
         return validate_global_aggregate_capability(&node.spec, output_schema);
     }
     if aggregate_spec_has_stddev_samp(&node.spec) {
+        if aggregate_spec_has_distinct(&node.spec) {
+            return Err(QueryError::new(
+                QueryErrorCode::UnsupportedOperator,
+                "cudf_query_engine.aggregate.validate_stddev_exact",
+                "DataFusion-exact stddev aggregate path does not support distinct aggregate expressions",
+            ));
+        }
         let expected_output_names = node
             .spec
             .group_exprs
@@ -55,6 +62,13 @@ pub(in crate::exec) fn validate_final_aggregate_capability(
         return validate_global_aggregate_capability(&node.spec, output_schema);
     }
     if aggregate_spec_has_stddev_samp(&node.spec) {
+        if aggregate_spec_has_distinct(&node.spec) {
+            return Err(QueryError::new(
+                QueryErrorCode::UnsupportedOperator,
+                "cudf_query_engine.final_merge.validate_stddev_exact",
+                "DataFusion-exact stddev aggregate path does not support distinct aggregate expressions",
+            ));
+        }
         return validate_aggregate_capability(node, output_schema);
     }
     let aggregate = lower_final_aggregate_spec(&node.spec)?;
@@ -94,6 +108,14 @@ pub(in crate::exec) fn validate_global_aggregate_capability(
             validate_avg_output_fields(spec, output_schema)?;
         }
         if expr.function == AggregateFunction::StddevSamp {
+            if expr.distinct {
+                return Err(QueryError::new(
+                    QueryErrorCode::UnsupportedOperator,
+                    "cudf_query_engine.global_aggregate.validate_stddev_exact",
+                    "DataFusion-exact stddev aggregate path does not support distinct aggregate expressions",
+                )
+                .with_fact("alias", expr.alias.as_str()));
+            }
             let field = output_schema.field_with_name(expr.alias.as_str()).map_err(|_error| {
                 QueryError::new(
                     QueryErrorCode::InvalidPlan,
@@ -119,7 +141,7 @@ pub(in crate::exec) fn validate_global_aggregate_capability(
 
 pub(in crate::exec) fn validate_global_aggregate_input_expr(expr: &AggregateExpr) -> Result<()> {
     match expr.function {
-        AggregateFunction::Count if global_count_star_expr(&expr.expr) => Ok(()),
+        AggregateFunction::Count if !expr.distinct && global_count_star_expr(&expr.expr) => Ok(()),
         _ => lower_column_expr(&expr.expr, "cudf_query_engine.global_aggregate.validate_expr").map(|_| ()),
     }
 }
@@ -883,8 +905,7 @@ fn execute_datafusion_exact_host_aggregate_batch(
         .iter()
         .map(|expr| lower_named_column_expr(expr, "cudf_query_engine.aggregate.stddev_exact.lower_key"))
         .collect::<Result<Vec<_>>>()?;
-    let aggregate_columns =
-        node.spec.aggr_exprs.iter().map(|expr| aggregate_input_column(expr)).collect::<Result<Vec<_>>>()?;
+    let aggregate_columns = node.spec.aggr_exprs.iter().map(aggregate_input_column).collect::<Result<Vec<_>>>()?;
     let mut group_indices = HashMap::<Vec<HostGroupKeyValue>, usize>::new();
     let mut groups = Vec::<HostAggregateGroup>::new();
     let row_count = batch.num_rows();

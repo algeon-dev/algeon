@@ -84,6 +84,35 @@ fn decimal_division_lowers_with_declared_binary_output_type() {
     fs::remove_dir_all(dir).unwrap();
 }
 
+#[tokio::test]
+async fn sql_round_decimal_integral_cast_lowers_to_native_expr() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-round-decimal-integral-cast");
+    let path = dir.join("input.parquet");
+    write_parquet_file_with_tpch_like_columns(&path);
+    let plan = sql_plan(&path, direct_friendly_sql_session_config(), SQL_ROUND_DECIMAL_INTEGRAL_CAST_QUERY).await;
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    let projection = native_projection_exprs(&result.plans[0])
+        .into_iter()
+        .find(|expr| matches!(expr, Expr::Alias { alias, .. } if alias == "segment"))
+        .expect("native plan should include segment projection");
+    assert!(matches!(
+        projection,
+        Expr::Alias { expr, .. }
+            if matches!(
+                expr.as_ref(),
+                Expr::Cast { expr, target_type }
+                    if *target_type == DataType::Int32
+                        && matches!(expr.as_ref(), Expr::Round { output_type: DataType::Decimal128(_, 0), .. })
+            )
+    ));
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
 #[test]
 fn try_cast_is_rejected_during_native_planning() {
     let dir = unique_temp_dir("datafusion-cudf-native-lowering-try-cast");

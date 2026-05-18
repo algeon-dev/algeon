@@ -61,6 +61,16 @@ impl QueryPlanBuilder {
         )
     }
 
+    /// Adds a window node that appends function outputs while preserving input row identity.
+    pub fn add_window(&mut self, input: NodeId, spec: WindowSpec, output_schema: SchemaRef) -> NodeId {
+        self.assert_input_exists(input);
+        let output_ordering = self.node(input).facts.output_ordering.clone();
+        self.push(
+            PlanNode::Window(WindowNode { input, spec }),
+            PlanFacts::device(output_schema, SchemaBehavior::Projection).with_output_ordering(output_ordering),
+        )
+    }
+
     /// Adds a sort node and records its output ordering fact.
     pub fn add_sort(&mut self, input: NodeId, spec: SortSpec, output_schema: SchemaRef) -> NodeId {
         self.assert_input_exists(input);
@@ -93,6 +103,15 @@ impl QueryPlanBuilder {
             PlanNode::Join(JoinNode { inputs: [left, right], spec }),
             PlanFacts::device(output_schema, SchemaBehavior::Join),
         )
+    }
+
+    /// Adds an ordered, schema-compatible union node.
+    pub fn add_union(&mut self, inputs: Vec<NodeId>, output_schema: SchemaRef) -> NodeId {
+        assert!(!inputs.is_empty(), "query plan union node must have at least one input");
+        for input in &inputs {
+            self.assert_input_exists(*input);
+        }
+        self.push(PlanNode::Union(UnionNode { inputs }), PlanFacts::device(output_schema, SchemaBehavior::Union))
     }
 
     /// Finishes the plan with a host Arrow materialization sink.

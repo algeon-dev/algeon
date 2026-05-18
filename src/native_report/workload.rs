@@ -65,7 +65,10 @@ impl NativeDataFusionPlanningWorkloadItem {
     ) -> Self {
         Self {
             query_id: query_id.into(),
-            input: NativeDataFusionPlanningWorkloadInput::Planned { planned_plan, native_diagnostics },
+            input: NativeDataFusionPlanningWorkloadInput::Planned {
+                planned_plan,
+                native_diagnostics: Box::new(native_diagnostics),
+            },
         }
     }
 
@@ -94,7 +97,7 @@ impl NativeDataFusionPlanningWorkloadItem {
 /// those diagnostics from being produced.
 #[derive(Debug, Clone)]
 pub enum NativeDataFusionPlanningWorkloadInput {
-    Planned { planned_plan: Arc<dyn ExecutionPlan>, native_diagnostics: NativePlanningDiagnostics },
+    Planned { planned_plan: Arc<dyn ExecutionPlan>, native_diagnostics: Box<NativePlanningDiagnostics> },
     PlanningFailure(NativePlanningFailure),
 }
 

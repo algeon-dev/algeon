@@ -37,6 +37,10 @@ pub(in crate::capability) fn root_join_with_post_root_stages(
                 stages.push(PostRootStage::Aggregate(current));
                 current = aggregate.input;
             },
+            PlanNode::Window(window) => {
+                stages.push(PostRootStage::Window(current));
+                current = window.input;
+            },
             PlanNode::Sort(sort) => {
                 stages.push(PostRootStage::Sort(current));
                 current = sort.input;
@@ -49,6 +53,16 @@ pub(in crate::capability) fn root_join_with_post_root_stages(
                 return Err(CapabilityDecision::rejected(
                     "post_root_stage_requires_root_join",
                     [("reason_prefix", reason_prefix.to_string()), ("node_id", current.to_string())],
+                ));
+            },
+            PlanNode::Union(_) => {
+                return Err(CapabilityDecision::rejected(
+                    "post_root_stage_unsupported_node",
+                    [
+                        ("reason_prefix", reason_prefix.to_string()),
+                        ("node_id", current.to_string()),
+                        ("operator", node_operator_fact(&node.kind).to_string()),
+                    ],
                 ));
             },
         }
@@ -118,12 +132,15 @@ pub(in crate::capability) fn validate_resident_source_filter_projection_leaf_pip
         PlanNode::Projection(projection) => {
             validate_resident_source_filter_projection_leaf_pipeline_for_capability(plan, projection.input)
         },
-        PlanNode::Join(_) | PlanNode::Aggregate(_) | PlanNode::Sort(_) | PlanNode::Limit(_) => {
-            Err(CapabilityDecision::rejected(
-                "source_leaf_pipeline_requires_source_filter_projection",
-                [("node_id", node_id.to_string()), ("operator", node_operator_fact(&node.kind).to_string())],
-            ))
-        },
+        PlanNode::Join(_)
+        | PlanNode::Aggregate(_)
+        | PlanNode::Window(_)
+        | PlanNode::Sort(_)
+        | PlanNode::Limit(_)
+        | PlanNode::Union(_) => Err(CapabilityDecision::rejected(
+            "source_leaf_pipeline_requires_source_filter_projection",
+            [("node_id", node_id.to_string()), ("operator", node_operator_fact(&node.kind).to_string())],
+        )),
     }
 }
 
@@ -144,6 +161,7 @@ pub(in crate::capability) fn validate_optional_projection_then_sort_post_root_st
             PostRootStage::Filter(node_id)
             | PostRootStage::Projection(node_id)
             | PostRootStage::Aggregate(node_id)
+            | PostRootStage::Window(node_id)
             | PostRootStage::Sort(node_id)
             | PostRootStage::Limit(node_id) => {
                 return Err(CapabilityDecision::rejected(

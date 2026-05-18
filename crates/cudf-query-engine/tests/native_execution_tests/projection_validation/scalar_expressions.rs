@@ -20,6 +20,7 @@ fn native_query_executes_phase2_scalar_expression_families() {
         Field::new("status_not_f", DataType::Boolean, true),
         Field::new("status_like_o", DataType::Boolean, true),
         Field::new("status_not_like_f", DataType::Boolean, true),
+        Field::new("abs_order_delta", DataType::Int64, false),
     ]));
     let source = LocalParquetSource::from_files(
         vec![LocalParquetFile::new(&path).with_file_size_bytes(fs::metadata(&path).unwrap().len())],
@@ -66,6 +67,8 @@ fn native_query_executes_phase2_scalar_expression_families() {
             .alias("status_not_f"),
         Expr::like(Expr::column("status"), "O%").alias("status_like_o"),
         Expr::not_like(Expr::column("status"), "F%").alias("status_not_like_f"),
+        Expr::abs(Expr::binary(Expr::column("orderkey"), BinaryOp::Subtract, Expr::literal(LiteralValue::Int64(3))))
+            .alias("abs_order_delta"),
     ];
 
     let mut builder = QueryPlanBuilder::new();
@@ -103,6 +106,71 @@ fn native_query_executes_phase2_scalar_expression_families() {
     assert!(boolean_array(batch, 12).value(0));
     assert!(boolean_array(batch, 12).value(1));
     assert!(boolean_array(batch, 12).is_null(2));
+    assert_eq!(int64_array(batch, 13).values().as_ref(), &[2, 0, 1]);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn native_query_executes_bitwise_scalar_expressions() {
+    let dir = unique_temp_dir("cudf-query-engine-native-execution-bitwise-scalars");
+    let path = dir.join("input.parquet");
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let input_schema = write_phase2_scalar_expression_parquet(&runtime, &path);
+    let output_schema = Arc::new(Schema::new(vec![
+        Field::new("flags", DataType::Int64, false),
+        Field::new("flags_and", DataType::Int64, false),
+        Field::new("flags_or", DataType::Int64, false),
+        Field::new("flags_xor", DataType::Int64, false),
+        Field::new("flags_shift_left", DataType::Int64, false),
+        Field::new("flags_shift_right", DataType::Int64, false),
+        Field::new("flags_grouping", DataType::Int32, false),
+    ]));
+    let source = LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(&path).with_file_size_bytes(fs::metadata(&path).unwrap().len())],
+        Arc::clone(&input_schema),
+        vec!["orderkey".to_string()],
+    );
+    let projection = vec![
+        Expr::column("orderkey").alias("flags"),
+        Expr::binary(Expr::column("orderkey"), BinaryOp::BitwiseAnd, Expr::literal(LiteralValue::Int64(3)))
+            .alias("flags_and"),
+        Expr::binary(Expr::column("orderkey"), BinaryOp::BitwiseOr, Expr::literal(LiteralValue::Int64(8)))
+            .alias("flags_or"),
+        Expr::binary(Expr::column("orderkey"), BinaryOp::BitwiseXor, Expr::literal(LiteralValue::Int64(1)))
+            .alias("flags_xor"),
+        Expr::binary(Expr::column("orderkey"), BinaryOp::ShiftLeft, Expr::literal(LiteralValue::Int64(1)))
+            .alias("flags_shift_left"),
+        Expr::binary(Expr::column("orderkey"), BinaryOp::ShiftRight, Expr::literal(LiteralValue::Int64(1)))
+            .alias("flags_shift_right"),
+        Expr::cast(
+            Expr::binary(
+                Expr::binary(Expr::column("orderkey"), BinaryOp::BitwiseAnd, Expr::literal(LiteralValue::Int64(2))),
+                BinaryOp::ShiftRight,
+                Expr::literal(LiteralValue::Int64(1)),
+            ),
+            DataType::Int32,
+        )
+        .alias("flags_grouping"),
+    ];
+
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LocalParquet(source));
+    let projection = builder.add_projection(source, projection_outputs(projection, output_schema));
+    let plan = builder.finish_with_host_sink(projection);
+
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+    let result = execute_query_plan(&context, &plan).unwrap();
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    assert_eq!(int64_array(batch, 0).values().as_ref(), &[1, 2, 3, 4]);
+    assert_eq!(int64_array(batch, 1).values().as_ref(), &[1, 2, 3, 0]);
+    assert_eq!(int64_array(batch, 2).values().as_ref(), &[9, 10, 11, 12]);
+    assert_eq!(int64_array(batch, 3).values().as_ref(), &[0, 3, 2, 5]);
+    assert_eq!(int64_array(batch, 4).values().as_ref(), &[2, 4, 6, 8]);
+    assert_eq!(int64_array(batch, 5).values().as_ref(), &[0, 1, 1, 2]);
+    assert_eq!(int32_array(batch, 6).values().as_ref(), &[0, 1, 1, 0]);
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -214,6 +282,93 @@ fn native_query_rejects_untyped_decimal_division_before_cudf_execution() {
     assert_eq!(error.fact_value("left_type"), Some("Decimal128(38, 8)"));
     assert_eq!(error.fact_value("right_type"), Some("Decimal128(38, 8)"));
     assert_eq!(error.fact_value("operator"), Some("/"));
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn native_query_executes_round_scalar_expression() {
+    let dir = unique_temp_dir("cudf-query-engine-native-execution-round-scalar");
+    let path = dir.join("input.parquet");
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let input_schema = write_decimal_ratio_parquet(&path);
+    let output_schema = Arc::new(Schema::new(vec![
+        Field::new("rounded_literal", DataType::Float64, false),
+        Field::new("rounded_ratio", DataType::Decimal128(38, 1), false),
+    ]));
+    let source = LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(&path).with_file_size_bytes(fs::metadata(&path).unwrap().len())],
+        Arc::clone(&input_schema),
+        vec!["numerator".to_string(), "denominator".to_string()],
+    );
+    let ratio = Expr::binary_with_output_type(
+        Expr::column("numerator"),
+        BinaryOp::Divide,
+        Expr::column("denominator"),
+        DataType::Decimal128(38, 8),
+    );
+
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LocalParquet(source));
+    let projection = builder.add_projection(
+        source,
+        projection_outputs(
+            vec![
+                Expr::round(Expr::literal(LiteralValue::Float64(1.235)), 2, DataType::Float64).alias("rounded_literal"),
+                Expr::round(ratio, 1, DataType::Decimal128(38, 1)).alias("rounded_ratio"),
+            ],
+            output_schema,
+        ),
+    );
+    let plan = builder.finish_with_host_sink(projection);
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+
+    let result = execute_query_plan(&context, &plan).unwrap();
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    assert_eq!(batch.num_rows(), 2);
+    assert_eq!(float64_array(batch, 0).values().as_ref(), &[1.24, 1.24]);
+    let rounded_ratio = decimal128_array(batch, 1);
+    assert_eq!(rounded_ratio.data_type(), &DataType::Decimal128(38, 1));
+    assert_eq!(rounded_ratio.values().as_ref(), &[3, 5]);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn native_query_executes_round_decimal_cast_to_integral_expression() {
+    let dir = unique_temp_dir("cudf-query-engine-native-execution-round-decimal-integral-cast");
+    let path = dir.join("input.parquet");
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let input_schema = write_decimal_ratio_parquet(&path);
+    let output_schema = Arc::new(Schema::new(vec![Field::new("rounded_segment", DataType::Int32, false)]));
+    let source = LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(&path).with_file_size_bytes(fs::metadata(&path).unwrap().len())],
+        Arc::clone(&input_schema),
+        vec!["numerator".to_string(), "denominator".to_string()],
+    );
+    let ratio = Expr::binary_with_output_type(
+        Expr::column("numerator"),
+        BinaryOp::Divide,
+        Expr::column("denominator"),
+        DataType::Decimal128(38, 8),
+    );
+    let rounded_segment =
+        Expr::cast(Expr::round(ratio, 0, DataType::Decimal128(38, 0)), DataType::Int32).alias("rounded_segment");
+
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LocalParquet(source));
+    let projection = builder.add_projection(source, projection_outputs(vec![rounded_segment], output_schema));
+    let plan = builder.finish_with_host_sink(projection);
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+
+    let result = execute_query_plan(&context, &plan).unwrap();
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    assert_eq!(batch.num_rows(), 2);
+    assert_eq!(int32_array(batch, 0).values().as_ref(), &[0, 1]);
 
     fs::remove_dir_all(dir).unwrap();
 }

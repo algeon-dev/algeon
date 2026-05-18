@@ -4,6 +4,7 @@ description = "DataFusion physical-plan adapter for native cudf-rs GPU execution
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.92"
+build = "build.rs"
 
 [workspace]
 members = [".", "crates/cudf-query-engine"]
@@ -15,11 +16,70 @@ arrow = { version = "58.3.0", default-features = false, features = ["ipc"] }
 cudf = { path = "../cudf-rs/cudf-rs" }
 parquet = "58.3.0"
 
+[features]
+default = []
+iceberg = [
+    "dep:aws-config",
+    "dep:aws-credential-types",
+    "dep:iceberg",
+    "dep:iceberg-catalog-glue",
+    "dep:object_store",
+    "dep:tempfile",
+]
+
 [dependencies]
 arrow = { workspace = true }
+async-trait = "0.1"
+aws-config = { version = "1.8", optional = true }
+aws-credential-types = { version = "1.2", optional = true }
 cudf = { workspace = true }
+# Direct (non-transitive) dep on cudf-sys so this crate's build.rs receives
+# DEP_CUDF_RUST_RUNTIME_LIB_DIR from cudf-sys's `links = "cudf_rust"`
+# metadata. The build script uses it to bake an rpath into every binary so
+# the loader picks up the freshly built libcudf_rust.so without relying on
+# LD_LIBRARY_PATH ordering.
+cudf-sys = { path = "../cudf-rs/cudf-sys" }
 cudf-query-engine = { path = "crates/cudf-query-engine" }
 datafusion = { path = "../datafusion/datafusion/core" }
 futures = "0.3"
+iceberg = { path = "../iceberg-rust/crates/iceberg", optional = true }
+iceberg-catalog-glue = { path = "../iceberg-rust/crates/catalog/glue", optional = true }
+object_store = { version = "0.13", default-features = false, features = ["aws"], optional = true }
 parquet = { workspace = true }
+tempfile = { version = "3", optional = true }
 tokio = { version = "1.52", features = ["macros", "rt-multi-thread", "sync"] }
+
+[[bin]]
+name = "native_iceberg_smoke_report"
+path = "src/bin/native_iceberg_smoke_report.rs"
+required-features = ["iceberg"]
+
+[[bin]]
+name = "native_iceberg_tpch_benchmark"
+path = "src/bin/native_iceberg_tpch_benchmark.rs"
+required-features = ["iceberg"]
+
+[[test]]
+name = "table_format_iceberg_planner_tests"
+path = "tests/table_format_iceberg_planner_tests.rs"
+required-features = ["iceberg"]
+
+[[test]]
+name = "table_format_provider_tests"
+path = "tests/table_format_provider_tests.rs"
+required-features = ["iceberg"]
+
+[[test]]
+name = "native_iceberg_smoke_report_tests"
+path = "tests/native_iceberg_smoke_report_tests.rs"
+required-features = ["iceberg"]
+
+[[test]]
+name = "native_iceberg_tpch_benchmark_tests"
+path = "tests/native_iceberg_tpch_benchmark_tests.rs"
+required-features = ["iceberg"]
+
+[[test]]
+name = "iceberg_public_api_tests"
+path = "tests/iceberg_public_api_tests.rs"
+required-features = ["iceberg"]

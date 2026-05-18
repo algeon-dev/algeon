@@ -24,6 +24,8 @@ pub struct NativeDataFusionPlanningRow {
     pub source_diagnostics: Vec<NativeSourceDiagnosticSummary>,
     pub post_native_plan_root: String,
     pub post_native_execution_path: NativeDataFusionPostNativeExecutionPath,
+    pub native_plan_fragment_count: usize,
+    pub host_datafusion_boundary_count: usize,
     pub rejected_before_execution: bool,
 }
 
@@ -46,6 +48,8 @@ pub struct NativeDataFusionExecutionRow {
     pub source_diagnostics: Vec<NativeSourceDiagnosticSummary>,
     pub post_native_plan_root: String,
     pub post_native_execution_path: NativeDataFusionPostNativeExecutionPath,
+    pub native_plan_fragment_count: usize,
+    pub host_datafusion_boundary_count: usize,
     pub rejected_before_execution: bool,
     pub native_runtime_started: bool,
     pub runtime_outcome: NativeDataFusionRuntimeOutcome,
@@ -109,6 +113,13 @@ impl NativeDataFusionPostNativeExecutionPath {
             Self::Cpu => "cpu",
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NativeDataFusionPlanCoverage {
+    pub execution_path: NativeDataFusionPostNativeExecutionPath,
+    pub native_fragment_count: usize,
+    pub host_datafusion_boundary_count: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

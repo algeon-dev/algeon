@@ -47,6 +47,18 @@ pub enum FallbackReason {
     NativeSourceFileOrdering,
     NativeSourceRowSelection,
     NativeSourceSchemaMapping,
+    TableFormatUnsupported,
+    TableFormatPlanningFailed,
+    IcebergNonParquetDataFile,
+    IcebergDeleteFilesUnsupported,
+    IcebergFieldIdMappingUnsupported,
+    IcebergNameMappingUnsupported,
+    IcebergNestedProjectionUnsupported,
+    IcebergPartitionTransformUnsupported,
+    IcebergResidualPredicateUnsupported,
+    IcebergRowSelectionUnsupported,
+    IcebergObjectStoreReadUnsupported,
+    IcebergSnapshotUnsupported,
 }
 
 impl FallbackReason {
@@ -75,6 +87,18 @@ impl FallbackReason {
             Self::NativeSourceFileOrdering => "native_source_file_ordering",
             Self::NativeSourceRowSelection => "native_source_row_selection",
             Self::NativeSourceSchemaMapping => "native_source_schema_mapping",
+            Self::TableFormatUnsupported => "table_format_unsupported",
+            Self::TableFormatPlanningFailed => "table_format_planning_failed",
+            Self::IcebergNonParquetDataFile => "iceberg_non_parquet_data_file",
+            Self::IcebergDeleteFilesUnsupported => "iceberg_delete_files_unsupported",
+            Self::IcebergFieldIdMappingUnsupported => "iceberg_field_id_mapping_unsupported",
+            Self::IcebergNameMappingUnsupported => "iceberg_name_mapping_unsupported",
+            Self::IcebergNestedProjectionUnsupported => "iceberg_nested_projection_unsupported",
+            Self::IcebergPartitionTransformUnsupported => "iceberg_partition_transform_unsupported",
+            Self::IcebergResidualPredicateUnsupported => "iceberg_residual_predicate_unsupported",
+            Self::IcebergRowSelectionUnsupported => "iceberg_row_selection_unsupported",
+            Self::IcebergObjectStoreReadUnsupported => "iceberg_object_store_read_unsupported",
+            Self::IcebergSnapshotUnsupported => "iceberg_snapshot_unsupported",
         }
     }
 }

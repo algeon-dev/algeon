@@ -209,6 +209,8 @@ pub enum PipelineTaskKind {
     Unary,
     /// Execute a blocking aggregate.
     Aggregate,
+    /// Execute a blocking window operator.
+    Window,
     /// Prepare the resident build side of a join.
     JoinBuild,
     /// Execute the probe phase against a prepared join build side.
@@ -219,6 +221,8 @@ pub enum PipelineTaskKind {
     FinalSort,
     /// Apply a bounded limit.
     Limit,
+    /// Concatenate ordered union inputs.
+    Union,
     /// Materialize the explicit result sink.
     SinkMaterialize,
 }
@@ -230,11 +234,13 @@ impl PipelineTaskKind {
             Self::GpuResidentSource => "gpu_resident_source",
             Self::Unary => "unary",
             Self::Aggregate => "aggregate",
+            Self::Window => "window",
             Self::JoinBuild => "join_build",
             Self::JoinProbe => "join_probe",
             Self::JoinMaterialize => "join_materialize",
             Self::FinalSort => "final_sort",
             Self::Limit => "limit",
+            Self::Union => "union",
             Self::SinkMaterialize => "sink_materialize",
         }
     }

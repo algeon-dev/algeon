@@ -108,6 +108,12 @@ pub const STRICT_UNRESOLVED_PREFLIGHT_GAPS: &[StrictUnresolvedPreflightGap] = &[
         retirement_requirement: "cudf-rs/libcudf groupby aggregate output and temporary-workspace preflight",
     },
     StrictUnresolvedPreflightGap {
+        kind: ReservationKind::OperatorOutput,
+        required_contract: "window_contract",
+        unresolved_gap: "libcudf_window_output_temporary_workspace_preflight_unavailable",
+        retirement_requirement: "cudf-rs/libcudf window output and temporary-workspace preflight",
+    },
+    StrictUnresolvedPreflightGap {
         kind: ReservationKind::FinalSort,
         required_contract: "final_sort_contract",
         unresolved_gap: "libcudf_final_sort_order_preflight_unavailable",
@@ -260,9 +266,11 @@ pub enum NodeOperator {
     Filter,
     Projection,
     Aggregate { grouping: AggregateGrouping, functions: Vec<AggregateFunction> },
+    Window { function_count: usize },
     Sort { ordering: OrderingRequirement },
     Limit,
     Join { join_type: JoinType, key_count: usize, residual: ResidualRequirement, build_side: JoinSide },
+    Union { input_count: usize },
 }
 
 /// Source format capability known by the native engine.
@@ -331,8 +339,10 @@ pub struct EdgeContract {
 pub enum EdgeContractKind {
     ResidentSourceInput { format: SourceFormatCapability },
     ResidentAggregateInput,
+    WindowInput,
     JoinBuildInput { side: JoinSide },
     JoinProbeInput { side: JoinSide },
+    UnionInput { input_index: usize },
     SharedProducer { identity: SharedProducerIdentity },
     ResidentFrameFlow,
     JoinMaterialization,
@@ -365,7 +375,9 @@ pub enum ResultSinkKind {
 pub enum InputRole {
     UnaryInput,
     AggregateInput,
+    WindowInput,
     SortInput,
+    UnionInput { input_index: usize },
     LimitInput,
     JoinBuildInput { side: JoinSide },
     JoinProbeInput { side: JoinSide },
@@ -519,6 +531,8 @@ pub struct CapabilityAnalysis {
     pub keyless_conditional_join_aggregate_over_join_subplan_inputs_admission: CapabilityDecision,
     /// Strict multi-join resident aggregate subquery-filter envelope admission.
     pub multi_join_resident_grouped_aggregate_subquery_filter_admission: CapabilityDecision,
+    /// Strict union compiled-envelope admission.
+    pub union_pipeline_admission: CapabilityDecision,
 }
 
 impl CapabilityAnalysis {
@@ -570,17 +584,17 @@ impl CapabilityAnalysis {
     }
 
     pub fn admits_strict_bounded_join(&self) -> bool {
-        !self.has_rejections()
-            && (self.admits_root_join()
-                || self.admits_single_join_post_root_pipeline()
-                || self.admits_keyless_conditional_join_input_subplan_pipeline()
-                || self.admits_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline()
-                || self.admits_closed_multi_join_subgraph()
-                || self.admits_multi_join_aggregate_over_join_subplan_topk_pipeline()
-                || self.admits_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline()
-                || self.admits_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_pipeline()
-                || self.admits_multi_join_resident_grouped_aggregate_subquery_filter_pipeline()
-                || self.admits_keyed_hash_join_resident_subplan_pipeline())
+        self.admits_root_join()
+            || self.admits_single_join_post_root_pipeline()
+            || self.admits_keyless_conditional_join_input_subplan_pipeline()
+            || self.admits_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline()
+            || self.admits_closed_multi_join_subgraph()
+            || self.admits_multi_join_aggregate_over_join_subplan_topk_pipeline()
+            || self.admits_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline()
+            || self.admits_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_pipeline()
+            || self.admits_multi_join_resident_grouped_aggregate_subquery_filter_pipeline()
+            || self.admits_keyed_hash_join_resident_subplan_pipeline()
+            || self.union_pipeline_admission == CapabilityDecision::Satisfied
     }
 
     pub fn first_rejection_projection(&self) -> Option<CapabilityRejectionProjection> {
@@ -647,6 +661,7 @@ impl CapabilityAnalysis {
                         "multi_join_resident_grouped_aggregate_subquery_filter_admission",
                         &self.multi_join_resident_grouped_aggregate_subquery_filter_admission,
                     ),
+                    ("union_pipeline_admission", &self.union_pipeline_admission),
                 ]
                 .into_iter()
                 .find_map(|(admission, decision)| {

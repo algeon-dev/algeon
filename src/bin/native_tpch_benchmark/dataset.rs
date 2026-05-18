@@ -116,12 +116,12 @@ fn prepare_external_dataset(
         .map_err(tpch_error)?;
         (root, metadata)
     } else {
-        let nvme_root = default_nvme_root_for(expected_scale_factor);
+        let default_root = default_root_for(expected_scale_factor);
         let Some((root, metadata)) =
-            default_nvme_tpch_dataset_with_fingerprint(nvme_root, expected_scale_factor.as_str())
+            default_nvme_tpch_dataset_with_fingerprint(default_root, expected_scale_factor.as_str())
         else {
             return Err(plan_error(format!(
-                "native TPC-H benchmark dataset_mode={dataset_mode} requires {CUDF_TPCH_PARQUET_DIR_ENV} or a populated default NVMe fixture at {nvme_root}; set CUDF_TPCH_BENCH_DATASET_MODE=allow_tiny for local tiny/dev runs"
+                "native TPC-H benchmark dataset_mode={dataset_mode} requires {CUDF_TPCH_PARQUET_DIR_ENV} or a populated default fixture at {default_root}; set CUDF_TPCH_BENCH_DATASET_MODE=allow_tiny for local tiny/dev runs"
             )));
         };
         (root, metadata)
@@ -130,12 +130,12 @@ fn prepare_external_dataset(
     Ok((root, metadata))
 }
 
-const fn default_nvme_root_for(scale_factor: NativeTpchScaleFactor) -> &'static str {
-    match scale_factor {
-        NativeTpchScaleFactor::Sf1 => DEFAULT_NVME_TPCH_SF1_PARQUET_DIR,
-        NativeTpchScaleFactor::Sf10 => DEFAULT_NVME_TPCH_SF10_PARQUET_DIR,
-        NativeTpchScaleFactor::Sf100 => DEFAULT_NVME_TPCH_SF100_OPTIMIZED_PARQUET_DIR,
-    }
+fn default_root_for(scale_factor: NativeTpchScaleFactor) -> &'static str {
+    datafusion_cudf::default_tpch_parquet_root(match scale_factor {
+        NativeTpchScaleFactor::Sf1 => datafusion_cudf::TpchDefaultScale::Sf1,
+        NativeTpchScaleFactor::Sf10 => datafusion_cudf::TpchDefaultScale::Sf10,
+        NativeTpchScaleFactor::Sf100 => datafusion_cudf::TpchDefaultScale::Sf100Optimized,
+    })
 }
 
 #[cfg(test)]

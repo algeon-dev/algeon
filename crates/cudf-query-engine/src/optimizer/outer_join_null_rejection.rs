@@ -126,14 +126,13 @@ pub(crate) fn optimize_outer_join_null_rejection(
 
             if let Some(node) = nodes.get_mut(first_trace.outer_join_id.index())
                 && let PlanNode::Join(join) = &mut node.kind
+                && join.spec.join_type == JoinType::Left
             {
-                if join.spec.join_type == JoinType::Left {
-                    join.spec.join_type = JoinType::Inner;
-                    candidate.applied = true;
-                    candidate.rejected_reason = None;
-                    diagnostics.applied_count += 1;
-                    changed = true;
-                }
+                join.spec.join_type = JoinType::Inner;
+                candidate.applied = true;
+                candidate.rejected_reason = None;
+                diagnostics.applied_count += 1;
+                changed = true;
             }
             diagnostics.candidates.push(candidate);
         }
@@ -223,7 +222,7 @@ fn trace_right_origin(
                 }
                 return Some(NullRejectingTrace { outer_join_id: node_id, rejecting_column: String::new(), path });
             },
-            PlanNode::Source(_) | PlanNode::Aggregate(_) => return None,
+            PlanNode::Source(_) | PlanNode::Aggregate(_) | PlanNode::Window(_) | PlanNode::Union(_) => return None,
         }
     }
 }

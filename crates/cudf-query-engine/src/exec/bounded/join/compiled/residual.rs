@@ -296,6 +296,18 @@ pub(super) fn rewrite_join_residual_for_candidate(
         },
         Expr::Lower(expr) => Ok(Expr::lower(rewrite_join_residual_for_candidate(expr, residual_output_names)?)),
         Expr::Upper(expr) => Ok(Expr::upper(rewrite_join_residual_for_candidate(expr, residual_output_names)?)),
+        Expr::Abs(expr) => Ok(Expr::abs(rewrite_join_residual_for_candidate(expr, residual_output_names)?)),
+        Expr::Concat(exprs) => Ok(Expr::concat(
+            exprs
+                .iter()
+                .map(|expr| rewrite_join_residual_for_candidate(expr, residual_output_names))
+                .collect::<Result<Vec<_>>>()?,
+        )),
+        Expr::Round { expr, decimal_places, output_type } => Ok(Expr::round(
+            rewrite_join_residual_for_candidate(expr, residual_output_names)?,
+            *decimal_places,
+            output_type.clone(),
+        )),
         Expr::InList { expr, list, negated } => Ok(Expr::InList {
             expr: Box::new(rewrite_join_residual_for_candidate(expr, residual_output_names)?),
             list: list

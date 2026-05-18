@@ -99,13 +99,13 @@ fn bounded_native_query_executes_grouped_aggregate_join_build_input() {
     write_aggregate_join_input_parquets(&runtime, &left_path, &right_path, Arc::clone(&left_schema));
 
     let mut builder = QueryPlanBuilder::new();
-    let left = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
-        &left_path,
+    let left = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(&left_path).with_file_size_bytes(1024)],
         Arc::clone(&left_schema),
         vec!["id".into(), "amount".into()],
     )));
-    let right = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
-        &right_path,
+    let right = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(&right_path).with_file_size_bytes(1024)],
         Arc::clone(&right_schema),
         vec!["id".into()],
     )));

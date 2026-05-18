@@ -171,6 +171,28 @@ pub(crate) fn resident_grouped_aggregate_subquery_filter_plan() -> cudf_query_en
     builder.finish_with_host_sink(sort)
 }
 
+pub(crate) fn shared_grouped_aggregate_fanout_to_join_and_grouped_aggregate_plan() -> cudf_query_engine::QueryPlan {
+    let mut builder = QueryPlanBuilder::new();
+    let a = source(&mut builder, "shared-grouped-aggregate-fanout-a");
+    let b = source(&mut builder, "shared-grouped-aggregate-fanout-b");
+    let lineitem = source(&mut builder, "shared-grouped-aggregate-fanout-lineitem");
+
+    let shared_grouped = grouped_aggregate(&mut builder, lineitem);
+    let shared_for_join = project_key_value(&mut builder, shared_grouped);
+    let ab = join(&mut builder, a, b, "ab");
+    let joined_branch = join(&mut builder, ab, shared_for_join, "joined_shared");
+    let joined_branch = project_key_value(&mut builder, joined_branch);
+
+    let shared_for_aggregate = project_key_value(&mut builder, shared_grouped);
+    let aggregate_branch = grouped_aggregate(&mut builder, shared_for_aggregate);
+    let aggregate_branch = project_key_value(&mut builder, aggregate_branch);
+
+    let root = join(&mut builder, joined_branch, aggregate_branch, "root");
+    let sort =
+        builder.add_sort(root, SortSpec::new(vec![SortExpr::new(Expr::column("k"), false, false)]), key_value_schema());
+    builder.finish_with_host_sink(sort)
+}
+
 fn source(builder: &mut QueryPlanBuilder, label: &str) -> cudf_query_engine::NodeId {
     builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
         format!("/tmp/{label}.parquet"),

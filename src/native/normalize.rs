@@ -5,16 +5,19 @@ use datafusion::{
         ExecutionPlan,
         aggregates::AggregateExec,
         coalesce_partitions::CoalescePartitionsExec,
+        coop::CooperativeExec,
         filter::FilterExec,
         joins::{CrossJoinExec, HashJoinExec, NestedLoopJoinExec},
         limit::{GlobalLimitExec, LocalLimitExec},
         projection::ProjectionExec,
         repartition::RepartitionExec,
         sorts::{sort::SortExec, sort_preserving_merge::SortPreservingMergeExec},
+        union::UnionExec,
+        windows::{BoundedWindowAggExec, WindowAggExec},
     },
 };
 
-use crate::{policy::FallbackReason, report::GpuCandidate};
+use crate::{policy::FallbackReason, report::GpuCandidate, table_format::CudfTableFormatScanExec};
 
 mod distributed_aggregate;
 mod shape;
@@ -25,6 +28,8 @@ use shape::*;
 pub(in crate::native) use types::*;
 
 pub(super) fn normalize_native_plan(plan: &dyn ExecutionPlan) -> Result<NormalizedNativePlan<'_>, NativePlanRejection> {
+    let plan = peel_repartition(plan);
+
     // Match root shapes from most specific to most general. The ordering keeps
     // diagnostic candidates stable: SPM(fetch) is not reported as a plain sort,
     // projection roots first try aggregate stacks, and bare joins are input
@@ -124,11 +129,12 @@ pub(super) fn normalize_native_plan(plan: &dyn ExecutionPlan) -> Result<Normaliz
                 return normalize_global_aggregate_stack(plan.schema().fields().len(), Some(projection), aggregate);
             },
             Err(rejection) if rejection.reason == FallbackReason::UnsupportedOperator => {
+                let sort_fetch = projection.input().as_any().downcast_ref::<SortExec>().and_then(SortExec::fetch);
                 return normalize_input_root(
                     plan.schema().fields().len(),
                     None,
                     None,
-                    None,
+                    sort_fetch,
                     Some(projection),
                     projection.input().as_ref(),
                     candidate,
@@ -142,7 +148,16 @@ pub(super) fn normalize_native_plan(plan: &dyn ExecutionPlan) -> Result<Normaliz
         return normalize_global_aggregate_stack(plan.schema().fields().len(), None, aggregate);
     }
 
-    if plan.as_any().downcast_ref::<FilterExec>().is_some() || plan.as_any().downcast_ref::<DataSourceExec>().is_some()
+    if plan.as_any().downcast_ref::<WindowAggExec>().is_some()
+        || plan.as_any().downcast_ref::<BoundedWindowAggExec>().is_some()
+    {
+        let candidate = input_root_candidate(None, plan.schema().fields().len(), plan.name().to_string(), false, 1);
+        return normalize_input_root(plan.schema().fields().len(), None, None, None, None, plan, candidate);
+    }
+
+    if plan.as_any().downcast_ref::<FilterExec>().is_some()
+        || plan.as_any().downcast_ref::<DataSourceExec>().is_some()
+        || plan.as_any().downcast_ref::<CudfTableFormatScanExec>().is_some()
     {
         let candidate = input_root_candidate(None, plan.schema().fields().len(), plan.name().to_string(), false, 1);
         return normalize_input_root(plan.schema().fields().len(), None, None, None, None, plan, candidate);
@@ -151,6 +166,7 @@ pub(super) fn normalize_native_plan(plan: &dyn ExecutionPlan) -> Result<Normaliz
     if plan.as_any().downcast_ref::<HashJoinExec>().is_some()
         || plan.as_any().downcast_ref::<CrossJoinExec>().is_some()
         || plan.as_any().downcast_ref::<NestedLoopJoinExec>().is_some()
+        || plan.as_any().downcast_ref::<UnionExec>().is_some()
     {
         let candidate = input_root_candidate(None, plan.schema().fields().len(), plan.name().to_string(), false, 1);
         return normalize_input_root(plan.schema().fields().len(), None, None, None, None, plan, candidate);
@@ -182,17 +198,16 @@ fn normalize_sort_stack(
         },
         Err(rejection) => return Err(rejection),
     };
-    let (aggregate, aggregate_allows_partial, has_distributed_aggregate, aggregate_output_schema) =
-        peel_distributed_aggregate_pair_if_present(aggregate, initial_candidate.clone())?;
+    let aggregate_peel = peel_distributed_aggregate_pair_if_present(aggregate, initial_candidate.clone())?;
     let (pre_aggregate_projection, native_input) =
-        peel_pre_aggregate_projection_and_input(aggregate, initial_candidate.clone())?;
+        peel_pre_aggregate_projection_and_input(aggregate_peel.aggregate, initial_candidate.clone())?;
     let candidate = native_stack_candidate_for_input(
         root,
         output_schema_fields,
         &native_input,
         post_aggregate_projection.is_some(),
         pre_aggregate_projection.is_some(),
-        has_distributed_aggregate,
+        aggregate_peel.has_distributed_aggregate,
     );
 
     Ok(NormalizedNativePlan {
@@ -200,9 +215,9 @@ fn normalize_sort_stack(
         root: NormalizedNativeRoot::Aggregate(NormalizedNativeAggregateRoot {
             input: native_input,
             pre_aggregate_projection,
-            aggregate,
-            aggregate_allows_partial,
-            aggregate_output_schema,
+            aggregate: aggregate_peel.aggregate,
+            aggregate_allows_partial: aggregate_peel.aggregate_allows_partial,
+            aggregate_output_schema: aggregate_peel.aggregate_output_schema,
             post_aggregate_projection,
         }),
         sort: Some(sort),
@@ -217,16 +232,15 @@ fn normalize_global_aggregate_stack<'a>(
 ) -> Result<NormalizedNativePlan<'a>, NativePlanRejection> {
     let candidate =
         global_aggregate_candidate(output_schema_fields, post_aggregate_projection.is_some(), false, false, false);
-    let (aggregate, aggregate_allows_partial, has_distributed_aggregate, aggregate_output_schema) =
-        peel_distributed_aggregate_pair_if_present(aggregate, candidate.clone())?;
+    let aggregate_peel = peel_distributed_aggregate_pair_if_present(aggregate, candidate.clone())?;
     let (pre_aggregate_projection, native_input) =
-        peel_pre_aggregate_projection_and_input(aggregate, candidate.clone())?;
+        peel_pre_aggregate_projection_and_input(aggregate_peel.aggregate, candidate.clone())?;
     let candidate = global_aggregate_candidate_for_input(
         output_schema_fields,
         &native_input,
         post_aggregate_projection.is_some(),
         pre_aggregate_projection.is_some(),
-        has_distributed_aggregate,
+        aggregate_peel.has_distributed_aggregate,
     );
 
     Ok(NormalizedNativePlan {
@@ -234,9 +248,9 @@ fn normalize_global_aggregate_stack<'a>(
         root: NormalizedNativeRoot::Aggregate(NormalizedNativeAggregateRoot {
             input: native_input,
             pre_aggregate_projection,
-            aggregate,
-            aggregate_allows_partial,
-            aggregate_output_schema,
+            aggregate: aggregate_peel.aggregate,
+            aggregate_allows_partial: aggregate_peel.aggregate_allows_partial,
+            aggregate_output_schema: aggregate_peel.aggregate_output_schema,
             post_aggregate_projection,
         }),
         sort: None,
@@ -383,13 +397,31 @@ fn normalize_native_input<'a>(
     if let Some(filter) = plan.as_any().downcast_ref::<FilterExec>() {
         let input = peel_repartition(filter.input().as_ref());
         if let Some(source_exec) = input.as_any().downcast_ref::<DataSourceExec>() {
-            return Ok(NormalizedNativeInput::Source(NormalizedNativeSource { source_exec, filter: Some(filter) }));
+            return Ok(NormalizedNativeInput::Source(NormalizedNativeSource {
+                scan: NormalizedNativeScan::LocalParquet(source_exec),
+                filter: Some(filter),
+            }));
+        }
+        if let Some(scan_exec) = input.as_any().downcast_ref::<CudfTableFormatScanExec>() {
+            return Ok(NormalizedNativeInput::Source(NormalizedNativeSource {
+                scan: NormalizedNativeScan::TableFormat(scan_exec),
+                filter: Some(filter),
+            }));
         }
         let input = normalize_native_input(input, candidate)?;
         return Ok(NormalizedNativeInput::Filter(NormalizedNativeFilter { filter, input: Box::new(input) }));
     }
     if let Some(source_exec) = plan.as_any().downcast_ref::<DataSourceExec>() {
-        return Ok(NormalizedNativeInput::Source(NormalizedNativeSource { source_exec, filter: None }));
+        return Ok(NormalizedNativeInput::Source(NormalizedNativeSource {
+            scan: NormalizedNativeScan::LocalParquet(source_exec),
+            filter: None,
+        }));
+    }
+    if let Some(scan_exec) = plan.as_any().downcast_ref::<CudfTableFormatScanExec>() {
+        return Ok(NormalizedNativeInput::Source(NormalizedNativeSource {
+            scan: NormalizedNativeScan::TableFormat(scan_exec),
+            filter: None,
+        }));
     }
     if let Some(projection) = plan.as_any().downcast_ref::<ProjectionExec>() {
         let input = normalize_native_input(projection.input().as_ref(), candidate)?;
@@ -398,14 +430,42 @@ fn normalize_native_input<'a>(
             input: Box::new(input),
         }));
     }
+    if let Some(limit) = plan.as_any().downcast_ref::<GlobalLimitExec>() {
+        let fetch = global_limit_fetch(limit, candidate.clone())?;
+        let input = normalize_native_input(limit.input().as_ref(), candidate)?;
+        return Ok(NormalizedNativeInput::Limit(NormalizedNativeLimit { fetch, input: Box::new(input) }));
+    }
     if let Some(aggregate) = plan.as_any().downcast_ref::<AggregateExec>() {
-        let (aggregate, aggregate_allows_partial, _has_distributed_aggregate, aggregate_output_schema) =
-            peel_distributed_aggregate_pair_if_present(aggregate, candidate.clone())?;
-        let input = normalize_native_input(aggregate.input().as_ref(), candidate)?;
+        let aggregate_peel = peel_distributed_aggregate_pair_if_present(aggregate, candidate.clone())?;
+        let input = normalize_native_input(aggregate_peel.aggregate.input().as_ref(), candidate)?;
         return Ok(NormalizedNativeInput::Aggregate(NormalizedNativeAggregate {
-            aggregate,
-            aggregate_allows_partial,
-            aggregate_output_schema,
+            aggregate: aggregate_peel.aggregate,
+            aggregate_allows_partial: aggregate_peel.aggregate_allows_partial,
+            aggregate_output_schema: aggregate_peel.aggregate_output_schema,
+            input: Box::new(input),
+        }));
+    }
+    if let Some(sort) = plan.as_any().downcast_ref::<SortExec>() {
+        if sort.preserve_partitioning() {
+            return Err(NativePlanRejection {
+                candidate,
+                reason: FallbackReason::NativePartitionPreservingSortUnsupported,
+            });
+        }
+        let input = normalize_native_input(sort.input().as_ref(), candidate)?;
+        return Ok(NormalizedNativeInput::Sort(NormalizedNativeSort { sort, input: Box::new(input) }));
+    }
+    if let Some(window) = plan.as_any().downcast_ref::<WindowAggExec>() {
+        let input = normalize_native_input(window.input().as_ref(), candidate)?;
+        return Ok(NormalizedNativeInput::Window(NormalizedNativeWindow {
+            window: NormalizedNativeWindowExec::Unbounded(window),
+            input: Box::new(input),
+        }));
+    }
+    if let Some(window) = plan.as_any().downcast_ref::<BoundedWindowAggExec>() {
+        let input = normalize_native_input(window.input().as_ref(), candidate)?;
+        return Ok(NormalizedNativeInput::Window(NormalizedNativeWindow {
+            window: NormalizedNativeWindowExec::Bounded(window),
             input: Box::new(input),
         }));
     }
@@ -436,6 +496,14 @@ fn normalize_native_input<'a>(
             right: Box::new(right),
         }));
     }
+    if let Some(union) = plan.as_any().downcast_ref::<UnionExec>() {
+        let inputs = union
+            .inputs()
+            .iter()
+            .map(|input| normalize_native_input(input.as_ref(), candidate.clone()))
+            .collect::<Result<Vec<_>, _>>()?;
+        return Ok(NormalizedNativeInput::Union(NormalizedNativeUnion { union, inputs }));
+    }
     Err(NativePlanRejection { candidate, reason: FallbackReason::UnsupportedOperator })
 }
 
@@ -446,6 +514,8 @@ fn peel_repartition(plan: &dyn ExecutionPlan) -> &dyn ExecutionPlan {
         repartition.input().as_ref()
     } else if let Some(coalesce) = plan.as_any().downcast_ref::<CoalescePartitionsExec>() {
         coalesce.input().as_ref()
+    } else if let Some(cooperative) = plan.as_any().downcast_ref::<CooperativeExec>() {
+        cooperative.input().as_ref()
     } else {
         plan
     }

@@ -85,7 +85,8 @@ pub use pipeline::{
 pub use plan::{
     AggregateNode, DataPlacement, FilterNode, HashJoinBuildArtifactId, JoinKey, JoinNode, JoinNullEquality,
     JoinOutputColumn, JoinSide, JoinSpec, JoinType, LimitNode, NodeId, PlanFacts, PlanNode, ProjectionNode,
-    ProjectionOutput, QueryNode, QueryPlan, QueryPlanBuilder, ResultSink, SchemaBehavior, SortNode,
+    ProjectionOutput, QueryNode, QueryPlan, QueryPlanBuilder, ResultSink, SchemaBehavior, SortNode, WindowFrame,
+    WindowFunction, WindowNode, WindowSpec,
 };
 pub use runtime::{
     BoundedJoinReservationContract, BoundedJoinReservationRequirement, BoundedJoinReservationStatus,
@@ -94,8 +95,8 @@ pub use runtime::{
     ReservationKind, ResultMaterializationBoundary, RetryFacts, SourceReadBoundary, SourceSchedulerPolicy,
 };
 pub use source::{
-    ByteRangeDisposition, GpuResidentSource, LocalParquetFile, LocalParquetSource, MissingColumn, PartitionColumn,
-    PartitionColumnDisposition, PredicateDisposition, RejectedSourceFeature, ScanLimitDisposition,
-    SchemaMappingDisposition, SourceColumnRef, SourceDiagnostics, SourceFormat, SourceNode, ZERO_COLUMN_COUNT_COLUMN,
-    ZeroColumnCountDisposition,
+    ByteRangeDisposition, GpuResidentSource, LocalParquetFile, LocalParquetSource, MissingColumn,
+    ParquetSourceLocation, PartitionColumn, PartitionColumnDisposition, PredicateDisposition, RejectedSourceFeature,
+    ScanLimitDisposition, SchemaMappingDisposition, SourceColumnRef, SourceDiagnostics, SourceFormat, SourceNode,
+    ZERO_COLUMN_COUNT_COLUMN, ZeroColumnCountDisposition,
 };

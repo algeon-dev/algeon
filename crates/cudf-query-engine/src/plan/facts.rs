@@ -73,6 +73,8 @@ pub enum SchemaBehavior {
     Aggregate,
     /// Schema is produced by join type and output projection.
     Join,
+    /// Schema is shared by all union inputs.
+    Union,
 }
 
 impl fmt::Display for SchemaBehavior {
@@ -83,6 +85,7 @@ impl fmt::Display for SchemaBehavior {
             Self::Projection => "projection",
             Self::Aggregate => "aggregate",
             Self::Join => "join",
+            Self::Union => "union",
         })
     }
 }

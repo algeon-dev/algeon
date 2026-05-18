@@ -15,7 +15,7 @@ use crate::{
     expr::LiteralValue,
     plan::NodeId,
     runtime::MemoryControlPolicy,
-    source::{LocalParquetFile, LocalParquetSource},
+    source::{LocalParquetFile, LocalParquetSource, ParquetSourceLocation},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -157,6 +157,7 @@ pub struct SourceChunk {
     pub source_node_id: NodeId,
     pub chunk_index: usize,
     pub file_index: usize,
+    pub location: ParquetSourceLocation,
     pub path: PathBuf,
     pub stable_id: String,
     pub row_group_indexes: Vec<usize>,
@@ -352,8 +353,9 @@ impl SourceMetadataCache {
         }
 
         let timer = Instant::now();
-        let metadata =
-            SerializedFileReader::try_from(file.path.as_path()).ok().map(|reader| Arc::new(reader.metadata().clone()));
+        let metadata = file.location.as_local_path().and_then(|path| {
+            SerializedFileReader::try_from(path).ok().map(|reader| Arc::new(reader.metadata().clone()))
+        });
         let load_time = timer.elapsed();
         self.footers.insert(key, metadata.clone());
         FooterMetadataLoad { metadata, load_time, load_count: 1 }
@@ -757,6 +759,7 @@ fn push_pending_chunk(
         source_node_id,
         chunk_index: chunks.len(),
         file_index,
+        location: file.location.clone(),
         path: file.path.clone(),
         stable_id: file.stable_id.clone(),
         row_group_indexes: std::mem::take(&mut pending.row_groups),
@@ -829,6 +832,7 @@ fn single_all_row_groups_chunk(
         source_node_id,
         chunk_index,
         file_index,
+        location: file.location.clone(),
         path: file.path.clone(),
         stable_id: file.stable_id.clone(),
         row_group_indexes: Vec::new(),

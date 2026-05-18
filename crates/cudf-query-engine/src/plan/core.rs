@@ -209,6 +209,8 @@ pub enum PlanNode {
     Projection(ProjectionNode),
     /// Groups and aggregates rows according to an [`AggregateSpec`].
     Aggregate(AggregateNode),
+    /// Appends native window function outputs to each input row.
+    Window(WindowNode),
     /// Establishes a full output ordering for the node.
     Sort(SortNode),
     /// Applies skip/fetch row limiting while preserving input ordering facts.
@@ -216,6 +218,8 @@ pub enum PlanNode {
     /// Combines two inputs using separated equality keys, residual predicates,
     /// output projection, and build-side/cache choices.
     Join(JoinNode),
+    /// Concatenates N schema-compatible inputs in order.
+    Union(UnionNode),
 }
 
 impl PlanNode {
@@ -229,9 +233,11 @@ impl PlanNode {
             Self::Filter(node) => std::slice::from_ref(&node.input),
             Self::Projection(node) => std::slice::from_ref(&node.input),
             Self::Aggregate(node) => std::slice::from_ref(&node.input),
+            Self::Window(node) => std::slice::from_ref(&node.input),
             Self::Sort(node) => std::slice::from_ref(&node.input),
             Self::Limit(node) => std::slice::from_ref(&node.input),
             Self::Join(node) => &node.inputs,
+            Self::Union(node) => &node.inputs,
         }
     }
 }

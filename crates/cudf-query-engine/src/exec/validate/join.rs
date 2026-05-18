@@ -26,12 +26,18 @@ pub(super) fn validate_join_capability(
 ) -> Result<()> {
     if !matches!(
         join.spec.join_type,
-        JoinType::Inner | JoinType::Left | JoinType::Full | JoinType::LeftSemi | JoinType::LeftAnti | JoinType::Cross
+        JoinType::Inner
+            | JoinType::Left
+            | JoinType::Full
+            | JoinType::LeftSemi
+            | JoinType::LeftAnti
+            | JoinType::Cross
+            | JoinType::LeftMark
     ) {
         return Err(QueryError::new(
             QueryErrorCode::UnsupportedPlanShape,
             "cudf_query_engine.join.validate",
-            "native join execution currently supports inner, left, full, left semi, left anti, and cross joins",
+            "native join execution currently supports inner, left, full, left semi, left anti, left mark, and cross joins",
         )
         .with_fact("join_type", join.spec.join_type));
     }
@@ -43,7 +49,11 @@ pub(super) fn validate_join_capability(
         )
         .with_fact("key_count", join.spec.keys.len()));
     }
-    if join.spec.join_type != JoinType::Cross && join.spec.keys.is_empty() && join.spec.residual_predicate.is_none() {
+    if join.spec.join_type != JoinType::Cross
+        && !keyless_predicate_free_outer_join(join)
+        && join.spec.keys.is_empty()
+        && join.spec.residual_predicate.is_none()
+    {
         return Err(QueryError::new(
             QueryErrorCode::InvalidPlan,
             "cudf_query_engine.join.validate",
@@ -66,6 +76,32 @@ pub(super) fn validate_join_capability(
         )
         .with_fact("join_type", join.spec.join_type)
         .with_fact("build_side", join.spec.build_side));
+    }
+    if join.spec.join_type == JoinType::LeftMark && join.spec.build_side != JoinSide::Right {
+        return Err(QueryError::new(
+            QueryErrorCode::UnsupportedPlanShape,
+            "cudf_query_engine.join.validate",
+            "native left mark join execution requires the right side to be the build side",
+        )
+        .with_fact("join_type", join.spec.join_type)
+        .with_fact("build_side", join.spec.build_side));
+    }
+    if join.spec.join_type == JoinType::LeftMark && join.spec.mark_column_name.is_none() {
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "cudf_query_engine.join.validate",
+            "native left mark join requires a mark_column_name in the join spec",
+        )
+        .with_fact("join_type", join.spec.join_type));
+    }
+    if join.spec.join_type != JoinType::LeftMark && join.spec.mark_column_name.is_some() {
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "cudf_query_engine.join.validate",
+            "mark_column_name is only valid for left mark joins",
+        )
+        .with_fact("join_type", join.spec.join_type)
+        .with_fact("mark_column_name", join.spec.mark_column_name.as_deref().unwrap_or("")));
     }
     if let Some(build_artifact_id) = &join.spec.build_artifact_id {
         if build_artifact_id.is_empty() {
@@ -121,18 +157,29 @@ pub(super) fn validate_join_capability(
     }
 
     validate_join_type_projection(join)?;
-    validate_join_output_projection(
-        &join.spec.output_projection,
-        left_schema,
-        left_available,
-        right_schema,
-        right_available,
-        output_schema,
-    )
+    if join.spec.join_type == JoinType::LeftMark {
+        validate_mark_join_output_projection(join, left_schema, left_available, output_schema)?;
+    } else {
+        validate_join_output_projection(
+            &join.spec.output_projection,
+            left_schema,
+            left_available,
+            right_schema,
+            right_available,
+            output_schema,
+        )?;
+    }
+    Ok(())
+}
+
+fn keyless_predicate_free_outer_join(join: &JoinNode) -> bool {
+    join.spec.keys.is_empty()
+        && join.spec.residual_predicate.is_none()
+        && matches!(join.spec.join_type, JoinType::Left | JoinType::Full)
 }
 
 fn validate_join_type_projection(join: &JoinNode) -> Result<()> {
-    if !matches!(join.spec.join_type, JoinType::LeftSemi | JoinType::LeftAnti) {
+    if !matches!(join.spec.join_type, JoinType::LeftSemi | JoinType::LeftAnti | JoinType::LeftMark) {
         return Ok(());
     }
 
@@ -140,7 +187,7 @@ fn validate_join_type_projection(join: &JoinNode) -> Result<()> {
         return Err(QueryError::new(
             QueryErrorCode::InvalidPlan,
             "cudf_query_engine.join.validate",
-            "left semi and left anti joins can only project left-side output columns",
+            "left semi, left anti, and left mark joins can only project left-side output columns",
         )
         .with_fact("join_type", join.spec.join_type)
         .with_fact("side", output.side)
@@ -229,6 +276,70 @@ fn validate_join_output_projection(
     Ok(())
 }
 
+fn validate_mark_join_output_projection(
+    join: &JoinNode,
+    left_schema: &SchemaRef,
+    left_available: &BTreeSet<String>,
+    output_schema: &SchemaRef,
+) -> Result<()> {
+    let mark_column_name = join.spec.mark_column_name.as_deref().unwrap_or("mark");
+    let expected_output_count = join.spec.output_projection.len() + 1;
+    if output_schema.fields().len() != expected_output_count {
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "cudf_query_engine.join.validate",
+            "left mark join output schema must have projection columns plus one mark column",
+        )
+        .with_fact("output_schema_len", output_schema.fields().len())
+        .with_fact("expected_output_count", expected_output_count));
+    }
+    // Validate left-side projection columns.
+    for (index, output) in join.spec.output_projection.iter().enumerate() {
+        validate_join_column_ref(&output.column, output.side)?;
+        let data_type = validate_column(output.column.name(), left_schema, left_available)?;
+        let schema_field = output_schema.field(index);
+        if output.output_name != *schema_field.name() {
+            return Err(QueryError::new(
+                QueryErrorCode::InvalidPlan,
+                "cudf_query_engine.join.validate",
+                "left mark join output projection name must match output schema field",
+            )
+            .with_fact("output_name", output.output_name.as_str())
+            .with_fact("schema_name", schema_field.name()));
+        }
+        if &data_type != schema_field.data_type() {
+            return Err(QueryError::new(
+                QueryErrorCode::InvalidPlan,
+                "cudf_query_engine.join.validate",
+                "left mark join output projection type must match output schema field",
+            )
+            .with_fact("output_name", output.output_name.as_str())
+            .with_fact("column_type", format!("{data_type:?}"))
+            .with_fact("output_type", format!("{:?}", schema_field.data_type())));
+        }
+    }
+    // Validate the mark column at the last position.
+    let mark_field = output_schema.field(join.spec.output_projection.len());
+    if mark_field.name() != mark_column_name {
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "cudf_query_engine.join.validate",
+            "left mark join mark column name must match output schema",
+        )
+        .with_fact("mark_column_name", mark_column_name)
+        .with_fact("schema_name", mark_field.name()));
+    }
+    if *mark_field.data_type() != ArrowDataType::Boolean {
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "cudf_query_engine.join.validate",
+            "left mark join mark column must be Boolean",
+        )
+        .with_fact("mark_column_type", format!("{:?}", mark_field.data_type())));
+    }
+    Ok(())
+}
+
 fn validate_join_residual_column_sides(expr: &Expr) -> Result<()> {
     let mut left = false;
     let mut right = false;
@@ -270,6 +381,8 @@ fn collect_join_residual_sides(expr: &Expr, left: &mut bool, right: &mut bool) -
         | Expr::IsNull(inner)
         | Expr::IsNotNull(inner)
         | Expr::Cast { expr: inner, .. }
+        | Expr::Abs(inner)
+        | Expr::Round { expr: inner, .. }
         | Expr::Alias { expr: inner, .. } => collect_join_residual_sides(inner, left, right),
         Expr::Binary { left: lhs, right: rhs, .. } => {
             collect_join_residual_sides(lhs, left, right)?;
@@ -279,6 +392,12 @@ fn collect_join_residual_sides(expr: &Expr, left: &mut bool, right: &mut bool) -
             collect_join_residual_sides(expr, left, right)?;
             for item in list {
                 collect_join_residual_sides(item, left, right)?;
+            }
+            Ok(())
+        },
+        Expr::Concat(exprs) => {
+            for expr in exprs {
+                collect_join_residual_sides(expr, left, right)?;
             }
             Ok(())
         },
@@ -344,6 +463,17 @@ fn validate_join_residual_expr(
             }
             Ok(target_type.clone())
         },
+        Expr::Binary { left, op, right, .. } if expr_is_interval_literal(left) || expr_is_interval_literal(right) => {
+            validate_join_interval_binary_expr(
+                left,
+                *op,
+                right,
+                left_schema,
+                left_available,
+                right_schema,
+                right_available,
+            )
+        },
         Expr::Binary { left, op, right, .. } => {
             let left_type =
                 validate_join_residual_expr(left, left_schema, left_available, right_schema, right_available)?;
@@ -362,6 +492,18 @@ fn validate_join_residual_expr(
                     require_compatible_types(&left_type, &right_type, "join residual modulo operands")?;
                     Ok(left_type)
                 },
+                BinaryOp::BitwiseAnd | BinaryOp::BitwiseOr | BinaryOp::BitwiseXor => {
+                    require_integral_type(&left_type, "join residual bitwise left operand")?;
+                    require_integral_type(&right_type, "join residual bitwise right operand")?;
+                    require_compatible_types(&left_type, &right_type, "join residual bitwise operands")?;
+                    Ok(left_type)
+                },
+                BinaryOp::ShiftLeft | BinaryOp::ShiftRight => Err(QueryError::new(
+                    QueryErrorCode::UnsupportedExpression,
+                    "cudf_query_engine.join.validate_residual",
+                    "native join residual AST does not support bit-shift operators",
+                )
+                .with_fact("operator", op.to_string())),
                 BinaryOp::Eq | BinaryOp::NotEq | BinaryOp::Lt | BinaryOp::LtEq | BinaryOp::Gt | BinaryOp::GtEq => {
                     require_comparable_types(&left_type, &right_type)?;
                     Ok(ArrowDataType::Boolean)
@@ -410,6 +552,9 @@ fn validate_join_residual_expr(
         | Expr::Substring { .. }
         | Expr::Lower(_)
         | Expr::Upper(_)
+        | Expr::Concat(_)
+        | Expr::Abs(_)
+        | Expr::Round { .. }
         | Expr::Case { .. }
         | Expr::Extract { .. } => Err(QueryError::new(
             QueryErrorCode::UnsupportedExpression,
@@ -466,6 +611,51 @@ fn validate_post_join_residual_expr(
             require_date_or_timestamp(&data_type, "post-join residual EXTRACT input")?;
             Ok(ArrowDataType::Int32)
         },
+        Expr::Abs(expr) => {
+            let data_type =
+                validate_post_join_residual_expr(expr, left_schema, left_available, right_schema, right_available)?;
+            require_arithmetic_type(&data_type, "post-join residual ABS input")?;
+            Ok(data_type)
+        },
+        Expr::Round { expr, output_type, .. } => {
+            let data_type =
+                validate_post_join_residual_expr(expr, left_schema, left_available, right_schema, right_available)?;
+            require_arithmetic_type(&data_type, "post-join residual ROUND input")?;
+            require_arithmetic_type(output_type, "post-join residual ROUND output")?;
+            Ok(output_type.clone())
+        },
+        Expr::Concat(exprs) => {
+            if exprs.is_empty() {
+                return Err(QueryError::new(
+                    QueryErrorCode::UnsupportedExpression,
+                    "cudf_query_engine.join.validate_residual",
+                    "post-join residual CONCAT requires at least one argument",
+                ));
+            }
+            let mut output_type = ArrowDataType::Utf8;
+            for expr in exprs {
+                let data_type =
+                    validate_post_join_residual_expr(expr, left_schema, left_available, right_schema, right_available)?;
+                require_string(&data_type, "post-join residual CONCAT input")?;
+                if data_type == ArrowDataType::Utf8View {
+                    output_type = ArrowDataType::Utf8View;
+                } else if data_type == ArrowDataType::LargeUtf8 && output_type != ArrowDataType::Utf8View {
+                    output_type = ArrowDataType::LargeUtf8;
+                }
+            }
+            Ok(output_type)
+        },
+        Expr::Binary { left, op, right, .. } if expr_is_interval_literal(left) || expr_is_interval_literal(right) => {
+            validate_post_join_interval_binary_expr(
+                left,
+                *op,
+                right,
+                left_schema,
+                left_available,
+                right_schema,
+                right_available,
+            )
+        },
         Expr::Binary { left, op, right, output_type } => {
             let left_type =
                 validate_post_join_residual_expr(left, left_schema, left_available, right_schema, right_available)?;
@@ -482,6 +672,16 @@ fn validate_post_join_residual_expr(
                     require_integral_type(&left_type, "post-join residual modulo left operand")?;
                     require_integral_type(&right_type, "post-join residual modulo right operand")?;
                     require_compatible_types(&left_type, &right_type, "post-join residual modulo operands")?;
+                    Ok(left_type)
+                },
+                BinaryOp::BitwiseAnd
+                | BinaryOp::BitwiseOr
+                | BinaryOp::BitwiseXor
+                | BinaryOp::ShiftLeft
+                | BinaryOp::ShiftRight => {
+                    require_integral_type(&left_type, "post-join residual bitwise left operand")?;
+                    require_integral_type(&right_type, "post-join residual bitwise right operand")?;
+                    require_compatible_types(&left_type, &right_type, "post-join residual bitwise operands")?;
                     Ok(left_type)
                 },
                 BinaryOp::Eq | BinaryOp::NotEq | BinaryOp::Lt | BinaryOp::LtEq | BinaryOp::Gt | BinaryOp::GtEq => {
@@ -589,7 +789,10 @@ fn residual_expr_requires_post_filter(expr: &Expr) -> bool {
         | Expr::Lower(expr)
         | Expr::Upper(expr)
         | Expr::Extract { expr, .. }
+        | Expr::Abs(expr)
+        | Expr::Round { expr, .. }
         | Expr::Alias { expr, .. } => residual_expr_requires_post_filter(expr),
+        Expr::Concat(exprs) => exprs.iter().any(residual_expr_requires_post_filter),
         Expr::Like { expr, .. } | Expr::Substring { expr, .. } => residual_expr_requires_post_filter(expr),
         Expr::Binary { op: BinaryOp::Or, .. } => true,
         Expr::Binary { left, right, .. } => {
@@ -600,6 +803,127 @@ fn residual_expr_requires_post_filter(expr: &Expr) -> bool {
         },
         Expr::Column(_) | Expr::Literal(_) => false,
     }
+}
+
+fn validate_join_interval_binary_expr(
+    left: &Expr,
+    op: BinaryOp,
+    right: &Expr,
+    left_schema: &SchemaRef,
+    left_available: &BTreeSet<String>,
+    right_schema: &SchemaRef,
+    right_available: &BTreeSet<String>,
+) -> Result<ArrowDataType> {
+    let left_interval = expr_is_interval_literal(left);
+    let right_interval = expr_is_interval_literal(right);
+    if left_interval == right_interval {
+        return Err(QueryError::new(
+            QueryErrorCode::UnsupportedExpression,
+            "cudf_query_engine.join.validate_residual",
+            "join residual interval arithmetic requires exactly one interval literal operand",
+        ));
+    }
+    let interval = if left_interval { left } else { right };
+    validate_fixed_day_interval_literal(interval)?;
+    let operand = if left_interval {
+        if op != BinaryOp::Add {
+            return Err(QueryError::new(
+                QueryErrorCode::UnsupportedExpression,
+                "cudf_query_engine.join.validate_residual",
+                "join residual interval arithmetic supports interval + datetime but not interval minus datetime",
+            ));
+        }
+        right
+    } else {
+        if !matches!(op, BinaryOp::Add | BinaryOp::Subtract) {
+            return Err(QueryError::new(
+                QueryErrorCode::UnsupportedExpression,
+                "cudf_query_engine.join.validate_residual",
+                "join residual interval arithmetic supports only datetime plus/minus interval",
+            ));
+        }
+        left
+    };
+    let operand_type =
+        validate_join_residual_expr(operand, left_schema, left_available, right_schema, right_available)?;
+    if operand_type != ArrowDataType::Date32 {
+        return Err(QueryError::new(
+            QueryErrorCode::UnsupportedExpression,
+            "cudf_query_engine.join.validate_residual",
+            "join residual AST interval arithmetic currently supports only Date32 fixed-day operands",
+        )
+        .with_fact("operand_type", format!("{operand_type:?}")));
+    }
+    Ok(operand_type)
+}
+
+fn validate_post_join_interval_binary_expr(
+    left: &Expr,
+    op: BinaryOp,
+    right: &Expr,
+    left_schema: &SchemaRef,
+    left_available: &BTreeSet<String>,
+    right_schema: &SchemaRef,
+    right_available: &BTreeSet<String>,
+) -> Result<ArrowDataType> {
+    let left_interval = expr_is_interval_literal(left);
+    let right_interval = expr_is_interval_literal(right);
+    if left_interval == right_interval {
+        return Err(QueryError::new(
+            QueryErrorCode::UnsupportedExpression,
+            "cudf_query_engine.join.validate_residual",
+            "post-join residual interval arithmetic requires exactly one interval literal operand",
+        ));
+    }
+    let operand = if left_interval {
+        if op != BinaryOp::Add {
+            return Err(QueryError::new(
+                QueryErrorCode::UnsupportedExpression,
+                "cudf_query_engine.join.validate_residual",
+                "post-join residual interval arithmetic supports interval + datetime but not interval minus datetime",
+            ));
+        }
+        right
+    } else {
+        if !matches!(op, BinaryOp::Add | BinaryOp::Subtract) {
+            return Err(QueryError::new(
+                QueryErrorCode::UnsupportedExpression,
+                "cudf_query_engine.join.validate_residual",
+                "post-join residual interval arithmetic supports only datetime plus/minus interval",
+            ));
+        }
+        right_interval.then_some(()).expect("right interval was checked above");
+        left
+    };
+    let operand_type =
+        validate_post_join_residual_expr(operand, left_schema, left_available, right_schema, right_available)?;
+    require_date_or_timestamp(&operand_type, "post-join residual interval datetime operand")?;
+    Ok(operand_type)
+}
+
+fn expr_is_interval_literal(expr: &Expr) -> bool {
+    matches!(expr, Expr::Literal(LiteralValue::IntervalMonthDayNano { .. }))
+}
+
+fn validate_fixed_day_interval_literal(expr: &Expr) -> Result<()> {
+    let Expr::Literal(LiteralValue::IntervalMonthDayNano { months, nanoseconds, .. }) = expr else {
+        return Err(QueryError::new(
+            QueryErrorCode::UnsupportedExpression,
+            "cudf_query_engine.join.validate_residual",
+            "join residual interval arithmetic requires an interval literal",
+        ));
+    };
+    const NANOS_PER_DAY: i64 = 86_400_000_000_000;
+    if *months != 0 || *nanoseconds % NANOS_PER_DAY != 0 {
+        return Err(QueryError::new(
+            QueryErrorCode::UnsupportedExpression,
+            "cudf_query_engine.join.validate_residual",
+            "join residual AST interval arithmetic currently supports only fixed day-resolution intervals",
+        )
+        .with_fact("months", *months)
+        .with_fact("nanoseconds", *nanoseconds));
+    }
+    Ok(())
 }
 
 fn is_supported_join_residual_ast_cast(source_type: &ArrowDataType, target_type: &ArrowDataType) -> bool {

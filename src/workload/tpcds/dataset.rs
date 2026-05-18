@@ -50,6 +50,23 @@ pub const CUDF_TPCDS_CONTENT_FINGERPRINT_ENV: &str = "CUDF_TPCDS_CONTENT_FINGERP
 /// preparation falls back to the tiny dataset).
 pub const DEFAULT_NVME_TPCDS_SF1_PARQUET_DIR: &str = "/opt/dlami/nvme/tpcds/sf1/parquet";
 
+/// In-repo fallback Parquet root for the TPC-DS SF1 fixture, used when the
+/// `DEFAULT_NVME_MOUNT_ROOT` mount point is not present on this host.
+pub const DEFAULT_LOCAL_TPCDS_SF1_PARQUET_DIR: &str = "./tests/data/tpcds/sf1/parquet";
+
+/// Returns the on-host default Parquet root for the TPC-DS SF1 fixture,
+/// picking the NVMe-staged path when `DEFAULT_NVME_MOUNT_ROOT` is mounted and
+/// the in-repo `./tests/data/...` path otherwise. The decision is based solely
+/// on whether the NVMe drive is attached — fixture completeness is probed by
+/// the caller.
+pub fn default_tpcds_sf1_parquet_root() -> &'static str {
+    if crate::workload::tpch::default_nvme_mount_present() {
+        DEFAULT_NVME_TPCDS_SF1_PARQUET_DIR
+    } else {
+        DEFAULT_LOCAL_TPCDS_SF1_PARQUET_DIR
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TpcdsDatasetMetadata {
     pub root: PathBuf,
@@ -168,13 +185,15 @@ pub fn prepare_tpcds_report_dataset(tiny_root: &Path) -> TpcdsWorkloadResult<(Pa
     Ok((tiny_root.to_path_buf(), metadata))
 }
 
-/// Returns the default NVMe SF1 fixture if `DEFAULT_NVME_TPCDS_SF1_PARQUET_DIR`
-/// exists and every required TPC-DS table is discoverable there. A `None`
-/// return covers both "the NVMe drive isn't staged here" and "the fixture is
-/// incomplete" — both are equivalent to "no implicit external fixture
-/// available, fall back to the tiny dataset".
+/// Returns the on-host default SF1 fixture when it is complete. The probe
+/// picks between the NVMe-staged root and the in-repo `./tests/data/...`
+/// fallback based solely on whether `DEFAULT_NVME_MOUNT_ROOT` is mounted on
+/// this host; fixture completeness is then checked at the chosen root. A
+/// `None` return means "no implicit external fixture available, fall back to
+/// the tiny dataset".
 fn try_default_nvme_tpcds_sf1_dataset() -> Option<(PathBuf, TpcdsDatasetMetadata)> {
-    let root = PathBuf::from(DEFAULT_NVME_TPCDS_SF1_PARQUET_DIR);
+    let root_str = default_tpcds_sf1_parquet_root();
+    let root = PathBuf::from(root_str);
     if !root.is_dir() {
         return None;
     }
@@ -183,7 +202,7 @@ fn try_default_nvme_tpcds_sf1_dataset() -> Option<(PathBuf, TpcdsDatasetMetadata
             return None;
         }
     }
-    let generation_command = format!("local {DEFAULT_NVME_TPCDS_SF1_PARQUET_DIR} parquet fixture (default)");
+    let generation_command = format!("local {root_str} parquet fixture (default)");
     let metadata = describe_tpcds_dataset(&root, "sf1", "external_parquet_root", generation_command).ok()?;
     Some((root, metadata))
 }

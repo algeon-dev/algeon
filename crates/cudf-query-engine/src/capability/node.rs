@@ -1,4 +1,5 @@
 use super::{expr::*, model::*, *};
+use crate::plan::UnionNode;
 
 pub(super) fn analyze_node(plan: &QueryPlan, node: &QueryNode) -> NodeCapability {
     let node_id = node.id;
@@ -25,6 +26,7 @@ pub(super) fn node_operator(kind: &PlanNode) -> NodeOperator {
             },
             functions: aggregate.spec.aggr_exprs.iter().map(|expr| expr.function).collect(),
         },
+        PlanNode::Window(window) => NodeOperator::Window { function_count: window.spec.functions.len() },
         PlanNode::Sort(sort) => NodeOperator::Sort {
             ordering: if sort.spec.expressions.is_empty() {
                 OrderingRequirement::None
@@ -43,6 +45,7 @@ pub(super) fn node_operator(kind: &PlanNode) -> NodeOperator {
             },
             build_side: join.spec.build_side,
         },
+        PlanNode::Union(union) => NodeOperator::Union { input_count: union.inputs.len() },
     }
 }
 
@@ -82,9 +85,11 @@ fn node_executable_decision(plan: &QueryPlan, node: &QueryNode) -> CapabilityDec
             decision
         },
         PlanNode::Aggregate(aggregate) => aggregate_node_executable_decision(node.id, aggregate),
+        PlanNode::Window(window) => window_node_executable_decision(node.id, window),
         PlanNode::Sort(sort) => sort_node_executable_decision(node.id, sort),
         PlanNode::Limit(limit) => limit_node_executable_decision(plan, node.id, limit),
         PlanNode::Join(join) => join_node_executable_decision(plan, node.id, join),
+        PlanNode::Union(union) => union_node_executable_decision(plan, node.id, union),
     }
 }
 
@@ -150,6 +155,97 @@ fn aggregate_node_executable_decision(node_id: NodeId, aggregate: &crate::plan::
                 &aggregate_expr.expr,
                 rejection,
             );
+        }
+    }
+    CapabilityDecision::Satisfied
+}
+
+fn window_node_executable_decision(node_id: NodeId, window: &crate::plan::WindowNode) -> CapabilityDecision {
+    if window.spec.functions.is_empty() {
+        return CapabilityDecision::rejected(
+            "unsupported_window_node_capability",
+            [("node_id", node_id.to_string()), ("reason", "empty_functions".to_string())],
+        );
+    }
+    for expr in &window.spec.partition_by {
+        if let Err(rejection) = validate_column_expr_capability(expr) {
+            return expression_rejection_decision(
+                node_id,
+                "unsupported_window_partition_expression_capability",
+                expr,
+                rejection,
+            );
+        }
+    }
+    for sort_expr in &window.spec.order_by {
+        if let Err(rejection) = validate_column_expr_capability(&sort_expr.expr) {
+            return expression_rejection_decision(
+                node_id,
+                "unsupported_window_order_expression_capability",
+                &sort_expr.expr,
+                rejection,
+            );
+        }
+    }
+    for function in &window.spec.functions {
+        match function {
+            crate::plan::WindowFunction::Aggregate { function, expr, frame, .. } => {
+                match frame {
+                    crate::plan::WindowFrame::WholePartition => {
+                        if !window.spec.order_by.is_empty() {
+                            return CapabilityDecision::rejected(
+                                "unsupported_window_node_capability",
+                                [
+                                    ("node_id", node_id.to_string()),
+                                    ("reason", "whole_partition_aggregate_window_requires_no_order_by".to_string()),
+                                ],
+                            );
+                        }
+                    },
+                    crate::plan::WindowFrame::RowsUnboundedPrecedingToCurrent => {
+                        if window.spec.order_by.is_empty() {
+                            return CapabilityDecision::rejected(
+                                "unsupported_window_node_capability",
+                                [
+                                    ("node_id", node_id.to_string()),
+                                    ("reason", "cumulative_aggregate_window_requires_order_by".to_string()),
+                                ],
+                            );
+                        }
+                        if !matches!(
+                            function,
+                            crate::expr::AggregateFunction::Sum
+                                | crate::expr::AggregateFunction::Min
+                                | crate::expr::AggregateFunction::Max
+                        ) {
+                            return CapabilityDecision::rejected(
+                                "unsupported_window_node_capability",
+                                [
+                                    ("node_id", node_id.to_string()),
+                                    ("reason", "cumulative_aggregate_window_function_unsupported".to_string()),
+                                    ("function", format!("{function:?}")),
+                                ],
+                            );
+                        }
+                    },
+                }
+                let aggregate_expr = AggregateExpr::new(*function, expr.clone(), "__window_aggregate");
+                if let Err(rejection) = validate_aggregate_expr_capability(&aggregate_expr, false) {
+                    return expression_rejection_decision(
+                        node_id,
+                        "unsupported_window_aggregate_expression_capability",
+                        expr,
+                        rejection,
+                    );
+                }
+            },
+            crate::plan::WindowFunction::Rank { .. } if window.spec.order_by.is_empty() => {
+                return CapabilityDecision::rejected(
+                    "unsupported_window_node_capability",
+                    [("node_id", node_id.to_string()), ("reason", "rank_requires_order_by".to_string())],
+                );
+            },
+            crate::plan::WindowFunction::Rank { .. } => {},
         }
     }
     CapabilityDecision::Satisfied
@@ -267,6 +363,45 @@ fn join_node_executable_decision(plan: &QueryPlan, node_id: NodeId, join: &JoinN
     CapabilityDecision::Satisfied
 }
 
+fn union_node_executable_decision(plan: &QueryPlan, node_id: NodeId, union: &UnionNode) -> CapabilityDecision {
+    if union.inputs.is_empty() {
+        return CapabilityDecision::rejected(
+            "unsupported_union_node_capability",
+            [("node_id", node_id.to_string()), ("reason", "empty_inputs".to_string())],
+        );
+    }
+    let Some(output_schema) = plan.node(node_id).map(|node| node.output_schema()) else {
+        return CapabilityDecision::rejected(
+            "unsupported_union_node_capability",
+            [("node_id", node_id.to_string()), ("reason", "missing_union_node".to_string())],
+        );
+    };
+    for (input_index, input) in union.inputs.iter().enumerate() {
+        let Some(input_schema) = plan.node(*input).map(|node| node.output_schema()) else {
+            return CapabilityDecision::rejected(
+                "unsupported_union_node_capability",
+                [
+                    ("node_id", node_id.to_string()),
+                    ("input_index", input_index.to_string()),
+                    ("reason", "missing_input_node".to_string()),
+                ],
+            );
+        };
+        if input_schema.as_ref() != output_schema.as_ref() {
+            return CapabilityDecision::rejected(
+                "unsupported_union_node_capability",
+                [
+                    ("node_id", node_id.to_string()),
+                    ("input_index", input_index.to_string()),
+                    ("input_node", input.to_string()),
+                    ("reason", "input_schema_mismatch".to_string()),
+                ],
+            );
+        }
+    }
+    CapabilityDecision::Satisfied
+}
+
 pub(super) fn produced_properties(node: &QueryNode) -> Vec<ProducedProperty> {
     let mut properties = Vec::new();
     if node.facts.placement == crate::plan::DataPlacement::Device {
@@ -277,6 +412,7 @@ pub(super) fn produced_properties(node: &QueryNode) -> Vec<ProducedProperty> {
             properties.push(ProducedProperty::ScalarFrame);
         },
         PlanNode::Aggregate(_) => properties.push(ProducedProperty::GroupedFrame),
+        PlanNode::Window(_) => properties.push(ProducedProperty::OrderedFrame),
         PlanNode::Sort(_) => properties.push(ProducedProperty::OrderedFrame),
         _ => {},
     }
@@ -289,6 +425,12 @@ fn node_local_requirements(plan: &QueryPlan, node: &QueryNode) -> Vec<Reservatio
             ReservationKind::OperatorOutput,
             "operator_output",
             "aggregate_contract",
+            ContractQuality::HardBudgetedReportWithUnresolvedPreflight,
+        )],
+        PlanNode::Window(_) => vec![ReservationRequirement::modeled(
+            ReservationKind::OperatorOutput,
+            "operator_output",
+            "window_contract",
             ContractQuality::HardBudgetedReportWithUnresolvedPreflight,
         )],
         PlanNode::Join(join)
@@ -360,6 +502,12 @@ fn node_local_requirements(plan: &QueryPlan, node: &QueryNode) -> Vec<Reservatio
             "join_mixed_size_data",
             "mixed_keyed_residual_or_conditional_full_retained_size_data",
             ContractQuality::ObservedRetainedState,
+        )],
+        PlanNode::Union(_) => vec![ReservationRequirement::modeled(
+            ReservationKind::OperatorOutput,
+            "union_concat_output",
+            "union_concat_output_size_preflight",
+            ContractQuality::ExactPreflight,
         )],
         _ => Vec::new(),
     }

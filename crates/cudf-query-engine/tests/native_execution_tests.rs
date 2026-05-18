@@ -21,8 +21,9 @@ use cudf_query_engine::{
     JoinOutputColumn, JoinSide, JoinSpec, JoinType, LimitSpec, LiteralValue, LocalParquetFile, LocalParquetSource,
     MemoryControlPolicy, MemoryReservationEventAction, MemorySpaceId, MissingColumn, PartitionColumn, ProjectionOutput,
     QueryErrorCode, QueryMetrics, QueryOutput, QueryPlanBuilder, ReservationKind, SortExpr, SortSpec,
-    SourceChunkPlanningPolicy, SourceNode, SourceSchedulerPolicy, ZERO_COLUMN_COUNT_COLUMN, execute_query_plan,
-    execute_query_plan_with_gpu_inputs, materialize_gpu_result_to_host, plan_local_parquet_source_chunks,
+    SourceChunkPlanningPolicy, SourceNode, SourceSchedulerPolicy, WindowFunction, WindowSpec, ZERO_COLUMN_COUNT_COLUMN,
+    execute_query_plan, execute_query_plan_with_gpu_inputs, materialize_gpu_result_to_host,
+    plan_local_parquet_source_chunks,
 };
 use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
 
@@ -48,6 +49,8 @@ mod projection_validation;
 mod semijoin_reduction;
 #[path = "native_execution_tests/test_support.rs"]
 mod test_support;
+#[path = "native_execution_tests/window_execution.rs"]
+mod window_execution;
 
 #[path = "native_execution_tests/aggregate_execution.rs"]
 mod aggregate_execution;

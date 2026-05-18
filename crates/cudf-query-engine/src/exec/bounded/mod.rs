@@ -151,6 +151,9 @@ fn aggregate_source_chunk_planning_policy(
     context: &ExecutionContext,
     bounded: &BoundedPlan<'_>,
 ) -> SourceChunkPlanningPolicy {
+    if aggregate_spec_has_distinct(&bounded.aggregate.0.spec) {
+        return SourceChunkPlanningPolicy::new(None, usize::MAX);
+    }
     let mut policy = SourceChunkPlanningPolicy::for_source_task(
         context.memory_control_policy(),
         SourceTaskMemoryModel::aggregate_pipeline(bounded.has_source_adjacent_stages()),
@@ -309,6 +312,28 @@ fn execute_bounded_generic_node(
                 },
             )
         },
+        PlanNode::Window(window) => {
+            let input = execute_bounded_generic_node(context, plan, window.input, gpu_inputs, reservations, metrics)?;
+            let input_schema = plan
+                .node(window.input)
+                .ok_or_else(|| invalid_node_reference(window.input, "window references a missing input"))?
+                .output_schema()
+                .clone();
+            let output_schema = node.output_schema().clone();
+            execute_bounded_generic_unary(
+                context,
+                id,
+                "bounded_generic_window",
+                "bounded_generic_window_output",
+                input,
+                reservations,
+                metrics,
+                false,
+                |context, input, _token, metrics| {
+                    execute_window(context, window, &input_schema, input, &output_schema, metrics)
+                },
+            )
+        },
         PlanNode::Sort(sort) => {
             let input = execute_bounded_generic_node(context, plan, sort.input, gpu_inputs, reservations, metrics)?;
             execute_bounded_generic_unary(
@@ -337,8 +362,16 @@ fn execute_bounded_generic_node(
                 |context, input, _token, metrics| execute_limit(context, limit, input, metrics),
             )
         },
+        PlanNode::Union(union) => {
+            let inputs = union
+                .inputs
+                .iter()
+                .map(|input| execute_bounded_generic_node(context, plan, *input, gpu_inputs, reservations, metrics))
+                .collect::<Result<Vec<_>>>()?;
+            execute_bounded_generic_union(context, id, inputs, reservations, metrics)
+        },
         PlanNode::Aggregate(_) | PlanNode::Join(_) => Err(unsupported_bounded_shape(
-            "bounded generic execution supports only source, filter, projection, sort, and limit nodes",
+            "bounded generic execution supports only source, filter, projection, window, sort, limit, and union nodes",
             "bounded_generic_plan_shape_unsupported",
         )
         .with_fact("node_id", id)
@@ -346,6 +379,140 @@ fn execute_bounded_generic_node(
     }?;
 
     Ok(frame)
+}
+
+pub(in crate::exec::bounded) fn execute_bounded_generic_union(
+    context: &ExecutionContext,
+    node_id: NodeId,
+    inputs: Vec<ResidentGpuFrame>,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+) -> Result<ResidentGpuFrame> {
+    if inputs.is_empty() {
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "cudf_query_engine.bounded.union",
+            "bounded union requires at least one input",
+        )
+        .with_fact("node_id", node_id));
+    }
+    if inputs.len() == 1 {
+        return Ok(inputs.into_iter().next().expect("single union input checked"));
+    }
+
+    let output_reservation_bytes =
+        inputs.iter().fold(0u64, |total, input| total.saturating_add(input.reservation.bytes()));
+    let mut output_reservation = match reservations.try_reserve(
+        MemoryReservationRequest::new(ReservationKind::OperatorOutput, output_reservation_bytes, reservations.budget())
+            .with_memory_boundary("bounded_union_concat_output")
+            .with_node_id(node_id)
+            .with_stage("bounded_union_concat")
+            .with_attempt(1, 1),
+        metrics,
+    ) {
+        Ok(reservation) => reservation,
+        Err(error) => {
+            release_resident_frames_reverse(reservations, inputs, metrics);
+            return Err(error);
+        },
+    };
+
+    let input_count = inputs.len();
+    let mut input_reservations = Vec::with_capacity(input_count);
+    let mut frames = Vec::with_capacity(input_count);
+    for input in inputs {
+        frames.push(input.frame.into_frame());
+        input_reservations.push(input.reservation);
+    }
+    let first = frames.remove(0);
+    let rest = frames.iter().collect::<Vec<_>>();
+    let overrides = execution_overrides(context);
+    let timer = Instant::now();
+    let output = match first.with_execution(&overrides).concat_many(&rest) {
+        Ok(output) => output,
+        Err(error) => {
+            drop(rest);
+            drop(frames);
+            drop(first);
+            release_reservations_reverse(reservations, input_reservations, metrics);
+            reservations.release(output_reservation, metrics);
+            return Err(QueryError::from_cudf(
+                "cudf_query_engine.bounded.union.concat",
+                "failed to concatenate bounded native union inputs",
+                error,
+            )
+            .with_fact("node_id", node_id)
+            .with_fact("input_count", input_count));
+        },
+    };
+    metrics.operator_time += timer.elapsed();
+
+    let output_frame = GpuDataFrame::new(output);
+    let output_bytes = match observe_device_memory_bytes(&output_frame, metrics) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            drop(output_frame);
+            drop(rest);
+            drop(frames);
+            drop(first);
+            release_reservations_reverse(reservations, input_reservations, metrics);
+            reservations.release(output_reservation, metrics);
+            return Err(error);
+        },
+    };
+    let output_request =
+        MemoryReservationRequest::new(ReservationKind::OperatorOutput, output_bytes, reservations.budget())
+            .with_memory_boundary("bounded_union_concat_output")
+            .with_node_id(node_id)
+            .with_stage("bounded_union_concat")
+            .with_attempt(1, 1);
+    if output_bytes > output_reservation.bytes() {
+        let delta = output_bytes.saturating_sub(output_reservation.bytes());
+        if let Err(error) =
+            reservations.try_grow(&mut output_reservation, output_request.clone().with_requested_bytes(delta), metrics)
+        {
+            drop(output_frame);
+            drop(rest);
+            drop(frames);
+            drop(first);
+            release_reservations_reverse(reservations, input_reservations, metrics);
+            reservations.release(output_reservation, metrics);
+            return Err(error);
+        }
+    } else {
+        reservations.shrink_to_observed_with_request(
+            &mut output_reservation,
+            output_bytes,
+            output_request.clone(),
+            metrics,
+        );
+    }
+
+    drop(rest);
+    drop(frames);
+    drop(first);
+    release_reservations_reverse(reservations, input_reservations, metrics);
+    Ok(ResidentGpuFrame { frame: output_frame, reservation: output_reservation })
+}
+
+pub(in crate::exec::bounded) fn release_resident_frames_reverse(
+    reservations: &mut ReservationTracker,
+    mut frames: Vec<ResidentGpuFrame>,
+    metrics: &mut QueryMetrics,
+) {
+    while let Some(frame) = frames.pop() {
+        reservations.release(frame.reservation, metrics);
+    }
+}
+
+pub(in crate::exec::bounded) fn release_reservations_reverse(
+    reservations: &mut ReservationTracker,
+    mut input_reservations: Vec<ActiveReservation>,
+    metrics: &mut QueryMetrics,
+) {
+    while let Some(reservation) = input_reservations.pop() {
+        reservations.release(reservation, metrics);
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -771,8 +938,10 @@ fn bounded_generic_node_kind(node: &PlanNode) -> &'static str {
         PlanNode::Filter(_) => "filter",
         PlanNode::Projection(_) => "projection",
         PlanNode::Aggregate(_) => "aggregate",
+        PlanNode::Window(_) => "window",
         PlanNode::Sort(_) => "sort",
         PlanNode::Limit(_) => "limit",
         PlanNode::Join(_) => "join",
+        PlanNode::Union(_) => "union",
     }
 }

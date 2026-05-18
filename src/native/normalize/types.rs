@@ -30,10 +30,14 @@ impl<'a> NormalizedNativePlan<'a> {
             NormalizedNativeInput::Source(source) => Some(source),
             NormalizedNativeInput::Filter(_)
             | NormalizedNativeInput::Projection(_)
+            | NormalizedNativeInput::Limit(_)
             | NormalizedNativeInput::Aggregate(_)
+            | NormalizedNativeInput::Sort(_)
+            | NormalizedNativeInput::Window(_)
             | NormalizedNativeInput::HashJoin(_)
             | NormalizedNativeInput::CrossJoin(_)
-            | NormalizedNativeInput::NestedLoopJoin(_) => None,
+            | NormalizedNativeInput::NestedLoopJoin(_)
+            | NormalizedNativeInput::Union(_) => None,
         }
     }
 
@@ -94,10 +98,14 @@ pub(in crate::native) enum NormalizedNativeInput<'a> {
     Source(NormalizedNativeSource<'a>),
     Filter(NormalizedNativeFilter<'a>),
     Projection(NormalizedNativeProjection<'a>),
+    Limit(NormalizedNativeLimit<'a>),
     Aggregate(NormalizedNativeAggregate<'a>),
+    Sort(NormalizedNativeSort<'a>),
+    Window(NormalizedNativeWindow<'a>),
     HashJoin(NormalizedNativeHashJoin<'a>),
     CrossJoin(NormalizedNativeCrossJoin<'a>),
     NestedLoopJoin(NormalizedNativeNestedLoopJoin<'a>),
+    Union(NormalizedNativeUnion<'a>),
 }
 
 impl NormalizedNativeInput<'_> {
@@ -109,10 +117,14 @@ impl NormalizedNativeInput<'_> {
             Self::Source(source) => source.shape(),
             Self::Filter(filter) => filter.shape(),
             Self::Projection(projection) => projection.shape(),
+            Self::Limit(limit) => limit.shape(),
             Self::Aggregate(aggregate) => aggregate.shape(),
+            Self::Sort(sort) => sort.shape(),
+            Self::Window(window) => window.shape(),
             Self::HashJoin(join) => join.shape(),
             Self::CrossJoin(join) => join.shape(),
             Self::NestedLoopJoin(join) => join.shape(),
+            Self::Union(union) => union.shape(),
         }
     }
 
@@ -124,10 +136,14 @@ impl NormalizedNativeInput<'_> {
             Self::Source(source) => source.operator_count(),
             Self::Filter(filter) => filter.operator_count(),
             Self::Projection(projection) => projection.operator_count(),
+            Self::Limit(limit) => limit.operator_count(),
             Self::Aggregate(aggregate) => aggregate.operator_count(),
+            Self::Sort(sort) => sort.operator_count(),
+            Self::Window(window) => window.operator_count(),
             Self::HashJoin(join) => join.operator_count(),
             Self::CrossJoin(join) => join.operator_count(),
             Self::NestedLoopJoin(join) => join.operator_count(),
+            Self::Union(union) => union.operator_count(),
         }
     }
 }
@@ -137,22 +153,45 @@ impl NormalizedNativeInput<'_> {
 /// scan, filter, and output columns together.
 #[derive(Debug, Clone)]
 pub(in crate::native) struct NormalizedNativeSource<'a> {
-    pub(in crate::native) source_exec: &'a DataSourceExec,
+    pub(in crate::native) scan: NormalizedNativeScan<'a>,
     pub(in crate::native) filter: Option<&'a FilterExec>,
 }
 
 impl NormalizedNativeSource<'_> {
-    fn shape(&self) -> String {
-        if self.filter.is_some() {
-            wrap_shape("FilterExec", "LocalParquetScan".to_string())
-        } else {
-            "LocalParquetScan".to_string()
+    pub(in crate::native) fn local_parquet_source_exec(&self) -> Option<&DataSourceExec> {
+        match self.scan {
+            NormalizedNativeScan::LocalParquet(source_exec) => Some(source_exec),
+            NormalizedNativeScan::TableFormat(_) => None,
         }
+    }
+
+    pub(in crate::native) fn table_format_scan_exec(&self) -> Option<&CudfTableFormatScanExec> {
+        match self.scan {
+            NormalizedNativeScan::LocalParquet(_) => None,
+            NormalizedNativeScan::TableFormat(scan_exec) => Some(scan_exec),
+        }
+    }
+
+    fn shape(&self) -> String {
+        let source_shape = match self.scan {
+            NormalizedNativeScan::LocalParquet(_) => "LocalParquetScan".to_string(),
+            NormalizedNativeScan::TableFormat(scan_exec) => {
+                format!("TableFormatScan({})", scan_exec.table_format().code())
+            },
+        };
+        if self.filter.is_some() { wrap_shape("FilterExec", source_shape) } else { source_shape }
     }
 
     fn operator_count(&self) -> usize {
         1 + usize::from(self.filter.is_some())
     }
+}
+
+/// Source scan leaf recognized by native normalization.
+#[derive(Debug, Clone, Copy)]
+pub(in crate::native) enum NormalizedNativeScan<'a> {
+    LocalParquet(&'a DataSourceExec),
+    TableFormat(&'a CudfTableFormatScanExec),
 }
 
 /// Non-source filter in a recursive native input tree.
@@ -189,6 +228,23 @@ impl NormalizedNativeProjection<'_> {
     }
 }
 
+/// Global limit inside a recursive native input tree.
+#[derive(Debug, Clone)]
+pub(in crate::native) struct NormalizedNativeLimit<'a> {
+    pub(in crate::native) fetch: usize,
+    pub(in crate::native) input: Box<NormalizedNativeInput<'a>>,
+}
+
+impl NormalizedNativeLimit<'_> {
+    fn shape(&self) -> String {
+        wrap_shape("GlobalLimitExec", self.input.shape())
+    }
+
+    fn operator_count(&self) -> usize {
+        1 + self.input.operator_count()
+    }
+}
+
 /// Aggregate inside a recursive native input tree, for example above a join.
 #[derive(Debug, Clone)]
 pub(in crate::native) struct NormalizedNativeAggregate<'a> {
@@ -205,6 +261,79 @@ pub(in crate::native) struct NormalizedNativeAggregate<'a> {
 impl NormalizedNativeAggregate<'_> {
     fn shape(&self) -> String {
         wrap_shape("AggregateExec", self.input.shape())
+    }
+
+    fn operator_count(&self) -> usize {
+        1 + self.input.operator_count()
+    }
+}
+
+/// Sort inside a recursive native input tree, for example as the ordering
+/// contract immediately below a native window.
+#[derive(Debug, Clone)]
+pub(in crate::native) struct NormalizedNativeSort<'a> {
+    pub(in crate::native) sort: &'a SortExec,
+    pub(in crate::native) input: Box<NormalizedNativeInput<'a>>,
+}
+
+impl NormalizedNativeSort<'_> {
+    fn shape(&self) -> String {
+        wrap_shape("SortExec", self.input.shape())
+    }
+
+    fn operator_count(&self) -> usize {
+        1 + self.input.operator_count()
+    }
+}
+
+/// DataFusion window node with a recursively normalized input.
+#[derive(Debug, Clone)]
+pub(in crate::native) struct NormalizedNativeWindow<'a> {
+    pub(in crate::native) window: NormalizedNativeWindowExec<'a>,
+    pub(in crate::native) input: Box<NormalizedNativeInput<'a>>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(in crate::native) enum NormalizedNativeWindowExec<'a> {
+    Unbounded(&'a WindowAggExec),
+    Bounded(&'a BoundedWindowAggExec),
+}
+
+impl NormalizedNativeWindowExec<'_> {
+    pub(in crate::native) fn window_expr(
+        &self,
+    ) -> &[std::sync::Arc<dyn datafusion::physical_expr::window::WindowExpr>] {
+        match self {
+            Self::Unbounded(window) => window.window_expr(),
+            Self::Bounded(window) => window.window_expr(),
+        }
+    }
+
+    pub(in crate::native) fn input_schema(&self) -> SchemaRef {
+        match self {
+            Self::Unbounded(window) => window.input().schema(),
+            Self::Bounded(window) => window.input().schema(),
+        }
+    }
+
+    pub(in crate::native) fn schema(&self) -> SchemaRef {
+        match self {
+            Self::Unbounded(window) => window.schema(),
+            Self::Bounded(window) => window.schema(),
+        }
+    }
+
+    fn name(&self) -> &'static str {
+        match self {
+            Self::Unbounded(_) => "WindowAggExec",
+            Self::Bounded(_) => "BoundedWindowAggExec",
+        }
+    }
+}
+
+impl NormalizedNativeWindow<'_> {
+    fn shape(&self) -> String {
+        wrap_shape(self.window.name(), self.input.shape())
     }
 
     fn operator_count(&self) -> usize {
@@ -264,6 +393,23 @@ impl NormalizedNativeNestedLoopJoin<'_> {
 
     fn operator_count(&self) -> usize {
         1 + self.left.operator_count() + self.right.operator_count()
+    }
+}
+
+/// DataFusion physical union with recursively normalized children.
+#[derive(Debug, Clone)]
+pub(in crate::native) struct NormalizedNativeUnion<'a> {
+    pub(in crate::native) union: &'a UnionExec,
+    pub(in crate::native) inputs: Vec<NormalizedNativeInput<'a>>,
+}
+
+impl NormalizedNativeUnion<'_> {
+    fn shape(&self) -> String {
+        wrap_shape("UnionExec", self.inputs.iter().map(NormalizedNativeInput::shape).collect::<Vec<_>>().join(","))
+    }
+
+    fn operator_count(&self) -> usize {
+        1 + self.inputs.iter().map(NormalizedNativeInput::operator_count).sum::<usize>()
     }
 }
 

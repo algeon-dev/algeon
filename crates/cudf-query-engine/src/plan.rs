@@ -4,7 +4,7 @@ use arrow::datatypes::{Field, Schema, SchemaRef};
 
 use crate::{
     bounded::{bounded_join_modeled_facts, bounded_join_unsupported_shape_facts},
-    expr::{AggregateSpec, ColumnRef, Expr, LimitSpec, SortExpr, SortSpec},
+    expr::{AggregateFunction, AggregateSpec, ColumnRef, Expr, LimitSpec, SortExpr, SortSpec},
     runtime::ExecutionBoundaryPolicy,
     source::SourceNode,
 };
@@ -26,5 +26,8 @@ pub use facts::{DataPlacement, PlanFacts, SchemaBehavior};
 pub use join::{
     HashJoinBuildArtifactId, JoinKey, JoinNode, JoinNullEquality, JoinOutputColumn, JoinSide, JoinSpec, JoinType,
 };
-pub use nodes::{AggregateNode, FilterNode, LimitNode, ProjectionNode, ProjectionOutput, SortNode};
+pub use nodes::{
+    AggregateNode, FilterNode, LimitNode, ProjectionNode, ProjectionOutput, SortNode, UnionNode, WindowFrame,
+    WindowFunction, WindowNode, WindowSpec,
+};
 pub use sink::ResultSink;

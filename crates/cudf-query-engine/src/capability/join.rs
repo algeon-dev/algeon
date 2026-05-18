@@ -1,7 +1,9 @@
 use std::collections::BTreeMap;
 
+use arrow::datatypes::DataType;
+
 use crate::{
-    expr::Expr,
+    expr::{BinaryOp, Expr},
     plan::{JoinNode, JoinSide, JoinType, NodeId, QueryPlan, estimated_output_bytes, estimated_output_rows},
 };
 
@@ -21,6 +23,7 @@ pub(crate) enum JoinExecutionCapability {
     KeyedHash,
     KeyedFilteredSemiAnti,
     KeylessConditional(KeylessConditionalJoinKind),
+    KeylessOuterCross,
     ProjectedCross,
     KeyedResidualMixed,
 }
@@ -91,7 +94,7 @@ impl KeylessConditionalJoinKind {
             JoinType::Full => Some(Self::Full),
             JoinType::LeftSemi if join.spec.build_side == JoinSide::Left => Some(Self::LeftSemi),
             JoinType::LeftAnti if join.spec.build_side == JoinSide::Left => Some(Self::LeftAnti),
-            JoinType::Left | JoinType::Cross => None,
+            JoinType::Left | JoinType::Cross | JoinType::LeftMark => None,
             JoinType::LeftSemi | JoinType::LeftAnti => None,
         }
     }
@@ -110,6 +113,9 @@ pub(crate) fn single_join_node_execution_capability(join: &JoinNode) -> Option<J
     }
     if let Some(join_type) = KeylessConditionalJoinKind::try_from_join(join) {
         return Some(JoinExecutionCapability::KeylessConditional(join_type));
+    }
+    if keyless_outer_cross_join_capable(join) {
+        return Some(JoinExecutionCapability::KeylessOuterCross);
     }
     if projected_cross_join_capable(join) {
         return Some(JoinExecutionCapability::ProjectedCross);
@@ -235,6 +241,11 @@ pub(crate) fn keyed_hash_join_strategy_decision(
         Some("build_side_too_large")
     } else if large_probe && !small_build {
         Some("probe_side_too_large")
+    } else if input.probe_side_bytes.is_none()
+        && input.build_side_bytes.is_some()
+        && join.spec.build_side == JoinSide::Left
+    {
+        Some("probe_side_unestimated")
     } else {
         None
     };
@@ -337,10 +348,14 @@ fn expr_requires_post_join_filter(expr: &Expr) -> bool {
         | Expr::Lower(expr)
         | Expr::Upper(expr)
         | Expr::Extract { expr, .. }
+        | Expr::Abs(expr)
+        | Expr::Round { expr, .. }
         | Expr::Alias { expr, .. }
         | Expr::Substring { expr, .. }
         | Expr::Like { expr, .. } => expr_requires_post_join_filter(expr),
-        Expr::Binary { op: crate::expr::BinaryOp::Or, .. } => true,
+        Expr::Concat(exprs) => exprs.iter().any(expr_requires_post_join_filter),
+        Expr::Binary { op: BinaryOp::Or, .. } => true,
+        Expr::Binary { op: BinaryOp::Divide, output_type: Some(DataType::Decimal128(_, _)), .. } => true,
         Expr::Binary { left, right, .. } => {
             expr_requires_post_join_filter(left) || expr_requires_post_join_filter(right)
         },
@@ -407,9 +422,10 @@ pub(crate) fn keyed_filtered_semi_anti_join_capable(join: &JoinNode) -> bool {
     !join.spec.keys.is_empty()
         && join.spec.residual_predicate.is_none()
         && !join.spec.output_projection.is_empty()
-        && matches!(join.spec.join_type, JoinType::LeftSemi | JoinType::LeftAnti)
+        && matches!(join.spec.join_type, JoinType::LeftSemi | JoinType::LeftAnti | JoinType::LeftMark)
         && join.spec.build_side == JoinSide::Right
         && join.spec.output_projection.iter().all(|column| column.side == JoinSide::Left)
+        && (join.spec.join_type != JoinType::LeftMark || join.spec.mark_column_name.is_some())
 }
 
 pub(crate) fn projected_cross_join_capable(join: &JoinNode) -> bool {
@@ -417,6 +433,14 @@ pub(crate) fn projected_cross_join_capable(join: &JoinNode) -> bool {
         && join.spec.residual_predicate.is_none()
         && !join.spec.output_projection.is_empty()
         && join.spec.join_type == JoinType::Cross
+}
+
+pub(crate) fn keyless_outer_cross_join_capable(join: &JoinNode) -> bool {
+    join.spec.keys.is_empty()
+        && join.spec.residual_predicate.is_none()
+        && !join.spec.output_projection.is_empty()
+        && matches!(join.spec.join_type, JoinType::Left | JoinType::Full)
+        && (join.spec.join_type != JoinType::Left || join.spec.build_side == JoinSide::Right)
 }
 
 pub(crate) fn keyed_residual_mixed_join_capable(join: &JoinNode) -> bool {
@@ -431,7 +455,7 @@ pub(crate) fn keyed_residual_mixed_join_capable(join: &JoinNode) -> bool {
             join.spec.build_side == JoinSide::Right
                 && join.spec.output_projection.iter().all(|column| column.side == JoinSide::Left)
         },
-        JoinType::Cross => false,
+        JoinType::Cross | JoinType::LeftMark => false,
     }
 }
 
@@ -446,6 +470,6 @@ pub(crate) fn multi_join_keyed_residual_mixed_join_capable(join: &JoinNode) -> b
             join.spec.build_side == JoinSide::Right
                 && join.spec.output_projection.iter().all(|column| column.side == JoinSide::Left)
         },
-        JoinType::Left | JoinType::Full | JoinType::Cross => false,
+        JoinType::Left | JoinType::Full | JoinType::Cross | JoinType::LeftMark => false,
     }
 }

@@ -252,7 +252,9 @@ fn should_partition_compiled_grouped_aggregate(
     aggregate: &AggregateNode,
     input_reserved_bytes: u64,
 ) -> bool {
-    !aggregate.spec.group_exprs.is_empty() && partitioned_aggregate_partition_count(context, input_reserved_bytes) > 1
+    !aggregate_spec_has_stddev_samp(&aggregate.spec)
+        && !aggregate.spec.group_exprs.is_empty()
+        && partitioned_aggregate_partition_count(context, input_reserved_bytes) > 1
 }
 
 fn partitioned_aggregate_partition_count(context: &ExecutionContext, input_bytes: u64) -> usize {
@@ -288,6 +290,42 @@ pub(in crate::exec::bounded) fn execute_compiled_bounded_aggregate_from_stream(
         )
         .with_fact("node_id", node_id));
     }
+    if aggregate_spec_has_stddev_samp(&aggregate.spec) {
+        let input = execute_bounded_generic_union(context, node_id, inputs, reservations, metrics)?;
+        return execute_bounded_generic_unary(
+            context,
+            node_id,
+            "compiled_stddev_aggregate",
+            "compiled_stddev_aggregate_output",
+            input,
+            reservations,
+            metrics,
+            true,
+            |context, input, token, metrics| {
+                execute_aggregate_with_budget(
+                    context,
+                    aggregate,
+                    input_schema,
+                    input,
+                    output_schema,
+                    token.expect("budget token is created for compiled bounded stddev aggregate stages"),
+                    metrics,
+                )
+            },
+        );
+    }
+    if aggregate_spec_has_distinct(&aggregate.spec) {
+        return execute_compiled_bounded_distinct_aggregate_from_stream(
+            context,
+            node_id,
+            aggregate,
+            input_schema,
+            output_schema,
+            inputs,
+            reservations,
+            metrics,
+        );
+    }
 
     let mut partials = Vec::with_capacity(inputs.len());
     for input in inputs {
@@ -318,6 +356,121 @@ pub(in crate::exec::bounded) fn execute_compiled_bounded_aggregate_from_stream(
         partials,
         reservations,
         metrics,
+    )
+}
+
+fn execute_compiled_bounded_distinct_aggregate_from_stream(
+    context: &ExecutionContext,
+    node_id: NodeId,
+    aggregate: &AggregateNode,
+    input_schema: &arrow::datatypes::SchemaRef,
+    output_schema: &arrow::datatypes::SchemaRef,
+    inputs: Vec<ResidentGpuFrame>,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+) -> Result<ResidentGpuFrame> {
+    let mut frames = inputs;
+    let input_reserved_bytes = frames.iter().map(|frame| frame.reservation.bytes()).sum::<u64>();
+    if frames.len() == 1 {
+        let input = frames.pop().expect("single frame checked");
+        return execute_compiled_bounded_aggregate_from_frame(
+            context,
+            node_id,
+            aggregate,
+            input_schema,
+            output_schema,
+            input.frame,
+            input.reservation.bytes(),
+            reservations,
+            metrics,
+        );
+    }
+
+    let request =
+        MemoryReservationRequest::new(ReservationKind::OperatorOutput, input_reserved_bytes, reservations.budget())
+            .with_memory_boundary("compiled_aggregate_distinct_stream_concat")
+            .with_node_id(node_id)
+            .with_stage("compiled_aggregate_distinct_stream_concat");
+    let mut concat_reservation = match reservations.try_reserve_work(request, metrics) {
+        Ok(reservation) => reservation,
+        Err(error) => {
+            drop(frames);
+            return Err(error);
+        },
+    };
+    let token = match execution_budget_token_for_boundary(
+        context,
+        reservations.available_bytes_including(&concat_reservation),
+        "compiled_aggregate_distinct_stream_concat",
+        "cudf_query_engine.bounded.aggregate.distinct_stream_concat.budget_token",
+        "failed to create bounded native distinct aggregate concat budget token",
+    ) {
+        Ok(token) => token,
+        Err(error) => {
+            reservations.release(concat_reservation, metrics);
+            drop(frames);
+            return Err(error);
+        },
+    };
+
+    let first = frames.remove(0);
+    let first_reservation = first.reservation;
+    let first_frame = first.frame.into_frame();
+    let other_frame_refs = frames.iter().map(|frame| frame.frame.frame()).collect::<Vec<_>>();
+    let concatenated = first_frame.with_execution(&token.execution_overrides()).concat_many(&other_frame_refs);
+    for frame in frames {
+        reservations.release(frame.reservation, metrics);
+    }
+    reservations.release(first_reservation, metrics);
+    let concatenated = concatenated.map(GpuDataFrame::new).map_err(|error| {
+        attach_budget_token_failure_facts(
+            QueryError::from_cudf(
+                "cudf_query_engine.bounded.aggregate.distinct_stream_concat",
+                "failed to concatenate distinct aggregate stream inputs",
+                error,
+            ),
+            &token,
+        )
+    })?;
+    let concatenated_bytes = observe_device_memory_bytes(&concatenated, metrics)?;
+    if concatenated_bytes > concat_reservation.bytes() {
+        let grow_request = MemoryReservationRequest::new(
+            ReservationKind::OperatorOutput,
+            concatenated_bytes.saturating_sub(concat_reservation.bytes()),
+            reservations.budget(),
+        )
+        .with_memory_boundary("compiled_aggregate_distinct_stream_concat")
+        .with_node_id(node_id)
+        .with_stage("compiled_aggregate_distinct_stream_concat");
+        if let Err(error) = reservations.try_grow(&mut concat_reservation, grow_request, metrics) {
+            drop(concatenated);
+            reservations.release(concat_reservation, metrics);
+            return Err(error);
+        }
+    } else {
+        reservations.shrink_to_observed(&mut concat_reservation, concatenated_bytes, metrics);
+    }
+
+    execute_bounded_generic_unary(
+        context,
+        node_id,
+        "compiled_aggregate_distinct",
+        "compiled_aggregate_distinct_output",
+        ResidentGpuFrame { frame: concatenated, reservation: concat_reservation },
+        reservations,
+        metrics,
+        true,
+        |context, input, token, metrics| {
+            execute_aggregate_with_budget(
+                context,
+                aggregate,
+                input_schema,
+                input,
+                output_schema,
+                token.expect("budget token is created for compiled bounded distinct aggregate stages"),
+                metrics,
+            )
+        },
     )
 }
 

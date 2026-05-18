@@ -403,7 +403,7 @@ fn format_opt<T: std::fmt::Display>(value: Option<T>) -> String {
 }
 
 fn sanitize(s: &str) -> String {
-    s.replace('\t', " ").replace('\n', " ")
+    s.replace(['\t', '\n'], " ")
 }
 
 #[derive(Debug, Clone, Default)]

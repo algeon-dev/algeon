@@ -439,16 +439,16 @@ async fn native_datafusion_planning_report_summarizes_session_optimizer_outcomes
     assert!(planning_failure_row.rejected_before_execution);
 
     let text = accepted.to_tsv();
-    assert_eq!(NATIVE_DATAFUSION_PLANNING_TSV_SCHEMA_VERSION, 9);
+    assert_eq!(NATIVE_DATAFUSION_PLANNING_TSV_SCHEMA_VERSION, 10);
     assert_eq!(
         NATIVE_DATAFUSION_PLANNING_TSV_HEADER,
-        "query_id\tphysical_root\tphysical_shape\tnative_candidate_shape\tnative_candidate_shape_family\toutcome\treason_code\tunsupported_category\tstrict_bounded_contract_rows\tstrict_bounded_compiled_graphs\tadaptive_pipeline_rows\tnative_optimizer\tjoin_diagnostics\tsource_diagnostics\tpost_native_plan_root\tpost_native_execution_path\trejected_before_execution"
+        "query_id\tphysical_root\tphysical_shape\tnative_candidate_shape\tnative_candidate_shape_family\toutcome\treason_code\tunsupported_category\tstrict_bounded_contract_rows\tstrict_bounded_compiled_graphs\tadaptive_pipeline_rows\tnative_optimizer\tjoin_diagnostics\tsource_diagnostics\tpost_native_plan_root\tpost_native_execution_path\tnative_plan_fragment_count\thost_datafusion_boundary_count\trejected_before_execution"
     );
-    assert!(text.starts_with("# native_datafusion_planning_tsv_schema_version=9\n"));
+    assert!(text.starts_with("# native_datafusion_planning_tsv_schema_version=10\n"));
     assert!(text.contains(&format!("{NATIVE_DATAFUSION_PLANNING_TSV_HEADER}\n")));
     assert!(text.contains("sum_session\t"));
     assert!(text.contains("\taccepted_replaced\tnone\tnone\t"));
-    assert!(text.contains("\tNativeCudfExec\tnative\tfalse"));
+    assert!(text.contains("\tNativeCudfExec\tnative\t1\t0\tfalse"));
 
     fs::remove_dir_all(dir).unwrap();
 }

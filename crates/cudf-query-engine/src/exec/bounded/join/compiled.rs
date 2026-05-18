@@ -243,6 +243,7 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_build_from_frame(
         | CompiledJoinExecutionStrategy::PartitionedHashEqui
         | CompiledJoinExecutionStrategy::PartitionedMixedKeyedResidual
         | CompiledJoinExecutionStrategy::KeylessConditional { .. }
+        | CompiledJoinExecutionStrategy::KeylessOuterCross
         | CompiledJoinExecutionStrategy::ProjectedCross
         | CompiledJoinExecutionStrategy::MixedKeyedResidual => {
             let side = node.spec.build_side;
@@ -294,6 +295,7 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_build_from_residen
         | CompiledJoinExecutionStrategy::PartitionedHashEqui
         | CompiledJoinExecutionStrategy::PartitionedMixedKeyedResidual
         | CompiledJoinExecutionStrategy::KeylessConditional { .. }
+        | CompiledJoinExecutionStrategy::KeylessOuterCross
         | CompiledJoinExecutionStrategy::ProjectedCross
         | CompiledJoinExecutionStrategy::MixedKeyedResidual => {
             let side = node.spec.build_side;
@@ -570,6 +572,20 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_probe_from_frame_s
             }
             Ok(BoundedCompiledJoinProbeState::FilteredStreamed { build, outputs })
         },
+        BoundedCompiledJoinBuildState::Prepared(build)
+            if build.strategy == CompiledJoinExecutionStrategy::PartitionedHashEqui
+                && node.spec.residual_predicate.is_none() =>
+        {
+            execute_compiled_partitioned_hash_equi_join_probe_from_frame_stream(
+                context,
+                node_id,
+                node,
+                build,
+                inputs,
+                reservations,
+                metrics,
+            )
+        },
         other => {
             let input = concatenate_streamed_hash_join_outputs(context, node_id, inputs, reservations, metrics)?;
             execute_bounded_compiled_join_probe_from_resident_frame(
@@ -653,6 +669,10 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_materialize_preser
     metrics: &mut QueryMetrics,
 ) -> Result<BoundedCompiledJoinMaterializeOutput> {
     match probe {
+        BoundedCompiledJoinProbeState::HashStreamed { build, outputs } => {
+            release_bounded_root_hash_join_build_state(build, reservations, metrics);
+            Ok(BoundedCompiledJoinMaterializeOutput::Stream(outputs))
+        },
         BoundedCompiledJoinProbeState::FilteredStreamed { build, outputs } => {
             release_compiled_filtered_join_build_state(build, reservations, metrics);
             Ok(BoundedCompiledJoinMaterializeOutput::Stream(outputs))
@@ -693,6 +713,19 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_materialize_preser
                 metrics,
             );
             Ok(BoundedCompiledJoinMaterializeOutput::Stream(outputs))
+        },
+        BoundedCompiledJoinProbeState::Prepared(probe)
+            if probe.strategy == CompiledJoinExecutionStrategy::PartitionedHashEqui =>
+        {
+            execute_compiled_partitioned_hash_equi_join_materialize_preserving_stream(
+                context,
+                node_id,
+                node,
+                probe.left,
+                probe.right,
+                reservations,
+                metrics,
+            )
         },
         other => execute_bounded_compiled_join_materialize(context, node_id, node, other, reservations, metrics)
             .map(|frame| BoundedCompiledJoinMaterializeOutput::Frame(Box::new(frame))),
@@ -907,6 +940,9 @@ fn compiled_join_input_columns(
             ))
         },
         CompiledJoinExecutionStrategy::ProjectedCross => {
+            Ok(projected_output_columns(&node.spec.output_projection, side))
+        },
+        CompiledJoinExecutionStrategy::KeylessOuterCross => {
             Ok(projected_output_columns(&node.spec.output_projection, side))
         },
         CompiledJoinExecutionStrategy::MixedKeyedResidual => {

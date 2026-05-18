@@ -80,6 +80,27 @@ pub enum Expr {
     Lower(Box<Expr>),
     /// SQL `UPPER(expr)` string expression.
     Upper(Box<Expr>),
+    /// SQL `CONCAT(expr, ...)` string expression.
+    ///
+    /// Native execution follows DataFusion semantics: null inputs contribute
+    /// empty strings rather than producing a null output row.
+    Concat(Vec<Expr>),
+    /// SQL `ABS(expr)` numeric expression.
+    Abs(Box<Expr>),
+    /// SQL `ROUND(expr, decimal_places)` numeric expression.
+    ///
+    /// The `output_type` is the frontend-declared DataFusion result type. It
+    /// is part of the native contract because decimal `ROUND` may reduce scale
+    /// even when the lower-level cuDF operation preserves the input storage
+    /// type.
+    Round {
+        /// Numeric or decimal expression being rounded.
+        expr: Box<Expr>,
+        /// Number of decimal places. Half-way ties round away from zero.
+        decimal_places: i32,
+        /// Declared output type after rounding.
+        output_type: DataType,
+    },
     /// SQL `IN` or `NOT IN` membership predicate.
     ///
     /// The IR can represent general SQL `IN` lists. Runnable native plans
@@ -211,6 +232,21 @@ impl Expr {
         Self::Upper(Box::new(expr))
     }
 
+    /// Build a SQL `CONCAT(expr, ...)` string expression.
+    pub fn concat(exprs: Vec<Self>) -> Self {
+        Self::Concat(exprs)
+    }
+
+    /// Build a SQL `ABS(expr)` numeric expression.
+    pub fn abs(expr: Self) -> Self {
+        Self::Abs(Box::new(expr))
+    }
+
+    /// Build a SQL `ROUND(expr, decimal_places)` numeric expression.
+    pub fn round(expr: Self, decimal_places: i32, output_type: DataType) -> Self {
+        Self::Round { expr: Box::new(expr), decimal_places, output_type }
+    }
+
     /// Build a SQL `IN` predicate.
     ///
     /// The IR accepts expression candidates, but runnable native plans require
@@ -281,6 +317,20 @@ impl fmt::Display for Expr {
             },
             Self::Lower(expr) => write!(f, "LOWER({expr})"),
             Self::Upper(expr) => write!(f, "UPPER({expr})"),
+            Self::Concat(exprs) => {
+                f.write_str("CONCAT(")?;
+                for (index, expr) in exprs.iter().enumerate() {
+                    if index > 0 {
+                        f.write_str(", ")?;
+                    }
+                    write!(f, "{expr}")?;
+                }
+                f.write_str(")")
+            },
+            Self::Abs(expr) => write!(f, "ABS({expr})"),
+            Self::Round { expr, decimal_places, output_type } => {
+                write!(f, "ROUND({expr}, {decimal_places})::{output_type}")
+            },
             Self::InList { expr, list, negated } => {
                 let operator = if *negated { "NOT IN" } else { "IN" };
                 write!(f, "{expr} {operator} (")?;
@@ -355,6 +405,16 @@ pub enum BinaryOp {
     Divide,
     /// Numeric remainder.
     Modulo,
+    /// Bitwise conjunction.
+    BitwiseAnd,
+    /// Bitwise disjunction.
+    BitwiseOr,
+    /// Bitwise exclusive disjunction.
+    BitwiseXor,
+    /// Bitwise left shift.
+    ShiftLeft,
+    /// Bitwise right shift.
+    ShiftRight,
     /// Equality comparison.
     Eq,
     /// Inequality comparison.
@@ -381,6 +441,11 @@ impl fmt::Display for BinaryOp {
             Self::Multiply => "*",
             Self::Divide => "/",
             Self::Modulo => "%",
+            Self::BitwiseAnd => "&",
+            Self::BitwiseOr => "|",
+            Self::BitwiseXor => "^",
+            Self::ShiftLeft => "<<",
+            Self::ShiftRight => ">>",
             Self::Eq => "=",
             Self::NotEq => "!=",
             Self::Lt => "<",
@@ -459,11 +524,17 @@ pub struct AggregateExpr {
     pub function: AggregateFunction,
     pub expr: Expr,
     pub alias: String,
+    pub distinct: bool,
 }
 
 impl AggregateExpr {
     pub fn new(function: AggregateFunction, expr: Expr, alias: impl Into<String>) -> Self {
-        Self { function, expr, alias: alias.into() }
+        Self { function, expr, alias: alias.into(), distinct: false }
+    }
+
+    pub fn with_distinct(mut self, distinct: bool) -> Self {
+        self.distinct = distinct;
+        self
     }
 }
 

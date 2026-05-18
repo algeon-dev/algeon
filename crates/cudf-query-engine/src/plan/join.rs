@@ -62,6 +62,11 @@ pub struct JoinSpec {
     /// for the logical build input, key set, null-equality behavior, and other
     /// build-affecting choices.
     pub build_artifact_id: Option<HashJoinBuildArtifactId>,
+    /// Output column name for the Boolean mark column in a `LeftMark` join.
+    ///
+    /// Must be `Some` when `join_type == LeftMark` and `None` otherwise.
+    /// The mark column appears as the last field in the output schema.
+    pub mark_column_name: Option<String>,
 }
 
 impl JoinSpec {
@@ -80,6 +85,7 @@ impl JoinSpec {
             null_equality: JoinNullEquality::NullsDoNotMatch,
             build_side: JoinSide::Right,
             build_artifact_id: None,
+            mark_column_name: None,
         }
     }
 
@@ -113,6 +119,12 @@ impl JoinSpec {
     /// table name. Validation rejects empty ids.
     pub fn with_build_artifact_id(mut self, id: impl Into<String>) -> Self {
         self.build_artifact_id = Some(HashJoinBuildArtifactId::new(id));
+        self
+    }
+
+    /// Sets the output column name for the Boolean mark column in a `LeftMark` join.
+    pub fn with_mark_column_name(mut self, name: impl Into<String>) -> Self {
+        self.mark_column_name = Some(name.into());
         self
     }
 }
@@ -223,6 +235,9 @@ pub enum JoinType {
     LeftAnti,
     /// Cartesian join; equality keys should be empty.
     Cross,
+    /// Keep every left row; output left-side columns plus a Boolean mark column
+    /// that is `true` when at least one matching right row exists.
+    LeftMark,
 }
 
 impl fmt::Display for JoinType {
@@ -234,6 +249,7 @@ impl fmt::Display for JoinType {
             Self::LeftSemi => "left_semi",
             Self::LeftAnti => "left_anti",
             Self::Cross => "cross",
+            Self::LeftMark => "left_mark",
         })
     }
 }

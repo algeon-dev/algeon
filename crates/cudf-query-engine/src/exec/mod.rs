@@ -14,7 +14,7 @@ use cudf::{
     core::Scalar as CudfScalar,
     frame::dataframe::{DropDuplicatesOptions, InfoDetail, ParquetReadOptions},
     io::source::SourceReadMode,
-    ops::{col, lit, lit_null},
+    ops::{col, lit, lit_null, reduction::ScanAgg, when},
 };
 
 mod bounded;
@@ -213,7 +213,7 @@ use crate::{
     metrics::QueryMetrics,
     plan::{
         AggregateNode, FilterNode, JoinNode, JoinNullEquality, JoinOutputColumn, JoinSide, JoinType, LimitNode, NodeId,
-        PlanNode, ProjectionNode, QueryPlan, ResultSink, SortNode,
+        PlanNode, ProjectionNode, QueryPlan, ResultSink, SortNode, WindowFrame, WindowNode,
     },
     runtime::{
         BoundedJoinReservationContract, ExecutionContext, MemoryControlPolicy, MemoryReservationRequest,
@@ -382,6 +382,14 @@ fn execute_node(
                 .output_schema();
             execute_aggregate(context, aggregate, input_schema, input, &node.facts.output_schema, metrics)
         },
+        PlanNode::Window(window) => {
+            let input = execute_node(context, plan, window.input, gpu_inputs, scratch, metrics)?;
+            let input_schema = plan
+                .node(window.input)
+                .ok_or_else(|| invalid_node_reference(window.input, "window references a missing input"))?
+                .output_schema();
+            execute_window(context, window, input_schema, input, &node.facts.output_schema, metrics)
+        },
         PlanNode::Sort(sort) => {
             let input = execute_node(context, plan, sort.input, gpu_inputs, scratch, metrics)?;
             execute_sort(context, sort, input, metrics)
@@ -394,6 +402,14 @@ fn execute_node(
             let left = execute_node(context, plan, join.inputs[0], gpu_inputs, scratch, metrics)?;
             let right = execute_node(context, plan, join.inputs[1], gpu_inputs, scratch, metrics)?;
             execute_join(context, node.id, join, left, right, scratch, metrics)
+        },
+        PlanNode::Union(union) => {
+            let inputs = union
+                .inputs
+                .iter()
+                .map(|input| execute_node(context, plan, *input, gpu_inputs, scratch, metrics))
+                .collect::<Result<Vec<_>>>()?;
+            execute_union(context, node.id, inputs, metrics)
         },
     }?;
 

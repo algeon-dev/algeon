@@ -7,13 +7,16 @@ mod root;
 mod sort;
 mod source;
 mod unary;
+mod union;
+mod window;
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use arrow::datatypes::{Field, Schema, SchemaRef};
 use cudf_query_engine::{
-    Expr as NativeExpr, NodeId as NativeNodeId, ProjectionOutput as NativeProjectionOutput,
-    QueryPlan as NativeQueryPlan, QueryPlanBuilder as NativeQueryPlanBuilder,
+    Expr as NativeExpr, LimitSpec as NativeLimitSpec, NodeId as NativeNodeId,
+    ProjectionOutput as NativeProjectionOutput, QueryPlan as NativeQueryPlan,
+    QueryPlanBuilder as NativeQueryPlanBuilder,
 };
 use datafusion::physical_expr::expressions::Column;
 
@@ -28,8 +31,22 @@ use crate::policy::FallbackReason;
 /// which covers joins and recursive unary/aggregate inputs.
 pub(super) fn lower_normalized_plan(normalized: &NormalizedNativePlan<'_>) -> Result<NativeQueryPlan, FallbackReason> {
     match &normalized.root {
-        NormalizedNativeRoot::Aggregate(root) if normalized.single_source_input().is_some() => {
+        NormalizedNativeRoot::Aggregate(root)
+            if normalized.single_source_input().is_some_and(|source| source.local_parquet_source_exec().is_some()) =>
+        {
             root::lower_slice1_plan(normalized, root)
+        },
+        NormalizedNativeRoot::Aggregate(root)
+            if normalized.single_source_input().is_some_and(|source| {
+                source.table_format_scan_exec().is_some()
+                    && crate::native::validate::native_zero_column_count_source_is_safe(
+                        source.filter,
+                        root.pre_aggregate_projection,
+                        root.aggregate,
+                    )
+            }) =>
+        {
+            root::lower_table_format_zero_column_count_plan(normalized, root)
         },
         NormalizedNativeRoot::Aggregate(root) => root::lower_joined_aggregate_plan(normalized, root),
         NormalizedNativeRoot::Input(root) => root::lower_input_root_plan(normalized, root),
@@ -197,14 +214,22 @@ fn lower_native_input(
         NormalizedNativeInput::Projection(projection) => {
             unary::lower_projection_input(projection, builder, required_output_fields)
         },
+        NormalizedNativeInput::Limit(limit) => {
+            let input = lower_native_input(&limit.input, builder, required_output_fields)?;
+            let node = builder.add_limit(input.node, NativeLimitSpec::fetch(limit.fetch), Arc::clone(&input.schema));
+            Ok(LoweredNativeInput::with_bindings(node, input.schema, input.bindings))
+        },
         NormalizedNativeInput::Aggregate(aggregate) => {
             aggregate::lower_aggregate_input(aggregate, builder, required_output_fields)
         },
+        NormalizedNativeInput::Sort(sort) => window::lower_sort_input(sort, builder, required_output_fields),
+        NormalizedNativeInput::Window(window) => window::lower_window_input(window, builder, required_output_fields),
         NormalizedNativeInput::HashJoin(join) => join::lower_hash_join_input(join, builder, required_output_fields),
         NormalizedNativeInput::CrossJoin(join) => join::lower_cross_join_input(join, builder, required_output_fields),
         NormalizedNativeInput::NestedLoopJoin(join) => {
             join::lower_nested_loop_join_input(join, builder, required_output_fields)
         },
+        NormalizedNativeInput::Union(union) => union::lower_union_input(union, builder, required_output_fields),
     }
 }
 

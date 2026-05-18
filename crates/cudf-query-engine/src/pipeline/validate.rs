@@ -557,27 +557,27 @@ fn validate_barrier_dominance(pipeline: &CompiledPipeline) -> crate::Result<()> 
                 )?;
             },
             PipelineBarrierKind::AggregateBoundary => {
-                validate_barrier_upstream_kind(
+                validate_barrier_upstream_kinds(
                     pipeline,
                     barrier.id(),
                     barrier.upstream_tasks(),
-                    PipelineTaskKind::Aggregate,
+                    &[PipelineTaskKind::Aggregate, PipelineTaskKind::Window],
                 )?;
             },
             PipelineBarrierKind::SortBoundary => {
-                validate_barrier_upstream_kind(
+                validate_barrier_upstream_kinds(
                     pipeline,
                     barrier.id(),
                     barrier.upstream_tasks(),
-                    PipelineTaskKind::FinalSort,
+                    &[PipelineTaskKind::FinalSort],
                 )?;
             },
             PipelineBarrierKind::SourceChunkBoundary => {
-                validate_barrier_upstream_kind(
+                validate_barrier_upstream_kinds(
                     pipeline,
                     barrier.id(),
                     barrier.upstream_tasks(),
-                    PipelineTaskKind::SourceRead,
+                    &[PipelineTaskKind::SourceRead],
                 )?;
             },
             PipelineBarrierKind::SinkBoundary => {},
@@ -622,19 +622,19 @@ fn validate_barrier_task_pair(
     Ok(())
 }
 
-fn validate_barrier_upstream_kind(
+fn validate_barrier_upstream_kinds(
     pipeline: &CompiledPipeline,
     barrier: PipelineBarrierId,
     upstream_tasks: &[PipelineTaskId],
-    expected: PipelineTaskKind,
+    expected: &[PipelineTaskKind],
 ) -> crate::Result<()> {
     for task_id in upstream_tasks {
         let task = task_by_id(pipeline, *task_id)?;
-        if task.kind() != expected {
+        if !expected.contains(&task.kind()) {
             return Err(invalid("pipeline barrier upstream task has wrong kind")
                 .with_fact("barrier_id", barrier)
                 .with_fact("task_id", task_id)
-                .with_fact("expected_kind", expected.as_str())
+                .with_fact("expected_kind", expected.iter().map(|kind| kind.as_str()).collect::<Vec<_>>().join("|"))
                 .with_fact("actual_kind", task.kind().as_str()));
         }
     }

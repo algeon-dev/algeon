@@ -572,8 +572,10 @@ pub(super) fn solve_resident_unary_chain_preserves_residency_invariant(
             PlanNode::Source(_)
             | PlanNode::Join(_)
             | PlanNode::Aggregate(_)
+            | PlanNode::Window(_)
             | PlanNode::Sort(_)
-            | PlanNode::Limit(_) => {
+            | PlanNode::Limit(_)
+            | PlanNode::Union(_) => {
                 return CapabilityDecision::rejected(
                     "resident_unary_chain_requires_filter_projection_nodes",
                     [("node_id", chain_id.to_string()), ("operator", node_operator_fact(&chain_node.kind).to_string())],
@@ -657,7 +659,10 @@ pub(super) fn expr_references_input(expr: &Expr, input_index: usize) -> bool {
         | Expr::Substring { expr, .. }
         | Expr::Lower(expr)
         | Expr::Upper(expr)
+        | Expr::Abs(expr)
+        | Expr::Round { expr, .. }
         | Expr::Extract { expr, .. } => expr_references_input(expr, input_index),
+        Expr::Concat(exprs) => exprs.iter().any(|expr| expr_references_input(expr, input_index)),
         Expr::InList { expr, list, .. } => {
             expr_references_input(expr, input_index) || list.iter().any(|item| expr_references_input(item, input_index))
         },

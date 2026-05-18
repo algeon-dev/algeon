@@ -30,6 +30,19 @@ fn fallback_reason_codes_are_stable_manifest_values() {
         (FallbackReason::NativeSourceByteRange, "native_source_byte_range"),
         (FallbackReason::NativeSourceFileOrdering, "native_source_file_ordering"),
         (FallbackReason::NativeSourceRowSelection, "native_source_row_selection"),
+        (FallbackReason::NativeSourceSchemaMapping, "native_source_schema_mapping"),
+        (FallbackReason::TableFormatUnsupported, "table_format_unsupported"),
+        (FallbackReason::TableFormatPlanningFailed, "table_format_planning_failed"),
+        (FallbackReason::IcebergNonParquetDataFile, "iceberg_non_parquet_data_file"),
+        (FallbackReason::IcebergDeleteFilesUnsupported, "iceberg_delete_files_unsupported"),
+        (FallbackReason::IcebergFieldIdMappingUnsupported, "iceberg_field_id_mapping_unsupported"),
+        (FallbackReason::IcebergNameMappingUnsupported, "iceberg_name_mapping_unsupported"),
+        (FallbackReason::IcebergNestedProjectionUnsupported, "iceberg_nested_projection_unsupported"),
+        (FallbackReason::IcebergPartitionTransformUnsupported, "iceberg_partition_transform_unsupported"),
+        (FallbackReason::IcebergResidualPredicateUnsupported, "iceberg_residual_predicate_unsupported"),
+        (FallbackReason::IcebergRowSelectionUnsupported, "iceberg_row_selection_unsupported"),
+        (FallbackReason::IcebergObjectStoreReadUnsupported, "iceberg_object_store_read_unsupported"),
+        (FallbackReason::IcebergSnapshotUnsupported, "iceberg_snapshot_unsupported"),
     ];
 
     for (reason, expected) in codes {

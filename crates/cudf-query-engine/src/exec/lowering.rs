@@ -1,6 +1,6 @@
 use cudf::ops::{
     binary::BinaryOperator,
-    expr::{lit_decimal128_raw, lit_duration_raw, lit_timestamp_raw},
+    expr::{concat, lit_decimal128_raw, lit_duration_raw, lit_timestamp_raw},
     lit_null,
     strings::StringSliceOptions,
     when,
@@ -49,6 +49,9 @@ pub(super) fn lower_expr(expr: &Expr) -> Result<cudf::Expr> {
         Expr::Substring { expr, start, length } => lower_substring(expr, *start, *length),
         Expr::Lower(expr) => Ok(lower_expr(expr)?.str().lower()),
         Expr::Upper(expr) => Ok(lower_expr(expr)?.str().upper()),
+        Expr::Concat(exprs) => lower_concat(exprs),
+        Expr::Abs(expr) => Ok(lower_expr(expr)?.abs()),
+        Expr::Round { expr, decimal_places, output_type } => lower_round(expr, *decimal_places, output_type),
         Expr::InList { expr, list, negated } => lower_in_list(expr, list, *negated),
         Expr::Case { branches, else_expr } => lower_case(branches, else_expr),
         Expr::Extract { field, expr } => lower_extract(*field, expr),
@@ -215,6 +218,11 @@ fn lower_binary_with_expected_type(
         BinaryOp::Multiply => Ok(left * right),
         BinaryOp::Divide => Ok(left / right),
         BinaryOp::Modulo => Ok(left % right),
+        BinaryOp::BitwiseAnd => Ok(cudf_binary_expr(left, BinaryOperator::BitwiseAnd, right)),
+        BinaryOp::BitwiseOr => Ok(cudf_binary_expr(left, BinaryOperator::BitwiseOr, right)),
+        BinaryOp::BitwiseXor => Ok(cudf_binary_expr(left, BinaryOperator::BitwiseXor, right)),
+        BinaryOp::ShiftLeft => Ok(cudf_binary_expr(left, BinaryOperator::ShiftLeft, right)),
+        BinaryOp::ShiftRight => Ok(cudf_binary_expr(left, BinaryOperator::ShiftRight, right)),
         BinaryOp::Eq => Ok(left.eq(right)),
         BinaryOp::NotEq => Ok(left.ne(right)),
         BinaryOp::Lt => Ok(left.lt(right)),
@@ -224,6 +232,10 @@ fn lower_binary_with_expected_type(
         BinaryOp::And => Ok(sql_boolean_and(left, right)),
         BinaryOp::Or => Ok(sql_boolean_or(left, right)),
     }
+}
+
+fn cudf_binary_expr(left: cudf::Expr, op: BinaryOperator, right: cudf::Expr) -> cudf::Expr {
+    cudf::Expr::BinaryOp { lhs: Box::new(left), op, rhs: Box::new(right) }
 }
 
 fn sql_boolean_and(left: cudf::Expr, right: cudf::Expr) -> cudf::Expr {
@@ -299,6 +311,49 @@ fn lower_substring(expr: &Expr, start: i32, length: Option<i32>) -> Result<cudf:
         .transpose()?;
     let options = StringSliceOptions::new(Some(zero_based_start), stop);
     Ok(lower_expr(expr)?.str().slice(options))
+}
+
+fn lower_concat(exprs: &[Expr]) -> Result<cudf::Expr> {
+    if exprs.is_empty() {
+        return Err(QueryError::new(
+            QueryErrorCode::UnsupportedExpression,
+            "cudf_query_engine.expr.lower_concat",
+            "native CONCAT requires at least one argument",
+        ));
+    }
+    exprs.iter().map(lower_expr).collect::<Result<Vec<_>>>().map(concat)
+}
+
+fn lower_round(expr: &Expr, decimal_places: i32, output_type: &ArrowDataType) -> Result<cudf::Expr> {
+    let dtype = cudf_dtype_from_arrow_type(output_type).ok_or_else(|| {
+        QueryError::new(
+            QueryErrorCode::UnsupportedType,
+            "cudf_query_engine.expr.lower_round",
+            "native ROUND output type is not supported",
+        )
+        .with_fact("output_type", format!("{output_type:?}"))
+    })?;
+    if matches!(output_type, ArrowDataType::Float32 | ArrowDataType::Float64) {
+        return lower_float_round(expr, decimal_places).map(|expr| expr.cast(dtype));
+    }
+    Ok(lower_expr(expr)?.round(decimal_places).cast(dtype))
+}
+
+fn lower_float_round(expr: &Expr, decimal_places: i32) -> Result<cudf::Expr> {
+    let factor = 10_f64.powi(decimal_places);
+    if !factor.is_finite() || factor == 0.0 {
+        return Err(QueryError::new(
+            QueryErrorCode::UnsupportedExpression,
+            "cudf_query_engine.expr.lower_round",
+            "native float ROUND decimal places produce a non-finite scale factor",
+        )
+        .with_fact("decimal_places", decimal_places));
+    }
+    let scaled = lower_expr(expr)? * lit(factor);
+    let rounded = when(scaled.clone().ge(lit(0.0)))
+        .then((scaled.clone() + lit(0.5)).floor())
+        .otherwise((scaled - lit(0.5)).ceil());
+    Ok(rounded / lit(factor))
 }
 
 fn lower_in_list(expr: &Expr, list: &[Expr], negated: bool) -> Result<cudf::Expr> {

@@ -67,6 +67,72 @@ pub struct AggregateNode {
     pub spec: AggregateSpec,
 }
 
+/// Window operation over one pre-ordered input.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WindowNode {
+    /// Input whose rows receive appended window outputs.
+    pub input: NodeId,
+    /// Window partition/order/function contract.
+    pub spec: WindowSpec,
+}
+
+/// Native window contract.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WindowSpec {
+    /// Partition expressions. Current executable forms require column
+    /// expressions and treat null partition keys as equal.
+    pub partition_by: Vec<Expr>,
+    /// Window ordering. Ranking functions require at least one ordering key.
+    pub order_by: Vec<SortExpr>,
+    /// Window functions appended to the input schema in order.
+    pub functions: Vec<WindowFunction>,
+}
+
+impl WindowSpec {
+    pub fn new(partition_by: Vec<Expr>, order_by: Vec<SortExpr>, functions: Vec<WindowFunction>) -> Self {
+        Self { partition_by, order_by, functions }
+    }
+}
+
+/// Supported native window functions.
+#[derive(Debug, Clone, PartialEq)]
+pub enum WindowFunction {
+    /// Full-partition aggregate window. The frame must be constant for every
+    /// row in the partition.
+    Aggregate { function: AggregateFunction, expr: Expr, alias: String, frame: WindowFrame },
+    /// SQL `rank()` over the window peer groups.
+    Rank { alias: String },
+}
+
+/// Supported native aggregate window frames.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WindowFrame {
+    /// `ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING`.
+    WholePartition,
+    /// `ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW`.
+    RowsUnboundedPrecedingToCurrent,
+}
+
+impl WindowFunction {
+    pub fn aggregate(function: AggregateFunction, expr: Expr, alias: impl Into<String>) -> Self {
+        Self::Aggregate { function, expr, alias: alias.into(), frame: WindowFrame::WholePartition }
+    }
+
+    pub fn cumulative_aggregate(function: AggregateFunction, expr: Expr, alias: impl Into<String>) -> Self {
+        Self::Aggregate { function, expr, alias: alias.into(), frame: WindowFrame::RowsUnboundedPrecedingToCurrent }
+    }
+
+    pub fn rank(alias: impl Into<String>) -> Self {
+        Self::Rank { alias: alias.into() }
+    }
+
+    pub fn alias(&self) -> &str {
+        match self {
+            Self::Aggregate { alias, .. } | Self::Rank { alias } => alias,
+        }
+    }
+}
+
 /// Sort operation over one input.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SortNode {
@@ -83,4 +149,11 @@ pub struct LimitNode {
     pub input: NodeId,
     /// Skip/fetch contract.
     pub spec: LimitSpec,
+}
+
+/// Row-wise concatenation of schema-compatible inputs.
+#[derive(Debug, Clone, PartialEq)]
+pub struct UnionNode {
+    /// Inputs concatenated in order.
+    pub inputs: Vec<NodeId>,
 }
