@@ -1,7 +1,7 @@
 use std::{
     collections::{BTreeSet, HashMap},
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, Mutex, MutexGuard, OnceLock},
 };
 
 use cugraph::{
@@ -18,6 +18,11 @@ const EDGE_COLUMN_NAMES: &[&str] = &["src", "dst", "weight"];
 
 pub use crate::common::fs::unique_temp_dir;
 use crate::common::support::write_bfs_graph_parquet;
+
+pub fn cuda_test_serial_guard() -> MutexGuard<'static, ()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(())).lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 
 pub fn explicit_runtime() -> cudf::Runtime {
     cudf::Runtime::builder().build().expect("runtime")
@@ -103,14 +108,14 @@ pub fn python_weighted_reciprocal_dataframe(runtime: &cudf::Runtime) -> cudf::Da
     let src = runtime.series(&[0i32, 1, 1, 2]).expect("src");
     let dst = runtime.series(&[1i32, 0, 2, 1]).expect("dst");
     let wgt = runtime.series(&[5.0f32, 2.0, 1.0, 1.0]).expect("weight");
-    cudf::DataFrame::from_columns([("src", src), ("dst", dst), ("weight", wgt)])
+    cudf::DataFrame::from_series([("src", src), ("dst", dst), ("weight", wgt)])
         .expect("python-weighted reciprocal dataframe")
 }
 
 pub fn python_undirected_multigraph_dataframe(runtime: &cudf::Runtime) -> cudf::DataFrame {
     let src = runtime.series(&[0i32, 0, 1]).expect("src");
     let dst = runtime.series(&[1i32, 1, 2]).expect("dst");
-    cudf::DataFrame::from_columns([("src", src), ("dst", dst)]).expect("python undirected multigraph dataframe")
+    cudf::DataFrame::from_series([("src", src), ("dst", dst)]).expect("python undirected multigraph dataframe")
 }
 
 pub fn python_weighted_reciprocal_expected_pagerank_map(handle: &EnteredContext<'_>) -> HashMap<i32, f32> {

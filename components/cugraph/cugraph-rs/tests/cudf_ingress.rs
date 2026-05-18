@@ -46,7 +46,7 @@ fn louvain_fixture_dataframe(runtime: &cudf::Runtime) -> cudf::DataFrame {
     let src = runtime.series(LOUVAIN_GRAPH_SRC_I32).expect("src");
     let dst = runtime.series(LOUVAIN_GRAPH_DST_I32).expect("dst");
     let weight = runtime.series(LOUVAIN_GRAPH_WEIGHT_F32).expect("weight");
-    cudf::DataFrame::from_columns([("src", src), ("dst", dst), ("weight", weight)]).expect("louvain graph dataframe")
+    cudf::DataFrame::from_series([("src", src), ("dst", dst), ("weight", weight)]).expect("louvain graph dataframe")
 }
 
 fn assert_python_weighted_ingress_scores_match_expected(
@@ -120,6 +120,7 @@ fn assert_score_maps_close(actual: &BTreeMap<i32, f64>, expected: &BTreeMap<i32,
 
 #[test]
 fn graph_from_parquet_then_bfs() {
+    let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
     let entered = handle.enter("graph_from_parquet_then_bfs").expect("entered");
     let fixture = TempParquetFixture::bfs_graph();
@@ -145,6 +146,7 @@ fn graph_from_parquet_then_bfs() {
 
 #[test]
 fn graph_from_parquet_rejects_nonexistent_file() {
+    let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
     let entered = handle.enter("graph_from_parquet_rejects_nonexistent_file").expect("entered");
     let opts = ParquetGraphOptions::new("/tmp/this_file_definitely_does_not_exist_12345.parquet", 0, 1)
@@ -158,6 +160,7 @@ fn graph_from_parquet_rejects_nonexistent_file() {
 
 #[test]
 fn graph_from_parquet_rejects_nulls_in_src_column() {
+    let _guard = common::cudf::cuda_test_serial_guard();
     let runtime = explicit_runtime();
     let src = runtime.column_from_slice_nullable(&[0i32, 1, 2], &[true, false, true]).expect("src");
     let dst = runtime.column_from_slice(&[1i32, 2, 0]).expect("dst");
@@ -188,6 +191,7 @@ fn graph_from_parquet_rejects_nulls_in_src_column() {
 
 #[test]
 fn graph_from_borrowed_table_view_then_bfs() {
+    let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
     let entered = handle.enter("graph_from_borrowed_table_view_then_bfs").expect("entered");
     let runtime = explicit_runtime();
@@ -214,6 +218,7 @@ fn graph_from_borrowed_table_view_then_bfs() {
 
 #[test]
 fn graph_from_borrowed_table_view_without_weights() {
+    let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
     let entered = handle.enter("graph_from_borrowed_table_view_without_weights").expect("entered");
     let runtime = explicit_runtime();
@@ -236,6 +241,7 @@ fn graph_from_borrowed_table_view_without_weights() {
 
 #[test]
 fn graph_from_borrowed_table_view_rejects_out_of_bounds_column() {
+    let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
     let entered = handle.enter("graph_from_borrowed_table_view_rejects_out_of_bounds_column").expect("entered");
     let runtime = explicit_runtime();
@@ -252,6 +258,7 @@ fn graph_from_borrowed_table_view_rejects_out_of_bounds_column() {
 
 #[test]
 fn graph_from_borrowed_table_view_rejects_nullable_column() {
+    let _guard = common::cudf::cuda_test_serial_guard();
     let runtime = explicit_runtime();
     let src = runtime.column_from_slice_nullable(&[0i32, 1, 2], &[true, false, true]).expect("src");
     let dst = runtime.column_from_slice(&[1i32, 2, 0]).expect("dst");
@@ -273,6 +280,7 @@ fn graph_from_borrowed_table_view_rejects_nullable_column() {
 
 #[test]
 fn graph_from_dataframe_by_name() {
+    let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
     let entered = handle.enter("graph_from_dataframe_by_name").expect("entered");
     let runtime = explicit_runtime();
@@ -298,10 +306,11 @@ fn graph_from_dataframe_by_name() {
 
 #[test]
 fn graph_from_dataframe_rejects_unknown_column_name() {
+    let _guard = common::cudf::cuda_test_serial_guard();
     let runtime = explicit_runtime();
     let src = runtime.series(&[0i32, 1]).expect("src");
     let dst = runtime.series(&[1i32, 0]).expect("dst");
-    let df = cudf::DataFrame::from_columns([("src", src), ("dst", dst)]).expect("dataframe");
+    let df = cudf::DataFrame::from_series([("src", src), ("dst", dst)]).expect("dataframe");
 
     let handle = test_handle();
     let entered = handle.enter("graph_from_dataframe_rejects_unknown_column_name").expect("entered");
@@ -312,6 +321,7 @@ fn graph_from_dataframe_rejects_unknown_column_name() {
 
 #[test]
 fn graph_from_dataframe_undirected_louvain_defaults_to_python_cugraph_policy() {
+    let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
     let entered =
         handle.enter("graph_from_dataframe_undirected_louvain_defaults_to_python_cugraph_policy").expect("entered");
@@ -355,6 +365,7 @@ fn graph_from_dataframe_undirected_louvain_defaults_to_python_cugraph_policy() {
 
 #[test]
 fn graph_from_dataframe_can_explicitly_request_raw_libcugraph_policy() {
+    let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
     let entered = handle.enter("graph_from_dataframe_can_explicitly_request_raw_libcugraph_policy").expect("entered");
     let runtime = explicit_runtime();
@@ -397,6 +408,7 @@ fn graph_from_dataframe_can_explicitly_request_raw_libcugraph_policy() {
 #[test]
 fn graph_from_dataframe_python_cugraph_weighted_undirected_simple_normalization_matches_expected_across_ingress_paths()
 {
+    let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
     let entered = handle.enter("graph_from_dataframe_python_cugraph_weighted_undirected_simple_normalization_matches_expected_across_ingress_paths").expect("entered");
     let runtime = explicit_runtime();
@@ -434,6 +446,7 @@ fn graph_from_dataframe_python_cugraph_weighted_undirected_simple_normalization_
 
 #[test]
 fn graph_from_dataframe_python_cugraph_accepts_undirected_multigraph_properties_across_ingress_paths() {
+    let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
     let entered = handle
         .enter("graph_from_dataframe_python_cugraph_accepts_undirected_multigraph_properties_across_ingress_paths")
@@ -468,6 +481,7 @@ fn graph_from_dataframe_python_cugraph_accepts_undirected_multigraph_properties_
 
 #[test]
 fn graph_from_dataframe_undirected_pagerank_defaults_to_python_cugraph_policy() {
+    let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
     let entered =
         handle.enter("graph_from_dataframe_undirected_pagerank_defaults_to_python_cugraph_policy").expect("entered");
@@ -503,6 +517,7 @@ fn graph_from_dataframe_undirected_pagerank_defaults_to_python_cugraph_policy() 
 
 #[test]
 fn graph_from_dataframe_undirected_betweenness_defaults_to_python_cugraph_policy() {
+    let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
     let entered =
         handle.enter("graph_from_dataframe_undirected_betweenness_defaults_to_python_cugraph_policy").expect("entered");

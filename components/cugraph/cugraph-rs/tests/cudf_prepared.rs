@@ -204,6 +204,7 @@ impl ActiveLeaseBackend for RecordingLeaseBackend {
 
 #[test]
 fn graph_from_prepared_columns_i32_bfs() {
+    let _guard = common::cudf::cuda_test_serial_guard();
     let _event_observation = lock_event_observation();
     let handle = test_handle();
     let handle = handle.enter("graph_from_prepared_columns_i32_bfs").expect("entered");
@@ -232,6 +233,7 @@ fn graph_from_prepared_columns_i32_bfs() {
 
 #[test]
 fn graph_from_prepared_columns_completes_earlier_leases_when_later_activation_fails() {
+    let _guard = common::cudf::cuda_test_serial_guard();
     let _event_observation = lock_event_observation();
     let handle = test_handle();
     let handle = handle
@@ -272,6 +274,7 @@ fn graph_from_prepared_columns_completes_earlier_leases_when_later_activation_fa
 
 #[test]
 fn graph_from_prepared_columns_runtime_bound_handle_uses_consumer_stream_authorities() {
+    let _guard = common::cudf::cuda_test_serial_guard();
     let _event_observation = lock_event_observation();
     let runtime = std::sync::Arc::new(explicit_runtime());
     let handle = ResourceHandle::for_runtime(std::sync::Arc::clone(&runtime)).expect("handle");
@@ -316,6 +319,7 @@ fn graph_from_prepared_columns_runtime_bound_handle_uses_consumer_stream_authori
 
 #[test]
 fn graph_from_prepared_columns_runtime_bound_handle_defers_completion_sync_until_graph_drop() {
+    let _guard = common::cudf::cuda_test_serial_guard();
     let _event_observation = lock_event_observation();
     let runtime = explicit_runtime_owner();
     let handle = runtime_bound_handle(&runtime);
@@ -348,6 +352,7 @@ fn graph_from_prepared_columns_runtime_bound_handle_defers_completion_sync_until
 
 #[test]
 fn graph_from_prepared_table_export_bfs() {
+    let _guard = common::cudf::cuda_test_serial_guard();
     let _event_observation = lock_event_observation();
     let handle = test_handle();
     let handle = handle.enter("graph_from_prepared_table_export_bfs").expect("entered");
@@ -356,7 +361,7 @@ fn graph_from_prepared_table_export_bfs() {
     let src = runtime.series(TRIANGLE_TAIL_SRC_I32).expect("src");
     let dst = runtime.series(TRIANGLE_TAIL_DST_I32).expect("dst");
     let wgt = runtime.series(TRIANGLE_TAIL_WEIGHT_F32).expect("weight");
-    let df = cudf::DataFrame::from_columns([("src", src), ("dst", dst), ("weight", wgt)]).expect("dataframe");
+    let df = cudf::DataFrame::from_series([("src", src), ("dst", dst), ("weight", wgt)]).expect("dataframe");
 
     let export = df.try_prepare_device_table_export().expect("table export");
     let opts = TableGraphOptions::new(0, 1).weight_col(2).renumber();
@@ -372,6 +377,7 @@ fn graph_from_prepared_table_export_bfs() {
 
 #[test]
 fn graph_from_prepared_table_export_runtime_bound_handle_uses_consumer_stream_authorities() {
+    let _guard = common::cudf::cuda_test_serial_guard();
     let _event_observation = lock_event_observation();
     let runtime = std::sync::Arc::new(explicit_runtime());
     let handle = ResourceHandle::for_runtime(std::sync::Arc::clone(&runtime)).expect("handle");
@@ -380,7 +386,7 @@ fn graph_from_prepared_table_export_runtime_bound_handle_uses_consumer_stream_au
         .expect("entered");
     let src = runtime.series(TRIANGLE_TAIL_SRC_I32).expect("src");
     let dst = runtime.series(TRIANGLE_TAIL_DST_I32).expect("dst");
-    let df = cudf::DataFrame::from_columns([("src", src), ("dst", dst)]).expect("dataframe");
+    let df = cudf::DataFrame::from_series([("src", src), ("dst", dst)]).expect("dataframe");
     let recorded = Arc::new(Mutex::new(Vec::new()));
 
     let export = df
@@ -416,6 +422,7 @@ fn graph_from_prepared_table_export_runtime_bound_handle_uses_consumer_stream_au
 
 #[test]
 fn graph_from_prepared_table_export_runtime_bound_handle_defers_completion_sync_until_graph_drop() {
+    let _guard = common::cudf::cuda_test_serial_guard();
     let _event_observation = lock_event_observation();
     let runtime = explicit_runtime_owner();
     let handle = runtime_bound_handle(&runtime);
@@ -424,7 +431,7 @@ fn graph_from_prepared_table_export_runtime_bound_handle_defers_completion_sync_
         .expect("entered");
     let src = runtime.series(TRIANGLE_TAIL_SRC_I32).expect("src");
     let dst = runtime.series(TRIANGLE_TAIL_DST_I32).expect("dst");
-    let df = cudf::DataFrame::from_columns([("src", src), ("dst", dst)]).expect("dataframe");
+    let df = cudf::DataFrame::from_series([("src", src), ("dst", dst)]).expect("dataframe");
 
     let export = df.try_prepare_device_table_export().expect("table export");
     assert!(export.clone_retained_owner().is_some(), "dataframe prepared export should retain its producer owner");
@@ -447,6 +454,7 @@ fn graph_from_prepared_table_export_runtime_bound_handle_defers_completion_sync_
 
 #[test]
 fn graph_from_prepared_columns_runtime_bound_owned_column_export_defers_completion_sync_until_graph_drop() {
+    let _guard = common::cudf::cuda_test_serial_guard();
     let _event_observation = lock_event_observation();
     let runtime = explicit_runtime_owner();
     let handle = runtime_bound_handle(&runtime);
@@ -485,6 +493,7 @@ fn graph_from_prepared_columns_runtime_bound_owned_column_export_defers_completi
 
 #[test]
 fn graph_from_prepared_table_export_runtime_bound_owned_table_export_defers_completion_sync_until_graph_drop() {
+    let _guard = common::cudf::cuda_test_serial_guard();
     let _event_observation = lock_event_observation();
     let runtime = explicit_runtime_owner();
     let handle = runtime_bound_handle(&runtime);
@@ -518,6 +527,7 @@ fn graph_from_prepared_table_export_runtime_bound_owned_table_export_defers_comp
 
 #[test]
 fn graph_from_prepared_columns_python_cugraph_weighted_undirected_simple_keeps_minimum_reciprocal_weight() {
+    let _guard = common::cudf::cuda_test_serial_guard();
     let _event_observation = lock_event_observation();
     let handle = test_handle();
     let handle = handle
@@ -550,6 +560,7 @@ fn graph_from_prepared_columns_python_cugraph_weighted_undirected_simple_keeps_m
 
 #[test]
 fn graph_from_prepared_table_export_python_cugraph_accepts_undirected_multigraph() {
+    let _guard = common::cudf::cuda_test_serial_guard();
     let _event_observation = lock_event_observation();
     let handle = test_handle();
     let handle =
@@ -568,6 +579,7 @@ fn graph_from_prepared_table_export_python_cugraph_accepts_undirected_multigraph
 
 #[test]
 fn graph_from_prepared_columns_rejects_host_exports() {
+    let _guard = common::cudf::cuda_test_serial_guard();
     let _event_observation = lock_event_observation();
     let handle = test_handle();
     let handle = handle.enter("graph_from_prepared_columns_rejects_host_exports").expect("entered");
@@ -593,6 +605,7 @@ fn graph_from_prepared_columns_rejects_host_exports() {
 
 #[test]
 fn graph_from_prepared_table_export_rejects_host_exports() {
+    let _guard = common::cudf::cuda_test_serial_guard();
     let _event_observation = lock_event_observation();
     let handle = test_handle();
     let handle = handle.enter("graph_from_prepared_table_export_rejects_host_exports").expect("entered");
@@ -600,7 +613,7 @@ fn graph_from_prepared_table_export_rejects_host_exports() {
 
     let src = runtime.series(DIRECTED_TRIANGLE_CYCLE_SRC_I32).expect("src");
     let dst = runtime.series(DIRECTED_TRIANGLE_CYCLE_DST_I32).expect("dst");
-    let df = cudf::DataFrame::from_columns([("src", src), ("dst", dst)]).expect("dataframe");
+    let df = cudf::DataFrame::from_series([("src", src), ("dst", dst)]).expect("dataframe");
 
     let export = df.try_prepare_host_table_export().expect("host table export");
     let opts = TableGraphOptions::new(0, 1).renumber();
@@ -617,6 +630,7 @@ fn graph_from_prepared_table_export_rejects_host_exports() {
 
 #[test]
 fn prepared_export_vs_deep_copy_import_pagerank_equivalence() {
+    let _guard = common::cudf::cuda_test_serial_guard();
     let _event_observation = lock_event_observation();
     let handle = test_handle();
     let handle = handle.enter("prepared_export_vs_deep_copy_import_pagerank_equivalence").expect("entered");
@@ -650,6 +664,7 @@ fn prepared_export_vs_deep_copy_import_pagerank_equivalence() {
 
 #[test]
 fn prepared_host_export_import_pagerank_matches_prepared_device_path() {
+    let _guard = common::cudf::cuda_test_serial_guard();
     let _event_observation = lock_event_observation();
     let handle = test_handle();
     let handle = handle.enter("prepared_host_export_import_pagerank_matches_prepared_device_path").expect("entered");

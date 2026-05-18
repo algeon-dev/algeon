@@ -2,6 +2,8 @@
 //!
 //! These tests run actual GPU algorithms and convert results to cudf DataFrames,
 //! verifying the full round-trip: GPU algorithm → result → cudf DataFrame → host Vec.
+mod common;
+
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
@@ -97,6 +99,7 @@ impl Drop for TempParquetFixture {
 /// back via column accessors and verify the values match the known graph topology.
 #[test]
 fn bfs_results_to_cudf_dataframe() {
+    let _guard = common::cudf::cuda_test_serial_guard();
     let (runtime, handle) = test_runtime_and_handle();
     let entered = handle.enter("bfs_results_to_cudf_dataframe").expect("entered");
 
@@ -140,6 +143,7 @@ fn bfs_results_to_cudf_dataframe() {
 /// write to Parquet, read back, and verify.
 #[test]
 fn bfs_results_roundtrip_through_parquet() {
+    let _guard = common::cudf::cuda_test_serial_guard();
     // ── Load graph from Parquet ─────────────────────────────────────────
     let (runtime, handle) = test_runtime_and_handle();
     let handle = handle.enter("bfs_results_roundtrip_through_parquet").expect("entered");
@@ -192,6 +196,7 @@ fn bfs_results_roundtrip_through_parquet() {
 /// verify the results match the known graph topology.
 #[test]
 fn graph_from_parquet_then_bfs() {
+    let _guard = common::cudf::cuda_test_serial_guard();
     let (runtime, handle) = test_runtime_and_handle();
     let handle = handle.enter("graph_from_parquet_then_bfs").expect("entered");
     let props = GraphProperties::directed();
@@ -223,6 +228,7 @@ fn graph_from_parquet_then_bfs() {
 /// Build a graph from Parquet without weights using `graph_from_parquet`.
 #[test]
 fn graph_from_parquet_without_weights() {
+    let _guard = common::cudf::cuda_test_serial_guard();
     let (runtime, handle) = test_runtime_and_handle();
     let handle = handle.enter("graph_from_parquet_without_weights").expect("entered");
     let props = GraphProperties::directed();
@@ -246,6 +252,7 @@ fn graph_from_parquet_without_weights() {
 /// `graph_from_parquet` should return an error for out-of-bounds column indices.
 #[test]
 fn graph_from_parquet_rejects_out_of_bounds_column() {
+    let _guard = common::cudf::cuda_test_serial_guard();
     let (runtime, handle) = test_runtime_and_handle();
     let handle = handle.enter("graph_from_parquet_rejects_out_of_bounds_column").expect("entered");
     let props = GraphProperties::directed();
@@ -267,6 +274,7 @@ fn graph_from_parquet_rejects_out_of_bounds_column() {
 /// `graph_from_parquet` should return an error for a non-existent file.
 #[test]
 fn graph_from_parquet_rejects_nonexistent_file() {
+    let _guard = common::cudf::cuda_test_serial_guard();
     let (_runtime, handle) = test_runtime_and_handle();
     let handle = handle.enter("graph_from_parquet_rejects_nonexistent_file").expect("entered");
 
@@ -289,6 +297,7 @@ fn graph_from_parquet_rejects_nonexistent_file() {
 /// `graph_from_parquet` should reject nullable source columns.
 #[test]
 fn graph_from_parquet_rejects_nulls_in_src_column() {
+    let _guard = common::cudf::cuda_test_serial_guard();
     let (runtime, handle) = test_runtime_and_handle();
     let handle = handle.enter("graph_from_parquet_rejects_nulls_in_src_column").expect("entered");
 
@@ -329,6 +338,7 @@ fn graph_from_parquet_rejects_nulls_in_src_column() {
 /// run BFS from vertex 0, verify distances match expected topology.
 #[test]
 fn graph_from_borrowed_table_view_then_bfs() {
+    let _guard = common::cudf::cuda_test_serial_guard();
     let (runtime, handle) = test_runtime_and_handle();
     let handle = handle.enter("graph_from_borrowed_table_view_then_bfs").expect("entered");
     let fixture = TempParquetFixture::bfs_graph(&runtime);
@@ -357,6 +367,7 @@ fn graph_from_borrowed_table_view_then_bfs() {
 /// Call graph_from_borrowed_table_view without weights (wgt_col: None).
 #[test]
 fn graph_from_borrowed_table_view_without_weights() {
+    let _guard = common::cudf::cuda_test_serial_guard();
     let (runtime, handle) = test_runtime_and_handle();
     let handle = handle.enter("graph_from_borrowed_table_view_without_weights").expect("entered");
     let fixture = TempParquetFixture::bfs_graph(&runtime);
@@ -380,6 +391,7 @@ fn graph_from_borrowed_table_view_without_weights() {
 /// Pass dst_col: 99 — should get ErrorKind::InvalidInput.
 #[test]
 fn graph_from_borrowed_table_view_rejects_out_of_bounds_column() {
+    let _guard = common::cudf::cuda_test_serial_guard();
     let (runtime, handle) = test_runtime_and_handle();
     let handle = handle.enter("graph_from_borrowed_table_view_rejects_out_of_bounds_column").expect("entered");
     let fixture = TempParquetFixture::bfs_graph(&runtime);
@@ -398,6 +410,7 @@ fn graph_from_borrowed_table_view_rejects_out_of_bounds_column() {
 /// message containing "null".
 #[test]
 fn graph_from_borrowed_table_view_rejects_nullable_column() {
+    let _guard = common::cudf::cuda_test_serial_guard();
     let (runtime, handle) = test_runtime_and_handle();
     let handle = handle.enter("graph_from_borrowed_table_view_rejects_nullable_column").expect("entered");
     let src = runtime.column_from_slice_nullable(&[0i32, 1, 2], &[true, false, true]).expect("src");
@@ -422,9 +435,10 @@ fn graph_from_borrowed_table_view_rejects_nullable_column() {
 /// with string names, run BFS, verify results.
 #[test]
 fn graph_from_dataframe_by_name() {
+    let _guard = common::cudf::cuda_test_serial_guard();
     let (runtime, handle) = test_runtime_and_handle();
     let handle = handle.enter("graph_from_dataframe_by_name").expect("entered");
-    let df = DataFrame::from_columns([
+    let df = DataFrame::from_series([
         ("src", runtime.series(&[0i32, 1, 1, 2, 2, 2, 3, 4]).expect("src")),
         ("dst", runtime.series(&[1i32, 3, 4, 0, 1, 3, 5, 5]).expect("dst")),
         ("weight", runtime.series(&[0.1f32, 2.1, 1.1, 5.1, 3.1, 4.1, 7.2, 3.2]).expect("weight")),
@@ -452,9 +466,10 @@ fn graph_from_dataframe_by_name() {
 /// Pass src_col: "nonexistent" — should get ErrorKind::InvalidInput.
 #[test]
 fn graph_from_dataframe_rejects_unknown_column_name() {
+    let _guard = common::cudf::cuda_test_serial_guard();
     let (runtime, handle) = test_runtime_and_handle();
     let handle = handle.enter("graph_from_dataframe_rejects_unknown_column_name").expect("entered");
-    let df = DataFrame::from_columns([
+    let df = DataFrame::from_series([
         ("src", runtime.series(&[0i32, 1]).expect("src")),
         ("dst", runtime.series(&[1i32, 0]).expect("dst")),
     ])
@@ -477,6 +492,7 @@ fn graph_from_dataframe_rejects_unknown_column_name() {
 fn centrality_result_to_dataframe() {
     use cugraph::centrality::PageRankParams;
 
+    let _guard = common::cudf::cuda_test_serial_guard();
     let (runtime, handle) = test_runtime_and_handle();
     let handle = handle.enter("centrality_result_to_dataframe").expect("entered");
 
@@ -521,6 +537,7 @@ fn centrality_result_to_dataframe() {
 fn layout_result_to_dataframe() {
     use cugraph::{layout::ForceAtlas2Params, params::IterationCount, random::RngState};
 
+    let _guard = common::cudf::cuda_test_serial_guard();
     let (runtime, handle) = test_runtime_and_handle();
     let handle = handle.enter("layout_result_to_dataframe").expect("entered");
     let mut rng = RngState::new(&handle, 42).expect("rng");
@@ -563,6 +580,7 @@ fn layout_result_to_dataframe() {
 /// 3 columns: "vertex", "distance", "predecessor".
 #[test]
 fn bfs_result_to_dataframe_with_predecessors() {
+    let _guard = common::cudf::cuda_test_serial_guard();
     let (runtime, handle) = test_runtime_and_handle();
     let handle = handle.enter("bfs_result_to_dataframe_with_predecessors").expect("entered");
 
@@ -597,6 +615,7 @@ fn bfs_result_to_dataframe_with_predecessors() {
 /// only 2 columns: "vertex", "distance".
 #[test]
 fn bfs_result_to_dataframe_without_predecessors() {
+    let _guard = common::cudf::cuda_test_serial_guard();
     let (runtime, handle) = test_runtime_and_handle();
     let handle = handle.enter("bfs_result_to_dataframe_without_predecessors").expect("entered");
 
@@ -627,6 +646,7 @@ fn bfs_result_to_dataframe_without_predecessors() {
 fn centrality_to_dataframe_write_parquet_roundtrip() {
     use cugraph::centrality::PageRankParams;
 
+    let _guard = common::cudf::cuda_test_serial_guard();
     let (runtime, handle) = test_runtime_and_handle();
     let handle = handle.enter("centrality_to_dataframe_write_parquet_roundtrip").expect("entered");
 

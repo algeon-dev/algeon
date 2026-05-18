@@ -20,7 +20,7 @@ fn write_small_louvain_fixture(path: &PathBuf) {
     let src = runtime.series(LOUVAIN_GRAPH_SRC_I32).expect("src");
     let dst = runtime.series(LOUVAIN_GRAPH_DST_I32).expect("dst");
     let weight = runtime.series(LOUVAIN_GRAPH_WEIGHT_F32).expect("weight");
-    let df = DataFrame::from_columns([("src", src), ("dst", dst), ("weight", weight)]).expect("dataframe");
+    let df = DataFrame::from_series([("src", src), ("dst", dst), ("weight", weight)]).expect("dataframe");
     df.write_parquet(path).expect("write parquet");
 }
 
@@ -34,7 +34,7 @@ fn write_small_louvain_alias_string_fixture(path: &PathBuf) {
         .expect("targetId");
     let weight = runtime.series(LOUVAIN_GRAPH_WEIGHT_F32).expect("weight");
     let df =
-        DataFrame::from_columns([("sourceId", subject), ("targetId", object), ("weight", weight)]).expect("dataframe");
+        DataFrame::from_series([("sourceId", subject), ("targetId", object), ("weight", weight)]).expect("dataframe");
     df.write_parquet(path).expect("write parquet");
 }
 
@@ -67,7 +67,7 @@ fn write_small_louvain_alias_string_fixture_with_null_weights(path: &PathBuf) {
         ])
         .expect("weight");
     let df =
-        DataFrame::from_columns([("sourceId", subject), ("targetId", object), ("weight", weight)]).expect("dataframe");
+        DataFrame::from_series([("sourceId", subject), ("targetId", object), ("weight", weight)]).expect("dataframe");
     df.write_parquet(path).expect("write parquet");
 }
 

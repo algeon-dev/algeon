@@ -72,6 +72,7 @@ fn borrowed_with_device<'a>(column: &BorrowedColumnView<'a>, device: i32) -> Bor
 
 #[test]
 fn runtime_bound_handle_same_provenance_borrowed_columns_plan_has_no_host_fence() {
+    let _guard = common::cudf::cuda_test_serial_guard();
     let runtime = explicit_runtime_owner();
     let handle = runtime_bound_handle(&runtime);
     let handle =
@@ -89,6 +90,7 @@ fn runtime_bound_handle_same_provenance_borrowed_columns_plan_has_no_host_fence(
 
 #[test]
 fn runtime_bound_handle_same_device_different_stream_plan_uses_device_dependencies() {
+    let _guard = common::cudf::cuda_test_serial_guard();
     let handle_runtime = explicit_runtime_owner();
     let handle = runtime_bound_handle(&handle_runtime);
     let handle = handle
@@ -109,6 +111,7 @@ fn runtime_bound_handle_same_device_different_stream_plan_uses_device_dependenci
 
 #[test]
 fn runtime_bound_handle_cross_device_borrowed_columns_are_rejected() {
+    let _guard = common::cudf::cuda_test_serial_guard();
     let runtime = explicit_runtime_owner();
     let handle = runtime_bound_handle(&runtime);
     let handle = handle.enter("runtime_bound_handle_cross_device_borrowed_columns_are_rejected").expect("entered");
@@ -130,6 +133,7 @@ fn runtime_bound_handle_cross_device_borrowed_columns_are_rejected() {
 
 #[test]
 fn graph_from_series_allows_mixed_explicit_runtimes_on_same_device() {
+    let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
     let handle = handle.enter("graph_from_series_allows_mixed_explicit_runtimes_on_same_device").expect("entered");
     let rt_a = explicit_runtime();
@@ -152,6 +156,7 @@ fn graph_from_series_allows_mixed_explicit_runtimes_on_same_device() {
 
 #[test]
 fn graph_from_borrowed_columns_allows_mixed_explicit_runtimes_on_same_device() {
+    let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
     let handle =
         handle.enter("graph_from_borrowed_columns_allows_mixed_explicit_runtimes_on_same_device").expect("entered");
@@ -182,6 +187,7 @@ fn graph_from_borrowed_columns_allows_mixed_explicit_runtimes_on_same_device() {
 
 #[test]
 fn graph_from_borrowed_columns_runtime_bound_same_device_different_stream_avoids_host_fence() {
+    let _guard = common::cudf::cuda_test_serial_guard();
     let runtime = explicit_runtime_owner();
     let handle = runtime_bound_handle(&runtime);
     let handle = handle
@@ -219,6 +225,7 @@ fn graph_from_borrowed_columns_runtime_bound_same_device_different_stream_avoids
 
 #[test]
 fn graph_from_borrowed_columns_python_cugraph_runtime_bound_avoids_host_fence() {
+    let _guard = common::cudf::cuda_test_serial_guard();
     let runtime = explicit_runtime_owner();
     let handle = runtime_bound_handle(&runtime);
     let handle =
@@ -262,6 +269,7 @@ fn graph_from_borrowed_columns_python_cugraph_runtime_bound_avoids_host_fence() 
 
 #[test]
 fn graph_from_borrowed_columns_python_cugraph_weighted_undirected_simple_keeps_minimum_reciprocal_weight() {
+    let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
     let handle = handle
         .enter("graph_from_borrowed_columns_python_cugraph_weighted_undirected_simple_keeps_minimum_reciprocal_weight")
@@ -288,6 +296,7 @@ fn graph_from_borrowed_columns_python_cugraph_weighted_undirected_simple_keeps_m
 
 #[test]
 fn graph_from_borrowed_table_view_python_cugraph_accepts_undirected_multigraph() {
+    let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
     let handle =
         handle.enter("graph_from_borrowed_table_view_python_cugraph_accepts_undirected_multigraph").expect("entered");

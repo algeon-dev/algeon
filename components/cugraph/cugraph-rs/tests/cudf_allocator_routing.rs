@@ -97,6 +97,7 @@ fn run_current_allocator_probe(mode: &str) -> CurrentAllocatorProbeOutcome {
 
 #[test]
 fn runtime_bound_borrowed_python_imports_use_runtime_execution_context() {
+    let _guard = common::cudf::cuda_test_serial_guard();
     let runtime = runtime_with_explicit_pool_memory_resource();
     let handle = ResourceHandle::for_runtime(Arc::clone(&runtime)).expect("runtime-bound handle");
     let handle = handle.enter("runtime_bound_borrowed_python_imports_use_runtime_execution_context").expect("entered");
@@ -139,6 +140,7 @@ fn runtime_bound_borrowed_python_imports_use_runtime_execution_context() {
 
 #[test]
 fn runtime_bound_prepared_python_imports_use_runtime_execution_context() {
+    let _guard = common::cudf::cuda_test_serial_guard();
     let runtime = runtime_with_explicit_pool_memory_resource();
     let handle = ResourceHandle::for_runtime(Arc::clone(&runtime)).expect("runtime-bound handle");
     let handle = handle.enter("runtime_bound_prepared_python_imports_use_runtime_execution_context").expect("entered");
@@ -181,6 +183,7 @@ fn runtime_bound_prepared_python_imports_use_runtime_execution_context() {
 
 #[test]
 fn borrowed_allocator_probe_reports_current_allocator_usage_or_contained_abort() {
+    let _guard = common::cudf::cuda_test_serial_guard();
     match run_current_allocator_probe("borrowed") {
         CurrentAllocatorProbeOutcome::Observed { allocation_delta } => {
             assert!(allocation_delta > 0, "observed probe should report a positive allocation delta");
@@ -191,6 +194,7 @@ fn borrowed_allocator_probe_reports_current_allocator_usage_or_contained_abort()
 
 #[test]
 fn prepared_allocator_probe_reports_current_allocator_usage_or_contained_abort() {
+    let _guard = common::cudf::cuda_test_serial_guard();
     match run_current_allocator_probe("prepared") {
         CurrentAllocatorProbeOutcome::Observed { allocation_delta } => {
             assert!(allocation_delta > 0, "observed probe should report a positive allocation delta");

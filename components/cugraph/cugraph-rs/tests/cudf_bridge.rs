@@ -26,6 +26,7 @@ use cugraph::{
 
 #[test]
 fn device_array_view_from_slice_i64() {
+    let _guard = common::cudf::cuda_test_serial_guard();
     let runtime = explicit_runtime();
     let series = runtime.series(&[100i64, 200, 300]).expect("series");
     let col_view = series.as_column();
@@ -37,6 +38,7 @@ fn device_array_view_from_slice_i64() {
 
 #[test]
 fn device_array_view_from_slice_rejects_mismatch() {
+    let _guard = common::cudf::cuda_test_serial_guard();
     let runtime = explicit_runtime();
     let series = runtime.series(&[1i32, 2, 3]).expect("series");
     let col_view = series.as_column();
@@ -48,6 +50,7 @@ fn device_array_view_from_slice_rejects_mismatch() {
 
 #[test]
 fn graph_from_series_weighted_pagerank() {
+    let _guard = common::cudf::cuda_test_serial_guard();
     let runtime = std::sync::Arc::new(explicit_runtime());
     let handle = ResourceHandle::for_runtime(std::sync::Arc::clone(&runtime)).expect("handle");
     let handle = handle.enter("graph_from_series_weighted_pagerank").expect("entered");
@@ -70,6 +73,7 @@ fn graph_from_series_weighted_pagerank() {
 
 #[test]
 fn graph_from_series_python_cugraph_weighted_undirected_simple_keeps_minimum_reciprocal_weight() {
+    let _guard = common::cudf::cuda_test_serial_guard();
     let runtime = std::sync::Arc::new(explicit_runtime());
     let handle = ResourceHandle::for_runtime(std::sync::Arc::clone(&runtime)).expect("handle");
     let handle = handle
@@ -90,6 +94,7 @@ fn graph_from_series_python_cugraph_weighted_undirected_simple_keeps_minimum_rec
 
 #[test]
 fn graph_bfs_host_slice_matches_typed_view_path() {
+    let _guard = common::cudf::cuda_test_serial_guard();
     let runtime = std::sync::Arc::new(explicit_runtime());
     let handle = ResourceHandle::for_runtime(std::sync::Arc::clone(&runtime)).expect("handle");
     let handle = handle.enter("graph_bfs_host_slice_matches_typed_view_path").expect("entered");
@@ -118,6 +123,7 @@ fn graph_bfs_host_slice_matches_typed_view_path() {
 
 #[test]
 fn into_series_bfs_results() {
+    let _guard = common::cudf::cuda_test_serial_guard();
     let runtime = std::sync::Arc::new(explicit_runtime());
     let handle = ResourceHandle::for_runtime(std::sync::Arc::clone(&runtime)).expect("handle");
     let handle = handle.enter("into_series_bfs_results").expect("entered");
@@ -141,6 +147,7 @@ fn into_series_bfs_results() {
 
 #[test]
 fn into_series_layout_results() {
+    let _guard = common::cudf::cuda_test_serial_guard();
     let runtime = std::sync::Arc::new(explicit_runtime());
     let handle = ResourceHandle::for_runtime(std::sync::Arc::clone(&runtime)).expect("handle");
     let handle = handle.enter("into_series_layout_results").expect("entered");
