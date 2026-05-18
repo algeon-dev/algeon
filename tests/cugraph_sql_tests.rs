@@ -1,5 +1,3 @@
-#![cfg(feature = "cugraph")]
-
 use std::{
     fs,
     path::Path,

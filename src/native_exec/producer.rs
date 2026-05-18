@@ -9,14 +9,24 @@ use datafusion::{
         metrics::{ExecutionPlanMetricsSet, MetricsSet},
     },
 };
+use futures::future::BoxFuture;
 
 use super::{
     common::{comma_separated, conservative_properties, gpu_resident_source_names, native_query_runtime_error},
     metrics::NativeCudfMetrics,
 };
 use crate::error::{Error, ErrorCode};
-#[cfg(feature = "cugraph")]
-use crate::graph_sql::CugraphAlgoExec;
+
+pub(crate) trait GpuResidentProducerExec {
+    fn gpu_result_input_name(&self) -> &str;
+
+    fn execute_gpu_result_with_context<'a>(
+        &'a self,
+        native_context: &'a ExecutionContext,
+        partition: usize,
+        task_context: Arc<TaskContext>,
+    ) -> BoxFuture<'a, DataFusionResult<(String, GpuResultHandle)>>;
+}
 
 /// Internal GPU-resident native fragment producer.
 ///
@@ -119,15 +129,37 @@ impl NativeCudfGpuProducerExec {
     }
 }
 
-pub(crate) fn gpu_resident_producer_input_name(plan: &dyn ExecutionPlan) -> Option<String> {
+impl GpuResidentProducerExec for NativeCudfGpuProducerExec {
+    fn gpu_result_input_name(&self) -> &str {
+        self.input_name()
+    }
+
+    fn execute_gpu_result_with_context<'a>(
+        &'a self,
+        native_context: &'a ExecutionContext,
+        partition: usize,
+        task_context: Arc<TaskContext>,
+    ) -> BoxFuture<'a, DataFusionResult<(String, GpuResultHandle)>> {
+        Box::pin(async move {
+            let _ = task_context;
+            NativeCudfGpuProducerExec::execute_gpu_result_with_context(self, native_context, partition)
+        })
+    }
+}
+
+pub(crate) fn gpu_resident_producer(plan: &dyn ExecutionPlan) -> Option<&dyn GpuResidentProducerExec> {
     if let Some(producer) = plan.as_any().downcast_ref::<NativeCudfGpuProducerExec>() {
-        return Some(producer.input_name().to_string());
+        return Some(producer);
     }
     #[cfg(feature = "cugraph")]
-    if let Some(producer) = plan.as_any().downcast_ref::<CugraphAlgoExec>() {
-        return Some(producer.gpu_result_input_name().to_string());
+    if let Some(producer) = crate::graph_sql::gpu_resident_producer(plan) {
+        return Some(producer);
     }
     None
+}
+
+pub(crate) fn gpu_resident_producer_input_name(plan: &dyn ExecutionPlan) -> Option<String> {
+    gpu_resident_producer(plan).map(|producer| producer.gpu_result_input_name().to_string())
 }
 
 pub(crate) async fn execute_gpu_resident_producer_with_context(
@@ -136,14 +168,7 @@ pub(crate) async fn execute_gpu_resident_producer_with_context(
     partition: usize,
     task_context: Arc<TaskContext>,
 ) -> DataFusionResult<(String, GpuResultHandle)> {
-    #[cfg(not(feature = "cugraph"))]
-    let _ = task_context;
-
-    if let Some(producer) = plan.as_any().downcast_ref::<NativeCudfGpuProducerExec>() {
-        return producer.execute_gpu_result_with_context(native_context, partition);
-    }
-    #[cfg(feature = "cugraph")]
-    if let Some(producer) = plan.as_any().downcast_ref::<CugraphAlgoExec>() {
+    if let Some(producer) = gpu_resident_producer(plan) {
         return producer.execute_gpu_result_with_context(native_context, partition, task_context).await;
     }
     Err(Error::new(
