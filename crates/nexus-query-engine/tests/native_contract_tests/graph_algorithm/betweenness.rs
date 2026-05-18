@@ -264,7 +264,7 @@ fn vertex_betweenness_dblp_top64_statistics_fits_24gb_budget() {
 
     let estimate = GraphMemoryModel.estimate(&spec, input).unwrap();
 
-    assert_eq!(estimate.requested_bytes, 16_052_517_586);
+    assert_eq!(estimate.requested_bytes, 15_986_169_234);
     assert!(
         estimate.requested_bytes < 24 * 1024 * 1024 * 1024,
         "DBLP betweenness k=64 with resident-source degree statistics should fit a 24 GiB graph budget"

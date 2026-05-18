@@ -941,6 +941,8 @@ pub struct AttemptTimedDomainUsage {
     /// terminal timestamp and from the post-cleanup sample time.
     pub sampled_ns: u64,
     pub usage: AttemptFinalDomainUsage,
+    /// Kept separate from logical usage so physical pool pages never widen the grant.
+    pub pool_usage: Option<AttemptAllocatorPoolUsage>,
 }
 
 /// Closed source category copied from one cuDF allocator-ring record.
@@ -2074,12 +2076,19 @@ mod tests {
                 failed_allocation_count: 0,
                 largest_failed_allocation_bytes: 0,
             },
+            pool_usage: Some(AttemptAllocatorPoolUsage {
+                reserved_current_bytes: 64,
+                reserved_high_bytes: 96,
+                used_current_bytes: 32,
+                used_high_bytes: 48,
+            }),
         });
 
         let encoded = serde_json::to_value(evidence).expect("resource evidence serializes");
         assert_eq!(encoded["grant_cap_bytes"]["provenance"], "attempt_exact");
         assert_eq!(encoded["ledger_sequence"]["provenance"], "device_snapshot");
         assert_eq!(encoded["outcome_terminal_usage"]["provenance"], "sampled_after_failure");
+        assert_eq!(encoded["outcome_terminal_usage"]["value"]["pool_usage"]["reserved_high_bytes"], 96);
         assert_eq!(encoded["allocator_event"]["provenance"], "unavailable");
         assert!(encoded["allocator_event"]["value"].is_null());
         assert_eq!(

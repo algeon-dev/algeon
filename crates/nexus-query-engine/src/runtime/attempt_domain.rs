@@ -136,4 +136,15 @@ impl AttemptAllocationDomain {
             .with_fact("domain_id", self.domain_id())
         })
     }
+
+    pub(crate) fn pool_usage(&self) -> Result<cudf::DeviceMemoryPoolUsage> {
+        self.domain.pool_usage().map_err(|error| {
+            QueryError::from_cudf(
+                "nexus_query_engine.runtime.attempt_allocation_domain.pool_usage",
+                "failed to sample attempt allocation domain pool usage",
+                error,
+            )
+            .with_fact("domain_id", self.domain_id())
+        })
+    }
 }

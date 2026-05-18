@@ -700,7 +700,26 @@ async fn run_measured(
     let vram_calibration = profile.vram_calibration.map(|policy| {
         let configured_ordinals =
             profile.backend.device_profiles.iter().map(|device| device.ordinal).collect::<Vec<_>>();
-        timeseries::vram_calibration_evidence(&sampler.device_series, &configured_ordinals, policy)
+        let query_domain_pool_claims = driven
+            .observations
+            .iter()
+            .filter_map(|attempt| {
+                let pool = attempt.domain_pool_usage?;
+                Some(timeseries::QueryDomainPoolClaim {
+                    device_ordinal: attempt.device_ordinal?,
+                    grant_id: attempt.grant_id?,
+                    grant_bytes: attempt.grant_bytes?,
+                    reserved_high_bytes: pool.reserved_high_bytes,
+                    used_high_bytes: pool.used_high_bytes,
+                })
+            })
+            .collect::<Vec<_>>();
+        timeseries::vram_calibration_evidence(
+            &sampler.device_series,
+            &query_domain_pool_claims,
+            &configured_ordinals,
+            policy,
+        )
     });
     let graph_claim_calibration = profile
         .graph_claim_calibration
@@ -3395,6 +3414,13 @@ fn observe(
         }),
         grant_id: resource_evidence.and_then(|evidence| evidence.grant_id.value),
         domain_id: resource_evidence.and_then(|evidence| evidence.domain_id.value),
+        domain_pool_usage: resource_evidence
+            .and_then(|evidence| evidence.outcome_terminal_usage.value)
+            .and_then(|sample| sample.pool_usage)
+            .map(|usage| super::aggregate::QueryDomainPoolUsageObservation {
+                reserved_high_bytes: usage.reserved_high_bytes,
+                used_high_bytes: usage.used_high_bytes,
+            }),
         total_ns: report.total_ns(),
         queue_wait_ns: report.queue_wait_ns(),
         physical_execution_ns: report.physical_execution_ns(),
@@ -3834,6 +3860,7 @@ fn sample_once(
             active_attempts: ledger.active_attempts,
             managed_capacity_bytes: ledger.managed_capacity_bytes,
             live_grants_bytes: ledger.live_grants_bytes,
+            live_grant_ids: ledger.grants.iter().map(|grant| grant.grant_id).collect(),
             live_reserved_bytes: ledger.live_reserved_bytes,
             cache_evictable_resident_bytes: ledger.cache_evictable_resident_bytes,
             cache_pinned_in_use_bytes: ledger.cache_pinned_in_use_bytes,

@@ -71,6 +71,7 @@ pub(super) struct AttemptObservation {
     /// non-qualifying result rather than a skipped assertion.
     pub(super) grant_id: Option<u64>,
     pub(super) domain_id: Option<u64>,
+    pub(super) domain_pool_usage: Option<QueryDomainPoolUsageObservation>,
     pub(super) total_ns: Option<u64>,
     pub(super) queue_wait_ns: Option<u64>,
     pub(super) physical_execution_ns: Option<u64>,
@@ -79,6 +80,12 @@ pub(super) struct AttemptObservation {
     /// are comparable and the overlap witness can actually fail.
     pub(super) submitted_ns: u64,
     pub(super) outcome_terminal_ns: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct QueryDomainPoolUsageObservation {
+    pub(super) reserved_high_bytes: u64,
+    pub(super) used_high_bytes: u64,
 }
 
 /// The report's bounded failure classification, projected for the artifact.
@@ -445,8 +452,8 @@ pub(super) fn graph_claim_calibration_evidence(observations: &[AttemptObservatio
         .filter(|attempt| attempt.graph_workload && attempt.phase == SchedulePhase::Measurement)
         .collect::<Vec<_>>();
     let mut attempts_by_id = BTreeMap::<&str, Vec<&AttemptObservation>>::new();
-    for attempt in &graph_attempts {
-        attempts_by_id.entry(&attempt.attempt_id).or_default().push(*attempt);
+    for attempt in observations.iter().filter(|attempt| attempt.graph_workload) {
+        attempts_by_id.entry(&attempt.attempt_id).or_default().push(attempt);
     }
     let attempts = graph_attempts
         .iter()
@@ -1824,14 +1831,21 @@ fn multiple_device_clauses(
     // must not be reclassified as a placement defect. An explicit
     // non-executing capability probe also has no placement by design; its
     // separate probe reducer owns the typed rejection proof. Every selected
-    // workload attempt still requires exactly one ordinal.
+    // workload attempt that reached admission still requires exactly one
+    // ordinal; a typed pre-admission capacity rejection owns no device.
     let pre_admission_cancellations =
         measured.iter().filter(|attempt| attempt.outcome == "cancelled" && attempt.device_ordinal.is_none()).count();
+    let not_admitted = measured
+        .iter()
+        .filter(|attempt| attempt.terminal_evidence.capacity_disposition.as_str() == Some("not_admitted"))
+        .count();
     let non_executing_capability_probes = measured.iter().filter(|attempt| !attempt.placement_required).count();
     let placement_required = measured
         .iter()
         .filter(|attempt| {
-            attempt.placement_required && !(attempt.outcome == "cancelled" && attempt.device_ordinal.is_none())
+            attempt.placement_required
+                && attempt.terminal_evidence.capacity_disposition.as_str() != Some("not_admitted")
+                && !(attempt.outcome == "cancelled" && attempt.device_ordinal.is_none())
         })
         .collect::<Vec<_>>();
     let one_ordinal_each =
@@ -1841,7 +1855,7 @@ fn multiple_device_clauses(
             "one_ordinal_per_attempt",
             ClauseStatus::Evidenced,
             format!(
-                "{} placement-required measured attempts each recorded exactly one ordinal; {non_executing_capability_probes} non-executing capability probes and {pre_admission_cancellations} explicit pre-admission cancellations were exempt",
+                "{} placement-required measured attempts each recorded exactly one ordinal; {not_admitted} not-admitted attempts, {non_executing_capability_probes} non-executing capability probes, and {pre_admission_cancellations} explicit pre-admission cancellations were exempt",
                 placement_required.len()
             ),
         )
@@ -2031,6 +2045,7 @@ mod tests {
             admission_wait: None,
             grant_id,
             domain_id,
+            domain_pool_usage: None,
             total_ns: Some(total_ns),
             queue_wait_ns: Some(5),
             physical_execution_ns: Some(total_ns / 2),
@@ -2267,6 +2282,29 @@ mod tests {
             .unwrap();
         assert_eq!(clause.status, ClauseStatus::Evidenced);
         assert!(clause.detail.contains("1 explicit pre-admission cancellations"));
+    }
+
+    #[test]
+    fn not_admitted_attempt_is_not_a_missing_placement() {
+        let devices = vec![device(0, 1 << 30, 2), device(1, 1 << 30, 2)];
+        let mut rejected = attempt(0, 0, None, None, 0, 10, 10, SchedulePhase::Measurement);
+        rejected.outcome = "failed".to_string();
+        rejected.terminal_evidence.capacity_disposition = serde_json::json!("not_admitted");
+        let observations = vec![
+            rejected,
+            attempt(1, 0, Some(2), Some(11), 0, 10, 10, SchedulePhase::Measurement),
+            attempt(2, 1, Some(3), Some(12), 0, 10, 10, SchedulePhase::Measurement),
+        ];
+
+        let aggregate = MeasuredAggregate::reduce(&observations, &devices, &BTreeMap::new(), 0, 1_000_000_000);
+        let clause = aggregate
+            .scenarios
+            .multiple_devices
+            .iter()
+            .find(|clause| clause.clause == "one_ordinal_per_attempt")
+            .unwrap();
+        assert_eq!(clause.status, ClauseStatus::Evidenced);
+        assert!(clause.detail.contains("1 not-admitted attempts"));
     }
 
     #[test]
@@ -2974,8 +3012,8 @@ mod tests {
     }
 
     #[test]
-    fn graph_claim_calibration_accepts_a_fully_linked_singleflight_follower() {
-        let mut leader = attempt(0, 0, Some(1), Some(2), 0, 10, 10, SchedulePhase::Measurement);
+    fn graph_claim_calibration_accepts_a_fully_linked_singleflight_follower_across_warmup() {
+        let mut leader = attempt(0, 0, Some(1), Some(2), 0, 10, 10, SchedulePhase::Warmup);
         leader.graph_workload = true;
         leader.graph_claim_calibration = Some(physical_graph_claim_snapshot(vec![complete_graph_claim_row()]));
 
@@ -2985,8 +3023,8 @@ mod tests {
 
         let evidence = graph_claim_calibration_evidence(&[leader, follower]);
         assert!(evidence.passes());
-        assert_eq!(evidence.graph_attempts, 2);
-        assert_eq!(evidence.attempts[1].reason, "complete");
+        assert_eq!(evidence.graph_attempts, 1);
+        assert_eq!(evidence.attempts[0].reason, "complete");
     }
 
     #[test]

@@ -1,6 +1,6 @@
 {
-  "schema": "datafusion_nexus.single_node_multi_gpu.run_artifact.v4",
-  "version": 4,
+  "schema": "datafusion_nexus.single_node_multi_gpu.run_artifact.v5",
+  "version": 5,
   "status": "measured_run",
   "profile": {"sha256": "PROFILE_SHA256"},
   "provenance": {
@@ -25,8 +25,24 @@
       "aggregate": {"attempts": [{"terminal_evidence": {"resource_evidence": {
         "grant_cap_bytes": {"value": 100},
         "domain_cap_bytes": {"value": 100},
-        "outcome_terminal_usage": {"provenance": "fixture", "value": {"usage": {"peak_aligned_bytes": 50}}},
-        "post_cleanup_usage": {"provenance": "fixture", "value": {"usage": {"peak_aligned_bytes": 50}}}
+        "outcome_terminal_usage": {"provenance": "fixture", "value": {
+          "usage": {"peak_aligned_bytes": 50},
+          "pool_usage": {
+            "reserved_current_bytes": 64,
+            "reserved_high_bytes": 64,
+            "used_current_bytes": 50,
+            "used_high_bytes": 50
+          }
+        }},
+        "post_cleanup_usage": {"provenance": "fixture", "value": {
+          "usage": {"peak_aligned_bytes": 50},
+          "pool_usage": {
+            "reserved_current_bytes": 0,
+            "reserved_high_bytes": 64,
+            "used_current_bytes": 0,
+            "used_high_bytes": 50
+          }
+        }}
       }}}]},
       "time_series": {
         "maximum_cuda_nvml_sample_gap": {"nanoseconds": 1},

@@ -2940,6 +2940,7 @@ pub const fn nexus_query_engine::observability::AttemptRetryAdvice::no_retry_nee
 impl<'de> serde_core::de::Deserialize<'de> for nexus_query_engine::observability::AttemptRetryAdvice
 pub fn nexus_query_engine::observability::AttemptRetryAdvice::deserialize<D>(D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
 pub struct nexus_query_engine::observability::AttemptTimedDomainUsage
+pub nexus_query_engine::observability::AttemptTimedDomainUsage::pool_usage: core::option::Option<nexus_query_engine::observability::AttemptAllocatorPoolUsage>
 pub nexus_query_engine::observability::AttemptTimedDomainUsage::sampled_ns: u64
 pub nexus_query_engine::observability::AttemptTimedDomainUsage::usage: nexus_query_engine::observability::AttemptFinalDomainUsage
 pub struct nexus_query_engine::observability::AttemptTimestamps

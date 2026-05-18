@@ -1,22 +1,23 @@
 {
   "schema": "datafusion_nexus.single_node_multi_gpu.run_profile.v1",
   "version": 1,
+  "completion_drain_grace_seconds": 30,
   "name": "qualification-four-gpu-mixed-cache-off",
   "scenario_requirements": {},
   "graph_claim_calibration": {},
   "vram_calibration": {"max_underclaim_bytes": 67108864, "max_observed_to_claim_ratio_milli": 1000, "max_overclaim_bytes": 67108864, "max_claim_to_observed_ratio_milli": 1000},
   "backend": {
     "device_profiles": [
-      {"ordinal": 0, "ownership": "whole_device_exclusive", "memory_limit_bytes": 47244640256, "backend_reserve_bytes": 1073741824, "cache_cap_bytes": 0, "attempt_floor_bytes": 268435456, "source_work_per_attempt": 2, "max_active_attempts": 2, "installation": {"stream_pool_size": 6, "worker_count": 2, "lane_count": 2}},
-      {"ordinal": 1, "ownership": "whole_device_exclusive", "memory_limit_bytes": 47244640256, "backend_reserve_bytes": 1073741824, "cache_cap_bytes": 0, "attempt_floor_bytes": 268435456, "source_work_per_attempt": 2, "max_active_attempts": 2, "installation": {"stream_pool_size": 6, "worker_count": 2, "lane_count": 2}},
-      {"ordinal": 2, "ownership": "whole_device_exclusive", "memory_limit_bytes": 47244640256, "backend_reserve_bytes": 1073741824, "cache_cap_bytes": 0, "attempt_floor_bytes": 268435456, "source_work_per_attempt": 2, "max_active_attempts": 2, "installation": {"stream_pool_size": 6, "worker_count": 2, "lane_count": 2}},
-      {"ordinal": 3, "ownership": "whole_device_exclusive", "memory_limit_bytes": 47244640256, "backend_reserve_bytes": 1073741824, "cache_cap_bytes": 0, "attempt_floor_bytes": 268435456, "source_work_per_attempt": 2, "max_active_attempts": 2, "installation": {"stream_pool_size": 6, "worker_count": 2, "lane_count": 2}}
+      {"ordinal": 0, "ownership": "whole_device_exclusive", "memory_limit_bytes": 36507222016, "backend_reserve_bytes": 1073741824, "cache_cap_bytes": 0, "attempt_floor_bytes": 268435456, "source_work_per_attempt": 2, "max_active_attempts": 12, "installation": {"stream_pool_size": 36, "worker_count": 12, "lane_count": 12}},
+      {"ordinal": 1, "ownership": "whole_device_exclusive", "memory_limit_bytes": 36507222016, "backend_reserve_bytes": 1073741824, "cache_cap_bytes": 0, "attempt_floor_bytes": 268435456, "source_work_per_attempt": 2, "max_active_attempts": 12, "installation": {"stream_pool_size": 36, "worker_count": 12, "lane_count": 12}},
+      {"ordinal": 2, "ownership": "whole_device_exclusive", "memory_limit_bytes": 36507222016, "backend_reserve_bytes": 1073741824, "cache_cap_bytes": 0, "attempt_floor_bytes": 268435456, "source_work_per_attempt": 2, "max_active_attempts": 12, "installation": {"stream_pool_size": 36, "worker_count": 12, "lane_count": 12}},
+      {"ordinal": 3, "ownership": "whole_device_exclusive", "memory_limit_bytes": 36507222016, "backend_reserve_bytes": 1073741824, "cache_cap_bytes": 0, "attempt_floor_bytes": 268435456, "source_work_per_attempt": 2, "max_active_attempts": 12, "installation": {"stream_pool_size": 36, "worker_count": 12, "lane_count": 12}}
     ],
     "queue": {"max_queued_attempts": 64, "max_queue_wait_ms": 30000, "max_overtakes_per_waiter": 4},
     "native_execution": {"device_budget_bytes": 1073741824, "max_source_chunk_bytes": 268435456, "max_row_groups_per_chunk": 1024, "max_retry_attempts": 3, "min_retry_chunk_row_groups": 1}
   },
   "session": {"shared_session_count": 4},
-  "scheduling": {"arrival_mode": "concurrency", "concurrency": 8, "seed": 20260810, "warmup_seconds": 5, "measurement_seconds": 75},
+  "scheduling": {"arrival_mode": "rate", "arrival_rate_per_second": 7, "seed": 20260810, "warmup_seconds": 10, "measurement_seconds": 75, "rate_overrun": "delay"},
   "cache": {"mode": "disabled"},
-  "workloads": [{"kind": "dblp", "path": "/opt/dlami/nvme/fixture/data/demo-v12-topology-r1/citation_network/v1/parquet", "scale": "v12", "preparation_command": "fixture/fixture.sh graph dblp-ingest --source-json /path/to/dblp.v12.json --out-root /opt/dlami/nvme/fixture/data/demo-v12-topology-r1", "queries": ["pagerank_topk", "bfs_topk", "pagerank"]}]
+  "workloads": [{"kind": "dblp", "path": "/opt/dlami/nvme/fixture/data/demo-v12-topology-r1/citation_network/v1/parquet", "scale": "v12", "preparation_command": "fixture/fixture.sh graph dblp-ingest --source-json /path/to/dblp.v12.json --out-root /opt/dlami/nvme/fixture/data/demo-v12-topology-r1", "queries": ["pagerank_topk", "pagerank", "pagerank_topk", "pagerank", "pagerank_topk", "pagerank", "pagerank_topk", "pagerank", "pagerank_topk", "bfs_topk"]}]
 }

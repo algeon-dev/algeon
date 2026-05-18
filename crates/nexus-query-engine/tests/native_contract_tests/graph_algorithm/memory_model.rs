@@ -375,7 +375,7 @@ fn similarity_memory_model_pins_representative_citation_fixture_capture() {
         )
         .unwrap();
     let observed_peak_bytes = 121_728_623;
-    assert_eq!(estimate.requested_bytes, 199_572_256);
+    assert_eq!(estimate.requested_bytes, 166_017_824);
     assert!(estimate.requested_bytes >= observed_peak_bytes);
     // The captured peak predates pricing the separately owned raw-construction
     // endpoint-pair sort staging, so it remains a lower safety check rather
@@ -418,7 +418,8 @@ fn graph_memory_report_admits_and_denies_without_strict_contract_projection() {
     assert_eq!(estimate.vertex_upper_bound, 200);
     assert_eq!(estimate.vertex_estimate, 200);
     assert_eq!(estimate.vertex_estimate_source, GraphVertexEstimateSource::EdgeEndpointUpperBound);
-    assert_eq!(estimate.requested_bytes, 13_600);
+    assert_eq!(estimate.requested_bytes, 10_400);
+    assert!(estimate.requested_bytes < estimate.construction_bytes + estimate.execution_bytes);
     assert!(estimate.requested_bytes > 0);
 
     let admitted = GraphReservationReport::from_estimate(
@@ -610,7 +611,7 @@ fn graph_memory_model_prices_triangle_count_from_runtime_statistics_formula() {
 
     let estimate = GraphMemoryModel.estimate(&spec, input).unwrap();
 
-    assert_eq!(estimate.requested_bytes, 16_320);
+    assert_eq!(estimate.requested_bytes, 16_000);
 }
 
 #[test]
@@ -646,7 +647,7 @@ fn graph_memory_model_prices_dblp_triangle_from_runtime_statistics_above_measure
 
     let estimate = GraphMemoryModel.estimate(&spec, input).unwrap();
 
-    assert_eq!(estimate.requested_bytes, 8_818_534_752);
+    assert_eq!(estimate.requested_bytes, 8_752_186_400);
     assert!(
         estimate.requested_bytes >= 6_617_470_861,
         "runtime-statistics DBLP triangle ask must cover the measured CUDA async-pool peak"
@@ -684,7 +685,7 @@ fn graph_memory_model_keeps_triangle_plan_time_fallback_below_whole_device_ticke
     let estimate = GraphMemoryModel.estimate(&spec, input).unwrap();
 
     assert_eq!(estimate.vertex_estimate, 182_256_596);
-    assert_eq!(estimate.requested_bytes, 34_993_266_432);
+    assert_eq!(estimate.requested_bytes, 32_077_160_896);
     assert!(
         estimate.requested_bytes < 101_449_662_464 / 2,
         "plan-time triangle fallback should remain a packing hint, not become a caller-selected grant target"

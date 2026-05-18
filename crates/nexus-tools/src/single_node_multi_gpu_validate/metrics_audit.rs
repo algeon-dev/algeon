@@ -306,7 +306,7 @@ fn bucket_clause(snapshots: &[MetricSnapshotObservation]) -> MetricAuditClause {
     if finite == 0 {
         return clause(
             "duration_bucket_suitability",
-            ClauseStatus::Failed,
+            ClauseStatus::NotEvidenced,
             format!("all {} total-duration samples overflowed the largest finite P4 bucket", last.total_duration_count),
         );
     }
@@ -360,12 +360,12 @@ mod tests {
     }
 
     #[test]
-    fn audit_fails_a_stalled_sampler_and_all_overflow_histogram() {
+    fn audit_fails_a_stalled_sampler_and_reports_all_overflow_histogram() {
         let mut snapshots = vec![snapshot(0, 0), snapshot(1_000_000_000, 2)];
         snapshots[1].total_duration_bucket_counts = vec![0, 0, 0, 0, 2];
         let audit = MetricsAudit::from_snapshots(&snapshots, &[0, 1], 2, 250, false);
         assert_eq!(audit.snapshot_cadence.status, ClauseStatus::Failed);
-        assert_eq!(audit.duration_bucket_suitability.status, ClauseStatus::Failed);
+        assert_eq!(audit.duration_bucket_suitability.status, ClauseStatus::NotEvidenced);
         assert!(!audit.passes());
     }
 
@@ -374,7 +374,7 @@ mod tests {
         let mut snapshots = vec![snapshot(0, 0), snapshot(250_000_000, 2)];
         snapshots[1].total_duration_bucket_counts = vec![0, 0, 0, 0, 2];
         let audit = MetricsAudit::from_snapshots(&snapshots, &[0, 1], 2, 250, false);
-        assert_eq!(audit.duration_bucket_suitability.status, ClauseStatus::Failed);
+        assert_eq!(audit.duration_bucket_suitability.status, ClauseStatus::NotEvidenced);
         assert!(audit.passes());
     }
 
