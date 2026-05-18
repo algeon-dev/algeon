@@ -46,6 +46,11 @@ pub(super) fn node_operator(kind: &PlanNode) -> NodeOperator {
             build_side: join.spec.build_side,
         },
         PlanNode::Union(union) => NodeOperator::Union { input_count: union.inputs.len() },
+        PlanNode::EdgeNormalize(node) => NodeOperator::EdgeNormalize {
+            add_reverse: node.spec.add_reverse,
+            dedup: node.spec.dedup,
+            weight_combiner: node.spec.weight_combiner,
+        },
         PlanNode::GraphAlgorithm(graph) => NodeOperator::GraphAlgorithm { algorithm: graph.spec.algorithm },
     }
 }
@@ -91,6 +96,9 @@ fn node_executable_decision(plan: &QueryPlan, node: &QueryNode) -> CapabilityDec
         PlanNode::Limit(limit) => limit_node_executable_decision(plan, node.id, limit),
         PlanNode::Join(join) => join_node_executable_decision(plan, node.id, join),
         PlanNode::Union(union) => union_node_executable_decision(plan, node.id, union),
+        PlanNode::EdgeNormalize(edge_normalize) => {
+            edge_normalize_node_executable_decision(plan, node.id, edge_normalize)
+        },
         PlanNode::GraphAlgorithm(graph) => graph_algorithm_node_executable_decision(plan, node.id, graph),
     }
 }
@@ -507,6 +515,84 @@ fn graph_algorithm_node_executable_decision(
     CapabilityDecision::Satisfied
 }
 
+fn edge_normalize_node_executable_decision(
+    plan: &QueryPlan,
+    node_id: NodeId,
+    edge_normalize: &crate::plan::EdgeNormalizeNode,
+) -> CapabilityDecision {
+    let Some(input) = plan.node(edge_normalize.input) else {
+        return CapabilityDecision::rejected(
+            "unsupported_edge_normalize_node_capability",
+            [("node_id", node_id.to_string()), ("reason", "missing_input_node".to_string())],
+        );
+    };
+    for (role, column) in [
+        ("source", edge_normalize.spec.edge_columns.source.as_str()),
+        ("destination", edge_normalize.spec.edge_columns.destination.as_str()),
+    ] {
+        let Some(field) = input.output_schema().field_with_name(column).ok() else {
+            return CapabilityDecision::rejected(
+                "unsupported_edge_normalize_node_capability",
+                [
+                    ("node_id", node_id.to_string()),
+                    ("reason", "missing_edge_column".to_string()),
+                    ("edge_column_role", role.to_string()),
+                    ("column", column.to_string()),
+                ],
+            );
+        };
+        if !matches!(field.data_type(), arrow::datatypes::DataType::Int32 | arrow::datatypes::DataType::Int64) {
+            return CapabilityDecision::rejected(
+                "unsupported_edge_normalize_node_capability",
+                [
+                    ("node_id", node_id.to_string()),
+                    ("reason", "unsupported_vertex_type".to_string()),
+                    ("edge_column_role", role.to_string()),
+                    ("column", column.to_string()),
+                    ("data_type", format!("{:?}", field.data_type())),
+                ],
+            );
+        }
+    }
+
+    if edge_normalize.spec.weight_combiner == crate::plan::EdgeWeightCombiner::MinWeight
+        && edge_normalize.spec.edge_columns.weight.is_none()
+    {
+        return CapabilityDecision::rejected(
+            "unsupported_edge_normalize_node_capability",
+            [("node_id", node_id.to_string()), ("reason", "min_weight_without_weight_column".to_string())],
+        );
+    }
+
+    if let Some(weight_col) = edge_normalize.spec.edge_columns.weight.as_deref() {
+        let Some(field) = input.output_schema().field_with_name(weight_col).ok() else {
+            return CapabilityDecision::rejected(
+                "unsupported_edge_normalize_node_capability",
+                [
+                    ("node_id", node_id.to_string()),
+                    ("reason", "missing_edge_column".to_string()),
+                    ("edge_column_role", "weight".to_string()),
+                    ("column", weight_col.to_string()),
+                ],
+            );
+        };
+        if !matches!(field.data_type(), arrow::datatypes::DataType::Float32 | arrow::datatypes::DataType::Float64) {
+            return CapabilityDecision::rejected(
+                "unsupported_edge_normalize_node_capability",
+                [
+                    ("node_id", node_id.to_string()),
+                    ("reason", "unsupported_weight_type".to_string()),
+                    ("edge_column_role", "weight".to_string()),
+                    ("column", weight_col.to_string()),
+                    ("data_type", format!("{:?}", field.data_type())),
+                ],
+            );
+        }
+    }
+
+    CapabilityDecision::Satisfied
+}
+
 pub(super) fn produced_properties(node: &QueryNode) -> Vec<ProducedProperty> {
     let mut properties = Vec::new();
     if node.facts.placement == crate::plan::DataPlacement::Device {
@@ -613,6 +699,12 @@ fn node_local_requirements(plan: &QueryPlan, node: &QueryNode) -> Vec<Reservatio
             "union_concat_output",
             "union_concat_output_size_preflight",
             ContractQuality::ExactPreflight,
+        )],
+        PlanNode::EdgeNormalize(_) => vec![ReservationRequirement::modeled(
+            ReservationKind::OperatorOutput,
+            "edge_normalize_output",
+            "edge_normalize_output_size_preflight",
+            ContractQuality::HardBudgetedReportWithUnresolvedPreflight,
         )],
         PlanNode::GraphAlgorithm(_) => vec![ReservationRequirement::blocked_by_lower_level(
             ReservationKind::OperatorOutput,

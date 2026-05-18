@@ -119,12 +119,15 @@ fn parse_options_json(
             "renumber" => graph_options.renumber = json_bool(value, key)?,
             "construction_policy" => {
                 let policy = json_string(value, key)?;
-                if policy != "python_cugraph" {
-                    return Err(plan_error(format!(
-                        "unsupported cuGraph construction_policy '{policy}', expected 'python_cugraph'"
-                    )));
-                }
-                graph_options.construction_policy = CugraphGraphConstructionPolicy::PythonCugraph;
+                graph_options.construction_policy = match policy.as_str() {
+                    "python_cugraph" => CugraphGraphConstructionPolicy::PythonCugraph,
+                    "raw_libcugraph" => CugraphGraphConstructionPolicy::RawLibcugraph,
+                    other => {
+                        return Err(plan_error(format!(
+                            "unsupported cuGraph construction_policy '{other}', expected 'python_cugraph' or 'raw_libcugraph'"
+                        )));
+                    },
+                };
             },
             "alpha" if algorithm == CugraphAlgorithm::PageRank => {
                 let alpha = json_f64(value, key)?;

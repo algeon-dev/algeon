@@ -118,6 +118,17 @@ pub(super) fn validate_query_plan(plan: &QueryPlan) -> Result<()> {
                 validate_union_node(plan, union, node.id, node.output_schema(), &available_columns_by_node)?;
                 schema_column_names(node.output_schema())
             },
+            PlanNode::EdgeNormalize(edge_normalize) => {
+                let input = input_node(plan, edge_normalize.input, node.id)?;
+                let input_available = available_columns(&available_columns_by_node, edge_normalize.input)?;
+                validate_edge_normalize_node(
+                    edge_normalize,
+                    input.output_schema(),
+                    input_available,
+                    node.output_schema(),
+                )?;
+                schema_column_names(node.output_schema())
+            },
             PlanNode::GraphAlgorithm(graph) => {
                 let input = input_node(plan, graph.input, node.id)?;
                 let input_available = available_columns(&available_columns_by_node, graph.input)?;
@@ -310,8 +321,46 @@ fn plan_node_kind(node: &PlanNode) -> &'static str {
         PlanNode::Limit(_) => "limit",
         PlanNode::Join(_) => "join",
         PlanNode::Union(_) => "union",
+        PlanNode::EdgeNormalize(_) => "edge_normalize",
         PlanNode::GraphAlgorithm(_) => "graph_algorithm",
     }
+}
+
+fn validate_edge_normalize_node(
+    edge_normalize: &crate::plan::EdgeNormalizeNode,
+    input_schema: &SchemaRef,
+    input_available: &BTreeSet<String>,
+    output_schema: &SchemaRef,
+) -> Result<()> {
+    validate_graph_vertex_column("source", &edge_normalize.spec.edge_columns.source, input_schema, input_available)?;
+    validate_graph_vertex_column(
+        "destination",
+        &edge_normalize.spec.edge_columns.destination,
+        input_schema,
+        input_available,
+    )?;
+    if let Some(weight_col) = edge_normalize.spec.edge_columns.weight.as_deref() {
+        validate_graph_weight_column(weight_col, input_schema, input_available)?;
+    }
+    let expected = [
+        Some(edge_normalize.spec.edge_columns.source.as_str()),
+        Some(edge_normalize.spec.edge_columns.destination.as_str()),
+        edge_normalize.spec.edge_columns.weight.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>();
+    let actual = output_schema.fields().iter().map(|field| field.name().as_str()).collect::<Vec<_>>();
+    if actual != expected {
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "cudf_query_engine.edge_normalize.validate",
+            "edge normalize output schema must contain source, destination, and optional weight columns in order",
+        )
+        .with_fact("expected_columns", expected.join(","))
+        .with_fact("actual_columns", actual.join(",")));
+    }
+    Ok(())
 }
 
 fn validate_graph_algorithm_node(

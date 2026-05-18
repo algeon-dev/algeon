@@ -29,7 +29,7 @@ pub(crate) fn estimated_output_rows(plan: &QueryPlan, node_id: NodeId) -> Option
             union.inputs.iter().try_fold(0_u64, |total, input| total.checked_add(estimated_output_rows(plan, *input)?))
         },
         PlanNode::Aggregate(aggregate) if aggregate.spec.group_exprs.is_empty() => Some(1),
-        PlanNode::Aggregate(_) | PlanNode::Join(_) | PlanNode::GraphAlgorithm(_) => None,
+        PlanNode::Aggregate(_) | PlanNode::Join(_) | PlanNode::EdgeNormalize(_) | PlanNode::GraphAlgorithm(_) => None,
     }
 }
 
@@ -60,6 +60,10 @@ pub(crate) fn estimated_output_bytes(plan: &QueryPlan, node_id: NodeId) -> Optio
         PlanNode::Union(union) => {
             union.inputs.iter().try_fold(0_u64, |total, input| total.checked_add(estimated_output_bytes(plan, *input)?))
         },
-        PlanNode::Limit(_) | PlanNode::Aggregate(_) | PlanNode::Join(_) | PlanNode::GraphAlgorithm(_) => None,
+        PlanNode::Limit(_)
+        | PlanNode::Aggregate(_)
+        | PlanNode::Join(_)
+        | PlanNode::EdgeNormalize(_)
+        | PlanNode::GraphAlgorithm(_) => None,
     }
 }

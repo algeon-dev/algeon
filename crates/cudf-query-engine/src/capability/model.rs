@@ -1,4 +1,5 @@
 use super::*;
+use crate::plan::{EdgeDedupStrategy, EdgeWeightCombiner};
 
 /// Whether the engine currently proves a bounded contract.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -112,6 +113,12 @@ pub const STRICT_UNRESOLVED_PREFLIGHT_GAPS: &[StrictUnresolvedPreflightGap] = &[
         required_contract: "window_contract",
         unresolved_gap: "libcudf_window_output_temporary_workspace_preflight_unavailable",
         retirement_requirement: "cudf-rs/libcudf window output and temporary-workspace preflight",
+    },
+    StrictUnresolvedPreflightGap {
+        kind: ReservationKind::OperatorOutput,
+        required_contract: "edge_normalize_output_size_preflight",
+        unresolved_gap: "libcudf_edge_normalize_output_preflight_unavailable",
+        retirement_requirement: "cudf-rs/libcudf edge normalization output and temporary-workspace preflight",
     },
     StrictUnresolvedPreflightGap {
         kind: ReservationKind::FinalSort,
@@ -287,6 +294,7 @@ pub enum NodeOperator {
     Limit,
     Join { join_type: JoinType, key_count: usize, residual: ResidualRequirement, build_side: JoinSide },
     Union { input_count: usize },
+    EdgeNormalize { add_reverse: bool, dedup: EdgeDedupStrategy, weight_combiner: EdgeWeightCombiner },
     GraphAlgorithm { algorithm: GraphAlgorithm },
 }
 

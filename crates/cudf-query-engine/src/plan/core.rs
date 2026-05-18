@@ -95,6 +95,11 @@ impl QueryPlan {
         self.nodes.iter().any(|node| matches!(node.kind, PlanNode::GraphAlgorithm(_)))
     }
 
+    /// Returns true when the plan contains an explicit edge-list normalization node.
+    pub fn contains_edge_normalize(&self) -> bool {
+        self.nodes.iter().any(|node| matches!(node.kind, PlanNode::EdgeNormalize(_)))
+    }
+
     /// Returns diagnostic facts for join plans rejected by every bounded join path.
     ///
     /// These facts are explanatory planning/execution diagnostics. They do not
@@ -235,6 +240,8 @@ pub enum PlanNode {
     Join(JoinNode),
     /// Concatenates N schema-compatible inputs in order.
     Union(UnionNode),
+    /// Canonicalizes an edge-list before cuGraph raw construction.
+    EdgeNormalize(EdgeNormalizeNode),
     /// Runs a graph algorithm over an edge-list input.
     GraphAlgorithm(GraphAlgorithmNode),
 }
@@ -255,6 +262,7 @@ impl PlanNode {
             Self::Limit(node) => std::slice::from_ref(&node.input),
             Self::Join(node) => &node.inputs,
             Self::Union(node) => &node.inputs,
+            Self::EdgeNormalize(node) => std::slice::from_ref(&node.input),
             Self::GraphAlgorithm(node) => std::slice::from_ref(&node.input),
         }
     }

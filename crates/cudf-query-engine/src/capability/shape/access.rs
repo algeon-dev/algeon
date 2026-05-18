@@ -432,6 +432,7 @@ pub(in crate::capability) fn projection_or_filter_wrapped_grouped_local_parquet_
             | PlanNode::Sort(_)
             | PlanNode::Limit(_)
             | PlanNode::Union(_)
+            | PlanNode::EdgeNormalize(_)
             | PlanNode::GraphAlgorithm(_) => {
                 return Err(CapabilityDecision::rejected(
                     "resident_grouped_aggregate_topk_input_requires_grouped_aggregate",
@@ -470,6 +471,7 @@ pub(in crate::capability) fn peel_resident_unary_chain_for_capability(
             | PlanNode::Sort(_)
             | PlanNode::Limit(_)
             | PlanNode::Union(_)
+            | PlanNode::EdgeNormalize(_)
             | PlanNode::GraphAlgorithm(_) => {
                 return Some((current, chain));
             },
@@ -541,6 +543,7 @@ pub(in crate::capability) fn validate_bounded_join_subtree_for_capability(
         | PlanNode::Sort(_)
         | PlanNode::Limit(_)
         | PlanNode::Union(_)
+        | PlanNode::EdgeNormalize(_)
         | PlanNode::GraphAlgorithm(_) => Err(CapabilityDecision::rejected(
             "join_subtree_input_unsupported_node",
             [("node_id", node_id.to_string()), ("operator", node_operator_fact(&node.kind).to_string())],
@@ -573,6 +576,7 @@ pub(in crate::capability) fn validate_bounded_join_subtree_rooted_at_join_for_ca
         | PlanNode::Sort(_)
         | PlanNode::Limit(_)
         | PlanNode::Union(_)
+        | PlanNode::EdgeNormalize(_)
         | PlanNode::GraphAlgorithm(_) => Err(CapabilityDecision::rejected(
             "aggregate_over_join_topk_input_requires_join_subplan",
             [("node_id", node_id.to_string()), ("operator", node_operator_fact(&node.kind).to_string())],
@@ -604,6 +608,7 @@ pub(in crate::capability) fn validate_local_parquet_leaf_pipeline_for_capability
         | PlanNode::Sort(_)
         | PlanNode::Limit(_)
         | PlanNode::Union(_)
+        | PlanNode::EdgeNormalize(_)
         | PlanNode::GraphAlgorithm(_) => Err(CapabilityDecision::rejected(
             "resident_grouped_aggregate_input_requires_source_filter_projection_leaf",
             [("node_id", node_id.to_string()), ("operator", node_operator_fact(&node.kind).to_string())],
@@ -639,6 +644,7 @@ pub(in crate::capability) fn validate_local_parquet_leaf_pipeline_for_keyed_hash
         | PlanNode::Sort(_)
         | PlanNode::Limit(_)
         | PlanNode::Union(_)
+        | PlanNode::EdgeNormalize(_)
         | PlanNode::GraphAlgorithm(_) => Err(CapabilityDecision::rejected(
             "keyed_hash_resident_subplan_leaf_requires_source_filter_projection",
             [("node_id", node_id.to_string()), ("operator", node_operator_fact(&node.kind).to_string())],
@@ -899,7 +905,9 @@ pub(in crate::capability) fn output_lineage(
                 Ok(OutputLineage::Derived { node_id, field_index })
             }
         },
-        PlanNode::Union(_) | PlanNode::GraphAlgorithm(_) => Ok(OutputLineage::Derived { node_id, field_index }),
+        PlanNode::Union(_) | PlanNode::EdgeNormalize(_) | PlanNode::GraphAlgorithm(_) => {
+            Ok(OutputLineage::Derived { node_id, field_index })
+        },
     }
 }
 
@@ -1015,6 +1023,7 @@ pub(in crate::capability) fn validate_closed_multi_join_subtree(
         | PlanNode::Sort(_)
         | PlanNode::Limit(_)
         | PlanNode::Union(_)
+        | PlanNode::EdgeNormalize(_)
         | PlanNode::GraphAlgorithm(_) => Err(CapabilityDecision::rejected(
             "closed_multi_join_subgraph_unsupported_node",
             [("node_id", node_id.to_string()), ("operator", node_operator_fact(&node.kind).to_string())],
@@ -1052,7 +1061,7 @@ pub(in crate::capability) fn post_root_join_id(plan: &QueryPlan) -> Result<NodeI
                     [("node_id", current.to_string()), ("operator", node_operator_fact(&node.kind).to_string())],
                 ));
             },
-            PlanNode::GraphAlgorithm(_) => {
+            PlanNode::EdgeNormalize(_) | PlanNode::GraphAlgorithm(_) => {
                 return Err(CapabilityDecision::rejected(
                     "closed_multi_join_subgraph_unsupported_node",
                     [("node_id", current.to_string()), ("operator", node_operator_fact(&node.kind).to_string())],

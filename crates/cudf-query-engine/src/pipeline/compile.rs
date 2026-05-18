@@ -415,6 +415,11 @@ fn build_tasks(
                     .with_fact("node_id", node_id)
                     .with_fact("operator", "graph_algorithm"));
             },
+            PlanNode::EdgeNormalize(_) => {
+                return Err(invalid("edge normalize nodes are not supported by the strict compiled pipeline")
+                    .with_fact("node_id", node_id)
+                    .with_fact("operator", "edge_normalize"));
+            },
             PlanNode::Join(_) => {
                 let NodeTasks::Join { build, probe, materialize } = tasks_for(task_ids, *node_id)? else {
                     return Err(invalid("join node was not assigned join pipeline tasks").with_fact("node_id", node_id));
@@ -743,6 +748,7 @@ fn build_barriers(
             | PlanNode::Projection(_)
             | PlanNode::Limit(_)
             | PlanNode::Union(_)
+            | PlanNode::EdgeNormalize(_)
             | PlanNode::GraphAlgorithm(_) => {},
         }
     }

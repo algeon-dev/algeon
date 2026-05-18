@@ -475,7 +475,7 @@ fn d5_contract_gate_rows_are_inventory_backed_and_family_path_free() {
 fn phase_f6_strict_preflight_gap_registry_tracks_current_retirement_protocol() {
     assert_eq!(
         STRICT_UNRESOLVED_PREFLIGHT_GAPS.len(),
-        5,
+        6,
         "strict unresolved preflight gap retirement must remove entries from this registry"
     );
 
@@ -504,6 +504,7 @@ fn phase_f6_strict_preflight_gap_registry_tracks_current_retirement_protocol() {
     assert!(markers.contains("libcudf_parquet_decoded_output_preflight_unavailable"));
     assert!(markers.contains("libcudf_groupby_aggregate_temporary_workspace_preflight_unavailable"));
     assert!(markers.contains("libcudf_window_output_temporary_workspace_preflight_unavailable"));
+    assert!(markers.contains("libcudf_edge_normalize_output_preflight_unavailable"));
     assert!(markers.contains("libcudf_final_sort_order_preflight_unavailable"));
     assert!(markers.contains("libcudf_equality_join_output_size_preflight_unavailable"));
 }
