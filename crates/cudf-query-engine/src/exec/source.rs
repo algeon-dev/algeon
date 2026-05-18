@@ -12,11 +12,10 @@ mod scheduler;
 mod schema;
 mod zero_column_count;
 
-use cudf_contract::cudf_local_parquet_source_chunk;
+use cudf_contract::{cudf_local_parquet_source_chunk, cudf_local_parquet_source_file_selection};
 pub use gpu_resident::read_gpu_resident_source;
 pub(super) use metrics::{format_row_groups, record_bounded_parquet_source_metrics};
 use partition::inject_partition_columns;
-use predicate::lower_source_reader_predicate;
 use read::read_local_parquet_file;
 pub(in crate::exec) use scheduler::{ScheduledLocalParquetRead, ScheduledLocalParquetReadOutput};
 pub(in crate::exec) use schema::local_parquet_execution_frame_schema;
@@ -91,7 +90,9 @@ fn read_local_parquet_source_uncached(
         let frame = if columns.is_empty() {
             context.runtime().empty_dataframe()
         } else {
-            let reader_predicate = lower_source_reader_predicate(context, source, file.path.as_path())?;
+            let (cudf_source, _cudf_chunk) =
+                cudf_local_parquet_source_file_selection(context, source, file, file_index, file_index)?;
+            let reader_predicate = cudf_source.reader_predicate().cloned();
             read_local_parquet_file(context, file, &columns, reader_predicate.clone(), metrics)?
         };
         let frame = inject_partition_columns(context, source, &file.partition_values, frame, metrics)?.into_frame();

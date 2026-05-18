@@ -1,15 +1,17 @@
-use super::*;
+use std::path::Path;
+
+use super::{predicate::lower_source_reader_predicate, *};
 
 pub(super) fn cudf_local_parquet_source_chunk(
     context: &ExecutionContext,
     source: &LocalParquetSource,
     chunk: &SourceChunk,
 ) -> Result<(cudf::io::source::LocalParquetSource, cudf::io::source::SourceChunk)> {
-    let source = cudf_local_parquet_source_for_chunk(context, source, chunk)?;
+    let cudf_source = cudf_local_parquet_source_for_chunk(source, chunk)?;
     let row_groups = if chunk.reads_all_row_groups { None } else { Some(chunk.row_group_indexes.clone()) };
     let cudf_chunk =
-        cudf::io::source::SourceChunk::from_source_file_selection(&source, 0, chunk.chunk_index, row_groups).map_err(
-            |error| {
+        cudf::io::source::SourceChunk::from_source_file_selection(&cudf_source, 0, chunk.chunk_index, row_groups)
+            .map_err(|error| {
                 QueryError::from_cudf(
                     "cudf_query_engine.local_parquet_chunk.descriptor_cudf",
                     "failed to convert native local parquet source chunk descriptor into cudf source chunk",
@@ -20,13 +22,61 @@ pub(super) fn cudf_local_parquet_source_chunk(
                 .with_fact("file_index", chunk.file_index)
                 .with_fact("read_columns", chunk.read_columns.len())
                 .with_fact("row_groups", format_row_groups(chunk))
+            })?;
+    let cudf_source = attach_cudf_source_reader_predicate(
+        context,
+        cudf_source,
+        &cudf_chunk,
+        source,
+        "cudf_query_engine.local_parquet_chunk.source_cudf",
+        chunk.path.as_path(),
+        chunk.chunk_index,
+        chunk.file_index,
+        chunk.read_columns.len(),
+        Some(format_row_groups(chunk)),
+    )?;
+    Ok((cudf_source, cudf_chunk))
+}
+
+pub(super) fn cudf_local_parquet_source_file_selection(
+    context: &ExecutionContext,
+    source: &LocalParquetSource,
+    file: &LocalParquetFile,
+    file_index: usize,
+    chunk_index: usize,
+) -> Result<(cudf::io::source::LocalParquetSource, cudf::io::source::SourceChunk)> {
+    let cudf_source = cudf_local_parquet_source_for_file(source, file, file_index, chunk_index)?;
+    let row_groups = file.row_groups.clone();
+    let cudf_chunk =
+        cudf::io::source::SourceChunk::from_source_file_selection(&cudf_source, 0, chunk_index, row_groups).map_err(
+            |error| {
+                QueryError::from_cudf(
+                    "cudf_query_engine.local_parquet_source.descriptor_cudf",
+                    "failed to convert native local parquet source file descriptor into cudf source chunk",
+                    error,
+                )
+                .with_fact("path", file.path.display())
+                .with_fact("chunk_index", chunk_index)
+                .with_fact("file_index", file_index)
+                .with_fact("read_columns", source.read_columns.len())
             },
         )?;
-    Ok((source, cudf_chunk))
+    let cudf_source = attach_cudf_source_reader_predicate(
+        context,
+        cudf_source,
+        &cudf_chunk,
+        source,
+        "cudf_query_engine.local_parquet_source.source_cudf",
+        file.path.as_path(),
+        chunk_index,
+        file_index,
+        source.read_columns.len(),
+        None,
+    )?;
+    Ok((cudf_source, cudf_chunk))
 }
 
 fn cudf_local_parquet_source_for_chunk(
-    context: &ExecutionContext,
     source: &LocalParquetSource,
     chunk: &SourceChunk,
 ) -> Result<cudf::io::source::LocalParquetSource> {
@@ -42,42 +92,95 @@ fn cudf_local_parquet_source_for_chunk(
         .with_fact("source_files", source.files.len())
     })?;
     let cudf_file = cudf_local_parquet_file_for_chunk(chunk)?;
+    cudf_local_parquet_source_from_file(
+        source,
+        cudf_file,
+        chunk.read_columns.iter().map(String::as_str),
+        "cudf_query_engine.local_parquet_chunk.source_cudf",
+    )
+    .map_err(|error| {
+        error
+            .with_fact("path", chunk.path.display())
+            .with_fact("chunk_index", chunk.chunk_index)
+            .with_fact("file_index", chunk.file_index)
+            .with_fact("read_columns", chunk.read_columns.len())
+            .with_fact("row_groups", format_row_groups(chunk))
+    })
+}
+
+fn cudf_local_parquet_source_for_file(
+    source: &LocalParquetSource,
+    file: &LocalParquetFile,
+    file_index: usize,
+    chunk_index: usize,
+) -> Result<cudf::io::source::LocalParquetSource> {
+    let cudf_file = cudf_local_parquet_file(file)?;
+    cudf_local_parquet_source_from_file(
+        source,
+        cudf_file,
+        source.read_columns.iter().map(String::as_str),
+        "cudf_query_engine.local_parquet_source.source_cudf",
+    )
+    .map_err(|error| {
+        error
+            .with_fact("path", file.path.display())
+            .with_fact("chunk_index", chunk_index)
+            .with_fact("file_index", file_index)
+            .with_fact("read_columns", source.read_columns.len())
+    })
+}
+
+fn cudf_local_parquet_source_from_file<'a>(
+    source: &LocalParquetSource,
+    cudf_file: cudf::io::source::LocalParquetFile,
+    read_columns: impl IntoIterator<Item = &'a str>,
+    operation: &'static str,
+) -> Result<cudf::io::source::LocalParquetSource> {
     let cudf_schema = cudf_source_schema(source)?;
     let output_columns = cudf_source_output_columns(source)?;
     let required_columns = cudf_source_required_columns(source)?;
     let partition_columns = cudf_partition_columns(source)?;
-    let mut cudf_source = cudf::io::source::LocalParquetSource::data(
+    cudf::io::source::LocalParquetSource::data(
         [cudf_file],
         cudf_schema,
-        chunk.read_columns.iter().map(String::as_str),
+        read_columns,
         output_columns,
         required_columns,
         partition_columns,
     )
     .map_err(|error| {
         QueryError::from_cudf(
-            "cudf_query_engine.local_parquet_chunk.source_cudf",
+            operation,
             "failed to convert native local parquet source into cudf source contract",
             error,
         )
-        .with_fact("path", chunk.path.display())
-        .with_fact("chunk_index", chunk.chunk_index)
-        .with_fact("file_index", chunk.file_index)
-        .with_fact("read_columns", chunk.read_columns.len())
-        .with_fact("row_groups", format_row_groups(chunk))
-    })?;
-    if let Some(predicate) = lower_source_reader_predicate(context, source, chunk.path.as_path())? {
+    })
+}
+
+fn attach_cudf_source_reader_predicate(
+    context: &ExecutionContext,
+    mut cudf_source: cudf::io::source::LocalParquetSource,
+    cudf_chunk: &cudf::io::source::SourceChunk,
+    source: &LocalParquetSource,
+    operation: &'static str,
+    path: &Path,
+    chunk_index: usize,
+    file_index: usize,
+    read_columns: usize,
+    row_groups: Option<String>,
+) -> Result<cudf::io::source::LocalParquetSource> {
+    if let Some(predicate) = lower_source_reader_predicate(context, source, &cudf_source, cudf_chunk)? {
         cudf_source = cudf_source.with_reader_predicate(predicate).map_err(|error| {
-            QueryError::from_cudf(
-                "cudf_query_engine.local_parquet_chunk.source_cudf",
+            let error = QueryError::from_cudf(
+                operation,
                 "failed to attach native reader predicate to cudf source contract",
                 error,
             )
-            .with_fact("path", chunk.path.display())
-            .with_fact("chunk_index", chunk.chunk_index)
-            .with_fact("file_index", chunk.file_index)
-            .with_fact("read_columns", chunk.read_columns.len())
-            .with_fact("row_groups", format_row_groups(chunk))
+            .with_fact("path", path.display())
+            .with_fact("chunk_index", chunk_index)
+            .with_fact("file_index", file_index)
+            .with_fact("read_columns", read_columns);
+            if let Some(row_groups) = row_groups { error.with_fact("row_groups", row_groups) } else { error }
         })?;
     }
     Ok(cudf_source)
@@ -156,6 +259,74 @@ fn cudf_local_parquet_file_for_chunk(chunk: &SourceChunk) -> Result<cudf::io::so
                 .with_fact("path", chunk.path.display())
                 .with_fact("chunk_index", chunk.chunk_index)
                 .with_fact("file_index", chunk.file_index)
+            })?;
+    }
+    Ok(cudf_file)
+}
+
+fn cudf_local_parquet_file(file: &LocalParquetFile) -> Result<cudf::io::source::LocalParquetFile> {
+    let partition_values = file.partition_values.iter().map(cudf_partition_value).collect::<Result<Vec<_>>>()?;
+    let mut cudf_file = match &file.location {
+        crate::source::ParquetSourceLocation::LocalPath(_) => {
+            cudf::io::source::LocalParquetFile::new(&file.path, file.stable_id.as_str(), partition_values)
+        },
+        crate::source::ParquetSourceLocation::ObjectStoreUri { uri, .. } => {
+            cudf::io::source::LocalParquetFile::object_store_uri(uri.clone(), file.stable_id.as_str(), partition_values)
+        },
+    }
+    .map_err(|error| {
+        QueryError::from_cudf(
+            "cudf_query_engine.local_parquet_source.file_cudf",
+            "failed to convert native local parquet file into cudf source contract",
+            error,
+        )
+        .with_fact("path", file.path.display())
+        .with_fact("stable_id", file.stable_id.as_str())
+    })?;
+    if let Some(file_size_bytes) = file.file_size_bytes {
+        cudf_file = cudf_file.with_file_size_bytes(file_size_bytes);
+    }
+    cudf_file = cudf_file.with_row_groups(file.row_groups.clone());
+    if let (Some(row_group_bytes), Some(row_group_rows)) = (&file.row_group_bytes, &file.row_group_rows) {
+        cudf_file =
+            cudf_file.with_row_group_metadata(row_group_bytes.clone(), row_group_rows.clone()).map_err(|error| {
+                QueryError::from_cudf(
+                    "cudf_query_engine.local_parquet_source.file_cudf",
+                    "failed to attach native local parquet row-group metadata to cudf source contract",
+                    error,
+                )
+                .with_fact("path", file.path.display())
+                .with_fact("stable_id", file.stable_id.as_str())
+            })?;
+    }
+    if let (Some(compressed_bytes), Some(uncompressed_bytes)) =
+        (&file.projected_row_group_compressed_bytes, &file.projected_row_group_uncompressed_bytes)
+    {
+        cudf_file = cudf_file
+            .with_projected_row_group_bytes(compressed_bytes.clone(), uncompressed_bytes.clone())
+            .map_err(|error| {
+                QueryError::from_cudf(
+                    "cudf_query_engine.local_parquet_source.file_cudf",
+                    "failed to attach projected row-group byte metadata to cudf source contract",
+                    error,
+                )
+                .with_fact("path", file.path.display())
+                .with_fact("stable_id", file.stable_id.as_str())
+            })?;
+    }
+    if let (Some(compressed_bytes), Some(uncompressed_bytes)) =
+        (&file.pure_filter_row_group_compressed_bytes, &file.pure_filter_row_group_uncompressed_bytes)
+    {
+        cudf_file = cudf_file
+            .with_pure_filter_row_group_bytes(compressed_bytes.clone(), uncompressed_bytes.clone())
+            .map_err(|error| {
+                QueryError::from_cudf(
+                    "cudf_query_engine.local_parquet_source.file_cudf",
+                    "failed to attach pure-filter row-group byte metadata to cudf source contract",
+                    error,
+                )
+                .with_fact("path", file.path.display())
+                .with_fact("stable_id", file.stable_id.as_str())
             })?;
     }
     Ok(cudf_file)

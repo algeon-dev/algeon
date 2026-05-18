@@ -1,13 +1,12 @@
-use std::path::Path;
-
 use cudf::{
     DataType as CudfDataType, TypeId,
+    io::source::{
+        SourceReaderPredicate as CudfSourceReaderPredicate,
+        SourceReaderPredicateColumn as CudfSourceReaderPredicateColumn,
+        SourceReaderPredicateLiteral as CudfSourceReaderPredicateLiteral,
+        SourceReaderPredicateOp as CudfSourceReaderPredicateOp,
+    },
     ops::ast::{AstExpression, AstOperator},
-};
-use parquet::{
-    basic::{ConvertedType, LogicalType, Type as ParquetPhysicalType},
-    file::reader::{FileReader, SerializedFileReader},
-    schema::types::ColumnDescriptor,
 };
 
 use super::*;
@@ -18,7 +17,8 @@ const OP_READER_PREDICATE: &str = "cudf_query_engine.local_parquet_source.reader
 pub(super) fn lower_source_reader_predicate(
     context: &ExecutionContext,
     source: &LocalParquetSource,
-    parquet_path: &Path,
+    cudf_source: &cudf::io::source::LocalParquetSource,
+    cudf_chunk: &cudf::io::source::SourceChunk,
 ) -> Result<Option<Arc<AstExpression>>> {
     let Some(predicate) = &source.reader_predicate else {
         return Ok(None);
@@ -31,13 +31,35 @@ pub(super) fn lower_source_reader_predicate(
         )
         .with_fact("predicate", predicate));
     }
-    lower_source_reader_ast_expr(context, source, parquet_path, predicate, None).map(Arc::new).map(Some)
+    if source_reader_predicate_references_decimal_column(source, predicate) {
+        return lower_source_reader_predicate_with_cudf_contract(context, source, cudf_source, cudf_chunk, predicate)
+            .map(Arc::new)
+            .map(Some);
+    }
+    lower_source_reader_ast_expr(context, source, predicate, None).map(Arc::new).map(Some)
+}
+
+fn lower_source_reader_predicate_with_cudf_contract(
+    context: &ExecutionContext,
+    source: &LocalParquetSource,
+    cudf_source: &cudf::io::source::LocalParquetSource,
+    cudf_chunk: &cudf::io::source::SourceChunk,
+    predicate: &Expr,
+) -> Result<AstExpression> {
+    let predicate = lower_cudf_source_reader_predicate(source, predicate)?;
+    cudf::io::source::build_local_parquet_reader_predicate(context.runtime(), cudf_source, cudf_chunk, &predicate)
+        .map_err(|error| {
+            QueryError::from_cudf(
+                OP_READER_PREDICATE,
+                "failed to build cudf source-aware local parquet reader predicate",
+                error,
+            )
+        })
 }
 
 fn lower_source_reader_ast_expr(
     context: &ExecutionContext,
     source: &LocalParquetSource,
-    parquet_path: &Path,
     expr: &Expr,
     literal_target_type: Option<CudfDataType>,
 ) -> Result<AstExpression> {
@@ -52,17 +74,17 @@ fn lower_source_reader_ast_expr(
         },
         Expr::Literal(value) => lower_source_reader_ast_literal(context, value, literal_target_type),
         Expr::Not(input) => {
-            let input = lower_source_reader_ast_expr(context, source, parquet_path, input, None)?;
+            let input = lower_source_reader_ast_expr(context, source, input, None)?;
             AstExpression::unary(AstOperator::Not, input)
                 .map_err(|error| QueryError::from_cudf(OP_READER_PREDICATE, "failed to build cudf AST NOT", error))
         },
         Expr::IsNull(input) => {
-            let input = lower_source_reader_ast_expr(context, source, parquet_path, input, None)?;
+            let input = lower_source_reader_ast_expr(context, source, input, None)?;
             AstExpression::unary(AstOperator::IsNull, input)
                 .map_err(|error| QueryError::from_cudf(OP_READER_PREDICATE, "failed to build cudf AST IS NULL", error))
         },
         Expr::IsNotNull(input) => {
-            let input = lower_source_reader_ast_expr(context, source, parquet_path, input, None)?;
+            let input = lower_source_reader_ast_expr(context, source, input, None)?;
             let is_null = AstExpression::unary(AstOperator::IsNull, input).map_err(|error| {
                 QueryError::from_cudf(OP_READER_PREDICATE, "failed to build cudf AST IS NULL", error)
             })?;
@@ -71,7 +93,7 @@ fn lower_source_reader_ast_expr(
             })
         },
         Expr::Cast { expr, target_type } => {
-            let input = lower_source_reader_ast_expr(context, source, parquet_path, expr, None)?;
+            let input = lower_source_reader_ast_expr(context, source, expr, None)?;
             let expression = match target_type {
                 ArrowDataType::Int64 => AstExpression::cast_to_int64(input),
                 ArrowDataType::UInt64 => AstExpression::cast_to_uint64(input),
@@ -92,9 +114,9 @@ fn lower_source_reader_ast_expr(
         },
         Expr::Binary { left, op, right, .. } => {
             let (left_literal_target_type, right_literal_target_type) =
-                source_reader_binary_literal_target_types(source, parquet_path, left, *op, right)?;
-            let left = lower_source_reader_ast_expr(context, source, parquet_path, left, left_literal_target_type)?;
-            let right = lower_source_reader_ast_expr(context, source, parquet_path, right, right_literal_target_type)?;
+                source_reader_binary_literal_target_types(source, left, *op, right);
+            let left = lower_source_reader_ast_expr(context, source, left, left_literal_target_type)?;
+            let right = lower_source_reader_ast_expr(context, source, right, right_literal_target_type)?;
             let op = lower_source_reader_ast_operator(*op)?;
             AstExpression::binary(op, left, right).map_err(|error| {
                 QueryError::from_cudf(OP_READER_PREDICATE, "failed to build cudf AST binary expression", error)
@@ -108,8 +130,8 @@ fn lower_source_reader_ast_expr(
                     "reader predicate IN list must not be empty",
                 ));
             }
-            let list_literal_target_type = source_reader_column_dtype(source, parquet_path, expr)?;
-            let input = lower_source_reader_ast_expr(context, source, parquet_path, expr, None)?;
+            let list_literal_target_type = source_reader_column_dtype(source, expr);
+            let input = lower_source_reader_ast_expr(context, source, expr, None)?;
             let values = list
                 .iter()
                 .map(|value| {
@@ -121,7 +143,7 @@ fn lower_source_reader_ast_expr(
                         )
                         .with_fact("value", value));
                     }
-                    lower_source_reader_ast_expr(context, source, parquet_path, value, list_literal_target_type)
+                    lower_source_reader_ast_expr(context, source, value, list_literal_target_type)
                 })
                 .collect::<Result<Vec<_>>>()?;
             if *negated {
@@ -135,9 +157,7 @@ fn lower_source_reader_ast_expr(
                     .with_fact("value_count", list.len())
             })
         },
-        Expr::Alias { expr, .. } => {
-            lower_source_reader_ast_expr(context, source, parquet_path, expr, literal_target_type)
-        },
+        Expr::Alias { expr, .. } => lower_source_reader_ast_expr(context, source, expr, literal_target_type),
         Expr::Like { .. }
         | Expr::Substring { .. }
         | Expr::Lower(_)
@@ -186,128 +206,267 @@ fn source_reader_column_index(source: &LocalParquetSource, column: &str) -> Resu
 
 fn source_reader_binary_literal_target_types(
     source: &LocalParquetSource,
-    parquet_path: &Path,
     left: &Expr,
     op: BinaryOp,
     right: &Expr,
-) -> Result<(Option<CudfDataType>, Option<CudfDataType>)> {
+) -> (Option<CudfDataType>, Option<CudfDataType>) {
     if matches!(op, BinaryOp::And | BinaryOp::Or) {
-        return Ok((None, None));
+        return (None, None);
     }
-    Ok((
-        source_reader_column_dtype(source, parquet_path, right)?,
-        source_reader_column_dtype(source, parquet_path, left)?,
-    ))
+    (source_reader_column_dtype(source, right), source_reader_column_dtype(source, left))
 }
 
-fn source_reader_column_dtype(
-    source: &LocalParquetSource,
-    parquet_path: &Path,
-    expr: &Expr,
-) -> Result<Option<CudfDataType>> {
+fn source_reader_column_dtype(source: &LocalParquetSource, expr: &Expr) -> Option<CudfDataType> {
     let column = match expr {
         Expr::Column(column) => column,
-        Expr::Alias { expr, .. } => return source_reader_column_dtype(source, parquet_path, expr),
-        _ => return Ok(None),
+        Expr::Alias { expr, .. } => return source_reader_column_dtype(source, expr),
+        _ => return None,
     };
-    let Some(field) = source.schema.field_with_name(column.name()).ok() else {
-        return Ok(None);
-    };
-    if !matches!(field.data_type(), ArrowDataType::Decimal128(_, _)) {
-        return Ok(crate::datatypes::cudf_dtype_from_arrow_type(field.data_type()));
-    }
-    let Some(SourceColumnRef::File(file_index)) = source.source_column_ref(column.name()) else {
-        return Ok(None);
-    };
-    parquet_reader_decimal_dtype(parquet_path, file_index, column.name())
+    source
+        .schema
+        .field_with_name(column.name())
+        .ok()
+        .and_then(|field| crate::datatypes::cudf_dtype_from_arrow_type(field.data_type()))
 }
 
-fn parquet_reader_decimal_dtype(
-    parquet_path: &Path,
-    file_column_index: usize,
-    column_name: &str,
-) -> Result<Option<CudfDataType>> {
-    let reader = SerializedFileReader::try_from(parquet_path).map_err(|error| {
-        QueryError::new(
-            QueryErrorCode::InvalidPlan,
+fn lower_cudf_source_reader_predicate(source: &LocalParquetSource, expr: &Expr) -> Result<CudfSourceReaderPredicate> {
+    match expr {
+        Expr::Binary { left, op, right, .. } => match op {
+            BinaryOp::And => Ok(CudfSourceReaderPredicate::and(
+                lower_cudf_source_reader_predicate(source, left)?,
+                lower_cudf_source_reader_predicate(source, right)?,
+            )),
+            BinaryOp::Or => Ok(CudfSourceReaderPredicate::or(
+                lower_cudf_source_reader_predicate(source, left)?,
+                lower_cudf_source_reader_predicate(source, right)?,
+            )),
+            _ => lower_cudf_source_reader_comparison(source, left, *op, right),
+        },
+        Expr::InList { expr, list, negated } => {
+            let column = cudf_source_reader_predicate_column(source, expr)?;
+            let literals = list.iter().map(cudf_source_reader_predicate_literal).collect::<Result<Vec<_>>>()?;
+            CudfSourceReaderPredicate::in_list(column, literals, *negated).map_err(|error| {
+                QueryError::from_cudf(
+                    OP_READER_PREDICATE,
+                    "failed to build cudf source reader IN list predicate",
+                    error,
+                )
+            })
+        },
+        Expr::Not(input) => {
+            Ok(CudfSourceReaderPredicate::Not(Box::new(lower_cudf_source_reader_predicate(source, input)?)))
+        },
+        Expr::Alias { expr, .. } => lower_cudf_source_reader_predicate(source, expr),
+        _ => Err(QueryError::new(
+            QueryErrorCode::UnsupportedExpression,
             OP_READER_PREDICATE,
-            "failed to read Parquet footer for decimal reader predicate typing",
+            "reader predicate cannot be expressed with the cudf source-aware predicate contract",
         )
-        .with_fact("path", parquet_path.display())
-        .with_fact("column", column_name)
-        .with_fact("file_column_index", file_column_index)
-        .with_fact("source_error", error.to_string())
-    })?;
-    let schema = reader.metadata().file_metadata().schema_descr();
-    let descriptor = schema
-        .columns()
-        .get(file_column_index)
-        .filter(|descriptor| parquet_descriptor_matches_column(descriptor, column_name))
-        .or_else(|| {
-            schema.columns().iter().find(|descriptor| parquet_descriptor_matches_column(descriptor, column_name))
-        });
-    let Some(descriptor) = descriptor else {
+        .with_fact("expression", expr)),
+    }
+}
+
+fn lower_cudf_source_reader_comparison(
+    source: &LocalParquetSource,
+    left: &Expr,
+    op: BinaryOp,
+    right: &Expr,
+) -> Result<CudfSourceReaderPredicate> {
+    if let Some((column, literal, op)) = cudf_source_reader_column_literal_comparison(source, left, op, right)? {
+        return Ok(CudfSourceReaderPredicate::comparison(column, op, literal));
+    }
+    if let Some((column, literal, op)) =
+        cudf_source_reader_column_literal_comparison(source, right, invert_binary_op(op)?, left)?
+    {
+        return Ok(CudfSourceReaderPredicate::comparison(column, op, literal));
+    }
+    Err(QueryError::new(
+        QueryErrorCode::UnsupportedExpression,
+        OP_READER_PREDICATE,
+        "source-aware reader predicates require column/literal comparisons",
+    )
+    .with_fact("left", left)
+    .with_fact("operator", op.to_string())
+    .with_fact("right", right))
+}
+
+fn cudf_source_reader_column_literal_comparison(
+    source: &LocalParquetSource,
+    column: &Expr,
+    op: BinaryOp,
+    literal: &Expr,
+) -> Result<Option<(CudfSourceReaderPredicateColumn, CudfSourceReaderPredicateLiteral, CudfSourceReaderPredicateOp)>> {
+    let Ok(column) = cudf_source_reader_predicate_column(source, column) else {
+        return Ok(None);
+    };
+    let literal = cudf_source_reader_predicate_literal(literal)?;
+    let op = cudf_source_reader_predicate_op(op)?;
+    Ok(Some((column, literal, op)))
+}
+
+fn cudf_source_reader_predicate_column(
+    source: &LocalParquetSource,
+    expr: &Expr,
+) -> Result<CudfSourceReaderPredicateColumn> {
+    let column = match expr {
+        Expr::Column(column) => column,
+        Expr::Alias { expr, .. } => return cudf_source_reader_predicate_column(source, expr),
+        _ => {
+            return Err(QueryError::new(
+                QueryErrorCode::UnsupportedExpression,
+                OP_READER_PREDICATE,
+                "source-aware reader predicate input must be a source column",
+            )
+            .with_fact("expression", expr));
+        },
+    };
+    let Some(SourceColumnRef::File(file_index)) = source.source_column_ref(column.name()) else {
+        return Err(QueryError::new(
+            QueryErrorCode::UnsupportedExpression,
+            OP_READER_PREDICATE,
+            "source-aware reader predicate column must resolve to a physical read column",
+        )
+        .with_fact("column", column.name()));
+    };
+    let Some(read_index) = source.read_column_file_indices.iter().position(|candidate| *candidate == file_index) else {
         return Err(QueryError::new(
             QueryErrorCode::InvalidPlan,
             OP_READER_PREDICATE,
-            "reader predicate decimal column was not found in Parquet footer",
+            "source-aware reader predicate file column was not included in the read projection",
         )
-        .with_fact("path", parquet_path.display())
-        .with_fact("column", column_name)
-        .with_fact("file_column_index", file_column_index));
+        .with_fact("column", column.name())
+        .with_fact("file_column_index", file_index));
     };
-
-    let Some((precision, scale)) = parquet_decimal_precision_scale(descriptor) else {
-        return Ok(None);
-    };
-    let type_id = parquet_reader_decimal_type_id(descriptor, precision)?;
-    Ok(Some(CudfDataType::fixed_point(type_id, -scale)))
-}
-
-fn parquet_descriptor_matches_column(descriptor: &ColumnDescriptor, column_name: &str) -> bool {
-    descriptor.name() == column_name || descriptor.path().parts().last().is_some_and(|part| part == column_name)
-}
-
-fn parquet_decimal_precision_scale(descriptor: &ColumnDescriptor) -> Option<(i32, i32)> {
-    if let Some(LogicalType::Decimal { precision, scale }) = descriptor.logical_type_ref() {
-        return Some((*precision, *scale));
-    }
-    (descriptor.converted_type() == ConvertedType::DECIMAL)
-        .then(|| (descriptor.type_precision(), descriptor.type_scale()))
-}
-
-fn parquet_reader_decimal_type_id(descriptor: &ColumnDescriptor, precision: i32) -> Result<TypeId> {
-    match descriptor.physical_type() {
-        ParquetPhysicalType::INT32 => Ok(TypeId::Decimal32),
-        ParquetPhysicalType::INT64 => Ok(TypeId::Decimal64),
-        ParquetPhysicalType::FIXED_LEN_BYTE_ARRAY => match descriptor.type_length() {
-            0..=4 => Ok(TypeId::Decimal32),
-            5..=8 => Ok(TypeId::Decimal64),
-            9..=16 => Ok(TypeId::Decimal128),
-            type_length => Err(QueryError::new(
-                QueryErrorCode::UnsupportedType,
-                OP_READER_PREDICATE,
-                "Parquet decimal fixed byte width exceeds libcudf Decimal128 storage",
-            )
-            .with_fact("type_length", type_length)),
-        },
-        ParquetPhysicalType::BYTE_ARRAY => match precision {
-            1..=9 => Ok(TypeId::Decimal32),
-            10..=18 => Ok(TypeId::Decimal64),
-            19..=38 => Ok(TypeId::Decimal128),
-            precision => Err(QueryError::new(
-                QueryErrorCode::UnsupportedType,
-                OP_READER_PREDICATE,
-                "Parquet decimal precision exceeds libcudf Decimal128 storage",
-            )
-            .with_fact("precision", precision)),
-        },
-        physical_type => Err(QueryError::new(
-            QueryErrorCode::UnsupportedType,
+    CudfSourceReaderPredicateColumn::read_column(column.name(), read_index).map_err(|error| {
+        QueryError::from_cudf(
             OP_READER_PREDICATE,
-            "Parquet decimal physical type is not supported by libcudf reader predicates",
+            "failed to build cudf source reader predicate column reference",
+            error,
         )
-        .with_fact("physical_type", format!("{physical_type:?}"))),
+        .with_fact("column", column.name())
+        .with_fact("read_index", read_index)
+    })
+}
+
+fn cudf_source_reader_predicate_literal(expr: &Expr) -> Result<CudfSourceReaderPredicateLiteral> {
+    let Expr::Literal(value) = expr else {
+        return Err(QueryError::new(
+            QueryErrorCode::UnsupportedExpression,
+            OP_READER_PREDICATE,
+            "source-aware reader predicate value must be a literal",
+        )
+        .with_fact("expression", expr));
+    };
+    match value {
+        LiteralValue::Boolean(value) => Ok(CudfSourceReaderPredicateLiteral::Boolean(*value)),
+        LiteralValue::Int8(value) => Ok(CudfSourceReaderPredicateLiteral::Int64(i64::from(*value))),
+        LiteralValue::Int16(value) => Ok(CudfSourceReaderPredicateLiteral::Int64(i64::from(*value))),
+        LiteralValue::Int32(value) => Ok(CudfSourceReaderPredicateLiteral::Int64(i64::from(*value))),
+        LiteralValue::Int64(value) => Ok(CudfSourceReaderPredicateLiteral::Int64(*value)),
+        LiteralValue::UInt8(value) => Ok(CudfSourceReaderPredicateLiteral::UInt64(u64::from(*value))),
+        LiteralValue::UInt16(value) => Ok(CudfSourceReaderPredicateLiteral::UInt64(u64::from(*value))),
+        LiteralValue::UInt32(value) => Ok(CudfSourceReaderPredicateLiteral::UInt64(u64::from(*value))),
+        LiteralValue::UInt64(value) => Ok(CudfSourceReaderPredicateLiteral::UInt64(*value)),
+        LiteralValue::Float32(value) => Ok(CudfSourceReaderPredicateLiteral::Float64(f64::from(*value))),
+        LiteralValue::Float64(value) => Ok(CudfSourceReaderPredicateLiteral::Float64(*value)),
+        LiteralValue::Utf8(value) | LiteralValue::LargeUtf8(value) => {
+            Ok(CudfSourceReaderPredicateLiteral::String(value.clone()))
+        },
+        LiteralValue::Decimal128 { raw, scale, .. } => Ok(CudfSourceReaderPredicateLiteral::Decimal128 {
+            raw: *raw,
+            scale: crate::datatypes::arrow_decimal_scale_to_cudf_scale(*scale),
+        }),
+        LiteralValue::Date32(value) => Ok(CudfSourceReaderPredicateLiteral::Date32(*value)),
+        LiteralValue::Timestamp { .. } | LiteralValue::Duration { .. } => Err(QueryError::new(
+            QueryErrorCode::UnsupportedExpression,
+            OP_READER_PREDICATE,
+            "source-aware reader predicates do not yet support temporal timestamp/duration literals",
+        )
+        .with_fact("literal", value)),
+        LiteralValue::Null(data_type) => Err(QueryError::new(
+            QueryErrorCode::UnsupportedExpression,
+            OP_READER_PREDICATE,
+            "source-aware reader predicates do not support typed null literals",
+        )
+        .with_fact("data_type", format!("{data_type:?}"))),
+        LiteralValue::IntervalMonthDayNano { .. } => Err(QueryError::new(
+            QueryErrorCode::UnsupportedExpression,
+            OP_READER_PREDICATE,
+            "source-aware reader predicates do not support interval literals",
+        )
+        .with_fact("literal", value)),
+    }
+}
+
+fn cudf_source_reader_predicate_op(op: BinaryOp) -> Result<CudfSourceReaderPredicateOp> {
+    match op {
+        BinaryOp::Eq => Ok(CudfSourceReaderPredicateOp::Equal),
+        BinaryOp::NotEq => Ok(CudfSourceReaderPredicateOp::NotEqual),
+        BinaryOp::Lt => Ok(CudfSourceReaderPredicateOp::Less),
+        BinaryOp::LtEq => Ok(CudfSourceReaderPredicateOp::LessEqual),
+        BinaryOp::Gt => Ok(CudfSourceReaderPredicateOp::Greater),
+        BinaryOp::GtEq => Ok(CudfSourceReaderPredicateOp::GreaterEqual),
+        _ => Err(QueryError::new(
+            QueryErrorCode::UnsupportedExpression,
+            OP_READER_PREDICATE,
+            "source-aware reader predicates only support comparison operators",
+        )
+        .with_fact("operator", op.to_string())),
+    }
+}
+
+fn invert_binary_op(op: BinaryOp) -> Result<BinaryOp> {
+    match op {
+        BinaryOp::Eq => Ok(BinaryOp::Eq),
+        BinaryOp::NotEq => Ok(BinaryOp::NotEq),
+        BinaryOp::Lt => Ok(BinaryOp::Gt),
+        BinaryOp::LtEq => Ok(BinaryOp::GtEq),
+        BinaryOp::Gt => Ok(BinaryOp::Lt),
+        BinaryOp::GtEq => Ok(BinaryOp::LtEq),
+        _ => Err(QueryError::new(
+            QueryErrorCode::UnsupportedExpression,
+            OP_READER_PREDICATE,
+            "source-aware reader predicates only support invertible comparison operators",
+        )
+        .with_fact("operator", op.to_string())),
+    }
+}
+
+fn source_reader_predicate_references_decimal_column(source: &LocalParquetSource, expr: &Expr) -> bool {
+    match expr {
+        Expr::Column(column) => source
+            .schema
+            .field_with_name(column.name())
+            .ok()
+            .is_some_and(|field| matches!(field.data_type(), ArrowDataType::Decimal128(_, _))),
+        Expr::Literal(_) => false,
+        Expr::Not(input)
+        | Expr::IsNull(input)
+        | Expr::IsNotNull(input)
+        | Expr::Alias { expr: input, .. }
+        | Expr::Cast { expr: input, .. } => source_reader_predicate_references_decimal_column(source, input),
+        Expr::Binary { left, right, .. } => {
+            source_reader_predicate_references_decimal_column(source, left)
+                || source_reader_predicate_references_decimal_column(source, right)
+        },
+        Expr::InList { expr, list, .. } => {
+            source_reader_predicate_references_decimal_column(source, expr)
+                || list.iter().any(|value| source_reader_predicate_references_decimal_column(source, value))
+        },
+        Expr::Like { expr, .. }
+        | Expr::Substring { expr, .. }
+        | Expr::Lower(expr)
+        | Expr::Upper(expr)
+        | Expr::Abs(expr)
+        | Expr::Round { expr, .. }
+        | Expr::Extract { expr, .. } => source_reader_predicate_references_decimal_column(source, expr),
+        Expr::Concat(exprs) => exprs.iter().any(|expr| source_reader_predicate_references_decimal_column(source, expr)),
+        Expr::Case { branches, else_expr } => {
+            branches.iter().any(|branch| {
+                source_reader_predicate_references_decimal_column(source, &branch.when)
+                    || source_reader_predicate_references_decimal_column(source, &branch.then)
+            }) || source_reader_predicate_references_decimal_column(source, else_expr)
+        },
     }
 }
 

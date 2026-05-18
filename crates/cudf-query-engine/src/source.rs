@@ -415,6 +415,8 @@ impl LocalParquetSource {
     /// using this source's read-column projection.
     pub fn reader_predicate_is_supported(&self, predicate: &Expr) -> bool {
         reader_predicate_expr_is_supported(self, predicate)
+            && (!reader_predicate_references_decimal_column(self, predicate)
+                || reader_predicate_source_contract_shape_is_supported(self, predicate))
     }
 
     /// Recomputes diagnostics from the current source metadata.
@@ -636,14 +638,7 @@ fn reader_predicate_operator_outputs_boolean(op: crate::expr::BinaryOp) -> bool 
 }
 
 fn reader_predicate_column_type_is_supported(data_type: &DataType) -> bool {
-    match data_type {
-        // libcudf reader predicates currently reject Decimal32-backed Parquet
-        // predicates with "Mismatched predicate column and literal types".
-        // Keep those predicates as native post-scan filters until the reader
-        // contract can honor the small-decimal physical storage.
-        DataType::Decimal128(precision, _) if *precision <= 9 => false,
-        _ => is_supported_arrow_type(data_type),
-    }
+    is_supported_arrow_type(data_type)
 }
 
 fn reader_predicate_literal_is_supported(value: &LiteralValue) -> bool {
@@ -825,6 +820,159 @@ fn checked_pow10(exponent: u32) -> Option<i128> {
         value = value.checked_mul(10)?;
     }
     Some(value)
+}
+
+fn reader_predicate_references_decimal_column(source: &LocalParquetSource, expr: &Expr) -> bool {
+    match expr {
+        Expr::Column(column) => source
+            .schema
+            .field_with_name(column.name())
+            .ok()
+            .is_some_and(|field| matches!(field.data_type(), DataType::Decimal128(_, _))),
+        Expr::Literal(_) => false,
+        Expr::Not(inner)
+        | Expr::IsNull(inner)
+        | Expr::IsNotNull(inner)
+        | Expr::Alias { expr: inner, .. }
+        | Expr::Cast { expr: inner, .. } => reader_predicate_references_decimal_column(source, inner),
+        Expr::Binary { left, right, .. } => {
+            reader_predicate_references_decimal_column(source, left)
+                || reader_predicate_references_decimal_column(source, right)
+        },
+        Expr::InList { expr, list, .. } => {
+            reader_predicate_references_decimal_column(source, expr)
+                || list.iter().any(|value| reader_predicate_references_decimal_column(source, value))
+        },
+        Expr::Like { expr, .. }
+        | Expr::Substring { expr, .. }
+        | Expr::Lower(expr)
+        | Expr::Upper(expr)
+        | Expr::Abs(expr)
+        | Expr::Round { expr, .. }
+        | Expr::Extract { expr, .. } => reader_predicate_references_decimal_column(source, expr),
+        Expr::Concat(exprs) => exprs.iter().any(|expr| reader_predicate_references_decimal_column(source, expr)),
+        Expr::Case { branches, else_expr } => {
+            branches.iter().any(|branch| {
+                reader_predicate_references_decimal_column(source, &branch.when)
+                    || reader_predicate_references_decimal_column(source, &branch.then)
+            }) || reader_predicate_references_decimal_column(source, else_expr)
+        },
+    }
+}
+
+fn reader_predicate_source_contract_shape_is_supported(source: &LocalParquetSource, expr: &Expr) -> bool {
+    match expr {
+        Expr::Binary { left, op, right, .. }
+            if matches!(op, crate::expr::BinaryOp::And | crate::expr::BinaryOp::Or) =>
+        {
+            reader_predicate_source_contract_shape_is_supported(source, left)
+                && reader_predicate_source_contract_shape_is_supported(source, right)
+        },
+        Expr::Binary { left, op, right, .. } => {
+            reader_predicate_source_contract_comparison_is_supported(source, left, *op, right)
+                || reader_predicate_source_contract_comparison_is_supported(source, right, invert_reader_op(*op), left)
+        },
+        Expr::InList { expr, list, .. } => {
+            !list.is_empty()
+                && reader_predicate_source_contract_column_type(source, expr).is_some()
+                && list.iter().all(reader_predicate_source_contract_literal_is_supported)
+        },
+        Expr::Not(inner) | Expr::Alias { expr: inner, .. } => {
+            reader_predicate_source_contract_shape_is_supported(source, inner)
+        },
+        Expr::Column(_)
+        | Expr::Literal(_)
+        | Expr::IsNull(_)
+        | Expr::IsNotNull(_)
+        | Expr::Cast { .. }
+        | Expr::Like { .. }
+        | Expr::Substring { .. }
+        | Expr::Lower(_)
+        | Expr::Upper(_)
+        | Expr::Concat(_)
+        | Expr::Abs(_)
+        | Expr::Round { .. }
+        | Expr::Case { .. }
+        | Expr::Extract { .. } => false,
+    }
+}
+
+fn reader_predicate_source_contract_comparison_is_supported(
+    source: &LocalParquetSource,
+    column: &Expr,
+    op: crate::expr::BinaryOp,
+    literal: &Expr,
+) -> bool {
+    matches!(
+        op,
+        crate::expr::BinaryOp::Eq
+            | crate::expr::BinaryOp::NotEq
+            | crate::expr::BinaryOp::Lt
+            | crate::expr::BinaryOp::LtEq
+            | crate::expr::BinaryOp::Gt
+            | crate::expr::BinaryOp::GtEq
+    ) && reader_predicate_source_contract_column_type(source, column).is_some()
+        && reader_predicate_source_contract_literal_is_supported(literal)
+}
+
+fn reader_predicate_source_contract_column_type(source: &LocalParquetSource, expr: &Expr) -> Option<DataType> {
+    let column = match expr {
+        Expr::Column(column) => column,
+        Expr::Alias { expr, .. } => return reader_predicate_source_contract_column_type(source, expr),
+        _ => return None,
+    };
+    let Some(SourceColumnRef::File(file_index)) = source.source_column_ref(column.name()) else {
+        return None;
+    };
+    if !source.read_column_file_indices.contains(&file_index) {
+        return None;
+    }
+    let data_type = source.schema.field_with_name(column.name()).ok()?.data_type().clone();
+    match data_type {
+        DataType::Boolean
+        | DataType::Int64
+        | DataType::UInt64
+        | DataType::Float64
+        | DataType::Utf8
+        | DataType::LargeUtf8
+        | DataType::Utf8View
+        | DataType::Decimal128(_, _)
+        | DataType::Date32 => Some(data_type),
+        _ => None,
+    }
+}
+
+fn reader_predicate_source_contract_literal_is_supported(expr: &Expr) -> bool {
+    matches!(
+        expr,
+        Expr::Literal(
+            LiteralValue::Boolean(_)
+                | LiteralValue::Int8(_)
+                | LiteralValue::Int16(_)
+                | LiteralValue::Int32(_)
+                | LiteralValue::Int64(_)
+                | LiteralValue::UInt8(_)
+                | LiteralValue::UInt16(_)
+                | LiteralValue::UInt32(_)
+                | LiteralValue::UInt64(_)
+                | LiteralValue::Float32(_)
+                | LiteralValue::Float64(_)
+                | LiteralValue::Utf8(_)
+                | LiteralValue::LargeUtf8(_)
+                | LiteralValue::Decimal128 { .. }
+                | LiteralValue::Date32(_)
+        )
+    )
+}
+
+fn invert_reader_op(op: crate::expr::BinaryOp) -> crate::expr::BinaryOp {
+    match op {
+        crate::expr::BinaryOp::Lt => crate::expr::BinaryOp::Gt,
+        crate::expr::BinaryOp::LtEq => crate::expr::BinaryOp::GtEq,
+        crate::expr::BinaryOp::Gt => crate::expr::BinaryOp::Lt,
+        crate::expr::BinaryOp::GtEq => crate::expr::BinaryOp::LtEq,
+        _ => op,
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]

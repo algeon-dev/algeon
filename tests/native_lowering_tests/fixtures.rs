@@ -33,7 +33,7 @@ pub(super) fn write_numeric_parquet_file(path: &std::path::Path) {
 pub(super) fn write_decimal_filter_parquet_file(path: &std::path::Path) {
     let schema = Arc::new(Schema::new(vec![
         Field::new("key", DataType::Int32, false),
-        Field::new("payload", DataType::Decimal128(15, 2), false),
+        Field::new("payload", DataType::Decimal128(7, 2), false),
         Field::new("m00", DataType::Int64, false),
         Field::new("m01", DataType::Int64, false),
     ]));
@@ -41,7 +41,7 @@ pub(super) fn write_decimal_filter_parquet_file(path: &std::path::Path) {
         Arc::clone(&schema),
         vec![
             Arc::new(Int32Array::from(vec![1, 2, 1])),
-            Arc::new(Decimal128Array::from_iter_values([500, 2_000, 3_000]).with_precision_and_scale(15, 2).unwrap()),
+            Arc::new(Decimal128Array::from_iter_values([500, 2_000, 3_000]).with_precision_and_scale(7, 2).unwrap()),
             Arc::new(Int64Array::from(vec![100, 200, 300])),
             Arc::new(Int64Array::from(vec![1, 2, 3])),
         ],

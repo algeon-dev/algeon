@@ -56,6 +56,32 @@ pub(super) fn write_reader_pushdown_selective_parquet_file(path: &std::path::Pat
     writer.close().unwrap();
 }
 
+pub(super) fn write_decimal32_reader_pushdown_parquet_file(path: &std::path::Path) {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int32, false),
+        Field::new("payload", DataType::Decimal128(7, 2), false),
+        Field::new("m00", DataType::Int64, false),
+        Field::new("m01", DataType::Int64, false),
+    ]));
+    let row_count = 1024;
+    let payload = (0..row_count).map(i128::from).collect::<Vec<_>>();
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int32Array::from((0..row_count).map(|value| value % 8).collect::<Vec<_>>())),
+            Arc::new(Decimal128Array::from_iter_values(payload).with_precision_and_scale(7, 2).unwrap()),
+            Arc::new(Int64Array::from((0..row_count).map(i64::from).collect::<Vec<_>>())),
+            Arc::new(Int64Array::from((0..row_count).map(|value| i64::from(value * 2)).collect::<Vec<_>>())),
+        ],
+    )
+    .unwrap();
+    let props = WriterProperties::builder().set_max_row_group_row_count(Some(row_count as usize)).build();
+    let file = File::create(path).unwrap();
+    let mut writer = ArrowWriter::try_new(file, schema, Some(props)).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
+}
+
 pub(super) fn write_phase2_scalar_input_parquet(path: &std::path::Path) {
     let schema = Arc::new(Schema::new(vec![
         Field::new("orderkey", DataType::Int64, false),
