@@ -1,80 +1,156 @@
 ---
-sidebar_position: 4
+sidebar_position: 3
 slug: /design/cache
-description: How DataFusion Nexus accounts for persistent lakehouse bytes and optional GPU-resident caches.
+description: How DataFusion Nexus caches lakehouse bytes, decoded GPU sources, and resident graphs.
 ---
 
-# Cache Design and Use
+# Cache Design
 
-Each device profile has an explicit `cache_cap_bytes`, which defaults to zero.
-With that default, an immutable query grant is the complete GPU allocation cap
-for an attempt. A nonzero cap creates one ledger-accounted device cache domain
-shared by decoded source frames and resident graphs; retained bytes consume
-that cache domain rather than a later attempt's grant.
+Nexus has two independent cache families. The lakehouse cache stores Parquet
+files on the local filesystem. The GPU-resident caches retain decoded source
+frames and cuGraph graphs in device memory across query attempts.
 
-| Layer | Status | Scope and capacity |
-| --- | --- | --- |
-| Lakehouse byte cache | Available | Complete remote Parquet objects on local storage. `NEXUS_LAKEHOUSE_CACHE_MAX_BYTES` is a best-effort retained-byte target. |
-| Decoded source cache | Opt-in | cuDF source frames can be retained between attempts when the device profile has a nonzero `cache_cap_bytes`. |
-| Resident graph cache | Opt-in | cuGraph graphs can be retained in that same device cache domain when the device profile has a nonzero `cache_cap_bytes`. |
+| Cache | Storage | Enabled by | Lifetime |
+| --- | --- | --- | --- |
+| Lakehouse byte cache | Local filesystem | `NEXUS_LAKEHOUSE_CACHE_ROOT` | Across queries and server restarts |
+| Decoded source cache | GPU memory | A nonzero device `cache_cap_bytes` | Across attempts, until query-service shutdown |
+| Resident graph cache | GPU memory | A nonzero device `cache_cap_bytes` and a stable graph key | Across attempts, until query-service shutdown |
 
-Query-local DAG results and repeated hash-join builds may still be memoized for
-one execution. They are released with that query and are not a cross-query
-device cache.
-
-## Recommended server setup
-
-The lakehouse byte cache is filesystem storage, not a GPU allocation. It can be
-enabled independently of the bounded controller:
-
-```bash
-NEXUS_LAKEHOUSE_CACHE_ROOT=/var/cache/datafusion-nexus/lakehouse \
-NEXUS_LAKEHOUSE_CACHE_POLICY=read_through \
-NEXUS_LAKEHOUSE_CACHE_MAX_BYTES=536870912000 \
-flock /tmp/cudf-gpu.lock bash scripts/dev/run_server.sh
-```
-
-GPU-resident retention is opt-in through the device profile's
-`cache_cap_bytes`. The immutable query grant still covers only query-owned
-allocations; the shared cache domain has its own ledger-accounted ownership.
-The old query-memory-domain multiplier is not a supported setting.
+Query-local DAG values and reusable join state are execution resources, not
+cross-query caches.
 
 ## Lakehouse byte cache
 
-The byte cache is used by remote table-format Parquet source resolution when
-`NEXUS_LAKEHOUSE_CACHE_ROOT` is set. A hit must be a complete object matching
-the planned metadata; partial or stale entries are not served.
+The cache root, read policy, and miss policy are independent controls. The root
+defines where entries live. `NEXUS_LAKEHOUSE_CACHE_READ` controls whether an
+existing hit may be used, and `NEXUS_LAKEHOUSE_CACHE_POLICY` controls whether a
+miss populates the cache:
 
-`NEXUS_LAKEHOUSE_CACHE_POLICY` controls misses:
+| `NEXUS_LAKEHOUSE_CACHE_POLICY` | Complete local hit | Miss |
+| --- | --- | --- |
+| `disabled` (default) | Read through the local KvikIO path | Read remotely; no fill |
+| `read_through` | Read through the local KvikIO path | Read remotely; fill in the background |
+| `fill_before_read` | Read through the local KvikIO path | Publish the complete local object first, then read it locally |
 
-- `disabled`: read the selected remote path and do not fill a miss;
-- `read_through`: serve the foreground query remotely and enqueue a bounded
-  background complete-object fill;
-- `fill_before_read`: fetch and publish the complete local file before cuDF
-  opens it.
+`NEXUS_LAKEHOUSE_CACHE_READ=disabled` ignores hits and always reads remotely;
+combined with `read_through` it still warms the cache in the background.
+Setting only the cache root therefore uses existing hits without filling
+misses.
 
-`NEXUS_LAKEHOUSE_CACHE_READ=enabled` is the default. Set it to `bypass` or
-`disabled` to ignore hits for an isolated benchmark while retaining the files.
-Cache paths are scoped by credential-free storage-domain identity, content
-identity, and location fingerprint. Publication is completion-aware, active
-reads are pinned against eviction, and retention cleanup protects the file
-being filled or read.
+Cache entries are scoped by the storage domain, content identity, and source
+location. A planned hit must still exist with the expected size at execution
+time, otherwise the plan is rejected as stale.
 
-## GPU-resident cache lifecycle
+Fills use a filesystem lock, write a temporary file, validate the byte count,
+and publish with an atomic rename. Readers hold sidecar pins so retention
+cleanup cannot remove an active file. `NEXUS_LAKEHOUSE_CACHE_MAX_BYTES` is a
+best-effort LRU target, not a reservation or hard quota, but it is required
+whenever a cache root is configured with a filling policy (`read_through` or
+`fill_before_read`). Blocking and background fills share service-wide
+host-byte and concurrency limits.
 
-The decoded-source and resident-graph implementations share one per-device
-cache allocation domain. They have no independent budget, allocation domain,
-or admission state: every retained byte has one ledger charge, and a pinned
-entry remains charged until its cache lease is released. A zero cache cap
-disables both caches without changing placement or an attempt's allocation
-domain cap.
+## One GPU cache domain per device
 
-Admission snapshots and backend metrics project the ledger-owned cache state.
-Do not add a compatibility projection or a second cache state store.
+`DeviceResidentCaches` is owned by the query service. For every device whose
+profile has `cache_cap_bytes > 0`, it installs one
+`DeviceCacheAllocationFactory`, one cuDF allocation domain, and the source and
+graph cache subdomains that share it. A zero cap creates none of these
+resources.
 
-## Verify the active behavior
+`cache_cap_bytes` is a ceiling, not an eagerly allocated reservation. Actual
+resident bytes are charged to the device ledger and must fit both the cache
+cap and currently free managed capacity. They are outside an attempt's
+immutable grant, but they reduce the headroom available to future grants. See
+[Admission & Memory Governance](./admission.mdx) for the full capacity
+equation.
 
-Lakehouse source diagnostics report `lakehouse_cache_status`, read mode, and
-fill mode. Background fills also emit structured completion/failure events.
-Admission snapshots report ledger-owned evictable and pinned cache bytes; both
-are zero when the device profile's cache cap is zero.
+Both GPU caches use the same residency lifecycle:
+
+~~~text
+AttemptOwned -> Evictable <-> Pinned -> Destroyed
+~~~
+
+The cache precharges the ledger before copying or building a resident object.
+A checkout moves the complete charge to `Pinned`; the final pin release moves
+it back to `Evictable`. Destruction releases the charge only after GPU-safe
+teardown. If teardown cannot be proven safe, Nexus retains the charge and
+closes admission on that device rather than expose unowned device memory.
+
+## Decoded source cache
+
+The source cache keys the exact execution-frame contract, including the
+resolved source identity and source/chunk/batch boundaries. Three kinds of
+value bypass the cache: values whose schema depends on DataFusion's
+exact-order scope, synthetic count sources, and empty-chunk paths.
+
+On a miss, `checkout_or_claim` elects one decode leader per key. Followers wait
+for that read instead of decoding the same Parquet data concurrently. After a
+successful decode, the leader:
+
+1. reserves ledger capacity, evicting unpinned source entries in LRU order if
+   necessary;
+2. copies the attempt-owned frame into the shared cache domain; and
+3. reconciles the reservation to the copied allocation before publishing it.
+
+The original frame remains owned by the attempt. Capacity pressure or a cache
+allocation failure skips retention without failing the successful source
+read. A hit pins the resident entry and returns a query-affine copy; the pin is
+carried through derived frames until the final dependent result is released.
+
+## Resident graph cache
+
+Planning creates a `ResidentGraphKey` only when it can prove a stable edge
+rowset and graph-construction contract. The key includes source identity,
+column bindings, graph options, edge preparation, data types, and graph
+orientation. A key also requires the plan to carry no edge-ID binding; the
+keyable algorithms are currently BFS (without `include_edges`), PageRank, and
+the similarity family (Jaccard, Sørensen, Overlap, Cosine). Inputs with
+unsupported transformations, unstable identity, or another unkeyable contract
+execute uncached.
+
+A cuGraph graph is bound to the runtime that allocated it. A miss therefore
+copies edges into the cache domain, builds and parks the graph there, copies
+the algorithm result back to the admitted attempt, and retains only the
+measured parked-graph allocation. A hit checks out and pins the parked graph,
+reserves cache-domain headroom for transient algorithm work, then verifies
+that the allocation scope returned to its retained baseline before re-parking
+the graph.
+
+The graph cache has no normal LRU eviction or per-key invalidation. Available
+graphs remain resident until service shutdown; concurrent duplicate builds
+are reconciled at insertion. When no safe key or cache-domain headroom exists,
+execution falls back to the attempt-owned uncached path.
+
+## Observability and control
+
+The ledger is the byte authority. Its reports, admission TSV, sealed attempt
+evidence, and backend gauges project the same two fields:
+
+- `cache_evictable_resident_bytes` / `nexus.gpu.cache.evictable.resident`;
+- `cache_pinned_in_use_bytes` / `nexus.gpu.cache.pinned.in_use`.
+
+`NexusGpuBackend::device_cache_reports()` pairs those ledger values with the
+physical shared-domain usage and source/graph activity counters. Use it to
+diagnose allocator drift, not to make admission decisions.
+`device_cache_source_event_snapshots()` exposes bounded, fingerprinted source
+load and promotion events. Lakehouse scan diagnostics report cache status,
+read mode, and fill mode; background fills emit structured completion or
+failure events.
+
+There is no public GPU per-key clear API. Shutdown closes and drains graph
+entries before source entries, then releases the allocation-domain owner.
+
+## Where to change cache behavior
+
+| Change | Owning code |
+| --- | --- |
+| Lakehouse configuration and source resolution | `src/table_format/scan/config.rs`, `src/table_format/scan/source_resolution.rs` |
+| Lakehouse fill, publication, pins, and retention | `crates/nexus-query-engine/src/exec/source/lakehouse_cache/` |
+| Shared GPU allocation and residency lifecycle | `crates/nexus-query-engine/src/runtime/cache/factory.rs`, `crates/nexus-query-engine/src/runtime/cache/residency.rs` |
+| Decoded source identity and caching | `crates/nexus-query-engine/src/runtime/source_identity/local_parquet.rs`, `crates/nexus-query-engine/src/runtime/cache/local_parquet/mod.rs` |
+| Resident graph keys and caching | `crates/nexus-query-engine/src/plan/graph_algorithm/residency.rs`, `crates/nexus-query-engine/src/runtime/cache/resident_graph.rs` |
+| Ledger capacity and cache metrics | `crates/nexus-query-engine/src/runtime/gpu/ledger.rs`, `crates/nexus-query-engine/src/metrics/backend_descriptor.rs`, `crates/nexus-query-engine/src/runtime/backend_metrics.rs` |
+
+Extend the existing owner-level tests when behavior changes. Do not add a
+second byte counter, a query-owned cache domain, or a fallback key that reuses
+data whose identity cannot be proven.

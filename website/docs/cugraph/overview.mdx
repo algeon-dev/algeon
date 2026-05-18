@@ -52,11 +52,11 @@ metadata response and validation-request schemas are in the
 
 ## Reuse in bounded servers
 
-A bounded Flight SQL server can optionally retain constructed graphs for repeat
-calls with a strongly identified, eligible input. Reuse is deliberately not a
-promise for every algorithm or graph transformation: the current reusable path
-covers eligible BFS and PageRank calls, while other calls bypass the cache.
-Configure and observe this behavior through [Cache Design](../design/cache.mdx).
+A bounded Flight SQL server can retain constructed graphs for repeat calls with
+a strongly identified, eligible input. The current reusable path covers BFS
+without `include_edges`, PageRank, Jaccard, Sorensen, Overlap, and Cosine;
+other calls bypass the cache. Configure and observe it through
+[Cache Design](../design/cache.mdx).
 
 ## Next steps
 

@@ -192,14 +192,14 @@ must already be installed (see
 
 ```bash
 cd "$NEXUS_ROOT/datafusion-nexus"
-cargo build -p nexus-server --features cugraph,cuvs
-bash scripts/check_all.sh --features cugraph,cuvs
+cargo build -p nexus-server --all-features
+bash scripts/check_all.sh
 ```
 
-The `nexus-server` package owns the Flight SQL server while its `cugraph` and
-`cuvs` features forward the full GPU stack. `check_all.sh` is the canonical local check; it assigns CPU and GPU
-lanes and acquires the cross-consumer GPU lock. See [Tests](./tests.md) for the
-lane model and feature matrix.
+The `nexus-server` package owns the Flight SQL server and forwards the adapter's
+GPU features. A bare `check_all.sh` is the canonical full pre-merge check; it
+assigns CPU and GPU lanes and acquires the cross-consumer GPU lock. See
+[Tests](./tests.md) for partial edit loops and the lane model.
 
 To package the standalone Flight SQL server after this source build, continue
 with [Building with Docker](./docker.md).

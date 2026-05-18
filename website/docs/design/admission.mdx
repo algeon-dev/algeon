@@ -1,132 +1,266 @@
 ---
 sidebar_position: 2
 slug: /design/admission
-description: "How DataFusion Nexus admits concurrent GPU queries through one bounded per-device resource controller."
+description: "How DataFusion Nexus turns an exact native-plan proof into one bounded GPU attempt."
 ---
 
-# Bounded GPU Admission
+# Admission & Memory Governance
 
-Nexus has one runtime admission contract for native GPU work. It is shared by
-embedded SessionContext users and the Flight SQL server; server environment
-variables lower onto the same engine policy and do not create another
-controller.
+:::note[Maturity]
+Query scheduling and admission control are still at an early research stage.
+The invariants on this page — the per-device ledger, immutable grants, and
+the transactional envelope — are enforced as described, but the surrounding
+model (slot limits, floor derivation, grant sizing, placement) still needs
+deeper profiling and design work, and its tuning behavior should be expected
+to change.
+:::
 
-Plan support is decided separately by native lowering. Runtime admission begins
-only when a supported plan first executes.
+Nexus admits GPU work once per native query attempt: one admission, one
+selected device, one immutable memory grant. Embedded DataFusion sessions and
+the Flight SQL server share the same process-scoped `NexusGpuBackend`,
+`QueryService`, bounded queue, and per-device ledgers. Planning may create an
+attempt lifecycle and a lazy admission ticket, but it does not reserve a GPU
+slot; admission happens when execution first needs the device. `EXPLAIN` does
+not admit or execute the plan.
 
-## Contract
+Admission governs device memory only. Host memory remains a DataFusion
+`MemoryPool` concern, exactly as in a CPU-only session.
 
-- Each configured CUDA device has one process-owned DeviceLedger.
-- An accepted attempt receives an immutable MemoryGrant. The grant is both its
-  hard memory cap and its allocation-domain ceiling for the lifetime of that
-  attempt.
-- A device profile fixes the root worker, auxiliary lane, stream, and active
-  attempt bounds before work starts. It is not resized by load.
-- The usable global active-attempt capacity is the checked sum of the
-  per-device active limits. There is no fixed global GPU-concurrency product
-  knob.
-- Capability-first checks reject unsupported or impossible work locally with a
-  structured reason. Queueing cannot make an impossible request admissible.
-- There is no tenant identity, priority tier, QoS weighting, grant band,
-  placement-policy selector, slot-guarantee mode, or strict/adaptive product
-  mode in the admission path.
-
-The controller may rank compatible devices, but the resulting placement is an
-engine decision from fixed device facts and live ledger state. It is not a
-caller-selected policy.
-
-## Attempt lifecycle
-
-1. Native lowering attaches one lazy attempt admission to the execution round.
-   Planning and EXPLAIN do not consume a device slot.
-2. At execution, the service evaluates capability requirements and ranks
-   compatible devices.
-3. The admission transaction reserves an immutable grant, device lane, stream,
-   allocation domain, and worker resources. A failed step rolls the preceding
-   reservations back in reverse order.
-4. Execution uses that one grant for its complete attempt domain. A grant never
-   grows, shrinks, borrows, or is revoked while live.
-5. Cleanup seals runtime observation and commits terminal disposition and
-   health before the ledger releases the attempt's capacity. A replacement
-   cannot observe reusable capacity before report completion.
-6. A cleanup failure or unknown CUDA-fault isolation latches the backend
-   unhealthy and prevents reuse rather than returning capacity.
-
-This ordering gives reports, DataFusion metrics, and TSV output one source of
-truth: the runtime observation snapshot.
-
-## Queue and fairness
-
-The queue is bounded by maximum waiters, maximum wait time, and a finite
-compatible-device overtake budget. It is a liveness mechanism, not a tenant
-scheduler:
-
-- impossible requirements reject immediately;
-- the oldest runnable compatible request wins once its overtake budget is
-  exhausted;
-- a request can be bypassed only while a compatible device can make progress;
-- service close, cancellation, deadline expiry, or backend-unhealthy state
-  completes every affected waiter with a structured outcome.
-
-## Device profiles and capacity
-
-A backend resolves a DeviceResourceProfile for each selected device. The
-profile declares active-attempt, root-worker, auxiliary-lane, and stream
-bounds. Its attempt floor is configured explicitly or derived per device as
-managed_bytes / max(8, active_attempts).
-
-For an empty device with managed capacity M, live granted bytes L, floor F, and
-E empty active-attempt slots, a candidate grant is bounded by:
+The runtime path is:
 
 ~~~text
-max_new = M - L - F * E
+QueryPlan
+  -> QueryPlanCapabilityProof
+  -> service and device-specific resolution
+  -> bounded queue and placement
+  -> DeviceLedger grant
+  -> AdmissionEnvelope
+  -> QueryHandle / ExecutionContext
 ~~~
 
-The transaction rejects any non-positive or capability-insufficient candidate.
-Heterogeneous devices keep their own profiles; no average or global split is
-substituted for their individual limits.
+Each arrow has exactly one owning component, and no step can be forged from
+outside: a caller cannot submit its own grant bytes or construct a capability
+proof around an unsupported plan. The moving parts, in the order they appear:
 
-## Server configuration lowering
+| Term | Meaning |
+| --- | --- |
+| `QueryPlanCapabilityProof` | Engine-issued, opaque evidence that one exact `QueryPlan` is executable, carrying its required device capabilities and allocation owners. |
+| Attempt | One bounded native execution of one admitted query on one selected device. |
+| `DeviceLedger` | The per-device integer accounting authority for grants, cache charges, protection, and attempt slots. |
+| `MemoryGrant` | The immutable byte budget an attempt receives at commit; it becomes the ceiling of the attempt's allocation domain. |
+| `AdmissionEnvelope` | The physical resources built around a committed grant: attempt lane, root stream, allocation domain, and worker scope. |
+| `QueryHandle` | The published admission result execution runs against; releasing it returns every resource above. |
 
-The Flight SQL server accepts resource-only inputs:
+## From plan proof to admission
 
-| Env | TOML | Meaning |
-| --- | --- | --- |
-| — | admission.device_profiles | One explicit ordinal device profile per selected GPU. It owns only resource inputs: memory limit/reserve, attempt floor, active-attempt cap, source-work bound, and installation bounds. |
-| NEXUS_SERVER_ADMISSION_MAX_QUEUED_ATTEMPTS | admission.max_queued_attempts | Queue capacity; default 64. |
-| NEXUS_SERVER_ADMISSION_MAX_QUEUE_WAIT_MS | admission.max_queue_wait_ms | Queue deadline; default 30000. |
-| NEXUS_SERVER_ADMISSION_MAX_OVERTAKES_PER_WAITER | admission.max_overtakes_per_waiter | Finite compatible-device bypass budget; default 4. |
-| NEXUS_SERVER_GPU_DEVICES | — | Comma-separated CUDA device ordinals; default 0. |
+Lowering issues an opaque `QueryPlanCapabilityProof` for the exact engine IR.
+The proof carries required device capabilities, plan scopes, and allocation
+owners. The query service then resolves it against its source scheduling and
+chunk policy and, where needed, candidate-device preflights.
 
-GPU-memory ownership and exact capability restrictions are supplied by the
-embedding process when it builds the backend; TOML does not invent either.
-The scalar admission inputs, placement selector, slot guarantee, tenant policy,
-strict/adaptive controller modes, and global device-budget fraction are removed.
-They are not compatibility projections and cannot be reconstructed from
-diagnostics.
+A submission reserves a bounded pending-preflight slot and FIFO sequence before
+device-specific resolution. Pending preflights count against queue capacity and
+act as an ordering barrier, so a slow preflight cannot be bypassed by a younger
+request. The request is rejected locally when:
 
-## Observability and shutdown
+- no installed device supports every required capability;
+- an owner, phase, or device preflight is unresolved; or
+- the required floor can never fit on a compatible device.
 
-Each native execution round records an admission sequence, wait time, device
-ordinal, grant bytes, reservations, and terminal disposition in the runtime
-observation snapshot. The same snapshot projects to native TSV reports,
-DataFusion metrics, JSONL artifacts, and QueryMetrics.
+These are capability or configuration failures, not reasons to wait for
+capacity. Composed GPU execution follows the same rule: after producer metadata
+is known, the engine binds every producer occurrence and the consumer into one
+proof, then uses one ticket, one selected device, and one grant.
 
-Close is coordinated in dependency order. Backend cleanup drains admitted
-attempts before execution pools; execution pools finish before stream cleanup;
-observation completion consumes the final tail. CUDA-capable workers register
-for process exit and are synchronously joined before CUDA runtime teardown, so
-a detached worker cannot race libcudart finalization.
+Manual `NexusGpuBackend::admit_query()` handles are resource-only; they do not
+authorize a native plan. Exact device-capability profiles require an explicit
+engine-issued proof.
 
-## Boundaries
+## Device profiles and grants
 
-- DataFusion MemoryPool governs host allocations. GPU grants and allocation
-  domains stay in the device ledger.
-- The controller does not provide authentication, authorization, application
-  rate limiting, idempotency, result retention, or tenant policy.
-- Native caches start disabled with `cache_cap_bytes = 0`. An explicit
-  per-device cap enables the ledger-accounted shared cache domain; retained
-  bytes never become a hidden cross-query grant.
-- cuGraph and cuVS stages use the same per-attempt capability and reservation
-  contract. A missing preflight remains a local structured rejection, never a
-  fallback admission mode.
+Each CUDA ordinal has one immutable `DeviceResourceProfile`, fixed at backend
+construction. Everything admission may spend on that device is declared here:
+
+| Profile field | What it bounds |
+| --- | --- |
+| Managed capacity | The device-byte pool the ledger accounts for; every number below is arithmetic over this pool. |
+| Backend reserve | Bytes kept out of the pool for the backend itself. |
+| Cache cap | The ceiling for [resident cache](./cache.mdx) bytes. |
+| Attempt floor | The minimum grant an admitted attempt receives (next paragraph). |
+| Active-attempt limit | How many attempts may run on the device at once. |
+| Source-work allowance | Concurrent source reads per attempt. |
+| Stream/worker/lane bounds | The physical execution resources an envelope may take. |
+| Device capability set | The plan capabilities this device can satisfy. |
+
+The attempt floor is the guaranteed share: admission never grants less than
+the floor, the ledger keeps one floor of headroom for every attempt slot it
+leaves open, and a protected waiter accumulates bytes until it reaches its
+floor. When the profile does not set a floor, each device derives its own
+default — the capacity cut into at least eight shares, or one share per
+attempt slot when the device allows more than eight:
+
+~~~text
+attempt_floor = managed_capacity / max(8, max_active_attempts)
+~~~
+
+The `DeviceLedger` is the only admission-capacity authority. At any instant,
+part of the managed capacity is already spoken for: bytes granted to running
+attempts, resident cache bytes, bytes protected for a waiting query, and one
+floor of headroom per remaining open slot. What is left is the largest grant
+a new attempt can receive:
+
+~~~text
+active_attempts + 1 <= max_active_attempts
+
+max_new = managed_capacity
+        - live_grants                  # bytes committed to running attempts
+        - cache_evictable_bytes        # resident cache, reclaimable
+        - cache_pinned_bytes           # resident cache, in use
+        - protected_bytes              # reserve held for a protected waiter
+        - attempt_floor * empty_slots  # headroom for the slots left open
+
+required_floor <= grant <= max_new
+~~~
+
+`empty_slots` counts the unprotected attempt slots that would remain open
+after this admission; reserving them stops one large grant from starving the
+device's remaining concurrency. `protected_bytes` belongs to an older waiter
+that has been overtaken too often (see
+[Queue and placement](#queue-and-placement)).
+
+A worked example: an 80 GB device with `max_active_attempts = 4` derives a
+10 GB floor (`80 / max(8, 4)`). One attempt is running with a 30 GB grant,
+the resident cache holds 8 GB evictable and 2 GB pinned, and nothing is
+protected. Admitting a second attempt leaves two slots open, so the ledger
+reserves 20 GB for them:
+
+~~~text
+max_new = 80 - 30 - 8 - 2 - 0 - (10 * 2) = 20 GB
+~~~
+
+The new attempt is admissible because its 10 GB required floor fits, and it
+receives a grant between 10 and 20 GB.
+
+The required floor comes from the installed profile plus the engine-issued
+phase and lower-layer capability evidence. A descriptive working-set hint may
+select a grant inside that interval; without a hint, the ledger grants
+`max_new`. Fit is proven only by this arithmetic: working-set estimates and
+live CUDA free-memory samples never admit a query.
+
+After commit, `MemoryGrant` is immutable. When the request carried plan
+evidence, its selected device and grant identity are bound into the admitted
+proof. Its byte budget becomes the attempt allocation-domain ceiling and does
+not grow, shrink, borrow, or move to another device.
+
+Keep these counters distinct when debugging:
+
+- `live_grants_bytes` is capacity committed by the admission ledger;
+- `live_reserved_bytes` is query-owned sub-reservation accounting inside those
+  grants; and
+- CUDA/NVML memory is diagnostic telemetry, never a placement input.
+
+## Queue and placement
+
+There is one bounded queue across the configured devices, with three bounds: a
+maximum combined queued/pending-preflight count, a maximum wait, and a
+per-waiter overtake budget — how many times younger runnable work may be
+admitted past a blocked older waiter.
+
+The scheduler scans requests in submission order and selects the oldest
+runnable waiter. A waiter blocked on all of its compatible devices does not
+idle another device that can run younger work. Candidate devices are ranked by:
+
+1. spare bytes after admission, descending;
+2. active attempts, live grants, and worker depth, ascending;
+3. stream availability, descending; then
+4. device ordinal, ascending.
+
+When an older blocked waiter exhausts its overtake budget, it protects one
+future slot and enough subsequently released bytes to reach its floor on one
+compatible ledger. Protection is ledger-local, is consumed atomically by that
+waiter's grant, and is retargeted if the device closes admission. It is not
+priority, preemption, or a tenant scheduler.
+
+Cancellation, deadline expiry, service close, and loss of every compatible
+healthy device remove the waiter with a structured outcome. Queueing never
+makes an impossible request admissible.
+
+## Transaction and release lifecycle
+
+The ledger first commits the attempt slot and immutable grant. The service then
+builds the physical `AdmissionEnvelope` outside the admission mutex:
+
+1. attempt lane;
+2. root stream;
+3. allocation domain;
+4. root-stream membership in that domain; and
+5. device worker scope.
+
+The `QueryHandle` is published only after the complete envelope validates. A
+failure or cancellation rolls the provisional transaction back in reverse
+resource order, waiting for stream cleanup first when a stream was already
+created; partial admission is never visible to execution.
+
+On release, the handle first waits for its execution contexts to become idle.
+GPU cleanup then determines terminal disposition and device health, finalizes
+and seals the attempt report, destroys physical resources, and only then drops
+the lane, grant, backend permit, and lifecycle ticket. The grant release wakes
+queued work after the ledger transaction commits.
+
+A proven stream-synchronization failure quarantines that device. Abandoned
+cleanup or a failure whose device isolation cannot be established closes the
+backend's ledgers before capacity can be reused. Existing in-flight grants stay
+valid and drain normally; closed ledgers issue no replacements.
+
+## Observability
+
+Admission has related projections, not a second admission state machine:
+
+- the runtime observation JSONL records admission lifecycle, queue depth, and
+  the selected device/grant when available;
+- DataFusion metrics and native TSV rows add adapter-owned admission sequence
+  and wait facts; and
+- engine `QueryMetrics` records execution and reservation behavior after
+  admission.
+
+For current controller state, use `NexusGpuBackend::admission_snapshot()` and
+`device_ledger_reports()`. Ledger reports are authoritative for grants,
+protection, cache charges, and device admission health. Device telemetry and
+allocator correlations help diagnose physical behavior but do not change an
+admission decision.
+
+`QueryAdmissionOutcome` provides a policy-neutral classification of structured
+errors. The application decides whether capacity pressure becomes a retry,
+queue, HTTP 429, or another protocol response.
+
+## Configuration boundary
+
+Backend construction requires one explicit `NexusGpuDeviceProfile` and one
+matching `GpuMemoryOwnership` declaration per ordinal. The server projects
+`NEXUS_SERVER_GPU_DEVICES`, one `[[admission.device_profiles]]` entry per
+selected ordinal, and the three queue bounds onto that same engine contract.
+See [DataFusion Session](../integration/datafusion-session.mdx#admission-configuration)
+and [Configuration](../integration/configuration.mdx#admission) for the public
+surfaces and examples.
+
+Profiles own device-local resources; queue policy owns only queue bounds.
+There is no request-authored grant, global GPU-concurrency knob, tenant or
+priority policy, placement selector, slot guarantee, or strict/adaptive runtime
+mode.
+
+## Where to change admission
+
+| Change | Owning code |
+| --- | --- |
+| Change native capability support | `crates/nexus-query-engine/src/capability/`, `admission/requirement.rs` |
+| Change phase/lifetime memory evidence | `crates/nexus-query-engine/src/admission/envelope.rs`, `crates/nexus-query-engine/src/graph_memory.rs` |
+| Change capacity, grants, cache charges, or device ranking | `crates/nexus-query-engine/src/runtime/gpu/profile.rs`, `ledger.rs`, `placement.rs` |
+| Change queueing, fairness, transactions, or cleanup | `crates/nexus-query-engine/src/runtime/query_service/service/`, `handle.rs` |
+| Change the DataFusion lazy-ticket boundary | `src/native_exec/admission.rs`, `src/native_exec/config/admission.rs` |
+| Change Flight SQL admission configuration | `crates/nexus-server/src/config/admission.rs` |
+
+Extend the existing queue, grant-request, transaction, and native admission
+tests for observable behavior. Do not add adapter byte arithmetic, a parallel
+ledger, or a fallback admission mode. Host allocations remain DataFusion
+`MemoryPool` concerns, while persistent GPU retention stays in the
+[ledger-accounted cache domain](./cache.mdx).

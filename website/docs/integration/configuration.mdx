@@ -1,236 +1,245 @@
 ---
-sidebar_position: 4
-description: "Environment-variable contract for DataFusion Nexus: server core, admission, cuGraph defaults, GPU memory budget, DataFusion session keys, Iceberg sources, and workspace overlays."
+sidebar_position: 5
+description: Configure the Flight SQL server, GPU admission, native execution, authentication, observability, and Iceberg sources.
 ---
 
 # Configuration
 
-This page is the environment-variable contract for a running Nexus deployment:
-the Flight SQL server's `NEXUS_SERVER_*` variables, the DataFusion session keys
-read through `SessionConfig::from_env()`, and the `NEXUS_ICEBERG_*` source and
-workspace settings. It groups the variables that matter most for a local graph
-SQL server and for production-style Iceberg deployments.
+Nexus has three configuration owners. Keep them separate:
 
-## Server core
-
-| Variable | Default | Purpose |
+| Surface | Configure with | Owns |
 | --- | --- | --- |
-| `NEXUS_SERVER_BIND` | `0.0.0.0:50051` | Flight SQL listen address. Bind `127.0.0.1` to restrict to localhost. |
-| `NEXUS_SERVER_LOG` | `info` | Log level (`error`/`warn`/`info`/`debug`/`trace`). |
-| `NEXUS_SERVER_CUGRAPH_ENABLED` | `false` | Register the `cugraph_*` SQL functions. Requires the `cugraph` build feature. |
-| `NEXUS_SERVER_CONFIG_FILE` | unset | Path to the TOML overlay. It is required in a GPU server deployment because it supplies the ordinal-keyed device profiles. |
+| Flight SQL process | `ServerConfig`, TOML, and environment variables | Listen address, admission, auth, source catalogs, and retention |
+| Embedded GPU backend | `NexusGpuBackend::builder()` | Device ownership, capacity, queues, and final-plan requirements |
+| DataFusion session | `SessionConfig` | DataFusion behavior and request-scoped planner evidence |
 
-## cuVS availability
+This page covers the Flight SQL process. For an embedded Rust service, use [DataFusion Session](./datafusion-session.mdx).
 
-cuVS has no `NEXUS_SERVER_CUVS_ENABLED` toggle. Build the server with the
-`cuvs` Cargo feature to register `cuvs_*` functions, then use
-`gpu_list_functions()` or `gpu_describe_function(...)` to inspect availability.
-Until cuVS supplies a bounded peak-memory preflight, the server rejects
-execution with structured `unsupported_operator`; it never selects a CPU
-fallback or an unadmitted GPU path.
+## How server configuration is resolved
 
-### cuVS retention
+`ServerConfig::from_env()` starts with built-in defaults, reads the TOML file
+named by `NEXUS_SERVER_CONFIG_FILE`, and then applies environment overrides for
+matching scalar admission, native, and observability fields.
 
-The server has no configurable cross-statement cuVS artifact retention. cuVS
-indexes, models, transforms, and result relations stay within the admitted
-query and are released with it. The persistent lakehouse byte cache described
-below is filesystem storage, not a cuVS or GPU-memory cache.
+The TOML file accepts only `[auth]`, `[admission]`, `[native]`, and
+`[observability]`. Unknown fields fail startup. cuGraph, Iceberg, and workspace
+settings use the environment; standard DataFusion settings come from its
+environment mapping or the embedded `SessionConfig` API.
+
+## Minimal GPU server
+
+Every selected CUDA ordinal needs exactly one TOML device profile, even when
+all device-local values use their defaults:
+
+```toml
+# server.toml
+[[admission.device_profiles]]
+device_ordinal = 0
+```
+
+```bash
+export NEXUS_SERVER_CONFIG_FILE="$PWD/server.toml"
+export NEXUS_SERVER_GPU_DEVICES=0
+
+flock /tmp/cudf-gpu.lock bash scripts/dev/run_server.sh
+```
+
+The profile above uses automatic device capacity, one active attempt, one
+source-work slot, no resident GPU cache, and engine-derived installation
+bounds. For a production deployment, set explicit limits only where the
+deployment needs them.
 
 ## Admission
 
-Server admission has one bounded-resource contract. Each admitted attempt gets
-an immutable device-local grant; placement is capability-first and the usable
-global attempt capacity is the checked sum of the configured per-device active
-limits.
-
-| Variable | Default | Purpose |
+| Environment variable | Default | Purpose |
 | --- | --- | --- |
-| `NEXUS_SERVER_ADMISSION_MAX_QUEUED_ATTEMPTS` | `64` | Bounded admission queue length. |
-| `NEXUS_SERVER_ADMISSION_MAX_QUEUE_WAIT_MS` | `30000` | Maximum queue wait before a structured overload error. |
-| `NEXUS_SERVER_ADMISSION_MAX_OVERTAKES_PER_WAITER` | `4` | Finite compatible-device bypass budget for a queued waiter. |
-| `NEXUS_SERVER_GPU_DEVICES` | `0` | Comma-separated CUDA device ordinals used for independent query placement. |
+| `NEXUS_SERVER_BIND` | `0.0.0.0:50051` | Flight SQL listen address |
+| `NEXUS_SERVER_LOG` | `info` | Tracing filter |
+| `NEXUS_SERVER_CONFIG_FILE` | unset | TOML overlay path |
+| `NEXUS_SERVER_STATEMENT_TICKET_TTL_SECS` | `300` | How long an unconsumed Flight statement ticket may wait for `DoGet` |
+| `NEXUS_SERVER_GPU_DEVICES` | `0` | Comma-separated CUDA ordinals |
+| `NEXUS_SERVER_ADMISSION_MAX_QUEUED_ATTEMPTS` | `64` | Maximum queued admission waiters |
+| `NEXUS_SERVER_ADMISSION_MAX_QUEUE_WAIT_MS` | `30000` | Maximum wait for a compatible device |
+| `NEXUS_SERVER_ADMISSION_MAX_OVERTAKES_PER_WAITER` | `4` | Compatible-device bypass budget before waiter protection |
 
-Device-local capacity belongs only to the ordinal-keyed TOML
-`admission.device_profiles` array. Each selected ordinal needs one profile;
-the server rejects startup with `missing_device_profiles` when the overlay is
-absent or incomplete. For one GPU, a minimal explicit deployment is:
+The three queue values can also be placed under `[admission]` as
+`max_queued_attempts`, `max_queue_wait_ms`, and
+`max_overtakes_per_waiter`. Environment values win.
+
+After `device_ordinal`, a profile accepts `memory_limit_bytes`,
+`backend_reserve_bytes`, `attempt_floor_bytes`, `max_active_attempts`,
+`source_work_per_attempt`, `cache_cap_bytes`, and the optional telemetry flag
+(`install_telemetry`). Configure `stream_pool_size`, `worker_count`, and
+`lane_count` together or omit all three. An explicit `memory_limit_bytes`
+requires an explicit `backend_reserve_bytes`: automatic capacity already bakes
+in driver headroom, but an explicit limit does not, so the reserve must be
+declared (`0` is a valid, deliberate choice).
+
+Selected ordinals and profile ordinals must match exactly. A profile outside
+`NEXUS_SERVER_GPU_DEVICES`, a missing profile, or a duplicate ordinal is an
+error. `cache_cap_bytes = 0` (the default) installs no resident GPU cache.
+
+Capabilities and memory ownership are not file settings. The shipped server
+binary declares `WholeDeviceExclusive` ownership for every selected ordinal;
+custom embedders must make that declaration through the Rust API.
+
+## Native execution
+
+Native settings are accepted both under `[native]` and through the environment:
+
+| TOML field | Environment variable | Default |
+| --- | --- | --- |
+| `max_source_chunk_bytes` | `NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES` | 64 MiB |
+| `max_row_groups_per_chunk` | `NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK` | `1` |
+| `max_retry_attempts` | `NEXUS_SERVER_NATIVE_MAX_RETRY_ATTEMPTS` | `3` |
+| `max_source_reads_in_flight` | `NEXUS_SERVER_NATIVE_MAX_SOURCE_READS_IN_FLIGHT` | `2` |
+| `source_chunk_planning_mode` | `NEXUS_SERVER_NATIVE_SOURCE_CHUNK_PLANNING_MODE` | `conservative` |
+| `statistical_aggregate_execution_mode` | `NEXUS_SERVER_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE` | `datafusion_exact_host_welford` |
+| `final_plan_requirement` | `NEXUS_SERVER_FINAL_PLAN_REQUIREMENT` | unset |
+
+`source_chunk_planning_mode` also accepts `local_parquet_throughput`.
+Statistical aggregates can use `gpu_native_tolerant` when exact DataFusion
+Welford bits are not required. The only final-plan requirement is
+`no_datafusion_cpu`.
+
+Native settings carry no device-budget planning placeholder. Device capacity
+is owned solely by the ordinal-keyed [`[[admission.device_profiles]]`](#admission)
+entries. `max_source_chunk_bytes` and `max_row_groups_per_chunk` are
+independent: each defaults to the engine default (64 MiB / `1`) when unset,
+and setting one no longer requires the other.
+
+## Authentication
+
+Authentication is TOML-only and defaults to `disabled`. Use that default only
+on a trusted local network. Static Basic credentials can be exchanged for
+server-issued bearer tokens:
 
 ```toml
-# /etc/datafusion-nexus/server.toml
-[[admission.device_profiles]]
-device_ordinal = 0
-memory_limit_bytes = 24_000_000_000
-attempt_floor_bytes = 536_870_912
-max_active_attempts = 1
-source_work_per_attempt = 1
-cache_cap_bytes = 0
+[auth.mode]
+kind = "basic_bearer"
+token_ttl_secs = 3600
+
+[[auth.mode.users]]
+username = "alice"
+password_hash = "$argon2id$v=19$m=19456,t=2,p=1$..."
 ```
 
-```bash
-NEXUS_SERVER_GPU_DEVICES=0 \
-NEXUS_SERVER_CONFIG_FILE=/etc/datafusion-nexus/server.toml \
-flock /tmp/cudf-gpu.lock bash scripts/dev/run_server.sh
-```
+`token_ttl_secs` is required and must be greater than zero; non-expiring
+bearer tokens are not supported. `password_hash` must be a valid Argon2 PHC
+string; plaintext is rejected. Usernames must be unique.
 
-`memory_limit_bytes`, `backend_reserve_bytes`, `attempt_floor_bytes`,
-`source_work_per_attempt`, `max_active_attempts`, `cache_cap_bytes`, `stream_pool_size`,
-`worker_count`, `lane_count`, `install_telemetry`, and
-`install_diagnostics` are the only accepted profile keys after
-`device_ordinal`. The installation bounds `stream_pool_size`, `worker_count`,
-and `lane_count` must be supplied together. Capabilities and GPU-memory
-ownership are not TOML profile fields:
-the embedding process resolves them when it creates the backend. The removed
-scalar active-attempt, floor, and source-work environment variables, as well
-as global device-capacity overrides, are rejected rather than broadcast across
-heterogeneous devices.
+## Runtime observation retention
 
-## cuGraph defaults
+The defaults retain bounded per-query records and sealed reports. Change them
+only when the service's traffic and exporter behavior require a different
+budget:
 
-These set base graph-construction defaults. Algorithm-specific defaults are
-applied next, and each call's `options_json` overrides both. See
-[Graph Construction Options](../cugraph/graph-options.mdx) for call-level
-semantics.
+| TOML field under `[observability]` | Environment override | Default |
+| --- | --- | --- |
+| `per_query_max_records` | `NEXUS_SERVER_OBSERVABILITY_PER_QUERY_MAX_RECORDS` | `65536` |
+| `per_query_max_bytes` | `NEXUS_SERVER_OBSERVABILITY_PER_QUERY_MAX_BYTES` | 8 MiB |
+| `active_logical_capture_max_bytes` | `NEXUS_SERVER_OBSERVABILITY_ACTIVE_LOGICAL_CAPTURE_MAX_BYTES` | 1 GiB |
+| `global_sealed_max_count` | `NEXUS_SERVER_OBSERVABILITY_GLOBAL_SEALED_MAX_COUNT` | `1024` |
+| `global_sealed_max_bytes` | `NEXUS_SERVER_OBSERVABILITY_GLOBAL_SEALED_MAX_BYTES` | 1 GiB |
+| `sealed_ttl_secs` | `NEXUS_SERVER_OBSERVABILITY_SEALED_TTL_SECS` | `3600` |
+| `shutdown_grace_secs` | `NEXUS_SERVER_OBSERVABILITY_SHUTDOWN_GRACE_SECS` | `30` |
+
+All values must be greater than zero.
+
+## GPU SQL functions
+
+cuGraph registration is controlled by these settings:
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `NEXUS_SERVER_CUGRAPH_DIRECTED` | `true` | Base `directed` default. Some algorithms default to `false`; each function page shows the effective default. |
-| `NEXUS_SERVER_CUGRAPH_RENUMBER` | `true` | Default `renumber`. |
-| `NEXUS_SERVER_CUGRAPH_CONSTRUCTION_POLICY` | `python_cugraph` | Default edge-list construction semantics: `python_cugraph` or `raw_libcugraph`. |
+| `NEXUS_SERVER_CUGRAPH_ENABLED` | `true` | Register the `cugraph_*` SQL frontend |
+| `NEXUS_SERVER_CUGRAPH_CONSTRUCTION_POLICY` | `python_cugraph` | `python_cugraph` or `raw_libcugraph` |
 
-## GPU memory budget
+The construction-policy override is rejected when
+`NEXUS_SERVER_CUGRAPH_ENABLED` is false. A binary without the `cugraph` feature can still expose the frontend,
+but execution returns a structured `required_feature_disabled` error.
+Per-call `options_json` overrides these defaults; see
+[Graph Construction Options](../cugraph/graph-options.mdx).
 
-The native engine runs on the GPU, so the device budget must fit your card.
+cuVS has no enable variable. Nexus installs its metadata and relation-aware
+planner with the backend; execution availability is described in
+[cuVS SQL API](../cuvs/overview.mdx#execution-availability).
 
-| Variable | Default | Purpose |
-| --- | --- | --- |
-| `NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES` | unset | Explicit bounded planning budget in bytes. When set, the source chunk byte and row-group limits must also be set. |
-| `NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES` | unset | Max bytes per source scan chunk. |
-| `NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK` | unset | Max Parquet row groups per chunk. |
-| `NEXUS_SERVER_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE` | `datafusion_exact_host_welford` | Exact host Welford parity or `gpu_native_tolerant` statistical execution. |
+## Iceberg and workspace
 
-:::warning[Leave deployment headroom]
-For automatic capacity, the server resolves every claimed GPU independently
-from that device's own profile; it never inherits GPU 0's budget. The 256 MiB
-native value is only an unadmitted planning placeholder. These calculations
-use total rather than live free memory and do not account for other processes.
-Set `memory_limit_bytes` or `backend_reserve_bytes` on each device profile when
-the deployment needs more headroom.
-:::
+Iceberg server configuration activates when a catalog, storage, or cache
+setting below is present and requires the `iceberg` Cargo feature. Start with the
+[Local Iceberg E2E](../guides/iceberg-e2e.md) for a reproducible REST catalog.
 
-Cross-query GPU cache capacity is configured per device with
-`admission.device_profiles.cache_cap_bytes`; it defaults to zero. The ledger
-reports retained cache bytes separately from live grants. The persistent
-lakehouse byte cache described below remains separate from GPU device memory.
+Common settings are:
 
-## DataFusion session
+| Variable | Requirement |
+| --- | --- |
+| `NEXUS_ICEBERG_CATALOG_KIND` | Required when Iceberg settings are present; `glue` or `rest` |
+| `NEXUS_ICEBERG_CATALOG_NAME` | DataFusion catalog name; defaults to the selected backend name |
+| `NEXUS_ICEBERG_NAMESPACE` | Required namespace exposed to SQL |
+| `NEXUS_ICEBERG_WAREHOUSE` | Required warehouse URI |
+| `NEXUS_ICEBERG_TABLES` | Optional `alias=table` preload list; otherwise tables resolve lazily |
+| `NEXUS_ICEBERG_SCAN_PLANNING_TIMEOUT_SECS` | Planning timeout; default `60` |
 
-DataFusion reads its own `SessionConfig::from_env()` keys. The key
-`datafusion.<group>.<name>` maps to the env var by upper-casing and replacing
-`.` with `_`:
+REST catalogs require `NEXUS_ICEBERG_REST_URI`. Glue requires `AWS_REGION` or
+`AWS_DEFAULT_REGION`; backend-specific prefix, token, catalog-handle, ID, and
+endpoint variables are optional.
 
-| Variable | Maps to | Purpose |
-| --- | --- | --- |
-| `DATAFUSION_EXECUTION_BATCH_SIZE` | `datafusion.execution.batch_size` | DataFusion/fallback operator batch size (default `8192`). |
-| `DATAFUSION_CATALOG_DEFAULT_CATALOG` | `datafusion.catalog.default_catalog` | Default catalog for unqualified names. |
-| `DATAFUSION_CATALOG_DEFAULT_SCHEMA` | `datafusion.catalog.default_schema` | Default schema; the mutable session workspace for `CREATE VIEW` etc. |
+S3-compatible storage uses `NEXUS_ICEBERG_S3_ENDPOINT`,
+`NEXUS_ICEBERG_S3_REGION`, and `NEXUS_ICEBERG_S3_PATH_STYLE`. Choose either
+static `NEXUS_ICEBERG_S3_ACCESS_KEY_ID` /
+`NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY` credentials or
+`NEXUS_ICEBERG_S3_CREDENTIAL_SOURCE=default_chain`; combining them is rejected.
+For Glue with remote KvikIO reads, set both `AWS_REGION` and
+`AWS_DEFAULT_REGION` to the same region.
 
-Nexus also registers `datafusion_nexus.native.*` session keys for direct
-optimizer installs. Backend-managed sessions freeze those native policy keys so
-they cannot diverge from the shared admission ledger. The
-`datafusion_nexus.request.*` namespace is intentionally request-scoped and stays
-mutable on those embedded DataFusion sessions only for planner evidence. Set
-`datafusion_nexus.request.graph_raw_input_edges` (edge-count evidence for graph
-memory pricing when source statistics are unavailable) through SQL or
-DataFusion's session-option API after Nexus registers the extension.
-Caller-selected grant bytes and request-scoped grant floors are not supported.
-Flight SQL does not support session-scoped `datafusion_nexus.*` keys through SQL
-`SET`; configure the server ordinal profiles and queue policy instead. The server does not load
-request keys from a `DATAFUSION_NEXUS_*` environment variable during startup.
+The optional persistent byte cache is separate from GPU memory. Configure it
+with `NEXUS_LAKEHOUSE_CACHE_ROOT`, `NEXUS_LAKEHOUSE_CACHE_READ`,
+`NEXUS_LAKEHOUSE_CACHE_POLICY`, and `NEXUS_LAKEHOUSE_CACHE_MAX_BYTES`; cache
+policy is `disabled`, `read_through`, or `fill_before_read`.
+`NEXUS_LAKEHOUSE_CACHE_READ` accepts only `enabled` or `disabled`.
+`NEXUS_LAKEHOUSE_CACHE_MAX_BYTES` is required whenever a cache root is
+configured with a filling policy (`read_through` or `fill_before_read`).
+`KVIKIO_COMPAT_MODE=ON|OFF|AUTO` and `NEXUS_ICEBERG_FOOTER_PRUNING` are
+process/source flags rather than `ServerConfig` fields; set them before
+process startup. `NEXUS_ICEBERG_FOOTER_PRUNING` accepts only `true`, `false`,
+`1`, or `0` — any other value is a startup/planning error, not a silent
+`false`.
 
-## Iceberg sources and workspace overlay
-
-The local REST catalog is the primary demo source. It exposes the five
-[citation network tables](../cugraph/demo-dataset.mdx) as
-`lake.citation_network.citation_edges`, `citation_edges_by_dst`, `papers`,
-`paper_authors`, and `paper_fos`.
-
-Remote Parquet objects can use the persistent lakehouse byte cache:
+Use a workspace overlay when the source catalog is read-only but interactive
+DDL should remain local:
 
 ```bash
-NEXUS_LAKEHOUSE_CACHE_ROOT=/var/cache/datafusion-nexus/lakehouse \
-NEXUS_LAKEHOUSE_CACHE_READ=enabled \
-NEXUS_LAKEHOUSE_CACHE_POLICY=read_through \
-NEXUS_LAKEHOUSE_CACHE_MAX_BYTES=536870912000
+export NEXUS_SERVER_WORKSPACE_CATALOG=datafusion
+export NEXUS_SERVER_WORKSPACE_SCHEMA=public
+export NEXUS_SERVER_WORKSPACE_BACKING_CATALOG=lake
+export NEXUS_SERVER_WORKSPACE_BACKING_SCHEMA=citation_network
+export NEXUS_SERVER_WORKSPACE_BACKING_ALIASES=citation_edges,papers,paper_authors
 ```
 
-`read_through` fills misses in the background; `fill_before_read` blocks until
-the complete object is published locally; `disabled` never fills. This
-persistent byte cache is separate from GPU device memory.
+The backing catalog and schema must be set together. Catalog/schema default to
+`datafusion.public`, and omitting the aliases exposes every backing table.
 
-Set `NEXUS_ICEBERG_FOOTER_PRUNING=true` to enable native object-store footer
-pruning. It applies safe static and dimension-derived filters to Parquet row
-groups before execution; a footer-read failure skips that pruning step without
-failing the query.
+## DataFusion and Nexus session keys
 
-A mutable workspace overlay exposes those source tables under unqualified names
-while keeping interactive DDL local to `datafusion.public`:
+The server builds DataFusion's `SessionConfig` with `SessionConfig::from_env()`.
+Common keys include `DATAFUSION_EXECUTION_BATCH_SIZE`,
+`DATAFUSION_EXECUTION_TARGET_PARTITIONS`,
+`DATAFUSION_CATALOG_DEFAULT_CATALOG`, and
+`DATAFUSION_CATALOG_DEFAULT_SCHEMA`.
 
-```bash
-NEXUS_SERVER_WORKSPACE_CATALOG=datafusion \
-NEXUS_SERVER_WORKSPACE_SCHEMA=public \
-NEXUS_SERVER_WORKSPACE_BACKING_CATALOG=lake \
-NEXUS_SERVER_WORKSPACE_BACKING_SCHEMA=citation_network \
-NEXUS_SERVER_WORKSPACE_BACKING_ALIASES=citation_edges,citation_edges_by_dst,papers,paper_authors,paper_fos
-```
+Nexus session options are registered later by the optimizer install; they are
+not loaded from `DATAFUSION_NEXUS_*` environment variables. Direct optimizer
+installs expose six session-scoped native fields as
+`datafusion_nexus.native.<field>`: `max_source_chunk_bytes`,
+`max_row_groups_per_chunk`, `max_retry_attempts`,
+`max_source_reads_in_flight`, `source_chunk_planning_mode`, and
+`statistical_aggregate_execution_mode`. `final_plan_requirement` has no
+session-key projection. Backend-managed sessions freeze those keys because the
+shared backend owns admission policy.
 
-With the overlay, `SELECT * FROM citation_edges LIMIT 10` resolves through to
-`lake.citation_network.citation_edges`, and
-`CREATE VIEW target_edges AS ...` writes to `datafusion.public`. CTAS snapshots
-used by a few examples are local workspace tables for deterministic re-use; they
-do not write to `lake.citation_network`. Fully-qualified names keep working too.
-
-Keep `DATAFUSION_CATALOG_DEFAULT_CATALOG=datafusion` and
-`DATAFUSION_CATALOG_DEFAULT_SCHEMA=public` when the backing Iceberg catalog is
-read-only. If the default catalog/schema points directly at Iceberg, interactive
-DDL is routed to that read-only source catalog and may fail.
-
-AWS Glue uses the same catalog contract, but it requires an AWS account,
-warehouse bucket, and credentials. The local REST configuration remains the
-reproducible website path.
-
-For Glue with `remote_kvikio`, keep the AWS region variables aligned:
-`AWS_REGION` is consumed by the Iceberg/Glue catalog path, while KvikIO's
-process-global S3 behavior expects `AWS_DEFAULT_REGION`. On private buckets,
-setting only `AWS_REGION` can make the remote read path fail with unsigned S3
-requests and 403 responses.
-
-GPU Parquet execution always gives cuDF a local path, lakehouse-cache path, or
-remote S3 URI. KvikIO owns the data I/O and may use native cuFile or its
-compatibility implementation according to process-global
-`KVIKIO_COMPAT_MODE=ON|OFF|AUTO`. Nexus does not download data objects or ranges
-for the decoder and does not fall back to another Parquet data path. A missing
-remote KvikIO backend or unusable source profile is a structured planning or
-execution error.
-
-`KVIKIO_COMPAT_MODE` must be fixed before the process starts. Testing multiple
-modes requires independent server processes because KvikIO initialization is
-process-global. Physical GDS mount prefixes are not a Nexus configuration
-surface; local path eligibility and native-versus-compatibility I/O remain
-KvikIO responsibilities.
-
-A condensed Glue configuration looks like:
-
-```bash
-NEXUS_ICEBERG_CATALOG_KIND=glue \
-NEXUS_ICEBERG_CATALOG_NAME=glue \
-NEXUS_ICEBERG_NAMESPACE=nexus_graph \
-NEXUS_ICEBERG_GLUE_CATALOG_ID=123456789012 \
-NEXUS_ICEBERG_WAREHOUSE=s3://your-bucket/warehouse \
-AWS_REGION=us-west-2 \
-AWS_DEFAULT_REGION=us-west-2 \
-NEXUS_ICEBERG_S3_REGION=us-west-2 \
-NEXUS_ICEBERG_S3_CREDENTIAL_SOURCE=default_chain \
-NEXUS_SERVER_CUGRAPH_ENABLED=true \
-NEXUS_SERVER_BIND=127.0.0.1:50051 \
-flock /tmp/cudf-gpu.lock bash scripts/dev/run_server.sh
-```
+The one mutable planner-evidence key is
+`datafusion_nexus.request.graph_raw_input_edges`, which accepts a positive edge
+count or `none`. Flight SQL rejects `SET datafusion_nexus.*`; configure Flight
+through the server surface instead.

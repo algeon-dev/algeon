@@ -1,7 +1,7 @@
 ---
 title: SSSP
 sidebar_label: SSSP
-description: "Compute single-source shortest paths."
+description: "Compute minimum weighted-path distances and predecessors from one source vertex to every reachable vertex."
 ---
 
 {/* GENERATED FROM the unified GPU function catalog by website/scripts/gen-cugraph-docs.mjs. Do not edit by hand. */}
@@ -10,11 +10,9 @@ description: "Compute single-source shortest paths."
 
 SQL function: `cugraph_sssp`
 
-Compute single-source shortest paths.
+Official cuGraph reference: [C API](https://docs.nvidia.com/cugraph/26.08/api_docs/cugraph_c/traversal/#single-source-shortest-path-sssp)
 
-## Use this when
-
-Use this when a SQL statement needs SSSP results over a registered edge relation.
+Compute minimum weighted-path distances and predecessors from one source vertex to every reachable vertex.
 
 ## Signature
 
@@ -22,29 +20,19 @@ Use this when a SQL statement needs SSSP results over a registered edge relation
 cugraph_sssp(table_name, source_vertex [, src_col, dst_col [, weight_col [, options_json]]])
 ```
 
-## Quickstart
-
-```sql
-SELECT * FROM cugraph_sssp('target_edges', 123)
-```
-
 ## Relation inputs
 
-cuGraph consumes a registered edge table or view by its first positional name. It does not accept a parenthesized relation subquery. Metadata validation uses the same registered name.
-
-| Role | Required | Reference | Description |
-| --- | --- | --- | --- |
-| `edges` | yes | `table` | Required edge-list table or view for graph construction. |
+The first positional argument names a registered edge table or view (the `edges` role). Parenthesized relation subqueries are not accepted; metadata validation uses the same registered name.
 
 ## Scalar arguments & JSON options
 
 ### Positional scalar arguments
 
+`src_col` and `dst_col` name the edge endpoint columns; both are optional and default to `src` and `dst`.
+
 | Argument | Type | Required | Default | Notes |
 | --- | --- | --- | --- | --- |
 | `source_vertex` | `Int64` | yes |  |  |
-| `src_col` | `Utf8` | no | `src` |  |
-| `dst_col` | `Utf8` | no | `dst` |  |
 | `weight_col` | `Utf8\|null` | no |  | optional edge weight column for graph construction when supported by the algorithm; semantic effect: edge weights affect algorithm results when provided |
 
 ### JSON options
@@ -55,13 +43,7 @@ cuGraph consumes a registered edge table or view by its first positional name. I
 
 ### Graph construction options
 
-Shared by all cuGraph functions, shown with this function's defaults. See [Graph Construction Options](../../graph-options.mdx) for the construction-policy guide.
-
-| Option | Type | Default | Constraints | Description |
-| --- | --- | --- | --- | --- |
-| `construction_policy` | `Utf8` | `"python_cugraph"` | one of `"python_cugraph"`, `"raw_libcugraph"` | Edge-list construction semantics used before calling libcugraph. |
-| `directed` | `Boolean` | `true` |  | Whether graph construction treats edges as directed. |
-| `renumber` | `Boolean` | `true` |  | Whether graph construction may renumber external vertex identifiers internally. |
+Graph construction follows the shared defaults (`directed=true`, renumbering, `python_cugraph` policy) documented in [Graph Construction Options](../../graph-options.mdx).
 
 ## Output schema
 
@@ -71,7 +53,7 @@ Shared by all cuGraph functions, shown with this function's defaults. See [Graph
 | `distance` | `Float64` | no | Shortest weighted-path distance from the source vertex. |
 | `predecessor` | `Int64` | yes | Previous vertex on the shortest-path tree, null for the source or unreachable vertices. |
 
-**Concrete schemas are call-specific.** These are generic descriptor schemas. Run [`gpu_validate_call`](../../../reference/gpu-function-catalog.mdx#gpu_validate_callfunction_name-call_json) for a concrete, table-specific output schema.
+These are generic descriptor schemas; [validate the call](#validate-before-running) to get the concrete, table-specific output schema.
 
 ## Examples
 
@@ -81,12 +63,11 @@ import Examples from '../../_examples/cugraph_sssp.mdx';
 
 ## Limitations & lifecycle
 
-- dry-run validates table resolution, column presence, static dtypes, and options only
-- dry-run does not scan edge data, construct a graph, or prove source-vertex existence
+_No algorithm-specific limitations._
 
 ## Validate before running
 
-Validation checks registered relation metadata, bindings, dtypes, and options without scanning rows or touching the GPU:
+Dry-run validation checks registered relation metadata, column presence, static dtypes, and options only; it does not scan edge data, construct a graph, or prove source-vertex existence:
 
 ```sql
 SELECT * FROM gpu_validate_call(

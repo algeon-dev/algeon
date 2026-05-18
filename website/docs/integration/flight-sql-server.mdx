@@ -1,28 +1,56 @@
 ---
 sidebar_position: 3
-description: Run the built-in DataFusion Nexus Flight SQL server and connect to it with Apache Arrow ADBC, databow, or arrow_cli.
+description: Build and run the nexus-server Flight SQL endpoint, then connect with ADBC or a CLI.
 ---
 
 # Flight SQL Server
 
-Run the standalone server when DataFusion Nexus should be a GPU query backend
-behind an API or tool that does not embed Rust. Clients connect with Apache
-Arrow Flight SQL and receive Arrow-native result batches.
+The standalone server lives in `crates/nexus-server`. Run it when clients need
+a remote Arrow Flight SQL endpoint instead of an embedded Rust API.
 
-## Build
+## Build and start
 
-Build the server with the features your endpoint needs. Add `cugraph` for graph
-SQL, `cuvs` for vector SQL, and `iceberg` for Iceberg/Glue/REST/S3 sources. Workspace Cargo builds
-require the mold linker and clang on the host ([Build prerequisites](../build/prerequisites.md#rust-linker-mold)):
+Build the `nexus-server` package and its `datafusion_nexus_server` binary:
 
 ```bash
-cargo build --release -p nexus-server --features cugraph,cuvs,iceberg --bin datafusion_nexus_server
+cargo build --release -p nexus-server --all-features --bin datafusion_nexus_server
 ```
+
+Every selected GPU needs an explicit device profile. For a single-GPU local
+server, create `server.toml` in the repository root:
+
+```toml
+[[admission.device_profiles]]
+device_ordinal = 0
+```
+
+Then start the server on localhost. The development helper enables its local
+Iceberg defaults unless `NEXUS_RUN_SERVER_ICEBERG=0` is set:
+
+```bash
+export NEXUS_SERVER_CONFIG_FILE="$PWD/server.toml"
+export NEXUS_SERVER_BIND=127.0.0.1:50051
+export NEXUS_RUN_SERVER_ICEBERG=0
+
+flock /tmp/cudf-gpu.lock bash scripts/dev/run_server.sh
+```
+
+From another terminal, verify the endpoint with the repository client:
+
+```bash
+cargo run -p nexus-tools --all-features -- \
+  flight-sql-query http://127.0.0.1:50051 "SELECT 1 AS one"
+```
+
+The expected result is a column named `one` containing `1`. Authentication is
+disabled by default, so keep this setup on a trusted local interface. See
+[Configuration](./configuration.mdx) before exposing the endpoint or selecting
+more GPUs.
 
 ## Start the citation demo server
 
-The website examples use the local Iceberg REST catalog backed by RustFS. Start
-that stack, load the citation network, then run the server bound to localhost:
+The graph examples use an Iceberg REST catalog backed by RustFS. Start the
+fixture, load the citation network, and reuse the `server.toml` profile above:
 
 ```bash
 docker compose -f fixture/iceberg-local/docker-compose.yml up -d
@@ -30,59 +58,45 @@ fixture/fixture.sh iceberg rest load \
   --workload citation_network \
   --load-mode add-files
 
-NEXUS_SERVER_CUGRAPH_ENABLED=true \
-NEXUS_SERVER_BIND=127.0.0.1:50051 \
-DATAFUSION_CATALOG_DEFAULT_CATALOG=datafusion \
-DATAFUSION_CATALOG_DEFAULT_SCHEMA=public \
-NEXUS_ICEBERG_CATALOG_KIND=rest \
-NEXUS_ICEBERG_CATALOG_NAME=lake \
-NEXUS_ICEBERG_NAMESPACE=citation_network \
-NEXUS_ICEBERG_WAREHOUSE=s3://lakehouse/warehouse \
-NEXUS_ICEBERG_REST_URI=http://localhost:8181 \
-NEXUS_ICEBERG_S3_ENDPOINT=http://localhost:9000 \
-NEXUS_ICEBERG_S3_REGION=us-east-1 \
-NEXUS_ICEBERG_S3_PATH_STYLE=true \
-NEXUS_ICEBERG_S3_ACCESS_KEY_ID=nexusadmin \
-NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY=nexusadmin \
-NEXUS_SERVER_WORKSPACE_CATALOG=datafusion \
-NEXUS_SERVER_WORKSPACE_SCHEMA=public \
-NEXUS_SERVER_WORKSPACE_BACKING_CATALOG=lake \
-NEXUS_SERVER_WORKSPACE_BACKING_SCHEMA=citation_network \
-NEXUS_SERVER_WORKSPACE_BACKING_ALIASES=citation_edges,citation_edges_by_dst,papers,paper_authors,paper_fos \
+export NEXUS_SERVER_CONFIG_FILE="$PWD/server.toml"
+export NEXUS_RUN_SERVER_ICEBERG=1
+export NEXUS_SERVER_CUGRAPH_ENABLED=true
+export NEXUS_SERVER_BIND=127.0.0.1:50051
+export DATAFUSION_CATALOG_DEFAULT_CATALOG=datafusion
+export DATAFUSION_CATALOG_DEFAULT_SCHEMA=public
+export NEXUS_ICEBERG_CATALOG_KIND=rest
+export NEXUS_ICEBERG_CATALOG_NAME=lake
+export NEXUS_ICEBERG_NAMESPACE=citation_network
+export NEXUS_ICEBERG_WAREHOUSE=s3://lakehouse/warehouse
+export NEXUS_ICEBERG_REST_URI=http://localhost:8181
+export NEXUS_ICEBERG_S3_ENDPOINT=http://localhost:9000
+export NEXUS_ICEBERG_S3_REGION=us-east-1
+export NEXUS_ICEBERG_S3_PATH_STYLE=true
+export NEXUS_ICEBERG_S3_ACCESS_KEY_ID=nexusadmin
+export NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY=nexusadmin
+export NEXUS_SERVER_WORKSPACE_CATALOG=datafusion
+export NEXUS_SERVER_WORKSPACE_SCHEMA=public
+export NEXUS_SERVER_WORKSPACE_BACKING_CATALOG=lake
+export NEXUS_SERVER_WORKSPACE_BACKING_SCHEMA=citation_network
+export NEXUS_SERVER_WORKSPACE_BACKING_ALIASES=citation_edges,citation_edges_by_dst,papers,paper_authors,paper_fos
+
 flock /tmp/cudf-gpu.lock bash scripts/dev/run_server.sh
 ```
 
-The startup log should show `iceberg_enabled=true`, `cugraph_enabled=true`, a
-non-zero `cugraph_registry_algorithm_count`, and a workspace overlay backed by
-`lake.citation_network`. cuVS has no separate server enable variable: verify
-the compiled `cuvs` feature through the unified catalog after startup.
+The startup snapshot should report `iceberg_enabled=true`,
+`cugraph_enabled=true`, and a non-zero `cugraph_registry_algorithm_count`. The
+[demo dataset](../cugraph/demo-dataset.mdx) page lists the available tables.
 
-For the meaning of each server variable, see
-[Configuration](./configuration.mdx). For the tables used by the
-graph examples, see the [demo dataset](../cugraph/demo-dataset.mdx).
+## Connect with ADBC
 
-Flight SQL accepts ordinary DataFusion `SET` statements through the update
-endpoint, but it rejects `SET datafusion_nexus.*`. DataFusion Nexus resource
-policy for Flight workloads comes from server configuration rather than
-session-scoped SQL keys.
+Use an [Apache Arrow ADBC Flight SQL
+driver](https://arrow.apache.org/adbc/current/driver/flight_sql.html) from
+application code. The Python DB-API wrapper requires both the Flight SQL driver
+and PyArrow:
 
-## Connect from application code with ADBC
-
-The production client path is the
-[Apache Arrow ADBC Flight SQL driver](https://arrow.apache.org/adbc/current/driver/flight_sql.html)
-for the language your service is written in. ADBC gives the client a library API
-over Arrow Flight SQL and returns Arrow-native result data, so your backend can
-own pooling, auth, query construction, validation, and response formatting.
-
-Use the server bind address as the Flight SQL URI:
-
-| Setting | Local demo value | Notes |
-| --- | --- | --- |
-| Flight SQL URI | `grpc://127.0.0.1:50051` | Translate to the equivalent `uri` setting for your language binding if it names schemes differently. |
-| Query timeout | `120s` or higher | Graph algorithms may scan large edge tables and run GPU kernels before returning the first batch. |
-| Result shape | Arrow record batches / Arrow table | Convert at your service boundary to Arrow IPC, Parquet, JSON, or your app model. |
-
-For example, a Python service can use the ADBC DB-API wrapper:
+```bash
+python -m pip install adbc-driver-flightsql pyarrow
+```
 
 ```python
 from adbc_driver_flightsql import dbapi
@@ -90,83 +104,26 @@ from adbc_driver_flightsql import dbapi
 
 with dbapi.connect(uri="grpc://127.0.0.1:50051") as conn:
     with conn.cursor() as cur:
-        cur.execute("""
-            SELECT function_name, signature, summary
-            FROM gpu_list_functions()
-            WHERE provider IN ('cugraph', 'cuvs')
-            ORDER BY function_name
-        """)
-        algorithms = cur.fetch_arrow_table()
-
-        cur.execute(
-            """
-            SELECT vertex, pagerank
-            FROM cugraph_pagerank('citation_edges', 'src', 'dst')
-            ORDER BY pagerank DESC
-            LIMIT 10
-            """
-        )
-        top_vertices = cur.fetch_arrow_table()
+        cur.execute("SELECT 1 AS one")
+        result = cur.fetch_arrow_table()
 ```
 
-The same contract applies from Java, Go, C/C++, Rust, Python, or any other
-runtime with an ADBC Flight SQL driver: configure the driver with the Flight SQL
-URI, execute SQL, and consume Arrow batches in the client-side service.
+The same endpoint works with other ADBC language bindings. Keep pooling,
+timeouts, authentication, and result conversion in the client service.
 
-## Smoke-test with a CLI
+## Use an interactive client
 
-A CLI client is useful for checking that the server is reachable, reproducing a
-SQL statement by hand, and debugging an ADBC client. Application code should use
-an ADBC driver library instead.
-
-### databow
-
-[`databow`](https://github.com/columnar-tech/databow) is an interactive SQL
-shell over ADBC, so it exercises the same Flight SQL driver path as the
-application code above. Follow the
-[databow documentation](https://docs.columnar.tech/databow/) to install it and
-the ADBC `flightsql` driver, then connect with the server bind address as the
-URI:
+[`databow`](https://github.com/columnar-tech/databow) exercises the ADBC driver
+path, while [`arrow_cli`](https://github.com/sundy-li/arrow_cli) connects
+directly over Flight SQL:
 
 ```bash
 databow --driver flightsql --uri grpc://127.0.0.1:50051
+arrow_cli --host 127.0.0.1 --port 50051 --timeout 120
 ```
 
-`--query "..."` runs a single statement and exits, and `--output` exports the
-result to a `.json`, `.csv`, or `.arrow` file. To avoid repeating the URI,
-save a connection profile at `~/.config/adbc/profiles/nexus.toml`:
-
-```toml
-profile_version = 1
-driver = "flightsql"
-
-[Options]
-uri = "grpc://127.0.0.1:50051"
-```
-
-and connect with `databow --profile nexus`.
-
-### arrow_cli
-
-[`arrow_cli`](https://github.com/sundy-li/arrow_cli) is a lighter-weight Flight
-SQL shell that needs no driver installation:
-
-```bash
-arrow_cli --host 127.0.0.1 -P 50051 --timeout 120
-```
-
-:::warning[One statement per line]
-`arrow_cli` sends SQL line by line and does not accumulate to a semicolon, so
-each statement must be on a single line. To keep session-local views, pipe
-multiple statements into one `arrow_cli` process.
-:::
-
-Output formats: `--output table` (default, shows column headers), `json`, `csv`,
-`tsv`, `psv`.
-
-Whether standalone or embedded, native execution runs on the GPU. The process
-must run on a machine with a CUDA-capable device and matching cuDF plus the
-cuGraph and/or cuVS runtime libraries selected by its Cargo features. `cuvs_*`
-calls remain fail-closed with structured `unsupported_operator` until their
-bounded peak-memory preflight is available; the server does not fall back to
-the host.
+Flight SQL accepts ordinary DataFusion `SET` statements, but rejects
+`SET datafusion_nexus.*`; server resource policy comes from `ServerConfig`.
+Native execution requires a CUDA-capable host and the runtime libraries for the
+enabled Cargo features. Unsupported GPU operators fail closed rather than
+falling back to the CPU.

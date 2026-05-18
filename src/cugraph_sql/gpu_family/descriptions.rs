@@ -246,38 +246,80 @@ pub(super) fn limitations_json(algorithm: CugraphAlgorithm) -> String {
 pub(super) fn summary(algorithm: CugraphAlgorithm) -> &'static str {
     match algorithm {
         CugraphAlgorithm::Bfs => {
-            "Multi-source-capable breadth-first search; source selectors must contain at most one source per connected component."
+            "Visit reachable vertices in increasing unweighted hop distance from one or more sources, returning distances and optional predecessors."
         },
-        CugraphAlgorithm::PageRank => "Compute PageRank scores.",
-        CugraphAlgorithm::PersonalizedPageRank => "Compute personalized PageRank scores.",
-        CugraphAlgorithm::Louvain => "Detect communities with Louvain modularity optimization.",
-        CugraphAlgorithm::EigenvectorCentrality => "Compute eigenvector centrality scores.",
-        CugraphAlgorithm::KatzCentrality => "Compute Katz centrality scores.",
-        CugraphAlgorithm::Hits => "Compute HITS hub and authority scores.",
+        CugraphAlgorithm::PageRank => {
+            "Rank vertices by the stationary probability of a damped random walk that follows outgoing edges."
+        },
+        CugraphAlgorithm::PersonalizedPageRank => {
+            "Rank vertices with PageRank while biasing random-walk restarts toward explicitly weighted personalization vertices."
+        },
+        CugraphAlgorithm::Louvain => {
+            "Build a hierarchy of communities by greedily moving vertices and aggregating partitions to maximize modularity."
+        },
+        CugraphAlgorithm::EigenvectorCentrality => {
+            "Score vertices by connections to other high-scoring vertices, using power iteration to find the dominant eigenvector."
+        },
+        CugraphAlgorithm::KatzCentrality => {
+            "Score vertices from the number of walks that reach them, attenuating longer walks and adding a baseline contribution."
+        },
+        CugraphAlgorithm::Hits => {
+            "Compute mutually reinforcing hub and authority scores: strong hubs point to strong authorities, and strong authorities are linked from strong hubs."
+        },
         CugraphAlgorithm::BetweennessCentrality => {
-            "Compute exact or explicitly seeded/k-sampled approximate betweenness centrality scores."
+            "Measure how often each vertex lies on shortest paths between other vertex pairs, exactly or from an explicit sample of source vertices."
         },
         CugraphAlgorithm::EdgeBetweennessCentrality => {
-            "Compute exact or explicitly seeded/k-sampled approximate edge betweenness centrality scores."
+            "Measure how often each edge lies on shortest paths between vertex pairs, exactly or from an explicit sample of source vertices."
         },
-        CugraphAlgorithm::Sssp => "Compute single-source shortest paths.",
-        CugraphAlgorithm::DegreesAll => "Compute in-degree and out-degree for every vertex.",
-        CugraphAlgorithm::InDegreesAll => "Compute in-degree for every vertex.",
-        CugraphAlgorithm::OutDegreesAll => "Compute out-degree for every vertex.",
-        CugraphAlgorithm::WeaklyConnectedComponents => "Compute weakly connected components.",
-        CugraphAlgorithm::StronglyConnectedComponents => "Compute strongly connected components.",
-        CugraphAlgorithm::TriangleCountAll => "Compute triangle counts for every vertex.",
-        CugraphAlgorithm::CoreNumber => "Compute graph core numbers.",
-        CugraphAlgorithm::KCore => "Return the graph k-core edge set.",
-        CugraphAlgorithm::MinimumSpanningTree => "Compute a minimum spanning tree.",
-        CugraphAlgorithm::Leiden => "Detect communities with Leiden optimization.",
-        CugraphAlgorithm::Ecg => "Detect communities with ensemble clustering for graphs.",
-        CugraphAlgorithm::SpectralModularityMaximization => "Cluster vertices with spectral modularity maximization.",
-        CugraphAlgorithm::ForceAtlas2 => "Compute ForceAtlas2 two-dimensional layout coordinates.",
-        CugraphAlgorithm::Jaccard => "Compute Jaccard coefficients for explicit candidate vertex pairs.",
-        CugraphAlgorithm::Sorensen => "Compute Sorensen coefficients for explicit candidate vertex pairs.",
-        CugraphAlgorithm::Overlap => "Compute overlap coefficients for explicit candidate vertex pairs.",
-        CugraphAlgorithm::Cosine => "Compute cosine similarity coefficients for explicit candidate vertex pairs.",
+        CugraphAlgorithm::Sssp => {
+            "Compute minimum weighted-path distances and predecessors from one source vertex to every reachable vertex."
+        },
+        CugraphAlgorithm::DegreesAll => "Count both incoming and outgoing edges for every vertex in the graph.",
+        CugraphAlgorithm::InDegreesAll => "Count incoming edges for every vertex in the graph.",
+        CugraphAlgorithm::OutDegreesAll => "Count outgoing edges for every vertex in the graph.",
+        CugraphAlgorithm::WeaklyConnectedComponents => {
+            "Label maximal connected subgraphs after treating directed edges as undirected."
+        },
+        CugraphAlgorithm::StronglyConnectedComponents => {
+            "Label maximal directed subgraphs in which every vertex is reachable from every other vertex."
+        },
+        CugraphAlgorithm::TriangleCountAll => {
+            "Count the number of three-vertex cycles incident to every vertex in the graph."
+        },
+        CugraphAlgorithm::CoreNumber => {
+            "Assign each vertex the largest k for which it belongs to a k-core, where every vertex has degree at least k within that subgraph."
+        },
+        CugraphAlgorithm::KCore => {
+            "Return the edges of the maximal subgraph whose vertices each have degree at least k within that subgraph."
+        },
+        CugraphAlgorithm::MinimumSpanningTree => {
+            "Select a minimum-total-weight acyclic edge set, producing a spanning tree for a connected graph or a spanning forest otherwise."
+        },
+        CugraphAlgorithm::Leiden => {
+            "Find modularity-based communities with refinement steps that improve the internal connectedness of the partitions."
+        },
+        CugraphAlgorithm::Ecg => {
+            "Stabilize community assignments by combining an ensemble of randomized Louvain partitions into a final consensus clustering."
+        },
+        CugraphAlgorithm::SpectralModularityMaximization => {
+            "Partition vertices by embedding the graph with leading modularity eigenvectors and clustering that embedding with k-means."
+        },
+        CugraphAlgorithm::ForceAtlas2 => {
+            "Place vertices in two dimensions with a force-directed simulation that attracts connected vertices and repels vertices from one another."
+        },
+        CugraphAlgorithm::Jaccard => {
+            "Compare explicit vertex pairs by dividing the size of their shared-neighbor intersection by the size of their neighbor union."
+        },
+        CugraphAlgorithm::Sorensen => {
+            "Compare explicit vertex pairs as twice their shared-neighbor count divided by the sum of their neighbor counts."
+        },
+        CugraphAlgorithm::Overlap => {
+            "Compare explicit vertex pairs by dividing their shared-neighbor count by the smaller of their two neighbor counts."
+        },
+        CugraphAlgorithm::Cosine => {
+            "Compare the neighbor vectors of explicit vertex pairs using cosine similarity, with optional edge-weight contributions."
+        },
     }
 }
 

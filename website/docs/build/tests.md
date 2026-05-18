@@ -29,15 +29,13 @@ cd datafusion-nexus
 bash scripts/check_all.sh
 ```
 
-This is more than the three test lanes. It runs all isolated policy self-tests,
-the nightly rustfmt check, build-support checks, the live canonical
-test-binary inventory (union of the default-member surface and an explicit
-all-feature bench inventory), a default-member compile, CPU/shared-GPU/
-exclusive-GPU tests, an explicit all-feature bench nextest phase, locked
-doctests with exact accounting, strict rustdoc for default members and bench,
-clippy for default members and bench, and compile-only checks for the explicit
-bench, tools, and examples packages. Those package checks compile code but never
-run operator/E2E tools or contact external services.
+This is more than the three test lanes. It runs the policy and build-support
+self-tests, nightly rustfmt, lane inventory and scheduling checks, workspace-wide
+CPU/shared-GPU/exclusive-GPU tests, locked doctests, strict rustdoc, public API
+snapshots, and clippy. One workspace-wide feature selection is used throughout,
+so tests from bench, tools, and examples packages are part of the same surface.
+Operator and external-service E2E tools are still explicit commands and are not
+run by this gate.
 
 Every invocation ends with a compact phase table. Each row records the
 effective command, wall time, pass/fail/skipped state, fail-closed test counts
@@ -48,27 +46,23 @@ dedicated directory when automation needs a predictable artifact path. Raw
 phase output remains visible while the log is written.
 
 The canonical runner is exactly cargo-nextest 0.9.140. A missing or different
-version exits 2 before policy, build, inventory, or test work. Its four nextest
+version exits 2 before policy, build, inventory, or test work. Its three nextest
 commands are equivalent to:
 
 ```bash
 AVAILABLE_CPU_CORES=$(nproc)
-cargo nextest run --all-features \
-  -E 'not group(gpu) & not group(gpu-exclusive)' --no-fail-fast
-cargo nextest run -p nexus-bench --all-features \
+cargo nextest run --workspace --all-features \
   -E 'not group(gpu) & not group(gpu-exclusive)' --no-fail-fast
 flock /tmp/cudf-gpu.lock \
-  cargo nextest run -P default --all-features \
+  cargo nextest run -P default --workspace --all-features \
   -E 'group(gpu)' --no-fail-fast --test-threads "${AVAILABLE_CPU_CORES}"
 flock /tmp/cudf-gpu.lock \
-  cargo nextest run -P default --all-features \
+  cargo nextest run -P default --workspace --all-features \
   -E 'group(gpu-exclusive)' --no-fail-fast --test-threads 1
 ```
 
-The full harness runs the default-member CPU lane, the explicit bench phase,
-and both GPU lanes. It first runs the binary-lane classification tripwire and
-verifies the configured cap with `nextest show-config` before running GPU
-lanes.
+The harness checks the live binary inventory before running lanes and verifies
+the configured cap with `nextest show-config` before GPU work.
 
 ## Modes and options
 
@@ -82,10 +76,9 @@ bash scripts/check_all.sh --fast --features iceberg
 
 It runs isolated policy self-tests, nightly rustfmt, build support, the
 catalog/generated lane-structure checks, and the CPU nextest lane. It does not
-run live nextest inventory, GPU tests, doctests, rustdoc, clippy, the explicit
-bench phases, or the tools/examples checks. CPU-lane membership is enforced by
-the binary-lane classification tripwire before the test command runs. `--lane
-cpu` (unlike `--fast`) still runs the explicit bench CPU nextest phase.
+run live nextest inventory, GPU tests, doctests, rustdoc, public API snapshots,
+or clippy. It still checks the committed lane catalog and generated scheduling
+overrides before the test command runs.
 
 By default `--fast` still uses `--all-features` for the packages it builds. That
 narrows *which tests execute*, not necessarily *which unrelated test binaries
@@ -117,10 +110,9 @@ bash scripts/check_all.sh --all-features
 
 `--all-features` conflicts with the other feature selectors.
 `--no-default-features` may accompany `--features`. Any CLI feature selector
-replaces, rather than merges with, the compatibility `FEATURES` value. Those
-selectors apply only to the core default-member surface; explicit full-pre-merge
-bench phases always use `--all-features` and report `all(fixed)` in the phase
-table.
+replaces, rather than merges with, the compatibility `FEATURES` value. The
+selected feature set applies to every workspace phase; the default is
+`--all-features`.
 
 Shared-GPU tests automatically use every CPU core available to the current
 environment. `check_all.sh` validates the positive integer returned by `nproc`
@@ -160,7 +152,7 @@ canonical harness therefore runs them as a separate, third flocked command:
 
 ```bash
 flock /tmp/cudf-gpu.lock \
-  cargo test --all-features --doc --no-fail-fast
+  cargo test --workspace --all-features --doc --no-fail-fast
 ```
 
 `check_all.sh` preserves the command's combined output and exit status, parses
@@ -195,12 +187,11 @@ outer lock solve different problems. The same lock convention applies to
 
 GPU-lane membership is **binary-level and explicit**. `.config/policies/test-lanes.toml`
 is the single admission source: every live pre-merge-admitted nextest binary
-(default-member surface plus the explicit all-feature bench surface) has one CPU
-or GPU entry, every GPU entry is `shared` or `exclusive`, and every entry records
-a reason. `scripts/ci/check_gpu_test_lane.sh` (run by `check_all.sh`) validates the
-union of those inventories and fails closed on missing, duplicate, stale
-all-feature, or malformed entries and on generated nextest drift. After editing
-the catalog, regenerate the scheduling overrides:
+in the selected workspace surface has one CPU or GPU entry, every GPU entry is
+`shared` or `exclusive`, and every entry records a reason.
+`scripts/ci/check_gpu_test_lane.sh` (run by `check_all.sh`) fails closed on
+missing, duplicate, stale, or malformed entries and on generated nextest drift.
+After editing the catalog, regenerate the scheduling overrides:
 
 ```bash
 python3 scripts/ci/test_lane_policy.py generate-nextest --write
@@ -210,8 +201,8 @@ Do not edit the generated override section in `.config/nextest.toml` directly.
 
 ## Build-support policy
 
-`scripts/build/rapids.rs` is included by four build scripts: the root adapter,
-`nexus-query-engine`, the benchmark package, and the examples package. Its
+`scripts/build/rapids.rs` is included by six build scripts: the root adapter,
+`nexus-query-engine`, server, benchmark, tools, and examples packages. Its
 environment capture is separate from pure direct/aggregate metadata merging,
 platform path-list parsing, candidate ordering, and library-identity policy;
 Cargo directive emission is a final stage. This keeps the native engine's
@@ -222,7 +213,7 @@ that boundary.
 bash scripts/build/check_build_support.sh
 ```
 
-The isolated suite reports explicit counts for pure policy tests, all four
+The isolated suite reports explicit counts for pure policy tests, five
 inclusion compile smokes, and fake-library build-script scenarios. Fixtures
 cover canonical paths, same inodes, byte-identical and divergent files,
 required RMM failure, optional `rapids_logger` linkage, direct/aggregate
@@ -238,36 +229,34 @@ bash scripts/check_all.sh --lane gpu-shared
 
 ### One package, one harness
 
-A warm source tree should not force the all-feature test surface while you edit
-a single contract. Prefer Cargo package and harness selectors:
+Prefer Cargo package and harness selectors for a focused edit loop while keeping
+the workspace's all-feature artifact graph:
 
 ```bash
-# One CPU adapter planning harness with the minimal feature set.
-cargo nextest run -p datafusion-nexus \
-  --no-default-features \
+# One CPU adapter planning harness.
+cargo nextest run -p datafusion-nexus --all-features \
   --test native_planning_tests
 
 # CPU adapter contracts (errors, policy reports, public facade, table-format).
 cargo nextest run -p datafusion-nexus \
-  --no-default-features \
+  --all-features \
   --test cpu_contract_tests
 
 # Pure native-engine contract harness.
 cargo nextest run -p nexus-query-engine \
-  --no-default-features \
+  --all-features \
   --test native_contract_tests
 
-# Repository policy/fmt/CPU partial loop without optional features.
-bash scripts/check_all.sh --fast --no-default-features
+# Repository policy/fmt/CPU partial loop.
+bash scripts/check_all.sh --fast
 ```
 
-Feature work should select only its required set until the all-feature pass, for
-example `--features cugraph` or `--features iceberg`. Targeted GPU work must
-still take `/tmp/cudf-gpu.lock`, preferably through
+Targeted GPU work must still take `/tmp/cudf-gpu.lock`, preferably through
 `bash scripts/check_all.sh --lane gpu-shared` or `--lane gpu-exclusive`.
 
-Workspace `[profile.test]` uses `debug = 1` (line tables) so routine test links
-stay smaller than full debuginfo while preserving file:line failure diagnostics.
+Workspace `[profile.test]` is intentionally absent. Tests inherit
+`[profile.dev]` with line-table debug information and unpacked split debuginfo,
+which preserves file:line diagnostics without full debug records.
 
 ### Compile delay versus test delay
 
@@ -282,7 +271,7 @@ Expose the first dirty unit with:
 
 ```bash
 CARGO_LOG=cargo::core::compiler::fingerprint=info \
-  cargo nextest run --all-features --no-run 2>&1 \
+  cargo nextest run --workspace --all-features --no-run 2>&1 \
   | rg 'fingerprint dirty|dirty:|Compiling'
 ```
 
@@ -324,13 +313,13 @@ explicit tool invocations instead.
 Scale-factor datasets are not Cargo tests. They are explicit acceptance runs:
 
 ```bash
-flock /tmp/cudf-gpu.lock \
-  NEXUS_PARQUET_DIR=/path/to/complete/tpcds-sf1 \
-  cargo run -p nexus-bench --bin native_tpcds_parity_report
+NEXUS_PARQUET_DIR=/path/to/complete/tpcds-sf1 \
+  flock /tmp/cudf-gpu.lock \
+  cargo run -p nexus-bench --all-features --bin native_tpcds_parity_report
 
-flock /tmp/cudf-gpu.lock \
-  NEXUS_PARQUET_DIR=/path/to/complete/tpch-sf1 \
-  cargo run -p nexus-bench --bin native_tpch_execution_report
+NEXUS_PARQUET_DIR=/path/to/complete/tpch-sf1 \
+  flock /tmp/cudf-gpu.lock \
+  cargo run -p nexus-bench --all-features --bin native_tpch_execution_report
 ```
 
 Both commands validate their dataset before the workload begins and fail when
@@ -344,7 +333,7 @@ host with Python cuGraph installed:
 
 ```bash
 flock /tmp/cudf-gpu.lock \
-  cargo run -p nexus-tools --features cugraph-oracle -- \
+  cargo run -p nexus-tools --all-features -- \
   cugraph-fixture-e2e bfs-include-edges
 ```
 
@@ -358,21 +347,24 @@ other provisioned cases.
 | Feature | Enables |
 | --- | --- |
 | `cugraph` | cuGraph graph algorithms callable from SQL |
+| `cuvs` | cuVS bindings and vector-function planning |
+| `iceberg` | Iceberg catalogs and native scan integration |
+| `nvml` | Optional NVML device diagnostics |
 
 The Arrow Flight SQL server is the separate `nexus-server` package; its
 `cugraph`, `cuvs`, `iceberg`, and `nvml` features forward the corresponding
 adapter and engine capabilities.
 
 ```bash
-cargo run -p nexus-server --bin datafusion_nexus_server
+cargo run -p nexus-server --all-features --bin datafusion_nexus_server
 ```
 
 ## Formatting and lints
 
 ```bash
 cargo +nightly fmt --all --check
-cargo clippy --all-targets --all-features
-RUSTDOCFLAGS="-D warnings" cargo doc --all-features --no-deps --keep-going
+cargo clippy --workspace --all-targets --all-features
+RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps --keep-going
 ```
 
 The MSRV is Rust 1.94. Formatting requires nightly.

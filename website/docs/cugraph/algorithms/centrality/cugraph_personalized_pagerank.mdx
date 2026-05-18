@@ -1,7 +1,7 @@
 ---
 title: Personalized PageRank
 sidebar_label: Personalized PageRank
-description: "Compute personalized PageRank scores."
+description: "Rank vertices with PageRank while biasing random-walk restarts toward explicitly weighted personalization vertices."
 ---
 
 {/* GENERATED FROM the unified GPU function catalog by website/scripts/gen-cugraph-docs.mjs. Do not edit by hand. */}
@@ -10,11 +10,9 @@ description: "Compute personalized PageRank scores."
 
 SQL function: `cugraph_personalized_pagerank`
 
-Compute personalized PageRank scores.
+Official cuGraph reference: [C API](https://docs.nvidia.com/cugraph/26.08/api_docs/cugraph_c/centrality/#personalized-pagerank)
 
-## Use this when
-
-Use this when a SQL statement needs Personalized PageRank results over a registered edge relation.
+Rank vertices with PageRank while biasing random-walk restarts toward explicitly weighted personalization vertices.
 
 ## Signature
 
@@ -22,28 +20,18 @@ Use this when a SQL statement needs Personalized PageRank results over a registe
 cugraph_personalized_pagerank(table_name, src_col, dst_col, weight_col, options_json)
 ```
 
-## Quickstart
-
-```sql
-SELECT * FROM cugraph_personalized_pagerank('target_edges', 'src', 'dst', NULL, '{"personalization_table":"ppr_seeds","personalization_vertex_col":"vertex","personalization_value_col":"value"}')
-```
-
 ## Relation inputs
 
-cuGraph consumes a registered edge table or view by its first positional name. It does not accept a parenthesized relation subquery. Metadata validation uses the same registered name.
-
-| Role | Required | Reference | Description |
-| --- | --- | --- | --- |
-| `edges` | yes | `table` | Required edge-list table or view for graph construction. |
+The first positional argument names a registered edge table or view (the `edges` role). Parenthesized relation subqueries are not accepted; metadata validation uses the same registered name.
 
 ## Scalar arguments & JSON options
 
 ### Positional scalar arguments
 
+`src_col` and `dst_col` name the edge endpoint columns; both are optional and default to `src` and `dst`.
+
 | Argument | Type | Required | Default | Notes |
 | --- | --- | --- | --- | --- |
-| `src_col` | `Utf8` | no | `src` |  |
-| `dst_col` | `Utf8` | no | `dst` |  |
 | `weight_col` | `Utf8\|null` | no |  | optional edge weight column for graph construction when supported by the algorithm; semantic effect: edge weights affect algorithm results when provided |
 
 ### JSON options
@@ -59,13 +47,7 @@ cuGraph consumes a registered edge table or view by its first positional name. I
 
 ### Graph construction options
 
-Shared by all cuGraph functions, shown with this function's defaults. See [Graph Construction Options](../../graph-options.mdx) for the construction-policy guide.
-
-| Option | Type | Default | Constraints | Description |
-| --- | --- | --- | --- | --- |
-| `construction_policy` | `Utf8` | `"python_cugraph"` | one of `"python_cugraph"`, `"raw_libcugraph"` | Edge-list construction semantics used before calling libcugraph. |
-| `directed` | `Boolean` | `true` |  | Whether graph construction treats edges as directed. |
-| `renumber` | `Boolean` | `true` |  | Whether graph construction may renumber external vertex identifiers internally. |
+Graph construction follows the shared defaults (`directed=true`, renumbering, `python_cugraph` policy) documented in [Graph Construction Options](../../graph-options.mdx).
 
 ## Output schema
 
@@ -74,7 +56,7 @@ Shared by all cuGraph functions, shown with this function's defaults. See [Graph
 | `vertex` | `Int64` | no | Vertex receiving the PageRank score. |
 | `value` | `Float64` | no | PageRank score for the vertex. |
 
-**Concrete schemas are call-specific.** These are generic descriptor schemas. Run [`gpu_validate_call`](../../../reference/gpu-function-catalog.mdx#gpu_validate_callfunction_name-call_json) for a concrete, table-specific output schema.
+These are generic descriptor schemas; [validate the call](#validate-before-running) to get the concrete, table-specific output schema.
 
 ## Examples
 
@@ -84,12 +66,11 @@ import Examples from '../../_examples/cugraph_personalized_pagerank.mdx';
 
 ## Limitations & lifecycle
 
-- dry-run validates table resolution, column presence, static dtypes, and options only
-- dry-run does not scan edge data, construct a graph, or prove source-vertex existence
+_No algorithm-specific limitations._
 
 ## Validate before running
 
-Validation checks registered relation metadata, bindings, dtypes, and options without scanning rows or touching the GPU:
+Dry-run validation checks registered relation metadata, column presence, static dtypes, and options only; it does not scan edge data, construct a graph, or prove source-vertex existence:
 
 ```sql
 SELECT * FROM gpu_validate_call(

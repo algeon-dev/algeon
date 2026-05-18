@@ -25,24 +25,160 @@ const WEBSITE = join(HERE, '..');
 const SPEC_DIR = join(WEBSITE, 'gpu-function-specs', 'cugraph');
 const DOCS_DIR = join(WEBSITE, 'docs', 'cugraph');
 const ALGORITHMS_DIR = join(DOCS_DIR, 'algorithms');
+const OFFICIAL_DOCS_ROOT = 'https://docs.nvidia.com/cugraph/26.08/';
 
-// Presentation grouping remains specific to the cuGraph documentation; the
-// function inventory itself always comes from the unified descriptors.
 const FAMILIES = {
-  centrality: { label: 'Centrality', position: 2, functions: ['cugraph_pagerank', 'cugraph_personalized_pagerank', 'cugraph_eigenvector_centrality', 'cugraph_katz_centrality', 'cugraph_hits', 'cugraph_betweenness_centrality', 'cugraph_edge_betweenness_centrality'] },
-  community: { label: 'Community Detection', position: 3, functions: ['cugraph_louvain', 'cugraph_leiden', 'cugraph_ecg', 'cugraph_spectral_modularity_maximization'] },
-  traversal: { label: 'Traversal & Paths', position: 4, functions: ['cugraph_bfs', 'cugraph_sssp'] },
-  connectivity: { label: 'Connectivity', position: 5, functions: ['cugraph_weakly_connected_components', 'cugraph_strongly_connected_components', 'cugraph_minimum_spanning_tree'] },
-  structure: { label: 'Structure', position: 6, functions: ['cugraph_degrees_all', 'cugraph_in_degrees_all', 'cugraph_out_degrees_all', 'cugraph_triangle_count_all', 'cugraph_core_number', 'cugraph_k_core'] },
-  similarity: { label: 'Similarity', position: 7, functions: ['cugraph_jaccard', 'cugraph_sorensen', 'cugraph_overlap', 'cugraph_cosine'] },
-  layout: { label: 'Layout', position: 1, functions: ['cugraph_force_atlas2'] },
+  centrality: { label: 'Centrality', position: 2 },
+  community: { label: 'Community Detection', position: 3 },
+  traversal: { label: 'Traversal & Paths', position: 4 },
+  connectivity: { label: 'Connectivity', position: 5 },
+  structure: { label: 'Structure', position: 6 },
+  similarity: { label: 'Similarity', position: 7 },
+  layout: { label: 'Layout', position: 1 },
 };
 
-function familyOf(functionName) {
-  for (const [slug, family] of Object.entries(FAMILIES)) {
-    if (family.functions.includes(functionName)) return slug;
-  }
-  throw new Error(`No documentation family for ${functionName}; classify it before generating docs`);
+const ALGORITHMS = {
+  cugraph_betweenness_centrality: {
+    family: 'centrality',
+    officialApi: 'C API',
+    officialPath: 'api_docs/cugraph_c/centrality/#betweenness-centrality',
+  },
+  cugraph_bfs: {
+    family: 'traversal',
+    officialApi: 'C API',
+    officialPath: 'api_docs/cugraph_c/traversal/#breadth-first-search-bfs',
+  },
+  cugraph_core_number: {
+    family: 'structure',
+    officialApi: 'C API',
+    officialPath: 'api_docs/cugraph_c/core/#core-number',
+  },
+  cugraph_cosine: {
+    family: 'similarity',
+    officialApi: 'Python API',
+    officialPath: 'api_docs/api/cugraph/cugraph.link_prediction.cosine/',
+  },
+  cugraph_degrees_all: {
+    family: 'structure',
+    officialApi: 'Python API',
+    officialPath: 'api_docs/api/cugraph/cugraph.structure.graph_implementation.simpleGraphImpl.degrees/',
+  },
+  cugraph_ecg: {
+    family: 'community',
+    officialApi: 'C API',
+    officialPath: 'api_docs/cugraph_c/community/#ecg',
+  },
+  cugraph_edge_betweenness_centrality: {
+    family: 'centrality',
+    officialApi: 'C API',
+    officialPath: 'api_docs/cugraph_c/centrality/#edge-betweenness-centrality',
+  },
+  cugraph_eigenvector_centrality: {
+    family: 'centrality',
+    officialApi: 'C API',
+    officialPath: 'api_docs/cugraph_c/centrality/#eigenvector-centrality',
+  },
+  cugraph_force_atlas2: {
+    family: 'layout',
+    officialApi: 'Python API',
+    officialPath: 'api_docs/api/cugraph/cugraph.force_atlas2/',
+  },
+  cugraph_hits: {
+    family: 'centrality',
+    officialApi: 'C API',
+    officialPath: 'api_docs/cugraph_c/centrality/#hits-centrality',
+  },
+  cugraph_in_degrees_all: {
+    family: 'structure',
+    officialApi: 'Python API',
+    officialPath: 'api_docs/api/cugraph/cugraph.structure.graph_implementation.simpleGraphImpl.in_degree/',
+  },
+  cugraph_jaccard: {
+    family: 'similarity',
+    officialApi: 'C API',
+    officialPath: 'api_docs/cugraph_c/similarity/#jaccard',
+  },
+  cugraph_katz_centrality: {
+    family: 'centrality',
+    officialApi: 'C API',
+    officialPath: 'api_docs/cugraph_c/centrality/#katz-centrality',
+  },
+  cugraph_k_core: {
+    family: 'structure',
+    officialApi: 'C API',
+    officialPath: 'api_docs/cugraph_c/core/#k-core',
+  },
+  cugraph_leiden: {
+    family: 'community',
+    officialApi: 'C API',
+    officialPath: 'api_docs/cugraph_c/community/#leiden',
+  },
+  cugraph_louvain: {
+    family: 'community',
+    officialApi: 'C API',
+    officialPath: 'api_docs/cugraph_c/community/#louvain',
+  },
+  cugraph_minimum_spanning_tree: {
+    family: 'connectivity',
+    officialApi: 'Python API',
+    officialPath: 'api_docs/api/cugraph/cugraph.tree.minimum_spanning_tree.minimum_spanning_tree/',
+  },
+  cugraph_out_degrees_all: {
+    family: 'structure',
+    officialApi: 'Python API',
+    officialPath: 'api_docs/api/cugraph/cugraph.structure.graph_implementation.simpleGraphImpl.out_degree/',
+  },
+  cugraph_overlap: {
+    family: 'similarity',
+    officialApi: 'C API',
+    officialPath: 'api_docs/cugraph_c/similarity/#overlap',
+  },
+  cugraph_pagerank: {
+    family: 'centrality',
+    officialApi: 'C API',
+    officialPath: 'api_docs/cugraph_c/centrality/#pagerank',
+  },
+  cugraph_personalized_pagerank: {
+    family: 'centrality',
+    officialApi: 'C API',
+    officialPath: 'api_docs/cugraph_c/centrality/#personalized-pagerank',
+  },
+  cugraph_sorensen: {
+    family: 'similarity',
+    officialApi: 'C API',
+    officialPath: 'api_docs/cugraph_c/similarity/#sorensen',
+  },
+  cugraph_spectral_modularity_maximization: {
+    family: 'community',
+    officialApi: 'C API',
+    officialPath: 'api_docs/cugraph_c/community/#spectral-clustering-modularity-maximization',
+  },
+  cugraph_sssp: {
+    family: 'traversal',
+    officialApi: 'C API',
+    officialPath: 'api_docs/cugraph_c/traversal/#single-source-shortest-path-sssp',
+  },
+  cugraph_strongly_connected_components: {
+    family: 'connectivity',
+    officialApi: 'C API',
+    officialPath: 'api_docs/cugraph_c/labeling/#strongly-connected-components',
+  },
+  cugraph_triangle_count_all: {
+    family: 'structure',
+    officialApi: 'C API',
+    officialPath: 'api_docs/cugraph_c/community/#triangle-counting',
+  },
+  cugraph_weakly_connected_components: {
+    family: 'connectivity',
+    officialApi: 'C API',
+    officialPath: 'api_docs/cugraph_c/labeling/#weakly-connected-components',
+  },
+};
+
+function documentationFor(functionName) {
+  const documentation = ALGORITHMS[functionName];
+  if (!documentation) throw new Error(`No documentation metadata for ${functionName}; classify it before generating docs`);
+  return documentation;
 }
 
 function loadSpecs() {
@@ -61,7 +197,7 @@ function loadSpecs() {
       if (!spec.options_schema || typeof spec.options_schema !== 'object' || !spec.result_schemas || typeof spec.result_schemas !== 'object') {
         throw new Error(`${file}: descriptor schemas must be JSON objects`);
       }
-      spec.family = familyOf(spec.function_name);
+      spec.family = documentationFor(spec.function_name).family;
     },
   });
 }
@@ -124,31 +260,61 @@ function optionTable(options) {
     ]));
 }
 
-function renderRelations(spec) {
-  return [
-    'cuGraph consumes a registered edge table or view by its first positional name. It does not accept a parenthesized relation subquery. Metadata validation uses the same registered name.',
-    '',
-    table(['Role', 'Required', 'Reference', 'Description'], spec.relation_roles.map(role => [
-      code(role.name), role.required === false ? 'no' : 'yes', code(role.reference?.type || 'table'), cell(role.description),
-    ])),
-  ].join('\n');
+function renderRelations() {
+  return 'The first positional argument names a registered edge table or view (the `edges` role). Parenthesized relation subqueries are not accepted; metadata validation uses the same registered name.';
+}
+
+function renderLimitations(spec) {
+  const limitations = spec.limitations.filter(limitation => !limitation.startsWith('dry-run'));
+  if (limitations.length === 0) return '_No algorithm-specific limitations._';
+  return limitations.map(limitation => `- ${prose(limitation)}`).join('\n');
+}
+
+function isSharedEndpointArgument(argument) {
+  const canonical = (argument.name === 'src_col' && argument.default === 'src')
+    || (argument.name === 'dst_col' && argument.default === 'dst');
+  return canonical
+    && argument.type === 'Utf8'
+    && argument.required === false
+    && !argument.note && !argument.description && !argument.semantic_effect && !argument.selector_policy;
+}
+
+function renderGraphOptionsNote(spec) {
+  const directed = spec.options_schema.graph_options?.directed;
+  const link = '[Graph Construction Options](../../graph-options.mdx)';
+  if (directed?.allowed_values?.length === 1 && directed.allowed_values[0] === false) {
+    return `This function requires ${code('directed=false')} (undirected/symmetric graph); all other graph construction options follow the shared defaults documented in ${link}.`;
+  }
+  if (directed?.default === false) {
+    return `This function builds an undirected graph by default (${code('directed=false')}); all other graph construction options follow the shared defaults documented in ${link}.`;
+  }
+  return `Graph construction follows the shared defaults (${code('directed=true')}, renumbering, ${code('python_cugraph')} policy) documented in ${link}.`;
 }
 
 function renderArguments(spec) {
-  const argumentsTable = spec.argument_descriptions.length === 0
-    ? '_This function has no non-relation arguments._'
-    : table(['Argument', 'Type', 'Required', 'Default', 'Notes'], spec.argument_descriptions.map(argument => [
+  const sharedEndpoints = spec.argument_descriptions.filter(isSharedEndpointArgument);
+  const useEndpointSentence = sharedEndpoints.length === 2;
+  const rows = useEndpointSentence ? spec.argument_descriptions.filter(argument => !isSharedEndpointArgument(argument)) : spec.argument_descriptions;
+  const positionalSections = [];
+  if (useEndpointSentence) {
+    positionalSections.push(`${code('src_col')} and ${code('dst_col')} name the edge endpoint columns; both are optional and default to ${code('src')} and ${code('dst')}.`);
+  }
+  if (rows.length > 0) {
+    positionalSections.push(table(['Argument', 'Type', 'Required', 'Default', 'Notes'], rows.map(argument => [
       code(argument.name),
       code(argument.type),
       argument.required ? 'yes' : 'no',
       Object.hasOwn(argument, 'default') ? code(argument.default) : '',
       cell([argument.note, argument.description, argument.semantic_effect && `semantic effect: ${argument.semantic_effect}`, argument.selector_policy && `selector: ${argument.selector_policy}`].filter(Boolean).join('; ')),
-    ]));
+    ])));
+  } else if (!useEndpointSentence) {
+    positionalSections.push('_This function has no non-relation arguments._');
+  }
   const algorithmOptions = spec.options_schema.algorithm_options || {};
   const optionSections = [
     '### Positional scalar arguments',
     '',
-    argumentsTable,
+    positionalSections.join('\n\n'),
     '',
     '### JSON options',
     '',
@@ -156,7 +322,7 @@ function renderArguments(spec) {
   ];
   const graphOptions = spec.options_schema.graph_options || {};
   if (Object.keys(graphOptions).length > 0) {
-    optionSections.push('', '### Graph construction options', '', 'Shared by all cuGraph functions, shown with this function\'s defaults. See [Graph Construction Options](../../graph-options.mdx) for the construction-policy guide.', '', optionTable(graphOptions));
+    optionSections.push('', '### Graph construction options', '', renderGraphOptionsNote(spec));
   }
   return optionSections.join('\n');
 }
@@ -175,35 +341,36 @@ function renderSchemas(spec) {
       code(field.name), code(field.data_type), field.nullable ? 'yes' : 'no', cell(descriptions[field.name]),
     ]));
   });
-  blocks.push('**Concrete schemas are call-specific.** These are generic descriptor schemas. Run [`gpu_validate_call`](../../../reference/gpu-function-catalog.mdx#gpu_validate_callfunction_name-call_json) for a concrete, table-specific output schema.');
+  blocks.push('These are generic descriptor schemas; [validate the call](#validate-before-running) to get the concrete, table-specific output schema.');
   return blocks.join('\n\n');
 }
 
 function firstExample(spec) {
   const example = spec.examples.find(candidate => (candidate?.call || candidate?.call_json) && typeof (candidate.call || candidate.call_json) === 'object');
   if (!example) throw new Error(`${spec.function_name}: examples_json must contain a unified validation call`);
-  if (typeof example.execution_sql !== 'string') throw new Error(`${spec.function_name}: example must contain execution_sql`);
   return { ...example, call: example.call || example.call_json };
 }
 
 function renderPage(spec) {
   const title = displayName(spec);
   const example = firstExample(spec);
+  const documentation = documentationFor(spec.function_name);
+  const officialDocsUrl = `${OFFICIAL_DOCS_ROOT}${documentation.officialPath}`;
   return renderFunctionPage({
     generator: 'website/scripts/gen-cugraph-docs.mjs',
     spec,
     title,
-    useThisWhen: `Use this when a SQL statement needs ${title} results over a registered edge relation.`,
-    quickstartSql: example.execution_sql,
-    relationInputs: renderRelations(spec),
+    reference: `Official cuGraph reference: [${documentation.officialApi}](${officialDocsUrl})`,
+    relationInputs: renderRelations(),
     scalarArgumentsAndOptions: renderArguments(spec),
     outputSchema: renderSchemas(spec),
     examples: narrativeExampleImport(`../../_examples/${spec.function_name}.mdx`),
-    limitations: spec.limitations.map(limitation => `- ${prose(limitation)}`).join('\n'),
+    limitations: renderLimitations(spec),
     validation: validationBlock({
       functionName: spec.function_name,
       call: example.call,
       discoveryLink: '../../../reference/gpu-function-catalog.mdx',
+      intro: 'Dry-run validation checks registered relation metadata, column presence, static dtypes, and options only; it does not scan edge data, construct a graph, or prove source-vertex existence:',
     }),
   });
 }
@@ -214,25 +381,27 @@ function renderCheatsheet(specs) {
     '',
     `The live catalog contains **${specs.length} SQL-visible cuGraph functions**.`,
     '',
-    table(['Function', 'Family', 'Signature', 'Summary'], specs.map(spec => [
-      `[${cell(displayName(spec))}](./algorithms/${spec.family}/${spec.function_name}.mdx)`,
-      cell(FAMILIES[spec.family].label),
-      code(spec.function_name),
-      cell(spec.summary),
-    ])),
+    table(['Function', 'Family', 'Signature', 'Summary', 'Official API'], specs.map(spec => {
+      const documentation = documentationFor(spec.function_name);
+      return [
+        `[${cell(displayName(spec))}](./algorithms/${spec.family}/${spec.function_name}.mdx)`,
+        cell(FAMILIES[spec.family].label),
+        code(spec.function_name),
+        cell(spec.summary),
+        `[${cell(documentation.officialApi)}](${OFFICIAL_DOCS_ROOT}${documentation.officialPath})`,
+      ];
+    })),
   ].join('\n');
 }
 
 function main() {
   const specs = loadSpecs();
   const classified = new Set(specs.map(spec => spec.function_name));
-  for (const family of Object.values(FAMILIES)) {
-    for (const functionName of family.functions) {
-      if (!classified.has(functionName)) throw new Error(`missing unified descriptor for ${functionName}`);
-    }
+  for (const functionName of Object.keys(ALGORITHMS)) {
+    if (!classified.has(functionName)) throw new Error(`missing unified descriptor for ${functionName}`);
   }
   for (const spec of specs) {
-    if (!Object.values(FAMILIES).some(family => family.functions.includes(spec.function_name))) {
+    if (!Object.hasOwn(ALGORITHMS, spec.function_name)) {
       throw new Error(`unclassified unified descriptor ${spec.function_name}`);
     }
   }

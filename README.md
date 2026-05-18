@@ -6,51 +6,50 @@
 
 <img src="website/static/img/nexus-logo-dark-theme.png" alt="DataFusion Nexus" width="420">
 
-DataFusion Nexus is a GPU query engine for [Apache DataFusion](https://datafusion.apache.org/).
-It evaluates whole relational physical-plan candidates and selects supported
-candidates for GPU execution with [Nvidia cuDF](https://docs.rapids.ai/api/cudf/stable/).
-[cuGraph](https://docs.rapids.ai/api/cugraph/stable/) algorithms are explicit
-GPU islands callable directly from SQL, and data is read from
-[Apache Iceberg](https://iceberg.apache.org/) and Parquet. A relational
-candidate that is not selected keeps its executable DataFusion baseline.
+DataFusion Nexus is an experimental GPU query engine for [Apache DataFusion](https://datafusion.apache.org/).
+It evaluates physical-plan candidates, selects those supported by [cuDF](https://docs.rapids.ai/api/cudf/stable/)
+for GPU execution, and exposes [cuGraph](https://docs.rapids.ai/api/cugraph/stable/) and other algorithms as
+SQL table functions. Data can be read directly from local Parquet files or remote Iceberg tables.
+Physical-plan candidates that are not selected for GPU execution fall back to their native DataFusion implementations.
 
-Nexus is designed to sit inside your own architecture. Graph workloads are
-exposed as ordinary SQL table functions over your existing data, and planning
-decisions and errors are returned as structured, machine-readable values — so
-both application code and agents can reason about a query before and after it
-runs.
+Nexus is designed to fit into your existing architecture. Planning decisions, function
+capabilities, and errors are exposed as structured, machine-readable values, allowing
+application code to reason about queries before and after execution.
 
 ## Features
 
-- **GPU SQL execution.** Nexus selects an entire supported relational physical
-  candidate for cuDF execution. `not_supported` and `not_selected_by_cost` are
-  planning diagnostics; they leave an otherwise valid executable DataFusion
-  plan intact. A caller that requires no DataFusion CPU execution adds a
-  final-plan requirement instead.
-- **Graph algorithms in SQL.** The `cugraph_*` table functions (PageRank, BFS,
-  Louvain, ForceAtlas2, and more) run cuGraph over an edge table or view and
-  return ordinary rows, so a graph traversal, a join, and an aggregation can
-  live in one query over the same data — no separate graph database and no copy
-  to keep in sync.
-- **Vector search and vector ML.** [cuVS](https://github.com/NVIDIA/cuvs)
-  provides `cuvs_brute_force_knn`, `cuvs_kmeans`, and `cuvs_pca` table
-  functions over parenthesized SQL subqueries. They accept Float32 columns or
-  vector-list columns and return ordinary relational rows for joins, filters,
-  and projections. See the generated [cuVS SQL API](website/docs/cuvs/overview.mdx).
-- **Lakehouse data access.** Query Iceberg tables from REST catalogs, AWS Glue,
-  or S3-compatible object stores, with KvikIO streaming Parquet from object
-  storage directly into GPU memory. The unified Iceberg scan shares resolved
-  facts with its executable CPU delegate; remote catalogs remain read-only, and
-  views and scratch tables can live in an opt-in mutable local workspace overlay.
-- **Explainable planning.** Planning reports record relational candidate
-  outcomes and the exact completed-plan disposition. Use
-  `nexus_explain_coverage('<sql>')` in every native session or `EXPLAIN GPU <sql>`
-  through Flight SQL; both return the same remedy-bearing coverage evidence
-  before a query runs. Errors cross the DataFusion boundary as typed values with
-  stable identity rather than log text — a surface application code and agents
-  can consume directly.
-- **Bounded GPU memory.** Bounded mode plans each query against a GPU memory
-  budget: shapes without a provable memory contract are rejected at planning
-  time, admitted queries receive their reservation before execution, and runtime
-  pressure is absorbed by chunk-split retries. A query that exhausts its retries
-  fails with structured facts rather than an opaque OOM.
+- **DataFusion-native GPU execution.** Nexus lowers supported physical-plan
+  candidates to a DataFusion-independent cuDF IR. Rewrites are whole-candidate
+  by default; narrowly certified mixed plans can retain a DataFusion CPU
+  boundary. Unsupported or cost-rejected candidates retain their executable
+  DataFusion plans, and callers can require a final plan with no DataFusion
+  CPU execution.
+- **Graph algorithms and GPU function discovery.** `cugraph_*` table functions
+  run PageRank, BFS, Louvain, ForceAtlas2, and other algorithms over registered
+  edge relations and return ordinary rows. The shared
+  [GPU function catalog](website/docs/guides/gpu-function-discovery.mdx) lets
+  clients list and describe cuGraph, cuVS, and cuOpt contracts, validate available
+  calls, and check whether each function is executable in the current session.
+- **Parquet and Iceberg sources.** Native scans read local and S3-compatible
+  Parquet, including Iceberg tables resolved through REST and Glue catalogs.
+  Remote reads use cuDF's KvikIO-backed S3 data source; unsupported native
+  Iceberg scans retain their executable CPU delegate. Remote catalogs are
+  read-only, with an optional mutable local workspace for views and scratch
+  tables.
+- **Structured planning diagnostics.** Planning reports record candidate
+  outcomes and the final plan disposition.
+  [`nexus_explain_coverage`](website/docs/integration/gpu-coverage-validation.mdx)
+  and Flight SQL `EXPLAIN GPU` expose the same coverage evidence and
+  remediation guidance.
+  Errors retain typed identities at the DataFusion boundary.
+- **Per-device memory admission.** Every native attempt is admitted against an
+  immutable GPU memory grant. Shapes without the required memory proof are
+  rejected before GPU work begins; eligible source-chunk failures may retry at
+  a smaller granularity, with structured facts reported when recovery is not
+  possible.
+
+> [!WARNING]
+> DataFusion Nexus is still an experimental project. Its public APIs,
+> query-planning behavior, and overall architecture are evolving rapidly
+> and may change incompatibly between releases. Evaluate it carefully
+> before using it in production, and use it at your own risk.

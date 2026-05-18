@@ -18,9 +18,6 @@ NEXUS_ROOT="${NEXUS_ROOT:-$nexus_env_dir}"
 unset nexus_env_source nexus_env_dir
 export NEXUS_ROOT
 
-# --- Rust toolchain ---------------------------------------------------------
-source "$HOME/.cargo/env"
-
 # --- CUDA toolkit -----------------------------------------------------------
 # CUDACXX / CUDAToolkit_ROOT are read by CMake (libcudf, libcuvs, libcugraph, the
 # cudf-nexus-sys shim); nvcc must ALSO be on PATH for CMake language detection.

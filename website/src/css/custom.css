@@ -331,7 +331,6 @@
      recede one step so they communicate relationships without dominating. */
   --nx-arch-card-border: #d7dce1;
   --nx-arch-edge: #748292;
-  --nx-arch-evidence-edge: #b7c0ca;
   --nx-dg-bar: var(--ifm-color-emphasis-900);
   --nx-dg-bar-fg: var(--ifm-background-color);
   --nx-dg-accent: var(--ifm-color-primary);
@@ -372,7 +371,6 @@
   --nx-dg-fg-subtle: #7a8494;
   --nx-arch-card-border: #313a47;
   --nx-arch-edge: #8492a5;
-  --nx-arch-evidence-edge: #414b59;
   --nx-dg-bar: var(--nx-ayu-text);
   --nx-dg-bar-fg: var(--nx-ayu-bg);
   --nx-dg-accent: var(--nx-ayu-accent);

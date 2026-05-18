@@ -70,9 +70,6 @@ function presentation(spec) {
   if (typeof quickstart.display_name !== 'string' || quickstart.display_name.trim() === '') {
     throw new Error(`${spec.function_name}: quickstart metadata must contain display_name`);
   }
-  if (typeof quickstart.use_this_when !== 'string' || quickstart.use_this_when.trim() === '') {
-    throw new Error(`${spec.function_name}: quickstart metadata must contain use_this_when`);
-  }
   if (typeof quickstart.sql !== 'string' || quickstart.sql.trim() === '') {
     throw new Error(`${spec.function_name}: quickstart metadata must contain executable SQL`);
   }
@@ -220,7 +217,6 @@ function renderPage(spec) {
     generator: 'website/scripts/gen-cuvs-docs.mjs',
     spec,
     title: entry.quickstart.display_name,
-    useThisWhen: entry.quickstart.use_this_when,
     quickstartSql: entry.quickstart.sql,
     relationInputs: renderRelations(spec),
     scalarArgumentsAndOptions: renderArguments(spec),

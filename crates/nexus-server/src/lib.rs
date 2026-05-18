@@ -1086,8 +1086,8 @@ fn cugraph_enabled(config: &ServerConfig) -> bool {
 }
 
 /// Emit a one-shot startup WARN when this binary was built with the `cugraph`
-/// feature but cuGraph SQL functions were not enabled at runtime
-/// (`NEXUS_SERVER_CUGRAPH_ENABLED` is not `true`). Without it the
+/// feature but cuGraph SQL functions were disabled at runtime
+/// (`NEXUS_SERVER_CUGRAPH_ENABLED=false`). Without it the
 /// `cugraph_*` table functions are never registered and queries fail with a
 /// not-found error, which is easy to misread as a build problem when the
 /// feature is actually compiled in. The cfg-gated definitions keep this a

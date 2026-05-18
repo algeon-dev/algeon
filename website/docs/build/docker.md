@@ -77,10 +77,10 @@ FEATURES=iceberg,nvml bash docker/build.sh
 # Run the exact printed docker build command.
 ```
 
-For this lean image, keep cuGraph disabled at runtime. Use direct `docker run`
-or set `NEXUS_SERVER_CUGRAPH_ENABLED=false` before using `docker/run.sh`; a
-server built without the `cugraph` feature rejects
-`NEXUS_SERVER_CUGRAPH_ENABLED=true`.
+For this lean image, set `NEXUS_SERVER_CUGRAPH_ENABLED=false` when using direct
+`docker run` or before using `docker/run.sh`. A server built without the
+`cugraph` feature exposes the frontend but returns a structured
+`required_feature_disabled` error when cuGraph execution is requested.
 
 If you already have a current release binary and only need to restage the
 runtime payload:
@@ -196,14 +196,14 @@ Expected output starts with:
 
 ```text
 algorithms
-23
+27
 ```
 
 ## Troubleshooting
 
 - `docker/build.sh` cannot find `libcudf.so`, `librmm.so`, or
   `libcugraph.so`: finish the source build first, or set `CUDF_INSTALL_DIR` /
-  `CUGRAPH_BUILD_DIR` to the correct artifact locations.
+  `CUGRAPH_CMAKE_BUILD_DIR` to the correct artifact locations.
 - The container starts but the first GPU query fails with
   `cudaErrorNoKernelImageForDevice`: rebuild the forked native libraries with
   CUDA architectures covering the deployment GPU.

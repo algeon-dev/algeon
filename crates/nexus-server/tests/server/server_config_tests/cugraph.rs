@@ -30,8 +30,11 @@ fn server_feature_off_cugraph_config_is_retained_for_unavailable_registration() 
 
 #[cfg(feature = "cugraph")]
 #[test]
-fn server_cugraph_config_rejects_settings_without_enabled_true() {
-    let env = BTreeMap::from([(NEXUS_SERVER_CUGRAPH_DIRECTED_ENV, "false".to_string())]);
+fn server_cugraph_config_rejects_settings_when_explicitly_disabled() {
+    let env = BTreeMap::from([
+        (NEXUS_SERVER_CUGRAPH_ENABLED_ENV, "false".to_string()),
+        (NEXUS_SERVER_CUGRAPH_DIRECTED_ENV, "false".to_string()),
+    ]);
     let error = server_config_with_default_device_profile(env).unwrap_err();
 
     assert!(error.to_string().contains(NEXUS_SERVER_CUGRAPH_ENABLED_ENV));
@@ -48,8 +51,18 @@ fn server_cugraph_config_materializes_when_enabled() {
 
 #[cfg(feature = "cugraph")]
 #[test]
-fn server_cugraph_config_remains_absent_when_disabled() {
+fn server_cugraph_config_defaults_to_enabled() {
     let env: BTreeMap<&'static str, String> = BTreeMap::new();
+    let config = server_config_with_default_device_profile(env).unwrap();
+    let cugraph = config.cugraph.expect("cuGraph must be enabled by default");
+
+    assert_eq!(cugraph.default_graph_options, datafusion_nexus::cugraph_sql::CugraphGraphOptions::default());
+}
+
+#[cfg(feature = "cugraph")]
+#[test]
+fn server_cugraph_config_remains_absent_when_explicitly_disabled() {
+    let env = BTreeMap::from([(NEXUS_SERVER_CUGRAPH_ENABLED_ENV, "false".to_string())]);
     let config = server_config_with_default_device_profile(env).unwrap();
 
     assert!(config.cugraph.is_none());

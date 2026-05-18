@@ -32,8 +32,10 @@
 
 - Default to no comments. Never explain what the code does; if code needs a
   comment to be understandable, rename things instead.
-- Comment only the non-obvious *why*: hidden constraints, workarounds, and
-  business rules the code cannot express.
+- Comment only non-obvious rationale, invariants, safety constraints, external
+  quirks, or business rules the code cannot express.
+- Public API documentation describes observable contracts, not incidental
+  implementation details.
 - An explicit `drop()` in production code needs a one-line comment on why the
   value cannot wait until end of scope (lock window, re-entrancy, `RefCell`
   re-borrow); otherwise delete the `drop()`. Test code is exempt.
@@ -99,10 +101,16 @@ partial and must not be reported as full validation.
 
 ## Writing tests
 
-- Extend existing tests before creating new ones.
-- Add tests for behavior or regressions that could fail silently and cause
-  real damage; never test what the type system already guarantees.
-- Test observable behavior, not implementation details.
+- Prefer extending existing coverage at the behavior boundary before creating
+  new tests.
+- Add tests for realistic observable regressions, non-trivial invariants or
+  boundaries, and concrete bugs. Code changing or coverage increasing is not
+  sufficient justification by itself.
+- Do not test what the type system guarantees or mirror literals, mappings,
+  obvious control flow, implementation details, or removed features unless
+  absence is itself a contract.
+- For concurrency, prefer deterministic coordination or controlled scheduling
+  over sleeps when practical.
 - A new test must fail when the code under test is reverted; if it does not,
   delete it.
 

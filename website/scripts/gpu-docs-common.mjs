@@ -12,17 +12,6 @@ export const REQUIRED_DESCRIPTOR_KEYS = [
   'validation_request_schema_json', 'examples_json', 'limitations_json',
 ];
 
-export const COMMON_HEADINGS = [
-  'Use this when',
-  'Signature',
-  'Quickstart',
-  'Relation inputs',
-  'Scalar arguments & JSON options',
-  'Output schema',
-  'Limitations & lifecycle',
-  'Validate before running',
-];
-
 export function write(path, content) {
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, content.replace(/\n*$/, '\n'));
@@ -108,10 +97,10 @@ export function sqlBlock(sql) {
   return ['```sql', sql, '```'].join('\n');
 }
 
-export function validationBlock({ functionName, call, discoveryLink }) {
+export function validationBlock({ functionName, call, discoveryLink, intro }) {
   if (!call || typeof call !== 'object') throw new Error(`${functionName}: no renderable validation call`);
   return [
-    'Validation checks registered relation metadata, bindings, dtypes, and options without scanning rows or touching the GPU:',
+    intro ?? 'Validation checks registered relation metadata, bindings, dtypes, and options without scanning rows or touching the GPU:',
     '',
     sqlBlock(`SELECT * FROM gpu_validate_call(\n  '${functionName}',\n  '${JSON.stringify(call)}'\n);`),
     '',
@@ -127,6 +116,7 @@ export function renderFunctionPage({
   generator,
   spec,
   title,
+  reference,
   useThisWhen,
   quickstartSql,
   relationInputs,
@@ -136,6 +126,8 @@ export function renderFunctionPage({
   limitations,
   validation,
 }) {
+  // 'Use this when' and 'Quickstart' are optional; providers omit them by
+  // passing null. All other sections are part of the fixed page contract.
   const parts = [
     '---',
     `title: ${title}`,
@@ -148,20 +140,21 @@ export function renderFunctionPage({
     `# ${title}`,
     '',
     `SQL function: ${code(spec.function_name)}`,
-    '',
-    prose(spec.summary),
-    '',
-    '## Use this when',
-    '',
-    prose(useThisWhen),
-    '',
-    '## Signature',
-    '',
-    sqlBlock(spec.signature),
-    '',
-    '## Quickstart',
-    '',
-    sqlBlock(quickstartSql),
+  ];
+  if (reference != null) parts.push('', reference);
+  parts.push('', prose(spec.summary));
+  const headings = [];
+  if (useThisWhen != null) {
+    parts.push('', '## Use this when', '', prose(useThisWhen));
+    headings.push('Use this when');
+  }
+  parts.push('', '## Signature', '', sqlBlock(spec.signature));
+  headings.push('Signature');
+  if (quickstartSql != null) {
+    parts.push('', '## Quickstart', '', sqlBlock(quickstartSql));
+    headings.push('Quickstart');
+  }
+  parts.push(
     '',
     '## Relation inputs',
     '',
@@ -174,18 +167,20 @@ export function renderFunctionPage({
     '## Output schema',
     '',
     outputSchema,
-  ];
-  if (examples) parts.push('', '## Examples', '', examples);
+  );
+  headings.push('Relation inputs', 'Scalar arguments & JSON options', 'Output schema');
+  if (examples) {
+    parts.push('', '## Examples', '', examples);
+    headings.push('Examples');
+  }
   parts.push('', '## Limitations & lifecycle', '', limitations, '', '## Validate before running', '', validation);
+  headings.push('Limitations & lifecycle', 'Validate before running');
   const page = parts.join('\n');
-  assertPageContract(spec.function_name, page, Boolean(examples));
+  assertPageContract(spec.function_name, page, headings);
   return page;
 }
 
-export function assertPageContract(functionName, page, hasExamples) {
-  const headings = hasExamples
-    ? [...COMMON_HEADINGS.slice(0, 6), 'Examples', ...COMMON_HEADINGS.slice(6)]
-    : COMMON_HEADINGS;
+export function assertPageContract(functionName, page, headings) {
   let previous = -1;
   for (const heading of headings) {
     const index = page.indexOf(`## ${heading}`);

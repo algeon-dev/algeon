@@ -14,9 +14,9 @@ built from the RAPIDS 26.06 sources, so their toolchain requirements are the
 upstream RAPIDS ones. Where a version matters, this page cites the upstream
 requirement rather than pinning the exact build this guide happened to run on;
 follow the [RAPIDS install guide](https://docs.rapids.ai/install/) and the
-`dependencies.yaml` in [rapidsai/cudf](https://github.com/rapidsai/cudf) /
-[rapidsai/cuvs](https://github.com/rapidsai/cuvs) /
-[rapidsai/cugraph](https://github.com/rapidsai/cugraph) as the source of truth.
+`dependencies.yaml` in [cudf](https://github.com/rapidsai/cudf) /
+[cuvs](https://github.com/rapidsai/cuvs) /
+[cugraph](https://github.com/rapidsai/cugraph) as the source of truth.
 
 ## What each tool is for
 
